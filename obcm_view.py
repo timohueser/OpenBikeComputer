@@ -1,6 +1,7 @@
 import pygame
 import sys
 import os
+import math
 from obcm.reader import OBCMReader
 from obcm.viewport import Viewport
 
@@ -22,6 +23,14 @@ def main():
     pygame.display.set_caption(f"OBCM Visualizer - {os.path.basename(map_path)}")
     clock = pygame.time.Clock()
 
+    def handle_zoom(factor, vp):
+        mouse_x, mouse_y = pygame.mouse.get_pos()
+        old_lon, old_lat = vp.to_map(mouse_x, mouse_y)
+        vp.zoom *= factor
+        new_lon, new_lat = vp.to_map(mouse_x, mouse_y)
+        vp.camera_lon += (old_lon - new_lon)
+        vp.camera_lat += (old_lat - new_lat)
+
     with open(map_path, "rb") as f:
         reader = OBCMReader(f)
     
@@ -35,7 +44,6 @@ def main():
         vp.zoom = SCREEN_WIDTH / (max_lon - min_lon) if max_lon != min_lon else 1.0
         
         panning = False
-        
         last_vp_state = None
         visible_features = []
         
@@ -47,10 +55,15 @@ def main():
                 elif event.type == pygame.MOUSEBUTTONDOWN:
                     if event.button == 1: # Left click
                         panning = True
-                    elif event.button == 4: # Scroll up
-                        vp.zoom *= 1.2
-                    elif event.button == 5: # Scroll down
-                        vp.zoom /= 1.2
+                    elif event.button == 4: # Scroll up (legacy)
+                        handle_zoom(1.2, vp)
+                    elif event.button == 5: # Scroll down (legacy)
+                        handle_zoom(1/1.2, vp)
+                elif event.type == pygame.MOUSEWHEEL:
+                    if event.y > 0: # Scroll up
+                        handle_zoom(1.2, vp)
+                    elif event.y < 0: # Scroll down
+                        handle_zoom(1/1.2, vp)
                 elif event.type == pygame.MOUSEBUTTONUP:
                     if event.button == 1:
                         panning = False
