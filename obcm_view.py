@@ -54,7 +54,11 @@ def main():
             "render_ms": 0.0
         }
 
-        font = pygame.font.SysFont("monospace", 20)
+        try:
+            font = pygame.font.SysFont("monospace", 20)
+        except (NotImplementedError, ImportError, AttributeError):
+            print("Warning: pygame.font not available. Falling back to console performance metrics.")
+            font = None
         
         panning = False
         last_vp_state = None
@@ -158,18 +162,22 @@ def main():
                     f"Render: {perf_metrics['render_ms']:.2f} ms"
                 ]
                 
-                for i, text in enumerate(labels):
-                    surf = font.render(text, True, (255, 255, 255))
-                    # Background rect for readability
-                    bg_rect = surf.get_rect()
-                    bg_rect.bottomright = (SCREEN_WIDTH - 10, SCREEN_HEIGHT - 10 - (i * 25))
-                    
-                    # Draw semi-transparent background
-                    bg_surface = pygame.Surface((bg_rect.width + 10, bg_rect.height + 5), pygame.SRCALPHA)
-                    bg_surface.fill((0, 0, 0, 150))
-                    screen.blit(bg_surface, bg_rect.inflate(10, 5))
-                    
-                    screen.blit(surf, bg_rect)
+                if font:
+                    for i, text in enumerate(labels):
+                        surf = font.render(text, True, (255, 255, 255))
+                        # Background rect for readability
+                        bg_rect = surf.get_rect()
+                        bg_rect.bottomright = (SCREEN_WIDTH - 10, SCREEN_HEIGHT - 10 - (i * 25))
+                        
+                        # Draw semi-transparent background
+                        bg_surface = pygame.Surface((bg_rect.width + 10, bg_rect.height + 5), pygame.SRCALPHA)
+                        bg_surface.fill((0, 0, 0, 150))
+                        screen.blit(bg_surface, bg_rect.inflate(10, 5))
+                        
+                        screen.blit(surf, bg_rect)
+                else:
+                    # Fallback to console if font module is broken
+                    print(f"\rQuery: {perf_metrics['query_ms']:6.2f} ms | Render: {perf_metrics['render_ms']:6.2f} ms", end="")
             
             pygame.display.flip()
             clock.tick(60)
