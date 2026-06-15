@@ -151,6 +151,26 @@ def main():
                     pygame.draw.lines(screen, (0, 255, 0), True, points, 1)
             
             perf_metrics["render_ms"] = (time.perf_counter() - t_render_start) * 1000.0
+
+            # Performance Overlay
+            if debug_settings["show_perf"]:
+                labels = [
+                    f"Query:  {perf_metrics['query_ms']:.2f} ms",
+                    f"Render: {perf_metrics['render_ms']:.2f} ms"
+                ]
+                
+                for i, text in enumerate(labels):
+                    surf = font.render(text, True, (255, 255, 255))
+                    # Background rect for readability
+                    bg_rect = surf.get_rect()
+                    bg_rect.bottomright = (SCREEN_WIDTH - 10, SCREEN_HEIGHT - 10 - (i * 25))
+                    
+                    # Draw semi-transparent background
+                    bg_surface = pygame.Surface((bg_rect.width + 10, bg_rect.height + 5), pygame.SRCALPHA)
+                    bg_surface.fill((0, 0, 0, 150))
+                    screen.blit(bg_surface, bg_rect.inflate(10, 5))
+                    
+                    screen.blit(surf, bg_rect)
             
             pygame.display.flip()
             clock.tick(60)
