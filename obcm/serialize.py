@@ -119,16 +119,17 @@ def serialize_all(root, config: dict, global_bbox: Tuple[int, int, int, int], ch
             
     index_data = struct.pack(f"<{len(flat_index)}I", *flat_index)
     
-    style_offset = 29
+    # Header: Magic(4), Version(1), BBox(4x i32), StyleOff(4), IndexOff(4), ChunkSize(2)
+    style_offset = 31 
     index_offset = style_offset + len(style_data)
     
-    # Header: Magic(4), Version(1), BBox(4x i32), StyleOff(4), IndexOff(4)
-    header = struct.pack("<4sBiiiiII",
+    header = struct.pack("<4sBiiiiIIH",
                         b"OBCM",
                         0x01,
                         global_bbox[1], global_bbox[0], global_bbox[3], global_bbox[2],
                         style_offset,
-                        index_offset)
+                        index_offset,
+                        chunk_size)
     
     full_binary = header + style_data + index_data
     for chunk in data_chunks:

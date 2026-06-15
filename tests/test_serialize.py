@@ -51,3 +51,21 @@ def test_pack_chunk_padding():
     chunk = pack_chunk([feature], bbox, chunk_size=32)
     assert len(chunk) == 32
     assert chunk[10:] == b"\xff" * 22
+
+def test_serialize_all_header_size():
+    from obcm.serialize import serialize_all
+    class MockNode:
+        def __init__(self):
+            self.is_leaf = True
+            self.features = []
+            self.bbox = (0, 0, 100, 100)
+    
+    root = MockNode()
+    config = {"features": {}}
+    global_bbox = (0, 0, 100, 100)
+    
+    binary = serialize_all(root, config, global_bbox, chunk_size=2048)
+    # Header(31) + StyleCount(1) + Index(4) = 36
+    assert len(binary) == 36
+    magic, ver, lat1, lon1, lat2, lon2, s_off, i_off, c_size = struct.unpack("<4sBiiiiIIH", binary[:31])
+    assert c_size == 2048
