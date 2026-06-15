@@ -94,23 +94,24 @@ def ingest_osm(pbf_path, config):
     
     # We must use a NodeLocationsForWays to resolve locations before AreaManager
     import osmium.index
+    import osmium.area
     idx = osmium.index.create_map('flex_mem')
     lh = osmium.NodeLocationsForWays(idx)
     lh.ignore_errors()
     
     # AreaManager handles relations and closed ways tagged as areas
-    am = osmium.AreaManager()
+    am = osmium.area.AreaManager()
     
     # Pass 1: Collect relations
     print("Pass 1: Reading relations...")
     r = osmium.io.Reader(pbf_path, osmium.osm.osm_entity_bits.RELATION)
-    am.read_relations(r)
+    osmium.apply(r, am.first_pass_handler())
     r.close()
     
     # Pass 2: Build areas and process ways
     print("Pass 2: Processing ways and areas...")
     r = osmium.io.Reader(pbf_path)
-    osmium.apply(r, lh, am, handler)
+    osmium.apply(r, lh, am.second_pass_handler(), handler)
     r.close()
     
     return handler.features, handler.coastlines
