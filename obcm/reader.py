@@ -8,6 +8,8 @@ class OBCMReader:
         self._read_header()
         self.styles = {}
         self._read_styles()
+        # Instance-level cache to avoid memory leaks
+        self.decode_chunk = functools.lru_cache(maxsize=128)(self._decode_chunk)
 
     def _read_header(self):
         self.stream.seek(0)
@@ -71,8 +73,7 @@ class OBCMReader:
         self.index = list(full_arr[:index_count])
         self.index_raw = all_data[:index_count * 4]
 
-    @functools.lru_cache(maxsize=128)
-    def decode_chunk(self, chunk_id, node_bbox, chunk_size=4096):
+    def _decode_chunk(self, chunk_id, node_bbox, chunk_size=4096):
         """
         Reads and decodes a data chunk from the file.
         """

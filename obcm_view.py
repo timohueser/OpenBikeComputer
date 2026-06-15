@@ -4,6 +4,9 @@ import os
 from obcm.reader import OBCMReader
 from obcm.viewport import Viewport
 
+SCREEN_WIDTH = 1024
+SCREEN_HEIGHT = 768
+
 def main():
     if len(sys.argv) < 2:
         print("Usage: python obcm_view.py <map.obcm>")
@@ -15,7 +18,7 @@ def main():
         return
 
     pygame.init()
-    screen = pygame.display.set_mode((1024, 768))
+    screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
     pygame.display.set_caption(f"OBCM Visualizer - {os.path.basename(map_path)}")
     clock = pygame.time.Clock()
 
@@ -24,12 +27,12 @@ def main():
     
         # Init viewport at center of map
         min_lon, min_lat, max_lon, max_lat = reader.global_bbox
-        vp = Viewport(1024, 768, (min_lat + max_lat) // 2)
+        vp = Viewport(SCREEN_WIDTH, SCREEN_HEIGHT, (min_lat + max_lat) // 2)
         vp.camera_lon = (min_lon + max_lon) // 2
         vp.camera_lat = (min_lat + max_lat) // 2
         
         # Initial zoom: fit map to screen width
-        vp.zoom = 1024 / (max_lon - min_lon) if max_lon != min_lon else 1.0
+        vp.zoom = SCREEN_WIDTH / (max_lon - min_lon) if max_lon != min_lon else 1.0
         
         panning = False
         
@@ -65,7 +68,7 @@ def main():
                 last_vp_state = current_vp_state
                 # Calculate visible BBox
                 v_min_lon, v_max_lat = vp.to_map(0, 0)
-                v_max_lon, v_min_lat = vp.to_map(1024, 768)
+                v_max_lon, v_min_lat = vp.to_map(SCREEN_WIDTH, SCREEN_HEIGHT)
                 
                 # Query visible chunks
                 chunks = reader.query_bbox((v_min_lon, v_min_lat, v_max_lon, v_max_lat))
