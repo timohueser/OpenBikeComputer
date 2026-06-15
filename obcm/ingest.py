@@ -93,7 +93,8 @@ def ingest_osm(pbf_path, config):
     handler = OSMHandler(config)
     
     # We must use a NodeLocationsForWays to resolve locations before AreaManager
-    idx = 'flex_mem'
+    import osmium.index
+    idx = osmium.index.create_map('flex_mem')
     lh = osmium.NodeLocationsForWays(idx)
     lh.ignore_errors()
     
