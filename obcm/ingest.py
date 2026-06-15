@@ -1,7 +1,7 @@
 import osmium
 from shapely.geometry import LineString, Polygon
 
-class OBCMHandler(osmium.SimpleHandler):
+class OSMHandler(osmium.SimpleHandler):
     def __init__(self, config):
         super().__init__()
         self.config = config
@@ -27,6 +27,25 @@ class OBCMHandler(osmium.SimpleHandler):
 
         style = self._get_style(w.tags)
         if not style: return
+
+        # Prevent closed ways from being added twice (once in way() and once in area()).
+        # Closed ways that are tagged as areas should only be processed in area().
+        if w.is_closed():
+            is_area = w.tags.get("area") == "yes"
+            # Common tags that imply an area if the way is closed
+            area_tags = {"building", "landuse", "amenity", "leisure", "natural"}
+            if not is_area:
+                for k, v in w.tags:
+                    if k in area_tags:
+                        is_area = True
+                        break
+            
+            # area=no overrides everything
+            if w.tags.get("area") == "no":
+                is_area = False
+                
+            if is_area:
+                return
 
         # If it's closed and NOT explicitly marked as an area by AreaManager, it might just be a circular road.
         # AreaManager handles true multipolygons.
@@ -71,7 +90,7 @@ class OBCMHandler(osmium.SimpleHandler):
             pass
 
 def ingest_osm(pbf_path, config):
-    handler = OBCMHandler(config)
+    handler = OSMHandler(config)
     
     # We must use a NodeLocationsForWays to resolve locations before AreaManager
     idx = 'flex_mem'
@@ -90,7 +109,7 @@ def ingest_osm(pbf_path, config):
     # Pass 2: Build areas and process ways
     print("Pass 2: Processing ways and areas...")
     r = osmium.io.Reader(pbf_path)
-    osmium.apply(r, lh, am, handler.filter(osmium.osm.osm_entity_bits.WAY | osmium.osm.osm_entity_bits.AREA))
+    osmium.apply(r, lh, am, handler)
     r.close()
     
     return handler.features, handler.coastlines

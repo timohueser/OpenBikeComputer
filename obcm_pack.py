@@ -34,11 +34,11 @@ def main():
     features, coastlines = ingest_osm(args.pbf, config)
     print(f"Extracted {len(features)} features and {len(coastlines)} coastlines.")
 
-    if not features:
+    if not features and not coastlines:
         print("No features found matching config. Exiting.")
         sys.exit(0)
 
-    # Calculate global bounding box in microdegrees
+    # Calculate global bounding box in degrees
     min_lon, min_lat, max_lon, max_lat = float('inf'), float('inf'), float('-inf'), float('-inf')
     for feat in features:
         f_minx, f_miny, f_maxx, f_maxy = feat["geometry"].bounds
@@ -47,6 +47,13 @@ def main():
         max_lon = max(max_lon, f_maxx)
         max_lat = max(max_lat, f_maxy)
     
+    for cl in coastlines:
+        f_minx, f_miny, f_maxx, f_maxy = cl.bounds
+        min_lon = min(min_lon, f_minx)
+        min_lat = min(min_lat, f_miny)
+        max_lon = max(max_lon, f_maxx)
+        max_lat = max(max_lat, f_maxy)
+
     global_bbox = (
         int(min_lon * 1e6),
         int(min_lat * 1e6),
@@ -54,6 +61,37 @@ def main():
         int(max_lat * 1e6)
     )
     print(f"Global BBox: {global_bbox}")
+
+    # --- Sea Generation Logic ---
+    if coastlines and "natural" in config.get("features", {}) and "sea" in config["features"]["natural"]:
+        from shapely.geometry import box
+        from shapely.ops import linemerge, split, unary_union
+        
+        print("Generating Sea polygon...")
+        sea_style = config["features"]["natural"]["sea"]["id"]
+        merged_coastlines = linemerge(coastlines)
+        
+        # Create a box slightly larger than the data extent
+        bbox_poly = box(min_lon - 0.01, min_lat - 0.01, max_lon + 0.01, max_lat + 0.01)
+        
+        if merged_coastlines.geom_type == 'LineString':
+            lines = [merged_coastlines]
+        elif hasattr(merged_coastlines, 'geoms'):
+            lines = list(merged_coastlines.geoms)
+        else:
+            lines = []
+            
+        if lines:
+            # We need to union the lines to split the box
+            split_result = split(bbox_poly, unary_union(lines))
+            
+            # Heuristic: polygons that touch the bbox edge are candidates
+            added_count = 0
+            for poly in split_result.geoms:
+                if poly.area < bbox_poly.area * 0.99: 
+                    features.append({"style_id": sea_style, "geometry": poly})
+                    added_count += 1
+            print(f"Added {added_count} sea polygons.")
 
     print("Building Quadtree index...")
     root = QuadtreeNode(global_bbox, chunk_size=chunk_size)

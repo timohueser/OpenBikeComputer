@@ -1,12 +1,12 @@
 import pytest
 import osmium
 from unittest.mock import MagicMock
-from obcm.ingest import OBCMHandler
+from obcm.ingest import OSMHandler
 from shapely.geometry import LineString, Polygon
 
 def test_handler_way_extraction():
     config = {"features": {"highway": {"primary": {"id": 10}}}}
-    handler = OBCMHandler(config)
+    handler = OSMHandler(config)
     
     # Mock an osmium way
     mock_way = MagicMock()
@@ -27,7 +27,7 @@ def test_handler_way_extraction():
 
 def test_handler_way_too_few_nodes():
     config = {"features": {"highway": {"primary": {"id": 10}}}}
-    handler = OBCMHandler(config)
+    handler = OSMHandler(config)
     mock_way = MagicMock()
     mock_way.tags = MagicMock()
     mock_way.tags.__iter__.return_value = [("highway", "primary")]
@@ -39,7 +39,7 @@ def test_handler_way_too_few_nodes():
 
 def test_handler_way_no_matching_tags():
     config = {"features": {"highway": {"primary": {"id": 10}}}}
-    handler = OBCMHandler(config)
+    handler = OSMHandler(config)
     mock_way = MagicMock()
     mock_way.tags = MagicMock()
     mock_way.tags.__iter__.return_value = [("highway", "residential")]
@@ -52,7 +52,7 @@ def test_handler_way_no_matching_tags():
 
 def test_handler_way_invalid_location_error():
     config = {"features": {"highway": {"primary": {"id": 10}}}}
-    handler = OBCMHandler(config)
+    handler = OSMHandler(config)
     mock_way = MagicMock()
     mock_way.tags = MagicMock()
     mock_way.tags.__iter__.return_value = [("highway", "primary")]
@@ -65,7 +65,7 @@ def test_handler_way_invalid_location_error():
 
 def test_handler_coastline_extraction():
     config = {"features": {}}
-    handler = OBCMHandler(config)
+    handler = OSMHandler(config)
     mock_way = MagicMock()
     mock_way.tags = MagicMock()
     mock_way.tags.get.side_effect = lambda k: "coastline" if k == "natural" else None
@@ -80,7 +80,7 @@ def test_handler_coastline_extraction():
 
 def test_handler_area_extraction():
     config = {"features": {"leisure": {"park": {"id": 20}}}}
-    handler = OBCMHandler(config)
+    handler = OSMHandler(config)
     
     mock_area = MagicMock()
     mock_area.tags = MagicMock()
