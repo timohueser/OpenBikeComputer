@@ -13,14 +13,14 @@ class OBCMReader:
 
     def _read_header(self):
         self.stream.seek(0)
-        data = self.stream.read(29)
-        if len(data) < 29:
+        data = self.stream.read(31)
+        if len(data) < 31:
             raise ValueError("File too short for header")
-        magic, self.version, min_lat, min_lon, max_lat, max_lon, self.style_offset, self.index_offset = struct.unpack("<4sBiiiiII", data)
+        magic, self.version, min_lat, min_lon, max_lat, max_lon, self.style_offset, self.index_offset, self.chunk_size = struct.unpack("<4sBiiiiIIH", data)
         if magic != b"OBCM":
             raise ValueError("Invalid magic bytes")
         
-        if self.style_offset < 29 or self.index_offset < 29:
+        if self.style_offset < 31 or self.index_offset < 31:
             raise ValueError("Offset too small")
             
         # Store as (min_lon, min_lat, max_lon, max_lat) to match pipeline's global_bbox order
@@ -73,7 +73,7 @@ class OBCMReader:
         self.index = list(full_arr[:index_count])
         self.index_raw = all_data[:index_count * 4]
 
-    def _decode_chunk(self, chunk_id, node_bbox, chunk_size=4096):
+    def _decode_chunk(self, chunk_id, node_bbox):
         """
         Reads and decodes a data chunk from the file.
         """
@@ -83,11 +83,12 @@ class OBCMReader:
         # Data starts immediately after the Index Block
         data_start_offset = self.index_offset + (len(self.index) * 4)
         
-        self.stream.seek(data_start_offset + chunk_id * chunk_size)
-        chunk_data = self.stream.read(chunk_size)
+        self.stream.seek(data_start_offset + chunk_id * self.chunk_size)
+        chunk_data = self.stream.read(self.chunk_size)
             
         offset = 0
         features = []
+        chunk_size = self.chunk_size
         while offset < chunk_size:
             # Check for padding (0xFF) or end of data
             if offset >= len(chunk_data) or chunk_data[offset] == 0xFF:
