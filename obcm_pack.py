@@ -31,26 +31,27 @@ def main():
     print(f"Using chunk size: {chunk_size}")
 
     print(f"Ingesting OSM data: {args.pbf}")
-    features = ingest_osm(args.pbf, config)
-    print(f"Extracted {len(features)} features.")
+    features, coastlines = ingest_osm(args.pbf, config)
+    print(f"Extracted {len(features)} features and {len(coastlines)} coastlines.")
 
     if not features:
         print("No features found matching config. Exiting.")
         sys.exit(0)
 
     # Calculate global bounding box in microdegrees
-    all_lons = []
-    all_lats = []
+    min_lon, min_lat, max_lon, max_lat = float('inf'), float('inf'), float('-inf'), float('-inf')
     for feat in features:
-        for lon, lat in feat["geometry"].coords:
-            all_lons.append(lon)
-            all_lats.append(lat)
+        f_minx, f_miny, f_maxx, f_maxy = feat["geometry"].bounds
+        min_lon = min(min_lon, f_minx)
+        min_lat = min(min_lat, f_miny)
+        max_lon = max(max_lon, f_maxx)
+        max_lat = max(max_lat, f_maxy)
     
     global_bbox = (
-        int(min(all_lons) * 1e6),
-        int(min(all_lats) * 1e6),
-        int(max(all_lons) * 1e6),
-        int(max(all_lats) * 1e6)
+        int(min_lon * 1e6),
+        int(min_lat * 1e6),
+        int(max_lon * 1e6),
+        int(max_lat * 1e6)
     )
     print(f"Global BBox: {global_bbox}")
 
