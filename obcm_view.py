@@ -54,7 +54,6 @@ def main():
             "render_ms": 0.0
         }
 
-        pygame.font.init()
         font = pygame.font.SysFont("monospace", 20)
         
         panning = False
