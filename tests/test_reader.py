@@ -4,12 +4,49 @@ import io
 from obcm.reader import OBCMReader
 
 def test_read_header():
-    # Mock a minimal OBCM file
-    # Magic(4), Ver(1), BBox(4*i32), StyleOff(4), IndexOff(4)
-    # Global BBox: minlat=0, minlon=0, maxlat=100, maxlon=100
-    # In .obcm header it is stored as: MinLat, MinLon, MaxLat, MaxLon
-    data = struct.pack("<4sBiiiiII", b"OBCM", 1, 0, 0, 100, 100, 29, 40)
+    # MinLat=10, MinLon=20, MaxLat=30, MaxLon=40
+    data = struct.pack("<4sBiiiiII", b"OBCM", 1, 10, 20, 30, 40, 29, 40)
     stream = io.BytesIO(data)
     reader = OBCMReader(stream)
     assert reader.version == 1
-    assert reader.global_bbox == (0, 0, 100, 100) # (min_lon, min_lat, max_lon, max_lat)
+    # Store as (min_lon, min_lat, max_lon, max_lat)
+    assert reader.global_bbox == (20, 10, 40, 30)
+
+def test_read_styles():
+    # Header (29) + StyleCount(1) + 2 Styles (5 bytes each)
+    header = struct.pack("<4sBiiiiII", b"OBCM", 1, 0, 0, 100, 100, 29, 40)
+    style_data = struct.pack("<B", 2)
+    style_data += struct.pack("<BBHB", 10, 50, 0xF9A6, 4)
+    style_data += struct.pack("<BBHB", 11, 40, 0xF79E, 3)
+    stream = io.BytesIO(header + style_data)
+    reader = OBCMReader(stream)
+    assert len(reader.styles) == 2
+    assert reader.styles[10]["color"] == 0xF9A6
+    assert reader.styles[10]["z_index"] == 50
+    assert reader.styles[10]["weight"] == 4
+    assert reader.styles[11]["color"] == 0xF79E
+
+def test_read_styles_truncated():
+    # Header (29) + StyleCount(1)
+    header = struct.pack("<4sBiiiiII", b"OBCM", 1, 0, 0, 100, 100, 29, 40)
+    # Style count says 2, but only 1 style entry follows
+    style_data = struct.pack("<B", 2)
+    style_data += struct.pack("<BBHB", 10, 50, 0xF9A6, 4)
+    # Missing second style
+    stream = io.BytesIO(header + style_data)
+    reader = OBCMReader(stream)
+    assert len(reader.styles) == 1
+    assert 10 in reader.styles
+
+def test_offset_validation():
+    # StyleOff < 29
+    data = struct.pack("<4sBiiiiII", b"OBCM", 1, 0, 0, 100, 100, 20, 40)
+    stream = io.BytesIO(data)
+    with pytest.raises(ValueError, match="Offset too small"):
+        OBCMReader(stream)
+
+    # IndexOff < 29
+    data = struct.pack("<4sBiiiiII", b"OBCM", 1, 0, 0, 100, 100, 29, 20)
+    stream = io.BytesIO(data)
+    with pytest.raises(ValueError, match="Offset too small"):
+        OBCMReader(stream)

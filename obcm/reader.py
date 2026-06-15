@@ -16,6 +16,10 @@ class OBCMReader:
         magic, self.version, min_lat, min_lon, max_lat, max_lon, self.style_offset, self.index_offset = struct.unpack("<4sBiiiiII", data)
         if magic != b"OBCM":
             raise ValueError("Invalid magic bytes")
+        
+        if self.style_offset < 29 or self.index_offset < 29:
+            raise ValueError("Offset too small")
+            
         # Store as (min_lon, min_lat, max_lon, max_lat) to match pipeline's global_bbox order
         self.global_bbox = (min_lon, min_lat, max_lon, max_lat)
 
@@ -26,5 +30,8 @@ class OBCMReader:
             return
         count = struct.unpack("<B", raw_count)[0]
         for _ in range(count):
-            sid, z, color, weight = struct.unpack("<BBHB", self.stream.read(5))
+            data = self.stream.read(5)
+            if len(data) < 5:
+                break
+            sid, z, color, weight = struct.unpack("<BBHB", data)
             self.styles[sid] = {"z_index": z, "color": color, "weight": weight}
