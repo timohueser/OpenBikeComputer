@@ -30,19 +30,24 @@ class QuadtreeNode:
         if hasattr(geom, 'geoms'): # MultiLineString, MultiPolygon, GeometryCollection
             for part in geom.geoms:
                 self._flatten_and_process(part, style_id)
-        elif geom.geom_type in ['LineString', 'LinearRing']:
+        elif geom.geom_type in ['LineString', 'LinearRing', 'Polygon']:
+            # Preserve Polygon geometry
             self._process_clipped({"style_id": style_id, "geometry": geom})
-        elif geom.geom_type == 'Polygon':
-            self._flatten_and_process(geom.exterior, style_id)
-            for interior in geom.interiors:
-                self._flatten_and_process(interior, style_id)
 
     def _process_clipped(self, feature):
         if self.is_leaf:
             self.features.append(feature)
             # Update current_size incrementally
-            pt_count = len(feature["geometry"].coords)
-            self.current_size += 8 + (pt_count * 4)
+            geom = feature["geometry"]
+            if geom.geom_type == 'Polygon':
+                pt_count = len(geom.exterior.coords)
+                for interior in geom.interiors:
+                    pt_count += len(interior.coords)
+            else:
+                pt_count = len(geom.coords)
+                
+            # 12 byte header + roughly 4 bytes per point (16-bit deltas)
+            self.current_size += 12 + (pt_count * 4)
             
             if self.should_split():
                 self.split()
@@ -51,14 +56,8 @@ class QuadtreeNode:
                 child.insert(feature)
 
     def should_split(self):
-        width = self.bbox[2] - self.bbox[0]
-        height = self.bbox[3] - self.bbox[1]
-        
-        # Split if too large in dimensions
-        if width > 32767 or height > 32767:
-            return True
-        
-        # Split if too many points/data
+        # Physical width limit removed as anchors are now 32-bit.
+        # Split only if too many points/data
         return self.current_size > self.chunk_size
 
     def split(self):

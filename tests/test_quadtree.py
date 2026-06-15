@@ -1,11 +1,11 @@
 from obcm.quadtree import QuadtreeNode
 from shapely.geometry import LineString, MultiLineString
 
-def test_quadtree_split_dimension():
-    # BBox larger than 32767 microdegrees
+def test_quadtree_no_split_dimension():
+    # BBox larger than 32767 microdegrees should NOT force split now
     node = QuadtreeNode((0, 0, 40000, 40000))
     node.features = [{"style_id": 1, "geometry": LineString([(0.01, 0.01), (0.02, 0.02)])}]
-    assert node.should_split() == True
+    assert node.should_split() == False
 
 def test_quadtree_insertion():
     node = QuadtreeNode((0, 0, 1000, 1000))
@@ -54,9 +54,9 @@ def test_quadtree_polygon_handling():
     node = QuadtreeNode((0, 0, 1000, 1000))
     poly = Polygon([(0.0001, 0.0001), (0.0005, 0.0001), (0.0005, 0.0005), (0.0001, 0.0005)])
     node.insert({"style_id": 1, "geometry": poly})
-    # Should extract exterior as LineString/LinearRing
+    # Should preserve Polygon
     assert len(node.features) == 1
-    assert node.features[0]["geometry"].geom_type in ['LineString', 'LinearRing']
+    assert node.features[0]["geometry"].geom_type == 'Polygon'
 
 def test_quadtree_recursion_guard():
     # Force split on a very small box
