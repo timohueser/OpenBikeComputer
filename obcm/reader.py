@@ -1,5 +1,6 @@
 import struct
 import io
+import functools
 
 class OBCMReader:
     def __init__(self, stream):
@@ -70,6 +71,7 @@ class OBCMReader:
         self.index = list(full_arr[:index_count])
         self.index_raw = all_data[:index_count * 4]
 
+    @functools.lru_cache(maxsize=128)
     def decode_chunk(self, chunk_id, node_bbox, chunk_size=4096):
         """
         Reads and decodes a data chunk from the file.
