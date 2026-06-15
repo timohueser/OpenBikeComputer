@@ -1,6 +1,6 @@
 import struct
 from obcm.serialize import pack_style_dict, pack_feature, pack_chunk
-from shapely.geometry import LineString
+from shapely.geometry import LineString, Polygon
 
 def test_pack_style_dict():
     config = {
@@ -29,16 +29,16 @@ def test_pack_feature_8bit():
     bbox = (1000000, 1000000, 1010000, 1010000)
     data = pack_feature(feature, bbox)
     
-    # Header(8) + 1 pair of 8-bit deltas (2 bytes) = 10 bytes
-    assert len(data) == 10
-    style, count, ax, ay, flag = struct.unpack("<BHhhB", data[:8])
+    # Header(12) + 1 pair of 8-bit deltas (2 bytes) = 14 bytes
+    assert len(data) == 14
+    style, count, ax, ay, flags = struct.unpack("<BHiiB", data[:12])
     assert style == 10
     assert count == 2
     assert ax == 0
     assert ay == 0
-    assert flag == 1 # 8-bit
+    assert flags == 0 # Line, 8-bit
     
-    dx, dy = struct.unpack("<bb", data[8:])
+    dx, dy = struct.unpack("<bb", data[12:])
     assert dx == 100 # (1.0001 - 1.0) * 1e6
     assert dy == 100
 
@@ -50,7 +50,24 @@ def test_pack_chunk_padding():
     bbox = (1000000, 1000000, 1010000, 1010000)
     chunk = pack_chunk([feature], bbox, chunk_size=32)
     assert len(chunk) == 32
-    assert chunk[10:] == b"\xff" * 22
+    # Header(12) + 1 pair of 8-bit deltas (2 bytes) = 14 bytes
+    assert chunk[14:] == b"\xff" * 18
+
+def test_pack_polygon_small():
+    ext = [(0.0, 0.0), (0.0001, 0.0), (0.0001, 0.0001), (0.0, 0.0001)]
+    hole = [(0.00002, 0.00002), (0.00008, 0.00002), (0.00008, 0.00008), (0.00002, 0.00008)]
+    feature = {"style_id": 20, "geometry": Polygon(ext, [hole])}
+    bbox = (0, 0, 200, 200)
+    data = pack_feature(feature, bbox)
+    style, count, ax, ay, flags = struct.unpack("<BHiiB", data[:12])
+    assert style == 20
+    assert count == 5 # Shapely Polygons are closed, so 4 points + 1 closing = 5
+    assert flags == 0x06 # HasHoles(1), Poly(1), 8-bit(0)
+    # 12 header + 4 pairs of 8-bit deltas (8 bytes) = 20. Index 20 is HoleCount.
+    assert data[20] == 1 
+    # Hole point count (u16) at index 21
+    h_count = struct.unpack("<H", data[21:23])[0]
+    assert h_count == 5
 
 def test_serialize_all_header_size():
     from obcm.serialize import serialize_all

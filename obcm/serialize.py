@@ -31,45 +31,77 @@ def pack_style_dict(config: dict) -> bytes:
 def pack_feature(feature: dict, node_bbox: Tuple[int, int, int, int]) -> bytes:
     """
     Pack a single feature into binary format.
-    Header (8 bytes): StyleID(u8), PointCount(u16), AnchorX(i16), AnchorY(i16), DeltaFlag(u8)
+    Header (12 bytes): StyleID(u8), PointCount(u16), AnchorX(i32), AnchorY(i32), Flags(u8)
     Followed by: Delta pairs (int8 or int16)
+    For Polygons with holes: HoleCount(u8), then for each hole: PointCount(u16), deltas.
     """
     style_id = feature["style_id"]
     geom = feature["geometry"]
-    coords = list(geom.coords)
     
-    # Convert float degrees to microdegrees
-    pts = [(int(round(lon * 1e6)), int(round(lat * 1e6))) for lon, lat in coords]
-    
-    # Anchor is relative to node's min boundaries
-    anchor_x = pts[0][0] - node_bbox[0]
-    anchor_y = pts[0][1] - node_bbox[1]
-    
-    deltas = []
-    max_delta = 0
-    prev_x, prev_y = pts[0]
-    
-    for x, y in pts[1:]:
-        dx, dy = x - prev_x, y - prev_y
-        deltas.extend([dx, dy])
-        max_delta = max(max_delta, abs(dx), abs(dy))
-        prev_x, prev_y = x, y
+    is_polygon = geom.geom_type == 'Polygon'
+    flags = 0
+    if is_polygon:
+        flags |= 0x02 # Bit 1: Polygon
         
-    delta_flag = 1 if max_delta <= 127 else 2
-    
-    header = struct.pack("<BHhhB", 
-                        style_id, 
-                        len(pts), 
-                        anchor_x, 
-                        anchor_y, 
-                        delta_flag)
-    
-    if delta_flag == 1:
-        delta_data = struct.pack(f"<{len(deltas)}b", *deltas)
+        # We need exterior and interiors
+        exterior_coords = list(geom.exterior.coords)
+        interiors = [list(ring.coords) for ring in geom.interiors]
+        
+        if interiors:
+            flags |= 0x04 # Bit 2: Has Holes
+            
+        rings_to_pack = [exterior_coords] + interiors
     else:
-        delta_data = struct.pack(f"<{len(deltas)}h", *deltas)
+        # LineString
+        rings_to_pack = [list(geom.coords)]
         
-    return header + delta_data
+    # Convert all coords to microdegrees relative to chunk anchor
+    anchor_lon, anchor_lat = None, None
+    max_delta = 0
+    
+    packed_rings = []
+    
+    for ring in rings_to_pack:
+        pts = [(int(round(lon * 1e6)), int(round(lat * 1e6))) for lon, lat in ring]
+        
+        if anchor_lon is None:
+            anchor_lon = pts[0][0] - node_bbox[0]
+            anchor_lat = pts[0][1] - node_bbox[1]
+            
+        deltas = []
+        prev_x, prev_y = pts[0]
+        for x, y in pts[1:]:
+            dx, dy = x - prev_x, y - prev_y
+            deltas.extend([dx, dy])
+            max_delta = max(max_delta, abs(dx), abs(dy))
+            prev_x, prev_y = x, y
+            
+        packed_rings.append((len(pts), deltas))
+
+    if max_delta > 127:
+        flags |= 0x01 # Bit 0: 16-bit deltas
+        d_fmt = "h"
+    else:
+        d_fmt = "b"
+
+    # Header: StyleID(u8), PointCount(u16), AnchorX(i32), AnchorY(i32), Flags(u8)
+    # Note: For polygons, PointCount is the exterior ring point count.
+    ext_pt_count = packed_rings[0][0]
+    header = struct.pack("<BHiiB", style_id, ext_pt_count, anchor_lon, anchor_lat, flags)
+    
+    data = header
+    
+    # Exterior deltas
+    data += struct.pack(f"<{len(packed_rings[0][1])}{d_fmt}", *packed_rings[0][1])
+    
+    # Holes
+    if flags & 0x04:
+        data += struct.pack("<B", len(interiors))
+        for pt_count, deltas in packed_rings[1:]:
+            data += struct.pack("<H", pt_count)
+            data += struct.pack(f"<{len(deltas)}{d_fmt}", *deltas)
+            
+    return data
 
 def pack_chunk(features: List[dict], node_bbox: Tuple[int, int, int, int], chunk_size: int) -> bytes:
     """
@@ -125,7 +157,7 @@ def serialize_all(root, config: dict, global_bbox: Tuple[int, int, int, int], ch
     
     header = struct.pack("<4sBiiiiIIH",
                         b"OBCM",
-                        0x01,
+                        0x02,
                         global_bbox[1], global_bbox[0], global_bbox[3], global_bbox[2],
                         style_offset,
                         index_offset,
