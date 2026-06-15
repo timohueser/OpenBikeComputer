@@ -22,51 +22,59 @@ def main():
     with open(map_path, "rb") as f:
         reader = OBCMReader(f)
     
-    # Init viewport at center of map
-    min_lon, min_lat, max_lon, max_lat = reader.global_bbox
-    vp = Viewport(1024, 768, (min_lat + max_lat) // 2)
-    vp.camera_lon = (min_lon + max_lon) // 2
-    vp.camera_lat = (min_lat + max_lat) // 2
-    
-    # Initial zoom: fit map to screen width
-    vp.zoom = 1024 / (max_lon - min_lon) if max_lon != min_lon else 1.0
-    
-    panning = False
-    
-    while True:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                pygame.quit()
-                sys.exit()
-            elif event.type == pygame.MOUSEBUTTONDOWN:
-                if event.button == 1: # Left click
-                    panning = True
-                elif event.button == 4: # Scroll up
-                    vp.zoom *= 1.2
-                elif event.button == 5: # Scroll down
-                    vp.zoom /= 1.2
-            elif event.type == pygame.MOUSEBUTTONUP:
-                if event.button == 1:
-                    panning = False
-            elif event.type == pygame.MOUSEMOTION and panning:
-                dx, dy = event.rel
-                # Convert screen delta to map delta
-                vp.camera_lon -= dx / (vp.zoom * vp.aspect)
-                vp.camera_lat += dy / vp.zoom
+        # Init viewport at center of map
+        min_lon, min_lat, max_lon, max_lat = reader.global_bbox
+        vp = Viewport(1024, 768, (min_lat + max_lat) // 2)
+        vp.camera_lon = (min_lon + max_lon) // 2
+        vp.camera_lat = (min_lat + max_lat) // 2
+        
+        # Initial zoom: fit map to screen width
+        vp.zoom = 1024 / (max_lon - min_lon) if max_lon != min_lon else 1.0
+        
+        panning = False
+        
+        last_vp_state = None
+        visible_features = []
+        
+        while True:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    pygame.quit()
+                    sys.exit()
+                elif event.type == pygame.MOUSEBUTTONDOWN:
+                    if event.button == 1: # Left click
+                        panning = True
+                    elif event.button == 4: # Scroll up
+                        vp.zoom *= 1.2
+                    elif event.button == 5: # Scroll down
+                        vp.zoom /= 1.2
+                elif event.type == pygame.MOUSEBUTTONUP:
+                    if event.button == 1:
+                        panning = False
+                elif event.type == pygame.MOUSEMOTION and panning:
+                    dx, dy = event.rel
+                    # Convert screen delta to map delta
+                    vp.camera_lon -= dx / (vp.zoom * vp.aspect)
+                    vp.camera_lat += dy / vp.zoom
 
-        screen.fill((30, 30, 30))
-        
-        # Calculate visible BBox
-        v_min_lon, v_max_lat = vp.to_map(0, 0)
-        v_max_lon, v_min_lat = vp.to_map(1024, 768)
-        
-        # Query visible chunks
-        chunks = reader.query_bbox((v_min_lon, v_min_lat, v_max_lon, v_max_lat))
-        
-        # Draw visible features
-        for cid, node_bbox in chunks:
-            feats = reader.decode_chunk(cid, node_bbox)
-            for f in feats:
+            screen.fill((30, 30, 30))
+            
+            # Only re-query if viewport changed
+            current_vp_state = (vp.camera_lon, vp.camera_lat, vp.zoom)
+            if current_vp_state != last_vp_state:
+                last_vp_state = current_vp_state
+                # Calculate visible BBox
+                v_min_lon, v_max_lat = vp.to_map(0, 0)
+                v_max_lon, v_min_lat = vp.to_map(1024, 768)
+                
+                # Query visible chunks
+                chunks = reader.query_bbox((v_min_lon, v_min_lat, v_max_lon, v_max_lat))
+                visible_features = []
+                for cid, node_bbox in chunks:
+                    visible_features.extend(reader.decode_chunk(cid, node_bbox))
+            
+            # Draw visible features
+            for f in visible_features:
                 if f["style_id"] not in reader.styles:
                     continue
                 style = reader.styles[f["style_id"]]
@@ -82,9 +90,9 @@ def main():
                 line_pts = [vp.to_screen(lon, lat) for lon, lat in f["points"]]
                 if len(line_pts) >= 2:
                     pygame.draw.lines(screen, rgb, False, line_pts, max(1, style["weight"]))
-        
-        pygame.display.flip()
-        clock.tick(60)
+            
+            pygame.display.flip()
+            clock.tick(60)
 
 if __name__ == "__main__":
     main()
