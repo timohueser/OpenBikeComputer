@@ -1,0 +1,14 @@
+{
+    "features": {
+        "highway": {
+            "primary": {"id": 10, "z_index": 50, "color": "0xF9A6", "weight": 4},
+            "secondary": {"id": 11, "z_index": 40, "color": "0xF79E", "weight": 3},
+            "tertiary": {"id": 12, "z_index": 30, "color": "0xFFFF", "weight": 2},
+            "residential": {"id": 13, "z_index": 20, "color": "0xFFFF", "weight": 1},
+            "service": {"id": 14, "z_index": 10, "color": "0xEEEE", "weight": 1}
+        },
+        "building": {
+            "yes": {"id": 100, "z_index": 5, "color": "0xAAAA", "weight": 1}
+        }
+    }
+}
