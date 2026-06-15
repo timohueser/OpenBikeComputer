@@ -99,6 +99,7 @@ def main():
             # Only re-query if viewport changed
             current_vp_state = (vp.camera_lon, vp.camera_lat, vp.zoom)
             if current_vp_state != last_vp_state:
+                t0 = time.perf_counter()
                 last_vp_state = current_vp_state
                 # Calculate visible BBox
                 v_min_lon, v_max_lat = vp.to_map(0, 0)
@@ -109,7 +110,10 @@ def main():
                 visible_features = []
                 for cid, node_bbox in chunks:
                     visible_features.extend(reader.decode_chunk(cid, node_bbox))
+                
+                perf_metrics["query_ms"] = (time.perf_counter() - t0) * 1000.0
             
+            t_render_start = time.perf_counter()
             # Draw visible features
             for f in visible_features:
                 if f["style_id"] not in reader.styles:
@@ -145,6 +149,8 @@ def main():
                     
                     # Draw bright green rectangle (0, 255, 0)
                     pygame.draw.lines(screen, (0, 255, 0), True, points, 1)
+            
+            perf_metrics["render_ms"] = (time.perf_counter() - t_render_start) * 1000.0
             
             pygame.display.flip()
             clock.tick(60)
