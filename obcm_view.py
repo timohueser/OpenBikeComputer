@@ -127,10 +127,24 @@ def main():
                 b = color & 0x1F
                 rgb = (r << 3, g << 2, b << 3)
                 
-                # Project points
-                line_pts = [vp.to_screen(lon, lat) for lon, lat in f["points"]]
-                if len(line_pts) >= 2:
-                    pygame.draw.lines(screen, rgb, False, line_pts, max(1, style["weight"]))
+                if f.get("type") == "polygon":
+                    # Project exterior
+                    ext_pts = [vp.to_screen(lon, lat) for lon, lat in f["exterior"]]
+                    if len(ext_pts) >= 3:
+                        pygame.draw.polygon(screen, rgb, ext_pts)
+                    
+                    # Workaround for holes: draw them over the polygon with the background color
+                    if "interiors" in f:
+                        bg_color = (30, 30, 30)
+                        for interior in f["interiors"]:
+                            int_pts = [vp.to_screen(lon, lat) for lon, lat in interior]
+                            if len(int_pts) >= 3:
+                                pygame.draw.polygon(screen, bg_color, int_pts)
+                else:
+                    # Line
+                    line_pts = [vp.to_screen(lon, lat) for lon, lat in f.get("points", [])]
+                    if len(line_pts) >= 2:
+                        pygame.draw.lines(screen, rgb, False, line_pts, max(1, style["weight"]))
             
             # Debug Overlay
             if debug_settings["show_bboxes"]:

@@ -94,33 +94,57 @@ class OBCMReader:
             if offset >= len(chunk_data) or chunk_data[offset] == 0xFF:
                 break
             
-            # Feature Header (8 bytes)
-            # StyleID(u8), PointCount(u16), AnchorX(i16), AnchorY(i16), DeltaFlag(u8)
+            # Feature Header (12 bytes)
+            # StyleID(u8), PtCount(u16), AnchorX(i32), AnchorY(i32), Flags(u8)
             try:
-                style_id, pt_count, ax, ay, flag = struct.unpack_from("<BHhhB", chunk_data, offset)
+                style_id, ext_pt_count, ax, ay, flags = struct.unpack_from("<BHiiB", chunk_data, offset)
             except struct.error:
                 break
-            offset += 8
+            offset += 12
             
-            # Anchor is relative to node's min boundaries (node_bbox)
-            pts = [(node_bbox[0] + ax, node_bbox[1] + ay)]
-            prev_x, prev_y = pts[0]
+            is_16bit = (flags & 0x01) != 0
+            is_polygon = (flags & 0x02) != 0
+            has_holes = (flags & 0x04) != 0
             
-            # Chained deltas
-            d_fmt = "b" if flag == 1 else "h"
-            d_size = 1 if flag == 1 else 2
+            d_fmt = "h" if is_16bit else "b"
+            d_size = 2 if is_16bit else 1
             
-            for _ in range(pt_count - 1):
-                try:
-                    dx, dy = struct.unpack_from(f"<{d_fmt}{d_fmt}", chunk_data, offset)
-                    offset += d_size * 2
-                    x, y = prev_x + dx, prev_y + dy
-                    pts.append((x, y))
-                    prev_x, prev_y = x, y
-                except struct.error:
-                    break
+            def read_ring(pt_count, current_offset):
+                if pt_count == 0:
+                    return [], current_offset
+                pts = [(node_bbox[0] + ax, node_bbox[1] + ay)]
+                prev_x, prev_y = pts[0]
+                for _ in range(pt_count - 1):
+                    try:
+                        dx, dy = struct.unpack_from(f"<{d_fmt}{d_fmt}", chunk_data, current_offset)
+                        current_offset += d_size * 2
+                        x, y = prev_x + dx, prev_y + dy
+                        pts.append((x, y))
+                        prev_x, prev_y = x, y
+                    except struct.error:
+                        break
+                return pts, current_offset
+
+            # Read exterior
+            exterior, offset = read_ring(ext_pt_count, offset)
             
-            features.append({"style_id": style_id, "points": pts})
+            interiors = []
+            if is_polygon and has_holes:
+                if offset < chunk_size:
+                    hole_count = chunk_data[offset]
+                    offset += 1
+                    for _ in range(hole_count):
+                        if offset + 2 > chunk_size: break
+                        h_pt_count, = struct.unpack_from("<H", chunk_data, offset)
+                        offset += 2
+                        hole_pts, offset = read_ring(h_pt_count, offset)
+                        interiors.append(hole_pts)
+            
+            if is_polygon:
+                features.append({"style_id": style_id, "type": "polygon", "exterior": exterior, "interiors": interiors})
+            else:
+                features.append({"style_id": style_id, "type": "line", "points": exterior})
+                
         return features
 
     def query_bbox(self, query_bbox):
