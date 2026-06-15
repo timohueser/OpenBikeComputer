@@ -43,6 +43,10 @@ def main():
         # Initial zoom: fit map to screen width
         vp.zoom = SCREEN_WIDTH / (max_lon - min_lon) if max_lon != min_lon else 1.0
         
+        debug_settings = {
+            "show_bboxes": False
+        }
+        
         panning = False
         last_vp_state = None
         visible_features = []
@@ -72,6 +76,10 @@ def main():
                     # Convert screen delta to map delta
                     vp.camera_lon -= dx / (vp.zoom * vp.aspect)
                     vp.camera_lat += dy / vp.zoom
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_b:
+                        debug_settings["show_bboxes"] = not debug_settings["show_bboxes"]
+                        print(f"Debug: show_bboxes = {debug_settings['show_bboxes']}")
 
             screen.fill((30, 30, 30))
             
