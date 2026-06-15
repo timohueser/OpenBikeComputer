@@ -26,6 +26,10 @@ def main():
     print(f"Loading config: {args.config}")
     config = load_config(args.config)
 
+    # Priority: Config > CLI > Default
+    chunk_size = config.get("chunk_size", args.chunk_size)
+    print(f"Using chunk size: {chunk_size}")
+
     print(f"Ingesting OSM data: {args.pbf}")
     features = ingest_osm(args.pbf, config)
     print(f"Extracted {len(features)} features.")
@@ -51,14 +55,14 @@ def main():
     print(f"Global BBox: {global_bbox}")
 
     print("Building Quadtree index...")
-    root = QuadtreeNode(global_bbox, chunk_size=args.chunk_size)
+    root = QuadtreeNode(global_bbox, chunk_size=chunk_size)
     for i, feat in enumerate(features):
         root.insert(feat)
         if i % 1000 == 0 and i > 0:
             print(f"Inserted {i} features...")
 
     print("Serializing to binary format...")
-    binary_data = serialize_all(root, config, global_bbox, chunk_size=args.chunk_size)
+    binary_data = serialize_all(root, config, global_bbox, chunk_size=chunk_size)
 
     print(f"Writing to {args.output} ({len(binary_data)} bytes)...")
     with open(args.output, "wb") as f:
