@@ -21,11 +21,21 @@ class QuadtreeNode:
         if clipped.is_empty:
             return
 
-        if isinstance(clipped, MultiLineString):
-            for part in clipped.geoms:
-                self._process_clipped({"style_id": feature["style_id"], "geometry": part})
-        elif isinstance(clipped, LineString):
-            self._process_clipped({"style_id": feature["style_id"], "geometry": clipped})
+        self._flatten_and_process(clipped, feature["style_id"])
+
+    def _flatten_and_process(self, geom, style_id):
+        if geom.is_empty:
+            return
+        
+        if hasattr(geom, 'geoms'): # MultiLineString, MultiPolygon, GeometryCollection
+            for part in geom.geoms:
+                self._flatten_and_process(part, style_id)
+        elif geom.geom_type in ['LineString', 'LinearRing']:
+            self._process_clipped({"style_id": style_id, "geometry": geom})
+        elif geom.geom_type == 'Polygon':
+            self._flatten_and_process(geom.exterior, style_id)
+            for interior in geom.interiors:
+                self._flatten_and_process(interior, style_id)
 
     def _process_clipped(self, feature):
         if self.is_leaf:
@@ -53,6 +63,13 @@ class QuadtreeNode:
 
     def split(self):
         min_lon, min_lat, max_lon, max_lat = self.bbox
+        width = max_lon - min_lon
+        height = max_lat - min_lat
+        
+        # Recursion guard: Don't split if smaller than 10 microdegrees
+        if width < 10 or height < 10:
+            return
+
         mid_lon = (min_lon + max_lon) // 2
         mid_lat = (min_lat + max_lat) // 2
         
