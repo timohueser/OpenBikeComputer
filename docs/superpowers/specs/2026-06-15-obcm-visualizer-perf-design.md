@@ -45,6 +45,7 @@ A text overlay in the bottom-right corner using `pygame.font`.
     - `Query: X.XX ms`
     - `Render: X.XX ms`
 - **Styling**: White text on a semi-transparent black rectangle for readability.
+- **Fallback**: If `pygame.font` is unavailable (e.g., due to library issues or headless mode), metrics are printed to the console using `\r` (carriage return) for real-time updates without vertical scrolling.
 
 ## Data Flow
 1. Main loop starts.
