@@ -2,6 +2,7 @@ import pygame
 import sys
 import os
 import math
+import time
 from obcm.reader import OBCMReader
 from obcm.viewport import Viewport
 
@@ -44,8 +45,17 @@ def main():
         vp.zoom = SCREEN_WIDTH / (max_lon - min_lon) if max_lon != min_lon else 1.0
         
         debug_settings = {
-            "show_bboxes": False
+            "show_bboxes": False,
+            "show_perf": False
         }
+
+        perf_metrics = {
+            "query_ms": 0.0,
+            "render_ms": 0.0
+        }
+
+        pygame.font.init()
+        font = pygame.font.SysFont("monospace", 20)
         
         panning = False
         last_vp_state = None
@@ -80,6 +90,9 @@ def main():
                     if event.key == pygame.K_b:
                         debug_settings["show_bboxes"] = not debug_settings["show_bboxes"]
                         print(f"Debug: show_bboxes = {debug_settings['show_bboxes']}")
+                    elif event.key == pygame.K_t:
+                        debug_settings["show_perf"] = not debug_settings["show_perf"]
+                        print(f"Debug: show_perf = {debug_settings['show_perf']}")
 
             screen.fill((30, 30, 30))
             
