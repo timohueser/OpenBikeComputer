@@ -8,12 +8,16 @@ class QuadtreeNode:
         self.features = []
         self.children = []
         self.is_leaf = True
+        
+        # Pre-calculate float boundaries and shapely box
+        self.min_lon_f, self.min_lat_f, self.max_lon_f, self.max_lat_f = [c / 1e6 for c in self.bbox]
+        self.q_box = box(self.min_lon_f, self.min_lat_f, self.max_lon_f, self.max_lat_f)
+        
+        # Incremental size tracking
+        self.current_size = 0
 
     def insert(self, feature):
-        min_lon_f, min_lat_f, max_lon_f, max_lat_f = [c / 1e6 for c in self.bbox]
-        q_box = box(min_lon_f, min_lat_f, max_lon_f, max_lat_f)
-        
-        clipped = feature["geometry"].intersection(q_box)
+        clipped = feature["geometry"].intersection(self.q_box)
         if clipped.is_empty:
             return
 
@@ -26,6 +30,10 @@ class QuadtreeNode:
     def _process_clipped(self, feature):
         if self.is_leaf:
             self.features.append(feature)
+            # Update current_size incrementally
+            pt_count = len(feature["geometry"].coords)
+            self.current_size += 8 + (pt_count * 4)
+            
             if self.should_split():
                 self.split()
         else:
@@ -35,15 +43,13 @@ class QuadtreeNode:
     def should_split(self):
         width = self.bbox[2] - self.bbox[0]
         height = self.bbox[3] - self.bbox[1]
+        
+        # Split if too large in dimensions
         if width > 32767 or height > 32767:
             return True
         
-        total_size = 0
-        for feat in self.features:
-            pt_count = len(feat["geometry"].coords)
-            # Estimate: 8 byte header + 4 bytes per point (16-bit deltas)
-            total_size += 8 + (pt_count * 4) 
-        return total_size > self.chunk_size
+        # Split if too many points/data
+        return self.current_size > self.chunk_size
 
     def split(self):
         min_lon, min_lat, max_lon, max_lat = self.bbox
