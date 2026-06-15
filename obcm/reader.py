@@ -38,15 +38,86 @@ class OBCMReader:
 
     def _load_index(self):
         self.stream.seek(self.index_offset)
-        # Read the entire index into memory (it's small relative to geometry)
-        # We stop at the first non-valid index byte or end of file
-        data = self.stream.read()
-        if not data:
+        # Read everything after index_offset (includes index and all data chunks)
+        all_data = self.stream.read()
+        if not all_data:
             self.index = []
+            self.index_raw = b""
             return
-        # Index is uint32 array
-        count = len(data) // 4
-        self.index = list(struct.unpack(f"<{count}I", data[:count*4]))
+            
+        # Parse everything as uint32 first to allow traversal
+        full_arr = struct.unpack(f"<{len(all_data)//4}I", all_data[:(len(all_data)//4)*4])
+        
+        # Traverse to find the actual index size (max index accessed)
+        max_idx = 0
+        if full_arr:
+            stack = [0]
+            visited = {0}
+            while stack:
+                idx = stack.pop()
+                if idx >= len(full_arr): continue
+                max_idx = max(max_idx, idx)
+                val = full_arr[idx]
+                if val & 0x80000000: # Branch
+                    child_start = val & 0x7FFFFFFF
+                    for i in range(4):
+                        c_idx = child_start + i
+                        if c_idx < len(full_arr) and c_idx not in visited:
+                            visited.add(c_idx)
+                            stack.append(c_idx)
+        
+        index_count = max_idx + 1
+        self.index = list(full_arr[:index_count])
+        self.index_raw = all_data[:index_count * 4]
+
+    def decode_chunk(self, chunk_id, node_bbox, chunk_size=4096):
+        """
+        Reads and decodes a data chunk from the file.
+        """
+        if not hasattr(self, 'index'):
+            self._load_index()
+
+        # Data starts immediately after the Index Block
+        data_start_offset = self.index_offset + (len(self.index) * 4)
+        
+        self.stream.seek(data_start_offset + chunk_id * chunk_size)
+        chunk_data = self.stream.read(chunk_size)
+            
+        offset = 0
+        features = []
+        while offset < chunk_size:
+            # Check for padding (0xFF) or end of data
+            if offset >= len(chunk_data) or chunk_data[offset] == 0xFF:
+                break
+            
+            # Feature Header (8 bytes)
+            # StyleID(u8), PointCount(u16), AnchorX(i16), AnchorY(i16), DeltaFlag(u8)
+            try:
+                style_id, pt_count, ax, ay, flag = struct.unpack_from("<BHhhB", chunk_data, offset)
+            except struct.error:
+                break
+            offset += 8
+            
+            # Anchor is relative to node's min boundaries (node_bbox)
+            pts = [(node_bbox[0] + ax, node_bbox[1] + ay)]
+            prev_x, prev_y = pts[0]
+            
+            # Chained deltas
+            d_fmt = "b" if flag == 1 else "h"
+            d_size = 1 if flag == 1 else 2
+            
+            for _ in range(pt_count - 1):
+                try:
+                    dx, dy = struct.unpack_from(f"<{d_fmt}{d_fmt}", chunk_data, offset)
+                    offset += d_size * 2
+                    x, y = prev_x + dx, prev_y + dy
+                    pts.append((x, y))
+                    prev_x, prev_y = x, y
+                except struct.error:
+                    break
+            
+            features.append({"style_id": style_id, "points": pts})
+        return features
 
     def query_bbox(self, query_bbox):
         """
