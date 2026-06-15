@@ -50,3 +50,24 @@ def test_offset_validation():
     stream = io.BytesIO(data)
     with pytest.raises(ValueError, match="Offset too small"):
         OBCMReader(stream)
+
+def test_spatial_query():
+    # Header (29) + StyleCount(1) = 30
+    # Index at 30
+    # Root branch (bit31=1) at index 0 pointing to child index 1
+    # Children at 1, 2, 3, 4 are leaves (bit31=0)
+    # Chunk IDs: 0, 1, 2, 3
+    index_data = struct.pack("<IIIII", 0x80000001, 0, 1, 2, 3)
+    header = struct.pack("<4sBiiiiII", b"OBCM", 1, 0, 0, 100, 100, 29, 30)
+    styles = struct.pack("<B", 0)
+    
+    stream = io.BytesIO(header + styles + index_data)
+    reader = OBCMReader(stream)
+    
+    # Query covering the whole map
+    results = reader.query_bbox((0, 0, 100, 100))
+    assert len(results) == 4
+    # Query only the NW quadrant
+    results_nw = reader.query_bbox((10, 60, 40, 90))
+    assert len(results_nw) == 1
+    assert results_nw[0][0] == 0 # Chunk ID of NW leaf
