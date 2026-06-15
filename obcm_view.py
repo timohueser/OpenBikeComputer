@@ -115,6 +115,24 @@ def main():
                 if len(line_pts) >= 2:
                     pygame.draw.lines(screen, rgb, False, line_pts, max(1, style["weight"]))
             
+            # Debug Overlay
+            if debug_settings["show_bboxes"]:
+                for cid, node_bbox in chunks:
+                    # node_bbox: (min_lon, min_lat, max_lon, max_lat)
+                    min_lon, min_lat, max_lon, max_lat = node_bbox
+                    
+                    # Project corners
+                    # Top-Left, Top-Right, Bottom-Right, Bottom-Left
+                    points = [
+                        vp.to_screen(min_lon, max_lat),
+                        vp.to_screen(max_lon, max_lat),
+                        vp.to_screen(max_lon, min_lat),
+                        vp.to_screen(min_lon, min_lat)
+                    ]
+                    
+                    # Draw bright green rectangle (0, 255, 0)
+                    pygame.draw.lines(screen, (0, 255, 0), True, points, 1)
+            
             pygame.display.flip()
             clock.tick(60)
 
