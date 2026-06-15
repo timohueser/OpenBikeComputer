@@ -1,4 +1,4 @@
-pyosmium
-shapely
-pytest
-pygame
+pygame>=2.5.0
+pyosmium>=3.5.0
+pytest>=7.0.0
+shapely>=2.0.0
