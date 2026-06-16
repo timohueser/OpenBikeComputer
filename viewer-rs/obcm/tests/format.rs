@@ -222,6 +222,20 @@ fn styles_parse() {
 }
 
 #[test]
+fn backdrop_is_lowest_z_regardless_of_id() {
+    // STYLES = [(id 1, z 3), (id 2, z -1)]. The backdrop is the bottom of the
+    // paint order (lowest z), i.e. id 2 — not the lowest id. This guards the
+    // sea/background lookup against style-ID reassignment.
+    let bytes = two_lod_file();
+    let r = Reader::new(&bytes).unwrap();
+
+    let bg = r.backdrop_style().expect("a backdrop");
+    assert_eq!(bg.id, 2);
+    assert_eq!(bg.z_index, -1);
+    assert_eq!(bg.color, 0x07E0);
+}
+
+#[test]
 fn select_lod_for_mpp_picks_finest_covering() {
     let bytes = two_lod_file(); // max_mpp = [+inf, 50]
     let r = Reader::new(&bytes).unwrap();

@@ -125,9 +125,10 @@ fn main() {
         args.width as f64 / span_lon,
     );
 
-    // Background = sea color (style 99) if present, else dark grey.
+    // Background = the backdrop style's color (lowest z-index, by convention the
+    // sea/background), else dark grey for an empty style table.
     let bg = reader
-        .style(99)
+        .backdrop_style()
         .map(|s| color_of(s.color, args.true_color))
         .unwrap_or(Rgb888::new(30, 30, 30));
 
