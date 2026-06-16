@@ -1,9 +1,9 @@
 import argparse
 import sys
 import os
-import struct
 import tempfile
 import subprocess
+import shapely
 from tqdm import tqdm
 from obcm.config import load_config
 from obcm.ingest import ingest_osm
@@ -67,21 +67,10 @@ def main():
         print("No features found matching config. Exiting.")
         sys.exit(0)
 
-    # Calculate global bounding box in degrees
-    min_lon, min_lat, max_lon, max_lat = float('inf'), float('inf'), float('-inf'), float('-inf')
-    for feat in tqdm(features, desc="Calculating BBox", unit="feat"):
-        f_minx, f_miny, f_maxx, f_maxy = feat["geometry"].bounds
-        min_lon = min(min_lon, f_minx)
-        min_lat = min(min_lat, f_miny)
-        max_lon = max(max_lon, f_maxx)
-        max_lat = max(max_lat, f_maxy)
-    
-    for cl in tqdm(coastlines, desc="Calculating BBox", unit="cl"):
-        f_minx, f_miny, f_maxx, f_maxy = cl.bounds
-        min_lon = min(min_lon, f_minx)
-        min_lat = min(min_lat, f_miny)
-        max_lon = max(max_lon, f_maxx)
-        max_lat = max(max_lat, f_maxy)
+    # Calculate global bounding box in degrees (vectorized over all geometries)
+    print("Calculating bounding box...")
+    all_geoms = [feat["geometry"] for feat in features] + coastlines
+    min_lon, min_lat, max_lon, max_lat = shapely.total_bounds(all_geoms)
 
     global_bbox = (
         int(min_lon * 1e6),

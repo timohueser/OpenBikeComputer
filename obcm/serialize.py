@@ -1,7 +1,7 @@
 import struct
 from collections import deque
-from typing import List, Tuple, Dict
-from shapely.geometry import LineString
+from typing import List, Tuple
+from tqdm import tqdm
 
 def pack_style_dict(config: dict) -> bytes:
     """
@@ -28,6 +28,23 @@ def pack_style_dict(config: dict) -> bytes:
                            s.get("weight", 1))
     return data
 
+# Max delta (microdegrees) before a segment is densified to keep deltas in range.
+_MAX_SEGMENT = 30000
+
+
+def _densify(p1, p2, out):
+    """Append intermediate points between p1 and p2 (then p2 itself) so that no
+    single (dx, dy) step exceeds the 16-bit delta range."""
+    dx, dy = p2[0] - p1[0], p2[1] - p1[1]
+    max_dist = max(abs(dx), abs(dy))
+    if max_dist > _MAX_SEGMENT:
+        steps = (max_dist // _MAX_SEGMENT) + 1
+        for step in range(1, steps):
+            t = step / float(steps)
+            out.append((int(round(p1[0] + dx * t)), int(round(p1[1] + dy * t))))
+    out.append(p2)
+
+
 def pack_feature(feature: dict, node_bbox: Tuple[int, int, int, int]) -> bytes:
     """
     Pack a single feature into binary format.
@@ -37,67 +54,39 @@ def pack_feature(feature: dict, node_bbox: Tuple[int, int, int, int]) -> bytes:
     """
     style_id = feature["style_id"]
     geom = feature["geometry"]
-    
+
     is_polygon = geom.geom_type == 'Polygon'
     flags = 0
     if is_polygon:
         flags |= 0x02 # Bit 1: Polygon
-        
-        # We need exterior and interiors
-        exterior_coords = list(geom.exterior.coords)
-        interiors = [list(ring.coords) for ring in geom.interiors]
-        
-        if interiors:
+        rings_to_pack = [geom.exterior.coords] + [ring.coords for ring in geom.interiors]
+        if len(rings_to_pack) > 1:
             flags |= 0x04 # Bit 2: Has Holes
-            
-        rings_to_pack = [exterior_coords] + interiors
     else:
-        # LineString
-        rings_to_pack = [list(geom.coords)]
-        
+        rings_to_pack = [geom.coords]
+
     # Convert all coords to microdegrees relative to chunk anchor
     anchor_lon, anchor_lat = None, None
     max_delta = 0
-    
     packed_rings = []
-    
+
     for i, ring in enumerate(rings_to_pack):
         raw_pts = [(int(round(lon * 1e6)), int(round(lat * 1e6))) for lon, lat in ring]
-        
+
         if i == 0:
             anchor_lon = raw_pts[0][0] - node_bbox[0]
             anchor_lat = raw_pts[0][1] - node_bbox[1]
             start_ref = raw_pts[0]
         else:
             start_ref = (node_bbox[0] + anchor_lon, node_bbox[1] + anchor_lat)
-            
-        # Interpolate jump from reference point (prev point or anchor) to first point
+
+        # Densify long segments: jump from the reference point to the first
+        # point, then walk the rest of the ring.
         pts = []
-        p1 = start_ref
-        p2 = raw_pts[0]
-        dx, dy = p2[0] - p1[0], p2[1] - p1[1]
-        max_dist = max(abs(dx), abs(dy))
-        if max_dist > 30000:
-            steps = int(max_dist // 30000) + 1
-            for step in range(1, steps):
-                nx = int(round(p1[0] + dx * (step / float(steps))))
-                ny = int(round(p1[1] + dy * (step / float(steps))))
-                pts.append((nx, ny))
-        pts.append(p2)
-        
-        # Interpolate the rest of the segment
+        _densify(start_ref, raw_pts[0], pts)
         for p2 in raw_pts[1:]:
-            p1 = pts[-1]
-            dx, dy = p2[0] - p1[0], p2[1] - p1[1]
-            max_dist = max(abs(dx), abs(dy))
-            if max_dist > 30000:
-                steps = int(max_dist // 30000) + 1
-                for step in range(1, steps):
-                    nx = int(round(p1[0] + dx * (step / float(steps))))
-                    ny = int(round(p1[1] + dy * (step / float(steps))))
-                    pts.append((nx, ny))
-            pts.append(p2)
-        
+            _densify(pts[-1], p2, pts)
+
         if i == 0:
             # Exterior ring: first point is the anchor, deltas start from second point
             prev_x, prev_y = pts[0]
@@ -106,14 +95,14 @@ def pack_feature(feature: dict, node_bbox: Tuple[int, int, int, int]) -> bytes:
             # Hole ring: first delta is relative to the anchor
             prev_x, prev_y = start_ref
             pts_to_delta = pts
-            
+
         deltas = []
         for x, y in pts_to_delta:
             dx, dy = x - prev_x, y - prev_y
-            deltas.extend([dx, dy])
+            deltas.extend((dx, dy))
             max_delta = max(max_delta, abs(dx), abs(dy))
             prev_x, prev_y = x, y
-            
+
         packed_rings.append((len(pts), deltas))
 
     if max_delta > 127:
@@ -126,19 +115,19 @@ def pack_feature(feature: dict, node_bbox: Tuple[int, int, int, int]) -> bytes:
     # Note: For polygons, PointCount is the exterior ring point count.
     ext_pt_count = packed_rings[0][0]
     header = struct.pack("<BHiiB", style_id, ext_pt_count, anchor_lon, anchor_lat, flags)
-    
+
     data = header
-    
+
     # Exterior deltas
     data += struct.pack(f"<{len(packed_rings[0][1])}{d_fmt}", *packed_rings[0][1])
-    
+
     # Holes
     if flags & 0x04:
-        data += struct.pack("<B", len(interiors))
+        data += struct.pack("<B", len(packed_rings) - 1)
         for pt_count, deltas in packed_rings[1:]:
             data += struct.pack("<H", pt_count)
             data += struct.pack(f"<{len(deltas)}{d_fmt}", *deltas)
-            
+
     return data
 
 def pack_chunk(features: List[dict], node_bbox: Tuple[int, int, int, int], chunk_size: int) -> bytes:
@@ -175,13 +164,7 @@ def serialize_all(root, config: dict, global_bbox: Tuple[int, int, int, int], ch
     data_chunks = []
     node_to_idx = {node: i for i, node in enumerate(all_nodes)}
     
-    try:
-        from tqdm import tqdm
-        iterator = tqdm(all_nodes, desc="Serializing Quadtree", unit="node")
-    except ImportError:
-        iterator = all_nodes
-
-    for node in iterator:
+    for node in tqdm(all_nodes, desc="Serializing Quadtree", unit="node"):
         if node.is_leaf:
             if not node.features:
                 flat_index.append(0x7FFFFFFF)

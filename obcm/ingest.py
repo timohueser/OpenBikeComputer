@@ -1,4 +1,6 @@
 import osmium
+import osmium.index
+import osmium.area
 from shapely.geometry import LineString, Polygon
 
 class OSMHandler(osmium.SimpleHandler):
@@ -7,9 +9,12 @@ class OSMHandler(osmium.SimpleHandler):
         self.config = config
         self.features = []
         self.coastlines = []
+        # Cache the (tag_key, values) pairs once instead of rebuilding the
+        # dict items view for every way/area.
+        self._feature_defs = list(config.get("features", {}).items())
 
     def _get_style(self, tags):
-        for tag_key, tag_vals in self.config["features"].items():
+        for tag_key, tag_vals in self._feature_defs:
             tag_val = tags.get(tag_key)
             if tag_val is not None and tag_val in tag_vals:
                 return tag_vals[tag_val]
@@ -96,10 +101,8 @@ class OSMHandler(osmium.SimpleHandler):
 
 def ingest_osm(pbf_path, config):
     handler = OSMHandler(config)
-    
+
     # We must use a NodeLocationsForWays to resolve locations before AreaManager
-    import osmium.index
-    import osmium.area
     idx = osmium.index.create_map('flex_mem')
     lh = osmium.NodeLocationsForWays(idx)
     lh.ignore_errors()
