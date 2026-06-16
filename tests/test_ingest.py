@@ -86,6 +86,7 @@ def test_handler_area_extraction():
     mock_area = MagicMock()
     mock_area.tags = MagicMock()
     mock_area.tags.__iter__.return_value = [("leisure", "park")]
+    mock_area.tags.get.side_effect = lambda k: "park" if k == "leisure" else None
     
     # Mock rings
     outer = [MagicMock(lon=0, lat=0), MagicMock(lon=1, lat=0), MagicMock(lon=1, lat=1), MagicMock(lon=0, lat=1)]

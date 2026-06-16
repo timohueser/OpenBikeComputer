@@ -2,6 +2,7 @@ import argparse
 import sys
 import os
 import struct
+from tqdm import tqdm
 from obcm.config import load_config
 from obcm.ingest import ingest_osm
 from obcm.quadtree import QuadtreeNode
@@ -23,16 +24,10 @@ def main():
         print(f"Error: Config file not found: {args.config}")
         sys.exit(1)
 
-    print(f"Loading config: {args.config}")
     config = load_config(args.config)
-
-    # Priority: Config > CLI > Default
     chunk_size = config.get("chunk_size", args.chunk_size)
-    print(f"Using chunk size: {chunk_size}")
 
-    print(f"Ingesting OSM data: {args.pbf}")
     features, coastlines = ingest_osm(args.pbf, config)
-    print(f"Extracted {len(features)} features and {len(coastlines)} coastlines.")
 
     if not features and not coastlines:
         print("No features found matching config. Exiting.")
@@ -40,14 +35,14 @@ def main():
 
     # Calculate global bounding box in degrees
     min_lon, min_lat, max_lon, max_lat = float('inf'), float('inf'), float('-inf'), float('-inf')
-    for feat in features:
+    for feat in tqdm(features, desc="Calculating BBox", unit="feat"):
         f_minx, f_miny, f_maxx, f_maxy = feat["geometry"].bounds
         min_lon = min(min_lon, f_minx)
         min_lat = min(min_lat, f_miny)
         max_lon = max(max_lon, f_maxx)
         max_lat = max(max_lat, f_maxy)
     
-    for cl in coastlines:
+    for cl in tqdm(coastlines, desc="Calculating BBox", unit="cl"):
         f_minx, f_miny, f_maxx, f_maxy = cl.bounds
         min_lon = min(min_lon, f_minx)
         min_lat = min(min_lat, f_miny)
@@ -60,13 +55,11 @@ def main():
         int(max_lon * 1e6),
         int(max_lat * 1e6)
     )
-    print(f"Global BBox: {global_bbox}")
 
     # --- Land Generation Logic ---
     has_land_config = "natural" in config.get("features", {}) and "land" in config["features"]["natural"]
     if not coastlines and has_land_config and min_lon != float('inf'):
         from shapely.geometry import box
-        print("No coastlines found. Generating Land polygon covering the entire bounding box...")
         land_style = config["features"]["natural"]["land"]["id"]
         bbox_poly = box(min_lon, min_lat, max_lon, max_lat)
         features.append({"style_id": land_style, "geometry": bbox_poly})
@@ -75,7 +68,6 @@ def main():
         from shapely.geometry import box, LineString, Point
         from shapely.ops import linemerge, polygonize, unary_union, nearest_points
         
-        print(f"Generating Land polygon from {len(coastlines)} coastline segments...")
         land_style = config["features"]["natural"]["land"]["id"]
         
         # Strictly bound by the data extent
@@ -90,8 +82,6 @@ def main():
         else:
             merged_parts = []
             
-        # 1. Bridge small gaps between coastline segments (fixes broken islands)
-        # 2. Connect remaining open ends to the boundary if they are near the edge
         connectors = []
         open_ends = []
         
@@ -102,12 +92,11 @@ def main():
                 
         # Find pairs of open ends that are close to each other
         used_ends = set()
-        GAP_TOLERANCE = 0.002 # ~200m tolerance for broken coastline data
+        GAP_TOLERANCE = 0.002
         
-        for i, p1 in enumerate(open_ends):
+        for i, p1 in tqdm(enumerate(open_ends), desc="Bridging coastlines", unit="end"):
             if i in used_ends: continue
             
-            # Find closest other endpoint
             best_j = -1
             min_dist = GAP_TOLERANCE
             
@@ -123,20 +112,13 @@ def main():
                 used_ends.add(i)
                 used_ends.add(best_j)
             else:
-                # If no other endpoint is near, connect to the bounding box
                 _, np = nearest_points(p1, bbox_boundary)
                 connectors.append(LineString([p1, np]))
                 used_ends.add(i)
         
-        # Union everything: coastlines, connectors, and the box boundary
         all_lines = unary_union(merged_parts + connectors + [bbox_boundary])
-        
-        # Find all enclosed areas
         all_polygons = list(polygonize(all_lines))
-        print(f"Polygonized into {len(all_polygons)} potential areas.")
         
-        # Heuristic: Land is on the LEFT of OSM coastlines.
-        # We'll use a positive offset curve to find a point that is definitely on the land side.
         land_test_points = []
         for l in merged_parts:
             offset_line = l.offset_curve(0.0001)
@@ -149,8 +131,7 @@ def main():
                     idx = len(part.coords) // 2
                     land_test_points.append(Point(part.coords[idx]))
         
-        added_count = 0
-        for i, poly in enumerate(all_polygons):
+        for poly in tqdm(all_polygons, desc="Identifying land", unit="poly"):
             is_land = False
             for p in land_test_points:
                 if poly.contains(p):
@@ -159,30 +140,19 @@ def main():
             
             if is_land:
                 features.append({"style_id": land_style, "geometry": poly})
-                added_count += 1
-            else:
-                print(f"  - Polygon {i} identified as Sea (skipped).")
-        
-        print(f"Successfully added {added_count} land polygons.")
 
-        # Also add raw coastlines for debugging if requested in config
         if "coastline_debug" in config["features"]["natural"]:
             debug_style = config["features"]["natural"]["coastline_debug"]["id"]
             for cl in coastlines:
                 features.append({"style_id": debug_style, "geometry": cl})
-            print(f"Added {len(coastlines)} debug coastline segments.")
 
-    print("Building Quadtree index...")
     root = QuadtreeNode(global_bbox, chunk_size=chunk_size)
-    for i, feat in enumerate(features):
+    for feat in tqdm(features, desc="Building Quadtree", unit="feat"):
         root.insert(feat)
-        if i % 1000 == 0 and i > 0:
-            print(f"Inserted {i} features...")
 
-    print("Serializing to binary format...")
+    print("Serializing and writing to disk...")
     binary_data = serialize_all(root, config, global_bbox, chunk_size=chunk_size)
 
-    print(f"Writing to {args.output} ({len(binary_data)} bytes)...")
     with open(args.output, "wb") as f:
         f.write(binary_data)
 

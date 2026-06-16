@@ -17,9 +17,23 @@ class QuadtreeNode:
         self.current_size = 0
 
     def insert(self, feature):
-        clipped = feature["geometry"].intersection(self.q_box)
-        if clipped.is_empty:
+        geom = feature["geometry"]
+        
+        # Fast bounding box overlap check
+        f_minx, f_miny, f_maxx, f_maxy = geom.bounds
+        if (f_maxx < self.min_lon_f or f_minx > self.max_lon_f or
+            f_maxy < self.min_lat_f or f_miny > self.max_lat_f):
             return
+
+        # Fast containment check: if completely inside, avoid intersection
+        if (f_minx >= self.min_lon_f and f_maxx <= self.max_lon_f and
+            f_miny >= self.min_lat_f and f_maxy <= self.max_lat_f):
+            clipped = geom
+        else:
+            # Fallback to expensive intersection for partial overlaps
+            clipped = geom.intersection(self.q_box)
+            if clipped.is_empty:
+                return
 
         self._flatten_and_process(clipped, feature["style_id"])
 

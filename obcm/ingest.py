@@ -9,19 +9,16 @@ class OSMHandler(osmium.SimpleHandler):
         self.coastlines = []
 
     def _get_style(self, tags):
-        for tag_key, tag_val in tags:
-            if tag_key in self.config["features"] and tag_val in self.config["features"][tag_key]:
-                return self.config["features"][tag_key][tag_val]
+        for tag_key, tag_vals in self.config["features"].items():
+            tag_val = tags.get(tag_key)
+            if tag_val is not None and tag_val in tag_vals:
+                return tag_vals[tag_val]
         return None
 
     def way(self, w):
         # Catch coastlines for sea generation
         # ALWAYS do this first, even if closed.
-        is_coastline = False
-        for k, v in w.tags:
-            if k == "natural" and v == "coastline":
-                is_coastline = True
-                break
+        is_coastline = w.tags.get("natural") == "coastline"
         
         if is_coastline:
             try:
@@ -41,15 +38,13 @@ class OSMHandler(osmium.SimpleHandler):
         # Only skip if it's definitely going to be an area.
         if w.is_closed():
             # osmium.area.AreaManager generally builds areas for these tags
-            area_tags = {"building", "landuse", "amenity", "leisure", "natural", "waterway"}
             is_area = False
-            for k, v in w.tags:
-                if k == "area" and v == "yes":
+            if w.tags.get("area") == "yes":
+                is_area = True
+            elif w.tags.get("area") != "no":
+                area_tags = ("building", "landuse", "amenity", "leisure", "natural", "waterway")
+                if any(w.tags.get(k) is not None for k in area_tags):
                     is_area = True
-                    break
-                if k in area_tags and w.tags.get("area") != "no":
-                    is_area = True
-                    break
             
             if is_area:
                 return

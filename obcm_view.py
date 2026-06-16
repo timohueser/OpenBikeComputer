@@ -9,6 +9,16 @@ from obcm.viewport import Viewport
 SCREEN_WIDTH = 1024
 SCREEN_HEIGHT = 768
 
+def get_distance(lon1, lat1, lon2, lat2):
+    # Haversine distance in meters
+    R = 6371000
+    phi1, phi2 = math.radians(lat1 / 1e6), math.radians(lat2 / 1e6)
+    dphi = math.radians((lat2 - lat1) / 1e6)
+    dlambda = math.radians((lon2 - lon1) / 1e6)
+    a = math.sin(dphi / 2)**2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2)**2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return R * c
+
 def main():
     if len(sys.argv) < 2:
         print("Usage: python obcm_view.py <map.obcm>")
@@ -156,6 +166,29 @@ def main():
                     if len(line_pts) >= 2:
                         pygame.draw.lines(screen, rgb, False, line_pts, max(1, style["weight"]))
             
+            # --- Viewport Dimension Overlay ---
+            v_min_lon, v_min_lat = vp.to_map(0, SCREEN_HEIGHT)
+            v_max_lon, v_max_lat = vp.to_map(SCREEN_WIDTH, 0)
+            
+            width_m = get_distance(v_min_lon, v_min_lat, v_max_lon, v_min_lat)
+            height_m = get_distance(v_min_lon, v_min_lat, v_min_lon, v_max_lat)
+            
+            def format_dist(meters):
+                if meters > 1000:
+                    return f"{meters / 1000:.2f} km"
+                return f"{int(meters)} m"
+
+            dim_text = f"{format_dist(width_m)} x {format_dist(height_m)}"
+            dim_surf = font.render(dim_text, True, (255, 255, 255))
+            
+            bg_rect = dim_surf.get_rect()
+            bg_rect.bottomleft = (10, SCREEN_HEIGHT - 10)
+            
+            bg_surface = pygame.Surface((bg_rect.width + 10, bg_rect.height + 5), pygame.SRCALPHA)
+            bg_surface.fill((0, 0, 0, 150))
+            screen.blit(bg_surface, bg_rect.inflate(10, 5))
+            screen.blit(dim_surf, bg_rect)
+
             # Debug Overlay
             if debug_settings["show_bboxes"]:
                 for cid, node_bbox in chunks:
