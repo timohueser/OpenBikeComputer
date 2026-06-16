@@ -21,7 +21,7 @@ def pack_style_dict(config: dict) -> bytes:
         if isinstance(color, str):
             color = int(color, 16)
         
-        data += struct.pack("<BBHB", 
+        data += struct.pack("<BbHB", 
                            s["id"], 
                            s.get("z_index", 0), 
                            color, 
@@ -61,16 +61,22 @@ def pack_feature(feature: dict, node_bbox: Tuple[int, int, int, int]) -> bytes:
     
     packed_rings = []
     
-    for ring in rings_to_pack:
+    for i, ring in enumerate(rings_to_pack):
         pts = [(int(round(lon * 1e6)), int(round(lat * 1e6))) for lon, lat in ring]
         
-        if anchor_lon is None:
+        if i == 0:
+            # Exterior ring
             anchor_lon = pts[0][0] - node_bbox[0]
             anchor_lat = pts[0][1] - node_bbox[1]
+            prev_x, prev_y = pts[0]
+            pts_to_delta = pts[1:]
+        else:
+            # Hole ring: first point is relative to the anchor
+            prev_x, prev_y = node_bbox[0] + anchor_lon, node_bbox[1] + anchor_lat
+            pts_to_delta = pts
             
         deltas = []
-        prev_x, prev_y = pts[0]
-        for x, y in pts[1:]:
+        for x, y in pts_to_delta:
             dx, dy = x - prev_x, y - prev_y
             deltas.extend([dx, dy])
             max_delta = max(max_delta, abs(dx), abs(dy))
@@ -84,10 +90,10 @@ def pack_feature(feature: dict, node_bbox: Tuple[int, int, int, int]) -> bytes:
     else:
         d_fmt = "b"
 
-    # Header: StyleID(u8), PointCount(u16), AnchorX(i32), AnchorY(i32), Flags(u8)
+    # Header: StyleID(u8), PointCount(u16), AnchorX(i16), AnchorY(i16), Flags(u8)
     # Note: For polygons, PointCount is the exterior ring point count.
     ext_pt_count = packed_rings[0][0]
-    header = struct.pack("<BHiiB", style_id, ext_pt_count, anchor_lon, anchor_lat, flags)
+    header = struct.pack("<BHhhB", style_id, ext_pt_count, anchor_lon, anchor_lat, flags)
     
     data = header
     
@@ -137,7 +143,13 @@ def serialize_all(root, config: dict, global_bbox: Tuple[int, int, int, int], ch
     data_chunks = []
     node_to_idx = {node: i for i, node in enumerate(all_nodes)}
     
-    for node in all_nodes:
+    try:
+        from tqdm import tqdm
+        iterator = tqdm(all_nodes, desc="Serializing Quadtree", unit="node")
+    except ImportError:
+        iterator = all_nodes
+
+    for node in iterator:
         if node.is_leaf:
             if not node.features:
                 flat_index.append(0x7FFFFFFF)
