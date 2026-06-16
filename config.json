@@ -9,6 +9,22 @@
         },
         "building": {
             "yes": {"id": 100, "z_index": 5, "color": "0xAAAA", "weight": 1}
+        },
+        "natural": {
+            "water": {"id": 20, "z_index": 20, "color": "0x3333", "weight": 1},
+            "sea": {"id": 99, "z_index": 0, "color": "0x001F", "weight": 1},
+            "land": {"id": 1, "z_index": 1, "color": "0xEFD5", "weight": 1},
+            "wood": {"id": 30, "z_index": 10, "color": "0x0500", "weight": 1},
+            "scrub": {"id": 31, "z_index": 5, "color": "0x0500", "weight": 1}
+        },
+        "landuse": {
+            "forest": {"id": 30, "z_index": 5, "color": "0x0500", "weight": 1},
+            "grass": {"id": 32, "z_index": 5, "color": "0x07E0", "weight": 1},
+            "residential": {"id": 110, "z_index": 2, "color": "0xCCCC", "weight": 1}
+        },
+        "leisure": {
+            "park": {"id": 32, "z_index": 5, "color": "0x07E0", "weight": 1},
+            "marina": {"id": 20, "z_index": 5, "color": "0x3333", "weight": 1}
         }
     }
 }
