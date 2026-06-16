@@ -13,7 +13,8 @@ def test_pack_style_dict():
     data = pack_style_dict(config)
     # Count(1) + ID(1), Z(1), Color(2), Weight(1) = 6 bytes
     assert len(data) == 6
-    count, id_, z, color, weight = struct.unpack("<BBBHB", data)
+    count = struct.unpack("<B", data[:1])[0]
+    id_, z, color, weight = struct.unpack("<BbHB", data[1:]) # Signed z
     assert count == 1
     assert id_ == 10
     assert z == 50

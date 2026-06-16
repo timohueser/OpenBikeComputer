@@ -57,6 +57,7 @@ class QuadtreeNode:
 
     def should_split(self):
         # Physical width limit removed as anchors are now 32-bit.
+        # Long segments are dynamically interpolated during serialization to prevent 16-bit delta overflow.
         # Split only if too many points/data
         return self.current_size > self.chunk_size
 

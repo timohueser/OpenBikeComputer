@@ -36,7 +36,7 @@ class OBCMReader:
             data = self.stream.read(5)
             if len(data) < 5:
                 break
-            sid, z, color, weight = struct.unpack("<BBHB", data)
+            sid, z, color, weight = struct.unpack("<BbHB", data)
             self.styles[sid] = {"z_index": z, "color": color, "weight": weight}
 
     def _load_index(self):
@@ -109,12 +109,25 @@ class OBCMReader:
             d_fmt = "h" if is_16bit else "b"
             d_size = 2 if is_16bit else 1
             
-            def read_ring(pt_count, current_offset):
+            def read_ring(pt_count, current_offset, is_hole=False):
                 if pt_count == 0:
                     return [], current_offset
-                pts = [(node_bbox[0] + ax, node_bbox[1] + ay)]
-                prev_x, prev_y = pts[0]
-                for _ in range(pt_count - 1):
+                
+                anchor_x = node_bbox[0] + ax
+                anchor_y = node_bbox[1] + ay
+                
+                if is_hole:
+                    # Holes store ALL points as deltas (first is rel to anchor)
+                    pts = []
+                    prev_x, prev_y = anchor_x, anchor_y
+                    num_deltas = pt_count
+                else:
+                    # Exterior starts at anchor, then pt_count-1 deltas
+                    pts = [(anchor_x, anchor_y)]
+                    prev_x, prev_y = anchor_x, anchor_y
+                    num_deltas = pt_count - 1
+
+                for _ in range(num_deltas):
                     try:
                         dx, dy = struct.unpack_from(f"<{d_fmt}{d_fmt}", chunk_data, current_offset)
                         current_offset += d_size * 2
@@ -126,7 +139,7 @@ class OBCMReader:
                 return pts, current_offset
 
             # Read exterior
-            exterior, offset = read_ring(ext_pt_count, offset)
+            exterior, offset = read_ring(ext_pt_count, offset, is_hole=False)
             
             interiors = []
             if is_polygon and has_holes:
@@ -137,7 +150,7 @@ class OBCMReader:
                         if offset + 2 > chunk_size: break
                         h_pt_count, = struct.unpack_from("<H", chunk_data, offset)
                         offset += 2
-                        hole_pts, offset = read_ring(h_pt_count, offset)
+                        hole_pts, offset = read_ring(h_pt_count, offset, is_hole=True)
                         interiors.append(hole_pts)
             
             if is_polygon:
