@@ -115,7 +115,7 @@ main {
 .muted { color: var(--muted); }
 .small { font-size: 12px; }
 
-.feat-group { margin-bottom: 12px; }
+.feat-group { margin-bottom: 12px; overflow-x: auto; }
 .feat-group > summary {
   cursor: pointer;
   font-weight: 600;
@@ -132,7 +132,7 @@ table.feat-table th {
 }
 table.feat-table td { padding: 3px 6px; border-bottom: 1px solid var(--border); }
 table.feat-table input[type="number"] {
-  width: 56px; background: var(--panel-2); border: 1px solid var(--border);
+  width: 46px; background: var(--panel-2); border: 1px solid var(--border);
   color: var(--text); border-radius: 4px; padding: 3px 5px;
 }
 table.feat-table input[type="color"] {
@@ -146,6 +146,30 @@ table.feat-table input[type="color"] {
   margin-top: 6px; background: var(--panel-2); border: 1px dashed var(--border);
   color: var(--muted); border-radius: 5px; padding: 4px 8px; cursor: pointer; font-size: 12px;
 }
+
+/* Levels of detail */
+table.lod-table { width: 100%; border-collapse: collapse; margin-bottom: 4px; }
+table.lod-table th {
+  text-align: left; color: var(--muted); font-weight: 500;
+  font-size: 11px; padding: 4px 6px; border-bottom: 1px solid var(--border);
+}
+table.lod-table td { padding: 4px 6px; border-bottom: 1px solid var(--border); }
+table.lod-table input[type="number"] {
+  width: 72px; background: var(--panel-2); border: 1px solid var(--border);
+  color: var(--text); border-radius: 4px; padding: 3px 5px;
+}
+.lod-name { font-weight: 600; white-space: nowrap; }
+.lod-table .inf { font-size: 16px; color: var(--muted); }
+
+/* Per-feature start-tier picker */
+.lod-picker { display: inline-flex; gap: 2px; }
+.lod-seg {
+  min-width: 18px; height: 20px; padding: 0 3px; font-size: 11px;
+  background: var(--panel-2); border: 1px solid var(--border); color: var(--muted);
+  border-radius: 4px; cursor: pointer; font-family: monospace; line-height: 1;
+}
+.lod-seg.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+.lod-seg:hover { border-color: var(--accent); }
 
 .field { margin-bottom: 10px; }
 .field label { display: block; color: var(--muted); margin-bottom: 4px; font-size: 12px; }

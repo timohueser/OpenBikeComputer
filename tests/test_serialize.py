@@ -70,20 +70,31 @@ def test_pack_polygon_small():
     h_count = struct.unpack("<H", data[21:23])[0]
     assert h_count == 5
 
-def test_serialize_all_header_size():
-    from obcm.serialize import serialize_all
+def test_serialize_lods_header():
+    import math
+    from obcm.serialize import serialize_lods
     class MockNode:
         def __init__(self):
             self.is_leaf = True
             self.features = []
             self.bbox = (0, 0, 100, 100)
-    
-    root = MockNode()
+
+    lods = [{"root": MockNode(), "chunk_size": 2048, "max_mpp": None}]
     config = {"features": {}}
-    global_bbox = (0, 0, 100, 100)
-    
-    binary = serialize_all(root, config, global_bbox, chunk_size=2048)
-    # Header(31) + StyleCount(1) + Index(4) = 36
-    assert len(binary) == 36
-    magic, ver, lat1, lon1, lat2, lon2, s_off, i_off, c_size = struct.unpack("<4sBiiiiIIH", binary[:31])
+    binary = serialize_lods(lods, config, (0, 0, 100, 100))
+
+    # v3 header(30) + StyleCount(1) + 1 LOD entry(18) + Index(4) = 53
+    assert len(binary) == 53
+    magic, ver, lat1, lon1, lat2, lon2, s_off, lod_count, lod_tbl = struct.unpack("<4sBiiiiIBI", binary[:30])
+    assert magic == b"OBCM"
+    assert ver == 3
+    assert s_off == 30
+    assert lod_count == 1
+    assert lod_tbl == 31  # 30 header + 1 style-count byte
+
+    mpp, idx_off, node_count, c_size, chunk_count = struct.unpack_from("<fIIHI", binary, lod_tbl)
+    assert math.isinf(mpp)       # coarsest layer
     assert c_size == 2048
+    assert node_count == 1       # single empty leaf
+    assert chunk_count == 0
+    assert idx_off == lod_tbl + 18

@@ -60,6 +60,7 @@ class OSMHandler(osmium.SimpleHandler):
             if len(coords) >= 2:
                 self.features.append({
                     "style_id": style["id"],
+                    "min_lod": style.get("min_lod", 0),
                     "geometry": LineString(coords)
                 })
         except osmium.InvalidLocationError:
@@ -94,6 +95,7 @@ class OSMHandler(osmium.SimpleHandler):
                             
                     self.features.append({
                         "style_id": style["id"],
+                        "min_lod": style.get("min_lod", 0),
                         "geometry": Polygon(ext_coords, closed_interiors)
                     })
         except osmium.InvalidLocationError:

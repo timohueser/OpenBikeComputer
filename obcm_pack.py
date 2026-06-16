@@ -8,7 +8,7 @@ from tqdm import tqdm
 from obcm.config import load_config
 from obcm.ingest import ingest_osm
 from obcm.quadtree import QuadtreeNode
-from obcm.serialize import serialize_all
+from obcm.serialize import serialize_lods
 from obcm.land_ingest import get_land_polygons
 
 def main():
@@ -93,21 +93,38 @@ def main():
             global_bbox[3] / 1e6
         )
         
+        land_min_lod = config["features"]["natural"]["land"].get("min_lod", 0)
         print("Fetching and processing land polygons...")
         land_polygons = get_land_polygons(pbf_bbox_deg)
-        
+
         for poly in land_polygons:
-            features.append({"style_id": land_style, "geometry": poly})
-        
+            features.append({"style_id": land_style, "min_lod": land_min_lod, "geometry": poly})
+
         print(f"Successfully added {len(land_polygons)} land polygons.")
 
+    # --- Build one quadtree per LOD level (pyramid). ---
+    # Cumulative model: LOD i contains every feature whose min_lod <= i, with
+    # geometry simplified to that level's tolerance. See the v3 LOD design doc.
+    lods_config = config.get("lods") or [{"max_mpp": None, "simplify": 0}]
+    built_lods = []
+    for i, lod_def in enumerate(lods_config):
+        level_feats = [f for f in features if f.get("min_lod", 0) <= i]
+        simplify_m = lod_def.get("simplify") or 0
+        tol_deg = simplify_m / 111320.0 if simplify_m else 0.0  # ~meters -> degrees
 
-    root = QuadtreeNode(global_bbox, chunk_size=chunk_size)
-    for feat in tqdm(features, desc="Building Quadtree", unit="feat"):
-        root.insert(feat)
+        root = QuadtreeNode(global_bbox, chunk_size=chunk_size)
+        desc = f"Quadtree LOD {i} ({len(level_feats)} feats, simplify {simplify_m}m)"
+        for f in tqdm(level_feats, desc=desc, unit="feat"):
+            geom = f["geometry"]
+            if tol_deg:
+                geom = geom.simplify(tol_deg)
+                if geom.is_empty:
+                    continue
+            root.insert({"style_id": f["style_id"], "geometry": geom})
+        built_lods.append({"root": root, "chunk_size": chunk_size, "max_mpp": lod_def.get("max_mpp")})
 
-    print("Serializing and writing to disk...")
-    binary_data = serialize_all(root, config, global_bbox, chunk_size=chunk_size)
+    print(f"Serializing {len(built_lods)} LOD level(s) and writing to disk...")
+    binary_data = serialize_lods(built_lods, config, global_bbox)
 
     with open(args.output, "wb") as f:
         f.write(binary_data)
