@@ -1,100 +1,253 @@
-# OBCM File Format Specification
+# OBCM File Format Specification (v3)
 
-OBCM (OpenStreetMap Binary Chunked Map) is a compact, binary format designed for efficient rendering on memory-constrained devices, such as microcontrollers (MCUs).
+OBCM (OpenStreetMap Binary Chunked Map) is a compact binary map format designed
+for efficient rendering on memory-constrained devices such as microcontrollers
+(MCUs). It is read by both the Python tooling (`obcm/reader.py`) and the Rust
+crate (`viewer-rs/obcm`, shared by the desktop simulator and the nRF5340
+firmware).
 
-## File Structure Overview
+**Version 3** introduces a **level-of-detail (LOD) pyramid**: a file holds N
+self-contained detail levels, each its own quadtree + chunk set with geometry
+simplified to that level's resolution. The renderer reads only the level that
+matches the current zoom, so zooming out touches a small coarse layer instead of
+decoding fine geometry just to skip it. **v3 is the only supported version; v2
+(single detail level) has been dropped.**
 
-The OBCM file is structured as a contiguous binary blob, optimized for random access:
+## Design principles
 
-| Section | Size | Description |
-| :--- | :--- | :--- |
-| **Header** | 31 bytes | File identification, bounding box, and section offsets. |
-| **Style Table** | Variable | Definitions of visual styles (colors, z-index, etc.). |
-| **Quadtree Index** | Variable | A flat, serialized representation of the spatial quadtree. |
-| **Data Chunks** | Variable | Fixed-capacity blocks containing packed feature geometry. |
+1. **Pyramid layers.** Each LOD is independent: zoomed out ⇒ read one small
+   coarse layer. (vs. tagging every feature with a min-zoom in a single fine
+   tree, which forces the MCU to decode fine chunks just to skip them.)
+2. **RGB565 in the file, quantized at render.** The style table is
+   device-independent and matches the webapp editor. The renderer quantizes the
+   small style palette to the target display depth once at load (RGB222 /
+   64 colors for the LS021B7DD02).
+3. **Meters-per-pixel LOD selection.** Each LOD stores a ground-meters-per-pixel
+   threshold; the renderer computes current m/px from zoom + display size and
+   picks the level. The same file looks right on a 1024 px desktop and a 240 px
+   device.
+4. **No runtime discovery.** Every section is reached via an explicit offset and
+   every count is stored, so a no_std reader does zero traversal/sizing work to
+   parse the structure.
+
+All coordinates are integer **microdegrees** (1e-6 degrees). Projection to
+screen space is the renderer's responsibility, not the format's.
+
+## File layout
+
+```
+[Header]                            (30 bytes, fixed)
+[Style Table]                       (global — shared by all LODs)
+[LOD Table]                         (LOD Count entries)
+[LOD 0 Index][LOD 0 Data Chunks]    (coarsest)
+[LOD 1 Index][LOD 1 Data Chunks]
+...
+[LOD N-1 Index][LOD N-1 Data Chunks] (finest)
+```
+
+The byte layout is produced by `obcm/serialize.py::serialize_lods` and parsed by
+`obcm/reader.py` and `viewer-rs/obcm/src/reader.rs`. All multi-byte integers are
+**little-endian**.
 
 ---
 
-## 1. Header (31 bytes)
+## 1. Header (30 bytes)
 
-The header provides the necessary metadata to parse the rest of the file.
+Packed as `struct "<4sBiiiiIBI"`.
 
-| Field | Size | Type | Description |
-| :--- | :--- | :--- | :--- |
-| Magic | 4 | `char` | Must be `b"OBCM"` |
-| Version | 1 | `uint8` | Format version (currently `0x02`) |
-| Min Lat | 4 | `int32` | Global BBox Min Latitude (microdegrees) |
-| Min Lon | 4 | `int32` | Global BBox Min Longitude (microdegrees) |
-| Max Lat | 4 | `int32` | Global BBox Max Latitude (microdegrees) |
-| Max Lon | 4 | `int32` | Global BBox Max Longitude (microdegrees) |
-| Style Offset | 4 | `uint32` | Byte offset to Style Table |
-| Index Offset | 4 | `uint32` | Byte offset to Quadtree Index |
-| Chunk Size | 2 | `uint16` | Fixed capacity of each Data Chunk (bytes) |
+| Offset | Field | Size | Type | Description |
+| :-- | :-- | :-- | :-- | :-- |
+| 0 | Magic | 4 | `char[4]` | Must be `b"OBCM"` |
+| 4 | Version | 1 | `uint8` | `0x03` |
+| 5 | Min Lat | 4 | `int32` | Global bbox min latitude (microdegrees) |
+| 9 | Min Lon | 4 | `int32` | Global bbox min longitude |
+| 13 | Max Lat | 4 | `int32` | Global bbox max latitude |
+| 17 | Max Lon | 4 | `int32` | Global bbox max longitude |
+| 21 | Style Offset | 4 | `uint32` | Byte offset to the Style Table |
+| 25 | LOD Count | 1 | `uint8` | Number of LOD levels (≥ 1) |
+| 26 | LOD Table Offset | 4 | `uint32` | Byte offset to the LOD Table |
+
+Note the bbox field order in the file is **lat, lon, lat, lon**. In practice the
+Style Table immediately follows the header, so `Style Offset` is `30`.
 
 ---
 
 ## 2. Style Table
 
-The style table maps numerical IDs to rendering properties.
+Maps numeric style IDs to rendering properties. **Global**: style IDs are shared
+across every LOD. Packed as `Count`, then `Count` records.
 
-**Format:**
-1.  **Count** (`uint8`): Number of styles.
-2.  **Style Records** (repeated `Count` times):
+1. **Count** (`uint8`): number of styles.
+2. **Style Records** (`Count` × 5 bytes):
 
 | Field | Size | Type | Description |
-| :--- | :--- | :--- | :--- |
-| ID | 1 | `uint8` | Unique Style ID |
-| Z-Index | 1 | `int8` | Rendering layer order |
-| Color | 2 | `uint16` | RGB565 color value |
-| Weight | 1 | `uint8` | Stroke width (for lines) |
+| :-- | :-- | :-- | :-- |
+| ID | 1 | `uint8` | Style ID, referenced by feature headers |
+| Z-Index | 1 | `int8` | Painter's-order layer (lower drawn first) |
+| Color | 2 | `uint16` | RGB565 |
+| Weight | 1 | `uint8` | Stroke width in pixels (lines) |
+
+> **Authoring constraint:** style IDs must be globally unique. If two style
+> records share an ID, a reader keeps whichever it parses last, so the other
+> feature type renders with the wrong color. (There is a known collision to
+> resolve in `config.json` — see the project notes.)
 
 ---
 
-## 3. Quadtree Index
+## 3. LOD Table
 
-This is a flat array of `uint32` values representing the quadtree. The index enables spatial filtering without loading the entire map.
+`LOD Count` entries, ordered **coarsest (index 0) → finest (index N-1)**. Each
+entry is 18 bytes, packed as `struct "<fIIHI"`.
 
-- **Leaf Node:** A value not containing the highest bit (`0x80000000`).
-    - `0x7FFFFFFF`: Empty leaf node.
-    - `Other`: `Chunk ID` of the corresponding Data Chunk.
-- **Branch Node:** A value with the highest bit set (`0x80000000`).
-    - Value: `0x80000000 | Index` to the first child node.
-    - Children are stored sequentially: `NW`, `NE`, `SW`, `SE`.
+| Field | Size | Type | Description |
+| :-- | :-- | :-- | :-- |
+| Max Meters/Pixel | 4 | `float32` | Upper bound of the m/px range this LOD covers. Strictly decreasing down the list; the coarsest level is `+inf` (`f32::INFINITY`). |
+| Index Offset | 4 | `uint32` | Byte offset to this LOD's quadtree index |
+| Index Node Count | 4 | `uint32` | Number of `uint32` nodes in the index |
+| Chunk Size | 2 | `uint16` | Fixed capacity of each data chunk (bytes) — per-LOD |
+| Chunk Count | 4 | `uint32` | Number of data chunks in this LOD |
+
+This LOD's data chunks begin at `Index Offset + Index Node Count * 4` (i.e.
+immediately after its index). Chunk `k` is at `data_start + k * Chunk Size`.
+
+Storing `Index Node Count` and `Chunk Count` explicitly is what removes any
+runtime discovery: the reader never has to walk the tree to learn its size.
 
 ---
 
-## 4. Data Chunks (Fixed-Capacity)
+## 4. Quadtree Index (per LOD)
 
-Features are stored in fixed-capacity blocks defined by the header's `Chunk Size`. If data does not fill the chunk, it is padded with `0xFF`.
+A flat array of `Index Node Count` × `uint32`. **Every LOD's quadtree is built
+over the same global bbox** (from the header), so node bboxes are computed
+identically at every level and the renderer's subdivision math is
+LOD-independent. Coarse levels hold few features ⇒ shallow trees.
+
+Each node value:
+
+- **Leaf** — high bit (`0x80000000`) clear:
+  - `0x7FFFFFFF` → **empty** leaf (no chunk).
+  - otherwise → the **Chunk ID** into this LOD's data chunks.
+- **Branch** — high bit set: `0x80000000 | first_child_index`. The four children
+  are stored sequentially in the order **NW, NE, SW, SE**.
+
+Children bboxes are derived by splitting the parent bbox at its **floor-division
+midpoints** (`mid = (min + max) // 2` for both axes), matching the packer:
+
+```
+NW = (min_lon, mid_lat, mid_lon, max_lat)
+NE = (mid_lon, mid_lat, max_lon, max_lat)
+SW = (min_lon, min_lat, mid_lon, mid_lat)
+SE = (mid_lon, min_lat, max_lon, mid_lat)
+```
+
+To query a viewport: start at node 0 with the global bbox, recurse into children
+whose bbox intersects the view, and collect `(chunk_id, node_bbox)` for every
+non-empty leaf reached. The `node_bbox` is required to decode the chunk (see
+§5, anchors).
+
+---
+
+## 5. Data Chunks (per LOD)
+
+Features are packed into fixed-capacity blocks of `Chunk Size` bytes. Unused
+trailing bytes are padded with `0xFF`; a `0xFF` style-ID byte (an impossible
+style) marks the end of features in a chunk.
 
 ### Feature Header (12 bytes)
 
+Packed as `struct "<BHiiB"`.
+
 | Field | Size | Type | Description |
-| :--- | :--- | :--- | :--- |
-| Style ID | 1 | `uint8` | Link to Style Table |
-| Pt Count | 2 | `uint16` | Points in exterior ring |
-| Anchor X | 4 | `int32` | Chunk-relative X-offset (microdegrees) |
-| Anchor Y | 4 | `int32` | Chunk-relative Y-offset (microdegrees) |
-| Flags | 1 | `uint8` | Bitmask: `0x01` (16-bit deltas), `0x02` (Polygon), `0x04` (Has holes) |
+| :-- | :-- | :-- | :-- |
+| Style ID | 1 | `uint8` | Reference into the Style Table |
+| Pt Count | 2 | `uint16` | Vertex count of the **exterior** ring |
+| Anchor X | 4 | `int32` | Exterior start, relative to the **leaf node's min longitude** (microdegrees) |
+| Anchor Y | 4 | `int32` | Exterior start, relative to the leaf node's min latitude |
+| Flags | 1 | `uint8` | `0x01` 16-bit deltas · `0x02` polygon · `0x04` has holes |
 
-### Geometry Encoding (Deltas)
+The **anchor** is the feature's first absolute coordinate, stored relative to the
+containing leaf node's min corner to keep it small:
 
-Geometry is stored using **Delta Encoding** to minimize size.
-
-1.  **Anchor Point**: The first point in a ring is stored absolutely relative to the chunk anchor.
-2.  **Deltas**: Subsequent points are stored as `(dx, dy)` relative to the previous point.
-3.  **Bit Depth**:
-    - If `Flags & 0x01` is `0`: `dx`/`dy` are `int8`.
-    - If `Flags & 0x01` is `1`: `dx`/`dy` are `int16`.
-
-#### Polygon with Holes Example
-```text
-[Header]
-[Exterior Deltas (int8/int16)]
-[Hole Count (uint8)]
-    [Hole 1 Point Count (uint16)]
-    [Hole 1 Deltas (int8/int16)]
-    [Hole 2 Point Count (uint16)]
-    [Hole 2 Deltas (int8/int16)]
-[Padding (0xFF)]
 ```
+anchor_abs = (node_bbox.min_lon + AnchorX, node_bbox.min_lat + AnchorY)
+```
+
+### Geometry encoding (delta)
+
+Rings are delta-encoded to minimize size. Bit depth is chosen **per feature**:
+if every `dx`/`dy` fits in `int8` (|d| ≤ 127), `Flags & 0x01 == 0` and deltas are
+`int8`; otherwise the flag is set and all deltas are `int16`.
+
+- **Exterior ring** (`Pt Count` vertices): the first vertex *is* the anchor;
+  the remaining `Pt Count - 1` vertices follow as `(dx, dy)` pairs, each relative
+  to the previous vertex.
+- **Holes** (only if `Flags & 0x04`, after the exterior deltas):
+  - **Hole Count** (`uint8`)
+  - per hole: **Pt Count** (`uint16`), then `Pt Count` `(dx, dy)` delta pairs.
+    Holes store **all** vertices as deltas — the first is relative to the feature
+    anchor, the rest chain from the previous vertex.
+
+Lines use only the exterior ring (`Flags & 0x02 == 0`, no holes).
+
+> **Long-segment densification:** the packer inserts intermediate vertices on any
+> segment longer than `30000` microdegrees so that no single delta exceeds the
+> 16-bit range. Readers need no special handling — these are ordinary vertices.
+
+### Polygon-with-holes byte layout
+
+```
+[Feature Header (12 B)]
+[Exterior deltas]                ((Pt Count - 1) × (int8|int16) pairs)
+[Hole Count (uint8)]
+  [Hole 1 Pt Count (uint16)]
+  [Hole 1 deltas]                (Pt Count × pairs)
+  [Hole 2 Pt Count (uint16)]
+  [Hole 2 deltas]
+  ...
+```
+
+---
+
+## 6. LOD selection (renderer)
+
+The renderer computes the current ground **meters-per-pixel** from zoom and
+display size. Using a latitude-based definition, 1 microdegree of latitude ≈
+`0.11132` m, so with `zoom` in pixels-per-microdegree-of-latitude:
+
+```
+mpp = 0.11132 / zoom
+```
+
+Among the LODs whose range covers `mpp` (`Max Meters/Pixel[i] >= mpp`), pick the
+**finest** (largest index). The coarsest level's `+inf` always qualifies, so the
+result is always valid; clamp to `[0, N-1]`.
+
+Worked example (the 3-level default):
+
+| LOD | content | Max m/px |
+| :-- | :-- | :-- |
+| 0 country | coastline/land, sea, motorway/trunk, major rivers, admin borders | `+inf` |
+| 1 region | + primary/secondary roads, lakes, forests | 50 |
+| 2 city/street | + residential/service, footways, buildings, parks | 10 |
+
+- `mpp = 70` → only LOD 0 covers it → **LOD 0**
+- `mpp = 30` → LOD 0 & 1 cover it; finest = **LOD 1**
+- `mpp = 5`  → all cover it; finest = **LOD 2**
+
+Within a selected LOD, query the quadtree for the viewport, decode the visible
+chunks, sort features by style `Z-Index` (painter's algorithm), then draw —
+polygons via even-odd scanline fill (holes fall out of the even-odd rule for
+free), lines as weighted polylines.
+
+---
+
+## Reference implementations
+
+- **Writer:** `obcm/serialize.py` (`serialize_lods`, `serialize_tree`,
+  `pack_feature`, `pack_chunk`, `pack_style_dict`).
+- **Reader (Python):** `obcm/reader.py` (`OBCMReader`, `select_lod_for_mpp`,
+  `query_bbox`).
+- **Reader + renderer (Rust, no_std):** `viewer-rs/obcm` — `reader.rs`
+  (`Reader`, `for_each_feature`, `select_lod_for_mpp`), `render.rs`
+  (`Viewport`, `MapRenderer`). Format-contract tests in
+  `viewer-rs/obcm/tests/format.rs`.
