@@ -175,8 +175,5 @@ def serialize_all(root, config: dict, global_bbox: Tuple[int, int, int, int], ch
                         index_offset,
                         chunk_size)
     
-    full_binary = header + style_data + index_data
-    for chunk in data_chunks:
-        full_binary += chunk
-        
+    full_binary = header + style_data + index_data + b"".join(data_chunks)
     return full_binary
