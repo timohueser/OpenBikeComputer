@@ -17,7 +17,7 @@ use embedded_graphics::{pixelcolor::Rgb888, prelude::*};
 use embedded_graphics_simulator::{
     sdl2::Keycode, OutputSettingsBuilder, SimulatorDisplay, SimulatorEvent, Window,
 };
-use obcm::{render_map, rgb565_to_device64, rgb565_to_rgb888, Reader, Viewport};
+use obcm::{rgb565_to_device64, rgb565_to_rgb888, MapRenderer, Reader, Viewport};
 
 struct Args {
     map: String,
@@ -71,6 +71,7 @@ fn color_of(c: u16, true_color: bool) -> Rgb888 {
 
 /// Render one frame through the shared renderer and report (features, lod, ms).
 fn draw(
+    renderer: &mut MapRenderer,
     display: &mut SimulatorDisplay<Rgb888>,
     reader: &Reader,
     vp: &Viewport,
@@ -78,7 +79,7 @@ fn draw(
     true_color: bool,
 ) -> (usize, usize, f64) {
     let t0 = Instant::now();
-    let stats = render_map(display, reader, vp, bg, |c| color_of(c, true_color));
+    let stats = renderer.render(display, reader, vp, bg, |c| color_of(c, true_color));
     (stats.features, stats.lod, t0.elapsed().as_secs_f64() * 1000.0)
 }
 
@@ -132,10 +133,11 @@ fn main() {
 
     let mut display = SimulatorDisplay::<Rgb888>::new(Size::new(args.width, args.height));
     let output = OutputSettingsBuilder::new().scale(args.scale).build();
+    let mut renderer = MapRenderer::new();
 
     // Headless mode: render one frame, save PNG, exit.
     if let Some(path) = &args.png {
-        let (n, lod, ms) = draw(&mut display, &reader, &vp, bg, args.true_color);
+        let (n, lod, ms) = draw(&mut renderer, &mut display, &reader, &vp, bg, args.true_color);
         eprintln!("rendered {n} features (LOD {lod}) in {ms:.2} ms");
         display
             .to_rgb_output_image(&output)
@@ -155,7 +157,7 @@ fn main() {
     let mut dirty = true;
     loop {
         if dirty {
-            let (n, lod, ms) = draw(&mut display, &reader, &vp, bg, args.true_color);
+            let (n, lod, ms) = draw(&mut renderer, &mut display, &reader, &vp, bg, args.true_color);
             eprint!("\rLOD {lod}  {n} features  {ms:.1} ms   ");
             dirty = false;
         }
