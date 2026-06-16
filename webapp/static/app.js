@@ -89,6 +89,8 @@ map.on("click", (e) => {
 });
 
 function showRegionPopup(latlng, hits) {
+  popupOpen = true;
+  clearPreview();
   const div = document.createElement("div");
   div.className = "region-popup";
   for (const f of hits) {
@@ -96,6 +98,9 @@ function showRegionPopup(latlng, hits) {
     const btn = document.createElement("button");
     btn.textContent = f.properties.name;
     if (selected.has(id)) btn.classList.add("selected");
+    // Lock the preview to whichever option is hovered, instead of the raw
+    // cursor position shooting "through" the menu.
+    btn.addEventListener("mouseenter", () => setPreviewFeature(f));
     btn.onclick = () => {
       toggleRegion(id);
       btn.classList.toggle("selected");
@@ -103,6 +108,7 @@ function showRegionPopup(latlng, hits) {
     div.appendChild(btn);
   }
   L.popup({ closeButton: true }).setLatLng(latlng).setContent(div).openOn(map);
+  setPreviewFeature(hits[0]); // default to the smallest (top) option
 }
 
 function toggleRegion(id) {
@@ -110,7 +116,73 @@ function toggleRegion(id) {
   else selected.add(id);
   renderSelected();
   renderHighlights();
+  clearPreview(); // selection changed under the cursor; recompute on next move
 }
+
+// ---------------------------------------------------------------------------
+// Hover preview: outline the smallest region under the cursor in a distinct
+// color so it's clearly a preview (not a selection).
+// ---------------------------------------------------------------------------
+const PREVIEW_STYLE = {
+  color: "#ff9500", weight: 2, dashArray: "5,4",
+  fillColor: "#ff9500", fillOpacity: 0.12, interactive: false,
+};
+let previewLayer = null;
+let previewId = null;
+let previewTip = L.tooltip({ className: "preview-tip", direction: "top", offset: [0, -6] });
+let pendingLatLng = null;
+let rafPending = false;
+let popupOpen = false; // a region-level picker is open; freeze the cursor-follow preview
+
+function smallestRegionAt(lng, lat) {
+  let best = null;
+  for (const f of regions) {
+    if (!featureContains(f, lng, lat)) continue;
+    if (!best || f._area < best._area) best = f; // most specific wins
+  }
+  return best;
+}
+
+function clearPreview() {
+  previewId = null;
+  if (previewLayer) { map.removeLayer(previewLayer); previewLayer = null; }
+  if (map.hasLayer(previewTip)) map.removeLayer(previewTip);
+}
+
+// Draw the orange preview outline for a specific region. When `latlng` is
+// given the name tooltip follows the cursor; otherwise no tooltip (the picker
+// menu already labels each option).
+function setPreviewFeature(f, latlng) {
+  const id = f ? f.properties.id : null;
+  if (id === previewId && !latlng) return;
+  if (previewLayer) { map.removeLayer(previewLayer); previewLayer = null; }
+  previewId = id;
+  if (id) {
+    previewLayer = L.geoJSON(f, { style: PREVIEW_STYLE }).addTo(map);
+    if (latlng) previewTip.setContent(f.properties.name).setLatLng(latlng).addTo(map);
+    else if (map.hasLayer(previewTip)) map.removeLayer(previewTip);
+  } else if (map.hasLayer(previewTip)) {
+    map.removeLayer(previewTip);
+  }
+}
+
+function updatePreview() {
+  rafPending = false;
+  if (popupOpen || !pendingLatLng) return;
+  const f = smallestRegionAt(pendingLatLng.lng, pendingLatLng.lat);
+  // Don't preview a region that's already selected (it's shown in blue).
+  const region = f && !selected.has(f.properties.id) ? f : null;
+  setPreviewFeature(region, region ? pendingLatLng : null);
+}
+
+map.on("mousemove", (e) => {
+  if (popupOpen) return; // picker is open; don't shoot the preview through the menu
+  pendingLatLng = e.latlng;
+  if (map.hasLayer(previewTip)) previewTip.setLatLng(e.latlng); // tip follows cursor
+  if (!rafPending) { rafPending = true; requestAnimationFrame(updatePreview); }
+});
+map.on("mouseout", () => { if (!popupOpen) { pendingLatLng = null; clearPreview(); } });
+map.on("popupclose", () => { popupOpen = false; clearPreview(); });
 
 function renderHighlights() {
   if (highlightLayer) map.removeLayer(highlightLayer);

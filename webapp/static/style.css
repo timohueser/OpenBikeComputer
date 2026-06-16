@@ -188,3 +188,9 @@ button#build-btn:disabled { background: var(--border); cursor: not-allowed; }
 }
 .region-popup button.selected { background: var(--accent-2); color: #fff; border-color: var(--accent); }
 .region-popup button:hover { border-color: var(--accent); }
+
+.leaflet-tooltip.preview-tip {
+  background: #ff9500; color: #1b1f24; border: none; font-weight: 600;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+}
+.leaflet-tooltip.preview-tip::before { border-top-color: #ff9500; }
