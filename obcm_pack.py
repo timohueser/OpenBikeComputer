@@ -8,26 +8,69 @@ from obcm.ingest import ingest_osm
 from obcm.quadtree import QuadtreeNode
 from obcm.serialize import serialize_all
 
+import argparse
+import sys
+import os
+import struct
+import tempfile
+import subprocess
+from tqdm import tqdm
+from obcm.config import load_config
+from obcm.ingest import ingest_osm
+from obcm.quadtree import QuadtreeNode
+from obcm.serialize import serialize_all
+
 def main():
     parser = argparse.ArgumentParser(description="OBCM Pack: OSM to OBCM Binary Converter")
-    parser.add_argument("pbf", help="Input .osm.pbf file")
+    parser.add_argument("pbf", nargs='+', help="Input .osm.pbf file(s)")
     parser.add_argument("config", help="Input config.json file")
     parser.add_argument("output", help="Output .obcm file")
     parser.add_argument("--chunk-size", type=int, default=4096, help="Data chunk size (default 4096)")
     args = parser.parse_args()
 
-    if not os.path.exists(args.pbf):
-        print(f"Error: PBF file not found: {args.pbf}")
-        sys.exit(1)
+    # Validate inputs
+    for pbf in args.pbf:
+        if not os.path.exists(pbf):
+            print(f"Error: PBF file not found: {pbf}")
+            sys.exit(1)
     
     if not os.path.exists(args.config):
         print(f"Error: Config file not found: {args.config}")
         sys.exit(1)
 
-    config = load_config(args.config)
-    chunk_size = config.get("chunk_size", args.chunk_size)
+    # Handle merging if multiple files
+    if len(args.pbf) > 1:
+        print(f"Merging {len(args.pbf)} files...")
+        temp_merged = tempfile.NamedTemporaryFile(suffix=".osm.pbf", delete=False)
+        temp_merged.close()
+        
+        try:
+            # Using subprocess to call osmium merge
+            subprocess.run(["osmium", "merge"] + args.pbf + ["-o", temp_merged.name], check=True)
+            # Sorting is recommended after merge
+            temp_sorted = tempfile.NamedTemporaryFile(suffix=".osm.pbf", delete=False)
+            temp_sorted.close()
+            subprocess.run(["osmium", "sort", temp_merged.name, "-o", temp_sorted.name], check=True)
+            pbf_to_ingest = temp_sorted.name
+            
+            # Clean up unsorted temp
+            os.remove(temp_merged.name)
+        except subprocess.CalledProcessError as e:
+            print(f"Error merging/sorting files: {e}")
+            os.remove(temp_merged.name)
+            sys.exit(1)
+    else:
+        pbf_to_ingest = args.pbf[0]
+        temp_sorted = None
 
-    features, coastlines = ingest_osm(args.pbf, config)
+    try:
+        config = load_config(args.config)
+        chunk_size = config.get("chunk_size", args.chunk_size)
+
+        features, coastlines = ingest_osm(pbf_to_ingest, config)
+    finally:
+        if temp_sorted:
+            os.remove(temp_sorted.name)
 
     if not features and not coastlines:
         print("No features found matching config. Exiting.")
