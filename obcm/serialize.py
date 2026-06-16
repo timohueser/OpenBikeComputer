@@ -145,12 +145,8 @@ def pack_chunk(features: List[dict], node_bbox: Tuple[int, int, int, int], chunk
     padding = b"\xff" * (chunk_size - len(data))
     return data + padding
 
-def serialize_all(root, config: dict, global_bbox: Tuple[int, int, int, int], chunk_size: int = 4096) -> bytes:
-    """
-    Serialize the entire quadtree into the .obcm binary format.
-    """
-    style_data = pack_style_dict(config)
-    
+def serialize_tree(root, chunk_size: int, desc: str = "Serializing Quadtree"):
+    """Flatten one quadtree into (index_bytes, node_count, chunk_bytes, chunk_count)."""
     # BFS traversal
     all_nodes = []
     queue = deque([root])
@@ -159,12 +155,12 @@ def serialize_all(root, config: dict, global_bbox: Tuple[int, int, int, int], ch
         all_nodes.append(node)
         if not node.is_leaf:
             queue.extend(node.children)
-            
+
     flat_index = []
     data_chunks = []
     node_to_idx = {node: i for i, node in enumerate(all_nodes)}
-    
-    for node in tqdm(all_nodes, desc="Serializing Quadtree", unit="node"):
+
+    for node in tqdm(all_nodes, desc=desc, unit="node"):
         if node.is_leaf:
             if not node.features:
                 flat_index.append(0x7FFFFFFF)
@@ -175,20 +171,53 @@ def serialize_all(root, config: dict, global_bbox: Tuple[int, int, int, int], ch
         else:
             first_child_idx = node_to_idx[node.children[0]]
             flat_index.append(first_child_idx | 0x80000000)
-            
+
     index_data = struct.pack(f"<{len(flat_index)}I", *flat_index)
-    
-    # Header: Magic(4), Version(1), BBox(4x i32), StyleOff(4), IndexOff(4), ChunkSize(2)
-    style_offset = 31 
-    index_offset = style_offset + len(style_data)
-    
-    header = struct.pack("<4sBiiiiIIH",
+    return index_data, len(flat_index), b"".join(data_chunks), len(data_chunks)
+
+
+# Header sizes (bytes).
+V3_HEADER_LEN = 30
+LOD_ENTRY_LEN = 18
+
+
+def serialize_lods(lods, config: dict, global_bbox: Tuple[int, int, int, int]) -> bytes:
+    """Serialize a pyramid of LOD layers into the v3 .obcm format.
+
+    `lods` is an ordered (coarsest -> finest) list of dicts:
+        {"root": QuadtreeNode, "chunk_size": int, "max_mpp": float | None}
+    `max_mpp` is the upper bound of the meters-per-pixel range the layer covers;
+    `None` means +inf (the coarsest layer, used when fully zoomed out).
+    See docs/superpowers/specs/2026-06-16-obcm-lod-design.md.
+    """
+    style_data = pack_style_dict(config)
+    lod_count = len(lods)
+    lod_table_offset = V3_HEADER_LEN + len(style_data)
+
+    # Flatten each layer's tree.
+    blocks = []  # (index_bytes, node_count, chunk_bytes, chunk_count, chunk_size, max_mpp)
+    for i, lod in enumerate(lods):
+        ib, nc, cb, cc = serialize_tree(lod["root"], lod["chunk_size"], desc=f"Serializing LOD {i}")
+        blocks.append((ib, nc, cb, cc, lod["chunk_size"], lod["max_mpp"]))
+
+    # Lay out per-layer index+chunk payloads after the LOD table; record offsets.
+    cursor = lod_table_offset + lod_count * LOD_ENTRY_LEN
+    table = b""
+    payload = b""
+    for ib, nc, cb, cc, cs, mpp in blocks:
+        index_offset = cursor
+        mpp_f = float("inf") if mpp is None else float(mpp)
+        table += struct.pack("<fIIHI", mpp_f, index_offset, nc, cs, cc)
+        payload += ib + cb
+        cursor += len(ib) + len(cb)
+
+    # Header: Magic(4), Version(1), BBox(4x i32), StyleOff(4), LODCount(1), LODTableOff(4)
+    header = struct.pack("<4sBiiiiIBI",
                         b"OBCM",
-                        0x02,
+                        0x03,
                         global_bbox[1], global_bbox[0], global_bbox[3], global_bbox[2],
-                        style_offset,
-                        index_offset,
-                        chunk_size)
-    
-    full_binary = header + style_data + index_data + b"".join(data_chunks)
-    return full_binary
+                        V3_HEADER_LEN,
+                        lod_count,
+                        lod_table_offset)
+
+    return header + style_data + table + payload

@@ -268,12 +268,143 @@ function hexToRgb565(hex) {
 // ---------------------------------------------------------------------------
 async function loadConfig() {
   config = await fetch("/api/config/default").then((r) => r.json());
+  if (!Array.isArray(config.lods) || config.lods.length === 0) {
+    config.lods = [{ max_mpp: null, simplify: 0 }];
+  }
+  config.lods[0].max_mpp = null; // coarsest is always +inf
   for (const cat of Object.keys(config.features)) {
     for (const name of Object.keys(config.features[cat])) {
+      const def = config.features[cat][name];
+      if (typeof def.min_lod !== "number") def.min_lod = config.lods.length - 1;
+      def.min_lod = clampLod(def.min_lod);
       enabled.set(`${cat}/${name}`, true);
     }
   }
+  renderLodEditor();
   renderStyleEditor();
+}
+
+// ---------------------------------------------------------------------------
+// Levels of detail
+// ---------------------------------------------------------------------------
+function lodCount() {
+  return config.lods.length;
+}
+
+function clampLod(i) {
+  return Math.max(0, Math.min(lodCount() - 1, i | 0));
+}
+
+function renderLodEditor() {
+  const root = document.getElementById("lod-editor");
+  root.innerHTML = "";
+  const table = document.createElement("table");
+  table.className = "lod-table";
+  table.innerHTML =
+    "<thead><tr><th>tier</th><th>max&nbsp;m/px</th><th>simplify&nbsp;(m)</th><th></th></tr></thead>";
+  const tbody = document.createElement("tbody");
+  const n = lodCount();
+  config.lods.forEach((lod, i) => {
+    const tr = document.createElement("tr");
+
+    const tdName = document.createElement("td");
+    tdName.className = "lod-name";
+    let tag = "";
+    if (i === 0) tag = ' <span class="muted small">coarsest</span>';
+    else if (i === n - 1) tag = ' <span class="muted small">finest</span>';
+    tdName.innerHTML = `LOD ${i}${tag}`;
+
+    const tdMpp = document.createElement("td");
+    if (i === 0) {
+      lod.max_mpp = null;
+      const inf = document.createElement("span");
+      inf.className = "inf";
+      inf.textContent = "∞";
+      inf.title = "Coarsest tier — drawn when fully zoomed out";
+      tdMpp.appendChild(inf);
+    } else {
+      tdMpp.appendChild(floatInput(lod.max_mpp, (v) => (lod.max_mpp = v)));
+    }
+
+    const tdSimp = document.createElement("td");
+    tdSimp.appendChild(floatInput(lod.simplify, (v) => (lod.simplify = v)));
+
+    const tdDel = document.createElement("td");
+    if (n > 1) {
+      const del = document.createElement("button");
+      del.className = "add-feat";
+      del.textContent = "×";
+      del.title = "Remove this tier";
+      del.onclick = () => removeLod(i);
+      tdDel.appendChild(del);
+    }
+
+    for (const td of [tdName, tdMpp, tdSimp, tdDel]) tr.appendChild(td);
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  root.appendChild(table);
+}
+
+function addLod() {
+  const last = config.lods[config.lods.length - 1];
+  const prev = last.max_mpp != null ? last.max_mpp : 120;
+  config.lods.push({ max_mpp: Math.max(1, Math.round(prev / 2)), simplify: 0 });
+  renderLodEditor();
+  renderStyleEditor(); // pickers gain a segment
+}
+
+function removeLod(k) {
+  if (config.lods.length <= 1) return;
+  config.lods.splice(k, 1);
+  config.lods[0].max_mpp = null; // whatever is now coarsest is +inf
+  // Remap feature start-tiers: levels above the removed one shift down by one;
+  // the removed level collapses into the tier that took its index.
+  const n = config.lods.length;
+  for (const cat of Object.keys(config.features)) {
+    for (const name of Object.keys(config.features[cat])) {
+      const def = config.features[cat][name];
+      let m = typeof def.min_lod === "number" ? def.min_lod : 0;
+      if (m > k) m -= 1;
+      def.min_lod = Math.max(0, Math.min(n - 1, m));
+    }
+  }
+  renderLodEditor();
+  renderStyleEditor();
+}
+
+function floatInput(value, onChange) {
+  const i = document.createElement("input");
+  i.type = "number";
+  i.min = "0";
+  i.value = value == null ? "" : value;
+  i.oninput = () => {
+    const v = parseFloat(i.value);
+    onChange(Number.isFinite(v) ? v : 0);
+  };
+  return i;
+}
+
+function buildLodPicker(def) {
+  const n = lodCount();
+  if (typeof def.min_lod !== "number") def.min_lod = n - 1;
+  def.min_lod = clampLod(def.min_lod);
+  const wrap = document.createElement("div");
+  wrap.className = "lod-picker";
+  for (let i = 0; i < n; i++) {
+    const seg = document.createElement("button");
+    seg.type = "button";
+    seg.className = "lod-seg" + (i >= def.min_lod ? " on" : "");
+    seg.textContent = i;
+    let where = i === 0 ? " (coarsest)" : i === n - 1 ? " (finest)" : "";
+    seg.title = `Show from LOD ${i}${where} and every finer tier`;
+    seg.onclick = () => {
+      def.min_lod = i;
+      [...wrap.children].forEach((c, idx) => c.classList.toggle("on", idx >= i));
+    };
+    wrap.appendChild(seg);
+  }
+  return wrap;
 }
 
 function renderStyleEditor() {
@@ -291,7 +422,7 @@ function renderStyleEditor() {
     const table = document.createElement("table");
     table.className = "feat-table";
     table.innerHTML =
-      "<thead><tr><th></th><th>type</th><th>id</th><th>color</th><th>z</th><th>w</th><th></th></tr></thead>";
+      "<thead><tr><th></th><th>type</th><th>LODs</th><th>id</th><th>color</th><th>z</th><th>w</th><th></th></tr></thead>";
     const tbody = document.createElement("tbody");
     for (const name of Object.keys(entries)) {
       tbody.appendChild(buildRow(cat, name, entries[name]));
@@ -351,6 +482,9 @@ function buildRow(cat, name, def) {
   const tdW = document.createElement("td");
   tdW.appendChild(numInput(def.weight, (v) => (def.weight = v)));
 
+  const tdLod = document.createElement("td");
+  tdLod.appendChild(buildLodPicker(def));
+
   const tdDel = document.createElement("td");
   const del = document.createElement("button");
   del.className = "add-feat";
@@ -364,7 +498,7 @@ function buildRow(cat, name, def) {
   tdDel.appendChild(del);
 
   if (!cb.checked) tr.classList.add("feat-off");
-  for (const td of [tdToggle, tdName, tdId, tdColor, tdZ, tdW, tdDel]) tr.appendChild(td);
+  for (const td of [tdToggle, tdName, tdLod, tdId, tdColor, tdZ, tdW, tdDel]) tr.appendChild(td);
   return tr;
 }
 
@@ -387,19 +521,26 @@ function addFeature(cat, tbody) {
     0,
     ...Object.values(config.features).flatMap((c) => Object.values(c).map((d) => d.id || 0))
   );
-  const def = { id: maxId + 1, z_index: 10, color: "0xFFFF", weight: 1 };
+  const def = { id: maxId + 1, z_index: 10, color: "0xFFFF", weight: 1, min_lod: lodCount() - 1 };
   config.features[cat][name] = def;
   enabled.set(`${cat}/${name}`, true);
   tbody.appendChild(buildRow(cat, name, def));
 }
 
 function buildConfigForSubmit() {
-  const out = { features: {} };
+  const n = lodCount();
+  const lods = config.lods.map((l, i) => ({
+    max_mpp: i === 0 ? null : (l.max_mpp != null ? l.max_mpp : null),
+    simplify: l.simplify || 0,
+  }));
+  const out = { lods, features: {} };
   for (const cat of Object.keys(config.features)) {
     for (const name of Object.keys(config.features[cat])) {
       if (enabled.get(`${cat}/${name}`) === false) continue;
+      const def = config.features[cat][name];
+      const min_lod = Math.max(0, Math.min(n - 1, def.min_lod | 0));
       out.features[cat] = out.features[cat] || {};
-      out.features[cat][name] = config.features[cat][name];
+      out.features[cat][name] = { ...def, min_lod };
     }
   }
   return out;
@@ -408,6 +549,8 @@ function buildConfigForSubmit() {
 // ---------------------------------------------------------------------------
 // Build / jobs
 // ---------------------------------------------------------------------------
+document.getElementById("add-lod").addEventListener("click", addLod);
+
 const buildBtn = document.getElementById("build-btn");
 const buildStatus = document.getElementById("build-status");
 const progressWrap = document.getElementById("progress-wrap");

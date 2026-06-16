@@ -26,9 +26,25 @@
     </section>
 
     <section id="side-panel">
+      <div class="card" id="lod-card">
+        <h2>Levels of detail</h2>
+        <p class="muted small">
+          Each LOD is a zoom tier. <strong>LOD&nbsp;0</strong> is the coarsest (drawn when zoomed
+          far out); the last LOD is the finest (full detail up close). A feature appears at its
+          starting tier and every finer one. <em>max&nbsp;m/px</em> is the most zoomed-out scale a
+          tier covers; <em>simplify</em> drops geometry detail finer than that many meters.
+        </p>
+        <div id="lod-editor"></div>
+        <button id="add-lod" class="add-feat">+ add finer level</button>
+      </div>
+
       <div class="card" id="style-card">
         <h2>Features &amp; styling</h2>
-        <p class="muted small">Toggle features to include, edit color (shown as RGB565), z-index and stroke weight.</p>
+        <p class="muted small">
+          Toggle features to include and edit color (RGB565), z-index and stroke weight — these are
+          global, shared across all LODs. The <strong>LODs</strong> column picks the coarsest tier a
+          feature appears at (it also shows at every finer tier).
+        </p>
         <div id="style-editor"><span class="muted">Loading config…</span></div>
       </div>
 
