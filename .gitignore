@@ -4,3 +4,4 @@ __pycache__/
 *.osm.pbf
 .pytest_cache/
 .worktrees/
+.DS_Store
