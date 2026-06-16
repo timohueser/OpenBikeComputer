@@ -3,3 +3,4 @@ __pycache__/
 *.obcm
 *.osm.pbf
 .pytest_cache/
+.worktrees/
