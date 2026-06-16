@@ -44,8 +44,10 @@
             "residential": {"id": 110, "z_index": 2, "color": "0xCCCC", "weight": 1}
         },
         "leisure": {
-            "park": {"id": 32, "z_index": 5, "color": "0x07E0", "weight": 1},
-            "marina": {"id": 20, "z_index": 5, "color": "0x3333", "weight": 1}
+            "park": {"id": 32, "z_index": 5, "color": "0x07E0", "weight": 1}
+        },
+        "admin_level": {
+            "2": {"id": 50, "z_index": 100, "color": "0x0000", "weight": 2}
         }
     }
 }

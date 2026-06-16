@@ -2,16 +2,6 @@ import argparse
 import sys
 import os
 import struct
-from tqdm import tqdm
-from obcm.config import load_config
-from obcm.ingest import ingest_osm
-from obcm.quadtree import QuadtreeNode
-from obcm.serialize import serialize_all
-
-import argparse
-import sys
-import os
-import struct
 import tempfile
 import subprocess
 from tqdm import tqdm
@@ -19,6 +9,7 @@ from obcm.config import load_config
 from obcm.ingest import ingest_osm
 from obcm.quadtree import QuadtreeNode
 from obcm.serialize import serialize_all
+from obcm.land_ingest import get_land_polygons
 
 def main():
     parser = argparse.ArgumentParser(description="OBCM Pack: OSM to OBCM Binary Converter")
@@ -46,11 +37,11 @@ def main():
         
         try:
             # Using subprocess to call osmium merge
-            subprocess.run(["osmium", "merge"] + args.pbf + ["-o", temp_merged.name], check=True)
+            subprocess.run(["osmium", "merge", "--overwrite"] + args.pbf + ["-o", temp_merged.name], check=True)
             # Sorting is recommended after merge
             temp_sorted = tempfile.NamedTemporaryFile(suffix=".osm.pbf", delete=False)
             temp_sorted.close()
-            subprocess.run(["osmium", "sort", temp_merged.name, "-o", temp_sorted.name], check=True)
+            subprocess.run(["osmium", "sort", "--overwrite", temp_merged.name, "-o", temp_sorted.name], check=True)
             pbf_to_ingest = temp_sorted.name
             
             # Clean up unsorted temp
@@ -101,93 +92,26 @@ def main():
 
     # --- Land Generation Logic ---
     has_land_config = "natural" in config.get("features", {}) and "land" in config["features"]["natural"]
-    if not coastlines and has_land_config and min_lon != float('inf'):
-        from shapely.geometry import box
+    if has_land_config:
         land_style = config["features"]["natural"]["land"]["id"]
-        bbox_poly = box(min_lon, min_lat, max_lon, max_lat)
-        features.append({"style_id": land_style, "geometry": bbox_poly})
+        # Convert bbox to (min_lon, min_lat, max_lon, max_lat) in decimal degrees
+        # Note: ingest_osm uses microdegrees, but land_ingest needs degrees.
+        # global_bbox is in microdegrees.
+        pbf_bbox_deg = (
+            global_bbox[0] / 1e6,
+            global_bbox[1] / 1e6,
+            global_bbox[2] / 1e6,
+            global_bbox[3] / 1e6
+        )
+        
+        print("Fetching and processing land polygons...")
+        land_polygons = get_land_polygons(pbf_bbox_deg)
+        
+        for poly in land_polygons:
+            features.append({"style_id": land_style, "geometry": poly})
+        
+        print(f"Successfully added {len(land_polygons)} land polygons.")
 
-    elif coastlines and has_land_config:
-        from shapely.geometry import box, LineString, Point
-        from shapely.ops import linemerge, polygonize, unary_union, nearest_points
-        
-        land_style = config["features"]["natural"]["land"]["id"]
-        
-        # Strictly bound by the data extent
-        bbox_poly = box(min_lon, min_lat, max_lon, max_lat)
-        bbox_boundary = bbox_poly.boundary
-        
-        merged_coastlines = linemerge(coastlines)
-        if merged_coastlines.geom_type == 'LineString':
-            merged_parts = [merged_coastlines]
-        elif hasattr(merged_coastlines, 'geoms'):
-            merged_parts = list(merged_coastlines.geoms)
-        else:
-            merged_parts = []
-            
-        connectors = []
-        open_ends = []
-        
-        for line in merged_parts:
-            if not line.is_closed:
-                open_ends.append(Point(line.coords[0]))
-                open_ends.append(Point(line.coords[-1]))
-                
-        # Find pairs of open ends that are close to each other
-        used_ends = set()
-        GAP_TOLERANCE = 0.002
-        
-        for i, p1 in tqdm(enumerate(open_ends), desc="Bridging coastlines", unit="end"):
-            if i in used_ends: continue
-            
-            best_j = -1
-            min_dist = GAP_TOLERANCE
-            
-            for j, p2 in enumerate(open_ends):
-                if i == j or j in used_ends: continue
-                dist = p1.distance(p2)
-                if dist < min_dist:
-                    min_dist = dist
-                    best_j = j
-                    
-            if best_j != -1:
-                connectors.append(LineString([p1, open_ends[best_j]]))
-                used_ends.add(i)
-                used_ends.add(best_j)
-            else:
-                _, np = nearest_points(p1, bbox_boundary)
-                connectors.append(LineString([p1, np]))
-                used_ends.add(i)
-        
-        all_lines = unary_union(merged_parts + connectors + [bbox_boundary])
-        all_polygons = list(polygonize(all_lines))
-        
-        land_test_points = []
-        for l in merged_parts:
-            offset_line = l.offset_curve(0.0001)
-            if not offset_line.is_empty:
-                if offset_line.geom_type == 'LineString':
-                    idx = len(offset_line.coords) // 2
-                    land_test_points.append(Point(offset_line.coords[idx]))
-                elif hasattr(offset_line, 'geoms') and len(offset_line.geoms) > 0:
-                    part = offset_line.geoms[0]
-                    idx = len(part.coords) // 2
-                    land_test_points.append(Point(part.coords[idx]))
-        
-        for poly in tqdm(all_polygons, desc="Identifying land", unit="poly"):
-            is_land = False
-            for p in land_test_points:
-                if poly.contains(p):
-                    is_land = True
-                    break
-            
-            if is_land:
-                features.append({"style_id": land_style, "geometry": poly})
-
-        if "coastline_debug" in config["features"]["natural"]:
-            debug_style = config["features"]["natural"]["coastline_debug"]["id"]
-            for cl in coastlines:
-                features.append({"style_id": debug_style, "geometry": cl})
 
     root = QuadtreeNode(global_bbox, chunk_size=chunk_size)
     for feat in tqdm(features, desc="Building Quadtree", unit="feat"):
