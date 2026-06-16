@@ -55,13 +55,77 @@ impl Lod {
     }
 }
 
-/// A decoded feature with coordinates in microdegrees.
+/// A decoded feature owning its geometry (microdegrees). Convenience type for
+/// callers that want owned data; the rendering path uses the allocation-free
+/// [`Reader::for_each_feature`] instead.
 #[derive(Debug, Clone)]
 pub struct Feature {
     pub style_id: u8,
     pub kind: Kind,
     pub exterior: Vec<(i32, i32)>,
     pub interiors: Vec<Vec<(i32, i32)>>,
+}
+
+/// A feature decoded into caller-owned scratch buffers, borrowed for the
+/// duration of one [`Reader::for_each_feature`] callback. No per-feature
+/// allocation: `points` holds every ring's vertices concatenated and `ring_lens`
+/// records each ring's length (`ring_lens[0]` is the exterior, the rest are
+/// holes). Coordinates are microdegrees.
+#[derive(Debug, Clone, Copy)]
+pub struct FeatureRef<'a> {
+    pub style_id: u8,
+    pub kind: Kind,
+    points: &'a [(i32, i32)],
+    ring_lens: &'a [usize],
+}
+
+impl<'a> FeatureRef<'a> {
+    /// The exterior ring's vertices.
+    #[inline]
+    pub fn exterior(&self) -> &'a [(i32, i32)] {
+        let n = self.ring_lens.first().copied().unwrap_or(0);
+        &self.points[..n]
+    }
+
+    /// Iterator over the interior (hole) rings, if any.
+    #[inline]
+    pub fn interiors(&self) -> Interiors<'a> {
+        let start = self.ring_lens.first().copied().unwrap_or(0);
+        let rest = if self.ring_lens.is_empty() { &[][..] } else { &self.ring_lens[1..] };
+        Interiors { points: self.points, lens: rest, offset: start }
+    }
+
+    /// All rings' vertices, concatenated (exterior first). Partition with
+    /// [`FeatureRef::ring_lens`].
+    #[inline]
+    pub fn points(&self) -> &'a [(i32, i32)] {
+        self.points
+    }
+
+    /// Per-ring vertex counts: `[0]` exterior, `[1..]` holes.
+    #[inline]
+    pub fn ring_lens(&self) -> &'a [usize] {
+        self.ring_lens
+    }
+}
+
+/// Iterator over a feature's hole rings (see [`FeatureRef::interiors`]).
+pub struct Interiors<'a> {
+    points: &'a [(i32, i32)],
+    lens: &'a [usize],
+    offset: usize,
+}
+
+impl<'a> Iterator for Interiors<'a> {
+    type Item = &'a [(i32, i32)];
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        let (&len, rest) = self.lens.split_first()?;
+        self.lens = rest;
+        let s = self.offset;
+        self.offset += len;
+        Some(&self.points[s..s + len])
+    }
 }
 
 #[inline]
@@ -167,12 +231,19 @@ impl<'a> Reader<'a> {
     /// overlaps `view`. `lod` indexes [`Reader::lods`]; out-of-range yields empty.
     pub fn query(&self, lod: usize, view: &BBox) -> Vec<(u32, BBox)> {
         let mut out = Vec::new();
+        self.query_into(lod, view, &mut out);
+        out
+    }
+
+    /// Like [`Reader::query`] but appends into a caller-owned buffer (cleared
+    /// first), so a renderer can reuse one allocation across frames.
+    pub fn query_into(&self, lod: usize, view: &BBox, out: &mut Vec<(u32, BBox)>) {
+        out.clear();
         if let Some(l) = self.lods.get(lod) {
             if l.node_count > 0 {
-                self.query_rec(l, 0, self.bbox, view, &mut out);
+                self.query_rec(l, 0, self.bbox, view, out);
             }
         }
-        out
     }
 
     fn query_rec(&self, lod: &Lod, idx: usize, node: BBox, view: &BBox, out: &mut Vec<(u32, BBox)>) {
@@ -202,68 +273,112 @@ impl<'a> Reader<'a> {
         }
     }
 
-    /// Decode all features in a chunk of `lod`. `node` is the leaf's bbox from
-    /// [`Reader::query`].
-    pub fn decode_chunk(&self, lod: usize, chunk_id: u32, node: &BBox) -> Vec<Feature> {
-        let mut features = Vec::new();
+    /// Decode every feature in a chunk of `lod`, invoking `visit` once per
+    /// feature with a [`FeatureRef`] borrowing the caller's `points`/`ring_lens`
+    /// scratch buffers. This is the allocation-free path: the buffers grow to the
+    /// largest feature once and are reused for every feature, chunk and frame, so
+    /// steady-state rendering does no heap work here. `node` is the leaf bbox
+    /// from [`Reader::query`].
+    pub fn for_each_feature(
+        &self,
+        lod: usize,
+        chunk_id: u32,
+        node: &BBox,
+        points: &mut Vec<(i32, i32)>,
+        ring_lens: &mut Vec<usize>,
+        visit: impl FnMut(FeatureRef),
+    ) {
         let l = match self.lods.get(lod) {
             Some(l) => l,
-            None => return features,
+            None => return,
         };
         let cs = l.chunk_size;
         let start = l.data_start() + (chunk_id as usize) * cs;
         if start + cs > self.data.len() {
-            return features;
+            return;
         }
-        let chunk = &self.data[start..start + cs];
-        let anchor_base = (node.min_lon, node.min_lat);
-        let mut off = 0usize;
+        decode_chunk_into(&self.data[start..start + cs], node, points, ring_lens, visit);
+    }
 
-        while off + 12 <= cs {
-            if chunk[off] == 0xFF {
-                break;
-            }
-            let style_id = chunk[off];
-            let ext_pt_count = rd_u16(chunk, off + 1) as usize;
-            let ax = rd_i32(chunk, off + 3);
-            let ay = rd_i32(chunk, off + 7);
-            let flags = chunk[off + 11];
-            off += 12;
-
-            let is_16 = flags & 0x01 != 0;
-            let is_poly = flags & 0x02 != 0;
-            let has_holes = flags & 0x04 != 0;
-            let dsize = if is_16 { 2 } else { 1 };
-
-            let anchor = (anchor_base.0 + ax, anchor_base.1 + ay);
-
-            let mut exterior = Vec::with_capacity(ext_pt_count);
-            off = read_ring(chunk, off, ext_pt_count, anchor, is_16, dsize, false, &mut exterior);
-
-            let mut interiors = Vec::new();
-            if is_poly && has_holes && off < cs {
-                let hole_count = chunk[off] as usize;
-                off += 1;
-                for _ in 0..hole_count {
-                    if off + 2 > cs {
-                        break;
-                    }
-                    let hpc = rd_u16(chunk, off) as usize;
-                    off += 2;
-                    let mut hole = Vec::with_capacity(hpc);
-                    off = read_ring(chunk, off, hpc, anchor, is_16, dsize, true, &mut hole);
-                    interiors.push(hole);
-                }
-            }
-
-            features.push(Feature {
-                style_id,
-                kind: if is_poly { Kind::Polygon } else { Kind::Line },
-                exterior,
-                interiors,
+    /// Decode all features in a chunk into owned [`Feature`]s. Convenience
+    /// wrapper over [`Reader::for_each_feature`] for callers that want owned data
+    /// (e.g. tests); the renderer uses the borrowing form to avoid allocating.
+    pub fn decode_chunk(&self, lod: usize, chunk_id: u32, node: &BBox) -> Vec<Feature> {
+        let mut out = Vec::new();
+        let mut points = Vec::new();
+        let mut ring_lens = Vec::new();
+        self.for_each_feature(lod, chunk_id, node, &mut points, &mut ring_lens, |f| {
+            out.push(Feature {
+                style_id: f.style_id,
+                kind: f.kind,
+                exterior: f.exterior().to_vec(),
+                interiors: f.interiors().map(|h| h.to_vec()).collect(),
             });
+        });
+        out
+    }
+}
+
+/// Walk a single chunk's bytes, decoding each feature into the shared
+/// `points`/`ring_lens` buffers and handing a [`FeatureRef`] to `visit`. The
+/// buffers are cleared and refilled per feature, so the same allocation serves
+/// every feature in the chunk.
+fn decode_chunk_into(
+    chunk: &[u8],
+    node: &BBox,
+    points: &mut Vec<(i32, i32)>,
+    ring_lens: &mut Vec<usize>,
+    mut visit: impl FnMut(FeatureRef),
+) {
+    let cs = chunk.len();
+    let anchor_base = (node.min_lon, node.min_lat);
+    let mut off = 0usize;
+
+    while off + 12 <= cs {
+        if chunk[off] == 0xFF {
+            break;
         }
-        features
+        let style_id = chunk[off];
+        let ext_pt_count = rd_u16(chunk, off + 1) as usize;
+        let ax = rd_i32(chunk, off + 3);
+        let ay = rd_i32(chunk, off + 7);
+        let flags = chunk[off + 11];
+        off += 12;
+
+        let is_16 = flags & 0x01 != 0;
+        let is_poly = flags & 0x02 != 0;
+        let has_holes = flags & 0x04 != 0;
+        let dsize = if is_16 { 2 } else { 1 };
+
+        let anchor = (anchor_base.0 + ax, anchor_base.1 + ay);
+
+        points.clear();
+        ring_lens.clear();
+
+        off = read_ring(chunk, off, ext_pt_count, anchor, is_16, dsize, false, points);
+        ring_lens.push(points.len());
+
+        if is_poly && has_holes && off < cs {
+            let hole_count = chunk[off] as usize;
+            off += 1;
+            for _ in 0..hole_count {
+                if off + 2 > cs {
+                    break;
+                }
+                let hpc = rd_u16(chunk, off) as usize;
+                off += 2;
+                let before = points.len();
+                off = read_ring(chunk, off, hpc, anchor, is_16, dsize, true, points);
+                ring_lens.push(points.len() - before);
+            }
+        }
+
+        visit(FeatureRef {
+            style_id,
+            kind: if is_poly { Kind::Polygon } else { Kind::Line },
+            points,
+            ring_lens,
+        });
     }
 }
 

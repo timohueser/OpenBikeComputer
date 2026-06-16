@@ -27,10 +27,10 @@ pub mod reader;
 pub mod render;
 
 pub use color::{rgb565_to_device64, rgb565_to_rgb888};
-pub use reader::{Feature, Kind, Lod, Reader, Style, HEADER_LEN};
+pub use reader::{Feature, FeatureRef, Interiors, Kind, Lod, Reader, Style, HEADER_LEN};
 
 #[cfg(feature = "render")]
-pub use render::{render_map, RenderStats, Viewport};
+pub use render::{MapRenderer, RenderStats, Viewport};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
