@@ -64,8 +64,28 @@ def pack_feature(feature: dict, node_bbox: Tuple[int, int, int, int]) -> bytes:
     for i, ring in enumerate(rings_to_pack):
         raw_pts = [(int(round(lon * 1e6)), int(round(lat * 1e6))) for lon, lat in ring]
         
-        # Interpolate long segments to prevent 16-bit delta overflow (>32767)
-        pts = [raw_pts[0]]
+        if i == 0:
+            anchor_lon = raw_pts[0][0] - node_bbox[0]
+            anchor_lat = raw_pts[0][1] - node_bbox[1]
+            start_ref = raw_pts[0]
+        else:
+            start_ref = (node_bbox[0] + anchor_lon, node_bbox[1] + anchor_lat)
+            
+        # Interpolate jump from reference point (prev point or anchor) to first point
+        pts = []
+        p1 = start_ref
+        p2 = raw_pts[0]
+        dx, dy = p2[0] - p1[0], p2[1] - p1[1]
+        max_dist = max(abs(dx), abs(dy))
+        if max_dist > 30000:
+            steps = int(max_dist // 30000) + 1
+            for step in range(1, steps):
+                nx = int(round(p1[0] + dx * (step / float(steps))))
+                ny = int(round(p1[1] + dy * (step / float(steps))))
+                pts.append((nx, ny))
+        pts.append(p2)
+        
+        # Interpolate the rest of the segment
         for p2 in raw_pts[1:]:
             p1 = pts[-1]
             dx, dy = p2[0] - p1[0], p2[1] - p1[1]
@@ -73,21 +93,18 @@ def pack_feature(feature: dict, node_bbox: Tuple[int, int, int, int]) -> bytes:
             if max_dist > 30000:
                 steps = int(max_dist // 30000) + 1
                 for step in range(1, steps):
-                    # Use float division to avoid compounded truncation errors
                     nx = int(round(p1[0] + dx * (step / float(steps))))
                     ny = int(round(p1[1] + dy * (step / float(steps))))
                     pts.append((nx, ny))
             pts.append(p2)
         
         if i == 0:
-            # Exterior ring
-            anchor_lon = pts[0][0] - node_bbox[0]
-            anchor_lat = pts[0][1] - node_bbox[1]
+            # Exterior ring: first point is the anchor, deltas start from second point
             prev_x, prev_y = pts[0]
             pts_to_delta = pts[1:]
         else:
-            # Hole ring: first point is relative to the anchor
-            prev_x, prev_y = node_bbox[0] + anchor_lon, node_bbox[1] + anchor_lat
+            # Hole ring: first delta is relative to the anchor
+            prev_x, prev_y = start_ref
             pts_to_delta = pts
             
         deltas = []
