@@ -1,4 +1,9 @@
-from shapely.geometry import box, LineString, MultiLineString
+from shapely.geometry import box
+
+# Geometry types that can be packed directly (vs. multi-part containers).
+_SIMPLE_TYPES = frozenset(("LineString", "LinearRing", "Polygon"))
+_MULTI_TYPES = frozenset(("MultiLineString", "MultiPolygon", "GeometryCollection"))
+
 
 class QuadtreeNode:
     def __init__(self, bbox, chunk_size=4096):
@@ -8,45 +13,48 @@ class QuadtreeNode:
         self.features = []
         self.children = []
         self.is_leaf = True
-        
+
         # Pre-calculate float boundaries and shapely box
         self.min_lon_f, self.min_lat_f, self.max_lon_f, self.max_lat_f = [c / 1e6 for c in self.bbox]
         self.q_box = box(self.min_lon_f, self.min_lat_f, self.max_lon_f, self.max_lat_f)
-        
+
         # Incremental size tracking
         self.current_size = 0
 
-    def insert(self, feature):
+    def insert(self, feature, bounds=None):
         geom = feature["geometry"]
-        
+        # `bounds` is threaded through the recursion so a geometry's extent is
+        # computed once, not re-derived at every node it touches (this was the
+        # single biggest cost in profiling).
+        if bounds is None:
+            bounds = geom.bounds
+        f_minx, f_miny, f_maxx, f_maxy = bounds
+
         # Fast bounding box overlap check
-        f_minx, f_miny, f_maxx, f_maxy = geom.bounds
         if (f_maxx < self.min_lon_f or f_minx > self.max_lon_f or
-            f_maxy < self.min_lat_f or f_miny > self.max_lat_f):
+                f_maxy < self.min_lat_f or f_miny > self.max_lat_f):
             return
 
-        # Fast containment check: if completely inside, avoid intersection
+        # Fast containment check: if completely inside, avoid intersection and
+        # reuse the existing bounds.
         if (f_minx >= self.min_lon_f and f_maxx <= self.max_lon_f and
-            f_miny >= self.min_lat_f and f_maxy <= self.max_lat_f):
-            clipped = geom
+                f_miny >= self.min_lat_f and f_maxy <= self.max_lat_f):
+            self._flatten_and_process(geom, feature["style_id"], bounds)
         else:
             # Fallback to expensive intersection for partial overlaps
             clipped = geom.intersection(self.q_box)
             if clipped.is_empty:
                 return
+            self._flatten_and_process(clipped, feature["style_id"], clipped.bounds)
 
-        self._flatten_and_process(clipped, feature["style_id"])
-
-    def _flatten_and_process(self, geom, style_id):
-        if geom.is_empty:
-            return
-        
-        if hasattr(geom, 'geoms'): # MultiLineString, MultiPolygon, GeometryCollection
+    def _flatten_and_process(self, geom, style_id, bounds):
+        gtype = geom.geom_type
+        if gtype in _SIMPLE_TYPES:
+            self._process_clipped({"style_id": style_id, "geometry": geom, "bounds": bounds})
+        elif gtype in _MULTI_TYPES:  # split containers; bounds per part
             for part in geom.geoms:
-                self._flatten_and_process(part, style_id)
-        elif geom.geom_type in ['LineString', 'LinearRing', 'Polygon']:
-            # Preserve Polygon geometry
-            self._process_clipped({"style_id": style_id, "geometry": geom})
+                if not part.is_empty:
+                    self._flatten_and_process(part, style_id, part.bounds)
 
     def _process_clipped(self, feature):
         if self.is_leaf:
@@ -59,15 +67,16 @@ class QuadtreeNode:
                     pt_count += len(interior.coords)
             else:
                 pt_count = len(geom.coords)
-                
+
             # 12 byte header + roughly 4 bytes per point (16-bit deltas)
             self.current_size += 12 + (pt_count * 4)
-            
+
             if self.should_split():
                 self.split()
         else:
+            bounds = feature["bounds"]
             for child in self.children:
-                child.insert(feature)
+                child.insert(feature, bounds)
 
     def should_split(self):
         # Physical width limit removed as anchors are now 32-bit.
@@ -79,14 +88,14 @@ class QuadtreeNode:
         min_lon, min_lat, max_lon, max_lat = self.bbox
         width = max_lon - min_lon
         height = max_lat - min_lat
-        
+
         # Recursion guard: Don't split if smaller than 10 microdegrees
         if width < 10 or height < 10:
             return
 
         mid_lon = (min_lon + max_lon) // 2
         mid_lat = (min_lat + max_lat) // 2
-        
+
         self.children = [
             QuadtreeNode((min_lon, mid_lat, mid_lon, max_lat), self.chunk_size), # NW
             QuadtreeNode((mid_lon, mid_lat, max_lon, max_lat), self.chunk_size), # NE
@@ -97,5 +106,6 @@ class QuadtreeNode:
         features_to_move = self.features
         self.features = []
         for feat in features_to_move:
+            bounds = feat["bounds"]
             for child in self.children:
-                child.insert(feat)
+                child.insert(feat, bounds)
