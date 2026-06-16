@@ -74,14 +74,13 @@ def test_spatial_query():
     assert results_nw[0][0] == 0 # Chunk ID of NW leaf
 
 def test_decode_chunk():
-    # 1 feature, 2 points, 8-bit deltas
-    # AnchorX=10, AnchorY=20, Deltas=(5, 5)
-    f_header = struct.pack("<BHhhB", 10, 2, 10, 20, 1)
+    # v2 Header (12 bytes): StyleID(u8), PtCount(u16), AnchorX(i32), AnchorY(i32), Flags(u8)
+    # Style=10, Count=2, AnchorX=10, AnchorY=20, Flags=0 (Line, 8-bit)
+    f_header = struct.pack("<BHiiB", 10, 2, 10, 20, 0)
     f_deltas = struct.pack("<bb", 5, 5)
     chunk_data = f_header + f_deltas
     chunk_data += b"\xff" * (4096 - len(chunk_data))
     
-    # We need to mock a reader with this chunk data at the right offset
     # Index with 1 leaf pointing to chunk 0
     index_data = struct.pack("<I", 0)
     header = struct.pack("<4sBiiiiIIH", b"OBCM", 1, 0, 0, 100, 100, 31, 32, 4096)
@@ -93,4 +92,5 @@ def test_decode_chunk():
     node_bbox = (0, 0, 100, 100)
     features = reader.decode_chunk(0, node_bbox)
     assert len(features) == 1
+    assert features[0]["type"] == "line"
     assert features[0]["points"] == [(10, 20), (15, 25)]

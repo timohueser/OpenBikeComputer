@@ -62,7 +62,21 @@ def pack_feature(feature: dict, node_bbox: Tuple[int, int, int, int]) -> bytes:
     packed_rings = []
     
     for i, ring in enumerate(rings_to_pack):
-        pts = [(int(round(lon * 1e6)), int(round(lat * 1e6))) for lon, lat in ring]
+        raw_pts = [(int(round(lon * 1e6)), int(round(lat * 1e6))) for lon, lat in ring]
+        
+        # Interpolate long segments to prevent 16-bit delta overflow (>32767)
+        pts = [raw_pts[0]]
+        for p2 in raw_pts[1:]:
+            p1 = pts[-1]
+            dx, dy = p2[0] - p1[0], p2[1] - p1[1]
+            max_dist = max(abs(dx), abs(dy))
+            if max_dist > 30000:
+                steps = (max_dist // 30000) + 1
+                for step in range(1, steps):
+                    nx = p1[0] + dx * step // steps
+                    ny = p1[1] + dy * step // steps
+                    pts.append((nx, ny))
+            pts.append(p2)
         
         if i == 0:
             # Exterior ring
@@ -90,10 +104,10 @@ def pack_feature(feature: dict, node_bbox: Tuple[int, int, int, int]) -> bytes:
     else:
         d_fmt = "b"
 
-    # Header: StyleID(u8), PointCount(u16), AnchorX(i16), AnchorY(i16), Flags(u8)
+    # Header: StyleID(u8), PointCount(u16), AnchorX(i32), AnchorY(i32), Flags(u8)
     # Note: For polygons, PointCount is the exterior ring point count.
     ext_pt_count = packed_rings[0][0]
-    header = struct.pack("<BHhhB", style_id, ext_pt_count, anchor_lon, anchor_lat, flags)
+    header = struct.pack("<BHiiB", style_id, ext_pt_count, anchor_lon, anchor_lat, flags)
     
     data = header
     
