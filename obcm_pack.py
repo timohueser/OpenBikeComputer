@@ -82,14 +82,43 @@ def main():
         else:
             merged_parts = []
             
-        # Connect open ends to the boundary to ensure closure
+        # 1. Bridge small gaps between coastline segments (fixes broken islands)
+        # 2. Connect remaining open ends to the boundary if they are near the edge
         connectors = []
+        open_ends = []
+        
         for line in merged_parts:
             if not line.is_closed:
-                for i in [0, -1]:
-                    p = Point(line.coords[i])
-                    _, np = nearest_points(p, bbox_boundary)
-                    connectors.append(LineString([p, np]))
+                open_ends.append(Point(line.coords[0]))
+                open_ends.append(Point(line.coords[-1]))
+                
+        # Find pairs of open ends that are close to each other
+        used_ends = set()
+        GAP_TOLERANCE = 0.05 # ~5km tolerance for broken coastline data
+        
+        for i, p1 in enumerate(open_ends):
+            if i in used_ends: continue
+            
+            # Find closest other endpoint
+            best_j = -1
+            min_dist = GAP_TOLERANCE
+            
+            for j, p2 in enumerate(open_ends):
+                if i == j or j in used_ends: continue
+                dist = p1.distance(p2)
+                if dist < min_dist:
+                    min_dist = dist
+                    best_j = j
+                    
+            if best_j != -1:
+                connectors.append(LineString([p1, open_ends[best_j]]))
+                used_ends.add(i)
+                used_ends.add(best_j)
+            else:
+                # If no other endpoint is near, connect to the bounding box
+                _, np = nearest_points(p1, bbox_boundary)
+                connectors.append(LineString([p1, np]))
+                used_ends.add(i)
         
         # Union everything: coastlines, connectors, and the box boundary
         all_lines = unary_union(merged_parts + connectors + [bbox_boundary])
