@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OBCM Web Builder</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <h1>OBCM Web Builder</h1>
+    <span class="subtitle">Select regions &rarr; style features &rarr; build <code>.obcm</code></span>
+  </header>
+
+  <main>
+    <section id="map-panel">
+      <div id="map"></div>
+      <div id="region-bar">
+        <input id="region-search" type="text" placeholder="Search regions (e.g. Germany, Baden)…" autocomplete="off" />
+        <div id="search-results"></div>
+        <div id="selected-regions">
+          <span class="muted">No regions selected. Click the map or search above.</span>
+        </div>
+      </div>
+    </section>
+
+    <section id="side-panel">
+      <div class="card" id="style-card">
+        <h2>Features &amp; styling</h2>
+        <p class="muted small">Toggle features to include, edit color (shown as RGB565), z-index and stroke weight.</p>
+        <div id="style-editor"><span class="muted">Loading config…</span></div>
+      </div>
+
+      <div class="card" id="build-card">
+        <h2>Build</h2>
+        <div class="field">
+          <label for="output-name">Output file</label>
+          <input id="output-name" type="text" value="output.obcm" />
+        </div>
+        <div class="field">
+          <label for="chunk-size">Chunk size (bytes)</label>
+          <input id="chunk-size" type="number" value="4096" min="256" step="256" />
+        </div>
+        <button id="build-btn">Build OBCM</button>
+        <div id="build-status"></div>
+        <div id="progress-wrap" hidden>
+          <div id="progress-bar"><div id="progress-fill"></div></div>
+          <div id="progress-label" class="small muted"></div>
+        </div>
+        <pre id="log" hidden></pre>
+      </div>
+    </section>
+  </main>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>
