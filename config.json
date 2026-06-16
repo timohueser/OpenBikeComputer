@@ -6,53 +6,53 @@
     ],
     "features": {
         "highway": {
-            "motorway": {"id": 8, "z_index": 60, "color": "0xE8E4", "weight": 5, "min_lod": 0},
-            "motorway_link": {"id": 9, "z_index": 55, "color": "0xE8E4", "weight": 4, "min_lod": 1},
-            "trunk": {"id": 15, "z_index": 55, "color": "0xF9A6", "weight": 4, "min_lod": 0},
-            "trunk_link": {"id": 16, "z_index": 50, "color": "0xF9A6", "weight": 3, "min_lod": 1},
-            "primary": {"id": 10, "z_index": 50, "color": "0xF9A6", "weight": 4, "min_lod": 0},
-            "primary_link": {"id": 17, "z_index": 45, "color": "0xF9A6", "weight": 3, "min_lod": 1},
-            "secondary": {"id": 11, "z_index": 40, "color": "0xF79E", "weight": 3, "min_lod": 1},
-            "secondary_link": {"id": 18, "z_index": 35, "color": "0xF79E", "weight": 2, "min_lod": 1},
-            "tertiary": {"id": 12, "z_index": 30, "color": "0xFFFF", "weight": 2, "min_lod": 1},
-            "tertiary_link": {"id": 19, "z_index": 25, "color": "0xFFFF", "weight": 2, "min_lod": 2},
-            "unclassified": {"id": 20, "z_index": 20, "color": "0xFFFF", "weight": 1, "min_lod": 2},
-            "residential": {"id": 13, "z_index": 20, "color": "0xFFFF", "weight": 1, "min_lod": 2},
-            "living_street": {"id": 21, "z_index": 20, "color": "0xEEEE", "weight": 1, "min_lod": 2},
-            "service": {"id": 14, "z_index": 10, "color": "0xEEEE", "weight": 1, "min_lod": 2},
-            "pedestrian": {"id": 22, "z_index": 10, "color": "0xDDDD", "weight": 1, "min_lod": 2},
-            "track": {"id": 23, "z_index": 5, "color": "0xAA55", "weight": 1, "min_lod": 2},
-            "path": {"id": 24, "z_index": 5, "color": "0xAA55", "weight": 1, "min_lod": 2},
-            "footway": {"id": 25, "z_index": 5, "color": "0xAA55", "weight": 1, "min_lod": 2},
-            "cycleway": {"id": 26, "z_index": 5, "color": "0x55AA", "weight": 1, "min_lod": 2}
+            "motorway": {"z_index": 60, "color": "0xE8E4", "weight": 5, "min_lod": 0},
+            "motorway_link": {"z_index": 55, "color": "0xE8E4", "weight": 4, "min_lod": 1},
+            "trunk": {"z_index": 55, "color": "0xF9A6", "weight": 4, "min_lod": 0},
+            "trunk_link": {"z_index": 50, "color": "0xF9A6", "weight": 3, "min_lod": 1},
+            "primary": {"z_index": 50, "color": "0xF9A6", "weight": 4, "min_lod": 0},
+            "primary_link": {"z_index": 45, "color": "0xF9A6", "weight": 3, "min_lod": 1},
+            "secondary": {"z_index": 40, "color": "0xF79E", "weight": 3, "min_lod": 1},
+            "secondary_link": {"z_index": 35, "color": "0xF79E", "weight": 2, "min_lod": 1},
+            "tertiary": {"z_index": 30, "color": "0xFFFF", "weight": 2, "min_lod": 1},
+            "tertiary_link": {"z_index": 25, "color": "0xFFFF", "weight": 2, "min_lod": 2},
+            "unclassified": {"z_index": 20, "color": "0xFFFF", "weight": 1, "min_lod": 2},
+            "residential": {"z_index": 20, "color": "0xFFFF", "weight": 1, "min_lod": 2},
+            "living_street": {"z_index": 20, "color": "0xEEEE", "weight": 1, "min_lod": 2},
+            "service": {"z_index": 10, "color": "0xEEEE", "weight": 1, "min_lod": 2},
+            "pedestrian": {"z_index": 10, "color": "0xDDDD", "weight": 1, "min_lod": 2},
+            "track": {"z_index": 5, "color": "0xAA55", "weight": 1, "min_lod": 2},
+            "path": {"z_index": 5, "color": "0xAA55", "weight": 1, "min_lod": 2},
+            "footway": {"z_index": 5, "color": "0xAA55", "weight": 1, "min_lod": 2},
+            "cycleway": {"z_index": 5, "color": "0x55AA", "weight": 1, "min_lod": 2}
         },
         "waterway": {
-            "river": {"id": 40, "z_index": 20, "color": "0x3333", "weight": 2, "min_lod": 0},
-            "stream": {"id": 41, "z_index": 15, "color": "0x3333", "weight": 1, "min_lod": 2},
-            "canal": {"id": 42, "z_index": 15, "color": "0x3333", "weight": 2, "min_lod": 1},
-            "drain": {"id": 43, "z_index": 10, "color": "0x3333", "weight": 1, "min_lod": 2},
-            "ditch": {"id": 44, "z_index": 10, "color": "0x3333", "weight": 1, "min_lod": 2}
+            "river": {"z_index": 20, "color": "0x3333", "weight": 2, "min_lod": 0},
+            "stream": {"z_index": 15, "color": "0x3333", "weight": 1, "min_lod": 2},
+            "canal": {"z_index": 15, "color": "0x3333", "weight": 2, "min_lod": 1},
+            "drain": {"z_index": 10, "color": "0x3333", "weight": 1, "min_lod": 2},
+            "ditch": {"z_index": 10, "color": "0x3333", "weight": 1, "min_lod": 2}
         },
         "building": {
-            "yes": {"id": 100, "z_index": 5, "color": "0xAAAA", "weight": 1, "min_lod": 2}
+            "yes": {"z_index": 5, "color": "0xAAAA", "weight": 1, "min_lod": 2}
         },
         "natural": {
-            "water": {"id": 45, "z_index": 20, "color": "0x3333", "weight": 1, "min_lod": 1},
-            "sea": {"id": 99, "z_index": 0, "color": "0x001F", "weight": 1, "min_lod": 0},
-            "land": {"id": 1, "z_index": 1, "color": "0xEFD5", "weight": 1, "min_lod": 0},
-            "wood": {"id": 30, "z_index": 10, "color": "0x0500", "weight": 1, "min_lod": 1},
-            "scrub": {"id": 31, "z_index": 5, "color": "0x0500", "weight": 1, "min_lod": 2}
+            "water": {"z_index": 20, "color": "0x3333", "weight": 1, "min_lod": 1},
+            "sea": {"z_index": 0, "color": "0x001F", "weight": 1, "min_lod": 0},
+            "land": {"z_index": 1, "color": "0xEFD5", "weight": 1, "min_lod": 0},
+            "wood": {"z_index": 10, "color": "0x0500", "weight": 1, "min_lod": 1},
+            "scrub": {"z_index": 5, "color": "0x0500", "weight": 1, "min_lod": 2}
         },
         "landuse": {
-            "forest": {"id": 33, "z_index": 5, "color": "0x0500", "weight": 1, "min_lod": 1},
-            "grass": {"id": 32, "z_index": 5, "color": "0x07E0", "weight": 1, "min_lod": 2},
-            "residential": {"id": 110, "z_index": 2, "color": "0xCCCC", "weight": 1, "min_lod": 2}
+            "forest": {"z_index": 5, "color": "0x0500", "weight": 1, "min_lod": 1},
+            "grass": {"z_index": 5, "color": "0x07E0", "weight": 1, "min_lod": 2},
+            "residential": {"z_index": 2, "color": "0xCCCC", "weight": 1, "min_lod": 2}
         },
         "leisure": {
-            "park": {"id": 34, "z_index": 5, "color": "0x07E0", "weight": 1, "min_lod": 2}
+            "park": {"z_index": 5, "color": "0x07E0", "weight": 1, "min_lod": 2}
         },
         "admin_level": {
-            "2": {"id": 50, "z_index": 100, "color": "0x0000", "weight": 2, "min_lod": 0}
+            "2": {"z_index": 100, "color": "0x0000", "weight": 2, "min_lod": 0}
         }
     }
 }
