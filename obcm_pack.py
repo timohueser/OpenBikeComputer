@@ -62,13 +62,13 @@ def main():
     )
     print(f"Global BBox: {global_bbox}")
 
-    # --- Sea Generation Logic ---
-    if coastlines and "natural" in config.get("features", {}) and "sea" in config["features"]["natural"]:
+    # --- Land Generation Logic ---
+    if coastlines and "natural" in config.get("features", {}) and "land" in config["features"]["natural"]:
         from shapely.geometry import box, LineString, Point
         from shapely.ops import linemerge, polygonize, unary_union, nearest_points
         
-        print(f"Generating Sea polygon from {len(coastlines)} coastline segments...")
-        sea_style = config["features"]["natural"]["sea"]["id"]
+        print(f"Generating Land polygon from {len(coastlines)} coastline segments...")
+        land_style = config["features"]["natural"]["land"]["id"]
         
         # Strictly bound by the data extent
         bbox_poly = box(min_lon, min_lat, max_lon, max_lat)
@@ -94,7 +94,7 @@ def main():
                 
         # Find pairs of open ends that are close to each other
         used_ends = set()
-        GAP_TOLERANCE = 0.05 # ~5km tolerance for broken coastline data
+        GAP_TOLERANCE = 0.002 # ~200m tolerance for broken coastline data
         
         for i, p1 in enumerate(open_ends):
             if i in used_ends: continue
@@ -127,35 +127,35 @@ def main():
         all_polygons = list(polygonize(all_lines))
         print(f"Polygonized into {len(all_polygons)} potential areas.")
         
-        # Heuristic: Water is on the RIGHT of OSM coastlines.
-        # We'll use a negative offset curve to find a point that is definitely on the water side.
-        water_test_points = []
+        # Heuristic: Land is on the LEFT of OSM coastlines.
+        # We'll use a positive offset curve to find a point that is definitely on the land side.
+        land_test_points = []
         for l in merged_parts:
-            offset_line = l.offset_curve(-0.001)
+            offset_line = l.offset_curve(0.0001)
             if not offset_line.is_empty:
                 if offset_line.geom_type == 'LineString':
                     idx = len(offset_line.coords) // 2
-                    water_test_points.append(Point(offset_line.coords[idx]))
+                    land_test_points.append(Point(offset_line.coords[idx]))
                 elif hasattr(offset_line, 'geoms') and len(offset_line.geoms) > 0:
                     part = offset_line.geoms[0]
                     idx = len(part.coords) // 2
-                    water_test_points.append(Point(part.coords[idx]))
+                    land_test_points.append(Point(part.coords[idx]))
         
         added_count = 0
         for i, poly in enumerate(all_polygons):
-            is_water = False
-            for p in water_test_points:
+            is_land = False
+            for p in land_test_points:
                 if poly.contains(p):
-                    is_water = True
+                    is_land = True
                     break
             
-            if is_water:
-                features.append({"style_id": sea_style, "geometry": poly})
+            if is_land:
+                features.append({"style_id": land_style, "geometry": poly})
                 added_count += 1
             else:
-                print(f"  - Polygon {i} identified as Land (skipped).")
+                print(f"  - Polygon {i} identified as Sea (skipped).")
         
-        print(f"Successfully added {added_count} sea polygons.")
+        print(f"Successfully added {added_count} land polygons.")
 
         # Also add raw coastlines for debugging if requested in config
         if "coastline_debug" in config["features"]["natural"]:

@@ -94,7 +94,15 @@ def main():
                         debug_settings["show_perf"] = not debug_settings["show_perf"]
                         print(f"Debug: show_perf = {debug_settings['show_perf']}")
 
-            screen.fill((30, 30, 30))
+            bg_color = (30, 30, 30)
+            if 99 in reader.styles:
+                sea_color = reader.styles[99]["color"]
+                r = (sea_color >> 11) & 0x1F
+                g = (sea_color >> 5) & 0x3F
+                b = sea_color & 0x1F
+                bg_color = (r << 3, g << 2, b << 3)
+                
+            screen.fill(bg_color)
             
             # Only re-query if viewport changed
             current_vp_state = (vp.camera_lon, vp.camera_lat, vp.zoom)
@@ -110,6 +118,9 @@ def main():
                 visible_features = []
                 for cid, node_bbox in chunks:
                     visible_features.extend(reader.decode_chunk(cid, node_bbox))
+                
+                # Sort by z_index
+                visible_features.sort(key=lambda f: reader.styles.get(f["style_id"], {}).get("z_index", 0))
                 
                 perf_metrics["query_ms"] = (time.perf_counter() - t0) * 1000.0
             
@@ -135,7 +146,6 @@ def main():
                     
                     # Workaround for holes: draw them over the polygon with the background color
                     if "interiors" in f:
-                        bg_color = (30, 30, 30)
                         for interior in f["interiors"]:
                             int_pts = [vp.to_screen(lon, lat) for lon, lat in interior]
                             if len(int_pts) >= 3:
