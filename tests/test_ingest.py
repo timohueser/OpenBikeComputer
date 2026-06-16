@@ -69,6 +69,7 @@ def test_handler_coastline_extraction():
     mock_way = MagicMock()
     mock_way.tags = MagicMock()
     mock_way.tags.get.side_effect = lambda k: "coastline" if k == "natural" else None
+    mock_way.tags.__iter__.return_value = [("natural", "coastline")]
     
     node1 = MagicMock(); node1.lon = 1.0; node1.lat = 1.0
     node2 = MagicMock(); node2.lon = 2.0; node2.lat = 2.0

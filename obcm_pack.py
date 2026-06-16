@@ -63,7 +63,15 @@ def main():
     print(f"Global BBox: {global_bbox}")
 
     # --- Land Generation Logic ---
-    if coastlines and "natural" in config.get("features", {}) and "land" in config["features"]["natural"]:
+    has_land_config = "natural" in config.get("features", {}) and "land" in config["features"]["natural"]
+    if not coastlines and has_land_config and min_lon != float('inf'):
+        from shapely.geometry import box
+        print("No coastlines found. Generating Land polygon covering the entire bounding box...")
+        land_style = config["features"]["natural"]["land"]["id"]
+        bbox_poly = box(min_lon, min_lat, max_lon, max_lat)
+        features.append({"style_id": land_style, "geometry": bbox_poly})
+
+    elif coastlines and has_land_config:
         from shapely.geometry import box, LineString, Point
         from shapely.ops import linemerge, polygonize, unary_union, nearest_points
         
