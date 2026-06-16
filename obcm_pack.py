@@ -64,34 +64,76 @@ def main():
 
     # --- Sea Generation Logic ---
     if coastlines and "natural" in config.get("features", {}) and "sea" in config["features"]["natural"]:
-        from shapely.geometry import box
-        from shapely.ops import linemerge, split, unary_union
+        from shapely.geometry import box, LineString, Point
+        from shapely.ops import linemerge, polygonize, unary_union, nearest_points
         
-        print("Generating Sea polygon...")
+        print(f"Generating Sea polygon from {len(coastlines)} coastline segments...")
         sea_style = config["features"]["natural"]["sea"]["id"]
+        
+        # Strictly bound by the data extent
+        bbox_poly = box(min_lon, min_lat, max_lon, max_lat)
+        bbox_boundary = bbox_poly.boundary
+        
         merged_coastlines = linemerge(coastlines)
-        
-        # Create a box slightly larger than the data extent
-        bbox_poly = box(min_lon - 0.01, min_lat - 0.01, max_lon + 0.01, max_lat + 0.01)
-        
         if merged_coastlines.geom_type == 'LineString':
-            lines = [merged_coastlines]
+            merged_parts = [merged_coastlines]
         elif hasattr(merged_coastlines, 'geoms'):
-            lines = list(merged_coastlines.geoms)
+            merged_parts = list(merged_coastlines.geoms)
         else:
-            lines = []
+            merged_parts = []
             
-        if lines:
-            # We need to union the lines to split the box
-            split_result = split(bbox_poly, unary_union(lines))
+        # Connect open ends to the boundary to ensure closure
+        connectors = []
+        for line in merged_parts:
+            if not line.is_closed:
+                for i in [0, -1]:
+                    p = Point(line.coords[i])
+                    _, np = nearest_points(p, bbox_boundary)
+                    connectors.append(LineString([p, np]))
+        
+        # Union everything: coastlines, connectors, and the box boundary
+        all_lines = unary_union(merged_parts + connectors + [bbox_boundary])
+        
+        # Find all enclosed areas
+        all_polygons = list(polygonize(all_lines))
+        print(f"Polygonized into {len(all_polygons)} potential areas.")
+        
+        # Heuristic: Water is on the RIGHT of OSM coastlines.
+        # We'll use a negative offset curve to find a point that is definitely on the water side.
+        water_test_points = []
+        for l in merged_parts:
+            offset_line = l.offset_curve(-0.001)
+            if not offset_line.is_empty:
+                if offset_line.geom_type == 'LineString':
+                    idx = len(offset_line.coords) // 2
+                    water_test_points.append(Point(offset_line.coords[idx]))
+                elif hasattr(offset_line, 'geoms') and len(offset_line.geoms) > 0:
+                    part = offset_line.geoms[0]
+                    idx = len(part.coords) // 2
+                    water_test_points.append(Point(part.coords[idx]))
+        
+        added_count = 0
+        for i, poly in enumerate(all_polygons):
+            is_water = False
+            for p in water_test_points:
+                if poly.contains(p):
+                    is_water = True
+                    break
             
-            # Heuristic: polygons that touch the bbox edge are candidates
-            added_count = 0
-            for poly in split_result.geoms:
-                if poly.area < bbox_poly.area * 0.99: 
-                    features.append({"style_id": sea_style, "geometry": poly})
-                    added_count += 1
-            print(f"Added {added_count} sea polygons.")
+            if is_water:
+                features.append({"style_id": sea_style, "geometry": poly})
+                added_count += 1
+            else:
+                print(f"  - Polygon {i} identified as Land (skipped).")
+        
+        print(f"Successfully added {added_count} sea polygons.")
+
+        # Also add raw coastlines for debugging if requested in config
+        if "coastline_debug" in config["features"]["natural"]:
+            debug_style = config["features"]["natural"]["coastline_debug"]["id"]
+            for cl in coastlines:
+                features.append({"style_id": debug_style, "geometry": cl})
+            print(f"Added {len(coastlines)} debug coastline segments.")
 
     print("Building Quadtree index...")
     root = QuadtreeNode(global_bbox, chunk_size=chunk_size)
