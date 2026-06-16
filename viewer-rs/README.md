@@ -6,9 +6,9 @@ target firmware (nRF5340 + LS021B7DD02, via `embedded-graphics`).
 - **`obcm/`** — `no_std + alloc` crate, the shared building block for both the
   simulator and the firmware. Two halves:
   - **reader** (`reader.rs`, `color.rs`): parses the OBCM **v3** LOD-pyramid
-    format ([design](../docs/superpowers/specs/2026-06-16-obcm-lod-design.md)) —
-    header, styles, LOD table, per-LOD quadtree query + chunk decode, and
-    `select_lod_for_mpp`. Dependency-light; the `render` feature is off here.
+    format ([spec](../OBCM_Spec.md)) — header, styles, LOD table, per-LOD
+    quadtree query + chunk decode, and `select_lod_for_mpp`. Dependency-light;
+    the `render` feature is off here.
   - **renderer** (`render.rs`, feature `render`): the *shared rendering path* —
     `Viewport` projection, meters-per-pixel LOD selection, painter z-ordering,
     even-odd scanline polygon fill and line drawing — written generically over an
