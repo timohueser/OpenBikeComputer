@@ -3,6 +3,7 @@ import sys
 import os
 import math
 import time
+import argparse
 from obcm.reader import OBCMReader
 from obcm.viewport import Viewport
 
@@ -20,11 +21,12 @@ def get_distance(lon1, lat1, lon2, lat2):
     return R * c
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: python obcm_view.py <map.obcm>")
-        return
+    parser = argparse.ArgumentParser(description="OBCM Visualizer")
+    parser.add_argument("map", help="Input .obcm file")
+    parser.add_argument("--bbox", help="Initial BBox: min_lon,min_lat,max_lon,max_lat (in decimal degrees)")
+    args = parser.parse_args()
 
-    map_path = sys.argv[1]
+    map_path = args.map
     if not os.path.exists(map_path):
         print(f"Error: File not found: {map_path}")
         return
@@ -44,9 +46,29 @@ def main():
 
     with open(map_path, "rb") as f:
         reader = OBCMReader(f)
+        
+        # Pre-calculate RGB colors for faster rendering
+        for style_id in reader.styles:
+            color = reader.styles[style_id]["color"]
+            r = (color >> 11) & 0x1F
+            g = (color >> 5) & 0x3F
+            b = color & 0x1F
+            reader.styles[style_id]["rgb"] = (r << 3, g << 2, b << 3)
     
         # Init viewport at center of map
-        min_lon, min_lat, max_lon, max_lat = reader.global_bbox
+        if args.bbox:
+            try:
+                parts = [int(float(p) * 1e6) for p in args.bbox.split(",")]
+                if len(parts) != 4:
+                    print("Error: --bbox requires 4 decimal values: min_lon,min_lat,max_lon,max_lat")
+                    sys.exit(1)
+                min_lon, min_lat, max_lon, max_lat = parts
+            except ValueError:
+                print("Error: --bbox values must be decimal numbers")
+                sys.exit(1)
+        else:
+            min_lon, min_lat, max_lon, max_lat = reader.global_bbox
+            
         vp = Viewport(SCREEN_WIDTH, SCREEN_HEIGHT, (min_lat + max_lat) // 2)
         vp.camera_lon = (min_lon + max_lon) // 2
         vp.camera_lat = (min_lat + max_lat) // 2
@@ -137,16 +159,11 @@ def main():
             t_render_start = time.perf_counter()
             # Draw visible features
             for f in visible_features:
-                if f["style_id"] not in reader.styles:
+                style = reader.styles.get(f["style_id"])
+                if not style:
                     continue
-                style = reader.styles[f["style_id"]]
                 
-                # RGB565 to RGB888
-                color = style["color"]
-                r = (color >> 11) & 0x1F
-                g = (color >> 5) & 0x3F
-                b = color & 0x1F
-                rgb = (r << 3, g << 2, b << 3)
+                rgb = style["rgb"]
                 
                 if f.get("type") == "polygon":
                     # Project exterior
