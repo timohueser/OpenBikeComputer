@@ -209,6 +209,17 @@ impl<'a> Reader<'a> {
         self.styles.get(id as usize).and_then(|s| s.as_ref())
     }
 
+    /// The backdrop style: the one at the bottom of the paint order (lowest
+    /// `z_index`, ties broken by lowest id). By convention the map's sea/
+    /// background style sits here, so its color fills the screen before any
+    /// geometry is drawn. Returns `None` only for an empty style table.
+    pub fn backdrop_style(&self) -> Option<&Style> {
+        self.styles
+            .iter()
+            .filter_map(|s| s.as_ref())
+            .min_by_key(|s| (s.z_index, s.id))
+    }
+
     /// Pick the finest LOD whose range still covers `mpp` (meters/pixel). The
     /// coarsest level (`max_mpp == +inf`) always qualifies, so the result is a
     /// valid index in `0..lods().len()`.
