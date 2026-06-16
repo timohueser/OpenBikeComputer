@@ -71,10 +71,11 @@ def pack_feature(feature: dict, node_bbox: Tuple[int, int, int, int]) -> bytes:
             dx, dy = p2[0] - p1[0], p2[1] - p1[1]
             max_dist = max(abs(dx), abs(dy))
             if max_dist > 30000:
-                steps = (max_dist // 30000) + 1
+                steps = int(max_dist // 30000) + 1
                 for step in range(1, steps):
-                    nx = p1[0] + dx * step // steps
-                    ny = p1[1] + dy * step // steps
+                    # Use float division to avoid compounded truncation errors
+                    nx = int(round(p1[0] + dx * (step / float(steps))))
+                    ny = int(round(p1[1] + dy * (step / float(steps))))
                     pts.append((nx, ny))
             pts.append(p2)
         
