@@ -2,8 +2,8 @@
 
 OBCM (OpenStreetMap Binary Chunked Map) is a compact binary map format designed
 for efficient rendering on memory-constrained devices such as microcontrollers
-(MCUs). It is read by both the Python tooling (`obcm/reader.py`) and the Rust
-crate (`viewer-rs/obcm`, shared by the desktop simulator and the nRF5340
+(MCUs). It is written by the Python tooling (`obcm/serialize.py`) and read by the
+Rust crate (`viewer-rs/obcm`, shared by the desktop simulator and the nRF5340
 firmware).
 
 **Version 3** introduces a **level-of-detail (LOD) pyramid**: a file holds N
@@ -46,8 +46,7 @@ screen space is the renderer's responsibility, not the format's.
 ```
 
 The byte layout is produced by `obcm/serialize.py::serialize_lods` and parsed by
-`obcm/reader.py` and `viewer-rs/obcm/src/reader.rs`. All multi-byte integers are
-**little-endian**.
+`viewer-rs/obcm/src/reader.rs`. All multi-byte integers are **little-endian**.
 
 ---
 
@@ -248,8 +247,6 @@ free), lines as weighted polylines.
 
 - **Writer:** `obcm/serialize.py` (`serialize_lods`, `serialize_tree`,
   `pack_feature`, `pack_chunk`, `pack_style_dict`).
-- **Reader (Python):** `obcm/reader.py` (`OBCMReader`, `select_lod_for_mpp`,
-  `query_bbox`).
 - **Reader + renderer (Rust, no_std):** `viewer-rs/obcm` — `reader.rs`
   (`Reader`, `for_each_feature`, `select_lod_for_mpp`), `render.rs`
   (`Viewport`, `MapRenderer`). Format-contract tests in

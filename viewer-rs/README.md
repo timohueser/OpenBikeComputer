@@ -59,4 +59,4 @@ Interactive controls: drag to pan, scroll to zoom, `Esc`/`Q` to quit.
   The full rendering path is shared (`obcm::render`) and compiles `no_std`.
 - **Next:** allocation-free chunk decode (visitor API + `heapless`) and a
   scratch-buffer scanline fill for the MCU; the actual nRF5340 front-end (embassy
-  + LS021B7DD02 driver) implementing a `DrawTarget` and calling `render_map`.
+  + LS021B7DD02 driver) implementing a `DrawTarget` and calling `MapRenderer::render`.
