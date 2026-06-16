@@ -1,0 +1,10 @@
+[package]
+name = "obcm-sim"
+version = "0.1.0"
+edition = "2021"
+description = "Desktop simulator for OBCM maps using embedded-graphics (same rendering path as the nRF5340 firmware)"
+
+[dependencies]
+obcm = { path = "../obcm" }
+embedded-graphics = "0.8"
+embedded-graphics-simulator = "0.6"
