@@ -87,10 +87,13 @@ across every LOD. Packed as `Count`, then `Count` records.
 | Color | 2 | `uint16` | RGB565 |
 | Weight | 1 | `uint8` | Stroke width in pixels (lines) |
 
-> **Authoring constraint:** style IDs must be globally unique. If two style
-> records share an ID, a reader keeps whichever it parses last, so the other
-> feature type renders with the wrong color. (There is a known collision to
-> resolve in `config.json` — see the project notes.)
+> **Style IDs are assigned by the packer, not authored.** A style ID is a
+> purely internal reference into this table — no reader depends on a specific
+> value, only on global uniqueness within the file. The packer ignores any `id`
+> in `config.json` and numbers every feature type sequentially (`1`-based, in
+> document order) at load time, so collisions are impossible by construction.
+> `0xFF` is reserved as the end-of-features sentinel (see §4), so a file holds at
+> most 254 distinct styles.
 
 ---
 

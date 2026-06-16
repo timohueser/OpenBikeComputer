@@ -422,7 +422,7 @@ function renderStyleEditor() {
     const table = document.createElement("table");
     table.className = "feat-table";
     table.innerHTML =
-      "<thead><tr><th></th><th>type</th><th>LODs</th><th>id</th><th>color</th><th>z</th><th>w</th><th></th></tr></thead>";
+      "<thead><tr><th></th><th>type</th><th>LODs</th><th>color</th><th>z</th><th>w</th><th></th></tr></thead>";
     const tbody = document.createElement("tbody");
     for (const name of Object.keys(entries)) {
       tbody.appendChild(buildRow(cat, name, entries[name]));
@@ -457,10 +457,6 @@ function buildRow(cat, name, def) {
   const tdName = document.createElement("td");
   tdName.className = "feat-name";
   tdName.textContent = name;
-
-  const tdId = document.createElement("td");
-  const idIn = numInput(def.id, (v) => (def.id = v));
-  tdId.appendChild(idIn);
 
   const tdColor = document.createElement("td");
   const color = document.createElement("input");
@@ -498,7 +494,7 @@ function buildRow(cat, name, def) {
   tdDel.appendChild(del);
 
   if (!cb.checked) tr.classList.add("feat-off");
-  for (const td of [tdToggle, tdName, tdLod, tdId, tdColor, tdZ, tdW, tdDel]) tr.appendChild(td);
+  for (const td of [tdToggle, tdName, tdLod, tdColor, tdZ, tdW, tdDel]) tr.appendChild(td);
   return tr;
 }
 
@@ -517,11 +513,7 @@ function addFeature(cat, tbody) {
     alert("That type already exists.");
     return;
   }
-  const maxId = Math.max(
-    0,
-    ...Object.values(config.features).flatMap((c) => Object.values(c).map((d) => d.id || 0))
-  );
-  const def = { id: maxId + 1, z_index: 10, color: "0xFFFF", weight: 1, min_lod: lodCount() - 1 };
+  const def = { z_index: 10, color: "0xFFFF", weight: 1, min_lod: lodCount() - 1 };
   config.features[cat][name] = def;
   enabled.set(`${cat}/${name}`, true);
   tbody.appendChild(buildRow(cat, name, def));
