@@ -61,6 +61,10 @@ class OSMHandler(osmium.SimpleHandler):
             pass
 
     def area(self, a):
+        # Admin boundaries should only be handled as lines
+        if "admin_level" in a.tags:
+            return
+            
         style = self._get_style(a.tags)
         if not style: return
         
