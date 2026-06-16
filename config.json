@@ -1,11 +1,32 @@
 {
     "features": {
         "highway": {
+            "motorway": {"id": 8, "z_index": 60, "color": "0xE8E4", "weight": 5},
+            "motorway_link": {"id": 9, "z_index": 55, "color": "0xE8E4", "weight": 4},
+            "trunk": {"id": 15, "z_index": 55, "color": "0xF9A6", "weight": 4},
+            "trunk_link": {"id": 16, "z_index": 50, "color": "0xF9A6", "weight": 3},
             "primary": {"id": 10, "z_index": 50, "color": "0xF9A6", "weight": 4},
+            "primary_link": {"id": 17, "z_index": 45, "color": "0xF9A6", "weight": 3},
             "secondary": {"id": 11, "z_index": 40, "color": "0xF79E", "weight": 3},
+            "secondary_link": {"id": 18, "z_index": 35, "color": "0xF79E", "weight": 2},
             "tertiary": {"id": 12, "z_index": 30, "color": "0xFFFF", "weight": 2},
+            "tertiary_link": {"id": 19, "z_index": 25, "color": "0xFFFF", "weight": 2},
+            "unclassified": {"id": 20, "z_index": 20, "color": "0xFFFF", "weight": 1},
             "residential": {"id": 13, "z_index": 20, "color": "0xFFFF", "weight": 1},
-            "service": {"id": 14, "z_index": 10, "color": "0xEEEE", "weight": 1}
+            "living_street": {"id": 21, "z_index": 20, "color": "0xEEEE", "weight": 1},
+            "service": {"id": 14, "z_index": 10, "color": "0xEEEE", "weight": 1},
+            "pedestrian": {"id": 22, "z_index": 10, "color": "0xDDDD", "weight": 1},
+            "track": {"id": 23, "z_index": 5, "color": "0xAA55", "weight": 1},
+            "path": {"id": 24, "z_index": 5, "color": "0xAA55", "weight": 1},
+            "footway": {"id": 25, "z_index": 5, "color": "0xAA55", "weight": 1},
+            "cycleway": {"id": 26, "z_index": 5, "color": "0x55AA", "weight": 1}
+        },
+        "waterway": {
+            "river": {"id": 40, "z_index": 20, "color": "0x3333", "weight": 2},
+            "stream": {"id": 41, "z_index": 15, "color": "0x3333", "weight": 1},
+            "canal": {"id": 42, "z_index": 15, "color": "0x3333", "weight": 2},
+            "drain": {"id": 43, "z_index": 10, "color": "0x3333", "weight": 1},
+            "ditch": {"id": 44, "z_index": 10, "color": "0x3333", "weight": 1}
         },
         "building": {
             "yes": {"id": 100, "z_index": 5, "color": "0xAAAA", "weight": 1}

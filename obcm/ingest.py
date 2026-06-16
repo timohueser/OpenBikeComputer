@@ -16,39 +16,45 @@ class OSMHandler(osmium.SimpleHandler):
 
     def way(self, w):
         # Catch coastlines for sea generation
-        if w.tags.get("natural") == "coastline":
+        # ALWAYS do this first, even if closed.
+        is_coastline = False
+        for k, v in w.tags:
+            if k == "natural" and v == "coastline":
+                is_coastline = True
+                break
+        
+        if is_coastline:
             try:
                 coords = [(n.lon, n.lat) for n in w.nodes]
                 if len(coords) >= 2:
                     self.coastlines.append(LineString(coords))
             except osmium.InvalidLocationError:
                 pass
-            return
-
+            # Coastlines are NEVER areas for AreaManager, they are just lines.
+            # We don't return here because a coastline way could also be tagged as something else
+            # (though unlikely in standard OSM).
+        
         style = self._get_style(w.tags)
         if not style: return
 
         # Prevent closed ways from being added twice (once in way() and once in area()).
-        # Closed ways that are tagged as areas should only be processed in area().
+        # Only skip if it's definitely going to be an area.
         if w.is_closed():
-            is_area = w.tags.get("area") == "yes"
-            # Common tags that imply an area if the way is closed
-            area_tags = {"building", "landuse", "amenity", "leisure", "natural"}
-            if not is_area:
-                for k, v in w.tags:
-                    if k in area_tags:
-                        is_area = True
-                        break
+            # osmium.area.AreaManager generally builds areas for these tags
+            area_tags = {"building", "landuse", "amenity", "leisure", "natural", "waterway"}
+            is_area = False
+            for k, v in w.tags:
+                if k == "area" and v == "yes":
+                    is_area = True
+                    break
+                if k in area_tags and w.tags.get("area") != "no":
+                    is_area = True
+                    break
             
-            # area=no overrides everything
-            if w.tags.get("area") == "no":
-                is_area = False
-                
             if is_area:
                 return
 
         # If it's closed and NOT explicitly marked as an area by AreaManager, it might just be a circular road.
-        # AreaManager handles true multipolygons.
         try:
             coords = [(n.lon, n.lat) for n in w.nodes]
             if len(coords) >= 2:
@@ -111,7 +117,7 @@ def ingest_osm(pbf_path, config):
     # Pass 2: Build areas and process ways
     print("Pass 2: Processing ways and areas...")
     r = osmium.io.Reader(pbf_path)
-    osmium.apply(r, lh, am.second_pass_handler(), handler)
+    osmium.apply(r, lh, am.second_pass_handler(handler), handler)
     r.close()
     
     return handler.features, handler.coastlines
