@@ -18,10 +18,12 @@
 
 use std::time::Instant;
 
-use embedded_graphics::pixelcolor::Rgb888;
+use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
 use obcm_reader::{rgb565_to_device64, rgb565_to_rgb888, Reader};
+use obcm_render::text::{draw_text, Font, TextAlign};
 use obcm_app::{App, AppState, Fix, LocationSource};
 
+mod device_input;
 mod framebuffer;
 mod gpx;
 mod gpx_player;
@@ -55,6 +57,9 @@ struct Args {
     /// Headless zoom multiplier applied to the bbox-fit zoom (e.g. `30` zooms in
     /// ~30×, picking a finer LOD). Defaults to 1 (whole-map overview).
     zoom_mul: f32,
+    /// Render the font/palette preview instead of the map (slice-1 text check).
+    /// Needs no map; writes to `--png` (default `text_demo.png`) and exits.
+    text_demo: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -71,6 +76,7 @@ fn parse_args() -> Result<Args, String> {
         at: None,
         center: None,
         zoom_mul: 1.0,
+        text_demo: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -99,6 +105,7 @@ fn parse_args() -> Result<Args, String> {
                 ));
             }
             "--zoom" => a.zoom_mul = it.next().and_then(|s| s.parse().ok()).ok_or("bad --zoom")?,
+            "--text-demo" => a.text_demo = true,
             other => {
                 if a.map.is_empty() {
                     a.map = other.to_string();
@@ -108,7 +115,8 @@ fn parse_args() -> Result<Args, String> {
             }
         }
     }
-    if a.map.is_empty() {
+    // `--text-demo` renders text on a blank panel, so it needs no map file.
+    if a.map.is_empty() && !a.text_demo {
         return Err("missing map path".into());
     }
     Ok(a)
@@ -117,6 +125,61 @@ fn parse_args() -> Result<Args, String> {
 fn color_of(c: u16, true_color: bool) -> Rgb888 {
     let (r, g, b) = if true_color { rgb565_to_rgb888(c) } else { rgb565_to_device64(c) };
     Rgb888::new(r, g, b)
+}
+
+/// Pack 8-bit RGB into RGB565 (the format/style color space the renderer
+/// quantizes from), so the demo palette below can be written as the spec's hexes.
+const fn rgb565(r: u8, g: u8, b: u8) -> u16 {
+    (((r as u16) >> 3) << 11) | (((g as u16) >> 2) << 5) | ((b as u16) >> 3)
+}
+
+// The "explorer's field map" palette from docs/bikepacking-computer-ui-spec.md,
+// in RGB565 so it travels through the same `color_of` quantization as map styles.
+const PARCHMENT: u16 = rgb565(0xEA, 0xDF, 0xC0);
+const HUD: u16 = rgb565(0x2E, 0x25, 0x1A); // wood-dark HUD strip
+const INK: u16 = rgb565(0x2C, 0x21, 0x14);
+const AMBER: u16 = rgb565(0xE3, 0xA5, 0x2B);
+const FOREST: u16 = rgb565(0x4F, 0x6B, 0x43);
+const WOOD: u16 = rgb565(0x5B, 0x3F, 0x28);
+const WARNING: u16 = rgb565(0xC0, 0x49, 0x2E);
+
+/// Slice-1 verification: render the font ladder + palette on a parchment panel
+/// with the elevation/menu HUD strip, through the device-64 `color_of` so the
+/// PNG shows exactly what the panel would. Proves text renders and that each
+/// palette color survives quantization (`--true-color` shows the un-quantized
+/// reference for comparison).
+fn render_text_demo(fb: &mut Framebuffer, true_color: bool) {
+    let col = |c: u16| color_of(c, true_color);
+    let w = fb.width() as i32;
+
+    let _ = fb.clear(col(PARCHMENT));
+    let _ = fb.fill_solid(&Rectangle::new(Point::zero(), Size::new(fb.width(), 22)), col(HUD));
+    draw_text(fb, "TEXT DEMO", Point::new(w / 2, 6), Font::Label, TextAlign::Center, col(PARCHMENT));
+
+    // Font ladder — the three sizes, in ink.
+    let mut y = 30;
+    for (label, font) in
+        [("Label 6x10", Font::Label), ("Body 9x15", Font::Body), ("Display 10x20", Font::Display)]
+    {
+        draw_text(fb, label, Point::new(8, y), font, TextAlign::Left, col(INK));
+        y += font.line_height() as i32 + 6;
+    }
+
+    // Palette — each name drawn in its own color, so the PNG shows whether amber,
+    // forest, wood and warning stay distinct and legible after device-64 quantization.
+    y += 6;
+    for (name, c) in [("amber", AMBER), ("forest", FOREST), ("wood", WOOD), ("warning", WARNING)] {
+        draw_text(fb, name, Point::new(8, y), Font::Body, TextAlign::Left, col(c));
+        y += Font::Body.line_height() as i32 + 4;
+    }
+
+    // Alignment row + a big number, mirroring the menu counter / stat tiles.
+    y += 8;
+    draw_text(fb, "LEFT", Point::new(8, y), Font::Label, TextAlign::Left, col(INK));
+    draw_text(fb, "CENTER", Point::new(w / 2, y), Font::Label, TextAlign::Center, col(INK));
+    draw_text(fb, "RIGHT", Point::new(w - 8, y), Font::Label, TextAlign::Right, col(INK));
+    y += 22;
+    draw_text(fb, "42.1 km", Point::new(w / 2, y), Font::Display, TextAlign::Center, col(INK));
 }
 
 /// The starting camera for a freshly-opened map: centered on the bbox, zoomed so
@@ -148,10 +211,24 @@ fn main() {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: obcm-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT]");
+            eprintln!("error: {e}\nusage: obcm-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo]");
             std::process::exit(2);
         }
     };
+
+    // Slice-1 font/palette preview: render text on a blank panel and exit. Comes
+    // before the map read so it needs no map file.
+    if args.text_demo {
+        let mut fb = Framebuffer::new(args.width, args.height);
+        render_text_demo(&mut fb, args.true_color);
+        let path = args.png.as_deref().unwrap_or("text_demo.png");
+        if let Err(e) = write_png(&fb, args.scale, path) {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+        eprintln!("wrote {path}");
+        return;
+    }
 
     let bytes = std::fs::read(&args.map).unwrap_or_else(|e| {
         eprintln!("cannot read {}: {e}", args.map);

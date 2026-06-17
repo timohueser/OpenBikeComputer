@@ -17,7 +17,9 @@
 //!
 //! Modules:
 //! - [`hal`] — the injected-hardware traits ([`LocationSource`], [`InputSource`])
-//!   and their data types ([`Fix`], [`Button`], [`ButtonEvent`]).
+//!   and their data types ([`Fix`], [`Button`], [`ButtonEvent`], [`InputEvent`]).
+//! - [`input`] — the shared gesture recognizer ([`Gestures`]) turning raw
+//!   [`InputEvent`]s + a millis clock into the five UI [`Gesture`]s.
 //! - [`app`] — [`AppState`]: the camera + mode + last-known-fix, advanced one
 //!   tick at a time from the HAL and projected into an [`obcm_render::Viewport`].
 
@@ -25,6 +27,8 @@
 
 pub mod app;
 pub mod hal;
+pub mod input;
 
 pub use app::{App, AppState, CameraMode};
-pub use hal::{Button, ButtonEvent, Fix, InputSource, LocationSource};
+pub use hal::{Button, ButtonEvent, Fix, InputEvent, InputSource, LocationSource};
+pub use input::{Gesture, Gestures, DEFAULT_HOLD_MS};

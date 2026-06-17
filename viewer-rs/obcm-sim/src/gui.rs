@@ -15,13 +15,35 @@ use std::path::Path;
 
 use eframe::egui;
 use obcm_reader::Reader;
-use obcm_app::{App, AppState, CameraMode, Fix};
+use obcm_app::{App, AppState, Button, CameraMode, Fix};
 
+use crate::device_input::DeviceInput;
 use crate::framebuffer::Framebuffer;
 use crate::gpx::Track;
 use crate::gpx_player::GpxPlayer;
 use crate::sim_location::SimLocationSource;
 use crate::Args;
+
+// Control-panel knob colors (host chrome — picked for the egui panel, not the
+// device screen, so they need not pass through the 64-color quantization).
+const KNOB_FILL: egui::Color32 = egui::Color32::from_rgb(70, 60, 48);
+const KNOB_EDGE: egui::Color32 = egui::Color32::from_rgb(150, 120, 80);
+const NOTCH: egui::Color32 = egui::Color32::from_rgb(234, 223, 192);
+const AMBER: egui::Color32 = egui::Color32::from_rgb(227, 165, 43);
+
+/// Points along a clockwise arc from 12 o'clock, sweeping `progress` (0–1) of a
+/// full turn at radius `r` — the encoder hold-progress ring around the knob.
+fn arc_points(center: egui::Pos2, r: f32, progress: f32) -> Vec<egui::Pos2> {
+    use std::f32::consts::{FRAC_PI_2, TAU};
+    let sweep = progress.clamp(0.0, 1.0) * TAU;
+    let n = ((sweep / 0.25).ceil() as usize).max(2);
+    (0..=n)
+        .map(|i| {
+            let a = -FRAC_PI_2 + sweep * (i as f32 / n as f32);
+            center + egui::Vec2::angled(a) * r
+        })
+        .collect()
+}
 
 /// Loosely clamp zoom (pixels per microdegree of latitude) so scroll can't drive
 /// it to zero or infinity and produce a degenerate projection.
@@ -111,6 +133,8 @@ struct SimGui {
     true_color: bool,
     /// Editable mirrors for the control-panel widgets.
     panel: PanelState,
+    /// Emulated device controls (encoder knob + Back) → shared gesture recognizer.
+    input: DeviceInput,
     /// The loaded GPX replay, if any. When `Some`, it drives the fix instead of
     /// the manual [`SimLocationSource`] (the device's GPS would likewise override
     /// any manual override). `None` = manual control via the panel sliders.
@@ -168,6 +192,7 @@ impl SimGui {
             scale: args.scale,
             true_color: args.true_color,
             panel,
+            input: DeviceInput::new(),
             gpx: None,
             gpx_label: None,
             gpx_error: None,
@@ -302,6 +327,116 @@ impl SimGui {
         }
     }
 
+    /// The device's own controls — a rotary **encoder** (turn + push) and a
+    /// **Back** button — emulated to resemble the real interface. Turn the knob by
+    /// scrolling over it or dragging around it; PUSH / BACK are press-and-hold
+    /// (held past the threshold they become `Hold` / `Back-hold`); the keyboard
+    /// mirrors all of it. Raw events run through the shared `obcm_app::Gestures`
+    /// recognizer; the recognized gesture and hold-progress are shown live. Screens
+    /// (a later slice) will consume these gestures — today this proves the path.
+    fn show_device_controls(&mut self, ui: &mut egui::Ui) {
+        ui.label(egui::RichText::new("Device controls — encoder + Back").strong());
+        ui.label(egui::RichText::new("scroll or drag the knob to turn").weak().size(11.0));
+        ui.add_space(4.0);
+
+        // --- Knob: a round encoder with a pointer notch + hold-progress ring. ---
+        let knob_angle = self.input.knob_angle();
+        let enc_progress = self.input.encoder_progress();
+        const SZ: f32 = 110.0;
+        let resp = ui
+            .vertical_centered(|ui| {
+                let (rect, resp) = ui.allocate_exact_size(egui::vec2(SZ, SZ), egui::Sense::drag());
+                let painter = ui.painter_at(rect);
+                let center = rect.center();
+                let radius = SZ * 0.42;
+                painter.circle_filled(center, radius, KNOB_FILL);
+                painter.circle_stroke(center, radius, egui::Stroke::new(2.0, KNOB_EDGE));
+                // Pointer notch shows the knob's rotation.
+                let notch = center + egui::Vec2::angled(knob_angle) * (radius - 7.0);
+                painter.line_segment([center, notch], egui::Stroke::new(3.0, NOTCH));
+                painter.circle_filled(notch, 4.0, NOTCH);
+                // Encoder hold-progress arc — previews the guarded-action confirm ring.
+                if enc_progress > 0.0 {
+                    painter.add(egui::Shape::line(
+                        arc_points(center, radius + 6.0, enc_progress),
+                        egui::Stroke::new(4.0, AMBER),
+                    ));
+                }
+                resp
+            })
+            .inner;
+
+        if resp.dragged() {
+            if let Some(p) = resp.interact_pointer_pos() {
+                self.input.drag_to((p - resp.rect.center()).angle());
+            }
+        }
+        if resp.drag_stopped() {
+            self.input.end_drag();
+        }
+        if resp.hovered() {
+            let dy = ui.input(|i| i.smooth_scroll_delta.y);
+            if dy != 0.0 {
+                self.input.scroll(dy);
+            }
+        }
+
+        // --- PUSH (encoder) / BACK buttons — press-and-hold. ---
+        ui.add_space(6.0);
+        let (push_resp, back_resp) = ui
+            .horizontal(|ui| {
+                let p = ui.add_sized([100.0, 32.0], egui::Button::new("PUSH"));
+                let b = ui.add_sized([100.0, 32.0], egui::Button::new("BACK"));
+                (p, b)
+            })
+            .inner;
+
+        // --- Keyboard mirror: ←/→ (or [ ] / , .) turn; Enter push; Backspace back. ---
+        let (enc_key, back_key, turn_keys) = ui.input(|i| {
+            let mut t = 0;
+            if i.key_pressed(egui::Key::ArrowRight)
+                || i.key_pressed(egui::Key::CloseBracket)
+                || i.key_pressed(egui::Key::Period)
+            {
+                t += 1;
+            }
+            if i.key_pressed(egui::Key::ArrowLeft)
+                || i.key_pressed(egui::Key::OpenBracket)
+                || i.key_pressed(egui::Key::Comma)
+            {
+                t -= 1;
+            }
+            (i.key_down(egui::Key::Enter), i.key_down(egui::Key::Backspace), t)
+        });
+        self.input.turn(turn_keys);
+        self.input.set_button(Button::Encoder, push_resp.is_pointer_button_down_on() || enc_key);
+        self.input.set_button(Button::Back, back_resp.is_pointer_button_down_on() || back_key);
+
+        // Recognize this frame's gestures (also fires a long-press at its threshold).
+        self.input.pump();
+
+        // --- Live readout. ---
+        ui.add_space(8.0);
+        let last = self.input.last_gesture().unwrap_or("(none)").to_owned();
+        ui.label(egui::RichText::new(format!("Last gesture:  {last}")).size(16.0).strong());
+
+        let ep = self.input.encoder_progress();
+        let bp = self.input.back_progress();
+        if ep > 0.0 {
+            ui.add(egui::ProgressBar::new(ep).desired_width(220.0).text("encoder hold"));
+        }
+        if bp > 0.0 {
+            ui.add(egui::ProgressBar::new(bp).desired_width(220.0).text("back hold"));
+        }
+
+        ui.add_space(2.0);
+        ui.label(
+            egui::RichText::new("keys: Left/Right turn · Enter push · Backspace back  (hold for long-press)")
+                .weak()
+                .size(11.0),
+        );
+    }
+
     /// Draw the "Controls" window — a second OS window (egui immediate viewport)
     /// that drives the simulated GPS fix. Re-declared every frame; the widgets
     /// edit the panel mirrors / `AppState`, then we push the mirrors into the
@@ -311,10 +446,16 @@ impl SimGui {
             egui::ViewportId::from_hash_of("controls"),
             egui::ViewportBuilder::default()
                 .with_title("Controls")
-                .with_inner_size([320.0, 640.0]),
+                .with_inner_size([360.0, 880.0]),
             |ctx, _class| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     ui.heading("Simulated device");
+                    ui.add_space(6.0);
+
+                    // The device's own controls (encoder + Back) → gesture readout.
+                    self.show_device_controls(ui);
+                    ui.add_space(6.0);
+                    ui.separator();
                     ui.add_space(6.0);
 
                     // Let sliders span the panel width instead of egui's narrow

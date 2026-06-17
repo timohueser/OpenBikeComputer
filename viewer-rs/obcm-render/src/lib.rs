@@ -23,6 +23,9 @@ use embedded_graphics::{
 
 use obcm_reader::{BBox, Kind, Reader};
 
+pub mod text;
+pub use text::{draw_text, text_width, Font, TextAlign};
+
 // ---------------------------------------------------------------------------
 // Buffer capacity constants.
 //
