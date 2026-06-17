@@ -7,13 +7,11 @@
 //! early — no `Hold` gesture — and nothing happens). `back` resumes (cancels the
 //! pause). Drawn as an overlay on top of the still-visible map.
 
-use embedded_graphics::{
-    prelude::*,
-    primitives::{PrimitiveStyle, Rectangle},
-};
+use embedded_graphics::prelude::{DrawTarget, Point};
 use obcm_render::{
-    text::{draw_text, Font, TextAlign},
-    RenderStats,
+    rect,
+    text::{Font, TextAlign},
+    Canvas, RenderStats,
 };
 
 use crate::activity::Mode;
@@ -90,57 +88,35 @@ impl RideControl {
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
+        use palette::*;
         let (w, h) = (rx.w as i32, rx.h as i32);
-        let (pw, ph) = (180, 132);
-        let origin = Point::new(w / 2 - pw / 2, h / 2 - ph / 2);
+        let (pw, ph) = (190, 132);
+        let (px, py) = (w / 2 - pw / 2, h / 2 - ph / 2);
+        let mut cv = Canvas::new(target, color_fn);
 
         // Parchment panel + dark HUD title strip over the map.
-        let _ = Rectangle::new(origin, Size::new(pw as u32, ph as u32))
-            .into_styled(PrimitiveStyle::with_fill(color_fn(palette::PARCHMENT)))
-            .draw(target);
-        let _ = Rectangle::new(origin, Size::new(pw as u32, 22))
-            .into_styled(PrimitiveStyle::with_fill(color_fn(palette::HUD)))
-            .draw(target);
-        draw_text(
-            target,
-            "PAUSED",
-            Point::new(w / 2, origin.y + 6),
-            Font::Label,
-            TextAlign::Center,
-            color_fn(palette::PARCHMENT),
-        );
+        cv.round(rect(px, py, pw, ph), 6, PARCHMENT);
+        cv.fill(rect(px, py, pw, 22), HUD);
+        cv.text("PAUSED", Point::new(w / 2, py + 6), Font::Label, TextAlign::Center, PARCHMENT);
 
-        // The options, each a highlighted row when selected.
-        let mut y = origin.y + 34;
+        // The options, each a highlighted row when selected. Guarded rows fill with
+        // a warning bar tracking the hold-progress; instant ones get a solid amber.
+        let mut y = py + 36;
         for (i, item) in ITEMS.iter().enumerate() {
             if i == self.selected {
-                let row = Rectangle::new(Point::new(origin.x + 6, y - 2), Size::new(pw as u32 - 12, 18));
+                let row = rect(px + 8, y - 3, pw - 16, 20);
                 if item.guard {
-                    // Dim base, filled by hold-progress in warning red.
-                    let _ = row
-                        .into_styled(PrimitiveStyle::with_fill(color_fn(palette::PARCHMENT_SHADE)))
-                        .draw(target);
-                    let fill_w = ((pw as u32 - 12) as f32 * rx.hold_progress.clamp(0.0, 1.0)) as u32;
+                    cv.fill(row, PARCHMENT_SHADE);
+                    let fill_w = ((pw - 16) as f32 * rx.hold_progress.clamp(0.0, 1.0)) as i32;
                     if fill_w > 0 {
-                        let _ = Rectangle::new(row.top_left, Size::new(fill_w, 18))
-                            .into_styled(PrimitiveStyle::with_fill(color_fn(palette::WARNING)))
-                            .draw(target);
+                        cv.fill(rect(px + 8, y - 3, fill_w, 20), WARNING);
                     }
                 } else {
-                    let _ = row
-                        .into_styled(PrimitiveStyle::with_fill(color_fn(palette::AMBER)))
-                        .draw(target);
+                    cv.fill(row, AMBER);
                 }
             }
-            draw_text(
-                target,
-                item.label,
-                Point::new(origin.x + 14, y),
-                Font::Body,
-                TextAlign::Left,
-                color_fn(palette::INK),
-            );
-            y += 22;
+            cv.text(item.label, Point::new(px + 16, y), Font::Body, TextAlign::Left, INK);
+            y += 28;
         }
         RenderStats::default()
     }

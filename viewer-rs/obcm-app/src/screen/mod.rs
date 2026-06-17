@@ -167,7 +167,10 @@ pub mod palette {
         (((r as u16) >> 3) << 11) | (((g as u16) >> 2) << 5) | ((b as u16) >> 3)
     }
 
-    pub const PARCHMENT: u16 = rgb565(234, 223, 165); // → (255,255,170) warm cream
+    // Device-64 has no warm off-white — any blue < 192 tints it yellow ("stained
+    // paper"). So the panel is a clean near-white; the wood frame + ink + amber
+    // carry the warmth instead.
+    pub const PARCHMENT: u16 = rgb565(245, 243, 238); // → (255,255,255) white
     pub const PARCHMENT_SHADE: u16 = rgb565(180, 170, 105); // → (170,170,85) tan
     pub const HUD: u16 = rgb565(46, 37, 26); // → (0,0,0) near-black frame
     pub const WOOD: u16 = rgb565(150, 100, 40); // → (170,85,0) wood brown
