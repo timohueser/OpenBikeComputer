@@ -7,11 +7,4 @@ description = "OBCM map format reader + renderer (no_std + alloc) — shared by 
 [features]
 default = ["std"]
 std = []
-# Shared rendering path (projection, LOD selection, polygon/line drawing) built
-# on embedded-graphics. Enabled by the simulator and the firmware; left off for
-# pure-parse builds and reader unit tests so they don't pull the graphics stack.
-render = ["dep:embedded-graphics", "dep:libm"]
 
-[dependencies]
-embedded-graphics = { version = "0.8", optional = true }
-libm = { version = "0.2", optional = true }

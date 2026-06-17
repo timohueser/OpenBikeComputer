@@ -1,8 +1,8 @@
 //! A plain in-memory `DrawTarget` — a packed RGB888 pixel buffer the host owns.
 //!
 //! This is the simulator's replacement for embedded-graphics-simulator's
-//! `SimulatorDisplay`: the shared [`obcm::MapRenderer`] draws the exact firmware
-//! path into a buffer we control, with no SDL dependency. The host then either
+//! `SimulatorDisplay`: the shared [`obcm_render::MapRenderer`] runs the exact same
+//! rendering code as the firmware, but draws into a buffer we control, with no SDL
 //! uploads the buffer to a GPU texture (the eframe screen window) or encodes it
 //! to a PNG (`--png`). The device firmware draws into its real LS021B7DD02 driver
 //! instead; only this host-side target differs.

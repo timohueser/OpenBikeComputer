@@ -5,7 +5,8 @@ edition = "2021"
 description = "Desktop simulator for OBCM maps using embedded-graphics (same rendering path as the nRF5340 firmware)"
 
 [dependencies]
-obcm = { path = "../obcm", features = ["render"] }
+obcm = { path = "../obcm" }
+obcm-render = { path = "../obcm-render" }
 obcm-app = { path = "../obcm-app" }
 embedded-graphics = "0.8"
 # Native GUI host: the device-screen window and (next) the control panel. Pure

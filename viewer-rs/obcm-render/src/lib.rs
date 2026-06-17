@@ -12,6 +12,10 @@
 //! streams through [`Reader::for_each_feature`] into reused buffers. Geometry
 //! math uses `libm` so it works unchanged in `no_std`.
 
+#![no_std]
+
+extern crate alloc;
+
 use alloc::vec::Vec;
 
 use embedded_graphics::{
@@ -19,7 +23,7 @@ use embedded_graphics::{
     primitives::{Polyline, PrimitiveStyle, Rectangle},
 };
 
-use crate::{BBox, Kind, Reader};
+use obcm::{BBox, Kind, Reader};
 
 /// Meters of ground per microdegree of latitude (≈ Earth circumference / 360e6).
 const METERS_PER_MICRODEG_LAT: f64 = 0.111_320;

@@ -28,7 +28,7 @@ use crate::Args;
 const MIN_ZOOM: f64 = 1e-6;
 const MAX_ZOOM: f64 = 1e4;
 
-/// Meters per microdegree of latitude — mirrors `obcm::render`'s private constant
+/// Meters per microdegree of latitude — mirrors `obcm_render`'s private constant
 /// so the control panel can present zoom in human-friendly meters-per-pixel.
 const METERS_PER_MICRODEG_LAT: f64 = 0.111_320;
 
@@ -39,7 +39,7 @@ const MPP_MIN: f64 = 0.02;
 const MPP_MAX: f64 = 20_000.0;
 
 /// Zoom (px per microdegree-lat) → meters per pixel. Same relation as
-/// [`obcm::Viewport::meters_per_pixel`], usable without a viewport.
+/// [`obcm_render::Viewport::meters_per_pixel`], usable without a viewport.
 fn zoom_to_mpp(zoom: f64) -> f64 {
     METERS_PER_MICRODEG_LAT / zoom
 }
@@ -614,7 +614,7 @@ mod tests {
     fn zoom_to_mpp_matches_viewport() {
         // The panel's conversion must agree with the renderer's own metric, or the
         // ground-span readout would lie about what's on screen.
-        let vp = obcm::Viewport::new(240.0, 320.0, 0.0, 0.0, 0.5);
+        let vp = obcm_render::Viewport::new(240.0, 320.0, 0.0, 0.0, 0.5);
         assert!((zoom_to_mpp(0.5) as f32 - vp.meters_per_pixel()).abs() < 1e-6);
     }
 

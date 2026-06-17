@@ -2,7 +2,7 @@
 //! quadtree query + chunk decode.
 //!
 //! All coordinates are integer microdegrees (1e-6 degrees), as stored in the
-//! file. Projection to screen space is the renderer's job (see [`crate::render`]).
+//! file. Projection to screen space is the renderer's job (see [`obcm_render`]).
 //!
 //! The reader is immutable: instead of a stateful "active layer" it exposes the
 //! parsed [`Lod`] table and takes a LOD index on every `query`/`decode_chunk`,
@@ -151,7 +151,7 @@ pub struct Reader<'a> {
     pub bbox: BBox,
     /// User-position marker color (RGB565), a global map-presentation property
     /// stored in the header — resolved to a device pixel by the host's color
-    /// policy just like style colors, then drawn by [`crate::render`].
+    /// policy just like style colors, then drawn by [`obcm_render`].
     pub marker_color: u16,
     /// LOD layers ordered coarsest (0) → finest (N-1). Always at least one.
     lods: Vec<Lod>,
