@@ -114,7 +114,14 @@ impl SimGui {
         // with the control panel. The fix is still seeded (map center) so the loop
         // and the future user marker have something to track.
         state.mode = CameraMode::Free;
-        let loc = SimLocationSource::new(Some(Fix::at(cy as i32, cx as i32)));
+        // `--heading` opens in heading-up with that course; otherwise north-up.
+        state.heading_up = args.heading.is_some();
+        let loc = SimLocationSource::new(Some(Fix {
+            lat: cy as i32,
+            lon: cx as i32,
+            course: args.heading,
+            speed_mps: None,
+        }));
 
         // Seed the panel mirrors from the initial fix so the widgets open showing
         // the device's actual starting position/heading.
@@ -181,9 +188,16 @@ impl SimGui {
 
         if resp.dragged() {
             let d = resp.drag_delta();
+            let dpx = d.x as f64 / scale;
+            let dpy = d.y as f64 / scale;
             let vp = st.viewport(w, h);
-            st.cam_lon -= (d.x as f64 / scale) / (vp.zoom * vp.aspect);
-            st.cam_lat += (d.y as f64 / scale) / vp.zoom;
+            // Convert the screen-space drag into a map delta through the inverse
+            // projection (`to_map`), so panning follows the cursor even when the
+            // view is rotated (heading-up) — a fixed `cam ± dx/zoom` would drift.
+            let (lon0, lat0) = vp.to_map(w / 2.0, h / 2.0);
+            let (lon1, lat1) = vp.to_map(w / 2.0 - dpx, h / 2.0 - dpy);
+            st.cam_lon += lon1 - lon0;
+            st.cam_lat += lat1 - lat0;
             st.mode = CameraMode::Free;
         }
 
@@ -216,7 +230,7 @@ impl SimGui {
             egui::ViewportId::from_hash_of("controls"),
             egui::ViewportBuilder::default()
                 .with_title("Controls")
-                .with_inner_size([300.0, 360.0]),
+                .with_inner_size([300.0, 420.0]),
             |ctx, _class| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     ui.heading("Simulated device");
@@ -300,6 +314,18 @@ impl SimGui {
                         self.panel.lat_deg = self.app.state.cam_lat / 1e6;
                         self.panel.lon_deg = self.app.state.cam_lon / 1e6;
                     }
+
+                    ui.add_space(6.0);
+                    ui.separator();
+
+                    // Orientation — north-up vs heading-up (rotates the map so the
+                    // Heading above points to the top of the screen). Independent
+                    // of the camera mode.
+                    ui.label("Orientation");
+                    ui.horizontal(|ui| {
+                        ui.selectable_value(&mut self.app.state.heading_up, false, "North-up");
+                        ui.selectable_value(&mut self.app.state.heading_up, true, "Heading-up");
+                    });
 
                     if ctx.input(|i| i.viewport().close_requested()) {
                         self.quit = true;

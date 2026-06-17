@@ -40,6 +40,19 @@ The central panel now fits the device image to the window at the largest integer
 scale ≤ `--scale` (fixes the §6 bottom-clipping). Pure helpers (`zoom_to_mpp`,
 `mpp_to_zoom`, `format_distance`) are unit-tested (obcm-sim now 7 tests).
 
+**Heading-up rotation (done, post-Step-4).** The heading slider now rotates the
+map. Rotation lives in the shared **`obcm::Viewport`** projection (so the firmware
+gets it free): `new_rotated(.., course_rad)` precomputes sin/cos and `to_screen`/
+`to_map` rotate the aspect-corrected ground offset so the course points to screen
+top; course 0 is byte-identical to the old projection. `visible_bbox` now spans all
+four screen corners so a tilted view still culls correctly. `AppState` gained a
+`heading_up: bool` (default false = north-up); `viewport()` derives the rotation
+from `user_fix.course` only when it's set. The panel has a **North-up / Heading-up**
+toggle (independent of Follow/Free), the mouse-pan was rewritten to un-project via
+`to_map` (so panning is correct while rotated), and a `--heading DEG` CLI flag
+renders/opens a rotated frame (handy for headless verification). 4 rotation tests in
+`obcm-app/tests/app.rs` (now 10). Next natural step: the user-position marker (§9.1).
+
 ---
 
 ## 2. Architecture & crate map
@@ -195,7 +208,10 @@ inside the closure if you want to react).
 cd viewer-rs
 cargo build --release -p obcm-sim
 cargo clippy --workspace --all-targets      # must stay clean
-cargo test --workspace                       # obcm 12, obcm-app 6, obcm-sim 7
+cargo test --workspace                       # obcm 12, obcm-app 10, obcm-sim 7
+
+# Render a rotated (heading-up) frame headlessly to verify rotation:
+./target/release/obcm-sim ../monaco.obcm --true-color --heading 45 --png /tmp/r45.png
 
 # Firmware-readiness (must keep compiling — this is the foundation guarantee):
 rustup target add thumbv8m.main-none-eabihf
