@@ -183,8 +183,11 @@ impl SimGui {
             None => PanelState { lat_deg: 0.0, lon_deg: 0.0, heading_deg: 0.0 },
         };
 
+        // `--boot` opens at the device's Home/Idle state to walk the full flow;
+        // otherwise the sim opens on the map (its map-viewer default).
+        let app = if args.boot { App::new_idle(state) } else { App::new(state) };
         let mut gui = SimGui {
-            app: App::new(state),
+            app,
             loc,
             fb: Framebuffer::new(args.width, args.height),
             dev_w: args.width,

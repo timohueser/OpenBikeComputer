@@ -8,7 +8,9 @@ use std::collections::VecDeque;
 
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
 use obcm_app::activity::Activity;
-use obcm_app::screen::{apply, Ctx, HomeScreen, MapScreen, MenuScreen, RideControl, Screen, Stack, Transition};
+use obcm_app::screen::{
+    apply, Ctx, HomeScreen, MapScreen, MenuScreen, RideControl, RouteMenuScreen, Screen, Stack, Transition,
+};
 use obcm_app::{App, AppState, Button, ButtonEvent, Fix, Gesture, InputEvent, InputSource, LocationSource, Mode};
 use obcm_reader::{rgb565_to_rgb888, Reader};
 
@@ -95,6 +97,56 @@ fn menu_back_returns_to_caller() {
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Riding));
     let t = MenuScreen::new().handle(Gesture::Back, &mut ctx(&mut st, &mut act));
     assert!(matches!(t, Transition::Pop));
+}
+
+// ---------------------------------------------------------------------------
+// The Home → Route menu → Map flow.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn home_press_opens_the_route_menu() {
+    let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Idle));
+    let t = HomeScreen::new().handle(Gesture::Press, &mut ctx(&mut st, &mut act));
+    assert!(matches!(t, Transition::Push(Screen::RouteMenu(_))));
+}
+
+#[test]
+fn route_menu_loads_the_selected_route_and_opens_the_map() {
+    let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Idle));
+    let mut rm = RouteMenuScreen::new();
+    rm.handle(Gesture::Turn(1), &mut ctx(&mut st, &mut act)); // highlight route 1
+    let t = rm.handle(Gesture::Press, &mut ctx(&mut st, &mut act));
+    assert!(matches!(t, Transition::Replace(Screen::Map(_))), "loading opens the Map");
+    assert_eq!(act.mode, Mode::Riding, "loading starts tracking");
+    assert_eq!(act.active_route, Some(1), "the selected route is the active one");
+}
+
+#[test]
+fn route_menu_back_returns_to_caller() {
+    let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Idle));
+    let t = RouteMenuScreen::new().handle(Gesture::Back, &mut ctx(&mut st, &mut act));
+    assert!(matches!(t, Transition::Pop));
+}
+
+#[test]
+fn boot_flow_walks_home_to_route_menu_to_riding_map() {
+    // End to end through `App`: Idle Home → press → Route menu → press → riding Map.
+    let mut app = App::new_idle(AppState::new(0, 0, 0.05));
+    assert_eq!(app.mode(), Mode::Idle);
+    press(&mut app); // Home → Route menu
+    assert_eq!(app.mode(), Mode::Idle, "opening the route list doesn't start riding yet");
+    press(&mut app); // Route menu → load route 0 → Map
+    assert_eq!(app.mode(), Mode::Riding);
+    assert_eq!(app.activity.active_route, Some(0));
+}
+
+/// Feed a single encoder press (down+up within the threshold) to the app.
+fn press(app: &mut App) {
+    let mut s = Script(VecDeque::from(vec![
+        InputEvent::Button(ButtonEvent::Down(Button::Encoder)),
+        InputEvent::Button(ButtonEvent::Up(Button::Encoder)),
+    ]));
+    app.handle_input(0, &mut s);
 }
 
 // ---------------------------------------------------------------------------

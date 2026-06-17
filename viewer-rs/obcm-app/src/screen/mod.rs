@@ -18,9 +18,15 @@
 //! read-only state plus the `Reader`, the reusable `MapRenderer`, and the
 //! in-flight hold-progress for the confirm ring).
 
-use embedded_graphics::draw_target::DrawTarget;
+use core::fmt::Write;
+
+use embedded_graphics::{draw_target::DrawTarget, prelude::Point};
 use obcm_reader::Reader;
-use obcm_render::{MapRenderer, RenderStats};
+use obcm_render::{
+    rect,
+    text::{Font, TextAlign},
+    Canvas, MapRenderer, RenderStats,
+};
 
 use crate::activity::Activity;
 use crate::app::AppState;
@@ -30,11 +36,13 @@ mod home;
 mod map;
 mod menu;
 mod ride_control;
+mod route_menu;
 
 pub use home::HomeScreen;
 pub use map::MapScreen;
 pub use menu::MenuScreen;
 pub use ride_control::RideControl;
+pub use route_menu::RouteMenuScreen;
 
 /// Maximum overlay depth (Home → Map → Ride control / Menu → …). Sized with
 /// headroom; the real flow never nests more than a few deep. Growing it costs a
@@ -116,6 +124,7 @@ pub enum Screen {
     Map(MapScreen),
     RideControl(RideControl),
     Menu(MenuScreen),
+    RouteMenu(RouteMenuScreen),
 }
 
 impl Screen {
@@ -126,6 +135,7 @@ impl Screen {
             Screen::Map(s) => s.handle(g, cx),
             Screen::RideControl(s) => s.handle(g, cx),
             Screen::Menu(s) => s.handle(g, cx),
+            Screen::RouteMenu(s) => s.handle(g, cx),
         }
     }
 
@@ -141,6 +151,7 @@ impl Screen {
             Screen::Map(s) => s.draw(target, rx, color_fn),
             Screen::RideControl(s) => s.draw(target, rx, color_fn),
             Screen::Menu(s) => s.draw(target, rx, color_fn),
+            Screen::RouteMenu(s) => s.draw(target, rx, color_fn),
         }
     }
 
@@ -150,6 +161,30 @@ impl Screen {
     pub fn is_overlay(&self) -> bool {
         matches!(self, Screen::RideControl(_))
     }
+}
+
+/// Top of the list area (just below the title bar) shared by list screens.
+pub const LIST_TOP: i32 = 42;
+
+/// Draw the shared list-screen chrome: a full-screen near-white background (the
+/// housing rounds the physical corners, so the panel goes edge to edge), a thin
+/// rounded outline, and a rounded wood title bar with `title` plus a `pos / total`
+/// counter. The caller then draws its rows below [`LIST_TOP`]. Used by the Menu and
+/// the Route menu so they stay visually identical.
+pub fn list_frame<D, F>(cv: &mut Canvas<D, F>, w: i32, h: i32, title: &str, pos: usize, total: usize)
+where
+    D: DrawTarget,
+    F: Fn(u16) -> D::Color,
+{
+    use palette::*;
+    cv.clear(PARCHMENT);
+    cv.round_outline(rect(4, 4, w - 8, h - 8), 8, WOOD_LIGHT);
+    cv.round(rect(4, 4, w - 8, 30), 6, WOOD);
+    cv.text(title, Point::new(w / 2, 12), Font::Body, TextAlign::Center, PARCHMENT);
+
+    let mut counter: heapless::String<8> = heapless::String::new();
+    let _ = write!(counter, "{pos} / {total}");
+    cv.text(&counter, Point::new(w - 16, 13), Font::Label, TextAlign::Right, PARCHMENT);
 }
 
 /// The "explorer's field map" palette in RGB565 (the format/style color space),

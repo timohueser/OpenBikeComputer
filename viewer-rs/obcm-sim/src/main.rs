@@ -65,6 +65,9 @@ struct Args {
     /// `r`/`l` = turn cw/ccw, `p` = press, `h` = hold, `b` = back, `B` = back-hold.
     /// E.g. `--script B` opens the Menu; `--script p` opens Ride control.
     script: Option<String>,
+    /// Boot at the device's real power-on state (Home / Idle, no route) instead of
+    /// the map. Use with `--script` to walk the Home → Route menu → Map flow.
+    boot: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -83,6 +86,7 @@ fn parse_args() -> Result<Args, String> {
         zoom_mul: 1.0,
         text_demo: false,
         script: None,
+        boot: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -113,6 +117,7 @@ fn parse_args() -> Result<Args, String> {
             "--zoom" => a.zoom_mul = it.next().and_then(|s| s.parse().ok()).ok_or("bad --zoom")?,
             "--text-demo" => a.text_demo = true,
             "--script" => a.script = Some(it.next().ok_or("--script needs a token string")?),
+            "--boot" => a.boot = true,
             other => {
                 if a.map.is_empty() {
                     a.map = other.to_string();
@@ -285,7 +290,7 @@ fn main() {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: obcm-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--script TOKENS]");
+            eprintln!("error: {e}\nusage: obcm-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--script TOKENS] [--boot]");
             std::process::exit(2);
         }
     };
@@ -369,7 +374,7 @@ fn main() {
                 }
             }
         }
-        let mut app = App::new(state);
+        let mut app = if args.boot { App::new_idle(state) } else { App::new(state) };
         // Drive the app to a specific screen before snapshotting (e.g. the Menu).
         if let Some(script) = &args.script {
             apply_script(&mut app, script);
