@@ -5,7 +5,7 @@ edition = "2021"
 description = "Desktop simulator for OBCM maps using embedded-graphics (same rendering path as the nRF5340 firmware)"
 
 [dependencies]
-obcm = { path = "../obcm" }
+obcm-reader = { path = "../obcm-reader" }
 obcm-render = { path = "../obcm-render" }
 obcm-app = { path = "../obcm-app" }
 embedded-graphics = "0.8"

@@ -14,7 +14,7 @@
 use std::path::Path;
 
 use eframe::egui;
-use obcm::Reader;
+use obcm_reader::Reader;
 use obcm_app::{App, AppState, CameraMode, Fix};
 
 use crate::framebuffer::Framebuffer;

@@ -14,7 +14,7 @@
 use std::time::Instant;
 
 use embedded_graphics::pixelcolor::Rgb888;
-use obcm::{rgb565_to_device64, rgb565_to_rgb888, Reader};
+use obcm_reader::{rgb565_to_device64, rgb565_to_rgb888, Reader};
 use obcm_app::{App, AppState, Fix, LocationSource};
 
 mod framebuffer;
