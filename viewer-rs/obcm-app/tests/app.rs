@@ -88,3 +88,79 @@ fn fix_at_helper_is_stationary() {
     assert_eq!(f.course, None);
     assert_eq!(f.speed_mps, None);
 }
+
+#[test]
+fn north_up_is_the_default_orientation() {
+    let app = AppState::new(0.0, 0.0, 1.0);
+    assert!(!app.heading_up);
+
+    let vp = app.viewport(200.0, 200.0);
+    assert_eq!(vp.course_rad, 0.0);
+    // A point due north of the camera projects straight up: centered in x, above
+    // center in y (screen y grows downward).
+    let (x, y) = vp.to_screen(0, 1_000);
+    assert_eq!(x, 100);
+    assert!(y < 100);
+}
+
+#[test]
+fn heading_up_rotates_course_to_screen_top() {
+    let mut app = AppState::new(0.0, 0.0, 1.0);
+    app.heading_up = true;
+    // Heading-up with no fix yet is still north-up — there's no course to face.
+    assert_eq!(app.viewport(200.0, 200.0).course_rad, 0.0);
+
+    // Now record a fix heading due east (course 90°).
+    let mut loc = Fixed(Some(Fix { lat: 0, lon: 0, course: Some(90.0), speed_mps: Some(5.0) }));
+    app.update(&mut loc);
+
+    let vp = app.viewport(200.0, 200.0);
+    assert!((vp.course_rad - std::f64::consts::FRAC_PI_2).abs() < 1e-9);
+
+    // Facing east: east is now up, and north swings to the left.
+    let (ex, ey) = vp.to_screen(1_000, 0); // 1000 µdeg east
+    assert!((ex - 100).abs() <= 1); // centered horizontally
+    assert!(ey < 100); // up
+
+    let (nx, ny) = vp.to_screen(0, 1_000); // 1000 µdeg north
+    assert!(nx < 100); // to the left
+    assert!((ny - 100).abs() <= 1); // centered vertically
+}
+
+#[test]
+fn projection_round_trips_under_rotation() {
+    let mut app = AppState::new(13_405_000.0, 52_520_000.0, 0.5);
+    app.heading_up = true;
+    let mut loc = Fixed(Some(Fix { lat: BERLIN.0, lon: BERLIN.1, course: Some(37.0), speed_mps: Some(4.0) }));
+    app.update(&mut loc);
+    let vp = app.viewport(240.0, 320.0);
+
+    // Project map → screen → map; the result is within a few microdegrees (screen
+    // is integer pixels at 0.5 px/µdeg, and aspect divides longitude back out).
+    for &(lon, lat) in &[(13_405_000, 52_520_000), (13_410_000, 52_525_000), (13_400_000, 52_515_000)] {
+        let (sx, sy) = vp.to_screen(lon, lat);
+        let (rlon, rlat) = vp.to_map(sx as f64, sy as f64);
+        assert!((rlon - lon as f64).abs() < 6.0, "lon {lon} -> {rlon}");
+        assert!((rlat - lat as f64).abs() < 6.0, "lat {lat} -> {rlat}");
+    }
+}
+
+#[test]
+fn rotation_widens_the_cull_box() {
+    let north = AppState::new(0.0, 0.0, 1.0).viewport(200.0, 100.0);
+
+    let mut app = AppState::new(0.0, 0.0, 1.0);
+    app.heading_up = true;
+    let mut loc = Fixed(Some(Fix { lat: 0, lon: 0, course: Some(45.0), speed_mps: Some(1.0) }));
+    app.update(&mut loc);
+    let rot = app.viewport(200.0, 100.0);
+
+    // A 45°-tilted 200×100 view covers more latitude than the axis-aligned one, so
+    // the quadtree cull box must grow or corner features would be dropped.
+    let nb = north.visible_bbox();
+    let rb = rot.visible_bbox();
+    assert!(
+        (rb.max_lat - rb.min_lat) > (nb.max_lat - nb.min_lat),
+        "rotated lat span should exceed north-up"
+    );
+}

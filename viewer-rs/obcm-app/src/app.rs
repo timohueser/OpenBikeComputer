@@ -45,8 +45,13 @@ pub struct AppState {
     pub zoom: f64,
     /// Whether the camera follows the user or is driven manually.
     pub mode: CameraMode,
+    /// Map orientation. `true` rotates the projection so the user's course points
+    /// to the top of the screen (heading-up / track-up navigation); `false` keeps
+    /// north up. Independent of [`mode`](AppState::mode): the camera can follow the
+    /// user in either orientation, and the simulator can rotate while mouse-panning.
+    pub heading_up: bool,
     /// The most recent fix from the [`LocationSource`], or `None` before the
-    /// first one. Drives the (future) user marker regardless of camera mode.
+    /// first one. Drives the heading-up rotation and the (future) user marker.
     pub user_fix: Option<Fix>,
 }
 
@@ -55,7 +60,14 @@ impl AppState {
     /// `zoom`, in [`Follow`](CameraMode::Follow) mode (the device default) and no
     /// fix yet.
     pub fn new(cam_lon: f64, cam_lat: f64, zoom: f64) -> Self {
-        AppState { cam_lon, cam_lat, zoom, mode: CameraMode::Follow, user_fix: None }
+        AppState {
+            cam_lon,
+            cam_lat,
+            zoom,
+            mode: CameraMode::Follow,
+            heading_up: false,
+            user_fix: None,
+        }
     }
 
     /// Advance one tick: poll the location source and, in
@@ -78,8 +90,19 @@ impl AppState {
     /// Project the current camera into a [`Viewport`] for a `w`×`h` pixel display.
     /// The host supplies its own dimensions, so the same state renders correctly
     /// to the 240×320 device panel and to a resizable simulator window.
+    ///
+    /// In [`heading_up`](AppState::heading_up) mode the projection is rotated so
+    /// the last fix's `course` points to the top of the screen; with no course (or
+    /// north-up) it stays north-up.
     pub fn viewport(&self, w: f64, h: f64) -> Viewport {
-        Viewport::new(w, h, self.cam_lon, self.cam_lat, self.zoom)
+        let course_rad = if self.heading_up {
+            self.user_fix
+                .and_then(|f| f.course)
+                .map_or(0.0, |deg| (deg as f64).to_radians())
+        } else {
+            0.0
+        };
+        Viewport::new_rotated(w, h, self.cam_lon, self.cam_lat, self.zoom, course_rad)
     }
 }
 

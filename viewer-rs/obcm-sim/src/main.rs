@@ -15,7 +15,7 @@ use std::time::Instant;
 
 use embedded_graphics::pixelcolor::Rgb888;
 use obcm::{rgb565_to_device64, rgb565_to_rgb888, Reader};
-use obcm_app::{App, AppState};
+use obcm_app::{App, AppState, Fix};
 
 mod framebuffer;
 mod gui;
@@ -31,6 +31,9 @@ struct Args {
     /// Launch the GUI, save its first composited frame to this path, then exit.
     screenshot: Option<String>,
     true_color: bool,
+    /// Start in heading-up orientation with this course (degrees CW from north),
+    /// so a rotated frame can be rendered headlessly (`--png`) or shown on launch.
+    heading: Option<f32>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -42,6 +45,7 @@ fn parse_args() -> Result<Args, String> {
         png: None,
         screenshot: None,
         true_color: false,
+        heading: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -56,6 +60,9 @@ fn parse_args() -> Result<Args, String> {
             "--png" => a.png = Some(it.next().ok_or("--png needs a path")?),
             "--screenshot" => a.screenshot = Some(it.next().ok_or("--screenshot needs a path")?),
             "--true-color" => a.true_color = true,
+            "--heading" => {
+                a.heading = Some(it.next().and_then(|s| s.parse().ok()).ok_or("bad --heading")?)
+            }
             other => {
                 if a.map.is_empty() {
                     a.map = other.to_string();
@@ -105,7 +112,7 @@ fn main() {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: obcm-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color]");
+            eprintln!("error: {e}\nusage: obcm-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG]");
             std::process::exit(2);
         }
     };
@@ -141,7 +148,14 @@ fn main() {
     if let Some(path) = &args.png {
         let reader = Reader::new(&bytes).expect("validated above");
         let (cx, cy, zoom) = initial_camera(&reader, args.width);
-        let mut app = App::new(AppState::new(cx, cy, zoom));
+        let mut state = AppState::new(cx, cy, zoom);
+        // `--heading` renders a rotated (heading-up) frame headlessly; the rotation
+        // is derived from the fix's course, so seed one at the map center.
+        if let Some(deg) = args.heading {
+            state.heading_up = true;
+            state.user_fix = Some(Fix { lat: cy as i32, lon: cx as i32, course: Some(deg), speed_mps: None });
+        }
+        let mut app = App::new(state);
         let mut fb = Framebuffer::new(args.width, args.height);
         let tc = args.true_color;
 

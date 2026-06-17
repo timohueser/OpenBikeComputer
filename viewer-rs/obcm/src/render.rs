@@ -27,6 +27,12 @@ const METERS_PER_MICRODEG_LAT: f64 = 0.111_320;
 /// Screen projection: microdegrees → pixels, with longitude aspect correction so
 /// the map keeps shape away from the equator. `zoom` is pixels per microdegree of
 /// latitude; longitude is additionally scaled by `aspect = cos(lat)`.
+///
+/// The projection can also rotate the map so a given course points to the top of
+/// the screen ("heading-up" / track-up navigation). `course_rad` is that course
+/// in radians clockwise from north; `0` is north-up and reduces the math to a
+/// plain translate+scale. The rotation is applied about the camera center, after
+/// aspect correction, so shapes stay correct.
 #[derive(Debug, Clone, Copy)]
 pub struct Viewport {
     pub w: f64,
@@ -35,13 +41,34 @@ pub struct Viewport {
     pub cam_lat: f64,
     pub zoom: f64,
     pub aspect: f64,
+    /// Course (radians CW from north) the projection rotates to screen-up. 0 = north-up.
+    pub course_rad: f64,
+    // Precomputed once per frame (rotation is hot — called per projected point).
+    sin_c: f64,
+    cos_c: f64,
 }
 
 impl Viewport {
-    /// Build a viewport centered on `(cam_lon, cam_lat)` (microdegrees) with the
-    /// aspect correction computed for that latitude.
+    /// Build a north-up viewport centered on `(cam_lon, cam_lat)` (microdegrees)
+    /// with the aspect correction computed for that latitude.
     pub fn new(w: f64, h: f64, cam_lon: f64, cam_lat: f64, zoom: f64) -> Self {
-        Viewport { w, h, cam_lon, cam_lat, zoom, aspect: aspect_for_lat(cam_lat) }
+        Self::new_rotated(w, h, cam_lon, cam_lat, zoom, 0.0)
+    }
+
+    /// Like [`new`](Viewport::new) but rotated so `course_rad` (radians CW from
+    /// north) points to the top of the screen.
+    pub fn new_rotated(w: f64, h: f64, cam_lon: f64, cam_lat: f64, zoom: f64, course_rad: f64) -> Self {
+        Viewport {
+            w,
+            h,
+            cam_lon,
+            cam_lat,
+            zoom,
+            aspect: aspect_for_lat(cam_lat),
+            course_rad,
+            sin_c: libm::sin(course_rad),
+            cos_c: libm::cos(course_rad),
+        }
     }
 
     /// Recompute the longitude aspect correction for the current camera latitude.
@@ -52,22 +79,50 @@ impl Viewport {
 
     #[inline]
     pub fn to_screen(&self, lon: i32, lat: i32) -> (i32, i32) {
-        let x = (lon as f64 - self.cam_lon) * self.zoom * self.aspect + self.w / 2.0;
-        let y = (self.cam_lat - lat as f64) * self.zoom + self.h / 2.0;
+        // Aspect-corrected ground offset from the camera (east, north).
+        let ex = (lon as f64 - self.cam_lon) * self.aspect;
+        let ny = lat as f64 - self.cam_lat;
+        // Rotate so `course_rad` points up; at course 0 this is (ex, -ny).
+        let rx = self.cos_c * ex - self.sin_c * ny;
+        let ry = -self.sin_c * ex - self.cos_c * ny;
+        let x = rx * self.zoom + self.w / 2.0;
+        let y = ry * self.zoom + self.h / 2.0;
         (x as i32, y as i32)
     }
 
     #[inline]
     pub fn to_map(&self, x: f64, y: f64) -> (f64, f64) {
-        let lon = (x - self.w / 2.0) / (self.zoom * self.aspect) + self.cam_lon;
-        let lat = self.cam_lat - (y - self.h / 2.0) / self.zoom;
+        let rx = (x - self.w / 2.0) / self.zoom;
+        let ry = (y - self.h / 2.0) / self.zoom;
+        // Inverse rotation reuses the same coefficients — the screen→ground matrix
+        // is an involution (its own inverse), so no extra trig.
+        let ex = self.cos_c * rx - self.sin_c * ry;
+        let ny = -self.sin_c * rx - self.cos_c * ry;
+        let lon = ex / self.aspect + self.cam_lon;
+        let lat = ny + self.cam_lat;
         (lon, lat)
     }
 
     /// Bounding box (microdegrees) of the on-screen area, for quadtree culling.
+    /// Uses all four screen corners so a *rotated* view still culls correctly —
+    /// the axis-aligned box must cover the tilted rectangle's full extent.
     pub fn visible_bbox(&self) -> BBox {
-        let (min_lon, max_lat) = self.to_map(0.0, 0.0);
-        let (max_lon, min_lat) = self.to_map(self.w, self.h);
+        let corners = [
+            self.to_map(0.0, 0.0),
+            self.to_map(self.w, 0.0),
+            self.to_map(0.0, self.h),
+            self.to_map(self.w, self.h),
+        ];
+        let mut min_lon = f64::MAX;
+        let mut max_lon = f64::MIN;
+        let mut min_lat = f64::MAX;
+        let mut max_lat = f64::MIN;
+        for (lon, lat) in corners {
+            min_lon = min_lon.min(lon);
+            max_lon = max_lon.max(lon);
+            min_lat = min_lat.min(lat);
+            max_lat = max_lat.max(lat);
+        }
         BBox {
             min_lon: min_lon as i32,
             min_lat: min_lat as i32,
