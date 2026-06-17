@@ -27,19 +27,21 @@ use obcm_render::{
     text::{Font, TextAlign},
     Canvas, MapRenderer, RenderStats,
 };
-use obcm_route::RouteReader;
+use obcm_route::{Profile, RouteReader};
 
 use crate::activity::Activity;
 use crate::app::AppState;
 use crate::input::Gesture;
 use crate::route::RouteSummary;
 
+mod elevation;
 mod home;
 mod map;
 mod menu;
 mod ride_control;
 mod route_menu;
 
+pub use elevation::ElevationScreen;
 pub use home::HomeScreen;
 pub use map::MapScreen;
 pub use menu::MenuScreen;
@@ -120,6 +122,10 @@ pub struct Render<'a, 'd> {
     /// The active route's geometry (the Map strokes it), or `None` when no route is
     /// loaded. Host-owned, streamed on demand; only the active route is open.
     pub route: Option<&'a RouteReader<'a>>,
+    /// The active route's elevation profile (the Elevation screen draws it), rebuilt by
+    /// the app on route load and cached — `None` when no route is loaded. Resident, so
+    /// the screen never re-reads the route to draw.
+    pub profile: Option<&'a Profile>,
     pub w: f32,
     pub h: f32,
     pub now_ms: u32,
@@ -132,6 +138,7 @@ pub struct Render<'a, 'd> {
 pub enum Screen {
     Home(HomeScreen),
     Map(MapScreen),
+    Elevation(ElevationScreen),
     RideControl(RideControl),
     Menu(MenuScreen),
     RouteMenu(RouteMenuScreen),
@@ -143,6 +150,7 @@ impl Screen {
         match self {
             Screen::Home(s) => s.handle(g, cx),
             Screen::Map(s) => s.handle(g, cx),
+            Screen::Elevation(s) => s.handle(g, cx),
             Screen::RideControl(s) => s.handle(g, cx),
             Screen::Menu(s) => s.handle(g, cx),
             Screen::RouteMenu(s) => s.handle(g, cx),
@@ -159,6 +167,7 @@ impl Screen {
         match self {
             Screen::Home(s) => s.draw(target, rx, color_fn),
             Screen::Map(s) => s.draw(target, rx, color_fn),
+            Screen::Elevation(s) => s.draw(target, rx, color_fn),
             Screen::RideControl(s) => s.draw(target, rx, color_fn),
             Screen::Menu(s) => s.draw(target, rx, color_fn),
             Screen::RouteMenu(s) => s.draw(target, rx, color_fn),
@@ -176,12 +185,13 @@ impl Screen {
 /// Top of the list area (just below the title bar) shared by list screens.
 pub const LIST_TOP: i32 = 42;
 
-/// Draw the shared list-screen chrome: a full-screen near-white background (the
-/// housing rounds the physical corners, so the panel goes edge to edge), a thin
-/// rounded outline, and a rounded wood title bar with `title` plus a `pos / total`
-/// counter. The caller then draws its rows below [`LIST_TOP`]. Used by the Menu and
-/// the Route menu so they stay visually identical.
-pub fn list_frame<D, F>(cv: &mut Canvas<D, F>, w: i32, h: i32, title: &str, pos: usize, total: usize)
+/// Draw the shared screen chrome: a full-screen near-white background (the housing
+/// rounds the physical corners, so the panel goes edge to edge), a thin rounded
+/// outline, and a rounded wood title bar with `title` on the left of center and
+/// `right` (a counter, a grade readout, …) right-justified. Every framed screen — the
+/// Menu, the Route menu, the Elevation profile — draws its header through this, so they
+/// stay visually identical; the caller fills the body below [`LIST_TOP`].
+pub fn title_frame<D, F>(cv: &mut Canvas<D, F>, w: i32, h: i32, title: &str, right: &str)
 where
     D: DrawTarget,
     F: Fn(u16) -> D::Color,
@@ -191,10 +201,19 @@ where
     cv.round_outline(rect(4, 4, w - 8, h - 8), 8, WOOD_LIGHT);
     cv.round(rect(4, 4, w - 8, 30), 6, WOOD);
     cv.text(title, Point::new(w / 2, 12), Font::Body, TextAlign::Center, PARCHMENT);
+    cv.text(right, Point::new(w - 16, 13), Font::Label, TextAlign::Right, PARCHMENT);
+}
 
+/// [`title_frame`] with a `pos / total` list counter on the right — the chrome the
+/// Menu and Route menu share. The caller then draws its rows below [`LIST_TOP`].
+pub fn list_frame<D, F>(cv: &mut Canvas<D, F>, w: i32, h: i32, title: &str, pos: usize, total: usize)
+where
+    D: DrawTarget,
+    F: Fn(u16) -> D::Color,
+{
     let mut counter: heapless::String<8> = heapless::String::new();
     let _ = write!(counter, "{pos} / {total}");
-    cv.text(&counter, Point::new(w - 16, 13), Font::Label, TextAlign::Right, PARCHMENT);
+    title_frame(cv, w, h, title, &counter);
 }
 
 /// First visible index of a scrolling list that keeps `selected` on screen within

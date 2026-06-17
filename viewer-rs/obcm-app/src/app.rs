@@ -4,7 +4,7 @@
 use embedded_graphics::draw_target::DrawTarget;
 use obcm_reader::Reader;
 use obcm_render::{zoom_for_mpp, MapRenderer, RenderStats, Viewport};
-use obcm_route::RouteReader;
+use obcm_route::{Profile, RouteReader};
 
 use crate::activity::{Activity, Mode};
 use crate::hal::{Fix, InputSource, LocationSource};
@@ -156,6 +156,14 @@ pub struct App {
     /// The screen stack (root = Home). The top screen receives input; drawing
     /// starts from the topmost opaque screen so overlays composite over the map.
     stack: Stack,
+    /// The active route's resident elevation profile, rebuilt on route load (it streams
+    /// every chunk, so never per frame) and handed to the Elevation screen via
+    /// [`Render`]. `None` when no route is loaded; [`profile_route`](App::profile_route)
+    /// tracks which route it was built for.
+    profile: Option<Profile>,
+    /// The [`active_route`](Activity::active_route) the cached [`profile`](App::profile)
+    /// was built for, so a route change triggers exactly one rebuild.
+    profile_route: Option<usize>,
     /// Reused renderer; clears (not frees) its scratch each frame, so steady-state
     /// rendering does no allocation — important on the MCU.
     renderer: MapRenderer,
@@ -194,6 +202,8 @@ impl App {
             activity: Activity::new(Mode::Idle),
             catalog: Catalog::new(),
             stack,
+            profile: None,
+            profile_route: None,
             renderer: MapRenderer::new(),
             gestures: Gestures::new(DEFAULT_HOLD_MS),
             last_gesture: None,
@@ -273,8 +283,17 @@ impl App {
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
+        // Rebuild the cached elevation profile when the active route changes — it
+        // streams every chunk, so it's built here once on load, never per frame. Keyed
+        // on the active-route index (same simplification as the host's route reload):
+        // it clears when no route is loaded.
+        if self.activity.active_route != self.profile_route {
+            self.profile = route.map(|r| r.elevation_profile());
+            self.profile_route = self.activity.active_route;
+        }
+
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
-        let App { state, activity, catalog, renderer, stack, now_ms, enc_progress, .. } = self;
+        let App { state, activity, catalog, renderer, stack, now_ms, enc_progress, profile, .. } = self;
         let mut rx = Render {
             reader,
             renderer,
@@ -282,6 +301,7 @@ impl App {
             activity,
             routes: catalog.as_slice(),
             route,
+            profile: profile.as_ref(),
             w,
             h,
             now_ms: *now_ms,
