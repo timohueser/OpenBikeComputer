@@ -1,0 +1,105 @@
+# Renderer Follow-ups
+
+Open items after the priority-rendering work (commit `6189fd4`, "Priority-based
+rendering: global cross-chunk ordering, seam fix, bigger span budget"). Ordered
+by priority. Items 1–3 are the next ones to tackle.
+
+Useful repro command (headless render at an arbitrary spot/zoom/rotation):
+
+```
+cd viewer-rs
+cargo run -q -p obcm-sim --release -- ../freiburg.obcm --size 240x320 --scale 3 \
+  --center 7849000,47996000 --zoom 900 --heading 35 --png /tmp/out.png
+```
+
+`freiburg.obcm` (v5, ~213 MB) is the test map. The headless `--png` line prints
+`features drawn/tried, chunks, LOD, dropped, spans/points/rings utilization` to
+stderr.
+
+---
+
+## 1. Render-level test for priority under saturation
+
+**Gap.** Reader-level invariants are covered (`filtered_decode_skips_without_drifting`,
+`for_each_chunk_has_no_cap` in `viewer-rs/obcm-reader/tests/format.rs`), and
+`viewer-rs/obcm-app/tests/marker.rs` exercises the render path — but nothing
+asserts the actual payoff: **under buffer saturation, priority-1 features survive
+and priority-4 features are dropped, across chunks.**
+
+**Why it's awkward.** Saturation needs more features than `MAX_SPANS = 3072`
+(or `MAX_FRAME_POINTS`/`MAX_FRAME_RINGS`), which a tiny synthetic map won't hit.
+
+**Approach (pick one):**
+- Add test-only (smaller) buffer capacities behind a `cfg(test)`/feature so a
+  modest synthetic map saturates, then assert the drawn set is exactly the
+  highest-priority features. The buffer consts live at the top of
+  `viewer-rs/obcm-render/src/lib.rs`; they'd need to become overridable.
+- Or build a synthetic multi-chunk map (the `format.rs` byte builders are a good
+  model) with, say, 1 priority-1 polygon in a *late* chunk and many priority-4
+  polygons in *early* chunks that exceed a (lowered) buffer, and assert the
+  priority-1 one is drawn. A `DrawTarget` that records filled pixels/spans (see
+  `marker.rs`'s `Buf`) makes the assertion concrete.
+
+**Acceptance:** a test that fails if collection ever reverts to chunk-order
+(non-priority) dropping.
+
+---
+
+## 2. Seam fix root cause vs. the 1px-overdraw tradeoff
+
+**Current state.** Chunk-seam "cracks" (background showing through where a
+polygon clipped across a chunk boundary splits into two pieces) are fixed by
+**outward span rounding** in `fill_polygon` (`viewer-rs/obcm-render/src/lib.rs`):
+`x0 = floor(left)`, `x1 = ceil(right)` so adjacent pieces overlap by ≤1px. See
+the long comment there. Verified: seam pixels 198 → 0 at heading 35; no
+regression at heading 0.
+
+**Cost.** It grows *every* polygon by ≤1px per side (~2.7% of pixels changed in
+the test view). Invisible for same-colored fills, ≤1px elsewhere — acceptable,
+but not free.
+
+**Root cause (for a zero-overdraw fix).** Adjacent clipped pieces carry
+*different* boundary-vertex sets (chunk-size-dependent densification in
+`obcm/serialize.py::_densify` / the per-chunk clip in `obcm/quadtree.py`), so
+the one shared map-space line gets two different `i32`-truncated pixel
+staircases in `Viewport::to_screen`. They diverge only when the seam is diagonal
+on screen — i.e. only when the view is rotated.
+
+**Approach if the 1px growth ever bothers us:** make adjacent pieces share
+identical boundary vertices — e.g. snap/normalize the densification of
+clip-boundary segments so both sides emit the same points, or stop clipping
+features per chunk. Bigger change (ingestion + repack); only worth it if the
+overdraw becomes visible. Pairs naturally with item 3.
+
+---
+
+## 3. `to_screen` truncates instead of rounding
+
+**Issue.** `Viewport::to_screen` (`viewer-rs/obcm-render/src/lib.rs`) ends with
+`(x as i32, y as i32)`, which truncates toward zero — asymmetric around the
+origin, and it feeds the staircase divergence in item 2.
+
+**Approach.** Switch to round-to-nearest (`libm::roundf`). It's more correct and
+may quietly improve sub-pixel quality, but it touches *all* projected geometry
+(polygon fill, lines, marker, and the `to_map` inverse used by `visible_bbox`),
+so it needs a visual pass with the repro command above at several headings/zooms
+and a check that the marker still lands correctly. Cheap to try; revert if it
+regresses anything. Won't fix the seam alone (vertex sets still differ) but is a
+prerequisite for a cleaner item-2 fix and good on its own.
+
+---
+
+## Later / lower priority
+
+- **Buffer balance at extreme zoom.** Whole-region overview saturates `spans`
+  *and* `rings` (points ~80%). The compile-time budget assert in `lib.rs` guards
+  ≤200 KB on the MCU, but the static spans/points/rings split isn't tuned to
+  real usage. Retune once there's device data.
+- **Within-level drops are quadtree-ordered** (same-priority features bunch NW
+  under saturation). A spatial stride / importance weighting would spread them.
+- **Stale planning doc.** `viewer-rs/docs/priority_rendering_plan.md` describes
+  the superseded boolean 2-pass design; `two_pass_descriptor_plan.md` is the
+  as-built record. Consolidate or remove the stale one.
+- **nRF5340 firmware bring-up** (separate track). Renderer is MCU-ready —
+  heapless, zero-alloc, budget-asserted ≤200 KB. Remaining work is the embassy +
+  LS021B7DD02 `DrawTarget` front-end. See the `obcm-followups` memory.
