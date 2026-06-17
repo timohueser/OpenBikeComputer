@@ -154,19 +154,30 @@ impl Screen {
 
 /// The "explorer's field map" palette in RGB565 (the format/style color space),
 /// so screen text and chrome quantize through the host `color_fn` exactly like
-/// map styles. Tune to the 64-color gamut later (parchment currently clips to
-/// white on the device-64 panel).
+/// map styles.
+///
+/// **Tuned to the 64-color (RGB222) gamut.** The panel only has 4 levels per
+/// channel (0/85/170/255), so each value below is chosen for the *quantized*
+/// result, with the device-64 color noted. (Earlier, true-color-picked values
+/// clipped: parchment → white, the tan accents → pink.) The trailing comments are
+/// the device-64 RGB each value lands on — keep them in sync if you retune.
 pub mod palette {
     /// Pack 8-bit RGB into RGB565.
     pub const fn rgb565(r: u8, g: u8, b: u8) -> u16 {
         (((r as u16) >> 3) << 11) | (((g as u16) >> 2) << 5) | ((b as u16) >> 3)
     }
 
-    pub const PARCHMENT: u16 = rgb565(0xEA, 0xDF, 0xC0);
-    pub const PARCHMENT_SHADE: u16 = rgb565(0xDF, 0xD0, 0xAB);
-    pub const HUD: u16 = rgb565(0x2E, 0x25, 0x1A);
-    pub const WOOD: u16 = rgb565(0x5B, 0x3F, 0x28);
-    pub const INK: u16 = rgb565(0x2C, 0x21, 0x14);
-    pub const AMBER: u16 = rgb565(0xE3, 0xA5, 0x2B);
-    pub const WARNING: u16 = rgb565(0xC0, 0x49, 0x2E);
+    pub const PARCHMENT: u16 = rgb565(234, 223, 165); // → (255,255,170) warm cream
+    pub const PARCHMENT_SHADE: u16 = rgb565(180, 170, 105); // → (170,170,85) tan
+    pub const HUD: u16 = rgb565(46, 37, 26); // → (0,0,0) near-black frame
+    pub const WOOD: u16 = rgb565(150, 100, 40); // → (170,85,0) wood brown
+    /// Lighter wood for inset borders / frame lines.
+    pub const WOOD_LIGHT: u16 = rgb565(180, 168, 100); // → (170,170,85) tan
+    pub const INK: u16 = rgb565(44, 33, 20); // → (0,0,0) text black
+    /// Muted ink for secondary / sub-label text.
+    pub const SUBTEXT: u16 = rgb565(110, 90, 58); // → (85,85,0) olive
+    /// Hairline rule between list rows.
+    pub const RULE: u16 = rgb565(180, 170, 100); // → (170,170,85) tan
+    pub const AMBER: u16 = rgb565(227, 165, 43); // → (255,170,0) accent
+    pub const WARNING: u16 = rgb565(192, 73, 46); // → (255,85,0) warning
 }
