@@ -6,5 +6,10 @@ description = "Desktop simulator for OBCM maps using embedded-graphics (same ren
 
 [dependencies]
 obcm = { path = "../obcm", features = ["render"] }
+obcm-app = { path = "../obcm-app" }
 embedded-graphics = "0.8"
-embedded-graphics-simulator = "0.6"
+# Native GUI host: the device-screen window and (next) the control panel. Pure
+# Rust window stack — no SDL2/Homebrew dependency anymore.
+eframe = "0.29"
+# PNG output for headless `--png` renders.
+image = { version = "0.25", default-features = false, features = ["png"] }

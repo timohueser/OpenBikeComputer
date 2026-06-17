@@ -1,0 +1,14 @@
+[package]
+name = "obcm-app"
+version = "0.1.0"
+edition = "2021"
+description = "OBCM device application + hardware-abstraction traits (no_std) — shared by the desktop simulator and the nRF5340 firmware"
+
+[dependencies]
+# default-features = false keeps `std` OUT of the shared app layer, so this crate
+# (and everything it pulls) compiles for the nRF5340's bare-metal target. The host
+# simulator re-enables std on `obcm` through its own dependency edge. `render`
+# brings the `Viewport` + `MapRenderer` the app drives; it's no_std.
+obcm = { path = "../obcm", default-features = false, features = ["render"] }
+# Needed only to name the `DrawTarget` bound on `App::render_frame`. no_std.
+embedded-graphics = "0.8"
