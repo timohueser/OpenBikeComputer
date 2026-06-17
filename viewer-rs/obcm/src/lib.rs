@@ -9,9 +9,6 @@
 //! Modules:
 //! - [`reader`] — header / style / LOD-table parsing and per-LOD query + decode.
 //! - [`color`] — RGB565 → display color conversions.
-//! - [`render`] (feature `render`) — the shared rendering path: projection, LOD
-//!   selection, painter ordering, polygon fill and line drawing, generic over an
-//!   `embedded-graphics` `DrawTarget`.
 //!
 //! All coordinates are integer microdegrees (1e-6 degrees), as stored in the
 //! file. Projection to screen space is the renderer's job.
@@ -23,14 +20,8 @@ extern crate alloc;
 pub mod color;
 pub mod reader;
 
-#[cfg(feature = "render")]
-pub mod render;
-
 pub use color::{rgb565_to_device64, rgb565_to_rgb888};
 pub use reader::{Feature, FeatureRef, Interiors, Kind, Lod, Reader, Style, HEADER_LEN};
-
-#[cfg(feature = "render")]
-pub use render::{MapRenderer, RenderStats, Viewport};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {

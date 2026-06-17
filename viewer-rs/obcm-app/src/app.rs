@@ -2,7 +2,8 @@
 //! driver that both hosts run.
 
 use embedded_graphics::draw_target::DrawTarget;
-use obcm::{MapRenderer, Reader, RenderStats, Viewport};
+use obcm::Reader;
+use obcm_render::{MapRenderer, RenderStats, Viewport};
 
 use crate::hal::{Fix, LocationSource};
 

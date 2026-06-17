@@ -1,7 +1,7 @@
 //! OBCM desktop simulator — host shell around the shared `obcm` renderer.
 //!
 //! All map drawing (projection, LOD selection, polygon fill, lines) lives in
-//! `obcm::render`, the same code the nRF5340 firmware will run against the
+//! `obcm_render`, the same code the nRF5340 firmware will run against the
 //! LS021B7DD02. This binary only owns the host concerns: argument parsing, the
 //! SDL window + pan/zoom event loop, PNG output, and the color policy (device
 //! 64-color quantization by default, or `--true-color`).
