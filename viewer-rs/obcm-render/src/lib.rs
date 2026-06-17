@@ -23,7 +23,7 @@ use embedded_graphics::{
     primitives::{Polyline, PrimitiveStyle, Rectangle},
 };
 
-use obcm::{BBox, Kind, Reader};
+use obcm_reader::{BBox, Kind, Reader};
 
 /// Meters of ground per microdegree of latitude (≈ Earth circumference / 360e6).
 const METERS_PER_MICRODEG_LAT: f32 = 0.111_320;

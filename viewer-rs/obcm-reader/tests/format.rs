@@ -4,9 +4,9 @@
 //! builder that mirrors `obcm/serialize.py` exactly, then asserts the reader
 //! parses it back. Building the bytes here (rather than checking in a binary
 //! fixture) keeps the Rust and Python encoders pinned to the same layout: if
-//! either drifts, these break. Runs without the `render` feature (no SDL).
+//! either drifts, these break.
 
-use obcm::{Error, Kind, Reader};
+use obcm_reader::{Error, Kind, Reader};
 
 const BRANCH_BIT: u32 = 0x8000_0000;
 const EMPTY_LEAF: u32 = 0x7FFF_FFFF;
@@ -265,14 +265,14 @@ fn query_single_leaf() {
     let r = Reader::new(&bytes).unwrap();
 
     // A view overlapping the global bbox hits the single leaf (chunk 0).
-    let hits = r.query(0, &obcm::BBox { min_lon: 100, min_lat: 100, max_lon: 200, max_lat: 200 });
+    let hits = r.query(0, &obcm_reader::BBox { min_lon: 100, min_lat: 100, max_lon: 200, max_lat: 200 });
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].0, 0);
     assert_eq!(hits[0].1, r.bbox); // leaf node bbox == global bbox
 
     // A view entirely outside the global bbox hits nothing.
     let miss =
-        r.query(0, &obcm::BBox { min_lon: 5000, min_lat: 5000, max_lon: 6000, max_lat: 6000 });
+        r.query(0, &obcm_reader::BBox { min_lon: 5000, min_lat: 5000, max_lon: 6000, max_lat: 6000 });
     assert!(miss.is_empty());
 }
 
@@ -371,14 +371,14 @@ fn quadtree_subdivision_and_node_bbox() {
     );
     let r = Reader::new(&bytes).unwrap();
 
-    let nw = obcm::BBox { min_lon: 0, min_lat: 500, max_lon: 500, max_lat: 1000 };
+    let nw = obcm_reader::BBox { min_lon: 0, min_lat: 500, max_lon: 500, max_lat: 1000 };
 
     // View inside the NW quadrant hits the leaf, with the NW node bbox.
-    let hits = r.query(0, &obcm::BBox { min_lon: 50, min_lat: 600, max_lon: 150, max_lat: 700 });
+    let hits = r.query(0, &obcm_reader::BBox { min_lon: 50, min_lat: 600, max_lon: 150, max_lat: 700 });
     assert_eq!(hits, vec![(0, nw)]);
 
     // View inside the (empty) SE quadrant hits nothing.
-    let se = r.query(0, &obcm::BBox { min_lon: 600, min_lat: 100, max_lon: 700, max_lat: 200 });
+    let se = r.query(0, &obcm_reader::BBox { min_lon: 600, min_lat: 100, max_lon: 700, max_lat: 200 });
     assert!(se.is_empty());
 
     // The feature's anchor is computed from the NW node's min corner (0,500):

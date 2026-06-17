@@ -2,7 +2,7 @@
 //! driver that both hosts run.
 
 use embedded_graphics::draw_target::DrawTarget;
-use obcm::Reader;
+use obcm_reader::Reader;
 use obcm_render::{MapRenderer, RenderStats, Viewport};
 
 use crate::hal::{Fix, LocationSource};
@@ -29,7 +29,7 @@ pub enum CameraMode {
 /// mode it's in, and the last known user fix.
 ///
 /// This is the shared core the host renders. The host owns the display size and
-/// the [`obcm::MapRenderer`]/draw target; each frame it calls [`update`] with the
+/// the [`obcm_render::MapRenderer`]/draw target; each frame it calls [`update`] with the
 /// platform's [`LocationSource`], then [`viewport`] to get the camera to render
 /// through. The split keeps display dimensions (240×320 on the device, a resized
 /// window on the host) out of the shared state.

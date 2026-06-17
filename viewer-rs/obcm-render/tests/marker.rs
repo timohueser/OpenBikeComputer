@@ -3,10 +3,8 @@
 //! reader build doesn't pull the graphics stack. Draws against a tiny in-memory
 //! `DrawTarget` and asserts the marker lands where it should.
 
-#![cfg(feature = "render")]
-
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
-use obcm::{MapRenderer, Viewport};
+use obcm_render::{MapRenderer, Viewport};
 
 const RED: Rgb888 = Rgb888::new(255, 0, 0);
 

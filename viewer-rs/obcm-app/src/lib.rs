@@ -3,7 +3,7 @@
 //! `no_std` so the **same** application logic runs in the desktop simulator and
 //! on the nRF5340 firmware, exactly like [`obcm`]'s reader and renderer already
 //! do. This crate adds no allocations of its own; the only heap use is inside the
-//! [`MapRenderer`](obcm::MapRenderer) scratch that [`App`] drives (see [`obcm`]),
+//! [`MapRenderer`](obcm_render::MapRenderer) scratch that [`App`] drives (see [`obcm_reader`]),
 //! which clears-not-frees each frame. This crate sits one level above the
 //! renderer: it owns *what the device is doing* — where the user is, where the
 //! camera looks, which mode it's in — and leaves *how pixels reach a screen* to
@@ -19,7 +19,7 @@
 //! - [`hal`] — the injected-hardware traits ([`LocationSource`], [`InputSource`])
 //!   and their data types ([`Fix`], [`Button`], [`ButtonEvent`]).
 //! - [`app`] — [`AppState`]: the camera + mode + last-known-fix, advanced one
-//!   tick at a time from the HAL and projected into an [`obcm::Viewport`].
+//!   tick at a time from the HAL and projected into an [`obcm_render::Viewport`].
 
 #![no_std]
 

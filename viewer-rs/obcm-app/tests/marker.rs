@@ -4,7 +4,7 @@
 //! tiny in-memory `DrawTarget` over a hand-built minimal v4 `.obcm`.
 
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
-use obcm::{rgb565_to_rgb888, Reader};
+use obcm_reader::{rgb565_to_rgb888, Reader};
 use obcm_app::{App, AppState, CameraMode, Fix, LocationSource};
 
 /// Marker color baked into the test file (RGB565 red → Rgb888 (255,0,0)).
