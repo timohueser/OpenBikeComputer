@@ -15,12 +15,16 @@ use std::time::Instant;
 
 use embedded_graphics::pixelcolor::Rgb888;
 use obcm::{rgb565_to_device64, rgb565_to_rgb888, Reader};
-use obcm_app::{App, AppState, Fix};
+use obcm_app::{App, AppState, Fix, LocationSource};
 
 mod framebuffer;
+mod gpx;
+mod gpx_player;
 mod gui;
 mod sim_location;
 use framebuffer::Framebuffer;
+use gpx::Track;
+use gpx_player::GpxPlayer;
 
 struct Args {
     map: String,
@@ -34,6 +38,12 @@ struct Args {
     /// Start in heading-up orientation with this course (degrees CW from north),
     /// so a rotated frame can be rendered headlessly (`--png`) or shown on launch.
     heading: Option<f32>,
+    /// Preload this GPX track for replay (the GUI opens with it loaded; `--png`
+    /// renders the fix at `--at`).
+    gpx: Option<String>,
+    /// With `--gpx --png`, the playback time (seconds) to render the fix at;
+    /// defaults to the track midpoint.
+    at: Option<f64>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -46,6 +56,8 @@ fn parse_args() -> Result<Args, String> {
         screenshot: None,
         true_color: false,
         heading: None,
+        gpx: None,
+        at: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -63,6 +75,8 @@ fn parse_args() -> Result<Args, String> {
             "--heading" => {
                 a.heading = Some(it.next().and_then(|s| s.parse().ok()).ok_or("bad --heading")?)
             }
+            "--gpx" => a.gpx = Some(it.next().ok_or("--gpx needs a path")?),
+            "--at" => a.at = Some(it.next().and_then(|s| s.parse().ok()).ok_or("bad --at")?),
             other => {
                 if a.map.is_empty() {
                     a.map = other.to_string();
@@ -112,7 +126,7 @@ fn main() {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: obcm-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG]");
+            eprintln!("error: {e}\nusage: obcm-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC]");
             std::process::exit(2);
         }
     };
@@ -154,6 +168,28 @@ fn main() {
         if let Some(deg) = args.heading {
             state.heading_up = true;
             state.user_fix = Some(Fix { lat: cy as i32, lon: cx as i32, course: Some(deg), speed_mps: None });
+        }
+        // `--gpx` renders the replayed fix at `--at` (default: track midpoint),
+        // a headless way to check the marker sits on the track with a derived
+        // heading. The fix's course drives heading-up just like a live replay.
+        if let Some(path) = &args.gpx {
+            match Track::load(std::path::Path::new(path)) {
+                Ok(track) => {
+                    let mut player = GpxPlayer::new(track);
+                    let at = args.at.unwrap_or(player.duration() / 2.0);
+                    player.seek(at);
+                    if let Some(fix) = player.poll() {
+                        state.heading_up = fix.course.is_some();
+                        state.user_fix = Some(fix);
+                        state.cam_lon = fix.lon as f64;
+                        state.cam_lat = fix.lat as f64;
+                    }
+                }
+                Err(e) => {
+                    eprintln!("cannot load GPX: {e}");
+                    std::process::exit(1);
+                }
+            }
         }
         let mut app = App::new(state);
         let mut fb = Framebuffer::new(args.width, args.height);

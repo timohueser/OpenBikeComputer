@@ -169,6 +169,17 @@ impl App {
         let vp = self.state.viewport(w, h);
         let bg_rgb565 = reader.backdrop_style().map_or(DEFAULT_BG_RGB565, |s| s.color);
         let bg = color_fn(bg_rgb565);
-        self.renderer.render(target, reader, &vp, bg, color_fn)
+        // Pass `color_fn` by reference so the marker overlay can reuse it after the
+        // map render (`&F: Fn` when `F: Fn`), keeping its quantization consistent.
+        let stats = self.renderer.render(target, reader, &vp, bg, &color_fn);
+
+        // Overlay the user-position marker on top of the map. The geometry lives in
+        // the shared renderer; this is the only glue between `AppState` and it.
+        if let Some(fix) = self.state.user_fix {
+            let marker_color = color_fn(reader.marker_color);
+            self.renderer.draw_marker(target, &vp, fix.lon, fix.lat, fix.course, marker_color);
+        }
+
+        stats
     }
 }

@@ -1,4 +1,4 @@
-//! OBCM **v3** format reader: header, style table, LOD table, and per-LOD
+//! OBCM **v4** format reader: header, style table, LOD table, and per-LOD
 //! quadtree query + chunk decode.
 //!
 //! All coordinates are integer microdegrees (1e-6 degrees), as stored in the
@@ -13,8 +13,8 @@ use alloc::vec::Vec;
 
 use crate::{BBox, Error};
 
-/// v3 header is fixed-size; everything after it is reached via explicit offsets.
-pub const HEADER_LEN: usize = 30;
+/// v4 header is fixed-size; everything after it is reached via explicit offsets.
+pub const HEADER_LEN: usize = 32;
 /// Each LOD table entry: `max_mpp f32, index_off u32, node_count u32, chunk_size u16, chunk_count u32`.
 pub const LOD_ENTRY_LEN: usize = 18;
 
@@ -149,6 +149,10 @@ pub struct Reader<'a> {
     data: &'a [u8],
     pub version: u8,
     pub bbox: BBox,
+    /// User-position marker color (RGB565), a global map-presentation property
+    /// stored in the header — resolved to a device pixel by the host's color
+    /// policy just like style colors, then drawn by [`crate::render`].
+    pub marker_color: u16,
     /// LOD layers ordered coarsest (0) → finest (N-1). Always at least one.
     lods: Vec<Lod>,
     /// Styles indexed by id (0..=255) for O(1) lookup during rendering.
@@ -164,7 +168,7 @@ impl<'a> Reader<'a> {
             return Err(Error::BadMagic);
         }
         let version = data[4];
-        if version != 3 {
+        if version != 4 {
             return Err(Error::BadVersion);
         }
         // Header field order: lat,lon,lat,lon (see serialize.py header pack).
@@ -175,6 +179,7 @@ impl<'a> Reader<'a> {
         let style_offset = rd_u32(data, 21) as usize;
         let lod_count = data[25] as usize;
         let lod_table_offset = rd_u32(data, 26) as usize;
+        let marker_color = rd_u16(data, 30);
 
         if style_offset < HEADER_LEN || style_offset > data.len() {
             return Err(Error::BadOffset);
@@ -193,6 +198,7 @@ impl<'a> Reader<'a> {
             data,
             version,
             bbox: BBox { min_lon, min_lat, max_lon, max_lat },
+            marker_color,
             lods,
             styles,
         })

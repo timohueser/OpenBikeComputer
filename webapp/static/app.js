@@ -289,6 +289,8 @@ function applyConfig(cfg) {
   }
   config.lods[0].max_mpp = null; // coarsest is always +inf
   config.features = config.features || {};
+  // User-position marker: a single global color (RGB565). Default bright red.
+  config.marker = config.marker || { color: "0xF800" };
   // A stylesheet may carry a `disabled` list of "cat/name" keys; everything
   // else defaults to enabled. Strip it from the working tree.
   const disabled = new Set(Array.isArray(config.disabled) ? config.disabled : []);
@@ -303,6 +305,7 @@ function applyConfig(cfg) {
     }
   }
   renderLodEditor();
+  renderMarkerEditor();
   renderStyleEditor();
 }
 
@@ -311,7 +314,7 @@ function applyConfig(cfg) {
 function serializeWorkingConfig() {
   const disabled = [];
   for (const [key, on] of enabled) if (on === false) disabled.push(key);
-  const out = { lods: config.lods, features: config.features };
+  const out = { lods: config.lods, features: config.features, marker: config.marker };
   if (disabled.length) out.disabled = disabled;
   return out;
 }
@@ -421,6 +424,41 @@ function renderLodEditor() {
   });
   table.appendChild(tbody);
   root.appendChild(table);
+}
+
+// User-position marker editor: a single color picker (shape/size are fixed in
+// the renderer). Mirrors the per-feature color control — an <input type="color">
+// alongside the raw RGB565 value.
+function renderMarkerEditor() {
+  const root = document.getElementById("marker-editor");
+  if (!root) return;
+  root.innerHTML = "";
+  if (!config.marker) config.marker = { color: "0xF800" };
+
+  const row = document.createElement("div");
+  row.className = "marker-row";
+
+  const lab = document.createElement("label");
+  lab.textContent = "Color";
+
+  const color = document.createElement("input");
+  color.type = "color";
+  color.value = rgb565ToHex(config.marker.color);
+
+  const label = document.createElement("span");
+  label.className = "rgb565";
+  label.textContent = config.marker.color;
+
+  color.oninput = () => {
+    config.marker.color = hexToRgb565(color.value);
+    label.textContent = config.marker.color;
+    scheduleSave();
+  };
+
+  row.appendChild(lab);
+  row.appendChild(color);
+  row.appendChild(label);
+  root.appendChild(row);
 }
 
 function addLod() {
@@ -767,7 +805,7 @@ function buildConfigForSubmit() {
     max_mpp: i === 0 ? null : (l.max_mpp != null ? l.max_mpp : null),
     simplify: l.simplify || 0,
   }));
-  const out = { lods, features: {} };
+  const out = { lods, features: {}, marker: config.marker };
   for (const cat of Object.keys(config.features)) {
     for (const name of Object.keys(config.features[cat])) {
       if (enabled.get(`${cat}/${name}`) === false) continue;
