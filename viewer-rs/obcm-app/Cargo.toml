@@ -9,7 +9,7 @@ description = "OBCM device application + hardware-abstraction traits (no_std) â€
 # (and everything it pulls) compiles for the nRF5340's bare-metal target. The host
 # simulator re-enables std on `obcm` through its own dependency edge. `render`
 # brings the `Viewport` + `MapRenderer` the app drives; it's no_std.
-obcm-reader = { path = "../obcm-reader", default-features = false }
+obcm-reader = { path = "../obcm-reader" }
 obcm-render = { path = "../obcm-render" }
 # Needed only to name the `DrawTarget` bound on `App::render_frame`. no_std.
 embedded-graphics = "0.8"

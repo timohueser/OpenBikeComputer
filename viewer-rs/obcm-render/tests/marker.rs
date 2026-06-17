@@ -68,7 +68,7 @@ impl DrawTarget for Buf {
 /// North-up viewport centered on (0,0); the anchor at (0,0) projects to the
 /// screen center.
 fn centered_vp() -> Viewport {
-    Viewport::new(200.0, 200.0, 0.0, 0.0, 1.0)
+    Viewport::new(200.0, 200.0, 0, 0, 1.0)
 }
 
 #[test]
