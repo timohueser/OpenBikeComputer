@@ -143,7 +143,12 @@ impl Viewport {
         let ry = -self.sin_c * ex - self.cos_c * ny;
         let x = rx * self.zoom + self.w / 2.0;
         let y = ry * self.zoom + self.h / 2.0;
-        (x as i32, y as i32)
+        // Round to nearest rather than truncate toward zero: `as i32` truncation
+        // is asymmetric around the origin (it biases toward the screen center) and
+        // feeds the staircase divergence behind the chunk-seam overdraw (see the
+        // `fill_polygon` comment). Round-to-nearest is symmetric and sub-pixel
+        // correct. `roundf` matches the marker glyph, which already rounds.
+        (libm::roundf(x) as i32, libm::roundf(y) as i32)
     }
 
     #[inline]
