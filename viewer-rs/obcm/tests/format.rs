@@ -1,4 +1,4 @@
-//! Format-contract tests for the OBCM v3 reader.
+//! Format-contract tests for the OBCM v4 reader.
 //!
 //! Each test builds a synthetic `.obcm` byte buffer with a small handwritten
 //! builder that mirrors `obcm/serialize.py` exactly, then asserts the reader
@@ -10,6 +10,8 @@ use obcm::{Error, Kind, Reader};
 
 const BRANCH_BIT: u32 = 0x8000_0000;
 const EMPTY_LEAF: u32 = 0x7FFF_FFFF;
+/// Distinctive (non-default) marker color so the round-trip test is meaningful.
+const MARKER: u16 = 0xABCD;
 
 // ---------------------------------------------------------------------------
 // Byte builders (mirror serialize.py)
@@ -30,7 +32,7 @@ fn build_file(
     styles: &[(u8, i8, u16, u8)],
     lods: &[LodSpec],
 ) -> Vec<u8> {
-    let style_off = 30usize;
+    let style_off = 32usize;
 
     let mut style_bytes = vec![styles.len() as u8];
     for &(id, z, color, weight) in styles {
@@ -65,11 +67,11 @@ fn build_file(
         payload.extend_from_slice(&chunk_bytes);
     }
 
-    // Header: <4sBiiiiIBI  magic, ver, min_lat, min_lon, max_lat, max_lon,
-    // style_off, lod_count, lod_table_off.
+    // Header: <4sBiiiiIBIH  magic, ver, min_lat, min_lon, max_lat, max_lon,
+    // style_off, lod_count, lod_table_off, marker_color.
     let mut f = Vec::new();
     f.extend_from_slice(b"OBCM");
-    f.push(3);
+    f.push(4);
     f.extend_from_slice(&bbox.1.to_le_bytes()); // min_lat
     f.extend_from_slice(&bbox.0.to_le_bytes()); // min_lon
     f.extend_from_slice(&bbox.3.to_le_bytes()); // max_lat
@@ -77,7 +79,8 @@ fn build_file(
     f.extend_from_slice(&(style_off as u32).to_le_bytes());
     f.push(lods.len() as u8);
     f.extend_from_slice(&(lod_tab_off as u32).to_le_bytes());
-    assert_eq!(f.len(), 30, "header must be 30 bytes");
+    f.extend_from_slice(&MARKER.to_le_bytes());
+    assert_eq!(f.len(), 32, "header must be 32 bytes");
 
     f.extend_from_slice(&style_bytes);
     f.extend_from_slice(&table);
@@ -188,7 +191,8 @@ fn header_and_lod_table() {
     let bytes = two_lod_file();
     let r = Reader::new(&bytes).unwrap();
 
-    assert_eq!(r.version, 3);
+    assert_eq!(r.version, 4);
+    assert_eq!(r.marker_color, MARKER);
     assert_eq!(r.bbox.min_lon, 0);
     assert_eq!(r.bbox.min_lat, 0);
     assert_eq!(r.bbox.max_lon, 1000);
@@ -202,6 +206,14 @@ fn header_and_lod_table() {
     assert_eq!(lods[0].chunk_size, CS);
     assert_eq!(lods[0].chunk_count, 1);
     assert_eq!(lods[1].chunk_count, 1);
+}
+
+#[test]
+fn marker_color_round_trips() {
+    // The header's marker color (v4) parses back unchanged at its fixed offset.
+    let bytes = two_lod_file();
+    let r = Reader::new(&bytes).unwrap();
+    assert_eq!(r.marker_color, MARKER);
 }
 
 #[test]
@@ -407,6 +419,6 @@ fn rejects_bad_input() {
     assert_eq!(err(&bytes), Error::BadMagic);
 
     let mut bytes = two_lod_file();
-    bytes[4] = 2; // version 2 no longer supported
+    bytes[4] = 3; // v3 (and earlier) no longer supported — only v4 is read
     assert_eq!(err(&bytes), Error::BadVersion);
 }

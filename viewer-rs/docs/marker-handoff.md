@@ -1,5 +1,15 @@
 # User-position marker — handoff guide
 
+> **STATUS: IMPLEMENTED.** All three parts landed: the format bumped **v3 → v4**
+> (header field for the marker color, the recommended design in §3), the webapp
+> gained a Marker color picker, and `MapRenderer::draw_marker` (chevron when
+> moving, diamond when stationary) is wired into `App::render_frame`. `monaco.obcm`
+> was re-packed to v4 from the cached PBF (the other root `*.obcm` are still v3 and
+> now obsolete — re-pack them when needed, since the v4 reader rejects v3 by
+> design). Tests added in `obcm/tests/format.rs` + `obcm/tests/marker.rs` +
+> `obcm-app/tests/marker.rs`; clippy clean; firmware target builds. The notes below
+> are kept as the original brief (they describe the *pre-change* v3 layout).
+
 **Read this first if you're picking up the "user-position marker" work.** It is a
 self-contained brief: the goal, the *abstraction boundaries* (read §2 twice — it's
 the whole point), the three parts (format color, webapp editor, shared renderer),

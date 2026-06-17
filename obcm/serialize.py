@@ -176,13 +176,13 @@ def serialize_tree(root, chunk_size: int, desc: str = "Serializing Quadtree"):
     return index_data, len(flat_index), b"".join(data_chunks), len(data_chunks)
 
 
-# Header sizes (bytes).
-V3_HEADER_LEN = 30
+# Header sizes (bytes). v4 appends a uint16 marker color to the v3 header.
+HEADER_LEN = 32
 LOD_ENTRY_LEN = 18
 
 
 def serialize_lods(lods, config: dict, global_bbox: Tuple[int, int, int, int]) -> bytes:
-    """Serialize a pyramid of LOD layers into the v3 .obcm format.
+    """Serialize a pyramid of LOD layers into the v4 .obcm format.
 
     `lods` is an ordered (coarsest -> finest) list of dicts:
         {"root": QuadtreeNode, "chunk_size": int, "max_mpp": float | None}
@@ -192,7 +192,14 @@ def serialize_lods(lods, config: dict, global_bbox: Tuple[int, int, int, int]) -
     """
     style_data = pack_style_dict(config)
     lod_count = len(lods)
-    lod_table_offset = V3_HEADER_LEN + len(style_data)
+    lod_table_offset = HEADER_LEN + len(style_data)
+
+    # User-position marker color (uint16 RGB565), a single global map-presentation
+    # property stored in the header. Defaults to bright red, which reads well over
+    # both sea and land. Accept an int or a "0x…" string, like pack_style_dict.
+    marker_color = config.get("marker", {}).get("color", 0xF800)
+    if isinstance(marker_color, str):
+        marker_color = int(marker_color, 16)
 
     # Flatten each layer's tree.
     blocks = []  # (index_bytes, node_count, chunk_bytes, chunk_count, chunk_size, max_mpp)
@@ -211,13 +218,15 @@ def serialize_lods(lods, config: dict, global_bbox: Tuple[int, int, int, int]) -
         payload += ib + cb
         cursor += len(ib) + len(cb)
 
-    # Header: Magic(4), Version(1), BBox(4x i32), StyleOff(4), LODCount(1), LODTableOff(4)
-    header = struct.pack("<4sBiiiiIBI",
+    # Header: Magic(4), Version(1), BBox(4x i32), StyleOff(4), LODCount(1),
+    # LODTableOff(4), MarkerColor(2).
+    header = struct.pack("<4sBiiiiIBIH",
                         b"OBCM",
-                        0x03,
+                        0x04,
                         global_bbox[1], global_bbox[0], global_bbox[3], global_bbox[2],
-                        V3_HEADER_LEN,
+                        HEADER_LEN,
                         lod_count,
-                        lod_table_offset)
+                        lod_table_offset,
+                        marker_color)
 
     return header + style_data + table + payload

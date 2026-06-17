@@ -11,11 +11,15 @@
 //! [`CameraMode::Free`]. A second "Controls" viewport (see [`SimGui::show_control_panel`])
 //! drives the simulated GPS fix — position, heading, zoom — and toggles Follow/Free.
 
+use std::path::Path;
+
 use eframe::egui;
 use obcm::Reader;
 use obcm_app::{App, AppState, CameraMode, Fix};
 
 use crate::framebuffer::Framebuffer;
+use crate::gpx::Track;
+use crate::gpx_player::GpxPlayer;
 use crate::sim_location::SimLocationSource;
 use crate::Args;
 
@@ -53,6 +57,18 @@ fn format_distance(m: f64) -> String {
         format!("{m:.0} m")
     } else {
         format!("{:.1} km", m / 1000.0)
+    }
+}
+
+/// Seconds as a playback clock: `M:SS`, or `H:MM:SS` past an hour. Used for the
+/// GPX scrubber's position/duration readout.
+fn format_clock(sec: f64) -> String {
+    let s = sec.max(0.0) as u64;
+    let (h, m, s) = (s / 3600, (s % 3600) / 60, s % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
     }
 }
 
@@ -95,6 +111,14 @@ struct SimGui {
     true_color: bool,
     /// Editable mirrors for the control-panel widgets.
     panel: PanelState,
+    /// The loaded GPX replay, if any. When `Some`, it drives the fix instead of
+    /// the manual [`SimLocationSource`] (the device's GPS would likewise override
+    /// any manual override). `None` = manual control via the panel sliders.
+    gpx: Option<GpxPlayer>,
+    /// A short "name — N pts, M:SS" status line for the loaded track.
+    gpx_label: Option<String>,
+    /// The last GPX load error, shown in the panel until the next successful load.
+    gpx_error: Option<String>,
     /// Set when the Controls window is closed; quits the whole app next frame.
     quit: bool,
     texture: Option<egui::TextureHandle>,
@@ -134,7 +158,7 @@ impl SimGui {
             None => PanelState { lat_deg: 0.0, lon_deg: 0.0, heading_deg: 0.0 },
         };
 
-        SimGui {
+        let mut gui = SimGui {
             app: App::new(state),
             loc,
             fb: Framebuffer::new(args.width, args.height),
@@ -143,11 +167,44 @@ impl SimGui {
             scale: args.scale,
             true_color: args.true_color,
             panel,
+            gpx: None,
+            gpx_label: None,
+            gpx_error: None,
             quit: false,
             texture: None,
             screenshot: args.screenshot,
             screenshot_requested: false,
             bytes,
+        };
+        // `--gpx` opens with a track loaded (paused at the start); press play in
+        // the panel to replay it.
+        if let Some(path) = &args.gpx {
+            gui.load_gpx(Path::new(path));
+        }
+        gui
+    }
+
+    /// Parse a GPX file and load it as the active replay (paused at the start),
+    /// or record the error for the panel to show.
+    fn load_gpx(&mut self, path: &Path) {
+        match Track::load(path) {
+            Ok(track) => {
+                let player = GpxPlayer::new(track);
+                let name =
+                    path.file_name().and_then(|n| n.to_str()).unwrap_or("track.gpx").to_string();
+                self.gpx_label = Some(format!(
+                    "{name} — {} pts, {}",
+                    player.point_count(),
+                    format_clock(player.duration())
+                ));
+                self.gpx = Some(player);
+                self.gpx_error = None;
+            }
+            Err(e) => {
+                self.gpx = None;
+                self.gpx_label = None;
+                self.gpx_error = Some(e);
+            }
         }
     }
 
@@ -155,7 +212,28 @@ impl SimGui {
     fn render_to_texture(&mut self, ctx: &egui::Context) {
         let reader = Reader::new(&self.bytes).expect("map validated in main()");
         let tc = self.true_color;
-        self.app.tick(&mut self.loc);
+
+        // Drive the app from whichever location source is active. A loaded GPX
+        // replay takes over from the manual panel fix (just as the device's GPS
+        // would); we advance it by this frame's wall-clock time before ticking.
+        if let Some(player) = self.gpx.as_mut() {
+            let dt = ctx.input(|i| i.stable_dt) as f64;
+            player.advance(dt);
+            self.app.tick(player);
+            // Reflect the replayed fix in the panel mirrors so the (disabled)
+            // position/heading widgets show the live values, and so manual control
+            // resumes from here if the track is ejected.
+            if let Some(f) = self.app.state.user_fix {
+                self.panel.lat_deg = f.lat as f64 / 1e6;
+                self.panel.lon_deg = f.lon as f64 / 1e6;
+                if let Some(c) = f.course {
+                    self.panel.heading_deg = c;
+                }
+            }
+        } else {
+            self.app.tick(&mut self.loc);
+        }
+
         self.app.render_frame(
             &mut self.fb,
             &reader,
@@ -230,44 +308,61 @@ impl SimGui {
             egui::ViewportId::from_hash_of("controls"),
             egui::ViewportBuilder::default()
                 .with_title("Controls")
-                .with_inner_size([300.0, 420.0]),
+                .with_inner_size([320.0, 580.0]),
             |ctx, _class| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     ui.heading("Simulated device");
                     ui.add_space(6.0);
 
+                    // Let sliders span the panel width instead of egui's narrow
+                    // default — leaves room for the value box on the right.
+                    ui.spacing_mut().slider_width = (ui.available_width() - 90.0).max(140.0);
+
+                    // While a GPX track is loaded it owns the fix (like the device's
+                    // GPS would), so the manual position/heading inputs are shown
+                    // read-only and just track the replay. Camera/zoom/orientation
+                    // stay live.
+                    let replaying = self.gpx.is_some();
+
                     // Position — the GPS fix, edited in degrees (stored as µdeg).
-                    egui::Grid::new("position").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-                        ui.label("Latitude");
-                        ui.add(
-                            egui::DragValue::new(&mut self.panel.lat_deg)
-                                .speed(1e-4)
-                                .range(-90.0..=90.0)
-                                .max_decimals(6)
-                                .suffix("°"),
+                    ui.add_enabled_ui(!replaying, |ui| {
+                        egui::Grid::new("position").num_columns(2).spacing([8.0, 6.0]).show(
+                            ui,
+                            |ui| {
+                                ui.label("Latitude");
+                                ui.add(
+                                    egui::DragValue::new(&mut self.panel.lat_deg)
+                                        .speed(1e-4)
+                                        .range(-90.0..=90.0)
+                                        .max_decimals(6)
+                                        .suffix("°"),
+                                );
+                                ui.end_row();
+                                ui.label("Longitude");
+                                ui.add(
+                                    egui::DragValue::new(&mut self.panel.lon_deg)
+                                        .speed(1e-4)
+                                        .range(-180.0..=180.0)
+                                        .max_decimals(6)
+                                        .suffix("°"),
+                                );
+                                ui.end_row();
+                            },
                         );
-                        ui.end_row();
-                        ui.label("Longitude");
-                        ui.add(
-                            egui::DragValue::new(&mut self.panel.lon_deg)
-                                .speed(1e-4)
-                                .range(-180.0..=180.0)
-                                .max_decimals(6)
-                                .suffix("°"),
-                        );
-                        ui.end_row();
                     });
 
                     ui.add_space(6.0);
                     ui.separator();
 
                     // Heading — rides on Fix.course (degrees CW from north).
-                    ui.label("Heading");
-                    ui.add(
-                        egui::Slider::new(&mut self.panel.heading_deg, 0.0..=360.0)
-                            .suffix("°")
-                            .step_by(1.0),
-                    );
+                    ui.add_enabled_ui(!replaying, |ui| {
+                        ui.label("Heading");
+                        ui.add(
+                            egui::Slider::new(&mut self.panel.heading_deg, 0.0..=360.0)
+                                .suffix("°")
+                                .step_by(1.0),
+                        );
+                    });
 
                     ui.add_space(6.0);
                     ui.separator();
@@ -327,6 +422,22 @@ impl SimGui {
                         ui.selectable_value(&mut self.app.state.heading_up, true, "Heading-up");
                     });
 
+                    ui.add_space(6.0);
+                    ui.separator();
+
+                    // GPX replay — load a recorded track and play it back as a
+                    // simulated GPS sensor (position + derived course/speed). The
+                    // player is the active `LocationSource` while a track is loaded.
+                    ui.label("GPX replay");
+                    if ui.button("Load GPX…").clicked() {
+                        if let Some(path) =
+                            rfd::FileDialog::new().add_filter("GPX track", &["gpx"]).pick_file()
+                        {
+                            self.load_gpx(&path);
+                        }
+                    }
+                    self.show_gpx_controls(ui);
+
                     if ctx.input(|i| i.viewport().close_requested()) {
                         self.quit = true;
                     }
@@ -340,6 +451,65 @@ impl SimGui {
             (self.panel.lon_deg * 1e6).round() as i32,
         );
         self.loc.set_course(self.panel.heading_deg);
+    }
+
+    /// The loaded-track controls: play/pause (auto-follows), a seek scrubber, and
+    /// a 1×–10× speed slider. Shows the load error (or nothing) when no track is
+    /// loaded. Split out of [`show_control_panel`] so the "eject" mutation of
+    /// `self.gpx` doesn't tangle with the active `&mut` borrow of the player.
+    fn show_gpx_controls(&mut self, ui: &mut egui::Ui) {
+        let Some(player) = self.gpx.as_mut() else {
+            if let Some(err) = &self.gpx_error {
+                ui.colored_label(egui::Color32::from_rgb(220, 80, 80), err);
+            }
+            return;
+        };
+
+        if let Some(label) = &self.gpx_label {
+            ui.label(label);
+        }
+
+        let dur = player.duration();
+        let mut eject = false;
+
+        ui.horizontal(|ui| {
+            let play_label = if player.is_playing() { "⏸ Pause" } else { "▶ Play" };
+            if ui.button(play_label).clicked() {
+                player.toggle();
+                // Pressing play tracks the moving fix; the user can still switch
+                // back to Free to pan around mid-playback.
+                if player.is_playing() {
+                    self.app.state.mode = CameraMode::Follow;
+                }
+            }
+            if ui.button("⏏ Eject").clicked() {
+                eject = true;
+            }
+        });
+
+        if dur > 0.0 {
+            // Scrubber — seek anywhere in the track, playing or paused.
+            let mut t = player.time();
+            let resp =
+                ui.add(egui::Slider::new(&mut t, 0.0..=dur).show_value(false).text("seek"));
+            if resp.changed() {
+                player.seek(t);
+            }
+            ui.label(format!("{} / {}", format_clock(player.time()), format_clock(dur)));
+
+            // Playback speed — real time (1×) up to 10×.
+            let mut speed = player.speed();
+            if ui.add(egui::Slider::new(&mut speed, 1.0..=10.0).suffix("×")).changed() {
+                player.set_speed(speed);
+            }
+        } else {
+            ui.label("track has no duration to replay");
+        }
+
+        if eject {
+            self.gpx = None;
+            self.gpx_label = None;
+        }
     }
 }
 

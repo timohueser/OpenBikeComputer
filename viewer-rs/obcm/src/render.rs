@@ -315,6 +315,81 @@ impl MapRenderer {
 
         RenderStats { features: count, lod }
     }
+
+    /// Draw the user-position marker: a chevron at `(lon, lat)` pointing along
+    /// `course` (degrees CW from north), or a non-directional diamond when
+    /// `course` is `None` (stationary fix). Screen-space size is fixed
+    /// (zoom-independent). Call **after** [`render`](MapRenderer::render) so it
+    /// sits on top of the map. Skips drawing when the anchor projects outside the
+    /// view (with a small margin), so an off-screen fix in Free mode draws nothing.
+    ///
+    /// `color` is the already-resolved device color (the app passes it through the
+    /// host's `color_fn`, same as map styles), so the marker quantizes correctly
+    /// on the device and stays true-color in the simulator.
+    pub fn draw_marker<D>(
+        &mut self,
+        target: &mut D,
+        vp: &Viewport,
+        lon: i32,
+        lat: i32,
+        course: Option<f32>,
+        color: D::Color,
+    ) where
+        D: DrawTarget,
+    {
+        let (w, h) = (vp.w as i32, vp.h as i32);
+        let (sx, sy) = vp.to_screen(lon, lat);
+        // Cull when the anchor is well off-screen (Free-mode fix outside the view).
+        // The glyph is small, so a modest margin keeps a just-off-edge marker visible.
+        const MARGIN: i32 = 16;
+        if sx < -MARGIN || sx > w + MARGIN || sy < -MARGIN || sy > h + MARGIN {
+            return;
+        }
+
+        // On-screen "forward" unit vector: project a point a ground step ahead
+        // along the course and take the screen delta. Letting the projection do
+        // the rotation makes this correct for both north-up and heading-up with no
+        // special case. The step is sized so integer screen rounding barely skews
+        // the direction; we normalize, so its exact length doesn't matter.
+        let forward = course.and_then(|deg| {
+            let theta = (deg as f64).to_radians();
+            let step = (64.0 / vp.zoom).clamp(1.0, 100_000.0);
+            let lon2 = lon as f64 + libm::sin(theta) * step / vp.aspect;
+            let lat2 = lat as f64 + libm::cos(theta) * step;
+            let (sx2, sy2) = vp.to_screen(lon2 as i32, lat2 as i32);
+            let (dx, dy) = ((sx2 - sx) as f64, (sy2 - sy) as f64);
+            let len = libm::sqrt(dx * dx + dy * dy);
+            (len > 1e-3).then(|| (dx / len, dy / len))
+        });
+
+        let (cx, cy) = (sx as f64, sy as f64);
+        let pt = |x: f64, y: f64| Point::new(libm::round(x) as i32, libm::round(y) as i32);
+
+        self.screen.clear();
+        let ring_len = match forward {
+            // Chevron: a tip a bit ahead and two base corners swept back and out.
+            Some((fx, fy)) => {
+                let (rx, ry) = (-fy, fx); // right perpendicular
+                const TIP: f64 = 9.0;
+                const BACK: f64 = 5.0;
+                const HALF: f64 = 6.0;
+                self.screen.push(pt(cx + fx * TIP, cy + fy * TIP));
+                self.screen.push(pt(cx - fx * BACK + rx * HALF, cy - fy * BACK + ry * HALF));
+                self.screen.push(pt(cx - fx * BACK - rx * HALF, cy - fy * BACK - ry * HALF));
+                3
+            }
+            // Stationary glyph: a small orientation-free diamond.
+            None => {
+                const R: f64 = 5.0;
+                self.screen.push(pt(cx, cy - R));
+                self.screen.push(pt(cx + R, cy));
+                self.screen.push(pt(cx, cy + R));
+                self.screen.push(pt(cx - R, cy));
+                4
+            }
+        };
+        fill_polygon(target, &self.screen, &[ring_len], color, w, h, &mut self.xs);
+    }
 }
 
 /// Scanline even-odd polygon fill. `screen` holds every ring's projected points

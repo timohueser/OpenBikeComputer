@@ -1,4 +1,4 @@
-# OBCM File Format Specification (v3)
+# OBCM File Format Specification (v4)
 
 OBCM (OpenStreetMap Binary Chunked Map) is a compact binary map format designed
 for efficient rendering on memory-constrained devices such as microcontrollers
@@ -6,12 +6,15 @@ for efficient rendering on memory-constrained devices such as microcontrollers
 Rust crate (`viewer-rs/obcm`, shared by the desktop simulator and the nRF5340
 firmware).
 
-**Version 3** introduces a **level-of-detail (LOD) pyramid**: a file holds N
+**Version 3** introduced a **level-of-detail (LOD) pyramid**: a file holds N
 self-contained detail levels, each its own quadtree + chunk set with geometry
 simplified to that level's resolution. The renderer reads only the level that
 matches the current zoom, so zooming out touches a small coarse layer instead of
-decoding fine geometry just to skip it. **v3 is the only supported version; v2
-(single detail level) has been dropped.**
+decoding fine geometry just to skip it.
+
+**Version 4** appends a single 2-byte field to the header — the **user-position
+marker color** (RGB565). Nothing else changes. **v4 is the only supported version**;
+earlier versions (v3 LOD-only, v2 single detail level) have been dropped.
 
 ## Design principles
 
@@ -36,7 +39,7 @@ screen space is the renderer's responsibility, not the format's.
 ## File layout
 
 ```
-[Header]                            (30 bytes, fixed)
+[Header]                            (32 bytes, fixed)
 [Style Table]                       (global — shared by all LODs)
 [LOD Table]                         (LOD Count entries)
 [LOD 0 Index][LOD 0 Data Chunks]    (coarsest)
@@ -50,14 +53,14 @@ The byte layout is produced by `obcm/serialize.py::serialize_lods` and parsed by
 
 ---
 
-## 1. Header (30 bytes)
+## 1. Header (32 bytes)
 
-Packed as `struct "<4sBiiiiIBI"`.
+Packed as `struct "<4sBiiiiIBIH"`.
 
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
 | 0 | Magic | 4 | `char[4]` | Must be `b"OBCM"` |
-| 4 | Version | 1 | `uint8` | `0x03` |
+| 4 | Version | 1 | `uint8` | `0x04` |
 | 5 | Min Lat | 4 | `int32` | Global bbox min latitude (microdegrees) |
 | 9 | Min Lon | 4 | `int32` | Global bbox min longitude |
 | 13 | Max Lat | 4 | `int32` | Global bbox max latitude |
@@ -65,9 +68,21 @@ Packed as `struct "<4sBiiiiIBI"`.
 | 21 | Style Offset | 4 | `uint32` | Byte offset to the Style Table |
 | 25 | LOD Count | 1 | `uint8` | Number of LOD levels (≥ 1) |
 | 26 | LOD Table Offset | 4 | `uint32` | Byte offset to the LOD Table |
+| 30 | Marker Color | 2 | `uint16` | User-position marker color (RGB565) |
 
 Note the bbox field order in the file is **lat, lon, lat, lon**. In practice the
-Style Table immediately follows the header, so `Style Offset` is `30`.
+Style Table immediately follows the header, so `Style Offset` is `32`.
+
+### Marker Color
+
+The **user-position marker** (a chevron drawn at the user's GPS fix, pointing
+along their course) is a single global map-presentation property, so its color
+lives in the header rather than the per-feature Style Table — the marker is not an
+OSM feature. It is RGB565 like every style color and is resolved to a device pixel
+through the same render-time color policy (quantized to 64 colors on the
+LS021B7DD02, true-color in the simulator). The marker's **shape and size are fixed**
+in the renderer; only its color is map-configurable (the webapp editor sets it).
+The default is `0xF800` (bright red), which reads well over both sea and land.
 
 ---
 
