@@ -153,10 +153,13 @@ fn aspect_for_lat(cam_lat: i32) -> f32 {
 }
 
 /// What a single render call drew.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct RenderStats {
-    pub features: usize,
     pub lod: usize,
+    pub features_tried: usize,
+    pub features_drawn: usize,
+    pub points_tried: usize,
+    pub points_drawn: usize,
 }
 
 /// One visible feature's draw metadata plus the ranges locating its geometry in
@@ -220,6 +223,7 @@ impl MapRenderer {
 
         let lod = reader.select_lod_for_mpp(vp.meters_per_pixel());
         let view = vp.visible_bbox();
+        let mut stats = RenderStats { lod, ..Default::default() };
 
         // --- Collect phase: stream visible features into the frame buffers. ---
         // Split borrows so the decode callback can fill `frame_*`/`spans` while
@@ -248,6 +252,38 @@ impl MapRenderer {
                 };
                 let pts = f.points();
                 let lens = f.ring_lens();
+
+                stats.features_tried += 1;
+                stats.points_tried += pts.len();
+
+                if pts.is_empty() {
+                    return;
+                }
+                let mut min_lon = pts[0].0;
+                let mut max_lon = pts[0].0;
+                let mut min_lat = pts[0].1;
+                let mut max_lat = pts[0].1;
+                for &(lon, lat) in pts.iter().skip(1) {
+                    min_lon = min_lon.min(lon);
+                    max_lon = max_lon.max(lon);
+                    min_lat = min_lat.min(lat);
+                    max_lat = max_lat.max(lat);
+                }
+                let feat_bbox = BBox { min_lon, min_lat, max_lon, max_lat };
+                if !feat_bbox.intersects(&view) {
+                    return;
+                }
+
+                if spans.is_full()
+                    || frame_points.capacity() - frame_points.len() < pts.len()
+                    || frame_ring_lens.capacity() - frame_ring_lens.len() < lens.len()
+                {
+                    return;
+                }
+
+                stats.features_drawn += 1;
+                stats.points_drawn += pts.len();
+
                 let _ = spans.push(Span {
                     kind: f.kind,
                     z: style.z_index,
@@ -268,7 +304,6 @@ impl MapRenderer {
 
         // --- Draw phase. ---
         let (w, h) = (vp.w as i32, vp.h as i32);
-        let count = spans.len();
         for span in spans.iter() {
             let ring_lens = &frame_ring_lens[span.ring_start..span.ring_start + span.ring_count];
             let total: usize = ring_lens.iter().sum();
@@ -322,7 +357,7 @@ impl MapRenderer {
             }
         }
 
-        RenderStats { features: count, lod }
+        stats
     }
 
     /// Draw the user-position marker: a chevron at `(lon, lat)` pointing along

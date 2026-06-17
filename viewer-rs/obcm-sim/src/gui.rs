@@ -234,13 +234,14 @@ impl SimGui {
             self.app.tick(&mut self.loc);
         }
 
-        self.app.render_frame(
+        let stats = self.app.render_frame(
             &mut self.fb,
             &reader,
             self.dev_w as f32,
             self.dev_h as f32,
             |c| crate::color_of(c, tc),
         );
+        println!("RenderStats: LOD={}, Features: {}/{} drawn, Points: {}/{} drawn", stats.lod, stats.features_drawn, stats.features_tried, stats.points_drawn, stats.points_tried);
 
         let image =
             egui::ColorImage::from_rgb([self.dev_w as usize, self.dev_h as usize], self.fb.as_rgb888());

@@ -200,7 +200,7 @@ fn main() {
             color_of(c, tc)
         });
         let ms = t0.elapsed().as_secs_f64() * 1000.0;
-        eprintln!("rendered {} features (LOD {}) in {ms:.2} ms", stats.features, stats.lod);
+        eprintln!("rendered {}/{} features (LOD {}) in {ms:.2} ms", stats.features_drawn, stats.features_tried, stats.lod);
 
         if let Err(e) = write_png(&fb, args.scale, path) {
             eprintln!("{e}");
