@@ -5,13 +5,10 @@ use embedded_graphics::draw_target::DrawTarget;
 use obcm_reader::Reader;
 use obcm_render::{MapRenderer, RenderStats, Viewport};
 
-use crate::hal::{Fix, LocationSource};
-
-/// Fallback background when a map has no backdrop style (degenerate / empty style
-/// table) — a dark grey in RGB565, mapped through the host's color policy like
-/// any other style color so it works on true-color and quantized displays alike.
-/// Real maps carry a sea/background backdrop, so this is rarely hit.
-const DEFAULT_BG_RGB565: u16 = 0x2104; // ≈ (16, 16, 16)
+use crate::activity::{Activity, Mode};
+use crate::hal::{Fix, InputSource, LocationSource};
+use crate::input::{Gesture, Gestures, DEFAULT_HOLD_MS};
+use crate::screen::{self, Ctx, HomeScreen, MapScreen, Render, Screen, Stack};
 
 /// How the camera relates to the user's position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,52 +106,111 @@ impl AppState {
 
 /// The whole device application, ready to run a frame.
 ///
-/// This is the single entry point both hosts share: the simulator and the
-/// nRF5340 firmware each construct one `App`, then per frame call [`tick`] with
-/// their platform's [`LocationSource`] and [`render_frame`] with their display.
-/// All the glue between *state* and *pixels* — LOD-driving viewport, backdrop
-/// background, the reusable [`MapRenderer`] and its scratch buffers — lives here
-/// so neither host reimplements it.
+/// The single entry point both hosts share: the simulator and the firmware each
+/// construct one `App`, then per frame [`tick`](App::tick) it with their
+/// platform's [`LocationSource`], feed raw controls through
+/// [`handle_input`](App::handle_input) with their [`InputSource`] + millis clock,
+/// and [`render_frame`](App::render_frame) it to their display. `App` owns the
+/// screen stack, the shared gesture recognizer, the camera [`AppState`], the ride
+/// [`Activity`], and the reusable [`MapRenderer`]; each frame it runs
+/// poll-inputs → top-screen `handle` → apply `Transition` → draw the stack.
 ///
 /// ```ignore
-/// // Both hosts run this same shape:
 /// let mut app = App::new(AppState::new(cx, cy, zoom));
 /// loop {
-///     app.tick(&mut location_source);          // GPS / control panel / GPX
-///     app.render_frame(&mut display, &reader,   // SDL-free buffer / LS021B7DD02
-///                      w, h, color_policy);
+///     app.tick(&mut location_source);              // GPS / control panel / GPX
+///     app.handle_input(now_ms, &mut input_source); // encoder + Back → gestures
+///     app.render_frame(&mut display, &reader, w, h, color_policy);
 /// }
 /// ```
-///
-/// [`tick`]: App::tick
-/// [`render_frame`]: App::render_frame
 pub struct App {
-    /// The view state — public so the host's UI (control panel, buttons) can read
-    /// and adjust mode/zoom/camera directly.
+    /// The camera / orientation / last-fix state — public so the host's mouse
+    /// pan/zoom and control panel can read and adjust it directly (the Map screen
+    /// renders from the very same state).
     pub state: AppState,
+    /// The ride mode + (later) tracking accumulators.
+    pub activity: Activity,
+    /// The screen stack (root = Home). The top screen receives input; drawing
+    /// starts from the topmost opaque screen so overlays composite over the map.
+    stack: Stack,
     /// Reused renderer; clears (not frees) its scratch each frame, so steady-state
     /// rendering does no allocation — important on the MCU.
     renderer: MapRenderer,
+    /// The shared gesture recognizer (raw events + clock → the five gestures).
+    gestures: Gestures,
+    /// The most recently recognized gesture, for the host's input readout.
+    last_gesture: Option<Gesture>,
+    /// Millis at the last [`handle_input`](App::handle_input), passed to draw.
+    now_ms: u32,
+    /// In-flight encoder / Back hold-progress (0.0–1.0) for the confirm ring.
+    enc_progress: f32,
+    back_progress: f32,
 }
 
 impl App {
+    /// Build the app. The stack starts at `[Home, Map]` in mode Riding — the host
+    /// opens on the live map, with Home as the always-present root that Finish /
+    /// Discard return to. (The device's real boot — start at Home/Idle and push
+    /// Map when a route loads — arrives with the Route menu.)
     pub fn new(state: AppState) -> Self {
-        App { state, renderer: MapRenderer::new() }
+        let mut stack = Stack::new();
+        let _ = stack.push(Screen::Home(HomeScreen::new()));
+        let _ = stack.push(Screen::Map(MapScreen::new()));
+        App {
+            state,
+            activity: Activity::new(Mode::Riding),
+            stack,
+            renderer: MapRenderer::new(),
+            gestures: Gestures::new(DEFAULT_HOLD_MS),
+            last_gesture: None,
+            now_ms: 0,
+            enc_progress: 0.0,
+            back_progress: 0.0,
+        }
     }
 
-    /// Advance the app one tick from the location source. Buttons
-    /// ([`InputSource`](crate::InputSource)) join this signature when input
-    /// handling lands.
+    /// Advance one tick from the location source (recenters the camera on the new
+    /// fix in Follow mode).
     pub fn tick(&mut self, loc: &mut dyn LocationSource) {
         self.state.update(loc);
     }
 
-    /// Render the current state into `target`, a `w`×`h` pixel display.
+    /// Drain raw control input through the shared recognizer and dispatch each
+    /// resulting gesture to the top screen, applying the navigation transition it
+    /// returns. `now_ms` is the host/MCU millis clock. Call once per frame even
+    /// with no pending events — that is how a held button's long-press fires at
+    /// its threshold.
+    pub fn handle_input(&mut self, now_ms: u32, input: &mut dyn InputSource) {
+        self.now_ms = now_ms;
+        while let Some(ev) = input.poll() {
+            if let Some(g) = self.gestures.on_event(ev, now_ms) {
+                self.dispatch(g);
+            }
+        }
+        if let Some(g) = self.gestures.tick(now_ms) {
+            self.dispatch(g);
+        }
+        self.enc_progress = self.gestures.encoder_progress(now_ms);
+        self.back_progress = self.gestures.back_progress(now_ms);
+    }
+
+    /// Route one gesture to the top screen and apply the transition it returns.
+    fn dispatch(&mut self, g: Gesture) {
+        self.last_gesture = Some(g);
+        let App { state, activity, stack, now_ms, .. } = self;
+        let mut cx = Ctx { state, activity, now_ms: *now_ms };
+        let t = stack.last_mut().expect("the stack always has the Home root").handle(g, &mut cx);
+        screen::apply(stack, t);
+    }
+
+    /// Render the current screen and any overlays above it into `target`, a
+    /// `w`×`h` pixel display. Draws from the topmost *opaque* screen upward, so an
+    /// overlay (Ride control) composites over the still-visible map. Returns the
+    /// map [`RenderStats`] for the host's stats panel.
     ///
     /// `color_fn` maps a style's RGB565 to the target's pixel color — the one
     /// genuinely display-specific policy (the simulator picks true-color vs.
     /// device-64 quantization; the firmware passes its panel's native mapping).
-    /// The backdrop fill is derived here so it's consistent across hosts.
     pub fn render_frame<D, F>(
         &mut self,
         target: &mut D,
@@ -167,20 +223,45 @@ impl App {
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
-        let vp = self.state.viewport(w, h);
-        let bg_rgb565 = reader.backdrop_style().map_or(DEFAULT_BG_RGB565, |s| s.color);
-        let bg = color_fn(bg_rgb565);
-        // Pass `color_fn` by reference so the marker overlay can reuse it after the
-        // map render (`&F: Fn` when `F: Fn`), keeping its quantization consistent.
-        let stats = self.renderer.render(target, reader, &vp, bg, &color_fn);
-
-        // Overlay the user-position marker on top of the map. The geometry lives in
-        // the shared renderer; this is the only glue between `AppState` and it.
-        if let Some(fix) = self.state.user_fix {
-            let marker_color = color_fn(reader.marker_color);
-            self.renderer.draw_marker(target, &vp, fix.lon, fix.lat, fix.course, marker_color);
+        let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
+        let App { state, activity, renderer, stack, now_ms, enc_progress, .. } = self;
+        let mut rx = Render {
+            reader,
+            renderer,
+            state,
+            activity,
+            w,
+            h,
+            now_ms: *now_ms,
+            hold_progress: *enc_progress,
+        };
+        let mut stats = RenderStats::default();
+        for (i, scr) in stack.iter().enumerate().skip(base) {
+            let s = scr.draw(target, &mut rx, &color_fn);
+            if i == base {
+                stats = s;
+            }
         }
-
         stats
+    }
+
+    /// The most recently recognized gesture (host input readout), if any.
+    pub fn last_gesture(&self) -> Option<Gesture> {
+        self.last_gesture
+    }
+
+    /// In-flight encoder hold-progress (0.0–1.0) for the confirm-ring readout.
+    pub fn encoder_hold_progress(&self) -> f32 {
+        self.enc_progress
+    }
+
+    /// In-flight Back hold-progress (0.0–1.0).
+    pub fn back_hold_progress(&self) -> f32 {
+        self.back_progress
+    }
+
+    /// The current operating mode.
+    pub fn mode(&self) -> Mode {
+        self.activity.mode
     }
 }

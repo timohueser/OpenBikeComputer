@@ -17,7 +17,7 @@ use eframe::egui;
 use obcm_reader::Reader;
 use obcm_app::{App, AppState, Button, CameraMode, Fix};
 
-use crate::device_input::DeviceInput;
+use crate::device_input::{label, DeviceInput};
 use crate::framebuffer::Framebuffer;
 use crate::gpx::Track;
 use crate::gpx_player::GpxPlayer;
@@ -331,9 +331,10 @@ impl SimGui {
     /// **Back** button — emulated to resemble the real interface. Turn the knob by
     /// scrolling over it or dragging around it; PUSH / BACK are press-and-hold
     /// (held past the threshold they become `Hold` / `Back-hold`); the keyboard
-    /// mirrors all of it. Raw events run through the shared `obcm_app::Gestures`
-    /// recognizer; the recognized gesture and hold-progress are shown live. Screens
-    /// (a later slice) will consume these gestures — today this proves the path.
+    /// mirrors all of it. Raw events feed [`App::handle_input`], which runs the
+    /// shared recognizer and drives the screen stack — so the encoder actually
+    /// zooms the map, pauses into Ride control, etc. The recognized gesture and
+    /// hold-progress are read back for the live readout.
     fn show_device_controls(&mut self, ui: &mut egui::Ui) {
         ui.label(egui::RichText::new("Device controls — encoder + Back").strong());
         ui.label(egui::RichText::new("scroll or drag the knob to turn").weak().size(11.0));
@@ -341,7 +342,7 @@ impl SimGui {
 
         // --- Knob: a round encoder with a pointer notch + hold-progress ring. ---
         let knob_angle = self.input.knob_angle();
-        let enc_progress = self.input.encoder_progress();
+        let enc_progress = self.app.encoder_hold_progress();
         const SZ: f32 = 110.0;
         let resp = ui
             .vertical_centered(|ui| {
@@ -412,16 +413,18 @@ impl SimGui {
         self.input.set_button(Button::Encoder, push_resp.is_pointer_button_down_on() || enc_key);
         self.input.set_button(Button::Back, back_resp.is_pointer_button_down_on() || back_key);
 
-        // Recognize this frame's gestures (also fires a long-press at its threshold).
-        self.input.pump();
+        // Run this frame's raw events through the shared recognizer + screen stack
+        // (the exact path the firmware uses), firing long-press at its threshold.
+        let now = self.input.now_ms();
+        self.app.handle_input(now, &mut self.input);
 
-        // --- Live readout. ---
+        // --- Live readout (read back from the app). ---
         ui.add_space(8.0);
-        let last = self.input.last_gesture().unwrap_or("(none)").to_owned();
+        let last = self.app.last_gesture().map(label).unwrap_or_else(|| "(none)".to_owned());
         ui.label(egui::RichText::new(format!("Last gesture:  {last}")).size(16.0).strong());
 
-        let ep = self.input.encoder_progress();
-        let bp = self.input.back_progress();
+        let ep = self.app.encoder_hold_progress();
+        let bp = self.app.back_hold_progress();
         if ep > 0.0 {
             ui.add(egui::ProgressBar::new(ep).desired_width(220.0).text("encoder hold"));
         }

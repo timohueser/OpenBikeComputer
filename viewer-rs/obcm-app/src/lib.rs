@@ -20,15 +20,23 @@
 //!   and their data types ([`Fix`], [`Button`], [`ButtonEvent`], [`InputEvent`]).
 //! - [`input`] — the shared gesture recognizer ([`Gestures`]) turning raw
 //!   [`InputEvent`]s + a millis clock into the five UI [`Gesture`]s.
-//! - [`app`] — [`AppState`]: the camera + mode + last-known-fix, advanced one
-//!   tick at a time from the HAL and projected into an [`obcm_render::Viewport`].
+//! - [`screen`] — the modular screen system: the [`Screen`] enum, the
+//!   [`Transition`] navigation stack, and the per-screen `handle`/`draw`.
+//! - [`activity`] — the ride/tracking model ([`Activity`] + [`Mode`]).
+//! - [`app`] — [`App`]: owns the screen stack, the gesture recognizer, the camera
+//!   [`AppState`] and the renderer, and drives a frame; [`AppState`] is the camera
+//!   core projected into an [`obcm_render::Viewport`].
 
 #![no_std]
 
+pub mod activity;
 pub mod app;
 pub mod hal;
 pub mod input;
+pub mod screen;
 
+pub use activity::{Activity, Mode};
 pub use app::{App, AppState, CameraMode};
 pub use hal::{Button, ButtonEvent, Fix, InputEvent, InputSource, LocationSource};
 pub use input::{Gesture, Gestures, DEFAULT_HOLD_MS};
+pub use screen::{Screen, Transition};

@@ -1,20 +1,21 @@
-//! Host-side device-input emulation — the bridge from the control panel's
-//! knob / PUSH / BACK widgets and keyboard to the shared gesture recognizer.
+//! Host-side device-input emulation — the control panel's knob / PUSH / BACK
+//! widgets and keyboard, turned into raw [`InputEvent`]s for the app.
 //!
-//! The egui widgets in [`crate::gui`] push raw [`InputEvent`]s here each frame
-//! (knob drag/scroll → [`InputEvent::Turn`] detents; PUSH/BACK press-hold and the
-//! Enter/Backspace keys → button edges); [`DeviceInput::pump`] then drains them
-//! through [`obcm_app::Gestures`] with a millis clock, producing the five
-//! [`Gesture`]s. This is the brief's "real device-input emulation path" — the
-//! existing GPS/camera widgets stay a separate dev tool. Screens (a later slice)
-//! will consume the gestures; for now they drive the panel's readout so the
-//! controls are visibly working.
+//! The egui widgets in [`crate::gui`] push raw events here each frame (knob
+//! drag/scroll → [`InputEvent::Turn`] detents; PUSH/BACK press-hold and the
+//! Enter/Backspace keys → button edges). [`DeviceInput`] implements
+//! [`InputSource`], so it drops straight into [`obcm_app::App::handle_input`],
+//! which runs the *shared* gesture recognizer and dispatches the gestures to the
+//! screen stack — the exact path the firmware uses with real GPIO. This is the
+//! brief's "real device-input emulation path"; the existing GPS/camera widgets
+//! stay a separate dev tool. It also owns the millis clock (since construction)
+//! and the visual knob angle for drawing.
 
 use std::collections::VecDeque;
 use std::f32::consts::{PI, TAU};
 use std::time::Instant;
 
-use obcm_app::{Button, ButtonEvent, Gesture, Gestures, InputEvent};
+use obcm_app::{Button, ButtonEvent, Gesture, InputEvent, InputSource};
 
 /// Radians of knob rotation per emitted detent (~15° ⇒ ~24 detents per turn,
 /// a typical encoder). Shared by drag and scroll so both feel the same.
@@ -22,12 +23,11 @@ const DETENT_RADS: f32 = TAU / 24.0;
 /// Scroll pixels per emitted detent.
 const SCROLL_PER_DETENT: f32 = 24.0;
 
-/// Accumulates raw control input and recognizes gestures from it. Owns the millis
-/// clock (since construction) the shared recognizer needs.
+/// Accumulates raw control input into a queue the app drains via [`InputSource`].
+/// Owns the millis clock and the visual knob angle.
 pub struct DeviceInput {
-    gestures: Gestures,
     start: Instant,
-    /// Raw events queued by the widgets this frame, drained by [`pump`](Self::pump).
+    /// Raw events queued by the widgets this frame, drained by [`poll`](InputSource::poll).
     pending: VecDeque<InputEvent>,
     /// Pointer angle (rad) at the previous drag sample while turning the knob.
     drag_angle: Option<f32>,
@@ -38,16 +38,11 @@ pub struct DeviceInput {
     /// Debounced button-held state, so we only emit edges on transitions.
     enc_down: bool,
     back_down: bool,
-    /// The most recently recognized gesture, for the readout.
-    last: Option<String>,
-    /// Latest (encoder, back) hold-progress for the confirm-ring preview.
-    progress: (f32, f32),
 }
 
 impl DeviceInput {
     pub fn new() -> Self {
         DeviceInput {
-            gestures: Gestures::with_defaults(),
             start: Instant::now(),
             pending: VecDeque::new(),
             drag_angle: None,
@@ -55,12 +50,10 @@ impl DeviceInput {
             knob_angle: 0.0,
             enc_down: false,
             back_down: false,
-            last: None,
-            progress: (0.0, 0.0),
         }
     }
 
-    /// Millis since construction — the shared recognizer's clock.
+    /// Millis since construction — the clock passed to [`obcm_app::App::handle_input`].
     pub fn now_ms(&self) -> u32 {
         self.start.elapsed().as_millis() as u32
     }
@@ -120,28 +113,6 @@ impl DeviceInput {
         }
     }
 
-    /// Drain this frame's queued raw events through the recognizer, then fire any
-    /// long-press that crossed its threshold and refresh hold-progress. Call once
-    /// per frame (even with no new events — that's how a held button's long-press
-    /// fires). Returns the gestures produced.
-    pub fn pump(&mut self) -> Vec<Gesture> {
-        let now = self.now_ms();
-        let mut out = Vec::new();
-        while let Some(ev) = self.pending.pop_front() {
-            if let Some(g) = self.gestures.on_event(ev, now) {
-                out.push(g);
-            }
-        }
-        if let Some(g) = self.gestures.tick(now) {
-            out.push(g);
-        }
-        if let Some(&g) = out.last() {
-            self.last = Some(label(g));
-        }
-        self.progress = (self.gestures.encoder_progress(now), self.gestures.back_progress(now));
-        out
-    }
-
     /// Pull whole detents out of the rotation accumulator, keeping the remainder.
     fn take_detents(&mut self) -> i32 {
         let mut n = 0;
@@ -156,17 +127,15 @@ impl DeviceInput {
         n
     }
 
+    /// The visual knob angle (rad) for drawing the pointer notch.
     pub fn knob_angle(&self) -> f32 {
         self.knob_angle
     }
-    pub fn encoder_progress(&self) -> f32 {
-        self.progress.0
-    }
-    pub fn back_progress(&self) -> f32 {
-        self.progress.1
-    }
-    pub fn last_gesture(&self) -> Option<&str> {
-        self.last.as_deref()
+}
+
+impl InputSource for DeviceInput {
+    fn poll(&mut self) -> Option<InputEvent> {
+        self.pending.pop_front()
     }
 }
 
@@ -176,7 +145,7 @@ impl Default for DeviceInput {
     }
 }
 
-/// A short human label for a gesture (the on-screen readout / log).
+/// A short human label for a recognized gesture (the panel's input readout).
 pub fn label(g: Gesture) -> String {
     match g {
         Gesture::Turn(n) => format!("Turn {n:+}"),
@@ -191,13 +160,25 @@ pub fn label(g: Gesture) -> String {
 mod tests {
     use super::*;
 
+    /// Drain every pending event, summing the `Turn` detents.
+    fn drain_turns(d: &mut DeviceInput) -> i32 {
+        let mut total = 0;
+        while let Some(ev) = d.poll() {
+            if let InputEvent::Turn(n) = ev {
+                total += n;
+            }
+        }
+        total
+    }
+
     #[test]
     fn scroll_accumulates_into_whole_detents() {
         let mut d = DeviceInput::new();
         d.scroll(SCROLL_PER_DETENT * 2.5); // 2 detents now, 0.5 carried
-        assert_eq!(d.pump(), vec![Gesture::Turn(2)]);
+        assert_eq!(d.poll(), Some(InputEvent::Turn(2)));
+        assert_eq!(d.poll(), None);
         d.scroll(SCROLL_PER_DETENT * 0.6); // 0.5 + 0.6 = 1.1 → 1 detent
-        assert_eq!(d.pump(), vec![Gesture::Turn(1)]);
+        assert_eq!(d.poll(), Some(InputEvent::Turn(1)));
     }
 
     #[test]
@@ -205,23 +186,22 @@ mod tests {
         let mut d = DeviceInput::new();
         d.drag_to(0.0); // baseline, no detent
         d.drag_to(PI); // +180° ⇒ ~12 detents clockwise
-        let total: i32 = d.pump().iter().map(|g| if let Gesture::Turn(n) = g { *n } else { 0 }).sum();
-        assert!((11..=12).contains(&total), "half turn ≈ 12 detents, got {total}");
-        // The opposite direction is negative.
+        assert!((11..=12).contains(&drain_turns(&mut d)), "half turn ≈ 12 detents");
+
         let mut d = DeviceInput::new();
         d.drag_to(0.0);
-        d.drag_to(-PI);
-        let total: i32 = d.pump().iter().map(|g| if let Gesture::Turn(n) = g { *n } else { 0 }).sum();
-        assert!((-12..=-11).contains(&total), "got {total}");
+        d.drag_to(-PI); // the opposite direction is negative
+        assert!((-12..=-11).contains(&drain_turns(&mut d)));
     }
 
     #[test]
     fn set_button_only_emits_on_edges() {
         let mut d = DeviceInput::new();
         d.set_button(Button::Encoder, true);
-        d.set_button(Button::Encoder, true); // no new edge
+        d.set_button(Button::Encoder, true); // no transition → no second edge
         d.set_button(Button::Encoder, false);
-        // Down then Up within the same frame (< hold threshold) ⇒ one Press.
-        assert_eq!(d.pump(), vec![Gesture::Press]);
+        assert_eq!(d.poll(), Some(InputEvent::Button(ButtonEvent::Down(Button::Encoder))));
+        assert_eq!(d.poll(), Some(InputEvent::Button(ButtonEvent::Up(Button::Encoder))));
+        assert_eq!(d.poll(), None);
     }
 }
