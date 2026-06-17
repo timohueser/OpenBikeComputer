@@ -619,16 +619,21 @@ fn fill_polygon<D>(
         let mut k = 0;
         while k + 1 < xs.len() {
             // Round spans *outward* (floor the left edge, ceil the right) so each
-            // span covers up to a pixel more on each side. This closes the hairline
-            // background "cracks" along chunk seams: a feature clipped across a
-            // chunk boundary becomes two polygons that share that boundary, but
-            // their boundary vertex sets differ (different chunk sizes densify it
-            // differently), and `to_screen`'s integer truncation then renders the
-            // one shared line as two slightly different pixel staircases. The
-            // staircases only diverge when the seam is diagonal on screen — i.e.
-            // when the view is rotated — which is why the cracks vanish at heading
-            // 0. Overlapping by ≤1px makes adjacent pieces meet regardless; the
-            // overdraw is invisible for same-colored fills and ≤1px elsewhere.
+            // span covers up to a pixel more on each side. This closes hairline
+            // background gaps where adjacent fills should meet but don't quite. A
+            // feature clipped across a chunk boundary (`obcm/quadtree.py`) becomes
+            // two polygons whose shared edge carries *different* boundary vertices
+            // on each side — each piece is clipped independently — so their pixel
+            // staircases can disagree by ≤1px, most visibly along a diagonal seam
+            // (i.e. when the view is rotated). `to_screen`'s round-to-nearest
+            // already collapses nearly all of that disagreement (it replaced the
+            // old truncation, which fell off a hard integer cliff); measurements
+            // showed no seam-localized cracks remain. The outward span rounding is
+            // the cheap remaining insurance, also closing the incidental ≤1px gaps
+            // at thin polygon parts and junctions that appear at any heading.
+            // Overlapping by ≤1px makes adjacent pieces meet regardless; the
+            // overdraw is invisible for same-colored fills and ≤1px elsewhere. See
+            // `viewer-rs/docs/render_followups.md` item 2 for the measured tradeoff.
             let x0 = (libm::floorf(xs[k]) as i32).max(0);
             let x1 = (libm::ceilf(xs[k + 1]) as i32).min(w - 1);
             if x1 >= x0 {

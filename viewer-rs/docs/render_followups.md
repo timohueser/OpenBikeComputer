@@ -2,7 +2,10 @@
 
 Open items after the priority-rendering work (commit `6189fd4`, "Priority-based
 rendering: global cross-chunk ordering, seam fix, bigger span budget"). Ordered
-by priority. Items 1–3 are the next ones to tackle.
+by priority.
+
+**Status:** items 1–3 are all resolved (see each section). Remaining work is in
+"Later / lower priority" below.
 
 Useful repro command (headless render at an arbitrary spot/zoom/rotation):
 
@@ -18,7 +21,17 @@ stderr.
 
 ---
 
-## 1. Render-level test for priority under saturation
+## 1. Render-level test for priority under saturation — DONE
+
+Resolved by `viewer-rs/obcm-render/tests/priority.rs`
+(`priority_one_survives_saturation_across_chunks`). The test builds a synthetic
+two-chunk map — `MAX_SPANS + 64` priority-4 polygons overflowing the span buffer
+in an *early* NW chunk, plus one large priority-1 polygon in a *late* NE chunk —
+renders it through the real `MapRenderer::render` into a recording `DrawTarget`,
+and asserts saturation actually occurred *and* the priority-1 polygon's color is
+present. Verified to fail (0 priority-1 pixels) when the priority-pass order is
+reversed, so it guards exactly against a regression to chunk-order dropping. The
+original analysis is kept below for context.
 
 **Gap.** Reader-level invariants are covered (`filtered_decode_skips_without_drifting`,
 `for_each_chunk_has_no_cap` in `viewer-rs/obcm-reader/tests/format.rs`), and
@@ -45,7 +58,36 @@ and priority-4 features are dropped, across chunks.**
 
 ---
 
-## 2. Seam fix root cause vs. the 1px-overdraw tradeoff
+## 2. Seam fix root cause vs. the 1px-overdraw tradeoff — RESOLVED (keep overdraw)
+
+**Decision.** Keep the ≤1px outward overdraw; do **not** do the ingestion +
+repack fix. Once item 3 landed, the rotation-dependent seam divergence was
+already gone, so the ingestion fix's gate ("only worth it if the overdraw
+becomes visible") is not met.
+
+**Why (measured, doc repro at zoom 900, heading 35 vs. a heading-0 control).**
+The cracks came from *two* compounding factors: (1) per-chunk independent
+clipping in `obcm/quadtree.py` emits different boundary vertices on each side of
+a shared edge, and (2) the old `to_screen` *truncation* mapped that one diagonal
+edge to two divergent pixel staircases. Item 3's round-to-nearest removes factor
+(2) — near-coincident boundary points now round to the same pixel instead of
+falling off truncation's hard integer cliff. With the overdraw removed
+(zero-overdraw fill + rounding), the rotated view reopened only ~100 isolated
+1px gaps — *fewer* than the heading-0 control's ~125 and scattered at building
+corners / line junctions, **not** clustered along any diagonal seam. So no
+seam-localized crack signal remains; the outward overdraw now just closes
+incidental ≤1px edge gaps present at every heading, at a cost of ~2% of pixels
+in the test view (≤1px, invisible for same-colored fills).
+
+**Why not the ingestion fix.** Beyond not being warranted: making adjacent
+pieces share identical boundary vertices is fiddly to coordinate across
+independently-processed sibling chunks, and "stop clipping per chunk" would
+break the quadtree/AABB cull (features must stay bounded by their chunk or a
+boundary feature is dropped when its home chunk falls outside the view). Plus a
+full ~213 MB repack. Revisit only if the overdraw ever becomes visible at some
+zoom/style combination. The original root-cause analysis is kept below.
+
+### Original analysis
 
 **Current state.** Chunk-seam "cracks" (background showing through where a
 polygon clipped across a chunk boundary splits into two pieces) are fixed by
@@ -73,7 +115,16 @@ overdraw becomes visible. Pairs naturally with item 3.
 
 ---
 
-## 3. `to_screen` truncates instead of rounding
+## 3. `to_screen` truncates instead of rounding — DONE
+
+Resolved: `Viewport::to_screen` now ends with
+`(libm::roundf(x) as i32, libm::roundf(y) as i32)`. Visual pass over
+`freiburg.obcm` at headings 0/35/90 and zooms 200/900/2500 showed only sub-pixel
+(≤1px) edge shifts — `round(v) − trunc(v) ∈ {0, ±1}` — with no new seam cracks,
+no vanished features, and the marker still landing at the camera center; render
+stats are unchanged (collection is unaffected) and the marker-placement tests
+still pass. This also turned out to do most of item 2's job (see below). Original
+analysis kept below.
 
 **Issue.** `Viewport::to_screen` (`viewer-rs/obcm-render/src/lib.rs`) ends with
 `(x as i32, y as i32)`, which truncates toward zero — asymmetric around the
