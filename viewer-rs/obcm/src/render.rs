@@ -224,9 +224,29 @@ impl MapRenderer {
                     // Lines use only the exterior ring.
                     let n = ring_lens.first().copied().unwrap_or(0);
                     screen.clear();
+                    let mut prev_pt: Option<Point> = None;
                     for &(lon, lat) in &pts[..n] {
                         let (x, y) = vp.to_screen(lon, lat);
-                        screen.push(Point::new(x.clamp(-4 * w, 4 * w), y.clamp(-4 * h, 4 * h)));
+                        let pt = Point::new(x.clamp(-4 * w, 4 * w), y.clamp(-4 * h, 4 * h));
+                        if let Some(p1) = prev_pt {
+                            let dx = pt.x - p1.x;
+                            let dy = pt.y - p1.y;
+                            let dist = dx.abs().max(dy.abs());
+                            // Subdivide segments with deltas > 150 pixels.
+                            // This prevents `embedded-graphics`'s line intersection logic from
+                            // overflowing and panicking on `denominator.pow(2)` in debug builds,
+                            // and avoids rendering glitches (miter spikes) on the MCU in release builds.
+                            if dist > 150 {
+                                let steps = (dist + 149) / 150;
+                                for i in 1..steps {
+                                    let sx = p1.x + dx * i / steps;
+                                    let sy = p1.y + dy * i / steps;
+                                    screen.push(Point::new(sx, sy));
+                                }
+                            }
+                        }
+                        screen.push(pt);
+                        prev_pt = Some(pt);
                     }
                     if screen.len() >= 2 {
                         let weight = span.weight.max(1) as u32;
