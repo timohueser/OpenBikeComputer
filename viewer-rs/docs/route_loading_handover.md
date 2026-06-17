@@ -44,8 +44,9 @@ centered. Empty `--routes-dir` shows the "No routes yet" state.
 
 ## Next (M2: live position-on-route)
 
-The format already carries what M2 needs — `ChunkMeta.cum_distance_m`/`cum_ascent_m` are
-written now.
+**The next session is scoped in `elevation_screen_handover.md`** (the Elevation screen +
+the map-matching it needs). The format already carries what M2 needs —
+`ChunkMeta.cum_distance_m`/`cum_ascent_m` are written now.
 
 1. **Map-matching.** A monotonic cursor (chunk + segment) snapped to the nearest segment
    in a local window per `Fix`; off-track when nearest distance > a threshold. Advance
@@ -62,9 +63,9 @@ written now.
 - **Route name = GPX file stem.** Parse `<trk><name>` (or `<metadata><name>`) for a nicer
   title; the converter takes the name as a parameter, so it's a one-line change at the
   call site once parsed.
-- **`center_camera` uses a fixed 240 px reference** (`route_menu.rs`) since `Ctx` has no
-  display size; correct for the device panel, slightly off on a resized sim window
-  (the rider zooms from there). Pass real dims into `Ctx` if this matters.
+- **Route load enters the riding view** — `AppState::enter_riding_view` (Follow,
+  heading-up, ~0.5 m/px seeded at the route start) rather than framing the whole route
+  (done 2026-06-18). `m/px → zoom` via `obcm_render::zoom_for_mpp`.
 - **Single resolution.** No separate zoomed-out overview LOD; the converter decimates to
   ~`MAX_SPAN_M` (1200 m) which keeps even a long route to a few hundred chunks. Add a
   coarse layer only if whole-route-zoomed-out draws get heavy.
