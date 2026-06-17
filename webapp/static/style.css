@@ -114,6 +114,27 @@ main {
 .card h2 { margin: 0 0 8px; font-size: 15px; }
 .muted { color: var(--muted); }
 .small { font-size: 12px; }
+.err-text { color: var(--err); }
+
+.card-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+}
+.card-head h2 { margin: 0; }
+.save-status { white-space: nowrap; }
+
+.style-toolbar {
+  display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 4px;
+}
+.style-toolbar .add-feat { margin-top: 0; }
+
+.feat-add-input {
+  width: 100%; max-width: 280px; padding: 5px 8px; background: var(--panel-2);
+  border: 1px solid var(--accent); border-radius: 5px; color: var(--text);
+  font-family: monospace; font-size: 12px;
+}
+.feat-add-input.dupe { border-color: var(--err); }
+.feat-add-row td { padding: 5px 6px; }
+.cat-add-row { margin-top: 6px; }
 
 .feat-group { margin-bottom: 12px; overflow-x: auto; }
 .feat-group > summary {
@@ -122,8 +143,26 @@ main {
   padding: 4px 0;
   text-transform: capitalize;
   user-select: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 .feat-group .count { color: var(--muted); font-weight: 400; font-size: 12px; }
+.del-cat {
+  background: none; border: 1px solid var(--border); color: var(--muted);
+  border-radius: 5px; padding: 2px 7px; cursor: pointer; font-size: 11px;
+  font-weight: 400; text-transform: none; flex: none;
+}
+.del-cat:hover { border-color: var(--err); color: var(--err); }
+
+.drag-handle {
+  cursor: grab; color: var(--muted); user-select: none; letter-spacing: -2px;
+  font-size: 13px; padding: 0 2px; display: inline-block;
+}
+.drag-handle:active { cursor: grabbing; }
+tr.dragging { opacity: 0.5; background: var(--panel-2); }
+table.feat-table td:first-child { width: 16px; }
 
 table.feat-table { width: 100%; border-collapse: collapse; }
 table.feat-table th {

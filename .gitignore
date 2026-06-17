@@ -3,5 +3,6 @@ __pycache__/
 *.obcm
 *.osm.pbf
 .pytest_cache/
+user_config.json
 .worktrees/
 .DS_Store

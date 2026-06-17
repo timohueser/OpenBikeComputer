@@ -10,6 +10,8 @@ let highlightLayer = null;         // Leaflet layer group for selected outlines
 
 let config = null;                 // working copy of config (features tree)
 const enabled = new Map();         // "cat/name" -> bool (include in build?)
+let catalog = { keys: {} };        // curated OSM keys -> common values (autocomplete)
+let dragRow = null;                // feature row currently being drag-reordered
 
 // ---------------------------------------------------------------------------
 // Map
@@ -267,21 +269,96 @@ function hexToRgb565(hex) {
 // Style editor
 // ---------------------------------------------------------------------------
 async function loadConfig() {
-  config = await fetch("/api/config/default").then((r) => r.json());
+  // Load the OSM autocomplete catalog (non-fatal if missing) and the active
+  // config (user edits if persisted, else factory defaults) in parallel.
+  const [cat, cfg] = await Promise.all([
+    fetch("/static/osm_catalog.json").then((r) => (r.ok ? r.json() : { keys: {} })).catch(() => ({ keys: {} })),
+    fetch("/api/config").then((r) => r.json()),
+  ]);
+  catalog = cat && cat.keys ? cat : { keys: {} };
+  populateKeyDatalist();
+  applyConfig(cfg);
+}
+
+// Adopt a loaded config object (from the server, a reset, or an imported
+// stylesheet) as the working state and re-render the editors.
+function applyConfig(cfg) {
+  config = cfg;
   if (!Array.isArray(config.lods) || config.lods.length === 0) {
     config.lods = [{ max_mpp: null, simplify: 0 }];
   }
   config.lods[0].max_mpp = null; // coarsest is always +inf
+  config.features = config.features || {};
+  // A stylesheet may carry a `disabled` list of "cat/name" keys; everything
+  // else defaults to enabled. Strip it from the working tree.
+  const disabled = new Set(Array.isArray(config.disabled) ? config.disabled : []);
+  delete config.disabled;
+  enabled.clear();
   for (const cat of Object.keys(config.features)) {
     for (const name of Object.keys(config.features[cat])) {
       const def = config.features[cat][name];
       if (typeof def.min_lod !== "number") def.min_lod = config.lods.length - 1;
       def.min_lod = clampLod(def.min_lod);
-      enabled.set(`${cat}/${name}`, true);
+      enabled.set(`${cat}/${name}`, !disabled.has(`${cat}/${name}`));
     }
   }
   renderLodEditor();
   renderStyleEditor();
+}
+
+// The working config plus the list of disabled features, used both for
+// autosave (-> user_config.json) and for exported stylesheets.
+function serializeWorkingConfig() {
+  const disabled = [];
+  for (const [key, on] of enabled) if (on === false) disabled.push(key);
+  const out = { lods: config.lods, features: config.features };
+  if (disabled.length) out.disabled = disabled;
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Autosave: persist edits to user_config.json (debounced).
+// ---------------------------------------------------------------------------
+let saveTimer = null;
+
+function setSaveStatus(text, cls) {
+  const el = document.getElementById("save-status");
+  if (!el) return;
+  el.textContent = text;
+  el.className = "save-status small " + (cls || "muted");
+}
+
+function scheduleSave() {
+  if (!config) return;
+  setSaveStatus("Saving…", "muted");
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveConfig, 500);
+}
+
+async function saveConfig() {
+  try {
+    const res = await fetch("/api/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(serializeWorkingConfig()),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    setSaveStatus("All changes saved", "muted");
+  } catch (e) {
+    setSaveStatus("Save failed: " + e.message, "err-text");
+  }
+}
+
+// Populate the shared <datalist> of OSM keys used by the "add category" input.
+function populateKeyDatalist() {
+  const dl = document.getElementById("osm-keys");
+  if (!dl) return;
+  dl.innerHTML = "";
+  for (const key of Object.keys(catalog.keys || {})) {
+    const opt = document.createElement("option");
+    opt.value = key;
+    dl.appendChild(opt);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -352,6 +429,7 @@ function addLod() {
   config.lods.push({ max_mpp: Math.max(1, Math.round(prev / 2)), simplify: 0 });
   renderLodEditor();
   renderStyleEditor(); // pickers gain a segment
+  scheduleSave();
 }
 
 function removeLod(k) {
@@ -371,6 +449,7 @@ function removeLod(k) {
   }
   renderLodEditor();
   renderStyleEditor();
+  scheduleSave();
 }
 
 function floatInput(value, onChange) {
@@ -381,6 +460,7 @@ function floatInput(value, onChange) {
   i.oninput = () => {
     const v = parseFloat(i.value);
     onChange(Number.isFinite(v) ? v : 0);
+    scheduleSave();
   };
   return i;
 }
@@ -401,6 +481,7 @@ function buildLodPicker(def) {
     seg.onclick = () => {
       def.min_lod = i;
       [...wrap.children].forEach((c, idx) => c.classList.toggle("on", idx >= i));
+      scheduleSave();
     };
     wrap.appendChild(seg);
   }
@@ -416,13 +497,29 @@ function renderStyleEditor() {
     group.open = true;
     const entries = config.features[cat];
     const summary = document.createElement("summary");
-    summary.innerHTML = `${cat} <span class="count">(${Object.keys(entries).length})</span>`;
+    const label = document.createElement("span");
+    label.innerHTML = `${cat} <span class="count">(${Object.keys(entries).length})</span>`;
+    summary.appendChild(label);
+    const delCat = document.createElement("button");
+    delCat.className = "del-cat";
+    delCat.textContent = "× category";
+    delCat.title = `Remove the "${cat}" category and all its types`;
+    delCat.onclick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!confirm(`Remove the "${cat}" category and all ${Object.keys(entries).length} of its types?`)) return;
+      for (const name of Object.keys(entries)) enabled.delete(`${cat}/${name}`);
+      delete config.features[cat];
+      renderStyleEditor();
+      scheduleSave();
+    };
+    summary.appendChild(delCat);
     group.appendChild(summary);
 
     const table = document.createElement("table");
     table.className = "feat-table";
     table.innerHTML =
-      "<thead><tr><th></th><th>type</th><th>LODs</th><th>color</th><th>z</th><th>w</th><th></th></tr></thead>";
+      "<thead><tr><th></th><th></th><th>type</th><th>LODs</th><th>color</th><th>z</th><th>w</th><th></th></tr></thead>";
     const tbody = document.createElement("tbody");
     for (const name of Object.keys(entries)) {
       tbody.appendChild(buildRow(cat, name, entries[name]));
@@ -430,19 +527,74 @@ function renderStyleEditor() {
     table.appendChild(tbody);
     group.appendChild(table);
 
+    // Per-category datalist of common OSM values for the "add type" field.
+    const dl = document.createElement("datalist");
+    dl.id = valueListId(cat);
+    group.appendChild(dl);
+
     const add = document.createElement("button");
     add.className = "add-feat";
     add.textContent = "+ add type";
-    add.onclick = () => addFeature(cat, tbody);
+    add.onclick = () => addFeature(cat, tbody, add);
     group.appendChild(add);
 
     root.appendChild(group);
   }
 }
 
+function valueListId(cat) {
+  return "dl-vals-" + cat.replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+
+// Refresh a category's value datalist to the catalog values not yet used.
+function refreshValueList(cat) {
+  const dl = document.getElementById(valueListId(cat));
+  if (!dl) return;
+  dl.innerHTML = "";
+  const used = new Set(Object.keys(config.features[cat] || {}));
+  for (const v of catalog.keys[cat] || []) {
+    if (used.has(v)) continue;
+    const opt = document.createElement("option");
+    opt.value = v;
+    dl.appendChild(opt);
+  }
+}
+
 function buildRow(cat, name, def) {
   const key = `${cat}/${name}`;
   const tr = document.createElement("tr");
+  tr.dataset.cat = cat;
+  tr.dataset.name = name;
+
+  // Drag handle: rows reorder within their category (order is preserved in the
+  // stylesheet and drives style-ID assignment). The row is only draggable while
+  // the handle is held, so the inputs stay usable.
+  const tdHandle = document.createElement("td");
+  const handle = document.createElement("span");
+  handle.className = "drag-handle";
+  handle.textContent = "⋮⋮";
+  handle.title = "Drag to reorder";
+  handle.onmousedown = () => { tr.draggable = true; };
+  tdHandle.appendChild(handle);
+  tr.addEventListener("dragstart", (e) => {
+    dragRow = tr;
+    tr.classList.add("dragging");
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", name);
+  });
+  tr.addEventListener("dragover", (e) => {
+    if (!dragRow || dragRow === tr || dragRow.dataset.cat !== tr.dataset.cat) return;
+    e.preventDefault();
+    const rect = tr.getBoundingClientRect();
+    const before = e.clientY - rect.top < rect.height / 2;
+    tr.parentNode.insertBefore(dragRow, before ? tr : tr.nextSibling);
+  });
+  tr.addEventListener("dragend", () => {
+    tr.draggable = false;
+    tr.classList.remove("dragging");
+    commitRowOrder(cat, tr.parentNode);
+    dragRow = null;
+  });
 
   const tdToggle = document.createElement("td");
   const cb = document.createElement("input");
@@ -451,6 +603,7 @@ function buildRow(cat, name, def) {
   cb.onchange = () => {
     enabled.set(key, cb.checked);
     tr.classList.toggle("feat-off", !cb.checked);
+    scheduleSave();
   };
   tdToggle.appendChild(cb);
 
@@ -468,6 +621,7 @@ function buildRow(cat, name, def) {
   color.oninput = () => {
     def.color = hexToRgb565(color.value);
     label.textContent = def.color;
+    scheduleSave();
   };
   tdColor.appendChild(color);
   tdColor.appendChild(label);
@@ -490,33 +644,121 @@ function buildRow(cat, name, def) {
     delete config.features[cat][name];
     enabled.delete(key);
     tr.remove();
+    scheduleSave();
   };
   tdDel.appendChild(del);
 
   if (!cb.checked) tr.classList.add("feat-off");
-  for (const td of [tdToggle, tdName, tdLod, tdColor, tdZ, tdW, tdDel]) tr.appendChild(td);
+  for (const td of [tdHandle, tdToggle, tdName, tdLod, tdColor, tdZ, tdW, tdDel]) tr.appendChild(td);
   return tr;
+}
+
+// Rebuild config.features[cat] in the current DOM row order, then persist.
+function commitRowOrder(cat, tbody) {
+  const names = [...tbody.querySelectorAll("tr[data-name]")].map((r) => r.dataset.name);
+  const entries = config.features[cat];
+  const reordered = {};
+  for (const name of names) {
+    if (name in entries) reordered[name] = entries[name];
+  }
+  config.features[cat] = reordered;
+  scheduleSave();
 }
 
 function numInput(value, onChange) {
   const i = document.createElement("input");
   i.type = "number";
   i.value = value;
-  i.oninput = () => onChange(parseInt(i.value, 10) || 0);
+  i.oninput = () => {
+    onChange(parseInt(i.value, 10) || 0);
+    scheduleSave();
+  };
   return i;
 }
 
-function addFeature(cat, tbody) {
-  const name = prompt(`New ${cat} type (OSM tag value, e.g. "steps"):`);
-  if (!name) return;
-  if (config.features[cat][name]) {
-    alert("That type already exists.");
-    return;
-  }
-  const def = { z_index: 10, color: "0xFFFF", weight: 1, min_lod: lodCount() - 1 };
-  config.features[cat][name] = def;
-  enabled.set(`${cat}/${name}`, true);
-  tbody.appendChild(buildRow(cat, name, def));
+// Inline "add type" row: a text input backed by the category's value datalist
+// so common OSM values autocomplete, while any freeform value is still allowed.
+function addFeature(cat, tbody, addBtn) {
+  refreshValueList(cat);
+  const tr = document.createElement("tr");
+  tr.className = "feat-add-row";
+  const td = document.createElement("td");
+  td.colSpan = 8;
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "feat-add-input";
+  input.placeholder = `OSM ${cat} value (e.g. "steps")…`;
+  input.setAttribute("list", valueListId(cat));
+  td.appendChild(input);
+  tr.appendChild(td);
+  tbody.appendChild(tr);
+  if (addBtn) addBtn.disabled = true;
+  input.focus();
+
+  const cleanup = () => {
+    tr.remove();
+    if (addBtn) addBtn.disabled = false;
+  };
+  const commit = () => {
+    const name = input.value.trim();
+    if (!name) return cleanup();
+    if (config.features[cat][name]) {
+      input.classList.add("dupe");
+      input.title = "That type already exists.";
+      return;
+    }
+    const def = { z_index: 10, color: "0xFFFF", weight: 1, min_lod: lodCount() - 1 };
+    config.features[cat][name] = def;
+    enabled.set(`${cat}/${name}`, true);
+    cleanup();
+    tbody.appendChild(buildRow(cat, name, def));
+    scheduleSave();
+  };
+  input.oninput = () => { input.classList.remove("dupe"); input.title = ""; };
+  input.onkeydown = (e) => {
+    if (e.key === "Enter") { e.preventDefault(); commit(); }
+    else if (e.key === "Escape") { e.preventDefault(); cleanup(); }
+  };
+  input.onblur = commit;
+}
+
+// Add a new top-level category (OSM tag key) via an autocompleted prompt-row at
+// the bottom of the style editor.
+function addCategory() {
+  const root = document.getElementById("style-editor");
+  if (document.getElementById("cat-add-row")) return; // already adding
+  const row = document.createElement("div");
+  row.id = "cat-add-row";
+  row.className = "cat-add-row";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "feat-add-input";
+  input.placeholder = 'OSM tag key (e.g. "railway")…';
+  input.setAttribute("list", "osm-keys");
+  row.appendChild(input);
+  root.appendChild(row);
+  input.focus();
+
+  const cleanup = () => row.remove();
+  const commit = () => {
+    const key = input.value.trim();
+    if (!key) return cleanup();
+    if (config.features[key]) {
+      input.classList.add("dupe");
+      input.title = "That category already exists.";
+      return;
+    }
+    config.features[key] = {};
+    cleanup();
+    renderStyleEditor();
+    scheduleSave();
+  };
+  input.oninput = () => { input.classList.remove("dupe"); input.title = ""; };
+  input.onkeydown = (e) => {
+    if (e.key === "Enter") { e.preventDefault(); commit(); }
+    else if (e.key === "Escape") { e.preventDefault(); cleanup(); }
+  };
+  input.onblur = commit;
 }
 
 function buildConfigForSubmit() {
@@ -542,6 +784,52 @@ function buildConfigForSubmit() {
 // Build / jobs
 // ---------------------------------------------------------------------------
 document.getElementById("add-lod").addEventListener("click", addLod);
+document.getElementById("add-category").addEventListener("click", addCategory);
+
+// ---------------------------------------------------------------------------
+// Stylesheet export / import (share configs independently of any .obcm)
+// ---------------------------------------------------------------------------
+document.getElementById("export-style").addEventListener("click", () => {
+  const blob = new Blob([JSON.stringify(serializeWorkingConfig(), null, 2)], {
+    type: "application/json",
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "stylesheet.json";
+  a.click();
+  URL.revokeObjectURL(url);
+});
+
+const importFile = document.getElementById("import-file");
+document.getElementById("import-style").addEventListener("click", () => importFile.click());
+importFile.addEventListener("change", async () => {
+  const file = importFile.files[0];
+  importFile.value = ""; // allow re-importing the same file
+  if (!file) return;
+  try {
+    const parsed = JSON.parse(await file.text());
+    if (!parsed || typeof parsed.features !== "object" || Array.isArray(parsed.features)) {
+      throw new Error("not a valid stylesheet (missing a features object)");
+    }
+    applyConfig(parsed);
+    setSaveStatus("Imported " + file.name, "muted");
+    scheduleSave(); // persist the imported stylesheet as the user's config
+  } catch (e) {
+    setSaveStatus("Import failed: " + e.message, "err-text");
+  }
+});
+
+document.getElementById("reset-style").addEventListener("click", async () => {
+  if (!confirm("Discard your edits and restore the factory defaults?")) return;
+  try {
+    const factory = await fetch("/api/config", { method: "DELETE" }).then((r) => r.json());
+    applyConfig(factory);
+    setSaveStatus("Restored factory defaults", "muted");
+  } catch (e) {
+    setSaveStatus("Restore failed: " + e.message, "err-text");
+  }
+});
 
 const buildBtn = document.getElementById("build-btn");
 const buildStatus = document.getElementById("build-status");

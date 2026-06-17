@@ -39,13 +39,25 @@
       </div>
 
       <div class="card" id="style-card">
-        <h2>Features &amp; styling</h2>
+        <div class="card-head">
+          <h2>Features &amp; styling</h2>
+          <span id="save-status" class="save-status muted small"></span>
+        </div>
         <p class="muted small">
           Toggle features to include and edit color (RGB565), z-index and stroke weight — these are
           global, shared across all LODs. The <strong>LODs</strong> column picks the coarsest tier a
-          feature appears at (it also shows at every finer tier).
+          feature appears at (it also shows at every finer tier). Edits are saved automatically and
+          persist between sessions.
         </p>
+        <div class="style-toolbar">
+          <button id="export-style" class="add-feat" title="Download the current config as a shareable stylesheet (.json)">↓ Export stylesheet</button>
+          <button id="import-style" class="add-feat" title="Load a stylesheet (.json) into the editor">↑ Import stylesheet</button>
+          <button id="reset-style" class="add-feat" title="Discard your edits and restore the factory defaults">↺ Restore defaults</button>
+          <input id="import-file" type="file" accept=".json,application/json" hidden />
+        </div>
         <div id="style-editor"><span class="muted">Loading config…</span></div>
+        <button id="add-category" class="add-feat" title="Add a new OSM tag key (category)">+ add category</button>
+        <datalist id="osm-keys"></datalist>
       </div>
 
       <div class="card" id="build-card">
