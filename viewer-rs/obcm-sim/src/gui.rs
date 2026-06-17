@@ -25,32 +25,32 @@ use crate::Args;
 
 /// Loosely clamp zoom (pixels per microdegree of latitude) so scroll can't drive
 /// it to zero or infinity and produce a degenerate projection.
-const MIN_ZOOM: f64 = 1e-6;
-const MAX_ZOOM: f64 = 1e4;
+const MIN_ZOOM: f32 = 1e-6;
+const MAX_ZOOM: f32 = 1e4;
 
 /// Meters per microdegree of latitude — mirrors `obcm_render`'s private constant
 /// so the control panel can present zoom in human-friendly meters-per-pixel.
-const METERS_PER_MICRODEG_LAT: f64 = 0.111_320;
+const METERS_PER_MICRODEG_LAT: f32 = 0.111_320;
 
 /// Practical bounds for the zoom slider, in meters per pixel: roughly a ~5 m to
 /// ~4800 m screen span on the 240 px device. The mouse can still scroll past these
 /// (the slider only writes back when dragged), so they don't cap the camera.
-const MPP_MIN: f64 = 0.02;
-const MPP_MAX: f64 = 20_000.0;
+const MPP_MIN: f32 = 0.02;
+const MPP_MAX: f32 = 20_000.0;
 
 /// Zoom (px per microdegree-lat) → meters per pixel. Same relation as
 /// [`obcm_render::Viewport::meters_per_pixel`], usable without a viewport.
-fn zoom_to_mpp(zoom: f64) -> f64 {
+fn zoom_to_mpp(zoom: f32) -> f32 {
     METERS_PER_MICRODEG_LAT / zoom
 }
 
 /// Meters per pixel → zoom (the inverse of [`zoom_to_mpp`]).
-fn mpp_to_zoom(mpp: f64) -> f64 {
+fn mpp_to_zoom(mpp: f32) -> f32 {
     METERS_PER_MICRODEG_LAT / mpp
 }
 
 /// A ground distance in meters as a short human string ("5 m", "2.5 km").
-fn format_distance(m: f64) -> String {
+fn format_distance(m: f32) -> String {
     if m < 1.0 {
         format!("{m:.2} m")
     } else if m < 1000.0 {
@@ -141,8 +141,8 @@ impl SimGui {
         // `--heading` opens in heading-up with that course; otherwise north-up.
         state.heading_up = args.heading.is_some();
         let loc = SimLocationSource::new(Some(Fix {
-            lat: cy as i32,
-            lon: cx as i32,
+            lat: cy,
+            lon: cx,
             course: args.heading,
             speed_mps: None,
         }));
@@ -237,8 +237,8 @@ impl SimGui {
         self.app.render_frame(
             &mut self.fb,
             &reader,
-            self.dev_w as f64,
-            self.dev_h as f64,
+            self.dev_w as f32,
+            self.dev_h as f32,
             |c| crate::color_of(c, tc),
         );
 
@@ -259,23 +259,23 @@ impl SimGui {
         ui: &egui::Ui,
         resp: &egui::Response,
         rect: egui::Rect,
-        scale: f64,
+        scale: f32,
     ) {
-        let (w, h) = (self.dev_w as f64, self.dev_h as f64);
+        let (w, h) = (self.dev_w as f32, self.dev_h as f32);
         let st = &mut self.app.state;
 
         if resp.dragged() {
             let d = resp.drag_delta();
-            let dpx = d.x as f64 / scale;
-            let dpy = d.y as f64 / scale;
+            let dpx = d.x / scale;
+            let dpy = d.y / scale;
             let vp = st.viewport(w, h);
             // Convert the screen-space drag into a map delta through the inverse
             // projection (`to_map`), so panning follows the cursor even when the
             // view is rotated (heading-up) — a fixed `cam ± dx/zoom` would drift.
             let (lon0, lat0) = vp.to_map(w / 2.0, h / 2.0);
             let (lon1, lat1) = vp.to_map(w / 2.0 - dpx, h / 2.0 - dpy);
-            st.cam_lon += lon1 - lon0;
-            st.cam_lat += lat1 - lat0;
+            st.cam_lon = st.cam_lon.wrapping_add(lon1.wrapping_sub(lon0));
+            st.cam_lat = st.cam_lat.wrapping_add(lat1.wrapping_sub(lat0));
             st.mode = CameraMode::Free;
         }
 
@@ -284,16 +284,16 @@ impl SimGui {
             if let Some(pos) = resp.hover_pos() {
                 // Cursor in device pixels, the space `Viewport::to_map` expects.
                 let local = pos - rect.min;
-                let px = (local.x as f64 / scale).clamp(0.0, w);
-                let py = (local.y as f64 / scale).clamp(0.0, h);
-                let new_zoom = (st.zoom * (scroll as f64 * 0.005).exp()).clamp(MIN_ZOOM, MAX_ZOOM);
+                let px = (local.x / scale).clamp(0.0, w);
+                let py = (local.y / scale).clamp(0.0, h);
+                let new_zoom = (st.zoom * (scroll * 0.005).exp()).clamp(MIN_ZOOM, MAX_ZOOM);
 
                 // Keep the ground point under the cursor fixed across the zoom.
                 let (olon, olat) = st.viewport(w, h).to_map(px, py);
                 st.zoom = new_zoom;
                 let (nlon, nlat) = st.viewport(w, h).to_map(px, py);
-                st.cam_lon += olon - nlon;
-                st.cam_lat += olat - nlat;
+                st.cam_lon = st.cam_lon.wrapping_add(olon.wrapping_sub(nlon));
+                st.cam_lat = st.cam_lat.wrapping_add(olat.wrapping_sub(nlat));
                 st.mode = CameraMode::Free;
             }
         }
@@ -389,7 +389,7 @@ impl SimGui {
                     if resp.changed() {
                         self.app.state.zoom = mpp_to_zoom(mpp).clamp(MIN_ZOOM, MAX_ZOOM);
                     }
-                    let span = zoom_to_mpp(self.app.state.zoom) * self.dev_w as f64;
+                    let span = zoom_to_mpp(self.app.state.zoom) * self.dev_w as f32;
                     ui.label(format!("{} across screen", format_distance(span)));
 
                     ui.add_space(6.0);
@@ -406,8 +406,8 @@ impl SimGui {
                     // so the view doesn't jump (in Free the mouse moved the camera
                     // away from the fix) and the panel reads the followed point.
                     if prev_mode == CameraMode::Free && self.app.state.mode == CameraMode::Follow {
-                        self.panel.lat_deg = self.app.state.cam_lat / 1e6;
-                        self.panel.lon_deg = self.app.state.cam_lon / 1e6;
+                        self.panel.lat_deg = self.app.state.cam_lat as f64 / 1e6;
+                        self.panel.lon_deg = self.app.state.cam_lon as f64 / 1e6;
                     }
 
                     ui.add_space(6.0);
@@ -535,7 +535,7 @@ impl eframe::App for SimGui {
                     .sense(egui::Sense::click_and_drag()),
             );
             let rect = resp.rect;
-            self.handle_camera_input(ui, &resp, rect, disp_scale as f64);
+            self.handle_camera_input(ui, &resp, rect, disp_scale);
         });
 
         self.show_control_panel(ctx);
@@ -604,9 +604,9 @@ mod tests {
 
     #[test]
     fn zoom_mpp_roundtrips() {
-        for &zoom in &[1e-3, 0.123, 1.0, 42.0, 1e3] {
+        for &zoom in &[1e-3_f32, 0.123, 1.0, 42.0, 1e3] {
             let back = mpp_to_zoom(zoom_to_mpp(zoom));
-            assert!((back - zoom).abs() < zoom * 1e-9, "zoom {zoom} -> {back}");
+            assert!((back - zoom).abs() < zoom * 1e-5, "zoom {zoom} -> {back}");
         }
     }
 
@@ -614,8 +614,8 @@ mod tests {
     fn zoom_to_mpp_matches_viewport() {
         // The panel's conversion must agree with the renderer's own metric, or the
         // ground-span readout would lie about what's on screen.
-        let vp = obcm_render::Viewport::new(240.0, 320.0, 0.0, 0.0, 0.5);
-        assert!((zoom_to_mpp(0.5) as f32 - vp.meters_per_pixel()).abs() < 1e-6);
+        let vp = obcm_render::Viewport::new(240.0, 320.0, 0, 0, 0.5);
+        assert!((zoom_to_mpp(0.5) - vp.meters_per_pixel()).abs() < 1e-5);
     }
 
     #[test]

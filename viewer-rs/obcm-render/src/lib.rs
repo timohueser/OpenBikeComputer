@@ -26,7 +26,7 @@ use embedded_graphics::{
 use obcm::{BBox, Kind, Reader};
 
 /// Meters of ground per microdegree of latitude (≈ Earth circumference / 360e6).
-const METERS_PER_MICRODEG_LAT: f64 = 0.111_320;
+const METERS_PER_MICRODEG_LAT: f32 = 0.111_320;
 
 /// Screen projection: microdegrees → pixels, with longitude aspect correction so
 /// the map keeps shape away from the equator. `zoom` is pixels per microdegree of
@@ -39,29 +39,29 @@ const METERS_PER_MICRODEG_LAT: f64 = 0.111_320;
 /// aspect correction, so shapes stay correct.
 #[derive(Debug, Clone, Copy)]
 pub struct Viewport {
-    pub w: f64,
-    pub h: f64,
-    pub cam_lon: f64,
-    pub cam_lat: f64,
-    pub zoom: f64,
-    pub aspect: f64,
+    pub w: f32,
+    pub h: f32,
+    pub cam_lon: i32,
+    pub cam_lat: i32,
+    pub zoom: f32,
+    pub aspect: f32,
     /// Course (radians CW from north) the projection rotates to screen-up. 0 = north-up.
-    pub course_rad: f64,
+    pub course_rad: f32,
     // Precomputed once per frame (rotation is hot — called per projected point).
-    sin_c: f64,
-    cos_c: f64,
+    sin_c: f32,
+    cos_c: f32,
 }
 
 impl Viewport {
     /// Build a north-up viewport centered on `(cam_lon, cam_lat)` (microdegrees)
     /// with the aspect correction computed for that latitude.
-    pub fn new(w: f64, h: f64, cam_lon: f64, cam_lat: f64, zoom: f64) -> Self {
+    pub fn new(w: f32, h: f32, cam_lon: i32, cam_lat: i32, zoom: f32) -> Self {
         Self::new_rotated(w, h, cam_lon, cam_lat, zoom, 0.0)
     }
 
     /// Like [`new`](Viewport::new) but rotated so `course_rad` (radians CW from
     /// north) points to the top of the screen.
-    pub fn new_rotated(w: f64, h: f64, cam_lon: f64, cam_lat: f64, zoom: f64, course_rad: f64) -> Self {
+    pub fn new_rotated(w: f32, h: f32, cam_lon: i32, cam_lat: i32, zoom: f32, course_rad: f32) -> Self {
         Viewport {
             w,
             h,
@@ -70,8 +70,8 @@ impl Viewport {
             zoom,
             aspect: aspect_for_lat(cam_lat),
             course_rad,
-            sin_c: libm::sin(course_rad),
-            cos_c: libm::cos(course_rad),
+            sin_c: libm::sinf(course_rad),
+            cos_c: libm::cosf(course_rad),
         }
     }
 
@@ -83,9 +83,12 @@ impl Viewport {
 
     #[inline]
     pub fn to_screen(&self, lon: i32, lat: i32) -> (i32, i32) {
-        // Aspect-corrected ground offset from the camera (east, north).
-        let ex = (lon as f64 - self.cam_lon) * self.aspect;
-        let ny = lat as f64 - self.cam_lat;
+        // Integer difference preserves absolute microdegree precision up to max.
+        let delta_lon = lon.wrapping_sub(self.cam_lon);
+        let delta_lat = lat.wrapping_sub(self.cam_lat);
+        // Cast the small relative delta to f32.
+        let ex = (delta_lon as f32) * self.aspect;
+        let ny = delta_lat as f32;
         // Rotate so `course_rad` points up; at course 0 this is (ex, -ny).
         let rx = self.cos_c * ex - self.sin_c * ny;
         let ry = -self.sin_c * ex - self.cos_c * ny;
@@ -95,15 +98,17 @@ impl Viewport {
     }
 
     #[inline]
-    pub fn to_map(&self, x: f64, y: f64) -> (f64, f64) {
+    pub fn to_map(&self, x: f32, y: f32) -> (i32, i32) {
         let rx = (x - self.w / 2.0) / self.zoom;
         let ry = (y - self.h / 2.0) / self.zoom;
         // Inverse rotation reuses the same coefficients — the screen→ground matrix
         // is an involution (its own inverse), so no extra trig.
         let ex = self.cos_c * rx - self.sin_c * ry;
         let ny = -self.sin_c * rx - self.cos_c * ry;
-        let lon = ex / self.aspect + self.cam_lon;
-        let lat = ny + self.cam_lat;
+        let delta_lon = (ex / self.aspect) as i32;
+        let delta_lat = ny as i32;
+        let lon = self.cam_lon.wrapping_add(delta_lon);
+        let lat = self.cam_lat.wrapping_add(delta_lat);
         (lon, lat)
     }
 
@@ -117,10 +122,10 @@ impl Viewport {
             self.to_map(0.0, self.h),
             self.to_map(self.w, self.h),
         ];
-        let mut min_lon = f64::MAX;
-        let mut max_lon = f64::MIN;
-        let mut min_lat = f64::MAX;
-        let mut max_lat = f64::MIN;
+        let mut min_lon = i32::MAX;
+        let mut max_lon = i32::MIN;
+        let mut min_lat = i32::MAX;
+        let mut max_lat = i32::MIN;
         for (lon, lat) in corners {
             min_lon = min_lon.min(lon);
             max_lon = max_lon.max(lon);
@@ -128,10 +133,10 @@ impl Viewport {
             max_lat = max_lat.max(lat);
         }
         BBox {
-            min_lon: min_lon as i32,
-            min_lat: min_lat as i32,
-            max_lon: max_lon as i32,
-            max_lat: max_lat as i32,
+            min_lon,
+            min_lat,
+            max_lon,
+            max_lat,
         }
     }
 
@@ -140,13 +145,13 @@ impl Viewport {
     /// panel showing the same ground span pick the same level.
     #[inline]
     pub fn meters_per_pixel(&self) -> f32 {
-        (METERS_PER_MICRODEG_LAT / self.zoom) as f32
+        METERS_PER_MICRODEG_LAT / self.zoom
     }
 }
 
 #[inline]
-fn aspect_for_lat(cam_lat: f64) -> f64 {
-    libm::cos((cam_lat / 1e6).to_radians())
+fn aspect_for_lat(cam_lat: i32) -> f32 {
+    libm::cosf((cam_lat as f32 / 1e6).to_radians())
 }
 
 /// What a single render call drew.
@@ -356,27 +361,27 @@ impl MapRenderer {
         // special case. The step is sized so integer screen rounding barely skews
         // the direction; we normalize, so its exact length doesn't matter.
         let forward = course.and_then(|deg| {
-            let theta = (deg as f64).to_radians();
+            let theta = deg.to_radians();
             let step = (64.0 / vp.zoom).clamp(1.0, 100_000.0);
-            let lon2 = lon as f64 + libm::sin(theta) * step / vp.aspect;
-            let lat2 = lat as f64 + libm::cos(theta) * step;
+            let lon2 = lon as f32 + libm::sinf(theta) * step / vp.aspect;
+            let lat2 = lat as f32 + libm::cosf(theta) * step;
             let (sx2, sy2) = vp.to_screen(lon2 as i32, lat2 as i32);
-            let (dx, dy) = ((sx2 - sx) as f64, (sy2 - sy) as f64);
-            let len = libm::sqrt(dx * dx + dy * dy);
+            let (dx, dy) = ((sx2 - sx) as f32, (sy2 - sy) as f32);
+            let len = libm::sqrtf(dx * dx + dy * dy);
             (len > 1e-3).then(|| (dx / len, dy / len))
         });
 
-        let (cx, cy) = (sx as f64, sy as f64);
-        let pt = |x: f64, y: f64| Point::new(libm::round(x) as i32, libm::round(y) as i32);
+        let (cx, cy) = (sx as f32, sy as f32);
+        let pt = |x: f32, y: f32| Point::new(libm::roundf(x) as i32, libm::roundf(y) as i32);
 
         self.screen.clear();
         let ring_len = match forward {
             // Chevron: a tip a bit ahead and two base corners swept back and out.
             Some((fx, fy)) => {
                 let (rx, ry) = (-fy, fx); // right perpendicular
-                const TIP: f64 = 9.0;
-                const BACK: f64 = 5.0;
-                const HALF: f64 = 6.0;
+                const TIP: f32 = 9.0;
+                const BACK: f32 = 5.0;
+                const HALF: f32 = 6.0;
                 self.screen.push(pt(cx + fx * TIP, cy + fy * TIP));
                 self.screen.push(pt(cx - fx * BACK + rx * HALF, cy - fy * BACK + ry * HALF));
                 self.screen.push(pt(cx - fx * BACK - rx * HALF, cy - fy * BACK - ry * HALF));
@@ -384,7 +389,7 @@ impl MapRenderer {
             }
             // Stationary glyph: a small orientation-free diamond.
             None => {
-                const R: f64 = 5.0;
+                const R: f32 = 5.0;
                 self.screen.push(pt(cx, cy - R));
                 self.screen.push(pt(cx + R, cy));
                 self.screen.push(pt(cx, cy + R));
