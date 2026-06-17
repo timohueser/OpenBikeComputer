@@ -13,3 +13,5 @@ obcm-reader = { path = "../obcm-reader" }
 obcm-render = { path = "../obcm-render" }
 # Needed only to name the `DrawTarget` bound on `App::render_frame`. no_std.
 embedded-graphics = "0.8"
+# Fixed-capacity screen stack (no_std, zero-alloc) — same crate the renderer uses.
+heapless = "0.8"
