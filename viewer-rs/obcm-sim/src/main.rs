@@ -21,7 +21,7 @@ use std::time::Instant;
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
 use obcm_reader::{rgb565_to_device64, rgb565_to_rgb888, Reader};
 use obcm_render::text::{draw_text, Font, TextAlign};
-use obcm_app::{App, AppState, Fix, LocationSource};
+use obcm_app::{App, AppState, Button, ButtonEvent, Fix, InputEvent, InputSource, LocationSource};
 
 mod device_input;
 mod framebuffer;
@@ -60,6 +60,11 @@ struct Args {
     /// Render the font/palette preview instead of the map (slice-1 text check).
     /// Needs no map; writes to `--png` (default `text_demo.png`) and exits.
     text_demo: bool,
+    /// A gesture script applied to the app before a headless `--png` render, so a
+    /// specific screen can be snapshotted. Tokens (one char each, spaces ignored):
+    /// `r`/`l` = turn cw/ccw, `p` = press, `h` = hold, `b` = back, `B` = back-hold.
+    /// E.g. `--script B` opens the Menu; `--script p` opens Ride control.
+    script: Option<String>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -77,6 +82,7 @@ fn parse_args() -> Result<Args, String> {
         center: None,
         zoom_mul: 1.0,
         text_demo: false,
+        script: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -106,6 +112,7 @@ fn parse_args() -> Result<Args, String> {
             }
             "--zoom" => a.zoom_mul = it.next().and_then(|s| s.parse().ok()).ok_or("bad --zoom")?,
             "--text-demo" => a.text_demo = true,
+            "--script" => a.script = Some(it.next().ok_or("--script needs a token string")?),
             other => {
                 if a.map.is_empty() {
                     a.map = other.to_string();
@@ -207,11 +214,78 @@ fn write_png(fb: &Framebuffer, scale: u32, path: &str) -> Result<(), String> {
     out.save(path).map_err(|e| format!("save_png failed: {e}"))
 }
 
+/// A scripted [`InputSource`] that replays a fixed queue of raw events — the
+/// headless counterpart to the control panel's [`device_input::DeviceInput`].
+struct ScriptInput(std::collections::VecDeque<InputEvent>);
+impl InputSource for ScriptInput {
+    fn poll(&mut self) -> Option<InputEvent> {
+        self.0.pop_front()
+    }
+}
+
+/// Feed one batch of raw events to the app at time `now` (ms).
+fn feed(app: &mut App, now: u32, events: Vec<InputEvent>) {
+    app.handle_input(now, &mut ScriptInput(events.into()));
+}
+
+/// Apply a gesture script (see `Args::script`) to `app`, so a headless render can
+/// snapshot any screen. Synthesizes the raw encoder/Back events with a rising
+/// clock — including the threshold crossing that turns a held button into a
+/// `Hold`/`BackHold` — exactly as the real recognizer would see them.
+fn apply_script(app: &mut App, script: &str) {
+    let down = |b| InputEvent::Button(ButtonEvent::Down(b));
+    let up = |b| InputEvent::Button(ButtonEvent::Up(b));
+    let hold = obcm_app::DEFAULT_HOLD_MS;
+    let mut now: u32 = 100;
+    for ch in script.chars() {
+        match ch {
+            ' ' => {}
+            'r' => {
+                feed(app, now, vec![InputEvent::Turn(1)]);
+                now += 30;
+            }
+            'l' => {
+                feed(app, now, vec![InputEvent::Turn(-1)]);
+                now += 30;
+            }
+            'p' => {
+                feed(app, now, vec![down(Button::Encoder)]);
+                now += 80;
+                feed(app, now, vec![up(Button::Encoder)]);
+                now += 30;
+            }
+            'b' => {
+                feed(app, now, vec![down(Button::Back)]);
+                now += 80;
+                feed(app, now, vec![up(Button::Back)]);
+                now += 30;
+            }
+            'h' => {
+                feed(app, now, vec![down(Button::Encoder)]);
+                now += hold + 80;
+                feed(app, now, vec![]); // a tick past the threshold fires `Hold`
+                now += 30;
+                feed(app, now, vec![up(Button::Encoder)]);
+                now += 30;
+            }
+            'B' => {
+                feed(app, now, vec![down(Button::Back)]);
+                now += hold + 80;
+                feed(app, now, vec![]); // fires `BackHold`
+                now += 30;
+                feed(app, now, vec![up(Button::Back)]);
+                now += 30;
+            }
+            other => eprintln!("warning: ignoring unknown --script token '{other}'"),
+        }
+    }
+}
+
 fn main() {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: obcm-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo]");
+            eprintln!("error: {e}\nusage: obcm-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--script TOKENS]");
             std::process::exit(2);
         }
     };
@@ -296,6 +370,10 @@ fn main() {
             }
         }
         let mut app = App::new(state);
+        // Drive the app to a specific screen before snapshotting (e.g. the Menu).
+        if let Some(script) = &args.script {
+            apply_script(&mut app, script);
+        }
         let mut fb = Framebuffer::new(args.width, args.height);
         let tc = args.true_color;
 
