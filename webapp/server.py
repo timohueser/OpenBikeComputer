@@ -11,7 +11,10 @@ from . import geofabrik, jobs
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
-DEFAULT_CONFIG = os.path.join(PROJECT_ROOT, "config.json")
+# config.json ships with the repo and is the read-only factory default.
+FACTORY_CONFIG = os.path.join(PROJECT_ROOT, "config.json")
+# user_config.json (gitignored) holds the user's persisted edits, if any.
+USER_CONFIG = os.path.join(PROJECT_ROOT, "user_config.json")
 
 app = FastAPI(title="OBCM Web Builder")
 
@@ -31,10 +34,38 @@ def get_regions():
         raise HTTPException(status_code=502, detail=f"Failed to load Geofabrik index: {exc}")
 
 
-@app.get("/api/config/default")
-def get_default_config():
-    with open(DEFAULT_CONFIG) as f:
-        return JSONResponse(json.load(f))
+def _read_config(path: str):
+    with open(path) as f:
+        return json.load(f)
+
+
+@app.get("/api/config")
+def get_config():
+    """Return the user's persisted config if present, else factory defaults."""
+    path = USER_CONFIG if os.path.exists(USER_CONFIG) else FACTORY_CONFIG
+    return JSONResponse(_read_config(path))
+
+
+@app.get("/api/config/factory")
+def get_factory_config():
+    """Return the read-only factory-default config (config.json)."""
+    return JSONResponse(_read_config(FACTORY_CONFIG))
+
+
+@app.put("/api/config")
+def put_config(config: dict):
+    """Persist the user's working config to user_config.json."""
+    with open(USER_CONFIG, "w") as f:
+        json.dump(config, f, indent=2)
+    return {"ok": True}
+
+
+@app.delete("/api/config")
+def reset_config():
+    """Discard user edits (delete user_config.json) and return factory defaults."""
+    if os.path.exists(USER_CONFIG):
+        os.remove(USER_CONFIG)
+    return JSONResponse(_read_config(FACTORY_CONFIG))
 
 
 @app.post("/api/jobs")

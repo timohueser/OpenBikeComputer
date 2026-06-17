@@ -1,0 +1,84 @@
+{
+  "_note": "Curated catalog of common OSM tag keys and values for the style editor's autocomplete. Not exhaustive — freeform entry of any key/value is still allowed.",
+  "keys": {
+    "highway": [
+      "motorway", "motorway_link", "trunk", "trunk_link", "primary", "primary_link",
+      "secondary", "secondary_link", "tertiary", "tertiary_link", "unclassified",
+      "residential", "living_street", "service", "pedestrian", "track", "path",
+      "footway", "cycleway", "bridleway", "steps", "busway", "road", "raceway"
+    ],
+    "waterway": [
+      "river", "stream", "canal", "drain", "ditch", "riverbank", "dock", "weir",
+      "dam", "lock_gate"
+    ],
+    "railway": [
+      "rail", "light_rail", "subway", "tram", "narrow_gauge", "monorail",
+      "funicular", "preserved", "disused", "abandoned", "construction", "platform"
+    ],
+    "natural": [
+      "water", "wood", "scrub", "heath", "grassland", "wetland", "beach", "sand",
+      "bare_rock", "scree", "cliff", "coastline", "peak", "tree_row", "bay",
+      "glacier", "wood", "land", "sea"
+    ],
+    "landuse": [
+      "forest", "grass", "residential", "commercial", "industrial", "retail",
+      "farmland", "farmyard", "meadow", "orchard", "vineyard", "cemetery",
+      "quarry", "military", "allotments", "recreation_ground", "village_green",
+      "basin", "reservoir", "construction", "railway", "brownfield", "greenfield"
+    ],
+    "leisure": [
+      "park", "garden", "playground", "pitch", "sports_centre", "stadium",
+      "golf_course", "nature_reserve", "swimming_pool", "track", "common",
+      "dog_park", "marina", "water_park"
+    ],
+    "amenity": [
+      "parking", "school", "university", "college", "kindergarten", "hospital",
+      "place_of_worship", "restaurant", "cafe", "bar", "pub", "fuel", "bank",
+      "pharmacy", "townhall", "library", "fountain", "grave_yard", "marketplace",
+      "police", "fire_station"
+    ],
+    "building": [
+      "yes", "house", "residential", "apartments", "commercial", "industrial",
+      "retail", "church", "cathedral", "school", "university", "hospital",
+      "garage", "hut", "shed", "roof", "construction", "warehouse", "office",
+      "public", "train_station", "stadium"
+    ],
+    "boundary": [
+      "administrative", "national_park", "protected_area", "maritime",
+      "political", "postal_code"
+    ],
+    "admin_level": ["2", "3", "4", "5", "6", "7", "8", "9", "10", "11"],
+    "aeroway": [
+      "runway", "taxiway", "apron", "terminal", "helipad", "aerodrome", "gate"
+    ],
+    "water": [
+      "lake", "pond", "reservoir", "river", "canal", "basin", "lagoon", "oxbow",
+      "lock", "moat"
+    ],
+    "man_made": [
+      "pier", "bridge", "breakwater", "groyne", "embankment", "tower",
+      "lighthouse", "storage_tank", "wastewater_plant", "water_works", "dyke"
+    ],
+    "barrier": [
+      "fence", "wall", "hedge", "gate", "retaining_wall", "city_wall", "bollard",
+      "kerb", "ditch"
+    ],
+    "place": [
+      "city", "town", "village", "hamlet", "suburb", "neighbourhood", "locality",
+      "island", "islet", "city_block"
+    ],
+    "power": [
+      "line", "minor_line", "cable", "tower", "pole", "substation", "plant",
+      "generator"
+    ],
+    "tourism": [
+      "hotel", "hostel", "guest_house", "attraction", "museum", "viewpoint",
+      "camp_site", "picnic_site", "zoo", "theme_park", "artwork"
+    ],
+    "service": [
+      "driveway", "parking_aisle", "alley", "siding", "spur", "yard", "drive-through"
+    ],
+    "bridge": ["yes"],
+    "tunnel": ["yes"]
+  }
+}

@@ -62,6 +62,15 @@ For an interactive flow — select regions, tweak styles, watch build progress:
 .venv/bin/python -m webapp        # http://localhost:8000
 ```
 
+- `config.json` is the read-only **factory default**. Edits made in the builder
+  are saved automatically to `user_config.json` (gitignored) and persist between
+  sessions; **Restore defaults** discards them.
+- Styles can be shared independently of any `.obcm`: **Export stylesheet** writes
+  the current config as a `.json`, **Import stylesheet** loads one back in.
+- Feature/category fields autocomplete from a curated catalog of common OSM tag
+  keys/values (`webapp/static/osm_catalog.json`); any freeform tag is still
+  accepted.
+
 ## Viewing a map
 
 The Rust simulator renders `.obcm` files with the same code path as the
