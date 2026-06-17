@@ -307,8 +307,10 @@ default (64-color) and `--true-color` modes. Don't break that.
 These are the features the panel is scaffolding for — design the panel so they slot in:
 
 1. **User-position marker** — draw a triangle at `AppState.user_fix` oriented along
-   `course`. `user_fix` is already updated every frame in both modes. Likely a new
-   draw step after `render_frame` (host-side overlay) or inside the renderer.
+   `course`, with a map-configurable color (format + webapp). **A full handoff for
+   this is written: [`marker-handoff.md`](marker-handoff.md)** — start there. (The
+   drawing goes in the shared renderer, *not* the host: `obcm` draws, `obcm-app`
+   wires, hosts unchanged.)
 2. **GPX replay** — a new `LocationSource` that walks a parsed track over wall-clock
    time and returns interpolated `Fix`es (position + derived course). Panel gets
    play/pause/seek. The app doesn't change — it's just a different source plugged in.
