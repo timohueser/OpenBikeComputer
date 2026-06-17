@@ -187,6 +187,36 @@ where
     cv.text(&counter, Point::new(w - 16, 13), Font::Label, TextAlign::Right, PARCHMENT);
 }
 
+/// First visible index of a scrolling list that keeps `selected` on screen within
+/// `visible` rows of `total` items. Stateless — a pure function of the selection —
+/// so list screens need no scroll state: the highlight moves down to the last
+/// visible row, then the window follows it (and wrapping to either end lands on
+/// the first/last page).
+pub fn window_start(selected: usize, visible: usize, total: usize) -> usize {
+    if total <= visible || selected < visible {
+        0
+    } else {
+        (selected + 1 - visible).min(total - visible)
+    }
+}
+
+/// Draw a list scrollbar — a faint track with a proportional thumb — at the right
+/// edge, or nothing when everything fits. `top`/`height` is the windowed list
+/// area; `first` is [`window_start`]'s result.
+pub fn scrollbar<D, F>(cv: &mut Canvas<D, F>, x: i32, top: i32, height: i32, total: usize, first: usize, visible: usize)
+where
+    D: DrawTarget,
+    F: Fn(u16) -> D::Color,
+{
+    if total <= visible || total == 0 {
+        return;
+    }
+    cv.round(rect(x, top, 3, height), 1, palette::RULE);
+    let thumb_h = (height * visible as i32 / total as i32).max(10);
+    let thumb_y = top + height * first as i32 / total as i32;
+    cv.round(rect(x, thumb_y, 3, thumb_h), 1, palette::WOOD);
+}
+
 /// The "explorer's field map" palette in RGB565 (the format/style color space),
 /// so screen text and chrome quantize through the host `color_fn` exactly like
 /// map styles.
