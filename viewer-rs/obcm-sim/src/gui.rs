@@ -16,11 +16,13 @@ use std::path::Path;
 use eframe::egui;
 use obcm_reader::Reader;
 use obcm_app::{App, AppState, Button, CameraMode, Fix};
+use obcm_route::RouteReader;
 
 use crate::device_input::{label, DeviceInput};
 use crate::framebuffer::Framebuffer;
 use crate::gpx::Track;
 use crate::gpx_player::GpxPlayer;
+use crate::routes::RouteStore;
 use crate::sim_location::SimLocationSource;
 use crate::Args;
 
@@ -125,6 +127,8 @@ struct SimGui {
     /// Map file bytes; `Reader` borrows these each frame.
     bytes: Vec<u8>,
     app: App,
+    /// The routes folder (the device-SD stand-in): the menu catalog + active geometry.
+    store: RouteStore,
     loc: SimLocationSource,
     fb: Framebuffer,
     dev_w: u32,
@@ -186,8 +190,10 @@ impl SimGui {
         // `--boot` opens at the device's Home/Idle state to walk the full flow;
         // otherwise the sim opens on the map (its map-viewer default).
         let app = if args.boot { App::new_idle(state) } else { App::new(state) };
+        let store = RouteStore::open(args.routes_dir.clone().unwrap_or_else(|| "routes".to_string()));
         let mut gui = SimGui {
             app,
+            store,
             loc,
             fb: Framebuffer::new(args.width, args.height),
             dev_w: args.width,
@@ -206,6 +212,8 @@ impl SimGui {
             bytes,
             last_stats: obcm_render::RenderStats::default(),
         };
+        // Hand the Route menu its catalog (the folder scan); refreshed on GPX import.
+        gui.app.set_routes(gui.store.catalog());
         // `--gpx` opens with a track loaded (paused at the start); press play in
         // the panel to replay it.
         if let Some(path) = &args.gpx {
@@ -264,9 +272,16 @@ impl SimGui {
             self.app.tick(&mut self.loc);
         }
 
+        // Open the active route's geometry (reloads only when the selection changes),
+        // so the Map can stream it — the firmware does the same from its SD card.
+        self.store.sync_active(self.app.activity.active_route);
+        let route_src = self.store.active_source();
+        let route = route_src.as_ref().and_then(|s| RouteReader::open(s).ok());
+
         let stats = self.app.render_frame(
             &mut self.fb,
             &reader,
+            route.as_ref(),
             self.dev_w as f32,
             self.dev_h as f32,
             |c| crate::color_of(c, tc),
@@ -729,6 +744,24 @@ impl SimGui {
 
 impl eframe::App for SimGui {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Drag-and-drop a `.gpx` onto the window to import it (the device's USB-drop
+        // path): convert into the routes folder and refresh the Route-menu catalog.
+        let dropped: Vec<std::path::PathBuf> =
+            ctx.input(|i| i.raw.dropped_files.iter().filter_map(|f| f.path.clone()).collect());
+        for path in dropped {
+            let is_gpx = path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("gpx"));
+            if is_gpx {
+                match self.store.import_gpx(&path) {
+                    Ok(s) => {
+                        self.gpx_error = None;
+                        eprintln!("imported {} | {} km, +{} m", path.display(), (s.total_distance_m + 500) / 1000, s.total_ascent_m);
+                    }
+                    Err(e) => self.gpx_error = Some(e),
+                }
+                self.app.set_routes(self.store.catalog());
+            }
+        }
+
         self.render_to_texture(ctx);
 
         // No frame margin: the device screen fills its window edge-to-edge.

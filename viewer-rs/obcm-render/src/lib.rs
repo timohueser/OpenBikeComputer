@@ -570,6 +570,68 @@ impl MapRenderer {
         };
         fill_polygon(target, &self.screen, &[ring_len], color, w, h, &mut self.xs);
     }
+
+    /// Stroke an active route as a polyline overlay. Call **after**
+    /// [`render`](MapRenderer::render) (like [`draw_marker`](MapRenderer::draw_marker))
+    /// so the route sits on top of the map.
+    ///
+    /// Streams the route chunk-by-chunk: only chunks whose bbox intersects the view are
+    /// decoded, each projected and stroked on its own. Consecutive chunks share their
+    /// seam vertex, so the per-chunk polylines join without a gap. Sub-pixel steps are
+    /// dropped so a long route never overruns the screen buffer.
+    pub fn draw_route<D>(
+        &mut self,
+        target: &mut D,
+        vp: &Viewport,
+        route: &obcm_route::RouteReader,
+        color: D::Color,
+        weight: u32,
+    ) where
+        D: DrawTarget,
+    {
+        let (w, h) = (vp.w as i32, vp.h as i32);
+        let view = vp.visible_bbox();
+        let mut pts = Vec::<obcm_route::RoutePoint, { obcm_route::MAX_POINTS_PER_CHUNK }>::new();
+
+        for (k, cm) in route.chunks().iter().enumerate() {
+            if !cm.bbox.intersects(&view) {
+                continue;
+            }
+            if route.decode_chunk(k, &mut pts).is_err() {
+                continue;
+            }
+            self.screen.clear();
+            let last = pts.len().saturating_sub(1);
+            let mut prev: Option<Point> = None;
+            for (i, p) in pts.iter().enumerate() {
+                let (x, y) = vp.to_screen(p.lon, p.lat);
+                let pt = Point::new(x.clamp(-4 * w, 4 * w), y.clamp(-4 * h, 4 * h));
+                if let Some(p1) = prev {
+                    // Drop sub-pixel steps (but keep the last point so seams stay closed).
+                    if i != last && (pt.x - p1.x).abs() + (pt.y - p1.y).abs() < 2 {
+                        continue;
+                    }
+                    // Subdivide long segments like the map's line path, so embedded-
+                    // graphics' line math can't overflow / spike on a near-screen-length run.
+                    let (dx, dy) = (pt.x - p1.x, pt.y - p1.y);
+                    let dist = dx.abs().max(dy.abs());
+                    if dist > 150 {
+                        let steps = (dist + 149) / 150;
+                        for s in 1..steps {
+                            let _ = self.screen.push(Point::new(p1.x + dx * s / steps, p1.y + dy * s / steps));
+                        }
+                    }
+                }
+                let _ = self.screen.push(pt);
+                prev = Some(pt);
+            }
+            if self.screen.len() >= 2 {
+                let _ = Polyline::new(&self.screen)
+                    .into_styled(PrimitiveStyle::with_stroke(color, weight.max(1)))
+                    .draw(target);
+            }
+        }
+    }
 }
 
 /// Scanline even-odd polygon fill. `screen` holds every ring's projected points

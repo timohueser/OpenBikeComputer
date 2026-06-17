@@ -1,38 +1,22 @@
 //! Routes — the loadable rides shown in the Route menu.
 //!
-//! For now this is a **static mock list**; the real list will be synced from the
-//! companion app over BLE into device storage. Callers go through [`routes`]
-//! rather than touching the representation, so that swap is a local change here —
-//! and the [`Route`] fields are the stable interface the screens already render
-//! against. Route *geometry* (the polyline + elevation profile, for drawing on the
-//! Map and the Elevation screen) joins [`Route`] when route loading lands.
+//! A route is described to the UI by a [`RouteSummary`] (name + totals + bbox +
+//! start), defined by the [`obcm_route`] format crate. The **catalog** of summaries is
+//! produced by the host — the simulator scans a folder of `.obcr` files, the firmware
+//! scans the SD card — and handed to [`App::set_routes`](crate::App::set_routes); the
+//! app owns a copy and the screens read it through [`Ctx`](crate::screen::Ctx) /
+//! [`Render`](crate::screen::Render). The heavy route *geometry* (the polyline the Map
+//! draws) stays host-owned and is streamed on demand through an
+//! [`obcm_route::RouteReader`]; only the one active route is opened at a time.
+//!
+//! [`Activity::active_route`](crate::Activity::active_route) indexes into the catalog.
 
-/// A loadable route. Distances are whole units for the v1 stat displays.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Route {
-    pub name: &'static str,
-    /// Total distance, km.
-    pub distance_km: u32,
-    /// Total climb, m.
-    pub climb_m: u32,
-}
+pub use obcm_route::RouteSummary;
 
-/// Mock route list (the stand-in until routes sync over BLE). Order is the
-/// Route-menu order. Deliberately more than fit on one screen, to exercise the
-/// list windowing + scrollbar.
-const MOCK: [Route; 7] = [
-    Route { name: "Alpine Loop", distance_km: 142, climb_m: 3200 },
-    Route { name: "Black Forest", distance_km: 88, climb_m: 1450 },
-    Route { name: "River Valley", distance_km: 56, climb_m: 620 },
-    Route { name: "Vosges Crossing", distance_km: 124, climb_m: 2600 },
-    Route { name: "Rhine Path", distance_km: 70, climb_m: 400 },
-    Route { name: "Jura Heights", distance_km: 98, climb_m: 2100 },
-    Route { name: "Lake Circuit", distance_km: 45, climb_m: 350 },
-];
+/// Maximum routes the resident menu catalog holds. Sized for a comfortable SD card of
+/// rides; each summary is ~80 bytes, so the cap costs a few KB of static RAM.
+pub const MAX_ROUTES: usize = 64;
 
-/// The available routes — today the mock list, later the BLE-synced one. The
-/// Route menu lists these and [`Activity::active_route`](crate::Activity::active_route)
-/// indexes into them.
-pub fn routes() -> &'static [Route] {
-    &MOCK
-}
+/// The app's resident route catalog: the summaries the Route menu lists and
+/// [`Activity::active_route`](crate::Activity::active_route) indexes.
+pub type Catalog = heapless::Vec<RouteSummary, MAX_ROUTES>;

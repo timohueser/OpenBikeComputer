@@ -11,6 +11,9 @@ description = "OBCM device application + hardware-abstraction traits (no_std) â€
 # brings the `Viewport` + `MapRenderer` the app drives; it's no_std.
 obcm-reader = { path = "../obcm-reader" }
 obcm-render = { path = "../obcm-render" }
+# The route format + reader (RouteSummary for the menu catalog, RouteReader the Map
+# draws). no_std, shared with the firmware exactly like the map reader.
+obcm-route = { path = "../obcm-route" }
 # Needed only to name the `DrawTarget` bound on `App::render_frame`. no_std.
 embedded-graphics = "0.8"
 # Fixed-capacity screen stack (no_std, zero-alloc) â€” same crate the renderer uses.

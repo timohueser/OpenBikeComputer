@@ -1,0 +1,10 @@
+[package]
+name = "obcm-route"
+version = "0.1.0"
+edition = "2021"
+description = "OBCR route format reader + GPX converter (no_std) — shared by the desktop simulator and nRF firmware"
+
+[dependencies]
+heapless = "0.8"
+libm = "0.2"
+obcm-reader = { path = "../obcm-reader" }

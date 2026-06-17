@@ -6,6 +6,7 @@ description = "OBCM map rendering path using embedded-graphics"
 
 [dependencies]
 obcm-reader = { path = "../obcm-reader" }
+obcm-route = { path = "../obcm-route" }
 embedded-graphics = "0.8"
 heapless = "0.8"
 libm = "0.2"

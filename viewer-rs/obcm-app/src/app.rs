@@ -4,10 +4,12 @@
 use embedded_graphics::draw_target::DrawTarget;
 use obcm_reader::Reader;
 use obcm_render::{MapRenderer, RenderStats, Viewport};
+use obcm_route::RouteReader;
 
 use crate::activity::{Activity, Mode};
 use crate::hal::{Fix, InputSource, LocationSource};
 use crate::input::{Gesture, Gestures, DEFAULT_HOLD_MS};
+use crate::route::{Catalog, RouteSummary};
 use crate::screen::{self, Ctx, HomeScreen, MapScreen, Render, Screen, Stack};
 
 /// How the camera relates to the user's position.
@@ -130,6 +132,10 @@ pub struct App {
     pub state: AppState,
     /// The ride mode + (later) tracking accumulators.
     pub activity: Activity,
+    /// The resident route catalog (summaries), populated by the host from its store
+    /// ([`set_routes`](App::set_routes)). The Route menu lists it; `active_route`
+    /// indexes it.
+    catalog: Catalog,
     /// The screen stack (root = Home). The top screen receives input; drawing
     /// starts from the topmost opaque screen so overlays composite over the map.
     stack: Stack,
@@ -148,14 +154,14 @@ pub struct App {
 }
 
 impl App {
-    /// Build the app on the live map, as if route 0 were already loaded — the
-    /// simulator's convenience default (it opens on the map; mouse/GPX/`--png` all
-    /// work). The stack is `[Home, Map]`, with Home the always-present root that
-    /// Finish / Discard return to. Use [`new_idle`](App::new_idle) for the device's
-    /// real boot (start at Home / Idle, no route).
+    /// Build the app straight onto the live map — the simulator's convenience default
+    /// (it opens on the map; mouse/GPX/`--png` all work). The stack is `[Home, Map]`,
+    /// with Home the always-present root that Finish / Discard return to. No route is
+    /// loaded; the map shows by itself until one is picked. Use
+    /// [`new_idle`](App::new_idle) for the device's real boot (Home / Idle).
     pub fn new(state: AppState) -> Self {
         let mut app = Self::new_idle(state);
-        app.activity = Activity { mode: Mode::Riding, active_route: Some(0) };
+        app.activity = Activity { mode: Mode::Riding, active_route: None };
         let _ = app.stack.push(Screen::Map(MapScreen::new()));
         app
     }
@@ -169,6 +175,7 @@ impl App {
         App {
             state,
             activity: Activity::new(Mode::Idle),
+            catalog: Catalog::new(),
             stack,
             renderer: MapRenderer::new(),
             gestures: Gestures::new(DEFAULT_HOLD_MS),
@@ -183,6 +190,21 @@ impl App {
     /// fix in Follow mode).
     pub fn tick(&mut self, loc: &mut dyn LocationSource) {
         self.state.update(loc);
+    }
+
+    /// Replace the resident route catalog from the host's store (the simulator's
+    /// folder scan / the firmware's SD-card scan). Clones up to
+    /// [`MAX_ROUTES`](crate::MAX_ROUTES) summaries; any beyond that are ignored.
+    pub fn set_routes(&mut self, summaries: &[RouteSummary]) {
+        self.catalog.clear();
+        for s in summaries.iter().take(crate::route::MAX_ROUTES) {
+            let _ = self.catalog.push(s.clone());
+        }
+    }
+
+    /// The resident route catalog.
+    pub fn routes(&self) -> &[RouteSummary] {
+        &self.catalog
     }
 
     /// Drain raw control input through the shared recognizer and dispatch each
@@ -207,8 +229,8 @@ impl App {
     /// Route one gesture to the top screen and apply the transition it returns.
     fn dispatch(&mut self, g: Gesture) {
         self.last_gesture = Some(g);
-        let App { state, activity, stack, now_ms, .. } = self;
-        let mut cx = Ctx { state, activity, now_ms: *now_ms };
+        let App { state, activity, catalog, stack, now_ms, .. } = self;
+        let mut cx = Ctx { state, activity, routes: catalog.as_slice(), now_ms: *now_ms };
         let t = stack.last_mut().expect("the stack always has the Home root").handle(g, &mut cx);
         screen::apply(stack, t);
     }
@@ -225,6 +247,7 @@ impl App {
         &mut self,
         target: &mut D,
         reader: &Reader,
+        route: Option<&RouteReader>,
         w: f32,
         h: f32,
         color_fn: F,
@@ -234,12 +257,14 @@ impl App {
         F: Fn(u16) -> D::Color,
     {
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
-        let App { state, activity, renderer, stack, now_ms, enc_progress, .. } = self;
+        let App { state, activity, catalog, renderer, stack, now_ms, enc_progress, .. } = self;
         let mut rx = Render {
             reader,
             renderer,
             state,
             activity,
+            routes: catalog.as_slice(),
+            route,
             w,
             h,
             now_ms: *now_ms,
