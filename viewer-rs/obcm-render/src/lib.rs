@@ -23,7 +23,9 @@ use embedded_graphics::{
 
 use obcm_reader::{BBox, Kind, Reader};
 
+pub mod canvas;
 pub mod text;
+pub use canvas::{rect, Canvas};
 pub use text::{draw_text, text_width, Font, TextAlign};
 
 // ---------------------------------------------------------------------------
