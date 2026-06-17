@@ -6,20 +6,21 @@ def test_pack_style_dict():
     config = {
         "features": {
             "highway": {
-                "primary": {"id": 10, "z_index": 50, "color": "0xF9A6", "weight": 4}
+                "primary": {"id": 10, "z_index": 50, "color": "0xF9A6", "weight": 4, "priority": 2}
             }
         }
     }
     data = pack_style_dict(config)
-    # Count(1) + ID(1), Z(1), Color(2), Weight(1) = 6 bytes
-    assert len(data) == 6
+    # Count(1) + ID(1), Z(1), Color(2), Weight(1), Flags(1) = 7 bytes
+    assert len(data) == 7
     count = struct.unpack("<B", data[:1])[0]
-    id_, z, color, weight = struct.unpack("<BbHB", data[1:]) # Signed z
+    id_, z, color, weight, flags = struct.unpack("<BbHBB", data[1:]) # Signed z
     assert count == 1
     assert id_ == 10
     assert z == 50
     assert color == 0xF9A6
     assert weight == 4
+    assert flags == 1
 
 def test_pack_feature_8bit():
     feature = {
@@ -83,14 +84,14 @@ def test_serialize_lods_header():
     config = {"features": {}}
     binary = serialize_lods(lods, config, (0, 0, 100, 100))
 
-    # v3 header(30) + StyleCount(1) + 1 LOD entry(18) + Index(4) = 53
-    assert len(binary) == 53
-    magic, ver, lat1, lon1, lat2, lon2, s_off, lod_count, lod_tbl = struct.unpack("<4sBiiiiIBI", binary[:30])
+    # v5 header(32) + StyleCount(1) + 1 LOD entry(18) + Index(4) = 55
+    assert len(binary) == 55
+    magic, ver, lat1, lon1, lat2, lon2, s_off, lod_count, lod_tbl, marker_color = struct.unpack("<4sBiiiiIBIH", binary[:32])
     assert magic == b"OBCM"
-    assert ver == 3
-    assert s_off == 30
+    assert ver == 5
+    assert s_off == 32
     assert lod_count == 1
-    assert lod_tbl == 31  # 30 header + 1 style-count byte
+    assert lod_tbl == 33  # 32 header + 1 style-count byte
 
     mpp, idx_off, node_count, c_size, chunk_count = struct.unpack_from("<fIIHI", binary, lod_tbl)
     assert math.isinf(mpp)       # coarsest layer

@@ -1,4 +1,4 @@
-//! OBCM **v4** format reader: header, style table, LOD table, and per-LOD
+//! OBCM **v5** format reader: header, style table, LOD table, and per-LOD
 //! quadtree query + chunk decode.
 //!
 //! All coordinates are integer microdegrees (1e-6 degrees), as stored in the
@@ -30,6 +30,7 @@ pub struct Style {
     pub z_index: i8,
     pub color: u16, // RGB565
     pub weight: u8,
+    pub priority: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,7 +172,7 @@ impl<'a> Reader<'a> {
             return Err(Error::BadMagic);
         }
         let version = data[4];
-        if version != 4 {
+        if version != 5 {
             return Err(Error::BadVersion);
         }
         // Header field order: lat,lon,lat,lon (see serialize.py header pack).
@@ -249,6 +250,10 @@ impl<'a> Reader<'a> {
 
     /// Collect (chunk_id, node_bbox) for every non-empty leaf in `lod` that
     /// overlaps `view`. `lod` indexes [`Reader::lods`]; out-of-range yields empty.
+    ///
+    /// Bounded by the buffer capacity `C`: if more leaves overlap than fit, the
+    /// extras are dropped. The renderer uses [`Reader::for_each_chunk`] instead,
+    /// which streams leaves through a callback with no such cap.
     pub fn query<const C: usize>(&self, lod: usize, view: &BBox) -> Vec<(u32, BBox), C> {
         let mut out = Vec::new();
         self.query_into(lod, view, &mut out);
@@ -256,24 +261,37 @@ impl<'a> Reader<'a> {
     }
 
     /// Like [`Reader::query`] but appends into a caller-owned buffer (cleared
-    /// first), so a renderer can reuse one allocation across frames.
+    /// first), so a caller can reuse one allocation across calls.
     pub fn query_into<const C: usize>(&self, lod: usize, view: &BBox, out: &mut Vec<(u32, BBox), C>) {
         out.clear();
+        self.for_each_chunk(lod, view, |cid, node| {
+            let _ = out.push((cid, node));
+        });
+    }
+
+    /// Visit `(chunk_id, node_bbox)` for every non-empty leaf in `lod` that
+    /// overlaps `view`, in quadtree order. Unlike [`Reader::query`] this streams
+    /// through a callback and so has **no upper bound** on the number of chunks:
+    /// the renderer relies on this to avoid silently dropping chunks — and the
+    /// high-priority features they hold — when a wide viewport overlaps many
+    /// leaves. The walk only reads the index (bbox tests over `u32` nodes), so
+    /// re-running it once per priority pass is cheap relative to decoding.
+    pub fn for_each_chunk(&self, lod: usize, view: &BBox, mut visit: impl FnMut(u32, BBox)) {
         if let Some(l) = self.lods.get(lod) {
             if l.node_count > 0 {
-                self.query_rec(l, 0, self.bbox, view, out);
+                self.walk_leaves(l, 0, self.bbox, view, &mut visit);
             }
         }
     }
 
-    fn query_rec<const C: usize>(&self, lod: &Lod, idx: usize, node: BBox, view: &BBox, out: &mut Vec<(u32, BBox), C>) {
+    fn walk_leaves<F: FnMut(u32, BBox)>(&self, lod: &Lod, idx: usize, node: BBox, view: &BBox, visit: &mut F) {
         if idx >= lod.node_count || !node.intersects(view) {
             return;
         }
         let val = self.node(lod, idx);
         if val & BRANCH_BIT == 0 {
             if val != EMPTY_LEAF {
-                let _ = out.push((val, node));
+                visit(val, node);
             }
             return;
         }
@@ -289,7 +307,7 @@ impl<'a> Reader<'a> {
             BBox { min_lon: mid_lon, min_lat: node.min_lat, max_lon: node.max_lon, max_lat: mid_lat },
         ];
         for (i, kb) in kids.iter().enumerate() {
-            self.query_rec(lod, child + i, *kb, view, out);
+            self.walk_leaves(lod, child + i, *kb, view, visit);
         }
     }
 
@@ -308,6 +326,28 @@ impl<'a> Reader<'a> {
         ring_lens: &mut Vec<usize, R>,
         visit: impl FnMut(FeatureRef),
     ) {
+        self.for_each_feature_filtered(lod, chunk_id, node, points, ring_lens, |_| true, visit);
+    }
+
+    /// Like [`Reader::for_each_feature`], but `should_decode` is consulted with
+    /// each feature's style id **before** its coordinates are decoded: return
+    /// `false` to skip the feature's geometry cheaply — advancing past its bytes
+    /// with no coordinate math or buffer writes — or `true` to decode it and hand
+    /// a [`FeatureRef`] to `visit`. The renderer uses this so each priority pass
+    /// decodes only the features at its level: across all passes, a feature's
+    /// coordinates are decoded **at most once per frame** rather than once per
+    /// pass.
+    #[allow(clippy::too_many_arguments)]
+    pub fn for_each_feature_filtered<const P: usize, const R: usize>(
+        &self,
+        lod: usize,
+        chunk_id: u32,
+        node: &BBox,
+        points: &mut Vec<(i32, i32), P>,
+        ring_lens: &mut Vec<usize, R>,
+        should_decode: impl Fn(u8) -> bool,
+        visit: impl FnMut(FeatureRef),
+    ) {
         let l = match self.lods.get(lod) {
             Some(l) => l,
             None => return,
@@ -317,10 +357,8 @@ impl<'a> Reader<'a> {
         if start + cs > self.data.len() {
             return;
         }
-        decode_chunk_into(&self.data[start..start + cs], node, points, ring_lens, visit);
+        decode_chunk_into(&self.data[start..start + cs], node, points, ring_lens, should_decode, visit);
     }
-
-
 }
 
 /// Walk a single chunk's bytes, decoding each feature into the shared
@@ -332,6 +370,7 @@ fn decode_chunk_into<const P: usize, const R: usize>(
     node: &BBox,
     points: &mut Vec<(i32, i32), P>,
     ring_lens: &mut Vec<usize, R>,
+    should_decode: impl Fn(u8) -> bool,
     mut visit: impl FnMut(FeatureRef),
 ) {
     let cs = chunk.len();
@@ -353,6 +392,26 @@ fn decode_chunk_into<const P: usize, const R: usize>(
         let is_poly = flags & 0x02 != 0;
         let has_holes = flags & 0x04 != 0;
         let dsize = if is_16 { 2 } else { 1 };
+
+        // Skip path: the caller doesn't want this style this pass, so advance
+        // past the geometry without decoding. `skip_ring` mirrors `read_ring`'s
+        // offset arithmetic exactly — the two must stay byte-for-byte in sync.
+        if !should_decode(style_id) {
+            off = skip_ring(chunk, off, ext_pt_count, false, dsize);
+            if is_poly && has_holes && off < cs {
+                let hole_count = chunk[off] as usize;
+                off += 1;
+                for _ in 0..hole_count {
+                    if off + 2 > cs {
+                        break;
+                    }
+                    let hpc = rd_u16(chunk, off) as usize;
+                    off += 2;
+                    off = skip_ring(chunk, off, hpc, true, dsize);
+                }
+            }
+            continue;
+        }
 
         let anchor = (anchor_base.0 + ax, anchor_base.1 + ay);
 
@@ -384,6 +443,24 @@ fn decode_chunk_into<const P: usize, const R: usize>(
             ring_lens,
         });
     }
+}
+
+/// Advance `off` past one ring's encoded deltas without decoding them, mirroring
+/// [`read_ring`]'s offset arithmetic exactly so the skip and decode paths stay
+/// byte-for-byte aligned. `is_hole` selects the hole encoding (every point is a
+/// delta) vs the exterior encoding (the first point is the anchor, not stored).
+fn skip_ring(chunk: &[u8], mut off: usize, pt_count: usize, is_hole: bool, dsize: usize) -> usize {
+    if pt_count == 0 {
+        return off;
+    }
+    let num_deltas = if is_hole { pt_count } else { pt_count - 1 };
+    for _ in 0..num_deltas {
+        if off + dsize * 2 > chunk.len() {
+            break;
+        }
+        off += dsize * 2;
+    }
+    off
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -436,15 +513,17 @@ fn parse_styles(data: &[u8], style_offset: usize) -> [Option<Style>; 256] {
     let count = data[style_offset] as usize;
     let mut o = style_offset + 1;
     for _ in 0..count {
-        if o + 5 > data.len() {
+        if o + 6 > data.len() {
             break;
         }
         let id = data[o];
         let z_index = data[o + 1] as i8;
         let color = rd_u16(data, o + 2);
         let weight = data[o + 4];
-        styles[id as usize] = Some(Style { id, z_index, color, weight });
-        o += 5;
+        let flags = data[o + 5];
+        let priority = (flags & 0x03) + 1;
+        styles[id as usize] = Some(Style { id, z_index, color, weight, priority });
+        o += 6;
     }
     styles
 }

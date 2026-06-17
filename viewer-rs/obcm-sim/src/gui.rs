@@ -125,6 +125,7 @@ struct SimGui {
     /// `--screenshot`: save the first composited frame here, then close.
     screenshot: Option<String>,
     screenshot_requested: bool,
+    last_stats: obcm_render::RenderStats,
 }
 
 impl SimGui {
@@ -175,6 +176,7 @@ impl SimGui {
             screenshot: args.screenshot,
             screenshot_requested: false,
             bytes,
+            last_stats: obcm_render::RenderStats::default(),
         };
         // `--gpx` opens with a track loaded (paused at the start); press play in
         // the panel to replay it.
@@ -241,7 +243,7 @@ impl SimGui {
             self.dev_h as f32,
             |c| crate::color_of(c, tc),
         );
-        println!("RenderStats: LOD={}, Features: {}/{} drawn, Points: {}/{} drawn", stats.lod, stats.features_drawn, stats.features_tried, stats.points_drawn, stats.points_tried);
+        self.last_stats = stats;
 
         let image =
             egui::ColorImage::from_rgb([self.dev_w as usize, self.dev_h as usize], self.fb.as_rgb888());
@@ -309,7 +311,7 @@ impl SimGui {
             egui::ViewportId::from_hash_of("controls"),
             egui::ViewportBuilder::default()
                 .with_title("Controls")
-                .with_inner_size([320.0, 580.0]),
+                .with_inner_size([320.0, 640.0]),
             |ctx, _class| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     ui.heading("Simulated device");
@@ -438,6 +440,70 @@ impl SimGui {
                         }
                     }
                     self.show_gpx_controls(ui);
+
+                    ui.add_space(6.0);
+                    ui.separator();
+
+                    ui.collapsing("Render Stats", |ui| {
+                        let s = &self.last_stats;
+
+                        egui::Grid::new("render_stats").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
+                            ui.label("LOD");
+                            ui.label(format!("{}", s.lod));
+                            ui.end_row();
+
+                            ui.label("Chunks");
+                            ui.label(format!("{}", s.chunks_visited));
+                            ui.end_row();
+
+                            ui.label("Features");
+                            ui.label(format!("{} / {} drawn", s.features_drawn, s.features_tried));
+                            ui.end_row();
+
+                            ui.label("Dropped");
+                            let drop_color = if s.features_dropped > 0 {
+                                egui::Color32::from_rgb(220, 80, 80)
+                            } else {
+                                ui.visuals().text_color()
+                            };
+                            ui.colored_label(drop_color, format!("{}", s.features_dropped));
+                            ui.end_row();
+
+                            ui.label("Points");
+                            ui.label(format!("{} / {} drawn", s.points_drawn, s.points_tried));
+                            ui.end_row();
+                        });
+
+                        ui.add_space(4.0);
+                        ui.label("Buffer utilization");
+
+                        // Span buffer bar
+                        let span_pct = s.span_utilization;
+                        ui.horizontal(|ui| {
+                            ui.label("Spans");
+                            let bar = egui::ProgressBar::new(span_pct)
+                                .text(format!("{:.0}%", span_pct * 100.0));
+                            ui.add(bar);
+                        });
+
+                        // Points buffer bar
+                        let pt_pct = s.point_utilization;
+                        ui.horizontal(|ui| {
+                            ui.label("Points");
+                            let bar = egui::ProgressBar::new(pt_pct)
+                                .text(format!("{:.0}%", pt_pct * 100.0));
+                            ui.add(bar);
+                        });
+
+                        // Rings buffer bar
+                        let ring_pct = s.ring_utilization;
+                        ui.horizontal(|ui| {
+                            ui.label("Rings");
+                            let bar = egui::ProgressBar::new(ring_pct)
+                                .text(format!("{:.0}%", ring_pct * 100.0));
+                            ui.add(bar);
+                        });
+                    });
 
                     if ctx.input(|i| i.viewport().close_requested()) {
                         self.quit = true;

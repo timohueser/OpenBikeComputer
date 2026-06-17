@@ -1,4 +1,4 @@
-# OBCM File Format Specification (v4)
+# OBCM File Format Specification (v5)
 
 OBCM (OpenStreetMap Binary Chunked Map) is a compact binary map format designed
 for efficient rendering on memory-constrained devices such as microcontrollers
@@ -13,8 +13,9 @@ matches the current zoom, so zooming out touches a small coarse layer instead of
 decoding fine geometry just to skip it.
 
 **Version 4** appends a single 2-byte field to the header — the **user-position
-marker color** (RGB565). Nothing else changes. **v4 is the only supported version**;
-earlier versions (v3 LOD-only, v2 single detail level) have been dropped.
+marker color** (RGB565).
+
+**Version 5** adds a 6th byte to style records for flags (bit 0 = priority). **v5 is the only supported version**; earlier versions (v4, v3 LOD-only, v2 single detail level) have been dropped.
 
 ## Design principles
 
@@ -60,7 +61,7 @@ Packed as `struct "<4sBiiiiIBIH"`.
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
 | 0 | Magic | 4 | `char[4]` | Must be `b"OBCM"` |
-| 4 | Version | 1 | `uint8` | `0x04` |
+| 4 | Version | 1 | `uint8` | `0x05` |
 | 5 | Min Lat | 4 | `int32` | Global bbox min latitude (microdegrees) |
 | 9 | Min Lon | 4 | `int32` | Global bbox min longitude |
 | 13 | Max Lat | 4 | `int32` | Global bbox max latitude |
@@ -92,7 +93,7 @@ Maps numeric style IDs to rendering properties. **Global**: style IDs are shared
 across every LOD. Packed as `Count`, then `Count` records.
 
 1. **Count** (`uint8`): number of styles.
-2. **Style Records** (`Count` × 5 bytes):
+2. **Style Records** (`Count` × 6 bytes):
 
 | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- |
@@ -100,6 +101,7 @@ across every LOD. Packed as `Count`, then `Count` records.
 | Z-Index | 1 | `int8` | Painter's-order layer (lower drawn first) |
 | Color | 2 | `uint16` | RGB565 |
 | Weight | 1 | `uint8` | Stroke width in pixels (lines) |
+| Flags | 1 | `uint8` | Bit 0-1: priority level (1=highest/render first, 4=lowest/render last) |
 
 > **Style IDs are assigned by the packer, not authored.** A style ID is a
 > purely internal reference into this table — no reader depends on a specific

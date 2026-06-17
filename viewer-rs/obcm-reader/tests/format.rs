@@ -1,4 +1,4 @@
-//! Format-contract tests for the OBCM v4 reader.
+//! Format-contract tests for the OBCM v5 reader.
 //!
 //! Each test builds a synthetic `.obcm` byte buffer with a small handwritten
 //! builder that mirrors `obcm/serialize.py` exactly, then asserts the reader
@@ -31,6 +31,29 @@ fn decode_chunk(r: &Reader, lod: usize, chunk_id: u32, node: &BBox) -> Vec<Featu
     out
 }
 
+/// Like [`decode_chunk`] but only the features for which `keep(style_id)` is
+/// true are decoded and returned; the rest are skipped in the reader.
+fn decode_filtered(
+    r: &Reader,
+    lod: usize,
+    chunk_id: u32,
+    node: &BBox,
+    keep: impl Fn(u8) -> bool,
+) -> Vec<Feature> {
+    let mut out = Vec::new();
+    let mut points = heapless::Vec::<_, MAX_FEAT_PTS>::new();
+    let mut ring_lens = heapless::Vec::<_, MAX_FEAT_RINGS>::new();
+    r.for_each_feature_filtered(lod, chunk_id, node, &mut points, &mut ring_lens, keep, |f| {
+        out.push(Feature {
+            style_id: f.style_id,
+            kind: f.kind,
+            exterior: f.exterior().to_vec(),
+            interiors: f.interiors().map(|h| h.to_vec()).collect(),
+        });
+    });
+    out
+}
+
 const BRANCH_BIT: u32 = 0x8000_0000;
 const EMPTY_LEAF: u32 = 0x7FFF_FFFF;
 /// Distinctive (non-default) marker color so the round-trip test is meaningful.
@@ -52,17 +75,18 @@ struct LodSpec {
 /// (id, z_index, color_rgb565, weight).
 fn build_file(
     bbox: (i32, i32, i32, i32),
-    styles: &[(u8, i8, u16, u8)],
+    styles: &[(u8, i8, u16, u8, u8)],
     lods: &[LodSpec],
 ) -> Vec<u8> {
     let style_off = 32usize;
 
     let mut style_bytes = vec![styles.len() as u8];
-    for &(id, z, color, weight) in styles {
+    for &(id, z, color, weight, priority) in styles {
         style_bytes.push(id);
         style_bytes.push(z as u8);
         style_bytes.extend_from_slice(&color.to_le_bytes());
         style_bytes.push(weight);
+        style_bytes.push((priority - 1) & 0x03);
     }
 
     let lod_tab_off = style_off + style_bytes.len();
@@ -94,7 +118,7 @@ fn build_file(
     // style_off, lod_count, lod_table_off, marker_color.
     let mut f = Vec::new();
     f.extend_from_slice(b"OBCM");
-    f.push(4);
+    f.push(5);
     f.extend_from_slice(&bbox.1.to_le_bytes()); // min_lat
     f.extend_from_slice(&bbox.0.to_le_bytes()); // min_lon
     f.extend_from_slice(&bbox.3.to_le_bytes()); // max_lat
@@ -181,7 +205,10 @@ fn pack_poly_hole(
 // and feature anchors are absolute.
 const CS: usize = 64;
 const GLOBAL: (i32, i32, i32, i32) = (0, 0, 1000, 1000);
-const STYLES: &[(u8, i8, u16, u8)] = &[(1, 3, 0xF800, 2), (2, -1, 0x07E0, 1)];
+const STYLES: &[(u8, i8, u16, u8, u8)] = &[
+    (1, 3, 0xF800, 2, 3),
+    (2, -1, 0x07E0, 1, 3),
+];
 
 fn two_lod_file() -> Vec<u8> {
     let line = pad(pack_line(1, 100, 200, &[(10, 0), (0, 10)]), CS);
@@ -214,7 +241,7 @@ fn header_and_lod_table() {
     let bytes = two_lod_file();
     let r = Reader::new(&bytes).unwrap();
 
-    assert_eq!(r.version, 4);
+    assert_eq!(r.version, 5);
     assert_eq!(r.marker_color, MARKER);
     assert_eq!(r.bbox.min_lon, 0);
     assert_eq!(r.bbox.min_lat, 0);
@@ -248,6 +275,7 @@ fn styles_parse() {
     assert_eq!(s1.z_index, 3);
     assert_eq!(s1.color, 0xF800);
     assert_eq!(s1.weight, 2);
+    assert_eq!(s1.priority, 3);
 
     let s2 = r.style(2).expect("style 2");
     assert_eq!(s2.z_index, -1);
@@ -442,6 +470,97 @@ fn rejects_bad_input() {
     assert_eq!(err(&bytes), Error::BadMagic);
 
     let mut bytes = two_lod_file();
-    bytes[4] = 3; // v3 (and earlier) no longer supported — only v4 is read
+    bytes[4] = 4; // v4 (and earlier) no longer supported — only v5 is read
     assert_eq!(err(&bytes), Error::BadVersion);
+}
+
+#[test]
+fn filtered_decode_skips_without_drifting() {
+    // Three heterogeneous features packed back-to-back in one chunk: an 8-bit
+    // line, a polygon-with-hole, and a 16-bit line. Skipping any of them must
+    // leave the reader's byte offset exactly where a full decode would, so the
+    // features *after* a skipped one decode byte-identically. This pins
+    // `skip_ring` to `read_ring`: if they ever drift, a trailing feature would
+    // decode garbage and these assertions break.
+    let mut chunk = Vec::new();
+    chunk.extend_from_slice(&pack_line(1, 100, 200, &[(10, 0), (0, 10)]));
+    chunk.extend_from_slice(&pack_poly_hole(
+        2,
+        300,
+        300,
+        &[(50, 0), (0, 50), (-50, 0)],
+        &[(10, 10), (20, 0), (0, 20), (-20, 0)],
+    ));
+    chunk.extend_from_slice(&pack_line16(3, 0, 0, &[(300, 400), (-200, 0)]));
+    let chunk = pad(chunk, 128);
+
+    let styles: &[(u8, i8, u16, u8, u8)] =
+        &[(1, 3, 0xF800, 2, 3), (2, -1, 0x07E0, 1, 3), (3, 0, 0x001F, 1, 3)];
+    let bytes = build_file(
+        GLOBAL,
+        styles,
+        &[LodSpec { max_mpp: f32::INFINITY, index: vec![0], chunks: vec![chunk], chunk_size: 128 }],
+    );
+    let r = Reader::new(&bytes).unwrap();
+    let node = r.bbox;
+
+    let all = decode_chunk(&r, 0, 0, &node);
+    assert_eq!(all.len(), 3);
+
+    // Keeping everything is identical to the unfiltered decode path.
+    assert_eq!(decode_filtered(&r, 0, 0, &node, |_| true), all);
+    // Keeping nothing visits nothing.
+    assert!(decode_filtered(&r, 0, 0, &node, |_| false).is_empty());
+
+    // Skip the middle polygon: the trailing 16-bit line must still be exact.
+    assert_eq!(
+        decode_filtered(&r, 0, 0, &node, |sid| sid != 2),
+        vec![all[0].clone(), all[2].clone()]
+    );
+    // Skip the leading line: both following features must be exact.
+    assert_eq!(
+        decode_filtered(&r, 0, 0, &node, |sid| sid != 1),
+        vec![all[1].clone(), all[2].clone()]
+    );
+    // Skip the trailing line: the leading two are unaffected.
+    assert_eq!(
+        decode_filtered(&r, 0, 0, &node, |sid| sid != 3),
+        vec![all[0].clone(), all[1].clone()]
+    );
+}
+
+#[test]
+fn for_each_chunk_has_no_cap() {
+    // Root branch with four non-empty leaf quadrants. `for_each_chunk` streams
+    // every overlapping leaf through its callback with no upper bound, whereas a
+    // capacity-bounded `query` silently truncates — the exact behaviour the
+    // renderer depends on so a wide viewport never silently loses whole chunks.
+    let mk = || pad(pack_line(1, 1, 1, &[(1, 1)]), CS);
+    let index = vec![
+        BRANCH_BIT | 1, // root branch, children start at idx 1
+        0,              // NW -> chunk 0
+        1,              // NE -> chunk 1
+        2,              // SW -> chunk 2
+        3,              // SE -> chunk 3
+    ];
+    let bytes = build_file(
+        GLOBAL,
+        STYLES,
+        &[LodSpec {
+            max_mpp: f32::INFINITY,
+            index,
+            chunks: vec![mk(), mk(), mk(), mk()],
+            chunk_size: CS,
+        }],
+    );
+    let r = Reader::new(&bytes).unwrap();
+
+    // A view over the whole bbox overlaps all four leaves.
+    let mut seen = 0;
+    r.for_each_chunk(0, &r.bbox, |_cid, _node| seen += 1);
+    assert_eq!(seen, 4);
+
+    // The same query into a 2-slot buffer keeps only the first two it reaches.
+    let capped = r.query::<2>(0, &r.bbox);
+    assert_eq!(capped.len(), 2);
 }

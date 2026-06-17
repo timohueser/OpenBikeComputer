@@ -23,6 +23,57 @@ use embedded_graphics::{
 
 use obcm_reader::{BBox, Kind, Reader};
 
+// ---------------------------------------------------------------------------
+// Buffer capacity constants.
+//
+// These control the maximum number of features, points, and rings the renderer
+// can hold per frame.  Tuned for an MCU with 512 KB of RAM.  Every buffer is
+// statically allocated (heapless::Vec), so increasing these costs RAM at boot,
+// not per-frame.  Adjust if moving to a different target.
+// ---------------------------------------------------------------------------
+
+/// Maximum visible features per frame (each is a [`Span`] — 14 bytes). At coarse
+/// zoom this is the buffer that saturates first (many small features), so it is
+/// sized generously; see the RAM-budget assertion below.
+pub const MAX_SPANS: usize = 3072;
+
+/// Maximum total vertices across all visible features per frame (8 bytes each).
+pub const MAX_FRAME_POINTS: usize = 12_288;
+
+/// Maximum total ring entries across all visible features per frame.
+pub const MAX_FRAME_RINGS: usize = 3072;
+
+/// Maximum vertices for a single feature during decode (reused per feature).
+pub const MAX_DECODE_POINTS: usize = 2048;
+
+/// Maximum rings for a single feature during decode.
+pub const MAX_DECODE_RINGS: usize = 32;
+
+/// Maximum projected screen points for drawing one feature.
+pub const MAX_SCREEN_POINTS: usize = 4096;
+
+/// Maximum scanline crossings for polygon fill.
+pub const MAX_CROSSINGS: usize = 256;
+
+// `Span` packs its buffer offsets into `u16` to stay small, so the frame buffers
+// it indexes must fit in a `u16`. These guard that invariant at compile time.
+const _: () = assert!(MAX_FRAME_POINTS <= u16::MAX as usize, "Span::pt_start is u16");
+const _: () = assert!(MAX_FRAME_RINGS <= u16::MAX as usize, "Span::ring_start is u16");
+const _: () = assert!(MAX_SPANS <= u16::MAX as usize, "Span::seq is u16");
+
+/// Static RAM the [`MapRenderer`]'s scratch buffers occupy on the 32-bit MCU
+/// target (`usize` = 4 bytes there). Computed from the constants above so the
+/// assertion below fails the build if a buffer is grown past the ~200 KB budget.
+/// (`(i32, i32)` and `Point` are 8 bytes; `usize`/`f32` are 4 on the MCU.)
+const MCU_RENDERER_BYTES: usize = MAX_DECODE_POINTS * 8
+    + MAX_DECODE_RINGS * 4
+    + MAX_FRAME_POINTS * 8
+    + MAX_FRAME_RINGS * 4
+    + MAX_SPANS * core::mem::size_of::<Span>()
+    + MAX_SCREEN_POINTS * 8
+    + MAX_CROSSINGS * 4;
+const _: () = assert!(MCU_RENDERER_BYTES <= 200 * 1024, "MapRenderer exceeds the 200 KB MCU budget");
+
 /// Meters of ground per microdegree of latitude (≈ Earth circumference / 360e6).
 const METERS_PER_MICRODEG_LAT: f32 = 0.111_320;
 
@@ -152,26 +203,127 @@ fn aspect_for_lat(cam_lat: i32) -> f32 {
     libm::cosf((cam_lat as f32 / 1e6).to_radians())
 }
 
+/// Collect every visible feature whose style is at priority `level` into the
+/// frame buffers. Streams the viewport's leaves via [`Reader::for_each_chunk`]
+/// (no chunk cap) and decodes only the features at this level via
+/// [`Reader::for_each_feature_filtered`], so running this once per level (lowest
+/// number first) fills the buffers in strict global priority order across all
+/// chunks, while decoding each feature's coordinates at most once per frame.
+#[allow(clippy::too_many_arguments)]
+fn collect_features(
+    reader: &Reader,
+    lod: usize,
+    level: u8,
+    view: &BBox,
+    dec_points: &mut Vec<(i32, i32), MAX_DECODE_POINTS>,
+    dec_ring_lens: &mut Vec<usize, MAX_DECODE_RINGS>,
+    frame_points: &mut Vec<(i32, i32), MAX_FRAME_POINTS>,
+    frame_ring_lens: &mut Vec<usize, MAX_FRAME_RINGS>,
+    spans: &mut Vec<Span, MAX_SPANS>,
+    stats: &mut RenderStats,
+) {
+    reader.for_each_chunk(lod, view, |cid, node| {
+        reader.for_each_feature_filtered(
+            lod,
+            cid,
+            &node,
+            dec_points,
+            dec_ring_lens,
+            |sid| reader.style(sid).is_some_and(|s| s.priority == level),
+            |f| {
+                let style = match reader.style(f.style_id) {
+                    Some(s) => s,
+                    None => return,
+                };
+
+                let pts = f.points();
+                let lens = f.ring_lens();
+
+                stats.features_tried += 1;
+                stats.points_tried += pts.len();
+
+                if pts.is_empty() {
+                    return;
+                }
+                let mut min_lon = pts[0].0;
+                let mut max_lon = pts[0].0;
+                let mut min_lat = pts[0].1;
+                let mut max_lat = pts[0].1;
+                for &(lon, lat) in pts.iter().skip(1) {
+                    min_lon = min_lon.min(lon);
+                    max_lon = max_lon.max(lon);
+                    min_lat = min_lat.min(lat);
+                    max_lat = max_lat.max(lat);
+                }
+                let feat_bbox = BBox { min_lon, min_lat, max_lon, max_lat };
+                if !feat_bbox.intersects(view) {
+                    return;
+                }
+
+                // Capacity check.
+                if spans.is_full()
+                    || frame_points.capacity() - frame_points.len() < pts.len()
+                    || frame_ring_lens.capacity() - frame_ring_lens.len() < lens.len()
+                {
+                    stats.features_dropped += 1;
+                    return;
+                }
+
+                stats.features_drawn += 1;
+                stats.points_drawn += pts.len();
+
+                // Casts are safe: the capacity check above guarantees room, and
+                // the buffer sizes are asserted `<= u16::MAX` at the constants.
+                let _ = spans.push(Span {
+                    kind: f.kind,
+                    z: style.z_index,
+                    weight: style.weight,
+                    color: style.color,
+                    pt_start: frame_points.len() as u16,
+                    ring_start: frame_ring_lens.len() as u16,
+                    ring_count: lens.len() as u16,
+                    seq: spans.len() as u16,
+                });
+                let _ = frame_points.extend_from_slice(pts);
+                let _ = frame_ring_lens.extend_from_slice(lens);
+            },
+        );
+    });
+}
+
 /// What a single render call drew.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RenderStats {
     pub lod: usize,
+    /// Quadtree leaves overlapping the viewport this frame. No longer capped, so
+    /// this can exceed any fixed buffer size — watching it confirms wide views
+    /// aren't silently dropping chunks.
+    pub chunks_visited: usize,
     pub features_tried: usize,
     pub features_drawn: usize,
+    pub features_dropped: usize,
     pub points_tried: usize,
     pub points_drawn: usize,
+    // Buffer utilization (0.0–1.0) for saturation display.
+    pub span_utilization: f32,
+    pub point_utilization: f32,
+    pub ring_utilization: f32,
 }
 
 /// One visible feature's draw metadata plus the ranges locating its geometry in
 /// the renderer's frame buffers. Cheap to sort for the painter's algorithm.
+///
+/// Offsets are `u16` (not `usize`) to keep the struct to 14 bytes — at coarse
+/// zoom thousands of these are buffered, so the width matters. The frame buffers
+/// they index are asserted `<= u16::MAX` near the buffer constants.
 struct Span {
     kind: Kind,
     z: i8,
     weight: u8,
     color: u16,
-    pt_start: usize,
-    ring_start: usize,
-    ring_count: usize,
+    pt_start: u16,
+    ring_start: u16,
+    ring_count: u16,
     seq: u16,
 }
 
@@ -181,17 +333,15 @@ struct Span {
 #[derive(Default)]
 pub struct MapRenderer {
     // Per-feature decode scratch handed to `Reader::for_each_feature`.
-    dec_points: Vec<(i32, i32), 2048>,
-    dec_ring_lens: Vec<usize, 32>,
-    // Visible chunks for this frame.
-    chunks: Vec<(u32, BBox), 64>,
+    dec_points: Vec<(i32, i32), MAX_DECODE_POINTS>,
+    dec_ring_lens: Vec<usize, MAX_DECODE_RINGS>,
     // All visible features' geometry, concatenated, plus per-feature spans.
-    frame_points: Vec<(i32, i32), 8192>,
-    frame_ring_lens: Vec<usize, 2048>,
-    spans: Vec<Span, 512>,
+    frame_points: Vec<(i32, i32), MAX_FRAME_POINTS>,
+    frame_ring_lens: Vec<usize, MAX_FRAME_RINGS>,
+    spans: Vec<Span, MAX_SPANS>,
     // Drawing scratch.
-    screen: Vec<Point, 2048>,
-    xs: Vec<f32, 128>,
+    screen: Vec<Point, MAX_SCREEN_POINTS>,
+    xs: Vec<f32, MAX_CROSSINGS>,
 }
 
 impl MapRenderer {
@@ -227,11 +377,10 @@ impl MapRenderer {
 
         // --- Collect phase: stream visible features into the frame buffers. ---
         // Split borrows so the decode callback can fill `frame_*`/`spans` while
-        // `for_each_feature` borrows the decode scratch.
+        // `for_each_feature_filtered` borrows the decode scratch.
         let Self {
             dec_points,
             dec_ring_lens,
-            chunks,
             frame_points,
             frame_ring_lens,
             spans,
@@ -243,61 +392,36 @@ impl MapRenderer {
         frame_ring_lens.clear();
         spans.clear();
 
-        reader.query_into(lod, &view, chunks);
-        for &(cid, node) in chunks.iter() {
-            reader.for_each_feature(lod, cid, &node, dec_points, dec_ring_lens, |f| {
-                let style = match reader.style(f.style_id) {
-                    Some(s) => s,
-                    None => return,
-                };
-                let pts = f.points();
-                let lens = f.ring_lens();
+        // Visible-chunk count for the stats panel: a cheap index-only walk (no
+        // decode) that also documents that the chunk set is no longer capped.
+        reader.for_each_chunk(lod, &view, |_, _| stats.chunks_visited += 1);
 
-                stats.features_tried += 1;
-                stats.points_tried += pts.len();
-
-                if pts.is_empty() {
-                    return;
-                }
-                let mut min_lon = pts[0].0;
-                let mut max_lon = pts[0].0;
-                let mut min_lat = pts[0].1;
-                let mut max_lat = pts[0].1;
-                for &(lon, lat) in pts.iter().skip(1) {
-                    min_lon = min_lon.min(lon);
-                    max_lon = max_lon.max(lon);
-                    min_lat = min_lat.min(lat);
-                    max_lat = max_lat.max(lat);
-                }
-                let feat_bbox = BBox { min_lon, min_lat, max_lon, max_lat };
-                if !feat_bbox.intersects(&view) {
-                    return;
-                }
-
-                if spans.is_full()
-                    || frame_points.capacity() - frame_points.len() < pts.len()
-                    || frame_ring_lens.capacity() - frame_ring_lens.len() < lens.len()
-                {
-                    return;
-                }
-
-                stats.features_drawn += 1;
-                stats.points_drawn += pts.len();
-
-                let _ = spans.push(Span {
-                    kind: f.kind,
-                    z: style.z_index,
-                    weight: style.weight,
-                    color: style.color,
-                    pt_start: frame_points.len(),
-                    ring_start: frame_ring_lens.len(),
-                    ring_count: lens.len(),
-                    seq: spans.len() as u16,
-                });
-                let _ = frame_points.extend_from_slice(pts);
-                let _ = frame_ring_lens.extend_from_slice(lens);
-            });
+        // One pass per priority level (the format stores a 2-bit level, 1..=4),
+        // lowest number first. Each pass fills the frame buffers with every
+        // visible feature at that level across *all* chunks before the next pass
+        // runs, so when the buffers saturate the features that get dropped are
+        // always the lowest-priority ones — regardless of which chunk they sit
+        // in. The quadtree walk re-runs per pass but only the matching level's
+        // coordinates are decoded, so each feature is decoded at most once.
+        for level in 1..=4u8 {
+            collect_features(
+                reader,
+                lod,
+                level,
+                &view,
+                dec_points,
+                dec_ring_lens,
+                frame_points,
+                frame_ring_lens,
+                spans,
+                &mut stats,
+            );
         }
+
+        // Record utilization for the stats panel.
+        stats.span_utilization = spans.len() as f32 / spans.capacity() as f32;
+        stats.point_utilization = frame_points.len() as f32 / frame_points.capacity() as f32;
+        stats.ring_utilization = frame_ring_lens.len() as f32 / frame_ring_lens.capacity() as f32;
 
         // Painter's order by z-index. Using sort_unstable with a sequence number for stable tie-breaking without alloc.
         spans.sort_unstable_by_key(|s| (s.z, s.seq));
@@ -305,9 +429,11 @@ impl MapRenderer {
         // --- Draw phase. ---
         let (w, h) = (vp.w as i32, vp.h as i32);
         for span in spans.iter() {
-            let ring_lens = &frame_ring_lens[span.ring_start..span.ring_start + span.ring_count];
+            let ring_start = span.ring_start as usize;
+            let pt_start = span.pt_start as usize;
+            let ring_lens = &frame_ring_lens[ring_start..ring_start + span.ring_count as usize];
             let total: usize = ring_lens.iter().sum();
-            let pts = &frame_points[span.pt_start..span.pt_start + total];
+            let pts = &frame_points[pt_start..pt_start + total];
             let color = color_fn(span.color);
 
             match span.kind {
@@ -446,7 +572,7 @@ fn fill_polygon<D>(
     color: D::Color,
     w: i32,
     h: i32,
-    xs: &mut Vec<f32, 128>,
+    xs: &mut Vec<f32, MAX_CROSSINGS>,
 ) where
     D: DrawTarget,
 {
@@ -487,8 +613,19 @@ fn fill_polygon<D>(
         xs.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
         let mut k = 0;
         while k + 1 < xs.len() {
-            let x0 = (libm::ceilf(xs[k]) as i32).max(0);
-            let x1 = (libm::floorf(xs[k + 1]) as i32).min(w - 1);
+            // Round spans *outward* (floor the left edge, ceil the right) so each
+            // span covers up to a pixel more on each side. This closes the hairline
+            // background "cracks" along chunk seams: a feature clipped across a
+            // chunk boundary becomes two polygons that share that boundary, but
+            // their boundary vertex sets differ (different chunk sizes densify it
+            // differently), and `to_screen`'s integer truncation then renders the
+            // one shared line as two slightly different pixel staircases. The
+            // staircases only diverge when the seam is diagonal on screen — i.e.
+            // when the view is rotated — which is why the cracks vanish at heading
+            // 0. Overlapping by ≤1px makes adjacent pieces meet regardless; the
+            // overdraw is invisible for same-colored fills and ≤1px elsewhere.
+            let x0 = (libm::floorf(xs[k]) as i32).max(0);
+            let x1 = (libm::ceilf(xs[k + 1]) as i32).min(w - 1);
             if x1 >= x0 {
                 let _ = target.fill_solid(
                     &Rectangle::new(Point::new(x0, y), Size::new((x1 - x0 + 1) as u32, 1)),

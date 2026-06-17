@@ -24,12 +24,14 @@ impl LocationSource for Fixed {
 /// pixels come from the marker — making it trivial to detect.
 fn build_min_obcm(marker: u16) -> Vec<u8> {
     let style_off: u32 = 32;
-    // Style table: count=1, then (id=1, z=0, color=0x001F blue sea, weight=1).
+    // Style table: count=1, then (id=1, z=0, color=0x001F blue sea, weight=1, flags=0).
+    // flags=0 → priority level 1 (highest); irrelevant to this marker-only test.
     let mut styles = vec![1u8];
     styles.push(1);
     styles.push(0);
     styles.extend_from_slice(&0x001Fu16.to_le_bytes());
     styles.push(1);
+    styles.push(0); // flags byte
 
     let lod_tab_off = style_off as usize + styles.len();
     let index_off = lod_tab_off + 18; // one 18-byte LOD entry
@@ -47,7 +49,7 @@ fn build_min_obcm(marker: u16) -> Vec<u8> {
 
     let mut f = Vec::new();
     f.extend_from_slice(b"OBCM");
-    f.push(4);
+    f.push(5);
     for v in [-1000i32, -1000, 1000, 1000] {
         f.extend_from_slice(&v.to_le_bytes()); // bbox: min_lat, min_lon, max_lat, max_lon
     }
@@ -113,7 +115,7 @@ impl DrawTarget for Buf {
 /// Render one frame of `app` against `bytes` into a fresh 120×120 buffer, with a
 /// true-color `color_fn` (so the RGB565 marker red shows up as Rgb888 red).
 fn render(app: &mut App, bytes: &[u8]) -> Buf {
-    let reader = Reader::new(bytes).expect("valid v4 file");
+    let reader = Reader::new(bytes).expect("valid v5 file");
     let mut buf = Buf::new(120, 120);
     app.render_frame(&mut buf, &reader, 120.0, 120.0, |c| {
         let (r, g, b) = rgb565_to_rgb888(c);

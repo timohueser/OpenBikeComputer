@@ -21,11 +21,16 @@ def pack_style_dict(config: dict) -> bytes:
         if isinstance(color, str):
             color = int(color, 16)
         
-        data += struct.pack("<BbHB", 
+        priority = s.get("priority", 3)
+        priority = max(1, min(4, int(priority)))
+        flags = (priority - 1) & 0x03
+        
+        data += struct.pack("<BbHBB", 
                            s["id"], 
                            s.get("z_index", 0), 
                            color, 
-                           s.get("weight", 1))
+                           s.get("weight", 1),
+                           flags)
     return data
 
 # Max delta (microdegrees) before a segment is densified to keep deltas in range.
@@ -222,7 +227,7 @@ def serialize_lods(lods, config: dict, global_bbox: Tuple[int, int, int, int]) -
     # LODTableOff(4), MarkerColor(2).
     header = struct.pack("<4sBiiiiIBIH",
                         b"OBCM",
-                        0x04,
+                        0x05,
                         global_bbox[1], global_bbox[0], global_bbox[3], global_bbox[2],
                         HEADER_LEN,
                         lod_count,
