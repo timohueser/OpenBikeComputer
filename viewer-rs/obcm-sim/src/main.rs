@@ -8,6 +8,11 @@
 //!
 //! Usage:
 //!   obcm-sim <map.obcm> [--size WxH] [--scale N] [--png OUT.png] [--true-color]
+//!     [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT]
+//!
+//! `--center`/`--zoom` aim the headless `--png` camera at a spot and zoom level
+//! (e.g. to inspect a specific chunk boundary); `--zoom` multiplies the bbox-fit
+//! zoom.
 //!
 //! Interactive: drag to pan, scroll to zoom, Esc/Q to quit.
 
@@ -44,6 +49,12 @@ struct Args {
     /// With `--gpx --png`, the playback time (seconds) to render the fix at;
     /// defaults to the track midpoint.
     at: Option<f64>,
+    /// Headless camera center "lon,lat" (microdegrees); defaults to the bbox
+    /// center. Lets `--png` target a specific spot (e.g. a chunk boundary).
+    center: Option<(i32, i32)>,
+    /// Headless zoom multiplier applied to the bbox-fit zoom (e.g. `30` zooms in
+    /// ~30×, picking a finer LOD). Defaults to 1 (whole-map overview).
+    zoom_mul: f32,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -58,6 +69,8 @@ fn parse_args() -> Result<Args, String> {
         heading: None,
         gpx: None,
         at: None,
+        center: None,
+        zoom_mul: 1.0,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -77,6 +90,15 @@ fn parse_args() -> Result<Args, String> {
             }
             "--gpx" => a.gpx = Some(it.next().ok_or("--gpx needs a path")?),
             "--at" => a.at = Some(it.next().and_then(|s| s.parse().ok()).ok_or("bad --at")?),
+            "--center" => {
+                let s = it.next().ok_or("--center needs lon,lat")?;
+                let (lon, lat) = s.split_once(',').ok_or("--center format is lon,lat")?;
+                a.center = Some((
+                    lon.trim().parse().map_err(|_| "bad --center lon")?,
+                    lat.trim().parse().map_err(|_| "bad --center lat")?,
+                ));
+            }
+            "--zoom" => a.zoom_mul = it.next().and_then(|s| s.parse().ok()).ok_or("bad --zoom")?,
             other => {
                 if a.map.is_empty() {
                     a.map = other.to_string();
@@ -126,7 +148,7 @@ fn main() {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: obcm-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC]");
+            eprintln!("error: {e}\nusage: obcm-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT]");
             std::process::exit(2);
         }
     };
@@ -161,7 +183,12 @@ fn main() {
     // Headless mode: render one frame through the shared app, save PNG, exit.
     if let Some(path) = &args.png {
         let reader = Reader::new(&bytes).expect("validated above");
-        let (cx, cy, zoom) = initial_camera(&reader, args.width);
+        let (mut cx, mut cy, mut zoom) = initial_camera(&reader, args.width);
+        if let Some((lon, lat)) = args.center {
+            cx = lon;
+            cy = lat;
+        }
+        zoom *= args.zoom_mul;
         let mut state = AppState::new(cx, cy, zoom);
         // `--heading` renders a rotated (heading-up) frame headlessly; the rotation
         // is derived from the fix's course, so seed one at the map center.
@@ -200,7 +227,17 @@ fn main() {
             color_of(c, tc)
         });
         let ms = t0.elapsed().as_secs_f64() * 1000.0;
-        eprintln!("rendered {}/{} features (LOD {}) in {ms:.2} ms", stats.features_drawn, stats.features_tried, stats.lod);
+        eprintln!(
+            "rendered {}/{} features ({} chunks, LOD {}, {} dropped) in {ms:.2} ms | spans {:.0}% points {:.0}% rings {:.0}%",
+            stats.features_drawn,
+            stats.features_tried,
+            stats.chunks_visited,
+            stats.lod,
+            stats.features_dropped,
+            stats.span_utilization * 100.0,
+            stats.point_utilization * 100.0,
+            stats.ring_utilization * 100.0
+        );
 
         if let Err(e) = write_png(&fb, args.scale, path) {
             eprintln!("{e}");

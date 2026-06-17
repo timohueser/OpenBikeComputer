@@ -1,10 +1,10 @@
 //! OBCM map format reader and renderer.
 //!
-//! `no_std + alloc` so the exact same code runs in the desktop simulator and in
-//! the nRF5340 firmware. Parses format **v4** (the LOD pyramid plus a header
-//! marker color — see docs/superpowers/specs/2026-06-16-obcm-lod-design.md and
-//! OBCM_Spec.md): a file holds N levels of detail, each its own quadtree + chunk
-//! set, selected at render time from the current meters-per-pixel.
+//! `no_std`, zero-alloc (heapless) so the exact same code runs in the desktop
+//! simulator and in the nRF5340 firmware. Parses format **v5** (the LOD pyramid,
+//! a header marker color, and a per-style priority level — see OBCM_Spec.md): a
+//! file holds N levels of detail, each its own quadtree + chunk set, selected at
+//! render time from the current meters-per-pixel.
 //!
 //! Modules:
 //! - [`reader`] — header / style / LOD-table parsing and per-LOD query + decode.

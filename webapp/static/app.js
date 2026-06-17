@@ -557,7 +557,7 @@ function renderStyleEditor() {
     const table = document.createElement("table");
     table.className = "feat-table";
     table.innerHTML =
-      "<thead><tr><th></th><th></th><th>type</th><th>LODs</th><th>color</th><th>z</th><th>w</th><th></th></tr></thead>";
+      "<thead><tr><th></th><th></th><th title=\"Priority: 1 (highest) to 4 (lowest)\">prio</th><th>type</th><th>LODs</th><th>color</th><th>z</th><th>w</th><th></th></tr></thead>";
     const tbody = document.createElement("tbody");
     for (const name of Object.keys(entries)) {
       tbody.appendChild(buildRow(cat, name, entries[name]));
@@ -645,6 +645,25 @@ function buildRow(cat, name, def) {
   };
   tdToggle.appendChild(cb);
 
+  const tdPrio = document.createElement("td");
+  const prioSel = document.createElement("select");
+  prioSel.className = "prio-select";
+  prioSel.title = "Priority level: 1 (highest) to 4 (lowest)";
+  for (let i = 1; i <= 4; i++) {
+    const opt = document.createElement("option");
+    opt.value = i;
+    opt.textContent = i;
+    if ((def.priority || 3) === i) {
+      opt.selected = true;
+    }
+    prioSel.appendChild(opt);
+  }
+  prioSel.onchange = () => {
+    def.priority = parseInt(prioSel.value, 10);
+    scheduleSave();
+  };
+  tdPrio.appendChild(prioSel);
+
   const tdName = document.createElement("td");
   tdName.className = "feat-name";
   tdName.textContent = name;
@@ -687,7 +706,7 @@ function buildRow(cat, name, def) {
   tdDel.appendChild(del);
 
   if (!cb.checked) tr.classList.add("feat-off");
-  for (const td of [tdHandle, tdToggle, tdName, tdLod, tdColor, tdZ, tdW, tdDel]) tr.appendChild(td);
+  for (const td of [tdHandle, tdToggle, tdPrio, tdName, tdLod, tdColor, tdZ, tdW, tdDel]) tr.appendChild(td);
   return tr;
 }
 
@@ -721,7 +740,7 @@ function addFeature(cat, tbody, addBtn) {
   const tr = document.createElement("tr");
   tr.className = "feat-add-row";
   const td = document.createElement("td");
-  td.colSpan = 8;
+  td.colSpan = 9;
   const input = document.createElement("input");
   input.type = "text";
   input.className = "feat-add-input";
@@ -745,7 +764,7 @@ function addFeature(cat, tbody, addBtn) {
       input.title = "That type already exists.";
       return;
     }
-    const def = { z_index: 10, color: "0xFFFF", weight: 1, min_lod: lodCount() - 1 };
+    const def = { z_index: 10, color: "0xFFFF", weight: 1, min_lod: lodCount() - 1, priority: 3 };
     config.features[cat][name] = def;
     enabled.set(`${cat}/${name}`, true);
     cleanup();
@@ -812,7 +831,7 @@ function buildConfigForSubmit() {
       const def = config.features[cat][name];
       const min_lod = Math.max(0, Math.min(n - 1, def.min_lod | 0));
       out.features[cat] = out.features[cat] || {};
-      out.features[cat][name] = { ...def, min_lod };
+      out.features[cat][name] = { ...def, min_lod, priority: def.priority || 3 };
     }
   }
   return out;

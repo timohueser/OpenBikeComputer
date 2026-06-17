@@ -178,6 +178,10 @@ table.feat-table input[type="color"] {
   width: 28px; height: 24px; padding: 0; border: 1px solid var(--border);
   border-radius: 4px; background: none; vertical-align: middle; cursor: pointer;
 }
+table.feat-table select.prio-select {
+  background: var(--panel-2); border: 1px solid var(--border);
+  color: var(--text); border-radius: 4px; padding: 2px 4px;
+}
 .rgb565 { color: var(--muted); font-size: 11px; margin-left: 4px; font-family: monospace; }
 
 /* User-position marker color picker */
