@@ -73,7 +73,7 @@ def get_land_polygons(pbf_bbox):
                 intersection = geom.intersection(bbox_poly_3857)
                 # Reproject result back to 4326 for consistency with PBF data
                 back_transformer = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
-                final_poly = transform(back_transformer.transform, intersection).simplify(0.000005, preserve_topology=True)
+                final_poly = transform(back_transformer.transform, intersection)
                 polygons.append(final_poly)
 
     return polygons

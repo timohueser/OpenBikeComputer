@@ -29,7 +29,7 @@ class OSMHandler(osmium.SimpleHandler):
             try:
                 coords = [(n.lon, n.lat) for n in w.nodes]
                 if len(coords) >= 2:
-                    self.coastlines.append(LineString(coords).simplify(0.000005, preserve_topology=True))
+                    self.coastlines.append(LineString(coords))
             except osmium.InvalidLocationError:
                 pass
             # Coastlines are NEVER areas for AreaManager, they are just lines.
@@ -61,7 +61,7 @@ class OSMHandler(osmium.SimpleHandler):
                 self.features.append({
                     "style_id": style["id"],
                     "min_lod": style.get("min_lod", 0),
-                    "geometry": LineString(coords).simplify(0.000005, preserve_topology=True)
+                    "geometry": LineString(coords)
                 })
         except osmium.InvalidLocationError:
             pass
@@ -96,7 +96,7 @@ class OSMHandler(osmium.SimpleHandler):
                     self.features.append({
                         "style_id": style["id"],
                         "min_lod": style.get("min_lod", 0),
-                        "geometry": Polygon(ext_coords, closed_interiors).simplify(0.000005, preserve_topology=True)
+                        "geometry": Polygon(ext_coords, closed_interiors)
                     })
         except osmium.InvalidLocationError:
             pass
