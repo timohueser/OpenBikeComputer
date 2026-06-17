@@ -9,9 +9,12 @@
 //! so the same `Reader` can serve different zoom levels without interior
 //! mutability — friendlier for the MCU and for concurrent reads.
 
-use alloc::vec::Vec;
+use heapless::Vec;
 
 use crate::{BBox, Error};
+
+pub const MAX_FEAT_PTS: usize = 2048;
+pub const MAX_FEAT_RINGS: usize = 32;
 
 /// v4 header is fixed-size; everything after it is reached via explicit offsets.
 pub const HEADER_LEN: usize = 32;
@@ -62,8 +65,8 @@ impl Lod {
 pub struct Feature {
     pub style_id: u8,
     pub kind: Kind,
-    pub exterior: Vec<(i32, i32)>,
-    pub interiors: Vec<Vec<(i32, i32)>>,
+    pub exterior: Vec<(i32, i32), MAX_FEAT_PTS>,
+    pub interiors: Vec<Vec<(i32, i32), MAX_FEAT_PTS>, MAX_FEAT_RINGS>,
 }
 
 /// A feature decoded into caller-owned scratch buffers, borrowed for the
@@ -154,9 +157,9 @@ pub struct Reader<'a> {
     /// policy just like style colors, then drawn by [`obcm_render`].
     pub marker_color: u16,
     /// LOD layers ordered coarsest (0) → finest (N-1). Always at least one.
-    lods: Vec<Lod>,
+    lods: Vec<Lod, 16>,
     /// Styles indexed by id (0..=255) for O(1) lookup during rendering.
-    styles: Vec<Option<Style>>,
+    styles: [Option<Style>; 256],
 }
 
 impl<'a> Reader<'a> {
@@ -246,7 +249,7 @@ impl<'a> Reader<'a> {
 
     /// Collect (chunk_id, node_bbox) for every non-empty leaf in `lod` that
     /// overlaps `view`. `lod` indexes [`Reader::lods`]; out-of-range yields empty.
-    pub fn query(&self, lod: usize, view: &BBox) -> Vec<(u32, BBox)> {
+    pub fn query<const C: usize>(&self, lod: usize, view: &BBox) -> Vec<(u32, BBox), C> {
         let mut out = Vec::new();
         self.query_into(lod, view, &mut out);
         out
@@ -254,7 +257,7 @@ impl<'a> Reader<'a> {
 
     /// Like [`Reader::query`] but appends into a caller-owned buffer (cleared
     /// first), so a renderer can reuse one allocation across frames.
-    pub fn query_into(&self, lod: usize, view: &BBox, out: &mut Vec<(u32, BBox)>) {
+    pub fn query_into<const C: usize>(&self, lod: usize, view: &BBox, out: &mut Vec<(u32, BBox), C>) {
         out.clear();
         if let Some(l) = self.lods.get(lod) {
             if l.node_count > 0 {
@@ -263,14 +266,14 @@ impl<'a> Reader<'a> {
         }
     }
 
-    fn query_rec(&self, lod: &Lod, idx: usize, node: BBox, view: &BBox, out: &mut Vec<(u32, BBox)>) {
+    fn query_rec<const C: usize>(&self, lod: &Lod, idx: usize, node: BBox, view: &BBox, out: &mut Vec<(u32, BBox), C>) {
         if idx >= lod.node_count || !node.intersects(view) {
             return;
         }
         let val = self.node(lod, idx);
         if val & BRANCH_BIT == 0 {
             if val != EMPTY_LEAF {
-                out.push((val, node));
+                let _ = out.push((val, node));
             }
             return;
         }
@@ -296,13 +299,13 @@ impl<'a> Reader<'a> {
     /// largest feature once and are reused for every feature, chunk and frame, so
     /// steady-state rendering does no heap work here. `node` is the leaf bbox
     /// from [`Reader::query`].
-    pub fn for_each_feature(
+    pub fn for_each_feature<const P: usize, const R: usize>(
         &self,
         lod: usize,
         chunk_id: u32,
         node: &BBox,
-        points: &mut Vec<(i32, i32)>,
-        ring_lens: &mut Vec<usize>,
+        points: &mut Vec<(i32, i32), P>,
+        ring_lens: &mut Vec<usize, R>,
         visit: impl FnMut(FeatureRef),
     ) {
         let l = match self.lods.get(lod) {
@@ -317,34 +320,18 @@ impl<'a> Reader<'a> {
         decode_chunk_into(&self.data[start..start + cs], node, points, ring_lens, visit);
     }
 
-    /// Decode all features in a chunk into owned [`Feature`]s. Convenience
-    /// wrapper over [`Reader::for_each_feature`] for callers that want owned data
-    /// (e.g. tests); the renderer uses the borrowing form to avoid allocating.
-    pub fn decode_chunk(&self, lod: usize, chunk_id: u32, node: &BBox) -> Vec<Feature> {
-        let mut out = Vec::new();
-        let mut points = Vec::new();
-        let mut ring_lens = Vec::new();
-        self.for_each_feature(lod, chunk_id, node, &mut points, &mut ring_lens, |f| {
-            out.push(Feature {
-                style_id: f.style_id,
-                kind: f.kind,
-                exterior: f.exterior().to_vec(),
-                interiors: f.interiors().map(|h| h.to_vec()).collect(),
-            });
-        });
-        out
-    }
+
 }
 
 /// Walk a single chunk's bytes, decoding each feature into the shared
 /// `points`/`ring_lens` buffers and handing a [`FeatureRef`] to `visit`. The
 /// buffers are cleared and refilled per feature, so the same allocation serves
 /// every feature in the chunk.
-fn decode_chunk_into(
+fn decode_chunk_into<const P: usize, const R: usize>(
     chunk: &[u8],
     node: &BBox,
-    points: &mut Vec<(i32, i32)>,
-    ring_lens: &mut Vec<usize>,
+    points: &mut Vec<(i32, i32), P>,
+    ring_lens: &mut Vec<usize, R>,
     mut visit: impl FnMut(FeatureRef),
 ) {
     let cs = chunk.len();
@@ -373,7 +360,7 @@ fn decode_chunk_into(
         ring_lens.clear();
 
         off = read_ring(chunk, off, ext_pt_count, anchor, is_16, dsize, false, points);
-        ring_lens.push(points.len());
+        let _ = ring_lens.push(points.len());
 
         if is_poly && has_holes && off < cs {
             let hole_count = chunk[off] as usize;
@@ -386,7 +373,7 @@ fn decode_chunk_into(
                 off += 2;
                 let before = points.len();
                 off = read_ring(chunk, off, hpc, anchor, is_16, dsize, true, points);
-                ring_lens.push(points.len() - before);
+                let _ = ring_lens.push(points.len() - before);
             }
         }
 
@@ -400,7 +387,7 @@ fn decode_chunk_into(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn read_ring(
+fn read_ring<const P: usize>(
     chunk: &[u8],
     mut off: usize,
     pt_count: usize,
@@ -408,7 +395,7 @@ fn read_ring(
     is_16: bool,
     dsize: usize,
     is_hole: bool,
-    out: &mut Vec<(i32, i32)>,
+    out: &mut Vec<(i32, i32), P>,
 ) -> usize {
     if pt_count == 0 {
         return off;
@@ -418,7 +405,7 @@ fn read_ring(
         // holes store all points as deltas (first relative to anchor)
         pt_count
     } else {
-        out.push(anchor);
+        let _ = out.push(anchor);
         pt_count - 1
     };
     for _ in 0..num_deltas {
@@ -436,13 +423,13 @@ fn read_ring(
         off += dsize * 2;
         px += dx;
         py += dy;
-        out.push((px, py));
+        let _ = out.push((px, py));
     }
     off
 }
 
-fn parse_styles(data: &[u8], style_offset: usize) -> Vec<Option<Style>> {
-    let mut styles: Vec<Option<Style>> = (0..256).map(|_| None).collect();
+fn parse_styles(data: &[u8], style_offset: usize) -> [Option<Style>; 256] {
+    let mut styles = [None; 256];
     if style_offset >= data.len() {
         return styles;
     }
@@ -464,8 +451,8 @@ fn parse_styles(data: &[u8], style_offset: usize) -> Vec<Option<Style>> {
 
 /// Parse the `lod_count` LOD-table entries; validates each layer's index/chunk
 /// region lies within the file so `query`/`decode_chunk` can skip bounds math.
-fn parse_lod_table(data: &[u8], offset: usize, lod_count: usize) -> Result<Vec<Lod>, Error> {
-    let mut lods = Vec::with_capacity(lod_count);
+fn parse_lod_table(data: &[u8], offset: usize, lod_count: usize) -> Result<Vec<Lod, 16>, Error> {
+    let mut lods = Vec::new();
     for k in 0..lod_count {
         let o = offset + k * LOD_ENTRY_LEN;
         let lod = Lod {
@@ -479,7 +466,7 @@ fn parse_lod_table(data: &[u8], offset: usize, lod_count: usize) -> Result<Vec<L
         if lod.index_offset < HEADER_LEN || chunks_end > data.len() {
             return Err(Error::BadOffset);
         }
-        lods.push(lod);
+        let _ = lods.push(lod);
     }
     Ok(lods)
 }

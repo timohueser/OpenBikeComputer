@@ -125,7 +125,7 @@ fn render(app: &mut App, bytes: &[u8]) -> Buf {
 #[test]
 fn marker_drawn_only_when_a_fix_is_set() {
     let bytes = build_min_obcm(MARKER_565);
-    let mut app = App::new(AppState::new(0.0, 0.0, 0.05));
+    let mut app = App::new(AppState::new(0, 0, 0.05));
 
     // No fix yet → backdrop only, no marker pixels.
     assert_eq!(render(&mut app, &bytes).count(RED), 0, "no fix ⇒ no marker");
@@ -138,7 +138,7 @@ fn marker_drawn_only_when_a_fix_is_set() {
 #[test]
 fn dot_and_chevron_glyphs_differ_by_course() {
     let bytes = build_min_obcm(MARKER_565);
-    let mut app = App::new(AppState::new(0.0, 0.0, 0.05));
+    let mut app = App::new(AppState::new(0, 0, 0.05));
     // Free keeps the camera pinned at (0,0) so both fixes project to the center.
     app.state.mode = CameraMode::Free;
 

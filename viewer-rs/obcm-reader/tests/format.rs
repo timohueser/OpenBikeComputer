@@ -6,7 +6,30 @@
 //! fixture) keeps the Rust and Python encoders pinned to the same layout: if
 //! either drifts, these break.
 
-use obcm_reader::{Error, Kind, Reader};
+use obcm_reader::{Error, Kind, Reader, MAX_FEAT_PTS, MAX_FEAT_RINGS, BBox};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Feature {
+    pub style_id: u8,
+    pub kind: Kind,
+    pub exterior: Vec<(i32, i32)>,
+    pub interiors: Vec<Vec<(i32, i32)>>,
+}
+
+fn decode_chunk(r: &Reader, lod: usize, chunk_id: u32, node: &BBox) -> Vec<Feature> {
+    let mut out = Vec::new();
+    let mut points = heapless::Vec::<_, MAX_FEAT_PTS>::new();
+    let mut ring_lens = heapless::Vec::<_, MAX_FEAT_RINGS>::new();
+    r.for_each_feature(lod, chunk_id, node, &mut points, &mut ring_lens, |f| {
+        out.push(Feature {
+            style_id: f.style_id,
+            kind: f.kind,
+            exterior: f.exterior().to_vec(),
+            interiors: f.interiors().map(|h| h.to_vec()).collect(),
+        });
+    });
+    out
+}
 
 const BRANCH_BIT: u32 = 0x8000_0000;
 const EMPTY_LEAF: u32 = 0x7FFF_FFFF;
@@ -265,14 +288,14 @@ fn query_single_leaf() {
     let r = Reader::new(&bytes).unwrap();
 
     // A view overlapping the global bbox hits the single leaf (chunk 0).
-    let hits = r.query(0, &obcm_reader::BBox { min_lon: 100, min_lat: 100, max_lon: 200, max_lat: 200 });
+    let hits = r.query::<64>(0, &obcm_reader::BBox { min_lon: 100, min_lat: 100, max_lon: 200, max_lat: 200 });
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].0, 0);
     assert_eq!(hits[0].1, r.bbox); // leaf node bbox == global bbox
 
     // A view entirely outside the global bbox hits nothing.
     let miss =
-        r.query(0, &obcm_reader::BBox { min_lon: 5000, min_lat: 5000, max_lon: 6000, max_lat: 6000 });
+        r.query::<64>(0, &obcm_reader::BBox { min_lon: 5000, min_lat: 5000, max_lon: 6000, max_lat: 6000 });
     assert!(miss.is_empty());
 }
 
@@ -282,7 +305,7 @@ fn decode_line() {
     let r = Reader::new(&bytes).unwrap();
     let node = r.bbox;
 
-    let feats = r.decode_chunk(0, 0, &node);
+    let feats = decode_chunk(&r, 0, 0, &node);
     assert_eq!(feats.len(), 1);
     let f = &feats[0];
     assert_eq!(f.style_id, 1);
@@ -297,7 +320,7 @@ fn decode_polygon_with_hole() {
     let r = Reader::new(&bytes).unwrap();
     let node = r.bbox;
 
-    let feats = r.decode_chunk(1, 0, &node);
+    let feats = decode_chunk(&r, 1, 0, &node);
     assert_eq!(feats.len(), 1);
     let f = &feats[0];
     assert_eq!(f.style_id, 2);
@@ -314,10 +337,10 @@ fn visitor_matches_owned_decode() {
     let node = r.bbox;
 
     // The borrowing for_each_feature must yield exactly what decode_chunk does.
-    let owned = r.decode_chunk(1, 0, &node);
+    let owned = decode_chunk(&r, 1, 0, &node);
 
-    let mut points = Vec::new();
-    let mut ring_lens = Vec::new();
+    let mut points = heapless::Vec::<_, MAX_FEAT_PTS>::new();
+    let mut ring_lens = heapless::Vec::<_, MAX_FEAT_RINGS>::new();
     let mut seen = 0;
     r.for_each_feature(1, 0, &node, &mut points, &mut ring_lens, |f| {
         let o = &owned[seen];
@@ -345,7 +368,7 @@ fn decode_16bit_deltas() {
         &[LodSpec { max_mpp: f32::INFINITY, index: vec![0], chunks: vec![line], chunk_size: CS }],
     );
     let r = Reader::new(&bytes).unwrap();
-    let feats = r.decode_chunk(0, 0, &r.bbox);
+    let feats = decode_chunk(&r, 0, 0, &r.bbox);
     assert_eq!(feats.len(), 1);
     assert_eq!(feats[0].exterior, vec![(0, 0), (300, 400), (100, 400)]);
 }
@@ -374,16 +397,16 @@ fn quadtree_subdivision_and_node_bbox() {
     let nw = obcm_reader::BBox { min_lon: 0, min_lat: 500, max_lon: 500, max_lat: 1000 };
 
     // View inside the NW quadrant hits the leaf, with the NW node bbox.
-    let hits = r.query(0, &obcm_reader::BBox { min_lon: 50, min_lat: 600, max_lon: 150, max_lat: 700 });
-    assert_eq!(hits, vec![(0, nw)]);
+    let hits = r.query::<64>(0, &obcm_reader::BBox { min_lon: 50, min_lat: 600, max_lon: 150, max_lat: 700 });
+    assert_eq!(hits.as_slice(), &[(0, nw)]);
 
     // View inside the (empty) SE quadrant hits nothing.
-    let se = r.query(0, &obcm_reader::BBox { min_lon: 600, min_lat: 100, max_lon: 700, max_lat: 200 });
+    let se = r.query::<64>(0, &obcm_reader::BBox { min_lon: 600, min_lat: 100, max_lon: 700, max_lat: 200 });
     assert!(se.is_empty());
 
     // The feature's anchor is computed from the NW node's min corner (0,500):
     // ax=10, ay=10 → absolute (10, 510), then +(5,5).
-    let feats = r.decode_chunk(0, 0, &nw);
+    let feats = decode_chunk(&r, 0, 0, &nw);
     assert_eq!(feats[0].exterior, vec![(10, 510), (15, 515)]);
 }
 
@@ -401,7 +424,7 @@ fn empty_leaf_yields_nothing() {
         }],
     );
     let r = Reader::new(&bytes).unwrap();
-    assert!(r.query(0, &r.bbox).is_empty());
+    assert!(r.query::<64>(0, &r.bbox).is_empty());
 }
 
 #[test]

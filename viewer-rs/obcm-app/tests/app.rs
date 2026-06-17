@@ -22,34 +22,34 @@ fn berlin_fix() -> Fix {
 
 #[test]
 fn follow_mode_recenters_camera_on_each_fix() {
-    let mut app = AppState::new(0.0, 0.0, 1.0); // defaults to Follow
+    let mut app = AppState::new(0, 0, 1.0); // defaults to Follow
     assert_eq!(app.mode, CameraMode::Follow);
 
     let mut loc = Fixed(Some(berlin_fix()));
     app.update(&mut loc);
 
-    assert_eq!(app.cam_lat, BERLIN.0 as f64);
-    assert_eq!(app.cam_lon, BERLIN.1 as f64);
+    assert_eq!(app.cam_lat, BERLIN.0);
+    assert_eq!(app.cam_lon, BERLIN.1);
 }
 
 #[test]
 fn free_mode_records_fix_but_leaves_camera_put() {
-    let mut app = AppState::new(1_000.0, 2_000.0, 1.0);
+    let mut app = AppState::new(1_000, 2_000, 1.0);
     app.mode = CameraMode::Free;
 
     let mut loc = Fixed(Some(berlin_fix()));
     app.update(&mut loc);
 
     // Camera stays where the host's pan/zoom left it...
-    assert_eq!(app.cam_lon, 1_000.0);
-    assert_eq!(app.cam_lat, 2_000.0);
+    assert_eq!(app.cam_lon, 1_000);
+    assert_eq!(app.cam_lat, 2_000);
     // ...but the fix is still recorded for the marker.
     assert_eq!(app.user_fix, Some(berlin_fix()));
 }
 
 #[test]
 fn fix_starts_none_and_then_tracks_the_source() {
-    let mut app = AppState::new(0.0, 0.0, 1.0);
+    let mut app = AppState::new(0, 0, 1.0);
     assert_eq!(app.user_fix, None);
 
     let mut loc = Fixed(Some(berlin_fix()));
@@ -62,23 +62,23 @@ fn fix_starts_none_and_then_tracks_the_source() {
 
 #[test]
 fn no_fix_holds_the_last_camera_position() {
-    let mut app = AppState::new(5.0, 6.0, 1.0);
+    let mut app = AppState::new(5, 6, 1.0);
     let mut loc = Fixed(None); // no satellite lock
 
     app.update(&mut loc);
 
-    assert_eq!((app.cam_lon, app.cam_lat), (5.0, 6.0));
+    assert_eq!((app.cam_lon, app.cam_lat), (5, 6));
     assert_eq!(app.user_fix, None);
 }
 
 #[test]
 fn viewport_carries_the_camera_and_display_size() {
-    let app = AppState::new(13_405_000.0, 52_520_000.0, 0.5);
+    let app = AppState::new(13_405_000, 52_520_000, 0.5);
     let vp = app.viewport(240.0, 320.0);
 
     assert_eq!((vp.w, vp.h), (240.0, 320.0));
-    assert_eq!(vp.cam_lon, 13_405_000.0);
-    assert_eq!(vp.cam_lat, 52_520_000.0);
+    assert_eq!(vp.cam_lon, 13_405_000);
+    assert_eq!(vp.cam_lat, 52_520_000);
     assert_eq!(vp.zoom, 0.5);
 }
 
@@ -91,7 +91,7 @@ fn fix_at_helper_is_stationary() {
 
 #[test]
 fn north_up_is_the_default_orientation() {
-    let app = AppState::new(0.0, 0.0, 1.0);
+    let app = AppState::new(0, 0, 1.0);
     assert!(!app.heading_up);
 
     let vp = app.viewport(200.0, 200.0);
@@ -105,7 +105,7 @@ fn north_up_is_the_default_orientation() {
 
 #[test]
 fn heading_up_rotates_course_to_screen_top() {
-    let mut app = AppState::new(0.0, 0.0, 1.0);
+    let mut app = AppState::new(0, 0, 1.0);
     app.heading_up = true;
     // Heading-up with no fix yet is still north-up — there's no course to face.
     assert_eq!(app.viewport(200.0, 200.0).course_rad, 0.0);
@@ -115,7 +115,7 @@ fn heading_up_rotates_course_to_screen_top() {
     app.update(&mut loc);
 
     let vp = app.viewport(200.0, 200.0);
-    assert!((vp.course_rad - std::f64::consts::FRAC_PI_2).abs() < 1e-9);
+    assert!((vp.course_rad - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
 
     // Facing east: east is now up, and north swings to the left.
     let (ex, ey) = vp.to_screen(1_000, 0); // 1000 µdeg east
@@ -129,7 +129,7 @@ fn heading_up_rotates_course_to_screen_top() {
 
 #[test]
 fn projection_round_trips_under_rotation() {
-    let mut app = AppState::new(13_405_000.0, 52_520_000.0, 0.5);
+    let mut app = AppState::new(13_405_000, 52_520_000, 0.5);
     app.heading_up = true;
     let mut loc = Fixed(Some(Fix { lat: BERLIN.0, lon: BERLIN.1, course: Some(37.0), speed_mps: Some(4.0) }));
     app.update(&mut loc);
@@ -139,17 +139,17 @@ fn projection_round_trips_under_rotation() {
     // is integer pixels at 0.5 px/µdeg, and aspect divides longitude back out).
     for &(lon, lat) in &[(13_405_000, 52_520_000), (13_410_000, 52_525_000), (13_400_000, 52_515_000)] {
         let (sx, sy) = vp.to_screen(lon, lat);
-        let (rlon, rlat) = vp.to_map(sx as f64, sy as f64);
-        assert!((rlon - lon as f64).abs() < 6.0, "lon {lon} -> {rlon}");
-        assert!((rlat - lat as f64).abs() < 6.0, "lat {lat} -> {rlat}");
+        let (rlon, rlat) = vp.to_map(sx as f32, sy as f32);
+        assert!((rlon - lon).abs() < 6, "lon {lon} -> {rlon}");
+        assert!((rlat - lat).abs() < 6, "lat {lat} -> {rlat}");
     }
 }
 
 #[test]
 fn rotation_widens_the_cull_box() {
-    let north = AppState::new(0.0, 0.0, 1.0).viewport(200.0, 100.0);
+    let north = AppState::new(0, 0, 1.0).viewport(200.0, 100.0);
 
-    let mut app = AppState::new(0.0, 0.0, 1.0);
+    let mut app = AppState::new(0, 0, 1.0);
     app.heading_up = true;
     let mut loc = Fixed(Some(Fix { lat: 0, lon: 0, course: Some(45.0), speed_mps: Some(1.0) }));
     app.update(&mut loc);

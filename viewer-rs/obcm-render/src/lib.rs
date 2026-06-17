@@ -14,9 +14,7 @@
 
 #![no_std]
 
-extern crate alloc;
-
-use alloc::vec::Vec;
+use heapless::Vec;
 
 use embedded_graphics::{
     prelude::*,
@@ -171,6 +169,7 @@ struct Span {
     pt_start: usize,
     ring_start: usize,
     ring_count: usize,
+    seq: u16,
 }
 
 /// Reusable renderer holding every scratch buffer. Construct once (the firmware
@@ -179,17 +178,17 @@ struct Span {
 #[derive(Default)]
 pub struct MapRenderer {
     // Per-feature decode scratch handed to `Reader::for_each_feature`.
-    dec_points: Vec<(i32, i32)>,
-    dec_ring_lens: Vec<usize>,
+    dec_points: Vec<(i32, i32), 2048>,
+    dec_ring_lens: Vec<usize, 32>,
     // Visible chunks for this frame.
-    chunks: Vec<(u32, BBox)>,
+    chunks: Vec<(u32, BBox), 64>,
     // All visible features' geometry, concatenated, plus per-feature spans.
-    frame_points: Vec<(i32, i32)>,
-    frame_ring_lens: Vec<usize>,
-    spans: Vec<Span>,
+    frame_points: Vec<(i32, i32), 8192>,
+    frame_ring_lens: Vec<usize, 2048>,
+    spans: Vec<Span, 512>,
     // Drawing scratch.
-    screen: Vec<Point>,
-    xs: Vec<f32>,
+    screen: Vec<Point, 2048>,
+    xs: Vec<f32, 128>,
 }
 
 impl MapRenderer {
@@ -249,7 +248,7 @@ impl MapRenderer {
                 };
                 let pts = f.points();
                 let lens = f.ring_lens();
-                spans.push(Span {
+                let _ = spans.push(Span {
                     kind: f.kind,
                     z: style.z_index,
                     weight: style.weight,
@@ -257,14 +256,15 @@ impl MapRenderer {
                     pt_start: frame_points.len(),
                     ring_start: frame_ring_lens.len(),
                     ring_count: lens.len(),
+                    seq: spans.len() as u16,
                 });
-                frame_points.extend_from_slice(pts);
-                frame_ring_lens.extend_from_slice(lens);
+                let _ = frame_points.extend_from_slice(pts);
+                let _ = frame_ring_lens.extend_from_slice(lens);
             });
         }
 
-        // Painter's order by z-index (stable: preserves chunk/decode order ties).
-        spans.sort_by_key(|s| s.z);
+        // Painter's order by z-index. Using sort_unstable with a sequence number for stable tie-breaking without alloc.
+        spans.sort_unstable_by_key(|s| (s.z, s.seq));
 
         // --- Draw phase. ---
         let (w, h) = (vp.w as i32, vp.h as i32);
@@ -280,7 +280,7 @@ impl MapRenderer {
                     screen.clear();
                     for &(lon, lat) in pts {
                         let (x, y) = vp.to_screen(lon, lat);
-                        screen.push(Point::new(x, y));
+                        let _ = screen.push(Point::new(x, y));
                     }
                     fill_polygon(target, screen, ring_lens, color, w, h, xs);
                 }
@@ -305,11 +305,11 @@ impl MapRenderer {
                                 for i in 1..steps {
                                     let sx = p1.x + dx * i / steps;
                                     let sy = p1.y + dy * i / steps;
-                                    screen.push(Point::new(sx, sy));
+                                    let _ = screen.push(Point::new(sx, sy));
                                 }
                             }
                         }
-                        screen.push(pt);
+                        let _ = screen.push(pt);
                         prev_pt = Some(pt);
                     }
                     if screen.len() >= 2 {
@@ -382,18 +382,18 @@ impl MapRenderer {
                 const TIP: f32 = 9.0;
                 const BACK: f32 = 5.0;
                 const HALF: f32 = 6.0;
-                self.screen.push(pt(cx + fx * TIP, cy + fy * TIP));
-                self.screen.push(pt(cx - fx * BACK + rx * HALF, cy - fy * BACK + ry * HALF));
-                self.screen.push(pt(cx - fx * BACK - rx * HALF, cy - fy * BACK - ry * HALF));
+                let _ = self.screen.push(pt(cx + fx * TIP, cy + fy * TIP));
+                let _ = self.screen.push(pt(cx - fx * BACK + rx * HALF, cy - fy * BACK + ry * HALF));
+                let _ = self.screen.push(pt(cx - fx * BACK - rx * HALF, cy - fy * BACK - ry * HALF));
                 3
             }
             // Stationary glyph: a small orientation-free diamond.
             None => {
                 const R: f32 = 5.0;
-                self.screen.push(pt(cx, cy - R));
-                self.screen.push(pt(cx + R, cy));
-                self.screen.push(pt(cx, cy + R));
-                self.screen.push(pt(cx - R, cy));
+                let _ = self.screen.push(pt(cx, cy - R));
+                let _ = self.screen.push(pt(cx + R, cy));
+                let _ = self.screen.push(pt(cx, cy + R));
+                let _ = self.screen.push(pt(cx - R, cy));
                 4
             }
         };
@@ -411,7 +411,7 @@ fn fill_polygon<D>(
     color: D::Color,
     w: i32,
     h: i32,
-    xs: &mut Vec<f32>,
+    xs: &mut Vec<f32, 128>,
 ) where
     D: DrawTarget,
 {
@@ -441,7 +441,7 @@ fn fill_polygon<D>(
                 let (xi, yi) = (ring[i].x as f32, ring[i].y as f32);
                 let (xj, yj) = (ring[j].x as f32, ring[j].y as f32);
                 if (yi <= yc && yc < yj) || (yj <= yc && yc < yi) {
-                    xs.push(xi + (yc - yi) / (yj - yi) * (xj - xi));
+                    let _ = xs.push(xi + (yc - yi) / (yj - yi) * (xj - xi));
                 }
                 j = i;
             }
@@ -449,7 +449,7 @@ fn fill_polygon<D>(
         if xs.len() < 2 {
             continue;
         }
-        xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        xs.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
         let mut k = 0;
         while k + 1 < xs.len() {
             let x0 = (libm::ceilf(xs[k]) as i32).max(0);
