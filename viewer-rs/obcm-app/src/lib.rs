@@ -33,9 +33,11 @@ pub mod activity;
 pub mod app;
 pub mod hal;
 pub mod input;
+pub mod route;
 pub mod screen;
 
 pub use activity::{Activity, Mode};
+pub use route::Route;
 pub use app::{App, AppState, CameraMode};
 pub use hal::{Button, ButtonEvent, Fix, InputEvent, InputSource, LocationSource};
 pub use input::{Gesture, Gestures, DEFAULT_HOLD_MS};

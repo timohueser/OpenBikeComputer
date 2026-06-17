@@ -69,7 +69,9 @@ impl RideControl {
                 // emits `Hold` exactly when the hold completes, so reaching here
                 // *is* the confirmation; releasing early never produces it.
                 if ITEMS[self.selected].guard {
-                    cx.activity.mode = Mode::Idle; // Finish saves / Discard deletes (stub) → clear → Home
+                    // Finish saves / Discard deletes (stub) → clear the route → Home.
+                    cx.activity.mode = Mode::Idle;
+                    cx.activity.active_route = None;
                     Transition::Home
                 } else {
                     Transition::None

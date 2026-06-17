@@ -148,17 +148,27 @@ pub struct App {
 }
 
 impl App {
-    /// Build the app. The stack starts at `[Home, Map]` in mode Riding — the host
-    /// opens on the live map, with Home as the always-present root that Finish /
-    /// Discard return to. (The device's real boot — start at Home/Idle and push
-    /// Map when a route loads — arrives with the Route menu.)
+    /// Build the app on the live map, as if route 0 were already loaded — the
+    /// simulator's convenience default (it opens on the map; mouse/GPX/`--png` all
+    /// work). The stack is `[Home, Map]`, with Home the always-present root that
+    /// Finish / Discard return to. Use [`new_idle`](App::new_idle) for the device's
+    /// real boot (start at Home / Idle, no route).
     pub fn new(state: AppState) -> Self {
+        let mut app = Self::new_idle(state);
+        app.activity = Activity { mode: Mode::Riding, active_route: Some(0) };
+        let _ = app.stack.push(Screen::Map(MapScreen::new()));
+        app
+    }
+
+    /// Build the app at the device's real power-on state: the Home screensaver,
+    /// Idle, no route loaded. Loading a route (Home → Route menu → `press`) starts
+    /// riding and opens the Map.
+    pub fn new_idle(state: AppState) -> Self {
         let mut stack = Stack::new();
         let _ = stack.push(Screen::Home(HomeScreen::new()));
-        let _ = stack.push(Screen::Map(MapScreen::new()));
         App {
             state,
-            activity: Activity::new(Mode::Riding),
+            activity: Activity::new(Mode::Idle),
             stack,
             renderer: MapRenderer::new(),
             gestures: Gestures::new(DEFAULT_HOLD_MS),

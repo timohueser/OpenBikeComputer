@@ -11,7 +11,7 @@ use obcm_render::{
 
 use crate::input::Gesture;
 
-use super::{palette, Ctx, MenuScreen, Render, Screen, Transition};
+use super::{palette, Ctx, MenuScreen, Render, RouteMenuScreen, Screen, Transition};
 
 /// The idle home screen. No state yet.
 #[derive(Debug, Default)]
@@ -24,7 +24,7 @@ impl HomeScreen {
 
     pub fn handle(&mut self, g: Gesture, _cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Press => Transition::None, // → Route menu, later slice
+            Gesture::Press => Transition::Push(Screen::RouteMenu(RouteMenuScreen::new())),
             Gesture::BackHold => Transition::Push(Screen::Menu(MenuScreen::new())),
             _ => Transition::None,
         }

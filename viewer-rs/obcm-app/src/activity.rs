@@ -18,16 +18,25 @@ pub enum Mode {
     Paused,
 }
 
-/// The active ride. Carries the [`Mode`] now; the ride-stat accumulators land here
-/// with the Elevation screen.
+/// The active ride: the [`Mode`] plus which route is loaded. The ride-stat
+/// accumulators (distance / time / climb from `Fix`es) land here with the
+/// Elevation screen.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Activity {
     pub mode: Mode,
+    /// Index into [`routes`](crate::route::routes) of the loaded route, or `None`
+    /// when idle. (Becomes a richer route reference once routes are dynamic.)
+    pub active_route: Option<usize>,
 }
 
 impl Activity {
-    /// A fresh activity in the given mode.
+    /// A fresh activity in the given mode, no route loaded.
     pub fn new(mode: Mode) -> Self {
-        Activity { mode }
+        Activity { mode, active_route: None }
+    }
+
+    /// The loaded route, if any.
+    pub fn route(&self) -> Option<&'static crate::route::Route> {
+        self.active_route.and_then(|i| crate::route::routes().get(i))
     }
 }
