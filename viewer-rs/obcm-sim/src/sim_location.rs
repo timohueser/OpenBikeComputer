@@ -11,9 +11,7 @@ pub struct SimLocationSource {
     fix: Option<Fix>,
 }
 
-// The setters are the control panel's write API (wired up in the next step); the
-// loop already reads through `poll`.
-#[allow(dead_code)]
+// The setters are the control panel's write API; the loop reads through `poll`.
 impl SimLocationSource {
     pub fn new(fix: Option<Fix>) -> Self {
         SimLocationSource { fix }

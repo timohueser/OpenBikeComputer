@@ -16,19 +16,29 @@ a faithful stand-in for the real nRF5340 + LS021B7DD02 hardware. The same app
 logic runs on the real firmware; the simulator and firmware are just two *hosts*
 behind a hardware-abstraction layer (HAL).
 
-This was planned as 5 steps. **Steps 1–3 are done and verified.** You are doing
-**Step 4 (the control panel itself).**
+This was planned as 5 steps. **Steps 1–4 are done and verified.** Next up are the
+*features the panel exists for* (see §9) and Step 5 polish.
 
 | Step | What | Status |
 |---|---|---|
 | 1 | `obcm-app` crate: `Fix`, `LocationSource`/`InputSource` traits, `AppState` follow/free camera | ✅ done |
 | 2 | In-house `Framebuffer` `DrawTarget` + `image`-crate PNG (replaced e-g-simulator's output) | ✅ done |
 | 3 | eframe/egui host window; `App::render_frame` shared entry point; **SDL dropped**; bare-metal build proven | ✅ done |
-| **4** | **Control-panel window (this task)** | **TODO** |
+| 4 | Control-panel window: lat/lon, heading, log-zoom (m/px + ground span), Follow/Free toggle | ✅ done |
 | 5 | Docs/memory polish | partially done |
 
 After Step 4 come the *features the panel exists for*: user-position marker, GPX
 replay, virtual buttons (see §9).
+
+**Step 4 as built** (`obcm-sim/src/gui.rs`): a second "Controls" immediate viewport
+holds `PanelState` mirrors (`lat_deg`/`lon_deg`/`heading_deg`), pushed into
+`SimLocationSource` each frame; zoom is a log slider in m/px that only writes back
+on `resp.changed()` (so it never fights mouse scroll); Follow/Free are
+`selectable_value`s bound to `AppState.mode`, and entering Follow snaps the fix to
+the current camera center. Closing the Controls window quits the app (`quit` flag).
+The central panel now fits the device image to the window at the largest integer
+scale ≤ `--scale` (fixes the §6 bottom-clipping). Pure helpers (`zoom_to_mpp`,
+`mpp_to_zoom`, `format_distance`) are unit-tested (obcm-sim now 7 tests).
 
 ---
 
@@ -185,7 +195,7 @@ inside the closure if you want to react).
 cd viewer-rs
 cargo build --release -p obcm-sim
 cargo clippy --workspace --all-targets      # must stay clean
-cargo test --workspace                       # obcm 12, obcm-app 6, obcm-sim 4
+cargo test --workspace                       # obcm 12, obcm-app 6, obcm-sim 7
 
 # Firmware-readiness (must keep compiling — this is the foundation guarantee):
 rustup target add thumbv8m.main-none-eabihf
@@ -235,6 +245,13 @@ default (64-color) and `--true-color` modes. Don't break that.
   so it can't be added to the computer-use app allowlist, and the compositor filter
   hides non-allowlisted apps. `screencapture` is also blocked (no Screen Recording
   permission for the terminal). Use `--screenshot` instead.
+- **`--screenshot` can't capture the Controls viewport.** Confirmed: eframe/egui
+  0.29 does **not** deliver `Event::Screenshot` for *immediate* child viewports —
+  sending `ViewportCommand::Screenshot` to the panel's `ctx` polls forever and
+  never fires (an attempt to auto-capture it was tried and reverted). `--screenshot`
+  captures only the root (screen) window. **The control panel must be verified by a
+  live look** — `cargo run --release -p obcm-sim -- ../monaco.obcm` and inspect the
+  second "Controls" window.
 - **Continuous repaint:** `SimGui::update` ends with `ctx.request_repaint()` so the
   loop runs every frame (needed for GPX animation later). Keep it.
 - Everything internal is **microdegrees `i32`**; `course` is degrees CW from north.
