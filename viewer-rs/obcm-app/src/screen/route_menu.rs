@@ -21,7 +21,7 @@ use crate::activity::Mode;
 use crate::input::Gesture;
 use crate::route::routes;
 
-use super::{list_frame, palette, Ctx, MapScreen, Render, Screen, Transition, LIST_TOP};
+use super::{list_frame, palette, scrollbar, window_start, Ctx, MapScreen, Render, Screen, Transition, LIST_TOP};
 
 /// Per-route pane height (two lines: name + stats).
 const ROW_H: i32 = 58;
@@ -63,12 +63,25 @@ impl RouteMenuScreen {
     {
         use palette::*;
         let (w, h) = (rx.w as i32, rx.h as i32);
+        let routes = routes();
+        let total = routes.len();
         let mut cv = Canvas::new(target, color_fn);
 
-        list_frame(&mut cv, w, h, "ROUTES", self.selected + 1, routes().len());
+        list_frame(&mut cv, w, h, "ROUTES", self.selected + 1, total);
 
-        for (i, route) in routes().iter().enumerate() {
-            let y = LIST_TOP + i as i32 * ROW_H;
+        // Window the list to the rows that fit, scrolling to keep the selection
+        // visible, and show a scrollbar when there are more routes than fit.
+        let list_h = h - LIST_TOP - 6;
+        let visible = (list_h / ROW_H).max(1) as usize;
+        let first = window_start(self.selected, visible, total);
+
+        for slot in 0..visible {
+            let i = first + slot;
+            if i >= total {
+                break;
+            }
+            let route = &routes[i];
+            let y = LIST_TOP + slot as i32 * ROW_H;
             let selected = i == self.selected;
 
             if selected {
@@ -93,10 +106,13 @@ impl RouteMenuScreen {
             let _ = write!(climb, "{} m", route.climb_m);
             cv.text(&climb, Point::new(cx0 + 14, sy), Font::Label, TextAlign::Left, accent);
 
-            if !selected && i + 1 < routes().len() {
+            // Separator below a row when the next visible row is also drawn.
+            if !selected && slot + 1 < visible && i + 1 < total {
                 cv.hline(16, y + ROW_H - 4, w - 32, RULE);
             }
         }
+
+        scrollbar(&mut cv, w - 8, LIST_TOP, visible as i32 * ROW_H, total, first, visible);
         RenderStats::default()
     }
 }

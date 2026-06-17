@@ -18,12 +18,16 @@ pub struct Route {
 }
 
 /// Mock route list (the stand-in until routes sync over BLE). Order is the
-/// Route-menu order.
-const MOCK: [Route; 4] = [
+/// Route-menu order. Deliberately more than fit on one screen, to exercise the
+/// list windowing + scrollbar.
+const MOCK: [Route; 7] = [
     Route { name: "Alpine Loop", distance_km: 142, climb_m: 3200 },
     Route { name: "Black Forest", distance_km: 88, climb_m: 1450 },
     Route { name: "River Valley", distance_km: 56, climb_m: 620 },
     Route { name: "Vosges Crossing", distance_km: 124, climb_m: 2600 },
+    Route { name: "Rhine Path", distance_km: 70, climb_m: 400 },
+    Route { name: "Jura Heights", distance_km: 98, climb_m: 2100 },
+    Route { name: "Lake Circuit", distance_km: 45, climb_m: 350 },
 ];
 
 /// The available routes — today the mock list, later the BLE-synced one. The

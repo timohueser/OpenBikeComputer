@@ -129,6 +129,22 @@ fn route_menu_back_returns_to_caller() {
 }
 
 #[test]
+fn list_window_keeps_the_selection_visible() {
+    use obcm_app::screen::window_start;
+    // Everything fits → never scrolls.
+    assert_eq!(window_start(0, 4, 3), 0);
+    assert_eq!(window_start(2, 4, 3), 0);
+    // Within the first page → pinned to the top.
+    assert_eq!(window_start(0, 4, 7), 0);
+    assert_eq!(window_start(3, 4, 7), 0);
+    // Past the page → the window follows, selection on the last visible row.
+    assert_eq!(window_start(4, 4, 7), 1);
+    assert_eq!(window_start(5, 4, 7), 2);
+    // Clamped at the last page — can't scroll past the end.
+    assert_eq!(window_start(6, 4, 7), 3);
+}
+
+#[test]
 fn boot_flow_walks_home_to_route_menu_to_riding_map() {
     // End to end through `App`: Idle Home → press → Route menu → press → riding Map.
     let mut app = App::new_idle(AppState::new(0, 0, 0.05));
