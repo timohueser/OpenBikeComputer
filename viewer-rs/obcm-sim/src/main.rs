@@ -100,12 +100,12 @@ fn color_of(c: u16, true_color: bool) -> Rgb888 {
 /// The starting camera for a freshly-opened map: centered on the bbox, zoomed so
 /// its longitude span fills the window width. Returns `(cam_lon, cam_lat, zoom)`
 /// in the [`AppState`] convention (microdegrees, pixels-per-microdegree).
-fn initial_camera(reader: &Reader, width: u32) -> (f64, f64, f64) {
+fn initial_camera(reader: &Reader, width: u32) -> (i32, i32, f32) {
     let b = reader.bbox;
-    let cam_lon = (b.min_lon + b.max_lon) as f64 / 2.0;
-    let cam_lat = (b.min_lat + b.max_lat) as f64 / 2.0;
-    let span_lon = (b.max_lon - b.min_lon).max(1) as f64;
-    (cam_lon, cam_lat, width as f64 / span_lon)
+    let cam_lon = (b.min_lon as i64 + b.max_lon as i64) / 2;
+    let cam_lat = (b.min_lat as i64 + b.max_lat as i64) / 2;
+    let span_lon = (b.max_lon as i64 - b.min_lon as i64).max(1) as f32;
+    (cam_lon as i32, cam_lat as i32, width as f32 / span_lon)
 }
 
 /// Encode a framebuffer to a PNG, upscaling by `scale` with nearest-neighbor so
@@ -167,7 +167,7 @@ fn main() {
         // is derived from the fix's course, so seed one at the map center.
         if let Some(deg) = args.heading {
             state.heading_up = true;
-            state.user_fix = Some(Fix { lat: cy as i32, lon: cx as i32, course: Some(deg), speed_mps: None });
+            state.user_fix = Some(Fix { lat: cy, lon: cx, course: Some(deg), speed_mps: None });
         }
         // `--gpx` renders the replayed fix at `--at` (default: track midpoint),
         // a headless way to check the marker sits on the track with a derived
@@ -181,8 +181,8 @@ fn main() {
                     if let Some(fix) = player.poll() {
                         state.heading_up = fix.course.is_some();
                         state.user_fix = Some(fix);
-                        state.cam_lon = fix.lon as f64;
-                        state.cam_lat = fix.lat as f64;
+                        state.cam_lon = fix.lon;
+                        state.cam_lat = fix.lat;
                     }
                 }
                 Err(e) => {
@@ -196,7 +196,7 @@ fn main() {
         let tc = args.true_color;
 
         let t0 = Instant::now();
-        let stats = app.render_frame(&mut fb, &reader, args.width as f64, args.height as f64, |c| {
+        let stats = app.render_frame(&mut fb, &reader, args.width as f32, args.height as f32, |c| {
             color_of(c, tc)
         });
         let ms = t0.elapsed().as_secs_f64() * 1000.0;

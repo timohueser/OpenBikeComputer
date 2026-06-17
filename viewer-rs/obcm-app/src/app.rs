@@ -39,11 +39,11 @@ pub enum CameraMode {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AppState {
     /// Camera center longitude in microdegrees (1e-6°).
-    pub cam_lon: f64,
+    pub cam_lon: i32,
     /// Camera center latitude in microdegrees (1e-6°).
-    pub cam_lat: f64,
+    pub cam_lat: i32,
     /// Pixels per microdegree of latitude (the [`Viewport::zoom`] convention).
-    pub zoom: f64,
+    pub zoom: f32,
     /// Whether the camera follows the user or is driven manually.
     pub mode: CameraMode,
     /// Map orientation. `true` rotates the projection so the user's course points
@@ -60,7 +60,7 @@ impl AppState {
     /// A fresh state centered at `(cam_lon, cam_lat)` microdegrees with the given
     /// `zoom`, in [`Follow`](CameraMode::Follow) mode (the device default) and no
     /// fix yet.
-    pub fn new(cam_lon: f64, cam_lat: f64, zoom: f64) -> Self {
+    pub fn new(cam_lon: i32, cam_lat: i32, zoom: f32) -> Self {
         AppState {
             cam_lon,
             cam_lat,
@@ -82,8 +82,8 @@ impl AppState {
         if let Some(fix) = loc.poll() {
             self.user_fix = Some(fix);
             if self.mode == CameraMode::Follow {
-                self.cam_lon = fix.lon as f64;
-                self.cam_lat = fix.lat as f64;
+                self.cam_lon = fix.lon;
+                self.cam_lat = fix.lat;
             }
         }
     }
@@ -95,11 +95,11 @@ impl AppState {
     /// In [`heading_up`](AppState::heading_up) mode the projection is rotated so
     /// the last fix's `course` points to the top of the screen; with no course (or
     /// north-up) it stays north-up.
-    pub fn viewport(&self, w: f64, h: f64) -> Viewport {
+    pub fn viewport(&self, w: f32, h: f32) -> Viewport {
         let course_rad = if self.heading_up {
             self.user_fix
                 .and_then(|f| f.course)
-                .map_or(0.0, |deg| (deg as f64).to_radians())
+                .map_or(0.0, |deg| deg.to_radians())
         } else {
             0.0
         };
@@ -159,8 +159,8 @@ impl App {
         &mut self,
         target: &mut D,
         reader: &Reader,
-        w: f64,
-        h: f64,
+        w: f32,
+        h: f32,
         color_fn: F,
     ) -> RenderStats
     where
