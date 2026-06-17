@@ -27,10 +27,12 @@ use obcm_render::{
     text::{Font, TextAlign},
     Canvas, MapRenderer, RenderStats,
 };
+use obcm_route::RouteReader;
 
 use crate::activity::Activity;
 use crate::app::AppState;
 use crate::input::Gesture;
+use crate::route::RouteSummary;
 
 mod home;
 mod map;
@@ -98,6 +100,9 @@ pub struct Ctx<'a> {
     pub state: &'a mut AppState,
     /// The ride mode + (later) tracking accumulators.
     pub activity: &'a mut Activity,
+    /// The route catalog (read-only) — the Route menu navigates it and centers the
+    /// camera on the picked route's bbox from here, no I/O needed.
+    pub routes: &'a [RouteSummary],
     /// Current millis clock.
     pub now_ms: u32,
 }
@@ -110,6 +115,11 @@ pub struct Render<'a, 'd> {
     pub renderer: &'a mut MapRenderer,
     pub state: &'a AppState,
     pub activity: &'a Activity,
+    /// The route catalog, for the Route-menu list.
+    pub routes: &'a [RouteSummary],
+    /// The active route's geometry (the Map strokes it), or `None` when no route is
+    /// loaded. Host-owned, streamed on demand; only the active route is open.
+    pub route: Option<&'a RouteReader<'a>>,
     pub w: f32,
     pub h: f32,
     pub now_ms: u32,

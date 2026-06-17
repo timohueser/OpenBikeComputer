@@ -9,10 +9,14 @@
 //! Usage:
 //!   obcm-sim <map.obcm> [--size WxH] [--scale N] [--png OUT.png] [--true-color]
 //!     [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT]
+//!     [--routes-dir DIR] [--import GPX]
 //!
 //! `--center`/`--zoom` aim the headless `--png` camera at a spot and zoom level
 //! (e.g. to inspect a specific chunk boundary); `--zoom` multiplies the bbox-fit
-//! zoom.
+//! zoom. `--routes-dir` points at the folder of `.obcr` routes (the device-SD
+//! stand-in; default `routes/`); `--import GPX` converts a GPX into it and exits, the
+//! host-side run of the same conversion the device does on a USB drop. Routes can also
+//! be dropped onto the window to import them live.
 //!
 //! Interactive: drag to pan, scroll to zoom, Esc/Q to quit.
 
@@ -28,10 +32,13 @@ mod framebuffer;
 mod gpx;
 mod gpx_player;
 mod gui;
+mod routes;
 mod sim_location;
 use framebuffer::Framebuffer;
 use gpx::Track;
 use gpx_player::GpxPlayer;
+use obcm_route::RouteReader;
+use routes::RouteStore;
 
 struct Args {
     map: String,
@@ -68,6 +75,12 @@ struct Args {
     /// Boot at the device's real power-on state (Home / Idle, no route) instead of
     /// the map. Use with `--script` to walk the Home → Route menu → Map flow.
     boot: bool,
+    /// Folder of `.obcr` routes — the simulator's stand-in for the device SD card.
+    /// The Route menu lists these; defaults to `routes/`.
+    routes_dir: Option<String>,
+    /// Convert this GPX into the routes folder and exit (the device does the same on
+    /// a USB drop). Headless; needs no map.
+    import: Option<String>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -87,6 +100,8 @@ fn parse_args() -> Result<Args, String> {
         text_demo: false,
         script: None,
         boot: false,
+        routes_dir: None,
+        import: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -118,6 +133,8 @@ fn parse_args() -> Result<Args, String> {
             "--text-demo" => a.text_demo = true,
             "--script" => a.script = Some(it.next().ok_or("--script needs a token string")?),
             "--boot" => a.boot = true,
+            "--routes-dir" => a.routes_dir = Some(it.next().ok_or("--routes-dir needs a path")?),
+            "--import" => a.import = Some(it.next().ok_or("--import needs a GPX path")?),
             other => {
                 if a.map.is_empty() {
                     a.map = other.to_string();
@@ -127,8 +144,8 @@ fn parse_args() -> Result<Args, String> {
             }
         }
     }
-    // `--text-demo` renders text on a blank panel, so it needs no map file.
-    if a.map.is_empty() && !a.text_demo {
+    // `--text-demo` and `--import` need no map file.
+    if a.map.is_empty() && !a.text_demo && a.import.is_none() {
         return Err("missing map path".into());
     }
     Ok(a)
@@ -290,7 +307,7 @@ fn main() {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: obcm-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--script TOKENS] [--boot]");
+            eprintln!("error: {e}\nusage: obcm-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--script TOKENS] [--boot] [--routes-dir DIR] [--import GPX]");
             std::process::exit(2);
         }
     };
@@ -306,6 +323,30 @@ fn main() {
             std::process::exit(1);
         }
         eprintln!("wrote {path}");
+        return;
+    }
+
+    // `--import` converts a GPX into the routes folder — the device's USB-drop path,
+    // run on the host. Needs no map, so it comes before the map read.
+    if let Some(gpx) = &args.import {
+        let dir = args.routes_dir.clone().unwrap_or_else(|| "routes".to_string());
+        let mut store = RouteStore::open(&dir);
+        match store.import_gpx(std::path::Path::new(gpx)) {
+            Ok(s) => eprintln!(
+                "imported {gpx} → {dir}/ | {} km, +{} m / -{} m | {} pts, {} chunks, ele {}..{} m",
+                (s.total_distance_m + 500) / 1000,
+                s.total_ascent_m,
+                s.total_descent_m,
+                s.point_count,
+                s.chunk_count,
+                s.min_ele_m,
+                s.max_ele_m
+            ),
+            Err(e) => {
+                eprintln!("import failed: {e}");
+                std::process::exit(1);
+            }
+        }
         return;
     }
 
@@ -375,15 +416,24 @@ fn main() {
             }
         }
         let mut app = if args.boot { App::new_idle(state) } else { App::new(state) };
+        // Load the routes folder so the Route menu has real entries and a picked route
+        // can be drawn (the device reads the same off its SD card).
+        let mut store = RouteStore::open(args.routes_dir.clone().unwrap_or_else(|| "routes".to_string()));
+        app.set_routes(store.catalog());
         // Drive the app to a specific screen before snapshotting (e.g. the Menu).
         if let Some(script) = &args.script {
             apply_script(&mut app, script);
         }
+        // After the script may have loaded a route, open its geometry for the Map.
+        store.sync_active(app.activity.active_route);
+        let route_src = store.active_source();
+        let route = route_src.as_ref().and_then(|s| RouteReader::open(s).ok());
+
         let mut fb = Framebuffer::new(args.width, args.height);
         let tc = args.true_color;
 
         let t0 = Instant::now();
-        let stats = app.render_frame(&mut fb, &reader, args.width as f32, args.height as f32, |c| {
+        let stats = app.render_frame(&mut fb, &reader, route.as_ref(), args.width as f32, args.height as f32, |c| {
             color_of(c, tc)
         });
         let ms = t0.elapsed().as_secs_f64() * 1000.0;

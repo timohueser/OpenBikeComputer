@@ -11,12 +11,35 @@ use obcm_app::activity::Activity;
 use obcm_app::screen::{
     apply, Ctx, HomeScreen, MapScreen, MenuScreen, RideControl, RouteMenuScreen, Screen, Stack, Transition,
 };
-use obcm_app::{App, AppState, Button, ButtonEvent, Fix, Gesture, InputEvent, InputSource, LocationSource, Mode};
-use obcm_reader::{rgb565_to_rgb888, Reader};
+use obcm_app::{App, AppState, Button, ButtonEvent, Fix, Gesture, InputEvent, InputSource, LocationSource, Mode, RouteSummary};
+use obcm_reader::{rgb565_to_rgb888, BBox, Reader};
 
-/// A handle [`Ctx`] over freshly-made state/activity for a one-gesture test.
+/// A handle [`Ctx`] over freshly-made state/activity for a one-gesture test. Most
+/// screens ignore the catalog; the Route-menu tests pass their own via [`route_ctx`].
 fn ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity) -> Ctx<'a> {
-    Ctx { state, activity, now_ms: 0 }
+    Ctx { state, activity, routes: &[], now_ms: 0 }
+}
+
+/// A handle [`Ctx`] carrying a route catalog, for the Route-menu tests.
+fn route_ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity, routes: &'a [RouteSummary]) -> Ctx<'a> {
+    Ctx { state, activity, routes, now_ms: 0 }
+}
+
+/// A small synthetic route catalog (names + totals + a unit bbox to center on).
+fn test_routes() -> [RouteSummary; 3] {
+    let mk = |n: &str, d: u32, c: u32| {
+        let mut name = heapless::String::<48>::new();
+        let _ = name.push_str(n);
+        RouteSummary {
+            name,
+            distance_km: d,
+            climb_m: c,
+            bbox: BBox { min_lon: 0, min_lat: 0, max_lon: 1000, max_lat: 1000 },
+            start_lon: 100,
+            start_lat: 100,
+        }
+    };
+    [mk("Alpha", 10, 100), mk("Beta", 20, 200), mk("Gamma", 30, 300)]
 }
 
 // ---------------------------------------------------------------------------
@@ -113,9 +136,10 @@ fn home_press_opens_the_route_menu() {
 #[test]
 fn route_menu_loads_the_selected_route_and_opens_the_map() {
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Idle));
+    let routes = test_routes();
     let mut rm = RouteMenuScreen::new();
-    rm.handle(Gesture::Turn(1), &mut ctx(&mut st, &mut act)); // highlight route 1
-    let t = rm.handle(Gesture::Press, &mut ctx(&mut st, &mut act));
+    rm.handle(Gesture::Turn(1), &mut route_ctx(&mut st, &mut act, &routes)); // highlight route 1
+    let t = rm.handle(Gesture::Press, &mut route_ctx(&mut st, &mut act, &routes));
     assert!(matches!(t, Transition::Replace(Screen::Map(_))), "loading opens the Map");
     assert_eq!(act.mode, Mode::Riding, "loading starts tracking");
     assert_eq!(act.active_route, Some(1), "the selected route is the active one");
@@ -126,6 +150,15 @@ fn route_menu_back_returns_to_caller() {
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Idle));
     let t = RouteMenuScreen::new().handle(Gesture::Back, &mut ctx(&mut st, &mut act));
     assert!(matches!(t, Transition::Pop));
+}
+
+#[test]
+fn route_menu_with_no_routes_ignores_press() {
+    // An empty catalog: press/turn are no-ops, so a routeless device can't "load" one.
+    let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Idle));
+    let t = RouteMenuScreen::new().handle(Gesture::Press, &mut ctx(&mut st, &mut act));
+    assert!(matches!(t, Transition::None));
+    assert_eq!(act.active_route, None);
 }
 
 #[test]
@@ -148,6 +181,7 @@ fn list_window_keeps_the_selection_visible() {
 fn boot_flow_walks_home_to_route_menu_to_riding_map() {
     // End to end through `App`: Idle Home → press → Route menu → press → riding Map.
     let mut app = App::new_idle(AppState::new(0, 0, 0.05));
+    app.set_routes(&test_routes());
     assert_eq!(app.mode(), Mode::Idle);
     press(&mut app); // Home → Route menu
     assert_eq!(app.mode(), Mode::Idle, "opening the route list doesn't start riding yet");
@@ -247,7 +281,7 @@ fn render(app: &mut App, bytes: &[u8]) -> Buf {
     app.tick(&mut NoFix);
     let reader = Reader::new(bytes).expect("valid v5 file");
     let mut buf = Buf::new(120, 120);
-    app.render_frame(&mut buf, &reader, 120.0, 120.0, |c| {
+    app.render_frame(&mut buf, &reader, None, 120.0, 120.0, |c| {
         let (r, g, b) = rgb565_to_rgb888(c);
         Rgb888::new(r, g, b)
     });

@@ -25,6 +25,9 @@ const MAX_ZOOM: f32 = 1e4;
 /// the old `App::render_frame` used, so a backdrop-less map looks identical.
 const DEFAULT_BG_RGB565: u16 = 0x2104;
 
+/// Stroke width (px) of the active-route overlay — bold enough to read over the map.
+const ROUTE_WEIGHT: u32 = 3;
+
 /// The live map / Follow view. Unit struct — all its state is the shared camera.
 #[derive(Debug, Default)]
 pub struct MapScreen;
@@ -66,6 +69,11 @@ impl MapScreen {
         let bg565 = rx.reader.backdrop_style().map_or(DEFAULT_BG_RGB565, |s| s.color);
         let bg = color_fn(bg565);
         let stats = rx.renderer.render(target, rx.reader, &vp, bg, color_fn);
+
+        // The active route, stroked in amber over the map (under the marker).
+        if let Some(route) = rx.route {
+            rx.renderer.draw_route(target, &vp, route, color_fn(super::palette::AMBER), ROUTE_WEIGHT);
+        }
 
         // The user-position marker, resolved through the host color_fn like styles.
         if let Some(fix) = rx.state.user_fix {

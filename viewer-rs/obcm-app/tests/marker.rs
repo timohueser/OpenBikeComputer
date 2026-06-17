@@ -117,7 +117,7 @@ impl DrawTarget for Buf {
 fn render(app: &mut App, bytes: &[u8]) -> Buf {
     let reader = Reader::new(bytes).expect("valid v5 file");
     let mut buf = Buf::new(120, 120);
-    app.render_frame(&mut buf, &reader, 120.0, 120.0, |c| {
+    app.render_frame(&mut buf, &reader, None, 120.0, 120.0, |c| {
         let (r, g, b) = rgb565_to_rgb888(c);
         Rgb888::new(r, g, b)
     });

@@ -6,6 +6,7 @@ description = "Desktop simulator for OBCM maps using embedded-graphics (same ren
 
 [dependencies]
 obcm-reader = { path = "../obcm-reader" }
+obcm-route = { path = "../obcm-route" }
 obcm-render = { path = "../obcm-render" }
 obcm-app = { path = "../obcm-app" }
 embedded-graphics = "0.8"
