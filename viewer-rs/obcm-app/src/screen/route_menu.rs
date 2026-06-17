@@ -19,9 +19,7 @@ use obcm_render::{
 };
 
 use crate::activity::Mode;
-use crate::app::AppState;
 use crate::input::Gesture;
-use crate::route::RouteSummary;
 
 use super::{list_frame, palette, scrollbar, window_start, Ctx, MapScreen, Render, Screen, Transition, LIST_TOP};
 
@@ -47,11 +45,11 @@ impl RouteMenuScreen {
                 Transition::None
             }
             Gesture::Press if len > 0 => {
-                // Load the selected route: tracking starts, the camera frames the
-                // route, and the Map opens. The host opens the geometry on the index
-                // change (no I/O here — the summary's bbox is enough to center).
+                // Load the selected route: tracking starts, the camera drops into the
+                // riding view (follow, heading-up, zoomed in at the start), and the Map
+                // opens. The host opens the geometry on the index change (no I/O here).
                 let i = self.selected.min(len - 1);
-                center_camera(cx.state, &cx.routes[i]);
+                cx.state.enter_riding_view(cx.routes[i].start_lon, cx.routes[i].start_lat);
                 cx.activity.mode = Mode::Riding;
                 cx.activity.active_route = Some(i);
                 Transition::Replace(Screen::Map(MapScreen::new()))
@@ -129,19 +127,4 @@ impl RouteMenuScreen {
         scrollbar(&mut cv, w - 8, LIST_TOP, visible as i32 * ROW_H, total, first, visible);
         RenderStats::default()
     }
-}
-
-/// Frame `route` on the Map: center the camera on its bbox and zoom so the whole route
-/// fits the device panel. Using the larger bbox span against the panel's short edge
-/// guarantees the route is fully visible (a touch conservative — the rider can zoom
-/// from there). The simulator window may differ in size; this targets the real panel.
-fn center_camera(state: &mut AppState, route: &RouteSummary) {
-    let b = route.bbox;
-    state.cam_lon = ((b.min_lon as i64 + b.max_lon as i64) / 2) as i32;
-    state.cam_lat = ((b.min_lat as i64 + b.max_lat as i64) / 2) as i32;
-    // zoom is pixels per microdegree-of-latitude; the projection narrows longitude by
-    // cos(lat), so fitting the larger raw span to the 240 px short edge fits both axes.
-    const PANEL_SHORT: f32 = 240.0;
-    let span = (b.max_lon - b.min_lon).max(b.max_lat - b.min_lat).max(1) as f32;
-    state.zoom = (PANEL_SHORT * 0.85 / span).clamp(1e-6, 1e4);
 }
