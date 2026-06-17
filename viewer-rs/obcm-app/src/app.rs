@@ -3,7 +3,7 @@
 
 use embedded_graphics::draw_target::DrawTarget;
 use obcm_reader::Reader;
-use obcm_render::{MapRenderer, RenderStats, Viewport};
+use obcm_render::{zoom_for_mpp, MapRenderer, RenderStats, Viewport};
 use obcm_route::RouteReader;
 
 use crate::activity::{Activity, Mode};
@@ -104,7 +104,24 @@ impl AppState {
         };
         Viewport::new_rotated(w, h, self.cam_lon, self.cam_lat, self.zoom, course_rad)
     }
+
+    /// Switch to the **riding view** — what loading a route should look like on the
+    /// device: follow the user, heading-up, and zoomed in close ([`RIDING_MPP`] m/px,
+    /// a ~120 m-wide view on the 240 px panel). The camera is seeded at `(lon, lat)`
+    /// (the route start) so the first frame is sensible; Follow mode then recenters it
+    /// on each GPS fix.
+    pub fn enter_riding_view(&mut self, lon: i32, lat: i32) {
+        self.mode = CameraMode::Follow;
+        self.heading_up = true;
+        self.cam_lon = lon;
+        self.cam_lat = lat;
+        self.zoom = zoom_for_mpp(RIDING_MPP);
+    }
 }
+
+/// Ground meters-per-pixel to zoom to when a route loads — close enough for
+/// turn-by-turn riding rather than the whole-route overview.
+const RIDING_MPP: f32 = 0.5;
 
 /// The whole device application, ready to run a frame.
 ///

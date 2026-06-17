@@ -82,6 +82,15 @@ const _: () = assert!(MCU_RENDERER_BYTES <= 200 * 1024, "MapRenderer exceeds the
 /// Meters of ground per microdegree of latitude (≈ Earth circumference / 360e6).
 const METERS_PER_MICRODEG_LAT: f32 = 0.111_320;
 
+/// The [`Viewport`]/`AppState` zoom (pixels per microdegree of latitude) that yields
+/// a given ground **meters-per-pixel** — the inverse of
+/// [`Viewport::meters_per_pixel`]. Lets callers aim the camera at a real-world scale
+/// (e.g. "zoom to 0.5 m/px for riding") instead of a raw zoom value.
+#[inline]
+pub fn zoom_for_mpp(mpp: f32) -> f32 {
+    METERS_PER_MICRODEG_LAT / mpp
+}
+
 /// Screen projection: microdegrees → pixels, with longitude aspect correction so
 /// the map keeps shape away from the equator. `zoom` is pixels per microdegree of
 /// latitude; longitude is additionally scaled by `aspect = cos(lat)`.

@@ -11,7 +11,7 @@ use obcm_app::activity::Activity;
 use obcm_app::screen::{
     apply, Ctx, HomeScreen, MapScreen, MenuScreen, RideControl, RouteMenuScreen, Screen, Stack, Transition,
 };
-use obcm_app::{App, AppState, Button, ButtonEvent, Fix, Gesture, InputEvent, InputSource, LocationSource, Mode, RouteSummary};
+use obcm_app::{App, AppState, Button, ButtonEvent, CameraMode, Fix, Gesture, InputEvent, InputSource, LocationSource, Mode, RouteSummary};
 use obcm_reader::{rgb565_to_rgb888, BBox, Reader};
 
 /// A handle [`Ctx`] over freshly-made state/activity for a one-gesture test. Most
@@ -136,6 +136,8 @@ fn home_press_opens_the_route_menu() {
 #[test]
 fn route_menu_loads_the_selected_route_and_opens_the_map() {
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Idle));
+    st.mode = CameraMode::Free; // the map-viewer default; loading must flip to Follow
+    st.heading_up = false;
     let routes = test_routes();
     let mut rm = RouteMenuScreen::new();
     rm.handle(Gesture::Turn(1), &mut route_ctx(&mut st, &mut act, &routes)); // highlight route 1
@@ -143,6 +145,11 @@ fn route_menu_loads_the_selected_route_and_opens_the_map() {
     assert!(matches!(t, Transition::Replace(Screen::Map(_))), "loading opens the Map");
     assert_eq!(act.mode, Mode::Riding, "loading starts tracking");
     assert_eq!(act.active_route, Some(1), "the selected route is the active one");
+    // Loading drops into the riding view: follow + heading-up, seeded at the start.
+    assert_eq!(st.mode, CameraMode::Follow);
+    assert!(st.heading_up);
+    assert_eq!((st.cam_lon, st.cam_lat), (100, 100), "camera seeded at the route start");
+    assert!(st.zoom > 0.2 && st.zoom < 0.25, "~0.5 m/px riding zoom, got {}", st.zoom);
 }
 
 #[test]
