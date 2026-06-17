@@ -10,6 +10,8 @@
 //!   bytes, plus a [`SliceSource`](byte_io::SliceSource) for in-memory bytes.
 //! - [`reader`] — header / chunk-index parsing and on-demand chunk decode
 //!   ([`RouteReader`], [`RouteSummary`], [`ChunkMeta`], [`RoutePoint`]).
+//! - [`profile`] — a route's elevation sampled to a fixed-width [`Profile`] for the
+//!   Elevation screen's band + cursor + peak label.
 //!
 //! Coordinates are integer microdegrees (1e-6 degrees) like the map; distances and
 //! elevations are whole meters. [`obcm_reader::BBox`] is reused for bounding boxes so
@@ -22,12 +24,15 @@
 
 pub mod byte_io;
 pub mod convert;
+mod geo;
 pub mod gpx;
+pub mod profile;
 pub mod reader;
 
 pub use byte_io::{ByteSink, ByteSource, Error, SliceSource};
 pub use convert::{gpx_to_obcr, RouteStats};
 pub use gpx::{GpxScanner, RawPoint};
+pub use profile::{Profile, PROFILE_COLS};
 pub use reader::{
     ChunkMeta, RoutePoint, RouteReader, RouteSummary, CHUNK_META_LEN, HEADER_LEN,
     MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS, NAME_CAP,

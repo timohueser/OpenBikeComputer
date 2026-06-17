@@ -4,8 +4,8 @@
 //! `draw` is byte-for-byte the previous map + marker render.
 //!
 //! Bindings (`docs/ui_framework_brief.md` §Screens): `turn` = zoom, `press` =
-//! pause → Ride control, `back-hold` = Menu. `hold` (Pan mode) and `back`
-//! (Elevation) are reserved until those screens land.
+//! pause → Ride control, `back` = the sibling Elevation view, `back-hold` = Menu.
+//! `hold` (Pan mode) is reserved until that screen lands.
 
 use embedded_graphics::draw_target::DrawTarget;
 use obcm_render::RenderStats;
@@ -13,7 +13,7 @@ use obcm_render::RenderStats;
 use crate::activity::Mode;
 use crate::input::Gesture;
 
-use super::{Ctx, MenuScreen, Render, RideControl, Screen, Transition};
+use super::{Ctx, ElevationScreen, MenuScreen, Render, RideControl, Screen, Transition};
 
 /// Zoom multiplier per encoder detent (matches the scroll-wheel feel).
 const ZOOM_STEP: f32 = 1.2;
@@ -55,7 +55,9 @@ impl MapScreen {
                 Transition::Push(Screen::RideControl(RideControl::new()))
             }
             Gesture::Hold => Transition::None, // Pan mode — later slice
-            Gesture::Back => Transition::None, // Elevation — later slice
+            // Swap to the sibling Elevation view (the stack stays one deep); its `back`
+            // swaps straight back here.
+            Gesture::Back => Transition::Replace(Screen::Elevation(ElevationScreen::new())),
             Gesture::BackHold => Transition::Push(Screen::Menu(MenuScreen::new())),
         }
     }

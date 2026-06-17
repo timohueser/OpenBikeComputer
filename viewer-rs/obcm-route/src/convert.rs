@@ -12,12 +12,11 @@
 use heapless::Vec;
 
 use crate::byte_io::{ByteSink, ByteSource, Error};
+use crate::geo::{cos_lat, delta_m, seg_dist_m};
 use crate::gpx::GpxScanner;
 use crate::reader::{ChunkMeta, CHUNK_META_LEN, HEADER_LEN, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS, NAME_CAP};
 use obcm_reader::BBox;
 
-/// Meters per degree of latitude (and of longitude at the equator).
-const M_PER_DEG: f64 = 111_320.0;
 /// Decimation tolerance: drop a vertex within this perpendicular distance of the chord.
 const EPSILON_M: f64 = 4.0;
 /// Force a kept vertex at least this often. Also bounds stored deltas to the `int16`
@@ -323,21 +322,7 @@ fn build_header(
 }
 
 // --- geometry helpers (local equirectangular meters) ---------------------------
-
-fn cos_lat(lat_ud: i32) -> f64 {
-    libm::cos(lat_ud as f64 * 1e-6 * core::f64::consts::PI / 180.0)
-}
-
-fn delta_m(from: (i32, i32), to: (i32, i32), cl: f64) -> (f64, f64) {
-    let dlon = (to.0 - from.0) as f64 * 1e-6;
-    let dlat = (to.1 - from.1) as f64 * 1e-6;
-    (dlon * M_PER_DEG * cl, dlat * M_PER_DEG)
-}
-
-fn seg_dist_m(a: (i32, i32), b: (i32, i32)) -> f64 {
-    let (mx, my) = delta_m(a, b, cos_lat(a.1));
-    libm::sqrt(mx * mx + my * my)
-}
+// Segment distance / projection live in `geo` (shared with the elevation profile).
 
 /// Perpendicular distance (m) from point `p` to the chord `a → c`.
 fn perp_dist_m(a: Cand, c: Cand, p: Cand) -> f64 {

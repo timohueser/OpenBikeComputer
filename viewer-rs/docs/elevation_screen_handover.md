@@ -5,6 +5,37 @@ second riding view, a sibling of the Map. It also pulls in the **map-matching** 
 both screens want ("where am I on the route"). Build on the M1 route-loading work
 (`route_loading_handover.md`); branch **`ui-framework`**.
 
+## Status — Phase A DONE (2026-06-18)
+
+The static Elevation screen ships and is reachable via the Map↔Elevation `back` toggle.
+What landed (a bit ahead of the literal Phase-A list, by design — see decisions below):
+
+- **`obcm-route`:** `Profile` (`src/profile.rs`, `PROFILE_COLS = 256` per-column
+  min/max + peak) built by `RouteReader::elevation_profile()`; `RouteReader::ascent_to(dist_m)`
+  (interpolates `cum_ascent_m`). Distance/elevation math factored into a shared `src/geo.rs`
+  (`seg_dist_m` etc.) reused by `convert.rs`, so the profile buckets by the *same* metric
+  the format stored. Tests in `tests/profile.rs`.
+- **`obcm-app`:** `Screen::Elevation` (`src/screen/elevation.rs`) + the toggle wiring
+  (`map.rs` `back` → `Replace(Elevation)`, and back). `App` owns a resident `profile`
+  rebuilt in `render_frame` only when `active_route` changes (decision (b)); threaded via
+  `Render.profile`. `list_frame` was generalized into `title_frame(…, right)` so the
+  Elevation header matches the menus.
+- **`obcm-render`:** added `Canvas::vline` + `Canvas::disc` (cursor line + dot).
+- **Look:** wood-framed chrome like the menus; the band is **tan fill + amber top line**
+  with the **traveled portion in dark olive** (no green — device-64 quantizes `#4F6B43`
+  to gray; the app's amber/tan/olive survives). Snapshot: `--boot --script "ppb"` then add
+  `r`/`l` to scrub.
+- **The `turn` cursor drives everything in Phase A** (chosen with the user): the
+  traveled shading, the amber progress bar, the "you are here" marker, and the
+  route-relative stats (done/to-go via totals×frac, climbed/to-climb via `ascent_to`) all
+  follow it. Speed comes from `fix.speed_mps`; **Avg. Speed is the only `--` placeholder.**
+
+**Phase B is the remaining work below** (live map-matching). When it lands, the matched
+`progress_m` simply *replaces the scrub fraction* as the cursor source — the draw code and
+the stats already consume a fraction, so most of step 7 is wiring, not new drawing.
+**→ Detailed Phase B plan (RouteMatch + ride stats + off-route UX on both screens):
+`map_matching_handover.md`.** The phasing below is the original sketch it expands.
+
 ## Target (from the spec)
 
 - **Content:** the route's **elevation profile** with traveled-portion shading + a
