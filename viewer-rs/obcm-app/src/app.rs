@@ -7,7 +7,7 @@ use obcm_render::{zoom_for_mpp, MapRenderer, RenderStats, Viewport};
 use obcm_route::{Profile, RouteMatch, RouteReader};
 
 use crate::activity::{Activity, Mode};
-use crate::hal::{AltimeterSource, Fix, InputSource, LocationSource};
+use crate::hal::{Fix, InputClock, InputSource, LocationSource, RideClock, Sensors};
 use crate::input::{Gesture, Gestures, DEFAULT_HOLD_MS};
 use crate::route::{Catalog, RouteSummary};
 use crate::screen::{self, Ctx, HomeScreen, MapScreen, Render, Screen, Stack};
@@ -141,8 +141,9 @@ const RIDING_MPP: f32 = 0.5;
 /// let mut app = App::new(AppState::new(cx, cy, zoom));
 /// loop {
 ///     // GPS + barometer + active route → camera, map-match, ride stats.
-///     app.tick(now_ms, &mut location_source, Some(&mut baro), route.as_ref());
-///     app.handle_input(now_ms, &mut input_source); // encoder + Back → gestures
+///     let sensors = Sensors { loc: &mut location_source, altimeter: Some(&mut baro) };
+///     app.tick(RideClock(now_ms), sensors, route.as_ref());
+///     app.handle_input(InputClock(now_ms), &mut input_source); // encoder + Back → gestures
 ///     app.render_frame(&mut display, &reader, route.as_ref(), w, h, color_policy);
 /// }
 /// ```
@@ -235,19 +236,16 @@ impl App {
     /// sensor streams are asynchronous, so each accumulates on its own cadence and a
     /// missing fix or baro sample simply contributes nothing this tick.
     ///
-    /// `now_ms` is the host/MCU millis clock used for moving-time; it must advance with
-    /// the *fix's* time base (on the device that's wall-clock; a sim GPX replay passes
-    /// playback-time so Avg. Speed isn't scaled by the playback multiplier).
+    /// `clock` is the [`RideClock`] — fix-consistent millis (wall-clock on the device, GPX
+    /// playback-time in the sim) used for moving-time, so Avg. Speed isn't scaled by the
+    /// replay multiplier. (Button hold-timing uses the separate [`InputClock`] in
+    /// [`handle_input`](App::handle_input).) The polled sensors arrive bundled in
+    /// [`Sensors`].
     ///
     /// Loading or swapping a route (a change in [`Activity::active_route`]) resets the
     /// matcher and ride totals here, so tracking starts fresh exactly once per load.
-    pub fn tick(
-        &mut self,
-        now_ms: u32,
-        loc: &mut dyn LocationSource,
-        ele: Option<&mut dyn AltimeterSource>,
-        route: Option<&RouteReader>,
-    ) {
+    pub fn tick(&mut self, clock: RideClock, sensors: Sensors, route: Option<&RouteReader>) {
+        let now_ms = clock.0;
         // A new route → restart tracking (matcher + accumulators) exactly once.
         if self.activity.active_route != self.ride_route {
             self.route_match.reset();
@@ -257,6 +255,7 @@ impl App {
         // Mirror the active route's length for the riding views (0 when none loaded).
         self.activity.route_total_m = route.map_or(0, |r| r.total_distance_m);
 
+        let Sensors { loc, altimeter } = sensors;
         // GPS fix → camera + map-match + ridden distance/time (only on a fresh fix, so a
         // dropout doesn't re-run the matcher or double-count on a stale position).
         if let Some(fix) = self.state.update(loc) {
@@ -268,8 +267,8 @@ impl App {
         }
 
         // Barometric altitude (its own cadence) → actually-ridden climb.
-        if let Some(ele) = ele {
-            if let Some(alt) = ele.poll() {
+        if let Some(altimeter) = altimeter {
+            if let Some(alt) = altimeter.poll() {
                 self.activity.record_altitude(alt);
             }
         }
@@ -292,10 +291,11 @@ impl App {
 
     /// Drain raw control input through the shared recognizer and dispatch each
     /// resulting gesture to the top screen, applying the navigation transition it
-    /// returns. `now_ms` is the host/MCU millis clock. Call once per frame even
-    /// with no pending events — that is how a held button's long-press fires at
-    /// its threshold.
-    pub fn handle_input(&mut self, now_ms: u32, input: &mut dyn InputSource) {
+    /// returns. `clock` is the [`InputClock`] (host/MCU wall-clock millis) for hold
+    /// timing. Call once per frame even with no pending events — that is how a held
+    /// button's long-press fires at its threshold.
+    pub fn handle_input(&mut self, clock: InputClock, input: &mut dyn InputSource) {
+        let now_ms = clock.0;
         self.now_ms = now_ms;
         while let Some(ev) = input.poll() {
             if let Some(g) = self.gestures.on_event(ev, now_ms) {

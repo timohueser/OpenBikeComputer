@@ -11,7 +11,7 @@ use obcm_app::activity::Activity;
 use obcm_app::screen::{
     apply, Ctx, HomeScreen, MapScreen, MenuScreen, RideControl, RouteMenuScreen, Screen, Stack, Transition,
 };
-use obcm_app::{App, AppState, Button, ButtonEvent, CameraMode, Fix, Gesture, InputEvent, InputSource, LocationSource, Mode, RouteSummary};
+use obcm_app::{App, AppState, Button, ButtonEvent, CameraMode, Fix, Gesture, InputClock, InputEvent, InputSource, LocationSource, Mode, RideClock, RouteSummary, Sensors};
 use obcm_reader::{rgb565_to_rgb888, BBox, Reader};
 
 /// A handle [`Ctx`] over freshly-made state/activity for a one-gesture test. Most
@@ -203,7 +203,7 @@ fn press(app: &mut App) {
         InputEvent::Button(ButtonEvent::Down(Button::Encoder)),
         InputEvent::Button(ButtonEvent::Up(Button::Encoder)),
     ]));
-    app.handle_input(0, &mut s);
+    app.handle_input(InputClock(0), &mut s);
 }
 
 // ---------------------------------------------------------------------------
@@ -272,7 +272,7 @@ fn ride_control_composites_over_the_map() {
         InputEvent::Button(ButtonEvent::Down(Button::Encoder)),
         InputEvent::Button(ButtonEvent::Up(Button::Encoder)),
     ]));
-    app.handle_input(0, &mut press);
+    app.handle_input(InputClock(0), &mut press);
     assert_eq!(app.mode(), Mode::Paused, "press paused the ride");
 
     // Now the center carries the parchment Ride-control panel, not the backdrop.
@@ -285,7 +285,7 @@ fn ride_control_composites_over_the_map() {
 // --- tiny render harness (mirrors marker.rs) ---
 
 fn render(app: &mut App, bytes: &[u8]) -> Buf {
-    app.tick(0, &mut NoFix, None, None);
+    app.tick(RideClock(0), Sensors { loc: &mut NoFix, altimeter: None }, None);
     let reader = Reader::new(bytes).expect("valid v5 file");
     let mut buf = Buf::new(120, 120);
     app.render_frame(&mut buf, &reader, None, 120.0, 120.0, |c| {

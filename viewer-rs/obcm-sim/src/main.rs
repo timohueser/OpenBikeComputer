@@ -25,7 +25,10 @@ use std::time::Instant;
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
 use obcm_reader::{rgb565_to_device64, rgb565_to_rgb888, Reader};
 use obcm_render::text::{draw_text, Font, TextAlign};
-use obcm_app::{App, AppState, Button, ButtonEvent, Fix, InputEvent, InputSource, LocationSource};
+use obcm_app::{
+    App, AppState, Button, ButtonEvent, Fix, InputClock, InputEvent, InputSource, LocationSource,
+    RideClock, Sensors,
+};
 
 mod baro;
 mod device_input;
@@ -240,7 +243,8 @@ fn replay_step(
     player.advance(dt);
     baro.feed(player.elevation_at(player.time()), player.time());
     let now_ms = (player.time() * 1000.0) as u32;
-    app.tick(now_ms, player, Some(baro), route);
+    let sensors = Sensors { loc: player, altimeter: Some(baro) };
+    app.tick(RideClock(now_ms), sensors, route);
 }
 
 /// Encode a framebuffer to a PNG, upscaling by `scale` with nearest-neighbor so
@@ -268,7 +272,7 @@ impl InputSource for ScriptInput {
 
 /// Feed one batch of raw events to the app at time `now` (ms).
 fn feed(app: &mut App, now: u32, events: Vec<InputEvent>) {
-    app.handle_input(now, &mut ScriptInput(events.into()));
+    app.handle_input(InputClock(now), &mut ScriptInput(events.into()));
 }
 
 /// Apply a gesture script (see `Args::script`) to `app`, so a headless render can

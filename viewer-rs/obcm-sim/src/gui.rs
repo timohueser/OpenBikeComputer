@@ -16,7 +16,7 @@ use std::path::Path;
 
 use eframe::egui;
 use obcm_reader::Reader;
-use obcm_app::{App, AppState, CameraMode, Fix};
+use obcm_app::{App, AppState, CameraMode, Fix, RideClock, Sensors};
 use obcm_route::RouteReader;
 
 use crate::baro::BaroSensor;
@@ -229,7 +229,8 @@ impl SimGui {
             // Manual panel control: no barometer, wall-clock for any moving-time.
             self.baro.clear();
             let now_ms = self.input.now_ms();
-            self.app.tick(now_ms, &mut self.loc, None, route.as_ref());
+            let sensors = Sensors { loc: &mut self.loc, altimeter: None };
+            self.app.tick(RideClock(now_ms), sensors, route.as_ref());
         }
 
         let stats = self.app.render_frame(

@@ -5,7 +5,7 @@
 
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
 use obcm_reader::{rgb565_to_rgb888, Reader};
-use obcm_app::{App, AppState, CameraMode, Fix, LocationSource};
+use obcm_app::{App, AppState, CameraMode, Fix, LocationSource, RideClock, Sensors};
 
 /// Marker color baked into the test file (RGB565 red → Rgb888 (255,0,0)).
 const MARKER_565: u16 = 0xF800;
@@ -133,7 +133,7 @@ fn marker_drawn_only_when_a_fix_is_set() {
     assert_eq!(render(&mut app, &bytes).count(RED), 0, "no fix ⇒ no marker");
 
     // A fix at the camera center → the marker is drawn.
-    app.tick(0, &mut Fixed(Some(Fix::at(0, 0))), None, None);
+    app.tick(RideClock(0), Sensors { loc: &mut Fixed(Some(Fix::at(0, 0))), altimeter: None }, None);
     assert!(render(&mut app, &bytes).count(RED) > 0, "fix ⇒ marker drawn");
 }
 
@@ -145,11 +145,11 @@ fn dot_and_chevron_glyphs_differ_by_course() {
     app.state.mode = CameraMode::Free;
 
     // Stationary (course None) → diamond dot.
-    app.tick(0, &mut Fixed(Some(Fix { lat: 0, lon: 0, course: None, speed_mps: None })), None, None);
+    app.tick(RideClock(0), Sensors { loc: &mut Fixed(Some(Fix { lat: 0, lon: 0, course: None, speed_mps: None })), altimeter: None }, None);
     let dot = render(&mut app, &bytes).count(RED);
 
     // Moving (course Some) → directional chevron, a different glyph.
-    app.tick(0, &mut Fixed(Some(Fix { lat: 0, lon: 0, course: Some(0.0), speed_mps: Some(5.0) })), None, None);
+    app.tick(RideClock(0), Sensors { loc: &mut Fixed(Some(Fix { lat: 0, lon: 0, course: Some(0.0), speed_mps: Some(5.0) })), altimeter: None }, None);
     let chevron = render(&mut app, &bytes).count(RED);
 
     assert!(dot > 0 && chevron > 0, "both glyphs paint pixels");
