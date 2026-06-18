@@ -4,55 +4,62 @@
         {"max_mpp": 120, "simplify": 12},
         {"max_mpp": 18, "simplify": 0}
     ],
+    "_palette_note": "Colors are RGB565 but the LS021B7DD02 panel only shows 64 (RGB222: 4 levels/channel = 0,85,170,255). Every value below is chosen to land exactly on that grid, so the webapp picker and the device agree. OSM/Komoot conventions on a near-white 'paper' base: warm = through-roads, grey = local roads, brown = trails, green = vegetation, azure = water. Verify the gamut with `obcm-sim --palette`.",
     "features": {
         "highway": {
-            "motorway": {"z_index": 60, "color": "0xE8E4", "weight": 5, "min_lod": 0, "priority": 2},
-            "motorway_link": {"z_index": 55, "color": "0xE8E4", "weight": 4, "min_lod": 1, "priority": 2},
-            "trunk": {"z_index": 55, "color": "0xF9A6", "weight": 4, "min_lod": 0, "priority": 2},
-            "trunk_link": {"z_index": 50, "color": "0xF9A6", "weight": 3, "min_lod": 1, "priority": 2},
-            "primary": {"z_index": 50, "color": "0xF9A6", "weight": 4, "min_lod": 0, "priority": 2},
-            "primary_link": {"z_index": 45, "color": "0xF9A6", "weight": 3, "min_lod": 1, "priority": 2},
-            "secondary": {"z_index": 40, "color": "0xF79E", "weight": 3, "min_lod": 1, "priority": 2},
-            "secondary_link": {"z_index": 35, "color": "0xF79E", "weight": 2, "min_lod": 1, "priority": 2},
-            "tertiary": {"z_index": 30, "color": "0xFFFF", "weight": 2, "min_lod": 1, "priority": 2},
-            "tertiary_link": {"z_index": 25, "color": "0xFFFF", "weight": 2, "min_lod": 2, "priority": 2},
-            "unclassified": {"z_index": 20, "color": "0xFFFF", "weight": 1, "min_lod": 2, "priority": 2},
-            "residential": {"z_index": 20, "color": "0xFFFF", "weight": 1, "min_lod": 2, "priority": 2},
-            "living_street": {"z_index": 20, "color": "0xEEEE", "weight": 1, "min_lod": 2, "priority": 2},
-            "service": {"z_index": 10, "color": "0xEEEE", "weight": 1, "min_lod": 2, "priority": 2},
-            "pedestrian": {"z_index": 10, "color": "0xDDDD", "weight": 1, "min_lod": 2, "priority": 2},
-            "track": {"z_index": 5, "color": "0xAA55", "weight": 1, "min_lod": 2, "priority": 2},
-            "path": {"z_index": 5, "color": "0xAA55", "weight": 1, "min_lod": 2, "priority": 2},
-            "footway": {"z_index": 5, "color": "0xAA55", "weight": 1, "min_lod": 2, "priority": 2},
-            "cycleway": {"z_index": 5, "color": "0x55AA", "weight": 1, "min_lod": 2, "priority": 2}
+            "motorway": {"z_index": 60, "color": "0xFAA0", "weight": 3, "min_lod": 0, "priority": 2},
+            "motorway_link": {"z_index": 58, "color": "0xFAA0", "weight": 2, "min_lod": 1, "priority": 2},
+            "trunk": {"z_index": 55, "color": "0xFAA0", "weight": 3, "min_lod": 0, "priority": 2},
+            "trunk_link": {"z_index": 53, "color": "0xFAA0", "weight": 2, "min_lod": 1, "priority": 2},
+            "primary": {"z_index": 50, "color": "0xFD40", "weight": 3, "min_lod": 0, "priority": 2},
+            "primary_link": {"z_index": 48, "color": "0xFD40", "weight": 2, "min_lod": 1, "priority": 2},
+            "secondary": {"z_index": 44, "color": "0xFD40", "weight": 2, "min_lod": 1, "priority": 2},
+            "secondary_link": {"z_index": 43, "color": "0xFD40", "weight": 1, "min_lod": 1, "priority": 2},
+            "tertiary": {"z_index": 34, "color": "0xFD40", "weight": 2, "min_lod": 1, "priority": 2},
+            "tertiary_link": {"z_index": 33, "color": "0xFD40", "weight": 1, "min_lod": 2, "priority": 2},
+            "unclassified": {"z_index": 30, "color": "0x52AA", "weight": 1, "min_lod": 2, "priority": 3},
+            "residential": {"z_index": 30, "color": "0x52AA", "weight": 1, "min_lod": 2, "priority": 3},
+            "living_street": {"z_index": 29, "color": "0x52AA", "weight": 1, "min_lod": 2, "priority": 3},
+            "service": {"z_index": 28, "color": "0x52AA", "weight": 1, "min_lod": 2, "priority": 3},
+            "pedestrian": {"z_index": 28, "color": "0x52AA", "weight": 1, "min_lod": 2, "priority": 3},
+            "track": {"z_index": 24, "color": "0xAAA0", "weight": 1, "min_lod": 2, "priority": 3},
+            "path": {"z_index": 24, "color": "0xAAA0", "weight": 1, "min_lod": 2, "priority": 3},
+            "footway": {"z_index": 24, "color": "0xAAA0", "weight": 1, "min_lod": 2, "priority": 3},
+            "cycleway": {"z_index": 25, "color": "0xAAA0", "weight": 1, "min_lod": 2, "priority": 3}
+        },
+        "railway": {
+            "rail": {"z_index": 40, "color": "0x0000", "weight": 2, "min_lod": 1, "priority": 2},
+            "light_rail": {"z_index": 36, "color": "0x0000", "weight": 1, "min_lod": 2, "priority": 3},
+            "subway": {"z_index": 35, "color": "0x52AA", "weight": 1, "min_lod": 2, "priority": 3},
+            "tram": {"z_index": 31, "color": "0x52AA", "weight": 1, "min_lod": 2, "priority": 3}
         },
         "waterway": {
-            "river": {"z_index": 20, "color": "0x3333", "weight": 2, "min_lod": 0, "priority": 3},
-            "stream": {"z_index": 15, "color": "0x3333", "weight": 1, "min_lod": 2, "priority": 3},
-            "canal": {"z_index": 15, "color": "0x3333", "weight": 2, "min_lod": 1, "priority": 3},
-            "drain": {"z_index": 10, "color": "0x3333", "weight": 1, "min_lod": 2, "priority": 3},
-            "ditch": {"z_index": 10, "color": "0x3333", "weight": 1, "min_lod": 2, "priority": 3}
+            "river": {"z_index": 16, "color": "0x555F", "weight": 2, "min_lod": 0, "priority": 2},
+            "canal": {"z_index": 16, "color": "0x555F", "weight": 2, "min_lod": 1, "priority": 3},
+            "stream": {"z_index": 15, "color": "0x555F", "weight": 1, "min_lod": 2, "priority": 3},
+            "drain": {"z_index": 12, "color": "0x555F", "weight": 1, "min_lod": 2, "priority": 3},
+            "ditch": {"z_index": 12, "color": "0x555F", "weight": 1, "min_lod": 2, "priority": 3}
         },
         "building": {
-            "yes": {"z_index": 5, "color": "0xAAAA", "weight": 1, "min_lod": 2, "priority": 4}
+            "yes": {"z_index": 20, "color": "0xAD55", "weight": 1, "min_lod": 2, "priority": 4}
         },
         "natural": {
-            "water": {"z_index": 20, "color": "0x3333", "weight": 1, "min_lod": 1, "priority": 3},
-            "sea": {"z_index": 0, "color": "0x001F", "weight": 1, "min_lod": 0, "priority": 1},
-            "land": {"z_index": 1, "color": "0xEFD5", "weight": 1, "min_lod": 0, "priority": 1},
-            "wood": {"z_index": 10, "color": "0x0500", "weight": 1, "min_lod": 1, "priority": 3},
-            "scrub": {"z_index": 5, "color": "0x0500", "weight": 1, "min_lod": 2, "priority": 3}
+            "sea": {"z_index": 0, "color": "0x555F", "weight": 1, "min_lod": 0, "priority": 1},
+            "land": {"z_index": 1, "color": "0xFFFF", "weight": 1, "min_lod": 0, "priority": 1},
+            "water": {"z_index": 14, "color": "0x555F", "weight": 1, "min_lod": 1, "priority": 2},
+            "wood": {"z_index": 4, "color": "0x554A", "weight": 1, "min_lod": 1, "priority": 3},
+            "scrub": {"z_index": 5, "color": "0xAFF5", "weight": 1, "min_lod": 2, "priority": 3}
         },
         "landuse": {
-            "forest": {"z_index": 5, "color": "0x0500", "weight": 1, "min_lod": 1, "priority": 3},
-            "grass": {"z_index": 5, "color": "0x07E0", "weight": 1, "min_lod": 2, "priority": 3},
-            "residential": {"z_index": 2, "color": "0xCCCC", "weight": 1, "min_lod": 2, "priority": 3}
+            "forest": {"z_index": 4, "color": "0x554A", "weight": 1, "min_lod": 1, "priority": 3},
+            "grass": {"z_index": 6, "color": "0xAFF5", "weight": 1, "min_lod": 2, "priority": 3}
         },
         "leisure": {
-            "park": {"z_index": 5, "color": "0x07E0", "weight": 1, "min_lod": 2, "priority": 3}
+            "park": {"z_index": 6, "color": "0xAFF5", "weight": 1, "min_lod": 2, "priority": 3}
         },
         "admin_level": {
-            "2": {"z_index": 100, "color": "0x0000", "weight": 2, "min_lod": 0, "priority": 3}
+            "2": {"z_index": 100, "color": "0xAAB5", "weight": 2, "min_lod": 0, "priority": 3}
         }
-    }
+    },
+    "marker": {"color": "0xF800"}
 }

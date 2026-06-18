@@ -349,10 +349,13 @@ pub mod palette {
     pub const TEAL: u16 = rgb565(0, 170, 170); // → (0,170,170) teal
     /// Dim teal — the unfilled Back hint track under the bright fill.
     pub const TEAL_DIM: u16 = rgb565(0, 85, 85); // → (0,85,85) dim teal
-    /// Deep blue — the **planned route** line on the Map. Distinct from the lighter water blue
-    /// and from the red breadcrumb drawn over it (route ahead = blue, trail behind = red).
-    pub const ROUTE: u16 = rgb565(0, 0, 160); // → (0,0,170) blue
-    /// Red — the recorded **breadcrumb** (travelled path), stroked over the route so the trail
-    /// behind you reads red while the route ahead reads blue.
-    pub const BREADCRUMB: u16 = rgb565(160, 0, 0); // → (170,0,0) red
+    /// Magenta — the **planned route** line on the Map, the boldest thing on screen.
+    /// The classic GPS route-line hue (Garmin / RideWithGPS / Komoot): it lands on no
+    /// base-map feature (greens, azure water, greys, warm roads), so it always reads as
+    /// "the line to follow". Route ahead = magenta, trail behind = the navy breadcrumb.
+    pub const ROUTE: u16 = rgb565(255, 0, 255); // → (255,0,255) magenta
+    /// Navy — the recorded **breadcrumb** (travelled path), stroked over the route and under
+    /// the marker. A cool, recessive line so the trail behind reads quieter than the magenta
+    /// route ahead, while staying clearly darker than the lighter azure water it may cross.
+    pub const BREADCRUMB: u16 = rgb565(0, 0, 170); // → (0,0,170) navy
 }
