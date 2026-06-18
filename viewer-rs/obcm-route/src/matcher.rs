@@ -32,6 +32,14 @@ const FWD_SEGS_ON: i64 = 64;
 /// Wider forward window while off-route, so a rejoin further along the route is found
 /// without an unbounded full scan.
 const FWD_SEGS_OFF: i64 = 320;
+/// Tie-break margin (m) for the **first lock only**. The initial scan covers the whole
+/// route and runs front-to-back; requiring a candidate to beat the best by this much keeps
+/// the *earliest* of several near-equal matches. On an out-and-back (start == end) the
+/// finish segment sits right on top of the start, so a few metres of cross-track offset
+/// would otherwise latch the cursor onto the finish (progress ≈ 100 %) and the forward bias
+/// could never follow the outbound leg. Only the first lock needs this; once tracking, the
+/// bounded forward window already prevents latching the far-away finish.
+const TIE_EPS_M: f64 = 8.0;
 
 /// The result of matching one fix onto the route.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,7 +135,15 @@ impl RouteMatch {
                     let seg_len = seg_dist_m(a, b);
                     if !self.started || off >= -back {
                         let (t, dist) = project_to_segment(a, b, p);
-                        if best.is_none_or(|(_, _, bd, _)| dist < bd) {
+                        // First lock biases near-ties to the earliest segment (TIE_EPS_M);
+                        // once tracking, the forward window bounds the search so a strict
+                        // nearest is right.
+                        let better = match best {
+                            None => true,
+                            Some((_, _, bd, _)) if self.started => dist < bd,
+                            Some((_, _, bd, _)) => dist < bd - TIE_EPS_M,
+                        };
+                        if better {
                             let progress = ((cum0 + intra + t * seg_len) as u32).min(total);
                             best = Some((c, s, dist, progress));
                         }

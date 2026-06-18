@@ -60,19 +60,32 @@ pub trait AltimeterSource {
     fn poll(&mut self) -> Option<f32>;
 }
 
+/// Sink for the recorded ride **track** — where each accepted fix is logged so the ride can
+/// be saved as a `.gpx`. The app encodes the [`TrackPoint`](obcm_route::TrackPoint) (so the
+/// firmware and sim share one record format) and hands it here; the host appends the bytes
+/// to the SD-card log it owns (the sim writes a temp file). Begin / finalise-to-GPX /
+/// discard are driven separately by the host reconciling the [`Activity`](crate::Activity)
+/// session — see `App::tick`'s caller — so this trait is just the per-fix append.
+pub trait TrackSink {
+    /// Append one recorded fix to the open ride log.
+    fn record(&mut self, p: obcm_route::TrackPoint);
+}
+
 /// The polled sensor set handed to [`App::tick`](crate::App::tick) each frame: the user's
-/// location and, optionally, the barometric altimeter. Bundling the two handles keeps
-/// `tick` to a single sensor argument — adding a sensor later is a new field here, not a
-/// new `tick` parameter — while leaving [`LocationSource`] and [`AltimeterSource`] as
-/// separate traits, since they model independent hardware. The host builds one per tick
-/// from whichever sources are live (GPX replay vs. manual panel in the sim; a real GPS +
-/// barometer on the device).
+/// location, optionally the barometric altimeter, and optionally the track [`TrackSink`].
+/// Bundling the handles keeps `tick` to a single argument — adding one later is a new field
+/// here, not a new `tick` parameter — while leaving each trait separate, since they model
+/// independent hardware. The host builds one per tick from whichever are live (GPX replay
+/// vs. manual panel in the sim; a real GPS + barometer + SD log on the device).
 pub struct Sensors<'a> {
     /// The user's position source.
     pub loc: &'a mut dyn LocationSource,
     /// The barometric altimeter, or `None` when no altitude source is wired (e.g. the
     /// simulator's manual control) — climb then simply doesn't accumulate.
     pub altimeter: Option<&'a mut dyn AltimeterSource>,
+    /// The recorded-track sink, or `None` when nothing is logging (the sim's manual panel,
+    /// tests) — the ride then simply isn't recorded.
+    pub track: Option<&'a mut dyn TrackSink>,
 }
 
 /// A physical button on the device. There are exactly two: the rotary encoder's

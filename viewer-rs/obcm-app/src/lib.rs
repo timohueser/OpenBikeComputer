@@ -31,18 +31,20 @@
 
 pub mod activity;
 pub mod app;
+pub mod breadcrumb;
 pub mod hal;
 pub mod hold_hint;
 pub mod input;
 pub mod route;
 pub mod screen;
 
-pub use activity::{Activity, Mode};
+pub use activity::{Activity, Mode, TrackAction};
+pub use breadcrumb::Breadcrumb;
 pub use route::{Catalog, RouteSummary, MAX_ROUTES};
 pub use app::{App, AppState, CameraMode, Pan, PanAxis};
 pub use hal::{
     AltimeterSource, Button, ButtonEvent, Fix, InputClock, InputEvent, InputSource, LocationSource,
-    RideClock, Sensors,
+    RideClock, Sensors, TrackSink,
 };
 pub use hold_hint::HoldHints;
 pub use input::{Gesture, Gestures, DEFAULT_HOLD_MS};

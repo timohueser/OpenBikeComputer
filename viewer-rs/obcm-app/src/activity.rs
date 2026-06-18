@@ -43,6 +43,26 @@ pub enum Mode {
     Paused,
 }
 
+/// A one-shot disposition for the **current** ride log, set by a screen and drained by the
+/// host (`take_track_action`) which owns the file I/O. The screens never touch storage —
+/// they record intent here, exactly as they record `active_route` for the route reader.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrackAction {
+    /// Finalise the open log to a `.gpx` (Finish, or "Save & start new").
+    Save,
+    /// Throw the open log away (Discard).
+    Discard,
+}
+
+/// What [`record_motion`](Activity::record_motion) decided about one fix: whether to **log**
+/// it (feed the breadcrumb + ride log) and whether it **starts a new track segment** (the
+/// first fix of a session, or the first after a pause / GPS gap → a fresh GPX `<trkseg>`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct Motion {
+    pub log: bool,
+    pub segment_start: bool,
+}
+
 /// The active ride: the [`Mode`], which route is loaded, the live map-match, and the
 /// actually-ridden accumulators. Small and `Copy` — the screens read it by value through
 /// [`Ctx`](crate::screen::Ctx) / [`Render`](crate::screen::Render).
@@ -53,6 +73,19 @@ pub struct Activity {
     /// route, or `None` when idle. The summary is read from the catalog; the geometry
     /// is opened separately by the host (only the active route is resident).
     pub active_route: Option<usize>,
+
+    // --- tracking session (distinct from the navigated route) ---
+    /// The active **tracking session** id, or `None` when not tracking. A session spans
+    /// from a route load (from Idle, or "Save & start new") to Finish/Discard, and survives
+    /// a "Swap route only" — so it's keyed separately from [`active_route`](Activity::active_route)
+    /// (which the matcher follows). The host reconciles the open ride log to this id.
+    pub session: Option<u32>,
+    /// Monotonic id source for [`session`](Activity::session); only ever increments, so a
+    /// new session can never collide with a just-finished one.
+    session_seq: u32,
+    /// A one-shot disposition (`Save`/`Discard`) for the open log, set by a screen and
+    /// drained by the host via [`take_track_action`](Activity::take_track_action).
+    track_action: Option<TrackAction>,
 
     // --- live map-match (from the GPS fix, set by `App::tick`) ---
     /// Total distance of the active route (m), mirrored from its header so the riding
@@ -81,6 +114,11 @@ pub struct Activity {
     last_ms: Option<u32>,
     /// Hysteresis reference altitude for the climb dead-band.
     alt_ref: Option<f32>,
+    /// Latest barometric altitude (m), stamped onto each logged [`TrackPoint`]'s elevation.
+    last_alt: Option<f32>,
+    /// `true` when a dropped fix (GPS gap / teleport) left a hole, so the next logged point
+    /// must start a fresh track segment.
+    segment_break: bool,
 }
 
 impl Activity {
@@ -95,8 +133,45 @@ impl Activity {
         (self.moving_s > 0.0).then(|| self.ridden_m / self.moving_s * 3.6)
     }
 
-    /// Clear the ride totals + match + integration state (keeps `mode`/`active_route`).
-    /// Called when a route is loaded or swapped — tracking starts fresh (spec §6).
+    /// Begin a fresh tracking session (a route load from Idle, or "Save & start new"),
+    /// assigning the next monotonic [`session`](Activity::session) id. The host opens a new
+    /// ride log when it sees the id change; [`App`](crate::App) resets the accumulators +
+    /// breadcrumb on the same change.
+    pub fn start_session(&mut self) {
+        self.session_seq = self.session_seq.wrapping_add(1);
+        self.session = Some(self.session_seq);
+    }
+
+    /// End the tracking session (Finish / Discard). The disposition of the open log is set
+    /// separately with [`request_track`](Activity::request_track).
+    pub fn end_session(&mut self) {
+        self.session = None;
+    }
+
+    /// Whether a tracking session is currently active (riding or paused).
+    pub fn is_tracking(&self) -> bool {
+        self.session.is_some()
+    }
+
+    /// Record a one-shot disposition for the open ride log, drained by the host.
+    pub fn request_track(&mut self, action: TrackAction) {
+        self.track_action = Some(action);
+    }
+
+    /// Take (and clear) the pending [`TrackAction`], if any — the host calls this each frame
+    /// and performs the file I/O (finalise-to-GPX / discard).
+    pub fn take_track_action(&mut self) -> Option<TrackAction> {
+        self.track_action.take()
+    }
+
+    /// The elevation (m) to stamp on a logged [`TrackPoint`](obcm_route::TrackPoint): the
+    /// latest barometric altitude, or 0 before any sample.
+    pub(crate) fn track_ele(&self) -> i16 {
+        self.last_alt.map_or(0, |a| a as i16)
+    }
+
+    /// Clear the ride totals + match + integration state (keeps `mode`/`active_route`/
+    /// `session`). Called when a session starts — tracking accumulators begin fresh (spec §6).
     pub(crate) fn reset_ride(&mut self) {
         self.progress_m = 0;
         self.off_route = false;
@@ -107,6 +182,8 @@ impl Activity {
         self.last_fix = None;
         self.last_ms = None;
         self.alt_ref = None;
+        self.last_alt = None;
+        self.segment_break = false;
     }
 
     /// Store the latest map-match result (cursor + off-route readout).
@@ -119,12 +196,14 @@ impl Activity {
     /// Integrate a position fix into the ridden distance + moving time. Only accumulates
     /// while [`Riding`](Mode::Riding); a sane-interval gate drops dropouts and teleports.
     /// Pausing drops the anchor so resuming doesn't book the gap (spec §6).
-    pub(crate) fn record_motion(&mut self, fix: Fix, now_ms: u32) {
+    pub(crate) fn record_motion(&mut self, fix: Fix, now_ms: u32) -> Motion {
         if self.mode != Mode::Riding {
             self.last_fix = None;
             self.last_ms = None;
-            return;
+            return Motion::default();
         }
+        let first = self.last_fix.is_none();
+        let mut counted = false;
         if let (Some(prev), Some(prev_ms)) = (self.last_fix, self.last_ms) {
             let dt = now_ms.saturating_sub(prev_ms) as f32 / 1000.0;
             let dist = ground_dist_m((prev.lon, prev.lat), (fix.lon, fix.lat));
@@ -134,16 +213,27 @@ impl Activity {
                 if implied >= MOVING_MIN_MPS {
                     self.moving_s += dt;
                 }
+                counted = true;
             }
         }
+        // Log the segment anchor (first fix) and every sane fix. A dropped fix (gap /
+        // teleport) isn't logged and arms a segment break, so the drawn line and the GPX
+        // `<trkseg>` don't leap across the hole.
+        let log = first || counted;
+        let segment_start = first || self.segment_break;
+        self.segment_break = !log;
         self.last_fix = Some(fix);
         self.last_ms = Some(now_ms);
+        Motion { log, segment_start }
     }
 
     /// Integrate one barometric altitude sample into the climbed total, dead-banded so
     /// sensor noise doesn't inflate it. Only while [`Riding`](Mode::Riding); pausing drops
     /// the reference so an altitude change *during* the pause isn't booked on resume.
     pub(crate) fn record_altitude(&mut self, alt_m: f32) {
+        // The latest altitude stamps logged track points regardless of mode (it's just the
+        // current height); the climb dead-band below only runs while riding.
+        self.last_alt = Some(alt_m);
         if self.mode != Mode::Riding {
             self.alt_ref = None;
             return;

@@ -38,6 +38,12 @@ const MOVING_THRESHOLD_MPS: f32 = 0.5;
 const LOOK_AHEAD_S: f64 = 2.0;
 
 /// Replays a parsed [`Track`] as a [`LocationSource`]. Holds the playback cursor
+/// Simulated GPS fix cadence, in **seconds of playback time**. Real consumer GPS / bike
+/// computers deliver fixes on a fixed ~1 Hz clock, not once per render frame — throttling
+/// [`poll`](GpxPlayer::poll) to this keeps the recorded track + breadcrumb at a realistic
+/// point density no matter how fast the host renders or how high the replay speed is set.
+const GPS_PERIOD_S: f64 = 1.0;
+
 /// (`t`, seconds into the track), whether it's playing, and the speed multiplier.
 pub struct GpxPlayer {
     track: Track,
@@ -46,12 +52,15 @@ pub struct GpxPlayer {
     playing: bool,
     /// Playback speed multiplier: `1.0` = real time, up to `10.0`.
     speed: f32,
+    /// Playback time of the last fix [`poll`](GpxPlayer::poll) emitted, to throttle to
+    /// ~[`GPS_PERIOD_S`]. `None` forces the next poll to emit (set on new / seek / play).
+    last_fix_t: Option<f64>,
 }
 
 impl GpxPlayer {
     /// Build a player for `track`, paused at the start at real-time (1×) speed.
     pub fn new(track: Track) -> Self {
-        GpxPlayer { track, t: 0.0, playing: false, speed: 1.0 }
+        GpxPlayer { track, t: 0.0, playing: false, speed: 1.0, last_fix_t: None }
     }
 
     /// Total track length in seconds.
@@ -89,6 +98,7 @@ impl GpxPlayer {
             self.t = 0.0;
         }
         self.playing = true;
+        self.last_fix_t = None; // emit a fix promptly on (re)start
     }
 
     pub fn pause(&mut self) {
@@ -108,6 +118,7 @@ impl GpxPlayer {
     /// play/pause state unchanged — the scrubber works while playing or paused.
     pub fn seek(&mut self, t: f64) {
         self.t = t.clamp(0.0, self.duration());
+        self.last_fix_t = None; // a scrub jumps the fix immediately, ignoring the GPS cadence
     }
 
     /// Advance the playback cursor by `real_dt` seconds of wall-clock time, scaled
@@ -242,7 +253,15 @@ impl GpxPlayer {
 
 impl LocationSource for GpxPlayer {
     fn poll(&mut self) -> Option<Fix> {
-        self.fix_at(self.t)
+        // Throttle to ~GPS_PERIOD_S of playback time: real GPS delivers fixes on a fixed
+        // cadence, so a 60 fps host (or a 10× replay) must not flood the matcher / recorder /
+        // breadcrumb with a fix every frame. `None` between ticks = "no new fix yet".
+        if self.last_fix_t.is_some_and(|last| (self.t - last).abs() < GPS_PERIOD_S) {
+            return None;
+        }
+        let fix = self.fix_at(self.t)?;
+        self.last_fix_t = Some(self.t);
+        Some(fix)
     }
 }
 
@@ -350,6 +369,33 @@ mod tests {
         p.advance(10.0); // overshoots the 10 s duration
         assert!(!p.is_playing());
         assert_eq!(p.time(), 10.0);
+    }
+
+    #[test]
+    fn poll_throttles_to_a_realistic_gps_rate() {
+        // A 60 fps host replaying 5 s of track at 1×: poll runs every frame, but a real GPS
+        // only delivers ~1 fix/s — so we expect ~5 fixes, not ~300.
+        let mut p = GpxPlayer::new(track(&[(0, 0, 0.0), (1_000_000, 0, 100.0)]));
+        p.play();
+        let mut fixes = 0;
+        for _ in 0..300 {
+            p.advance(1.0 / 60.0);
+            if p.poll().is_some() {
+                fixes += 1;
+            }
+        }
+        assert!((4..=6).contains(&fixes), "≈1 Hz over 5 s, got {fixes} fixes");
+    }
+
+    #[test]
+    fn seek_re_arms_the_fix_throttle() {
+        // A scrub must jump the fix immediately, not wait out the GPS period.
+        let mut p = GpxPlayer::new(track(&[(0, 0, 0.0), (1_000_000, 0, 100.0)]));
+        p.play();
+        assert!(p.poll().is_some(), "first fix after play");
+        assert!(p.poll().is_none(), "throttled — no second fix without time passing");
+        p.seek(50.0);
+        assert!(p.poll().is_some(), "a seek delivers a fresh fix at once");
     }
 
     #[test]

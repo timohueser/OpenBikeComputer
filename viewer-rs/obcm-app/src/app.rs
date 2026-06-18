@@ -4,9 +4,10 @@
 use embedded_graphics::draw_target::DrawTarget;
 use obcm_reader::Reader;
 use obcm_render::{zoom_for_mpp, MapRenderer, RenderStats, Viewport};
-use obcm_route::{Profile, RouteMatch, RouteReader};
+use obcm_route::{Profile, RouteMatch, RouteReader, TrackPoint};
 
 use crate::activity::{Activity, Mode};
+use crate::breadcrumb::Breadcrumb;
 use crate::hal::{Fix, InputClock, InputSource, LocationSource, RideClock, Sensors};
 use crate::hold_hint::HoldHints;
 use crate::input::{Gesture, Gestures, DEFAULT_HOLD_MS};
@@ -315,9 +316,16 @@ pub struct App {
     /// off-route). Reset on route change; runs in [`tick`](App::tick), result stored on
     /// [`Activity`].
     route_match: RouteMatch,
-    /// The [`active_route`](Activity::active_route) the matcher + ride accumulators were
-    /// last reset for, so loading/swapping a route restarts tracking exactly once.
-    ride_route: Option<usize>,
+    /// The [`active_route`](Activity::active_route) the **matcher** was last reset for, so
+    /// changing the navigated route — a load *or* a "Swap route only" — re-locks it once.
+    matched_route: Option<usize>,
+    /// The [`session`](Activity::session) the **ride accumulators + breadcrumb** were last
+    /// reset for, so a new tracking session (load from Idle / "Save & start new") restarts
+    /// them once, while a swap (same session) leaves them running.
+    ride_session: Option<u32>,
+    /// The travelled-path breadcrumb (RAM, bounded), fed each logged fix in
+    /// [`tick`](App::tick) and drawn on the Map; cleared when `ride_session` changes.
+    breadcrumb: Breadcrumb,
     /// Reused renderer; clears (not frees) its scratch each frame, so steady-state
     /// rendering does no allocation — important on the MCU.
     renderer: MapRenderer,
@@ -363,7 +371,9 @@ impl App {
             profile: None,
             profile_route: None,
             route_match: RouteMatch::new(),
-            ride_route: None,
+            matched_route: None,
+            ride_session: None,
+            breadcrumb: Breadcrumb::new(),
             renderer: MapRenderer::new(),
             gestures: Gestures::new(DEFAULT_HOLD_MS),
             last_gesture: None,
@@ -393,30 +403,49 @@ impl App {
     /// matcher and ride totals here, so tracking starts fresh exactly once per load.
     pub fn tick(&mut self, clock: RideClock, sensors: Sensors, route: Option<&RouteReader>) {
         let now_ms = clock.0;
-        // A new route → restart tracking (matcher + accumulators) exactly once.
-        if self.activity.active_route != self.ride_route {
+        // The matcher follows the *navigated route*: a load or a "Swap route only" re-locks it.
+        if self.activity.active_route != self.matched_route {
             self.route_match.reset();
+            self.matched_route = self.activity.active_route;
+        }
+        // The accumulators + breadcrumb follow the *tracking session*: a new session restarts
+        // them, while a swap (which keeps the session) leaves them running.
+        if self.activity.session != self.ride_session {
             self.activity.reset_ride();
-            self.ride_route = self.activity.active_route;
+            self.breadcrumb.clear();
+            self.ride_session = self.activity.session;
         }
         // Mirror the active route's length for the riding views (0 when none loaded).
         self.activity.route_total_m = route.map_or(0, |r| r.total_distance_m);
 
-        let Sensors { loc, altimeter } = sensors;
+        let Sensors { loc, altimeter, track } = sensors;
+        // Barometric altitude on its own cadence → climb + the elevation stamped on the log.
+        // Polled before the fix so a point logged this tick carries the freshest altitude.
+        if let Some(altimeter) = altimeter {
+            if let Some(alt) = altimeter.poll() {
+                self.activity.record_altitude(alt);
+            }
+        }
         // GPS fix → camera + map-match + ridden distance/time (only on a fresh fix, so a
-        // dropout doesn't re-run the matcher or double-count on a stale position).
+        // dropout doesn't re-run the matcher or double-count). A *logged* fix also feeds the
+        // breadcrumb + the ride log.
         if let Some(fix) = self.state.update(loc) {
             if let Some(route) = route {
                 let m = self.route_match.update(fix.lon, fix.lat, route);
                 self.activity.apply_match(m);
             }
-            self.activity.record_motion(fix, now_ms);
-        }
-
-        // Barometric altitude (its own cadence) → actually-ridden climb.
-        if let Some(altimeter) = altimeter {
-            if let Some(alt) = altimeter.poll() {
-                self.activity.record_altitude(alt);
+            let motion = self.activity.record_motion(fix, now_ms);
+            if motion.log {
+                self.breadcrumb.push(fix.lon, fix.lat);
+                if let Some(track) = track {
+                    track.record(TrackPoint {
+                        lon: fix.lon,
+                        lat: fix.lat,
+                        ele: self.activity.track_ele(),
+                        t_ms: now_ms,
+                        segment_start: motion.segment_start,
+                    });
+                }
             }
         }
     }
@@ -507,7 +536,8 @@ impl App {
 
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
         let App {
-            state, activity, catalog, renderer, stack, now_ms, enc_progress, profile, hold_hints, ..
+            state, activity, catalog, renderer, stack, now_ms, enc_progress, profile, breadcrumb,
+            hold_hints, ..
         } = self;
         let mut rx = Render {
             reader,
@@ -517,6 +547,7 @@ impl App {
             routes: catalog.as_slice(),
             route,
             profile: profile.as_ref(),
+            breadcrumb: &*breadcrumb,
             w,
             h,
             now_ms: *now_ms,

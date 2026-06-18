@@ -14,7 +14,7 @@ use obcm_render::{
     Canvas, RenderStats,
 };
 
-use crate::activity::Mode;
+use crate::activity::{Mode, TrackAction};
 use crate::input::Gesture;
 
 use super::{palette, Ctx, Render, Transition};
@@ -30,6 +30,9 @@ const ITEMS: [Item; 3] = [
     Item { label: "Finish", guard: true },
     Item { label: "Discard", guard: true },
 ];
+
+const FINISH: usize = 1;
+const DISCARD: usize = 2;
 
 /// The pause overlay. State is just the highlighted option.
 #[derive(Debug, Default)]
@@ -67,13 +70,10 @@ impl RideControl {
                 // Confirm guarded options only — Finish / Discard. The recognizer
                 // emits `Hold` exactly when the hold completes, so reaching here
                 // *is* the confirmation; releasing early never produces it.
-                if ITEMS[self.selected].guard {
-                    // Finish saves / Discard deletes (stub) → clear the route → Home.
-                    cx.activity.mode = Mode::Idle;
-                    cx.activity.active_route = None;
-                    Transition::Home
-                } else {
-                    Transition::None
+                match self.selected {
+                    FINISH => self.end_ride(cx, TrackAction::Save),
+                    DISCARD => self.end_ride(cx, TrackAction::Discard),
+                    _ => Transition::None, // Resume isn't guarded — hold does nothing
                 }
             }
             Gesture::Back => {
@@ -82,6 +82,16 @@ impl RideControl {
             }
             Gesture::BackHold => Transition::None,
         }
+    }
+
+    /// End the tracking session: record the log's disposition (Save → GPX / Discard → drop,
+    /// performed by the host), end the session, go Idle, clear the route, and return Home.
+    fn end_ride(&self, cx: &mut Ctx, action: TrackAction) -> Transition {
+        cx.activity.request_track(action);
+        cx.activity.end_session();
+        cx.activity.mode = Mode::Idle;
+        cx.activity.active_route = None;
+        Transition::Home
     }
 
     pub fn draw<D, F>(&self, target: &mut D, rx: &mut Render, color_fn: &F) -> RenderStats

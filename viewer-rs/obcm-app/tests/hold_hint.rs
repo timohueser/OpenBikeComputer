@@ -133,7 +133,7 @@ fn rgb(c: u16) -> Rgb888 {
 fn render(app: &mut App, bytes: &[u8]) -> Buf {
     let reader = Reader::new(bytes).expect("valid v5 file");
     let mut buf = Buf::new(120, 120);
-    app.render_frame(&mut buf, &reader, None, 120.0, 120.0, |c| rgb(c));
+    app.render_frame(&mut buf, &reader, None, 120.0, 120.0, rgb);
     buf
 }
 

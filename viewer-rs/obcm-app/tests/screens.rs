@@ -9,9 +9,10 @@ use std::collections::VecDeque;
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
 use obcm_app::activity::Activity;
 use obcm_app::screen::{
-    apply, Ctx, HomeScreen, MapScreen, MenuScreen, RideControl, RouteMenuScreen, Screen, Stack, Transition,
+    apply, Ctx, HomeScreen, MapScreen, MenuScreen, RideControl, RouteMenuScreen, RouteSwapScreen, Screen,
+    Stack, Transition,
 };
-use obcm_app::{App, AppState, Button, ButtonEvent, CameraMode, Fix, Gesture, InputClock, InputEvent, InputSource, LocationSource, Mode, PanAxis, RideClock, RouteSummary, Sensors};
+use obcm_app::{App, AppState, Button, ButtonEvent, CameraMode, Fix, Gesture, InputClock, InputEvent, InputSource, LocationSource, Mode, PanAxis, RideClock, RouteSummary, Sensors, TrackAction};
 use obcm_reader::{rgb565_to_rgb888, BBox, Reader};
 
 /// A handle [`Ctx`] over freshly-made state/activity for a one-gesture test. Most
@@ -142,9 +143,10 @@ fn route_menu_loads_the_selected_route_and_opens_the_map() {
     let mut rm = RouteMenuScreen::new();
     rm.handle(Gesture::Turn(1), &mut route_ctx(&mut st, &mut act, &routes)); // highlight route 1
     let t = rm.handle(Gesture::Press, &mut route_ctx(&mut st, &mut act, &routes));
-    assert!(matches!(t, Transition::Replace(Screen::Map(_))), "loading opens the Map");
+    assert!(matches!(t, Transition::Root(Screen::Map(_))), "loading lands on a clean [Home, Map]");
     assert_eq!(act.mode, Mode::Riding, "loading starts tracking");
     assert_eq!(act.active_route, Some(1), "the selected route is the active one");
+    assert!(act.is_tracking(), "loading from Idle begins a tracking session");
     // Loading drops into the riding view: follow + heading-up, seeded at the start.
     assert_eq!(st.mode, CameraMode::Follow);
     assert!(st.heading_up);
@@ -166,6 +168,98 @@ fn route_menu_with_no_routes_ignores_press() {
     let t = RouteMenuScreen::new().handle(Gesture::Press, &mut ctx(&mut st, &mut act));
     assert!(matches!(t, Transition::None));
     assert_eq!(act.active_route, None);
+}
+
+// ---------------------------------------------------------------------------
+// Loading a route mid-session: the swap / save prompt, Finish / Discard.
+// ---------------------------------------------------------------------------
+
+/// An activity that is already tracking route `r` (a session is open).
+fn tracking(r: usize) -> Activity {
+    let mut act = Activity::new(Mode::Riding);
+    act.active_route = Some(r);
+    act.start_session();
+    act
+}
+
+#[test]
+fn loading_a_different_route_mid_session_prompts() {
+    let (mut st, mut act) = (AppState::new(0, 0, 1.0), tracking(0));
+    let routes = test_routes();
+    let mut rm = RouteMenuScreen::new();
+    rm.handle(Gesture::Turn(1), &mut route_ctx(&mut st, &mut act, &routes)); // highlight route 1
+    let t = rm.handle(Gesture::Press, &mut route_ctx(&mut st, &mut act, &routes));
+    assert!(matches!(t, Transition::Push(Screen::RouteSwap(_))), "a different route mid-ride asks");
+    assert_eq!(act.active_route, Some(0), "the prompt hasn't changed the route yet");
+}
+
+#[test]
+fn reselecting_the_active_route_mid_session_returns_to_the_map() {
+    let (mut st, mut act) = (AppState::new(0, 0, 1.0), tracking(1));
+    let routes = test_routes();
+    let mut rm = RouteMenuScreen::new();
+    rm.handle(Gesture::Turn(1), &mut route_ctx(&mut st, &mut act, &routes)); // highlight the active route 1
+    let t = rm.handle(Gesture::Press, &mut route_ctx(&mut st, &mut act, &routes));
+    assert!(matches!(t, Transition::Root(Screen::Map(_))), "re-picking the active route just rides it");
+}
+
+#[test]
+fn route_swap_swap_only_keeps_the_session() {
+    let (mut st, mut act) = (AppState::new(0, 0, 1.0), tracking(0));
+    let before = act.session;
+    let routes = test_routes();
+    // Default selection (0) is "Swap route".
+    let t = RouteSwapScreen::new(2).handle(Gesture::Press, &mut route_ctx(&mut st, &mut act, &routes));
+    assert!(matches!(t, Transition::Root(Screen::Map(_))));
+    assert_eq!(act.active_route, Some(2), "navigation swapped to the picked route");
+    assert_eq!(act.session, before, "the tracking session continues unchanged");
+    assert!(act.take_track_action().is_none(), "swap-only saves nothing");
+}
+
+#[test]
+fn route_swap_save_and_new_saves_then_starts_a_fresh_session() {
+    let (mut st, mut act) = (AppState::new(0, 0, 1.0), tracking(0));
+    let before = act.session;
+    let routes = test_routes();
+    let mut rs = RouteSwapScreen::new(2);
+    rs.handle(Gesture::Turn(1), &mut route_ctx(&mut st, &mut act, &routes)); // highlight "Save & new"
+    assert!(rs.selection_is_guarded());
+    // A press must not commit the guarded option — only a completed hold.
+    let t = rs.handle(Gesture::Press, &mut route_ctx(&mut st, &mut act, &routes));
+    assert!(matches!(t, Transition::None), "a press can't confirm Save & new");
+    assert!(act.take_track_action().is_none());
+
+    let t = rs.handle(Gesture::Hold, &mut route_ctx(&mut st, &mut act, &routes));
+    assert!(matches!(t, Transition::Root(Screen::Map(_))));
+    assert_eq!(act.active_route, Some(2));
+    assert_ne!(act.session, before, "a fresh session id");
+    assert!(act.is_tracking());
+    assert_eq!(act.take_track_action(), Some(TrackAction::Save), "the old ride is saved");
+}
+
+#[test]
+fn ride_control_finish_saves_and_discard_discards() {
+    // Finish (row 1) → save the ride.
+    let (mut st, mut act) = (AppState::new(0, 0, 1.0), tracking(0));
+    act.mode = Mode::Paused;
+    let mut rc = RideControl::new();
+    rc.handle(Gesture::Turn(1), &mut ctx(&mut st, &mut act)); // → Finish
+    let t = rc.handle(Gesture::Hold, &mut ctx(&mut st, &mut act));
+    assert!(matches!(t, Transition::Home));
+    assert_eq!(act.mode, Mode::Idle);
+    assert_eq!(act.active_route, None);
+    assert!(!act.is_tracking(), "Finish ends the session");
+    assert_eq!(act.take_track_action(), Some(TrackAction::Save));
+
+    // Discard (row 2) → throw the ride away.
+    let (mut st, mut act) = (AppState::new(0, 0, 1.0), tracking(0));
+    act.mode = Mode::Paused;
+    let mut rc = RideControl::new();
+    rc.handle(Gesture::Turn(2), &mut ctx(&mut st, &mut act)); // → Discard
+    let t = rc.handle(Gesture::Hold, &mut ctx(&mut st, &mut act));
+    assert!(matches!(t, Transition::Home));
+    assert!(!act.is_tracking());
+    assert_eq!(act.take_track_action(), Some(TrackAction::Discard));
 }
 
 #[test]
@@ -285,7 +379,7 @@ fn ride_control_composites_over_the_map() {
 // --- tiny render harness (mirrors marker.rs) ---
 
 fn render(app: &mut App, bytes: &[u8]) -> Buf {
-    app.tick(RideClock(0), Sensors { loc: &mut NoFix, altimeter: None }, None);
+    app.tick(RideClock(0), Sensors { loc: &mut NoFix, altimeter: None, track: None }, None);
     let reader = Reader::new(bytes).expect("valid v5 file");
     let mut buf = Buf::new(120, 120);
     app.render_frame(&mut buf, &reader, None, 120.0, 120.0, |c| {

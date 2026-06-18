@@ -29,6 +29,7 @@ pub mod gpx;
 pub mod matcher;
 pub mod profile;
 pub mod reader;
+pub mod track;
 
 pub use byte_io::{ByteSink, ByteSource, Error, SliceSource};
 pub use convert::{gpx_to_obcr, RouteStats};
@@ -36,6 +37,7 @@ pub use geo::ground_dist_m;
 pub use gpx::{GpxScanner, RawPoint};
 pub use matcher::{Match, RouteMatch};
 pub use profile::{Profile, Window, PROFILE_COLS};
+pub use track::{decode_record, encode_record, track_to_gpx, TrackPoint, TRACK_RECORD_LEN};
 pub use reader::{
     ChunkMeta, RoutePoint, RouteReader, RouteSummary, CHUNK_META_LEN, HEADER_LEN,
     MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS, NAME_CAP,

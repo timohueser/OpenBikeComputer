@@ -31,6 +31,7 @@ use obcm_route::{Profile, RouteReader};
 
 use crate::activity::{Activity, Mode};
 use crate::app::AppState;
+use crate::breadcrumb::Breadcrumb;
 use crate::input::Gesture;
 use crate::route::RouteSummary;
 
@@ -39,6 +40,7 @@ mod map;
 mod menu;
 mod ride_control;
 mod route_menu;
+mod route_swap;
 mod statistics;
 
 pub use home::HomeScreen;
@@ -46,6 +48,7 @@ pub use map::MapScreen;
 pub use menu::MenuScreen;
 pub use ride_control::RideControl;
 pub use route_menu::RouteMenuScreen;
+pub use route_swap::RouteSwapScreen;
 pub use statistics::StatisticsScreen;
 
 /// Maximum overlay depth (Home → Map → Ride control / Menu → …). Sized with
@@ -69,6 +72,11 @@ pub enum Transition {
     /// Swap this screen for `screen` without growing the stack — sibling moves
     /// (Map ↔ Elevation) and "consume this screen" steps (Route menu → Map).
     Replace(Screen),
+    /// Truncate to the Home root and push `screen`, landing on `[Home, screen]` from any
+    /// depth — "load a route and go ride it", reachable through Home or the Menu, and from
+    /// the route-swap prompt. Lands on a clean `[Home, Map]` instead of leaving stale Menu /
+    /// Route-menu screens buried under the new Map.
+    Root(Screen),
     /// Clear every overlay back to the Home root — Finish / Discard / power-down.
     Home,
 }
@@ -90,6 +98,10 @@ pub fn apply(stack: &mut Stack, t: Transition) {
             if let Some(top) = stack.last_mut() {
                 *top = s;
             }
+        }
+        Transition::Root(s) => {
+            stack.truncate(1); // keep the Home root
+            let _ = stack.push(s);
         }
         Transition::Home => stack.truncate(1),
     }
@@ -126,6 +138,9 @@ pub struct Render<'a, 'd> {
     /// the app on route load and cached — `None` when no route is loaded. Resident, so
     /// the screen never re-reads the route to draw.
     pub profile: Option<&'a Profile>,
+    /// The travelled-path breadcrumb (bounded RAM); the Map strokes it under the route. Empty
+    /// when nothing has been recorded yet, so the Map can skip it with [`Breadcrumb::is_empty`].
+    pub breadcrumb: &'a Breadcrumb,
     pub w: f32,
     pub h: f32,
     pub now_ms: u32,
@@ -142,6 +157,7 @@ pub enum Screen {
     RideControl(RideControl),
     Menu(MenuScreen),
     RouteMenu(RouteMenuScreen),
+    RouteSwap(RouteSwapScreen),
 }
 
 impl Screen {
@@ -154,6 +170,7 @@ impl Screen {
             Screen::RideControl(s) => s.handle(g, cx),
             Screen::Menu(s) => s.handle(g, cx),
             Screen::RouteMenu(s) => s.handle(g, cx),
+            Screen::RouteSwap(s) => s.handle(g, cx),
         }
     }
 
@@ -171,6 +188,7 @@ impl Screen {
             Screen::RideControl(s) => s.draw(target, rx, color_fn),
             Screen::Menu(s) => s.draw(target, rx, color_fn),
             Screen::RouteMenu(s) => s.draw(target, rx, color_fn),
+            Screen::RouteSwap(s) => s.draw(target, rx, color_fn),
         }
     }
 
@@ -331,4 +349,10 @@ pub mod palette {
     pub const TEAL: u16 = rgb565(0, 170, 170); // → (0,170,170) teal
     /// Dim teal — the unfilled Back hint track under the bright fill.
     pub const TEAL_DIM: u16 = rgb565(0, 85, 85); // → (0,85,85) dim teal
+    /// Deep blue — the **planned route** line on the Map. Distinct from the lighter water blue
+    /// and from the red breadcrumb drawn over it (route ahead = blue, trail behind = red).
+    pub const ROUTE: u16 = rgb565(0, 0, 160); // → (0,0,170) blue
+    /// Red — the recorded **breadcrumb** (travelled path), stroked over the route so the trail
+    /// behind you reads red while the route ahead reads blue.
+    pub const BREADCRUMB: u16 = rgb565(160, 0, 0); // → (170,0,0) red
 }

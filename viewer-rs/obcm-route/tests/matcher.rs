@@ -202,3 +202,52 @@ fn forward_bias_does_not_snap_back_on_a_loop() {
         "final progress {last} m should be near the {total} m total, not snapped back"
     );
 }
+
+/// An out-and-back: out along a north-bowing arc A→M→B, back straight B→A′, where A′ ends
+/// ~2 m north of the A start (a real GPS retrace never lands exactly on its start). Start
+/// and finish sit nearly on top of each other, so a small north offset at the start makes
+/// the *finish* segment marginally the nearest — which latched the cursor onto progress ≈
+/// total before the first-lock earliest-bias fix, tripping spurious off-route. The bowed
+/// outbound keeps the mid-route unambiguous (the legs are tens of metres apart there), so
+/// the test isolates the genuine failure: the first lock.
+fn out_and_back_gpx() -> String {
+    gpx_from(&[
+        (48.0000, 7.8000, 200.0),  // A  — start
+        (48.0006, 7.8050, 240.0),  // M  — outbound apex, ~67 m north of the chord
+        (48.0000, 7.8100, 210.0),  // B  — turnaround (~745 m east)
+        (48.00002, 7.8000, 201.0), // A′ — finish, ~2 m north of A
+    ])
+}
+
+#[test]
+fn out_and_back_first_lock_biases_to_the_start() {
+    let bytes = convert("OutBack", &out_and_back_gpx());
+    let src = SliceSource(&bytes);
+    let r = RouteReader::open(&src).unwrap();
+    let total = r.total_distance_m;
+    let pts = decode_all(&r);
+    assert!(pts.len() >= 4, "out-and-back should keep A, M, B, A′; got {}", pts.len());
+
+    // Walk the outbound vertices A, M, B. The first fix is offset 12 m north — the offset
+    // that used to latch the coincident finish; M/B get a small offset for realism.
+    let mut m = RouteMatch::new();
+    let mut last = 0u32;
+    for (k, (idx, off)) in [(0usize, 12.0), (1, 3.0), (2, -3.0)].iter().enumerate() {
+        let p = pts[*idx];
+        let res = m.update(p.lon, p.lat + north_ud(*off), &r);
+        assert!(!res.off_route, "outbound vertex {idx} (~{off} m off) stays on-route");
+        if k == 0 {
+            assert!(
+                (res.progress_m as f64) < 0.25 * total as f64,
+                "first lock must land near the START (progress {} m), not the finish (~{total} m)",
+                res.progress_m
+            );
+        }
+        assert!(res.progress_m + 1 >= last, "progress must not snap back at vertex {idx}");
+        last = res.progress_m;
+    }
+    assert!(
+        (last as f64) < 0.75 * total as f64,
+        "outbound progress {last} m should be on the first half, not near the {total} m finish"
+    );
+}

@@ -26,6 +26,7 @@ use crate::gpx::Track;
 use crate::gpx_player::GpxPlayer;
 use crate::routes::RouteStore;
 use crate::sim_location::SimLocationSource;
+use crate::track::TrackStore;
 use crate::Args;
 
 mod panel;
@@ -72,6 +73,9 @@ struct SimGui {
     app: App,
     /// The routes folder (the device-SD stand-in): the menu catalog + active geometry.
     store: RouteStore,
+    /// The tracks folder (device-SD `/tracks` stand-in): the in-progress `.obct` ride log +
+    /// saved `.gpx` files. Reconciled to the app's tracking session each frame.
+    tracks: TrackStore,
     loc: SimLocationSource,
     fb: Framebuffer,
     dev_w: u32,
@@ -156,6 +160,7 @@ impl SimGui {
         // headless `--png` path opens straight on the map for render inspection.)
         let app = App::new_idle(state);
         let store = RouteStore::open(args.routes_dir.clone().unwrap_or_else(|| "routes".to_string()));
+        let tracks = TrackStore::open(args.tracks_dir.clone().unwrap_or_else(|| "tracks".to_string()));
         // Load any saved 1:1 calibration; `--physical` only takes effect if we have one,
         // and `--calibrate` opens the calibration screen straight away.
         let points_per_mm = crate::calib::load();
@@ -163,6 +168,7 @@ impl SimGui {
         let mut gui = SimGui {
             app,
             store,
+            tracks,
             loc,
             fb: Framebuffer::new(args.width, args.height),
             dev_w: args.width,
@@ -236,6 +242,10 @@ impl SimGui {
         let route_src = self.store.active_source();
         let route = route_src.as_ref().and_then(|s| RouteReader::open(s).ok());
 
+        // Reconcile the ride log to the app's tracking session (open / finalise-to-GPX /
+        // discard) before ticking — the device does the same off its SD card.
+        crate::reconcile_tracks(&mut self.app, &mut self.tracks);
+
         // Drive the app from whichever location source is active. A loaded GPX replay
         // takes over from the manual panel fix (just as the device's GPS would); we
         // advance it by this frame's wall-clock time before ticking, and feed the
@@ -243,7 +253,7 @@ impl SimGui {
         if let Some(player) = self.gpx.as_mut() {
             // Advance + tick on the playback clock (shared with the headless replay).
             let dt = ctx.input(|i| i.stable_dt) as f64;
-            crate::replay_step(&mut self.app, player, &mut self.baro, dt, route.as_ref());
+            crate::replay_step(&mut self.app, player, &mut self.baro, dt, route.as_ref(), self.tracks.sink());
             // Reflect the replayed fix in the panel mirrors so the (disabled)
             // position/heading widgets show the live values, and so manual control
             // resumes from here if the track is ejected.
@@ -258,7 +268,7 @@ impl SimGui {
             // Manual panel control: no barometer, wall-clock for any moving-time.
             self.baro.clear();
             let now_ms = self.input.now_ms();
-            let sensors = Sensors { loc: &mut self.loc, altimeter: None };
+            let sensors = Sensors { loc: &mut self.loc, altimeter: None, track: self.tracks.sink() };
             self.app.tick(RideClock(now_ms), sensors, route.as_ref());
         }
 
