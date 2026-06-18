@@ -32,6 +32,7 @@
 pub mod activity;
 pub mod app;
 pub mod hal;
+pub mod hold_hint;
 pub mod input;
 pub mod route;
 pub mod screen;
@@ -43,5 +44,6 @@ pub use hal::{
     AltimeterSource, Button, ButtonEvent, Fix, InputClock, InputEvent, InputSource, LocationSource,
     RideClock, Sensors,
 };
+pub use hold_hint::HoldHints;
 pub use input::{Gesture, Gestures, DEFAULT_HOLD_MS};
 pub use screen::{Screen, Transition};

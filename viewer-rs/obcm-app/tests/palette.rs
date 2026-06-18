@@ -25,6 +25,8 @@ fn palette_quantizes_to_documented_device64() {
         ("RULE", RULE, (170, 170, 85)),
         ("AMBER", AMBER, (255, 170, 0)),
         ("WARNING", WARNING, (255, 85, 0)),
+        ("TEAL", TEAL, (0, 170, 170)),
+        ("TEAL_DIM", TEAL_DIM, (0, 85, 85)),
     ];
     for &(name, c, want) in cases {
         assert_eq!(
