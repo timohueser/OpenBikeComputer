@@ -29,7 +29,7 @@ use obcm_render::{
 };
 use obcm_route::{Profile, RouteReader};
 
-use crate::activity::Activity;
+use crate::activity::{Activity, Mode};
 use crate::app::AppState;
 use crate::input::Gesture;
 use crate::route::RouteSummary;
@@ -244,6 +244,45 @@ where
     let thumb_h = (height * visible as i32 / total as i32).max(10);
     let thumb_y = top + height * first as i32 / total as i32;
     cv.round(rect(x, thumb_y, 3, thumb_h), 1, palette::WOOD);
+}
+
+/// The gestures the two **riding views** (Map and Statistics) bind identically:
+/// `press` pauses tracking and opens the Ride-control overlay, and `back-hold` opens
+/// the Menu. Each riding screen calls this from its `Press | BackHold` arm, so the
+/// shared navigation lives in one place (and a future riding view inherits it for
+/// free) while the screen keeps its own `turn` / `back` / `hold`.
+pub(crate) fn riding_common(g: Gesture, cx: &mut Ctx) -> Transition {
+    match g {
+        Gesture::Press => {
+            // Pause: tracking stops and the Ride-control overlay opens over the view.
+            cx.activity.mode = Mode::Paused;
+            Transition::Push(Screen::RideControl(RideControl::new()))
+        }
+        Gesture::BackHold => Transition::Push(Screen::Menu(MenuScreen::new())),
+        _ => Transition::None, // only ever called for the two arms above
+    }
+}
+
+/// Advance a **wrapping** list selection by `n` detents over `len` items — the
+/// `turn`-moves-the-highlight every list screen shares (Menu, Route menu, Ride
+/// control). Wraps at both ends; a no-op on an empty list.
+pub(crate) fn step_selection(selected: usize, n: i32, len: usize) -> usize {
+    if len == 0 {
+        return selected;
+    }
+    (selected as i32 + n).rem_euclid(len as i32) as usize
+}
+
+/// Draw a centered two-line **empty state** — a bold `title` over a muted `hint`,
+/// vertically centered — the shared "nothing to show yet" body the Route menu (no
+/// routes) and Statistics (no route loaded) both draw under their header.
+pub(crate) fn empty_state<D, F>(cv: &mut Canvas<D, F>, w: i32, h: i32, title: &str, hint: &str)
+where
+    D: DrawTarget,
+    F: Fn(u16) -> D::Color,
+{
+    cv.text(title, Point::new(w / 2, h / 2 - 10), Font::Body, TextAlign::Center, palette::INK);
+    cv.text(hint, Point::new(w / 2, h / 2 + 12), Font::Label, TextAlign::Center, palette::SUBTEXT);
 }
 
 /// The "explorer's field map" palette in RGB565 (the format/style color space),
