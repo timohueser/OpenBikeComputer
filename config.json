@@ -4,7 +4,7 @@
         {"max_mpp": 120, "simplify": 12},
         {"max_mpp": 18, "simplify": 0}
     ],
-    "_palette_note": "Colors are RGB565 but the LS021B7DD02 panel only shows 64 (RGB222: 4 levels/channel = 0,85,170,255). Every value below is chosen to land exactly on that grid, so the webapp picker and the device agree. OSM/Komoot conventions on a near-white 'paper' base: warm = through-roads, grey = local roads, brown = trails, green = vegetation, azure = water. Verify the gamut with `obcm-sim --palette`.",
+    "_palette_note": "Colors are RGB565 but the LS021B7DD02 panel only shows 64 (RGB222: 4 levels/channel = 0,85,170,255). Every value below is chosen to land exactly on that grid, so the webapp picker and the device agree. OSM/Komoot conventions on a near-white 'paper' base: warm = through-roads, grey = local roads, brown = trails, indigo = cycleways (a cycling computer's key feature, lifted out of the brown trail group), green = vegetation, azure = water, cream = built-up landuse fill (residential / commercial / industrial / retail — the only near-white tint the gamut offers, so towns read as a faint warm blush without colliding with the grey buildings on top). Verify the gamut with `obcm-sim --palette`.",
     "features": {
         "highway": {
             "motorway": {"z_index": 60, "color": "0xFAA0", "weight": 3, "min_lod": 0, "priority": 2},
@@ -25,7 +25,7 @@
             "track": {"z_index": 24, "color": "0xAAA0", "weight": 1, "min_lod": 2, "priority": 3},
             "path": {"z_index": 24, "color": "0xAAA0", "weight": 1, "min_lod": 2, "priority": 3},
             "footway": {"z_index": 24, "color": "0xAAA0", "weight": 1, "min_lod": 2, "priority": 3},
-            "cycleway": {"z_index": 25, "color": "0xAAA0", "weight": 1, "min_lod": 2, "priority": 3}
+            "cycleway": {"z_index": 26, "color": "0x501F", "weight": 2, "min_lod": 2, "priority": 3}
         },
         "railway": {
             "rail": {"z_index": 40, "color": "0x0000", "weight": 2, "min_lod": 1, "priority": 2},
@@ -51,6 +51,10 @@
             "scrub": {"z_index": 5, "color": "0xAFF5", "weight": 1, "min_lod": 2, "priority": 3}
         },
         "landuse": {
+            "residential": {"z_index": 2, "color": "0xFFF5", "weight": 1, "min_lod": 1, "priority": 4},
+            "commercial": {"z_index": 2, "color": "0xFFF5", "weight": 1, "min_lod": 1, "priority": 4},
+            "industrial": {"z_index": 2, "color": "0xFFF5", "weight": 1, "min_lod": 1, "priority": 4},
+            "retail": {"z_index": 2, "color": "0xFFF5", "weight": 1, "min_lod": 1, "priority": 4},
             "forest": {"z_index": 4, "color": "0x554A", "weight": 1, "min_lod": 1, "priority": 3},
             "grass": {"z_index": 6, "color": "0xAFF5", "weight": 1, "min_lod": 2, "priority": 3}
         },
