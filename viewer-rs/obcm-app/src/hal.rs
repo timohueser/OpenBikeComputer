@@ -46,7 +46,7 @@ pub trait LocationSource {
 /// Source of barometric altitude — the device's **pressure altimeter**, a sensor
 /// entirely separate from the GPS (its own bus, its own sample rate). The app polls it
 /// each tick like a [`LocationSource`], but the two are **asynchronous**: a baro sample
-/// and a GPS fix do not arrive together. So [`poll`](ElevationSource::poll) returns
+/// and a GPS fix do not arrive together. So [`poll`](AltimeterSource::poll) returns
 /// `Some(meters)` only when a *fresh* sample is available and `None` otherwise — the app
 /// integrates climb from this stream independently of position fixes, so going off-route
 /// (or briefly losing GPS) never stops the climb total.
@@ -55,7 +55,7 @@ pub trait LocationSource {
 /// noisy, whereas a barometric altimeter resolves the *relative* height changes that make
 /// up "climbed" far better. Only relative change matters here, so absolute calibration
 /// (weather drift) is irrelevant — the climb accumulator dead-bands small wiggles anyway.
-pub trait ElevationSource {
+pub trait AltimeterSource {
     /// The latest barometric altitude in meters, or `None` if no new sample this tick.
     fn poll(&mut self) -> Option<f32>;
 }

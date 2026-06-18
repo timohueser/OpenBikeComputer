@@ -10,7 +10,7 @@
 //! really did, not the route-relative position — so they keep counting off-route, while
 //! `to go`/`to climb` stay route-relative (they have to). Distance comes from the GPS
 //! [`Fix`] stream and climb from the **separate** barometric
-//! [`ElevationSource`](crate::ElevationSource); the two integrate independently, on their
+//! [`AltimeterSource`](crate::AltimeterSource); the two integrate independently, on their
 //! own cadences. [`App::tick`](crate::App::tick) feeds both.
 
 use obcm_route::{ground_dist_m, Match};
@@ -27,9 +27,9 @@ const MAX_SPEED_MPS: f32 = 30.0;
 /// moving average, so red lights and rests don't drag Avg. Speed down.
 const MOVING_MIN_MPS: f32 = 0.8;
 /// Climb dead-band (m): ignore altitude wiggles below this so barometric noise doesn't
-/// inflate the climb. Matches the converter's `ELE_THRESHOLD_M`, so an actually-ridden
-/// climb on-route lands close to the route's precomputed ascent.
-const ELE_THRESHOLD_M: f32 = 3.0;
+/// inflate the climb. Matches the converter's elevation dead-band (`ELE_THRESHOLD_M`), so
+/// an actually-ridden climb on-route lands close to the route's precomputed ascent.
+const ALT_THRESHOLD_M: f32 = 3.0;
 
 /// The device's operating mode (`docs/ui_framework_brief.md` §"Operating modes").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -80,7 +80,7 @@ pub struct Activity {
     last_fix: Option<Fix>,
     last_ms: Option<u32>,
     /// Hysteresis reference altitude for the climb dead-band.
-    ele_ref: Option<f32>,
+    alt_ref: Option<f32>,
 }
 
 impl Activity {
@@ -106,7 +106,7 @@ impl Activity {
         self.climb_m = 0.0;
         self.last_fix = None;
         self.last_ms = None;
-        self.ele_ref = None;
+        self.alt_ref = None;
     }
 
     /// Store the latest map-match result (cursor + off-route readout).
@@ -143,20 +143,20 @@ impl Activity {
     /// Integrate one barometric altitude sample into the climbed total, dead-banded so
     /// sensor noise doesn't inflate it. Only while [`Riding`](Mode::Riding); pausing drops
     /// the reference so an altitude change *during* the pause isn't booked on resume.
-    pub(crate) fn record_elevation(&mut self, alt_m: f32) {
+    pub(crate) fn record_altitude(&mut self, alt_m: f32) {
         if self.mode != Mode::Riding {
-            self.ele_ref = None;
+            self.alt_ref = None;
             return;
         }
-        match self.ele_ref {
-            None => self.ele_ref = Some(alt_m),
+        match self.alt_ref {
+            None => self.alt_ref = Some(alt_m),
             Some(r) => {
                 let d = alt_m - r;
-                if d >= ELE_THRESHOLD_M {
+                if d >= ALT_THRESHOLD_M {
                     self.climb_m += d;
-                    self.ele_ref = Some(alt_m);
-                } else if d <= -ELE_THRESHOLD_M {
-                    self.ele_ref = Some(alt_m);
+                    self.alt_ref = Some(alt_m);
+                } else if d <= -ALT_THRESHOLD_M {
+                    self.alt_ref = Some(alt_m);
                 }
             }
         }

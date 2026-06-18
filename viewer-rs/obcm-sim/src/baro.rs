@@ -8,17 +8,17 @@
 //! the real hardware: a baro sample and a GPS fix do not arrive together, so the app must
 //! integrate climb from this asynchronous stream rather than assuming one reading per fix.
 //!
-//! The app reads it through the shared [`ElevationSource`] trait, exactly as it will read
+//! The app reads it through the shared [`AltimeterSource`] trait, exactly as it will read
 //! the real barometer driver — it never learns this one is backed by a GPX file.
 
-use obcm_app::ElevationSource;
+use obcm_app::AltimeterSource;
 
 /// Emit a fresh reading at most this often (seconds of playback time). Coarser than and
 /// unaligned with the GPS fixes, modelling a barometer polled on its own schedule.
 const SAMPLE_INTERVAL_S: f64 = 0.5;
 
 /// A barometer fed from the GPX replay. The host calls [`feed`](BaroSensor::feed) each
-/// frame with the track's current elevation + playback time; [`poll`](ElevationSource::poll)
+/// frame with the track's current elevation + playback time; [`poll`](AltimeterSource::poll)
 /// returns a value only when [`SAMPLE_INTERVAL_S`] has elapsed since the last emission.
 #[derive(Debug, Default)]
 pub struct BaroSensor {
@@ -61,7 +61,7 @@ impl BaroSensor {
     }
 }
 
-impl ElevationSource for BaroSensor {
+impl AltimeterSource for BaroSensor {
     fn poll(&mut self) -> Option<f32> {
         if self.due {
             self.due = false;
