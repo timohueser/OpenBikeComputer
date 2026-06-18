@@ -9,7 +9,7 @@
 //! Usage:
 //!   obcm-sim <map.obcm> [--size WxH] [--scale N] [--png OUT.png] [--true-color]
 //!     [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT]
-//!     [--routes-dir DIR] [--import GPX]
+//!     [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX]
 //!
 //! `--center`/`--zoom` aim the headless `--png` camera at a spot and zoom level
 //! (e.g. to inspect a specific chunk boundary); `--zoom` multiplies the bbox-fit
@@ -27,7 +27,7 @@ use obcm_reader::{rgb565_to_device64, rgb565_to_rgb888, Reader};
 use obcm_render::text::{draw_text, Font, TextAlign};
 use obcm_app::{
     App, AppState, Button, ButtonEvent, Fix, InputClock, InputEvent, InputSource, LocationSource,
-    RideClock, Sensors,
+    RideClock, Sensors, TrackAction, TrackSink,
 };
 
 mod baro;
@@ -40,12 +40,14 @@ mod gui;
 mod palette;
 mod routes;
 mod sim_location;
+mod track;
 use baro::BaroSensor;
 use framebuffer::Framebuffer;
 use gpx::Track;
 use gpx_player::GpxPlayer;
 use obcm_route::RouteReader;
 use routes::RouteStore;
+use track::TrackStore;
 
 struct Args {
     map: String,
@@ -88,6 +90,12 @@ struct Args {
     /// Folder of `.obcr` routes — the simulator's stand-in for the device SD card.
     /// The Route menu lists these; defaults to `routes/`.
     routes_dir: Option<String>,
+    /// Folder for saved `.gpx` tracks + the in-progress `.obct` log — the stand-in for the
+    /// device's `/tracks` SD folder; defaults to `tracks/`.
+    tracks_dir: Option<String>,
+    /// Headless `--gpx` only: after replaying, finalise the active ride to a `.gpx` in the
+    /// tracks folder (verifies the load→ride→save loop without the GUI).
+    save_track: bool,
     /// Convert this GPX into the routes folder and exit (the device does the same on
     /// a USB drop). Headless; needs no map.
     import: Option<String>,
@@ -121,6 +129,8 @@ fn parse_args() -> Result<Args, String> {
         script: None,
         boot: false,
         routes_dir: None,
+        tracks_dir: None,
+        save_track: false,
         import: None,
         physical: false,
         calibrate: false,
@@ -157,6 +167,8 @@ fn parse_args() -> Result<Args, String> {
             "--script" => a.script = Some(it.next().ok_or("--script needs a token string")?),
             "--boot" => a.boot = true,
             "--routes-dir" => a.routes_dir = Some(it.next().ok_or("--routes-dir needs a path")?),
+            "--tracks-dir" => a.tracks_dir = Some(it.next().ok_or("--tracks-dir needs a path")?),
+            "--save-track" => a.save_track = true,
             "--import" => a.import = Some(it.next().ok_or("--import needs a GPX path")?),
             "--physical" => a.physical = true,
             "--calibrate" => a.calibrate = true,
@@ -258,18 +270,35 @@ fn initial_camera(reader: &Reader, width: u32) -> (i32, i32, f32) {
 /// (not wall-clock) so Avg. Speed isn't scaled by the replay-speed multiplier. Shared
 /// by the live GUI loop and the headless `--png` replay so both step the simulated
 /// GPS + barometer through the app identically.
-fn replay_step(
+fn replay_step<'s>(
     app: &mut App,
-    player: &mut GpxPlayer,
-    baro: &mut BaroSensor,
+    player: &'s mut GpxPlayer,
+    baro: &'s mut BaroSensor,
     dt: f64,
     route: Option<&RouteReader>,
+    track: Option<&'s mut dyn TrackSink>,
 ) {
+    // The three sensor handles share one lifetime `'s` so the invariant `Sensors<'a>` can
+    // bind them together; the caller passes three disjoint borrows over a common scope.
     player.advance(dt);
     baro.feed(player.elevation_at(player.time()), player.time());
     let now_ms = (player.time() * 1000.0) as u32;
-    let sensors = Sensors { loc: player, altimeter: Some(baro) };
+    let sensors = Sensors { loc: player, altimeter: Some(baro), track };
     app.tick(RideClock(now_ms), sensors, route);
+}
+
+/// Reconcile the track store to the app's current tracking intent (drains the one-shot
+/// action, opens / closes the `.obct` log) — the host's per-frame storage step, shared by the
+/// headless replay and the GUI. Reads the save name from the active route's catalog entry.
+fn reconcile_tracks(app: &mut App, tracks: &mut TrackStore) {
+    let action = app.activity.take_track_action();
+    let session = app.activity.session;
+    let name = app
+        .activity
+        .active_route
+        .and_then(|i| app.routes().get(i))
+        .map(|r| r.name.as_str().to_string());
+    tracks.reconcile(action, session, name.as_deref());
 }
 
 /// Encode a framebuffer to a PNG, upscaling by `scale` with nearest-neighbor so
@@ -369,7 +398,7 @@ fn main() {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: obcm-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--import GPX] [--physical] [--calibrate]");
+            eprintln!("error: {e}\nusage: obcm-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate]");
             std::process::exit(2);
         }
     };
@@ -515,10 +544,14 @@ fn main() {
         let route_src = store.active_source();
         let route = route_src.as_ref().and_then(|s| RouteReader::open(s).ok());
 
+        // Recorded-track store (the device-SD `/tracks` stand-in). A session started by a
+        // `--script` load records here; the breadcrumb itself draws regardless.
+        let mut tracks = TrackStore::open(args.tracks_dir.clone().unwrap_or_else(|| "tracks".to_string()));
+
         // Replay the track from the start up to `--at`, ticking the app each step so the
-        // map-matcher locks on and the ride accumulators (done / climbed / Avg) build up.
-        // A coarse-but-bounded step keeps long tracks fast while staying under the
-        // dropout/teleport gates; the playback clock keeps Avg. Speed unscaled.
+        // map-matcher locks on, the ride accumulators (done / climbed / Avg) build up, and the
+        // breadcrumb + ride log fill. A coarse-but-bounded step keeps long tracks fast while
+        // staying under the dropout/teleport gates; the playback clock keeps Avg. Speed unscaled.
         if let Some(p) = player.as_mut() {
             let mut baro = BaroSensor::new();
             p.seek(0.0);
@@ -526,8 +559,20 @@ fn main() {
             let step = (replay_to / 400.0).clamp(1.0, 8.0);
             let mut t = 0.0;
             while t < replay_to {
-                replay_step(&mut app, p, &mut baro, step, route.as_ref());
+                reconcile_tracks(&mut app, &mut tracks);
+                replay_step(&mut app, p, &mut baro, step, route.as_ref(), tracks.sink());
                 t += step;
+            }
+        }
+
+        // `--save-track`: finalise the active ride to a `.gpx` (verifies the save loop).
+        if args.save_track {
+            if tracks.is_recording() {
+                app.activity.request_track(TrackAction::Save);
+                app.activity.end_session();
+                reconcile_tracks(&mut app, &mut tracks);
+            } else {
+                eprintln!("--save-track: no active ride (load a route first, e.g. --boot --script pp)");
             }
         }
 

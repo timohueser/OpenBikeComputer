@@ -21,7 +21,10 @@ use obcm_render::{
 use crate::activity::Mode;
 use crate::input::Gesture;
 
-use super::{list_frame, palette, scrollbar, window_start, Ctx, MapScreen, Render, Screen, Transition, LIST_TOP};
+use super::{
+    list_frame, palette, scrollbar, window_start, Ctx, MapScreen, Render, RouteSwapScreen, Screen,
+    Transition, LIST_TOP,
+};
 
 /// Per-route pane height (two lines: name + stats). Sized so exactly four routes fill the
 /// list area below the title bar, with the two-line content centred in each pane.
@@ -46,14 +49,24 @@ impl RouteMenuScreen {
                 Transition::None
             }
             Gesture::Press if len > 0 => {
-                // Load the selected route: tracking starts, the camera drops into the
-                // riding view (follow, heading-up, zoomed in at the start), and the Map
-                // opens. The host opens the geometry on the index change (no I/O here).
                 let i = self.selected.min(len - 1);
+                // A session already running changes the meaning of "load": picking a
+                // *different* route asks whether to swap navigation only or save the ride and
+                // start fresh; re-picking the active route just returns to riding it.
+                if cx.activity.is_tracking() {
+                    if cx.activity.active_route == Some(i) {
+                        return Transition::Root(Screen::Map(MapScreen::new()));
+                    }
+                    return Transition::Push(Screen::RouteSwap(RouteSwapScreen::new(i)));
+                }
+                // No session (loading from Idle): tracking starts, the camera drops into the
+                // riding view (follow, heading-up, zoomed in at the start), and the Map opens.
+                // The host opens the geometry + the ride log on the index/session change.
                 cx.state.enter_riding_view(cx.routes[i].start_lon, cx.routes[i].start_lat);
                 cx.activity.mode = Mode::Riding;
                 cx.activity.active_route = Some(i);
-                Transition::Replace(Screen::Map(MapScreen::new()))
+                cx.activity.start_session();
+                Transition::Root(Screen::Map(MapScreen::new()))
             }
             Gesture::Back => Transition::Pop, // return to caller (Home / Menu)
             _ => Transition::None,

@@ -33,7 +33,11 @@ const MAX_ZOOM: f32 = 1e4;
 const DEFAULT_BG_RGB565: u16 = 0x2104;
 
 /// Stroke width (px) of the active-route overlay — bold enough to read over the map.
-const ROUTE_WEIGHT: u32 = 3;
+const ROUTE_WEIGHT: u32 = 5;
+
+/// Stroke width (px) of the travelled-path breadcrumb — a touch thinner than the route, so
+/// the planned route stays the dominant line where the two coincide.
+const BREADCRUMB_WEIGHT: u32 = 4;
 
 /// The live map / Follow view. Unit struct — all its state is the shared camera.
 #[derive(Debug, Default)]
@@ -84,13 +88,22 @@ impl MapScreen {
         let bg = color_fn(bg565);
         let stats = rx.renderer.render(target, rx.reader, &vp, bg, color_fn);
 
-        // The active route, stroked in amber over the map (under the marker).
+        // The planned route, stroked in blue over the map (under the breadcrumb + marker).
         if let Some(route) = rx.route {
-            rx.renderer.draw_route(target, &vp, route, color_fn(super::palette::AMBER), ROUTE_WEIGHT);
+            rx.renderer.draw_route(target, &vp, route, color_fn(super::palette::ROUTE), ROUTE_WEIGHT);
+        }
+
+        // The travelled-path breadcrumb in red, drawn *over* the route (and under the marker)
+        // so the trail behind you reads red and the route ahead reads blue. One chained stroke
+        // (coarse spine → full-res recent tail), so the tiers never double up. Skipped when
+        // nothing is recorded yet (the bounded buffers can never overrun the scratch).
+        if !rx.breadcrumb.is_empty() {
+            let trail = color_fn(super::palette::BREADCRUMB);
+            rx.renderer.stroke_path(target, &vp, rx.breadcrumb.points(), trail, BREADCRUMB_WEIGHT);
         }
 
         // The "you" colour: warning-red while off-route (so a glance at the map shows the
-        // rider has strayed; the active amber route stays drawn — it's the line back),
+        // rider has strayed; the route + breadcrumb stay drawn — the line back),
         // else the map's marker colour. Shared by the marker and the pan pin so the
         // off-screen pin matches the on-screen marker.
         let marker565 = if rx.activity.off_route { super::palette::WARNING } else { rx.reader.marker_color };

@@ -3,8 +3,10 @@ __pycache__/
 *.obcm
 *.obcr
 *.osm.pbf
-# The simulator's default route store (its "SD card") — runtime artifacts.
+# The simulator's default route + track stores (its "SD card") — runtime artifacts.
 viewer-rs/routes/
+viewer-rs/tracks/
+*.obct
 .pytest_cache/
 user_config.json
 .worktrees/

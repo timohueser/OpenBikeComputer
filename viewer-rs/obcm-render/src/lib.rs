@@ -652,6 +652,51 @@ impl MapRenderer {
             }
         }
     }
+
+    /// Stroke a single polyline of `(lon, lat)` microdegree points as an overlay, applying
+    /// the same projection + overflow guards as [`draw_route`](MapRenderer::draw_route):
+    /// sub-pixel steps are dropped, long segments subdivided, and coordinates clamped, so a
+    /// long path can never overrun the screen scratch (it stops once the buffer fills).
+    ///
+    /// Unlike `draw_route` (a chunked, seam-shared file) this strokes one in-RAM point
+    /// stream — the recorded **breadcrumb**, whose two tiers (spine, recent) are each one
+    /// call. Call after [`render`](MapRenderer::render) so the path sits on the map.
+    pub fn stroke_path<D, I>(&mut self, target: &mut D, vp: &Viewport, pts: I, color: D::Color, weight: u32)
+    where
+        D: DrawTarget,
+        I: IntoIterator<Item = (i32, i32)>,
+    {
+        let (w, h) = (vp.w as i32, vp.h as i32);
+        self.screen.clear();
+        let mut prev: Option<Point> = None;
+        for (lon, lat) in pts {
+            let (x, y) = vp.to_screen(lon, lat);
+            let pt = Point::new(x.clamp(-4 * w, 4 * w), y.clamp(-4 * h, 4 * h));
+            if let Some(p1) = prev {
+                // Drop sub-pixel steps; subdivide long runs like the map/route line path.
+                if (pt.x - p1.x).abs() + (pt.y - p1.y).abs() < 2 {
+                    continue;
+                }
+                let (dx, dy) = (pt.x - p1.x, pt.y - p1.y);
+                let dist = dx.abs().max(dy.abs());
+                if dist > 150 {
+                    let steps = (dist + 149) / 150;
+                    for s in 1..steps {
+                        let _ = self.screen.push(Point::new(p1.x + dx * s / steps, p1.y + dy * s / steps));
+                    }
+                }
+            }
+            if self.screen.push(pt).is_err() {
+                break; // scratch full — bounded, never overruns
+            }
+            prev = Some(pt);
+        }
+        if self.screen.len() >= 2 {
+            let _ = Polyline::new(&self.screen)
+                .into_styled(PrimitiveStyle::with_stroke(color, weight.max(1)))
+                .draw(target);
+        }
+    }
 }
 
 /// Scanline even-odd polygon fill. `screen` holds every ring's projected points
