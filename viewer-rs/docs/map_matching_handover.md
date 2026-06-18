@@ -1,4 +1,16 @@
-# Next session — live map-matching + off-route (route loading M2, Phase B)
+# Live map-matching + off-route (route loading M2, Phase B)
+
+> **STATUS: DONE (2026-06-18).** Shipped `obcm-route::matcher` (`RouteMatch`/`Match`),
+> `App::tick(now_ms, loc, ele, route)`, actually-ridden `Activity` accumulators, and the
+> off-route presentation on both screens. User decisions: stats = **actually-ridden**;
+> off-route on **both** screens; **breadcrumb deferred** to its own slice; scrub =
+> **transient** (snap-back) + a current-elevation readout. Plus a design change beyond this
+> plan: **elevation is a separate barometric `ElevationSource`** (not GPS altitude / not on
+> `Fix`) — see the handover note. **Next = Elevation profile zoom** (`elevation_zoom_handover.md`).
+> The original plan follows for reference.
+
+---
+
 
 The deliverable: make the riding views **live**. Snap the GPS fix to the route
 (`RouteMatch`), feed the matched position + ride accumulators into the Map and the

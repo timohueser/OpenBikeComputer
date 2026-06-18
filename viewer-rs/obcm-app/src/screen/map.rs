@@ -4,16 +4,22 @@
 //! `draw` is byte-for-byte the previous map + marker render.
 //!
 //! Bindings (`docs/ui_framework_brief.md` §Screens): `turn` = zoom, `press` =
-//! pause → Ride control, `back` = the sibling Elevation view, `back-hold` = Menu.
+//! pause → Ride control, `back` = the sibling Statistics view, `back-hold` = Menu.
 //! `hold` (Pan mode) is reserved until that screen lands.
 
-use embedded_graphics::draw_target::DrawTarget;
-use obcm_render::RenderStats;
+use core::fmt::Write;
+
+use embedded_graphics::{draw_target::DrawTarget, prelude::Point};
+use obcm_render::{
+    rect,
+    text::{text_width, Font, TextAlign},
+    Canvas, RenderStats,
+};
 
 use crate::activity::Mode;
 use crate::input::Gesture;
 
-use super::{Ctx, ElevationScreen, MenuScreen, Render, RideControl, Screen, Transition};
+use super::{Ctx, MenuScreen, Render, RideControl, Screen, StatisticsScreen, Transition};
 
 /// Zoom multiplier per encoder detent (matches the scroll-wheel feel).
 const ZOOM_STEP: f32 = 1.2;
@@ -55,9 +61,9 @@ impl MapScreen {
                 Transition::Push(Screen::RideControl(RideControl::new()))
             }
             Gesture::Hold => Transition::None, // Pan mode — later slice
-            // Swap to the sibling Elevation view (the stack stays one deep); its `back`
+            // Swap to the sibling Statistics view (the stack stays one deep); its `back`
             // swaps straight back here.
-            Gesture::Back => Transition::Replace(Screen::Elevation(ElevationScreen::new())),
+            Gesture::Back => Transition::Replace(Screen::Statistics(StatisticsScreen::new())),
             Gesture::BackHold => Transition::Push(Screen::Menu(MenuScreen::new())),
         }
     }
@@ -77,11 +83,42 @@ impl MapScreen {
             rx.renderer.draw_route(target, &vp, route, color_fn(super::palette::AMBER), ROUTE_WEIGHT);
         }
 
-        // The user-position marker, resolved through the host color_fn like styles.
+        // The user-position marker, resolved through the host color_fn like styles. It
+        // turns warning-red while off-route, so a glance at the map shows the rider has
+        // strayed (the active amber route stays drawn — it's the line back).
         if let Some(fix) = rx.state.user_fix {
-            let marker = color_fn(rx.reader.marker_color);
-            rx.renderer.draw_marker(target, &vp, fix.lon, fix.lat, fix.course, marker);
+            let marker565 = if rx.activity.off_route { super::palette::WARNING } else { rx.reader.marker_color };
+            rx.renderer.draw_marker(target, &vp, fix.lon, fix.lat, fix.course, color_fn(marker565));
+        }
+
+        // Off-route pill: a small parchment chip with the cross-track distance, shown
+        // *only* while off-route so the map's steady state stays chrome-free ("map only").
+        if rx.activity.off_route {
+            draw_off_route_pill(target, rx, color_fn);
         }
         stats
     }
+}
+
+/// A compact "off route NNNm" chip centered at the top of the map — appears only while
+/// off-route and vanishes on rejoin, keeping the map otherwise free of chrome.
+fn draw_off_route_pill<D, F>(target: &mut D, rx: &Render, color_fn: &F)
+where
+    D: DrawTarget,
+    F: Fn(u16) -> D::Color,
+{
+    use super::palette::*;
+    let w = rx.w as i32;
+    let mut cv = Canvas::new(target, color_fn);
+    let mut s: heapless::String<20> = heapless::String::new();
+    let _ = write!(s, "off route {}m", rx.activity.dist_to_route_m);
+    // Bold (Body font) so it's readable at a glance over the map.
+    let font = Font::Body;
+    let tw = text_width(&s, font) as i32;
+    let (pw, ph) = (tw + 24, 26);
+    let px = (w - pw) / 2;
+    let py = 10;
+    cv.round(rect(px, py, pw, ph), 7, PARCHMENT);
+    cv.round_outline(rect(px, py, pw, ph), 7, WARNING);
+    cv.text(&s, Point::new(w / 2, py + 6), font, TextAlign::Center, WARNING);
 }
