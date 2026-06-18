@@ -272,7 +272,11 @@ impl SimGui {
             self.app.tick(RideClock(now_ms), sensors, route.as_ref());
         }
 
-        let stats = self.app.render_frame(
+        // Time the whole frame draw (render + route/overlays) and fold it into the stats
+        // as `render_us` — `obcm-render` is no_std and clockless, so the host fills it (the
+        // device will use the DWT cycle counter). Surfaced in the control panel's stats.
+        let t0 = std::time::Instant::now();
+        let mut stats = self.app.render_frame(
             &mut self.fb,
             &reader,
             route.as_ref(),
@@ -280,6 +284,7 @@ impl SimGui {
             self.dev_h as f32,
             |c| crate::color_of(c, tc),
         );
+        stats.render_us = t0.elapsed().as_micros() as u32;
         self.last_stats = stats;
 
         let image =

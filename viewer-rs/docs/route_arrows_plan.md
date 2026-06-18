@@ -1,4 +1,39 @@
-# Route direction arrows + render-timing telemetry — PLAN (STATUS: PLANNED)
+# Route direction arrows + render-timing telemetry — PLAN (STATUS: DONE 2026-06-19)
+
+> **Done** (revised after review — see "What changed vs the original sketch" below).
+>
+> `draw_route(.., arrow_color, arrows_at: Option<u32>)` now does **two passes**: (1) stroke every
+> visible chunk, (2) chevrons. Chevrons are **anchored to route distance** — placed at multiples of
+> `ARROW_SPACING_M` (33 m) along the route's own cumulative distance (`walk_route_arrows`), so they
+> stay pinned to the ground as the camera follows the rider — and **windowed** to
+> `[progress_m − ARROW_BEHIND_M, progress_m + ARROW_AHEAD_M]` around the matcher cursor
+> (`Activity.progress_m`, threaded from `map.rs`). The window means an out-and-back's two passes never
+> collide (only the leg you're on is marked, the right way round), and pass 2 running after the whole
+> route is stroked means chevrons sit on top even where the route doubles back. Finest-LOD gate stays
+> in `map.rs` (`arrows_at = …then_some(progress_m)`). `ROUTE_WEIGHT` 4→8, white `ARROW_COLOR` sits
+> inside the line. `RenderStats.render_us` added (host-filled via `Instant` in `gui.rs`/`main.rs`);
+> panel "Render" row. Tests: `walk_route_arrows` grid/window/anchoring (unit) + `draw_route`
+> gate/window/stroke-width (tests/arrows.rs).
+>
+> **Render-cost fix (the headline).** The thick overlay was ~62 ms/frame for two compounding reasons:
+> embedded-graphics' thick `Polyline` rasterises width pixel-by-pixel (w1 0.04 ms → w4 54 ms for the
+> same geometry), **and** the route/breadcrumb are drawn essentially unclipped — measured **22 of 531
+> segments on-screen (96 % off)**, all rasterised by eg (clipped only per-pixel). First attempt
+> (`stroke_polyline`: one filled quad per segment via the scanline `fill_polygon`) was fast but its
+> per-segment quads don't joint at kinks — curvy routes looked broken. **Final fix** (per review):
+> keep eg's properly-jointed `Polyline`, but **clip the overlay to the view first** —
+> `stroke_overlay` Cohen–Sutherland-clips each projected segment to the screen (grown by the stroke
+> width), splits the line into on-screen runs, and strokes each with eg. eg then only pays for the
+> visible part. `draw_route`, `stroke_path`, **and `render()`'s map lines** all use it. **Frame
+> 85 ms → ~2.3 ms** with correct joints; routing roads through it too (measured) halved the riding
+> view (2.2 → 1.0 ms — the route's underlying mountain road extends off-screen like the route did)
+> and cut coarse zoom ~23 % (7.2 → 5.6 ms), for a +0.09 ms clip-overhead tax on dense city views.
+>
+> **What changed vs the original sketch:** the plan called for screen-arc-length spacing with a
+> per-chunk accumulator (`walk_arrows`); review showed that drifts as chunks scroll in/out and points
+> the wrong way on repeated roads. Replaced with route-distance anchoring + a rider window. The plan's
+> "Cost: negligible" was wrong about the *baseline* stroke (not the chevrons) — hence the
+> `stroke_polyline` work above, which the timing harness measured.
 
 **Part 1 of 3** of the line-rendering roadmap (route arrows → [line styles](line_styles_plan.md) →
 [road casing](road_casing_plan.md)). This part is self-contained and has **no format change** — do it

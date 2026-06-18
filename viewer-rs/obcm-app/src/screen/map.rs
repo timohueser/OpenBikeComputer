@@ -33,8 +33,16 @@ const MAX_ZOOM: f32 = 1e4;
 const DEFAULT_BG_RGB565: u16 = 0x2104;
 
 /// Stroke width (px) of the active-route overlay — bold enough to read over the map and to
-/// out-weigh the heaviest base road (motorway/trunk = 3 px), so the route stays the dominant line.
-const ROUTE_WEIGHT: u32 = 4;
+/// out-weigh the heaviest base road (motorway/trunk = 3 px), so the route stays the dominant
+/// line. Sized so a direction chevron (see [`ARROW_COLOR`]) sits nicely *inside* the line at
+/// riding zoom, the Garmin look — sweep it together with the arrow consts in `obcm-render`.
+const ROUTE_WEIGHT: u32 = 11;
+
+/// Colour of the route direction chevrons — white, for maximum contrast over the magenta
+/// route line (lands on `(255,255,255)` on the device-64 panel). Drawn only at the finest
+/// LOD (riding zoom); see [`MapScreen::draw`]. The chevron shape + spacing are tuned in
+/// `obcm-render` (`ARROW_*`).
+const ARROW_COLOR: u16 = super::palette::PARCHMENT;
 
 /// Stroke width (px) of the travelled-path breadcrumb — a touch thinner than the route, so
 /// the planned route stays the dominant line where the two coincide.
@@ -89,9 +97,23 @@ impl MapScreen {
         let bg = color_fn(bg565);
         let stats = rx.renderer.render(target, rx.reader, &vp, bg, color_fn);
 
-        // The planned route, stroked in magenta over the map (under the breadcrumb + marker).
+        // Direction chevrons ride the route only at the finest LOD (riding zoom): the plain
+        // stroke shows at every zoom, the chevrons appear once `render` selected the last LOD,
+        // anchored to the rider's matched distance along the route (`progress_m`).
+        let arrows_at = (stats.lod + 1 == rx.reader.lods().len()).then_some(rx.activity.progress_m);
+
+        // The planned route, stroked in magenta over the map (under the breadcrumb + marker),
+        // with white travel-direction chevrons near the rider at riding zoom.
         if let Some(route) = rx.route {
-            rx.renderer.draw_route(target, &vp, route, color_fn(super::palette::ROUTE), ROUTE_WEIGHT);
+            rx.renderer.draw_route(
+                target,
+                &vp,
+                route,
+                color_fn(super::palette::ROUTE),
+                ROUTE_WEIGHT,
+                color_fn(ARROW_COLOR),
+                arrows_at,
+            );
         }
 
         // The travelled-path breadcrumb in navy, drawn *over* the route (and under the marker)

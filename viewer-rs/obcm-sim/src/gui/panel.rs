@@ -424,6 +424,15 @@ impl SimGui {
             ui.label("Points");
             ui.label(format!("{} / {} drawn", s.points_drawn, s.points_tried));
             ui.end_row();
+
+            // Host-measured frame draw time (render + route/overlays). 0 = not yet measured.
+            ui.label("Render");
+            if s.render_us == 0 {
+                ui.label("—");
+            } else {
+                ui.label(format!("{:.2} ms", s.render_us as f64 / 1000.0));
+            }
+            ui.end_row();
         });
 
         ui.add_space(4.0);
