@@ -32,12 +32,13 @@ const MAX_ZOOM: f32 = 1e4;
 /// the old `App::render_frame` used, so a backdrop-less map looks identical.
 const DEFAULT_BG_RGB565: u16 = 0x2104;
 
-/// Stroke width (px) of the active-route overlay — bold enough to read over the map.
-const ROUTE_WEIGHT: u32 = 5;
+/// Stroke width (px) of the active-route overlay — bold enough to read over the map and to
+/// out-weigh the heaviest base road (motorway/trunk = 3 px), so the route stays the dominant line.
+const ROUTE_WEIGHT: u32 = 4;
 
 /// Stroke width (px) of the travelled-path breadcrumb — a touch thinner than the route, so
 /// the planned route stays the dominant line where the two coincide.
-const BREADCRUMB_WEIGHT: u32 = 4;
+const BREADCRUMB_WEIGHT: u32 = 3;
 
 /// The live map / Follow view. Unit struct — all its state is the shared camera.
 #[derive(Debug, Default)]
@@ -88,13 +89,13 @@ impl MapScreen {
         let bg = color_fn(bg565);
         let stats = rx.renderer.render(target, rx.reader, &vp, bg, color_fn);
 
-        // The planned route, stroked in blue over the map (under the breadcrumb + marker).
+        // The planned route, stroked in magenta over the map (under the breadcrumb + marker).
         if let Some(route) = rx.route {
             rx.renderer.draw_route(target, &vp, route, color_fn(super::palette::ROUTE), ROUTE_WEIGHT);
         }
 
-        // The travelled-path breadcrumb in red, drawn *over* the route (and under the marker)
-        // so the trail behind you reads red and the route ahead reads blue. One chained stroke
+        // The travelled-path breadcrumb in navy, drawn *over* the route (and under the marker)
+        // so the trail behind you reads navy and the route ahead reads magenta. One chained stroke
         // (coarse spine → full-res recent tail), so the tiers never double up. Skipped when
         // nothing is recorded yet (the bounded buffers can never overrun the scratch).
         if !rx.breadcrumb.is_empty() {
