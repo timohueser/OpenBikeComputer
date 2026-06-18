@@ -11,7 +11,7 @@ use obcm_app::activity::Activity;
 use obcm_app::screen::{
     apply, Ctx, HomeScreen, MapScreen, MenuScreen, RideControl, RouteMenuScreen, Screen, Stack, Transition,
 };
-use obcm_app::{App, AppState, Button, ButtonEvent, CameraMode, Fix, Gesture, InputClock, InputEvent, InputSource, LocationSource, Mode, RideClock, RouteSummary, Sensors};
+use obcm_app::{App, AppState, Button, ButtonEvent, CameraMode, Fix, Gesture, InputClock, InputEvent, InputSource, LocationSource, Mode, PanAxis, RideClock, RouteSummary, Sensors};
 use obcm_reader::{rgb565_to_rgb888, BBox, Reader};
 
 /// A handle [`Ctx`] over freshly-made state/activity for a one-gesture test. Most
@@ -381,4 +381,100 @@ fn build_min_obcm(marker: u16) -> Vec<u8> {
     f.extend_from_slice(&table);
     f.extend_from_slice(&index);
     f
+}
+
+// ---------------------------------------------------------------------------
+// Pan mode (a Map sub-mode driven by the shared `AppState::pan`): enter/exit,
+// the axis + orientation toggles, panning, and the camera freeze.
+// ---------------------------------------------------------------------------
+
+/// A location source that always returns the same fix (for the freeze test).
+struct OneFix(Fix);
+impl LocationSource for OneFix {
+    fn poll(&mut self) -> Option<Fix> {
+        Some(self.0)
+    }
+}
+
+/// `hold` on the Follow map enters pan: the camera detaches (Free) and a pan state
+/// appears — axis Vertical, orientation matching the map (here north-up).
+#[test]
+fn map_hold_enters_pan_mode() {
+    let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Riding));
+    let t = MapScreen::new().handle(Gesture::Hold, &mut ctx(&mut st, &mut act));
+    assert!(matches!(t, Transition::None));
+    let pan = st.pan.expect("hold enters pan");
+    assert_eq!(pan.axis, PanAxis::Vertical);
+    assert!(pan.north_up, "a north-up map enters pan north-up");
+    assert_eq!(st.mode, CameraMode::Free, "the camera detaches while panning");
+}
+
+/// While panning, a fresh fix no longer recenters the frozen camera (but is still
+/// recorded for the marker).
+#[test]
+fn pan_freezes_camera_against_fixes() {
+    let (mut st, _act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Riding));
+    st.enter_pan();
+    st.update(&mut OneFix(Fix::at(5000, 7000)));
+    assert_eq!((st.cam_lon, st.cam_lat), (0, 0), "the frozen camera ignores the fix");
+    assert_eq!(st.user_fix.map(|f| (f.lon, f.lat)), Some((7000, 5000)), "but the fix is recorded");
+}
+
+/// `turn` moves the frozen camera along the active axis: a positive detent on a
+/// north-up map pans up (+latitude), leaving longitude alone, and reversing returns
+/// to the start (within microdegree rounding).
+#[test]
+fn pan_turn_moves_camera_along_axis() {
+    let (mut st, mut act) = (AppState::new(0, 0, 4.0), Activity::new(Mode::Riding));
+    st.enter_pan(); // north-up (heading_up defaults false)
+    MapScreen::new().handle(Gesture::Turn(1), &mut ctx(&mut st, &mut act));
+    assert!(st.cam_lat > 0, "a positive detent pans up = +latitude");
+    assert_eq!(st.cam_lon, 0, "the vertical axis leaves longitude unchanged");
+    MapScreen::new().handle(Gesture::Turn(-1), &mut ctx(&mut st, &mut act));
+    assert!(st.cam_lat.abs() <= 1 && st.cam_lon.abs() <= 1, "reversing returns to the start (±1 µdeg)");
+}
+
+/// `press` toggles the pan axis; `hold` flips N-up ↔ heading-up and freezes the new
+/// angle, so the map orientation never drifts while panning.
+#[test]
+fn pan_press_toggles_axis_hold_toggles_orientation() {
+    let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Riding));
+    st.heading_up = true;
+    st.user_fix = Some(Fix { lat: 0, lon: 0, course: Some(90.0), speed_mps: Some(5.0) });
+    st.enter_pan();
+    assert!(!st.pan.unwrap().north_up, "a heading-up map enters pan heading-up");
+    let rot0 = st.viewport(240.0, 320.0).course_rad;
+    assert!((rot0 - std::f32::consts::FRAC_PI_2).abs() < 1e-3, "frozen at the 90° course");
+
+    MapScreen::new().handle(Gesture::Press, &mut ctx(&mut st, &mut act));
+    assert_eq!(st.pan.unwrap().axis, PanAxis::Horizontal);
+
+    MapScreen::new().handle(Gesture::Hold, &mut ctx(&mut st, &mut act));
+    assert!(st.pan.unwrap().north_up, "hold flips to north-up");
+    assert!(st.viewport(240.0, 320.0).course_rad.abs() < 1e-6, "north-up = 0 rotation");
+
+    MapScreen::new().handle(Gesture::Hold, &mut ctx(&mut st, &mut act));
+    assert!(!st.pan.unwrap().north_up, "hold flips back to heading-up");
+    assert!((st.viewport(240.0, 320.0).course_rad - std::f32::consts::FRAC_PI_2).abs() < 1e-3, "and re-freezes the course");
+}
+
+/// `back` recenters on the rider but stays in pan; `back-hold` exits to Follow and
+/// does *not* fall through to the global `back-hold` = Menu.
+#[test]
+fn pan_back_recenters_and_back_hold_exits() {
+    let (mut st, mut act) = (AppState::new(0, 0, 4.0), Activity::new(Mode::Riding));
+    st.user_fix = Some(Fix::at(5000, 7000));
+    st.enter_pan();
+    MapScreen::new().handle(Gesture::Turn(2), &mut ctx(&mut st, &mut act)); // pan away
+    assert_ne!((st.cam_lon, st.cam_lat), (7000, 5000));
+
+    let t = MapScreen::new().handle(Gesture::Back, &mut ctx(&mut st, &mut act));
+    assert!(matches!(t, Transition::None));
+    assert_eq!((st.cam_lon, st.cam_lat), (7000, 5000), "back recenters on the fix");
+    assert!(st.pan.is_some(), "back stays in pan");
+
+    let t = MapScreen::new().handle(Gesture::BackHold, &mut ctx(&mut st, &mut act));
+    assert!(matches!(t, Transition::None), "back-hold doesn't open the Menu while panning");
+    assert!(st.pan.is_none(), "back-hold exits pan");
+    assert_eq!(st.mode, CameraMode::Follow, "exiting resumes Follow");
 }

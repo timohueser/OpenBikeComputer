@@ -33,7 +33,8 @@ Five distinct gestures total:
 | Back long press | `back-hold` |
 
 Global rule: **`back-hold` toggles the Menu** from any main screen (Home, Map,
-Elevation). **`hold` toggles Pan mode** while on the Map.
+Elevation) — **except inside Pan mode, where `back-hold` exits Pan**. **`hold`
+enters Pan mode** from the Map (and, once in it, toggles north-up / heading-up).
 
 ---
 
@@ -78,7 +79,8 @@ stateDiagram-v2
     state Map {
         [*] --> Follow
         Follow --> Pan: hold
-        Pan --> Follow: hold
+        Pan --> Follow: back-hold
+        Pan --> Pan: hold (north-up / heading-up)
     }
 
     Follow --> Elevation: back
@@ -116,8 +118,8 @@ Authoritative bindings. `–` = unbound (no-op, reserved).
 |---|---|---|---|---|---|
 | **Home** | – | → Route menu | – | – | → Menu |
 | **Route menu** | scroll routes | load route → Map (tracking ON) | – | → caller (Home/Menu) | – |
-| **Map / Follow** | zoom | pause → Ride control | → Pan mode | → Elevation | → Menu |
-| **Pan mode** | pan along active axis | toggle axis (L-R ↔ U-D) | exit → Follow | recenter on position | – |
+| **Map / Follow** | zoom | pause → Ride control | enter Pan mode | → Statistics | → Menu |
+| **Pan mode** | pan along axis | toggle axis (U-D ↔ L-R) | toggle N-up / heading-up | recenter on you | exit → Follow |
 | **Elevation** | scrub profile cursor | pause → Ride control | – | → Map | → Menu |
 | **Ride control** | choose option | select (Resume / Finish / Discard) | – | Resume (cancel) | – |
 | **Menu** | scroll (Routes / Settings) | open selected | – | → caller | → Shutdown prompt |
@@ -213,5 +215,6 @@ numeric/glanceable data in the most legible face.
    one for live grade / ETA while moving?
 6. **Settings contents** — not yet defined.
 7. **Power-on resume** of an in-progress route — assumed yes; confirm.
-8. Reserved/unbound gestures: Home `hold`, Elevation `hold`, Pan `back-hold`,
-   Ride control `hold`. Available for future features.
+8. Reserved/unbound gestures: Home `hold`, Ride control `hold`. (Map `hold` enters
+   Pan; Pan binds all five gestures; Elevation `hold` is claimed by the profile-zoom
+   slice.) Available for future features.
