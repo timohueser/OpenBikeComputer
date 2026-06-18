@@ -38,7 +38,7 @@ pub mod screen;
 
 pub use activity::{Activity, Mode};
 pub use route::{Catalog, RouteSummary, MAX_ROUTES};
-pub use app::{App, AppState, CameraMode};
+pub use app::{App, AppState, CameraMode, Pan, PanAxis};
 pub use hal::{
     AltimeterSource, Button, ButtonEvent, Fix, InputClock, InputEvent, InputSource, LocationSource,
     RideClock, Sensors,

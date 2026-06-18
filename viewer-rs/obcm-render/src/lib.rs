@@ -215,6 +215,16 @@ impl Viewport {
     pub fn meters_per_pixel(&self) -> f32 {
         METERS_PER_MICRODEG_LAT / self.zoom
     }
+
+    /// Unit screen-space vector pointing to map **north** — for a compass needle.
+    /// At north-up this is `(0, -1)` (straight up); a heading-up rotation turns it.
+    /// Pure rotation, independent of zoom, latitude, and position: a +lat step maps
+    /// to `(-sin_c, -cos_c)` in [`to_screen`](Viewport::to_screen) before the (here
+    /// irrelevant) scale, and that is already unit length.
+    #[inline]
+    pub fn north_screen_unit(&self) -> (f32, f32) {
+        (-self.sin_c, -self.cos_c)
+    }
 }
 
 #[inline]

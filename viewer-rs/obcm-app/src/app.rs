@@ -24,6 +24,52 @@ pub enum CameraMode {
     Free,
 }
 
+/// The screen-space axis the encoder pans along in [pan mode](Pan).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanAxis {
+    /// Up / down in screen space — the default on entering pan.
+    Vertical,
+    /// Left / right in screen space.
+    Horizontal,
+}
+
+impl PanAxis {
+    /// The other axis — encoder `press` toggles between the two.
+    pub fn toggled(self) -> Self {
+        match self {
+            PanAxis::Vertical => PanAxis::Horizontal,
+            PanAxis::Horizontal => PanAxis::Vertical,
+        }
+    }
+
+    /// Unit screen-space direction a **positive** detent pans the camera centre
+    /// toward: vertical → up (`-y`), horizontal → right (`+x`).
+    fn unit(self) -> (f32, f32) {
+        match self {
+            PanAxis::Vertical => (0.0, -1.0),
+            PanAxis::Horizontal => (1.0, 0.0),
+        }
+    }
+}
+
+/// Active **pan-mode** state. While this is `Some`, the camera is detached
+/// ([`Free`](CameraMode::Free)) and frozen where the rider left it: GPS fixes no
+/// longer recenter it, and the map rotation is locked to
+/// [`frozen_course_rad`](Pan::frozen_course_rad) so a live heading update can't spin
+/// the map under the pan. `None` = the normal Follow map.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Pan {
+    /// Which screen axis `turn` pans along.
+    pub axis: PanAxis,
+    /// `true` = north-up; `false` = heading-up at
+    /// [`frozen_course_rad`](Pan::frozen_course_rad). Encoder `hold` toggles it.
+    pub north_up: bool,
+    /// The frozen heading-up rotation (radians CW from north), snapshotted on entry
+    /// and re-snapshotted whenever `hold` flips back to heading-up — so the map never
+    /// rotates *while* you pan.
+    pub frozen_course_rad: f32,
+}
+
 /// The device's view state: where the camera looks, how zoomed in it is, what
 /// mode it's in, and the last known user fix.
 ///
@@ -53,6 +99,10 @@ pub struct AppState {
     /// The most recent fix from the [`LocationSource`], or `None` before the
     /// first one. Drives the heading-up rotation and the (future) user marker.
     pub user_fix: Option<Fix>,
+    /// Pan mode, or `None` on the normal Follow map. `Some` detaches the camera and
+    /// freezes the rotation (see [`Pan`]); the Map screen binds the encoder/Back to
+    /// panning while it's set and draws the pan HUD over the map.
+    pub pan: Option<Pan>,
 }
 
 impl AppState {
@@ -67,6 +117,7 @@ impl AppState {
             mode: CameraMode::Follow,
             heading_up: false,
             user_fix: None,
+            pan: None,
         }
     }
 
@@ -83,7 +134,9 @@ impl AppState {
     pub fn update(&mut self, loc: &mut dyn LocationSource) -> Option<Fix> {
         let fix = loc.poll()?;
         self.user_fix = Some(fix);
-        if self.mode == CameraMode::Follow {
+        // Recenter only when actually following — pan mode runs in Free, but guard on
+        // `pan` too so a frozen camera can never be yanked back by an incoming fix.
+        if self.mode == CameraMode::Follow && self.pan.is_none() {
             self.cam_lon = fix.lon;
             self.cam_lat = fix.lat;
         }
@@ -98,14 +151,27 @@ impl AppState {
     /// the last fix's `course` points to the top of the screen; with no course (or
     /// north-up) it stays north-up.
     pub fn viewport(&self, w: f32, h: f32) -> Viewport {
-        let course_rad = if self.heading_up {
-            self.user_fix
-                .and_then(|f| f.course)
-                .map_or(0.0, |deg| deg.to_radians())
-        } else {
-            0.0
-        };
-        Viewport::new_rotated(w, h, self.cam_lon, self.cam_lat, self.zoom, course_rad)
+        Viewport::new_rotated(w, h, self.cam_lon, self.cam_lat, self.zoom, self.course_rad())
+    }
+
+    /// The rotation (radians CW from north) the projection puts at screen-up. In
+    /// [pan mode](Pan) it's the frozen pan angle (0 north-up, else the snapshot); on
+    /// the normal map it's the live fix course when [`heading_up`](AppState::heading_up),
+    /// else north-up. Shared by [`viewport`](AppState::viewport) and the pan math so
+    /// the two never disagree.
+    pub(crate) fn course_rad(&self) -> f32 {
+        match self.pan {
+            Some(pan) if pan.north_up => 0.0,
+            Some(pan) => pan.frozen_course_rad,
+            None if self.heading_up => self.live_course_rad(),
+            None => 0.0,
+        }
+    }
+
+    /// The heading-up angle to freeze from the latest fix right now (0 when stopped /
+    /// no fix). Used on entering pan and when `hold` flips back to heading-up.
+    fn live_course_rad(&self) -> f32 {
+        self.user_fix.and_then(|f| f.course).map_or(0.0, |deg| deg.to_radians())
     }
 
     /// Switch to the **riding view** — what loading a route should look like on the
@@ -116,15 +182,90 @@ impl AppState {
     pub fn enter_riding_view(&mut self, lon: i32, lat: i32) {
         self.mode = CameraMode::Follow;
         self.heading_up = true;
+        self.pan = None;
         self.cam_lon = lon;
         self.cam_lat = lat;
         self.zoom = zoom_for_mpp(RIDING_MPP);
+    }
+
+    /// Enter **pan mode**: detach the camera ([`Free`](CameraMode::Free)) so fixes stop
+    /// recentering it, and snapshot the current orientation (keeping north-up vs
+    /// heading-up) with its angle frozen. Axis starts [`Vertical`](PanAxis::Vertical).
+    pub fn enter_pan(&mut self) {
+        self.mode = CameraMode::Free;
+        self.pan = Some(Pan {
+            axis: PanAxis::Vertical,
+            north_up: !self.heading_up,
+            frozen_course_rad: self.live_course_rad(),
+        });
+    }
+
+    /// Leave pan mode: drop the pan state, resume [`Follow`](CameraMode::Follow), and
+    /// recenter on the last fix so the rider snaps straight back onto themselves.
+    pub fn exit_pan(&mut self) {
+        self.pan = None;
+        self.mode = CameraMode::Follow;
+        self.recenter_on_user();
+    }
+
+    /// Recenter the camera on the last known fix — encoder `back` in pan mode (which
+    /// stays in pan). No-op before the first fix.
+    pub fn recenter_on_user(&mut self) {
+        if let Some(fix) = self.user_fix {
+            self.cam_lon = fix.lon;
+            self.cam_lat = fix.lat;
+        }
+    }
+
+    /// Toggle the active pan axis (encoder `press`). No-op when not panning.
+    pub fn toggle_pan_axis(&mut self) {
+        if let Some(pan) = self.pan.as_mut() {
+            pan.axis = pan.axis.toggled();
+        }
+    }
+
+    /// Toggle north-up ↔ heading-up while panning (encoder `hold`), re-freezing the
+    /// heading-up angle from the latest fix so it tracks the rider's current heading.
+    /// No-op when not panning.
+    pub fn toggle_pan_orientation(&mut self) {
+        let frozen = self.live_course_rad();
+        if let Some(pan) = self.pan.as_mut() {
+            pan.north_up = !pan.north_up;
+            if !pan.north_up {
+                pan.frozen_course_rad = frozen;
+            }
+        }
+    }
+
+    /// Pan the camera by `detents` encoder steps along the active axis
+    /// ([`PAN_STEP_PX`] each). No-op when not panning.
+    pub fn pan_step(&mut self, detents: i32) {
+        let Some(pan) = self.pan else { return };
+        let (ux, uy) = pan.axis.unit();
+        let d = detents as f32 * PAN_STEP_PX;
+        self.pan_by_pixels(ux * d, uy * d);
+    }
+
+    /// Shift the camera centre by a screen-space pixel offset, honouring the current
+    /// zoom, latitude aspect, and frozen rotation. Reuses [`Viewport::to_map`] on a
+    /// zero-sized viewport — the screen centre cancels out of the inverse projection,
+    /// so this needs no display dimensions and the projection math stays in one place.
+    fn pan_by_pixels(&mut self, dx: f32, dy: f32) {
+        let vp = Viewport::new_rotated(0.0, 0.0, self.cam_lon, self.cam_lat, self.zoom, self.course_rad());
+        let (lon, lat) = vp.to_map(dx, dy);
+        self.cam_lon = lon;
+        self.cam_lat = lat;
     }
 }
 
 /// Ground meters-per-pixel to zoom to when a route loads — close enough for
 /// turn-by-turn riding rather than the whole-route overview.
 const RIDING_MPP: f32 = 0.5;
+
+/// Camera travel **per encoder detent** in pan mode, in screen pixels. A *screen*
+/// amount (not ground metres), so panning is finer when zoomed in — "panning always
+/// happens at the current zoom level". The single knob for pan speed; tune here.
+pub const PAN_STEP_PX: f32 = 40.0;
 
 /// The whole device application, ready to run a frame.
 ///
