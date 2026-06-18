@@ -15,7 +15,7 @@ use std::collections::VecDeque;
 use std::f32::consts::{PI, TAU};
 use std::time::Instant;
 
-use obcm_app::{Button, ButtonEvent, Gesture, InputEvent, InputSource};
+use obcm_app::{Button, ButtonEvent, InputEvent, InputSource};
 
 /// Radians of knob rotation per emitted detent (~15° ⇒ ~24 detents per turn,
 /// a typical encoder). Shared by drag and scroll so both feel the same.
@@ -142,17 +142,6 @@ impl InputSource for DeviceInput {
 impl Default for DeviceInput {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-/// A short human label for a recognized gesture (the panel's input readout).
-pub fn label(g: Gesture) -> String {
-    match g {
-        Gesture::Turn(n) => format!("Turn {n:+}"),
-        Gesture::Press => "Press".into(),
-        Gesture::Hold => "Hold".into(),
-        Gesture::Back => "Back".into(),
-        Gesture::BackHold => "Back-hold".into(),
     }
 }
 

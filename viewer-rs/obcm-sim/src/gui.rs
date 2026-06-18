@@ -132,9 +132,10 @@ impl SimGui {
             None => PanelState { lat_deg: 0.0, lon_deg: 0.0, heading_deg: 0.0 },
         };
 
-        // `--boot` opens at the device's Home/Idle state to walk the full flow;
-        // otherwise the sim opens on the map (its map-viewer default).
-        let app = if args.boot { App::new_idle(state) } else { App::new(state) };
+        // Boot at the device's real power-on state (Home / Idle, no route): pressing
+        // the encoder walks Home → Route menu → Map, exactly like the device. (The
+        // headless `--png` path opens straight on the map for render inspection.)
+        let app = App::new_idle(state);
         let store = RouteStore::open(args.routes_dir.clone().unwrap_or_else(|| "routes".to_string()));
         let mut gui = SimGui {
             app,

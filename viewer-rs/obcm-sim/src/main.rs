@@ -77,8 +77,9 @@ struct Args {
     /// `r`/`l` = turn cw/ccw, `p` = press, `h` = hold, `b` = back, `B` = back-hold.
     /// E.g. `--script B` opens the Menu; `--script p` opens Ride control.
     script: Option<String>,
-    /// Boot at the device's real power-on state (Home / Idle, no route) instead of
-    /// the map. Use with `--script` to walk the Home → Route menu → Map flow.
+    /// Headless `--png` only: render from the device's real power-on state (Home /
+    /// Idle, no route) instead of straight from the map. Use with `--script` to walk
+    /// the Home → Route menu → Map flow. (The interactive GUI always boots to Home.)
     boot: bool,
     /// Folder of `.obcr` routes — the simulator's stand-in for the device SD card.
     /// The Route menu lists these; defaults to `routes/`.

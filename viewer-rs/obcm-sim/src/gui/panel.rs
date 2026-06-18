@@ -12,7 +12,6 @@ use super::units::{
     format_clock, format_distance, mpp_to_zoom, zoom_to_mpp, MAX_ZOOM, MIN_ZOOM, MPP_MAX, MPP_MIN,
 };
 use super::SimGui;
-use crate::device_input::label;
 
 // Control-panel knob colors (host chrome — picked for the egui panel, not the
 // device screen, so they need not pass through the 64-color quantization).
@@ -46,13 +45,10 @@ impl SimGui {
             egui::ViewportId::from_hash_of("controls"),
             egui::ViewportBuilder::default()
                 .with_title("Controls")
-                .with_inner_size([360.0, 880.0]),
+                .with_inner_size([360.0, 770.0]),
             |ctx, _class| {
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    ui.heading("Simulated device");
-                    ui.add_space(6.0);
-
-                    // The device's own controls (encoder + Back) → gesture readout.
+                    // The device's own controls (encoder + Back).
                     self.show_device_controls(ui);
                     ui.add_space(6.0);
                     ui.separator();
@@ -69,30 +65,27 @@ impl SimGui {
                     let replaying = self.gpx.is_some();
 
                     // Position — the GPS fix, edited in degrees (stored as µdeg).
+                    // Lat and Lon share one row to spend width, not height.
                     ui.add_enabled_ui(!replaying, |ui| {
-                        egui::Grid::new("position").num_columns(2).spacing([8.0, 6.0]).show(
-                            ui,
-                            |ui| {
-                                ui.label("Latitude");
-                                ui.add(
-                                    egui::DragValue::new(&mut self.panel.lat_deg)
-                                        .speed(1e-4)
-                                        .range(-90.0..=90.0)
-                                        .max_decimals(6)
-                                        .suffix("°"),
-                                );
-                                ui.end_row();
-                                ui.label("Longitude");
-                                ui.add(
-                                    egui::DragValue::new(&mut self.panel.lon_deg)
-                                        .speed(1e-4)
-                                        .range(-180.0..=180.0)
-                                        .max_decimals(6)
-                                        .suffix("°"),
-                                );
-                                ui.end_row();
-                            },
-                        );
+                        ui.horizontal(|ui| {
+                            ui.label("Lat");
+                            ui.add(
+                                egui::DragValue::new(&mut self.panel.lat_deg)
+                                    .speed(1e-4)
+                                    .range(-90.0..=90.0)
+                                    .max_decimals(6)
+                                    .suffix("°"),
+                            );
+                            ui.add_space(12.0);
+                            ui.label("Lon");
+                            ui.add(
+                                egui::DragValue::new(&mut self.panel.lon_deg)
+                                    .speed(1e-4)
+                                    .range(-180.0..=180.0)
+                                    .max_decimals(6)
+                                    .suffix("°"),
+                            );
+                        });
                     });
 
                     ui.add_space(6.0);
@@ -139,32 +132,35 @@ impl SimGui {
                     ui.add_space(6.0);
                     ui.separator();
 
-                    // Camera mode.
-                    ui.label("Camera");
+                    // Camera mode and Orientation — paired on one row (each a label
+                    // over its toggle) to spend width instead of height. Orientation
+                    // (north-up vs heading-up, rotating the map so Heading points to the
+                    // top) is independent of the camera mode.
                     let prev_mode = self.app.state.mode;
                     ui.horizontal(|ui| {
-                        ui.selectable_value(&mut self.app.state.mode, CameraMode::Follow, "Follow");
-                        ui.selectable_value(&mut self.app.state.mode, CameraMode::Free, "Free");
+                        ui.vertical(|ui| {
+                            ui.label("Camera");
+                            ui.horizontal(|ui| {
+                                ui.selectable_value(&mut self.app.state.mode, CameraMode::Follow, "Follow");
+                                ui.selectable_value(&mut self.app.state.mode, CameraMode::Free, "Free");
+                            });
+                        });
+                        ui.separator();
+                        ui.vertical(|ui| {
+                            ui.label("Orientation");
+                            ui.horizontal(|ui| {
+                                ui.selectable_value(&mut self.app.state.heading_up, false, "North-up");
+                                ui.selectable_value(&mut self.app.state.heading_up, true, "Heading-up");
+                            });
+                        });
                     });
-                    // Entering Follow: snap the fix onto the current camera center
-                    // so the view doesn't jump (in Free the mouse moved the camera
-                    // away from the fix) and the panel reads the followed point.
+                    // Entering Follow: snap the fix onto the current camera center so the
+                    // view doesn't jump (in Free the mouse moved the camera away from the
+                    // fix) and the panel reads the followed point.
                     if prev_mode == CameraMode::Free && self.app.state.mode == CameraMode::Follow {
                         self.panel.lat_deg = self.app.state.cam_lat as f64 / 1e6;
                         self.panel.lon_deg = self.app.state.cam_lon as f64 / 1e6;
                     }
-
-                    ui.add_space(6.0);
-                    ui.separator();
-
-                    // Orientation — north-up vs heading-up (rotates the map so the
-                    // Heading above points to the top of the screen). Independent
-                    // of the camera mode.
-                    ui.label("Orientation");
-                    ui.horizontal(|ui| {
-                        ui.selectable_value(&mut self.app.state.heading_up, false, "North-up");
-                        ui.selectable_value(&mut self.app.state.heading_up, true, "Heading-up");
-                    });
 
                     ui.add_space(6.0);
                     ui.separator();
@@ -185,7 +181,10 @@ impl SimGui {
                     ui.add_space(6.0);
                     ui.separator();
 
-                    ui.collapsing("Render Stats", |ui| self.show_render_stats(ui));
+                    // Expanded by default — the render stats are worth keeping an eye on.
+                    egui::CollapsingHeader::new("Render Stats")
+                        .default_open(true)
+                        .show(ui, |ui| self.show_render_stats(ui));
 
                     if ctx.input(|i| i.viewport().close_requested()) {
                         self.quit = true;
@@ -208,20 +207,26 @@ impl SimGui {
     /// (held past the threshold they become `Hold` / `Back-hold`); the keyboard
     /// mirrors all of it. Raw events feed [`App::handle_input`](obcm_app::App::handle_input),
     /// which runs the shared recognizer and drives the screen stack — so the encoder
-    /// actually zooms the map, pauses into Ride control, etc. The recognized gesture
-    /// and hold-progress are read back for the live readout.
+    /// actually zooms the map, pauses into Ride control, etc. Encoder-hold progress
+    /// shows as the amber confirm ring drawn around the knob.
     fn show_device_controls(&mut self, ui: &mut egui::Ui) {
-        ui.label(egui::RichText::new("Device controls — encoder + Back").strong());
-        ui.label(egui::RichText::new("scroll or drag the knob to turn").weak().size(11.0));
+        ui.label(egui::RichText::new("Device — encoder + Back").strong());
         ui.add_space(4.0);
 
-        // --- Knob: a round encoder with a pointer notch + hold-progress ring. ---
+        // Read back before the closure borrows `self` for the knob interaction.
         let knob_angle = self.input.knob_angle();
         let enc_progress = self.app.encoder_hold_progress();
-        const SZ: f32 = 110.0;
-        let resp = ui
-            .vertical_centered(|ui| {
-                let (rect, resp) = ui.allocate_exact_size(egui::vec2(SZ, SZ), egui::Sense::drag());
+        const SZ: f32 = 96.0;
+        const BTN_W: f32 = 110.0;
+        const BTN_H: f32 = 34.0;
+
+        // Knob on the left, PUSH / BACK stacked to its right — spend the panel's
+        // width rather than its height.
+        let (push_resp, back_resp) = ui
+            .horizontal(|ui| {
+                // --- Knob: a round encoder with a pointer notch + hold-progress ring. ---
+                let (rect, resp) =
+                    ui.allocate_exact_size(egui::vec2(SZ, SZ), egui::Sense::drag());
                 let painter = ui.painter_at(rect);
                 let center = rect.center();
                 let radius = SZ * 0.42;
@@ -231,39 +236,40 @@ impl SimGui {
                 let notch = center + egui::Vec2::angled(knob_angle) * (radius - 7.0);
                 painter.line_segment([center, notch], egui::Stroke::new(3.0, NOTCH));
                 painter.circle_filled(notch, 4.0, NOTCH);
-                // Encoder hold-progress arc — previews the guarded-action confirm ring.
+                // Encoder hold-progress arc — the guarded-action confirm ring.
                 if enc_progress > 0.0 {
                     painter.add(egui::Shape::line(
                         arc_points(center, radius + 6.0, enc_progress),
                         egui::Stroke::new(4.0, AMBER),
                     ));
                 }
-                resp
-            })
-            .inner;
+                if resp.dragged() {
+                    if let Some(p) = resp.interact_pointer_pos() {
+                        self.input.drag_to((p - resp.rect.center()).angle());
+                    }
+                }
+                if resp.drag_stopped() {
+                    self.input.end_drag();
+                }
+                if resp.hovered() {
+                    let dy = ui.input(|i| i.smooth_scroll_delta.y);
+                    if dy != 0.0 {
+                        self.input.scroll(dy);
+                    }
+                }
 
-        if resp.dragged() {
-            if let Some(p) = resp.interact_pointer_pos() {
-                self.input.drag_to((p - resp.rect.center()).angle());
-            }
-        }
-        if resp.drag_stopped() {
-            self.input.end_drag();
-        }
-        if resp.hovered() {
-            let dy = ui.input(|i| i.smooth_scroll_delta.y);
-            if dy != 0.0 {
-                self.input.scroll(dy);
-            }
-        }
+                ui.add_space(16.0);
 
-        // --- PUSH (encoder) / BACK buttons — press-and-hold. ---
-        ui.add_space(6.0);
-        let (push_resp, back_resp) = ui
-            .horizontal(|ui| {
-                let p = ui.add_sized([100.0, 32.0], egui::Button::new("PUSH"));
-                let b = ui.add_sized([100.0, 32.0], egui::Button::new("BACK"));
-                (p, b)
+                // --- PUSH (encoder) / BACK — press-and-hold, stacked and vertically
+                // centered beside the knob. ---
+                ui.vertical(|ui| {
+                    ui.add_space((SZ - 2.0 * BTN_H - 8.0) / 2.0);
+                    let p = ui.add_sized([BTN_W, BTN_H], egui::Button::new("PUSH"));
+                    ui.add_space(8.0);
+                    let b = ui.add_sized([BTN_W, BTN_H], egui::Button::new("BACK"));
+                    (p, b)
+                })
+                .inner
             })
             .inner;
 
@@ -280,23 +286,9 @@ impl SimGui {
         let now = self.input.now_ms();
         self.app.handle_input(InputClock(now), &mut self.input);
 
-        // --- Live readout (read back from the app). ---
-        ui.add_space(8.0);
-        let last = self.app.last_gesture().map(label).unwrap_or_else(|| "(none)".to_owned());
-        ui.label(egui::RichText::new(format!("Last gesture:  {last}")).size(16.0).strong());
-
-        let ep = self.app.encoder_hold_progress();
-        let bp = self.app.back_hold_progress();
-        if ep > 0.0 {
-            ui.add(egui::ProgressBar::new(ep).desired_width(220.0).text("encoder hold"));
-        }
-        if bp > 0.0 {
-            ui.add(egui::ProgressBar::new(bp).desired_width(220.0).text("back hold"));
-        }
-
-        ui.add_space(2.0);
+        ui.add_space(4.0);
         ui.label(
-            egui::RichText::new("keys: Left/Right turn · Enter push · Backspace back  (hold for long-press)")
+            egui::RichText::new("keys: ←/→ turn · Enter push · Backspace back  (hold for long-press)")
                 .weak()
                 .size(11.0),
         );
