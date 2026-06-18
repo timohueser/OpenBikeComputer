@@ -6,7 +6,7 @@
 //! reads and mutates the same fields directly.
 
 use eframe::egui;
-use obcm_app::{Button, CameraMode};
+use obcm_app::{Button, CameraMode, InputClock};
 
 use super::units::{
     format_clock, format_distance, mpp_to_zoom, zoom_to_mpp, MAX_ZOOM, MIN_ZOOM, MPP_MAX, MPP_MIN,
@@ -278,7 +278,7 @@ impl SimGui {
         // Run this frame's raw events through the shared recognizer + screen stack
         // (the exact path the firmware uses), firing long-press at its threshold.
         let now = self.input.now_ms();
-        self.app.handle_input(now, &mut self.input);
+        self.app.handle_input(InputClock(now), &mut self.input);
 
         // --- Live readout (read back from the app). ---
         ui.add_space(8.0);

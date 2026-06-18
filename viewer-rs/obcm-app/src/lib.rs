@@ -39,6 +39,9 @@ pub mod screen;
 pub use activity::{Activity, Mode};
 pub use route::{Catalog, RouteSummary, MAX_ROUTES};
 pub use app::{App, AppState, CameraMode};
-pub use hal::{Button, ButtonEvent, AltimeterSource, Fix, InputEvent, InputSource, LocationSource};
+pub use hal::{
+    AltimeterSource, Button, ButtonEvent, Fix, InputClock, InputEvent, InputSource, LocationSource,
+    RideClock, Sensors,
+};
 pub use input::{Gesture, Gestures, DEFAULT_HOLD_MS};
 pub use screen::{Screen, Transition};

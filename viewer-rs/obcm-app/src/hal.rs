@@ -60,6 +60,21 @@ pub trait AltimeterSource {
     fn poll(&mut self) -> Option<f32>;
 }
 
+/// The polled sensor set handed to [`App::tick`](crate::App::tick) each frame: the user's
+/// location and, optionally, the barometric altimeter. Bundling the two handles keeps
+/// `tick` to a single sensor argument — adding a sensor later is a new field here, not a
+/// new `tick` parameter — while leaving [`LocationSource`] and [`AltimeterSource`] as
+/// separate traits, since they model independent hardware. The host builds one per tick
+/// from whichever sources are live (GPX replay vs. manual panel in the sim; a real GPS +
+/// barometer on the device).
+pub struct Sensors<'a> {
+    /// The user's position source.
+    pub loc: &'a mut dyn LocationSource,
+    /// The barometric altimeter, or `None` when no altitude source is wired (e.g. the
+    /// simulator's manual control) — climb then simply doesn't accumulate.
+    pub altimeter: Option<&'a mut dyn AltimeterSource>,
+}
+
 /// A physical button on the device. There are exactly two: the rotary encoder's
 /// **push**, and the dedicated **Back** button. (Encoder *rotation* is not a
 /// button — it arrives as [`InputEvent::Turn`] detents.) This mirrors the input
@@ -104,3 +119,18 @@ pub trait InputSource {
     /// tick. Called in a loop until it returns `None`.
     fn poll(&mut self) -> Option<InputEvent>;
 }
+
+/// Milliseconds from a clock consistent with the **sensor samples** — wall-clock on the
+/// device, GPX **playback** time in the simulator. Passed to [`App::tick`](crate::App::tick)
+/// so the ride accumulators (moving time → Avg. Speed) measure sample-relative time and
+/// aren't scaled by the simulator's replay-speed multiplier. A type distinct from
+/// [`InputClock`] so the two clocks can't be handed to the wrong method.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RideClock(pub u32);
+
+/// Milliseconds from the host/MCU **wall clock** (monotonic real time). Passed to
+/// [`App::handle_input`](crate::App::handle_input) for button hold-timing — a long-press
+/// is real-time even while a GPX replay is fast-forwarding, which is exactly why this is
+/// distinct from [`RideClock`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct InputClock(pub u32);
