@@ -1,3 +1,34 @@
+## STATUS: DONE — 2026-06-18 (Terminus, not Spleen)
+
+Shipped on branch `ui-framework`. The plan below is kept as historical context; what
+actually landed:
+
+- **Font: Terminus Bold**, not Spleen. Spleen was wired first but the user found it too
+  thin/light — Terminus is the bolder, chunkier misc-fixed-lineage face they wanted, and
+  ships large native cuts. Three tiers (all native 1×, crisp; `Font` names unchanged):
+  | Tier | cut | cap | mm |
+  |---|---|---|---|
+  | `Label` | ter-u24 bold | 15 px | 2.03 |
+  | `Body` | ter-u28 bold | 18 px | 2.44 |
+  | `Display` | ter-u32 bold | 20 px | 2.71 |
+  Targets were 2.0 mm (hit exactly) and 3.3 mm; Terminus tops out at 2.71 mm native and the
+  user chose that crisp ceiling over a chunkier 2× upscale.
+- **Converter:** [`fonts/convert_bdf.py`](../obcm-render/fonts/convert_bdf.py) (BDF →
+  embedded-graphics 1bpp strip; `--scale N` integer upscale; `--deslash-zero` swaps the
+  slashed `0` for the capital-`O` ring — the user's request). Assets +
+  OFL license under `obcm-render/fonts/terminus/`; the seam is
+  [`obcm-render/src/font_data.rs`](../obcm-render/src/font_data.rs) (no call sites changed).
+- **Layout refit (all screens):** `title_frame` slimmed to a 34 px bar with a left-aligned,
+  vertically-centred title (kills the header/readout collision). Menu rows → Body; Route
+  menu rows sized so exactly 4 fit, content centred, long names truncated with ".."; Ride
+  control + Map off-route pill grown for the taller glyphs. **Statistics** redesigned
+  Wahoo-style to keep the 2×3 grid: unit-bearing caption on top + number-only big value,
+  peak label dropped, profile compacted. Speeds show one decimal; distances drop it past
+  100 km.
+- Tests (`obcm-render/tests/text.rs`) + `--text-demo` updated; full workspace builds clean.
+
+---
+
 # Handover — custom pixel font (the text overhaul)
 
 Replace the three `embedded-graphics` built-in mono stand-ins with a real **monospace

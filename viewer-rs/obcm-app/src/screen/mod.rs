@@ -182,15 +182,21 @@ impl Screen {
     }
 }
 
+/// Height of the wood title bar. Sized for the Body-tier title (28 px cell, ≈18 px caps)
+/// with even ≈8 px padding above and below.
+pub const TITLE_BAR_H: i32 = 34;
+
 /// Top of the list area (just below the title bar) shared by list screens.
-pub const LIST_TOP: i32 = 42;
+pub const LIST_TOP: i32 = TITLE_BAR_H + 8;
 
 /// Draw the shared screen chrome: a full-screen near-white background (the housing
 /// rounds the physical corners, so the panel goes edge to edge), a thin rounded
-/// outline, and a rounded wood title bar with `title` on the left of center and
-/// `right` (a counter, a grade readout, …) right-justified. Every framed screen — the
-/// Menu, the Route menu, the Elevation profile — draws its header through this, so they
-/// stay visually identical; the caller fills the body below [`LIST_TOP`].
+/// outline, and a rounded wood title bar with `title` **left-aligned** and `right`
+/// (a counter, a grade readout, …) right-justified. The title is left-aligned rather
+/// than centered so a long right-hand readout (e.g. the Statistics grade / off-route
+/// distance) never collides with it at the bigger Terminus glyph sizes. Every framed
+/// screen — the Menu, the Route menu, the Elevation profile — draws its header through
+/// this, so they stay visually identical; the caller fills the body below [`LIST_TOP`].
 pub fn title_frame<D, F>(cv: &mut Canvas<D, F>, w: i32, h: i32, title: &str, right: &str)
 where
     D: DrawTarget,
@@ -199,9 +205,11 @@ where
     use palette::*;
     cv.clear(PARCHMENT);
     cv.round_outline(rect(4, 4, w - 8, h - 8), 8, WOOD_LIGHT);
-    cv.round(rect(4, 4, w - 8, 30), 6, WOOD);
-    cv.text(title, Point::new(w / 2, 12), Font::Body, TextAlign::Center, PARCHMENT);
-    cv.text(right, Point::new(w - 16, 13), Font::Label, TextAlign::Right, PARCHMENT);
+    cv.round(rect(4, 4, w - 8, TITLE_BAR_H), 6, WOOD);
+    // Both rows vertically centered in the bar (centre y ≈ 21): the Body title's caps sit
+    // ≈4..22 px below its cell top, the Label readout's ≈4..19, so these y's align them.
+    cv.text(title, Point::new(14, 8), Font::Body, TextAlign::Left, PARCHMENT);
+    cv.text(right, Point::new(w - 14, 10), Font::Label, TextAlign::Right, PARCHMENT);
 }
 
 /// [`title_frame`] with a `pos / total` list counter on the right — the chrome the
@@ -281,8 +289,8 @@ where
     D: DrawTarget,
     F: Fn(u16) -> D::Color,
 {
-    cv.text(title, Point::new(w / 2, h / 2 - 10), Font::Body, TextAlign::Center, palette::INK);
-    cv.text(hint, Point::new(w / 2, h / 2 + 12), Font::Label, TextAlign::Center, palette::SUBTEXT);
+    cv.text(title, Point::new(w / 2, h / 2 - 28), Font::Body, TextAlign::Center, palette::INK);
+    cv.text(hint, Point::new(w / 2, h / 2 + 8), Font::Label, TextAlign::Center, palette::SUBTEXT);
 }
 
 /// The "explorer's field map" palette in RGB565 (the format/style color space),

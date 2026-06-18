@@ -43,10 +43,13 @@ const SCRUB_HOLD_MS: u32 = 4000;
 
 // Chart geometry (px), tuned for the 240×320 panel; the band fills the top, the stat
 // grid the rest. `x`/widths derive from `w` so a resized simulator window still frames.
-const CHART_TOP: i32 = 44;
-const CHART_BOT: i32 = 148;
-/// The peak elevation maps here (not to `CHART_TOP`), leaving headroom for the peak label.
-const BAND_TOP: i32 = CHART_TOP + 16;
+// With no peak label, the band starts just below the title bar; it stays compact so the
+// 2×3 grid of big-number tiles below gets enough height (the grid is the riding priority,
+// and the cursor readout already names the elevation under it).
+const CHART_TOP: i32 = 42;
+const CHART_BOT: i32 = 110;
+/// The peak elevation maps here (a few px below `CHART_TOP`) so the apex clears the bar.
+const BAND_TOP: i32 = CHART_TOP + 4;
 const SIDE_MARGIN: i32 = 12;
 
 /// A transient scrub: the inspection cursor's column + the millis after which it snaps
@@ -134,16 +137,21 @@ impl StatisticsScreen {
         let cursor_color = if off && !scrubbing { WARNING } else { AMBER };
 
         // --- Title bar: grade at the cursor, or the off-route cross-track readout ------
+        // The readout goes through `title_frame`'s right slot (now that the title is
+        // left-aligned, a long readout no longer collides with it). Off-route distance is
+        // compacted to km past 1 km so it stays within the bar.
+        let mut readout: heapless::String<16> = heapless::String::new();
         if off {
-            title_frame(&mut cv, w, h, "STATS", "");
-            let mut s: heapless::String<16> = heapless::String::new();
-            let _ = write!(s, "off {}m", rx.activity.dist_to_route_m);
-            cv.text(&s, Point::new(w - 16, 13), Font::Label, TextAlign::Right, PARCHMENT);
+            let d = rx.activity.dist_to_route_m;
+            if d >= 1000 {
+                let _ = write!(readout, "off {}km", (d + 500) / 1000);
+            } else {
+                let _ = write!(readout, "off {}m", d);
+            }
         } else {
-            let mut grade: heapless::String<12> = heapless::String::new();
-            let _ = write!(grade, "grade {}%", cursor_grade(profile, total, cursor_col));
-            title_frame(&mut cv, w, h, "STATS", &grade);
+            let _ = write!(readout, "grade {}%", cursor_grade(profile, total, cursor_col));
         }
+        title_frame(&mut cv, w, h, "STATS", &readout);
 
         // --- Elevation band + amber top line ------------------------------------------
         let chart_x = SIDE_MARGIN;
@@ -174,19 +182,15 @@ impl StatisticsScreen {
         }
         cv.hline(chart_x, band_bot + 1, chart_w, RULE); // baseline under the band
 
-        // Peak label, centered over the peak column (kept on-panel).
-        let peak_x = (chart_x + (profile.peak_col * chart_w as usize / PROFILE_COLS) as i32)
-            .clamp(chart_x + 20, w - chart_x - 20);
-        let mut peak: heapless::String<10> = heapless::String::new();
-        let _ = write!(peak, "{} m", profile.peak_ele_m());
-        cv.text(&peak, Point::new(peak_x, CHART_TOP + 1), Font::Label, TextAlign::Center, SUBTEXT);
+        // (No peak label — the scrub cursor's own elevation readout covers "what's the high
+        // point?", and dropping it lets the profile sit higher.)
 
         // --- The cursor: live "you are here" or a transient scrub ----------------------
         let cursor_px = (cursor_frac * chart_w as f32) as i32;
         let cursor_x = chart_x + cursor_px;
         let cur_ele = profile.at(cursor_frac).1;
         let cur_y = ele_to_y(cur_ele);
-        cv.vline(cursor_x, CHART_TOP + 12, band_bot - (CHART_TOP + 12) + 1, 2, cursor_color);
+        cv.vline(cursor_x, CHART_TOP, band_bot - CHART_TOP + 1, 2, cursor_color);
         cv.disc(Point::new(cursor_x, cur_y), 4, INK); // dark ring …
         cv.disc(Point::new(cursor_x, cur_y), 3, cursor_color); // … around the cursor dot
         // Current-elevation readout at the cursor (updates as you scrub). Placed below the
@@ -195,7 +199,9 @@ impl StatisticsScreen {
         let mut ele_s: heapless::String<8> = heapless::String::new();
         let _ = write!(ele_s, "{} m", cur_ele);
         let near_peak = (cursor_col as i32 - profile.peak_col as i32).abs() < 18;
-        let label_y = if near_peak { cur_y + 9 } else { cur_y - 5 };
+        // Keep the readout inside the band and clear of the baseline/progress bar even when
+        // the cursor sits on a low point near the bottom of the (compact) band.
+        let label_y = (if near_peak { cur_y + 9 } else { cur_y - 5 }).clamp(CHART_TOP + 2, band_bot - 24);
         if cursor_x < w - 44 {
             cv.text(&ele_s, Point::new(cursor_x + 8, label_y), Font::Label, TextAlign::Left, INK);
         } else {
@@ -220,45 +226,53 @@ impl StatisticsScreen {
         // climbed by the live position, read from the profile at column resolution.
         let to_climb = route.total_ascent_m.saturating_sub(profile.ascent_to(live_frac));
 
-        let mut speed: heapless::String<10> = heapless::String::new();
+        // Values are **number only** — the unit lives in the tile's caption (Wahoo style),
+        // so the big Display digits fit the half-width tiles instead of overrunning them.
+        // Speeds keep one decimal; distances drop it past 100 km so they stay ≤ 3 digits.
+        let mut speed: heapless::String<8> = heapless::String::new();
         match rx.state.user_fix.and_then(|f| f.speed_mps) {
             Some(mps) => {
-                let _ = write!(speed, "{} km/h", (mps * 3.6) as i32);
+                let _ = write!(speed, "{:.1}", mps * 3.6);
             }
             None => {
                 let _ = speed.push_str("--");
             }
         }
-        let mut avg: heapless::String<10> = heapless::String::new();
+        let mut avg: heapless::String<8> = heapless::String::new();
         match a.avg_kmh() {
             Some(kmh) => {
-                let _ = write!(avg, "{} km/h", kmh as i32);
+                let _ = write!(avg, "{:.1}", kmh);
             }
             None => {
                 let _ = avg.push_str("--");
             }
         }
-        let mut done: heapless::String<10> = heapless::String::new();
-        let _ = write!(done, "{:.1} km", a.ridden_m / 1000.0);
-        let mut to_go: heapless::String<10> = heapless::String::new();
-        let _ = write!(to_go, "{:.1} km", to_go_m as f32 / 1000.0);
-        let mut climbed_s: heapless::String<10> = heapless::String::new();
-        let _ = write!(climbed_s, "{} m", climbed);
-        let mut to_climb_s: heapless::String<10> = heapless::String::new();
-        let _ = write!(to_climb_s, "{} m", to_climb);
+        let km_done = a.ridden_m / 1000.0;
+        let km_to_go = to_go_m as f32 / 1000.0;
+        let mut done: heapless::String<8> = heapless::String::new();
+        let _ = if km_done >= 100.0 { write!(done, "{:.0}", km_done) } else { write!(done, "{:.1}", km_done) };
+        let mut to_go: heapless::String<8> = heapless::String::new();
+        let _ = if km_to_go >= 100.0 { write!(to_go, "{:.0}", km_to_go) } else { write!(to_go, "{:.1}", km_to_go) };
+        let mut climbed_s: heapless::String<8> = heapless::String::new();
+        let _ = write!(climbed_s, "{}", climbed);
+        let mut to_climb_s: heapless::String<8> = heapless::String::new();
+        let _ = write!(to_climb_s, "{}", to_climb);
 
-        // (label, value, climb-arrow?).
+        // (caption [unit-bearing], value [number only], climb-arrow?). The up-arrow on the
+        // climb tiles reads as "elevation, metres".
         let cells: [(&str, &str, bool); 6] = [
-            ("Speed", &speed, false),
-            ("Avg. Speed", &avg, false),
-            ("done", &done, false),
-            ("to go", &to_go, false),
-            ("climbed", &climbed_s, true),
-            ("to climb", &to_climb_s, true),
+            ("KPH", &speed, false),
+            ("AVG KPH", &avg, false),
+            ("KM DONE", &done, false),
+            ("KM TO GO", &to_go, false),
+            ("CLIMBED", &climbed_s, true),
+            ("TO CLIMB", &to_climb_s, true),
         ];
         let gap = 6;
         let col_w = (chart_w - gap) / 2;
-        let grid_top = prog_y + 8 + 12;
+        // Tuck the grid up a little under the progress bar so the three rows get more
+        // height (≈54 px), giving the big value room to sit off the tile's bottom edge.
+        let grid_top = prog_y + 16;
         let row_h = ((h - 10 - grid_top - 2 * gap) / 3).max(20);
         for (i, &(label, value, arrow)) in cells.iter().enumerate() {
             let x = chart_x + (i % 2) as i32 * (col_w + gap);
@@ -281,9 +295,10 @@ fn live_col(a: &Activity) -> usize {
     (frac * last as f32) as usize
 }
 
-/// Draw one stat tile: a tan rounded pane with a small olive caption and a big ink
-/// value, optionally prefixed by an up-triangle for climb figures (the panel font has
-/// no ↑ glyph — same trick the Route menu uses).
+/// Draw one stat tile: a tan rounded pane with a small olive caption (unit-bearing) at
+/// the top and a big ink Display value below, optionally prefixed by an up-triangle for
+/// climb figures (the panel font has no ↑ glyph — same trick the Route menu uses). The
+/// value is number-only, so the big digits fit the half-width tile.
 fn tile<D, F>(cv: &mut Canvas<D, F>, area: Rectangle, label: &str, value: &str, arrow: bool)
 where
     D: DrawTarget,
@@ -291,13 +306,16 @@ where
 {
     use palette::*;
     let (x, y) = (area.top_left.x, area.top_left.y);
-    cv.round(area, 4, PARCHMENT_SHADE);
-    cv.text(label, Point::new(x + 8, y + 5), Font::Label, TextAlign::Left, SUBTEXT);
-    let vy = y + 17;
+    cv.round(area, 5, PARCHMENT_SHADE);
+    // Caption inset slightly less than the value so the wide unit captions (KM TO GO,
+    // TO CLIMB) sit nearer the tile's centre; the value keeps a touch more left margin.
+    cv.text(label, Point::new(x + 5, y + 4), Font::Label, TextAlign::Left, SUBTEXT);
+    let vy = y + 22;
     let vx = if arrow {
-        let ax = x + 9;
-        cv.triangle(Point::new(ax, vy + 13), Point::new(ax + 9, vy + 13), Point::new(ax + 4, vy + 2), INK);
-        x + 24
+        // Up-triangle sized to sit alongside the Display digits (ink spans ≈ vy+6..vy+26).
+        let ax = x + 8;
+        cv.triangle(Point::new(ax, vy + 26), Point::new(ax + 13, vy + 26), Point::new(ax + 6, vy + 6), INK);
+        x + 26
     } else {
         x + 8
     };

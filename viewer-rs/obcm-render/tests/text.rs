@@ -85,10 +85,10 @@ impl DrawTarget for Buf {
 
 #[test]
 fn draws_glyphs_inside_the_font_cell() {
-    // A single "A" in the Body (9×15) font, top-left at (2, 2), stays within its
-    // one-cell box — proves something was drawn and that the top baseline puts
-    // the glyph where the anchor says.
-    let mut b = Buf::new(64, 32);
+    // A single "A" in the Body font, top-left at (2, 2), stays within its one-cell
+    // box — proves something was drawn and that the top baseline puts the glyph
+    // where the anchor says. The buffer fits the tallest tier's cell with margin.
+    let mut b = Buf::new(64, 48);
     draw_text(&mut b, "A", Point::new(2, 2), Font::Body, TextAlign::Left, RED);
     let (minx, miny, maxx, maxy) = b.bbox(RED).expect("glyph should draw pixels");
     assert!(minx >= 2 && miny >= 2, "glyph starts at/after the anchor ({minx},{miny})");
@@ -129,7 +129,7 @@ fn quantized_palette_color_reaches_the_panel() {
     assert_ne!(q, t, "test is only meaningful if quantization changes the color");
 
     let quantized = Rgb888::new(q.0, q.1, q.2);
-    let mut b = Buf::new(32, 24);
+    let mut b = Buf::new(32, 40); // fits the Display cell (16×32) at (2, 2)
     draw_text(&mut b, "8", Point::new(2, 2), Font::Display, TextAlign::Left, quantized);
     assert!(b.count(quantized) > 0, "the quantized color should be painted");
     assert_eq!(
@@ -143,13 +143,13 @@ fn quantized_palette_color_reaches_the_panel() {
 fn center_and_right_align_about_the_anchor() {
     let s = "OK";
     // Center: the glyphs straddle the anchor x.
-    let mut c = Buf::new(64, 16);
+    let mut c = Buf::new(64, 32);
     draw_text(&mut c, s, Point::new(32, 2), Font::Body, TextAlign::Center, RED);
     let (cminx, _, cmaxx, _) = c.bbox(RED).expect("centered text should draw");
     assert!(cminx < 32 && cmaxx > 32, "centered text straddles x=32 (got {cminx}..{cmaxx})");
 
     // Right: the glyphs end at/left of the anchor x.
-    let mut r = Buf::new(64, 16);
+    let mut r = Buf::new(64, 32);
     draw_text(&mut r, s, Point::new(40, 2), Font::Body, TextAlign::Right, RED);
     let (_, _, rmaxx, _) = r.bbox(RED).expect("right-aligned text should draw");
     assert!(rmaxx <= 40, "right-aligned text ends at x<=40 (got {rmaxx})");

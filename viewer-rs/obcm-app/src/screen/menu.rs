@@ -19,8 +19,8 @@ use super::{list_frame, palette, Ctx, Render, RouteMenuScreen, Screen, Transitio
 
 const ITEMS: [&str; 2] = ["Routes", "Settings"];
 
-/// Per-row height.
-const ROW_H: i32 = 48;
+/// Per-row height — fits a Body-tier (28 px) row with an amber highlight + padding.
+const ROW_H: i32 = 52;
 
 /// The main menu. State is the highlighted row.
 #[derive(Debug, Default)]
@@ -60,21 +60,22 @@ impl MenuScreen {
 
         list_frame(&mut cv, w, h, "MENU", self.selected + 1, ITEMS.len());
 
-        // Rows: one big label each, with a pointer bullet + amber selection.
+        // Rows: one Body-tier label each, with a pointer bullet + amber selection,
+        // vertically centered in the row.
         for (i, &name) in ITEMS.iter().enumerate() {
             let y = LIST_TOP + i as i32 * ROW_H;
-            let mid = y + (ROW_H - 10) / 2;
+            let mid = y + (ROW_H - 8) / 2;
             let selected = i == self.selected;
 
             if selected {
-                cv.round(rect(16, y, w - 32, ROW_H - 10), 5, AMBER);
+                cv.round(rect(16, y, w - 32, ROW_H - 8), 6, AMBER);
             }
             let bullet = if selected { INK } else { SUBTEXT };
-            cv.triangle(Point::new(28, mid - 7), Point::new(28, mid + 7), Point::new(39, mid), bullet);
-            cv.text(name, Point::new(50, mid - 10), Font::Display, TextAlign::Left, INK);
+            cv.triangle(Point::new(30, mid - 9), Point::new(30, mid + 9), Point::new(43, mid), bullet);
+            cv.text(name, Point::new(54, mid - 14), Font::Body, TextAlign::Left, INK);
 
             if i + 1 < ITEMS.len() {
-                cv.hline(20, y + ROW_H - 5, w - 40, RULE);
+                cv.hline(20, y + ROW_H - 4, w - 40, RULE);
             }
         }
         RenderStats::default()

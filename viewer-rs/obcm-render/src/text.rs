@@ -1,12 +1,11 @@
 //! On-screen text — the shared text primitive for the device UI.
 //!
 //! The map renderer draws only geometry; every non-map screen (menus, the
-//! elevation stats, Ride control) needs text. This wires `embedded-graphics`'
-//! built-in monospace fonts as **stand-ins** for the converted pixel font
-//! (m5x7 / m3x6 / Pixellari) the device UI will ultimately ship — see
-//! `docs/ui_framework_brief.md`. Routing every screen's text through this one
-//! module means swapping the stand-ins for the real pixel font is a single edit
-//! here, not a sweep across call sites.
+//! elevation stats, Ride control) needs text. This wires the converted **Terminus**
+//! pixel font (a bold monospace bitmap face in the misc-fixed lineage of the old
+//! embedded-graphics built-ins; see [`font_data`](crate::font_data)) in three size
+//! tiers. Routing every screen's text through this one module means the font is a
+//! single edit here — [`Font::mono`] — not a sweep across call sites.
 //!
 //! Like [`MapRenderer::draw_marker`](crate::MapRenderer::draw_marker), the color
 //! is already resolved to the target's pixel type: the caller maps a style/palette
@@ -16,32 +15,34 @@
 //! a palette color drawn this way survives the device-64 quantization intact.
 
 use embedded_graphics::{
-    mono_font::{ascii, MonoFont, MonoTextStyle},
+    mono_font::{MonoFont, MonoTextStyle},
     prelude::*,
     text::{Alignment, Baseline, Text, TextStyleBuilder},
 };
 
-/// A text size. Three monospace stand-ins until the converted pixel font lands;
-/// the names describe intent (`Label` / `Body` / `Display`), not pixel sizes, so
-/// screen code keeps reading right after the font swap.
+use crate::font_data;
+
+/// A text size — one of three Terminus tiers. The names describe intent
+/// (`Label` / `Body` / `Display`), not pixel sizes, so screen code reads the same
+/// regardless of which Terminus cut each maps to (see [`Font::mono`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Font {
-    /// Smallest — dense labels, list captions, the HUD strip title.
+    /// Terminus 12×24 (cap ≈ 2.0 mm) — dense labels, list captions, the HUD strip title.
     Label,
-    /// Mid — list rows and body text.
+    /// Terminus 14×28 (cap ≈ 2.44 mm) — list / menu rows and body text.
     Body,
-    /// Largest — glanceable numbers (speed, time, the big stat tiles).
+    /// Terminus 16×32 (cap ≈ 2.71 mm) — glanceable numbers (speed, the big stat tiles).
     Display,
 }
 
 impl Font {
-    /// The backing embedded-graphics mono font (stand-in for the pixel font).
+    /// The backing Terminus [`MonoFont`] — the single point the typeface is chosen.
     #[inline]
     fn mono(self) -> &'static MonoFont<'static> {
         match self {
-            Font::Label => &ascii::FONT_6X10,
-            Font::Body => &ascii::FONT_9X15,
-            Font::Display => &ascii::FONT_10X20,
+            Font::Label => &font_data::TER_U24B,
+            Font::Body => &font_data::TER_U28B,
+            Font::Display => &font_data::TER_U32B,
         }
     }
 
