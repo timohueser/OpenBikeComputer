@@ -1,21 +1,28 @@
 //! The Statistics screen — the riding view's sibling of the [`Map`](super::MapScreen),
 //! in the same "explorer's field map" style as the menus: the route's elevation
-//! profile as a filled band under an amber top line, with a live "you are here" cursor
-//! (the matched position), a peak label, an amber progress bar, and a 2×3 grid of ride
-//! stats. Same wood-framed chrome ([`title_frame`]) as the menus, so the family reads as
-//! one device.
+//! profile as a filled band under an amber top line, with a movable "you are here" /
+//! inspection cursor (carrying a current-elevation readout), an amber progress bar, and
+//! a 2×3 grid of ride stats. Same wood-framed chrome ([`title_frame`]) as the menus.
 //!
-//! Bindings (`bikepacking-computer-ui-spec.md` §5): `turn` = scrub a transient inspection
-//! cursor along the profile (snaps back to the live position after a few seconds idle),
-//! `press` = pause → Ride control, `back` = the sibling Map view, `back-hold` = Menu.
-//! `hold` is unbound (reserved for the profile-zoom phase).
+//! Bindings (`bikepacking-computer-ui-spec.md` §5):
+//! - **Cursor mode (default):** `turn` scrubs the cursor along the *full* profile to read
+//!   the elevation/grade at any point; it **springs back to the live position** after a
+//!   few seconds idle (a transient inspection, not a mode). `hold` enters Zoom mode.
+//! - **Zoom mode:** `turn` zooms the profile **centred on the frozen cursor** (a small
+//!   magnifying-glass icon marks the mode — no numbers, no labels). It does *not* spring
+//!   back while zooming. `hold` **or** `back` exits, springing back to the full route +
+//!   live position.
+//! - Shared: `press` = pause → Ride control, `back` (in cursor mode) = the sibling Map,
+//!   `back-hold` = Menu.
 //!
-//! **Phase B (live):** the cursor follows [`Activity::progress_m`] from map-matching; the
-//! stat grid reads the actually-ridden accumulators (Speed / Avg. Speed / done / climbed)
-//! and the route-relative remainders (to go / to climb). Going off-route freezes the
-//! cursor at the last on-route point, tints it + the bar warning-red, and swaps the
-//! header's grade readout for the cross-track distance. The cursor carries a small
-//! current-elevation readout that updates as you scrub.
+//! Zoom is cheap: the profile is a load-time [`Profile`] pyramid, so a zoom step is just
+//! [`Profile::window`] picking a level + sub-range to draw — no route re-read.
+//!
+//! **Phase B (live):** the live position comes from [`Activity::progress_m`] (map-matching);
+//! the stat grid reads the actually-ridden accumulators (Speed / Avg. Speed / done /
+//! climbed) and the route-relative remainders (to go / to climb). Going off-route freezes
+//! the live position, tints it + the bar warning-red, and swaps the header's grade readout
+//! for the cross-track distance.
 
 use core::fmt::Write;
 
@@ -28,70 +35,134 @@ use obcm_render::{
     text::{Font, TextAlign},
     Canvas, RenderStats,
 };
-use obcm_route::{Profile, PROFILE_COLS};
+use obcm_route::Profile;
 
 use crate::activity::Activity;
 use crate::input::Gesture;
 
 use super::{palette, title_frame, Ctx, MapScreen, Render, Screen, Transition};
 
-/// Columns the cursor moves per encoder detent — a full scrub of the route in ~40 turns.
-const SCRUB_STEP: i32 = 6;
-/// After this many millis with no scrub input the cursor snaps back to the live position —
-/// scrubbing is a transient inspection, not a mode.
-const SCRUB_HOLD_MS: u32 = 4000;
+/// Cursor scrub per encoder detent, as a fraction of the whole route — ~42 detents end to
+/// end, matching the Phase-B scrub feel (independent of the base column count).
+const CURSOR_STEP_FRAC: f32 = 1.0 / 42.0;
+/// Zoom multiplier per encoder detent (matches the Map's zoom feel).
+const ZOOM_STEP: f32 = 1.2;
+/// Zoom clamps: `1.0` = whole route; the max is a touch under where the 2048-col base
+/// stops adding detail for a 240-px panel (≈ base / chart width).
+const MIN_ZOOM: f32 = 1.0;
+const MAX_ZOOM: f32 = 8.0;
+/// After this many millis with no input the cursor springs back to the live position —
+/// scrubbing is a transient inspection. (Zoom mode is exempt: it never springs back.)
+const IDLE_MS: u32 = 4000;
 
 // Chart geometry (px), tuned for the 240×320 panel; the band fills the top, the stat
 // grid the rest. `x`/widths derive from `w` so a resized simulator window still frames.
-// With no peak label, the band starts just below the title bar; it stays compact so the
-// 2×3 grid of big-number tiles below gets enough height (the grid is the riding priority,
-// and the cursor readout already names the elevation under it).
 const CHART_TOP: i32 = 42;
 const CHART_BOT: i32 = 110;
 /// The peak elevation maps here (a few px below `CHART_TOP`) so the apex clears the bar.
 const BAND_TOP: i32 = CHART_TOP + 4;
 const SIDE_MARGIN: i32 = 12;
 
-/// A transient scrub: the inspection cursor's column + the millis after which it snaps
-/// back to the live position.
-#[derive(Debug, Clone, Copy)]
-struct Scrub {
-    col: usize,
+/// What `turn` does: scrub the cursor, or zoom the view about it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Cursor,
+    Zoom,
+}
+
+/// The Statistics / elevation-profile view. The cursor defaults to (and springs back to)
+/// the live matched position; Zoom is an explicit long-press sub-mode.
+#[derive(Debug)]
+pub struct StatisticsScreen {
+    mode: Mode,
+    /// Inspection cursor as a route fraction; `None` = track the live position.
+    cursor: Option<f32>,
+    /// Zoom factor (`1.0` = full route); only ever `> 1` while in [`Mode::Zoom`].
+    zoom: f32,
+    /// Millis after which the cursor springs back to live (Cursor mode only).
     until_ms: u32,
 }
 
-/// The Elevation profile view. The only state is an optional transient scrub cursor;
-/// the live "you are here" position comes from the shared [`Activity`].
-#[derive(Debug, Default)]
-pub struct StatisticsScreen {
-    scrub: Option<Scrub>,
+impl Default for StatisticsScreen {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl StatisticsScreen {
     pub fn new() -> Self {
-        StatisticsScreen { scrub: None }
+        StatisticsScreen { mode: Mode::Cursor, cursor: None, zoom: 1.0, until_ms: 0 }
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
+        let live = live_frac(cx.activity);
         match g {
             Gesture::Turn(n) => {
-                // Seed from the current effective cursor — the active scrub if one is
-                // still live, otherwise the matched position — then nudge and re-arm the
-                // snap-back timer.
-                let last = (PROFILE_COLS - 1) as i32;
-                let base = match self.scrub {
-                    Some(s) if cx.now_ms < s.until_ms => s.col as i32,
-                    _ => live_col(cx.activity) as i32,
-                };
-                let col = (base + n * SCRUB_STEP).clamp(0, last) as usize;
-                self.scrub = Some(Scrub { col, until_ms: cx.now_ms + SCRUB_HOLD_MS });
+                self.on_turn(n, live, cx.now_ms);
                 Transition::None
             }
-            // Sibling toggle: swap back to the Map without growing the stack.
-            Gesture::Back => Transition::Replace(Screen::Map(MapScreen::new())),
-            Gesture::Hold => Transition::None, // unbound (reserved for profile zoom)
+            // hold = enter Zoom mode / exit it (springing back to the full route + live).
+            Gesture::Hold => {
+                match self.mode {
+                    Mode::Cursor => {
+                        // Freeze the cursor at its current spot; zoom starts at full and
+                        // the user turns to zoom in.
+                        self.cursor = Some(self.effective_cursor(cx.now_ms, live));
+                        self.zoom = 1.0;
+                        self.mode = Mode::Zoom;
+                    }
+                    Mode::Zoom => self.reset(),
+                }
+                Transition::None
+            }
+            Gesture::Back => match self.mode {
+                // In zoom mode `back` is the quick exit (springs back); otherwise it's the
+                // sibling toggle to the Map (the stack stays one deep).
+                Mode::Zoom => {
+                    self.reset();
+                    Transition::None
+                }
+                Mode::Cursor => Transition::Replace(Screen::Map(MapScreen::new())),
+            },
             // press = pause → Ride control, back-hold = Menu (shared by both riding views).
             Gesture::Press | Gesture::BackHold => super::riding_common(g, cx),
+        }
+    }
+
+    /// Spring back to the default view: cursor tracking the live position, full route.
+    fn reset(&mut self) {
+        self.mode = Mode::Cursor;
+        self.cursor = None;
+        self.zoom = 1.0;
+        self.until_ms = 0;
+    }
+
+    /// The cursor fraction in effect now: the scrub position while it's still live,
+    /// otherwise the live position it has sprung back to.
+    fn effective_cursor(&self, now_ms: u32, live: f32) -> f32 {
+        match self.cursor {
+            Some(c) if self.mode == Mode::Zoom || now_ms < self.until_ms => c,
+            _ => live,
+        }
+    }
+
+    fn on_turn(&mut self, n: i32, live: f32, now_ms: u32) {
+        match self.mode {
+            Mode::Cursor => {
+                let c = self.effective_cursor(now_ms, live);
+                self.cursor = Some((c + n as f32 * CURSOR_STEP_FRAC).clamp(0.0, 1.0));
+                self.zoom = 1.0;
+                self.until_ms = now_ms + IDLE_MS;
+            }
+            Mode::Zoom => {
+                // Multiply per detent (no_std: no powf) — `n` is a small count.
+                let step = if n >= 0 { ZOOM_STEP } else { 1.0 / ZOOM_STEP };
+                let mut z = self.zoom;
+                for _ in 0..n.unsigned_abs() {
+                    z *= step;
+                }
+                self.zoom = z.clamp(MIN_ZOOM, MAX_ZOOM);
+            }
         }
     }
 
@@ -112,34 +183,35 @@ impl StatisticsScreen {
             return RenderStats::default();
         };
 
-        let last_col = PROFILE_COLS - 1;
         let total = route.total_distance_m;
         let off = rx.activity.off_route;
 
         // Live position (matched progress) drives the traveled shading + progress bar; the
-        // cursor may be a transient scrub ahead of / behind it.
+        // cursor may be a scrub ahead of / behind it, and in zoom mode it's the zoom centre.
         let live_frac = if total > 0 {
             (rx.activity.progress_m as f32 / total as f32).clamp(0.0, 1.0)
         } else {
             0.0
         };
-        let live = (live_frac * last_col as f32) as usize;
-        let cursor_col = match self.scrub {
-            Some(s) if rx.now_ms < s.until_ms => s.col.min(last_col),
-            _ => live,
-        };
-        let cursor_frac = cursor_col as f32 / last_col as f32;
-        let scrubbing = cursor_col != live;
+        let cursor_frac = self.effective_cursor(rx.now_ms, live_frac);
+        let in_zoom = self.mode == Mode::Zoom;
+        let zoom = if in_zoom { self.zoom } else { 1.0 };
+        let scrubbing = (cursor_frac - live_frac).abs() > 1e-4;
 
-        // Live indicators go warning-red off-route; the scrub cursor stays amber (it's an
-        // inspection point, not "you").
+        // The visible window: zoom mode centres on the (frozen) cursor; cursor mode is the
+        // whole route (`zoom == 1`, so the centre is moot).
+        let chart_x = SIDE_MARGIN;
+        let chart_w = w - 2 * SIDE_MARGIN;
+        let win = profile.window(cursor_frac, zoom, chart_w.max(1) as u32);
+        let span = (win.hi_frac - win.lo_frac).max(1e-6);
+        let frac_to_x = |f: f32| chart_x + ((f - win.lo_frac) / span * chart_w as f32) as i32;
+
+        // Live indicators go warning-red off-route; the cursor stays amber while scrubbing
+        // (it's an inspection point, not "you").
         let live_color = if off { WARNING } else { AMBER };
         let cursor_color = if off && !scrubbing { WARNING } else { AMBER };
 
-        // --- Title bar: grade at the cursor, or the off-route cross-track readout ------
-        // The readout goes through `title_frame`'s right slot (now that the title is
-        // left-aligned, a long readout no longer collides with it). Off-route distance is
-        // compacted to km past 1 km so it stays within the bar.
+        // --- Title bar: grade at the cursor, or the off-route cross-track readout --------
         let mut readout: heapless::String<16> = heapless::String::new();
         if off {
             let d = rx.activity.dist_to_route_m;
@@ -149,30 +221,27 @@ impl StatisticsScreen {
                 let _ = write!(readout, "off {}m", d);
             }
         } else {
-            let _ = write!(readout, "grade {}%", cursor_grade(profile, total, cursor_col));
+            let _ = write!(readout, "grade {}%", grade_at(profile, total, cursor_frac));
         }
         title_frame(&mut cv, w, h, "STATS", &readout);
 
         // --- Elevation band + amber top line ------------------------------------------
-        let chart_x = SIDE_MARGIN;
-        let chart_w = w - 2 * SIDE_MARGIN;
         let band_bot = CHART_BOT;
-        let span = (profile.max_ele_m - profile.min_ele_m).max(1) as f32;
+        let span_ele = (profile.max_ele_m - profile.min_ele_m).max(1) as f32;
         let ele_to_y = |e: i16| -> i32 {
-            let t = ((e - profile.min_ele_m) as f32 / span).clamp(0.0, 1.0);
+            let t = ((e - profile.min_ele_m) as f32 / span_ele).clamp(0.0, 1.0);
             band_bot - (t * (band_bot - BAND_TOP) as f32) as i32
         };
 
-        let cols = profile.cols();
-        let live_px = (live_frac * chart_w as f32) as i32;
         let mut prev_top: Option<i32> = None;
         for px in 0..chart_w {
-            let col = (px as usize * PROFILE_COLS / chart_w as usize).min(last_col);
-            let top_y = ele_to_y(cols[col].1);
+            // The route fraction this pixel shows, read from the window's pyramid level.
+            let f = win.lo_frac + span * (px as f32 / chart_w as f32);
+            let top_y = ele_to_y(profile.sample(win.level, f).1);
             let x = chart_x + px;
-            // Filled band: the traveled (left of the live position) part reads darker
+            // Filled band: the traveled part (left of the live position) reads darker
             // (olive), the part still ahead lighter (tan) — the traveled-portion shading.
-            let band = if px <= live_px { SUBTEXT } else { PARCHMENT_SHADE };
+            let band = if f <= live_frac { SUBTEXT } else { PARCHMENT_SHADE };
             cv.vline(x, top_y, band_bot - top_y + 1, 1, band);
             // Amber top line, connected to the previous column so it stays continuous on
             // steep sections rather than stair-stepping into gaps.
@@ -182,30 +251,29 @@ impl StatisticsScreen {
         }
         cv.hline(chart_x, band_bot + 1, chart_w, RULE); // baseline under the band
 
-        // (No peak label — the scrub cursor's own elevation readout covers "what's the high
-        // point?", and dropping it lets the profile sit higher.)
-
-        // --- The cursor: live "you are here" or a transient scrub ----------------------
-        let cursor_px = (cursor_frac * chart_w as f32) as i32;
-        let cursor_x = chart_x + cursor_px;
+        // --- The cursor (always in-window: scrub point, or the zoom centre) ------------
+        let cursor_x = frac_to_x(cursor_frac).clamp(chart_x, chart_x + chart_w - 1);
         let cur_ele = profile.at(cursor_frac).1;
         let cur_y = ele_to_y(cur_ele);
         cv.vline(cursor_x, CHART_TOP, band_bot - CHART_TOP + 1, 2, cursor_color);
         cv.disc(Point::new(cursor_x, cur_y), 4, INK); // dark ring …
         cv.disc(Point::new(cursor_x, cur_y), 3, cursor_color); // … around the cursor dot
         // Current-elevation readout at the cursor (updates as you scrub). Placed below the
-        // dot when the cursor is near the peak column, so the two height labels never
-        // overlap; otherwise just above it.
+        // dot near the peak so the labels never overlap; else just above it, clamped inside
+        // the band and clear of the baseline/bar.
         let mut ele_s: heapless::String<8> = heapless::String::new();
         let _ = write!(ele_s, "{} m", cur_ele);
-        let near_peak = (cursor_col as i32 - profile.peak_col as i32).abs() < 18;
-        // Keep the readout inside the band and clear of the baseline/progress bar even when
-        // the cursor sits on a low point near the bottom of the (compact) band.
+        let near_peak = (cursor_frac - profile.peak_frac()).abs() < 0.07;
         let label_y = (if near_peak { cur_y + 9 } else { cur_y - 5 }).clamp(CHART_TOP + 2, band_bot - 24);
         if cursor_x < w - 44 {
             cv.text(&ele_s, Point::new(cursor_x + 8, label_y), Font::Label, TextAlign::Left, INK);
         } else {
             cv.text(&ele_s, Point::new(cursor_x - 8, label_y), Font::Label, TextAlign::Right, INK);
+        }
+
+        // --- Zoom-mode marker: a small magnifying-glass icon (no numbers, no label) -----
+        if in_zoom {
+            draw_zoom_icon(&mut cv, chart_x + 2, CHART_TOP + 2);
         }
 
         // --- Progress bar at the live fraction ----------------------------------------
@@ -284,15 +352,35 @@ impl StatisticsScreen {
     }
 }
 
-/// The profile column of the live matched position, for seeding a scrub from "you are
-/// here". `0` when no route length is known yet.
-fn live_col(a: &Activity) -> usize {
+/// The fractional position (`0.0`–`1.0`) of the live matched position along the route.
+/// `0.0` when no route length is known yet.
+fn live_frac(a: &Activity) -> f32 {
     if a.route_total_m == 0 {
-        return 0;
+        return 0.0;
     }
-    let last = PROFILE_COLS - 1;
-    let frac = (a.progress_m as f32 / a.route_total_m as f32).clamp(0.0, 1.0);
-    (frac * last as f32) as usize
+    (a.progress_m as f32 / a.route_total_m as f32).clamp(0.0, 1.0)
+}
+
+/// Draw a small magnifying-glass icon on a parchment chip — the wordless "Zoom mode is on"
+/// marker (top-left of the chart). A lens (ink ring) with a short diagonal handle; no
+/// numbers or label, since the zoom *level* isn't useful information.
+fn draw_zoom_icon<D, F>(cv: &mut Canvas<D, F>, x: i32, y: i32)
+where
+    D: DrawTarget,
+    F: Fn(u16) -> D::Color,
+{
+    use palette::*;
+    let s = 22;
+    cv.round(rect(x, y, s, s), 5, PARCHMENT);
+    cv.round_outline(rect(x, y, s, s), 5, WOOD_LIGHT);
+    // Lens: an ink ring (filled disc with a parchment disc punched out).
+    let (lx, ly) = (x + 8, y + 8);
+    cv.disc(Point::new(lx, ly), 5, INK);
+    cv.disc(Point::new(lx, ly), 3, PARCHMENT);
+    // Handle: a few ink discs stepping out from the lower-right of the lens.
+    for k in 0..3 {
+        cv.disc(Point::new(lx + 4 + k, ly + 4 + k), 2, INK);
+    }
 }
 
 /// Draw one stat tile: a tan rounded pane with a small olive caption (unit-bearing) at
@@ -322,15 +410,19 @@ where
     cv.text(value, Point::new(vx, vy), Font::Display, TextAlign::Left, INK);
 }
 
-/// The grade (%) at the cursor: rise over run across a small window of columns around
-/// it, using each column's mid-band elevation. Zero when the run is degenerate.
-fn cursor_grade(profile: &Profile, total_distance_m: u32, cursor_col: usize) -> i32 {
-    let cols = profile.cols();
-    let last = PROFILE_COLS - 1;
-    let lo = cursor_col.saturating_sub(4);
-    let hi = (cursor_col + 4).min(last);
-    let mid = |c: usize| (cols[c].0 as i32 + cols[c].1 as i32) / 2;
-    let run_m = (hi - lo) as f32 / last as f32 * total_distance_m as f32;
+/// The grade (%) at fractional position `frac`: rise over run across a small fixed window
+/// of the route around it, using each end's mid-band elevation (base level). Zero when the
+/// run is degenerate.
+fn grade_at(profile: &Profile, total_distance_m: u32, frac: f32) -> i32 {
+    // ±1.5 % of the route — a touch of smoothing, matching the old ±4-of-256-columns feel.
+    const HALF: f32 = 0.015;
+    let lo = (frac - HALF).max(0.0);
+    let hi = (frac + HALF).min(1.0);
+    let mid = |t: f32| {
+        let (a, b) = profile.at(t);
+        (a as i32 + b as i32) / 2
+    };
+    let run_m = (hi - lo) * total_distance_m as f32;
     if run_m < 1.0 {
         return 0;
     }

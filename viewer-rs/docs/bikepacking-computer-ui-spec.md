@@ -120,7 +120,8 @@ Authoritative bindings. `–` = unbound (no-op, reserved).
 | **Route menu** | scroll routes | load route → Map (tracking ON) | – | → caller (Home/Menu) | – |
 | **Map / Follow** | zoom | pause → Ride control | enter Pan mode | → Statistics | → Menu |
 | **Pan mode** | pan along axis | toggle axis (U-D ↔ L-R) | toggle N-up / heading-up | recenter on you | exit → Follow |
-| **Elevation** | scrub profile cursor | pause → Ride control | – | → Map | → Menu |
+| **Elevation** | move cursor (altitude scrub) | pause → Ride control | enter Zoom mode | → Map | → Menu |
+| **Elevation Zoom** | zoom about the cursor | pause → Ride control | exit → cursor | exit → cursor | → Menu |
 | **Ride control** | choose option | select (Resume / Finish / Discard) | – | Resume (cancel) | – |
 | **Menu** | scroll (Routes / Settings) | open selected | – | → caller | → Shutdown prompt |
 | **Settings** | move / adjust | change / toggle | – | → Menu | – |
@@ -182,9 +183,13 @@ numeric/glanceable data in the most legible face.
 
 - **Home:** large centered **time** + **battery**; light adventure styling. (Keep minimal for v1.)
 - **Map:** use what we have right now obv, will be styled later (using stylesheets)
-- **Elevation:** elevation profile with traveled-portion shading + "you are here" marker + peak label, a thin amber
-  progress bar, and a 2×3 (wxh) stat grid: **Speed**, **Avg. Speed**, **done (km)**, **to go (km)**, **climbed (m)**,
-  **to climb (m)**.
+- **Elevation:** elevation profile with traveled-portion shading + a movable **cursor** (carries a current-elevation
+  readout), a thin amber progress bar, and a 2×3 (wxh) stat grid: **Speed**, **Avg. Speed**, **done (km)**,
+  **to go (km)**, **climbed (m)**, **to climb (m)**. **Cursor mode (default):** `turn` scrubs the cursor along the
+  full profile to read elevation/grade anywhere; it springs back to your live position after a few seconds idle.
+  `hold` enters **Zoom mode** (a small magnifying-glass icon marks it — no zoom numbers/labels): `turn` zooms the
+  profile centred on the frozen cursor, and `hold` or `back` exits, springing back to the full route + live cursor.
+  Backed by a load-time LOD pyramid, so zoom never re-reads the route.
 - **Ride control:** vertical list — Resume / Finish / Discard -
 - **Menu:** List of Menu options, currently: Routes / Settings.
 - **Route menu:** scrollable route list (name · km · total climb)
@@ -216,5 +221,5 @@ numeric/glanceable data in the most legible face.
 6. **Settings contents** — not yet defined.
 7. **Power-on resume** of an in-progress route — assumed yes; confirm.
 8. Reserved/unbound gestures: Home `hold`, Ride control `hold`. (Map `hold` enters
-   Pan; Pan binds all five gestures; Elevation `hold` is claimed by the profile-zoom
-   slice.) Available for future features.
+   Pan; Pan binds all five gestures; Elevation `hold` now enters/exits the profile
+   Zoom mode — DONE.) Available for future features.
