@@ -191,11 +191,11 @@ pub struct App {
 }
 
 impl App {
-    /// Build the app straight onto the live map — the simulator's convenience default
-    /// (it opens on the map; mouse/GPX/`--png` all work). The stack is `[Home, Map]`,
-    /// with Home the always-present root that Finish / Discard return to. No route is
-    /// loaded; the map shows by itself until one is picked. Use
-    /// [`new_idle`](App::new_idle) for the device's real boot (Home / Idle).
+    /// Build the app straight onto the live map: the stack is `[Home, Map]`, with Home
+    /// the always-present root that Finish / Discard return to, and no route loaded — the
+    /// map shows by itself until one is picked. This is the map-first constructor the
+    /// simulator uses for headless `--png` renders (and the tests); the interactive GUI
+    /// and the device both boot via [`new_idle`](App::new_idle) (Home / Idle).
     pub fn new(state: AppState) -> Self {
         let mut app = Self::new_idle(state);
         app.activity = Activity::new(Mode::Riding);
