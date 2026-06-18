@@ -41,6 +41,14 @@ struct PanelState {
     heading_deg: f32,
 }
 
+/// In-progress 1:1 size calibration: a reference bar is drawn in the device window;
+/// the user measures it with a ruler and types the millimetres here. `Some` while the
+/// calibration screen is up (see [`SimGui::show_calibration`]).
+#[derive(Default)]
+struct CalibState {
+    measured_mm: String,
+}
+
 /// Launch the simulator window. Owns the map bytes for the process lifetime; the
 /// [`Reader`] is a cheap view rebuilt each frame over them.
 pub fn run(bytes: Vec<u8>, args: Args) -> Result<(), eframe::Error> {
@@ -70,6 +78,17 @@ struct SimGui {
     dev_h: u32,
     scale: u32,
     true_color: bool,
+    /// Saved display calibration (egui points per millimetre), or `None` until the
+    /// user calibrates. Loaded from / written to [`crate::calib`].
+    points_per_mm: Option<f32>,
+    /// Render the device at the panel's true physical size (needs `points_per_mm`).
+    physical: bool,
+    /// Snap the window to the device's 1:1 size next frame (set when 1:1 turns on).
+    physical_resize_pending: bool,
+    /// `Some` while the size-calibration screen is shown instead of the device image.
+    calib: Option<CalibState>,
+    /// Last calibration-save error, surfaced in the control panel.
+    calib_error: Option<String>,
     /// Editable mirrors for the control-panel widgets.
     panel: PanelState,
     /// Emulated device controls (encoder knob + Back) → shared gesture recognizer.
@@ -137,6 +156,10 @@ impl SimGui {
         // headless `--png` path opens straight on the map for render inspection.)
         let app = App::new_idle(state);
         let store = RouteStore::open(args.routes_dir.clone().unwrap_or_else(|| "routes".to_string()));
+        // Load any saved 1:1 calibration; `--physical` only takes effect if we have one,
+        // and `--calibrate` opens the calibration screen straight away.
+        let points_per_mm = crate::calib::load();
+        let physical = args.physical && points_per_mm.is_some();
         let mut gui = SimGui {
             app,
             store,
@@ -146,6 +169,11 @@ impl SimGui {
             dev_h: args.height,
             scale: args.scale,
             true_color: args.true_color,
+            points_per_mm,
+            physical,
+            physical_resize_pending: physical,
+            calib: args.calibrate.then(CalibState::default),
+            calib_error: None,
             panel,
             input: DeviceInput::new(),
             gpx: None,
@@ -300,6 +328,124 @@ impl SimGui {
             }
         }
     }
+
+    /// Draw the device framebuffer, centred, at either the integer fit scale (default)
+    /// or the panel's true physical size when 1:1 is on and calibrated.
+    fn show_device_image(&mut self, ctx: &egui::Context) {
+        egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+            let tex = self.texture.as_ref().expect("texture uploaded this frame");
+            let disp_scale = match (self.physical, self.points_per_mm) {
+                // 1:1 — points per device pixel so 240 px spans the panel's real width.
+                // Fractional on purpose (the size isn't a whole multiple of the grid);
+                // NEAREST keeps it crisp at the cost of a slightly uneven pixel grid.
+                (true, Some(ppm)) => (crate::calib::PANEL_W_MM * ppm / self.dev_w as f32).max(0.05),
+                // Otherwise: largest integer scale that fits, capped at `--scale`, ≥1.
+                _ => {
+                    let avail = ui.available_size();
+                    let fit = (avail.x / self.dev_w as f32).min(avail.y / self.dev_h as f32);
+                    fit.floor().clamp(1.0, self.scale as f32)
+                }
+            };
+            let size = egui::vec2(self.dev_w as f32 * disp_scale, self.dev_h as f32 * disp_scale);
+            let rect = egui::Rect::from_center_size(ui.available_rect_before_wrap().center(), size);
+            let resp = ui.put(
+                rect,
+                egui::Image::new(egui::load::SizedTexture::from_handle(tex))
+                    .fit_to_exact_size(size)
+                    .texture_options(egui::TextureOptions::NEAREST)
+                    .sense(egui::Sense::click_and_drag()),
+            );
+            self.handle_camera_input(ui, &resp, resp.rect, disp_scale);
+        });
+    }
+
+    /// The 1:1 calibration screen: draw a reference bar of a known point-width; the user
+    /// measures it with a ruler and types the length → points-per-mm. Saved (so it's
+    /// one-time) and 1:1 switches on. `calib` is taken out of `self` so the egui closure
+    /// borrows only locals.
+    fn show_calibration(&mut self, ctx: &egui::Context) {
+        let Some(mut calib) = self.calib.take() else { return };
+        let mut save_ppm: Option<f32> = None;
+        let mut cancel = false;
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.add_space(24.0);
+            ui.vertical_centered(|ui| {
+                ui.heading("Actual-size calibration");
+                ui.add_space(8.0);
+                ui.label("Hold a ruler to the screen, measure the bar between the two ticks,");
+                ui.label("then type its length. Saved once and reused on every launch.");
+                ui.add_space(22.0);
+
+                // Reference bar: a known width in points (clamped to the window). The user
+                // measures its physical length, so points-per-mm = drawn width / mm.
+                let bar_w = crate::calib::REF_BAR_POINTS.min(ui.available_width() - 48.0).max(60.0);
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(bar_w, 34.0), egui::Sense::hover());
+                let p = ui.painter_at(rect);
+                let col = ui.visuals().strong_text_color();
+                let y = rect.center().y;
+                p.line_segment([egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)], egui::Stroke::new(3.0, col));
+                for x in [rect.left(), rect.right()] {
+                    p.line_segment([egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())], egui::Stroke::new(2.0, col));
+                }
+
+                ui.add_space(22.0);
+                ui.horizontal(|ui| {
+                    ui.label("Measured length:");
+                    ui.add(egui::TextEdit::singleline(&mut calib.measured_mm).desired_width(70.0));
+                    ui.label("mm");
+                });
+                let parsed = calib.measured_mm.trim().parse::<f32>().ok().filter(|v| v.is_finite() && *v > 1.0);
+
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(parsed.is_some(), egui::Button::new("Save")).clicked() {
+                        save_ppm = parsed.map(|mm| bar_w / mm);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+                if parsed.is_none() && !calib.measured_mm.trim().is_empty() {
+                    ui.colored_label(egui::Color32::from_rgb(220, 80, 80), "enter a length in mm (> 1)");
+                }
+            });
+        });
+
+        match save_ppm {
+            Some(ppm) => match crate::calib::save(ppm) {
+                Ok(()) => {
+                    self.points_per_mm = Some(ppm);
+                    self.physical = true;
+                    self.physical_resize_pending = true;
+                    self.calib_error = None;
+                    // `calib` stays taken (None) → leave the calibration screen.
+                }
+                Err(e) => {
+                    self.calib_error = Some(e);
+                    self.calib = Some(calib); // keep the screen up to retry
+                }
+            },
+            None if !cancel => self.calib = Some(calib), // still editing
+            None => {} // cancelled → leave the screen
+        }
+    }
+
+    /// Snap the device window to match the current mode once, when 1:1 is toggled:
+    /// the panel's true size in physical mode, the `--scale` default otherwise.
+    fn apply_physical_resize(&mut self, ctx: &egui::Context) {
+        if !std::mem::take(&mut self.physical_resize_pending) {
+            return;
+        }
+        let size = match (self.physical, self.points_per_mm) {
+            (true, Some(ppm)) => {
+                let s = crate::calib::PANEL_W_MM * ppm / self.dev_w as f32;
+                egui::vec2(self.dev_w as f32 * s, self.dev_h as f32 * s)
+            }
+            // 1:1 off → back to the requested `--scale` window.
+            _ => egui::vec2((self.dev_w * self.scale) as f32, (self.dev_h * self.scale) as f32),
+        };
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
+    }
 }
 
 impl eframe::App for SimGui {
@@ -349,26 +495,13 @@ impl eframe::App for SimGui {
 
         self.render_to_texture(ctx);
 
-        // No frame margin: the device screen fills its window edge-to-edge.
-        egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
-            let tex = self.texture.as_ref().expect("texture uploaded this frame");
-            // Fit the device image to the window at the largest *integer* scale
-            // that fits (kept ≥1 so the pixel grid stays crisp, capped at the
-            // requested `--scale`). This avoids winit clipping the bottom when the
-            // requested scale makes the window taller than the screen.
-            let avail = ui.available_size();
-            let fit = (avail.x / self.dev_w as f32).min(avail.y / self.dev_h as f32);
-            let disp_scale = fit.floor().clamp(1.0, self.scale as f32);
-            let size = egui::vec2(self.dev_w as f32 * disp_scale, self.dev_h as f32 * disp_scale);
-            let resp = ui.add(
-                egui::Image::new(egui::load::SizedTexture::from_handle(tex))
-                    .fit_to_exact_size(size)
-                    .texture_options(egui::TextureOptions::NEAREST)
-                    .sense(egui::Sense::click_and_drag()),
-            );
-            let rect = resp.rect;
-            self.handle_camera_input(ui, &resp, rect, disp_scale);
-        });
+        // The device window shows either the live screen or the size-calibration UI.
+        if self.calib.is_some() {
+            self.show_calibration(ctx);
+        } else {
+            self.show_device_image(ctx);
+        }
+        self.apply_physical_resize(ctx);
 
         self.show_control_panel(ctx);
 
