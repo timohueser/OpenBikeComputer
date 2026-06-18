@@ -83,6 +83,33 @@ const _: () = assert!(MCU_RENDERER_BYTES <= 200 * 1024, "MapRenderer exceeds the
 /// Meters of ground per microdegree of latitude (≈ Earth circumference / 360e6).
 const METERS_PER_MICRODEG_LAT: f32 = 0.111_320;
 
+// --- Route direction chevrons (tunable) --------------------------------------------
+// White arrowheads stencilled along the active route at riding zoom (finest LOD only) — the
+// Garmin/Komoot "arrows on the line" look. They are anchored to the route's own cumulative
+// distance (not the screen), so each one stays pinned to a ground spot as you ride, and are
+// drawn only within a window around the rider's matched position — so on an out-and-back only
+// the leg you're on is marked, the right way round. Spacing/window are real **metres**; the
+// glyph sizes are **screen pixels**. Sweep these together with the app's `ROUTE_WEIGHT`.
+//
+/// Route distance between consecutive chevrons (m). At the ~0.5 m/px riding zoom the on-screen
+/// spacing is ≈ 2× this.
+const ARROW_SPACING_M: f32 = 33.0;
+/// How far ahead of the rider chevrons are drawn (m) — covers the route climbing the screen,
+/// generously (cheap: off-screen chevrons cost nothing, and a wider look-ahead reads further
+/// when zoomed out within the finest LOD).
+const ARROW_AHEAD_M: f32 = 300.0;
+/// How far behind the rider chevrons are drawn (m). Zero: the travelled line is the breadcrumb's
+/// to show, so chevrons only lead *ahead* (and never poke out from under the breadcrumb).
+const ARROW_BEHIND_M: f32 = 0.0;
+/// Chevron tip reach ahead of its centre (px).
+const ARROW_TIP: f32 = 8.0;
+/// Chevron base reach behind its centre (px).
+const ARROW_BACK: f32 = 2.5;
+/// Chevron base half-width (px) — half the spread of the two trailing corners. Kept under
+/// the route's half-stroke so the glyph sits *inside* the line (framed by the route colour
+/// on every side), the Garmin look — independent of whatever map colour the line crosses.
+const ARROW_HALF: f32 = 4.5;
+
 /// The [`Viewport`]/`AppState` zoom (pixels per microdegree of latitude) that yields
 /// a given ground **meters-per-pixel** — the inverse of
 /// [`Viewport::meters_per_pixel`]. Lets callers aim the camera at a real-world scale
@@ -338,6 +365,12 @@ pub struct RenderStats {
     pub span_utilization: f32,
     pub point_utilization: f32,
     pub ring_utilization: f32,
+    /// Host-measured wall time for the whole frame draw (render + route/overlays), in
+    /// microseconds; `0` = not measured. `obcm-render` is `no_std` and carries no clock,
+    /// so the **host** fills this after timing the draw (the sim uses `Instant`; the
+    /// device the Cortex-M DWT cycle counter) — kept on the stats so the control panel and
+    /// the headless line surface it without a side channel.
+    pub render_us: u32,
 }
 
 /// One visible feature's draw metadata plus the ranges locating its geometry in
@@ -476,39 +509,16 @@ impl MapRenderer {
                     fill_polygon(target, screen, ring_lens, color, w, h, xs);
                 }
                 Kind::Line => {
-                    // Lines use only the exterior ring.
+                    // Lines use only the exterior ring. Same view-clipped eg stroke as the
+                    // route/breadcrumb overlays: clipping spares eg the off-screen part of a
+                    // line whose chunk straddles the view edge (most visible at coarse zoom),
+                    // while keeping its properly-jointed thick rendering for thicker classes.
                     let n = ring_lens.first().copied().unwrap_or(0);
-                    screen.clear();
-                    let mut prev_pt: Option<Point> = None;
-                    for &(lon, lat) in &pts[..n] {
+                    let projected = pts[..n].iter().map(|&(lon, lat)| {
                         let (x, y) = vp.to_screen(lon, lat);
-                        let pt = Point::new(x.clamp(-4 * w, 4 * w), y.clamp(-4 * h, 4 * h));
-                        if let Some(p1) = prev_pt {
-                            let dx = pt.x - p1.x;
-                            let dy = pt.y - p1.y;
-                            let dist = dx.abs().max(dy.abs());
-                            // Subdivide segments with deltas > 150 pixels.
-                            // This prevents `embedded-graphics`'s line intersection logic from
-                            // overflowing and panicking on `denominator.pow(2)` in debug builds,
-                            // and avoids rendering glitches (miter spikes) on the MCU in release builds.
-                            if dist > 150 {
-                                let steps = (dist + 149) / 150;
-                                for i in 1..steps {
-                                    let sx = p1.x + dx * i / steps;
-                                    let sy = p1.y + dy * i / steps;
-                                    let _ = screen.push(Point::new(sx, sy));
-                                }
-                            }
-                        }
-                        let _ = screen.push(pt);
-                        prev_pt = Some(pt);
-                    }
-                    if screen.len() >= 2 {
-                        let weight = span.weight.max(1) as u32;
-                        let _ = Polyline::new(screen)
-                            .into_styled(PrimitiveStyle::with_stroke(color, weight))
-                            .draw(target);
-                    }
+                        Point::new(x, y)
+                    });
+                    stroke_overlay(target, screen, projected, color, span.weight.max(1) as u32, w, h);
                 }
             }
         }
@@ -570,9 +580,9 @@ impl MapRenderer {
             // Chevron: a tip a bit ahead and two base corners swept back and out.
             Some((fx, fy)) => {
                 let (rx, ry) = (-fy, fx); // right perpendicular
-                const TIP: f32 = 9.0;
-                const BACK: f32 = 5.0;
-                const HALF: f32 = 6.0;
+                const TIP: f32 = 12.0;
+                const BACK: f32 = 6.0;
+                const HALF: f32 = 8.0;
                 let _ = self.screen.push(pt(cx + fx * TIP, cy + fy * TIP));
                 let _ = self.screen.push(pt(cx - fx * BACK + rx * HALF, cy - fy * BACK + ry * HALF));
                 let _ = self.screen.push(pt(cx - fx * BACK - rx * HALF, cy - fy * BACK - ry * HALF));
@@ -580,7 +590,7 @@ impl MapRenderer {
             }
             // Stationary glyph: a small orientation-free diamond.
             None => {
-                const R: f32 = 5.0;
+                const R: f32 = 7.0;
                 let _ = self.screen.push(pt(cx, cy - R));
                 let _ = self.screen.push(pt(cx + R, cy));
                 let _ = self.screen.push(pt(cx, cy + R));
@@ -591,14 +601,26 @@ impl MapRenderer {
         fill_polygon(target, &self.screen, &[ring_len], color, w, h, &mut self.xs);
     }
 
-    /// Stroke an active route as a polyline overlay. Call **after**
-    /// [`render`](MapRenderer::render) (like [`draw_marker`](MapRenderer::draw_marker))
-    /// so the route sits on top of the map.
+    /// Stroke an active route as a polyline overlay, with optional travel-direction
+    /// chevrons. Call **after** [`render`](MapRenderer::render) (like
+    /// [`draw_marker`](MapRenderer::draw_marker)) so the route sits on top of the map.
     ///
     /// Streams the route chunk-by-chunk: only chunks whose bbox intersects the view are
-    /// decoded, each projected and stroked on its own. Consecutive chunks share their
-    /// seam vertex, so the per-chunk polylines join without a gap. Sub-pixel steps are
-    /// dropped so a long route never overruns the screen buffer.
+    /// decoded and stroked. Consecutive chunks share their seam vertex, so the per-chunk
+    /// strokes join without a gap. Each chunk is drawn by [`stroke_overlay`], which clips it to
+    /// the view before handing the on-screen runs to embedded-graphics — so eg's properly
+    /// jointed thick line is kept while it only pays for the (small) visible part, not the
+    /// route's ~96 % that's off-screen at riding zoom.
+    ///
+    /// `arrows_at` is the rider's matched distance along the route (m), or `None` to skip the
+    /// chevrons (coarser-than-finest LOD, or no fix yet). When set, chevrons in `arrow_color`
+    /// are drawn in a **second pass after the whole route is stroked** — so they sit on top
+    /// even where the route doubles back on itself — and only within a window around that
+    /// distance ([`ARROW_BEHIND_M`]‥[`ARROW_AHEAD_M`]). Each chevron is pinned to a fixed
+    /// **route distance** (a multiple of [`ARROW_SPACING_M`]), so it stays put on the ground
+    /// as the camera follows the rider, and an out-and-back's two passes never collide (only
+    /// the leg you're on is in the window, drawn the right way round).
+    #[allow(clippy::too_many_arguments)]
     pub fn draw_route<D>(
         &mut self,
         target: &mut D,
@@ -606,96 +628,246 @@ impl MapRenderer {
         route: &obcm_route::RouteReader,
         color: D::Color,
         weight: u32,
+        arrow_color: D::Color,
+        arrows_at: Option<u32>,
     ) where
         D: DrawTarget,
     {
         let (w, h) = (vp.w as i32, vp.h as i32);
         let view = vp.visible_bbox();
+        let chunks = route.chunks();
         let mut pts = Vec::<obcm_route::RoutePoint, { obcm_route::MAX_POINTS_PER_CHUNK }>::new();
+        // Split the borrow so the fills can take `xs` while we build the polyline in `screen`.
+        let Self { screen, xs, .. } = self;
 
-        for (k, cm) in route.chunks().iter().enumerate() {
+        // Pass 1 — stroke every visible chunk, in full, before any chevron is drawn.
+        for (k, cm) in chunks.iter().enumerate() {
             if !cm.bbox.intersects(&view) {
                 continue;
             }
             if route.decode_chunk(k, &mut pts).is_err() {
                 continue;
             }
-            self.screen.clear();
-            let last = pts.len().saturating_sub(1);
-            let mut prev: Option<Point> = None;
-            for (i, p) in pts.iter().enumerate() {
+            let projected = pts.iter().map(|p| {
                 let (x, y) = vp.to_screen(p.lon, p.lat);
-                let pt = Point::new(x.clamp(-4 * w, 4 * w), y.clamp(-4 * h, 4 * h));
-                if let Some(p1) = prev {
-                    // Drop sub-pixel steps (but keep the last point so seams stay closed).
-                    if i != last && (pt.x - p1.x).abs() + (pt.y - p1.y).abs() < 2 {
-                        continue;
-                    }
-                    // Subdivide long segments like the map's line path, so embedded-
-                    // graphics' line math can't overflow / spike on a near-screen-length run.
-                    let (dx, dy) = (pt.x - p1.x, pt.y - p1.y);
-                    let dist = dx.abs().max(dy.abs());
-                    if dist > 150 {
-                        let steps = (dist + 149) / 150;
-                        for s in 1..steps {
-                            let _ = self.screen.push(Point::new(p1.x + dx * s / steps, p1.y + dy * s / steps));
-                        }
-                    }
+                Point::new(x, y)
+            });
+            stroke_overlay(target, screen, projected, color, weight, w, h);
+        }
+
+        // Pass 2 — chevrons, anchored to route distance and windowed around the rider.
+        let Some(progress_m) = arrows_at else {
+            return;
+        };
+        let total = route.total_distance_m;
+        let lo = progress_m.saturating_sub(ARROW_BEHIND_M as u32) as f32;
+        let hi = (progress_m + ARROW_AHEAD_M as u32).min(total) as f32;
+        for (k, cm) in chunks.iter().enumerate() {
+            // Skip chunks whose cumulative-distance span misses the window (then the view).
+            let chunk_start = cm.cum_distance_m as f32;
+            let chunk_end = chunks.get(k + 1).map_or(total, |c| c.cum_distance_m) as f32;
+            if chunk_end < lo || chunk_start > hi || !cm.bbox.intersects(&view) {
+                continue;
+            }
+            if route.decode_chunk(k, &mut pts).is_err() {
+                continue;
+            }
+            walk_route_arrows(&pts, chunk_start, lo, hi, |a, b, f| {
+                let (ax, ay) = vp.to_screen(a.lon, a.lat);
+                let (bx, by) = vp.to_screen(b.lon, b.lat);
+                let (ax, ay, bx, by) = (ax as f32, ay as f32, bx as f32, by as f32);
+                let (dx, dy) = (bx - ax, by - ay);
+                let m = dx.abs().max(dy.abs()) + 0.41 * dx.abs().min(dy.abs());
+                if m < 1e-3 {
+                    return;
                 }
-                let _ = self.screen.push(pt);
-                prev = Some(pt);
-            }
-            if self.screen.len() >= 2 {
-                let _ = Polyline::new(&self.screen)
-                    .into_styled(PrimitiveStyle::with_stroke(color, weight.max(1)))
-                    .draw(target);
-            }
+                let (ux, uy) = (dx / m, dy / m); // screen travel dir (north-up & heading-up)
+                let (cx, cy) = (ax + dx * f, ay + dy * f); // chevron centre along the segment
+                let (px, py) = (-uy, ux); // right perpendicular = base spread
+                let r = |x: f32, y: f32| Point::new(libm::roundf(x) as i32, libm::roundf(y) as i32);
+                let tri = [
+                    r(cx + ux * ARROW_TIP, cy + uy * ARROW_TIP),
+                    r(cx - ux * ARROW_BACK + px * ARROW_HALF, cy - uy * ARROW_BACK + py * ARROW_HALF),
+                    r(cx - ux * ARROW_BACK - px * ARROW_HALF, cy - uy * ARROW_BACK - py * ARROW_HALF),
+                ];
+                fill_polygon(target, &tri, &[3], arrow_color, w, h, xs);
+            });
         }
     }
 
-    /// Stroke a single polyline of `(lon, lat)` microdegree points as an overlay, applying
-    /// the same projection + overflow guards as [`draw_route`](MapRenderer::draw_route):
-    /// sub-pixel steps are dropped, long segments subdivided, and coordinates clamped, so a
-    /// long path can never overrun the screen scratch (it stops once the buffer fills).
-    ///
-    /// Unlike `draw_route` (a chunked, seam-shared file) this strokes one in-RAM point
-    /// stream — the recorded **breadcrumb**, whose two tiers (spine, recent) are each one
-    /// call. Call after [`render`](MapRenderer::render) so the path sits on the map.
+    /// Stroke a single polyline of `(lon, lat)` microdegree points as an overlay, clipped to the
+    /// view and stroked with embedded-graphics (see [`stroke_overlay`]) — this is the recorded
+    /// **breadcrumb**, whose two tiers (spine, recent) are each one call. Call after
+    /// [`render`](MapRenderer::render) so the path sits on the map.
     pub fn stroke_path<D, I>(&mut self, target: &mut D, vp: &Viewport, pts: I, color: D::Color, weight: u32)
     where
         D: DrawTarget,
         I: IntoIterator<Item = (i32, i32)>,
     {
         let (w, h) = (vp.w as i32, vp.h as i32);
-        self.screen.clear();
-        let mut prev: Option<Point> = None;
-        for (lon, lat) in pts {
+        let projected = pts.into_iter().map(|(lon, lat)| {
             let (x, y) = vp.to_screen(lon, lat);
-            let pt = Point::new(x.clamp(-4 * w, 4 * w), y.clamp(-4 * h, 4 * h));
-            if let Some(p1) = prev {
-                // Drop sub-pixel steps; subdivide long runs like the map/route line path.
-                if (pt.x - p1.x).abs() + (pt.y - p1.y).abs() < 2 {
-                    continue;
-                }
-                let (dx, dy) = (pt.x - p1.x, pt.y - p1.y);
-                let dist = dx.abs().max(dy.abs());
-                if dist > 150 {
-                    let steps = (dist + 149) / 150;
-                    for s in 1..steps {
-                        let _ = self.screen.push(Point::new(p1.x + dx * s / steps, p1.y + dy * s / steps));
+            Point::new(x, y)
+        });
+        stroke_overlay(target, &mut self.screen, projected, color, weight, w, h);
+    }
+}
+
+/// Cohen–Sutherland outcode: bit 1 = left, 2 = right, 4 = above the top, 8 = below the bottom.
+#[inline]
+fn outcode(x: f32, y: f32, xmin: f32, ymin: f32, xmax: f32, ymax: f32) -> u8 {
+    let mut c = 0;
+    if x < xmin {
+        c |= 1;
+    } else if x > xmax {
+        c |= 2;
+    }
+    if y < ymin {
+        c |= 4;
+    } else if y > ymax {
+        c |= 8;
+    }
+    c
+}
+
+/// Clip segment `a`→`b` to the rectangle (Cohen–Sutherland), returning the visible sub-segment
+/// rounded back to integer pixels, or `None` if it misses the rectangle entirely.
+fn clip_segment(a: Point, b: Point, xmin: f32, ymin: f32, xmax: f32, ymax: f32) -> Option<(Point, Point)> {
+    let (mut x0, mut y0) = (a.x as f32, a.y as f32);
+    let (mut x1, mut y1) = (b.x as f32, b.y as f32);
+    let mut o0 = outcode(x0, y0, xmin, ymin, xmax, ymax);
+    let mut o1 = outcode(x1, y1, xmin, ymin, xmax, ymax);
+    loop {
+        if o0 | o1 == 0 {
+            let r = |x: f32, y: f32| Point::new(libm::roundf(x) as i32, libm::roundf(y) as i32);
+            return Some((r(x0, y0), r(x1, y1)));
+        }
+        if o0 & o1 != 0 {
+            return None; // both ends past the same edge — wholly outside
+        }
+        let o = if o0 != 0 { o0 } else { o1 };
+        let (x, y) = if o & 8 != 0 {
+            (x0 + (x1 - x0) * (ymax - y0) / (y1 - y0), ymax)
+        } else if o & 4 != 0 {
+            (x0 + (x1 - x0) * (ymin - y0) / (y1 - y0), ymin)
+        } else if o & 2 != 0 {
+            (xmax, y0 + (y1 - y0) * (xmax - x0) / (x1 - x0))
+        } else {
+            (xmin, y0 + (y1 - y0) * (xmin - x0) / (x1 - x0))
+        };
+        if o == o0 {
+            x0 = x;
+            y0 = y;
+            o0 = outcode(x0, y0, xmin, ymin, xmax, ymax);
+        } else {
+            x1 = x;
+            y1 = y;
+            o1 = outcode(x1, y1, xmin, ymin, xmax, ymax);
+        }
+    }
+}
+
+/// Append `c1` to the current run, first subdividing a step longer than 150 px into ≤150 px hops so
+/// embedded-graphics' thick-line intersection math stays well-behaved (no overflow in debug,
+/// no miter spikes on the MCU in release).
+fn push_run(run: &mut Vec<Point, MAX_SCREEN_POINTS>, c1: Point) {
+    if let Some(&p1) = run.last() {
+        let (dx, dy) = (c1.x - p1.x, c1.y - p1.y);
+        let dist = dx.abs().max(dy.abs());
+        if dist > 150 {
+            let steps = (dist + 149) / 150;
+            for s in 1..steps {
+                let _ = run.push(Point::new(p1.x + dx * s / steps, p1.y + dy * s / steps));
+            }
+        }
+    }
+    let _ = run.push(c1);
+}
+
+/// Stroke the accumulated run with embedded-graphics' (properly jointed) thick `Polyline`,
+/// then clear it for the next run.
+fn flush_run<D>(target: &mut D, run: &mut Vec<Point, MAX_SCREEN_POINTS>, color: D::Color, weight: u32)
+where
+    D: DrawTarget,
+{
+    if run.len() >= 2 {
+        let _ = Polyline::new(run)
+            .into_styled(PrimitiveStyle::with_stroke(color, weight))
+            .draw(target);
+    }
+    run.clear();
+}
+
+/// Clip a projected overlay polyline to the view and stroke the on-screen runs with
+/// embedded-graphics. eg's `Polyline` gives correctly **jointed** thick lines (no kink gaps),
+/// but rasterises width pixel-by-pixel — ruinous when the route/breadcrumb is ~96% off-screen.
+/// Clipping first (Cohen–Sutherland, into the screen grown by the stroke width so an
+/// edge-hugging line keeps its full thickness) means eg only ever pays for the visible part:
+/// the line where it crosses the view splits into separate runs, each stroked on its own. The
+/// `run` scratch is reused; sub-pixel steps are dropped and long runs subdivided.
+fn stroke_overlay<D, I>(target: &mut D, run: &mut Vec<Point, MAX_SCREEN_POINTS>, points: I, color: D::Color, weight: u32, w: i32, h: i32)
+where
+    D: DrawTarget,
+    I: IntoIterator<Item = Point>,
+{
+    let weight = weight.max(1);
+    let m = weight as f32 + 2.0; // clip margin ≥ half-width, so edge strokes still paint in
+    let (xmin, ymin, xmax, ymax) = (-m, -m, w as f32 + m, h as f32 + m);
+    run.clear();
+    let mut prev: Option<Point> = None;
+    for cur in points {
+        if let Some(a) = prev {
+            // Drop sub-pixel steps (keeps the run — and eg's per-segment work — bounded).
+            if (cur.x - a.x).abs() + (cur.y - a.y).abs() < 2 {
+                continue;
+            }
+            match clip_segment(a, cur, xmin, ymin, xmax, ymax) {
+                None => flush_run(target, run, color, weight), // segment wholly off-screen
+                Some((c0, c1)) => {
+                    // (Re)start a run if this segment didn't continue the previous one.
+                    if run.last().copied() != Some(c0) {
+                        flush_run(target, run, color, weight);
+                        let _ = run.push(c0);
+                    }
+                    push_run(run, c1);
+                    // Clipped at its far end → the line left the view here; close this run.
+                    if c1 != cur {
+                        flush_run(target, run, color, weight);
                     }
                 }
             }
-            if self.screen.push(pt).is_err() {
-                break; // scratch full — bounded, never overruns
+        }
+        prev = Some(cur);
+    }
+    flush_run(target, run, color, weight);
+}
+
+/// Walk a decoded route chunk (its absolute points plus `s0`, the cumulative route distance
+/// in metres at its first point) and call `emit(&a, &b, f)` for every chevron whose route
+/// distance is a multiple of [`ARROW_SPACING_M`] lying inside `[lo, hi]` — `f` is the
+/// fraction along segment `a`→`b`. Anchoring to the route's own cumulative distance (rather
+/// than the screen) pins each chevron to one ground spot as the camera moves; the `[lo, hi]`
+/// window keeps them near the rider. Segment length is real ground metres
+/// ([`obcm_route::ground_dist_m`]).
+fn walk_route_arrows<F>(pts: &[obcm_route::RoutePoint], s0: f32, lo: f32, hi: f32, mut emit: F)
+where
+    F: FnMut(&obcm_route::RoutePoint, &obcm_route::RoutePoint, f32),
+{
+    let mut s = s0;
+    for seg in pts.windows(2) {
+        let (a, b) = (&seg[0], &seg[1]);
+        let dl = obcm_route::ground_dist_m((a.lon, a.lat), (b.lon, b.lat));
+        if dl > 1e-3 {
+            // Grid multiples of ARROW_SPACING_M that fall on this segment and in the window.
+            let lo_seg = s.max(lo);
+            let hi_seg = (s + dl).min(hi);
+            let mut n = libm::ceilf(lo_seg / ARROW_SPACING_M) * ARROW_SPACING_M;
+            while n <= hi_seg {
+                emit(a, b, ((n - s) / dl).clamp(0.0, 1.0));
+                n += ARROW_SPACING_M;
             }
-            prev = Some(pt);
         }
-        if self.screen.len() >= 2 {
-            let _ = Polyline::new(&self.screen)
-                .into_styled(PrimitiveStyle::with_stroke(color, weight.max(1)))
-                .draw(target);
-        }
+        s += dl;
     }
 }
 
@@ -776,5 +948,73 @@ fn fill_polygon<D>(
             }
             k += 2;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{walk_route_arrows, ARROW_SPACING_M};
+    use heapless::Vec;
+    use obcm_route::{ground_dist_m, RoutePoint};
+
+    /// A due-north two-point segment ~300 m long (fixed longitude, so its length is pure
+    /// latitude — the chevron grid is easy to reason about). Returned with its ground length.
+    fn north_line() -> (Vec<RoutePoint, 4>, f32) {
+        let mut v = Vec::new();
+        v.push(RoutePoint { lon: 7_800_000, lat: 48_000_000, ele: 0 }).unwrap();
+        v.push(RoutePoint { lon: 7_800_000, lat: 48_002_700, ele: 0 }).unwrap();
+        let dl = ground_dist_m((v[0].lon, v[0].lat), (v[1].lon, v[1].lat));
+        (v, dl)
+    }
+
+    /// Route distances (m from the segment start) at which chevrons land for a window `[lo,hi]`.
+    fn distances(pts: &[RoutePoint], dl: f32, lo: f32, hi: f32) -> Vec<i32, 64> {
+        let mut v = Vec::new();
+        walk_route_arrows(pts, 0.0, lo, hi, |_, _, f| {
+            let _ = v.push(libm::roundf(f * dl) as i32);
+        });
+        v
+    }
+
+    #[test]
+    fn chevrons_land_on_the_spacing_grid() {
+        // Chevrons sit at 0, SPACING, 2·SPACING, … of route distance — they're anchored to the
+        // route, not the screen, so each is a fixed multiple of ARROW_SPACING_M.
+        let (pts, dl) = north_line();
+        let ds = distances(&pts, dl, 0.0, dl);
+        assert!(ds.len() >= 5, "a {dl:.0} m segment should carry several chevrons");
+        for (i, d) in ds.iter().enumerate() {
+            let expect = libm::roundf(i as f32 * ARROW_SPACING_M) as i32;
+            assert!((d - expect).abs() <= 1, "chevron {i} at {d} m, expected {expect} m");
+        }
+    }
+
+    #[test]
+    fn chevrons_stay_within_the_window() {
+        // Only chevrons inside [lo, hi] are emitted, and a wider window strictly adds more.
+        let (pts, dl) = north_line();
+        let (lo, hi) = (50.0, 140.0);
+        let narrow = distances(&pts, dl, lo, hi);
+        assert!(!narrow.is_empty());
+        for d in &narrow {
+            assert!(*d as f32 >= lo - 0.5 && *d as f32 <= hi + 0.5, "chevron at {d} m outside window");
+        }
+        assert!(distances(&pts, dl, 0.0, dl).len() > narrow.len());
+    }
+
+    #[test]
+    fn chevrons_are_pinned_to_route_distance_not_the_rider() {
+        // The exact property the redesign is about: slide the window forward (as the rider
+        // advances) and the chevrons still visible keep the *same* route distances — they do
+        // not crawl with the rider. Here the shared [80, 200] m band must match between a
+        // window centred earlier and one centred later.
+        let (pts, dl) = north_line();
+        let band = |lo, hi| -> Vec<i32, 64> {
+            distances(&pts, dl, lo, hi).iter().copied().filter(|&d| (80..=200).contains(&d)).collect()
+        };
+        let early = band(0.0, 210.0);
+        let late = band(70.0, 280.0);
+        assert!(!early.is_empty(), "the shared band should contain chevrons");
+        assert_eq!(early, late, "a chevron moved when the window slid — it should be ground-pinned");
     }
 }

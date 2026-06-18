@@ -579,18 +579,21 @@ fn main() {
         let mut fb = Framebuffer::new(args.width, args.height);
         let tc = args.true_color;
 
+        // Time the whole frame draw and fold it into the stats as `render_us` (the no_std
+        // renderer carries no clock, so the host fills it) — same field the live panel shows.
         let t0 = Instant::now();
-        let stats = app.render_frame(&mut fb, &reader, route.as_ref(), args.width as f32, args.height as f32, |c| {
+        let mut stats = app.render_frame(&mut fb, &reader, route.as_ref(), args.width as f32, args.height as f32, |c| {
             color_of(c, tc)
         });
-        let ms = t0.elapsed().as_secs_f64() * 1000.0;
+        stats.render_us = t0.elapsed().as_micros() as u32;
         eprintln!(
-            "rendered {}/{} features ({} chunks, LOD {}, {} dropped) in {ms:.2} ms | spans {:.0}% points {:.0}% rings {:.0}%",
+            "rendered {}/{} features ({} chunks, LOD {}, {} dropped) in {:.2} ms | spans {:.0}% points {:.0}% rings {:.0}%",
             stats.features_drawn,
             stats.features_tried,
             stats.chunks_visited,
             stats.lod,
             stats.features_dropped,
+            stats.render_us as f64 / 1000.0,
             stats.span_utilization * 100.0,
             stats.point_utilization * 100.0,
             stats.ring_utilization * 100.0
