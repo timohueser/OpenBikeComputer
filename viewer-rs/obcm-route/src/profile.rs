@@ -21,6 +21,11 @@ use crate::reader::{RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
 /// detail, coarse enough to stay cheap to build and store on the MCU.
 pub const PROFILE_COLS: usize = 256;
 
+/// Climb dead-band (m) for the cumulative-ascent profile — ignore wiggles below this so
+/// the per-column ascent matches the converter's intent. Mirrors `convert.rs`'s
+/// `ELE_THRESHOLD_M`.
+const ELE_THRESHOLD_M: f32 = 3.0;
+
 /// A route's elevation profile: per-column min/max height plus the y-axis range and
 /// the peak — everything the Elevation screen needs to draw without re-reading the
 /// route. Build with [`RouteReader::elevation_profile`] and cache it.
@@ -29,6 +34,12 @@ pub struct Profile {
     /// Per-column `(min_ele_m, max_ele_m)`. Columns that caught no route point inherit
     /// the nearest filled neighbour, so the band is gap-free at any sampling density.
     cols: [(i16, i16); PROFILE_COLS],
+    /// Cumulative route ascent (m) through each column — monotonic non-decreasing,
+    /// normalized so the last column equals the route's total ascent. Computed from the
+    /// per-point elevations at column resolution (not the coarse per-chunk samples), so
+    /// "to climb" is correct even on a route with few chunks: at the top of a climb it
+    /// reads ~total (no phantom remaining), and flat/descending stretches don't add.
+    cum_ascent: [u32; PROFILE_COLS],
     /// Lowest/highest elevation over the whole route (the y-axis range), from the route
     /// header. Equal for a perfectly flat route — callers guard the zero-height span.
     pub min_ele_m: i16,
@@ -58,6 +69,24 @@ impl Profile {
     pub fn peak_ele_m(&self) -> i16 {
         self.cols[self.peak_col].1
     }
+
+    /// Cumulative ascent (m) climbed by fractional position `t` along the route
+    /// (`0.0` = start, `1.0` = end) — for "to climb" (`total_ascent - ascent_to`).
+    /// Interpolated at column resolution and normalized so `ascent_to(1.0)` is exactly
+    /// the route's total ascent.
+    #[inline]
+    pub fn ascent_to(&self, t: f32) -> u32 {
+        let last = PROFILE_COLS - 1;
+        let x = t.clamp(0.0, 1.0) * last as f32;
+        let i = x as usize;
+        if i >= last {
+            return self.cum_ascent[last];
+        }
+        let f = x - i as f32;
+        let a = self.cum_ascent[i] as f32;
+        let b = self.cum_ascent[i + 1] as f32;
+        (a + (b - a) * f) as u32
+    }
 }
 
 impl RouteReader<'_> {
@@ -73,8 +102,17 @@ impl RouteReader<'_> {
     pub fn elevation_profile(&self) -> Profile {
         // Sentinel for "no point landed here": an empty column has min > max.
         let mut cols = [(i16::MAX, i16::MIN); PROFILE_COLS];
+        // Cumulative dead-banded ascent recorded at the last point of each column (0 =
+        // none recorded). Filled/normalized below.
+        let mut casc = [0f32; PROFILE_COLS];
         let total = self.total_distance_m.max(1) as f64;
         let last_col = PROFILE_COLS - 1;
+
+        // The climb hysteresis runs *continuously* across chunks (a chunk's shared seam
+        // point compares equal to itself, contributing nothing), so the running ascent is
+        // one sweep over the whole route.
+        let mut ascent = 0f32;
+        let mut ele_ref: Option<f32> = None;
 
         let mut buf: Vec<RoutePoint, MAX_POINTS_PER_CHUNK> = Vec::new();
         let n = self.chunks().len();
@@ -92,13 +130,48 @@ impl RouteReader<'_> {
                 }
                 prev = Some((p.lon, p.lat));
                 let col = ((dist / total) * last_col as f64) as usize;
-                let slot = &mut cols[col.min(last_col)];
+                let col = col.min(last_col);
+                let slot = &mut cols[col];
                 slot.0 = slot.0.min(p.ele);
                 slot.1 = slot.1.max(p.ele);
+
+                // Accumulate ascent with the dead-band; record the running total in this
+                // column (later points in the same column overwrite, so it ends correct).
+                let e = p.ele as f32;
+                match ele_ref {
+                    None => ele_ref = Some(e),
+                    Some(r) => {
+                        let d = e - r;
+                        if d >= ELE_THRESHOLD_M {
+                            ascent += d;
+                            ele_ref = Some(e);
+                        } else if d <= -ELE_THRESHOLD_M {
+                            ele_ref = Some(e);
+                        }
+                    }
+                }
+                casc[col] = ascent;
             }
         }
 
         fill_gaps(&mut cols, (self.min_ele_m, self.max_ele_m));
+
+        // Build the cumulative-ascent profile: carry each empty column forward (and keep
+        // it monotonic), then scale to the header's exact total so "to climb" reaches 0.
+        let mut cum_ascent = [0u32; PROFILE_COLS];
+        let mut run = 0f32;
+        let mut raw = [0f32; PROFILE_COLS];
+        for i in 0..PROFILE_COLS {
+            run = run.max(casc[i]);
+            raw[i] = run;
+        }
+        if raw[last_col] > 0.0 {
+            let scale = self.total_ascent_m as f32 / raw[last_col];
+            for i in 0..PROFILE_COLS {
+                cum_ascent[i] = (raw[i] * scale) as u32;
+            }
+        }
+        cum_ascent[last_col] = self.total_ascent_m; // exact endpoint
 
         // Peak = the tallest column's max.
         let mut peak_col = 0;
@@ -110,7 +183,7 @@ impl RouteReader<'_> {
             }
         }
 
-        Profile { cols, min_ele_m: self.min_ele_m, max_ele_m: self.max_ele_m, peak_col }
+        Profile { cols, cum_ascent, min_ele_m: self.min_ele_m, max_ele_m: self.max_ele_m, peak_col }
     }
 }
 

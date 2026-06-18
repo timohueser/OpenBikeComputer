@@ -34,19 +34,19 @@ use crate::app::AppState;
 use crate::input::Gesture;
 use crate::route::RouteSummary;
 
-mod elevation;
 mod home;
 mod map;
 mod menu;
 mod ride_control;
 mod route_menu;
+mod statistics;
 
-pub use elevation::ElevationScreen;
 pub use home::HomeScreen;
 pub use map::MapScreen;
 pub use menu::MenuScreen;
 pub use ride_control::RideControl;
 pub use route_menu::RouteMenuScreen;
+pub use statistics::StatisticsScreen;
 
 /// Maximum overlay depth (Home → Map → Ride control / Menu → …). Sized with
 /// headroom; the real flow never nests more than a few deep. Growing it costs a
@@ -138,7 +138,7 @@ pub struct Render<'a, 'd> {
 pub enum Screen {
     Home(HomeScreen),
     Map(MapScreen),
-    Elevation(ElevationScreen),
+    Statistics(StatisticsScreen),
     RideControl(RideControl),
     Menu(MenuScreen),
     RouteMenu(RouteMenuScreen),
@@ -150,7 +150,7 @@ impl Screen {
         match self {
             Screen::Home(s) => s.handle(g, cx),
             Screen::Map(s) => s.handle(g, cx),
-            Screen::Elevation(s) => s.handle(g, cx),
+            Screen::Statistics(s) => s.handle(g, cx),
             Screen::RideControl(s) => s.handle(g, cx),
             Screen::Menu(s) => s.handle(g, cx),
             Screen::RouteMenu(s) => s.handle(g, cx),
@@ -167,7 +167,7 @@ impl Screen {
         match self {
             Screen::Home(s) => s.draw(target, rx, color_fn),
             Screen::Map(s) => s.draw(target, rx, color_fn),
-            Screen::Elevation(s) => s.draw(target, rx, color_fn),
+            Screen::Statistics(s) => s.draw(target, rx, color_fn),
             Screen::RideControl(s) => s.draw(target, rx, color_fn),
             Screen::Menu(s) => s.draw(target, rx, color_fn),
             Screen::RouteMenu(s) => s.draw(target, rx, color_fn),

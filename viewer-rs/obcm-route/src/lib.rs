@@ -26,12 +26,15 @@ pub mod byte_io;
 pub mod convert;
 mod geo;
 pub mod gpx;
+pub mod matcher;
 pub mod profile;
 pub mod reader;
 
 pub use byte_io::{ByteSink, ByteSource, Error, SliceSource};
 pub use convert::{gpx_to_obcr, RouteStats};
+pub use geo::ground_dist_m;
 pub use gpx::{GpxScanner, RawPoint};
+pub use matcher::{Match, RouteMatch};
 pub use profile::{Profile, PROFILE_COLS};
 pub use reader::{
     ChunkMeta, RoutePoint, RouteReader, RouteSummary, CHUNK_META_LEN, HEADER_LEN,

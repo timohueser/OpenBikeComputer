@@ -15,11 +15,13 @@
 use std::path::Path;
 
 /// One recorded track point: position in microdegrees (matching the rest of the
-/// pipeline) and `t`, seconds elapsed since the first point of the track.
+/// pipeline), optional `<ele>` in meters (fed to the simulated barometer), and `t`,
+/// seconds elapsed since the first point of the track.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TrackPoint {
     pub lat: i32,
     pub lon: i32,
+    pub ele: Option<f32>,
     pub t: f64,
 }
 
@@ -43,7 +45,7 @@ impl Track {
     /// first point. If a track has no `<time>` stamps at all, falls back to a
     /// uniform one-second spacing so it can still be replayed.
     pub fn parse(xml: &str) -> Result<Track, String> {
-        let mut raw: Vec<(i32, i32, Option<f64>)> = Vec::new();
+        let mut raw: Vec<(i32, i32, Option<f32>, Option<f64>)> = Vec::new();
         let mut rest = xml;
         while let Some(start) = rest.find("<trkpt") {
             // Opening tag spans `<trkpt ... >`; attributes (lat/lon) live inside it.
@@ -53,19 +55,20 @@ impl Track {
             let lat = attr_f64(open_tag, "lat").ok_or("trkpt missing lat")?;
             let lon = attr_f64(open_tag, "lon").ok_or("trkpt missing lon")?;
 
-            // A self-closing `<trkpt .../>` has no children; otherwise read up to
-            // the matching `</trkpt>` and look for a <time> inside it.
+            // A self-closing `<trkpt .../>` has no children; otherwise read up to the
+            // matching `</trkpt>` and look for <ele> (→ the barometer) and <time> inside.
             let self_closing = open_tag.trim_end().ends_with('/');
-            let time = if self_closing {
-                None
+            let (ele, time) = if self_closing {
+                (None, None)
             } else {
                 let body_start = start + tag_end + 1;
                 let body = &rest[body_start..];
                 let close = body.find("</trkpt>").ok_or("unterminated <trkpt> element")?;
-                parse_time_tag(&body[..close])
+                let inner = &body[..close];
+                (parse_ele_tag(inner), parse_time_tag(inner))
             };
 
-            raw.push((deg_to_microdeg(lat), deg_to_microdeg(lon), time));
+            raw.push((deg_to_microdeg(lat), deg_to_microdeg(lon), ele, time));
             // Advance past this point. (`<trkpt` again can only appear after `>`.)
             rest = &after[tag_end + 1..];
         }
@@ -76,14 +79,14 @@ impl Track {
 
         // Rebase time. If every point is timestamped, use real elapsed seconds;
         // otherwise fall back to uniform 1 s/point so replay still works.
-        let all_timed = raw.iter().all(|(_, _, t)| t.is_some());
+        let all_timed = raw.iter().all(|(_, _, _, t)| t.is_some());
         let points = if all_timed {
-            let t0 = raw[0].2.unwrap();
-            raw.iter().map(|&(lat, lon, t)| TrackPoint { lat, lon, t: t.unwrap() - t0 }).collect()
+            let t0 = raw[0].3.unwrap();
+            raw.iter().map(|&(lat, lon, ele, t)| TrackPoint { lat, lon, ele, t: t.unwrap() - t0 }).collect()
         } else {
             raw.iter()
                 .enumerate()
-                .map(|(i, &(lat, lon, _))| TrackPoint { lat, lon, t: i as f64 })
+                .map(|(i, &(lat, lon, ele, _))| TrackPoint { lat, lon, ele, t: i as f64 })
                 .collect()
         };
 
@@ -125,6 +128,14 @@ fn attr_f64(tag: &str, name: &str) -> Option<f64> {
         // Keep scanning past this (non-)match.
         search = &search[idx + name.len()..];
     }
+}
+
+/// Pull the `<ele>...</ele>` text (meters) from a trkpt body. Returns `None` if there's
+/// no elevation element — the barometer then has no reading for that point.
+fn parse_ele_tag(body: &str) -> Option<f32> {
+    let start = body.find("<ele>")? + "<ele>".len();
+    let end = body[start..].find("</ele>")? + start;
+    body[start..end].trim().parse().ok()
 }
 
 /// Pull the `<time>...</time>` text from a trkpt body and parse it to epoch
@@ -186,6 +197,7 @@ mod tests {
         assert_eq!(t.points.len(), 3);
         assert_eq!(t.points[0].lat, 48_122_905);
         assert_eq!(t.points[0].lon, 7_814_438);
+        assert_eq!(t.points[0].ele, Some(200.8)); // <ele> feeds the barometer
         // First point rebased to zero, others relative.
         assert_eq!(t.points[0].t, 0.0);
         assert_eq!(t.points[1].t, 20.0);

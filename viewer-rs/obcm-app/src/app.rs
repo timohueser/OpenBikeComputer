@@ -4,10 +4,10 @@
 use embedded_graphics::draw_target::DrawTarget;
 use obcm_reader::Reader;
 use obcm_render::{zoom_for_mpp, MapRenderer, RenderStats, Viewport};
-use obcm_route::{Profile, RouteReader};
+use obcm_route::{Profile, RouteMatch, RouteReader};
 
 use crate::activity::{Activity, Mode};
-use crate::hal::{Fix, InputSource, LocationSource};
+use crate::hal::{ElevationSource, Fix, InputSource, LocationSource};
 use crate::input::{Gesture, Gestures, DEFAULT_HOLD_MS};
 use crate::route::{Catalog, RouteSummary};
 use crate::screen::{self, Ctx, HomeScreen, MapScreen, Render, Screen, Stack};
@@ -77,14 +77,17 @@ impl AppState {
     ///
     /// No fix this tick leaves everything untouched, so a momentary GPS dropout
     /// holds the last camera position rather than snapping anywhere.
-    pub fn update(&mut self, loc: &mut dyn LocationSource) {
-        if let Some(fix) = loc.poll() {
-            self.user_fix = Some(fix);
-            if self.mode == CameraMode::Follow {
-                self.cam_lon = fix.lon;
-                self.cam_lat = fix.lat;
-            }
+    ///
+    /// Returns the new [`Fix`] when one arrived this tick (so [`App::tick`] can feed it to
+    /// the map-matcher and ride accumulators), or `None` when there was no fresh fix.
+    pub fn update(&mut self, loc: &mut dyn LocationSource) -> Option<Fix> {
+        let fix = loc.poll()?;
+        self.user_fix = Some(fix);
+        if self.mode == CameraMode::Follow {
+            self.cam_lon = fix.lon;
+            self.cam_lat = fix.lat;
         }
+        Some(fix)
     }
 
     /// Project the current camera into a [`Viewport`] for a `w`×`h` pixel display.
@@ -137,9 +140,10 @@ const RIDING_MPP: f32 = 0.5;
 /// ```ignore
 /// let mut app = App::new(AppState::new(cx, cy, zoom));
 /// loop {
-///     app.tick(&mut location_source);              // GPS / control panel / GPX
+///     // GPS + barometer + active route → camera, map-match, ride stats.
+///     app.tick(now_ms, &mut location_source, Some(&mut baro), route.as_ref());
 ///     app.handle_input(now_ms, &mut input_source); // encoder + Back → gestures
-///     app.render_frame(&mut display, &reader, w, h, color_policy);
+///     app.render_frame(&mut display, &reader, route.as_ref(), w, h, color_policy);
 /// }
 /// ```
 pub struct App {
@@ -157,13 +161,20 @@ pub struct App {
     /// starts from the topmost opaque screen so overlays composite over the map.
     stack: Stack,
     /// The active route's resident elevation profile, rebuilt on route load (it streams
-    /// every chunk, so never per frame) and handed to the Elevation screen via
+    /// every chunk, so never per frame) and handed to the Statistics screen via
     /// [`Render`]. `None` when no route is loaded; [`profile_route`](App::profile_route)
     /// tracks which route it was built for.
     profile: Option<Profile>,
     /// The [`active_route`](Activity::active_route) the cached [`profile`](App::profile)
     /// was built for, so a route change triggers exactly one rebuild.
     profile_route: Option<usize>,
+    /// The live route-matcher (snaps each GPS fix to the active route → progress /
+    /// off-route). Reset on route change; runs in [`tick`](App::tick), result stored on
+    /// [`Activity`].
+    route_match: RouteMatch,
+    /// The [`active_route`](Activity::active_route) the matcher + ride accumulators were
+    /// last reset for, so loading/swapping a route restarts tracking exactly once.
+    ride_route: Option<usize>,
     /// Reused renderer; clears (not frees) its scratch each frame, so steady-state
     /// rendering does no allocation — important on the MCU.
     renderer: MapRenderer,
@@ -186,7 +197,7 @@ impl App {
     /// [`new_idle`](App::new_idle) for the device's real boot (Home / Idle).
     pub fn new(state: AppState) -> Self {
         let mut app = Self::new_idle(state);
-        app.activity = Activity { mode: Mode::Riding, active_route: None };
+        app.activity = Activity::new(Mode::Riding);
         let _ = app.stack.push(Screen::Map(MapScreen::new()));
         app
     }
@@ -204,6 +215,8 @@ impl App {
             stack,
             profile: None,
             profile_route: None,
+            route_match: RouteMatch::new(),
+            ride_route: None,
             renderer: MapRenderer::new(),
             gestures: Gestures::new(DEFAULT_HOLD_MS),
             last_gesture: None,
@@ -213,10 +226,53 @@ impl App {
         }
     }
 
-    /// Advance one tick from the location source (recenters the camera on the new
-    /// fix in Follow mode).
-    pub fn tick(&mut self, loc: &mut dyn LocationSource) {
-        self.state.update(loc);
+    /// Advance one tick from the sensors.
+    ///
+    /// Polls the GPS [`LocationSource`] (recenters the camera in Follow mode) and, when a
+    /// route is loaded, snaps the new fix onto it with the resident [`RouteMatch`] and
+    /// integrates the actually-ridden distance / moving time. Separately polls the
+    /// barometric [`ElevationSource`] (when present) and integrates climb — the two
+    /// sensor streams are asynchronous, so each accumulates on its own cadence and a
+    /// missing fix or baro sample simply contributes nothing this tick.
+    ///
+    /// `now_ms` is the host/MCU millis clock used for moving-time; it must advance with
+    /// the *fix's* time base (on the device that's wall-clock; a sim GPX replay passes
+    /// playback-time so Avg. Speed isn't scaled by the playback multiplier).
+    ///
+    /// Loading or swapping a route (a change in [`Activity::active_route`]) resets the
+    /// matcher and ride totals here, so tracking starts fresh exactly once per load.
+    pub fn tick(
+        &mut self,
+        now_ms: u32,
+        loc: &mut dyn LocationSource,
+        ele: Option<&mut dyn ElevationSource>,
+        route: Option<&RouteReader>,
+    ) {
+        // A new route → restart tracking (matcher + accumulators) exactly once.
+        if self.activity.active_route != self.ride_route {
+            self.route_match.reset();
+            self.activity.reset_ride();
+            self.ride_route = self.activity.active_route;
+        }
+        // Mirror the active route's length for the riding views (0 when none loaded).
+        self.activity.route_total_m = route.map_or(0, |r| r.total_distance_m);
+
+        // GPS fix → camera + map-match + ridden distance/time (only on a fresh fix, so a
+        // dropout doesn't re-run the matcher or double-count on a stale position).
+        if let Some(fix) = self.state.update(loc) {
+            if let Some(route) = route {
+                let m = self.route_match.update(fix.lon, fix.lat, route);
+                self.activity.apply_match(m);
+            }
+            self.activity.record_motion(fix, now_ms);
+        }
+
+        // Barometric altitude (its own cadence) → actually-ridden climb.
+        if let Some(ele) = ele {
+            if let Some(alt) = ele.poll() {
+                self.activity.record_elevation(alt);
+            }
+        }
     }
 
     /// Replace the resident route catalog from the host's store (the simulator's

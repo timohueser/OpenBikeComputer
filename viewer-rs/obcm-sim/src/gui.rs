@@ -18,6 +18,7 @@ use obcm_reader::Reader;
 use obcm_app::{App, AppState, Button, CameraMode, Fix};
 use obcm_route::RouteReader;
 
+use crate::baro::BaroSensor;
 use crate::device_input::{label, DeviceInput};
 use crate::framebuffer::Framebuffer;
 use crate::gpx::Track;
@@ -143,6 +144,9 @@ struct SimGui {
     /// the manual [`SimLocationSource`] (the device's GPS would likewise override
     /// any manual override). `None` = manual control via the panel sliders.
     gpx: Option<GpxPlayer>,
+    /// Simulated barometer, fed the replay's elevation on its own cadence (asynchronous
+    /// to the GPS fix) — the device's pressure altimeter stand-in.
+    baro: BaroSensor,
     /// A short "name — N pts, M:SS" status line for the loaded track.
     gpx_label: Option<String>,
     /// The last GPX load error, shown in the panel until the next successful load.
@@ -154,6 +158,13 @@ struct SimGui {
     screenshot: Option<String>,
     screenshot_requested: bool,
     last_stats: obcm_render::RenderStats,
+    /// This frame's device-control keyboard state, read globally at the top of `update`
+    /// (before any widget can take focus and swallow the keys), then applied in
+    /// [`show_device_controls`](Self::show_device_controls). Turn is edge (detents this
+    /// frame); the buttons are held state.
+    kbd_turn: i32,
+    kbd_enc: bool,
+    kbd_back: bool,
 }
 
 impl SimGui {
@@ -203,6 +214,7 @@ impl SimGui {
             panel,
             input: DeviceInput::new(),
             gpx: None,
+            baro: BaroSensor::new(),
             gpx_label: None,
             gpx_error: None,
             quit: false,
@@ -211,6 +223,9 @@ impl SimGui {
             screenshot_requested: false,
             bytes,
             last_stats: obcm_render::RenderStats::default(),
+            kbd_turn: 0,
+            kbd_enc: false,
+            kbd_back: false,
         };
         // Hand the Route menu its catalog (the folder scan); refreshed on GPX import.
         gui.app.set_routes(gui.store.catalog());
@@ -251,13 +266,25 @@ impl SimGui {
         let reader = Reader::new(&self.bytes).expect("map validated in main()");
         let tc = self.true_color;
 
-        // Drive the app from whichever location source is active. A loaded GPX
-        // replay takes over from the manual panel fix (just as the device's GPS
-        // would); we advance it by this frame's wall-clock time before ticking.
+        // Open the active route's geometry *before* ticking, so the map-matcher gets it
+        // (reloads only when the selection changes; the firmware does the same off its SD
+        // card). It stays borrowed through `tick` + `render_frame` below.
+        self.store.sync_active(self.app.activity.active_route);
+        let route_src = self.store.active_source();
+        let route = route_src.as_ref().and_then(|s| RouteReader::open(s).ok());
+
+        // Drive the app from whichever location source is active. A loaded GPX replay
+        // takes over from the manual panel fix (just as the device's GPS would); we
+        // advance it by this frame's wall-clock time before ticking, and feed the
+        // barometer the track's elevation on its own (asynchronous) cadence.
         if let Some(player) = self.gpx.as_mut() {
             let dt = ctx.input(|i| i.stable_dt) as f64;
             player.advance(dt);
-            self.app.tick(player);
+            self.baro.feed(player.elevation_at(player.time()), player.time());
+            // Ride stats use the *playback* clock (not wall-clock), so Avg. Speed isn't
+            // scaled by the replay-speed multiplier.
+            let now_ms = (player.time() * 1000.0) as u32;
+            self.app.tick(now_ms, player, Some(&mut self.baro), route.as_ref());
             // Reflect the replayed fix in the panel mirrors so the (disabled)
             // position/heading widgets show the live values, and so manual control
             // resumes from here if the track is ejected.
@@ -269,14 +296,11 @@ impl SimGui {
                 }
             }
         } else {
-            self.app.tick(&mut self.loc);
+            // Manual panel control: no barometer, wall-clock for any moving-time.
+            self.baro.clear();
+            let now_ms = self.input.now_ms();
+            self.app.tick(now_ms, &mut self.loc, None, route.as_ref());
         }
-
-        // Open the active route's geometry (reloads only when the selection changes),
-        // so the Map can stream it — the firmware does the same from its SD card.
-        self.store.sync_active(self.app.activity.active_route);
-        let route_src = self.store.active_source();
-        let route = route_src.as_ref().and_then(|s| RouteReader::open(s).ok());
 
         let stats = self.app.render_frame(
             &mut self.fb,
@@ -411,25 +435,12 @@ impl SimGui {
             .inner;
 
         // --- Keyboard mirror: ←/→ (or [ ] / , .) turn; Enter push; Backspace back. ---
-        let (enc_key, back_key, turn_keys) = ui.input(|i| {
-            let mut t = 0;
-            if i.key_pressed(egui::Key::ArrowRight)
-                || i.key_pressed(egui::Key::CloseBracket)
-                || i.key_pressed(egui::Key::Period)
-            {
-                t += 1;
-            }
-            if i.key_pressed(egui::Key::ArrowLeft)
-                || i.key_pressed(egui::Key::OpenBracket)
-                || i.key_pressed(egui::Key::Comma)
-            {
-                t -= 1;
-            }
-            (i.key_down(egui::Key::Enter), i.key_down(egui::Key::Backspace), t)
-        });
-        self.input.turn(turn_keys);
-        self.input.set_button(Button::Encoder, push_resp.is_pointer_button_down_on() || enc_key);
-        self.input.set_button(Button::Back, back_resp.is_pointer_button_down_on() || back_key);
+        // Read globally at the top of `update` (see [`kbd_turn`](Self::kbd_turn)) so it
+        // works regardless of which widget has focus; here we just merge it with the
+        // on-screen PUSH/BACK buttons' pointer state.
+        self.input.turn(self.kbd_turn);
+        self.input.set_button(Button::Encoder, push_resp.is_pointer_button_down_on() || self.kbd_enc);
+        self.input.set_button(Button::Back, back_resp.is_pointer_button_down_on() || self.kbd_back);
 
         // Run this frame's raw events through the shared recognizer + screen stack
         // (the exact path the firmware uses), firing long-press at its threshold.
@@ -744,6 +755,31 @@ impl SimGui {
 
 impl eframe::App for SimGui {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Read the device-control keyboard shortcuts *first*, before any widget (the
+        // device-screen image, the panel) is laid out and can take focus and swallow the
+        // keys — so they drive the encoder/Back whether the screen or the control panel is
+        // focused. Turn keys are consumed (one detent per press); the Enter/Backspace
+        // button state is the live held state. Applied in `show_device_controls`.
+        let (kt, ke, kb) = ctx.input_mut(|i| {
+            let mut t = 0;
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight)
+                || i.consume_key(egui::Modifiers::NONE, egui::Key::CloseBracket)
+                || i.consume_key(egui::Modifiers::NONE, egui::Key::Period)
+            {
+                t += 1;
+            }
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft)
+                || i.consume_key(egui::Modifiers::NONE, egui::Key::OpenBracket)
+                || i.consume_key(egui::Modifiers::NONE, egui::Key::Comma)
+            {
+                t -= 1;
+            }
+            (t, i.key_down(egui::Key::Enter), i.key_down(egui::Key::Backspace))
+        });
+        self.kbd_turn = kt;
+        self.kbd_enc = ke;
+        self.kbd_back = kb;
+
         // Drag-and-drop a `.gpx` onto the window to import it (the device's USB-drop
         // path): convert into the routes folder and refresh the Route-menu catalog.
         let dropped: Vec<std::path::PathBuf> =

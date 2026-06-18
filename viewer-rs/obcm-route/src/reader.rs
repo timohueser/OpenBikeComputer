@@ -167,36 +167,10 @@ impl<'a> RouteReader<'a> {
         &self.index
     }
 
-    /// Cumulative ascent (m) at `dist_m` along the route — the climbing done by that
-    /// point. Linearly interpolates the per-chunk [`cum_ascent_m`](ChunkMeta::cum_ascent_m)
-    /// the format stores at each chunk's first point, so "climbed"/"to climb" can be read
-    /// at any position (the Elevation cursor, later the matched ride position) without
-    /// re-summing the geometry. Clamped to `0..=total_ascent_m`.
-    pub fn ascent_to(&self, dist_m: u32) -> u32 {
-        let chunks = &self.index;
-        if chunks.is_empty() {
-            return 0;
-        }
-        // The last chunk whose first point is at or before `dist_m`.
-        let mut k = 0;
-        while k + 1 < chunks.len() && chunks[k + 1].cum_distance_m <= dist_m {
-            k += 1;
-        }
-        let (d0, asc0) = (chunks[k].cum_distance_m, chunks[k].cum_ascent_m);
-        // The segment runs to the next chunk's anchor, or to the route end past the last.
-        let (d1, asc1) = match chunks.get(k + 1) {
-            Some(next) => (next.cum_distance_m, next.cum_ascent_m),
-            None => (self.total_distance_m, self.total_ascent_m),
-        };
-        if dist_m <= d0 || d1 <= d0 {
-            return asc0;
-        }
-        if dist_m >= d1 {
-            return asc1;
-        }
-        let t = (dist_m - d0) as f32 / (d1 - d0) as f32;
-        asc0 + (t * (asc1 - asc0) as f32) as u32
-    }
+    // Cumulative ascent at a position is read from the elevation [`Profile`]
+    // ([`Profile::ascent_to`](crate::Profile::ascent_to)) at column resolution, not from
+    // the coarse per-chunk `cum_ascent_m` (which, with few chunks, spread the climb
+    // uniformly over distance and left a phantom "to climb" at the top of a climb).
 
     /// A [`RouteSummary`] for this route (for the menu / centering).
     pub fn summary(&self) -> RouteSummary {

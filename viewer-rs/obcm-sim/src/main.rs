@@ -27,6 +27,7 @@ use obcm_reader::{rgb565_to_device64, rgb565_to_rgb888, Reader};
 use obcm_render::text::{draw_text, Font, TextAlign};
 use obcm_app::{App, AppState, Button, ButtonEvent, Fix, InputEvent, InputSource, LocationSource};
 
+mod baro;
 mod device_input;
 mod framebuffer;
 mod gpx;
@@ -34,6 +35,7 @@ mod gpx_player;
 mod gui;
 mod routes;
 mod sim_location;
+use baro::BaroSensor;
 use framebuffer::Framebuffer;
 use gpx::Track;
 use gpx_player::GpxPlayer;
@@ -393,21 +395,26 @@ fn main() {
             state.heading_up = true;
             state.user_fix = Some(Fix { lat: cy, lon: cx, course: Some(deg), speed_mps: None });
         }
-        // `--gpx` renders the replayed fix at `--at` (default: track midpoint),
-        // a headless way to check the marker sits on the track with a derived
-        // heading. The fix's course drives heading-up just like a live replay.
+        // `--gpx` renders the replayed fix at `--at` (default: track midpoint). We seed
+        // the camera/heading from that fix now, then (below, after the route opens) replay
+        // the track up to `--at` ticking the app, so the snapshot shows live riding state
+        // (matched cursor, ride stats) rather than just a static marker.
+        let mut player: Option<GpxPlayer> = None;
+        let mut replay_to = 0.0_f64;
         if let Some(path) = &args.gpx {
             match Track::load(std::path::Path::new(path)) {
                 Ok(track) => {
-                    let mut player = GpxPlayer::new(track);
-                    let at = args.at.unwrap_or(player.duration() / 2.0);
-                    player.seek(at);
-                    if let Some(fix) = player.poll() {
+                    let mut p = GpxPlayer::new(track);
+                    let at = args.at.unwrap_or(p.duration() / 2.0);
+                    replay_to = at;
+                    p.seek(at);
+                    if let Some(fix) = p.poll() {
                         state.heading_up = fix.course.is_some();
                         state.user_fix = Some(fix);
                         state.cam_lon = fix.lon;
                         state.cam_lat = fix.lat;
                     }
+                    player = Some(p);
                 }
                 Err(e) => {
                     eprintln!("cannot load GPX: {e}");
@@ -428,6 +435,25 @@ fn main() {
         store.sync_active(app.activity.active_route);
         let route_src = store.active_source();
         let route = route_src.as_ref().and_then(|s| RouteReader::open(s).ok());
+
+        // Replay the track from the start up to `--at`, ticking the app each step so the
+        // map-matcher locks on and the ride accumulators (done / climbed / Avg) build up.
+        // A coarse-but-bounded step keeps long tracks fast while staying under the
+        // dropout/teleport gates; the playback clock keeps Avg. Speed unscaled.
+        if let Some(p) = player.as_mut() {
+            let mut baro = BaroSensor::new();
+            p.seek(0.0);
+            p.play();
+            let step = (replay_to / 400.0).clamp(1.0, 8.0);
+            let mut t = 0.0;
+            while t < replay_to {
+                p.advance(step);
+                baro.feed(p.elevation_at(p.time()), p.time());
+                let now_ms = (p.time() * 1000.0) as u32;
+                app.tick(now_ms, p, Some(&mut baro), route.as_ref());
+                t += step;
+            }
+        }
 
         let mut fb = Framebuffer::new(args.width, args.height);
         let tc = args.true_color;

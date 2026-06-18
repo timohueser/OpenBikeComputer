@@ -146,6 +146,37 @@ impl GpxPlayer {
         })
     }
 
+    /// The barometric elevation (m) at playback time `t`, linearly interpolated from the
+    /// track's `<ele>` values — the simulator's stand-in for a pressure-altimeter reading,
+    /// fed into the [`BaroSensor`](crate::baro::BaroSensor). `None` where the track carries
+    /// no elevation around `t`. Deliberately separate from [`poll`](Self::poll): the baro
+    /// and the GPS fix are independent sensors, sampled on their own cadences.
+    pub fn elevation_at(&self, t: f64) -> Option<f32> {
+        let pts = &self.track.points;
+        if pts.is_empty() {
+            return None;
+        }
+        let t = t.clamp(0.0, self.duration());
+        let idx = pts.partition_point(|p| p.t <= t);
+        if idx == 0 {
+            return pts[0].ele;
+        }
+        if idx >= pts.len() {
+            return pts.last().unwrap().ele;
+        }
+        let (a, b) = (&pts[idx - 1], &pts[idx]);
+        match (a.ele, b.ele) {
+            (Some(ea), Some(eb)) => {
+                let span = b.t - a.t;
+                let f = if span > 0.0 { (t - a.t) / span } else { 0.0 };
+                Some(ea + (eb - ea) * f as f32)
+            }
+            // A lone elevation on one side still gives a reading; none on either → None.
+            (Some(e), None) | (None, Some(e)) => Some(e),
+            (None, None) => None,
+        }
+    }
+
     /// Linearly interpolate the position (microdegrees, unrounded) at time `t`.
     /// `t` is assumed already clamped to `[0, duration]`.
     fn interp_pos(&self, t: f64) -> (f64, f64) {
@@ -247,7 +278,20 @@ mod tests {
     use crate::gpx::{Track, TrackPoint};
 
     fn track(pts: &[(i32, i32, f64)]) -> Track {
-        Track { points: pts.iter().map(|&(lat, lon, t)| TrackPoint { lat, lon, t }).collect() }
+        Track { points: pts.iter().map(|&(lat, lon, t)| TrackPoint { lat, lon, ele: None, t }).collect() }
+    }
+
+    #[test]
+    fn elevation_interpolates_between_points() {
+        // 200 m at t=0, 300 m at t=10 → 250 m at the midpoint; clamps past the ends.
+        let pts = vec![
+            TrackPoint { lat: 0, lon: 0, ele: Some(200.0), t: 0.0 },
+            TrackPoint { lat: 10_000, lon: 0, ele: Some(300.0), t: 10.0 },
+        ];
+        let p = GpxPlayer::new(Track { points: pts });
+        assert_eq!(p.elevation_at(5.0), Some(250.0));
+        assert_eq!(p.elevation_at(0.0), Some(200.0));
+        assert_eq!(p.elevation_at(10.0), Some(300.0));
     }
 
     #[test]

@@ -82,17 +82,30 @@ fn profile_band_is_gap_free() {
 }
 
 #[test]
-fn ascent_to_interpolates_climb() {
+fn profile_ascent_to_tracks_where_the_climb_happens() {
     let bytes = convert("Peaked Ridge", PEAKED);
     let src = SliceSource(&bytes);
     let r = RouteReader::open(&src).unwrap();
+    let p = r.elevation_profile();
 
-    // Endpoints pin to 0 and the route total; the middle lands strictly between.
-    assert_eq!(r.ascent_to(0), 0);
-    assert_eq!(r.ascent_to(r.total_distance_m), r.total_ascent_m);
-    assert_eq!(r.ascent_to(r.total_distance_m * 10), r.total_ascent_m); // clamped past the end
-    let mid = r.ascent_to(r.total_distance_m / 2);
-    assert!(mid > 0 && mid < r.total_ascent_m, "mid ascent {mid} not between 0 and total");
+    // Endpoints pin to 0 and the exact route total (clamped past the end).
+    assert_eq!(p.ascent_to(0.0), 0);
+    assert_eq!(p.ascent_to(1.0), r.total_ascent_m);
+    assert_eq!(p.ascent_to(1.5), r.total_ascent_m);
+
+    // PEAKED climbs 200→300 then descends — so by the peak essentially all of the route's
+    // ascent is already done. (The old per-chunk interpolation spread the climb uniformly
+    // over distance and reported only ~half here, leaving a phantom "to climb" at the top.)
+    let peak_frac = p.peak_col as f32 / (PROFILE_COLS - 1) as f32;
+    assert!(
+        p.ascent_to(peak_frac) as f32 > 0.9 * r.total_ascent_m as f32,
+        "by the peak the climb should be ~done, got {} of {}",
+        p.ascent_to(peak_frac),
+        r.total_ascent_m
+    );
+    // Monotonic, and the descending tail past the peak adds nothing.
+    assert!(p.ascent_to(0.25) <= p.ascent_to(0.5));
+    assert_eq!(p.ascent_to(0.95), r.total_ascent_m);
 }
 
 /// A flat route: constant elevation, collinear-in-plan, so it decimates hard. The

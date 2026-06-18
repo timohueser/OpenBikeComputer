@@ -285,7 +285,7 @@ fn ride_control_composites_over_the_map() {
 // --- tiny render harness (mirrors marker.rs) ---
 
 fn render(app: &mut App, bytes: &[u8]) -> Buf {
-    app.tick(&mut NoFix);
+    app.tick(0, &mut NoFix, None, None);
     let reader = Reader::new(bytes).expect("valid v5 file");
     let mut buf = Buf::new(120, 120);
     app.render_frame(&mut buf, &reader, None, 120.0, 120.0, |c| {
