@@ -7,7 +7,7 @@ use obcm_render::{zoom_for_mpp, MapRenderer, RenderStats, Viewport};
 use obcm_route::{Profile, RouteMatch, RouteReader};
 
 use crate::activity::{Activity, Mode};
-use crate::hal::{ElevationSource, Fix, InputSource, LocationSource};
+use crate::hal::{AltimeterSource, Fix, InputSource, LocationSource};
 use crate::input::{Gesture, Gestures, DEFAULT_HOLD_MS};
 use crate::route::{Catalog, RouteSummary};
 use crate::screen::{self, Ctx, HomeScreen, MapScreen, Render, Screen, Stack};
@@ -231,7 +231,7 @@ impl App {
     /// Polls the GPS [`LocationSource`] (recenters the camera in Follow mode) and, when a
     /// route is loaded, snaps the new fix onto it with the resident [`RouteMatch`] and
     /// integrates the actually-ridden distance / moving time. Separately polls the
-    /// barometric [`ElevationSource`] (when present) and integrates climb — the two
+    /// barometric [`AltimeterSource`] (when present) and integrates climb — the two
     /// sensor streams are asynchronous, so each accumulates on its own cadence and a
     /// missing fix or baro sample simply contributes nothing this tick.
     ///
@@ -245,7 +245,7 @@ impl App {
         &mut self,
         now_ms: u32,
         loc: &mut dyn LocationSource,
-        ele: Option<&mut dyn ElevationSource>,
+        ele: Option<&mut dyn AltimeterSource>,
         route: Option<&RouteReader>,
     ) {
         // A new route → restart tracking (matcher + accumulators) exactly once.
@@ -270,7 +270,7 @@ impl App {
         // Barometric altitude (its own cadence) → actually-ridden climb.
         if let Some(ele) = ele {
             if let Some(alt) = ele.poll() {
-                self.activity.record_elevation(alt);
+                self.activity.record_altitude(alt);
             }
         }
     }
