@@ -224,6 +224,25 @@ fn initial_camera(reader: &Reader, width: u32) -> (i32, i32, f32) {
     (cam_lon as i32, cam_lat as i32, width as f32 / span_lon)
 }
 
+/// Advance the GPX replay by `dt` seconds and run one app tick on the **playback**
+/// clock. Feeds the barometer the track's elevation at the new time, then ticks the
+/// app with the player as the location source — deriving the millis from playback-time
+/// (not wall-clock) so Avg. Speed isn't scaled by the replay-speed multiplier. Shared
+/// by the live GUI loop and the headless `--png` replay so both step the simulated
+/// GPS + barometer through the app identically.
+fn replay_step(
+    app: &mut App,
+    player: &mut GpxPlayer,
+    baro: &mut BaroSensor,
+    dt: f64,
+    route: Option<&RouteReader>,
+) {
+    player.advance(dt);
+    baro.feed(player.elevation_at(player.time()), player.time());
+    let now_ms = (player.time() * 1000.0) as u32;
+    app.tick(now_ms, player, Some(baro), route);
+}
+
 /// Encode a framebuffer to a PNG, upscaling by `scale` with nearest-neighbor so
 /// the device's hard pixel edges stay crisp (matching the old simulator output).
 fn write_png(fb: &Framebuffer, scale: u32, path: &str) -> Result<(), String> {
@@ -447,10 +466,7 @@ fn main() {
             let step = (replay_to / 400.0).clamp(1.0, 8.0);
             let mut t = 0.0;
             while t < replay_to {
-                p.advance(step);
-                baro.feed(p.elevation_at(p.time()), p.time());
-                let now_ms = (p.time() * 1000.0) as u32;
-                app.tick(now_ms, p, Some(&mut baro), route.as_ref());
+                replay_step(&mut app, p, &mut baro, step, route.as_ref());
                 t += step;
             }
         }
