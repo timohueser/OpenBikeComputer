@@ -278,13 +278,9 @@ impl SimGui {
         // advance it by this frame's wall-clock time before ticking, and feed the
         // barometer the track's elevation on its own (asynchronous) cadence.
         if let Some(player) = self.gpx.as_mut() {
+            // Advance + tick on the playback clock (shared with the headless replay).
             let dt = ctx.input(|i| i.stable_dt) as f64;
-            player.advance(dt);
-            self.baro.feed(player.elevation_at(player.time()), player.time());
-            // Ride stats use the *playback* clock (not wall-clock), so Avg. Speed isn't
-            // scaled by the replay-speed multiplier.
-            let now_ms = (player.time() * 1000.0) as u32;
-            self.app.tick(now_ms, player, Some(&mut self.baro), route.as_ref());
+            crate::replay_step(&mut self.app, player, &mut self.baro, dt, route.as_ref());
             // Reflect the replayed fix in the panel mirrors so the (disabled)
             // position/heading widgets show the live values, and so manual control
             // resumes from here if the track is ejected.
