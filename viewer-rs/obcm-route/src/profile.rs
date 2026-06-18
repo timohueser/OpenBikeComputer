@@ -102,18 +102,17 @@ impl RouteReader<'_> {
     pub fn elevation_profile(&self) -> Profile {
         // Sentinel for "no point landed here": an empty column has min > max.
         let mut cols = [(i16::MAX, i16::MIN); PROFILE_COLS];
-        // Cumulative dead-banded ascent recorded at the last point of each column (0 =
-        // none recorded). Filled/normalized below.
+        // Running dead-banded ascent recorded at the last point of each column (0 = none
+        // yet); carried forward and scaled into `cum_ascent` below.
         let mut casc = [0f32; PROFILE_COLS];
         let total = self.total_distance_m.max(1) as f64;
         let last_col = PROFILE_COLS - 1;
 
-        // The climb hysteresis runs *continuously* across chunks (a chunk's shared seam
-        // point compares equal to itself, contributing nothing), so the running ascent is
-        // one sweep over the whole route.
-        let mut ascent = 0f32;
-        let mut ele_ref: Option<f32> = None;
-
+        // One sweep over the whole route: bucket each point into its distance column,
+        // updating that column's elevation band and the continuous ascent integrator. The
+        // integrator runs *across* chunk seams (a chunk's shared seam point compares equal
+        // to itself, contributing nothing), so it stays one continuous pass.
+        let mut ascent = AscentDeadband::new();
         let mut buf: Vec<RoutePoint, MAX_POINTS_PER_CHUNK> = Vec::new();
         let n = self.chunks().len();
         for k in 0..n {
@@ -129,62 +128,93 @@ impl RouteReader<'_> {
                     dist += seg_dist_m(pr, (p.lon, p.lat));
                 }
                 prev = Some((p.lon, p.lat));
-                let col = ((dist / total) * last_col as f64) as usize;
-                let col = col.min(last_col);
+                let col = (((dist / total) * last_col as f64) as usize).min(last_col);
                 let slot = &mut cols[col];
                 slot.0 = slot.0.min(p.ele);
                 slot.1 = slot.1.max(p.ele);
-
-                // Accumulate ascent with the dead-band; record the running total in this
-                // column (later points in the same column overwrite, so it ends correct).
-                let e = p.ele as f32;
-                match ele_ref {
-                    None => ele_ref = Some(e),
-                    Some(r) => {
-                        let d = e - r;
-                        if d >= ELE_THRESHOLD_M {
-                            ascent += d;
-                            ele_ref = Some(e);
-                        } else if d <= -ELE_THRESHOLD_M {
-                            ele_ref = Some(e);
-                        }
-                    }
-                }
-                casc[col] = ascent;
+                // Record the running ascent at this column (later points in the same column
+                // overwrite, so it ends on the correct value).
+                casc[col] = ascent.push(p.ele as f32);
             }
         }
 
         fill_gaps(&mut cols, (self.min_ele_m, self.max_ele_m));
-
-        // Build the cumulative-ascent profile: carry each empty column forward (and keep
-        // it monotonic), then scale to the header's exact total so "to climb" reaches 0.
-        let mut cum_ascent = [0u32; PROFILE_COLS];
-        let mut run = 0f32;
-        let mut raw = [0f32; PROFILE_COLS];
-        for i in 0..PROFILE_COLS {
-            run = run.max(casc[i]);
-            raw[i] = run;
-        }
-        if raw[last_col] > 0.0 {
-            let scale = self.total_ascent_m as f32 / raw[last_col];
-            for i in 0..PROFILE_COLS {
-                cum_ascent[i] = (raw[i] * scale) as u32;
-            }
-        }
-        cum_ascent[last_col] = self.total_ascent_m; // exact endpoint
-
-        // Peak = the tallest column's max.
-        let mut peak_col = 0;
-        let mut peak = i16::MIN;
-        for (i, c) in cols.iter().enumerate() {
-            if c.1 > peak {
-                peak = c.1;
-                peak_col = i;
-            }
-        }
+        let cum_ascent = cumulative_ascent(&casc, self.total_ascent_m);
+        let peak_col = peak_column(&cols);
 
         Profile { cols, cum_ascent, min_ele_m: self.min_ele_m, max_ele_m: self.max_ele_m, peak_col }
     }
+}
+
+/// Running dead-banded ascent: feed each point's elevation in route order, read back the
+/// cumulative climb so far. Changes smaller than [`ELE_THRESHOLD_M`] neither count nor move
+/// the reference, so sampling/sensor wiggle doesn't inflate the total — the same dead-band
+/// the converter applies when precomputing the route's ascent.
+struct AscentDeadband {
+    /// Reference elevation the next sample is compared against; `None` before the first.
+    ref_ele: Option<f32>,
+    /// Cumulative climb (m) past the dead-band so far.
+    total: f32,
+}
+
+impl AscentDeadband {
+    fn new() -> Self {
+        AscentDeadband { ref_ele: None, total: 0.0 }
+    }
+
+    /// Integrate one elevation sample, returning the running cumulative ascent.
+    fn push(&mut self, e: f32) -> f32 {
+        match self.ref_ele {
+            None => self.ref_ele = Some(e),
+            Some(r) => {
+                let d = e - r;
+                if d >= ELE_THRESHOLD_M {
+                    self.total += d;
+                    self.ref_ele = Some(e);
+                } else if d <= -ELE_THRESHOLD_M {
+                    self.ref_ele = Some(e);
+                }
+            }
+        }
+        self.total
+    }
+}
+
+/// Turn the per-column running ascent (`casc`, set only where points landed) into a
+/// gap-free, monotonic-non-decreasing cumulative-ascent curve, scaled so the final column
+/// equals the header's exact `total_ascent_m` (so "to climb" reaches 0 at the route's end).
+fn cumulative_ascent(casc: &[f32; PROFILE_COLS], total_ascent_m: u32) -> [u32; PROFILE_COLS] {
+    let last_col = PROFILE_COLS - 1;
+    // Carry the running value across empty columns, keeping the curve non-decreasing.
+    let mut raw = [0f32; PROFILE_COLS];
+    let mut run = 0f32;
+    for i in 0..PROFILE_COLS {
+        run = run.max(casc[i]);
+        raw[i] = run;
+    }
+    // Scale to the header's exact total, then pin the endpoint so rounding can't miss it.
+    let mut cum = [0u32; PROFILE_COLS];
+    if raw[last_col] > 0.0 {
+        let scale = total_ascent_m as f32 / raw[last_col];
+        for i in 0..PROFILE_COLS {
+            cum[i] = (raw[i] * scale) as u32;
+        }
+    }
+    cum[last_col] = total_ascent_m;
+    cum
+}
+
+/// The column index of the route's highest point (for placing the peak label).
+fn peak_column(cols: &[(i16, i16); PROFILE_COLS]) -> usize {
+    let mut peak_col = 0;
+    let mut peak = i16::MIN;
+    for (i, c) in cols.iter().enumerate() {
+        if c.1 > peak {
+            peak = c.1;
+            peak_col = i;
+        }
+    }
+    peak_col
 }
 
 /// Make `cols` gap-free: each empty column (sentinel `min > max`) inherits the nearest
