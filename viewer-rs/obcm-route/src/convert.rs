@@ -18,7 +18,7 @@ use crate::reader::{ChunkMeta, CHUNK_META_LEN, HEADER_LEN, MAX_POINTS_PER_CHUNK,
 use obcm_reader::BBox;
 
 /// Decimation tolerance: drop a vertex within this perpendicular distance of the chord.
-const EPSILON_M: f64 = 4.0;
+const EPSILON_M: f64 = 1.0;
 /// Force a kept vertex at least this often. Also bounds stored deltas to the `int16`
 /// range (≈3.6 km lat; ≈3.6 km·cos(lat) lon — safe to ~70° latitude).
 const MAX_SPAN_M: f64 = 1200.0;
