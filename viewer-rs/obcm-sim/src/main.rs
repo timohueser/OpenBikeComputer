@@ -102,7 +102,7 @@ fn parse_args() -> Result<Args, String> {
         map: String::new(),
         width: 240,
         height: 320,
-        scale: 3,
+        scale: 1,
         png: None,
         screenshot: None,
         true_color: false,
@@ -200,33 +200,37 @@ fn render_text_demo(fb: &mut Framebuffer, true_color: bool) {
     let w = fb.width() as i32;
 
     let _ = fb.clear(col(PARCHMENT));
-    let _ = fb.fill_solid(&Rectangle::new(Point::zero(), Size::new(fb.width(), 22)), col(HUD));
-    draw_text(fb, "TEXT DEMO", Point::new(w / 2, 6), Font::Label, TextAlign::Center, col(PARCHMENT));
+    let _ = fb.fill_solid(&Rectangle::new(Point::zero(), Size::new(fb.width(), 28)), col(HUD));
+    draw_text(fb, "TERMINUS FONT DEMO", Point::new(w / 2, 3), Font::Label, TextAlign::Center, col(PARCHMENT));
 
-    // Font ladder — the three sizes, in ink.
-    let mut y = 30;
-    for (label, font) in
-        [("Label 6x10", Font::Label), ("Body 9x15", Font::Body), ("Display 10x20", Font::Display)]
-    {
-        draw_text(fb, label, Point::new(8, y), font, TextAlign::Left, col(INK));
-        y += font.line_height() as i32 + 6;
+    // Font ladder: each tier's caption (in Label) over a true-size sample drawn in that
+    // tier, annotated with its measured cap height in mm so the size targets are checkable
+    // at a glance — render with `--physical` to judge it at device scale.
+    let sample = "12.5 km/h";
+    let mut y = 36;
+    for (caption, font) in [
+        ("Label  ter24  2.0mm", Font::Label),
+        ("Body   ter28  2.4mm", Font::Body),
+        ("Disply ter32  2.7mm", Font::Display),
+    ] {
+        draw_text(fb, caption, Point::new(8, y), Font::Label, TextAlign::Left, col(WOOD));
+        y += Font::Label.line_height() as i32 + 2;
+        draw_text(fb, sample, Point::new(8, y), font, TextAlign::Left, col(INK));
+        y += font.line_height() as i32 + 8;
     }
 
     // Palette — each name drawn in its own color, so the PNG shows whether amber,
     // forest, wood and warning stay distinct and legible after device-64 quantization.
-    y += 6;
     for (name, c) in [("amber", AMBER), ("forest", FOREST), ("wood", WOOD), ("warning", WARNING)] {
-        draw_text(fb, name, Point::new(8, y), Font::Body, TextAlign::Left, col(c));
-        y += Font::Body.line_height() as i32 + 4;
+        draw_text(fb, name, Point::new(8, y), Font::Label, TextAlign::Left, col(c));
+        y += Font::Label.line_height() as i32 + 2;
     }
 
-    // Alignment row + a big number, mirroring the menu counter / stat tiles.
-    y += 8;
+    // Alignment row, mirroring the menu counter / stat labels.
+    y += 6;
     draw_text(fb, "LEFT", Point::new(8, y), Font::Label, TextAlign::Left, col(INK));
     draw_text(fb, "CENTER", Point::new(w / 2, y), Font::Label, TextAlign::Center, col(INK));
     draw_text(fb, "RIGHT", Point::new(w - 8, y), Font::Label, TextAlign::Right, col(INK));
-    y += 22;
-    draw_text(fb, "42.1 km", Point::new(w / 2, y), Font::Display, TextAlign::Center, col(INK));
 }
 
 /// The starting camera for a freshly-opened map: centered on the bbox, zoomed so

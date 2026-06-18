@@ -91,33 +91,33 @@ impl RideControl {
     {
         use palette::*;
         let (w, h) = (rx.w as i32, rx.h as i32);
-        let (pw, ph) = (190, 132);
+        let (pw, ph) = (210, 176);
         let (px, py) = (w / 2 - pw / 2, h / 2 - ph / 2);
         let mut cv = Canvas::new(target, color_fn);
 
         // Parchment panel + dark HUD title strip over the map.
-        cv.round(rect(px, py, pw, ph), 6, PARCHMENT);
-        cv.fill(rect(px, py, pw, 22), HUD);
-        cv.text("PAUSED", Point::new(w / 2, py + 6), Font::Label, TextAlign::Center, PARCHMENT);
+        cv.round(rect(px, py, pw, ph), 8, PARCHMENT);
+        cv.fill(rect(px, py, pw, 32), HUD);
+        cv.text("PAUSED", Point::new(w / 2, py + 7), Font::Label, TextAlign::Center, PARCHMENT);
 
         // The options, each a highlighted row when selected. Guarded rows fill with
         // a warning bar tracking the hold-progress; instant ones get a solid amber.
-        let mut y = py + 36;
+        let (row_h, gap, first) = (38, 6, py + 40);
         for (i, item) in ITEMS.iter().enumerate() {
+            let y = first + i as i32 * (row_h + gap);
+            let row = rect(px + 10, y, pw - 20, row_h);
             if i == self.selected {
-                let row = rect(px + 8, y - 3, pw - 16, 20);
                 if item.guard {
-                    cv.fill(row, PARCHMENT_SHADE);
-                    let fill_w = ((pw - 16) as f32 * rx.hold_progress.clamp(0.0, 1.0)) as i32;
+                    cv.round(row, 6, PARCHMENT_SHADE);
+                    let fill_w = ((pw - 20) as f32 * rx.hold_progress.clamp(0.0, 1.0)) as i32;
                     if fill_w > 0 {
-                        cv.fill(rect(px + 8, y - 3, fill_w, 20), WARNING);
+                        cv.round(rect(px + 10, y, fill_w, row_h), 6, WARNING);
                     }
                 } else {
-                    cv.fill(row, AMBER);
+                    cv.round(row, 6, AMBER);
                 }
             }
-            cv.text(item.label, Point::new(px + 16, y), Font::Body, TextAlign::Left, INK);
-            y += 28;
+            cv.text(item.label, Point::new(px + 22, y + 5), Font::Body, TextAlign::Left, INK);
         }
         RenderStats::default()
     }

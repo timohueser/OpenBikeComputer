@@ -23,8 +23,9 @@ use crate::input::Gesture;
 
 use super::{list_frame, palette, scrollbar, window_start, Ctx, MapScreen, Render, Screen, Transition, LIST_TOP};
 
-/// Per-route pane height (two lines: name + stats).
-const ROW_H: i32 = 58;
+/// Per-route pane height (two lines: name + stats). Sized so exactly four routes fill the
+/// list area below the title bar, with the two-line content centred in each pane.
+const ROW_H: i32 = 66;
 
 /// The route list. State is the highlighted route.
 #[derive(Debug, Default)]
@@ -99,23 +100,28 @@ impl RouteMenuScreen {
                 cv.round(rect(12, y, w - 24, ROW_H - 8), 6, AMBER);
             }
 
-            // Pointer bullet + route name on the first line.
+            // Pointer bullet (vertically centred on the whole two-line entry) + name.
+            // The name is truncated with ".." when it would overrun the pane (the panel
+            // font has no ellipsis glyph).
             let accent = if selected { INK } else { SUBTEXT };
-            let name_mid = y + 16;
-            cv.triangle(Point::new(24, name_mid - 6), Point::new(24, name_mid + 6), Point::new(33, name_mid), accent);
-            cv.text(&route.name, Point::new(42, y + 8), Font::Body, TextAlign::Left, INK);
+            let row_mid = y + 33;
+            cv.triangle(Point::new(24, row_mid - 8), Point::new(24, row_mid + 8), Point::new(36, row_mid), accent);
+            let name_max = (((w - 20) - 44) / Font::Body.char_width() as i32).max(6) as usize;
+            let name = fit_name(&route.name, name_max);
+            cv.text(&name, Point::new(44, y + 9), Font::Body, TextAlign::Left, INK);
 
-            // Stats line: "NNN km" then an up-triangle + "NNNN m" of climb.
-            let sy = y + 32;
+            // Stats line: "NNN km" then an up-triangle + "NNNN m" of climb. The climb column
+            // sits at a fixed x with room for 5-digit metres (10 000 m+) inside the frame.
+            let sy = y + 35;
             let mut dist: heapless::String<12> = heapless::String::new();
             let _ = write!(dist, "{} km", route.distance_km);
-            cv.text(&dist, Point::new(42, sy), Font::Label, TextAlign::Left, accent);
+            cv.text(&dist, Point::new(44, sy), Font::Label, TextAlign::Left, accent);
 
-            let cx0 = 132;
-            cv.triangle(Point::new(cx0, sy + 9), Point::new(cx0 + 8, sy + 9), Point::new(cx0 + 4, sy), accent);
+            let cx0 = 126;
+            cv.triangle(Point::new(cx0, sy + 9), Point::new(cx0 + 9, sy + 9), Point::new(cx0 + 4, sy), accent);
             let mut climb: heapless::String<12> = heapless::String::new();
             let _ = write!(climb, "{} m", route.climb_m);
-            cv.text(&climb, Point::new(cx0 + 14, sy), Font::Label, TextAlign::Left, accent);
+            cv.text(&climb, Point::new(cx0 + 16, sy), Font::Label, TextAlign::Left, accent);
 
             // Separator below a row when the next visible row is also drawn.
             if !selected && slot + 1 < visible && i + 1 < total {
@@ -126,4 +132,20 @@ impl RouteMenuScreen {
         scrollbar(&mut cv, w - 8, LIST_TOP, visible as i32 * ROW_H, total, first, visible);
         RenderStats::default()
     }
+}
+
+/// Fit a route name into `max_chars`, appending ".." when it has to be truncated (the
+/// panel font has no ellipsis glyph). Truncates on a char boundary; the buffer comfortably
+/// holds a full `NAME_CAP` (48-char) name for the no-truncation case.
+fn fit_name(name: &str, max_chars: usize) -> heapless::String<64> {
+    let mut s = heapless::String::new();
+    if name.chars().count() <= max_chars {
+        let _ = s.push_str(name);
+    } else {
+        for c in name.chars().take(max_chars.saturating_sub(2)) {
+            let _ = s.push(c);
+        }
+        let _ = s.push_str("..");
+    }
+    s
 }

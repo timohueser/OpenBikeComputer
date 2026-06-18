@@ -140,17 +140,24 @@ where
     use super::palette::*;
     let w = rx.w as i32;
     let mut cv = Canvas::new(target, color_fn);
+    // Compact the distance to whole km past 1 km so the pill stays within the panel width
+    // at the Body glyph size (a long "...14515m" would otherwise overrun 240 px).
+    let d = rx.activity.dist_to_route_m;
     let mut s: heapless::String<20> = heapless::String::new();
-    let _ = write!(s, "off route {}m", rx.activity.dist_to_route_m);
+    if d >= 1000 {
+        let _ = write!(s, "off route {}km", (d + 500) / 1000);
+    } else {
+        let _ = write!(s, "off route {}m", d);
+    }
     // Bold (Body font) so it's readable at a glance over the map.
     let font = Font::Body;
     let tw = text_width(&s, font) as i32;
-    let (pw, ph) = (tw + 24, 26);
+    let (pw, ph) = (tw + 28, 36);
     let px = (w - pw) / 2;
     let py = 10;
-    cv.round(rect(px, py, pw, ph), 7, PARCHMENT);
-    cv.round_outline(rect(px, py, pw, ph), 7, WARNING);
-    cv.text(&s, Point::new(w / 2, py + 6), font, TextAlign::Center, WARNING);
+    cv.round(rect(px, py, pw, ph), 9, PARCHMENT);
+    cv.round_outline(rect(px, py, pw, ph), 9, WARNING);
+    cv.text(&s, Point::new(w / 2, py + 5), font, TextAlign::Center, WARNING);
 }
 
 /// Pan-mode HUD geometry — every tunable pixel size in one place, so there are no
