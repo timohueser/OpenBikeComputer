@@ -30,10 +30,10 @@ use obcm_render::{
 };
 use obcm_route::{Profile, PROFILE_COLS};
 
-use crate::activity::{Activity, Mode};
+use crate::activity::Activity;
 use crate::input::Gesture;
 
-use super::{palette, title_frame, Ctx, MapScreen, MenuScreen, Render, RideControl, Screen, Transition};
+use super::{palette, title_frame, Ctx, MapScreen, Render, Screen, Transition};
 
 /// Columns the cursor moves per encoder detent — a full scrub of the route in ~40 turns.
 const SCRUB_STEP: i32 = 6;
@@ -84,15 +84,11 @@ impl StatisticsScreen {
                 self.scrub = Some(Scrub { col, until_ms: cx.now_ms + SCRUB_HOLD_MS });
                 Transition::None
             }
-            Gesture::Press => {
-                // Pause → Ride control, exactly like the Map (the mode outlives the view).
-                cx.activity.mode = Mode::Paused;
-                Transition::Push(Screen::RideControl(RideControl::new()))
-            }
             // Sibling toggle: swap back to the Map without growing the stack.
             Gesture::Back => Transition::Replace(Screen::Map(MapScreen::new())),
-            Gesture::BackHold => Transition::Push(Screen::Menu(MenuScreen::new())),
             Gesture::Hold => Transition::None, // unbound (reserved for profile zoom)
+            // press = pause → Ride control, back-hold = Menu (shared by both riding views).
+            Gesture::Press | Gesture::BackHold => super::riding_common(g, cx),
         }
     }
 
@@ -109,8 +105,7 @@ impl StatisticsScreen {
         // cumulative climb). Either missing → the empty state, same as the Route menu's.
         let (Some(profile), Some(route)) = (rx.profile, rx.route) else {
             title_frame(&mut cv, w, h, "STATS", "");
-            cv.text("No route loaded", Point::new(w / 2, h / 2 - 10), Font::Body, TextAlign::Center, INK);
-            cv.text("Load one from Routes", Point::new(w / 2, h / 2 + 12), Font::Label, TextAlign::Center, SUBTEXT);
+            super::empty_state(&mut cv, w, h, "No route loaded", "Load one from Routes");
             return RenderStats::default();
         };
 

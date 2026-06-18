@@ -16,10 +16,9 @@ use obcm_render::{
     Canvas, RenderStats,
 };
 
-use crate::activity::Mode;
 use crate::input::Gesture;
 
-use super::{Ctx, MenuScreen, Render, RideControl, Screen, StatisticsScreen, Transition};
+use super::{Ctx, Render, Screen, StatisticsScreen, Transition};
 
 /// Zoom multiplier per encoder detent (matches the scroll-wheel feel).
 const ZOOM_STEP: f32 = 1.2;
@@ -55,16 +54,12 @@ impl MapScreen {
                 cx.state.zoom = z.clamp(MIN_ZOOM, MAX_ZOOM);
                 Transition::None
             }
-            Gesture::Press => {
-                // Pause: tracking stops and the Ride control overlay opens.
-                cx.activity.mode = Mode::Paused;
-                Transition::Push(Screen::RideControl(RideControl::new()))
-            }
             Gesture::Hold => Transition::None, // Pan mode — later slice
             // Swap to the sibling Statistics view (the stack stays one deep); its `back`
             // swaps straight back here.
             Gesture::Back => Transition::Replace(Screen::Statistics(StatisticsScreen::new())),
-            Gesture::BackHold => Transition::Push(Screen::Menu(MenuScreen::new())),
+            // press = pause → Ride control, back-hold = Menu (shared by both riding views).
+            Gesture::Press | Gesture::BackHold => super::riding_common(g, cx),
         }
     }
 

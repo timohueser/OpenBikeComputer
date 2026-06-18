@@ -51,8 +51,7 @@ impl RideControl {
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
             Gesture::Turn(n) => {
-                let len = ITEMS.len() as i32;
-                self.selected = (self.selected as i32 + n).rem_euclid(len) as usize;
+                self.selected = super::step_selection(self.selected, n, ITEMS.len());
                 Transition::None
             }
             Gesture::Press => {

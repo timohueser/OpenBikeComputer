@@ -40,8 +40,8 @@ impl RouteMenuScreen {
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         let len = cx.routes.len();
         match g {
-            Gesture::Turn(n) if len > 0 => {
-                self.selected = (self.selected as i32 + n).rem_euclid(len as i32) as usize;
+            Gesture::Turn(n) => {
+                self.selected = super::step_selection(self.selected, n, len);
                 Transition::None
             }
             Gesture::Press if len > 0 => {
@@ -75,8 +75,7 @@ impl RouteMenuScreen {
 
         // Empty catalog: prompt the rider to add a route rather than show a blank list.
         if total == 0 {
-            cv.text("No routes yet", Point::new(w / 2, h / 2 - 10), Font::Body, TextAlign::Center, INK);
-            cv.text("Import a GPX file", Point::new(w / 2, h / 2 + 12), Font::Label, TextAlign::Center, SUBTEXT);
+            super::empty_state(&mut cv, w, h, "No routes yet", "Import a GPX file");
             return RenderStats::default();
         }
 
