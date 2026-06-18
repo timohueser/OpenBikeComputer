@@ -1,4 +1,45 @@
-# Next phase — Elevation profile zoom (after route-loading M2 Phase B)
+# Elevation profile zoom
+
+> **Status: DONE (2026-06-18, branch `ui-framework`).** The data layer is as planned; the
+> **interaction model was revised after hands-on testing** (the user found a pan/zoom-toggle
+> worse than a movable cursor). Final design:
+>
+> **Data — `obcm-route` (`profile.rs`), as planned:**
+> - **LOD pyramid**, base `PROFILE_COLS = 2048`: levels 2048/1024/512/256 (×4 B) + a
+>   separate 256-col cumulative-ascent array = **exactly 16 KB resident**. Base size is the
+>   one-line RAM/zoom knob. `cum_ascent` stays single-resolution (feeds only the live "to
+>   climb", never the zoom draw).
+> - **`Profile::window(center, zoom, target_px) -> Window{level, lo_frac, hi_frac}`** picks
+>   the coarsest level holding ≥ `target_px` cols; the screen samples it per pixel via
+>   `Profile::sample(level, frac)`. No geometry re-read on a detent.
+>
+> **Interaction — `obcm-app` (`screen/statistics.rs`), REVISED from the plan below:**
+> - **Cursor mode is the default** (restores Phase B's loved scrub): `turn` moves a cursor
+>   along the *full* profile with a current-elevation readout; it **springs back to the live
+>   position** after `IDLE_MS = 4000` idle.
+> - **`hold` enters Zoom mode**; `turn` then zooms (`ZOOM_STEP` 1.2/detent, ≤ `MAX_ZOOM`
+>   8×) **centred on the frozen cursor** — it does *not* spring back while zooming. A small
+>   **magnifying-glass icon** marks the mode; **no zoom numbers or labels** (the level isn't
+>   useful info — user's call). `hold` *or* short `back` exits, **springing back to the full
+>   route + live cursor**.
+> - **No pan mode** (the earlier toggle-to-pan + edge-chevrons + `N.Nx` pill were cut):
+>   inspecting elsewhere = scrub the cursor, then zoom. State is local to `StatisticsScreen`.
+> - **Spec** (`bikepacking-computer-ui-spec.md` §5) updated: Elevation `turn` = move cursor,
+>   `hold` = enter/exit Zoom, + an "Elevation Zoom" bindings row.
+> - **Verified:** `obcm-route` pyramid/window unit tests + full `cargo test --workspace` +
+>   clippy clean; headless snapshots — default cursor on-route (cursor at live + traveled
+>   shading), scrub (cursor moved + altitude/grade readout), zoom mode (magnifying-glass
+>   icon, profile zoomed about the frozen cursor). Gotcha: a scrub/zoom set via pre-replay
+>   `--script` can't co-exist with a `--gpx` replay in one snapshot — the replay's `now_ms`
+>   outruns the 4 s idle deadline, so the cursor springs back to live; snapshot scrub/zoom
+>   without `--gpx`.
+>
+> The original plan (a Map-style Follow↔Pan toggle) follows for reference; the pan half was
+> replaced by the cursor-first model above.
+
+---
+
+# (original plan) Next phase — Elevation profile zoom (after route-loading M2 Phase B)
 
 A focused follow-up to **Phase B** (live map-matching). Phase B makes the Elevation
 cursor follow the live matched position and leaves `turn` = a transient scrub placeholder.

@@ -35,7 +35,7 @@ pub use convert::{gpx_to_obcr, RouteStats};
 pub use geo::ground_dist_m;
 pub use gpx::{GpxScanner, RawPoint};
 pub use matcher::{Match, RouteMatch};
-pub use profile::{Profile, PROFILE_COLS};
+pub use profile::{Profile, Window, PROFILE_COLS};
 pub use reader::{
     ChunkMeta, RoutePoint, RouteReader, RouteSummary, CHUNK_META_LEN, HEADER_LEN,
     MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS, NAME_CAP,
