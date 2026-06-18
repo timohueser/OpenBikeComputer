@@ -293,7 +293,9 @@ where
 /// channel (0/85/170/255), so each value below is chosen for the *quantized*
 /// result, with the device-64 color noted. (Earlier, true-color-picked values
 /// clipped: parchment → white, the tan accents → pink.) The trailing comments are
-/// the device-64 RGB each value lands on — keep them in sync if you retune.
+/// the device-64 RGB each value lands on; `tests/palette.rs` asserts every one
+/// through `rgb565_to_device64`, so a retune that forgets to update a comment fails
+/// the build rather than drifting silently.
 pub mod palette {
     /// Pack 8-bit RGB into RGB565.
     pub const fn rgb565(r: u8, g: u8, b: u8) -> u16 {
