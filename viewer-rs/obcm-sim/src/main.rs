@@ -31,6 +31,7 @@ use obcm_app::{
 };
 
 mod baro;
+mod calib;
 mod device_input;
 mod framebuffer;
 mod gpx;
@@ -87,6 +88,13 @@ struct Args {
     /// Convert this GPX into the routes folder and exit (the device does the same on
     /// a USB drop). Headless; needs no map.
     import: Option<String>,
+    /// Render the device window at the panel's true physical size (needs a saved
+    /// calibration; see `--calibrate`). Falls back to the normal scaled view if
+    /// uncalibrated. Toggleable live in the control panel.
+    physical: bool,
+    /// Open the GUI straight into the 1:1 size-calibration screen (measure the
+    /// on-screen bar with a ruler, enter mm). One-time; the result persists.
+    calibrate: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -108,6 +116,8 @@ fn parse_args() -> Result<Args, String> {
         boot: false,
         routes_dir: None,
         import: None,
+        physical: false,
+        calibrate: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -141,6 +151,8 @@ fn parse_args() -> Result<Args, String> {
             "--boot" => a.boot = true,
             "--routes-dir" => a.routes_dir = Some(it.next().ok_or("--routes-dir needs a path")?),
             "--import" => a.import = Some(it.next().ok_or("--import needs a GPX path")?),
+            "--physical" => a.physical = true,
+            "--calibrate" => a.calibrate = true,
             other => {
                 if a.map.is_empty() {
                     a.map = other.to_string();
@@ -333,7 +345,7 @@ fn main() {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: obcm-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--script TOKENS] [--boot] [--routes-dir DIR] [--import GPX]");
+            eprintln!("error: {e}\nusage: obcm-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--script TOKENS] [--boot] [--routes-dir DIR] [--import GPX] [--physical] [--calibrate]");
             std::process::exit(2);
         }
     };

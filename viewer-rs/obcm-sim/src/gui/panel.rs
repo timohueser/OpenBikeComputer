@@ -8,6 +8,7 @@
 use eframe::egui;
 use obcm_app::{Button, CameraMode, InputClock};
 
+use crate::calib;
 use super::units::{
     format_clock, format_distance, mpp_to_zoom, zoom_to_mpp, MAX_ZOOM, MIN_ZOOM, MPP_MAX, MPP_MIN,
 };
@@ -181,6 +182,12 @@ impl SimGui {
                     ui.add_space(6.0);
                     ui.separator();
 
+                    // Display size — the 1:1 "actual size" toggle + ruler calibration.
+                    self.show_display_controls(ui);
+
+                    ui.add_space(6.0);
+                    ui.separator();
+
                     // Expanded by default — the render stats are worth keeping an eye on.
                     egui::CollapsingHeader::new("Render Stats")
                         .default_open(true)
@@ -292,6 +299,38 @@ impl SimGui {
                 .weak()
                 .size(11.0),
         );
+    }
+
+    /// Display size — the 1:1 "actual size" toggle (needs a calibration) plus a button
+    /// to (re)calibrate. The toggle and the calibration screen live in
+    /// [`super::SimGui`] ([`show_calibration`](super::SimGui::show_calibration)).
+    fn show_display_controls(&mut self, ui: &mut egui::Ui) {
+        ui.label(egui::RichText::new("Display size").strong());
+        let calibrated = self.points_per_mm.is_some();
+        ui.horizontal(|ui| {
+            let resp = ui.add_enabled(calibrated, egui::Checkbox::new(&mut self.physical, "Actual size (1:1)"));
+            if resp.changed() {
+                // Resize the window either way: to 1:1 on, back to the --scale default off.
+                self.physical_resize_pending = true;
+            }
+            if ui.add_enabled(self.calib.is_none(), egui::Button::new("Calibrate…")).clicked() {
+                self.calib = Some(super::CalibState::default());
+            }
+        });
+        match self.points_per_mm {
+            Some(ppm) => {
+                ui.weak(format!(
+                    "calibrated {ppm:.2} pt/mm · panel {:.1} × {:.1} mm",
+                    calib::PANEL_W_MM, calib::PANEL_H_MM
+                ));
+            }
+            None => {
+                ui.weak("not calibrated — click Calibrate… to set 1:1 size");
+            }
+        }
+        if let Some(e) = &self.calib_error {
+            ui.colored_label(egui::Color32::from_rgb(220, 80, 80), e);
+        }
     }
 
     /// The loaded-track controls: play/pause (auto-follows), a seek scrubber, and
