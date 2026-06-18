@@ -326,4 +326,9 @@ pub mod palette {
     pub const RULE: u16 = rgb565(180, 170, 100); // → (170,170,85) tan
     pub const AMBER: u16 = rgb565(227, 165, 43); // → (255,170,0) accent
     pub const WARNING: u16 = rgb565(192, 73, 46); // → (255,85,0) warning
+    /// Cool accent — the one non-warm hue, reserved for the Back long-press hint so
+    /// it reads distinct from the amber encoder hint at a glance.
+    pub const TEAL: u16 = rgb565(0, 170, 170); // → (0,170,170) teal
+    /// Dim teal — the unfilled Back hint track under the bright fill.
+    pub const TEAL_DIM: u16 = rgb565(0, 85, 85); // → (0,85,85) dim teal
 }

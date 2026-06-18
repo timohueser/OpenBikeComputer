@@ -8,6 +8,7 @@ use obcm_route::{Profile, RouteMatch, RouteReader};
 
 use crate::activity::{Activity, Mode};
 use crate::hal::{Fix, InputClock, InputSource, LocationSource, RideClock, Sensors};
+use crate::hold_hint::HoldHints;
 use crate::input::{Gesture, Gestures, DEFAULT_HOLD_MS};
 use crate::route::{Catalog, RouteSummary};
 use crate::screen::{self, Ctx, HomeScreen, MapScreen, Render, Screen, Stack};
@@ -329,6 +330,10 @@ pub struct App {
     /// In-flight encoder / Back hold-progress (0.0–1.0) for the confirm ring.
     enc_progress: f32,
     back_progress: f32,
+    /// The global long-press hint overlay (charge-in-place pills at the encoder /
+    /// Back edges), drawn above every screen so the central hold gesture is always
+    /// visible — not just on Ride control.
+    hold_hints: HoldHints,
 }
 
 impl App {
@@ -365,6 +370,7 @@ impl App {
             now_ms: 0,
             enc_progress: 0.0,
             back_progress: 0.0,
+            hold_hints: HoldHints::new(),
         }
     }
 
@@ -443,11 +449,21 @@ impl App {
                 self.dispatch(g);
             }
         }
+        // `tick` is the only source of Hold/BackHold — note which fired this frame so
+        // the hint overlay pops the matching pill the instant the threshold crosses.
+        let (mut enc_fired, mut back_fired) = (false, false);
         if let Some(g) = self.gestures.tick(now_ms) {
+            match g {
+                Gesture::Hold => enc_fired = true,
+                Gesture::BackHold => back_fired = true,
+                _ => {}
+            }
             self.dispatch(g);
         }
         self.enc_progress = self.gestures.encoder_progress(now_ms);
         self.back_progress = self.gestures.back_progress(now_ms);
+        self.hold_hints
+            .update(now_ms, self.enc_progress, self.back_progress, enc_fired, back_fired);
     }
 
     /// Route one gesture to the top screen and apply the transition it returns.
@@ -490,7 +506,9 @@ impl App {
         }
 
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
-        let App { state, activity, catalog, renderer, stack, now_ms, enc_progress, profile, .. } = self;
+        let App {
+            state, activity, catalog, renderer, stack, now_ms, enc_progress, profile, hold_hints, ..
+        } = self;
         let mut rx = Render {
             reader,
             renderer,
@@ -511,6 +529,9 @@ impl App {
                 stats = s;
             }
         }
+        // The global long-press hint sits above every screen (the map stays untouched
+        // beneath it). It reads its own folded state, so it needs no per-screen plumbing.
+        hold_hints.draw(target, &color_fn, w as i32, h as i32, *now_ms);
         stats
     }
 

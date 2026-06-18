@@ -76,8 +76,10 @@ struct Args {
     text_demo: bool,
     /// A gesture script applied to the app before a headless `--png` render, so a
     /// specific screen can be snapshotted. Tokens (one char each, spaces ignored):
-    /// `r`/`l` = turn cw/ccw, `p` = press, `h` = hold, `b` = back, `B` = back-hold.
-    /// E.g. `--script B` opens the Menu; `--script p` opens Ride control.
+    /// `r`/`l` = turn cw/ccw, `p` = press, `h` = hold, `b` = back, `B` = back-hold,
+    /// `H`/`M` = leave the encoder / Back held partway (snapshots the in-flight
+    /// long-press hint). E.g. `--script B` opens the Menu; `--script H` shows the
+    /// encoder hold hint mid-charge.
     script: Option<String>,
     /// Headless `--png` only: render from the device's real power-on state (Home /
     /// Idle, no route) instead of straight from the map. Use with `--script` to walk
@@ -345,6 +347,18 @@ fn apply_script(app: &mut App, script: &str) {
                 now += 30;
                 feed(app, now, vec![up(Button::Back)]);
                 now += 30;
+            }
+            // `H`/`M`: leave the encoder / Back held partway (no release, no threshold
+            // crossing) so a headless render snapshots the in-flight long-press hint.
+            'H' => {
+                feed(app, now, vec![down(Button::Encoder)]);
+                now += hold * 55 / 100; // ~55% toward the threshold
+                feed(app, now, vec![]); // samples the in-flight progress for the render
+            }
+            'M' => {
+                feed(app, now, vec![down(Button::Back)]);
+                now += hold * 55 / 100;
+                feed(app, now, vec![]);
             }
             other => eprintln!("warning: ignoring unknown --script token '{other}'"),
         }
