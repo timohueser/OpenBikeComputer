@@ -37,6 +37,7 @@ mod framebuffer;
 mod gpx;
 mod gpx_player;
 mod gui;
+mod palette;
 mod routes;
 mod sim_location;
 use baro::BaroSensor;
@@ -95,6 +96,9 @@ struct Args {
     /// Open the GUI straight into the 1:1 size-calibration screen (measure the
     /// on-screen bar with a ruler, enter mm). One-time; the result persists.
     calibrate: bool,
+    /// Show the device's 64-color gamut and nothing else — a standalone color-test
+    /// screen. Needs no map; opens a window, or writes to `--png` and exits.
+    palette: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -118,6 +122,7 @@ fn parse_args() -> Result<Args, String> {
         import: None,
         physical: false,
         calibrate: false,
+        palette: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -153,6 +158,7 @@ fn parse_args() -> Result<Args, String> {
             "--import" => a.import = Some(it.next().ok_or("--import needs a GPX path")?),
             "--physical" => a.physical = true,
             "--calibrate" => a.calibrate = true,
+            "--palette" => a.palette = true,
             other => {
                 if a.map.is_empty() {
                     a.map = other.to_string();
@@ -162,8 +168,8 @@ fn parse_args() -> Result<Args, String> {
             }
         }
     }
-    // `--text-demo` and `--import` need no map file.
-    if a.map.is_empty() && !a.text_demo && a.import.is_none() {
+    // `--text-demo`, `--palette` and `--import` need no map file.
+    if a.map.is_empty() && !a.text_demo && !a.palette && a.import.is_none() {
         return Err("missing map path".into());
     }
     Ok(a)
@@ -349,7 +355,7 @@ fn main() {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: obcm-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--script TOKENS] [--boot] [--routes-dir DIR] [--import GPX] [--physical] [--calibrate]");
+            eprintln!("error: {e}\nusage: obcm-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--import GPX] [--physical] [--calibrate]");
             std::process::exit(2);
         }
     };
@@ -365,6 +371,25 @@ fn main() {
             std::process::exit(1);
         }
         eprintln!("wrote {path}");
+        return;
+    }
+
+    // `--palette`: the device's 64-color gamut on a standalone color-test screen.
+    // Needs no map. With `--png` it writes the frame headlessly (so it can be diffed
+    // in CI); otherwise it opens a minimal window. Comes before the map read.
+    if args.palette {
+        if let Some(path) = &args.png {
+            let mut fb = Framebuffer::new(args.width, args.height);
+            palette::draw_palette(&mut fb);
+            if let Err(e) = write_png(&fb, args.scale, path) {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+            eprintln!("wrote {path}");
+        } else if let Err(e) = palette::run(args.width, args.height, args.scale) {
+            eprintln!("palette error: {e}");
+            std::process::exit(1);
+        }
         return;
     }
 
