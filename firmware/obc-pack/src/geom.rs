@@ -231,6 +231,84 @@ pub fn polygon_is_valid(exterior: &[(f64, f64)], interiors: &[Vec<(f64, f64)>]) 
     }
 }
 
+/// Collect every [`Geom::Polygon`] out of a (possibly `Multi`/nested) geometry,
+/// dropping anything non-polygonal. Used to unpack a `build_area` result, which is
+/// a `Polygon`, `MultiPolygon`, or (degenerate) `GeometryCollection`.
+fn collect_polygons(g: Geom, out: &mut Vec<Geom>) {
+    match g {
+        p @ Geom::Polygon { .. } => out.push(p),
+        Geom::Multi(parts) => {
+            for p in parts {
+                collect_polygons(p, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Assemble a multipolygon/boundary relation's member-way geometries into
+/// polygons-with-holes — the Stage-4 counterpart of osmium's `AreaManager`.
+///
+/// `members` is each member way's coordinate list (already resolved against the
+/// node store). The job mirrors osmium's `Assembler`: stitch the (often open)
+/// member-way fragments into closed rings, then apply the **even-odd nesting
+/// rule** (a ring nested at odd depth is a hole of the outer that contains it —
+/// landmine §3.1; roles are *not* trusted). GEOS `build_area` does exactly this:
+/// its own doc example turns `GEOMETRYCOLLECTION(outer, inner)` into a
+/// polygon-with-hole, and disjoint outers into a `MultiPolygon`. We feed it the
+/// members as a `MultiLineString`; `build_area` extracts + polygonizes the
+/// linework, so fragments sharing endpoint nodes are joined for free.
+///
+/// Returns one [`Geom::Polygon`] per assembled outer ring (with its directly
+/// nested holes). Returns empty on un-assemblable or invalid geometry — osmium
+/// silently drops broken relations (landmine §3.6), and the oracle then emits
+/// nothing, so an empty result is the parity-correct outcome. Each polygon is run
+/// through [`polygon_is_valid`], matching the closed-way path.
+///
+/// Two-tier: try `build_area` on the raw linework (the clean common case), and if
+/// that yields nothing, retry after **noding** the linework (`node`) — that splits
+/// members that cross or self-touch mid-segment so polygonize can find the faces,
+/// which is the repair osmium's assembler does for the handful of messy relations
+/// real extracts contain. Only those pay the extra cost; clean relations take the
+/// fast path unchanged.
+pub fn assemble_multipolygon(members: &[Vec<(f64, f64)>]) -> Vec<Geom> {
+    let polys = build_area_from_members(members, false);
+    if !polys.is_empty() {
+        return polys;
+    }
+    build_area_from_members(members, true)
+}
+
+/// Build polygons from member-way linework via GEOS `build_area`. `node_first`
+/// planar-nodes the linework before assembling (the repair path for crossing /
+/// self-touching members).
+fn build_area_from_members(members: &[Vec<(f64, f64)>], node_first: bool) -> Vec<Geom> {
+    let lines: Vec<Geometry> = members
+        .iter()
+        .filter(|m| m.len() >= 2)
+        .filter_map(|m| Geometry::create_line_string(ring_to_coordseq(m)).ok())
+        .collect();
+    if lines.is_empty() {
+        return Vec::new();
+    }
+    let Ok(mls) = Geometry::create_multiline_string(lines) else {
+        return Vec::new();
+    };
+    let noded = if node_first { mls.node() } else { Ok(mls) };
+    let assembled = noded.and_then(|g| g.build_area());
+    let Ok(area) = assembled else {
+        return Vec::new();
+    };
+    let mut polys = Vec::new();
+    collect_polygons(from_geos(&area), &mut polys);
+    // Keep only rings osmium would accept (same guard as the closed-way path).
+    polys.retain(|g| match g {
+        Geom::Polygon { exterior, interiors } => polygon_is_valid(exterior, interiors),
+        _ => false,
+    });
+    polys
+}
+
 /// Clip `geom` to the node box (integer microdegrees → degrees), via the SAME
 /// `intersection` shapely uses (not `clip_by_rect`). The clip box ring matches
 /// shapely's `box(minx,miny,maxx,maxy)` order to minimise vertex-order drift.
@@ -252,4 +330,77 @@ pub fn clip_to_box(geom: &Geom, bbox: (i64, i64, i64, i64)) -> Geom {
     .expect("box polygon");
     let clipped = to_geos(geom).intersection(&box_geom).expect("intersection");
     from_geos(&clipped)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// R1/R2 from `tiny.osm` (lon,lat closed rings). The probe the handover §7.2
+    /// mandates *before* wiring: confirm GEOS `build_area` gives R1 → one polygon
+    /// with one hole (lake + island, even-odd rule), R2 → two disjoint polygons
+    /// (one relation → many outers), so the assembler choice is empirically sound.
+    fn ring(pts: &[(f64, f64)]) -> Vec<(f64, f64)> {
+        pts.to_vec()
+    }
+
+    // R1 outer (way 101) + inner (way 102): concentric squares.
+    fn r1_outer() -> Vec<(f64, f64)> {
+        ring(&[(7.800, 47.990), (7.804, 47.990), (7.804, 47.994), (7.800, 47.994), (7.800, 47.990)])
+    }
+    fn r1_inner() -> Vec<(f64, f64)> {
+        ring(&[(7.801, 47.991), (7.803, 47.991), (7.803, 47.993), (7.801, 47.993), (7.801, 47.991)])
+    }
+    // R2 outer A (way 103) + outer B (way 104): two disjoint squares.
+    fn r2_a() -> Vec<(f64, f64)> {
+        ring(&[(7.806, 47.990), (7.808, 47.990), (7.808, 47.992), (7.806, 47.992), (7.806, 47.990)])
+    }
+    fn r2_b() -> Vec<(f64, f64)> {
+        ring(&[(7.810, 47.990), (7.812, 47.990), (7.812, 47.992), (7.810, 47.992), (7.810, 47.990)])
+    }
+
+    #[test]
+    fn assemble_r1_lake_with_island() {
+        let polys = assemble_multipolygon(&[r1_outer(), r1_inner()]);
+        assert_eq!(polys.len(), 1, "R1 → exactly one polygon");
+        match &polys[0] {
+            Geom::Polygon { exterior, interiors } => {
+                assert!(exterior.len() >= 4, "outer is a closed ring");
+                assert_eq!(interiors.len(), 1, "the island is one hole");
+            }
+            other => panic!("expected a polygon, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn assemble_r2_two_outers() {
+        let polys = assemble_multipolygon(&[r2_a(), r2_b()]);
+        assert_eq!(polys.len(), 2, "R2 → two disjoint polygons");
+        for p in &polys {
+            match p {
+                Geom::Polygon { interiors, .. } => assert!(interiors.is_empty(), "no holes"),
+                other => panic!("expected a polygon, got {other:?}"),
+            }
+        }
+    }
+
+    /// Order/role independence: feeding the inner ring first must still yield the
+    /// lake-with-hole (build_area classifies by geometry, not member order/role).
+    #[test]
+    fn assemble_is_order_independent() {
+        let polys = assemble_multipolygon(&[r1_inner(), r1_outer()]);
+        assert_eq!(polys.len(), 1);
+        if let Geom::Polygon { interiors, .. } = &polys[0] {
+            assert_eq!(interiors.len(), 1);
+        } else {
+            panic!("expected polygon");
+        }
+    }
+
+    /// A single un-closeable fragment assembles to nothing (skip-and-warn parity).
+    #[test]
+    fn assemble_open_fragment_is_dropped() {
+        let open = ring(&[(7.800, 47.990), (7.804, 47.990)]);
+        assert!(assemble_multipolygon(&[open]).is_empty());
+    }
 }

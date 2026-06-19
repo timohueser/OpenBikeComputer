@@ -91,6 +91,22 @@ def main():
     ok &= report("features", a_feats, b_feats, max_examples)
     ok &= report("coastlines", a_coasts, b_coasts, max_examples)
 
+    # Machine-readable residual, split by kind, so a caller (run_stage4_ingest.sh)
+    # can distinguish a benign relation-assembly re-tessellation (balanced polygon
+    # residual, lines exact — render-verified by run_stage4.sh) from a real bug.
+    def split(counter):
+        line = sum(c for k, c in counter.items() if k[0] == "line")
+        poly = sum(c for k, c in counter.items() if k[0] == "polygon")
+        return line, poly
+
+    fl, fp = split(a_feats - b_feats)
+    bl, bp = split(b_feats - a_feats)
+    cl = sum((a_coasts - b_coasts).values()) + sum((b_coasts - a_coasts).values())
+    print(
+        f"SUMMARY line_only_oracle={fl} line_only_rust={bl} "
+        f"poly_only_oracle={fp} poly_only_rust={bp} coast_diff={cl}"
+    )
+
     if ok:
         print("OK — ingest multiset identical")
         sys.exit(0)

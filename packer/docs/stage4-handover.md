@@ -1,5 +1,13 @@
 # Stage 4 handover — OBCM packer Rust port (multipolygon relations)
 
+> **STATUS: DONE** (2026-06-19, branch `rust-packer-port`). Relations are assembled
+> via GEOS `build_area` (even-odd holes) with a `node()` repair fallback and an
+> osmium-matching completeness rule; whole corpus passes the ingest multiset gate
+> (`run_stage4_ingest.sh`) and the end-to-end + render gate (`run_stage4.sh`).
+> Outcome + the few divergences are recorded in
+> [`rust-port-plan.md`](rust-port-plan.md) (Progress → Stage 4). The notes below
+> are the original briefing, kept for context.
+
 > Read this top-to-bottom before writing code. It is self-contained: a fresh
 > session should be able to start Stage 4 from here. Authoritative sources are
 > linked throughout — when in doubt, the **Python oracle** (`packer/obcm/*`) and

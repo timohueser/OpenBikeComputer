@@ -98,12 +98,46 @@ These supersede the relevant parts of §4/§5/§9 below; the rest of the plan st
     single-thread) at **1.48 GB** peak RSS — vs the Python pipeline's ~227 s, so
     ~7× even before relations/land and before Stage-6 threading. Node-store
     memory (risk §8) is fine; flag for Stage 6.
-- **Next — Stage 4 (multipolygon relation area assembly):** the hard sub-project
-  (§8.4). Stage 3 intentionally omits relations; `obcm_diff --canonical-polys`
-  and the provenance harness are ready to validate the added relation polygons.
-  **→ Full briefing: [`stage4-handover.md`](stage4-handover.md)** (start here):
-  recommends GEOS `polygonize`/`build_area` for ring assembly, flips the harness
-  filter to keep relation polygons, and adds an `obc-sim --png` render-diff.
+- **Stage 4 (multipolygon relation area assembly): DONE.** Ingest now assembles
+  `type=multipolygon`/`type=boundary` relations (skipping `admin_level`) into area
+  polygons-with-holes, styled by **relation** tags, alongside the Stage-3 features.
+  Briefing: [`stage4-handover.md`](stage4-handover.md).
+  - **Assembly = GEOS `build_area`** (`geom::assemble_multipolygon`), the even-odd
+    nesting primitive — its doc example turns `GEOMETRYCOLLECTION(outer, inner)`
+    into a polygon-with-hole and disjoint outers into a `MultiPolygon`, exactly the
+    multipolygon semantics. Member **roles are ignored** (geometry classifies
+    outer/inner). Required enabling the `geos` crate's `v3_14_0` feature (matches
+    the system libGEOS) to expose `build_area`. Probed on `tiny` R1/R2 first
+    (handover §7.2) before wiring.
+  - **Two-tier with a noding repair:** clean relations go straight through
+    `build_area`; the handful whose raw linework `build_area` can't validly close
+    (self-touching / crossing members) retry after `node()` — the repair osmium's
+    `Assembler` does. Only those pay the cost.
+  - **Completeness rule:** a relation is assembled only when **all** its member
+    ways are present, mirroring osmium's `MultipolygonManager` (it drops, not
+    partially-assembles, relations with members clipped out of the extract).
+    Without it the Rust port emitted phantom polygons from partial rings at extract
+    boundaries (seen as +23 polys on `freiburg-town`, +2 on `monaco`).
+  - **2 passes, no perf regression:** relations are collected in the existing pass 1
+    (node store), member-way geometry captured in pass 2 — no extra PBF read.
+  - **Validation (whole corpus PASS):** ingest multiset gate
+    (`run_stage4_ingest.sh`, oracle dump `--with-relations`) — **lines + coastlines
+    exact**, relation polygons up to ring winding, with a small **balanced**
+    re-tessellation residual on the broken relations. End-to-end + render gate
+    (`run_stage4.sh`): **structural identical, zero line diffs**, and **every
+    assembly divergence render-equivalent at the finest (no-simplify) LOD**
+    (`find_divergences.py` locates them, `compare_png.py` pixel-diffs; worst tile
+    <0.8 %, whole-map overviews ~0 %). The remaining polygon residual lives at the
+    *simplify* LODs and is the **same GEOS 3.14-vs-3.13 skew Stage 3 documented**,
+    not assembly. Finding: clean relations are vertex-exact up to winding; broken
+    ones get a `node`-repaired tessellation differing from osmium only in
+    sub-microdegree coordinates (matching point count + area within ~1 %), which is
+    render-equivalent — the pre-authorized outcome (§8.4 / Amendment 1).
+  - `run_stage3*.sh` are **superseded** (the pipeline now emits relations, so the
+    Stage-3-only references show a relation surplus by design); use `run_stage4*.sh`.
+- **Next — Stage 5 (land + multi-PBF merge):** keep Python `land_ingest` / the
+  `osmium` CLI (§6) or port; validate on the coastal corpus. Then Stage 6
+  (parallelize) and Stage 7 (`jobs.py` switchover behind `OBC_PACK_BACKEND`).
 
 ## 0. Context (measured)
 
