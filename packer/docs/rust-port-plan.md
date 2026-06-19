@@ -101,6 +101,9 @@ These supersede the relevant parts of §4/§5/§9 below; the rest of the plan st
 - **Next — Stage 4 (multipolygon relation area assembly):** the hard sub-project
   (§8.4). Stage 3 intentionally omits relations; `obcm_diff --canonical-polys`
   and the provenance harness are ready to validate the added relation polygons.
+  **→ Full briefing: [`stage4-handover.md`](stage4-handover.md)** (start here):
+  recommends GEOS `polygonize`/`build_area` for ring assembly, flips the harness
+  filter to keep relation polygons, and adds an `obc-sim --png` render-diff.
 
 ## 0. Context (measured)
 
