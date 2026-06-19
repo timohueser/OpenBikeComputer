@@ -44,7 +44,13 @@ pub use text::{draw_text, text_width, Font, TextAlign};
 pub const MAX_SPANS: usize = 3072;
 
 /// Maximum total vertices across all visible features per frame (8 bytes each).
+#[cfg(not(feature = "small-scratch"))]
 pub const MAX_FRAME_POINTS: usize = 12_288;
+/// `small-scratch` variant: shrinks the biggest buffer so `MapRenderer` fits a
+/// 192 KB-SRAM MCU (STM32F429) for the cross-board FPU bench. Both bench crates
+/// enable it so the RP2040 and F429 do identical work (only the FPU differs).
+#[cfg(feature = "small-scratch")]
+pub const MAX_FRAME_POINTS: usize = 8_192;
 
 /// Maximum total ring entries across all visible features per frame.
 pub const MAX_FRAME_RINGS: usize = 3072;
@@ -56,7 +62,10 @@ pub const MAX_DECODE_POINTS: usize = 2048;
 pub const MAX_DECODE_RINGS: usize = 32;
 
 /// Maximum projected screen points for drawing one feature.
+#[cfg(not(feature = "small-scratch"))]
 pub const MAX_SCREEN_POINTS: usize = 4096;
+#[cfg(feature = "small-scratch")]
+pub const MAX_SCREEN_POINTS: usize = 2048;
 
 /// Maximum scanline crossings for polygon fill.
 pub const MAX_CROSSINGS: usize = 256;
@@ -190,6 +199,7 @@ impl Viewport {
         // feeds the staircase divergence behind the chunk-seam overdraw (see the
         // `fill_polygon` comment). Round-to-nearest is symmetric and sub-pixel
         // correct. `roundf` matches the marker glyph, which already rounds.
+        // (Measured on M4F: `roundf` lowers as fast as an inline round, so keep it.)
         (libm::roundf(x) as i32, libm::roundf(y) as i32)
     }
 
@@ -412,6 +422,23 @@ impl MapRenderer {
         Self::default()
     }
 
+    /// `const` constructor so the renderer can live in a `static` (`.bss`) on the
+    /// MCU without a ~199 KB stack temporary — `heapless::Vec::new()` is `const`,
+    /// and an empty `Vec` is the same all-zero state `.bss` provides. The firmware
+    /// (and the RP2040 render-timing bench) place `MapRenderer` here; the desktop
+    /// simulator keeps using [`MapRenderer::new`]/`Default`.
+    pub const fn new_const() -> Self {
+        Self {
+            dec_points: Vec::new(),
+            dec_ring_lens: Vec::new(),
+            frame_points: Vec::new(),
+            frame_ring_lens: Vec::new(),
+            spans: Vec::new(),
+            screen: Vec::new(),
+            xs: Vec::new(),
+        }
+    }
+
     /// Render the visible map into `target`.
     ///
     /// Selects the LOD for the viewport's meters-per-pixel, clears to `bg`,
@@ -523,6 +550,54 @@ impl MapRenderer {
             }
         }
 
+        stats
+    }
+
+    /// Run **only** the collect/decode phase: walk the quadtree for the viewport's
+    /// LOD and decode every visible feature's geometry (varint → microdegree
+    /// coords) into the frame buffers, *without* projecting or drawing anything.
+    ///
+    /// This isolates decode cost (flash/SD reads + integer varint work — almost no
+    /// float) from the float-heavy draw phase (`to_screen` projection + scanline
+    /// fill + stroke). Timing `collect_only` vs [`render`](MapRenderer::render) on
+    /// a target lets a profiling harness attribute time to "memory/integer" vs
+    /// "float" — the key question for an FPU-less proxy like the RP2040. Leaves the
+    /// buffers populated; not part of the normal render path.
+    pub fn collect_only(&mut self, reader: &Reader, vp: &Viewport) -> RenderStats {
+        let lod = reader.select_lod_for_mpp(vp.meters_per_pixel());
+        let view = vp.visible_bbox();
+        let mut stats = RenderStats { lod, ..Default::default() };
+
+        let Self {
+            dec_points,
+            dec_ring_lens,
+            frame_points,
+            frame_ring_lens,
+            spans,
+            screen: _,
+            xs: _,
+        } = self;
+
+        frame_points.clear();
+        frame_ring_lens.clear();
+        spans.clear();
+
+        reader.for_each_chunk(lod, &view, |_, _| stats.chunks_visited += 1);
+
+        for level in 1..=4u8 {
+            collect_features(
+                reader,
+                lod,
+                level,
+                &view,
+                dec_points,
+                dec_ring_lens,
+                frame_points,
+                frame_ring_lens,
+                spans,
+                &mut stats,
+            );
+        }
         stats
     }
 

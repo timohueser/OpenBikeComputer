@@ -1,0 +1,16 @@
+# Build for the RP2040 (Cortex-M0+, soft-float) by default, and on `cargo run`
+# convert the ELF to UF2 and copy it to a mounted RPI-RP2 BOOTSEL drive.
+[build]
+target = "thumbv6m-none-eabi"
+
+[target.thumbv6m-none-eabi]
+# `-d` auto-deploys to the mounted BOOTSEL mass-storage drive. If it can't find it,
+# run `elf2uf2-rs <elf> bench.uf2` and drag bench.uf2 onto the RPI-RP2 volume.
+runner = "elf2uf2-rs -d"
+rustflags = [
+  # flip-link puts the stack below .bss so a stack overflow faults instead of
+  # silently corrupting the ~199 KB renderer static. `cargo install flip-link`.
+  "-C", "linker=flip-link",
+  "-C", "link-arg=--nmagic",
+  "-C", "link-arg=-Tlink.x",   # provided by cortex-m-rt; pulls in our memory.x
+]
