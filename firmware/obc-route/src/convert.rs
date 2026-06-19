@@ -12,9 +12,11 @@
 use heapless::Vec;
 
 use crate::byte_io::{ByteSink, ByteSource, Error};
+use crate::deadband::DeadBand;
 use crate::geo::{cos_lat, delta_m, seg_dist_m};
 use crate::gpx::GpxScanner;
 use crate::reader::{ChunkMeta, CHUNK_META_LEN, HEADER_LEN, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS, NAME_CAP};
+use obc_reader::codec::{put_i16, put_i32, put_u16, put_u32};
 use obc_reader::BBox;
 
 /// Decimation tolerance: drop a vertex within this perpendicular distance of the chord.
@@ -22,9 +24,6 @@ const EPSILON_M: f32 = 1.0;
 /// Force a kept vertex at least this often. Also bounds stored deltas to the `int16`
 /// range (≈3.6 km lat; ≈3.6 km·cos(lat) lon — safe to ~70° latitude).
 const MAX_SPAN_M: f32 = 1200.0;
-/// Ascent/descent dead-band: ignore elevation wiggles below this (m) so totals read
-/// like a route planner's rather than tracking GPS noise.
-const ELE_THRESHOLD_M: f64 = 3.0;
 
 /// Max bytes of one chunk's record body (`(points-1) × 6`).
 const BODY_CAP: usize = (MAX_POINTS_PER_CHUNK - 1) * 6;
@@ -59,11 +58,10 @@ pub fn gpx_to_obcr(
     // ~7 significant digits resolve a 300 km total to only ~3 cm and could drift over
     // thousands of segments.
     let mut cum_dist = 0f64;
-    let mut ascent = 0f64;
-    let mut descent = 0f64;
+    // Dead-banded ascent/descent (shared with the elevation profile + app climb).
+    let mut elev = DeadBand::<f64>::new();
     let mut prev: Option<(i32, i32)> = None;
     let mut last_ele = 0f32;
-    let mut ele_ref: Option<f64> = None;
     let mut min_ele = i16::MAX;
     let mut max_ele = i16::MIN;
     let mut bbox: Option<BBox> = None;
@@ -89,20 +87,7 @@ pub fn gpx_to_obcr(
             min_ele = min_ele.min(round_i16(e as f64));
             max_ele = max_ele.max(round_i16(e as f64));
         }
-        let ele = last_ele as f64;
-        match ele_ref {
-            None => ele_ref = Some(ele),
-            Some(r) => {
-                let d = ele - r;
-                if d >= ELE_THRESHOLD_M {
-                    ascent += d;
-                    ele_ref = Some(ele);
-                } else if d <= -ELE_THRESHOLD_M {
-                    descent += -d;
-                    ele_ref = Some(ele);
-                }
-            }
-        }
+        elev.push(last_ele as f64);
 
         bbox = Some(grow(bbox, p.lon, p.lat));
 
@@ -112,7 +97,7 @@ pub fn gpx_to_obcr(
             lat: p.lat,
             ele: round_i16(last_ele as f64),
             cum_d: cum_dist as u32,
-            cum_a: ascent as u32,
+            cum_a: elev.ascent() as u32,
         };
         match (last_kept, pending) {
             (None, _) => {
@@ -155,8 +140,8 @@ pub fn gpx_to_obcr(
         point_count: emitted,
         chunk_count: enc.index.len() as u32,
         total_distance_m: cum_dist as u32,
-        total_ascent_m: ascent as u32,
-        total_descent_m: descent as u32,
+        total_ascent_m: elev.ascent() as u32,
+        total_descent_m: elev.descent() as u32,
         min_ele_m: min_ele,
         max_ele_m: max_ele,
     };
@@ -353,19 +338,4 @@ fn grow(b: Option<BBox>, lon: i32, lat: i32) -> BBox {
 
 fn round_i16(m: f64) -> i16 {
     libm::round(m).clamp(i16::MIN as f64, i16::MAX as f64) as i16
-}
-
-// little-endian writers
-
-fn put_i16(b: &mut [u8], o: usize, v: i16) {
-    b[o..o + 2].copy_from_slice(&v.to_le_bytes());
-}
-fn put_u16(b: &mut [u8], o: usize, v: u16) {
-    b[o..o + 2].copy_from_slice(&v.to_le_bytes());
-}
-fn put_i32(b: &mut [u8], o: usize, v: i32) {
-    b[o..o + 4].copy_from_slice(&v.to_le_bytes());
-}
-fn put_u32(b: &mut [u8], o: usize, v: u32) {
-    b[o..o + 4].copy_from_slice(&v.to_le_bytes());
 }

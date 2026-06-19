@@ -9,18 +9,29 @@
 //! Modules:
 //! - [`reader`] — header / style / LOD-table parsing and per-LOD query + decode.
 //! - [`color`] — RGB565 → display color conversions.
+//! - [`codec`] — little-endian field readers/writers shared with the route format.
 //!
 //! All coordinates are integer microdegrees (1e-6 degrees), as stored in the
 //! file. Projection to screen space is the renderer's job.
 
 #![no_std]
 
+pub mod codec;
 pub mod color;
 pub mod reader;
 
 pub use color::rgb565_to_device64;
 pub use color::rgb565_to_rgb888;
 pub use reader::{FeatureRef, Kind, Lod, Reader, Style, MAX_FEAT_PTS, MAX_FEAT_RINGS, HEADER_LEN};
+
+/// Meters of ground per degree of latitude (and of longitude at the equator) — the
+/// local-equirectangular Earth model. The single source of truth for every crate that
+/// turns microdegree coordinates into ground distance (the route converter and its
+/// elevation profile, the packer's simplify tolerance) or into screen scale (the
+/// renderer's zoom ↔ meters-per-pixel): they all derive from this one number, so a
+/// refinement to the Earth model lands everywhere at once instead of in four places
+/// under three names.
+pub const M_PER_DEG: f64 = 111_320.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
