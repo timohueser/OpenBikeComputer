@@ -69,6 +69,7 @@ These supersede the relevant parts of §4/§5/§9 below; the rest of the plan st
   (`TopologyPreservingSimplifier`, §4.4) finally runs in Rust — the likely first
   real GEOS-version divergence, so the render+multiset gate earns its keep. Also
   implement the closed-way classification fix (Amendments §2).
+  **→ Full briefing: [`stage3-handover.md`](stage3-handover.md)** (start here).
 
 ## 0. Context (measured)
 
