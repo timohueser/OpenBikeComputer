@@ -79,8 +79,11 @@ pub struct StatisticsScreen {
     cursor: Option<f32>,
     /// Zoom factor (`1.0` = full route); only ever `> 1` while in [`Mode::Zoom`].
     zoom: f32,
-    /// Millis after which the cursor springs back to live (Cursor mode only).
-    until_ms: u32,
+    /// Millis at the last cursor scrub; the cursor springs back to live once `IDLE_MS`
+    /// have elapsed since (Cursor mode only). Stored as the scrub *instant* — not a
+    /// deadline — so the `wrapping_sub` elapsed check stays correct across the `u32`
+    /// millis wrap, matching the gesture/hold-hint timers.
+    last_scrub_ms: u32,
 }
 
 impl Default for StatisticsScreen {
@@ -91,7 +94,7 @@ impl Default for StatisticsScreen {
 
 impl StatisticsScreen {
     pub fn new() -> Self {
-        StatisticsScreen { mode: Mode::Cursor, cursor: None, zoom: 1.0, until_ms: 0 }
+        StatisticsScreen { mode: Mode::Cursor, cursor: None, zoom: 1.0, last_scrub_ms: 0 }
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
@@ -134,14 +137,14 @@ impl StatisticsScreen {
         self.mode = Mode::Cursor;
         self.cursor = None;
         self.zoom = 1.0;
-        self.until_ms = 0;
+        self.last_scrub_ms = 0;
     }
 
     /// The cursor fraction in effect now: the scrub position while it's still live,
     /// otherwise the live position it has sprung back to.
     fn effective_cursor(&self, now_ms: u32, live: f32) -> f32 {
         match self.cursor {
-            Some(c) if self.mode == Mode::Zoom || now_ms < self.until_ms => c,
+            Some(c) if self.mode == Mode::Zoom || now_ms.wrapping_sub(self.last_scrub_ms) < IDLE_MS => c,
             _ => live,
         }
     }
@@ -152,7 +155,7 @@ impl StatisticsScreen {
                 let c = self.effective_cursor(now_ms, live);
                 self.cursor = Some((c + n as f32 * CURSOR_STEP_FRAC).clamp(0.0, 1.0));
                 self.zoom = 1.0;
-                self.until_ms = now_ms + IDLE_MS;
+                self.last_scrub_ms = now_ms;
             }
             Mode::Zoom => {
                 // Multiply per detent (no_std: no powf) — `n` is a small count.
@@ -427,4 +430,42 @@ fn grade_at(profile: &Profile, total_distance_m: u32, frac: f32) -> i32 {
         return 0;
     }
     ((mid(hi) - mid(lo)) as f32 / run_m * 100.0) as i32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A live position to scrub away from; one detent right lands at `scrubbed`.
+    const LIVE: f32 = 0.5;
+    fn scrubbed() -> f32 {
+        (LIVE + CURSOR_STEP_FRAC).clamp(0.0, 1.0)
+    }
+
+    /// Spring-back: after a scrub the cursor holds for `IDLE_MS`, then tracks live again.
+    #[test]
+    fn cursor_springs_back_after_idle() {
+        let mut s = StatisticsScreen::new();
+        s.on_turn(1, LIVE, 1_000);
+        // Held while fresh and right up to (but not at) the threshold…
+        assert_eq!(s.effective_cursor(1_000, LIVE), scrubbed());
+        assert_eq!(s.effective_cursor(1_000 + IDLE_MS - 1, LIVE), scrubbed());
+        // …then springs back to live once IDLE_MS have elapsed.
+        assert_eq!(s.effective_cursor(1_000 + IDLE_MS, LIVE), LIVE);
+    }
+
+    /// The fix (issue #6): near the `u32` millis wrap, the old `now + IDLE_MS` deadline
+    /// overflowed — a debug panic, a corrupted timer in release. The `wrapping_sub` elapsed
+    /// check must behave identically straddling the wrap.
+    #[test]
+    fn idle_timer_is_wrap_safe() {
+        let mut s = StatisticsScreen::new();
+        let t0 = u32::MAX - 1_000; // 1 s before the wrap; t0 + IDLE_MS would overflow
+        s.on_turn(1, LIVE, t0); // panicked here in debug before the fix
+        // Held across the wrap while still inside the window…
+        assert_eq!(s.effective_cursor(t0, LIVE), scrubbed());
+        assert_eq!(s.effective_cursor(t0.wrapping_add(IDLE_MS - 1), LIVE), scrubbed());
+        // …and springs back to live once IDLE_MS have elapsed past the wrap.
+        assert_eq!(s.effective_cursor(t0.wrapping_add(IDLE_MS), LIVE), LIVE);
+    }
 }
