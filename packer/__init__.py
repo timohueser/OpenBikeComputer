@@ -1,6 +1,7 @@
-"""OBCM map-packing pipeline.
+"""OBCM map-packing tools.
 
-Groups the `obcm` packing library, the `pack.py` CLI, and the `web_builder`
-browser UI that drives them. Builds OpenStreetMap extracts into `.obcm` maps
-for the OBC firmware (see ../firmware).
+The `web_builder` browser UI drives the native `obc-pack` packer
+(`firmware/obc-pack`) to build OpenStreetMap extracts into `.obcm` maps for the
+OBC firmware (see ../firmware). The packer was historically a Python pipeline
+(`pack.py` + `obcm/`); it now lives entirely in Rust.
 """
