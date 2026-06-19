@@ -1,0 +1,32 @@
+[package]
+name = "obcm-bench-stm32"
+version = "0.1.0"
+edition = "2021"
+description = "STM32F429 (Cortex-M4F + FPU) render-timing bench — a near-direct nRF54L proxy. Runs the SAME render as obcm-bench-rp2040 (small-scratch) but with a hardware FPU; output over RTT (probe-rs + onboard ST-LINK)."
+
+[dependencies]
+# Pipeline under test. small-scratch so the renderer fits the F429's 192 KB SRAM;
+# the RP2040 bench enables the same feature so the only difference is the FPU.
+obcm-render = { path = "../obcm-render", features = ["small-scratch"] }
+obcm-reader = { path = "../obcm-reader" }
+embedded-graphics = "0.8"
+
+# RP/STM32 runtime (embassy) + defmt logging over RTT via the onboard ST-LINK.
+# critical-section-single-core provides the critical-section 1.0 impl that defmt +
+# embassy-executor need on a single-core MCU (embassy-rp bundled this; STM32 doesn't).
+cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
+cortex-m-rt = "0.7"
+# Arena must hold the main task future; 4096 was too small (panicked at spawn).
+# 16384 (same as the RP2040 bench) is safe; renderer + arena + stack still fit 192 KB.
+embassy-executor = { version = "0.7", features = ["arch-cortex-m", "executor-thread", "task-arena-size-16384"] }
+embassy-stm32 = { version = "0.2", features = ["stm32f429zi", "time-driver-any"] }
+embassy-time = "0.4"
+defmt = "0.3"
+defmt-rtt = "0.4"
+panic-probe = { version = "0.3", features = ["print-defmt"] }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+debug = 2

@@ -1,0 +1,37 @@
+[package]
+name = "obcm-bench-rp2040"
+version = "0.1.0"
+edition = "2021"
+description = "Headless render-timing harness for the OBCM map pipeline on an RP2040 (no SD/display) — times MapRenderer::render into a counting null target and prints over USB-CDC serial."
+
+[dependencies]
+# --- The pipeline under test (path deps; all no_std, no heap) ---
+# small-scratch here too, so the RP2040 clips identically to the F429 bench and the
+# two boards' numbers are an apples-to-apples FPU comparison. (The RP2040 has the RAM
+# for full scratch; this is only to match the F429.)
+obcm-render = { path = "../obcm-render", features = ["small-scratch"] }
+obcm-reader = { path = "../obcm-reader" }
+embedded-graphics = "0.8"
+
+# --- RP2040 runtime (embassy) ---
+cortex-m-rt = "0.7"
+# task-arena-size-* must hold both task futures (main + the USB logger, whose
+# future carries the USB device + a 2 KB log buffer); the 4 KB default is too small
+# and `spawn().unwrap()` would panic before USB ever enumerates. 16 KB is ample and
+# still leaves ~50 KB stack after the 199 KB renderer static.
+embassy-executor = { version = "0.7", features = ["arch-cortex-m", "executor-thread", "task-arena-size-16384"] }
+embassy-rp = { version = "0.3", features = ["rp2040", "time-driver", "critical-section-impl"] }
+embassy-time = "0.4"
+embassy-usb-logger = "0.4"
+log = "0.4"
+panic-halt = "0.2"
+
+# Optimize for the float-heavy render path even in dev builds; release is what we measure.
+[profile.release]
+opt-level = 3          # SPEED — this is a speed benchmark; "s" understates the float path badly
+lto = "fat"
+codegen-units = 1
+debug = 2              # symbols stay in the ELF (stripped from the .uf2), handy for probe later
+
+[profile.dev]
+opt-level = "s"        # un-optimized soft-float would be unbearably slow; never measure dev anyway

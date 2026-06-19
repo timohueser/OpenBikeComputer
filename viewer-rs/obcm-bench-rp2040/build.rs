@@ -1,0 +1,17 @@
+//! Put `memory.x` (the RP2040 flash/RAM layout) where the linker can find it, and
+//! re-link if it changes. Standard rp2040 / cortex-m-rt build-script boilerplate.
+use std::env;
+use std::fs::File;
+use std::io::Write;
+use std::path::PathBuf;
+
+fn main() {
+    let out = PathBuf::from(env::var("OUT_DIR").unwrap());
+    File::create(out.join("memory.x"))
+        .unwrap()
+        .write_all(include_bytes!("memory.x"))
+        .unwrap();
+    println!("cargo:rustc-link-search={}", out.display());
+    println!("cargo:rerun-if-changed=memory.x");
+    println!("cargo:rerun-if-changed=build.rs");
+}

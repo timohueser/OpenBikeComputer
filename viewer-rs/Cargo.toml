@@ -1,3 +1,7 @@
 [workspace]
 members = ["obcm-reader", "obcm-route", "obcm-render", "obcm-app", "obcm-sim"]
+# The RP2040 render-timing bench builds for thumbv6m-none-eabi (embassy, no_std,
+# no host std), so it must NOT be a member of this host workspace — it has its own
+# .cargo/config.toml pinning the target. Path-deps on the obcm-* crates still resolve.
+exclude = ["obcm-bench-rp2040", "obcm-bench-stm32"]
 resolver = "2"

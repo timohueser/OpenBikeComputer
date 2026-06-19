@@ -10,3 +10,9 @@ obcm-route = { path = "../obcm-route" }
 embedded-graphics = "0.8"
 heapless = "0.8"
 libm = "0.2"
+
+[features]
+# Shrinks the render scratch (MAX_FRAME_POINTS/MAX_SCREEN_POINTS) so MapRenderer
+# fits a 192 KB-SRAM MCU (STM32F429) for the cross-board render-timing bench.
+# Off by default — the host simulator and the RP2040 (264 KB) use the full size.
+small-scratch = []
