@@ -1,3 +1,0 @@
-[workspace]
-members = ["obcm-reader", "obcm-route", "obcm-render", "obcm-app", "obcm-sim"]
-resolver = "2"

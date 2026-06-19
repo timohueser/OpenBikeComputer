@@ -1,0 +1,20 @@
+[package]
+name = "obc-sim"
+version = "0.1.0"
+edition = "2021"
+description = "Desktop simulator for OBCM maps using embedded-graphics (same rendering path as the nRF54L firmware)"
+
+[dependencies]
+obc-reader = { path = "../obc-reader" }
+obc-route = { path = "../obc-route" }
+obc-render = { path = "../obc-render" }
+obc-app = { path = "../obc-app" }
+embedded-graphics = "0.8"
+# Native GUI host: the device-screen window and (next) the control panel. Pure
+# Rust window stack — no SDL2/Homebrew dependency anymore.
+eframe = "0.29"
+# PNG output for headless `--png` renders.
+image = { version = "0.25", default-features = false, features = ["png"] }
+# Native "open file" dialog for selecting a GPX track to replay (host-only; the
+# firmware obviously has no file picker).
+rfd = "0.14"

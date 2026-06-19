@@ -5,7 +5,7 @@ the route-planning sibling of the [`OBCM`](OBCM_Spec.md) map format. A route is 
 single ordered polyline with per-point elevation, plus precomputed ride statistics.
 It is produced **on the device** (or in the simulator) by converting an uploaded GPX
 file, and read back by the same `no_std` Rust code that the firmware runs
-(`viewer-rs/obcm-route`).
+(`firmware/obc-route`).
 
 It shares OBCM's conventions so the reader/renderer feel identical: little-endian
 integers, coordinates in **microdegrees** (1e-6 degrees), per-chunk **anchor +
@@ -158,10 +158,10 @@ sharing, §Design principle 4).
 
 ## Reference implementation
 
-`viewer-rs/obcm-route` (`no_std`): `byte_io.rs` ([`ByteSource`](#bytesource)/`ByteSink`),
+`firmware/obc-route` (`no_std`): `byte_io.rs` ([`ByteSource`](#bytesource)/`ByteSink`),
 `reader.rs` (`RouteReader`, `RouteSummary`, `ChunkMeta`), `convert.rs` (GPX → OBCR),
 `gpx.rs` (streaming `<trkpt>` scan). Format-contract tests build synthetic `.obcr`
-bytes by hand, mirroring this layout (cf. `obcm-reader/tests/format.rs`).
+bytes by hand, mirroring this layout (cf. `obc-reader/tests/format.rs`).
 
 ### ByteSource
 
