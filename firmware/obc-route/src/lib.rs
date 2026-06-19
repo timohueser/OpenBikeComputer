@@ -24,6 +24,7 @@
 
 pub mod byte_io;
 pub mod convert;
+pub mod deadband;
 mod geo;
 pub mod gpx;
 pub mod matcher;
@@ -33,6 +34,7 @@ pub mod track;
 
 pub use byte_io::{ByteSink, ByteSource, Error, SliceSource};
 pub use convert::{gpx_to_obcr, RouteStats};
+pub use deadband::{DeadBand, Elev, ELE_DEADBAND_M};
 pub use geo::ground_dist_m;
 pub use gpx::{GpxScanner, RawPoint};
 pub use matcher::{Match, RouteMatch};
