@@ -53,9 +53,29 @@ pub struct Lod {
 
 impl Lod {
     /// Byte offset where this level's data chunks begin (right after its index).
+    /// `None` if the arithmetic overflows `usize` — reachable on the 32-bit MCU
+    /// when `index_offset`/`node_count` come from a corrupt file.
     #[inline]
-    fn data_start(&self) -> usize {
-        self.index_offset + self.node_count * 4
+    fn data_start(&self) -> Option<usize> {
+        self.node_count.checked_mul(4)?.checked_add(self.index_offset)
+    }
+
+    /// Byte range `[start, end)` of chunk `chunk_id` within the file, or `None`
+    /// if `chunk_id` is out of range or any offset arithmetic overflows `usize`.
+    /// `chunk_id` comes straight from a quadtree leaf, so a corrupt or hostile
+    /// map can carry an arbitrary value; validating it against `chunk_count` and
+    /// computing the offset with checked arithmetic keeps the 32-bit device from
+    /// wrapping past the caller's file-length guard (it must not panic on a bad
+    /// map file). The caller still bounds-checks `end` against the actual buffer.
+    #[inline]
+    fn chunk_range(&self, chunk_id: u32) -> Option<(usize, usize)> {
+        let id = chunk_id as usize;
+        if id >= self.chunk_count {
+            return None;
+        }
+        let start = id.checked_mul(self.chunk_size)?.checked_add(self.data_start()?)?;
+        let end = start.checked_add(self.chunk_size)?;
+        Some((start, end))
     }
 }
 
@@ -199,7 +219,13 @@ impl<'a> Reader<'a> {
         if lod_count == 0 {
             return Err(Error::BadOffset);
         }
-        if lod_table_offset + lod_count * LOD_ENTRY_LEN > data.len() {
+        // Checked: `lod_table_offset` is an arbitrary u32 from the header, so on
+        // the 32-bit target the table-end can wrap and slip past this guard.
+        let lod_table_end = lod_count
+            .checked_mul(LOD_ENTRY_LEN)
+            .and_then(|len| lod_table_offset.checked_add(len))
+            .ok_or(Error::BadOffset)?;
+        if lod_table_end > data.len() {
             return Err(Error::BadOffset);
         }
 
@@ -360,12 +386,17 @@ impl<'a> Reader<'a> {
             Some(l) => l,
             None => return,
         };
-        let cs = l.chunk_size;
-        let start = l.data_start() + (chunk_id as usize) * cs;
-        if start + cs > self.data.len() {
+        // `chunk_id` is unvalidated file data: reject an out-of-range id or any
+        // offset that overflows `usize` (32-bit on device) instead of panicking
+        // or decoding an adjacent region.
+        let (start, end) = match l.chunk_range(chunk_id) {
+            Some(range) => range,
+            None => return,
+        };
+        if end > self.data.len() {
             return;
         }
-        decode_chunk_into(&self.data[start..start + cs], node, points, ring_lens, should_decode, visit);
+        decode_chunk_into(&self.data[start..end], node, points, ring_lens, should_decode, visit);
     }
 }
 
@@ -590,7 +621,16 @@ fn parse_lod_table(data: &[u8], offset: usize, lod_count: usize) -> Result<Vec<L
             chunk_size: rd_u16(data, o + 12) as usize,
             chunk_count: rd_u32(data, o + 14) as usize,
         };
-        let chunks_end = lod.data_start() + lod.chunk_count * lod.chunk_size;
+        // Checked: a corrupt entry can advertise a `node_count`/`chunk_count`/
+        // `chunk_size` whose products wrap `usize` on the 32-bit target, so an
+        // unchecked `chunks_end` could land below `data.len()` and admit a layer
+        // that indexes far out of the file.
+        let chunks_end = lod
+            .data_start()
+            .and_then(|start| {
+                lod.chunk_count.checked_mul(lod.chunk_size).and_then(|len| start.checked_add(len))
+            })
+            .ok_or(Error::BadOffset)?;
         if lod.index_offset < HEADER_LEN || chunks_end > data.len() {
             return Err(Error::BadOffset);
         }
