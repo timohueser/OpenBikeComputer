@@ -2070,6 +2070,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "obc-pack"
+version = "0.1.0"
+dependencies = [
+ "heapless",
+ "obc-reader",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "obc-reader"
 version = "0.1.0"
 dependencies = [
