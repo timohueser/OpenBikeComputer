@@ -139,6 +139,13 @@ impl Config {
         None
     }
 
+    /// The `natural.land` style, if the config requests land generation —
+    /// mirrors `pack.py`'s `config["features"]["natural"]["land"]` lookup. The id
+    /// + `min_lod` style the generated land polygons (see [`crate::land`]).
+    pub fn land_style(&self) -> Option<&FeatureStyle> {
+        self.features.iter().find(|(k, _)| k == "natural").and_then(|(_, m)| m.get("land"))
+    }
+
     /// The full Style Table for the serializer (order is irrelevant; the
     /// serializer sorts by id).
     pub fn styles(&self) -> Vec<Style> {

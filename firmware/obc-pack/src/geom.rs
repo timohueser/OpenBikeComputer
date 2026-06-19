@@ -116,7 +116,7 @@ pub fn pt_count(g: &Geom) -> usize {
 
 // --- GEOS bridge -----------------------------------------------------------
 
-fn ring_to_coordseq(coords: &[(f64, f64)]) -> CoordSeq {
+pub(crate) fn ring_to_coordseq(coords: &[(f64, f64)]) -> CoordSeq {
     let buf: Vec<[f64; 2]> = coords.iter().map(|&(x, y)| [x, y]).collect();
     CoordSeq::new_from_vec(&buf).expect("coordseq")
 }
@@ -190,6 +190,13 @@ trait Geom_: geos::Geom {}
 impl Geom_ for Geometry {}
 impl Geom_ for geos::ConstGeometry<'_> {}
 
+/// Convert an owned GEOS [`Geometry`] back into a [`Geom`] (the public entry to
+/// the generic `from_geos`). Used by [`crate::land`] to read a clipped land
+/// polygon out of GEOS before reprojecting it.
+pub(crate) fn geom_from_geos(g: &Geometry) -> Geom {
+    from_geos(g)
+}
+
 /// Topology-preserving simplify — the algorithm shapely's `geom.simplify(tol)`
 /// uses by default (`preserve_topology=True` ⇒ GEOS `TopologyPreservingSimplifier`),
 /// **not** plain Douglas–Peucker (the geos crate's `simplify`). `tol` is in
@@ -232,9 +239,10 @@ pub fn polygon_is_valid(exterior: &[(f64, f64)], interiors: &[Vec<(f64, f64)>]) 
 }
 
 /// Collect every [`Geom::Polygon`] out of a (possibly `Multi`/nested) geometry,
-/// dropping anything non-polygonal. Used to unpack a `build_area` result, which is
-/// a `Polygon`, `MultiPolygon`, or (degenerate) `GeometryCollection`.
-fn collect_polygons(g: Geom, out: &mut Vec<Geom>) {
+/// dropping anything non-polygonal. Used to unpack a `build_area` result (a
+/// `Polygon`, `MultiPolygon`, or degenerate `GeometryCollection`) and, in
+/// [`crate::land`], a clipped-land intersection result.
+pub(crate) fn collect_polygons(g: Geom, out: &mut Vec<Geom>) {
     match g {
         p @ Geom::Polygon { .. } => out.push(p),
         Geom::Multi(parts) => {
