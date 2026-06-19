@@ -1,3 +1,3 @@
 [workspace]
-members = ["obc-reader", "obc-route", "obc-render", "obc-app", "obc-sim"]
+members = ["obc-reader", "obc-route", "obc-render", "obc-app", "obc-sim", "obc-pack"]
 resolver = "2"
