@@ -7,8 +7,8 @@ description = "STM32F429 (Cortex-M4F + FPU) render-timing bench — a near-direc
 [dependencies]
 # Pipeline under test. small-scratch so the renderer fits the F429's 192 KB SRAM;
 # the RP2040 bench enables the same feature so the only difference is the FPU.
-obcm-render = { path = "../obcm-render", features = ["small-scratch"] }
-obcm-reader = { path = "../obcm-reader" }
+obc-render = { path = "../../firmware/obc-render", features = ["small-scratch"] }
+obc-reader = { path = "../../firmware/obc-reader" }
 embedded-graphics = "0.8"
 
 # RP/STM32 runtime (embassy) + defmt logging over RTT via the onboard ST-LINK.

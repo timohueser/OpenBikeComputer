@@ -809,7 +809,7 @@ where
         // keeping full shape detail (no decimation needed). Only thick lines need it (≤2 px don't
         // visibly facet), and the disc at a shared chunk-seam vertex also closes the butt-cap gap
         // between adjacent features.
-        if weight > 2 {
+        if weight > JOINT_MIN_WEIGHT {
             let r = (weight / 2) as i32;
             for p in run.iter() {
                 let _ = Circle::new(Point::new(p.x - r, p.y - r), weight)
@@ -821,10 +821,23 @@ where
     run.clear();
 }
 
+// ===========================================================================
+// BENCH A/B TOGGLE (round-joint + subpixel-dedup cost, EXPERIMENTAL commit)
+// ON  (feature enabled): SIMPLIFY_EPS_PX = 0.75, JOINT_MIN_WEIGHT = 2
+// OFF (feature disabled): SIMPLIFY_EPS_PX = 0.0,  JOINT_MIN_WEIGHT = 20_000
+// Flip both, rebuild the bench, and compare the timings.
+// ===========================================================================
+
+/// Min stroke width (px) above which [`flush_run`] fills a disc at each vertex for round
+/// joints/caps. `2` in production (≤2 px lines don't visibly facet). Set huge (20_000) to
+/// disable the per-vertex disc fill for the A/B baseline.
+const JOINT_MIN_WEIGHT: u32 = 2;
+
 /// Screen-space simplification tolerance (px) for [`stroke_overlay`]. **Subpixel** by design:
 /// big enough to fold away the integer-projection staircase (≤ ½ px deviations) and the
 /// same-pixel vertex pile-ups that make eg's thick `Polyline` bead, but under 1 px so the
 /// stroked line never shifts a visible pixel — beading goes, road/route shape stays.
+/// Set to 0.0 to disable the simplify pass for the A/B baseline.
 const SIMPLIFY_EPS_PX: f32 = 0.75;
 
 /// True when `p` lies within `eps` px (perpendicular) of the infinite line through `a` and `b`
