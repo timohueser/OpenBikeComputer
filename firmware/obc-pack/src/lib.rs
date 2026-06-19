@@ -22,6 +22,9 @@
 //! also as filled polygons. See the plan's Amendments section.
 
 pub mod dump;
+pub mod feature_dump;
+pub mod geom;
+pub mod quadtree;
 pub mod serialize;
 
 pub use serialize::{
