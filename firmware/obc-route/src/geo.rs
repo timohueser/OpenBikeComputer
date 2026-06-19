@@ -10,9 +10,11 @@
 //! The projection is a local equirectangular approximation (east scaled by
 //! `cos(lat)`), the same one the converter has always used — accurate over the short
 //! segments of a decimated route, and cheap (no per-segment haversine).
+//!
+//! The Earth model itself — meters per degree — is [`obc_reader::M_PER_DEG`], shared
+//! with the renderer and packer so the route's distances and the map's scale agree.
 
-/// Meters per degree of latitude (and of longitude at the equator).
-pub(crate) const M_PER_DEG: f64 = 111_320.0;
+use obc_reader::M_PER_DEG;
 
 /// `cos(latitude)` for the local east-scaling, from latitude in microdegrees.
 pub(crate) fn cos_lat(lat_ud: i32) -> f64 {

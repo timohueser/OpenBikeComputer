@@ -8,25 +8,23 @@
 pub(super) const MIN_ZOOM: f32 = 1e-6;
 pub(super) const MAX_ZOOM: f32 = 1e4;
 
-/// Meters per microdegree of latitude — mirrors `obc_render`'s private constant
-/// so the control panel can present zoom in human-friendly meters-per-pixel.
-const METERS_PER_MICRODEG_LAT: f32 = 0.111_320;
-
 /// Practical bounds for the zoom slider, in meters per pixel: roughly a ~5 m to
 /// ~4800 m screen span on the 240 px device. The mouse can still scroll past these
 /// (the slider only writes back when dragged), so they don't cap the camera.
 pub(super) const MPP_MIN: f32 = 0.02;
 pub(super) const MPP_MAX: f32 = 20_000.0;
 
-/// Zoom (px per microdegree-lat) → meters per pixel. Same relation as
-/// [`obc_render::Viewport::meters_per_pixel`], usable without a viewport.
+/// Zoom (px per microdegree-lat) → meters per pixel. Thin re-export of the renderer's
+/// own [`obc_render::mpp_for_zoom`] so the control panel reads ground scale from the very
+/// metric the map is drawn with — no private copy of the constant or the formula to drift.
 pub(super) fn zoom_to_mpp(zoom: f32) -> f32 {
-    METERS_PER_MICRODEG_LAT / zoom
+    obc_render::mpp_for_zoom(zoom)
 }
 
-/// Meters per pixel → zoom (the inverse of [`zoom_to_mpp`]).
+/// Meters per pixel → zoom (the inverse of [`zoom_to_mpp`]) — the renderer's
+/// [`obc_render::zoom_for_mpp`].
 pub(super) fn mpp_to_zoom(mpp: f32) -> f32 {
-    METERS_PER_MICRODEG_LAT / mpp
+    obc_render::zoom_for_mpp(mpp)
 }
 
 /// A ground distance in meters as a short human string ("5 m", "2.5 km").
