@@ -1,4 +1,11 @@
 #!/usr/bin/env bash
+# SUPERSEDED by run_stage4_ingest.sh. Stage 4 made ingest emit multipolygon
+# relations, so the Rust output now carries relation polygons this Stage-3-only
+# oracle (dump_ingest.py WITHOUT --with-relations) drops — the gate will report a
+# `poly_only_rust` surplus equal to the relation polygons. That is expected, not a
+# regression; use run_stage4_ingest.sh for the current ingest gate. Kept as the
+# Stage-3 milestone record (the lines + closed-way subset still compares exactly).
+#
 # Stage-3 INGEST gate (handover §6.1): isolates the new ingest port. For each
 # corpus item, dump the Python oracle's Stage-3 *expected* feature set
 # (dump_ingest.py — relations and closed-line-way blobs removed) and the Rust

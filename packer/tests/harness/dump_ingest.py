@@ -1,23 +1,26 @@
 #!/usr/bin/env python3
-"""Stage-3 ingest oracle dump (handover §6.1).
+"""Ingest oracle dump (handover §6.1).
 
 Runs the REAL `obcm.ingest.OSMHandler` via a thin *observing* subclass — it only
 calls `super().way()/area()`, so the geometry and feature list are exactly the
 oracle's — and records per-feature provenance (`way` vs `area`, and for areas
-`from_way` + tags). From that it derives the **Stage-3 expected set**: the
-features the Rust port should also produce. Specifically:
+`from_way` + tags). From that it derives the **expected set**: the features the
+Rust port should also produce. Specifically:
 
   - every LineString from `way()`                 -> KEEP (open + closed-non-area)
   - `area()` polygons built from a single closed way that is a genuine area
     (`is_area(tags)` true; admin_level ones never reach area())  -> KEEP
-  - `area()` polygons from a relation (`from_way()` false)        -> DROP (Stage 4)
+  - `area()` polygons from a relation (`from_way()` false)        -> DROP for
+    Stage 3; KEEP with --with-relations (the Stage-4 gate: the Rust port now
+    assembles these via GEOS build_area)
   - `area()` polygons from a closed *line* way (`is_area` false — the oracle's
-    double-emit bug)                                              -> DROP
+    double-emit bug)                                              -> always DROP
+    (Rust emits the line only; Amendment 2)
 
 Vertices are microdegree-rounded (`int(round(v*1e6))`, banker's). Output schema
 matches the Rust `ingest_dump` bin so `compare_ingest.py` can diff them.
 
-Usage:  dump_ingest.py <pbf> <config.json> <out.json>
+Usage:  dump_ingest.py <pbf> <config.json> <out.json> [--with-relations]
 """
 import json
 import sys
@@ -82,7 +85,9 @@ def feature_json(feat):
 
 
 def main():
-    pbf, config_path, out_path = sys.argv[1], sys.argv[2], sys.argv[3]
+    with_relations = "--with-relations" in sys.argv
+    pos = [a for a in sys.argv[1:] if not a.startswith("--")]
+    pbf, config_path, out_path = pos[0], pos[1], pos[2]
     config = load_config(config_path)
     handler = ProvenanceHandler(config)
 
@@ -100,13 +105,15 @@ def main():
     r.close()
 
     features = []
-    dropped_rel = dropped_blob = 0
+    kept_rel = dropped_rel = dropped_blob = 0
     for feat, (src, from_way, tags) in zip(handler.features, handler.meta):
         if src == "area":
             if not from_way:
-                dropped_rel += 1
-                continue  # relation-sourced -> Stage 4
-            if not is_area(tags):
+                if not with_relations:
+                    dropped_rel += 1
+                    continue  # relation-sourced -> Stage 4
+                kept_rel += 1  # Stage 4: the Rust port assembles these too
+            elif not is_area(tags):
                 dropped_blob += 1
                 continue  # closed line-way double-emit -> Rust emits the line only
         features.append(feature_json(feat))
@@ -114,8 +121,9 @@ def main():
     coastlines = [[[ud(x), ud(y)] for (x, y) in c.coords] for c in handler.coastlines]
     out = {"features": features, "coastlines": coastlines}
     Path(out_path).write_text(json.dumps(out))
+    rel_note = f"+{kept_rel} relation kept" if with_relations else f"+{dropped_rel} relation dropped"
     print(
-        f"{out_path}: {len(features)} expected features (+{dropped_rel} relation, "
+        f"{out_path}: {len(features)} expected features ({rel_note}, "
         f"+{dropped_blob} closed-line-way blob dropped), {len(coastlines)} coastlines",
         file=sys.stderr,
     )

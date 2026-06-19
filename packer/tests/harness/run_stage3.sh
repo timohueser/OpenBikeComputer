@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# SUPERSEDED by run_stage4.sh. Stage 4 made ingest emit multipolygon relations, so
+# the Rust .obcm now contains relation polygons this Stage-3-only reference
+# (dump_stage3_ref.py WITHOUT --with-relations) omits — expect a polygon surplus,
+# not a regression. Use run_stage4.sh for the current end-to-end + render gate.
+# Kept as the Stage-3 milestone record.
+#
 # Stage-3 END-TO-END gate (handover §6.2): build each corpus item's .obcm two
 # ways — the Rust `obc-pack` (full ingest→quadtree→serialize) and a Python
 # reference *restricted to the same Stage-3 set* (dump_stage3_ref.py: relations

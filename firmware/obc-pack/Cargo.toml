@@ -13,5 +13,7 @@ obc-reader = { path = "../obc-reader" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 heapless = "0.8"
-geos = "11.1.1"
+# `v3_14_0` matches the system libGEOS (3.14.1) and unlocks the area-assembly API
+# (`build_area`, the even-odd multipolygon primitive) used for Stage-4 relations.
+geos = { version = "11.1.1", features = ["v3_14_0"] }
 osmpbf = "0.3.8"

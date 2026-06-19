@@ -75,9 +75,23 @@ and does match — a sharp test of `pack_feature`/`pack_chunk`/`serialize_tree`.
   **ingest** gate: dumps the oracle's Stage-3-expected feature set (relations and
   closed-line-way blobs removed) and the Rust ingest (`ingest_dump`), then
   compares as a multiset (lines exact; polygons up to ring rotation/winding).
+  *Superseded by the Stage-4 ingest gate now that the pipeline emits relations.*
 - `dump_stage3_ref.py` + `run_stage3.sh` — the Stage-3 **end-to-end** gate:
   builds a Python reference restricted to the same Stage-3 set and compares to
-  Rust `obc-pack` with `obcm_diff --canonical-polys`.
+  Rust `obc-pack` with `obcm_diff --canonical-polys`. *Superseded by Stage 4.*
+- `run_stage4_ingest.sh` — the Stage-4 **ingest** gate: `dump_ingest.py
+  --with-relations` keeps the relation-assembled polygons, so this validates the
+  multipolygon assembly. Lines + coastlines must stay exact; a small **balanced**
+  polygon residual (broken relations osmium and GEOS `build_area`/`node` repair
+  into different vertex sets) is accepted and render-verified by `run_stage4.sh`.
+- `find_divergences.py` + `compare_png.py` + `run_stage4.sh` — the Stage-4
+  **end-to-end + render** gate: builds the `.obcm` both ways (Rust `obc-pack` and
+  `dump_stage3_ref.py --with-relations`), hard-guards structural identity + zero
+  line diffs via `obcm_diff`, then render-diffs each assembly divergence at the
+  **finest (no-simplify) LOD** (`find_divergences.py` aims the camera at a boundary
+  tip, forced to the finest LOD so it measures assembly, not the coarse-LOD
+  simplify skew; `compare_png.py` pixel-diffs with PIL). PASS = divergences
+  render-equivalent.
 - `node_probe.py` + `node_probe` bin — throwaway coordinate-parity probe (kept as
   a regression guard for the `decimicro/1e7` lon/lat formula).
 - `firmware/obc-pack` `obcm_diff` binary — the escalating comparator (structural
@@ -86,11 +100,16 @@ and does match — a sharp test of `pack_feature`/`pack_chunk`/`serialize_tree`.
 
 Current status: **Stages 1 (serializer) and 2 (quadtree) pass byte-identical
 across the whole corpus** (the Stage-1 reference also matches `pack.py` exactly,
-verified with land on monaco). **Stage 3 (ingest: lines + closed ways, no
-relations) passes**: ingest is multiset-identical to the oracle's Stage-3 set,
-and end-to-end the output is structurally identical with **lines byte-exact and
-no-simplify LODs exact** — the only divergence is the expected GEOS 3.14-vs-3.13
-simplify skew on polygons at the 12 m LOD.
+verified with land on monaco). **Stage 3 (ingest: lines + closed ways) passes**:
+ingest is multiset-identical to the oracle's Stage-3 set, and end-to-end the
+output is structurally identical with **lines byte-exact and no-simplify LODs
+exact** — the only divergence is the expected GEOS 3.14-vs-3.13 simplify skew on
+polygons at the 12 m LOD. **Stage 4 (multipolygon relation areas) passes** the
+whole corpus: ingest multiset-identical (lines + coastlines exact, relation
+polygons up to ring winding with a small balanced re-tessellation residual), and
+end-to-end structurally identical with zero line diffs and **every assembly
+divergence render-equivalent at the finest LOD** (worst tile <0.8 %); the residual
+again lives only at the simplify LODs.
 
 ## Known intentional divergence (a bug we do NOT replicate)
 

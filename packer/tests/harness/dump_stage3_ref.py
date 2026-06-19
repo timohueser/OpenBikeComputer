@@ -28,9 +28,10 @@ from obcm.serialize import serialize_lods
 from dump_ingest import ProvenanceHandler, is_area
 
 
-def stage3_features(pbf, config):
-    """Run the oracle handler and return the Stage-3-restricted feature list
-    (each `{style_id, min_lod, geometry}`) + coastlines."""
+def stage3_features(pbf, config, with_relations=False):
+    """Run the oracle handler and return the feature list restricted to the set the
+    Rust port produces (each `{style_id, min_lod, geometry}`) + coastlines.
+    `with_relations` keeps the relation-assembled polygons (the Stage-4 set)."""
     handler = ProvenanceHandler(config)
     idx = osmium.index.create_map("flex_mem")
     lh = osmium.NodeLocationsForWays(idx)
@@ -47,8 +48,9 @@ def stage3_features(pbf, config):
     for feat, (src, from_way, tags) in zip(handler.features, handler.meta):
         if src == "area":
             if not from_way:
-                continue  # relation -> Stage 4
-            if not is_area(tags):
+                if not with_relations:
+                    continue  # relation -> Stage 4
+            elif not is_area(tags):
                 continue  # closed line-way double-emit -> Rust emits the line only
         feats.append(feat)
     return feats, handler.coastlines
@@ -62,14 +64,16 @@ def main():
     ap.add_argument("config")
     ap.add_argument("ref")
     ap.add_argument("--chunk-size", type=int, default=4096)
+    ap.add_argument("--with-relations", action="store_true",
+                    help="keep relation-assembled polygons (the Stage-4 reference set)")
     args = ap.parse_args()
 
     config = load_config(args.config)
     chunk_size = config.get("chunk_size", args.chunk_size)
 
-    feats, coastlines = stage3_features(args.pbf, config)
+    feats, coastlines = stage3_features(args.pbf, config, with_relations=args.with_relations)
     if not feats and not coastlines:
-        print("No Stage-3 features.", file=sys.stderr)
+        print("No features.", file=sys.stderr)
         sys.exit(1)
 
     # bbox over the Stage-3 set + coastlines, int() truncation (NOT rounding).
