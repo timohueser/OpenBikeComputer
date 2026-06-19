@@ -233,21 +233,31 @@ into the reused `screen: Vec<Point>` and calls `fill_polygon`:
 `fill_polygon` is shared: the map polygons, the marker glyph, and the route
 chevrons all fill through it.
 
-### 4.8 Draw: line stroke — `stroke_overlay` (`lib.rs:808`)
+### 4.8 Draw: line stroke — `stroke_overlay` (`lib.rs:866`)
 
 The `Kind::Line` arm (and every overlay polyline) strokes through one path:
 
-* **Clip first** (Cohen–Sutherland, `outcode`/`clip_segment`, `lib.rs:716/735`)
-  against the screen grown by the stroke half-width, so an edge-hugging line keeps
-  full thickness. This is the fix for the old ~62 ms/frame overlay cost: the route
-  is ~96 % off-screen at riding zoom, and `embedded-graphics`' thick `Polyline`
-  rasterises width pixel-by-pixel over the *whole* line. Clipping means eg only
-  pays for the visible part.
-* Sub-pixel steps (`|dx|+|dy| < 2`) are dropped; each on-screen run is accumulated
-  in `screen` and flushed as one eg `Polyline::with_stroke(color, weight)` —
-  keeping eg's properly **jointed** thick line within a run.
-* `push_run` (`lib.rs:773`) subdivides any > 150 px hop into ≤150 px steps so eg's
-  thick-line intersection math doesn't overflow (debug) or spike miters (release).
+* **Clip first** (Cohen–Sutherland, `outcode`/`clip_segment`) against the screen
+  grown by the stroke half-width, so an edge-hugging line keeps full thickness. This
+  is the fix for the old ~62 ms/frame overlay cost: the route is ~96 % off-screen at
+  riding zoom, and `embedded-graphics`' thick `Polyline` rasterises width
+  pixel-by-pixel over the *whole* line. Clipping means eg only pays for the visible
+  part.
+* **Simplify in screen space** (`simplify` + `within_eps`, `lib.rs:823/782`): a
+  streaming one-lookahead collinear drop at a *subpixel* tolerance
+  (`SIMPLIFY_EPS_PX = 0.75`). It folds away the integer-projection staircase and the
+  same-pixel vertex pile-ups a dense route/road carries when zoomed out — never
+  moving the line a visible pixel — so eg gets far fewer segments and discs. Each
+  on-screen run is accumulated in `screen` and flushed as one eg
+  `Polyline::with_stroke(color, weight)`.
+* **Round joints + caps** (`flush_run`, `lib.rs:746`): eg joins thick segments with a
+  flat **bevel** (and butt-caps the ends), so a densely sampled curve renders as a fan
+  of facets — the thick-line *beading*. For `weight > 2`, `flush_run` fills a disc
+  (⌀ = stroke width) at each run vertex, turning every joint/cap into a smooth arc with
+  full shape detail kept (no decimation). The disc at a shared chunk-seam vertex also
+  closes the butt-cap gap between adjacent features.
+* `push_run` subdivides any > 150 px hop into ≤150 px steps so eg's thick-line
+  intersection math doesn't overflow (debug) or spike miters (release).
 * A run is flushed and restarted whenever a segment leaves the view or doesn't
   continue the previous one.
 
