@@ -5,6 +5,11 @@
 field** in the OBCM format — infrastructure that **part 3 (road casing) reuses**, so build it here,
 once. Land [part 1](route_arrows_plan.md)'s timing harness first so cost is measurable.
 
+> **Note (post-refactor):** the renderer was refactored after this plan was written, so the
+> `lib.rs` line numbers below are stale. The `Span`/`draw_line`/`draw_map` seams this plan targets
+> are now factored out — see **[`draw_phase_onramp_plan.md`](draw_phase_onramp_plan.md)** for the
+> current anchors and the `style_id`-in-`Span` + dispatch plan this builds on.
+
 ## Goal
 
 Render lines that aren't flat single-colour strokes:
