@@ -1,4 +1,4 @@
-"""Background job runner: download selected PBFs, then run pack.py.
+"""Background job runner: download selected PBFs, then run the native `obc-pack`.
 
 Each job records an append-only list of events. The SSE endpoint replays the
 list and follows new events, so reconnects and (single-user) multiple tabs both
@@ -6,7 +6,6 @@ work. PBF downloads are cached on disk and reused across runs.
 """
 import os
 import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -18,9 +17,27 @@ from . import geofabrik
 
 PBF_CACHE = os.path.expanduser("~/.cache/obcm/pbf")
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PACK_SCRIPT = os.path.join(PROJECT_ROOT, "pack.py")
+REPO_ROOT = os.path.dirname(PROJECT_ROOT)
 
-# Stage strings emitted by pack.py / obcm.ingest mapped to a coarse phase.
+
+def _rust_pack_bin():
+    """Locate the native `obc-pack` packer binary, or None if it isn't built.
+
+    Override the path with OBC_PACK_BIN; otherwise prefer the release build
+    under firmware/target/ and fall back to debug. Build it with
+    `cargo build --release -p obc-pack` in firmware/.
+    """
+    override = os.environ.get("OBC_PACK_BIN")
+    if override:
+        return override if os.path.exists(override) else None
+    for profile in ("release", "debug"):
+        p = os.path.join(REPO_ROOT, "firmware", "target", profile, "obc-pack")
+        if os.path.exists(p) and os.access(p, os.X_OK):
+            return p
+    return None
+
+
+# `obc-pack` prints these stage strings on stdout; they map to a coarse UI phase.
 _STAGE_MARKERS = {
     "Merging": "merging",
     "Pass 1": "ingest",
@@ -126,7 +143,17 @@ def _run(job):
         urls = geofabrik.region_pbf_urls(job.region_ids)
         pbf_paths = [_download_pbf(job, rid, url) for rid, url in urls]
 
-        # Write the editor's config to a temp file for pack.py.
+        # The native obc-pack binary is the only backend; fail fast (before any
+        # temp file) with a clear message if it isn't built.
+        rust_bin = _rust_pack_bin()
+        if rust_bin is None:
+            raise RuntimeError(
+                "obc-pack binary not found — build it with "
+                "`cargo build --release -p obc-pack` in firmware/ "
+                "(or set OBC_PACK_BIN to its path)."
+            )
+
+        # Write the editor's config to a temp file for obc-pack.
         cfg_fd, cfg_path = tempfile.mkstemp(suffix=".json", prefix="obcm-config-")
         with os.fdopen(cfg_fd, "w") as f:
             import json
@@ -139,7 +166,8 @@ def _run(job):
 
         job.status = "converting"
         job.emit({"type": "status", "status": "converting", "detail": "starting"})
-        cmd = [sys.executable, "-u", PACK_SCRIPT, *pbf_paths, cfg_path, out_path,
+
+        cmd = [rust_bin, *pbf_paths, cfg_path, out_path,
                "--chunk-size", str(job.chunk_size)]
         job.emit({"type": "log", "line": "$ " + " ".join(cmd), "transient": False})
 
@@ -158,7 +186,7 @@ def _run(job):
                       "path": out_path, "size": size})
         else:
             job.status = "failed"
-            job.emit({"type": "error", "message": f"pack.py exited with code {rc}"})
+            job.emit({"type": "error", "message": f"obc-pack exited with code {rc}"})
     except Exception as exc:  # surface any failure to the browser
         job.status = "failed"
         job.emit({"type": "error", "message": str(exc)})
