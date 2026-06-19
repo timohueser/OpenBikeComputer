@@ -68,12 +68,15 @@ and does match — a sharp test of `pack_feature`/`pack_chunk`/`serialize_tree`.
   `serialize_from_dump` binary and asserts byte-identical output. Run it from
   anywhere; `WITH_LAND=1` also exercises the land path, `ITEMS="tiny monaco"`
   narrows the set.
+- `dump_features.py` + `run_stage2.sh` — the Stage-2 gate: dumps each LOD's
+  *pre-quadtree* simplified features, builds the quadtree in Rust
+  (`build_from_features`), and compares to the Python quadtree's `.obcm`.
 - `firmware/obc-pack` `obcm_diff` binary — the escalating comparator (structural
   + feature-multiset) for the later stages where byte-identity is not the gate.
 
-Current status: **Stage 1 (serializer) passes byte-identical across the whole
-corpus**, and the harness reference matches `pack.py`'s own output exactly
-(verified with land on monaco).
+Current status: **Stages 1 (serializer) and 2 (quadtree) pass byte-identical
+across the whole corpus**; the Stage-1 harness reference also matches `pack.py`'s
+own output exactly (verified with land on monaco).
 
 ## Known intentional divergence (a bug we do NOT replicate)
 

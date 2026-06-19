@@ -54,11 +54,21 @@ These supersede the relevant parts of §4/§5/§9 below; the rest of the plan st
   `tests/harness/dump_tree.py` form the byte-parity gate (`run_stage1.sh`).
   **Byte-identical to `pack.py` across the entire corpus** (tiny → 10 MB malta,
   with holes/16-bit deltas/densification/land). 7 unit+integration tests green.
-- **Next — Stage 2 (quadtree):** port `quadtree.py` (split sizing, NW/NE/SW/SE
-  floor-div midpoints, containment fast-path vs GEOS-clip, multi-geom flatten,
-  BFS). Needs the `geos` crate (system 3.14.1 is fine now, gate is render +
-  multiset). Validate against `test_quadtree.py` cases, then real features via
-  `obcm_diff`.
+- **Stage 2 (quadtree): DONE.** `quadtree.rs` ports `quadtree.py` (size-based
+  split, NW/NE/SW/SE floor-div midpoints via `div_euclid`, containment fast-path
+  vs GEOS clip, multi-geom flatten, re-insert on split); `geom.rs` is the GEOS
+  bridge (`geos` crate v11 → system GEOS 3.14.1, `intersection` like shapely, not
+  `clip_by_rect`). Gate `run_stage2.sh` (Python `dump_features.py` →
+  `build_from_features`): **byte-identical to the Python quadtree across the
+  whole corpus** — GEOS 3.14 and shapely's 3.13 happen to clip identically on
+  this data, so it beat the render+multiset bar. 6 quadtree unit tests
+  (`test_quadtree.py` cases) green.
+- **Next — Stage 3 (ingest, common case):** port `ingest.py` lines + closed
+  ways (skip MP *relations*). First real end-to-end Rust pipeline. Needs the
+  `osmpbf` crate + a node-location store. This is where per-LOD **simplify**
+  (`TopologyPreservingSimplifier`, §4.4) finally runs in Rust — the likely first
+  real GEOS-version divergence, so the render+multiset gate earns its keep. Also
+  implement the closed-way classification fix (Amendments §2).
 
 ## 0. Context (measured)
 
