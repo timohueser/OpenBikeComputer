@@ -75,8 +75,11 @@ const MCU_RENDERER_BYTES: usize = MAX_DECODE_POINTS * 8
     + MAX_CROSSINGS * 4;
 const _: () = assert!(MCU_RENDERER_BYTES <= 200 * 1024, "MapRenderer exceeds the 200 KB MCU budget");
 
-/// Meters of ground per microdegree of latitude (≈ Earth circumference / 360e6).
-const METERS_PER_MICRODEG_LAT: f32 = 0.111_320;
+/// Meters of ground per microdegree of latitude — the renderer's zoom is pixels per
+/// microdegree-lat, so this turns zoom into meters-per-pixel. Derived from the shared
+/// [`obc_reader::M_PER_DEG`] (a microdegree is 1e-6°) so the on-screen scale tracks the
+/// one Earth model the route/packer measure against.
+const METERS_PER_MICRODEG_LAT: f32 = (obc_reader::M_PER_DEG / 1_000_000.0) as f32;
 
 // Route direction chevrons (tunable). Arrowheads along the active route at riding zoom,
 // anchored to route distance (not screen) so each stays pinned to a ground spot, drawn only
@@ -108,12 +111,21 @@ const ARROW_BACK: f32 = 2.5;
 const ARROW_HALF: f32 = 4.5;
 
 /// The [`Viewport`]/`AppState` zoom (pixels per microdegree of latitude) that yields
-/// a given ground **meters-per-pixel** — the inverse of
+/// a given ground **meters-per-pixel** — the inverse of [`mpp_for_zoom`] /
 /// [`Viewport::meters_per_pixel`]. Lets callers aim the camera at a real-world scale
 /// (e.g. "zoom to 0.5 m/px for riding") instead of a raw zoom value.
 #[inline]
 pub fn zoom_for_mpp(mpp: f32) -> f32 {
     METERS_PER_MICRODEG_LAT / mpp
+}
+
+/// Ground **meters-per-pixel** at a given zoom (pixels per microdegree of latitude) —
+/// the viewport-free form of [`Viewport::meters_per_pixel`] and the inverse of
+/// [`zoom_for_mpp`]. Lets a caller (e.g. the simulator's zoom slider) read a real-world
+/// scale from a raw zoom without constructing a [`Viewport`].
+#[inline]
+pub fn mpp_for_zoom(zoom: f32) -> f32 {
+    METERS_PER_MICRODEG_LAT / zoom
 }
 
 /// Screen projection: microdegrees → pixels, with longitude aspect correction so
@@ -238,7 +250,7 @@ impl Viewport {
     /// panel showing the same ground span pick the same level.
     #[inline]
     pub fn meters_per_pixel(&self) -> f32 {
-        METERS_PER_MICRODEG_LAT / self.zoom
+        mpp_for_zoom(self.zoom)
     }
 
     /// Unit screen-space vector pointing to map **north** — for a compass needle.
