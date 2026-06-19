@@ -18,10 +18,10 @@ use crate::reader::{ChunkMeta, CHUNK_META_LEN, HEADER_LEN, MAX_POINTS_PER_CHUNK,
 use obc_reader::BBox;
 
 /// Decimation tolerance: drop a vertex within this perpendicular distance of the chord.
-const EPSILON_M: f64 = 1.0;
+const EPSILON_M: f32 = 1.0;
 /// Force a kept vertex at least this often. Also bounds stored deltas to the `int16`
 /// range (≈3.6 km lat; ≈3.6 km·cos(lat) lon — safe to ~70° latitude).
-const MAX_SPAN_M: f64 = 1200.0;
+const MAX_SPAN_M: f32 = 1200.0;
 /// Ascent/descent dead-band: ignore elevation wiggles below this (m) so totals read
 /// like a route planner's rather than tracking GPS noise.
 const ELE_THRESHOLD_M: f64 = 3.0;
@@ -54,7 +54,10 @@ pub fn gpx_to_obcr(
     let mut enc = Encoder::new(HEADER_LEN as u32);
     let mut scan = GpxScanner::new(src);
 
-    // Running stats.
+    // Running stats. `cum_dist` accumulates in `f64`: each per-segment distance is a small
+    // `f32` (see `geo`), but a long route's running total needs the dynamic range — `f32`'s
+    // ~7 significant digits resolve a 300 km total to only ~3 cm and could drift over
+    // thousands of segments.
     let mut cum_dist = 0f64;
     let mut ascent = 0f64;
     let mut descent = 0f64;
@@ -74,7 +77,7 @@ pub fn gpx_to_obcr(
     while let Some(p) = scan.next_point()? {
         // Distance from the previous raw point.
         if let Some(pr) = prev {
-            cum_dist += seg_dist_m(pr, (p.lon, p.lat));
+            cum_dist += seg_dist_m(pr, (p.lon, p.lat)) as f64;
         } else {
             start = (p.lon, p.lat);
         }
@@ -120,7 +123,7 @@ pub fn gpx_to_obcr(
             (Some(_), None) => pending = Some(c),
             (Some(lk), Some(pd)) => {
                 let perp = perp_dist_m(lk, c, pd);
-                let span = (c.cum_d - lk.cum_d) as f64;
+                let span = (c.cum_d - lk.cum_d) as f32;
                 if perp > EPSILON_M || span > MAX_SPAN_M {
                     enc.emit(sink, pd)?;
                     emitted += 1;
@@ -325,15 +328,15 @@ fn build_header(
 // Segment distance / projection live in `geo` (shared with the elevation profile).
 
 /// Perpendicular distance (m) from point `p` to the chord `a → c`.
-fn perp_dist_m(a: Cand, c: Cand, p: Cand) -> f64 {
+fn perp_dist_m(a: Cand, c: Cand, p: Cand) -> f32 {
     let cl = cos_lat(a.lat);
     let (cx, cy) = delta_m((a.lon, a.lat), (c.lon, c.lat), cl);
     let (px, py) = delta_m((a.lon, a.lat), (p.lon, p.lat), cl);
     let len2 = cx * cx + cy * cy;
     if len2 <= 1e-9 {
-        return libm::sqrt(px * px + py * py);
+        return libm::sqrtf(px * px + py * py);
     }
-    (cx * py - cy * px).abs() / libm::sqrt(len2)
+    (cx * py - cy * px).abs() / libm::sqrtf(len2)
 }
 
 fn grow(b: Option<BBox>, lon: i32, lat: i32) -> BBox {

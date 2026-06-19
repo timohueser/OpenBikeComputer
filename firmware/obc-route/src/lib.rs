@@ -33,7 +33,7 @@ pub mod track;
 
 pub use byte_io::{ByteSink, ByteSource, Error, SliceSource};
 pub use convert::{gpx_to_obcr, RouteStats};
-pub use geo::ground_dist_m;
+pub use geo::{ground_dist_m, ground_dist_m_cl};
 pub use gpx::{GpxScanner, RawPoint};
 pub use matcher::{Match, RouteMatch};
 pub use profile::{Profile, Window, PROFILE_COLS};
