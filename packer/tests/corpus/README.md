@@ -71,12 +71,26 @@ and does match — a sharp test of `pack_feature`/`pack_chunk`/`serialize_tree`.
 - `dump_features.py` + `run_stage2.sh` — the Stage-2 gate: dumps each LOD's
   *pre-quadtree* simplified features, builds the quadtree in Rust
   (`build_from_features`), and compares to the Python quadtree's `.obcm`.
+- `dump_ingest.py` + `compare_ingest.py` + `run_stage3_ingest.sh` — the Stage-3
+  **ingest** gate: dumps the oracle's Stage-3-expected feature set (relations and
+  closed-line-way blobs removed) and the Rust ingest (`ingest_dump`), then
+  compares as a multiset (lines exact; polygons up to ring rotation/winding).
+- `dump_stage3_ref.py` + `run_stage3.sh` — the Stage-3 **end-to-end** gate:
+  builds a Python reference restricted to the same Stage-3 set and compares to
+  Rust `obc-pack` with `obcm_diff --canonical-polys`.
+- `node_probe.py` + `node_probe` bin — throwaway coordinate-parity probe (kept as
+  a regression guard for the `decimicro/1e7` lon/lat formula).
 - `firmware/obc-pack` `obcm_diff` binary — the escalating comparator (structural
-  + feature-multiset) for the later stages where byte-identity is not the gate.
+  + feature-multiset; `--canonical-polys` compares polygons up to ring
+  rotation/winding) for the stages where byte-identity is not the gate.
 
 Current status: **Stages 1 (serializer) and 2 (quadtree) pass byte-identical
-across the whole corpus**; the Stage-1 harness reference also matches `pack.py`'s
-own output exactly (verified with land on monaco).
+across the whole corpus** (the Stage-1 reference also matches `pack.py` exactly,
+verified with land on monaco). **Stage 3 (ingest: lines + closed ways, no
+relations) passes**: ingest is multiset-identical to the oracle's Stage-3 set,
+and end-to-end the output is structurally identical with **lines byte-exact and
+no-simplify LODs exact** — the only divergence is the expected GEOS 3.14-vs-3.13
+simplify skew on polygons at the 12 m LOD.
 
 ## Known intentional divergence (a bug we do NOT replicate)
 

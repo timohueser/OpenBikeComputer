@@ -8,7 +8,10 @@ description = "OBCM map packer (OSM .osm.pbf -> .obcm): std host port of packer/
 # Shared definition of the binary format — the reader that reads back what this
 # writes; also used by the obcm_diff comparator.
 obc-reader = { path = "../obc-reader" }
+# `preserve_order` is load-bearing: config.py assigns style IDs 1-based in
+# config.json document order, so the parsed map must keep insertion order.
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
 heapless = "0.8"
 geos = "11.1.1"
+osmpbf = "0.3.8"

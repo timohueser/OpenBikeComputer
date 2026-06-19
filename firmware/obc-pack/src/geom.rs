@@ -190,6 +190,47 @@ trait Geom_: geos::Geom {}
 impl Geom_ for Geometry {}
 impl Geom_ for geos::ConstGeometry<'_> {}
 
+/// Topology-preserving simplify — the algorithm shapely's `geom.simplify(tol)`
+/// uses by default (`preserve_topology=True` ⇒ GEOS `TopologyPreservingSimplifier`),
+/// **not** plain Douglas–Peucker (the geos crate's `simplify`). `tol` is in
+/// degrees (`simplify_m / 111320.0`). An empty/failed result becomes
+/// [`Geom::Empty`], which the quadtree drops — matching `pack.py`'s
+/// `if geom.is_empty: continue`.
+pub fn topology_preserve_simplify(geom: &Geom, tol: f64) -> Geom {
+    match to_geos(geom).topology_preserve_simplify(tol) {
+        Ok(s) => from_geos(&s),
+        Err(_) => Geom::Empty,
+    }
+}
+
+/// Whether a closed-way ring assembles into a **valid** polygon. Mirrors osmium's
+/// area assembler, which rejects a self-intersecting closed way (it yields zero
+/// rings, so `ingest.py::area()` emits nothing). We approximate that rejection
+/// with GEOS `is_valid`; a degenerate ring (too few points) or any construction
+/// error also counts as invalid → skip. Stage-3 closed-way polygons have no
+/// holes, but `interiors` is accepted for symmetry with [`Geom::Polygon`].
+pub fn polygon_is_valid(exterior: &[(f64, f64)], interiors: &[Vec<(f64, f64)>]) -> bool {
+    // A linear ring needs ≥4 positions (≥3 distinct + closing); fewer can't form
+    // a polygon and GEOS would error.
+    if exterior.len() < 4 {
+        return false;
+    }
+    let Ok(ext) = Geometry::create_linear_ring(ring_to_coordseq(exterior)) else {
+        return false;
+    };
+    let mut holes = Vec::with_capacity(interiors.len());
+    for r in interiors {
+        let Ok(ring) = Geometry::create_linear_ring(ring_to_coordseq(r)) else {
+            return false;
+        };
+        holes.push(ring);
+    }
+    match Geometry::create_polygon(ext, holes) {
+        Ok(p) => p.is_valid().unwrap_or(false),
+        Err(_) => false,
+    }
+}
+
 /// Clip `geom` to the node box (integer microdegrees → degrees), via the SAME
 /// `intersection` shapely uses (not `clip_by_rect`). The clip box ring matches
 /// shapely's `box(minx,miny,maxx,maxy)` order to minimise vertex-order drift.

@@ -1,5 +1,13 @@
 # Stage 3 handover — OBCM packer Rust port (ingest)
 
+> **STATUS: Stage 3 DONE** (branch `rust-packer-port`). Ingest + end-to-end
+> pipeline landed and validated across the corpus; see the Progress section of
+> [`rust-port-plan.md`](rust-port-plan.md) for outcomes (node-coordinate parity
+> solved via `decimicro/1e7`; closed-way fix + invalid-ring skip; ingest
+> multiset-identical; end-to-end lines byte-exact + no-simplify LODs exact, only
+> 12 m-LOD polygon simplify skew remains). This document is kept as the design
+> record; the next session targets **Stage 4 (multipolygon relations)**.
+>
 > Read this top-to-bottom before writing code. It is self-contained: a fresh
 > session should be able to start Stage 3 from here. Authoritative sources are
 > linked throughout — when in doubt, the **Python oracle** (`packer/obcm/*`) and
