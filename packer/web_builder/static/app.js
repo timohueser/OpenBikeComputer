@@ -13,6 +13,18 @@ const enabled = new Map();         // "cat/name" -> bool (include in build?)
 let catalog = { keys: {} };        // curated OSM keys -> common values (autocomplete)
 let dragRow = null;                // feature row currently being drag-reordered
 
+let palette = [];                  // device color swatches [{hex, name?}, …]
+let paletteColumns = 8;            // grid width for the palette picker
+
+// Region select vs. bounding-box are mutually exclusive map modes.
+let bboxMode = false;
+let bboxRect = null;               // Leaflet rectangle layer for the drawn box
+let bboxBounds = null;             // L.LatLngBounds of the drawn box (or null)
+let bboxHandles = null;            // {nw,ne,se,sw} draggable corner markers
+let bboxDrawing = false;           // mid-draw (dragging out a fresh box)
+let bboxStart = null;
+let drawArmed = false;             // "Draw box" clicked; next drag draws the box
+
 // ---------------------------------------------------------------------------
 // Map
 // ---------------------------------------------------------------------------
@@ -82,6 +94,7 @@ async function loadRegions() {
 }
 
 map.on("click", (e) => {
+  if (bboxMode) return; // drawing a box, not picking regions
   const { lng, lat } = e.latlng;
   const hits = regions
     .filter((f) => featureContains(f, lng, lat))
@@ -178,13 +191,272 @@ function updatePreview() {
 }
 
 map.on("mousemove", (e) => {
-  if (popupOpen) return; // picker is open; don't shoot the preview through the menu
+  if (bboxMode || popupOpen) return; // box mode or picker open: no region preview
   pendingLatLng = e.latlng;
   if (map.hasLayer(previewTip)) previewTip.setLatLng(e.latlng); // tip follows cursor
   if (!rafPending) { rafPending = true; requestAnimationFrame(updatePreview); }
 });
 map.on("mouseout", () => { if (!popupOpen) { pendingLatLng = null; clearPreview(); } });
 map.on("popupclose", () => { popupOpen = false; clearPreview(); });
+
+// ---------------------------------------------------------------------------
+// Bounding-box mode: an editable rectangle. "Draw box" arms a one-shot drag to
+// draw it; afterwards the map pans normally and the box is fine-tuned by dragging
+// its corner handles or its body. Mutually exclusive with region picking.
+// ---------------------------------------------------------------------------
+const BBOX_STYLE = {
+  color: "#ff9500", weight: 2, fillColor: "#ff9500", fillOpacity: 0.08, className: "bbox-rect",
+};
+const CORNERS = ["nw", "ne", "se", "sw"];
+const OPPOSITE = { nw: "se", ne: "sw", se: "nw", sw: "ne" };
+
+function cornerLatLng(b, key) {
+  return key === "nw" ? b.getNorthWest()
+    : key === "ne" ? b.getNorthEast()
+    : key === "se" ? b.getSouthEast()
+    : b.getSouthWest();
+}
+
+// --- Draw a fresh box (only while armed, so plain drags still pan the map). ---
+map.on("mousedown", (e) => {
+  if (!drawArmed) return;
+  bboxDrawing = true;
+  bboxStart = e.latlng;
+  removeBox();
+  bboxRect = L.rectangle(L.latLngBounds(bboxStart, bboxStart), BBOX_STYLE).addTo(map);
+});
+map.on("mousemove", (e) => {
+  if (!drawArmed || !bboxDrawing) return;
+  bboxRect.setBounds(L.latLngBounds(bboxStart, e.latlng));
+});
+map.on("mouseup", () => {
+  if (!drawArmed || !bboxDrawing) return;
+  bboxDrawing = false;
+  finishDraw();
+});
+
+function finishDraw() {
+  drawArmed = false;
+  map.dragging.enable();
+  map.getContainer().classList.remove("bbox-cursor");
+  const b = bboxRect.getBounds();
+  // Ignore a stray click or micro-drag (no real area to build).
+  const a = map.latLngToContainerPoint(b.getNorthWest());
+  const c = map.latLngToContainerPoint(b.getSouthEast());
+  if (Math.abs(a.x - c.x) < 5 || Math.abs(a.y - c.y) < 5) {
+    removeBox();
+    renderBboxInfo();
+    return;
+  }
+  bboxBounds = b;
+  buildHandles();
+  enableBoxDrag();
+  renderBboxInfo();
+}
+
+// Arm / cancel the one-shot draw. While armed, panning is off and the cursor is a
+// crosshair; the next drag becomes the new box.
+function armDraw() {
+  drawArmed = true;
+  removeHandles(); // don't let an old box's handles intercept the new draw
+  map.dragging.disable();
+  map.getContainer().classList.add("bbox-cursor");
+  updateBboxButtons();
+}
+function cancelDraw() {
+  if (!drawArmed) return;
+  drawArmed = false;
+  map.dragging.enable();
+  map.getContainer().classList.remove("bbox-cursor");
+  if (bboxBounds && bboxRect) buildHandles(); // restore handles on the kept box
+  updateBboxButtons();
+}
+
+// Four draggable corner markers. Dragging one resizes the box about the opposite
+// (fixed) corner; the adjacent handles follow. Leaflet marker-drag suppresses map
+// panning for the duration, so corners and panning never fight.
+function buildHandles() {
+  removeHandles();
+  bboxHandles = {};
+  for (const key of CORNERS) {
+    const m = L.marker(cornerLatLng(bboxBounds, key), {
+      draggable: true,
+      keyboard: false,
+      zIndexOffset: 1000,
+      icon: L.divIcon({ className: "bbox-handle", iconSize: [12, 12], iconAnchor: [6, 6] }),
+    }).addTo(map);
+    m.on("drag", () => {
+      const opp = bboxHandles[OPPOSITE[key]].getLatLng();
+      bboxBounds = L.latLngBounds(opp, m.getLatLng());
+      bboxRect.setBounds(bboxBounds);
+      for (const k of CORNERS) if (k !== key) bboxHandles[k].setLatLng(cornerLatLng(bboxBounds, k));
+      scheduleBboxInfo();
+    });
+    m.on("dragend", () => { positionHandles(); renderBboxInfo(); });
+    bboxHandles[key] = m;
+  }
+}
+function positionHandles() {
+  if (!bboxHandles || !bboxBounds) return;
+  for (const key of CORNERS) bboxHandles[key].setLatLng(cornerLatLng(bboxBounds, key));
+}
+function removeHandles() {
+  if (!bboxHandles) return;
+  for (const key of CORNERS) map.removeLayer(bboxHandles[key]);
+  bboxHandles = null;
+}
+
+// Drag the box body to move the whole box. Stop the mousedown so the map doesn't
+// pan underneath, then translate the bounds by the cursor delta until release.
+function enableBoxDrag() {
+  bboxRect.on("mousedown", (e) => {
+    if (drawArmed) return; // a redraw is in progress; let the draw handler run
+    L.DomEvent.stop(e.originalEvent);
+    map.dragging.disable();
+    let last = e.latlng;
+    const onMove = (ev) => {
+      const dLat = ev.latlng.lat - last.lat;
+      const dLng = ev.latlng.lng - last.lng;
+      last = ev.latlng;
+      bboxBounds = L.latLngBounds(
+        [bboxBounds.getSouth() + dLat, bboxBounds.getWest() + dLng],
+        [bboxBounds.getNorth() + dLat, bboxBounds.getEast() + dLng]
+      );
+      bboxRect.setBounds(bboxBounds);
+      positionHandles();
+      scheduleBboxInfo();
+    };
+    const onUp = () => {
+      map.off("mousemove", onMove);
+      map.off("mouseup", onUp);
+      map.dragging.enable();
+      renderBboxInfo();
+    };
+    map.on("mousemove", onMove);
+    map.on("mouseup", onUp);
+  });
+}
+
+function setMode(mode) {
+  const toBbox = mode === "bbox";
+  if (toBbox === bboxMode) return;
+  bboxMode = toBbox;
+  document.getElementById("mode-regions").classList.toggle("active", !toBbox);
+  document.getElementById("mode-bbox").classList.toggle("active", toBbox);
+  document.getElementById("regions-pane").hidden = toBbox;
+  document.getElementById("bbox-pane").hidden = !toBbox;
+  if (toBbox) {
+    clearPreview();   // no region hover preview while in box mode
+    renderBboxInfo(); // refresh the pane + buttons (panning stays enabled)
+  } else {
+    cancelDraw();     // un-arm if needed (re-enables dragging)
+    clearBbox();      // remove any box + handles
+  }
+}
+
+function clearBbox() {
+  bboxDrawing = false;
+  removeBox();
+  renderBboxInfo();
+}
+
+function removeBox() {
+  removeHandles();
+  if (bboxRect) { map.removeLayer(bboxRect); bboxRect = null; }
+  bboxBounds = null;
+}
+
+// Recompute coverage on every drag frame, but at most once per animation frame.
+let bboxInfoRaf = false;
+function scheduleBboxInfo() {
+  if (bboxInfoRaf) return;
+  bboxInfoRaf = true;
+  requestAnimationFrame(() => { bboxInfoRaf = false; renderBboxInfo(); });
+}
+
+function updateBboxButtons() {
+  const draw = document.getElementById("bbox-draw");
+  const clear = document.getElementById("bbox-clear");
+  if (draw) {
+    draw.textContent = drawArmed ? "✕ Cancel" : bboxBounds ? "▢ Redraw" : "▢ Draw box";
+    draw.classList.toggle("armed", drawArmed);
+  }
+  if (clear) clear.hidden = !bboxBounds;
+}
+
+// Approximate area of a lon/lat box in km² (good enough for a size hint).
+function bboxAreaKm2(w, s, e, n) {
+  const latMid = (((s + n) / 2) * Math.PI) / 180;
+  const area = Math.abs(n - s) * 110.574 * Math.abs(e - w) * 111.32 * Math.cos(latMid);
+  if (area >= 1000) return Math.round(area).toLocaleString() + " km²";
+  return area.toFixed(area < 10 ? 1 : 0) + " km²";
+}
+
+function renderBboxInfo() {
+  const info = document.getElementById("bbox-info");
+  if (!info) return;
+  if (!bboxBounds) {
+    info.textContent = "No box yet — click “Draw box”, then drag on the map.";
+    updateBboxButtons();
+    return;
+  }
+  const w = bboxBounds.getWest(), s = bboxBounds.getSouth();
+  const e = bboxBounds.getEast(), n = bboxBounds.getNorth();
+  const regs = regionsForBbox([w, s, e, n]);
+  const cover = regs.length
+    ? "source: " + regs.map((r) => r.properties.name).join(", ")
+    : "⚠ no downloadable region covers this area";
+  info.innerHTML =
+    `<div class="bbox-coords">W ${w.toFixed(3)} · S ${s.toFixed(3)} · E ${e.toFixed(3)} · N ${n.toFixed(3)}</div>` +
+    `<div class="muted">~${bboxAreaKm2(w, s, e, n)} · ${cover}</div>`;
+  updateBboxButtons();
+}
+
+// Smallest *leaf* (most specific, downloadable) region at a point. Coarse parent
+// regions (continents, countries split into sub-regions) are skipped: their
+// children tile the same land, and unlike a parent's simplified outline a leaf
+// doesn't sprawl across the surrounding sea — so a point out at sea matches no
+// leaf and is correctly treated as water rather than dragging in a continent PBF.
+function smallestLeafAt(lng, lat) {
+  let best = null;
+  for (const f of regions) {
+    if (f.properties.has_children) continue;
+    if (!featureContains(f, lng, lat)) continue;
+    if (!best || f._area < best._area) best = f;
+  }
+  return best;
+}
+
+// Pick the Geofabrik regions whose PBFs cover a drawn box: union the smallest leaf
+// region under a grid of sample points. A box inside one region yields just that
+// region; a box spanning a border yields the few leaf regions it touches — always
+// the minimal download. Sea points match nothing and are skipped. Only if the box
+// samples no land at all (e.g. a thin offshore strip) do we fall back to the
+// smallest leaf whose bbox overlaps it.
+function regionsForBbox(bbox) {
+  const [w, s, e, n] = bbox;
+  const N = 6; // 6x6 grid; dense enough to catch small regions inside the box
+  const set = new Map();
+  for (let i = 0; i < N; i++) {
+    for (let j = 0; j < N; j++) {
+      const x = w + ((e - w) * i) / (N - 1);
+      const y = s + ((n - s) * j) / (N - 1);
+      const f = smallestLeafAt(x, y);
+      if (f) set.set(f.properties.id, f);
+    }
+  }
+  if (set.size) return [...set.values()];
+
+  // No sampled point hit land — grab the smallest leaf whose bbox overlaps the box.
+  const overlaps = regions
+    .filter((f) => !f.properties.has_children)
+    .filter((f) => {
+      const b = f._bbox;
+      return b[0] <= e && b[2] >= w && b[1] <= n && b[3] >= s;
+    })
+    .sort((a, b) => a._area - b._area);
+  return overlaps.length ? [overlaps[0]] : [];
+}
 
 function renderHighlights() {
   if (highlightLayer) map.removeLayer(highlightLayer);
@@ -263,6 +535,156 @@ function hexToRgb565(hex) {
   const b = parseInt(hex.slice(5, 7), 16);
   const v = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
   return "0x" + v.toString(16).toUpperCase().padStart(4, "0");
+}
+
+// Quantize an RGB565 value to the device's 64-color RGB222 gamut and return it
+// as a CSS hex — i.e. exactly what the panel will display (mirrors the firmware's
+// `rgb565_to_device64`). Swatches show this, so the UI never promises a color
+// the device can't render.
+function rgb565ToDeviceHex(str) {
+  const v = parseInt(str, 16);
+  const r5 = (v >> 11) & 0x1f, g6 = (v >> 5) & 0x3f, b5 = v & 0x1f;
+  const r8 = (r5 << 3) | (r5 >> 2);
+  const g8 = (g6 << 2) | (g6 >> 4);
+  const b8 = (b5 << 3) | (b5 >> 2);
+  const q = (x) => (x >> 6) * 85; // keep top 2 bits, expand (step = 85)
+  return "#" + [q(r8), q(g8), q(b8)].map((n) => n.toString(16).padStart(2, "0")).join("");
+}
+
+// ---------------------------------------------------------------------------
+// Color picker: a swatch button + RGB565 label. Clicking opens a popover with
+// the device's 64-color palette (default) plus the OS picker for custom colors.
+// ---------------------------------------------------------------------------
+async function loadPalette() {
+  try {
+    const p = await fetch("/api/palette").then((r) => (r.ok ? r.json() : null));
+    if (p && Array.isArray(p.colors)) {
+      palette = p.colors.map((c) => (typeof c === "string" ? { hex: c } : c));
+      if (Number.isFinite(p.columns) && p.columns > 0) paletteColumns = p.columns;
+    }
+  } catch (_) { /* non-fatal: the popover falls back to the custom picker */ }
+}
+
+// A swatch + label bound to one RGB565 value. `onChange(newRgb565)` fires on every
+// pick. Returns the wrapper element.
+function createColorControl(rgb565, onChange) {
+  const wrap = document.createElement("span");
+  wrap.className = "color-control";
+  const swatch = document.createElement("button");
+  swatch.type = "button";
+  swatch.className = "color-swatch";
+  swatch.title = "Pick a color";
+  const label = document.createElement("span");
+  label.className = "rgb565";
+  let value = rgb565;
+  const apply = (v) => {
+    value = v;
+    swatch.style.background = rgb565ToDeviceHex(v);
+    label.textContent = v;
+  };
+  apply(value);
+  swatch.onclick = () =>
+    openColorPopover(swatch, value, (v) => { apply(v); onChange(v); });
+  wrap.appendChild(swatch);
+  wrap.appendChild(label);
+  return wrap;
+}
+
+let activePopover = null;
+let popoverCleanup = null;
+
+function closeColorPopover() {
+  if (popoverCleanup) { popoverCleanup(); popoverCleanup = null; }
+  if (activePopover) { activePopover.remove(); activePopover = null; }
+}
+
+function positionPopover(pop, anchor) {
+  const r = anchor.getBoundingClientRect();
+  const pw = pop.offsetWidth, ph = pop.offsetHeight;
+  let left = Math.min(r.left, window.innerWidth - 8 - pw);
+  left = Math.max(8, left);
+  let top = r.bottom + 6;
+  if (top + ph > window.innerHeight - 8) top = r.top - 6 - ph; // flip above
+  top = Math.max(8, top);
+  pop.style.left = left + "px";
+  pop.style.top = top + "px";
+}
+
+function openColorPopover(anchorEl, currentRgb565, onPick) {
+  closeColorPopover();
+  const pop = document.createElement("div");
+  pop.className = "color-popover";
+
+  const title = document.createElement("div");
+  title.className = "popover-title";
+  title.textContent = "Device palette";
+  pop.appendChild(title);
+
+  const grid = document.createElement("div");
+  grid.className = "palette-grid";
+  grid.style.gridTemplateColumns = `repeat(${paletteColumns}, 1fr)`;
+  const curDev = rgb565ToDeviceHex(currentRgb565).toUpperCase();
+  for (const c of palette) {
+    const rgb = hexToRgb565(c.hex);
+    const cell = document.createElement("button");
+    cell.type = "button";
+    cell.className = "palette-cell";
+    cell.style.background = c.hex;
+    cell.title = `${c.name ? c.name + " · " : ""}${c.hex} · ${rgb}`;
+    if (c.hex.toUpperCase() === curDev) cell.classList.add("current");
+    cell.onclick = () => { onPick(rgb); closeColorPopover(); };
+    grid.appendChild(cell);
+  }
+  pop.appendChild(grid);
+
+  // Custom color: the OS picker, always available. The device quantizes it, so
+  // show a small preview of the actual on-device color next to it.
+  const custom = document.createElement("div");
+  custom.className = "popover-custom";
+  const clab = document.createElement("span");
+  clab.className = "muted small";
+  clab.textContent = "Custom";
+  const native = document.createElement("input");
+  native.type = "color";
+  native.value = rgb565ToHex(currentRgb565);
+  const prev = document.createElement("span");
+  prev.className = "device-preview";
+  prev.title = "How the device will show this color";
+  prev.style.background = rgb565ToDeviceHex(currentRgb565);
+  native.oninput = () => {
+    const v = hexToRgb565(native.value);
+    prev.style.background = rgb565ToDeviceHex(v);
+    onPick(v); // live-apply; popover stays open for tweaking
+  };
+  custom.appendChild(clab);
+  custom.appendChild(native);
+  const arrow = document.createElement("span");
+  arrow.className = "muted small";
+  arrow.textContent = "→ device";
+  custom.appendChild(arrow);
+  custom.appendChild(prev);
+  pop.appendChild(custom);
+
+  document.body.appendChild(pop);
+  positionPopover(pop, anchorEl);
+  activePopover = pop;
+
+  const onDocDown = (ev) => {
+    if (!pop.contains(ev.target) && !anchorEl.contains(ev.target)) closeColorPopover();
+  };
+  const onKey = (ev) => { if (ev.key === "Escape") closeColorPopover(); };
+  const sidePanel = document.getElementById("side-panel");
+  // The popover is position:fixed, so re-anchor isn't free — just close on scroll/resize.
+  setTimeout(() => document.addEventListener("mousedown", onDocDown), 0);
+  document.addEventListener("keydown", onKey);
+  if (sidePanel) sidePanel.addEventListener("scroll", closeColorPopover, { passive: true });
+  window.addEventListener("resize", closeColorPopover);
+  popoverCleanup = () => {
+    document.removeEventListener("mousedown", onDocDown);
+    document.removeEventListener("keydown", onKey);
+    if (sidePanel) sidePanel.removeEventListener("scroll", closeColorPopover);
+    window.removeEventListener("resize", closeColorPopover);
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -441,23 +863,13 @@ function renderMarkerEditor() {
   const lab = document.createElement("label");
   lab.textContent = "Color";
 
-  const color = document.createElement("input");
-  color.type = "color";
-  color.value = rgb565ToHex(config.marker.color);
-
-  const label = document.createElement("span");
-  label.className = "rgb565";
-  label.textContent = config.marker.color;
-
-  color.oninput = () => {
-    config.marker.color = hexToRgb565(color.value);
-    label.textContent = config.marker.color;
+  const ctrl = createColorControl(config.marker.color, (v) => {
+    config.marker.color = v;
     scheduleSave();
-  };
+  });
 
   row.appendChild(lab);
-  row.appendChild(color);
-  row.appendChild(label);
+  row.appendChild(ctrl);
   root.appendChild(row);
 }
 
@@ -669,19 +1081,10 @@ function buildRow(cat, name, def) {
   tdName.textContent = name;
 
   const tdColor = document.createElement("td");
-  const color = document.createElement("input");
-  color.type = "color";
-  color.value = rgb565ToHex(def.color);
-  const label = document.createElement("span");
-  label.className = "rgb565";
-  label.textContent = def.color;
-  color.oninput = () => {
-    def.color = hexToRgb565(color.value);
-    label.textContent = def.color;
+  tdColor.appendChild(createColorControl(def.color, (v) => {
+    def.color = v;
     scheduleSave();
-  };
-  tdColor.appendChild(color);
-  tdColor.appendChild(label);
+  }));
 
   const tdZ = document.createElement("td");
   tdZ.appendChild(numInput(def.z_index, (v) => (def.z_index = v)));
@@ -842,6 +1245,10 @@ function buildConfigForSubmit() {
 // ---------------------------------------------------------------------------
 document.getElementById("add-lod").addEventListener("click", addLod);
 document.getElementById("add-category").addEventListener("click", addCategory);
+document.getElementById("mode-regions").addEventListener("click", () => setMode("regions"));
+document.getElementById("mode-bbox").addEventListener("click", () => setMode("bbox"));
+document.getElementById("bbox-draw").addEventListener("click", () => (drawArmed ? cancelDraw() : armDraw()));
+document.getElementById("bbox-clear").addEventListener("click", clearBbox);
 
 // ---------------------------------------------------------------------------
 // Stylesheet export / import (share configs independently of any .obcm)
@@ -895,20 +1302,37 @@ const progressFill = document.getElementById("progress-fill");
 const progressLabel = document.getElementById("progress-label");
 const logEl = document.getElementById("log");
 
-const PHASES = ["downloading", "merging", "ingest", "bbox", "land", "quadtree", "serialize"];
+const PHASES = ["downloading", "cropping", "merging", "ingest", "bbox", "land", "quadtree", "serialize"];
 let transientLine = null; // last tqdm-style line element
 
 buildBtn.addEventListener("click", async () => {
-  if (selected.size === 0) {
-    setStatus("Select at least one region first.", "err");
-    return;
+  let regionIds, bbox = null;
+  if (bboxMode) {
+    if (!bboxBounds) {
+      setStatus("Draw a bounding box on the map first.", "err");
+      return;
+    }
+    bbox = [bboxBounds.getWest(), bboxBounds.getSouth(), bboxBounds.getEast(), bboxBounds.getNorth()];
+    const regs = regionsForBbox(bbox);
+    if (regs.length === 0) {
+      setStatus("No downloadable region covers that box — draw it over land within a known region.", "err");
+      return;
+    }
+    regionIds = regs.map((r) => r.properties.id);
+  } else {
+    if (selected.size === 0) {
+      setStatus("Select at least one region first.", "err");
+      return;
+    }
+    regionIds = [...selected];
   }
   const body = {
-    region_ids: [...selected],
+    region_ids: regionIds,
     config: buildConfigForSubmit(),
     chunk_size: parseInt(document.getElementById("chunk-size").value, 10) || 4096,
     output_name: document.getElementById("output-name").value.trim() || "output.obcm",
   };
+  if (bbox) body.bbox = bbox;
 
   buildBtn.disabled = true;
   setStatus("Starting…", "");
@@ -1014,7 +1438,7 @@ function formatBytes(n) {
 // ---------------------------------------------------------------------------
 (async function init() {
   try {
-    await Promise.all([loadRegions(), loadConfig()]);
+    await Promise.all([loadRegions(), loadConfig(), loadPalette()]);
     renderSelected();
   } catch (e) {
     document.getElementById("style-editor").textContent = "Init failed: " + e.message;

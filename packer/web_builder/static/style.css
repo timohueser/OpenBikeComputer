@@ -96,6 +96,36 @@ main {
   font-size: 14px; line-height: 1; padding: 0;
 }
 
+/* Region vs. bounding-box mode toggle (segmented control) */
+#mode-toggle.seg {
+  display: inline-flex; margin-bottom: 10px;
+  border: 1px solid var(--border); border-radius: 6px; overflow: hidden;
+}
+.seg-btn {
+  background: var(--panel-2); color: var(--muted); border: none;
+  padding: 6px 14px; cursor: pointer; font-size: 13px;
+}
+.seg-btn + .seg-btn { border-left: 1px solid var(--border); }
+.seg-btn.active { background: var(--accent); color: #fff; }
+.seg-btn:not(.active):hover { color: var(--text); }
+
+#bbox-pane p { margin: 0 0 8px; }
+.bbox-coords { font-family: monospace; font-size: 12px; color: var(--text); }
+.bbox-actions { display: flex; gap: 6px; margin-top: 8px; }
+.bbox-actions .add-feat { margin-top: 0; }
+.add-feat.armed { border-style: solid; border-color: var(--accent); color: var(--accent); }
+.leaflet-container.bbox-cursor,
+.bbox-cursor .leaflet-grab,
+.bbox-cursor .leaflet-interactive { cursor: crosshair !important; }
+
+/* Editable bounding-box: draggable corner handles + move cursor on the body */
+.bbox-handle {
+  background: #fff; border: 2px solid #ff9500; border-radius: 2px;
+  box-sizing: border-box; cursor: grab; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+.bbox-handle:active { cursor: grabbing; }
+path.bbox-rect { cursor: move; }
+
 #side-panel {
   flex: 1 1 44%;
   overflow-y: auto;
@@ -174,23 +204,53 @@ table.feat-table input[type="number"] {
   width: 46px; background: var(--panel-2); border: 1px solid var(--border);
   color: var(--text); border-radius: 4px; padding: 3px 5px;
 }
-table.feat-table input[type="color"] {
-  width: 28px; height: 24px; padding: 0; border: 1px solid var(--border);
-  border-radius: 4px; background: none; vertical-align: middle; cursor: pointer;
-}
 table.feat-table select.prio-select {
   background: var(--panel-2); border: 1px solid var(--border);
   color: var(--text); border-radius: 4px; padding: 2px 4px;
 }
 .rgb565 { color: var(--muted); font-size: 11px; margin-left: 4px; font-family: monospace; }
 
+/* Color picker: swatch button + RGB565 label, opening a palette popover */
+.color-control { display: inline-flex; align-items: center; }
+.color-swatch {
+  width: 28px; height: 24px; padding: 0; border: 1px solid var(--border);
+  border-radius: 4px; cursor: pointer; vertical-align: middle;
+  background-clip: padding-box;
+}
+.color-swatch:hover { border-color: var(--accent); }
+
+.color-popover {
+  position: fixed; z-index: 1000; background: var(--panel);
+  border: 1px solid var(--border); border-radius: 8px; padding: 10px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55); width: max-content;
+}
+.popover-title {
+  color: var(--muted); font-size: 10px; letter-spacing: 0.06em;
+  text-transform: uppercase; margin-bottom: 7px;
+}
+.palette-grid { display: grid; gap: 3px; }
+.palette-cell {
+  width: 22px; height: 22px; padding: 0; cursor: pointer;
+  border: 1px solid rgba(0, 0, 0, 0.35); border-radius: 3px;
+}
+.palette-cell:hover { outline: 2px solid var(--accent); outline-offset: 1px; }
+.palette-cell.current { outline: 2px solid #fff; outline-offset: 1px; }
+.popover-custom {
+  display: flex; align-items: center; gap: 7px; margin-top: 10px;
+  padding-top: 10px; border-top: 1px solid var(--border);
+}
+.popover-custom input[type="color"] {
+  width: 34px; height: 26px; padding: 0; border: 1px solid var(--border);
+  border-radius: 4px; background: none; cursor: pointer;
+}
+.device-preview {
+  width: 22px; height: 22px; border-radius: 3px;
+  border: 1px solid var(--border); display: inline-block;
+}
+
 /* User-position marker color picker */
 .marker-row { display: flex; align-items: center; gap: 8px; }
 .marker-row label { color: var(--muted); font-size: 12px; }
-.marker-row input[type="color"] {
-  width: 28px; height: 24px; padding: 0; border: 1px solid var(--border);
-  border-radius: 4px; background: none; cursor: pointer;
-}
 .feat-name { font-family: monospace; }
 .feat-off { opacity: 0.4; }
 .add-feat {
