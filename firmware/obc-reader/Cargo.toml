@@ -1,0 +1,8 @@
+[package]
+name = "obc-reader"
+version = "0.1.0"
+edition = "2021"
+description = "OBCM map format reader (no_std + alloc) — pure-parse logic for the desktop simulator and nRF54L firmware"
+
+[dependencies]
+heapless = "0.8"
