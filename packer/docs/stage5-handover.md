@@ -115,5 +115,8 @@ The remaining gap is **performance**, explicitly deferred to here:
 - **Do not** chase `structural_ok=1` end-to-end — it's the documented GEOS-version
   skew (§2), render-equivalent. Keep the render gate as truth.
 
-Then **Stage 7**: switch `web_builder/jobs.py` to the Rust binary behind
-`OBC_PACK_BACKEND=rust` (the CLI + stage markers already match — plan §7).
+**Integration (plan §7) is now DONE** (ahead of Stage 6, by request):
+`web_builder/jobs.py` runs the native `obc-pack` by default
+(`OBC_PACK_BACKEND=rust`, `python` to fall back; auto-fallback if unbuilt), and
+python-vs-rust is render-identical on the user's 5-LOD `user_config.json`. See the
+plan's Progress → "Integration (§7)". So Stage 6 is the only remaining work.
