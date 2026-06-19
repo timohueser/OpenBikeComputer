@@ -16,7 +16,7 @@ use crate::{BBox, Error};
 pub const MAX_FEAT_PTS: usize = 2048;
 pub const MAX_FEAT_RINGS: usize = 32;
 
-/// v4 header is fixed-size; everything after it is reached via explicit offsets.
+/// The header is fixed-size; everything after it is reached via explicit offsets.
 pub const HEADER_LEN: usize = 32;
 /// Each LOD table entry: `max_mpp f32, index_off u32, node_count u32, chunk_size u16, chunk_count u32`.
 pub const LOD_ENTRY_LEN: usize = 18;
@@ -81,9 +81,17 @@ pub struct FeatureRef<'a> {
     pub kind: Kind,
     points: &'a [(i32, i32)],
     ring_lens: &'a [usize],
+    bbox: BBox,
 }
 
 impl<'a> FeatureRef<'a> {
+    /// Axis-aligned bounds (microdegrees) of every vertex, computed during decode
+    /// (no extra pass over the points). Empty for a zero-vertex feature.
+    #[inline]
+    pub fn bbox(&self) -> BBox {
+        self.bbox
+    }
+
     /// The exterior ring's vertices.
     #[inline]
     pub fn exterior(&self) -> &'a [(i32, i32)] {
@@ -361,6 +369,42 @@ impl<'a> Reader<'a> {
     }
 }
 
+/// Running vertex bounds, accumulated as a feature decodes so its bbox is ready
+/// with no extra pass over the points. Seeded inverted; widened per vertex.
+#[derive(Clone, Copy)]
+struct Bounds {
+    min_lon: i32,
+    min_lat: i32,
+    max_lon: i32,
+    max_lat: i32,
+}
+
+impl Bounds {
+    #[inline]
+    fn new() -> Self {
+        Bounds { min_lon: i32::MAX, min_lat: i32::MAX, max_lon: i32::MIN, max_lat: i32::MIN }
+    }
+    #[inline]
+    fn add(&mut self, x: i32, y: i32) {
+        if x < self.min_lon {
+            self.min_lon = x;
+        }
+        if x > self.max_lon {
+            self.max_lon = x;
+        }
+        if y < self.min_lat {
+            self.min_lat = y;
+        }
+        if y > self.max_lat {
+            self.max_lat = y;
+        }
+    }
+    #[inline]
+    fn to_bbox(self) -> BBox {
+        BBox { min_lon: self.min_lon, min_lat: self.min_lat, max_lon: self.max_lon, max_lat: self.max_lat }
+    }
+}
+
 /// Walk a single chunk's bytes, decoding each feature into the shared
 /// `points`/`ring_lens` buffers and handing a [`FeatureRef`] to `visit`. The
 /// buffers are cleared and refilled per feature, so the same allocation serves
@@ -417,8 +461,9 @@ fn decode_chunk_into<const P: usize, const R: usize>(
 
         points.clear();
         ring_lens.clear();
+        let mut bounds = Bounds::new();
 
-        off = read_ring(chunk, off, ext_pt_count, anchor, is_16, dsize, false, points);
+        off = read_ring(chunk, off, ext_pt_count, anchor, is_16, dsize, false, points, &mut bounds);
         let _ = ring_lens.push(points.len());
 
         if is_poly && has_holes && off < cs {
@@ -431,7 +476,7 @@ fn decode_chunk_into<const P: usize, const R: usize>(
                 let hpc = rd_u16(chunk, off) as usize;
                 off += 2;
                 let before = points.len();
-                off = read_ring(chunk, off, hpc, anchor, is_16, dsize, true, points);
+                off = read_ring(chunk, off, hpc, anchor, is_16, dsize, true, points, &mut bounds);
                 let _ = ring_lens.push(points.len() - before);
             }
         }
@@ -441,6 +486,7 @@ fn decode_chunk_into<const P: usize, const R: usize>(
             kind: if is_poly { Kind::Polygon } else { Kind::Line },
             points,
             ring_lens,
+            bbox: bounds.to_bbox(),
         });
     }
 }
@@ -473,6 +519,7 @@ fn read_ring<const P: usize>(
     dsize: usize,
     is_hole: bool,
     out: &mut Vec<(i32, i32), P>,
+    bounds: &mut Bounds,
 ) -> usize {
     if pt_count == 0 {
         return off;
@@ -483,6 +530,7 @@ fn read_ring<const P: usize>(
         pt_count
     } else {
         let _ = out.push(anchor);
+        bounds.add(anchor.0, anchor.1);
         pt_count - 1
     };
     for _ in 0..num_deltas {
@@ -501,6 +549,7 @@ fn read_ring<const P: usize>(
         px += dx;
         py += dy;
         let _ = out.push((px, py));
+        bounds.add(px, py);
     }
     off
 }

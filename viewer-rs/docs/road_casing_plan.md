@@ -6,6 +6,11 @@ reuses that part's `color2` style field as the casing colour and its line-style 
 **only part with real CPU cost** — land [part 1](route_arrows_plan.md)'s timing harness first and
 measure before/after.
 
+> **Note (post-refactor):** the `lib.rs` line numbers below predate the renderer refactor and are
+> stale. The draw phase is now `MapRenderer::draw_map`, with line drawing factored into `draw_line`
+> — the casing pre-pass slots in there. See **[`draw_phase_onramp_plan.md`](draw_phase_onramp_plan.md)**
+> for current anchors and the two-sub-pass structure this plan needs.
+
 ## Goal
 
 At high zoom (the finest LOD), draw roads with a **casing**: a darker outline on each side of the road
