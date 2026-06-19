@@ -13,7 +13,7 @@
 //! [`AltimeterSource`](crate::AltimeterSource); the two integrate independently, on their
 //! own cadences. [`App::tick`](crate::App::tick) feeds both.
 
-use obc_route::{ground_dist_m, Match};
+use obc_route::{ground_dist_m, DeadBand, Match};
 
 use crate::hal::Fix;
 
@@ -26,10 +26,6 @@ const MAX_SPEED_MPS: f32 = 30.0;
 /// Below this implied speed (m/s) the rider is stopped; don't count the time toward the
 /// moving average, so red lights and rests don't drag Avg. Speed down.
 const MOVING_MIN_MPS: f32 = 0.8;
-/// Climb dead-band (m): ignore altitude wiggles below this so barometric noise doesn't
-/// inflate the climb. Matches the converter's elevation dead-band (`ELE_THRESHOLD_M`), so
-/// an actually-ridden climb on-route lands close to the route's precomputed ascent.
-const ALT_THRESHOLD_M: f32 = 3.0;
 
 /// The device's operating mode (`docs/ui_framework_brief.md` §"Operating modes").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -105,15 +101,15 @@ pub struct Activity {
     pub ridden_m: f32,
     /// Moving time (s), accumulated only above [`MOVING_MIN_MPS`] — denominator of Avg.
     pub moving_s: f32,
-    /// Climb actually done (m), barometric + dead-banded — the `climbed` stat.
-    pub climb_m: f32,
 
     // integration state (private)
     /// Previous fix + its host timestamp, to integrate distance/time between ticks.
     last_fix: Option<Fix>,
     last_ms: Option<u32>,
-    /// Hysteresis reference altitude for the climb dead-band.
-    alt_ref: Option<f32>,
+    /// Dead-banded barometric climb — the `climbed` stat, read via
+    /// [`climb_m`](Activity::climb_m). The same hysteresis integrator (and dead-band) the
+    /// route converter uses, so an on-route ride lands near the route's precomputed ascent.
+    climb: DeadBand<f32>,
     /// Latest barometric altitude (m), stamped onto each logged [`TrackPoint`]'s elevation.
     last_alt: Option<f32>,
     /// `true` when a dropped fix (GPS gap / teleport) left a hole, so the next logged point
@@ -131,6 +127,11 @@ impl Activity {
     /// accrued (so the Statistics screen can show a placeholder rather than a `NaN`).
     pub fn avg_kmh(&self) -> Option<f32> {
         (self.moving_s > 0.0).then(|| self.ridden_m / self.moving_s * 3.6)
+    }
+
+    /// Climb actually done (m) — barometric and dead-banded — the `climbed` stat.
+    pub fn climb_m(&self) -> f32 {
+        self.climb.ascent()
     }
 
     /// Begin a fresh tracking session (a route load from Idle, or "Save & start new"),
@@ -178,10 +179,9 @@ impl Activity {
         self.dist_to_route_m = 0;
         self.ridden_m = 0.0;
         self.moving_s = 0.0;
-        self.climb_m = 0.0;
+        self.climb = DeadBand::new();
         self.last_fix = None;
         self.last_ms = None;
-        self.alt_ref = None;
         self.last_alt = None;
         self.segment_break = false;
     }
@@ -235,20 +235,11 @@ impl Activity {
         // current height); the climb dead-band below only runs while riding.
         self.last_alt = Some(alt_m);
         if self.mode != Mode::Riding {
-            self.alt_ref = None;
+            // Drop the reference so a height change *during* the pause isn't booked on
+            // resume; the accumulated climb is kept.
+            self.climb.pause();
             return;
         }
-        match self.alt_ref {
-            None => self.alt_ref = Some(alt_m),
-            Some(r) => {
-                let d = alt_m - r;
-                if d >= ALT_THRESHOLD_M {
-                    self.climb_m += d;
-                    self.alt_ref = Some(alt_m);
-                } else if d <= -ALT_THRESHOLD_M {
-                    self.alt_ref = Some(alt_m);
-                }
-            }
-        }
+        self.climb.push(alt_m);
     }
 }

@@ -292,7 +292,7 @@ impl StatisticsScreen {
         // to-go/to-climb are necessarily *route-relative* (remaining along the route).
         let a: &Activity = rx.activity;
         let to_go_m = total.saturating_sub(a.progress_m);
-        let climbed = a.climb_m as u32;
+        let climbed = a.climb_m() as u32;
         // Remaining climb is route-relative: the route's total ascent minus what's been
         // climbed by the live position, read from the profile at column resolution.
         let to_climb = route.total_ascent_m.saturating_sub(profile.ascent_to(live_frac));
