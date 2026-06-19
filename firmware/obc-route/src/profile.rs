@@ -249,12 +249,14 @@ impl RouteReader<'_> {
                 continue;
             }
             // The chunk's first point sits at its cumulative distance; the rest add up
-            // segment by segment from there.
+            // segment by segment from there. Like the converter, accumulate the small
+            // per-segment `f32` distances into an `f64` running total so a long route's
+            // column placement can't drift (the two must match exactly — same metric).
             let mut dist = self.chunks()[k].cum_distance_m as f64;
             let mut prev: Option<(i32, i32)> = None;
             for p in &buf {
                 if let Some(pr) = prev {
-                    dist += seg_dist_m(pr, (p.lon, p.lat));
+                    dist += seg_dist_m(pr, (p.lon, p.lat)) as f64;
                 }
                 prev = Some((p.lon, p.lat));
                 let frac = dist / total;
