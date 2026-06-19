@@ -51,12 +51,13 @@ _STAGE_MARKERS = {
 
 
 class Job:
-    def __init__(self, region_ids, config, chunk_size, output_name):
+    def __init__(self, region_ids, config, chunk_size, output_name, bbox=None):
         self.id = uuid.uuid4().hex[:12]
         self.region_ids = region_ids
         self.config = config
         self.chunk_size = chunk_size
         self.output_name = output_name
+        self.bbox = bbox  # [west, south, east, north] in degrees, or None
         self.status = "queued"
         self.events = []
         self._lock = threading.Lock()
@@ -78,8 +79,8 @@ def get_job(job_id):
     return _JOBS.get(job_id)
 
 
-def create_job(region_ids, config, chunk_size, output_name):
-    job = Job(region_ids, config, chunk_size, output_name)
+def create_job(region_ids, config, chunk_size, output_name, bbox=None):
+    job = Job(region_ids, config, chunk_size, output_name, bbox)
     _JOBS[job.id] = job
     t = threading.Thread(target=_run, args=(job,), daemon=True)
     t.start()
@@ -115,6 +116,35 @@ def _download_pbf(job, region_id, url):
     return dest
 
 
+def _crop_pbf(job, src_path, region_id, bbox, out_dir):
+    """Crop one source PBF to `bbox` ([W, S, E, N], degrees) with `osmium extract`.
+
+    Returns the cropped path, or None if the crop is empty / fails (e.g. the
+    region doesn't actually reach into the box). Cropping each source up front
+    keeps obc-pack from chewing through whole countries for a city-sized box.
+    """
+    w, s, e, n = bbox
+    out = os.path.join(out_dir, f"{region_id}.crop.osm.pbf")
+    cmd = [
+        "osmium", "extract", "--overwrite",
+        "-b", f"{w},{s},{e},{n}",
+        src_path, "-o", out,
+    ]
+    job.emit({"type": "log", "line": "$ " + " ".join(cmd), "transient": False})
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        job.emit({"type": "log",
+                  "line": f"crop {region_id} failed: {proc.stderr.strip()}",
+                  "transient": False})
+        return None
+    if not os.path.exists(out) or os.path.getsize(out) == 0:
+        return None
+    job.emit({"type": "log",
+              "line": f"Cropped {region_id} to box ({os.path.getsize(out)} bytes)",
+              "transient": False})
+    return out
+
+
 def _stream_process(job, proc):
     """Read proc output, splitting on both \\n and \\r so tqdm bars surface as
     transient log lines while normal prints are committed lines."""
@@ -138,10 +168,28 @@ def _stream_process(job, proc):
 
 
 def _run(job):
+    crop_dir = None
     try:
         job.status = "downloading"
         urls = geofabrik.region_pbf_urls(job.region_ids)
         pbf_paths = [_download_pbf(job, rid, url) for rid, url in urls]
+
+        # Bounding-box build: crop each source PBF to the box before packing, so
+        # obc-pack only sees the area of interest (and merges the crops as usual).
+        if job.bbox:
+            job.status = "cropping"
+            job.emit({"type": "status", "status": "cropping", "detail": "cropping"})
+            crop_dir = tempfile.mkdtemp(prefix="obcm-crop-")
+            cropped = []
+            for (rid, _url), src in zip(urls, pbf_paths):
+                out = _crop_pbf(job, src, rid, job.bbox, crop_dir)
+                if out:
+                    cropped.append(out)
+            if not cropped:
+                raise RuntimeError(
+                    "The bounding box does not overlap any of the selected regions' data."
+                )
+            pbf_paths = cropped
 
         # The native obc-pack binary is the only backend; fail fast (before any
         # temp file) with a clear message if it isn't built.
@@ -191,6 +239,9 @@ def _run(job):
         job.status = "failed"
         job.emit({"type": "error", "message": str(exc)})
     finally:
+        if crop_dir:
+            import shutil
+            shutil.rmtree(crop_dir, ignore_errors=True)
         job.finished = True
 
 

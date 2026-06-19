@@ -17,10 +17,26 @@
     <section id="map-panel">
       <div id="map"></div>
       <div id="region-bar">
-        <input id="region-search" type="text" placeholder="Search regions (e.g. Germany, Baden)…" autocomplete="off" />
-        <div id="search-results"></div>
-        <div id="selected-regions">
-          <span class="muted">No regions selected. Click the map or search above.</span>
+        <div id="mode-toggle" class="seg" role="tablist">
+          <button id="mode-regions" class="seg-btn active" type="button" title="Pick whole Geofabrik regions">Regions</button>
+          <button id="mode-bbox" class="seg-btn" type="button" title="Draw a custom area; the needed regions are cropped automatically">Bounding box</button>
+        </div>
+        <div id="regions-pane">
+          <input id="region-search" type="text" placeholder="Search regions (e.g. Germany, Baden)…" autocomplete="off" />
+          <div id="search-results"></div>
+          <div id="selected-regions">
+            <span class="muted">No regions selected. Click the map or search above.</span>
+          </div>
+        </div>
+        <div id="bbox-pane" hidden>
+          <p class="muted small">Click <strong>Draw box</strong>, then drag on the map to set a
+            build area. Fine-tune by dragging the corner handles or the box itself; pan and zoom
+            work as usual. The overlapping regions are cropped to the box automatically.</p>
+          <div id="bbox-info" class="muted small">No box yet — click “Draw box”, then drag on the map.</div>
+          <div class="bbox-actions">
+            <button id="bbox-draw" class="add-feat">▢ Draw box</button>
+            <button id="bbox-clear" class="add-feat" hidden>Clear box</button>
+          </div>
         </div>
       </div>
     </section>
