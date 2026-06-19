@@ -2,8 +2,8 @@
 
 OBCM (OpenStreetMap Binary Chunked Map) is a compact binary map format designed
 for efficient rendering on memory-constrained devices such as microcontrollers
-(MCUs). It is written by the Python tooling (`obcm/serialize.py`) and read by the
-Rust crate (`viewer-rs/obcm`, shared by the desktop simulator and the nRF5340
+(MCUs). It is written by the Python tooling (`packer/obcm/serialize.py`) and read by the
+Rust crate (`firmware/obc-reader`, shared by the desktop simulator and the nRF54L
 firmware).
 
 **Version 3** introduced a **level-of-detail (LOD) pyramid**: a file holds N
@@ -23,7 +23,7 @@ marker color** (RGB565).
    coarse layer. (vs. tagging every feature with a min-zoom in a single fine
    tree, which forces the MCU to decode fine chunks just to skip them.)
 2. **RGB565 in the file, quantized at render.** The style table is
-   device-independent and matches the webapp editor. The renderer quantizes the
+   device-independent and matches the web builder editor. The renderer quantizes the
    small style palette to the target display depth once at load (RGB222 /
    64 colors for the LS021B7DD02).
 3. **Meters-per-pixel LOD selection.** Each LOD stores a ground-meters-per-pixel
@@ -49,8 +49,8 @@ screen space is the renderer's responsibility, not the format's.
 [LOD N-1 Index][LOD N-1 Data Chunks] (finest)
 ```
 
-The byte layout is produced by `obcm/serialize.py::serialize_lods` and parsed by
-`viewer-rs/obcm/src/reader.rs`. All multi-byte integers are **little-endian**.
+The byte layout is produced by `packer/obcm/serialize.py::serialize_lods` and parsed by
+`firmware/obc-reader/src/reader.rs`. All multi-byte integers are **little-endian**.
 
 ---
 
@@ -82,7 +82,7 @@ lives in the header rather than the per-feature Style Table — the marker is no
 OSM feature. It is RGB565 like every style color and is resolved to a device pixel
 through the same render-time color policy (quantized to 64 colors on the
 LS021B7DD02, true-color in the simulator). The marker's **shape and size are fixed**
-in the renderer; only its color is map-configurable (the webapp editor sets it).
+in the renderer; only its color is map-configurable (the web builder editor sets it).
 The default is `0xF800` (bright red), which reads well over both sea and land.
 
 ---
@@ -268,9 +268,9 @@ it survives the packer's automatic ID assignment. Land is then painted on top.
 
 ## Reference implementations
 
-- **Writer:** `obcm/serialize.py` (`serialize_lods`, `serialize_tree`,
+- **Writer:** `packer/obcm/serialize.py` (`serialize_lods`, `serialize_tree`,
   `pack_feature`, `pack_chunk`, `pack_style_dict`).
-- **Reader + renderer (Rust, no_std):** `viewer-rs/obcm` — `reader.rs`
-  (`Reader`, `for_each_feature`, `select_lod_for_mpp`), `render.rs`
+- **Reader + renderer (Rust, no_std):** `firmware/obc-reader` — `reader.rs`
+  (`Reader`, `for_each_feature`, `select_lod_for_mpp`) — and `firmware/obc-render`
   (`Viewport`, `MapRenderer`). Format-contract tests in
-  `viewer-rs/obcm/tests/format.rs`.
+  `firmware/obc-reader/tests/format.rs`.

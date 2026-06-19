@@ -1,0 +1,3 @@
+# Cargo build output — the workspace root and any nested crate (e.g. the MCU
+# benches on the mcu-render-bench branch, which are separate workspaces).
+target/
