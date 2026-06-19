@@ -11,6 +11,7 @@
 
 use heapless::Vec;
 
+use crate::codec::{rd_f32, rd_i32, rd_u16, rd_u32};
 use crate::{BBox, Error};
 
 pub const MAX_FEAT_PTS: usize = 2048;
@@ -138,23 +139,6 @@ impl<'a> Iterator for Interiors<'a> {
         self.offset += len;
         Some(&self.points[s..s + len])
     }
-}
-
-#[inline]
-fn rd_u16(d: &[u8], o: usize) -> u16 {
-    u16::from_le_bytes([d[o], d[o + 1]])
-}
-#[inline]
-fn rd_u32(d: &[u8], o: usize) -> u32 {
-    u32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]])
-}
-#[inline]
-fn rd_i32(d: &[u8], o: usize) -> i32 {
-    i32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]])
-}
-#[inline]
-fn rd_f32(d: &[u8], o: usize) -> f32 {
-    f32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]])
 }
 
 pub struct Reader<'a> {

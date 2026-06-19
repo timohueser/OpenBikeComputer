@@ -9,12 +9,14 @@
 //! Modules:
 //! - [`reader`] — header / style / LOD-table parsing and per-LOD query + decode.
 //! - [`color`] — RGB565 → display color conversions.
+//! - [`codec`] — little-endian field readers/writers shared with the route format.
 //!
 //! All coordinates are integer microdegrees (1e-6 degrees), as stored in the
 //! file. Projection to screen space is the renderer's job.
 
 #![no_std]
 
+pub mod codec;
 pub mod color;
 pub mod reader;
 

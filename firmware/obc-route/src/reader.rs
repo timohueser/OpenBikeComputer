@@ -9,6 +9,7 @@
 use heapless::{String, Vec};
 
 use crate::byte_io::{ByteSource, Error};
+use obc_reader::codec::{rd_i16, rd_i32, rd_u16, rd_u32};
 use obc_reader::BBox;
 
 /// Fixed header length (see `OBCR_Spec.md` §1).
@@ -282,22 +283,4 @@ fn read_header(src: &dyn ByteSource) -> Result<Header, Error> {
         index_offset: rd_u32(&h, 56),
         name,
     })
-}
-
-// Little-endian field readers over an already-read, correctly sized buffer.
-#[inline]
-fn rd_i16(b: &[u8], o: usize) -> i16 {
-    i16::from_le_bytes([b[o], b[o + 1]])
-}
-#[inline]
-fn rd_u16(b: &[u8], o: usize) -> u16 {
-    u16::from_le_bytes([b[o], b[o + 1]])
-}
-#[inline]
-fn rd_i32(b: &[u8], o: usize) -> i32 {
-    i32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
-}
-#[inline]
-fn rd_u32(b: &[u8], o: usize) -> u32 {
-    u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
 }

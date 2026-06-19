@@ -15,6 +15,7 @@ use crate::byte_io::{ByteSink, ByteSource, Error};
 use crate::geo::{cos_lat, delta_m, seg_dist_m};
 use crate::gpx::GpxScanner;
 use crate::reader::{ChunkMeta, CHUNK_META_LEN, HEADER_LEN, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS, NAME_CAP};
+use obc_reader::codec::{put_i16, put_i32, put_u16, put_u32};
 use obc_reader::BBox;
 
 /// Decimation tolerance: drop a vertex within this perpendicular distance of the chord.
@@ -350,19 +351,4 @@ fn grow(b: Option<BBox>, lon: i32, lat: i32) -> BBox {
 
 fn round_i16(m: f64) -> i16 {
     libm::round(m).clamp(i16::MIN as f64, i16::MAX as f64) as i16
-}
-
-// little-endian writers
-
-fn put_i16(b: &mut [u8], o: usize, v: i16) {
-    b[o..o + 2].copy_from_slice(&v.to_le_bytes());
-}
-fn put_u16(b: &mut [u8], o: usize, v: u16) {
-    b[o..o + 2].copy_from_slice(&v.to_le_bytes());
-}
-fn put_i32(b: &mut [u8], o: usize, v: i32) {
-    b[o..o + 4].copy_from_slice(&v.to_le_bytes());
-}
-fn put_u32(b: &mut [u8], o: usize, v: u32) {
-    b[o..o + 4].copy_from_slice(&v.to_le_bytes());
 }
