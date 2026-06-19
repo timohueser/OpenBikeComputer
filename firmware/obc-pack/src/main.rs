@@ -1,21 +1,25 @@
-//! `obc-pack` CLI — the Stage-3 end-to-end pipeline (`.osm.pbf` → `.obcm`),
-//! mirroring `packer/pack.py`'s single-PBF path **minus multipolygon relations
-//! and minus land/merge** (deferred to Stages 4–5). Same positional CLI as
-//! `pack.py` (`<pbf...> <config.json> <out.obcm>`) plus `--chunk-size` and
-//! `--no-land`, and it prints the stage strings the web builder's `_STAGE_MARKERS`
-//! scrapes ("Pass 1/2", "Calculating BBox", "Building Quadtree", "Serializing",
-//! "Writing"), so it can be dropped behind `OBC_PACK_BACKEND=rust` later.
+//! `obc-pack` CLI — the full end-to-end pipeline (`.osm.pbf` → `.obcm`), mirroring
+//! `packer/pack.py`: multi-PBF **merge** (Stage 5) → ingest (lines + closed ways +
+//! multipolygon relations, Stages 3–4) → bbox → **land generation** (Stage 5) →
+//! per-LOD simplify+quadtree → serialize. Same positional CLI as `pack.py`
+//! (`<pbf...> <config.json> <out.obcm>`) plus `--chunk-size` and `--no-land`, and
+//! it prints the stage strings the web builder's `_STAGE_MARKERS` scrapes
+//! ("Merging", "Pass 1/2", "Calculating BBox", "Generating land", "Building
+//! Quadtree", "Serializing", "Writing"), so it can be dropped behind
+//! `OBC_PACK_BACKEND=rust`.
 //!
 //! Validation is the feature-multiset + render gate (see `lib.rs` / the corpus
 //! README), not byte-identity: simplify runs in GEOS 3.14 here vs shapely's 3.13,
 //! and feature/ring order is not reproduced. The serializer + quadtree remain
 //! byte-exact in isolation (Stages 1–2).
 
-use std::process::ExitCode;
+use std::path::PathBuf;
+use std::process::{Command, ExitCode};
 
 use obc_pack::config::Config;
 use obc_pack::geom::{topology_preserve_simplify, Geom};
-use obc_pack::ingest::ingest_osm;
+use obc_pack::ingest::{ingest_osm, IngestFeature};
+use obc_pack::land;
 use obc_pack::quadtree::build_lod;
 use obc_pack::serialize::{serialize_lods, LodLayer};
 
@@ -60,20 +64,37 @@ fn parse_args() -> Result<Args, String> {
 
 fn run() -> Result<(), String> {
     let args = parse_args()?;
-    if args.pbfs.len() > 1 {
-        return Err("multi-PBF merge is not ported yet (Stage 5); pass a single .osm.pbf \
-                    or use the Python backend"
-            .into());
-    }
-    let pbf = &args.pbfs[0];
-
     let config = Config::load(&args.config)?;
     let chunk_size = args.chunk_size.unwrap_or(config.chunk_size);
+
+    // --- Merge: >1 input ⇒ `osmium merge` + `osmium sort` to a temp, then ingest
+    // that (mirrors pack.py; the CLI is battle-tested, so we shell out, plan §6).
+    // `_temps` keeps the temp files alive until run() returns, then drops them. ---
+    let mut _temps: Vec<TempPath> = Vec::new();
+    let pbf_to_ingest: String = if args.pbfs.len() > 1 {
+        println!("Merging {} files...", args.pbfs.len());
+        let merged = TempPath::new("merged")?;
+        let sorted = TempPath::new("sorted")?;
+        let mut merge_args: Vec<&str> = vec!["merge", "--overwrite"];
+        for p in &args.pbfs {
+            merge_args.push(p);
+        }
+        merge_args.push("-o");
+        merge_args.push(merged.as_str());
+        run_osmium(&merge_args)?;
+        run_osmium(&["sort", "--overwrite", merged.as_str(), "-o", sorted.as_str()])?;
+        let path = sorted.as_str().to_string();
+        _temps.push(merged);
+        _temps.push(sorted);
+        path
+    } else {
+        args.pbfs[0].clone()
+    };
 
     // --- Ingest (two passes: nodes, then ways). ---
     println!("Pass 1: reading nodes...");
     println!("Pass 2: processing ways...");
-    let ingested = ingest_osm(pbf, &config)?;
+    let mut ingested = ingest_osm(&pbf_to_ingest, &config)?;
     if ingested.features.is_empty() && ingested.coastlines.is_empty() {
         return Err("no features found matching config".into());
     }
@@ -83,13 +104,25 @@ fn run() -> Result<(), String> {
     println!("Calculating BBox...");
     let global_bbox = compute_bbox(&ingested);
 
-    // --- Land: deferred to Stage 5. Warn if the config asked for it. ---
-    let has_land_cfg = config.features.iter().any(|(k, m)| k == "natural" && m.contains_key("land"));
-    if has_land_cfg && !args.no_land {
-        eprintln!(
-            "note: land generation is not ported yet (Stage 5); omitting land polygons. \
-             Pass --no-land to silence."
-        );
+    // --- Land: clip the global land-polygon dataset to the bbox and add the
+    // faces as features, styled by `natural.land` (Stage 5, mirrors pack.py). ---
+    if !args.no_land {
+        if let Some(land) = config.land_style() {
+            let (lid, lmin) = (land.id, land.min_lod);
+            println!("Generating land...");
+            let bbox_deg = (
+                global_bbox.0 as f64 / 1e6,
+                global_bbox.1 as f64 / 1e6,
+                global_bbox.2 as f64 / 1e6,
+                global_bbox.3 as f64 / 1e6,
+            );
+            let polys = land::get_land_polygons(bbox_deg)?;
+            let n = polys.len();
+            for geom in polys {
+                ingested.features.push(IngestFeature { style_id: lid, min_lod: lmin, geom });
+            }
+            println!("Successfully added {n} land polygons.");
+        }
     }
 
     // --- One quadtree per LOD (cumulative + per-level simplify), like pack.py. ---
@@ -145,10 +178,52 @@ fn compute_bbox(ing: &obc_pack::ingest::Ingested) -> (i64, i64, i64, i64) {
     ((minx * 1e6) as i64, (miny * 1e6) as i64, (maxx * 1e6) as i64, (maxy * 1e6) as i64)
 }
 
+/// Run an `osmium` subcommand (merge/sort), erroring helpfully if the CLI is
+/// missing. The Python pipeline shells out the same way (plan §6).
+fn run_osmium(args: &[&str]) -> Result<(), String> {
+    let status = Command::new("osmium")
+        .args(args)
+        .status()
+        .map_err(|e| format!("failed to run `osmium` ({e}); install osmium-tool"))?;
+    if !status.success() {
+        return Err(format!("osmium {} failed with {status}", args.first().copied().unwrap_or("")));
+    }
+    Ok(())
+}
+
+/// A temp file path that deletes itself on drop — the merge/sort intermediates,
+/// like `pack.py`'s `NamedTemporaryFile`.
+struct TempPath(PathBuf);
+
+impl TempPath {
+    fn new(tag: &str) -> Result<Self, String> {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let mut p = std::env::temp_dir();
+        p.push(format!("obc-pack-{}-{nanos}-{tag}.osm.pbf", std::process::id()));
+        Ok(TempPath(p))
+    }
+
+    fn as_str(&self) -> &str {
+        self.0.to_str().expect("temp path is utf-8")
+    }
+}
+
+impl Drop for TempPath {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--version") {
-        println!("obc-pack {} (stage 3: ingest + quadtree + serialize)", env!("CARGO_PKG_VERSION"));
+        println!(
+            "obc-pack {} (stage 5: merge + ingest + relations + land + quadtree + serialize)",
+            env!("CARGO_PKG_VERSION")
+        );
         return ExitCode::SUCCESS;
     }
     match run() {

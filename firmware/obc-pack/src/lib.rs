@@ -26,6 +26,7 @@ pub mod dump;
 pub mod feature_dump;
 pub mod geom;
 pub mod ingest;
+pub mod land;
 pub mod quadtree;
 pub mod serialize;
 

@@ -135,9 +135,52 @@ These supersede the relevant parts of §4/§5/§9 below; the rest of the plan st
     render-equivalent — the pre-authorized outcome (§8.4 / Amendment 1).
   - `run_stage3*.sh` are **superseded** (the pipeline now emits relations, so the
     Stage-3-only references show a relation surplus by design); use `run_stage4*.sh`.
-- **Next — Stage 5 (land + multi-PBF merge):** keep Python `land_ingest` / the
-  `osmium` CLI (§6) or port; validate on the coastal corpus. Then Stage 6
-  (parallelize) and Stage 7 (`jobs.py` switchover behind `OBC_PACK_BACKEND`).
+- **Stage 5 (land generation + multi-PBF merge): DONE — and ported natively, not
+  shelled out** (the §6 conservative default was overridden; user chose the full
+  port). `obc-pack` is now a zero-Python binary (modulo the `osmium` CLI it shells
+  out to for merge, as the plan always intended). Briefing:
+  [`stage5-handover.md`](stage5-handover.md).
+  - **Land = native `land.rs`** (replaces `fiona` + `pyproj` + `shapely`): parse the
+    `land-polygons-split-3857` `.shp` directly with a **per-record bbox-skip** (only
+    records touching the query box are decoded — what GDAL's filter does, since the
+    dataset has no spatial index), clip to the bbox with the same GEOS `intersection`
+    in 3857, then reproject 3857→4326. **EPSG:3857 is the auxiliary sphere**
+    (`R = 6378137`, the `.prj` confirms) ⇒ a **closed-form** spherical Web Mercator
+    inverse; no PROJ datum grids. Verified vs `pyproj`: **max inverse error 2.1e-14°**
+    (~8 orders below the µdeg quantum) — the "PROJ last-digit" rabbit hole (§6) does
+    not exist for 3857. One-time dataset download via `curl`+`unzip` if the cache is
+    absent (the oracle's `Last-Modified` freshness check is dropped — it's a HEAD-
+    request optimization the oracle itself skips on any network error).
+  - **Multi-PBF merge** shells out to `osmium merge` + `osmium sort` (plan §4.9/§6),
+    via `std::process::Command` with self-deleting temp files — exactly `pack.py`.
+  - **Representation:** a clip can yield a MultiPolygon; we flatten to one
+    `Geom::Polygon` per face (the Stage-4 convention) so each flows through the
+    existing simplify+quadtree. The quadtree flattens multipolygons anyway and split
+    decisions are insertion-order-independent, so this is multiset-equivalent to the
+    oracle appending the MultiPolygon as one feature (only the land *count* print
+    differs, e.g. monaco 9 vs 10).
+  - **Validation (whole coastal/inland corpus PASS, `run_stage5.sh`):**
+    (1) **Land parity** (`land_probe` vs `dump_land.py`, isolated from the quadtree):
+    total land **area matches to 1.3e-12 … 5.2e-11** relative, *identical* vertex
+    counts (monaco 9131, malta 13430) — the land geometry is essentially bit-exact.
+    (2) **Header identical** (version/bbox/marker/style) on every item.
+    (3) **Render-equivalent** — whole-map overview + coastal fine-LOD tiles all
+    < 0.01 % differing pixels (monaco/malta 0 %). (4) **Merge:** `obc-pack a a`
+    (osmium dedupes) render-matches the single-file build.
+  - **Known benign residual (documented, not a bug):** on dense items (malta) the
+    end-to-end `obcm_diff` shows `structural_ok=0` (node counts differ ~0.6–1 %) with
+    nonzero line/poly diffs. Cause: land adds density, so the **pre-existing GEOS
+    3.14-vs-3.13 simplify + relation-assembly skew** tips a few near-threshold
+    quadtree splits, re-clipping features at different leaf boundaries (LOD0 feature
+    counts stay equal with **balanced** only-in-A/only-in-B — zero net loss). The
+    render is pixel-identical at every zoom; the land geometry itself is bit-exact
+    (point (1)). This is the pre-authorized render+multiset outcome (Amendment 1),
+    so Stage 5's gate requires header identity + land-area parity + render-
+    equivalence, not `structural_ok=1`.
+  - Freiburg (157 MB) end-to-end with land: **37 s** (+~4 s for the 1.3 GB shapefile
+    scan over the Stage-3 baseline), 2.2 GB RSS — memory/scan are Stage-6 concerns.
+- **Next — Stage 6 (parallelize + node-store memory):** then Stage 7 (`jobs.py`
+  switchover behind `OBC_PACK_BACKEND`).
 
 ## 0. Context (measured)
 
