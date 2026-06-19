@@ -4,9 +4,12 @@
 >
 > `draw_route(.., arrow_color, arrows_at: Option<u32>)` now does **two passes**: (1) stroke every
 > visible chunk, (2) chevrons. Chevrons are **anchored to route distance** — placed at multiples of
-> `ARROW_SPACING_M` (33 m) along the route's own cumulative distance (`walk_route_arrows`), so they
-> stay pinned to the ground as the camera follows the rider — and **windowed** to
-> `[progress_m − ARROW_BEHIND_M, progress_m + ARROW_AHEAD_M]` around the matcher cursor
+> a screen-relative spacing along the route's own cumulative distance (`walk_route_arrows`), so they
+> stay pinned to the ground as the camera follows the rider — and **windowed** to a chevron *count*
+> around the matcher cursor. The spacing is held in **screen space**: each frame the ground spacing is
+> `ARROW_SPACING_PX × m/px` (≈ 33 m at riding zoom), so the cadence stays even as you zoom within the
+> finest LOD instead of bunching when zoomed out, and the window is `ARROW_BEHIND_COUNT` /
+> `ARROW_AHEAD_COUNT` (0 / 9) chevrons either side of the cursor
 > (`Activity.progress_m`, threaded from `map.rs`). The window means an out-and-back's two passes never
 > collide (only the leg you're on is marked, the right way round), and pass 2 running after the whole
 > route is stroked means chevrons sit on top even where the route doubles back. Finest-LOD gate stays
