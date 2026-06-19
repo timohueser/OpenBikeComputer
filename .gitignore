@@ -11,5 +11,4 @@ viewer-rs/tracks/
 user_config.json
 .worktrees/
 .DS_Store
-Cargo.lock
 *.gpx
