@@ -475,6 +475,52 @@ fn rejects_bad_input() {
 }
 
 #[test]
+fn out_of_range_chunk_id_decodes_nothing() {
+    // `chunk_id` comes from a quadtree leaf and is never otherwise constrained to
+    // `chunk_count`. LOD0 here holds a single chunk, so id 1 already points one
+    // past it — straight into LOD1's bytes. The reader must decode nothing rather
+    // than silently decode the adjacent layer (visible even on the 64-bit host)
+    // or, on the 32-bit device, wrap the offset and panic. `u32::MAX` is the
+    // arithmetic-overflow edge.
+    let bytes = two_lod_file();
+    let r = Reader::new(&bytes).unwrap();
+    let node = r.bbox;
+    assert!(decode_chunk(&r, 0, 1, &node).is_empty());
+    assert!(decode_chunk(&r, 0, u32::MAX, &node).is_empty());
+    // Filtered path shares the same guard.
+    assert!(decode_filtered(&r, 0, 1, &node, |_| true).is_empty());
+    // The in-range chunk still decodes, so the guard isn't over-broad.
+    assert_eq!(decode_chunk(&r, 0, 0, &node).len(), 1);
+}
+
+#[test]
+fn rejects_overflowing_lod_table_offset() {
+    // A `lod_table_offset` near the top of the u32 range wraps `usize` once the
+    // table length is added on the 32-bit device, passing the file-length guard
+    // and then indexing far out of the file. Checked arithmetic rejects it up
+    // front; on the 64-bit host the same value simply exceeds data.len().
+    let mut bytes = two_lod_file();
+    bytes[26..30].copy_from_slice(&0xFFFF_FFF0u32.to_le_bytes()); // header lod_table_offset
+    assert!(matches!(Reader::new(&bytes), Err(Error::BadOffset)));
+}
+
+#[test]
+fn rejects_overflowing_chunk_region() {
+    // A corrupt LOD entry advertising a huge chunk_count × chunk_size must be
+    // rejected, not trusted: on the 32-bit device the product wraps `usize` and
+    // the computed chunks-end can land below data.len(), admitting a layer that
+    // indexes out of the file. Checked arithmetic turns it into BadOffset.
+    let mut bytes = two_lod_file();
+    let lod_tab_off = u32::from_le_bytes(bytes[26..30].try_into().unwrap()) as usize;
+    // Entry layout: max_mpp(4) index_off(4) node_count(4) chunk_size(2) chunk_count(4).
+    let chunk_size_at = lod_tab_off + 12;
+    let chunk_count_at = lod_tab_off + 14;
+    bytes[chunk_size_at..chunk_size_at + 2].copy_from_slice(&u16::MAX.to_le_bytes());
+    bytes[chunk_count_at..chunk_count_at + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+    assert!(matches!(Reader::new(&bytes), Err(Error::BadOffset)));
+}
+
+#[test]
 fn filtered_decode_skips_without_drifting() {
     // Three heterogeneous features packed back-to-back in one chunk: an 8-bit
     // line, a polygon-with-hole, and a 16-bit line. Skipping any of them must
