@@ -257,11 +257,13 @@ The `Kind::Line` arm (and every overlay polyline) strokes through one path:
    route chunk via `stroke_overlay` (consecutive chunks share a seam vertex, so the
    per-chunk strokes join). *Pass 2* (only when `arrows_at` is `Some`, i.e. finest
    LOD + a fix): direction **chevrons**, in a separate pass so they sit on top even
-   where the route doubles back. `walk_route_arrows` (`lib.rs:852`) emits a chevron
-   at every multiple of `ARROW_SPACING_M` of **route distance** within a
-   `[progress−behind, progress+ahead]` metre window, so each chevron is pinned to a
-   ground spot (doesn't crawl with the rider) and an out-and-back's two legs never
-   collide. Each chevron is a 3-point triangle filled via `fill_polygon`.
+   where the route doubles back. `walk_route_arrows` emits a chevron at every multiple
+   of a screen-relative spacing of **route distance** — `ARROW_SPACING_PX × m/px`, a
+   fixed pixel cadence converted to ground metres per frame, so the chevrons keep an
+   even spread as you zoom — within a window of `ARROW_AHEAD_COUNT` chevrons around the
+   rider, so each chevron is pinned to a ground spot (doesn't crawl with the rider) and
+   an out-and-back's two legs never collide. Each chevron is a 3-point triangle filled
+   via `fill_polygon`.
 2. **Breadcrumb** — `stroke_path` (`lib.rs:702`): the two-tier travelled trail
    (coarse spine → full-res recent tail) as one chained `stroke_overlay`, navy,
    over the route.

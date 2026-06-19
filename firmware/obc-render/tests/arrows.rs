@@ -98,6 +98,16 @@ const NORTHWARD: &str = r#"<?xml version="1.0"?>
   <trkpt lat="48.003000" lon="7.800000"><ele>100.0</ele></trkpt>
 </trkseg></trk></gpx>"#;
 
+/// A longer due-north route (~1.8 km) so a full screenful of chevrons fits at more than one
+/// zoom — used to check the on-screen spacing is held constant as you zoom (see
+/// `chevron_spacing_is_held_in_screen_space`).
+const LONG_NORTH: &str = r#"<?xml version="1.0"?>
+<gpx><trk><trkseg>
+  <trkpt lat="48.000000" lon="7.800000"><ele>100.0</ele></trkpt>
+  <trkpt lat="48.008000" lon="7.800000"><ele>100.0</ele></trkpt>
+  <trkpt lat="48.016000" lon="7.800000"><ele>100.0</ele></trkpt>
+</trkseg></trk></gpx>"#;
+
 fn route_bytes(gpx: &str) -> Vec<u8> {
     let src = SliceSource(gpx.as_bytes());
     let mut sink = VecSink::default();
@@ -172,4 +182,61 @@ fn route_stroke_has_the_requested_width() {
     let row = 330; // below the route's on-screen extent? no — within it, clear of any chevron
     let width = (0..400).filter(|&x| buf.get(x, row) == ROUTE).count();
     assert!((5..=8).contains(&width), "weight-6 stroke should be ~6 px wide, got {width}");
+}
+
+/// Centre-to-centre screen gaps (px) between consecutive chevrons down the route column. The
+/// route is the vertical `LONG_NORTH` line at screen x≈200; each chevron shows as a short run
+/// of white over the magenta stroke, so distinct white runs in the central columns are the
+/// chevrons and the gaps between their mid-rows are the on-screen spacing.
+fn chevron_gaps(buf: &Buf) -> Vec<i32> {
+    let has_white: Vec<bool> = (0..buf.h)
+        .map(|y| (197..=203).any(|x| buf.get(x, y) == ARROW))
+        .collect();
+    let mut centres = Vec::new();
+    let mut y = 0;
+    while y < buf.h {
+        if has_white[y as usize] {
+            let start = y;
+            while y < buf.h && has_white[y as usize] {
+                y += 1;
+            }
+            centres.push((start + y - 1) / 2);
+        } else {
+            y += 1;
+        }
+    }
+    centres.windows(2).map(|w| w[1] - w[0]).collect()
+}
+
+#[test]
+fn chevron_spacing_is_held_in_screen_space() {
+    // The fix: chevron spacing is a fixed *screen* cadence (ARROW_SPACING_PX) converted to ground
+    // metres at the current zoom, so the on-screen gap between chevrons stays the same as you zoom
+    // instead of collapsing when zoomed out. Render the same route at two zooms (2× apart) with the
+    // rider at the start so chevrons fill the screen upward, and the measured pixel gaps must match.
+    // With the old fixed-metre spacing the gap would scale ~2× with zoom — the bunching bug.
+    let bytes = route_bytes(LONG_NORTH);
+    let src = SliceSource(&bytes);
+    let route = RouteReader::open(&src).unwrap();
+
+    let gaps_at = |zoom: f32| {
+        let vp = Viewport::new(400.0, 400.0, 7_800_000, 48_001_500, zoom);
+        let mut buf = Buf::new(400, 400);
+        MapRenderer::new().draw_route(&mut buf, &vp, &route, ROUTE, 11, ARROW, Some(0));
+        chevron_gaps(&buf)
+    };
+    let median = |mut v: Vec<i32>| {
+        v.sort_unstable();
+        v[v.len() / 2]
+    };
+
+    let far = gaps_at(0.05); // zoomed out — more m/px
+    let near = gaps_at(0.10); // zoomed in 2×
+    assert!(far.len() >= 2 && near.len() >= 2, "need several chevrons to measure spacing (far {far:?}, near {near:?})");
+
+    let (g_far, g_near) = (median(far.clone()), median(near.clone()));
+    assert!(
+        (g_far - g_near).abs() <= 10,
+        "on-screen chevron spacing should be ~constant across zoom, got {g_far} px (far {far:?}) vs {g_near} px (near {near:?})"
+    );
 }

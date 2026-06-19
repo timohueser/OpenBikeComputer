@@ -81,18 +81,23 @@ const METERS_PER_MICRODEG_LAT: f32 = 0.111_320;
 // Route direction chevrons (tunable). Arrowheads along the active route at riding zoom,
 // anchored to route distance (not screen) so each stays pinned to a ground spot, drawn only
 // in a window around the rider — so an out-and-back marks just the leg you're on, the right
-// way round. Spacing/window are real metres; glyph sizes are screen pixels. Sweep with the
-// app's `ROUTE_WEIGHT`.
+// way round. Spacing + window are screen-relative — a fixed pixel cadence and a chevron *count*,
+// not ground metres — so the chevrons keep an even spread across the finest LOD's zoom range
+// (no bunching when zoomed out); the ground spacing is derived per-frame from the camera's
+// m/px. Glyph sizes are screen pixels. Sweep with the app's `ROUTE_WEIGHT`.
 //
-/// Route distance between consecutive chevrons (m). At the ~0.5 m/px riding zoom the on-screen
-/// spacing is ≈ 2× this.
-const ARROW_SPACING_M: f32 = 33.0;
-/// How far ahead of the rider chevrons are drawn (m). Generous — off-screen chevrons are free
-/// and a wider look-ahead reads better when zoomed out.
-const ARROW_AHEAD_M: f32 = 300.0;
-/// How far behind the rider chevrons are drawn (m). Zero — the breadcrumb shows the travelled
-/// line, so chevrons only lead ahead.
-const ARROW_BEHIND_M: f32 = 0.0;
+/// On-screen gap between consecutive chevrons (px). Held in *screen* space, not ground metres:
+/// each frame the route-distance spacing is `ARROW_SPACING_PX × m/px`, so the chevrons stay
+/// evenly spread however far you zoom. At the ~0.5 m/px riding zoom this works out to ≈ 33 m
+/// apart on the ground — the original feel.
+const ARROW_SPACING_PX: f32 = 66.0;
+/// How many chevrons lead *ahead* of the rider. A count (not a ground distance) so the
+/// look-ahead tracks the screen cadence — the chevrons reach a fixed way up the screen at every
+/// zoom. Off-screen ones are free, so this is generous (≈ the old 300 m at riding zoom).
+const ARROW_AHEAD_COUNT: u32 = 9;
+/// How many chevrons trail *behind* the rider. Zero — the breadcrumb shows the travelled line,
+/// so chevrons only lead ahead.
+const ARROW_BEHIND_COUNT: u32 = 0;
 /// Chevron tip reach ahead of its centre (px).
 const ARROW_TIP: f32 = 8.0;
 /// Chevron base reach behind its centre (px).
@@ -573,8 +578,8 @@ impl MapRenderer {
     ///
     /// `arrows_at` is the rider's matched route distance (m), or `None` to skip chevrons. When
     /// set, chevrons are drawn in a **second pass** (so they sit on top where the route doubles
-    /// back) within a window around that distance, each pinned to a multiple of
-    /// [`ARROW_SPACING_M`] — see the chevron constants above.
+    /// back) within a window of [`ARROW_AHEAD_COUNT`] chevrons around that distance, each pinned
+    /// to a multiple of the screen-relative spacing — see the chevron constants above.
     #[allow(clippy::too_many_arguments)]
     pub fn draw_route<D>(
         &mut self,
@@ -615,8 +620,12 @@ impl MapRenderer {
             return;
         };
         let total = route.total_distance_m;
-        let lo = progress_m.saturating_sub(ARROW_BEHIND_M as u32) as f32;
-        let hi = (progress_m + ARROW_AHEAD_M as u32).min(total) as f32;
+        // Ground spacing for *this* frame: a fixed screen cadence scaled by the current m/px, so
+        // the chevrons keep an even spread as you zoom (the `.max` is a divide-by-zero guard for
+        // absurd zoom-in). The window is then a chevron *count* either side of the rider.
+        let spacing_m = (ARROW_SPACING_PX * vp.meters_per_pixel()).max(1e-3);
+        let lo = (progress_m as f32 - ARROW_BEHIND_COUNT as f32 * spacing_m).max(0.0);
+        let hi = (progress_m as f32 + ARROW_AHEAD_COUNT as f32 * spacing_m).min(total as f32);
         for (k, cm) in chunks.iter().enumerate() {
             // Skip chunks whose cumulative-distance span misses the window (then the view).
             let chunk_start = cm.cum_distance_m as f32;
@@ -627,7 +636,7 @@ impl MapRenderer {
             if route.decode_chunk(k, &mut pts).is_err() {
                 continue;
             }
-            walk_route_arrows(&pts, chunk_start, lo, hi, |a, b, f| {
+            walk_route_arrows(&pts, chunk_start, lo, hi, spacing_m, |a, b, f| {
                 let (ax, ay) = vp.to_screen(a.lon, a.lat);
                 let (bx, by) = vp.to_screen(b.lon, b.lat);
                 let (ax, ay, bx, by) = (ax as f32, ay as f32, bx as f32, by as f32);
@@ -792,12 +801,12 @@ where
 
 /// Walk a decoded route chunk (its absolute points plus `s0`, the cumulative route distance
 /// in metres at its first point) and call `emit(&a, &b, f)` for every chevron whose route
-/// distance is a multiple of [`ARROW_SPACING_M`] lying inside `[lo, hi]` — `f` is the
-/// fraction along segment `a`→`b`. Anchoring to the route's own cumulative distance (rather
-/// than the screen) pins each chevron to one ground spot as the camera moves; the `[lo, hi]`
-/// window keeps them near the rider. Segment length is real ground metres
-/// ([`obc_route::ground_dist_m`]).
-fn walk_route_arrows<F>(pts: &[obc_route::RoutePoint], s0: f32, lo: f32, hi: f32, mut emit: F)
+/// distance is a multiple of `spacing_m` lying inside `[lo, hi]` — `f` is the fraction along
+/// segment `a`→`b`. Anchoring to the route's own cumulative distance (rather than the screen)
+/// pins each chevron to one ground spot as the camera pans; the `[lo, hi]` window keeps them
+/// near the rider. `spacing_m` is the per-frame ground spacing the caller derives from the zoom
+/// (see [`ARROW_SPACING_PX`]). Segment length is real ground metres ([`obc_route::ground_dist_m`]).
+fn walk_route_arrows<F>(pts: &[obc_route::RoutePoint], s0: f32, lo: f32, hi: f32, spacing_m: f32, mut emit: F)
 where
     F: FnMut(&obc_route::RoutePoint, &obc_route::RoutePoint, f32),
 {
@@ -806,13 +815,13 @@ where
         let (a, b) = (&seg[0], &seg[1]);
         let dl = obc_route::ground_dist_m((a.lon, a.lat), (b.lon, b.lat));
         if dl > 1e-3 {
-            // Grid multiples of ARROW_SPACING_M that fall on this segment and in the window.
+            // Grid multiples of spacing_m that fall on this segment and in the window.
             let lo_seg = s.max(lo);
             let hi_seg = (s + dl).min(hi);
-            let mut n = libm::ceilf(lo_seg / ARROW_SPACING_M) * ARROW_SPACING_M;
+            let mut n = libm::ceilf(lo_seg / spacing_m) * spacing_m;
             while n <= hi_seg {
                 emit(a, b, ((n - s) / dl).clamp(0.0, 1.0));
-                n += ARROW_SPACING_M;
+                n += spacing_m;
             }
         }
         s += dl;
@@ -972,9 +981,14 @@ fn fill_polygon<D>(
 
 #[cfg(test)]
 mod tests {
-    use super::{walk_route_arrows, ARROW_SPACING_M};
+    use super::walk_route_arrows;
     use heapless::Vec;
     use obc_route::{ground_dist_m, RoutePoint};
+
+    /// Ground spacing used to drive the grid walker directly. In the app this is derived
+    /// per-frame from the zoom (`ARROW_SPACING_PX × m/px`); the walker itself just takes metres,
+    /// so these tests pin the grid maths with a fixed, easy-to-reason-about spacing.
+    const SPACING: f32 = 33.0;
 
     /// A due-north two-point segment ~300 m long (fixed longitude, so its length is pure
     /// latitude — the chevron grid is easy to reason about). Returned with its ground length.
@@ -989,7 +1003,7 @@ mod tests {
     /// Route distances (m from the segment start) at which chevrons land for a window `[lo,hi]`.
     fn distances(pts: &[RoutePoint], dl: f32, lo: f32, hi: f32) -> Vec<i32, 64> {
         let mut v = Vec::new();
-        walk_route_arrows(pts, 0.0, lo, hi, |_, _, f| {
+        walk_route_arrows(pts, 0.0, lo, hi, SPACING, |_, _, f| {
             let _ = v.push(libm::roundf(f * dl) as i32);
         });
         v
@@ -998,12 +1012,12 @@ mod tests {
     #[test]
     fn chevrons_land_on_the_spacing_grid() {
         // Chevrons sit at 0, SPACING, 2·SPACING, … of route distance — they're anchored to the
-        // route, not the screen, so each is a fixed multiple of ARROW_SPACING_M.
+        // route, not the screen, so each is a fixed multiple of the spacing.
         let (pts, dl) = north_line();
         let ds = distances(&pts, dl, 0.0, dl);
         assert!(ds.len() >= 5, "a {dl:.0} m segment should carry several chevrons");
         for (i, d) in ds.iter().enumerate() {
-            let expect = libm::roundf(i as f32 * ARROW_SPACING_M) as i32;
+            let expect = libm::roundf(i as f32 * SPACING) as i32;
             assert!((d - expect).abs() <= 1, "chevron {i} at {d} m, expected {expect} m");
         }
     }
