@@ -53,7 +53,10 @@ pub const MAX_DECODE_RINGS: usize = 32;
 /// Maximum projected screen points for drawing one feature.
 pub const MAX_SCREEN_POINTS: usize = 4096;
 
-/// Maximum scanline crossings for polygon fill.
+/// Maximum scanline crossings buffered for one polygon-fill row. A row whose
+/// outline crossings exceed this is skipped rather than mis-filled (see
+/// [`fill_polygon`]) — sized to fit the MCU RAM budget asserted below, not the
+/// worst-case comb (which could approach [`MAX_SCREEN_POINTS`]).
 pub const MAX_CROSSINGS: usize = 256;
 
 // `Span` packs its buffer offsets into `u16` to stay small, so the frame buffers
@@ -997,7 +1000,9 @@ fn fill_chevron<D>(
 
 /// Scanline even-odd polygon fill. `screen` holds every ring's projected points
 /// concatenated; `ring_lens` partitions them (exterior first, then holes — holes
-/// fall out of the even-odd rule for free). `xs` is a reused crossing buffer.
+/// fall out of the even-odd rule for free). `xs` is a reused crossing buffer; a
+/// row that overflows it is skipped to keep even-odd parity intact rather than
+/// pairing spans from a truncated crossing list (issue #3).
 fn fill_polygon<D>(
     target: &mut D,
     screen: &[Point],
@@ -1024,7 +1029,8 @@ fn fill_polygon<D>(
         let yc = y as f32 + 0.5;
         xs.clear();
         let mut base = 0usize;
-        for &len in ring_lens {
+        let mut saturated = false;
+        'rings: for &len in ring_lens {
             let ring = &screen[base..base + len];
             base += len;
             if len < 2 {
@@ -1035,12 +1041,22 @@ fn fill_polygon<D>(
                 let (xi, yi) = (ring[i].x as f32, ring[i].y as f32);
                 let (xj, yj) = (ring[j].x as f32, ring[j].y as f32);
                 if (yi <= yc && yc < yj) || (yj <= yc && yc < yi) {
-                    let _ = xs.push(xi + (yc - yi) / (yj - yi) * (xj - xi));
+                    // A row crossing the outline more than MAX_CROSSINGS times
+                    // can't be captured whole; pairing a truncated list would
+                    // break even-odd parity and paint background-colored gaps
+                    // across the row (issue #3). Stop and skip the row instead —
+                    // an unfilled 1px seam, only on the densest features, beats a
+                    // mis-filled span, and the buffer can't grow without busting
+                    // the MCU_RENDERER_BYTES budget asserted above.
+                    if xs.push(xi + (yc - yi) / (yj - yi) * (xj - xi)).is_err() {
+                        saturated = true;
+                        break 'rings;
+                    }
                 }
                 j = i;
             }
         }
-        if xs.len() < 2 {
+        if saturated || xs.len() < 2 {
             continue;
         }
         xs.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
@@ -1069,7 +1085,7 @@ fn fill_polygon<D>(
 
 #[cfg(test)]
 mod tests {
-    use super::{aspect_for_lat, simplify, walk_route_arrows, within_eps};
+    use super::{aspect_for_lat, fill_polygon, simplify, walk_route_arrows, within_eps, MAX_CROSSINGS};
     use embedded_graphics::prelude::Point;
     use heapless::Vec;
     use obc_route::{ground_dist_m, RoutePoint};
@@ -1189,5 +1205,87 @@ mod tests {
         let late = band(70.0, 280.0);
         assert!(!early.is_empty(), "the shared band should contain chevrons");
         assert_eq!(early, late, "a chevron moved when the window slid — it should be ground-pinned");
+    }
+
+    #[test]
+    fn fill_polygon_skips_rows_that_overflow_the_crossing_buffer() {
+        // Issue #3: a scanline crossing the outline more than MAX_CROSSINGS times
+        // must NOT be filled from the truncated crossing list (which corrupts the
+        // even-odd parity and paints background-colored gaps). It must be skipped
+        // instead, while ordinary rows of the same polygon still fill correctly.
+        use embedded_graphics::{pixelcolor::BinaryColor, prelude::*, primitives::Rectangle};
+
+        const P: usize = 200; // prongs → 2·P scanline crossings in the prong band
+        const W: i32 = 2 * P as i32; // one column per prong + its gap
+        const H: i32 = 8;
+        const HBASE: i32 = 4; // prongs span y ∈ [0, HBASE); a solid base sits below
+        const HBOTTOM: i32 = 6;
+        // The comb only proves anything if it actually overflows the buffer.
+        const { assert!(2 * P > MAX_CROSSINGS, "comb must exceed MAX_CROSSINGS to exercise saturation") };
+
+        // Records pixels painted per row via fill_solid — the only primitive
+        // fill_polygon uses — so a skipped row (0) is distinguishable from a
+        // correctly filled one (full width).
+        struct RowFill {
+            rows: [u32; H as usize],
+        }
+        impl OriginDimensions for RowFill {
+            fn size(&self) -> Size {
+                Size::new(W as u32, H as u32)
+            }
+        }
+        impl DrawTarget for RowFill {
+            type Color = BinaryColor;
+            type Error = core::convert::Infallible;
+            fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
+            where
+                I: IntoIterator<Item = Pixel<Self::Color>>,
+            {
+                for Pixel(p, _) in pixels {
+                    if (0..H).contains(&p.y) && (0..W).contains(&p.x) {
+                        self.rows[p.y as usize] += 1;
+                    }
+                }
+                Ok(())
+            }
+            fn fill_solid(&mut self, area: &Rectangle, _: Self::Color) -> Result<(), Self::Error> {
+                let y = area.top_left.y;
+                if (0..H).contains(&y) {
+                    self.rows[y as usize] += area.size.width;
+                }
+                Ok(())
+            }
+        }
+
+        // A comb: P vertical 1px prongs (1px gaps) standing on a solid base. A
+        // scanline through the prongs crosses both walls of every prong (2·P);
+        // one through the base crosses only the two outer walls.
+        let mut poly: Vec<Point, 1024> = Vec::new();
+        poly.push(Point::new(0, 0)).unwrap();
+        for i in 0..P as i32 {
+            let x1 = 2 * i + 1;
+            poly.push(Point::new(x1, 0)).unwrap(); // prong top-right
+            poly.push(Point::new(x1, HBASE)).unwrap(); // right wall down to base
+            if i + 1 < P as i32 {
+                poly.push(Point::new(x1 + 1, HBASE)).unwrap(); // base across the gap
+                poly.push(Point::new(x1 + 1, 0)).unwrap(); // next prong's left wall up
+            }
+        }
+        poly.push(Point::new(W - 1, HBOTTOM)).unwrap(); // right wall down past the base
+        poly.push(Point::new(0, HBOTTOM)).unwrap(); // base bottom edge (closing edge → (0,0))
+
+        let mut target = RowFill { rows: [0; H as usize] };
+        let mut xs: Vec<f32, MAX_CROSSINGS> = Vec::new();
+        let len = poly.len();
+        fill_polygon(&mut target, &poly, &[len], BinaryColor::On, W, H, &mut xs);
+
+        // Prong-band rows overflow the buffer → skipped, not mis-filled.
+        for y in 0..HBASE {
+            assert_eq!(target.rows[y as usize], 0, "saturated prong row {y} must be left unfilled, not mis-filled");
+        }
+        // Base-band rows have just two crossings → filled edge to edge.
+        for y in HBASE..HBOTTOM {
+            assert_eq!(target.rows[y as usize], W as u32, "base row {y} should fill the full width");
+        }
     }
 }
