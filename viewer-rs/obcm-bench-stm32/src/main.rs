@@ -38,20 +38,26 @@ static mut RENDERER: MapRenderer = MapRenderer::new_const();
 const PANEL_W: f32 = 240.0;
 const PANEL_H: f32 = 320.0;
 
-// Camera centre: Teningen (48.1223 N, 7.8142 E) in microdegrees — the tile is baked
-// around this point so the bench renders real, populated map data at every zoom.
-const CAM_LON: i32 = 7_814_200; // 7.8142 E
-const CAM_LAT: i32 = 48_122_300; // 48.1223 N
+// Camera centre: the dense core of Teningen (48.1265 N, 7.8136 E) in microdegrees —
+// the median of every building vertex in the tile, so the fine zooms land in the
+// busiest part of town (heaviest feature/line density), not a quiet residential block.
+const CAM_LON: i32 = 7_813_599; // 7.81360 E
+const CAM_LAT: i32 = 48_126_492; // 48.12649 N
 
-// The benchmarked zooms, in ground metres-per-pixel. zoom_for_mpp() converts each to
-// the Viewport's pixels-per-microdegree. 0.5 = riding (~120x160 m), 1.0 = finest-LOD
-// pan (~240x320 m), 5.0 = zoomed-out overview (~1200x1600 m). The LOD chosen for each
-// comes from the tile's own LOD table (select_lod_for_mpp); with breakpoints at 18/120
-// mpp all three still render the finest LOD, so 5.0 is the heaviest disc-fill case.
+// The benchmarked zooms, in ground metres-per-pixel. zoom_for_mpp() maps each to the
+// Viewport's pixels-per-microdegree. The LOD per zoom is chosen from the tile's own
+// table (select_lod_for_mpp) — with this stylesheet's breakpoints (2/4/10/20 mpp) the
+// six zooms walk the whole pyramid, finest to coarsest:
+//   0.5, 1.0 -> LOD4 | 3.0 -> LOD3 | 5.0 -> LOD2 | 12 -> LOD1 | 22 -> LOD0
+// (At 22 mpp the ~7 km frame slightly overruns the ~9 km tile's nearer edge — a thin
+//  empty margin — but the full LOD0 feature set still renders.)
 const MPP_PRESETS: &[(&str, f32)] = &[
     ("ride_0.5", 0.5),
     ("pan_1.0", 1.0),
-    ("zoom_5.0", 5.0),
+    ("z3.0", 3.0),
+    ("z5.0", 5.0),
+    ("z12", 12.0),
+    ("z22", 22.0),
 ];
 
 #[embassy_executor::main]
