@@ -636,7 +636,7 @@ impl MapRenderer {
             if route.decode_chunk(k, &mut pts).is_err() {
                 continue;
             }
-            walk_route_arrows(&pts, chunk_start, lo, hi, spacing_m, |a, b, f| {
+            walk_route_arrows(&pts, chunk_start, lo, hi, spacing_m, vp.aspect, |a, b, f| {
                 let (ax, ay) = vp.to_screen(a.lon, a.lat);
                 let (bx, by) = vp.to_screen(b.lon, b.lat);
                 let (ax, ay, bx, by) = (ax as f32, ay as f32, bx as f32, by as f32);
@@ -891,15 +891,17 @@ where
 /// segment `a`→`b`. Anchoring to the route's own cumulative distance (rather than the screen)
 /// pins each chevron to one ground spot as the camera pans; the `[lo, hi]` window keeps them
 /// near the rider. `spacing_m` is the per-frame ground spacing the caller derives from the zoom
-/// (see [`ARROW_SPACING_PX`]). Segment length is real ground metres ([`obc_route::ground_dist_m`]).
-fn walk_route_arrows<F>(pts: &[obc_route::RoutePoint], s0: f32, lo: f32, hi: f32, spacing_m: f32, mut emit: F)
+/// (see [`ARROW_SPACING_PX`]). Segment length is real ground metres
+/// ([`obc_route::ground_dist_m_cl`]); `cl` is the band's hoisted `cos(lat)` (the caller
+/// passes the viewport's, computed once per frame), so the walk costs no per-segment `cosf`.
+fn walk_route_arrows<F>(pts: &[obc_route::RoutePoint], s0: f32, lo: f32, hi: f32, spacing_m: f32, cl: f32, mut emit: F)
 where
     F: FnMut(&obc_route::RoutePoint, &obc_route::RoutePoint, f32),
 {
     let mut s = s0;
     for seg in pts.windows(2) {
         let (a, b) = (&seg[0], &seg[1]);
-        let dl = obc_route::ground_dist_m((a.lon, a.lat), (b.lon, b.lat));
+        let dl = obc_route::ground_dist_m_cl((a.lon, a.lat), (b.lon, b.lat), cl);
         if dl > 1e-3 {
             // Grid multiples of spacing_m that fall on this segment and in the window.
             let lo_seg = s.max(lo);
@@ -1067,7 +1069,7 @@ fn fill_polygon<D>(
 
 #[cfg(test)]
 mod tests {
-    use super::{simplify, walk_route_arrows, within_eps};
+    use super::{aspect_for_lat, simplify, walk_route_arrows, within_eps};
     use embedded_graphics::prelude::Point;
     use heapless::Vec;
     use obc_route::{ground_dist_m, RoutePoint};
@@ -1140,7 +1142,8 @@ mod tests {
     /// Route distances (m from the segment start) at which chevrons land for a window `[lo,hi]`.
     fn distances(pts: &[RoutePoint], dl: f32, lo: f32, hi: f32) -> Vec<i32, 64> {
         let mut v = Vec::new();
-        walk_route_arrows(pts, 0.0, lo, hi, SPACING, |_, _, f| {
+        let cl = aspect_for_lat(pts[0].lat);
+        walk_route_arrows(pts, 0.0, lo, hi, SPACING, cl, |_, _, f| {
             let _ = v.push(libm::roundf(f * dl) as i32);
         });
         v

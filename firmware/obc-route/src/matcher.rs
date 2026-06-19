@@ -15,14 +15,14 @@
 
 use heapless::Vec;
 
-use crate::geo::{project_to_segment, seg_dist_m};
+use crate::geo::{cos_lat, project_to_segment, seg_dist_m_cl};
 use crate::reader::{RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
 
 /// Cross-track distance (m) at/above which the rider is considered off-route…
-const OFF_M: f64 = 25.0;
+const OFF_M: f32 = 25.0;
 /// …and (below which) back on-route. `ON_M < OFF_M` gives the hysteresis band that keeps
 /// the flag from flapping on GPS noise at the boundary.
-const ON_M: f64 = 15.0;
+const ON_M: f32 = 15.0;
 /// Segments of backward slack in the on-route search window — absorbs a little GPS jitter
 /// without losing the forward bias.
 const BACK_SEGS: i64 = 3;
@@ -39,7 +39,7 @@ const FWD_SEGS_OFF: i64 = 320;
 /// would otherwise latch the cursor onto the finish (progress ≈ 100 %) and the forward bias
 /// could never follow the outbound leg. Only the first lock needs this; once tracking, the
 /// bounded forward window already prevents latching the far-away finish.
-const TIE_EPS_M: f64 = 8.0;
+const TIE_EPS_M: f32 = 8.0;
 
 /// The result of matching one fix onto the route.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,7 +112,7 @@ impl RouteMatch {
         };
 
         // Best so far: (chunk, seg, dist_m, progress_m).
-        let mut best: Option<(usize, usize, f64, u32)> = None;
+        let mut best: Option<(usize, usize, f32, u32)> = None;
         let mut c = first_chunk;
         let mut base_gidx = global_seg_index(route, first_chunk, 0) as i64;
         'outer: while c < chunks.len() {
@@ -122,8 +122,12 @@ impl RouteMatch {
             }
             let pc_segs = (chunks[c].point_count as usize).saturating_sub(1) as i64;
             if route.decode_chunk(c, &mut self.buf).is_ok() && self.buf.len() >= 2 {
-                let cum0 = chunks[c].cum_distance_m as f64;
-                let mut intra = 0f64; // distance from this chunk's anchor to point s
+                let cum0 = chunks[c].cum_distance_m as f32;
+                let mut intra = 0f32; // distance from this chunk's anchor to point s
+                // cos(lat) barely changes across one chunk's span, so hoist it once per
+                // chunk (the natural latitude band) rather than recomputing the `cosf` for
+                // every segment of the forward window.
+                let cl = cos_lat(self.buf[0].lat);
                 let n = self.buf.len();
                 for s in 0..n - 1 {
                     let off = base_gidx + s as i64 - cur_gidx;
@@ -132,9 +136,9 @@ impl RouteMatch {
                     }
                     let a = (self.buf[s].lon, self.buf[s].lat);
                     let b = (self.buf[s + 1].lon, self.buf[s + 1].lat);
-                    let seg_len = seg_dist_m(a, b);
+                    let seg_len = seg_dist_m_cl(a, b, cl);
                     if !self.started || off >= -back {
-                        let (t, dist) = project_to_segment(a, b, p);
+                        let (t, dist) = project_to_segment(a, b, p, cl);
                         // First lock biases near-ties to the earliest segment (TIE_EPS_M);
                         // once tracking, the forward window bounds the search so a strict
                         // nearest is right.
