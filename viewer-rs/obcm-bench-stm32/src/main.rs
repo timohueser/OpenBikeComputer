@@ -18,15 +18,17 @@ use embassy_executor::Spawner;
 use embassy_time::{Instant, Timer};
 use embedded_graphics::pixelcolor::raw::RawU16;
 use embedded_graphics::pixelcolor::Rgb565;
-use obcm_reader::Reader;
-use obcm_render::{MapRenderer, Viewport};
+use obc_reader::Reader;
+use obc_render::{zoom_for_mpp, MapRenderer, Viewport};
 use panic_probe as _;
 
 mod null_target;
 use null_target::NullTarget;
 
-// Same baked tile as the RP2040 bench → identical work. 1.6 MB fits the F429's 2 MB flash.
-static TILE: &[u8] = include_bytes!("../../obcm-bench-rp2040/fixtures/fr_small.obcm");
+// User-supplied OBCM v5 tile centred on Teningen (48.1223 N, 7.8142 E), with well-defined
+// LODs. Baked into flash via include_bytes! — must be OBCM v5 and fit the F429's 2 MB flash
+// alongside code (keep it <= ~1.7 MB; the old fr_small tile was 1.6 MB).
+static TILE: &[u8] = include_bytes!("../../obcm-bench-rp2040/fixtures/teningen.obcm");
 
 // Renderer in .bss (SRAM); the stack lives in CCM (see memory.x), so the full
 // 192 KB SRAM is available. `small-scratch` keeps it ~160 KB. `#[used]` pins it.
@@ -36,12 +38,20 @@ static mut RENDERER: MapRenderer = MapRenderer::new_const();
 const PANEL_W: f32 = 240.0;
 const PANEL_H: f32 = 320.0;
 
-// The *realistic* device zooms: finest-LOD panning tops out ~1.0 mpp and actual
-// riding sits ~0.5 mpp — far more zoomed-in (a city block, not the whole town) than
-// the old presets, so only a few hundred LOD2 features are in view.
-const PRESETS: &[(&str, i32, i32, f32)] = &[
-    ("pan_1mpp", 7_850_000, 47_995_000, 0.111_32), // 1.0 mpp — finest-LOD pan, ~240x320 m
-    ("ride_0.5", 7_850_000, 47_995_000, 0.222_64), // 0.5 mpp — riding, ~120x160 m
+// Camera centre: Teningen (48.1223 N, 7.8142 E) in microdegrees — the tile is baked
+// around this point so the bench renders real, populated map data at every zoom.
+const CAM_LON: i32 = 7_814_200; // 7.8142 E
+const CAM_LAT: i32 = 48_122_300; // 48.1223 N
+
+// The benchmarked zooms, in ground metres-per-pixel. zoom_for_mpp() converts each to
+// the Viewport's pixels-per-microdegree. 0.5 = riding (~120x160 m), 1.0 = finest-LOD
+// pan (~240x320 m), 5.0 = zoomed-out overview (~1200x1600 m). The LOD chosen for each
+// comes from the tile's own LOD table (select_lod_for_mpp); with breakpoints at 18/120
+// mpp all three still render the finest LOD, so 5.0 is the heaviest disc-fill case.
+const MPP_PRESETS: &[(&str, f32)] = &[
+    ("ride_0.5", 0.5),
+    ("pan_1.0", 1.0),
+    ("zoom_5.0", 5.0),
 ];
 
 #[embassy_executor::main]
@@ -86,8 +96,8 @@ async fn main(_spawner: Spawner) {
 
     let mut cycle = 0u32;
     loop {
-        for &(label, lon, lat, zoom) in PRESETS {
-            let vp = Viewport::new(PANEL_W, PANEL_H, lon, lat, zoom);
+        for &(label, mpp) in MPP_PRESETS {
+            let vp = Viewport::new(PANEL_W, PANEL_H, CAM_LON, CAM_LAT, zoom_for_mpp(mpp));
             let mut target = NullTarget::new(PANEL_W as u32, PANEL_H as u32);
 
             // Decode-only (flash/RAM reads + varint, ~no float).
