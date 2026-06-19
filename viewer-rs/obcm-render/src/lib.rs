@@ -260,92 +260,124 @@ fn aspect_for_lat(cam_lat: i32) -> f32 {
     libm::cosf((cam_lat as f32 / 1e6).to_radians())
 }
 
-/// Collect every visible feature whose style is at priority `level` into the
-/// frame buffers. Streams the viewport's leaves via [`Reader::for_each_chunk`]
-/// (no chunk cap) and decodes only the features at this level via
-/// [`Reader::for_each_feature_filtered`], so running this once per level (lowest
-/// number first) fills the buffers in strict global priority order across all
-/// chunks, while decoding each feature's coordinates at most once per frame.
-#[allow(clippy::too_many_arguments)]
-fn collect_features(
-    reader: &Reader,
-    lod: usize,
-    level: u8,
-    view: &BBox,
-    dec_points: &mut Vec<(i32, i32), MAX_DECODE_POINTS>,
-    dec_ring_lens: &mut Vec<usize, MAX_DECODE_RINGS>,
-    frame_points: &mut Vec<(i32, i32), MAX_FRAME_POINTS>,
-    frame_ring_lens: &mut Vec<usize, MAX_FRAME_RINGS>,
-    spans: &mut Vec<Span, MAX_SPANS>,
-    stats: &mut RenderStats,
-) {
-    reader.for_each_chunk(lod, view, |cid, node| {
-        reader.for_each_feature_filtered(
-            lod,
-            cid,
-            &node,
-            dec_points,
-            dec_ring_lens,
-            |sid| reader.style(sid).is_some_and(|s| s.priority == level),
-            |f| {
-                let style = match reader.style(f.style_id) {
-                    Some(s) => s,
-                    None => return,
-                };
+/// The renderer's collection scratch: per-feature decode buffers plus the frame
+/// buffers that accumulate every visible feature's geometry (and its [`Span`]) for
+/// the current frame. Cleared (not freed) each frame — see [`MapRenderer`].
+#[derive(Default)]
+struct FrameScratch {
+    // Per-feature decode scratch handed to `Reader::for_each_feature_filtered`.
+    dec_points: Vec<(i32, i32), MAX_DECODE_POINTS>,
+    dec_ring_lens: Vec<usize, MAX_DECODE_RINGS>,
+    // All visible features' geometry, concatenated, plus per-feature spans.
+    frame_points: Vec<(i32, i32), MAX_FRAME_POINTS>,
+    frame_ring_lens: Vec<usize, MAX_FRAME_RINGS>,
+    spans: Vec<Span, MAX_SPANS>,
+}
 
-                let pts = f.points();
-                let lens = f.ring_lens();
+impl FrameScratch {
+    /// Fill the frame buffers with every visible feature, in strict global
+    /// priority order. One pass per priority level (the format stores a 2-bit
+    /// level, 1..=4), lowest number first: each pass fills the buffers with every
+    /// visible feature at that level across *all* chunks before the next runs, so
+    /// when the buffers saturate the dropped features are always the lowest
+    /// priority — regardless of which chunk they sit in. Each feature matches one
+    /// level, so its coordinates decode at most once per frame.
+    fn collect(&mut self, reader: &Reader, lod: usize, view: &BBox, stats: &mut RenderStats) {
+        self.frame_points.clear();
+        self.frame_ring_lens.clear();
+        self.spans.clear();
 
-                stats.features_tried += 1;
-                stats.points_tried += pts.len();
+        for level in 1..=4u8 {
+            self.collect_level(reader, lod, level, view, stats);
+        }
 
-                if pts.is_empty() {
-                    return;
-                }
-                let mut min_lon = pts[0].0;
-                let mut max_lon = pts[0].0;
-                let mut min_lat = pts[0].1;
-                let mut max_lat = pts[0].1;
-                for &(lon, lat) in pts.iter().skip(1) {
-                    min_lon = min_lon.min(lon);
-                    max_lon = max_lon.max(lon);
-                    min_lat = min_lat.min(lat);
-                    max_lat = max_lat.max(lat);
-                }
-                let feat_bbox = BBox { min_lon, min_lat, max_lon, max_lat };
-                if !feat_bbox.intersects(view) {
-                    return;
-                }
+        // Record utilization for the stats panel.
+        stats.span_utilization = self.spans.len() as f32 / self.spans.capacity() as f32;
+        stats.point_utilization = self.frame_points.len() as f32 / self.frame_points.capacity() as f32;
+        stats.ring_utilization = self.frame_ring_lens.len() as f32 / self.frame_ring_lens.capacity() as f32;
+    }
 
-                // Capacity check.
-                if spans.is_full()
-                    || frame_points.capacity() - frame_points.len() < pts.len()
-                    || frame_ring_lens.capacity() - frame_ring_lens.len() < lens.len()
-                {
-                    stats.features_dropped += 1;
-                    return;
-                }
+    /// Append every visible feature whose style is at priority `level` to the
+    /// frame buffers. Streams the viewport's leaves via [`Reader::for_each_chunk`]
+    /// (no chunk cap) and decodes only this level's features via
+    /// [`Reader::for_each_feature_filtered`]. The leaf walk reads only the index,
+    /// so the per-level re-walk is cheap; `stats.chunks_visited` is recorded once
+    /// (the chunk set is identical every level).
+    fn collect_level(&mut self, reader: &Reader, lod: usize, level: u8, view: &BBox, stats: &mut RenderStats) {
+        // Split the borrow so the decode callback can fill `frame_*`/`spans` while
+        // `for_each_feature_filtered` borrows the decode scratch.
+        let FrameScratch { dec_points, dec_ring_lens, frame_points, frame_ring_lens, spans } = self;
+        let mut chunks = 0usize;
+        reader.for_each_chunk(lod, view, |cid, node| {
+            chunks += 1;
+            reader.for_each_feature_filtered(
+                lod,
+                cid,
+                &node,
+                dec_points,
+                dec_ring_lens,
+                |sid| reader.style(sid).is_some_and(|s| s.priority == level),
+                |f| {
+                    let style = match reader.style(f.style_id) {
+                        Some(s) => s,
+                        None => return,
+                    };
 
-                stats.features_drawn += 1;
-                stats.points_drawn += pts.len();
+                    let pts = f.points();
+                    let lens = f.ring_lens();
 
-                // Casts are safe: the capacity check above guarantees room, and
-                // the buffer sizes are asserted `<= u16::MAX` at the constants.
-                let _ = spans.push(Span {
-                    kind: f.kind,
-                    z: style.z_index,
-                    weight: style.weight,
-                    color: style.color,
-                    pt_start: frame_points.len() as u16,
-                    ring_start: frame_ring_lens.len() as u16,
-                    ring_count: lens.len() as u16,
-                    seq: spans.len() as u16,
-                });
-                let _ = frame_points.extend_from_slice(pts);
-                let _ = frame_ring_lens.extend_from_slice(lens);
-            },
-        );
-    });
+                    stats.features_tried += 1;
+                    stats.points_tried += pts.len();
+
+                    // Per-feature bbox cull (tighter than the leaf): the feature's
+                    // bounds come free from decode (`FeatureRef::bbox`).
+                    if pts.is_empty() || !f.bbox().intersects(view) {
+                        return;
+                    }
+
+                    // Capacity check.
+                    if spans.is_full()
+                        || frame_points.capacity() - frame_points.len() < pts.len()
+                        || frame_ring_lens.capacity() - frame_ring_lens.len() < lens.len()
+                    {
+                        stats.features_dropped += 1;
+                        return;
+                    }
+
+                    stats.features_drawn += 1;
+                    stats.points_drawn += pts.len();
+
+                    // Casts are safe: the capacity check above guarantees room, and
+                    // the buffer sizes are asserted `<= u16::MAX` at the constants.
+                    let _ = spans.push(Span {
+                        kind: f.kind,
+                        z: style.z_index,
+                        weight: style.weight,
+                        color: style.color,
+                        pt_start: frame_points.len() as u16,
+                        ring_start: frame_ring_lens.len() as u16,
+                        ring_count: lens.len() as u16,
+                        seq: spans.len() as u16,
+                    });
+                    let _ = frame_points.extend_from_slice(pts);
+                    let _ = frame_ring_lens.extend_from_slice(lens);
+                },
+            );
+        });
+        // Visible-chunk count for the stats panel (documents that the chunk set is
+        // uncapped). Identical across levels, so record it once.
+        if level == 1 {
+            stats.chunks_visited = chunks;
+        }
+    }
+}
+
+/// The renderer's draw scratch: projected screen points (also the polyline run
+/// buffer) and the scanline-fill crossing buffer. Cleared per use.
+#[derive(Default)]
+struct DrawScratch {
+    screen: Vec<Point, MAX_SCREEN_POINTS>,
+    xs: Vec<f32, MAX_CROSSINGS>,
 }
 
 /// What a single render call drew.
@@ -395,16 +427,11 @@ struct Span {
 /// buffers are cleared and reused, so no per-frame allocation.
 #[derive(Default)]
 pub struct MapRenderer {
-    // Per-feature decode scratch handed to `Reader::for_each_feature`.
-    dec_points: Vec<(i32, i32), MAX_DECODE_POINTS>,
-    dec_ring_lens: Vec<usize, MAX_DECODE_RINGS>,
-    // All visible features' geometry, concatenated, plus per-feature spans.
-    frame_points: Vec<(i32, i32), MAX_FRAME_POINTS>,
-    frame_ring_lens: Vec<usize, MAX_FRAME_RINGS>,
-    spans: Vec<Span, MAX_SPANS>,
-    // Drawing scratch.
-    screen: Vec<Point, MAX_SCREEN_POINTS>,
-    xs: Vec<f32, MAX_CROSSINGS>,
+    /// Collection scratch + the frame buffers (decode → cull → spans).
+    frame: FrameScratch,
+    /// Draw scratch (projected points / polyline runs + scanline crossings),
+    /// shared by the map draw phase and the marker/route/breadcrumb overlays.
+    draw: DrawScratch,
 }
 
 impl MapRenderer {
@@ -415,11 +442,12 @@ impl MapRenderer {
     /// Render the visible map into `target`.
     ///
     /// Selects the LOD for the viewport's meters-per-pixel, clears to `bg`,
-    /// streams the visible chunks' features into reused buffers, orders them by
-    /// style z-index (painter's algorithm) and draws polygons (even-odd scanline
-    /// fill) and lines. `color_fn` maps a style's RGB565 to the target's pixel
-    /// color, letting the host choose true-color vs. device quantization while
-    /// the device passes its native map.
+    /// collects the visible features into reused buffers in global priority order
+    /// ([`FrameScratch::collect`]), orders them by style z-index (painter's
+    /// algorithm) and draws polygons (even-odd scanline fill) and lines.
+    /// `color_fn` maps a style's RGB565 to the target's pixel color, letting the
+    /// host choose true-color vs. device quantization while the device passes its
+    /// native map.
     pub fn render<D, F>(
         &mut self,
         target: &mut D,
@@ -438,92 +466,44 @@ impl MapRenderer {
         let view = vp.visible_bbox();
         let mut stats = RenderStats { lod, ..Default::default() };
 
-        // --- Collect phase: stream visible features into the frame buffers. ---
-        // Split borrows so the decode callback can fill `frame_*`/`spans` while
-        // `for_each_feature_filtered` borrows the decode scratch.
-        let Self {
-            dec_points,
-            dec_ring_lens,
-            frame_points,
-            frame_ring_lens,
-            spans,
-            screen,
-            xs,
-        } = self;
+        // Collect → painter's order → draw. `seq` is the stable, alloc-free
+        // tie-break within a z-index.
+        self.frame.collect(reader, lod, &view, &mut stats);
+        self.frame.spans.sort_unstable_by_key(|s| (s.z, s.seq));
+        self.draw_map(target, vp, &color_fn);
 
-        frame_points.clear();
-        frame_ring_lens.clear();
-        spans.clear();
+        stats
+    }
 
-        // Visible-chunk count for the stats panel: a cheap index-only walk (no
-        // decode) that also documents that the chunk set is no longer capped.
-        reader.for_each_chunk(lod, &view, |_, _| stats.chunks_visited += 1);
-
-        // One pass per priority level (the format stores a 2-bit level, 1..=4),
-        // lowest number first. Each pass fills the frame buffers with every
-        // visible feature at that level across *all* chunks before the next pass
-        // runs, so when the buffers saturate the features that get dropped are
-        // always the lowest-priority ones — regardless of which chunk they sit
-        // in. The quadtree walk re-runs per pass but only the matching level's
-        // coordinates are decoded, so each feature is decoded at most once.
-        for level in 1..=4u8 {
-            collect_features(
-                reader,
-                lod,
-                level,
-                &view,
-                dec_points,
-                dec_ring_lens,
-                frame_points,
-                frame_ring_lens,
-                spans,
-                &mut stats,
-            );
-        }
-
-        // Record utilization for the stats panel.
-        stats.span_utilization = spans.len() as f32 / spans.capacity() as f32;
-        stats.point_utilization = frame_points.len() as f32 / frame_points.capacity() as f32;
-        stats.ring_utilization = frame_ring_lens.len() as f32 / frame_ring_lens.capacity() as f32;
-
-        // Painter's order by z-index. Using sort_unstable with a sequence number for stable tie-breaking without alloc.
-        spans.sort_unstable_by_key(|s| (s.z, s.seq));
-
-        // --- Draw phase. ---
-        let (w, h) = (vp.w as i32, vp.h as i32);
-        for span in spans.iter() {
+    /// Draw the collected, painter-ordered spans into `target` (the map's "draw
+    /// phase"). Polygons fill via even-odd scanline; lines stroke via the
+    /// view-clipped overlay path. Kept separate from collection so each is read
+    /// (and, later, extended — see `docs/rendering_pipeline.md` §9d) on its own.
+    fn draw_map<D, F>(&mut self, target: &mut D, vp: &Viewport, color_fn: &F)
+    where
+        D: DrawTarget,
+        F: Fn(u16) -> D::Color,
+    {
+        // Disjoint borrows: the spans/geometry are read from `frame` while the
+        // draw scratch (`screen`/`xs`) is written.
+        let Self { frame, draw } = self;
+        for span in frame.spans.iter() {
             let ring_start = span.ring_start as usize;
             let pt_start = span.pt_start as usize;
-            let ring_lens = &frame_ring_lens[ring_start..ring_start + span.ring_count as usize];
+            let ring_lens = &frame.frame_ring_lens[ring_start..ring_start + span.ring_count as usize];
             let total: usize = ring_lens.iter().sum();
-            let pts = &frame_points[pt_start..pt_start + total];
+            let pts = &frame.frame_points[pt_start..pt_start + total];
             let color = color_fn(span.color);
 
             match span.kind {
-                Kind::Polygon => {
-                    screen.clear();
-                    for &(lon, lat) in pts {
-                        let (x, y) = vp.to_screen(lon, lat);
-                        let _ = screen.push(Point::new(x, y));
-                    }
-                    fill_polygon(target, screen, ring_lens, color, w, h, xs);
-                }
+                Kind::Polygon => fill_polygon_proj(target, vp, pts, ring_lens, color, &mut draw.screen, &mut draw.xs),
                 Kind::Line => {
-                    // Lines use only the exterior ring. Same view-clipped eg stroke as the
-                    // route/breadcrumb overlays: clipping spares eg the off-screen part of a
-                    // line whose chunk straddles the view edge (most visible at coarse zoom),
-                    // while keeping its properly-jointed thick rendering for thicker classes.
+                    // Lines use only the exterior ring.
                     let n = ring_lens.first().copied().unwrap_or(0);
-                    let projected = pts[..n].iter().map(|&(lon, lat)| {
-                        let (x, y) = vp.to_screen(lon, lat);
-                        Point::new(x, y)
-                    });
-                    stroke_overlay(target, screen, projected, color, span.weight.max(1) as u32, w, h);
+                    draw_line(target, vp, &pts[..n], color, span.weight.max(1) as u32, &mut draw.screen);
                 }
             }
         }
-
-        stats
     }
 
     /// Draw the user-position marker: a chevron at `(lon, lat)` pointing along
@@ -573,32 +553,22 @@ impl MapRenderer {
         });
 
         let (cx, cy) = (sx as f32, sy as f32);
-        let pt = |x: f32, y: f32| Point::new(libm::roundf(x) as i32, libm::roundf(y) as i32);
-
-        self.screen.clear();
-        let ring_len = match forward {
+        match forward {
             // Chevron: a tip a bit ahead and two base corners swept back and out.
-            Some((fx, fy)) => {
-                let (rx, ry) = (-fy, fx); // right perpendicular
+            Some(fwd) => {
                 const TIP: f32 = 12.0;
                 const BACK: f32 = 6.0;
                 const HALF: f32 = 8.0;
-                let _ = self.screen.push(pt(cx + fx * TIP, cy + fy * TIP));
-                let _ = self.screen.push(pt(cx - fx * BACK + rx * HALF, cy - fy * BACK + ry * HALF));
-                let _ = self.screen.push(pt(cx - fx * BACK - rx * HALF, cy - fy * BACK - ry * HALF));
-                3
+                fill_chevron(target, &mut self.draw.xs, (cx, cy), fwd, TIP, BACK, HALF, color, w, h);
             }
             // Stationary glyph: a small orientation-free diamond.
             None => {
                 const R: f32 = 7.0;
-                let _ = self.screen.push(pt(cx, cy - R));
-                let _ = self.screen.push(pt(cx + R, cy));
-                let _ = self.screen.push(pt(cx, cy + R));
-                let _ = self.screen.push(pt(cx - R, cy));
-                4
+                let pt = |x: f32, y: f32| Point::new(libm::roundf(x) as i32, libm::roundf(y) as i32);
+                let diamond = [pt(cx, cy - R), pt(cx + R, cy), pt(cx, cy + R), pt(cx - R, cy)];
+                fill_polygon(target, &diamond, &[4], color, w, h, &mut self.draw.xs);
             }
-        };
-        fill_polygon(target, &self.screen, &[ring_len], color, w, h, &mut self.xs);
+        }
     }
 
     /// Stroke an active route as a polyline overlay, with optional travel-direction
@@ -638,7 +608,7 @@ impl MapRenderer {
         let chunks = route.chunks();
         let mut pts = Vec::<obcm_route::RoutePoint, { obcm_route::MAX_POINTS_PER_CHUNK }>::new();
         // Split the borrow so the fills can take `xs` while we build the polyline in `screen`.
-        let Self { screen, xs, .. } = self;
+        let DrawScratch { screen, xs } = &mut self.draw;
 
         // Pass 1 — stroke every visible chunk, in full, before any chevron is drawn.
         for (k, cm) in chunks.iter().enumerate() {
@@ -681,16 +651,9 @@ impl MapRenderer {
                 if m < 1e-3 {
                     return;
                 }
-                let (ux, uy) = (dx / m, dy / m); // screen travel dir (north-up & heading-up)
-                let (cx, cy) = (ax + dx * f, ay + dy * f); // chevron centre along the segment
-                let (px, py) = (-uy, ux); // right perpendicular = base spread
-                let r = |x: f32, y: f32| Point::new(libm::roundf(x) as i32, libm::roundf(y) as i32);
-                let tri = [
-                    r(cx + ux * ARROW_TIP, cy + uy * ARROW_TIP),
-                    r(cx - ux * ARROW_BACK + px * ARROW_HALF, cy - uy * ARROW_BACK + py * ARROW_HALF),
-                    r(cx - ux * ARROW_BACK - px * ARROW_HALF, cy - uy * ARROW_BACK - py * ARROW_HALF),
-                ];
-                fill_polygon(target, &tri, &[3], arrow_color, w, h, xs);
+                let fwd = (dx / m, dy / m); // screen travel dir (north-up & heading-up)
+                let centre = (ax + dx * f, ay + dy * f); // chevron centre along the segment
+                fill_chevron(target, xs, centre, fwd, ARROW_TIP, ARROW_BACK, ARROW_HALF, arrow_color, w, h);
             });
         }
     }
@@ -709,7 +672,7 @@ impl MapRenderer {
             let (x, y) = vp.to_screen(lon, lat);
             Point::new(x, y)
         });
-        stroke_overlay(target, &mut self.screen, projected, color, weight, w, h);
+        stroke_overlay(target, &mut self.draw.screen, projected, color, weight, w, h);
     }
 }
 
@@ -869,6 +832,85 @@ where
         }
         s += dl;
     }
+}
+
+/// Project a feature's microdegree rings into `screen` and scanline-fill them.
+/// The draw phase's `Kind::Polygon` arm; also the marker diamond's path. `screen`
+/// and `xs` are the reused draw scratch; the screen bounds come from `vp`.
+fn fill_polygon_proj<D>(
+    target: &mut D,
+    vp: &Viewport,
+    pts: &[(i32, i32)],
+    ring_lens: &[usize],
+    color: D::Color,
+    screen: &mut Vec<Point, MAX_SCREEN_POINTS>,
+    xs: &mut Vec<f32, MAX_CROSSINGS>,
+) where
+    D: DrawTarget,
+{
+    screen.clear();
+    for &(lon, lat) in pts {
+        let (x, y) = vp.to_screen(lon, lat);
+        let _ = screen.push(Point::new(x, y));
+    }
+    fill_polygon(target, screen, ring_lens, color, vp.w as i32, vp.h as i32, xs);
+}
+
+/// Project and stroke one map line (its exterior ring). The draw phase's
+/// `Kind::Line` arm — factored out as the single point where per-feature line
+/// styling (dashes, casing) will branch later (see `docs/rendering_pipeline.md`
+/// §9d). Uses the same view-clipped eg stroke as the route/breadcrumb overlays:
+/// clipping spares eg the off-screen part of a line whose chunk straddles the
+/// view edge (most visible at coarse zoom) while keeping its properly-jointed
+/// thick rendering for thicker classes.
+fn draw_line<D>(
+    target: &mut D,
+    vp: &Viewport,
+    pts: &[(i32, i32)],
+    color: D::Color,
+    weight: u32,
+    screen: &mut Vec<Point, MAX_SCREEN_POINTS>,
+) where
+    D: DrawTarget,
+{
+    let projected = pts.iter().map(|&(lon, lat)| {
+        let (x, y) = vp.to_screen(lon, lat);
+        Point::new(x, y)
+    });
+    stroke_overlay(target, screen, projected, color, weight, vp.w as i32, vp.h as i32);
+}
+
+/// Fill a 3-point direction chevron centred at `c`, pointing along the unit
+/// vector `fwd`: a tip `tip` px ahead and two base corners swept `back` px behind
+/// and `half` px out to each side (all screen pixels). Shared by the user-position
+/// marker ([`MapRenderer::draw_marker`]) and the route arrows
+/// ([`MapRenderer::draw_route`]); the caller supplies `fwd` already normalized
+/// (exact for the marker, alpha-max-beta-min for the arrows). `xs` is the reused
+/// scanline-crossing scratch — the 3-point glyph needs no `screen` buffer.
+#[allow(clippy::too_many_arguments)]
+fn fill_chevron<D>(
+    target: &mut D,
+    xs: &mut Vec<f32, MAX_CROSSINGS>,
+    c: (f32, f32),
+    fwd: (f32, f32),
+    tip: f32,
+    back: f32,
+    half: f32,
+    color: D::Color,
+    w: i32,
+    h: i32,
+) where
+    D: DrawTarget,
+{
+    let (fx, fy) = fwd;
+    let (rx, ry) = (-fy, fx); // right perpendicular = base spread
+    let r = |x: f32, y: f32| Point::new(libm::roundf(x) as i32, libm::roundf(y) as i32);
+    let tri = [
+        r(c.0 + fx * tip, c.1 + fy * tip),
+        r(c.0 - fx * back + rx * half, c.1 - fy * back + ry * half),
+        r(c.0 - fx * back - rx * half, c.1 - fy * back - ry * half),
+    ];
+    fill_polygon(target, &tri, &[3], color, w, h, xs);
 }
 
 /// Scanline even-odd polygon fill. `screen` holds every ring's projected points
