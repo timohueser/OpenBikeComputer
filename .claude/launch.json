@@ -2,9 +2,9 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "obcm-webapp",
+      "name": "web-builder",
       "runtimeExecutable": ".venv/bin/python",
-      "runtimeArgs": ["-m", "webapp", "--no-browser", "--port", "8000"],
+      "runtimeArgs": ["-m", "packer.web_builder", "--no-browser", "--port", "8000"],
       "port": 8000
     }
   ]

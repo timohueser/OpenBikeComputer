@@ -1,0 +1,20 @@
+[package]
+name = "obc-app"
+version = "0.1.0"
+edition = "2021"
+description = "OBC device application + hardware-abstraction traits (no_std) — shared by the desktop simulator and the nRF54L firmware"
+
+[dependencies]
+# default-features = false keeps `std` OUT of the shared app layer, so this crate
+# (and everything it pulls) compiles for the nRF54L's bare-metal target. The host
+# simulator re-enables std on `obc-reader` through its own dependency edge. `render`
+# brings the `Viewport` + `MapRenderer` the app drives; it's no_std.
+obc-reader = { path = "../obc-reader" }
+obc-render = { path = "../obc-render" }
+# The route format + reader (RouteSummary for the menu catalog, RouteReader the Map
+# draws). no_std, shared with the firmware exactly like the map reader.
+obc-route = { path = "../obc-route" }
+# Needed only to name the `DrawTarget` bound on `App::render_frame`. no_std.
+embedded-graphics = "0.8"
+# Fixed-capacity screen stack (no_std, zero-alloc) — same crate the renderer uses.
+heapless = "0.8"
