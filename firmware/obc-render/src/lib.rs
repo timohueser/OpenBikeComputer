@@ -18,7 +18,7 @@ use heapless::Vec;
 
 use embedded_graphics::{
     prelude::*,
-    primitives::{Polyline, PrimitiveStyle, Rectangle},
+    primitives::{Circle, Polyline, PrimitiveStyle, Rectangle},
 };
 
 use obc_reader::{BBox, Kind, Reader};
@@ -751,17 +751,118 @@ where
         let _ = Polyline::new(run)
             .into_styled(PrimitiveStyle::with_stroke(color, weight))
             .draw(target);
+        // Round joints + caps. eg joins thick segments with a flat **bevel**, so a densely
+        // sampled curve renders as a fan of facets — the scalloped "beading" on thick lines.
+        // Filling a disc (⌀ = stroke width) at each vertex turns every joint into a smooth arc,
+        // keeping full shape detail (no decimation needed). Only thick lines need it (≤2 px don't
+        // visibly facet), and the disc at a shared chunk-seam vertex also closes the butt-cap gap
+        // between adjacent features.
+        if weight > 2 {
+            let r = (weight / 2) as i32;
+            for p in run.iter() {
+                let _ = Circle::new(Point::new(p.x - r, p.y - r), weight)
+                    .into_styled(PrimitiveStyle::with_fill(color))
+                    .draw(target);
+            }
+        }
     }
     run.clear();
 }
 
+/// Screen-space simplification tolerance (px) for [`stroke_overlay`]. **Subpixel** by design:
+/// big enough to fold away the integer-projection staircase (≤ ½ px deviations) and the
+/// same-pixel vertex pile-ups that make eg's thick `Polyline` bead, but under 1 px so the
+/// stroked line never shifts a visible pixel — beading goes, road/route shape stays.
+const SIMPLIFY_EPS_PX: f32 = 0.75;
+
+/// True when `p` lies within `eps` px (perpendicular) of the infinite line through `a` and `b`
+/// — the near-collinear test [`simplify`] uses to drop redundant vertices. Cross / length-squared
+/// in `f32` (no `sqrt`); degenerate `a == b` falls back to `|p − a|`.
+#[inline]
+fn within_eps(p: Point, a: Point, b: Point, eps: f32) -> bool {
+    let (abx, aby) = ((b.x - a.x) as f32, (b.y - a.y) as f32);
+    let (apx, apy) = ((p.x - a.x) as f32, (p.y - a.y) as f32);
+    let cross = apx * aby - apy * abx;
+    let len_sq = abx * abx + aby * aby;
+    let e2 = eps * eps;
+    if len_sq < 1e-6 {
+        return apx * apx + apy * apy <= e2; // a == b: distance to the point
+    }
+    cross * cross <= e2 * len_sq // (cross / len)² ≤ eps²  ⇔  perp-dist ≤ eps
+}
+
+/// Clip one committed segment `a`→`b` to the view and append it to the current run, flushing
+/// where the line is discontinuous (segment off-screen, or it doesn't continue the last run).
+/// Pulled out of [`stroke_overlay`] so the main loop can feed it the *simplified* segments.
+#[allow(clippy::too_many_arguments)]
+fn stroke_seg<D>(target: &mut D, run: &mut Vec<Point, MAX_SCREEN_POINTS>, a: Point, b: Point, color: D::Color, weight: u32, xmin: f32, ymin: f32, xmax: f32, ymax: f32)
+where
+    D: DrawTarget,
+{
+    match clip_segment(a, b, xmin, ymin, xmax, ymax) {
+        None => flush_run(target, run, color, weight), // segment wholly off-screen
+        Some((c0, c1)) => {
+            // (Re)start a run if this segment didn't continue the previous one.
+            if run.last().copied() != Some(c0) {
+                flush_run(target, run, color, weight);
+                let _ = run.push(c0);
+            }
+            push_run(run, c1);
+            // Clipped at its far end → the line left the view here; close this run.
+            if c1 != b {
+                flush_run(target, run, color, weight);
+            }
+        }
+    }
+}
+
+/// Streaming one-lookahead collinear simplification: calls `emit` for the first vertex, the
+/// last, and every vertex of `points` that bends off the line through its kept neighbours by
+/// more than `eps` px ([`within_eps`]) — dropping the rest. O(1) state; each dropped vertex lies
+/// within `eps` of the kept path, so the simplified line never leaves that tolerance.
+fn simplify<I, F>(points: I, eps: f32, mut emit: F)
+where
+    I: IntoIterator<Item = Point>,
+    F: FnMut(Point),
+{
+    let mut anchor: Option<Point> = None; // last kept (emitted) vertex
+    let mut held: Option<Point> = None; // candidate, kept only if it bends away by > eps
+    for cur in points {
+        match (anchor, held) {
+            (None, _) => {
+                anchor = Some(cur);
+                emit(cur);
+            }
+            (Some(_), None) => held = Some(cur),
+            (Some(a), Some(hp)) => {
+                if within_eps(hp, a, cur, eps) {
+                    held = Some(cur); // `hp` redundant — extend the straight run through it
+                } else {
+                    emit(hp);
+                    anchor = Some(hp);
+                    held = Some(cur);
+                }
+            }
+        }
+    }
+    if let Some(hp) = held {
+        emit(hp); // tail vertex
+    }
+}
+
 /// Clip a projected overlay polyline to the view and stroke the on-screen runs with
-/// embedded-graphics. eg's `Polyline` gives correctly **jointed** thick lines (no kink gaps),
-/// but rasterises width pixel-by-pixel — ruinous when the route/breadcrumb is ~96% off-screen.
-/// Clipping first (Cohen–Sutherland, into the screen grown by the stroke width so an
-/// edge-hugging line keeps its full thickness) means eg only ever pays for the visible part:
-/// the line where it crosses the view splits into separate runs, each stroked on its own. The
-/// `run` scratch is reused; sub-pixel steps are dropped and long runs subdivided.
+/// embedded-graphics. eg's `Polyline` gives thick lines but rasterises width pixel-by-pixel —
+/// ruinous when the route/breadcrumb is ~96% off-screen. Clipping first (Cohen–Sutherland, into
+/// the screen grown by the stroke width so an edge-hugging line keeps its full thickness) means
+/// eg only ever pays for the visible part: the line where it crosses the view splits into
+/// separate runs, each stroked on its own (and round-jointed in [`flush_run`]).
+///
+/// The points are first **simplified in screen space** ([`simplify`] at [`SIMPLIFY_EPS_PX`]) — a
+/// *subpixel* dedup that folds away the integer-projection staircase and same-pixel vertex
+/// pile-ups a dense route/road carries when zoomed out. It never moves the line a visible pixel,
+/// so no shape is lost (the joint smoothing that kills thick-line beading is [`flush_run`]'s
+/// round discs, not this); it just hands eg far fewer segments and discs. The `run` scratch is
+/// reused; long runs are subdivided.
 fn stroke_overlay<D, I>(target: &mut D, run: &mut Vec<Point, MAX_SCREEN_POINTS>, points: I, color: D::Color, weight: u32, w: i32, h: i32)
 where
     D: DrawTarget,
@@ -771,31 +872,16 @@ where
     let m = weight as f32 + 2.0; // clip margin ≥ half-width, so edge strokes still paint in
     let (xmin, ymin, xmax, ymax) = (-m, -m, w as f32 + m, h as f32 + m);
     run.clear();
+
+    // Simplify in screen space, then stroke consecutive kept vertices as clipped segments — their
+    // runs join because each segment starts where the previous ended.
     let mut prev: Option<Point> = None;
-    for cur in points {
+    simplify(points, SIMPLIFY_EPS_PX, |v| {
         if let Some(a) = prev {
-            // Drop sub-pixel steps (keeps the run — and eg's per-segment work — bounded).
-            if (cur.x - a.x).abs() + (cur.y - a.y).abs() < 2 {
-                continue;
-            }
-            match clip_segment(a, cur, xmin, ymin, xmax, ymax) {
-                None => flush_run(target, run, color, weight), // segment wholly off-screen
-                Some((c0, c1)) => {
-                    // (Re)start a run if this segment didn't continue the previous one.
-                    if run.last().copied() != Some(c0) {
-                        flush_run(target, run, color, weight);
-                        let _ = run.push(c0);
-                    }
-                    push_run(run, c1);
-                    // Clipped at its far end → the line left the view here; close this run.
-                    if c1 != cur {
-                        flush_run(target, run, color, weight);
-                    }
-                }
-            }
+            stroke_seg(target, run, a, v, color, weight, xmin, ymin, xmax, ymax);
         }
-        prev = Some(cur);
-    }
+        prev = Some(v);
+    });
     flush_run(target, run, color, weight);
 }
 
@@ -981,9 +1067,60 @@ fn fill_polygon<D>(
 
 #[cfg(test)]
 mod tests {
-    use super::walk_route_arrows;
+    use super::{simplify, walk_route_arrows, within_eps};
+    use embedded_graphics::prelude::Point;
     use heapless::Vec;
     use obc_route::{ground_dist_m, RoutePoint};
+
+    /// Collect the vertices [`simplify`] keeps from `pts` at tolerance `eps`.
+    fn kept(pts: &[Point], eps: f32) -> Vec<Point, 64> {
+        let mut out = Vec::new();
+        simplify(pts.iter().copied(), eps, |p| {
+            let _ = out.push(p);
+        });
+        out
+    }
+
+    #[test]
+    fn within_eps_is_perpendicular_distance() {
+        let (a, b) = (Point::new(0, 0), Point::new(10, 0)); // the x-axis
+        assert!(within_eps(Point::new(5, 0), a, b, 0.5), "on the line");
+        assert!(!within_eps(Point::new(5, 1), a, b, 0.5), "1 px off > 0.5 tol");
+        assert!(within_eps(Point::new(5, 1), a, b, 1.5), "1 px off < 1.5 tol");
+        // Degenerate a == b falls back to the point distance |p − a|.
+        assert!(within_eps(Point::new(0, 1), a, a, 1.5));
+        assert!(!within_eps(Point::new(0, 2), a, a, 1.5));
+    }
+
+    #[test]
+    fn simplify_collapses_the_subpixel_staircase() {
+        // y = round(0.4·x): a straight line the integer projection turned into a staircase. Every
+        // point sits within ½ px of the true line, so a subpixel tolerance drops all but the ends.
+        let mut pts = Vec::<Point, 64>::new();
+        for x in 0..=30 {
+            let _ = pts.push(Point::new(x, libm::roundf(x as f32 * 0.4) as i32));
+        }
+        let out = kept(&pts, 0.75);
+        assert!(out.len() <= 3, "staircase should collapse to ~the endpoints, kept {}", out.len());
+        assert_eq!(out.first(), pts.first(), "keeps the start");
+        assert_eq!(out.last(), pts.last(), "keeps the end");
+    }
+
+    #[test]
+    fn simplify_keeps_a_real_corner() {
+        // A right-angle L: the straight arms collapse, but the corner bends far past any subpixel
+        // tolerance, so it survives — shape is preserved, only redundant vertices go.
+        let mut pts = Vec::<Point, 64>::new();
+        for x in 0..=10 {
+            let _ = pts.push(Point::new(x, 0));
+        }
+        for y in 1..=10 {
+            let _ = pts.push(Point::new(10, y));
+        }
+        let out = kept(&pts, 0.75);
+        assert_eq!(out.len(), 3, "start, corner, end");
+        assert_eq!(out[1], Point::new(10, 0), "the corner is kept");
+    }
 
     /// Ground spacing used to drive the grid walker directly. In the app this is derived
     /// per-frame from the zoom (`ARROW_SPACING_PX × m/px`); the walker itself just takes metres,
