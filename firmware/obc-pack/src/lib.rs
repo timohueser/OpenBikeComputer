@@ -21,9 +21,11 @@
 //! line-ways (e.g. `highway=residential` loops) are emitted as lines only, not
 //! also as filled polygons. See the plan's Amendments section.
 
+pub mod config;
 pub mod dump;
 pub mod feature_dump;
 pub mod geom;
+pub mod ingest;
 pub mod quadtree;
 pub mod serialize;
 

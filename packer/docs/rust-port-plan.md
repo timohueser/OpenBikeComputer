@@ -63,13 +63,44 @@ These supersede the relevant parts of §4/§5/§9 below; the rest of the plan st
   whole corpus** — GEOS 3.14 and shapely's 3.13 happen to clip identically on
   this data, so it beat the render+multiset bar. 6 quadtree unit tests
   (`test_quadtree.py` cases) green.
-- **Next — Stage 3 (ingest, common case):** port `ingest.py` lines + closed
-  ways (skip MP *relations*). First real end-to-end Rust pipeline. Needs the
-  `osmpbf` crate + a node-location store. This is where per-LOD **simplify**
-  (`TopologyPreservingSimplifier`, §4.4) finally runs in Rust — the likely first
-  real GEOS-version divergence, so the render+multiset gate earns its keep. Also
-  implement the closed-way classification fix (Amendments §2).
-  **→ Full briefing: [`stage3-handover.md`](stage3-handover.md)** (start here).
+- **Stage 3 (ingest, common case): DONE.** First end-to-end Rust pipeline
+  (`.osm.pbf` → `.obcm`), branch `rust-packer-port`. New modules: `config.rs`
+  (style-IDs 1-based in **document order** via `serde_json` `preserve_order`),
+  `ingest.rs` (`osmpbf` 0.3.8 two-pass — node-location `HashMap`, then ways —
+  with the closed-way classification fix of Amendment 2), `main.rs` (the real
+  `pack.py` single-PBF pipeline minus relations + land/merge), plus
+  `geom::topology_preserve_simplify` and `geom::polygon_is_valid`.
+  - **Node-coordinate parity (the gating risk) is solved:** osmium derives
+    lon/lat as `decimicro / 1e7`; `osmpbf`'s own `.lon()` is `1e-9*nano_lon()`
+    and differs in the last bit. Using `node.decimicro_lon() as f64 / 1e7`
+    (division by the exact integer, not `*1e-7`) is **bit-identical** to osmium
+    across tiny + monaco + malta (`node_probe` bin / `node_probe.py`).
+  - **Closed-way fix + invalid geometry:** a closed way is a polygon iff
+    `is_area` (and not `admin_level`), else a line — never both. We additionally
+    **skip closed-way polygons whose ring is invalid** (GEOS `is_valid`), because
+    osmium's assembler yields no ring for them (e.g. malta's self-intersecting
+    "Red House" way 368715930) — this made the ingest multiset exact.
+  - **Ingest gate (`run_stage3_ingest.sh`): multiset-identical to the oracle's
+    Stage-3-expected set across the whole corpus** (lines exact; closed-way
+    polygons up to ring rotation/winding). `dump_ingest.py` observes the real
+    `OSMHandler` (via a provenance subclass) and drops relation- and
+    closed-line-way-sourced polygons; `compare_ingest.py` does the multiset diff.
+  - **End-to-end gate (`run_stage3.sh`, `dump_stage3_ref.py`,
+    `obcm_diff --canonical-polys`): PASS.** Structural identical; **lines
+    byte-exact at every LOD**; **no-simplify LODs (0 m, 50 m) match exactly**
+    (polygons up to ring winding). The **only** divergence is the predicted
+    GEOS 3.14-vs-3.13 `TopologyPreservingSimplifier` skew, and it appears
+    **only at the 12 m LOD on polygons** (~5–35 % of that LOD's polys, vertex
+    level) — the answer to §5.4's "does simplify diverge?": yes, narrowly and
+    benignly, lines unaffected. This is exactly the multiset gate's reason to
+    exist (Amendment 1).
+  - **Freiburg smoke test:** 150 MB / ~14 M nodes runs in **33 s** (release,
+    single-thread) at **1.48 GB** peak RSS — vs the Python pipeline's ~227 s, so
+    ~7× even before relations/land and before Stage-6 threading. Node-store
+    memory (risk §8) is fine; flag for Stage 6.
+- **Next — Stage 4 (multipolygon relation area assembly):** the hard sub-project
+  (§8.4). Stage 3 intentionally omits relations; `obcm_diff --canonical-polys`
+  and the provenance harness are ready to validate the added relation polygons.
 
 ## 0. Context (measured)
 
