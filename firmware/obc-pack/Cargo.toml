@@ -17,3 +17,8 @@ heapless = "0.8"
 # (`build_area`, the even-odd multipolygon primitive) used for Stage-4 relations.
 geos = { version = "11.1.1", features = ["v3_14_0"] }
 osmpbf = "0.3.8"
+# Stage-6 speed: parallelize the per-feature simplify. Safe because the `geos`
+# crate keeps a thread-local GEOS context (each worker has its own) and `Geometry`
+# is `!Send` (never crosses threads); rayon's `collect` preserves order, so output
+# stays byte-identical.
+rayon = "1"

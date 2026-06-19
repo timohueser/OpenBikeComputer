@@ -13,15 +13,18 @@
 //! and feature/ring order is not reproduced. The serializer + quadtree remain
 //! byte-exact in isolation (Stages 1–2).
 
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
+
+use rayon::prelude::*;
 
 use obc_pack::config::Config;
 use obc_pack::geom::{topology_preserve_simplify, Geom};
 use obc_pack::ingest::{ingest_osm, IngestFeature};
 use obc_pack::land;
 use obc_pack::quadtree::build_lod;
-use obc_pack::serialize::{serialize_lods, LodLayer};
+use obc_pack::serialize::serialize_lods_streaming;
 
 /// Meters → degrees divisor for the simplify tolerance (mirrors `pack.py`).
 const M_PER_DEG: f64 = 111_320.0;
@@ -125,30 +128,46 @@ fn run() -> Result<(), String> {
         }
     }
 
-    // --- One quadtree per LOD (cumulative + per-level simplify), like pack.py. ---
-    let mut lods = Vec::with_capacity(config.lods.len());
-    for (i, lod) in config.lods.iter().enumerate() {
-        println!("Building Quadtree LOD {i} (simplify {}m)...", lod.simplify_m);
-        let tol = if lod.simplify_m > 0.0 { lod.simplify_m / M_PER_DEG } else { 0.0 };
-        let level: Vec<(u8, Geom)> = ingested
-            .features
-            .iter()
-            .filter(|f| f.min_lod <= i)
-            .map(|f| {
-                let g = if tol > 0.0 { topology_preserve_simplify(&f.geom, tol) } else { f.geom.clone() };
-                (f.style_id, g)
-            })
-            .collect();
-        let root = build_lod(level, global_bbox, chunk_size);
-        lods.push(LodLayer { max_mpp: lod.max_mpp, chunk_size, root });
-    }
-
-    // --- Serialize the pyramid + write. ---
-    println!("Serializing {} LOD level(s)...", lods.len());
+    // --- Build + serialize the LOD pyramid in one streaming pass (Stage 6): each
+    // LOD's tree is built (cumulative + per-level simplify, like pack.py),
+    // serialized, streamed to disk, and dropped before the next — so peak memory
+    // is ~one tree instead of all of them plus the whole output buffer. The bytes
+    // are identical to the in-memory serializer. ---
     let styles = config.styles();
-    let bytes = serialize_lods(&lods, &styles, config.marker_color, global_bbox);
-    println!("Writing {} ({} bytes)...", args.output, bytes.len());
-    std::fs::write(&args.output, &bytes).map_err(|e| format!("write {}: {e}", args.output))?;
+    let file =
+        std::fs::File::create(&args.output).map_err(|e| format!("create {}: {e}", args.output))?;
+    let mut w = std::io::BufWriter::new(file);
+    let total = serialize_lods_streaming(
+        &mut w,
+        config.lods.len(),
+        &styles,
+        config.marker_color,
+        global_bbox,
+        |i| {
+            let lod = &config.lods[i];
+            println!("Building Quadtree LOD {i} (simplify {}m)...", lod.simplify_m);
+            let tol = if lod.simplify_m > 0.0 { lod.simplify_m / M_PER_DEG } else { 0.0 };
+            // Parallel per-feature simplify (rayon). Each closure runs wholly on
+            // one worker thread — to_geos → simplify → back — using that thread's
+            // own GEOS context, so no geometry crosses threads. `collect` preserves
+            // order, so the feature order into `build_lod` (and thus the output) is
+            // unchanged. The quadtree build below stays sequential (bounded memory).
+            let level: Vec<(u8, Geom)> = ingested
+                .features
+                .par_iter()
+                .filter(|f| f.min_lod <= i)
+                .map(|f| {
+                    let g =
+                        if tol > 0.0 { topology_preserve_simplify(&f.geom, tol) } else { f.geom.clone() };
+                    (f.style_id, g)
+                })
+                .collect();
+            (build_lod(level, global_bbox, chunk_size), chunk_size, lod.max_mpp)
+        },
+    )
+    .map_err(|e| format!("write {}: {e}", args.output))?;
+    w.flush().map_err(|e| format!("flush {}: {e}", args.output))?;
+    println!("Writing {} ({total} bytes)...", args.output);
     println!("Done!");
     Ok(())
 }

@@ -2150,6 +2150,7 @@ dependencies = [
  "heapless",
  "obc-reader",
  "osmpbf",
+ "rayon",
  "serde",
  "serde_json",
 ]

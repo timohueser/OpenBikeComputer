@@ -12,6 +12,8 @@
 //! `round`), densifies long segments, delta-encodes rings, and lays out the
 //! chunk / index / LOD-table / header bytes per `OBCM_Spec.md`.
 
+use std::io::{self, Seek, SeekFrom, Write};
+
 /// Max delta (microdegrees) before a segment is densified to keep deltas in
 /// 16-bit range. Mirrors `serialize.py::_MAX_SEGMENT`.
 const MAX_SEGMENT: i64 = 30_000;
@@ -348,6 +350,82 @@ pub fn serialize_lods(
     out
 }
 
+/// Streaming counterpart to [`serialize_lods`]: writes the **same** v5 byte
+/// stream, but builds, serializes, and *drops* one LOD tree at a time, streaming
+/// each LOD's payload straight to `w`. Peak memory is ~one tree + one LOD's chunk
+/// bytes, instead of all trees plus the whole output buffer in RAM — the Stage-6
+/// memory win (freiburg's 5-LOD build peaked at ~2.7 GB here).
+///
+/// The header, style table, and LOD-table *offset* are all known up front; only
+/// the per-LOD table entries need the built trees. So we write the header + style
+/// table + a **zeroed** LOD table, stream each LOD's `index ++ chunks` (recording
+/// its table entry), then `seek` back and patch the LOD table. The bytes are
+/// identical to `serialize_lods` for the same trees (asserted by
+/// `streaming_matches_in_memory`). Returns the total bytes written.
+///
+/// `build(i)` produces LOD `i`'s `(root, chunk_size, max_mpp)`; it is called once
+/// per level, in order, and each tree is dropped before the next call.
+pub fn serialize_lods_streaming<W, F>(
+    w: &mut W,
+    lod_count: usize,
+    styles: &[Style],
+    marker_color: u16,
+    global_bbox: (i64, i64, i64, i64),
+    mut build: F,
+) -> io::Result<u64>
+where
+    W: Write + Seek,
+    F: FnMut(usize) -> (Node, usize, Option<f64>),
+{
+    let style_data = pack_style_dict(styles);
+    let lod_table_offset = HEADER_LEN + style_data.len();
+    let payload_start = lod_table_offset + lod_count * LOD_ENTRY_LEN;
+
+    // 1. Header `<4sBiiiiIBIH>` (bbox stored lat,lon,lat,lon) — needs no tree.
+    let mut header = Vec::with_capacity(HEADER_LEN);
+    header.extend_from_slice(b"OBCM");
+    header.push(0x05);
+    header.extend_from_slice(&(global_bbox.1 as i32).to_le_bytes()); // min_lat
+    header.extend_from_slice(&(global_bbox.0 as i32).to_le_bytes()); // min_lon
+    header.extend_from_slice(&(global_bbox.3 as i32).to_le_bytes()); // max_lat
+    header.extend_from_slice(&(global_bbox.2 as i32).to_le_bytes()); // max_lon
+    header.extend_from_slice(&(HEADER_LEN as u32).to_le_bytes());
+    header.push(lod_count as u8);
+    header.extend_from_slice(&(lod_table_offset as u32).to_le_bytes());
+    header.extend_from_slice(&marker_color.to_le_bytes());
+    debug_assert_eq!(header.len(), HEADER_LEN);
+    w.write_all(&header)?;
+
+    // 2. Style table, then a zeroed LOD table we patch in step 4.
+    w.write_all(&style_data)?;
+    w.write_all(&vec![0u8; lod_count * LOD_ENTRY_LEN])?;
+
+    // 3. Per-LOD: build → serialize → stream payload → drop the tree.
+    let mut table = Vec::with_capacity(lod_count * LOD_ENTRY_LEN);
+    let mut cursor = payload_start;
+    for i in 0..lod_count {
+        let (root, chunk_size, max_mpp) = build(i);
+        let (ib, nc, cb, cc) = serialize_tree(&root, chunk_size);
+        drop(root); // free the tree before writing this LOD / building the next
+        let mpp_f: f32 = max_mpp.map_or(f32::INFINITY, |v| v as f32);
+        // Same field order as serialize_lods: mpp, index_offset, nc, cs, cc.
+        table.extend_from_slice(&mpp_f.to_le_bytes());
+        table.extend_from_slice(&(cursor as u32).to_le_bytes());
+        table.extend_from_slice(&nc.to_le_bytes());
+        table.extend_from_slice(&(chunk_size as u16).to_le_bytes());
+        table.extend_from_slice(&cc.to_le_bytes());
+        w.write_all(&ib)?;
+        w.write_all(&cb)?;
+        cursor += ib.len() + cb.len();
+    }
+
+    // 4. Back-patch the LOD table in place, then leave the cursor at EOF.
+    w.seek(SeekFrom::Start(lod_table_offset as u64))?;
+    w.write_all(&table)?;
+    w.seek(SeekFrom::Start(cursor as u64))?;
+    Ok(cursor as u64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -387,5 +465,48 @@ mod tests {
         let mut out3 = Vec::new();
         densify((0, 0), (30000, -30000), &mut out3);
         assert_eq!(out3, vec![(30000, -30000)]);
+    }
+
+    #[test]
+    fn streaming_matches_in_memory() {
+        // The Stage-6 streaming serializer must be byte-identical to
+        // `serialize_lods` for the same trees. Build a small 2-LOD pyramid via the
+        // real quadtree, serialize both ways, and compare.
+        use crate::geom::Geom;
+        use std::io::Cursor;
+
+        let bbox = (0, 0, 1_000_000, 1_000_000);
+        let styles = vec![Style { id: 1, z_index: 0, color: 0x1234, weight: 2, priority: 1 }];
+        let lods = vec![
+            LodLayer {
+                max_mpp: Some(100.0),
+                chunk_size: 256,
+                root: crate::quadtree::build_lod(
+                    [(1u8, Geom::Line(vec![(0.1, 0.1), (0.9, 0.9)]))],
+                    bbox,
+                    256,
+                ),
+            },
+            LodLayer {
+                max_mpp: None,
+                chunk_size: 256,
+                root: crate::quadtree::build_lod(
+                    [(1u8, Geom::Line(vec![(0.2, 0.2), (0.8, 0.8), (0.5, 0.1)]))],
+                    bbox,
+                    256,
+                ),
+            },
+        ];
+
+        let reference = serialize_lods(&lods, &styles, 0xABCD, bbox);
+
+        let mut cur = Cursor::new(Vec::new());
+        let total = serialize_lods_streaming(&mut cur, lods.len(), &styles, 0xABCD, bbox, |i| {
+            (lods[i].root.clone(), lods[i].chunk_size, lods[i].max_mpp)
+        })
+        .unwrap();
+
+        assert_eq!(cur.into_inner(), reference, "streaming output must be byte-identical");
+        assert_eq!(total as usize, reference.len());
     }
 }

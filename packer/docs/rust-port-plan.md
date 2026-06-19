@@ -179,8 +179,50 @@ These supersede the relevant parts of §4/§5/§9 below; the rest of the plan st
     equivalence, not `structural_ok=1`.
   - Freiburg (157 MB) end-to-end with land: **37 s** (+~4 s for the 1.3 GB shapefile
     scan over the Stage-3 baseline), 2.2 GB RSS — memory/scan are Stage-6 concerns.
-- **Next — Stage 6 (parallelize + node-store memory):** then Stage 7 (`jobs.py`
-  switchover behind `OBC_PACK_BACKEND`).
+- **Integration (§7 — done ahead of Stage 6, by request): DONE.**
+  `web_builder/jobs.py` now selects the packer backend via `OBC_PACK_BACKEND`
+  (default **`rust`**): `_rust_pack_bin()` resolves the native binary
+  (`firmware/target/{release,debug}/obc-pack`, or `OBC_PACK_BIN`) and runs it with
+  the unchanged positional CLI + `--chunk-size`. The stage strings already match
+  `_STAGE_MARKERS`, so SSE streaming + phase mapping are untouched. It falls back to
+  `pack.py` automatically if the binary isn't built, and `OBC_PACK_BACKEND=python`
+  forces the fallback.
+  - **Verified end-to-end** by driving the real `jobs._run` for monaco **offline**
+    (cached PBF + land dataset, only the geofabrik URL lookup stubbed): valid
+    **OBCM v5**, every stage phase streamed (`ingest → bbox → land → quadtree →
+    serialize`), `done` event with the output path.
+  - **Render-equivalent on the user's actual 5-LOD `user_config.json`** (Stage 5's
+    gate used the 3-LOD `config.json`): python-vs-rust monaco is **0-px diff** at
+    both the overview and the zoom-1200 fine-LOD tile, byte sizes equal. The
+    per-LOD multiset diff at LOD1–3 is the same documented GEOS-version split skew,
+    now surfaced by the finer simplify steps — render-equivalent, not a regression.
+- **Stage 6 (memory + parallel): DONE.** Profiling the **5-LOD `user_config`**
+  freiburg build (the real web-builder workload) **overturned the handover's
+  assumption**: the node store is only ~0.8 GB (not the peak); the peak was the
+  **serializer** holding all 5 quadtrees **and** the whole output buffer in RAM
+  (~3 GB). Two changes, both **byte-identical** to the pre-Stage-6 output:
+  - **Streaming serializer** (`serialize::serialize_lods_streaming`, wired in
+    `main.rs`): build → serialize → **drop** one LOD tree at a time, streaming each
+    LOD's `index ++ chunks` straight to a `BufWriter`. Header + style table + a
+    *zeroed* LOD table are written first; the **LOD table is back-patched** at the
+    end (every offset is known up front). Unit-tested byte-identical to the
+    in-memory `serialize_lods` (`streaming_matches_in_memory`).
+  - **Parallel simplify** (`rayon`): the per-feature `topology_preserve_simplify`
+    runs across cores. Safe because the `geos` crate keeps a **thread-local** GEOS
+    context (`with_context` → `thread_local!`) and `Geometry` is `!Send` (never
+    crosses threads); rayon's `collect` preserves order ⇒ byte-identical (verified
+    par == seq on malta). The quadtree build stays **sequential** (bounds memory to
+    one tree at a time).
+  - **Result (freiburg, same config, apples-to-apples via `git stash` of HEAD):
+    peak RSS 2.96 GB → 1.58 GB (−47 %), wall 89.7 s → 71.1 s (−21 %)**, output
+    `cmp`-identical (452 MB). Passes the corpus render gate **transitively** (bytes
+    identical to the original, which passed it). Node-store compaction deferred
+    (low-ROI). **Remaining sequential bottleneck = the quadtree build** (GEOS clips
+    during leaf splits); parallelizing it (bulk-load / parallel subtrees) is the
+    next speed lever, larger change.
+  - Gotcha for the next session: `user_config.json` is **live** (the web builder
+    rewrites it). Snapshot it before before/after measurements — a mid-session edit
+    silently invalidated a reference here.
 
 ## 0. Context (measured)
 
