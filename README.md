@@ -1,5 +1,8 @@
 # OBC — OpenBikeComputer
 
+<img width="483" height="692" alt="image" src="https://github.com/user-attachments/assets/a222e908-a12b-4e26-a53c-6c227f30005a" />
+
+
 A from-scratch bikepacking computer: a custom binary map format, a Rust map
 packer, a web-based map builder, and the device firmware + a desktop simulator
 that share **one** rendering path. The target hardware is an **nRF54L** driving a
