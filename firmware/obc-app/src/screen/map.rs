@@ -95,7 +95,7 @@ impl MapScreen {
         let vp = rx.state.viewport(rx.w, rx.h);
         let bg565 = rx.reader.backdrop_style().map_or(DEFAULT_BG_RGB565, |s| s.color);
         let bg = color_fn(bg565);
-        let stats = rx.renderer.render(target, rx.reader, &vp, bg, color_fn);
+        let mut stats = rx.renderer.render(target, rx.reader, &vp, bg, color_fn);
 
         // Direction chevrons ride the route only at the finest LOD (riding zoom): the plain
         // stroke shows at every zoom, the chevrons appear once `render` selected the last LOD,
@@ -105,7 +105,7 @@ impl MapScreen {
         // The planned route, stroked in magenta over the map (under the breadcrumb + marker),
         // with white travel-direction chevrons near the rider at riding zoom.
         if let Some(route) = rx.route {
-            rx.renderer.draw_route(
+            let (route_chunks, route_points, route_points_drawn) = rx.renderer.draw_route(
                 target,
                 &vp,
                 route,
@@ -114,6 +114,9 @@ impl MapScreen {
                 color_fn(ARROW_COLOR),
                 arrows_at,
             );
+            stats.route_chunks = route_chunks;
+            stats.route_points = route_points;
+            stats.route_points_drawn = route_points_drawn;
         }
 
         // The travelled-path breadcrumb in navy, drawn *over* the route (and under the marker)
