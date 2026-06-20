@@ -11,10 +11,11 @@
 //! black bezel *bulging into* the display — the iOS volume/lock-button press effect.
 //! The hump has a **fixed base width** along the edge ([`BASE_HALF`]) and only its
 //! inward *depth* tracks the hold, so holding pushes it deeper in place rather than
-//! fanning it wider. Its silhouette is a quartic bump (flat tangent shoulders that
-//! melt into the edge, a softly rounded apex — deliberately *not* a round circular
-//! cap), rasterized as edge-perpendicular strips. A completed hold **pops** — a
-//! quick deeper lunge that eases back out — and an early release retracts it.
+//! fanning it wider. Its silhouette is a flat-topped bump — a [`FLAT_HALF`]-wide
+//! flat shelf at the apex with quartic shoulders easing into the edge (deliberately
+//! *not* a round circular cap or a pointed parabola) — rasterized as edge-
+//! perpendicular strips. A completed hold **pops** — a quick deeper lunge that eases
+//! back out — and an early release retracts it.
 //!
 //! Drawn in [`palette::HUD`] (the near-black frame colour), so it needs no gradient
 //! or alpha and renders on the real 8-color panel exactly as in the simulator. The
@@ -33,11 +34,17 @@ use crate::screen::palette;
 
 /// Half the bulge's fixed base width (px) along the edge — the hump spans `2 *
 /// BASE_HALF` regardless of how deep it bulges, so depth and width are independent.
-const BASE_HALF: i32 = 22;
+const BASE_HALF: i32 = 44;
+/// Half the bulge's flat *top* width (px): strips within `±FLAT_HALF` of the centre
+/// sit at full depth (a flat shelf at the apex), and the quartic shoulder eases to
+/// zero only across the remaining `BASE_HALF - FLAT_HALF` on each side — so the top
+/// reads as a flat edge rather than a parabola's point. `0` is a pure quartic bump;
+/// keep it `< BASE_HALF` to leave room for the shoulders.
+const FLAT_HALF: i32 = 12;
 /// Inward depth (px) the bulge reaches at a full charge, just before the threshold.
-const DEPTH: f32 = 12.0;
+const DEPTH: f32 = 8.0;
 /// Peak inward depth (px) at the confirm "pop" — a brief deeper lunge past [`DEPTH`].
-const POP_DEPTH: f32 = 22.0;
+const POP_DEPTH: f32 = 14.0;
 /// Pop animation duration (ms).
 const POP_MS: u32 = 220;
 /// Fraction of the pop spent lunging in to [`POP_DEPTH`] before it eases back out —
@@ -207,9 +214,22 @@ impl Hint {
     }
 }
 
-/// Draw the bulge: a black hump of the fixed [`BASE_HALF`] base width poking `depth`
-/// px inward from the edge, its profile a quartic bump (flat tangent shoulders, soft
-/// apex) rasterized as edge-perpendicular strips. Nothing when uncharged.
+/// Profile height (`0.0..=1.0`) at along-offset `i`: a flat shelf at full height
+/// within `±FLAT_HALF`, then a quartic shoulder easing to `0` at `±BASE_HALF` (flat
+/// tangent at both the shelf and the edge, so it melts into each).
+fn top_profile(i: i32) -> f32 {
+    let a = i.abs();
+    if a <= FLAT_HALF {
+        return 1.0;
+    }
+    let u = (a - FLAT_HALF) as f32 / (BASE_HALF - FLAT_HALF).max(1) as f32; // 0..1 shoulder
+    let s = 1.0 - u * u;
+    s * s
+}
+
+/// Draw the bulge: a black hump of the fixed [`BASE_HALF`] base width with a
+/// [`FLAT_HALF`]-wide flat top, poking `depth` px inward from the edge, rasterized as
+/// edge-perpendicular strips (see [`top_profile`]). Nothing when uncharged.
 fn bulge<D, F>(cv: &mut Canvas<D, F>, place: &Place, depth: f32)
 where
     D: DrawTarget,
@@ -219,9 +239,7 @@ where
         return;
     }
     for i in -BASE_HALF..=BASE_HALF {
-        let t = i as f32 / BASE_HALF as f32; // -1..1 across the base
-        let s = 1.0 - t * t;
-        let d = (depth * s * s + 0.5) as i32; // quartic: melts into the edge at ±1
+        let d = (depth * top_profile(i) + 0.5) as i32;
         if d > 0 {
             cv.fill(place.strip(i, d), palette::HUD);
         }
