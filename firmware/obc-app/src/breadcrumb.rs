@@ -37,7 +37,7 @@ type P = (i32, i32);
 
 /// Full-resolution recent-tail capacity. At ≥[`RECENT_MIN_M`] spacing this covers the last
 /// ~2 km of trail — more than the riding-zoom view ever shows.
-const RECENT_CAP: usize = 512;
+const RECENT_CAP: usize = 256;
 /// Minimum spacing (m) between recent-tail points — drops near-duplicate fixes (and a
 /// stationary rider) so the ring spans real distance, not GPS jitter.
 const RECENT_MIN_M: f32 = 4.0;
@@ -45,7 +45,7 @@ const RECENT_MIN_M: f32 = 4.0;
 /// Whole-ride spine capacity (points). The spine holds exactly this many once warmed, so it
 /// stays resident at ~6 KB regardless of ride length; the only lever for long-ride fidelity is
 /// this number, at a linear RAM cost.
-const SPINE_CAP: usize = 768;
+const SPINE_CAP: usize = 1024;
 
 /// The travelled path drawn on the map: a full-res recent tail over a coarse whole-ride spine.
 /// Owned by [`App`](crate::App) (it's kilobytes, so *not* the `Copy` [`Activity`](crate::Activity));
