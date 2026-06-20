@@ -131,11 +131,13 @@ fn rgb(c: u16) -> Rgb888 {
     Rgb888::new(r, g, b)
 }
 
-/// Render one frame of `app` over `bytes` into a fresh 120×120 buffer (true-color).
+/// Render one frame of `app` over `bytes` into a fresh 240×320 buffer (true-color) —
+/// the real device size, so each control's bulge lands in its own screen half (its
+/// fixed base width can span more than half of a smaller buffer).
 fn render(app: &mut App, bytes: &[u8]) -> Buf {
     let reader = Reader::new(bytes).expect("valid v5 file");
-    let mut buf = Buf::new(120, 120);
-    app.render_frame(&mut buf, &reader, None, 120.0, 120.0, rgb);
+    let mut buf = Buf::new(240, 320);
+    app.render_frame(&mut buf, &reader, None, 240.0, 320.0, rgb);
     buf
 }
 
