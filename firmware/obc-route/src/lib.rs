@@ -39,10 +39,10 @@ pub use geo::{cos_lat, ground_dist_m, ground_dist_m_cl, tri_area_m2, tri_area_m2
 pub use gpx::{GpxScanner, RawPoint};
 pub use matcher::{Match, RouteMatch};
 pub use profile::{Profile, Window, PROFILE_COLS};
-pub use track::{decode_record, encode_record, track_to_gpx, TrackPoint, TRACK_RECORD_LEN};
 pub use reader::{
     ChunkMeta, RoutePoint, RouteReader, RouteSummary, CHUNK_META_LEN, HEADER_LEN,
     MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS, NAME_CAP,
 };
+pub use track::{decode_record, encode_record, track_to_gpx, TrackPoint, TRACK_RECORD_LEN};
 
 pub use obc_reader::BBox;

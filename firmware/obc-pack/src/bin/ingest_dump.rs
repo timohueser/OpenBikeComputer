@@ -74,7 +74,9 @@ fn main() -> ExitCode {
                 rings.extend(interiors.iter().map(|r| ring(r)));
                 OutFeature { style_id: f.style_id, kind: "polygon", rings }
             }
-            Geom::Line(c) => OutFeature { style_id: f.style_id, kind: "line", rings: vec![ring(c)] },
+            Geom::Line(c) => {
+                OutFeature { style_id: f.style_id, kind: "line", rings: vec![ring(c)] }
+            }
             _ => OutFeature { style_id: f.style_id, kind: "line", rings: Vec::new() },
         })
         .collect();

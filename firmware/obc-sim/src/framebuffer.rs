@@ -126,11 +126,8 @@ mod tests {
     fn fill_solid_fills_subrect_and_clips() {
         let mut fb = Framebuffer::new(4, 4);
         // Rectangle straddling the right/bottom edge: only the in-bounds part fills.
-        fb.fill_solid(
-            &Rectangle::new(Point::new(2, 2), Size::new(10, 10)),
-            Rgb888::new(255, 0, 0),
-        )
-        .unwrap();
+        fb.fill_solid(&Rectangle::new(Point::new(2, 2), Size::new(10, 10)), Rgb888::new(255, 0, 0))
+            .unwrap();
         assert_eq!(pixel(&fb, 1, 1), (0, 0, 0)); // outside
         assert_eq!(pixel(&fb, 2, 2), (255, 0, 0)); // inside corner
         assert_eq!(pixel(&fb, 3, 3), (255, 0, 0)); // last in-bounds pixel

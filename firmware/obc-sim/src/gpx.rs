@@ -82,7 +82,9 @@ impl Track {
         let all_timed = raw.iter().all(|(_, _, _, t)| t.is_some());
         let points = if all_timed {
             let t0 = raw[0].3.unwrap();
-            raw.iter().map(|&(lat, lon, ele, t)| TrackPoint { lat, lon, ele, t: t.unwrap() - t0 }).collect()
+            raw.iter()
+                .map(|&(lat, lon, ele, t)| TrackPoint { lat, lon, ele, t: t.unwrap() - t0 })
+                .collect()
         } else {
             raw.iter()
                 .enumerate()
@@ -198,7 +200,7 @@ mod tests {
         assert_eq!(t.points[0].lat, 48_122_905);
         assert_eq!(t.points[0].lon, 7_814_438);
         assert_eq!(t.points[0].ele, Some(200.8)); // <ele> feeds the barometer
-        // First point rebased to zero, others relative.
+                                                  // First point rebased to zero, others relative.
         assert_eq!(t.points[0].t, 0.0);
         assert_eq!(t.points[1].t, 20.0);
         assert_eq!(t.points[2].t, 22.0);

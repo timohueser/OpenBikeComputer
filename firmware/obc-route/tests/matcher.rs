@@ -38,9 +38,7 @@ fn convert(name: &str, gpx: &str) -> Vec<u8> {
 fn gpx_from(pts: &[(f64, f64, f64)]) -> String {
     let mut s = String::from("<?xml version=\"1.0\"?><gpx><trk><trkseg>");
     for &(lat, lon, ele) in pts {
-        s.push_str(&format!(
-            "<trkpt lat=\"{lat:.6}\" lon=\"{lon:.6}\"><ele>{ele}</ele></trkpt>"
-        ));
+        s.push_str(&format!("<trkpt lat=\"{lat:.6}\" lon=\"{lon:.6}\"><ele>{ele}</ele></trkpt>"));
     }
     s.push_str("</trkseg></trk></gpx>");
     s

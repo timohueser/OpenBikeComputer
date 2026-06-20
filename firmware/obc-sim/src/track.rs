@@ -51,7 +51,12 @@ impl TrackStore {
     /// ticking. `action` is the drained one-shot, `session` the current id, `name` the active
     /// route's name (the save filename). Drains the action first (finalising / abandoning the
     /// *current* log), then opens a fresh log when the session id changes.
-    pub fn reconcile(&mut self, action: Option<TrackAction>, session: Option<u32>, name: Option<&str>) {
+    pub fn reconcile(
+        &mut self,
+        action: Option<TrackAction>,
+        session: Option<u32>,
+        name: Option<&str>,
+    ) {
         match action {
             Some(TrackAction::Save) => self.finalize(),
             Some(TrackAction::Discard) => self.abandon(),
@@ -137,7 +142,11 @@ fn sanitize(name: &str) -> String {
         .map(|c| if c.is_control() || matches!(c, '/' | '\\') { '_' } else { c })
         .collect();
     let trimmed = s.trim();
-    if trimmed.is_empty() { "ride".to_string() } else { trimmed.to_string() }
+    if trimmed.is_empty() {
+        "ride".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 /// A `ByteSink` collecting the GPX into a `Vec` before one `fs::write` (mirrors the route

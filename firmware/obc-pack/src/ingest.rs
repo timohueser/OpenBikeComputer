@@ -181,11 +181,8 @@ fn collect_relation(
         return;
     }
     let Some(style) = config.get_style(&tags) else { return };
-    let member_ways: Vec<i64> = r
-        .members()
-        .filter(|m| m.member_type == RelMemberType::Way)
-        .map(|m| m.member_id)
-        .collect();
+    let member_ways: Vec<i64> =
+        r.members().filter(|m| m.member_type == RelMemberType::Way).map(|m| m.member_id).collect();
     if member_ways.is_empty() {
         return;
     }
@@ -268,7 +265,8 @@ fn is_area(tags: &HashMap<&str, &str>) -> bool {
 mod tests {
     use super::*;
 
-    const TINY_PBF: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/tests/corpus/data/tiny.osm.pbf");
+    const TINY_PBF: &str =
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/tests/corpus/data/tiny.osm.pbf");
 
     fn is_polygon(g: &Geom) -> bool {
         matches!(g, Geom::Polygon { .. })
