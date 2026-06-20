@@ -4,39 +4,48 @@
 //! held in RAM so the map can draw the travelled path without ever re-reading storage. Its
 //! two constraints are opposite, so it has two tiers:
 //!
-//! - [`recent`](Breadcrumb::recent) — a full-resolution sliding tail (the last few km). While
+//! - [`recent`](Breadcrumb::recent) — a full-resolution sliding tail (the last ~2 km). While
 //!   riding you follow yourself zoomed in, so the trail you actually *see* is here, and it's
 //!   **never decimated** — just a fixed-length ring.
-//! - [`spine`](Breadcrumb::spine) — the whole ride decimated to a fixed budget: a point every
-//!   `spacing` metres, and when the budget fills it **halves the resolution and doubles the
-//!   spacing**. So a 20 km ride keeps ~15 m spacing while a 150 km ride relaxes to ~120 m —
-//!   coarse, but that's all you need in the zoomed-out overview where the spine is seen.
+//! - [`spine`](Breadcrumb::spine) — the whole rest of the ride, held to a fixed point budget by
+//!   **Visvalingam–Whyatt** simplification: when the budget is full, drop the single *least
+//!   significant* vertex — the one whose [effective area](obc_route::tri_area_m2) (the triangle
+//!   it makes with its two neighbours) is smallest, i.e. whose removal bends the line least.
+//!   A straight run collapses toward its endpoints; a sharp bend is kept.
+//!
+//! Why not a distance/perpendicular *tolerance* (issue #22)? A global tolerance on a *growing*
+//! track behaves badly under a fixed budget: once any section forces the tolerance up
+//! it sticks, and every later point is then judged against it, so a long gently-curving stretch
+//! gets drawn as one straight chord while stale early detail survives. Visvalingam has **no**
+//! global tolerance — it always keeps exactly the budget and drops the globally-least-useful
+//! point, so the budget **redistributes** to wherever the shape is. Removing a vertex widens its
+//! neighbours' triangles, which protects them next time, so the points self-spread along the
+//! ride instead of clustering. On a ride longer than the budget can hold at the route's fidelity
+//! the spine simply coarsens — evenly, never collapsing one stretch to a line.
 //!
 //! The tiers are **disjoint**: a point lives in `recent` until it ages out of the ring, and
-//! only *then* is it handed to `spine`. So the two never cover the same ground, and the whole
-//! trail draws as **one** chained polyline ([`points`](Breadcrumb::points)) — coarse for the
-//! old part, full-resolution for the recent tail, with no doubled-up overlap. Both are
+//! only *then* is it handed to the spine. So the two never cover the same ground, and the whole
+//! trail draws as **one** chained polyline ([`points`](Breadcrumb::points)) — coarse for the old
+//! part, full-resolution for the recent tail, with no doubled-up overlap. Both are
 //! fixed-capacity `heapless` containers, so the renderer's polyline scratch can never overrun.
 
 use heapless::{Deque, Vec};
-use obc_route::ground_dist_m;
+use obc_route::{cos_lat, ground_dist_m, tri_area_m2_cl};
 
 /// A 2-D point in microdegrees `(lon, lat)` — what the renderer projects.
 type P = (i32, i32);
 
 /// Full-resolution recent-tail capacity. At ≥[`RECENT_MIN_M`] spacing this covers the last
 /// ~2 km of trail — more than the riding-zoom view ever shows.
-const RECENT_CAP: usize = 512;
+const RECENT_CAP: usize = 256;
 /// Minimum spacing (m) between recent-tail points — drops near-duplicate fixes (and a
 /// stationary rider) so the ring spans real distance, not GPS jitter.
 const RECENT_MIN_M: f32 = 4.0;
 
-/// Whole-ride spine capacity. With the doubling spacing below this stays resident at ~6 KB
-/// regardless of ride length.
-const SPINE_CAP: usize = 768;
-/// Starting spine spacing (m). Doubles each time the spine fills, so the spacing self-tunes
-/// to ride length (≈ `SPINE_START_M · 2^k` once `SPINE_CAP · 2^k` metres have been ridden).
-const SPINE_START_M: f32 = 8.0;
+/// Whole-ride spine capacity (points). The spine holds exactly this many once warmed, so it
+/// stays resident at ~6 KB regardless of ride length; the only lever for long-ride fidelity is
+/// this number, at a linear RAM cost.
+const SPINE_CAP: usize = 1024;
 
 /// The travelled path drawn on the map: a full-res recent tail over a coarse whole-ride spine.
 /// Owned by [`App`](crate::App) (it's kilobytes, so *not* the `Copy` [`Activity`](crate::Activity));
@@ -44,9 +53,7 @@ const SPINE_START_M: f32 = 8.0;
 pub struct Breadcrumb {
     recent: Deque<P, RECENT_CAP>,
     spine: Vec<P, SPINE_CAP>,
-    spine_spacing_m: f32,
     last_recent: Option<P>,
-    last_spine: Option<P>,
 }
 
 impl Default for Breadcrumb {
@@ -60,9 +67,7 @@ impl Breadcrumb {
         Breadcrumb {
             recent: Deque::new(),
             spine: Vec::new(),
-            spine_spacing_m: SPINE_START_M,
             last_recent: None,
-            last_spine: None,
         }
     }
 
@@ -71,9 +76,7 @@ impl Breadcrumb {
     pub fn clear(&mut self) {
         self.recent.clear();
         self.spine.clear();
-        self.spine_spacing_m = SPINE_START_M;
         self.last_recent = None;
-        self.last_spine = None;
     }
 
     /// Whether the trail has anything to draw yet.
@@ -97,23 +100,49 @@ impl Breadcrumb {
         }
     }
 
-    /// Add an aged-out point to the coarse whole-ride spine: one point per `spacing`, halving
-    /// resolution + doubling the spacing when the budget fills.
-    fn spine_push(&mut self, p: P) {
-        if self.last_spine.is_none_or(|q| ground_dist_m(p, q) >= self.spine_spacing_m) {
-            if self.spine.is_full() {
-                self.thin_spine();
-            }
-            let _ = self.spine.push(p);
-            self.last_spine = Some(p);
+    /// Append one aged-out point to the whole-ride spine, holding it to [`SPINE_CAP`] by
+    /// Visvalingam–Whyatt: while there's room just keep the point; once full, drop the
+    /// least-significant interior vertex (smallest [`tri_area_m2_cl`]) and append the new one.
+    ///
+    /// Always keeps index 0 (the ride start) and the newest point, so the drawn line spans the
+    /// whole ride and joins cleanly to `recent`. One O([`SPINE_CAP`]) scan per aged fix — no
+    /// `sqrt`, no divide, ~1 Hz — negligible on the MCU.
+    fn spine_push(&mut self, c: P) {
+        if !self.spine.is_full() {
+            let _ = self.spine.push(c);
+            return;
         }
+        let n = self.spine.len();
+        if n < 2 {
+            return; // degenerate budget (<2): keep the start, drop the rest
+        }
+        // `cos_lat` barely varies across one ride, so hoist it once for the whole scan rather
+        // than per triangle. Find the interior vertex (1..n; the current last uses the incoming
+        // `c` as its right neighbour) whose removal loses the least area.
+        let cl = cos_lat(c.1);
+        let mut min_i = 1;
+        let mut min_area = f32::INFINITY;
+        for i in 1..n {
+            let left = self.spine[i - 1];
+            let right = if i + 1 < n { self.spine[i + 1] } else { c };
+            let area = tri_area_m2_cl(left, self.spine[i], right, cl);
+            if area < min_area {
+                min_area = area;
+                min_i = i;
+            }
+        }
+        // Drop `min_i` and append `c`: shift the tail left into the freed slot, then reuse the
+        // last slot for the new point. Index 0 and the newest fix are preserved; budget stays full.
+        for j in min_i..n - 1 {
+            self.spine[j] = self.spine[j + 1];
+        }
+        self.spine[n - 1] = c;
     }
 
-    /// The whole travelled path as **one** polyline, oldest→newest: the coarse spine (points
-    /// that have aged out of the ring) chained to the full-res recent tail. The Map draws this
-    /// in a single stroke, so the tiers never double up.
+    /// The whole travelled path as **one** polyline, oldest→newest: the coarse spine chained to
+    /// the full-res recent tail. The Map draws this in a single stroke, so the tiers never double up.
     pub fn points(&self) -> impl Iterator<Item = P> + '_ {
-        self.spine.iter().chain(self.recent.iter()).copied()
+        self.spine.iter().copied().chain(self.recent.iter().copied())
     }
 
     /// Whole-ride spine points (coarse), oldest first — for introspection / tests.
@@ -124,19 +153,5 @@ impl Breadcrumb {
     /// Recent-tail points (full resolution), oldest first — for introspection / tests.
     pub fn recent_iter(&self) -> impl Iterator<Item = P> + '_ {
         self.recent.iter().copied()
-    }
-
-    /// Halve the spine in place (keep every other point) and double the spacing, making room
-    /// for more of a long ride without growing memory.
-    fn thin_spine(&mut self) {
-        let mut w = 0;
-        let mut i = 0;
-        while i < self.spine.len() {
-            self.spine[w] = self.spine[i];
-            w += 1;
-            i += 2;
-        }
-        self.spine.truncate(w);
-        self.spine_spacing_m *= 2.0;
     }
 }
