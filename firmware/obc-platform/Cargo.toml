@@ -8,3 +8,17 @@ description = "Board-agnostic no_std firmware glue between obc-app and a concret
 # The `DrawTarget` / `Rgb565` the framebuffer implements — pinned to the same 0.8
 # the renderer and app use so the target type unifies across the path deps.
 embedded-graphics = "0.8"
+
+# The shared HAL the button debouncer speaks: it emits `obc_app::InputEvent`s and
+# implements `obc_app::InputSource`, so a board drops it straight into
+# `App::handle_input`. obc-app is no_std, so this stays a clean no_std dep.
+obc-app = { path = "../obc-app" }
+
+# The GPIO trait the debouncer is generic over (`InputPin`). 1.0 — embassy-stm32's
+# `gpio::Input` (and the future nRF board's pins) implement this, so `ButtonInput`
+# is board-agnostic.
+embedded-hal = "1.0"
+
+# The small event ring the debouncer buffers between `update` and the app's drain.
+# Same 0.8 the rest of the OBC stack uses.
+heapless = "0.8"

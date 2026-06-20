@@ -14,7 +14,10 @@
 //!   D. obc-app on glass (issue #34): the SDRAM framebuffer becomes an
 //!      `embedded-graphics` `DrawTarget`, and the shared `App` (boots to Home/Idle,
 //!      then opens the Map on a baked-in OBCM tile) is rendered through it via
-//!      `App::render_frame` — the first time `obc-app` runs on hardware.   <- this commit
+//!      `App::render_frame` — the first time `obc-app` runs on hardware.
+//!   E. Pushbutton input (issue #35): four GPIO buttons → obc-platform's
+//!      board-agnostic `ButtonInput` debouncer → the shared gesture recognizer, so
+//!      the UI is driven on-device — Home → Route menu → Map and back.   <- this commit
 //!
 //! ## RAM split (issue #34 / #8)
 //! The renderer's per-frame scratch is ~200 KB and the framebuffer is 150 KB; the
@@ -35,6 +38,14 @@
 //! Data     D0-D15 : PD14 PD15 PD0 PD1 PE7 PE8 PE9 PE10 PE11 PE12 PE13 PE14 PE15 PD8 PD9 PD10
 //! Mask     NBL0-1 : PE0 PE1
 //! Control         : SDCKE1 PB5 | SDCLK PG8 | SDNCAS PG15 | SDNE1 PB6 | SDNRAS PF11 | SDNWE PC0
+//!
+//! ## Pushbutton pin map (issue #35) — DISC1 header P1, internal pull-ups, active-low
+//! One common pin to GND; each switch to its GPIO (no external pull-ups/resistors —
+//! the F429's internal pull-ups hold the lines high, a press pulls one low):
+//!   PREV PE2 | NEXT PE3 | SELECT PE4 | BACK PE5     (P1 pins 15 / 16 / 13 / 14)
+//! Chosen clear of FMC/LTDC/SPI5/LEDs, and leaving the SD-card SDIO pins free for a
+//! later step: PC8/PC12/PD2 (+ data PC9/PC11). Note PC10 is LTDC R2 here, so that SD
+//! must run **1-bit** SDIO (4-bit's D2 would clash).
 //!
 //! ## Display pin map (onboard ILI9341, 240x320)
 //! Config (SPI5, 8-bit mode-0) : SCK PF7 | MOSI PF9 | CS/NCS PC2 | DCX/WRX PD13   (reset = NRST)
@@ -66,13 +77,17 @@ use panic_probe as _;
 // just exercises the framebuffer + text). Kept behind the cfg so the demo build is
 // warning-free too.
 #[cfg(not(feature = "glass-demo"))]
+use embassy_stm32::gpio::{Input, Pull};
+#[cfg(not(feature = "glass-demo"))]
 use embassy_time::Instant;
 #[cfg(not(feature = "glass-demo"))]
 use embedded_graphics::pixelcolor::{raw::RawU16, Rgb565};
 #[cfg(not(feature = "glass-demo"))]
-use obc_app::{App, AppState, Fix, LocationSource, RideClock, Sensors};
+use obc_app::{App, AppState, Fix, InputClock, LocationSource, RideClock, RouteSummary, Sensors};
 #[cfg(not(feature = "glass-demo"))]
-use obc_reader::Reader;
+use obc_platform::ButtonInput;
+#[cfg(not(feature = "glass-demo"))]
+use obc_reader::{BBox, Reader};
 #[cfg(not(feature = "glass-demo"))]
 use obc_render::zoom_for_mpp;
 
@@ -106,12 +121,26 @@ const CAM_LON: i32 = 7_813_599; // 7.81360 E
 #[cfg(not(feature = "glass-demo"))]
 const CAM_LAT: i32 = 48_126_492; // 48.12649 N
 
-/// Map zoom presets cycled on glass, in ground **metres-per-pixel** (kept in the
-/// 0.5–4 mpp band — the riding/panning range). `zoom_for_mpp` maps each to the
-/// camera zoom; the tile's LOD table (breakpoints 2/4 mpp) walks LOD2→LOD1 across
-/// them, so the per-frame log covers more than one detail level.
+/// Initial camera zoom, in ground **metres-per-pixel** (in the 0.5–4 mpp riding band).
+/// Used for the Idle [`AppState`]; opening the Map via the Route menu resets to the
+/// riding zoom, and PREV/NEXT then zoom from there.
 #[cfg(not(feature = "glass-demo"))]
-const MPP_PRESETS: &[(&str, f32)] = &[("z0.5", 0.5), ("z1.0", 1.0), ("z2.0", 2.0), ("z4.0", 4.0)];
+const INIT_MPP: f32 = 1.0;
+
+/// Main-loop button-sample period (ms). Buttons are sampled every tick so quick taps
+/// and hold timing are caught even when a heavy Map frame stretches the render cadence.
+#[cfg(not(feature = "glass-demo"))]
+const LOOP_MS: u64 = 8;
+
+/// Keep redrawing for this long (ms) after the last input/gesture/hold activity, so a
+/// confirm-ring bulge plays its pop/retract out (POP ≈ 220 ms) before frames stop.
+#[cfg(not(feature = "glass-demo"))]
+const ANIM_TAIL_MS: u32 = 300;
+
+/// Idle redraw heartbeat (ms): redraw at least this often even with no input, so
+/// time-based screens (e.g. Statistics) stay live. A static Map then costs ~1 fps.
+#[cfg(not(feature = "glass-demo"))]
+const IDLE_REFRESH_MS: u32 = 1000;
 
 /// A fixed-fix [`LocationSource`]: there is no GPS yet (step #38 streams a fake one
 /// over USB-CDC), so this returns a constant fix at the tile's dense core. In Follow
@@ -396,7 +425,8 @@ async fn main(_spawner: Spawner) {
         }
     }
 
-    // --- obc-app on glass (issue #34): boot Home/Idle, then the Map on the baked tile. ---
+    // --- obc-app on glass, button-driven (issues #34/#35): boot Home/Idle, then let
+    // the four pushbuttons walk Home -> Route menu -> Map and back. ---
     #[cfg(not(feature = "glass-demo"))]
     {
         let reader = match Reader::new(TILE) {
@@ -426,70 +456,95 @@ async fn main(_spawner: Spawner) {
             FB_BYTES
         );
 
-        // Phase A — the real power-on screen: Home / Idle.
+        // Power-on screen: Home / Idle — the user now drives navigation from here.
         // SAFETY: app_ptr is a valid, aligned, exclusively-owned SDRAM slot, fully
         // initialized by ptr::write before any read.
         unsafe {
-            app_ptr.write(App::new_idle(AppState::new(
-                CAM_LON,
-                CAM_LAT,
-                zoom_for_mpp(MPP_PRESETS[0].1),
-            )));
-        }
-        {
-            let app = unsafe { &mut *app_ptr };
-            let mut fb = Framebuffer565::new(&mut *fb_buf, W as u32, H as u32);
-            let _ = app.render_frame(&mut fb, &reader, None, W as f32, H as f32, color_fn);
-        }
-        defmt::info!("booted to Home (Idle)");
-        Timer::after_millis(2500).await;
-
-        // Phase B — open the Map on the baked tile (Riding, Follow). No input yet
-        // (step #35), so build the map-first App directly rather than walking Home ->
-        // Route menu by gesture. drop_in_place runs Phase A's (trivial) destructor.
-        // SAFETY: same slot; Phase A's borrow has ended at the block above.
-        unsafe {
-            core::ptr::drop_in_place(app_ptr);
-            app_ptr.write(App::new(AppState::new(
-                CAM_LON,
-                CAM_LAT,
-                zoom_for_mpp(MPP_PRESETS[0].1),
-            )));
+            app_ptr.write(App::new_idle(AppState::new(CAM_LON, CAM_LAT, zoom_for_mpp(INIT_MPP))));
         }
         let app = unsafe { &mut *app_ptr };
+
+        // One stub route so the Route menu has an entry SELECT can open. There's no
+        // OBCR geometry yet (SD/USB are steps #36/#38), so loading it just drops the
+        // camera onto the tile's dense core (the stub fix below) and opens the Map on
+        // the baked tile — `render_frame` is passed `None` for the route overlay.
+        let mut name = heapless::String::new();
+        let _ = name.push_str("Teningen");
+        app.set_routes(&[RouteSummary {
+            name,
+            distance_km: 0,
+            climb_m: 0,
+            bbox: BBox { min_lon: CAM_LON, min_lat: CAM_LAT, max_lon: CAM_LON, max_lat: CAM_LAT },
+            start_lon: CAM_LON,
+            start_lat: CAM_LAT,
+        }]);
+
+        // Four pushbuttons on a breadboard PCB: one common pin to GND, each switch to
+        // its GPIO, no external parts — internal pull-ups, read active-low (see the
+        // pin-map note in the module header). All four are `Input<'static>` (the type
+        // erases the pin), so they share the `ButtonInput` type parameter.
+        let mut buttons = ButtonInput::new(
+            Input::new(p.PE2, Pull::Up), // PREV   → Turn(-1)
+            Input::new(p.PE3, Pull::Up), // NEXT   → Turn(+1)
+            Input::new(p.PE4, Pull::Up), // SELECT → encoder press / hold
+            Input::new(p.PE5, Pull::Up), // BACK   → back / back-hold
+        );
+
+        // No GPS yet (step #38): a constant fix at the tile's dense core, so the Map's
+        // Follow camera parks there and the user marker sits at centre.
         let mut stub = StubLocation(Fix::at(CAM_LAT, CAM_LON));
         let mut fb = Framebuffer565::new(fb_buf, W as u32, H as u32);
-        defmt::info!("Map open on baked tile; cycling zoom 0.5-4 mpp");
+        defmt::info!(
+            "input live: PE2 PREV / PE3 NEXT / PE4 SELECT / PE5 BACK (pull-up, active-low)"
+        );
 
-        // Per-frame: park the camera (Follow snaps to the stub fix), pick the next
-        // zoom preset, render into the live framebuffer, and log the render time so
-        // it can be sanity-checked against the internal-RAM mcu-render-bench.
-        let mut frame = 0usize;
+        // Render-on-demand loop. Buttons are sampled every LOOP_MS so quick taps and
+        // long-press timing are caught; the screen is redrawn only when there's input/
+        // gesture activity, a hold bulge is animating (ANIM_TAIL_MS carries it through
+        // the pop), or on the IDLE_REFRESH heartbeat — so a static Map costs ~1 fps
+        // instead of pinning the CPU on a full redraw every loop.
+        let start = Instant::now();
+        let now0 = start.elapsed().as_millis() as u32;
+        let mut prev_gesture = app.last_gesture();
+        let mut last_activity = now0;
+        let mut last_render = now0.wrapping_sub(IDLE_REFRESH_MS); // force the first frame
         loop {
-            let (label, mpp) = MPP_PRESETS[frame % MPP_PRESETS.len()];
-            app.state.zoom = zoom_for_mpp(mpp);
-            let now_ms = Instant::now().as_millis() as u32;
+            let now = start.elapsed().as_millis() as u32;
+            buttons.update(now);
+            let had_events = buttons.has_pending();
+            app.handle_input(InputClock(now), &mut buttons);
             app.tick(
-                RideClock(now_ms),
+                RideClock(now),
                 Sensors { loc: &mut stub, altimeter: None, track: None },
                 None,
             );
 
-            let t0 = Instant::now();
-            let stats = app.render_frame(&mut fb, &reader, None, W as f32, H as f32, color_fn);
-            let render_us = t0.elapsed().as_micros();
+            // Anything that can change the screen extends the redraw window: fresh
+            // events, a dispatched gesture (incl. a `Hold`/`BackHold` that `tick`
+            // fired), or an in-flight hold ring/bulge.
+            let gesture = app.last_gesture();
+            let ring = app.encoder_hold_progress() > 0.0 || app.back_hold_progress() > 0.0;
+            if had_events || ring || gesture != prev_gesture {
+                last_activity = now;
+            }
+            prev_gesture = gesture;
 
-            defmt::info!(
-                "map {=str}: render {=u64} us | lod {=usize} | feat {=usize}/{=usize} | chunks {=usize}",
-                label,
-                render_us,
-                stats.lod,
-                stats.features_drawn,
-                stats.features_tried,
-                stats.chunks_visited
-            );
-            frame += 1;
-            Timer::after_millis(1500).await;
+            let interactive = now.wrapping_sub(last_activity) < ANIM_TAIL_MS;
+            let heartbeat = now.wrapping_sub(last_render) >= IDLE_REFRESH_MS;
+            if interactive || heartbeat {
+                let t0 = Instant::now();
+                let stats = app.render_frame(&mut fb, &reader, None, W as f32, H as f32, color_fn);
+                let render_us = t0.elapsed().as_micros();
+                last_render = now;
+                defmt::debug!(
+                    "frame: {=u64} us | lod {=usize} | feat {=usize}/{=usize}",
+                    render_us,
+                    stats.lod,
+                    stats.features_drawn,
+                    stats.features_tried
+                );
+            }
+            Timer::after_millis(LOOP_MS).await;
         }
     }
 }
