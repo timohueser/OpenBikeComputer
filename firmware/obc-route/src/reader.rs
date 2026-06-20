@@ -18,8 +18,9 @@ pub const HEADER_LEN: usize = 112;
 pub const CHUNK_META_LEN: usize = 44;
 /// Capacity of the inline route-name field, bytes.
 pub const NAME_CAP: usize = 48;
-/// Resident chunk-index capacity. The converter raises its per-chunk point budget to
-/// keep any route under this, so the index always fits RAM (≈ 22 KB at the cap).
+/// Resident chunk-index capacity. With [`MAX_POINTS_PER_CHUNK`] this caps a route at
+/// ~131 k decimated points (≈ 22 KB of resident index at the cap); a longer route fails
+/// conversion with [`Error::TooLarge`] rather than being silently coarsened.
 pub const MAX_ROUTE_CHUNKS: usize = 512;
 /// Max points a single chunk may hold (bounds the per-chunk decode buffer).
 pub const MAX_POINTS_PER_CHUNK: usize = 256;
