@@ -471,6 +471,28 @@ impl MapRenderer {
         Self::default()
     }
 
+    /// `const` constructor so the renderer can live in a `static` (or be placed
+    /// into a fixed RAM region) on an MCU without a ~200 KB stack temporary —
+    /// `heapless::Vec::new()` is `const`, and an empty `Vec` is the same all-zero
+    /// state `.bss` provides. The firmware constructs the [`App`](../obc_app)
+    /// (which embeds this) straight into SDRAM via this path; the desktop
+    /// simulator keeps using [`new`](MapRenderer::new)/`Default`.
+    ///
+    /// Re-derived from the `mcu-render-bench` branch's `new_const`, updated for the
+    /// `FrameScratch`/`DrawScratch` split this crate gained since.
+    pub const fn new_const() -> Self {
+        Self {
+            frame: FrameScratch {
+                dec_points: Vec::new(),
+                dec_ring_lens: Vec::new(),
+                frame_points: Vec::new(),
+                frame_ring_lens: Vec::new(),
+                spans: Vec::new(),
+            },
+            draw: DrawScratch { screen: Vec::new(), xs: Vec::new() },
+        }
+    }
+
     /// Render the visible map into `target`.
     ///
     /// Selects the LOD for the viewport's meters-per-pixel, clears to `bg`,

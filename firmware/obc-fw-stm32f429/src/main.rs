@@ -7,10 +7,24 @@
 //! depends on it.
 //!
 //! Bring-up is phased so each hardware layer is verified over defmt/RTT before the
-//! next is stacked (issue #33):
+//! next is stacked:
 //!   A. clocks + RTT + GPIO              [done]
 //!   B. FMC SDRAM (8 MB @ 0xD0000000)    [done: 8 MB verified, 0 errors]
-//!   C. ILI9341 (SPI5) + LTDC + SDRAM framebuffer + test pattern   <- this commit
+//!   C. ILI9341 (SPI5) + LTDC + SDRAM framebuffer + test pattern   [done: issue #33]
+//!   D. obc-app on glass (issue #34): the SDRAM framebuffer becomes an
+//!      `embedded-graphics` `DrawTarget`, and the shared `App` (boots to Home/Idle,
+//!      then opens the Map on a baked-in OBCM tile) is rendered through it via
+//!      `App::render_frame` — the first time `obc-app` runs on hardware.   <- this commit
+//!
+//! ## RAM split (issue #34 / #8)
+//! The renderer's per-frame scratch is ~200 KB and the framebuffer is 150 KB; the
+//! two do not both fit the F429's 192 KB internal SRAM. For the prototype the whole
+//! `App` (which embeds the renderer) is placed in **SDRAM**, just past the
+//! framebuffer — simplest, runs the full-size renderer. The cost is render-time:
+//! the scratch is now behind the FMC's wait states (slower than the internal-RAM
+//! `mcu-render-bench`); the per-frame time logged over RTT quantifies the delta.
+//! A `small-scratch` cargo feature (internal-RAM scratch) is the fallback if that
+//! delta ever matters — not needed yet.
 //!
 //! Clock: 180 MHz core from the 16 MHz HSI (no dependency on the DISC1 HSE), plus a
 //! PLLSAI leg for the LTDC pixel clock.
@@ -37,19 +51,79 @@
 use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_stm32::fmc::Fmc;
-use embassy_stm32::gpio::{AfType, Flex, Level, OutputType, Output, Pin, Speed};
-use embassy_stm32::ltdc::{Ltdc, LtdcConfiguration, LtdcLayer, LtdcLayerConfig, PixelFormat, PolarityActive, PolarityEdge};
+use embassy_stm32::gpio::{AfType, Flex, Level, Output, OutputType, Pin, Speed};
+use embassy_stm32::ltdc::{
+    Ltdc, LtdcConfiguration, LtdcLayer, LtdcLayerConfig, PixelFormat, PolarityActive, PolarityEdge,
+};
 use embassy_stm32::spi::Spi;
 use embassy_stm32::time::Hertz;
 use embassy_stm32::Peri;
 use embassy_time::{Delay, Timer};
+use obc_platform::Framebuffer565;
 use panic_probe as _;
+
+// The shared-app render path — only the `not(glass-demo)` build drives it (the demo
+// just exercises the framebuffer + text). Kept behind the cfg so the demo build is
+// warning-free too.
+#[cfg(not(feature = "glass-demo"))]
+use embassy_time::Instant;
+#[cfg(not(feature = "glass-demo"))]
+use embedded_graphics::pixelcolor::{raw::RawU16, Rgb565};
+#[cfg(not(feature = "glass-demo"))]
+use obc_app::{App, AppState, Fix, LocationSource, RideClock, Sensors};
+#[cfg(not(feature = "glass-demo"))]
+use obc_reader::Reader;
+#[cfg(not(feature = "glass-demo"))]
+use obc_render::zoom_for_mpp;
+
+#[cfg(feature = "glass-demo")]
+mod demo;
 
 const SDRAM_ADDR: usize = 0xD000_0000;
 /// Framebuffer at the base of SDRAM: 240x320 RGB565 = 150 KB.
 const FB_ADDR: usize = SDRAM_ADDR;
 const W: usize = 240;
 const H: usize = 320;
+/// Framebuffer extent in pixels / bytes (RGB565, 2 bytes each).
+const FB_PIXELS: usize = W * H;
+/// Only the app path needs this — it places the `App` in SDRAM just past the FB.
+#[cfg(not(feature = "glass-demo"))]
+const FB_BYTES: usize = FB_PIXELS * 2;
+
+/// Baked-in OBCM **v5** map tile (issue #34): a small ~1.4 MB Teningen tile in
+/// flash via `include_bytes!`, so the Map screen has data before SD/USB exist
+/// (steps #36/#38). Packed from `packer/small.obcm`; must stay well under the F429's
+/// 2 MB flash beside code. (The issue named the bench's `teningen.obcm`, which was
+/// gitignored and never committed — this committed tile is its stand-in.)
+#[cfg(not(feature = "glass-demo"))]
+static TILE: &[u8] = include_bytes!("../tiles/teningen.obcm");
+
+/// Camera centre / stub fix: Teningen's dense core (microdegrees), the busiest part
+/// of the tile — the same spot the `mcu-render-bench` aimed at, so the on-glass
+/// render is comparable to the bench's timings.
+#[cfg(not(feature = "glass-demo"))]
+const CAM_LON: i32 = 7_813_599; // 7.81360 E
+#[cfg(not(feature = "glass-demo"))]
+const CAM_LAT: i32 = 48_126_492; // 48.12649 N
+
+/// Map zoom presets cycled on glass, in ground **metres-per-pixel** (kept in the
+/// 0.5–4 mpp band — the riding/panning range). `zoom_for_mpp` maps each to the
+/// camera zoom; the tile's LOD table (breakpoints 2/4 mpp) walks LOD2→LOD1 across
+/// them, so the per-frame log covers more than one detail level.
+#[cfg(not(feature = "glass-demo"))]
+const MPP_PRESETS: &[(&str, f32)] = &[("z0.5", 0.5), ("z1.0", 1.0), ("z2.0", 2.0), ("z4.0", 4.0)];
+
+/// A fixed-fix [`LocationSource`]: there is no GPS yet (step #38 streams a fake one
+/// over USB-CDC), so this returns a constant fix at the tile's dense core. In Follow
+/// mode that parks the camera there and the Map draws the user marker at centre.
+#[cfg(not(feature = "glass-demo"))]
+struct StubLocation(Fix);
+#[cfg(not(feature = "glass-demo"))]
+impl LocationSource for StubLocation {
+    fn poll(&mut self) -> Option<Fix> {
+        Some(self.0)
+    }
+}
 
 /// ILI9341 power-on / RGB-interface init, transcribed verbatim from ST's
 /// `32f429idiscovery-bsp` `ili9341_Init`: `(command, data bytes, delay-ms-after)`.
@@ -78,8 +152,16 @@ const ILI9341_INIT: &[(u8, &[u8], u16)] = &[
     (0xF6, &[0x01, 0x00, 0x06], 0),
     (0x2C, &[], 200), // memory write, then settle
     (0x26, &[0x01], 0),
-    (0xE0, &[0x0F, 0x29, 0x24, 0x0C, 0x0E, 0x09, 0x4E, 0x78, 0x3C, 0x09, 0x13, 0x05, 0x17, 0x11, 0x00], 0),
-    (0xE1, &[0x00, 0x16, 0x1B, 0x04, 0x11, 0x07, 0x31, 0x33, 0x42, 0x05, 0x0C, 0x0A, 0x28, 0x2F, 0x0F], 0),
+    (
+        0xE0,
+        &[0x0F, 0x29, 0x24, 0x0C, 0x0E, 0x09, 0x4E, 0x78, 0x3C, 0x09, 0x13, 0x05, 0x17, 0x11, 0x00],
+        0,
+    ),
+    (
+        0xE1,
+        &[0x00, 0x16, 0x1B, 0x04, 0x11, 0x07, 0x31, 0x33, 0x42, 0x05, 0x0C, 0x0A, 0x28, 0x2F, 0x0F],
+        0,
+    ),
     (0x11, &[], 200), // sleep out, then settle (datasheet >= 120 ms before display on)
     (0x29, &[], 0),   // display on
     (0x2C, &[], 0),   // memory write start
@@ -135,34 +217,59 @@ async fn main(_spawner: Spawner) {
     // --- SDRAM (framebuffer storage) ---
     let mut sdram = Fmc::sdram_a12bits_d16bits_4banks_bank2(
         p.FMC,
-        p.PF0, p.PF1, p.PF2, p.PF3, p.PF4, p.PF5, p.PF12, p.PF13, p.PF14, p.PF15, p.PG0, p.PG1,
-        p.PG4, p.PG5,
-        p.PD14, p.PD15, p.PD0, p.PD1, p.PE7, p.PE8, p.PE9, p.PE10, p.PE11, p.PE12, p.PE13, p.PE14,
-        p.PE15, p.PD8, p.PD9, p.PD10,
-        p.PE0, p.PE1,
-        p.PB5, p.PG8, p.PG15, p.PB6, p.PF11, p.PC0,
+        p.PF0,
+        p.PF1,
+        p.PF2,
+        p.PF3,
+        p.PF4,
+        p.PF5,
+        p.PF12,
+        p.PF13,
+        p.PF14,
+        p.PF15,
+        p.PG0,
+        p.PG1,
+        p.PG4,
+        p.PG5,
+        p.PD14,
+        p.PD15,
+        p.PD0,
+        p.PD1,
+        p.PE7,
+        p.PE8,
+        p.PE9,
+        p.PE10,
+        p.PE11,
+        p.PE12,
+        p.PE13,
+        p.PE14,
+        p.PE15,
+        p.PD8,
+        p.PD9,
+        p.PD10,
+        p.PE0,
+        p.PE1,
+        p.PB5,
+        p.PG8,
+        p.PG15,
+        p.PB6,
+        p.PF11,
+        p.PC0,
         stm32_fmc::devices::is42s16400j_7::Is42s16400j {},
     );
     let ram_ptr: *mut u32 = sdram.init(&mut Delay);
     defmt::info!("SDRAM base {=u32:#010x}", ram_ptr as u32);
 
-    // --- test pattern into the SDRAM framebuffer (volatile so the fill can't be
-    // dead-store-eliminated — the LTDC reads it by DMA, invisible to the compiler) ---
-    let fb = FB_ADDR as *mut u16;
-    for y in 0..H {
-        for x in 0..W {
-            let c: u16 = if x < 2 || x >= W - 2 || y < 2 || y >= H - 2 {
-                0xFFFF // white border -> confirms full active area / no porch clipping
-            } else if y < H / 2 {
-                match x * 3 / W { 0 => 0xF800, 1 => 0x07E0, _ => 0x001F } // R | G | B bars
-            } else {
-                let v = (x * 31 / (W - 1)) as u16; // grayscale gradient, black -> white
-                (v << 11) | ((v * 2) << 5) | v
-            };
-            unsafe { fb.add(y * W + x).write_volatile(c) };
-        }
-    }
-    defmt::info!("framebuffer filled: {=usize}x{=usize} RGB565 test pattern", W, H);
+    // --- SDRAM framebuffer as a flat &mut [u16] — the `DrawTarget` the app/demo
+    // render into below (replacing phase C's raw test pattern). Cleared to black up
+    // front so the panel shows black, not SDRAM garbage, in the window between LTDC
+    // turn-on and the first rendered frame.
+    // SAFETY: the FMC maps a contiguous FB_PIXELS×u16 region at FB_ADDR (verified in
+    // phase B); nothing else aliases it — the LTDC only *reads* it by DMA. ---
+    let fb_buf: &'static mut [u16] =
+        unsafe { core::slice::from_raw_parts_mut(FB_ADDR as *mut u16, FB_PIXELS) };
+    fb_buf.fill(0x0000);
+    defmt::info!("framebuffer ready: {=usize}x{=usize} RGB565 in SDRAM, cleared", W, H);
 
     // --- LTDC: drive the panel's RGB lines, scanning the SDRAM framebuffer ---
     // Brought up BEFORE the ILI9341 so the sync/DE/DOTCLK are already running when the
@@ -188,18 +295,37 @@ async fn main(_spawner: Spawner) {
     // `Ltdc::new` forces PLLSAIDIVR = 2 (giving 48/2 = 24 MHz); override it to 8 so the
     // DOTCLK is 48/8 = 6 MHz, exactly matching ST's BSP (the ILI9341 RGB interface mis-
     // samples above ~6 MHz, which sheared the image at our earlier 8 MHz).
-    stm32_metapac::RCC.dckcfgr().modify(|w| w.set_pllsaidivr(stm32_metapac::rcc::vals::Pllsaidivr::DIV8));
+    stm32_metapac::RCC
+        .dckcfgr()
+        .modify(|w| w.set_pllsaidivr(stm32_metapac::rcc::vals::Pllsaidivr::DIV8));
     // Drive only the 18 wired RGB666 bits + 4 sync/clk/de lines (AF14, except the
     // four AF9 pins). Kept alive in `_ltdc_pins` so the AF config persists.
     let _ltdc_pins = [
-        af_pin(p.PC6, 14), af_pin(p.PA4, 14), af_pin(p.PG7, 14), af_pin(p.PF10, 14), // HSYNC VSYNC CLK DE
-        af_pin(p.PC10, 14), af_pin(p.PA11, 14), af_pin(p.PA12, 14), af_pin(p.PG6, 14), // R2 R4 R5 R7
-        af_pin(p.PA6, 14), af_pin(p.PB10, 14), af_pin(p.PB11, 14), af_pin(p.PC7, 14), af_pin(p.PD3, 14), // G2 G4 G5 G6 G7
-        af_pin(p.PD6, 14), af_pin(p.PG11, 14), af_pin(p.PA3, 14), af_pin(p.PB8, 14), af_pin(p.PB9, 14), // B2 B3 B5 B6 B7
-        af_pin(p.PB0, 9), af_pin(p.PB1, 9), af_pin(p.PG10, 9), af_pin(p.PG12, 9), // R3 R6 G3 B4
+        af_pin(p.PC6, 14),
+        af_pin(p.PA4, 14),
+        af_pin(p.PG7, 14),
+        af_pin(p.PF10, 14), // HSYNC VSYNC CLK DE
+        af_pin(p.PC10, 14),
+        af_pin(p.PA11, 14),
+        af_pin(p.PA12, 14),
+        af_pin(p.PG6, 14), // R2 R4 R5 R7
+        af_pin(p.PA6, 14),
+        af_pin(p.PB10, 14),
+        af_pin(p.PB11, 14),
+        af_pin(p.PC7, 14),
+        af_pin(p.PD3, 14), // G2 G4 G5 G6 G7
+        af_pin(p.PD6, 14),
+        af_pin(p.PG11, 14),
+        af_pin(p.PA3, 14),
+        af_pin(p.PB8, 14),
+        af_pin(p.PB9, 14), // B2 B3 B5 B6 B7
+        af_pin(p.PB0, 9),
+        af_pin(p.PB1, 9),
+        af_pin(p.PG10, 9),
+        af_pin(p.PG12, 9), // R3 R6 G3 B4
     ];
     ltdc.init(&ltdc_config);
-    
+
     let layer_config = LtdcLayerConfig {
         pixel_format: PixelFormat::RGB565,
         layer: LtdcLayer::Layer1,
@@ -254,11 +380,116 @@ async fn main(_spawner: Spawner) {
     defmt::info!("ILI9341 init done");
 
     green.set_high();
-    defmt::info!("phase C done: LTDC scanning SDRAM framebuffer. Panel should show the test pattern.");
-    // Halt so probe-rs exits and releases the ST-LINK; the LTDC + FMC keep running on
-    // their own clocks, so the panel stays lit (for the webcam) after the core halts.
-    cortex_m::asm::bkpt();
-    loop {
-        cortex_m::asm::wfi();
+    defmt::info!("display up: LTDC scanning SDRAM framebuffer");
+
+    // --- glass-demo (issue #33 leftover): font ladder + palette on glass, then halt.
+    // The device analog of the simulator's `--text-demo`; verifies the text raster +
+    // RGB565 colour path in isolation before the whole app is pointed at the panel. ---
+    #[cfg(feature = "glass-demo")]
+    {
+        let mut fb = Framebuffer565::new(fb_buf, W as u32, H as u32);
+        let _ = demo::font_palette_demo(&mut fb);
+        defmt::info!("glass-demo: font + palette rendered; halting");
+        cortex_m::asm::bkpt();
+        loop {
+            cortex_m::asm::wfi();
+        }
+    }
+
+    // --- obc-app on glass (issue #34): boot Home/Idle, then the Map on the baked tile. ---
+    #[cfg(not(feature = "glass-demo"))]
+    {
+        let reader = match Reader::new(TILE) {
+            Ok(r) => r,
+            Err(_) => {
+                defmt::error!("baked tile is not valid OBCM ({=usize} bytes)", TILE.len());
+                cortex_m::asm::bkpt();
+                loop {
+                    cortex_m::asm::wfi();
+                }
+            }
+        };
+        // Native RGB565 panel → the color_fn is the identity (device-64 quantization
+        // is a host/simulator concern; see obc-platform::framebuffer).
+        let color_fn = |c: u16| Rgb565::from(RawU16::new(c));
+
+        // Place the App in SDRAM, just past the framebuffer (RAM-split note in the
+        // module header). Built in place via ptr::write so the ~200 KB scratch never
+        // lands on the stack — opt-level 3 + LTO emit App::new* straight to the slot.
+        let app_align = core::mem::align_of::<App>();
+        let app_addr = (SDRAM_ADDR + FB_BYTES + app_align - 1) & !(app_align - 1);
+        let app_ptr = app_addr as *mut App;
+        defmt::info!(
+            "App in SDRAM @ {=u32:#010x} ({=usize} bytes); FB {=usize} bytes",
+            app_addr as u32,
+            core::mem::size_of::<App>(),
+            FB_BYTES
+        );
+
+        // Phase A — the real power-on screen: Home / Idle.
+        // SAFETY: app_ptr is a valid, aligned, exclusively-owned SDRAM slot, fully
+        // initialized by ptr::write before any read.
+        unsafe {
+            app_ptr.write(App::new_idle(AppState::new(
+                CAM_LON,
+                CAM_LAT,
+                zoom_for_mpp(MPP_PRESETS[0].1),
+            )));
+        }
+        {
+            let app = unsafe { &mut *app_ptr };
+            let mut fb = Framebuffer565::new(&mut *fb_buf, W as u32, H as u32);
+            let _ = app.render_frame(&mut fb, &reader, None, W as f32, H as f32, color_fn);
+        }
+        defmt::info!("booted to Home (Idle)");
+        Timer::after_millis(2500).await;
+
+        // Phase B — open the Map on the baked tile (Riding, Follow). No input yet
+        // (step #35), so build the map-first App directly rather than walking Home ->
+        // Route menu by gesture. drop_in_place runs Phase A's (trivial) destructor.
+        // SAFETY: same slot; Phase A's borrow has ended at the block above.
+        unsafe {
+            core::ptr::drop_in_place(app_ptr);
+            app_ptr.write(App::new(AppState::new(
+                CAM_LON,
+                CAM_LAT,
+                zoom_for_mpp(MPP_PRESETS[0].1),
+            )));
+        }
+        let app = unsafe { &mut *app_ptr };
+        let mut stub = StubLocation(Fix::at(CAM_LAT, CAM_LON));
+        let mut fb = Framebuffer565::new(fb_buf, W as u32, H as u32);
+        defmt::info!("Map open on baked tile; cycling zoom 0.5-4 mpp");
+
+        // Per-frame: park the camera (Follow snaps to the stub fix), pick the next
+        // zoom preset, render into the live framebuffer, and log the render time so
+        // it can be sanity-checked against the internal-RAM mcu-render-bench.
+        let mut frame = 0usize;
+        loop {
+            let (label, mpp) = MPP_PRESETS[frame % MPP_PRESETS.len()];
+            app.state.zoom = zoom_for_mpp(mpp);
+            let now_ms = Instant::now().as_millis() as u32;
+            app.tick(
+                RideClock(now_ms),
+                Sensors { loc: &mut stub, altimeter: None, track: None },
+                None,
+            );
+
+            let t0 = Instant::now();
+            let stats = app.render_frame(&mut fb, &reader, None, W as f32, H as f32, color_fn);
+            let render_us = t0.elapsed().as_micros();
+
+            defmt::info!(
+                "map {=str}: render {=u64} us | lod {=usize} | feat {=usize}/{=usize} | chunks {=usize}",
+                label,
+                render_us,
+                stats.lod,
+                stats.features_drawn,
+                stats.features_tried,
+                stats.chunks_visited
+            );
+            frame += 1;
+            Timer::after_millis(1500).await;
+        }
     }
 }

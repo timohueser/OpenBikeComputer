@@ -2156,6 +2156,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "obc-platform"
+version = "0.1.0"
+dependencies = [
+ "embedded-graphics",
+]
+
+[[package]]
 name = "obc-reader"
 version = "0.1.0"
 dependencies = [

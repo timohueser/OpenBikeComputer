@@ -1,0 +1,10 @@
+[package]
+name = "obc-platform"
+version = "0.1.0"
+edition = "2021"
+description = "Board-agnostic no_std firmware glue between obc-app and a concrete board — written once, reused by every OBC board crate. For now: the SDRAM/framebuffer DrawTarget. Later: FatFs ByteSource/Sink adapters, the input debouncer, the USB-CDC debug protocol."
+
+[dependencies]
+# The `DrawTarget` / `Rgb565` the framebuffer implements — pinned to the same 0.8
+# the renderer and app use so the target type unifies across the path deps.
+embedded-graphics = "0.8"
