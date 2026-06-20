@@ -232,8 +232,14 @@ where
 
 /// [`title_frame`] with a `pos / total` list counter on the right — the chrome the
 /// Menu and Route menu share. The caller then draws its rows below [`LIST_TOP`].
-pub fn list_frame<D, F>(cv: &mut Canvas<D, F>, w: i32, h: i32, title: &str, pos: usize, total: usize)
-where
+pub fn list_frame<D, F>(
+    cv: &mut Canvas<D, F>,
+    w: i32,
+    h: i32,
+    title: &str,
+    pos: usize,
+    total: usize,
+) where
     D: DrawTarget,
     F: Fn(u16) -> D::Color,
 {
@@ -258,8 +264,15 @@ pub fn window_start(selected: usize, visible: usize, total: usize) -> usize {
 /// Draw a list scrollbar — a faint track with a proportional thumb — at the right
 /// edge, or nothing when everything fits. `top`/`height` is the windowed list
 /// area; `first` is [`window_start`]'s result.
-pub fn scrollbar<D, F>(cv: &mut Canvas<D, F>, x: i32, top: i32, height: i32, total: usize, first: usize, visible: usize)
-where
+pub fn scrollbar<D, F>(
+    cv: &mut Canvas<D, F>,
+    x: i32,
+    top: i32,
+    height: i32,
+    total: usize,
+    first: usize,
+    visible: usize,
+) where
     D: DrawTarget,
     F: Fn(u16) -> D::Color,
 {

@@ -1,0 +1,10 @@
+# Firmware workspace formatting.
+#
+# The code is hand-formatted in a compact style: single-line struct literals,
+# calls, and match arms are kept on one line up to the column limit. The stable
+# `use_small_heuristics = "Max"` option reproduces that style, so running
+# `cargo fmt` leaves already-conformant code untouched.
+#
+# Stable-toolchain options only (no nightly-only keys), so plain `cargo fmt`
+# on the pinned stable toolchain works without `--config` flags.
+use_small_heuristics = "Max"

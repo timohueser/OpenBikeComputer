@@ -77,7 +77,14 @@ impl Default for RouteMatch {
 
 impl RouteMatch {
     pub fn new() -> Self {
-        RouteMatch { chunk: 0, seg: 0, progress_m: 0, off_route: false, started: false, buf: Vec::new() }
+        RouteMatch {
+            chunk: 0,
+            seg: 0,
+            progress_m: 0,
+            off_route: false,
+            started: false,
+            buf: Vec::new(),
+        }
     }
 
     /// Forget all match state — call when a route is loaded or swapped.
@@ -124,9 +131,9 @@ impl RouteMatch {
             if route.decode_chunk(c, &mut self.buf).is_ok() && self.buf.len() >= 2 {
                 let cum0 = chunks[c].cum_distance_m as f32;
                 let mut intra = 0f32; // distance from this chunk's anchor to point s
-                // cos(lat) barely changes across one chunk's span, so hoist it once per
-                // chunk (the natural latitude band) rather than recomputing the `cosf` for
-                // every segment of the forward window.
+                                      // cos(lat) barely changes across one chunk's span, so hoist it once per
+                                      // chunk (the natural latitude band) rather than recomputing the `cosf` for
+                                      // every segment of the forward window.
                 let cl = cos_lat(self.buf[0].lat);
                 let n = self.buf.len();
                 for s in 0..n - 1 {

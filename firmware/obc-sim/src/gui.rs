@@ -15,8 +15,8 @@
 use std::path::Path;
 
 use eframe::egui;
-use obc_reader::Reader;
 use obc_app::{App, AppState, Button, CameraMode, Fix, InputClock, RideClock, Sensors};
+use obc_reader::Reader;
 use obc_route::RouteReader;
 
 use crate::baro::BaroSensor;
@@ -62,9 +62,7 @@ pub fn run(bytes: Vec<u8>, args: Args) -> Result<(), eframe::Error> {
         .window_size_px(egui::vec2(args.width as f32, args.height as f32));
     let win = [dev.x * args.scale as f32, dev.y * args.scale as f32];
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("OBC Simulator")
-            .with_inner_size(win),
+        viewport: egui::ViewportBuilder::default().with_title("OBC Simulator").with_inner_size(win),
         ..Default::default()
     };
     eframe::run_native(
@@ -169,8 +167,10 @@ impl SimGui {
         // the encoder walks Home → Route menu → Map, exactly like the device. (The
         // headless `--png` path opens straight on the map for render inspection.)
         let app = App::new_idle(state);
-        let store = RouteStore::open(args.routes_dir.clone().unwrap_or_else(|| "routes".to_string()));
-        let tracks = TrackStore::open(args.tracks_dir.clone().unwrap_or_else(|| "tracks".to_string()));
+        let store =
+            RouteStore::open(args.routes_dir.clone().unwrap_or_else(|| "routes".to_string()));
+        let tracks =
+            TrackStore::open(args.tracks_dir.clone().unwrap_or_else(|| "tracks".to_string()));
         // Load any saved 1:1 calibration; `--physical` only takes effect if we have one,
         // and `--calibrate` opens the calibration screen straight away.
         let points_per_mm = crate::calib::load();
@@ -267,7 +267,14 @@ impl SimGui {
         if let Some(player) = self.gpx.as_mut() {
             // Advance + tick on the playback clock (shared with the headless replay).
             let dt = ctx.input(|i| i.stable_dt) as f64;
-            crate::replay_step(&mut self.app, player, &mut self.baro, dt, route.as_ref(), self.tracks.sink());
+            crate::replay_step(
+                &mut self.app,
+                player,
+                &mut self.baro,
+                dt,
+                route.as_ref(),
+                self.tracks.sink(),
+            );
             // Reflect the replayed fix in the panel mirrors so the (disabled)
             // position/heading widgets show the live values, and so manual control
             // resumes from here if the track is ejected.
@@ -282,7 +289,8 @@ impl SimGui {
             // Manual panel control: no barometer, wall-clock for any moving-time.
             self.baro.clear();
             let now_ms = self.input.now_ms();
-            let sensors = Sensors { loc: &mut self.loc, altimeter: None, track: self.tracks.sink() };
+            let sensors =
+                Sensors { loc: &mut self.loc, altimeter: None, track: self.tracks.sink() };
             self.app.tick(RideClock(now_ms), sensors, route.as_ref());
         }
 
@@ -301,8 +309,10 @@ impl SimGui {
         stats.render_us = t0.elapsed().as_micros() as u32;
         self.last_stats = stats;
 
-        let image =
-            egui::ColorImage::from_rgb([self.dev_w as usize, self.dev_h as usize], self.fb.as_rgb888());
+        let image = egui::ColorImage::from_rgb(
+            [self.dev_w as usize, self.dev_h as usize],
+            self.fb.as_rgb888(),
+        );
         let opts = egui::TextureOptions::NEAREST;
         match &mut self.texture {
             Some(t) => t.set(image, opts),
@@ -345,7 +355,8 @@ impl SimGui {
                 let local = pos - rect.min;
                 let px = (local.x / scale).clamp(0.0, w);
                 let py = (local.y / scale).clamp(0.0, h);
-                let new_zoom = (st.zoom * (scroll * 0.005).exp()).clamp(units::MIN_ZOOM, units::MAX_ZOOM);
+                let new_zoom =
+                    (st.zoom * (scroll * 0.005).exp()).clamp(units::MIN_ZOOM, units::MAX_ZOOM);
 
                 // Keep the ground point under the cursor fixed across the zoom.
                 let (olon, olat) = st.viewport(w, h).to_map(px, py);
@@ -407,8 +418,11 @@ impl SimGui {
 
             // Mirror the live control state onto the housing so the encoder/Back animate.
             // The knurl eases toward the new angle so each detent reads as a little turn.
-            let knob_angle =
-                ui.ctx().animate_value_with_time(egui::Id::new("knurl_phase"), self.input.knob_angle(), 0.12);
+            let knob_angle = ui.ctx().animate_value_with_time(
+                egui::Id::new("knurl_phase"),
+                self.input.knob_angle(),
+                0.12,
+            );
             let ctrl = housing::ControlVisual { knob_angle, encoder_down: enc_down, back_down };
             let palette = self.colorway.palette();
 
@@ -449,13 +463,20 @@ impl SimGui {
                 // Reference bar: a known width in points (clamped to the window). The user
                 // measures its physical length, so points-per-mm = drawn width / mm.
                 let bar_w = crate::calib::REF_BAR_POINTS.min(ui.available_width() - 48.0).max(60.0);
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(bar_w, 34.0), egui::Sense::hover());
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(bar_w, 34.0), egui::Sense::hover());
                 let p = ui.painter_at(rect);
                 let col = ui.visuals().strong_text_color();
                 let y = rect.center().y;
-                p.line_segment([egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)], egui::Stroke::new(3.0, col));
+                p.line_segment(
+                    [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
+                    egui::Stroke::new(3.0, col),
+                );
                 for x in [rect.left(), rect.right()] {
-                    p.line_segment([egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())], egui::Stroke::new(2.0, col));
+                    p.line_segment(
+                        [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
+                        egui::Stroke::new(2.0, col),
+                    );
                 }
 
                 ui.add_space(22.0);
@@ -464,7 +485,12 @@ impl SimGui {
                     ui.add(egui::TextEdit::singleline(&mut calib.measured_mm).desired_width(70.0));
                     ui.label("mm");
                 });
-                let parsed = calib.measured_mm.trim().parse::<f32>().ok().filter(|v| v.is_finite() && *v > 1.0);
+                let parsed = calib
+                    .measured_mm
+                    .trim()
+                    .parse::<f32>()
+                    .ok()
+                    .filter(|v| v.is_finite() && *v > 1.0);
 
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
@@ -476,7 +502,10 @@ impl SimGui {
                     }
                 });
                 if parsed.is_none() && !calib.measured_mm.trim().is_empty() {
-                    ui.colored_label(egui::Color32::from_rgb(220, 80, 80), "enter a length in mm (> 1)");
+                    ui.colored_label(
+                        egui::Color32::from_rgb(220, 80, 80),
+                        "enter a length in mm (> 1)",
+                    );
                 }
             });
         });
@@ -496,7 +525,7 @@ impl SimGui {
                 }
             },
             None if !cancel => self.calib = Some(calib), // still editing
-            None => {} // cancelled → leave the screen
+            None => {}                                   // cancelled → leave the screen
         }
     }
 
@@ -554,12 +583,20 @@ impl eframe::App for SimGui {
         let dropped: Vec<std::path::PathBuf> =
             ctx.input(|i| i.raw.dropped_files.iter().filter_map(|f| f.path.clone()).collect());
         for path in dropped {
-            let is_gpx = path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("gpx"));
+            let is_gpx = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("gpx"));
             if is_gpx {
                 match self.store.import_gpx(&path) {
                     Ok(s) => {
                         self.gpx_error = None;
-                        eprintln!("imported {} | {} km, +{} m", path.display(), (s.total_distance_m + 500) / 1000, s.total_ascent_m);
+                        eprintln!(
+                            "imported {} | {} km, +{} m",
+                            path.display(),
+                            (s.total_distance_m + 500) / 1000,
+                            s.total_ascent_m
+                        );
                     }
                     Err(e) => self.gpx_error = Some(e),
                 }

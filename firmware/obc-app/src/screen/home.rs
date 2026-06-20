@@ -38,8 +38,20 @@ impl HomeScreen {
         let (w, h) = (rx.w as i32, rx.h as i32);
         let mut cv = Canvas::new(target, color_fn);
         cv.clear(palette::HUD);
-        cv.text("HOME", Point::new(w / 2, h / 2 - 40), Font::Display, TextAlign::Center, palette::AMBER);
-        cv.text("press to start", Point::new(w / 2, h / 2 + 8), Font::Label, TextAlign::Center, palette::PARCHMENT);
+        cv.text(
+            "HOME",
+            Point::new(w / 2, h / 2 - 40),
+            Font::Display,
+            TextAlign::Center,
+            palette::AMBER,
+        );
+        cv.text(
+            "press to start",
+            Point::new(w / 2, h / 2 + 8),
+            Font::Label,
+            TextAlign::Center,
+            palette::PARCHMENT,
+        );
         RenderStats::default()
     }
 }

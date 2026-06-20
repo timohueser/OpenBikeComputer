@@ -54,7 +54,9 @@ pub fn run(width: u32, height: u32, scale: u32) -> Result<(), eframe::Error> {
     eframe::run_native(
         "OBC Palette",
         options,
-        Box::new(move |_cc| Ok(Box::new(PaletteGui { fb, scale, texture: None }) as Box<dyn eframe::App>)),
+        Box::new(move |_cc| {
+            Ok(Box::new(PaletteGui { fb, scale, texture: None }) as Box<dyn eframe::App>)
+        }),
     )
 }
 

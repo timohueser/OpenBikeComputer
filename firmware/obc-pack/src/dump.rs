@@ -117,9 +117,14 @@ impl Dump {
         let lods: Vec<LodLayer> = self
             .lods
             .into_iter()
-            .map(|l| LodLayer { max_mpp: l.max_mpp, chunk_size: l.chunk_size, root: l.root.into_node() })
+            .map(|l| LodLayer {
+                max_mpp: l.max_mpp,
+                chunk_size: l.chunk_size,
+                root: l.root.into_node(),
+            })
             .collect();
-        let bbox = (self.global_bbox[0], self.global_bbox[1], self.global_bbox[2], self.global_bbox[3]);
+        let bbox =
+            (self.global_bbox[0], self.global_bbox[1], self.global_bbox[2], self.global_bbox[3]);
         serialize::serialize_lods(&lods, &styles, self.marker_color, bbox)
     }
 }

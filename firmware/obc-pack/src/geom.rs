@@ -164,18 +164,15 @@ fn from_geos<G: Geom_>(g: &G) -> Geom {
         Ok(GeometryTypes::Polygon) => {
             let ext = read_ring(&g.get_exterior_ring().expect("ext"));
             let nholes = g.get_num_interior_rings().expect("nholes");
-            let interiors = (0..nholes)
-                .map(|i| read_ring(&g.get_interior_ring_n(i).expect("hole")))
-                .collect();
+            let interiors =
+                (0..nholes).map(|i| read_ring(&g.get_interior_ring_n(i).expect("hole"))).collect();
             Geom::Polygon { exterior: ext, interiors }
         }
         Ok(GeometryTypes::MultiLineString)
         | Ok(GeometryTypes::MultiPolygon)
         | Ok(GeometryTypes::GeometryCollection) => {
             let n = g.get_num_geometries().expect("n geoms");
-            let parts = (0..n)
-                .map(|i| from_geos(&g.get_geometry_n(i).expect("geom n")))
-                .collect();
+            let parts = (0..n).map(|i| from_geos(&g.get_geometry_n(i).expect("geom n"))).collect();
             Geom::Multi(parts)
         }
         // Points (incl. inside a GeometryCollection) carry no renderable line/area
@@ -324,13 +321,7 @@ pub fn clip_to_box(geom: &Geom, bbox: (i64, i64, i64, i64)) -> Geom {
     let (minx, miny, maxx, maxy) =
         (bbox.0 as f64 / 1e6, bbox.1 as f64 / 1e6, bbox.2 as f64 / 1e6, bbox.3 as f64 / 1e6);
     // shapely box() ccw ring: (maxx,miny),(maxx,maxy),(minx,maxy),(minx,miny), closed.
-    let ring = [
-        (maxx, miny),
-        (maxx, maxy),
-        (minx, maxy),
-        (minx, miny),
-        (maxx, miny),
-    ];
+    let ring = [(maxx, miny), (maxx, maxy), (minx, maxy), (minx, miny), (maxx, miny)];
     let box_geom = Geometry::create_polygon(
         Geometry::create_linear_ring(ring_to_coordseq(&ring)).expect("box ring"),
         vec![],

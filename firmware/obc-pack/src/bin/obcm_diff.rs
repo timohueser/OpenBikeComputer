@@ -145,7 +145,12 @@ fn main() -> ExitCode {
     }
     check!(ra.version == rb.version, "version a={} b={}", ra.version, rb.version);
     check!(ra.bbox == rb.bbox, "bbox a={:?} b={:?}", ra.bbox, rb.bbox);
-    check!(ra.marker_color == rb.marker_color, "marker a={:#06x} b={:#06x}", ra.marker_color, rb.marker_color);
+    check!(
+        ra.marker_color == rb.marker_color,
+        "marker a={:#06x} b={:#06x}",
+        ra.marker_color,
+        rb.marker_color
+    );
 
     // Style table (compare all 256 slots).
     for id in 0u16..=255 {
@@ -161,11 +166,27 @@ fn main() -> ExitCode {
     let n = la.len().min(lb.len());
     for i in 0..n {
         let (x, y) = (&la[i], &lb[i]);
-        let mpp_eq = (x.max_mpp == y.max_mpp) || (x.max_mpp.is_infinite() && y.max_mpp.is_infinite());
+        let mpp_eq =
+            (x.max_mpp == y.max_mpp) || (x.max_mpp.is_infinite() && y.max_mpp.is_infinite());
         check!(mpp_eq, "lod[{i}].max_mpp a={} b={}", x.max_mpp, y.max_mpp);
-        check!(x.node_count == y.node_count, "lod[{i}].node_count a={} b={}", x.node_count, y.node_count);
-        check!(x.chunk_count == y.chunk_count, "lod[{i}].chunk_count a={} b={}", x.chunk_count, y.chunk_count);
-        check!(x.chunk_size == y.chunk_size, "lod[{i}].chunk_size a={} b={}", x.chunk_size, y.chunk_size);
+        check!(
+            x.node_count == y.node_count,
+            "lod[{i}].node_count a={} b={}",
+            x.node_count,
+            y.node_count
+        );
+        check!(
+            x.chunk_count == y.chunk_count,
+            "lod[{i}].chunk_count a={} b={}",
+            x.chunk_count,
+            y.chunk_count
+        );
+        check!(
+            x.chunk_size == y.chunk_size,
+            "lod[{i}].chunk_size a={} b={}",
+            x.chunk_size,
+            y.chunk_size
+        );
     }
 
     // Structural diffs are the hard failures; multiset diffs are reported with a
@@ -177,7 +198,10 @@ fn main() -> ExitCode {
     let mut poly_diffs = 0usize;
     let mut lod_poly_diffs: Vec<usize> = Vec::with_capacity(n);
 
-    println!("== feature multiset (per LOD){} ==", if canonical { " [polygons canonical]" } else { "" });
+    println!(
+        "== feature multiset (per LOD){} ==",
+        if canonical { " [polygons canonical]" } else { "" }
+    );
     for i in 0..n {
         let ca = collect_features(&ra, i, canonical);
         let cb = collect_features(&rb, i, canonical);
@@ -192,9 +216,20 @@ fn main() -> ExitCode {
             let vb = cb.get(k).copied().unwrap_or(0);
             if *va > vb {
                 only_a += va - vb;
-                if k.1 { poly_diffs += va - vb; lod_poly += va - vb } else { line_diffs += va - vb }
+                if k.1 {
+                    poly_diffs += va - vb;
+                    lod_poly += va - vb
+                } else {
+                    line_diffs += va - vb
+                }
                 if examples_a < max_examples {
-                    println!("  - LOD{i} only-in-A x{}: style={} poly={} ext_pts={}", va - vb, k.0, k.1, k.2.len());
+                    println!(
+                        "  - LOD{i} only-in-A x{}: style={} poly={} ext_pts={}",
+                        va - vb,
+                        k.0,
+                        k.1,
+                        k.2.len()
+                    );
                     examples_a += 1;
                 }
             }
@@ -205,9 +240,20 @@ fn main() -> ExitCode {
             let va = ca.get(k).copied().unwrap_or(0);
             if *vb > va {
                 only_b += vb - va;
-                if k.1 { poly_diffs += vb - va; lod_poly += vb - va } else { line_diffs += vb - va }
+                if k.1 {
+                    poly_diffs += vb - va;
+                    lod_poly += vb - va
+                } else {
+                    line_diffs += vb - va
+                }
                 if examples_b < max_examples {
-                    println!("  + LOD{i} only-in-B x{}: style={} poly={} ext_pts={}", vb - va, k.0, k.1, k.2.len());
+                    println!(
+                        "  + LOD{i} only-in-B x{}: style={} poly={} ext_pts={}",
+                        vb - va,
+                        k.0,
+                        k.1,
+                        k.2.len()
+                    );
                     examples_b += 1;
                 }
             }

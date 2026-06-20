@@ -48,9 +48,7 @@ fn parse_args() -> Result<Args, String> {
         match a.as_str() {
             "--chunk-size" => {
                 chunk_size = Some(
-                    it.next()
-                        .and_then(|s| s.parse().ok())
-                        .ok_or("--chunk-size needs a number")?,
+                    it.next().and_then(|s| s.parse().ok()).ok_or("--chunk-size needs a number")?,
                 );
             }
             "--no-land" => no_land = true,
@@ -60,7 +58,9 @@ fn parse_args() -> Result<Args, String> {
     // pack.py contract: `<pbf...> <config.json> <out.obcm>` — last two positionals
     // are config + output, the rest are inputs.
     if positional.len() < 3 {
-        return Err("usage: obc-pack <pbf...> <config.json> <out.obcm> [--chunk-size N] [--no-land]".into());
+        return Err(
+            "usage: obc-pack <pbf...> <config.json> <out.obcm> [--chunk-size N] [--no-land]".into(),
+        );
     }
     let output = positional.pop().unwrap();
     let config = positional.pop().unwrap();
@@ -159,8 +159,11 @@ fn run() -> Result<(), String> {
                 .par_iter()
                 .filter(|f| f.min_lod <= i)
                 .map(|f| {
-                    let g =
-                        if tol > 0.0 { topology_preserve_simplify(&f.geom, tol) } else { f.geom.clone() };
+                    let g = if tol > 0.0 {
+                        topology_preserve_simplify(&f.geom, tol)
+                    } else {
+                        f.geom.clone()
+                    };
                     (f.style_id, g)
                 })
                 .collect();

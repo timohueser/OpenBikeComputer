@@ -176,11 +176,8 @@ pub fn pack_feature(f: &Feature, node_bbox: (i64, i64, i64, i64)) -> Vec<u8> {
 
         // Exterior: first point is the anchor; deltas start at the 2nd vertex.
         // Hole: every vertex is a delta, the first relative to the anchor.
-        let (mut prev, delta_pts): ((i64, i64), &[(i64, i64)]) = if i == 0 {
-            (pts[0], &pts[1..])
-        } else {
-            (start_ref, &pts[..])
-        };
+        let (mut prev, delta_pts): ((i64, i64), &[(i64, i64)]) =
+            if i == 0 { (pts[0], &pts[1..]) } else { (start_ref, &pts[..]) };
 
         let mut deltas: Vec<i64> = Vec::with_capacity(delta_pts.len() * 2);
         for &(x, y) in delta_pts {
@@ -222,7 +219,11 @@ pub fn pack_feature(f: &Feature, node_bbox: (i64, i64, i64, i64)) -> Vec<u8> {
 /// Pack features into a fixed-size chunk, padded with `0xFF`. A feature that
 /// would overflow the chunk (and every feature after it) is dropped — the same
 /// `break` as `serialize.py::pack_chunk`.
-pub fn pack_chunk(features: &[Feature], node_bbox: (i64, i64, i64, i64), chunk_size: usize) -> Vec<u8> {
+pub fn pack_chunk(
+    features: &[Feature],
+    node_bbox: (i64, i64, i64, i64),
+    chunk_size: usize,
+) -> Vec<u8> {
     let mut data = Vec::new();
     for f in features {
         let packed = pack_feature(f, node_bbox);

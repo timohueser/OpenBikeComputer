@@ -8,12 +8,12 @@
 use eframe::egui;
 use obc_app::CameraMode;
 
-use crate::calib;
 use super::housing::Colorway;
 use super::units::{
     format_clock, format_distance, mpp_to_zoom, zoom_to_mpp, MAX_ZOOM, MIN_ZOOM, MPP_MAX, MPP_MIN,
 };
 use super::SimGui;
+use crate::calib;
 
 impl SimGui {
     /// Draw the "Controls" window — a second OS window (egui immediate viewport)
@@ -24,9 +24,7 @@ impl SimGui {
     pub(super) fn show_control_panel(&mut self, ctx: &egui::Context) {
         ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("controls"),
-            egui::ViewportBuilder::default()
-                .with_title("Controls")
-                .with_inner_size([360.0, 770.0]),
+            egui::ViewportBuilder::default().with_title("Controls").with_inner_size([360.0, 770.0]),
             |ctx, _class| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     // The device's own controls live on the housing now (click the wheel /
@@ -145,16 +143,32 @@ impl SimGui {
                         ui.vertical(|ui| {
                             ui.label("Camera");
                             ui.horizontal(|ui| {
-                                ui.selectable_value(&mut self.app.state.mode, CameraMode::Follow, "Follow");
-                                ui.selectable_value(&mut self.app.state.mode, CameraMode::Free, "Free");
+                                ui.selectable_value(
+                                    &mut self.app.state.mode,
+                                    CameraMode::Follow,
+                                    "Follow",
+                                );
+                                ui.selectable_value(
+                                    &mut self.app.state.mode,
+                                    CameraMode::Free,
+                                    "Free",
+                                );
                             });
                         });
                         ui.separator();
                         ui.vertical(|ui| {
                             ui.label("Orientation");
                             ui.horizontal(|ui| {
-                                ui.selectable_value(&mut self.app.state.heading_up, false, "North-up");
-                                ui.selectable_value(&mut self.app.state.heading_up, true, "Heading-up");
+                                ui.selectable_value(
+                                    &mut self.app.state.heading_up,
+                                    false,
+                                    "North-up",
+                                );
+                                ui.selectable_value(
+                                    &mut self.app.state.heading_up,
+                                    true,
+                                    "Heading-up",
+                                );
                             });
                         });
                     });
@@ -218,7 +232,10 @@ impl SimGui {
         ui.label(egui::RichText::new("Display size").strong());
         let calibrated = self.points_per_mm.is_some();
         ui.horizontal(|ui| {
-            let resp = ui.add_enabled(calibrated, egui::Checkbox::new(&mut self.physical, "Actual size (1:1)"));
+            let resp = ui.add_enabled(
+                calibrated,
+                egui::Checkbox::new(&mut self.physical, "Actual size (1:1)"),
+            );
             if resp.changed() {
                 // Resize the window either way: to 1:1 on, back to the --scale default off.
                 self.physical_resize_pending = true;
@@ -231,7 +248,8 @@ impl SimGui {
             Some(ppm) => {
                 ui.weak(format!(
                     "calibrated {ppm:.2} pt/mm · panel {:.1} × {:.1} mm",
-                    calib::PANEL_W_MM, calib::PANEL_H_MM
+                    calib::PANEL_W_MM,
+                    calib::PANEL_H_MM
                 ));
             }
             None => {
@@ -281,8 +299,7 @@ impl SimGui {
         if dur > 0.0 {
             // Scrubber — seek anywhere in the track, playing or paused.
             let mut t = player.time();
-            let resp =
-                ui.add(egui::Slider::new(&mut t, 0.0..=dur).show_value(false).text("seek"));
+            let resp = ui.add(egui::Slider::new(&mut t, 0.0..=dur).show_value(false).text("seek"));
             if resp.changed() {
                 player.seek(t);
             }
@@ -339,7 +356,10 @@ impl SimGui {
             // you zoom out `pts` climbs with the visible route, but `drawn` tracks what's on-screen
             // (per-segment view clip + subpixel fold) — the gap is the clip doing its job.
             ui.label("Route");
-            ui.label(format!("{} / {} drawn · {} chunks", s.route_points_drawn, s.route_points, s.route_chunks));
+            ui.label(format!(
+                "{} / {} drawn · {} chunks",
+                s.route_points_drawn, s.route_points, s.route_chunks
+            ));
             ui.end_row();
 
             // Host-measured frame draw time (render + route/overlays). 0 = not yet measured.

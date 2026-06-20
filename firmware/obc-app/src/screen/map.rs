@@ -108,7 +108,8 @@ impl MapScreen {
         // zoom, the chevrons appear once the view is zoomed in past `CHEVRON_MAX_MPP`, anchored to
         // the rider's matched distance along the route (`progress_m`). Gated on the viewport scale
         // directly, so it's decoupled from the map's LOD pyramid.
-        let arrows_at = (vp.meters_per_pixel() <= CHEVRON_MAX_MPP).then_some(rx.activity.progress_m);
+        let arrows_at =
+            (vp.meters_per_pixel() <= CHEVRON_MAX_MPP).then_some(rx.activity.progress_m);
 
         // The planned route, stroked in magenta over the map (under the breadcrumb + marker),
         // with white travel-direction chevrons near the rider at riding zoom.
@@ -140,7 +141,8 @@ impl MapScreen {
         // rider has strayed; the route + breadcrumb stay drawn — the line back),
         // else the map's marker colour. Shared by the marker and the pan pin so the
         // off-screen pin matches the on-screen marker.
-        let marker565 = if rx.activity.off_route { super::palette::WARNING } else { rx.reader.marker_color };
+        let marker565 =
+            if rx.activity.off_route { super::palette::WARNING } else { rx.reader.marker_color };
         if let Some(fix) = rx.state.user_fix {
             rx.renderer.draw_marker(target, &vp, fix.lon, fix.lat, fix.course, color_fn(marker565));
         }
@@ -252,8 +254,14 @@ fn pt(x: f32, y: f32) -> Point {
 /// solid back-to-you marker (the open chevrons are drawn separately by [`chevron`]).
 /// `h`/`w` are the half-height and base half-width; the outline is the same triangle
 /// grown by [`hud::OUTLINE`], drawn first.
-fn outlined_arrow<D, F>(cv: &mut Canvas<D, F>, center: (f32, f32), dir: (f32, f32), size: (f32, f32), fill: u16, outline: u16)
-where
+fn outlined_arrow<D, F>(
+    cv: &mut Canvas<D, F>,
+    center: (f32, f32),
+    dir: (f32, f32),
+    size: (f32, f32),
+    fill: u16,
+    outline: u16,
+) where
     D: DrawTarget,
     F: Fn(u16) -> D::Color,
 {
@@ -280,13 +288,20 @@ where
 /// rider is off-screen) a back-to-you marker in the rider's colour. `vp` is the map's
 /// viewport — already carrying the frozen pan rotation — so the compass needle and the
 /// off-screen test agree with what's drawn.
-fn draw_pan_hud<D, F>(target: &mut D, size: (f32, f32), pan: Pan, user_fix: Option<Fix>, marker: u16, vp: &Viewport, color_fn: &F)
-where
+fn draw_pan_hud<D, F>(
+    target: &mut D,
+    size: (f32, f32),
+    pan: Pan,
+    user_fix: Option<Fix>,
+    marker: u16,
+    vp: &Viewport,
+    color_fn: &F,
+) where
     D: DrawTarget,
     F: Fn(u16) -> D::Color,
 {
-    use hud::*;
     use super::palette::*;
+    use hud::*;
     let (w, h) = size;
     let mut cv = Canvas::new(target, color_fn);
 
@@ -300,8 +315,12 @@ where
     // 2) Active-axis chevrons: one outward-pointing hollow caret on each of the axis's
     //    two edges (the open-arrow look — distinct from the solid back-to-you triangle).
     let chevs: [((f32, f32), (f32, f32)); 2] = match pan.axis {
-        PanAxis::Vertical => [((w / 2.0, CHEV_INSET), (0.0, -1.0)), ((w / 2.0, h - CHEV_INSET), (0.0, 1.0))],
-        PanAxis::Horizontal => [((CHEV_INSET, h / 2.0), (-1.0, 0.0)), ((w - CHEV_INSET, h / 2.0), (1.0, 0.0))],
+        PanAxis::Vertical => {
+            [((w / 2.0, CHEV_INSET), (0.0, -1.0)), ((w / 2.0, h - CHEV_INSET), (0.0, 1.0))]
+        }
+        PanAxis::Horizontal => {
+            [((CHEV_INSET, h / 2.0), (-1.0, 0.0)), ((w - CHEV_INSET, h / 2.0), (1.0, 0.0))]
+        }
     };
     for (center, dir) in chevs {
         chevron(&mut cv, center, dir, AMBER, INK);
@@ -328,7 +347,10 @@ fn back_to_you(w: f32, h: f32, vp: &Viewport, fix: Fix) -> Option<(f32, f32, f32
     use hud::*;
     let (sxi, syi) = vp.to_screen(fix.lon, fix.lat);
     let (sx, sy) = (sxi as f32, syi as f32);
-    let off = sx < -OFFSCREEN_MARGIN || sx > w + OFFSCREEN_MARGIN || sy < -OFFSCREEN_MARGIN || sy > h + OFFSCREEN_MARGIN;
+    let off = sx < -OFFSCREEN_MARGIN
+        || sx > w + OFFSCREEN_MARGIN
+        || sy < -OFFSCREEN_MARGIN
+        || sy > h + OFFSCREEN_MARGIN;
     if !off {
         return None;
     }
@@ -355,8 +377,13 @@ fn back_to_you(w: f32, h: f32, vp: &Viewport, fix: Fix) -> Option<(f32, f32, f32
 /// arm quads at half-width `hw` + round caps/join (a disc at each of the three vertices).
 /// Because both passes share the centreline, the halo stays uniform — unlike growing a
 /// filled polygon, which warps the arm angle and gives the ragged border it replaces.
-fn chevron<D, F>(cv: &mut Canvas<D, F>, center: (f32, f32), dir: (f32, f32), fill: u16, outline: u16)
-where
+fn chevron<D, F>(
+    cv: &mut Canvas<D, F>,
+    center: (f32, f32),
+    dir: (f32, f32),
+    fill: u16,
+    outline: u16,
+) where
     D: DrawTarget,
     F: Fn(u16) -> D::Color,
 {
