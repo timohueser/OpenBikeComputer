@@ -109,6 +109,9 @@ struct Args {
     /// Show the device's 64-color gamut and nothing else — a standalone color-test
     /// screen. Needs no map; opens a window, or writes to `--png` and exits.
     palette: bool,
+    /// Initial housing body color: `coral` | `mint` | `mustard` | `slate` (default
+    /// slate). Cosmetic host chrome; switchable live in the control panel.
+    colorway: Option<String>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -135,6 +138,7 @@ fn parse_args() -> Result<Args, String> {
         physical: false,
         calibrate: false,
         palette: false,
+        colorway: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -173,6 +177,7 @@ fn parse_args() -> Result<Args, String> {
             "--physical" => a.physical = true,
             "--calibrate" => a.calibrate = true,
             "--palette" => a.palette = true,
+            "--colorway" => a.colorway = Some(it.next().ok_or("--colorway needs a name")?),
             other => {
                 if a.map.is_empty() {
                     a.map = other.to_string();
@@ -398,7 +403,7 @@ fn main() {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: obc-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate]");
+            eprintln!("error: {e}\nusage: obc-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate] [--colorway NAME]");
             std::process::exit(2);
         }
     };
