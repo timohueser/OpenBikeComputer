@@ -22,6 +22,7 @@
 
 use heapless::Vec;
 
+use crate::deadband::DeadBand;
 use crate::geo::seg_dist_m;
 use crate::reader::{RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
 
@@ -47,11 +48,6 @@ const TOTAL_COLS: usize = sum_levels();
 /// band pyramid: ascent feeds only the live "to climb" stat, never the zoom drawing, so
 /// it needs no extra detail and pays no extra RAM as the base grows.
 const ASCENT_COLS: usize = 256;
-
-/// Climb dead-band (m) for the cumulative-ascent profile — ignore wiggles below this so
-/// the per-column ascent matches the converter's intent. Mirrors `convert.rs`'s
-/// `ELE_THRESHOLD_M`.
-const ELE_THRESHOLD_M: f32 = 3.0;
 
 /// Sum of [`LEVEL_COLS`] — a `const fn` so [`TOTAL_COLS`] tracks the table automatically.
 const fn sum_levels() -> usize {
@@ -241,7 +237,7 @@ impl RouteReader<'_> {
         // updating that column's elevation band and the continuous ascent integrator. The
         // integrator runs *across* chunk seams (a chunk's shared seam point compares equal
         // to itself, contributing nothing), so it stays one continuous pass.
-        let mut ascent = AscentDeadband::new();
+        let mut ascent = DeadBand::<f32>::new();
         let mut buf: Vec<RoutePoint, MAX_POINTS_PER_CHUNK> = Vec::new();
         let n = self.chunks().len();
         for k in 0..n {
@@ -267,7 +263,8 @@ impl RouteReader<'_> {
                 // Record the running ascent at this column (later points in the same column
                 // overwrite, so it ends on the correct value).
                 let acol = ((frac * asc_last as f64) as usize).min(asc_last);
-                casc[acol] = ascent.push(p.ele as f32);
+                ascent.push(p.ele as f32);
+                casc[acol] = ascent.ascent();
             }
         }
 
@@ -298,40 +295,6 @@ fn downsample_levels(cols: &mut [(i16, i16); TOTAL_COLS]) {
             let b = src[2 * j + 1];
             *d = (a.0.min(b.0), a.1.max(b.1));
         }
-    }
-}
-
-/// Running dead-banded ascent: feed each point's elevation in route order, read back the
-/// cumulative climb so far. Changes smaller than [`ELE_THRESHOLD_M`] neither count nor move
-/// the reference, so sampling/sensor wiggle doesn't inflate the total — the same dead-band
-/// the converter applies when precomputing the route's ascent.
-struct AscentDeadband {
-    /// Reference elevation the next sample is compared against; `None` before the first.
-    ref_ele: Option<f32>,
-    /// Cumulative climb (m) past the dead-band so far.
-    total: f32,
-}
-
-impl AscentDeadband {
-    fn new() -> Self {
-        AscentDeadband { ref_ele: None, total: 0.0 }
-    }
-
-    /// Integrate one elevation sample, returning the running cumulative ascent.
-    fn push(&mut self, e: f32) -> f32 {
-        match self.ref_ele {
-            None => self.ref_ele = Some(e),
-            Some(r) => {
-                let d = e - r;
-                if d >= ELE_THRESHOLD_M {
-                    self.total += d;
-                    self.ref_ele = Some(e);
-                } else if d <= -ELE_THRESHOLD_M {
-                    self.ref_ele = Some(e);
-                }
-            }
-        }
-        self.total
     }
 }
 

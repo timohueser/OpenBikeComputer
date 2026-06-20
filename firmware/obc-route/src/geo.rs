@@ -24,8 +24,10 @@
 //! [`ground_dist_m_cl`] all take a precomputed `cl`), rather than recomputing `cosf` per
 //! segment.
 
-/// Meters per degree of latitude (and of longitude at the equator).
-pub(crate) const M_PER_DEG: f32 = 111_320.0;
+/// Meters per degree of latitude (and of longitude at the equator) — the `f32` form of
+/// the shared [`obc_reader::M_PER_DEG`], so the route's distances, the packer's simplify
+/// tolerance and the renderer's scale all derive from one Earth model.
+pub(crate) const M_PER_DEG: f32 = obc_reader::M_PER_DEG as f32;
 
 /// `cos(latitude)` for the local east-scaling, from latitude in microdegrees. Hoist this
 /// once per latitude band and pass it to the `_cl` helpers across a run of nearby

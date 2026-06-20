@@ -11,9 +11,14 @@
 
 use heapless::Vec;
 
+use crate::codec::{rd_f32, rd_i32, rd_u16, rd_u32};
 use crate::{BBox, Error};
 
+/// Upper bound on the vertices of a single decoded feature — the capacity a caller
+/// sizes the `points` scratch buffer to for [`Reader::for_each_feature`].
 pub const MAX_FEAT_PTS: usize = 2048;
+/// Upper bound on the rings (exterior + holes) of a single decoded feature — the
+/// capacity for the `ring_lens` scratch buffer of [`Reader::for_each_feature`].
 pub const MAX_FEAT_RINGS: usize = 32;
 
 /// The header is fixed-size; everything after it is reached via explicit offsets.
@@ -77,17 +82,6 @@ impl Lod {
         let end = start.checked_add(self.chunk_size)?;
         Some((start, end))
     }
-}
-
-/// A decoded feature owning its geometry (microdegrees). Convenience type for
-/// callers that want owned data; the rendering path uses the allocation-free
-/// [`Reader::for_each_feature`] instead.
-#[derive(Debug, Clone)]
-pub struct Feature {
-    pub style_id: u8,
-    pub kind: Kind,
-    pub exterior: Vec<(i32, i32), MAX_FEAT_PTS>,
-    pub interiors: Vec<Vec<(i32, i32), MAX_FEAT_PTS>, MAX_FEAT_RINGS>,
 }
 
 /// A feature decoded into caller-owned scratch buffers, borrowed for the
@@ -158,23 +152,6 @@ impl<'a> Iterator for Interiors<'a> {
         self.offset += len;
         Some(&self.points[s..s + len])
     }
-}
-
-#[inline]
-fn rd_u16(d: &[u8], o: usize) -> u16 {
-    u16::from_le_bytes([d[o], d[o + 1]])
-}
-#[inline]
-fn rd_u32(d: &[u8], o: usize) -> u32 {
-    u32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]])
-}
-#[inline]
-fn rd_i32(d: &[u8], o: usize) -> i32 {
-    i32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]])
-}
-#[inline]
-fn rd_f32(d: &[u8], o: usize) -> f32 {
-    f32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]])
 }
 
 pub struct Reader<'a> {
