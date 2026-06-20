@@ -10,7 +10,27 @@ description = "STM32F429I-DISC1 board firmware for the OpenBikeComputer hardware
 # like the mcu-render-bench bench crates.
 [workspace]
 
+[features]
+# Boot the font/palette bring-up demo (the device analog of the simulator's
+# `--text-demo`) instead of the real app: draws the Terminus font ladder + the
+# explorer palette through the SDRAM `DrawTarget` and halts. A reusable way to
+# re-verify the text + RGB565 colour path on glass in isolation. Off by default —
+# the firmware boots `obc-app` (Home → Map).
+glass-demo = []
+
 [dependencies]
+# The shared OBC stack (all no_std, no global allocator — heapless throughout).
+# Path deps to the host workspace's crates; this standalone crate builds them for
+# thumbv7em-none-eabihf via its own Cargo.lock.
+obc-app = { path = "../obc-app" }       # App + HAL traits + render_frame
+obc-render = { path = "../obc-render" } # zoom_for_mpp + the text demo
+obc-reader = { path = "../obc-reader" } # Reader over the baked-in OBCM tile
+obc-platform = { path = "../obc-platform" } # the SDRAM RGB565 framebuffer DrawTarget
+# Names the `DrawTarget` / `Rgb565` / `RawU16` the app + framebuffer speak. Pinned
+# to the same 0.8 the shared crates use so the target type unifies.
+embedded-graphics = "0.8"
+
+
 # embassy HAL for the STM32F429ZI. `fmc` and `ltdc` are auto-enabled cfgs for this
 # die (driven by the chip feature, not a Cargo feature); `time-driver-any` provides
 # the embassy-time backend. Pinned to the published 0.6.0 (brings the ltdc driver).
