@@ -1,4 +1,4 @@
-//! The global long-press hint — a small "charge-in-place" pill that surfaces the
+//! The global long-press hint — an on-screen "frame bulge" that surfaces the
 //! device's central hold gesture wherever it's available.
 //!
 //! Long-press is the spine of the input model, but until now only the Ride-control
@@ -6,16 +6,25 @@
 //! everywhere: [`App`](crate::app::App) folds each frame's encoder/Back
 //! hold-progress into [`HoldHints`] and draws it on top of the screen stack.
 //!
-//! Per control a fixed-length pill sits at the screen edge nearest its physical
-//! button (both on the right today — encoder up top, Back below). Holding fills the
-//! pill from its centre outward (so it reads as "keep holding until it's full"); a
-//! completed hold **pops** — a brief thickness kick — and an early release retracts.
-//! Each pill is colour-coded (amber = encoder, teal = Back) and backed by a dark
-//! casing so it stays legible over a busy map. The panel has no alpha and the frame
-//! is fully redrawn, so everything here is opaque and simply absent once an
-//! animation ends — no fades, no ghosting.
+//! Per control a black hump swells inward from the screen edge nearest its physical
+//! button (both on the right today — encoder up top, Back below), so it reads as the
+//! black bezel *bulging into* the display — the iOS volume/lock-button press effect.
+//! The hump has a **fixed base width** along the edge ([`Style::base_half`], per
+//! control) and only its inward *depth* tracks the hold, so holding pushes it deeper
+//! in place rather than fanning it wider. Its silhouette is a flat-topped bump — a
+//! [`Style::flat_half`]-wide flat shelf at the apex with quartic shoulders easing
+//! into the edge (deliberately
+//! *not* a round circular cap or a pointed parabola) — rasterized as edge-
+//! perpendicular strips. A completed hold **pops** — a quick deeper lunge that eases
+//! back out — and an early release retracts it.
 //!
-//! Relocating or recolouring a pill is a one-line edit to its [`Style`].
+//! Drawn in [`palette::HUD`] (the near-black frame colour), so it needs no gradient
+//! or alpha and renders on the real 8-color panel exactly as in the simulator. The
+//! panel has no alpha and the frame is fully redrawn, so the bulge is opaque and
+//! simply absent once an animation ends — no fades, no ghosting.
+//!
+//! Encoder vs. Back is told apart by *position* (the bulge erupts next to the button
+//! held), not colour. Relocating a bulge is a one-line edit to its [`Style::anchor`].
 
 use embedded_graphics::{draw_target::DrawTarget, primitives::Rectangle};
 use obc_render::{rect, Canvas};
@@ -24,31 +33,25 @@ use crate::screen::palette;
 
 // tunables
 
-/// Gap (px) between a pill's outer edge and the screen edge it hugs.
-const INSET: i32 = 5;
-/// Dark-casing thickness (px) drawn around the pill for legibility over any map.
-/// Kept `<= INSET` so the casing never spills off the panel edge.
-const PAD: i32 = 2;
-/// Track / fill cross-thickness (px).
-const W: i32 = 6;
-/// Peak cross-thickness at the confirm "pop".
-const WPOP: i32 = 11;
-/// Half the fixed track length (px): the pill is `2 * HALF` long and stays put while
-/// the fill grows inside it — the "charge in place" the goal length communicates.
-const HALF: i32 = 24;
+// The bulge's base / flat-top widths and its charge / pop depths are per-control
+// (encoder vs. Back can differ); see [`Style`] on the ENCODER / BACK constants.
+
 /// Pop animation duration (ms).
-const POP_MS: u32 = 180;
+const POP_MS: u32 = 220;
+/// Fraction of the pop spent lunging in to the pop depth before it eases back out —
+/// a fast attack, slow release, so the confirm reads as a snap.
+const POP_ATTACK: f32 = 0.22;
 /// Retract animation duration (ms) when a hold is released early.
 const CANCEL_MS: u32 = 150;
-/// Dead zone: the charge fraction a hold must pass before any pill is drawn, so a
-/// quick tap stays completely clean (a short press shouldn't flicker a pill). The
-/// drawn fill is remapped ([`shown`]) so the pill emerges empty right at this point
-/// and reaches full at the threshold. `0.30` ≈ 150 ms of the 500 ms hold.
+/// Dead zone: the charge fraction a hold must pass before any bulge is drawn, so a
+/// quick tap stays completely clean (a short press shouldn't flicker a bulge). The
+/// drawn depth is remapped ([`shown`]) so the bulge emerges flat right at this point
+/// and reaches full depth at the threshold. `0.30` ≈ 150 ms of the 500 ms hold.
 const DEAD: f32 = 0.30;
 
 // placement
 
-/// Which screen edge a pill hugs. Both controls live on [`Right`](Edge::Right)
+/// Which screen edge a bulge erupts from. Both controls live on [`Right`](Edge::Right)
 /// today; the other three are the supported relocations (change a [`Style::anchor`]).
 #[allow(dead_code)] // Left / Top / Bottom are the relocation options, not dead.
 #[derive(Clone, Copy)]
@@ -59,7 +62,7 @@ enum Edge {
     Bottom,
 }
 
-/// Where a pill sits: an [`Edge`] plus a `0.0..=1.0` position along it (0 = top/left
+/// Where a bulge sits: an [`Edge`] plus a `0.0..=1.0` position along it (0 = top/left
 /// end, 1 = bottom/right end).
 #[derive(Clone, Copy)]
 struct Anchor {
@@ -69,23 +72,23 @@ struct Anchor {
 
 impl Anchor {
     /// Resolve to a concrete [`Place`] for a `w`×`h` screen, clamping the centre so
-    /// the whole pill (plus casing) stays on-panel.
-    fn place(self, w: i32, h: i32) -> Place {
+    /// the `base_half`-wide base stays on-panel along the edge.
+    fn place(self, w: i32, h: i32, base_half: i32) -> Place {
         let vertical = matches!(self.edge, Edge::Right | Edge::Left);
         let along = if vertical { h } else { w };
-        let lo = HALF + PAD + 1;
-        let hi = (along - HALF - PAD - 1).max(lo);
+        let lo = base_half + 1;
+        let hi = (along - base_half - 1).max(lo);
         let cc = ((self.pos * along as f32) as i32).clamp(lo, hi);
         match self.edge {
-            Edge::Right => Place { vertical, outer: w - INSET, inward: -1, cc },
-            Edge::Left => Place { vertical, outer: INSET, inward: 1, cc },
-            Edge::Bottom => Place { vertical, outer: h - INSET, inward: -1, cc },
-            Edge::Top => Place { vertical, outer: INSET, inward: 1, cc },
+            Edge::Right => Place { vertical, outer: w, inward: -1, cc },
+            Edge::Left => Place { vertical, outer: 0, inward: 1, cc },
+            Edge::Bottom => Place { vertical, outer: h, inward: -1, cc },
+            Edge::Top => Place { vertical, outer: 0, inward: 1, cc },
         }
     }
 }
 
-/// A resolved placement: orientation, the fixed outer (edge) coordinate, the inward
+/// A resolved placement: orientation, the edge coordinate (`outer`), the inward
 /// growth direction (`±1`), and the centre along the edge.
 struct Place {
     vertical: bool,
@@ -95,31 +98,18 @@ struct Place {
 }
 
 impl Place {
-    /// The area for a pill of cross-thickness `t` and half-length `a`, pinned to the
-    /// edge and growing inward — so a thicker pop never crosses the panel boundary.
-    fn pill(&self, t: i32, a: i32) -> Rectangle {
-        let near = if self.inward < 0 { self.outer - t } else { self.outer };
+    /// One rasterizer strip: a 1px-wide slice `along_off` from the centre that pokes
+    /// `depth` px inward from the edge. The bulge is the union of these across the
+    /// fixed base width.
+    fn strip(&self, along_off: i32, depth: i32) -> Rectangle {
+        let a = self.cc + along_off;
+        let near = if self.inward < 0 { self.outer - depth } else { self.outer };
         if self.vertical {
-            rect(near, self.cc - a, t, 2 * a)
+            rect(near, a, depth, 1)
         } else {
-            rect(self.cc - a, near, 2 * a, t)
+            rect(a, near, 1, depth)
         }
     }
-}
-
-/// Grow a rectangle by `pad` on every side — the dark casing around a pill.
-fn inflate(r: Rectangle, pad: i32) -> Rectangle {
-    rect(
-        r.top_left.x - pad,
-        r.top_left.y - pad,
-        r.size.width as i32 + 2 * pad,
-        r.size.height as i32 + 2 * pad,
-    )
-}
-
-/// Capsule corner radius for a pill rectangle (half its short side).
-fn rad(r: &Rectangle) -> u32 {
-    r.size.width.min(r.size.height) / 2
 }
 
 /// Linear `0.0..` progress through a `dur`-ms animation that began at `t0`.
@@ -128,7 +118,7 @@ fn frac(now: u32, t0: u32, dur: u32) -> f32 {
     now.wrapping_sub(t0) as f32 / dur as f32
 }
 
-/// Remap raw hold progress through the [`DEAD`] zone to a `0.0..=1.0` drawn fill:
+/// Remap raw hold progress through the [`DEAD`] zone to a `0.0..=1.0` drawn depth:
 /// `0` at the dead-zone exit, `1` at the threshold.
 fn shown(progress: f32) -> f32 {
     ((progress - DEAD) / (1.0 - DEAD)).clamp(0.0, 1.0)
@@ -141,9 +131,9 @@ fn shown(progress: f32) -> f32 {
 enum Anim {
     /// No animation — drawing follows the live charge in [`Hint::prev`].
     Idle,
-    /// The hold completed: a brief thickness pop that began at `t0`.
+    /// The hold completed: a brief deeper lunge that began at `t0`.
     Pop { t0: u32 },
-    /// The hold was released early: the fill retracts from `from`, starting at `t0`.
+    /// The hold was released early: the bulge retracts from `from`, starting at `t0`.
     Cancel { t0: u32, from: f32 },
 }
 
@@ -171,7 +161,7 @@ impl Hint {
             // Threshold crossed → the confirm pop (the live charge is already 0).
             self.anim = Anim::Pop { t0: now };
         } else if progress == 0.0 && self.prev > DEAD && matches!(self.anim, Anim::Idle) {
-            // Released past the dead zone but before the threshold → retract the fill.
+            // Released past the dead zone but before the threshold → retract the bulge.
             self.anim = Anim::Cancel { t0: now, from: shown(self.prev) };
         }
         self.prev = progress;
@@ -183,76 +173,113 @@ impl Hint {
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
-        let place = style.anchor.place(w, h);
+        let (base_half, flat_half) = (style.base_half, style.flat_half);
+        let (charge_depth, pop_depth) = (style.depth, style.pop_depth);
+        let place = style.anchor.place(w, h, base_half);
+        let mut draw = |depth| bulge(cv, &place, depth, base_half, flat_half);
         match self.anim {
             Anim::Pop { t0 } => {
                 let e = frac(now, t0, POP_MS);
                 if e >= 1.0 {
                     return;
                 }
-                let bump = 4.0 * e * (1.0 - e); // 0 → 1 → 0 parabola (no libm)
-                let t = W + ((WPOP - W) as f32 * bump) as i32;
-                let pill = place.pill(t, HALF);
-                let case = inflate(pill, PAD);
-                cv.round(case, rad(&case), palette::HUD);
-                cv.round(pill, rad(&pill), style.bright);
+                // Fast lunge past the charge depth to the overshoot, then ease back
+                // out to nothing — a snap inward rather than a symmetric pulse.
+                let depth = if e < POP_ATTACK {
+                    charge_depth + (pop_depth - charge_depth) * (e / POP_ATTACK)
+                } else {
+                    pop_depth * (1.0 - (e - POP_ATTACK) / (1.0 - POP_ATTACK))
+                };
+                draw(depth);
             }
             Anim::Cancel { t0, from } => {
                 let e = frac(now, t0, CANCEL_MS);
                 if e >= 1.0 {
                     return;
                 }
-                charging(cv, &place, from * (1.0 - e), style);
+                draw(charge_depth * from * (1.0 - e));
             }
             Anim::Idle => {
                 if self.prev > DEAD {
-                    charging(cv, &place, shown(self.prev), style);
+                    draw(charge_depth * shown(self.prev));
                 }
             }
         }
     }
 }
 
-/// The charge-in-place body: dark casing, the dim full-length track (the "hold until
-/// here" goal), then the bright fill growing from the centre out.
-fn charging<D, F>(cv: &mut Canvas<D, F>, place: &Place, fill: f32, style: &Style)
+/// Profile height (`0.0..=1.0`) at along-offset `i`: a flat shelf at full height
+/// within `±flat_half`, then a quartic shoulder easing to `0` at `±base_half` (flat
+/// tangent at both the shelf and the edge, so it melts into each).
+fn top_profile(i: i32, base_half: i32, flat_half: i32) -> f32 {
+    let a = i.abs();
+    if a <= flat_half {
+        return 1.0;
+    }
+    let u = (a - flat_half) as f32 / (base_half - flat_half).max(1) as f32; // 0..1 shoulder
+    let s = 1.0 - u * u;
+    s * s
+}
+
+/// Draw the bulge: a black hump of `base_half` base width with a `flat_half`-wide
+/// flat top, poking `depth` px inward from the edge, rasterized as edge-perpendicular
+/// strips (see [`top_profile`]). Nothing when uncharged.
+fn bulge<D, F>(cv: &mut Canvas<D, F>, place: &Place, depth: f32, base_half: i32, flat_half: i32)
 where
     D: DrawTarget,
     F: Fn(u16) -> D::Color,
 {
-    let track = place.pill(W, HALF);
-    let case = inflate(track, PAD);
-    cv.round(case, rad(&case), palette::HUD);
-    cv.round(track, rad(&track), style.dim);
-    let a = (HALF as f32 * fill.clamp(0.0, 1.0)) as i32;
-    if a > 0 {
-        let f = place.pill(W, a);
-        cv.round(f, rad(&f), style.bright);
+    if depth < 0.5 {
+        return;
+    }
+    for i in -base_half..=base_half {
+        let d = (depth * top_profile(i, base_half, flat_half) + 0.5) as i32;
+        if d > 0 {
+            cv.fill(place.strip(i, d), palette::HUD);
+        }
     }
 }
 
 // the overlay
 
-/// Per-control colour + anchor. Relocating a pill or recolouring it is a one-line
-/// change to one of the [`ENCODER`] / [`BACK`] constants below.
+/// Per-control look: where the bulge sits and its size along the edge. Relocating or
+/// resizing a bulge is a one-line change to one of the [`ENCODER`] / [`BACK`]
+/// constants below.
 struct Style {
     anchor: Anchor,
-    bright: u16,
-    dim: u16,
+    /// Half the base width (px) along the edge — the hump spans `2 * base_half`
+    /// regardless of depth, so size along the edge and inward depth are independent.
+    base_half: i32,
+    /// Half the flat *top* width (px): strips within `±flat_half` of the centre sit
+    /// at full depth (a flat shelf at the apex), and the quartic shoulder eases to
+    /// zero only across the remaining `base_half - flat_half` on each side — so the
+    /// top reads as a flat edge rather than a parabola's point. `0` is a pure quartic
+    /// bump; keep it `< base_half` to leave room for the shoulders.
+    flat_half: i32,
+    /// Inward depth (px) the bulge reaches at a full charge, just before the threshold.
+    depth: f32,
+    /// Peak inward depth (px) at the confirm "pop" — a brief deeper lunge past `depth`.
+    pop_depth: f32,
 }
 
-/// Encoder hint — amber, upper-right edge (the encoder wheel sits near the top right).
+/// Encoder hint — upper-right edge (the encoder wheel sits near the top right); the
+/// taller of the two, echoing the encoder's longer pill.
 const ENCODER: Style = Style {
-    anchor: Anchor { edge: Edge::Right, pos: 0.30 },
-    bright: palette::AMBER,
-    dim: palette::WOOD,
+    anchor: Anchor { edge: Edge::Right, pos: 0.36 },
+    base_half: 56,
+    flat_half: 20,
+    depth: 7.0,
+    pop_depth: 12.0,
 };
 
-/// Back hint — teal, lower-right edge (the Back button sits below the encoder).
+/// Back hint — lower-right edge (the Back button sits below the encoder); shorter than
+/// the encoder bulge, echoing the Back button's smaller pill.
 const BACK: Style = Style {
-    anchor: Anchor { edge: Edge::Right, pos: 0.70 },
-    bright: palette::TEAL,
-    dim: palette::TEAL_DIM,
+    anchor: Anchor { edge: Edge::Right, pos: 0.67 },
+    base_half: 32,
+    flat_half: 10,
+    depth: 7.0,
+    pop_depth: 12.0,
 };
 
 /// The global long-press overlay: one [`Hint`] per control, drawn above every screen.
@@ -272,7 +299,7 @@ impl HoldHints {
 
     /// Advance both hints one frame. `enc`/`back` are the live hold fractions
     /// (`0.0..=1.0`); `enc_fired`/`back_fired` mark the frame each long-press crossed
-    /// its threshold (so the pill pops the instant the action commits).
+    /// its threshold (so the bulge pops the instant the action commits).
     pub fn update(&mut self, now: u32, enc: f32, back: f32, enc_fired: bool, back_fired: bool) {
         self.encoder.update(now, enc, enc_fired);
         self.back.update(now, back, back_fired);

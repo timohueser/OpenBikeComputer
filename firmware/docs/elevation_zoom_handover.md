@@ -82,7 +82,7 @@ re-read geometry for zoom at all**:
 - The **finest** level caps zoom-in depth. If you ever want to zoom past it (very long
   route), that window is small by definition (a few chunks), so an **optional tiny local
   re-read** stays cheap. RAM is a few KB to low-tens-of-KB of `i16` pairs — trivial on the
-  nRF54L15's 256 KB.
+  nRF54LM20's 512 KB.
 
 So the one real cost is the load-time build (same as today's single-resolution profile);
 interaction is free. Compute is **not** the limiter — this is purely a UX feature.

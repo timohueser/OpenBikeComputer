@@ -1,8 +1,9 @@
 //! Wiring test for the global long-press hint in [`App::render_frame`]: holding the
-//! encoder paints an amber pill on the right edge, holding Back a teal one, a quick
-//! tap paints neither, and each pill sits in its own half of the edge (encoder up
-//! top, Back below). Renders against a tiny in-memory `DrawTarget` over a minimal
-//! `.obcm` whose map is a flat sea backdrop, so the only edge pixels are the hint.
+//! encoder swells a black "frame bulge" into the right edge near the top, holding
+//! Back swells one near the bottom, and a quick tap swells neither. Renders against a
+//! tiny in-memory `DrawTarget` over a minimal `.obcm` whose map is a flat sea
+//! backdrop, then compares each held frame to the idle frame so any standing chrome
+//! cancels out and only the bulge's extra near-black pixels are measured.
 
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
 use obc_app::screen::palette;
@@ -62,7 +63,8 @@ impl Buf {
         }
     }
     /// Count pixels of color `c` in the right-edge band, split by screen half:
-    /// returns `(top_half, bottom_half)`. The hint pills live at `x >= w - 20`.
+    /// returns `(top_half, bottom_half)`. The bulge pokes in from `x = w`, so it
+    /// always lands in `x >= w - 20`.
     fn edge_halves(&self, c: Rgb888) -> (usize, usize) {
         let (mut top, mut bot) = (0, 0);
         for y in 0..self.h {
@@ -129,53 +131,49 @@ fn rgb(c: u16) -> Rgb888 {
     Rgb888::new(r, g, b)
 }
 
-/// Render one frame of `app` over `bytes` into a fresh 120×120 buffer (true-color).
+/// Render one frame of `app` over `bytes` into a fresh 240×320 buffer (true-color) —
+/// the real device size, so each control's bulge lands in its own screen half (its
+/// fixed base width can span more than half of a smaller buffer).
 fn render(app: &mut App, bytes: &[u8]) -> Buf {
     let reader = Reader::new(bytes).expect("valid v5 file");
-    let mut buf = Buf::new(120, 120);
-    app.render_frame(&mut buf, &reader, None, 120.0, 120.0, rgb);
+    let mut buf = Buf::new(240, 320);
+    app.render_frame(&mut buf, &reader, None, 240.0, 320.0, rgb);
     buf
 }
 
-#[test]
-fn holding_a_button_paints_its_edge_pill_a_tap_paints_nothing() {
-    let bytes = build_min_obcm();
-    let amber = rgb(palette::AMBER);
-    let teal = rgb(palette::TEAL);
+/// Hold `button` from 0 ms, then render the frame sampled at `at_ms`.
+fn render_hold(bytes: &[u8], button: Button, at_ms: u32) -> Buf {
+    let mut app = App::new(AppState::new(0, 0, 0.05));
+    app.handle_input(InputClock(0), &mut keys(&[down(button)]));
+    app.handle_input(InputClock(at_ms), &mut keys(&[]));
+    render(&mut app, bytes)
+}
 
-    // Idle: no held button → no hint pixels on the edge at all.
+#[test]
+fn holding_a_button_bulges_its_edge_a_tap_does_nothing() {
+    let bytes = build_min_obcm();
+    let hud = rgb(palette::HUD); // the near-black bulge color
+
+    // Idle baseline: any standing near-black chrome in the edge band (so the held
+    // frames below measure only the bulge's *extra* pixels, not whatever the screen
+    // already draws there).
     let mut app = App::new(AppState::new(0, 0, 0.05));
     app.handle_input(InputClock(0), &mut keys(&[]));
-    let idle = render(&mut app, &bytes);
-    assert_eq!(idle.edge_halves(amber), (0, 0), "idle ⇒ no encoder pill");
-    assert_eq!(idle.edge_halves(teal), (0, 0), "idle ⇒ no Back pill");
+    let (i_top, i_bot) = render(&mut app, &bytes).edge_halves(hud);
 
-    // Hold the encoder past the dead zone (down at 0, sampled mid-hold at 300 ms of a
-    // 500 ms threshold): an amber pill fills in the *top* half, no teal anywhere.
-    let mut app = App::new(AppState::new(0, 0, 0.05));
-    app.handle_input(InputClock(0), &mut keys(&[down(Button::Encoder)]));
-    app.handle_input(InputClock(300), &mut keys(&[]));
-    let held = render(&mut app, &bytes);
-    let (a_top, a_bot) = held.edge_halves(amber);
-    assert!(a_top > 0, "encoder hold ⇒ amber pill on the right edge");
-    assert_eq!(a_bot, 0, "the encoder pill stays in the top half");
-    assert_eq!(held.edge_halves(teal), (0, 0), "encoder hold doesn't paint the Back pill");
+    // Hold the encoder past the dead zone (300 ms of a 500 ms threshold): a bulge
+    // swells the *top* half of the right edge, the bottom half is untouched.
+    let (e_top, e_bot) = render_hold(&bytes, Button::Encoder, 300).edge_halves(hud);
+    assert!(e_top > i_top, "encoder hold ⇒ a bulge swells the top of the right edge");
+    assert_eq!(e_bot, i_bot, "the encoder bulge stays out of the bottom half");
 
-    // Hold Back instead: a teal pill in the *bottom* half, no amber.
-    let mut app = App::new(AppState::new(0, 0, 0.05));
-    app.handle_input(InputClock(0), &mut keys(&[down(Button::Back)]));
-    app.handle_input(InputClock(300), &mut keys(&[]));
-    let held = render(&mut app, &bytes);
-    let (t_top, t_bot) = held.edge_halves(teal);
-    assert!(t_bot > 0, "Back hold ⇒ teal pill on the right edge");
-    assert_eq!(t_top, 0, "the Back pill stays in the bottom half");
-    assert_eq!(held.edge_halves(amber), (0, 0), "Back hold doesn't paint the encoder pill");
+    // Hold Back instead: a bulge in the *bottom* half, the top untouched.
+    let (b_top, b_bot) = render_hold(&bytes, Button::Back, 300).edge_halves(hud);
+    assert!(b_bot > i_bot, "Back hold ⇒ a bulge swells the bottom of the right edge");
+    assert_eq!(b_top, i_top, "the Back bulge stays out of the top half");
 
     // Just-pressed, still inside the dead zone (50 ms of a 500 ms hold ⇒ 10% < DEAD):
-    // a tap-length press shows nothing, so a quick click never flashes a pill.
-    let mut app = App::new(AppState::new(0, 0, 0.05));
-    app.handle_input(InputClock(0), &mut keys(&[down(Button::Encoder)]));
-    app.handle_input(InputClock(50), &mut keys(&[]));
-    let early = render(&mut app, &bytes);
-    assert_eq!(early.edge_halves(amber), (0, 0), "inside the dead zone a press shows nothing");
+    // a tap-length press swells nothing, so a quick click never flashes a bulge.
+    let early = render_hold(&bytes, Button::Encoder, 50).edge_halves(hud);
+    assert_eq!(early, (i_top, i_bot), "inside the dead zone a press shows no bulge");
 }
