@@ -1,18 +1,16 @@
-//! Host-side device-input emulation — the control panel's knob / PUSH / BACK
-//! widgets and keyboard, turned into raw [`InputEvent`]s for the app.
+//! Host-side device-input emulation — the on-housing encoder / Back controls and
+//! the keyboard, turned into raw [`InputEvent`]s for the app.
 //!
-//! The egui widgets in [`crate::gui`] push raw events here each frame (knob
-//! drag/scroll → [`InputEvent::Turn`] detents; PUSH/BACK press-hold and the
-//! Enter/Backspace keys → button edges). [`DeviceInput`] implements
-//! [`InputSource`], so it drops straight into [`obc_app::App::handle_input`],
-//! which runs the *shared* gesture recognizer and dispatches the gestures to the
-//! screen stack — the exact path the firmware uses with real GPIO. This is the
-//! brief's "real device-input emulation path"; the existing GPS/camera widgets
-//! stay a separate dev tool. It also owns the millis clock (since construction)
-//! and the visual knob angle for drawing.
+//! [`crate::gui`] pushes raw events here each frame (mouse-wheel over the scroll-wheel
+//! → [`InputEvent::Turn`] detents; clicking the encoder / Back and the Enter/Backspace
+//! keys → button edges). [`DeviceInput`] implements [`InputSource`], so it drops
+//! straight into [`obc_app::App::handle_input`], which runs the *shared* gesture
+//! recognizer and dispatches the gestures to the screen stack — the exact path the
+//! firmware uses with real GPIO. It also owns the millis clock (since construction)
+//! and the visual knob angle for drawing the wheel.
 
 use std::collections::VecDeque;
-use std::f32::consts::{PI, TAU};
+use std::f32::consts::TAU;
 use std::time::Instant;
 
 use obc_app::{Button, ButtonEvent, InputEvent, InputSource};
@@ -29,9 +27,7 @@ pub struct DeviceInput {
     start: Instant,
     /// Raw events queued by the widgets this frame, drained by [`poll`](InputSource::poll).
     pending: VecDeque<InputEvent>,
-    /// Pointer angle (rad) at the previous drag sample while turning the knob.
-    drag_angle: Option<f32>,
-    /// Sub-detent rotation accumulator (drag + scroll), in radians.
+    /// Sub-detent rotation accumulator (from scroll), in radians.
     accum: f32,
     /// Visual knob angle (rad), stepped one detent per emitted detent.
     knob_angle: f32,
@@ -45,7 +41,6 @@ impl DeviceInput {
         DeviceInput {
             start: Instant::now(),
             pending: VecDeque::new(),
-            drag_angle: None,
             accum: 0.0,
             knob_angle: 0.0,
             enc_down: false,
@@ -67,31 +62,7 @@ impl DeviceInput {
         }
     }
 
-    /// Feed a knob drag sample: `angle` is the pointer's angle (rad) about the
-    /// knob center. Accumulates rotation and emits whole detents.
-    pub fn drag_to(&mut self, angle: f32) {
-        if let Some(prev) = self.drag_angle {
-            let mut d = angle - prev;
-            while d > PI {
-                d -= TAU;
-            }
-            while d < -PI {
-                d += TAU;
-            }
-            self.accum += d;
-            let n = self.take_detents();
-            self.turn(n);
-        }
-        self.drag_angle = Some(angle);
-    }
-
-    /// End a knob drag (pointer released or left the knob).
-    pub fn end_drag(&mut self) {
-        self.drag_angle = None;
-        self.accum = 0.0;
-    }
-
-    /// Feed a scroll delta over the knob (egui `smooth_scroll_delta.y`); scroll up
+    /// Feed a scroll delta over the wheel (egui `smooth_scroll_delta.y`); scroll up
     /// is "next" (clockwise). Emits whole detents.
     pub fn scroll(&mut self, dy: f32) {
         self.accum += dy / SCROLL_PER_DETENT * DETENT_RADS;
@@ -127,17 +98,9 @@ impl DeviceInput {
         n
     }
 
-    /// The visual knob angle (rad) for drawing the pointer notch.
+    /// The visual knob angle (rad) for drawing the wheel's knurl scroll.
     pub fn knob_angle(&self) -> f32 {
         self.knob_angle
-    }
-
-    /// The debounced held state of each button, for the housing's press animation.
-    pub fn enc_down(&self) -> bool {
-        self.enc_down
-    }
-    pub fn back_down(&self) -> bool {
-        self.back_down
     }
 }
 
@@ -179,16 +142,12 @@ mod tests {
     }
 
     #[test]
-    fn drag_emits_detents_in_the_turn_direction() {
+    fn scroll_direction_sets_turn_sign() {
         let mut d = DeviceInput::new();
-        d.drag_to(0.0); // baseline, no detent
-        d.drag_to(PI); // +180° ⇒ ~12 detents clockwise
-        assert!((11..=12).contains(&drain_turns(&mut d)), "half turn ≈ 12 detents");
-
-        let mut d = DeviceInput::new();
-        d.drag_to(0.0);
-        d.drag_to(-PI); // the opposite direction is negative
-        assert!((-12..=-11).contains(&drain_turns(&mut d)));
+        d.scroll(SCROLL_PER_DETENT * 3.0);
+        assert_eq!(drain_turns(&mut d), 3, "scroll up ⇒ positive detents");
+        d.scroll(-SCROLL_PER_DETENT * 2.0);
+        assert_eq!(drain_turns(&mut d), -2, "scroll down ⇒ negative detents");
     }
 
     #[test]

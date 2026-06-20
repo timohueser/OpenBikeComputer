@@ -16,7 +16,7 @@ use std::path::Path;
 
 use eframe::egui;
 use obc_reader::Reader;
-use obc_app::{App, AppState, CameraMode, Fix, RideClock, Sensors};
+use obc_app::{App, AppState, Button, CameraMode, Fix, InputClock, RideClock, Sensors};
 use obc_route::RouteReader;
 
 use crate::baro::BaroSensor;
@@ -126,9 +126,9 @@ struct SimGui {
     /// control panel; defaults to slate (or `--colorway`). Purely cosmetic host chrome.
     colorway: Colorway,
     /// This frame's device-control keyboard state, read globally at the top of `update`
-    /// (before any widget can take focus and swallow the keys), then applied in
-    /// [`show_device_controls`](Self::show_device_controls). Turn is edge (detents this
-    /// frame); the buttons are held state.
+    /// (before any widget can take focus and swallow the keys), then folded into the
+    /// on-housing controls in [`show_device_image`](Self::show_device_image). Turn is
+    /// edge (detents this frame); the buttons are held state.
     kbd_turn: i32,
     kbd_enc: bool,
     kbd_back: bool,
@@ -362,7 +362,7 @@ impl SimGui {
     /// screen cutout — centred, at either the integer fit scale (default) or the
     /// panel's true physical size when 1:1 is on and calibrated.
     fn show_device_image(&mut self, ctx: &egui::Context) {
-        let frame = egui::Frame::none().fill(housing::BACKGROUND);
+        let frame = egui::Frame::none().fill(housing::background());
         egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
             let tex = self.texture.clone().expect("texture uploaded this frame");
             let style = housing::HousingStyle::default();
@@ -381,28 +381,46 @@ impl SimGui {
                     fit.floor().clamp(1.0, self.scale as f32)
                 }
             };
+            let lo = style.layout(ui.available_rect_before_wrap(), disp_scale, screen);
 
-            // Mirror the live control state onto the housing so the encoder/Back animate
-            // as the user drives them. Keyboard state is this frame's (read at the top of
-            // `update`); the pointer/turn state lags a frame (the panel sets it after
-            // this), which is imperceptible.
-            let ctrl = housing::ControlVisual {
-                knob_angle: self.input.knob_angle(),
-                encoder_down: self.input.enc_down() || self.kbd_enc,
-                back_down: self.input.back_down() || self.kbd_back,
-            };
+            // The device's own controls live *on the housing* now: click the encoder /
+            // Back, or scroll over the wheel to turn it. Hit-test their rects, fold in the
+            // keyboard (read at the top of `update`), and run the shared recognizer — the
+            // same path the firmware uses with real GPIO.
+            let enc = ui.interact(lo.encoder, egui::Id::new("dev_encoder"), egui::Sense::click());
+            let back = ui.interact(lo.back, egui::Id::new("dev_back"), egui::Sense::click());
+            let enc = enc.on_hover_cursor(egui::CursorIcon::PointingHand);
+            let back = back.on_hover_cursor(egui::CursorIcon::PointingHand);
+            if enc.hovered() {
+                let dy = ui.input(|i| i.smooth_scroll_delta.y);
+                if dy != 0.0 {
+                    self.input.scroll(dy);
+                }
+            }
+            self.input.turn(self.kbd_turn);
+            let enc_down = enc.is_pointer_button_down_on() || self.kbd_enc;
+            let back_down = back.is_pointer_button_down_on() || self.kbd_back;
+            self.input.set_button(Button::Encoder, enc_down);
+            self.input.set_button(Button::Back, back_down);
+            let now = self.input.now_ms();
+            self.app.handle_input(InputClock(now), &mut self.input);
+
+            // Mirror the live control state onto the housing so the encoder/Back animate.
+            // The knurl eases toward the new angle so each detent reads as a little turn.
+            let knob_angle =
+                ui.ctx().animate_value_with_time(egui::Id::new("knurl_phase"), self.input.knob_angle(), 0.12);
+            let ctrl = housing::ControlVisual { knob_angle, encoder_down: enc_down, back_down };
             let palette = self.colorway.palette();
 
-            // Paint the housing, then blit the framebuffer into the screen rect it hands
-            // back, with corners rounded to follow the bezel (revealing it behind). Clone
-            // the painter so the borrow of `ui` is released before `ui.put` takes it.
+            // Paint the housing, then blit the framebuffer into its screen rect, corners
+            // rounded to follow the bezel (revealing it behind). Clone the painter so the
+            // borrow of `ui` is released before `ui.put` takes it.
             let painter = ui.painter().clone();
-            let avail = ui.available_rect_before_wrap();
-            let screen_rect = housing::draw(&painter, avail, disp_scale, screen, &style, &palette, &ctrl);
+            housing::draw(&painter, &lo, &style, &palette, &ctrl);
             let resp = ui.put(
-                screen_rect,
+                lo.screen,
                 egui::Image::new(egui::load::SizedTexture::from_handle(&tex))
-                    .fit_to_exact_size(screen_rect.size())
+                    .fit_to_exact_size(lo.screen.size())
                     .texture_options(egui::TextureOptions::NEAREST)
                     .rounding(egui::Rounding::same(style.screen_radius_pts(disp_scale)))
                     .sense(egui::Sense::click_and_drag()),
@@ -510,7 +528,7 @@ impl eframe::App for SimGui {
         // device-screen image, the panel) is laid out and can take focus and swallow the
         // keys — so they drive the encoder/Back whether the screen or the control panel is
         // focused. Turn keys are consumed (one detent per press); the Enter/Backspace
-        // button state is the live held state. Applied in `show_device_controls`.
+        // button state is the live held state. Applied in `show_device_image`.
         let (kt, ke, kb) = ctx.input_mut(|i| {
             let mut t = 0;
             if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight)
