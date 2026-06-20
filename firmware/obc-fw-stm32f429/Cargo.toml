@@ -1,0 +1,47 @@
+[package]
+name = "obc-fw-stm32f429"
+version = "0.1.0"
+edition = "2021"
+description = "STM32F429I-DISC1 board firmware for the OpenBikeComputer hardware prototype: FMC SDRAM + onboard ILI9341 via LTDC. The LTDC display path is a stand-in; the real target is the nRF54L with a MIP panel, so the board-agnostic glue stays in obc-platform / obc-app."
+
+# Standalone crate with its own (empty) workspace table so the firmware/ host
+# workspace — which builds its members for the host target — ignores this crate.
+# Built for thumbv7em-none-eabihf via the crate-local .cargo/config.toml, exactly
+# like the mcu-render-bench bench crates.
+[workspace]
+
+[dependencies]
+# embassy HAL for the STM32F429ZI. `fmc` and `ltdc` are auto-enabled cfgs for this
+# die (driven by the chip feature, not a Cargo feature); `time-driver-any` provides
+# the embassy-time backend. Pinned to the published 0.6.0 (brings the ltdc driver).
+embassy-stm32 = { version = "0.6.0", features = ["stm32f429zi", "time-driver-any", "defmt"] }
+# embassy-stm32 0.6.0 pulls executor 0.10 / time 0.5 — newer than the bench's
+# 0.7/0.4, so match them here (0.10 dropped the task arena; no arena feature).
+embassy-executor = { version = "0.10.0", features = ["executor-thread", "platform-cortex-m", "defmt"] }
+embassy-time = { version = "0.5.1", features = ["defmt"] }
+
+# SDRAM chip driver: the IS42S16400J device + the SdramChip trait that
+# embassy_stm32::fmc's `sdram_*` constructors take. Same 0.4.0 embassy-stm32 uses.
+stm32-fmc = "0.4.0"
+
+# Direct PAC access for the one register poke embassy doesn't expose publicly:
+# pointing the LTDC layer at the SDRAM framebuffer + an immediate shadow reload
+# (`embassy_stm32::pac` is pub(crate)). Pinned to the 21.0.0 embassy-stm32 0.6.0
+# resolves, so the dependency graph has a single shared metapac.
+stm32-metapac = { version = "21.0.0", features = ["stm32f429zi"] }
+
+# Single-core critical-section impl (defmt + embassy need critical-section 1.0;
+# unlike embassy-rp, embassy-stm32 does not bundle it).
+cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
+cortex-m-rt = "0.7"
+
+# defmt logging over RTT via the onboard ST-LINK (`cargo run` flashes + streams).
+defmt = "0.3"
+defmt-rtt = "0.4"
+panic-probe = { version = "0.3", features = ["print-defmt"] }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+debug = 2
