@@ -265,21 +265,21 @@ struct Style {
 /// Encoder hint — upper-right edge (the encoder wheel sits near the top right); the
 /// taller of the two, echoing the encoder's longer pill.
 const ENCODER: Style = Style {
-    anchor: Anchor { edge: Edge::Right, pos: 0.30 },
-    base_half: 44,
-    flat_half: 12,
-    depth: 8.0,
-    pop_depth: 14.0,
+    anchor: Anchor { edge: Edge::Right, pos: 0.36 },
+    base_half: 56,
+    flat_half: 20,
+    depth: 7.0,
+    pop_depth: 12.0,
 };
 
 /// Back hint — lower-right edge (the Back button sits below the encoder); shorter than
 /// the encoder bulge, echoing the Back button's smaller pill.
 const BACK: Style = Style {
-    anchor: Anchor { edge: Edge::Right, pos: 0.70 },
-    base_half: 28,
-    flat_half: 8,
-    depth: 6.0,
-    pop_depth: 11.0,
+    anchor: Anchor { edge: Edge::Right, pos: 0.67 },
+    base_half: 32,
+    flat_half: 10,
+    depth: 7.0,
+    pop_depth: 12.0,
 };
 
 /// The global long-press overlay: one [`Hint`] per control, drawn above every screen.
