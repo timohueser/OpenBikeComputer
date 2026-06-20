@@ -801,6 +801,7 @@ dependencies = [
  "embassy-stm32",
  "embassy-time",
  "embedded-graphics",
+ "heapless 0.8.0",
  "obc-app",
  "obc-platform",
  "obc-reader",
@@ -815,6 +816,9 @@ name = "obc-platform"
 version = "0.1.0"
 dependencies = [
  "embedded-graphics",
+ "embedded-hal 1.0.0",
+ "heapless 0.8.0",
+ "obc-app",
 ]
 
 [[package]]
