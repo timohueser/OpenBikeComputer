@@ -26,8 +26,10 @@ use obc_pack::land;
 use obc_pack::quadtree::build_lod;
 use obc_pack::serialize::serialize_lods_streaming;
 
-/// Meters → degrees divisor for the simplify tolerance (mirrors `pack.py`).
-const M_PER_DEG: f64 = 111_320.0;
+// Meters → degrees divisor for the simplify tolerance (mirrors `pack.py`). Shared with
+// the reader/route/renderer so the packer's simplification scale matches the Earth model
+// everything else measures distance against.
+use obc_reader::M_PER_DEG;
 
 struct Args {
     pbfs: Vec<String>,
