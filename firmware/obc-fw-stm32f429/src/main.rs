@@ -50,15 +50,16 @@
 //! Mask     NBL0-1 : PE0 PE1
 //! Control         : SDCKE1 PB5 | SDCLK PG8 | SDNCAS PG15 | SDNE1 PB6 | SDNRAS PF11 | SDNWE PC0
 //!
-//! ## Pushbutton pin map (issue #35) — DISC1 header P1, internal pull-ups, active-low
+//! ## Pushbutton pin map (issue #35) — DISC1 headers, internal pull-ups, active-low
 //! One common pin to GND; each switch to its GPIO (no external pull-ups/resistors —
 //! the F429's internal pull-ups hold the lines high, a press pulls one low):
-//!   PREV PE2 | NEXT PE3 | SELECT PE4 | BACK PE5     (P1 pins 15 / 16 / 13 / 14)
-//! Clear of FMC/LTDC/SPI5/LEDs. CAVEAT for the SD card (#36 uses SD-over-**SPI** /
-//! embedded-sdmmc, not SDIO): PE2/PE4/PE5 sit on SPI4's only usable pins here —
-//! SCK PE2 / NSS PE4 / MISO PE5 / MOSI PE6 (the PE11-14 alternate is all FMC) — so
-//! these buttons block SPI4, the cleanest SD-over-SPI bus. Before #36, either move the
-//! buttons off PE2/4/5/6 to free SPI4 for the card, or route the SD to another SPI.
+//!   PREV PD4 | NEXT PE3 | SELECT PE4 | BACK PD5
+//! Clear of FMC/LTDC/SPI5/LEDs, and deliberately kept off SPI4's data pins so the SD
+//! card (#36 uses SD-over-**SPI** / embedded-sdmmc, not SDIO) can take SPI4: its only
+//! usable pinout on the DISC1 is SCK PE2 / MISO PE5 / MOSI PE6 (PE11-14 is all FMC),
+//! now all free. PE4 = SPI4_NSS is still SELECT, but SPI-mode SD uses a software CS, so
+//! it never needs hardware NSS. PD4/PD5 are free GPIO broken out on the headers (locate
+//! by the silkscreen port labels). PREV/BACK were moved off PE2/PE5 for exactly this.
 //!
 //! ## Display pin map (onboard ILI9341, 240x320)
 //! Config (SPI5, 8-bit mode-0) : SCK PF7 | MOSI PF9 | CS/NCS PC2 | DCX/WRX PD13   (reset = NRST)
@@ -524,11 +525,13 @@ async fn main(_spawner: Spawner) {
         // its GPIO, no external parts — internal pull-ups, read active-low (see the
         // pin-map note in the module header). All four are `Input<'static>` (the type
         // erases the pin), so they share the `ButtonInput` type parameter.
+        // PREV/BACK live on PD4/PD5 (not PE2/PE5) to keep SPI4's data pins free for the
+        // SD card (#36, SD-over-SPI) — see the pin-map note in the module header.
         let mut buttons = ButtonInput::new(
-            Input::new(p.PE2, Pull::Up), // PREV   → Turn(-1)
+            Input::new(p.PD4, Pull::Up), // PREV   → Turn(-1)
             Input::new(p.PE3, Pull::Up), // NEXT   → Turn(+1)
             Input::new(p.PE4, Pull::Up), // SELECT → encoder press / hold
-            Input::new(p.PE5, Pull::Up), // BACK   → back / back-hold
+            Input::new(p.PD5, Pull::Up), // BACK   → back / back-hold
         );
 
         // No GPS yet (step #38): a constant fix at the tile's dense core, so the Map's
@@ -546,7 +549,7 @@ async fn main(_spawner: Spawner) {
         let mut back_addr = FB_ADDR + FB_BYTES;
         unsafe { core::slice::from_raw_parts_mut(back_addr as *mut u16, FB_PIXELS) }.fill(0x0000);
         defmt::info!(
-            "input live: PE2 PREV / PE3 NEXT / PE4 SELECT / PE5 BACK (pull-up, active-low); double-buffered"
+            "input live: PD4 PREV / PE3 NEXT / PE4 SELECT / PD5 BACK (pull-up, active-low); double-buffered"
         );
 
         // Render-on-demand loop. Buttons are sampled every LOOP_MS so quick taps and
