@@ -405,6 +405,14 @@ pub struct RenderStats {
     pub features_dropped: usize,
     pub points_tried: usize,
     pub points_drawn: usize,
+    /// Active-route overlay this frame: chunks whose bbox met the viewport (so they were
+    /// decoded), the total points across them, and how many of those were *actually* stroked
+    /// after the view clip + subpixel simplify. The route carries **no LOD**, so `route_points`
+    /// climbs as you zoom out of a long route — but `route_points_drawn` stays near what's
+    /// on-screen, confirming the per-segment clip is doing its job.
+    pub route_chunks: usize,
+    pub route_points: usize,
+    pub route_points_drawn: usize,
     // Buffer utilization (0.0–1.0) for saturation display.
     pub span_utilization: f32,
     pub point_utilization: f32,
@@ -595,6 +603,12 @@ impl MapRenderer {
     /// set, chevrons are drawn in a **second pass** (so they sit on top where the route doubles
     /// back) within a window of [`ARROW_AHEAD_COUNT`] chevrons around that distance, each pinned
     /// to a multiple of the screen-relative spacing — see the chevron constants above.
+    ///
+    /// Returns `(chunks, points, drawn)`: chunks decoded (bbox met the view), the points across
+    /// them (the route has no LOD, so this grows as you zoom out of a long route), and how many
+    /// of those vertices were *actually* stroked after the per-segment view clip + subpixel
+    /// simplify — so `drawn` ≪ `points` when most of the route is off-screen. The caller folds
+    /// all three into [`RenderStats`] for the stats panel.
     #[allow(clippy::too_many_arguments)]
     pub fn draw_route<D>(
         &mut self,
@@ -605,7 +619,8 @@ impl MapRenderer {
         weight: u32,
         arrow_color: D::Color,
         arrows_at: Option<u32>,
-    ) where
+    ) -> (usize, usize, usize)
+    where
         D: DrawTarget,
     {
         let (w, h) = (vp.w as i32, vp.h as i32);
@@ -614,6 +629,7 @@ impl MapRenderer {
         let mut pts = Vec::<obc_route::RoutePoint, { obc_route::MAX_POINTS_PER_CHUNK }>::new();
         // Split the borrow so the fills can take `xs` while we build the polyline in `screen`.
         let DrawScratch { screen, xs } = &mut self.draw;
+        let (mut route_chunks, mut route_points, mut route_drawn) = (0usize, 0usize, 0usize);
 
         // Pass 1 — stroke every visible chunk, in full, before any chevron is drawn.
         for (k, cm) in chunks.iter().enumerate() {
@@ -623,16 +639,20 @@ impl MapRenderer {
             if route.decode_chunk(k, &mut pts).is_err() {
                 continue;
             }
+            // Tally what we actually decode + stroke (the stat the panel shows). Adjacent chunks
+            // share a seam vertex, so this counts it on both — matching the points eg strokes.
+            route_chunks += 1;
+            route_points += pts.len();
             let projected = pts.iter().map(|p| {
                 let (x, y) = vp.to_screen(p.lon, p.lat);
                 Point::new(x, y)
             });
-            stroke_overlay(target, screen, projected, color, weight, w, h);
+            route_drawn += stroke_overlay(target, screen, projected, color, weight, w, h);
         }
 
         // Pass 2 — chevrons, anchored to route distance and windowed around the rider.
         let Some(progress_m) = arrows_at else {
-            return;
+            return (route_chunks, route_points, route_drawn);
         };
         let total = route.total_distance_m;
         // Ground spacing for *this* frame: a fixed screen cadence scaled by the current m/px, so
@@ -665,6 +685,7 @@ impl MapRenderer {
                 fill_chevron(target, xs, centre, fwd, ARROW_TIP, ARROW_BACK, ARROW_HALF, arrow_color, w, h);
             });
         }
+        (route_chunks, route_points, route_drawn)
     }
 
     /// Stroke a single polyline of `(lon, lat)` microdegree points as an overlay, clipped to the
@@ -809,24 +830,34 @@ fn within_eps(p: Point, a: Point, b: Point, eps: f32) -> bool {
 /// Clip one committed segment `a`→`b` to the view and append it to the current run, flushing
 /// where the line is discontinuous (segment off-screen, or it doesn't continue the last run).
 /// Pulled out of [`stroke_overlay`] so the main loop can feed it the *simplified* segments.
+///
+/// Returns how many **real on-screen vertices** this segment contributed (0 if wholly clipped
+/// out) — `c1` always, plus `c0` when it (re)starts a run. Excludes [`push_run`]'s synthetic
+/// subdivision hops, so the caller's running total is the points actually rasterised, not decoded.
 #[allow(clippy::too_many_arguments)]
-fn stroke_seg<D>(target: &mut D, run: &mut Vec<Point, MAX_SCREEN_POINTS>, a: Point, b: Point, color: D::Color, weight: u32, xmin: f32, ymin: f32, xmax: f32, ymax: f32)
+fn stroke_seg<D>(target: &mut D, run: &mut Vec<Point, MAX_SCREEN_POINTS>, a: Point, b: Point, color: D::Color, weight: u32, xmin: f32, ymin: f32, xmax: f32, ymax: f32) -> usize
 where
     D: DrawTarget,
 {
     match clip_segment(a, b, xmin, ymin, xmax, ymax) {
-        None => flush_run(target, run, color, weight), // segment wholly off-screen
+        None => {
+            flush_run(target, run, color, weight); // segment wholly off-screen
+            0
+        }
         Some((c0, c1)) => {
+            let mut drawn = 1; // c1
             // (Re)start a run if this segment didn't continue the previous one.
             if run.last().copied() != Some(c0) {
                 flush_run(target, run, color, weight);
                 let _ = run.push(c0);
+                drawn += 1; // c0 enters the view here
             }
             push_run(run, c1);
             // Clipped at its far end → the line left the view here; close this run.
             if c1 != b {
                 flush_run(target, run, color, weight);
             }
+            drawn
         }
     }
 }
@@ -878,7 +909,11 @@ where
 /// so no shape is lost (the joint smoothing that kills thick-line beading is [`flush_run`]'s
 /// round discs, not this); it just hands eg far fewer segments and discs. The `run` scratch is
 /// reused; long runs are subdivided.
-fn stroke_overlay<D, I>(target: &mut D, run: &mut Vec<Point, MAX_SCREEN_POINTS>, points: I, color: D::Color, weight: u32, w: i32, h: i32)
+/// Returns the count of **on-screen vertices actually stroked** (after the subpixel simplify and
+/// the view clip) — far fewer than the points fed in when the line is mostly off-screen or
+/// folds to the same pixels. Callers that want the stat (the route overlay) sum it; the
+/// breadcrumb ignores it.
+fn stroke_overlay<D, I>(target: &mut D, run: &mut Vec<Point, MAX_SCREEN_POINTS>, points: I, color: D::Color, weight: u32, w: i32, h: i32) -> usize
 where
     D: DrawTarget,
     I: IntoIterator<Item = Point>,
@@ -891,13 +926,15 @@ where
     // Simplify in screen space, then stroke consecutive kept vertices as clipped segments — their
     // runs join because each segment starts where the previous ended.
     let mut prev: Option<Point> = None;
+    let mut drawn = 0usize;
     simplify(points, SIMPLIFY_EPS_PX, |v| {
         if let Some(a) = prev {
-            stroke_seg(target, run, a, v, color, weight, xmin, ymin, xmax, ymax);
+            drawn += stroke_seg(target, run, a, v, color, weight, xmin, ymin, xmax, ymax);
         }
         prev = Some(v);
     });
     flush_run(target, run, color, weight);
+    drawn
 }
 
 /// Walk a decoded route chunk (its absolute points plus `s0`, the cumulative route distance
