@@ -29,6 +29,9 @@ obc-platform = { path = "../obc-platform" } # the SDRAM RGB565 framebuffer DrawT
 # Names the `DrawTarget` / `Rgb565` / `RawU16` the app + framebuffer speak. Pinned
 # to the same 0.8 the shared crates use so the target type unifies.
 embedded-graphics = "0.8"
+# For the one stub `RouteSummary` the Route menu lists (so SELECT can open the Map on
+# the baked tile before SD/USB land). Same 0.8 the shared crates use.
+heapless = "0.8"
 
 
 # embassy HAL for the STM32F429ZI. `fmc` and `ltdc` are auto-enabled cfgs for this

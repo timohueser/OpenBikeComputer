@@ -14,17 +14,31 @@
 //!   D. obc-app on glass (issue #34): the SDRAM framebuffer becomes an
 //!      `embedded-graphics` `DrawTarget`, and the shared `App` (boots to Home/Idle,
 //!      then opens the Map on a baked-in OBCM tile) is rendered through it via
-//!      `App::render_frame` — the first time `obc-app` runs on hardware.   <- this commit
+//!      `App::render_frame` — the first time `obc-app` runs on hardware.
+//!   E. Pushbutton input (issue #35): four GPIO buttons → obc-platform's
+//!      board-agnostic `ButtonInput` debouncer → the shared gesture recognizer, so
+//!      the UI is driven on-device — Home → Route menu → Map and back.   <- this commit
 //!
 //! ## RAM split (issue #34 / #8)
 //! The renderer's per-frame scratch is ~200 KB and the framebuffer is 150 KB; the
 //! two do not both fit the F429's 192 KB internal SRAM. For the prototype the whole
-//! `App` (which embeds the renderer) is placed in **SDRAM**, just past the
-//! framebuffer — simplest, runs the full-size renderer. The cost is render-time:
+//! `App` (which embeds the renderer) is placed in **SDRAM**, just past the two
+//! framebuffers (double-buffered, 2x150 KB — see below) — simplest, runs the full-size
+//! renderer. The 8 MB SDRAM swallows all of it. The cost is render-time:
 //! the scratch is now behind the FMC's wait states (slower than the internal-RAM
 //! `mcu-render-bench`); the per-frame time logged over RTT quantifies the delta.
 //! A `small-scratch` cargo feature (internal-RAM scratch) is the fallback if that
 //! delta ever matters — not needed yet.
+//!
+//! ## Double buffering
+//! Rendering clears and repaints the whole frame, so drawing straight into the buffer
+//! the LTDC is scanning makes the panel flash on every redraw — fine for a static
+//! demo, but ugly once the UI animates (the hold bulge redraws continuously). So the
+//! app path keeps **two** framebuffers: the LTDC scans the *front* while the app
+//! renders the next frame into the *back*, then [`flip_to`] points the layer at the
+//! back and reloads it at the next vertical blank (tear-free) and the roles swap. The
+//! panel only ever shows a fully-rendered frame. (The `glass-demo` path stays single-
+//! buffered — it draws one static screen and halts.)
 //!
 //! Clock: 180 MHz core from the 16 MHz HSI (no dependency on the DISC1 HSE), plus a
 //! PLLSAI leg for the LTDC pixel clock.
@@ -35,6 +49,17 @@
 //! Data     D0-D15 : PD14 PD15 PD0 PD1 PE7 PE8 PE9 PE10 PE11 PE12 PE13 PE14 PE15 PD8 PD9 PD10
 //! Mask     NBL0-1 : PE0 PE1
 //! Control         : SDCKE1 PB5 | SDCLK PG8 | SDNCAS PG15 | SDNE1 PB6 | SDNRAS PF11 | SDNWE PC0
+//!
+//! ## Pushbutton pin map (issue #35) — DISC1 headers, internal pull-ups, active-low
+//! One common pin to GND; each switch to its GPIO (no external pull-ups/resistors —
+//! the F429's internal pull-ups hold the lines high, a press pulls one low):
+//!   PREV PD4 | NEXT PE3 | SELECT PE4 | BACK PD5
+//! Clear of FMC/LTDC/SPI5/LEDs, and deliberately kept off SPI4's data pins so the SD
+//! card (#36 uses SD-over-**SPI** / embedded-sdmmc, not SDIO) can take SPI4: its only
+//! usable pinout on the DISC1 is SCK PE2 / MISO PE5 / MOSI PE6 (PE11-14 is all FMC),
+//! now all free. PE4 = SPI4_NSS is still SELECT, but SPI-mode SD uses a software CS, so
+//! it never needs hardware NSS. PD4/PD5 are free GPIO broken out on the headers (locate
+//! by the silkscreen port labels). PREV/BACK were moved off PE2/PE5 for exactly this.
 //!
 //! ## Display pin map (onboard ILI9341, 240x320)
 //! Config (SPI5, 8-bit mode-0) : SCK PF7 | MOSI PF9 | CS/NCS PC2 | DCX/WRX PD13   (reset = NRST)
@@ -66,13 +91,17 @@ use panic_probe as _;
 // just exercises the framebuffer + text). Kept behind the cfg so the demo build is
 // warning-free too.
 #[cfg(not(feature = "glass-demo"))]
+use embassy_stm32::gpio::{Input, Pull};
+#[cfg(not(feature = "glass-demo"))]
 use embassy_time::Instant;
 #[cfg(not(feature = "glass-demo"))]
 use embedded_graphics::pixelcolor::{raw::RawU16, Rgb565};
 #[cfg(not(feature = "glass-demo"))]
-use obc_app::{App, AppState, Fix, LocationSource, RideClock, Sensors};
+use obc_app::{App, AppState, Fix, InputClock, LocationSource, RideClock, RouteSummary, Sensors};
 #[cfg(not(feature = "glass-demo"))]
-use obc_reader::Reader;
+use obc_platform::ButtonInput;
+#[cfg(not(feature = "glass-demo"))]
+use obc_reader::{BBox, Reader};
 #[cfg(not(feature = "glass-demo"))]
 use obc_render::zoom_for_mpp;
 
@@ -80,13 +109,16 @@ use obc_render::zoom_for_mpp;
 mod demo;
 
 const SDRAM_ADDR: usize = 0xD000_0000;
-/// Framebuffer at the base of SDRAM: 240x320 RGB565 = 150 KB.
+/// Front framebuffer at the base of SDRAM: 240x320 RGB565 = 150 KB. The app path adds a
+/// second (back) buffer one [`FB_BYTES`] past it for double buffering; the LTDC is first
+/// pointed here at init and thereafter flipped between the two by [`flip_to`].
 const FB_ADDR: usize = SDRAM_ADDR;
 const W: usize = 240;
 const H: usize = 320;
 /// Framebuffer extent in pixels / bytes (RGB565, 2 bytes each).
 const FB_PIXELS: usize = W * H;
-/// Only the app path needs this — it places the `App` in SDRAM just past the FB.
+/// Only the app path needs this — the back-buffer offset, and it places the `App` in
+/// SDRAM just past *both* framebuffers.
 #[cfg(not(feature = "glass-demo"))]
 const FB_BYTES: usize = FB_PIXELS * 2;
 
@@ -106,12 +138,26 @@ const CAM_LON: i32 = 7_813_599; // 7.81360 E
 #[cfg(not(feature = "glass-demo"))]
 const CAM_LAT: i32 = 48_126_492; // 48.12649 N
 
-/// Map zoom presets cycled on glass, in ground **metres-per-pixel** (kept in the
-/// 0.5–4 mpp band — the riding/panning range). `zoom_for_mpp` maps each to the
-/// camera zoom; the tile's LOD table (breakpoints 2/4 mpp) walks LOD2→LOD1 across
-/// them, so the per-frame log covers more than one detail level.
+/// Initial camera zoom, in ground **metres-per-pixel** (in the 0.5–4 mpp riding band).
+/// Used for the Idle [`AppState`]; opening the Map via the Route menu resets to the
+/// riding zoom, and PREV/NEXT then zoom from there.
 #[cfg(not(feature = "glass-demo"))]
-const MPP_PRESETS: &[(&str, f32)] = &[("z0.5", 0.5), ("z1.0", 1.0), ("z2.0", 2.0), ("z4.0", 4.0)];
+const INIT_MPP: f32 = 1.0;
+
+/// Main-loop button-sample period (ms). Buttons are sampled every tick so quick taps
+/// and hold timing are caught even when a heavy Map frame stretches the render cadence.
+#[cfg(not(feature = "glass-demo"))]
+const LOOP_MS: u64 = 8;
+
+/// Keep redrawing for this long (ms) after the last input/gesture/hold activity, so a
+/// confirm-ring bulge plays its pop/retract out (POP ≈ 220 ms) before frames stop.
+#[cfg(not(feature = "glass-demo"))]
+const ANIM_TAIL_MS: u32 = 300;
+
+/// Idle redraw heartbeat (ms): redraw at least this often even with no input, so
+/// time-based screens (e.g. Statistics) stay live. A static Map then costs ~1 fps.
+#[cfg(not(feature = "glass-demo"))]
+const IDLE_REFRESH_MS: u32 = 1000;
 
 /// A fixed-fix [`LocationSource`]: there is no GPS yet (step #38 streams a fake one
 /// over USB-CDC), so this returns a constant fix at the tile's dense core. In Follow
@@ -175,6 +221,28 @@ fn af_pin(pin: Peri<'static, impl Pin>, af: u8) -> Flex<'static> {
     let mut f = Flex::new(pin);
     f.set_as_af_unchecked(af, AfType::output(OutputType::PushPull, Speed::VeryHigh));
     f
+}
+
+/// Point LTDC layer 1 at the framebuffer at `addr`, reloading at the next vertical
+/// blank — the double-buffer flip. Unlike the immediate reload used at init, the
+/// **vblank** reload switches buffers between frames, so there's no tear; the bounded
+/// poll on the hardware-cleared `VBR` bit then waits for the switch to actually land
+/// (so the old front is free to reuse) without ever spinning forever — the same
+/// "no blocking wait that can hang probe-rs" rule init follows by avoiding the reload
+/// interrupt. A frame is ~15 ms at the 6 MHz DOTCLK, so the reload lands well within
+/// the 50 ms cap in normal operation.
+#[cfg(not(feature = "glass-demo"))]
+fn flip_to(addr: usize) {
+    use stm32_metapac::ltdc::vals::Vbr;
+    use stm32_metapac::LTDC;
+    LTDC.layer(LtdcLayer::Layer1 as usize).cfbar().modify(|w| w.set_cfbadd(addr as u32));
+    LTDC.srcr().modify(|w| w.set_vbr(Vbr::RELOAD));
+    let t0 = Instant::now();
+    while LTDC.srcr().read().vbr() == Vbr::RELOAD {
+        if t0.elapsed().as_millis() > 50 {
+            break;
+        }
+    }
 }
 
 #[embassy_executor::main]
@@ -260,15 +328,15 @@ async fn main(_spawner: Spawner) {
     let ram_ptr: *mut u32 = sdram.init(&mut Delay);
     defmt::info!("SDRAM base {=u32:#010x}", ram_ptr as u32);
 
-    // --- SDRAM framebuffer as a flat &mut [u16] — the `DrawTarget` the app/demo
-    // render into below (replacing phase C's raw test pattern). Cleared to black up
-    // front so the panel shows black, not SDRAM garbage, in the window between LTDC
-    // turn-on and the first rendered frame.
+    // --- SDRAM framebuffer(s). Cleared to black up front so the panel shows black, not
+    // SDRAM garbage, in the window between LTDC turn-on and the first rendered frame.
+    // The LTDC starts scanning FB_ADDR (the front buffer); the app path adds a second
+    // buffer just past it and double-buffers (see the render loop), so each buffer is
+    // wrapped in its own short-lived slice instead of one long-lived `&mut` — two live
+    // `&mut` over the same SDRAM would alias.
     // SAFETY: the FMC maps a contiguous FB_PIXELS×u16 region at FB_ADDR (verified in
-    // phase B); nothing else aliases it — the LTDC only *reads* it by DMA. ---
-    let fb_buf: &'static mut [u16] =
-        unsafe { core::slice::from_raw_parts_mut(FB_ADDR as *mut u16, FB_PIXELS) };
-    fb_buf.fill(0x0000);
+    // phase B); the borrow ends at the statement, and the LTDC only *reads* it by DMA. ---
+    unsafe { core::slice::from_raw_parts_mut(FB_ADDR as *mut u16, FB_PIXELS) }.fill(0x0000);
     defmt::info!("framebuffer ready: {=usize}x{=usize} RGB565 in SDRAM, cleared", W, H);
 
     // --- LTDC: drive the panel's RGB lines, scanning the SDRAM framebuffer ---
@@ -387,6 +455,9 @@ async fn main(_spawner: Spawner) {
     // RGB565 colour path in isolation before the whole app is pointed at the panel. ---
     #[cfg(feature = "glass-demo")]
     {
+        // Single-buffer demo (a static screen, then halt — no flicker to fix).
+        // SAFETY: the LTDC scans FB_ADDR and we only write it; sole borrow.
+        let fb_buf = unsafe { core::slice::from_raw_parts_mut(FB_ADDR as *mut u16, FB_PIXELS) };
         let mut fb = Framebuffer565::new(fb_buf, W as u32, H as u32);
         let _ = demo::font_palette_demo(&mut fb);
         defmt::info!("glass-demo: font + palette rendered; halting");
@@ -396,7 +467,8 @@ async fn main(_spawner: Spawner) {
         }
     }
 
-    // --- obc-app on glass (issue #34): boot Home/Idle, then the Map on the baked tile. ---
+    // --- obc-app on glass, button-driven (issues #34/#35): boot Home/Idle, then let
+    // the four pushbuttons walk Home -> Route menu -> Map and back. ---
     #[cfg(not(feature = "glass-demo"))]
     {
         let reader = match Reader::new(TILE) {
@@ -413,83 +485,132 @@ async fn main(_spawner: Spawner) {
         // is a host/simulator concern; see obc-platform::framebuffer).
         let color_fn = |c: u16| Rgb565::from(RawU16::new(c));
 
-        // Place the App in SDRAM, just past the framebuffer (RAM-split note in the
+        // Place the App in SDRAM, just past *both* framebuffers (RAM-split note in the
         // module header). Built in place via ptr::write so the ~200 KB scratch never
         // lands on the stack — opt-level 3 + LTO emit App::new* straight to the slot.
         let app_align = core::mem::align_of::<App>();
-        let app_addr = (SDRAM_ADDR + FB_BYTES + app_align - 1) & !(app_align - 1);
+        let app_addr = (SDRAM_ADDR + 2 * FB_BYTES + app_align - 1) & !(app_align - 1);
         let app_ptr = app_addr as *mut App;
         defmt::info!(
-            "App in SDRAM @ {=u32:#010x} ({=usize} bytes); FB {=usize} bytes",
+            "App in SDRAM @ {=u32:#010x} ({=usize} bytes); 2x FB {=usize} bytes",
             app_addr as u32,
             core::mem::size_of::<App>(),
             FB_BYTES
         );
 
-        // Phase A — the real power-on screen: Home / Idle.
+        // Power-on screen: Home / Idle — the user now drives navigation from here.
         // SAFETY: app_ptr is a valid, aligned, exclusively-owned SDRAM slot, fully
         // initialized by ptr::write before any read.
         unsafe {
-            app_ptr.write(App::new_idle(AppState::new(
-                CAM_LON,
-                CAM_LAT,
-                zoom_for_mpp(MPP_PRESETS[0].1),
-            )));
-        }
-        {
-            let app = unsafe { &mut *app_ptr };
-            let mut fb = Framebuffer565::new(&mut *fb_buf, W as u32, H as u32);
-            let _ = app.render_frame(&mut fb, &reader, None, W as f32, H as f32, color_fn);
-        }
-        defmt::info!("booted to Home (Idle)");
-        Timer::after_millis(2500).await;
-
-        // Phase B — open the Map on the baked tile (Riding, Follow). No input yet
-        // (step #35), so build the map-first App directly rather than walking Home ->
-        // Route menu by gesture. drop_in_place runs Phase A's (trivial) destructor.
-        // SAFETY: same slot; Phase A's borrow has ended at the block above.
-        unsafe {
-            core::ptr::drop_in_place(app_ptr);
-            app_ptr.write(App::new(AppState::new(
-                CAM_LON,
-                CAM_LAT,
-                zoom_for_mpp(MPP_PRESETS[0].1),
-            )));
+            app_ptr.write(App::new_idle(AppState::new(CAM_LON, CAM_LAT, zoom_for_mpp(INIT_MPP))));
         }
         let app = unsafe { &mut *app_ptr };
-        let mut stub = StubLocation(Fix::at(CAM_LAT, CAM_LON));
-        let mut fb = Framebuffer565::new(fb_buf, W as u32, H as u32);
-        defmt::info!("Map open on baked tile; cycling zoom 0.5-4 mpp");
 
-        // Per-frame: park the camera (Follow snaps to the stub fix), pick the next
-        // zoom preset, render into the live framebuffer, and log the render time so
-        // it can be sanity-checked against the internal-RAM mcu-render-bench.
-        let mut frame = 0usize;
+        // One stub route so the Route menu has an entry SELECT can open. There's no
+        // OBCR geometry yet (SD/USB are steps #36/#38), so loading it just drops the
+        // camera onto the tile's dense core (the stub fix below) and opens the Map on
+        // the baked tile — `render_frame` is passed `None` for the route overlay.
+        let mut name = heapless::String::new();
+        let _ = name.push_str("Teningen");
+        app.set_routes(&[RouteSummary {
+            name,
+            distance_km: 0,
+            climb_m: 0,
+            bbox: BBox { min_lon: CAM_LON, min_lat: CAM_LAT, max_lon: CAM_LON, max_lat: CAM_LAT },
+            start_lon: CAM_LON,
+            start_lat: CAM_LAT,
+        }]);
+
+        // Four pushbuttons on a breadboard PCB: one common pin to GND, each switch to
+        // its GPIO, no external parts — internal pull-ups, read active-low (see the
+        // pin-map note in the module header). All four are `Input<'static>` (the type
+        // erases the pin), so they share the `ButtonInput` type parameter.
+        // PREV/BACK live on PD4/PD5 (not PE2/PE5) to keep SPI4's data pins free for the
+        // SD card (#36, SD-over-SPI) — see the pin-map note in the module header.
+        let mut buttons = ButtonInput::new(
+            Input::new(p.PD4, Pull::Up), // PREV   → Turn(-1)
+            Input::new(p.PE3, Pull::Up), // NEXT   → Turn(+1)
+            Input::new(p.PE4, Pull::Up), // SELECT → encoder press / hold
+            Input::new(p.PD5, Pull::Up), // BACK   → back / back-hold
+        );
+
+        // No GPS yet (step #38): a constant fix at the tile's dense core, so the Map's
+        // Follow camera parks there and the user marker sits at centre.
+        let mut stub = StubLocation(Fix::at(CAM_LAT, CAM_LON));
+
+        // Double buffering: the LTDC scans the *front* buffer while the app renders the
+        // next frame into the *back*; on completion we flip the layer to the back at the
+        // next vertical blank (tear-free) and swap. The panel therefore never shows a
+        // half-cleared frame — that mid-redraw flash was the single-buffer flicker.
+        // FB_ADDR is the initial front (the LTDC was pointed there at init); the second
+        // buffer sits one FB_BYTES past it. SAFETY: the back is never the buffer the LTDC
+        // is scanning, so the per-frame `&mut` over it is unaliased.
+        let mut front_addr = FB_ADDR;
+        let mut back_addr = FB_ADDR + FB_BYTES;
+        unsafe { core::slice::from_raw_parts_mut(back_addr as *mut u16, FB_PIXELS) }.fill(0x0000);
+        defmt::info!(
+            "input live: PD4 PREV / PE3 NEXT / PE4 SELECT / PD5 BACK (pull-up, active-low); double-buffered"
+        );
+
+        // Render-on-demand loop. Buttons are sampled every LOOP_MS so quick taps and
+        // long-press timing are caught; the screen is redrawn only when there's input/
+        // gesture activity, a hold bulge is animating (ANIM_TAIL_MS carries it through
+        // the pop), or on the IDLE_REFRESH heartbeat — so a static Map costs ~1 fps
+        // instead of pinning the CPU on a full redraw every loop.
+        let start = Instant::now();
+        let now0 = start.elapsed().as_millis() as u32;
+        let mut prev_gesture = app.last_gesture();
+        let mut last_activity = now0;
+        let mut last_render = now0.wrapping_sub(IDLE_REFRESH_MS); // force the first frame
         loop {
-            let (label, mpp) = MPP_PRESETS[frame % MPP_PRESETS.len()];
-            app.state.zoom = zoom_for_mpp(mpp);
-            let now_ms = Instant::now().as_millis() as u32;
+            let now = start.elapsed().as_millis() as u32;
+            buttons.update(now);
+            let had_events = buttons.has_pending();
+            app.handle_input(InputClock(now), &mut buttons);
             app.tick(
-                RideClock(now_ms),
+                RideClock(now),
                 Sensors { loc: &mut stub, altimeter: None, track: None },
                 None,
             );
 
-            let t0 = Instant::now();
-            let stats = app.render_frame(&mut fb, &reader, None, W as f32, H as f32, color_fn);
-            let render_us = t0.elapsed().as_micros();
+            // Anything that can change the screen extends the redraw window: fresh
+            // events, a dispatched gesture (incl. a `Hold`/`BackHold` that `tick`
+            // fired), or an in-flight hold ring/bulge.
+            let gesture = app.last_gesture();
+            let ring = app.encoder_hold_progress() > 0.0 || app.back_hold_progress() > 0.0;
+            if had_events || ring || gesture != prev_gesture {
+                last_activity = now;
+            }
+            prev_gesture = gesture;
 
-            defmt::info!(
-                "map {=str}: render {=u64} us | lod {=usize} | feat {=usize}/{=usize} | chunks {=usize}",
-                label,
-                render_us,
-                stats.lod,
-                stats.features_drawn,
-                stats.features_tried,
-                stats.chunks_visited
-            );
-            frame += 1;
-            Timer::after_millis(1500).await;
+            let interactive = now.wrapping_sub(last_activity) < ANIM_TAIL_MS;
+            let heartbeat = now.wrapping_sub(last_render) >= IDLE_REFRESH_MS;
+            if interactive || heartbeat {
+                let t0 = Instant::now();
+                // Render the frame into the back buffer (not the one being scanned out).
+                // SAFETY: back_addr is the buffer the LTDC is *not* scanning; this is the
+                // only live `&mut` over it, dropped before the flip below.
+                let back =
+                    unsafe { core::slice::from_raw_parts_mut(back_addr as *mut u16, FB_PIXELS) };
+                let mut fb = Framebuffer565::new(back, W as u32, H as u32);
+                let stats = app.render_frame(&mut fb, &reader, None, W as f32, H as f32, color_fn);
+                let render_us = t0.elapsed().as_micros();
+
+                // Flip the layer to the freshly-drawn buffer at the next vertical blank,
+                // then swap roles. `flip_to` waits (bounded) for the reload to land, so
+                // the old front is free to become the next back.
+                flip_to(back_addr);
+                core::mem::swap(&mut front_addr, &mut back_addr);
+                last_render = now;
+                defmt::debug!(
+                    "frame: {=u64} us | lod {=usize} | feat {=usize}/{=usize}",
+                    render_us,
+                    stats.lod,
+                    stats.features_drawn,
+                    stats.features_tried
+                );
+            }
+            Timer::after_millis(LOOP_MS).await;
         }
     }
 }
