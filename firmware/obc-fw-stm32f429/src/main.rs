@@ -22,12 +22,23 @@
 //! ## RAM split (issue #34 / #8)
 //! The renderer's per-frame scratch is ~200 KB and the framebuffer is 150 KB; the
 //! two do not both fit the F429's 192 KB internal SRAM. For the prototype the whole
-//! `App` (which embeds the renderer) is placed in **SDRAM**, just past the
-//! framebuffer — simplest, runs the full-size renderer. The cost is render-time:
+//! `App` (which embeds the renderer) is placed in **SDRAM**, just past the two
+//! framebuffers (double-buffered, 2x150 KB — see below) — simplest, runs the full-size
+//! renderer. The 8 MB SDRAM swallows all of it. The cost is render-time:
 //! the scratch is now behind the FMC's wait states (slower than the internal-RAM
 //! `mcu-render-bench`); the per-frame time logged over RTT quantifies the delta.
 //! A `small-scratch` cargo feature (internal-RAM scratch) is the fallback if that
 //! delta ever matters — not needed yet.
+//!
+//! ## Double buffering
+//! Rendering clears and repaints the whole frame, so drawing straight into the buffer
+//! the LTDC is scanning makes the panel flash on every redraw — fine for a static
+//! demo, but ugly once the UI animates (the hold bulge redraws continuously). So the
+//! app path keeps **two** framebuffers: the LTDC scans the *front* while the app
+//! renders the next frame into the *back*, then [`flip_to`] points the layer at the
+//! back and reloads it at the next vertical blank (tear-free) and the roles swap. The
+//! panel only ever shows a fully-rendered frame. (The `glass-demo` path stays single-
+//! buffered — it draws one static screen and halts.)
 //!
 //! Clock: 180 MHz core from the 16 MHz HSI (no dependency on the DISC1 HSE), plus a
 //! PLLSAI leg for the LTDC pixel clock.
@@ -95,13 +106,16 @@ use obc_render::zoom_for_mpp;
 mod demo;
 
 const SDRAM_ADDR: usize = 0xD000_0000;
-/// Framebuffer at the base of SDRAM: 240x320 RGB565 = 150 KB.
+/// Front framebuffer at the base of SDRAM: 240x320 RGB565 = 150 KB. The app path adds a
+/// second (back) buffer one [`FB_BYTES`] past it for double buffering; the LTDC is first
+/// pointed here at init and thereafter flipped between the two by [`flip_to`].
 const FB_ADDR: usize = SDRAM_ADDR;
 const W: usize = 240;
 const H: usize = 320;
 /// Framebuffer extent in pixels / bytes (RGB565, 2 bytes each).
 const FB_PIXELS: usize = W * H;
-/// Only the app path needs this — it places the `App` in SDRAM just past the FB.
+/// Only the app path needs this — the back-buffer offset, and it places the `App` in
+/// SDRAM just past *both* framebuffers.
 #[cfg(not(feature = "glass-demo"))]
 const FB_BYTES: usize = FB_PIXELS * 2;
 
@@ -206,6 +220,28 @@ fn af_pin(pin: Peri<'static, impl Pin>, af: u8) -> Flex<'static> {
     f
 }
 
+/// Point LTDC layer 1 at the framebuffer at `addr`, reloading at the next vertical
+/// blank — the double-buffer flip. Unlike the immediate reload used at init, the
+/// **vblank** reload switches buffers between frames, so there's no tear; the bounded
+/// poll on the hardware-cleared `VBR` bit then waits for the switch to actually land
+/// (so the old front is free to reuse) without ever spinning forever — the same
+/// "no blocking wait that can hang probe-rs" rule init follows by avoiding the reload
+/// interrupt. A frame is ~15 ms at the 6 MHz DOTCLK, so the reload lands well within
+/// the 50 ms cap in normal operation.
+#[cfg(not(feature = "glass-demo"))]
+fn flip_to(addr: usize) {
+    use stm32_metapac::ltdc::vals::Vbr;
+    use stm32_metapac::LTDC;
+    LTDC.layer(LtdcLayer::Layer1 as usize).cfbar().modify(|w| w.set_cfbadd(addr as u32));
+    LTDC.srcr().modify(|w| w.set_vbr(Vbr::RELOAD));
+    let t0 = Instant::now();
+    while LTDC.srcr().read().vbr() == Vbr::RELOAD {
+        if t0.elapsed().as_millis() > 50 {
+            break;
+        }
+    }
+}
+
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
     // 180 MHz core from HSI (16/8=2 MHz -> x180 -> /2). Plus a PLLSAI leg for the LTDC
@@ -289,15 +325,15 @@ async fn main(_spawner: Spawner) {
     let ram_ptr: *mut u32 = sdram.init(&mut Delay);
     defmt::info!("SDRAM base {=u32:#010x}", ram_ptr as u32);
 
-    // --- SDRAM framebuffer as a flat &mut [u16] — the `DrawTarget` the app/demo
-    // render into below (replacing phase C's raw test pattern). Cleared to black up
-    // front so the panel shows black, not SDRAM garbage, in the window between LTDC
-    // turn-on and the first rendered frame.
+    // --- SDRAM framebuffer(s). Cleared to black up front so the panel shows black, not
+    // SDRAM garbage, in the window between LTDC turn-on and the first rendered frame.
+    // The LTDC starts scanning FB_ADDR (the front buffer); the app path adds a second
+    // buffer just past it and double-buffers (see the render loop), so each buffer is
+    // wrapped in its own short-lived slice instead of one long-lived `&mut` — two live
+    // `&mut` over the same SDRAM would alias.
     // SAFETY: the FMC maps a contiguous FB_PIXELS×u16 region at FB_ADDR (verified in
-    // phase B); nothing else aliases it — the LTDC only *reads* it by DMA. ---
-    let fb_buf: &'static mut [u16] =
-        unsafe { core::slice::from_raw_parts_mut(FB_ADDR as *mut u16, FB_PIXELS) };
-    fb_buf.fill(0x0000);
+    // phase B); the borrow ends at the statement, and the LTDC only *reads* it by DMA. ---
+    unsafe { core::slice::from_raw_parts_mut(FB_ADDR as *mut u16, FB_PIXELS) }.fill(0x0000);
     defmt::info!("framebuffer ready: {=usize}x{=usize} RGB565 in SDRAM, cleared", W, H);
 
     // --- LTDC: drive the panel's RGB lines, scanning the SDRAM framebuffer ---
@@ -416,6 +452,9 @@ async fn main(_spawner: Spawner) {
     // RGB565 colour path in isolation before the whole app is pointed at the panel. ---
     #[cfg(feature = "glass-demo")]
     {
+        // Single-buffer demo (a static screen, then halt — no flicker to fix).
+        // SAFETY: the LTDC scans FB_ADDR and we only write it; sole borrow.
+        let fb_buf = unsafe { core::slice::from_raw_parts_mut(FB_ADDR as *mut u16, FB_PIXELS) };
         let mut fb = Framebuffer565::new(fb_buf, W as u32, H as u32);
         let _ = demo::font_palette_demo(&mut fb);
         defmt::info!("glass-demo: font + palette rendered; halting");
@@ -443,14 +482,14 @@ async fn main(_spawner: Spawner) {
         // is a host/simulator concern; see obc-platform::framebuffer).
         let color_fn = |c: u16| Rgb565::from(RawU16::new(c));
 
-        // Place the App in SDRAM, just past the framebuffer (RAM-split note in the
+        // Place the App in SDRAM, just past *both* framebuffers (RAM-split note in the
         // module header). Built in place via ptr::write so the ~200 KB scratch never
         // lands on the stack — opt-level 3 + LTO emit App::new* straight to the slot.
         let app_align = core::mem::align_of::<App>();
-        let app_addr = (SDRAM_ADDR + FB_BYTES + app_align - 1) & !(app_align - 1);
+        let app_addr = (SDRAM_ADDR + 2 * FB_BYTES + app_align - 1) & !(app_align - 1);
         let app_ptr = app_addr as *mut App;
         defmt::info!(
-            "App in SDRAM @ {=u32:#010x} ({=usize} bytes); FB {=usize} bytes",
+            "App in SDRAM @ {=u32:#010x} ({=usize} bytes); 2x FB {=usize} bytes",
             app_addr as u32,
             core::mem::size_of::<App>(),
             FB_BYTES
@@ -493,9 +532,19 @@ async fn main(_spawner: Spawner) {
         // No GPS yet (step #38): a constant fix at the tile's dense core, so the Map's
         // Follow camera parks there and the user marker sits at centre.
         let mut stub = StubLocation(Fix::at(CAM_LAT, CAM_LON));
-        let mut fb = Framebuffer565::new(fb_buf, W as u32, H as u32);
+
+        // Double buffering: the LTDC scans the *front* buffer while the app renders the
+        // next frame into the *back*; on completion we flip the layer to the back at the
+        // next vertical blank (tear-free) and swap. The panel therefore never shows a
+        // half-cleared frame — that mid-redraw flash was the single-buffer flicker.
+        // FB_ADDR is the initial front (the LTDC was pointed there at init); the second
+        // buffer sits one FB_BYTES past it. SAFETY: the back is never the buffer the LTDC
+        // is scanning, so the per-frame `&mut` over it is unaliased.
+        let mut front_addr = FB_ADDR;
+        let mut back_addr = FB_ADDR + FB_BYTES;
+        unsafe { core::slice::from_raw_parts_mut(back_addr as *mut u16, FB_PIXELS) }.fill(0x0000);
         defmt::info!(
-            "input live: PE2 PREV / PE3 NEXT / PE4 SELECT / PE5 BACK (pull-up, active-low)"
+            "input live: PE2 PREV / PE3 NEXT / PE4 SELECT / PE5 BACK (pull-up, active-low); double-buffered"
         );
 
         // Render-on-demand loop. Buttons are sampled every LOOP_MS so quick taps and
@@ -533,8 +582,20 @@ async fn main(_spawner: Spawner) {
             let heartbeat = now.wrapping_sub(last_render) >= IDLE_REFRESH_MS;
             if interactive || heartbeat {
                 let t0 = Instant::now();
+                // Render the frame into the back buffer (not the one being scanned out).
+                // SAFETY: back_addr is the buffer the LTDC is *not* scanning; this is the
+                // only live `&mut` over it, dropped before the flip below.
+                let back =
+                    unsafe { core::slice::from_raw_parts_mut(back_addr as *mut u16, FB_PIXELS) };
+                let mut fb = Framebuffer565::new(back, W as u32, H as u32);
                 let stats = app.render_frame(&mut fb, &reader, None, W as f32, H as f32, color_fn);
                 let render_us = t0.elapsed().as_micros();
+
+                // Flip the layer to the freshly-drawn buffer at the next vertical blank,
+                // then swap roles. `flip_to` waits (bounded) for the reload to land, so
+                // the old front is free to become the next back.
+                flip_to(back_addr);
+                core::mem::swap(&mut front_addr, &mut back_addr);
                 last_render = now;
                 defmt::debug!(
                     "frame: {=u64} us | lod {=usize} | feat {=usize}/{=usize}",
