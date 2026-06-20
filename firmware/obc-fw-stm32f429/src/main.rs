@@ -54,9 +54,11 @@
 //! One common pin to GND; each switch to its GPIO (no external pull-ups/resistors —
 //! the F429's internal pull-ups hold the lines high, a press pulls one low):
 //!   PREV PE2 | NEXT PE3 | SELECT PE4 | BACK PE5     (P1 pins 15 / 16 / 13 / 14)
-//! Chosen clear of FMC/LTDC/SPI5/LEDs, and leaving the SD-card SDIO pins free for a
-//! later step: PC8/PC12/PD2 (+ data PC9/PC11). Note PC10 is LTDC R2 here, so that SD
-//! must run **1-bit** SDIO (4-bit's D2 would clash).
+//! Clear of FMC/LTDC/SPI5/LEDs. CAVEAT for the SD card (#36 uses SD-over-**SPI** /
+//! embedded-sdmmc, not SDIO): PE2/PE4/PE5 sit on SPI4's only usable pins here —
+//! SCK PE2 / NSS PE4 / MISO PE5 / MOSI PE6 (the PE11-14 alternate is all FMC) — so
+//! these buttons block SPI4, the cleanest SD-over-SPI bus. Before #36, either move the
+//! buttons off PE2/4/5/6 to free SPI4 for the card, or route the SD to another SPI.
 //!
 //! ## Display pin map (onboard ILI9341, 240x320)
 //! Config (SPI5, 8-bit mode-0) : SCK PF7 | MOSI PF9 | CS/NCS PC2 | DCX/WRX PD13   (reset = NRST)
