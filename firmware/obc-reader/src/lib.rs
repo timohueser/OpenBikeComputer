@@ -22,7 +22,7 @@ pub mod reader;
 
 pub use color::rgb565_to_device64;
 pub use color::rgb565_to_rgb888;
-pub use reader::{FeatureRef, Kind, Lod, Reader, Style, MAX_FEAT_PTS, MAX_FEAT_RINGS, HEADER_LEN};
+pub use reader::{FeatureRef, Kind, Lod, Reader, Style, HEADER_LEN, MAX_FEAT_PTS, MAX_FEAT_RINGS};
 
 /// Meters of ground per degree of latitude (and of longitude at the equator) — the
 /// local-equirectangular Earth model. The single source of truth for every crate that

@@ -15,7 +15,9 @@ use crate::byte_io::{ByteSink, ByteSource, Error};
 use crate::deadband::DeadBand;
 use crate::geo::{cos_lat, delta_m, seg_dist_m};
 use crate::gpx::GpxScanner;
-use crate::reader::{ChunkMeta, CHUNK_META_LEN, HEADER_LEN, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS, NAME_CAP};
+use crate::reader::{
+    ChunkMeta, CHUNK_META_LEN, HEADER_LEN, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS, NAME_CAP,
+};
 use obc_reader::codec::{put_i16, put_i32, put_u16, put_u32};
 use obc_reader::BBox;
 
@@ -278,7 +280,7 @@ fn build_header(
     let mut h = [0u8; HEADER_LEN];
     h[0..4].copy_from_slice(b"OBCR");
     h[4] = 1; // version
-    // h[5] flags = 0, h[7] reserved = 0
+              // h[5] flags = 0, h[7] reserved = 0
 
     // Name truncated to NAME_CAP on a char boundary.
     let mut nlen = 0;

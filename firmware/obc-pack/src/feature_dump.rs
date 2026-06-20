@@ -38,7 +38,9 @@ pub struct FeatureEntry {
 impl FeatureEntry {
     fn into_geom(self) -> (u8, Geom) {
         let mut rings = self.rings.into_iter().map(|ring| {
-            ring.into_iter().map(|(x, y)| (f64::from_bits(x), f64::from_bits(y))).collect::<Vec<_>>()
+            ring.into_iter()
+                .map(|(x, y)| (f64::from_bits(x), f64::from_bits(y)))
+                .collect::<Vec<_>>()
         });
         if self.kind == "polygon" {
             let exterior = rings.next().unwrap_or_default();
@@ -64,13 +66,18 @@ impl FeatureDump {
                 priority: s.priority,
             })
             .collect();
-        let bbox = (self.global_bbox[0], self.global_bbox[1], self.global_bbox[2], self.global_bbox[3]);
+        let bbox =
+            (self.global_bbox[0], self.global_bbox[1], self.global_bbox[2], self.global_bbox[3]);
         let chunk_size = self.chunk_size;
         let lods: Vec<LodLayer> = self
             .lods
             .into_iter()
             .map(|l| {
-                let root = build_lod(l.features.into_iter().map(FeatureEntry::into_geom), bbox, chunk_size);
+                let root = build_lod(
+                    l.features.into_iter().map(FeatureEntry::into_geom),
+                    bbox,
+                    chunk_size,
+                );
                 LodLayer { max_mpp: l.max_mpp, chunk_size, root }
             })
             .collect();

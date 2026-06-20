@@ -6,7 +6,7 @@
 //! fixture) keeps the Rust and Python encoders pinned to the same layout: if
 //! either drifts, these break.
 
-use obc_reader::{Error, Kind, Reader, MAX_FEAT_PTS, MAX_FEAT_RINGS, BBox};
+use obc_reader::{BBox, Error, Kind, Reader, MAX_FEAT_PTS, MAX_FEAT_RINGS};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Feature {
@@ -205,10 +205,7 @@ fn pack_poly_hole(
 // and feature anchors are absolute.
 const CS: usize = 64;
 const GLOBAL: (i32, i32, i32, i32) = (0, 0, 1000, 1000);
-const STYLES: &[(u8, i8, u16, u8, u8)] = &[
-    (1, 3, 0xF800, 2, 3),
-    (2, -1, 0x07E0, 1, 3),
-];
+const STYLES: &[(u8, i8, u16, u8, u8)] = &[(1, 3, 0xF800, 2, 3), (2, -1, 0x07E0, 1, 3)];
 
 fn two_lod_file() -> Vec<u8> {
     let line = pad(pack_line(1, 100, 200, &[(10, 0), (0, 10)]), CS);
@@ -316,14 +313,19 @@ fn query_single_leaf() {
     let r = Reader::new(&bytes).unwrap();
 
     // A view overlapping the global bbox hits the single leaf (chunk 0).
-    let hits = r.query::<64>(0, &obc_reader::BBox { min_lon: 100, min_lat: 100, max_lon: 200, max_lat: 200 });
+    let hits = r.query::<64>(
+        0,
+        &obc_reader::BBox { min_lon: 100, min_lat: 100, max_lon: 200, max_lat: 200 },
+    );
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].0, 0);
     assert_eq!(hits[0].1, r.bbox); // leaf node bbox == global bbox
 
     // A view entirely outside the global bbox hits nothing.
-    let miss =
-        r.query::<64>(0, &obc_reader::BBox { min_lon: 5000, min_lat: 5000, max_lon: 6000, max_lat: 6000 });
+    let miss = r.query::<64>(
+        0,
+        &obc_reader::BBox { min_lon: 5000, min_lat: 5000, max_lon: 6000, max_lat: 6000 },
+    );
     assert!(miss.is_empty());
 }
 
@@ -425,11 +427,17 @@ fn quadtree_subdivision_and_node_bbox() {
     let nw = obc_reader::BBox { min_lon: 0, min_lat: 500, max_lon: 500, max_lat: 1000 };
 
     // View inside the NW quadrant hits the leaf, with the NW node bbox.
-    let hits = r.query::<64>(0, &obc_reader::BBox { min_lon: 50, min_lat: 600, max_lon: 150, max_lat: 700 });
+    let hits = r.query::<64>(
+        0,
+        &obc_reader::BBox { min_lon: 50, min_lat: 600, max_lon: 150, max_lat: 700 },
+    );
     assert_eq!(hits.as_slice(), &[(0, nw)]);
 
     // View inside the (empty) SE quadrant hits nothing.
-    let se = r.query::<64>(0, &obc_reader::BBox { min_lon: 600, min_lat: 100, max_lon: 700, max_lat: 200 });
+    let se = r.query::<64>(
+        0,
+        &obc_reader::BBox { min_lon: 600, min_lat: 100, max_lon: 700, max_lat: 200 },
+    );
     assert!(se.is_empty());
 
     // The feature's anchor is computed from the NW node's min corner (0,500):

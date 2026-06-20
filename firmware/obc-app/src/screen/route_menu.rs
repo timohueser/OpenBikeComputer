@@ -118,7 +118,12 @@ impl RouteMenuScreen {
             // font has no ellipsis glyph).
             let accent = if selected { INK } else { SUBTEXT };
             let row_mid = y + 33;
-            cv.triangle(Point::new(24, row_mid - 8), Point::new(24, row_mid + 8), Point::new(36, row_mid), accent);
+            cv.triangle(
+                Point::new(24, row_mid - 8),
+                Point::new(24, row_mid + 8),
+                Point::new(36, row_mid),
+                accent,
+            );
             let name_max = (((w - 20) - 44) / Font::Body.char_width() as i32).max(6) as usize;
             let name = fit_name(&route.name, name_max);
             cv.text(&name, Point::new(44, y + 9), Font::Body, TextAlign::Left, INK);
@@ -131,7 +136,12 @@ impl RouteMenuScreen {
             cv.text(&dist, Point::new(44, sy), Font::Label, TextAlign::Left, accent);
 
             let cx0 = 126;
-            cv.triangle(Point::new(cx0, sy + 9), Point::new(cx0 + 9, sy + 9), Point::new(cx0 + 4, sy), accent);
+            cv.triangle(
+                Point::new(cx0, sy + 9),
+                Point::new(cx0 + 9, sy + 9),
+                Point::new(cx0 + 4, sy),
+                accent,
+            );
             let mut climb: heapless::String<12> = heapless::String::new();
             let _ = write!(climb, "{} m", route.climb_m);
             cv.text(&climb, Point::new(cx0 + 16, sy), Font::Label, TextAlign::Left, accent);

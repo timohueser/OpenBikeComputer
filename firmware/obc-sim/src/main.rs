@@ -23,12 +23,12 @@
 use std::time::Instant;
 
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
-use obc_reader::{rgb565_to_device64, rgb565_to_rgb888, Reader};
-use obc_render::text::{draw_text, Font, TextAlign};
 use obc_app::{
     App, AppState, Button, ButtonEvent, Fix, InputClock, InputEvent, InputSource, LocationSource,
     RideClock, Sensors, TrackAction, TrackSink,
 };
+use obc_reader::{rgb565_to_device64, rgb565_to_rgb888, Reader};
+use obc_render::text::{draw_text, Font, TextAlign};
 
 mod baro;
 mod calib;
@@ -226,7 +226,14 @@ fn render_text_demo(fb: &mut Framebuffer, true_color: bool) {
 
     let _ = fb.clear(col(PARCHMENT));
     let _ = fb.fill_solid(&Rectangle::new(Point::zero(), Size::new(fb.width(), 28)), col(HUD));
-    draw_text(fb, "TERMINUS FONT DEMO", Point::new(w / 2, 3), Font::Label, TextAlign::Center, col(PARCHMENT));
+    draw_text(
+        fb,
+        "TERMINUS FONT DEMO",
+        Point::new(w / 2, 3),
+        Font::Label,
+        TextAlign::Center,
+        col(PARCHMENT),
+    );
 
     // Font ladder: each tier's caption (in Label) over a true-size sample drawn in that
     // tier, annotated with its measured cap height in mm so the size targets are checkable
@@ -538,7 +545,8 @@ fn main() {
         let mut app = if args.boot { App::new_idle(state) } else { App::new(state) };
         // Load the routes folder so the Route menu has real entries and a picked route
         // can be drawn (the device reads the same off its SD card).
-        let mut store = RouteStore::open(args.routes_dir.clone().unwrap_or_else(|| "routes".to_string()));
+        let mut store =
+            RouteStore::open(args.routes_dir.clone().unwrap_or_else(|| "routes".to_string()));
         app.set_routes(store.catalog());
         // Drive the app to a specific screen before snapshotting (e.g. the Menu).
         if let Some(script) = &args.script {
@@ -551,7 +559,8 @@ fn main() {
 
         // Recorded-track store (the device-SD `/tracks` stand-in). A session started by a
         // `--script` load records here; the breadcrumb itself draws regardless.
-        let mut tracks = TrackStore::open(args.tracks_dir.clone().unwrap_or_else(|| "tracks".to_string()));
+        let mut tracks =
+            TrackStore::open(args.tracks_dir.clone().unwrap_or_else(|| "tracks".to_string()));
 
         // Replay the track from the start up to `--at`, ticking the app each step so the
         // map-matcher locks on, the ride accumulators (done / climbed / Avg) build up, and the
@@ -577,7 +586,9 @@ fn main() {
                 app.activity.end_session();
                 reconcile_tracks(&mut app, &mut tracks);
             } else {
-                eprintln!("--save-track: no active ride (load a route first, e.g. --boot --script pp)");
+                eprintln!(
+                    "--save-track: no active ride (load a route first, e.g. --boot --script pp)"
+                );
             }
         }
 
@@ -587,9 +598,14 @@ fn main() {
         // Time the whole frame draw and fold it into the stats as `render_us` (the no_std
         // renderer carries no clock, so the host fills it) — same field the live panel shows.
         let t0 = Instant::now();
-        let mut stats = app.render_frame(&mut fb, &reader, route.as_ref(), args.width as f32, args.height as f32, |c| {
-            color_of(c, tc)
-        });
+        let mut stats = app.render_frame(
+            &mut fb,
+            &reader,
+            route.as_ref(),
+            args.width as f32,
+            args.height as f32,
+            |c| color_of(c, tc),
+        );
         stats.render_us = t0.elapsed().as_micros() as u32;
         eprintln!(
             "rendered {}/{} features ({} chunks, LOD {}, {} dropped) | route {}/{} drawn, {} chunks in {:.2} ms | spans {:.0}% points {:.0}% rings {:.0}%",

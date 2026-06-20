@@ -107,11 +107,7 @@ where
     D: DrawTarget,
 {
     let character_style = MonoTextStyle::new(font.mono(), color);
-    let text_style = TextStyleBuilder::new()
-        .alignment(align.to_eg())
-        .baseline(Baseline::Top)
-        .build();
-    Text::with_text_style(s, anchor, character_style, text_style)
-        .draw(target)
-        .unwrap_or(anchor)
+    let text_style =
+        TextStyleBuilder::new().alignment(align.to_eg()).baseline(Baseline::Top).build();
+    Text::with_text_style(s, anchor, character_style, text_style).draw(target).unwrap_or(anchor)
 }

@@ -29,10 +29,20 @@ const MARKER: u16 = 0xBEEF;
 // Small features (microdegrees). Kept under 30 000 µdeg per segment so nothing
 // densifies, and polygon rings are pre-closed (first == last) like shapely's.
 const LINE5: &[(i32, i32)] = &[(200_000, 50_000), (200_050, 50_050), (200_100, 50_000)];
-const POLY12_EXT: &[(i32, i32)] =
-    &[(100_000, 100_000), (120_000, 100_000), (120_000, 120_000), (100_000, 120_000), (100_000, 100_000)];
-const POLY12_HOLE: &[(i32, i32)] =
-    &[(105_000, 105_000), (115_000, 105_000), (115_000, 115_000), (105_000, 115_000), (105_000, 105_000)];
+const POLY12_EXT: &[(i32, i32)] = &[
+    (100_000, 100_000),
+    (120_000, 100_000),
+    (120_000, 120_000),
+    (100_000, 120_000),
+    (100_000, 100_000),
+];
+const POLY12_HOLE: &[(i32, i32)] = &[
+    (105_000, 105_000),
+    (115_000, 105_000),
+    (115_000, 115_000),
+    (105_000, 115_000),
+    (105_000, 105_000),
+];
 // Deltas of 500 µdeg exceed the int8 range, forcing the 16-bit delta path.
 const LINE16: &[(i32, i32)] = &[(300_000, 300_000), (300_500, 300_500), (301_000, 300_500)];
 
@@ -67,7 +77,11 @@ fn line(style_id: u8, pts: &[(i32, i32)]) -> Feature {
 }
 
 fn polygon(style_id: u8, rings: &[&[(i32, i32)]]) -> Feature {
-    Feature { style_id, kind: PackKind::Polygon, rings: rings.iter().map(|r| ring_deg(r)).collect() }
+    Feature {
+        style_id,
+        kind: PackKind::Polygon,
+        rings: rings.iter().map(|r| ring_deg(r)).collect(),
+    }
 }
 
 /// Build a two-LOD map and serialize it the way the packer really does:
@@ -232,6 +246,7 @@ fn query_finds_the_leaf() {
     assert_eq!(hits[0].1, r.bbox);
 
     // A view fully outside the bbox hits nothing.
-    let outside = BBox { min_lon: 9_000_000, min_lat: 9_000_000, max_lon: 9_001_000, max_lat: 9_001_000 };
+    let outside =
+        BBox { min_lon: 9_000_000, min_lat: 9_000_000, max_lon: 9_001_000, max_lat: 9_001_000 };
     assert!(r.query::<8>(0, &outside).is_empty());
 }
