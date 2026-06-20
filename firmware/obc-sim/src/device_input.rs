@@ -131,6 +131,14 @@ impl DeviceInput {
     pub fn knob_angle(&self) -> f32 {
         self.knob_angle
     }
+
+    /// The debounced held state of each button, for the housing's press animation.
+    pub fn enc_down(&self) -> bool {
+        self.enc_down
+    }
+    pub fn back_down(&self) -> bool {
+        self.back_down
+    }
 }
 
 impl InputSource for DeviceInput {
