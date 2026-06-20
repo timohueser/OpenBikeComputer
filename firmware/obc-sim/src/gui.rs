@@ -29,8 +29,11 @@ use crate::sim_location::SimLocationSource;
 use crate::track::TrackStore;
 use crate::Args;
 
+mod housing;
 mod panel;
 mod units;
+
+use housing::Colorway;
 
 /// The control panel's editable mirrors. The simulated GPS fix is stored in the
 /// [`SimLocationSource`] as integer microdegrees + a `course`; egui widgets need
@@ -53,7 +56,11 @@ struct CalibState {
 /// Launch the simulator window. Owns the map bytes for the process lifetime; the
 /// [`Reader`] is a cheap view rebuilt each frame over them.
 pub fn run(bytes: Vec<u8>, args: Args) -> Result<(), eframe::Error> {
-    let win = [(args.width * args.scale) as f32, (args.height * args.scale) as f32];
+    // The window wraps the whole device (housing + screen + a little backdrop) at
+    // `--scale`, not just the screen, so the body has room around the framebuffer.
+    let dev = housing::HousingStyle::default()
+        .window_size_px(egui::vec2(args.width as f32, args.height as f32));
+    let win = [dev.x * args.scale as f32, dev.y * args.scale as f32];
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("OBC Simulator")
@@ -115,6 +122,9 @@ struct SimGui {
     screenshot: Option<String>,
     screenshot_requested: bool,
     last_stats: obc_render::RenderStats,
+    /// The device body color drawn by the housing chrome. Switchable live in the
+    /// control panel; defaults to slate (or `--colorway`). Purely cosmetic host chrome.
+    colorway: Colorway,
     /// This frame's device-control keyboard state, read globally at the top of `update`
     /// (before any widget can take focus and swallow the keys), then applied in
     /// [`show_device_controls`](Self::show_device_controls). Turn is edge (detents this
@@ -165,6 +175,9 @@ impl SimGui {
         // and `--calibrate` opens the calibration screen straight away.
         let points_per_mm = crate::calib::load();
         let physical = args.physical && points_per_mm.is_some();
+        // Housing body color: `--colorway NAME`, else the slate default.
+        let colorway =
+            args.colorway.as_deref().and_then(Colorway::from_label).unwrap_or(Colorway::Slate);
         let mut gui = SimGui {
             app,
             store,
@@ -192,6 +205,7 @@ impl SimGui {
             screenshot_requested: false,
             bytes,
             last_stats: obc_render::RenderStats::default(),
+            colorway,
             kbd_turn: 0,
             kbd_enc: false,
             kbd_back: false,
@@ -344,30 +358,53 @@ impl SimGui {
         }
     }
 
-    /// Draw the device framebuffer, centred, at either the integer fit scale (default)
-    /// or the panel's true physical size when 1:1 is on and calibrated.
+    /// Draw the device — the housing chrome plus the framebuffer blitted into its
+    /// screen cutout — centred, at either the integer fit scale (default) or the
+    /// panel's true physical size when 1:1 is on and calibrated.
     fn show_device_image(&mut self, ctx: &egui::Context) {
-        egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
-            let tex = self.texture.as_ref().expect("texture uploaded this frame");
+        let frame = egui::Frame::none().fill(housing::BACKGROUND);
+        egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
+            let tex = self.texture.clone().expect("texture uploaded this frame");
+            let style = housing::HousingStyle::default();
+            let screen = egui::vec2(self.dev_w as f32, self.dev_h as f32);
             let disp_scale = match (self.physical, self.points_per_mm) {
                 // 1:1 — points per device pixel so 240 px spans the panel's real width.
                 // Fractional on purpose (the size isn't a whole multiple of the grid);
                 // NEAREST keeps it crisp at the cost of a slightly uneven pixel grid.
                 (true, Some(ppm)) => (crate::calib::PANEL_W_MM * ppm / self.dev_w as f32).max(0.05),
-                // Otherwise: largest integer scale that fits, capped at `--scale`, ≥1.
+                // Otherwise: largest integer scale at which the whole *device* fits,
+                // capped at `--scale`, ≥1 — keeps the screen at a crisp whole multiple.
                 _ => {
                     let avail = ui.available_size();
-                    let fit = (avail.x / self.dev_w as f32).min(avail.y / self.dev_h as f32);
+                    let dev = style.device_size_px(screen);
+                    let fit = (avail.x / dev.x).min(avail.y / dev.y);
                     fit.floor().clamp(1.0, self.scale as f32)
                 }
             };
-            let size = egui::vec2(self.dev_w as f32 * disp_scale, self.dev_h as f32 * disp_scale);
-            let rect = egui::Rect::from_center_size(ui.available_rect_before_wrap().center(), size);
+
+            // Mirror the live control state onto the housing so the encoder/Back animate
+            // as the user drives them. Keyboard state is this frame's (read at the top of
+            // `update`); the pointer/turn state lags a frame (the panel sets it after
+            // this), which is imperceptible.
+            let ctrl = housing::ControlVisual {
+                knob_angle: self.input.knob_angle(),
+                encoder_down: self.input.enc_down() || self.kbd_enc,
+                back_down: self.input.back_down() || self.kbd_back,
+            };
+            let palette = self.colorway.palette();
+
+            // Paint the housing, then blit the framebuffer into the screen rect it hands
+            // back, with corners rounded to follow the bezel (revealing it behind). Clone
+            // the painter so the borrow of `ui` is released before `ui.put` takes it.
+            let painter = ui.painter().clone();
+            let avail = ui.available_rect_before_wrap();
+            let screen_rect = housing::draw(&painter, avail, disp_scale, screen, &style, &palette, &ctrl);
             let resp = ui.put(
-                rect,
-                egui::Image::new(egui::load::SizedTexture::from_handle(tex))
-                    .fit_to_exact_size(size)
+                screen_rect,
+                egui::Image::new(egui::load::SizedTexture::from_handle(&tex))
+                    .fit_to_exact_size(screen_rect.size())
                     .texture_options(egui::TextureOptions::NEAREST)
+                    .rounding(egui::Rounding::same(style.screen_radius_pts(disp_scale)))
                     .sense(egui::Sense::click_and_drag()),
             );
             self.handle_camera_input(ui, &resp, resp.rect, disp_scale);
@@ -451,13 +488,17 @@ impl SimGui {
         if !std::mem::take(&mut self.physical_resize_pending) {
             return;
         }
+        // Either way the window wraps the whole device (housing + screen + backdrop), so
+        // the body fits around the framebuffer.
+        let dev = housing::HousingStyle::default()
+            .window_size_px(egui::vec2(self.dev_w as f32, self.dev_h as f32));
         let size = match (self.physical, self.points_per_mm) {
             (true, Some(ppm)) => {
                 let s = crate::calib::PANEL_W_MM * ppm / self.dev_w as f32;
-                egui::vec2(self.dev_w as f32 * s, self.dev_h as f32 * s)
+                egui::vec2(dev.x * s, dev.y * s)
             }
             // 1:1 off → back to the requested `--scale` window.
-            _ => egui::vec2((self.dev_w * self.scale) as f32, (self.dev_h * self.scale) as f32),
+            _ => egui::vec2(dev.x * self.scale as f32, dev.y * self.scale as f32),
         };
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
     }

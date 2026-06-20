@@ -9,6 +9,7 @@ use eframe::egui;
 use obc_app::{Button, CameraMode, InputClock};
 
 use crate::calib;
+use super::housing::Colorway;
 use super::units::{
     format_clock, format_distance, mpp_to_zoom, zoom_to_mpp, MAX_ZOOM, MIN_ZOOM, MPP_MAX, MPP_MIN,
 };
@@ -51,6 +52,20 @@ impl SimGui {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     // The device's own controls (encoder + Back).
                     self.show_device_controls(ui);
+                    ui.add_space(6.0);
+
+                    // Housing body color — purely cosmetic chrome (the four colorways).
+                    ui.horizontal(|ui| {
+                        ui.label("Device color");
+                        egui::ComboBox::from_id_salt("colorway")
+                            .selected_text(self.colorway.label())
+                            .show_ui(ui, |ui| {
+                                for c in Colorway::ALL {
+                                    ui.selectable_value(&mut self.colorway, c, c.label());
+                                }
+                            });
+                    });
+
                     ui.add_space(6.0);
                     ui.separator();
                     ui.add_space(6.0);
