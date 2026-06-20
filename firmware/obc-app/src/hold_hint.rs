@@ -9,10 +9,11 @@
 //! Per control a black hump swells inward from the screen edge nearest its physical
 //! button (both on the right today — encoder up top, Back below), so it reads as the
 //! black bezel *bulging into* the display — the iOS volume/lock-button press effect.
-//! The hump has a **fixed base width** along the edge ([`BASE_HALF`]) and only its
-//! inward *depth* tracks the hold, so holding pushes it deeper in place rather than
-//! fanning it wider. Its silhouette is a flat-topped bump — a [`FLAT_HALF`]-wide
-//! flat shelf at the apex with quartic shoulders easing into the edge (deliberately
+//! The hump has a **fixed base width** along the edge ([`Style::base_half`], per
+//! control) and only its inward *depth* tracks the hold, so holding pushes it deeper
+//! in place rather than fanning it wider. Its silhouette is a flat-topped bump — a
+//! [`Style::flat_half`]-wide flat shelf at the apex with quartic shoulders easing
+//! into the edge (deliberately
 //! *not* a round circular cap or a pointed parabola) — rasterized as edge-
 //! perpendicular strips. A completed hold **pops** — a quick deeper lunge that eases
 //! back out — and an early release retracts it.
@@ -32,15 +33,9 @@ use crate::screen::palette;
 
 // tunables
 
-/// Half the bulge's fixed base width (px) along the edge — the hump spans `2 *
-/// BASE_HALF` regardless of how deep it bulges, so depth and width are independent.
-const BASE_HALF: i32 = 44;
-/// Half the bulge's flat *top* width (px): strips within `±FLAT_HALF` of the centre
-/// sit at full depth (a flat shelf at the apex), and the quartic shoulder eases to
-/// zero only across the remaining `BASE_HALF - FLAT_HALF` on each side — so the top
-/// reads as a flat edge rather than a parabola's point. `0` is a pure quartic bump;
-/// keep it `< BASE_HALF` to leave room for the shoulders.
-const FLAT_HALF: i32 = 12;
+// The bulge's base / flat-top widths are per-control (encoder vs. Back can differ);
+// see [`Style::base_half`] / [`Style::flat_half`] on the ENCODER / BACK constants.
+
 /// Inward depth (px) the bulge reaches at a full charge, just before the threshold.
 const DEPTH: f32 = 8.0;
 /// Peak inward depth (px) at the confirm "pop" — a brief deeper lunge past [`DEPTH`].
@@ -81,12 +76,12 @@ struct Anchor {
 
 impl Anchor {
     /// Resolve to a concrete [`Place`] for a `w`×`h` screen, clamping the centre so
-    /// the fixed-width base stays on-panel along the edge.
-    fn place(self, w: i32, h: i32) -> Place {
+    /// the `base_half`-wide base stays on-panel along the edge.
+    fn place(self, w: i32, h: i32, base_half: i32) -> Place {
         let vertical = matches!(self.edge, Edge::Right | Edge::Left);
         let along = if vertical { h } else { w };
-        let lo = BASE_HALF + 1;
-        let hi = (along - BASE_HALF - 1).max(lo);
+        let lo = base_half + 1;
+        let hi = (along - base_half - 1).max(lo);
         let cc = ((self.pos * along as f32) as i32).clamp(lo, hi);
         match self.edge {
             Edge::Right => Place { vertical, outer: w, inward: -1, cc },
@@ -182,7 +177,9 @@ impl Hint {
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
-        let place = style.anchor.place(w, h);
+        let (base_half, flat_half) = (style.base_half, style.flat_half);
+        let place = style.anchor.place(w, h, base_half);
+        let mut draw = |depth| bulge(cv, &place, depth, base_half, flat_half);
         match self.anim {
             Anim::Pop { t0 } => {
                 let e = frac(now, t0, POP_MS);
@@ -196,18 +193,18 @@ impl Hint {
                 } else {
                     POP_DEPTH * (1.0 - (e - POP_ATTACK) / (1.0 - POP_ATTACK))
                 };
-                bulge(cv, &place, depth);
+                draw(depth);
             }
             Anim::Cancel { t0, from } => {
                 let e = frac(now, t0, CANCEL_MS);
                 if e >= 1.0 {
                     return;
                 }
-                bulge(cv, &place, DEPTH * from * (1.0 - e));
+                draw(DEPTH * from * (1.0 - e));
             }
             Anim::Idle => {
                 if self.prev > DEAD {
-                    bulge(cv, &place, DEPTH * shown(self.prev));
+                    draw(DEPTH * shown(self.prev));
                 }
             }
         }
@@ -215,22 +212,22 @@ impl Hint {
 }
 
 /// Profile height (`0.0..=1.0`) at along-offset `i`: a flat shelf at full height
-/// within `±FLAT_HALF`, then a quartic shoulder easing to `0` at `±BASE_HALF` (flat
+/// within `±flat_half`, then a quartic shoulder easing to `0` at `±base_half` (flat
 /// tangent at both the shelf and the edge, so it melts into each).
-fn top_profile(i: i32) -> f32 {
+fn top_profile(i: i32, base_half: i32, flat_half: i32) -> f32 {
     let a = i.abs();
-    if a <= FLAT_HALF {
+    if a <= flat_half {
         return 1.0;
     }
-    let u = (a - FLAT_HALF) as f32 / (BASE_HALF - FLAT_HALF).max(1) as f32; // 0..1 shoulder
+    let u = (a - flat_half) as f32 / (base_half - flat_half).max(1) as f32; // 0..1 shoulder
     let s = 1.0 - u * u;
     s * s
 }
 
-/// Draw the bulge: a black hump of the fixed [`BASE_HALF`] base width with a
-/// [`FLAT_HALF`]-wide flat top, poking `depth` px inward from the edge, rasterized as
-/// edge-perpendicular strips (see [`top_profile`]). Nothing when uncharged.
-fn bulge<D, F>(cv: &mut Canvas<D, F>, place: &Place, depth: f32)
+/// Draw the bulge: a black hump of `base_half` base width with a `flat_half`-wide
+/// flat top, poking `depth` px inward from the edge, rasterized as edge-perpendicular
+/// strips (see [`top_profile`]). Nothing when uncharged.
+fn bulge<D, F>(cv: &mut Canvas<D, F>, place: &Place, depth: f32, base_half: i32, flat_half: i32)
 where
     D: DrawTarget,
     F: Fn(u16) -> D::Color,
@@ -238,8 +235,8 @@ where
     if depth < 0.5 {
         return;
     }
-    for i in -BASE_HALF..=BASE_HALF {
-        let d = (depth * top_profile(i) + 0.5) as i32;
+    for i in -base_half..=base_half {
+        let d = (depth * top_profile(i, base_half, flat_half) + 0.5) as i32;
         if d > 0 {
             cv.fill(place.strip(i, d), palette::HUD);
         }
@@ -248,17 +245,31 @@ where
 
 // the overlay
 
-/// Per-control anchor. Relocating a bulge is a one-line change to one of the
-/// [`ENCODER`] / [`BACK`] constants below.
+/// Per-control look: where the bulge sits and its size along the edge. Relocating or
+/// resizing a bulge is a one-line change to one of the [`ENCODER`] / [`BACK`]
+/// constants below.
 struct Style {
     anchor: Anchor,
+    /// Half the base width (px) along the edge — the hump spans `2 * base_half`
+    /// regardless of depth, so size along the edge and inward depth are independent.
+    base_half: i32,
+    /// Half the flat *top* width (px): strips within `±flat_half` of the centre sit
+    /// at full depth (a flat shelf at the apex), and the quartic shoulder eases to
+    /// zero only across the remaining `base_half - flat_half` on each side — so the
+    /// top reads as a flat edge rather than a parabola's point. `0` is a pure quartic
+    /// bump; keep it `< base_half` to leave room for the shoulders.
+    flat_half: i32,
 }
 
-/// Encoder hint — upper-right edge (the encoder wheel sits near the top right).
-const ENCODER: Style = Style { anchor: Anchor { edge: Edge::Right, pos: 0.30 } };
+/// Encoder hint — upper-right edge (the encoder wheel sits near the top right); the
+/// taller of the two, echoing the encoder's longer pill.
+const ENCODER: Style =
+    Style { anchor: Anchor { edge: Edge::Right, pos: 0.30 }, base_half: 44, flat_half: 12 };
 
-/// Back hint — lower-right edge (the Back button sits below the encoder).
-const BACK: Style = Style { anchor: Anchor { edge: Edge::Right, pos: 0.70 } };
+/// Back hint — lower-right edge (the Back button sits below the encoder); shorter than
+/// the encoder bulge, echoing the Back button's smaller pill.
+const BACK: Style =
+    Style { anchor: Anchor { edge: Edge::Right, pos: 0.70 }, base_half: 28, flat_half: 8 };
 
 /// The global long-press overlay: one [`Hint`] per control, drawn above every screen.
 ///
