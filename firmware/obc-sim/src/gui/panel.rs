@@ -6,34 +6,14 @@
 //! reads and mutates the same fields directly.
 
 use eframe::egui;
-use obc_app::{Button, CameraMode, InputClock};
+use obc_app::CameraMode;
 
 use crate::calib;
+use super::housing::Colorway;
 use super::units::{
     format_clock, format_distance, mpp_to_zoom, zoom_to_mpp, MAX_ZOOM, MIN_ZOOM, MPP_MAX, MPP_MIN,
 };
 use super::SimGui;
-
-// Control-panel knob colors (host chrome — picked for the egui panel, not the
-// device screen, so they need not pass through the 64-color quantization).
-const KNOB_FILL: egui::Color32 = egui::Color32::from_rgb(70, 60, 48);
-const KNOB_EDGE: egui::Color32 = egui::Color32::from_rgb(150, 120, 80);
-const NOTCH: egui::Color32 = egui::Color32::from_rgb(234, 223, 192);
-const AMBER: egui::Color32 = egui::Color32::from_rgb(227, 165, 43);
-
-/// Points along a clockwise arc from 12 o'clock, sweeping `progress` (0–1) of a
-/// full turn at radius `r` — the encoder hold-progress ring around the knob.
-fn arc_points(center: egui::Pos2, r: f32, progress: f32) -> Vec<egui::Pos2> {
-    use std::f32::consts::{FRAC_PI_2, TAU};
-    let sweep = progress.clamp(0.0, 1.0) * TAU;
-    let n = ((sweep / 0.25).ceil() as usize).max(2);
-    (0..=n)
-        .map(|i| {
-            let a = -FRAC_PI_2 + sweep * (i as f32 / n as f32);
-            center + egui::Vec2::angled(a) * r
-        })
-        .collect()
-}
 
 impl SimGui {
     /// Draw the "Controls" window — a second OS window (egui immediate viewport)
@@ -49,8 +29,31 @@ impl SimGui {
                 .with_inner_size([360.0, 770.0]),
             |ctx, _class| {
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    // The device's own controls (encoder + Back).
-                    self.show_device_controls(ui);
+                    // The device's own controls live on the housing now (click the wheel /
+                    // Back, scroll over the wheel to turn); just a reminder here.
+                    ui.label(egui::RichText::new("Device — encoder + Back").strong());
+                    ui.label(
+                        egui::RichText::new(
+                            "click the wheel / Back on the device, or use the keyboard:\n\
+                             ←/→ turn · Enter push · Backspace back  (hold for long-press)",
+                        )
+                        .weak()
+                        .size(11.0),
+                    );
+                    ui.add_space(6.0);
+
+                    // Housing body color — purely cosmetic chrome (the four colorways).
+                    ui.horizontal(|ui| {
+                        ui.label("Device color");
+                        egui::ComboBox::from_id_salt("colorway")
+                            .selected_text(self.colorway.label())
+                            .show_ui(ui, |ui| {
+                                for c in Colorway::ALL {
+                                    ui.selectable_value(&mut self.colorway, c, c.label());
+                                }
+                            });
+                    });
+
                     ui.add_space(6.0);
                     ui.separator();
                     ui.add_space(6.0);
@@ -206,99 +209,6 @@ impl SimGui {
             (self.panel.lon_deg * 1e6).round() as i32,
         );
         self.loc.set_course(self.panel.heading_deg);
-    }
-
-    /// The device's own controls — a rotary **encoder** (turn + push) and a
-    /// **Back** button — emulated to resemble the real interface. Turn the knob by
-    /// scrolling over it or dragging around it; PUSH / BACK are press-and-hold
-    /// (held past the threshold they become `Hold` / `Back-hold`); the keyboard
-    /// mirrors all of it. Raw events feed [`App::handle_input`](obc_app::App::handle_input),
-    /// which runs the shared recognizer and drives the screen stack — so the encoder
-    /// actually zooms the map, pauses into Ride control, etc. Encoder-hold progress
-    /// shows as the amber confirm ring drawn around the knob.
-    fn show_device_controls(&mut self, ui: &mut egui::Ui) {
-        ui.label(egui::RichText::new("Device — encoder + Back").strong());
-        ui.add_space(4.0);
-
-        // Read back before the closure borrows `self` for the knob interaction.
-        let knob_angle = self.input.knob_angle();
-        let enc_progress = self.app.encoder_hold_progress();
-        const SZ: f32 = 96.0;
-        const BTN_W: f32 = 110.0;
-        const BTN_H: f32 = 34.0;
-
-        // Knob on the left, PUSH / BACK stacked to its right — spend the panel's
-        // width rather than its height.
-        let (push_resp, back_resp) = ui
-            .horizontal(|ui| {
-                // Knob: a round encoder with a pointer notch + hold-progress ring.
-                let (rect, resp) =
-                    ui.allocate_exact_size(egui::vec2(SZ, SZ), egui::Sense::drag());
-                let painter = ui.painter_at(rect);
-                let center = rect.center();
-                let radius = SZ * 0.42;
-                painter.circle_filled(center, radius, KNOB_FILL);
-                painter.circle_stroke(center, radius, egui::Stroke::new(2.0, KNOB_EDGE));
-                // Pointer notch shows the knob's rotation.
-                let notch = center + egui::Vec2::angled(knob_angle) * (radius - 7.0);
-                painter.line_segment([center, notch], egui::Stroke::new(3.0, NOTCH));
-                painter.circle_filled(notch, 4.0, NOTCH);
-                // Encoder hold-progress arc — the guarded-action confirm ring.
-                if enc_progress > 0.0 {
-                    painter.add(egui::Shape::line(
-                        arc_points(center, radius + 6.0, enc_progress),
-                        egui::Stroke::new(4.0, AMBER),
-                    ));
-                }
-                if resp.dragged() {
-                    if let Some(p) = resp.interact_pointer_pos() {
-                        self.input.drag_to((p - resp.rect.center()).angle());
-                    }
-                }
-                if resp.drag_stopped() {
-                    self.input.end_drag();
-                }
-                if resp.hovered() {
-                    let dy = ui.input(|i| i.smooth_scroll_delta.y);
-                    if dy != 0.0 {
-                        self.input.scroll(dy);
-                    }
-                }
-
-                ui.add_space(16.0);
-
-                // PUSH (encoder) / BACK — press-and-hold, stacked and vertically
-                // centered beside the knob. ---
-                ui.vertical(|ui| {
-                    ui.add_space((SZ - 2.0 * BTN_H - 8.0) / 2.0);
-                    let p = ui.add_sized([BTN_W, BTN_H], egui::Button::new("PUSH"));
-                    ui.add_space(8.0);
-                    let b = ui.add_sized([BTN_W, BTN_H], egui::Button::new("BACK"));
-                    (p, b)
-                })
-                .inner
-            })
-            .inner;
-
-        // Keyboard mirror: ←/→ (or [ ] / , .) turn; Enter push; Backspace back.
-        // Read globally at the top of `update` (see [`kbd_turn`](SimGui::kbd_turn)) so it
-        // works regardless of which widget has focus; here we just merge it with the
-        // on-screen PUSH/BACK buttons' pointer state.
-        self.input.turn(self.kbd_turn);
-        self.input.set_button(Button::Encoder, push_resp.is_pointer_button_down_on() || self.kbd_enc);
-        self.input.set_button(Button::Back, back_resp.is_pointer_button_down_on() || self.kbd_back);
-
-        // Run this frame's raw events through the shared recognizer + screen stack
-        // (the exact path the firmware uses), firing long-press at its threshold.
-        let now = self.input.now_ms();
-        self.app.handle_input(InputClock(now), &mut self.input);
-
-        ui.add_space(4.0);
-        ui.label(
-            egui::RichText::new("keys: ←/→ turn · Enter push · Backspace back  (hold for long-press)")
-                .weak()
-                .size(11.0),
-        );
     }
 
     /// Display size — the 1:1 "actual size" toggle (needs a calibration) plus a button
