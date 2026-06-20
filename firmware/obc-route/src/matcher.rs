@@ -99,7 +99,7 @@ impl RouteMatch {
         }
         let total = route.total_distance_m;
         let p = (lon, lat);
-        let cur_gidx = global_seg_index(route, self.chunk, self.seg) as i64;
+        let cur_gidx = route.global_seg_index(self.chunk, self.seg) as i64;
 
         // Window: the first lock and off-route rejoin scan wide; on-route a tight forward
         // window (with a little backward slack) keeps it O(window) and forward-biased.
@@ -114,7 +114,7 @@ impl RouteMatch {
         // Best so far: (chunk, seg, dist_m, progress_m).
         let mut best: Option<(usize, usize, f32, u32)> = None;
         let mut c = first_chunk;
-        let mut base_gidx = global_seg_index(route, first_chunk, 0) as i64;
+        let mut base_gidx = route.global_seg_index(first_chunk, 0) as i64;
         'outer: while c < chunks.len() {
             // Whole chunk past the forward window → done (segments only run forward).
             if self.started && base_gidx - cur_gidx > fwd {
@@ -183,16 +183,4 @@ impl RouteMatch {
         }
         Match { progress_m: self.progress_m, off_route: now_off, dist_m: bdist as u32 }
     }
-}
-
-/// Global index (from the route start) of segment `seg` in chunk `c`: how many segments
-/// precede it. Segments per chunk = `point_count - 1` (the shared seam point isn't
-/// double-counted). Computed from the index alone — no decode.
-fn global_seg_index(route: &RouteReader, c: usize, seg: usize) -> usize {
-    let chunks = route.chunks();
-    let mut idx = 0usize;
-    for cm in &chunks[..c.min(chunks.len())] {
-        idx += (cm.point_count as usize).saturating_sub(1);
-    }
-    idx + seg
 }
