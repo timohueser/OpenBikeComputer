@@ -6,37 +6,43 @@
 //! everywhere: [`App`](crate::app::App) folds each frame's encoder/Back
 //! hold-progress into [`HoldHints`] and draws it on top of the screen stack.
 //!
-//! Per control a black lobe swells inward from the screen edge nearest its physical
-//! button (both on the right today — encoder up top, Back below), drawn as the cap
-//! of an off-edge [`disc`](Canvas::disc) so it reads as the black bezel *bulging
-//! into* the display — the iOS volume/lock-button press effect. Holding deepens the
-//! bulge ("keep holding until it pops"); a completed hold **pops** — a brief deeper
-//! lunge — and an early release retracts it. It's drawn in [`palette::HUD`] (the
-//! near-black frame colour), so it needs no gradient or alpha and renders on the
-//! real 8-color panel exactly as in the simulator. The panel has no alpha and the
-//! frame is fully redrawn, so the bulge is opaque and simply absent once an
-//! animation ends — no fades, no ghosting.
+//! Per control a black hump swells inward from the screen edge nearest its physical
+//! button (both on the right today — encoder up top, Back below), so it reads as the
+//! black bezel *bulging into* the display — the iOS volume/lock-button press effect.
+//! The hump has a **fixed base width** along the edge ([`BASE_HALF`]) and only its
+//! inward *depth* tracks the hold, so holding pushes it deeper in place rather than
+//! fanning it wider. Its silhouette is a quartic bump (flat tangent shoulders that
+//! melt into the edge, a softly rounded apex — deliberately *not* a round circular
+//! cap), rasterized as edge-perpendicular strips. A completed hold **pops** — a
+//! quick deeper lunge that eases back out — and an early release retracts it.
+//!
+//! Drawn in [`palette::HUD`] (the near-black frame colour), so it needs no gradient
+//! or alpha and renders on the real 8-color panel exactly as in the simulator. The
+//! panel has no alpha and the frame is fully redrawn, so the bulge is opaque and
+//! simply absent once an animation ends — no fades, no ghosting.
 //!
 //! Encoder vs. Back is told apart by *position* (the bulge erupts next to the button
 //! held), not colour. Relocating a bulge is a one-line edit to its [`Style::anchor`].
 
-use embedded_graphics::{draw_target::DrawTarget, geometry::Point};
-use obc_render::Canvas;
+use embedded_graphics::{draw_target::DrawTarget, primitives::Rectangle};
+use obc_render::{rect, Canvas};
 
 use crate::screen::palette;
 
 // tunables
 
-/// Bulge disc radius (px). The visible cap is a slice of this circle, so a larger
-/// radius gives a gentler, wider swell for the same inward depth. Must stay `>=`
-/// [`POP_DEPTH`] (the cap depth can't exceed the radius).
-const R: i32 = 30;
+/// Half the bulge's fixed base width (px) along the edge — the hump spans `2 *
+/// BASE_HALF` regardless of how deep it bulges, so depth and width are independent.
+const BASE_HALF: i32 = 22;
 /// Inward depth (px) the bulge reaches at a full charge, just before the threshold.
-const DEPTH: i32 = 12;
-/// Peak inward depth (px) at the confirm "pop" — a brief deeper lunge.
-const POP_DEPTH: i32 = 18;
+const DEPTH: f32 = 12.0;
+/// Peak inward depth (px) at the confirm "pop" — a brief deeper lunge past [`DEPTH`].
+const POP_DEPTH: f32 = 22.0;
 /// Pop animation duration (ms).
-const POP_MS: u32 = 180;
+const POP_MS: u32 = 220;
+/// Fraction of the pop spent lunging in to [`POP_DEPTH`] before it eases back out —
+/// a fast attack, slow release, so the confirm reads as a snap.
+const POP_ATTACK: f32 = 0.22;
 /// Retract animation duration (ms) when a hold is released early.
 const CANCEL_MS: u32 = 150;
 /// Dead zone: the charge fraction a hold must pass before any bulge is drawn, so a
@@ -68,12 +74,12 @@ struct Anchor {
 
 impl Anchor {
     /// Resolve to a concrete [`Place`] for a `w`×`h` screen, clamping the centre so
-    /// the widest the cap can ever reach (`R`) stays on-panel along the edge.
+    /// the fixed-width base stays on-panel along the edge.
     fn place(self, w: i32, h: i32) -> Place {
         let vertical = matches!(self.edge, Edge::Right | Edge::Left);
         let along = if vertical { h } else { w };
-        let lo = R + 1;
-        let hi = (along - R - 1).max(lo);
+        let lo = BASE_HALF + 1;
+        let hi = (along - BASE_HALF - 1).max(lo);
         let cc = ((self.pos * along as f32) as i32).clamp(lo, hi);
         match self.edge {
             Edge::Right => Place { vertical, outer: w, inward: -1, cc },
@@ -94,15 +100,16 @@ struct Place {
 }
 
 impl Place {
-    /// Centre of the bulge disc for an inward cap `depth`: the circle is pushed
-    /// *outboard* of the edge so only its `depth`-deep cap falls on-panel, growing
-    /// inward as `depth` rises. (`depth == 0` parks the whole disc off-screen.)
-    fn disc_center(&self, r: i32, depth: i32) -> Point {
-        let c_in = self.outer - self.inward * (r - depth);
+    /// One rasterizer strip: a 1px-wide slice `along_off` from the centre that pokes
+    /// `depth` px inward from the edge. The bulge is the union of these across the
+    /// fixed base width.
+    fn strip(&self, along_off: i32, depth: i32) -> Rectangle {
+        let a = self.cc + along_off;
+        let near = if self.inward < 0 { self.outer - depth } else { self.outer };
         if self.vertical {
-            Point::new(c_in, self.cc)
+            rect(near, a, depth, 1)
         } else {
-            Point::new(self.cc, c_in)
+            rect(a, near, 1, depth)
         }
     }
 }
@@ -175,8 +182,13 @@ impl Hint {
                 if e >= 1.0 {
                     return;
                 }
-                let bump = 4.0 * e * (1.0 - e); // 0 → 1 → 0 parabola (no libm)
-                let depth = DEPTH + ((POP_DEPTH - DEPTH) as f32 * bump) as i32;
+                // Fast lunge past the charge depth to the overshoot, then ease back
+                // out to nothing — a snap inward rather than a symmetric pulse.
+                let depth = if e < POP_ATTACK {
+                    DEPTH + (POP_DEPTH - DEPTH) * (e / POP_ATTACK)
+                } else {
+                    POP_DEPTH * (1.0 - (e - POP_ATTACK) / (1.0 - POP_ATTACK))
+                };
                 bulge(cv, &place, depth);
             }
             Anim::Cancel { t0, from } => {
@@ -184,28 +196,36 @@ impl Hint {
                 if e >= 1.0 {
                     return;
                 }
-                bulge(cv, &place, (DEPTH as f32 * from * (1.0 - e)) as i32);
+                bulge(cv, &place, DEPTH * from * (1.0 - e));
             }
             Anim::Idle => {
                 if self.prev > DEAD {
-                    bulge(cv, &place, (DEPTH as f32 * shown(self.prev)) as i32);
+                    bulge(cv, &place, DEPTH * shown(self.prev));
                 }
             }
         }
     }
 }
 
-/// Draw the bulge: the inward cap of a black [`disc`](Canvas::disc) pushed off the
-/// edge, so it pokes `depth` px into the screen. Nothing when uncharged.
-fn bulge<D, F>(cv: &mut Canvas<D, F>, place: &Place, depth: i32)
+/// Draw the bulge: a black hump of the fixed [`BASE_HALF`] base width poking `depth`
+/// px inward from the edge, its profile a quartic bump (flat tangent shoulders, soft
+/// apex) rasterized as edge-perpendicular strips. Nothing when uncharged.
+fn bulge<D, F>(cv: &mut Canvas<D, F>, place: &Place, depth: f32)
 where
     D: DrawTarget,
     F: Fn(u16) -> D::Color,
 {
-    if depth <= 0 {
+    if depth < 0.5 {
         return;
     }
-    cv.disc(place.disc_center(R, depth), R as u32, palette::HUD);
+    for i in -BASE_HALF..=BASE_HALF {
+        let t = i as f32 / BASE_HALF as f32; // -1..1 across the base
+        let s = 1.0 - t * t;
+        let d = (depth * s * s + 0.5) as i32; // quartic: melts into the edge at ±1
+        if d > 0 {
+            cv.fill(place.strip(i, d), palette::HUD);
+        }
+    }
 }
 
 // the overlay
