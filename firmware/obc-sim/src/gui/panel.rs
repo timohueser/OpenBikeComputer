@@ -425,6 +425,13 @@ impl SimGui {
             ui.label(format!("{} / {} drawn", s.points_drawn, s.points_tried));
             ui.end_row();
 
+            // Active route overlay (no LOD): points decoded vs. actually stroked, and chunks. As
+            // you zoom out `pts` climbs with the visible route, but `drawn` tracks what's on-screen
+            // (per-segment view clip + subpixel fold) — the gap is the clip doing its job.
+            ui.label("Route");
+            ui.label(format!("{} / {} drawn · {} chunks", s.route_points_drawn, s.route_points, s.route_chunks));
+            ui.end_row();
+
             // Host-measured frame draw time (render + route/overlays). 0 = not yet measured.
             ui.label("Render");
             if s.render_us == 0 {

@@ -587,12 +587,15 @@ fn main() {
         });
         stats.render_us = t0.elapsed().as_micros() as u32;
         eprintln!(
-            "rendered {}/{} features ({} chunks, LOD {}, {} dropped) in {:.2} ms | spans {:.0}% points {:.0}% rings {:.0}%",
+            "rendered {}/{} features ({} chunks, LOD {}, {} dropped) | route {}/{} drawn, {} chunks in {:.2} ms | spans {:.0}% points {:.0}% rings {:.0}%",
             stats.features_drawn,
             stats.features_tried,
             stats.chunks_visited,
             stats.lod,
             stats.features_dropped,
+            stats.route_points_drawn,
+            stats.route_points,
+            stats.route_chunks,
             stats.render_us as f64 / 1000.0,
             stats.span_utilization * 100.0,
             stats.point_utilization * 100.0,
