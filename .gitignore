@@ -1,6 +1,9 @@
 __pycache__/
 *.pyc
 *.obcm
+# ...except the small tile baked into the STM32 firmware via include_bytes! (issue
+# #34). It must ship in-repo so the board crate builds without a separate pack step.
+!firmware/obc-fw-stm32f429/tiles/*.obcm
 *.obcr
 *.osm.pbf
 # The simulator's default route + track stores (its "SD card") — runtime artifacts.
