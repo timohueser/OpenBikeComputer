@@ -30,7 +30,7 @@ pub(crate) const M_PER_DEG: f32 = 111_320.0;
 /// `cos(latitude)` for the local east-scaling, from latitude in microdegrees. Hoist this
 /// once per latitude band and pass it to the `_cl` helpers across a run of nearby
 /// segments — over a route window the latitude barely changes.
-pub(crate) fn cos_lat(lat_ud: i32) -> f32 {
+pub fn cos_lat(lat_ud: i32) -> f32 {
     libm::cosf((lat_ud as f32 / 1e6).to_radians())
 }
 
@@ -78,6 +78,24 @@ pub(crate) fn project_to_segment(a: (i32, i32), b: (i32, i32), p: (i32, i32), cl
     let t = ((px * bx + py * by) / len2).clamp(0.0, 1.0);
     let (dx, dy) = (px - bx * t, py - by * t);
     (t, libm::sqrtf(dx * dx + dy * dy))
+}
+
+/// Effective area (m²) of the triangle `a, b, c` — the Visvalingam–Whyatt *significance* of
+/// vertex `b`: the area the line loses if `b` is dropped and `a` joins straight to `c`. Computed
+/// in the local-equirectangular metric (precomputed `cl = cos_lat`); cheap — no `sqrt`, no
+/// divide. A fixed-budget simplifier drops the smallest-area vertex, so a straight run (area ≈ 0)
+/// yields its points before a bend does, and the metric self-spreads: removing a vertex widens
+/// its neighbours' triangles, protecting them next time.
+pub fn tri_area_m2_cl(a: (i32, i32), b: (i32, i32), c: (i32, i32), cl: f32) -> f32 {
+    let (ux, uy) = delta_m(a, b, cl);
+    let (vx, vy) = delta_m(a, c, cl);
+    0.5 * (ux * vy - uy * vx).abs()
+}
+
+/// Effective area (m²) of triangle `a, b, c`, computing `cos_lat` from `a`'s latitude; prefer
+/// [`tri_area_m2_cl`] in a loop that can hoist it.
+pub fn tri_area_m2(a: (i32, i32), b: (i32, i32), c: (i32, i32)) -> f32 {
+    tri_area_m2_cl(a, b, c, cos_lat(a.1))
 }
 
 /// Straight-line ground distance (m) between two `(lon, lat)` microdegree points, given a
