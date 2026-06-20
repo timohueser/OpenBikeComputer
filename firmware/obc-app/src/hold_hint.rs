@@ -33,16 +33,12 @@ use crate::screen::palette;
 
 // tunables
 
-// The bulge's base / flat-top widths are per-control (encoder vs. Back can differ);
-// see [`Style::base_half`] / [`Style::flat_half`] on the ENCODER / BACK constants.
+// The bulge's base / flat-top widths and its charge / pop depths are per-control
+// (encoder vs. Back can differ); see [`Style`] on the ENCODER / BACK constants.
 
-/// Inward depth (px) the bulge reaches at a full charge, just before the threshold.
-const DEPTH: f32 = 8.0;
-/// Peak inward depth (px) at the confirm "pop" — a brief deeper lunge past [`DEPTH`].
-const POP_DEPTH: f32 = 14.0;
 /// Pop animation duration (ms).
 const POP_MS: u32 = 220;
-/// Fraction of the pop spent lunging in to [`POP_DEPTH`] before it eases back out —
+/// Fraction of the pop spent lunging in to the pop depth before it eases back out —
 /// a fast attack, slow release, so the confirm reads as a snap.
 const POP_ATTACK: f32 = 0.22;
 /// Retract animation duration (ms) when a hold is released early.
@@ -178,6 +174,7 @@ impl Hint {
         F: Fn(u16) -> D::Color,
     {
         let (base_half, flat_half) = (style.base_half, style.flat_half);
+        let (charge_depth, pop_depth) = (style.depth, style.pop_depth);
         let place = style.anchor.place(w, h, base_half);
         let mut draw = |depth| bulge(cv, &place, depth, base_half, flat_half);
         match self.anim {
@@ -189,9 +186,9 @@ impl Hint {
                 // Fast lunge past the charge depth to the overshoot, then ease back
                 // out to nothing — a snap inward rather than a symmetric pulse.
                 let depth = if e < POP_ATTACK {
-                    DEPTH + (POP_DEPTH - DEPTH) * (e / POP_ATTACK)
+                    charge_depth + (pop_depth - charge_depth) * (e / POP_ATTACK)
                 } else {
-                    POP_DEPTH * (1.0 - (e - POP_ATTACK) / (1.0 - POP_ATTACK))
+                    pop_depth * (1.0 - (e - POP_ATTACK) / (1.0 - POP_ATTACK))
                 };
                 draw(depth);
             }
@@ -200,11 +197,11 @@ impl Hint {
                 if e >= 1.0 {
                     return;
                 }
-                draw(DEPTH * from * (1.0 - e));
+                draw(charge_depth * from * (1.0 - e));
             }
             Anim::Idle => {
                 if self.prev > DEAD {
-                    draw(DEPTH * shown(self.prev));
+                    draw(charge_depth * shown(self.prev));
                 }
             }
         }
@@ -259,17 +256,31 @@ struct Style {
     /// top reads as a flat edge rather than a parabola's point. `0` is a pure quartic
     /// bump; keep it `< base_half` to leave room for the shoulders.
     flat_half: i32,
+    /// Inward depth (px) the bulge reaches at a full charge, just before the threshold.
+    depth: f32,
+    /// Peak inward depth (px) at the confirm "pop" — a brief deeper lunge past `depth`.
+    pop_depth: f32,
 }
 
 /// Encoder hint — upper-right edge (the encoder wheel sits near the top right); the
 /// taller of the two, echoing the encoder's longer pill.
-const ENCODER: Style =
-    Style { anchor: Anchor { edge: Edge::Right, pos: 0.30 }, base_half: 44, flat_half: 12 };
+const ENCODER: Style = Style {
+    anchor: Anchor { edge: Edge::Right, pos: 0.30 },
+    base_half: 44,
+    flat_half: 12,
+    depth: 8.0,
+    pop_depth: 14.0,
+};
 
 /// Back hint — lower-right edge (the Back button sits below the encoder); shorter than
 /// the encoder bulge, echoing the Back button's smaller pill.
-const BACK: Style =
-    Style { anchor: Anchor { edge: Edge::Right, pos: 0.70 }, base_half: 28, flat_half: 8 };
+const BACK: Style = Style {
+    anchor: Anchor { edge: Edge::Right, pos: 0.70 },
+    base_half: 28,
+    flat_half: 8,
+    depth: 6.0,
+    pop_depth: 11.0,
+};
 
 /// The global long-press overlay: one [`Hint`] per control, drawn above every screen.
 ///
