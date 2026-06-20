@@ -99,6 +99,12 @@ pub struct RouteReader<'a> {
     pub max_ele_m: i16,
     name: String<NAME_CAP>,
     index: Vec<ChunkMeta, MAX_ROUTE_CHUNKS>,
+    /// Prefix sum of segments per chunk: `cum_seg[c]` = segments before chunk `c`
+    /// (∑ `point_count − 1`, the shared seam point not double-counted). A trailing
+    /// entry holds the route's total segment count, so an index at `chunk_count` is
+    /// valid. Built once at [`open`](Self::open) so [`global_seg_index`](Self::global_seg_index)
+    /// — on the matcher's per-fix hot path — is an O(1) lookup, not a prefix scan.
+    cum_seg: Vec<u32, { MAX_ROUTE_CHUNKS + 1 }>,
 }
 
 impl<'a> RouteReader<'a> {
@@ -111,6 +117,8 @@ impl<'a> RouteReader<'a> {
         }
 
         let mut index = Vec::new();
+        let mut cum_seg = Vec::new();
+        let mut seg_acc: u32 = 0;
         let mut meta = [0u8; CHUNK_META_LEN];
         for k in 0..h.chunk_count {
             let off = h.index_offset + k * CHUNK_META_LEN as u32;
@@ -140,8 +148,14 @@ impl<'a> RouteReader<'a> {
             if end > src.len() {
                 return Err(Error::BadOffset);
             }
+            // Running segment prefix sum, built alongside the index so the matcher never
+            // re-walks the chunk list per fix.
+            cum_seg.push(seg_acc).map_err(|_| Error::TooLarge)?;
+            seg_acc += (point_count as u32).saturating_sub(1);
             index.push(cm).map_err(|_| Error::TooLarge)?;
         }
+        // Trailing total, so `cum_seg[chunk_count]` is the route's full segment count.
+        cum_seg.push(seg_acc).map_err(|_| Error::TooLarge)?;
 
         Ok(RouteReader {
             src,
@@ -156,6 +170,7 @@ impl<'a> RouteReader<'a> {
             max_ele_m: h.max_ele_m,
             name: h.name,
             index,
+            cum_seg,
         })
     }
 
@@ -167,6 +182,16 @@ impl<'a> RouteReader<'a> {
     /// The chunk index (in route order).
     pub fn chunks(&self) -> &[ChunkMeta] {
         &self.index
+    }
+
+    /// Global index (from the route start) of segment `seg` in chunk `c`: how many
+    /// segments precede it. Segments per chunk = `point_count − 1` (the shared seam
+    /// point isn't double-counted). O(1) via the `cum_seg` prefix sum built at
+    /// [`open`](Self::open) — the per-fix matcher calls this on its hot path, so it
+    /// must not re-scan the chunk index. `c` past the last chunk clamps to the total.
+    pub(crate) fn global_seg_index(&self, c: usize, seg: usize) -> usize {
+        let c = c.min(self.index.len());
+        self.cum_seg.get(c).copied().unwrap_or(0) as usize + seg
     }
 
     // Cumulative ascent at a position is read from the elevation [`Profile`]

@@ -39,10 +39,17 @@ const DEFAULT_BG_RGB565: u16 = 0x2104;
 const ROUTE_WEIGHT: u32 = 11;
 
 /// Colour of the route direction chevrons — white, for maximum contrast over the magenta
-/// route line (lands on `(255,255,255)` on the device-64 panel). Drawn only at the finest
-/// LOD (riding zoom); see [`MapScreen::draw`]. The chevron shape + spacing are tuned in
+/// route line (lands on `(255,255,255)` on the device-64 panel). Drawn only at riding zoom
+/// (see [`CHEVRON_MAX_MPP`] / [`MapScreen::draw`]). The chevron shape + spacing are tuned in
 /// `obc-render` (`ARROW_*`).
 const ARROW_COLOR: u16 = super::palette::PARCHMENT;
+
+/// Zoom threshold (ground meters per pixel) at/below which the route direction chevrons are
+/// drawn — i.e. they appear once you're zoomed in to roughly riding scale (the riding view
+/// opens at ~0.5 m/px) and fade out on wider overviews where they'd just clutter a short
+/// on-screen route. A plain scale gate, independent of the map's LOD pyramid: tune this one
+/// number to move the cut-off.
+const CHEVRON_MAX_MPP: f32 = 4.0;
 
 /// Stroke width (px) of the travelled-path breadcrumb — a touch thinner than the route, so
 /// the planned route stays the dominant line where the two coincide.
@@ -97,10 +104,11 @@ impl MapScreen {
         let bg = color_fn(bg565);
         let mut stats = rx.renderer.render(target, rx.reader, &vp, bg, color_fn);
 
-        // Direction chevrons ride the route only at the finest LOD (riding zoom): the plain
-        // stroke shows at every zoom, the chevrons appear once `render` selected the last LOD,
-        // anchored to the rider's matched distance along the route (`progress_m`).
-        let arrows_at = (stats.lod + 1 == rx.reader.lods().len()).then_some(rx.activity.progress_m);
+        // Direction chevrons ride the route only at riding zoom: the plain stroke shows at every
+        // zoom, the chevrons appear once the view is zoomed in past `CHEVRON_MAX_MPP`, anchored to
+        // the rider's matched distance along the route (`progress_m`). Gated on the viewport scale
+        // directly, so it's decoupled from the map's LOD pyramid.
+        let arrows_at = (vp.meters_per_pixel() <= CHEVRON_MAX_MPP).then_some(rx.activity.progress_m);
 
         // The planned route, stroked in magenta over the map (under the breadcrumb + marker),
         // with white travel-direction chevrons near the rider at riding zoom.

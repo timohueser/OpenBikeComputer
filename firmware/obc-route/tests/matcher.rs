@@ -157,6 +157,50 @@ fn off_route_freezes_progress_then_resumes_on_rejoin() {
 /// vertices — enough curvature that every vertex survives decimation, giving ~20 segments.
 /// The loop returns to its start, so spatial nearest-point is ambiguous there; only the
 /// forward bias keeps progress from snapping back.
+/// A high-frequency eastward sawtooth of `n` points. Every interior vertex is a
+/// peak/valley deviating ~4 m from its neighbours' chord — well past the 1 m
+/// decimation tolerance — so all survive and a few hundred span more than one
+/// chunk. Walking it is the only matcher test that crosses a chunk seam, exercising
+/// the cumulative segment index + cursor advance across chunks.
+fn sawtooth_gpx(n: usize) -> String {
+    let (lat0, lon0) = (48.0_f64, 7.8_f64);
+    let cl = (lat0 * std::f64::consts::PI / 180.0).cos();
+    let dlon = 8.0 / (111_320.0 * cl); // ~8 m east per step
+    let dlat = 4.0 / 111_320.0; // ±4 m north sawtooth
+    let pts: Vec<(f64, f64, f64)> = (0..n)
+        .map(|i| {
+            let lat = lat0 + if i % 2 == 0 { 0.0 } else { dlat };
+            (lat, lon0 + dlon * i as f64, 200.0)
+        })
+        .collect();
+    gpx_from(&pts)
+}
+
+#[test]
+fn multi_chunk_route_matches_across_chunk_boundaries() {
+    let bytes = convert("Sawtooth", &sawtooth_gpx(400));
+    let src = SliceSource(&bytes);
+    let r = RouteReader::open(&src).unwrap();
+    assert!(r.chunks().len() >= 2, "sawtooth should span >1 chunk, got {}", r.chunks().len());
+    let pts = decode_all(&r);
+    let total = r.total_distance_m;
+
+    // Each decoded vertex sits exactly on the route, so a fix walked through them must
+    // read on-route with monotonically advancing progress — across every chunk seam.
+    let mut m = RouteMatch::new();
+    let mut last = 0u32;
+    for (i, p) in pts.iter().enumerate() {
+        let res = m.update(p.lon, p.lat, &r);
+        assert!(!res.off_route, "vertex {i} sits on the route");
+        assert!(res.progress_m + 1 >= last, "vertex {i}: progress {} < {last}", res.progress_m);
+        last = res.progress_m;
+    }
+    assert!(
+        last as f64 > 0.9 * total as f64,
+        "final progress {last} m should reach near the {total} m total"
+    );
+}
+
 fn loop_gpx() -> String {
     let (clat, clon) = (48.0_f64, 7.8_f64);
     let r_deg = 800.0 / 111_320.0; // ~800 m in latitude degrees
