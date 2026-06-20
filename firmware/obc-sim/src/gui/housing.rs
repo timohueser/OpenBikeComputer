@@ -17,7 +17,9 @@
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Rounding, Stroke, Vec2};
 
 /// Charcoal behind the device, matching the reference render's backdrop.
-pub const BACKGROUND: Color32 = Color32::from_rgb(30, 30, 32);
+pub fn background() -> Color32 {
+    hex("#1e1e20")
+}
 
 /// Backdrop padding (screen-pixel units) left around the device when sizing the
 /// window, so it floats in a little charcoal instead of touching the edges.
@@ -55,10 +57,10 @@ impl Colorway {
     /// The body color; the rest of the palette is derived from it + shared dark tones.
     fn body(self) -> Color32 {
         match self {
-            Colorway::Coral => Color32::from_rgb(203, 103, 80),
-            Colorway::Mint => Color32::from_rgb(98, 190, 156),
-            Colorway::Mustard => Color32::from_rgb(224, 179, 72),
-            Colorway::Slate => Color32::from_rgb(108, 120, 145),
+            Colorway::Coral => hex("#cb6750"),
+            Colorway::Mint => hex("#62be9c"),
+            Colorway::Mustard => hex("#e0b348"),
+            Colorway::Slate => hex("#6c7891"),
         }
     }
 
@@ -69,10 +71,10 @@ impl Colorway {
             body_edge: darken(body, 0.72),
             wordmark: darken(body, 0.5),
             // Shared dark tones across all colorways (the bezel + side controls).
-            bezel: Color32::from_rgb(20, 21, 24),
-            button: Color32::from_rgb(54, 57, 63),
-            button_pressed: Color32::from_rgb(38, 40, 45),
-            knurl: Color32::from_rgb(80, 84, 92),
+            bezel: hex("#141518"),
+            button: hex("#36393f"),
+            button_pressed: hex("#26282d"),
+            knurl: hex("#50545c"),
         }
     }
 }
@@ -150,21 +152,24 @@ impl Default for HousingStyle {
             back_h: 46.0,
             back_cy: 0.58,
             knurl_spacing: 7.0,
-            knurl_gain: 26.0,
+            knurl_gain: 18.0,
             wordmark_size: 24.0,
         }
     }
 }
 
-/// The resolved on-screen rects for a placed device.
-struct Layout {
-    body: Rect,
-    bezel: Rect,
-    screen: Rect,
-    encoder: Rect,
-    back: Rect,
-    wordmark_center: Pos2,
-    wordmark_size: f32,
+/// The resolved on-screen rects for a placed device. The caller hit-tests `encoder`
+/// / `back` for the clickable controls and blits the framebuffer into `screen`.
+pub struct Layout {
+    pub body: Rect,
+    pub bezel: Rect,
+    pub screen: Rect,
+    pub encoder: Rect,
+    pub back: Rect,
+    pub wordmark_center: Pos2,
+    pub wordmark_size: f32,
+    /// Points per device pixel (carried so [`draw`] needn't re-take it).
+    pub scale: f32,
 }
 
 impl HousingStyle {
@@ -189,10 +194,12 @@ impl HousingStyle {
         (self.bezel_radius - self.bezel_gap).max(0.0) * scale
     }
 
-    /// Resolve every rect for the device placed with its top-left at `origin`, at
-    /// `scale` points per screen-pixel.
-    fn layout(&self, origin: Pos2, scale: f32, screen: Vec2) -> Layout {
+    /// Resolve every rect for the device centered in `available`, at `scale` points
+    /// per screen-pixel.
+    pub fn layout(&self, available: Rect, scale: f32, screen: Vec2) -> Layout {
         let s = scale;
+        // Center the device, snapped to whole points so an integer scale stays crisp.
+        let origin = (available.center() - self.device_size_px(screen) * s / 2.0).round();
         let body_w = (screen.x + 2.0 * self.pad_x) * s;
         let body_h = (screen.y + self.pad_top + self.pad_bottom) * s;
         let body = Rect::from_min_size(origin, Vec2::new(body_w, body_h));
@@ -224,29 +231,21 @@ impl HousingStyle {
             back,
             wordmark_center,
             wordmark_size: self.wordmark_size * s,
+            scale: s,
         }
     }
 }
 
-/// Draw the housing centered in `available`, returning the rect the **screen texture**
-/// should be placed in (the caller blits the framebuffer there, over the bezel).
-///
-/// `scale` is points per device pixel — an integer in the normal view (so the screen
-/// stays pixel-crisp) and fractional in 1:1 "actual size" mode; the housing scales
-/// with it either way so the screen keeps its exact size.
+/// Paint the housing into the precomputed [`Layout`] (from [`HousingStyle::layout`]).
+/// The caller then blits the framebuffer into `lo.screen`, over the bezel.
 pub fn draw(
     painter: &egui::Painter,
-    available: Rect,
-    scale: f32,
-    screen: Vec2,
+    lo: &Layout,
     style: &HousingStyle,
     palette: &HousingPalette,
     ctrl: &ControlVisual,
-) -> Rect {
-    let dev = style.device_size_px(screen) * scale;
-    // Center the device, snapped to whole points so an integer scale stays crisp.
-    let origin = (available.center() - dev / 2.0).round();
-    let lo = style.layout(origin, scale, screen);
+) {
+    let scale = lo.scale;
 
     // Body — colored rounded slab with a subtle darker rim against the backdrop.
     let body_round = Rounding::same(style.body_radius * scale);
@@ -273,8 +272,6 @@ pub fn draw(
         FontId::new(lo.wordmark_size, egui::FontFamily::Proportional),
         palette.wordmark,
     );
-
-    lo.screen
 }
 
 /// A side pill (encoder or Back): sinks in and darkens when pressed. `knurl` is the
@@ -312,6 +309,12 @@ fn draw_pill(
             y += spacing;
         }
     }
+}
+
+/// A `#rrggbb` literal → `Color32`, so the palette reads as hex codes VSCode's color
+/// picker can edit in place. Panics on a malformed literal (they're all constants above).
+fn hex(s: &str) -> Color32 {
+    Color32::from_hex(s).expect("valid #rrggbb literal")
 }
 
 /// Scale each channel toward black by `f` (0 = black, 1 = unchanged).
