@@ -45,8 +45,10 @@ fn build_route(
     for ch in chunks {
         let p = &ch.points;
         let anchor = p[0];
-        let (cmin_lon, cmin_lat) = (p.iter().map(|q| q.0).min().unwrap(), p.iter().map(|q| q.1).min().unwrap());
-        let (cmax_lon, cmax_lat) = (p.iter().map(|q| q.0).max().unwrap(), p.iter().map(|q| q.1).max().unwrap());
+        let (cmin_lon, cmin_lat) =
+            (p.iter().map(|q| q.0).min().unwrap(), p.iter().map(|q| q.1).min().unwrap());
+        let (cmax_lon, cmax_lat) =
+            (p.iter().map(|q| q.0).max().unwrap(), p.iter().map(|q| q.1).max().unwrap());
 
         let mut body: Vec<u8> = Vec::new();
         for w in p.windows(2) {

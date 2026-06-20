@@ -144,7 +144,11 @@ impl StatisticsScreen {
     /// otherwise the live position it has sprung back to.
     fn effective_cursor(&self, now_ms: u32, live: f32) -> f32 {
         match self.cursor {
-            Some(c) if self.mode == Mode::Zoom || now_ms.wrapping_sub(self.last_scrub_ms) < IDLE_MS => c,
+            Some(c)
+                if self.mode == Mode::Zoom || now_ms.wrapping_sub(self.last_scrub_ms) < IDLE_MS =>
+            {
+                c
+            }
             _ => live,
         }
     }
@@ -261,13 +265,14 @@ impl StatisticsScreen {
         cv.vline(cursor_x, CHART_TOP, band_bot - CHART_TOP + 1, 2, cursor_color);
         cv.disc(Point::new(cursor_x, cur_y), 4, INK); // dark ring …
         cv.disc(Point::new(cursor_x, cur_y), 3, cursor_color); // … around the cursor dot
-        // Current-elevation readout at the cursor (updates as you scrub). Placed below the
-        // dot near the peak so the labels never overlap; else just above it, clamped inside
-        // the band and clear of the baseline/bar.
+                                                               // Current-elevation readout at the cursor (updates as you scrub). Placed below the
+                                                               // dot near the peak so the labels never overlap; else just above it, clamped inside
+                                                               // the band and clear of the baseline/bar.
         let mut ele_s: heapless::String<8> = heapless::String::new();
         let _ = write!(ele_s, "{} m", cur_ele);
         let near_peak = (cursor_frac - profile.peak_frac()).abs() < 0.07;
-        let label_y = (if near_peak { cur_y + 9 } else { cur_y - 5 }).clamp(CHART_TOP + 2, band_bot - 24);
+        let label_y =
+            (if near_peak { cur_y + 9 } else { cur_y - 5 }).clamp(CHART_TOP + 2, band_bot - 24);
         if cursor_x < w - 44 {
             cv.text(&ele_s, Point::new(cursor_x + 8, label_y), Font::Label, TextAlign::Left, INK);
         } else {
@@ -321,9 +326,17 @@ impl StatisticsScreen {
         let km_done = a.ridden_m / 1000.0;
         let km_to_go = to_go_m as f32 / 1000.0;
         let mut done: heapless::String<8> = heapless::String::new();
-        let _ = if km_done >= 100.0 { write!(done, "{:.0}", km_done) } else { write!(done, "{:.1}", km_done) };
+        let _ = if km_done >= 100.0 {
+            write!(done, "{:.0}", km_done)
+        } else {
+            write!(done, "{:.1}", km_done)
+        };
         let mut to_go: heapless::String<8> = heapless::String::new();
-        let _ = if km_to_go >= 100.0 { write!(to_go, "{:.0}", km_to_go) } else { write!(to_go, "{:.1}", km_to_go) };
+        let _ = if km_to_go >= 100.0 {
+            write!(to_go, "{:.0}", km_to_go)
+        } else {
+            write!(to_go, "{:.1}", km_to_go)
+        };
         let mut climbed_s: heapless::String<8> = heapless::String::new();
         let _ = write!(climbed_s, "{}", climbed);
         let mut to_climb_s: heapless::String<8> = heapless::String::new();
@@ -405,7 +418,12 @@ where
     let vx = if arrow {
         // Up-triangle sized to sit alongside the Display digits (ink spans ≈ vy+6..vy+26).
         let ax = x + 8;
-        cv.triangle(Point::new(ax, vy + 26), Point::new(ax + 13, vy + 26), Point::new(ax + 6, vy + 6), INK);
+        cv.triangle(
+            Point::new(ax, vy + 26),
+            Point::new(ax + 13, vy + 26),
+            Point::new(ax + 6, vy + 6),
+            INK,
+        );
         x + 26
     } else {
         x + 8
@@ -462,7 +480,7 @@ mod tests {
         let mut s = StatisticsScreen::new();
         let t0 = u32::MAX - 1_000; // 1 s before the wrap; t0 + IDLE_MS would overflow
         s.on_turn(1, LIVE, t0); // panicked here in debug before the fix
-        // Held across the wrap while still inside the window…
+                                // Held across the wrap while still inside the window…
         assert_eq!(s.effective_cursor(t0, LIVE), scrubbed());
         assert_eq!(s.effective_cursor(t0.wrapping_add(IDLE_MS - 1), LIVE), scrubbed());
         // …and springs back to live once IDLE_MS have elapsed past the wrap.

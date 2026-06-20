@@ -253,7 +253,14 @@ impl AppState {
     /// zero-sized viewport — the screen centre cancels out of the inverse projection,
     /// so this needs no display dimensions and the projection math stays in one place.
     fn pan_by_pixels(&mut self, dx: f32, dy: f32) {
-        let vp = Viewport::new_rotated(0.0, 0.0, self.cam_lon, self.cam_lat, self.zoom, self.course_rad());
+        let vp = Viewport::new_rotated(
+            0.0,
+            0.0,
+            self.cam_lon,
+            self.cam_lat,
+            self.zoom,
+            self.course_rad(),
+        );
         let (lon, lat) = vp.to_map(dx, dy);
         self.cam_lon = lon;
         self.cam_lat = lat;
@@ -487,8 +494,13 @@ impl App {
         }
         self.enc_progress = self.gestures.encoder_progress(now_ms);
         self.back_progress = self.gestures.back_progress(now_ms);
-        self.hold_hints
-            .update(now_ms, self.enc_progress, self.back_progress, enc_fired, back_fired);
+        self.hold_hints.update(
+            now_ms,
+            self.enc_progress,
+            self.back_progress,
+            enc_fired,
+            back_fired,
+        );
     }
 
     /// Route one gesture to the top screen and apply the transition it returns.
@@ -532,8 +544,17 @@ impl App {
 
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
         let App {
-            state, activity, catalog, renderer, stack, now_ms, enc_progress, profile, breadcrumb,
-            hold_hints, ..
+            state,
+            activity,
+            catalog,
+            renderer,
+            stack,
+            now_ms,
+            enc_progress,
+            profile,
+            breadcrumb,
+            hold_hints,
+            ..
         } = self;
         let mut rx = Render {
             reader,

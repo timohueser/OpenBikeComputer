@@ -37,8 +37,7 @@ use crate::geom::{collect_polygons, geom_from_geos, ring_to_coordseq, Geom};
 const R: f64 = 6_378_137.0;
 
 /// Where `land_ingest.py` caches the dataset (`~/.cache/obcm/land`).
-const LAND_URL: &str =
-    "https://osmdata.openstreetmap.de/download/land-polygons-split-3857.zip";
+const LAND_URL: &str = "https://osmdata.openstreetmap.de/download/land-polygons-split-3857.zip";
 
 // --- Reprojection (closed-form spherical Web Mercator) ---------------------
 
@@ -181,8 +180,7 @@ fn read_shapefile(
         let mut body = vec![0u8; (content_len - consumed) as usize];
         r.read_exact(&mut body).map_err(|e| format!("read record body: {e}"))?;
         let rings = parse_polygon_rings(&body)?;
-        let fully_inside =
-            bxmin >= qminx && bxmax <= qmaxx && bymin >= qminy && bymax <= qmaxy;
+        let fully_inside = bxmin >= qminx && bxmax <= qmaxx && bymin >= qminy && bymax <= qmaxy;
         process_record(rings, fully_inside, box_geom, out);
     }
     Ok(())
@@ -284,8 +282,7 @@ fn geos_polygon_from_rings(rings: &[Vec<(f64, f64)>]) -> Option<Geometry> {
 /// The clip box as a GEOS polygon, in shapely `box(minx,miny,maxx,maxy)` ring
 /// order (same as [`crate::geom::clip_to_box`]).
 fn box_polygon((minx, miny, maxx, maxy): (f64, f64, f64, f64)) -> Result<Geometry, String> {
-    let ring =
-        [(maxx, miny), (maxx, maxy), (minx, maxy), (minx, miny), (maxx, miny)];
+    let ring = [(maxx, miny), (maxx, maxy), (minx, maxy), (minx, miny), (maxx, miny)];
     let lr = Geometry::create_linear_ring(ring_to_coordseq(&ring))
         .map_err(|e| format!("clip box ring: {e}"))?;
     Geometry::create_polygon(lr, vec![]).map_err(|e| format!("clip box polygon: {e}"))
@@ -324,10 +321,9 @@ fn ensure_dataset() -> Result<PathBuf, String> {
 }
 
 fn run_tool(cmd: &str, args: &[&str]) -> Result<(), String> {
-    let status = std::process::Command::new(cmd)
-        .args(args)
-        .status()
-        .map_err(|e| format!("failed to run `{cmd}` ({e}); install it or pre-populate the land cache"))?;
+    let status = std::process::Command::new(cmd).args(args).status().map_err(|e| {
+        format!("failed to run `{cmd}` ({e}); install it or pre-populate the land cache")
+    })?;
     if !status.success() {
         return Err(format!("`{cmd}` exited with {status}"));
     }
@@ -362,8 +358,7 @@ mod tests {
     /// `parse_polygon_rings` decodes a hand-built single-ring (square) record body.
     #[test]
     fn parse_one_square_ring() {
-        let pts: [(f64, f64); 5] =
-            [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0), (0.0, 0.0)];
+        let pts: [(f64, f64); 5] = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0), (0.0, 0.0)];
         let mut body = Vec::new();
         body.extend_from_slice(&1i32.to_le_bytes()); // NumParts
         body.extend_from_slice(&(pts.len() as i32).to_le_bytes()); // NumPoints

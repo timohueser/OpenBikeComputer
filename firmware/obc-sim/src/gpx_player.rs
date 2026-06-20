@@ -207,10 +207,7 @@ impl GpxPlayer {
         let b = &pts[idx];
         let span = b.t - a.t;
         let f = if span > 0.0 { (t - a.t) / span } else { 0.0 };
-        (
-            a.lat as f64 + (b.lat - a.lat) as f64 * f,
-            a.lon as f64 + (b.lon - a.lon) as f64 * f,
-        )
+        (a.lat as f64 + (b.lat - a.lat) as f64 * f, a.lon as f64 + (b.lon - a.lon) as f64 * f)
     }
 
     /// Derive `(course, speed)` at time `t` from motion over a short window.
@@ -235,11 +232,8 @@ impl GpxPlayer {
 
         // Order the endpoints along the direction of travel so the bearing points
         // the way the user is moving.
-        let (from, to) = if behind {
-            ((lat1, lon1), (lat0, lon0))
-        } else {
-            ((lat0, lon0), (lat1, lon1))
-        };
+        let (from, to) =
+            if behind { ((lat1, lon1), (lat0, lon0)) } else { ((lat0, lon0), (lat1, lon1)) };
         let dist = haversine_m(from.0, from.1, to.0, to.1);
         let speed = (dist / dt) as f32;
         let course = if speed >= MOVING_THRESHOLD_MPS {
@@ -297,7 +291,12 @@ mod tests {
     use crate::gpx::{Track, TrackPoint};
 
     fn track(pts: &[(i32, i32, f64)]) -> Track {
-        Track { points: pts.iter().map(|&(lat, lon, t)| TrackPoint { lat, lon, ele: None, t }).collect() }
+        Track {
+            points: pts
+                .iter()
+                .map(|&(lat, lon, t)| TrackPoint { lat, lon, ele: None, t })
+                .collect(),
+        }
     }
 
     #[test]

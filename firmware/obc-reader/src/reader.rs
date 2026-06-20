@@ -235,10 +235,7 @@ impl<'a> Reader<'a> {
     /// background style sits here, so its color fills the screen before any
     /// geometry is drawn. Returns `None` only for an empty style table.
     pub fn backdrop_style(&self) -> Option<&Style> {
-        self.styles
-            .iter()
-            .filter_map(|s| s.as_ref())
-            .min_by_key(|s| (s.z_index, s.id))
+        self.styles.iter().filter_map(|s| s.as_ref()).min_by_key(|s| (s.z_index, s.id))
     }
 
     /// Pick the finest LOD whose range still covers `mpp` (meters/pixel). The
@@ -273,7 +270,12 @@ impl<'a> Reader<'a> {
 
     /// Like [`Reader::query`] but appends into a caller-owned buffer (cleared
     /// first), so a caller can reuse one allocation across calls.
-    pub fn query_into<const C: usize>(&self, lod: usize, view: &BBox, out: &mut Vec<(u32, BBox), C>) {
+    pub fn query_into<const C: usize>(
+        &self,
+        lod: usize,
+        view: &BBox,
+        out: &mut Vec<(u32, BBox), C>,
+    ) {
         out.clear();
         self.for_each_chunk(lod, view, |cid, node| {
             let _ = out.push((cid, node));
@@ -295,7 +297,14 @@ impl<'a> Reader<'a> {
         }
     }
 
-    fn walk_leaves<F: FnMut(u32, BBox)>(&self, lod: &Lod, idx: usize, node: BBox, view: &BBox, visit: &mut F) {
+    fn walk_leaves<F: FnMut(u32, BBox)>(
+        &self,
+        lod: &Lod,
+        idx: usize,
+        node: BBox,
+        view: &BBox,
+        visit: &mut F,
+    ) {
         if idx >= lod.node_count || !node.intersects(view) {
             return;
         }
@@ -312,10 +321,30 @@ impl<'a> Reader<'a> {
         let mid_lat = (node.min_lat + node.max_lat).div_euclid(2);
         // NW, NE, SW, SE
         let kids = [
-            BBox { min_lon: node.min_lon, min_lat: mid_lat, max_lon: mid_lon, max_lat: node.max_lat },
-            BBox { min_lon: mid_lon, min_lat: mid_lat, max_lon: node.max_lon, max_lat: node.max_lat },
-            BBox { min_lon: node.min_lon, min_lat: node.min_lat, max_lon: mid_lon, max_lat: mid_lat },
-            BBox { min_lon: mid_lon, min_lat: node.min_lat, max_lon: node.max_lon, max_lat: mid_lat },
+            BBox {
+                min_lon: node.min_lon,
+                min_lat: mid_lat,
+                max_lon: mid_lon,
+                max_lat: node.max_lat,
+            },
+            BBox {
+                min_lon: mid_lon,
+                min_lat: mid_lat,
+                max_lon: node.max_lon,
+                max_lat: node.max_lat,
+            },
+            BBox {
+                min_lon: node.min_lon,
+                min_lat: node.min_lat,
+                max_lon: mid_lon,
+                max_lat: mid_lat,
+            },
+            BBox {
+                min_lon: mid_lon,
+                min_lat: node.min_lat,
+                max_lon: node.max_lon,
+                max_lat: mid_lat,
+            },
         ];
         for (i, kb) in kids.iter().enumerate() {
             self.walk_leaves(lod, child + i, *kb, view, visit);
@@ -409,7 +438,12 @@ impl Bounds {
     }
     #[inline]
     fn to_bbox(self) -> BBox {
-        BBox { min_lon: self.min_lon, min_lat: self.min_lat, max_lon: self.max_lon, max_lat: self.max_lat }
+        BBox {
+            min_lon: self.min_lon,
+            min_lat: self.min_lat,
+            max_lon: self.max_lon,
+            max_lat: self.max_lat,
+        }
     }
 }
 

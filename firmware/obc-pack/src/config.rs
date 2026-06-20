@@ -82,7 +82,8 @@ impl Config {
                 let values = values
                     .as_object()
                     .ok_or_else(|| format!("features.{tag_key} must be an object"))?;
-                let mut by_value: HashMap<String, FeatureStyle> = HashMap::with_capacity(values.len());
+                let mut by_value: HashMap<String, FeatureStyle> =
+                    HashMap::with_capacity(values.len());
                 for (value, style) in values {
                     if next_id > MAX_STYLE_ID {
                         return Err(format!(
@@ -203,11 +204,7 @@ mod tests {
         // The first feature type's first value is id 1, and a few landmarks down
         // the document confirm the running counter never resets per tag_key.
         let id = |key: &str, val: &str| {
-            cfg.features
-                .iter()
-                .find(|(k, _)| k == key)
-                .and_then(|(_, m)| m.get(val))
-                .map(|s| s.id)
+            cfg.features.iter().find(|(k, _)| k == key).and_then(|(_, m)| m.get(val)).map(|s| s.id)
         };
         assert_eq!(id("highway", "motorway"), Some(1));
         assert_eq!(id("highway", "cycleway"), Some(19)); // last highway value
@@ -252,7 +249,7 @@ mod tests {
         tags.insert("building", "yes");
         let s = cfg.get_style(&tags).expect("matched");
         assert_eq!(s.id, 5); // highway=primary
-        // Unmatched tags ⇒ None.
+                             // Unmatched tags ⇒ None.
         let mut other = HashMap::new();
         other.insert("barrier", "fence");
         assert!(cfg.get_style(&other).is_none());

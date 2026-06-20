@@ -131,13 +131,16 @@ fn heading_up_rotates_course_to_screen_top() {
 fn projection_round_trips_under_rotation() {
     let mut app = AppState::new(13_405_000, 52_520_000, 0.5);
     app.heading_up = true;
-    let mut loc = Fixed(Some(Fix { lat: BERLIN.0, lon: BERLIN.1, course: Some(37.0), speed_mps: Some(4.0) }));
+    let mut loc =
+        Fixed(Some(Fix { lat: BERLIN.0, lon: BERLIN.1, course: Some(37.0), speed_mps: Some(4.0) }));
     app.update(&mut loc);
     let vp = app.viewport(240.0, 320.0);
 
     // Project map → screen → map; the result is within a few microdegrees (screen
     // is integer pixels at 0.5 px/µdeg, and aspect divides longitude back out).
-    for &(lon, lat) in &[(13_405_000, 52_520_000), (13_410_000, 52_525_000), (13_400_000, 52_515_000)] {
+    for &(lon, lat) in
+        &[(13_405_000, 52_520_000), (13_410_000, 52_525_000), (13_400_000, 52_515_000)]
+    {
         let (sx, sy) = vp.to_screen(lon, lat);
         let (rlon, rlat) = vp.to_map(sx as f32, sy as f32);
         assert!((rlon - lon).abs() < 6, "lon {lon} -> {rlon}");

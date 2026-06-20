@@ -64,11 +64,7 @@ impl Default for Breadcrumb {
 
 impl Breadcrumb {
     pub const fn new() -> Self {
-        Breadcrumb {
-            recent: Deque::new(),
-            spine: Vec::new(),
-            last_recent: None,
-        }
+        Breadcrumb { recent: Deque::new(), spine: Vec::new(), last_recent: None }
     }
 
     /// Forget the whole trail — called when a tracking session begins (load from Idle, or

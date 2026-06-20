@@ -35,13 +35,13 @@ pub mod route;
 pub mod screen;
 
 pub use activity::{Activity, Mode, TrackAction};
-pub use breadcrumb::Breadcrumb;
-pub use route::{Catalog, RouteSummary, MAX_ROUTES};
 pub use app::{App, AppState, CameraMode, Pan, PanAxis};
+pub use breadcrumb::Breadcrumb;
 pub use hal::{
     AltimeterSource, Button, ButtonEvent, Fix, InputClock, InputEvent, InputSource, LocationSource,
     RideClock, Sensors, TrackSink,
 };
 pub use hold_hint::HoldHints;
 pub use input::{Gesture, Gestures, DEFAULT_HOLD_MS};
+pub use route::{Catalog, RouteSummary, MAX_ROUTES};
 pub use screen::{Screen, Transition};
