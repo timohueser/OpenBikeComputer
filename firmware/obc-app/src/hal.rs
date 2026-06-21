@@ -37,9 +37,20 @@ impl Fix {
 /// once per tick; on the device this wraps a GPS driver, in the simulator it's
 /// the control panel or a GPX player.
 pub trait LocationSource {
-    /// The latest fix, or `None` if no fix is available yet (no satellite lock,
-    /// empty replay, etc.). Returning the same fix on consecutive polls is fine —
-    /// the app treats it idempotently.
+    /// A fix **only when a fresh sample is available this tick**, `None` otherwise —
+    /// identical cadence semantics to [`AltimeterSource::poll`]. Each `Some` is integrated
+    /// as exactly one real GPS sample at the current [`RideClock`](crate::RideClock): the app
+    /// advances its motion integrator (previous fix + timestamp) on *every* returned fix. So a
+    /// source must **not** re-return the same fix on every ~8 ms poll — doing so would make the
+    /// next per-second move look like an 8 ms teleport, get it rejected as a glitch, and record
+    /// zero distance with a segment break on each fix. Return `None` on ticks with no new fix.
+    ///
+    /// A stationary rider still emits a fresh, *identical-position* fix at the GPS rate — that
+    /// is a real sample and must be returned (do **not** dedupe by position): the integrator
+    /// reads a zero-distance interval as "stopped" and keeps the moving-time clock honest,
+    /// rather than treating it as a dropout. `None` means strictly "no new fix yet" — no
+    /// satellite lock, a cold start, an empty replay, or the gap between the receiver's
+    /// per-second fixes.
     fn poll(&mut self) -> Option<Fix>;
 }
 
