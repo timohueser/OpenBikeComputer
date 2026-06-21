@@ -520,7 +520,41 @@ impl App {
     /// `color_fn` maps a style's RGB565 to the target's pixel color — the one
     /// genuinely display-specific policy (the simulator picks true-color vs.
     /// device-64 quantization; the firmware passes its panel's native mapping).
+    ///
+    /// This is the single-target convenience that draws a whole frame:
+    /// [`render_map`](App::render_map) then [`render_overlay`](App::render_overlay)
+    /// into the *same* target, in that order, so the result is byte-identical to the
+    /// old monolithic path. Hosts that keep the map and overlay on separate
+    /// buffers/layers (dual-layer display) call the two halves directly instead.
     pub fn render_frame<D, F>(
+        &mut self,
+        target: &mut D,
+        reader: &Reader,
+        route: Option<&RouteReader>,
+        w: f32,
+        h: f32,
+        color_fn: F,
+    ) -> RenderStats
+    where
+        D: DrawTarget,
+        F: Fn(u16) -> D::Color,
+    {
+        let stats = self.render_map(target, reader, route, w, h, &color_fn);
+        self.render_overlay(target, w, h, &color_fn);
+        stats
+    }
+
+    /// Render **only the map plane** — the screen stack from the topmost opaque
+    /// screen upward (map + screen content, incl. the Ride-control overlay screen),
+    /// but **excluding** the global hold-hint chrome. Returns the map
+    /// [`RenderStats`] for the host's stats panel.
+    ///
+    /// This is the expensive half (24–51 ms on the device); a host that keeps the
+    /// transient overlay on its own buffer/layer renders this only when the map
+    /// actually changed, then repaints the cheap [`render_overlay`](App::render_overlay)
+    /// over it at a higher rate. `color_fn` is the display-specific RGB565 mapping
+    /// (see [`render_frame`](App::render_frame)).
+    pub fn render_map<D, F>(
         &mut self,
         target: &mut D,
         reader: &Reader,
@@ -553,7 +587,6 @@ impl App {
             enc_progress,
             profile,
             breadcrumb,
-            hold_hints,
             ..
         } = self;
         let mut rx = Render {
@@ -577,10 +610,40 @@ impl App {
                 stats = s;
             }
         }
-        // The global long-press hint sits above every screen (the map stays untouched
-        // beneath it). It reads its own folded state, so it needs no per-screen plumbing.
-        hold_hints.draw(target, &color_fn, w as i32, h as i32, *now_ms);
         stats
+    }
+
+    /// Render **only the overlay plane** — the transient always-on-top chrome (the
+    /// global long-press hint / confirm bulge), over whatever is already in `target`.
+    ///
+    /// **Compositing contract** (so this can later live on its own buffer/layer):
+    /// `render_overlay` paints *only* its own pixels — the hold-bulge strips — and
+    /// **never** clears or otherwise touches the rest of the target. It must be valid
+    /// drawn over arbitrary existing content, so a host can repaint it over an
+    /// unchanged map without re-running [`render_map`](App::render_map). Poll
+    /// [`overlay_active`](App::overlay_active) to decide whether a repaint is needed.
+    ///
+    /// On the simulator (and today's single-buffer firmware) this draws directly over
+    /// the map buffer, so non-overlay pixels simply keep the map underneath. On the
+    /// device's dedicated overlay layer the non-overlay pixels are *transparent*; the
+    /// exact convention (per-pixel alpha vs. chroma-key) is finalised in the
+    /// dual-layer display issue. The bulge is drawn opaque in `palette::HUD`, so it
+    /// needs no alpha and reads identically on the 8-colour panel.
+    pub fn render_overlay<D, F>(&self, target: &mut D, w: f32, h: f32, color_fn: F)
+    where
+        D: DrawTarget,
+        F: Fn(u16) -> D::Color,
+    {
+        self.hold_hints.draw(target, &color_fn, w as i32, h as i32, self.now_ms);
+    }
+
+    /// Whether the overlay plane has live content this frame — a hold bulge that is
+    /// charging, popping, or retracting. A host driving the map and overlay as
+    /// separate layers polls this to decide when [`render_overlay`](App::render_overlay)
+    /// must repaint over an unchanged map; it is `false` exactly when the overlay
+    /// would draw nothing, so the overlay layer can stay idle.
+    pub fn overlay_active(&self) -> bool {
+        self.hold_hints.active(self.now_ms)
     }
 
     /// The most recently recognized gesture (host input readout), if any.
