@@ -75,6 +75,11 @@ pub fn run(bytes: Vec<u8>, args: Args) -> Result<(), eframe::Error> {
 struct SimGui {
     /// Map file bytes; `Reader` borrows these each frame.
     bytes: Vec<u8>,
+    /// The streamed-map cache (issue #37), kept for the whole session and reused across frames —
+    /// exactly as the device holds one in SDRAM. A persistent cache lets a chunk read one frame
+    /// hit the next, so the "Map SD" stats track real device behaviour (a panned-into view warms
+    /// up, then settles to 100% hit) rather than the cold ≤75% a per-frame cache would show.
+    map_cache: MapCache,
     app: App,
     /// The routes folder (the device-SD stand-in): the menu catalog + active geometry.
     store: RouteStore,
@@ -214,6 +219,7 @@ impl SimGui {
             screenshot: args.screenshot,
             screenshot_requested: false,
             bytes,
+            map_cache: MapCache::new(),
             last_stats: obc_render::RenderStats::default(),
             last_dirty: Dirty::CLEAN,
             colorway,
@@ -257,12 +263,10 @@ impl SimGui {
 
     /// Run the shared app for one frame into the framebuffer, then upload it.
     fn render_to_texture(&mut self, ctx: &egui::Context) {
-        // A fresh cache per frame (the device keeps one for the whole session in SDRAM and reuses
-        // it across redraws; the sim's per-frame cache still shows the within-frame across-pass
-        // hit rate, the chunk cache's main job — see the stats panel's "Map SD" row).
-        let map_cache = MapCache::new();
+        // Reuse the session-long cache (see the field doc) — the same cross-frame reuse the
+        // device gets, so the "Map SD" stats panel mirrors on-glass behaviour.
         let map_src = SliceSource(&self.bytes);
-        let reader = Reader::new(&map_src, &map_cache).expect("map validated in main()");
+        let reader = Reader::new(&map_src, &self.map_cache).expect("map validated in main()");
         let tc = self.true_color;
 
         // Open the active route's geometry *before* ticking, so the map-matcher gets it
