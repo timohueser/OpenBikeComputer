@@ -57,14 +57,16 @@ fn pad(mut chunk: Vec<u8>, size: usize) -> Vec<u8> {
     chunk
 }
 
-/// Build a single-LOD file whose root quadtree node is a branch with two
-/// non-empty leaves: NW = chunk 0 (visited first), NE = chunk 1 (visited second).
+/// Build a single-LOD file whose root quadtree node is a branch. NW is itself a branch whose
+/// four leaves are chunks 0–3 (the "early" chunks, all visited before NE); NE is chunk 4 (the
+/// "late" chunk). Splitting the early load across four leaves keeps every chunk under the
+/// reader's `MAX_CHUNK_BYTES` cap while still saturating the frame buffer before NE is reached.
 /// `styles` are `(id, z, color, weight, priority)`.
 fn build_file(
     bbox: (i32, i32, i32, i32),
     styles: &[(u8, i8, u16, u8, u8)],
     chunk_size: usize,
-    nw_chunk: Vec<u8>,
+    nw_chunks: [Vec<u8>; 4],
     ne_chunk: Vec<u8>,
 ) -> Vec<u8> {
     let style_off = 32usize;
@@ -80,22 +82,25 @@ fn build_file(
     let lod_tab_off = style_off + style_bytes.len();
     let index_off = lod_tab_off + 18; // one 18-byte LOD entry
 
-    // Root branch (children at idx 1): NW -> chunk 0, NE -> chunk 1, SW/SE empty.
-    let index: [u32; 5] = [BRANCH_BIT | 1, 0, 1, EMPTY_LEAF, EMPTY_LEAF];
+    // Quadtree (9 nodes). Root branch -> [NW=branch@5, NE=chunk 4, SW/SE empty]; NW's four
+    // children (idx 5..8) -> chunks 0,1,2,3. Walk order NW(→0,1,2,3) then NE(→4): the four
+    // early chunks are all visited before the late one.
+    let index: [u32; 9] = [BRANCH_BIT | 1, BRANCH_BIT | 5, 4, EMPTY_LEAF, EMPTY_LEAF, 0, 1, 2, 3];
     let mut idx_bytes = Vec::new();
     for node in index {
         idx_bytes.extend_from_slice(&node.to_le_bytes());
     }
-    let nw = pad(nw_chunk, chunk_size);
-    let ne = pad(ne_chunk, chunk_size);
+    // Chunk data in chunk-id order: 0..3 = NW leaves, 4 = NE.
+    let [nw0, nw1, nw2, nw3] = nw_chunks;
+    let chunks = [nw0, nw1, nw2, nw3, ne_chunk];
 
-    // LOD entry: max_mpp=+inf, index_off, node_count=5, chunk_size, chunk_count=2.
+    // LOD entry: max_mpp=+inf, index_off, node_count, chunk_size, chunk_count.
     let mut table = Vec::new();
     table.extend_from_slice(&f32::INFINITY.to_le_bytes());
     table.extend_from_slice(&(index_off as u32).to_le_bytes());
     table.extend_from_slice(&(index.len() as u32).to_le_bytes());
     table.extend_from_slice(&(chunk_size as u16).to_le_bytes());
-    table.extend_from_slice(&2u32.to_le_bytes());
+    table.extend_from_slice(&(chunks.len() as u32).to_le_bytes());
 
     let mut f = Vec::new();
     f.extend_from_slice(b"OBCM");
@@ -112,8 +117,9 @@ fn build_file(
     f.extend_from_slice(&style_bytes);
     f.extend_from_slice(&table);
     f.extend_from_slice(&idx_bytes);
-    f.extend_from_slice(&nw);
-    f.extend_from_slice(&ne);
+    for c in chunks {
+        f.extend_from_slice(&pad(c, chunk_size));
+    }
     f
 }
 
@@ -181,19 +187,22 @@ fn priority_one_survives_saturation_across_chunks() {
         (2, 1, HIGH_565, 1, 1), // priority 1 (highest) — one polygon, in the late chunk
     ];
 
-    // Early chunk (NW, node min corner (0,500)): NUM_LOW small priority-4 triangles
-    // stacked near node-local (50,50); enough to overflow MAX_SPANS by themselves.
-    let mut nw = Vec::new();
-    for _ in 0..NUM_LOW {
-        nw.extend_from_slice(&pack_poly(1, 50, 50, &[(50, 0), (0, 50)]));
-    }
-    let chunk_size = nw.len() + 64; // headroom for the 0xFF terminator/padding
+    // Early chunks (the four NW leaves, all in the left/upper quadrant): NUM_LOW small
+    // priority-4 triangles split evenly across them (remainder into the last), each near its
+    // leaf-local (50,50). Together they overflow MAX_SPANS before NE is reached, and splitting
+    // keeps every chunk well under the reader's MAX_CHUNK_BYTES cap (a single chunk of all
+    // NUM_LOW features would exceed it).
+    let one_low = pack_poly(1, 50, 50, &[(50, 0), (0, 50)]);
+    let make = |n: usize| -> Vec<u8> { (0..n).flat_map(|_| one_low.clone()).collect() };
+    let base = NUM_LOW / 4;
+    let nw_chunks = [make(base), make(base), make(base), make(NUM_LOW - 3 * base)];
+    let chunk_size = nw_chunks.iter().map(Vec::len).max().unwrap() + 64;
 
-    // Late chunk (NE, node min corner (500,500)): one large priority-1 square
-    // near node-local (50,50), big enough that its red fill is unmistakable.
+    // Late chunk (NE, node min corner (500,500)): one large priority-1 triangle near
+    // node-local (50,50), big enough that its red fill is unmistakable.
     let ne = pack_poly(2, 50, 50, &[(120, 0), (0, 120), (-120, 0)]);
 
-    let bytes = build_file((0, 0, 1000, 1000), styles, chunk_size, nw, ne);
+    let bytes = build_file((0, 0, 1000, 1000), styles, chunk_size, nw_chunks, ne);
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
     let reader = Reader::new(&src, &cache).expect("valid v5 file");
