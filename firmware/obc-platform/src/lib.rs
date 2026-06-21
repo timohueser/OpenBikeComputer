@@ -18,6 +18,42 @@
 //! - [`sd`] — FatFs [`ByteSource`](obc_route::ByteSource)/[`ByteSink`](obc_route::ByteSink)
 //!   and [`TrackSink`](obc_app::TrackSink) adapters over an [`embedded_sdmmc`] SD card, so
 //!   maps/routes load and rides save against a real card (issue #36).
+//!
+//! ## Two-plane architecture — input/overlay vs. map (issue #48)
+//!
+//! Each board's main loop should run the device on **two planes across two executors**, so
+//! input + the overlay stay responsive *while a map frame renders*. `render_map` is a
+//! CPU-bound call (24–51 ms on the F429 prototype) that never `.await`s, so it blocks
+//! whatever executor it runs on; dirty-tracking (issue #47) cuts how *often* it runs but not
+//! the during-render case (panning re-renders rapidly while a button is held). The fix is
+//! preemption:
+//!
+//! - **High-priority plane** — an embassy **`InterruptExecutor`** pended from an unused
+//!   interrupt vector, at a priority *above* thread mode but *below* the embassy-time driver
+//!   (so its `Timer`s still wake mid-render). It owns the [`ButtonInput`] debouncer, the
+//!   shared [`InputPlane`](obc_app::InputPlane) (gesture recogniser + hold-hint overlay), and
+//!   the **overlay** framebuffer/layer. Every few ms it *preempts the map render*, samples the
+//!   buttons, recognises gestures — pushing each into a channel — and animates + repaints the
+//!   hold bulge. Press-to-feedback latency and the auto-repeat cadence stay bounded regardless
+//!   of map-render time.
+//! - **Low-priority plane** — the thread-mode executor running the [`App`](obc_app::App): the
+//!   screen stack, the camera, sensors, SD, and the **map** render. Each loop it drains the
+//!   gesture channel → [`App::apply_gesture`](obc_app::App::apply_gesture),
+//!   [`App::advance_animations`](obc_app::App::advance_animations) for timed screen content,
+//!   polls sensors → [`App::tick`](obc_app::App::tick), and re-renders the map when
+//!   [`Dirty::map`](obc_app::Dirty) — never the overlay (the high-priority plane owns it).
+//!
+//! The only shared state is a lock-free [`embassy_sync`](https://docs.rs/embassy-sync)
+//! `Channel<Gesture>` plus the two **disjoint** framebuffers — so the long map render holds
+//! no lock against the input plane. UX: the bulge confirms a press *instantly* on the overlay
+//! layer; the screen transition lands a frame later when the map plane drains the channel.
+//! The one piece of shared hardware (the LTDC's single vblank-reload bit, written by both
+//! planes' framebuffer flips) is guarded by a short critical section in the board's flip
+//! helper. The board's `main` may also offer a `single-executor` fallback that drives both
+//! planes inline through [`App::handle_input`](obc_app::App::handle_input) — proving the seam
+//! composes — but the preemptive split is the shipping default and the structure the future
+//! `obc-fw-nrf54l` adopts unchanged (the nRF supports the identical embassy
+//! `InterruptExecutor` pattern). The concrete F429 wiring lives in `obc-fw-stm32f429`'s `main`.
 
 #![no_std]
 

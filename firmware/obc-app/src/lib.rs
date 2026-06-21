@@ -16,6 +16,8 @@
 //!   and their data types ([`Fix`], [`Button`], [`ButtonEvent`], [`InputEvent`]).
 //! - [`input`] — the shared gesture recognizer ([`Gestures`]) turning raw
 //!   [`InputEvent`]s + a millis clock into the five UI [`Gesture`]s.
+//! - [`input_plane`] — [`InputPlane`]: the input + overlay plane (recogniser + hold-hint
+//!   overlay + hold-progress) that the firmware runs preemptively against the map render.
 //! - [`screen`] — the modular screen system: the [`Screen`] enum, the
 //!   [`Transition`] navigation stack, and the per-screen `handle`/`draw`.
 //! - [`activity`] — the ride/tracking model ([`Activity`] + [`Mode`]).
@@ -34,6 +36,7 @@ pub mod dirty;
 pub mod hal;
 pub mod hold_hint;
 pub mod input;
+pub mod input_plane;
 pub mod route;
 pub mod screen;
 
@@ -47,5 +50,6 @@ pub use hal::{
 };
 pub use hold_hint::HoldHints;
 pub use input::{Gesture, Gestures, DEFAULT_HOLD_MS};
+pub use input_plane::InputPlane;
 pub use route::{Catalog, RouteSummary, MAX_ROUTES};
 pub use screen::{Screen, Transition};
