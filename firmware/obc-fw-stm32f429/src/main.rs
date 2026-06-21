@@ -80,6 +80,29 @@
 //! log run per fresh fix, decoupled from the render cadence (the route reader is opened every
 //! frame — it does no I/O until geometry is actually streamed).
 //!
+//! ## Two-plane preemptive input/overlay (issue #48)
+//! Dirty-tracking cuts *how often* the map renders, but a `render_map` call still blocks its
+//! executor for its whole 24–51 ms — so input goes sluggish *during* a render (panning
+//! re-renders rapidly while a button is held). The fix is to run input + the overlay on a
+//! **high-priority `InterruptExecutor`** (pended from the unused **UART5** vector at **P6** —
+//! above thread mode so it preempts the map render, below the P0 embassy-time driver so its
+//! `Timer`s still wake mid-render) and the `App` + map render on the thread-mode executor:
+//!   - **High-priority plane** ([`input_overlay_task`]): owns the `ButtonInput`, the shared
+//!     `obc_app::InputPlane` (recogniser + hold-hint overlay), and the double-buffered **Layer 2**
+//!     overlay. Every `LOOP_MS` it samples the buttons, recognises gestures — pushing each into
+//!     the [`GESTURES`] channel — and repaints + flips the bulge on Layer 2. So the confirm bulge
+//!     stays at full FPS and the auto-repeat cadence stays exact *while* the map re-renders.
+//!   - **Map plane** (this `main` loop, thread mode): drains [`GESTURES`] → `App::apply_gesture`,
+//!     `App::advance_animations`, ticks sensors, and re-renders **Layer 1** on `dirty.map`.
+//!
+//! The only shared state is the lock-free gesture channel + the two disjoint framebuffers, so
+//! the long map render holds no lock against input. The bulge confirms a press instantly; the
+//! screen transition lands a frame later when the map plane drains the channel. The shared
+//! LTDC vblank-reload bit (both planes flip their own layer) is guarded by a short critical
+//! section in [`flip_to`]. A `single-executor` cargo feature drops back to the old one-loop
+//! path (`App::handle_input` + inline overlay) to prove the `InputPlane`/`apply_gesture` seam
+//! composes; the two-plane split is the default and the structure `obc-fw-nrf54l` will reuse.
+//!
 //! Clock: 180 MHz core from the 16 MHz HSI (no dependency on the DISC1 HSE), plus a
 //! PLLSAI leg for the LTDC pixel clock.
 //!
@@ -158,6 +181,23 @@ use obc_render::zoom_for_mpp;
 #[cfg(not(feature = "glass-demo"))]
 use obc_route::{RouteIndex, RouteReader};
 
+// The two-plane (default) build only: the high-priority interrupt executor that runs the
+// input/overlay plane, the lock-free gesture channel feeding the map plane, and the
+// shared `InputPlane`/`Gesture` it carries. The `single-executor` fallback drives input
+// inline through `App::handle_input` instead, so none of this is compiled there.
+#[cfg(all(not(feature = "glass-demo"), not(feature = "single-executor")))]
+use embassy_executor::InterruptExecutor;
+#[cfg(all(not(feature = "glass-demo"), not(feature = "single-executor")))]
+use embassy_stm32::interrupt;
+#[cfg(all(not(feature = "glass-demo"), not(feature = "single-executor")))]
+use embassy_stm32::interrupt::{InterruptExt, Priority};
+#[cfg(all(not(feature = "glass-demo"), not(feature = "single-executor")))]
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+#[cfg(all(not(feature = "glass-demo"), not(feature = "single-executor")))]
+use embassy_sync::channel::{Channel, Receiver, Sender};
+#[cfg(all(not(feature = "glass-demo"), not(feature = "single-executor")))]
+use obc_app::{Gesture, InputPlane};
+
 #[cfg(feature = "glass-demo")]
 mod demo;
 // microSD map/route/track storage over SPI4 + FatFs (issue #36) — only the real-app build
@@ -228,8 +268,119 @@ const UDEG_PER_M: f32 = 1_000_000.0 / 111_320.0;
 
 /// Main-loop button-sample period (ms). Buttons are sampled every tick so quick taps
 /// and hold timing are caught even when a heavy Map frame stretches the render cadence.
+/// On the two-plane build this is the **input plane's** period — sampled on the
+/// high-priority executor that preempts the map render, so the cadence is exact regardless
+/// of how long a map frame takes; the map plane polls the gesture channel on the same period.
 #[cfg(not(feature = "glass-demo"))]
 const LOOP_MS: u64 = 8;
+
+// --- two-plane architecture (issue #48): the high-priority input/overlay plane ---
+//
+// The map plane (this crate's `main`) runs on the thread-mode executor at the lowest
+// priority; `render_map` is a 24–51 ms CPU-bound call that blocks it. To keep input + the
+// overlay responsive *during* that render, the input plane runs on an `InterruptExecutor`
+// pended from an unused IRQ at a priority above thread mode — so it preempts the map render
+// every `LOOP_MS`, samples the buttons, recognises gestures (pushing each into the channel
+// below) and animates the Layer-2 bulge on its own. The embassy-time driver IRQ stays more
+// urgent still (it runs at the reset-default priority), so the input plane's `Timer`s wake
+// even mid-render. This is embassy's documented multi-priority pattern.
+
+/// Bound of the gesture channel from the input plane to the map plane. One frame yields at
+/// most a couple of gestures and the map plane drains it each loop, so even across a ~50 ms
+/// map render (a handful of input samples) it never fills — the same slack as `ButtonInput`'s
+/// queue. `try_send` simply drops on the (unreachable) overflow rather than ever blocking the
+/// high-priority plane.
+#[cfg(all(not(feature = "glass-demo"), not(feature = "single-executor")))]
+const GESTURE_QUEUE: usize = 16;
+
+/// Recognised gestures flowing from the input plane (high priority) to the map plane
+/// (thread mode). The only shared state between the two planes — lock-free, so the long map
+/// render never holds anything against the input plane.
+#[cfg(all(not(feature = "glass-demo"), not(feature = "single-executor")))]
+static GESTURES: Channel<CriticalSectionRawMutex, Gesture, GESTURE_QUEUE> = Channel::new();
+
+/// The high-priority executor the input/overlay plane runs on. Started in `main` and driven
+/// by the [`UART5`](input_plane_irq) interrupt handler (UART5 is unused on this board, so its
+/// vector is free to repurpose as the executor's software-pend line).
+#[cfg(all(not(feature = "glass-demo"), not(feature = "single-executor")))]
+static EXECUTOR_INPUT: InterruptExecutor = InterruptExecutor::new();
+
+/// UART5 ISR → poll the input-plane executor. The peripheral itself is unused; we only
+/// borrow its interrupt vector as the executor's pend line (set its priority + start the
+/// executor in `main`).
+#[cfg(all(not(feature = "glass-demo"), not(feature = "single-executor")))]
+#[interrupt]
+unsafe fn UART5() {
+    EXECUTOR_INPUT.on_interrupt();
+}
+
+/// The input + overlay plane task. Runs on [`EXECUTOR_INPUT`], preempting the map render:
+/// every `LOOP_MS` it samples the buttons, recognises gestures (pushing each into `gestures`
+/// for the map plane to apply), and — when the hold bulge changes — repaints the
+/// double-buffered Layer-2 overlay and vblank-flips it, all without touching anything the map
+/// plane owns. So press-to-feedback latency and the auto-repeat cadence stay bounded no matter
+/// how long a map frame takes.
+#[cfg(all(not(feature = "glass-demo"), not(feature = "single-executor")))]
+#[embassy_executor::task]
+async fn input_overlay_task(
+    mut buttons: ButtonInput<Input<'static>>,
+    mut plane: InputPlane,
+    gestures: Sender<'static, CriticalSectionRawMutex, Gesture, GESTURE_QUEUE>,
+    mut overlay_front: usize,
+    mut overlay_back: usize,
+    start: Instant,
+) {
+    // Native RGB565 panel → identity colour map, same as the map plane (see `main`).
+    let color_fn = |c: u16| Rgb565::from(RawU16::new(c));
+    loop {
+        let now = start.elapsed().as_millis() as u32;
+        buttons.update(now);
+        // Recognise this frame's input on the *input* clock (wall time, preemptive). Each
+        // gesture is pushed to the map plane; the bulge is animated below regardless, so the
+        // press is confirmed on screen immediately even before the map plane drains it.
+        plane.recognize(InputClock(now), &mut buttons, |g| {
+            if gestures.try_send(g).is_err() {
+                defmt::warn!("gesture channel full — dropped a gesture (map plane stalled?)");
+            }
+        });
+
+        // Repaint the overlay only when the bulge changed (plus the one trailing clear). Like
+        // the map plane it is double-buffered + vblank-flipped, so the bulge never tears.
+        if plane.take_overlay_dirty() {
+            // SAFETY: overlay_back is the Layer-2 buffer the LTDC is *not* scanning; the only
+            // live `&mut` over it, dropped before the flip.
+            let back =
+                unsafe { core::slice::from_raw_parts_mut(overlay_back as *mut u16, FB_PIXELS) };
+            let mut overlay_fb = FramebufferArgb4444::new(back, W as u32, H as u32);
+            overlay_fb.clear_transparent();
+            plane.render_overlay(&mut overlay_fb, W as f32, H as f32, color_fn);
+            // Arm the flip, then `await` the vblank by yielding ~1 ms at a time — this runs in the
+            // high-priority ISR, so busy-polling here would hold off the very map render we just
+            // preempted; yielding instead lets the thread-mode map plane keep rendering while we
+            // wait. Swap the buffers only once the reload lands (tear-free, same contract as
+            // `flip_to`); on the rare timeout keep them and retry next frame.
+            request_flip(LtdcLayer::Layer2, overlay_back);
+            let t0 = Instant::now();
+            let landed = loop {
+                if flip_landed() {
+                    break true;
+                }
+                if t0.elapsed().as_millis() > 50 {
+                    break false;
+                }
+                Timer::after_millis(1).await;
+            };
+            if landed {
+                core::mem::swap(&mut overlay_front, &mut overlay_back);
+            } else {
+                defmt::warn!(
+                    "LTDC: Layer 2 vblank reload didn't land in 50 ms — kept buffers, skipped swap"
+                );
+            }
+        }
+        Timer::after_millis(LOOP_MS).await;
+    }
+}
 
 /// A stand-in moving [`LocationSource`] until #38 streams a real GPS over USB-CDC: the fix
 /// walks a slow square loop around a centre, driven by the wall clock. Unlike a constant fix,
@@ -392,25 +543,61 @@ fn halt() -> ! {
 /// flip only changes the named layer's `CFBAR` shadow; the other layer's shadow is unchanged,
 /// so re-applying it is a no-op. Flipping one layer therefore never disturbs the other.
 ///
+/// In the two-plane build (issue #48) the two layers flip from **different executors** — the
+/// map (Layer 1) from thread mode, the overlay (Layer 2) from the high-priority interrupt
+/// executor — so the `CFBAR` write + the shared `SRCR.VBR` read-modify-write are done inside a
+/// short critical section. The per-layer `CFBAR` is independent, but `SRCR` also holds the
+/// `IMR` field, so an un-guarded RMW could tear across a preemption. The **poll** stays outside
+/// the critical section so it never blocks the other plane: if both planes flip near the same
+/// vblank, the one pending reload simply applies both layers' shadows and both polls observe it.
+///
 /// Returns `true` if the reload **landed** (the hardware cleared `VBR` within the cap),
 /// `false` on timeout. The caller swaps front/back only on `true`: on a timeout the LTDC is
 /// still scanning the old front, so swapping roles would point the next render at the buffer
 /// being scanned out — a torn frame. Keeping the buffers on timeout instead lets the next
 /// redraw re-render into the same back and retry the flip. (Rare — the 50 ms cap is ~3 frames.)
+///
+/// This is the **synchronous** flip the map plane (thread mode) uses — its busy-poll blocks
+/// only itself (the lowest priority). The overlay task on the high-priority interrupt executor
+/// must NOT busy-poll (that would hold the ISR and starve the map render it just preempted), so
+/// it uses [`request_flip`] + [`flip_landed`] and `await`s the vblank with `Timer` yields.
 #[cfg(not(feature = "glass-demo"))]
 #[must_use]
 fn flip_to(layer: LtdcLayer, addr: usize) -> bool {
-    use stm32_metapac::ltdc::vals::Vbr;
-    use stm32_metapac::LTDC;
-    LTDC.layer(layer as usize).cfbar().modify(|w| w.set_cfbadd(addr as u32));
-    LTDC.srcr().modify(|w| w.set_vbr(Vbr::RELOAD));
+    request_flip(layer, addr);
     let t0 = Instant::now();
-    while LTDC.srcr().read().vbr() == Vbr::RELOAD {
+    while !flip_landed() {
         if t0.elapsed().as_millis() > 50 {
             return false;
         }
     }
     true
+}
+
+/// Arm a vblank framebuffer flip for `layer` to `addr`: point its `CFBAR` at the new buffer and
+/// request the shared `SRCR` vblank reload. Guarded by a short critical section so the per-layer
+/// `CFBAR` write + the shared `SRCR.VBR` read-modify-write can't tear against a flip on the other
+/// executor (the two planes flip from different priorities — see [`flip_to`]). The reload itself
+/// lands at the next vblank; the caller waits for it via [`flip_landed`].
+#[cfg(not(feature = "glass-demo"))]
+fn request_flip(layer: LtdcLayer, addr: usize) {
+    use stm32_metapac::ltdc::vals::Vbr;
+    use stm32_metapac::LTDC;
+    critical_section::with(|_| {
+        LTDC.layer(layer as usize).cfbar().modify(|w| w.set_cfbadd(addr as u32));
+        LTDC.srcr().modify(|w| w.set_vbr(Vbr::RELOAD));
+    });
+}
+
+/// Whether the pending vblank reload armed by [`request_flip`] has landed (the hardware cleared
+/// `SRCR.VBR`). Read-only, so it is safe to poll concurrently from both planes: if both armed a
+/// reload near the same vblank, the one reload applies both layers' shadow registers and both
+/// observe `VBR` clear.
+#[cfg(not(feature = "glass-demo"))]
+fn flip_landed() -> bool {
+    use stm32_metapac::ltdc::vals::Vbr;
+    use stm32_metapac::LTDC;
+    LTDC.srcr().read().vbr() != Vbr::RELOAD
 }
 
 #[embassy_executor::main]
@@ -787,15 +974,6 @@ async fn main(_spawner: Spawner) {
             }
         }
 
-        // Four pushbuttons (issue #35): one common pin to GND, each switch to its GPIO, internal
-        // pull-ups, active-low. PREV/BACK on PD4/PD5 keep SPI4's data pins free for the SD card.
-        let mut buttons = ButtonInput::new(
-            Input::new(p.PD4, Pull::Up), // PREV   → Turn(-1)
-            Input::new(p.PE3, Pull::Up), // NEXT   → Turn(+1)
-            Input::new(p.PE4, Pull::Up), // SELECT → encoder press / hold
-            Input::new(p.PD5, Pull::Up), // BACK   → back / back-hold
-        );
-
         // Stand-in moving GPS (until #38's USB feed) so a ride is real: a slow square loop near
         // the map centre, re-centred on the route start when a route loads.
         let start = Instant::now();
@@ -803,33 +981,78 @@ async fn main(_spawner: Spawner) {
 
         // Double buffering (the map plane / Layer 1): the LTDC scans the *front* while the app
         // renders the *back*, then we flip at the next vblank (tear-free) and swap. FB_ADDR is the
-        // initial front; the back sits one FB_BYTES past it. SAFETY: the back is never the buffer
-        // the LTDC is scanning.
+        // initial front; the back sits one FB_BYTES past it. Owned by the map plane (this loop) in
+        // both builds. SAFETY: the back is never the buffer the LTDC is scanning.
         let mut front_addr = FB_ADDR;
         let mut back_addr = FB_ADDR + FB_BYTES;
         unsafe { core::slice::from_raw_parts_mut(back_addr as *mut u16, FB_PIXELS) }.fill(0x0000);
-        // Double buffering (the overlay plane / Layer 2): same scheme — OVERLAY_ADDR is the initial
-        // front (cleared transparent above), the back sits one FB_BYTES past it. Clear the back too
-        // so a first flip can't show SDRAM garbage. SAFETY: distinct SDRAM region, LTDC DMA-reads
-        // only the front.
-        let mut overlay_front = OVERLAY_ADDR;
-        let mut overlay_back = OVERLAY_ADDR + FB_BYTES;
-        unsafe { core::slice::from_raw_parts_mut(overlay_back as *mut u16, FB_PIXELS) }
-            .fill(0x0000);
-        defmt::info!(
-            "input live: PD4 PREV / PE3 NEXT / PE4 SELECT / PD5 BACK; map + overlay both double-buffered; SD card {=bool}",
-            storage.is_some()
-        );
+
+        // --- input + overlay plane wiring (issue #48) ---
+        // The pushbuttons (issue #35) + the Layer-2 overlay double-buffer belong to the *input
+        // plane*. In the default two-plane build that plane runs on the high-priority interrupt
+        // executor, so its state moves into the spawned task and the map loop only drains the
+        // recognised gestures off the channel. The `single-executor` fallback keeps it all inline.
+        //
+        // Layer 2's *back* buffer never needs pre-clearing: the overlay render clears it to
+        // transparent before every flip, and the *front* (OVERLAY_ADDR) was cleared at Layer-2
+        // init, so the panel shows transparent (the map) until the first hold either way.
+
+        // Two-plane (default): stand up the high-priority executor, hand it the buttons, a
+        // standalone `InputPlane`, the Layer-2 overlay double-buffer and the gesture channel
+        // sender; the map loop keeps the receiver. UART5 is unused on this board, so its interrupt
+        // vector is the executor's pend line; P6 is above thread mode (so it preempts the map
+        // render) and below the embassy-time driver (so its `Timer`s still wake mid-render).
+        #[cfg(not(feature = "single-executor"))]
+        let gestures: Receiver<'static, CriticalSectionRawMutex, Gesture, GESTURE_QUEUE> = {
+            let buttons = ButtonInput::new(
+                Input::new(p.PD4, Pull::Up), // PREV   → Turn(-1)
+                Input::new(p.PE3, Pull::Up), // NEXT   → Turn(+1)
+                Input::new(p.PE4, Pull::Up), // SELECT → encoder press / hold
+                Input::new(p.PD5, Pull::Up), // BACK   → back / back-hold
+            );
+            interrupt::UART5.set_priority(Priority::P6);
+            let input_spawner = EXECUTOR_INPUT.start(interrupt::UART5);
+            input_spawner.spawn(defmt::unwrap!(input_overlay_task(
+                buttons,
+                InputPlane::new(),
+                GESTURES.sender(),
+                OVERLAY_ADDR,
+                OVERLAY_ADDR + FB_BYTES,
+                start,
+            )));
+            defmt::info!(
+                "input plane: high-priority interrupt executor (UART5 @ P6), preempting the map render; map plane: thread mode; SD card {=bool}",
+                storage.is_some()
+            );
+            GESTURES.receiver()
+        };
+
+        // Single-executor fallback: buttons + the overlay double-buffer stay in this loop, driven
+        // inline through `App::handle_input` + `render_overlay` — proving the `InputPlane` /
+        // `apply_gesture` seam composes back into one cooperative loop.
+        #[cfg(feature = "single-executor")]
+        let (mut buttons, mut overlay_front, mut overlay_back) = {
+            let buttons = ButtonInput::new(
+                Input::new(p.PD4, Pull::Up), // PREV   → Turn(-1)
+                Input::new(p.PE3, Pull::Up), // NEXT   → Turn(+1)
+                Input::new(p.PE4, Pull::Up), // SELECT → encoder press / hold
+                Input::new(p.PD5, Pull::Up), // BACK   → back / back-hold
+            );
+            defmt::info!(
+                "input live (single-executor): PD4 PREV / PE3 NEXT / PE4 SELECT / PD5 BACK; map + overlay both double-buffered; SD card {=bool}",
+                storage.is_some()
+            );
+            (buttons, OVERLAY_ADDR, OVERLAY_ADDR + FB_BYTES)
+        };
 
         // Render-on-demand loop, split across the two LTDC layers (issue #46) and driven by the
         // app's **dirty signal** (issue #47): the shared `App` accumulates which planes changed as
         // it ticks/handles input, and `App::take_dirty` reports it once per frame. The **map**
         // (Layer 1) re-renders only when `dirty.map` — a gesture, a camera-moving GPS fix, a route
         // load, or a screen's timed content (the Statistics spring-back) — so a genuinely static
-        // Map performs **zero** map renders (no more blind 1 s heartbeat). The **overlay** (Layer 2,
-        // the hold bulge) repaints on `dirty.overlay`, independently of the map, so an animating
-        // ring over a static map touches only Layer 2. Buttons are still sampled every LOOP_MS so
-        // taps / hold timing are never missed; only *rendering* is on-demand.
+        // Map performs **zero** map renders (no more blind 1 s heartbeat). The hold-bulge overlay
+        // (Layer 2) repaints independently of the map: on the two-plane build that happens on the
+        // high-priority plane above; on the single-executor build it repaints here on `dirty.overlay`.
         let mut prev_route: Option<usize> = None;
         // The active route's parsed chunk index, cached across frames (issue #44). `index_route`
         // is the route it belongs to; a mismatch triggers one rebuild off the open file, so a
@@ -838,8 +1061,25 @@ async fn main(_spawner: Spawner) {
         let mut index_route: Option<usize> = None;
         loop {
             let now = start.elapsed().as_millis() as u32;
-            buttons.update(now);
-            app.handle_input(InputClock(now), &mut buttons);
+
+            // --- input (map-plane side) ---
+            // Two-plane: the high-priority plane has already recognised this frame's gestures and
+            // animated the overlay; here we just drain them in order and apply each to the screen
+            // stack, then advance the visible screens' timed content (the Statistics spring-back).
+            // So the screen transition lands a frame after the overlay already confirmed the press.
+            #[cfg(not(feature = "single-executor"))]
+            {
+                while let Ok(g) = gestures.try_receive() {
+                    app.apply_gesture(g);
+                }
+                app.advance_animations(InputClock(now));
+            }
+            // Single-executor: recognise + apply + animate inline, the cooperative path.
+            #[cfg(feature = "single-executor")]
+            {
+                buttons.update(now);
+                app.handle_input(InputClock(now), &mut buttons);
+            }
 
             // Re-centre the synthetic GPS onto a freshly-loaded route's start so Follow doesn't
             // yank the camera off it.
@@ -958,15 +1198,18 @@ async fn main(_spawner: Spawner) {
                 );
             }
 
-            // Overlay plane (Layer 2): `dirty.overlay` is true whenever the hold bulge has live
-            // content this frame, plus the one trailing frame when it goes quiet (`App::take_dirty`
-            // folds in the old `overlay_was_active` edge, so the layer is cleared once when the
-            // bulge ends). This never touches the map — the LTDC blends Layer 2 over whatever Layer 1
-            // already shows — so an animating ring over a static map re-renders only this small layer
-            // (the `map frame` log above stays silent while these `overlay frame`s tick by). Like the
-            // map plane it is double-buffered + vblank-flipped: render the whole overlay (clear to
-            // transparent, then the bulge) into the *back* buffer, then flip — drawing in place into
-            // the scanned buffer tears the bulge as the clear races the scan.
+            // Overlay plane (Layer 2) — **single-executor build only**. `dirty.overlay` is true
+            // whenever the hold bulge has live content this frame, plus the one trailing frame when
+            // it goes quiet (`App::take_dirty` folds in the old `overlay_was_active` edge, so the
+            // layer is cleared once when the bulge ends). This never touches the map — the LTDC blends
+            // Layer 2 over whatever Layer 1 already shows — so an animating ring over a static map
+            // re-renders only this small layer (the `map frame` log above stays silent while these
+            // `overlay frame`s tick by). Like the map plane it is double-buffered + vblank-flipped:
+            // render the whole overlay (clear to transparent, then the bulge) into the *back* buffer,
+            // then flip — drawing in place into the scanned buffer tears the bulge as the clear races
+            // the scan. (In the two-plane build this all runs on the high-priority `input_overlay_task`
+            // instead, so the map plane here never re-renders the overlay.)
+            #[cfg(feature = "single-executor")]
             if dirty.overlay {
                 let t0 = Instant::now();
                 // Render into the back overlay buffer (not the one being scanned out).
