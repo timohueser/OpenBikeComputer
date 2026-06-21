@@ -35,7 +35,7 @@ use embedded_sdmmc::{
 use heapless::{String, Vec};
 use obc_app::MAX_ROUTES;
 use obc_platform::{SdByteSink, SdByteSource, SdTrackSink};
-use obc_route::{track_to_gpx, ByteSource, RouteSummary, NAME_CAP};
+use obc_route::{track_to_gpx, ByteSource, RouteIndex, RouteSummary, NAME_CAP};
 
 /// SD clock for bulk transfer once the card is initialised. Conservative for breadboard
 /// jumpers (SPI4 is on the 90 MHz PCLK2; embassy picks the /8 prescaler → ~11.25 MHz, well
@@ -288,6 +288,18 @@ impl Storage {
         self.open_route.map(|(_, f, len)| SdByteSource::new(&self.vmgr, f, len))
     }
 
+    /// Parse the active route's [`RouteIndex`] — the header plus the **full chunk-meta walk**,
+    /// the one up-front per-route cost. The render loop builds this once when the active route
+    /// changes and reuses it across frames (issue #44): a redraw then streams only the visible
+    /// geometry chunks, instead of re-walking the whole index off the card at panel rate (what
+    /// calling [`RouteIndex::read`] every redraw would do). `None` when no route is open or the
+    /// index read fails (a flaky link) — the loop retries the build on a later redraw, so a
+    /// transient glitch doesn't hide the route.
+    pub fn build_route_index(&self) -> Option<RouteIndex> {
+        let src = self.route_source()?;
+        RouteIndex::read(&src).ok()
+    }
+
     /// Reconcile the open ride log to the app's tracking intent — call once per frame *before*
     /// ticking, mirroring the sim's `TrackStore::reconcile`. Drains the one-shot disposition
     /// first (finalising / abandoning the current log), then opens a fresh log when the session
@@ -333,32 +345,61 @@ impl Storage {
         }
     }
 
-    /// Convert the open `TRACK.OBT` to a non-clobbering `<name>.gpx` and delete the temp.
+    /// Convert the open `TRACK.OBT` to a non-clobbering `<name>.gpx`, deleting the temp **only
+    /// once the ride is safely in a GPX**. Any path that can't guarantee a clean save — no
+    /// confirmed-free name ([`unique_gpx`](Self::unique_gpx) returns `None`), the GPX won't
+    /// open, or the conversion errors — keeps `TRACK.OBT` so the ride isn't lost to a transient
+    /// SD glitch (it converts on a later save; a fresh ride truncates it, as before).
     fn finalize_track(&mut self) {
         let Some(ot) = self.open_track.take() else { return };
         let _ = self.vmgr.flush_file(ot.file);
         let _ = self.vmgr.close_file(ot.file);
         let Some(dir) = self.tracks_dir else { return };
 
-        if let Ok(src_file) = self.vmgr.open_file_in_dir(dir, TRACK_TMP, Mode::ReadOnly) {
-            let len = self.vmgr.file_length(src_file).unwrap_or(0);
-            let gpx = self.unique_gpx(dir, &ot.name);
+        // Pick a name we can *prove* is free before touching the filesystem. If we can't (the
+        // collision bound is hit, or a glitch means no candidate can be confirmed absent), bail
+        // without writing — keeping the temp beats truncating an existing ride's GPX.
+        let Some(gpx) = self.unique_gpx(dir, &ot.name) else {
+            defmt::warn!(
+                "SD: no free GPX slot for {=str} — kept TRACK.OBT (no overwrite)",
+                ot.name.as_str()
+            );
+            return;
+        };
+
+        let Ok(src_file) = self.vmgr.open_file_in_dir(dir, TRACK_TMP, Mode::ReadOnly) else {
+            return;
+        };
+        let len = self.vmgr.file_length(src_file).unwrap_or(0);
+        let saved =
             match self.vmgr.open_file_in_dir(dir, gpx.as_str(), Mode::ReadWriteCreateOrTruncate) {
                 Ok(dst_file) => {
                     let source = SdByteSource::new(&self.vmgr, src_file, len);
                     let mut sink = SdByteSink::new(&self.vmgr, dst_file);
-                    match track_to_gpx(&source, &ot.name, &mut sink) {
-                        Ok(()) => defmt::info!("SD: saved ride → tracks/{=str}", gpx.as_str()),
-                        Err(e) => defmt::warn!("SD: GPX write failed: {}", defmt::Debug2Format(&e)),
-                    }
+                    let ok = match track_to_gpx(&source, &ot.name, &mut sink) {
+                        Ok(()) => {
+                            defmt::info!("SD: saved ride → tracks/{=str}", gpx.as_str());
+                            true
+                        }
+                        Err(e) => {
+                            defmt::warn!("SD: GPX write failed: {}", defmt::Debug2Format(&e));
+                            false
+                        }
+                    };
                     let _ = self.vmgr.flush_file(dst_file);
                     let _ = self.vmgr.close_file(dst_file);
+                    ok
                 }
-                Err(e) => defmt::warn!("SD: cannot open GPX: {}", defmt::Debug2Format(&e)),
-            }
-            let _ = self.vmgr.close_file(src_file);
+                Err(e) => {
+                    defmt::warn!("SD: cannot open GPX: {}", defmt::Debug2Format(&e));
+                    false
+                }
+            };
+        let _ = self.vmgr.close_file(src_file);
+        // Drop the temp only after the ride is confirmed written; otherwise keep it.
+        if saved {
+            let _ = self.vmgr.delete_file_in_dir(dir, TRACK_TMP);
         }
-        let _ = self.vmgr.delete_file_in_dir(dir, TRACK_TMP);
     }
 
     /// Drop the open log without saving (Discard, or a no-session reconcile), deleting the temp.
@@ -371,24 +412,45 @@ impl Storage {
         }
     }
 
-    /// A non-clobbering `<name>.gpx` 8.3 filename in `dir`: the sanitised route name, with a
-    /// trailing digit appended if the base name is already taken (a re-ridden route doesn't
-    /// silently overwrite an earlier save).
-    fn unique_gpx(&self, dir: RawDirectory, name: &str) -> String<12> {
+    /// A **confirmed-free** `<name>.gpx` 8.3 filename in `dir`, or `None` when none of the
+    /// `BASE` / `BASE01`…`BASE{GPX_COLLISION_MAX}` candidates can be proven absent.
+    ///
+    /// "Free" means [`find_directory_entry`](VolumeManager::find_directory_entry) answered
+    /// `NotFound` — the *only* answer that proves a name is unused. A present entry, or **any
+    /// other error** (a transient `DeviceError` on the flaky breadboard link — the same
+    /// condition the render loop guards a route read against), is treated as "taken", so a
+    /// glitch can never green-light reusing a name and make [`finalize_track`](Self::finalize_track)
+    /// truncate an existing ride's GPX. `None` therefore means "couldn't confirm any slot is
+    /// free": the caller keeps the temp log rather than clobbering.
+    fn unique_gpx(&self, dir: RawDirectory, name: &str) -> Option<String<12>> {
         let base = sanitize_base(name);
         let first = make_83(&base, None);
-        if self.vmgr.find_directory_entry(dir, first.as_str()).is_err() {
-            return first; // NotFound → free to use
+        if self.name_is_free(dir, first.as_str()) {
+            return Some(first);
         }
-        for d in 1..=9u8 {
+        for d in 1..=GPX_COLLISION_MAX {
             let cand = make_83(&base, Some(d));
-            if self.vmgr.find_directory_entry(dir, cand.as_str()).is_err() {
-                return cand;
+            if self.name_is_free(dir, cand.as_str()) {
+                return Some(cand);
             }
         }
-        first
+        None
+    }
+
+    /// Whether `name` is **confirmed absent** in `dir` — i.e. safe to create without
+    /// overwriting. Only `embedded_sdmmc::Error::NotFound` counts as free; a found entry or any
+    /// other error is "not free" (see [`unique_gpx`](Self::unique_gpx)).
+    fn name_is_free(&self, dir: RawDirectory, name: &str) -> bool {
+        matches!(self.vmgr.find_directory_entry(dir, name), Err(embedded_sdmmc::Error::NotFound))
     }
 }
+
+/// Largest collision counter [`Storage::unique_gpx`] tries for a repeat save of the same route
+/// name: `BASE01`…`BASE99`, so up to **100 distinct GPX files** per route name (the un-suffixed
+/// `BASE.GPX` plus 99 numbered). Past that the ride is kept as the temp `.obct` rather than
+/// risking an overwrite — generous enough that the bound is never hit in practice (a route
+/// re-ridden 100 times with none of the saves ever cleared off the card).
+const GPX_COLLISION_MAX: u8 = 99;
 
 /// Whether a directory entry's **long** name ends with `ext` (e.g. `b".obcr"`, case-
 /// insensitive) and isn't a dot-prefixed file (macOS `._*` AppleDouble / `.DS_Store`). The long
@@ -421,19 +483,22 @@ fn sanitize_base(name: &str) -> String<8> {
     s
 }
 
-/// Build a `BASE.GPX` 8.3 name, or `BASE<digit>.GPX` (base trimmed to 7 chars) when
-/// disambiguating a collision.
-fn make_83(base: &str, digit: Option<u8>) -> String<12> {
+/// Build a `BASE.GPX` 8.3 name, or `BASE<dd>.GPX` (base trimmed to 6 chars, `dd` the
+/// zero-padded collision counter `01`…`99`) when disambiguating a repeat save. Two digits
+/// (vs. the old single digit, which silently fell back to clobbering on the 11th save) widen
+/// the per-name space to 100 before [`Storage::unique_gpx`] gives up — see [`GPX_COLLISION_MAX`].
+fn make_83(base: &str, suffix: Option<u8>) -> String<12> {
     let mut s: String<12> = String::new();
-    match digit {
+    match suffix {
         None => {
             let _ = s.push_str(base);
         }
         Some(d) => {
-            for c in base.chars().take(7) {
+            for c in base.chars().take(6) {
                 let _ = s.push(c);
             }
-            let _ = s.push((b'0' + d) as char);
+            let _ = s.push((b'0' + (d / 10) % 10) as char);
+            let _ = s.push((b'0' + d % 10) as char);
         }
     }
     let _ = s.push_str(".GPX");
