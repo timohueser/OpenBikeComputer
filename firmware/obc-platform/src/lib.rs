@@ -13,11 +13,16 @@
 //! - [`button_input`] — a [`ButtonInput`] debouncer over four
 //!   [`InputPin`](embedded_hal::digital::InputPin)s, feeding the shared gesture
 //!   recognizer through [`InputSource`](obc_app::InputSource).
+//! - [`sd`] — FatFs [`ByteSource`](obc_route::ByteSource)/[`ByteSink`](obc_route::ByteSink)
+//!   and [`TrackSink`](obc_app::TrackSink) adapters over an [`embedded_sdmmc`] SD card, so
+//!   maps/routes load and rides save against a real card (issue #36).
 
 #![no_std]
 
 pub mod button_input;
 pub mod framebuffer;
+pub mod sd;
 
 pub use button_input::{ButtonInput, Timing};
 pub use framebuffer::Framebuffer565;
+pub use sd::{SdByteSink, SdByteSource, SdTrackSink};
