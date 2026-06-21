@@ -38,22 +38,25 @@ pub const HEADER_LEN: usize = 32;
 /// Each LOD table entry: `max_mpp f32, index_off u32, node_count u32, chunk_size u16, chunk_count u32`.
 pub const LOD_ENTRY_LEN: usize = 18;
 
-/// Absolute upper bound on a single map data chunk, in bytes — the size of the decode scratch,
-/// so the reader can decode **any** valid chunk. A `chunk_size` is a `u16` in the format, so
-/// this is the 65535-byte ceiling rounded up: no valid map can declare a larger chunk.
-pub const MAX_CHUNK_BYTES: usize = 1 << 16;
+/// Upper bound on a single map data chunk, in bytes — the size of the decode scratch, and the
+/// largest `chunk_size` the reader accepts ([`Reader::new`] rejects a map declaring a bigger
+/// one). The format stores `chunk_size` as a `u16` (≤ 65535), but real maps pack far smaller
+/// (the packer defaults to 4096), so this caps the resident scratch well below the format
+/// ceiling to save RAM. A chunk between a cache slot and this decodes through the scratch,
+/// uncached.
+pub const MAX_CHUNK_BYTES: usize = 16384;
 
 /// Size of one geometry-chunk **cache** slot. A chunk this size or smaller is cached (kept
-/// resident across the frame's priority passes); a larger one — the packer's default is 4096,
-/// but the format permits up to 65535 — is decoded through [`MAX_CHUNK_BYTES`] scratch without
-/// being cached. Covers the default and the headroom the packer uses for a max-size feature.
-const CACHE_SLOT_BYTES: usize = 8192;
+/// resident across the frame's priority passes); a larger one — up to [`MAX_CHUNK_BYTES`] — is
+/// decoded through the scratch without being cached. Matches the packer's default `chunk_size`
+/// (4096) so the maps the device actually loads are fully cacheable.
+const CACHE_SLOT_BYTES: usize = 4096;
 
 /// Geometry-chunk cache slots (each [`CACHE_SLOT_BYTES`]). The renderer makes four priority
 /// passes over the same visible-chunk set per frame; sizing the cache to hold a riding-zoom
-/// viewport's chunks turns passes 2–4 into cache hits instead of re-reads from SD. ≈64 KB at
-/// the default; tune against the on-device RAM budget.
-const MAP_CHUNK_SLOTS: usize = 8;
+/// viewport's chunks turns passes 2–4 into cache hits instead of re-reads from SD, and a wider
+/// pan into a partial hit. ≈64 KB at the default; the knob to trade RAM for hit rate.
+const MAP_CHUNK_SLOTS: usize = 16;
 
 /// Block size + count of the quadtree-index cache. The leaf walk reads 4-byte nodes (siblings
 /// adjacent in the file); caching a few aligned blocks coalesces those into a handful of SD
@@ -61,9 +64,10 @@ const MAP_CHUNK_SLOTS: usize = 8;
 const INDEX_BLOCK: usize = 512;
 const INDEX_BLOCKS: usize = 8;
 
-// A cache slot's length is stored in a `u16`-range chunk; the scratch must hold any u16 chunk.
-const _: () = assert!(CACHE_SLOT_BYTES <= u16::MAX as usize, "chunk_size is a u16 in the format");
-const _: () = assert!(MAX_CHUNK_BYTES > u16::MAX as usize, "scratch must hold any u16 chunk_size");
+// A slot must fit any chunk it caches, and the scratch any chunk the reader accepts; `chunk_size`
+// is a `u16`, so the accepted cap stays within range.
+const _: () = assert!(CACHE_SLOT_BYTES <= MAX_CHUNK_BYTES, "a cached chunk must fit the scratch");
+const _: () = assert!(MAX_CHUNK_BYTES <= u16::MAX as usize, "chunk_size is a u16 in the format");
 
 const BRANCH_BIT: u32 = 0x8000_0000;
 const EMPTY_LEAF: u32 = 0x7FFF_FFFF;
@@ -210,7 +214,7 @@ pub struct Reader<'a> {
     /// Styles indexed by id (0..=255) for O(1) lookup during rendering.
     styles: [Option<Style>; 256],
     /// Borrowed lazy-read cache for the streamed index + geometry. **Borrowed**, not owned, so
-    /// the ≈130 KB of buffers live in a caller-provided [`MapCache`] (the device places it once
+    /// the ≈84 KB of buffers live in a caller-provided [`MapCache`] (the device places it once
     /// in SDRAM and rebuilds the small `Reader` per frame, reusing the cache across frames; the
     /// host just makes one on the stack). `MapCache` keeps its own `RefCell` because `read_at`
     /// (and so `for_each_chunk`/`for_each_feature_filtered`) take `&self` but the cache mutates;
@@ -484,8 +488,8 @@ impl<'a> Reader<'a> {
         if end > self.src.len() as usize {
             return;
         }
-        // `chunk_size` (== `end - start`) is a `u16`, so it always fits the decode scratch; this
-        // defensive check just keeps a corrupt LOD from indexing past it.
+        // `chunk_size` (== `end - start`) was capped at `MAX_CHUNK_BYTES` in `new`, so it fits the
+        // decode scratch; this defensive check just keeps a corrupt LOD from indexing past it.
         let len = end - start;
         if len > MAX_CHUNK_BYTES {
             return;
@@ -769,8 +773,12 @@ fn parse_lod_table(
         if lod.index_offset < HEADER_LEN || chunks_end > total {
             return Err(Error::BadOffset);
         }
-        // No `chunk_size` ceiling check: it's a `u16`, so it always fits the [`MAX_CHUNK_BYTES`]
-        // decode scratch — a chunk larger than a cache slot is decoded uncached, not rejected.
+        // A chunk is decoded into the resident scratch, so reject a map declaring one larger than
+        // [`MAX_CHUNK_BYTES`] (well above the packer's 4096 default) rather than silently dropping
+        // its geometry at render time.
+        if lod.chunk_size > MAX_CHUNK_BYTES {
+            return Err(Error::BadOffset);
+        }
         let _ = lods.push(lod);
     }
     Ok(lods)
@@ -827,7 +835,7 @@ struct IndexBlock {
 /// quadtree-node reads, with the streaming counters. Caller-owned and reusable across frames —
 /// the device places one in SDRAM for the whole session and rebuilds the small [`Reader`] each
 /// frame against it (so a chunk read one frame can hit the next), while the host just makes one
-/// per render. ≈130 KB, dominated by the slots + the decode scratch; tune the slot count /
+/// per render. ≈84 KB, dominated by the slots + the decode scratch; tune the slot count /
 /// `CACHE_SLOT_BYTES` against the on-device RAM budget.
 ///
 /// Wraps its mutable state in a `RefCell` so a [`Reader`] can borrow it (`&MapCache`) yet read
@@ -844,7 +852,7 @@ impl Default for MapCache {
 }
 
 impl MapCache {
-    /// A fresh, empty cache. ≈130 KB of zeroed buffers — on the device, place it once in SDRAM
+    /// A fresh, empty cache. ≈84 KB of zeroed buffers — on the device, place it once in SDRAM
     /// (e.g. `ptr::write`, like the `App`) so it stays off the 192 KB main stack.
     pub fn new() -> Self {
         MapCache { inner: RefCell::new(MapCacheInner::new()) }
@@ -867,8 +875,8 @@ struct MapCacheInner {
     tick: u32,
     chunks: [ChunkSlot; MAP_CHUNK_SLOTS],
     index: [IndexBlock; INDEX_BLOCKS],
-    /// Decode buffer for a chunk too large to cache (`> CACHE_SLOT_BYTES`). Sized to the format
-    /// ceiling so any valid map decodes; never keyed, so such a chunk is re-read every pass.
+    /// Decode buffer for a chunk too large to cache (`> CACHE_SLOT_BYTES`, up to the accepted
+    /// `MAX_CHUNK_BYTES`); never keyed, so such a chunk is re-read every pass.
     scratch: [u8; MAX_CHUNK_BYTES],
     chunk_hits: u32,
     chunk_misses: u32,
@@ -880,7 +888,7 @@ impl MapCacheInner {
     fn new() -> Self {
         // Zero-init the whole thing. Every field is valid when all-zero — `valid: false` (empty
         // slot), integer 0, and write-before-read byte buffers — and `zeroed()` lowers to a
-        // `memset` / `.bss`, whereas a struct literal that zeroes the ~130 KB of buffers emits
+        // `memset` / `.bss`, whereas a struct literal that zeroes the ~84 KB of buffers emits
         // them as a `.rodata` const that is then `memcpy`'d. On the device that const overflowed
         // flash; the simulator/tests are unaffected either way (the value is identical).
         //
