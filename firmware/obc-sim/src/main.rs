@@ -45,7 +45,7 @@ use baro::BaroSensor;
 use framebuffer::Framebuffer;
 use gpx::Track;
 use gpx_player::GpxPlayer;
-use obc_route::RouteReader;
+use obc_route::{RouteIndex, RouteReader};
 use routes::RouteStore;
 use track::TrackStore;
 
@@ -555,7 +555,11 @@ fn main() {
         // After the script may have loaded a route, open its geometry for the Map.
         store.sync_active(app.activity.active_route);
         let route_src = store.active_source();
-        let route = route_src.as_ref().and_then(|s| RouteReader::open(s).ok());
+        let route_index = route_src.as_ref().and_then(|s| RouteIndex::read(s).ok());
+        let route = match (route_index.as_ref(), route_src.as_ref()) {
+            (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
+            _ => None,
+        };
 
         // Recorded-track store (the device-SD `/tracks` stand-in). A session started by a
         // `--script` load records here; the breadcrumb itself draws regardless.

@@ -17,7 +17,7 @@ use std::path::Path;
 use eframe::egui;
 use obc_app::{App, AppState, Button, CameraMode, Fix, InputClock, RideClock, Sensors};
 use obc_reader::Reader;
-use obc_route::RouteReader;
+use obc_route::{RouteIndex, RouteReader};
 
 use crate::baro::BaroSensor;
 use crate::device_input::DeviceInput;
@@ -254,7 +254,11 @@ impl SimGui {
         // card). It stays borrowed through `tick` + `render_frame` below.
         self.store.sync_active(self.app.activity.active_route);
         let route_src = self.store.active_source();
-        let route = route_src.as_ref().and_then(|s| RouteReader::open(s).ok());
+        let route_index = route_src.as_ref().and_then(|s| RouteIndex::read(s).ok());
+        let route = match (route_index.as_ref(), route_src.as_ref()) {
+            (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
+            _ => None,
+        };
 
         // Reconcile the ride log to the app's tracking session (open / finalise-to-GPX /
         // discard) before ticking — the device does the same off its SD card.

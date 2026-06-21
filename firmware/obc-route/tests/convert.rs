@@ -2,7 +2,8 @@
 //! reader, and check the geometry round-trips and the stats are exact.
 
 use obc_route::{
-    gpx_to_obcr, ByteSink, Error, RoutePoint, RouteReader, SliceSource, MAX_POINTS_PER_CHUNK,
+    gpx_to_obcr, ByteSink, Error, RouteIndex, RoutePoint, RouteReader, SliceSource,
+    MAX_POINTS_PER_CHUNK,
 };
 
 /// A `ByteSink` over a growable `Vec` — the host's "write the whole file to RAM"
@@ -51,7 +52,8 @@ const STRAIGHT: &str = r#"<?xml version="1.0"?>
 fn straight_track_stats_and_decimation() {
     let bytes = convert("Rhine Path", STRAIGHT);
     let src = SliceSource(&bytes);
-    let r = RouteReader::open(&src).unwrap();
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
 
     assert_eq!(r.name(), "Rhine Path");
     assert_eq!(r.start_lon, 7_800_000);
@@ -89,7 +91,8 @@ const CORNER: &str = r#"<gpx><trk><trkseg>
 fn corner_is_preserved() {
     let bytes = convert("Jura Heights", CORNER);
     let src = SliceSource(&bytes);
-    let r = RouteReader::open(&src).unwrap();
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
 
     // The corner vertex is kept: all three points survive decimation.
     assert_eq!(r.point_count, 3);
