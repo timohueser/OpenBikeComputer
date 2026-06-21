@@ -27,23 +27,40 @@
 //! ## RAM split (issue #34 / #8)
 //! The renderer's per-frame scratch is ~200 KB and the framebuffer is 150 KB; the
 //! two do not both fit the F429's 192 KB internal SRAM. For the prototype the whole
-//! `App` (which embeds the renderer) is placed in **SDRAM**, just past the two
-//! framebuffers (double-buffered, 2x150 KB — see below) — simplest, runs the full-size
-//! renderer. The 8 MB SDRAM swallows all of it. The cost is render-time:
+//! `App` (which embeds the renderer) is placed in **SDRAM**, just past the three
+//! framebuffers (two double-buffered map planes + the Layer 2 overlay, 3x150 KB — see
+//! below) — simplest, runs the full-size renderer. The 8 MB SDRAM swallows all of it.
+//! The cost is render-time:
 //! the scratch is now behind the FMC's wait states (slower than the internal-RAM
 //! `mcu-render-bench`); the per-frame time logged over RTT quantifies the delta.
 //! A `small-scratch` cargo feature (internal-RAM scratch) is the fallback if that
 //! delta ever matters — not needed yet.
 //!
-//! ## Double buffering
+//! ## Double buffering (the map plane)
 //! Rendering clears and repaints the whole frame, so drawing straight into the buffer
 //! the LTDC is scanning makes the panel flash on every redraw — fine for a static
-//! demo, but ugly once the UI animates (the hold bulge redraws continuously). So the
-//! app path keeps **two** framebuffers: the LTDC scans the *front* while the app
-//! renders the next frame into the *back*, then [`flip_to`] points the layer at the
-//! back and reloads it at the next vertical blank (tear-free) and the roles swap. The
-//! panel only ever shows a fully-rendered frame. (The `glass-demo` path stays single-
-//! buffered — it draws one static screen and halts.)
+//! demo, but ugly once the map changes. So the app path keeps **two** map framebuffers:
+//! the LTDC scans the *front* while the app renders the next frame into the *back*, then
+//! [`flip_to`] points the layer at the back and reloads it at the next vertical blank
+//! (tear-free) and the roles swap. The panel only ever shows a fully-rendered map frame.
+//! (The `glass-demo` path stays single-buffered, single-layer — it draws one static
+//! screen and halts.)
+//!
+//! ## Dual-layer display (issue #46): map plane + overlay plane
+//! The LTDC has two blendable layers. The double-buffered map above is **Layer 1** (the
+//! bottom, opaque RGB565 plane). The transient UI chrome — the hold-bulge / confirm ring
+//! ([`obc_app`]'s overlay plane, issue #45) — renders into **Layer 2**, a *single*
+//! ARGB4444 framebuffer the LTDC composites over Layer 1 in hardware
+//! (`BC = α·overlay + (1−α)·map`). So when only the ring animates (the common case: a
+//! static map under a charging hold), **only Layer 2 repaints** — the map is never
+//! re-rendered, and an overlay frame (a transparent buffer clear + a few bulge strips)
+//! is a couple of ms at most vs. tens of ms for a map frame (the RTT `overlay frame` /
+//! `map frame` logs quantify both). Layer 2 is single-buffered and updated **in place**:
+//! the overlay is sparse and opaque,
+//! its CFBAR never changes (so no reload), and a redraw that briefly races the scan can at
+//! worst flicker one frame of the small bulge — acceptable for the prototype (the
+//! mitigation, if it ever shows on glass, is to clear only the bulge's bounding strip or
+//! double-buffer Layer 2). This is the third framebuffer in SDRAM (2 map + 1 overlay).
 //!
 //! Clock: 180 MHz core from the 16 MHz HSI (no dependency on the DISC1 HSE), plus a
 //! PLLSAI leg for the LTDC pixel clock.
@@ -115,7 +132,7 @@ use obc_app::{
     App, AppState, Fix, InputClock, LocationSource, RideClock, RouteSummary, Sensors, TrackSink,
 };
 #[cfg(not(feature = "glass-demo"))]
-use obc_platform::ButtonInput;
+use obc_platform::{ButtonInput, FramebufferArgb4444};
 #[cfg(not(feature = "glass-demo"))]
 use obc_reader::{BBox, Reader};
 #[cfg(not(feature = "glass-demo"))]
@@ -139,10 +156,18 @@ const W: usize = 240;
 const H: usize = 320;
 /// Framebuffer extent in pixels / bytes (RGB565, 2 bytes each).
 const FB_PIXELS: usize = W * H;
-/// Only the app path needs this — the back-buffer offset, and it places the `App` in
-/// SDRAM just past *both* framebuffers.
+/// Only the app path needs this — the back-buffer offset, and it places the overlay
+/// framebuffer + the `App` in SDRAM just past the map framebuffers.
 #[cfg(not(feature = "glass-demo"))]
 const FB_BYTES: usize = FB_PIXELS * 2;
+
+/// Layer 2 overlay framebuffer (issue #46): one ARGB4444 buffer (2 B/px → the same
+/// [`FB_BYTES`] as an RGB565 map buffer) placed just past the *two* double-buffered map
+/// framebuffers and before the App slot. The LTDC blends it over the map; it is
+/// single-buffered and drawn in place (see the render loop), so its address is fixed
+/// after init and never reloaded.
+#[cfg(not(feature = "glass-demo"))]
+const OVERLAY_ADDR: usize = SDRAM_ADDR + 2 * FB_BYTES;
 
 /// Baked-in OBCM **v5** map tile (issue #34): a small ~1.4 MB Teningen tile in
 /// flash via `include_bytes!`. With #36 the map normally comes off the SD card; this stays
@@ -187,11 +212,6 @@ const UDEG_PER_M: f32 = 1_000_000.0 / 111_320.0;
 /// and hold timing are caught even when a heavy Map frame stretches the render cadence.
 #[cfg(not(feature = "glass-demo"))]
 const LOOP_MS: u64 = 8;
-
-/// Keep redrawing for this long (ms) after the last input/gesture/hold activity, so a
-/// confirm-ring bulge plays its pop/retract out (POP ≈ 220 ms) before frames stop.
-#[cfg(not(feature = "glass-demo"))]
-const ANIM_TAIL_MS: u32 = 300;
 
 /// Idle redraw heartbeat (ms): redraw at least this often even with no input, so
 /// time-based screens (e.g. Statistics) stay live. A static Map then costs ~1 fps.
@@ -609,11 +629,56 @@ async fn main(_spawner: Spawner) {
         let sd_cs = Output::new(p.PD7, Level::High, Speed::VeryHigh);
         let mut storage = sd::init(sd_spi, sd_cs);
 
-        // SDRAM layout: the App sits just past both framebuffers (RAM-split note in the module
-        // header), and the resident map is read into the region just past the App. Compute both
-        // addresses up front so the map load below lands clear of the App slot.
+        // --- LTDC Layer 2: the transparent UI overlay plane (issue #46) ---
+        // The map renders to the double-buffered Layer 1 (below); the hold-bulge / confirm ring
+        // renders to this second, per-pixel-alpha-blended layer (above), so it composites over the
+        // map in hardware and repaints without ever touching — or re-rendering — the map buffer.
+        // embassy's `init_layer` already programs the blend we want: BF1/BF2 = pixel-alpha
+        // (BC = α·overlay + (1−α)·map), constant alpha 0xFF, and a transparent-black default colour
+        // (DCCR = 0) for the pixels outside the (here full-screen) window. ARGB4444 is plenty for the
+        // opaque near-black bulge; alpha 0 = transparent lets the map show through everywhere the
+        // overlay leaves blank. Clear the buffer fully transparent first so Layer 2 shows nothing
+        // (the map shows through) until the first hold.
+        // SAFETY: OVERLAY_ADDR..+FB_BYTES is a distinct SDRAM region past both map framebuffers and
+        // before the App slot (see the layout math below); sole owner, the LTDC only DMA-reads it.
+        unsafe { core::slice::from_raw_parts_mut(OVERLAY_ADDR as *mut u16, FB_PIXELS) }
+            .fill(0x0000);
+        ltdc.init_layer(
+            &LtdcLayerConfig {
+                pixel_format: PixelFormat::ARGB4444,
+                layer: LtdcLayer::Layer2,
+                window_x0: 0,
+                window_x1: W as u16,
+                window_y0: 0,
+                window_y1: H as u16,
+            },
+            None,
+        );
+        // Mirror the Layer-1 CFBLR fix (see the Layer-1 setup): embassy programs CFBLL = active*bpp
+        // + 7, but RM0090 specifies + 3; the extra 4-byte over-read shears each line. ARGB4444 is
+        // 2 B/px like RGB565, so the values are identical — pitch 240*2 = 480, line length 480 + 3.
+        stm32_metapac::LTDC.layer(LtdcLayer::Layer2 as usize).cfblr().modify(|w| {
+            w.set_cfbp(480);
+            w.set_cfbll(483);
+        });
+        // Point Layer 2 at its framebuffer and reload immediately (no vblank wait, same as Layer 1
+        // at init). Thereafter the overlay is updated *in place* (single-buffered — see the loop),
+        // so this CFBAR never changes and needs no further reload.
+        {
+            use stm32_metapac::ltdc::vals::Imr;
+            use stm32_metapac::LTDC;
+            LTDC.layer(LtdcLayer::Layer2 as usize)
+                .cfbar()
+                .modify(|w| w.set_cfbadd(OVERLAY_ADDR as u32));
+            LTDC.srcr().write(|w| w.set_imr(Imr::RELOAD));
+        }
+
+        // SDRAM layout: past the three framebuffers (two double-buffered map planes + the Layer 2
+        // overlay, see [`OVERLAY_ADDR`]) sits the App (RAM-split note in the module header), and the
+        // resident map is read into the region just past the App. Compute both addresses up front so
+        // the map load below lands clear of the App slot.
         let app_align = core::mem::align_of::<App>();
-        let app_addr = (SDRAM_ADDR + 2 * FB_BYTES + app_align - 1) & !(app_align - 1);
+        let app_addr = (SDRAM_ADDR + 3 * FB_BYTES + app_align - 1) & !(app_align - 1);
         let map_addr = (app_addr + core::mem::size_of::<App>() + 7) & !7;
 
         // Map: read the card's `.obcm` tile resident into SDRAM, else fall back to the baked-in
@@ -716,21 +781,25 @@ async fn main(_spawner: Spawner) {
         let start = Instant::now();
         let mut synth = SynthLocation::new(cam_lon, cam_lat, start);
 
-        // Double buffering: the LTDC scans the *front* while the app renders the *back*, then we
-        // flip at the next vblank (tear-free) and swap. FB_ADDR is the initial front; the back
-        // sits one FB_BYTES past it. SAFETY: the back is never the buffer the LTDC is scanning.
+        // Double buffering (the map plane / Layer 1): the LTDC scans the *front* while the app
+        // renders the *back*, then we flip at the next vblank (tear-free) and swap. FB_ADDR is the
+        // initial front; the back sits one FB_BYTES past it. SAFETY: the back is never the buffer
+        // the LTDC is scanning.
         let mut front_addr = FB_ADDR;
         let mut back_addr = FB_ADDR + FB_BYTES;
         unsafe { core::slice::from_raw_parts_mut(back_addr as *mut u16, FB_PIXELS) }.fill(0x0000);
         defmt::info!(
-            "input live: PD4 PREV / PE3 NEXT / PE4 SELECT / PD5 BACK; double-buffered; SD card {=bool}",
+            "input live: PD4 PREV / PE3 NEXT / PE4 SELECT / PD5 BACK; map double-buffered + overlay layer; SD card {=bool}",
             storage.is_some()
         );
 
-        // Render-on-demand loop. Buttons are sampled every LOOP_MS; the screen redraws only on
-        // input/gesture activity, an animating hold bulge (ANIM_TAIL_MS), or the IDLE_REFRESH
-        // heartbeat — so a static Map costs ~1 fps. The active route's geometry and the ride log
-        // are opened only on redraw frames, which also paces the `.obct` log to the redraw rate.
+        // Render-on-demand loop, now split across the two LTDC layers (issue #46). Buttons are
+        // sampled every LOOP_MS. The **map** (Layer 1) re-renders only on input/gesture activity or
+        // the IDLE_REFRESH heartbeat — so a static Map costs ~1 fps. The **overlay** (Layer 2, the
+        // hold bulge) repaints independently whenever it has live content, without re-rendering the
+        // map, so an animating ring over a static map touches only Layer 2. The active route's
+        // geometry and the ride log are opened only on map-redraw frames, which paces the `.obct`
+        // log to that rate.
         let now0 = start.elapsed().as_millis() as u32;
         let mut prev_gesture = app.last_gesture();
         let mut prev_route: Option<usize> = None;
@@ -739,8 +808,10 @@ async fn main(_spawner: Spawner) {
         // per-frame redraw streams geometry without re-walking the index off the SD card.
         let mut route_index: Option<RouteIndex> = None;
         let mut index_route: Option<usize> = None;
-        let mut last_activity = now0;
-        let mut last_render = now0.wrapping_sub(IDLE_REFRESH_MS); // force the first frame
+        // Whether the overlay (Layer 2) had live content last frame, so the loop paints one trailing
+        // transparent frame when the bulge goes quiet — clearing it off the layer.
+        let mut overlay_was_active = false;
+        let mut last_render = now0.wrapping_sub(IDLE_REFRESH_MS); // force the first map frame
         loop {
             let now = start.elapsed().as_millis() as u32;
             buttons.update(now);
@@ -771,18 +842,18 @@ async fn main(_spawner: Spawner) {
                 s.reconcile_track(action, session, &name);
             }
 
-            // Redraw window: fresh events, an in-flight hold ring, a changed gesture, or the
-            // idle heartbeat (the synthetic fix moving is deliberately *not* activity — same as
-            // a real GPS would be once #38 lands; the heartbeat keeps the moving map live).
+            // Map-redraw window: fresh input events, a clock-driven gesture firing (e.g. a
+            // long-press crossing its threshold, which changes the screen without a new button
+            // edge), or the idle heartbeat. The in-flight hold *ring* is deliberately **not** here
+            // — it lives on Layer 2 now and repaints below without re-rendering the map, so an
+            // animating ring over a static map keeps the map render count flat. The synthetic fix
+            // moving is likewise not activity (same as a real GPS once #38 lands); the heartbeat
+            // keeps the moving map live.
             let gesture = app.last_gesture();
-            let ring = app.encoder_hold_progress() > 0.0 || app.back_hold_progress() > 0.0;
-            if had_events || ring || gesture != prev_gesture {
-                last_activity = now;
-            }
+            let gesture_changed = gesture != prev_gesture;
             prev_gesture = gesture;
-            let interactive = now.wrapping_sub(last_activity) < ANIM_TAIL_MS;
             let heartbeat = now.wrapping_sub(last_render) >= IDLE_REFRESH_MS;
-            let redraw = interactive || heartbeat;
+            let redraw = had_events || gesture_changed || heartbeat;
 
             // Cache the active route's chunk index across frames: rebuild it (the expensive
             // header + full chunk-meta walk off SD) only when the route changes, or retry if a
@@ -844,14 +915,11 @@ async fn main(_spawner: Spawner) {
                 let back =
                     unsafe { core::slice::from_raw_parts_mut(back_addr as *mut u16, FB_PIXELS) };
                 let mut fb = Framebuffer565::new(back, W as u32, H as u32);
-                let stats = app.render_frame(
-                    &mut fb,
-                    &reader,
-                    route.as_ref(),
-                    W as f32,
-                    H as f32,
-                    color_fn,
-                );
+                // Render *only* the map plane into Layer 1 — the overlay (hold ring) is drawn onto
+                // Layer 2 below and composited by the LTDC, so the map buffer never carries the
+                // bulge and is re-rendered only when the map itself changes.
+                let stats =
+                    app.render_map(&mut fb, &reader, route.as_ref(), W as f32, H as f32, color_fn);
                 let render_us = t0.elapsed().as_micros();
 
                 // Flip to the freshly-drawn buffer at the next vblank. Swap front/back roles
@@ -867,13 +935,42 @@ async fn main(_spawner: Spawner) {
                 }
                 last_render = now;
                 defmt::debug!(
-                    "frame: {=u64} us | lod {=usize} | feat {=usize}/{=usize}",
+                    "map frame: {=u64} us | lod {=usize} | feat {=usize}/{=usize}",
                     render_us,
                     stats.lod,
                     stats.features_drawn,
                     stats.features_tried
                 );
             }
+
+            // Overlay plane (Layer 2): repaint whenever the hold bulge has live content this frame,
+            // plus one trailing frame when it goes quiet (to clear the last bulge off the layer).
+            // This never touches the map — the LTDC blends Layer 2 over whatever Layer 1 already
+            // shows — so an animating ring over a static map re-renders only this small layer (the
+            // `map frame` log above stays silent while these `overlay` frames tick by). Single-
+            // buffered, drawn in place: the CFBAR is fixed, so the LTDC picks up the new contents on
+            // its next scan with no reload. The `overlay frame` log below times it — a transparent
+            // clear + a few bulge strips, a couple of ms at most vs. tens of ms for a map frame.
+            let overlay_active = app.overlay_active();
+            if overlay_active || overlay_was_active {
+                let t0 = Instant::now();
+                // SAFETY: the overlay buffer is a distinct SDRAM region (past both map buffers);
+                // this is its sole `&mut`, dropped at the end of the block. The LTDC only DMA-reads
+                // it; single-buffered in place, so a redraw can at worst briefly race the scan — an
+                // accepted tradeoff for the sparse, opaque bulge (see the module header).
+                let overlay =
+                    unsafe { core::slice::from_raw_parts_mut(OVERLAY_ADDR as *mut u16, FB_PIXELS) };
+                let mut overlay_fb = FramebufferArgb4444::new(overlay, W as u32, H as u32);
+                overlay_fb.clear_transparent();
+                app.render_overlay(&mut overlay_fb, W as f32, H as f32, color_fn);
+                defmt::debug!(
+                    "overlay frame: {=u64} us | active {=bool}",
+                    t0.elapsed().as_micros(),
+                    overlay_active
+                );
+            }
+            overlay_was_active = overlay_active;
+
             Timer::after_millis(LOOP_MS).await;
         }
     }
