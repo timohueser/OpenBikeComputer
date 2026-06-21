@@ -303,6 +303,19 @@ fn af_pin(pin: Peri<'static, impl Pin>, af: u8) -> Flex<'static> {
     f
 }
 
+/// Idle forever after an unrecoverable bring-up failure. Breaks to the debugger **only when
+/// one is attached** (so `probe-rs run` regains control and releases the ST-LINK), then
+/// low-power idles. A standalone boot (plain NRST / battery, no debugger) must NOT execute a
+/// bare `bkpt` — with `C_DEBUGEN` clear it escalates to a HardFault — so it just `wfi`s.
+fn halt() -> ! {
+    if cortex_m::peripheral::DCB::is_debugger_attached() {
+        cortex_m::asm::bkpt();
+    }
+    loop {
+        cortex_m::asm::wfi();
+    }
+}
+
 /// Point LTDC layer 1 at the framebuffer at `addr`, reloading at the next vertical
 /// blank — the double-buffer flip. Unlike the immediate reload used at init, the
 /// **vblank** reload switches buffers between frames, so there's no tear; the bounded
@@ -541,10 +554,7 @@ async fn main(_spawner: Spawner) {
         let mut fb = Framebuffer565::new(fb_buf, W as u32, H as u32);
         let _ = demo::font_palette_demo(&mut fb);
         defmt::info!("glass-demo: font + palette rendered; halting");
-        cortex_m::asm::bkpt();
-        loop {
-            cortex_m::asm::wfi();
-        }
+        halt()
     }
 
     // --- obc-app on glass, button-driven, now reading real data off SD (issues #34/#35/#36):
@@ -592,20 +602,14 @@ async fn main(_spawner: Spawner) {
             #[cfg(not(feature = "baked-tile"))]
             {
                 defmt::error!("no SD card map and baked-tile is disabled — halting");
-                cortex_m::asm::bkpt();
-                loop {
-                    cortex_m::asm::wfi();
-                }
+                halt()
             }
         };
         let reader = match Reader::new(map_bytes) {
             Ok(r) => r,
             Err(_) => {
                 defmt::error!("map is not valid OBCM ({=usize} bytes)", map_bytes.len());
-                cortex_m::asm::bkpt();
-                loop {
-                    cortex_m::asm::wfi();
-                }
+                halt()
             }
         };
 
