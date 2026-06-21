@@ -40,7 +40,7 @@ pub use gpx::{GpxScanner, RawPoint};
 pub use matcher::{Match, RouteMatch};
 pub use profile::{Profile, Window, PROFILE_COLS};
 pub use reader::{
-    ChunkMeta, RoutePoint, RouteReader, RouteSummary, CHUNK_META_LEN, HEADER_LEN,
+    ChunkMeta, RouteIndex, RoutePoint, RouteReader, RouteSummary, CHUNK_META_LEN, HEADER_LEN,
     MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS, NAME_CAP,
 };
 pub use track::{decode_record, encode_record, track_to_gpx, TrackPoint, TRACK_RECORD_LEN};
