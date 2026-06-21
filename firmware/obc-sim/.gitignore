@@ -1,0 +1,9 @@
+# Trunk wasm build output (the web simulator). Built from source by CI for the site.
+dist/
+
+# The web demo's bundled map / route / track are embedded into the wasm via
+# include_bytes!, so they must be committed — re-include them over the repo-wide
+# *.obcm / *.obcr / *.gpx ignore rules in the root .gitignore.
+!assets/*.obcm
+!assets/*.obcr
+!assets/*.gpx

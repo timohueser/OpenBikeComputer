@@ -1,0 +1,65 @@
+name: Deploy site
+
+# Builds the obc-sim web demo (the embedded live simulator) to wasm and publishes it
+# to GitHub Pages. Because the demo is the firmware's own render path compiled to wasm,
+# every push rebuilds it — the site can never show a stale screenshot.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "firmware/**"
+      - ".github/workflows/deploy-site.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time; let an in-progress run finish (don't cancel a live deploy).
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (wasm target)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo + build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: firmware
+
+      - name: Install Trunk
+        uses: taiki-e/install-action@v2
+        with:
+          tool: trunk@0.21.14
+
+      # Project Pages serve under /<repo>/, so the wasm/js asset URLs must be prefixed
+      # or they 404. --release turns on wasm-opt (see data-wasm-opt in index.html).
+      - name: Build (release)
+        run: trunk build --release --config firmware/obc-sim/Trunk.toml --public-url "/${{ github.event.repository.name }}/"
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: firmware/obc-sim/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
