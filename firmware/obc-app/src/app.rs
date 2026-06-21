@@ -8,9 +8,10 @@ use obc_route::{Profile, RouteMatch, RouteReader, TrackPoint};
 
 use crate::activity::{Activity, Mode};
 use crate::breadcrumb::Breadcrumb;
+use crate::dirty::Dirty;
 use crate::hal::{Fix, InputClock, InputSource, LocationSource, RideClock, Sensors};
-use crate::hold_hint::HoldHints;
-use crate::input::{Gesture, Gestures, DEFAULT_HOLD_MS};
+use crate::input::Gesture;
+use crate::input_plane::InputPlane;
 use crate::route::{Catalog, RouteSummary};
 use crate::screen::{self, Ctx, HomeScreen, MapScreen, Render, Screen, Stack};
 
@@ -276,6 +277,13 @@ const RIDING_MPP: f32 = 0.5;
 /// happens at the current zoom level". The single knob for pan speed; tune here.
 pub const PAN_STEP_PX: f32 = 40.0;
 
+/// Capacity of [`handle_input`](App::handle_input)'s per-frame gesture buffer — the
+/// gestures recognised from one frame's raw input, held while `self.input` is borrowed and
+/// applied after. One frame yields at most one gesture per raw event (the input queue is
+/// bounded — `ButtonInput`'s is 8) plus the single per-frame long-press, so this never
+/// overflows; the slack matches the cross-executor channel the firmware's two-plane path uses.
+const GESTURE_BUF: usize = 16;
+
 /// The whole device application, ready to run a frame.
 ///
 /// The single entry point both hosts share: the simulator and the firmware each
@@ -283,9 +291,14 @@ pub const PAN_STEP_PX: f32 = 40.0;
 /// platform's [`LocationSource`], feed raw controls through
 /// [`handle_input`](App::handle_input) with their [`InputSource`] + millis clock,
 /// and [`render_frame`](App::render_frame) it to their display. `App` owns the
-/// screen stack, the shared gesture recognizer, the camera [`AppState`], the ride
-/// [`Activity`], and the reusable [`MapRenderer`]; each frame it runs
+/// screen stack, the input + overlay plane ([`InputPlane`]), the camera [`AppState`],
+/// the ride [`Activity`], and the reusable [`MapRenderer`]; each frame it runs
 /// poll-inputs → top-screen `handle` → apply `Transition` → draw the stack.
+///
+/// The firmware can also split the two planes across executors — recognising gestures on a
+/// high-priority [`InputPlane`] that preempts the map render and feeding them back through
+/// [`apply_gesture`](App::apply_gesture) (issue #48); [`handle_input`](App::handle_input) is
+/// just those halves fused for the single-loop hosts.
 ///
 /// ```ignore
 /// let mut app = App::new(AppState::new(cx, cy, zoom));
@@ -336,19 +349,26 @@ pub struct App {
     /// Reused renderer; clears (not frees) its scratch each frame, so steady-state
     /// rendering does no allocation — important on the MCU.
     renderer: MapRenderer,
-    /// The shared gesture recognizer (raw events + clock → the five gestures).
-    gestures: Gestures,
-    /// The most recently recognized gesture, for the host's input readout.
-    last_gesture: Option<Gesture>,
-    /// Millis at the last [`handle_input`](App::handle_input), passed to draw.
+    /// The input + overlay plane: the gesture recognizer, the long-press hint overlay, and
+    /// the live hold-progress. Relocated off `App` into [`InputPlane`] (issue #48) so the
+    /// firmware can run it on a *separate, high-priority* executor that preempts the map
+    /// render — keeping input + the overlay responsive while a map frame draws. `App` keeps
+    /// this one for the convenience [`handle_input`](App::handle_input) path (the sim, the
+    /// single-executor firmware); the two-plane firmware drives its own standalone
+    /// [`InputPlane`] and feeds the recognised gestures back through
+    /// [`apply_gesture`](App::apply_gesture).
+    input: InputPlane,
+    /// Millis at the last [`handle_input`](App::handle_input) /
+    /// [`advance_animations`](App::advance_animations) — the **map plane's** clock, passed to
+    /// draw and to the [`Ctx`](screen::Ctx) a gesture is applied through. Distinct from the
+    /// input plane's own clock in [`InputPlane`].
     now_ms: u32,
-    /// In-flight encoder / Back hold-progress (0.0–1.0) for the confirm ring.
-    enc_progress: f32,
-    back_progress: f32,
-    /// The global long-press hint overlay (charge-in-place pills at the encoder /
-    /// Back edges), drawn above every screen so the central hold gesture is always
-    /// visible — not just on Ride control.
-    hold_hints: HoldHints,
+    /// Accumulated **map-plane** repaint demand since the last [`take_dirty`](App::take_dirty):
+    /// set as [`tick`](App::tick) / [`handle_input`](App::handle_input) mutate map-affecting
+    /// state, drained once per frame. Starts `true` so the host's first frame paints. (The
+    /// overlay-plane flag isn't accumulated here — it's derived from the live hold-bulge state
+    /// at drain time, owned by [`InputPlane`]; see [`take_dirty`](App::take_dirty).)
+    map_dirty: bool,
 }
 
 impl App {
@@ -382,12 +402,10 @@ impl App {
             ride_session: None,
             breadcrumb: Breadcrumb::new(),
             renderer: MapRenderer::new(),
-            gestures: Gestures::new(DEFAULT_HOLD_MS),
-            last_gesture: None,
+            input: InputPlane::new(),
             now_ms: 0,
-            enc_progress: 0.0,
-            back_progress: 0.0,
-            hold_hints: HoldHints::new(),
+            // Force the host's first frame: nothing has been drawn yet, so the map is dirty.
+            map_dirty: true,
         }
     }
 
@@ -406,10 +424,15 @@ impl App {
     /// once per load.
     pub fn tick(&mut self, clock: RideClock, sensors: Sensors, route: Option<&RouteReader>) {
         let now_ms = clock.0;
+        // The camera state before this tick's fix, so a fresh fix that actually moved the
+        // camera / marker / heading is detected below by one `AppState` comparison (it's
+        // `Copy` + `PartialEq`).
+        let state_before = self.state;
         // The matcher follows the *navigated route*: a load or a "Swap route only" re-locks it.
         if self.activity.active_route != self.matched_route {
             self.route_match.reset();
             self.matched_route = self.activity.active_route;
+            self.map_dirty = true; // route load / swap repaints the route line + recenters
         }
         // The accumulators + breadcrumb follow the *tracking session*: a new session restarts
         // them, while a swap (which keeps the session) leaves them running.
@@ -417,9 +440,18 @@ impl App {
             self.activity.reset_ride();
             self.breadcrumb.clear();
             self.ride_session = self.activity.session;
+            self.map_dirty = true; // the breadcrumb cleared — the map's travelled trail changed
         }
-        // Mirror the active route's length for the riding views (0 when none loaded).
+        // Mirror the active route's length for the riding views (0 when none loaded). A change
+        // here means the *drawable* route just appeared or vanished — a load, or (on the device)
+        // a transient SD glitch recovering, where the geometry becomes streamable a frame or two
+        // after the load. Dirty the map so the route line is painted (or cleared) even on a frame
+        // with no fresh fix to trigger it, closing an under-redraw gap independent of `active_route`.
+        let route_total_before = self.activity.route_total_m;
         self.activity.route_total_m = route.map_or(0, |r| r.total_distance_m);
+        if self.activity.route_total_m != route_total_before {
+            self.map_dirty = true;
+        }
 
         let Sensors { loc, altimeter, track } = sensors;
         // Barometric altitude on its own cadence → climb + the elevation stamped on the log.
@@ -451,6 +483,27 @@ impl App {
                 }
             }
         }
+        // A fresh fix that actually moved the camera, marker or heading dirties the map — but
+        // only on a screen that *draws* live data (the Map / Statistics riding views). On the
+        // Home screensaver and the menus the camera still follows the fix, yet nothing they draw
+        // uses it, so a fix there must not redraw them (the "static Home does zero map renders"
+        // criterion). The `AppState` comparison also makes a stationary fix that changed nothing
+        // a no-op. (The breadcrumb only grows on a *moving* logged fix, which moved `user_fix`
+        // too, so it's covered by this same comparison — no separate breadcrumb check needed.)
+        if self.state != state_before && self.shows_live_data() {
+            self.map_dirty = true;
+        }
+    }
+
+    /// Whether the screen currently drawing the base view shows live sensor data (the user
+    /// fix / ride accumulators) — the Map and Statistics riding views do, so a fresh fix must
+    /// redraw them; the Home screensaver and the menus don't, so a fix (which still moves the
+    /// camera behind them) must not. The base is the lowest *opaque* drawn screen — the same one
+    /// [`render_map`](App::render_map) starts from — so an overlay (Ride control) over a riding
+    /// view still counts as live, since the map keeps moving under the pause panel.
+    fn shows_live_data(&self) -> bool {
+        let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
+        matches!(self.stack.get(base), Some(Screen::Map(_) | Screen::Statistics(_)))
     }
 
     /// Replace the resident route catalog from the host's store (the simulator's
@@ -468,48 +521,73 @@ impl App {
         &self.catalog
     }
 
-    /// Drain raw control input through the shared recognizer and dispatch each
-    /// resulting gesture to the top screen, applying the navigation transition it
-    /// returns. `clock` is the [`InputClock`] (host/MCU wall-clock millis) for hold
-    /// timing. Call once per frame even with no pending events — that is how a held
-    /// button's long-press fires at its threshold.
+    /// Recognise this frame's raw control input and apply each resulting gesture to the top
+    /// screen, then advance the visible screens' timed content. The convenience that fuses the
+    /// two planes into one call for the simulator and the firmware's single-executor fallback;
+    /// `clock` is the [`InputClock`] (host/MCU wall-clock millis) for hold timing. Call once per
+    /// frame even with no pending events — that is how a held button's long-press fires.
+    ///
+    /// The two-plane firmware does **not** call this: its high-priority plane owns a separate
+    /// [`InputPlane`] that recognises gestures and feeds them back through
+    /// [`apply_gesture`](App::apply_gesture), while [`advance_animations`](App::advance_animations)
+    /// runs on the map plane. This method is exactly those two halves over `App`'s own
+    /// [`InputPlane`], so all three hosts behave identically.
     pub fn handle_input(&mut self, clock: InputClock, input: &mut dyn InputSource) {
-        let now_ms = clock.0;
-        self.now_ms = now_ms;
-        while let Some(ev) = input.poll() {
-            if let Some(g) = self.gestures.on_event(ev, now_ms) {
-                self.dispatch(g);
-            }
+        self.now_ms = clock.0;
+        // Recognise raw input into gestures and apply each. The borrow split is the point:
+        // `recognize` borrows `self.input`, so the gestures are buffered there and applied
+        // *after* it returns — `apply_gesture` touches the App's other fields, never
+        // `self.input`. Recognition depends only on the raw events + the clock, so this is
+        // identical to applying each gesture inline (capacity dwarfs one frame's events —
+        // the input queue is bounded; overflow is unreachable, like `ButtonInput`'s queue).
+        let mut pending: heapless::Vec<Gesture, GESTURE_BUF> = heapless::Vec::new();
+        self.input.recognize(clock, input, |g| {
+            let _ = pending.push(g);
+        });
+        for g in pending {
+            self.apply_gesture(g);
         }
-        // `tick` is the only source of Hold/BackHold — note which fired this frame so
-        // the hint overlay pops the matching pill the instant the threshold crosses.
-        let (mut enc_fired, mut back_fired) = (false, false);
-        if let Some(g) = self.gestures.tick(now_ms) {
-            match g {
-                Gesture::Hold => enc_fired = true,
-                Gesture::BackHold => back_fired = true,
-                _ => {}
-            }
-            self.dispatch(g);
-        }
-        self.enc_progress = self.gestures.encoder_progress(now_ms);
-        self.back_progress = self.gestures.back_progress(now_ms);
-        self.hold_hints.update(
-            now_ms,
-            self.enc_progress,
-            self.back_progress,
-            enc_fired,
-            back_fired,
-        );
+        self.advance_animations(clock);
     }
 
-    /// Route one gesture to the top screen and apply the transition it returns.
-    fn dispatch(&mut self, g: Gesture) {
-        self.last_gesture = Some(g);
+    /// Apply one recognised gesture to the top screen and run the navigation transition it
+    /// returns — the **map plane's** half of input handling, split out from recognition.
+    ///
+    /// The two-plane firmware drains the high-priority plane's gesture channel and calls this
+    /// for each gesture, in order, so the screen transition lands a frame after the overlay
+    /// already confirmed the press — a clean flow rather than a frozen UI. Uses the map plane's
+    /// clock ([`now_ms`](App::now_ms), set by [`advance_animations`](App::advance_animations) /
+    /// [`handle_input`](App::handle_input)) for the [`Ctx`](screen::Ctx).
+    pub fn apply_gesture(&mut self, g: Gesture) {
+        // Any recognized gesture drives the top screen, and every screen — the map, the
+        // menus, the Ride-control overlay — renders into the map plane (Layer 1), so an
+        // applied gesture dirties it. Conservative by design (a gesture a screen ignores
+        // still costs one redraw), which is what keeps the idle path exact: no gesture is
+        // recognized, so `apply_gesture` never runs and the map stays clean — zero idle renders.
+        self.map_dirty = true;
         let App { state, activity, catalog, stack, now_ms, .. } = self;
         let mut cx = Ctx { state, activity, routes: catalog.as_slice(), now_ms: *now_ms };
         let t = stack.last_mut().expect("the stack always has the Home root").handle(g, &mut cx);
         screen::apply(stack, t);
+    }
+
+    /// Advance the **map plane's** clock to `clock` and let each visible screen surface any
+    /// time-driven repaint need — today the Statistics cursor's spring-back to the live
+    /// position — dirtying the map if any advanced. So a screen surfaces its own timed-refresh
+    /// rather than the host re-rendering on a blind heartbeat (issue #47). Cheap: a clock
+    /// comparison per drawn screen, over the same `base..` range [`render_map`](App::render_map)
+    /// draws (so an overlay over a riding view still lets the view underneath settle).
+    ///
+    /// [`handle_input`](App::handle_input) calls this for the single-loop hosts; the two-plane
+    /// firmware calls it directly on its map plane (its input lives on a separate executor).
+    pub fn advance_animations(&mut self, clock: InputClock) {
+        self.now_ms = clock.0;
+        let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
+        let mut animated = false;
+        for scr in self.stack.iter_mut().skip(base) {
+            animated |= scr.animate(self.now_ms);
+        }
+        self.map_dirty |= animated;
     }
 
     /// Render the current screen and any overlays above it into `target`, a
@@ -577,18 +655,15 @@ impl App {
         }
 
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
-        let App {
-            state,
-            activity,
-            catalog,
-            renderer,
-            stack,
-            now_ms,
-            enc_progress,
-            profile,
-            breadcrumb,
-            ..
-        } = self;
+        // The in-screen confirm fill (RideControl / RouteSwap) tracks the encoder hold-progress
+        // owned by the input plane. On the single-loop hosts that is `App`'s own, kept live by
+        // `handle_input`. On the two-plane firmware `App` owns only the map plane and this reads
+        // `0.0` — which matches the render-on-demand behaviour anyway: a pure hold-charge never
+        // dirties the map (issue #47), so the map (and this fill) doesn't redraw mid-charge; the
+        // live confirmation is the overlay bulge on its own high-priority plane.
+        let hold_progress = self.input.encoder_hold_progress();
+        let App { state, activity, catalog, renderer, stack, now_ms, profile, breadcrumb, .. } =
+            self;
         let mut rx = Render {
             reader,
             renderer,
@@ -601,7 +676,7 @@ impl App {
             w,
             h,
             now_ms: *now_ms,
-            hold_progress: *enc_progress,
+            hold_progress,
         };
         let mut stats = RenderStats::default();
         for (i, scr) in stack.iter().enumerate().skip(base) {
@@ -634,7 +709,7 @@ impl App {
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
-        self.hold_hints.draw(target, &color_fn, w as i32, h as i32, self.now_ms);
+        self.input.render_overlay(target, w, h, color_fn);
     }
 
     /// Whether the overlay plane has live content this frame — a hold bulge that is
@@ -643,22 +718,46 @@ impl App {
     /// must repaint over an unchanged map; it is `false` exactly when the overlay
     /// would draw nothing, so the overlay layer can stay idle.
     pub fn overlay_active(&self) -> bool {
-        self.hold_hints.active(self.now_ms)
+        self.input.overlay_active()
+    }
+
+    /// Drain the repaint demand accumulated since the last call, resetting to
+    /// [`Dirty::CLEAN`]. The host calls this **once per frame** after [`tick`](App::tick) +
+    /// [`handle_input`](App::handle_input), then renders [`render_map`](App::render_map) only
+    /// when [`Dirty::map`] and [`render_overlay`](App::render_overlay) only when
+    /// [`Dirty::overlay`] — the render-on-demand loop (issue #47).
+    ///
+    /// [`map`](Dirty::map) is the accumulation of every map-affecting mutation since the last
+    /// drain (an applied gesture, a camera-moving fix on a riding view, a route/session change,
+    /// a screen's timed `animate`). [`overlay`](Dirty::overlay) is *derived* by the
+    /// [`InputPlane`] from the live hold-bulge state rather than accumulated: it's set while
+    /// the bulge is live, plus exactly one trailing frame after it goes quiet so the host can
+    /// clear it off Layer 2. Because that trailing edge is tracked across calls, draining twice
+    /// in one frame would swallow it — call exactly once per frame.
+    ///
+    /// (The two-plane firmware doesn't use the `overlay` flag here — its high-priority plane
+    /// drives the overlay from its *own* [`InputPlane::take_overlay_dirty`]; this `App` owns
+    /// only the map plane there. The single-loop hosts use both.)
+    pub fn take_dirty(&mut self) -> Dirty {
+        Dirty {
+            map: core::mem::take(&mut self.map_dirty),
+            overlay: self.input.take_overlay_dirty(),
+        }
     }
 
     /// The most recently recognized gesture (host input readout), if any.
     pub fn last_gesture(&self) -> Option<Gesture> {
-        self.last_gesture
+        self.input.last_gesture()
     }
 
     /// In-flight encoder hold-progress (0.0–1.0) for the confirm-ring readout.
     pub fn encoder_hold_progress(&self) -> f32 {
-        self.enc_progress
+        self.input.encoder_hold_progress()
     }
 
     /// In-flight Back hold-progress (0.0–1.0).
     pub fn back_hold_progress(&self) -> f32 {
-        self.back_progress
+        self.input.back_hold_progress()
     }
 
     /// The current operating mode.
