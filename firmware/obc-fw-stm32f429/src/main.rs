@@ -747,7 +747,18 @@ async fn main(_spawner: Spawner) {
             // panel rate while interacting) rather than logging a point every loop.
             let route_src =
                 if redraw { storage.as_ref().and_then(|s| s.route_source()) } else { None };
-            let route = route_src.as_ref().and_then(|s| RouteReader::open(s).ok());
+            // A route is selected but its header won't read → a transient SD glitch (flaky
+            // jumpers): hide the route this frame and flag it. It returns once a read succeeds.
+            let route = match route_src.as_ref() {
+                Some(s) => match RouteReader::open(s) {
+                    Ok(r) => Some(r),
+                    Err(_) => {
+                        defmt::warn!("SD: route read failed (flaky link?) — route hidden this frame");
+                        None
+                    }
+                },
+                None => None,
+            };
             let mut tsink =
                 if redraw { storage.as_ref().and_then(|s| s.track_sink()) } else { None };
             let track_dyn = tsink.as_mut().map(|t| t as &mut dyn TrackSink);
