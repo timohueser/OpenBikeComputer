@@ -298,9 +298,12 @@ impl SimGui {
             player.play();
             g.gpx = Some(player);
         }
-        // Follow the rider, and tighten the fit-to-whole-tile zoom to a riding view so the
-        // route reads as a ribbon up the pass with the switchbacks visible.
+        // Follow the rider in heading-up (the map rotates so the direction of travel is
+        // always up — the natural bike-computer view), and tighten the fit-to-whole-tile
+        // zoom to a riding view so the route reads as a ribbon up the pass with the
+        // switchbacks visible.
         g.app.state.mode = CameraMode::Follow;
+        g.app.state.heading_up = true;
         g.app.state.zoom *= 12.0;
         g
     }
