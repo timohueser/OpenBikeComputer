@@ -22,12 +22,15 @@
 //! - [`app`] — [`App`]: owns the screen stack, the gesture recognizer, the camera
 //!   [`AppState`] and the renderer, and drives a frame; [`AppState`] is the camera
 //!   core projected into an [`obc_render::Viewport`].
+//! - [`dirty`] — [`Dirty`]: the per-frame "which plane changed" signal the
+//!   render-on-demand host drains via [`App::take_dirty`](app::App::take_dirty).
 
 #![no_std]
 
 pub mod activity;
 pub mod app;
 pub mod breadcrumb;
+pub mod dirty;
 pub mod hal;
 pub mod hold_hint;
 pub mod input;
@@ -37,6 +40,7 @@ pub mod screen;
 pub use activity::{Activity, Mode, TrackAction};
 pub use app::{App, AppState, CameraMode, Pan, PanAxis};
 pub use breadcrumb::Breadcrumb;
+pub use dirty::Dirty;
 pub use hal::{
     AltimeterSource, Button, ButtonEvent, Fix, InputClock, InputEvent, InputSource, LocationSource,
     RideClock, Sensors, TrackSink,

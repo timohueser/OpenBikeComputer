@@ -198,6 +198,20 @@ impl Screen {
     pub fn is_overlay(&self) -> bool {
         matches!(self, Screen::RideControl(_))
     }
+
+    /// Advance this screen's **time-driven** content one frame, returning whether the drawn
+    /// output changed so the render-on-demand host marks the map dirty (issue #47). Most
+    /// screens change only on input or a fresh fix and return `false`; the Statistics view's
+    /// cursor springs back to the live position on an idle timer — a change driven by neither
+    /// input nor a fix — so it reports that here. The host calls this each frame on every drawn
+    /// screen; a future clock/battery readout would hook in the same way (a small region it
+    /// owns, not the whole map, ticking on its own interval).
+    pub fn animate(&mut self, now_ms: u32) -> bool {
+        match self {
+            Screen::Statistics(s) => s.animate(now_ms),
+            _ => false,
+        }
+    }
 }
 
 /// Height of the wood title bar. Sized for the Body-tier title (28 px cell, ≈18 px caps)
