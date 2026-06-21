@@ -36,6 +36,7 @@
 
     body {
       margin: 0;
+      overflow-x: hidden;
       color: var(--ink);
       background-color: var(--parchment);
       font-family: var(--sans);
@@ -158,13 +159,30 @@
     }
     @keyframes spin { to { transform: rotate(360deg); } }
 
-    .device-caption { margin: 6px 0 0; font-size: 13px; color: var(--ink-soft); text-align: center; max-width: 22rem; }
+    .device-caption { margin: 8px 0 0; font-size: 13px; color: var(--ink-soft); text-align: center; max-width: 22rem; }
     .device-caption b { color: var(--ink); font-weight: 600; }
-    .keys { margin: 12px 0 0; display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
-    .key {
-      font-family: var(--mono); font-size: 11.5px; color: var(--ink-soft);
+
+    /* On-screen device controls — drive the sim by tap (works on touch + desktop;
+       they dispatch the same key events the firmware already handles). */
+    .controls {
+      margin: 13px 0 0; display: flex; gap: 8px; flex-wrap: wrap; justify-content: center;
+    }
+    .ctl {
+      font-family: var(--sans); font-size: 14px; font-weight: 600; color: var(--ink);
       background: var(--parchment-2); border: 1px solid var(--parchment-3);
-      border-radius: 6px; padding: 3px 7px;
+      border-radius: 10px; padding: 10px 15px; cursor: pointer;
+      min-width: 46px; min-height: 42px;
+      user-select: none; -webkit-user-select: none; touch-action: none;
+      transition: background .12s ease, color .12s ease, transform .06s ease;
+    }
+    .ctl:hover { background: var(--parchment-3); }
+    .ctl.pressed, .ctl:active { background: var(--wood); color: var(--parchment); transform: translateY(1px); }
+    .ctl-arrow { font-size: 17px; line-height: 1; }
+    .ctl-hint { margin: 9px 0 0; font-size: 12px; color: var(--ink-soft); text-align: center; max-width: 24rem; }
+    .ctl-hint kbd {
+      font-family: var(--mono); font-size: 11px; color: var(--ink-soft);
+      background: var(--parchment-2); border: 1px solid var(--parchment-3);
+      border-radius: 4px; padding: 1px 5px;
     }
 
     /* ---------- features ---------- */
@@ -231,6 +249,15 @@
       .features { grid-template-columns: 1fr; }
       h1 { font-size: clamp(30px, 8vw, 40px); }
     }
+    /* On phones the section links don't fit beside the brand — keep just the
+       brand and the GitHub link, and let the page scroll to the sections. */
+    @media (max-width: 600px) {
+      header { padding-top: 16px; }
+      .nav-links a:not(.gh) { display: none; }
+      .nav-links { gap: 0; }
+      .brand .name { font-size: 16px; }
+      footer .wrap { gap: 10px; }
+    }
   </style>
 </head>
 
@@ -290,12 +317,14 @@
             <canvas id="device_canvas"></canvas>
             <div id="loading_text"><span class="spinner"></span>Warming up the device…</div>
           </div>
-          <p class="device-caption"><b>Try it:</b> it's interactive.</p>
-          <div class="keys">
-            <span class="key">Enter — select</span>
-            <span class="key">Backspace — back</span>
-            <span class="key">◂ ▸ — scroll wheel</span>
+          <p class="device-caption"><b>Try it</b> — tap the controls to drive the device.</p>
+          <div class="controls" role="group" aria-label="Device controls">
+            <button class="ctl ctl-arrow" data-key="ArrowLeft" aria-label="Scroll back" title="Scroll back">◂</button>
+            <button class="ctl" data-key="Enter">Select</button>
+            <button class="ctl" data-key="Backspace">Back</button>
+            <button class="ctl ctl-arrow" data-key="ArrowRight" aria-label="Scroll forward" title="Scroll forward">▸</button>
           </div>
+          <p class="ctl-hint">Or on a keyboard: <kbd>←</kbd> <kbd>→</kbd> scroll · <kbd>Enter</kbd> select · <kbd>Backspace</kbd> back — hold for a long-press.</p>
         </div>
       </div>
     </section>
@@ -377,6 +406,49 @@
       <div class="made">Runs on the desktop today · headed for the trail.</div>
     </div>
   </footer>
+
+  <script>
+    // Drive the embedded device from the on-screen buttons. The sim already handles
+    // these keys (←/→ scroll the encoder, Enter = press, Backspace = back), so we just
+    // forward synthetic key events to the canvas — making it work on touch, where there's
+    // no keyboard and no wheel-scroll. Holding a button holds the key (long-press).
+    (function () {
+      var canvas = document.getElementById('device_canvas');
+      if (!canvas) return;
+      var CODE = { ArrowLeft: 37, ArrowRight: 39, Enter: 13, Backspace: 8 };
+      var MIN_HOLD = 110; // ms — keep the key 'down' long enough for a frame to sample it
+      function send(type, key) {
+        canvas.dispatchEvent(new KeyboardEvent(type, {
+          key: key, code: key, keyCode: CODE[key], which: CODE[key],
+          bubbles: true, cancelable: true
+        }));
+      }
+      document.querySelectorAll('.ctl[data-key]').forEach(function (btn) {
+        var key = btn.getAttribute('data-key'), downAt = 0, upTimer = null;
+        function press(e) {
+          e.preventDefault();
+          canvas.focus();
+          if (upTimer) { clearTimeout(upTimer); upTimer = null; }
+          downAt = performance.now();
+          btn.classList.add('pressed');
+          send('keydown', key);
+        }
+        function release(e) {
+          if (e) e.preventDefault();
+          var wait = Math.max(0, MIN_HOLD - (performance.now() - downAt));
+          upTimer = setTimeout(function () {
+            send('keyup', key);
+            btn.classList.remove('pressed');
+          }, wait);
+        }
+        btn.addEventListener('pointerdown', press);
+        btn.addEventListener('pointerup', release);
+        btn.addEventListener('pointerleave', release);
+        btn.addEventListener('pointercancel', release);
+        btn.addEventListener('click', function (e) { e.preventDefault(); });
+      });
+    })();
+  </script>
 </body>
 
 </html>
