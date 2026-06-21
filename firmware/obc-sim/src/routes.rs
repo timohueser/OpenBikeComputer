@@ -10,15 +10,19 @@
 
 use std::path::{Path, PathBuf};
 
-use obc_route::{gpx_to_obcr, ByteSink, Error, RouteStats, RouteSummary, SliceSource};
+use obc_route::{RouteStats, RouteSummary, SliceSource};
+#[cfg(not(target_arch = "wasm32"))]
+use obc_route::{gpx_to_obcr, ByteSink, Error};
 
 /// A `ByteSink` over a growable `Vec` — converts a GPX to OBCR bytes in memory before
 /// they're written to the folder.
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Default)]
 struct VecSink {
     buf: Vec<u8>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl ByteSink for VecSink {
     fn write(&mut self, b: &[u8]) -> Result<(), Error> {
         self.buf.extend_from_slice(b);
@@ -37,6 +41,7 @@ impl ByteSink for VecSink {
 
 /// The folder-backed route store: the catalog of summaries (for the menu) plus the
 /// bytes of the one active route (for the Map to stream).
+#[cfg(not(target_arch = "wasm32"))]
 pub struct RouteStore {
     dir: PathBuf,
     catalog: Vec<RouteSummary>,
@@ -45,6 +50,7 @@ pub struct RouteStore {
     active_bytes: Option<Vec<u8>>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl RouteStore {
     /// Open and scan the routes folder. A missing folder is fine — it scans to an
     /// empty catalog (the menu shows its empty state); the folder is created lazily on
@@ -125,5 +131,62 @@ impl RouteStore {
     /// opening a [`RouteReader`](obc_route::RouteReader) to stream geometry from.
     pub fn active_source(&self) -> Option<SliceSource<'_>> {
         self.active_bytes.as_deref().map(SliceSource)
+    }
+}
+
+// --- Web (wasm32) route store ---------------------------------------------------
+//
+// The browser has no folder to scan, so the web build keeps the catalog + route
+// bytes entirely in memory. Same public surface as the native folder store above,
+// so `gui.rs` drives both identically. The demo routes baked into the wasm binary
+// are seeded in [`RouteStore::open`] (none yet — that lands with the curated demo
+// dataset; until then the Route menu shows its empty state).
+#[cfg(target_arch = "wasm32")]
+pub struct RouteStore {
+    catalog: Vec<RouteSummary>,
+    bytes: Vec<Vec<u8>>,
+    active: Option<usize>,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl RouteStore {
+    /// `dir` is ignored on the web (there is no filesystem); the signature matches the
+    /// native store so the caller is target-agnostic.
+    pub fn open(_dir: impl Into<PathBuf>) -> Self {
+        let mut s = RouteStore { catalog: Vec::new(), bytes: Vec::new(), active: None };
+        s.seed_embedded();
+        s
+    }
+
+    /// Load the demo routes compiled into the wasm binary — the web stand-in for the
+    /// device's SD card. Add more `include_bytes!` entries here to grow the menu.
+    fn seed_embedded(&mut self) {
+        for route in [include_bytes!("../assets/grimsel-climb.obcr").as_slice()] {
+            if let Ok(sum) = RouteSummary::read(&SliceSource(route)) {
+                self.catalog.push(sum);
+                self.bytes.push(route.to_vec());
+            }
+        }
+    }
+
+    pub fn catalog(&self) -> &[RouteSummary] {
+        &self.catalog
+    }
+
+    /// No folder to re-read on the web; the embedded catalog is fixed.
+    pub fn rescan(&mut self) {}
+
+    /// GPX import (USB-drop equivalent) isn't wired up on the web yet — a file-input
+    /// upload path replaces the native dialog later.
+    pub fn import_gpx(&mut self, _gpx_path: &Path) -> Result<RouteStats, String> {
+        Err("GPX import is not available in the web build yet".into())
+    }
+
+    pub fn sync_active(&mut self, want: Option<usize>) {
+        self.active = want.filter(|&i| i < self.bytes.len());
+    }
+
+    pub fn active_source(&self) -> Option<SliceSource<'_>> {
+        self.active.and_then(|i| self.bytes.get(i)).map(|b| SliceSource(b.as_slice()))
     }
 }

@@ -9,15 +9,19 @@
 //! unconverted. The save filename is the route that *started* the session, so a later "Swap
 //! route only" can never rename a finished file.
 
-use std::fs::{self, File, OpenOptions};
-use std::io::Write;
 use std::path::PathBuf;
 
 use obc_app::{TrackAction, TrackSink};
-use obc_route::{encode_record, track_to_gpx, ByteSink, Error, SliceSource, TrackPoint};
+#[cfg(not(target_arch = "wasm32"))]
+use {
+    obc_route::{encode_record, track_to_gpx, ByteSink, Error, SliceSource, TrackPoint},
+    std::fs::{self, File, OpenOptions},
+    std::io::Write,
+};
 
 /// An open ride log: the session it belongs to, the save name (frozen at begin), its temp
 /// `.obct` path, and the append handle. Implements [`TrackSink`], so `App::tick` logs to it.
+#[cfg(not(target_arch = "wasm32"))]
 struct OpenLog {
     id: u32,
     name: String,
@@ -25,6 +29,7 @@ struct OpenLog {
     file: File,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl TrackSink for OpenLog {
     fn record(&mut self, p: TrackPoint) {
         // Append the fixed record; a write error just drops the point (the ride continues).
@@ -34,11 +39,13 @@ impl TrackSink for OpenLog {
 
 /// The simulator's recorded-track store: a folder of saved `.gpx` files plus at most one open
 /// `.obct` log.
+#[cfg(not(target_arch = "wasm32"))]
 pub struct TrackStore {
     dir: PathBuf,
     open: Option<OpenLog>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl TrackStore {
     /// Open (creating) the tracks folder `dir`.
     pub fn open(dir: impl Into<PathBuf>) -> Self {
@@ -136,6 +143,7 @@ impl TrackStore {
 }
 
 /// Replace path separators / control chars so a route name is a safe filename stem.
+#[cfg(not(target_arch = "wasm32"))]
 fn sanitize(name: &str) -> String {
     let s: String = name
         .chars()
@@ -151,8 +159,10 @@ fn sanitize(name: &str) -> String {
 
 /// A `ByteSink` collecting the GPX into a `Vec` before one `fs::write` (mirrors the route
 /// store's in-memory conversion; a ride's GPX is a few MB at most on the host).
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Default)]
 struct VecSink(Vec<u8>);
+#[cfg(not(target_arch = "wasm32"))]
 impl ByteSink for VecSink {
     fn write(&mut self, b: &[u8]) -> Result<(), Error> {
         self.0.extend_from_slice(b);
@@ -162,5 +172,47 @@ impl ByteSink for VecSink {
         let o = off as usize;
         self.0[o..o + b.len()].copy_from_slice(b);
         Ok(())
+    }
+}
+
+// --- Web (wasm32) track store ---------------------------------------------------
+//
+// No SD card / filesystem in the browser, so the web build keeps no on-disk log:
+// the on-screen breadcrumb and ride stats come from the shared app state, not from
+// this sink. It only tracks whether a ride is active so `is_recording()` stays
+// honest. Saving a finished ride to a downloadable `.gpx` is a later addition.
+#[cfg(target_arch = "wasm32")]
+pub struct TrackStore {
+    recording: bool,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl TrackStore {
+    /// `dir` is ignored on the web; the signature matches the native store.
+    pub fn open(_dir: impl Into<PathBuf>) -> Self {
+        TrackStore { recording: false }
+    }
+
+    /// Mirror the native reconcile's recording flag without touching a filesystem:
+    /// a drained Save/Discard ends the ride, then a live session id (re)starts it.
+    pub fn reconcile(
+        &mut self,
+        action: Option<TrackAction>,
+        session: Option<u32>,
+        _name: Option<&str>,
+    ) {
+        if matches!(action, Some(TrackAction::Save) | Some(TrackAction::Discard)) {
+            self.recording = false;
+        }
+        self.recording = session.is_some();
+    }
+
+    /// No persistent sink on the web — the app still draws the live breadcrumb itself.
+    pub fn sink(&mut self) -> Option<&mut dyn TrackSink> {
+        None
+    }
+
+    pub fn is_recording(&self) -> bool {
+        self.recording
     }
 }
