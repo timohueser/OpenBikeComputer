@@ -8,7 +8,7 @@
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
 use obc_app::screen::palette;
 use obc_app::{App, AppState, Button, ButtonEvent, InputClock, InputEvent, InputSource};
-use obc_reader::{rgb565_to_rgb888, Reader};
+use obc_reader::{rgb565_to_rgb888, MapCache, Reader, SliceSource};
 
 /// A minimal valid file: one sea-backdrop style, one empty LOD leaf, no chunks — the
 /// map is a flat backdrop, so every non-sea pixel comes from the overlay.
@@ -135,7 +135,9 @@ fn rgb(c: u16) -> Rgb888 {
 /// the real device size, so each control's bulge lands in its own screen half (its
 /// fixed base width can span more than half of a smaller buffer).
 fn render(app: &mut App, bytes: &[u8]) -> Buf {
-    let reader = Reader::new(bytes).expect("valid v5 file");
+    let cache = MapCache::new();
+    let src = SliceSource(bytes);
+    let reader = Reader::new(&src, &cache).expect("valid v5 file");
     let mut buf = Buf::new(240, 320);
     app.render_frame(&mut buf, &reader, None, 240.0, 320.0, rgb);
     buf
