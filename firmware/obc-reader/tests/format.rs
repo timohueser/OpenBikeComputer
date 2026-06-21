@@ -6,7 +6,7 @@
 //! fixture) keeps the Rust and Python encoders pinned to the same layout: if
 //! either drifts, these break.
 
-use obc_reader::{BBox, Error, Kind, Reader, MAX_FEAT_PTS, MAX_FEAT_RINGS};
+use obc_reader::{BBox, Error, Kind, MapCache, Reader, SliceSource, MAX_FEAT_PTS, MAX_FEAT_RINGS};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Feature {
@@ -236,7 +236,9 @@ fn two_lod_file() -> Vec<u8> {
 #[test]
 fn header_and_lod_table() {
     let bytes = two_lod_file();
-    let r = Reader::new(&bytes).unwrap();
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let r = Reader::new(&src, &cache).unwrap();
 
     assert_eq!(r.version, 5);
     assert_eq!(r.marker_color, MARKER);
@@ -259,14 +261,18 @@ fn header_and_lod_table() {
 fn marker_color_round_trips() {
     // The header's marker color (v4) parses back unchanged at its fixed offset.
     let bytes = two_lod_file();
-    let r = Reader::new(&bytes).unwrap();
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let r = Reader::new(&src, &cache).unwrap();
     assert_eq!(r.marker_color, MARKER);
 }
 
 #[test]
 fn styles_parse() {
     let bytes = two_lod_file();
-    let r = Reader::new(&bytes).unwrap();
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let r = Reader::new(&src, &cache).unwrap();
 
     let s1 = r.style(1).expect("style 1");
     assert_eq!(s1.z_index, 3);
@@ -287,7 +293,9 @@ fn backdrop_is_lowest_z_regardless_of_id() {
     // paint order (lowest z), i.e. id 2 — not the lowest id. This guards the
     // sea/background lookup against style-ID reassignment.
     let bytes = two_lod_file();
-    let r = Reader::new(&bytes).unwrap();
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let r = Reader::new(&src, &cache).unwrap();
 
     let bg = r.backdrop_style().expect("a backdrop");
     assert_eq!(bg.id, 2);
@@ -298,7 +306,9 @@ fn backdrop_is_lowest_z_regardless_of_id() {
 #[test]
 fn select_lod_for_mpp_picks_finest_covering() {
     let bytes = two_lod_file(); // max_mpp = [+inf, 50]
-    let r = Reader::new(&bytes).unwrap();
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let r = Reader::new(&src, &cache).unwrap();
 
     assert_eq!(r.select_lod_for_mpp(1000.0), 0); // only +inf covers
     assert_eq!(r.select_lod_for_mpp(51.0), 0); // 50 doesn't cover
@@ -310,7 +320,9 @@ fn select_lod_for_mpp_picks_finest_covering() {
 #[test]
 fn query_single_leaf() {
     let bytes = two_lod_file();
-    let r = Reader::new(&bytes).unwrap();
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let r = Reader::new(&src, &cache).unwrap();
 
     // A view overlapping the global bbox hits the single leaf (chunk 0).
     let hits = r.query::<64>(
@@ -332,7 +344,9 @@ fn query_single_leaf() {
 #[test]
 fn decode_line() {
     let bytes = two_lod_file();
-    let r = Reader::new(&bytes).unwrap();
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let r = Reader::new(&src, &cache).unwrap();
     let node = r.bbox;
 
     let feats = decode_chunk(&r, 0, 0, &node);
@@ -347,7 +361,9 @@ fn decode_line() {
 #[test]
 fn decode_polygon_with_hole() {
     let bytes = two_lod_file();
-    let r = Reader::new(&bytes).unwrap();
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let r = Reader::new(&src, &cache).unwrap();
     let node = r.bbox;
 
     let feats = decode_chunk(&r, 1, 0, &node);
@@ -363,7 +379,9 @@ fn decode_polygon_with_hole() {
 #[test]
 fn visitor_matches_owned_decode() {
     let bytes = two_lod_file();
-    let r = Reader::new(&bytes).unwrap();
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let r = Reader::new(&src, &cache).unwrap();
     let node = r.bbox;
 
     // The borrowing for_each_feature must yield exactly what decode_chunk does.
@@ -397,7 +415,9 @@ fn decode_16bit_deltas() {
         STYLES,
         &[LodSpec { max_mpp: f32::INFINITY, index: vec![0], chunks: vec![line], chunk_size: CS }],
     );
-    let r = Reader::new(&bytes).unwrap();
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let r = Reader::new(&src, &cache).unwrap();
     let feats = decode_chunk(&r, 0, 0, &r.bbox);
     assert_eq!(feats.len(), 1);
     assert_eq!(feats[0].exterior, vec![(0, 0), (300, 400), (100, 400)]);
@@ -422,7 +442,9 @@ fn quadtree_subdivision_and_node_bbox() {
         STYLES,
         &[LodSpec { max_mpp: f32::INFINITY, index, chunks: vec![line], chunk_size: CS }],
     );
-    let r = Reader::new(&bytes).unwrap();
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let r = Reader::new(&src, &cache).unwrap();
 
     let nw = obc_reader::BBox { min_lon: 0, min_lat: 500, max_lon: 500, max_lat: 1000 };
 
@@ -459,14 +481,17 @@ fn empty_leaf_yields_nothing() {
             chunk_size: CS,
         }],
     );
-    let r = Reader::new(&bytes).unwrap();
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let r = Reader::new(&src, &cache).unwrap();
     assert!(r.query::<64>(0, &r.bbox).is_empty());
 }
 
 #[test]
 fn rejects_bad_input() {
     // Reader isn't Debug, so match the Err arm rather than using unwrap_err.
-    let err = |b: &[u8]| match Reader::new(b) {
+    let cache = MapCache::new();
+    let err = |b: &[u8]| match Reader::new(&SliceSource(b), &cache) {
         Ok(_) => panic!("expected Err"),
         Err(e) => e,
     };
@@ -491,7 +516,9 @@ fn out_of_range_chunk_id_decodes_nothing() {
     // or, on the 32-bit device, wrap the offset and panic. `u32::MAX` is the
     // arithmetic-overflow edge.
     let bytes = two_lod_file();
-    let r = Reader::new(&bytes).unwrap();
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let r = Reader::new(&src, &cache).unwrap();
     let node = r.bbox;
     assert!(decode_chunk(&r, 0, 1, &node).is_empty());
     assert!(decode_chunk(&r, 0, u32::MAX, &node).is_empty());
@@ -509,7 +536,7 @@ fn rejects_overflowing_lod_table_offset() {
     // front; on the 64-bit host the same value simply exceeds data.len().
     let mut bytes = two_lod_file();
     bytes[26..30].copy_from_slice(&0xFFFF_FFF0u32.to_le_bytes()); // header lod_table_offset
-    assert!(matches!(Reader::new(&bytes), Err(Error::BadOffset)));
+    assert!(matches!(Reader::new(&SliceSource(&bytes), &MapCache::new()), Err(Error::BadOffset)));
 }
 
 #[test]
@@ -525,7 +552,7 @@ fn rejects_overflowing_chunk_region() {
     let chunk_count_at = lod_tab_off + 14;
     bytes[chunk_size_at..chunk_size_at + 2].copy_from_slice(&u16::MAX.to_le_bytes());
     bytes[chunk_count_at..chunk_count_at + 4].copy_from_slice(&u32::MAX.to_le_bytes());
-    assert!(matches!(Reader::new(&bytes), Err(Error::BadOffset)));
+    assert!(matches!(Reader::new(&SliceSource(&bytes), &MapCache::new()), Err(Error::BadOffset)));
 }
 
 #[test]
@@ -555,7 +582,9 @@ fn filtered_decode_skips_without_drifting() {
         styles,
         &[LodSpec { max_mpp: f32::INFINITY, index: vec![0], chunks: vec![chunk], chunk_size: 128 }],
     );
-    let r = Reader::new(&bytes).unwrap();
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let r = Reader::new(&src, &cache).unwrap();
     let node = r.bbox;
 
     let all = decode_chunk(&r, 0, 0, &node);
@@ -607,7 +636,9 @@ fn for_each_chunk_has_no_cap() {
             chunk_size: CS,
         }],
     );
-    let r = Reader::new(&bytes).unwrap();
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let r = Reader::new(&src, &cache).unwrap();
 
     // A view over the whole bbox overlaps all four leaves.
     let mut seen = 0;

@@ -16,7 +16,7 @@ use std::path::Path;
 
 use eframe::egui;
 use obc_app::{App, AppState, Button, CameraMode, Dirty, Fix, InputClock, RideClock, Sensors};
-use obc_reader::Reader;
+use obc_reader::{MapCache, Reader, SliceSource};
 use obc_route::{RouteIndex, RouteReader};
 
 use crate::baro::BaroSensor;
@@ -143,7 +143,9 @@ struct SimGui {
 impl SimGui {
     fn new(bytes: Vec<u8>, args: Args) -> Self {
         let (cx, cy, zoom) = {
-            let reader = Reader::new(&bytes).expect("map validated in main()");
+            let cache = MapCache::new();
+            let src = SliceSource(&bytes);
+            let reader = Reader::new(&src, &cache).expect("map validated in main()");
             crate::initial_camera(&reader, args.width)
         };
         let mut state = AppState::new(cx, cy, zoom);
@@ -255,7 +257,12 @@ impl SimGui {
 
     /// Run the shared app for one frame into the framebuffer, then upload it.
     fn render_to_texture(&mut self, ctx: &egui::Context) {
-        let reader = Reader::new(&self.bytes).expect("map validated in main()");
+        // A fresh cache per frame (the device keeps one for the whole session in SDRAM and reuses
+        // it across redraws; the sim's per-frame cache still shows the within-frame across-pass
+        // hit rate, the chunk cache's main job — see the stats panel's "Map SD" row).
+        let map_cache = MapCache::new();
+        let map_src = SliceSource(&self.bytes);
+        let reader = Reader::new(&map_src, &map_cache).expect("map validated in main()");
         let tc = self.true_color;
 
         // Open the active route's geometry *before* ticking, so the map-matcher gets it

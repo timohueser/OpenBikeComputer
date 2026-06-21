@@ -5,7 +5,7 @@
 
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
 use obc_app::{App, AppState, CameraMode, Fix, LocationSource, RideClock, Sensors};
-use obc_reader::{rgb565_to_rgb888, Reader};
+use obc_reader::{rgb565_to_rgb888, MapCache, Reader, SliceSource};
 
 /// Marker color baked into the test file (RGB565 red → Rgb888 (255,0,0)).
 const MARKER_565: u16 = 0xF800;
@@ -115,7 +115,9 @@ impl DrawTarget for Buf {
 /// Render one frame of `app` against `bytes` into a fresh 120×120 buffer, with a
 /// true-color `color_fn` (so the RGB565 marker red shows up as Rgb888 red).
 fn render(app: &mut App, bytes: &[u8]) -> Buf {
-    let reader = Reader::new(bytes).expect("valid v5 file");
+    let cache = MapCache::new();
+    let src = SliceSource(bytes);
+    let reader = Reader::new(&src, &cache).expect("valid v5 file");
     let mut buf = Buf::new(120, 120);
     app.render_frame(&mut buf, &reader, None, 120.0, 120.0, |c| {
         let (r, g, b) = rgb565_to_rgb888(c);

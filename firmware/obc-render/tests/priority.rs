@@ -15,7 +15,7 @@
 //! collection ever reverts to chunk-order (non-priority) dropping.
 
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
-use obc_reader::{rgb565_to_rgb888, Reader};
+use obc_reader::{rgb565_to_rgb888, MapCache, Reader, SliceSource};
 use obc_render::{MapRenderer, Viewport, MAX_SPANS};
 
 // Distinct colors per priority so the recording target can tell them apart.
@@ -194,7 +194,9 @@ fn priority_one_survives_saturation_across_chunks() {
     let ne = pack_poly(2, 50, 50, &[(120, 0), (0, 120), (-120, 0)]);
 
     let bytes = build_file((0, 0, 1000, 1000), styles, chunk_size, nw, ne);
-    let reader = Reader::new(&bytes).expect("valid v5 file");
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let reader = Reader::new(&src, &cache).expect("valid v5 file");
 
     // North-up view centered on the bbox; the whole 1000×1000 map fits on screen.
     let vp = Viewport::new(200.0, 200.0, 500, 500, 0.15);

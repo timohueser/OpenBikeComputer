@@ -335,6 +335,24 @@ impl SimGui {
             ui.label(format!("{}", s.chunks_visited));
             ui.end_row();
 
+            // Streamed-map cache (issue #37): the chunk-cache hit rate + raw source overhead this
+            // frame. The map renders through 4 priority passes over the same chunks, so a healthy
+            // hit rate (passes 2–4 served from cache) keeps the SD-read overhead near one read per
+            // visible chunk. In the sim the source is an in-memory slice, so this measures the
+            // cache behaviour the device sees over real SD reads.
+            let cache_reqs = s.map_chunk_hits + s.map_chunk_misses;
+            ui.label("Map SD");
+            if cache_reqs == 0 {
+                ui.label("—");
+            } else {
+                let hit_pct = 100.0 * s.map_chunk_hits as f32 / cache_reqs as f32;
+                ui.label(format!(
+                    "{:.0}% hit · {} rd · {} B",
+                    hit_pct, s.map_sd_reads, s.map_bytes_read
+                ));
+            }
+            ui.end_row();
+
             ui.label("Features");
             ui.label(format!("{} / {} drawn", s.features_drawn, s.features_tried));
             ui.end_row();
