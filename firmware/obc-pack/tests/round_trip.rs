@@ -17,7 +17,9 @@
 //! are preserved.
 
 use obc_pack::{serialize_lods, Feature, Kind as PackKind, LodLayer, Node, Style};
-use obc_reader::{BBox, Kind as ReadKind, Reader, MAX_FEAT_PTS, MAX_FEAT_RINGS};
+use obc_reader::{
+    BBox, Kind as ReadKind, MapCache, Reader, SliceSource, MAX_FEAT_PTS, MAX_FEAT_RINGS,
+};
 
 /// Global bbox (min_lon, min_lat, max_lon, max_lat) in microdegrees. min corner
 /// is (0,0) so each single-leaf node's anchor base is the origin and decoded
@@ -155,7 +157,9 @@ fn decode_lod(r: &Reader, lod: usize) -> Vec<Decoded> {
 #[test]
 fn header_round_trips() {
     let bytes = packed();
-    let r = Reader::new(&bytes).unwrap();
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let r = Reader::new(&src, &cache).unwrap();
     assert_eq!(r.version, 5);
     assert_eq!(r.marker_color, MARKER);
     // bbox stored lat,lon,lat,lon in the header; the reader must hand it back
@@ -166,7 +170,9 @@ fn header_round_trips() {
 #[test]
 fn styles_round_trip() {
     let bytes = packed();
-    let r = Reader::new(&bytes).unwrap();
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let r = Reader::new(&src, &cache).unwrap();
 
     let s1 = r.style(1).expect("style 1");
     assert_eq!((s1.z_index, s1.color, s1.weight, s1.priority), (-2, 0x07E0, 1, 1));
@@ -187,7 +193,9 @@ fn styles_round_trip() {
 #[test]
 fn lod_table_and_selection() {
     let bytes = packed();
-    let r = Reader::new(&bytes).unwrap();
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let r = Reader::new(&src, &cache).unwrap();
 
     let lods = r.lods();
     assert_eq!(lods.len(), 2);
@@ -210,7 +218,9 @@ fn lod_table_and_selection() {
 #[test]
 fn features_round_trip() {
     let bytes = packed();
-    let r = Reader::new(&bytes).unwrap();
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let r = Reader::new(&src, &cache).unwrap();
 
     // LOD0: an 8-bit line and a 16-bit polygon-with-hole.
     assert_eq!(
@@ -226,7 +236,9 @@ fn features_round_trip() {
 #[test]
 fn max_feat_pts_boundary_survives() {
     let bytes = packed();
-    let r = Reader::new(&bytes).unwrap();
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let r = Reader::new(&src, &cache).unwrap();
     let d1 = decode_lod(&r, 1);
     // The big line filled the reader's per-feature buffer to exactly its cap and
     // was decoded without truncation.
@@ -237,7 +249,9 @@ fn max_feat_pts_boundary_survives() {
 #[test]
 fn query_finds_the_leaf() {
     let bytes = packed();
-    let r = Reader::new(&bytes).unwrap();
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let r = Reader::new(&src, &cache).unwrap();
     // A view overlapping the global bbox hits the single populated leaf; the
     // returned node bbox is the global bbox.
     let inside = BBox { min_lon: 90_000, min_lat: 90_000, max_lon: 130_000, max_lat: 130_000 };

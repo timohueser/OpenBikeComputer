@@ -35,7 +35,7 @@ use embedded_sdmmc::{
 use heapless::{String, Vec};
 use obc_app::MAX_ROUTES;
 use obc_platform::{SdByteSink, SdByteSource, SdTrackSink};
-use obc_route::{track_to_gpx, ByteSource, RouteIndex, RouteSummary, NAME_CAP};
+use obc_route::{track_to_gpx, RouteIndex, RouteSummary, NAME_CAP};
 
 /// SD clock for bulk transfer once the card is initialised. Conservative for breadboard
 /// jumpers (SPI4 is on the 90 MHz PCLK2; embassy picks the /8 prescaler → ~11.25 MHz, well
@@ -88,6 +88,10 @@ pub struct Storage {
     /// The active route's open geometry file: `(catalog index, handle, length)`. Reopened only
     /// when the selected route changes.
     open_route: Option<(usize, RawFile, u32)>,
+    /// The map `.obcm`, opened once at startup and held open for the whole session: `(handle,
+    /// length)`. The map streams through this (issue #37) instead of being read resident into
+    /// SDRAM — `map_source` hands out a fresh [`SdByteSource`] over it each redraw.
+    open_map: Option<(RawFile, u32)>,
     /// The open ride log for the current tracking session.
     open_track: Option<OpenTrack>,
     /// The real chip-select (PD7), held LOW for the whole session so the card stays selected.
@@ -188,6 +192,7 @@ impl Storage {
             tracks_dir,
             route_files: Vec::new(),
             open_route: None,
+            open_map: None,
             open_track: None,
             _cs: cs,
         })
@@ -231,11 +236,15 @@ impl Storage {
         catalog
     }
 
-    /// Read the first `*.obcm` in the card root fully into `buf` (the resident-map load).
-    /// Returns the byte length on success, or `None` if there's no map file, it can't be read,
-    /// or it's larger than `buf` (the SDRAM region) — the caller then falls back to the baked
-    /// tile.
-    pub fn load_map(&self, buf: &mut [u8]) -> Option<usize> {
+    /// Open the first `*.obcm` in the card root and hold it open for the session, so the map can
+    /// **stream** from it (issue #37) rather than be read resident into SDRAM. Returns the file
+    /// length on success, or `None` if there's no map file / it can't be opened (the caller then
+    /// falls back to the baked-in tile). Call once at startup; [`map_source`](Self::map_source)
+    /// then hands out a reader over the open handle.
+    pub fn open_map(&mut self) -> Option<u32> {
+        if let Some((_, len)) = self.open_map {
+            return Some(len);
+        }
         let mut found: Option<ShortFileName> = None;
         let mut lfn_storage = [0u8; 256];
         let mut lfn = LfnBuffer::new(&mut lfn_storage);
@@ -246,19 +255,22 @@ impl Storage {
         });
         let name = found?;
         let file = self.vmgr.open_file_in_dir(self.root, &name, Mode::ReadOnly).ok()?;
-        let len = self.vmgr.file_length(file).unwrap_or(0) as usize;
-        let result = if len > 0 && len <= buf.len() {
-            let src = SdByteSource::new(&self.vmgr, file, len as u32);
-            match src.read_at(0, &mut buf[..len]) {
-                Ok(()) => Some(len),
-                Err(_) => None,
-            }
-        } else {
-            defmt::warn!("SD: map {=usize} B doesn't fit {=usize} B region", len, buf.len());
-            None
-        };
-        let _ = self.vmgr.close_file(file);
-        result
+        let len = self.vmgr.file_length(file).unwrap_or(0);
+        if len == 0 {
+            let _ = self.vmgr.close_file(file);
+            return None;
+        }
+        self.open_map = Some((file, len));
+        Some(len)
+    }
+
+    /// A [`ByteSource`](obc_route::ByteSource) over the open map file, for building a per-frame
+    /// [`Reader`](obc_reader::Reader) that streams the index + geometry chunks. `None` if no map
+    /// was opened ([`open_map`](Self::open_map) returned `None` → baked-tile fallback). Cheap —
+    /// the source just wraps the already-open handle, so it's rebuilt every redraw (like the
+    /// route source), keeping no borrow across the `&mut self` route/track operations.
+    pub fn map_source(&self) -> Option<SdByteSource<'_, Sd, NullTime>> {
+        self.open_map.map(|(f, len)| SdByteSource::new(&self.vmgr, f, len))
     }
 
     /// Make the open route geometry match the app's selected route (a catalog index), reopening

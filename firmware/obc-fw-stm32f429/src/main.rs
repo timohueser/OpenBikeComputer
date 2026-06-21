@@ -175,7 +175,10 @@ use obc_app::{
 #[cfg(not(feature = "glass-demo"))]
 use obc_platform::{ButtonInput, FramebufferArgb4444};
 #[cfg(not(feature = "glass-demo"))]
-use obc_reader::{BBox, Reader};
+use obc_reader::{BBox, ByteSource, MapCache, Reader};
+// `SliceSource` only wraps the baked-in tile; the SD path streams through `SdByteSource`.
+#[cfg(feature = "baked-tile")]
+use obc_reader::SliceSource;
 #[cfg(not(feature = "glass-demo"))]
 use obc_render::zoom_for_mpp;
 #[cfg(not(feature = "glass-demo"))]
@@ -234,12 +237,6 @@ const OVERLAY_ADDR: usize = SDRAM_ADDR + 2 * FB_BYTES;
 /// `--no-default-features` drops it for a tiny, fast-to-flash image while iterating.
 #[cfg(all(not(feature = "glass-demo"), feature = "baked-tile"))]
 static TILE: &[u8] = include_bytes!("../tiles/teningen.obcm");
-
-/// SDRAM region (bytes) reserved for the resident map read off the SD card — placed just past
-/// the App (see the loop). Caps the on-card tile size; comfortably fits the small tiles the
-/// prototype uses (teningen is 1.35 MB) with megabytes of SDRAM to spare.
-#[cfg(not(feature = "glass-demo"))]
-const MAP_CAP: usize = 4 * 1024 * 1024;
 
 /// Initial camera zoom, in ground **metres-per-pixel** (in the 0.5–4 mpp riding band).
 /// Used for the Idle [`AppState`]; opening the Map via the Route menu resets to the
@@ -881,51 +878,66 @@ async fn main(_spawner: Spawner) {
         }
 
         // SDRAM layout: past the four framebuffers (the double-buffered map plane + the
-        // double-buffered Layer 2 overlay, see [`OVERLAY_ADDR`]) sits the App (RAM-split note in the
-        // module header), and the resident map is read into the region just past the App. Compute
-        // both addresses up front so the map load below lands clear of the App slot.
+        // double-buffered Layer 2 overlay, see [`OVERLAY_ADDR`]) sits the App, then the streamed
+        // map's `MapCache` (issue #37 — the geometry/index cache, placed once and reused across
+        // redraws). Both live in SDRAM, off the 192 KB main stack. No resident full-tile buffer
+        // any more: the map streams from the open `.obcm` on the card.
         let app_align = core::mem::align_of::<App>();
         let app_addr = (SDRAM_ADDR + 4 * FB_BYTES + app_align - 1) & !(app_align - 1);
-        let map_addr = (app_addr + core::mem::size_of::<App>() + 7) & !7;
+        let cache_align = core::mem::align_of::<MapCache>();
+        let cache_addr =
+            (app_addr + core::mem::size_of::<App>() + cache_align - 1) & !(cache_align - 1);
 
-        // Map: read the card's `.obcm` tile resident into SDRAM, else fall back to the baked-in
-        // tile. The buffer lives in SDRAM for the whole run; `Reader` borrows it read-only.
-        // SAFETY: the 8 MB SDRAM holds [map_addr, map_addr+MAP_CAP) clear of the framebuffers
-        // and the (not-yet-written) App slot; this is its sole owner.
-        let map_buf = unsafe { core::slice::from_raw_parts_mut(map_addr as *mut u8, MAP_CAP) };
-        let map_len = match storage.as_ref() {
-            Some(s) => s.load_map(map_buf),
-            None => None,
-        };
-        let map_bytes: &[u8] = if let Some(n) = map_len {
-            defmt::info!("map: {=usize} B from SD card", n);
-            &map_buf[..n]
+        // The streamed-map cache, placed once in SDRAM and reused every redraw. ptr::write keeps
+        // its ~130 KB off the stack (opt-level 3 + LTO build `MapCache::new` straight into the
+        // slot, like the App below).
+        // SAFETY: [cache_addr, cache_addr + size_of::<MapCache>()) is a distinct SDRAM region just
+        // past the App slot and clear of the framebuffers; this is its sole owner for the run.
+        let cache_ptr = cache_addr as *mut MapCache;
+        unsafe { cache_ptr.write(MapCache::new()) };
+        let map_cache: &MapCache = unsafe { &*cache_ptr };
+
+        // Map: open the card's `.obcm` and **stream** it (issue #37 — no resident full-tile
+        // buffer), else fall back to the baked-in tile (flash-resident), else halt. `map_streaming`
+        // selects the per-frame source in the render loop below.
+        let map_streaming = storage.as_mut().and_then(|s| s.open_map()).is_some();
+        if map_streaming {
+            defmt::info!("map: streaming from SD card");
         } else {
-            // No SD map: fall back to the baked-in tile, or halt if it's been compiled out
-            // (the fast-flash build) — the SD init result has already been logged above.
             #[cfg(feature = "baked-tile")]
-            {
-                defmt::info!("map: {=usize} B baked-in tile (no SD card map)", TILE.len());
-                TILE
-            }
+            defmt::info!("map: {=usize} B baked-in tile (no SD card map)", TILE.len());
             #[cfg(not(feature = "baked-tile"))]
             {
                 defmt::error!("no SD card map and baked-tile is disabled — halting");
                 halt()
             }
-        };
-        let reader = match Reader::new(map_bytes) {
-            Ok(r) => r,
-            Err(_) => {
-                defmt::error!("map is not valid OBCM ({=usize} bytes)", map_bytes.len());
-                halt()
+        }
+
+        // One-shot parse to validate the map + read its bbox for the idle camera centre. The
+        // throwaway source/reader is dropped here; the open file handle stays for the loop's
+        // per-frame readers. (The shared cache is empty at startup, so this warms nothing.)
+        let (cam_lon, cam_lat) = {
+            #[cfg(feature = "baked-tile")]
+            let baked_src = SliceSource(TILE);
+            let init_sd_src = storage.as_ref().and_then(|s| s.map_source());
+            let init_src: &dyn ByteSource = match &init_sd_src {
+                Some(s) => s,
+                #[cfg(feature = "baked-tile")]
+                None => &baked_src,
+                #[cfg(not(feature = "baked-tile"))]
+                None => halt(),
+            };
+            match Reader::new(init_src, map_cache) {
+                Ok(reader) => (
+                    ((reader.bbox.min_lon as i64 + reader.bbox.max_lon as i64) / 2) as i32,
+                    ((reader.bbox.min_lat as i64 + reader.bbox.max_lat as i64) / 2) as i32,
+                ),
+                Err(_) => {
+                    defmt::error!("map is not valid OBCM — halting");
+                    halt()
+                }
             }
         };
-
-        // Idle camera + synthetic-GPS centre = the loaded map's bbox centre, so any tile frames
-        // sensibly (not only the baked teningen one, which the constant fix used to assume).
-        let cam_lon = ((reader.bbox.min_lon as i64 + reader.bbox.max_lon as i64) / 2) as i32;
-        let cam_lat = ((reader.bbox.min_lat as i64 + reader.bbox.max_lat as i64) / 2) as i32;
 
         // Native RGB565 panel → the color_fn is the identity (device-64 quantization is a
         // host/simulator concern; see obc-platform::framebuffer).
@@ -935,10 +947,11 @@ async fn main(_spawner: Spawner) {
         // scratch off the stack (opt-level 3 + LTO emit App::new* straight to the slot).
         let app_ptr = app_addr as *mut App;
         defmt::info!(
-            "App in SDRAM @ {=u32:#010x} ({=usize} B); map @ {=u32:#010x}",
+            "App in SDRAM @ {=u32:#010x} ({=usize} B); map cache @ {=u32:#010x} ({=usize} B)",
             app_addr as u32,
             core::mem::size_of::<App>(),
-            map_addr as u32
+            cache_addr as u32,
+            core::mem::size_of::<MapCache>()
         );
         // Power-on screen: Home / Idle — the user drives navigation from here.
         // SAFETY: app_ptr is a valid, aligned, exclusively-owned SDRAM slot, fully initialized
@@ -1171,31 +1184,73 @@ async fn main(_spawner: Spawner) {
                 let back =
                     unsafe { core::slice::from_raw_parts_mut(back_addr as *mut u16, FB_PIXELS) };
                 let mut fb = Framebuffer565::new(back, W as u32, H as u32);
-                // Render *only* the map plane into Layer 1 — the overlay (hold ring) is drawn onto
-                // Layer 2 below and composited by the LTDC, so the map buffer never carries the
-                // bulge and is re-rendered only when the map itself changes.
-                let stats =
-                    app.render_map(&mut fb, &reader, route.as_ref(), W as f32, H as f32, color_fn);
-                let render_us = t0.elapsed().as_micros();
 
-                // Flip to the freshly-drawn buffer at the next vblank. Swap front/back roles
-                // only once the reload is confirmed landed; on a timeout the LTDC is still
-                // scanning the old front, so we keep the buffers (the next redraw re-renders
-                // into this same back and retries) rather than render into the scanned-out one.
-                if flip_to(LtdcLayer::Layer1, back_addr) {
-                    core::mem::swap(&mut front_addr, &mut back_addr);
+                // This frame's map source: streamed from the open SD `.obcm` (issue #37), or the
+                // baked tile (flash-resident). Both are `ByteSource`s; the small `Reader` is
+                // rebuilt per redraw against the session-long SDRAM `MapCache`, so a chunk read on
+                // a previous frame can still hit this frame (cross-frame reuse).
+                let sd_src = if map_streaming {
+                    storage.as_ref().and_then(|s| s.map_source())
+                } else {
+                    None
+                };
+                #[cfg(feature = "baked-tile")]
+                let baked_src = SliceSource(TILE);
+                let map_src: Option<&dyn ByteSource> = match &sd_src {
+                    Some(s) => Some(s),
+                    #[cfg(feature = "baked-tile")]
+                    None => Some(&baked_src),
+                    #[cfg(not(feature = "baked-tile"))]
+                    None => None,
+                };
+
+                // A transient SD read failure makes the reader build fail; skip the redraw and
+                // keep the last buffer (like the route path), rather than show a half-read map.
+                if let Some(reader) = map_src.and_then(|s| Reader::new(s, map_cache).ok()) {
+                    // Render *only* the map plane into Layer 1 — the overlay (hold ring) is drawn
+                    // onto Layer 2 below and composited by the LTDC, so the map buffer never carries
+                    // the bulge and is re-rendered only when the map itself changes.
+                    let stats = app.render_map(
+                        &mut fb,
+                        &reader,
+                        route.as_ref(),
+                        W as f32,
+                        H as f32,
+                        color_fn,
+                    );
+                    let render_us = t0.elapsed().as_micros();
+
+                    // Flip to the freshly-drawn buffer at the next vblank. Swap front/back roles
+                    // only once the reload is confirmed landed; on a timeout the LTDC is still
+                    // scanning the old front, so we keep the buffers (the next redraw re-renders
+                    // into this same back and retries) rather than render into the scanned-out one.
+                    if flip_to(LtdcLayer::Layer1, back_addr) {
+                        core::mem::swap(&mut front_addr, &mut back_addr);
+                    } else {
+                        defmt::warn!(
+                            "LTDC: Layer 1 vblank reload didn't land in 50 ms — kept buffers, skipped swap"
+                        );
+                    }
+                    // Chunk-cache hit rate + SD-read overhead this frame (issue #37's measured
+                    // deliverables). `RenderStats` reports the per-frame delta over the persistent
+                    // cache, so this tracks what each redraw actually pulled off the card.
+                    let reqs = stats.map_chunk_hits + stats.map_chunk_misses;
+                    let hit_pct = if reqs == 0 { 0 } else { stats.map_chunk_hits * 100 / reqs };
+                    defmt::debug!(
+                        "map frame: {=u64} us | lod {=usize} | feat {=usize}/{=usize} | map-cache {=u32}% hit, {=u32} rd, {=u32} B",
+                        render_us,
+                        stats.lod,
+                        stats.features_drawn,
+                        stats.features_tried,
+                        hit_pct,
+                        stats.map_sd_reads,
+                        stats.map_bytes_read
+                    );
                 } else {
                     defmt::warn!(
-                        "LTDC: Layer 1 vblank reload didn't land in 50 ms — kept buffers, skipped swap"
+                        "map: reader build failed this frame (flaky SD?) — kept buffers, skipped redraw"
                     );
                 }
-                defmt::debug!(
-                    "map frame: {=u64} us | lod {=usize} | feat {=usize}/{=usize}",
-                    render_us,
-                    stats.lod,
-                    stats.features_drawn,
-                    stats.features_tried
-                );
             }
 
             // Overlay plane (Layer 2) — **single-executor build only**. `dirty.overlay` is true

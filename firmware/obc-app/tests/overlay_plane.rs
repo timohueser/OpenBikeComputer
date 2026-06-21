@@ -13,7 +13,7 @@
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
 use obc_app::screen::palette;
 use obc_app::{App, AppState, Button, ButtonEvent, InputClock, InputEvent, InputSource};
-use obc_reader::{rgb565_to_rgb888, Reader};
+use obc_reader::{rgb565_to_rgb888, MapCache, Reader, SliceSource};
 
 /// A minimal valid file: one sea-backdrop style, one empty LOD leaf, no chunks — the
 /// map is a flat backdrop, so every non-sea pixel the overlay adds is its own.
@@ -124,7 +124,9 @@ fn rgb(c: u16) -> Rgb888 {
 #[test]
 fn render_overlay_touches_only_overlay_pixels() {
     let bytes = build_min_obcm();
-    let reader = Reader::new(&bytes).expect("valid v5 file");
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let reader = Reader::new(&src, &cache).expect("valid v5 file");
     let (w, h) = (240i32, 320i32);
     let hud = rgb(palette::HUD); // the near-black bulge color
 
@@ -163,7 +165,9 @@ fn render_overlay_touches_only_overlay_pixels() {
 #[test]
 fn render_frame_equals_map_then_overlay() {
     let bytes = build_min_obcm();
-    let reader = Reader::new(&bytes).expect("valid v5 file");
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let reader = Reader::new(&src, &cache).expect("valid v5 file");
     let (w, h) = (240i32, 320i32);
 
     // Same app state rendered two ways: the thin `render_frame` convenience vs. the
