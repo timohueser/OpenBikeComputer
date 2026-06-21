@@ -43,6 +43,12 @@ impl SimLocationSource {
 }
 
 impl LocationSource for SimLocationSource {
+    // This deliberately returns the same fix on every poll, which is *not* the fresh-fix cadence
+    // a real sensor (or the [`GpxPlayer`](crate::gpx_player::GpxPlayer)) follows — but the manual
+    // panel is a position *override* for free-roaming, not a ride-recording source. Replaying one
+    // fix means a stationary user books no distance and a drag to a new spot reads as a teleport
+    // (dropped) — both acceptable here. Ride recording exercises the fresh-fix path via the GPX
+    // player; see [`LocationSource::poll`]'s contract.
     fn poll(&mut self) -> Option<Fix> {
         self.fix
     }
