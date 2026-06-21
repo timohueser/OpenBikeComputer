@@ -17,7 +17,12 @@
 //!      `App::render_frame` — the first time `obc-app` runs on hardware.
 //!   E. Pushbutton input (issue #35): four GPIO buttons → obc-platform's
 //!      board-agnostic `ButtonInput` debouncer → the shared gesture recognizer, so
-//!      the UI is driven on-device — Home → Route menu → Map and back.   <- this commit
+//!      the UI is driven on-device — Home → Route menu → Map and back.
+//!   F. microSD over SPI (issue #36): SPI4 + FatFs (`embedded-sdmmc`) → the card's map
+//!      `.obcm` loads resident, the `/routes/*.obcr` catalog fills the Route menu, the
+//!      chosen route streams from the card, and the ride logs to `/tracks` and saves as a
+//!      `.gpx`. The FatFs byte adapters live in `obc-platform` (shared with the nRF
+//!      board); only the SPI bus + chip-select here are board-specific.   <- this commit
 //!
 //! ## RAM split (issue #34 / #8)
 //! The renderer's per-frame scratch is ~200 KB and the framebuffer is 150 KB; the
@@ -55,11 +60,20 @@
 //! the F429's internal pull-ups hold the lines high, a press pulls one low):
 //!   PREV PD4 | NEXT PE3 | SELECT PE4 | BACK PD5
 //! Clear of FMC/LTDC/SPI5/LEDs, and deliberately kept off SPI4's data pins so the SD
-//! card (#36 uses SD-over-**SPI** / embedded-sdmmc, not SDIO) can take SPI4: its only
-//! usable pinout on the DISC1 is SCK PE2 / MISO PE5 / MOSI PE6 (PE11-14 is all FMC),
-//! now all free. PE4 = SPI4_NSS is still SELECT, but SPI-mode SD uses a software CS, so
-//! it never needs hardware NSS. PD4/PD5 are free GPIO broken out on the headers (locate
-//! by the silkscreen port labels). PREV/BACK were moved off PE2/PE5 for exactly this.
+//! card (#36 uses SD-over-**SPI** / embedded-sdmmc, not SDIO) can take SPI4. PE4 =
+//! SPI4_NSS is still SELECT, but SPI-mode SD uses a software CS, so it never needs
+//! hardware NSS. PD4/PD5 are free GPIO broken out on the headers. PREV/BACK were moved
+//! off PE2/PE5 for exactly this.
+//!
+//! ## microSD pin map (issue #36) — SPI4, chip-select held low, internal MISO pull-up
+//! SPI4's only usable data pinout on the DISC1 (PE11-14 is all FMC): SCK PE2 / MISO PE5
+//! / MOSI PE6. CS is a free GPIO (PD7), held LOW for the whole session — embassy's SPI
+//! can't tolerate embedded-sdmmc toggling CS between a command and its reply (the card
+//! drops the bus and CMD0's response is lost), so a no-op CS is used instead (see
+//! `sd::NoCs` / `sd::init`). Wire the breakout: SCK→PE2, MOSI→PE6, MISO→PE5, CS→PD7,
+//! GND→GND, VCC→3V3 (bare socket) or 5V (regulated breakout). Card is FAT16/FAT32, init
+//! at ≤400 kHz then re-clocked (see `sd::init`).
+//!   SCK PE2 | MISO PE5 | MOSI PE6 | CS PD7
 //!
 //! ## Display pin map (onboard ILI9341, 240x320)
 //! Config (SPI5, 8-bit mode-0) : SCK PF7 | MOSI PF9 | CS/NCS PC2 | DCX/WRX PD13   (reset = NRST)
@@ -97,16 +111,24 @@ use embassy_time::Instant;
 #[cfg(not(feature = "glass-demo"))]
 use embedded_graphics::pixelcolor::{raw::RawU16, Rgb565};
 #[cfg(not(feature = "glass-demo"))]
-use obc_app::{App, AppState, Fix, InputClock, LocationSource, RideClock, RouteSummary, Sensors};
+use obc_app::{
+    App, AppState, Fix, InputClock, LocationSource, RideClock, RouteSummary, Sensors, TrackSink,
+};
 #[cfg(not(feature = "glass-demo"))]
 use obc_platform::ButtonInput;
 #[cfg(not(feature = "glass-demo"))]
 use obc_reader::{BBox, Reader};
 #[cfg(not(feature = "glass-demo"))]
 use obc_render::zoom_for_mpp;
+#[cfg(not(feature = "glass-demo"))]
+use obc_route::RouteReader;
 
 #[cfg(feature = "glass-demo")]
 mod demo;
+// microSD map/route/track storage over SPI4 + FatFs (issue #36) — only the real-app build
+// touches the card; the glass demo just exercises the framebuffer.
+#[cfg(not(feature = "glass-demo"))]
+mod sd;
 
 const SDRAM_ADDR: usize = 0xD000_0000;
 /// Front framebuffer at the base of SDRAM: 240x320 RGB565 = 150 KB. The app path adds a
@@ -123,26 +145,37 @@ const FB_PIXELS: usize = W * H;
 const FB_BYTES: usize = FB_PIXELS * 2;
 
 /// Baked-in OBCM **v5** map tile (issue #34): a small ~1.4 MB Teningen tile in
-/// flash via `include_bytes!`, so the Map screen has data before SD/USB exist
-/// (steps #36/#38). Packed from `packer/small.obcm`; must stay well under the F429's
-/// 2 MB flash beside code. (The issue named the bench's `teningen.obcm`, which was
-/// gitignored and never committed — this committed tile is its stand-in.)
-#[cfg(not(feature = "glass-demo"))]
+/// flash via `include_bytes!`. With #36 the map normally comes off the SD card; this stays
+/// as the **fallback** when no card / no `.obcm` is present, so the device still boots to a
+/// usable Map. Packed from `packer/small.obcm`. Behind the `baked-tile` feature (default on);
+/// `--no-default-features` drops it for a tiny, fast-to-flash image while iterating.
+#[cfg(all(not(feature = "glass-demo"), feature = "baked-tile"))]
 static TILE: &[u8] = include_bytes!("../tiles/teningen.obcm");
 
-/// Camera centre / stub fix: Teningen's dense core (microdegrees), the busiest part
-/// of the tile — the same spot the `mcu-render-bench` aimed at, so the on-glass
-/// render is comparable to the bench's timings.
+/// SDRAM region (bytes) reserved for the resident map read off the SD card — placed just past
+/// the App (see the loop). Caps the on-card tile size; comfortably fits the small tiles the
+/// prototype uses (teningen is 1.35 MB) with megabytes of SDRAM to spare.
 #[cfg(not(feature = "glass-demo"))]
-const CAM_LON: i32 = 7_813_599; // 7.81360 E
-#[cfg(not(feature = "glass-demo"))]
-const CAM_LAT: i32 = 48_126_492; // 48.12649 N
+const MAP_CAP: usize = 4 * 1024 * 1024;
 
 /// Initial camera zoom, in ground **metres-per-pixel** (in the 0.5–4 mpp riding band).
 /// Used for the Idle [`AppState`]; opening the Map via the Route menu resets to the
 /// riding zoom, and PREV/NEXT then zoom from there.
 #[cfg(not(feature = "glass-demo"))]
 const INIT_MPP: f32 = 1.0;
+
+/// Stand-in moving GPS until #38's USB feed: side length (m) and speed (m/s) of the square
+/// loop [`SynthLocation`] walks. Slow enough to watch the user marker / breadcrumb crawl, big
+/// enough that a saved ride is a real ~0.8 km loop that re-imports as a sane route.
+#[cfg(not(feature = "glass-demo"))]
+const SYNTH_LEG_M: f32 = 200.0;
+#[cfg(not(feature = "glass-demo"))]
+const SYNTH_SPEED_MPS: f32 = 5.0;
+
+/// Microdegrees of latitude per metre north (the map/route coordinate convention). Longitude
+/// scales this by 1/cos(lat), via [`obc_route::cos_lat`].
+#[cfg(not(feature = "glass-demo"))]
+const UDEG_PER_M: f32 = 1_000_000.0 / 111_320.0;
 
 /// Main-loop button-sample period (ms). Buttons are sampled every tick so quick taps
 /// and hold timing are caught even when a heavy Map frame stretches the render cadence.
@@ -159,15 +192,62 @@ const ANIM_TAIL_MS: u32 = 300;
 #[cfg(not(feature = "glass-demo"))]
 const IDLE_REFRESH_MS: u32 = 1000;
 
-/// A fixed-fix [`LocationSource`]: there is no GPS yet (step #38 streams a fake one
-/// over USB-CDC), so this returns a constant fix at the tile's dense core. In Follow
-/// mode that parks the camera there and the Map draws the user marker at centre.
+/// A stand-in moving [`LocationSource`] until #38 streams a real GPS over USB-CDC: the fix
+/// walks a slow square loop around a centre, driven by the wall clock. Unlike a constant fix,
+/// this gives the ride accumulators, breadcrumb and `.obct` log real motion — so a saved
+/// ride is a non-degenerate `.gpx` that re-imports cleanly (issue #36's save-loop deliverable).
+/// The centre is the map (or loaded route's) start, re-pointed via [`recenter`](Self::recenter).
 #[cfg(not(feature = "glass-demo"))]
-struct StubLocation(Fix);
+struct SynthLocation {
+    center_lon: i32,
+    center_lat: i32,
+    /// 1/cos(lat) folded into the east-metres → microdegrees scale, refreshed on recenter.
+    udeg_per_m_east: f32,
+    start: Instant,
+}
+
 #[cfg(not(feature = "glass-demo"))]
-impl LocationSource for StubLocation {
+impl SynthLocation {
+    fn new(center_lon: i32, center_lat: i32, start: Instant) -> Self {
+        let mut s = SynthLocation { center_lon, center_lat, udeg_per_m_east: 0.0, start };
+        s.recenter(center_lon, center_lat);
+        s
+    }
+
+    /// Move the loop's centre (e.g. onto a freshly-loaded route's start) and refresh the
+    /// longitude scale for the new latitude.
+    fn recenter(&mut self, lon: i32, lat: i32) {
+        self.center_lon = lon;
+        self.center_lat = lat;
+        self.udeg_per_m_east = UDEG_PER_M / obc_route::cos_lat(lat);
+    }
+}
+
+#[cfg(not(feature = "glass-demo"))]
+impl LocationSource for SynthLocation {
     fn poll(&mut self) -> Option<Fix> {
-        Some(self.0)
+        // Position along the square as a function of elapsed time. Each leg takes leg_s seconds;
+        // the heading is the leg's constant bearing (no trig needed). The loop is centred on the
+        // square so the camera sits in its middle.
+        let t = self.start.elapsed().as_millis() as f32 / 1000.0;
+        let leg_s = SYNTH_LEG_M / SYNTH_SPEED_MPS;
+        let phase = t % (4.0 * leg_s);
+        let leg = (phase / leg_s) as u32;
+        let d = (phase - leg as f32 * leg_s) * SYNTH_SPEED_MPS; // metres into this leg
+        let (east, north, course) = match leg {
+            0 => (d, 0.0, 90.0),                        // →E along the south edge
+            1 => (SYNTH_LEG_M, d, 0.0),                 // →N up the east edge
+            2 => (SYNTH_LEG_M - d, SYNTH_LEG_M, 270.0), // →W along the north edge
+            _ => (0.0, SYNTH_LEG_M - d, 180.0),         // →S down the west edge
+        };
+        let east = east - SYNTH_LEG_M / 2.0; // centre the square on the centre point
+        let north = north - SYNTH_LEG_M / 2.0;
+        Some(Fix {
+            lon: self.center_lon + (east * self.udeg_per_m_east) as i32,
+            lat: self.center_lat + (north * UDEG_PER_M) as i32,
+            course: Some(course),
+            speed_mps: Some(SYNTH_SPEED_MPS),
+        })
     }
 }
 
@@ -221,6 +301,19 @@ fn af_pin(pin: Peri<'static, impl Pin>, af: u8) -> Flex<'static> {
     let mut f = Flex::new(pin);
     f.set_as_af_unchecked(af, AfType::output(OutputType::PushPull, Speed::VeryHigh));
     f
+}
+
+/// Idle forever after an unrecoverable bring-up failure. Breaks to the debugger **only when
+/// one is attached** (so `probe-rs run` regains control and releases the ST-LINK), then
+/// low-power idles. A standalone boot (plain NRST / battery, no debugger) must NOT execute a
+/// bare `bkpt` — with `C_DEBUGEN` clear it escalates to a HardFault — so it just `wfi`s.
+fn halt() -> ! {
+    if cortex_m::peripheral::DCB::is_debugger_attached() {
+        cortex_m::asm::bkpt();
+    }
+    loop {
+        cortex_m::asm::wfi();
+    }
 }
 
 /// Point LTDC layer 1 at the framebuffer at `addr`, reloading at the next vertical
@@ -461,72 +554,119 @@ async fn main(_spawner: Spawner) {
         let mut fb = Framebuffer565::new(fb_buf, W as u32, H as u32);
         let _ = demo::font_palette_demo(&mut fb);
         defmt::info!("glass-demo: font + palette rendered; halting");
-        cortex_m::asm::bkpt();
-        loop {
-            cortex_m::asm::wfi();
-        }
+        halt()
     }
 
-    // --- obc-app on glass, button-driven (issues #34/#35): boot Home/Idle, then let
-    // the four pushbuttons walk Home -> Route menu -> Map and back. ---
+    // --- obc-app on glass, button-driven, now reading real data off SD (issues #34/#35/#36):
+    // boot Home/Idle, list the card's routes, ride the chosen route on the card's map, and save
+    // the ride back as a `.gpx`. A missing/bad card degrades to the baked tile + a stub route. ---
     #[cfg(not(feature = "glass-demo"))]
     {
-        let reader = match Reader::new(TILE) {
-            Ok(r) => r,
-            Err(_) => {
-                defmt::error!("baked tile is not valid OBCM ({=usize} bytes)", TILE.len());
-                cortex_m::asm::bkpt();
-                loop {
-                    cortex_m::asm::wfi();
-                }
-            }
-        };
-        // Native RGB565 panel → the color_fn is the identity (device-64 quantization
-        // is a host/simulator concern; see obc-platform::framebuffer).
-        let color_fn = |c: u16| Rgb565::from(RawU16::new(c));
+        // microSD over SPI4 (CS = PD7). Init the bus slow (SD spec ≤400 kHz); `sd::init`
+        // re-clocks it after the card is up. A `None` here is a missing/bad card — handled by
+        // falling back below, never a panic (acceptance criterion).
+        let mut sd_cfg = embassy_stm32::spi::Config::default();
+        sd_cfg.frequency = Hertz(400_000);
+        sd_cfg.miso_pull = Pull::Up; // hold DO high when the card isn't driving the line
+        let sd_spi = Spi::new_blocking(p.SPI4, p.PE2, p.PE6, p.PE5, sd_cfg);
+        let sd_cs = Output::new(p.PD7, Level::High, Speed::VeryHigh);
+        let mut storage = sd::init(sd_spi, sd_cs);
 
-        // Place the App in SDRAM, just past *both* framebuffers (RAM-split note in the
-        // module header). Built in place via ptr::write so the ~200 KB scratch never
-        // lands on the stack — opt-level 3 + LTO emit App::new* straight to the slot.
+        // SDRAM layout: the App sits just past both framebuffers (RAM-split note in the module
+        // header), and the resident map is read into the region just past the App. Compute both
+        // addresses up front so the map load below lands clear of the App slot.
         let app_align = core::mem::align_of::<App>();
         let app_addr = (SDRAM_ADDR + 2 * FB_BYTES + app_align - 1) & !(app_align - 1);
+        let map_addr = (app_addr + core::mem::size_of::<App>() + 7) & !7;
+
+        // Map: read the card's `.obcm` tile resident into SDRAM, else fall back to the baked-in
+        // tile. The buffer lives in SDRAM for the whole run; `Reader` borrows it read-only.
+        // SAFETY: the 8 MB SDRAM holds [map_addr, map_addr+MAP_CAP) clear of the framebuffers
+        // and the (not-yet-written) App slot; this is its sole owner.
+        let map_buf = unsafe { core::slice::from_raw_parts_mut(map_addr as *mut u8, MAP_CAP) };
+        let map_len = match storage.as_ref() {
+            Some(s) => s.load_map(map_buf),
+            None => None,
+        };
+        let map_bytes: &[u8] = if let Some(n) = map_len {
+            defmt::info!("map: {=usize} B from SD card", n);
+            &map_buf[..n]
+        } else {
+            // No SD map: fall back to the baked-in tile, or halt if it's been compiled out
+            // (the fast-flash build) — the SD init result has already been logged above.
+            #[cfg(feature = "baked-tile")]
+            {
+                defmt::info!("map: {=usize} B baked-in tile (no SD card map)", TILE.len());
+                TILE
+            }
+            #[cfg(not(feature = "baked-tile"))]
+            {
+                defmt::error!("no SD card map and baked-tile is disabled — halting");
+                halt()
+            }
+        };
+        let reader = match Reader::new(map_bytes) {
+            Ok(r) => r,
+            Err(_) => {
+                defmt::error!("map is not valid OBCM ({=usize} bytes)", map_bytes.len());
+                halt()
+            }
+        };
+
+        // Idle camera + synthetic-GPS centre = the loaded map's bbox centre, so any tile frames
+        // sensibly (not only the baked teningen one, which the constant fix used to assume).
+        let cam_lon = ((reader.bbox.min_lon as i64 + reader.bbox.max_lon as i64) / 2) as i32;
+        let cam_lat = ((reader.bbox.min_lat as i64 + reader.bbox.max_lat as i64) / 2) as i32;
+
+        // Native RGB565 panel → the color_fn is the identity (device-64 quantization is a
+        // host/simulator concern; see obc-platform::framebuffer).
+        let color_fn = |c: u16| Rgb565::from(RawU16::new(c));
+
+        // Place + build the App in SDRAM at the reserved slot. ptr::write keeps the ~200 KB
+        // scratch off the stack (opt-level 3 + LTO emit App::new* straight to the slot).
         let app_ptr = app_addr as *mut App;
         defmt::info!(
-            "App in SDRAM @ {=u32:#010x} ({=usize} bytes); 2x FB {=usize} bytes",
+            "App in SDRAM @ {=u32:#010x} ({=usize} B); map @ {=u32:#010x}",
             app_addr as u32,
             core::mem::size_of::<App>(),
-            FB_BYTES
+            map_addr as u32
         );
-
-        // Power-on screen: Home / Idle — the user now drives navigation from here.
-        // SAFETY: app_ptr is a valid, aligned, exclusively-owned SDRAM slot, fully
-        // initialized by ptr::write before any read.
+        // Power-on screen: Home / Idle — the user drives navigation from here.
+        // SAFETY: app_ptr is a valid, aligned, exclusively-owned SDRAM slot, fully initialized
+        // by ptr::write before any read.
         unsafe {
-            app_ptr.write(App::new_idle(AppState::new(CAM_LON, CAM_LAT, zoom_for_mpp(INIT_MPP))));
+            app_ptr.write(App::new_idle(AppState::new(cam_lon, cam_lat, zoom_for_mpp(INIT_MPP))));
         }
         let app = unsafe { &mut *app_ptr };
 
-        // One stub route so the Route menu has an entry SELECT can open. There's no
-        // OBCR geometry yet (SD/USB are steps #36/#38), so loading it just drops the
-        // camera onto the tile's dense core (the stub fix below) and opens the Map on
-        // the baked tile — `render_frame` is passed `None` for the route overlay.
-        let mut name = heapless::String::new();
-        let _ = name.push_str("Teningen");
-        app.set_routes(&[RouteSummary {
-            name,
-            distance_km: 0,
-            climb_m: 0,
-            bbox: BBox { min_lon: CAM_LON, min_lat: CAM_LAT, max_lon: CAM_LON, max_lat: CAM_LAT },
-            start_lon: CAM_LON,
-            start_lat: CAM_LAT,
-        }]);
+        // Routes: the card's `/routes` catalog feeds the Route menu; with no card a single stub
+        // route keeps the Map reachable (the pre-#36 behaviour).
+        match storage.as_mut() {
+            Some(s) => {
+                let catalog = s.scan_routes();
+                app.set_routes(&catalog);
+            }
+            None => {
+                let mut name = heapless::String::new();
+                let _ = name.push_str("Teningen");
+                app.set_routes(&[RouteSummary {
+                    name,
+                    distance_km: 0,
+                    climb_m: 0,
+                    bbox: BBox {
+                        min_lon: cam_lon,
+                        min_lat: cam_lat,
+                        max_lon: cam_lon,
+                        max_lat: cam_lat,
+                    },
+                    start_lon: cam_lon,
+                    start_lat: cam_lat,
+                }]);
+            }
+        }
 
-        // Four pushbuttons on a breadboard PCB: one common pin to GND, each switch to
-        // its GPIO, no external parts — internal pull-ups, read active-low (see the
-        // pin-map note in the module header). All four are `Input<'static>` (the type
-        // erases the pin), so they share the `ButtonInput` type parameter.
-        // PREV/BACK live on PD4/PD5 (not PE2/PE5) to keep SPI4's data pins free for the
-        // SD card (#36, SD-over-SPI) — see the pin-map note in the module header.
+        // Four pushbuttons (issue #35): one common pin to GND, each switch to its GPIO, internal
+        // pull-ups, active-low. PREV/BACK on PD4/PD5 keep SPI4's data pins free for the SD card.
         let mut buttons = ButtonInput::new(
             Input::new(p.PD4, Pull::Up), // PREV   → Turn(-1)
             Input::new(p.PE3, Pull::Up), // NEXT   → Turn(+1)
@@ -534,32 +674,29 @@ async fn main(_spawner: Spawner) {
             Input::new(p.PD5, Pull::Up), // BACK   → back / back-hold
         );
 
-        // No GPS yet (step #38): a constant fix at the tile's dense core, so the Map's
-        // Follow camera parks there and the user marker sits at centre.
-        let mut stub = StubLocation(Fix::at(CAM_LAT, CAM_LON));
+        // Stand-in moving GPS (until #38's USB feed) so a ride is real: a slow square loop near
+        // the map centre, re-centred on the route start when a route loads.
+        let start = Instant::now();
+        let mut synth = SynthLocation::new(cam_lon, cam_lat, start);
 
-        // Double buffering: the LTDC scans the *front* buffer while the app renders the
-        // next frame into the *back*; on completion we flip the layer to the back at the
-        // next vertical blank (tear-free) and swap. The panel therefore never shows a
-        // half-cleared frame — that mid-redraw flash was the single-buffer flicker.
-        // FB_ADDR is the initial front (the LTDC was pointed there at init); the second
-        // buffer sits one FB_BYTES past it. SAFETY: the back is never the buffer the LTDC
-        // is scanning, so the per-frame `&mut` over it is unaliased.
+        // Double buffering: the LTDC scans the *front* while the app renders the *back*, then we
+        // flip at the next vblank (tear-free) and swap. FB_ADDR is the initial front; the back
+        // sits one FB_BYTES past it. SAFETY: the back is never the buffer the LTDC is scanning.
         let mut front_addr = FB_ADDR;
         let mut back_addr = FB_ADDR + FB_BYTES;
         unsafe { core::slice::from_raw_parts_mut(back_addr as *mut u16, FB_PIXELS) }.fill(0x0000);
         defmt::info!(
-            "input live: PD4 PREV / PE3 NEXT / PE4 SELECT / PD5 BACK (pull-up, active-low); double-buffered"
+            "input live: PD4 PREV / PE3 NEXT / PE4 SELECT / PD5 BACK; double-buffered; SD card {=bool}",
+            storage.is_some()
         );
 
-        // Render-on-demand loop. Buttons are sampled every LOOP_MS so quick taps and
-        // long-press timing are caught; the screen is redrawn only when there's input/
-        // gesture activity, a hold bulge is animating (ANIM_TAIL_MS carries it through
-        // the pop), or on the IDLE_REFRESH heartbeat — so a static Map costs ~1 fps
-        // instead of pinning the CPU on a full redraw every loop.
-        let start = Instant::now();
+        // Render-on-demand loop. Buttons are sampled every LOOP_MS; the screen redraws only on
+        // input/gesture activity, an animating hold bulge (ANIM_TAIL_MS), or the IDLE_REFRESH
+        // heartbeat — so a static Map costs ~1 fps. The active route's geometry and the ride log
+        // are opened only on redraw frames, which also paces the `.obct` log to the redraw rate.
         let now0 = start.elapsed().as_millis() as u32;
         let mut prev_gesture = app.last_gesture();
+        let mut prev_route: Option<usize> = None;
         let mut last_activity = now0;
         let mut last_render = now0.wrapping_sub(IDLE_REFRESH_MS); // force the first frame
         loop {
@@ -567,38 +704,90 @@ async fn main(_spawner: Spawner) {
             buttons.update(now);
             let had_events = buttons.has_pending();
             app.handle_input(InputClock(now), &mut buttons);
-            app.tick(
-                RideClock(now),
-                Sensors { loc: &mut stub, altimeter: None, track: None },
-                None,
-            );
 
-            // Anything that can change the screen extends the redraw window: fresh
-            // events, a dispatched gesture (incl. a `Hold`/`BackHold` that `tick`
-            // fired), or an in-flight hold ring/bulge.
+            // Re-centre the synthetic GPS onto a freshly-loaded route's start so Follow doesn't
+            // yank the camera off it.
+            let active = app.activity.active_route;
+            if active != prev_route {
+                if let Some(r) = active.and_then(|i| app.routes().get(i)) {
+                    synth.recenter(r.start_lon, r.start_lat);
+                }
+                prev_route = active;
+            }
+
+            // Reconcile the card to the app's intent: open/close the active route's geometry and
+            // the ride log (begin on load, finalise-to-GPX on Finish), reading the save name from
+            // the active route. Cheap when nothing changed.
+            if let Some(s) = storage.as_mut() {
+                let action = app.activity.take_track_action();
+                let session = app.activity.session;
+                let mut name: heapless::String<64> = heapless::String::new();
+                if let Some(r) = active.and_then(|i| app.routes().get(i)) {
+                    let _ = name.push_str(&r.name);
+                }
+                s.reconcile_route(active);
+                s.reconcile_track(action, session, &name);
+            }
+
+            // Redraw window: fresh events, an in-flight hold ring, a changed gesture, or the
+            // idle heartbeat (the synthetic fix moving is deliberately *not* activity — same as
+            // a real GPS would be once #38 lands; the heartbeat keeps the moving map live).
             let gesture = app.last_gesture();
             let ring = app.encoder_hold_progress() > 0.0 || app.back_hold_progress() > 0.0;
             if had_events || ring || gesture != prev_gesture {
                 last_activity = now;
             }
             prev_gesture = gesture;
-
             let interactive = now.wrapping_sub(last_activity) < ANIM_TAIL_MS;
             let heartbeat = now.wrapping_sub(last_render) >= IDLE_REFRESH_MS;
-            if interactive || heartbeat {
+            let redraw = interactive || heartbeat;
+
+            // Open the active route's geometry + ride-log sink only on redraw frames — bounding
+            // per-frame SD I/O and pacing the ride log to the redraw rate (~1 Hz idle, up to the
+            // panel rate while interacting) rather than logging a point every loop.
+            let route_src =
+                if redraw { storage.as_ref().and_then(|s| s.route_source()) } else { None };
+            // A route is selected but its header won't read → a transient SD glitch (flaky
+            // jumpers): hide the route this frame and flag it. It returns once a read succeeds.
+            let route = match route_src.as_ref() {
+                Some(s) => match RouteReader::open(s) {
+                    Ok(r) => Some(r),
+                    Err(_) => {
+                        defmt::warn!("SD: route read failed (flaky link?) — route hidden this frame");
+                        None
+                    }
+                },
+                None => None,
+            };
+            let mut tsink =
+                if redraw { storage.as_ref().and_then(|s| s.track_sink()) } else { None };
+            let track_dyn = tsink.as_mut().map(|t| t as &mut dyn TrackSink);
+
+            app.tick(
+                RideClock(now),
+                Sensors { loc: &mut synth, altimeter: None, track: track_dyn },
+                route.as_ref(),
+            );
+
+            if redraw {
                 let t0 = Instant::now();
-                // Render the frame into the back buffer (not the one being scanned out).
-                // SAFETY: back_addr is the buffer the LTDC is *not* scanning; this is the
-                // only live `&mut` over it, dropped before the flip below.
+                // Render into the back buffer (not the one being scanned out).
+                // SAFETY: back_addr is the buffer the LTDC is *not* scanning; the only live
+                // `&mut` over it, dropped before the flip.
                 let back =
                     unsafe { core::slice::from_raw_parts_mut(back_addr as *mut u16, FB_PIXELS) };
                 let mut fb = Framebuffer565::new(back, W as u32, H as u32);
-                let stats = app.render_frame(&mut fb, &reader, None, W as f32, H as f32, color_fn);
+                let stats = app.render_frame(
+                    &mut fb,
+                    &reader,
+                    route.as_ref(),
+                    W as f32,
+                    H as f32,
+                    color_fn,
+                );
                 let render_us = t0.elapsed().as_micros();
 
-                // Flip the layer to the freshly-drawn buffer at the next vertical blank,
-                // then swap roles. `flip_to` waits (bounded) for the reload to land, so
-                // the old front is free to become the next back.
+                // Flip to the freshly-drawn buffer at the next vblank, then swap roles.
                 flip_to(back_addr);
                 core::mem::swap(&mut front_addr, &mut back_addr);
                 last_render = now;

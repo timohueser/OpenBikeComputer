@@ -523,6 +523,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "embedded-hal-bus"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "513e0b3a8fb7d3013a8ae17a834283f170deaf7d0eeab0a7c1a36ad4dd356d22"
+dependencies = [
+ "critical-section",
+ "embedded-hal 1.0.0",
+]
+
+[[package]]
 name = "embedded-hal-nb"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -564,6 +574,19 @@ checksum = "2564b9f813c544241430e147d8bc454815ef9ac998878d30cc3055449f7fd4c0"
 dependencies = [
  "defmt 1.1.0",
  "embedded-io 0.7.1",
+]
+
+[[package]]
+name = "embedded-sdmmc"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce3c7f9ea039eeafc4a49597b7bd5ae3a1c8e51b2803a381cb0f29ce90fe1ec6"
+dependencies = [
+ "byteorder",
+ "defmt 0.3.100",
+ "embedded-hal 1.0.0",
+ "embedded-io 0.6.1",
+ "heapless 0.8.0",
 ]
 
 [[package]]
@@ -801,11 +824,15 @@ dependencies = [
  "embassy-stm32",
  "embassy-time",
  "embedded-graphics",
+ "embedded-hal 1.0.0",
+ "embedded-hal-bus",
+ "embedded-sdmmc",
  "heapless 0.8.0",
  "obc-app",
  "obc-platform",
  "obc-reader",
  "obc-render",
+ "obc-route",
  "panic-probe",
  "stm32-fmc",
  "stm32-metapac",
@@ -817,8 +844,10 @@ version = "0.1.0"
 dependencies = [
  "embedded-graphics",
  "embedded-hal 1.0.0",
+ "embedded-sdmmc",
  "heapless 0.8.0",
  "obc-app",
+ "obc-route",
 ]
 
 [[package]]
