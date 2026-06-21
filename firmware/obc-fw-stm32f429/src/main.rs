@@ -66,6 +66,20 @@
 //! the 8 MB SDRAM (the issue sketched a single overlay buffer; double-buffering is the fix the
 //! observed tearing demanded).
 //!
+//! ## Render-on-demand (issue #47): dirty-region tracking
+//! The render loop is driven by the shared app's **dirty signal**, not a clock. As the `App`
+//! ticks sensors and handles input it accumulates *which planes changed*; `App::take_dirty`
+//! reports `{ map, overlay }` once per frame, and the loop re-renders **Layer 1 only when
+//! `map`** and **Layer 2 only when `overlay`**. So a genuinely static Map performs **zero** map
+//! renders (the old design forced a full 24–51 ms map frame every 1 s purely to keep time-based
+//! screens live — wasteful on the MIP/battery target this prototypes). The map redraws on a
+//! gesture, a camera-moving GPS fix, a route load, or a screen's own timed content (the
+//! Statistics cursor spring-back, which the screen surfaces via `Screen::animate`); the overlay
+//! repaints whenever the hold bulge is live. Buttons are still sampled every `LOOP_MS` so taps
+//! and hold timing are never missed — only *rendering* is on-demand. Map-matching and the ride
+//! log run per fresh fix, decoupled from the render cadence (the route reader is opened every
+//! frame — it does no I/O until geometry is actually streamed).
+//!
 //! Clock: 180 MHz core from the 16 MHz HSI (no dependency on the DISC1 HSE), plus a
 //! PLLSAI leg for the LTDC pixel clock.
 //!
@@ -216,11 +230,6 @@ const UDEG_PER_M: f32 = 1_000_000.0 / 111_320.0;
 /// and hold timing are caught even when a heavy Map frame stretches the render cadence.
 #[cfg(not(feature = "glass-demo"))]
 const LOOP_MS: u64 = 8;
-
-/// Idle redraw heartbeat (ms): redraw at least this often even with no input, so
-/// time-based screens (e.g. Statistics) stay live. A static Map then costs ~1 fps.
-#[cfg(not(feature = "glass-demo"))]
-const IDLE_REFRESH_MS: u32 = 1000;
 
 /// A stand-in moving [`LocationSource`] until #38 streams a real GPS over USB-CDC: the fix
 /// walks a slow square loop around a centre, driven by the wall clock. Unlike a constant fix,
@@ -812,29 +821,24 @@ async fn main(_spawner: Spawner) {
             storage.is_some()
         );
 
-        // Render-on-demand loop, now split across the two LTDC layers (issue #46). Buttons are
-        // sampled every LOOP_MS. The **map** (Layer 1) re-renders only on input/gesture activity or
-        // the IDLE_REFRESH heartbeat — so a static Map costs ~1 fps. The **overlay** (Layer 2, the
-        // hold bulge) repaints independently whenever it has live content, without re-rendering the
-        // map, so an animating ring over a static map touches only Layer 2. The active route's
-        // geometry and the ride log are opened only on map-redraw frames, which paces the `.obct`
-        // log to that rate.
-        let now0 = start.elapsed().as_millis() as u32;
-        let mut prev_gesture = app.last_gesture();
+        // Render-on-demand loop, split across the two LTDC layers (issue #46) and driven by the
+        // app's **dirty signal** (issue #47): the shared `App` accumulates which planes changed as
+        // it ticks/handles input, and `App::take_dirty` reports it once per frame. The **map**
+        // (Layer 1) re-renders only when `dirty.map` — a gesture, a camera-moving GPS fix, a route
+        // load, or a screen's timed content (the Statistics spring-back) — so a genuinely static
+        // Map performs **zero** map renders (no more blind 1 s heartbeat). The **overlay** (Layer 2,
+        // the hold bulge) repaints on `dirty.overlay`, independently of the map, so an animating
+        // ring over a static map touches only Layer 2. Buttons are still sampled every LOOP_MS so
+        // taps / hold timing are never missed; only *rendering* is on-demand.
         let mut prev_route: Option<usize> = None;
         // The active route's parsed chunk index, cached across frames (issue #44). `index_route`
         // is the route it belongs to; a mismatch triggers one rebuild off the open file, so a
         // per-frame redraw streams geometry without re-walking the index off the SD card.
         let mut route_index: Option<RouteIndex> = None;
         let mut index_route: Option<usize> = None;
-        // Whether the overlay (Layer 2) had live content last frame, so the loop paints one trailing
-        // transparent frame when the bulge goes quiet — clearing it off the layer.
-        let mut overlay_was_active = false;
-        let mut last_render = now0.wrapping_sub(IDLE_REFRESH_MS); // force the first map frame
         loop {
             let now = start.elapsed().as_millis() as u32;
             buttons.update(now);
-            let had_events = buttons.has_pending();
             app.handle_input(InputClock(now), &mut buttons);
 
             // Re-centre the synthetic GPS onto a freshly-loaded route's start so Follow doesn't
@@ -861,24 +865,12 @@ async fn main(_spawner: Spawner) {
                 s.reconcile_track(action, session, &name);
             }
 
-            // Map-redraw window: fresh input events, a clock-driven gesture firing (e.g. a
-            // long-press crossing its threshold, which changes the screen without a new button
-            // edge), or the idle heartbeat. The in-flight hold *ring* is deliberately **not** here
-            // — it lives on Layer 2 now and repaints below without re-rendering the map, so an
-            // animating ring over a static map keeps the map render count flat. The synthetic fix
-            // moving is likewise not activity (same as a real GPS once #38 lands); the heartbeat
-            // keeps the moving map live.
-            let gesture = app.last_gesture();
-            let gesture_changed = gesture != prev_gesture;
-            prev_gesture = gesture;
-            let heartbeat = now.wrapping_sub(last_render) >= IDLE_REFRESH_MS;
-            let redraw = had_events || gesture_changed || heartbeat;
-
             // Cache the active route's chunk index across frames: rebuild it (the expensive
             // header + full chunk-meta walk off SD) only when the route changes, or retry if a
-            // prior build failed on a flaky link. Gated on redraw — the index is only needed to
-            // draw / match, and `reconcile_route` above has already opened the active file.
-            if redraw && index_route != active {
+            // prior build failed on a flaky link. Not gated on rendering — the matcher in `tick`
+            // below needs the index on every *fresh fix*, independent of whether the map redraws,
+            // so it's ready as soon as the route is loaded (`reconcile_route` above opened the file).
+            if index_route != active {
                 match active {
                     Some(_) => {
                         match storage.as_ref().and_then(|s| s.build_route_index()) {
@@ -888,13 +880,13 @@ async fn main(_spawner: Spawner) {
                             }
                             None => {
                                 // Transient SD glitch: clear the cache *key* too (not just the
-                                // index) so the mismatch persists and every redraw retries —
+                                // index) so the mismatch persists and every frame retries —
                                 // leaving `index_route` stale would suppress the rebuild if the
                                 // user swapped away and back to this route. Hide it this frame
                                 // rather than the whole ride.
                                 route_index = None;
                                 index_route = None;
-                                defmt::warn!("SD: route index read failed (flaky link?) — retrying next redraw");
+                                defmt::warn!("SD: route index read failed (flaky link?) — retrying next frame");
                             }
                         }
                     }
@@ -905,10 +897,11 @@ async fn main(_spawner: Spawner) {
                 }
             }
             // This frame's reader = the cached index + a fresh geometry source. `RouteReader::new`
-            // does no I/O; geometry still streams per frame via the source (decode_chunk), only on
-            // redraw frames (the matcher / renderer need it just to draw).
-            let route_src =
-                if redraw { storage.as_ref().and_then(|s| s.route_source()) } else { None };
+            // and `route_source` do no I/O (the source just wraps the open file handle); geometry
+            // streams lazily via the source (`decode_chunk`) only where it's actually read — the
+            // matcher on a fresh fix, and the renderer on a map-redraw frame. So opening it every
+            // frame is cheap, and decouples matching from the render cadence (issue #43/#47).
+            let route_src = storage.as_ref().and_then(|s| s.route_source());
             let route = match (route_index.as_ref(), route_src.as_ref()) {
                 (Some(idx), Some(src)) => Some(RouteReader::new(idx, src)),
                 _ => None,
@@ -926,7 +919,11 @@ async fn main(_spawner: Spawner) {
                 route.as_ref(),
             );
 
-            if redraw {
+            // Drain the per-frame dirty signal (issue #47) now that input + tick have run: it
+            // tells us which planes actually changed, so each render below is on-demand.
+            let dirty = app.take_dirty();
+
+            if dirty.map {
                 let t0 = Instant::now();
                 // Render into the back buffer (not the one being scanned out).
                 // SAFETY: back_addr is the buffer the LTDC is *not* scanning; the only live
@@ -952,7 +949,6 @@ async fn main(_spawner: Spawner) {
                         "LTDC: Layer 1 vblank reload didn't land in 50 ms — kept buffers, skipped swap"
                     );
                 }
-                last_render = now;
                 defmt::debug!(
                     "map frame: {=u64} us | lod {=usize} | feat {=usize}/{=usize}",
                     render_us,
@@ -962,16 +958,16 @@ async fn main(_spawner: Spawner) {
                 );
             }
 
-            // Overlay plane (Layer 2): repaint whenever the hold bulge has live content this frame,
-            // plus one trailing frame when it goes quiet (to clear the last bulge off the layer).
-            // This never touches the map — the LTDC blends Layer 2 over whatever Layer 1 already
-            // shows — so an animating ring over a static map re-renders only this small layer (the
-            // `map frame` log above stays silent while these `overlay frame`s tick by). Like the map
-            // plane it is double-buffered + vblank-flipped: render the whole overlay (clear to
+            // Overlay plane (Layer 2): `dirty.overlay` is true whenever the hold bulge has live
+            // content this frame, plus the one trailing frame when it goes quiet (`App::take_dirty`
+            // folds in the old `overlay_was_active` edge, so the layer is cleared once when the
+            // bulge ends). This never touches the map — the LTDC blends Layer 2 over whatever Layer 1
+            // already shows — so an animating ring over a static map re-renders only this small layer
+            // (the `map frame` log above stays silent while these `overlay frame`s tick by). Like the
+            // map plane it is double-buffered + vblank-flipped: render the whole overlay (clear to
             // transparent, then the bulge) into the *back* buffer, then flip — drawing in place into
             // the scanned buffer tears the bulge as the clear races the scan.
-            let overlay_active = app.overlay_active();
-            if overlay_active || overlay_was_active {
+            if dirty.overlay {
                 let t0 = Instant::now();
                 // Render into the back overlay buffer (not the one being scanned out).
                 // SAFETY: overlay_back is the buffer the LTDC is *not* scanning; the only live
@@ -996,10 +992,9 @@ async fn main(_spawner: Spawner) {
                 defmt::debug!(
                     "overlay frame: {=u64} us | active {=bool}",
                     overlay_us,
-                    overlay_active
+                    app.overlay_active()
                 );
             }
-            overlay_was_active = overlay_active;
 
             Timer::after_millis(LOOP_MS).await;
         }
