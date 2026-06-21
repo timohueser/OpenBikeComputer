@@ -55,6 +55,7 @@ struct CalibState {
 
 /// Launch the simulator window. Owns the map bytes for the process lifetime; the
 /// [`Reader`] is a cheap view rebuilt each frame over them.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn run(bytes: Vec<u8>, args: Args) -> Result<(), eframe::Error> {
     // The window wraps the whole device (housing + screen + a little backdrop) at
     // `--scale`, not just the screen, so the body has room around the framebuffer.
@@ -70,6 +71,48 @@ pub fn run(bytes: Vec<u8>, args: Args) -> Result<(), eframe::Error> {
         options,
         Box::new(move |_cc| Ok(Box::new(SimGui::new(bytes, args)) as Box<dyn eframe::App>)),
     )
+}
+
+/// Web entry point: mount the *same* `SimGui` app on the page's `<canvas>` via
+/// eframe's WebGL runner. Called from the wasm `main` (see `main.rs`). Because the
+/// app is identical to the native sim — and to the firmware's render path — the
+/// embedded demo on the project site is always current with the code, never a
+/// screenshot that drifts out of date.
+#[cfg(target_arch = "wasm32")]
+pub fn run_web() {
+    use eframe::wasm_bindgen::JsCast as _;
+
+    // Surface Rust panics in the browser console instead of an opaque trap.
+    console_error_panic_hook::set_once();
+    eframe::WebLogger::init(log::LevelFilter::Warn).ok();
+
+    wasm_bindgen_futures::spawn_local(async {
+        let document = eframe::web_sys::window()
+            .expect("no window")
+            .document()
+            .expect("no document");
+        let canvas = document
+            .get_element_by_id("device_canvas")
+            .expect("index.html is missing <canvas id=\"device_canvas\">")
+            .dyn_into::<eframe::web_sys::HtmlCanvasElement>()
+            .expect("#device_canvas is not a <canvas>");
+
+        let result = eframe::WebRunner::new()
+            .start(
+                canvas,
+                eframe::WebOptions::default(),
+                Box::new(|_cc| Ok(Box::new(SimGui::new_web()) as Box<dyn eframe::App>)),
+            )
+            .await;
+
+        // Clear the "loading…" placeholder once egui owns the canvas (or show why not).
+        if let Some(el) = document.get_element_by_id("loading_text") {
+            match result {
+                Ok(_) => el.remove(),
+                Err(e) => el.set_inner_html(&format!("<p>Failed to start: {e:?}</p>")),
+            }
+        }
+    });
 }
 
 struct SimGui {
@@ -173,8 +216,8 @@ impl SimGui {
 
         // Boot at the device's real power-on state (Home / Idle, no route): pressing
         // the encoder walks Home → Route menu → Map, exactly like the device. (The
-        // headless `--png` path opens straight on the map for render inspection.)
-        let app = App::new_idle(state);
+        // headless `--png` path and the web demo open straight on the map instead.)
+        let app = if args.start_on_map { App::new(state) } else { App::new_idle(state) };
         let store =
             RouteStore::open(args.routes_dir.clone().unwrap_or_else(|| "routes".to_string()));
         let tracks =
@@ -229,8 +272,46 @@ impl SimGui {
         gui
     }
 
+    /// Web constructor: build the sim from the demo map baked into the wasm binary
+    /// and web-flavoured defaults (in-memory route/track stores, no native file
+    /// dialog or 1:1 calibration). Everything below this — the app, the render path,
+    /// the control panel — is shared verbatim with the native sim.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn new_web() -> Self {
+        let bytes = include_bytes!("../assets/grimsel.obcm").to_vec();
+        let mut g = SimGui::new(bytes, crate::Args::web_default());
+
+        // Select the embedded demo route (catalog index 0) so its line + ride stats show,
+        // and open a tracking session so the breadcrumb + climb totals accumulate.
+        if !g.store.catalog().is_empty() {
+            g.app.activity.active_route = Some(0);
+            g.app.activity.start_session();
+        }
+        // Auto-play the embedded ride (the Grimselpass climb, Guttannen → summit) so the
+        // page opens on a *moving* map. It's point-to-point, not a loop, so the restart in
+        // render_to_texture snaps back to the start and clears the trail for a fresh lap.
+        if let Ok(track) = crate::gpx::Track::parse(include_str!("../assets/grimsel-climb.gpx")) {
+            let mut player = crate::gpx_player::GpxPlayer::new(track);
+            // The GPX is distance-timed at a ~12 km/h base, so this multiplier reads as
+            // "N× a normal climbing pace" — 3× keeps the map moving without a blur.
+            player.set_speed(3.0);
+            player.play();
+            g.gpx = Some(player);
+        }
+        // Follow the rider in heading-up (the map rotates so the direction of travel is
+        // always up — the natural bike-computer view), and tighten the fit-to-whole-tile
+        // zoom to a riding view so the route reads as a ribbon up the pass with the
+        // switchbacks visible.
+        g.app.state.mode = CameraMode::Follow;
+        g.app.state.heading_up = true;
+        g.app.state.zoom *= 12.0;
+        g
+    }
+
     /// Parse a GPX file and load it as the active replay (paused at the start),
-    /// or record the error for the panel to show.
+    /// or record the error for the panel to show. Only reachable from native entry
+    /// points (CLI `--gpx`, file-dialog); the web build has no loader wired yet.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     fn load_gpx(&mut self, path: &Path) {
         match Track::load(path) {
             Ok(track) => {
@@ -288,6 +369,15 @@ impl SimGui {
                 route.as_ref(),
                 self.tracks.sink(),
             );
+            // Web demo: restart the climb when it reaches the summit so the page stays
+            // "alive". It's point-to-point (not a loop), so also bump the tracking session
+            // to clear the breadcrumb + ride totals — the rider snaps back to Guttannen for
+            // a fresh lap instead of dragging a trail across the map.
+            #[cfg(target_arch = "wasm32")]
+            if !player.is_playing() {
+                player.play();
+                self.app.activity.start_session();
+            }
             // Reflect the replayed fix in the panel mirrors so the (disabled)
             // position/heading widgets show the live values, and so manual control
             // resumes from here if the track is ejected.
@@ -310,7 +400,7 @@ impl SimGui {
         // Time the whole frame draw (render + route/overlays) and fold it into the stats
         // as `render_us` — `obc-render` is no_std and clockless, so the host fills it (the
         // device will use the DWT cycle counter). Surfaced in the control panel's stats.
-        let t0 = std::time::Instant::now();
+        let t0 = web_time::Instant::now();
         let mut stats = self.app.render_frame(
             &mut self.fb,
             &reader,
@@ -340,6 +430,8 @@ impl SimGui {
     /// Apply mouse pan/scroll-zoom over the screen `rect`, switching to Free mode.
     /// `scale` is the *displayed* device-pixels-to-screen-points factor (the image
     /// is fit to the window, so it can differ from the requested `--scale`).
+    /// Native-only: the web demo disables screen pan/zoom (no touchscreen feel).
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     fn handle_camera_input(
         &mut self,
         ui: &egui::Ui,
@@ -390,7 +482,12 @@ impl SimGui {
     /// screen cutout — centred, at either the integer fit scale (default) or the
     /// panel's true physical size when 1:1 is on and calibrated.
     fn show_device_image(&mut self, ctx: &egui::Context) {
+        // Native frames the device in the reference render's charcoal backdrop; the web
+        // demo drops it (transparent) so the device sits straight on the page background.
+        #[cfg(not(target_arch = "wasm32"))]
         let frame = egui::Frame::none().fill(housing::background());
+        #[cfg(target_arch = "wasm32")]
+        let frame = egui::Frame::none().fill(egui::Color32::TRANSPARENT);
         egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
             let tex = self.texture.clone().expect("texture uploaded this frame");
             let style = housing::HousingStyle::default();
@@ -456,7 +553,13 @@ impl SimGui {
                     .rounding(egui::Rounding::same(style.screen_radius_pts(disp_scale)))
                     .sense(egui::Sense::click_and_drag()),
             );
+            // Native: mouse drag pans / scroll zooms the map. The web demo is
+            // encoder-driven only — no screen pan/zoom, so it never feels like a
+            // touchscreen (the device has none).
+            #[cfg(not(target_arch = "wasm32"))]
             self.handle_camera_input(ui, &resp, resp.rect, disp_scale);
+            #[cfg(target_arch = "wasm32")]
+            let _ = &resp;
         });
     }
 
@@ -569,6 +672,13 @@ impl SimGui {
 }
 
 impl eframe::App for SimGui {
+    // Web: clear the canvas to transparent so the page background shows around the
+    // device (the central panel is transparent there too — see `show_device_image`).
+    #[cfg(target_arch = "wasm32")]
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        egui::Color32::TRANSPARENT.to_normalized_gamma_f32()
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Read the device-control keyboard shortcuts *first*, before any widget (the
         // device-screen image, the panel) is laid out and can take focus and swallow the
@@ -631,6 +741,10 @@ impl eframe::App for SimGui {
         }
         self.apply_physical_resize(ctx);
 
+        // The Controls window is a development tool (a second OS window driving the
+        // simulated GPS / encoder). The web demo shows only the device itself —
+        // housing, screen and on-housing buttons — so it's native-only.
+        #[cfg(not(target_arch = "wasm32"))]
         self.show_control_panel(ctx);
 
         if self.screenshot.is_some() {

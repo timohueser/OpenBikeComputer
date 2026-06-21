@@ -19,6 +19,12 @@
 //! be dropped onto the window to import them live.
 //!
 //! Interactive: drag to pan, scroll to zoom, Esc/Q to quit.
+//!
+//! The web build (wasm32) reuses only the shared host pieces — [`Args`],
+//! [`color_of`], [`initial_camera`], [`replay_step`], [`reconcile_tracks`] — and the
+//! eframe app; the CLI parser and headless-PNG helpers below still compile but go
+//! unreferenced there, so we quiet the resulting dead-code/import noise for wasm.
+#![cfg_attr(target_arch = "wasm32", allow(dead_code, unused_imports))]
 
 use std::time::Instant;
 
@@ -37,6 +43,9 @@ mod framebuffer;
 mod gpx;
 mod gpx_player;
 mod gui;
+// `--palette` is a native-only standalone window (its own eframe::run_native); the
+// web build never uses it, so keep its native APIs out of the wasm compile.
+#[cfg(not(target_arch = "wasm32"))]
 mod palette;
 mod routes;
 mod sim_location;
@@ -112,6 +121,46 @@ struct Args {
     /// Initial housing body color: `coral` | `mint` | `mustard` | `slate` (default
     /// slate). Cosmetic host chrome; switchable live in the control panel.
     colorway: Option<String>,
+    /// Boot straight onto the live Map (via [`obc_app::App::new`]) instead of the
+    /// Home/Idle screensaver. The native GUI always boots to Home; the web demo sets
+    /// this so the page opens on the moving map.
+    start_on_map: bool,
+}
+
+impl Args {
+    /// Defaults for the web build: the device resolution, in-memory route/track
+    /// stores (the `*_dir`s are unused on wasm), and none of the headless/CLI knobs.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn web_default() -> Self {
+        Args {
+            map: String::new(),
+            width: 240,
+            height: 320,
+            scale: 1,
+            png: None,
+            screenshot: None,
+            true_color: false,
+            heading: None,
+            gpx: None,
+            at: None,
+            center: None,
+            zoom_mul: 1.0,
+            text_demo: false,
+            script: None,
+            boot: false,
+            routes_dir: None,
+            tracks_dir: None,
+            save_track: false,
+            import: None,
+            physical: false,
+            calibrate: false,
+            palette: false,
+            // Warm terracotta body for the web demo (fits the parchment/forest/amber
+            // page) instead of the default slate.
+            colorway: Some("coral".to_string()),
+            start_on_map: true,
+        }
+    }
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -139,6 +188,7 @@ fn parse_args() -> Result<Args, String> {
         calibrate: false,
         palette: false,
         colorway: None,
+        start_on_map: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -406,6 +456,14 @@ fn apply_script(app: &mut App, script: &str) {
     }
 }
 
+/// Web entry: hand the page's canvas to the shared eframe app (see [`gui::run_web`]).
+/// Trunk builds this binary to wasm and calls `main` on load.
+#[cfg(target_arch = "wasm32")]
+fn main() {
+    gui::run_web();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn main() {
     let args = match parse_args() {
         Ok(a) => a,

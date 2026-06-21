@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OpenBikeComputer — a from-scratch bikepacking computer</title>
+  <meta name="description"
+    content="OpenBikeComputer (OBC) is an open-source bikepacking computer: offline vector maps in a custom binary format, GPX route navigation with live map-matching, and ride recording — firmware and simulator sharing one render path." />
+
+  <!-- Trunk builds this crate to wasm. wasm-opt only runs on --release builds, so dev
+       (trunk serve) stays fast while release ships a small, size-optimised binary. -->
+  <link data-trunk rel="rust" data-wasm-opt="z" />
+  <base data-trunk-public-url />
+
+  <style>
+    :root {
+      --parchment: #eadfc0;
+      --parchment-2: #e3d6b6;
+      --parchment-3: #d9caa4;
+      --line: rgba(91, 63, 40, 0.13);
+      --ink: #2c2114;
+      --ink-soft: #5e4c36;
+      --wood: #5b3f28;
+      --amber: #c98a22;
+      --forest: #4f6b43;
+      --coral: #c4583f;
+      --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
+      --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    }
+
+    * { box-sizing: border-box; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      margin: 0;
+      overflow-x: hidden;
+      color: var(--ink);
+      background-color: var(--parchment);
+      font-family: var(--sans);
+      line-height: 1.55;
+      -webkit-font-smoothing: antialiased;
+      /* faint topographic-paper speckle */
+      background-image:
+        radial-gradient(circle at 18% 28%, rgba(91, 63, 40, 0.045) 0 1.5px, transparent 2.5px),
+        radial-gradient(circle at 68% 64%, rgba(91, 63, 40, 0.04) 0 1.5px, transparent 2.5px);
+      background-size: 44px 44px, 60px 60px;
+    }
+
+    /* faint contour lines drifting behind the whole page */
+    .topo {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      pointer-events: none;
+      opacity: 0.5;
+    }
+
+    .wrap { width: min(1080px, 92vw); margin: 0 auto; }
+
+    a { color: var(--forest); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+
+    /* ---------- top bar ---------- */
+    header {
+      position: relative;
+      z-index: 2;
+      padding: 22px 0 6px;
+    }
+    header .wrap { display: flex; align-items: center; justify-content: space-between; }
+    .brand { display: flex; align-items: baseline; gap: 11px; }
+    .brand .mark {
+      font-family: var(--mono);
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      font-size: 15px;
+      color: var(--parchment);
+      background: var(--ink);
+      padding: 4px 8px;
+      border-radius: 7px;
+    }
+    .brand .name { font-family: var(--serif); font-size: 17px; font-weight: 600; }
+    .nav-links { display: flex; align-items: center; gap: 22px; font-size: 14px; }
+    .nav-links a { color: var(--ink-soft); text-decoration: none; }
+    .nav-links a:hover { color: var(--ink); }
+    .nav-links .gh { display: inline-flex; align-items: center; gap: 7px; color: var(--ink); font-weight: 600; }
+    .nav-links .gh svg { width: 18px; height: 18px; }
+
+    /* ---------- hero ---------- */
+    .hero { position: relative; z-index: 1; }
+    .hero .wrap {
+      display: grid;
+      grid-template-columns: 1.08fr 0.92fr;
+      gap: 40px;
+      align-items: center;
+      padding: 40px 0 26px;
+    }
+    .eyebrow {
+      text-transform: uppercase;
+      letter-spacing: 0.26em;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--forest);
+      margin: 0 0 16px;
+    }
+    h1 {
+      font-family: var(--serif);
+      font-weight: 700;
+      font-size: clamp(34px, 5vw, 56px);
+      line-height: 1.04;
+      letter-spacing: -0.01em;
+      margin: 0 0 18px;
+    }
+    h1 em { font-style: italic; color: var(--coral); }
+    .lede { font-size: clamp(16px, 1.6vw, 18.5px); color: var(--ink-soft); max-width: 34rem; margin: 0 0 26px; }
+    .lede strong { color: var(--ink); font-weight: 600; }
+
+    .cta { display: flex; flex-wrap: wrap; gap: 13px; align-items: center; }
+    .btn {
+      display: inline-flex; align-items: center; gap: 9px;
+      font-family: var(--sans); font-size: 15px; font-weight: 600;
+      padding: 12px 20px; border-radius: 11px;
+      text-decoration: none; cursor: pointer; border: 1.5px solid transparent;
+      transition: transform .08s ease, background .15s ease, box-shadow .15s ease;
+    }
+    .btn:active { transform: translateY(1px); }
+    .btn.primary { background: var(--ink); color: var(--parchment); box-shadow: 0 6px 16px rgba(44, 33, 20, 0.22); }
+    .btn.primary:hover { background: #1c150c; }
+    .btn.primary svg { width: 18px; height: 18px; }
+    .btn.ghost { color: var(--ink); border-color: var(--wood); background: transparent; }
+    .btn.ghost:hover { background: var(--parchment-3); }
+
+    .microcopy { margin: 18px 0 0; font-size: 13.5px; color: var(--ink-soft); }
+    .microcopy b { color: var(--coral); font-weight: 700; }
+
+    /* ---------- device ---------- */
+    .device-col { display: flex; flex-direction: column; align-items: center; }
+    .device-stage { position: relative; }
+    canvas#device_canvas {
+      display: block;
+      width: 330px;
+      height: 452px;
+      background: transparent;
+      outline: none;
+      touch-action: none;
+      /* shadow follows the device silhouette (transparent canvas) */
+      filter: drop-shadow(0 22px 30px rgba(44, 33, 20, 0.30));
+    }
+    #loading_text {
+      position: absolute; inset: 0;
+      display: flex; align-items: center; justify-content: center; gap: 10px;
+      font-family: var(--serif); font-size: 15px; color: var(--wood);
+    }
+    .spinner {
+      width: 16px; height: 16px; border: 3px solid var(--wood);
+      border-top-color: transparent; border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .device-caption { margin: 8px 0 0; font-size: 13px; color: var(--ink-soft); text-align: center; max-width: 22rem; }
+    .device-caption b { color: var(--ink); font-weight: 600; }
+
+    /* On-screen device controls — drive the sim by tap (works on touch + desktop;
+       they dispatch the same key events the firmware already handles). */
+    .controls {
+      margin: 13px 0 0; display: flex; gap: 8px; flex-wrap: wrap; justify-content: center;
+    }
+    .ctl {
+      font-family: var(--sans); font-size: 14px; font-weight: 600; color: var(--ink);
+      background: var(--parchment-2); border: 1px solid var(--parchment-3);
+      border-radius: 10px; padding: 10px 15px; cursor: pointer;
+      min-width: 46px; min-height: 42px;
+      user-select: none; -webkit-user-select: none; touch-action: none;
+      transition: background .12s ease, color .12s ease, transform .06s ease;
+    }
+    .ctl:hover { background: var(--parchment-3); }
+    .ctl.pressed, .ctl:active { background: var(--wood); color: var(--parchment); transform: translateY(1px); }
+    .ctl-arrow { font-size: 17px; line-height: 1; }
+    .ctl-hint { margin: 9px 0 0; font-size: 12px; color: var(--ink-soft); text-align: center; max-width: 24rem; }
+    .ctl-hint kbd {
+      font-family: var(--mono); font-size: 11px; color: var(--ink-soft);
+      background: var(--parchment-2); border: 1px solid var(--parchment-3);
+      border-radius: 4px; padding: 1px 5px;
+    }
+
+    /* ---------- features ---------- */
+    section.band { position: relative; z-index: 1; padding: 46px 0; }
+    .section-head { margin: 0 0 28px; }
+    .section-head h2 {
+      font-family: var(--serif); font-size: clamp(24px, 3vw, 32px); margin: 0 0 8px;
+    }
+    .section-head p { margin: 0; color: var(--ink-soft); max-width: 40rem; }
+
+    .features {
+      display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px;
+    }
+    .card {
+      background: linear-gradient(180deg, var(--parchment-2), var(--parchment));
+      border: 1px solid var(--parchment-3);
+      border-radius: 16px; padding: 22px 22px 24px;
+    }
+    .card .ico {
+      width: 38px; height: 38px; border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      background: var(--parchment-3); margin-bottom: 14px;
+    }
+    .card .ico svg { width: 21px; height: 21px; stroke: var(--wood); fill: none; stroke-width: 1.7; }
+    .card h3 { font-family: var(--serif); font-size: 19px; margin: 0 0 7px; }
+    .card p { margin: 0; font-size: 14.5px; color: var(--ink-soft); }
+    .card .tag { color: var(--coral); }
+    .card .tag svg { stroke: var(--coral); }
+
+    /* ---------- the "one render path" highlight ---------- */
+    .highlight {
+      background: var(--ink); color: var(--parchment);
+      border-radius: 20px; padding: 38px clamp(24px, 4vw, 46px);
+      display: grid; grid-template-columns: 1.2fr 1fr; gap: 34px; align-items: center;
+    }
+    .highlight h2 { font-family: var(--serif); font-size: clamp(23px, 3vw, 30px); margin: 0 0 12px; color: #f3e9cf; }
+    .highlight p { margin: 0 0 14px; color: #d8caa8; font-size: 15.5px; }
+    .highlight .pipe {
+      font-family: var(--mono); font-size: 12.5px; line-height: 1.7;
+      color: #c7b88f; background: rgba(0,0,0,0.25); border: 1px solid rgba(234,223,192,0.12);
+      border-radius: 12px; padding: 16px 18px; white-space: pre; overflow-x: auto;
+    }
+    .highlight .pipe b { color: var(--amber); font-weight: 700; }
+
+    /* ---------- specs strip ---------- */
+    .specs { display: flex; flex-wrap: wrap; gap: 12px 30px; margin-top: 30px; }
+    .spec { display: flex; flex-direction: column; }
+    .spec .k { font-size: 12px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--forest); font-weight: 700; }
+    .spec .v { font-family: var(--serif); font-size: 17px; }
+
+    /* ---------- footer ---------- */
+    footer { position: relative; z-index: 1; border-top: 1px solid var(--parchment-3); margin-top: 30px; padding: 30px 0 46px; }
+    footer .wrap { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; justify-content: space-between; }
+    footer .links { display: flex; flex-wrap: wrap; gap: 20px; font-size: 14px; }
+    footer .links a { color: var(--ink-soft); text-decoration: none; }
+    footer .links a:hover { color: var(--ink); }
+    footer .made { font-size: 13px; color: var(--ink-soft); }
+
+    /* ---------- responsive ---------- */
+    @media (max-width: 860px) {
+      .hero .wrap { grid-template-columns: 1fr; gap: 26px; padding-top: 26px; }
+      .device-col { order: -1; }
+      .highlight { grid-template-columns: 1fr; gap: 22px; }
+      .features { grid-template-columns: 1fr; }
+      h1 { font-size: clamp(30px, 8vw, 40px); }
+    }
+    /* On phones the section links don't fit beside the brand — keep just the
+       brand and the GitHub link, and let the page scroll to the sections. */
+    @media (max-width: 600px) {
+      header { padding-top: 16px; }
+      .nav-links a:not(.gh) { display: none; }
+      .nav-links { gap: 0; }
+      .brand .name { font-size: 16px; }
+      footer .wrap { gap: 10px; }
+    }
+  </style>
+</head>
+
+<body>
+  <!-- faint contour-line backdrop -->
+  <svg class="topo" viewBox="0 0 1440 900" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+    <g fill="none" stroke="#5b3f28" stroke-width="1.1" stroke-opacity="0.10">
+      <path d="M-50 180 C 240 120, 420 250, 700 200 S 1180 110, 1500 220" />
+      <path d="M-50 250 C 240 195, 430 320, 710 270 S 1180 185, 1500 295" />
+      <path d="M-50 330 C 260 280, 440 400, 720 345 S 1190 265, 1500 380" />
+      <path d="M-50 690 C 250 640, 470 760, 760 700 S 1200 615, 1500 735" />
+      <path d="M-50 760 C 250 712, 470 832, 760 772 S 1200 690, 1500 808" />
+    </g>
+  </svg>
+
+  <header>
+    <div class="wrap">
+      <div class="brand">
+        <span class="mark">OBC</span>
+        <span class="name">OpenBikeComputer</span>
+      </div>
+      <nav class="nav-links">
+        <a href="#features">Features</a>
+        <a href="#how">How it works</a>
+        <a class="gh" href="https://github.com/timohueser/OpenBikeComputer" target="_blank" rel="noopener">
+          <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8a8 8 0 0 0 5.47 7.59c.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8 8 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+          GitHub
+        </a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <!-- HERO -->
+    <section class="hero">
+      <div class="wrap">
+        <div class="hero-copy">
+          <p class="eyebrow">Open-source bikepacking computer</p>
+          <h1>Your whole map.<br><em>Offline.</em> On your bars.</h1>
+          <p class="lede">
+            A from-scratch bike computer: a custom compact map format, a Rust renderer,
+            and firmware that shares <strong>one render path</strong> with the simulator
+            you're watching here. No tiles, no subscription, no connection required.
+          </p>
+          <div class="cta">
+            <a class="btn primary" href="https://github.com/timohueser/OpenBikeComputer" target="_blank" rel="noopener">
+              <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8a8 8 0 0 0 5.47 7.59c.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8 8 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+              View on GitHub
+            </a>
+            <a class="btn ghost" href="#how">How it works</a>
+          </div>
+          <p class="microcopy"><b>Live, not a screenshot</b> — the device on the right is the actual firmware, compiled to your browser and replaying a ride.</p>
+        </div>
+
+        <div class="device-col">
+          <div class="device-stage">
+            <canvas id="device_canvas"></canvas>
+            <div id="loading_text"><span class="spinner"></span>Warming up the device…</div>
+          </div>
+          <p class="device-caption"><b>Try it</b> — tap the controls to drive the device.</p>
+          <div class="controls" role="group" aria-label="Device controls">
+            <button class="ctl ctl-arrow" data-key="ArrowLeft" aria-label="Scroll back" title="Scroll back">◂</button>
+            <button class="ctl" data-key="Enter">Select</button>
+            <button class="ctl" data-key="Backspace">Back</button>
+            <button class="ctl ctl-arrow" data-key="ArrowRight" aria-label="Scroll forward" title="Scroll forward">▸</button>
+          </div>
+          <p class="ctl-hint">Or on a keyboard: <kbd>←</kbd> <kbd>→</kbd> scroll · <kbd>Enter</kbd> select · <kbd>Backspace</kbd> back — hold for a long-press.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- FEATURES -->
+    <section class="band" id="features">
+      <div class="wrap">
+        <div class="section-head">
+          <h2>Built for the long way round</h2>
+          <p>Everything you need to follow a route through the middle of nowhere — and nothing you don't.</p>
+        </div>
+        <div class="features">
+          <div class="card">
+            <div class="ico"><svg viewBox="0 0 24 24"><path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2Z"/><path d="M9 4v14M15 6v14"/></svg></div>
+            <h3>Offline vector maps</h3>
+            <p>A whole region in a compact binary format (OBCM), read straight off flash and drawn on-device through an LOD pyramid. No tiles to download, no data plan.</p>
+          </div>
+          <div class="card">
+            <div class="ico"><svg viewBox="0 0 24 24"><path d="M6 19a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"/><path d="M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"/><path d="M9 17c6 0 0-10 6-10"/></svg></div>
+            <h3>Navigate any route</h3>
+            <p>Drop in a GPX. The device map-matches your position live, shows distance-to-go and a zoomable elevation profile, and trails a breadcrumb behind you.</p>
+          </div>
+          <div class="card">
+            <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z"/><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"/></svg></div>
+            <h3>Records the ride</h3>
+            <p>Tracks ridden distance, moving time, and barometric climb as you go — then exports the whole ride back out as a standard GPX.</p>
+          </div>
+          <div class="card">
+            <div class="ico"><svg viewBox="0 0 24 24"><path d="M6 3v12"/><path d="M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"/><path d="M18 9c0 6-12 3-12 6"/></svg></div>
+            <h3 class="tag">One render path</h3>
+            <p>The firmware and this web demo run the <em>exact same</em> Rust drawing code. What you see here is always what the device shows — never a stale screenshot.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- HOW IT WORKS / HIGHLIGHT -->
+    <section class="band" id="how">
+      <div class="wrap">
+        <div class="highlight">
+          <div>
+            <h2>Maps a microcontroller can read directly</h2>
+            <p>
+              OpenStreetMap data is packed into <b style="color:var(--amber)">OBCM</b> — a self-contained
+              binary map a tiny CPU reads with no JSON, no reparsing, no heap churn. The same
+              <b style="color:var(--amber)">Rust</b> core renders it on the desktop and on the device,
+              so the demo above can't drift out of date.
+            </p>
+            <p style="color:#b6a884; font-size:14px; margin:0;">A web map builder lets you pick a region, style it against the device's 64-colour gamut, and build your own map.</p>
+          </div>
+          <div class="pipe">.osm.pbf  ──▶  <b>obc-pack</b>  ──▶  .obcm
+ (OSM data)                  (binary map)
+                                 │
+   .gpx    ──▶  obc-route  ──▶   ├─▶  <b>shared Rust core</b>
+ (a route)                       │     ├─▶  simulator  ✓
+                                 │     └─▶  nRF54L fw
+                                 ▼
+                            this page</div>
+        </div>
+
+        <div class="specs">
+          <div class="spec"><span class="k">Brain</span><span class="v">nRF54L · Rust, no_std</span></div>
+          <div class="spec"><span class="k">Display</span><span class="v">Sharp memory LCD</span></div>
+          <div class="spec"><span class="k">Resolution</span><span class="v">240×320 · 64 colours</span></div>
+          <div class="spec"><span class="k">Input</span><span class="v">Encoder + Back, no touch</span></div>
+          <div class="spec"><span class="k">Licence</span><span class="v">Open source</span></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <div class="links">
+        <a href="https://github.com/timohueser/OpenBikeComputer" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/timohueser/OpenBikeComputer/blob/main/OBCM_Spec.md" target="_blank" rel="noopener">OBCM map format</a>
+        <a href="https://github.com/timohueser/OpenBikeComputer/blob/main/OBCR_Spec.md" target="_blank" rel="noopener">OBCR route format</a>
+      </div>
+      <div class="made">Runs on the desktop today · headed for the trail.</div>
+    </div>
+  </footer>
+
+  <script>
+    // Drive the embedded device from the on-screen buttons. The sim already handles
+    // these keys (←/→ scroll the encoder, Enter = press, Backspace = back), so we just
+    // forward synthetic key events to the canvas — making it work on touch, where there's
+    // no keyboard and no wheel-scroll. Holding a button holds the key (long-press).
+    (function () {
+      var canvas = document.getElementById('device_canvas');
+      if (!canvas) return;
+      var CODE = { ArrowLeft: 37, ArrowRight: 39, Enter: 13, Backspace: 8 };
+      var MIN_HOLD = 110; // ms — keep the key 'down' long enough for a frame to sample it
+      function send(type, key) {
+        canvas.dispatchEvent(new KeyboardEvent(type, {
+          key: key, code: key, keyCode: CODE[key], which: CODE[key],
+          bubbles: true, cancelable: true
+        }));
+      }
+      document.querySelectorAll('.ctl[data-key]').forEach(function (btn) {
+        var key = btn.getAttribute('data-key'), downAt = 0, upTimer = null;
+        function press(e) {
+          e.preventDefault();
+          canvas.focus();
+          if (upTimer) { clearTimeout(upTimer); upTimer = null; }
+          downAt = performance.now();
+          btn.classList.add('pressed');
+          send('keydown', key);
+        }
+        function release(e) {
+          if (e) e.preventDefault();
+          var wait = Math.max(0, MIN_HOLD - (performance.now() - downAt));
+          upTimer = setTimeout(function () {
+            send('keyup', key);
+            btn.classList.remove('pressed');
+          }, wait);
+        }
+        btn.addEventListener('pointerdown', press);
+        btn.addEventListener('pointerup', release);
+        btn.addEventListener('pointerleave', release);
+        btn.addEventListener('pointercancel', release);
+        btn.addEventListener('click', function (e) { e.preventDefault(); });
+      });
+    })();
+  </script>
+</body>
+
+</html>

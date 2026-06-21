@@ -10,11 +10,27 @@ obc-route = { path = "../obc-route" }
 obc-render = { path = "../obc-render" }
 obc-app = { path = "../obc-app" }
 embedded-graphics = "0.8"
-# Native GUI host: the device-screen window and (next) the control panel. Pure
-# Rust window stack — no SDL2/Homebrew dependency anymore.
+# GUI host: the device-screen window + control panel. Pure-Rust window stack
+# (native) and a WebGL canvas (wasm) — the same eframe app drives both, so the
+# web demo is the firmware-identical render path, never a stale screenshot.
 eframe = "0.29"
 # PNG output for headless `--png` renders.
 image = { version = "0.25", default-features = false, features = ["png"] }
-# Native "open file" dialog for selecting a GPX track to replay (host-only; the
-# firmware obviously has no file picker).
+# Monotonic clock that works on both native (re-exports std) and wasm (JS perf
+# clock) — std::time::Instant::now() panics in the browser.
+web-time = "1"
+
+# --- Native-only host concerns (file picker, etc.) ---
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Native "open file" dialog for selecting a GPX track to replay (the firmware /
+# web build obviously has no native file picker).
 rfd = "0.14"
+
+# --- Web (wasm32) build: the embedded simulator that runs on the project site ---
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-futures = "0.4"
+log = "0.4"
+console_error_panic_hook = "0.1"
+# egui/ahash pull getrandom; the wasm32-unknown-unknown target needs the `js`
+# backend explicitly or it fails to build.
+getrandom = { version = "0.2", features = ["js"] }
