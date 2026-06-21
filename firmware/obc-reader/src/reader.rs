@@ -4,13 +4,25 @@
 //! All coordinates are integer microdegrees (1e-6 degrees), as stored in the
 //! file. Projection to screen space is the renderer's job (see [`obc_render`]).
 //!
-//! The reader is immutable: instead of a stateful "active layer" it exposes the
-//! parsed [`Lod`] table and takes a LOD index on every `query`/`decode_chunk`,
-//! so the same `Reader` can serve different zoom levels without interior
-//! mutability — friendlier for the MCU and for concurrent reads.
+//! The reader **streams** through a [`ByteSource`] (issue #37): only the small
+//! header / style table / LOD table are read resident at [`Reader::new`]; the
+//! quadtree index and geometry chunks are pulled on demand via `read_at`, so the
+//! whole `.obcm` never has to fit in RAM (the nRF54L has 256 KB, no SDRAM). A
+//! [`SliceSource`](crate::SliceSource) makes "the whole file is resident" a
+//! one-line wrapper for the simulator and tests, exactly as the route reader does.
+//!
+//! Because `read_at` takes `&self`, the lazy reads go through an internal
+//! [`MapCache`] behind a `RefCell` — a small **geometry-chunk cache** so the
+//! renderer's per-priority-pass walk (`for_each_chunk` is re-run once per level)
+//! does not re-read the same chunk from SD on every pass, plus a tiny block cache
+//! that coalesces the 4-byte quadtree-node reads. The cache changes only *when* a
+//! byte is read, never *what* decodes, so renders stay byte-identical.
+
+use core::cell::{RefCell, RefMut};
 
 use heapless::Vec;
 
+use crate::byte_io::{ByteSource, Error as IoError};
 use crate::codec::{rd_f32, rd_i32, rd_u16, rd_u32};
 use crate::{BBox, Error};
 
@@ -25,6 +37,37 @@ pub const MAX_FEAT_RINGS: usize = 32;
 pub const HEADER_LEN: usize = 32;
 /// Each LOD table entry: `max_mpp f32, index_off u32, node_count u32, chunk_size u16, chunk_count u32`.
 pub const LOD_ENTRY_LEN: usize = 18;
+
+/// Upper bound on a single map data chunk, in bytes — the size of the decode scratch, and the
+/// largest `chunk_size` the reader accepts ([`Reader::new`] rejects a map declaring a bigger
+/// one). The format stores `chunk_size` as a `u16` (≤ 65535), but real maps pack far smaller
+/// (the packer defaults to 4096), so this caps the resident scratch well below the format
+/// ceiling to save RAM. A chunk between a cache slot and this decodes through the scratch,
+/// uncached.
+pub const MAX_CHUNK_BYTES: usize = 16384;
+
+/// Size of one geometry-chunk **cache** slot. A chunk this size or smaller is cached (kept
+/// resident across the frame's priority passes); a larger one — up to [`MAX_CHUNK_BYTES`] — is
+/// decoded through the scratch without being cached. Matches the packer's default `chunk_size`
+/// (4096) so the maps the device actually loads are fully cacheable.
+const CACHE_SLOT_BYTES: usize = 4096;
+
+/// Geometry-chunk cache slots (each [`CACHE_SLOT_BYTES`]). The renderer makes four priority
+/// passes over the same visible-chunk set per frame; sizing the cache to hold a riding-zoom
+/// viewport's chunks turns passes 2–4 into cache hits instead of re-reads from SD, and a wider
+/// pan into a partial hit. ≈64 KB at the default; the knob to trade RAM for hit rate.
+const MAP_CHUNK_SLOTS: usize = 16;
+
+/// Block size + count of the quadtree-index cache. The leaf walk reads 4-byte nodes (siblings
+/// adjacent in the file); caching a few aligned blocks coalesces those into a handful of SD
+/// reads per walk rather than one read per node. ≈4 KB total.
+const INDEX_BLOCK: usize = 512;
+const INDEX_BLOCKS: usize = 8;
+
+// A slot must fit any chunk it caches, and the scratch any chunk the reader accepts; `chunk_size`
+// is a `u16`, so the accepted cap stays within range.
+const _: () = assert!(CACHE_SLOT_BYTES <= MAX_CHUNK_BYTES, "a cached chunk must fit the scratch");
+const _: () = assert!(MAX_CHUNK_BYTES <= u16::MAX as usize, "chunk_size is a u16 in the format");
 
 const BRANCH_BIT: u32 = 0x8000_0000;
 const EMPTY_LEAF: u32 = 0x7FFF_FFFF;
@@ -155,7 +198,11 @@ impl<'a> Iterator for Interiors<'a> {
 }
 
 pub struct Reader<'a> {
-    data: &'a [u8],
+    /// The byte source the index + geometry chunks stream from. `&dyn` (not a generic) so the
+    /// renderer / app / screen signatures that hold a `&Reader` need no `<S>` parameter — the
+    /// same monomorphic shape the route [`RouteReader`](../../obc_route/struct.RouteReader.html)
+    /// uses.
+    src: &'a dyn ByteSource,
     pub version: u8,
     pub bbox: BBox,
     /// User-position marker color (RGB565), a global map-presentation property
@@ -166,31 +213,47 @@ pub struct Reader<'a> {
     lods: Vec<Lod, 16>,
     /// Styles indexed by id (0..=255) for O(1) lookup during rendering.
     styles: [Option<Style>; 256],
+    /// Borrowed lazy-read cache for the streamed index + geometry. **Borrowed**, not owned, so
+    /// the ≈84 KB of buffers live in a caller-provided [`MapCache`] (the device places it once
+    /// in SDRAM and rebuilds the small `Reader` per frame, reusing the cache across frames; the
+    /// host just makes one on the stack). `MapCache` keeps its own `RefCell` because `read_at`
+    /// (and so `for_each_chunk`/`for_each_feature_filtered`) take `&self` but the cache mutates;
+    /// the borrows are tightly scoped so the index-node read and the chunk decode never overlap.
+    cache: &'a MapCache,
 }
 
 impl<'a> Reader<'a> {
-    pub fn new(data: &'a [u8]) -> Result<Reader<'a>, Error> {
-        if data.len() < HEADER_LEN {
+    /// Parse the resident header / styles / LOD table from `src`, pairing the result with a
+    /// `cache` the geometry + index reads stream through. The cache is caller-owned and reusable
+    /// across frames (a chunk read last frame stays resident); pass a fresh [`MapCache::new`] if
+    /// you don't keep one around. Both borrows live as long as the `Reader`.
+    pub fn new(src: &'a dyn ByteSource, cache: &'a MapCache) -> Result<Reader<'a>, Error> {
+        let total = src.len() as usize;
+        if total < HEADER_LEN {
             return Err(Error::TooShort);
         }
-        if &data[0..4] != b"OBCM" {
+        // The header is the one read that's fixed-size and always present; a short read here is
+        // the streamed equivalent of the old `data.len() < HEADER_LEN`.
+        let mut header = [0u8; HEADER_LEN];
+        src.read_at(0, &mut header).map_err(|_| Error::TooShort)?;
+        if &header[0..4] != b"OBCM" {
             return Err(Error::BadMagic);
         }
-        let version = data[4];
+        let version = header[4];
         if version != 5 {
             return Err(Error::BadVersion);
         }
         // Header field order: lat,lon,lat,lon (see serialize.py header pack).
-        let min_lat = rd_i32(data, 5);
-        let min_lon = rd_i32(data, 9);
-        let max_lat = rd_i32(data, 13);
-        let max_lon = rd_i32(data, 17);
-        let style_offset = rd_u32(data, 21) as usize;
-        let lod_count = data[25] as usize;
-        let lod_table_offset = rd_u32(data, 26) as usize;
-        let marker_color = rd_u16(data, 30);
+        let min_lat = rd_i32(&header, 5);
+        let min_lon = rd_i32(&header, 9);
+        let max_lat = rd_i32(&header, 13);
+        let max_lon = rd_i32(&header, 17);
+        let style_offset = rd_u32(&header, 21) as usize;
+        let lod_count = header[25] as usize;
+        let lod_table_offset = rd_u32(&header, 26) as usize;
+        let marker_color = rd_u16(&header, 30);
 
-        if style_offset < HEADER_LEN || style_offset > data.len() {
+        if style_offset < HEADER_LEN || style_offset > total {
             return Err(Error::BadOffset);
         }
         if lod_count == 0 {
@@ -202,21 +265,31 @@ impl<'a> Reader<'a> {
             .checked_mul(LOD_ENTRY_LEN)
             .and_then(|len| lod_table_offset.checked_add(len))
             .ok_or(Error::BadOffset)?;
-        if lod_table_end > data.len() {
+        if lod_table_end > total {
             return Err(Error::BadOffset);
         }
 
-        let styles = parse_styles(data, style_offset);
-        let lods = parse_lod_table(data, lod_table_offset, lod_count)?;
+        let styles = parse_styles(src, style_offset, total);
+        let lods = parse_lod_table(src, lod_table_offset, lod_count, total)?;
 
         Ok(Reader {
-            data,
+            src,
             version,
             bbox: BBox { min_lon, min_lat, max_lon, max_lat },
             marker_color,
             lods,
             styles,
+            cache,
         })
+    }
+
+    /// A snapshot of the geometry-chunk cache + streaming counters of the paired [`MapCache`].
+    /// The renderer reports the per-frame delta, so the host stats panel / device log can show
+    /// the chunk-cache hit rate and the SD-read overhead this frame — the measured deliverables
+    /// of issue #37. (Counters are cumulative over the cache's life, hence the renderer's delta.)
+    #[inline]
+    pub fn chunk_cache_stats(&self) -> CacheStats {
+        self.cache.stats()
     }
 
     /// The parsed LOD pyramid (coarsest first).
@@ -251,9 +324,17 @@ impl<'a> Reader<'a> {
         chosen
     }
 
+    /// Read quadtree node `idx` of `lod` (a `u32`), streamed through the index block cache.
+    /// `None` on a read failure — the walk then skips that subtree (the streamed equivalent of
+    /// the old in-bounds-by-construction direct read). `idx < node_count` and the index region
+    /// lies within the file (both guaranteed by `walk_leaves`/`parse_lod_table`), so the offset
+    /// never overflows `u32`.
     #[inline]
-    fn node(&self, lod: &Lod, idx: usize) -> u32 {
-        rd_u32(self.data, lod.index_offset + idx * 4)
+    fn read_node(&self, lod: &Lod, idx: usize) -> Option<u32> {
+        let off = (lod.index_offset + idx * 4) as u32;
+        let mut b = [0u8; 4];
+        self.cache.borrow_mut().index_read(self.src, off, &mut b).ok()?;
+        Some(u32::from_le_bytes(b))
     }
 
     /// Collect (chunk_id, node_bbox) for every non-empty leaf in `lod` that
@@ -308,7 +389,12 @@ impl<'a> Reader<'a> {
         if idx >= lod.node_count || !node.intersects(view) {
             return;
         }
-        let val = self.node(lod, idx);
+        // Read the node *before* descending/visiting so the index-cache borrow is released by
+        // the time a leaf's `visit` triggers a geometry-chunk read (no nested `RefCell` borrow).
+        let val = match self.read_node(lod, idx) {
+            Some(v) => v,
+            None => return,
+        };
         if val & BRANCH_BIT == 0 {
             if val != EMPTY_LEAF {
                 visit(val, node);
@@ -399,10 +485,28 @@ impl<'a> Reader<'a> {
             Some(range) => range,
             None => return,
         };
-        if end > self.data.len() {
+        if end > self.src.len() as usize {
             return;
         }
-        decode_chunk_into(&self.data[start..end], node, points, ring_lens, should_decode, visit);
+        // `chunk_size` (== `end - start`) was capped at `MAX_CHUNK_BYTES` in `new`, so it fits the
+        // decode scratch; this defensive check just keeps a corrupt LOD from indexing past it.
+        let len = end - start;
+        if len > MAX_CHUNK_BYTES {
+            return;
+        }
+        // Pull the chunk through the cache (a hit if a prior priority pass read it this frame),
+        // then decode from the resident bytes. The borrow is held across `decode_chunk_into` —
+        // safe because `should_decode`/`visit` only touch `self.styles`, never the cache.
+        let mut cache = self.cache.borrow_mut();
+        let loc = match cache.load_chunk(self.src, lod as u8, chunk_id, start as u32, len) {
+            Ok(loc) => loc,
+            Err(_) => return,
+        };
+        let chunk = match loc {
+            ChunkLoc::Slot(i) => &cache.chunks[i].buf[..len],
+            ChunkLoc::Scratch => &cache.scratch[..len],
+        };
+        decode_chunk_into(chunk, node, points, ring_lens, should_decode, visit);
     }
 }
 
@@ -596,22 +700,38 @@ fn read_ring<const P: usize>(
     off
 }
 
-fn parse_styles(data: &[u8], style_offset: usize) -> [Option<Style>; 256] {
+/// Parse the style table, read resident from `src` at `style_offset` (the file is `total`
+/// bytes). The table is small (≤ `1 + 256*6` bytes) so it's pulled in two reads — the count
+/// byte, then the records — and parsed exactly as the old in-memory path (same per-record
+/// in-bounds break, so a truncated table yields the same styles).
+fn parse_styles(src: &dyn ByteSource, style_offset: usize, total: usize) -> [Option<Style>; 256] {
     let mut styles = [None; 256];
-    if style_offset >= data.len() {
+    if style_offset >= total {
         return styles;
     }
-    let count = data[style_offset] as usize;
-    let mut o = style_offset + 1;
+    let mut cb = [0u8; 1];
+    if src.read_at(style_offset as u32, &mut cb).is_err() {
+        return styles;
+    }
+    let count = cb[0] as usize;
+    // `count*6` record bytes follow the count, clamped to what the file actually holds — so the
+    // `o + 6 > want` break below fires at the same record the old `o + 6 > data.len()` did.
+    let avail = total - (style_offset + 1);
+    let want = (count * 6).min(avail);
+    let mut buf = [0u8; 256 * 6];
+    if want > 0 && src.read_at((style_offset + 1) as u32, &mut buf[..want]).is_err() {
+        return styles;
+    }
+    let mut o = 0usize;
     for _ in 0..count {
-        if o + 6 > data.len() {
+        if o + 6 > want {
             break;
         }
-        let id = data[o];
-        let z_index = data[o + 1] as i8;
-        let color = rd_u16(data, o + 2);
-        let weight = data[o + 4];
-        let flags = data[o + 5];
+        let id = buf[o];
+        let z_index = buf[o + 1] as i8;
+        let color = rd_u16(&buf, o + 2);
+        let weight = buf[o + 4];
+        let flags = buf[o + 5];
         let priority = (flags & 0x03) + 1;
         styles[id as usize] = Some(Style { id, z_index, color, weight, priority });
         o += 6;
@@ -619,22 +739,30 @@ fn parse_styles(data: &[u8], style_offset: usize) -> [Option<Style>; 256] {
     styles
 }
 
-/// Parse the `lod_count` LOD-table entries; validates each layer's index/chunk
-/// region lies within the file so `query`/`decode_chunk` can skip bounds math.
-fn parse_lod_table(data: &[u8], offset: usize, lod_count: usize) -> Result<Vec<Lod, 16>, Error> {
+/// Parse the `lod_count` LOD-table entries (read resident from `src`); validates each layer's
+/// index/chunk region lies within the file (`total` bytes) so `query`/`decode_chunk` can skip
+/// bounds math, and that its `chunk_size` fits a cache slot ([`MAX_CHUNK_BYTES`], issue #37).
+fn parse_lod_table(
+    src: &dyn ByteSource,
+    offset: usize,
+    lod_count: usize,
+    total: usize,
+) -> Result<Vec<Lod, 16>, Error> {
     let mut lods = Vec::new();
+    let mut e = [0u8; LOD_ENTRY_LEN];
     for k in 0..lod_count {
         let o = offset + k * LOD_ENTRY_LEN;
+        src.read_at(o as u32, &mut e).map_err(|_| Error::BadOffset)?;
         let lod = Lod {
-            max_mpp: rd_f32(data, o),
-            index_offset: rd_u32(data, o + 4) as usize,
-            node_count: rd_u32(data, o + 8) as usize,
-            chunk_size: rd_u16(data, o + 12) as usize,
-            chunk_count: rd_u32(data, o + 14) as usize,
+            max_mpp: rd_f32(&e, 0),
+            index_offset: rd_u32(&e, 4) as usize,
+            node_count: rd_u32(&e, 8) as usize,
+            chunk_size: rd_u16(&e, 12) as usize,
+            chunk_count: rd_u32(&e, 14) as usize,
         };
         // Checked: a corrupt entry can advertise a `node_count`/`chunk_count`/
         // `chunk_size` whose products wrap `usize` on the 32-bit target, so an
-        // unchecked `chunks_end` could land below `data.len()` and admit a layer
+        // unchecked `chunks_end` could land below `total` and admit a layer
         // that indexes far out of the file.
         let chunks_end = lod
             .data_start()
@@ -642,10 +770,259 @@ fn parse_lod_table(data: &[u8], offset: usize, lod_count: usize) -> Result<Vec<L
                 lod.chunk_count.checked_mul(lod.chunk_size).and_then(|len| start.checked_add(len))
             })
             .ok_or(Error::BadOffset)?;
-        if lod.index_offset < HEADER_LEN || chunks_end > data.len() {
+        if lod.index_offset < HEADER_LEN || chunks_end > total {
+            return Err(Error::BadOffset);
+        }
+        // A chunk is decoded into the resident scratch, so reject a map declaring one larger than
+        // [`MAX_CHUNK_BYTES`] (well above the packer's 4096 default) rather than silently dropping
+        // its geometry at render time.
+        if lod.chunk_size > MAX_CHUNK_BYTES {
             return Err(Error::BadOffset);
         }
         let _ = lods.push(lod);
     }
     Ok(lods)
+}
+
+/// A snapshot of the [`Reader`]'s streaming counters: the geometry-chunk cache hit/miss tally
+/// and the raw SD-read overhead (read calls + bytes). Issue #37's measured deliverables — the
+/// renderer reports the per-frame delta to the host stats panel / device log.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CacheStats {
+    /// Geometry-chunk requests served from a resident slot (no SD read).
+    pub chunk_hits: u32,
+    /// Geometry-chunk requests that missed and read from the source.
+    pub chunk_misses: u32,
+    /// Total `read_at` calls to the source (index blocks + chunk fills).
+    pub sd_reads: u32,
+    /// Total bytes pulled from the source.
+    pub bytes_read: u32,
+}
+
+/// Where `load_chunk` left a chunk's bytes: a cache slot (cacheable, ≤ `CACHE_SLOT_BYTES`) or the
+/// shared decode scratch (an oversized chunk, read uncached).
+#[derive(Clone, Copy)]
+enum ChunkLoc {
+    Slot(usize),
+    Scratch,
+}
+
+/// One geometry-chunk cache slot: a resident copy of a `chunk_size`-byte chunk, tagged with its
+/// `(lod, chunk_id)` and a recency stamp for LRU eviction. `valid` distinguishes a loaded slot
+/// from an empty one — chosen over `Option` so the all-zero state is a valid *empty* slot, which
+/// lets [`MapCacheInner::new`] zero-init the whole cache (see there).
+struct ChunkSlot {
+    valid: bool,
+    lod: u8,
+    cid: u32,
+    len: usize,
+    used: u32,
+    buf: [u8; CACHE_SLOT_BYTES],
+}
+
+/// One quadtree-index cache block: a resident, block-aligned window of the index region. `valid`
+/// plays the same all-zero-is-empty role as in [`ChunkSlot`].
+struct IndexBlock {
+    valid: bool,
+    off: u32,
+    len: usize,
+    used: u32,
+    buf: [u8; INDEX_BLOCK],
+}
+
+/// The streamed-map cache: an LRU set of geometry-chunk slots (the issue-#37 chunk cache that
+/// absorbs the renderer's per-priority-pass re-reads) plus a small block cache for the
+/// quadtree-node reads, with the streaming counters. Caller-owned and reusable across frames —
+/// the device places one in SDRAM for the whole session and rebuilds the small [`Reader`] each
+/// frame against it (so a chunk read one frame can hit the next), while the host just makes one
+/// per render. ≈84 KB, dominated by the slots + the decode scratch; tune the slot count /
+/// `CACHE_SLOT_BYTES` against the on-device RAM budget.
+///
+/// Wraps its mutable state in a `RefCell` so a [`Reader`] can borrow it (`&MapCache`) yet read
+/// through it on `&self` paths; the borrows are tightly scoped (one index-node read, or one chunk
+/// load + decode) so they never overlap.
+pub struct MapCache {
+    inner: RefCell<MapCacheInner>,
+}
+
+impl Default for MapCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MapCache {
+    /// A fresh, empty cache. ≈84 KB of zeroed buffers — on the device, place it once in SDRAM
+    /// (e.g. `ptr::write`, like the `App`) so it stays off the 192 KB main stack.
+    pub fn new() -> Self {
+        MapCache { inner: RefCell::new(MapCacheInner::new()) }
+    }
+
+    #[inline]
+    fn borrow_mut(&self) -> RefMut<'_, MapCacheInner> {
+        self.inner.borrow_mut()
+    }
+
+    #[inline]
+    fn stats(&self) -> CacheStats {
+        self.inner.borrow().stats()
+    }
+}
+
+/// The cache's mutable interior (see [`MapCache`]). Recency is a monotonic `tick` stamped on each
+/// access; eviction picks the lowest stamp.
+struct MapCacheInner {
+    tick: u32,
+    chunks: [ChunkSlot; MAP_CHUNK_SLOTS],
+    index: [IndexBlock; INDEX_BLOCKS],
+    /// Decode buffer for a chunk too large to cache (`> CACHE_SLOT_BYTES`, up to the accepted
+    /// `MAX_CHUNK_BYTES`); never keyed, so such a chunk is re-read every pass.
+    scratch: [u8; MAX_CHUNK_BYTES],
+    chunk_hits: u32,
+    chunk_misses: u32,
+    sd_reads: u32,
+    bytes_read: u32,
+}
+
+impl MapCacheInner {
+    fn new() -> Self {
+        // Zero-init the whole thing. Every field is valid when all-zero — `valid: false` (empty
+        // slot), integer 0, and write-before-read byte buffers — and `zeroed()` lowers to a
+        // `memset` / `.bss`, whereas a struct literal that zeroes the ~84 KB of buffers emits
+        // them as a `.rodata` const that is then `memcpy`'d. On the device that const overflowed
+        // flash; the simulator/tests are unaffected either way (the value is identical).
+        //
+        // SAFETY: `MapCacheInner` is inhabited and valid for the all-zero bit pattern — it has no
+        // references, no enums with a non-zero discriminant, and no `bool` that must be non-zero
+        // (the only `bool`s are the `valid` flags, false at zero). No padding is read.
+        unsafe { core::mem::MaybeUninit::zeroed().assume_init() }
+    }
+
+    #[inline]
+    fn stats(&self) -> CacheStats {
+        CacheStats {
+            chunk_hits: self.chunk_hits,
+            chunk_misses: self.chunk_misses,
+            sd_reads: self.sd_reads,
+            bytes_read: self.bytes_read,
+        }
+    }
+
+    #[inline]
+    fn touch(&mut self) -> u32 {
+        self.tick = self.tick.wrapping_add(1);
+        self.tick
+    }
+
+    #[inline]
+    fn count_read(&mut self, bytes: usize) {
+        self.sd_reads = self.sd_reads.saturating_add(1);
+        self.bytes_read = self.bytes_read.saturating_add(bytes as u32);
+    }
+
+    /// Ensure chunk `(lod, cid)` — the `len` bytes at `start` — is resident, returning where its
+    /// bytes are. A chunk that fits a cache slot is cached: a hit bumps recency + the hit
+    /// counter, a miss evicts the LRU slot and reads from the source. A chunk larger than a slot
+    /// is read into the uncached scratch every call (counted as a miss + a read).
+    fn load_chunk(
+        &mut self,
+        src: &dyn ByteSource,
+        lod: u8,
+        cid: u32,
+        start: u32,
+        len: usize,
+    ) -> Result<ChunkLoc, IoError> {
+        if len > CACHE_SLOT_BYTES {
+            src.read_at(start, &mut self.scratch[..len])?;
+            self.chunk_misses = self.chunk_misses.saturating_add(1);
+            self.count_read(len);
+            return Ok(ChunkLoc::Scratch);
+        }
+        if let Some(i) =
+            self.chunks.iter().position(|s| s.valid && s.lod == lod && s.cid == cid && s.len == len)
+        {
+            self.chunk_hits = self.chunk_hits.saturating_add(1);
+            let t = self.touch();
+            self.chunks[i].used = t;
+            return Ok(ChunkLoc::Slot(i));
+        }
+        let i = lru(self.chunks.iter().map(|s| (!s.valid, s.used)));
+        src.read_at(start, &mut self.chunks[i].buf[..len])?;
+        self.chunks[i].valid = true;
+        self.chunks[i].lod = lod;
+        self.chunks[i].cid = cid;
+        self.chunks[i].len = len;
+        let t = self.touch();
+        self.chunks[i].used = t;
+        self.chunk_misses = self.chunk_misses.saturating_add(1);
+        self.count_read(len);
+        Ok(ChunkLoc::Slot(i))
+    }
+
+    /// Fill `out` from index-region offset `off`, assembling from cached blocks (reading any
+    /// missing block from the source). A node read is 4 bytes and may straddle a block edge, so
+    /// this loops over blocks.
+    fn index_read(
+        &mut self,
+        src: &dyn ByteSource,
+        off: u32,
+        out: &mut [u8],
+    ) -> Result<(), IoError> {
+        let mut filled = 0usize;
+        while filled < out.len() {
+            let cur = off + filled as u32;
+            let block_off = cur - cur % INDEX_BLOCK as u32;
+            let slot = self.index_block(src, block_off)?;
+            let within = (cur - block_off) as usize;
+            let blen = self.index[slot].len;
+            if within >= blen {
+                return Err(IoError::BadOffset);
+            }
+            let take = (blen - within).min(out.len() - filled);
+            out[filled..filled + take]
+                .copy_from_slice(&self.index[slot].buf[within..within + take]);
+            filled += take;
+        }
+        Ok(())
+    }
+
+    /// Ensure the `INDEX_BLOCK`-aligned block at `block_off` is resident, returning its slot.
+    fn index_block(&mut self, src: &dyn ByteSource, block_off: u32) -> Result<usize, IoError> {
+        if let Some(i) = self.index.iter().position(|b| b.valid && b.off == block_off) {
+            let t = self.touch();
+            self.index[i].used = t;
+            return Ok(i);
+        }
+        let want = ((src.len() - block_off) as usize).min(INDEX_BLOCK);
+        if want == 0 {
+            return Err(IoError::BadOffset);
+        }
+        let i = lru(self.index.iter().map(|b| (!b.valid, b.used)));
+        src.read_at(block_off, &mut self.index[i].buf[..want])?;
+        self.index[i].valid = true;
+        self.index[i].off = block_off;
+        self.index[i].len = want;
+        let t = self.touch();
+        self.index[i].used = t;
+        self.count_read(want);
+        Ok(i)
+    }
+}
+
+/// Pick a slot to (re)fill: the first empty slot if any, else the least-recently-used. Input is
+/// `(is_empty, used)` per slot in order; returns the chosen index. Never empty in practice (the
+/// cache always has ≥ 1 slot).
+fn lru(slots: impl Iterator<Item = (bool, u32)>) -> usize {
+    let mut best = 0usize;
+    let mut best_used = u32::MAX;
+    for (i, (empty, used)) in slots.enumerate() {
+        if empty {
+            return i;
+        }
+        if used < best_used {
+            best_used = used;
+            best = i;
+        }
+    }
+    best
 }

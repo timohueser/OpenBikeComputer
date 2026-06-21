@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 use std::process::ExitCode;
 
-use obc_reader::{BBox, Kind, Reader, Style, MAX_FEAT_PTS, MAX_FEAT_RINGS};
+use obc_reader::{BBox, Kind, MapCache, Reader, SliceSource, Style, MAX_FEAT_PTS, MAX_FEAT_RINGS};
 
 /// Canonical, hashable identity of a decoded feature (geometry in microdegrees).
 type FeatureKey = (u8, bool, Vec<(i32, i32)>, Vec<Vec<(i32, i32)>>);
@@ -115,14 +115,18 @@ fn main() -> ExitCode {
 
     let a_bytes = std::fs::read(&a_path).expect("read a");
     let b_bytes = std::fs::read(&b_path).expect("read b");
-    let ra = match Reader::new(&a_bytes) {
+    let a_cache = MapCache::new();
+    let b_cache = MapCache::new();
+    let a_src = SliceSource(&a_bytes);
+    let b_src = SliceSource(&b_bytes);
+    let ra = match Reader::new(&a_src, &a_cache) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("parse {a_path}: {e:?}");
             return ExitCode::FAILURE;
         }
     };
-    let rb = match Reader::new(&b_bytes) {
+    let rb = match Reader::new(&b_src, &b_cache) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("parse {b_path}: {e:?}");

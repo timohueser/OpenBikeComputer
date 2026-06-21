@@ -16,7 +16,7 @@ use obc_app::{
     App, AppState, Button, ButtonEvent, CameraMode, Fix, Gesture, InputClock, InputEvent,
     InputSource, LocationSource, Mode, PanAxis, RideClock, RouteSummary, Sensors, TrackAction,
 };
-use obc_reader::{rgb565_to_rgb888, BBox, Reader};
+use obc_reader::{rgb565_to_rgb888, BBox, MapCache, Reader, SliceSource};
 
 /// A handle [`Ctx`] over freshly-made state/activity for a one-gesture test. Most
 /// screens ignore the catalog; the Route-menu tests pass their own via [`route_ctx`].
@@ -391,7 +391,9 @@ fn ride_control_composites_over_the_map() {
 
 fn render(app: &mut App, bytes: &[u8]) -> Buf {
     app.tick(RideClock(0), Sensors { loc: &mut NoFix, altimeter: None, track: None }, None);
-    let reader = Reader::new(bytes).expect("valid v5 file");
+    let cache = MapCache::new();
+    let src = SliceSource(bytes);
+    let reader = Reader::new(&src, &cache).expect("valid v5 file");
     let mut buf = Buf::new(120, 120);
     app.render_frame(&mut buf, &reader, None, 120.0, 120.0, |c| {
         let (r, g, b) = rgb565_to_rgb888(c);

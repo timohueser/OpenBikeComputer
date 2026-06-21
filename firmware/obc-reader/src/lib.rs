@@ -7,6 +7,8 @@
 //! render time from the current meters-per-pixel.
 //!
 //! Modules:
+//! - [`byte_io`] — the [`ByteSource`]/[`ByteSink`] seam (+ [`SliceSource`]) the map and route
+//!   formats both stream through, so neither needs the whole file resident (issue #37).
 //! - [`reader`] — header / style / LOD-table parsing and per-LOD query + decode.
 //! - [`color`] — RGB565 → display color conversions.
 //! - [`codec`] — little-endian field readers/writers shared with the route format.
@@ -16,13 +18,21 @@
 
 #![no_std]
 
+pub mod byte_io;
 pub mod codec;
 pub mod color;
 pub mod reader;
 
+// The byte-I/O traits are re-exported at the crate root for convenience; its `Error` is **not**
+// (it would shadow the map-parse [`Error`] below) — reach it via `byte_io::Error`, as `obc-route`
+// does when it re-exports it as `obc_route::Error`.
+pub use byte_io::{ByteSink, ByteSource, SliceSource};
 pub use color::rgb565_to_device64;
 pub use color::rgb565_to_rgb888;
-pub use reader::{FeatureRef, Kind, Lod, Reader, Style, HEADER_LEN, MAX_FEAT_PTS, MAX_FEAT_RINGS};
+pub use reader::{
+    CacheStats, FeatureRef, Kind, Lod, MapCache, Reader, Style, HEADER_LEN, MAX_CHUNK_BYTES,
+    MAX_FEAT_PTS, MAX_FEAT_RINGS,
+};
 
 /// Meters of ground per degree of latitude (and of longitude at the equator) — the
 /// local-equirectangular Earth model. The single source of truth for every crate that

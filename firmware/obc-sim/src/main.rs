@@ -33,7 +33,7 @@ use obc_app::{
     App, AppState, Button, ButtonEvent, Fix, InputClock, InputEvent, InputSource, LocationSource,
     RideClock, Sensors, TrackAction, TrackSink,
 };
-use obc_reader::{rgb565_to_device64, rgb565_to_rgb888, Reader};
+use obc_reader::{rgb565_to_device64, rgb565_to_rgb888, MapCache, Reader, SliceSource};
 use obc_render::text::{draw_text, Font, TextAlign};
 
 mod baro;
@@ -538,7 +538,9 @@ fn main() {
     // Validate + log once up front; the borrow ends with this block so `bytes`
     // can move into the GUI (which rebuilds the cheap `Reader` view per frame).
     {
-        let reader = Reader::new(&bytes).unwrap_or_else(|e| {
+        let cache = MapCache::new();
+        let src = SliceSource(&bytes);
+        let reader = Reader::new(&src, &cache).unwrap_or_else(|e| {
             eprintln!("invalid OBCM file: {e:?}");
             std::process::exit(1);
         });
@@ -559,7 +561,9 @@ fn main() {
 
     // Headless mode: render one frame through the shared app, save PNG, exit.
     if let Some(path) = &args.png {
-        let reader = Reader::new(&bytes).expect("validated above");
+        let cache = MapCache::new();
+        let src = SliceSource(&bytes);
+        let reader = Reader::new(&src, &cache).expect("validated above");
         let (mut cx, mut cy, mut zoom) = initial_camera(&reader, args.width);
         if let Some((lon, lat)) = args.center {
             cx = lon;
@@ -669,8 +673,14 @@ fn main() {
             |c| color_of(c, tc),
         );
         stats.render_us = t0.elapsed().as_micros() as u32;
+        let cache_reqs = stats.map_chunk_hits + stats.map_chunk_misses;
+        let hit_pct = if cache_reqs == 0 {
+            0.0
+        } else {
+            100.0 * stats.map_chunk_hits as f32 / cache_reqs as f32
+        };
         eprintln!(
-            "rendered {}/{} features ({} chunks, LOD {}, {} dropped) | route {}/{} drawn, {} chunks in {:.2} ms | spans {:.0}% points {:.0}% rings {:.0}%",
+            "rendered {}/{} features ({} chunks, LOD {}, {} dropped) | route {}/{} drawn, {} chunks in {:.2} ms | spans {:.0}% points {:.0}% rings {:.0}% | map-cache {:.0}% hit, {} reads, {} B",
             stats.features_drawn,
             stats.features_tried,
             stats.chunks_visited,
@@ -682,7 +692,10 @@ fn main() {
             stats.render_us as f64 / 1000.0,
             stats.span_utilization * 100.0,
             stats.point_utilization * 100.0,
-            stats.ring_utilization * 100.0
+            stats.ring_utilization * 100.0,
+            hit_pct,
+            stats.map_sd_reads,
+            stats.map_bytes_read
         );
 
         if let Err(e) = write_png(&fb, args.scale, path) {

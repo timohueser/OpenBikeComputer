@@ -429,6 +429,17 @@ pub struct RenderStats {
     pub span_utilization: f32,
     pub point_utilization: f32,
     pub ring_utilization: f32,
+    /// Streamed-map cache accounting for this frame (issue #37). The map `Reader` re-walks the
+    /// visible chunks once per priority level; `map_chunk_hits` are the passes served from a
+    /// resident cache slot, `map_chunk_misses` the ones that read from SD. `map_sd_reads` /
+    /// `map_bytes_read` are the raw source overhead (index blocks + chunk fills) — the
+    /// "SD-read overhead per frame" the issue asks to measure. All `0` with an in-memory map
+    /// whose chunks all fit the cache only if nothing was decoded; otherwise the hit rate is
+    /// `hits / (hits + misses)`.
+    pub map_chunk_hits: u32,
+    pub map_chunk_misses: u32,
+    pub map_sd_reads: u32,
+    pub map_bytes_read: u32,
     /// Host-measured wall time for the whole frame draw (render + route/overlays), in
     /// microseconds; `0` = not measured. `obc-render` is `no_std` and carries no clock,
     /// so the **host** fills this after timing the draw (the sim uses `Instant`; the
@@ -522,7 +533,18 @@ impl MapRenderer {
 
         // Collect → painter's order → draw. `seq` is the stable, alloc-free
         // tie-break within a z-index.
+        //
+        // Snapshot the streamed-map cache counters across `collect` (the only phase that reads
+        // the map source) and record the per-frame delta — robust whether the caller hands us a
+        // fresh `Reader` each frame (sim / device) or a reused one. (#37)
+        let before = reader.chunk_cache_stats();
         self.frame.collect(reader, lod, &view, &mut stats);
+        let after = reader.chunk_cache_stats();
+        stats.map_chunk_hits = after.chunk_hits.wrapping_sub(before.chunk_hits);
+        stats.map_chunk_misses = after.chunk_misses.wrapping_sub(before.chunk_misses);
+        stats.map_sd_reads = after.sd_reads.wrapping_sub(before.sd_reads);
+        stats.map_bytes_read = after.bytes_read.wrapping_sub(before.bytes_read);
+
         self.frame.spans.sort_unstable_by_key(|s| (s.z, s.seq));
         self.draw_map(target, vp, &color_fn);
 
