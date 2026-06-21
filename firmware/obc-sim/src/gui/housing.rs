@@ -26,7 +26,7 @@ pub fn background() -> Color32 {
 pub const WINDOW_MARGIN: f32 = 18.0;
 
 /// The four body colors the device ships in. Selectable live in the control panel
-/// (and via `--colorway`); the front wordmark always reads `OBM` regardless.
+/// (and via `--colorway`); the front wordmark always reads `OBC` regardless.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Colorway {
     Coral,
@@ -264,11 +264,11 @@ pub fn draw(
     // Bezel — the dark frame the (corner-rounded) screen texture is blitted over.
     painter.rect_filled(lo.bezel, Rounding::same(style.bezel_radius * scale), palette.bezel);
 
-    // Front wordmark — always "OBM".
+    // Front wordmark — always "OBC".
     painter.text(
         lo.wordmark_center,
         Align2::CENTER_CENTER,
-        "OBM",
+        "OBC",
         FontId::new(lo.wordmark_size, egui::FontFamily::Proportional),
         palette.wordmark,
     );

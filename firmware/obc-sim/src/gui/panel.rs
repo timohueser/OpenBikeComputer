@@ -4,6 +4,10 @@
 //! stats readout. Split out of [`super`]'s host loop so the panel UI lives apart
 //! from the framebuffer/texture plumbing; it is a second `impl SimGui` block, so it
 //! reads and mutates the same fields directly.
+//!
+//! The whole panel is a native development tool — the web demo shows only the device
+//! itself — so on wasm these methods are compiled but unreferenced.
+#![cfg_attr(target_arch = "wasm32", allow(dead_code))]
 
 use eframe::egui;
 use obc_app::CameraMode;
@@ -187,6 +191,9 @@ impl SimGui {
                     // simulated GPS sensor (position + derived course/speed). The
                     // player is the active `LocationSource` while a track is loaded.
                     ui.label("GPX replay");
+                    // Native uses an OS file picker to load a track; the web build has no
+                    // such dialog (a file-input upload path replaces it later).
+                    #[cfg(not(target_arch = "wasm32"))]
                     if ui.button("Load GPX…").clicked() {
                         if let Some(path) =
                             rfd::FileDialog::new().add_filter("GPX track", &["gpx"]).pick_file()
