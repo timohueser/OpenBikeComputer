@@ -8,6 +8,7 @@ use obc_route::{Profile, RouteMatch, RouteReader, TrackPoint};
 
 use crate::activity::{Activity, Mode};
 use crate::breadcrumb::Breadcrumb;
+use crate::dirty::Dirty;
 use crate::hal::{Fix, InputClock, InputSource, LocationSource, RideClock, Sensors};
 use crate::hold_hint::HoldHints;
 use crate::input::{Gesture, Gestures, DEFAULT_HOLD_MS};
@@ -349,6 +350,17 @@ pub struct App {
     /// Back edges), drawn above every screen so the central hold gesture is always
     /// visible — not just on Ride control.
     hold_hints: HoldHints,
+    /// Accumulated **map-plane** repaint demand since the last [`take_dirty`](App::take_dirty):
+    /// set as [`tick`](App::tick) / [`handle_input`](App::handle_input) mutate map-affecting
+    /// state, drained once per frame. Starts `true` so the host's first frame paints. (The
+    /// overlay-plane flag isn't accumulated here — it's derived from the live hold-bulge state
+    /// at drain time; see [`take_dirty`](App::take_dirty).)
+    map_dirty: bool,
+    /// The overlay plane's live state at the previous [`take_dirty`](App::take_dirty), so a
+    /// bulge going quiet yields exactly one trailing overlay repaint (clearing the last frame
+    /// off Layer 2). Folds the host's old `overlay_was_active` bookkeeping into the shared
+    /// [`Dirty`] signal so the sim and firmware share one definition.
+    overlay_was_active: bool,
 }
 
 impl App {
@@ -388,6 +400,9 @@ impl App {
             enc_progress: 0.0,
             back_progress: 0.0,
             hold_hints: HoldHints::new(),
+            // Force the host's first frame: nothing has been drawn yet, so the map is dirty.
+            map_dirty: true,
+            overlay_was_active: false,
         }
     }
 
@@ -406,10 +421,15 @@ impl App {
     /// once per load.
     pub fn tick(&mut self, clock: RideClock, sensors: Sensors, route: Option<&RouteReader>) {
         let now_ms = clock.0;
+        // The camera state before this tick's fix, so a fresh fix that actually moved the
+        // camera / marker / heading is detected below by one `AppState` comparison (it's
+        // `Copy` + `PartialEq`).
+        let state_before = self.state;
         // The matcher follows the *navigated route*: a load or a "Swap route only" re-locks it.
         if self.activity.active_route != self.matched_route {
             self.route_match.reset();
             self.matched_route = self.activity.active_route;
+            self.map_dirty = true; // route load / swap repaints the route line + recenters
         }
         // The accumulators + breadcrumb follow the *tracking session*: a new session restarts
         // them, while a swap (which keeps the session) leaves them running.
@@ -417,9 +437,18 @@ impl App {
             self.activity.reset_ride();
             self.breadcrumb.clear();
             self.ride_session = self.activity.session;
+            self.map_dirty = true; // the breadcrumb cleared — the map's travelled trail changed
         }
-        // Mirror the active route's length for the riding views (0 when none loaded).
+        // Mirror the active route's length for the riding views (0 when none loaded). A change
+        // here means the *drawable* route just appeared or vanished — a load, or (on the device)
+        // a transient SD glitch recovering, where the geometry becomes streamable a frame or two
+        // after the load. Dirty the map so the route line is painted (or cleared) even on a frame
+        // with no fresh fix to trigger it, closing an under-redraw gap independent of `active_route`.
+        let route_total_before = self.activity.route_total_m;
         self.activity.route_total_m = route.map_or(0, |r| r.total_distance_m);
+        if self.activity.route_total_m != route_total_before {
+            self.map_dirty = true;
+        }
 
         let Sensors { loc, altimeter, track } = sensors;
         // Barometric altitude on its own cadence → climb + the elevation stamped on the log.
@@ -451,6 +480,27 @@ impl App {
                 }
             }
         }
+        // A fresh fix that actually moved the camera, marker or heading dirties the map — but
+        // only on a screen that *draws* live data (the Map / Statistics riding views). On the
+        // Home screensaver and the menus the camera still follows the fix, yet nothing they draw
+        // uses it, so a fix there must not redraw them (the "static Home does zero map renders"
+        // criterion). The `AppState` comparison also makes a stationary fix that changed nothing
+        // a no-op. (The breadcrumb only grows on a *moving* logged fix, which moved `user_fix`
+        // too, so it's covered by this same comparison — no separate breadcrumb check needed.)
+        if self.state != state_before && self.shows_live_data() {
+            self.map_dirty = true;
+        }
+    }
+
+    /// Whether the screen currently drawing the base view shows live sensor data (the user
+    /// fix / ride accumulators) — the Map and Statistics riding views do, so a fresh fix must
+    /// redraw them; the Home screensaver and the menus don't, so a fix (which still moves the
+    /// camera behind them) must not. The base is the lowest *opaque* drawn screen — the same one
+    /// [`render_map`](App::render_map) starts from — so an overlay (Ride control) over a riding
+    /// view still counts as live, since the map keeps moving under the pause panel.
+    fn shows_live_data(&self) -> bool {
+        let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
+        matches!(self.stack.get(base), Some(Screen::Map(_) | Screen::Statistics(_)))
     }
 
     /// Replace the resident route catalog from the host's store (the simulator's
@@ -501,11 +551,29 @@ impl App {
             enc_fired,
             back_fired,
         );
+        // Advance each visible screen's time-driven content (today: the Statistics cursor's
+        // spring-back to the live position) on the input clock, and dirty the map if any of it
+        // changed — so a screen surfaces its own timed-refresh need rather than the host
+        // re-rendering on a blind heartbeat (issue #47). Cheap: a clock comparison per drawn
+        // screen, the same `base..` range `render_map` draws (so an overlay over a riding view
+        // still lets the view underneath settle).
+        let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
+        let mut animated = false;
+        for scr in self.stack.iter_mut().skip(base) {
+            animated |= scr.animate(now_ms);
+        }
+        self.map_dirty |= animated;
     }
 
     /// Route one gesture to the top screen and apply the transition it returns.
     fn dispatch(&mut self, g: Gesture) {
         self.last_gesture = Some(g);
+        // Any recognized gesture drives the top screen, and every screen — the map, the
+        // menus, the Ride-control overlay — renders into the map plane (Layer 1), so a
+        // dispatched gesture dirties it. Conservative by design (a gesture a screen ignores
+        // still costs one redraw), which is what keeps the idle path exact: no gesture is
+        // recognized, so `dispatch` never runs and the map stays clean — zero idle renders.
+        self.map_dirty = true;
         let App { state, activity, catalog, stack, now_ms, .. } = self;
         let mut cx = Ctx { state, activity, routes: catalog.as_slice(), now_ms: *now_ms };
         let t = stack.last_mut().expect("the stack always has the Home root").handle(g, &mut cx);
@@ -644,6 +712,27 @@ impl App {
     /// would draw nothing, so the overlay layer can stay idle.
     pub fn overlay_active(&self) -> bool {
         self.hold_hints.active(self.now_ms)
+    }
+
+    /// Drain the repaint demand accumulated since the last call, resetting to
+    /// [`Dirty::CLEAN`]. The host calls this **once per frame** after [`tick`](App::tick) +
+    /// [`handle_input`](App::handle_input), then renders [`render_map`](App::render_map) only
+    /// when [`Dirty::map`] and [`render_overlay`](App::render_overlay) only when
+    /// [`Dirty::overlay`] — the render-on-demand loop (issue #47).
+    ///
+    /// [`map`](Dirty::map) is the accumulation of every map-affecting mutation since the last
+    /// drain (a dispatched gesture, a camera-moving fix on a riding view, a route/session change,
+    /// a screen's timed `animate`). [`overlay`](Dirty::overlay) is *derived* from the live
+    /// hold-bulge state rather than accumulated: it's set while [`overlay_active`](App::overlay_active)
+    /// is true, plus exactly one trailing frame after the bulge goes quiet so the host can clear
+    /// it off Layer 2. Because that trailing edge is tracked across calls, draining twice in one
+    /// frame would swallow it — call exactly once per frame.
+    pub fn take_dirty(&mut self) -> Dirty {
+        let overlay_now = self.overlay_active();
+        let dirty = Dirty { map: self.map_dirty, overlay: overlay_now || self.overlay_was_active };
+        self.map_dirty = false;
+        self.overlay_was_active = overlay_now;
+        dirty
     }
 
     /// The most recently recognized gesture (host input readout), if any.

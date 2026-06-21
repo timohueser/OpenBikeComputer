@@ -140,6 +140,24 @@ impl StatisticsScreen {
         self.last_scrub_ms = 0;
     }
 
+    /// Advance the idle spring-back on the input clock, returning whether it fired. Once
+    /// [`IDLE_MS`] have elapsed since the last scrub (Cursor mode only — Zoom never springs
+    /// back), the cursor drops back to tracking the live position. That transition is driven by
+    /// the timer, not by input or a fix, so the dirty-tracking host learns of it through here
+    /// (issue #47) — between the scrub and the deadline the drawn output is constant, so it
+    /// reports `false` and the host renders nothing. This eagerly clears the same scrub that
+    /// [`effective_cursor`](Self::effective_cursor) already retires lazily, so the two agree;
+    /// it just makes the moment observable. Idempotent: once sprung back it returns `false`.
+    pub fn animate(&mut self, now_ms: u32) -> bool {
+        let sprung_back = self.mode == Mode::Cursor
+            && self.cursor.is_some()
+            && now_ms.wrapping_sub(self.last_scrub_ms) >= IDLE_MS;
+        if sprung_back {
+            self.cursor = None;
+        }
+        sprung_back
+    }
+
     /// The cursor fraction in effect now: the scrub position while it's still live,
     /// otherwise the live position it has sprung back to.
     fn effective_cursor(&self, now_ms: u32, live: f32) -> f32 {
@@ -470,6 +488,38 @@ mod tests {
         assert_eq!(s.effective_cursor(1_000 + IDLE_MS - 1, LIVE), scrubbed());
         // …then springs back to live once IDLE_MS have elapsed.
         assert_eq!(s.effective_cursor(1_000 + IDLE_MS, LIVE), LIVE);
+    }
+
+    /// `animate` (the render-on-demand hook, issue #47) makes the spring-back *observable*:
+    /// it fires `true` exactly once, at the deadline, and agrees with the lazy spring-back
+    /// `effective_cursor` already does. Between the scrub and the deadline it's `false` (the
+    /// frozen cursor draws the same thing, so the host renders nothing); after it, `false`.
+    #[test]
+    fn animate_reports_the_spring_back_once_at_the_deadline() {
+        let mut s = StatisticsScreen::new();
+        // Untouched: tracking the live position already, nothing to settle.
+        assert!(!s.animate(1_000), "an untouched view never self-dirties");
+
+        s.on_turn(1, LIVE, 1_000); // scrub the cursor away from live
+        assert!(!s.animate(1_000), "the scrub frame itself isn't a spring-back");
+        assert!(!s.animate(1_000 + IDLE_MS - 1), "still frozen inside the idle window");
+        assert!(s.animate(1_000 + IDLE_MS), "springs back exactly at the deadline → dirty once");
+        assert_eq!(
+            s.effective_cursor(1_000 + IDLE_MS, LIVE),
+            LIVE,
+            "and it really is back at live"
+        );
+        assert!(!s.animate(1_000 + IDLE_MS + 5_000), "and only once — it stays put afterwards");
+    }
+
+    /// Zoom mode is exempt from the spring-back (the frozen cursor is the zoom centre), so
+    /// `animate` must never fire there.
+    #[test]
+    fn animate_never_springs_back_in_zoom_mode() {
+        let mut s = StatisticsScreen::new();
+        s.on_turn(1, LIVE, 0); // a scrub…
+        s.mode = Mode::Zoom; // …then into zoom (as `Hold` would)
+        assert!(!s.animate(IDLE_MS * 3), "zoom mode holds the cursor — no spring-back");
     }
 
     /// The fix (issue #6): near the `u32` millis wrap, the old `now + IDLE_MS` deadline

@@ -370,6 +370,20 @@ impl SimGui {
                 ui.label(format!("{:.2} ms", s.render_us as f64 / 1000.0));
             }
             ui.end_row();
+
+            // Render-on-demand signal (issue #47): which planes the firmware *would* have
+            // re-rendered this frame. The sim always redraws, so this is informational — but it
+            // makes the dirty logic observable: drive the device controls and watch `map` fire on
+            // gestures / camera-moving fixes and stay quiet when idle.
+            let d = self.last_dirty;
+            ui.label("Dirty");
+            let on = egui::Color32::from_rgb(227, 165, 43); // amber, like the device accent
+            let off = ui.visuals().weak_text_color();
+            ui.horizontal(|ui| {
+                ui.colored_label(if d.map { on } else { off }, "map");
+                ui.colored_label(if d.overlay { on } else { off }, "overlay");
+            });
+            ui.end_row();
         });
 
         ui.add_space(4.0);

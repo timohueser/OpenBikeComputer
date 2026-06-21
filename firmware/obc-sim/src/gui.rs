@@ -15,7 +15,7 @@
 use std::path::Path;
 
 use eframe::egui;
-use obc_app::{App, AppState, Button, CameraMode, Fix, InputClock, RideClock, Sensors};
+use obc_app::{App, AppState, Button, CameraMode, Dirty, Fix, InputClock, RideClock, Sensors};
 use obc_reader::Reader;
 use obc_route::{RouteIndex, RouteReader};
 
@@ -120,6 +120,14 @@ struct SimGui {
     screenshot: Option<String>,
     screenshot_requested: bool,
     last_stats: obc_render::RenderStats,
+    /// The shared render-on-demand dirty signal ([`App::take_dirty`], issue #47), drained
+    /// once per frame and shown in the stats panel. The sim keeps its continuous redraw (it
+    /// also animates host chrome and replays GPX), so this is *informational* here — a live
+    /// readout of the same signal the firmware gates its map/overlay renders on, which makes
+    /// the dirty logic observable while iterating. (Mouse pan/zoom is a Free-mode host
+    /// convenience that mutates the camera outside the app's input path, so it isn't reflected
+    /// — on the device every camera change goes through a gesture or a fix, which is.)
+    last_dirty: Dirty,
     /// The device body color drawn by the housing chrome. Switchable live in the
     /// control panel; defaults to slate (or `--colorway`). Purely cosmetic host chrome.
     colorway: Colorway,
@@ -205,6 +213,7 @@ impl SimGui {
             screenshot_requested: false,
             bytes,
             last_stats: obc_render::RenderStats::default(),
+            last_dirty: Dirty::CLEAN,
             colorway,
             kbd_turn: 0,
             kbd_enc: false,
@@ -312,6 +321,10 @@ impl SimGui {
         );
         stats.render_us = t0.elapsed().as_micros() as u32;
         self.last_stats = stats;
+        // Drain the shared dirty signal for the stats readout. The sim renders unconditionally
+        // (above), so this doesn't gate drawing — it just surfaces what the firmware *would*
+        // have re-rendered this frame, so the render-on-demand logic can be watched live.
+        self.last_dirty = self.app.take_dirty();
 
         let image = egui::ColorImage::from_rgb(
             [self.dev_w as usize, self.dev_h as usize],
