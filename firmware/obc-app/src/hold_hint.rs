@@ -167,6 +167,20 @@ impl Hint {
         self.prev = progress;
     }
 
+    /// Whether this hint has something to draw at `now`: a bulge charging past the
+    /// dead zone, or a pop / retract still in flight. Mirrors the [`draw`](Hint::draw)
+    /// decision exactly (a finished animation is retired to [`Anim::Idle`] on the next
+    /// [`update`](Hint::update), so a stale-`now` query degrades gracefully to the
+    /// animation's own time check) so a host can repaint the overlay precisely when —
+    /// and only when — it would change a pixel.
+    fn active(&self, now: u32) -> bool {
+        match self.anim {
+            Anim::Pop { t0 } => frac(now, t0, POP_MS) < 1.0,
+            Anim::Cancel { t0, .. } => frac(now, t0, CANCEL_MS) < 1.0,
+            Anim::Idle => self.prev > DEAD,
+        }
+    }
+
     /// Draw the hint for this control, or nothing when idle and uncharged.
     fn draw<D, F>(&self, cv: &mut Canvas<D, F>, style: &Style, now: u32, w: i32, h: i32)
     where
@@ -305,6 +319,13 @@ impl HoldHints {
         self.back.update(now, back, back_fired);
     }
 
+    /// Whether either hint has live content at `now` — a bulge charging, popping, or
+    /// retracting. `false` exactly when [`draw`](HoldHints::draw) would paint nothing,
+    /// so a host can leave the overlay layer untouched while it's quiet.
+    pub fn active(&self, now: u32) -> bool {
+        self.encoder.active(now) || self.back.active(now)
+    }
+
     /// Draw both hints above the current screen, into a `w`×`h` target.
     pub fn draw<D, F>(&self, target: &mut D, color_fn: &F, w: i32, h: i32, now: u32)
     where
@@ -365,6 +386,39 @@ mod tests {
         h.update(0, 0.03, false); // barely brushed, inside the dead zone
         h.update(20, 0.0, false);
         assert!(is_idle(&h), "an early release inside the DEAD zone must not animate");
+    }
+
+    #[test]
+    fn active_tracks_the_whole_charge_pop_retract_lifecycle() {
+        // Uncharged → nothing to draw.
+        let mut h = Hint::new();
+        h.update(0, 0.0, false);
+        assert!(!h.active(0), "an idle, uncharged hint draws nothing");
+
+        // Inside the dead zone a press still draws nothing.
+        h.update(10, DEAD - 0.01, false);
+        assert!(!h.active(10), "a charge inside the dead zone stays quiet");
+
+        // Charging past the dead zone → the bulge is live.
+        h.update(20, DEAD + 0.01, false);
+        assert!(h.active(20), "charging past the dead zone shows a bulge");
+
+        // The hold fires → a pop is in flight for POP_MS, then quiet again.
+        h.update(30, 0.0, true);
+        assert!(h.active(30), "the confirm pop is live the frame it fires");
+        assert!(h.active(30 + POP_MS - 1), "still live mid-pop");
+        assert!(!h.active(30 + POP_MS), "quiet once the pop has run its course");
+    }
+
+    #[test]
+    fn active_spans_an_early_release_retract() {
+        let mut h = Hint::new();
+        h.update(0, 0.4, false); // charging past the dead zone
+        assert!(h.active(0));
+        h.update(50, 0.0, false); // released early → retract begins
+        assert!(h.active(50), "the retract is live");
+        assert!(h.active(50 + CANCEL_MS - 1), "still live mid-retract");
+        assert!(!h.active(50 + CANCEL_MS), "quiet once the retract finishes");
     }
 
     #[test]
