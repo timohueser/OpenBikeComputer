@@ -8,8 +8,10 @@
 //! debug protocol; today it is the framebuffer `DrawTarget` and the button debouncer.
 //!
 //! Modules:
-//! - [`framebuffer`] — a [`DrawTarget`](embedded_graphics::draw_target::DrawTarget)
-//!   over a raw `&mut [u16]` RGB565 buffer (the LTDC-scanned SDRAM framebuffer).
+//! - [`framebuffer`] — [`DrawTarget`](embedded_graphics::draw_target::DrawTarget)s
+//!   over the LTDC-scanned SDRAM framebuffers: the opaque RGB565 map plane
+//!   ([`Framebuffer565`]) and the transparent ARGB4444 overlay plane
+//!   ([`FramebufferArgb4444`], the dual-layer display's second layer — issue #46).
 //! - [`button_input`] — a [`ButtonInput`] debouncer over four
 //!   [`InputPin`](embedded_hal::digital::InputPin)s, feeding the shared gesture
 //!   recognizer through [`InputSource`](obc_app::InputSource).
@@ -24,5 +26,5 @@ pub mod framebuffer;
 pub mod sd;
 
 pub use button_input::{ButtonInput, Timing};
-pub use framebuffer::Framebuffer565;
+pub use framebuffer::{Framebuffer565, FramebufferArgb4444};
 pub use sd::{SdByteSink, SdByteSource, SdTrackSink};
