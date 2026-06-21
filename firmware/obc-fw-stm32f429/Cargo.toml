@@ -27,6 +27,13 @@ glass-demo = []
 # logging (rather than falling back to the tile).
 baked-tile = []
 
+# Single-executor fallback (issue #48): run input + the map + the overlay all on the one
+# thread-mode executor (`App::handle_input` + `render_frame`-style split), instead of the
+# default two-plane split that runs input + overlay on a *high-priority interrupt executor*
+# preempting the map render. Off by default — the default build is the preemptive two-plane
+# architecture; this proves the `InputPlane`/`apply_gesture` seam composes back into one loop.
+single-executor = []
+
 [dependencies]
 # The shared OBC stack (all no_std, no global allocator — heapless throughout).
 # Path deps to the host workspace's crates; this standalone crate builds them for
@@ -50,8 +57,14 @@ heapless = "0.8"
 embassy-stm32 = { version = "0.6.0", features = ["stm32f429zi", "time-driver-any", "defmt"] }
 # embassy-stm32 0.6.0 pulls executor 0.10 / time 0.5 — newer than the bench's
 # 0.7/0.4, so match them here (0.10 dropped the task arena; no arena feature).
-embassy-executor = { version = "0.10.0", features = ["executor-thread", "platform-cortex-m", "defmt"] }
+# `executor-interrupt` adds the `InterruptExecutor` the two-plane architecture (issue #48)
+# runs the high-priority input/overlay task on; the thread executor still runs the map plane.
+embassy-executor = { version = "0.10.0", features = ["executor-thread", "executor-interrupt", "platform-cortex-m", "defmt"] }
 embassy-time = { version = "0.5.1", features = ["defmt"] }
+# Lock-free SPSC channel carrying recognised gestures from the high-priority input plane to
+# the map plane (issue #48). `CriticalSectionRawMutex` since the two ends run on different
+# executor priorities. Pinned to the 0.8.0 embassy-stm32 0.6.0 already resolves.
+embassy-sync = { version = "0.8.0", features = ["defmt"] }
 
 # SDRAM chip driver: the IS42S16400J device + the SdramChip trait that
 # embassy_stm32::fmc's `sdram_*` constructors take. Same 0.4.0 embassy-stm32 uses.
@@ -75,6 +88,10 @@ stm32-metapac = { version = "21.0.0", features = ["stm32f429zi"] }
 # Single-core critical-section impl (defmt + embassy need critical-section 1.0;
 # unlike embassy-rp, embassy-stm32 does not bundle it).
 cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
+# Used directly to guard the shared LTDC `SRCR` reload across the two planes' framebuffer
+# flips (issue #48) — the per-layer CFBAR is independent, but the one VBR bit is shared, so
+# its read-modify-write must not tear across a preemption. `cortex-m` provides the impl above.
+critical-section = "1.1"
 cortex-m-rt = "0.7"
 
 # defmt logging over RTT via the onboard ST-LINK (`cargo run` flashes + streams).
