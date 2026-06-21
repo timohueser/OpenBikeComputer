@@ -7,7 +7,7 @@
 
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
 use obc_render::{MapRenderer, Viewport};
-use obc_route::{gpx_to_obcr, ByteSink, Error, RouteReader, SliceSource};
+use obc_route::{gpx_to_obcr, ByteSink, Error, RouteIndex, RouteReader, SliceSource};
 
 const ROUTE: Rgb888 = Rgb888::new(255, 0, 255); // magenta stroke
 const ARROW: Rgb888 = Rgb888::new(255, 255, 255); // white chevrons
@@ -125,7 +125,8 @@ fn vp() -> Viewport {
 fn no_arrows_when_disabled() {
     let bytes = route_bytes(NORTHWARD);
     let src = SliceSource(&bytes);
-    let route = RouteReader::open(&src).unwrap();
+    let ridx = RouteIndex::read(&src).unwrap();
+    let route = RouteReader::new(&ridx, &src);
 
     let mut buf = Buf::new(400, 400);
     MapRenderer::new().draw_route(&mut buf, &vp(), &route, ROUTE, 6, ARROW, None);
@@ -138,7 +139,8 @@ fn no_arrows_when_disabled() {
 fn arrows_drawn_near_the_rider_when_enabled() {
     let bytes = route_bytes(NORTHWARD);
     let src = SliceSource(&bytes);
-    let route = RouteReader::open(&src).unwrap();
+    let ridx = RouteIndex::read(&src).unwrap();
+    let route = RouteReader::new(&ridx, &src);
 
     // Rider ~150 m along the ~333 m route → chevrons cluster around the route midpoint.
     let mut buf = Buf::new(400, 400);
@@ -155,7 +157,8 @@ fn arrows_are_windowed_to_the_rider() {
     // colliding (only the leg you're on, the right way round).
     let bytes = route_bytes(NORTHWARD);
     let src = SliceSource(&bytes);
-    let route = RouteReader::open(&src).unwrap();
+    let ridx = RouteIndex::read(&src).unwrap();
+    let route = RouteReader::new(&ridx, &src);
 
     // Route start (progress 0) is at the screen bottom, the ~333 m end at the top. Rider at
     // 250 m → up near the top; chevrons lead the remaining ~83 m (upper screen), and the
@@ -177,7 +180,8 @@ fn route_stroke_has_the_requested_width() {
     // line at screen x≈200; measure the run of route pixels across a clean row).
     let bytes = route_bytes(NORTHWARD);
     let src = SliceSource(&bytes);
-    let route = RouteReader::open(&src).unwrap();
+    let ridx = RouteIndex::read(&src).unwrap();
+    let route = RouteReader::new(&ridx, &src);
 
     let mut buf = Buf::new(400, 400);
     MapRenderer::new().draw_route(&mut buf, &vp(), &route, ROUTE, 6, ARROW, None);
@@ -219,7 +223,8 @@ fn chevron_spacing_is_held_in_screen_space() {
     // With the old fixed-metre spacing the gap would scale ~2× with zoom — the bunching bug.
     let bytes = route_bytes(LONG_NORTH);
     let src = SliceSource(&bytes);
-    let route = RouteReader::open(&src).unwrap();
+    let ridx = RouteIndex::read(&src).unwrap();
+    let route = RouteReader::new(&ridx, &src);
 
     let gaps_at = |zoom: f32| {
         let vp = Viewport::new(400.0, 400.0, 7_800_000, 48_001_500, zoom);
