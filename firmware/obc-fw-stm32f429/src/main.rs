@@ -172,6 +172,12 @@ const SYNTH_LEG_M: f32 = 200.0;
 #[cfg(not(feature = "glass-demo"))]
 const SYNTH_SPEED_MPS: f32 = 5.0;
 
+/// The synthetic GPS emits a fresh fix at this cadence (ms), `None` between — so the prototype
+/// drives the app on the same ~1 Hz fresh-fix contract a real receiver (and #38's USB feed)
+/// honours, exercising the integrate-one-sample path instead of an every-tick replay (#43).
+#[cfg(not(feature = "glass-demo"))]
+const SYNTH_FIX_INTERVAL_MS: u64 = 1000;
+
 /// Microdegrees of latitude per metre north (the map/route coordinate convention). Longitude
 /// scales this by 1/cos(lat), via [`obc_route::cos_lat`].
 #[cfg(not(feature = "glass-demo"))]
@@ -204,12 +210,21 @@ struct SynthLocation {
     /// 1/cos(lat) folded into the east-metres → microdegrees scale, refreshed on recenter.
     udeg_per_m_east: f32,
     start: Instant,
+    /// Elapsed-millis at the last fix [`poll`](LocationSource::poll) emitted, to throttle to
+    /// [`SYNTH_FIX_INTERVAL_MS`]. `None` forces the first poll to emit.
+    last_fix_ms: Option<u64>,
 }
 
 #[cfg(not(feature = "glass-demo"))]
 impl SynthLocation {
     fn new(center_lon: i32, center_lat: i32, start: Instant) -> Self {
-        let mut s = SynthLocation { center_lon, center_lat, udeg_per_m_east: 0.0, start };
+        let mut s = SynthLocation {
+            center_lon,
+            center_lat,
+            udeg_per_m_east: 0.0,
+            start,
+            last_fix_ms: None,
+        };
         s.recenter(center_lon, center_lat);
         s
     }
@@ -226,14 +241,28 @@ impl SynthLocation {
 #[cfg(not(feature = "glass-demo"))]
 impl LocationSource for SynthLocation {
     fn poll(&mut self) -> Option<Fix> {
-        // Position along the square as a function of elapsed time. Each leg takes leg_s seconds;
-        // the heading is the leg's constant bearing (no trig needed). The loop is centred on the
-        // square so the camera sits in its middle.
-        let t = self.start.elapsed().as_millis() as f32 / 1000.0;
+        // Emit on the GPS's own ~1 Hz cadence, `None` between — the exact fresh-fix contract a
+        // real receiver (and #38's USB feed) honours, so the prototype walks the same
+        // integrate-one-sample path rather than the every-tick replay that masked issue #43.
+        let elapsed_ms = self.start.elapsed().as_millis();
+        if let Some(last) = self.last_fix_ms {
+            if elapsed_ms.wrapping_sub(last) < SYNTH_FIX_INTERVAL_MS {
+                return None;
+            }
+        }
+        self.last_fix_ms = Some(elapsed_ms);
+
+        // Position along the square as a function of elapsed time. Each leg takes `leg_s`
+        // seconds; the heading is the leg's constant bearing (no trig needed). The loop is
+        // centred on the square so the camera sits in its middle. Take the loop modulus on the
+        // integer millis *before* the `f32` cast: `as_millis()` grows without bound and `f32`
+        // carries only a 24-bit mantissa, so casting first would quantise the phase (the loop
+        // would jitter, then freeze) once the board had been up past ~4.6 h.
         let leg_s = SYNTH_LEG_M / SYNTH_SPEED_MPS;
-        let phase = t % (4.0 * leg_s);
-        let leg = (phase / leg_s) as u32;
-        let d = (phase - leg as f32 * leg_s) * SYNTH_SPEED_MPS; // metres into this leg
+        let loop_ms = (4.0 * leg_s * 1000.0) as u64;
+        let t = (elapsed_ms % loop_ms) as f32 / 1000.0;
+        let leg = (t / leg_s) as u32;
+        let d = (t - leg as f32 * leg_s) * SYNTH_SPEED_MPS; // metres into this leg
         let (east, north, course) = match leg {
             0 => (d, 0.0, 90.0),                        // →E along the south edge
             1 => (SYNTH_LEG_M, d, 0.0),                 // →N up the east edge
@@ -742,9 +771,9 @@ async fn main(_spawner: Spawner) {
             let heartbeat = now.wrapping_sub(last_render) >= IDLE_REFRESH_MS;
             let redraw = interactive || heartbeat;
 
-            // Open the active route's geometry + ride-log sink only on redraw frames — bounding
-            // per-frame SD I/O and pacing the ride log to the redraw rate (~1 Hz idle, up to the
-            // panel rate while interacting) rather than logging a point every loop.
+            // Open the active route's geometry only on redraw frames: that reopen is the
+            // expensive SD read, and the matcher / renderer only need it when we're about to
+            // draw. (Caching the open reader across frames is the hardening issue's job.)
             let route_src =
                 if redraw { storage.as_ref().and_then(|s| s.route_source()) } else { None };
             // A route is selected but its header won't read → a transient SD glitch (flaky
@@ -753,14 +782,19 @@ async fn main(_spawner: Spawner) {
                 Some(s) => match RouteReader::open(s) {
                     Ok(r) => Some(r),
                     Err(_) => {
-                        defmt::warn!("SD: route read failed (flaky link?) — route hidden this frame");
+                        defmt::warn!(
+                            "SD: route read failed (flaky link?) — route hidden this frame"
+                        );
                         None
                     }
                 },
                 None => None,
             };
-            let mut tsink =
-                if redraw { storage.as_ref().and_then(|s| s.track_sink()) } else { None };
+            // The ride-log sink, by contrast, is built *every* tick — it only wraps the already
+            // open log file handle (no I/O), so a fresh fix is written to the `.gpx` the moment it
+            // arrives, at the fix rate, independent of the render cadence. Gating it on redraw
+            // made *which* fixes reached the log depend on redraw phase rather than time (#43).
+            let mut tsink = storage.as_ref().and_then(|s| s.track_sink());
             let track_dyn = tsink.as_mut().map(|t| t as &mut dyn TrackSink);
 
             app.tick(
