@@ -121,7 +121,7 @@ use obc_reader::{BBox, Reader};
 #[cfg(not(feature = "glass-demo"))]
 use obc_render::zoom_for_mpp;
 #[cfg(not(feature = "glass-demo"))]
-use obc_route::RouteReader;
+use obc_route::{RouteIndex, RouteReader};
 
 #[cfg(feature = "glass-demo")]
 mod demo;
@@ -353,8 +353,15 @@ fn halt() -> ! {
 /// "no blocking wait that can hang probe-rs" rule init follows by avoiding the reload
 /// interrupt. A frame is ~15 ms at the 6 MHz DOTCLK, so the reload lands well within
 /// the 50 ms cap in normal operation.
+///
+/// Returns `true` if the reload **landed** (the hardware cleared `VBR` within the cap),
+/// `false` on timeout. The caller swaps front/back only on `true`: on a timeout the LTDC is
+/// still scanning the old front, so swapping roles would point the next render at the buffer
+/// being scanned out — a torn frame. Keeping the buffers on timeout instead lets the next
+/// redraw re-render into the same back and retry the flip. (Rare — the 50 ms cap is ~3 frames.)
 #[cfg(not(feature = "glass-demo"))]
-fn flip_to(addr: usize) {
+#[must_use]
+fn flip_to(addr: usize) -> bool {
     use stm32_metapac::ltdc::vals::Vbr;
     use stm32_metapac::LTDC;
     LTDC.layer(LtdcLayer::Layer1 as usize).cfbar().modify(|w| w.set_cfbadd(addr as u32));
@@ -362,9 +369,10 @@ fn flip_to(addr: usize) {
     let t0 = Instant::now();
     while LTDC.srcr().read().vbr() == Vbr::RELOAD {
         if t0.elapsed().as_millis() > 50 {
-            break;
+            return false;
         }
     }
+    true
 }
 
 #[embassy_executor::main]
@@ -726,6 +734,11 @@ async fn main(_spawner: Spawner) {
         let now0 = start.elapsed().as_millis() as u32;
         let mut prev_gesture = app.last_gesture();
         let mut prev_route: Option<usize> = None;
+        // The active route's parsed chunk index, cached across frames (issue #44). `index_route`
+        // is the route it belongs to; a mismatch triggers one rebuild off the open file, so a
+        // per-frame redraw streams geometry without re-walking the index off the SD card.
+        let mut route_index: Option<RouteIndex> = None;
+        let mut index_route: Option<usize> = None;
         let mut last_activity = now0;
         let mut last_render = now0.wrapping_sub(IDLE_REFRESH_MS); // force the first frame
         loop {
@@ -771,24 +784,44 @@ async fn main(_spawner: Spawner) {
             let heartbeat = now.wrapping_sub(last_render) >= IDLE_REFRESH_MS;
             let redraw = interactive || heartbeat;
 
-            // Open the active route's geometry only on redraw frames: that reopen is the
-            // expensive SD read, and the matcher / renderer only need it when we're about to
-            // draw. (Caching the open reader across frames is the hardening issue's job.)
+            // Cache the active route's chunk index across frames: rebuild it (the expensive
+            // header + full chunk-meta walk off SD) only when the route changes, or retry if a
+            // prior build failed on a flaky link. Gated on redraw — the index is only needed to
+            // draw / match, and `reconcile_route` above has already opened the active file.
+            if redraw && index_route != active {
+                match active {
+                    Some(_) => {
+                        match storage.as_ref().and_then(|s| s.build_route_index()) {
+                            Some(idx) => {
+                                route_index = Some(idx);
+                                index_route = active; // cached — no more rebuilds until the route changes
+                            }
+                            None => {
+                                // Transient SD glitch: clear the cache *key* too (not just the
+                                // index) so the mismatch persists and every redraw retries —
+                                // leaving `index_route` stale would suppress the rebuild if the
+                                // user swapped away and back to this route. Hide it this frame
+                                // rather than the whole ride.
+                                route_index = None;
+                                index_route = None;
+                                defmt::warn!("SD: route index read failed (flaky link?) — retrying next redraw");
+                            }
+                        }
+                    }
+                    None => {
+                        route_index = None;
+                        index_route = None;
+                    }
+                }
+            }
+            // This frame's reader = the cached index + a fresh geometry source. `RouteReader::new`
+            // does no I/O; geometry still streams per frame via the source (decode_chunk), only on
+            // redraw frames (the matcher / renderer need it just to draw).
             let route_src =
                 if redraw { storage.as_ref().and_then(|s| s.route_source()) } else { None };
-            // A route is selected but its header won't read → a transient SD glitch (flaky
-            // jumpers): hide the route this frame and flag it. It returns once a read succeeds.
-            let route = match route_src.as_ref() {
-                Some(s) => match RouteReader::open(s) {
-                    Ok(r) => Some(r),
-                    Err(_) => {
-                        defmt::warn!(
-                            "SD: route read failed (flaky link?) — route hidden this frame"
-                        );
-                        None
-                    }
-                },
-                None => None,
+            let route = match (route_index.as_ref(), route_src.as_ref()) {
+                (Some(idx), Some(src)) => Some(RouteReader::new(idx, src)),
+                _ => None,
             };
             // The ride-log sink, by contrast, is built *every* tick — it only wraps the already
             // open log file handle (no I/O), so a fresh fix is written to the `.gpx` the moment it
@@ -821,9 +854,17 @@ async fn main(_spawner: Spawner) {
                 );
                 let render_us = t0.elapsed().as_micros();
 
-                // Flip to the freshly-drawn buffer at the next vblank, then swap roles.
-                flip_to(back_addr);
-                core::mem::swap(&mut front_addr, &mut back_addr);
+                // Flip to the freshly-drawn buffer at the next vblank. Swap front/back roles
+                // only once the reload is confirmed landed; on a timeout the LTDC is still
+                // scanning the old front, so we keep the buffers (the next redraw re-renders
+                // into this same back and retries) rather than render into the scanned-out one.
+                if flip_to(back_addr) {
+                    core::mem::swap(&mut front_addr, &mut back_addr);
+                } else {
+                    defmt::warn!(
+                        "LTDC: vblank reload didn't land in 50 ms — kept buffers, skipped swap"
+                    );
+                }
                 last_render = now;
                 defmt::debug!(
                     "frame: {=u64} us | lod {=usize} | feat {=usize}/{=usize}",

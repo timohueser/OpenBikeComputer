@@ -2,7 +2,7 @@
 //! reader, and check it captures the route's shape — the peak, the y-range, and a
 //! gap-free band — independent of how sparsely the route samples the columns.
 
-use obc_route::{gpx_to_obcr, ByteSink, Error, RouteReader, SliceSource, PROFILE_COLS};
+use obc_route::{gpx_to_obcr, ByteSink, Error, RouteIndex, RouteReader, SliceSource, PROFILE_COLS};
 
 /// Densely scan one pyramid `level` across `[lo, hi]` and return its `(min, max)`
 /// elevation envelope — for asserting the downsample keeps extremes (it's min/max, not
@@ -58,7 +58,8 @@ const PEAKED: &str = r#"<?xml version="1.0"?>
 fn profile_captures_peak_and_range() {
     let bytes = convert("Peaked Ridge", PEAKED);
     let src = SliceSource(&bytes);
-    let r = RouteReader::open(&src).unwrap();
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
     let p = r.elevation_profile();
 
     // Y-range mirrors the route header.
@@ -90,7 +91,8 @@ fn profile_band_is_gap_free() {
     // builder must carry-fill so the band has no sentinel (min > max) holes.
     let bytes = convert("Peaked Ridge", PEAKED);
     let src = SliceSource(&bytes);
-    let r = RouteReader::open(&src).unwrap();
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
     let p = r.elevation_profile();
 
     assert_eq!(p.cols().len(), PROFILE_COLS);
@@ -104,7 +106,8 @@ fn profile_band_is_gap_free() {
 fn profile_ascent_to_tracks_where_the_climb_happens() {
     let bytes = convert("Peaked Ridge", PEAKED);
     let src = SliceSource(&bytes);
-    let r = RouteReader::open(&src).unwrap();
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
     let p = r.elevation_profile();
 
     // Endpoints pin to 0 and the exact route total (clamped past the end).
@@ -140,7 +143,8 @@ const FLAT: &str = r#"<?xml version="1.0"?>
 fn flat_route_has_flat_gap_free_band() {
     let bytes = convert("Towpath", FLAT);
     let src = SliceSource(&bytes);
-    let r = RouteReader::open(&src).unwrap();
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
     let p = r.elevation_profile();
 
     assert_eq!((p.min_ele_m, p.max_ele_m), (150, 150));
@@ -155,7 +159,8 @@ fn pyramid_downsample_keeps_extremes() {
     // the route's full 200..300 m envelope, with the peak's max and the valley's min intact.
     let bytes = convert("Peaked Ridge", PEAKED);
     let src = SliceSource(&bytes);
-    let r = RouteReader::open(&src).unwrap();
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
     let p = r.elevation_profile();
 
     // The full-route window lands on a coarse level; its envelope must still be 200..300.
@@ -170,7 +175,8 @@ fn pyramid_downsample_keeps_extremes() {
 fn window_full_route_spans_everything() {
     let bytes = convert("Peaked Ridge", PEAKED);
     let src = SliceSource(&bytes);
-    let r = RouteReader::open(&src).unwrap();
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
     let p = r.elevation_profile();
 
     let w = p.window(0.5, 1.0, 216);
@@ -183,7 +189,8 @@ fn window_full_route_spans_everything() {
 fn window_zoom_narrows_span_and_chooses_finer_levels() {
     let bytes = convert("Peaked Ridge", PEAKED);
     let src = SliceSource(&bytes);
-    let r = RouteReader::open(&src).unwrap();
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
     let p = r.elevation_profile();
 
     let full = p.window(0.5, 1.0, 216);
@@ -205,7 +212,8 @@ fn window_zoom_narrows_span_and_chooses_finer_levels() {
 fn window_clamps_to_route_ends() {
     let bytes = convert("Peaked Ridge", PEAKED);
     let src = SliceSource(&bytes);
-    let r = RouteReader::open(&src).unwrap();
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
     let p = r.elevation_profile();
 
     // Centre at the very start/end: the fixed-width span slides flush against the edge

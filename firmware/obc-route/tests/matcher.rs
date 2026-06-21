@@ -6,7 +6,7 @@
 
 use heapless::Vec as HVec;
 use obc_route::{
-    gpx_to_obcr, ByteSink, Error, RouteMatch, RoutePoint, RouteReader, SliceSource,
+    gpx_to_obcr, ByteSink, Error, RouteIndex, RouteMatch, RoutePoint, RouteReader, SliceSource,
     MAX_POINTS_PER_CHUNK,
 };
 
@@ -78,7 +78,8 @@ fn east_fix(p0: RoutePoint, p1: RoutePoint, f: f64, north_m: f64) -> (i32, i32) 
 fn on_line_fixes_advance_monotonically() {
     let bytes = convert("East", &gpx_from(EAST));
     let src = SliceSource(&bytes);
-    let r = RouteReader::open(&src).unwrap();
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
     let pts = decode_all(&r);
     let (p0, p1) = (pts[0], *pts.last().unwrap());
     let total = r.total_distance_m;
@@ -106,7 +107,8 @@ fn on_line_fixes_advance_monotonically() {
 fn cross_track_distance_matches_a_known_offset() {
     let bytes = convert("East", &gpx_from(EAST));
     let src = SliceSource(&bytes);
-    let r = RouteReader::open(&src).unwrap();
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
     let pts = decode_all(&r);
     let (p0, p1) = (pts[0], *pts.last().unwrap());
 
@@ -123,7 +125,8 @@ fn cross_track_distance_matches_a_known_offset() {
 fn off_route_freezes_progress_then_resumes_on_rejoin() {
     let bytes = convert("East", &gpx_from(EAST));
     let src = SliceSource(&bytes);
-    let r = RouteReader::open(&src).unwrap();
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
     let pts = decode_all(&r);
     let (p0, p1) = (pts[0], *pts.last().unwrap());
     let total = r.total_distance_m;
@@ -178,7 +181,8 @@ fn sawtooth_gpx(n: usize) -> String {
 fn multi_chunk_route_matches_across_chunk_boundaries() {
     let bytes = convert("Sawtooth", &sawtooth_gpx(400));
     let src = SliceSource(&bytes);
-    let r = RouteReader::open(&src).unwrap();
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
     assert!(r.chunks().len() >= 2, "sawtooth should span >1 chunk, got {}", r.chunks().len());
     let pts = decode_all(&r);
     let total = r.total_distance_m;
@@ -217,7 +221,8 @@ fn loop_gpx() -> String {
 fn forward_bias_does_not_snap_back_on_a_loop() {
     let bytes = convert("Loop", &loop_gpx());
     let src = SliceSource(&bytes);
-    let r = RouteReader::open(&src).unwrap();
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
     let pts = decode_all(&r);
     let total = r.total_distance_m;
     assert!(pts.len() >= 8, "loop should keep many vertices, got {}", pts.len());
@@ -265,7 +270,8 @@ fn out_and_back_gpx() -> String {
 fn out_and_back_first_lock_biases_to_the_start() {
     let bytes = convert("OutBack", &out_and_back_gpx());
     let src = SliceSource(&bytes);
-    let r = RouteReader::open(&src).unwrap();
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
     let total = r.total_distance_m;
     let pts = decode_all(&r);
     assert!(pts.len() >= 4, "out-and-back should keep A, M, B, A′; got {}", pts.len());

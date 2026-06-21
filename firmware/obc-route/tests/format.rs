@@ -6,8 +6,8 @@
 //! spec independently: if either drifts, these break.
 
 use obc_route::{
-    Error, RoutePoint, RouteReader, RouteSummary, SliceSource, CHUNK_META_LEN, HEADER_LEN,
-    MAX_POINTS_PER_CHUNK,
+    Error, RouteIndex, RoutePoint, RouteReader, RouteSummary, SliceSource, CHUNK_META_LEN,
+    HEADER_LEN, MAX_POINTS_PER_CHUNK,
 };
 
 /// A chunk to encode: its absolute points (lon, lat, ele) plus the cumulative stats
@@ -141,7 +141,8 @@ fn decode(r: &RouteReader, k: usize) -> Vec<RoutePoint> {
 fn header_and_summary() {
     let bytes = two_chunk_route();
     let src = SliceSource(&bytes);
-    let r = RouteReader::open(&src).unwrap();
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
 
     assert_eq!(r.name(), "Black Forest");
     assert_eq!(r.bbox.min_lon, 10);
@@ -173,7 +174,8 @@ fn header_and_summary() {
 fn chunk_index_and_decode() {
     let bytes = two_chunk_route();
     let src = SliceSource(&bytes);
-    let r = RouteReader::open(&src).unwrap();
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
 
     assert_eq!(r.chunks().len(), 2);
     assert_eq!(r.chunks()[1].cum_distance_m, 6000);
@@ -199,7 +201,8 @@ fn chunk_index_and_decode() {
 fn visible_chunk_query() {
     let bytes = two_chunk_route();
     let src = SliceSource(&bytes);
-    let r = RouteReader::open(&src).unwrap();
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
 
     // A view around (10,10) overlaps only chunk 0 (bbox 10..40).
     let view = obc_route::BBox { min_lon: 0, min_lat: 0, max_lon: 30, max_lat: 30 };
@@ -218,7 +221,7 @@ fn visible_chunk_query() {
 fn rejects_bad_input() {
     let err = |b: &[u8]| {
         let src = SliceSource(b);
-        match RouteReader::open(&src) {
+        match RouteIndex::read(&src) {
             Ok(_) => panic!("expected Err"),
             Err(e) => e,
         }

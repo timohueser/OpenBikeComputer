@@ -84,10 +84,16 @@ impl RouteSummary {
     }
 }
 
-/// A parsed route, ready to query and decode. Holds the resident header + chunk index
-/// plus a shared borrow of the byte source the chunks stream from.
-pub struct RouteReader<'a> {
-    src: &'a dyn ByteSource,
+/// The resident, source-independent parse of a route: the header summary fields plus the
+/// chunk index and its segment prefix sums. [`read`](Self::read) does the route's only
+/// up-front cost — the header read **and the full chunk-meta walk** — so afterwards a
+/// [`RouteReader`] streams geometry chunk-by-chunk without re-reading the index.
+///
+/// Splitting this out of [`RouteReader`] lets a caller build it **once** when the active
+/// route changes and reuse it across frames (the firmware render loop does exactly this,
+/// the way the app caches the elevation [`Profile`](crate::Profile) — issue #44): a redraw
+/// then pays only the geometry reads, not an N+1 re-walk of the index off the SD card.
+pub struct RouteIndex {
     pub bbox: BBox,
     pub start_lon: i32,
     pub start_lat: i32,
@@ -102,15 +108,27 @@ pub struct RouteReader<'a> {
     /// Prefix sum of segments per chunk: `cum_seg[c]` = segments before chunk `c`
     /// (∑ `point_count − 1`, the shared seam point not double-counted). A trailing
     /// entry holds the route's total segment count, so an index at `chunk_count` is
-    /// valid. Built once at [`open`](Self::open) so [`global_seg_index`](Self::global_seg_index)
+    /// valid. Built once at [`read`](Self::read) so [`global_seg_index`](Self::global_seg_index)
     /// — on the matcher's per-fix hot path — is an O(1) lookup, not a prefix scan.
     cum_seg: Vec<u32, { MAX_ROUTE_CHUNKS + 1 }>,
 }
 
-impl<'a> RouteReader<'a> {
+/// A parsed route, ready to query and decode: a [`RouteIndex`] (resident, reusable across
+/// frames) paired with a shared borrow of the byte source its geometry chunks stream from.
+/// Cheap to build via [`new`](Self::new) — the expensive parse lives in [`RouteIndex::read`].
+///
+/// Derefs to its [`RouteIndex`], so the summary fields (`bbox`, `total_distance_m`, …) and
+/// the resident-only queries (`chunks`, `name`, …) read straight through `route.field` /
+/// `route.method()` as before; only [`decode_chunk`](Self::decode_chunk) needs the source.
+pub struct RouteReader<'a> {
+    src: &'a dyn ByteSource,
+    idx: &'a RouteIndex,
+}
+
+impl RouteIndex {
     /// Parse the header and chunk index from `src`. Validates magic/version and that
     /// every chunk lies within the source and within the resident buffers.
-    pub fn open(src: &'a dyn ByteSource) -> Result<RouteReader<'a>, Error> {
+    pub fn read(src: &dyn ByteSource) -> Result<RouteIndex, Error> {
         let h = read_header(src)?;
         if h.chunk_count as usize > MAX_ROUTE_CHUNKS {
             return Err(Error::TooLarge);
@@ -157,8 +175,7 @@ impl<'a> RouteReader<'a> {
         // Trailing total, so `cum_seg[chunk_count]` is the route's full segment count.
         cum_seg.push(seg_acc).map_err(|_| Error::TooLarge)?;
 
-        Ok(RouteReader {
-            src,
+        Ok(RouteIndex {
             bbox: h.bbox,
             start_lon: h.start_lon,
             start_lat: h.start_lat,
@@ -187,7 +204,7 @@ impl<'a> RouteReader<'a> {
     /// Global index (from the route start) of segment `seg` in chunk `c`: how many
     /// segments precede it. Segments per chunk = `point_count − 1` (the shared seam
     /// point isn't double-counted). O(1) via the `cum_seg` prefix sum built at
-    /// [`open`](Self::open) — the per-fix matcher calls this on its hot path, so it
+    /// [`read`](Self::read) — the per-fix matcher calls this on its hot path, so it
     /// must not re-scan the chunk index. `c` past the last chunk clamps to the total.
     pub(crate) fn global_seg_index(&self, c: usize, seg: usize) -> usize {
         let c = c.min(self.index.len());
@@ -211,6 +228,29 @@ impl<'a> RouteReader<'a> {
         }
     }
 
+    /// Visit each chunk whose bbox intersects `view`, in route order, passing its
+    /// index `k` and `ChunkMeta`. The caller decodes the ones it wants with
+    /// [`RouteReader::decode_chunk`] into its own reused buffer — keeping the
+    /// streaming draw allocation-free.
+    pub fn for_each_visible_chunk<F: FnMut(usize, &ChunkMeta)>(&self, view: &BBox, mut f: F) {
+        for (k, cm) in self.index.iter().enumerate() {
+            if cm.bbox.intersects(view) {
+                f(k, cm);
+            }
+        }
+    }
+}
+
+impl<'a> RouteReader<'a> {
+    /// Pair an already-parsed [`RouteIndex`] with the byte source its geometry chunks stream
+    /// from. No I/O — the expensive header + chunk-meta walk already happened in
+    /// [`RouteIndex::read`]; this just couples the resident index to a source so
+    /// [`decode_chunk`](Self::decode_chunk) can pull chunks on demand. Build the index once
+    /// per route and call this per frame (issue #44).
+    pub fn new(idx: &'a RouteIndex, src: &'a dyn ByteSource) -> RouteReader<'a> {
+        RouteReader { src, idx }
+    }
+
     /// Decode chunk `k` into `out` (cleared first): its anchor followed by each
     /// delta-stepped point. The chunk's last point equals chunk `k+1`'s anchor (seam
     /// sharing), so adjacent chunks stitch without a gap.
@@ -220,7 +260,7 @@ impl<'a> RouteReader<'a> {
         out: &mut Vec<RoutePoint, MAX_POINTS_PER_CHUNK>,
     ) -> Result<(), Error> {
         out.clear();
-        let m = self.index.get(k).ok_or(Error::BadOffset)?;
+        let m = self.idx.index.get(k).ok_or(Error::BadOffset)?;
         let n = m.point_count as usize;
         if n == 0 {
             return Ok(());
@@ -246,21 +286,19 @@ impl<'a> RouteReader<'a> {
         }
         Ok(())
     }
+}
 
-    /// Visit each chunk whose bbox intersects `view`, in route order, passing its
-    /// index `k` and `ChunkMeta`. The caller decodes the ones it wants with
-    /// [`decode_chunk`](Self::decode_chunk) into its own reused buffer — keeping the
-    /// streaming draw allocation-free.
-    pub fn for_each_visible_chunk<F: FnMut(usize, &ChunkMeta)>(&self, view: &BBox, mut f: F) {
-        for (k, cm) in self.index.iter().enumerate() {
-            if cm.bbox.intersects(view) {
-                f(k, cm);
-            }
-        }
+/// `RouteReader` is a `RouteIndex` plus a live source: deref to the index so the summary
+/// fields and resident-only queries read straight through `route.bbox` / `route.chunks()`
+/// without forwarding boilerplate (only `decode_chunk` needs the source, and it's inherent).
+impl core::ops::Deref for RouteReader<'_> {
+    type Target = RouteIndex;
+    fn deref(&self) -> &RouteIndex {
+        self.idx
     }
 }
 
-/// Parsed header fields (shared by [`RouteReader::open`] and [`RouteSummary::read`]).
+/// Parsed header fields (shared by [`RouteIndex::read`] and [`RouteSummary::read`]).
 struct Header {
     bbox: BBox,
     start_lon: i32,
