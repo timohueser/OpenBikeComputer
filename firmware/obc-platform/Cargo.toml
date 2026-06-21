@@ -22,3 +22,14 @@ embedded-hal = "1.0"
 # The small event ring the debouncer buffers between `update` and the app's drain.
 # Same 0.8 the rest of the OBC stack uses.
 heapless = "0.8"
+
+# The OBCR byte I/O the SD adapters implement (`ByteSource`/`ByteSink`/`Error`) plus the
+# track record codec — so `SdByteSource` drops into `RouteReader`/`RouteSummary::read` and
+# `SdTrackSink` encodes `obc_app::TrackPoint`s exactly like the simulator's host store.
+obc-route = { path = "../obc-route" }
+
+# The FatFs/SD-card stack the adapters wrap. The adapters are generic over its
+# `BlockDevice` + `TimeSource`, so they carry no board/bus types — a board crate picks the
+# concrete `SdCard<SpiDevice, _>`. `default-features = false` drops the `log` facade (the
+# board logs over defmt/RTT itself); the adapters add no logging of their own.
+embedded-sdmmc = { version = "0.9", default-features = false }
