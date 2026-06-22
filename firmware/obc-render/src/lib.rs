@@ -461,26 +461,29 @@ impl MapRenderer {
         Self::default()
     }
 
-    /// `const` constructor so the renderer can live in a `static` (or be placed
-    /// into a fixed RAM region) on an MCU without a ~200 KB stack temporary —
-    /// `heapless::Vec::new()` is `const`, and an empty `Vec` is the same all-zero
-    /// state `.bss` provides. The firmware constructs the [`App`](../obc_app)
-    /// (which embeds this) straight into SDRAM via this path; the desktop
-    /// simulator keeps using [`new`](MapRenderer::new)/`Default`.
+    /// Initialize a renderer **in place** at `slot` as the empty, ready-to-render
+    /// state — the placement path an MCU uses to build the resident renderer (and
+    /// the [`App`](../obc_app) that embeds it) straight into a fixed RAM region
+    /// without ever materializing the ~200 KB of scratch on the stack.
     ///
-    /// Re-derived from the `mcu-render-bench` branch's `new_const`, updated for the
-    /// `FrameScratch`/`DrawScratch` split this crate gained since.
-    pub const fn new_const() -> Self {
-        Self {
-            frame: FrameScratch {
-                dec_points: Vec::new(),
-                dec_ring_lens: Vec::new(),
-                frame_points: Vec::new(),
-                frame_ring_lens: Vec::new(),
-                spans: Vec::new(),
-            },
-            draw: DrawScratch { screen: Vec::new(), xs: Vec::new() },
-        }
+    /// Every scratch buffer is a [`heapless::Vec`], whose empty state is `len = 0`
+    /// over an *uninitialized* backing array — i.e. exactly the all-zero bit
+    /// pattern. So zeroing the slot yields a valid, empty renderer, and
+    /// `write_bytes(0, 1)` lowers to a `memset` of the slot with no temporary and
+    /// no reliance on the optimizer's return-value optimization. This is the same
+    /// robust trick `MapCache` uses (obc-reader); the desktop simulator keeps using
+    /// [`new`](MapRenderer::new)/`Default`, where a stack temporary is fine.
+    ///
+    /// # Safety
+    /// `slot` must be valid for writes, aligned, and exclusively owned for the call.
+    /// On return the slot holds a fully initialized, empty [`MapRenderer`].
+    pub unsafe fn init_zeroed(slot: *mut Self) {
+        // SAFETY: a renderer is `{ FrameScratch, DrawScratch }`, each only
+        // `heapless::Vec`s — no references, no enum with a non-zero discriminant, no
+        // `bool` that must be non-zero — so the all-zero bit pattern is the empty
+        // renderer (`len = 0`, write-before-read buffers). The caller guarantees the
+        // slot is a valid, owned, aligned region; `write_bytes` initializes it whole.
+        unsafe { slot.write_bytes(0u8, 1) }
     }
 
     /// Render the visible map into `target`.
