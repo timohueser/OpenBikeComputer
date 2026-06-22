@@ -71,6 +71,21 @@ pub trait AltimeterSource {
     fn poll(&mut self) -> Option<f32>;
 }
 
+/// Source of the rider's **heading** from a magnetometer (electronic compass) — the direction
+/// the device is pointing, independent of motion. Its one job is the heading when the GPS can't
+/// supply a course: a real receiver drops [`Fix::course`] to `None` below walking pace (see
+/// [`LocationSource`]), so a stationary rider's heading-up map would otherwise snap to north.
+/// The compass fills that gap; while the rider is moving the GPS course still wins.
+///
+/// Polled each tick like the other sensors, on its own cadence: [`poll`](CompassSource::poll)
+/// returns `Some(degrees)` only when a *fresh* reading is available and `None` otherwise. The
+/// app retains the last reading, so a `None` between samples simply holds the current heading.
+/// Degrees are clockwise from north (`0` = north, `90` = east), matching [`Fix::course`].
+pub trait CompassSource {
+    /// The latest magnetic heading in degrees CW from north, or `None` if no new sample this tick.
+    fn poll(&mut self) -> Option<f32>;
+}
+
 /// Sink for the recorded ride **track** — where each accepted fix is logged so the ride can
 /// be saved as a `.gpx`. The app encodes the [`TrackPoint`](obc_route::TrackPoint) (so the
 /// firmware and sim share one record format) and hands it here; the host appends the bytes
@@ -94,6 +109,10 @@ pub struct Sensors<'a> {
     /// The barometric altimeter, or `None` when no altitude source is wired (e.g. the
     /// simulator's manual control) — climb then simply doesn't accumulate.
     pub altimeter: Option<&'a mut dyn AltimeterSource>,
+    /// The electronic compass, or `None` when no heading source is wired (tests, a host that
+    /// only streams position) — the heading-up map then just holds north / the last GPS course
+    /// while stopped, instead of following a magnetometer.
+    pub compass: Option<&'a mut dyn CompassSource>,
     /// The recorded-track sink, or `None` when nothing is logging (the sim's manual panel,
     /// tests) — the ride then simply isn't recorded.
     pub track: Option<&'a mut dyn TrackSink>,

@@ -110,6 +110,20 @@ impl SimGui {
                     ui.add_space(6.0);
                     ui.separator();
 
+                    // Compass — the magnetometer heading the device uses to orient the map when
+                    // the rider is stopped (a real GPS drops its course at a standstill). Always
+                    // live: it only takes effect on a heading-up map with no GPS course, so during
+                    // a GPX-replay pause it visibly rotates the map, and it's a no-op otherwise.
+                    ui.label("Compass (heading when stopped)");
+                    ui.add(
+                        egui::Slider::new(&mut self.panel.compass_deg, 0.0..=360.0)
+                            .suffix("°")
+                            .step_by(1.0),
+                    );
+
+                    ui.add_space(6.0);
+                    ui.separator();
+
                     // Zoom — operated in meters-per-pixel on a log scale. Only
                     // write back when the user drags it, so it never fights the
                     // mouse scroll (which can range past the slider's bounds).
@@ -224,12 +238,13 @@ impl SimGui {
             },
         );
 
-        // Push the mirrors into the location source (the app reads them next tick).
+        // Push the mirrors into the location + compass sources (the app reads them next tick).
         self.loc.set_position(
             (self.panel.lat_deg * 1e6).round() as i32,
             (self.panel.lon_deg * 1e6).round() as i32,
         );
         self.loc.set_course(self.panel.heading_deg);
+        self.compass.set(self.panel.compass_deg);
     }
 
     /// Display size — the 1:1 "actual size" toggle (needs a calibration) plus a button
