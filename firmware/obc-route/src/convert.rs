@@ -15,9 +15,7 @@ use crate::byte_io::{ByteSink, ByteSource, Error};
 use crate::deadband::DeadBand;
 use crate::geo::{cos_lat, delta_m, seg_dist_m};
 use crate::gpx::GpxScanner;
-use crate::reader::{
-    ChunkMeta, CHUNK_META_LEN, HEADER_LEN, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS, NAME_CAP,
-};
+use crate::reader::{ChunkMeta, CHUNK_META_LEN, HEADER_LEN, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS, NAME_CAP};
 use obc_reader::codec::{put_i16, put_i32, put_u16, put_u32};
 use obc_reader::BBox;
 
@@ -44,11 +42,7 @@ pub struct RouteStats {
 
 /// Convert a GPX byte source into a `.obcr` written to `sink`, naming the route
 /// `name`. Returns the computed [`RouteStats`].
-pub fn gpx_to_obcr(
-    src: &dyn ByteSource,
-    name: &str,
-    sink: &mut dyn ByteSink,
-) -> Result<RouteStats, Error> {
+pub fn gpx_to_obcr(src: &dyn ByteSource, name: &str, sink: &mut dyn ByteSink) -> Result<RouteStats, Error> {
     // Reserve the header; the body follows immediately (data_offset = HEADER_LEN).
     sink.write(&[0u8; HEADER_LEN])?;
 
@@ -270,13 +264,7 @@ impl Encoder {
     }
 }
 
-fn build_header(
-    name: &str,
-    bbox: &BBox,
-    start: (i32, i32),
-    index_offset: u32,
-    s: &RouteStats,
-) -> [u8; HEADER_LEN] {
+fn build_header(name: &str, bbox: &BBox, start: (i32, i32), index_offset: u32, s: &RouteStats) -> [u8; HEADER_LEN] {
     let mut h = [0u8; HEADER_LEN];
     h[0..4].copy_from_slice(b"OBCR");
     h[4] = 1; // version

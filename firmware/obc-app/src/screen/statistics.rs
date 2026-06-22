@@ -149,9 +149,8 @@ impl StatisticsScreen {
     /// [`effective_cursor`](Self::effective_cursor) already retires lazily, so the two agree;
     /// it just makes the moment observable. Idempotent: once sprung back it returns `false`.
     pub fn animate(&mut self, now_ms: u32) -> bool {
-        let sprung_back = self.mode == Mode::Cursor
-            && self.cursor.is_some()
-            && now_ms.wrapping_sub(self.last_scrub_ms) >= IDLE_MS;
+        let sprung_back =
+            self.mode == Mode::Cursor && self.cursor.is_some() && now_ms.wrapping_sub(self.last_scrub_ms) >= IDLE_MS;
         if sprung_back {
             self.cursor = None;
         }
@@ -162,11 +161,7 @@ impl StatisticsScreen {
     /// otherwise the live position it has sprung back to.
     fn effective_cursor(&self, now_ms: u32, live: f32) -> f32 {
         match self.cursor {
-            Some(c)
-                if self.mode == Mode::Zoom || now_ms.wrapping_sub(self.last_scrub_ms) < IDLE_MS =>
-            {
-                c
-            }
+            Some(c) if self.mode == Mode::Zoom || now_ms.wrapping_sub(self.last_scrub_ms) < IDLE_MS => c,
             _ => live,
         }
     }
@@ -213,11 +208,7 @@ impl StatisticsScreen {
 
         // Live position (matched progress) drives the traveled shading + progress bar; the
         // cursor may be a scrub ahead of / behind it, and in zoom mode it's the zoom centre.
-        let live_frac = if total > 0 {
-            (rx.activity.progress_m as f32 / total as f32).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
+        let live_frac = if total > 0 { (rx.activity.progress_m as f32 / total as f32).clamp(0.0, 1.0) } else { 0.0 };
         let cursor_frac = self.effective_cursor(rx.now_ms, live_frac);
         let in_zoom = self.mode == Mode::Zoom;
         let zoom = if in_zoom { self.zoom } else { 1.0 };
@@ -289,8 +280,7 @@ impl StatisticsScreen {
         let mut ele_s: heapless::String<8> = heapless::String::new();
         let _ = write!(ele_s, "{} m", cur_ele);
         let near_peak = (cursor_frac - profile.peak_frac()).abs() < 0.07;
-        let label_y =
-            (if near_peak { cur_y + 9 } else { cur_y - 5 }).clamp(CHART_TOP + 2, band_bot - 24);
+        let label_y = (if near_peak { cur_y + 9 } else { cur_y - 5 }).clamp(CHART_TOP + 2, band_bot - 24);
         if cursor_x < w - 44 {
             cv.text(&ele_s, Point::new(cursor_x + 8, label_y), Font::Label, TextAlign::Left, INK);
         } else {
@@ -344,17 +334,9 @@ impl StatisticsScreen {
         let km_done = a.ridden_m / 1000.0;
         let km_to_go = to_go_m as f32 / 1000.0;
         let mut done: heapless::String<8> = heapless::String::new();
-        let _ = if km_done >= 100.0 {
-            write!(done, "{:.0}", km_done)
-        } else {
-            write!(done, "{:.1}", km_done)
-        };
+        let _ = if km_done >= 100.0 { write!(done, "{:.0}", km_done) } else { write!(done, "{:.1}", km_done) };
         let mut to_go: heapless::String<8> = heapless::String::new();
-        let _ = if km_to_go >= 100.0 {
-            write!(to_go, "{:.0}", km_to_go)
-        } else {
-            write!(to_go, "{:.1}", km_to_go)
-        };
+        let _ = if km_to_go >= 100.0 { write!(to_go, "{:.0}", km_to_go) } else { write!(to_go, "{:.1}", km_to_go) };
         let mut climbed_s: heapless::String<8> = heapless::String::new();
         let _ = write!(climbed_s, "{}", climbed);
         let mut to_climb_s: heapless::String<8> = heapless::String::new();
@@ -436,12 +418,7 @@ where
     let vx = if arrow {
         // Up-triangle sized to sit alongside the Display digits (ink spans ≈ vy+6..vy+26).
         let ax = x + 8;
-        cv.triangle(
-            Point::new(ax, vy + 26),
-            Point::new(ax + 13, vy + 26),
-            Point::new(ax + 6, vy + 6),
-            INK,
-        );
+        cv.triangle(Point::new(ax, vy + 26), Point::new(ax + 13, vy + 26), Point::new(ax + 6, vy + 6), INK);
         x + 26
     } else {
         x + 8
@@ -504,11 +481,7 @@ mod tests {
         assert!(!s.animate(1_000), "the scrub frame itself isn't a spring-back");
         assert!(!s.animate(1_000 + IDLE_MS - 1), "still frozen inside the idle window");
         assert!(s.animate(1_000 + IDLE_MS), "springs back exactly at the deadline → dirty once");
-        assert_eq!(
-            s.effective_cursor(1_000 + IDLE_MS, LIVE),
-            LIVE,
-            "and it really is back at live"
-        );
+        assert_eq!(s.effective_cursor(1_000 + IDLE_MS, LIVE), LIVE, "and it really is back at live");
         assert!(!s.animate(1_000 + IDLE_MS + 5_000), "and only once — it stays put afterwards");
     }
 

@@ -235,11 +235,7 @@ fn process_way(
     // Line: open ways, and closed-but-not-area "circular roads" (W6 residential,
     // W12 natural=water area=no). Mirror way()'s `len(coords) >= 2` guard.
     if coords.len() >= 2 {
-        features.push(IngestFeature {
-            style_id: style.id,
-            min_lod: style.min_lod,
-            geom: Geom::Line(coords.to_vec()),
-        });
+        features.push(IngestFeature { style_id: style.id, min_lod: style.min_lod, geom: Geom::Line(coords.to_vec()) });
     }
 }
 
@@ -257,8 +253,7 @@ fn is_area(tags: &HashMap<&str, &str>) -> bool {
 mod tests {
     use super::*;
 
-    const TINY_PBF: &str =
-        concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/tests/corpus/data/tiny.osm.pbf");
+    const TINY_PBF: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/tests/corpus/data/tiny.osm.pbf");
 
     fn is_polygon(g: &Geom) -> bool {
         matches!(g, Geom::Polygon { .. })
@@ -274,8 +269,7 @@ mod tests {
             eprintln!("SKIP tiny_truth_table: {TINY_PBF} missing (run build_corpus.sh)");
             return;
         }
-        let cfg = Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/config.json"))
-            .expect("config");
+        let cfg = Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/config.json")).expect("config");
         let ing = ingest_osm(TINY_PBF, &cfg).expect("ingest");
 
         // W8 (way 109) is the only coastline; nodes 29,30 ⇒ 2 points.
@@ -301,11 +295,7 @@ mod tests {
         assert_eq!(n(32, false), 1, "W12 natural=water area=no ⇒ 1 line");
 
         // R1 is a lake WITH an island (one hole).
-        let lake = ing
-            .features
-            .iter()
-            .find(|f| f.style_id == 32 && is_polygon(&f.geom))
-            .expect("water polygon");
+        let lake = ing.features.iter().find(|f| f.style_id == 32 && is_polygon(&f.geom)).expect("water polygon");
         match &lake.geom {
             Geom::Polygon { interiors, .. } => assert_eq!(interiors.len(), 1, "R1 has one hole"),
             _ => unreachable!(),

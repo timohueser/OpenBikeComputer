@@ -76,8 +76,7 @@ const MCU_RENDERER_BYTES: usize = MAX_DECODE_POINTS * 8
     + MAX_SPANS * core::mem::size_of::<Span>()
     + MAX_SCREEN_POINTS * 8
     + MAX_CROSSINGS * 4;
-const _: () =
-    assert!(MCU_RENDERER_BYTES <= 200 * 1024, "MapRenderer exceeds the 200 KB MCU budget");
+const _: () = assert!(MCU_RENDERER_BYTES <= 200 * 1024, "MapRenderer exceeds the 200 KB MCU budget");
 
 /// Meters of ground per microdegree of latitude — the renderer's zoom is pixels per
 /// microdegree-lat, so this turns zoom into meters-per-pixel. Derived from the shared
@@ -165,14 +164,7 @@ impl Viewport {
 
     /// Like [`new`](Viewport::new) but rotated so `course_rad` (radians CW from
     /// north) points to the top of the screen.
-    pub fn new_rotated(
-        w: f32,
-        h: f32,
-        cam_lon: i32,
-        cam_lat: i32,
-        zoom: f32,
-        course_rad: f32,
-    ) -> Self {
+    pub fn new_rotated(w: f32, h: f32, cam_lon: i32, cam_lat: i32, zoom: f32, course_rad: f32) -> Self {
         Viewport {
             w,
             h,
@@ -232,12 +224,8 @@ impl Viewport {
     /// Uses all four screen corners so a *rotated* view still culls correctly —
     /// the axis-aligned box must cover the tilted rectangle's full extent.
     pub fn visible_bbox(&self) -> BBox {
-        let corners = [
-            self.to_map(0.0, 0.0),
-            self.to_map(self.w, 0.0),
-            self.to_map(0.0, self.h),
-            self.to_map(self.w, self.h),
-        ];
+        let corners =
+            [self.to_map(0.0, 0.0), self.to_map(self.w, 0.0), self.to_map(0.0, self.h), self.to_map(self.w, self.h)];
         let mut min_lon = i32::MAX;
         let mut max_lon = i32::MIN;
         let mut min_lat = i32::MAX;
@@ -308,10 +296,8 @@ impl FrameScratch {
 
         // Record utilization for the stats panel.
         stats.span_utilization = self.spans.len() as f32 / self.spans.capacity() as f32;
-        stats.point_utilization =
-            self.frame_points.len() as f32 / self.frame_points.capacity() as f32;
-        stats.ring_utilization =
-            self.frame_ring_lens.len() as f32 / self.frame_ring_lens.capacity() as f32;
+        stats.point_utilization = self.frame_points.len() as f32 / self.frame_points.capacity() as f32;
+        stats.ring_utilization = self.frame_ring_lens.len() as f32 / self.frame_ring_lens.capacity() as f32;
     }
 
     /// Append every visible feature whose style is at priority `level` to the
@@ -320,14 +306,7 @@ impl FrameScratch {
     /// [`Reader::for_each_feature_filtered`]. The leaf walk reads only the index,
     /// so the per-level re-walk is cheap; `stats.chunks_visited` is recorded once
     /// (the chunk set is identical every level).
-    fn collect_level(
-        &mut self,
-        reader: &Reader,
-        lod: usize,
-        level: u8,
-        view: &BBox,
-        stats: &mut RenderStats,
-    ) {
+    fn collect_level(&mut self, reader: &Reader, lod: usize, level: u8, view: &BBox, stats: &mut RenderStats) {
         // Split the borrow so the decode callback can fill `frame_*`/`spans` while
         // `for_each_feature_filtered` borrows the decode scratch.
         let FrameScratch { dec_points, dec_ring_lens, frame_points, frame_ring_lens, spans } = self;
@@ -566,33 +545,17 @@ impl MapRenderer {
         for span in frame.spans.iter() {
             let ring_start = span.ring_start as usize;
             let pt_start = span.pt_start as usize;
-            let ring_lens =
-                &frame.frame_ring_lens[ring_start..ring_start + span.ring_count as usize];
+            let ring_lens = &frame.frame_ring_lens[ring_start..ring_start + span.ring_count as usize];
             let total: usize = ring_lens.iter().sum();
             let pts = &frame.frame_points[pt_start..pt_start + total];
             let color = color_fn(span.color);
 
             match span.kind {
-                Kind::Polygon => fill_polygon_proj(
-                    target,
-                    vp,
-                    pts,
-                    ring_lens,
-                    color,
-                    &mut draw.screen,
-                    &mut draw.xs,
-                ),
+                Kind::Polygon => fill_polygon_proj(target, vp, pts, ring_lens, color, &mut draw.screen, &mut draw.xs),
                 Kind::Line => {
                     // Lines use only the exterior ring.
                     let n = ring_lens.first().copied().unwrap_or(0);
-                    draw_line(
-                        target,
-                        vp,
-                        &pts[..n],
-                        color,
-                        span.weight.max(1) as u32,
-                        &mut draw.screen,
-                    );
+                    draw_line(target, vp, &pts[..n], color, span.weight.max(1) as u32, &mut draw.screen);
                 }
             }
         }
@@ -651,24 +614,12 @@ impl MapRenderer {
                 const TIP: f32 = 12.0;
                 const BACK: f32 = 6.0;
                 const HALF: f32 = 8.0;
-                fill_chevron(
-                    target,
-                    &mut self.draw.xs,
-                    (cx, cy),
-                    fwd,
-                    TIP,
-                    BACK,
-                    HALF,
-                    color,
-                    w,
-                    h,
-                );
+                fill_chevron(target, &mut self.draw.xs, (cx, cy), fwd, TIP, BACK, HALF, color, w, h);
             }
             // Stationary glyph: a small orientation-free diamond.
             None => {
                 const R: f32 = 7.0;
-                let pt =
-                    |x: f32, y: f32| Point::new(libm::roundf(x) as i32, libm::roundf(y) as i32);
+                let pt = |x: f32, y: f32| Point::new(libm::roundf(x) as i32, libm::roundf(y) as i32);
                 let diamond = [pt(cx, cy - R), pt(cx + R, cy), pt(cx, cy + R), pt(cx - R, cy)];
                 fill_polygon(target, &diamond, &[4], color, w, h, &mut self.draw.xs);
             }
@@ -766,18 +717,7 @@ impl MapRenderer {
                 }
                 let fwd = (dx / m, dy / m); // screen travel dir (north-up & heading-up)
                 let centre = (ax + dx * f, ay + dy * f); // chevron centre along the segment
-                fill_chevron(
-                    target,
-                    xs,
-                    centre,
-                    fwd,
-                    ARROW_TIP,
-                    ARROW_BACK,
-                    ARROW_HALF,
-                    arrow_color,
-                    w,
-                    h,
-                );
+                fill_chevron(target, xs, centre, fwd, ARROW_TIP, ARROW_BACK, ARROW_HALF, arrow_color, w, h);
             });
         }
         (route_chunks, route_points, route_drawn)
@@ -787,14 +727,8 @@ impl MapRenderer {
     /// view and stroked with embedded-graphics (see [`stroke_overlay`]) — this is the recorded
     /// **breadcrumb**, whose two tiers (spine, recent) are each one call. Call after
     /// [`render`](MapRenderer::render) so the path sits on the map.
-    pub fn stroke_path<D, I>(
-        &mut self,
-        target: &mut D,
-        vp: &Viewport,
-        pts: I,
-        color: D::Color,
-        weight: u32,
-    ) where
+    pub fn stroke_path<D, I>(&mut self, target: &mut D, vp: &Viewport, pts: I, color: D::Color, weight: u32)
+    where
         D: DrawTarget,
         I: IntoIterator<Item = (i32, i32)>,
     {
@@ -826,14 +760,7 @@ fn outcode(x: f32, y: f32, xmin: f32, ymin: f32, xmax: f32, ymax: f32) -> u8 {
 
 /// Clip segment `a`→`b` to the rectangle (Cohen–Sutherland), returning the visible sub-segment
 /// rounded back to integer pixels, or `None` if it misses the rectangle entirely.
-fn clip_segment(
-    a: Point,
-    b: Point,
-    xmin: f32,
-    ymin: f32,
-    xmax: f32,
-    ymax: f32,
-) -> Option<(Point, Point)> {
+fn clip_segment(a: Point, b: Point, xmin: f32, ymin: f32, xmax: f32, ymax: f32) -> Option<(Point, Point)> {
     let (mut x0, mut y0) = (a.x as f32, a.y as f32);
     let (mut x1, mut y1) = (b.x as f32, b.y as f32);
     let mut o0 = outcode(x0, y0, xmin, ymin, xmax, ymax);
@@ -887,17 +814,12 @@ fn push_run(run: &mut Vec<Point, MAX_SCREEN_POINTS>, c1: Point) {
 
 /// Stroke the accumulated run with embedded-graphics' (properly jointed) thick `Polyline`,
 /// then clear it for the next run.
-fn flush_run<D>(
-    target: &mut D,
-    run: &mut Vec<Point, MAX_SCREEN_POINTS>,
-    color: D::Color,
-    weight: u32,
-) where
+fn flush_run<D>(target: &mut D, run: &mut Vec<Point, MAX_SCREEN_POINTS>, color: D::Color, weight: u32)
+where
     D: DrawTarget,
 {
     if run.len() >= 2 {
-        let _ =
-            Polyline::new(run).into_styled(PrimitiveStyle::with_stroke(color, weight)).draw(target);
+        let _ = Polyline::new(run).into_styled(PrimitiveStyle::with_stroke(color, weight)).draw(target);
         // Round joints + caps. eg joins thick segments with a flat **bevel**, so a densely
         // sampled curve renders as a fan of facets — the scalloped "beading" on thick lines.
         // Filling a disc (⌀ = stroke width) at each vertex turns every joint into a smooth arc,
@@ -1076,15 +998,8 @@ where
 /// (see [`ARROW_SPACING_PX`]). Segment length is real ground metres
 /// ([`obc_route::ground_dist_m_cl`]); `cl` is the band's hoisted `cos(lat)` (the caller
 /// passes the viewport's, computed once per frame), so the walk costs no per-segment `cosf`.
-fn walk_route_arrows<F>(
-    pts: &[obc_route::RoutePoint],
-    s0: f32,
-    lo: f32,
-    hi: f32,
-    spacing_m: f32,
-    cl: f32,
-    mut emit: F,
-) where
+fn walk_route_arrows<F>(pts: &[obc_route::RoutePoint], s0: f32, lo: f32, hi: f32, spacing_m: f32, cl: f32, mut emit: F)
+where
     F: FnMut(&obc_route::RoutePoint, &obc_route::RoutePoint, f32),
 {
     let mut s = s0;
@@ -1259,10 +1174,8 @@ fn fill_polygon<D>(
             let x0 = (libm::floorf(xs[k]) as i32).max(0);
             let x1 = (libm::ceilf(xs[k + 1]) as i32).min(w - 1);
             if x1 >= x0 {
-                let _ = target.fill_solid(
-                    &Rectangle::new(Point::new(x0, y), Size::new((x1 - x0 + 1) as u32, 1)),
-                    color,
-                );
+                let _ =
+                    target.fill_solid(&Rectangle::new(Point::new(x0, y), Size::new((x1 - x0 + 1) as u32, 1)), color);
             }
             k += 2;
         }
@@ -1271,9 +1184,7 @@ fn fill_polygon<D>(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        aspect_for_lat, fill_polygon, simplify, walk_route_arrows, within_eps, MAX_CROSSINGS,
-    };
+    use super::{aspect_for_lat, fill_polygon, simplify, walk_route_arrows, within_eps, MAX_CROSSINGS};
     use embedded_graphics::prelude::Point;
     use heapless::Vec;
     use obc_route::{ground_dist_m, RoutePoint};
@@ -1374,10 +1285,7 @@ mod tests {
         let narrow = distances(&pts, dl, lo, hi);
         assert!(!narrow.is_empty());
         for d in &narrow {
-            assert!(
-                *d as f32 >= lo - 0.5 && *d as f32 <= hi + 0.5,
-                "chevron at {d} m outside window"
-            );
+            assert!(*d as f32 >= lo - 0.5 && *d as f32 <= hi + 0.5, "chevron at {d} m outside window");
         }
         assert!(distances(&pts, dl, 0.0, dl).len() > narrow.len());
     }
@@ -1390,19 +1298,12 @@ mod tests {
         // window centred earlier and one centred later.
         let (pts, dl) = north_line();
         let band = |lo, hi| -> Vec<i32, 64> {
-            distances(&pts, dl, lo, hi)
-                .iter()
-                .copied()
-                .filter(|&d| (80..=200).contains(&d))
-                .collect()
+            distances(&pts, dl, lo, hi).iter().copied().filter(|&d| (80..=200).contains(&d)).collect()
         };
         let early = band(0.0, 210.0);
         let late = band(70.0, 280.0);
         assert!(!early.is_empty(), "the shared band should contain chevrons");
-        assert_eq!(
-            early, late,
-            "a chevron moved when the window slid — it should be ground-pinned"
-        );
+        assert_eq!(early, late, "a chevron moved when the window slid — it should be ground-pinned");
     }
 
     #[test]
@@ -1479,17 +1380,11 @@ mod tests {
 
         // Prong-band rows overflow the buffer → skipped, not mis-filled.
         for y in 0..HBASE {
-            assert_eq!(
-                target.rows[y as usize], 0,
-                "saturated prong row {y} must be left unfilled, not mis-filled"
-            );
+            assert_eq!(target.rows[y as usize], 0, "saturated prong row {y} must be left unfilled, not mis-filled");
         }
         // Base-band rows have just two crossings → filled edge to edge.
         for y in HBASE..HBOTTOM {
-            assert_eq!(
-                target.rows[y as usize], W as u32,
-                "base row {y} should fill the full width"
-            );
+            assert_eq!(target.rows[y as usize], W as u32, "base row {y} should fill the full width");
         }
     }
 }

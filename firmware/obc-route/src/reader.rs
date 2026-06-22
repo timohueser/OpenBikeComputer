@@ -254,11 +254,7 @@ impl<'a> RouteReader<'a> {
     /// Decode chunk `k` into `out` (cleared first): its anchor followed by each
     /// delta-stepped point. The chunk's last point equals chunk `k+1`'s anchor (seam
     /// sharing), so adjacent chunks stitch without a gap.
-    pub fn decode_chunk(
-        &self,
-        k: usize,
-        out: &mut Vec<RoutePoint, MAX_POINTS_PER_CHUNK>,
-    ) -> Result<(), Error> {
+    pub fn decode_chunk(&self, k: usize, out: &mut Vec<RoutePoint, MAX_POINTS_PER_CHUNK>) -> Result<(), Error> {
         out.clear();
         let m = self.idx.index.get(k).ok_or(Error::BadOffset)?;
         let n = m.point_count as usize;

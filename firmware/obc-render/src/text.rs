@@ -95,19 +95,11 @@ pub fn text_width(s: &str, font: Font) -> u32 {
 /// baseline. Returns the position just past the string (next glyph's origin) for
 /// chaining runs; a draw error — possible only on a real display, never on the
 /// host's infallible targets — falls back to `anchor`.
-pub fn draw_text<D>(
-    target: &mut D,
-    s: &str,
-    anchor: Point,
-    font: Font,
-    align: TextAlign,
-    color: D::Color,
-) -> Point
+pub fn draw_text<D>(target: &mut D, s: &str, anchor: Point, font: Font, align: TextAlign, color: D::Color) -> Point
 where
     D: DrawTarget,
 {
     let character_style = MonoTextStyle::new(font.mono(), color);
-    let text_style =
-        TextStyleBuilder::new().alignment(align.to_eg()).baseline(Baseline::Top).build();
+    let text_style = TextStyleBuilder::new().alignment(align.to_eg()).baseline(Baseline::Top).build();
     Text::with_text_style(s, anchor, character_style, text_style).draw(target).unwrap_or(anchor)
 }

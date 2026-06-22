@@ -53,8 +53,7 @@ pub fn save(points_per_mm: f32) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("create config dir: {e}"))?;
     }
-    std::fs::write(&path, format!("{points_per_mm}\n"))
-        .map_err(|e| format!("write {}: {e}", path.display()))
+    std::fs::write(&path, format!("{points_per_mm}\n")).map_err(|e| format!("write {}: {e}", path.display()))
 }
 
 /// Web build: there's no per-monitor config file, and 1:1 physical sizing makes no

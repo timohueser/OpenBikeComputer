@@ -30,13 +30,7 @@ pub struct FeatureStyle {
 impl FeatureStyle {
     /// The serializer's `Style` view (drops `min_lod`).
     pub fn to_style(&self) -> Style {
-        Style {
-            id: self.id,
-            z_index: self.z_index,
-            color: self.color,
-            weight: self.weight,
-            priority: self.priority,
-        }
+        Style { id: self.id, z_index: self.z_index, color: self.color, weight: self.weight, priority: self.priority }
     }
 }
 
@@ -78,11 +72,8 @@ impl Config {
         let mut next_id: u32 = 1;
         if let Some(feature_map) = root.get("features").and_then(Value::as_object) {
             for (tag_key, values) in feature_map {
-                let values = values
-                    .as_object()
-                    .ok_or_else(|| format!("features.{tag_key} must be an object"))?;
-                let mut by_value: HashMap<String, FeatureStyle> =
-                    HashMap::with_capacity(values.len());
+                let values = values.as_object().ok_or_else(|| format!("features.{tag_key} must be an object"))?;
+                let mut by_value: HashMap<String, FeatureStyle> = HashMap::with_capacity(values.len());
                 for (value, style) in values {
                     if next_id > MAX_STYLE_ID {
                         return Err(format!(
@@ -112,16 +103,11 @@ impl Config {
         };
 
         // --- marker color (`config.get("marker", {}).get("color", 0xF800)`) ---
-        let marker_color = root
-            .get("marker")
-            .and_then(|m| m.get("color"))
-            .map(parse_color)
-            .transpose()?
-            .unwrap_or(0xF800);
+        let marker_color =
+            root.get("marker").and_then(|m| m.get("color")).map(parse_color).transpose()?.unwrap_or(0xF800);
 
         // --- chunk_size (`config.get("chunk_size", 4096)`) ---
-        let chunk_size =
-            root.get("chunk_size").and_then(Value::as_u64).map(|v| v as usize).unwrap_or(4096);
+        let chunk_size = root.get("chunk_size").and_then(Value::as_u64).map(|v| v as usize).unwrap_or(4096);
 
         Ok(Config { features, lods, marker_color, chunk_size })
     }
@@ -173,9 +159,7 @@ fn parse_color(v: &Value) -> Result<u16, String> {
             let hex = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")).unwrap_or(s);
             u16::from_str_radix(hex, 16).map_err(|e| format!("bad color {s:?}: {e}"))
         }
-        Value::Number(n) => {
-            n.as_u64().map(|v| v as u16).ok_or_else(|| format!("bad numeric color {n}"))
-        }
+        Value::Number(n) => n.as_u64().map(|v| v as u16).ok_or_else(|| format!("bad numeric color {n}")),
         other => Err(format!("color must be int or hex string, got {other}")),
     }
 }
@@ -186,8 +170,7 @@ mod tests {
 
     fn corpus_config() -> Config {
         // The same config.json the corpus + web builder use.
-        Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/config.json"))
-            .expect("load corpus config")
+        Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/config.json")).expect("load corpus config")
     }
 
     #[test]

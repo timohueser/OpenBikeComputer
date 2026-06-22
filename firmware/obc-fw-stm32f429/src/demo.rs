@@ -44,14 +44,7 @@ where
 
     target.clear(parchment)?;
     target.fill_solid(&Rectangle::new(Point::zero(), Size::new(w as u32, 28)), hud)?;
-    draw_text(
-        target,
-        "TERMINUS FONT DEMO",
-        Point::new(w / 2, 3),
-        Font::Label,
-        TextAlign::Center,
-        parchment,
-    );
+    draw_text(target, "TERMINUS FONT DEMO", Point::new(w / 2, 3), Font::Label, TextAlign::Center, parchment);
 
     // Font ladder: each tier's caption (in Label) over a true-size sample drawn in
     // that tier, annotated with its measured cap height in mm.
@@ -70,8 +63,7 @@ where
 
     // Palette — each name drawn in its own colour, so the panel shows whether
     // amber, forest, wood and warning stay distinct and legible on glass.
-    for (name, col) in [("amber", amber), ("forest", forest), ("wood", wood), ("warning", warning)]
-    {
+    for (name, col) in [("amber", amber), ("forest", forest), ("wood", wood), ("warning", warning)] {
         draw_text(target, name, Point::new(8, y), Font::Label, TextAlign::Left, col);
         y += Font::Label.line_height() as i32 + 2;
     }
