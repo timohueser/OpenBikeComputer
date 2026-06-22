@@ -82,8 +82,10 @@ docs/
 
 **Build flow:** `python3 docs/build_docs.py` reads `content/*.md` + `site.toml`, renders
 each page into the `page.html` shell with the sidebar, and writes `docs/docs/**`. A Trunk
-`pre_build` hook runs it automatically on `trunk serve`/`trunk build`, so CI needs no
-change. Output is gitignored (same pattern as `dist/`).
+`pre_build` hook runs it automatically on `trunk serve`/`trunk build`, so the deploy needs
+no change. Output is gitignored (same pattern as `dist/`). The `--check-links` flag adds a
+cross-page anchor audit (every `../page/#anchor` must resolve to a real heading id) and
+exits non-zero on a break — the CI `docs` job runs this.
 
 ### The renderer (supported markdown)
 
