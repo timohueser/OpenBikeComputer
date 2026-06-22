@@ -947,6 +947,11 @@ impl MapCacheInner {
             return Ok(ChunkLoc::Slot(i));
         }
         let i = lru(self.chunks.iter().map(|s| (!s.valid, s.used)));
+        // Invalidate before the read: a flaky source can fail partway through, leaving the buffer
+        // partially overwritten with the new chunk's bytes. Committing nothing until the read
+        // succeeds means a failed read leaves an empty slot, not a poisoned one keyed to the old
+        // chunk (which would later be served as a corrupt cache hit).
+        self.chunks[i].valid = false;
         src.read_at(start, &mut self.chunks[i].buf[..len])?;
         self.chunks[i].valid = true;
         self.chunks[i].lod = lod;
@@ -998,6 +1003,9 @@ impl MapCacheInner {
             return Err(IoError::BadOffset);
         }
         let i = lru(self.index.iter().map(|b| (!b.valid, b.used)));
+        // Invalidate before the read (see `load_chunk`): a partial read failure must not leave a
+        // poisoned slot still keyed to the old block offset.
+        self.index[i].valid = false;
         src.read_at(block_off, &mut self.index[i].buf[..want])?;
         self.index[i].valid = true;
         self.index[i].off = block_off;
@@ -1025,4 +1033,85 @@ fn lru(slots: impl Iterator<Item = (bool, u32)>) -> usize {
         }
     }
     best
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `ByteSource` that reproduces the flaky-SD failure of issue #64: the read whose offset is
+    /// `fail_at` copies `partial` bytes into the destination (a *real* partial overwrite, like
+    /// `SdByteSource` filling block-by-block) and then returns `Err`. Every other read is filled
+    /// from `data`. The host's `SliceSource` copies in one shot and so can never reproduce this.
+    struct FlakySource<'a> {
+        data: &'a [u8],
+        fail_at: u32,
+        partial: usize,
+    }
+
+    impl ByteSource for FlakySource<'_> {
+        fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), IoError> {
+            let start = offset as usize;
+            let end = start.checked_add(buf.len()).ok_or(IoError::BadOffset)?;
+            let bytes = self.data.get(start..end).ok_or(IoError::BadOffset)?;
+            if offset == self.fail_at {
+                let n = self.partial.min(buf.len());
+                buf[..n].copy_from_slice(&bytes[..n]); // partial write, then fail
+                return Err(IoError::Io);
+            }
+            buf.copy_from_slice(bytes);
+            Ok(())
+        }
+
+        fn len(&self) -> u32 {
+            self.data.len() as u32
+        }
+    }
+
+    /// A read that fails partway through must leave the evicted slot *empty*, not poisoned with
+    /// the old key over a half-overwritten buffer — otherwise a later request for the old key is
+    /// served as a (corrupt) cache hit. Regression test for issue #64.
+    #[test]
+    fn partial_read_failure_does_not_poison_evicted_slot() {
+        const LEN: usize = 64;
+        let mut data = [0u8; 4096];
+        for (k, b) in data.iter_mut().enumerate() {
+            *b = (k as u8).wrapping_mul(31).wrapping_add(7); // distinct, offset-derived bytes
+        }
+        // The eviction read (K_new) lives past the 16 primed chunks and fails partway.
+        let fail_at = (MAP_CHUNK_SLOTS as u32) * LEN as u32;
+        let src = FlakySource { data: &data, fail_at, partial: 8 };
+
+        let cache = MapCache::new();
+        let mut inner = cache.borrow_mut();
+
+        // Prime all slots, oldest first — so the LRU victim of the next miss is slot 0 (cid 0).
+        for cid in 0..MAP_CHUNK_SLOTS as u32 {
+            let loc = inner.load_chunk(&src, 0, cid, cid * LEN as u32, LEN).unwrap();
+            assert!(matches!(loc, ChunkLoc::Slot(_)));
+        }
+        let primed = inner.stats();
+        assert_eq!(primed.chunk_misses, MAP_CHUNK_SLOTS as u32);
+        assert_eq!(primed.chunk_hits, 0);
+
+        // The true bytes of K_old (cid 0), for an uncorrupted-content check after re-read.
+        let mut k_old = [0u8; LEN];
+        src.read_at(0, &mut k_old).unwrap();
+
+        // Eviction read of K_new fails partway through filling slot 0's buffer.
+        assert!(matches!(inner.load_chunk(&src, 0, 99, fail_at, LEN), Err(IoError::Io)));
+
+        // Request K_old again: it must be a *miss* (re-read), not a hit on the poisoned slot.
+        let before = inner.stats();
+        let loc = inner.load_chunk(&src, 0, 0, 0, LEN).unwrap();
+        let after = inner.stats();
+        assert_eq!(after.chunk_hits, before.chunk_hits, "K_old must not hit the poisoned slot");
+        assert_eq!(after.chunk_misses, before.chunk_misses + 1, "K_old must be re-read");
+
+        // …and the re-read returns the real K_old bytes, not the half-written K_new.
+        match loc {
+            ChunkLoc::Slot(i) => assert_eq!(&inner.chunks[i].buf[..LEN], &k_old[..]),
+            ChunkLoc::Scratch => panic!("a slot-sized chunk should land in a slot"),
+        }
+    }
 }
