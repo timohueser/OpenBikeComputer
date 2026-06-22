@@ -6,12 +6,14 @@ publish = false  # internal firmware crate — not published to crates.io
 description = "Board-agnostic no_std firmware glue between obc-app and a concrete board — written once, reused by every OBC board crate. For now: the SDRAM/framebuffer DrawTarget. Later: FatFs ByteSource/Sink adapters, the input debouncer, the USB-CDC debug protocol."
 
 [features]
-# USB-CDC fake-sensor debug protocol (issue #38): the line parser + the
-# LocationSource/AltimeterSource/CompassSource impls + the telemetry format, for streaming a
-# recorded ride from a host. Board-agnostic and dependency-light — only embassy-sync's `Signal`
-# (the fresh-fix hand-off from the USB task to the app poll); the board crate owns the actual
-# embassy-usb CDC driver. Off by default so the host workspace build never pulls embassy-sync;
-# the F429 firmware turns it on in its own default features.
+# USB-CDC fake-sensor debug protocol (issue #38). The pure codec in `debug_usb` (line parser,
+# `Telemetry`/fix encoders, `LineReader`) is always compiled — board-agnostic and dependency-light
+# (only `obc_app` types + heapless) — so the host feeder reuses one canonical wire format with
+# default features. This feature adds only the embassy-sync `Signal`/`Channel` hand-off plus the
+# LocationSource/AltimeterSource/CompassSource impls that bridge parsed samples to the app poll
+# (the fresh-fix latch); the board crate owns the actual embassy-usb CDC driver. Off by default so
+# the host workspace build never pulls embassy-sync; the F429 firmware turns it on in its own
+# default features.
 debug-usb = ["dep:embassy-sync"]
 
 [dependencies]

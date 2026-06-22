@@ -8,6 +8,10 @@ description = "Desktop USB feeder for the OBC prototype (issue #38): replays a r
 [dependencies]
 # The `Fix` the player emits + the trait methods used to poll it (`LocationSource`/`AltimeterSource`).
 obc-app = { path = "../obc-app" }
+# The canonical USB-CDC wire codec (`Telemetry`/`parse_telemetry`/`format_fix`), authored once on the
+# device side and reused here so the two halves can't drift (issue #71). DEFAULT features only — the
+# pure codec is always compiled, so this pulls NO embassy-sync (that lives behind `debug-usb`).
+obc-platform = { path = "../obc-platform" }
 # The shared GPX replay core — the same GpxPlayer/BaroSensor the simulator drives, so a recorded
 # ride plays back over USB exactly as it does in the sim.
 obc-replay = { path = "../obc-replay" }
