@@ -1268,6 +1268,13 @@ async fn main(spawner: Spawner) {
         // per-frame redraw streams geometry without re-walking the index off the SD card.
         let mut route_index: Option<RouteIndex> = None;
         let mut index_route: Option<usize> = None;
+        // Latched when a frame's `dirty.map` edge can't be serviced because `Reader::new` failed on
+        // a transient SD glitch (issue #66). The map dirty signal is an *accumulated edge* (unlike
+        // the overlay's, which `take_dirty` recomputes from live state each frame), so once the
+        // drain consumes it and the redraw is skipped the demand is gone — the map would stay stale
+        // until some unrelated mutation re-dirties it. We OR this back into next frame's `dirty.map`
+        // so the redraw retries until the reader builds.
+        let mut pending_map_redraw = false;
         loop {
             let now = start.saturating_elapsed().as_millis() as u32;
 
@@ -1392,7 +1399,11 @@ async fn main(spawner: Spawner) {
 
             // Drain the per-frame dirty signal (issue #47) now that input + tick have run: it
             // tells us which planes actually changed, so each render below is on-demand.
-            let dirty = app.take_dirty();
+            let mut dirty = app.take_dirty();
+            // Re-arm a map redraw a previous frame couldn't service (issue #66): fold the latch in
+            // and clear it, so a redraw that the skip path below re-latches is retried next frame.
+            dirty.map |= pending_map_redraw;
+            pending_map_redraw = false;
 
             if dirty.map {
                 let t0 = Instant::now();
@@ -1482,8 +1493,12 @@ async fn main(spawner: Spawner) {
                         stats.map_bytes_read
                     );
                 } else {
+                    // `Reader::new` failed (flaky SD). The `dirty.map` edge we drained above would
+                    // otherwise be lost, freezing the map; latch it so next frame retries the redraw
+                    // until the reader builds (issue #66).
+                    pending_map_redraw = true;
                     defmt::warn!(
-                        "map: reader build failed this frame (flaky SD?) — kept buffers, skipped redraw"
+                        "map: reader build failed this frame (flaky SD?) — kept buffers, will retry redraw next frame"
                     );
                 }
             }
