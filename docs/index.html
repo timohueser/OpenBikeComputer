@@ -8,23 +8,29 @@
   <meta name="description"
     content="OpenBikeComputer (OBC) is an open-source bikepacking computer: offline vector maps in a custom binary format, GPX route navigation with live map-matching, and ride recording — firmware and simulator sharing one render path." />
 
-  <!-- Trunk builds this crate to wasm. wasm-opt only runs on --release builds, so dev
-       (trunk serve) stays fast while release ships a small, size-optimised binary. -->
-  <link data-trunk rel="rust" data-wasm-opt="z" />
+  <!-- Trunk builds the obc-sim crate (in firmware/) to wasm — the live device demo.
+       wasm-opt only runs on --release builds, so dev (trunk serve) stays fast while
+       release ships a small, size-optimised binary. -->
+  <link data-trunk rel="rust" href="../firmware/obc-sim/Cargo.toml" data-wasm-opt="z" />
+  <!-- Ship the placeholder docs page (dist/docs/index.html) until real docs exist. -->
+  <link data-trunk rel="copy-dir" href="docs" />
   <base data-trunk-public-url />
 
   <style>
     :root {
-      --parchment: #eadfc0;
-      --parchment-2: #e3d6b6;
-      --parchment-3: #d9caa4;
-      --line: rgba(91, 63, 40, 0.13);
-      --ink: #2c2114;
-      --ink-soft: #5e4c36;
-      --wood: #5b3f28;
-      --amber: #c98a22;
-      --forest: #4f6b43;
-      --coral: #c4583f;
+      /* "Field guide" colourway — saturated greens lead, trail-marker orange pops,
+         a moss-tinted cream base. Variable names kept from the old parchment theme so
+         the rest of the sheet re-themes for free. */
+      --parchment: #ece8cf;
+      --parchment-2: #e4dec0;
+      --parchment-3: #d6cda8;
+      --line: rgba(47, 82, 51, 0.14);
+      --ink: #24331c;
+      --ink-soft: #4d5b3c;
+      --wood: #5f7d3d;
+      --amber: #e3ad33;
+      --forest: #3c6b39;
+      --coral: #cf6a2a;
       --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
       --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
       --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
@@ -42,20 +48,15 @@
       font-family: var(--sans);
       line-height: 1.55;
       -webkit-font-smoothing: antialiased;
-      /* faint topographic-paper speckle */
-      background-image:
-        radial-gradient(circle at 18% 28%, rgba(91, 63, 40, 0.045) 0 1.5px, transparent 2.5px),
-        radial-gradient(circle at 68% 64%, rgba(91, 63, 40, 0.04) 0 1.5px, transparent 2.5px);
-      background-size: 44px 44px, 60px 60px;
     }
 
-    /* faint contour lines drifting behind the whole page */
+    /* cool contour lines drifting behind the whole page (the only backdrop texture) */
     .topo {
       position: fixed;
       inset: 0;
       z-index: 0;
       pointer-events: none;
-      opacity: 0.5;
+      opacity: 0.75;
     }
 
     .wrap { width: min(1080px, 92vw); margin: 0 auto; }
@@ -76,7 +77,7 @@
       letter-spacing: 0.06em;
       font-size: 15px;
       color: var(--parchment);
-      background: var(--ink);
+      background: var(--forest);
       padding: 4px 8px;
       border-radius: 7px;
     }
@@ -130,6 +131,7 @@
     .btn.primary svg { width: 18px; height: 18px; }
     .btn.ghost { color: var(--ink); border-color: var(--wood); background: transparent; }
     .btn.ghost:hover { background: var(--parchment-3); }
+    .btn.ghost svg { width: 18px; height: 18px; }
 
     .microcopy { margin: 18px 0 0; font-size: 13.5px; color: var(--ink-soft); }
     .microcopy b { color: var(--coral); font-weight: 700; }
@@ -241,6 +243,25 @@
     footer .links a:hover { color: var(--ink); }
     footer .made { font-size: 13px; color: var(--ink-soft); }
 
+    /* ---------- work-in-progress note ---------- */
+    .wip-band { padding: 10px 0 0; }
+    .wip {
+      display: flex; align-items: flex-start; gap: 12px;
+      background: var(--parchment-2);
+      border: 1px solid var(--parchment-3);
+      border-left: 4px solid var(--amber);
+      border-radius: 12px;
+      padding: 14px 18px;
+    }
+    .wip p { margin: 0; font-size: 14px; color: var(--ink-soft); }
+    .wip p b { color: var(--ink); font-weight: 700; }
+    .wip-dot {
+      flex: none; margin-top: 6px;
+      width: 9px; height: 9px; border-radius: 50%;
+      background: var(--amber);
+      box-shadow: 0 0 0 4px rgba(227, 173, 51, 0.22);
+    }
+
     /* ---------- responsive ---------- */
     @media (max-width: 860px) {
       .hero .wrap { grid-template-columns: 1fr; gap: 26px; padding-top: 26px; }
@@ -264,10 +285,13 @@
 <body>
   <!-- faint contour-line backdrop -->
   <svg class="topo" viewBox="0 0 1440 900" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
-    <g fill="none" stroke="#5b3f28" stroke-width="1.1" stroke-opacity="0.10">
-      <path d="M-50 180 C 240 120, 420 250, 700 200 S 1180 110, 1500 220" />
-      <path d="M-50 250 C 240 195, 430 320, 710 270 S 1180 185, 1500 295" />
-      <path d="M-50 330 C 260 280, 440 400, 720 345 S 1190 265, 1500 380" />
+    <g fill="none" stroke="#2c5e54" stroke-width="1.1" stroke-opacity="0.17">
+      <path d="M-50 150 C 240 92, 420 222, 700 172 S 1180 82, 1500 192" />
+      <path d="M-50 220 C 240 165, 430 290, 710 240 S 1180 155, 1500 265" />
+      <path d="M-50 300 C 260 250, 440 370, 720 315 S 1190 235, 1500 350" />
+      <path d="M-50 388 C 250 342, 450 452, 740 402 S 1190 322, 1500 438" />
+      <path d="M-50 470 C 250 426, 470 532, 760 486 S 1200 408, 1500 520" />
+      <path d="M-50 620 C 250 570, 470 690, 760 630 S 1200 545, 1500 665" />
       <path d="M-50 690 C 250 640, 470 760, 760 700 S 1200 615, 1500 735" />
       <path d="M-50 760 C 250 712, 470 832, 760 772 S 1200 690, 1500 808" />
     </g>
@@ -281,7 +305,7 @@
       </div>
       <nav class="nav-links">
         <a href="#features">Features</a>
-        <a href="#how">How it works</a>
+        <a href="docs/">Docs</a>
         <a class="gh" href="https://github.com/timohueser/OpenBikeComputer" target="_blank" rel="noopener">
           <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8a8 8 0 0 0 5.47 7.59c.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8 8 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
           GitHub
@@ -298,16 +322,19 @@
           <p class="eyebrow">Open-source bikepacking computer</p>
           <h1>Your whole map.<br><em>Offline.</em> On your bars.</h1>
           <p class="lede">
-            A from-scratch bike computer: a custom compact map format, a Rust renderer,
-            and firmware that shares <strong>one render path</strong> with the simulator
-            you're watching here. No tiles, no subscription, no connection required.
+            An open-source bikepacking computer with offline maps, route navigation, and
+            ride recording — built to go <strong>days off-grid</strong>. No account, no
+            subscription, no cloud. Your maps and your rides stay with you.
           </p>
           <div class="cta">
             <a class="btn primary" href="https://github.com/timohueser/OpenBikeComputer" target="_blank" rel="noopener">
               <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8a8 8 0 0 0 5.47 7.59c.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8 8 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
               View on GitHub
             </a>
-            <a class="btn ghost" href="#how">How it works</a>
+            <a class="btn ghost" href="docs/">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4.5A1.5 1.5 0 0 1 5.5 3H12v18H5.5A1.5 1.5 0 0 1 4 19.5Z"/><path d="M20 4.5A1.5 1.5 0 0 0 18.5 3H12v18h6.5a1.5 1.5 0 0 0 1.5-1.5Z"/></svg>
+              Read the docs
+            </a>
           </div>
           <p class="microcopy"><b>Live, not a screenshot</b> — the device on the right is the actual firmware, compiled to your browser and replaying a ride.</p>
         </div>
@@ -334,55 +361,39 @@
       <div class="wrap">
         <div class="section-head">
           <h2>Built for the long way round</h2>
-          <p>Everything you need to follow a route through the middle of nowhere — and nothing you don't.</p>
+          <p>The things that matter when you're a long way from the nearest plug or signal.</p>
         </div>
         <div class="features">
           <div class="card">
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2Z"/><path d="M9 4v14M15 6v14"/></svg></div>
-            <h3>Offline vector maps</h3>
-            <p>A whole region in a compact binary format (OBCM), read straight off flash and drawn on-device through an LOD pyramid. No tiles to download, no data plan.</p>
+            <div class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4 12H2M22 12h-2M5 5l1.5 1.5M17.5 17.5 19 19M19 5l-1.5 1.5M6.5 17.5 5 19"/></svg></div>
+            <h3>Sunlight-readable display</h3>
+            <p>A memory-LCD (MIP) screen that's crisp and always on — and only redraws what changes, so it stays readable in direct sun without burning power.</p>
           </div>
           <div class="card">
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M6 19a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"/><path d="M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"/><path d="M9 17c6 0 0-10 6-10"/></svg></div>
-            <h3>Navigate any route</h3>
-            <p>Drop in a GPX. The device map-matches your position live, shows distance-to-go and a zoomable elevation profile, and trails a breadcrumb behind you.</p>
+            <div class="ico"><svg viewBox="0 0 24 24"><rect x="2" y="8" width="16" height="8" rx="2"/><path d="M22 11v2M6 11v2M9 11v2M12 11v2"/></svg></div>
+            <h3>Lasts for days</h3>
+            <p>The low-power display and microcontroller sip from the battery — so you measure runtime in days on the trail, not hours between charges.</p>
           </div>
           <div class="card">
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z"/><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"/></svg></div>
-            <h3>Records the ride</h3>
-            <p>Tracks ridden distance, moving time, and barometric climb as you go — then exports the whole ride back out as a standard GPX.</p>
+            <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 3 3 7.5v9L12 21l9-4.5v-9L12 3Z"/><path d="M3 7.5 12 12l9-4.5M12 12v9"/></svg></div>
+            <h3>3D-printed case</h3>
+            <p>Open hardware: the enclosure is 3D-printable, so you can make it, mount it your way, mod it, and repair it yourself — no proprietary parts.</p>
           </div>
           <div class="card">
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M6 3v12"/><path d="M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"/><path d="M18 9c0 6-12 3-12 6"/></svg></div>
-            <h3 class="tag">One render path</h3>
-            <p>The firmware and this web demo run the <em>exact same</em> Rust drawing code. What you see here is always what the device shows — never a stale screenshot.</p>
+            <div class="ico"><svg viewBox="0 0 24 24"><path d="M9 7 4 12l5 5"/><path d="M15 7l5 5-5 5"/></svg></div>
+            <h3>Open-source software</h3>
+            <p>Every part of it is open — firmware and the tools that feed it. Read it, build it, change what you don't like, and make it your own.</p>
           </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- HOW IT WORKS / HIGHLIGHT -->
-    <section class="band" id="how">
-      <div class="wrap">
-        <div class="highlight">
-          <div>
-            <h2>Maps a microcontroller can read directly</h2>
-            <p>
-              OpenStreetMap data is packed into <b style="color:var(--amber)">OBCM</b> — a self-contained
-              binary map a tiny CPU reads with no JSON, no reparsing, no heap churn. The same
-              <b style="color:var(--amber)">Rust</b> core renders it on the desktop and on the device,
-              so the demo above can't drift out of date.
-            </p>
-            <p style="color:#b6a884; font-size:14px; margin:0;">A web map builder lets you pick a region, style it against the device's 64-colour gamut, and build your own map.</p>
+          <div class="card">
+            <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 3 3 8l9 5 9-5-9-5Z"/><path d="M3 12l9 5 9-5M3 16l9 5 9-5"/></svg></div>
+            <h3>Style your own maps</h3>
+            <p>Pick a region and style the map to your taste, then build it yourself. Your colours, your detail — the map looks the way you want it to.</p>
           </div>
-          <div class="pipe">.osm.pbf  ──▶  <b>obc-pack</b>  ──▶  .obcm
- (OSM data)                  (binary map)
-                                 │
-   .gpx    ──▶  obc-route  ──▶   ├─▶  <b>shared Rust core</b>
- (a route)                       │     ├─▶  simulator  ✓
-                                 │     └─▶  nRF54L fw
-                                 ▼
-                            this page</div>
+          <div class="card">
+            <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.5 3 7.5 7 9 4-1.5 7-4.5 7-9V6l-7-3Z"/><path d="M9.2 12l1.9 1.9 3.7-4"/></svg></div>
+            <h3 class="tag">Completely cloud-free</h3>
+            <p>No account, no subscription, no cloud. Your maps and your rides live on the device and on your computer — and only there. Your data stays yours.</p>
+          </div>
         </div>
 
         <div class="specs">
@@ -390,20 +401,28 @@
           <div class="spec"><span class="k">Display</span><span class="v">Sharp memory LCD</span></div>
           <div class="spec"><span class="k">Resolution</span><span class="v">240×320 · 64 colours</span></div>
           <div class="spec"><span class="k">Input</span><span class="v">Encoder + Back, no touch</span></div>
-          <div class="spec"><span class="k">Licence</span><span class="v">Open source</span></div>
+          <div class="spec"><span class="k">Licence</span><span class="v">GPL-3.0</span></div>
         </div>
       </div>
     </section>
   </main>
 
+  <section class="band wip-band">
+    <div class="wrap">
+      <div class="wip">
+        <span class="wip-dot" aria-hidden="true"></span>
+        <p><b>Work in progress.</b> This site and the project behind it are still being built — wording and features will change, and proper documentation is on the way.</p>
+      </div>
+    </div>
+  </section>
+
   <footer>
     <div class="wrap">
       <div class="links">
         <a href="https://github.com/timohueser/OpenBikeComputer" target="_blank" rel="noopener">GitHub</a>
-        <a href="https://github.com/timohueser/OpenBikeComputer/blob/main/OBCM_Spec.md" target="_blank" rel="noopener">OBCM map format</a>
-        <a href="https://github.com/timohueser/OpenBikeComputer/blob/main/OBCR_Spec.md" target="_blank" rel="noopener">OBCR route format</a>
+        <a href="docs/">Docs</a>
       </div>
-      <div class="made">Runs on the desktop today · headed for the trail.</div>
+      <div class="made">Headed for the trail.</div>
     </div>
   </footer>
 

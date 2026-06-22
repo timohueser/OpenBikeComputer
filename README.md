@@ -249,5 +249,18 @@ second host beside `obc-sim`, once the hardware is in hand.
 > The packer was originally a Python pipeline; it has been ported to Rust
 > (`firmware/obc-pack`) and the Python pipeline removed. The port's design notes
 > live in `packer/docs/`.
-</content>
-</invoke>
+
+---
+
+## License
+
+The **software** in this repository — the firmware, the `obc-*` crates, the Rust
+packer, and the web map builder — is licensed under the **GNU GPL v3.0** (see
+[`LICENSE`](LICENSE)). Use it for anything, commercial or not, as long as
+derivatives stay open source under the same terms.
+
+The **hardware** design files (the 3D-printed case, and any future board designs)
+are licensed under **CERN-OHL-S v2** — strongly reciprocal; see
+[`LICENSE.hardware`](LICENSE.hardware). It's the open-hardware counterpart to the
+GPL: build it, modify it, even sell it, but share the editable source under the
+same licence.
