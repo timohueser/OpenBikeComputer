@@ -23,56 +23,18 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
-use obc_app::{AltimeterSource, Fix, LocationSource};
+use obc_app::{AltimeterSource, LocationSource};
+// The canonical USB-CDC codec, authored once on the device side (issue #71): the device→host
+// `Telemetry` + its `parse_telemetry`, and the host→device `format_fix` `F`-line encoder. Reusing
+// these is the whole point — the two halves of the protocol can no longer drift (the old local
+// copies had already diverged: `lod` was `u32` here vs. `u8` on the device). DEFAULT features only,
+// so the pure codec is pulled without embassy-sync.
+use obc_platform::debug_usb::{format_fix, parse_telemetry, Telemetry};
 use obc_replay::{BaroSensor, GpxPlayer, Track};
 
 /// How long a "hold" button keeps the edge down before releasing — past the device's ~500 ms
 /// long-press threshold, so the recogniser fires Hold / BackHold.
 const HOLD_MS: u64 = 700;
-
-/// Device→host render-stats telemetry — the integer fields of `obc-platform::debug_usb::Telemetry`
-/// (the same numbers as the RTT `map frame` log / the sim's Render Stats panel).
-#[derive(Clone, Copy, Default)]
-struct Telemetry {
-    frame_us: u32,
-    lod: u32,
-    feat_drawn: u32,
-    feat_tried: u32,
-    feat_dropped: u32,
-    chunks: u32,
-    cache_hits: u32,
-    cache_misses: u32,
-    sd_reads: u32,
-    bytes_read: u32,
-}
-
-/// Parse a `T …` telemetry line; `None` for anything else (so other device chatter is ignored).
-fn parse_telemetry(line: &str) -> Option<Telemetry> {
-    let mut it = line.split_ascii_whitespace();
-    if it.next()? != "T" {
-        return None;
-    }
-    Some(Telemetry {
-        frame_us: it.next()?.parse().ok()?,
-        lod: it.next()?.parse().ok()?,
-        feat_drawn: it.next()?.parse().ok()?,
-        feat_tried: it.next()?.parse().ok()?,
-        feat_dropped: it.next()?.parse().ok()?,
-        chunks: it.next()?.parse().ok()?,
-        cache_hits: it.next()?.parse().ok()?,
-        cache_misses: it.next()?.parse().ok()?,
-        sd_reads: it.next()?.parse().ok()?,
-        bytes_read: it.next()?.parse().ok()?,
-    })
-}
-
-/// Format a GPS fix as an `F` line. Missing course/speed (a standstill) become the `-` sentinel,
-/// so the field stays positional — mirroring `obc-platform::debug_usb::parse_line`.
-fn fix_line(f: &Fix) -> String {
-    let course = f.course.map_or_else(|| "-".to_string(), |c| format!("{c:.1}"));
-    let speed = f.speed_mps.map_or_else(|| "-".to_string(), |s| format!("{s:.2}"));
-    format!("F {} {} {} {}\n", f.lat, f.lon, course, speed)
-}
 
 /// What the serial reader thread sends up to the UI.
 enum HostEvent {
@@ -325,7 +287,9 @@ impl FeederApp {
             if let Some(s) = fix.speed_mps {
                 fix.speed_mps = Some(s * player.speed());
             }
-            self.pending.push(fix_line(&fix));
+            // `format_fix` is the device's `F`-line encoder (a heapless String); copy it into the
+            // owned `pending` queue, so device and host share one encoder.
+            self.pending.push(format_fix(&fix).to_string());
         }
         self.baro.feed(player.elevation_at(player.time()), player.time());
         if let Some(alt) = self.baro.poll() {
