@@ -2,6 +2,7 @@
 name = "obc-reader"
 version = "0.1.0"
 edition = "2021"
+publish = false  # internal firmware crate — not published to crates.io
 description = "OBCM map format reader (no_std + alloc) — pure-parse logic for the desktop simulator and nRF54L firmware"
 
 [dependencies]

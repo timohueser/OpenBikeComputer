@@ -2,6 +2,7 @@
 name = "obc-fw-stm32f429"
 version = "0.1.0"
 edition = "2021"
+publish = false  # board firmware — not published to crates.io
 description = "STM32F429I-DISC1 board firmware for the OpenBikeComputer hardware prototype: FMC SDRAM + onboard ILI9341 via LTDC. The LTDC display path is a stand-in; the real target is the nRF54L with a MIP panel, so the board-agnostic glue stays in obc-platform / obc-app."
 
 # Standalone crate with its own (empty) workspace table so the firmware/ host

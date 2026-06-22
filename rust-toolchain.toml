@@ -1,0 +1,18 @@
+# Single source of truth for the Rust toolchain, shared by CI and local dev so the
+# rustfmt/clippy versions always agree. rustup discovers this by walking up from the cwd,
+# so it covers *both* cargo roots — the firmware/ workspace and the workspace-excluded
+# firmware/obc-fw-stm32f429 board crate (which has its own .cargo/config.toml that only
+# selects a default build target; the two don't conflict).
+#
+# Tracks latest stable (no pinned version), so a new Rust can tighten a clippy lint and
+# turn a previously-green PR red — fix the lint when that happens. The targets below are
+# the cross-compiles CI needs; rustup installs them with the toolchain.
+[toolchain]
+channel = "stable"
+profile = "minimal"
+components = ["rustfmt", "clippy"]
+targets = [
+    "thumbv7em-none-eabihf",     # STM32F429 board crate
+    "thumbv8m.main-none-eabihf", # nRF54L device target (the shared no_std std-creep guard)
+    "wasm32-unknown-unknown",    # obc-sim web build (Trunk)
+]
