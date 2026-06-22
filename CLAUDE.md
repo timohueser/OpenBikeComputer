@@ -20,8 +20,9 @@ target. If it does, **tell me what's now stale** and land the fix as a **separat
 changed, say so in one line. Don't let the docs silently drift.
 
 When editing docs: read the actual source (the `.md` and spec files can lag the
-code), rebuild with `python3 docs/build_docs.py`, and verify every cross-page
-`../page/#anchor` resolves to a real heading id.
+code), then rebuild and check the cross-page links in one step with
+`python3 docs/build_docs.py --check-links` — it fails if any `../page/#anchor`
+doesn't resolve to a real heading id (CI runs the same check).
 
 ## Layout
 
