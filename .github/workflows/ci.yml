@@ -50,6 +50,7 @@ jobs:
               - 'rust-toolchain.toml'
               - 'deny.toml'
               - '.github/workflows/ci.yml'
+              - '.github/actions/**'
             docs:
               - 'docs/**'
               - '.github/workflows/ci.yml'
@@ -95,12 +96,9 @@ jobs:
         with:
           workspaces: firmware
           key: host
-      # obc-sim / obc-usb-host build eframe (glow backend) natively here; these are the
-      # standard egui-on-Linux build deps (rfd uses the XDG portal, so no GTK is needed).
-      - name: Install eframe Linux build deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
+      # Native host build: system libGEOS (built from source — apt's is too old) + serialport/
+      # eframe system libs. See .github/actions/setup-host-deps.
+      - uses: ./.github/actions/setup-host-deps
       - name: cargo clippy (workspace, all targets + features)
         run: cargo clippy --manifest-path firmware/Cargo.toml --workspace --all-targets --all-features --locked -- -D warnings
 
@@ -118,12 +116,9 @@ jobs:
         with:
           workspaces: firmware
           key: host
-      # obc-sim / obc-usb-host build eframe (glow backend) natively here; these are the
-      # standard egui-on-Linux build deps (rfd uses the XDG portal, so no GTK is needed).
-      - name: Install eframe Linux build deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
+      # Native host build: system libGEOS (built from source — apt's is too old) + serialport/
+      # eframe system libs. See .github/actions/setup-host-deps.
+      - uses: ./.github/actions/setup-host-deps
       - name: cargo test (workspace, all features)
         run: cargo test --manifest-path firmware/Cargo.toml --workspace --all-features --locked
 
