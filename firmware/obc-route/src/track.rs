@@ -7,9 +7,8 @@
 //! ([`track_to_gpx`]) in one streaming pass and the temp log is dropped.
 //!
 //! This is deliberately *not* the [`OBCR`](crate) route format: a route is decimated for
-//! compact drawing, whereas a recorded track wants full GPS fidelity. So the log keeps
-//! every accepted point verbatim and only the on-screen breadcrumb (host-side, in RAM) is
-//! decimated.
+//! compact drawing, whereas a recorded track wants full GPS fidelity. The log keeps every
+//! accepted point verbatim; only the on-screen breadcrumb (host-side, in RAM) is decimated.
 //!
 //! The format + the GPX writer live here in the format crate so the firmware and the
 //! simulator share one implementation, exactly like the GPX→OBCR [`convert`](crate::convert)

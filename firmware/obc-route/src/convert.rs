@@ -51,7 +51,7 @@ pub fn gpx_to_obcr(src: &dyn ByteSource, name: &str, sink: &mut dyn ByteSink) ->
 
     // Running stats. `cum_dist` accumulates in `f64`: each per-segment distance is a small
     // `f32` (see `geo`), but a long route's running total needs the dynamic range — `f32`'s
-    // ~7 significant digits resolve a 300 km total to only ~3 cm and could drift over
+    // ~7 significant digits resolve a 300 km total to only ~3 cm and would drift over
     // thousands of segments.
     let mut cum_dist = 0f64;
     // Dead-banded ascent/descent (shared with the elevation profile + app climb).

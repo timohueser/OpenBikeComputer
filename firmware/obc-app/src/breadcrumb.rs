@@ -4,18 +4,18 @@
 //! held in RAM so the map can draw the travelled path without ever re-reading storage. Its
 //! two constraints are opposite, so it has two tiers:
 //!
-//! - [`recent`](Breadcrumb::recent) — a full-resolution sliding tail (the last ~2 km). While
-//!   riding you follow yourself zoomed in, so the trail you actually *see* is here, and it's
-//!   **never decimated** — just a fixed-length ring.
+//! - [`recent`](Breadcrumb::recent) — a full-resolution sliding tail (the last ~2 km). The
+//!   riding view is zoomed in, so the visible trail is here, and it's **never decimated** —
+//!   just a fixed-length ring.
 //! - [`spine`](Breadcrumb::spine) — the whole rest of the ride, held to a fixed point budget by
 //!   **Visvalingam–Whyatt** simplification: when the budget is full, drop the single *least
 //!   significant* vertex — the one whose [effective area](obc_route::tri_area_m2) (the triangle
 //!   it makes with its two neighbours) is smallest, i.e. whose removal bends the line least.
 //!   A straight run collapses toward its endpoints; a sharp bend is kept.
 //!
-//! Why not a distance/perpendicular *tolerance* (issue #22)? A global tolerance on a *growing*
-//! track behaves badly under a fixed budget: once any section forces the tolerance up
-//! it sticks, and every later point is then judged against it, so a long gently-curving stretch
+//! Not a distance/perpendicular *tolerance* (issue #22): a global tolerance on a *growing*
+//! track behaves badly under a fixed budget — once any section forces the tolerance up it
+//! sticks, and every later point is then judged against it, so a long gently-curving stretch
 //! gets drawn as one straight chord while stale early detail survives. Visvalingam has **no**
 //! global tolerance — it always keeps exactly the budget and drops the globally-least-useful
 //! point, so the budget **redistributes** to wherever the shape is. Removing a vertex widens its

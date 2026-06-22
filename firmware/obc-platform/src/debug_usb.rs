@@ -254,8 +254,8 @@ pub struct Telemetry {
 }
 
 /// Format a telemetry line (`T … \n`) into a small heap-free string the board writes to CDC.
-/// Cap sized to the worst case: `T ` + ten `u32::MAX` (10 digits) fields + 9 spaces + `\n` = 105
-/// bytes, so the `write!` below truly cannot truncate.
+/// Cap sized to the worst case: `T` + ten `u32::MAX` (10-digit) fields each space-separated (10
+/// spaces) + `\n` = 1 + 100 + 10 + 1 = 112 bytes, so the `write!` below truly cannot truncate.
 pub fn format_telemetry(t: &Telemetry) -> heapless::String<112> {
     let mut s = heapless::String::new();
     // Infallible for the field count + cap; ignore the Result rather than panic on the MCU.

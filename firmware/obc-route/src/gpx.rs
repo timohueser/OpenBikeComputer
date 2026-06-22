@@ -3,12 +3,12 @@
 //! Pulls `<trkpt lat=".." lon="..">…<ele>…</ele></trkpt>` points out of a
 //! [`ByteSource`] one at a time, reading the file in fixed blocks with compaction so a
 //! point that straddles a block boundary is handled transparently. RAM is O(1) (one
-//! [`SCAN_BUF`]-sized buffer) regardless of route length — the property that makes
-//! on-device conversion of a hundreds-of-km GPX feasible.
+//! [`SCAN_BUF`]-sized buffer) regardless of route length, so converting a hundreds-of-km
+//! GPX on-device is feasible.
 //!
-//! It is a deliberately small hand-rolled scan, not a full XML stack: GPX track points
-//! are a regular shape and that is all the converter needs. Elevation is optional;
-//! timestamps are ignored (a route has no time).
+//! A deliberately small hand-rolled scan, not a full XML stack: GPX track points are a
+//! regular shape and that is all the converter needs. Elevation is optional; timestamps
+//! are ignored (a route has no time).
 
 use crate::byte_io::{ByteSource, Error};
 
@@ -25,8 +25,8 @@ pub struct RawPoint {
     pub ele: Option<f32>,
 }
 
-/// A forward-only scanner over a GPX byte source. Call [`next`](GpxScanner::next) until
-/// it returns `Ok(None)`.
+/// A forward-only scanner over a GPX byte source. Call [`next_point`](GpxScanner::next_point)
+/// until it returns `Ok(None)`.
 pub struct GpxScanner<'a> {
     src: &'a dyn ByteSource,
     buf: [u8; SCAN_BUF],
@@ -73,7 +73,7 @@ impl<'a> GpxScanner<'a> {
         loop {
             let window = &self.buf[self.pos..self.filled];
             let Some(rel) = find(window, b"<trkpt") else {
-                // No start tag here. Keep a short tail (a split "<trkpt") and refill.
+                // No start tag here. Keep a short tail (a split "<trkpt") across the refill.
                 if self.at_source_end() {
                     return Ok(None);
                 }
