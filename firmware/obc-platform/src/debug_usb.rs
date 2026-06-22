@@ -19,11 +19,17 @@
 //!   (signed), or an encoder/Back button down/up edge. These feed the gesture recogniser exactly
 //!   like the physical buttons, so a host can drive the UI (taps and — via a delayed up — holds)
 //!   for hardware-in-the-loop work without anyone pressing a button.
+//! - `Z <mpp>` — set the map camera to exactly `mpp` meters-per-pixel (float). A
+//!   debug/benchmark hook: it drives the zoom directly instead of stepping the encoder (which
+//!   only moves in fixed 1.2× detents) and always forces one map redraw, so a host sweep can
+//!   pin an exact scale and read back one fresh render-stats line per setting.
 //!
 //! Device → host (see [`Telemetry`]): `T <frame_us> <lod> <feat_drawn> <feat_tried> <feat_dropped>
-//! <chunks> <cache_hits> <cache_misses> <sd_reads> <bytes_read>` — the last map frame's render
-//! stats (the same numbers as the RTT `map frame` log / the sim's Render Stats panel), at a low
-//! fixed rate so the link never floods.
+//! <chunks> <cache_hits> <cache_misses> <sd_reads> <bytes_read> <collect_us> <read_us> <sort_us>
+//! <draw_us> <overlay_us> <mpp_milli>` — the last map frame's render stats (the same numbers as
+//! the RTT `map frame` log / the sim's Render Stats panel), at a low fixed rate so the link never
+//! floods. The trailing six are the render-benchmark fields: the per-stage wall-time breakdown
+//! and the frame's camera scale (see [`Telemetry`]).
 //!
 //! ## Fresh-fix contract (#43) — behind `debug-usb`
 //! Each parsed *sensor* sample is handed across to the app through an embassy `Signal`, whose
@@ -60,6 +66,8 @@ pub enum Msg {
     Compass(f32),
     /// An injected raw input event (encoder turn or a button down/up edge).
     Input(InputEvent),
+    /// A debug camera-scale command: set the map viewport to exactly this meters-per-pixel.
+    Zoom(f32),
 }
 
 /// Parse one line into a [`Msg`], or `None` if the tag is unknown or the required fields are
@@ -77,6 +85,7 @@ pub fn parse_line(line: &str) -> Option<Msg> {
         }
         "A" => Some(Msg::Alt(it.next()?.parse::<f32>().ok()?)),
         "C" => Some(Msg::Compass(it.next()?.parse::<f32>().ok()?)),
+        "Z" => Some(Msg::Zoom(it.next()?.parse::<f32>().ok()?)),
         "K" => parse_key(&mut it),
         _ => None,
     }
@@ -215,17 +224,32 @@ pub struct Telemetry {
     /// Raw SD-source overhead this frame (reads + bytes).
     pub sd_reads: u32,
     pub bytes_read: u32,
+    /// Per-stage map-render wall time, microseconds — the render-benchmark breakdown (filled from
+    /// [`RenderStats`](obc_render::RenderStats) plus the board's read timer). `collect_us` is the
+    /// visible-feature collection (quadtree walk + decode + cull + span build, and **includes**
+    /// `read_us`); `read_us` is the SD/cache I/O within collect; `sort_us` the painter-order span
+    /// sort; `draw_us` the full-screen clear + rasterize; `overlay_us` the route + breadcrumb +
+    /// marker. `frame_us` is the whole map frame ≈ `collect_us + sort_us + draw_us + overlay_us`.
+    pub collect_us: u32,
+    pub read_us: u32,
+    pub sort_us: u32,
+    pub draw_us: u32,
+    pub overlay_us: u32,
+    /// Camera scale of the rendered frame, **milli-mpp** (meters-per-pixel × 1000) — lets the host
+    /// label each sample by zoom without echoing the `Z` command back. Integer to keep the line
+    /// float-free; e.g. `500` = 0.5 m/px.
+    pub mpp_milli: u32,
 }
 
 /// Format a telemetry line (`T … \n`) into a small heap-free string the board writes to CDC.
-/// Cap sized to the worst case: `T` + ten `u32::MAX` (10-digit) fields each space-separated (10
-/// spaces) + `\n` = 1 + 100 + 10 + 1 = 112 bytes, so the `write!` below truly cannot truncate.
-pub fn format_telemetry(t: &Telemetry) -> heapless::String<112> {
+/// Cap sized to the worst case: `T` + sixteen `u32::MAX` (10-digit) fields each space-separated
+/// (16 spaces) + `\n` = 1 + 160 + 16 + 1 = 178 bytes, so the `write!` below truly cannot truncate.
+pub fn format_telemetry(t: &Telemetry) -> heapless::String<192> {
     let mut s = heapless::String::new();
     // Infallible for the field count + cap; ignore the Result rather than panic on the MCU.
     let _ = writeln!(
         s,
-        "T {} {} {} {} {} {} {} {} {} {}",
+        "T {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
         t.frame_us,
         t.lod,
         t.feat_drawn,
@@ -235,7 +259,13 @@ pub fn format_telemetry(t: &Telemetry) -> heapless::String<112> {
         t.cache_hits,
         t.cache_misses,
         t.sd_reads,
-        t.bytes_read
+        t.bytes_read,
+        t.collect_us,
+        t.read_us,
+        t.sort_us,
+        t.draw_us,
+        t.overlay_us,
+        t.mpp_milli
     );
     s
 }
@@ -261,6 +291,12 @@ pub fn parse_telemetry(line: &str) -> Option<Telemetry> {
         cache_misses: it.next()?.parse().ok()?,
         sd_reads: it.next()?.parse().ok()?,
         bytes_read: it.next()?.parse().ok()?,
+        collect_us: it.next()?.parse().ok()?,
+        read_us: it.next()?.parse().ok()?,
+        sort_us: it.next()?.parse().ok()?,
+        draw_us: it.next()?.parse().ok()?,
+        overlay_us: it.next()?.parse().ok()?,
+        mpp_milli: it.next()?.parse().ok()?,
     })
 }
 
@@ -286,6 +322,10 @@ mod handoff {
     static COMPASS: Signal<CriticalSectionRawMutex, f32> = Signal::new();
     /// Latest device telemetry to send host-ward; the app sets it, the CDC task awaits it.
     static TELEMETRY: Signal<CriticalSectionRawMutex, Telemetry> = Signal::new();
+    /// Latest debug camera-scale command (meters-per-pixel), `try_take`-once like a sensor. The
+    /// board's map loop drains it each frame and applies it via `App::set_map_mpp` (render
+    /// benchmark — see the `Z` wire command).
+    static ZOOM: Signal<CriticalSectionRawMutex, f32> = Signal::new();
 
     /// Injected input events (encoder turns / button edges), queued in order for the input plane to
     /// drain alongside the physical buttons. A queue, not a latch: a tap is a down+up *pair* and a
@@ -300,6 +340,7 @@ mod handoff {
             Msg::Fix(f) => FIX.signal(f),
             Msg::Alt(a) => ALT.signal(a),
             Msg::Compass(c) => COMPASS.signal(c),
+            Msg::Zoom(z) => ZOOM.signal(z),
             // Drop on the (unreachable) overflow rather than block the RX task.
             Msg::Input(ev) => {
                 let _ = INPUT.try_send(ev);
@@ -348,6 +389,13 @@ mod handoff {
         }
     }
 
+    /// Take a pending debug `Z` camera-scale command (meters-per-pixel), if one arrived since the
+    /// last call — `try_take`-once, like a sensor poll. The board's map loop calls this each frame
+    /// and applies any value via `App::set_map_mpp` (render benchmark).
+    pub fn take_zoom() -> Option<f32> {
+        ZOOM.try_take()
+    }
+
     /// Publish the latest telemetry (called by the app loop, throttled). Overwrites any unsent
     /// value, so the host always gets the freshest snapshot.
     pub fn set_telemetry(t: Telemetry) {
@@ -365,7 +413,8 @@ mod handoff {
 // (`debug_usb::DebugLocation`, `debug_usb::feed_bytes`, …) are unchanged by the split.
 #[cfg(feature = "debug-usb")]
 pub use handoff::{
-    dispatch, feed_bytes, set_telemetry, wait_telemetry, DebugAltimeter, DebugCompass, DebugInput, DebugLocation,
+    dispatch, feed_bytes, set_telemetry, take_zoom, wait_telemetry, DebugAltimeter, DebugCompass, DebugInput,
+    DebugLocation,
 };
 
 #[cfg(test)]
@@ -401,6 +450,14 @@ mod tests {
     fn parses_alt_and_compass() {
         assert_eq!(parse_line("A 612.5"), Some(Msg::Alt(612.5)));
         assert_eq!(parse_line("C 270"), Some(Msg::Compass(270.0)));
+    }
+
+    #[test]
+    fn parses_zoom() {
+        assert_eq!(parse_line("Z 0.5"), Some(Msg::Zoom(0.5)));
+        assert_eq!(parse_line("Z 5"), Some(Msg::Zoom(5.0)));
+        assert_eq!(parse_line("Z"), None); // missing value
+        assert_eq!(parse_line("Z x"), None); // non-numeric
     }
 
     #[test]
@@ -465,8 +522,14 @@ mod tests {
             cache_misses: 3,
             sd_reads: 3,
             bytes_read: 12288,
+            collect_us: 20000,
+            read_us: 8000,
+            sort_us: 500,
+            draw_us: 19000,
+            overlay_us: 1500,
+            mpp_milli: 500,
         };
-        assert_eq!(format_telemetry(&t).as_str(), "T 41000 2 312 480 0 9 27 3 3 12288\n");
+        assert_eq!(format_telemetry(&t).as_str(), "T 41000 2 312 480 0 9 27 3 3 12288 20000 8000 500 19000 1500 500\n");
     }
 
     #[test]
@@ -484,6 +547,12 @@ mod tests {
             cache_misses: 12,
             sd_reads: 9,
             bytes_read: 65535,
+            collect_us: 30000,
+            read_us: 12000,
+            sort_us: 800,
+            draw_us: 18000,
+            overlay_us: 2434,
+            mpp_milli: 3000,
         };
         assert_eq!(parse_telemetry(format_telemetry(&t).as_str()), Some(t));
     }

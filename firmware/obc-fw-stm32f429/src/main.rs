@@ -276,11 +276,35 @@ async fn usb_tx_task(mut tx: CdcSender<'static, UsbDriver>) {
         loop {
             let t = obc_platform::debug_usb::wait_telemetry().await;
             let line = obc_platform::debug_usb::format_telemetry(&t);
-            if tx.write_packet(line.as_bytes()).await.is_err() {
+            // A CDC bulk packet is capped at the endpoint's max-packet-size (64 B here), and a
+            // single `write_packet` of more than that fails — which silently dropped the longer
+            // telemetry lines (the per-stage breakdown at coarse zoom, with big microsecond
+            // fields, runs past 64 B). Send the line in max-packet-size chunks, then a ZLP when
+            // its length is an exact multiple so the host sees the transfer end on a short packet.
+            if write_cdc_line(&mut tx, line.as_bytes()).await.is_err() {
                 break; // disconnected — wait for the next connection
             }
         }
     }
+}
+
+/// Write `bytes` over a CDC IN endpoint as one logical transfer, split into max-packet-size
+/// packets (`write_packet` rejects anything larger than the endpoint's MPS). A trailing
+/// zero-length packet terminates a transfer whose final data packet was exactly full, so the host
+/// never waits for more. Used for the telemetry lines, which can exceed one 64-byte packet.
+#[cfg(feature = "debug-usb")]
+async fn write_cdc_line(
+    tx: &mut CdcSender<'static, UsbDriver>,
+    bytes: &[u8],
+) -> Result<(), embassy_usb::driver::EndpointError> {
+    let mps = tx.max_packet_size() as usize;
+    for chunk in bytes.chunks(mps) {
+        tx.write_packet(chunk).await?;
+    }
+    if !bytes.is_empty() && bytes.len() % mps == 0 {
+        tx.write_packet(&[]).await?;
+    }
+    Ok(())
 }
 
 /// Chains two input sources for the gesture recogniser: drains `a` (the physical buttons) fully,
@@ -306,6 +330,57 @@ struct NullInput;
 impl InputSource for NullInput {
     fn poll(&mut self) -> Option<InputEvent> {
         None
+    }
+}
+
+/// A `no_std` [`Clock`](obc_render::Clock) over embassy's monotonic `Instant`, in microseconds —
+/// the time base for the map render's per-stage timing (collect / sort / draw). It's the **same**
+/// clock as the whole-frame `Instant` total the loop already measures, so the stages reconcile
+/// against it. Part of the strippable render-stage-timing instrumentation (the USB telemetry's
+/// `*_us` fields); drop it with them.
+#[cfg(not(feature = "glass-demo"))]
+struct InstantClock;
+#[cfg(not(feature = "glass-demo"))]
+impl obc_render::Clock for InstantClock {
+    fn now_us(&self) -> u64 {
+        Instant::now().as_micros()
+    }
+}
+
+/// A [`ByteSource`] decorator that accumulates the wall time its inner source spends in `read_at`,
+/// so the render benchmark can attribute a frame's **SD/cache I/O** (the "read" stage) apart from
+/// the CPU decode. Interior-mutable (a `Cell`) like the medium it wraps, so a `Reader` can hold a
+/// shared `&TimedSource`; the two `Instant` reads per `read_at` are negligible against SD latency.
+/// [`reset`](TimedSource::reset) zeroes the counter — the render loop calls it right after
+/// `Reader::new` so the count is only the frame's collect (chunk + index) reads, not the
+/// header/style/LOD setup reads. Part of the strippable render-stage-timing instrumentation.
+#[cfg(not(feature = "glass-demo"))]
+struct TimedSource<'a> {
+    inner: &'a dyn ByteSource,
+    read_us: core::cell::Cell<u64>,
+}
+#[cfg(not(feature = "glass-demo"))]
+impl<'a> TimedSource<'a> {
+    fn new(inner: &'a dyn ByteSource) -> Self {
+        Self { inner, read_us: core::cell::Cell::new(0) }
+    }
+    fn reset(&self) {
+        self.read_us.set(0);
+    }
+    fn read_us(&self) -> u64 {
+        self.read_us.get()
+    }
+}
+#[cfg(not(feature = "glass-demo"))]
+impl ByteSource for TimedSource<'_> {
+    fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), obc_reader::byte_io::Error> {
+        let t = Instant::now();
+        let r = self.inner.read_at(offset, buf);
+        self.read_us.set(self.read_us.get().wrapping_add(t.saturating_elapsed().as_micros()));
+        r
+    }
+    fn len(&self) -> u32 {
+        self.inner.len()
     }
 }
 
@@ -1183,6 +1258,14 @@ async fn main(spawner: Spawner) {
                 app.handle_input(InputClock(now), &mut input);
             }
 
+            // Apply any pending debug `Z` camera-scale command (render benchmark): pin the map to
+            // an exact meters-per-pixel and force one redraw, so a host zoom sweep gets exactly one
+            // fresh, stage-timed frame per setting instead of stepping the encoder's 1.2× detents.
+            #[cfg(feature = "debug-usb")]
+            if let Some(mpp) = obc_platform::debug_usb::take_zoom() {
+                app.set_map_mpp(mpp);
+            }
+
             let active = app.activity.active_route;
             // Re-centre the synthetic GPS onto a freshly-loaded route's start so Follow doesn't
             // yank the camera off it. Only the `debug-usb`-off fallback: the USB feed streams
@@ -1324,58 +1407,104 @@ async fn main(spawner: Spawner) {
 
                 // A transient SD read failure makes the reader build fail; skip the redraw and
                 // keep the last buffer (like the route path), rather than show a half-read map.
-                if let Some(reader) = map_src.and_then(|s| Reader::new(s, map_cache).ok()) {
-                    // Render *only* the map plane into Layer 1 — the overlay (hold ring) is drawn
-                    // onto Layer 2 below and composited by the LTDC, so the map buffer never carries
-                    // the bulge and is re-rendered only when the map itself changes.
-                    let stats = app.render_map(&mut fb, &reader, route.as_ref(), W as f32, H as f32, color_fn);
-                    let render_us = t0.saturating_elapsed().as_micros();
-                    // Snapshot this frame's render stats for the host telemetry line (the same
-                    // numbers as the RTT `map frame` log / the sim's Render Stats panel).
-                    #[cfg(feature = "debug-usb")]
-                    {
-                        last_telem = obc_platform::debug_usb::Telemetry {
-                            frame_us: render_us as u32,
-                            lod: stats.lod as u8,
-                            feat_drawn: stats.features_drawn as u32,
-                            feat_tried: stats.features_tried as u32,
-                            feat_dropped: stats.features_dropped as u32,
-                            chunks: stats.chunks_visited as u32,
-                            cache_hits: stats.map_chunk_hits,
-                            cache_misses: stats.map_chunk_misses,
-                            sd_reads: stats.map_sd_reads,
-                            bytes_read: stats.map_bytes_read,
-                        };
-                    }
+                // The source is wrapped in a `TimedSource` so the render benchmark can split the
+                // frame's SD/cache I/O (the "read" stage) out of the CPU work (issue: render stage
+                // timing); the wrapper is a thin delegating `ByteSource`, so the non-benchmark
+                // behaviour is unchanged.
+                let reader_built = if let Some(timed_src) = map_src.map(TimedSource::new) {
+                    if let Ok(reader) = Reader::new(&timed_src, map_cache) {
+                        // Discount `Reader::new`'s header/style/LOD setup reads, so the counter
+                        // measures only this frame's collect (chunk + index) reads.
+                        timed_src.reset();
+                        // Render *only* the map plane into Layer 1 — the overlay (hold ring) is
+                        // drawn onto Layer 2 below and composited by the LTDC, so the map buffer
+                        // never carries the bulge and is re-rendered only when the map changes.
+                        // `render_map_timed` fills the per-stage map timings via `InstantClock`.
+                        let frame_t0 = Instant::now();
+                        let stats = app.render_map_timed(
+                            &mut fb,
+                            &reader,
+                            route.as_ref(),
+                            W as f32,
+                            H as f32,
+                            color_fn,
+                            &InstantClock,
+                        );
+                        // `render_us` = whole map frame incl. `Reader::new` (unchanged headline).
+                        // `render_map_us` brackets just the draw, so `overlay_us` (route +
+                        // breadcrumb + marker) is what's left after the map's collect/sort/draw; the
+                        // setup cost is then `render_us − render_map_us`, derivable by the host.
+                        let render_us = t0.saturating_elapsed().as_micros();
+                        let render_map_us = frame_t0.saturating_elapsed().as_micros() as u32;
+                        let read_us = timed_src.read_us() as u32;
+                        let overlay_us = render_map_us.saturating_sub(stats.collect_us + stats.sort_us + stats.draw_us);
+                        // Snapshot this frame's render stats for the host telemetry line (the same
+                        // numbers as the RTT `map frame` log / the sim's Render Stats panel).
+                        #[cfg(feature = "debug-usb")]
+                        {
+                            let mpp_milli = (app.state.viewport(W as f32, H as f32).meters_per_pixel() * 1000.0) as u32;
+                            last_telem = obc_platform::debug_usb::Telemetry {
+                                frame_us: render_us as u32,
+                                lod: stats.lod as u8,
+                                feat_drawn: stats.features_drawn as u32,
+                                feat_tried: stats.features_tried as u32,
+                                feat_dropped: stats.features_dropped as u32,
+                                chunks: stats.chunks_visited as u32,
+                                cache_hits: stats.map_chunk_hits,
+                                cache_misses: stats.map_chunk_misses,
+                                sd_reads: stats.map_sd_reads,
+                                bytes_read: stats.map_bytes_read,
+                                collect_us: stats.collect_us,
+                                read_us,
+                                sort_us: stats.sort_us,
+                                draw_us: stats.draw_us,
+                                overlay_us,
+                                mpp_milli,
+                            };
+                        }
 
-                    // Flip to the freshly-drawn buffer at the next vblank. Swap front/back roles
-                    // only once the reload is confirmed landed; on a timeout the LTDC is still
-                    // scanning the old front, so we keep the buffers (the next redraw re-renders
-                    // into this same back and retries) rather than render into the scanned-out one.
-                    if flip_to(LtdcLayer::Layer1, back_addr) {
-                        core::mem::swap(&mut front_addr, &mut back_addr);
+                        // Flip to the freshly-drawn buffer at the next vblank. Swap front/back
+                        // roles only once the reload is confirmed landed; on a timeout the LTDC is
+                        // still scanning the old front, so we keep the buffers (the next redraw
+                        // re-renders into this same back and retries) rather than render into it.
+                        if flip_to(LtdcLayer::Layer1, back_addr) {
+                            core::mem::swap(&mut front_addr, &mut back_addr);
+                        } else {
+                            defmt::warn!(
+                                "LTDC: Layer 1 vblank reload didn't land in 50 ms — kept buffers, skipped swap"
+                            );
+                        }
+                        // Chunk-cache hit rate + the per-stage breakdown this frame (issue #37 +
+                        // the render-stage-timing work). `RenderStats` reports the per-frame delta
+                        // over the persistent cache, so this tracks what each redraw pulled.
+                        let reqs = stats.map_chunk_hits + stats.map_chunk_misses;
+                        let hit_pct = (stats.map_chunk_hits * 100).checked_div(reqs).unwrap_or(0);
+                        defmt::debug!(
+                            "map frame: {=u64} us (collect {=u32} [read {=u32}] | sort {=u32} | draw {=u32} | overlay {=u32}) | lod {=usize} | feat {=usize}/{=usize} | map-cache {=u32}% hit, {=u32} rd, {=u32} B",
+                            render_us,
+                            stats.collect_us,
+                            read_us,
+                            stats.sort_us,
+                            stats.draw_us,
+                            overlay_us,
+                            stats.lod,
+                            stats.features_drawn,
+                            stats.features_tried,
+                            hit_pct,
+                            stats.map_sd_reads,
+                            stats.map_bytes_read
+                        );
+                        true
                     } else {
-                        defmt::warn!("LTDC: Layer 1 vblank reload didn't land in 50 ms — kept buffers, skipped swap");
+                        false
                     }
-                    // Chunk-cache hit rate + SD-read overhead this frame (issue #37's measured
-                    // deliverables). `RenderStats` reports the per-frame delta over the persistent
-                    // cache, so this tracks what each redraw actually pulled off the card.
-                    let reqs = stats.map_chunk_hits + stats.map_chunk_misses;
-                    let hit_pct = (stats.map_chunk_hits * 100).checked_div(reqs).unwrap_or(0);
-                    defmt::debug!(
-                        "map frame: {=u64} us | lod {=usize} | feat {=usize}/{=usize} | map-cache {=u32}% hit, {=u32} rd, {=u32} B",
-                        render_us,
-                        stats.lod,
-                        stats.features_drawn,
-                        stats.features_tried,
-                        hit_pct,
-                        stats.map_sd_reads,
-                        stats.map_bytes_read
-                    );
                 } else {
-                    // `Reader::new` failed (flaky SD). The `dirty.map` edge we drained above would
-                    // otherwise be lost, freezing the map; latch it so next frame retries the redraw
-                    // until the reader builds (issue #66).
+                    false
+                };
+                if !reader_built {
+                    // `Reader::new` failed (flaky SD) or no source. The `dirty.map` edge we drained
+                    // above would otherwise be lost, freezing the map; latch it so next frame
+                    // retries the redraw until the reader builds (issue #66).
                     pending_map_redraw = true;
                     defmt::warn!(
                         "map: reader build failed this frame (flaky SD?) — kept buffers, will retry redraw next frame"
