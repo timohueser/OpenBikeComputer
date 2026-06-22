@@ -414,6 +414,55 @@ impl App {
         }
     }
 
+    /// Build the idle power-on [`App`] **in place** at `slot` — the by-reference
+    /// twin of [`new_idle`](App::new_idle), and the placement path the firmware uses
+    /// to construct the ~200 KB resident `App` straight into its reserved SDRAM block
+    /// without ever materializing it (or its renderer scratch) on the 192 KB stack.
+    ///
+    /// `new_idle` returns the `App` by value, which only stays off the stack thanks to
+    /// the optimizer's return-value optimization — a fragile guarantee that a debug
+    /// build, a different toolchain, or a tighter target could drop, overflowing the
+    /// stack (issue #67). This writes each field through `addr_of_mut!` exactly once,
+    /// so no by-value `App` is ever formed: there is no stack temporary to elide. The
+    /// only field big enough to matter is the renderer, zeroed in place via
+    /// [`MapRenderer::init_zeroed`] rather than built-and-moved; the rest are small.
+    ///
+    /// The end state is identical to `new_idle`'s — keep the two in sync.
+    ///
+    /// # Safety
+    /// `slot` must be a valid, aligned `*mut App` the caller exclusively owns and into
+    /// which a full `App` may be written (e.g. the device's reserved SDRAM region). On
+    /// return the slot is fully initialized; read it via `&mut *slot`.
+    pub unsafe fn init_idle(slot: *mut App, state: AppState) {
+        use core::ptr::addr_of_mut;
+        // SAFETY: `slot` is a valid, owned, aligned `App` region (caller's contract).
+        // Every field below is written exactly once before any read, in declaration
+        // order, so the slot is fully initialized on return and no field is read while
+        // uninitialized.
+        unsafe {
+            addr_of_mut!((*slot).state).write(state);
+            addr_of_mut!((*slot).activity).write(Activity::new(Mode::Idle));
+            addr_of_mut!((*slot).catalog).write(Catalog::new());
+            // The screen stack: empty in place, then push the always-present Home root.
+            // `heapless::Vec::push` isn't `const`, so the root can't be part of a literal.
+            addr_of_mut!((*slot).stack).write(Stack::new());
+            let _ = (*slot).stack.push(Screen::Home(HomeScreen::new()));
+            addr_of_mut!((*slot).profile).write(None);
+            addr_of_mut!((*slot).profile_route).write(None);
+            addr_of_mut!((*slot).route_match).write(RouteMatch::new());
+            addr_of_mut!((*slot).matched_route).write(None);
+            addr_of_mut!((*slot).ride_session).write(None);
+            addr_of_mut!((*slot).breadcrumb).write(Breadcrumb::new());
+            // The ~200 KB scratch renderer: an empty renderer *is* the all-zero bit
+            // pattern, so it is zeroed straight into the slot — never on the stack.
+            MapRenderer::init_zeroed(addr_of_mut!((*slot).renderer));
+            addr_of_mut!((*slot).input).write(InputPlane::new());
+            addr_of_mut!((*slot).now_ms).write(0);
+            // Force the host's first frame: nothing has been drawn yet, so the map is dirty.
+            addr_of_mut!((*slot).map_dirty).write(true);
+        }
+    }
+
     /// Advance one tick from the sensors.
     ///
     /// Polls the GPS [`LocationSource`] (recenters the camera in Follow mode) and, with a
@@ -878,5 +927,38 @@ mod tests {
         app.state.heading_up = false; // north-up never consults the compass
         tick_with(&mut app, Fix::at(0, 0), 200.0);
         assert_eq!(app.state.compass_deg, None);
+    }
+
+    // --- in-place SDRAM placement (issue #67) ---
+
+    /// `init_idle` writing field-by-field into a slot must land the same power-on state
+    /// `new_idle` builds by value — Home root, Idle, nothing loaded, map dirty — with the
+    /// renderer zeroed in place. Guards against a field being forgotten in the in-place path.
+    #[test]
+    fn init_idle_matches_new_idle() {
+        use core::mem::MaybeUninit;
+        let state = AppState::new(1, 2, 3.0);
+        // Placement target. ~200 KB on the host test stack is fine; the point being exercised
+        // is that no *second* `App`-sized temporary is formed (init_idle writes straight in).
+        let mut slot = MaybeUninit::<App>::uninit();
+        // SAFETY: `slot` is a valid, aligned, exclusively-owned `App` region; init_idle fully
+        // initializes it before assume_init_ref reads it.
+        let placed = unsafe {
+            App::init_idle(slot.as_mut_ptr(), state);
+            slot.assume_init_ref()
+        };
+
+        assert_eq!(placed.state, state, "camera state is preserved verbatim");
+        assert_eq!(placed.activity.mode, Mode::Idle, "boots Idle, not Riding");
+        assert!(placed.map_dirty, "first frame must paint");
+        assert_eq!(placed.now_ms, 0);
+        assert!(placed.profile.is_none() && placed.profile_route.is_none());
+        assert!(placed.matched_route.is_none() && placed.ride_session.is_none());
+        assert!(placed.breadcrumb.is_empty(), "no breadcrumb before any ride");
+        // The stack is exactly the Home root, like `new_idle`.
+        let reference = App::new_idle(state);
+        assert_eq!(placed.stack.len(), reference.stack.len());
+        assert_eq!(placed.stack.len(), 1);
+        assert!(matches!(placed.stack[0], Screen::Home(_)), "Home is the stack root");
     }
 }

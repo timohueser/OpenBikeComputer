@@ -348,6 +348,22 @@ const FB_BYTES: usize = FB_PIXELS * 2;
 #[cfg(not(feature = "glass-demo"))]
 const OVERLAY_ADDR: usize = SDRAM_ADDR + 2 * FB_BYTES;
 
+/// Total FMC SDRAM the IS42S16400J provides (8 MB @ [`SDRAM_ADDR`]).
+#[cfg(not(feature = "glass-demo"))]
+const SDRAM_BYTES: usize = 8 * 1024 * 1024;
+
+// Build-time guard for the resident SDRAM placement (issue #67): the four framebuffers
+// (2 map + 2 overlay), the `App` slot, and the `MapCache` must all fit the 8 MB. `App` is
+// initialized *in place* by `App::init_idle` — never returned by value into a stack temporary —
+// so the only way it can break the placement is by outgrowing this region; this fails the build
+// if it (or `MapCache`, or the framebuffers) ever does, instead of corrupting SDRAM on glass.
+// (Per-region alignment padding is a handful of bytes against ~7.5 MB of headroom; ignored here.)
+#[cfg(not(feature = "glass-demo"))]
+const _: () = assert!(
+    4 * FB_BYTES + core::mem::size_of::<App>() + core::mem::size_of::<MapCache>() <= SDRAM_BYTES,
+    "resident SDRAM set (framebuffers + App + MapCache) overruns the 8 MB SDRAM"
+);
+
 /// Baked-in OBCM **v5** map tile (issue #34): a small ~1.4 MB Teningen tile in
 /// flash via `include_bytes!`. With #36 the map normally comes off the SD card; this stays
 /// as the **fallback** when no card / no `.obcm` is present, so the device still boots to a
@@ -1039,9 +1055,10 @@ async fn main(spawner: Spawner) {
         let cache_align = core::mem::align_of::<MapCache>();
         let cache_addr = (app_addr + core::mem::size_of::<App>() + cache_align - 1) & !(cache_align - 1);
 
-        // The streamed-map cache, placed once in SDRAM and reused every redraw. ptr::write keeps
-        // its ~130 KB off the stack (opt-level 3 + LTO build `MapCache::new` straight into the
-        // slot, like the App below).
+        // The streamed-map cache, placed once in SDRAM and reused every redraw. `MapCache::new`
+        // is `MaybeUninit::zeroed()` (every field is valid all-zero), so `ptr::write` lowers to a
+        // `memset` of the slot — its ~130 KB never lands on the stack, with no reliance on RVO.
+        // (The App below is placed the same way in spirit, field-by-field via `App::init_idle`.)
         // SAFETY: [cache_addr, cache_addr + size_of::<MapCache>()) is a distinct SDRAM region just
         // past the App slot and clear of the framebuffers; this is its sole owner for the run.
         let cache_ptr = cache_addr as *mut MapCache;
@@ -1094,8 +1111,10 @@ async fn main(spawner: Spawner) {
         // host/simulator concern; see obc-platform::framebuffer).
         let color_fn = |c: u16| Rgb565::from(RawU16::new(c));
 
-        // Place + build the App in SDRAM at the reserved slot. ptr::write keeps the ~200 KB
-        // scratch off the stack (opt-level 3 + LTO emit App::new* straight to the slot).
+        // Build the App *in place* in SDRAM at the reserved slot. `App::init_idle` writes each
+        // field straight into the slot (the ~200 KB renderer is zeroed in place), so the App is
+        // never formed by value — no 200 KB stack temporary, and no reliance on the optimizer's
+        // RVO to keep one off the 192 KB stack (issue #67).
         let app_ptr = app_addr as *mut App;
         defmt::info!(
             "App in SDRAM @ {=u32:#010x} ({=usize} B); map cache @ {=u32:#010x} ({=usize} B)",
@@ -1105,10 +1124,10 @@ async fn main(spawner: Spawner) {
             core::mem::size_of::<MapCache>()
         );
         // Power-on screen: Home / Idle — the user drives navigation from here.
-        // SAFETY: app_ptr is a valid, aligned, exclusively-owned SDRAM slot, fully initialized
-        // by ptr::write before any read.
+        // SAFETY: app_ptr is a valid, aligned, exclusively-owned SDRAM slot; init_idle fully
+        // initializes it before the &mut below reads it.
         unsafe {
-            app_ptr.write(App::new_idle(AppState::new(cam_lon, cam_lat, zoom_for_mpp(INIT_MPP))));
+            App::init_idle(app_ptr, AppState::new(cam_lon, cam_lat, zoom_for_mpp(INIT_MPP)));
         }
         let app = unsafe { &mut *app_ptr };
 
