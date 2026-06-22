@@ -8,6 +8,7 @@ on:
   push:
     branches: [main]
     paths:
+      - "docs/**"
       - "firmware/**"
       - ".github/workflows/deploy-site.yml"
   workflow_dispatch:
@@ -46,12 +47,12 @@ jobs:
       # Project Pages serve under /<repo>/, so the wasm/js asset URLs must be prefixed
       # or they 404. --release turns on wasm-opt (see data-wasm-opt in index.html).
       - name: Build (release)
-        run: trunk build --release --config firmware/obc-sim/Trunk.toml --public-url "/${{ github.event.repository.name }}/"
+        run: trunk build --release --config docs/Trunk.toml --public-url "/${{ github.event.repository.name }}/"
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: firmware/obc-sim/dist
+          path: docs/dist
 
   deploy:
     needs: build

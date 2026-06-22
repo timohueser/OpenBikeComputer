@@ -8,9 +8,10 @@
   <meta name="description"
     content="OpenBikeComputer (OBC) is an open-source bikepacking computer: offline vector maps in a custom binary format, GPX route navigation with live map-matching, and ride recording — firmware and simulator sharing one render path." />
 
-  <!-- Trunk builds this crate to wasm. wasm-opt only runs on --release builds, so dev
-       (trunk serve) stays fast while release ships a small, size-optimised binary. -->
-  <link data-trunk rel="rust" data-wasm-opt="z" />
+  <!-- Trunk builds the obc-sim crate (in firmware/) to wasm — the live device demo.
+       wasm-opt only runs on --release builds, so dev (trunk serve) stays fast while
+       release ships a small, size-optimised binary. -->
+  <link data-trunk rel="rust" href="../firmware/obc-sim/Cargo.toml" data-wasm-opt="z" />
   <!-- Ship the placeholder docs page (dist/docs/index.html) until real docs exist. -->
   <link data-trunk rel="copy-dir" href="docs" />
   <base data-trunk-public-url />
