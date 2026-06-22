@@ -16,7 +16,9 @@
 //! All coordinates are integer microdegrees (1e-6 degrees), as stored in the
 //! file. Projection to screen space is the renderer's job.
 
-#![no_std]
+// `no_std` for every real target; the host test harness needs `std`, so allow it under `cfg(test)`
+// (the unit tests in `reader` exercise the chunk cache against a flaky `ByteSource`, issue #64).
+#![cfg_attr(not(test), no_std)]
 
 pub mod byte_io;
 pub mod codec;
