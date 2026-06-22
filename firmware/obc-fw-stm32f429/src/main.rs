@@ -165,7 +165,7 @@ use panic_probe as _;
 #[cfg(not(feature = "glass-demo"))]
 use embassy_stm32::gpio::{Input, Pull};
 #[cfg(not(feature = "glass-demo"))]
-use embassy_time::Instant;
+use embassy_time::{Duration, Instant};
 #[cfg(not(feature = "glass-demo"))]
 use embedded_graphics::pixelcolor::{raw::RawU16, Rgb565};
 #[cfg(not(feature = "glass-demo"))]
@@ -211,6 +211,27 @@ mod demo;
 // touches the card; the glass demo just exercises the framebuffer.
 #[cfg(not(feature = "glass-demo"))]
 mod sd;
+
+/// Panic-free `Instant::elapsed()` (issue #51). embassy-time's own `Instant::elapsed()` is
+/// `Instant::now() - *self`, and `Instant - Instant` calls `duration_since`, which `unwrap!`s a
+/// `checked_sub` — so it **panics** the instant `now()` reads *less* than the captured instant.
+/// `now()` doing exactly that (a momentarily non-monotonic read) is a known embassy-stm32
+/// time-driver race when the 16-bit hardware timer is extended to a 64-bit tick count, and the
+/// panic `udf`s → HardFault → the board halts. Every `.elapsed()` in this firmware (the frame
+/// `now`, the flip-reload timeouts, the render-stat deltas) only wants "how long since", and a
+/// transient backwards read meaning "zero time passed" is harmless to all of them — so clamp to
+/// zero via `saturating_duration_since` instead of panicking the device.
+#[cfg(not(feature = "glass-demo"))]
+trait SaturatingElapsed {
+    fn saturating_elapsed(&self) -> Duration;
+}
+
+#[cfg(not(feature = "glass-demo"))]
+impl SaturatingElapsed for Instant {
+    fn saturating_elapsed(&self) -> Duration {
+        Instant::now().saturating_duration_since(*self)
+    }
+}
 
 // --- USB-CDC fake sensors (issue #38, behind `debug-usb`) ---
 // The DISC1 has no GPS/baro/compass, so a host streams a recorded ride over the USER USB port
@@ -428,7 +449,7 @@ async fn input_overlay_task(
     // Native RGB565 panel → identity colour map, same as the map plane (see `main`).
     let color_fn = |c: u16| Rgb565::from(RawU16::new(c));
     loop {
-        let now = start.elapsed().as_millis() as u32;
+        let now = start.saturating_elapsed().as_millis() as u32;
         buttons.update(now);
         // Physical buttons + (with `debug-usb`) the USB-injected events, drained into one
         // recogniser pass — so a host can drive the UI (taps/holds) like the real buttons.
@@ -467,7 +488,7 @@ async fn input_overlay_task(
                 if flip_landed() {
                     break true;
                 }
-                if t0.elapsed().as_millis() > 50 {
+                if t0.saturating_elapsed().as_millis() > 50 {
                     break false;
                 }
                 Timer::after_millis(1).await;
@@ -531,7 +552,7 @@ impl LocationSource for SynthLocation {
         // Emit on the GPS's own ~1 Hz cadence, `None` between — the exact fresh-fix contract a
         // real receiver (and #38's USB feed) honours, so the prototype walks the same
         // integrate-one-sample path rather than the every-tick replay that masked issue #43.
-        let elapsed_ms = self.start.elapsed().as_millis();
+        let elapsed_ms = self.start.saturating_elapsed().as_millis();
         if let Some(last) = self.last_fix_ms {
             if elapsed_ms.wrapping_sub(last) < SYNTH_FIX_INTERVAL_MS {
                 return None;
@@ -670,7 +691,7 @@ fn flip_to(layer: LtdcLayer, addr: usize) -> bool {
     request_flip(layer, addr);
     let t0 = Instant::now();
     while !flip_landed() {
-        if t0.elapsed().as_millis() > 50 {
+        if t0.saturating_elapsed().as_millis() > 50 {
             return false;
         }
     }
@@ -1246,7 +1267,7 @@ async fn main(spawner: Spawner) {
         let mut route_index: Option<RouteIndex> = None;
         let mut index_route: Option<usize> = None;
         loop {
-            let now = start.elapsed().as_millis() as u32;
+            let now = start.saturating_elapsed().as_millis() as u32;
 
             // --- input (map-plane side) ---
             // Two-plane: the high-priority plane has already recognised this frame's gestures and
@@ -1413,7 +1434,7 @@ async fn main(spawner: Spawner) {
                         H as f32,
                         color_fn,
                     );
-                    let render_us = t0.elapsed().as_micros();
+                    let render_us = t0.saturating_elapsed().as_micros();
                     // Snapshot this frame's render stats for the host telemetry line (the same
                     // numbers as the RTT `map frame` log / the sim's Render Stats panel).
                     #[cfg(feature = "debug-usb")]
@@ -1487,7 +1508,7 @@ async fn main(spawner: Spawner) {
                 let mut overlay_fb = FramebufferArgb4444::new(back, W as u32, H as u32);
                 overlay_fb.clear_transparent();
                 app.render_overlay(&mut overlay_fb, W as f32, H as f32, color_fn);
-                let overlay_us = t0.elapsed().as_micros();
+                let overlay_us = t0.saturating_elapsed().as_micros();
 
                 // Flip Layer 2 to the freshly-drawn buffer at the next vblank, swapping only once
                 // the reload lands (same tear-free contract as the map flip). On a timeout keep the
