@@ -100,7 +100,9 @@ impl MapScreen {
         let vp = rx.state.viewport(rx.w, rx.h);
         let bg565 = rx.reader.backdrop_style().map_or(DEFAULT_BG_RGB565, |s| s.color);
         let bg = color_fn(bg565);
-        let mut stats = rx.renderer.render(target, rx.reader, &vp, bg, color_fn);
+        // `render_timed` fills the per-stage map timings (collect/sort/draw) from `rx.clock`; with
+        // the host's `NoopClock` it's the same as `render` with the stage fields left at 0.
+        let mut stats = rx.renderer.render_timed(target, rx.reader, &vp, bg, color_fn, rx.clock);
 
         // Direction chevrons ride the route only at riding zoom: the plain stroke shows at every
         // zoom, the chevrons appear once the view is zoomed in past `CHEVRON_MAX_MPP`, anchored to
