@@ -170,7 +170,11 @@ impl ByteSink for VecSink {
     }
     fn patch_at(&mut self, off: u32, b: &[u8]) -> Result<(), Error> {
         let o = off as usize;
-        self.0[o..o + b.len()].copy_from_slice(b);
+        let end = o.checked_add(b.len()).ok_or(Error::BadOffset)?;
+        if end > self.0.len() {
+            return Err(Error::BadOffset);
+        }
+        self.0[o..end].copy_from_slice(b);
         Ok(())
     }
 }
