@@ -15,22 +15,33 @@
 //!   "unknown" (a real receiver drops both at a standstill). Trailing fields may be omitted.
 //! - `A <meters>` — a barometric-altitude sample (float metres).
 //! - `C <deg>` — a compass heading (float degrees CW from north).
+//! - `K t <n>` / `K e <d|u>` / `K b <d|u>` — **input injection**: an encoder turn of `n` detents
+//!   (signed), or an encoder/Back button down/up edge. These feed the gesture recogniser exactly
+//!   like the physical buttons, so a host can drive the UI (taps and — via a delayed up — holds)
+//!   for hardware-in-the-loop work without anyone pressing a button.
 //!
-//! Device → host (see [`Telemetry`]): `T <ridden_m> <climb_m> <avg_kmh_x10> <speed_mps_x10>
-//! <frame_us> <mode>` — one short line at ~1 Hz, deliberately low-rate so the link never floods.
+//! Device → host (see [`Telemetry`]): `T <frame_us> <lod> <feat_drawn> <feat_tried> <feat_dropped>
+//! <chunks> <cache_hits> <cache_misses> <sd_reads> <bytes_read>` — the last map frame's render
+//! stats (the same numbers as the RTT `map frame` log / the sim's Render Stats panel), at a low
+//! fixed rate so the link never floods.
 //!
 //! ## Fresh-fix contract (#43)
-//! Each parsed sample is handed across to the app through an embassy [`Signal`], whose `try_take`
-//! returns a value exactly **once** per signal — so [`DebugLocation::poll`] yields `Some` only on
-//! the tick a new fix arrived and `None` between, the same cadence a real ~1 Hz receiver follows.
-//! Returning the latest fix on *every* ~8 ms poll would re-trigger the teleport-rejection bug #43
-//! fixes; the `Signal` gives the correct semantics for free.
+//! Each parsed *sensor* sample is handed across to the app through an embassy [`Signal`], whose
+//! `try_take` returns a value exactly **once** per signal — so [`DebugLocation::poll`] yields
+//! `Some` only on the tick a new fix arrived and `None` between, the same cadence a real ~1 Hz
+//! receiver follows. Returning the latest fix on *every* ~8 ms poll would re-trigger the
+//! teleport-rejection bug #43 fixes; the `Signal` gives the correct semantics for free. Injected
+//! input events instead go through a small [`Channel`] (a queue, not a latch) so a burst of edges
+//! is delivered in order, exactly as the button debouncer's ring would.
 
 use core::fmt::Write;
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::channel::Channel;
 use embassy_sync::signal::Signal;
-use obc_app::{AltimeterSource, CompassSource, Fix, LocationSource};
+use obc_app::{
+    AltimeterSource, Button, ButtonEvent, CompassSource, Fix, InputEvent, InputSource, LocationSource,
+};
 
 /// Longest line we accept. The widest message is an `F` with full i32 lat/lon and float
 /// course/speed (`F -2147483648 -2147483648 359.99 99.99`) ≈ 45 bytes; 64 leaves slack.
@@ -45,6 +56,8 @@ pub enum Msg {
     Alt(f32),
     /// A compass heading, degrees CW from north.
     Compass(f32),
+    /// An injected raw input event (encoder turn or a button down/up edge).
+    Input(InputEvent),
 }
 
 /// Parse one line into a [`Msg`], or `None` if the tag is unknown or the required fields are
@@ -62,6 +75,7 @@ pub fn parse_line(line: &str) -> Option<Msg> {
         }
         "A" => Some(Msg::Alt(it.next()?.parse::<f32>().ok()?)),
         "C" => Some(Msg::Compass(it.next()?.parse::<f32>().ok()?)),
+        "K" => parse_key(&mut it),
         _ => None,
     }
 }
@@ -72,6 +86,27 @@ fn parse_opt_f32(tok: Option<&str>) -> Option<f32> {
     match tok {
         None | Some("-") => None,
         Some(s) => s.parse::<f32>().ok(),
+    }
+}
+
+/// Parse the tokens after a `K` tag into an injected input event: `K t <n>` an encoder turn of
+/// `n` signed detents, `K e <d|u>` an encoder down/up edge, `K b <d|u>` a Back down/up edge.
+fn parse_key(it: &mut core::str::SplitAsciiWhitespace) -> Option<Msg> {
+    let ev = match it.next()? {
+        "t" => InputEvent::Turn(it.next()?.parse::<i32>().ok()?),
+        "e" => InputEvent::Button(edge(it.next()?, Button::Encoder)?),
+        "b" => InputEvent::Button(edge(it.next()?, Button::Back)?),
+        _ => return None,
+    };
+    Some(Msg::Input(ev))
+}
+
+/// `d` → down edge, `u` → up edge, for button `b`.
+fn edge(tok: &str, b: Button) -> Option<ButtonEvent> {
+    match tok {
+        "d" => Some(ButtonEvent::Down(b)),
+        "u" => Some(ButtonEvent::Up(b)),
+        _ => None,
     }
 }
 
@@ -133,16 +168,26 @@ static FIX: Signal<CriticalSectionRawMutex, Fix> = Signal::new();
 static ALT: Signal<CriticalSectionRawMutex, f32> = Signal::new();
 /// Latest compass heading (degrees CW from north).
 static COMPASS: Signal<CriticalSectionRawMutex, f32> = Signal::new();
-/// Latest device telemetry to send host-ward; the app sets it ~1 Hz, the CDC task awaits it.
+/// Latest device telemetry to send host-ward; the app sets it, the CDC task awaits it.
 static TELEMETRY: Signal<CriticalSectionRawMutex, Telemetry> = Signal::new();
 
-/// Route a decoded [`Msg`] to its sensor signal (the bridge from the USB RX task to the app
-/// poll). The board passes this to [`LineReader::feed`]; [`feed_bytes`] bundles both.
+/// Injected input events (encoder turns / button edges), queued in order for the input plane to
+/// drain alongside the physical buttons. A queue, not a latch: a tap is a down+up *pair* and a
+/// burst must arrive intact. Sized like the gesture channel — a frame yields at most a couple.
+const INPUT_QUEUE: usize = 16;
+static INPUT: Channel<CriticalSectionRawMutex, InputEvent, INPUT_QUEUE> = Channel::new();
+
+/// Route a decoded [`Msg`] to its signal/queue (the bridge from the USB RX task to the app poll).
+/// The board passes this to [`LineReader::feed`]; [`feed_bytes`] bundles both.
 pub fn dispatch(msg: Msg) {
     match msg {
         Msg::Fix(f) => FIX.signal(f),
         Msg::Alt(a) => ALT.signal(a),
         Msg::Compass(c) => COMPASS.signal(c),
+        // Drop on the (unreachable) overflow rather than block the RX task.
+        Msg::Input(ev) => {
+            let _ = INPUT.try_send(ev);
+        }
     }
 }
 
@@ -176,39 +221,55 @@ impl CompassSource for DebugCompass {
     }
 }
 
-/// A compact device→host status line — "basic telemetry like the control panel", emitted at
-/// ~1 Hz so the link never floods (the explicit performance constraint of issue #38). Integer
-/// fields only, so [`format_telemetry`] is allocation- and float-free.
+/// Injected input, drained by the input plane next to the physical buttons. The board chains this
+/// after its `ButtonInput` into the gesture recogniser, so injected turns/edges become gestures
+/// (taps and holds) identically to real presses.
+pub struct DebugInput;
+impl InputSource for DebugInput {
+    fn poll(&mut self) -> Option<InputEvent> {
+        INPUT.try_receive().ok()
+    }
+}
+
+/// The last map frame's **render stats** — the same numbers as the RTT `map frame` log and the
+/// sim's Render Stats panel (frame time, LOD, feature/chunk counts, map-cache + SD accounting).
+/// Snapshotted from [`RenderStats`](obc_render::RenderStats) by the board after each map render and
+/// sent host-ward at a low fixed rate. Integer fields only, so [`format_telemetry`] is float-free.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Telemetry {
-    /// Distance actually ridden, metres (the `done` stat).
-    pub ridden_m: u32,
-    /// Climb accumulated, metres (the `climbed` stat).
-    pub climb_m: u32,
-    /// Average moving speed × 10 (km/h, one decimal); `0` when not yet moving.
-    pub avg_kmh_x10: u32,
-    /// Last fix's ground speed × 10 (m/s, one decimal); `0` when stopped / unknown.
-    pub speed_mps_x10: u32,
-    /// Last map-render time, microseconds (the panel's "Render" readout).
+    /// Last map-render wall time, microseconds.
     pub frame_us: u32,
-    /// Operating mode: `0` Idle, `1` Riding, `2` Paused.
-    pub mode: u8,
+    /// LOD chosen for the last render.
+    pub lod: u8,
+    /// Features drawn / tried, and dropped (scratch overflow — want `0`).
+    pub feat_drawn: u32,
+    pub feat_tried: u32,
+    pub feat_dropped: u32,
+    /// Quadtree leaves visited this frame.
+    pub chunks: u32,
+    /// Streamed-map chunk cache: passes served from cache vs. read from SD.
+    pub cache_hits: u32,
+    pub cache_misses: u32,
+    /// Raw SD-source overhead this frame (reads + bytes).
+    pub sd_reads: u32,
+    pub bytes_read: u32,
 }
 
 /// Format a telemetry line (`T … \n`) into a small heap-free string the board writes to CDC.
-pub fn format_telemetry(t: &Telemetry) -> heapless::String<64> {
+pub fn format_telemetry(t: &Telemetry) -> heapless::String<96> {
     let mut s = heapless::String::new();
-    // Infallible for the field count + 64 cap; ignore the Result rather than panic on the MCU.
+    // Infallible for the field count + cap; ignore the Result rather than panic on the MCU.
     let _ = write!(
         s,
-        "T {} {} {} {} {} {}\n",
-        t.ridden_m, t.climb_m, t.avg_kmh_x10, t.speed_mps_x10, t.frame_us, t.mode
+        "T {} {} {} {} {} {} {} {} {} {}\n",
+        t.frame_us, t.lod, t.feat_drawn, t.feat_tried, t.feat_dropped, t.chunks, t.cache_hits,
+        t.cache_misses, t.sd_reads, t.bytes_read
     );
     s
 }
 
-/// Publish the latest telemetry (called by the app loop, throttled to ~1 Hz). Overwrites any
-/// unsent value, so the host always gets the freshest snapshot.
+/// Publish the latest telemetry (called by the app loop, throttled). Overwrites any unsent value,
+/// so the host always gets the freshest snapshot.
 pub fn set_telemetry(t: Telemetry) {
     TELEMETRY.signal(t);
 }
@@ -255,6 +316,23 @@ mod tests {
     }
 
     #[test]
+    fn parses_input_injection() {
+        assert_eq!(parse_line("K t 1"), Some(Msg::Input(InputEvent::Turn(1))));
+        assert_eq!(parse_line("K t -2"), Some(Msg::Input(InputEvent::Turn(-2))));
+        assert_eq!(
+            parse_line("K e d"),
+            Some(Msg::Input(InputEvent::Button(ButtonEvent::Down(Button::Encoder))))
+        );
+        assert_eq!(
+            parse_line("K b u"),
+            Some(Msg::Input(InputEvent::Button(ButtonEvent::Up(Button::Back))))
+        );
+        assert_eq!(parse_line("K e x"), None); // bad edge
+        assert_eq!(parse_line("K z 1"), None); // unknown key
+        assert_eq!(parse_line("K t"), None); // missing detents
+    }
+
+    #[test]
     fn extra_whitespace_is_tolerated() {
         assert_eq!(parse_line("  F   1   2  "), Some(Msg::Fix(Fix::at(1, 2))));
     }
@@ -298,13 +376,17 @@ mod tests {
     #[test]
     fn telemetry_formats_compactly() {
         let t = Telemetry {
-            ridden_m: 1234,
-            climb_m: 56,
-            avg_kmh_x10: 187,
-            speed_mps_x10: 52,
             frame_us: 41000,
-            mode: 1,
+            lod: 2,
+            feat_drawn: 312,
+            feat_tried: 480,
+            feat_dropped: 0,
+            chunks: 9,
+            cache_hits: 27,
+            cache_misses: 3,
+            sd_reads: 3,
+            bytes_read: 12288,
         };
-        assert_eq!(format_telemetry(&t).as_str(), "T 1234 56 187 52 41000 1\n");
+        assert_eq!(format_telemetry(&t).as_str(), "T 41000 2 312 480 0 9 27 3 3 12288\n");
     }
 }
