@@ -65,10 +65,12 @@
 #![no_std]
 
 pub mod button_input;
-// USB-CDC fake-sensor protocol + sources + telemetry (issue #38). Behind `debug-usb` so the
-// host workspace build never pulls embassy-sync; the board crate enables it and owns the actual
-// embassy-usb CDC driver. The protocol + sources move to the nRF54L unchanged.
-#[cfg(feature = "debug-usb")]
+// USB-CDC fake-sensor protocol + sources + telemetry (issue #38). The **pure codec** (line
+// parser, `Telemetry`/fix encoders, `LineReader`) is always compiled so the host feeder reuses one
+// canonical wire format; only the embassy-sync `Signal`/`Channel` plumbing + HAL-trait sources are
+// gated *inside* the module behind `debug-usb`, so the host workspace build never pulls
+// embassy-sync. The board crate enables the feature and owns the actual embassy-usb CDC driver.
+// The protocol + sources move to the nRF54L unchanged.
 pub mod debug_usb;
 pub mod framebuffer;
 pub mod sd;
