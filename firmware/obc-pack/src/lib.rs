@@ -18,6 +18,5 @@ pub mod quadtree;
 pub mod serialize;
 
 pub use serialize::{
-    pack_chunk, pack_feature, pack_style_dict, serialize_lods, serialize_tree, Feature, Kind,
-    LodLayer, Node, Style,
+    pack_chunk, pack_feature, pack_style_dict, serialize_lods, serialize_tree, Feature, Kind, LodLayer, Node, Style,
 };

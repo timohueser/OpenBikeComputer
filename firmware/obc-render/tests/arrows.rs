@@ -167,10 +167,7 @@ fn arrows_are_windowed_to_the_rider() {
     MapRenderer::new().draw_route(&mut buf, &vp(), &route, ROUTE, 6, ARROW, Some(250));
 
     let arrows_in = |y0: i32, y1: i32| (y0..y1).any(|y| (0..400).any(|x| buf.get(x, y) == ARROW));
-    assert!(
-        arrows_in(40, 130),
-        "chevrons expected ahead of the rider (toward route end, upper screen)"
-    );
+    assert!(arrows_in(40, 130), "chevrons expected ahead of the rider (toward route end, upper screen)");
     assert!(!arrows_in(170, 360), "no chevrons behind the rider (travelled part, lower screen)");
 }
 
@@ -196,8 +193,7 @@ fn route_stroke_has_the_requested_width() {
 /// of white over the magenta stroke, so distinct white runs in the central columns are the
 /// chevrons and the gaps between their mid-rows are the on-screen spacing.
 fn chevron_gaps(buf: &Buf) -> Vec<i32> {
-    let has_white: Vec<bool> =
-        (0..buf.h).map(|y| (197..=203).any(|x| buf.get(x, y) == ARROW)).collect();
+    let has_white: Vec<bool> = (0..buf.h).map(|y| (197..=203).any(|x| buf.get(x, y) == ARROW)).collect();
     let mut centres = Vec::new();
     let mut y = 0;
     while y < buf.h {
@@ -239,10 +235,7 @@ fn chevron_spacing_is_held_in_screen_space() {
 
     let far = gaps_at(0.05); // zoomed out — more m/px
     let near = gaps_at(0.10); // zoomed in 2×
-    assert!(
-        far.len() >= 2 && near.len() >= 2,
-        "need several chevrons to measure spacing (far {far:?}, near {near:?})"
-    );
+    assert!(far.len() >= 2 && near.len() >= 2, "need several chevrons to measure spacing (far {far:?}, near {near:?})");
 
     let (g_far, g_near) = (median(far.clone()), median(near.clone()));
     assert!(

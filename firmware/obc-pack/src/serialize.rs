@@ -148,8 +148,7 @@ pub fn pack_feature(f: &Feature, node_bbox: (i64, i64, i64, i64)) -> Vec<u8> {
     let mut packed_rings: Vec<(usize, Vec<i64>)> = Vec::with_capacity(f.rings.len());
 
     for (i, ring) in f.rings.iter().enumerate() {
-        let raw_pts: Vec<(i64, i64)> =
-            ring.iter().map(|&(lon, lat)| (to_udeg(lon), to_udeg(lat))).collect();
+        let raw_pts: Vec<(i64, i64)> = ring.iter().map(|&(lon, lat)| (to_udeg(lon), to_udeg(lat))).collect();
 
         let start_ref = if i == 0 {
             anchor_lon = raw_pts[0].0 - node_bbox.0;
@@ -211,11 +210,7 @@ pub fn pack_feature(f: &Feature, node_bbox: (i64, i64, i64, i64)) -> Vec<u8> {
 
 /// Pack features into a fixed-size chunk, padded with `0xFF`. A feature that
 /// would overflow the chunk (and every feature after it) is dropped.
-pub fn pack_chunk(
-    features: &[Feature],
-    node_bbox: (i64, i64, i64, i64),
-    chunk_size: usize,
-) -> Vec<u8> {
+pub fn pack_chunk(features: &[Feature], node_bbox: (i64, i64, i64, i64), chunk_size: usize) -> Vec<u8> {
     let mut data = Vec::new();
     for f in features {
         let packed = pack_feature(f, node_bbox);
@@ -472,11 +467,7 @@ mod tests {
             LodLayer {
                 max_mpp: Some(100.0),
                 chunk_size: 256,
-                root: crate::quadtree::build_lod(
-                    [(1u8, Geom::Line(vec![(0.1, 0.1), (0.9, 0.9)]))],
-                    bbox,
-                    256,
-                ),
+                root: crate::quadtree::build_lod([(1u8, Geom::Line(vec![(0.1, 0.1), (0.9, 0.9)]))], bbox, 256),
             },
             LodLayer {
                 max_mpp: None,

@@ -44,9 +44,7 @@ pub fn draw_palette(fb: &mut Framebuffer) {
 pub fn run(width: u32, height: u32, scale: u32) -> Result<(), eframe::Error> {
     let win = [(width * scale) as f32, (height * scale) as f32];
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("OBC Palette — 64 colors")
-            .with_inner_size(win),
+        viewport: egui::ViewportBuilder::default().with_title("OBC Palette — 64 colors").with_inner_size(win),
         ..Default::default()
     };
     let mut fb = Framebuffer::new(width, height);
@@ -54,9 +52,7 @@ pub fn run(width: u32, height: u32, scale: u32) -> Result<(), eframe::Error> {
     eframe::run_native(
         "OBC Palette",
         options,
-        Box::new(move |_cc| {
-            Ok(Box::new(PaletteGui { fb, scale, texture: None }) as Box<dyn eframe::App>)
-        }),
+        Box::new(move |_cc| Ok(Box::new(PaletteGui { fb, scale, texture: None }) as Box<dyn eframe::App>)),
     )
 }
 
@@ -75,10 +71,8 @@ impl eframe::App for PaletteGui {
 
         // Upload the (static) framebuffer once.
         if self.texture.is_none() {
-            let img = egui::ColorImage::from_rgb(
-                [self.fb.width() as usize, self.fb.height() as usize],
-                self.fb.as_rgb888(),
-            );
+            let img =
+                egui::ColorImage::from_rgb([self.fb.width() as usize, self.fb.height() as usize], self.fb.as_rgb888());
             self.texture = Some(ctx.load_texture("palette", img, egui::TextureOptions::NEAREST));
         }
         let tex = self.texture.as_ref().expect("uploaded just above");

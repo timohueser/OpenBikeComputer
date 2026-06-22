@@ -64,17 +64,15 @@ where
     /// Fill a rounded rectangle (equal corner radius).
     pub fn round(&mut self, area: Rectangle, radius: u32, color: u16) {
         let style = PrimitiveStyle::with_fill(self.c(color));
-        let _ = RoundedRectangle::with_equal_corners(area, Size::new(radius, radius))
-            .into_styled(style)
-            .draw(self.target);
+        let _ =
+            RoundedRectangle::with_equal_corners(area, Size::new(radius, radius)).into_styled(style).draw(self.target);
     }
 
     /// Draw the 1px outline of a rounded rectangle.
     pub fn round_outline(&mut self, area: Rectangle, radius: u32, color: u16) {
         let style = PrimitiveStyle::with_stroke(self.c(color), 1);
-        let _ = RoundedRectangle::with_equal_corners(area, Size::new(radius, radius))
-            .into_styled(style)
-            .draw(self.target);
+        let _ =
+            RoundedRectangle::with_equal_corners(area, Size::new(radius, radius)).into_styled(style).draw(self.target);
     }
 
     /// A horizontal hairline `len` px wide starting at `(x, y)`.

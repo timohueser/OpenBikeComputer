@@ -29,8 +29,7 @@ use embassy_stm32::time::Hertz;
 use embassy_time::Delay;
 use embedded_hal_bus::spi::ExclusiveDevice;
 use embedded_sdmmc::{
-    LfnBuffer, Mode, RawDirectory, RawFile, SdCard, ShortFileName, TimeSource, Timestamp,
-    VolumeIdx, VolumeManager,
+    LfnBuffer, Mode, RawDirectory, RawFile, SdCard, ShortFileName, TimeSource, Timestamp, VolumeIdx, VolumeManager,
 };
 use heapless::{String, Vec};
 use obc_app::MAX_ROUTES;
@@ -60,14 +59,7 @@ type Vmgr = VolumeManager<Sd, NullTime>;
 pub(crate) struct NullTime;
 impl TimeSource for NullTime {
     fn get_timestamp(&self) -> Timestamp {
-        Timestamp {
-            year_since_1970: 0,
-            zero_indexed_month: 0,
-            zero_indexed_day: 0,
-            hours: 0,
-            minutes: 0,
-            seconds: 0,
-        }
+        Timestamp { year_since_1970: 0, zero_indexed_month: 0, zero_indexed_day: 0, hours: 0, minutes: 0, seconds: 0 }
     }
 }
 
@@ -180,11 +172,7 @@ impl Storage {
                 vmgr.open_dir(root, "tracks").ok()
             }
         };
-        defmt::info!(
-            "SD: mounted; /routes {=bool}, /tracks {=bool}",
-            routes_dir.is_some(),
-            tracks_dir.is_some()
-        );
+        defmt::info!("SD: mounted; /routes {=bool}, /tracks {=bool}", routes_dir.is_some(), tracks_dir.is_some());
         Some(Storage {
             vmgr,
             root,
@@ -316,12 +304,7 @@ impl Storage {
     /// ticking, mirroring the sim's `TrackStore::reconcile`. Drains the one-shot disposition
     /// first (finalising / abandoning the current log), then opens a fresh log when the session
     /// id changes. `name` is the active route's name (the save filename).
-    pub fn reconcile_track(
-        &mut self,
-        action: Option<obc_app::TrackAction>,
-        session: Option<u32>,
-        name: &str,
-    ) {
+    pub fn reconcile_track(&mut self, action: Option<obc_app::TrackAction>, session: Option<u32>, name: &str) {
         use obc_app::TrackAction;
         match action {
             Some(TrackAction::Save) => self.finalize_track(),
@@ -329,9 +312,7 @@ impl Storage {
             None => {}
         }
         match session {
-            Some(id) if self.open_track.as_ref().map(|o| o.session) != Some(id) => {
-                self.begin_track(id, name)
-            }
+            Some(id) if self.open_track.as_ref().map(|o| o.session) != Some(id) => self.begin_track(id, name),
             None => self.abandon_track(), // no session → ensure nothing is left open
             _ => {}                       // same session → keep appending
         }
@@ -372,10 +353,7 @@ impl Storage {
         // collision bound is hit, or a glitch means no candidate can be confirmed absent), bail
         // without writing — keeping the temp beats truncating an existing ride's GPX.
         let Some(gpx) = self.unique_gpx(dir, &ot.name) else {
-            defmt::warn!(
-                "SD: no free GPX slot for {=str} — kept TRACK.OBT (no overwrite)",
-                ot.name.as_str()
-            );
+            defmt::warn!("SD: no free GPX slot for {=str} — kept TRACK.OBT (no overwrite)", ot.name.as_str());
             return;
         };
 
@@ -383,30 +361,29 @@ impl Storage {
             return;
         };
         let len = self.vmgr.file_length(src_file).unwrap_or(0);
-        let saved =
-            match self.vmgr.open_file_in_dir(dir, gpx.as_str(), Mode::ReadWriteCreateOrTruncate) {
-                Ok(dst_file) => {
-                    let source = SdByteSource::new(&self.vmgr, src_file, len);
-                    let mut sink = SdByteSink::new(&self.vmgr, dst_file);
-                    let ok = match track_to_gpx(&source, &ot.name, &mut sink) {
-                        Ok(()) => {
-                            defmt::info!("SD: saved ride → tracks/{=str}", gpx.as_str());
-                            true
-                        }
-                        Err(e) => {
-                            defmt::warn!("SD: GPX write failed: {}", defmt::Debug2Format(&e));
-                            false
-                        }
-                    };
-                    let _ = self.vmgr.flush_file(dst_file);
-                    let _ = self.vmgr.close_file(dst_file);
-                    ok
-                }
-                Err(e) => {
-                    defmt::warn!("SD: cannot open GPX: {}", defmt::Debug2Format(&e));
-                    false
-                }
-            };
+        let saved = match self.vmgr.open_file_in_dir(dir, gpx.as_str(), Mode::ReadWriteCreateOrTruncate) {
+            Ok(dst_file) => {
+                let source = SdByteSource::new(&self.vmgr, src_file, len);
+                let mut sink = SdByteSink::new(&self.vmgr, dst_file);
+                let ok = match track_to_gpx(&source, &ot.name, &mut sink) {
+                    Ok(()) => {
+                        defmt::info!("SD: saved ride → tracks/{=str}", gpx.as_str());
+                        true
+                    }
+                    Err(e) => {
+                        defmt::warn!("SD: GPX write failed: {}", defmt::Debug2Format(&e));
+                        false
+                    }
+                };
+                let _ = self.vmgr.flush_file(dst_file);
+                let _ = self.vmgr.close_file(dst_file);
+                ok
+            }
+            Err(e) => {
+                defmt::warn!("SD: cannot open GPX: {}", defmt::Debug2Format(&e));
+                false
+            }
+        };
         let _ = self.vmgr.close_file(src_file);
         // Drop the temp only after the ride is confirmed written; otherwise keep it.
         if saved {
@@ -472,9 +449,7 @@ const GPX_COLLISION_MAX: u8 = 99;
 fn long_has_ext(long: Option<&str>, ext: &[u8]) -> bool {
     let Some(name) = long else { return false };
     let b = name.as_bytes();
-    !b.starts_with(b".")
-        && b.len() >= ext.len()
-        && b[b.len() - ext.len()..].eq_ignore_ascii_case(ext)
+    !b.starts_with(b".") && b.len() >= ext.len() && b[b.len() - ext.len()..].eq_ignore_ascii_case(ext)
 }
 
 /// Reduce a route name to an 8.3 base: up to 8 upper-cased ASCII alphanumerics, never empty.

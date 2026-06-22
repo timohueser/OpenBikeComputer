@@ -11,8 +11,8 @@
 use std::collections::VecDeque;
 
 use obc_app::{
-    App, AppState, Button, ButtonEvent, Dirty, Fix, InputClock, InputEvent, InputSource,
-    LocationSource, RideClock, RouteSummary, Sensors,
+    App, AppState, Button, ButtonEvent, Dirty, Fix, InputClock, InputEvent, InputSource, LocationSource, RideClock,
+    RouteSummary, Sensors,
 };
 use obc_reader::BBox;
 
@@ -182,10 +182,7 @@ fn statistics_spring_back_is_wired_into_the_dirty_signal() {
     assert_eq!(idle_frame(&mut app, 2_000), Dirty::CLEAN, "still frozen mid-window");
     // …and at the 4 s idle deadline the cursor springs back to live: a redraw driven purely by
     // the timer, with no input and no fix.
-    assert!(
-        idle_frame(&mut app, 30 + 4_000).map,
-        "the spring-back dirties the map at the deadline"
-    );
+    assert!(idle_frame(&mut app, 30 + 4_000).map, "the spring-back dirties the map at the deadline");
     // One-shot: the frame after is quiet again.
     assert_eq!(idle_frame(&mut app, 30 + 4_100), Dirty::CLEAN, "spring-back fires only once");
 }

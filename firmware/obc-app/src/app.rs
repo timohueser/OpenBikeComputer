@@ -261,14 +261,7 @@ impl AppState {
     /// zero-sized viewport — the screen centre cancels out of the inverse projection,
     /// so this needs no display dimensions and the projection math stays in one place.
     fn pan_by_pixels(&mut self, dx: f32, dy: f32) {
-        let vp = Viewport::new_rotated(
-            0.0,
-            0.0,
-            self.cam_lon,
-            self.cam_lat,
-            self.zoom,
-            self.course_rad(),
-        );
+        let vp = Viewport::new_rotated(0.0, 0.0, self.cam_lon, self.cam_lat, self.zoom, self.course_rad());
         let (lon, lat) = vp.to_map(dx, dy);
         self.cam_lon = lon;
         self.cam_lat = lat;
@@ -689,8 +682,7 @@ impl App {
         // dirties the map (issue #47), so the map (and this fill) doesn't redraw mid-charge; the
         // live confirmation is the overlay bulge on its own high-priority plane.
         let hold_progress = self.input.encoder_hold_progress();
-        let App { state, activity, catalog, renderer, stack, now_ms, profile, breadcrumb, .. } =
-            self;
+        let App { state, activity, catalog, renderer, stack, now_ms, profile, breadcrumb, .. } = self;
         let mut rx = Render {
             reader,
             renderer,
@@ -766,10 +758,7 @@ impl App {
     /// drives the overlay from its *own* [`InputPlane::take_overlay_dirty`]; this `App` owns
     /// only the map plane there. The single-loop hosts use both.)
     pub fn take_dirty(&mut self) -> Dirty {
-        Dirty {
-            map: core::mem::take(&mut self.map_dirty),
-            overlay: self.input.take_overlay_dirty(),
-        }
+        Dirty { map: core::mem::take(&mut self.map_dirty), overlay: self.input.take_overlay_dirty() }
     }
 
     /// The most recently recognized gesture (host input readout), if any.

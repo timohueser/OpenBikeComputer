@@ -32,8 +32,8 @@ pub use byte_io::{ByteSink, ByteSource, SliceSource};
 pub use color::rgb565_to_device64;
 pub use color::rgb565_to_rgb888;
 pub use reader::{
-    CacheStats, FeatureRef, Kind, Lod, MapCache, Reader, Style, HEADER_LEN, MAX_CHUNK_BYTES,
-    MAX_FEAT_PTS, MAX_FEAT_RINGS,
+    CacheStats, FeatureRef, Kind, Lod, MapCache, Reader, Style, HEADER_LEN, MAX_CHUNK_BYTES, MAX_FEAT_PTS,
+    MAX_FEAT_RINGS,
 };
 
 /// Meters of ground per degree of latitude (and of longitude at the equator) — the
@@ -65,9 +65,6 @@ pub struct BBox {
 impl BBox {
     #[inline]
     pub fn intersects(&self, o: &BBox) -> bool {
-        !(self.max_lon < o.min_lon
-            || self.min_lon > o.max_lon
-            || self.max_lat < o.min_lat
-            || self.min_lat > o.max_lat)
+        !(self.max_lon < o.min_lon || self.min_lon > o.max_lon || self.max_lat < o.min_lat || self.min_lat > o.max_lat)
     }
 }

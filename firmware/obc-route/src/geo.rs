@@ -69,12 +69,7 @@ pub(crate) fn seg_dist_m(a: (i32, i32), b: (i32, i32)) -> f32 {
 /// measures to the *infinite* chord for decimation); the [route matcher](crate::matcher)
 /// needs the clamped on-segment distance, but both share this one projection so they
 /// can't drift.
-pub(crate) fn project_to_segment(
-    a: (i32, i32),
-    b: (i32, i32),
-    p: (i32, i32),
-    cl: f32,
-) -> (f32, f32) {
+pub(crate) fn project_to_segment(a: (i32, i32), b: (i32, i32), p: (i32, i32), cl: f32) -> (f32, f32) {
     let (bx, by) = delta_m(a, b, cl);
     let (px, py) = delta_m(a, p, cl);
     let len2 = bx * bx + by * by;

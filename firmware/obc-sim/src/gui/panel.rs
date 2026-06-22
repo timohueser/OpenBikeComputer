@@ -13,9 +13,7 @@ use eframe::egui;
 use obc_app::CameraMode;
 
 use super::housing::Colorway;
-use super::units::{
-    format_clock, format_distance, mpp_to_zoom, zoom_to_mpp, MAX_ZOOM, MIN_ZOOM, MPP_MAX, MPP_MIN,
-};
+use super::units::{format_clock, format_distance, mpp_to_zoom, zoom_to_mpp, MAX_ZOOM, MIN_ZOOM, MPP_MAX, MPP_MIN};
 use super::SimGui;
 use crate::calib;
 
@@ -47,13 +45,14 @@ impl SimGui {
                     // Housing body color — purely cosmetic chrome (the four colorways).
                     ui.horizontal(|ui| {
                         ui.label("Device color");
-                        egui::ComboBox::from_id_salt("colorway")
-                            .selected_text(self.colorway.label())
-                            .show_ui(ui, |ui| {
+                        egui::ComboBox::from_id_salt("colorway").selected_text(self.colorway.label()).show_ui(
+                            ui,
+                            |ui| {
                                 for c in Colorway::ALL {
                                     ui.selectable_value(&mut self.colorway, c, c.label());
                                 }
-                            });
+                            },
+                        );
                     });
 
                     ui.add_space(6.0);
@@ -100,11 +99,7 @@ impl SimGui {
                     // Heading — rides on Fix.course (degrees CW from north).
                     ui.add_enabled_ui(!replaying, |ui| {
                         ui.label("Heading");
-                        ui.add(
-                            egui::Slider::new(&mut self.panel.heading_deg, 0.0..=360.0)
-                                .suffix("°")
-                                .step_by(1.0),
-                        );
+                        ui.add(egui::Slider::new(&mut self.panel.heading_deg, 0.0..=360.0).suffix("°").step_by(1.0));
                     });
 
                     ui.add_space(6.0);
@@ -115,11 +110,7 @@ impl SimGui {
                     // live: it only takes effect on a heading-up map with no GPS course, so during
                     // a GPX-replay pause it visibly rotates the map, and it's a no-op otherwise.
                     ui.label("Compass (heading when stopped)");
-                    ui.add(
-                        egui::Slider::new(&mut self.panel.compass_deg, 0.0..=360.0)
-                            .suffix("°")
-                            .step_by(1.0),
-                    );
+                    ui.add(egui::Slider::new(&mut self.panel.compass_deg, 0.0..=360.0).suffix("°").step_by(1.0));
 
                     ui.add_space(6.0);
                     ui.separator();
@@ -130,18 +121,16 @@ impl SimGui {
                     ui.label("Zoom");
                     let mut mpp = zoom_to_mpp(self.app.state.zoom);
                     let resp = ui.add(
-                        egui::Slider::new(&mut mpp, MPP_MIN..=MPP_MAX)
-                            .logarithmic(true)
-                            .custom_formatter(|n, _| {
-                                let v = if n < 1.0 {
-                                    format!("{n:.3}")
-                                } else if n < 100.0 {
-                                    format!("{n:.1}")
-                                } else {
-                                    format!("{n:.0}")
-                                };
-                                format!("{v} m/px")
-                            }),
+                        egui::Slider::new(&mut mpp, MPP_MIN..=MPP_MAX).logarithmic(true).custom_formatter(|n, _| {
+                            let v = if n < 1.0 {
+                                format!("{n:.3}")
+                            } else if n < 100.0 {
+                                format!("{n:.1}")
+                            } else {
+                                format!("{n:.0}")
+                            };
+                            format!("{v} m/px")
+                        }),
                     );
                     if resp.changed() {
                         self.app.state.zoom = mpp_to_zoom(mpp).clamp(MIN_ZOOM, MAX_ZOOM);
@@ -161,32 +150,16 @@ impl SimGui {
                         ui.vertical(|ui| {
                             ui.label("Camera");
                             ui.horizontal(|ui| {
-                                ui.selectable_value(
-                                    &mut self.app.state.mode,
-                                    CameraMode::Follow,
-                                    "Follow",
-                                );
-                                ui.selectable_value(
-                                    &mut self.app.state.mode,
-                                    CameraMode::Free,
-                                    "Free",
-                                );
+                                ui.selectable_value(&mut self.app.state.mode, CameraMode::Follow, "Follow");
+                                ui.selectable_value(&mut self.app.state.mode, CameraMode::Free, "Free");
                             });
                         });
                         ui.separator();
                         ui.vertical(|ui| {
                             ui.label("Orientation");
                             ui.horizontal(|ui| {
-                                ui.selectable_value(
-                                    &mut self.app.state.heading_up,
-                                    false,
-                                    "North-up",
-                                );
-                                ui.selectable_value(
-                                    &mut self.app.state.heading_up,
-                                    true,
-                                    "Heading-up",
-                                );
+                                ui.selectable_value(&mut self.app.state.heading_up, false, "North-up");
+                                ui.selectable_value(&mut self.app.state.heading_up, true, "Heading-up");
                             });
                         });
                     });
@@ -209,9 +182,7 @@ impl SimGui {
                     // such dialog (a file-input upload path replaces it later).
                     #[cfg(not(target_arch = "wasm32"))]
                     if ui.button("Load GPX…").clicked() {
-                        if let Some(path) =
-                            rfd::FileDialog::new().add_filter("GPX track", &["gpx"]).pick_file()
-                        {
+                        if let Some(path) = rfd::FileDialog::new().add_filter("GPX track", &["gpx"]).pick_file() {
                             self.load_gpx(&path);
                         }
                     }
@@ -239,10 +210,7 @@ impl SimGui {
         );
 
         // Push the mirrors into the location + compass sources (the app reads them next tick).
-        self.loc.set_position(
-            (self.panel.lat_deg * 1e6).round() as i32,
-            (self.panel.lon_deg * 1e6).round() as i32,
-        );
+        self.loc.set_position((self.panel.lat_deg * 1e6).round() as i32, (self.panel.lon_deg * 1e6).round() as i32);
         self.loc.set_course(self.panel.heading_deg);
         self.compass.set(self.panel.compass_deg);
     }
@@ -254,10 +222,7 @@ impl SimGui {
         ui.label(egui::RichText::new("Display size").strong());
         let calibrated = self.points_per_mm.is_some();
         ui.horizontal(|ui| {
-            let resp = ui.add_enabled(
-                calibrated,
-                egui::Checkbox::new(&mut self.physical, "Actual size (1:1)"),
-            );
+            let resp = ui.add_enabled(calibrated, egui::Checkbox::new(&mut self.physical, "Actual size (1:1)"));
             if resp.changed() {
                 // Resize the window either way: to 1:1 on, back to the --scale default off.
                 self.physical_resize_pending = true;
@@ -368,10 +333,7 @@ impl SimGui {
                 ui.label("—");
             } else {
                 let hit_pct = 100.0 * s.map_chunk_hits as f32 / cache_reqs as f32;
-                ui.label(format!(
-                    "{:.0}% hit · {} rd · {} B",
-                    hit_pct, s.map_sd_reads, s.map_bytes_read
-                ));
+                ui.label(format!("{:.0}% hit · {} rd · {} B", hit_pct, s.map_sd_reads, s.map_bytes_read));
             }
             ui.end_row();
 
@@ -380,11 +342,8 @@ impl SimGui {
             ui.end_row();
 
             ui.label("Dropped");
-            let drop_color = if s.features_dropped > 0 {
-                egui::Color32::from_rgb(220, 80, 80)
-            } else {
-                ui.visuals().text_color()
-            };
+            let drop_color =
+                if s.features_dropped > 0 { egui::Color32::from_rgb(220, 80, 80) } else { ui.visuals().text_color() };
             ui.colored_label(drop_color, format!("{}", s.features_dropped));
             ui.end_row();
 
@@ -396,10 +355,7 @@ impl SimGui {
             // you zoom out `pts` climbs with the visible route, but `drawn` tracks what's on-screen
             // (per-segment view clip + subpixel fold) — the gap is the clip doing its job.
             ui.label("Route");
-            ui.label(format!(
-                "{} / {} drawn · {} chunks",
-                s.route_points_drawn, s.route_points, s.route_chunks
-            ));
+            ui.label(format!("{} / {} drawn · {} chunks", s.route_points_drawn, s.route_points, s.route_chunks));
             ui.end_row();
 
             // Host-measured frame draw time (render + route/overlays). 0 = not yet measured.

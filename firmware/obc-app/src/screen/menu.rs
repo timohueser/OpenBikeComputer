@@ -41,7 +41,7 @@ impl MenuScreen {
             }
             Gesture::Press => match self.selected {
                 0 => Transition::Push(Screen::RouteMenu(RouteMenuScreen::new())), // Routes
-                _ => Transition::None, // Settings — later slice
+                _ => Transition::None,                                            // Settings — later slice
             },
             Gesture::Back => Transition::Pop, // return to caller (Home or Map)
             Gesture::Hold => Transition::None,
@@ -71,12 +71,7 @@ impl MenuScreen {
                 cv.round(rect(16, y, w - 32, ROW_H - 8), 6, AMBER);
             }
             let bullet = if selected { INK } else { SUBTEXT };
-            cv.triangle(
-                Point::new(30, mid - 9),
-                Point::new(30, mid + 9),
-                Point::new(43, mid),
-                bullet,
-            );
+            cv.triangle(Point::new(30, mid - 9), Point::new(30, mid + 9), Point::new(43, mid), bullet);
             cv.text(name, Point::new(54, mid - 14), Font::Body, TextAlign::Left, INK);
 
             if i + 1 < ITEMS.len() {
