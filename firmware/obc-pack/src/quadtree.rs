@@ -1,4 +1,4 @@
-//! Quadtree build — a faithful port of `packer/obcm/quadtree.py`.
+//! Quadtree build — bucket a LOD's features into chunks.
 //!
 //! Per LOD: insert every feature into a quadtree over the global bbox, splitting
 //! a leaf once its accumulated size (`12 + pt_count*4` per feature) exceeds the
@@ -7,10 +7,9 @@
 //! The result converts to a [`serialize::Node`] tree, which the serializer walks
 //! in BFS order.
 //!
-//! Overlap/containment tests and clipping run in **degree space** (bbox / 1e6),
-//! exactly like the oracle, so leaf membership matches. The only expected
-//! divergence from the Python output is last-digit clip differences from the GEOS
-//! version (3.14 vs shapely's 3.13) — hence the render-diff + multiset gate.
+//! Overlap/containment tests and clipping run in **degree space** (bbox / 1e6), so
+//! leaf membership stays consistent with the node bounds the reader recomputes at
+//! render time.
 
 use crate::geom::{clip_to_box, pt_count, to_feature, Bounds, Geom};
 use crate::serialize::Node;
@@ -28,7 +27,7 @@ struct QuadtreeNode {
     features: Vec<StoredFeature>,
     children: Option<Box<[QuadtreeNode; 4]>>,
     current_size: usize,
-    // Float boundaries (degrees), precomputed like quadtree.py.
+    // Float boundaries (degrees), precomputed.
     minxf: f64,
     minyf: f64,
     maxxf: f64,
@@ -121,7 +120,7 @@ impl QuadtreeNode {
         if max_lon - min_lon < 10 || max_lat - min_lat < 10 {
             return;
         }
-        // Floor-division midpoints (`div_euclid` matches Python `//` for negatives).
+        // Floor-division midpoints (`div_euclid` floors toward −∞, matching the reader).
         let mid_lon = (min_lon + max_lon).div_euclid(2);
         let mid_lat = (min_lat + max_lat).div_euclid(2);
         let cs = self.chunk_size;
@@ -159,8 +158,7 @@ impl QuadtreeNode {
 
 /// Build one LOD's quadtree from its (already simplified) features and convert it
 /// to a serializable [`Node`] tree. `features` yields `(style_id, geom)` with
-/// geometry in degrees; empties are skipped (the oracle drops simplify-emptied
-/// geoms before insert).
+/// geometry in degrees; empties are skipped (simplify can empty a geometry).
 pub fn build_lod(
     features: impl IntoIterator<Item = (u8, Geom)>,
     global_bbox: (i64, i64, i64, i64),
@@ -196,8 +194,8 @@ mod tests {
         matches!(n, Node::Branch(_))
     }
 
-    // test_quadtree.py — these cases are all containment/flatten/split/guard, so
-    // they pin the algorithm with no GEOS clip involved.
+    // These cases are all containment/flatten/split/guard, so they pin the
+    // algorithm with no GEOS clip involved.
 
     #[test]
     fn insertion_keeps_contained_line() {
