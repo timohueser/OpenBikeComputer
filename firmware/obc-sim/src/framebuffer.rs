@@ -1,11 +1,9 @@
 //! A plain in-memory `DrawTarget` — a packed RGB888 pixel buffer the host owns.
 //!
-//! This is the simulator's replacement for embedded-graphics-simulator's
-//! `SimulatorDisplay`: the shared [`obc_render::MapRenderer`] runs the exact same
-//! rendering code as the firmware, but draws into a buffer we control, with no SDL
-//! uploads the buffer to a GPU texture (the eframe screen window) or encodes it
-//! to a PNG (`--png`). The device firmware draws into its real LS021B7DD02 driver
-//! instead; only this host-side target differs.
+//! The shared [`obc_render::MapRenderer`] runs the exact same rendering code as the
+//! firmware, but draws into this buffer; the host then uploads it to a GPU texture
+//! (the eframe screen window) or encodes it to a PNG (`--png`). The device firmware
+//! draws into its real LS021B7DD02 driver instead; only this host-side target differs.
 
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
 
@@ -70,8 +68,8 @@ impl DrawTarget for Framebuffer {
         Ok(())
     }
 
-    /// Fast path for the renderer's scanline fills (it calls this per polygon row
-    /// and to clear): fill a clipped rectangle directly instead of per-pixel.
+    /// Fast path for the renderer's rectangle fills (per polygon-fill scanline row,
+    /// and HUD strips): fill a clipped rectangle directly instead of per-pixel.
     fn fill_solid(&mut self, area: &Rectangle, color: Self::Color) -> Result<(), Self::Error> {
         let clipped = area.intersection(&self.bounding_box());
         if let Some(br) = clipped.bottom_right() {

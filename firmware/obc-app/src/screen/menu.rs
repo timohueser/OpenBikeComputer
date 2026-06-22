@@ -1,10 +1,10 @@
 //! The Menu overlay — Routes / Settings, in the "explorer's field map" style of
 //! the route-list mock (`docs/bikepacking_portrait_screens.html`): a dark wood
 //! frame around a panel, a wood title strip with a `n / total` counter, big rows
-//! with a pointer bullet and an amber selection highlight, hairline separators,
-//! and a control hint. A stub for behavior — `back` returns to the caller; opening
-//! an item and the Shutdown prompt land in later slices — but it doubles as the
-//! worked example of the framework's drawing surface ([`Canvas`]).
+//! with a pointer bullet and an amber selection highlight, and hairline separators.
+//! Partly stubbed — Routes opens the Route menu and `back` returns to the caller, but
+//! Settings and the Shutdown prompt (`back-hold`) land in later slices — but it doubles
+//! as the worked example of the framework's drawing surface ([`Canvas`]).
 
 use embedded_graphics::prelude::{DrawTarget, Point};
 use obc_render::{

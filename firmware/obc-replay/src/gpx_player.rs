@@ -7,7 +7,7 @@
 //! consume [`Fix`]es.
 //!
 //! ## Fidelity
-//! GPX stores only position + time, never course or speed, so we derive them the
+//! GPX stores only position + time, never course or speed, so they're derived the
 //! way a GPS receiver does — from motion. Course is the bearing over a short
 //! look-ahead window (smoothing per-point jitter), and **when the track is
 //! stationary the reported course is `None`**, matching a real receiver that
@@ -36,13 +36,13 @@ const MOVING_THRESHOLD_MPS: f32 = 0.5;
 /// per-point bearing jitter you'd otherwise get from dense, noisy track points.
 const LOOK_AHEAD_S: f64 = 2.0;
 
-/// Replays a parsed [`Track`] as a [`LocationSource`]. Holds the playback cursor
 /// Simulated GPS fix cadence, in **seconds of playback time**. Real consumer GPS / bike
 /// computers deliver fixes on a fixed ~1 Hz clock, not once per render frame — throttling
 /// [`poll`](GpxPlayer::poll) to this keeps the recorded track + breadcrumb at a realistic
 /// point density no matter how fast the host renders or how high the replay speed is set.
 const GPS_PERIOD_S: f64 = 1.0;
 
+/// Replays a parsed [`Track`] as a [`LocationSource`]. Holds the playback cursor
 /// (`t`, seconds into the track), whether it's playing, and the speed multiplier.
 pub struct GpxPlayer {
     track: Track,

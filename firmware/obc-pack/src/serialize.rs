@@ -1,4 +1,4 @@
-//! OBCM **v5** serializer — lay out the `.obcm` bytes.
+//! OBCM v5 serializer — lay out the `.obcm` bytes.
 //!
 //! Deterministic integer/byte work: given the same feature list and quadtree it
 //! produces the same output every run. The geometry that reaches here is already
@@ -447,7 +447,7 @@ mod tests {
         densify((0, 0), (100, 200), &mut out2);
         assert_eq!(out2, vec![(100, 200)]);
 
-        // Exactly at the threshold (30000) is NOT densified (`> _MAX_SEGMENT`).
+        // Exactly at the threshold (30000) is NOT densified (`> MAX_SEGMENT`).
         let mut out3 = Vec::new();
         densify((0, 0), (30000, -30000), &mut out3);
         assert_eq!(out3, vec![(30000, -30000)]);

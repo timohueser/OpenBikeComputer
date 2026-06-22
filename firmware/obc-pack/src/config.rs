@@ -1,5 +1,5 @@
-//! `config.rs` — parses the packer's `config.json`. Assigns style IDs **1-based in
-//! document order** (so `serde_json`'s `preserve_order` feature is mandatory — see
+//! `config.rs` — parses the packer's `config.json`. Assigns style IDs 1-based in
+//! document order (so `serde_json`'s `preserve_order` feature is mandatory — see
 //! Cargo.toml; a hash-ordered map would scramble the IDs), and exposes everything
 //! the pipeline needs: the ordered `tag_key → value → style` map for first-match
 //! styling ([`Config::get_style`]), the style table for the serializer, the LOD
@@ -45,7 +45,7 @@ pub struct Lod {
 
 /// The parsed `config.json`.
 pub struct Config {
-    /// `(tag_key, {value → style})` in document order. `_get_style` walks the
+    /// `(tag_key, {value → style})` in document order. `get_style` walks the
     /// keys in this order and returns the first whose value matches.
     pub features: Vec<(String, HashMap<String, FeatureStyle>)>,
     pub lods: Vec<Lod>,
@@ -92,9 +92,9 @@ impl Config {
             Some(arr) if !arr.is_empty() => arr
                 .iter()
                 .map(|l| Lod {
-                    // `lod_def.get("max_mpp")` — absent/null ⇒ None ⇒ +inf layer.
+                    // Absent/null ⇒ None ⇒ +inf layer.
                     max_mpp: l.get("max_mpp").and_then(Value::as_f64),
-                    // `lod_def.get("simplify") or 0` — absent/null/0 ⇒ no simplify.
+                    // Absent/null ⇒ 0.0 ⇒ no simplify.
                     simplify_m: l.get("simplify").and_then(Value::as_f64).unwrap_or(0.0),
                 })
                 .collect(),
@@ -102,11 +102,11 @@ impl Config {
             _ => vec![Lod { max_mpp: None, simplify_m: 0.0 }],
         };
 
-        // --- marker color (`config.get("marker", {}).get("color", 0xF800)`) ---
+        // --- marker color (default 0xF800) ---
         let marker_color =
             root.get("marker").and_then(|m| m.get("color")).map(parse_color).transpose()?.unwrap_or(0xF800);
 
-        // --- chunk_size (`config.get("chunk_size", 4096)`) ---
+        // --- chunk_size (default 4096) ---
         let chunk_size = root.get("chunk_size").and_then(Value::as_u64).map(|v| v as usize).unwrap_or(4096);
 
         Ok(Config { features, lods, marker_color, chunk_size })

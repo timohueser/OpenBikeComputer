@@ -7,13 +7,13 @@
 //! geometry the Map draws — so [`RouteReader::elevation_profile`] reduces the route to
 //! a [`Profile`] of per-column min/max elevation.
 //!
-//! **Why a pyramid.** Zooming must not re-stream the route on every encoder detent. So
-//! one load-time pass builds a **fine base** level ([`PROFILE_COLS`] columns); the
-//! coarser levels are pure **min/max downsamples** of the finer one (merge adjacent
-//! column pairs — a few array passes, no extra chunk decodes), exactly the trick the
-//! OBCM map format uses (v5). Drawing a view then [picks the level](Profile::window)
-//! whose resolution matches the visible window and walks only ~chart-width columns, so
-//! the per-detent cost is flat across every zoom level and touches no geometry.
+//! **Why a pyramid.** Zooming must not re-stream the route on every encoder detent. One
+//! load-time pass builds a **fine base** level ([`PROFILE_COLS`] columns); the coarser
+//! levels are pure **min/max downsamples** of the finer one (merge adjacent column pairs —
+//! a few array passes, no extra chunk decodes), the same trick the OBCM map format uses
+//! (v5). Drawing a view then [picks the level](Profile::window) whose resolution matches
+//! the visible window and walks only ~chart-width columns, so the per-detent cost is flat
+//! across every zoom level and touches no geometry.
 //!
 //! The resolution is decoupled from any display width: the screen maps columns onto its
 //! chart pixels, so the same profile draws to the 240-px device panel or a resized

@@ -256,7 +256,7 @@ impl<'a> Reader<'a> {
         if version != 5 {
             return Err(Error::BadVersion);
         }
-        // Header field order: lat,lon,lat,lon (see serialize.py header pack).
+        // Header field order: lat,lon,lat,lon (see `obc-pack`'s `serialize.rs` header pack / OBCM_Spec.md).
         let min_lat = rd_i32(&header, 5);
         let min_lon = rd_i32(&header, 9);
         let max_lat = rd_i32(&header, 13);
@@ -423,7 +423,8 @@ impl<'a> Reader<'a> {
         if child <= idx {
             return;
         }
-        // floor-division midpoints to match the Python packer's `//`.
+        // Floor-division midpoints (`div_euclid` floors toward −∞) — must match the packer's
+        // `quadtree.rs` split so reader and writer agree on every node bbox.
         let mid_lon = (node.min_lon + node.max_lon).div_euclid(2);
         let mid_lat = (node.min_lat + node.max_lat).div_euclid(2);
         // NW, NE, SW, SE

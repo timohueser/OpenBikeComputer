@@ -29,22 +29,20 @@
 //! two do not both fit the F429's 192 KB internal SRAM. For the prototype the whole
 //! `App` (which embeds the renderer) is placed in **SDRAM**, just past the four
 //! framebuffers (the double-buffered map plane + the double-buffered Layer 2 overlay,
-//! 4x150 KB — see below) — simplest, runs the full-size renderer. The 8 MB SDRAM swallows
-//! all of it. The cost is render-time:
-//! the scratch is now behind the FMC's wait states (slower than the internal-RAM
-//! `mcu-render-bench`); the per-frame time logged over RTT quantifies the delta.
-//! A `small-scratch` cargo feature (internal-RAM scratch) is the fallback if that
-//! delta ever matters — not needed yet.
+//! 4x150 KB — see below); the 8 MB SDRAM holds all of it and runs the full-size
+//! renderer. The cost is render time: the scratch is now behind the FMC's wait states
+//! (slower than the internal-RAM `mcu-render-bench`); the per-frame time logged over
+//! RTT quantifies the delta. A `small-scratch` cargo feature (internal-RAM scratch) is
+//! the fallback if that delta ever matters — not needed yet.
 //!
 //! ## Double buffering (the map plane)
 //! Rendering clears and repaints the whole frame, so drawing straight into the buffer
-//! the LTDC is scanning makes the panel flash on every redraw — fine for a static
-//! demo, but ugly once the map changes. So the app path keeps **two** map framebuffers:
-//! the LTDC scans the *front* while the app renders the next frame into the *back*, then
-//! [`flip_to`] points the layer at the back and reloads it at the next vertical blank
-//! (tear-free) and the roles swap. The panel only ever shows a fully-rendered map frame.
-//! (The `glass-demo` path stays single-buffered, single-layer — it draws one static
-//! screen and halts.)
+//! the LTDC is scanning flashes the panel on every redraw. The app path instead keeps
+//! **two** map framebuffers: the LTDC scans the *front* while the app renders the next
+//! frame into the *back*, then [`flip_to`] points the layer at the back and reloads it
+//! at the next vertical blank (tear-free) and the roles swap. The panel only ever shows
+//! a fully-rendered map frame. (The `glass-demo` path stays single-buffered,
+//! single-layer — it draws one static screen and halts.)
 //!
 //! ## Dual-layer display (issue #46): map plane + overlay plane
 //! The LTDC has two blendable layers. The double-buffered map is **Layer 1** (the bottom,
@@ -58,8 +56,8 @@
 //!
 //! Layer 2 is **double-buffered** exactly like the map, for the same reason: the overlay
 //! redraws the whole buffer (clear-to-transparent then the bulge), so writing in place into
-//! the buffer the LTDC is scanning tears — the bulge visibly flickers as the clear races the
-//! scan (an in-place single buffer was the first cut; it flickered on glass). Instead the app
+//! the buffer the LTDC is scanning tears — the bulge flickers as the clear races the scan
+//! (an in-place single buffer was the first cut; it flickered on glass). Instead the app
 //! renders the next overlay frame into the *back* overlay buffer and [`flip_to`]s Layer 2 at
 //! the vblank, tear-free, then swaps — so the panel only ever scans a complete overlay frame.
 //! That makes **four** framebuffers in SDRAM (2 map + 2 overlay, 4x150 KB ≈ 600 KB), still ≪
@@ -103,7 +101,7 @@
 //! path (`App::handle_input` + inline overlay) to prove the `InputPlane`/`apply_gesture` seam
 //! composes; the two-plane split is the default and the structure `obc-fw-nrf54l` will reuse.
 //!
-//! Clock: 180 MHz core from the 16 MHz HSI (no dependency on the DISC1 HSE), plus a
+//! Clock: 168 MHz core from the 16 MHz HSI (no dependency on the DISC1 HSE), plus a
 //! PLLSAI leg for the LTDC pixel clock.
 //!
 //! ## SDRAM pin map (FMC bank 2, IS42S16400J, 8 MB @ 0xD000_0000)

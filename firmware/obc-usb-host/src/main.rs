@@ -1,13 +1,12 @@
 //! OBC USB feeder — the bench stand-in for real GPS / altimeter / compass hardware (issue #38).
 //!
-//! The prototype has no sensors (and never a good fix indoors), so this little desktop app
-//! replays a recorded `.gpx` out over the device's USB-CDC debug link as fake fixes: it drives
-//! the **same** [`GpxPlayer`]/[`BaroSensor`] the simulator uses (deriving course/speed from
-//! motion, throttled to ~1 Hz), so a real recorded ride moves the rider on-device exactly as it
-//! does in the sim. A compass slider sets the heading the device shows when stopped, a button row
-//! injects encoder/Back input (taps + holds) so the UI is drivable without touching the hardware,
-//! and a readout shows the device's render-stats telemetry. It's the host twin of the sim's
-//! control panel, pointed at real glass instead of the in-process app.
+//! The prototype has no sensors (and never a good fix indoors), so this desktop app replays a
+//! recorded `.gpx` over the device's USB-CDC debug link as fake fixes. It drives the same
+//! [`GpxPlayer`]/[`BaroSensor`] the simulator uses (deriving course/speed from motion, throttled
+//! to ~1 Hz), so a recorded ride moves the rider on-device as it does in the sim. A compass slider
+//! sets the heading the device shows when stopped, a button row injects encoder/Back input (taps +
+//! holds) so the UI is drivable without touching the hardware, and a readout shows the device's
+//! render-stats telemetry. The host twin of the sim's control panel, pointed at real glass.
 //!
 //! Wire format (see `obc-platform::debug_usb`): host→device `F <lat> <lon> <course|-> <speed|->`,
 //! `A <m>`, `C <deg>`, and input injection `K t <n>` / `K e <d|u>` / `K b <d|u>`; device→host

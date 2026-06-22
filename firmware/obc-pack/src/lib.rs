@@ -6,9 +6,8 @@
 //! system GEOS; the quadtree build and the serializer are deterministic
 //! integer/byte work. Feature selection is config-driven — see [`config`].
 //!
-//! One deliberate correctness rule worth flagging: a closed line-way (e.g. a
-//! `highway=residential` loop) is emitted as a line **only**, never also as a
-//! filled polygon.
+//! Deliberate correctness rule: a closed line-way (e.g. a `highway=residential`
+//! loop) is emitted as a line only, never also as a filled polygon.
 
 pub mod config;
 pub mod geom;

@@ -112,7 +112,7 @@ pub fn apply(stack: &mut Stack, t: Transition) {
 pub struct Ctx<'a> {
     /// The camera / orientation / last-fix state (a screen may zoom, pan, …).
     pub state: &'a mut AppState,
-    /// The ride mode + (later) tracking accumulators.
+    /// The ride mode + tracking accumulators.
     pub activity: &'a mut Activity,
     /// The route catalog (read-only) — the Route menu navigates it and centers the
     /// camera on the picked route's bbox from here, no I/O needed.

@@ -1,7 +1,7 @@
 //! GPX track parsing — a **simulator-only** concern.
 //!
 //! The real device has a GPS chip; it never parses a GPX file. Replaying a
-//! recorded track is purely a host convenience, so this lives in `obc-sim` (it
+//! recorded track is purely a host convenience, so this lives in this host crate (it
 //! needs `std`) and produces nothing the shared crates know about — the
 //! [`GpxPlayer`](crate::gpx_player::GpxPlayer) turns a [`Track`] into the same
 //! [`Fix`](obc_app::Fix)es a GPS driver would emit.
