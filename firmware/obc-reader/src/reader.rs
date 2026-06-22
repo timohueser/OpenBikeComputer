@@ -237,7 +237,9 @@ impl<'a> Reader<'a> {
     /// Parse the resident header / styles / LOD table from `src`, pairing the result with a
     /// `cache` the geometry + index reads stream through. The cache is caller-owned and reusable
     /// across frames (a chunk read last frame stays resident); pass a fresh [`MapCache::new`] if
-    /// you don't keep one around. Both borrows live as long as the `Reader`.
+    /// you don't keep one around. Both borrows live as long as the `Reader`. Reusing one cache is
+    /// only sound while the *source is the same map* — if you point a new `Reader` at a different
+    /// `.obcm`, call [`MapCache::clear`] first or the old map's resident chunks cross-serve.
     pub fn new(src: &'a dyn ByteSource, cache: &'a MapCache) -> Result<Reader<'a>, Error> {
         let total = src.len() as usize;
         if total < HEADER_LEN {
@@ -845,6 +847,16 @@ impl MapCache {
         MapCache { inner: RefCell::new(MapCacheInner::new()) }
     }
 
+    /// Drop every resident chunk + index slot. **Call this whenever you rebuild a [`Reader`] over
+    /// a *different* [`ByteSource`]** (a runtime map switch): the cache keys slots only by
+    /// `(lod, chunk_id, len)` / index offset, *not* by which map produced them, so a slot left
+    /// resident from the old map would be served to the new reader as a (wrong-geometry) hit. The
+    /// device opens its map once at boot and never needs this; a host that swaps the active
+    /// `.obcm` does. Cheap — only the `valid` flags + counters are touched, not the buffers.
+    pub fn clear(&self) {
+        self.inner.borrow_mut().clear();
+    }
+
     #[inline]
     fn borrow_mut(&self) -> RefMut<'_, MapCacheInner> {
         self.inner.borrow_mut()
@@ -883,6 +895,23 @@ impl MapCacheInner {
         // references, no enums with a non-zero discriminant, and no `bool` that must be non-zero
         // (the only `bool`s are the `valid` flags, false at zero). No padding is read.
         unsafe { core::mem::MaybeUninit::zeroed().assume_init() }
+    }
+
+    /// Drop every resident chunk + index slot and zero the counters, returning the cache to its
+    /// just-`new` state without touching the ≈84 KB of backing buffers (only the `valid` flags
+    /// and the small counters are written). Used on a map switch — see [`MapCache::clear`].
+    fn clear(&mut self) {
+        for s in &mut self.chunks {
+            s.valid = false;
+        }
+        for b in &mut self.index {
+            b.valid = false;
+        }
+        self.tick = 0;
+        self.chunk_hits = 0;
+        self.chunk_misses = 0;
+        self.sd_reads = 0;
+        self.bytes_read = 0;
     }
 
     #[inline]
@@ -1017,6 +1046,7 @@ fn lru(slots: impl Iterator<Item = (bool, u32)>) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SliceSource;
 
     /// A `ByteSource` that reproduces the flaky-SD failure of issue #64: the read whose offset is
     /// `fail_at` copies `partial` bytes into the destination (a *real* partial overwrite, like
@@ -1092,5 +1122,81 @@ mod tests {
             ChunkLoc::Slot(i) => assert_eq!(&inner.chunks[i].buf[..LEN], &k_old[..]),
             ChunkLoc::Scratch => panic!("a slot-sized chunk should land in a slot"),
         }
+    }
+
+    /// Two maps that share a chunk key `(lod, cid, len)` but hold *different* bytes there must not
+    /// cross-serve through a shared cache. The cache keys a slot only by `(lod, cid, len)`, not by
+    /// the source, so after a map switch the old slot would be returned as a (wrong-geometry) hit
+    /// — the latent map-switch bug of issue #68. `clear()` on the switch drops the stale slots so
+    /// the next read misses and fills from the new source. This first half *demonstrates the
+    /// hazard* (the stale hit) so the test fails loudly if `clear()` is ever dropped from the fix.
+    #[test]
+    fn clear_prevents_chunk_cache_cross_serving() {
+        const LEN: usize = 64;
+        let a = [0xAAu8; 256]; // map A's bytes
+        let b = [0xBBu8; 256]; // map B's bytes — same key, different geometry
+        let sa = SliceSource(&a);
+        let sb = SliceSource(&b);
+
+        let cache = MapCache::new();
+        let mut inner = cache.borrow_mut();
+
+        // Map A fills slot (0, 0, LEN) with A's bytes.
+        match inner.load_chunk(&sa, 0, 0, 0, LEN).unwrap() {
+            ChunkLoc::Slot(i) => assert!(inner.chunks[i].buf[..LEN].iter().all(|&x| x == 0xAA)),
+            ChunkLoc::Scratch => panic!("a slot-sized chunk should land in a slot"),
+        }
+
+        // The hazard: the same key from map B *without* a clear hits A's resident slot and serves
+        // A's bytes — exactly the stale-geometry cross-serve issue #68 is about.
+        let before = inner.stats();
+        let loc = inner.load_chunk(&sb, 0, 0, 0, LEN).unwrap();
+        let after = inner.stats();
+        assert_eq!(after.chunk_hits, before.chunk_hits + 1, "same key must cross-serve before a clear");
+        match loc {
+            ChunkLoc::Slot(i) => assert!(inner.chunks[i].buf[..LEN].iter().all(|&x| x == 0xAA), "stale A bytes"),
+            ChunkLoc::Scratch => panic!("a slot-sized chunk should land in a slot"),
+        }
+        drop(inner);
+
+        // The fix: clear on the switch, then map B's read misses and returns B's bytes.
+        cache.clear();
+        let mut inner = cache.borrow_mut();
+        let before = inner.stats();
+        let loc = inner.load_chunk(&sb, 0, 0, 0, LEN).unwrap();
+        let after = inner.stats();
+        assert_eq!(after.chunk_hits, before.chunk_hits, "post-clear read must not hit a stale slot");
+        assert_eq!(after.chunk_misses, before.chunk_misses + 1, "post-clear read must miss + re-read");
+        match loc {
+            ChunkLoc::Slot(i) => assert!(inner.chunks[i].buf[..LEN].iter().all(|&x| x == 0xBB), "B bytes after clear"),
+            ChunkLoc::Scratch => panic!("a slot-sized chunk should land in a slot"),
+        }
+    }
+
+    /// The index-block cache keys a block by its absolute offset into the index region, which means
+    /// nothing across maps — so `clear()` must drop index blocks too, or a switched map's quadtree
+    /// read at the same offset would hit a stale block. Detected via the source-read counters: a
+    /// post-clear read of the same offset must re-read (a hit reads nothing).
+    #[test]
+    fn clear_invalidates_index_blocks() {
+        let data = [0x5Au8; 1024];
+        let src = SliceSource(&data);
+
+        let cache = MapCache::new();
+        let mut inner = cache.borrow_mut();
+
+        // Resident, then a hit (no source read).
+        inner.index_block(&src, 0).unwrap();
+        let before = inner.stats();
+        inner.index_block(&src, 0).unwrap();
+        assert_eq!(inner.stats().sd_reads, before.sd_reads, "a resident block must hit, not re-read");
+        drop(inner);
+
+        // After clear the same offset must miss and re-read from the source.
+        cache.clear();
+        let mut inner = cache.borrow_mut();
+        let before = inner.stats();
+        inner.index_block(&src, 0).unwrap();
+        assert_eq!(inner.stats().sd_reads, before.sd_reads + 1, "post-clear index read must re-read");
     }
 }
