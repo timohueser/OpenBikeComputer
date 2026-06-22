@@ -269,10 +269,12 @@ async fn usb_device_task(mut device: embassy_usb::UsbDevice<'static, UsbDriver>)
 #[cfg(feature = "debug-usb")]
 #[embassy_executor::task]
 async fn usb_rx_task(mut rx: CdcReceiver<'static, UsbDriver>) {
-    let mut reader = obc_platform::debug_usb::LineReader::new();
     let mut buf = [0u8; 64];
     loop {
         rx.wait_connection().await;
+        // A fresh reader per session: a partial line buffered when the previous session
+        // disconnected must not be prepended to (and corrupt) this session's first line.
+        let mut reader = obc_platform::debug_usb::LineReader::new();
         loop {
             match rx.read_packet(&mut buf).await {
                 Ok(n) => obc_platform::debug_usb::feed_bytes(&mut reader, &buf[..n]),
