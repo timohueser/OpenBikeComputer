@@ -1,17 +1,10 @@
-//! `obc-pack` CLI — the full end-to-end pipeline (`.osm.pbf` → `.obcm`), mirroring
-//! `packer/pack.py`: multi-PBF **merge** (Stage 5) → ingest (lines + closed ways +
-//! multipolygon relations, Stages 3–4) → bbox → **land generation** (Stage 5) →
-//! per-LOD simplify+quadtree → serialize. Same positional CLI as `pack.py`
-//! (`<pbf...> <config.json> <out.obcm>`) plus `--chunk-size` and `--no-land`, and
-//! it prints the stage strings the web builder's `_STAGE_MARKERS` scrapes
-//! ("Merging", "Pass 1/2", "Calculating BBox", "Generating land", "Building
-//! Quadtree", "Serializing", "Writing"), so it can be dropped behind
-//! `OBC_PACK_BACKEND=rust`.
-//!
-//! Validation is the feature-multiset + render gate (see `lib.rs` / the corpus
-//! README), not byte-identity: simplify runs in GEOS 3.14 here vs shapely's 3.13,
-//! and feature/ring order is not reproduced. The serializer + quadtree remain
-//! byte-exact in isolation (Stages 1–2).
+//! `obc-pack` CLI — the full end-to-end pipeline (`.osm.pbf` → `.obcm`): multi-PBF
+//! **merge** → ingest (lines + closed ways + multipolygon relations) → bbox →
+//! **land generation** → per-LOD simplify + quadtree → serialize. Positional CLI:
+//! `<pbf...> <config.json> <out.obcm>`, plus `--chunk-size` and `--no-land`. It
+//! prints one stage string per phase ("Merging", "Pass 1/2", "Calculating BBox",
+//! "Generating land", "Building Quadtree", "Serializing", "Writing") so the web
+//! builder UI can show progress.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -26,7 +19,7 @@ use obc_pack::land;
 use obc_pack::quadtree::build_lod;
 use obc_pack::serialize::serialize_lods_streaming;
 
-// Meters → degrees divisor for the simplify tolerance (mirrors `pack.py`). Shared with
+// Meters → degrees divisor for the simplify tolerance. Shared with
 // the reader/route/renderer so the packer's simplification scale matches the Earth model
 // everything else measures distance against.
 use obc_reader::M_PER_DEG;
@@ -55,7 +48,7 @@ fn parse_args() -> Result<Args, String> {
             _ => positional.push(a),
         }
     }
-    // pack.py contract: `<pbf...> <config.json> <out.obcm>` — last two positionals
+    // CLI contract: `<pbf...> <config.json> <out.obcm>` — last two positionals
     // are config + output, the rest are inputs.
     if positional.len() < 3 {
         return Err(
@@ -73,7 +66,7 @@ fn run() -> Result<(), String> {
     let chunk_size = args.chunk_size.unwrap_or(config.chunk_size);
 
     // --- Merge: >1 input ⇒ `osmium merge` + `osmium sort` to a temp, then ingest
-    // that (mirrors pack.py; the CLI is battle-tested, so we shell out, plan §6).
+    // that (the osmium CLI is battle-tested, so we shell out to it).
     // `_temps` keeps the temp files alive until run() returns, then drops them. ---
     let mut _temps: Vec<TempPath> = Vec::new();
     let pbf_to_ingest: String = if args.pbfs.len() > 1 {
@@ -105,12 +98,13 @@ fn run() -> Result<(), String> {
     }
 
     // --- Global bbox over features + coastlines, then TRUNCATE toward zero
-    // (`int(v*1e6)`), NOT round — the deliberate asymmetry from plan §4.3. ---
+    // (floored to whole µdeg), NOT round — a deliberate asymmetry with the
+    // serializer's round-to-nearest. ---
     println!("Calculating BBox...");
     let global_bbox = compute_bbox(&ingested);
 
     // --- Land: clip the global land-polygon dataset to the bbox and add the
-    // faces as features, styled by `natural.land` (Stage 5, mirrors pack.py). ---
+    // faces as features, styled by `natural.land`. ---
     if !args.no_land {
         if let Some(land) = config.land_style() {
             let (lid, lmin) = (land.id, land.min_lod);
@@ -131,7 +125,7 @@ fn run() -> Result<(), String> {
     }
 
     // --- Build + serialize the LOD pyramid in one streaming pass (Stage 6): each
-    // LOD's tree is built (cumulative + per-level simplify, like pack.py),
+    // LOD's tree is built (cumulative + per-level simplify),
     // serialized, streamed to disk, and dropped before the next — so peak memory
     // is ~one tree instead of all of them plus the whole output buffer. The bytes
     // are identical to the in-memory serializer. ---
@@ -178,7 +172,7 @@ fn run() -> Result<(), String> {
 }
 
 /// `total_bounds(features + coastlines)` then `int(v*1e6)` truncation. The coords
-/// are the exact osmium f64s (see `node_probe`), so the bbox matches the oracle's.
+/// are the exact osmium f64s, so the bbox is stable across runs.
 fn compute_bbox(ing: &obc_pack::ingest::Ingested) -> (i64, i64, i64, i64) {
     let (mut minx, mut miny, mut maxx, mut maxy) =
         (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
@@ -198,12 +192,12 @@ fn compute_bbox(ing: &obc_pack::ingest::Ingested) -> (i64, i64, i64, i64) {
             widen(x, y);
         }
     }
-    // `as i64` truncates toward zero — same as Python `int()`.
+    // `as i64` truncates toward zero — the bbox floors to whole microdegrees.
     ((minx * 1e6) as i64, (miny * 1e6) as i64, (maxx * 1e6) as i64, (maxy * 1e6) as i64)
 }
 
 /// Run an `osmium` subcommand (merge/sort), erroring helpfully if the CLI is
-/// missing. The Python pipeline shells out the same way (plan §6).
+/// missing.
 fn run_osmium(args: &[&str]) -> Result<(), String> {
     let status = Command::new("osmium")
         .args(args)
@@ -215,8 +209,7 @@ fn run_osmium(args: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
-/// A temp file path that deletes itself on drop — the merge/sort intermediates,
-/// like `pack.py`'s `NamedTemporaryFile`.
+/// A temp file path that deletes itself on drop — the merge/sort intermediates.
 struct TempPath(PathBuf);
 
 impl TempPath {
@@ -245,7 +238,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--version") {
         println!(
-            "obc-pack {} (stage 5: merge + ingest + relations + land + quadtree + serialize)",
+            "obc-pack {} (merge + ingest + relations + land + quadtree + serialize)",
             env!("CARGO_PKG_VERSION")
         );
         return ExitCode::SUCCESS;

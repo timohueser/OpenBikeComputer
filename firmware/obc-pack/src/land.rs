@@ -1,29 +1,23 @@
-//! `land.rs` — native port of `packer/obcm/land_ingest.py` (**Stage 5**). Generates
-//! the land-fill polygons for an extract by clipping the global
-//! [land-polygons-split-3857] dataset to the map's bounding box.
+//! `land.rs` — generate the land-fill polygons for an extract by clipping the
+//! global [land-polygons-split-3857] dataset to the map's bounding box. Self-
+//! contained: no GIS stack, just a direct shapefile read + closed-form
+//! reprojection + a GEOS clip.
 //!
 //! [land-polygons-split-3857]: https://osmdata.openstreetmap.de/data/land-polygons.html
 //!
-//! The oracle path is `fiona` (read the shapefile) + `pyproj` (reproject) +
-//! `shapely` (clip). This replaces all three with no Python:
-//!
 //!   - **Shapefile read** — the `.shp` is parsed directly (the polygon record
 //!     format is trivial), with a per-record **bounding-box skip** so only records
-//!     that touch the query box are decoded. This matches what GDAL's bbox filter
-//!     does (the dataset has no spatial index, so GDAL also scans record MBRs).
+//!     that touch the query box are decoded (the dataset has no spatial index).
 //!   - **Reproject** — EPSG:3857 here is the *Web Mercator Auxiliary Sphere*
 //!     (`SPHEROID` radius = `6378137`, the `.prj` confirms), i.e. the closed-form
-//!     spherical mercator. The forward/inverse below match `pyproj`'s EPSG:3857 to
-//!     ~1e-14° (verified) — far below the microdegree quantization — so the
-//!     generated land is µdeg-identical to the oracle. No PROJ datum grids.
-//!   - **Clip** — the same GEOS `intersection` shapely uses, against the box built
-//!     from the forward-projected bbox corners (shapely `box(...)` ring order),
-//!     done in 3857 *before* reprojecting the result (exactly the oracle order).
+//!     spherical mercator, computed directly below — no PROJ datum grids.
+//!   - **Clip** — a GEOS `intersection` against the box built from the forward-
+//!     projected bbox corners, done in 3857 *before* reprojecting the result.
 //!
 //! Output is one [`Geom::Polygon`] per land face (a clip can split one shapefile
 //! polygon into several, or yield a multipolygon — we flatten to simple polygons,
-//! the Stage-4 relation convention, so each flows through the existing
-//! simplify+quadtree path; `main.rs` styles them with the `natural.land` style).
+//! like the relation path, so each flows through the existing simplify+quadtree
+//! path; `main.rs` styles them with the `natural.land` style).
 
 use std::fs::File;
 use std::io::{BufReader, ErrorKind, Read};
@@ -36,7 +30,7 @@ use crate::geom::{collect_polygons, geom_from_geos, ring_to_coordseq, Geom};
 /// EPSG:3857 auxiliary-sphere radius = WGS84 semi-major axis (see the `.prj`).
 const R: f64 = 6_378_137.0;
 
-/// Where `land_ingest.py` caches the dataset (`~/.cache/obcm/land`).
+/// Where the dataset is cached (`~/.cache/obcm/land`).
 const LAND_URL: &str = "https://osmdata.openstreetmap.de/download/land-polygons-split-3857.zip";
 
 // --- Reprojection (closed-form spherical Web Mercator) ---------------------
@@ -50,7 +44,7 @@ fn merc_inverse(x: f64, y: f64) -> (f64, f64) {
 }
 
 /// EPSG:4326 → EPSG:3857: (lon°, lat°) → (meters east, meters north). Used only
-/// for the clip-box corners (mirrors the oracle's `Transformer.transform`).
+/// for the clip-box corners.
 #[inline]
 fn merc_forward(lon: f64, lat: f64) -> (f64, f64) {
     let x = R * lon.to_radians();
@@ -165,7 +159,7 @@ fn read_shapefile(
             continue;
         }
 
-        // Record MBR (4 doubles) — the skip filter, matching GDAL/`fiona`.
+        // Record MBR (4 doubles) — the bounding-box skip filter.
         let mut bbuf = [0u8; 32];
         r.read_exact(&mut bbuf).map_err(|e| format!("read record bbox: {e}"))?;
         consumed += 32;
@@ -218,8 +212,8 @@ fn parse_polygon_rings(body: &[u8]) -> Result<Vec<Vec<(f64, f64)>>, String> {
 }
 
 /// Clip one shapefile record's rings (in 3857) to the box, reproject, and append
-/// the resulting polygons. A record fully inside the box skips the GEOS clip — the
-/// oracle's `intersection` of a contained polygon returns it unchanged.
+/// the resulting polygons. A record fully inside the box skips the GEOS clip — an
+/// `intersection` of a contained polygon would return it unchanged.
 fn process_record(
     rings: Vec<Vec<(f64, f64)>>,
     fully_inside: bool,
@@ -258,7 +252,7 @@ fn process_record(
 /// Build a GEOS geometry from a record's rings (still in 3857). A single ring is a
 /// plain polygon; multiple rings (holes and/or disjoint outers) go through
 /// `build_area`, which applies the even-odd nesting rule to attach holes — robust
-/// to ring winding, matching how the oracle's OGR reader assembles the feature.
+/// to ring winding.
 fn geos_polygon_from_rings(rings: &[Vec<(f64, f64)>]) -> Option<Geometry> {
     if rings.len() == 1 {
         if rings[0].len() < 4 {
@@ -279,8 +273,8 @@ fn geos_polygon_from_rings(rings: &[Vec<(f64, f64)>]) -> Option<Geometry> {
     mls.build_area().ok()
 }
 
-/// The clip box as a GEOS polygon, in shapely `box(minx,miny,maxx,maxy)` ring
-/// order (same as [`crate::geom::clip_to_box`]).
+/// The clip box as a GEOS polygon, in `box(minx,miny,maxx,maxy)` ring order (same
+/// as [`crate::geom::clip_to_box`]).
 fn box_polygon((minx, miny, maxx, maxy): (f64, f64, f64, f64)) -> Result<Geometry, String> {
     let ring = [(maxx, miny), (maxx, maxy), (minx, maxy), (minx, miny), (maxx, miny)];
     let lr = Geometry::create_linear_ring(ring_to_coordseq(&ring))
@@ -296,10 +290,8 @@ fn cache_dir() -> Result<PathBuf, String> {
 }
 
 /// Return the cached `land_polygons.shp`, downloading + extracting the dataset on
-/// first use (~950 MB). Mirrors `land_ingest.py`'s cache layout. The oracle's
-/// `Last-Modified` freshness check is intentionally dropped — it needs an HTTP
-/// HEAD and the oracle itself proceeds with the local copy on any network error;
-/// delete the cache dir to force a refresh.
+/// first use (~950 MB). There's no `Last-Modified` freshness check — delete the
+/// cache dir to force a refresh.
 fn ensure_dataset() -> Result<PathBuf, String> {
     let dir = cache_dir()?;
     let shp = dir.join("land-polygons-split-3857/land_polygons.shp");
