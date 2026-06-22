@@ -4,13 +4,15 @@
 //! replays a recorded `.gpx` out over the device's USB-CDC debug link as fake fixes: it drives
 //! the **same** [`GpxPlayer`]/[`BaroSensor`] the simulator uses (deriving course/speed from
 //! motion, throttled to ~1 Hz), so a real recorded ride moves the rider on-device exactly as it
-//! does in the sim. A compass slider sets the heading the device shows when stopped, and a small
-//! readout shows the telemetry the device streams back (~1 Hz). It's the host twin of the sim's
+//! does in the sim. A compass slider sets the heading the device shows when stopped, a button row
+//! injects encoder/Back input (taps + holds) so the UI is drivable without touching the hardware,
+//! and a readout shows the device's render-stats telemetry. It's the host twin of the sim's
 //! control panel, pointed at real glass instead of the in-process app.
 //!
 //! Wire format (see `obc-platform::debug_usb`): host→device `F <lat> <lon> <course|-> <speed|->`,
-//! `A <m>`, `C <deg>`; device→host `T <ridden_m> <climb_m> <avg_kmh_x10> <speed_x10> <frame_us>
-//! <mode>`. ASCII, newline-terminated.
+//! `A <m>`, `C <deg>`, and input injection `K t <n>` / `K e <d|u>` / `K b <d|u>`; device→host
+//! `T <frame_us> <lod> <feat_drawn> <feat_tried> <feat_dropped> <chunks> <hits> <misses> <reads>
+//! <bytes>`. ASCII, newline-terminated.
 //!
 //! Usage: `obc-usb-host [--gpx FILE] [--port NAME] [--baud N] [--list]`.
 
@@ -19,21 +21,30 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use eframe::egui;
 use obc_app::{AltimeterSource, Fix, LocationSource};
 use obc_replay::{BaroSensor, GpxPlayer, Track};
 
-/// Device→host telemetry — the integer fields of `obc-platform::debug_usb::Telemetry`.
+/// How long a "hold" button keeps the edge down before releasing — past the device's ~500 ms
+/// long-press threshold, so the recogniser fires Hold / BackHold.
+const HOLD_MS: u64 = 700;
+
+/// Device→host render-stats telemetry — the integer fields of `obc-platform::debug_usb::Telemetry`
+/// (the same numbers as the RTT `map frame` log / the sim's Render Stats panel).
 #[derive(Clone, Copy, Default)]
 struct Telemetry {
-    ridden_m: u32,
-    climb_m: u32,
-    avg_kmh_x10: u32,
-    speed_mps_x10: u32,
     frame_us: u32,
-    mode: u8,
+    lod: u32,
+    feat_drawn: u32,
+    feat_tried: u32,
+    feat_dropped: u32,
+    chunks: u32,
+    cache_hits: u32,
+    cache_misses: u32,
+    sd_reads: u32,
+    bytes_read: u32,
 }
 
 /// Parse a `T …` telemetry line; `None` for anything else (so other device chatter is ignored).
@@ -43,12 +54,16 @@ fn parse_telemetry(line: &str) -> Option<Telemetry> {
         return None;
     }
     Some(Telemetry {
-        ridden_m: it.next()?.parse().ok()?,
-        climb_m: it.next()?.parse().ok()?,
-        avg_kmh_x10: it.next()?.parse().ok()?,
-        speed_mps_x10: it.next()?.parse().ok()?,
         frame_us: it.next()?.parse().ok()?,
-        mode: it.next()?.parse().ok()?,
+        lod: it.next()?.parse().ok()?,
+        feat_drawn: it.next()?.parse().ok()?,
+        feat_tried: it.next()?.parse().ok()?,
+        feat_dropped: it.next()?.parse().ok()?,
+        chunks: it.next()?.parse().ok()?,
+        cache_hits: it.next()?.parse().ok()?,
+        cache_misses: it.next()?.parse().ok()?,
+        sd_reads: it.next()?.parse().ok()?,
+        bytes_read: it.next()?.parse().ok()?,
     })
 }
 
@@ -186,7 +201,7 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("OBC USB Feeder")
-            .with_inner_size([440.0, 660.0]),
+            .with_inner_size([460.0, 720.0]),
         ..Default::default()
     };
     eframe::run_native("OBC USB Feeder", options, Box::new(|_cc| Ok(Box::new(FeederApp::new(args)))))
@@ -212,6 +227,8 @@ struct FeederApp {
     log: std::collections::VecDeque<String>,
     // outgoing lines queued during a frame, flushed to the port after the UI closure
     pending: Vec<String>,
+    // scheduled button-up edges for "hold" presses: (when, line) without the trailing `\n`
+    pending_ups: Vec<(Instant, String)>,
 }
 
 impl FeederApp {
@@ -231,12 +248,12 @@ impl FeederApp {
             telemetry: None,
             log: std::collections::VecDeque::new(),
             pending: Vec::new(),
+            pending_ups: Vec::new(),
         };
         app.selected_port = args.port.clone().or_else(|| app.ports.first().cloned());
         if let Some(path) = &args.gpx {
             app.load_gpx(std::path::Path::new(path));
         }
-        // Auto-connect when a port was named on the command line.
         if args.port.is_some() {
             app.toggle_connection();
         }
@@ -278,14 +295,12 @@ impl FeederApp {
             Ok(c) => {
                 self.status = format!("connected: {}", c.name);
                 self.conn = Some(c);
-                // Send the current compass once on connect so the device has a heading immediately.
-                self.last_compass_sent = None;
+                self.last_compass_sent = None; // re-send compass on (re)connect
             }
             Err(e) => self.status = format!("error: {e}"),
         }
     }
 
-    /// Drain reader-thread events into the telemetry readout + log.
     fn drain_events(&mut self) {
         let mut disconnected: Option<String> = None;
         if let Some(conn) = &self.conn {
@@ -303,8 +318,8 @@ impl FeederApp {
         }
     }
 
-    /// Advance the replay one frame and queue the resulting fix/altitude lines. Mirrors the sim's
-    /// `replay_step`, but emits over serial instead of ticking the in-process app.
+    /// Advance the replay one frame and queue the resulting fix/altitude lines (mirrors the sim's
+    /// `replay_step`, emitting over serial instead of ticking the app).
     fn step_playback(&mut self, dt: f64) {
         if self.conn.is_none() {
             return;
@@ -314,19 +329,15 @@ impl FeederApp {
             return;
         }
         player.advance(dt);
-        // GPS fix on its ~1 Hz cadence (the player throttles `poll`).
         if let Some(fix) = player.poll() {
             self.pending.push(fix_line(&fix));
         }
-        // Barometer on its own (coarser) cadence.
         self.baro.feed(player.elevation_at(player.time()), player.time());
         if let Some(alt) = self.baro.poll() {
             self.pending.push(format!("A {alt:.2}\n"));
         }
     }
 
-    /// Queue a compass line when the slider moved (≥1°) since the last send, so the device's
-    /// stopped-heading follows it without spamming the link.
     fn queue_compass(&mut self) {
         let send = match self.last_compass_sent {
             Some(prev) => (prev - self.compass_deg).abs() >= 1.0,
@@ -335,6 +346,42 @@ impl FeederApp {
         if send {
             self.last_compass_sent = Some(self.compass_deg);
             self.pending.push(format!("C {:.1}\n", self.compass_deg));
+        }
+    }
+
+    /// Queue a raw input line (without the trailing newline).
+    fn key(&mut self, line: &str) {
+        self.pending.push(format!("{line}\n"));
+    }
+
+    /// A tap: down + up in the same frame → a Press / Back gesture.
+    fn tap(&mut self, k: char) {
+        self.key(&format!("K {k} d"));
+        self.key(&format!("K {k} u"));
+    }
+
+    /// A hold: down now, up after [`HOLD_MS`] → a Hold / BackHold gesture (the recogniser fires at
+    /// its threshold before the up arrives).
+    fn hold(&mut self, k: char) {
+        self.key(&format!("K {k} d"));
+        self.pending_ups
+            .push((Instant::now() + Duration::from_millis(HOLD_MS), format!("K {k} u")));
+    }
+
+    /// Move any scheduled button-up edges that are now due into the outgoing queue.
+    fn flush_due_ups(&mut self) {
+        let now = Instant::now();
+        let mut due = Vec::new();
+        self.pending_ups.retain(|(when, line)| {
+            if *when <= now {
+                due.push(line.clone());
+                false
+            } else {
+                true
+            }
+        });
+        for line in due {
+            self.key(&line);
         }
     }
 
@@ -359,18 +406,23 @@ impl FeederApp {
 impl eframe::App for FeederApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_events();
+        let connected = self.conn.is_some();
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            // Let sliders span the panel width (leave room for the value box), so the replay /
+            // compass rows use the full width instead of egui's narrow default.
+            ui.spacing_mut().slider_width = (ui.available_width() - 96.0).max(180.0);
+
             ui.heading("OBC USB Feeder");
             ui.label(egui::RichText::new(&self.status).weak());
             ui.add_space(6.0);
 
             // --- Serial ---
-            ui.group(|ui| {
+            full_group(ui, |ui| {
                 ui.label(egui::RichText::new("Serial").strong());
                 ui.horizontal(|ui| {
-                    let connected = self.conn.is_some();
                     egui::ComboBox::from_id_salt("port")
+                        .width(220.0)
                         .selected_text(self.selected_port.clone().unwrap_or_else(|| "—".into()))
                         .show_ui(ui, |ui| {
                             for p in &self.ports.clone() {
@@ -380,20 +432,15 @@ impl eframe::App for FeederApp {
                     if ui.add_enabled(!connected, egui::Button::new("⟳")).clicked() {
                         self.ports = list_ports();
                     }
-                    ui.add_enabled_ui(!connected, |ui| {
-                        ui.add(egui::DragValue::new(&mut self.baud).prefix("baud "));
-                    });
-                    let label = if connected { "Disconnect" } else { "Connect" };
-                    if ui.button(label).clicked() {
+                    if ui.button(if connected { "Disconnect" } else { "Connect" }).clicked() {
                         self.toggle_connection();
                     }
                 });
             });
-
             ui.add_space(6.0);
 
-            // --- GPX replay (mirrors the sim control panel) ---
-            ui.group(|ui| {
+            // --- GPX replay ---
+            full_group(ui, |ui| {
                 ui.label(egui::RichText::new("GPX replay").strong());
                 if ui.button("Load GPX…").clicked() {
                     if let Some(path) =
@@ -410,12 +457,12 @@ impl eframe::App for FeederApp {
                 }
                 if let Some(player) = self.player.as_mut() {
                     let dur = player.duration();
-                    ui.horizontal(|ui| {
-                        let play = if player.is_playing() { "⏸ Pause" } else { "▶ Play" };
-                        if ui.button(play).clicked() {
-                            player.toggle();
-                        }
-                    });
+                    if ui
+                        .button(if player.is_playing() { "⏸ Pause" } else { "▶ Play" })
+                        .clicked()
+                    {
+                        player.toggle();
+                    }
                     if dur > 0.0 {
                         let mut t = player.time();
                         if ui
@@ -429,39 +476,80 @@ impl eframe::App for FeederApp {
                         if ui.add(egui::Slider::new(&mut speed, 1.0..=10.0).suffix("×")).changed() {
                             player.set_speed(speed);
                         }
+                        ui.label(
+                            egui::RichText::new("keep at 1× over USB — the device clocks fixes on its own wall time, so >1× reads as teleporting")
+                                .weak()
+                                .size(10.0),
+                        );
                     }
                 }
             });
-
             ui.add_space(6.0);
 
             // --- Compass (heading when stopped) ---
-            ui.group(|ui| {
+            full_group(ui, |ui| {
                 ui.label(egui::RichText::new("Compass (heading when stopped)").strong());
-                if ui
-                    .add(egui::Slider::new(&mut self.compass_deg, 0.0..=360.0).suffix("°").step_by(1.0))
-                    .changed()
-                {
-                    // queued after the closure (queue_compass) so it sends on change
-                }
+                ui.add(
+                    egui::Slider::new(&mut self.compass_deg, 0.0..=360.0).suffix("°").step_by(1.0),
+                );
             });
-
             ui.add_space(6.0);
 
-            // --- Telemetry readout ---
-            ui.group(|ui| {
-                ui.label(egui::RichText::new("Telemetry (device → host)").strong());
+            // --- Input injection (drive the device's encoder + Back remotely) ---
+            full_group(ui, |ui| {
+                ui.label(egui::RichText::new("Input (encoder + Back)").strong());
+                ui.add_enabled_ui(connected, |ui| {
+                    ui.horizontal(|ui| {
+                        if ui.button("◀ Prev").clicked() {
+                            self.key("K t -1");
+                        }
+                        if ui.button("Next ▶").clicked() {
+                            self.key("K t 1");
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.button("Select (tap)").clicked() {
+                            self.tap('e');
+                        }
+                        if ui.button("Select (hold)").clicked() {
+                            self.hold('e');
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.button("Back (tap)").clicked() {
+                            self.tap('b');
+                        }
+                        if ui.button("Back (hold)").clicked() {
+                            self.hold('b');
+                        }
+                    });
+                });
+            });
+            ui.add_space(6.0);
+
+            // --- Render-stats telemetry (device → host) ---
+            full_group(ui, |ui| {
+                ui.label(egui::RichText::new("Render stats (device → host)").strong());
                 match self.telemetry {
                     Some(t) => {
                         egui::Grid::new("telemetry").num_columns(2).spacing([12.0, 2.0]).show(
                             ui,
                             |ui| {
-                                row(ui, "Distance", &format!("{:.2} km", t.ridden_m as f32 / 1000.0));
-                                row(ui, "Climb", &format!("{} m", t.climb_m));
-                                row(ui, "Avg speed", &format!("{:.1} km/h", t.avg_kmh_x10 as f32 / 10.0));
-                                row(ui, "Speed", &format!("{:.1} m/s", t.speed_mps_x10 as f32 / 10.0));
-                                row(ui, "Frame", &format!("{:.1} ms", t.frame_us as f32 / 1000.0));
-                                row(ui, "Mode", mode_str(t.mode));
+                                row(ui, "Frame", &format!("{:.2} ms", t.frame_us as f32 / 1000.0));
+                                row(ui, "LOD", &t.lod.to_string());
+                                row(ui, "Features", &format!("{} / {} drawn", t.feat_drawn, t.feat_tried));
+                                ui.label("Dropped");
+                                let c = if t.feat_dropped > 0 {
+                                    egui::Color32::from_rgb(220, 80, 80)
+                                } else {
+                                    ui.visuals().text_color()
+                                };
+                                ui.colored_label(c, t.feat_dropped.to_string());
+                                ui.end_row();
+                                row(ui, "Chunks", &t.chunks.to_string());
+                                let reqs = t.cache_hits + t.cache_misses;
+                                let hit = if reqs == 0 { 0.0 } else { 100.0 * t.cache_hits as f32 / reqs as f32 };
+                                row(ui, "Map cache", &format!("{hit:.0}% hit · {} rd · {} B", t.sd_reads, t.bytes_read));
                             },
                         );
                     }
@@ -470,10 +558,8 @@ impl eframe::App for FeederApp {
                     }
                 }
             });
-
             ui.add_space(6.0);
 
-            // --- Wire log ---
             ui.collapsing("Wire log", |ui| {
                 egui::ScrollArea::vertical().max_height(140.0).stick_to_bottom(true).show(ui, |ui| {
                     for line in &self.log {
@@ -483,18 +569,27 @@ impl eframe::App for FeederApp {
             });
         });
 
-        // After the UI: queue the compass (on change), advance the replay, flush to the port.
+        // After the UI: queue compass-on-change, advance the replay, release any due holds, flush.
         self.queue_compass();
         let dt = ctx.input(|i| i.stable_dt) as f64;
         self.step_playback(dt);
+        self.flush_due_ups();
         self.flush_pending();
 
-        // Keep animating while a replay is playing so the fix stream is steady.
+        // Keep animating while playing (steady fix stream) or while holds are pending.
         let playing = self.player.as_ref().is_some_and(|p| p.is_playing());
-        if playing || self.conn.is_some() {
+        if playing || !self.pending_ups.is_empty() || self.conn.is_some() {
             ctx.request_repaint_after(Duration::from_millis(16));
         }
     }
+}
+
+/// A group that fills the panel width (so sections don't shrink-wrap their content).
+fn full_group(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+    ui.group(|ui| {
+        ui.set_width(ui.available_width());
+        add(ui);
+    });
 }
 
 /// A two-column telemetry row.
@@ -502,15 +597,6 @@ fn row(ui: &mut egui::Ui, label: &str, value: &str) {
     ui.label(label);
     ui.label(value);
     ui.end_row();
-}
-
-fn mode_str(mode: u8) -> &'static str {
-    match mode {
-        0 => "Idle",
-        1 => "Riding",
-        2 => "Paused",
-        _ => "?",
-    }
 }
 
 /// `M:SS` clock for the seek readout.

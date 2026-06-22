@@ -169,7 +169,9 @@ use embassy_time::Instant;
 #[cfg(not(feature = "glass-demo"))]
 use embedded_graphics::pixelcolor::{raw::RawU16, Rgb565};
 #[cfg(not(feature = "glass-demo"))]
-use obc_app::{App, AppState, InputClock, RideClock, RouteSummary, Sensors, TrackSink};
+use obc_app::{
+    App, AppState, InputClock, InputEvent, InputSource, RideClock, RouteSummary, Sensors, TrackSink,
+};
 // Only the `debug-usb`-off fallback implements its own `LocationSource` (`SynthLocation`); the
 // USB build's sources live in obc-platform, so these would be unused there.
 #[cfg(all(not(feature = "glass-demo"), not(feature = "debug-usb")))]
@@ -277,14 +279,29 @@ async fn usb_tx_task(mut tx: CdcSender<'static, UsbDriver>) {
     }
 }
 
-/// Map the app's operating mode to the telemetry wire code (`0` Idle, `1` Riding, `2` Paused).
-/// Used only by the app loop's telemetry publish, which the glass-demo build doesn't compile.
-#[cfg(all(feature = "debug-usb", not(feature = "glass-demo")))]
-fn mode_code(mode: obc_app::Mode) -> u8 {
-    match mode {
-        obc_app::Mode::Idle => 0,
-        obc_app::Mode::Riding => 1,
-        obc_app::Mode::Paused => 2,
+/// Chains two input sources for the gesture recogniser: drains `a` (the physical buttons) fully,
+/// then `b` (the USB-injected events with `debug-usb`, else [`NullInput`]). So the recogniser sees
+/// injected turns/edges interleaved with real presses and turns them into gestures identically.
+#[cfg(not(feature = "glass-demo"))]
+struct ChainedInput<'a> {
+    a: &'a mut dyn InputSource,
+    b: &'a mut dyn InputSource,
+}
+#[cfg(not(feature = "glass-demo"))]
+impl InputSource for ChainedInput<'_> {
+    fn poll(&mut self) -> Option<InputEvent> {
+        self.a.poll().or_else(|| self.b.poll())
+    }
+}
+
+/// An input source that never yields — the `debug-usb`-off stand-in for the USB-injected stream,
+/// so the recogniser call site is one code path in both builds.
+#[cfg(all(not(feature = "glass-demo"), not(feature = "debug-usb")))]
+struct NullInput;
+#[cfg(all(not(feature = "glass-demo"), not(feature = "debug-usb")))]
+impl InputSource for NullInput {
+    fn poll(&mut self) -> Option<InputEvent> {
+        None
     }
 }
 
@@ -413,10 +430,17 @@ async fn input_overlay_task(
     loop {
         let now = start.elapsed().as_millis() as u32;
         buttons.update(now);
+        // Physical buttons + (with `debug-usb`) the USB-injected events, drained into one
+        // recogniser pass — so a host can drive the UI (taps/holds) like the real buttons.
+        #[cfg(feature = "debug-usb")]
+        let mut usb_in = obc_platform::debug_usb::DebugInput;
+        #[cfg(not(feature = "debug-usb"))]
+        let mut usb_in = NullInput;
+        let mut input = ChainedInput { a: &mut buttons, b: &mut usb_in };
         // Recognise this frame's input on the *input* clock (wall time, preemptive). Each
         // gesture is pushed to the map plane; the bulge is animated below regardless, so the
         // press is confirmed on screen immediately even before the map plane drains it.
-        plane.recognize(InputClock(now), &mut buttons, |g| {
+        plane.recognize(InputClock(now), &mut input, |g| {
             if gestures.try_send(g).is_err() {
                 defmt::warn!("gesture channel full — dropped a gesture (map plane stalled?)");
             }
@@ -1211,11 +1235,11 @@ async fn main(spawner: Spawner) {
         // USB feed needs no re-centre — it streams absolute positions, so this is `debug-usb`-off only).
         #[cfg(not(feature = "debug-usb"))]
         let mut prev_route: Option<usize> = None;
-        // Telemetry throttle + the last map-render time, published host-ward at ~1 Hz (issue #38).
+        // Telemetry throttle + the last map frame's render stats, published host-ward (issue #38).
         #[cfg(feature = "debug-usb")]
         let mut last_telem_ms: u32 = 0;
         #[cfg(feature = "debug-usb")]
-        let mut last_render_us: u32 = 0;
+        let mut last_telem = obc_platform::debug_usb::Telemetry::default();
         // The active route's parsed chunk index, cached across frames (issue #44). `index_route`
         // is the route it belongs to; a mismatch triggers one rebuild off the open file, so a
         // per-frame redraw streams geometry without re-walking the index off the SD card.
@@ -1236,11 +1260,17 @@ async fn main(spawner: Spawner) {
                 }
                 app.advance_animations(InputClock(now));
             }
-            // Single-executor: recognise + apply + animate inline, the cooperative path.
+            // Single-executor: recognise + apply + animate inline, the cooperative path. Physical
+            // buttons + (with `debug-usb`) the USB-injected events, chained into one pass.
             #[cfg(feature = "single-executor")]
             {
                 buttons.update(now);
-                app.handle_input(InputClock(now), &mut buttons);
+                #[cfg(feature = "debug-usb")]
+                let mut usb_in = obc_platform::debug_usb::DebugInput;
+                #[cfg(not(feature = "debug-usb"))]
+                let mut usb_in = NullInput;
+                let mut input = ChainedInput { a: &mut buttons, b: &mut usb_in };
+                app.handle_input(InputClock(now), &mut input);
             }
 
             let active = app.activity.active_route;
@@ -1384,10 +1414,22 @@ async fn main(spawner: Spawner) {
                         color_fn,
                     );
                     let render_us = t0.elapsed().as_micros();
-                    // Remember it for the host telemetry line (the panel's "Render" readout).
+                    // Snapshot this frame's render stats for the host telemetry line (the same
+                    // numbers as the RTT `map frame` log / the sim's Render Stats panel).
                     #[cfg(feature = "debug-usb")]
                     {
-                        last_render_us = render_us as u32;
+                        last_telem = obc_platform::debug_usb::Telemetry {
+                            frame_us: render_us as u32,
+                            lod: stats.lod as u8,
+                            feat_drawn: stats.features_drawn as u32,
+                            feat_tried: stats.features_tried as u32,
+                            feat_dropped: stats.features_dropped as u32,
+                            chunks: stats.chunks_visited as u32,
+                            cache_hits: stats.map_chunk_hits,
+                            cache_misses: stats.map_chunk_misses,
+                            sd_reads: stats.map_sd_reads,
+                            bytes_read: stats.map_bytes_read,
+                        };
                     }
 
                     // Flip to the freshly-drawn buffer at the next vblank. Swap front/back roles
@@ -1464,22 +1506,14 @@ async fn main(spawner: Spawner) {
                 );
             }
 
-            // Publish telemetry host-ward at ~1 Hz (issue #38): one compact line the host readout
-            // shows — distance / climb / avg / current speed / last frame time / mode. Throttled
-            // here (not in the USB task) so the link never floods and the device never stalls on it.
+            // Publish render-stats telemetry host-ward at ~2 Hz (issue #38): the last map frame's
+            // numbers (render time / LOD / features / chunks / map-cache + SD), the same data the
+            // RTT `map frame` log carries. Throttled here (not in the USB task) so the link never
+            // floods and the device never stalls on it.
             #[cfg(feature = "debug-usb")]
-            if now.wrapping_sub(last_telem_ms) >= 1000 {
+            if now.wrapping_sub(last_telem_ms) >= 500 {
                 last_telem_ms = now;
-                let a = &app.activity;
-                let speed = app.state.user_fix.and_then(|f| f.speed_mps).unwrap_or(0.0);
-                obc_platform::debug_usb::set_telemetry(obc_platform::debug_usb::Telemetry {
-                    ridden_m: a.ridden_m as u32,
-                    climb_m: a.climb_m() as u32,
-                    avg_kmh_x10: (a.avg_kmh().unwrap_or(0.0) * 10.0) as u32,
-                    speed_mps_x10: (speed * 10.0) as u32,
-                    frame_us: last_render_us,
-                    mode: mode_code(app.mode()),
-                });
+                obc_platform::debug_usb::set_telemetry(last_telem);
             }
 
             Timer::after_millis(LOOP_MS).await;
