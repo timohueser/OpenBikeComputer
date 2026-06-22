@@ -2436,6 +2436,7 @@ version = "0.1.0"
 dependencies = [
  "eframe",
  "obc-app",
+ "obc-platform",
  "obc-replay",
  "rfd",
  "serialport",

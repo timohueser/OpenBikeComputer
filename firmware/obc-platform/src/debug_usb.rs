@@ -25,21 +25,25 @@
 //! stats (the same numbers as the RTT `map frame` log / the sim's Render Stats panel), at a low
 //! fixed rate so the link never floods.
 //!
-//! ## Fresh-fix contract (#43)
-//! Each parsed *sensor* sample is handed across to the app through an embassy [`Signal`], whose
-//! `try_take` returns a value exactly **once** per signal — so [`DebugLocation::poll`] yields
+//! ## Fresh-fix contract (#43) — behind `debug-usb`
+//! Each parsed *sensor* sample is handed across to the app through an embassy `Signal`, whose
+//! `try_take` returns a value exactly **once** per signal — so `DebugLocation::poll` yields
 //! `Some` only on the tick a new fix arrived and `None` between, the same cadence a real ~1 Hz
 //! receiver follows. Returning the latest fix on *every* ~8 ms poll would re-trigger the
 //! teleport-rejection bug #43 fixes; the `Signal` gives the correct semantics for free. Injected
-//! input events instead go through a small [`Channel`] (a queue, not a latch) so a burst of edges
-//! is delivered in order, exactly as the button debouncer's ring would.
+//! input events instead go through a small `Channel` (a queue, not a latch) so a burst of edges
+//! is delivered in order, exactly as the button debouncer's ring would. This hand-off (the
+//! `Signal`/`Channel` statics + the [`DebugLocation`]/[`DebugAltimeter`]/[`DebugCompass`]/
+//! [`DebugInput`] sources) lives behind the `debug-usb` feature; the pure codec above does not.
 
 use core::fmt::Write;
 
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::Channel;
-use embassy_sync::signal::Signal;
-use obc_app::{AltimeterSource, Button, ButtonEvent, CompassSource, Fix, InputEvent, InputSource, LocationSource};
+// The pure protocol below (parser, encoders, `LineReader`, `Telemetry`) needs only these app
+// types — no embassy-sync — so it is **always** compiled and the host feeder (`obc-usb-host`) can
+// reuse the one canonical codec with default features. The `Signal`/`Channel` plumbing that
+// bridges parsed samples to the app's HAL traits pulls embassy-sync, so it stays behind
+// `debug-usb` (with its source-trait imports) at the bottom of the file.
+use obc_app::{Button, ButtonEvent, Fix, InputEvent};
 
 /// Longest line we accept. The widest message is an `F` with full i32 lat/lon and float
 /// course/speed (`F -2147483648 -2147483648 359.99 99.99`) ≈ 45 bytes; 64 leaves slack.
@@ -108,6 +112,37 @@ fn edge(tok: &str, b: Button) -> Option<ButtonEvent> {
     }
 }
 
+/// Encode a [`Fix`] as an `F` line (the exact inverse of the `F` arm of [`parse_line`]): `F <lat>
+/// <lon> <course|-> <speed|->\n`, with `course` at `{:.1}` and `speed` at `{:.2}`, and the `-`
+/// sentinel for a missing (standstill) field so each stays positional. The host feeder builds its
+/// outgoing fix lines through this so device and host share one encoder. Cap sized to the worst
+/// case: `F ` + two i32 (11 chars each) + two spaces + `360.0` + ` ` + `99.99` + `\n` ≈ 38 bytes;
+/// 48 leaves slack, so the `write!`s below truly cannot truncate.
+pub fn format_fix(f: &Fix) -> heapless::String<48> {
+    let mut s = heapless::String::new();
+    // Infallible for the cap above; ignore the Result rather than panic on the MCU.
+    let _ = write!(s, "F {} {} ", f.lat, f.lon);
+    match f.course {
+        Some(c) => {
+            let _ = write!(s, "{c:.1}");
+        }
+        None => {
+            let _ = s.push('-');
+        }
+    }
+    let _ = s.push(' ');
+    match f.speed_mps {
+        Some(v) => {
+            let _ = write!(s, "{v:.2}");
+        }
+        None => {
+            let _ = s.push('-');
+        }
+    }
+    let _ = s.push('\n');
+    s
+}
+
 /// Accumulates raw CDC bytes into lines, parsing each complete `\n`-terminated line. CDC delivers
 /// bytes in arbitrary chunks, so the board calls [`feed`](LineReader::feed) (or the convenience
 /// [`feed_bytes`]) with each read; over-long lines (no newline within [`LINE_MAX`]) are dropped to
@@ -158,77 +193,6 @@ impl LineReader {
     }
 }
 
-// --- the cross-task hand-off: parsed samples in, telemetry out ---
-
-/// Latest GPS fix, with fresh-fix semantics (`try_take` yields it once). See the module docs.
-static FIX: Signal<CriticalSectionRawMutex, Fix> = Signal::new();
-/// Latest barometric-altitude sample (metres).
-static ALT: Signal<CriticalSectionRawMutex, f32> = Signal::new();
-/// Latest compass heading (degrees CW from north).
-static COMPASS: Signal<CriticalSectionRawMutex, f32> = Signal::new();
-/// Latest device telemetry to send host-ward; the app sets it, the CDC task awaits it.
-static TELEMETRY: Signal<CriticalSectionRawMutex, Telemetry> = Signal::new();
-
-/// Injected input events (encoder turns / button edges), queued in order for the input plane to
-/// drain alongside the physical buttons. A queue, not a latch: a tap is a down+up *pair* and a
-/// burst must arrive intact. Sized like the gesture channel — a frame yields at most a couple.
-const INPUT_QUEUE: usize = 16;
-static INPUT: Channel<CriticalSectionRawMutex, InputEvent, INPUT_QUEUE> = Channel::new();
-
-/// Route a decoded [`Msg`] to its signal/queue (the bridge from the USB RX task to the app poll).
-/// The board passes this to [`LineReader::feed`]; [`feed_bytes`] bundles both.
-pub fn dispatch(msg: Msg) {
-    match msg {
-        Msg::Fix(f) => FIX.signal(f),
-        Msg::Alt(a) => ALT.signal(a),
-        Msg::Compass(c) => COMPASS.signal(c),
-        // Drop on the (unreachable) overflow rather than block the RX task.
-        Msg::Input(ev) => {
-            let _ = INPUT.try_send(ev);
-        }
-    }
-}
-
-/// Convenience for the board's CDC RX loop: accumulate `bytes` and dispatch every complete line
-/// to the sensor signals. `reader` persists across reads (it holds the partial-line buffer).
-pub fn feed_bytes(reader: &mut LineReader, bytes: &[u8]) {
-    reader.feed(bytes, dispatch);
-}
-
-/// The user's location, streamed over USB. Hand `&mut DebugLocation` to `Sensors::loc`.
-pub struct DebugLocation;
-impl LocationSource for DebugLocation {
-    fn poll(&mut self) -> Option<Fix> {
-        FIX.try_take()
-    }
-}
-
-/// The barometric altimeter, streamed over USB. Hand `&mut DebugAltimeter` to `Sensors::altimeter`.
-pub struct DebugAltimeter;
-impl AltimeterSource for DebugAltimeter {
-    fn poll(&mut self) -> Option<f32> {
-        ALT.try_take()
-    }
-}
-
-/// The electronic compass, streamed over USB. Hand `&mut DebugCompass` to `Sensors::compass`.
-pub struct DebugCompass;
-impl CompassSource for DebugCompass {
-    fn poll(&mut self) -> Option<f32> {
-        COMPASS.try_take()
-    }
-}
-
-/// Injected input, drained by the input plane next to the physical buttons. The board chains this
-/// after its `ButtonInput` into the gesture recogniser, so injected turns/edges become gestures
-/// (taps and holds) identically to real presses.
-pub struct DebugInput;
-impl InputSource for DebugInput {
-    fn poll(&mut self) -> Option<InputEvent> {
-        INPUT.try_receive().ok()
-    }
-}
-
 /// The last map frame's **render stats** — the same numbers as the RTT `map frame` log and the
 /// sim's Render Stats panel (frame time, LOD, feature/chunk counts, map-cache + SD accounting).
 /// Snapshotted from [`RenderStats`](obc_render::RenderStats) by the board after each map render and
@@ -276,17 +240,133 @@ pub fn format_telemetry(t: &Telemetry) -> heapless::String<112> {
     s
 }
 
-/// Publish the latest telemetry (called by the app loop, throttled). Overwrites any unsent value,
-/// so the host always gets the freshest snapshot.
-pub fn set_telemetry(t: Telemetry) {
-    TELEMETRY.signal(t);
+/// Parse a `T …` telemetry line back into a [`Telemetry`] — the exact inverse of
+/// [`format_telemetry`] — or `None` for a non-`T` line or one with a missing / malformed field (so
+/// other device chatter is simply ignored). The host feeder reads its render-stats readout through
+/// this so device and host share one telemetry codec; matching [`Telemetry::lod`] it parses `lod`
+/// as a `u8`.
+pub fn parse_telemetry(line: &str) -> Option<Telemetry> {
+    let mut it = line.split_ascii_whitespace();
+    if it.next()? != "T" {
+        return None;
+    }
+    Some(Telemetry {
+        frame_us: it.next()?.parse().ok()?,
+        lod: it.next()?.parse().ok()?,
+        feat_drawn: it.next()?.parse().ok()?,
+        feat_tried: it.next()?.parse().ok()?,
+        feat_dropped: it.next()?.parse().ok()?,
+        chunks: it.next()?.parse().ok()?,
+        cache_hits: it.next()?.parse().ok()?,
+        cache_misses: it.next()?.parse().ok()?,
+        sd_reads: it.next()?.parse().ok()?,
+        bytes_read: it.next()?.parse().ok()?,
+    })
 }
 
-/// Await the next published telemetry (the CDC TX task), so the send cadence is driven by the
-/// app's [`set_telemetry`] calls — no polling, no flooding.
-pub async fn wait_telemetry() -> Telemetry {
-    TELEMETRY.wait().await
+// --- the cross-task hand-off: parsed samples in, telemetry out ---
+//
+// Everything below pulls embassy-sync (`Signal`/`Channel`) and the app's source traits, so it is
+// gated behind `debug-usb`. The board crate enables the feature and owns the embassy-usb CDC
+// driver; the host feeder builds without it and reuses only the pure codec above.
+#[cfg(feature = "debug-usb")]
+mod handoff {
+    use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+    use embassy_sync::channel::Channel;
+    use embassy_sync::signal::Signal;
+    use obc_app::{AltimeterSource, CompassSource, Fix, InputEvent, InputSource, LocationSource};
+
+    use super::{LineReader, Msg, Telemetry};
+
+    /// Latest GPS fix, with fresh-fix semantics (`try_take` yields it once). See the module docs.
+    static FIX: Signal<CriticalSectionRawMutex, Fix> = Signal::new();
+    /// Latest barometric-altitude sample (metres).
+    static ALT: Signal<CriticalSectionRawMutex, f32> = Signal::new();
+    /// Latest compass heading (degrees CW from north).
+    static COMPASS: Signal<CriticalSectionRawMutex, f32> = Signal::new();
+    /// Latest device telemetry to send host-ward; the app sets it, the CDC task awaits it.
+    static TELEMETRY: Signal<CriticalSectionRawMutex, Telemetry> = Signal::new();
+
+    /// Injected input events (encoder turns / button edges), queued in order for the input plane to
+    /// drain alongside the physical buttons. A queue, not a latch: a tap is a down+up *pair* and a
+    /// burst must arrive intact. Sized like the gesture channel — a frame yields at most a couple.
+    const INPUT_QUEUE: usize = 16;
+    static INPUT: Channel<CriticalSectionRawMutex, InputEvent, INPUT_QUEUE> = Channel::new();
+
+    /// Route a decoded [`Msg`] to its signal/queue (the bridge from the USB RX task to the app
+    /// poll). The board passes this to [`LineReader::feed`]; [`feed_bytes`] bundles both.
+    pub fn dispatch(msg: Msg) {
+        match msg {
+            Msg::Fix(f) => FIX.signal(f),
+            Msg::Alt(a) => ALT.signal(a),
+            Msg::Compass(c) => COMPASS.signal(c),
+            // Drop on the (unreachable) overflow rather than block the RX task.
+            Msg::Input(ev) => {
+                let _ = INPUT.try_send(ev);
+            }
+        }
+    }
+
+    /// Convenience for the board's CDC RX loop: accumulate `bytes` and dispatch every complete line
+    /// to the sensor signals. `reader` persists across reads (it holds the partial-line buffer).
+    pub fn feed_bytes(reader: &mut LineReader, bytes: &[u8]) {
+        reader.feed(bytes, dispatch);
+    }
+
+    /// The user's location, streamed over USB. Hand `&mut DebugLocation` to `Sensors::loc`.
+    pub struct DebugLocation;
+    impl LocationSource for DebugLocation {
+        fn poll(&mut self) -> Option<Fix> {
+            FIX.try_take()
+        }
+    }
+
+    /// The barometric altimeter, streamed over USB. Hand `&mut DebugAltimeter` to
+    /// `Sensors::altimeter`.
+    pub struct DebugAltimeter;
+    impl AltimeterSource for DebugAltimeter {
+        fn poll(&mut self) -> Option<f32> {
+            ALT.try_take()
+        }
+    }
+
+    /// The electronic compass, streamed over USB. Hand `&mut DebugCompass` to `Sensors::compass`.
+    pub struct DebugCompass;
+    impl CompassSource for DebugCompass {
+        fn poll(&mut self) -> Option<f32> {
+            COMPASS.try_take()
+        }
+    }
+
+    /// Injected input, drained by the input plane next to the physical buttons. The board chains
+    /// this after its `ButtonInput` into the gesture recogniser, so injected turns/edges become
+    /// gestures (taps and holds) identically to real presses.
+    pub struct DebugInput;
+    impl InputSource for DebugInput {
+        fn poll(&mut self) -> Option<InputEvent> {
+            INPUT.try_receive().ok()
+        }
+    }
+
+    /// Publish the latest telemetry (called by the app loop, throttled). Overwrites any unsent
+    /// value, so the host always gets the freshest snapshot.
+    pub fn set_telemetry(t: Telemetry) {
+        TELEMETRY.signal(t);
+    }
+
+    /// Await the next published telemetry (the CDC TX task), so the send cadence is driven by the
+    /// app's [`set_telemetry`] calls — no polling, no flooding.
+    pub async fn wait_telemetry() -> Telemetry {
+        TELEMETRY.wait().await
+    }
 }
+
+// Re-export the gated hand-off at the module root so the board crate's call sites
+// (`debug_usb::DebugLocation`, `debug_usb::feed_bytes`, …) are unchanged by the split.
+#[cfg(feature = "debug-usb")]
+pub use handoff::{
+    dispatch, feed_bytes, set_telemetry, wait_telemetry, DebugAltimeter, DebugCompass, DebugInput, DebugLocation,
+};
 
 #[cfg(test)]
 mod tests {
@@ -387,5 +467,49 @@ mod tests {
             bytes_read: 12288,
         };
         assert_eq!(format_telemetry(&t).as_str(), "T 41000 2 312 480 0 9 27 3 3 12288\n");
+    }
+
+    #[test]
+    fn telemetry_round_trips_through_format_and_parse() {
+        // `parse_telemetry` is the exact inverse of `format_telemetry` — the host reads back what
+        // the device wrote. A `\n`-terminated line is fine: `parse_telemetry` splits on whitespace.
+        let t = Telemetry {
+            frame_us: 51234,
+            lod: 4,
+            feat_drawn: 1000,
+            feat_tried: 1024,
+            feat_dropped: 7,
+            chunks: 33,
+            cache_hits: 480,
+            cache_misses: 12,
+            sd_reads: 9,
+            bytes_read: 65535,
+        };
+        assert_eq!(parse_telemetry(format_telemetry(&t).as_str()), Some(t));
+    }
+
+    #[test]
+    fn parse_telemetry_rejects_non_t_and_short_lines() {
+        assert_eq!(parse_telemetry("F 1 2"), None); // not a telemetry line
+        assert_eq!(parse_telemetry("T 1 2 3"), None); // too few fields
+        assert_eq!(parse_telemetry("T 1 x 3 4 5 6 7 8 9 10"), None); // non-numeric field
+    }
+
+    #[test]
+    fn format_fix_round_trips_through_parse_line() {
+        // `format_fix` is the exact inverse of the `F` arm of `parse_line`. Course/speed are
+        // re-read at the formatter's precision (`{:.1}` / `{:.2}`), so pick values that survive it.
+        let f = Fix { lat: 48_122_905, lon: 7_814_438, course: Some(90.5), speed_mps: Some(5.25) };
+        assert_eq!(format_fix(&f).as_str(), "F 48122905 7814438 90.5 5.25\n");
+        assert_eq!(parse_line(format_fix(&f).as_str().trim_end()), Some(Msg::Fix(f)));
+    }
+
+    #[test]
+    fn format_fix_uses_dash_for_a_standstill() {
+        // No course/speed → the `-` sentinel keeps each field positional, exactly as the host's
+        // old `fix_line` produced and `parse_line` accepts.
+        let f = Fix::at(1, 2);
+        assert_eq!(format_fix(&f).as_str(), "F 1 2 - -\n");
+        assert_eq!(parse_line(format_fix(&f).as_str().trim_end()), Some(Msg::Fix(f)));
     }
 }
