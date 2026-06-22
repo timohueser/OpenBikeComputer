@@ -19,6 +19,12 @@
 //! - [`sd`] — FatFs [`ByteSource`](obc_route::ByteSource)/[`ByteSink`](obc_route::ByteSink)
 //!   and [`TrackSink`](obc_app::TrackSink) adapters over an [`embedded_sdmmc`] SD card, so
 //!   maps/routes load and rides save against a real card (issue #36).
+//! - [`time`] — [`SaturatingElapsed`], the panic-free `Instant::elapsed()` (issue #51); a
+//!   generic embassy-time property, so every board reuses one copy rather than re-deriving it.
+//! - [`synth`] — [`SynthLocation`], a board-agnostic synthetic moving
+//!   [`LocationSource`](obc_app::LocationSource) — the `debug-usb`-off fallback fake GPS that
+//!   walks a slow square loop (always compiled, *not* behind `debug-usb`, since it *is* the
+//!   debug-usb-off path).
 //!
 //! ## Two-plane architecture — input/overlay vs. map (issue #48)
 //!
@@ -66,7 +72,13 @@ pub mod button_input;
 pub mod debug_usb;
 pub mod framebuffer;
 pub mod sd;
+// Always compiled — the synthetic GPS is the `debug-usb`-OFF fallback, so it must exist without
+// the `debug-usb` feature; `time` it depends on is board-agnostic embassy-time glue.
+pub mod synth;
+pub mod time;
 
 pub use button_input::{ButtonInput, Timing};
 pub use framebuffer::{Framebuffer565, FramebufferArgb4444};
 pub use sd::{SdByteSink, SdByteSource, SdTrackSink};
+pub use synth::SynthLocation;
+pub use time::SaturatingElapsed;
