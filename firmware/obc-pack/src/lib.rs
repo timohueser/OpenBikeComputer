@@ -11,8 +11,6 @@
 //! filled polygon.
 
 pub mod config;
-pub mod dump;
-pub mod feature_dump;
 pub mod geom;
 pub mod ingest;
 pub mod land;
