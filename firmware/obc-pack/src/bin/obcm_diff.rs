@@ -1,15 +1,14 @@
-//! `obcm_diff` — the escalating-comparison tool from the plan's §5, the gate for
-//! every stage past serialize. Parses two `.obcm` files with the *same*
+//! `obcm_diff` — compare two `.obcm` files. Parses both with the *same*
 //! `obc-reader` the device uses and reports:
 //!   1. structural diffs — version, bbox, marker, style table, per-LOD
 //!      node/chunk counts, chunk size, max_mpp;
 //!   2. feature-multiset diffs per LOD — decodes every chunk and compares the
-//!      multiset of `(style_id, kind, vertices)`, since ordering is allowed to
-//!      differ (see the corpus README's validation-strategy note).
+//!      multiset of `(style_id, kind, vertices)`, since chunk/feature ordering is
+//!      allowed to differ.
 //!
-//! Exits non-zero on any difference. `a` is treated as the reference (oracle),
-//! `b` as the candidate (Rust); "only in A" therefore means *missing from the
-//! Rust output*, "only in B" means *extra*.
+//! Exits non-zero on any difference. `a` is the reference, `b` the candidate:
+//! "only in A" means *missing from B*, "only in B" means *extra in B*. Handy for
+//! checking whether a packer change altered the output.
 //!
 //! Usage: `obcm_diff <a.obcm> <b.obcm> [--max-examples N]`
 
@@ -24,10 +23,9 @@ type FeatureKey = (u8, bool, Vec<(i32, i32)>, Vec<Vec<(i32, i32)>>);
 /// Canonical form of a closed ring, invariant to **start vertex + winding**:
 /// strip the closing duplicate, then take the lexicographically-smallest sequence
 /// over all rotations of the ring and its reversal. Used by `--canonical-polys`
-/// so that geometrically-identical closed-way polygons that osmium and the Rust
-/// port encode with a different ring start/direction (handover §3.4) compare
-/// equal. Lines are never canonicalized (their vertex order is meaningful and
-/// matches both sides exactly).
+/// so that geometrically-identical closed-way polygons encoded with a different
+/// ring start/direction compare equal. Lines are never canonicalized (their vertex
+/// order is meaningful and matches both sides exactly).
 fn canon_ring(ring: &[(i32, i32)]) -> Vec<(i32, i32)> {
     let mut pts = ring.to_vec();
     if pts.len() >= 2 && pts.first() == pts.last() {
@@ -97,8 +95,8 @@ fn main() -> ExitCode {
             "--max-examples" => {
                 max_examples = it.next().and_then(|s| s.parse().ok()).unwrap_or(5);
             }
-            // Compare polygons up to ring rotation + winding (handover §6). Lines
-            // still compare exactly. Strict (byte-order) mode is the default.
+            // Compare polygons up to ring rotation + winding. Lines still compare
+            // exactly. Strict (byte-order) mode is the default.
             "--canonical-polys" => canonical = true,
             _ if a_path.is_none() => a_path = Some(arg),
             _ if b_path.is_none() => b_path = Some(arg),
@@ -194,9 +192,9 @@ fn main() -> ExitCode {
     }
 
     // Structural diffs are the hard failures; multiset diffs are reported with a
-    // line/polygon breakdown so the Stage-3 gate can accept polygon-only residual
-    // (ring-winding under --canonical-polys is already reconciled, so what's left
-    // is GEOS-version simplify skew) while still requiring lines to be exact.
+    // line/polygon breakdown so a caller can accept a polygon-only residual (e.g.
+    // ring-winding under --canonical-polys is reconciled, leaving only GEOS
+    // simplify skew) while still requiring lines to be exact.
     let structural_ok = ok;
     let mut line_diffs = 0usize;
     let mut poly_diffs = 0usize;
