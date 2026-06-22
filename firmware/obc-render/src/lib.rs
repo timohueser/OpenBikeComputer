@@ -85,21 +85,20 @@ const _: () = assert!(MCU_RENDERER_BYTES <= 200 * 1024, "MapRenderer exceeds the
 const METERS_PER_MICRODEG_LAT: f32 = (obc_reader::M_PER_DEG / 1_000_000.0) as f32;
 
 // Route direction chevrons (tunable). Arrowheads along the active route at riding zoom,
-// anchored to route distance (not screen) so each stays pinned to a ground spot, drawn only
-// in a window around the rider — so an out-and-back marks just the leg you're on, the right
-// way round. Spacing + window are screen-relative — a fixed pixel cadence and a chevron *count*,
-// not ground metres — so the chevrons keep an even spread across the finest LOD's zoom range
-// (no bunching when zoomed out); the ground spacing is derived per-frame from the camera's
-// m/px. Glyph sizes are screen pixels. Sweep with the app's `ROUTE_WEIGHT`.
+// anchored to route distance (not screen) so each stays pinned to a ground spot, drawn only in a
+// window around the rider — so an out-and-back marks just the current leg. Spacing + window are
+// screen-relative — a fixed pixel cadence and a chevron *count*, not ground metres — so the
+// chevrons keep an even spread across the finest LOD's zoom range (no bunching when zoomed out);
+// the ground spacing is derived per-frame from the camera's m/px. Glyph sizes are screen pixels.
+// Sweep with the app's `ROUTE_WEIGHT`.
 //
-/// On-screen gap between consecutive chevrons (px). Held in *screen* space, not ground metres:
-/// each frame the route-distance spacing is `ARROW_SPACING_PX × m/px`, so the chevrons stay
-/// evenly spread however far you zoom. At the ~0.5 m/px riding zoom this works out to ≈ 33 m
-/// apart on the ground — the original feel.
+/// On-screen gap between consecutive chevrons (px). Held in *screen* space: each frame the
+/// route-distance spacing is `ARROW_SPACING_PX × m/px`, so the chevrons stay evenly spread however
+/// far you zoom. At the ~0.5 m/px riding zoom this is ≈ 33 m apart on the ground.
 const ARROW_SPACING_PX: f32 = 66.0;
-/// How many chevrons lead *ahead* of the rider. A count (not a ground distance) so the
-/// look-ahead tracks the screen cadence — the chevrons reach a fixed way up the screen at every
-/// zoom. Off-screen ones are free, so this is generous (≈ the old 300 m at riding zoom).
+/// How many chevrons lead *ahead* of the rider. A count (not a ground distance) so the look-ahead
+/// tracks the screen cadence — the chevrons reach a fixed way up the screen at every zoom.
+/// Off-screen ones are free, so this is generous (≈ the old 300 m at riding zoom).
 const ARROW_AHEAD_COUNT: u32 = 9;
 /// How many chevrons trail *behind* the rider. Zero — the breadcrumb shows the travelled line,
 /// so chevrons only lead ahead.
@@ -110,7 +109,7 @@ const ARROW_TIP: f32 = 8.0;
 const ARROW_BACK: f32 = 2.5;
 /// Chevron base half-width (px) — half the spread of the two trailing corners. Kept under
 /// the route's half-stroke so the glyph sits *inside* the line (framed by the route colour
-/// on every side), the Garmin look — independent of whatever map colour the line crosses.
+/// on every side), independent of whatever map colour the line crosses.
 const ARROW_HALF: f32 = 4.5;
 
 /// The [`Viewport`]/`AppState` zoom (pixels per microdegree of latitude) that yields
@@ -412,8 +411,7 @@ pub struct RenderStats {
     /// visible chunks once per priority level; `map_chunk_hits` are the passes served from a
     /// resident cache slot, `map_chunk_misses` the ones that read from SD. `map_sd_reads` /
     /// `map_bytes_read` are the raw source overhead (index blocks + chunk fills) — the
-    /// "SD-read overhead per frame" the issue asks to measure. All `0` with an in-memory map
-    /// whose chunks all fit the cache only if nothing was decoded; otherwise the hit rate is
+    /// "SD-read overhead per frame" the issue asks to measure. Hit rate is
     /// `hits / (hits + misses)`.
     pub map_chunk_hits: u32,
     pub map_chunk_misses: u32,
@@ -824,11 +822,11 @@ where
     if run.len() >= 2 {
         let _ = Polyline::new(run).into_styled(PrimitiveStyle::with_stroke(color, weight)).draw(target);
         // Round joints + caps. eg joins thick segments with a flat **bevel**, so a densely
-        // sampled curve renders as a fan of facets — the scalloped "beading" on thick lines.
-        // Filling a disc (⌀ = stroke width) at each vertex turns every joint into a smooth arc,
-        // keeping full shape detail (no decimation needed). Only thick lines need it (≤2 px don't
-        // visibly facet), and the disc at a shared chunk-seam vertex also closes the butt-cap gap
-        // between adjacent features.
+        // sampled curve renders as a fan of facets (the "beading" on thick lines). Filling a disc
+        // (⌀ = stroke width) at each vertex turns every joint into a smooth arc, keeping full shape
+        // detail (no decimation needed). Only thick lines need it (≤2 px don't visibly facet), and
+        // the disc at a shared chunk-seam vertex also closes the butt-cap gap between adjacent
+        // features.
         if weight > 2 {
             let r = (weight / 2) as i32;
             for p in run.iter() {
@@ -953,9 +951,9 @@ where
 /// The points are first **simplified in screen space** ([`simplify`] at [`SIMPLIFY_EPS_PX`]) — a
 /// *subpixel* dedup that folds away the integer-projection staircase and same-pixel vertex
 /// pile-ups a dense route/road carries when zoomed out. It never moves the line a visible pixel,
-/// so no shape is lost (the joint smoothing that kills thick-line beading is [`flush_run`]'s
-/// round discs, not this); it just hands eg far fewer segments and discs. The `run` scratch is
+/// so no shape is lost; it just hands eg far fewer segments and discs. The `run` scratch is
 /// reused; long runs are subdivided.
+///
 /// Returns the count of **on-screen vertices actually stroked** (after the subpixel simplify and
 /// the view clip) — far fewer than the points fed in when the line is mostly off-screen or
 /// folds to the same pixels. Callers that want the stat (the route overlay) sum it; the
@@ -1168,7 +1166,7 @@ fn fill_polygon<D>(
         while k + 1 < xs.len() {
             // Round spans *outward* (floor left, ceil right) to close hairline
             // background gaps between adjacent fills. A feature clipped across a
-            // chunk boundary (`packer/obcm/quadtree.py`) becomes two polygons whose
+            // chunk boundary (`obc-pack`'s `quadtree.rs`) becomes two polygons whose
             // shared edge is clipped independently, so their pixel staircases can
             // disagree by ≤1px (most visible along a rotated diagonal seam).
             // `to_screen`'s round-to-nearest collapses nearly all of it; this ≤1px

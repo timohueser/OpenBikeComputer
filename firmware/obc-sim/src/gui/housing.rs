@@ -106,7 +106,7 @@ pub struct ControlVisual {
 /// derives every rect from them.
 pub struct HousingStyle {
     /// Colored body padding around the screen (left/right, above, below). The bottom
-    /// is roomier to seat the `OBM` wordmark.
+    /// is roomier to seat the `OBC` wordmark.
     pub pad_x: f32,
     pub pad_top: f32,
     pub pad_bottom: f32,
@@ -129,7 +129,7 @@ pub struct HousingStyle {
     /// Scroll-wheel knurl ridge spacing and how fast it scrolls per radian of turn.
     pub knurl_spacing: f32,
     pub knurl_gain: f32,
-    /// `OBM` wordmark font size.
+    /// `OBC` wordmark font size.
     pub wordmark_size: f32,
 }
 

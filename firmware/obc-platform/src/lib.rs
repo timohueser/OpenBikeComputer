@@ -3,9 +3,10 @@
 //!
 //! `no_std`, over `embedded-hal` / `embedded-graphics`, so the board crates stay
 //! thin (clocks, concrete pins, the main loop) and everything reusable lives here:
-//! written once, ported to the next board by re-pointing the pins. The epic
-//! (issue #32) grows this into FatFs `ByteSource`/`Sink` adapters and the USB-CDC
-//! debug protocol; today it is the framebuffer `DrawTarget` and the button debouncer.
+//! written once, ported to the next board by re-pointing the pins. Today that is the
+//! framebuffer `DrawTarget`s, the button debouncer, the FatFs `ByteSource`/`Sink`
+//! adapters (issue #36), and the USB-CDC debug-sensor protocol (issue #38, behind
+//! `debug-usb`).
 //!
 //! Modules:
 //! - [`framebuffer`] — [`DrawTarget`](embedded_graphics::draw_target::DrawTarget)s

@@ -1,5 +1,5 @@
-//! `obcm_diff` — compare two `.obcm` files. Parses both with the *same*
-//! `obc-reader` the device uses and reports:
+//! `obcm_diff` — compare two `.obcm` files. Parses both with the same `obc-reader`
+//! the device uses and reports:
 //!   1. structural diffs — version, bbox, marker, style table, per-LOD
 //!      node/chunk counts, chunk size, max_mpp;
 //!   2. feature-multiset diffs per LOD — decodes every chunk and compares the
@@ -7,8 +7,7 @@
 //!      allowed to differ.
 //!
 //! Exits non-zero on any difference. `a` is the reference, `b` the candidate:
-//! "only in A" means *missing from B*, "only in B" means *extra in B*. Handy for
-//! checking whether a packer change altered the output.
+//! "only in A" means missing from B, "only in B" means extra in B.
 //!
 //! Usage: `obcm_diff <a.obcm> <b.obcm> [--max-examples N]`
 
@@ -20,12 +19,12 @@ use obc_reader::{BBox, Kind, MapCache, Reader, SliceSource, Style, MAX_FEAT_PTS,
 /// Canonical, hashable identity of a decoded feature (geometry in microdegrees).
 type FeatureKey = (u8, bool, Vec<(i32, i32)>, Vec<Vec<(i32, i32)>>);
 
-/// Canonical form of a closed ring, invariant to **start vertex + winding**:
-/// strip the closing duplicate, then take the lexicographically-smallest sequence
-/// over all rotations of the ring and its reversal. Used by `--canonical-polys`
-/// so that geometrically-identical closed-way polygons encoded with a different
-/// ring start/direction compare equal. Lines are never canonicalized (their vertex
-/// order is meaningful and matches both sides exactly).
+/// Canonical form of a closed ring, invariant to start vertex + winding: strip the
+/// closing duplicate, then take the lexicographically-smallest sequence over all
+/// rotations of the ring and its reversal. Used by `--canonical-polys` so that
+/// geometrically-identical closed-way polygons encoded with a different ring
+/// start/direction compare equal. Lines are never canonicalized (their vertex order
+/// is meaningful and matches both sides exactly).
 fn canon_ring(ring: &[(i32, i32)]) -> Vec<(i32, i32)> {
     let mut pts = ring.to_vec();
     if pts.len() >= 2 && pts.first() == pts.last() {

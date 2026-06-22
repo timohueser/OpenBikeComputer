@@ -19,9 +19,9 @@ use obc_pack::land;
 use obc_pack::quadtree::build_lod;
 use obc_pack::serialize::serialize_lods_streaming;
 
-// Meters → degrees divisor for the simplify tolerance. Shared with
-// the reader/route/renderer so the packer's simplification scale matches the Earth model
-// everything else measures distance against.
+// Meters → degrees divisor for the simplify tolerance. Shared with the
+// reader/route/renderer so the packer's simplification scale matches the Earth
+// model everything else measures distance against.
 use obc_reader::M_PER_DEG;
 
 struct Args {
@@ -155,8 +155,8 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
-/// `total_bounds(features + coastlines)` then `int(v*1e6)` truncation. The coords
-/// are the exact osmium f64s, so the bbox is stable across runs.
+/// Total bounds over features + coastlines, then truncate `v*1e6` toward zero. The
+/// coords are the exact osmium f64s, so the bbox is stable across runs.
 fn compute_bbox(ing: &obc_pack::ingest::Ingested) -> (i64, i64, i64, i64) {
     let (mut minx, mut miny, mut maxx, mut maxy) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
     let mut widen = |x: f64, y: f64| {

@@ -69,7 +69,7 @@ pub struct Pan {
     pub north_up: bool,
     /// The frozen heading-up rotation (radians CW from north), snapshotted on entry
     /// and re-snapshotted whenever `hold` flips back to heading-up — so the map never
-    /// rotates *while* you pan.
+    /// rotates *while* panning.
     pub frozen_course_rad: f32,
 }
 
@@ -100,7 +100,7 @@ pub struct AppState {
     /// user in either orientation, and the simulator can rotate while mouse-panning.
     pub heading_up: bool,
     /// The most recent fix from the [`LocationSource`], or `None` before the
-    /// first one. Drives the heading-up rotation and the (future) user marker.
+    /// first one. Drives the heading-up rotation and the user marker.
     pub user_fix: Option<Fix>,
     /// Pan mode, or `None` on the normal Follow map. `Some` detaches the camera and
     /// freezes the rotation (see [`Pan`]); the Map screen binds the encoder/Back to
@@ -273,8 +273,8 @@ impl AppState {
 const RIDING_MPP: f32 = 0.5;
 
 /// Camera travel **per encoder detent** in pan mode, in screen pixels. A *screen*
-/// amount (not ground metres), so panning is finer when zoomed in — "panning always
-/// happens at the current zoom level". The single knob for pan speed; tune here.
+/// amount (not ground metres), so panning is finer when zoomed in. The single knob
+/// for pan speed; tune here.
 pub const PAN_STEP_PX: f32 = 40.0;
 
 /// Capacity of [`handle_input`](App::handle_input)'s per-frame gesture buffer — the
@@ -320,7 +320,7 @@ pub struct App {
     /// pan/zoom and control panel can read and adjust it directly (the Map screen
     /// renders from the very same state).
     pub state: AppState,
-    /// The ride mode + (later) tracking accumulators.
+    /// The ride mode + tracking accumulators.
     pub activity: Activity,
     /// The resident route catalog (summaries), populated by the host from its store
     /// ([`set_routes`](App::set_routes)). The Route menu lists it; `active_route`
@@ -670,9 +670,8 @@ impl App {
     ///
     /// This is the single-target convenience that draws a whole frame:
     /// [`render_map`](App::render_map) then [`render_overlay`](App::render_overlay)
-    /// into the *same* target, in that order, so the result is byte-identical to the
-    /// old monolithic path. Hosts that keep the map and overlay on separate
-    /// buffers/layers (dual-layer display) call the two halves directly instead.
+    /// into the *same* target, in that order. Hosts that keep the map and overlay on
+    /// separate buffers/layers (dual-layer display) call the two halves directly instead.
     pub fn render_frame<D, F>(
         &mut self,
         target: &mut D,

@@ -6,8 +6,8 @@
 //! *along* the route (`progress_m`) plus the cross-track distance to it (`dist_m`). Past a
 //! distance threshold it flags **off-route** (with hysteresis, so it doesn't flap on GPS
 //! jitter) and **freezes** progress — a far fix must not drag the route position — while
-//! widening the search so a rejoin is still found. The forward bias is what stops a loop's
-//! second pass from snapping back to the first.
+//! widening the search so a rejoin is still found. The forward bias stops a loop's second
+//! pass from snapping back to the first.
 //!
 //! It is `no_std` and allocation-free: one reused chunk-decode buffer, decoding only the
 //! handful of chunks the window spans. The projection ([`project_to_segment`]) is shared
@@ -27,7 +27,7 @@ const ON_M: f32 = 15.0;
 /// without losing the forward bias.
 const BACK_SEGS: i64 = 3;
 /// Forward search window (segments) while on-route. One fix's travel is far less than this
-/// at any cycling speed, so the nearest segment is comfortably inside it.
+/// at any cycling speed, so the nearest segment is well inside it.
 const FWD_SEGS_ON: i64 = 64;
 /// Wider forward window while off-route, so a rejoin further along the route is found
 /// without an unbounded full scan.
@@ -125,8 +125,7 @@ impl RouteMatch {
                 let cum0 = chunks[c].cum_distance_m as f32;
                 let mut intra = 0f32; // distance from this chunk's anchor to point s
                                       // cos(lat) barely changes across one chunk's span, so hoist it once per
-                                      // chunk (the natural latitude band) rather than recomputing the `cosf` for
-                                      // every segment of the forward window.
+                                      // chunk rather than recomputing `cosf` for every segment of the window.
                 let cl = cos_lat(self.buf[0].lat);
                 let n = self.buf.len();
                 for s in 0..n - 1 {

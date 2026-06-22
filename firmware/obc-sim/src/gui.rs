@@ -76,10 +76,10 @@ pub fn run(bytes: Vec<u8>, args: Args) -> Result<(), eframe::Error> {
 }
 
 /// Web entry point: mount the *same* `SimGui` app on the page's `<canvas>` via
-/// eframe's WebGL runner. Called from the wasm `main` (see `main.rs`). Because the
-/// app is identical to the native sim — and to the firmware's render path — the
-/// embedded demo on the project site is always current with the code, never a
-/// screenshot that drifts out of date.
+/// eframe's WebGL runner. Called from the wasm `main` (see `main.rs`). The app is
+/// identical to the native sim and to the firmware's render path, so the project
+/// site's embedded demo stays current with the code rather than drifting like a
+/// screenshot.
 #[cfg(target_arch = "wasm32")]
 pub fn run_web() {
     use eframe::wasm_bindgen::JsCast as _;
@@ -171,12 +171,11 @@ struct SimGui {
     screenshot_requested: bool,
     last_stats: obc_render::RenderStats,
     /// The shared render-on-demand dirty signal ([`App::take_dirty`], issue #47), drained
-    /// once per frame and shown in the stats panel. The sim keeps its continuous redraw (it
-    /// also animates host chrome and replays GPX), so this is *informational* here — a live
-    /// readout of the same signal the firmware gates its map/overlay renders on, which makes
-    /// the dirty logic observable while iterating. (Mouse pan/zoom is a Free-mode host
-    /// convenience that mutates the camera outside the app's input path, so it isn't reflected
-    /// — on the device every camera change goes through a gesture or a fix, which is.)
+    /// once per frame and shown in the stats panel. The sim redraws continuously (it also
+    /// animates host chrome and replays GPX), so this is informational — a live readout of the
+    /// signal the firmware gates its map/overlay renders on. (Mouse pan/zoom mutates the camera
+    /// outside the app's input path, so it isn't reflected; on the device every camera change
+    /// goes through a gesture or a fix, which is.)
     last_dirty: Dirty,
     /// The device body color drawn by the housing chrome. Switchable live in the
     /// control panel; defaults to slate (or `--colorway`). Purely cosmetic host chrome.
@@ -292,20 +291,18 @@ impl SimGui {
             g.app.activity.start_session();
         }
         // Auto-play the embedded ride (the Grimselpass climb, Guttannen → summit) so the
-        // page opens on a *moving* map. It's point-to-point, not a loop, so the restart in
+        // page opens on a moving map. It's point-to-point, not a loop, so the restart in
         // render_to_texture snaps back to the start and clears the trail for a fresh lap.
         if let Ok(track) = Track::parse(include_str!("../assets/grimsel-climb.gpx")) {
             let mut player = GpxPlayer::new(track);
-            // The GPX is distance-timed at a ~12 km/h base, so this multiplier reads as
-            // "N× a normal climbing pace" — 3× keeps the map moving without a blur.
+            // The GPX is distance-timed at a ~12 km/h base, so the multiplier reads as
+            // "N× a normal climbing pace"; 3× keeps the map moving without a blur.
             player.set_speed(3.0);
             player.play();
             g.gpx = Some(player);
         }
-        // Follow the rider in heading-up (the map rotates so the direction of travel is
-        // always up — the natural bike-computer view), and tighten the fit-to-whole-tile
-        // zoom to a riding view so the route reads as a ribbon up the pass with the
-        // switchbacks visible.
+        // Follow the rider heading-up (map rotates so travel is always up), and tighten the
+        // fit-to-whole-tile zoom to a riding view so the route's switchbacks are visible.
         g.app.state.mode = CameraMode::Follow;
         g.app.state.heading_up = true;
         g.app.state.zoom *= 12.0;

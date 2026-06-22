@@ -140,8 +140,8 @@ fn opaque_argb4444(c: Rgb565) -> u16 {
 ///
 /// The [`Color`](DrawTarget::Color) is [`Rgb565`], **identical** to
 /// [`Framebuffer565`], so the same `color_fn` drives both layers and the shared
-/// overlay renderer is layer-agnostic. The trick is that the overlay only ever draws
-/// *opaque* pixels (the near-black bulge), so every write is packed opaque
+/// overlay renderer is layer-agnostic. The overlay only ever draws *opaque* pixels
+/// (the near-black bulge), so every write is packed opaque
 /// ([`opaque_argb4444`]); the only transparency is the cleared background, reset by
 /// [`clear_transparent`](Self::clear_transparent). 4-bit channels are ample for the
 /// flat near-black bulge, and at 2 bytes/px the buffer is the same 150 KB as the

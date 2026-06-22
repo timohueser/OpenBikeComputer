@@ -19,7 +19,7 @@ pub struct Fix {
     pub lon: i32,
     /// Course over ground in degrees clockwise from north (`0` = north,
     /// `90` = east), or `None` when stationary / unknown. This is what the
-    /// future heading marker points along.
+    /// heading marker points along.
     pub course: Option<f32>,
     /// Ground speed in meters per second, or `None` when stationary / unknown.
     pub speed_mps: Option<f32>,

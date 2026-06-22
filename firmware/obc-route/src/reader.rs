@@ -284,9 +284,9 @@ impl<'a> RouteReader<'a> {
     }
 }
 
-/// `RouteReader` is a `RouteIndex` plus a live source: deref to the index so the summary
-/// fields and resident-only queries read straight through `route.bbox` / `route.chunks()`
-/// without forwarding boilerplate (only `decode_chunk` needs the source, and it's inherent).
+/// Deref to the index so the summary fields and resident-only queries read straight through
+/// `route.bbox` / `route.chunks()` without forwarding boilerplate (only `decode_chunk` needs
+/// the source, and it's inherent).
 impl core::ops::Deref for RouteReader<'_> {
     type Target = RouteIndex;
     fn deref(&self) -> &RouteIndex {

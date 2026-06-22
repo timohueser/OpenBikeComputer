@@ -131,8 +131,7 @@ impl RouteStore {
 // The browser has no folder to scan, so the web build keeps the catalog + route
 // bytes entirely in memory. Same public surface as the native folder store above,
 // so `gui.rs` drives both identically. The demo routes baked into the wasm binary
-// are seeded in [`RouteStore::open`] (none yet — that lands with the curated demo
-// dataset; until then the Route menu shows its empty state).
+// are seeded in [`RouteStore::open`] (see [`seed_embedded`](RouteStore::seed_embedded)).
 #[cfg(target_arch = "wasm32")]
 pub struct RouteStore {
     catalog: Vec<RouteSummary>,
