@@ -193,9 +193,8 @@ fn parse_polygon_rings(body: &[u8]) -> Result<Vec<Vec<(f64, f64)>>, String> {
     if body.len() < points_off + num_points * 16 {
         return Err("polygon record truncated".into());
     }
-    let mut starts: Vec<usize> = (0..num_parts)
-        .map(|i| le_i32(&body[parts_off + i * 4..parts_off + i * 4 + 4]) as usize)
-        .collect();
+    let mut starts: Vec<usize> =
+        (0..num_parts).map(|i| le_i32(&body[parts_off + i * 4..parts_off + i * 4 + 4]) as usize).collect();
     starts.push(num_points);
 
     let mut rings = Vec::with_capacity(num_parts);
@@ -214,12 +213,7 @@ fn parse_polygon_rings(body: &[u8]) -> Result<Vec<Vec<(f64, f64)>>, String> {
 /// Clip one shapefile record's rings (in 3857) to the box, reproject, and append
 /// the resulting polygons. A record fully inside the box skips the GEOS clip — an
 /// `intersection` of a contained polygon would return it unchanged.
-fn process_record(
-    rings: Vec<Vec<(f64, f64)>>,
-    fully_inside: bool,
-    box_geom: &Geometry,
-    out: &mut Vec<Geom>,
-) {
+fn process_record(rings: Vec<Vec<(f64, f64)>>, fully_inside: bool, box_geom: &Geometry, out: &mut Vec<Geom>) {
     // Fast path: a single-ring polygon already inside the box needs no GEOS at
     // all (the common case for inland extracts) — just reproject and emit.
     if fully_inside && rings.len() == 1 {
@@ -277,8 +271,7 @@ fn geos_polygon_from_rings(rings: &[Vec<(f64, f64)>]) -> Option<Geometry> {
 /// as [`crate::geom::clip_to_box`]).
 fn box_polygon((minx, miny, maxx, maxy): (f64, f64, f64, f64)) -> Result<Geometry, String> {
     let ring = [(maxx, miny), (maxx, maxy), (minx, maxy), (minx, miny), (maxx, miny)];
-    let lr = Geometry::create_linear_ring(ring_to_coordseq(&ring))
-        .map_err(|e| format!("clip box ring: {e}"))?;
+    let lr = Geometry::create_linear_ring(ring_to_coordseq(&ring)).map_err(|e| format!("clip box ring: {e}"))?;
     Geometry::create_polygon(lr, vec![]).map_err(|e| format!("clip box polygon: {e}"))
 }
 
@@ -313,9 +306,10 @@ fn ensure_dataset() -> Result<PathBuf, String> {
 }
 
 fn run_tool(cmd: &str, args: &[&str]) -> Result<(), String> {
-    let status = std::process::Command::new(cmd).args(args).status().map_err(|e| {
-        format!("failed to run `{cmd}` ({e}); install it or pre-populate the land cache")
-    })?;
+    let status = std::process::Command::new(cmd)
+        .args(args)
+        .status()
+        .map_err(|e| format!("failed to run `{cmd}` ({e}); install it or pre-populate the land cache"))?;
     if !status.success() {
         return Err(format!("`{cmd}` exited with {status}"));
     }

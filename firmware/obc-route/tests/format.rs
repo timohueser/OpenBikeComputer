@@ -6,8 +6,8 @@
 //! spec independently: if either drifts, these break.
 
 use obc_route::{
-    Error, RouteIndex, RoutePoint, RouteReader, RouteSummary, SliceSource, CHUNK_META_LEN,
-    HEADER_LEN, MAX_POINTS_PER_CHUNK,
+    Error, RouteIndex, RoutePoint, RouteReader, RouteSummary, SliceSource, CHUNK_META_LEN, HEADER_LEN,
+    MAX_POINTS_PER_CHUNK,
 };
 
 /// A chunk to encode: its absolute points (lon, lat, ele) plus the cumulative stats
@@ -33,8 +33,7 @@ fn build_route(
     let max_lon = all().map(|p| p.0).max().unwrap();
     let max_lat = all().map(|p| p.1).max().unwrap();
     // Distinct points: seams (each chunk's first == previous chunk's last) count once.
-    let distinct: usize =
-        chunks.iter().map(|c| c.points.len()).sum::<usize>() - chunks.len().saturating_sub(1);
+    let distinct: usize = chunks.iter().map(|c| c.points.len()).sum::<usize>() - chunks.len().saturating_sub(1);
 
     let index_offset = HEADER_LEN;
     let data_offset = index_offset + chunks.len() * CHUNK_META_LEN;
@@ -45,10 +44,8 @@ fn build_route(
     for ch in chunks {
         let p = &ch.points;
         let anchor = p[0];
-        let (cmin_lon, cmin_lat) =
-            (p.iter().map(|q| q.0).min().unwrap(), p.iter().map(|q| q.1).min().unwrap());
-        let (cmax_lon, cmax_lat) =
-            (p.iter().map(|q| q.0).max().unwrap(), p.iter().map(|q| q.1).max().unwrap());
+        let (cmin_lon, cmin_lat) = (p.iter().map(|q| q.0).min().unwrap(), p.iter().map(|q| q.1).min().unwrap());
+        let (cmax_lon, cmax_lat) = (p.iter().map(|q| q.0).max().unwrap(), p.iter().map(|q| q.1).max().unwrap());
 
         let mut body: Vec<u8> = Vec::new();
         for w in p.windows(2) {
@@ -117,11 +114,7 @@ fn two_chunk_route() -> Vec<u8> {
         (12_340, 678, 540),
         (200, 240),
         &[
-            ChunkIn {
-                points: vec![(10, 10, 200), (20, 25, 205), (40, 40, 210)],
-                cum_distance_m: 0,
-                cum_ascent_m: 0,
-            },
+            ChunkIn { points: vec![(10, 10, 200), (20, 25, 205), (40, 40, 210)], cum_distance_m: 0, cum_ascent_m: 0 },
             ChunkIn {
                 points: vec![(40, 40, 210), (60, 30, 230), (90, 70, 225)],
                 cum_distance_m: 6000,

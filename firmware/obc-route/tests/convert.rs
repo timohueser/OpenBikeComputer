@@ -1,10 +1,7 @@
 //! GPX → OBCR conversion tests: convert an in-memory GPX, read it back with the
 //! reader, and check the geometry round-trips and the stats are exact.
 
-use obc_route::{
-    gpx_to_obcr, ByteSink, Error, RouteIndex, RoutePoint, RouteReader, SliceSource,
-    MAX_POINTS_PER_CHUNK,
-};
+use obc_route::{gpx_to_obcr, ByteSink, Error, RouteIndex, RoutePoint, RouteReader, SliceSource, MAX_POINTS_PER_CHUNK};
 
 /// A `ByteSink` over a growable `Vec` — the host's "write the whole file to RAM"
 /// backing (the device uses a FatFs-backed sink instead).

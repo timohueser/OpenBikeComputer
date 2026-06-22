@@ -3,9 +3,7 @@
 //! automatically, so the geometry that reaches `pack_feature` (in Python and in
 //! the dump the harness feeds us) already has `first == last`.
 
-use obc_pack::{
-    pack_chunk, pack_feature, pack_style_dict, serialize_lods, Feature, Kind, LodLayer, Node, Style,
-};
+use obc_pack::{pack_chunk, pack_feature, pack_style_dict, serialize_lods, Feature, Kind, LodLayer, Node, Style};
 
 fn line(style_id: u8, pts: &[(f64, f64)]) -> Feature {
     Feature { style_id, kind: Kind::Line, rings: vec![pts.to_vec()] }
@@ -14,8 +12,7 @@ fn line(style_id: u8, pts: &[(f64, f64)]) -> Feature {
 #[test]
 fn pack_style_dict_one_style() {
     // test_pack_style_dict: id 10, z 50, color 0xF9A6, weight 4, priority 2.
-    let data =
-        pack_style_dict(&[Style { id: 10, z_index: 50, color: 0xF9A6, weight: 4, priority: 2 }]);
+    let data = pack_style_dict(&[Style { id: 10, z_index: 50, color: 0xF9A6, weight: 4, priority: 2 }]);
     assert_eq!(data.len(), 7); // count(1) + 6-byte record
     assert_eq!(data[0], 1); // count
     assert_eq!(data[1], 10); // id
@@ -56,13 +53,7 @@ fn pack_chunk_pads_with_ff() {
 fn pack_polygon_with_hole() {
     // test_pack_polygon_small. shapely closes both rings (4 pts -> 5 stored).
     let ext = vec![(0.0, 0.0), (0.0001, 0.0), (0.0001, 0.0001), (0.0, 0.0001), (0.0, 0.0)];
-    let hole = vec![
-        (0.00002, 0.00002),
-        (0.00008, 0.00002),
-        (0.00008, 0.00008),
-        (0.00002, 0.00008),
-        (0.00002, 0.00002),
-    ];
+    let hole = vec![(0.00002, 0.00002), (0.00008, 0.00002), (0.00008, 0.00008), (0.00002, 0.00008), (0.00002, 0.00002)];
     let f = Feature { style_id: 20, kind: Kind::Polygon, rings: vec![ext, hole] };
     let node_bbox = (0, 0, 200, 200);
     let data = pack_feature(&f, node_bbox);
@@ -93,28 +84,12 @@ fn serialize_lods_header_single_empty_leaf() {
     let lod_tbl = u32::from_le_bytes([bin[26], bin[27], bin[28], bin[29]]) as usize;
     assert_eq!(lod_tbl, 33); // 32 header + 1 style-count byte
 
-    let mpp =
-        f32::from_le_bytes([bin[lod_tbl], bin[lod_tbl + 1], bin[lod_tbl + 2], bin[lod_tbl + 3]]);
+    let mpp = f32::from_le_bytes([bin[lod_tbl], bin[lod_tbl + 1], bin[lod_tbl + 2], bin[lod_tbl + 3]]);
     assert!(mpp.is_infinite()); // coarsest layer
-    let idx_off = u32::from_le_bytes([
-        bin[lod_tbl + 4],
-        bin[lod_tbl + 5],
-        bin[lod_tbl + 6],
-        bin[lod_tbl + 7],
-    ]);
-    let node_count = u32::from_le_bytes([
-        bin[lod_tbl + 8],
-        bin[lod_tbl + 9],
-        bin[lod_tbl + 10],
-        bin[lod_tbl + 11],
-    ]);
+    let idx_off = u32::from_le_bytes([bin[lod_tbl + 4], bin[lod_tbl + 5], bin[lod_tbl + 6], bin[lod_tbl + 7]]);
+    let node_count = u32::from_le_bytes([bin[lod_tbl + 8], bin[lod_tbl + 9], bin[lod_tbl + 10], bin[lod_tbl + 11]]);
     let c_size = u16::from_le_bytes([bin[lod_tbl + 12], bin[lod_tbl + 13]]);
-    let chunk_count = u32::from_le_bytes([
-        bin[lod_tbl + 14],
-        bin[lod_tbl + 15],
-        bin[lod_tbl + 16],
-        bin[lod_tbl + 17],
-    ]);
+    let chunk_count = u32::from_le_bytes([bin[lod_tbl + 14], bin[lod_tbl + 15], bin[lod_tbl + 16], bin[lod_tbl + 17]]);
     assert_eq!(idx_off as usize, lod_tbl + 18);
     assert_eq!(node_count, 1);
     assert_eq!(c_size, 2048);

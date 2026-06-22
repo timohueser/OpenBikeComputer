@@ -169,9 +169,7 @@ use embassy_time::{Duration, Instant};
 #[cfg(not(feature = "glass-demo"))]
 use embedded_graphics::pixelcolor::{raw::RawU16, Rgb565};
 #[cfg(not(feature = "glass-demo"))]
-use obc_app::{
-    App, AppState, InputClock, InputEvent, InputSource, RideClock, RouteSummary, Sensors, TrackSink,
-};
+use obc_app::{App, AppState, InputClock, InputEvent, InputSource, RideClock, RouteSummary, Sensors, TrackSink};
 // Only the `debug-usb`-off fallback implements its own `LocationSource` (`SynthLocation`); the
 // USB build's sources live in obc-platform, so these would be unused there.
 #[cfg(all(not(feature = "glass-demo"), not(feature = "debug-usb")))]
@@ -474,8 +472,7 @@ async fn input_overlay_task(
         if plane.take_overlay_dirty() {
             // SAFETY: overlay_back is the Layer-2 buffer the LTDC is *not* scanning; the only
             // live `&mut` over it, dropped before the flip.
-            let back =
-                unsafe { core::slice::from_raw_parts_mut(overlay_back as *mut u16, FB_PIXELS) };
+            let back = unsafe { core::slice::from_raw_parts_mut(overlay_back as *mut u16, FB_PIXELS) };
             let mut overlay_fb = FramebufferArgb4444::new(back, W as u32, H as u32);
             overlay_fb.clear_transparent();
             plane.render_overlay(&mut overlay_fb, W as f32, H as f32, color_fn);
@@ -498,9 +495,7 @@ async fn input_overlay_task(
             if landed {
                 core::mem::swap(&mut overlay_front, &mut overlay_back);
             } else {
-                defmt::warn!(
-                    "LTDC: Layer 2 vblank reload didn't land in 50 ms — kept buffers, skipped swap"
-                );
+                defmt::warn!("LTDC: Layer 2 vblank reload didn't land in 50 ms — kept buffers, skipped swap");
             }
         }
         Timer::after_millis(LOOP_MS).await;
@@ -528,13 +523,7 @@ struct SynthLocation {
 #[cfg(all(not(feature = "glass-demo"), not(feature = "debug-usb")))]
 impl SynthLocation {
     fn new(center_lon: i32, center_lat: i32, start: Instant) -> Self {
-        let mut s = SynthLocation {
-            center_lon,
-            center_lat,
-            udeg_per_m_east: 0.0,
-            start,
-            last_fix_ms: None,
-        };
+        let mut s = SynthLocation { center_lon, center_lat, udeg_per_m_east: 0.0, start, last_fix_ms: None };
         s.recenter(center_lon, center_lat);
         s
     }
@@ -617,16 +606,8 @@ const ILI9341_INIT: &[(u8, &[u8], u16)] = &[
     (0xF6, &[0x01, 0x00, 0x06], 0),
     (0x2C, &[], 200), // memory write, then settle
     (0x26, &[0x01], 0),
-    (
-        0xE0,
-        &[0x0F, 0x29, 0x24, 0x0C, 0x0E, 0x09, 0x4E, 0x78, 0x3C, 0x09, 0x13, 0x05, 0x17, 0x11, 0x00],
-        0,
-    ),
-    (
-        0xE1,
-        &[0x00, 0x16, 0x1B, 0x04, 0x11, 0x07, 0x31, 0x33, 0x42, 0x05, 0x0C, 0x0A, 0x28, 0x2F, 0x0F],
-        0,
-    ),
+    (0xE0, &[0x0F, 0x29, 0x24, 0x0C, 0x0E, 0x09, 0x4E, 0x78, 0x3C, 0x09, 0x13, 0x05, 0x17, 0x11, 0x00], 0),
+    (0xE1, &[0x00, 0x16, 0x1B, 0x04, 0x11, 0x07, 0x31, 0x33, 0x42, 0x05, 0x0C, 0x0A, 0x28, 0x2F, 0x0F], 0),
     (0x11, &[], 200), // sleep out, then settle (datasheet >= 120 ms before display on)
     (0x29, &[], 0),   // display on
     (0x2C, &[], 0),   // memory write start
@@ -741,9 +722,9 @@ async fn main(spawner: Spawner) {
         config.rcc.pll_src = PllSource::HSI;
         config.rcc.pll = Some(Pll {
             prediv: PllPreDiv::DIV8,
-            mul: PllMul::MUL168,           // VCO = 2 x 168 = 336 MHz
-            divp: Some(PllPDiv::DIV2),     // SYSCLK = 336 / 2 = 168 MHz
-            divq: Some(PllQDiv::DIV7),     // PLL48CLK = 336 / 7 = 48 MHz (USB OTG FS clock)
+            mul: PllMul::MUL168,       // VCO = 2 x 168 = 336 MHz
+            divp: Some(PllPDiv::DIV2), // SYSCLK = 336 / 2 = 168 MHz
+            divq: Some(PllQDiv::DIV7), // PLL48CLK = 336 / 7 = 48 MHz (USB OTG FS clock)
             divr: None,
         });
         config.rcc.pllsai = Some(Pll {
@@ -779,8 +760,7 @@ async fn main(spawner: Spawner) {
         let mut otg_cfg = usb::Config::default();
         // The DISC1 USER port doesn't wire VBUS sense to the MCU; assume the cable is present.
         otg_cfg.vbus_detection = false;
-        let driver =
-            usb::Driver::new_fs(p.USB_OTG_HS, UsbIrqs, p.PB15, p.PB14, EP_OUT.init([0; 256]), otg_cfg);
+        let driver = usb::Driver::new_fs(p.USB_OTG_HS, UsbIrqs, p.PB15, p.PB14, EP_OUT.init([0; 256]), otg_cfg);
 
         // Device descriptor: a generic CDC-ACM serial device (pid.codes test VID/PID).
         let mut dev_cfg = embassy_usb::Config::new(0x16c0, 0x27dd);
@@ -892,9 +872,7 @@ async fn main(spawner: Spawner) {
     // `Ltdc::new` forces PLLSAIDIVR = 2 (giving 48/2 = 24 MHz); override it to 8 so the
     // DOTCLK is 48/8 = 6 MHz, exactly matching ST's BSP (the ILI9341 RGB interface mis-
     // samples above ~6 MHz, which sheared the image at our earlier 8 MHz).
-    stm32_metapac::RCC
-        .dckcfgr()
-        .modify(|w| w.set_pllsaidivr(stm32_metapac::rcc::vals::Pllsaidivr::DIV8));
+    stm32_metapac::RCC.dckcfgr().modify(|w| w.set_pllsaidivr(stm32_metapac::rcc::vals::Pllsaidivr::DIV8));
     // Drive only the 18 wired RGB666 bits + 4 sync/clk/de lines (AF14, except the
     // four AF9 pins). Kept alive in `_ltdc_pins` so the AF config persists.
     let _ltdc_pins = [
@@ -1021,8 +999,7 @@ async fn main(spawner: Spawner) {
         // setup below.
         // SAFETY: OVERLAY_ADDR..+FB_BYTES is a distinct SDRAM region past both map framebuffers and
         // before the back overlay buffer / App slot; sole owner, the LTDC only DMA-reads it.
-        unsafe { core::slice::from_raw_parts_mut(OVERLAY_ADDR as *mut u16, FB_PIXELS) }
-            .fill(0x0000);
+        unsafe { core::slice::from_raw_parts_mut(OVERLAY_ADDR as *mut u16, FB_PIXELS) }.fill(0x0000);
         ltdc.init_layer(
             &LtdcLayerConfig {
                 pixel_format: PixelFormat::ARGB4444,
@@ -1048,9 +1025,7 @@ async fn main(spawner: Spawner) {
         {
             use stm32_metapac::ltdc::vals::Imr;
             use stm32_metapac::LTDC;
-            LTDC.layer(LtdcLayer::Layer2 as usize)
-                .cfbar()
-                .modify(|w| w.set_cfbadd(OVERLAY_ADDR as u32));
+            LTDC.layer(LtdcLayer::Layer2 as usize).cfbar().modify(|w| w.set_cfbadd(OVERLAY_ADDR as u32));
             LTDC.srcr().write(|w| w.set_imr(Imr::RELOAD));
         }
 
@@ -1062,8 +1037,7 @@ async fn main(spawner: Spawner) {
         let app_align = core::mem::align_of::<App>();
         let app_addr = (SDRAM_ADDR + 4 * FB_BYTES + app_align - 1) & !(app_align - 1);
         let cache_align = core::mem::align_of::<MapCache>();
-        let cache_addr =
-            (app_addr + core::mem::size_of::<App>() + cache_align - 1) & !(cache_align - 1);
+        let cache_addr = (app_addr + core::mem::size_of::<App>() + cache_align - 1) & !(cache_align - 1);
 
         // The streamed-map cache, placed once in SDRAM and reused every redraw. ptr::write keeps
         // its ~130 KB off the stack (opt-level 3 + LTO build `MapCache::new` straight into the
@@ -1152,12 +1126,7 @@ async fn main(spawner: Spawner) {
                     name,
                     distance_km: 0,
                     climb_m: 0,
-                    bbox: BBox {
-                        min_lon: cam_lon,
-                        min_lat: cam_lat,
-                        max_lon: cam_lon,
-                        max_lat: cam_lat,
-                    },
+                    bbox: BBox { min_lon: cam_lon, min_lat: cam_lat, max_lon: cam_lon, max_lat: cam_lat },
                     start_lon: cam_lon,
                     start_lat: cam_lat,
                 }]);
@@ -1410,19 +1379,14 @@ async fn main(spawner: Spawner) {
                 // Render into the back buffer (not the one being scanned out).
                 // SAFETY: back_addr is the buffer the LTDC is *not* scanning; the only live
                 // `&mut` over it, dropped before the flip.
-                let back =
-                    unsafe { core::slice::from_raw_parts_mut(back_addr as *mut u16, FB_PIXELS) };
+                let back = unsafe { core::slice::from_raw_parts_mut(back_addr as *mut u16, FB_PIXELS) };
                 let mut fb = Framebuffer565::new(back, W as u32, H as u32);
 
                 // This frame's map source: streamed from the open SD `.obcm` (issue #37), or the
                 // baked tile (flash-resident). Both are `ByteSource`s; the small `Reader` is
                 // rebuilt per redraw against the session-long SDRAM `MapCache`, so a chunk read on
                 // a previous frame can still hit this frame (cross-frame reuse).
-                let sd_src = if map_streaming {
-                    storage.as_ref().and_then(|s| s.map_source())
-                } else {
-                    None
-                };
+                let sd_src = if map_streaming { storage.as_ref().and_then(|s| s.map_source()) } else { None };
                 #[cfg(feature = "baked-tile")]
                 let baked_src = SliceSource(TILE);
                 let map_src: Option<&dyn ByteSource> = match &sd_src {
@@ -1439,14 +1403,7 @@ async fn main(spawner: Spawner) {
                     // Render *only* the map plane into Layer 1 — the overlay (hold ring) is drawn
                     // onto Layer 2 below and composited by the LTDC, so the map buffer never carries
                     // the bulge and is re-rendered only when the map itself changes.
-                    let stats = app.render_map(
-                        &mut fb,
-                        &reader,
-                        route.as_ref(),
-                        W as f32,
-                        H as f32,
-                        color_fn,
-                    );
+                    let stats = app.render_map(&mut fb, &reader, route.as_ref(), W as f32, H as f32, color_fn);
                     let render_us = t0.saturating_elapsed().as_micros();
                     // Snapshot this frame's render stats for the host telemetry line (the same
                     // numbers as the RTT `map frame` log / the sim's Render Stats panel).
@@ -1473,9 +1430,7 @@ async fn main(spawner: Spawner) {
                     if flip_to(LtdcLayer::Layer1, back_addr) {
                         core::mem::swap(&mut front_addr, &mut back_addr);
                     } else {
-                        defmt::warn!(
-                            "LTDC: Layer 1 vblank reload didn't land in 50 ms — kept buffers, skipped swap"
-                        );
+                        defmt::warn!("LTDC: Layer 1 vblank reload didn't land in 50 ms — kept buffers, skipped swap");
                     }
                     // Chunk-cache hit rate + SD-read overhead this frame (issue #37's measured
                     // deliverables). `RenderStats` reports the per-frame delta over the persistent
@@ -1520,8 +1475,7 @@ async fn main(spawner: Spawner) {
                 // Render into the back overlay buffer (not the one being scanned out).
                 // SAFETY: overlay_back is the buffer the LTDC is *not* scanning; the only live
                 // `&mut` over it, dropped before the flip.
-                let back =
-                    unsafe { core::slice::from_raw_parts_mut(overlay_back as *mut u16, FB_PIXELS) };
+                let back = unsafe { core::slice::from_raw_parts_mut(overlay_back as *mut u16, FB_PIXELS) };
                 let mut overlay_fb = FramebufferArgb4444::new(back, W as u32, H as u32);
                 overlay_fb.clear_transparent();
                 app.render_overlay(&mut overlay_fb, W as f32, H as f32, color_fn);
@@ -1533,15 +1487,9 @@ async fn main(spawner: Spawner) {
                 if flip_to(LtdcLayer::Layer2, overlay_back) {
                     core::mem::swap(&mut overlay_front, &mut overlay_back);
                 } else {
-                    defmt::warn!(
-                        "LTDC: Layer 2 vblank reload didn't land in 50 ms — kept buffers, skipped swap"
-                    );
+                    defmt::warn!("LTDC: Layer 2 vblank reload didn't land in 50 ms — kept buffers, skipped swap");
                 }
-                defmt::debug!(
-                    "overlay frame: {=u64} us | active {=bool}",
-                    overlay_us,
-                    app.overlay_active()
-                );
+                defmt::debug!("overlay frame: {=u64} us | active {=bool}", overlay_us, app.overlay_active());
             }
 
             // Publish render-stats telemetry host-ward at ~2 Hz (issue #38): the last map frame's

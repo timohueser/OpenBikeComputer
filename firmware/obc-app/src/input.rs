@@ -46,9 +46,7 @@ impl Held {
     /// or 0 when up. `now.wrapping_sub` tolerates the millis clock wrapping.
     fn progress(&self, now: u32, hold_ms: u32) -> f32 {
         match self.since {
-            Some(t0) if hold_ms > 0 => {
-                (now.wrapping_sub(t0) as f32 / hold_ms as f32).clamp(0.0, 1.0)
-            }
+            Some(t0) if hold_ms > 0 => (now.wrapping_sub(t0) as f32 / hold_ms as f32).clamp(0.0, 1.0),
             _ => 0.0,
         }
     }

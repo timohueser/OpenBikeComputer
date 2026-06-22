@@ -35,8 +35,7 @@ pub struct Track {
 impl Track {
     /// Read and parse a GPX file from disk.
     pub fn load(path: &Path) -> Result<Track, String> {
-        let xml = std::fs::read_to_string(path)
-            .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+        let xml = std::fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
         Track::parse(&xml)
     }
 
@@ -82,14 +81,9 @@ impl Track {
         let all_timed = raw.iter().all(|(_, _, _, t)| t.is_some());
         let points = if all_timed {
             let t0 = raw[0].3.unwrap();
-            raw.iter()
-                .map(|&(lat, lon, ele, t)| TrackPoint { lat, lon, ele, t: t.unwrap() - t0 })
-                .collect()
+            raw.iter().map(|&(lat, lon, ele, t)| TrackPoint { lat, lon, ele, t: t.unwrap() - t0 }).collect()
         } else {
-            raw.iter()
-                .enumerate()
-                .map(|(i, &(lat, lon, ele, _))| TrackPoint { lat, lon, ele, t: i as f64 })
-                .collect()
+            raw.iter().enumerate().map(|(i, &(lat, lon, ele, _))| TrackPoint { lat, lon, ele, t: i as f64 }).collect()
         };
 
         Ok(Track { points })

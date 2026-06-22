@@ -113,11 +113,7 @@ fn connect(name: &str, baud: u32) -> Result<Connection, String> {
 
 /// The reader thread: accumulate bytes into `\n`-terminated lines, surface telemetry + raw lines,
 /// and exit on a non-timeout error (unplug) or when `stop` is set.
-fn spawn_reader(
-    mut port: Box<dyn serialport::SerialPort>,
-    tx: mpsc::Sender<HostEvent>,
-    stop: Arc<AtomicBool>,
-) {
+fn spawn_reader(mut port: Box<dyn serialport::SerialPort>, tx: mpsc::Sender<HostEvent>, stop: Arc<AtomicBool>) {
     thread::spawn(move || {
         let mut acc: Vec<u8> = Vec::new();
         let mut buf = [0u8; 256];
@@ -172,9 +168,7 @@ fn parse_args() -> Result<Args, String> {
 }
 
 fn list_ports() -> Vec<String> {
-    serialport::available_ports()
-        .map(|ports| ports.into_iter().map(|p| p.port_name).collect())
-        .unwrap_or_default()
+    serialport::available_ports().map(|ports| ports.into_iter().map(|p| p.port_name).collect()).unwrap_or_default()
 }
 
 fn main() -> eframe::Result<()> {
@@ -199,9 +193,7 @@ fn main() -> eframe::Result<()> {
     }
 
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("OBC USB Feeder")
-            .with_inner_size([460.0, 720.0]),
+        viewport: egui::ViewportBuilder::default().with_title("OBC USB Feeder").with_inner_size([460.0, 720.0]),
         ..Default::default()
     };
     eframe::run_native("OBC USB Feeder", options, Box::new(|_cc| Ok(Box::new(FeederApp::new(args)))))
@@ -265,11 +257,8 @@ impl FeederApp {
             Ok(track) => {
                 let player = GpxPlayer::new(track);
                 let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("track");
-                self.gpx_label = Some(format!(
-                    "{name} — {} pts, {}",
-                    player.point_count(),
-                    fmt_clock(player.duration())
-                ));
+                self.gpx_label =
+                    Some(format!("{name} — {} pts, {}", player.point_count(), fmt_clock(player.duration())));
                 self.gpx_error = None;
                 self.player = Some(player);
                 self.baro = BaroSensor::new();
@@ -371,8 +360,7 @@ impl FeederApp {
     /// its threshold before the up arrives).
     fn hold(&mut self, k: char) {
         self.key(&format!("K {k} d"));
-        self.pending_ups
-            .push((Instant::now() + Duration::from_millis(HOLD_MS), format!("K {k} u")));
+        self.pending_ups.push((Instant::now() + Duration::from_millis(HOLD_MS), format!("K {k} u")));
     }
 
     /// Move any scheduled button-up edges that are now due into the outgoing queue.

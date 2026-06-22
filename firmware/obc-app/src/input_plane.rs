@@ -87,12 +87,7 @@ impl InputPlane {
     ///
     /// Call once per frame even with no pending events: that is how a held button's long-press
     /// fires at its threshold and how the bulge animates while charging.
-    pub fn recognize(
-        &mut self,
-        clock: InputClock,
-        input: &mut dyn InputSource,
-        mut on_gesture: impl FnMut(Gesture),
-    ) {
+    pub fn recognize(&mut self, clock: InputClock, input: &mut dyn InputSource, mut on_gesture: impl FnMut(Gesture)) {
         let now_ms = clock.0;
         self.now_ms = now_ms;
         while let Some(ev) = input.poll() {
@@ -115,13 +110,7 @@ impl InputPlane {
         }
         self.enc_progress = self.gestures.encoder_progress(now_ms);
         self.back_progress = self.gestures.back_progress(now_ms);
-        self.hold_hints.update(
-            now_ms,
-            self.enc_progress,
-            self.back_progress,
-            enc_fired,
-            back_fired,
-        );
+        self.hold_hints.update(now_ms, self.enc_progress, self.back_progress, enc_fired, back_fired);
     }
 
     /// Render **only the overlay plane** — the transient hold bulge / confirm ring — over

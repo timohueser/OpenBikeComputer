@@ -73,8 +73,5 @@ fn thick_line_end_gets_a_round_cap() {
     // 3 px past the end: inside the ⌀=11 cap disc (radius ~5) but beyond eg's butt cap (which
     // stops at x=90). Painted only when the per-vertex disc — the same one that rounds interior
     // joints — is drawn.
-    assert!(
-        buf.on(cx + 3, cy),
-        "no round cap past the line end — the per-vertex joint/cap disc isn't being drawn"
-    );
+    assert!(buf.on(cx + 3, cy), "no round cap past the line end — the per-vertex joint/cap disc isn't being drawn");
 }
