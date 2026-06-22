@@ -1,26 +1,20 @@
-//! OBCM **v5** serializer — a faithful port of `packer/obcm/serialize.py`.
+//! OBCM **v5** serializer — lay out the `.obcm` bytes.
 //!
-//! This is deterministic integer/byte work: given the *same* feature list and
-//! quadtree, it produces **byte-identical** output to the Python oracle. That is
-//! the one place the port still chases byte-parity (see the crate-level note in
-//! `lib.rs`), because it isolates `pack_feature`/`pack_chunk`/`serialize_tree`
-//! from the GEOS-version and ordering differences that make end-to-end
-//! byte-parity impractical.
-//!
-//! The geometry that reaches here is already clipped + simplified; this module
-//! only: rounds lon/lat to microdegrees (banker's rounding, matching Python's
-//! `round`), densifies long segments, delta-encodes rings, and lays out the
-//! chunk / index / LOD-table / header bytes per `OBCM_Spec.md`.
+//! Deterministic integer/byte work: given the same feature list and quadtree it
+//! produces the same output every run. The geometry that reaches here is already
+//! clipped + simplified; this module only rounds lon/lat to microdegrees (banker's
+//! rounding — round-half-to-even), densifies long segments, delta-encodes rings,
+//! and lays out the chunk / index / LOD-table / header bytes per `OBCM_Spec.md`.
 
 use std::io::{self, Seek, SeekFrom, Write};
 
 /// Max delta (microdegrees) before a segment is densified to keep deltas in
-/// 16-bit range. Mirrors `serialize.py::_MAX_SEGMENT`.
+/// 16-bit range.
 const MAX_SEGMENT: i64 = 30_000;
 
-/// Fixed header length (bytes). Mirrors `serialize.py::HEADER_LEN`.
+/// Fixed header length (bytes).
 pub const HEADER_LEN: usize = 32;
-/// One LOD-table entry, `<fIIHI>`. Mirrors `serialize.py::LOD_ENTRY_LEN`.
+/// One LOD-table entry, `<fIIHI>`.
 pub const LOD_ENTRY_LEN: usize = 18;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,14 +30,14 @@ pub struct Style {
     pub z_index: i8,
     pub color: u16,
     pub weight: u8,
-    /// Priority 1..=4; clamped on pack like the Python `max(1, min(4, ...))`.
+    /// Priority 1..=4; clamped to that range on pack.
     pub priority: u8,
 }
 
-/// A feature as it reaches the serializer. Geometry is f64 lon/lat — the exact
-/// shapely coords post clip+simplify — so the microdegree rounding and
-/// densification reproduce the oracle byte-for-byte. `rings[0]` is the exterior;
-/// `rings[1..]` are interior rings (polygons only). Lines carry a single ring.
+/// A feature as it reaches the serializer. Geometry is f64 lon/lat — the clipped +
+/// simplified coords — rounded to microdegrees and densified here. `rings[0]` is
+/// the exterior; `rings[1..]` are interior rings (polygons only). Lines carry a
+/// single ring.
 #[derive(Debug, Clone)]
 pub struct Feature {
     pub style_id: u8,
@@ -73,25 +67,25 @@ pub struct LodLayer {
     pub root: Node,
 }
 
-/// `int(round(v * 1e6))` with Python's **round-half-to-even** (banker's
+/// `round(v * 1e6)` to microdegrees with **round-half-to-even** (banker's
 /// rounding). Rust's `f64::round` is half-*away*-from-zero, so we use
-/// `round_ties_even` to match; the value is integer-valued before the `as i64`
-/// truncation, so the cast is exact. This is the classic regression trap from
-/// the plan's §4.3.
+/// `round_ties_even`; the value is integer-valued before the `as i64` truncation,
+/// so the cast is exact. (The rounding mode matters — getting it wrong shifts
+/// vertices by a microdegree.)
 #[inline]
 fn to_udeg(v: f64) -> i64 {
     (v * 1e6).round_ties_even() as i64
 }
 
 /// Append intermediate points between `p1` and `p2` (then `p2`) so no single
-/// (dx, dy) step exceeds the 16-bit delta range. Mirrors `serialize.py::_densify`
-/// exactly, including the integer step count and banker's-rounded midpoints.
+/// (dx, dy) step exceeds the 16-bit delta range, using an integer step count and
+/// banker's-rounded midpoints.
 fn densify(p1: (i64, i64), p2: (i64, i64), out: &mut Vec<(i64, i64)>) {
     let dx = p2.0 - p1.0;
     let dy = p2.1 - p1.1;
     let max_dist = dx.abs().max(dy.abs());
     if max_dist > MAX_SEGMENT {
-        let steps = max_dist / MAX_SEGMENT + 1; // Python `max_dist // _MAX_SEGMENT + 1`
+        let steps = max_dist / MAX_SEGMENT + 1; // integer step count
         for step in 1..steps {
             let t = step as f64 / steps as f64;
             out.push((
@@ -117,7 +111,7 @@ fn push_deltas(data: &mut Vec<u8>, deltas: &[i64], is16: bool) {
 }
 
 /// Pack the style table: `Count(u8)` then, sorted by id, `<BbHBB>` per style with
-/// `flags = (priority-1) & 0x03`. Mirrors `serialize.py::pack_style_dict`.
+/// `flags = (priority-1) & 0x03`.
 pub fn pack_style_dict(styles: &[Style]) -> Vec<u8> {
     let mut styles = styles.to_vec();
     styles.sort_by_key(|s| s.id);
@@ -135,10 +129,9 @@ pub fn pack_style_dict(styles: &[Style]) -> Vec<u8> {
     data
 }
 
-/// Pack one feature: 12-byte header `<BHiiB>` + delta-encoded rings. Mirrors
-/// `serialize.py::pack_feature`. `node_bbox` is the containing leaf's bbox; the
-/// exterior's first point becomes the anchor, stored relative to the leaf min
-/// corner.
+/// Pack one feature: 12-byte header `<BHiiB>` + delta-encoded rings. `node_bbox`
+/// is the containing leaf's bbox; the exterior's first point becomes the anchor,
+/// stored relative to the leaf min corner.
 pub fn pack_feature(f: &Feature, node_bbox: (i64, i64, i64, i64)) -> Vec<u8> {
     let is_polygon = f.kind == Kind::Polygon;
     let mut flags: u8 = 0;
@@ -217,8 +210,7 @@ pub fn pack_feature(f: &Feature, node_bbox: (i64, i64, i64, i64)) -> Vec<u8> {
 }
 
 /// Pack features into a fixed-size chunk, padded with `0xFF`. A feature that
-/// would overflow the chunk (and every feature after it) is dropped — the same
-/// `break` as `serialize.py::pack_chunk`.
+/// would overflow the chunk (and every feature after it) is dropped.
 pub fn pack_chunk(
     features: &[Feature],
     node_bbox: (i64, i64, i64, i64),
@@ -237,12 +229,11 @@ pub fn pack_chunk(
 }
 
 /// Flatten one quadtree into `(index_bytes, node_count, chunk_bytes,
-/// chunk_count)` via BFS, mirroring `serialize.py::serialize_tree`. Child order
-/// and chunk-id assignment order are BFS, which fixes the byte layout.
+/// chunk_count)` via BFS. Child order and chunk-id assignment order are BFS, which
+/// fixes the byte layout.
 pub fn serialize_tree(root: &Node, chunk_size: usize) -> (Vec<u8>, u32, Vec<u8>, u32) {
-    // BFS in enqueue order — identical to the Python `deque` traversal. Children
-    // are appended contiguously, so a branch's first-child index is the length
-    // of `nodes` at the moment we expand it.
+    // BFS in enqueue order. Children are appended contiguously, so a branch's
+    // first-child index is the length of `nodes` at the moment we expand it.
     let mut nodes: Vec<&Node> = vec![root];
     let mut first_child: Vec<usize> = vec![0];
     let mut i = 0;
@@ -285,9 +276,8 @@ pub fn serialize_tree(root: &Node, chunk_size: usize) -> (Vec<u8>, u32, Vec<u8>,
     (index_bytes, index.len() as u32, chunks, chunk_count)
 }
 
-/// Serialize a pyramid of LOD layers into the full v5 `.obcm` byte stream.
-/// Mirrors `serialize.py::serialize_lods` (header field order, LOD table layout,
-/// and the bbox stored as lat,lon,lat,lon).
+/// Serialize a pyramid of LOD layers into the full v5 `.obcm` byte stream (header
+/// field order, LOD table layout, and the bbox stored as lat,lon,lat,lon).
 pub fn serialize_lods(
     lods: &[LodLayer],
     styles: &[Style],
@@ -433,9 +423,9 @@ mod tests {
 
     #[test]
     fn rounding_is_ties_even_not_away() {
-        // Plan §4.3: Python `round()` is round-half-to-even; `f64::round` is
-        // round-half-away-from-zero. `to_udeg` must use the former. Exact halves
-        // are representable in f64, so these pin the *mode* `to_udeg` relies on.
+        // `round_ties_even` is round-half-to-even; `f64::round` is round-half-away-
+        // from-zero. `to_udeg` must use the former. Exact halves are representable
+        // in f64, so these pin the *mode* `to_udeg` relies on.
         assert_eq!(0.5_f64.round_ties_even(), 0.0);
         assert_eq!(1.5_f64.round_ties_even(), 2.0);
         assert_eq!(2.5_f64.round_ties_even(), 2.0);
@@ -450,9 +440,9 @@ mod tests {
     }
 
     #[test]
-    fn densify_matches_python_stepping() {
-        // Plan §4.5: a 55000-µdeg jump → steps = 55000//30000 + 1 = 2, so exactly
-        // one banker's-rounded midpoint, then the endpoint.
+    fn densify_steps_long_segments() {
+        // A 55000-µdeg jump → steps = 55000//30000 + 1 = 2, so exactly one
+        // banker's-rounded midpoint, then the endpoint.
         let mut out = Vec::new();
         densify((0, 0), (55000, 0), &mut out);
         assert_eq!(out, vec![(27500, 0), (55000, 0)]);
@@ -470,9 +460,9 @@ mod tests {
 
     #[test]
     fn streaming_matches_in_memory() {
-        // The Stage-6 streaming serializer must be byte-identical to
-        // `serialize_lods` for the same trees. Build a small 2-LOD pyramid via the
-        // real quadtree, serialize both ways, and compare.
+        // The streaming serializer must be byte-identical to `serialize_lods` for
+        // the same trees. Build a small 2-LOD pyramid via the real quadtree,
+        // serialize both ways, and compare.
         use crate::geom::Geom;
         use std::io::Cursor;
 

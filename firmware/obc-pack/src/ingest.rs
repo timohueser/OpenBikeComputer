@@ -1,27 +1,26 @@
-//! `ingest.rs` — port of `packer/obcm/ingest.py`. **Stage 3** covered lines +
-//! closed ways; **Stage 4** adds multipolygon/`boundary` *relation* area assembly
-//! (lakes-with-islands, multi-part forests) alongside them. Reads an `.osm.pbf`
-//! with `osmpbf` in two passes:
+//! `ingest.rs` — read an `.osm.pbf` into styled features. Handles lines, closed-way
+//! polygons, and multipolygon/`boundary` *relation* area assembly (lakes-with-
+//! islands, multi-part forests). Reads with `osmpbf` in two passes:
 //!
 //!   - **Pass 1** builds the `node_id → coord` store **and** collects qualifying
 //!     area relations (their style + member way-ids) — relations sit last in a
 //!     sorted PBF, so a single whole-file read sees them after the nodes, no extra
 //!     pass needed.
-//!   - **Pass 2** resolves ways into features + coastlines (Stage 3) and captures
-//!     the geometry of any way that is a relation member.
+//!   - **Pass 2** resolves ways into features + coastlines and captures the
+//!     geometry of any way that is a relation member.
 //!
 //! Then each relation's member ways are assembled into polygons-with-holes via
 //! GEOS `build_area` ([`assemble_multipolygon`]) and emitted styled by the
-//! *relation's* tags. Stage 4 is **additive**: a tagged closed way that is also a
-//! relation member still yields its own Stage-3 `from_way` polygon *and*
-//! contributes to the relation polygon (matching the oracle).
+//! *relation's* tags. Assembly is **additive**: a tagged closed way that is also a
+//! relation member still yields its own polygon *and* contributes to the relation
+//! polygon.
 //!
-//! Closed-way classification keeps Amendment 2 (the closed-line-way fix): a closed
-//! `highway=residential` loop becomes a line **only**, never also a filled blob.
+//! Closed-way classification: a closed `highway=residential` loop becomes a line
+//! **only**, never also a filled blob.
 //!
-//! Coordinates are read *osmium's* way — `decimicro / 1e7` (see the `node_probe`
-//! parity gate) — so the f64 lon/lat are bit-identical to the oracle's, and
-//! everything downstream (bbox, simplify, serialize) lines up.
+//! Coordinates are read *osmium's* way — `decimicro / 1e7`, never `* 1e-7` — so the
+//! f64 lon/lat match osmium's exactly and everything downstream (bbox, simplify,
+//! serialize) lines up.
 
 use std::collections::{HashMap, HashSet};
 
@@ -31,8 +30,7 @@ use crate::config::Config;
 use crate::geom::{assemble_multipolygon, polygon_is_valid, Geom};
 
 /// A feature as it leaves ingest: a simple geometry plus its style id and the
-/// `min_lod` gate. Mirrors the `{style_id, min_lod, geometry}` dicts `ingest.py`
-/// appends to `self.features`.
+/// `min_lod` gate.
 pub struct IngestFeature {
     pub style_id: u8,
     pub min_lod: usize,
@@ -57,12 +55,11 @@ struct PendingRelation {
 }
 
 /// The tags whose presence (with `area != no`) classifies a *closed* way as a
-/// polygon. Mirrors `ingest.py::way`'s `area_tags`.
+/// polygon.
 const AREA_TAGS: [&str; 6] = ["building", "landuse", "amenity", "leisure", "natural", "waterway"];
 
 /// osmium derives lon/lat as `decimicro / 1e7` — division by the exact integer
-/// `1e7`, never `* 1e-7`. The `node_probe` gate proved this is bit-identical to
-/// the oracle. Keep it that way.
+/// `1e7`, never `* 1e-7`. Keep it that way so the coords match osmium exactly.
 #[inline]
 fn to_deg(decimicro: i32) -> f64 {
     decimicro as f64 / 1e7
@@ -73,8 +70,8 @@ fn to_deg(decimicro: i32) -> f64 {
 pub fn ingest_osm(pbf_path: &str, config: &Config) -> Result<Ingested, String> {
     // --- Pass 1: node-location store + relation collection. ---
     // The PBF is node-sorted so the store is filled before any relation is read
-    // (relations come last); a full store is the safe, oracle-faithful choice —
-    // Stage 6 can shrink it. ~8 B/node + overhead.
+    // (relations come last); a full store is the simple, safe choice — it could be
+    // shrunk later. ~8 B/node + overhead.
     let mut nodes: HashMap<i64, (i32, i32)> = HashMap::new();
     let mut pending: Vec<PendingRelation> = Vec::new();
     let mut needed_ways: HashSet<i64> = HashSet::new();
@@ -101,8 +98,8 @@ pub fn ingest_osm(pbf_path: &str, config: &Config) -> Result<Ingested, String> {
         .for_each(|el| {
             if let Element::Way(w) = el {
                 let refs: Vec<i64> = w.refs().collect();
-                // A missing node aborts the whole way — mirrors osmium raising
-                // `InvalidLocationError`, caught by `ingest.py` (the way is dropped).
+                // A missing node aborts the whole way — osmium would raise
+                // `InvalidLocationError` here, and the way is dropped.
                 let Some(coords) = resolve_coords(&refs, &nodes) else { return };
                 process_way(&w, &refs, &coords, config, &mut features, &mut coastlines);
                 // Capture geometry for relation assembly (move, no extra clone).
@@ -121,9 +118,8 @@ pub fn ingest_osm(pbf_path: &str, config: &Config) -> Result<Ingested, String> {
     // **Completeness:** osmium's MultipolygonManager only assembles a relation when
     // ALL its member ways are present; an incomplete relation (a member way clipped
     // out of the extract) is dropped, not assembled from the surviving members.
-    // We mirror that — assembling a partial ring would emit a phantom polygon the
-    // oracle never produces (seen as over-production on boundary-crossing relations
-    // in freiburg-town/monaco).
+    // We mirror that — assembling a partial ring would emit a phantom polygon that
+    // crosses the extract boundary.
     for pr in &pending {
         let mut members = Vec::with_capacity(pr.member_ways.len());
         let mut complete = true;
@@ -160,10 +156,9 @@ fn resolve_coords(refs: &[i64], nodes: &HashMap<i64, (i32, i32)>) -> Option<Vec<
 }
 
 /// Collect a `type=multipolygon`/`type=boundary` relation (skipping `admin_level`)
-/// for Stage-4 assembly: record its style + member way-ids. Mirrors which
-/// relations osmium's `AreaManager` turns into areas, and `ingest.py::area()`'s
-/// `admin_level` early-return. Member roles are ignored — geometry decides
-/// outer/inner (handover §3.1); non-way members (nodes, sub-relations) are skipped.
+/// for area assembly: record its style + member way-ids — the relations osmium's
+/// `AreaManager` turns into areas. Member roles are ignored — geometry decides
+/// outer/inner; non-way members (nodes, sub-relations) are skipped.
 fn collect_relation(
     r: &osmpbf::Relation,
     config: &Config,
@@ -192,9 +187,9 @@ fn collect_relation(
     pending.push(PendingRelation { style_id: style.id, min_lod: style.min_lod, member_ways });
 }
 
-/// One way (mirrors `ingest.py::way`): capture coastline always, then style +
-/// classify into a single polygon-or-line emission. `refs`/`coords` are
-/// pre-resolved (so the caller can also reuse `coords` for member capture).
+/// One way: capture coastline always, then style + classify into a single
+/// polygon-or-line emission. `refs`/`coords` are pre-resolved (so the caller can
+/// also reuse `coords` for member capture).
 fn process_way(
     w: &osmpbf::Way,
     refs: &[i64],
@@ -207,28 +202,26 @@ fn process_way(
     let tags: HashMap<&str, &str> = w.tags().collect();
 
     // Coastlines are captured ALWAYS — even if the way is also closed/styled —
-    // and as lines, never areas (matches `ingest.py::way`'s leading block).
+    // and as lines, never areas.
     if tags.get("natural") == Some(&"coastline") && coords.len() >= 2 {
         coastlines.push(coords.to_vec());
     }
 
     let Some(style) = config.get_style(&tags) else { return };
 
-    // Closed-way classification (plan Amendment 2 / handover §4): emit a polygon
-    // iff it's an area, else a line — never both (the oracle's double-emit bug we
-    // intentionally do not replicate).
+    // Closed-way classification: emit a polygon iff it's an area, else a line —
+    // never both (a closed road loop is a line, not also a filled blob).
     let is_closed = refs.len() >= 2 && refs.first() == refs.last();
     if is_closed && is_area(&tags) {
-        // admin_level + area ⇒ the oracle drops it entirely (way() skips the line
-        // because is_area, area() skips the polygon because admin_level). Match.
+        // admin_level + area ⇒ drop it entirely (neither a styled line nor a
+        // polygon here).
         if tags.contains_key("admin_level") {
             return;
         }
         // Closed ways are already first==last; no holes (those come from
-        // relations). Mirror area()'s `len(ext_coords) >= 3` guard, and skip rings
-        // osmium's assembler would reject as invalid (e.g. the self-intersecting
-        // "Red House" building in malta) — it emits no polygon for those, and
-        // crucially no line either (way() already returned).
+        // relations). Require ≥3 points, and skip rings osmium's assembler would
+        // reject as invalid (e.g. a self-intersecting building) — those emit no
+        // polygon, and no line either (the line branch already returned).
         if coords.len() >= 3 && polygon_is_valid(coords, &[]) {
             features.push(IngestFeature {
                 style_id: style.id,
@@ -250,9 +243,8 @@ fn process_way(
     }
 }
 
-/// Closed-way area heuristic, byte-for-byte with `ingest.py::way`:
-/// `area=yes` ⇒ area; `area=no` ⇒ never; otherwise area iff it carries any
-/// [`AREA_TAGS`] key.
+/// Closed-way area heuristic: `area=yes` ⇒ area; `area=no` ⇒ never; otherwise
+/// area iff it carries any [`AREA_TAGS`] key.
 fn is_area(tags: &HashMap<&str, &str>) -> bool {
     match tags.get("area") {
         Some(&"yes") => true,

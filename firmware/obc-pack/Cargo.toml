@@ -2,23 +2,22 @@
 name = "obc-pack"
 version = "0.1.0"
 edition = "2021"
-description = "OBCM map packer (OSM .osm.pbf -> .obcm): std host port of packer/obcm/*, validated against the Python oracle"
+description = "OBCM map packer (OSM .osm.pbf -> .obcm)"
 
 [dependencies]
 # Shared definition of the binary format — the reader that reads back what this
 # writes; also used by the obcm_diff comparator.
 obc-reader = { path = "../obc-reader" }
-# `preserve_order` is load-bearing: config.py assigns style IDs 1-based in
+# `preserve_order` is load-bearing: the config assigns style IDs 1-based in
 # config.json document order, so the parsed map must keep insertion order.
-serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 heapless = "0.8"
 # `v3_14_0` matches the system libGEOS (3.14.1) and unlocks the area-assembly API
-# (`build_area`, the even-odd multipolygon primitive) used for Stage-4 relations.
+# (`build_area`, the even-odd multipolygon primitive) used for relation polygons.
 geos = { version = "11.1.1", features = ["v3_14_0"] }
 osmpbf = "0.3.8"
-# Stage-6 speed: parallelize the per-feature simplify. Safe because the `geos`
-# crate keeps a thread-local GEOS context (each worker has its own) and `Geometry`
-# is `!Send` (never crosses threads); rayon's `collect` preserves order, so output
-# stays byte-identical.
+# Speed: parallelize the per-feature simplify. Safe because the `geos` crate keeps
+# a thread-local GEOS context (each worker has its own) and `Geometry` is `!Send`
+# (never crosses threads); rayon's `collect` preserves order, so output stays
+# deterministic.
 rayon = "1"
