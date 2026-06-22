@@ -112,9 +112,9 @@ impl DrawTarget for Framebuffer565<'_> {
 
     fn clear(&mut self, color: Self::Color) -> Result<(), Self::Error> {
         let raw = color.into_storage();
-        for px in self.buf.iter_mut() {
-            *px = raw;
-        }
+        // `fill` lowers to a burstable memset across the wait-stated FMC, far cheaper than a
+        // per-pixel store on every map redraw.
+        self.buf.fill(raw);
         Ok(())
     }
 }
