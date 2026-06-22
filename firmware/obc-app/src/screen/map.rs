@@ -1,11 +1,11 @@
-//! The Map screen — the Riding view. This is the refactor of the old
-//! `App::render_frame` map path: it owns no state of its own (the camera lives in
-//! [`AppState`](crate::AppState), shared with the host's mouse pan/zoom), and its
-//! `draw` is byte-for-byte the previous map + marker render.
+//! The Map screen — the Riding view. It owns no state of its own (the camera lives in
+//! [`AppState`](crate::AppState), shared with the host's mouse pan/zoom); `draw` renders
+//! the base map plus the route, travel chevrons, breadcrumb, user marker, off-route pill,
+//! and pan HUD.
 //!
 //! Bindings (`docs/ui_framework_brief.md` §Screens): `turn` = zoom, `press` =
-//! pause → Ride control, `back` = the sibling Statistics view, `back-hold` = Menu.
-//! `hold` (Pan mode) is reserved until that screen lands.
+//! pause → Ride control, `back` = the sibling Statistics view, `back-hold` = Menu,
+//! `hold` = enter Pan mode.
 
 use core::fmt::Write;
 
@@ -28,8 +28,7 @@ const ZOOM_STEP: f32 = 1.2;
 const MIN_ZOOM: f32 = 1e-6;
 const MAX_ZOOM: f32 = 1e4;
 
-/// Fallback backdrop when a map carries no backdrop style — mirrors the constant
-/// the old `App::render_frame` used, so a backdrop-less map looks identical.
+/// Fallback backdrop when a map carries no backdrop style.
 const DEFAULT_BG_RGB565: u16 = 0x2104;
 
 /// Stroke width (px) of the active-route overlay — bold enough to read over the map and to
@@ -45,10 +44,9 @@ const ROUTE_WEIGHT: u32 = 11;
 const ARROW_COLOR: u16 = super::palette::PARCHMENT;
 
 /// Zoom threshold (ground meters per pixel) at/below which the route direction chevrons are
-/// drawn — i.e. they appear once you're zoomed in to roughly riding scale (the riding view
-/// opens at ~0.5 m/px) and fade out on wider overviews where they'd just clutter a short
-/// on-screen route. A plain scale gate, independent of the map's LOD pyramid: tune this one
-/// number to move the cut-off.
+/// drawn — i.e. they appear at roughly riding scale (the riding view opens at ~0.5 m/px) and
+/// fade out on wider overviews where they'd just clutter a short on-screen route. A plain
+/// scale gate, independent of the map's LOD pyramid: tune this one number to move the cut-off.
 const CHEVRON_MAX_MPP: f32 = 4.0;
 
 /// Stroke width (px) of the travelled-path breadcrumb — a touch thinner than the route, so
@@ -128,7 +126,7 @@ impl MapScreen {
         }
 
         // The travelled-path breadcrumb in navy, drawn *over* the route (and under the marker)
-        // so the trail behind you reads navy and the route ahead reads magenta. One chained stroke
+        // so the trail behind reads navy and the route ahead reads magenta. One chained stroke
         // (coarse spine → full-res recent tail), so the tiers never double up. Skipped when
         // nothing is recorded yet (the bounded buffers can never overrun the scratch).
         if !rx.breadcrumb.is_empty() {

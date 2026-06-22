@@ -3,7 +3,7 @@
 //! All map drawing (projection, LOD selection, polygon fill, lines) lives in
 //! `obc_render`, the same code the nRF54L firmware will run against the
 //! LS021B7DD02. This binary only owns the host concerns: argument parsing, the
-//! SDL window + pan/zoom event loop, PNG output, and the color policy (device
+//! eframe window + pan/zoom event loop, PNG output, and the color policy (device
 //! 64-color quantization by default, or `--true-color`).
 //!
 //! Usage:
@@ -18,7 +18,7 @@
 //! host-side run of the same conversion the device does on a USB drop. Routes can also
 //! be dropped onto the window to import them live.
 //!
-//! Interactive: drag to pan, scroll to zoom, Esc/Q to quit.
+//! Interactive: drag to pan, scroll to zoom; close the Controls window to quit.
 //!
 //! The web build (wasm32) reuses only the shared host pieces — [`Args`],
 //! [`color_of`], [`initial_camera`], [`replay_step`], [`reconcile_tracks`] — and the

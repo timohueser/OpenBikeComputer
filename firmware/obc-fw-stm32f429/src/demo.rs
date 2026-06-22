@@ -3,16 +3,16 @@
 //!
 //! Issue #33 listed "the existing font & palette demo" as a board-bring-up
 //! deliverable, but the merged bring-up only landed the raw colour-bar test
-//! pattern. This brings it onto glass: the Terminus font ladder + the "explorer's
-//! field map" palette (`docs/bikepacking-computer-ui-spec.md`), drawn through the
-//! SDRAM [`Framebuffer565`](obc_platform::Framebuffer565) with `obc_render::text`.
-//! It verifies the text raster + the RGB565 colour path in isolation, before the
+//! pattern. This draws the Terminus font ladder + the "explorer's field map"
+//! palette (`docs/bikepacking-computer-ui-spec.md`) through the SDRAM
+//! [`Framebuffer565`](obc_platform::Framebuffer565) with `obc_render::text`,
+//! verifying the text raster + the RGB565 colour path in isolation before the
 //! whole [`App::render_frame`](obc_app::App::render_frame) is pointed at the panel.
 //!
 //! Unlike the simulator — which previews the LS021B7DD02's device-64 (RGB222)
 //! gamut via `rgb565_to_device64` — this draws the palette in **native RGB565**:
 //! the ILI9341 is a true 5/6/5 panel, so the colours go on straight (no host-only
-//! quantization). Reached via the `glass-demo` cargo feature.
+//! quantization). Behind the `glass-demo` cargo feature.
 
 use embedded_graphics::{pixelcolor::Rgb565, prelude::*, primitives::Rectangle};
 use obc_render::text::{draw_text, Font, TextAlign};

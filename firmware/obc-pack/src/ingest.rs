@@ -11,14 +11,14 @@
 //!
 //! Then each relation's member ways are assembled into polygons-with-holes via
 //! GEOS `build_area` ([`assemble_multipolygon`]) and emitted styled by the
-//! *relation's* tags. Assembly is **additive**: a tagged closed way that is also a
-//! relation member still yields its own polygon *and* contributes to the relation
+//! relation's tags. Assembly is additive: a tagged closed way that is also a
+//! relation member still yields its own polygon and contributes to the relation
 //! polygon.
 //!
 //! Closed-way classification: a closed `highway=residential` loop becomes a line
-//! **only**, never also a filled blob.
+//! only, never also a filled blob.
 //!
-//! Coordinates are read *osmium's* way — `decimicro / 1e7`, never `* 1e-7` — so the
+//! Coordinates are read osmium's way — `decimicro / 1e7`, never `* 1e-7` — so the
 //! f64 lon/lat match osmium's exactly and everything downstream (bbox, simplify,
 //! serialize) lines up.
 

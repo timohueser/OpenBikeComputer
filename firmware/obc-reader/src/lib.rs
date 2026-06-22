@@ -41,8 +41,7 @@ pub use reader::{
 /// turns microdegree coordinates into ground distance (the route converter and its
 /// elevation profile, the packer's simplify tolerance) or into screen scale (the
 /// renderer's zoom ↔ meters-per-pixel): they all derive from this one number, so a
-/// refinement to the Earth model lands everywhere at once instead of in four places
-/// under three names.
+/// refinement to the Earth model lands everywhere at once.
 pub const M_PER_DEG: f64 = 111_320.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

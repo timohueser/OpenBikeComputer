@@ -18,11 +18,11 @@
 //! Zoom is cheap: the profile is a load-time [`Profile`] pyramid, so a zoom step is just
 //! [`Profile::window`] picking a level + sub-range to draw — no route re-read.
 //!
-//! **Phase B (live):** the live position comes from [`Activity::progress_m`] (map-matching);
-//! the stat grid reads the actually-ridden accumulators (Speed / Avg. Speed / done /
-//! climbed) and the route-relative remainders (to go / to climb). Going off-route freezes
-//! the live position, tints it + the bar warning-red, and swaps the header's grade readout
-//! for the cross-track distance.
+//! The live position comes from [`Activity::progress_m`] (map-matching); the stat grid
+//! reads the actually-ridden accumulators (Speed / Avg. Speed / done / climbed) and the
+//! route-relative remainders (to go / to climb). Going off-route freezes the live position,
+//! tints it + the bar warning-red, and swaps the header's grade readout for the cross-track
+//! distance.
 
 use core::fmt::Write;
 
@@ -43,7 +43,7 @@ use crate::input::Gesture;
 use super::{palette, title_frame, Ctx, MapScreen, Render, Screen, Transition};
 
 /// Cursor scrub per encoder detent, as a fraction of the whole route — ~42 detents end to
-/// end, matching the Phase-B scrub feel (independent of the base column count).
+/// end (independent of the base column count).
 const CURSOR_STEP_FRAC: f32 = 1.0 / 42.0;
 /// Zoom multiplier per encoder detent (matches the Map's zoom feel).
 const ZOOM_STEP: f32 = 1.2;
@@ -274,7 +274,7 @@ impl StatisticsScreen {
         cv.vline(cursor_x, CHART_TOP, band_bot - CHART_TOP + 1, 2, cursor_color);
         cv.disc(Point::new(cursor_x, cur_y), 4, INK); // dark ring …
         cv.disc(Point::new(cursor_x, cur_y), 3, cursor_color); // … around the cursor dot
-                                                               // Current-elevation readout at the cursor (updates as you scrub). Placed below the
+                                                               // Current-elevation readout at the cursor (updates while scrubbing). Placed below the
                                                                // dot near the peak so the labels never overlap; else just above it, clamped inside
                                                                // the band and clear of the baseline/bar.
         let mut ele_s: heapless::String<8> = heapless::String::new();
@@ -430,7 +430,7 @@ where
 /// of the route around it, using each end's mid-band elevation (base level). Zero when the
 /// run is degenerate.
 fn grade_at(profile: &Profile, total_distance_m: u32, frac: f32) -> i32 {
-    // ±1.5 % of the route — a touch of smoothing, matching the old ±4-of-256-columns feel.
+    // ±1.5 % of the route — a touch of smoothing.
     const HALF: f32 = 0.015;
     let lo = (frac - HALF).max(0.0);
     let hi = (frac + HALF).min(1.0);

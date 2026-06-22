@@ -8,9 +8,9 @@
 //! is STM32F429-specific (SPI4 + the GPIO chip-select) and will be re-pointed, not rewritten,
 //! for the nRF board.
 //!
-//! Mirroring the host stores keeps one behaviour across both: routes stream from the card
-//! through a [`RouteReader`], the chosen map is read **resident** into SDRAM, and the ride is
-//! logged to a temp `.obct` that's converted to a `<route>.gpx` on Finish.
+//! Mirroring the host stores keeps one behaviour across both: routes and the chosen map both
+//! **stream** from the card (through a [`RouteReader`] / a per-frame [`SdByteSource`], issue
+//! #37), and the ride is logged to a temp `.obct` that's converted to a `<route>.gpx` on Finish.
 //!
 //! ## Card layout (FAT16/FAT32)
 //!   `/<name>.obcm`   — the map tile (first one found in the root is loaded)

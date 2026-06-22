@@ -1,9 +1,8 @@
 //! The global long-press hint — an on-screen "frame bulge" that surfaces the
 //! device's central hold gesture wherever it's available.
 //!
-//! Long-press is the spine of the input model, but until now only the Ride-control
-//! overlay showed it. This is the *one shared layer* that makes it visible
-//! everywhere: [`App`](crate::app::App) folds each frame's encoder/Back
+//! Long-press is the spine of the input model. This is the one shared layer that
+//! surfaces it everywhere: [`App`](crate::app::App) folds each frame's encoder/Back
 //! hold-progress into [`HoldHints`] and draws it on top of the screen stack.
 //!
 //! Per control a black hump swells inward from the screen edge nearest its physical
