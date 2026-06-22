@@ -77,11 +77,7 @@ const BLOCK_RECORDS: usize = 64;
 /// (and on the first point), so pauses/gaps become honest segment breaks. `<time>` is
 /// intentionally omitted until the device has a real clock. A trailing partial record (a
 /// power-loss mid-write) is ignored — the log stays valid at any 16-byte boundary.
-pub fn track_to_gpx(
-    src: &dyn ByteSource,
-    name: &str,
-    sink: &mut dyn ByteSink,
-) -> Result<(), Error> {
+pub fn track_to_gpx(src: &dyn ByteSource, name: &str, sink: &mut dyn ByteSink) -> Result<(), Error> {
     let mut line: String<160> = String::new();
 
     put(sink, b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")?;

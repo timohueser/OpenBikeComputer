@@ -132,11 +132,7 @@ fn quantized_palette_color_reaches_the_panel() {
     let mut b = Buf::new(32, 40); // fits the Display cell (16×32) at (2, 2)
     draw_text(&mut b, "8", Point::new(2, 2), Font::Display, TextAlign::Left, quantized);
     assert!(b.count(quantized) > 0, "the quantized color should be painted");
-    assert_eq!(
-        b.count(Rgb888::new(t.0, t.1, t.2)),
-        0,
-        "the un-quantized true-color version must not appear"
-    );
+    assert_eq!(b.count(Rgb888::new(t.0, t.1, t.2)), 0, "the un-quantized true-color version must not appear");
 }
 
 #[test]

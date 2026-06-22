@@ -10,9 +10,9 @@
 
 use std::path::{Path, PathBuf};
 
-use obc_route::{RouteStats, RouteSummary, SliceSource};
 #[cfg(not(target_arch = "wasm32"))]
 use obc_route::{gpx_to_obcr, ByteSink, Error};
+use obc_route::{RouteStats, RouteSummary, SliceSource};
 
 /// A `ByteSink` over a growable `Vec` — converts a GPX to OBCR bytes in memory before
 /// they're written to the folder.
@@ -56,13 +56,8 @@ impl RouteStore {
     /// empty catalog (the menu shows its empty state); the folder is created lazily on
     /// the first import.
     pub fn open(dir: impl Into<PathBuf>) -> Self {
-        let mut s = RouteStore {
-            dir: dir.into(),
-            catalog: Vec::new(),
-            paths: Vec::new(),
-            active: None,
-            active_bytes: None,
-        };
+        let mut s =
+            RouteStore { dir: dir.into(), catalog: Vec::new(), paths: Vec::new(), active: None, active_bytes: None };
         s.rescan();
         s
     }
@@ -102,14 +97,12 @@ impl RouteStore {
     /// Convert a GPX file into the store (named after its file stem) and rescan.
     /// Returns the computed stats — the same conversion the device runs on a USB drop.
     pub fn import_gpx(&mut self, gpx_path: &Path) -> Result<RouteStats, String> {
-        let gpx =
-            std::fs::read(gpx_path).map_err(|e| format!("read {}: {e}", gpx_path.display()))?;
+        let gpx = std::fs::read(gpx_path).map_err(|e| format!("read {}: {e}", gpx_path.display()))?;
         let stem = gpx_path.file_stem().and_then(|s| s.to_str()).unwrap_or("route");
         let mut sink = VecSink::default();
         let stats = gpx_to_obcr(&SliceSource(&gpx), stem, &mut sink)
             .map_err(|e| format!("convert {}: {e:?}", gpx_path.display()))?;
-        std::fs::create_dir_all(&self.dir)
-            .map_err(|e| format!("create {}: {e}", self.dir.display()))?;
+        std::fs::create_dir_all(&self.dir).map_err(|e| format!("create {}: {e}", self.dir.display()))?;
         let out = self.dir.join(format!("{stem}.obcr"));
         std::fs::write(&out, &sink.buf).map_err(|e| format!("write {}: {e}", out.display()))?;
         self.rescan();
@@ -123,8 +116,7 @@ impl RouteStore {
             return;
         }
         self.active = want;
-        self.active_bytes =
-            want.and_then(|i| self.paths.get(i)).and_then(|p| std::fs::read(p).ok());
+        self.active_bytes = want.and_then(|i| self.paths.get(i)).and_then(|p| std::fs::read(p).ok());
     }
 
     /// A [`ByteSource`](obc_route::ByteSource) over the active route's bytes, for

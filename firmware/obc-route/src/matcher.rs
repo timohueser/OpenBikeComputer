@@ -77,14 +77,7 @@ impl Default for RouteMatch {
 
 impl RouteMatch {
     pub fn new() -> Self {
-        RouteMatch {
-            chunk: 0,
-            seg: 0,
-            progress_m: 0,
-            off_route: false,
-            started: false,
-            buf: Vec::new(),
-        }
+        RouteMatch { chunk: 0, seg: 0, progress_m: 0, off_route: false, started: false, buf: Vec::new() }
     }
 
     /// Forget all match state — call when a route is loaded or swapped.

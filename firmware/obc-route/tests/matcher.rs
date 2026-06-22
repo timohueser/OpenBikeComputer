@@ -6,8 +6,7 @@
 
 use heapless::Vec as HVec;
 use obc_route::{
-    gpx_to_obcr, ByteSink, Error, RouteIndex, RouteMatch, RoutePoint, RouteReader, SliceSource,
-    MAX_POINTS_PER_CHUNK,
+    gpx_to_obcr, ByteSink, Error, RouteIndex, RouteMatch, RoutePoint, RouteReader, SliceSource, MAX_POINTS_PER_CHUNK,
 };
 
 /// A `ByteSink` over a growable `Vec` (mirrors the profile test's backing).
@@ -94,11 +93,7 @@ fn on_line_fixes_advance_monotonically() {
         assert!(res.progress_m + 1 >= last, "progress went backwards at fix {i}");
         // Progress tracks the fraction along the route.
         let want = (*f * total as f64) as u32;
-        assert!(
-            res.progress_m.abs_diff(want) <= 5,
-            "fix {i}: progress {} m, expected ~{want} m",
-            res.progress_m
-        );
+        assert!(res.progress_m.abs_diff(want) <= 5, "fix {i}: progress {} m, expected ~{want} m", res.progress_m);
         last = res.progress_m;
     }
 }
@@ -197,10 +192,7 @@ fn multi_chunk_route_matches_across_chunk_boundaries() {
         assert!(res.progress_m + 1 >= last, "vertex {i}: progress {} < {last}", res.progress_m);
         last = res.progress_m;
     }
-    assert!(
-        last as f64 > 0.9 * total as f64,
-        "final progress {last} m should reach near the {total} m total"
-    );
+    assert!(last as f64 > 0.9 * total as f64, "final progress {last} m should reach near the {total} m total");
 }
 
 fn loop_gpx() -> String {

@@ -37,8 +37,7 @@ pub enum Colorway {
 
 impl Colorway {
     /// All four, in the reference render's order — drives the dropdown.
-    pub const ALL: [Colorway; 4] =
-        [Colorway::Coral, Colorway::Mint, Colorway::Mustard, Colorway::Slate];
+    pub const ALL: [Colorway; 4] = [Colorway::Coral, Colorway::Mint, Colorway::Mustard, Colorway::Slate];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -220,8 +219,7 @@ impl HousingStyle {
         let encoder = pill(self.enc_cy, self.enc_h);
         let back = pill(self.back_cy, self.back_h);
 
-        let wordmark_center =
-            Pos2::new(body.center().x, screen_rect.bottom() + self.pad_bottom * s / 2.0);
+        let wordmark_center = Pos2::new(body.center().x, screen_rect.bottom() + self.pad_bottom * s / 2.0);
 
         Layout {
             body,
@@ -250,11 +248,7 @@ pub fn draw(
     // Body — colored rounded slab with a subtle darker rim against the backdrop.
     let body_round = Rounding::same(style.body_radius * scale);
     painter.rect_filled(lo.body, body_round, palette.body);
-    painter.rect_stroke(
-        lo.body,
-        body_round,
-        Stroke::new((1.5 * scale).max(1.0), palette.body_edge),
-    );
+    painter.rect_stroke(lo.body, body_round, Stroke::new((1.5 * scale).max(1.0), palette.body_edge));
 
     // Side controls (drawn before the bezel; they don't overlap it). The encoder
     // carries knurling (`Some(angle)`); Back is a plain button (`None`).

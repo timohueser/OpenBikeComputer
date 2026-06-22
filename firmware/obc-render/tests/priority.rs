@@ -229,11 +229,7 @@ fn priority_one_survives_saturation_across_chunks() {
     // The payoff: the lone priority-1 polygon — in the *late* chunk, behind enough
     // priority-4 features to fill the buffer — survives and is painted. Chunk-order
     // dropping would have discarded it, leaving zero red pixels.
-    assert!(
-        buf.count(RED) > 100,
-        "priority-1 polygon must survive saturation (got {} red px)",
-        buf.count(RED)
-    );
+    assert!(buf.count(RED) > 100, "priority-1 polygon must survive saturation (got {} red px)", buf.count(RED));
 
     // Sanity: priority-4 features are drawn too (just not all of them) — saturation
     // dropped the overflow, not the whole low-priority layer.

@@ -39,9 +39,7 @@ use core::fmt::Write;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_sync::signal::Signal;
-use obc_app::{
-    AltimeterSource, Button, ButtonEvent, CompassSource, Fix, InputEvent, InputSource, LocationSource,
-};
+use obc_app::{AltimeterSource, Button, ButtonEvent, CompassSource, Fix, InputEvent, InputSource, LocationSource};
 
 /// Longest line we accept. The widest message is an `F` with full i32 lat/lon and float
 /// course/speed (`F -2147483648 -2147483648 359.99 99.99`) ≈ 45 bytes; 64 leaves slack.
@@ -264,8 +262,16 @@ pub fn format_telemetry(t: &Telemetry) -> heapless::String<112> {
     let _ = write!(
         s,
         "T {} {} {} {} {} {} {} {} {} {}\n",
-        t.frame_us, t.lod, t.feat_drawn, t.feat_tried, t.feat_dropped, t.chunks, t.cache_hits,
-        t.cache_misses, t.sd_reads, t.bytes_read
+        t.frame_us,
+        t.lod,
+        t.feat_drawn,
+        t.feat_tried,
+        t.feat_dropped,
+        t.chunks,
+        t.cache_hits,
+        t.cache_misses,
+        t.sd_reads,
+        t.bytes_read
     );
     s
 }
@@ -321,14 +327,8 @@ mod tests {
     fn parses_input_injection() {
         assert_eq!(parse_line("K t 1"), Some(Msg::Input(InputEvent::Turn(1))));
         assert_eq!(parse_line("K t -2"), Some(Msg::Input(InputEvent::Turn(-2))));
-        assert_eq!(
-            parse_line("K e d"),
-            Some(Msg::Input(InputEvent::Button(ButtonEvent::Down(Button::Encoder))))
-        );
-        assert_eq!(
-            parse_line("K b u"),
-            Some(Msg::Input(InputEvent::Button(ButtonEvent::Up(Button::Back))))
-        );
+        assert_eq!(parse_line("K e d"), Some(Msg::Input(InputEvent::Button(ButtonEvent::Down(Button::Encoder)))));
+        assert_eq!(parse_line("K b u"), Some(Msg::Input(InputEvent::Button(ButtonEvent::Up(Button::Back)))));
         assert_eq!(parse_line("K e x"), None); // bad edge
         assert_eq!(parse_line("K z 1"), None); // unknown key
         assert_eq!(parse_line("K t"), None); // missing detents
@@ -355,10 +355,7 @@ mod tests {
         // Two lines plus a partial third, fed as separate chunks (as CDC would).
         r.feed(b"F 1 2 - -\nA 100", |m| got.push(m).unwrap());
         r.feed(b".5\nC 45\n", |m| got.push(m).unwrap());
-        assert_eq!(
-            got.as_slice(),
-            &[Msg::Fix(Fix::at(1, 2)), Msg::Alt(100.5), Msg::Compass(45.0)]
-        );
+        assert_eq!(got.as_slice(), &[Msg::Fix(Fix::at(1, 2)), Msg::Alt(100.5), Msg::Compass(45.0)]);
     }
 
     #[test]

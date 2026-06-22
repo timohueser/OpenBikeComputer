@@ -40,10 +40,7 @@ impl<'a> Framebuffer565<'a> {
     /// (this is bring-up code — better a clear panic over RTT than a silent
     /// out-of-bounds later).
     pub fn new(buf: &'a mut [u16], width: u32, height: u32) -> Self {
-        assert!(
-            buf.len() >= (width * height) as usize,
-            "framebuffer slice smaller than width*height"
-        );
+        assert!(buf.len() >= (width * height) as usize, "framebuffer slice smaller than width*height");
         Framebuffer565 { width, height, buf }
     }
 
@@ -160,10 +157,7 @@ impl<'a> FramebufferArgb4444<'a> {
     /// `width * height` pixels; a shorter slice is a board wiring bug, so it panics
     /// (same contract as [`Framebuffer565::new`]).
     pub fn new(buf: &'a mut [u16], width: u32, height: u32) -> Self {
-        assert!(
-            buf.len() >= (width * height) as usize,
-            "overlay framebuffer slice smaller than width*height"
-        );
+        assert!(buf.len() >= (width * height) as usize, "overlay framebuffer slice smaller than width*height");
         FramebufferArgb4444 { width, height, buf }
     }
 
@@ -288,11 +282,8 @@ mod tests {
         {
             let mut fb = fb(&mut buf, 4, 4);
             // Rectangle straddling the right/bottom edge: only the in-bounds part fills.
-            fb.fill_solid(
-                &Rectangle::new(Point::new(2, 2), Size::new(10, 10)),
-                Rgb565::from(RawU16::new(0x001F)),
-            )
-            .unwrap();
+            fb.fill_solid(&Rectangle::new(Point::new(2, 2), Size::new(10, 10)), Rgb565::from(RawU16::new(0x001F)))
+                .unwrap();
         }
         let at = |x: usize, y: usize| buf[y * 4 + x];
         assert_eq!(at(1, 1), 0x0000); // outside

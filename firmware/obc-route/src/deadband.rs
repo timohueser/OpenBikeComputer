@@ -28,9 +28,7 @@ pub const ELE_DEADBAND_M: f64 = 3.0;
 /// A float usable as an elevation sample. Implemented for the converter's `f64` and the
 /// profile/app `f32`; both take the same [`ELE_DEADBAND_M`] dead-band, cast to the sample
 /// type via [`Elev::DEADBAND`] so the one constant stays the source of truth.
-pub trait Elev:
-    Copy + PartialOrd + Add<Output = Self> + Sub<Output = Self> + Neg<Output = Self>
-{
+pub trait Elev: Copy + PartialOrd + Add<Output = Self> + Sub<Output = Self> + Neg<Output = Self> {
     /// The additive identity for this type (`0.0`).
     const ZERO: Self;
     /// [`ELE_DEADBAND_M`] in this sample type.

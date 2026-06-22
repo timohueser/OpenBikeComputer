@@ -51,19 +51,11 @@ impl QuadtreeNode {
 
     fn insert(&mut self, style_id: u8, geom: Geom, bounds: Bounds) {
         // Fast bbox-overlap reject (degree space).
-        if bounds.2 < self.minxf
-            || bounds.0 > self.maxxf
-            || bounds.3 < self.minyf
-            || bounds.1 > self.maxyf
-        {
+        if bounds.2 < self.minxf || bounds.0 > self.maxxf || bounds.3 < self.minyf || bounds.1 > self.maxyf {
             return;
         }
         // Fast containment: fully inside ⇒ no clip, reuse the geometry + bounds.
-        if bounds.0 >= self.minxf
-            && bounds.2 <= self.maxxf
-            && bounds.1 >= self.minyf
-            && bounds.3 <= self.maxyf
-        {
+        if bounds.0 >= self.minxf && bounds.2 <= self.maxxf && bounds.1 >= self.minyf && bounds.3 <= self.maxyf {
             self.flatten_and_process(style_id, geom, bounds);
         } else {
             let clipped = clip_to_box(&geom, self.bbox);
@@ -148,8 +140,7 @@ impl QuadtreeNode {
                 Node::Branch(Box::new([a.into_node(), b.into_node(), c.into_node(), d.into_node()]))
             }
             None => {
-                let features =
-                    self.features.iter().filter_map(|f| to_feature(f.style_id, &f.geom)).collect();
+                let features = self.features.iter().filter_map(|f| to_feature(f.style_id, &f.geom)).collect();
                 Node::Leaf { bbox: self.bbox, features }
             }
         }
@@ -199,21 +190,15 @@ mod tests {
 
     #[test]
     fn insertion_keeps_contained_line() {
-        let n = build_lod(
-            [(1u8, line(&[(0.0005, 0.0005), (0.0006, 0.0006)]))],
-            (0, 0, 1000, 1000),
-            4096,
-        );
+        let n = build_lod([(1u8, line(&[(0.0005, 0.0005), (0.0006, 0.0006)]))], (0, 0, 1000, 1000), 4096);
         assert_eq!(leaf_feature_count(&n), 1);
         assert!(!is_branch(&n));
     }
 
     #[test]
     fn multilinestring_flattens_into_parts() {
-        let mls = Geom::Multi(vec![
-            line(&[(0.0001, 0.0001), (0.0002, 0.0002)]),
-            line(&[(0.0003, 0.0003), (0.0004, 0.0004)]),
-        ]);
+        let mls =
+            Geom::Multi(vec![line(&[(0.0001, 0.0001), (0.0002, 0.0002)]), line(&[(0.0003, 0.0003), (0.0004, 0.0004)])]);
         let mut root = QuadtreeNode::new((0, 0, 1000, 1000), 4096);
         let b = mls.bounds();
         root.insert(1, mls, b);
@@ -224,8 +209,7 @@ mod tests {
     #[test]
     fn split_on_size() {
         // ~15-point line, chunk_size 50: 12 + 15*4 = 72 > 50 → split into 4.
-        let coords: Vec<(f64, f64)> =
-            (0..15).map(|i| (0.0001 * i as f64, 0.0001 * i as f64)).collect();
+        let coords: Vec<(f64, f64)> = (0..15).map(|i| (0.0001 * i as f64, 0.0001 * i as f64)).collect();
         let n = build_lod([(1u8, line(&coords))], (0, 0, 1000, 1000), 50);
         assert!(is_branch(&n));
         if let Node::Branch(c) = &n {
@@ -236,13 +220,7 @@ mod tests {
     #[test]
     fn polygon_preserved() {
         let poly = Geom::Polygon {
-            exterior: vec![
-                (0.0001, 0.0001),
-                (0.0005, 0.0001),
-                (0.0005, 0.0005),
-                (0.0001, 0.0005),
-                (0.0001, 0.0001),
-            ],
+            exterior: vec![(0.0001, 0.0001), (0.0005, 0.0001), (0.0005, 0.0005), (0.0001, 0.0005), (0.0001, 0.0001)],
             interiors: vec![],
         };
         let mut root = QuadtreeNode::new((0, 0, 1000, 1000), 4096);

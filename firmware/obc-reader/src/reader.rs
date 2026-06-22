@@ -362,12 +362,7 @@ impl<'a> Reader<'a> {
 
     /// Like [`Reader::query`] but appends into a caller-owned buffer (cleared
     /// first), so a caller can reuse one allocation across calls.
-    pub fn query_into<const C: usize>(
-        &self,
-        lod: usize,
-        view: &BBox,
-        out: &mut Vec<(u32, BBox), C>,
-    ) {
+    pub fn query_into<const C: usize>(&self, lod: usize, view: &BBox, out: &mut Vec<(u32, BBox), C>) {
         out.clear();
         self.for_each_chunk(lod, view, |cid, node| {
             let _ = out.push((cid, node));
@@ -431,30 +426,10 @@ impl<'a> Reader<'a> {
         let mid_lat = (node.min_lat + node.max_lat).div_euclid(2);
         // NW, NE, SW, SE
         let kids = [
-            BBox {
-                min_lon: node.min_lon,
-                min_lat: mid_lat,
-                max_lon: mid_lon,
-                max_lat: node.max_lat,
-            },
-            BBox {
-                min_lon: mid_lon,
-                min_lat: mid_lat,
-                max_lon: node.max_lon,
-                max_lat: node.max_lat,
-            },
-            BBox {
-                min_lon: node.min_lon,
-                min_lat: node.min_lat,
-                max_lon: mid_lon,
-                max_lat: mid_lat,
-            },
-            BBox {
-                min_lon: mid_lon,
-                min_lat: node.min_lat,
-                max_lon: node.max_lon,
-                max_lat: mid_lat,
-            },
+            BBox { min_lon: node.min_lon, min_lat: mid_lat, max_lon: mid_lon, max_lat: node.max_lat },
+            BBox { min_lon: mid_lon, min_lat: mid_lat, max_lon: node.max_lon, max_lat: node.max_lat },
+            BBox { min_lon: node.min_lon, min_lat: node.min_lat, max_lon: mid_lon, max_lat: mid_lat },
+            BBox { min_lon: mid_lon, min_lat: node.min_lat, max_lon: node.max_lon, max_lat: mid_lat },
         ];
         for (i, kb) in kids.iter().enumerate() {
             self.walk_leaves(lod, child + i, *kb, view, depth + 1, visit);
@@ -566,12 +541,7 @@ impl Bounds {
     }
     #[inline]
     fn to_bbox(self) -> BBox {
-        BBox {
-            min_lon: self.min_lon,
-            min_lat: self.min_lat,
-            max_lon: self.max_lon,
-            max_lat: self.max_lat,
-        }
+        BBox { min_lon: self.min_lon, min_lat: self.min_lat, max_lon: self.max_lon, max_lat: self.max_lat }
     }
 }
 
@@ -766,12 +736,7 @@ fn parse_styles(src: &dyn ByteSource, style_offset: usize, total: usize) -> [Opt
 /// Parse the `lod_count` LOD-table entries (read resident from `src`); validates each layer's
 /// index/chunk region lies within the file (`total` bytes) so `query`/`decode_chunk` can skip
 /// bounds math, and that its `chunk_size` fits a cache slot ([`MAX_CHUNK_BYTES`], issue #37).
-fn parse_lod_table(
-    src: &dyn ByteSource,
-    offset: usize,
-    lod_count: usize,
-    total: usize,
-) -> Result<Vec<Lod, 16>, Error> {
+fn parse_lod_table(src: &dyn ByteSource, offset: usize, lod_count: usize, total: usize) -> Result<Vec<Lod, 16>, Error> {
     let mut lods = Vec::new();
     let mut e = [0u8; LOD_ENTRY_LEN];
     for k in 0..lod_count {
@@ -790,9 +755,7 @@ fn parse_lod_table(
         // that indexes far out of the file.
         let chunks_end = lod
             .data_start()
-            .and_then(|start| {
-                lod.chunk_count.checked_mul(lod.chunk_size).and_then(|len| start.checked_add(len))
-            })
+            .and_then(|start| lod.chunk_count.checked_mul(lod.chunk_size).and_then(|len| start.checked_add(len)))
             .ok_or(Error::BadOffset)?;
         if lod.index_offset < HEADER_LEN || chunks_end > total {
             return Err(Error::BadOffset);
@@ -962,9 +925,7 @@ impl MapCacheInner {
             self.count_read(len);
             return Ok(ChunkLoc::Scratch);
         }
-        if let Some(i) =
-            self.chunks.iter().position(|s| s.valid && s.lod == lod && s.cid == cid && s.len == len)
-        {
+        if let Some(i) = self.chunks.iter().position(|s| s.valid && s.lod == lod && s.cid == cid && s.len == len) {
             self.chunk_hits = self.chunk_hits.saturating_add(1);
             let t = self.touch();
             self.chunks[i].used = t;
@@ -991,12 +952,7 @@ impl MapCacheInner {
     /// Fill `out` from index-region offset `off`, assembling from cached blocks (reading any
     /// missing block from the source). A node read is 4 bytes and may straddle a block edge, so
     /// this loops over blocks.
-    fn index_read(
-        &mut self,
-        src: &dyn ByteSource,
-        off: u32,
-        out: &mut [u8],
-    ) -> Result<(), IoError> {
+    fn index_read(&mut self, src: &dyn ByteSource, off: u32, out: &mut [u8]) -> Result<(), IoError> {
         let mut filled = 0usize;
         while filled < out.len() {
             let cur = off + filled as u32;
@@ -1008,8 +964,7 @@ impl MapCacheInner {
                 return Err(IoError::BadOffset);
             }
             let take = (blen - within).min(out.len() - filled);
-            out[filled..filled + take]
-                .copy_from_slice(&self.index[slot].buf[within..within + take]);
+            out[filled..filled + take].copy_from_slice(&self.index[slot].buf[within..within + take]);
             filled += take;
         }
         Ok(())
