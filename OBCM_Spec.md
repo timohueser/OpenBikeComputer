@@ -2,7 +2,7 @@
 
 OBCM (OpenStreetMap Binary Chunked Map) is a compact binary map format designed
 for efficient rendering on memory-constrained devices such as microcontrollers
-(MCUs). It is written by the Python tooling (`packer/obcm/serialize.py`) and read by the
+(MCUs). It is written by the Rust packer (`firmware/obc-pack`) and read by the
 Rust crate (`firmware/obc-reader`, shared by the desktop simulator and the nRF54L
 firmware).
 
@@ -49,8 +49,8 @@ screen space is the renderer's responsibility, not the format's.
 [LOD N-1 Index][LOD N-1 Data Chunks] (finest)
 ```
 
-The byte layout is produced by `packer/obcm/serialize.py::serialize_lods` and parsed by
-`firmware/obc-reader/src/reader.rs`. All multi-byte integers are **little-endian**.
+The byte layout is produced by `firmware/obc-pack/src/serialize.rs` (`serialize_lods`) and
+parsed by `firmware/obc-reader/src/reader.rs`. All multi-byte integers are **little-endian**.
 
 ---
 
@@ -268,8 +268,8 @@ it survives the packer's automatic ID assignment. Land is then painted on top.
 
 ## Reference implementations
 
-- **Writer:** `packer/obcm/serialize.py` (`serialize_lods`, `serialize_tree`,
-  `pack_feature`, `pack_chunk`, `pack_style_dict`).
+- **Writer (Rust, std host):** `firmware/obc-pack/src/serialize.rs` (`serialize_lods`,
+  `serialize_tree`, `pack_feature`, `pack_chunk`, `pack_style_dict`).
 - **Reader + renderer (Rust, no_std):** `firmware/obc-reader` — `reader.rs`
   (`Reader`, `for_each_feature`, `select_lod_for_mpp`) — and `firmware/obc-render`
   (`Viewport`, `MapRenderer`). Format-contract tests in
