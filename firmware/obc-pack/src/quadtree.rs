@@ -85,19 +85,18 @@ impl QuadtreeNode {
     }
 
     fn process_clipped(&mut self, f: StoredFeature) {
-        if self.children.is_none() {
+        if let Some(children) = &mut self.children {
+            // Branch (split mid-insert): hand to every child; each rejects/clips.
+            for child in children.iter_mut() {
+                child.insert(f.style_id, f.geom.clone(), f.bounds);
+            }
+        } else {
             // Leaf: accumulate, then split if over capacity.
             let delta = 12 + pt_count(&f.geom) * 4;
             self.features.push(f);
             self.current_size += delta;
             if self.should_split() {
                 self.split();
-            }
-        } else {
-            // Branch (split mid-insert): hand to every child; each rejects/clips.
-            let children = self.children.as_mut().unwrap();
-            for child in children.iter_mut() {
-                child.insert(f.style_id, f.geom.clone(), f.bounds);
             }
         }
     }

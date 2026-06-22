@@ -259,9 +259,9 @@ pub struct Telemetry {
 pub fn format_telemetry(t: &Telemetry) -> heapless::String<112> {
     let mut s = heapless::String::new();
     // Infallible for the field count + cap; ignore the Result rather than panic on the MCU.
-    let _ = write!(
+    let _ = writeln!(
         s,
-        "T {} {} {} {} {} {} {} {} {} {}\n",
+        "T {} {} {} {} {} {} {} {} {} {}",
         t.frame_us,
         t.lod,
         t.feat_drawn,
