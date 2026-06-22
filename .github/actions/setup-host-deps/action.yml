@@ -1,0 +1,54 @@
+name: Set up host build deps
+description: >
+  System libraries and GEOS for the *native* firmware host-workspace build (clippy + test).
+  obc-pack links the system libGEOS via the `geos` crate's `v3_14_0` feature, and ubuntu-latest's
+  apt GEOS is older than 3.14, so GEOS is built from source (cached). obc-usb-host pulls serialport
+  (libudev) and obc-sim/obc-usb-host build eframe natively (X11/xkbcommon); rfd uses the XDG portal,
+  so no GTK is needed.
+
+# Keep GEOS_VERSION in step with the `v3_*` feature on the `geos` dep in firmware/obc-pack/Cargo.toml.
+inputs:
+  geos-version:
+    description: GEOS version to build from source
+    default: "3.14.1"
+
+runs:
+  using: composite
+  steps:
+    - name: Install system libraries
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          libudev-dev \
+          libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+          libxkbcommon-dev libssl-dev
+
+    - name: Cache GEOS ${{ inputs.geos-version }}
+      id: geos-cache
+      uses: actions/cache@v4
+      with:
+        path: ~/geos-install
+        key: geos-${{ inputs.geos-version }}-${{ runner.os }}
+
+    - name: Build GEOS ${{ inputs.geos-version }} from source
+      if: steps.geos-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        ver="${{ inputs.geos-version }}"
+        curl -fsSL "https://download.osgeo.org/geos/geos-${ver}.tar.bz2" -o /tmp/geos.tar.bz2
+        tar -xf /tmp/geos.tar.bz2 -C /tmp
+        cmake -S "/tmp/geos-${ver}" -B /tmp/geos-build \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_INSTALL_PREFIX="$HOME/geos-install" \
+          -DBUILD_TESTING=OFF
+        cmake --build /tmp/geos-build -j"$(nproc)"
+        cmake --install /tmp/geos-build
+
+    - name: Expose GEOS to the build
+      shell: bash
+      run: |
+        # geos-sys finds GEOS via geos-config (on PATH) or pkg-config; tests load libgeos_c at runtime.
+        echo "$HOME/geos-install/bin" >> "$GITHUB_PATH"
+        echo "PKG_CONFIG_PATH=$HOME/geos-install/lib/pkgconfig:$HOME/geos-install/lib64/pkgconfig" >> "$GITHUB_ENV"
+        echo "LD_LIBRARY_PATH=$HOME/geos-install/lib:$HOME/geos-install/lib64:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"

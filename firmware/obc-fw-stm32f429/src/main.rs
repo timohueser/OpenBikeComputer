@@ -179,7 +179,9 @@ use obc_platform::{ButtonInput, FramebufferArgb4444};
 #[cfg(not(feature = "glass-demo"))]
 use obc_reader::{BBox, ByteSource, MapCache, Reader};
 // `SliceSource` only wraps the baked-in tile; the SD path streams through `SdByteSource`.
-#[cfg(feature = "baked-tile")]
+// Gated like its use sites in the real-app path (baked-tile, and not the glass-demo build, which
+// has no map loading) so `--all-features` (which turns on both) doesn't see it as unused.
+#[cfg(all(feature = "baked-tile", not(feature = "glass-demo")))]
 use obc_reader::SliceSource;
 #[cfg(not(feature = "glass-demo"))]
 use obc_render::zoom_for_mpp;
@@ -273,11 +275,9 @@ async fn usb_rx_task(mut rx: CdcReceiver<'static, UsbDriver>) {
         // A fresh reader per session: a partial line buffered when the previous session
         // disconnected must not be prepended to (and corrupt) this session's first line.
         let mut reader = obc_platform::debug_usb::LineReader::new();
-        loop {
-            match rx.read_packet(&mut buf).await {
-                Ok(n) => obc_platform::debug_usb::feed_bytes(&mut reader, &buf[..n]),
-                Err(_) => break, // disconnected — wait for the next connection
-            }
+        // Loop until the packet read errors (disconnect) — then wait for the next connection.
+        while let Ok(n) = rx.read_packet(&mut buf).await {
+            obc_platform::debug_usb::feed_bytes(&mut reader, &buf[..n]);
         }
     }
 }
@@ -1455,7 +1455,7 @@ async fn main(spawner: Spawner) {
                     // deliverables). `RenderStats` reports the per-frame delta over the persistent
                     // cache, so this tracks what each redraw actually pulled off the card.
                     let reqs = stats.map_chunk_hits + stats.map_chunk_misses;
-                    let hit_pct = if reqs == 0 { 0 } else { stats.map_chunk_hits * 100 / reqs };
+                    let hit_pct = (stats.map_chunk_hits * 100).checked_div(reqs).unwrap_or(0);
                     defmt::debug!(
                         "map frame: {=u64} us | lod {=usize} | feat {=usize}/{=usize} | map-cache {=u32}% hit, {=u32} rd, {=u32} B",
                         render_us,
