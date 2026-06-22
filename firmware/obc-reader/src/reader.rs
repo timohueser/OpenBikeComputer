@@ -72,6 +72,17 @@ const _: () = assert!(MAX_CHUNK_BYTES <= u16::MAX as usize, "chunk_size is a u16
 const BRANCH_BIT: u32 = 0x8000_0000;
 const EMPTY_LEAF: u32 = 0x7FFF_FFFF;
 
+/// Hard cap on quadtree recursion depth in [`Reader::walk_leaves`] (issue #65). A well-formed
+/// map's tree is far shallower: the node bbox halves each level, so it bottoms out at the
+/// coordinate bit-width — ~26 for the packer's 10-µdeg split floor over a world-sized bbox, and
+/// 32 even for a degenerate full-`i32`-range bbox — so this never rejects a real map. The cap
+/// matters for a *corrupt* one: a hostile map can store a branch whose child pointer points
+/// backward (`child <= idx`), and once the node bbox subdivides to a degenerate point the
+/// quadrants stop shrinking while `intersects(view)` stays true, so the walk would recurse
+/// forever → stack overflow → HardFault (no MMU guard page on the MCU). Bounding the depth caps
+/// the stack regardless of file contents.
+const MAX_QUADTREE_DEPTH: u32 = 32;
+
 #[derive(Debug, Clone, Copy)]
 pub struct Style {
     pub id: u8,
@@ -373,7 +384,7 @@ impl<'a> Reader<'a> {
     pub fn for_each_chunk(&self, lod: usize, view: &BBox, mut visit: impl FnMut(u32, BBox)) {
         if let Some(l) = self.lods.get(lod) {
             if l.node_count > 0 {
-                self.walk_leaves(l, 0, self.bbox, view, &mut visit);
+                self.walk_leaves(l, 0, self.bbox, view, 0, &mut visit);
             }
         }
     }
@@ -384,9 +395,13 @@ impl<'a> Reader<'a> {
         idx: usize,
         node: BBox,
         view: &BBox,
+        depth: u32,
         visit: &mut F,
     ) {
-        if idx >= lod.node_count || !node.intersects(view) {
+        // The depth cap is the hard stack bound: a corrupt map can cycle a branch back onto
+        // itself (see `MAX_QUADTREE_DEPTH`), so without it the walk could recurse until the MCU
+        // stack overflows into a HardFault. A well-formed tree never reaches the cap.
+        if idx >= lod.node_count || depth > MAX_QUADTREE_DEPTH || !node.intersects(view) {
             return;
         }
         // Read the node *before* descending/visiting so the index-cache borrow is released by
@@ -402,6 +417,15 @@ impl<'a> Reader<'a> {
             return;
         }
         let child = (val & !BRANCH_BIT) as usize;
+        // A branch's four children always lie *after* it in the file — the packer flattens the
+        // quadtree breadth-first, so a parent's first-child index is always greater than its own
+        // (`serialize_tree`). `child > idx` is therefore an invariant of every well-formed map;
+        // a back-/self-reference (`child <= idx`) only appears in a corrupt one, and descending it
+        // would re-enter a node already on the stack. Reject it here — the depth cap above is the
+        // backstop, this stops the most direct cycle at its source.
+        if child <= idx {
+            return;
+        }
         // floor-division midpoints to match the Python packer's `//`.
         let mid_lon = (node.min_lon + node.max_lon).div_euclid(2);
         let mid_lat = (node.min_lat + node.max_lat).div_euclid(2);
@@ -433,7 +457,7 @@ impl<'a> Reader<'a> {
             },
         ];
         for (i, kb) in kids.iter().enumerate() {
-            self.walk_leaves(lod, child + i, *kb, view, visit);
+            self.walk_leaves(lod, child + i, *kb, view, depth + 1, visit);
         }
     }
 
