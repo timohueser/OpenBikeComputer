@@ -1244,6 +1244,12 @@ async fn main(spawner: Spawner) {
         // USB feed needs no re-centre — it streams absolute positions, so this is `debug-usb`-off only).
         #[cfg(not(feature = "debug-usb"))]
         let mut prev_route: Option<usize> = None;
+        // The previously-reconciled active route + tracking session, to gate the SD reconcile block
+        // below on actual change (issue #73). Kept separate from `prev_route` (which is
+        // `debug-usb`-off-only and tracks the *re-centre*): these must drive the gate under
+        // `debug-usb` on and off alike, so they're fresh, un-`cfg`'d vars.
+        let mut prev_active: Option<usize> = None;
+        let mut prev_session: Option<u32> = None;
         // Telemetry throttle + the last map frame's render stats, published host-ward (issue #38).
         #[cfg(feature = "debug-usb")]
         let mut last_telem_ms: u32 = 0;
@@ -1303,16 +1309,30 @@ async fn main(spawner: Spawner) {
 
             // Reconcile the card to the app's intent: open/close the active route's geometry and
             // the ride log (begin on load, finalise-to-GPX on Finish), reading the save name from
-            // the active route. Cheap when nothing changed.
-            if let Some(s) = storage.as_mut() {
-                let action = app.activity.take_track_action();
-                let session = app.activity.session;
-                let mut name: heapless::String<64> = heapless::String::new();
-                if let Some(r) = active.and_then(|i| app.routes().get(i)) {
-                    let _ = name.push_str(&r.name);
+            // the active route. `reconcile_route`/`reconcile_track` already early-return when
+            // nothing changed, but at ~125 Hz the dominant idle/riding frame changes *nothing* — so
+            // gate the whole block on the same edges it tests internally (a route swap, a session
+            // change, or a pending track action) to skip the per-tick `String<64>` name copy + the
+            // four state re-walks on every static frame (issue #73). `has_track_action` is a
+            // non-consuming peek; the actual `take_track_action()` stays inside, so the one-shot is
+            // still drained only when it's processed.
+            let session = app.activity.session;
+            if active != prev_active || session != prev_session || app.activity.has_track_action() {
+                if let Some(s) = storage.as_mut() {
+                    let action = app.activity.take_track_action();
+                    let mut name: heapless::String<64> = heapless::String::new();
+                    if let Some(r) = active.and_then(|i| app.routes().get(i)) {
+                        let _ = name.push_str(&r.name);
+                    }
+                    s.reconcile_route(active);
+                    s.reconcile_track(action, session, &name);
                 }
-                s.reconcile_route(active);
-                s.reconcile_track(action, session, &name);
+                // Latch the reconciled edges outside the `storage` branch: `storage` is established
+                // once at boot and never reappears, so a `None` here would only mean the reconcile
+                // is moot anyway — and latching unconditionally keeps the gate from re-firing every
+                // frame on a (non-existent) storage-less tick.
+                prev_active = active;
+                prev_session = session;
             }
 
             // Cache the active route's chunk index across frames: rebuild it (the expensive

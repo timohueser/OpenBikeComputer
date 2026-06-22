@@ -165,6 +165,13 @@ impl Activity {
         self.track_action.take()
     }
 
+    /// Non-consuming peek at whether a [`TrackAction`] is pending. Lets the host gate its
+    /// per-tick storage reconcile on actual change without draining the one-shot — the action is
+    /// still consumed only by [`take_track_action`](Activity::take_track_action), once processed.
+    pub fn has_track_action(&self) -> bool {
+        self.track_action.is_some()
+    }
+
     /// The elevation (m) to stamp on a logged [`TrackPoint`](obc_route::TrackPoint): the
     /// latest barometric altitude, or 0 before any sample.
     pub(crate) fn track_ele(&self) -> i16 {
