@@ -7,6 +7,15 @@
 target = "index.html"
 dist = "dist"
 
+# Render the documentation (content/*.md -> docs/) before every build and serve, so
+# the `copy-dir href="docs"` in index.html always ships current HTML. build_docs.py is
+# stdlib-only Python, so CI needs nothing beyond the python3 already on the runner.
+# Trunk runs hooks from this file's directory, so the script path is relative to docs/.
+[[hooks]]
+stage = "pre_build"
+command = "python3"
+command_arguments = ["build_docs.py"]
+
 [serve]
 addresses = ["127.0.0.1"]
 port = 8080
