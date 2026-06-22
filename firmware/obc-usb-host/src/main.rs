@@ -329,7 +329,14 @@ impl FeederApp {
             return;
         }
         player.advance(dt);
-        if let Some(fix) = player.poll() {
+        if let Some(mut fix) = player.poll() {
+            // GpxPlayer derives speed in *playback* time (the track's real speed), but at >1× the
+            // device sees the positions arrive faster and derives a higher average — so scale the
+            // reported instantaneous speed by the multiplier too. Then the device's KPH and AVG KPH
+            // move together, as on a real GPS where the reported speed agrees with the motion.
+            if let Some(s) = fix.speed_mps {
+                fix.speed_mps = Some(s * player.speed());
+            }
             self.pending.push(fix_line(&fix));
         }
         self.baro.feed(player.elevation_at(player.time()), player.time());
@@ -477,7 +484,7 @@ impl eframe::App for FeederApp {
                             player.set_speed(speed);
                         }
                         ui.label(
-                            egui::RichText::new("keep at 1× over USB — the device clocks fixes on its own wall time, so >1× reads as teleporting")
+                            egui::RichText::new("speed-up rides faster on-device — KPH + AVG KPH scale together; at very high × the implied jump can exceed the device's glitch filter and drop fixes")
                                 .weak()
                                 .size(10.0),
                         );
