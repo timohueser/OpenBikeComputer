@@ -649,3 +649,84 @@ fn for_each_chunk_has_no_cap() {
     let capped = r.query::<2>(0, &r.bbox);
     assert_eq!(capped.len(), 2);
 }
+
+/// Build a forward-only quadtree index that is a single NW-chain `levels` branches deep, ending
+/// in a non-empty leaf (chunk 0). Each branch's four children are contiguous (NW, NE, SW, SE):
+/// NE/SW/SE are empty leaves and NW continues the chain, so every child index is strictly greater
+/// than its parent's — the `child > idx` invariant of a well-formed map holds, isolating the
+/// **depth** cap as the only thing that can stop the descent.
+fn nw_chain_index(levels: usize) -> Vec<u32> {
+    let mut index: Vec<u32> = vec![0]; // slot 0 is the root branch, filled below
+    let mut cur = 0usize;
+    for _ in 0..levels {
+        let base = index.len(); // the four children are appended here, after `cur`
+        index[cur] = BRANCH_BIT | base as u32;
+        index.push(0); // NW: next chain node (overwritten next iteration, or the final leaf)
+        index.push(EMPTY_LEAF); // NE
+        index.push(EMPTY_LEAF); // SW
+        index.push(EMPTY_LEAF); // SE
+        cur = base;
+    }
+    index[cur] = 0; // deepest NW is a non-empty leaf -> chunk 0
+    index
+}
+
+#[test]
+fn walk_terminates_on_back_referencing_branch() {
+    // A corrupt map whose root branch points its first child back at itself (`child == idx`).
+    // The node bbox would shrink toward the NW corner and then stay put, so `intersects(view)`
+    // never goes false — with no guard the walk recurses forever and stack-overflows (a HardFault
+    // on the MCU, which has no MMU guard page; issue #65). The `child > idx` guard rejects the
+    // back-edge, so the walk must simply return, reporting no chunks.
+    let chunk = pad(pack_line(1, 0, 0, &[(1, 1)]), CS);
+    let bytes = build_file(
+        GLOBAL,
+        STYLES,
+        &[LodSpec {
+            max_mpp: f32::INFINITY,
+            index: vec![BRANCH_BIT], // root branch, child base 0 == its own index
+            chunks: vec![chunk],
+            chunk_size: CS,
+        }],
+    );
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let r = Reader::new(&src, &cache).unwrap();
+
+    // A viewport over the whole bbox keeps intersecting the (degenerate) node every level — the
+    // condition under which the unguarded walk would never terminate.
+    let mut seen = 0;
+    r.for_each_chunk(0, &r.bbox, |_cid, _node| seen += 1);
+    assert_eq!(seen, 0);
+    // `query` walks the same path; it too must return rather than overflow.
+    assert!(r.query::<64>(0, &r.bbox).is_empty());
+}
+
+#[test]
+fn walk_caps_depth_on_forward_chain() {
+    // A forward-only NW-chain (every `child > idx`, so the back-reference guard never fires) far
+    // deeper than the depth cap (~32). The node bbox degenerates to the NW corner after ~10
+    // levels but keeps intersecting a whole-bbox viewport forever, so without the depth cap the
+    // walk would descend all `LEVELS` levels and report the leaf's chunk. With the cap it stops
+    // first, pruning the over-cap leaf — so no chunk is reported. This pins the depth cap
+    // independently of the `child > idx` guard (issue #65).
+    const LEVELS: usize = 50; // comfortably past the ~32 cap
+    let chunk = pad(pack_line(1, 0, 0, &[(1, 1)]), CS);
+    let bytes = build_file(
+        GLOBAL,
+        STYLES,
+        &[LodSpec {
+            max_mpp: f32::INFINITY,
+            index: nw_chain_index(LEVELS),
+            chunks: vec![chunk],
+            chunk_size: CS,
+        }],
+    );
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let r = Reader::new(&src, &cache).unwrap();
+
+    let mut seen = 0;
+    r.for_each_chunk(0, &r.bbox, |_cid, _node| seen += 1);
+    assert_eq!(seen, 0, "the depth cap must prune the over-cap leaf before it is reached");
+}

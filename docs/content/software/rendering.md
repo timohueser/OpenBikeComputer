@@ -336,8 +336,8 @@ Within a chosen LOD, geometry is bucketed into fixed-size **chunks**, indexed by
 The walk is a recursive descent that prunes whole subtrees by bounding box and reads the index as raw bits — a high bit flags a branch, a sentinel marks an empty leaf ([`walk_leaves`](src:firmware/obc-reader/src/reader.rs)):
 
 ```rust
-if idx >= lod.node_count || !node.intersects(view) {
-    return;                          // prune: this subtree can't be on screen
+if idx >= lod.node_count || depth > MAX_DEPTH || !node.intersects(view) {
+    return;                          // prune: out of range, too deep, or off-screen
 }
 let val = self.read_node(lod, idx);
 if val & BRANCH_BIT == 0 {
@@ -346,8 +346,11 @@ if val & BRANCH_BIT == 0 {
     }
     return;
 }
-// branch: split `node`'s bbox into NW/NE/SW/SE and recurse into each child
+// branch: child must advance (child > idx) — reject a corrupt back-reference —
+// then split `node`'s bbox into NW/NE/SW/SE and recurse into each child
 ```
+
+The `depth > MAX_DEPTH` bound and the `child > idx` check are pure robustness. A well-formed tree is only ~30 levels deep and always stores a branch's children *after* it, so neither ever fires on a real map — but a truncated or hostile `.obcm` off the SD card could otherwise point a branch back at itself and drive the walk into unbounded recursion. On the MCU there's no MMU guard page, so that's a stack overflow straight into a HardFault; bounding the depth makes the walk safe on any bytes. (This caps recursion *depth*, not the number of chunks visited — a different axis from the next paragraph.)
 
 That "uncapped" property is load-bearing. An earlier version capped the visited chunks at a fixed number; a wide zoomed-out view overlaps far more leaves than the cap, so it silently dropped half the map *before* any importance logic could weigh in. Streaming the leaves through a callback instead means the decision about *what to drop* belongs entirely to the next stage — where it can be made by priority, not by accident.
 
