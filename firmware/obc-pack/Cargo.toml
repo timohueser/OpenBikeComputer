@@ -2,6 +2,7 @@
 name = "obc-pack"
 version = "0.1.0"
 edition = "2021"
+publish = false  # internal firmware crate — not published to crates.io
 description = "OBCM map packer (OSM .osm.pbf -> .obcm)"
 
 [dependencies]

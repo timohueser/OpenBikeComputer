@@ -2,6 +2,7 @@
 name = "obc-platform"
 version = "0.1.0"
 edition = "2021"
+publish = false  # internal firmware crate — not published to crates.io
 description = "Board-agnostic no_std firmware glue between obc-app and a concrete board — written once, reused by every OBC board crate. For now: the SDRAM/framebuffer DrawTarget. Later: FatFs ByteSource/Sink adapters, the input debouncer, the USB-CDC debug protocol."
 
 [features]

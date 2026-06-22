@@ -1,0 +1,245 @@
+name: CI
+
+# Unified correctness gate for the firmware (host workspace + the workspace-excluded board
+# crate), the wasm sim, and the docs site. Build surfaces and their structural gotchas:
+#
+#   * The firmware/ manifest is a *virtual* workspace (no targets of its own) → workspace
+#     commands need `--workspace` / `--all`.
+#   * obc-fw-stm32f429 is `exclude`d from that workspace and is its own cargo root → it needs
+#     its own invocation, run from inside the crate dir so its .cargo/config.toml selects the
+#     thumbv7em target (a `--manifest-path` from the root would build it for the host and fail
+#     on embassy-stm32). It has its own Cargo.lock, and no test harness (no_std on bare metal),
+#     so it gets `clippy`/`build` but not `--all-targets`/`test`.
+#   * There is no board in CI, so every embedded target is build-only.
+#   * `baked-tile` embeds a ~1.4 MB tile and overflows flash in debug → it must build --release.
+#   * The toolchain (channel + rustfmt/clippy + the thumbv7em / thumbv8m / wasm32 targets) is
+#     pinned once in //rust-toolchain.toml and shared with local dev; jobs install from it.
+#   * `--locked` everywhere so a stale Cargo.lock (either of the two) fails CI.
+
+on:
+  pull_request:
+  push:
+    branches: [main, develop]
+
+# One run per ref; a new push cancels the previous in-flight run for that ref.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Per-surface path filtering: a docs-only PR shouldn't pay for the Rust matrix, and vice
+  # versa. Downstream jobs gate on these outputs; the `ci` job at the bottom is the single
+  # required status check, so skipped jobs never wedge branch protection.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      docs: ${{ steps.filter.outputs.docs }}
+      wasm: ${{ steps.filter.outputs.wasm }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            rust:
+              - 'firmware/**'
+              - 'rust-toolchain.toml'
+              - 'deny.toml'
+              - '.github/workflows/ci.yml'
+            docs:
+              - 'docs/**'
+              - '.github/workflows/ci.yml'
+            wasm:
+              - 'firmware/**'
+              - 'docs/**'
+              - '.github/workflows/ci.yml'
+
+  # cargo fmt --check for both manifests. rustfmt walks up from each file and finds the shared
+  # firmware/rustfmt.toml, so the excluded board crate inherits it; the virtual workspace
+  # manifest needs `--all`, the board crate is checked on its own. (Folds the old fmt.yml.)
+  fmt:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+      - name: cargo fmt --check (host workspace + standalone board crate)
+        run: |
+          rc=0
+          echo "::group::firmware workspace"
+          cargo fmt --all --check --manifest-path firmware/Cargo.toml || rc=1
+          echo "::endgroup::"
+          echo "::group::obc-fw-stm32f429 (workspace-excluded)"
+          cargo fmt --check --manifest-path firmware/obc-fw-stm32f429/Cargo.toml || rc=1
+          echo "::endgroup::"
+          exit $rc
+
+  # Blocking clippy on the host workspace: -D warnings from day one (the baseline is clean).
+  clippy:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: firmware
+          key: host
+      # obc-sim / obc-usb-host build eframe (glow backend) natively here; these are the
+      # standard egui-on-Linux build deps (rfd uses the XDG portal, so no GTK is needed).
+      - name: Install eframe Linux build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
+      - name: cargo clippy (workspace, all targets + features)
+        run: cargo clippy --manifest-path firmware/Cargo.toml --workspace --all-targets --all-features --locked -- -D warnings
+
+  # The 251-test shared render + packer suite — the real safety net.
+  test:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: firmware
+          key: host
+      # obc-sim / obc-usb-host build eframe (glow backend) natively here; these are the
+      # standard egui-on-Linux build deps (rfd uses the XDG portal, so no GTK is needed).
+      - name: Install eframe Linux build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
+      - name: cargo test (workspace, all features)
+        run: cargo test --manifest-path firmware/Cargo.toml --workspace --all-features --locked
+
+  # The board crate on its real target: clippy + every feature combination that has to build.
+  # Build-only (no board in CI). Each leg runs from the crate dir so .cargo/config.toml applies.
+  embedded:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: "clippy (all features)", cmd: "cargo clippy --locked --all-features -- -D warnings" }
+          - { name: "build (default)", cmd: "cargo build --locked" }
+          - { name: "build (debug-usb)", cmd: "cargo build --locked --features debug-usb" }
+          - { name: "build (single-executor)", cmd: "cargo build --locked --features single-executor" }
+          # baked-tile overflows flash in debug, so it only builds in release.
+          - { name: "build (baked-tile, release)", cmd: "cargo build --release --locked --features baked-tile" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: firmware/obc-fw-stm32f429
+          key: thumbv7em
+      - name: "obc-fw-stm32f429: ${{ matrix.name }}"
+        working-directory: firmware/obc-fw-stm32f429
+        run: ${{ matrix.cmd }}
+
+  # std-creep guard for the real device: the shared no_std stack (obc-app pulls in reader /
+  # route / render) must still compile for the nRF54L's thumbv8m target.
+  device:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: firmware
+          key: thumbv8m
+      - name: cargo build -p obc-app (thumbv8m.main, nRF54L)
+        run: cargo build --manifest-path firmware/Cargo.toml -p obc-app --target thumbv8m.main-none-eabihf --locked
+
+  # Supply-chain gate: advisories + licenses + bans + sources, for both lockfiles (deny.toml).
+  deny:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - name: cargo-deny (firmware workspace)
+        run: cargo deny --manifest-path firmware/Cargo.toml --all-features check --config deny.toml
+      - name: cargo-deny (obc-fw-stm32f429 board crate)
+        run: cargo deny --manifest-path firmware/obc-fw-stm32f429/Cargo.toml --all-features check --config deny.toml
+
+  # The web sim is the firmware's own render path compiled to wasm; build it on PRs (not just on
+  # the deploy-to-Pages push) so a stack-size regression in firmware/.cargo/config.toml — which
+  # makes the sim silently trap at startup — is caught before merge.
+  wasm:
+    needs: changes
+    if: needs.changes.outputs.wasm == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: firmware
+          key: wasm
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: trunk@0.21.14
+      - name: trunk build (obc-sim → wasm)
+        run: trunk build --config docs/Trunk.toml
+
+  # Render the docs site (stdlib-only Python, no pip) and fail on error, plus the cross-page
+  # anchor audit CLAUDE.md otherwise asks for by hand: every internal ../page/#anchor must
+  # resolve to a real heading id.
+  docs:
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: build_docs.py --check-links
+        run: python3 docs/build_docs.py --check-links
+
+  # Single aggregate gate: make THIS the required status check on main/develop. It succeeds
+  # only if no needed job failed or was cancelled; jobs skipped by the path filters are fine.
+  ci:
+    if: always()
+    needs: [changes, fmt, clippy, test, embedded, device, deny, wasm, docs]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify all required jobs succeeded (or were skipped)
+        run: |
+          echo "results: ${{ join(needs.*.result, ' ') }}"
+          for r in ${{ join(needs.*.result, ' ') }}; do
+            if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
+              echo "::error::a required job did not succeed"
+              exit 1
+            fi
+          done
+          echo "all good"
