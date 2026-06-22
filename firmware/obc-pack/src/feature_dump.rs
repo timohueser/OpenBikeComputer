@@ -1,7 +1,6 @@
-//! Stage-2 validation bridge: a JSON dump of the **pre-quadtree** per-LOD feature
-//! lists (post-simplify), emitted by `packer/tests/harness/dump_features.py`. The
-//! Rust side builds its own quadtree from these and serializes, isolating the
-//! quadtree+clip port from ingest and simplify (which stay Python here). See the
+//! Debug/test bridge: load a JSON dump of the **pre-quadtree** per-LOD feature
+//! lists (post-simplify), build a quadtree from them and serialize — exercising the
+//! quadtree + clip + serializer in isolation from ingest and simplify. See the
 //! `build_from_features` binary.
 //!
 //! Coordinates are exact f64 bit patterns, like [`crate::dump`].

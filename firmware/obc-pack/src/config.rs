@@ -1,10 +1,9 @@
-//! `config.rs` — port of `packer/obcm/config.py` plus the config-reading parts of
-//! `pack.py`. Parses `config.json`, assigns style IDs **1-based in document
-//! order** (so `serde_json`'s `preserve_order` feature is mandatory — see
+//! `config.rs` — parses the packer's `config.json`. Assigns style IDs **1-based in
+//! document order** (so `serde_json`'s `preserve_order` feature is mandatory — see
 //! Cargo.toml; a hash-ordered map would scramble the IDs), and exposes everything
 //! the pipeline needs: the ordered `tag_key → value → style` map for first-match
-//! styling (`_get_style`), the style table for the serializer, the LOD tiers, the
-//! marker color, and the chunk size.
+//! styling ([`Config::get_style`]), the style table for the serializer, the LOD
+//! tiers, the marker color, and the chunk size.
 
 use std::collections::HashMap;
 
@@ -13,7 +12,7 @@ use serde_json::Value;
 use crate::serialize::Style;
 
 /// 0xFF is the end-of-features sentinel in chunk payloads, so style IDs occupy
-/// 1..=254 (ID 0 left unused). Mirrors `config.py::MAX_STYLE_ID`.
+/// 1..=254 (ID 0 left unused).
 const MAX_STYLE_ID: u32 = 254;
 
 /// A configured feature style: its assigned id + the fields the Style Table
@@ -72,7 +71,7 @@ impl Config {
     pub fn parse(text: &str) -> Result<Config, String> {
         let root: Value = serde_json::from_str(text).map_err(|e| format!("config json: {e}"))?;
 
-        // --- features + style-ID assignment (config.py::assign_style_ids) ---
+        // --- features + style-ID assignment ---
         // Number every (tag_key, value) pair 1-based in document order; any `id`
         // present in the config is deliberately ignored.
         let mut features: Vec<(String, HashMap<String, FeatureStyle>)> = Vec::new();
@@ -97,7 +96,7 @@ impl Config {
             }
         }
 
-        // --- lods (pack.py: `config.get("lods") or [default]`) ---
+        // --- lods (absent/empty ⇒ a single coarsest layer) ---
         let lods = match root.get("lods").and_then(Value::as_array) {
             Some(arr) if !arr.is_empty() => arr
                 .iter()
@@ -127,8 +126,8 @@ impl Config {
         Ok(Config { features, lods, marker_color, chunk_size })
     }
 
-    /// First matching `(tag_key, value)` in document order — mirrors
-    /// `ingest.py::OSMHandler._get_style`. `tags` is the way's tag map.
+    /// First matching `(tag_key, value)` in document order. `tags` is the way's
+    /// tag map.
     pub fn get_style(&self, tags: &HashMap<&str, &str>) -> Option<&FeatureStyle> {
         for (tag_key, by_value) in &self.features {
             if let Some(val) = tags.get(tag_key.as_str()) {
@@ -140,8 +139,7 @@ impl Config {
         None
     }
 
-    /// The `natural.land` style, if the config requests land generation —
-    /// mirrors `pack.py`'s `config["features"]["natural"]["land"]` lookup. The id
+    /// The `natural.land` style, if the config requests land generation. Its id
     /// + `min_lod` style the generated land polygons (see [`crate::land`]).
     pub fn land_style(&self) -> Option<&FeatureStyle> {
         self.features.iter().find(|(k, _)| k == "natural").and_then(|(_, m)| m.get("land"))
@@ -155,8 +153,7 @@ impl Config {
 }
 
 /// `{z_index?, color, weight?, priority?, min_lod?}` → `FeatureStyle` with the
-/// `id` chosen by the caller. Defaults mirror `style.get(..., default)` in the
-/// oracle: z_index 0, weight 1, priority 3, min_lod 0.
+/// `id` chosen by the caller. Defaults: z_index 0, weight 1, priority 3, min_lod 0.
 fn parse_style(id: u8, v: &Value) -> Result<FeatureStyle, String> {
     let color = v.get("color").map(parse_color).transpose()?.ok_or("style missing `color`")?;
     Ok(FeatureStyle {
@@ -169,8 +166,7 @@ fn parse_style(id: u8, v: &Value) -> Result<FeatureStyle, String> {
     })
 }
 
-/// Color is either a JSON int or a hex string like `"0xFAA0"`. Mirrors the
-/// oracle's `int(color, 16) if isinstance(color, str)`.
+/// Color is either a JSON int or a hex string like `"0xFAA0"`.
 fn parse_color(v: &Value) -> Result<u16, String> {
     match v {
         Value::String(s) => {
@@ -196,9 +192,7 @@ mod tests {
 
     #[test]
     fn style_ids_are_1_based_document_order() {
-        // Cross-checked against `python -c "from obcm.config import load_config;
-        // c=load_config('packer/config.json'); ..."`: 42 styles, numbered in the
-        // order the feature types appear in config.json.
+        // 42 styles, numbered in the order the feature types appear in config.json.
         let cfg = corpus_config();
 
         // The first feature type's first value is id 1, and a few landmarks down

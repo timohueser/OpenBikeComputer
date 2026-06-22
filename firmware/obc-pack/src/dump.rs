@@ -1,10 +1,7 @@
-//! The Stage-1 validation bridge: a JSON "tree dump" the Python oracle emits
-//! (one already-built quadtree per LOD, geometry as raw f64 lon/lat), which this
-//! crate re-serializes and byte-compares against `pack.py`'s `.obcm`. It isolates
-//! the serializer from ingest/quadtree/GEOS so byte-parity is a meaningful gate.
-//!
-//! Emitted by `packer/tests/harness/dump_tree.py`; consumed by the
-//! `serialize_from_dump` binary. Schema (see that script for the writer):
+//! Debug/test bridge: load a JSON "tree dump" (one already-built quadtree per LOD,
+//! geometry as raw f64 lon/lat) and re-serialize it, exercising the serializer in
+//! isolation from ingest/quadtree/GEOS. Consumed by the `serialize_from_dump`
+//! binary. Schema:
 //!
 //! ```json
 //! { "marker_color": 63488, "global_bbox": [minlon,minlat,maxlon,maxlat],
@@ -16,8 +13,8 @@
 //! ```
 //!
 //! Coordinates are the **u64 bit patterns** of the f64 lon/lat, not decimal text:
-//! decimal round-trip is lossy (serde_json can land 1 ULP off Python, flipping a
-//! `*1e6` halfway case), so bits keep the serializer test exact.
+//! a decimal round-trip is lossy (serde_json can land 1 ULP off, flipping a `*1e6`
+//! halfway case), so bits keep the serializer test exact.
 
 use serde::Deserialize;
 
