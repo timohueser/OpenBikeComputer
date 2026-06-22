@@ -1,0 +1,32 @@
+{
+  "sections": [
+    {
+      "title": null,
+      "pages": [
+        { "path": "index", "title": "Overview" }
+      ]
+    },
+    {
+      "title": "Software",
+      "pages": [
+        { "path": "software/architecture", "title": "System architecture" },
+        { "path": "software/formats", "title": "Data formats" },
+        { "path": "software/rendering", "title": "Rendering pipeline" },
+        { "path": "software/ui", "title": "The UI system" },
+        { "path": "software/packer-routing", "title": "Packer & routing" }
+      ]
+    },
+    {
+      "title": "Hardware",
+      "pages": [
+        { "path": "hardware/index", "title": "Hardware", "soon": true }
+      ]
+    },
+    {
+      "title": "Building one",
+      "pages": [
+        { "path": "build/index", "title": "Build guide", "soon": true }
+      ]
+    }
+  ]
+}

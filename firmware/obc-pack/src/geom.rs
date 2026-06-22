@@ -1,12 +1,10 @@
-//! Geometry for the quadtree port: a small owned geometry type, its bounds, and
-//! the GEOS bridge used for boundary clipping. Mirrors the shapely geometries
-//! `quadtree.py` passes around — simple types (`LineString`/`Polygon`) plus the
-//! multi-containers that `intersection` can return and `_flatten_and_process`
-//! splits apart.
+//! Geometry for the packer: a small owned geometry type, its bounds, and the GEOS
+//! bridge used for boundary clipping. Simple types (`LineString`/`Polygon`) plus
+//! the multi-containers that `intersection` can return and the quadtree flattens
+//! apart.
 //!
-//! Coordinates are f64 lon/lat (degrees), exactly as in the oracle: the quadtree
-//! does its overlap/containment tests and its clip in degree space, then the
-//! serializer rounds to microdegrees.
+//! Coordinates are f64 lon/lat (degrees): the quadtree does its overlap/containment
+//! tests and its clip in degree space, then the serializer rounds to microdegrees.
 
 use geos::{CoordSeq, Geom as _, Geometry, GeometryTypes};
 
@@ -26,9 +24,8 @@ pub enum Geom {
 }
 
 impl Geom {
-    /// Bounds over every vertex. Mirrors shapely's `geom.bounds` (min/max of
-    /// coordinates). Panics on `Empty` — callers guard with `is_empty` first,
-    /// exactly as the oracle does.
+    /// Bounds over every vertex (min/max of coordinates). Panics on `Empty` —
+    /// callers guard with `is_empty` first.
     pub fn bounds(&self) -> Bounds {
         let mut b = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
         fn fold(g: &Geom, b: &mut Bounds) {
@@ -102,8 +99,7 @@ pub fn to_feature(style_id: u8, g: &Geom) -> Option<Feature> {
 }
 
 /// Point count used for chunk-size accounting (`12 + pt_count*4`): exterior +
-/// every interior ring for a polygon, else the vertex count. Mirrors
-/// `quadtree.py::_process_clipped`.
+/// every interior ring for a polygon, else the vertex count.
 pub fn pt_count(g: &Geom) -> usize {
     match g {
         Geom::Line(c) => c.len(),
@@ -176,7 +172,7 @@ fn from_geos<G: Geom_>(g: &G) -> Geom {
             Geom::Multi(parts)
         }
         // Points (incl. inside a GeometryCollection) carry no renderable line/area
-        // — the oracle drops them.
+        // — dropped.
         _ => Geom::Empty,
     }
 }
@@ -194,12 +190,10 @@ pub(crate) fn geom_from_geos(g: &Geometry) -> Geom {
     from_geos(g)
 }
 
-/// Topology-preserving simplify — the algorithm shapely's `geom.simplify(tol)`
-/// uses by default (`preserve_topology=True` ⇒ GEOS `TopologyPreservingSimplifier`),
-/// **not** plain Douglas–Peucker (the geos crate's `simplify`). `tol` is in
-/// degrees (`simplify_m / 111320.0`). An empty/failed result becomes
-/// [`Geom::Empty`], which the quadtree drops — matching `pack.py`'s
-/// `if geom.is_empty: continue`.
+/// Topology-preserving simplify — GEOS `TopologyPreservingSimplifier`, **not**
+/// plain Douglas–Peucker (the geos crate's `simplify`), so a simplified ring can't
+/// self-intersect. `tol` is in degrees (`simplify_m / 111320.0`). An empty/failed
+/// result becomes [`Geom::Empty`], which the quadtree drops.
 pub fn topology_preserve_simplify(geom: &Geom, tol: f64) -> Geom {
     match to_geos(geom).topology_preserve_simplify(tol) {
         Ok(s) => from_geos(&s),
@@ -207,12 +201,12 @@ pub fn topology_preserve_simplify(geom: &Geom, tol: f64) -> Geom {
     }
 }
 
-/// Whether a closed-way ring assembles into a **valid** polygon. Mirrors osmium's
-/// area assembler, which rejects a self-intersecting closed way (it yields zero
-/// rings, so `ingest.py::area()` emits nothing). We approximate that rejection
-/// with GEOS `is_valid`; a degenerate ring (too few points) or any construction
-/// error also counts as invalid → skip. Stage-3 closed-way polygons have no
-/// holes, but `interiors` is accepted for symmetry with [`Geom::Polygon`].
+/// Whether a closed-way ring assembles into a **valid** polygon. Like osmium's
+/// area assembler, a self-intersecting closed way is rejected (it would emit
+/// nothing). We approximate that with GEOS `is_valid`; a degenerate ring (too few
+/// points) or any construction error also counts as invalid → skip. Closed-way
+/// polygons have no holes, but `interiors` is accepted for symmetry with
+/// [`Geom::Polygon`].
 pub fn polygon_is_valid(exterior: &[(f64, f64)], interiors: &[Vec<(f64, f64)>]) -> bool {
     // A linear ring needs ≥4 positions (≥3 distinct + closing); fewer can't form
     // a polygon and GEOS would error.
@@ -266,9 +260,8 @@ pub(crate) fn collect_polygons(g: Geom, out: &mut Vec<Geom>) {
 ///
 /// Returns one [`Geom::Polygon`] per assembled outer ring (with its directly
 /// nested holes). Returns empty on un-assemblable or invalid geometry — osmium
-/// silently drops broken relations (landmine §3.6), and the oracle then emits
-/// nothing, so an empty result is the parity-correct outcome. Each polygon is run
-/// through [`polygon_is_valid`], matching the closed-way path.
+/// silently drops broken relations, so emitting nothing is the right outcome. Each
+/// polygon is run through [`polygon_is_valid`], matching the closed-way path.
 ///
 /// Two-tier: try `build_area` on the raw linework (the clean common case), and if
 /// that yields nothing, retry after **noding** the linework (`node`) — that splits
@@ -314,13 +307,12 @@ fn build_area_from_members(members: &[Vec<(f64, f64)>], node_first: bool) -> Vec
     polys
 }
 
-/// Clip `geom` to the node box (integer microdegrees → degrees), via the SAME
-/// `intersection` shapely uses (not `clip_by_rect`). The clip box ring matches
-/// shapely's `box(minx,miny,maxx,maxy)` order to minimise vertex-order drift.
+/// Clip `geom` to the node box (integer microdegrees → degrees) via GEOS
+/// `intersection`. The clip box ring is built in `box(minx,miny,maxx,maxy)` order.
 pub fn clip_to_box(geom: &Geom, bbox: (i64, i64, i64, i64)) -> Geom {
     let (minx, miny, maxx, maxy) =
         (bbox.0 as f64 / 1e6, bbox.1 as f64 / 1e6, bbox.2 as f64 / 1e6, bbox.3 as f64 / 1e6);
-    // shapely box() ccw ring: (maxx,miny),(maxx,maxy),(minx,maxy),(minx,miny), closed.
+    // box() ccw ring: (maxx,miny),(maxx,maxy),(minx,maxy),(minx,miny), closed.
     let ring = [(maxx, miny), (maxx, maxy), (minx, maxy), (minx, miny), (maxx, miny)];
     let box_geom = Geometry::create_polygon(
         Geometry::create_linear_ring(ring_to_coordseq(&ring)).expect("box ring"),
