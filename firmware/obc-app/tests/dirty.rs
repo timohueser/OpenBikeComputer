@@ -61,7 +61,7 @@ const BERLIN: (i32, i32) = (52_520_000, 13_405_000); // (lat, lon) µdeg
 
 /// Tick with one (or no) fix at `t`, no route, no other sensors.
 fn tick(app: &mut App, loc: &mut dyn LocationSource, t: u32) {
-    app.tick(RideClock(t), Sensors { loc, altimeter: None, track: None }, None);
+    app.tick(RideClock(t), Sensors { loc, altimeter: None, compass: None, track: None }, None);
 }
 /// Drive a full frame (input + tick) and drain it. `evs` is this frame's input.
 fn frame(app: &mut App, loc: &mut dyn LocationSource, t: u32, evs: &[InputEvent]) -> Dirty {

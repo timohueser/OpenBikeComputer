@@ -4,6 +4,15 @@ version = "0.1.0"
 edition = "2021"
 description = "Board-agnostic no_std firmware glue between obc-app and a concrete board — written once, reused by every OBC board crate. For now: the SDRAM/framebuffer DrawTarget. Later: FatFs ByteSource/Sink adapters, the input debouncer, the USB-CDC debug protocol."
 
+[features]
+# USB-CDC fake-sensor debug protocol (issue #38): the line parser + the
+# LocationSource/AltimeterSource/CompassSource impls + the telemetry format, for streaming a
+# recorded ride from a host. Board-agnostic and dependency-light — only embassy-sync's `Signal`
+# (the fresh-fix hand-off from the USB task to the app poll); the board crate owns the actual
+# embassy-usb CDC driver. Off by default so the host workspace build never pulls embassy-sync;
+# the F429 firmware turns it on in its own default features.
+debug-usb = ["dep:embassy-sync"]
+
 [dependencies]
 # The `DrawTarget` / `Rgb565` the framebuffer implements — pinned to the same 0.8
 # the renderer and app use so the target type unifies across the path deps.
@@ -33,3 +42,14 @@ obc-route = { path = "../obc-route" }
 # concrete `SdCard<SpiDevice, _>`. `default-features = false` drops the `log` facade (the
 # board logs over defmt/RTT itself); the adapters add no logging of their own.
 embedded-sdmmc = { version = "0.9", default-features = false }
+
+# `Signal` for the `debug-usb` fresh-fix hand-off (USB task → app poll). Pinned to the 0.8 the
+# F429 crate already resolves so the board build shares one embassy-sync. Optional — only the
+# `debug-usb` feature pulls it.
+embassy-sync = { version = "0.8", optional = true }
+
+[dev-dependencies]
+# `cargo test --features debug-usb` compiles the Signal-based sources, which reference
+# `critical_section::with`; the std impl satisfies the link on the host. Dev-only — it never
+# reaches the firmware build (which provides cortex-m's single-core impl), so no double impl.
+critical-section = { version = "1.1", features = ["std"] }

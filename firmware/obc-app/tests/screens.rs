@@ -390,7 +390,7 @@ fn ride_control_composites_over_the_map() {
 // --- tiny render harness (mirrors marker.rs) ---
 
 fn render(app: &mut App, bytes: &[u8]) -> Buf {
-    app.tick(RideClock(0), Sensors { loc: &mut NoFix, altimeter: None, track: None }, None);
+    app.tick(RideClock(0), Sensors { loc: &mut NoFix, altimeter: None, compass: None, track: None }, None);
     let cache = MapCache::new();
     let src = SliceSource(bytes);
     let reader = Reader::new(&src, &cache).expect("valid v5 file");

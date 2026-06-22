@@ -19,12 +19,12 @@ use obc_app::{App, AppState, Button, CameraMode, Dirty, Fix, InputClock, RideClo
 use obc_reader::{MapCache, Reader, SliceSource};
 use obc_route::{RouteIndex, RouteReader};
 
-use crate::baro::BaroSensor;
+use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
+
 use crate::device_input::DeviceInput;
 use crate::framebuffer::Framebuffer;
-use crate::gpx::Track;
-use crate::gpx_player::GpxPlayer;
 use crate::routes::RouteStore;
+use crate::sim_compass::SimCompass;
 use crate::sim_location::SimLocationSource;
 use crate::track::TrackStore;
 use crate::Args;
@@ -43,6 +43,9 @@ struct PanelState {
     lat_deg: f64,
     lon_deg: f64,
     heading_deg: f32,
+    /// The "Compass" slider — the magnetometer heading used to orient a heading-up map while
+    /// the rider is stopped (when the GPS course drops to `None`). Pushed into [`SimCompass`].
+    compass_deg: f32,
 }
 
 /// In-progress 1:1 size calibration: a reference bar is drawn in the device window;
@@ -157,6 +160,9 @@ struct SimGui {
     /// Simulated barometer, fed the replay's elevation on its own cadence (asynchronous
     /// to the GPS fix) — the device's pressure altimeter stand-in.
     baro: BaroSensor,
+    /// Simulated electronic compass (the panel's "Compass" slider) — sets the heading-up
+    /// orientation while stopped, when the GPS has no course. The device's magnetometer stand-in.
+    compass: SimCompass,
     /// A short "name — N pts, M:SS" status line for the loaded track.
     gpx_label: Option<String>,
     /// The last GPX load error, shown in the panel until the next successful load.
@@ -217,8 +223,9 @@ impl SimGui {
                 lat_deg: f.lat as f64 / 1e6,
                 lon_deg: f.lon as f64 / 1e6,
                 heading_deg: f.course.unwrap_or(0.0),
+                compass_deg: f.course.unwrap_or(0.0),
             },
-            None => PanelState { lat_deg: 0.0, lon_deg: 0.0, heading_deg: 0.0 },
+            None => PanelState { lat_deg: 0.0, lon_deg: 0.0, heading_deg: 0.0, compass_deg: 0.0 },
         };
 
         // Boot at the device's real power-on state (Home / Idle, no route): pressing
@@ -255,6 +262,7 @@ impl SimGui {
             input: DeviceInput::new(),
             gpx: None,
             baro: BaroSensor::new(),
+            compass: SimCompass::new(),
             gpx_label: None,
             gpx_error: None,
             quit: false,
@@ -298,8 +306,8 @@ impl SimGui {
         // Auto-play the embedded ride (the Grimselpass climb, Guttannen → summit) so the
         // page opens on a *moving* map. It's point-to-point, not a loop, so the restart in
         // render_to_texture snaps back to the start and clears the trail for a fresh lap.
-        if let Ok(track) = crate::gpx::Track::parse(include_str!("../assets/grimsel-climb.gpx")) {
-            let mut player = crate::gpx_player::GpxPlayer::new(track);
+        if let Ok(track) = Track::parse(include_str!("../assets/grimsel-climb.gpx")) {
+            let mut player = GpxPlayer::new(track);
             // The GPX is distance-timed at a ~12 km/h base, so this multiplier reads as
             // "N× a normal climbing pace" — 3× keeps the map moving without a blur.
             player.set_speed(3.0);
@@ -376,6 +384,7 @@ impl SimGui {
                 &mut self.app,
                 player,
                 &mut self.baro,
+                Some(&mut self.compass),
                 dt,
                 route.as_ref(),
                 self.tracks.sink(),
@@ -403,8 +412,12 @@ impl SimGui {
             // Manual panel control: no barometer, wall-clock for any moving-time.
             self.baro.clear();
             let now_ms = self.input.now_ms();
-            let sensors =
-                Sensors { loc: &mut self.loc, altimeter: None, track: self.tracks.sink() };
+            let sensors = Sensors {
+                loc: &mut self.loc,
+                altimeter: None,
+                compass: Some(&mut self.compass),
+                track: self.tracks.sink(),
+            };
             self.app.tick(RideClock(now_ms), sensors, route.as_ref());
         }
 

@@ -58,6 +58,11 @@
 #![no_std]
 
 pub mod button_input;
+// USB-CDC fake-sensor protocol + sources + telemetry (issue #38). Behind `debug-usb` so the
+// host workspace build never pulls embassy-sync; the board crate enables it and owns the actual
+// embassy-usb CDC driver. The protocol + sources move to the nRF54L unchanged.
+#[cfg(feature = "debug-usb")]
+pub mod debug_usb;
 pub mod framebuffer;
 pub mod sd;
 

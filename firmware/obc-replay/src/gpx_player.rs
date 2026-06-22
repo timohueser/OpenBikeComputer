@@ -1,11 +1,10 @@
 //! GPX replay as a simulated GPS sensor.
 //!
-//! [`GpxPlayer`] is the simulator's stand-in for the device's GPS chip when
-//! replaying a recorded [`Track`]: it implements [`LocationSource`] exactly like
-//! [`SimLocationSource`](crate::sim_location::SimLocationSource), so the shared
-//! [`App`](obc_app::App) can't tell a replay from a live fix. This is why the
-//! whole feature stays host-side — `obc-render`/`obc-app` never learn what a GPX file
-//! is; they just consume [`Fix`]es.
+//! [`GpxPlayer`] is the host's stand-in for the device's GPS chip when replaying a recorded
+//! [`Track`]: it implements [`LocationSource`] exactly like a real receiver's driver would, so
+//! the shared [`App`](obc_app::App) can't tell a replay from a live fix. This is why the whole
+//! feature stays host-side — `obc-render`/`obc-app` never learn what a GPX file is; they just
+//! consume [`Fix`]es.
 //!
 //! ## Fidelity
 //! GPX stores only position + time, never course or speed, so we derive them the

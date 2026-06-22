@@ -106,6 +106,11 @@ pub struct AppState {
     /// freezes the rotation (see [`Pan`]); the Map screen binds the encoder/Back to
     /// panning while it's set and draws the pan HUD over the map.
     pub pan: Option<Pan>,
+    /// Latest electronic-compass heading (degrees CW from north), or `None` until one
+    /// arrives. Stands in for the GPS course when the rider is stopped on a heading-up
+    /// map, so the orientation follows the compass instead of snapping to north; only
+    /// adopted on ticks where it would actually drive the rotation (see [`App::tick`]).
+    pub compass_deg: Option<f32>,
 }
 
 impl AppState {
@@ -121,6 +126,7 @@ impl AppState {
             heading_up: false,
             user_fix: None,
             pan: None,
+            compass_deg: None,
         }
     }
 
@@ -171,10 +177,11 @@ impl AppState {
         }
     }
 
-    /// The heading-up angle to freeze from the latest fix right now (0 when stopped /
-    /// no fix). Used on entering pan and when `hold` flips back to heading-up.
+    /// The heading-up angle to freeze from the latest fix right now: the GPS course, or the
+    /// electronic compass when stopped (no course), or 0 (north) when neither is known. Used by
+    /// [`course_rad`](AppState::course_rad), on entering pan, and when `hold` flips to heading-up.
     fn live_course_rad(&self) -> f32 {
-        self.user_fix.and_then(|f| f.course).map_or(0.0, |deg| deg.to_radians())
+        self.user_fix.and_then(|f| f.course).or(self.compass_deg).map_or(0.0, |deg| deg.to_radians())
     }
 
     /// Switch to the **riding view** — what loading a route should look like on the
@@ -303,8 +310,13 @@ const GESTURE_BUF: usize = 16;
 /// ```ignore
 /// let mut app = App::new(AppState::new(cx, cy, zoom));
 /// loop {
-///     // GPS + barometer + active route → camera, map-match, ride stats.
-///     let sensors = Sensors { loc: &mut location_source, altimeter: Some(&mut baro) };
+///     // GPS + barometer + compass + active route → camera, map-match, ride stats.
+///     let sensors = Sensors {
+///         loc: &mut location_source,
+///         altimeter: Some(&mut baro),
+///         compass: Some(&mut compass),
+///         track: Some(&mut track_log),
+///     };
 ///     app.tick(RideClock(now_ms), sensors, route.as_ref());
 ///     app.handle_input(InputClock(now_ms), &mut input_source); // encoder + Back → gestures
 ///     app.render_frame(&mut display, &reader, route.as_ref(), w, h, color_policy);
@@ -453,7 +465,7 @@ impl App {
             self.map_dirty = true;
         }
 
-        let Sensors { loc, altimeter, track } = sensors;
+        let Sensors { loc, altimeter, compass, track } = sensors;
         // Barometric altitude on its own cadence → climb + the elevation stamped on the log.
         // Polled before the fix so a point logged this tick carries the freshest altitude.
         if let Some(altimeter) = altimeter {
@@ -480,6 +492,21 @@ impl App {
                         t_ms: now_ms,
                         segment_start: motion.segment_start,
                     });
+                }
+            }
+        }
+        // Electronic compass → the heading when the GPS can't give a course. Polled after the fix
+        // so it sees this tick's movement state, and adopted into `compass_deg` *only* when it
+        // would actually drive the orientation: heading-up, not panning, and the latest fix has no
+        // course (the rider is stopped). Storing it in any other state — moving, north-up, or
+        // panning, where `course_rad` ignores it — would change `state` on every reading and force
+        // a needless map redraw, breaking the render-on-demand contract (#47). When it *is*
+        // adopted, the `state != state_before` check below redraws only if the heading changed.
+        if let Some(compass) = compass {
+            if let Some(heading) = compass.poll() {
+                let stopped = self.state.user_fix.and_then(|f| f.course).is_none();
+                if stopped && self.state.heading_up && self.state.pan.is_none() {
+                    self.state.compass_deg = Some(heading);
                 }
             }
         }
@@ -763,5 +790,104 @@ impl App {
     /// The current operating mode.
     pub fn mode(&self) -> Mode {
         self.activity.mode
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hal::{CompassSource, LocationSource};
+
+    /// A location source that yields one fix then runs dry (so a single `tick` integrates it).
+    struct OneFix(Option<Fix>);
+    impl LocationSource for OneFix {
+        fn poll(&mut self) -> Option<Fix> {
+            self.0.take()
+        }
+    }
+
+    /// A compass that always reports the same heading.
+    struct ConstCompass(f32);
+    impl CompassSource for ConstCompass {
+        fn poll(&mut self) -> Option<f32> {
+            Some(self.0)
+        }
+    }
+
+    fn moving(course: f32) -> Fix {
+        Fix { lat: 0, lon: 0, course: Some(course), speed_mps: Some(5.0) }
+    }
+
+    // --- the heading fallback chain (course_rad / live_course_rad) ---
+
+    #[test]
+    fn heading_up_uses_gps_course_when_moving() {
+        let mut s = AppState::new(0, 0, 1.0);
+        s.heading_up = true;
+        s.user_fix = Some(moving(90.0));
+        s.compass_deg = Some(180.0); // ignored: the GPS has a course
+        assert!((s.course_rad() - 90f32.to_radians()).abs() < 1e-6);
+    }
+
+    #[test]
+    fn heading_up_falls_back_to_compass_when_stopped() {
+        let mut s = AppState::new(0, 0, 1.0);
+        s.heading_up = true;
+        s.user_fix = Some(Fix::at(0, 0)); // stationary → no course
+        s.compass_deg = Some(270.0);
+        assert!((s.course_rad() - 270f32.to_radians()).abs() < 1e-6);
+    }
+
+    #[test]
+    fn north_up_ignores_compass() {
+        let mut s = AppState::new(0, 0, 1.0);
+        s.heading_up = false;
+        s.user_fix = Some(Fix::at(0, 0));
+        s.compass_deg = Some(123.0);
+        assert_eq!(s.course_rad(), 0.0, "north-up holds north regardless of the compass");
+    }
+
+    #[test]
+    fn stopped_without_compass_holds_north() {
+        let mut s = AppState::new(0, 0, 1.0);
+        s.heading_up = true;
+        s.user_fix = Some(Fix::at(0, 0));
+        assert_eq!(s.course_rad(), 0.0);
+    }
+
+    // --- tick adoption gating (don't store the compass where it would force a redraw) ---
+
+    fn tick_with(app: &mut App, fix: Fix, compass_deg: f32) {
+        let mut loc = OneFix(Some(fix));
+        let mut compass = ConstCompass(compass_deg);
+        app.tick(
+            RideClock(1000),
+            Sensors { loc: &mut loc, altimeter: None, compass: Some(&mut compass), track: None },
+            None,
+        );
+    }
+
+    #[test]
+    fn tick_adopts_compass_when_stopped_and_heading_up() {
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        app.state.heading_up = true;
+        tick_with(&mut app, Fix::at(0, 0), 200.0);
+        assert_eq!(app.state.compass_deg, Some(200.0));
+    }
+
+    #[test]
+    fn tick_ignores_compass_while_moving() {
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        app.state.heading_up = true;
+        tick_with(&mut app, moving(45.0), 200.0);
+        assert_eq!(app.state.compass_deg, None, "GPS course wins → compass not stored while moving");
+    }
+
+    #[test]
+    fn tick_ignores_compass_when_north_up() {
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        app.state.heading_up = false; // north-up never consults the compass
+        tick_with(&mut app, Fix::at(0, 0), 200.0);
+        assert_eq!(app.state.compass_deg, None);
     }
 }
