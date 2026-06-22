@@ -170,8 +170,12 @@ use embassy_time::Instant;
 use embedded_graphics::pixelcolor::{raw::RawU16, Rgb565};
 #[cfg(not(feature = "glass-demo"))]
 use obc_app::{
-    App, AppState, Fix, InputClock, LocationSource, RideClock, RouteSummary, Sensors, TrackSink,
+    App, AppState, InputClock, InputEvent, InputSource, RideClock, RouteSummary, Sensors, TrackSink,
 };
+// Only the `debug-usb`-off fallback implements its own `LocationSource` (`SynthLocation`); the
+// USB build's sources live in obc-platform, so these would be unused there.
+#[cfg(all(not(feature = "glass-demo"), not(feature = "debug-usb")))]
+use obc_app::{Fix, LocationSource};
 #[cfg(not(feature = "glass-demo"))]
 use obc_platform::{ButtonInput, FramebufferArgb4444};
 #[cfg(not(feature = "glass-demo"))]
@@ -207,6 +211,99 @@ mod demo;
 // touches the card; the glass demo just exercises the framebuffer.
 #[cfg(not(feature = "glass-demo"))]
 mod sd;
+
+// --- USB-CDC fake sensors (issue #38, behind `debug-usb`) ---
+// The DISC1 has no GPS/baro/compass, so a host streams a recorded ride over the USER USB port
+// (OTG_HS internal full-speed PHY on PB14/PB15) and `obc-platform`'s debug sources turn it into
+// the HAL traits the app already polls. embassy-stm32 owns the OTG `Driver`; the protocol +
+// sources live in obc-platform so they move to the nRF unchanged. Three small async tasks on the
+// thread-mode executor: the device stack, the line-RX → sensor-signal pump, and the ~1 Hz
+// telemetry TX. OTG RX is interrupt-buffered, so the 24–51 ms map render never drops bytes.
+#[cfg(feature = "debug-usb")]
+use embassy_stm32::{bind_interrupts, peripherals, usb};
+// Aliased so the CDC endpoints don't clash with embassy-sync's channel `Sender`/`Receiver`
+// (imported by the two-plane build for the gesture channel).
+#[cfg(feature = "debug-usb")]
+use embassy_usb::class::cdc_acm::{CdcAcmClass, Receiver as CdcReceiver, Sender as CdcSender, State};
+
+#[cfg(feature = "debug-usb")]
+bind_interrupts!(struct UsbIrqs {
+    OTG_HS => usb::InterruptHandler<peripherals::USB_OTG_HS>;
+});
+
+/// The concrete OTG full-speed driver the CDC tasks carry (`USB_OTG_HS` + internal FS PHY).
+#[cfg(feature = "debug-usb")]
+type UsbDriver = usb::Driver<'static, peripherals::USB_OTG_HS>;
+
+/// Run the USB device stack (enumeration, control transfers). Spawned once; never returns.
+#[cfg(feature = "debug-usb")]
+#[embassy_executor::task]
+async fn usb_device_task(mut device: embassy_usb::UsbDevice<'static, UsbDriver>) {
+    device.run().await
+}
+
+/// CDC RX → sensor signals: accumulate received bytes into lines and dispatch each `F`/`A`/`C`
+/// into `obc-platform`'s fresh-fix signals, which the app's `DebugLocation`/`DebugAltimeter`/
+/// `DebugCompass` poll. Re-arms on disconnect/reconnect.
+#[cfg(feature = "debug-usb")]
+#[embassy_executor::task]
+async fn usb_rx_task(mut rx: CdcReceiver<'static, UsbDriver>) {
+    let mut reader = obc_platform::debug_usb::LineReader::new();
+    let mut buf = [0u8; 64];
+    loop {
+        rx.wait_connection().await;
+        loop {
+            match rx.read_packet(&mut buf).await {
+                Ok(n) => obc_platform::debug_usb::feed_bytes(&mut reader, &buf[..n]),
+                Err(_) => break, // disconnected — wait for the next connection
+            }
+        }
+    }
+}
+
+/// CDC TX ← telemetry: send one compact status line each time the app publishes telemetry
+/// (~1 Hz via `set_telemetry`), so the host's readout updates without the device ever polling or
+/// flooding the link. Re-arms on disconnect/reconnect.
+#[cfg(feature = "debug-usb")]
+#[embassy_executor::task]
+async fn usb_tx_task(mut tx: CdcSender<'static, UsbDriver>) {
+    loop {
+        tx.wait_connection().await;
+        loop {
+            let t = obc_platform::debug_usb::wait_telemetry().await;
+            let line = obc_platform::debug_usb::format_telemetry(&t);
+            if tx.write_packet(line.as_bytes()).await.is_err() {
+                break; // disconnected — wait for the next connection
+            }
+        }
+    }
+}
+
+/// Chains two input sources for the gesture recogniser: drains `a` (the physical buttons) fully,
+/// then `b` (the USB-injected events with `debug-usb`, else [`NullInput`]). So the recogniser sees
+/// injected turns/edges interleaved with real presses and turns them into gestures identically.
+#[cfg(not(feature = "glass-demo"))]
+struct ChainedInput<'a> {
+    a: &'a mut dyn InputSource,
+    b: &'a mut dyn InputSource,
+}
+#[cfg(not(feature = "glass-demo"))]
+impl InputSource for ChainedInput<'_> {
+    fn poll(&mut self) -> Option<InputEvent> {
+        self.a.poll().or_else(|| self.b.poll())
+    }
+}
+
+/// An input source that never yields — the `debug-usb`-off stand-in for the USB-injected stream,
+/// so the recogniser call site is one code path in both builds.
+#[cfg(all(not(feature = "glass-demo"), not(feature = "debug-usb")))]
+struct NullInput;
+#[cfg(all(not(feature = "glass-demo"), not(feature = "debug-usb")))]
+impl InputSource for NullInput {
+    fn poll(&mut self) -> Option<InputEvent> {
+        None
+    }
+}
 
 const SDRAM_ADDR: usize = 0xD000_0000;
 /// Front framebuffer at the base of SDRAM: 240x320 RGB565 = 150 KB. The app path adds a
@@ -244,23 +341,24 @@ static TILE: &[u8] = include_bytes!("../tiles/teningen.obcm");
 #[cfg(not(feature = "glass-demo"))]
 const INIT_MPP: f32 = 1.0;
 
-/// Stand-in moving GPS until #38's USB feed: side length (m) and speed (m/s) of the square
-/// loop [`SynthLocation`] walks. Slow enough to watch the user marker / breadcrumb crawl, big
-/// enough that a saved ride is a real ~0.8 km loop that re-imports as a sane route.
-#[cfg(not(feature = "glass-demo"))]
+/// Stand-in moving GPS — the **`debug-usb`-off fallback** (the default build streams a real ride
+/// over USB instead, see issue #38): side length (m) and speed (m/s) of the square loop
+/// [`SynthLocation`] walks. Slow enough to watch the user marker / breadcrumb crawl, big enough
+/// that a saved ride is a real ~0.8 km loop that re-imports as a sane route.
+#[cfg(all(not(feature = "glass-demo"), not(feature = "debug-usb")))]
 const SYNTH_LEG_M: f32 = 200.0;
-#[cfg(not(feature = "glass-demo"))]
+#[cfg(all(not(feature = "glass-demo"), not(feature = "debug-usb")))]
 const SYNTH_SPEED_MPS: f32 = 5.0;
 
 /// The synthetic GPS emits a fresh fix at this cadence (ms), `None` between — so the prototype
-/// drives the app on the same ~1 Hz fresh-fix contract a real receiver (and #38's USB feed)
+/// drives the app on the same ~1 Hz fresh-fix contract a real receiver (and the USB feed)
 /// honours, exercising the integrate-one-sample path instead of an every-tick replay (#43).
-#[cfg(not(feature = "glass-demo"))]
+#[cfg(all(not(feature = "glass-demo"), not(feature = "debug-usb")))]
 const SYNTH_FIX_INTERVAL_MS: u64 = 1000;
 
 /// Microdegrees of latitude per metre north (the map/route coordinate convention). Longitude
 /// scales this by 1/cos(lat), via [`obc_route::cos_lat`].
-#[cfg(not(feature = "glass-demo"))]
+#[cfg(all(not(feature = "glass-demo"), not(feature = "debug-usb")))]
 const UDEG_PER_M: f32 = 1_000_000.0 / 111_320.0;
 
 /// Main-loop button-sample period (ms). Buttons are sampled every tick so quick taps
@@ -332,10 +430,17 @@ async fn input_overlay_task(
     loop {
         let now = start.elapsed().as_millis() as u32;
         buttons.update(now);
+        // Physical buttons + (with `debug-usb`) the USB-injected events, drained into one
+        // recogniser pass — so a host can drive the UI (taps/holds) like the real buttons.
+        #[cfg(feature = "debug-usb")]
+        let mut usb_in = obc_platform::debug_usb::DebugInput;
+        #[cfg(not(feature = "debug-usb"))]
+        let mut usb_in = NullInput;
+        let mut input = ChainedInput { a: &mut buttons, b: &mut usb_in };
         // Recognise this frame's input on the *input* clock (wall time, preemptive). Each
         // gesture is pushed to the map plane; the bulge is animated below regardless, so the
         // press is confirmed on screen immediately even before the map plane drains it.
-        plane.recognize(InputClock(now), &mut buttons, |g| {
+        plane.recognize(InputClock(now), &mut input, |g| {
             if gestures.try_send(g).is_err() {
                 defmt::warn!("gesture channel full — dropped a gesture (map plane stalled?)");
             }
@@ -379,12 +484,13 @@ async fn input_overlay_task(
     }
 }
 
-/// A stand-in moving [`LocationSource`] until #38 streams a real GPS over USB-CDC: the fix
-/// walks a slow square loop around a centre, driven by the wall clock. Unlike a constant fix,
-/// this gives the ride accumulators, breadcrumb and `.obct` log real motion — so a saved
-/// ride is a non-degenerate `.gpx` that re-imports cleanly (issue #36's save-loop deliverable).
-/// The centre is the map (or loaded route's) start, re-pointed via [`recenter`](Self::recenter).
-#[cfg(not(feature = "glass-demo"))]
+/// A stand-in moving [`LocationSource`] for the **`debug-usb`-off** build (the default streams a
+/// real GPS over USB-CDC, issue #38): the fix walks a slow square loop around a centre, driven by
+/// the wall clock. Unlike a constant fix, this gives the ride accumulators, breadcrumb and `.obct`
+/// log real motion — so a saved ride is a non-degenerate `.gpx` that re-imports cleanly (issue
+/// #36's save-loop deliverable). The centre is the map (or loaded route's) start, re-pointed via
+/// [`recenter`](Self::recenter).
+#[cfg(all(not(feature = "glass-demo"), not(feature = "debug-usb")))]
 struct SynthLocation {
     center_lon: i32,
     center_lat: i32,
@@ -396,7 +502,7 @@ struct SynthLocation {
     last_fix_ms: Option<u64>,
 }
 
-#[cfg(not(feature = "glass-demo"))]
+#[cfg(all(not(feature = "glass-demo"), not(feature = "debug-usb")))]
 impl SynthLocation {
     fn new(center_lon: i32, center_lat: i32, start: Instant) -> Self {
         let mut s = SynthLocation {
@@ -419,7 +525,7 @@ impl SynthLocation {
     }
 }
 
-#[cfg(not(feature = "glass-demo"))]
+#[cfg(all(not(feature = "glass-demo"), not(feature = "debug-usb")))]
 impl LocationSource for SynthLocation {
     fn poll(&mut self) -> Option<Fix> {
         // Emit on the GPS's own ~1 Hz cadence, `None` between — the exact fresh-fix contract a
@@ -598,11 +704,13 @@ fn flip_landed() -> bool {
 }
 
 #[embassy_executor::main]
-async fn main(_spawner: Spawner) {
-    // 180 MHz core from HSI (16/8=2 MHz -> x180 -> /2). Plus a PLLSAI leg for the LTDC
-    // pixel clock: VCO = 2 MHz x 96 = 192 MHz, /R(4) = 48 MHz, /PLLSAIDIVR(8) = 6 MHz
-    // DOTCLK (matching ST's BSP). embassy's ltdc driver hard-codes PLLSAIDIVR=2, so the
-    // DIV8 is forced back on via the PAC right after `Ltdc::new()` below.
+async fn main(spawner: Spawner) {
+    // 168 MHz core from HSI (16/8=2 MHz -> x168 -> /2). VCO = 336 MHz so PLL_Q = 336/7 = 48 MHz
+    // feeds the USB OTG full-speed clock (issue #38) — F429 has no CK48 mux, so the 48 MHz must
+    // come from PLL_Q, which forces the classic F4 168/48 pair (180 MHz can't yield an integer
+    // /Q = 48). The LTDC pixel clock is independent: a PLLSAI leg gives VCO = 2 x 96 = 192 MHz,
+    // /R(4) = 48 MHz, /PLLSAIDIVR(8) = 6 MHz DOTCLK (matching ST's BSP). embassy's ltdc driver
+    // hard-codes PLLSAIDIVR=2, so the DIV8 is forced back on via the PAC right after `Ltdc::new()`.
     let p = {
         let mut config = embassy_stm32::Config::default();
         use embassy_stm32::rcc::*;
@@ -610,9 +718,9 @@ async fn main(_spawner: Spawner) {
         config.rcc.pll_src = PllSource::HSI;
         config.rcc.pll = Some(Pll {
             prediv: PllPreDiv::DIV8,
-            mul: PllMul::MUL180,
-            divp: Some(PllPDiv::DIV2),
-            divq: None,
+            mul: PllMul::MUL168,           // VCO = 2 x 168 = 336 MHz
+            divp: Some(PllPDiv::DIV2),     // SYSCLK = 336 / 2 = 168 MHz
+            divq: Some(PllQDiv::DIV7),     // PLL48CLK = 336 / 7 = 48 MHz (USB OTG FS clock)
             divr: None,
         });
         config.rcc.pllsai = Some(Pll {
@@ -623,13 +731,59 @@ async fn main(_spawner: Spawner) {
             divr: Some(PllRDiv::DIV4), // PLLSAI_R = 192 / 4 = 48 MHz
         });
         config.rcc.sys = Sysclk::PLL1_P;
-        config.rcc.ahb_pre = AHBPrescaler::DIV1; // HCLK 180 MHz
-        config.rcc.apb1_pre = APBPrescaler::DIV4; // PCLK1 45 MHz
-        config.rcc.apb2_pre = APBPrescaler::DIV2; // PCLK2 90 MHz
+        config.rcc.ahb_pre = AHBPrescaler::DIV1; // HCLK 168 MHz
+        config.rcc.apb1_pre = APBPrescaler::DIV4; // PCLK1 42 MHz (<= 45 MHz)
+        config.rcc.apb2_pre = APBPrescaler::DIV2; // PCLK2 84 MHz (<= 90 MHz)
         embassy_stm32::init(config)
     };
 
-    defmt::info!("obc-fw-stm32f429: phase C (ILI9341 + LTDC), 180 MHz core / 6 MHz pixel clock");
+    defmt::info!("obc-fw-stm32f429: phase C (ILI9341 + LTDC), 168 MHz core / 6 MHz pixel clock");
+
+    // Bring up the USB-CDC fake-sensor link first (issue #38) so it enumerates while the display
+    // and SD card come up; the parsed fixes land in obc-platform's signals, ready for the app's
+    // sensor poll below. Compiled out (and `spawner` unused) when `debug-usb` is off — then the
+    // app falls back to the SynthLocation stand-in.
+    #[cfg(feature = "debug-usb")]
+    {
+        use static_cell::StaticCell;
+        // 'static buffers the USB device + CDC class borrow for the whole run.
+        static EP_OUT: StaticCell<[u8; 256]> = StaticCell::new();
+        static CONFIG_DESC: StaticCell<[u8; 256]> = StaticCell::new();
+        static BOS_DESC: StaticCell<[u8; 32]> = StaticCell::new();
+        static CONTROL_BUF: StaticCell<[u8; 128]> = StaticCell::new();
+        static STATE: StaticCell<State<'static>> = StaticCell::new();
+
+        let mut otg_cfg = usb::Config::default();
+        // The DISC1 USER port doesn't wire VBUS sense to the MCU; assume the cable is present.
+        otg_cfg.vbus_detection = false;
+        let driver =
+            usb::Driver::new_fs(p.USB_OTG_HS, UsbIrqs, p.PB15, p.PB14, EP_OUT.init([0; 256]), otg_cfg);
+
+        // Device descriptor: a generic CDC-ACM serial device (pid.codes test VID/PID).
+        let mut dev_cfg = embassy_usb::Config::new(0x16c0, 0x27dd);
+        dev_cfg.manufacturer = Some("OpenBikeComputer");
+        dev_cfg.product = Some("OBC debug sensors");
+        dev_cfg.serial_number = Some("obc-f429");
+        dev_cfg.max_power = 100;
+        dev_cfg.max_packet_size_0 = 64;
+
+        let mut builder = embassy_usb::Builder::new(
+            driver,
+            dev_cfg,
+            CONFIG_DESC.init([0; 256]),
+            BOS_DESC.init([0; 32]),
+            &mut [], // no Microsoft OS descriptors
+            CONTROL_BUF.init([0; 128]),
+        );
+        let class = CdcAcmClass::new(&mut builder, STATE.init(State::new()), 64);
+        let (tx, rx) = class.split();
+        spawner.spawn(defmt::unwrap!(usb_device_task(builder.build())));
+        spawner.spawn(defmt::unwrap!(usb_rx_task(rx)));
+        spawner.spawn(defmt::unwrap!(usb_tx_task(tx)));
+        defmt::info!("USB-CDC debug sensors up on OTG_HS (USER port, PB14/PB15)");
+    }
+    #[cfg(not(feature = "debug-usb"))]
+    let _ = spawner;
 
     let mut green = Output::new(p.PG13, Level::High, Speed::Low);
     let _red = Output::new(p.PG14, Level::Low, Speed::Low);
@@ -987,9 +1141,20 @@ async fn main(_spawner: Spawner) {
             }
         }
 
-        // Stand-in moving GPS (until #38's USB feed) so a ride is real: a slow square loop near
-        // the map centre, re-centred on the route start when a route loads.
+        // The wall clock the loop's `now` reads (and, without `debug-usb`, the SynthLocation
+        // stand-in). Kept regardless of which sensor source is wired below.
         let start = Instant::now();
+        // Sensor sources. Default (`debug-usb`): the host-streamed GPS / altimeter / compass
+        // (issue #38), parsed by the USB tasks into obc-platform's signals — these ZST handles
+        // just `try_take` from them. Fallback (`debug-usb` off): the SynthLocation square-loop,
+        // with no altimeter/compass. Same `Sensors` either way, so the app can't tell.
+        #[cfg(feature = "debug-usb")]
+        let (mut debug_loc, mut debug_alt, mut debug_compass) = (
+            obc_platform::debug_usb::DebugLocation,
+            obc_platform::debug_usb::DebugAltimeter,
+            obc_platform::debug_usb::DebugCompass,
+        );
+        #[cfg(not(feature = "debug-usb"))]
         let mut synth = SynthLocation::new(cam_lon, cam_lat, start);
 
         // Double buffering (the map plane / Layer 1): the LTDC scans the *front* while the app
@@ -1066,7 +1231,15 @@ async fn main(_spawner: Spawner) {
         // Map performs **zero** map renders (no more blind 1 s heartbeat). The hold-bulge overlay
         // (Layer 2) repaints independently of the map: on the two-plane build that happens on the
         // high-priority plane above; on the single-executor build it repaints here on `dirty.overlay`.
+        // The previously-active route, to re-centre the SynthLocation loop when it changes (the
+        // USB feed needs no re-centre — it streams absolute positions, so this is `debug-usb`-off only).
+        #[cfg(not(feature = "debug-usb"))]
         let mut prev_route: Option<usize> = None;
+        // Telemetry throttle + the last map frame's render stats, published host-ward (issue #38).
+        #[cfg(feature = "debug-usb")]
+        let mut last_telem_ms: u32 = 0;
+        #[cfg(feature = "debug-usb")]
+        let mut last_telem = obc_platform::debug_usb::Telemetry::default();
         // The active route's parsed chunk index, cached across frames (issue #44). `index_route`
         // is the route it belongs to; a mismatch triggers one rebuild off the open file, so a
         // per-frame redraw streams geometry without re-walking the index off the SD card.
@@ -1087,16 +1260,24 @@ async fn main(_spawner: Spawner) {
                 }
                 app.advance_animations(InputClock(now));
             }
-            // Single-executor: recognise + apply + animate inline, the cooperative path.
+            // Single-executor: recognise + apply + animate inline, the cooperative path. Physical
+            // buttons + (with `debug-usb`) the USB-injected events, chained into one pass.
             #[cfg(feature = "single-executor")]
             {
                 buttons.update(now);
-                app.handle_input(InputClock(now), &mut buttons);
+                #[cfg(feature = "debug-usb")]
+                let mut usb_in = obc_platform::debug_usb::DebugInput;
+                #[cfg(not(feature = "debug-usb"))]
+                let mut usb_in = NullInput;
+                let mut input = ChainedInput { a: &mut buttons, b: &mut usb_in };
+                app.handle_input(InputClock(now), &mut input);
             }
 
-            // Re-centre the synthetic GPS onto a freshly-loaded route's start so Follow doesn't
-            // yank the camera off it.
             let active = app.activity.active_route;
+            // Re-centre the synthetic GPS onto a freshly-loaded route's start so Follow doesn't
+            // yank the camera off it. Only the `debug-usb`-off fallback: the USB feed streams
+            // absolute positions, so it needs no re-centre.
+            #[cfg(not(feature = "debug-usb"))]
             if active != prev_route {
                 if let Some(r) = active.and_then(|i| app.routes().get(i)) {
                     synth.recenter(r.start_lon, r.start_lat);
@@ -1166,9 +1347,23 @@ async fn main(_spawner: Spawner) {
             let mut tsink = storage.as_ref().and_then(|s| s.track_sink());
             let track_dyn = tsink.as_mut().map(|t| t as &mut dyn TrackSink);
 
+            // Default: the USB-streamed GPS + altimeter + compass (issue #38). Fallback: the
+            // SynthLocation square loop, no altimeter/compass. `track_dyn` is consumed either way.
+            #[cfg(feature = "debug-usb")]
             app.tick(
                 RideClock(now),
-                Sensors { loc: &mut synth, altimeter: None, track: track_dyn },
+                Sensors {
+                    loc: &mut debug_loc,
+                    altimeter: Some(&mut debug_alt),
+                    compass: Some(&mut debug_compass),
+                    track: track_dyn,
+                },
+                route.as_ref(),
+            );
+            #[cfg(not(feature = "debug-usb"))]
+            app.tick(
+                RideClock(now),
+                Sensors { loc: &mut synth, altimeter: None, compass: None, track: track_dyn },
                 route.as_ref(),
             );
 
@@ -1219,6 +1414,23 @@ async fn main(_spawner: Spawner) {
                         color_fn,
                     );
                     let render_us = t0.elapsed().as_micros();
+                    // Snapshot this frame's render stats for the host telemetry line (the same
+                    // numbers as the RTT `map frame` log / the sim's Render Stats panel).
+                    #[cfg(feature = "debug-usb")]
+                    {
+                        last_telem = obc_platform::debug_usb::Telemetry {
+                            frame_us: render_us as u32,
+                            lod: stats.lod as u8,
+                            feat_drawn: stats.features_drawn as u32,
+                            feat_tried: stats.features_tried as u32,
+                            feat_dropped: stats.features_dropped as u32,
+                            chunks: stats.chunks_visited as u32,
+                            cache_hits: stats.map_chunk_hits,
+                            cache_misses: stats.map_chunk_misses,
+                            sd_reads: stats.map_sd_reads,
+                            bytes_read: stats.map_bytes_read,
+                        };
+                    }
 
                     // Flip to the freshly-drawn buffer at the next vblank. Swap front/back roles
                     // only once the reload is confirmed landed; on a timeout the LTDC is still
@@ -1292,6 +1504,16 @@ async fn main(_spawner: Spawner) {
                     overlay_us,
                     app.overlay_active()
                 );
+            }
+
+            // Publish render-stats telemetry host-ward at ~2 Hz (issue #38): the last map frame's
+            // numbers (render time / LOD / features / chunks / map-cache + SD), the same data the
+            // RTT `map frame` log carries. Throttled here (not in the USB task) so the link never
+            // floods and the device never stalls on it.
+            #[cfg(feature = "debug-usb")]
+            if now.wrapping_sub(last_telem_ms) >= 500 {
+                last_telem_ms = now;
+                obc_platform::debug_usb::set_telemetry(last_telem);
             }
 
             Timer::after_millis(LOOP_MS).await;

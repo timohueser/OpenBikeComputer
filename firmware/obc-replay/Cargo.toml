@@ -1,0 +1,11 @@
+[package]
+name = "obc-replay"
+version = "0.1.0"
+edition = "2021"
+description = "Host-only GPX replay core: parse a recorded track and play it back as the obc-app LocationSource / AltimeterSource a real GPS + barometer would emit. Shared by the desktop simulator (obc-sim) and the USB feeder (obc-usb-host) so both drive the device from real rides via one tested code path."
+
+[dependencies]
+# The HAL the player + barometer implement (`Fix`, `LocationSource`, `AltimeterSource`),
+# so a replayed track drops straight into `App::tick` exactly like a live sensor. obc-app
+# is no_std but builds for the host as part of this workspace.
+obc-app = { path = "../obc-app" }

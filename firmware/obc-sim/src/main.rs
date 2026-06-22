@@ -30,30 +30,26 @@ use std::time::Instant;
 
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
 use obc_app::{
-    App, AppState, Button, ButtonEvent, Fix, InputClock, InputEvent, InputSource, LocationSource,
-    RideClock, Sensors, TrackAction, TrackSink,
+    App, AppState, Button, ButtonEvent, CompassSource, Fix, InputClock, InputEvent, InputSource,
+    LocationSource, RideClock, Sensors, TrackAction, TrackSink,
 };
 use obc_reader::{rgb565_to_device64, rgb565_to_rgb888, MapCache, Reader, SliceSource};
 use obc_render::text::{draw_text, Font, TextAlign};
 
-mod baro;
 mod calib;
 mod device_input;
 mod framebuffer;
-mod gpx;
-mod gpx_player;
 mod gui;
 // `--palette` is a native-only standalone window (its own eframe::run_native); the
 // web build never uses it, so keep its native APIs out of the wasm compile.
 #[cfg(not(target_arch = "wasm32"))]
 mod palette;
 mod routes;
+mod sim_compass;
 mod sim_location;
 mod track;
-use baro::BaroSensor;
 use framebuffer::Framebuffer;
-use gpx::Track;
-use gpx_player::GpxPlayer;
+use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 use obc_route::{RouteIndex, RouteReader};
 use routes::RouteStore;
 use track::TrackStore;
@@ -336,16 +332,18 @@ fn replay_step<'s>(
     app: &mut App,
     player: &'s mut GpxPlayer,
     baro: &'s mut BaroSensor,
+    compass: Option<&'s mut dyn CompassSource>,
     dt: f64,
     route: Option<&RouteReader>,
     track: Option<&'s mut dyn TrackSink>,
 ) {
-    // The three sensor handles share one lifetime `'s` so the invariant `Sensors<'a>` can
-    // bind them together; the caller passes three disjoint borrows over a common scope.
+    // The sensor handles share one lifetime `'s` so the invariant `Sensors<'a>` can bind them
+    // together; the caller passes disjoint borrows over a common scope. The compass only matters
+    // while the track is stationary (the GPS course drops to `None`) — then it sets the heading.
     player.advance(dt);
     baro.feed(player.elevation_at(player.time()), player.time());
     let now_ms = (player.time() * 1000.0) as u32;
-    let sensors = Sensors { loc: player, altimeter: Some(baro), track };
+    let sensors = Sensors { loc: player, altimeter: Some(baro), compass, track };
     app.tick(RideClock(now_ms), sensors, route);
 }
 
@@ -640,7 +638,7 @@ fn main() {
             let mut t = 0.0;
             while t < replay_to {
                 reconcile_tracks(&mut app, &mut tracks);
-                replay_step(&mut app, p, &mut baro, step, route.as_ref(), tracks.sink());
+                replay_step(&mut app, p, &mut baro, None, step, route.as_ref(), tracks.sink());
                 t += step;
             }
         }

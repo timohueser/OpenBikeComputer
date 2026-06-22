@@ -9,6 +9,9 @@ obc-reader = { path = "../obc-reader" }
 obc-route = { path = "../obc-route" }
 obc-render = { path = "../obc-render" }
 obc-app = { path = "../obc-app" }
+# Shared host GPX replay (the GpxPlayer / BaroSensor the control panel drives) — the same
+# crate the USB feeder (obc-usb-host) uses, so a recorded ride plays back identically here.
+obc-replay = { path = "../obc-replay" }
 embedded-graphics = "0.8"
 # GUI host: the device-screen window + control panel. Pure-Rust window stack
 # (native) and a WebGL canvas (wasm) — the same eframe app drives both, so the

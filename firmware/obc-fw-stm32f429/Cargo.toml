@@ -11,7 +11,7 @@ description = "STM32F429I-DISC1 board firmware for the OpenBikeComputer hardware
 [workspace]
 
 [features]
-default = ["baked-tile"]
+default = ["baked-tile", "debug-usb"]
 
 # Boot the font/palette bring-up demo (the device analog of the simulator's
 # `--text-demo`) instead of the real app: draws the Terminus font ladder + the
@@ -33,6 +33,13 @@ baked-tile = []
 # preempting the map render. Off by default — the default build is the preemptive two-plane
 # architecture; this proves the `InputPlane`/`apply_gesture` seam composes back into one loop.
 single-executor = []
+
+# Stream fake GPS / altimeter / compass from a host over USB-CDC (issue #38): brings up the OTG
+# CDC-ACM device on the DISC1 USER port (PB14/PB15) and feeds `obc-platform`'s debug sources into
+# the app, replacing the `SynthLocation` stand-in. On by default so a plain flash is benchable from
+# a recorded ride; `--no-default-features --features baked-tile` compiles the fake sources out
+# (proving the seam to real drivers). Enables the protocol + sources in obc-platform.
+debug-usb = ["obc-platform/debug-usb", "dep:embassy-usb", "dep:embassy-futures", "dep:static_cell"]
 
 [dependencies]
 # The shared OBC stack (all no_std, no global allocator — heapless throughout).
@@ -65,6 +72,15 @@ embassy-time = { version = "0.5.1", features = ["defmt"] }
 # the map plane (issue #48). `CriticalSectionRawMutex` since the two ends run on different
 # executor priorities. Pinned to the 0.8.0 embassy-stm32 0.6.0 already resolves.
 embassy-sync = { version = "0.8.0", features = ["defmt"] }
+
+# USB-CDC fake-sensor link (issue #38, behind `debug-usb`). embassy-usb 0.6.0 is the version
+# whose `embassy-usb-driver` (^0.2.0) unifies with embassy-stm32 0.6.0's OTG `Driver`, and whose
+# embassy-sync (^0.8.0) matches the pin above — so the CDC `Builder`/`CdcAcmClass` accept the OTG
+# driver and share one sync crate. `embassy-futures` for `select` (RX vs TX on the split class);
+# `static-cell` for the 'static USB descriptor/EP buffers the device + class borrow.
+embassy-usb = { version = "0.6.0", features = ["defmt"], optional = true }
+embassy-futures = { version = "0.1", optional = true }
+static_cell = { version = "2", optional = true }
 
 # SDRAM chip driver: the IS42S16400J device + the SdramChip trait that
 # embassy_stm32::fmc's `sdram_*` constructors take. Same 0.4.0 embassy-stm32 uses.
