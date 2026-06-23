@@ -132,4 +132,35 @@ mod tests {
         assert_eq!(pixel(&fb, 0, 0), (0, 0, 0));
         assert_eq!(pixel(&fb, 239, 319), (255, 255, 255));
     }
+
+    /// Item 16 (no gaps "for any width/height", `draw_palette` ~31-32): the cells are tiled
+    /// by edge (`col * w / 8 .. (col+1) * w / 8`), which only tiles seamlessly if the edges
+    /// chain without gap or overlap — and that's only obvious when 8 divides w/h. On a size
+    /// that is *not* a multiple of 8 (37×53), check EVERY pixel equals the color its column's
+    /// cell predicts: a gap would leave a pixel the wrong color (or untouched black where a
+    /// non-black cell was due), and an overlap would paint a cell's edge with its neighbor's.
+    #[test]
+    fn tiles_without_gaps_on_non_multiple_of_8_dimensions() {
+        let (w, h) = (37u32, 53u32);
+        let mut fb = Framebuffer::new(w, h);
+        draw_palette(&mut fb);
+
+        // Recompute the expected (red,green,blue) for the cell a given pixel falls in, by
+        // inverting the same edge math draw_palette uses.
+        let cell_color = |x: u32, y: u32| -> (u8, u8, u8) {
+            // Find the col whose [col*w/8, (col+1)*w/8) span contains x (likewise row/y).
+            let col = (0..8).find(|&c| x >= c * w / 8 && x < (c + 1) * w / 8).expect("x in some column");
+            let row = (0..8).find(|&r| y >= r * h / 8 && y < (r + 1) * h / 8).expect("y in some row");
+            let red = LEVELS[(row / 4 * 2 + col / 4) as usize];
+            let green = LEVELS[(row % 4) as usize];
+            let blue = LEVELS[(col % 4) as usize];
+            (red, green, blue)
+        };
+
+        for y in 0..h {
+            for x in 0..w {
+                assert_eq!(pixel(&fb, x, y), cell_color(x, y), "gap/overlap at ({x},{y}) on {w}x{h}");
+            }
+        }
+    }
 }
