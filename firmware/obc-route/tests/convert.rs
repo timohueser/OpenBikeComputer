@@ -75,3 +75,163 @@ fn empty_gpx_is_an_error() {
     let mut sink = VecSink::default();
     assert_eq!(gpx_to_obcr(&src, "x", &mut sink), Err(Error::Empty));
 }
+
+/// Build GPX text from `(lat_deg, lon_deg, ele_m?)` track points; `None` omits `<ele>`
+/// entirely (a planner export with no elevation). The `const &str` fixtures above can't
+/// express either an omitted `<ele>` or computed coordinates, which the decimation /
+/// elevation tests below need.
+fn gpx(pts: &[(f64, f64, Option<f64>)]) -> String {
+    let mut s = String::from("<?xml version=\"1.0\"?><gpx><trk><trkseg>");
+    for &(lat, lon, ele) in pts {
+        match ele {
+            Some(e) => s.push_str(&format!("<trkpt lat=\"{lat:.6}\" lon=\"{lon:.6}\"><ele>{e}</ele></trkpt>")),
+            None => s.push_str(&format!("<trkpt lat=\"{lat:.6}\" lon=\"{lon:.6}\"/>")),
+        }
+    }
+    s.push_str("</trkseg></trk></gpx>");
+    s
+}
+
+/// Item 8 (decimation tolerance) — **a vertex *just inside* `EPSILON_M` is dropped.** The
+/// existing `STRAIGHT` fixture is perfectly collinear, so the perpendicular-distance test
+/// (`convert.rs`, `EPSILON_M=1.0`) never actually fires on a non-zero deviation. Here the
+/// middle point bulges 0.8 m off the A→C chord — inside the 1 m tolerance — so the decimator
+/// must drop it, leaving just the two endpoints. This is the branch that decides whether a
+/// near-straight road keeps spurious wobble vertices (storage) or smooths them.
+#[test]
+fn vertex_just_inside_epsilon_is_decimated() {
+    let dlat = 0.8 / 111_320.0; // ~0.8 m north — inside EPSILON_M = 1.0 m
+    let bytes = convert(
+        "Nearly Straight",
+        &gpx(&[(48.0, 7.800, Some(100.0)), (48.0 + dlat, 7.801, Some(100.0)), (48.0, 7.802, Some(100.0))]),
+    );
+    let src = SliceSource(&bytes);
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
+
+    assert_eq!(r.point_count, 2, "a 0.8 m bulge is within tolerance → the middle vertex is dropped");
+    let pts = decode(&r, 0);
+    assert_eq!(
+        pts,
+        vec![
+            RoutePoint { lon: 7_800_000, lat: 48_000_000, ele: 100 },
+            RoutePoint { lon: 7_802_000, lat: 48_000_000, ele: 100 },
+        ]
+    );
+}
+
+/// Item 8 (decimation tolerance) — **a vertex *just outside* `EPSILON_M` is kept.** The
+/// companion to the test above: bump the same middle point to 1.5 m off the chord — past the
+/// 1 m tolerance — and the decimator must keep all three, preserving the bend. Together the
+/// two pin both sides of the `perp > EPSILON_M` decision the collinear fixture never reached.
+#[test]
+fn vertex_just_outside_epsilon_is_kept() {
+    let dlat = 1.5 / 111_320.0; // ~1.5 m north — outside EPSILON_M = 1.0 m
+    let bytes = convert(
+        "Bent",
+        &gpx(&[(48.0, 7.800, Some(100.0)), (48.0 + dlat, 7.801, Some(100.0)), (48.0, 7.802, Some(100.0))]),
+    );
+    let src = SliceSource(&bytes);
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
+
+    assert_eq!(r.point_count, 3, "a 1.5 m deviation exceeds tolerance → the bend vertex is kept");
+    let pts = decode(&r, 0);
+    // The kept middle vertex: lon 7_801_000, lat rounded from 48.0 + 1.5/111320 deg = 48_000_013.
+    assert_eq!(pts[1], RoutePoint { lon: 7_801_000, lat: 48_000_013, ele: 100 });
+}
+
+/// Item 8 (densification / `MAX_SPAN_M`) — **a long collinear run keeps an intermediate vertex
+/// so deltas stay inside `int16`.** `MAX_SPAN_M=1200` forces a kept vertex at least that often,
+/// which also bounds the stored `(Δlon, Δlat)` to the `int16` range. Three collinear points
+/// 0.03° apart (~2234 m/segment) would, if the middle were dropped as collinear, leave a single
+/// segment whose Δ overflows `int16`; the span rule keeps the middle, so the decoded geometry
+/// round-trips exactly. Guards against the silent geometry corruption item 8 warns about.
+#[test]
+fn long_collinear_run_keeps_an_intermediate_vertex() {
+    let bytes = convert(
+        "Long Straight",
+        &gpx(&[(48.0, 7.80, Some(100.0)), (48.0, 7.83, Some(100.0)), (48.0, 7.86, Some(100.0))]),
+    );
+    let src = SliceSource(&bytes);
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
+
+    // The middle point survives despite being collinear — kept by the MAX_SPAN_M rule.
+    assert_eq!(r.point_count, 3, "the span rule must keep the middle of a ~4.5 km collinear run");
+    let pts = decode(&r, 0);
+    // Decoded geometry round-trips exactly — no int16 wrap.
+    assert_eq!(
+        pts,
+        vec![
+            RoutePoint { lon: 7_800_000, lat: 48_000_000, ele: 100 },
+            RoutePoint { lon: 7_830_000, lat: 48_000_000, ele: 100 },
+            RoutePoint { lon: 7_860_000, lat: 48_000_000, ele: 100 },
+        ]
+    );
+}
+
+/// Item 8 (known gap) — **DOCUMENTS** the one geometry the densifier can't protect: a *single*
+/// segment whose Δ overflows `int16`, with **no intermediate raw point** to trigger the span
+/// rule. `MAX_SPAN_M` only force-keeps a *pending* candidate between two kept points; a 2-point
+/// GPX has no such candidate, so a 0.04° (~3.3 km) lon step is stored as `40000 as i16`, which
+/// wraps to `-25536` and decodes to a corrupt position. This test PINS the current (buggy)
+/// behaviour so a future fix is a deliberate, visible change — it is **not** an endorsement.
+/// See the PR notes (flagged for issue #94 / epic #90); a real >3.6 km single segment is rare
+/// in a decimated route but reachable from a sparsely-sampled planner GPX.
+#[test]
+fn single_oversized_segment_overflows_int16_today() {
+    let bytes = convert("Overflow", &gpx(&[(48.0, 7.80, Some(100.0)), (48.0, 7.84, Some(100.0))]));
+    let src = SliceSource(&bytes);
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
+
+    assert_eq!(r.point_count, 2, "two raw points → no intermediate candidate for the span rule");
+    let pts = decode(&r, 0);
+    assert_eq!(pts[0].lon, 7_800_000, "the anchor is stored absolutely and is correct");
+    // The endpoint's Δlon (40_000 µdeg) wraps as i16: 40_000 - 65_536 = -25_536 → 7_774_464.
+    // CORRUPT — should be 7_840_000. Pinned so a future densification fix is intentional.
+    assert_eq!(pts[1].lon, 7_774_464, "DOCUMENTED int16 overflow: Δlon wraps (want 7_840_000)");
+}
+
+/// Item 10 (convert: carry-last-known elevation) — **a point missing `<ele>` carries the last
+/// known height** (`convert.rs`, the `if let Some(e) = p.ele` carry). Every existing fixture
+/// has `<ele>` on every point, so this path — common when a planner drops elevation partway —
+/// was untested. Here points 1–2 climb 200→250 m and point 3 omits `<ele>`: it must inherit
+/// 250 m (not reset to 0), so the stored geometry and the ascent stat stay sane.
+#[test]
+fn missing_elevation_carries_last_known() {
+    let dlat = 5.0 / 111_320.0; // zigzag north so all three vertices survive decimation
+    let bytes = convert(
+        "Partial Ele",
+        &gpx(&[(48.0, 7.800, Some(200.0)), (48.0 + dlat, 7.801, Some(250.0)), (48.0, 7.802, None)]),
+    );
+    let src = SliceSource(&bytes);
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
+
+    assert_eq!(r.point_count, 3, "the zigzag keeps all three vertices");
+    assert_eq!((r.min_ele_m, r.max_ele_m), (200, 250), "min/max ignore the carried (not measured) point");
+    assert_eq!(r.total_ascent_m, 50, "the 200→250 climb; the carried point adds no further ascent");
+    let pts = decode(&r, 0);
+    assert_eq!(pts[2].ele, 250, "the <ele>-less third point carries the last known 250 m, not 0");
+}
+
+/// Item 10 (convert: no elevation at all) — **a route with no `<ele>` anywhere** (a bare
+/// planner GPX). The carry starts at 0 and never updates, and `min_ele > max_ele` after the
+/// sweep, so the converter falls back to a 0..0 range. Distance/geometry are still computed
+/// from the positions; only elevation is flat zero. Pins that a no-elevation route converts
+/// cleanly rather than producing garbage ele extremes.
+#[test]
+fn no_elevation_anywhere_yields_zero_range() {
+    let bytes = convert("No Ele", &gpx(&[(48.0, 7.80, None), (48.005, 7.80, None), (48.01, 7.80, None)]));
+    let src = SliceSource(&bytes);
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
+
+    assert_eq!((r.min_ele_m, r.max_ele_m), (0, 0), "no <ele> → the converter's 0..0 fallback");
+    assert_eq!((r.total_ascent_m, r.total_descent_m), (0, 0));
+    assert!(r.total_distance_m > 1000, "distance is still measured from positions, got {}", r.total_distance_m);
+    let pts = decode(&r, 0);
+    assert!(pts.iter().all(|p| p.ele == 0), "every stored elevation is 0");
+}
