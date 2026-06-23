@@ -6,6 +6,12 @@ __pycache__/
 !firmware/obc-fw-stm32f429/tiles/*.obcm
 *.obcr
 *.osm.pbf
+# ...except the 735-byte hand-authored fixture the obc-pack ingest test reads
+# (firmware/obc-pack `ingest::tests::tiny_truth_table`). It must ship in-repo so the
+# test actually runs in CI — otherwise it silently reported PASS without ever running
+# (issue #95). Source of truth is the committed tiny/tiny.osm; rebuild via
+# packer/tests/corpus/build_corpus.sh.
+!packer/tests/corpus/data/tiny.osm.pbf
 # The simulator's default route + track stores (its "SD card") — runtime artifacts.
 firmware/routes/
 firmware/tracks/

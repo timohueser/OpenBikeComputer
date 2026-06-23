@@ -301,4 +301,27 @@ mod tests {
         let text = format!("{{\"features\": {{}}, \"lods\": [{}]}}", entries.join(","));
         assert!(Config::parse(&text).is_err(), "more LODs than the reader supports must error (#5)");
     }
+
+    /// Style IDs are a `u8` capped at `MAX_STYLE_ID` (254): id 0 is unused and 0xFF
+    /// is the end-of-features chunk sentinel. A config defining >254 styles must error
+    /// (config.rs ~78), not wrap the 255th id past the `u8` and collide with a
+    /// sentinel/lower style. Untested before (issue #95, item 10). The boundary: 254
+    /// styles is the last legal count, 255 is one too many.
+    #[test]
+    fn too_many_styles_is_rejected() {
+        // Build a `features` object with `n` distinct (key, value) pairs, each a
+        // single tag_key with one value, so the 1-based counter reaches `n`.
+        let make = |n: usize| {
+            let pairs: Vec<String> =
+                (0..n).map(|i| format!("\"k{i}\": {{\"v\": {{\"color\": \"0x0001\"}}}}")).collect();
+            format!("{{\"features\": {{{}}}}}", pairs.join(","))
+        };
+
+        // 254 styles is exactly the cap ⇒ accepted.
+        let ok = Config::parse(&make(254)).expect("254 styles is the legal maximum");
+        assert_eq!(ok.styles().len(), 254, "all 254 styles parsed");
+
+        // 255 styles overflows the table ⇒ hard error, not a silent u8 wrap.
+        assert!(Config::parse(&make(255)).is_err(), "a 255th style must error (config.rs ~78), not wrap past u8");
+    }
 }
