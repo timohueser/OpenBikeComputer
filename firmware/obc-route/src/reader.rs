@@ -6,6 +6,8 @@
 //! `&dyn ByteSource`), so it can be threaded through the app/render layers without
 //! making them generic.
 
+use core::cell::RefCell;
+
 use heapless::{String, Vec};
 
 use crate::byte_io::{ByteSource, Error};
@@ -123,6 +125,11 @@ pub struct RouteIndex {
 pub struct RouteReader<'a> {
     src: &'a dyn ByteSource,
     idx: &'a RouteIndex,
+    /// Optional resident decoded-chunk cache (issue #98 P4). When present,
+    /// [`decode_chunk`](Self::decode_chunk) serves an unchanged route from RAM instead of
+    /// re-reading its geometry from the source every redraw / matcher fix. `None` keeps the
+    /// original stream-every-call behaviour (the host store is fast, so the sim/tests skip it).
+    cache: Option<&'a RouteCache>,
 }
 
 impl RouteIndex {
@@ -248,12 +255,25 @@ impl<'a> RouteReader<'a> {
     /// [`decode_chunk`](Self::decode_chunk) can pull chunks on demand. Build the index once
     /// per route and call this per frame (issue #44).
     pub fn new(idx: &'a RouteIndex, src: &'a dyn ByteSource) -> RouteReader<'a> {
-        RouteReader { src, idx }
+        RouteReader { src, idx, cache: None }
+    }
+
+    /// Like [`new`](Self::new), but back [`decode_chunk`](Self::decode_chunk) with a resident
+    /// [`RouteCache`] (issue #98 P4). The cache is caller-owned and lives across frames (the
+    /// device places one in SDRAM, like the map's `MapCache`), so a redraw of an unchanged route
+    /// — and the matcher's per-fix chunk decode — hit RAM instead of re-reading the geometry from
+    /// the SD card on every frame. The cache keys slots by chunk index only, so the caller must
+    /// [`RouteCache::clear`] it whenever the active route changes.
+    pub fn new_cached(idx: &'a RouteIndex, src: &'a dyn ByteSource, cache: &'a RouteCache) -> RouteReader<'a> {
+        RouteReader { src, idx, cache: Some(cache) }
     }
 
     /// Decode chunk `k` into `out` (cleared first): its anchor followed by each
     /// delta-stepped point. The chunk's last point equals chunk `k+1`'s anchor (seam
     /// sharing), so adjacent chunks stitch without a gap.
+    ///
+    /// With a [`RouteCache`] attached ([`new_cached`](Self::new_cached)) a chunk decoded earlier
+    /// is served from RAM; otherwise its geometry is read from the source every call.
     pub fn decode_chunk(&self, k: usize, out: &mut Vec<RoutePoint, MAX_POINTS_PER_CHUNK>) -> Result<(), Error> {
         out.clear();
         let m = self.idx.index.get(k).ok_or(Error::BadOffset)?;
@@ -261,27 +281,194 @@ impl<'a> RouteReader<'a> {
         if n == 0 {
             return Ok(());
         }
-        let _ = out.push(RoutePoint { lon: m.anchor_lon, lat: m.anchor_lat, ele: m.anchor_ele });
-
-        // Remaining n-1 points are fixed 6-byte records; read the chunk in one go.
-        let want = (n - 1) * 6;
-        let mut buf = [0u8; (MAX_POINTS_PER_CHUNK - 1) * 6];
-        let bytes = buf.get_mut(..want).ok_or(Error::TooLarge)?;
-        if want > 0 {
-            self.src.read_at(m.byte_offset, bytes)?;
+        // Cache fast path: a hit fills `out` with no SD read; a miss decodes from the source and
+        // stores the result, so the next redraw of the same chunk is free.
+        if let Some(cache) = self.cache {
+            if cache.get(k, out) {
+                return Ok(());
+            }
+            decode_chunk_from(self.src, m, n, out)?;
+            cache.put(k, out);
+            return Ok(());
         }
-
-        let (mut lon, mut lat) = (m.anchor_lon, m.anchor_lat);
-        let mut o = 0;
-        for _ in 1..n {
-            lon += rd_i16(bytes, o) as i32;
-            lat += rd_i16(bytes, o + 2) as i32;
-            let ele = rd_i16(bytes, o + 4);
-            o += 6;
-            let _ = out.push(RoutePoint { lon, lat, ele });
-        }
-        Ok(())
+        decode_chunk_from(self.src, m, n, out)
     }
+}
+
+/// Decode chunk `m` (its `n` points) from `src` into the already-cleared `out`: the anchor, then
+/// each delta-stepped point. Factored out of [`RouteReader::decode_chunk`] so both the cached and
+/// uncached paths share the one decoder (the cache only saves the read + this work, never changes
+/// the bytes produced).
+fn decode_chunk_from(
+    src: &dyn ByteSource,
+    m: &ChunkMeta,
+    n: usize,
+    out: &mut Vec<RoutePoint, MAX_POINTS_PER_CHUNK>,
+) -> Result<(), Error> {
+    let _ = out.push(RoutePoint { lon: m.anchor_lon, lat: m.anchor_lat, ele: m.anchor_ele });
+
+    // Remaining n-1 points are fixed 6-byte records; read the chunk in one go.
+    let want = (n - 1) * 6;
+    let mut buf = [0u8; (MAX_POINTS_PER_CHUNK - 1) * 6];
+    let bytes = buf.get_mut(..want).ok_or(Error::TooLarge)?;
+    if want > 0 {
+        src.read_at(m.byte_offset, bytes)?;
+    }
+
+    let (mut lon, mut lat) = (m.anchor_lon, m.anchor_lat);
+    let mut o = 0;
+    for _ in 1..n {
+        lon += rd_i16(bytes, o) as i32;
+        lat += rd_i16(bytes, o + 2) as i32;
+        let ele = rd_i16(bytes, o + 4);
+        o += 6;
+        let _ = out.push(RoutePoint { lon, lat, ele });
+    }
+    Ok(())
+}
+
+/// Resident decoded-route-chunk cache slots. A route is at most [`MAX_ROUTE_CHUNKS`] chunks, but
+/// real routes are a handful and only the chunks crossing the view are ever decoded, so a small
+/// LRU holds a frame's working set; sized to also absorb a wide zoomed-out view of a winding
+/// route. The win is per-redraw, not per-route — see [`RouteCache`].
+const ROUTE_CHUNK_SLOTS: usize = 32;
+
+/// One cache slot: a decoded chunk's points, keyed by chunk index, with LRU recency.
+struct RouteSlot {
+    valid: bool,
+    key: u32,
+    used: u32,
+    pts: Vec<RoutePoint, MAX_POINTS_PER_CHUNK>,
+}
+
+/// A small resident cache of **decoded** route-geometry chunks — the route analogue of
+/// `obc_reader::MapCache`. [`RouteReader::decode_chunk`] re-reads a chunk's geometry from the
+/// byte source on every call, so without a cache a per-frame map redraw (and the matcher's
+/// per-fix decode) re-pulls the same visible chunks from the SD card every time. Holding the
+/// decoded points resident turns those repeats into RAM copies (issue #98 P4).
+///
+/// Caller-owned and reused across frames: the device places one in SDRAM for the session (like
+/// `MapCache`) and pairs it with the per-frame [`RouteReader`] via
+/// [`new_cached`](RouteReader::new_cached); the host just skips it. Slots are keyed by chunk
+/// index only (a route has its own source), so [`clear`](Self::clear) **must** be called when the
+/// active route changes, or a new route's chunk `k` would hit the old route's stale slot.
+///
+/// Wraps its state in a `RefCell` so a `&RouteCache` `decode_chunk` (an `&self` path) can fill it,
+/// mirroring `MapCache`; the borrow is scoped to a single get/put.
+pub struct RouteCache {
+    inner: RefCell<RouteCacheInner>,
+}
+
+struct RouteCacheInner {
+    tick: u32,
+    slots: [RouteSlot; ROUTE_CHUNK_SLOTS],
+    hits: u32,
+    misses: u32,
+}
+
+impl Default for RouteCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RouteCache {
+    /// A fresh, empty cache (~99 KB of zeroed slots). On the device, place it once in SDRAM (e.g.
+    /// `ptr::write`, like the `App` / `MapCache`) so it stays off the main stack.
+    pub fn new() -> Self {
+        RouteCache { inner: RefCell::new(RouteCacheInner::new()) }
+    }
+
+    /// Drop every resident slot (and zero the counters) — call on a route switch so the next
+    /// decode misses and refills from the new route's geometry. Cheap: only the `valid` flags +
+    /// counters are touched, not the point buffers.
+    pub fn clear(&self) {
+        let mut inner = self.inner.borrow_mut();
+        for s in &mut inner.slots {
+            s.valid = false;
+        }
+        inner.tick = 0;
+        inner.hits = 0;
+        inner.misses = 0;
+    }
+
+    /// Cumulative `(hits, misses)` since the last [`clear`](Self::clear) — for the device's RTT
+    /// route-cache log (the analogue of `MapCache`'s render-stats counters).
+    pub fn stats(&self) -> (u32, u32) {
+        let inner = self.inner.borrow();
+        (inner.hits, inner.misses)
+    }
+
+    /// If chunk `key` is resident, copy its points into `out` (cleared first), bump recency + the
+    /// hit counter, and return `true`; otherwise leave `out` untouched and return `false`.
+    fn get(&self, key: usize, out: &mut Vec<RoutePoint, MAX_POINTS_PER_CHUNK>) -> bool {
+        let mut inner = self.inner.borrow_mut();
+        let key = key as u32;
+        let Some(i) = inner.slots.iter().position(|s| s.valid && s.key == key) else {
+            return false;
+        };
+        inner.hits = inner.hits.saturating_add(1);
+        let t = inner.touch();
+        inner.slots[i].used = t;
+        out.clear();
+        let _ = out.extend_from_slice(&inner.slots[i].pts);
+        true
+    }
+
+    /// Store chunk `key`'s decoded `pts` into the LRU slot (evicting the least-recently-used) and
+    /// count the miss that prompted it.
+    fn put(&self, key: usize, pts: &[RoutePoint]) {
+        let mut inner = self.inner.borrow_mut();
+        inner.misses = inner.misses.saturating_add(1);
+        let i = route_lru(inner.slots.iter().map(|s| (!s.valid, s.used)));
+        let t = inner.touch();
+        let s = &mut inner.slots[i];
+        s.valid = true;
+        s.key = key as u32;
+        s.used = t;
+        s.pts.clear();
+        let _ = s.pts.extend_from_slice(pts);
+    }
+}
+
+impl RouteCacheInner {
+    fn new() -> Self {
+        // Zero-init the whole thing. All-zero is a valid `RouteCacheInner`: `valid: false`, the
+        // integer counters 0, and each `heapless::Vec` is `{ len: 0, uninit buffer }` — a valid
+        // empty vec whose backing is never read while empty. `zeroed()` lowers to a `memset`
+        // (`.bss`), whereas a struct literal zeroing the ~99 KB of point buffers would emit a
+        // `.rodata` const that is then `memcpy`'d — which overflowed flash on the MCU for the
+        // larger `MapCache`, so it uses the same trick.
+        //
+        // SAFETY: `RouteCacheInner` is inhabited and valid for the all-zero bit pattern — no
+        // references, no non-zero-discriminant enums, and its only `bool`s (`RouteSlot::valid`)
+        // are false at zero. The `MaybeUninit<RoutePoint>` backing of each `Vec` is valid for any
+        // bits and is not read while `len == 0`.
+        unsafe { core::mem::MaybeUninit::zeroed().assume_init() }
+    }
+
+    #[inline]
+    fn touch(&mut self) -> u32 {
+        self.tick = self.tick.wrapping_add(1);
+        self.tick
+    }
+}
+
+/// Pick a slot to (re)fill: the first empty slot, else the least-recently-used. Input is
+/// `(is_empty, used)` per slot in order. Mirrors `obc_reader`'s `lru`.
+fn route_lru(slots: impl Iterator<Item = (bool, u32)>) -> usize {
+    let mut best = 0usize;
+    let mut best_used = u32::MAX;
+    for (i, (empty, used)) in slots.enumerate() {
+        if empty {
+            return i;
+        }
+        if used < best_used {
+            best_used = used;
+            best = i;
+        }
+    }
+    best
 }
 
 /// Deref to the index so the summary fields and resident-only queries read straight through
