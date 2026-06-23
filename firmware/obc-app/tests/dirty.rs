@@ -8,54 +8,15 @@
 //! `take_dirty` resets the accumulator, so every test drains the construction-time frame
 //! first (the host's mandatory first paint) and then asserts about the *next* frame.
 
-use std::collections::VecDeque;
-
 use obc_app::{
-    App, AppState, Button, ButtonEvent, Dirty, Fix, InputClock, InputEvent, InputSource, LocationSource, RideClock,
-    RouteSummary, Sensors,
+    App, AppState, Button, Dirty, Fix, InputClock, InputEvent, LocationSource, RideClock, RouteSummary, Sensors,
 };
 use obc_reader::BBox;
 
-// --- scripted hardware -------------------------------------------------------
-
-/// One scripted raw input event per `poll` — drives [`App::handle_input`].
-struct Keys(VecDeque<InputEvent>);
-impl InputSource for Keys {
-    fn poll(&mut self) -> Option<InputEvent> {
-        self.0.pop_front()
-    }
-}
-fn keys(evs: &[InputEvent]) -> Keys {
-    Keys(evs.iter().copied().collect())
-}
-fn turn(n: i32) -> InputEvent {
-    InputEvent::Turn(n)
-}
-fn down(b: Button) -> InputEvent {
-    InputEvent::Button(ButtonEvent::Down(b))
-}
-fn up(b: Button) -> InputEvent {
-    InputEvent::Button(ButtonEvent::Up(b))
-}
-/// A tap (down then up within the hold threshold) → a `Press` (Encoder) or `Back` gesture.
-fn tap(b: Button) -> [InputEvent; 2] {
-    [down(b), up(b)]
-}
-
-/// A [`LocationSource`] that emits its fix exactly once, then `None` — the real
-/// one-fresh-fix-per-tick contract (no per-poll replay).
-struct OneFix(Option<Fix>);
-impl LocationSource for OneFix {
-    fn poll(&mut self) -> Option<Fix> {
-        self.0.take()
-    }
-}
-struct NoFix;
-impl LocationSource for NoFix {
-    fn poll(&mut self) -> Option<Fix> {
-        None
-    }
-}
+mod common;
+// `OnceFix` is the emit-the-fix-exactly-once source (the real one-fresh-fix-per-tick
+// contract); the scripted-hardware helpers and `NoFix` are shared too.
+use common::{down, keys, tap, turn, NoFix, OnceFix};
 
 const BERLIN: (i32, i32) = (52_520_000, 13_405_000); // (lat, lon) µdeg
 
@@ -129,12 +90,12 @@ fn a_camera_moving_fix_on_the_map_dirties_it_but_a_stationary_one_does_not() {
     let _ = app.take_dirty();
 
     // A fresh fix recenters the Follow camera → the map moved → dirty. No input this frame.
-    let mut loc = OneFix(Some(Fix::at(BERLIN.0, BERLIN.1)));
+    let mut loc = OnceFix(Some(Fix::at(BERLIN.0, BERLIN.1)));
     assert!(frame(&mut app, &mut loc, 0, &[]).map, "a fix that moves the camera dirties the map");
 
     // A second, *identical* fix moves nothing → the map stays clean, honouring "re-render only
     // on fixes that actually move the camera".
-    let mut same = OneFix(Some(Fix::at(BERLIN.0, BERLIN.1)));
+    let mut same = OnceFix(Some(Fix::at(BERLIN.0, BERLIN.1)));
     assert!(!frame(&mut app, &mut same, 1000, &[]).map, "a stationary fix does not redraw");
 }
 
@@ -147,7 +108,7 @@ fn fixes_do_not_redraw_the_home_screensaver() {
 
     for (i, lat) in [BERLIN.0, BERLIN.0 + 5_000, BERLIN.0 + 10_000].into_iter().enumerate() {
         let t = i as u32 * 1000;
-        let mut loc = OneFix(Some(Fix::at(lat, BERLIN.1))); // a genuinely moving fix
+        let mut loc = OnceFix(Some(Fix::at(lat, BERLIN.1))); // a genuinely moving fix
         assert!(!frame(&mut app, &mut loc, t, &[]).map, "a fix must not redraw static Home");
     }
 }

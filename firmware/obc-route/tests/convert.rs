@@ -1,39 +1,10 @@
 //! GPX → OBCR conversion tests: convert an in-memory GPX, read it back with the
 //! reader, and check the geometry round-trips and the stats are exact.
 
-use obc_route::{gpx_to_obcr, ByteSink, Error, RouteIndex, RoutePoint, RouteReader, SliceSource, MAX_POINTS_PER_CHUNK};
+use obc_route::{gpx_to_obcr, Error, RouteIndex, RoutePoint, RouteReader, SliceSource};
 
-/// A `ByteSink` over a growable `Vec` — the host's "write the whole file to RAM"
-/// backing (the device uses a FatFs-backed sink instead).
-#[derive(Default)]
-struct VecSink {
-    buf: Vec<u8>,
-}
-
-impl ByteSink for VecSink {
-    fn write(&mut self, b: &[u8]) -> Result<(), Error> {
-        self.buf.extend_from_slice(b);
-        Ok(())
-    }
-    fn patch_at(&mut self, off: u32, b: &[u8]) -> Result<(), Error> {
-        let o = off as usize;
-        self.buf[o..o + b.len()].copy_from_slice(b);
-        Ok(())
-    }
-}
-
-fn convert(name: &str, gpx: &str) -> Vec<u8> {
-    let src = SliceSource(gpx.as_bytes());
-    let mut sink = VecSink::default();
-    gpx_to_obcr(&src, name, &mut sink).unwrap();
-    sink.buf
-}
-
-fn decode(r: &RouteReader, k: usize) -> Vec<RoutePoint> {
-    let mut out = heapless::Vec::<_, MAX_POINTS_PER_CHUNK>::new();
-    r.decode_chunk(k, &mut out).unwrap();
-    out.to_vec()
-}
+mod common;
+use common::{convert, decode, VecSink};
 
 /// A straight, gently rolling eastward track. The four points are collinear, so the
 /// geometry decimates to its two endpoints — but the stats come from every raw point.
