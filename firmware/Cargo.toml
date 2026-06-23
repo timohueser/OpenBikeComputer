@@ -1,5 +1,5 @@
 [workspace]
-members = ["obc-reader", "obc-route", "obc-render", "obc-app", "obc-sim", "obc-pack", "obc-platform", "obc-replay", "obc-usb-host"]
+members = ["obc-reader", "obc-route", "obc-render", "obc-app", "obc-sim", "obc-pack", "obc-platform", "obc-replay", "obc-usb-host", "obcm-testkit"]
 # obc-fw-stm32f429 is a standalone board crate (own target + .cargo/config.toml,
 # own empty [workspace]); it is built on its own, not as part of this host workspace.
 exclude = ["obc-fw-stm32f429"]

@@ -4,19 +4,23 @@
 //! `obc-render/tests/priority.rs` (feed inputs, assert the outcome) and
 //! `obc-app/tests/marker.rs` (render into a tiny `DrawTarget`).
 
-use std::collections::VecDeque;
-
-use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
+use embedded_graphics::pixelcolor::Rgb888;
+use embedded_graphics::prelude::RgbColor; // for `Rgb888::r()` in the compositing snapshot
 use obc_app::activity::Activity;
 use obc_app::screen::{
     apply, Ctx, HomeScreen, MapScreen, MenuScreen, RideControl, RouteMenuScreen, RouteSwapScreen, Screen, Stack,
     Transition,
 };
 use obc_app::{
-    App, AppState, Button, ButtonEvent, CameraMode, Fix, Gesture, InputClock, InputEvent, InputSource, LocationSource,
-    Mode, PanAxis, RideClock, RouteSummary, Sensors, TrackAction,
+    App, AppState, Button, ButtonEvent, CameraMode, Fix, Gesture, InputClock, InputEvent, Mode, PanAxis, RideClock,
+    RouteSummary, Sensors, TrackAction,
 };
 use obc_reader::{rgb565_to_rgb888, BBox, MapCache, Reader, SliceSource};
+
+mod common;
+// `ReplayFix` is the always-the-same-fix source (the old `OneFix(Fix)` here, distinct
+// from `dirty.rs`'s emit-once source); `keys`/`NoFix`/`Buf`/`build_min_obcm` are shared.
+use common::{build_min_obcm, keys, Buf, NoFix, ReplayFix};
 
 /// A handle [`Ctx`] over freshly-made state/activity for a one-gesture test. Most
 /// screens ignore the catalog; the Route-menu tests pass their own via [`route_ctx`].
@@ -296,10 +300,10 @@ fn boot_flow_walks_home_to_route_menu_to_riding_map() {
 
 /// Feed a single encoder press (down+up within the threshold) to the app.
 fn press(app: &mut App) {
-    let mut s = Script(VecDeque::from(vec![
+    let mut s = keys(&[
         InputEvent::Button(ButtonEvent::Down(Button::Encoder)),
         InputEvent::Button(ButtonEvent::Up(Button::Encoder)),
-    ]));
+    ]);
     app.handle_input(InputClock(0), &mut s);
 }
 
@@ -339,22 +343,6 @@ fn apply_pushes_pops_replaces_and_returns_home() {
 // Render snapshot: the map, and Ride control composited over it.
 // ---------------------------------------------------------------------------
 
-/// One scripted raw input event per `poll` — drives [`App::handle_input`].
-struct Script(VecDeque<InputEvent>);
-impl InputSource for Script {
-    fn poll(&mut self) -> Option<InputEvent> {
-        self.0.pop_front()
-    }
-}
-
-/// A no-fix location source (the marker stays off so it can't confuse the snapshot).
-struct NoFix;
-impl LocationSource for NoFix {
-    fn poll(&mut self) -> Option<Fix> {
-        None
-    }
-}
-
 #[test]
 fn ride_control_composites_over_the_map() {
     let bytes = build_min_obcm(0xF800);
@@ -365,10 +353,10 @@ fn ride_control_composites_over_the_map() {
     let backdrop = map.get(60, 60);
 
     // A press (Down+Up within the threshold) pauses into Ride control.
-    let mut press = Script(VecDeque::from(vec![
+    let mut press = keys(&[
         InputEvent::Button(ButtonEvent::Down(Button::Encoder)),
         InputEvent::Button(ButtonEvent::Up(Button::Encoder)),
-    ]));
+    ]);
     app.handle_input(InputClock(0), &mut press);
     assert_eq!(app.mode(), Mode::Paused, "press paused the ride");
 
@@ -394,106 +382,13 @@ fn render(app: &mut App, bytes: &[u8]) -> Buf {
     buf
 }
 
-struct Buf {
-    w: i32,
-    h: i32,
-    px: Vec<Rgb888>,
-}
-impl Buf {
-    fn new(w: i32, h: i32) -> Self {
-        Buf { w, h, px: vec![Rgb888::BLACK; (w * h) as usize] }
-    }
-    fn get(&self, x: i32, y: i32) -> Rgb888 {
-        self.px[(y * self.w + x) as usize]
-    }
-    fn put(&mut self, x: i32, y: i32, c: Rgb888) {
-        if x >= 0 && y >= 0 && x < self.w && y < self.h {
-            self.px[(y * self.w + x) as usize] = c;
-        }
-    }
-}
-impl OriginDimensions for Buf {
-    fn size(&self) -> Size {
-        Size::new(self.w as u32, self.h as u32)
-    }
-}
-impl DrawTarget for Buf {
-    type Color = Rgb888;
-    type Error = core::convert::Infallible;
-    fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
-    where
-        I: IntoIterator<Item = Pixel<Self::Color>>,
-    {
-        for Pixel(p, c) in pixels {
-            self.put(p.x, p.y, c);
-        }
-        Ok(())
-    }
-    fn fill_solid(&mut self, area: &Rectangle, color: Self::Color) -> Result<(), Self::Error> {
-        let clip = area.intersection(&self.bounding_box());
-        if let Some(br) = clip.bottom_right() {
-            for y in clip.top_left.y..=br.y {
-                for x in clip.top_left.x..=br.x {
-                    self.put(x, y, color);
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-/// A minimal valid v5 file: one sea-backdrop style, one empty LOD leaf, no chunks.
-/// The map renders as a flat backdrop, so the only non-backdrop pixels come from a
-/// screen drawn on top. (Same builder as `marker.rs`.)
-fn build_min_obcm(marker: u16) -> Vec<u8> {
-    let style_off: u32 = 32;
-    let mut styles = vec![1u8];
-    styles.push(1);
-    styles.push(0);
-    styles.extend_from_slice(&0x001Fu16.to_le_bytes());
-    styles.push(1);
-    styles.push(0);
-
-    let lod_tab_off = style_off as usize + styles.len();
-    let index_off = lod_tab_off + 18;
-
-    let mut table = Vec::new();
-    table.extend_from_slice(&f32::INFINITY.to_le_bytes());
-    table.extend_from_slice(&(index_off as u32).to_le_bytes());
-    table.extend_from_slice(&1u32.to_le_bytes());
-    table.extend_from_slice(&16u16.to_le_bytes());
-    table.extend_from_slice(&0u32.to_le_bytes());
-
-    let index = 0x7FFF_FFFFu32.to_le_bytes();
-
-    let mut f = Vec::new();
-    f.extend_from_slice(b"OBCM");
-    f.push(5);
-    for v in [-1000i32, -1000, 1000, 1000] {
-        f.extend_from_slice(&v.to_le_bytes());
-    }
-    f.extend_from_slice(&style_off.to_le_bytes());
-    f.push(1);
-    f.extend_from_slice(&(lod_tab_off as u32).to_le_bytes());
-    f.extend_from_slice(&marker.to_le_bytes());
-    f.extend_from_slice(&styles);
-    f.extend_from_slice(&table);
-    f.extend_from_slice(&index);
-    f
-}
+// The recording `Buf` `DrawTarget` and the `build_min_obcm` fixture now live in the
+// shared `tests/common` module, imported above.
 
 // ---------------------------------------------------------------------------
 // Pan mode (a Map sub-mode driven by the shared `AppState::pan`): enter/exit,
 // the axis + orientation toggles, panning, and the camera freeze.
 // ---------------------------------------------------------------------------
-
-/// A location source that always returns the same fix (for the freeze test).
-struct OneFix(Fix);
-impl LocationSource for OneFix {
-    fn poll(&mut self) -> Option<Fix> {
-        Some(self.0)
-    }
-}
 
 /// `hold` on the Follow map enters pan: the camera detaches (Free) and a pan state
 /// appears — axis Vertical, orientation matching the map (here north-up).
@@ -514,7 +409,7 @@ fn map_hold_enters_pan_mode() {
 fn pan_freezes_camera_against_fixes() {
     let (mut st, _act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Riding));
     st.enter_pan();
-    st.update(&mut OneFix(Fix::at(5000, 7000)));
+    st.update(&mut ReplayFix(Some(Fix::at(5000, 7000))));
     assert_eq!((st.cam_lon, st.cam_lat), (0, 0), "the frozen camera ignores the fix");
     assert_eq!(st.user_fix.map(|f| (f.lon, f.lat)), Some((7000, 5000)), "but the fix is recorded");
 }

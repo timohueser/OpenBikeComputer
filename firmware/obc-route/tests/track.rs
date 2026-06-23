@@ -1,26 +1,10 @@
 //! Recorded-track tests: the fixed-record encode/decode roundtrip and the GPX export
 //! (coordinate formatting, `<trkseg>` splitting on `segment_start`, well-formedness).
 
-use obc_route::{
-    decode_record, encode_record, track_to_gpx, ByteSink, Error, SliceSource, TrackPoint, TRACK_RECORD_LEN,
-};
+use obc_route::{decode_record, encode_record, track_to_gpx, SliceSource, TrackPoint, TRACK_RECORD_LEN};
 
-/// A `ByteSink` over a growable `Vec` (mirrors the matcher/profile test backings).
-#[derive(Default)]
-struct VecSink {
-    buf: Vec<u8>,
-}
-impl ByteSink for VecSink {
-    fn write(&mut self, b: &[u8]) -> Result<(), Error> {
-        self.buf.extend_from_slice(b);
-        Ok(())
-    }
-    fn patch_at(&mut self, off: u32, b: &[u8]) -> Result<(), Error> {
-        let o = off as usize;
-        self.buf[o..o + b.len()].copy_from_slice(b);
-        Ok(())
-    }
-}
+mod common;
+use common::VecSink;
 
 #[test]
 fn record_roundtrip() {

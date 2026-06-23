@@ -9,8 +9,11 @@ use core::cell::Cell;
 
 use obc_route::{
     ByteSource, Error, RouteCache, RouteIndex, RoutePoint, RouteReader, RouteSummary, SliceSource, CHUNK_META_LEN,
-    HEADER_LEN, MAX_POINTS_PER_CHUNK,
+    HEADER_LEN,
 };
+
+mod common;
+use common::decode;
 
 /// A [`ByteSource`] that wraps a [`SliceSource`] and counts `read_at` calls, so a test can prove
 /// the [`RouteCache`] really skips the source on a hit.
@@ -141,12 +144,6 @@ fn two_chunk_route() -> Vec<u8> {
             },
         ],
     )
-}
-
-fn decode(r: &RouteReader, k: usize) -> Vec<RoutePoint> {
-    let mut out = heapless::Vec::<_, MAX_POINTS_PER_CHUNK>::new();
-    r.decode_chunk(k, &mut out).unwrap();
-    out.to_vec()
 }
 
 #[test]
