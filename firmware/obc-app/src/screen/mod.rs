@@ -25,7 +25,7 @@ use obc_reader::Reader;
 use obc_render::{
     rect,
     text::{Font, TextAlign},
-    Canvas, MapRenderer, RenderStats,
+    Canvas, Clock, MapRenderer, RenderStats,
 };
 use obc_route::{Profile, RouteReader};
 
@@ -145,6 +145,12 @@ pub struct Render<'a, 'd> {
     pub h: f32,
     pub now_ms: u32,
     pub hold_progress: f32,
+    /// Microsecond clock for the map render's per-stage timing (collect / sort / draw), passed
+    /// straight to [`MapRenderer::render_timed`] by the Map screen. Hosts that don't profile pass
+    /// [`NoopClock`](obc_render::NoopClock) (via [`App::render_map`]); the device passes its
+    /// `Instant`-based clock (via [`App::render_map_timed`]). Part of the strippable
+    /// render-instrumentation seam.
+    pub clock: &'a dyn Clock,
 }
 
 /// The on-device screens. Each variant owns its typed state and forwards the
