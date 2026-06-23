@@ -889,6 +889,31 @@ fn push_run(run: &mut Vec<Point, MAX_SCREEN_POINTS>, c1: Point) {
     let _ = run.push(c1);
 }
 
+/// Minimum turn — as `cos²θ`, with a sign guard — at which an *interior* run vertex earns a
+/// round-joint disc in [`flush_run`]. eg joins thick segments with a flat **bevel**, which
+/// departs from a true round joint by only `r·(1 − cos(θ/2))` at the outer corner (`r` = half
+/// the stroke width, `θ` = the turn off straight). For the thickest overlay we stroke — the
+/// route at weight 11, so `r = 5.5` — a 30° turn facets by just `5.5·(1 − cos 15°) ≈ 0.19 px`:
+/// subpixel, invisible. So a vertex bending less than 30° needs no disc; thinner strokes facet
+/// even less, so the same cut is safe for them. `cos² 30° = 0.75`.
+const JOINT_TURN_COS2: f32 = 0.75;
+
+/// Whether the polyline turns sharply enough at `b` (across `a → b → c`) to warrant a
+/// round-joint disc — i.e. the deviation from straight exceeds the [`JOINT_TURN_COS2`]
+/// threshold. A reversed/obtuse turn (non-positive dot) always qualifies; otherwise compare
+/// `cos²θ` against the threshold with the segment magnitudes folded in (no `sqrt`, no `acos`).
+#[inline]
+fn turn_is_sharp(a: Point, b: Point, c: Point) -> bool {
+    let (ux, uy) = ((b.x - a.x) as f32, (b.y - a.y) as f32);
+    let (vx, vy) = ((c.x - b.x) as f32, (c.y - b.y) as f32);
+    let dot = ux * vx + uy * vy;
+    if dot <= 0.0 {
+        return true; // ≥ 90° turn (or a degenerate spur): always disc it
+    }
+    // sharp ⇔ cosθ < cos θmax ⇔ dot² < cos²θmax · |u|²|v|²  (dot ≥ 0, so squaring keeps the sense)
+    dot * dot < JOINT_TURN_COS2 * (ux * ux + uy * uy) * (vx * vx + vy * vy)
+}
+
 /// Stroke the accumulated run with embedded-graphics' (properly jointed) thick `Polyline`,
 /// then clear it for the next run.
 fn flush_run<D>(target: &mut D, run: &mut Vec<Point, MAX_SCREEN_POINTS>, color: D::Color, weight: u32)
@@ -897,19 +922,33 @@ where
 {
     if run.len() >= 2 {
         let _ = Polyline::new(run).into_styled(PrimitiveStyle::with_stroke(color, weight)).draw(target);
-        // Round joints + caps. eg joins thick segments with a flat **bevel**, so a densely
-        // sampled curve renders as a fan of facets (the "beading" on thick lines). Filling a disc
-        // (⌀ = stroke width) at each vertex turns every joint into a smooth arc, keeping full shape
-        // detail (no decimation needed). Only thick lines need it (≤2 px don't visibly facet), and
-        // the disc at a shared chunk-seam vertex also closes the butt-cap gap between adjacent
-        // features.
+        // Round joints + caps. eg joins thick segments with a flat **bevel**, so a sharply bending
+        // curve renders as a fan of facets (the "beading" on thick lines). Filling a disc
+        // (⌀ = stroke width) at the corner turns that joint into a smooth arc, keeping full shape
+        // detail (no decimation needed). Only thick lines need it (≤2 px don't visibly facet).
+        //
+        // The disc is the overlay's dominant per-pixel cost (an 11×11 fill at weight 11), so it
+        // pays to draw only the discs that show: the two **run ends** always (they round the cap
+        // and, at a chunk seam, close the butt-cap gap to the next feature — each chunk strokes on
+        // its own), but an **interior** vertex only when the line actually bends sharply there
+        // ([`turn_is_sharp`]). That skips the gentle-curve vertices and `push_run`'s synthetic
+        // collinear subdivision hops, where eg's bevel already lands within a subpixel of the
+        // round joint — turning the disc count from O(vertices) into O(sharp corners).
         if weight > 2 {
             let r = (weight / 2) as i32;
-            for p in run.iter() {
+            let mut disc = |p: Point| {
                 let _ = Circle::new(Point::new(p.x - r, p.y - r), weight)
                     .into_styled(PrimitiveStyle::with_fill(color))
                     .draw(target);
+            };
+            let n = run.len();
+            disc(run[0]);
+            for i in 1..n - 1 {
+                if turn_is_sharp(run[i - 1], run[i], run[i + 1]) {
+                    disc(run[i]);
+                }
             }
+            disc(run[n - 1]);
         }
     }
     run.clear();
@@ -1261,7 +1300,7 @@ fn fill_polygon<D>(
 
 #[cfg(test)]
 mod tests {
-    use super::{aspect_for_lat, fill_polygon, simplify, walk_route_arrows, within_eps, MAX_CROSSINGS};
+    use super::{aspect_for_lat, fill_polygon, simplify, turn_is_sharp, walk_route_arrows, within_eps, MAX_CROSSINGS};
     use embedded_graphics::prelude::Point;
     use heapless::Vec;
     use obc_route::{ground_dist_m, RoutePoint};
@@ -1284,6 +1323,20 @@ mod tests {
         // Degenerate a == b falls back to the point distance |p − a|.
         assert!(within_eps(Point::new(0, 1), a, a, 1.5));
         assert!(!within_eps(Point::new(0, 2), a, a, 1.5));
+    }
+
+    #[test]
+    fn turn_is_sharp_discs_only_real_corners() {
+        let b = Point::new(10, 0);
+        // Collinear continuation (incl. push_run's subdivision hops): no disc.
+        assert!(!turn_is_sharp(Point::new(0, 0), b, Point::new(20, 0)));
+        // A gentle ~18° bend stays under the 30° threshold: still no disc.
+        assert!(!turn_is_sharp(Point::new(0, 0), b, Point::new(20, 3)));
+        // A 45° bend clears 30°: disc it.
+        assert!(turn_is_sharp(Point::new(0, 0), b, Point::new(20, 10)));
+        // A right-angle and a hairpin (non-positive dot) always disc.
+        assert!(turn_is_sharp(Point::new(0, 0), b, Point::new(10, 10)));
+        assert!(turn_is_sharp(Point::new(0, 0), b, Point::new(0, 1)));
     }
 
     #[test]
