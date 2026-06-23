@@ -175,17 +175,22 @@ impl<P: Pack> DrawTarget for RawFb<'_, P> {
 
     /// Fast path for the renderer's scanline fills (it calls this per polygon row and
     /// to clear, and the overlay bulge is rasterized as edge-perpendicular strips):
-    /// fill a clipped rectangle row-by-row instead of per-pixel.
+    /// fill a clipped rectangle one **contiguous row-slice** at a time. Each row is a
+    /// single `<[u16]>::fill`, so the inner loop carries no per-pixel bounds check and
+    /// the compiler can coalesce the stores (word-wide where aligned) instead of the
+    /// element-indexed `buf[row + x] = raw` it can't prove in-bounds — the polygon
+    /// scanline fill is the renderer's dominant draw cost (issue #98 P3).
     fn fill_solid(&mut self, area: &Rectangle, color: Self::Color) -> Result<(), Self::Error> {
         let clipped = area.intersection(&self.bounding_box());
         if let Some(br) = clipped.bottom_right() {
             let raw = P::pack(color);
             let w = self.width as usize;
+            // Clipped to `bounding_box` (origin 0,0): `0 <= x0 <= x1 < width` and
+            // `0 <= y <= height-1`, so `row + x0 ..= row + x1` is always in bounds.
+            let (x0, x1) = (clipped.top_left.x as usize, br.x as usize);
             for y in clipped.top_left.y..=br.y {
                 let row = y as usize * w;
-                for x in clipped.top_left.x as usize..=br.x as usize {
-                    self.buf[row + x] = raw;
-                }
+                self.buf[row + x0..=row + x1].fill(raw);
             }
         }
         Ok(())
