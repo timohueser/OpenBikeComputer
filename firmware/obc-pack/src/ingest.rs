@@ -265,10 +265,16 @@ mod tests {
     /// (1 water polygon WITH a hole) and R2's two forest outers → 10 features.
     #[test]
     fn tiny_truth_table() {
-        if !std::path::Path::new(TINY_PBF).exists() {
-            eprintln!("SKIP tiny_truth_table: {TINY_PBF} missing (run build_corpus.sh)");
-            return;
-        }
+        // The fixture now ships in-repo (committed past the `*.osm.pbf` ignore; source
+        // of truth is `tiny/tiny.osm`), so it must be present. The old guard did
+        // `eprintln! + return` on a missing file — which reported PASS without ever
+        // running, so CI (which never built the corpus) was green on a test that did
+        // nothing (issue #95). A missing fixture is now a hard failure, not a skip.
+        assert!(
+            std::path::Path::new(TINY_PBF).exists(),
+            "corpus fixture missing: {TINY_PBF}. It is committed; rebuild from tiny/tiny.osm via \
+             packer/tests/corpus/build_corpus.sh"
+        );
         let cfg = Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/config.json")).expect("config");
         let ing = ingest_osm(TINY_PBF, &cfg).expect("ingest");
 
@@ -305,5 +311,34 @@ mod tests {
         assert_eq!(n(12, true), 0, "no residential blob (closed-line-way fix)");
         // 5 polygons (3 forest, 1 pedestrian, 1 water lake) + 5 lines.
         assert_eq!(ing.features.len(), 10, "10 features total");
+    }
+
+    fn tags(pairs: &[(&'static str, &'static str)]) -> HashMap<&'static str, &'static str> {
+        pairs.iter().copied().collect()
+    }
+
+    /// `is_area` (ingest.rs ~244) is the closed-way polygon/line gate, and the only
+    /// path the `tiny_truth_table` corpus test exercises it through is the skippable
+    /// fixture — so cover the heuristic directly. The decisive cases: an `area=yes`
+    /// override forces area even with no AREA_TAGS key; `area=no` forces a line even
+    /// when an AREA_TAGS key is present (this is the W12 `natural=water area=no`
+    /// branch that must stay a line); and absent `area` falls back to "any AREA_TAGS
+    /// key present".
+    #[test]
+    fn is_area_overrides_and_tag_fallback() {
+        // area=yes wins outright, even with no AREA_TAGS key.
+        assert!(is_area(&tags(&[("area", "yes")])), "area=yes ⇒ area regardless of other tags");
+        // area=no wins outright, even over an AREA_TAGS key — the W12 line case.
+        assert!(!is_area(&tags(&[("area", "no"), ("natural", "water")])), "area=no ⇒ never an area");
+        // No `area` key: any one of building/landuse/amenity/leisure/natural/waterway
+        // present ⇒ area.
+        for key in AREA_TAGS {
+            assert!(is_area(&tags(&[(key, "whatever")])), "AREA_TAGS key {key} ⇒ area");
+        }
+        // No `area`, no AREA_TAGS key ⇒ not an area (a bare closed highway loop).
+        assert!(!is_area(&tags(&[("highway", "residential")])), "no area tag, no AREA_TAGS key ⇒ line");
+        // An unrecognized `area` value falls through to the tag fallback (not yes/no).
+        assert!(!is_area(&tags(&[("area", "maybe")])), "unknown area value, no AREA_TAGS key ⇒ line");
+        assert!(is_area(&tags(&[("area", "maybe"), ("building", "yes")])), "unknown area value falls back to tags");
     }
 }
