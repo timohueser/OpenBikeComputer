@@ -301,7 +301,7 @@ async fn write_cdc_line(
     for chunk in bytes.chunks(mps) {
         tx.write_packet(chunk).await?;
     }
-    if !bytes.is_empty() && bytes.len() % mps == 0 {
+    if !bytes.is_empty() && bytes.len().is_multiple_of(mps) {
         tx.write_packet(&[]).await?;
     }
     Ok(())
