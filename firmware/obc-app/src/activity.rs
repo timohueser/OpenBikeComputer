@@ -97,8 +97,14 @@ pub struct Activity {
     pub dist_to_route_m: u32,
 
     // actually-ridden accumulators
-    /// Distance actually pedalled (m) — the `done` stat.
+    /// Distance actually pedalled (m) — the `done` stat. Counts **every** sane fix,
+    /// including sub-threshold creep, so it's the true total covered.
     pub ridden_m: f32,
+    /// Distance covered **while moving** (m): only fixes at or above [`MOVING_MIN_MPS`] —
+    /// the numerator of Avg. Kept separate from [`ridden_m`](Activity::ridden_m) so the
+    /// average pairs moving distance with moving time; mixing total distance with
+    /// moving-only time inflated Avg (issue #4).
+    moving_m: f32,
     /// Moving time (s), accumulated only above [`MOVING_MIN_MPS`] — denominator of Avg.
     pub moving_s: f32,
 
@@ -125,8 +131,10 @@ impl Activity {
 
     /// Average speed (km/h) over the moving time, or `None` before any moving time has
     /// accrued (so the Statistics screen can show a placeholder rather than a `NaN`).
+    /// Uses the moving-only distance ([`moving_m`](Activity::moving_m)) over the moving
+    /// time, so sub-threshold creep (counted in `ridden_m`) can't inflate it (issue #4).
     pub fn avg_kmh(&self) -> Option<f32> {
-        (self.moving_s > 0.0).then(|| self.ridden_m / self.moving_s * 3.6)
+        (self.moving_s > 0.0).then(|| self.moving_m / self.moving_s * 3.6)
     }
 
     /// Climb actually done (m) — barometric and dead-banded — the `climbed` stat.
@@ -185,6 +193,7 @@ impl Activity {
         self.off_route = false;
         self.dist_to_route_m = 0;
         self.ridden_m = 0.0;
+        self.moving_m = 0.0;
         self.moving_s = 0.0;
         self.climb = DeadBand::new();
         self.last_fix = None;
@@ -233,6 +242,10 @@ impl Activity {
             if dt < MAX_GAP_S && implied < MAX_SPEED_MPS {
                 self.ridden_m += dist;
                 if implied >= MOVING_MIN_MPS {
+                    // Above the moving threshold: book the distance *and* the time toward
+                    // Avg. Sub-threshold creep still adds to `ridden_m` above, but neither
+                    // to `moving_m` nor `moving_s`, so the two stay paired (issue #4).
+                    self.moving_m += dist;
                     self.moving_s += dt;
                 }
                 counted = true;
@@ -323,6 +336,31 @@ mod tests {
         assert_eq!(a.ridden_m, 0.0);
         assert_eq!(a.moving_s, 0.0);
         assert_eq!(a.avg_kmh(), None);
+    }
+
+    /// Avg must pair moving distance with moving time: a sub-threshold "creep" interval (a slow
+    /// red-light roll, below [`MOVING_MIN_MPS`]) adds to the `done` total but *not* to Avg, so it
+    /// can't drag the reported average above any speed actually sustained (issue #4).
+    #[test]
+    fn sub_threshold_creep_does_not_inflate_avg() {
+        // ~0.56 m north over 1 s ≈ 0.56 m/s — comfortably below MOVING_MIN_MPS (0.8).
+        const CREEP_UD: i32 = 5;
+        let mut a = Activity::new(Mode::Riding);
+        a.record_motion(Fix::at(BASE_LAT, LON), 0); // anchor
+
+        // One real moving step (~5 m/s), then one creep step (~0.56 m/s).
+        a.record_motion(Fix::at(BASE_LAT + STEP_UD, LON), 1000);
+        a.record_motion(Fix::at(BASE_LAT + STEP_UD + CREEP_UD, LON), 2000);
+
+        // The creep distance lands in `done` but only the moving interval counts toward Avg.
+        assert_eq!(a.moving_s, 1.0, "only the above-threshold interval counts as moving time");
+        assert!(a.ridden_m > 5.2, "creep distance is still in the done total, got {}", a.ridden_m);
+
+        let avg = a.avg_kmh().expect("moving time accrued");
+        // Avg reflects the ~5 m/s moving step (~18 km/h), *not* the creep-padded total.
+        assert!((16.0..=19.5).contains(&avg), "avg must track the moving step, got {avg}");
+        let inflated = a.ridden_m / a.moving_s * 3.6; // the old (buggy) total-over-moving-time figure
+        assert!(avg < inflated, "moving-only avg ({avg}) must be below the creep-inflated {inflated}");
     }
 
     /// Defensive guard: two fixes stamped the same millisecond (a contract violation / clock
