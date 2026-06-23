@@ -266,6 +266,14 @@ impl Activity {
     /// sensor noise doesn't inflate it. Only while [`Riding`](Mode::Riding); pausing drops
     /// the reference so an altitude change *during* the pause isn't booked on resume.
     pub(crate) fn record_altitude(&mut self, alt_m: f32) {
+        // Reject a non-finite sample (a baro driver hiccup / divide-by-zero in the
+        // pressure→altitude conversion). A `NaN` delta already slips through the dead-band's
+        // comparisons, but `+inf - ref = +inf >= DEADBAND` would book *infinite* ascent —
+        // permanently poisoning the `climbed` stat — and a non-finite value must never stamp a
+        // logged track point's elevation. Drop it before it touches either.
+        if !alt_m.is_finite() {
+            return;
+        }
         // The latest altitude stamps logged track points regardless of mode (it's just the
         // current height); the climb dead-band below only runs while riding.
         self.last_alt = Some(alt_m);
@@ -423,5 +431,218 @@ mod tests {
         assert_eq!(m, Motion::default());
         a.record_motion(Fix::at(BASE_LAT + STEP_UD, LON), 1000);
         assert_eq!(a.ridden_m, 0.0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Barometric climb — `record_altitude` / `climb_m` (issue #93 item 1).
+    //
+    // The whole climb path had zero coverage: no test ever fed an altitude through
+    // `Activity`. These exercise the dead-band integrator, the NaN/inf rejection, and the
+    // pause-drops-the-reference-but-keeps-the-total rule (src/activity.rs ~265-279) that
+    // decides whether a climb during a rest gets booked on resume.
+    // -----------------------------------------------------------------------
+
+    /// The dead-band (3.0 m, `ELE_DEADBAND_M`) is the whole reason climb isn't pure baro noise:
+    /// a sub-3 m wiggle (a gust of pressure noise, a bridge) must book *nothing*, while a clean
+    /// climb past the band books its full delta. Without this, a parked bike on a breezy day
+    /// would accrue phantom ascent. Guards `record_altitude` → `DeadBand::push` (activity.rs ~278).
+    #[test]
+    fn climb_ignores_sub_deadband_noise_and_books_clear_gains() {
+        let mut a = Activity::new(Mode::Riding);
+        a.record_altitude(100.0); // the reference; books nothing on its own
+        assert_eq!(a.climb_m(), 0.0, "the first sample only anchors");
+
+        // Noise: +2.9 m is inside the 3.0 m dead-band — ignored, and crucially does NOT
+        // re-anchor, so the reference is still 100.0.
+        a.record_altitude(102.9);
+        assert_eq!(a.climb_m(), 0.0, "a 2.9 m wiggle is below the 3.0 m dead-band");
+
+        // A clean climb to 105.0: 5 m above the *still-100* reference → books the whole 5 m.
+        a.record_altitude(105.0);
+        assert_eq!(a.climb_m(), 5.0, "a clear gain past the band books its full delta, got {}", a.climb_m());
+    }
+
+    /// Descending must never subtract from `climbed` — the stat is total ascent, the descent the
+    /// dead-band also tracks is read separately. A rolling profile (up 6, down 6, up 6) books
+    /// 12 m of climb, not 6. Guards that `climb_m()` reads only `ascent` (activity.rs ~141).
+    #[test]
+    fn climb_accumulates_only_ascent_across_rolling_terrain() {
+        let mut a = Activity::new(Mode::Riding);
+        a.record_altitude(100.0);
+        a.record_altitude(106.0); // +6 booked
+        a.record_altitude(100.0); // -6 is descent, not climb
+        a.record_altitude(106.0); // +6 booked again
+        assert_eq!(a.climb_m(), 12.0, "two 6 m climbs book 12 m, the dip in between doesn't subtract");
+    }
+
+    /// The headline pause rule (activity.rs ~272-277): pausing drops the dead-band *reference*
+    /// but keeps the accumulated total, so a height change *during* a rest is not booked on
+    /// resume. A rider who climbs 10 m, stops at a hut and the barometer drifts +50 m over lunch
+    /// (weather, or carrying the bike upstairs), then resumes must still read ~10 m — not 60.
+    #[test]
+    fn pause_drops_reference_so_climb_during_a_rest_is_not_booked() {
+        let mut a = Activity::new(Mode::Riding);
+        a.record_altitude(100.0); // anchor
+        a.record_altitude(110.0); // a clean +10 m climb while riding
+        assert_eq!(a.climb_m(), 10.0);
+
+        // Pause. The next altitude samples arrive while not riding: each drops the reference and
+        // books nothing, even though the height swings wildly during the rest.
+        a.mode = Mode::Paused;
+        a.record_altitude(160.0); // +50 m of drift during the stop
+        a.record_altitude(160.0);
+        assert_eq!(a.climb_m(), 10.0, "a height change during the pause must not accrue");
+
+        // Resume. The first riding sample re-anchors at the *current* height (160) instead of
+        // measuring the 50 m hole across the pause; only genuine post-resume climb adds.
+        a.mode = Mode::Riding;
+        a.record_altitude(160.0); // re-anchor at 160, books nothing
+        assert_eq!(a.climb_m(), 10.0, "resuming re-anchors, it does not book the pause gap");
+        a.record_altitude(165.0); // a real +5 m after resuming
+        assert_eq!(a.climb_m(), 15.0, "only genuine post-resume climb adds, got {}", a.climb_m());
+    }
+
+    /// A NaN or infinite altitude (a baro driver hiccup / divide-by-zero in pressure→altitude)
+    /// must not corrupt the climb total. `DeadBand::push` compares the delta against `±DEADBAND`;
+    /// a NaN delta fails both `>=` and `<=`, and `+inf - ref = +inf` would otherwise book infinite
+    /// ascent. This pins that a garbage sample is silently ignored, not allowed to inflate (or
+    /// `NaN`-poison) the stat. Guards `record_altitude` against bad sensor input (activity.rs ~268).
+    #[test]
+    fn climb_ignores_nan_and_infinite_altitude() {
+        let mut a = Activity::new(Mode::Riding);
+        a.record_altitude(100.0);
+        a.record_altitude(105.0); // a clean +5 m
+        assert_eq!(a.climb_m(), 5.0);
+
+        // Garbage samples: neither must change the total, and neither must poison it to NaN/inf.
+        a.record_altitude(f32::NAN);
+        a.record_altitude(f32::INFINITY);
+        a.record_altitude(f32::NEG_INFINITY);
+        assert_eq!(a.climb_m(), 5.0, "NaN/inf samples are ignored, total stays finite, got {}", a.climb_m());
+        assert!(a.climb_m().is_finite(), "the climb total must never become non-finite");
+
+        // …and a real sample after the garbage still integrates against the last good reference
+        // (105), proving the bad samples didn't re-anchor either.
+        a.record_altitude(110.0);
+        assert_eq!(a.climb_m(), 10.0, "a good sample after garbage measures from the last good ref");
+    }
+
+    /// The latest altitude stamps logged track points regardless of mode (it is just the current
+    /// height) — distinct from the climb integrator, which only runs while riding. `track_ele`
+    /// must reflect the most recent sample even when paused, so a point logged during a paused
+    /// frame still carries a sane elevation. Guards `last_alt`/`track_ele` (activity.rs ~185, 271).
+    #[test]
+    fn track_ele_tracks_latest_altitude_even_when_paused() {
+        let mut a = Activity::new(Mode::Riding);
+        assert_eq!(a.track_ele(), 0, "no sample yet → 0 elevation");
+        a.record_altitude(123.7);
+        assert_eq!(a.track_ele(), 123, "rounds toward zero into i16 metres");
+        a.mode = Mode::Paused;
+        a.record_altitude(200.4);
+        assert_eq!(a.track_ele(), 200, "the stamped elevation follows the latest sample even paused");
+    }
+
+    /// `reset_ride` (a new tracking session) must wipe the climb total *and* its reference, so a
+    /// second ride doesn't inherit the first ride's ascent or measure its first climb against the
+    /// first ride's last altitude. Guards `reset_ride` resetting `climb`/`last_alt` (activity.rs ~198).
+    #[test]
+    fn reset_ride_clears_the_climb_total_and_reference() {
+        let mut a = Activity::new(Mode::Riding);
+        a.record_altitude(100.0);
+        a.record_altitude(120.0); // +20 m on ride one
+        assert_eq!(a.climb_m(), 20.0);
+
+        a.reset_ride();
+        assert_eq!(a.climb_m(), 0.0, "a new session starts climb at zero");
+
+        // Ride two: the first sample re-anchors fresh; the old 120 m must not be the reference.
+        a.record_altitude(500.0); // far from ride one's last altitude
+        a.record_altitude(505.0); // a clean +5 m on ride two
+        assert_eq!(a.climb_m(), 5.0, "ride two measures from its own anchor, got {}", a.climb_m());
+    }
+
+    // -----------------------------------------------------------------------
+    // `record_motion` numeric edges (issue #93 item 2): the gate thresholds and
+    // `ground_dist_m` extremes the mid-band cases above don't reach.
+    // -----------------------------------------------------------------------
+
+    /// The teleport gate (activity.rs ~242) is `implied < MAX_SPEED_MPS` (30 m/s). A move whose
+    /// implied speed lands *just under* 30 m/s must still be counted, while one at/over 30 must be
+    /// dropped — pinning the `<` boundary so an off-by-one (`<=` vs `<`) is caught. A sub-ms `dt`
+    /// is the nastiest input: it divides a normal step by a tiny time and manufactures a huge
+    /// implied speed, exactly the case that probes the gate's upper edge.
+    #[test]
+    fn teleport_gate_boundary_is_just_under_max_speed() {
+        // dt = 100 ms. At 30 m/s the gate trips, so a move of just under 3.0 m must pass and a
+        // move of 3.0 m (→ exactly 30 m/s) must be rejected.
+        let mut a = Activity::new(Mode::Riding);
+        a.record_motion(Fix::at(BASE_LAT, LON), 1000);
+        // ~26 µdeg north ≈ 2.9 m → 29 m/s over 0.1 s: under the gate, counted.
+        let under = a.record_motion(Fix::at(BASE_LAT + 26, LON), 1100);
+        assert!(under.log, "29 m/s is under the 30 m/s teleport gate → counted");
+        assert!(a.ridden_m > 2.5 && a.ridden_m < 3.3, "the ~2.9 m step is booked, got {}", a.ridden_m);
+
+        // Now a step that implies >= 30 m/s over the next 0.1 s: ~45 µdeg ≈ 5 m → 50 m/s, dropped.
+        let over = a.record_motion(Fix::at(BASE_LAT + 26 + STEP_UD, LON), 1200);
+        assert!(!over.log, "50 m/s is over the gate → dropped as a teleport");
+        assert!(a.ridden_m < 3.3, "the over-gate step booked nothing extra, got {}", a.ridden_m);
+    }
+
+    /// The moving-threshold gate (activity.rs ~244) is `implied >= MOVING_MIN_MPS` (0.8 m/s):
+    /// at/above it the interval's time counts toward Avg, below it only distance does. This pins
+    /// the `>=` boundary at exactly 0.8 m/s so a `>` regression (which would drop a rider holding
+    /// a steady 0.8 m/s crawl out of the moving average) is caught. Distance is always booked.
+    #[test]
+    fn moving_threshold_boundary_counts_at_exactly_min_speed() {
+        // dt = 1 s. 0.8 m/s ⇒ a 0.8 m step. 0.8 m north ≈ 7.2 µdeg; use 8 µdeg (~0.89 m) to land
+        // just at/above the threshold, and 6 µdeg (~0.67 m) to land just below it.
+        let mut at = Activity::new(Mode::Riding);
+        at.record_motion(Fix::at(BASE_LAT, LON), 0);
+        at.record_motion(Fix::at(BASE_LAT + 8, LON), 1000);
+        assert_eq!(at.moving_s, 1.0, "≈0.89 m/s is at/above 0.8 → the interval counts as moving");
+        assert!(at.ridden_m > 0.0, "and the distance is booked regardless");
+
+        let mut below = Activity::new(Mode::Riding);
+        below.record_motion(Fix::at(BASE_LAT, LON), 0);
+        below.record_motion(Fix::at(BASE_LAT + 6, LON), 1000);
+        assert_eq!(below.moving_s, 0.0, "≈0.67 m/s is below 0.8 → no moving time");
+        assert!(below.ridden_m > 0.0, "but the creep distance is still in the done total");
+    }
+
+    /// Antimeridian: `ground_dist_m` uses a local-equirectangular projection with a raw
+    /// `lon_b - lon_a` delta and **no ±180° wrap** (geo.rs `delta_m`, documented as accurate only
+    /// over a decimated route's short segments). So two points either side of the date line —
+    /// physically ~2 µdeg apart — read as a ~40 000 km jump and are rejected by the teleport gate.
+    ///
+    /// This pins the *actual current behaviour*, not an idealised one: crossing the antimeridian
+    /// is unsupported (a real but rare bikepacking edge in the Pacific / NZ). The interval is
+    /// dropped — like any other teleport — rather than crashing or booking a planet-circling
+    /// distance, and the next sane fix opens a fresh segment. If wrap handling is ever added to
+    /// the projection, flip the first assertion to expect the short real distance.
+    #[test]
+    fn motion_across_antimeridian_is_dropped_as_a_teleport() {
+        const NEAR_180: i32 = 179_999_990; // ~1 µdeg west of +180°
+        const PAST_180: i32 = -179_999_990; // ~1 µdeg east of -180° — physically ~2 µdeg apart
+        let mut a = Activity::new(Mode::Riding);
+        a.record_motion(Fix::at(0, NEAR_180), 0);
+        let m = a.record_motion(Fix::at(0, PAST_180), 1000);
+        // The unwrapped longitude delta is ~360° → an enormous implied speed → over the gate.
+        assert!(!m.log, "an unwrapped date-line crossing reads as a teleport and is dropped");
+        assert_eq!(a.ridden_m, 0.0, "no planet-circling distance is ever booked");
+    }
+
+    /// `ground_dist_m` near the pole: longitude lines converge, so a microdegree of longitude is
+    /// almost no ground distance at 85°N. A polar fix stream must not manufacture a teleport from
+    /// the raw longitude delta — `cos(lat)` has to shrink it. Guards the metric at a latitude
+    /// extreme the Berlin-band cases never reach.
+    #[test]
+    fn motion_near_the_pole_shrinks_longitude_distance() {
+        const HIGH_LAT: i32 = 85_000_000; // 85°N
+        let mut a = Activity::new(Mode::Riding);
+        a.record_motion(Fix::at(HIGH_LAT, 0), 0);
+        // 100 µdeg of longitude ≈ 11 m at the equator, but ~1 m at 85°N (×cos 85°).
+        a.record_motion(Fix::at(HIGH_LAT, 100), 1000);
+        assert!(a.ridden_m < 3.0, "longitude distance is heavily foreshortened at 85°N, got {}", a.ridden_m);
+        assert!(a.ridden_m > 0.0, "but it's still a real, non-zero step");
     }
 }

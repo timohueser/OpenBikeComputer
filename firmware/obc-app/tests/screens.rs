@@ -13,7 +13,7 @@ use obc_app::screen::{
 };
 use obc_app::{
     App, AppState, Button, ButtonEvent, CameraMode, Fix, Gesture, InputClock, InputEvent, Mode, PanAxis, RideClock,
-    RouteSummary, Sensors, TrackAction,
+    RouteSummary, Sensors, TrackAction, MAX_ROUTES,
 };
 use obc_reader::{rgb565_to_rgb888, BBox, MapCache, Reader, SliceSource};
 
@@ -69,6 +69,46 @@ fn map_turn_zooms_in_place() {
     let t = MapScreen::new().handle(Gesture::Turn(2), &mut ctx(&mut st, &mut act));
     assert!(matches!(t, Transition::None));
     assert!(st.zoom > z0, "clockwise turn zooms in");
+}
+
+/// Map zoom is `×ZOOM_STEP` per detent, compounding (map.rs ~74-79) — the same geometric step
+/// the Statistics zoom uses. Pins the per-detent multiply so a regression to an additive step
+/// (which would crawl, then under/overshoot) is caught. Two detents = `ZOOM_STEP²·z0`.
+#[test]
+fn map_turn_multiplies_zoom_per_detent() {
+    let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Riding));
+    MapScreen::new().handle(Gesture::Turn(1), &mut ctx(&mut st, &mut act));
+    let one = st.zoom;
+    assert!(one > 1.0, "one detent zooms in past 1.0, got {one}");
+    MapScreen::new().handle(Gesture::Turn(1), &mut ctx(&mut st, &mut act));
+    // The second detent multiplies again: zoom/one == one/1.0 (a constant ratio per detent).
+    assert!((st.zoom / one - one).abs() < 1e-3, "each detent is the same ×ratio, got {} then {}", one, st.zoom);
+}
+
+/// A huge forward turn saturates at the map's `MAX_ZOOM` clamp instead of overflowing to `inf`
+/// (map.rs ~79). `map_turn_zooms_in_place` only checks the in-band case; this pins the upper
+/// clamp — without it a `Turn(1000)` would multiply `1.2^1000` straight to infinity.
+#[test]
+fn map_turn_saturates_at_max_zoom() {
+    let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Riding));
+    MapScreen::new().handle(Gesture::Turn(1000), &mut ctx(&mut st, &mut act));
+    let saturated = st.zoom;
+    assert!(saturated.is_finite(), "a huge turn must clamp, not overflow to inf, got {saturated}");
+    // A second huge turn can't push it any higher — it's pinned at the cap.
+    MapScreen::new().handle(Gesture::Turn(1000), &mut ctx(&mut st, &mut act));
+    assert_eq!(st.zoom, saturated, "already at MAX_ZOOM — further zoom-in is a no-op");
+}
+
+/// A huge backward turn saturates at the map's `MIN_ZOOM` clamp (map.rs ~79) instead of
+/// underflowing toward 0 (which would invert / blank the view). Symmetric to the max case.
+#[test]
+fn map_turn_saturates_at_min_zoom() {
+    let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Riding));
+    MapScreen::new().handle(Gesture::Turn(-1000), &mut ctx(&mut st, &mut act));
+    let saturated = st.zoom;
+    assert!(saturated > 0.0, "min-zoom clamp keeps the scale positive, got {saturated}");
+    MapScreen::new().handle(Gesture::Turn(-1000), &mut ctx(&mut st, &mut act));
+    assert_eq!(st.zoom, saturated, "already at MIN_ZOOM — further zoom-out is a no-op");
 }
 
 #[test]
@@ -296,6 +336,67 @@ fn boot_flow_walks_home_to_route_menu_to_riding_map() {
     press(&mut app); // Route menu → load route 0 → Map
     assert_eq!(app.mode(), Mode::Riding);
     assert_eq!(app.activity.active_route, Some(0));
+}
+
+// ---------------------------------------------------------------------------
+// Route catalog capacity (issue #93 item 3): `set_routes` truncates a host store
+// larger than the resident catalog (`MAX_ROUTES = 64`, app.rs ~583, `.take(MAX_ROUTES)`).
+// A full SD card hits exactly this; an off-by-one or a missing `.take` would overflow the
+// fixed `heapless::Vec`. The mid-size catalog cases never reach the cap.
+// ---------------------------------------------------------------------------
+
+/// Build `n` distinctly-named route summaries (`R0`, `R1`, …) so the survivors are identifiable.
+fn many_routes(n: usize) -> Vec<RouteSummary> {
+    (0..n)
+        .map(|i| {
+            let mut name = heapless::String::<48>::new();
+            let _ = core::fmt::Write::write_fmt(&mut name, format_args!("R{i}"));
+            RouteSummary {
+                name,
+                distance_km: i as u32,
+                climb_m: 0,
+                bbox: BBox { min_lon: 0, min_lat: 0, max_lon: 1, max_lat: 1 },
+                start_lon: 0,
+                start_lat: 0,
+            }
+        })
+        .collect()
+}
+
+/// A store larger than `MAX_ROUTES` is silently truncated to the first `MAX_ROUTES`, not
+/// overflowed: the catalog holds exactly 64 entries and keeps the *first* 64 in order (the SD
+/// scan's order), so the menu is bounded and well-defined on a full card.
+#[test]
+fn set_routes_truncates_at_max_routes() {
+    let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+    app.set_routes(&many_routes(MAX_ROUTES + 50)); // 114 routes — well over the cap
+    assert_eq!(app.routes().len(), MAX_ROUTES, "the catalog is capped at MAX_ROUTES, not overflowed");
+    assert_eq!(app.routes()[0].name.as_str(), "R0", "the first scanned route is kept");
+    assert_eq!(
+        app.routes()[MAX_ROUTES - 1].name.as_str(),
+        format!("R{}", MAX_ROUTES - 1),
+        "the 64th route is the last kept; everything past it is dropped"
+    );
+}
+
+/// Exactly `MAX_ROUTES` routes fit with none dropped — the boundary just below truncation. Pins
+/// that the cap is inclusive (`take(64)` keeps all 64), guarding a `>=`/`>` off-by-one.
+#[test]
+fn set_routes_keeps_exactly_max_routes() {
+    let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+    app.set_routes(&many_routes(MAX_ROUTES));
+    assert_eq!(app.routes().len(), MAX_ROUTES, "a card with exactly 64 routes loses none");
+}
+
+/// `set_routes` replaces, not appends: a second call clears the previous catalog first (app.rs
+/// ~582). A rescan of a now-emptied card must leave an empty catalog, not the stale entries.
+#[test]
+fn set_routes_replaces_the_previous_catalog() {
+    let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+    app.set_routes(&many_routes(10));
+    assert_eq!(app.routes().len(), 10);
+    app.set_routes(&[]); // card removed / emptied
+    assert!(app.routes().is_empty(), "a rescan replaces the catalog rather than appending");
 }
 
 /// Feed a single encoder press (down+up within the threshold) to the app.
