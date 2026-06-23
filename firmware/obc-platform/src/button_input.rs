@@ -272,12 +272,7 @@ mod tests {
     }
     impl Pins {
         fn new() -> Self {
-            Pins {
-                prev: Cell::new(false),
-                next: Cell::new(false),
-                select: Cell::new(false),
-                back: Cell::new(false),
-            }
+            Pins { prev: Cell::new(false), next: Cell::new(false), select: Cell::new(false), back: Cell::new(false) }
         }
         fn input(&self) -> ButtonInput<MockPin<'_>> {
             ButtonInput::new(

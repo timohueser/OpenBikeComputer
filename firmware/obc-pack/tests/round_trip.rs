@@ -17,9 +17,7 @@
 //! are preserved.
 
 use obc_pack::{serialize_lods, Feature, Kind as PackKind, LodLayer, Node, Style};
-use obc_reader::{
-    BBox, Kind as ReadKind, MapCache, Reader, SliceSource, MAX_FEAT_PTS, MAX_FEAT_RINGS,
-};
+use obc_reader::{BBox, Kind as ReadKind, MapCache, Reader, SliceSource, MAX_FEAT_PTS, MAX_FEAT_RINGS};
 
 /// Global bbox (min_lon, min_lat, max_lon, max_lat) in microdegrees. min corner
 /// is (0,0) so each single-leaf node's anchor base is the origin and decoded
@@ -31,20 +29,10 @@ const MARKER: u16 = 0xBEEF;
 // Small features (microdegrees). Kept under 30 000 µdeg per segment so nothing
 // densifies, and polygon rings are pre-closed (first == last) like shapely's.
 const LINE5: &[(i32, i32)] = &[(200_000, 50_000), (200_050, 50_050), (200_100, 50_000)];
-const POLY12_EXT: &[(i32, i32)] = &[
-    (100_000, 100_000),
-    (120_000, 100_000),
-    (120_000, 120_000),
-    (100_000, 120_000),
-    (100_000, 100_000),
-];
-const POLY12_HOLE: &[(i32, i32)] = &[
-    (105_000, 105_000),
-    (115_000, 105_000),
-    (115_000, 115_000),
-    (105_000, 115_000),
-    (105_000, 105_000),
-];
+const POLY12_EXT: &[(i32, i32)] =
+    &[(100_000, 100_000), (120_000, 100_000), (120_000, 120_000), (100_000, 120_000), (100_000, 100_000)];
+const POLY12_HOLE: &[(i32, i32)] =
+    &[(105_000, 105_000), (115_000, 105_000), (115_000, 115_000), (105_000, 115_000), (105_000, 105_000)];
 // Deltas of 500 µdeg exceed the int8 range, forcing the 16-bit delta path.
 const LINE16: &[(i32, i32)] = &[(300_000, 300_000), (300_500, 300_500), (301_000, 300_500)];
 
@@ -79,11 +67,7 @@ fn line(style_id: u8, pts: &[(i32, i32)]) -> Feature {
 }
 
 fn polygon(style_id: u8, rings: &[&[(i32, i32)]]) -> Feature {
-    Feature {
-        style_id,
-        kind: PackKind::Polygon,
-        rings: rings.iter().map(|r| ring_deg(r)).collect(),
-    }
+    Feature { style_id, kind: PackKind::Polygon, rings: rings.iter().map(|r| ring_deg(r)).collect() }
 }
 
 /// Build a two-LOD map and serialize it the way the packer really does:
@@ -94,18 +78,12 @@ fn packed() -> Vec<u8> {
     let lod0 = LodLayer {
         max_mpp: None, // coarsest layer ⇒ +inf
         chunk_size: 512,
-        root: Node::Leaf {
-            bbox: GLOBAL,
-            features: vec![line(5, LINE5), polygon(12, &[POLY12_EXT, POLY12_HOLE])],
-        },
+        root: Node::Leaf { bbox: GLOBAL, features: vec![line(5, LINE5), polygon(12, &[POLY12_EXT, POLY12_HOLE])] },
     };
     let lod1 = LodLayer {
         max_mpp: Some(50.0),
         chunk_size: 8192, // must hold the ~4 KiB MAX_FEAT_PTS line
-        root: Node::Leaf {
-            bbox: GLOBAL,
-            features: vec![line(1, LINE16), line(5, &big_line_points())],
-        },
+        root: Node::Leaf { bbox: GLOBAL, features: vec![line(1, LINE16), line(5, &big_line_points())] },
     };
     serialize_lods(&[lod0, lod1], &styles(), MARKER, GLOBAL)
 }
@@ -223,10 +201,7 @@ fn features_round_trip() {
     let r = Reader::new(&src, &cache).unwrap();
 
     // LOD0: an 8-bit line and a 16-bit polygon-with-hole.
-    assert_eq!(
-        decode_lod(&r, 0),
-        vec![expect_line(5, LINE5), expect_poly(12, POLY12_EXT, &[POLY12_HOLE])],
-    );
+    assert_eq!(decode_lod(&r, 0), vec![expect_line(5, LINE5), expect_poly(12, POLY12_EXT, &[POLY12_HOLE])],);
 
     // LOD1: a 16-bit line and the MAX_FEAT_PTS line.
     let big = big_line_points();
@@ -260,7 +235,6 @@ fn query_finds_the_leaf() {
     assert_eq!(hits[0].1, r.bbox);
 
     // A view fully outside the bbox hits nothing.
-    let outside =
-        BBox { min_lon: 9_000_000, min_lat: 9_000_000, max_lon: 9_001_000, max_lat: 9_001_000 };
+    let outside = BBox { min_lon: 9_000_000, min_lat: 9_000_000, max_lon: 9_001_000, max_lat: 9_001_000 };
     assert!(r.query::<8>(0, &outside).is_empty());
 }

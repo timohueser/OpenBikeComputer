@@ -1,10 +1,13 @@
 # Firmware workspace formatting.
 #
 # The code is hand-formatted in a compact style: single-line struct literals,
-# calls, and match arms are kept on one line up to the column limit. The stable
-# `use_small_heuristics = "Max"` option reproduces that style, so running
-# `cargo fmt` leaves already-conformant code untouched.
+# calls, and match arms are kept on one line up to the column limit. A wider
+# `max_width = 120` suits the dense render / packer math, and the stable
+# `use_small_heuristics = "Max"` option ties every sub-heuristic (call, chain,
+# struct-literal, array width...) to that limit — so a line stays on one line up
+# to the full 120 columns.
 #
-# Stable-toolchain options only (no nightly-only keys), so plain `cargo fmt`
-# on the pinned stable toolchain works without `--config` flags.
+# Both keys are stable-toolchain only (no nightly-only options), so plain
+# `cargo fmt` on stable works without `--config` flags.
+max_width = 120
 use_small_heuristics = "Max"

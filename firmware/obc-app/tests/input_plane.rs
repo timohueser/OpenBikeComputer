@@ -9,8 +9,7 @@
 use std::collections::VecDeque;
 
 use obc_app::{
-    App, AppState, Button, ButtonEvent, Gesture, InputClock, InputEvent, InputPlane, InputSource,
-    RouteSummary,
+    App, AppState, Button, ButtonEvent, Gesture, InputClock, InputEvent, InputPlane, InputSource, RouteSummary,
 };
 use obc_reader::BBox;
 
@@ -61,16 +60,16 @@ fn drive_split(app: &mut App, plane: &mut InputPlane, t: u32, evs: &[InputEvent]
 fn script() -> Vec<(u32, Vec<InputEvent>)> {
     vec![
         (0, vec![down(Button::Encoder)]),
-        (80, vec![up(Button::Encoder)]),    // Home press → Route menu
-        (200, vec![down(Button::Encoder)]), //
-        (280, vec![up(Button::Encoder)]),   // load route → Map (riding)
-        (400, vec![turn(1)]),               // Map zoom in
-        (450, vec![turn(-1)]),              // Map zoom out
-        (600, vec![down(Button::Encoder)]), // begin an encoder hold…
-        (800, vec![]),                      // …charging past the dead zone (overlay live)
-        (1200, vec![]),                     // crosses 500 ms → Hold fires → enter pan
-        (1260, vec![up(Button::Encoder)]),  // release (silent after the hold)
-        (1300, vec![turn(2)]),              // pan along the axis
+        (80, vec![up(Button::Encoder)]),     // Home press → Route menu
+        (200, vec![down(Button::Encoder)]),  //
+        (280, vec![up(Button::Encoder)]),    // load route → Map (riding)
+        (400, vec![turn(1)]),                // Map zoom in
+        (450, vec![turn(-1)]),               // Map zoom out
+        (600, vec![down(Button::Encoder)]),  // begin an encoder hold…
+        (800, vec![]),                       // …charging past the dead zone (overlay live)
+        (1200, vec![]),                      // crosses 500 ms → Hold fires → enter pan
+        (1260, vec![up(Button::Encoder)]),   // release (silent after the hold)
+        (1300, vec![turn(2)]),               // pan along the axis
         (1340, vec![down(Button::Encoder)]), // encoder press in pan → toggle axis
         (1380, vec![up(Button::Encoder)]),
         (1400, vec![turn(-1)]),           // pan back
@@ -104,19 +103,11 @@ fn split_path_matches_handle_input_state_and_map_dirty() {
         assert_eq!(split.state, single.state, "app state diverged at t={t} (evs={evs:?})");
         // And the map-plane repaint demand must match — the decomposition dirties the map on
         // exactly the same frames.
-        assert_eq!(
-            split.take_dirty().map,
-            single.take_dirty().map,
-            "map-dirty diverged at t={t} (evs={evs:?})"
-        );
+        assert_eq!(split.take_dirty().map, single.take_dirty().map, "map-dirty diverged at t={t} (evs={evs:?})");
 
         // The overlay the firmware drives on its *own* plane (the standalone `InputPlane`) stays
         // in lock-step with the reference app's overlay (driven inside `handle_input`).
-        assert_eq!(
-            plane.overlay_active(),
-            single.overlay_active(),
-            "overlay liveness diverged at t={t} (evs={evs:?})"
-        );
+        assert_eq!(plane.overlay_active(), single.overlay_active(), "overlay liveness diverged at t={t} (evs={evs:?})");
     }
 
     // `last_gesture` is a readout of the recogniser, so on the two-plane path it lives on the
@@ -145,9 +136,5 @@ fn standalone_input_plane_recognizes_the_same_gestures_as_handle_input() {
     // A turn detent recognises immediately; a release after the hold is silent.
     got.clear();
     plane.recognize(InputClock(620), &mut keys(&[turn(3), up(Button::Encoder)]), |g| got.push(g));
-    assert_eq!(
-        got,
-        vec![Gesture::Turn(3)],
-        "turn fires immediately; the post-hold release is silent"
-    );
+    assert_eq!(got, vec![Gesture::Turn(3)], "turn fires immediately; the post-hold release is silent");
 }

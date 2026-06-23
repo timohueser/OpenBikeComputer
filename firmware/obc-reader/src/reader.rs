@@ -55,8 +55,15 @@ const CACHE_SLOT_BYTES: usize = 4096;
 /// Geometry-chunk cache slots (each [`CACHE_SLOT_BYTES`]). The renderer makes four priority
 /// passes over the same visible-chunk set per frame; sizing the cache to hold a riding-zoom
 /// viewport's chunks turns passes 2–4 into cache hits instead of re-reads from SD, and a wider
-/// pan into a partial hit. ≈64 KB at the default; the knob to trade RAM for hit rate.
-const MAP_CHUNK_SLOTS: usize = 16;
+/// pan into a partial hit. ≈256 KB at the default; the knob to trade RAM for hit rate.
+///
+/// Sized to the **visible-chunk count**, not just 16: a thrash sets in the moment a frame's
+/// working set exceeds the slot count, because each of the four passes then re-reads every chunk
+/// (LRU can't hold a pass's set) → `miss ≈ chunks × 4` and SD I/O dominates the frame (issue #98).
+/// The worst zooms (LOD1, ~3–4 m/px) put up to ~50 chunks in view, so 64 slots keep the whole
+/// working set resident across all four passes *and* across frames (a slow camera pan re-hits the
+/// previous frame's chunks). 64 × 4 KB = 256 KB of the device's 8 MB SDRAM.
+const MAP_CHUNK_SLOTS: usize = 64;
 
 /// Block size + count of the quadtree-index cache. The leaf walk reads 4-byte nodes (siblings
 /// adjacent in the file); caching a few aligned blocks coalesces those into a handful of SD
@@ -71,6 +78,17 @@ const _: () = assert!(MAX_CHUNK_BYTES <= u16::MAX as usize, "chunk_size is a u16
 
 const BRANCH_BIT: u32 = 0x8000_0000;
 const EMPTY_LEAF: u32 = 0x7FFF_FFFF;
+
+/// Hard cap on quadtree recursion depth in [`Reader::walk_leaves`] (issue #65). A well-formed
+/// map's tree is far shallower: the node bbox halves each level, so it bottoms out at the
+/// coordinate bit-width — ~26 for the packer's 10-µdeg split floor over a world-sized bbox, and
+/// 32 even for a degenerate full-`i32`-range bbox — so this never rejects a real map. The cap
+/// matters for a *corrupt* one: a hostile map can store a branch whose child pointer points
+/// backward (`child <= idx`), and once the node bbox subdivides to a degenerate point the
+/// quadrants stop shrinking while `intersects(view)` stays true, so the walk would recurse
+/// forever → stack overflow → HardFault (no MMU guard page on the MCU). Bounding the depth caps
+/// the stack regardless of file contents.
+const MAX_QUADTREE_DEPTH: u32 = 32;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Style {
@@ -226,7 +244,9 @@ impl<'a> Reader<'a> {
     /// Parse the resident header / styles / LOD table from `src`, pairing the result with a
     /// `cache` the geometry + index reads stream through. The cache is caller-owned and reusable
     /// across frames (a chunk read last frame stays resident); pass a fresh [`MapCache::new`] if
-    /// you don't keep one around. Both borrows live as long as the `Reader`.
+    /// you don't keep one around. Both borrows live as long as the `Reader`. Reusing one cache is
+    /// only sound while the *source is the same map* — if you point a new `Reader` at a different
+    /// `.obcm`, call [`MapCache::clear`] first or the old map's resident chunks cross-serve.
     pub fn new(src: &'a dyn ByteSource, cache: &'a MapCache) -> Result<Reader<'a>, Error> {
         let total = src.len() as usize;
         if total < HEADER_LEN {
@@ -243,7 +263,7 @@ impl<'a> Reader<'a> {
         if version != 5 {
             return Err(Error::BadVersion);
         }
-        // Header field order: lat,lon,lat,lon (see serialize.py header pack).
+        // Header field order: lat,lon,lat,lon (see `obc-pack`'s `serialize.rs` header pack / OBCM_Spec.md).
         let min_lat = rd_i32(&header, 5);
         let min_lon = rd_i32(&header, 9);
         let max_lat = rd_i32(&header, 13);
@@ -351,12 +371,7 @@ impl<'a> Reader<'a> {
 
     /// Like [`Reader::query`] but appends into a caller-owned buffer (cleared
     /// first), so a caller can reuse one allocation across calls.
-    pub fn query_into<const C: usize>(
-        &self,
-        lod: usize,
-        view: &BBox,
-        out: &mut Vec<(u32, BBox), C>,
-    ) {
+    pub fn query_into<const C: usize>(&self, lod: usize, view: &BBox, out: &mut Vec<(u32, BBox), C>) {
         out.clear();
         self.for_each_chunk(lod, view, |cid, node| {
             let _ = out.push((cid, node));
@@ -373,7 +388,7 @@ impl<'a> Reader<'a> {
     pub fn for_each_chunk(&self, lod: usize, view: &BBox, mut visit: impl FnMut(u32, BBox)) {
         if let Some(l) = self.lods.get(lod) {
             if l.node_count > 0 {
-                self.walk_leaves(l, 0, self.bbox, view, &mut visit);
+                self.walk_leaves(l, 0, self.bbox, view, 0, &mut visit);
             }
         }
     }
@@ -384,9 +399,13 @@ impl<'a> Reader<'a> {
         idx: usize,
         node: BBox,
         view: &BBox,
+        depth: u32,
         visit: &mut F,
     ) {
-        if idx >= lod.node_count || !node.intersects(view) {
+        // The depth cap is the hard stack bound: a corrupt map can cycle a branch back onto
+        // itself (see `MAX_QUADTREE_DEPTH`), so without it the walk could recurse until the MCU
+        // stack overflows into a HardFault. A well-formed tree never reaches the cap.
+        if idx >= lod.node_count || depth > MAX_QUADTREE_DEPTH || !node.intersects(view) {
             return;
         }
         // Read the node *before* descending/visiting so the index-cache borrow is released by
@@ -402,38 +421,28 @@ impl<'a> Reader<'a> {
             return;
         }
         let child = (val & !BRANCH_BIT) as usize;
-        // floor-division midpoints to match the Python packer's `//`.
+        // A branch's four children always lie *after* it in the file — the packer flattens the
+        // quadtree breadth-first, so a parent's first-child index is always greater than its own
+        // (`serialize_tree`). `child > idx` is therefore an invariant of every well-formed map;
+        // a back-/self-reference (`child <= idx`) only appears in a corrupt one, and descending it
+        // would re-enter a node already on the stack. Reject it here — the depth cap above is the
+        // backstop, this stops the most direct cycle at its source.
+        if child <= idx {
+            return;
+        }
+        // Floor-division midpoints (`div_euclid` floors toward −∞) — must match the packer's
+        // `quadtree.rs` split so reader and writer agree on every node bbox.
         let mid_lon = (node.min_lon + node.max_lon).div_euclid(2);
         let mid_lat = (node.min_lat + node.max_lat).div_euclid(2);
         // NW, NE, SW, SE
         let kids = [
-            BBox {
-                min_lon: node.min_lon,
-                min_lat: mid_lat,
-                max_lon: mid_lon,
-                max_lat: node.max_lat,
-            },
-            BBox {
-                min_lon: mid_lon,
-                min_lat: mid_lat,
-                max_lon: node.max_lon,
-                max_lat: node.max_lat,
-            },
-            BBox {
-                min_lon: node.min_lon,
-                min_lat: node.min_lat,
-                max_lon: mid_lon,
-                max_lat: mid_lat,
-            },
-            BBox {
-                min_lon: mid_lon,
-                min_lat: node.min_lat,
-                max_lon: node.max_lon,
-                max_lat: mid_lat,
-            },
+            BBox { min_lon: node.min_lon, min_lat: mid_lat, max_lon: mid_lon, max_lat: node.max_lat },
+            BBox { min_lon: mid_lon, min_lat: mid_lat, max_lon: node.max_lon, max_lat: node.max_lat },
+            BBox { min_lon: node.min_lon, min_lat: node.min_lat, max_lon: mid_lon, max_lat: mid_lat },
+            BBox { min_lon: mid_lon, min_lat: node.min_lat, max_lon: node.max_lon, max_lat: mid_lat },
         ];
         for (i, kb) in kids.iter().enumerate() {
-            self.walk_leaves(lod, child + i, *kb, view, visit);
+            self.walk_leaves(lod, child + i, *kb, view, depth + 1, visit);
         }
     }
 
@@ -542,12 +551,7 @@ impl Bounds {
     }
     #[inline]
     fn to_bbox(self) -> BBox {
-        BBox {
-            min_lon: self.min_lon,
-            min_lat: self.min_lat,
-            max_lon: self.max_lon,
-            max_lat: self.max_lat,
-        }
+        BBox { min_lon: self.min_lon, min_lat: self.min_lat, max_lon: self.max_lon, max_lat: self.max_lat }
     }
 }
 
@@ -742,12 +746,7 @@ fn parse_styles(src: &dyn ByteSource, style_offset: usize, total: usize) -> [Opt
 /// Parse the `lod_count` LOD-table entries (read resident from `src`); validates each layer's
 /// index/chunk region lies within the file (`total` bytes) so `query`/`decode_chunk` can skip
 /// bounds math, and that its `chunk_size` fits a cache slot ([`MAX_CHUNK_BYTES`], issue #37).
-fn parse_lod_table(
-    src: &dyn ByteSource,
-    offset: usize,
-    lod_count: usize,
-    total: usize,
-) -> Result<Vec<Lod, 16>, Error> {
+fn parse_lod_table(src: &dyn ByteSource, offset: usize, lod_count: usize, total: usize) -> Result<Vec<Lod, 16>, Error> {
     let mut lods = Vec::new();
     let mut e = [0u8; LOD_ENTRY_LEN];
     for k in 0..lod_count {
@@ -766,9 +765,7 @@ fn parse_lod_table(
         // that indexes far out of the file.
         let chunks_end = lod
             .data_start()
-            .and_then(|start| {
-                lod.chunk_count.checked_mul(lod.chunk_size).and_then(|len| start.checked_add(len))
-            })
+            .and_then(|start| lod.chunk_count.checked_mul(lod.chunk_size).and_then(|len| start.checked_add(len)))
             .ok_or(Error::BadOffset)?;
         if lod.index_offset < HEADER_LEN || chunks_end > total {
             return Err(Error::BadOffset);
@@ -835,7 +832,7 @@ struct IndexBlock {
 /// quadtree-node reads, with the streaming counters. Caller-owned and reusable across frames —
 /// the device places one in SDRAM for the whole session and rebuilds the small [`Reader`] each
 /// frame against it (so a chunk read one frame can hit the next), while the host just makes one
-/// per render. ≈84 KB, dominated by the slots + the decode scratch; tune the slot count /
+/// per render. ≈277 KB, dominated by the slots + the decode scratch; tune the slot count /
 /// `CACHE_SLOT_BYTES` against the on-device RAM budget.
 ///
 /// Wraps its mutable state in a `RefCell` so a [`Reader`] can borrow it (`&MapCache`) yet read
@@ -852,10 +849,20 @@ impl Default for MapCache {
 }
 
 impl MapCache {
-    /// A fresh, empty cache. ≈84 KB of zeroed buffers — on the device, place it once in SDRAM
+    /// A fresh, empty cache. ≈277 KB of zeroed buffers — on the device, place it once in SDRAM
     /// (e.g. `ptr::write`, like the `App`) so it stays off the 192 KB main stack.
     pub fn new() -> Self {
         MapCache { inner: RefCell::new(MapCacheInner::new()) }
+    }
+
+    /// Drop every resident chunk + index slot. **Call this whenever you rebuild a [`Reader`] over
+    /// a *different* [`ByteSource`]** (a runtime map switch): the cache keys slots only by
+    /// `(lod, chunk_id, len)` / index offset, *not* by which map produced them, so a slot left
+    /// resident from the old map would be served to the new reader as a (wrong-geometry) hit. The
+    /// device opens its map once at boot and never needs this; a host that swaps the active
+    /// `.obcm` does. Cheap — only the `valid` flags + counters are touched, not the buffers.
+    pub fn clear(&self) {
+        self.inner.borrow_mut().clear();
     }
 
     #[inline]
@@ -898,6 +905,23 @@ impl MapCacheInner {
         unsafe { core::mem::MaybeUninit::zeroed().assume_init() }
     }
 
+    /// Drop every resident chunk + index slot and zero the counters, returning the cache to its
+    /// just-`new` state without touching the ≈84 KB of backing buffers (only the `valid` flags
+    /// and the small counters are written). Used on a map switch — see [`MapCache::clear`].
+    fn clear(&mut self) {
+        for s in &mut self.chunks {
+            s.valid = false;
+        }
+        for b in &mut self.index {
+            b.valid = false;
+        }
+        self.tick = 0;
+        self.chunk_hits = 0;
+        self.chunk_misses = 0;
+        self.sd_reads = 0;
+        self.bytes_read = 0;
+    }
+
     #[inline]
     fn stats(&self) -> CacheStats {
         CacheStats {
@@ -938,15 +962,18 @@ impl MapCacheInner {
             self.count_read(len);
             return Ok(ChunkLoc::Scratch);
         }
-        if let Some(i) =
-            self.chunks.iter().position(|s| s.valid && s.lod == lod && s.cid == cid && s.len == len)
-        {
+        if let Some(i) = self.chunks.iter().position(|s| s.valid && s.lod == lod && s.cid == cid && s.len == len) {
             self.chunk_hits = self.chunk_hits.saturating_add(1);
             let t = self.touch();
             self.chunks[i].used = t;
             return Ok(ChunkLoc::Slot(i));
         }
         let i = lru(self.chunks.iter().map(|s| (!s.valid, s.used)));
+        // Invalidate before the read: a flaky source can fail partway through, leaving the buffer
+        // partially overwritten with the new chunk's bytes. Committing nothing until the read
+        // succeeds means a failed read leaves an empty slot, not a poisoned one keyed to the old
+        // chunk (which would later be served as a corrupt cache hit).
+        self.chunks[i].valid = false;
         src.read_at(start, &mut self.chunks[i].buf[..len])?;
         self.chunks[i].valid = true;
         self.chunks[i].lod = lod;
@@ -962,12 +989,7 @@ impl MapCacheInner {
     /// Fill `out` from index-region offset `off`, assembling from cached blocks (reading any
     /// missing block from the source). A node read is 4 bytes and may straddle a block edge, so
     /// this loops over blocks.
-    fn index_read(
-        &mut self,
-        src: &dyn ByteSource,
-        off: u32,
-        out: &mut [u8],
-    ) -> Result<(), IoError> {
+    fn index_read(&mut self, src: &dyn ByteSource, off: u32, out: &mut [u8]) -> Result<(), IoError> {
         let mut filled = 0usize;
         while filled < out.len() {
             let cur = off + filled as u32;
@@ -979,8 +1001,7 @@ impl MapCacheInner {
                 return Err(IoError::BadOffset);
             }
             let take = (blen - within).min(out.len() - filled);
-            out[filled..filled + take]
-                .copy_from_slice(&self.index[slot].buf[within..within + take]);
+            out[filled..filled + take].copy_from_slice(&self.index[slot].buf[within..within + take]);
             filled += take;
         }
         Ok(())
@@ -998,6 +1019,9 @@ impl MapCacheInner {
             return Err(IoError::BadOffset);
         }
         let i = lru(self.index.iter().map(|b| (!b.valid, b.used)));
+        // Invalidate before the read (see `load_chunk`): a partial read failure must not leave a
+        // poisoned slot still keyed to the old block offset.
+        self.index[i].valid = false;
         src.read_at(block_off, &mut self.index[i].buf[..want])?;
         self.index[i].valid = true;
         self.index[i].off = block_off;
@@ -1025,4 +1049,164 @@ fn lru(slots: impl Iterator<Item = (bool, u32)>) -> usize {
         }
     }
     best
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::SliceSource;
+
+    /// A `ByteSource` that reproduces the flaky-SD failure of issue #64: the read whose offset is
+    /// `fail_at` copies `partial` bytes into the destination (a *real* partial overwrite, like
+    /// `SdByteSource` filling block-by-block) and then returns `Err`. Every other read is filled
+    /// from `data`. The host's `SliceSource` copies in one shot and so can never reproduce this.
+    struct FlakySource<'a> {
+        data: &'a [u8],
+        fail_at: u32,
+        partial: usize,
+    }
+
+    impl ByteSource for FlakySource<'_> {
+        fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), IoError> {
+            let start = offset as usize;
+            let end = start.checked_add(buf.len()).ok_or(IoError::BadOffset)?;
+            let bytes = self.data.get(start..end).ok_or(IoError::BadOffset)?;
+            if offset == self.fail_at {
+                let n = self.partial.min(buf.len());
+                buf[..n].copy_from_slice(&bytes[..n]); // partial write, then fail
+                return Err(IoError::Io);
+            }
+            buf.copy_from_slice(bytes);
+            Ok(())
+        }
+
+        fn len(&self) -> u32 {
+            self.data.len() as u32
+        }
+    }
+
+    /// A read that fails partway through must leave the evicted slot *empty*, not poisoned with
+    /// the old key over a half-overwritten buffer — otherwise a later request for the old key is
+    /// served as a (corrupt) cache hit. Regression test for issue #64.
+    #[test]
+    fn partial_read_failure_does_not_poison_evicted_slot() {
+        const LEN: usize = 64;
+        // One LEN-chunk per slot, plus one more past them for the failing eviction read — sized off
+        // MAP_CHUNK_SLOTS so the test tracks the cache size rather than a hard-coded buffer length.
+        let mut data = [0u8; (MAP_CHUNK_SLOTS + 1) * LEN];
+        for (k, b) in data.iter_mut().enumerate() {
+            *b = (k as u8).wrapping_mul(31).wrapping_add(7); // distinct, offset-derived bytes
+        }
+        // The eviction read (K_new) lives past the primed chunks (one per slot) and fails partway.
+        let fail_at = (MAP_CHUNK_SLOTS as u32) * LEN as u32;
+        let src = FlakySource { data: &data, fail_at, partial: 8 };
+
+        let cache = MapCache::new();
+        let mut inner = cache.borrow_mut();
+
+        // Prime all slots, oldest first — so the LRU victim of the next miss is slot 0 (cid 0).
+        for cid in 0..MAP_CHUNK_SLOTS as u32 {
+            let loc = inner.load_chunk(&src, 0, cid, cid * LEN as u32, LEN).unwrap();
+            assert!(matches!(loc, ChunkLoc::Slot(_)));
+        }
+        let primed = inner.stats();
+        assert_eq!(primed.chunk_misses, MAP_CHUNK_SLOTS as u32);
+        assert_eq!(primed.chunk_hits, 0);
+
+        // The true bytes of K_old (cid 0), for an uncorrupted-content check after re-read.
+        let mut k_old = [0u8; LEN];
+        src.read_at(0, &mut k_old).unwrap();
+
+        // Eviction read of K_new fails partway through filling slot 0's buffer.
+        assert!(matches!(inner.load_chunk(&src, 0, 99, fail_at, LEN), Err(IoError::Io)));
+
+        // Request K_old again: it must be a *miss* (re-read), not a hit on the poisoned slot.
+        let before = inner.stats();
+        let loc = inner.load_chunk(&src, 0, 0, 0, LEN).unwrap();
+        let after = inner.stats();
+        assert_eq!(after.chunk_hits, before.chunk_hits, "K_old must not hit the poisoned slot");
+        assert_eq!(after.chunk_misses, before.chunk_misses + 1, "K_old must be re-read");
+
+        // …and the re-read returns the real K_old bytes, not the half-written K_new.
+        match loc {
+            ChunkLoc::Slot(i) => assert_eq!(&inner.chunks[i].buf[..LEN], &k_old[..]),
+            ChunkLoc::Scratch => panic!("a slot-sized chunk should land in a slot"),
+        }
+    }
+
+    /// Two maps that share a chunk key `(lod, cid, len)` but hold *different* bytes there must not
+    /// cross-serve through a shared cache. The cache keys a slot only by `(lod, cid, len)`, not by
+    /// the source, so after a map switch the old slot would be returned as a (wrong-geometry) hit
+    /// — the latent map-switch bug of issue #68. `clear()` on the switch drops the stale slots so
+    /// the next read misses and fills from the new source. This first half *demonstrates the
+    /// hazard* (the stale hit) so the test fails loudly if `clear()` is ever dropped from the fix.
+    #[test]
+    fn clear_prevents_chunk_cache_cross_serving() {
+        const LEN: usize = 64;
+        let a = [0xAAu8; 256]; // map A's bytes
+        let b = [0xBBu8; 256]; // map B's bytes — same key, different geometry
+        let sa = SliceSource(&a);
+        let sb = SliceSource(&b);
+
+        let cache = MapCache::new();
+        let mut inner = cache.borrow_mut();
+
+        // Map A fills slot (0, 0, LEN) with A's bytes.
+        match inner.load_chunk(&sa, 0, 0, 0, LEN).unwrap() {
+            ChunkLoc::Slot(i) => assert!(inner.chunks[i].buf[..LEN].iter().all(|&x| x == 0xAA)),
+            ChunkLoc::Scratch => panic!("a slot-sized chunk should land in a slot"),
+        }
+
+        // The hazard: the same key from map B *without* a clear hits A's resident slot and serves
+        // A's bytes — exactly the stale-geometry cross-serve issue #68 is about.
+        let before = inner.stats();
+        let loc = inner.load_chunk(&sb, 0, 0, 0, LEN).unwrap();
+        let after = inner.stats();
+        assert_eq!(after.chunk_hits, before.chunk_hits + 1, "same key must cross-serve before a clear");
+        match loc {
+            ChunkLoc::Slot(i) => assert!(inner.chunks[i].buf[..LEN].iter().all(|&x| x == 0xAA), "stale A bytes"),
+            ChunkLoc::Scratch => panic!("a slot-sized chunk should land in a slot"),
+        }
+        drop(inner);
+
+        // The fix: clear on the switch, then map B's read misses and returns B's bytes.
+        cache.clear();
+        let mut inner = cache.borrow_mut();
+        let before = inner.stats();
+        let loc = inner.load_chunk(&sb, 0, 0, 0, LEN).unwrap();
+        let after = inner.stats();
+        assert_eq!(after.chunk_hits, before.chunk_hits, "post-clear read must not hit a stale slot");
+        assert_eq!(after.chunk_misses, before.chunk_misses + 1, "post-clear read must miss + re-read");
+        match loc {
+            ChunkLoc::Slot(i) => assert!(inner.chunks[i].buf[..LEN].iter().all(|&x| x == 0xBB), "B bytes after clear"),
+            ChunkLoc::Scratch => panic!("a slot-sized chunk should land in a slot"),
+        }
+    }
+
+    /// The index-block cache keys a block by its absolute offset into the index region, which means
+    /// nothing across maps — so `clear()` must drop index blocks too, or a switched map's quadtree
+    /// read at the same offset would hit a stale block. Detected via the source-read counters: a
+    /// post-clear read of the same offset must re-read (a hit reads nothing).
+    #[test]
+    fn clear_invalidates_index_blocks() {
+        let data = [0x5Au8; 1024];
+        let src = SliceSource(&data);
+
+        let cache = MapCache::new();
+        let mut inner = cache.borrow_mut();
+
+        // Resident, then a hit (no source read).
+        inner.index_block(&src, 0).unwrap();
+        let before = inner.stats();
+        inner.index_block(&src, 0).unwrap();
+        assert_eq!(inner.stats().sd_reads, before.sd_reads, "a resident block must hit, not re-read");
+        drop(inner);
+
+        // After clear the same offset must miss and re-read from the source.
+        cache.clear();
+        let mut inner = cache.borrow_mut();
+        let before = inner.stats();
+        inner.index_block(&src, 0).unwrap();
+        assert_eq!(inner.stats().sd_reads, before.sd_reads + 1, "post-clear index read must re-read");
+    }
 }

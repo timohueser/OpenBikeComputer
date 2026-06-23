@@ -9,12 +9,12 @@ use std::collections::VecDeque;
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
 use obc_app::activity::Activity;
 use obc_app::screen::{
-    apply, Ctx, HomeScreen, MapScreen, MenuScreen, RideControl, RouteMenuScreen, RouteSwapScreen,
-    Screen, Stack, Transition,
+    apply, Ctx, HomeScreen, MapScreen, MenuScreen, RideControl, RouteMenuScreen, RouteSwapScreen, Screen, Stack,
+    Transition,
 };
 use obc_app::{
-    App, AppState, Button, ButtonEvent, CameraMode, Fix, Gesture, InputClock, InputEvent,
-    InputSource, LocationSource, Mode, PanAxis, RideClock, RouteSummary, Sensors, TrackAction,
+    App, AppState, Button, ButtonEvent, CameraMode, Fix, Gesture, InputClock, InputEvent, InputSource, LocationSource,
+    Mode, PanAxis, RideClock, RouteSummary, Sensors, TrackAction,
 };
 use obc_reader::{rgb565_to_rgb888, BBox, MapCache, Reader, SliceSource};
 
@@ -25,11 +25,7 @@ fn ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity) -> Ctx<'a> {
 }
 
 /// A handle [`Ctx`] carrying a route catalog, for the Route-menu tests.
-fn route_ctx<'a>(
-    state: &'a mut AppState,
-    activity: &'a mut Activity,
-    routes: &'a [RouteSummary],
-) -> Ctx<'a> {
+fn route_ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity, routes: &'a [RouteSummary]) -> Ctx<'a> {
     Ctx { state, activity, routes, now_ms: 0 }
 }
 
@@ -207,10 +203,7 @@ fn reselecting_the_active_route_mid_session_returns_to_the_map() {
     let mut rm = RouteMenuScreen::new();
     rm.handle(Gesture::Turn(1), &mut route_ctx(&mut st, &mut act, &routes)); // highlight the active route 1
     let t = rm.handle(Gesture::Press, &mut route_ctx(&mut st, &mut act, &routes));
-    assert!(
-        matches!(t, Transition::Root(Screen::Map(_))),
-        "re-picking the active route just rides it"
-    );
+    assert!(matches!(t, Transition::Root(Screen::Map(_))), "re-picking the active route just rides it");
 }
 
 #[test]
@@ -219,8 +212,7 @@ fn route_swap_swap_only_keeps_the_session() {
     let before = act.session;
     let routes = test_routes();
     // Default selection (0) is "Swap route".
-    let t =
-        RouteSwapScreen::new(2).handle(Gesture::Press, &mut route_ctx(&mut st, &mut act, &routes));
+    let t = RouteSwapScreen::new(2).handle(Gesture::Press, &mut route_ctx(&mut st, &mut act, &routes));
     assert!(matches!(t, Transition::Root(Screen::Map(_))));
     assert_eq!(act.active_route, Some(2), "navigation swapped to the picked route");
     assert_eq!(act.session, before, "the tracking session continues unchanged");
@@ -538,10 +530,7 @@ fn pan_turn_moves_camera_along_axis() {
     assert!(st.cam_lat > 0, "a positive detent pans up = +latitude");
     assert_eq!(st.cam_lon, 0, "the vertical axis leaves longitude unchanged");
     MapScreen::new().handle(Gesture::Turn(-1), &mut ctx(&mut st, &mut act));
-    assert!(
-        st.cam_lat.abs() <= 1 && st.cam_lon.abs() <= 1,
-        "reversing returns to the start (±1 µdeg)"
-    );
+    assert!(st.cam_lat.abs() <= 1 && st.cam_lon.abs() <= 1, "reversing returns to the start (±1 µdeg)");
 }
 
 /// `press` toggles the pan axis; `hold` flips N-up ↔ heading-up and freezes the new

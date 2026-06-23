@@ -2,6 +2,7 @@
 name = "obc-route"
 version = "0.1.0"
 edition = "2021"
+publish = false  # internal firmware crate — not published to crates.io
 description = "OBCR route format reader + GPX converter (no_std) — shared by the desktop simulator and nRF firmware"
 
 [dependencies]

@@ -62,8 +62,7 @@ struct CalibState {
 pub fn run(bytes: Vec<u8>, args: Args) -> Result<(), eframe::Error> {
     // The window wraps the whole device (housing + screen + a little backdrop) at
     // `--scale`, not just the screen, so the body has room around the framebuffer.
-    let dev = housing::HousingStyle::default()
-        .window_size_px(egui::vec2(args.width as f32, args.height as f32));
+    let dev = housing::HousingStyle::default().window_size_px(egui::vec2(args.width as f32, args.height as f32));
     let win = [dev.x * args.scale as f32, dev.y * args.scale as f32];
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_title("OBC Simulator").with_inner_size(win),
@@ -77,10 +76,10 @@ pub fn run(bytes: Vec<u8>, args: Args) -> Result<(), eframe::Error> {
 }
 
 /// Web entry point: mount the *same* `SimGui` app on the page's `<canvas>` via
-/// eframe's WebGL runner. Called from the wasm `main` (see `main.rs`). Because the
-/// app is identical to the native sim — and to the firmware's render path — the
-/// embedded demo on the project site is always current with the code, never a
-/// screenshot that drifts out of date.
+/// eframe's WebGL runner. Called from the wasm `main` (see `main.rs`). The app is
+/// identical to the native sim and to the firmware's render path, so the project
+/// site's embedded demo stays current with the code rather than drifting like a
+/// screenshot.
 #[cfg(target_arch = "wasm32")]
 pub fn run_web() {
     use eframe::wasm_bindgen::JsCast as _;
@@ -90,10 +89,7 @@ pub fn run_web() {
     eframe::WebLogger::init(log::LevelFilter::Warn).ok();
 
     wasm_bindgen_futures::spawn_local(async {
-        let document = eframe::web_sys::window()
-            .expect("no window")
-            .document()
-            .expect("no document");
+        let document = eframe::web_sys::window().expect("no window").document().expect("no document");
         let canvas = document
             .get_element_by_id("device_canvas")
             .expect("index.html is missing <canvas id=\"device_canvas\">")
@@ -175,12 +171,11 @@ struct SimGui {
     screenshot_requested: bool,
     last_stats: obc_render::RenderStats,
     /// The shared render-on-demand dirty signal ([`App::take_dirty`], issue #47), drained
-    /// once per frame and shown in the stats panel. The sim keeps its continuous redraw (it
-    /// also animates host chrome and replays GPX), so this is *informational* here — a live
-    /// readout of the same signal the firmware gates its map/overlay renders on, which makes
-    /// the dirty logic observable while iterating. (Mouse pan/zoom is a Free-mode host
-    /// convenience that mutates the camera outside the app's input path, so it isn't reflected
-    /// — on the device every camera change goes through a gesture or a fix, which is.)
+    /// once per frame and shown in the stats panel. The sim redraws continuously (it also
+    /// animates host chrome and replays GPX), so this is informational — a live readout of the
+    /// signal the firmware gates its map/overlay renders on. (Mouse pan/zoom mutates the camera
+    /// outside the app's input path, so it isn't reflected; on the device every camera change
+    /// goes through a gesture or a fix, which is.)
     last_dirty: Dirty,
     /// The device body color drawn by the housing chrome. Switchable live in the
     /// control panel; defaults to slate (or `--colorway`). Purely cosmetic host chrome.
@@ -209,12 +204,7 @@ impl SimGui {
         state.mode = CameraMode::Free;
         // `--heading` opens in heading-up with that course; otherwise north-up.
         state.heading_up = args.heading.is_some();
-        let loc = SimLocationSource::new(Some(Fix {
-            lat: cy,
-            lon: cx,
-            course: args.heading,
-            speed_mps: None,
-        }));
+        let loc = SimLocationSource::new(Some(Fix { lat: cy, lon: cx, course: args.heading, speed_mps: None }));
 
         // Seed the panel mirrors from the initial fix so the widgets open showing
         // the device's actual starting position/heading.
@@ -232,17 +222,14 @@ impl SimGui {
         // the encoder walks Home → Route menu → Map, exactly like the device. (The
         // headless `--png` path and the web demo open straight on the map instead.)
         let app = if args.start_on_map { App::new(state) } else { App::new_idle(state) };
-        let store =
-            RouteStore::open(args.routes_dir.clone().unwrap_or_else(|| "routes".to_string()));
-        let tracks =
-            TrackStore::open(args.tracks_dir.clone().unwrap_or_else(|| "tracks".to_string()));
+        let store = RouteStore::open(args.routes_dir.clone().unwrap_or_else(|| "routes".to_string()));
+        let tracks = TrackStore::open(args.tracks_dir.clone().unwrap_or_else(|| "tracks".to_string()));
         // Load any saved 1:1 calibration; `--physical` only takes effect if we have one,
         // and `--calibrate` opens the calibration screen straight away.
         let points_per_mm = crate::calib::load();
         let physical = args.physical && points_per_mm.is_some();
         // Housing body color: `--colorway NAME`, else the slate default.
-        let colorway =
-            args.colorway.as_deref().and_then(Colorway::from_label).unwrap_or(Colorway::Slate);
+        let colorway = args.colorway.as_deref().and_then(Colorway::from_label).unwrap_or(Colorway::Slate);
         let mut gui = SimGui {
             app,
             store,
@@ -304,20 +291,18 @@ impl SimGui {
             g.app.activity.start_session();
         }
         // Auto-play the embedded ride (the Grimselpass climb, Guttannen → summit) so the
-        // page opens on a *moving* map. It's point-to-point, not a loop, so the restart in
+        // page opens on a moving map. It's point-to-point, not a loop, so the restart in
         // render_to_texture snaps back to the start and clears the trail for a fresh lap.
         if let Ok(track) = Track::parse(include_str!("../assets/grimsel-climb.gpx")) {
             let mut player = GpxPlayer::new(track);
-            // The GPX is distance-timed at a ~12 km/h base, so this multiplier reads as
-            // "N× a normal climbing pace" — 3× keeps the map moving without a blur.
+            // The GPX is distance-timed at a ~12 km/h base, so the multiplier reads as
+            // "N× a normal climbing pace"; 3× keeps the map moving without a blur.
             player.set_speed(3.0);
             player.play();
             g.gpx = Some(player);
         }
-        // Follow the rider in heading-up (the map rotates so the direction of travel is
-        // always up — the natural bike-computer view), and tighten the fit-to-whole-tile
-        // zoom to a riding view so the route reads as a ribbon up the pass with the
-        // switchbacks visible.
+        // Follow the rider heading-up (map rotates so travel is always up), and tighten the
+        // fit-to-whole-tile zoom to a riding view so the route's switchbacks are visible.
         g.app.state.mode = CameraMode::Follow;
         g.app.state.heading_up = true;
         g.app.state.zoom *= 12.0;
@@ -332,13 +317,9 @@ impl SimGui {
         match Track::load(path) {
             Ok(track) => {
                 let player = GpxPlayer::new(track);
-                let name =
-                    path.file_name().and_then(|n| n.to_str()).unwrap_or("track.gpx").to_string();
-                self.gpx_label = Some(format!(
-                    "{name} — {} pts, {}",
-                    player.point_count(),
-                    units::format_clock(player.duration())
-                ));
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("track.gpx").to_string();
+                self.gpx_label =
+                    Some(format!("{name} — {} pts, {}", player.point_count(), units::format_clock(player.duration())));
                 self.gpx = Some(player);
                 self.gpx_error = None;
             }
@@ -425,14 +406,10 @@ impl SimGui {
         // as `render_us` — `obc-render` is no_std and clockless, so the host fills it (the
         // device will use the DWT cycle counter). Surfaced in the control panel's stats.
         let t0 = web_time::Instant::now();
-        let mut stats = self.app.render_frame(
-            &mut self.fb,
-            &reader,
-            route.as_ref(),
-            self.dev_w as f32,
-            self.dev_h as f32,
-            |c| crate::color_of(c, tc),
-        );
+        let mut stats =
+            self.app.render_frame(&mut self.fb, &reader, route.as_ref(), self.dev_w as f32, self.dev_h as f32, |c| {
+                crate::color_of(c, tc)
+            });
         stats.render_us = t0.elapsed().as_micros() as u32;
         self.last_stats = stats;
         // Drain the shared dirty signal for the stats readout. The sim renders unconditionally
@@ -440,10 +417,7 @@ impl SimGui {
         // have re-rendered this frame, so the render-on-demand logic can be watched live.
         self.last_dirty = self.app.take_dirty();
 
-        let image = egui::ColorImage::from_rgb(
-            [self.dev_w as usize, self.dev_h as usize],
-            self.fb.as_rgb888(),
-        );
+        let image = egui::ColorImage::from_rgb([self.dev_w as usize, self.dev_h as usize], self.fb.as_rgb888());
         let opts = egui::TextureOptions::NEAREST;
         match &mut self.texture {
             Some(t) => t.set(image, opts),
@@ -456,13 +430,7 @@ impl SimGui {
     /// is fit to the window, so it can differ from the requested `--scale`).
     /// Native-only: the web demo disables screen pan/zoom (no touchscreen feel).
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-    fn handle_camera_input(
-        &mut self,
-        ui: &egui::Ui,
-        resp: &egui::Response,
-        rect: egui::Rect,
-        scale: f32,
-    ) {
+    fn handle_camera_input(&mut self, ui: &egui::Ui, resp: &egui::Response, rect: egui::Rect, scale: f32) {
         let (w, h) = (self.dev_w as f32, self.dev_h as f32);
         let st = &mut self.app.state;
 
@@ -488,8 +456,7 @@ impl SimGui {
                 let local = pos - rect.min;
                 let px = (local.x / scale).clamp(0.0, w);
                 let py = (local.y / scale).clamp(0.0, h);
-                let new_zoom =
-                    (st.zoom * (scroll * 0.005).exp()).clamp(units::MIN_ZOOM, units::MAX_ZOOM);
+                let new_zoom = (st.zoom * (scroll * 0.005).exp()).clamp(units::MIN_ZOOM, units::MAX_ZOOM);
 
                 // Keep the ground point under the cursor fixed across the zoom.
                 let (olon, olat) = st.viewport(w, h).to_map(px, py);
@@ -556,11 +523,8 @@ impl SimGui {
 
             // Mirror the live control state onto the housing so the encoder/Back animate.
             // The knurl eases toward the new angle so each detent reads as a little turn.
-            let knob_angle = ui.ctx().animate_value_with_time(
-                egui::Id::new("knurl_phase"),
-                self.input.knob_angle(),
-                0.12,
-            );
+            let knob_angle =
+                ui.ctx().animate_value_with_time(egui::Id::new("knurl_phase"), self.input.knob_angle(), 0.12);
             let ctrl = housing::ControlVisual { knob_angle, encoder_down: enc_down, back_down };
             let palette = self.colorway.palette();
 
@@ -607,15 +571,11 @@ impl SimGui {
                 // Reference bar: a known width in points (clamped to the window). The user
                 // measures its physical length, so points-per-mm = drawn width / mm.
                 let bar_w = crate::calib::REF_BAR_POINTS.min(ui.available_width() - 48.0).max(60.0);
-                let (rect, _) =
-                    ui.allocate_exact_size(egui::vec2(bar_w, 34.0), egui::Sense::hover());
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(bar_w, 34.0), egui::Sense::hover());
                 let p = ui.painter_at(rect);
                 let col = ui.visuals().strong_text_color();
                 let y = rect.center().y;
-                p.line_segment(
-                    [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
-                    egui::Stroke::new(3.0, col),
-                );
+                p.line_segment([egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)], egui::Stroke::new(3.0, col));
                 for x in [rect.left(), rect.right()] {
                     p.line_segment(
                         [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
@@ -629,12 +589,7 @@ impl SimGui {
                     ui.add(egui::TextEdit::singleline(&mut calib.measured_mm).desired_width(70.0));
                     ui.label("mm");
                 });
-                let parsed = calib
-                    .measured_mm
-                    .trim()
-                    .parse::<f32>()
-                    .ok()
-                    .filter(|v| v.is_finite() && *v > 1.0);
+                let parsed = calib.measured_mm.trim().parse::<f32>().ok().filter(|v| v.is_finite() && *v > 1.0);
 
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
@@ -646,10 +601,7 @@ impl SimGui {
                     }
                 });
                 if parsed.is_none() && !calib.measured_mm.trim().is_empty() {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(220, 80, 80),
-                        "enter a length in mm (> 1)",
-                    );
+                    ui.colored_label(egui::Color32::from_rgb(220, 80, 80), "enter a length in mm (> 1)");
                 }
             });
         });
@@ -681,8 +633,7 @@ impl SimGui {
         }
         // Either way the window wraps the whole device (housing + screen + backdrop), so
         // the body fits around the framebuffer.
-        let dev = housing::HousingStyle::default()
-            .window_size_px(egui::vec2(self.dev_w as f32, self.dev_h as f32));
+        let dev = housing::HousingStyle::default().window_size_px(egui::vec2(self.dev_w as f32, self.dev_h as f32));
         let size = match (self.physical, self.points_per_mm) {
             (true, Some(ppm)) => {
                 let s = crate::calib::PANEL_W_MM * ppm / self.dev_w as f32;
@@ -734,10 +685,7 @@ impl eframe::App for SimGui {
         let dropped: Vec<std::path::PathBuf> =
             ctx.input(|i| i.raw.dropped_files.iter().filter_map(|f| f.path.clone()).collect());
         for path in dropped {
-            let is_gpx = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .is_some_and(|e| e.eq_ignore_ascii_case("gpx"));
+            let is_gpx = path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("gpx"));
             if is_gpx {
                 match self.store.import_gpx(&path) {
                     Ok(s) => {

@@ -29,22 +29,20 @@
 //! two do not both fit the F429's 192 KB internal SRAM. For the prototype the whole
 //! `App` (which embeds the renderer) is placed in **SDRAM**, just past the four
 //! framebuffers (the double-buffered map plane + the double-buffered Layer 2 overlay,
-//! 4x150 KB — see below) — simplest, runs the full-size renderer. The 8 MB SDRAM swallows
-//! all of it. The cost is render-time:
-//! the scratch is now behind the FMC's wait states (slower than the internal-RAM
-//! `mcu-render-bench`); the per-frame time logged over RTT quantifies the delta.
-//! A `small-scratch` cargo feature (internal-RAM scratch) is the fallback if that
-//! delta ever matters — not needed yet.
+//! 4x150 KB — see below); the 8 MB SDRAM holds all of it and runs the full-size
+//! renderer. The cost is render time: the scratch is now behind the FMC's wait states
+//! (slower than the internal-RAM `mcu-render-bench`); the per-frame time logged over
+//! RTT quantifies the delta. A `small-scratch` cargo feature (internal-RAM scratch) is
+//! the fallback if that delta ever matters — not needed yet.
 //!
 //! ## Double buffering (the map plane)
 //! Rendering clears and repaints the whole frame, so drawing straight into the buffer
-//! the LTDC is scanning makes the panel flash on every redraw — fine for a static
-//! demo, but ugly once the map changes. So the app path keeps **two** map framebuffers:
-//! the LTDC scans the *front* while the app renders the next frame into the *back*, then
-//! [`flip_to`] points the layer at the back and reloads it at the next vertical blank
-//! (tear-free) and the roles swap. The panel only ever shows a fully-rendered map frame.
-//! (The `glass-demo` path stays single-buffered, single-layer — it draws one static
-//! screen and halts.)
+//! the LTDC is scanning flashes the panel on every redraw. The app path instead keeps
+//! **two** map framebuffers: the LTDC scans the *front* while the app renders the next
+//! frame into the *back*, then [`flip_to`] points the layer at the back and reloads it
+//! at the next vertical blank (tear-free) and the roles swap. The panel only ever shows
+//! a fully-rendered map frame. (The `glass-demo` path stays single-buffered,
+//! single-layer — it draws one static screen and halts.)
 //!
 //! ## Dual-layer display (issue #46): map plane + overlay plane
 //! The LTDC has two blendable layers. The double-buffered map is **Layer 1** (the bottom,
@@ -58,8 +56,8 @@
 //!
 //! Layer 2 is **double-buffered** exactly like the map, for the same reason: the overlay
 //! redraws the whole buffer (clear-to-transparent then the bulge), so writing in place into
-//! the buffer the LTDC is scanning tears — the bulge visibly flickers as the clear races the
-//! scan (an in-place single buffer was the first cut; it flickered on glass). Instead the app
+//! the buffer the LTDC is scanning tears — the bulge flickers as the clear races the scan
+//! (an in-place single buffer was the first cut; it flickered on glass). Instead the app
 //! renders the next overlay frame into the *back* overlay buffer and [`flip_to`]s Layer 2 at
 //! the vblank, tear-free, then swaps — so the panel only ever scans a complete overlay frame.
 //! That makes **four** framebuffers in SDRAM (2 map + 2 overlay, 4x150 KB ≈ 600 KB), still ≪
@@ -103,7 +101,7 @@
 //! path (`App::handle_input` + inline overlay) to prove the `InputPlane`/`apply_gesture` seam
 //! composes; the two-plane split is the default and the structure `obc-fw-nrf54l` will reuse.
 //!
-//! Clock: 180 MHz core from the 16 MHz HSI (no dependency on the DISC1 HSE), plus a
+//! Clock: 168 MHz core from the 16 MHz HSI (no dependency on the DISC1 HSE), plus a
 //! PLLSAI leg for the LTDC pixel clock.
 //!
 //! ## SDRAM pin map (FMC bank 2, IS42S16400J, 8 MB @ 0xD000_0000)
@@ -169,24 +167,30 @@ use embassy_time::Instant;
 #[cfg(not(feature = "glass-demo"))]
 use embedded_graphics::pixelcolor::{raw::RawU16, Rgb565};
 #[cfg(not(feature = "glass-demo"))]
-use obc_app::{
-    App, AppState, InputClock, InputEvent, InputSource, RideClock, RouteSummary, Sensors, TrackSink,
-};
-// Only the `debug-usb`-off fallback implements its own `LocationSource` (`SynthLocation`); the
-// USB build's sources live in obc-platform, so these would be unused there.
-#[cfg(all(not(feature = "glass-demo"), not(feature = "debug-usb")))]
-use obc_app::{Fix, LocationSource};
+use obc_app::{App, AppState, InputClock, InputEvent, InputSource, RideClock, RouteSummary, Sensors, TrackSink};
 #[cfg(not(feature = "glass-demo"))]
 use obc_platform::{ButtonInput, FramebufferArgb4444};
+// Board-agnostic embassy-time glue (issue #51 / #70): `Instant::saturating_elapsed()` lives in
+// obc-platform now, so this board and the future nRF54L share one copy. The trait is brought into
+// scope here so every existing `.saturating_elapsed()` call site keeps working unchanged.
+#[cfg(not(feature = "glass-demo"))]
+use obc_platform::time::SaturatingElapsed;
+// The `debug-usb`-off fallback's stand-in GPS (`SynthLocation`) is board-agnostic too — it lives
+// in obc-platform (always compiled, since it IS the debug-usb-off path). The USB build streams a
+// real ride instead, so this import is gated to the fallback like its construction sites.
+#[cfg(all(not(feature = "glass-demo"), not(feature = "debug-usb")))]
+use obc_platform::SynthLocation;
 #[cfg(not(feature = "glass-demo"))]
 use obc_reader::{BBox, ByteSource, MapCache, Reader};
 // `SliceSource` only wraps the baked-in tile; the SD path streams through `SdByteSource`.
-#[cfg(feature = "baked-tile")]
+// Gated like its use sites in the real-app path (baked-tile, and not the glass-demo build, which
+// has no map loading) so `--all-features` (which turns on both) doesn't see it as unused.
+#[cfg(all(feature = "baked-tile", not(feature = "glass-demo")))]
 use obc_reader::SliceSource;
 #[cfg(not(feature = "glass-demo"))]
 use obc_render::zoom_for_mpp;
 #[cfg(not(feature = "glass-demo"))]
-use obc_route::{RouteIndex, RouteReader};
+use obc_route::{RouteCache, RouteIndex, RouteReader};
 
 // The two-plane (default) build only: the high-priority interrupt executor that runs the
 // input/overlay plane, the lock-free gesture channel feeding the map plane, and the
@@ -248,15 +252,15 @@ async fn usb_device_task(mut device: embassy_usb::UsbDevice<'static, UsbDriver>)
 #[cfg(feature = "debug-usb")]
 #[embassy_executor::task]
 async fn usb_rx_task(mut rx: CdcReceiver<'static, UsbDriver>) {
-    let mut reader = obc_platform::debug_usb::LineReader::new();
     let mut buf = [0u8; 64];
     loop {
         rx.wait_connection().await;
-        loop {
-            match rx.read_packet(&mut buf).await {
-                Ok(n) => obc_platform::debug_usb::feed_bytes(&mut reader, &buf[..n]),
-                Err(_) => break, // disconnected — wait for the next connection
-            }
+        // A fresh reader per session: a partial line buffered when the previous session
+        // disconnected must not be prepended to (and corrupt) this session's first line.
+        let mut reader = obc_platform::debug_usb::LineReader::new();
+        // Loop until the packet read errors (disconnect) — then wait for the next connection.
+        while let Ok(n) = rx.read_packet(&mut buf).await {
+            obc_platform::debug_usb::feed_bytes(&mut reader, &buf[..n]);
         }
     }
 }
@@ -272,11 +276,35 @@ async fn usb_tx_task(mut tx: CdcSender<'static, UsbDriver>) {
         loop {
             let t = obc_platform::debug_usb::wait_telemetry().await;
             let line = obc_platform::debug_usb::format_telemetry(&t);
-            if tx.write_packet(line.as_bytes()).await.is_err() {
+            // A CDC bulk packet is capped at the endpoint's max-packet-size (64 B here), and a
+            // single `write_packet` of more than that fails — which silently dropped the longer
+            // telemetry lines (the per-stage breakdown at coarse zoom, with big microsecond
+            // fields, runs past 64 B). Send the line in max-packet-size chunks, then a ZLP when
+            // its length is an exact multiple so the host sees the transfer end on a short packet.
+            if write_cdc_line(&mut tx, line.as_bytes()).await.is_err() {
                 break; // disconnected — wait for the next connection
             }
         }
     }
+}
+
+/// Write `bytes` over a CDC IN endpoint as one logical transfer, split into max-packet-size
+/// packets (`write_packet` rejects anything larger than the endpoint's MPS). A trailing
+/// zero-length packet terminates a transfer whose final data packet was exactly full, so the host
+/// never waits for more. Used for the telemetry lines, which can exceed one 64-byte packet.
+#[cfg(feature = "debug-usb")]
+async fn write_cdc_line(
+    tx: &mut CdcSender<'static, UsbDriver>,
+    bytes: &[u8],
+) -> Result<(), embassy_usb::driver::EndpointError> {
+    let mps = tx.max_packet_size() as usize;
+    for chunk in bytes.chunks(mps) {
+        tx.write_packet(chunk).await?;
+    }
+    if !bytes.is_empty() && bytes.len().is_multiple_of(mps) {
+        tx.write_packet(&[]).await?;
+    }
+    Ok(())
 }
 
 /// Chains two input sources for the gesture recogniser: drains `a` (the physical buttons) fully,
@@ -305,6 +333,57 @@ impl InputSource for NullInput {
     }
 }
 
+/// A `no_std` [`Clock`](obc_render::Clock) over embassy's monotonic `Instant`, in microseconds —
+/// the time base for the map render's per-stage timing (collect / sort / draw). It's the **same**
+/// clock as the whole-frame `Instant` total the loop already measures, so the stages reconcile
+/// against it. Part of the strippable render-stage-timing instrumentation (the USB telemetry's
+/// `*_us` fields); drop it with them.
+#[cfg(not(feature = "glass-demo"))]
+struct InstantClock;
+#[cfg(not(feature = "glass-demo"))]
+impl obc_render::Clock for InstantClock {
+    fn now_us(&self) -> u64 {
+        Instant::now().as_micros()
+    }
+}
+
+/// A [`ByteSource`] decorator that accumulates the wall time its inner source spends in `read_at`,
+/// so the render benchmark can attribute a frame's **SD/cache I/O** (the "read" stage) apart from
+/// the CPU decode. Interior-mutable (a `Cell`) like the medium it wraps, so a `Reader` can hold a
+/// shared `&TimedSource`; the two `Instant` reads per `read_at` are negligible against SD latency.
+/// [`reset`](TimedSource::reset) zeroes the counter — the render loop calls it right after
+/// `Reader::new` so the count is only the frame's collect (chunk + index) reads, not the
+/// header/style/LOD setup reads. Part of the strippable render-stage-timing instrumentation.
+#[cfg(not(feature = "glass-demo"))]
+struct TimedSource<'a> {
+    inner: &'a dyn ByteSource,
+    read_us: core::cell::Cell<u64>,
+}
+#[cfg(not(feature = "glass-demo"))]
+impl<'a> TimedSource<'a> {
+    fn new(inner: &'a dyn ByteSource) -> Self {
+        Self { inner, read_us: core::cell::Cell::new(0) }
+    }
+    fn reset(&self) {
+        self.read_us.set(0);
+    }
+    fn read_us(&self) -> u64 {
+        self.read_us.get()
+    }
+}
+#[cfg(not(feature = "glass-demo"))]
+impl ByteSource for TimedSource<'_> {
+    fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), obc_reader::byte_io::Error> {
+        let t = Instant::now();
+        let r = self.inner.read_at(offset, buf);
+        self.read_us.set(self.read_us.get().wrapping_add(t.saturating_elapsed().as_micros()));
+        r
+    }
+    fn len(&self) -> u32 {
+        self.inner.len()
+    }
+}
+
 const SDRAM_ADDR: usize = 0xD000_0000;
 /// Front framebuffer at the base of SDRAM: 240x320 RGB565 = 150 KB. The app path adds a
 /// second (back) buffer one [`FB_BYTES`] past it for double buffering; the LTDC is first
@@ -327,6 +406,24 @@ const FB_BYTES: usize = FB_PIXELS * 2;
 #[cfg(not(feature = "glass-demo"))]
 const OVERLAY_ADDR: usize = SDRAM_ADDR + 2 * FB_BYTES;
 
+/// Total FMC SDRAM the IS42S16400J provides (8 MB @ [`SDRAM_ADDR`]).
+#[cfg(not(feature = "glass-demo"))]
+const SDRAM_BYTES: usize = 8 * 1024 * 1024;
+
+// Build-time guard for the resident SDRAM placement (issue #67): the four framebuffers
+// (2 map + 2 overlay), the `App` slot, the `MapCache`, and the route-geometry `RouteCache` must
+// all fit the 8 MB. `App` is initialized *in place* by `App::init_idle` — never returned by value
+// into a stack temporary — so the only way it can break the placement is by outgrowing this
+// region; this fails the build if it (or either cache, or the framebuffers) ever does, instead of
+// corrupting SDRAM on glass. (Per-region alignment padding is a handful of bytes against ~7.5 MB
+// of headroom; ignored here.)
+#[cfg(not(feature = "glass-demo"))]
+const _: () = assert!(
+    4 * FB_BYTES + core::mem::size_of::<App>() + core::mem::size_of::<MapCache>() + core::mem::size_of::<RouteCache>()
+        <= SDRAM_BYTES,
+    "resident SDRAM set (framebuffers + App + MapCache + RouteCache) overruns the 8 MB SDRAM"
+);
+
 /// Baked-in OBCM **v5** map tile (issue #34): a small ~1.4 MB Teningen tile in
 /// flash via `include_bytes!`. With #36 the map normally comes off the SD card; this stays
 /// as the **fallback** when no card / no `.obcm` is present, so the device still boots to a
@@ -340,26 +437,6 @@ static TILE: &[u8] = include_bytes!("../tiles/teningen.obcm");
 /// riding zoom, and PREV/NEXT then zoom from there.
 #[cfg(not(feature = "glass-demo"))]
 const INIT_MPP: f32 = 1.0;
-
-/// Stand-in moving GPS — the **`debug-usb`-off fallback** (the default build streams a real ride
-/// over USB instead, see issue #38): side length (m) and speed (m/s) of the square loop
-/// [`SynthLocation`] walks. Slow enough to watch the user marker / breadcrumb crawl, big enough
-/// that a saved ride is a real ~0.8 km loop that re-imports as a sane route.
-#[cfg(all(not(feature = "glass-demo"), not(feature = "debug-usb")))]
-const SYNTH_LEG_M: f32 = 200.0;
-#[cfg(all(not(feature = "glass-demo"), not(feature = "debug-usb")))]
-const SYNTH_SPEED_MPS: f32 = 5.0;
-
-/// The synthetic GPS emits a fresh fix at this cadence (ms), `None` between — so the prototype
-/// drives the app on the same ~1 Hz fresh-fix contract a real receiver (and the USB feed)
-/// honours, exercising the integrate-one-sample path instead of an every-tick replay (#43).
-#[cfg(all(not(feature = "glass-demo"), not(feature = "debug-usb")))]
-const SYNTH_FIX_INTERVAL_MS: u64 = 1000;
-
-/// Microdegrees of latitude per metre north (the map/route coordinate convention). Longitude
-/// scales this by 1/cos(lat), via [`obc_route::cos_lat`].
-#[cfg(all(not(feature = "glass-demo"), not(feature = "debug-usb")))]
-const UDEG_PER_M: f32 = 1_000_000.0 / 111_320.0;
 
 /// Main-loop button-sample period (ms). Buttons are sampled every tick so quick taps
 /// and hold timing are caught even when a heavy Map frame stretches the render cadence.
@@ -428,7 +505,7 @@ async fn input_overlay_task(
     // Native RGB565 panel → identity colour map, same as the map plane (see `main`).
     let color_fn = |c: u16| Rgb565::from(RawU16::new(c));
     loop {
-        let now = start.elapsed().as_millis() as u32;
+        let now = start.saturating_elapsed().as_millis() as u32;
         buttons.update(now);
         // Physical buttons + (with `debug-usb`) the USB-injected events, drained into one
         // recogniser pass — so a host can drive the UI (taps/holds) like the real buttons.
@@ -451,8 +528,7 @@ async fn input_overlay_task(
         if plane.take_overlay_dirty() {
             // SAFETY: overlay_back is the Layer-2 buffer the LTDC is *not* scanning; the only
             // live `&mut` over it, dropped before the flip.
-            let back =
-                unsafe { core::slice::from_raw_parts_mut(overlay_back as *mut u16, FB_PIXELS) };
+            let back = unsafe { core::slice::from_raw_parts_mut(overlay_back as *mut u16, FB_PIXELS) };
             let mut overlay_fb = FramebufferArgb4444::new(back, W as u32, H as u32);
             overlay_fb.clear_transparent();
             plane.render_overlay(&mut overlay_fb, W as f32, H as f32, color_fn);
@@ -467,7 +543,7 @@ async fn input_overlay_task(
                 if flip_landed() {
                     break true;
                 }
-                if t0.elapsed().as_millis() > 50 {
+                if t0.saturating_elapsed().as_millis() > 50 {
                     break false;
                 }
                 Timer::after_millis(1).await;
@@ -475,95 +551,10 @@ async fn input_overlay_task(
             if landed {
                 core::mem::swap(&mut overlay_front, &mut overlay_back);
             } else {
-                defmt::warn!(
-                    "LTDC: Layer 2 vblank reload didn't land in 50 ms — kept buffers, skipped swap"
-                );
+                defmt::warn!("LTDC: Layer 2 vblank reload didn't land in 50 ms — kept buffers, skipped swap");
             }
         }
         Timer::after_millis(LOOP_MS).await;
-    }
-}
-
-/// A stand-in moving [`LocationSource`] for the **`debug-usb`-off** build (the default streams a
-/// real GPS over USB-CDC, issue #38): the fix walks a slow square loop around a centre, driven by
-/// the wall clock. Unlike a constant fix, this gives the ride accumulators, breadcrumb and `.obct`
-/// log real motion — so a saved ride is a non-degenerate `.gpx` that re-imports cleanly (issue
-/// #36's save-loop deliverable). The centre is the map (or loaded route's) start, re-pointed via
-/// [`recenter`](Self::recenter).
-#[cfg(all(not(feature = "glass-demo"), not(feature = "debug-usb")))]
-struct SynthLocation {
-    center_lon: i32,
-    center_lat: i32,
-    /// 1/cos(lat) folded into the east-metres → microdegrees scale, refreshed on recenter.
-    udeg_per_m_east: f32,
-    start: Instant,
-    /// Elapsed-millis at the last fix [`poll`](LocationSource::poll) emitted, to throttle to
-    /// [`SYNTH_FIX_INTERVAL_MS`]. `None` forces the first poll to emit.
-    last_fix_ms: Option<u64>,
-}
-
-#[cfg(all(not(feature = "glass-demo"), not(feature = "debug-usb")))]
-impl SynthLocation {
-    fn new(center_lon: i32, center_lat: i32, start: Instant) -> Self {
-        let mut s = SynthLocation {
-            center_lon,
-            center_lat,
-            udeg_per_m_east: 0.0,
-            start,
-            last_fix_ms: None,
-        };
-        s.recenter(center_lon, center_lat);
-        s
-    }
-
-    /// Move the loop's centre (e.g. onto a freshly-loaded route's start) and refresh the
-    /// longitude scale for the new latitude.
-    fn recenter(&mut self, lon: i32, lat: i32) {
-        self.center_lon = lon;
-        self.center_lat = lat;
-        self.udeg_per_m_east = UDEG_PER_M / obc_route::cos_lat(lat);
-    }
-}
-
-#[cfg(all(not(feature = "glass-demo"), not(feature = "debug-usb")))]
-impl LocationSource for SynthLocation {
-    fn poll(&mut self) -> Option<Fix> {
-        // Emit on the GPS's own ~1 Hz cadence, `None` between — the exact fresh-fix contract a
-        // real receiver (and #38's USB feed) honours, so the prototype walks the same
-        // integrate-one-sample path rather than the every-tick replay that masked issue #43.
-        let elapsed_ms = self.start.elapsed().as_millis();
-        if let Some(last) = self.last_fix_ms {
-            if elapsed_ms.wrapping_sub(last) < SYNTH_FIX_INTERVAL_MS {
-                return None;
-            }
-        }
-        self.last_fix_ms = Some(elapsed_ms);
-
-        // Position along the square as a function of elapsed time. Each leg takes `leg_s`
-        // seconds; the heading is the leg's constant bearing (no trig needed). The loop is
-        // centred on the square so the camera sits in its middle. Take the loop modulus on the
-        // integer millis *before* the `f32` cast: `as_millis()` grows without bound and `f32`
-        // carries only a 24-bit mantissa, so casting first would quantise the phase (the loop
-        // would jitter, then freeze) once the board had been up past ~4.6 h.
-        let leg_s = SYNTH_LEG_M / SYNTH_SPEED_MPS;
-        let loop_ms = (4.0 * leg_s * 1000.0) as u64;
-        let t = (elapsed_ms % loop_ms) as f32 / 1000.0;
-        let leg = (t / leg_s) as u32;
-        let d = (t - leg as f32 * leg_s) * SYNTH_SPEED_MPS; // metres into this leg
-        let (east, north, course) = match leg {
-            0 => (d, 0.0, 90.0),                        // →E along the south edge
-            1 => (SYNTH_LEG_M, d, 0.0),                 // →N up the east edge
-            2 => (SYNTH_LEG_M - d, SYNTH_LEG_M, 270.0), // →W along the north edge
-            _ => (0.0, SYNTH_LEG_M - d, 180.0),         // →S down the west edge
-        };
-        let east = east - SYNTH_LEG_M / 2.0; // centre the square on the centre point
-        let north = north - SYNTH_LEG_M / 2.0;
-        Some(Fix {
-            lon: self.center_lon + (east * self.udeg_per_m_east) as i32,
-            lat: self.center_lat + (north * UDEG_PER_M) as i32,
-            course: Some(course),
-            speed_mps: Some(SYNTH_SPEED_MPS),
-        })
     }
 }
 
@@ -594,16 +585,8 @@ const ILI9341_INIT: &[(u8, &[u8], u16)] = &[
     (0xF6, &[0x01, 0x00, 0x06], 0),
     (0x2C, &[], 200), // memory write, then settle
     (0x26, &[0x01], 0),
-    (
-        0xE0,
-        &[0x0F, 0x29, 0x24, 0x0C, 0x0E, 0x09, 0x4E, 0x78, 0x3C, 0x09, 0x13, 0x05, 0x17, 0x11, 0x00],
-        0,
-    ),
-    (
-        0xE1,
-        &[0x00, 0x16, 0x1B, 0x04, 0x11, 0x07, 0x31, 0x33, 0x42, 0x05, 0x0C, 0x0A, 0x28, 0x2F, 0x0F],
-        0,
-    ),
+    (0xE0, &[0x0F, 0x29, 0x24, 0x0C, 0x0E, 0x09, 0x4E, 0x78, 0x3C, 0x09, 0x13, 0x05, 0x17, 0x11, 0x00], 0),
+    (0xE1, &[0x00, 0x16, 0x1B, 0x04, 0x11, 0x07, 0x31, 0x33, 0x42, 0x05, 0x0C, 0x0A, 0x28, 0x2F, 0x0F], 0),
     (0x11, &[], 200), // sleep out, then settle (datasheet >= 120 ms before display on)
     (0x29, &[], 0),   // display on
     (0x2C, &[], 0),   // memory write start
@@ -670,7 +653,7 @@ fn flip_to(layer: LtdcLayer, addr: usize) -> bool {
     request_flip(layer, addr);
     let t0 = Instant::now();
     while !flip_landed() {
-        if t0.elapsed().as_millis() > 50 {
+        if t0.saturating_elapsed().as_millis() > 50 {
             return false;
         }
     }
@@ -718,9 +701,9 @@ async fn main(spawner: Spawner) {
         config.rcc.pll_src = PllSource::HSI;
         config.rcc.pll = Some(Pll {
             prediv: PllPreDiv::DIV8,
-            mul: PllMul::MUL168,           // VCO = 2 x 168 = 336 MHz
-            divp: Some(PllPDiv::DIV2),     // SYSCLK = 336 / 2 = 168 MHz
-            divq: Some(PllQDiv::DIV7),     // PLL48CLK = 336 / 7 = 48 MHz (USB OTG FS clock)
+            mul: PllMul::MUL168,       // VCO = 2 x 168 = 336 MHz
+            divp: Some(PllPDiv::DIV2), // SYSCLK = 336 / 2 = 168 MHz
+            divq: Some(PllQDiv::DIV7), // PLL48CLK = 336 / 7 = 48 MHz (USB OTG FS clock)
             divr: None,
         });
         config.rcc.pllsai = Some(Pll {
@@ -756,8 +739,7 @@ async fn main(spawner: Spawner) {
         let mut otg_cfg = usb::Config::default();
         // The DISC1 USER port doesn't wire VBUS sense to the MCU; assume the cable is present.
         otg_cfg.vbus_detection = false;
-        let driver =
-            usb::Driver::new_fs(p.USB_OTG_HS, UsbIrqs, p.PB15, p.PB14, EP_OUT.init([0; 256]), otg_cfg);
+        let driver = usb::Driver::new_fs(p.USB_OTG_HS, UsbIrqs, p.PB15, p.PB14, EP_OUT.init([0; 256]), otg_cfg);
 
         // Device descriptor: a generic CDC-ACM serial device (pid.codes test VID/PID).
         let mut dev_cfg = embassy_usb::Config::new(0x16c0, 0x27dd);
@@ -869,9 +851,7 @@ async fn main(spawner: Spawner) {
     // `Ltdc::new` forces PLLSAIDIVR = 2 (giving 48/2 = 24 MHz); override it to 8 so the
     // DOTCLK is 48/8 = 6 MHz, exactly matching ST's BSP (the ILI9341 RGB interface mis-
     // samples above ~6 MHz, which sheared the image at our earlier 8 MHz).
-    stm32_metapac::RCC
-        .dckcfgr()
-        .modify(|w| w.set_pllsaidivr(stm32_metapac::rcc::vals::Pllsaidivr::DIV8));
+    stm32_metapac::RCC.dckcfgr().modify(|w| w.set_pllsaidivr(stm32_metapac::rcc::vals::Pllsaidivr::DIV8));
     // Drive only the 18 wired RGB666 bits + 4 sync/clk/de lines (AF14, except the
     // four AF9 pins). Kept alive in `_ltdc_pins` so the AF config persists.
     let _ltdc_pins = [
@@ -998,8 +978,7 @@ async fn main(spawner: Spawner) {
         // setup below.
         // SAFETY: OVERLAY_ADDR..+FB_BYTES is a distinct SDRAM region past both map framebuffers and
         // before the back overlay buffer / App slot; sole owner, the LTDC only DMA-reads it.
-        unsafe { core::slice::from_raw_parts_mut(OVERLAY_ADDR as *mut u16, FB_PIXELS) }
-            .fill(0x0000);
+        unsafe { core::slice::from_raw_parts_mut(OVERLAY_ADDR as *mut u16, FB_PIXELS) }.fill(0x0000);
         ltdc.init_layer(
             &LtdcLayerConfig {
                 pixel_format: PixelFormat::ARGB4444,
@@ -1025,9 +1004,7 @@ async fn main(spawner: Spawner) {
         {
             use stm32_metapac::ltdc::vals::Imr;
             use stm32_metapac::LTDC;
-            LTDC.layer(LtdcLayer::Layer2 as usize)
-                .cfbar()
-                .modify(|w| w.set_cfbadd(OVERLAY_ADDR as u32));
+            LTDC.layer(LtdcLayer::Layer2 as usize).cfbar().modify(|w| w.set_cfbadd(OVERLAY_ADDR as u32));
             LTDC.srcr().write(|w| w.set_imr(Imr::RELOAD));
         }
 
@@ -1039,17 +1016,30 @@ async fn main(spawner: Spawner) {
         let app_align = core::mem::align_of::<App>();
         let app_addr = (SDRAM_ADDR + 4 * FB_BYTES + app_align - 1) & !(app_align - 1);
         let cache_align = core::mem::align_of::<MapCache>();
-        let cache_addr =
-            (app_addr + core::mem::size_of::<App>() + cache_align - 1) & !(cache_align - 1);
+        let cache_addr = (app_addr + core::mem::size_of::<App>() + cache_align - 1) & !(cache_align - 1);
 
-        // The streamed-map cache, placed once in SDRAM and reused every redraw. ptr::write keeps
-        // its ~130 KB off the stack (opt-level 3 + LTO build `MapCache::new` straight into the
-        // slot, like the App below).
+        // The streamed-map cache, placed once in SDRAM and reused every redraw. `MapCache::new`
+        // is `MaybeUninit::zeroed()` (every field is valid all-zero), so `ptr::write` lowers to a
+        // `memset` of the slot — its ~130 KB never lands on the stack, with no reliance on RVO.
+        // (The App below is placed the same way in spirit, field-by-field via `App::init_idle`.)
         // SAFETY: [cache_addr, cache_addr + size_of::<MapCache>()) is a distinct SDRAM region just
         // past the App slot and clear of the framebuffers; this is its sole owner for the run.
         let cache_ptr = cache_addr as *mut MapCache;
         unsafe { cache_ptr.write(MapCache::new()) };
         let map_cache: &MapCache = unsafe { &*cache_ptr };
+
+        // The route-geometry cache (issue #98 P4), placed just past the `MapCache` — same SDRAM,
+        // same `MaybeUninit::zeroed()`/`ptr::write` trick so its ~99 KB never lands on the stack.
+        // It holds decoded route chunks so a per-frame redraw of the active route (and the
+        // matcher's per-fix decode) hit RAM instead of re-reading the `.obcr` geometry from the
+        // card every time; cleared on a route change below.
+        let rcache_align = core::mem::align_of::<RouteCache>();
+        let rcache_addr = (cache_addr + core::mem::size_of::<MapCache>() + rcache_align - 1) & !(rcache_align - 1);
+        // SAFETY: [rcache_addr, rcache_addr + size_of::<RouteCache>()) is a distinct SDRAM region
+        // just past the MapCache slot and clear of the framebuffers/App; sole owner for the run.
+        let rcache_ptr = rcache_addr as *mut RouteCache;
+        unsafe { rcache_ptr.write(RouteCache::new()) };
+        let route_cache: &RouteCache = unsafe { &*rcache_ptr };
 
         // Map: open the card's `.obcm` and **stream** it (issue #37 — no resident full-tile
         // buffer), else fall back to the baked-in tile (flash-resident), else halt. `map_streaming`
@@ -1097,8 +1087,10 @@ async fn main(spawner: Spawner) {
         // host/simulator concern; see obc-platform::framebuffer).
         let color_fn = |c: u16| Rgb565::from(RawU16::new(c));
 
-        // Place + build the App in SDRAM at the reserved slot. ptr::write keeps the ~200 KB
-        // scratch off the stack (opt-level 3 + LTO emit App::new* straight to the slot).
+        // Build the App *in place* in SDRAM at the reserved slot. `App::init_idle` writes each
+        // field straight into the slot (the ~200 KB renderer is zeroed in place), so the App is
+        // never formed by value — no 200 KB stack temporary, and no reliance on the optimizer's
+        // RVO to keep one off the 192 KB stack (issue #67).
         let app_ptr = app_addr as *mut App;
         defmt::info!(
             "App in SDRAM @ {=u32:#010x} ({=usize} B); map cache @ {=u32:#010x} ({=usize} B)",
@@ -1108,10 +1100,10 @@ async fn main(spawner: Spawner) {
             core::mem::size_of::<MapCache>()
         );
         // Power-on screen: Home / Idle — the user drives navigation from here.
-        // SAFETY: app_ptr is a valid, aligned, exclusively-owned SDRAM slot, fully initialized
-        // by ptr::write before any read.
+        // SAFETY: app_ptr is a valid, aligned, exclusively-owned SDRAM slot; init_idle fully
+        // initializes it before the &mut below reads it.
         unsafe {
-            app_ptr.write(App::new_idle(AppState::new(cam_lon, cam_lat, zoom_for_mpp(INIT_MPP))));
+            App::init_idle(app_ptr, AppState::new(cam_lon, cam_lat, zoom_for_mpp(INIT_MPP)));
         }
         let app = unsafe { &mut *app_ptr };
 
@@ -1129,12 +1121,7 @@ async fn main(spawner: Spawner) {
                     name,
                     distance_km: 0,
                     climb_m: 0,
-                    bbox: BBox {
-                        min_lon: cam_lon,
-                        min_lat: cam_lat,
-                        max_lon: cam_lon,
-                        max_lat: cam_lat,
-                    },
+                    bbox: BBox { min_lon: cam_lon, min_lat: cam_lat, max_lon: cam_lon, max_lat: cam_lat },
                     start_lon: cam_lon,
                     start_lat: cam_lat,
                 }]);
@@ -1235,6 +1222,12 @@ async fn main(spawner: Spawner) {
         // USB feed needs no re-centre — it streams absolute positions, so this is `debug-usb`-off only).
         #[cfg(not(feature = "debug-usb"))]
         let mut prev_route: Option<usize> = None;
+        // The previously-reconciled active route + tracking session, to gate the SD reconcile block
+        // below on actual change (issue #73). Kept separate from `prev_route` (which is
+        // `debug-usb`-off-only and tracks the *re-centre*): these must drive the gate under
+        // `debug-usb` on and off alike, so they're fresh, un-`cfg`'d vars.
+        let mut prev_active: Option<usize> = None;
+        let mut prev_session: Option<u32> = None;
         // Telemetry throttle + the last map frame's render stats, published host-ward (issue #38).
         #[cfg(feature = "debug-usb")]
         let mut last_telem_ms: u32 = 0;
@@ -1245,8 +1238,15 @@ async fn main(spawner: Spawner) {
         // per-frame redraw streams geometry without re-walking the index off the SD card.
         let mut route_index: Option<RouteIndex> = None;
         let mut index_route: Option<usize> = None;
+        // Latched when a frame's `dirty.map` edge can't be serviced because `Reader::new` failed on
+        // a transient SD glitch (issue #66). The map dirty signal is an *accumulated edge* (unlike
+        // the overlay's, which `take_dirty` recomputes from live state each frame), so once the
+        // drain consumes it and the redraw is skipped the demand is gone — the map would stay stale
+        // until some unrelated mutation re-dirties it. We OR this back into next frame's `dirty.map`
+        // so the redraw retries until the reader builds.
+        let mut pending_map_redraw = false;
         loop {
-            let now = start.elapsed().as_millis() as u32;
+            let now = start.saturating_elapsed().as_millis() as u32;
 
             // --- input (map-plane side) ---
             // Two-plane: the high-priority plane has already recognised this frame's gestures and
@@ -1273,6 +1273,14 @@ async fn main(spawner: Spawner) {
                 app.handle_input(InputClock(now), &mut input);
             }
 
+            // Apply any pending debug `Z` camera-scale command (render benchmark): pin the map to
+            // an exact meters-per-pixel and force one redraw, so a host zoom sweep gets exactly one
+            // fresh, stage-timed frame per setting instead of stepping the encoder's 1.2× detents.
+            #[cfg(feature = "debug-usb")]
+            if let Some(mpp) = obc_platform::debug_usb::take_zoom() {
+                app.set_map_mpp(mpp);
+            }
+
             let active = app.activity.active_route;
             // Re-centre the synthetic GPS onto a freshly-loaded route's start so Follow doesn't
             // yank the camera off it. Only the `debug-usb`-off fallback: the USB feed streams
@@ -1287,16 +1295,30 @@ async fn main(spawner: Spawner) {
 
             // Reconcile the card to the app's intent: open/close the active route's geometry and
             // the ride log (begin on load, finalise-to-GPX on Finish), reading the save name from
-            // the active route. Cheap when nothing changed.
-            if let Some(s) = storage.as_mut() {
-                let action = app.activity.take_track_action();
-                let session = app.activity.session;
-                let mut name: heapless::String<64> = heapless::String::new();
-                if let Some(r) = active.and_then(|i| app.routes().get(i)) {
-                    let _ = name.push_str(&r.name);
+            // the active route. `reconcile_route`/`reconcile_track` already early-return when
+            // nothing changed, but at ~125 Hz the dominant idle/riding frame changes *nothing* — so
+            // gate the whole block on the same edges it tests internally (a route swap, a session
+            // change, or a pending track action) to skip the per-tick `String<64>` name copy + the
+            // four state re-walks on every static frame (issue #73). `has_track_action` is a
+            // non-consuming peek; the actual `take_track_action()` stays inside, so the one-shot is
+            // still drained only when it's processed.
+            let session = app.activity.session;
+            if active != prev_active || session != prev_session || app.activity.has_track_action() {
+                if let Some(s) = storage.as_mut() {
+                    let action = app.activity.take_track_action();
+                    let mut name: heapless::String<64> = heapless::String::new();
+                    if let Some(r) = active.and_then(|i| app.routes().get(i)) {
+                        let _ = name.push_str(&r.name);
+                    }
+                    s.reconcile_route(active);
+                    s.reconcile_track(action, session, &name);
                 }
-                s.reconcile_route(active);
-                s.reconcile_track(action, session, &name);
+                // Latch the reconciled edges outside the `storage` branch: `storage` is established
+                // once at boot and never reappears, so a `None` here would only mean the reconcile
+                // is moot anyway — and latching unconditionally keeps the gate from re-firing every
+                // frame on a (non-existent) storage-less tick.
+                prev_active = active;
+                prev_session = session;
             }
 
             // Cache the active route's chunk index across frames: rebuild it (the expensive
@@ -1305,6 +1327,10 @@ async fn main(spawner: Spawner) {
             // below needs the index on every *fresh fix*, independent of whether the map redraws,
             // so it's ready as soon as the route is loaded (`reconcile_route` above opened the file).
             if index_route != active {
+                // The active route is changing: drop the route-geometry cache so a new route's
+                // chunk `k` can't be served from the old route's stale slot (the cache keys by
+                // chunk index only — see `RouteCache`).
+                route_cache.clear();
                 match active {
                     Some(_) => {
                         match storage.as_ref().and_then(|s| s.build_route_index()) {
@@ -1337,7 +1363,10 @@ async fn main(spawner: Spawner) {
             // frame is cheap, and decouples matching from the render cadence (issue #43/#47).
             let route_src = storage.as_ref().and_then(|s| s.route_source());
             let route = match (route_index.as_ref(), route_src.as_ref()) {
-                (Some(idx), Some(src)) => Some(RouteReader::new(idx, src)),
+                // Pair the resident index + fresh source with the session-long route cache (P4),
+                // so a redraw of the unchanged route (and the matcher's per-fix decode) hit RAM
+                // instead of re-reading the `.obcr` geometry off the card every frame.
+                (Some(idx), Some(src)) => Some(RouteReader::new_cached(idx, src, route_cache)),
                 _ => None,
             };
             // The ride-log sink, by contrast, is built *every* tick — it only wraps the already
@@ -1369,26 +1398,25 @@ async fn main(spawner: Spawner) {
 
             // Drain the per-frame dirty signal (issue #47) now that input + tick have run: it
             // tells us which planes actually changed, so each render below is on-demand.
-            let dirty = app.take_dirty();
+            let mut dirty = app.take_dirty();
+            // Re-arm a map redraw a previous frame couldn't service (issue #66): fold the latch in
+            // and clear it, so a redraw that the skip path below re-latches is retried next frame.
+            dirty.map |= pending_map_redraw;
+            pending_map_redraw = false;
 
             if dirty.map {
                 let t0 = Instant::now();
                 // Render into the back buffer (not the one being scanned out).
                 // SAFETY: back_addr is the buffer the LTDC is *not* scanning; the only live
                 // `&mut` over it, dropped before the flip.
-                let back =
-                    unsafe { core::slice::from_raw_parts_mut(back_addr as *mut u16, FB_PIXELS) };
+                let back = unsafe { core::slice::from_raw_parts_mut(back_addr as *mut u16, FB_PIXELS) };
                 let mut fb = Framebuffer565::new(back, W as u32, H as u32);
 
                 // This frame's map source: streamed from the open SD `.obcm` (issue #37), or the
                 // baked tile (flash-resident). Both are `ByteSource`s; the small `Reader` is
                 // rebuilt per redraw against the session-long SDRAM `MapCache`, so a chunk read on
                 // a previous frame can still hit this frame (cross-frame reuse).
-                let sd_src = if map_streaming {
-                    storage.as_ref().and_then(|s| s.map_source())
-                } else {
-                    None
-                };
+                let sd_src = if map_streaming { storage.as_ref().and_then(|s| s.map_source()) } else { None };
                 #[cfg(feature = "baked-tile")]
                 let baked_src = SliceSource(TILE);
                 let map_src: Option<&dyn ByteSource> = match &sd_src {
@@ -1401,66 +1429,113 @@ async fn main(spawner: Spawner) {
 
                 // A transient SD read failure makes the reader build fail; skip the redraw and
                 // keep the last buffer (like the route path), rather than show a half-read map.
-                if let Some(reader) = map_src.and_then(|s| Reader::new(s, map_cache).ok()) {
-                    // Render *only* the map plane into Layer 1 — the overlay (hold ring) is drawn
-                    // onto Layer 2 below and composited by the LTDC, so the map buffer never carries
-                    // the bulge and is re-rendered only when the map itself changes.
-                    let stats = app.render_map(
-                        &mut fb,
-                        &reader,
-                        route.as_ref(),
-                        W as f32,
-                        H as f32,
-                        color_fn,
-                    );
-                    let render_us = t0.elapsed().as_micros();
-                    // Snapshot this frame's render stats for the host telemetry line (the same
-                    // numbers as the RTT `map frame` log / the sim's Render Stats panel).
-                    #[cfg(feature = "debug-usb")]
-                    {
-                        last_telem = obc_platform::debug_usb::Telemetry {
-                            frame_us: render_us as u32,
-                            lod: stats.lod as u8,
-                            feat_drawn: stats.features_drawn as u32,
-                            feat_tried: stats.features_tried as u32,
-                            feat_dropped: stats.features_dropped as u32,
-                            chunks: stats.chunks_visited as u32,
-                            cache_hits: stats.map_chunk_hits,
-                            cache_misses: stats.map_chunk_misses,
-                            sd_reads: stats.map_sd_reads,
-                            bytes_read: stats.map_bytes_read,
-                        };
-                    }
-
-                    // Flip to the freshly-drawn buffer at the next vblank. Swap front/back roles
-                    // only once the reload is confirmed landed; on a timeout the LTDC is still
-                    // scanning the old front, so we keep the buffers (the next redraw re-renders
-                    // into this same back and retries) rather than render into the scanned-out one.
-                    if flip_to(LtdcLayer::Layer1, back_addr) {
-                        core::mem::swap(&mut front_addr, &mut back_addr);
-                    } else {
-                        defmt::warn!(
-                            "LTDC: Layer 1 vblank reload didn't land in 50 ms — kept buffers, skipped swap"
+                // The source is wrapped in a `TimedSource` so the render benchmark can split the
+                // frame's SD/cache I/O (the "read" stage) out of the CPU work (issue: render stage
+                // timing); the wrapper is a thin delegating `ByteSource`, so the non-benchmark
+                // behaviour is unchanged.
+                let reader_built = if let Some(timed_src) = map_src.map(TimedSource::new) {
+                    if let Ok(reader) = Reader::new(&timed_src, map_cache) {
+                        // Discount `Reader::new`'s header/style/LOD setup reads, so the counter
+                        // measures only this frame's collect (chunk + index) reads.
+                        timed_src.reset();
+                        // Render *only* the map plane into Layer 1 — the overlay (hold ring) is
+                        // drawn onto Layer 2 below and composited by the LTDC, so the map buffer
+                        // never carries the bulge and is re-rendered only when the map changes.
+                        // `render_map_timed` fills the per-stage map timings via `InstantClock`.
+                        let frame_t0 = Instant::now();
+                        let stats = app.render_map_timed(
+                            &mut fb,
+                            &reader,
+                            route.as_ref(),
+                            W as f32,
+                            H as f32,
+                            color_fn,
+                            &InstantClock,
                         );
+                        // `render_us` = whole map frame incl. `Reader::new` (unchanged headline).
+                        // `render_map_us` brackets just the draw, so `overlay_us` (route +
+                        // breadcrumb + marker) is what's left after the map's collect/sort/draw; the
+                        // setup cost is then `render_us − render_map_us`, derivable by the host.
+                        let render_us = t0.saturating_elapsed().as_micros();
+                        let render_map_us = frame_t0.saturating_elapsed().as_micros() as u32;
+                        let read_us = timed_src.read_us() as u32;
+                        let overlay_us = render_map_us.saturating_sub(stats.collect_us + stats.sort_us + stats.draw_us);
+                        // Snapshot this frame's render stats for the host telemetry line (the same
+                        // numbers as the RTT `map frame` log / the sim's Render Stats panel).
+                        #[cfg(feature = "debug-usb")]
+                        {
+                            let mpp_milli = (app.state.viewport(W as f32, H as f32).meters_per_pixel() * 1000.0) as u32;
+                            last_telem = obc_platform::debug_usb::Telemetry {
+                                frame_us: render_us as u32,
+                                lod: stats.lod as u8,
+                                feat_drawn: stats.features_drawn as u32,
+                                feat_tried: stats.features_tried as u32,
+                                feat_dropped: stats.features_dropped as u32,
+                                chunks: stats.chunks_visited as u32,
+                                cache_hits: stats.map_chunk_hits,
+                                cache_misses: stats.map_chunk_misses,
+                                sd_reads: stats.map_sd_reads,
+                                bytes_read: stats.map_bytes_read,
+                                collect_us: stats.collect_us,
+                                read_us,
+                                sort_us: stats.sort_us,
+                                draw_us: stats.draw_us,
+                                overlay_us,
+                                mpp_milli,
+                            };
+                        }
+
+                        // Flip to the freshly-drawn buffer at the next vblank. Swap front/back
+                        // roles only once the reload is confirmed landed; on a timeout the LTDC is
+                        // still scanning the old front, so we keep the buffers (the next redraw
+                        // re-renders into this same back and retries) rather than render into it.
+                        if flip_to(LtdcLayer::Layer1, back_addr) {
+                            core::mem::swap(&mut front_addr, &mut back_addr);
+                        } else {
+                            defmt::warn!(
+                                "LTDC: Layer 1 vblank reload didn't land in 50 ms — kept buffers, skipped swap"
+                            );
+                        }
+                        // Chunk-cache hit rate + the per-stage breakdown this frame (issue #37 +
+                        // the render-stage-timing work). `RenderStats` reports the per-frame delta
+                        // over the persistent cache, so this tracks what each redraw pulled.
+                        let reqs = stats.map_chunk_hits + stats.map_chunk_misses;
+                        let hit_pct = (stats.map_chunk_hits * 100).checked_div(reqs).unwrap_or(0);
+                        // Route-geometry cache accounting (issue #98 P4), cumulative since the last
+                        // route change — `hits` should climb each redraw while `misses` settles at
+                        // the route's visible-chunk count (a warm route re-reads nothing).
+                        let (rc_hits, rc_misses) = route_cache.stats();
+                        defmt::debug!(
+                            "map frame: {=u64} us (collect {=u32} [read {=u32}] | sort {=u32} | draw {=u32} | overlay {=u32}) | lod {=usize} | feat {=usize}/{=usize} | map-cache {=u32}% hit, {=u32} rd, {=u32} B | route-cache {=u32} hit / {=u32} miss",
+                            render_us,
+                            stats.collect_us,
+                            read_us,
+                            stats.sort_us,
+                            stats.draw_us,
+                            overlay_us,
+                            stats.lod,
+                            stats.features_drawn,
+                            stats.features_tried,
+                            hit_pct,
+                            stats.map_sd_reads,
+                            stats.map_bytes_read,
+                            rc_hits,
+                            rc_misses
+                        );
+                        true
+                    } else {
+                        false
                     }
-                    // Chunk-cache hit rate + SD-read overhead this frame (issue #37's measured
-                    // deliverables). `RenderStats` reports the per-frame delta over the persistent
-                    // cache, so this tracks what each redraw actually pulled off the card.
-                    let reqs = stats.map_chunk_hits + stats.map_chunk_misses;
-                    let hit_pct = if reqs == 0 { 0 } else { stats.map_chunk_hits * 100 / reqs };
-                    defmt::debug!(
-                        "map frame: {=u64} us | lod {=usize} | feat {=usize}/{=usize} | map-cache {=u32}% hit, {=u32} rd, {=u32} B",
-                        render_us,
-                        stats.lod,
-                        stats.features_drawn,
-                        stats.features_tried,
-                        hit_pct,
-                        stats.map_sd_reads,
-                        stats.map_bytes_read
-                    );
                 } else {
+                    false
+                };
+                if !reader_built {
+                    // `Reader::new` failed (flaky SD) or no source. The `dirty.map` edge we drained
+                    // above would otherwise be lost, freezing the map; latch it so next frame
+                    // retries the redraw until the reader builds (issue #66).
+                    pending_map_redraw = true;
                     defmt::warn!(
-                        "map: reader build failed this frame (flaky SD?) — kept buffers, skipped redraw"
+                        "map: reader build failed this frame (flaky SD?) — kept buffers, will retry redraw next frame"
                     );
                 }
             }
@@ -1482,12 +1557,11 @@ async fn main(spawner: Spawner) {
                 // Render into the back overlay buffer (not the one being scanned out).
                 // SAFETY: overlay_back is the buffer the LTDC is *not* scanning; the only live
                 // `&mut` over it, dropped before the flip.
-                let back =
-                    unsafe { core::slice::from_raw_parts_mut(overlay_back as *mut u16, FB_PIXELS) };
+                let back = unsafe { core::slice::from_raw_parts_mut(overlay_back as *mut u16, FB_PIXELS) };
                 let mut overlay_fb = FramebufferArgb4444::new(back, W as u32, H as u32);
                 overlay_fb.clear_transparent();
                 app.render_overlay(&mut overlay_fb, W as f32, H as f32, color_fn);
-                let overlay_us = t0.elapsed().as_micros();
+                let overlay_us = t0.saturating_elapsed().as_micros();
 
                 // Flip Layer 2 to the freshly-drawn buffer at the next vblank, swapping only once
                 // the reload lands (same tear-free contract as the map flip). On a timeout keep the
@@ -1495,15 +1569,9 @@ async fn main(spawner: Spawner) {
                 if flip_to(LtdcLayer::Layer2, overlay_back) {
                     core::mem::swap(&mut overlay_front, &mut overlay_back);
                 } else {
-                    defmt::warn!(
-                        "LTDC: Layer 2 vblank reload didn't land in 50 ms — kept buffers, skipped swap"
-                    );
+                    defmt::warn!("LTDC: Layer 2 vblank reload didn't land in 50 ms — kept buffers, skipped swap");
                 }
-                defmt::debug!(
-                    "overlay frame: {=u64} us | active {=bool}",
-                    overlay_us,
-                    app.overlay_active()
-                );
+                defmt::debug!("overlay frame: {=u64} us | active {=bool}", overlay_us, app.overlay_active());
             }
 
             // Publish render-stats telemetry host-ward at ~2 Hz (issue #38): the last map frame's

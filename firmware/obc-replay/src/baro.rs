@@ -2,8 +2,8 @@
 //! pressure sensor.
 //!
 //! On the device this is a barometer (e.g. a BMP390) on its own I2C bus, sampled
-//! independently of the GPS. Here we feed it the elevation interpolated from the replayed
-//! GPX track — but emit on the sensor's *own* cadence ([`SAMPLE_INTERVAL_S`] of playback
+//! independently of the GPS. Here it is fed the elevation interpolated from the replayed
+//! GPX track, but emits on the sensor's *own* cadence ([`SAMPLE_INTERVAL_S`] of playback
 //! time), **not** locked to the per-frame GPS fixes. That keeps the simulator honest about
 //! the real hardware: a baro sample and a GPS fix do not arrive together, so the app must
 //! integrate climb from this asynchronous stream rather than assuming one reading per fix.

@@ -19,9 +19,9 @@ use obc_pack::land;
 use obc_pack::quadtree::build_lod;
 use obc_pack::serialize::serialize_lods_streaming;
 
-// Meters → degrees divisor for the simplify tolerance. Shared with
-// the reader/route/renderer so the packer's simplification scale matches the Earth model
-// everything else measures distance against.
+// Meters → degrees divisor for the simplify tolerance. Shared with the
+// reader/route/renderer so the packer's simplification scale matches the Earth
+// model everything else measures distance against.
 use obc_reader::M_PER_DEG;
 
 struct Args {
@@ -40,9 +40,7 @@ fn parse_args() -> Result<Args, String> {
     while let Some(a) = it.next() {
         match a.as_str() {
             "--chunk-size" => {
-                chunk_size = Some(
-                    it.next().and_then(|s| s.parse().ok()).ok_or("--chunk-size needs a number")?,
-                );
+                chunk_size = Some(it.next().and_then(|s| s.parse().ok()).ok_or("--chunk-size needs a number")?);
             }
             "--no-land" => no_land = true,
             _ => positional.push(a),
@@ -51,9 +49,7 @@ fn parse_args() -> Result<Args, String> {
     // CLI contract: `<pbf...> <config.json> <out.obcm>` — last two positionals
     // are config + output, the rest are inputs.
     if positional.len() < 3 {
-        return Err(
-            "usage: obc-pack <pbf...> <config.json> <out.obcm> [--chunk-size N] [--no-land]".into(),
-        );
+        return Err("usage: obc-pack <pbf...> <config.json> <out.obcm> [--chunk-size N] [--no-land]".into());
     }
     let output = positional.pop().unwrap();
     let config = positional.pop().unwrap();
@@ -64,6 +60,8 @@ fn run() -> Result<(), String> {
     let args = parse_args()?;
     let config = Config::load(&args.config)?;
     let chunk_size = args.chunk_size.unwrap_or(config.chunk_size);
+    // Fail loud before any work if chunk_size would let a feature outgrow the reader's cap (#2).
+    obc_pack::serialize::validate_chunk_size(chunk_size)?;
 
     // --- Merge: >1 input ⇒ `osmium merge` + `osmium sort` to a temp, then ingest
     // that (the osmium CLI is battle-tested, so we shell out to it).
@@ -130,40 +128,28 @@ fn run() -> Result<(), String> {
     // is ~one tree instead of all of them plus the whole output buffer. The bytes
     // are identical to the in-memory serializer. ---
     let styles = config.styles();
-    let file =
-        std::fs::File::create(&args.output).map_err(|e| format!("create {}: {e}", args.output))?;
+    let file = std::fs::File::create(&args.output).map_err(|e| format!("create {}: {e}", args.output))?;
     let mut w = std::io::BufWriter::new(file);
-    let total = serialize_lods_streaming(
-        &mut w,
-        config.lods.len(),
-        &styles,
-        config.marker_color,
-        global_bbox,
-        |i| {
-            let lod = &config.lods[i];
-            println!("Building Quadtree LOD {i} (simplify {}m)...", lod.simplify_m);
-            let tol = if lod.simplify_m > 0.0 { lod.simplify_m / M_PER_DEG } else { 0.0 };
-            // Parallel per-feature simplify (rayon). Each closure runs wholly on
-            // one worker thread — to_geos → simplify → back — using that thread's
-            // own GEOS context, so no geometry crosses threads. `collect` preserves
-            // order, so the feature order into `build_lod` (and thus the output) is
-            // unchanged. The quadtree build below stays sequential (bounded memory).
-            let level: Vec<(u8, Geom)> = ingested
-                .features
-                .par_iter()
-                .filter(|f| f.min_lod <= i)
-                .map(|f| {
-                    let g = if tol > 0.0 {
-                        topology_preserve_simplify(&f.geom, tol)
-                    } else {
-                        f.geom.clone()
-                    };
-                    (f.style_id, g)
-                })
-                .collect();
-            (build_lod(level, global_bbox, chunk_size), chunk_size, lod.max_mpp)
-        },
-    )
+    let total = serialize_lods_streaming(&mut w, config.lods.len(), &styles, config.marker_color, global_bbox, |i| {
+        let lod = &config.lods[i];
+        println!("Building Quadtree LOD {i} (simplify {}m)...", lod.simplify_m);
+        let tol = if lod.simplify_m > 0.0 { lod.simplify_m / M_PER_DEG } else { 0.0 };
+        // Parallel per-feature simplify (rayon). Each closure runs wholly on
+        // one worker thread — to_geos → simplify → back — using that thread's
+        // own GEOS context, so no geometry crosses threads. `collect` preserves
+        // order, so the feature order into `build_lod` (and thus the output) is
+        // unchanged. The quadtree build below stays sequential (bounded memory).
+        let level: Vec<(u8, Geom)> = ingested
+            .features
+            .par_iter()
+            .filter(|f| f.min_lod <= i)
+            .map(|f| {
+                let g = if tol > 0.0 { topology_preserve_simplify(&f.geom, tol) } else { f.geom.clone() };
+                (f.style_id, g)
+            })
+            .collect();
+        (build_lod(level, global_bbox, chunk_size), chunk_size, lod.max_mpp)
+    })
     .map_err(|e| format!("write {}: {e}", args.output))?;
     w.flush().map_err(|e| format!("flush {}: {e}", args.output))?;
     println!("Writing {} ({total} bytes)...", args.output);
@@ -171,11 +157,10 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
-/// `total_bounds(features + coastlines)` then `int(v*1e6)` truncation. The coords
-/// are the exact osmium f64s, so the bbox is stable across runs.
+/// Total bounds over features + coastlines, then truncate `v*1e6` toward zero. The
+/// coords are the exact osmium f64s, so the bbox is stable across runs.
 fn compute_bbox(ing: &obc_pack::ingest::Ingested) -> (i64, i64, i64, i64) {
-    let (mut minx, mut miny, mut maxx, mut maxy) =
-        (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+    let (mut minx, mut miny, mut maxx, mut maxy) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
     let mut widen = |x: f64, y: f64| {
         minx = minx.min(x);
         miny = miny.min(y);
@@ -214,10 +199,8 @@ struct TempPath(PathBuf);
 
 impl TempPath {
     fn new(tag: &str) -> Result<Self, String> {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
+        let nanos =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
         let mut p = std::env::temp_dir();
         p.push(format!("obc-pack-{}-{nanos}-{tag}.osm.pbf", std::process::id()));
         Ok(TempPath(p))
@@ -237,10 +220,7 @@ impl Drop for TempPath {
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--version") {
-        println!(
-            "obc-pack {} (merge + ingest + relations + land + quadtree + serialize)",
-            env!("CARGO_PKG_VERSION")
-        );
+        println!("obc-pack {} (merge + ingest + relations + land + quadtree + serialize)", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
     match run() {

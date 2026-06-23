@@ -7,9 +7,9 @@
 //! converter stored in [`ChunkMeta::cum_distance_m`](crate::ChunkMeta). Keeping the
 //! one implementation here guarantees they can't drift.
 //!
-//! The projection is a local equirectangular approximation (east scaled by
-//! `cos(lat)`), the same one the converter has always used — accurate over the short
-//! segments of a decimated route, and cheap (no per-segment haversine).
+//! The projection is a local equirectangular approximation (east scaled by `cos(lat)`):
+//! accurate over the short segments of a decimated route, and cheap (no per-segment
+//! haversine).
 //!
 //! **All math is `f32`.** The device's Cortex-M33 FPU is single-precision, so every
 //! `f64` op here was a soft-float library call (~10× an `f32` op) — and this runs in
@@ -69,12 +69,7 @@ pub(crate) fn seg_dist_m(a: (i32, i32), b: (i32, i32)) -> f32 {
 /// measures to the *infinite* chord for decimation); the [route matcher](crate::matcher)
 /// needs the clamped on-segment distance, but both share this one projection so they
 /// can't drift.
-pub(crate) fn project_to_segment(
-    a: (i32, i32),
-    b: (i32, i32),
-    p: (i32, i32),
-    cl: f32,
-) -> (f32, f32) {
+pub(crate) fn project_to_segment(a: (i32, i32), b: (i32, i32), p: (i32, i32), cl: f32) -> (f32, f32) {
     let (bx, by) = delta_m(a, b, cl);
     let (px, py) = delta_m(a, p, cl);
     let len2 = bx * bx + by * by;
@@ -91,8 +86,8 @@ pub(crate) fn project_to_segment(
 /// vertex `b`: the area the line loses if `b` is dropped and `a` joins straight to `c`. Computed
 /// in the local-equirectangular metric (precomputed `cl = cos_lat`); cheap — no `sqrt`, no
 /// divide. A fixed-budget simplifier drops the smallest-area vertex, so a straight run (area ≈ 0)
-/// yields its points before a bend does, and the metric self-spreads: removing a vertex widens
-/// its neighbours' triangles, protecting them next time.
+/// yields its points before a bend does; the metric self-spreads, since removing a vertex widens
+/// its neighbours' triangles and protects them next time.
 pub fn tri_area_m2_cl(a: (i32, i32), b: (i32, i32), c: (i32, i32), cl: f32) -> f32 {
     let (ux, uy) = delta_m(a, b, cl);
     let (vx, vy) = delta_m(a, c, cl);

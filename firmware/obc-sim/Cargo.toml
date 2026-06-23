@@ -2,6 +2,7 @@
 name = "obc-sim"
 version = "0.1.0"
 edition = "2021"
+publish = false  # internal firmware crate — not published to crates.io
 description = "Desktop simulator for OBCM maps using embedded-graphics (same rendering path as the nRF54L firmware)"
 
 [dependencies]

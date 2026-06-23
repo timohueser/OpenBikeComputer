@@ -16,7 +16,9 @@ pipe tables, `>` blockquote callouts, `---` rules, and **raw block HTML/SVG
 passthrough** (a line starting with a block tag at column 0 is emitted verbatim — this
 is how the inline SVG figures embed). A `src:` link scheme expands to a repo file link.
 
-Run directly (`python3 docs/build_docs.py`) or let the Trunk hook run it.
+Run directly (`python3 docs/build_docs.py`) or let the Trunk hook run it. Pass
+`--check-links` to additionally verify every internal anchor link resolves to a real
+page and heading id (the cross-page `#anchor` audit CI runs) and exit non-zero if not.
 """
 
 import html
@@ -25,6 +27,7 @@ import re
 import shutil
 import sys
 from pathlib import Path
+from urllib.parse import urljoin
 
 ROOT = Path(__file__).resolve().parent          # docs/
 CONTENT = ROOT / "content"
@@ -350,7 +353,48 @@ def nav_title_for(nav, path):
     return path
 
 
+# ----------------------------------------------------------------------- link check
+
+# Heading ids and anchor hrefs straight out of the *rendered* HTML — so the check
+# validates exactly the ids/links that ship, not a re-derivation that could drift.
+HEADING_ID_RE = re.compile(r'<h[1-6]\b[^>]*\bid="([^"]+)"')
+ANCHOR_HREF_RE = re.compile(r'<a\b[^>]*\bhref="([^"]+)"')
+
+
+def check_links(rendered):
+    """Verify every internal anchor link resolves to a real page and (if it carries a
+    `#fragment`) a real heading id on that page. `rendered` maps each page's root-relative
+    URL ('' for the index) to its content HTML. Returns the number of broken links — the
+    cross-page `../page/#anchor` check CLAUDE.md otherwise asks me to do by hand."""
+    pages = set(rendered)
+    slugs = {url: set(HEADING_ID_RE.findall(content)) for url, content in rendered.items()}
+
+    broken = []
+    for url, content in sorted(rendered.items()):
+        for href in ANCHOR_HREF_RE.findall(content):
+            # Only internal links: external (http/mailto, incl. expanded `src:` links) and
+            # protocol-relative URLs resolve elsewhere and aren't ours to validate.
+            if re.match(r"[a-z]+:", href) or href.startswith("//"):
+                continue
+            path, _, frag = href.partition("#")
+            target = urljoin(url, path).lstrip("/") if path else url
+            label = "/" + (url or "(index)")
+            if target not in pages:
+                broken.append("%s: '%s' -> no such page '%s'" % (label, href, target or "(index)"))
+            elif frag and frag not in slugs[target]:
+                broken.append("%s: '%s' -> no '#%s' heading on '%s'" % (label, href, frag, target or "(index)"))
+
+    if broken:
+        print("docs: %d broken internal link(s):" % len(broken), file=sys.stderr)
+        for b in broken:
+            print("  ✗ %s" % b, file=sys.stderr)
+    else:
+        print("docs: all internal anchor links resolve")
+    return len(broken)
+
+
 def main():
+    check = "--check-links" in sys.argv[1:]
     if not TEMPLATE.exists():
         sys.exit("missing template: %s" % TEMPLATE)
     nav = json.loads((CONTENT / "nav.json").read_text())
@@ -361,6 +405,7 @@ def main():
     OUT.mkdir(parents=True)
     shutil.copytree(ASSETS, OUT / "assets")
 
+    rendered = {}
     pages = [pg["path"] for sec in nav["sections"] for pg in sec["pages"]]
     for path in pages:
         src = CONTENT / (path + ".md")
@@ -392,9 +437,13 @@ def main():
         dest = OUT / "index.html" if url == "" else OUT / url / "index.html"
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(out_html)
+        rendered[url] = content
         print("  %s -> %s" % (path + ".md", dest.relative_to(ROOT)))
 
     print("docs: rendered %d pages into %s" % (len(pages), OUT.relative_to(ROOT)))
+
+    if check and check_links(rendered):
+        sys.exit(1)
 
 
 if __name__ == "__main__":

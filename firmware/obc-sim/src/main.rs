@@ -3,7 +3,7 @@
 //! All map drawing (projection, LOD selection, polygon fill, lines) lives in
 //! `obc_render`, the same code the nRF54L firmware will run against the
 //! LS021B7DD02. This binary only owns the host concerns: argument parsing, the
-//! SDL window + pan/zoom event loop, PNG output, and the color policy (device
+//! eframe window + pan/zoom event loop, PNG output, and the color policy (device
 //! 64-color quantization by default, or `--true-color`).
 //!
 //! Usage:
@@ -18,7 +18,7 @@
 //! host-side run of the same conversion the device does on a USB drop. Routes can also
 //! be dropped onto the window to import them live.
 //!
-//! Interactive: drag to pan, scroll to zoom, Esc/Q to quit.
+//! Interactive: drag to pan, scroll to zoom; close the Controls window to quit.
 //!
 //! The web build (wasm32) reuses only the shared host pieces — [`Args`],
 //! [`color_of`], [`initial_camera`], [`replay_step`], [`reconcile_tracks`] — and the
@@ -30,8 +30,8 @@ use std::time::Instant;
 
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
 use obc_app::{
-    App, AppState, Button, ButtonEvent, CompassSource, Fix, InputClock, InputEvent, InputSource,
-    LocationSource, RideClock, Sensors, TrackAction, TrackSink,
+    App, AppState, Button, ButtonEvent, CompassSource, Fix, InputClock, InputEvent, InputSource, LocationSource,
+    RideClock, Sensors, TrackAction, TrackSink,
 };
 use obc_reader::{rgb565_to_device64, rgb565_to_rgb888, MapCache, Reader, SliceSource};
 use obc_render::text::{draw_text, Font, TextAlign};
@@ -199,9 +199,7 @@ fn parse_args() -> Result<Args, String> {
             "--png" => a.png = Some(it.next().ok_or("--png needs a path")?),
             "--screenshot" => a.screenshot = Some(it.next().ok_or("--screenshot needs a path")?),
             "--true-color" => a.true_color = true,
-            "--heading" => {
-                a.heading = Some(it.next().and_then(|s| s.parse().ok()).ok_or("bad --heading")?)
-            }
+            "--heading" => a.heading = Some(it.next().and_then(|s| s.parse().ok()).ok_or("bad --heading")?),
             "--gpx" => a.gpx = Some(it.next().ok_or("--gpx needs a path")?),
             "--at" => a.at = Some(it.next().and_then(|s| s.parse().ok()).ok_or("bad --at")?),
             "--center" => {
@@ -272,14 +270,7 @@ fn render_text_demo(fb: &mut Framebuffer, true_color: bool) {
 
     let _ = fb.clear(col(PARCHMENT));
     let _ = fb.fill_solid(&Rectangle::new(Point::zero(), Size::new(fb.width(), 28)), col(HUD));
-    draw_text(
-        fb,
-        "TERMINUS FONT DEMO",
-        Point::new(w / 2, 3),
-        Font::Label,
-        TextAlign::Center,
-        col(PARCHMENT),
-    );
+    draw_text(fb, "TERMINUS FONT DEMO", Point::new(w / 2, 3), Font::Label, TextAlign::Center, col(PARCHMENT));
 
     // Font ladder: each tier's caption (in Label) over a true-size sample drawn in that
     // tier, annotated with its measured cap height in mm so the size targets are checkable
@@ -353,11 +344,7 @@ fn replay_step<'s>(
 fn reconcile_tracks(app: &mut App, tracks: &mut TrackStore) {
     let action = app.activity.take_track_action();
     let session = app.activity.session;
-    let name = app
-        .activity
-        .active_route
-        .and_then(|i| app.routes().get(i))
-        .map(|r| r.name.as_str().to_string());
+    let name = app.activity.active_route.and_then(|i| app.routes().get(i)).map(|r| r.name.as_str().to_string());
     tracks.reconcile(action, session, name.as_deref());
 }
 
@@ -365,8 +352,7 @@ fn reconcile_tracks(app: &mut App, tracks: &mut TrackStore) {
 /// the device's hard pixel edges stay crisp (matching the old simulator output).
 fn write_png(fb: &Framebuffer, scale: u32, path: &str) -> Result<(), String> {
     let (w, h) = (fb.width(), fb.height());
-    let base = image::RgbImage::from_raw(w, h, fb.as_rgb888().to_vec())
-        .ok_or("framebuffer size mismatch")?;
+    let base = image::RgbImage::from_raw(w, h, fb.as_rgb888().to_vec()).ok_or("framebuffer size mismatch")?;
     let out = if scale > 1 {
         image::imageops::resize(&base, w * scale, h * scale, image::imageops::FilterType::Nearest)
     } else {
@@ -605,8 +591,7 @@ fn main() {
         let mut app = if args.boot { App::new_idle(state) } else { App::new(state) };
         // Load the routes folder so the Route menu has real entries and a picked route
         // can be drawn (the device reads the same off its SD card).
-        let mut store =
-            RouteStore::open(args.routes_dir.clone().unwrap_or_else(|| "routes".to_string()));
+        let mut store = RouteStore::open(args.routes_dir.clone().unwrap_or_else(|| "routes".to_string()));
         app.set_routes(store.catalog());
         // Drive the app to a specific screen before snapshotting (e.g. the Menu).
         if let Some(script) = &args.script {
@@ -623,8 +608,7 @@ fn main() {
 
         // Recorded-track store (the device-SD `/tracks` stand-in). A session started by a
         // `--script` load records here; the breadcrumb itself draws regardless.
-        let mut tracks =
-            TrackStore::open(args.tracks_dir.clone().unwrap_or_else(|| "tracks".to_string()));
+        let mut tracks = TrackStore::open(args.tracks_dir.clone().unwrap_or_else(|| "tracks".to_string()));
 
         // Replay the track from the start up to `--at`, ticking the app each step so the
         // map-matcher locks on, the ride accumulators (done / climbed / Avg) build up, and the
@@ -650,9 +634,7 @@ fn main() {
                 app.activity.end_session();
                 reconcile_tracks(&mut app, &mut tracks);
             } else {
-                eprintln!(
-                    "--save-track: no active ride (load a route first, e.g. --boot --script pp)"
-                );
+                eprintln!("--save-track: no active ride (load a route first, e.g. --boot --script pp)");
             }
         }
 
@@ -662,21 +644,13 @@ fn main() {
         // Time the whole frame draw and fold it into the stats as `render_us` (the no_std
         // renderer carries no clock, so the host fills it) — same field the live panel shows.
         let t0 = Instant::now();
-        let mut stats = app.render_frame(
-            &mut fb,
-            &reader,
-            route.as_ref(),
-            args.width as f32,
-            args.height as f32,
-            |c| color_of(c, tc),
-        );
+        let mut stats =
+            app.render_frame(&mut fb, &reader, route.as_ref(), args.width as f32, args.height as f32, |c| {
+                color_of(c, tc)
+            });
         stats.render_us = t0.elapsed().as_micros() as u32;
         let cache_reqs = stats.map_chunk_hits + stats.map_chunk_misses;
-        let hit_pct = if cache_reqs == 0 {
-            0.0
-        } else {
-            100.0 * stats.map_chunk_hits as f32 / cache_reqs as f32
-        };
+        let hit_pct = if cache_reqs == 0 { 0.0 } else { 100.0 * stats.map_chunk_hits as f32 / cache_reqs as f32 };
         eprintln!(
             "rendered {}/{} features ({} chunks, LOD {}, {} dropped) | route {}/{} drawn, {} chunks in {:.2} ms | spans {:.0}% points {:.0}% rings {:.0}% | map-cache {:.0}% hit, {} reads, {} B",
             stats.features_drawn,

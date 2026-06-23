@@ -2,8 +2,7 @@
 //! (coordinate formatting, `<trkseg>` splitting on `segment_start`, well-formedness).
 
 use obc_route::{
-    decode_record, encode_record, track_to_gpx, ByteSink, Error, SliceSource, TrackPoint,
-    TRACK_RECORD_LEN,
+    decode_record, encode_record, track_to_gpx, ByteSink, Error, SliceSource, TrackPoint, TRACK_RECORD_LEN,
 };
 
 /// A `ByteSink` over a growable `Vec` (mirrors the matcher/profile test backings).
@@ -27,13 +26,7 @@ impl ByteSink for VecSink {
 fn record_roundtrip() {
     for p in [
         TrackPoint { lon: -7_654_321, lat: 47_123_456, ele: 812, t_ms: 0, segment_start: true },
-        TrackPoint {
-            lon: 13_404_954,
-            lat: -8_000_001,
-            ele: -42,
-            t_ms: 1_234_567,
-            segment_start: false,
-        },
+        TrackPoint { lon: 13_404_954, lat: -8_000_001, ele: -42, t_ms: 1_234_567, segment_start: false },
         TrackPoint { lon: 0, lat: 0, ele: 0, t_ms: u32::MAX, segment_start: true },
     ] {
         assert_eq!(decode_record(&encode_record(&p)), p);
@@ -92,8 +85,7 @@ fn gpx_splits_segments_on_pause() {
 
 #[test]
 fn gpx_handles_negative_degrees_and_escapes_name() {
-    let pts =
-        [TrackPoint { lon: -122_419_400, lat: -37_774_900, ele: 0, t_ms: 0, segment_start: true }];
+    let pts = [TrackPoint { lon: -122_419_400, lat: -37_774_900, ele: 0, t_ms: 0, segment_start: true }];
     let gpx = to_gpx(&log_of(&pts), "a < b & c");
     assert!(gpx.contains("lat=\"-37.774900\" lon=\"-122.419400\""));
     assert!(gpx.contains("<name>a &lt; b &amp; c</name>"));

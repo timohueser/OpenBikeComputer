@@ -3,16 +3,16 @@
 //!
 //! Issue #33 listed "the existing font & palette demo" as a board-bring-up
 //! deliverable, but the merged bring-up only landed the raw colour-bar test
-//! pattern. This brings it onto glass: the Terminus font ladder + the "explorer's
-//! field map" palette (`docs/bikepacking-computer-ui-spec.md`), drawn through the
-//! SDRAM [`Framebuffer565`](obc_platform::Framebuffer565) with `obc_render::text`.
-//! It verifies the text raster + the RGB565 colour path in isolation, before the
+//! pattern. This draws the Terminus font ladder + the "explorer's field map"
+//! palette (`docs/bikepacking-computer-ui-spec.md`) through the SDRAM
+//! [`Framebuffer565`](obc_platform::Framebuffer565) with `obc_render::text`,
+//! verifying the text raster + the RGB565 colour path in isolation before the
 //! whole [`App::render_frame`](obc_app::App::render_frame) is pointed at the panel.
 //!
 //! Unlike the simulator — which previews the LS021B7DD02's device-64 (RGB222)
 //! gamut via `rgb565_to_device64` — this draws the palette in **native RGB565**:
 //! the ILI9341 is a true 5/6/5 panel, so the colours go on straight (no host-only
-//! quantization). Reached via the `glass-demo` cargo feature.
+//! quantization). Behind the `glass-demo` cargo feature.
 
 use embedded_graphics::{pixelcolor::Rgb565, prelude::*, primitives::Rectangle};
 use obc_render::text::{draw_text, Font, TextAlign};
@@ -44,14 +44,7 @@ where
 
     target.clear(parchment)?;
     target.fill_solid(&Rectangle::new(Point::zero(), Size::new(w as u32, 28)), hud)?;
-    draw_text(
-        target,
-        "TERMINUS FONT DEMO",
-        Point::new(w / 2, 3),
-        Font::Label,
-        TextAlign::Center,
-        parchment,
-    );
+    draw_text(target, "TERMINUS FONT DEMO", Point::new(w / 2, 3), Font::Label, TextAlign::Center, parchment);
 
     // Font ladder: each tier's caption (in Label) over a true-size sample drawn in
     // that tier, annotated with its measured cap height in mm.
@@ -70,8 +63,7 @@ where
 
     // Palette — each name drawn in its own colour, so the panel shows whether
     // amber, forest, wood and warning stay distinct and legible on glass.
-    for (name, col) in [("amber", amber), ("forest", forest), ("wood", wood), ("warning", warning)]
-    {
+    for (name, col) in [("amber", amber), ("forest", forest), ("wood", wood), ("warning", warning)] {
         draw_text(target, name, Point::new(8, y), Font::Label, TextAlign::Left, col);
         y += Font::Label.line_height() as i32 + 2;
     }

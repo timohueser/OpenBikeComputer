@@ -2,15 +2,18 @@
 name = "obc-platform"
 version = "0.1.0"
 edition = "2021"
+publish = false  # internal firmware crate — not published to crates.io
 description = "Board-agnostic no_std firmware glue between obc-app and a concrete board — written once, reused by every OBC board crate. For now: the SDRAM/framebuffer DrawTarget. Later: FatFs ByteSource/Sink adapters, the input debouncer, the USB-CDC debug protocol."
 
 [features]
-# USB-CDC fake-sensor debug protocol (issue #38): the line parser + the
-# LocationSource/AltimeterSource/CompassSource impls + the telemetry format, for streaming a
-# recorded ride from a host. Board-agnostic and dependency-light — only embassy-sync's `Signal`
-# (the fresh-fix hand-off from the USB task to the app poll); the board crate owns the actual
-# embassy-usb CDC driver. Off by default so the host workspace build never pulls embassy-sync;
-# the F429 firmware turns it on in its own default features.
+# USB-CDC fake-sensor debug protocol (issue #38). The pure codec in `debug_usb` (line parser,
+# `Telemetry`/fix encoders, `LineReader`) is always compiled — board-agnostic and dependency-light
+# (only `obc_app` types + heapless) — so the host feeder reuses one canonical wire format with
+# default features. This feature adds only the embassy-sync `Signal`/`Channel` hand-off plus the
+# LocationSource/AltimeterSource/CompassSource impls that bridge parsed samples to the app poll
+# (the fresh-fix latch); the board crate owns the actual embassy-usb CDC driver. Off by default so
+# the host workspace build never pulls embassy-sync; the F429 firmware turns it on in its own
+# default features.
 debug-usb = ["dep:embassy-sync"]
 
 [dependencies]
@@ -48,8 +51,22 @@ embedded-sdmmc = { version = "0.9", default-features = false }
 # `debug-usb` feature pulls it.
 embassy-sync = { version = "0.8", optional = true }
 
+# `Instant`/`Duration` for the `time::SaturatingElapsed` fix (issue #51) and the `synth`
+# stand-in GPS's wall-clock cadence. Pinned to the same 0.5.1 the F429 board resolves so
+# `Instant` unifies across the two crates (the trait impl applies to the board's `Instant`).
+# `default-features = false` here; the board adds `defmt` itself and cargo unions the features.
+# NB: no time-*driver* is selected — the MCU build links embassy-stm32's, and the host *test*
+# build links the `std` driver from the dev-dependency below.
+embassy-time = { version = "0.5.1", default-features = false }
+
 [dev-dependencies]
 # `cargo test --features debug-usb` compiles the Signal-based sources, which reference
 # `critical_section::with`; the std impl satisfies the link on the host. Dev-only — it never
 # reaches the firmware build (which provides cortex-m's single-core impl), so no double impl.
 critical-section = { version = "1.1", features = ["std"] }
+
+# The host time-driver for tests: `embassy_time::Instant::now()` (reached by `SaturatingElapsed`
+# and `SynthLocation`) needs a *linked* time driver or the test binary fails to link. `std`
+# registers `driver_std` on the host. Dev-only, so the MCU lib build never pulls it — there the
+# board's embassy-stm32 driver is the one linked.
+embassy-time = { version = "0.5.1", features = ["std"] }

@@ -1,0 +1,64 @@
+# cargo-deny: supply-chain gate for both cargo roots (the firmware workspace and the
+# standalone obc-fw-stm32f429 board crate). Run from the repo root against each lockfile:
+#   cargo deny --manifest-path firmware/Cargo.toml --all-features check
+#   cargo deny --manifest-path firmware/obc-fw-stm32f429/Cargo.toml --all-features check
+# Checks advisories (RustSec), licenses, banned crates, and dependency sources.
+
+[graph]
+# Resolve every feature so feature-gated deps (debug-usb, baked-tile, the sim's eframe
+# stack...) are in scope for the license/advisory scan, not just the default set.
+all-features = true
+
+[advisories]
+# Fail on any known security advisory, and on a crate pinned to a yanked version (the
+# lockfile-drift class of bug this whole pipeline guards against). `ignore` stays empty:
+# add a specific RustSec id here, with a comment, only when one is triaged as not affecting us.
+yanked = "deny"
+ignore = []
+# Only fail on *unmaintained* crates we depend on directly — the sim's GUI stack (eframe ->
+# egui -> accesskit) drags in deep transitive crates like `paste` (RUSTSEC-2024-0436) we can't
+# upgrade. Security *vulnerabilities* are still denied everywhere regardless of this setting.
+unmaintained = "workspace"
+
+[licenses]
+# Permissive licenses only — everything the dep tree currently resolves to. A new dep under
+# a license not listed here fails CI, forcing a deliberate decision rather than silent drift.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unlicense",
+    "0BSD",
+    "BSL-1.0",
+    "CC0-1.0",
+    "MPL-2.0",
+]
+confidence-threshold = 0.8
+# The workspace's own obc-* crates carry no `license` field (never published); skip them.
+private = { ignore = true }
+# eframe/egui's bundled default fonts ship under the SIL Open Font License plus a non-SPDX
+# Ubuntu Font License reference, alongside the usual MIT/Apache dual-license. Scope those two
+# to just this crate rather than allowing OFL globally.
+exceptions = [
+    { crate = "epaint_default_fonts", allow = ["OFL-1.1", "LicenseRef-UFL-1.0"] },
+]
+
+[bans]
+# embassy + eframe legitimately pull several versions of small crates (bitflags, syn, ...);
+# warn so it's visible without blocking. Nothing is hard-banned yet.
+multiple-versions = "warn"
+# Ban `version = "*"` on crates.io deps, but allow it for the workspace's own path deps
+# (`obc-app = { path = "../obc-app" }`), which cargo models as a wildcard requirement.
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+# Every dependency must come from crates.io — there are no git/path deps today, and an
+# unexpected git or unknown-registry source should fail rather than slip in unreviewed.
+unknown-registry = "deny"
+unknown-git = "deny"

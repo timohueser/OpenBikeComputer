@@ -3,9 +3,10 @@
 //!
 //! `no_std`, over `embedded-hal` / `embedded-graphics`, so the board crates stay
 //! thin (clocks, concrete pins, the main loop) and everything reusable lives here:
-//! written once, ported to the next board by re-pointing the pins. The epic
-//! (issue #32) grows this into FatFs `ByteSource`/`Sink` adapters and the USB-CDC
-//! debug protocol; today it is the framebuffer `DrawTarget` and the button debouncer.
+//! written once, ported to the next board by re-pointing the pins. Today that is the
+//! framebuffer `DrawTarget`s, the button debouncer, the FatFs `ByteSource`/`Sink`
+//! adapters (issue #36), and the USB-CDC debug-sensor protocol (issue #38, behind
+//! `debug-usb`).
 //!
 //! Modules:
 //! - [`framebuffer`] — [`DrawTarget`](embedded_graphics::draw_target::DrawTarget)s
@@ -18,6 +19,12 @@
 //! - [`sd`] — FatFs [`ByteSource`](obc_route::ByteSource)/[`ByteSink`](obc_route::ByteSink)
 //!   and [`TrackSink`](obc_app::TrackSink) adapters over an [`embedded_sdmmc`] SD card, so
 //!   maps/routes load and rides save against a real card (issue #36).
+//! - [`time`] — [`SaturatingElapsed`], the panic-free `Instant::elapsed()` (issue #51); a
+//!   generic embassy-time property, so every board reuses one copy rather than re-deriving it.
+//! - [`synth`] — [`SynthLocation`], a board-agnostic synthetic moving
+//!   [`LocationSource`](obc_app::LocationSource) — the `debug-usb`-off fallback fake GPS that
+//!   walks a slow square loop (always compiled, *not* behind `debug-usb`, since it *is* the
+//!   debug-usb-off path).
 //!
 //! ## Two-plane architecture — input/overlay vs. map (issue #48)
 //!
@@ -58,14 +65,22 @@
 #![no_std]
 
 pub mod button_input;
-// USB-CDC fake-sensor protocol + sources + telemetry (issue #38). Behind `debug-usb` so the
-// host workspace build never pulls embassy-sync; the board crate enables it and owns the actual
-// embassy-usb CDC driver. The protocol + sources move to the nRF54L unchanged.
-#[cfg(feature = "debug-usb")]
+// USB-CDC fake-sensor protocol + sources + telemetry (issue #38). The **pure codec** (line
+// parser, `Telemetry`/fix encoders, `LineReader`) is always compiled so the host feeder reuses one
+// canonical wire format; only the embassy-sync `Signal`/`Channel` plumbing + HAL-trait sources are
+// gated *inside* the module behind `debug-usb`, so the host workspace build never pulls
+// embassy-sync. The board crate enables the feature and owns the actual embassy-usb CDC driver.
+// The protocol + sources move to the nRF54L unchanged.
 pub mod debug_usb;
 pub mod framebuffer;
 pub mod sd;
+// Always compiled — the synthetic GPS is the `debug-usb`-OFF fallback, so it must exist without
+// the `debug-usb` feature; `time` it depends on is board-agnostic embassy-time glue.
+pub mod synth;
+pub mod time;
 
 pub use button_input::{ButtonInput, Timing};
 pub use framebuffer::{Framebuffer565, FramebufferArgb4444};
 pub use sd::{SdByteSink, SdByteSource, SdTrackSink};
+pub use synth::SynthLocation;
+pub use time::SaturatingElapsed;

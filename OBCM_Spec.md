@@ -212,6 +212,15 @@ Lines use only the exterior ring (`Flags & 0x02 == 0`, no holes).
 > segment longer than `30000` microdegrees so that no single delta exceeds the
 > 16-bit range. Readers need no special handling — these are ordinary vertices.
 
+> **Per-feature vertex cap:** although `Pt Count` is a `uint16`, a single feature
+> (exterior plus all holes, densification included) must not exceed **2048
+> vertices**. The reference reader decodes a whole feature into one fixed buffer
+> (`MAX_FEAT_PTS`) and silently truncates anything beyond it. The packer guarantees
+> the bound through `Chunk Size`: a feature can't outgrow its chunk, and the densest
+> encoding is 8-bit deltas at 2 bytes per vertex, so `Chunk Size ≤ (2048−1)·2 + 12 =
+> 4106` keeps every feature within the cap. `obc-pack` rejects a larger `Chunk Size`
+> at build time rather than emit a feature the reader would corrupt.
+
 ### Polygon-with-holes byte layout
 
 ```
