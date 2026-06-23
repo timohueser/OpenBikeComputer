@@ -374,3 +374,55 @@ pub mod palette {
     /// route ahead, while staying clearly darker than the lighter azure water it may cross.
     pub const BREADCRUMB: u16 = rgb565(0, 0, 170); // → (0,0,170) navy
 }
+
+#[cfg(test)]
+mod tests {
+    use super::step_selection;
+
+    // -----------------------------------------------------------------------
+    // `step_selection` wrapping (issue #93 item 4).
+    //
+    // Every list screen (Menu, Route menu, Ride control) shares this `rem_euclid`-based
+    // wrap (screen/mod.rs ~315). The existing suite only ever turns *within* the list; these
+    // pin the behaviour when a turn crosses either end — exactly where a `%` regression
+    // (which is negative for a backward turn at the top) would hand back a garbage index and
+    // either highlight nothing or panic on the row lookup.
+    // -----------------------------------------------------------------------
+
+    /// Backward off the top: `Turn(-1)` from index 0 must wrap to the *last* item, not produce a
+    /// negative index. `%` would give `-1`; `rem_euclid` gives `len - 1`. This is the menu's
+    /// "scroll up past the top to reach the bottom" — a daily interaction.
+    #[test]
+    fn step_selection_wraps_backward_past_the_top() {
+        assert_eq!(step_selection(0, -1, 4), 3, "up from the first item lands on the last");
+        assert_eq!(step_selection(0, -1, 1), 0, "a single-item list stays put");
+    }
+
+    /// Forward off the bottom: `Turn(1)` from the last item wraps to the first.
+    #[test]
+    fn step_selection_wraps_forward_past_the_bottom() {
+        assert_eq!(step_selection(3, 1, 4), 0, "down from the last item lands on the first");
+    }
+
+    /// A multi-detent turn larger than the list (a fast flick of the encoder) must wrap cleanly,
+    /// not run off the end. `Turn(n)` with `n > len` and `Turn(-n)` both land via the same modulo.
+    #[test]
+    fn step_selection_wraps_multiple_turns() {
+        // From 0, +5 over a 3-item list: 5 mod 3 = 2.
+        assert_eq!(step_selection(0, 5, 3), 2, "a long forward flick wraps modulo the length");
+        // From 0, -5 over a 3-item list: rem_euclid keeps it in 0..3 → 1.
+        assert_eq!(step_selection(0, -5, 3), 1, "a long backward flick wraps without going negative");
+        // A full lap forward returns to the start.
+        assert_eq!(step_selection(2, 3, 3), 2, "exactly one lap is a no-op");
+    }
+
+    /// An empty list (no routes on the SD card, an empty menu) is a no-op for *any* turn — the
+    /// `len == 0` guard must short-circuit before the `% 0` that would otherwise panic. Press is
+    /// already covered elsewhere; this pins the Turn path the issue called out.
+    #[test]
+    fn step_selection_on_empty_list_is_a_noop() {
+        assert_eq!(step_selection(0, 1, 0), 0, "a forward turn on an empty list stays at 0");
+        assert_eq!(step_selection(0, -1, 0), 0, "a backward turn on an empty list stays at 0");
+        assert_eq!(step_selection(7, 3, 0), 7, "the selection is returned unchanged, not modulo'd");
+    }
+}
