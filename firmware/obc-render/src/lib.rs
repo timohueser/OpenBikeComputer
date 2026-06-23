@@ -382,6 +382,34 @@ struct DrawScratch {
     xs: Vec<f32, MAX_CROSSINGS>,
 }
 
+/// A monotonic microsecond clock for **stage timing** inside [`MapRenderer::render_timed`].
+///
+/// `obc-render` is `no_std` and carries no clock of its own, so a caller that wants the
+/// per-stage breakdown (collect / sort / draw) passes one in: the device an embassy-`Instant`
+/// microsecond clock, a desktop host a `std::time::Instant` clock. The plain
+/// [`MapRenderer::render`] path passes the zero-cost [`NoopClock`], so it pays nothing and leaves
+/// the stage fields at `0`.
+///
+/// This whole timing seam — the trait, [`NoopClock`], [`MapRenderer::render_timed`] and the
+/// `*_us` stage fields on [`RenderStats`] — is self-contained on purpose: it backs the
+/// render-performance benchmark and can be lifted out in one revert once that work is done.
+pub trait Clock {
+    /// Microseconds since some fixed, monotonic epoch. Only differences are taken.
+    fn now_us(&self) -> u64;
+}
+
+/// The zero-cost [`Clock`] used by the untimed [`MapRenderer::render`] path: always `0`, so
+/// every stage delta is `0` and the optimizer can fold the timing away entirely.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoopClock;
+
+impl Clock for NoopClock {
+    #[inline(always)]
+    fn now_us(&self) -> u64 {
+        0
+    }
+}
+
 /// What a single render call drew.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RenderStats {
@@ -423,6 +451,16 @@ pub struct RenderStats {
     /// device the Cortex-M DWT cycle counter) — kept on the stats so the control panel and
     /// the headless line surface it without a side channel.
     pub render_us: u32,
+    /// Per-stage wall time of the **map** render, microseconds — filled by
+    /// [`render_timed`](MapRenderer::render_timed) from the caller's [`Clock`]; left `0` on the
+    /// untimed [`render`](MapRenderer::render) path. `collect_us` is visible-feature collection
+    /// (quadtree walk + SD/cache reads + decode + cull + span build), `sort_us` the painter's-
+    /// order span sort, `draw_us` the full-screen clear + rasterization (`draw_map`). They cover
+    /// only the base map; overlays (route/marker/breadcrumb) are drawn after `render` returns, so
+    /// a caller derives overlay time as `total − (collect_us + sort_us + draw_us)`.
+    pub collect_us: u32,
+    pub sort_us: u32,
+    pub draw_us: u32,
 }
 
 /// One visible feature's draw metadata plus the ranges locating its geometry in
@@ -505,7 +543,33 @@ impl MapRenderer {
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
+        // Untimed path: the zero-cost `NoopClock` leaves the `*_us` stage fields at 0 and lets
+        // the optimizer fold the timing away. Callers wanting the per-stage breakdown (the
+        // device render benchmark) use `render_timed` with a real clock.
+        self.render_timed(target, reader, vp, bg, color_fn, &NoopClock)
+    }
+
+    /// Like [`render`](MapRenderer::render) but fills the per-stage timings on the returned
+    /// [`RenderStats`] (`collect_us` / `sort_us` / `draw_us`) from `clock` — a `no_std`-friendly
+    /// microsecond source the caller supplies (the device's DWT cycle counter; a host an
+    /// `Instant`). The stages cover the base map only; see the [`RenderStats`] stage-field docs
+    /// and [`Clock`].
+    pub fn render_timed<D, F>(
+        &mut self,
+        target: &mut D,
+        reader: &Reader,
+        vp: &Viewport,
+        bg: D::Color,
+        color_fn: F,
+        clock: &dyn Clock,
+    ) -> RenderStats
+    where
+        D: DrawTarget,
+        F: Fn(u16) -> D::Color,
+    {
+        let t0 = clock.now_us();
         let _ = target.clear(bg);
+        let t_cleared = clock.now_us();
 
         let lod = reader.select_lod_for_mpp(vp.meters_per_pixel());
         let view = vp.visible_bbox();
@@ -524,9 +588,21 @@ impl MapRenderer {
         stats.map_chunk_misses = after.chunk_misses.wrapping_sub(before.chunk_misses);
         stats.map_sd_reads = after.sd_reads.wrapping_sub(before.sd_reads);
         stats.map_bytes_read = after.bytes_read.wrapping_sub(before.bytes_read);
+        let t_collected = clock.now_us();
 
         self.frame.spans.sort_unstable_by_key(|s| (s.z, s.seq));
+        let t_sorted = clock.now_us();
+
         self.draw_map(target, vp, &color_fn);
+        let t_drawn = clock.now_us();
+
+        // `collect` = walk + read + decode; `sort` = painter order; `draw` = the full-screen
+        // clear plus rasterization (the clear is a framebuffer write, so it belongs with draw
+        // even though it ran first). `saturating_sub` guards a momentarily non-monotonic clock;
+        // a frame is well under a second, so the `u32` µs casts never truncate.
+        stats.collect_us = t_collected.saturating_sub(t_cleared) as u32;
+        stats.sort_us = t_sorted.saturating_sub(t_collected) as u32;
+        stats.draw_us = (t_cleared.saturating_sub(t0) + t_drawn.saturating_sub(t_sorted)) as u32;
 
         stats
     }

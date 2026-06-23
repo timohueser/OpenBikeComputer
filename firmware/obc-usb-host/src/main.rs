@@ -9,9 +9,11 @@
 //! render-stats telemetry. The host twin of the sim's control panel, pointed at real glass.
 //!
 //! Wire format (see `obc-platform::debug_usb`): host→device `F <lat> <lon> <course|-> <speed|->`,
-//! `A <m>`, `C <deg>`, and input injection `K t <n>` / `K e <d|u>` / `K b <d|u>`; device→host
+//! `A <m>`, `C <deg>`, `Z <mpp>` (set the map's exact meters-per-pixel — the render-benchmark
+//! hook), and input injection `K t <n>` / `K e <d|u>` / `K b <d|u>`; device→host
 //! `T <frame_us> <lod> <feat_drawn> <feat_tried> <feat_dropped> <chunks> <hits> <misses> <reads>
-//! <bytes>`. ASCII, newline-terminated.
+//! <bytes> <collect_us> <read_us> <sort_us> <draw_us> <overlay_us> <mpp_milli>` — the last six are
+//! the per-stage render breakdown + the frame's camera scale. ASCII, newline-terminated.
 //!
 //! Usage: `obc-usb-host [--gpx FILE] [--port NAME] [--baud N] [--list]`.
 
@@ -494,6 +496,18 @@ impl eframe::App for FeederApp {
                             ui,
                             |ui| {
                                 row(ui, "Frame", &format!("{:.2} ms", t.frame_us as f32 / 1000.0));
+                                row(ui, "Scale", &format!("{:.3} m/px", t.mpp_milli as f32 / 1000.0));
+                                // Per-stage breakdown (render benchmark): `collect_us` includes
+                                // `read_us`, so show the CPU part of collect separately. `setup`
+                                // (Reader::new) is whatever the frame total has over the stages.
+                                let ms = |us: u32| format!("{:.2} ms", us as f32 / 1000.0);
+                                let stages = t.collect_us + t.sort_us + t.draw_us + t.overlay_us;
+                                row(ui, "· read (SD)", &ms(t.read_us));
+                                row(ui, "· collect-cpu", &ms(t.collect_us.saturating_sub(t.read_us)));
+                                row(ui, "· sort", &ms(t.sort_us));
+                                row(ui, "· draw", &ms(t.draw_us));
+                                row(ui, "· overlay", &ms(t.overlay_us));
+                                row(ui, "· setup", &ms(t.frame_us.saturating_sub(stages)));
                                 row(ui, "LOD", &t.lod.to_string());
                                 row(ui, "Features", &format!("{} / {} drawn", t.feat_drawn, t.feat_tried));
                                 ui.label("Dropped");

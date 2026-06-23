@@ -3,7 +3,7 @@
 
 use embedded_graphics::draw_target::DrawTarget;
 use obc_reader::Reader;
-use obc_render::{zoom_for_mpp, MapRenderer, RenderStats, Viewport};
+use obc_render::{zoom_for_mpp, Clock, MapRenderer, NoopClock, RenderStats, Viewport};
 use obc_route::{Profile, RouteMatch, RouteReader, TrackPoint};
 
 use crate::activity::{Activity, Mode};
@@ -590,6 +590,16 @@ impl App {
         &self.catalog
     }
 
+    /// **Debug/benchmark hook** (the USB-CDC `Z` command): set the map camera to exactly `mpp`
+    /// meters-per-pixel and force one map redraw. Drives the zoom directly — independent of the
+    /// encoder's fixed 1.2× detents — so a host render sweep can pin an exact scale per sample,
+    /// and always dirties the map (even at an unchanged scale) so each command yields one fresh
+    /// frame to time. Part of the strippable render-instrumentation seam; no other caller.
+    pub fn set_map_mpp(&mut self, mpp: f32) {
+        self.state.zoom = zoom_for_mpp(mpp);
+        self.map_dirty = true;
+    }
+
     /// Recognise this frame's raw control input and apply each resulting gesture to the top
     /// screen, then advance the visible screens' timed content. The convenience that fuses the
     /// two planes into one call for the simulator and the firmware's single-executor fallback;
@@ -713,6 +723,31 @@ impl App {
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
+        // Untimed: the host's `NoopClock` leaves the map's per-stage `*_us` fields at 0. The
+        // device uses `render_map_timed` with a real clock for the render benchmark.
+        self.render_map_timed(target, reader, route, w, h, color_fn, &NoopClock)
+    }
+
+    /// Like [`render_map`](App::render_map) but threads `clock` to the Map screen's
+    /// [`render_timed`](obc_render::MapRenderer::render_timed), so the returned [`RenderStats`]
+    /// carries the map's per-stage timings (`collect_us` / `sort_us` / `draw_us`). The device's
+    /// render benchmark uses this with its own microsecond clock; every other host calls the plain
+    /// [`render_map`](App::render_map). Part of the strippable render-instrumentation seam.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_map_timed<D, F>(
+        &mut self,
+        target: &mut D,
+        reader: &Reader,
+        route: Option<&RouteReader>,
+        w: f32,
+        h: f32,
+        color_fn: F,
+        clock: &dyn Clock,
+    ) -> RenderStats
+    where
+        D: DrawTarget,
+        F: Fn(u16) -> D::Color,
+    {
         // Rebuild the cached elevation profile when the active route changes — it
         // streams every chunk, so it's built here once on load, never per frame. Keyed
         // on the active-route index (same simplification as the host's route reload):
@@ -744,6 +779,7 @@ impl App {
             h,
             now_ms: *now_ms,
             hold_progress,
+            clock,
         };
         let mut stats = RenderStats::default();
         for (i, scr) in stack.iter().enumerate().skip(base) {
