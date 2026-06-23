@@ -1,9 +1,10 @@
 //! Round joints/caps on thick lines. embedded-graphics joins thick `Polyline` segments with a
-//! flat bevel (and butt-caps the ends), so a densely sampled curve scallops — the thick-line
-//! "beading". `stroke_overlay`/`flush_run` fills a disc (⌀ = stroke width) at *every* vertex so
-//! joints and ends are smooth arcs. The disc at an isolated 90° corner hides inside eg's miter,
-//! so we probe the same disc where it's unambiguous: a **round cap** past a line end, a pixel
-//! eg's butt-capped segment can't reach. Driven through the public `stroke_path`.
+//! flat bevel (and butt-caps the ends), so a sharply bending curve scallops — the thick-line
+//! "beading". `stroke_overlay`/`flush_run` fills a disc (⌀ = stroke width) at each **run end**
+//! and at every interior vertex that bends sharply, so those joints and ends read as smooth
+//! arcs. The disc at an isolated 90° corner hides inside eg's miter, so we probe the same disc
+//! where it's unambiguous: a **round cap** past a line end, a pixel eg's butt-capped segment
+//! can't reach. Driven through the public `stroke_path`.
 
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
 use obc_render::{MapRenderer, Viewport};
