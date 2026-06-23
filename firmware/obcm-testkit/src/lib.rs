@@ -242,3 +242,85 @@ pub fn pack_poly_hole(style_id: u8, ax: i32, ay: i32, ext_deltas: &[(i8, i8)], h
     }
     v
 }
+
+/// A hole-free polygon with 16-bit deltas (flag bit 0) — the polygon analogue of [`pack_line16`].
+/// Lets a test build a polygon whose vertices span more than ±127 µdeg per delta (e.g. a screen-
+/// sized square for the renderer's edge-fill tests), which the 8-bit [`pack_poly`] can't express.
+/// The stored exterior point count is `1 + deltas.len()`.
+pub fn pack_poly16(style_id: u8, ax: i32, ay: i32, deltas: &[(i16, i16)]) -> Vec<u8> {
+    let mut v = Vec::new();
+    v.push(style_id);
+    v.extend_from_slice(&((1 + deltas.len()) as u16).to_le_bytes());
+    v.extend_from_slice(&ax.to_le_bytes());
+    v.extend_from_slice(&ay.to_le_bytes());
+    v.push(0x03); // flags: polygon (0x02) | 16-bit deltas (0x01)
+    for &(dx, dy) in deltas {
+        v.extend_from_slice(&dx.to_le_bytes());
+        v.extend_from_slice(&dy.to_le_bytes());
+    }
+    v
+}
+
+/// A polygon with `holes.len()` 8-bit-delta holes (each its own delta list). Generalises
+/// [`pack_poly_hole`] so a test can pack *more rings than the reader's `MAX_FEAT_RINGS` scratch
+/// holds* and assert the past-capacity rings are dropped (issue #96, reader item 1). The
+/// exterior's stored point count is `1 + ext_deltas.len()`; each hole's stored count is its own
+/// `hole.len()` (every hole vertex is a delta, the first relative to the anchor).
+pub fn pack_poly_holes(style_id: u8, ax: i32, ay: i32, ext_deltas: &[(i8, i8)], holes: &[Vec<(i8, i8)>]) -> Vec<u8> {
+    let mut v = Vec::new();
+    v.push(style_id);
+    v.extend_from_slice(&((1 + ext_deltas.len()) as u16).to_le_bytes());
+    v.extend_from_slice(&ax.to_le_bytes());
+    v.extend_from_slice(&ay.to_le_bytes());
+    v.push(0x06); // flags: polygon | has-holes, 8-bit deltas
+    for &(dx, dy) in ext_deltas {
+        v.push(dx as u8);
+        v.push(dy as u8);
+    }
+    v.push(holes.len() as u8); // hole count
+    for hole in holes {
+        v.extend_from_slice(&(hole.len() as u16).to_le_bytes());
+        for &(dx, dy) in hole {
+            v.push(dx as u8);
+            v.push(dy as u8);
+        }
+    }
+    v
+}
+
+/// A line whose **declared** exterior point count (`decl_count`, the `uint16` in the feature
+/// header) is set independently of the `deltas` actually written. The reader trusts that count and
+/// loops `decl_count - 1` deltas; a `decl_count` *larger* than `1 + deltas.len()` forges a header
+/// that runs past the bytes present — and, sized right, past the reader's `MAX_FEAT_PTS` scratch —
+/// letting a test drive the scratch-overflow + truncated-ring guards of issue #96 (reader items 1
+/// and 4) that the count-correct [`pack_line`] never reaches. 8-bit deltas.
+pub fn pack_line_decl(style_id: u8, ax: i32, ay: i32, decl_count: u16, deltas: &[(i8, i8)]) -> Vec<u8> {
+    let mut v = Vec::new();
+    v.push(style_id);
+    v.extend_from_slice(&decl_count.to_le_bytes());
+    v.extend_from_slice(&ax.to_le_bytes());
+    v.extend_from_slice(&ay.to_le_bytes());
+    v.push(0x00); // flags: line, 8-bit deltas
+    for &(dx, dy) in deltas {
+        v.push(dx as u8);
+        v.push(dy as u8);
+    }
+    v
+}
+
+/// A hole-free polygon whose **declared** exterior point count is forged independently of the
+/// `deltas` written — the polygon analogue of [`pack_line_decl`], used to overrun the reader's
+/// `MAX_FEAT_PTS` exterior scratch with one big feature (issue #96, reader item 1). 8-bit deltas.
+pub fn pack_poly_decl(style_id: u8, ax: i32, ay: i32, decl_count: u16, deltas: &[(i8, i8)]) -> Vec<u8> {
+    let mut v = Vec::new();
+    v.push(style_id);
+    v.extend_from_slice(&decl_count.to_le_bytes());
+    v.extend_from_slice(&ax.to_le_bytes());
+    v.extend_from_slice(&ay.to_le_bytes());
+    v.push(0x02); // flags: polygon, no holes, 8-bit deltas
+    for &(dx, dy) in deltas {
+        v.push(dx as u8);
+        v.push(dy as u8);
+    }
+    v
+}
