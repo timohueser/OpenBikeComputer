@@ -387,4 +387,144 @@ mod tests {
         bi.update(1000); // still held, much later: no repeat
         assert!(bi.poll().is_none());
     }
+
+    /// Item 1 (catch-up/rebase, `turn` ~202-208): a render loop that stalls and only
+    /// re-`update`s long *after* several repeat intervals have elapsed must emit exactly
+    /// ONE catch-up detent (not one per missed interval) and rebase the next due time to
+    /// `now`. Guards the `*repeat = Some(now.wrapping_add(interval))` rebase: if the code
+    /// instead advanced `due` by `interval`, a long stall would dump a burst on the next
+    /// frame and the menu would jump wildly.
+    #[test]
+    fn a_stalled_loop_emits_one_catch_up_detent_then_rearms() {
+        let pins = Pins::new();
+        let mut bi = pins.input(); // delay 350, interval 120
+
+        pins.next.set(true);
+        bi.update(0);
+        bi.update(8); // press → first detent, repeat armed for 8 + 350 = 358
+        assert_eq!(bi.poll(), Some(InputEvent::Turn(1)));
+
+        // Loop stalls, then resumes at 10_000 — past `due` (358) by ~80 intervals.
+        bi.update(10_000);
+        assert_eq!(bi.poll(), Some(InputEvent::Turn(1)), "exactly one catch-up detent");
+        assert!(bi.poll().is_none(), "not a burst — only one detent for the whole stall");
+
+        // Rearmed relative to `now`: nothing is due before 10_000 + 120 = 10_120.
+        bi.update(10_119);
+        assert!(bi.poll().is_none(), "next detent rebased to now + interval, not the old due");
+        bi.update(10_120);
+        assert_eq!(bi.poll(), Some(InputEvent::Turn(1)), "next interval fires off the rebased due");
+    }
+
+    /// Item 1 (millis wrap, `turn` ~205): the due-time comparison is
+    /// `now.wrapping_sub(due) < u32::MAX / 2`, so auto-repeat must keep firing across a
+    /// u32-millis rollover (~49.7 days of uptime). Arm the repeat just below `u32::MAX`,
+    /// wrap `now` past 0, and assert the detent still fires — a naive `now >= due` would
+    /// wrongly suppress it forever after the wrap.
+    #[test]
+    fn auto_repeat_survives_a_millis_wrap() {
+        let pins = Pins::new();
+        let mut bi = pins.input(); // delay 350, interval 120
+
+        let t0 = u32::MAX - 100; // press 100 ms before the rollover
+        pins.next.set(true);
+        bi.update(t0);
+        bi.update(t0.wrapping_add(8)); // committed press; repeat armed for ~(t0+8)+350, which wraps
+        assert_eq!(bi.poll(), Some(InputEvent::Turn(1)));
+
+        // `due` = (u32::MAX - 92).wrapping_add(350) = 257. After the wrap, now = 300 is
+        // past due by 43 ms; wrapping_sub keeps that small and positive → detent fires.
+        bi.update(300);
+        assert_eq!(bi.poll(), Some(InputEvent::Turn(1)), "repeat fires across the millis rollover");
+    }
+
+    /// Item 2 (overlapping presses): SELECT held while NEXT taps must not block or swallow
+    /// the NEXT detents — each button debounces independently, so one `update(now)` can
+    /// commit edges for several buttons. Proves the SELECT-down stays latched (no spurious
+    /// repeat) while NEXT cleanly emits its own detent on a later frame.
+    #[test]
+    fn select_held_while_next_taps_keeps_both_independent() {
+        let pins = Pins::new();
+        let mut bi = pins.input();
+
+        pins.select.set(true); // hold SELECT down
+        bi.update(0);
+        bi.update(8); // SELECT commits → Down(Encoder)
+        assert_eq!(bi.poll(), Some(InputEvent::Button(ButtonEvent::Down(Button::Encoder))));
+        assert!(bi.poll().is_none());
+
+        // NEXT taps while SELECT is still held — independent debounce, independent detent.
+        pins.next.set(true);
+        bi.update(20);
+        bi.update(28); // NEXT commits → Turn(1); SELECT already latched, emits nothing
+        assert_eq!(bi.poll(), Some(InputEvent::Turn(1)));
+        assert!(bi.poll().is_none(), "held SELECT does not re-emit while NEXT taps");
+    }
+
+    /// Item 2 (simultaneous presses): PREV and NEXT pressed and committed on the *same*
+    /// `update(now)` must both enqueue, in PREV-then-NEXT order (the order `update` calls
+    /// `turn`), and drain intact. Proves a single frame can queue multiple events and the
+    /// queue preserves their order.
+    #[test]
+    fn prev_and_next_both_down_enqueue_in_call_order() {
+        let pins = Pins::new();
+        let mut bi = pins.input();
+
+        pins.prev.set(true);
+        pins.next.set(true);
+        bi.update(0); // both candidates flip
+        bi.update(8); // both commit in one update: PREV (-1) then NEXT (+1)
+        assert_eq!(bi.poll(), Some(InputEvent::Turn(-1)), "PREV is sampled first");
+        assert_eq!(bi.poll(), Some(InputEvent::Turn(1)), "NEXT second");
+        assert!(bi.poll().is_none());
+    }
+
+    /// Item 3 (overflow drop, `push` ~239, QUEUE_LEN=8): the queue silently drops on
+    /// overflow ("can't happen in practice"). Force it to happen — never drain, hold all
+    /// four buttons, and pump auto-repeat until well past 8 queued events — then prove the
+    /// queue caps at exactly QUEUE_LEN and the overflow is dropped, not a panic or wraparound.
+    #[test]
+    fn queue_caps_at_eight_and_drops_overflow() {
+        let pins = Pins::new();
+        let mut bi = pins.input();
+
+        // Hold all four down; never poll, so nothing drains.
+        pins.prev.set(true);
+        pins.next.set(true);
+        pins.select.set(true);
+        pins.back.set(true);
+        bi.update(0);
+        bi.update(8); // 4 events queued (PREV, NEXT, SELECT-down, BACK-down) — queue at 4 of 8
+
+        // Pump PREV/NEXT auto-repeat many times to push well past QUEUE_LEN=8; every push
+        // beyond 8 hits the `let _ = push_back` drop path.
+        for f in 1..20 {
+            bi.update(8 + 350 + 120 * f); // repeated catch-up detents, never drained
+        }
+
+        // Drain: exactly QUEUE_LEN events come out, the rest were dropped.
+        let mut drained = 0;
+        while bi.poll().is_some() {
+            drained += 1;
+        }
+        assert_eq!(drained, QUEUE_LEN, "queue holds at most QUEUE_LEN; overflow is dropped, not panicked");
+    }
+
+    /// Item 4 (debounce boundary, `Debounced::update` ~116 uses `>=`): a level that has
+    /// held for *exactly* `debounce_ms` commits (`>=`, not `>`). At `now - since == 8` the
+    /// edge must fire on this very frame; at `== 7` it must not yet. Pins down the
+    /// off-by-one a `>` would introduce (one frame of extra latency, or a press that
+    /// never commits if updates always land exactly on the window).
+    #[test]
+    fn commit_lands_exactly_on_the_debounce_boundary() {
+        let pins = Pins::new();
+        let mut bi = pins.input(); // debounce 8 ms
+
+        pins.select.set(true);
+        bi.update(0); // candidate seen at 0
+        bi.update(7); // 7 ms held: one short of the window → no commit
+        assert!(bi.poll().is_none(), "7 ms < 8 ms window: not yet committed");
+        bi.update(8); // exactly 8 ms: `now - since >= debounce_ms` → commit
+        assert_eq!(bi.poll(), Some(InputEvent::Button(ButtonEvent::Down(Button::Encoder))), "8 ms >= window commits");
+    }
 }

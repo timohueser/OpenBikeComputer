@@ -163,4 +163,57 @@ mod tests {
         assert_eq!(d.poll(), Some(InputEvent::Button(ButtonEvent::Up(Button::Encoder))));
         assert_eq!(d.poll(), None);
     }
+
+    /// Item 15 (`turn(0)` no-op, `turn` ~62 `if detents != 0`): a zero-detent turn must
+    /// queue nothing and leave the visual knob angle untouched, so a frame with no rotation
+    /// doesn't emit a spurious `Turn(0)` (which would still wake the app / redraw). Guards
+    /// the `!= 0` gate.
+    #[test]
+    fn turn_zero_is_a_no_op() {
+        let mut d = DeviceInput::new();
+        let before = d.knob_angle();
+        d.turn(0);
+        assert_eq!(d.poll(), None, "zero detents queues no event");
+        assert_eq!(d.knob_angle(), before, "knob angle unchanged by a zero turn");
+    }
+
+    /// Item 15 (negative-scroll remainder carry, `take_detents` ~91-101): the sub-detent
+    /// accumulator must carry its *negative* remainder across `scroll` calls, exactly as
+    /// the positive path does — a 1.5-detent scroll-down emits one detent now and carries
+    /// −0.5, so a following 0.6-detent scroll-down (−1.1 total) emits the next. Without the
+    /// carry, partial scrolls down a list would silently lose motion.
+    #[test]
+    fn negative_scroll_carries_the_remainder() {
+        let mut d = DeviceInput::new();
+        d.scroll(-SCROLL_PER_DETENT * 1.5); // -1.5 detents → one -1 now, -0.5 carried
+        assert_eq!(d.poll(), Some(InputEvent::Turn(-1)));
+        assert_eq!(d.poll(), None, "only one whole detent so far");
+        d.scroll(-SCROLL_PER_DETENT * 0.6); // -0.5 + -0.6 = -1.1 → one more -1
+        assert_eq!(d.poll(), Some(InputEvent::Turn(-1)), "carried remainder completes the next detent");
+        assert_eq!(d.poll(), None);
+    }
+
+    /// Item 15 (Encoder vs Back field independence, `set_button` ~78-82): `set_button`
+    /// selects `enc_down` / `back_down` by the button arm. Driving *only* Back must toggle
+    /// the Back field and emit Back edges, leaving Encoder untouched — a swapped-field bug
+    /// (Back writing `enc_down`) would surface here as a wrong-button edge or a missing one.
+    /// No existing test drives Back at all.
+    #[test]
+    fn back_button_is_independent_of_encoder() {
+        let mut d = DeviceInput::new();
+
+        // Back down then up — emits Back edges, never Encoder.
+        d.set_button(Button::Back, true);
+        d.set_button(Button::Back, true); // no transition
+        d.set_button(Button::Back, false);
+        assert_eq!(d.poll(), Some(InputEvent::Button(ButtonEvent::Down(Button::Back))));
+        assert_eq!(d.poll(), Some(InputEvent::Button(ButtonEvent::Up(Button::Back))));
+        assert_eq!(d.poll(), None, "Back edges only — Encoder field never touched");
+
+        // Encoder still starts from 'up': its first set is a fresh Down edge, proving the
+        // earlier Back activity did not flip enc_down.
+        d.set_button(Button::Encoder, true);
+        assert_eq!(d.poll(), Some(InputEvent::Button(ButtonEvent::Down(Button::Encoder))));
+        assert_eq!(d.poll(), None);
+    }
 }

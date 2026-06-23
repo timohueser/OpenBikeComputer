@@ -91,6 +91,24 @@ mod tests {
         std::fs::write(dir.join("obc-sim").join("calibration"), "-3").unwrap();
         assert_eq!(load(), None, "non-positive is invalid");
 
+        // Item 14 (`load`'s filter `is_finite() && *v > 0.0` ~45): the `> 0.0` (not `>=`)
+        // and `is_finite()` boundaries. These extend the same test rather than adding a
+        // second one because `load` reads a process-global `XDG_CONFIG_HOME` that this test
+        // already owns — a parallel test would race on it.
+        let cal = dir.join("obc-sim").join("calibration");
+        std::fs::write(&cal, "0").unwrap();
+        assert_eq!(load(), None, "exactly 0 fails `> 0.0` (a zero scale is degenerate)");
+        std::fs::write(&cal, "0.0").unwrap();
+        assert_eq!(load(), None, "0.0 fails `> 0.0`");
+        std::fs::write(&cal, "nan").unwrap();
+        assert_eq!(load(), None, "NaN fails `is_finite()`");
+        std::fs::write(&cal, "inf").unwrap();
+        assert_eq!(load(), None, "infinity fails `is_finite()`");
+        // The smallest positive finite value still loads — proves the filter rejects only
+        // ≤ 0 and non-finite, not all small numbers.
+        std::fs::write(&cal, "0.001").unwrap();
+        assert!((load().expect("tiny positive is valid") - 0.001).abs() < 1e-6);
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
