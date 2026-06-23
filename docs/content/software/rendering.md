@@ -519,7 +519,7 @@ The fill leans on one `DrawTarget` primitive: a fast clipped horizontal-rectangl
 Lines are where a naïve approach gets expensive. A loaded route or a long road is mostly *off-screen* at riding zoom, and a thick-line rasteriser that walks the whole polyline pays for every off-screen pixel. The renderer's line path is built to never pay for what it can't see.
 
 <figure class="fig">
-<svg viewBox="0 0 720 300" role="img" aria-label="On the left, a long route crosses a small viewport; only the visible portion is stroked while the off-screen majority costs nothing. On the right, a thick line's bevelled joints are smoothed by filling a disc at each vertex.">
+<svg viewBox="0 0 720 300" role="img" aria-label="On the left, a long route crosses a small viewport; only the visible portion is stroked while the off-screen majority costs nothing. On the right, a thick line's bevelled joints are smoothed by filling a disc at the run ends and at the vertices where the line actually bends sharply.">
   <text class="d-tag" x="20" y="24">Clip to the view, then smooth the joints</text>
 
   <!-- LEFT: clip -->
@@ -540,14 +540,14 @@ Lines are where a naïve approach gets expensive. A loaded route or a long road 
   <text class="d-sub" x="430" y="196">+ round discs at joints</text>
   <polyline points="420,224 470,254 520,218 560,264" fill="none" stroke="#4f6b43" stroke-width="12" stroke-linejoin="bevel" stroke-linecap="butt" />
   <g fill="#3c6b39"><circle cx="420" cy="224" r="6"/><circle cx="470" cy="254" r="6"/><circle cx="520" cy="218" r="6"/><circle cx="560" cy="264" r="6"/></g>
-  <text class="d-sub" x="600" y="244" style="font-size:11px">a disc (⌀ = width)</text>
-  <text class="d-sub" x="600" y="260" style="font-size:11px">at each vertex →</text>
+  <text class="d-sub" x="600" y="244" style="font-size:11px">a disc (⌀ = width) at</text>
+  <text class="d-sub" x="600" y="260" style="font-size:11px">corners + run ends →</text>
   <text class="d-sub" x="600" y="276" style="font-size:11px">smooth arc, no gaps</text>
 </svg>
 <figcaption>Each segment is clipped to the view (grown by the stroke's half-width so edge-hugging lines keep full thickness) <i>before</i> it's drawn, so the stroker only ever touches on-screen pixels. The points are also deduplicated in screen space at a subpixel tolerance — folding away the integer-projection staircase — so a dense line hands the stroker far fewer segments without ever shifting a visible pixel.</figcaption>
 </figure>
 
-Thick lines get one more touch. The underlying stroker joins segments with flat bevels, so a tightly-sampled curve renders as a fan of facets — a scalloped "beading." Filling a small disc the width of the stroke at every vertex turns each joint into a smooth arc, and the disc at a shared chunk-seam vertex also closes the tiny gap between two adjacent line features. This only kicks in above 2 px, where faceting would actually show.
+Thick lines get one more touch. The underlying stroker joins segments with flat bevels, so a tightly-sampled curve renders as a fan of facets — a scalloped "beading." Filling a small disc the width of the stroke at a joint turns it into a smooth arc. The disc is the overlay's dominant per-pixel cost, though — at an 11 px route it's an 11×11 fill — so it's spent only where it shows: at the two **run ends** (which also round the cap and close the tiny gap to the next feature at a chunk seam) and at interior vertices where the line **actually bends sharply**. A bevel departs from a true round joint by only `r·(1 − cos(θ/2))` at the corner, so a gentle bend — or one of the synthetic points the stroker inserts to subdivide a long straight segment — facets by a sub-pixel amount and needs no disc at all. This whole step only kicks in above 2 px, where faceting would otherwise show.
 
 ## 7 · The overlays
 
