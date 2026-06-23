@@ -18,7 +18,7 @@ use heapless::Vec;
 
 use embedded_graphics::{
     prelude::*,
-    primitives::{Circle, Polyline, PrimitiveStyle, Rectangle},
+    primitives::{Polyline, PrimitiveStyle, Rectangle},
 };
 
 use obc_reader::{BBox, Kind, Reader};
@@ -632,7 +632,7 @@ impl MapRenderer {
                 Kind::Line => {
                     // Lines use only the exterior ring.
                     let n = ring_lens.first().copied().unwrap_or(0);
-                    draw_line(target, vp, &pts[..n], color, span.weight.max(1) as u32, &mut draw.screen);
+                    draw_line(target, vp, &pts[..n], color, span.weight.max(1) as u32, &mut draw.screen, &mut draw.xs);
                 }
             }
         }
@@ -759,7 +759,7 @@ impl MapRenderer {
                 let (x, y) = vp.to_screen(p.lon, p.lat);
                 Point::new(x, y)
             });
-            route_drawn += stroke_overlay(target, screen, projected, color, weight, w, h);
+            route_drawn += stroke_overlay(target, screen, xs, projected, color, weight, w, h);
         }
 
         // Pass 2 — chevrons, anchored to route distance and windowed around the rider.
@@ -801,9 +801,9 @@ impl MapRenderer {
     }
 
     /// Stroke a single polyline of `(lon, lat)` microdegree points as an overlay, clipped to the
-    /// view and stroked with embedded-graphics (see [`stroke_overlay`]) — this is the recorded
-    /// **breadcrumb**, whose two tiers (spine, recent) are each one call. Call after
-    /// [`render`](MapRenderer::render) so the path sits on the map.
+    /// view (see [`stroke_overlay`]) — this is the recorded **breadcrumb**, whose two tiers (spine,
+    /// recent) are each one call. Call after [`render`](MapRenderer::render) so the path sits on
+    /// the map.
     pub fn stroke_path<D, I>(&mut self, target: &mut D, vp: &Viewport, pts: I, color: D::Color, weight: u32)
     where
         D: DrawTarget,
@@ -814,7 +814,9 @@ impl MapRenderer {
             let (x, y) = vp.to_screen(lon, lat);
             Point::new(x, y)
         });
-        stroke_overlay(target, &mut self.draw.screen, projected, color, weight, w, h);
+        // Split the borrow so the span fills can take `xs` while the run builds in `screen`.
+        let DrawScratch { screen, xs } = &mut self.draw;
+        stroke_overlay(target, screen, xs, projected, color, weight, w, h);
     }
 }
 
@@ -872,44 +874,138 @@ fn clip_segment(a: Point, b: Point, xmin: f32, ymin: f32, xmax: f32, ymax: f32) 
     }
 }
 
-/// Append `c1` to the current run, first subdividing a step longer than 150 px into ≤150 px hops so
-/// embedded-graphics' thick-line intersection math stays well-behaved (no overflow in debug,
-/// no miter spikes on the MCU in release).
-fn push_run(run: &mut Vec<Point, MAX_SCREEN_POINTS>, c1: Point) {
-    if let Some(&p1) = run.last() {
-        let (dx, dy) = (c1.x - p1.x, c1.y - p1.y);
-        let dist = dx.abs().max(dy.abs());
-        if dist > 150 {
-            let steps = (dist + 149) / 150;
-            for s in 1..steps {
-                let _ = run.push(Point::new(p1.x + dx * s / steps, p1.y + dy * s / steps));
-            }
-        }
+/// The `cos²θ` threshold below which a `weight`-px thick stroke's bare butt-join is already within
+/// ½ px of a round joint, so the vertex needs no round-join disc in [`flush_run`]. The span stroke
+/// lays each segment as a rectangle whose butt ends meet at the vertex; on the outer side of a turn
+/// of `θ` (off straight) that leaves an uncovered notch about `r·sin(θ/2)` deep (`r = weight/2`).
+/// Sub-pixel means `r·sin(θ/2) ≤ ½`, i.e. `sin(θ/2) ≤ 1/weight`, so the cut-off cosine is
+/// `cosθ = 1 − 2·sin²(θ/2) = 1 − 2·(1/weight)²` — returned squared for the magnitude-folded test.
+/// At the route's weight 11 that's a ~10° cut-off; a sharper bend gets its disc.
+#[inline]
+fn joint_disc_cos2(weight: u32) -> f32 {
+    let sin_half = (1.0 / weight as f32).min(1.0); // ½px ÷ (weight/2)
+    let cos = 1.0 - 2.0 * sin_half * sin_half;
+    if cos <= 0.0 {
+        0.0 // cos ≤ 0 ⇒ every turn discs — the `dot ≤ 0` guard in `turn_is_sharp` already covers it
+    } else {
+        cos * cos
     }
-    let _ = run.push(c1);
 }
 
-/// Stroke the accumulated run with embedded-graphics' (properly jointed) thick `Polyline`,
-/// then clear it for the next run.
-fn flush_run<D>(target: &mut D, run: &mut Vec<Point, MAX_SCREEN_POINTS>, color: D::Color, weight: u32)
+/// Whether the polyline turns sharply enough at `b` (across `a → b → c`) that its butt-join notch
+/// would show — i.e. `cos²θ` falls below `cos2` ([`joint_disc_cos2`]). A reversed/obtuse turn
+/// (non-positive dot) always qualifies; otherwise compare with the segment magnitudes folded in
+/// (no `sqrt`, no `acos`).
+#[inline]
+fn turn_is_sharp(a: Point, b: Point, c: Point, cos2: f32) -> bool {
+    let (ux, uy) = ((b.x - a.x) as f32, (b.y - a.y) as f32);
+    let (vx, vy) = ((c.x - b.x) as f32, (c.y - b.y) as f32);
+    let dot = ux * vx + uy * vy;
+    if dot <= 0.0 {
+        return true; // ≥ 90° turn (or a degenerate spur): always disc it
+    }
+    // sharp ⇔ cosθ < √cos2 ⇔ dot² < cos2 · |u|²|v|²  (dot ≥ 0, so squaring keeps the sense)
+    dot * dot < cos2 * (ux * ux + uy * uy) * (vx * vx + vy * vy)
+}
+
+/// Fill a solid disc of radius `r` px centred at `(cx, cy)` as horizontal spans — one
+/// [`fill_solid`](DrawTarget::fill_solid) per row (`hw = √(r² − dy²)`), the same coalesced row
+/// fill the polygon scanline uses, rather than embedded-graphics' per-pixel `Circle`. Rounds the
+/// thick stroke's joints and caps. Rows off the top/bottom are skipped; `fill_solid` clips x.
+fn fill_disc<D>(target: &mut D, cx: i32, cy: i32, r: i32, color: D::Color, h: i32)
 where
     D: DrawTarget,
 {
+    if r < 1 {
+        return;
+    }
+    let r2 = (r * r) as f32;
+    for dy in -r..=r {
+        let y = cy + dy;
+        if y < 0 || y >= h {
+            continue;
+        }
+        let hw = libm::sqrtf((r2 - (dy * dy) as f32).max(0.0)) as i32;
+        let _ = target.fill_solid(&Rectangle::new(Point::new(cx - hw, y), Size::new((2 * hw + 1) as u32, 1)), color);
+    }
+}
+
+/// Lay down one segment of a thick stroke as a filled rectangle (the segment swept ±`hw` px along
+/// its perpendicular) via the even-odd scanline [`fill_polygon`] — a convex quad, so every row has
+/// exactly two crossings and fills as one span. A degenerate zero-length segment is left to the
+/// joint/cap disc. Spans round **outward** (see `fill_polygon`), so adjacent quads and the joint
+/// discs overlap by ≤1 px and leave no hairline crack.
+#[allow(clippy::too_many_arguments)]
+fn fill_thick_segment<D>(
+    target: &mut D,
+    a: Point,
+    b: Point,
+    hw: f32,
+    color: D::Color,
+    w: i32,
+    h: i32,
+    xs: &mut Vec<f32, MAX_CROSSINGS>,
+) where
+    D: DrawTarget,
+{
+    let (ax, ay, bx, by) = (a.x as f32, a.y as f32, b.x as f32, b.y as f32);
+    let (dx, dy) = (bx - ax, by - ay);
+    let len = libm::sqrtf(dx * dx + dy * dy);
+    if len < 1e-3 {
+        return;
+    }
+    let (nx, ny) = (-dy / len * hw, dx / len * hw); // perpendicular × half-width
+    let rp = |x: f32, y: f32| Point::new(libm::roundf(x) as i32, libm::roundf(y) as i32);
+    let quad = [rp(ax + nx, ay + ny), rp(bx + nx, by + ny), rp(bx - nx, by - ny), rp(ax - nx, ay - ny)];
+    fill_polygon(target, &quad, &[4], color, w, h, xs);
+}
+
+/// Rasterise the accumulated run, then clear it for the next.
+///
+/// A **1 px** stroke goes through embedded-graphics' `Polyline` — a thin Bresenham line it draws
+/// well and cheaply, and the one width the span path below can't (a zero-width rectangle has no
+/// scanline crossings). **Everything ≥ 2 px** — most of the map's roads, plus the route and
+/// breadcrumb — is laid down as **spans**: a filled rectangle per segment ([`fill_thick_segment`])
+/// plus a round-join/cap disc ([`fill_disc`]) at the two run ends (always — they round the cap and,
+/// at a chunk seam, close the butt gap to the next feature) and at every interior vertex that bends
+/// sharply enough to show a notch ([`turn_is_sharp`]). Both go through the framebuffer's coalesced
+/// `fill_solid`, not the per-pixel `draw_iter` eg's thick `Polyline` + `Circle` ran through. eg's
+/// thick path was the overlay's former dominant cost, and (measured) it's ~10× a span stroke even
+/// at 2 px — the narrowest width that path enters — so the split sits at 1 px, not 2.
+#[allow(clippy::too_many_arguments)]
+fn flush_run<D>(
+    target: &mut D,
+    run: &mut Vec<Point, MAX_SCREEN_POINTS>,
+    color: D::Color,
+    weight: u32,
+    w: i32,
+    h: i32,
+    xs: &mut Vec<f32, MAX_CROSSINGS>,
+) where
+    D: DrawTarget,
+{
     if run.len() >= 2 {
-        let _ = Polyline::new(run).into_styled(PrimitiveStyle::with_stroke(color, weight)).draw(target);
-        // Round joints + caps. eg joins thick segments with a flat **bevel**, so a densely
-        // sampled curve renders as a fan of facets (the "beading" on thick lines). Filling a disc
-        // (⌀ = stroke width) at each vertex turns every joint into a smooth arc, keeping full shape
-        // detail (no decimation needed). Only thick lines need it (≤2 px don't visibly facet), and
-        // the disc at a shared chunk-seam vertex also closes the butt-cap gap between adjacent
-        // features.
-        if weight > 2 {
+        if weight <= 1 {
+            let _ = Polyline::new(run).into_styled(PrimitiveStyle::with_stroke(color, weight)).draw(target);
+        } else {
+            // The body's half-width is the integer disc radius, not `weight/2` — so the rectangle
+            // and the round-join/cap disc come out the same thickness (the disc never narrower than
+            // the body it caps), and an odd `weight` lands on its nominal width instead of rounding
+            // a px fatter.
             let r = (weight / 2) as i32;
-            for p in run.iter() {
-                let _ = Circle::new(Point::new(p.x - r, p.y - r), weight)
-                    .into_styled(PrimitiveStyle::with_fill(color))
-                    .draw(target);
+            let hw = r as f32;
+            for seg in run.windows(2) {
+                fill_thick_segment(target, seg[0], seg[1], hw, color, w, h, xs);
             }
+            let cos2 = joint_disc_cos2(weight);
+            let n = run.len();
+            fill_disc(target, run[0].x, run[0].y, r, color, h);
+            for i in 1..n - 1 {
+                if turn_is_sharp(run[i - 1], run[i], run[i + 1], cos2) {
+                    fill_disc(target, run[i].x, run[i].y, r, color, h);
+                }
+            }
+            fill_disc(target, run[n - 1].x, run[n - 1].y, r, color, h);
         }
     }
     run.clear();
@@ -942,8 +1038,8 @@ fn within_eps(p: Point, a: Point, b: Point, eps: f32) -> bool {
 /// Pulled out of [`stroke_overlay`] so the main loop can feed it the *simplified* segments.
 ///
 /// Returns how many **real on-screen vertices** this segment contributed (0 if wholly clipped
-/// out) — `c1` always, plus `c0` when it (re)starts a run. Excludes [`push_run`]'s synthetic
-/// subdivision hops, so the caller's running total is the points actually rasterised, not decoded.
+/// out) — `c1` always, plus `c0` when it (re)starts a run — so the caller's running total is the
+/// points actually rasterised, not decoded.
 #[allow(clippy::too_many_arguments)]
 fn stroke_seg<D>(
     target: &mut D,
@@ -952,31 +1048,32 @@ fn stroke_seg<D>(
     b: Point,
     color: D::Color,
     weight: u32,
-    xmin: f32,
-    ymin: f32,
-    xmax: f32,
-    ymax: f32,
+    clip: (f32, f32, f32, f32),
+    w: i32,
+    h: i32,
+    xs: &mut Vec<f32, MAX_CROSSINGS>,
 ) -> usize
 where
     D: DrawTarget,
 {
+    let (xmin, ymin, xmax, ymax) = clip;
     match clip_segment(a, b, xmin, ymin, xmax, ymax) {
         None => {
-            flush_run(target, run, color, weight); // segment wholly off-screen
+            flush_run(target, run, color, weight, w, h, xs); // segment wholly off-screen
             0
         }
         Some((c0, c1)) => {
             let mut drawn = 1; // c1
                                // (Re)start a run if this segment didn't continue the previous one.
             if run.last().copied() != Some(c0) {
-                flush_run(target, run, color, weight);
+                flush_run(target, run, color, weight, w, h, xs);
                 let _ = run.push(c0);
                 drawn += 1; // c0 enters the view here
             }
-            push_run(run, c1);
+            let _ = run.push(c1);
             // Clipped at its far end → the line left the view here; close this run.
             if c1 != b {
-                flush_run(target, run, color, weight);
+                flush_run(target, run, color, weight, w, h, xs);
             }
             drawn
         }
@@ -1017,26 +1114,27 @@ where
     }
 }
 
-/// Clip a projected overlay polyline to the view and stroke the on-screen runs with
-/// embedded-graphics. eg's `Polyline` gives thick lines but rasterises width pixel-by-pixel —
-/// ruinous when the route/breadcrumb is ~96% off-screen. Clipping first (Cohen–Sutherland, into
-/// the screen grown by the stroke width so an edge-hugging line keeps its full thickness) means
-/// eg only ever pays for the visible part: the line where it crosses the view splits into
-/// separate runs, each stroked on its own (and round-jointed in [`flush_run`]).
+/// Clip a projected overlay polyline to the view and stroke the on-screen runs ([`flush_run`]).
+/// Clipping first (Cohen–Sutherland, into the screen grown by the stroke width so an edge-hugging
+/// line keeps its full thickness) means the stroker only ever pays for the visible part — vital
+/// when the route/breadcrumb is ~96% off-screen at riding zoom: the line splits into separate runs
+/// where it crosses the view, each stroked on its own.
 ///
 /// The points are first **simplified in screen space** ([`simplify`] at [`SIMPLIFY_EPS_PX`]) — a
 /// *subpixel* dedup that folds away the integer-projection staircase and same-pixel vertex
 /// pile-ups a dense route/road carries when zoomed out. It never moves the line a visible pixel,
-/// so no shape is lost; it just hands eg far fewer segments and discs. The `run` scratch is
-/// reused; long runs are subdivided.
+/// so no shape is lost; it just hands the stroker far fewer segments and joints. The `run` scratch
+/// is reused; `xs` is the shared crossing buffer the span fills need.
 ///
 /// Returns the count of **on-screen vertices actually stroked** (after the subpixel simplify and
 /// the view clip) — far fewer than the points fed in when the line is mostly off-screen or
 /// folds to the same pixels. Callers that want the stat (the route overlay) sum it; the
 /// breadcrumb ignores it.
+#[allow(clippy::too_many_arguments)]
 fn stroke_overlay<D, I>(
     target: &mut D,
     run: &mut Vec<Point, MAX_SCREEN_POINTS>,
+    xs: &mut Vec<f32, MAX_CROSSINGS>,
     points: I,
     color: D::Color,
     weight: u32,
@@ -1049,7 +1147,7 @@ where
 {
     let weight = weight.max(1);
     let m = weight as f32 + 2.0; // clip margin ≥ half-width, so edge strokes still paint in
-    let (xmin, ymin, xmax, ymax) = (-m, -m, w as f32 + m, h as f32 + m);
+    let clip = (-m, -m, w as f32 + m, h as f32 + m);
     run.clear();
 
     // Simplify in screen space, then stroke consecutive kept vertices as clipped segments — their
@@ -1058,11 +1156,11 @@ where
     let mut drawn = 0usize;
     simplify(points, SIMPLIFY_EPS_PX, |v| {
         if let Some(a) = prev {
-            drawn += stroke_seg(target, run, a, v, color, weight, xmin, ymin, xmax, ymax);
+            drawn += stroke_seg(target, run, a, v, color, weight, clip, w, h, xs);
         }
         prev = Some(v);
     });
-    flush_run(target, run, color, weight);
+    flush_run(target, run, color, weight, w, h, xs);
     drawn
 }
 
@@ -1122,10 +1220,10 @@ fn fill_polygon_proj<D>(
 /// Project and stroke one map line (its exterior ring). The draw phase's
 /// `Kind::Line` arm — factored out as the single point where per-feature line
 /// styling (dashes, casing) will branch later (see `docs/rendering_pipeline.md`
-/// §9d). Uses the same view-clipped eg stroke as the route/breadcrumb overlays:
-/// clipping spares eg the off-screen part of a line whose chunk straddles the
-/// view edge (most visible at coarse zoom) while keeping its properly-jointed
-/// thick rendering for thicker classes.
+/// §9d). Uses the same view-clipped stroke as the route/breadcrumb overlays:
+/// clipping spares the off-screen part of a line whose chunk straddles the view
+/// edge (most visible at coarse zoom), while thick classes get the span-filled
+/// rectangles + round joints and thin ones eg's `Polyline` (see [`flush_run`]).
 fn draw_line<D>(
     target: &mut D,
     vp: &Viewport,
@@ -1133,6 +1231,7 @@ fn draw_line<D>(
     color: D::Color,
     weight: u32,
     screen: &mut Vec<Point, MAX_SCREEN_POINTS>,
+    xs: &mut Vec<f32, MAX_CROSSINGS>,
 ) where
     D: DrawTarget,
 {
@@ -1140,7 +1239,7 @@ fn draw_line<D>(
         let (x, y) = vp.to_screen(lon, lat);
         Point::new(x, y)
     });
-    stroke_overlay(target, screen, projected, color, weight, vp.w as i32, vp.h as i32);
+    stroke_overlay(target, screen, xs, projected, color, weight, vp.w as i32, vp.h as i32);
 }
 
 /// Fill a 3-point direction chevron centred at `c`, pointing along the unit
@@ -1261,7 +1360,10 @@ fn fill_polygon<D>(
 
 #[cfg(test)]
 mod tests {
-    use super::{aspect_for_lat, fill_polygon, simplify, walk_route_arrows, within_eps, MAX_CROSSINGS};
+    use super::{
+        aspect_for_lat, fill_polygon, joint_disc_cos2, simplify, turn_is_sharp, walk_route_arrows, within_eps,
+        MAX_CROSSINGS,
+    };
     use embedded_graphics::prelude::Point;
     use heapless::Vec;
     use obc_route::{ground_dist_m, RoutePoint};
@@ -1284,6 +1386,23 @@ mod tests {
         // Degenerate a == b falls back to the point distance |p − a|.
         assert!(within_eps(Point::new(0, 1), a, a, 1.5));
         assert!(!within_eps(Point::new(0, 2), a, a, 1.5));
+    }
+
+    #[test]
+    fn turn_is_sharp_discs_only_notch_corners() {
+        let cos2 = joint_disc_cos2(11); // route weight ⇒ ~10° cut-off
+        let b = Point::new(100, 0);
+        // Collinear continuation: never a disc.
+        assert!(!turn_is_sharp(Point::new(0, 0), b, Point::new(200, 0), cos2));
+        // A ~6° bend stays under the cut-off — the butt-join notch is sub-pixel: no disc.
+        assert!(!turn_is_sharp(Point::new(0, 0), b, Point::new(200, 10), cos2));
+        // A ~27° bend clears it: disc.
+        assert!(turn_is_sharp(Point::new(0, 0), b, Point::new(200, 50), cos2));
+        // A right-angle and a hairpin (non-positive dot) always disc.
+        assert!(turn_is_sharp(Point::new(0, 0), b, Point::new(100, 50), cos2));
+        assert!(turn_is_sharp(Point::new(0, 0), b, Point::new(0, 10), cos2));
+        // A thinner stroke tolerates a wider bend before the notch shows (looser cut-off).
+        assert!(joint_disc_cos2(3) < joint_disc_cos2(11));
     }
 
     #[test]
