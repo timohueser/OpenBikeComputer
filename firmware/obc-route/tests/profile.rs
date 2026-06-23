@@ -186,6 +186,40 @@ fn window_zoom_narrows_span_and_chooses_finer_levels() {
     assert_eq!(p.window(0.5, 8.0, 216).level, 0);
 }
 
+/// A route with **no `<ele>` anywhere** — a planner GPX export. The converter stores a flat
+/// 0 m elevation and a 0..0 header range, so the profile's `(min, max)` is `(0, 0)` and the
+/// band must still be gap-free (the `fill_gaps` header fallback in `profile.rs`, ~line 341 —
+/// the only path that uses the fallback). Item 10 calls this out: every other fixture has
+/// `<ele>` on every point, so the no-elevation fallback was untested though planner GPX
+/// frequently lacks elevation. Build the GPX by hand here (the `convert` fixtures all carry
+/// `<ele>`).
+const NO_ELE: &str = r#"<?xml version="1.0"?>
+<gpx><trk><trkseg>
+  <trkpt lat="48.0000" lon="7.8000"/>
+  <trkpt lat="48.0050" lon="7.8000"/>
+  <trkpt lat="48.0100" lon="7.8000"/>
+</trkseg></trk></gpx>"#;
+
+#[test]
+fn no_elevation_route_has_flat_zero_gap_free_band() {
+    let bytes = convert("Unmeasured", NO_ELE);
+    let src = SliceSource(&bytes);
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
+    assert_eq!((r.min_ele_m, r.max_ele_m), (0, 0), "no <ele> → 0..0 header range");
+    let p = r.elevation_profile();
+
+    // The whole band is the flat 0 m fallback, with no sentinel (min > max) holes.
+    assert_eq!((p.min_ele_m, p.max_ele_m), (0, 0));
+    assert_eq!(p.peak_ele_m(), 0);
+    for (i, &(mn, mx)) in p.cols().iter().enumerate() {
+        assert_eq!((mn, mx), (0, 0), "column {i} should be the flat 0 m fallback");
+    }
+    // No climb anywhere, so "to climb" is 0 across the whole route.
+    assert_eq!(p.ascent_to(0.0), 0);
+    assert_eq!(p.ascent_to(1.0), 0);
+}
+
 #[test]
 fn window_clamps_to_route_ends() {
     let bytes = convert("Peaked Ridge", PEAKED);
