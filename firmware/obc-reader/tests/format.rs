@@ -1,12 +1,16 @@
 //! Format-contract tests for the OBCM v5 reader.
 //!
-//! Each test builds a synthetic `.obcm` byte buffer with a small handwritten
-//! builder that mirrors `packer/obcm/serialize.py` exactly, then asserts the reader
+//! Each test builds a synthetic `.obcm` byte buffer with the shared `obcm-testkit`
+//! builder, which mirrors `packer/obcm/serialize.py` exactly, then asserts the reader
 //! parses it back. Building the bytes here (rather than checking in a binary
 //! fixture) keeps the Rust and Python encoders pinned to the same layout: if
-//! either drifts, these break.
+//! either drifts, these break. The builder lives in `obcm-testkit` so the same layout
+//! is shared with `obc-render`'s priority test and a format bump edits one place.
 
 use obc_reader::{BBox, Error, Kind, MapCache, Reader, SliceSource, MAX_FEAT_PTS, MAX_FEAT_RINGS};
+use obcm_testkit::{
+    build_file, pack_line, pack_line16, pack_poly_hole, pad, LodSpec, Style, BRANCH_BIT, EMPTY_LEAF, MARKER,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Feature {
@@ -48,140 +52,9 @@ fn decode_filtered(r: &Reader, lod: usize, chunk_id: u32, node: &BBox, keep: imp
     out
 }
 
-const BRANCH_BIT: u32 = 0x8000_0000;
-const EMPTY_LEAF: u32 = 0x7FFF_FFFF;
-/// Distinctive (non-default) marker color so the round-trip test is meaningful.
-const MARKER: u16 = 0xABCD;
-
-// ---------------------------------------------------------------------------
-// Byte builders (mirror serialize.py)
-// ---------------------------------------------------------------------------
-
-/// One LOD layer: its quadtree index (flat u32 nodes) and padded data chunks.
-struct LodSpec {
-    max_mpp: f32,
-    index: Vec<u32>,
-    chunks: Vec<Vec<u8>>,
-    chunk_size: usize,
-}
-
-/// `bbox` is (min_lon, min_lat, max_lon, max_lat); `styles` are
-/// (id, z_index, color_rgb565, weight).
-fn build_file(bbox: (i32, i32, i32, i32), styles: &[(u8, i8, u16, u8, u8)], lods: &[LodSpec]) -> Vec<u8> {
-    let style_off = 32usize;
-
-    let mut style_bytes = vec![styles.len() as u8];
-    for &(id, z, color, weight, priority) in styles {
-        style_bytes.push(id);
-        style_bytes.push(z as u8);
-        style_bytes.extend_from_slice(&color.to_le_bytes());
-        style_bytes.push(weight);
-        style_bytes.push((priority - 1) & 0x03);
-    }
-
-    let lod_tab_off = style_off + style_bytes.len();
-    let mut cursor = lod_tab_off + lods.len() * 18;
-    let mut table = Vec::new();
-    let mut payload = Vec::new();
-    for lod in lods {
-        let idx_off = cursor;
-        let mut idx_bytes = Vec::new();
-        for &node in &lod.index {
-            idx_bytes.extend_from_slice(&node.to_le_bytes());
-        }
-        let mut chunk_bytes = Vec::new();
-        for c in &lod.chunks {
-            assert_eq!(c.len(), lod.chunk_size, "chunk must be padded to chunk_size");
-            chunk_bytes.extend_from_slice(c);
-        }
-        table.extend_from_slice(&lod.max_mpp.to_le_bytes());
-        table.extend_from_slice(&(idx_off as u32).to_le_bytes());
-        table.extend_from_slice(&(lod.index.len() as u32).to_le_bytes());
-        table.extend_from_slice(&(lod.chunk_size as u16).to_le_bytes());
-        table.extend_from_slice(&(lod.chunks.len() as u32).to_le_bytes());
-        cursor += idx_bytes.len() + chunk_bytes.len();
-        payload.extend_from_slice(&idx_bytes);
-        payload.extend_from_slice(&chunk_bytes);
-    }
-
-    // Header: <4sBiiiiIBIH  magic, ver, min_lat, min_lon, max_lat, max_lon,
-    // style_off, lod_count, lod_table_off, marker_color.
-    let mut f = Vec::new();
-    f.extend_from_slice(b"OBCM");
-    f.push(5);
-    f.extend_from_slice(&bbox.1.to_le_bytes()); // min_lat
-    f.extend_from_slice(&bbox.0.to_le_bytes()); // min_lon
-    f.extend_from_slice(&bbox.3.to_le_bytes()); // max_lat
-    f.extend_from_slice(&bbox.2.to_le_bytes()); // max_lon
-    f.extend_from_slice(&(style_off as u32).to_le_bytes());
-    f.push(lods.len() as u8);
-    f.extend_from_slice(&(lod_tab_off as u32).to_le_bytes());
-    f.extend_from_slice(&MARKER.to_le_bytes());
-    assert_eq!(f.len(), 32, "header must be 32 bytes");
-
-    f.extend_from_slice(&style_bytes);
-    f.extend_from_slice(&table);
-    f.extend_from_slice(&payload);
-    f
-}
-
-fn pad(mut chunk: Vec<u8>, size: usize) -> Vec<u8> {
-    assert!(chunk.len() <= size);
-    chunk.resize(size, 0xFF);
-    chunk
-}
-
-/// A line feature with 8-bit deltas. Exterior point count = 1 + deltas.len().
-fn pack_line(style_id: u8, ax: i32, ay: i32, deltas: &[(i8, i8)]) -> Vec<u8> {
-    let mut v = Vec::new();
-    v.push(style_id);
-    v.extend_from_slice(&((1 + deltas.len()) as u16).to_le_bytes());
-    v.extend_from_slice(&ax.to_le_bytes());
-    v.extend_from_slice(&ay.to_le_bytes());
-    v.push(0x00); // flags: line, 8-bit deltas
-    for &(dx, dy) in deltas {
-        v.push(dx as u8);
-        v.push(dy as u8);
-    }
-    v
-}
-
-/// A line feature with 16-bit deltas (flag bit 0).
-fn pack_line16(style_id: u8, ax: i32, ay: i32, deltas: &[(i16, i16)]) -> Vec<u8> {
-    let mut v = Vec::new();
-    v.push(style_id);
-    v.extend_from_slice(&((1 + deltas.len()) as u16).to_le_bytes());
-    v.extend_from_slice(&ax.to_le_bytes());
-    v.extend_from_slice(&ay.to_le_bytes());
-    v.push(0x01); // flags: line, 16-bit deltas
-    for &(dx, dy) in deltas {
-        v.extend_from_slice(&dx.to_le_bytes());
-        v.extend_from_slice(&dy.to_le_bytes());
-    }
-    v
-}
-
-/// A polygon with one hole, 8-bit deltas. Hole vertices are all deltas (first
-/// relative to the anchor), so its stored point count == hole_deltas.len().
-fn pack_poly_hole(style_id: u8, ax: i32, ay: i32, ext_deltas: &[(i8, i8)], hole_deltas: &[(i8, i8)]) -> Vec<u8> {
-    let mut v = Vec::new();
-    v.push(style_id);
-    v.extend_from_slice(&((1 + ext_deltas.len()) as u16).to_le_bytes());
-    v.extend_from_slice(&ax.to_le_bytes());
-    v.extend_from_slice(&ay.to_le_bytes());
-    v.push(0x06); // flags: polygon | has-holes, 8-bit deltas
-    for &(dx, dy) in ext_deltas {
-        v.push(dx as u8);
-        v.push(dy as u8);
-    }
-    v.push(1u8); // hole count
-    v.extend_from_slice(&(hole_deltas.len() as u16).to_le_bytes());
-    for &(dx, dy) in hole_deltas {
-        v.push(dx as u8);
-        v.push(dy as u8);
-    }
-    v
-}
+// The byte builders (`build_file`, `pack_line`/`pack_line16`/`pack_poly_hole`, `pad`)
+// and the `BRANCH_BIT` / `EMPTY_LEAF` / `MARKER` constants now live in `obcm-testkit`,
+// imported above — one source for the layout, shared with `obc-render`'s priority test.
 
 // A two-LOD file used by several tests: LOD0 (coarse, +inf) holds one line,
 // LOD1 (max_mpp 50) holds one polygon-with-hole. Both are single-leaf trees over
@@ -189,7 +62,7 @@ fn pack_poly_hole(style_id: u8, ax: i32, ay: i32, ext_deltas: &[(i8, i8)], hole_
 // and feature anchors are absolute.
 const CS: usize = 64;
 const GLOBAL: (i32, i32, i32, i32) = (0, 0, 1000, 1000);
-const STYLES: &[(u8, i8, u16, u8, u8)] = &[(1, 3, 0xF800, 2, 3), (2, -1, 0x07E0, 1, 3)];
+const STYLES: &[Style] = &[(1, 3, 0xF800, 2, 3), (2, -1, 0x07E0, 1, 3)];
 
 fn two_lod_file() -> Vec<u8> {
     let line = pad(pack_line(1, 100, 200, &[(10, 0), (0, 10)]), CS);
@@ -235,7 +108,7 @@ fn header_and_lod_table() {
 
 #[test]
 fn marker_color_round_trips() {
-    // The header's marker color (v4) parses back unchanged at its fixed offset.
+    // The header's marker color parses back unchanged at its fixed offset.
     let bytes = two_lod_file();
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
@@ -531,7 +404,7 @@ fn filtered_decode_skips_without_drifting() {
     chunk.extend_from_slice(&pack_line16(3, 0, 0, &[(300, 400), (-200, 0)]));
     let chunk = pad(chunk, 128);
 
-    let styles: &[(u8, i8, u16, u8, u8)] = &[(1, 3, 0xF800, 2, 3), (2, -1, 0x07E0, 1, 3), (3, 0, 0x001F, 1, 3)];
+    let styles: &[Style] = &[(1, 3, 0xF800, 2, 3), (2, -1, 0x07E0, 1, 3), (3, 0, 0x001F, 1, 3)];
     let bytes = build_file(
         GLOBAL,
         styles,

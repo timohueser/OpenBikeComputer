@@ -3,67 +3,13 @@
 //! reader build doesn't pull the graphics stack. Draws against a tiny in-memory
 //! `DrawTarget` and asserts the marker lands where it should.
 
-use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
+use embedded_graphics::pixelcolor::Rgb888;
 use obc_render::{MapRenderer, Viewport};
 
+mod common;
+use common::Buf;
+
 const RED: Rgb888 = Rgb888::new(255, 0, 0);
-
-/// A `w`×`h` Rgb888 buffer implementing `DrawTarget`, with clipped writes.
-struct Buf {
-    w: i32,
-    h: i32,
-    px: Vec<Rgb888>,
-}
-
-impl Buf {
-    fn new(w: i32, h: i32) -> Self {
-        Buf { w, h, px: vec![Rgb888::BLACK; (w * h) as usize] }
-    }
-    fn get(&self, x: i32, y: i32) -> Rgb888 {
-        self.px[(y * self.w + x) as usize]
-    }
-    fn count(&self, c: Rgb888) -> usize {
-        self.px.iter().filter(|&&p| p == c).count()
-    }
-    fn put(&mut self, x: i32, y: i32, c: Rgb888) {
-        if x >= 0 && y >= 0 && x < self.w && y < self.h {
-            self.px[(y * self.w + x) as usize] = c;
-        }
-    }
-}
-
-impl OriginDimensions for Buf {
-    fn size(&self) -> Size {
-        Size::new(self.w as u32, self.h as u32)
-    }
-}
-
-impl DrawTarget for Buf {
-    type Color = Rgb888;
-    type Error = core::convert::Infallible;
-
-    fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
-    where
-        I: IntoIterator<Item = Pixel<Self::Color>>,
-    {
-        for Pixel(p, c) in pixels {
-            self.put(p.x, p.y, c);
-        }
-        Ok(())
-    }
-
-    fn fill_solid(&mut self, area: &Rectangle, color: Self::Color) -> Result<(), Self::Error> {
-        let clip = area.intersection(&self.bounding_box());
-        if let Some(br) = clip.bottom_right() {
-            for y in clip.top_left.y..=br.y {
-                for x in clip.top_left.x..=br.x {
-                    self.put(x, y, color);
-                }
-            }
-        }
-        Ok(())
-    }
-}
 
 /// North-up viewport centered on (0,0); the anchor at (0,0) projects to the
 /// screen center.

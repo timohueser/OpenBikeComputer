@@ -6,32 +6,11 @@
 //! `App` changed nothing observable, and the overlay the firmware drives on its own plane stays
 //! in lock-step with the gestures the map plane applies.
 
-use std::collections::VecDeque;
-
-use obc_app::{
-    App, AppState, Button, ButtonEvent, Gesture, InputClock, InputEvent, InputPlane, InputSource, RouteSummary,
-};
+use obc_app::{App, AppState, Button, Gesture, InputClock, InputEvent, InputPlane, RouteSummary};
 use obc_reader::BBox;
 
-/// One scripted raw input event per `poll`.
-struct Keys(VecDeque<InputEvent>);
-impl InputSource for Keys {
-    fn poll(&mut self) -> Option<InputEvent> {
-        self.0.pop_front()
-    }
-}
-fn keys(evs: &[InputEvent]) -> Keys {
-    Keys(evs.iter().copied().collect())
-}
-fn turn(n: i32) -> InputEvent {
-    InputEvent::Turn(n)
-}
-fn down(b: Button) -> InputEvent {
-    InputEvent::Button(ButtonEvent::Down(b))
-}
-fn up(b: Button) -> InputEvent {
-    InputEvent::Button(ButtonEvent::Up(b))
-}
+mod common;
+use common::{down, keys, turn, up};
 
 /// One minimal route summary so the Route menu has something to load.
 fn one_route() -> RouteSummary {

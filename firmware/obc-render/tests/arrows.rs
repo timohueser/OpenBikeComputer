@@ -5,88 +5,15 @@
 //! cadence itself is unit-tested against `walk_arrows` inside the crate; this pins the
 //! end-to-end `draw_route` gate.
 
-use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
+use embedded_graphics::pixelcolor::Rgb888;
 use obc_render::{MapRenderer, Viewport};
-use obc_route::{gpx_to_obcr, ByteSink, Error, RouteIndex, RouteReader, SliceSource};
+use obc_route::{gpx_to_obcr, RouteIndex, RouteReader, SliceSource};
+
+mod common;
+use common::{Buf, VecSink};
 
 const ROUTE: Rgb888 = Rgb888::new(255, 0, 255); // magenta stroke
 const ARROW: Rgb888 = Rgb888::new(255, 255, 255); // white chevrons
-
-/// A `w`×`h` Rgb888 buffer implementing `DrawTarget`, with clipped writes (mirrors the
-/// `marker.rs` smoke-test target).
-struct Buf {
-    w: i32,
-    h: i32,
-    px: Vec<Rgb888>,
-}
-
-impl Buf {
-    fn new(w: i32, h: i32) -> Self {
-        Buf { w, h, px: vec![Rgb888::BLACK; (w * h) as usize] }
-    }
-    fn count(&self, c: Rgb888) -> usize {
-        self.px.iter().filter(|&&p| p == c).count()
-    }
-    fn get(&self, x: i32, y: i32) -> Rgb888 {
-        self.px[(y * self.w + x) as usize]
-    }
-    fn put(&mut self, x: i32, y: i32, c: Rgb888) {
-        if x >= 0 && y >= 0 && x < self.w && y < self.h {
-            self.px[(y * self.w + x) as usize] = c;
-        }
-    }
-}
-
-impl OriginDimensions for Buf {
-    fn size(&self) -> Size {
-        Size::new(self.w as u32, self.h as u32)
-    }
-}
-
-impl DrawTarget for Buf {
-    type Color = Rgb888;
-    type Error = core::convert::Infallible;
-
-    fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
-    where
-        I: IntoIterator<Item = Pixel<Self::Color>>,
-    {
-        for Pixel(p, c) in pixels {
-            self.put(p.x, p.y, c);
-        }
-        Ok(())
-    }
-
-    fn fill_solid(&mut self, area: &Rectangle, color: Self::Color) -> Result<(), Self::Error> {
-        let clip = area.intersection(&self.bounding_box());
-        if let Some(br) = clip.bottom_right() {
-            for y in clip.top_left.y..=br.y {
-                for x in clip.top_left.x..=br.x {
-                    self.put(x, y, color);
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-/// A `ByteSink` over a growable `Vec` — the host's "whole file to RAM" backing.
-#[derive(Default)]
-struct VecSink {
-    buf: Vec<u8>,
-}
-
-impl ByteSink for VecSink {
-    fn write(&mut self, b: &[u8]) -> Result<(), Error> {
-        self.buf.extend_from_slice(b);
-        Ok(())
-    }
-    fn patch_at(&mut self, off: u32, b: &[u8]) -> Result<(), Error> {
-        let o = off as usize;
-        self.buf[o..o + b.len()].copy_from_slice(b);
-        Ok(())
-    }
-}
 
 /// A due-north route at a fixed longitude: collinear points decimate to the two endpoints,
 /// and a constant longitude maps straight down the screen by zoom alone (no aspect skew),

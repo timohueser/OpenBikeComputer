@@ -2381,6 +2381,7 @@ name = "obc-reader"
 version = "0.1.0"
 dependencies = [
  "heapless 0.8.0",
+ "obcm-testkit",
 ]
 
 [[package]]
@@ -2392,6 +2393,7 @@ dependencies = [
  "libm",
  "obc-reader",
  "obc-route",
+ "obcm-testkit",
 ]
 
 [[package]]
@@ -2441,6 +2443,10 @@ dependencies = [
  "rfd",
  "serialport",
 ]
+
+[[package]]
+name = "obcm-testkit"
+version = "0.1.0"
 
 [[package]]
 name = "objc"

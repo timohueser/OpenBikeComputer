@@ -5,33 +5,10 @@
 //! vertices survived decimation.
 
 use heapless::Vec as HVec;
-use obc_route::{
-    gpx_to_obcr, ByteSink, Error, RouteIndex, RouteMatch, RoutePoint, RouteReader, SliceSource, MAX_POINTS_PER_CHUNK,
-};
+use obc_route::{RouteIndex, RouteMatch, RoutePoint, RouteReader, SliceSource, MAX_POINTS_PER_CHUNK};
 
-/// A `ByteSink` over a growable `Vec` (mirrors the profile test's backing).
-#[derive(Default)]
-struct VecSink {
-    buf: Vec<u8>,
-}
-impl ByteSink for VecSink {
-    fn write(&mut self, b: &[u8]) -> Result<(), Error> {
-        self.buf.extend_from_slice(b);
-        Ok(())
-    }
-    fn patch_at(&mut self, off: u32, b: &[u8]) -> Result<(), Error> {
-        let o = off as usize;
-        self.buf[o..o + b.len()].copy_from_slice(b);
-        Ok(())
-    }
-}
-
-fn convert(name: &str, gpx: &str) -> Vec<u8> {
-    let src = SliceSource(gpx.as_bytes());
-    let mut sink = VecSink::default();
-    gpx_to_obcr(&src, name, &mut sink).unwrap();
-    sink.buf
-}
+mod common;
+use common::convert;
 
 /// Build GPX text from `(lat_deg, lon_deg, ele_m)` track points.
 fn gpx_from(pts: &[(f64, f64, f64)]) -> String {
@@ -149,10 +126,6 @@ fn off_route_freezes_progress_then_resumes_on_rejoin() {
     assert!(back.progress_m.abs_diff(want) <= 6, "resumed progress {} ~ {want}", back.progress_m);
 }
 
-/// A closed ~800 m-radius loop (meter-corrected so it's round on the ground) sampled at 20
-/// vertices — enough curvature that every vertex survives decimation, giving ~20 segments.
-/// The loop returns to its start, so spatial nearest-point is ambiguous there; only the
-/// forward bias keeps progress from snapping back.
 /// A high-frequency eastward sawtooth of `n` points. Every interior vertex is a
 /// peak/valley deviating ~4 m from its neighbours' chord — well past the 1 m
 /// decimation tolerance — so all survive and a few hundred span more than one
@@ -195,6 +168,10 @@ fn multi_chunk_route_matches_across_chunk_boundaries() {
     assert!(last as f64 > 0.9 * total as f64, "final progress {last} m should reach near the {total} m total");
 }
 
+/// A closed ~800 m-radius loop (meter-corrected so it's round on the ground) sampled at 20
+/// vertices — enough curvature that every vertex survives decimation, giving ~20 segments.
+/// The loop returns to its start, so spatial nearest-point is ambiguous there; only the
+/// forward bias keeps progress from snapping back.
 fn loop_gpx() -> String {
     let (clat, clon) = (48.0_f64, 7.8_f64);
     let r_deg = 800.0 / 111_320.0; // ~800 m in latitude degrees
