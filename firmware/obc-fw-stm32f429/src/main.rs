@@ -190,7 +190,7 @@ use obc_reader::SliceSource;
 #[cfg(not(feature = "glass-demo"))]
 use obc_render::zoom_for_mpp;
 #[cfg(not(feature = "glass-demo"))]
-use obc_route::{RouteIndex, RouteReader};
+use obc_route::{RouteCache, RouteIndex, RouteReader};
 
 // The two-plane (default) build only: the high-priority interrupt executor that runs the
 // input/overlay plane, the lock-free gesture channel feeding the map plane, and the
@@ -411,15 +411,17 @@ const OVERLAY_ADDR: usize = SDRAM_ADDR + 2 * FB_BYTES;
 const SDRAM_BYTES: usize = 8 * 1024 * 1024;
 
 // Build-time guard for the resident SDRAM placement (issue #67): the four framebuffers
-// (2 map + 2 overlay), the `App` slot, and the `MapCache` must all fit the 8 MB. `App` is
-// initialized *in place* by `App::init_idle` — never returned by value into a stack temporary —
-// so the only way it can break the placement is by outgrowing this region; this fails the build
-// if it (or `MapCache`, or the framebuffers) ever does, instead of corrupting SDRAM on glass.
-// (Per-region alignment padding is a handful of bytes against ~7.5 MB of headroom; ignored here.)
+// (2 map + 2 overlay), the `App` slot, the `MapCache`, and the route-geometry `RouteCache` must
+// all fit the 8 MB. `App` is initialized *in place* by `App::init_idle` — never returned by value
+// into a stack temporary — so the only way it can break the placement is by outgrowing this
+// region; this fails the build if it (or either cache, or the framebuffers) ever does, instead of
+// corrupting SDRAM on glass. (Per-region alignment padding is a handful of bytes against ~7.5 MB
+// of headroom; ignored here.)
 #[cfg(not(feature = "glass-demo"))]
 const _: () = assert!(
-    4 * FB_BYTES + core::mem::size_of::<App>() + core::mem::size_of::<MapCache>() <= SDRAM_BYTES,
-    "resident SDRAM set (framebuffers + App + MapCache) overruns the 8 MB SDRAM"
+    4 * FB_BYTES + core::mem::size_of::<App>() + core::mem::size_of::<MapCache>() + core::mem::size_of::<RouteCache>()
+        <= SDRAM_BYTES,
+    "resident SDRAM set (framebuffers + App + MapCache + RouteCache) overruns the 8 MB SDRAM"
 );
 
 /// Baked-in OBCM **v5** map tile (issue #34): a small ~1.4 MB Teningen tile in
@@ -1026,6 +1028,19 @@ async fn main(spawner: Spawner) {
         unsafe { cache_ptr.write(MapCache::new()) };
         let map_cache: &MapCache = unsafe { &*cache_ptr };
 
+        // The route-geometry cache (issue #98 P4), placed just past the `MapCache` — same SDRAM,
+        // same `MaybeUninit::zeroed()`/`ptr::write` trick so its ~99 KB never lands on the stack.
+        // It holds decoded route chunks so a per-frame redraw of the active route (and the
+        // matcher's per-fix decode) hit RAM instead of re-reading the `.obcr` geometry from the
+        // card every time; cleared on a route change below.
+        let rcache_align = core::mem::align_of::<RouteCache>();
+        let rcache_addr = (cache_addr + core::mem::size_of::<MapCache>() + rcache_align - 1) & !(rcache_align - 1);
+        // SAFETY: [rcache_addr, rcache_addr + size_of::<RouteCache>()) is a distinct SDRAM region
+        // just past the MapCache slot and clear of the framebuffers/App; sole owner for the run.
+        let rcache_ptr = rcache_addr as *mut RouteCache;
+        unsafe { rcache_ptr.write(RouteCache::new()) };
+        let route_cache: &RouteCache = unsafe { &*rcache_ptr };
+
         // Map: open the card's `.obcm` and **stream** it (issue #37 — no resident full-tile
         // buffer), else fall back to the baked-in tile (flash-resident), else halt. `map_streaming`
         // selects the per-frame source in the render loop below.
@@ -1312,6 +1327,10 @@ async fn main(spawner: Spawner) {
             // below needs the index on every *fresh fix*, independent of whether the map redraws,
             // so it's ready as soon as the route is loaded (`reconcile_route` above opened the file).
             if index_route != active {
+                // The active route is changing: drop the route-geometry cache so a new route's
+                // chunk `k` can't be served from the old route's stale slot (the cache keys by
+                // chunk index only — see `RouteCache`).
+                route_cache.clear();
                 match active {
                     Some(_) => {
                         match storage.as_ref().and_then(|s| s.build_route_index()) {
@@ -1344,7 +1363,10 @@ async fn main(spawner: Spawner) {
             // frame is cheap, and decouples matching from the render cadence (issue #43/#47).
             let route_src = storage.as_ref().and_then(|s| s.route_source());
             let route = match (route_index.as_ref(), route_src.as_ref()) {
-                (Some(idx), Some(src)) => Some(RouteReader::new(idx, src)),
+                // Pair the resident index + fresh source with the session-long route cache (P4),
+                // so a redraw of the unchanged route (and the matcher's per-fix decode) hit RAM
+                // instead of re-reading the `.obcr` geometry off the card every frame.
+                (Some(idx), Some(src)) => Some(RouteReader::new_cached(idx, src, route_cache)),
                 _ => None,
             };
             // The ride-log sink, by contrast, is built *every* tick — it only wraps the already
@@ -1479,8 +1501,12 @@ async fn main(spawner: Spawner) {
                         // over the persistent cache, so this tracks what each redraw pulled.
                         let reqs = stats.map_chunk_hits + stats.map_chunk_misses;
                         let hit_pct = (stats.map_chunk_hits * 100).checked_div(reqs).unwrap_or(0);
+                        // Route-geometry cache accounting (issue #98 P4), cumulative since the last
+                        // route change — `hits` should climb each redraw while `misses` settles at
+                        // the route's visible-chunk count (a warm route re-reads nothing).
+                        let (rc_hits, rc_misses) = route_cache.stats();
                         defmt::debug!(
-                            "map frame: {=u64} us (collect {=u32} [read {=u32}] | sort {=u32} | draw {=u32} | overlay {=u32}) | lod {=usize} | feat {=usize}/{=usize} | map-cache {=u32}% hit, {=u32} rd, {=u32} B",
+                            "map frame: {=u64} us (collect {=u32} [read {=u32}] | sort {=u32} | draw {=u32} | overlay {=u32}) | lod {=usize} | feat {=usize}/{=usize} | map-cache {=u32}% hit, {=u32} rd, {=u32} B | route-cache {=u32} hit / {=u32} miss",
                             render_us,
                             stats.collect_us,
                             read_us,
@@ -1492,7 +1518,9 @@ async fn main(spawner: Spawner) {
                             stats.features_tried,
                             hit_pct,
                             stats.map_sd_reads,
-                            stats.map_bytes_read
+                            stats.map_bytes_read,
+                            rc_hits,
+                            rc_misses
                         );
                         true
                     } else {
