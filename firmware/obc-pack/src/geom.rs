@@ -386,4 +386,253 @@ mod tests {
         let open = ring(&[(7.800, 47.990), (7.804, 47.990)]);
         assert!(assemble_multipolygon(&[open]).is_empty());
     }
+
+    // --- clip_to_box (geom.rs ~307) -----------------------------------------
+    // Every straddling feature hits this on a subdivided tile, yet the quadtree
+    // suite only ever fed fully-contained geometry — so the clip path (ring order,
+    // the µdeg→deg `/1e6`, Multi flattening) had ZERO coverage (issue #95, item 1).
+
+    /// Bounding box of a single simple geom, as `(minx, miny, maxx, maxy)`.
+    fn bounds_of(g: &Geom) -> (f64, f64, f64, f64) {
+        g.bounds()
+    }
+
+    /// Clipping a horizontal line that pokes out both sides of the box must trim it
+    /// to exactly the box span. Pins the `bbox / 1e6` scaling: a box of `(0,0,1000,
+    /// 1000)` µdeg is `0.0..0.001` deg, so the line clips at x=0 and x=0.001, and the
+    /// y stays at the input 0.0005. A wrong scale (e.g. `* 1e-6` vs the spec) would
+    /// move those cut points.
+    #[test]
+    fn clip_line_straddling_both_edges() {
+        let line = Geom::Line(vec![(-0.0005, 0.0005), (0.0015, 0.0005)]);
+        let clipped = clip_to_box(&line, (0, 0, 1000, 1000));
+        match clipped {
+            Geom::Line(pts) => {
+                assert_eq!(pts.len(), 2, "a single crossing yields one 2-point segment");
+                // Endpoints land on the box's left/right edges at the input y.
+                let mut xs = [pts[0].0, pts[1].0];
+                xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                assert!((xs[0] - 0.0).abs() < 1e-12, "left cut at x=0, got {}", xs[0]);
+                assert!((xs[1] - 0.001).abs() < 1e-12, "right cut at x=0.001, got {}", xs[1]);
+                assert!((pts[0].1 - 0.0005).abs() < 1e-12 && (pts[1].1 - 0.0005).abs() < 1e-12, "y unchanged");
+            }
+            other => panic!("expected a clipped LineString, got {other:?}"),
+        }
+    }
+
+    /// A polygon larger than the box clips to exactly the box: the intersection is the
+    /// box itself, so the surviving ring's bounds are `(0,0)..(0.001,0.001)`. Guards
+    /// the polygon branch of `from_geos` (exterior ring read-back) and the clip-box
+    /// ring construction.
+    #[test]
+    fn clip_polygon_to_box_yields_box() {
+        let big = Geom::Polygon {
+            exterior: vec![
+                (-0.0005, -0.0005),
+                (0.0015, -0.0005),
+                (0.0015, 0.0015),
+                (-0.0005, 0.0015),
+                (-0.0005, -0.0005),
+            ],
+            interiors: vec![],
+        };
+        let clipped = clip_to_box(&big, (0, 0, 1000, 1000));
+        match &clipped {
+            Geom::Polygon { exterior, interiors } => {
+                assert!(interiors.is_empty(), "clipping a hole-free poly to a box stays hole-free");
+                let (minx, miny, maxx, maxy) = bounds_of(&clipped);
+                assert!(minx.abs() < 1e-12 && miny.abs() < 1e-12, "min corner at the box origin");
+                assert!((maxx - 0.001).abs() < 1e-12 && (maxy - 0.001).abs() < 1e-12, "max corner at the box max");
+                assert!(exterior.len() >= 4, "a closed clipped ring");
+            }
+            other => panic!("expected a clipped Polygon, got {other:?}"),
+        }
+    }
+
+    /// A line that leaves and re-enters the box clips to a `MultiLineString`, which
+    /// `from_geos` must turn into a `Geom::Multi` of the two inside segments — the
+    /// Multi-flattening path the quadtree relies on (a missed flatten would store a
+    /// bogus single geometry). The line dips: in at the left, out the bottom, back in
+    /// from the bottom, out the right — two segments survive inside the box.
+    #[test]
+    fn clip_line_reentering_box_is_multi() {
+        // Box 0..0.001 in both axes. y crosses below 0 in the middle, so the part
+        // inside splits into two pieces.
+        let line = Geom::Line(vec![
+            (-0.0002, 0.0005), // start left, outside
+            (0.0003, 0.0005),  // inside
+            (0.0005, -0.0002), // dip below the box (outside)
+            (0.0007, 0.0005),  // back inside
+            (0.0012, 0.0005),  // exit right, outside
+        ]);
+        let clipped = clip_to_box(&line, (0, 0, 1000, 1000));
+        match clipped {
+            Geom::Multi(parts) => {
+                let lines: Vec<_> = parts.iter().filter(|p| matches!(p, Geom::Line(_))).collect();
+                assert_eq!(lines.len(), 2, "two disjoint segments survive inside the box");
+                for p in &lines {
+                    let (minx, miny, maxx, maxy) = bounds_of(p);
+                    assert!(minx >= -1e-9 && miny >= -1e-9, "segment stays inside the box (min)");
+                    assert!(maxx <= 0.001 + 1e-9 && maxy <= 0.001 + 1e-9, "segment stays inside the box (max)");
+                }
+            }
+            other => panic!("expected a Multi from a re-entering line, got {other:?}"),
+        }
+    }
+
+    /// A feature entirely outside the box clips to `Empty` (the quadtree drops it).
+    #[test]
+    fn clip_disjoint_is_empty() {
+        let line = Geom::Line(vec![(0.005, 0.005), (0.006, 0.006)]);
+        let clipped = clip_to_box(&line, (0, 0, 1000, 1000));
+        assert!(clipped.is_empty(), "a disjoint feature clips to Empty");
+    }
+
+    // --- topology_preserve_simplify (geom.rs ~194) ---------------------------
+    // ZERO coverage before (issue #95, item 2): the survivor case, the topology-
+    // preserving guarantee that is the whole reason this is not plain Douglas–Peucker,
+    // and the meters→degrees `tol` scale the LOD config feeds in.
+
+    /// A survivor must keep its shape: a 3-point line whose middle vertex sits
+    /// 0.0001° off the chord keeps all 3 points when `tol` is below that deviation,
+    /// and drops the now-redundant middle vertex (→ 2 points, endpoints intact) when
+    /// `tol` is above it. Pins that the simplifier is wired up and `tol` actually
+    /// bites at the deviation boundary (over-simplification would already strip the
+    /// vertex at the tight tolerance).
+    #[test]
+    fn simplify_keeps_survivor_drops_redundant() {
+        let line = Geom::Line(vec![(0.0, 0.0), (0.001, 0.0001), (0.002, 0.0)]);
+
+        // Tolerance below the deviation: nothing collapses.
+        let tight = topology_preserve_simplify(&line, 0.00001);
+        match tight {
+            Geom::Line(pts) => assert_eq!(pts.len(), 3, "tol below deviation keeps the middle vertex"),
+            other => panic!("expected a Line, got {other:?}"),
+        }
+
+        // Tolerance above the deviation: the middle vertex is redundant ⇒ dropped.
+        let loose = topology_preserve_simplify(&line, 0.001);
+        match loose {
+            Geom::Line(pts) => {
+                assert_eq!(pts.len(), 2, "tol above deviation drops the redundant middle vertex");
+                assert!((pts[0].0 - 0.0).abs() < 1e-12 && (pts[1].0 - 0.002).abs() < 1e-12, "endpoints preserved");
+            }
+            other => panic!("expected a Line, got {other:?}"),
+        }
+    }
+
+    /// The reason this is `TopologyPreservingSimplifier` and not the geos crate's
+    /// plain `simplify` (Douglas–Peucker): a concave "C"/staple polygon simplified
+    /// hard must NOT self-intersect — plain DP can pull an edge across the notch and
+    /// produce an invalid ring, which the downstream `polygon_is_valid` guard and the
+    /// device renderer both assume never happens. Assert the simplified result is a
+    /// still-valid (non-self-intersecting) polygon.
+    #[test]
+    fn simplify_is_topology_preserving_stays_valid() {
+        // A "staple": a fat C with a deep notch. A naive DP simplify at a large tol
+        // can collapse the notch walls across each other.
+        let staple = Geom::Polygon {
+            exterior: vec![
+                (0.0, 0.0),
+                (0.003, 0.0),
+                (0.003, 0.003),
+                (0.002, 0.003),
+                (0.002, 0.001),
+                (0.001, 0.001),
+                (0.001, 0.003),
+                (0.0, 0.003),
+                (0.0, 0.0),
+            ],
+            interiors: vec![],
+        };
+        let out = topology_preserve_simplify(&staple, 0.0005);
+        match out {
+            Geom::Polygon { ref exterior, ref interiors } => {
+                assert!(!exterior.is_empty(), "the polygon survives simplification");
+                assert!(
+                    polygon_is_valid(exterior, interiors),
+                    "a topology-preserving result stays non-self-intersecting"
+                );
+            }
+            other => panic!("expected a Polygon, got {other:?}"),
+        }
+    }
+
+    /// The `tol` this function takes is degrees, but the LOD config specifies the
+    /// simplify tolerance in **meters** (`config.simplify_m`), converted at the call
+    /// site as `simplify_m / M_PER_DEG` (main.rs ~136, `M_PER_DEG = 111_320`). This
+    /// pins that unit relationship end-to-end: a vertex deviating ~22 m off the chord
+    /// survives a 10 m tolerance and is dropped by a 50 m tolerance — getting the
+    /// conversion wrong (e.g. treating meters as degrees) would simplify ~111 000×
+    /// too aggressively and flatten every road.
+    #[test]
+    fn simplify_meters_to_degrees_scale() {
+        const M_PER_DEG: f64 = 111_320.0; // obc_reader::M_PER_DEG; the main.rs conversion constant.
+        let tol_deg = |m: f64| m / M_PER_DEG;
+
+        // Middle vertex deviates ~22 m (0.0002° ≈ 22.3 m) off the chord.
+        let dev_deg = 0.0002;
+        let line = Geom::Line(vec![(0.0, 0.0), (0.001, dev_deg), (0.002, 0.0)]);
+        assert!(dev_deg * M_PER_DEG > 10.0 && dev_deg * M_PER_DEG < 50.0, "fixture deviation is between 10 m and 50 m");
+
+        // A 10 m tolerance is below the ~22 m deviation ⇒ vertex survives.
+        match topology_preserve_simplify(&line, tol_deg(10.0)) {
+            Geom::Line(pts) => assert_eq!(pts.len(), 3, "10 m tol keeps the ~22 m deviation"),
+            other => panic!("expected a Line, got {other:?}"),
+        }
+        // A 50 m tolerance is above it ⇒ vertex dropped.
+        match topology_preserve_simplify(&line, tol_deg(50.0)) {
+            Geom::Line(pts) => assert_eq!(pts.len(), 2, "50 m tol drops the ~22 m deviation"),
+            other => panic!("expected a Line, got {other:?}"),
+        }
+    }
+
+    // --- assemble_multipolygon node-repair tier (geom.rs ~272,290) ----------
+
+    /// The two-tier reason the function exists (issue #95, item 9): the fast
+    /// `build_area` pass yields nothing for a self-touching "figure-eight" of two
+    /// squares sharing a single mid-edge node, so the `node_first=true` retry must
+    /// node the linework and recover the two faces. The existing tests only ever hit
+    /// the fast path; this forces the repair path. A bow-tie made of one closed way
+    /// that crosses itself: build_area can't polygonize the crossing without noding.
+    #[test]
+    fn assemble_self_touching_uses_node_repair() {
+        // Bow-tie / figure-eight: a single closed way whose diagonals cross at the
+        // centre. Without noding, build_area sees no valid faces; noding splits the
+        // crossing and recovers two triangles.
+        let bowtie = ring(&[(0.0, 0.0), (0.002, 0.002), (0.002, 0.0), (0.0, 0.002), (0.0, 0.0)]);
+        let polys = assemble_multipolygon(&[bowtie]);
+        assert_eq!(polys.len(), 2, "the node-repair tier recovers both faces of the bow-tie");
+        for p in &polys {
+            match p {
+                Geom::Polygon { exterior, interiors } => {
+                    assert!(exterior.len() >= 4, "each recovered face is a closed ring");
+                    assert!(interiors.is_empty(), "the triangles have no holes");
+                }
+                other => panic!("expected a polygon, got {other:?}"),
+            }
+        }
+    }
+
+    // --- polygon_is_valid (geom.rs ~207, issue #95, item 7) ------------------
+    // The closed-way classifier (ingest.rs ~225) and relation assembler both gate on
+    // this to reject rings osmium's assembler would drop (self-intersecting
+    // buildings). Only covered transitively through the skippable corpus test before.
+
+    /// A simple square is a valid polygon; a self-intersecting bow-tie ring is not
+    /// (osmium drops it, so we must too); and a ring with too few positions (<4)
+    /// can't form a linear ring and is rejected without erroring.
+    #[test]
+    fn polygon_is_valid_rejects_self_intersection_and_degenerate() {
+        let square = ring(&[(0.0, 0.0), (0.002, 0.0), (0.002, 0.002), (0.0, 0.002), (0.0, 0.0)]);
+        assert!(polygon_is_valid(&square, &[]), "a simple closed square is valid");
+
+        // Bow-tie: edges cross at the centre ⇒ self-intersecting ⇒ invalid.
+        let bowtie = ring(&[(0.0, 0.0), (0.002, 0.002), (0.002, 0.0), (0.0, 0.002), (0.0, 0.0)]);
+        assert!(!polygon_is_valid(&bowtie, &[]), "a self-intersecting building ring is rejected");
+
+        // Too few positions for a linear ring (needs ≥4: ≥3 distinct + closing).
+        let degenerate = ring(&[(0.0, 0.0), (0.002, 0.0), (0.0, 0.0)]);
+        assert!(!polygon_is_valid(&degenerate, &[]), "a <4-position ring can't form a polygon");
+    }
 }

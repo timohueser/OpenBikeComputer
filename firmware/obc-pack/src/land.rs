@@ -358,4 +358,89 @@ mod tests {
         assert_eq!(rings[0].len(), 5);
         assert_eq!(rings[0][2], (10.0, 10.0));
     }
+
+    // --- geos_polygon_from_rings + process_record (issue #95, item 8) --------
+    // The land path runs only on the ~1.3 GB real dataset, so its decode/clip logic
+    // had no unit coverage. Hand-built rings (in EPSG:3857 metres) drive the two
+    // branches of `geos_polygon_from_rings` and the three branches of
+    // `process_record` directly.
+
+    /// A square in 3857 metres, CCW, closed. `cx,cy` is the lower-left corner; `s`
+    /// the side length.
+    fn box3857(cx: f64, cy: f64, s: f64) -> Vec<(f64, f64)> {
+        vec![(cx, cy), (cx + s, cy), (cx + s, cy + s), (cx, cy + s), (cx, cy)]
+    }
+
+    /// Single ring ⇒ a plain GEOS polygon, no holes. Pins the `rings.len() == 1`
+    /// fast branch of `geos_polygon_from_rings` (land.rs ~251).
+    #[test]
+    fn geos_polygon_from_one_ring_is_hole_free() {
+        let g = geos_polygon_from_rings(&[box3857(1_000_000.0, 2_000_000.0, 1000.0)]).expect("polygon");
+        assert_eq!(g.get_num_interior_rings().unwrap(), 0, "a lone outer ring has no holes");
+    }
+
+    /// Outer + concentric inner ring ⇒ `build_area`'s even-odd rule attaches the
+    /// inner as a hole. Pins the multi-ring branch of `geos_polygon_from_rings`
+    /// (land.rs ~258) that the real dataset's lakes-with-islands exercise.
+    #[test]
+    fn geos_polygon_from_outer_and_inner_attaches_hole() {
+        let outer = box3857(0.0, 0.0, 10_000.0);
+        let inner = box3857(3_000.0, 3_000.0, 4_000.0); // fully inside the outer
+        let g = geos_polygon_from_rings(&[outer, inner]).expect("polygon");
+        assert_eq!(g.get_num_interior_rings().unwrap(), 1, "even-odd nesting makes the inner ring a hole");
+    }
+
+    /// `process_record` fully-inside single-ring fast path: NO GEOS clip, just
+    /// reproject + emit. Pins land.rs ~219, and that the reprojection matches
+    /// `merc_inverse` exactly. The `box_geom` is unused on this path, so pass a dummy.
+    #[test]
+    fn process_record_fully_inside_single_ring_skips_clip() {
+        let s = 1000.0;
+        let (cx, cy) = (1_000_000.0, 2_000_000.0);
+        let ring3857 = box3857(cx, cy, s);
+        let dummy = box_polygon((0.0, 0.0, 1.0, 1.0)).unwrap(); // not consulted on the fast path
+
+        let mut out = Vec::new();
+        process_record(vec![ring3857.clone()], /* fully_inside */ true, &dummy, &mut out);
+        assert_eq!(out.len(), 1, "one polygon emitted");
+        match &out[0] {
+            Geom::Polygon { exterior, interiors } => {
+                assert!(interiors.is_empty(), "single-ring fast path has no holes");
+                // Each vertex equals merc_inverse of the 3857 input — proves it was
+                // reprojected, and via the fast path (no clip altered it).
+                for (got, src) in exterior.iter().zip(ring3857.iter()) {
+                    let (elon, elat) = merc_inverse(src.0, src.1);
+                    assert!((got.0 - elon).abs() < 1e-12 && (got.1 - elat).abs() < 1e-12, "vertex reprojected exactly");
+                }
+            }
+            other => panic!("expected a Polygon, got {other:?}"),
+        }
+    }
+
+    /// `process_record` GEOS-clip path: a record straddling the query box is clipped,
+    /// reprojected, and the surviving polygon stays within the box (in degrees).
+    /// Pins land.rs ~229-243 (the not-fully-inside branch + `collect_polygons`).
+    #[test]
+    fn process_record_straddling_is_clipped_to_box() {
+        // Query box: 0..10 000 m in both axes (3857). A record wider than it.
+        let qbox = (0.0, 0.0, 10_000.0, 10_000.0);
+        let box_geom = box_polygon(qbox).unwrap();
+        let record = box3857(-5_000.0, 2_000.0, 20_000.0); // overhangs left + right
+
+        let mut out = Vec::new();
+        process_record(vec![record], /* fully_inside */ false, &box_geom, &mut out);
+        assert_eq!(out.len(), 1, "the clipped record yields one polygon");
+
+        // The clip box's degree extent (reproject the box corners).
+        let (lon_min, lat_min) = merc_inverse(qbox.0, qbox.1);
+        let (lon_max, lat_max) = merc_inverse(qbox.2, qbox.3);
+        if let Geom::Polygon { exterior, .. } = &out[0] {
+            for &(lon, lat) in exterior {
+                assert!(lon >= lon_min - 1e-9 && lon <= lon_max + 1e-9, "clipped lon {lon} within box");
+                assert!(lat >= lat_min - 1e-9 && lat <= lat_max + 1e-9, "clipped lat {lat} within box");
+            }
+        } else {
+            panic!("expected a Polygon");
+        }
+    }
 }
