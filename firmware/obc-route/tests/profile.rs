@@ -2,7 +2,10 @@
 //! reader, and check it captures the route's shape — the peak, the y-range, and a
 //! gap-free band — independent of how sparsely the route samples the columns.
 
-use obc_route::{gpx_to_obcr, ByteSink, Error, RouteIndex, RouteReader, SliceSource, PROFILE_COLS};
+use obc_route::{RouteIndex, RouteReader, SliceSource, PROFILE_COLS};
+
+mod common;
+use common::convert;
 
 /// Densely scan one pyramid `level` across `[lo, hi]` and return its `(min, max)`
 /// elevation envelope — for asserting the downsample keeps extremes (it's min/max, not
@@ -16,31 +19,6 @@ fn level_envelope(p: &obc_route::Profile, level: usize, lo: f32, hi: f32) -> (i1
         mx = mx.max(b);
     }
     (mn, mx)
-}
-
-/// A `ByteSink` over a growable `Vec` (the host's in-RAM file backing).
-#[derive(Default)]
-struct VecSink {
-    buf: Vec<u8>,
-}
-
-impl ByteSink for VecSink {
-    fn write(&mut self, b: &[u8]) -> Result<(), Error> {
-        self.buf.extend_from_slice(b);
-        Ok(())
-    }
-    fn patch_at(&mut self, off: u32, b: &[u8]) -> Result<(), Error> {
-        let o = off as usize;
-        self.buf[o..o + b.len()].copy_from_slice(b);
-        Ok(())
-    }
-}
-
-fn convert(name: &str, gpx: &str) -> Vec<u8> {
-    let src = SliceSource(gpx.as_bytes());
-    let mut sink = VecSink::default();
-    gpx_to_obcr(&src, name, &mut sink).unwrap();
-    sink.buf
 }
 
 /// A zigzag (so no point decimates away) that climbs 200→300 m then falls back to

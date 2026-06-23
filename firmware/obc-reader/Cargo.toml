@@ -7,3 +7,8 @@ description = "OBCM map format reader (no_std + alloc) — pure-parse logic for 
 
 [dependencies]
 heapless = "0.8"
+
+[dev-dependencies]
+# Shared OBCM byte builder for the format-contract tests (one source of the layout,
+# also used by obc-render's priority test).
+obcm-testkit = { path = "../obcm-testkit" }

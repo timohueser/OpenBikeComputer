@@ -11,3 +11,8 @@ obc-route = { path = "../obc-route" }
 embedded-graphics = "0.8"
 heapless = "0.8"
 libm = "0.2"
+
+[dev-dependencies]
+# Shared OBCM byte builder for the priority-saturation test (same source the reader's
+# format tests use, so a format bump edits one place).
+obcm-testkit = { path = "../obcm-testkit" }
