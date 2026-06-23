@@ -143,4 +143,34 @@ mod tests {
         assert_eq!(pixel(&fb, 0, 1), (0, 255, 0));
         assert_eq!(pixel(&fb, 0, 0), (0, 0, 0));
     }
+
+    /// Item 11 (`put` stride `(y * width + x) * 3` ~43): existing tests only write column 0,
+    /// so a stride bug (e.g. forgetting the `* 3`, or `x * 3 + y * width`) wouldn't show.
+    /// Write a pixel at a *non-leading* column on a width that isn't a power of two and
+    /// assert it lands at exactly byte `(2 * 5 + 3) * 3 = 39`, with the rest untouched.
+    #[test]
+    fn put_uses_the_row_major_rgb_stride() {
+        let mut fb = Framebuffer::new(5, 4);
+        fb.draw_iter([Pixel(Point::new(3, 2), Rgb888::new(10, 20, 30))]).unwrap();
+        assert_eq!(pixel(&fb, 3, 2), (10, 20, 30), "lands at (3,2)");
+        // Exact byte offset proves the stride, not just the helper.
+        let i = (2 * 5 + 3) * 3;
+        assert_eq!(&fb.as_rgb888()[i..i + 3], &[10, 20, 30]);
+        // The neighbouring pixels (one before, one after) stay black — no smear.
+        assert_eq!(pixel(&fb, 2, 2), (0, 0, 0));
+        assert_eq!(pixel(&fb, 4, 2), (0, 0, 0));
+    }
+
+    /// Item 10 on the host framebuffer (`fill_solid` ~73 `area.intersection`): a negative
+    /// top-left must clip to the origin, never indexing with a negative coordinate. The
+    /// crate's existing fill_solid test only overruns the bottom-right; this covers the
+    /// negative-origin half so both crates' framebuffers are symmetric.
+    #[test]
+    fn fill_solid_clips_a_negative_top_left() {
+        let mut fb = Framebuffer::new(4, 4);
+        fb.fill_solid(&Rectangle::new(Point::new(-2, -2), Size::new(4, 4)), Rgb888::new(0, 0, 255)).unwrap();
+        assert_eq!(pixel(&fb, 0, 0), (0, 0, 255)); // clipped origin fills
+        assert_eq!(pixel(&fb, 1, 1), (0, 0, 255)); // last covered pixel (rect reaches 1,1)
+        assert_eq!(pixel(&fb, 2, 2), (0, 0, 0)); // beyond the clipped rect: untouched
+    }
 }
