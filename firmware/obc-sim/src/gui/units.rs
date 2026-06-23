@@ -77,4 +77,55 @@ mod tests {
         assert_eq!(format_distance(240.0), "240 m");
         assert_eq!(format_distance(2500.0), "2.5 km");
     }
+
+    /// Item 13 (`format_distance` boundaries, the two `<` thresholds at ~32-37): the
+    /// existing test never hits the exact transition values, so an off-by-one in either
+    /// comparison (`<=` vs `<`) would slip through. `1.0` is the `< 1.0` → `< 1000.0`
+    /// boundary (sub-meter `{:.2}` gives way to whole-meter `{:.0}`), and `1000.0` is the
+    /// `< 1000.0` → km boundary. Pin both exact strings.
+    #[test]
+    fn distance_formatting_hits_exact_boundaries() {
+        // Just below 1 m is still the two-decimal sub-meter form ({:.2} rounds to 1.00, unit "m").
+        assert_eq!(format_distance(0.999), "1.00 m");
+        // Exactly 1.0: `1.0 < 1.0` is false → whole-meter form, not sub-meter.
+        assert_eq!(format_distance(1.0), "1 m");
+        // Just below 1 km stays in meters; exactly 1000.0 flips to km.
+        assert_eq!(format_distance(999.0), "999 m");
+        assert_eq!(format_distance(1000.0), "1.0 km"); // `1000.0 < 1000.0` false → km
+    }
+
+    /// Item 13 (negative / zero distance): below 1.0 (incl. ≤ 0) takes the `{:.2} m`
+    /// branch — there's no separate clamp, so a negative ground distance prints with its
+    /// sign rather than panicking or wrapping. Documents the actual behavior at the low end.
+    #[test]
+    fn distance_formatting_zero_and_negative() {
+        assert_eq!(format_distance(0.0), "0.00 m");
+        assert_eq!(format_distance(-5.0), "-5.00 m");
+    }
+
+    /// Item 12 (`format_clock`, ~43-51 — ZERO prior tests): pins the three behaviors the
+    /// GPX scrubber's readout depends on. (a) The `M:SS` form below an hour with `:02`
+    /// zero-padded seconds; (b) the switch to `H:MM:SS` once `h > 0`, with both minutes and
+    /// seconds zero-padded; (c) that a partial trailing second truncates (`as u64`), not rounds.
+    #[test]
+    fn clock_formats_minutes_seconds_and_hours() {
+        assert_eq!(format_clock(0.0), "0:00"); // start of a track
+        assert_eq!(format_clock(5.0), "0:05"); // seconds zero-padded to :02
+        assert_eq!(format_clock(65.0), "1:05"); // 1 min 5 s → M:SS, no leading-zero minute
+        assert_eq!(format_clock(600.0), "10:00"); // two-digit minutes still M:SS below an hour
+        assert_eq!(format_clock(3599.0), "59:59"); // last second before the hour switch
+        assert_eq!(format_clock(3600.0), "1:00:00"); // exactly an hour → H:MM:SS, MM zero-padded
+        assert_eq!(format_clock(3661.0), "1:01:01"); // 1 h 1 m 1 s: both MM and SS padded
+        assert_eq!(format_clock(36000.0), "10:00:00"); // multi-hour
+        assert_eq!(format_clock(65.9), "1:05"); // fractional second truncates, not rounds
+    }
+
+    /// Item 12 (`format_clock` negative clamp, `sec.max(0.0)` ~44): a scrubber can hand a
+    /// slightly-negative time (e.g. a position just before t=0); the `max(0.0)` must clamp
+    /// it to `0:00`, never producing a huge value from a negative-to-`u64` cast.
+    #[test]
+    fn clock_clamps_negative_to_zero() {
+        assert_eq!(format_clock(-1.0), "0:00");
+        assert_eq!(format_clock(-3600.0), "0:00", "even a large negative clamps, not wraps");
+    }
 }

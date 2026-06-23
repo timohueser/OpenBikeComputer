@@ -581,4 +581,106 @@ mod tests {
         assert_eq!(format_fix(&f).as_str(), "F 1 2 - -\n");
         assert_eq!(parse_line(format_fix(&f).as_str().trim_end()), Some(Msg::Fix(f)));
     }
+
+    /// Item 5 (`\r` / CRLF, `feed` ~183): `feed` treats `\r` and `\n` *both* as line
+    /// terminators, but every existing feed test uses only `\n`. A refactor that checked
+    /// only `b == b'\n'` would pass them all yet break a host on CRLF. Feed a bare `\r`
+    /// and a full `\r\n` and prove each line still dispatches exactly once (the `\n` after
+    /// a `\r` lands on an already-reset empty buffer, so no phantom blank line).
+    #[test]
+    fn line_reader_treats_cr_and_crlf_as_terminators() {
+        let mut r = LineReader::new();
+        let mut got = heapless::Vec::<Msg, 8>::new();
+        // A `\r`-terminated line, then a `\r\n`-terminated one (CRLF), then a lone `\n`.
+        r.feed(b"A 1\rC 2\r\nZ 3\n", |m| got.push(m).unwrap());
+        assert_eq!(
+            got.as_slice(),
+            &[Msg::Alt(1.0), Msg::Compass(2.0), Msg::Zoom(3.0)],
+            "bare CR, CRLF, and LF each terminate exactly one line (CRLF emits no blank)"
+        );
+    }
+
+    /// Item 6 (blank-line guard, `feed` ~184 `self.len > 0`): empty lines from the wire
+    /// (a stray `\n`, or a CRLF's `\n` after the `\r` already flushed) must be skipped at
+    /// the `LineReader` level, not handed to `parse_line`. Only bare `parse_line("")` is
+    /// tested elsewhere; this proves the reader's guard so blank lines never even reach the
+    /// parser and produce no spurious `Msg`.
+    #[test]
+    fn line_reader_skips_blank_lines() {
+        let mut r = LineReader::new();
+        let mut got = heapless::Vec::<Msg, 8>::new();
+        // Leading blanks, blank between, trailing blanks — only the two real lines dispatch.
+        r.feed(b"\n\nA 5\n\n\nC 9\n\n", |m| got.push(m).unwrap());
+        assert_eq!(got.as_slice(), &[Msg::Alt(5.0), Msg::Compass(9.0)], "blank lines produce no Msg");
+    }
+
+    /// Item 7 (i32 extremes through format→parse, the worst case the 48-byte cap is sized
+    /// for, ~129): `parse_line` parses `i32::MIN`/`i32::MAX` and a mid value round-trips,
+    /// but the *extreme* lat/lon has never gone format→parse. `F -2147483648 2147483647`
+    /// is the widest fix line; this proves `format_fix` emits it within the cap (no
+    /// truncation) and `parse_line` reads the exact extremes back.
+    #[test]
+    fn format_fix_round_trips_i32_extremes() {
+        let f = Fix { lat: i32::MIN, lon: i32::MAX, course: None, speed_mps: None };
+        assert_eq!(format_fix(&f).as_str(), "F -2147483648 2147483647 - -\n", "widest fix fits the 48-byte cap");
+        assert_eq!(
+            parse_line(format_fix(&f).as_str().trim_end()),
+            Some(Msg::Fix(f)),
+            "extremes survive the round-trip"
+        );
+    }
+
+    /// Item 8 (lod u8 overflow, `parse_telemetry` ~285): `lod` is parsed as `u8`, so a
+    /// line whose `lod` field exceeds 255 must make the whole parse fail (`None`), not
+    /// wrap or truncate. A value of 999 in the lod slot is the guard — every other field
+    /// is valid, so only the u8 overflow can reject the line.
+    #[test]
+    fn parse_telemetry_rejects_lod_above_u8() {
+        // Valid T line shape, but lod = 999 (> u8::MAX) — the u8 parse fails the line.
+        assert_eq!(
+            parse_telemetry("T 41000 999 312 480 0 9 27 3 3 12288 20000 8000 500 19000 1500 500"),
+            None,
+            "lod > 255 overflows the u8 field and rejects the line"
+        );
+        // Sanity: the same line with lod = 5 parses, isolating the overflow as the cause.
+        assert!(
+            parse_telemetry("T 41000 5 312 480 0 9 27 3 3 12288 20000 8000 500 19000 1500 500").is_some(),
+            "identical line with an in-range lod parses"
+        );
+    }
+
+    /// Item 9 (LINE_MAX boundary, `feed` ~195 `self.len < LINE_MAX`): a line that *fills*
+    /// the 64-byte buffer exactly (64 chars, no newline yet) must NOT trip overflow — the
+    /// boundary is `< LINE_MAX` for accepting a byte, `else` overflow only on the 65th.
+    /// Only a 200-char overrun is tested elsewhere; this pins the exact-fit edge so a line
+    /// padded to precisely LINE_MAX still parses when its newline arrives.
+    #[test]
+    fn line_reader_accepts_a_line_filling_the_buffer_exactly() {
+        // `Z 1` plus enough trailing spaces to total exactly LINE_MAX=64 bytes. Trailing
+        // whitespace is ignored by `split_ascii_whitespace`, so it parses as `Zoom(1.0)`.
+        let mut line = heapless::String::<64>::new();
+        line.push_str("Z 1").unwrap();
+        while line.len() < LINE_MAX {
+            line.push(' ').unwrap();
+        }
+        assert_eq!(line.len(), LINE_MAX, "line is exactly LINE_MAX bytes");
+
+        let mut r = LineReader::new();
+        let mut got = heapless::Vec::<Msg, 4>::new();
+        r.feed(line.as_bytes(), |m| got.push(m).unwrap()); // fills buffer to the brim, no overflow
+        r.feed(b"\n", |m| got.push(m).unwrap()); // newline flushes the full-but-not-overflowed line
+        assert_eq!(got.as_slice(), &[Msg::Zoom(1.0)], "a line filling the buffer exactly is not dropped");
+
+        // One byte more before the newline *does* overflow and is dropped.
+        let mut over = heapless::String::<80>::new();
+        over.push_str("Z 1").unwrap();
+        while over.len() < LINE_MAX + 1 {
+            over.push(' ').unwrap();
+        }
+        let mut r2 = LineReader::new();
+        let mut got2 = heapless::Vec::<Msg, 4>::new();
+        r2.feed(over.as_bytes(), |m| got2.push(m).unwrap());
+        r2.feed(b"\n", |m| got2.push(m).unwrap());
+        assert!(got2.is_empty(), "LINE_MAX + 1 bytes overflows and the line is dropped");
+    }
 }

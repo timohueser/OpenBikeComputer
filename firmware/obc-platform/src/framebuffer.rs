@@ -269,6 +269,24 @@ mod tests {
         assert_eq!(at(3, 3), 0x001F); // last in-bounds pixel
     }
 
+    /// Item 10 (negative top-left clip, `fill_solid` ~184 `area.intersection`): existing
+    /// tests only overrun the right/bottom edge; a rectangle whose top-left is *negative*
+    /// must be clipped by the intersection so the fill starts at (0,0), never indexing the
+    /// buffer with a negative `x0`/`y0`. A rect at (-2,-2) sized 4×4 covers only (0,0)..(1,1).
+    #[test]
+    fn fill_solid_clips_a_negative_top_left() {
+        let mut buf = [0u16; 4 * 4];
+        {
+            let mut fb = fb(&mut buf, 4, 4);
+            fb.fill_solid(&Rectangle::new(Point::new(-2, -2), Size::new(4, 4)), Rgb565::from(RawU16::new(0x001F)))
+                .unwrap();
+        }
+        let at = |x: usize, y: usize| buf[y * 4 + x];
+        assert_eq!(at(0, 0), 0x001F); // clipped origin fills
+        assert_eq!(at(1, 1), 0x001F); // last covered pixel (rect reaches x=y=1)
+        assert_eq!(at(2, 2), 0x0000); // beyond the clipped rect: untouched
+    }
+
     #[test]
     #[should_panic]
     fn too_small_buffer_panics() {
@@ -338,6 +356,23 @@ mod tests {
         assert_eq!(at(1, 1), 0x0000); // untouched → still transparent
         assert_eq!(at(2, 2), 0xF00F); // opaque blue
         assert_eq!(at(3, 3), 0xF00F); // last in-bounds pixel
+    }
+
+    /// Item 10 on the overlay plane: a negative top-left must clip the same way (the
+    /// intersection clamps to the bounding box) and pack the clipped fill opaque, never
+    /// indexing the buffer with a negative coordinate.
+    #[test]
+    fn overlay_fill_solid_clips_a_negative_top_left() {
+        let mut buf = [0x0000u16; 4 * 4]; // transparent start
+        {
+            let mut fb = ovl(&mut buf, 4, 4);
+            fb.fill_solid(&Rectangle::new(Point::new(-2, -2), Size::new(4, 4)), Rgb565::from(RawU16::new(0x001F)))
+                .unwrap();
+        }
+        let at = |x: usize, y: usize| buf[y * 4 + x];
+        assert_eq!(at(0, 0), 0xF00F); // clipped origin, opaque blue
+        assert_eq!(at(1, 1), 0xF00F); // last covered pixel
+        assert_eq!(at(2, 2), 0x0000); // beyond the rect: still transparent
     }
 
     #[test]
