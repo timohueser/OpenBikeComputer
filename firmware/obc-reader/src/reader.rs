@@ -55,8 +55,15 @@ const CACHE_SLOT_BYTES: usize = 4096;
 /// Geometry-chunk cache slots (each [`CACHE_SLOT_BYTES`]). The renderer makes four priority
 /// passes over the same visible-chunk set per frame; sizing the cache to hold a riding-zoom
 /// viewport's chunks turns passes 2–4 into cache hits instead of re-reads from SD, and a wider
-/// pan into a partial hit. ≈64 KB at the default; the knob to trade RAM for hit rate.
-const MAP_CHUNK_SLOTS: usize = 16;
+/// pan into a partial hit. ≈256 KB at the default; the knob to trade RAM for hit rate.
+///
+/// Sized to the **visible-chunk count**, not just 16: a thrash sets in the moment a frame's
+/// working set exceeds the slot count, because each of the four passes then re-reads every chunk
+/// (LRU can't hold a pass's set) → `miss ≈ chunks × 4` and SD I/O dominates the frame (issue #98).
+/// The worst zooms (LOD1, ~3–4 m/px) put up to ~50 chunks in view, so 64 slots keep the whole
+/// working set resident across all four passes *and* across frames (a slow camera pan re-hits the
+/// previous frame's chunks). 64 × 4 KB = 256 KB of the device's 8 MB SDRAM.
+const MAP_CHUNK_SLOTS: usize = 64;
 
 /// Block size + count of the quadtree-index cache. The leaf walk reads 4-byte nodes (siblings
 /// adjacent in the file); caching a few aligned blocks coalesces those into a handful of SD
@@ -825,7 +832,7 @@ struct IndexBlock {
 /// quadtree-node reads, with the streaming counters. Caller-owned and reusable across frames —
 /// the device places one in SDRAM for the whole session and rebuilds the small [`Reader`] each
 /// frame against it (so a chunk read one frame can hit the next), while the host just makes one
-/// per render. ≈84 KB, dominated by the slots + the decode scratch; tune the slot count /
+/// per render. ≈277 KB, dominated by the slots + the decode scratch; tune the slot count /
 /// `CACHE_SLOT_BYTES` against the on-device RAM budget.
 ///
 /// Wraps its mutable state in a `RefCell` so a [`Reader`] can borrow it (`&MapCache`) yet read
@@ -842,7 +849,7 @@ impl Default for MapCache {
 }
 
 impl MapCache {
-    /// A fresh, empty cache. ≈84 KB of zeroed buffers — on the device, place it once in SDRAM
+    /// A fresh, empty cache. ≈277 KB of zeroed buffers — on the device, place it once in SDRAM
     /// (e.g. `ptr::write`, like the `App`) so it stays off the 192 KB main stack.
     pub fn new() -> Self {
         MapCache { inner: RefCell::new(MapCacheInner::new()) }
@@ -1084,11 +1091,13 @@ mod tests {
     #[test]
     fn partial_read_failure_does_not_poison_evicted_slot() {
         const LEN: usize = 64;
-        let mut data = [0u8; 4096];
+        // One LEN-chunk per slot, plus one more past them for the failing eviction read — sized off
+        // MAP_CHUNK_SLOTS so the test tracks the cache size rather than a hard-coded buffer length.
+        let mut data = [0u8; (MAP_CHUNK_SLOTS + 1) * LEN];
         for (k, b) in data.iter_mut().enumerate() {
             *b = (k as u8).wrapping_mul(31).wrapping_add(7); // distinct, offset-derived bytes
         }
-        // The eviction read (K_new) lives past the 16 primed chunks and fails partway.
+        // The eviction read (K_new) lives past the primed chunks (one per slot) and fails partway.
         let fail_at = (MAP_CHUNK_SLOTS as u32) * LEN as u32;
         let src = FlakySource { data: &data, fail_at, partial: 8 };
 
