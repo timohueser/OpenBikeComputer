@@ -519,7 +519,7 @@ The fill leans on one `DrawTarget` primitive: a fast clipped horizontal-rectangl
 Lines are where a naïve approach gets expensive. A loaded route or a long road is mostly *off-screen* at riding zoom, and a thick-line rasteriser that walks the whole polyline pays for every off-screen pixel. The renderer's line path is built to never pay for what it can't see.
 
 <figure class="fig">
-<svg viewBox="0 0 720 300" role="img" aria-label="On the left, a long route crosses a small viewport; only the visible portion is stroked while the off-screen majority costs nothing. On the right, a thick line's bevelled joints are smoothed by filling a disc at each vertex.">
+<svg viewBox="0 0 720 300" role="img" aria-label="On the left, a long route crosses a small viewport; only the visible portion is stroked while the off-screen majority costs nothing. On the right, a thick line drawn as a chain of filled rectangles leaves a notch at each joint, smoothed by filling a disc at the run ends and at the vertices where the line bends sharply.">
   <text class="d-tag" x="20" y="24">Clip to the view, then smooth the joints</text>
 
   <!-- LEFT: clip -->
@@ -535,19 +535,21 @@ Lines are where a naïve approach gets expensive. A loaded route or a long road 
   <text class="d-sub" x="44" y="262" style="font-size:11px">only the clipped part is stroked</text>
 
   <!-- RIGHT: joints -->
-  <text class="d-sub" x="430" y="66">bevel (beading)</text>
+  <text class="d-sub" x="430" y="66">butt-jointed rects (notch)</text>
   <polyline points="420,110 470,140 520,104 560,150" fill="none" stroke="#4f6b43" stroke-width="12" stroke-linejoin="bevel" stroke-linecap="butt" />
-  <text class="d-sub" x="430" y="196">+ round discs at joints</text>
+  <text class="d-sub" x="430" y="196">+ round-join / cap discs</text>
   <polyline points="420,224 470,254 520,218 560,264" fill="none" stroke="#4f6b43" stroke-width="12" stroke-linejoin="bevel" stroke-linecap="butt" />
   <g fill="#3c6b39"><circle cx="420" cy="224" r="6"/><circle cx="470" cy="254" r="6"/><circle cx="520" cy="218" r="6"/><circle cx="560" cy="264" r="6"/></g>
-  <text class="d-sub" x="600" y="244" style="font-size:11px">a disc (⌀ = width)</text>
-  <text class="d-sub" x="600" y="260" style="font-size:11px">at each vertex →</text>
+  <text class="d-sub" x="600" y="244" style="font-size:11px">a disc (⌀ = width) at</text>
+  <text class="d-sub" x="600" y="260" style="font-size:11px">corners + run ends →</text>
   <text class="d-sub" x="600" y="276" style="font-size:11px">smooth arc, no gaps</text>
 </svg>
 <figcaption>Each segment is clipped to the view (grown by the stroke's half-width so edge-hugging lines keep full thickness) <i>before</i> it's drawn, so the stroker only ever touches on-screen pixels. The points are also deduplicated in screen space at a subpixel tolerance — folding away the integer-projection staircase — so a dense line hands the stroker far fewer segments without ever shifting a visible pixel.</figcaption>
 </figure>
 
-Thick lines get one more touch. The underlying stroker joins segments with flat bevels, so a tightly-sampled curve renders as a fan of facets — a scalloped "beading." Filling a small disc the width of the stroke at every vertex turns each joint into a smooth arc, and the disc at a shared chunk-seam vertex also closes the tiny gap between two adjacent line features. This only kicks in above 2 px, where faceting would actually show.
+A **1 px** line is stroked by embedded-graphics directly — a thin Bresenham line it draws cheaply, and the one width the span fill below can't (a zero-width rectangle has no scanline crossings). **Everything else** — width-2 roads on up, plus the route and breadcrumb — takes a different path, because a per-pixel thick-line rasteriser is exactly the trap above: it *generates* every pixel of the stroke one at a time, and that generation, not the writes, was measured to dominate the overlay (and to run ~10× a span stroke even at 2 px, the narrowest thick width). So those strokes go through the **same scanline span fill as the polygons**: each segment becomes a rectangle (the segment swept ±half-width along its perpendicular), filled row-by-row as one `fill_solid` span apiece. No per-pixel plotting; the whole overlay rides the coalesced row blit.
+
+Two filled rectangles butt-joined at a vertex leave a small notch on the outside of a bend and don't round the line's ends, so a disc the width of the stroke is filled (also as spans) to smooth each joint and cap. The disc is the overlay's biggest remaining cost, so it's spent only where it shows: at the two **run ends** (which round the cap and close the gap to the next feature at a chunk seam) and at interior vertices where the line **bends sharply**. The uncovered notch at a turn of `θ` off straight is only about `r·sin(θ/2)` deep (`r` = half the stroke width), so a gentle bend leaves a sub-pixel notch and needs no disc at all.
 
 ## 7 · The overlays
 
@@ -558,7 +560,7 @@ The map underneath is the base; everything that moves with *you* is drawn on top
 3. **Marker** — a course-pointing chevron (or a stationary diamond) at your fix, a fixed screen size, culled when off-view.
 4. **HUD chrome** — the off-route readout and pan-mode indicators.
 
-Each is just another polyline through the stroker or a triangle through the polygon fill — the same two rasterisers, reused.
+Each is just another polyline through the stroker or a triangle through the polygon fill — and since a thick stroke is itself rectangles and discs filled as spans, nearly everything on screen comes down to the one scanline span fill, reused.
 
 ## Zero allocation, by budget
 
