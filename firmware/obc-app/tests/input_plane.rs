@@ -117,3 +117,28 @@ fn standalone_input_plane_recognizes_the_same_gestures_as_handle_input() {
     plane.recognize(InputClock(620), &mut keys(&[turn(3), up(Button::Encoder)]), |g| got.push(g));
     assert_eq!(got, vec![Gesture::Turn(3)], "turn fires immediately; the post-hold release is silent");
 }
+
+/// In-frame ordering within one poll batch (issue #93 item 7). `recognize` drains the whole
+/// frame's input in a `while let` loop (input_plane.rs ~92), emitting one gesture per event **in
+/// arrival order**. The existing two-button tests run across frames; this pins that several events
+/// queued in a *single* poll — multiple turn detents plus a press-and-release — all surface, in
+/// order, from one `recognize` call. A regression that stopped after the first event would drop
+/// the rest of a fast burst.
+#[test]
+fn multiple_events_in_one_poll_all_fire_in_order() {
+    let mut plane = InputPlane::new();
+    let mut got: Vec<Gesture> = Vec::new();
+
+    // One frame's worth: two zoom detents, a reverse detent, then a quick encoder tap
+    // (down+up under the hold threshold → a single `Press`), all in one poll batch.
+    plane.recognize(
+        InputClock(1000),
+        &mut keys(&[turn(1), turn(2), turn(-1), down(Button::Encoder), up(Button::Encoder)]),
+        |g| got.push(g),
+    );
+    assert_eq!(
+        got,
+        vec![Gesture::Turn(1), Gesture::Turn(2), Gesture::Turn(-1), Gesture::Press],
+        "every queued event surfaces once, in arrival order, from a single frame"
+    );
+}
