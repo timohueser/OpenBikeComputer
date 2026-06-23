@@ -887,6 +887,15 @@ mod tests {
         }
     }
 
+    /// An altimeter that yields one altitude sample then runs dry (so a single `tick`
+    /// integrates exactly one barometric reading, matching the once-per-tick contract).
+    struct OneAlt(Option<f32>);
+    impl crate::hal::AltimeterSource for OneAlt {
+        fn poll(&mut self) -> Option<f32> {
+            self.0.take()
+        }
+    }
+
     fn moving(course: f32) -> Fix {
         Fix { lat: 0, lon: 0, course: Some(course), speed_mps: Some(5.0) }
     }
@@ -995,5 +1004,54 @@ mod tests {
         assert_eq!(placed.stack.len(), reference.stack.len());
         assert_eq!(placed.stack.len(), 1);
         assert!(matches!(placed.stack[0], Screen::Home(_)), "Home is the stack root");
+    }
+
+    // --- end-to-end barometric climb through `tick` (issue #93 item 1) ---
+
+    /// Feed one altitude sample through `App::tick`'s `Sensors.altimeter` arm (app.rs ~513). No
+    /// previous test ever attached an altimeter, so the wiring from `tick` → `record_altitude` →
+    /// `climb_m` was untested end-to-end. This walks a real climb in tick-sized steps and reads
+    /// the `climbed` stat through the public `App`, proving the barometer actually drives it.
+    fn tick_alt(app: &mut App, alt_m: f32, now_ms: u32) {
+        let mut loc = OneFix(None); // no fix this tick — isolate the altimeter path
+        let mut alt = OneAlt(Some(alt_m));
+        app.tick(
+            RideClock(now_ms),
+            Sensors { loc: &mut loc, altimeter: Some(&mut alt), compass: None, track: None },
+            None,
+        );
+    }
+
+    #[test]
+    fn tick_integrates_barometric_climb_dead_banded() {
+        let mut app = App::new(AppState::new(0, 0, 1.0)); // boots Riding
+        tick_alt(&mut app, 100.0, 1000); // anchor
+        assert_eq!(app.activity.climb_m(), 0.0, "the first sample only anchors");
+        tick_alt(&mut app, 102.0, 2000); // +2 m: inside the dead-band
+        assert_eq!(app.activity.climb_m(), 0.0, "sub-dead-band noise books nothing through tick");
+        tick_alt(&mut app, 110.0, 3000); // +10 m from the 100 m reference
+        assert_eq!(app.activity.climb_m(), 10.0, "a clean climb books through the full tick path");
+    }
+
+    /// The pause rule end-to-end: with the activity paused (the Ride-control state), `tick` still
+    /// records the latest altitude but must not book climb across the rest — so a barometer drift
+    /// while stopped doesn't inflate `climbed` when riding resumes. Mirrors the unit test in
+    /// `activity.rs`, but proves the *whole tick path* honours the mode gate (app.rs ~513-516).
+    #[test]
+    fn tick_does_not_book_climb_while_paused() {
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        tick_alt(&mut app, 100.0, 1000); // anchor while riding
+        tick_alt(&mut app, 110.0, 2000); // +10 m climbed
+        assert_eq!(app.activity.climb_m(), 10.0);
+
+        app.activity.mode = Mode::Paused; // as a `press` → Ride control would set it
+        tick_alt(&mut app, 160.0, 3000); // +50 m of drift during the stop
+        tick_alt(&mut app, 160.0, 4000);
+        assert_eq!(app.activity.climb_m(), 10.0, "no climb accrues across a paused tick");
+
+        app.activity.mode = Mode::Riding; // resume
+        tick_alt(&mut app, 160.0, 5000); // re-anchors at the current height
+        tick_alt(&mut app, 165.0, 6000); // a real +5 m after resuming
+        assert_eq!(app.activity.climb_m(), 15.0, "only genuine post-resume climb adds through tick");
     }
 }

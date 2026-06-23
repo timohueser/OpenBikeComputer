@@ -221,4 +221,22 @@ mod tests {
         // Back crosses next.
         assert_eq!(g.tick(600), Some(Gesture::BackHold));
     }
+
+    /// The in-frame rule the doc comment promises (input.rs ~112-113): `tick` emits **at most one**
+    /// gesture per call, so when *both* buttons cross the hold threshold in the same frame, only
+    /// the encoder's `Hold` fires now and the `BackHold` fires on the next `tick`. The existing
+    /// independence test crosses them on *different* frames; this pins the simultaneous case, where
+    /// dropping the `return` would silently swallow the second long-press. (Both pressed together is
+    /// a plausible fumble in a glove on the trail.)
+    #[test]
+    fn both_holds_crossing_one_frame_fire_one_then_the_other() {
+        let mut g = Gestures::new(500);
+        g.on_event(down(Button::Encoder), 0);
+        g.on_event(down(Button::Back), 0); // pressed in the very same frame
+                                           // Both are past 500 ms at t=500: only the encoder's Hold comes out this call.
+        assert_eq!(g.tick(500), Some(Gesture::Hold), "the encoder long-press wins the shared frame");
+        // The Back long-press wasn't lost — it fires on the next tick, even with no new input.
+        assert_eq!(g.tick(500), Some(Gesture::BackHold), "the other hold fires next frame, not dropped");
+        assert_eq!(g.tick(500), None, "and each long-press fires exactly once");
+    }
 }

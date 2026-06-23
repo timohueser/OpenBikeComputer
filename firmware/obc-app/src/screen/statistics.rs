@@ -509,4 +509,75 @@ mod tests {
         // …and springs back to live once IDLE_MS have elapsed past the wrap.
         assert_eq!(s.effective_cursor(t0.wrapping_add(IDLE_MS), LIVE), LIVE);
     }
+
+    // -----------------------------------------------------------------------
+    // Zoom-mode math + clamps (issue #93 item 5).
+    //
+    // `on_turn` in Zoom mode multiplies the zoom by `ZOOM_STEP` per detent and clamps to
+    // [MIN_ZOOM, MAX_ZOOM] (statistics.rs ~177-185). Only the spring-back exemption was
+    // covered before; the multiply loop and the saturating clamps were not. A regression that
+    // dropped the clamp would let the profile zoom to a degenerate window (or below 1× and
+    // invert), and one that used `+`/`pow` instead of the per-detent multiply would mis-scale.
+    // -----------------------------------------------------------------------
+
+    /// A helper screen frozen in Zoom mode at full zoom — the state `Hold` lands in.
+    fn zoom_screen() -> StatisticsScreen {
+        let mut s = StatisticsScreen::new();
+        s.cursor = Some(0.5); // a frozen centre (Hold sets this)
+        s.zoom = MIN_ZOOM; // zoom starts at full (1.0)
+        s.mode = Mode::Zoom;
+        s
+    }
+
+    /// One detent in Zoom mode multiplies the zoom by exactly `ZOOM_STEP`, and a second detent
+    /// multiplies again (so two detents = `ZOOM_STEP²`, not `2·ZOOM_STEP`). Pins the per-detent
+    /// geometric step the profile zoom shares with the Map.
+    #[test]
+    fn zoom_in_multiplies_per_detent() {
+        let mut s = zoom_screen();
+        s.on_turn(1, LIVE, 0);
+        assert!((s.zoom - ZOOM_STEP).abs() < 1e-5, "one detent is ×ZOOM_STEP, got {}", s.zoom);
+        s.on_turn(1, LIVE, 0);
+        assert!((s.zoom - ZOOM_STEP * ZOOM_STEP).abs() < 1e-4, "two detents compound, got {}", s.zoom);
+    }
+
+    /// A single multi-detent turn applies the multiply `|n|` times in one call (`ZOOM_STEP³` for
+    /// `Turn(3)`), matching three separate detents — the encoder can batch detents per frame.
+    #[test]
+    fn zoom_multi_detent_turn_compounds_in_one_call() {
+        let mut s = zoom_screen();
+        s.on_turn(3, LIVE, 0);
+        let expect = ZOOM_STEP * ZOOM_STEP * ZOOM_STEP;
+        assert!((s.zoom - expect).abs() < 1e-4, "Turn(3) compounds three steps, got {}", s.zoom);
+    }
+
+    /// Zooming out below full is clamped at `MIN_ZOOM` (1.0): a backward turn at full zoom can't
+    /// drive the zoom under 1× and invert the visible span. Pins the lower `clamp`.
+    #[test]
+    fn zoom_out_at_full_is_clamped_at_min() {
+        let mut s = zoom_screen(); // already at MIN_ZOOM
+        s.on_turn(-1, LIVE, 0);
+        assert_eq!(s.zoom, MIN_ZOOM, "can't zoom out past the whole route");
+        s.on_turn(-5, LIVE, 0);
+        assert_eq!(s.zoom, MIN_ZOOM, "a long backward flick saturates at full, not below");
+    }
+
+    /// A huge forward turn saturates at `MAX_ZOOM` (8.0) instead of running away. A `Turn(100)`
+    /// would otherwise multiply to a vast, meaningless zoom; the clamp pins it at the cap.
+    #[test]
+    fn zoom_in_saturates_at_max() {
+        let mut s = zoom_screen();
+        s.on_turn(100, LIVE, 0);
+        assert_eq!(s.zoom, MAX_ZOOM, "an enormous forward flick saturates at MAX_ZOOM, not beyond");
+    }
+
+    /// Cursor-mode turns never zoom: a turn while not in Zoom scrubs the cursor and forces the
+    /// zoom back to 1.0 (statistics.rs ~174). Guards that the zoom state can't leak in from a
+    /// scrub — the spring-back exemption test covers the *cursor*, this covers the *zoom* field.
+    #[test]
+    fn cursor_mode_turn_keeps_zoom_at_full() {
+        let mut s = StatisticsScreen::new(); // Cursor mode, zoom 1.0
+        s.on_turn(3, LIVE, 0);
+        assert_eq!(s.zoom, 1.0, "a scrub leaves the zoom at full");
+    }
 }
