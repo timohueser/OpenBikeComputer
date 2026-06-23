@@ -60,6 +60,8 @@ fn run() -> Result<(), String> {
     let args = parse_args()?;
     let config = Config::load(&args.config)?;
     let chunk_size = args.chunk_size.unwrap_or(config.chunk_size);
+    // Fail loud before any work if chunk_size would let a feature outgrow the reader's cap (#2).
+    obc_pack::serialize::validate_chunk_size(chunk_size)?;
 
     // --- Merge: >1 input ⇒ `osmium merge` + `osmium sort` to a temp, then ingest
     // that (the osmium CLI is battle-tested, so we shell out to it).
