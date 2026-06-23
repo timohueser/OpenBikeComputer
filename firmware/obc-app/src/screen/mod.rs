@@ -25,7 +25,7 @@ use obc_reader::Reader;
 use obc_render::{
     rect,
     text::{Font, TextAlign},
-    Canvas, MapRenderer, RenderStats,
+    Canvas, Clock, MapRenderer, RenderStats,
 };
 use obc_route::{Profile, RouteReader};
 
@@ -112,7 +112,7 @@ pub fn apply(stack: &mut Stack, t: Transition) {
 pub struct Ctx<'a> {
     /// The camera / orientation / last-fix state (a screen may zoom, pan, …).
     pub state: &'a mut AppState,
-    /// The ride mode + (later) tracking accumulators.
+    /// The ride mode + tracking accumulators.
     pub activity: &'a mut Activity,
     /// The route catalog (read-only) — the Route menu navigates it and centers the
     /// camera on the picked route's bbox from here, no I/O needed.
@@ -145,6 +145,12 @@ pub struct Render<'a, 'd> {
     pub h: f32,
     pub now_ms: u32,
     pub hold_progress: f32,
+    /// Microsecond clock for the map render's per-stage timing (collect / sort / draw), passed
+    /// straight to [`MapRenderer::render_timed`] by the Map screen. Hosts that don't profile pass
+    /// [`NoopClock`](obc_render::NoopClock) (via [`App::render_map`]); the device passes its
+    /// `Instant`-based clock (via [`App::render_map_timed`]). Part of the strippable
+    /// render-instrumentation seam.
+    pub clock: &'a dyn Clock,
 }
 
 /// The on-device screens. Each variant owns its typed state and forwards the
@@ -246,14 +252,8 @@ where
 
 /// [`title_frame`] with a `pos / total` list counter on the right — the chrome the
 /// Menu and Route menu share. The caller then draws its rows below [`LIST_TOP`].
-pub fn list_frame<D, F>(
-    cv: &mut Canvas<D, F>,
-    w: i32,
-    h: i32,
-    title: &str,
-    pos: usize,
-    total: usize,
-) where
+pub fn list_frame<D, F>(cv: &mut Canvas<D, F>, w: i32, h: i32, title: &str, pos: usize, total: usize)
+where
     D: DrawTarget,
     F: Fn(u16) -> D::Color,
 {
@@ -278,15 +278,8 @@ pub fn window_start(selected: usize, visible: usize, total: usize) -> usize {
 /// Draw a list scrollbar — a faint track with a proportional thumb — at the right
 /// edge, or nothing when everything fits. `top`/`height` is the windowed list
 /// area; `first` is [`window_start`]'s result.
-pub fn scrollbar<D, F>(
-    cv: &mut Canvas<D, F>,
-    x: i32,
-    top: i32,
-    height: i32,
-    total: usize,
-    first: usize,
-    visible: usize,
-) where
+pub fn scrollbar<D, F>(cv: &mut Canvas<D, F>, x: i32, top: i32, height: i32, total: usize, first: usize, visible: usize)
+where
     D: DrawTarget,
     F: Fn(u16) -> D::Color,
 {

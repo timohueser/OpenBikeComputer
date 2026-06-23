@@ -16,7 +16,9 @@
 //! All coordinates are integer microdegrees (1e-6 degrees), as stored in the
 //! file. Projection to screen space is the renderer's job.
 
-#![no_std]
+// `no_std` for every real target; the host test harness needs `std`, so allow it under `cfg(test)`
+// (the unit tests in `reader` exercise the chunk cache against a flaky `ByteSource`, issue #64).
+#![cfg_attr(not(test), no_std)]
 
 pub mod byte_io;
 pub mod codec;
@@ -30,8 +32,8 @@ pub use byte_io::{ByteSink, ByteSource, SliceSource};
 pub use color::rgb565_to_device64;
 pub use color::rgb565_to_rgb888;
 pub use reader::{
-    CacheStats, FeatureRef, Kind, Lod, MapCache, Reader, Style, HEADER_LEN, MAX_CHUNK_BYTES,
-    MAX_FEAT_PTS, MAX_FEAT_RINGS,
+    CacheStats, FeatureRef, Kind, Lod, MapCache, Reader, Style, HEADER_LEN, MAX_CHUNK_BYTES, MAX_FEAT_PTS,
+    MAX_FEAT_RINGS,
 };
 
 /// Meters of ground per degree of latitude (and of longitude at the equator) — the
@@ -39,8 +41,7 @@ pub use reader::{
 /// turns microdegree coordinates into ground distance (the route converter and its
 /// elevation profile, the packer's simplify tolerance) or into screen scale (the
 /// renderer's zoom ↔ meters-per-pixel): they all derive from this one number, so a
-/// refinement to the Earth model lands everywhere at once instead of in four places
-/// under three names.
+/// refinement to the Earth model lands everywhere at once.
 pub const M_PER_DEG: f64 = 111_320.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,9 +64,6 @@ pub struct BBox {
 impl BBox {
     #[inline]
     pub fn intersects(&self, o: &BBox) -> bool {
-        !(self.max_lon < o.min_lon
-            || self.min_lon > o.max_lon
-            || self.max_lat < o.min_lat
-            || self.min_lat > o.max_lat)
+        !(self.max_lon < o.min_lon || self.min_lon > o.max_lon || self.max_lat < o.min_lat || self.min_lat > o.max_lat)
     }
 }

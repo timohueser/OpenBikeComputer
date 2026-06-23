@@ -58,21 +58,14 @@ impl TrackStore {
     /// ticking. `action` is the drained one-shot, `session` the current id, `name` the active
     /// route's name (the save filename). Drains the action first (finalising / abandoning the
     /// *current* log), then opens a fresh log when the session id changes.
-    pub fn reconcile(
-        &mut self,
-        action: Option<TrackAction>,
-        session: Option<u32>,
-        name: Option<&str>,
-    ) {
+    pub fn reconcile(&mut self, action: Option<TrackAction>, session: Option<u32>, name: Option<&str>) {
         match action {
             Some(TrackAction::Save) => self.finalize(),
             Some(TrackAction::Discard) => self.abandon(),
             None => {}
         }
         match session {
-            Some(id) if self.open.as_ref().map(|o| o.id) != Some(id) => {
-                self.begin(id, name.unwrap_or("ride"))
-            }
+            Some(id) if self.open.as_ref().map(|o| o.id) != Some(id) => self.begin(id, name.unwrap_or("ride")),
             None => self.abandon(), // no session → ensure nothing is left open
             _ => {}                 // same session → keep appending
         }
@@ -135,20 +128,14 @@ impl TrackStore {
         if !first.exists() {
             return first;
         }
-        (2..=9999)
-            .map(|n| self.dir.join(format!("{stem} ({n}).gpx")))
-            .find(|p| !p.exists())
-            .unwrap_or(first)
+        (2..=9999).map(|n| self.dir.join(format!("{stem} ({n}).gpx"))).find(|p| !p.exists()).unwrap_or(first)
     }
 }
 
 /// Replace path separators / control chars so a route name is a safe filename stem.
 #[cfg(not(target_arch = "wasm32"))]
 fn sanitize(name: &str) -> String {
-    let s: String = name
-        .chars()
-        .map(|c| if c.is_control() || matches!(c, '/' | '\\') { '_' } else { c })
-        .collect();
+    let s: String = name.chars().map(|c| if c.is_control() || matches!(c, '/' | '\\') { '_' } else { c }).collect();
     let trimmed = s.trim();
     if trimmed.is_empty() {
         "ride".to_string()
@@ -170,7 +157,11 @@ impl ByteSink for VecSink {
     }
     fn patch_at(&mut self, off: u32, b: &[u8]) -> Result<(), Error> {
         let o = off as usize;
-        self.0[o..o + b.len()].copy_from_slice(b);
+        let end = o.checked_add(b.len()).ok_or(Error::BadOffset)?;
+        if end > self.0.len() {
+            return Err(Error::BadOffset);
+        }
+        self.0[o..end].copy_from_slice(b);
         Ok(())
     }
 }
@@ -195,12 +186,7 @@ impl TrackStore {
 
     /// Mirror the native reconcile's recording flag without touching a filesystem:
     /// a drained Save/Discard ends the ride, then a live session id (re)starts it.
-    pub fn reconcile(
-        &mut self,
-        action: Option<TrackAction>,
-        session: Option<u32>,
-        _name: Option<&str>,
-    ) {
+    pub fn reconcile(&mut self, action: Option<TrackAction>, session: Option<u32>, _name: Option<&str>) {
         if matches!(action, Some(TrackAction::Save) | Some(TrackAction::Discard)) {
             self.recording = false;
         }

@@ -50,14 +50,11 @@ const fn mono(data: &'static [u8], cell: (u32, u32), ascent: u32) -> MonoFont<'s
 }
 
 /// Terminus 12×24 bold — cap 15 px (≈ 2.0 mm). The `Label` tier.
-pub static TER_U24B: MonoFont =
-    mono(include_bytes!("../fonts/terminus/ter_u24b.raw"), (12, 24), 19);
+pub static TER_U24B: MonoFont = mono(include_bytes!("../fonts/terminus/ter_u24b.raw"), (12, 24), 19);
 
 /// Terminus 14×28 bold — cap 18 px (≈ 2.44 mm). The `Body` tier.
-pub static TER_U28B: MonoFont =
-    mono(include_bytes!("../fonts/terminus/ter_u28b.raw"), (14, 28), 22);
+pub static TER_U28B: MonoFont = mono(include_bytes!("../fonts/terminus/ter_u28b.raw"), (14, 28), 22);
 
 /// Terminus 16×32 bold — cap 20 px (≈ 2.71 mm). The `Display` tier (big numbers); the
 /// largest native Terminus cut.
-pub static TER_U32B: MonoFont =
-    mono(include_bytes!("../fonts/terminus/ter_u32b.raw"), (16, 32), 26);
+pub static TER_U32B: MonoFont = mono(include_bytes!("../fonts/terminus/ter_u32b.raw"), (16, 32), 26);

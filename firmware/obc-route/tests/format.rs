@@ -5,10 +5,29 @@
 //! Building the bytes here (rather than via the converter) pins the reader to the
 //! spec independently: if either drifts, these break.
 
+use core::cell::Cell;
+
 use obc_route::{
-    Error, RouteIndex, RoutePoint, RouteReader, RouteSummary, SliceSource, CHUNK_META_LEN,
+    ByteSource, Error, RouteCache, RouteIndex, RoutePoint, RouteReader, RouteSummary, SliceSource, CHUNK_META_LEN,
     HEADER_LEN, MAX_POINTS_PER_CHUNK,
 };
+
+/// A [`ByteSource`] that wraps a [`SliceSource`] and counts `read_at` calls, so a test can prove
+/// the [`RouteCache`] really skips the source on a hit.
+struct CountingSource<'a> {
+    inner: SliceSource<'a>,
+    reads: Cell<u32>,
+}
+
+impl ByteSource for CountingSource<'_> {
+    fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), Error> {
+        self.reads.set(self.reads.get() + 1);
+        self.inner.read_at(offset, buf)
+    }
+    fn len(&self) -> u32 {
+        self.inner.len()
+    }
+}
 
 /// A chunk to encode: its absolute points (lon, lat, ele) plus the cumulative stats
 /// at its first point.
@@ -33,8 +52,7 @@ fn build_route(
     let max_lon = all().map(|p| p.0).max().unwrap();
     let max_lat = all().map(|p| p.1).max().unwrap();
     // Distinct points: seams (each chunk's first == previous chunk's last) count once.
-    let distinct: usize =
-        chunks.iter().map(|c| c.points.len()).sum::<usize>() - chunks.len().saturating_sub(1);
+    let distinct: usize = chunks.iter().map(|c| c.points.len()).sum::<usize>() - chunks.len().saturating_sub(1);
 
     let index_offset = HEADER_LEN;
     let data_offset = index_offset + chunks.len() * CHUNK_META_LEN;
@@ -45,10 +63,8 @@ fn build_route(
     for ch in chunks {
         let p = &ch.points;
         let anchor = p[0];
-        let (cmin_lon, cmin_lat) =
-            (p.iter().map(|q| q.0).min().unwrap(), p.iter().map(|q| q.1).min().unwrap());
-        let (cmax_lon, cmax_lat) =
-            (p.iter().map(|q| q.0).max().unwrap(), p.iter().map(|q| q.1).max().unwrap());
+        let (cmin_lon, cmin_lat) = (p.iter().map(|q| q.0).min().unwrap(), p.iter().map(|q| q.1).min().unwrap());
+        let (cmax_lon, cmax_lat) = (p.iter().map(|q| q.0).max().unwrap(), p.iter().map(|q| q.1).max().unwrap());
 
         let mut body: Vec<u8> = Vec::new();
         for w in p.windows(2) {
@@ -117,11 +133,7 @@ fn two_chunk_route() -> Vec<u8> {
         (12_340, 678, 540),
         (200, 240),
         &[
-            ChunkIn {
-                points: vec![(10, 10, 200), (20, 25, 205), (40, 40, 210)],
-                cum_distance_m: 0,
-                cum_ascent_m: 0,
-            },
+            ChunkIn { points: vec![(10, 10, 200), (20, 25, 205), (40, 40, 210)], cum_distance_m: 0, cum_ascent_m: 0 },
             ChunkIn {
                 points: vec![(40, 40, 210), (60, 30, 230), (90, 70, 225)],
                 cum_distance_m: 6000,
@@ -168,6 +180,45 @@ fn header_and_summary() {
     assert_eq!(s2.name, "Black Forest");
     assert_eq!(s2.distance_km, 12);
     assert_eq!(s2.bbox.max_lon, 90);
+}
+
+#[test]
+fn route_cache_serves_repeats_without_re_reading() {
+    let bytes = two_chunk_route();
+    // The index is parsed from its own source so its header/meta reads don't skew the geometry
+    // read count we're asserting on.
+    let idx_src = SliceSource(&bytes);
+    let ridx = RouteIndex::read(&idx_src).unwrap();
+
+    let src = CountingSource { inner: SliceSource(&bytes), reads: Cell::new(0) };
+    let cache = RouteCache::new();
+    let r = RouteReader::new_cached(&ridx, &src, &cache);
+
+    // First decode of each chunk is a miss → exactly one geometry read each.
+    let a0 = decode(&r, 0);
+    let a1 = decode(&r, 1);
+    assert_eq!(src.reads.get(), 2);
+    assert_eq!(cache.stats(), (0, 2));
+
+    // Re-decoding the same chunks is served from the cache — no further source reads.
+    let b0 = decode(&r, 0);
+    let b1 = decode(&r, 1);
+    assert_eq!(src.reads.get(), 2, "a cache hit must not touch the source");
+    assert_eq!(cache.stats(), (2, 2));
+    assert_eq!(a0, b0);
+    assert_eq!(a1, b1);
+
+    // The cached bytes are exactly what the uncached decoder produces.
+    let plain = RouteReader::new(&ridx, &idx_src);
+    assert_eq!(decode(&plain, 0), a0);
+    assert_eq!(decode(&plain, 1), a1);
+
+    // After a clear (a route switch), the chunk misses and is re-read.
+    cache.clear();
+    assert_eq!(cache.stats(), (0, 0));
+    let _ = decode(&r, 0);
+    assert_eq!(src.reads.get(), 3, "after clear the chunk is re-read");
+    assert_eq!(cache.stats(), (0, 1));
 }
 
 #[test]

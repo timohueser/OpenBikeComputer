@@ -2,6 +2,7 @@
 name = "obc-app"
 version = "0.1.0"
 edition = "2021"
+publish = false  # internal firmware crate — not published to crates.io
 description = "OBC device application + hardware-abstraction traits (no_std) — shared by the desktop simulator and the nRF54L firmware"
 
 [dependencies]

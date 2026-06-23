@@ -1,5 +1,5 @@
-//! `obcm_diff` — compare two `.obcm` files. Parses both with the *same*
-//! `obc-reader` the device uses and reports:
+//! `obcm_diff` — compare two `.obcm` files. Parses both with the same `obc-reader`
+//! the device uses and reports:
 //!   1. structural diffs — version, bbox, marker, style table, per-LOD
 //!      node/chunk counts, chunk size, max_mpp;
 //!   2. feature-multiset diffs per LOD — decodes every chunk and compares the
@@ -7,8 +7,7 @@
 //!      allowed to differ.
 //!
 //! Exits non-zero on any difference. `a` is the reference, `b` the candidate:
-//! "only in A" means *missing from B*, "only in B" means *extra in B*. Handy for
-//! checking whether a packer change altered the output.
+//! "only in A" means missing from B, "only in B" means extra in B.
 //!
 //! Usage: `obcm_diff <a.obcm> <b.obcm> [--max-examples N]`
 
@@ -20,12 +19,12 @@ use obc_reader::{BBox, Kind, MapCache, Reader, SliceSource, Style, MAX_FEAT_PTS,
 /// Canonical, hashable identity of a decoded feature (geometry in microdegrees).
 type FeatureKey = (u8, bool, Vec<(i32, i32)>, Vec<Vec<(i32, i32)>>);
 
-/// Canonical form of a closed ring, invariant to **start vertex + winding**:
-/// strip the closing duplicate, then take the lexicographically-smallest sequence
-/// over all rotations of the ring and its reversal. Used by `--canonical-polys`
-/// so that geometrically-identical closed-way polygons encoded with a different
-/// ring start/direction compare equal. Lines are never canonicalized (their vertex
-/// order is meaningful and matches both sides exactly).
+/// Canonical form of a closed ring, invariant to start vertex + winding: strip the
+/// closing duplicate, then take the lexicographically-smallest sequence over all
+/// rotations of the ring and its reversal. Used by `--canonical-polys` so that
+/// geometrically-identical closed-way polygons encoded with a different ring
+/// start/direction compare equal. Lines are never canonicalized (their vertex order
+/// is meaningful and matches both sides exactly).
 fn canon_ring(ring: &[(i32, i32)]) -> Vec<(i32, i32)> {
     let mut pts = ring.to_vec();
     if pts.len() >= 2 && pts.first() == pts.last() {
@@ -37,13 +36,11 @@ fn canon_ring(ring: &[(i32, i32)]) -> Vec<(i32, i32)> {
     }
     let mut best: Option<Vec<(i32, i32)>> = None;
     for reversed in [false, true] {
-        let seq: Vec<(i32, i32)> =
-            if reversed { pts.iter().rev().copied().collect() } else { pts.clone() };
+        let seq: Vec<(i32, i32)> = if reversed { pts.iter().rev().copied().collect() } else { pts.clone() };
         let min_pt = *seq.iter().min().unwrap();
         for i in 0..n {
             if seq[i] == min_pt {
-                let cand: Vec<(i32, i32)> =
-                    seq[i..].iter().chain(seq[..i].iter()).copied().collect();
+                let cand: Vec<(i32, i32)> = seq[i..].iter().chain(seq[..i].iter()).copied().collect();
                 if best.as_ref().is_none_or(|b| cand < *b) {
                     best = Some(cand);
                 }
@@ -147,12 +144,7 @@ fn main() -> ExitCode {
     }
     check!(ra.version == rb.version, "version a={} b={}", ra.version, rb.version);
     check!(ra.bbox == rb.bbox, "bbox a={:?} b={:?}", ra.bbox, rb.bbox);
-    check!(
-        ra.marker_color == rb.marker_color,
-        "marker a={:#06x} b={:#06x}",
-        ra.marker_color,
-        rb.marker_color
-    );
+    check!(ra.marker_color == rb.marker_color, "marker a={:#06x} b={:#06x}", ra.marker_color, rb.marker_color);
 
     // Style table (compare all 256 slots).
     for id in 0u16..=255 {
@@ -168,27 +160,11 @@ fn main() -> ExitCode {
     let n = la.len().min(lb.len());
     for i in 0..n {
         let (x, y) = (&la[i], &lb[i]);
-        let mpp_eq =
-            (x.max_mpp == y.max_mpp) || (x.max_mpp.is_infinite() && y.max_mpp.is_infinite());
+        let mpp_eq = (x.max_mpp == y.max_mpp) || (x.max_mpp.is_infinite() && y.max_mpp.is_infinite());
         check!(mpp_eq, "lod[{i}].max_mpp a={} b={}", x.max_mpp, y.max_mpp);
-        check!(
-            x.node_count == y.node_count,
-            "lod[{i}].node_count a={} b={}",
-            x.node_count,
-            y.node_count
-        );
-        check!(
-            x.chunk_count == y.chunk_count,
-            "lod[{i}].chunk_count a={} b={}",
-            x.chunk_count,
-            y.chunk_count
-        );
-        check!(
-            x.chunk_size == y.chunk_size,
-            "lod[{i}].chunk_size a={} b={}",
-            x.chunk_size,
-            y.chunk_size
-        );
+        check!(x.node_count == y.node_count, "lod[{i}].node_count a={} b={}", x.node_count, y.node_count);
+        check!(x.chunk_count == y.chunk_count, "lod[{i}].chunk_count a={} b={}", x.chunk_count, y.chunk_count);
+        check!(x.chunk_size == y.chunk_size, "lod[{i}].chunk_size a={} b={}", x.chunk_size, y.chunk_size);
     }
 
     // Structural diffs are the hard failures; multiset diffs are reported with a
@@ -200,10 +176,7 @@ fn main() -> ExitCode {
     let mut poly_diffs = 0usize;
     let mut lod_poly_diffs: Vec<usize> = Vec::with_capacity(n);
 
-    println!(
-        "== feature multiset (per LOD){} ==",
-        if canonical { " [polygons canonical]" } else { "" }
-    );
+    println!("== feature multiset (per LOD){} ==", if canonical { " [polygons canonical]" } else { "" });
     for i in 0..n {
         let ca = collect_features(&ra, i, canonical);
         let cb = collect_features(&rb, i, canonical);
@@ -225,13 +198,7 @@ fn main() -> ExitCode {
                     line_diffs += va - vb
                 }
                 if examples_a < max_examples {
-                    println!(
-                        "  - LOD{i} only-in-A x{}: style={} poly={} ext_pts={}",
-                        va - vb,
-                        k.0,
-                        k.1,
-                        k.2.len()
-                    );
+                    println!("  - LOD{i} only-in-A x{}: style={} poly={} ext_pts={}", va - vb, k.0, k.1, k.2.len());
                     examples_a += 1;
                 }
             }
@@ -249,13 +216,7 @@ fn main() -> ExitCode {
                     line_diffs += vb - va
                 }
                 if examples_b < max_examples {
-                    println!(
-                        "  + LOD{i} only-in-B x{}: style={} poly={} ext_pts={}",
-                        vb - va,
-                        k.0,
-                        k.1,
-                        k.2.len()
-                    );
+                    println!("  + LOD{i} only-in-B x{}: style={} poly={} ext_pts={}", vb - va, k.0, k.1, k.2.len());
                     examples_b += 1;
                 }
             }

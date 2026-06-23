@@ -7,7 +7,7 @@
 //! consume [`Fix`]es.
 //!
 //! ## Fidelity
-//! GPX stores only position + time, never course or speed, so we derive them the
+//! GPX stores only position + time, never course or speed, so they're derived the
 //! way a GPS receiver does — from motion. Course is the bearing over a short
 //! look-ahead window (smoothing per-point jitter), and **when the track is
 //! stationary the reported course is `None`**, matching a real receiver that
@@ -36,13 +36,13 @@ const MOVING_THRESHOLD_MPS: f32 = 0.5;
 /// per-point bearing jitter you'd otherwise get from dense, noisy track points.
 const LOOK_AHEAD_S: f64 = 2.0;
 
-/// Replays a parsed [`Track`] as a [`LocationSource`]. Holds the playback cursor
 /// Simulated GPS fix cadence, in **seconds of playback time**. Real consumer GPS / bike
 /// computers deliver fixes on a fixed ~1 Hz clock, not once per render frame — throttling
 /// [`poll`](GpxPlayer::poll) to this keeps the recorded track + breadcrumb at a realistic
 /// point density no matter how fast the host renders or how high the replay speed is set.
 const GPS_PERIOD_S: f64 = 1.0;
 
+/// Replays a parsed [`Track`] as a [`LocationSource`]. Holds the playback cursor
 /// (`t`, seconds into the track), whether it's playing, and the speed multiplier.
 pub struct GpxPlayer {
     track: Track,
@@ -148,12 +148,7 @@ impl GpxPlayer {
         let t = t.clamp(0.0, self.duration());
         let (lat, lon) = self.interp_pos(t);
         let (course, speed) = self.course_speed(t);
-        Some(Fix {
-            lat: lat.round() as i32,
-            lon: lon.round() as i32,
-            course,
-            speed_mps: Some(speed),
-        })
+        Some(Fix { lat: lat.round() as i32, lon: lon.round() as i32, course, speed_mps: Some(speed) })
     }
 
     /// The barometric elevation (m) at playback time `t`, linearly interpolated from the
@@ -218,11 +213,8 @@ impl GpxPlayer {
 
         // Prefer a forward window; within `LOOK_AHEAD_S` of the end, look back so
         // the heading stays defined right up to the final fix.
-        let (t1, behind) = if t + LOOK_AHEAD_S <= dur {
-            (t + LOOK_AHEAD_S, false)
-        } else {
-            ((t - LOOK_AHEAD_S).max(0.0), true)
-        };
+        let (t1, behind) =
+            if t + LOOK_AHEAD_S <= dur { (t + LOOK_AHEAD_S, false) } else { ((t - LOOK_AHEAD_S).max(0.0), true) };
         let dt = (t1 - t).abs();
         if dt <= 0.0 {
             return (None, 0.0);
@@ -231,15 +223,11 @@ impl GpxPlayer {
 
         // Order the endpoints along the direction of travel so the bearing points
         // the way the user is moving.
-        let (from, to) =
-            if behind { ((lat1, lon1), (lat0, lon0)) } else { ((lat0, lon0), (lat1, lon1)) };
+        let (from, to) = if behind { ((lat1, lon1), (lat0, lon0)) } else { ((lat0, lon0), (lat1, lon1)) };
         let dist = haversine_m(from.0, from.1, to.0, to.1);
         let speed = (dist / dt) as f32;
-        let course = if speed >= MOVING_THRESHOLD_MPS {
-            Some(bearing_deg(from.0, from.1, to.0, to.1) as f32)
-        } else {
-            None
-        };
+        let course =
+            if speed >= MOVING_THRESHOLD_MPS { Some(bearing_deg(from.0, from.1, to.0, to.1) as f32) } else { None };
         (course, speed)
     }
 }
@@ -290,12 +278,7 @@ mod tests {
     use crate::gpx::{Track, TrackPoint};
 
     fn track(pts: &[(i32, i32, f64)]) -> Track {
-        Track {
-            points: pts
-                .iter()
-                .map(|&(lat, lon, t)| TrackPoint { lat, lon, ele: None, t })
-                .collect(),
-        }
+        Track { points: pts.iter().map(|&(lat, lon, t)| TrackPoint { lat, lon, ele: None, t }).collect() }
     }
 
     #[test]

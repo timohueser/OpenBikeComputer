@@ -1,11 +1,11 @@
-//! The Map screen — the Riding view. This is the refactor of the old
-//! `App::render_frame` map path: it owns no state of its own (the camera lives in
-//! [`AppState`](crate::AppState), shared with the host's mouse pan/zoom), and its
-//! `draw` is byte-for-byte the previous map + marker render.
+//! The Map screen — the Riding view. It owns no state of its own (the camera lives in
+//! [`AppState`](crate::AppState), shared with the host's mouse pan/zoom); `draw` renders
+//! the base map plus the route, travel chevrons, breadcrumb, user marker, off-route pill,
+//! and pan HUD.
 //!
 //! Bindings (`docs/ui_framework_brief.md` §Screens): `turn` = zoom, `press` =
-//! pause → Ride control, `back` = the sibling Statistics view, `back-hold` = Menu.
-//! `hold` (Pan mode) is reserved until that screen lands.
+//! pause → Ride control, `back` = the sibling Statistics view, `back-hold` = Menu,
+//! `hold` = enter Pan mode.
 
 use core::fmt::Write;
 
@@ -28,8 +28,7 @@ const ZOOM_STEP: f32 = 1.2;
 const MIN_ZOOM: f32 = 1e-6;
 const MAX_ZOOM: f32 = 1e4;
 
-/// Fallback backdrop when a map carries no backdrop style — mirrors the constant
-/// the old `App::render_frame` used, so a backdrop-less map looks identical.
+/// Fallback backdrop when a map carries no backdrop style.
 const DEFAULT_BG_RGB565: u16 = 0x2104;
 
 /// Stroke width (px) of the active-route overlay — bold enough to read over the map and to
@@ -45,10 +44,9 @@ const ROUTE_WEIGHT: u32 = 11;
 const ARROW_COLOR: u16 = super::palette::PARCHMENT;
 
 /// Zoom threshold (ground meters per pixel) at/below which the route direction chevrons are
-/// drawn — i.e. they appear once you're zoomed in to roughly riding scale (the riding view
-/// opens at ~0.5 m/px) and fade out on wider overviews where they'd just clutter a short
-/// on-screen route. A plain scale gate, independent of the map's LOD pyramid: tune this one
-/// number to move the cut-off.
+/// drawn — i.e. they appear at roughly riding scale (the riding view opens at ~0.5 m/px) and
+/// fade out on wider overviews where they'd just clutter a short on-screen route. A plain
+/// scale gate, independent of the map's LOD pyramid: tune this one number to move the cut-off.
 const CHEVRON_MAX_MPP: f32 = 4.0;
 
 /// Stroke width (px) of the travelled-path breadcrumb — a touch thinner than the route, so
@@ -102,14 +100,15 @@ impl MapScreen {
         let vp = rx.state.viewport(rx.w, rx.h);
         let bg565 = rx.reader.backdrop_style().map_or(DEFAULT_BG_RGB565, |s| s.color);
         let bg = color_fn(bg565);
-        let mut stats = rx.renderer.render(target, rx.reader, &vp, bg, color_fn);
+        // `render_timed` fills the per-stage map timings (collect/sort/draw) from `rx.clock`; with
+        // the host's `NoopClock` it's the same as `render` with the stage fields left at 0.
+        let mut stats = rx.renderer.render_timed(target, rx.reader, &vp, bg, color_fn, rx.clock);
 
         // Direction chevrons ride the route only at riding zoom: the plain stroke shows at every
         // zoom, the chevrons appear once the view is zoomed in past `CHEVRON_MAX_MPP`, anchored to
         // the rider's matched distance along the route (`progress_m`). Gated on the viewport scale
         // directly, so it's decoupled from the map's LOD pyramid.
-        let arrows_at =
-            (vp.meters_per_pixel() <= CHEVRON_MAX_MPP).then_some(rx.activity.progress_m);
+        let arrows_at = (vp.meters_per_pixel() <= CHEVRON_MAX_MPP).then_some(rx.activity.progress_m);
 
         // The planned route, stroked in magenta over the map (under the breadcrumb + marker),
         // with white travel-direction chevrons near the rider at riding zoom.
@@ -129,7 +128,7 @@ impl MapScreen {
         }
 
         // The travelled-path breadcrumb in navy, drawn *over* the route (and under the marker)
-        // so the trail behind you reads navy and the route ahead reads magenta. One chained stroke
+        // so the trail behind reads navy and the route ahead reads magenta. One chained stroke
         // (coarse spine → full-res recent tail), so the tiers never double up. Skipped when
         // nothing is recorded yet (the bounded buffers can never overrun the scratch).
         if !rx.breadcrumb.is_empty() {
@@ -141,8 +140,7 @@ impl MapScreen {
         // rider has strayed; the route + breadcrumb stay drawn — the line back),
         // else the map's marker colour. Shared by the marker and the pan pin so the
         // off-screen pin matches the on-screen marker.
-        let marker565 =
-            if rx.activity.off_route { super::palette::WARNING } else { rx.reader.marker_color };
+        let marker565 = if rx.activity.off_route { super::palette::WARNING } else { rx.reader.marker_color };
         if let Some(fix) = rx.state.user_fix {
             rx.renderer.draw_marker(target, &vp, fix.lon, fix.lat, fix.course, color_fn(marker565));
         }
@@ -271,11 +269,7 @@ fn outlined_arrow<D, F>(
     let (perpx, perpy) = (-uy, ux);
     let arrow = |hh: f32, ww: f32| {
         let (bx, by) = (cx - ux * hh, cy - uy * hh); // base centre, opposite the tip
-        (
-            pt(cx + ux * hh, cy + uy * hh),
-            pt(bx + perpx * ww, by + perpy * ww),
-            pt(bx - perpx * ww, by - perpy * ww),
-        )
+        (pt(cx + ux * hh, cy + uy * hh), pt(bx + perpx * ww, by + perpy * ww), pt(bx - perpx * ww, by - perpy * ww))
     };
     let (ot, obl, obr) = arrow(h + hud::OUTLINE, w + hud::OUTLINE);
     cv.triangle(ot, obl, obr, outline);
@@ -315,12 +309,8 @@ fn draw_pan_hud<D, F>(
     // 2) Active-axis chevrons: one outward-pointing hollow caret on each of the axis's
     //    two edges (the open-arrow look — distinct from the solid back-to-you triangle).
     let chevs: [((f32, f32), (f32, f32)); 2] = match pan.axis {
-        PanAxis::Vertical => {
-            [((w / 2.0, CHEV_INSET), (0.0, -1.0)), ((w / 2.0, h - CHEV_INSET), (0.0, 1.0))]
-        }
-        PanAxis::Horizontal => {
-            [((CHEV_INSET, h / 2.0), (-1.0, 0.0)), ((w - CHEV_INSET, h / 2.0), (1.0, 0.0))]
-        }
+        PanAxis::Vertical => [((w / 2.0, CHEV_INSET), (0.0, -1.0)), ((w / 2.0, h - CHEV_INSET), (0.0, 1.0))],
+        PanAxis::Horizontal => [((CHEV_INSET, h / 2.0), (-1.0, 0.0)), ((w - CHEV_INSET, h / 2.0), (1.0, 0.0))],
     };
     for (center, dir) in chevs {
         chevron(&mut cv, center, dir, AMBER, INK);
@@ -347,10 +337,8 @@ fn back_to_you(w: f32, h: f32, vp: &Viewport, fix: Fix) -> Option<(f32, f32, f32
     use hud::*;
     let (sxi, syi) = vp.to_screen(fix.lon, fix.lat);
     let (sx, sy) = (sxi as f32, syi as f32);
-    let off = sx < -OFFSCREEN_MARGIN
-        || sx > w + OFFSCREEN_MARGIN
-        || sy < -OFFSCREEN_MARGIN
-        || sy > h + OFFSCREEN_MARGIN;
+    let off =
+        sx < -OFFSCREEN_MARGIN || sx > w + OFFSCREEN_MARGIN || sy < -OFFSCREEN_MARGIN || sy > h + OFFSCREEN_MARGIN;
     if !off {
         return None;
     }
@@ -377,13 +365,8 @@ fn back_to_you(w: f32, h: f32, vp: &Viewport, fix: Fix) -> Option<(f32, f32, f32
 /// arm quads at half-width `hw` + round caps/join (a disc at each of the three vertices).
 /// Because both passes share the centreline, the halo stays uniform — unlike growing a
 /// filled polygon, which warps the arm angle and gives the ragged border it replaces.
-fn chevron<D, F>(
-    cv: &mut Canvas<D, F>,
-    center: (f32, f32),
-    dir: (f32, f32),
-    fill: u16,
-    outline: u16,
-) where
+fn chevron<D, F>(cv: &mut Canvas<D, F>, center: (f32, f32), dir: (f32, f32), fill: u16, outline: u16)
+where
     D: DrawTarget,
     F: Fn(u16) -> D::Color,
 {

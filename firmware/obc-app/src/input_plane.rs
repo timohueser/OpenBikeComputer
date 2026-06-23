@@ -18,8 +18,7 @@
 //! place. Either way the recognition + overlay logic is *this one struct*, so host and
 //! device behave identically.
 //!
-//! The split is deliberately a behaviour-preserving relocation of fields that used to live
-//! on [`App`]: the recogniser, the hint overlay, `enc`/`back` hold-progress, the
+//! This plane owns the recogniser, the hint overlay, `enc`/`back` hold-progress, the
 //! last-recognised gesture, and the overlay's trailing-edge bookkeeping. [`App`] keeps one
 //! [`InputPlane`] for the convenience path; the firmware's high-priority plane owns a
 //! second, standalone one.
@@ -87,12 +86,7 @@ impl InputPlane {
     ///
     /// Call once per frame even with no pending events: that is how a held button's long-press
     /// fires at its threshold and how the bulge animates while charging.
-    pub fn recognize(
-        &mut self,
-        clock: InputClock,
-        input: &mut dyn InputSource,
-        mut on_gesture: impl FnMut(Gesture),
-    ) {
+    pub fn recognize(&mut self, clock: InputClock, input: &mut dyn InputSource, mut on_gesture: impl FnMut(Gesture)) {
         let now_ms = clock.0;
         self.now_ms = now_ms;
         while let Some(ev) = input.poll() {
@@ -115,13 +109,7 @@ impl InputPlane {
         }
         self.enc_progress = self.gestures.encoder_progress(now_ms);
         self.back_progress = self.gestures.back_progress(now_ms);
-        self.hold_hints.update(
-            now_ms,
-            self.enc_progress,
-            self.back_progress,
-            enc_fired,
-            back_fired,
-        );
+        self.hold_hints.update(now_ms, self.enc_progress, self.back_progress, enc_fired, back_fired);
     }
 
     /// Render **only the overlay plane** — the transient hold bulge / confirm ring — over

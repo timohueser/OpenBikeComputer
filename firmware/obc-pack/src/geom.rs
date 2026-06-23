@@ -103,9 +103,7 @@ pub fn to_feature(style_id: u8, g: &Geom) -> Option<Feature> {
 pub fn pt_count(g: &Geom) -> usize {
     match g {
         Geom::Line(c) => c.len(),
-        Geom::Polygon { exterior, interiors } => {
-            exterior.len() + interiors.iter().map(Vec::len).sum::<usize>()
-        }
+        Geom::Polygon { exterior, interiors } => exterior.len() + interiors.iter().map(Vec::len).sum::<usize>(),
         _ => 0,
     }
 }
@@ -160,8 +158,7 @@ fn from_geos<G: Geom_>(g: &G) -> Geom {
         Ok(GeometryTypes::Polygon) => {
             let ext = read_ring(&g.get_exterior_ring().expect("ext"));
             let nholes = g.get_num_interior_rings().expect("nholes");
-            let interiors =
-                (0..nholes).map(|i| read_ring(&g.get_interior_ring_n(i).expect("hole"))).collect();
+            let interiors = (0..nholes).map(|i| read_ring(&g.get_interior_ring_n(i).expect("hole"))).collect();
             Geom::Polygon { exterior: ext, interiors }
         }
         Ok(GeometryTypes::MultiLineString)
@@ -190,9 +187,9 @@ pub(crate) fn geom_from_geos(g: &Geometry) -> Geom {
     from_geos(g)
 }
 
-/// Topology-preserving simplify — GEOS `TopologyPreservingSimplifier`, **not**
-/// plain Douglas–Peucker (the geos crate's `simplify`), so a simplified ring can't
-/// self-intersect. `tol` is in degrees (`simplify_m / 111320.0`). An empty/failed
+/// Topology-preserving simplify — GEOS `TopologyPreservingSimplifier`, not plain
+/// Douglas–Peucker (the geos crate's `simplify`), so a simplified ring can't
+/// self-intersect. `tol` is in degrees (`simplify_m / M_PER_DEG`). An empty/failed
 /// result becomes [`Geom::Empty`], which the quadtree drops.
 pub fn topology_preserve_simplify(geom: &Geom, tol: f64) -> Geom {
     match to_geos(geom).topology_preserve_simplify(tol) {
@@ -249,26 +246,24 @@ pub(crate) fn collect_polygons(g: Geom, out: &mut Vec<Geom>) {
 /// polygons-with-holes — the Stage-4 counterpart of osmium's `AreaManager`.
 ///
 /// `members` is each member way's coordinate list (already resolved against the
-/// node store). The job mirrors osmium's `Assembler`: stitch the (often open)
-/// member-way fragments into closed rings, then apply the **even-odd nesting
-/// rule** (a ring nested at odd depth is a hole of the outer that contains it —
-/// landmine §3.1; roles are *not* trusted). GEOS `build_area` does exactly this:
-/// its own doc example turns `GEOMETRYCOLLECTION(outer, inner)` into a
-/// polygon-with-hole, and disjoint outers into a `MultiPolygon`. We feed it the
-/// members as a `MultiLineString`; `build_area` extracts + polygonizes the
-/// linework, so fragments sharing endpoint nodes are joined for free.
+/// node store). Mirrors osmium's `Assembler`: stitch the (often open) member-way
+/// fragments into closed rings, then apply the even-odd nesting rule (a ring nested
+/// at odd depth is a hole of the outer that contains it — landmine §3.1; roles are
+/// not trusted). GEOS `build_area` does this: fed the members as a `MultiLineString`,
+/// it extracts + polygonizes the linework (joining fragments that share endpoint
+/// nodes), turning `GEOMETRYCOLLECTION(outer, inner)` into a polygon-with-hole and
+/// disjoint outers into a `MultiPolygon`.
 ///
 /// Returns one [`Geom::Polygon`] per assembled outer ring (with its directly
 /// nested holes). Returns empty on un-assemblable or invalid geometry — osmium
 /// silently drops broken relations, so emitting nothing is the right outcome. Each
 /// polygon is run through [`polygon_is_valid`], matching the closed-way path.
 ///
-/// Two-tier: try `build_area` on the raw linework (the clean common case), and if
-/// that yields nothing, retry after **noding** the linework (`node`) — that splits
-/// members that cross or self-touch mid-segment so polygonize can find the faces,
-/// which is the repair osmium's assembler does for the handful of messy relations
-/// real extracts contain. Only those pay the extra cost; clean relations take the
-/// fast path unchanged.
+/// Two-tier: try `build_area` on the raw linework, and if that yields nothing, retry
+/// after noding the linework (`node`) — that splits members crossing or self-touching
+/// mid-segment so polygonize can find the faces, the repair osmium's assembler does
+/// for the handful of messy relations real extracts contain. Only those pay the
+/// extra cost; clean relations take the fast path unchanged.
 pub fn assemble_multipolygon(members: &[Vec<(f64, f64)>]) -> Vec<Geom> {
     let polys = build_area_from_members(members, false);
     if !polys.is_empty() {
@@ -310,15 +305,12 @@ fn build_area_from_members(members: &[Vec<(f64, f64)>], node_first: bool) -> Vec
 /// Clip `geom` to the node box (integer microdegrees → degrees) via GEOS
 /// `intersection`. The clip box ring is built in `box(minx,miny,maxx,maxy)` order.
 pub fn clip_to_box(geom: &Geom, bbox: (i64, i64, i64, i64)) -> Geom {
-    let (minx, miny, maxx, maxy) =
-        (bbox.0 as f64 / 1e6, bbox.1 as f64 / 1e6, bbox.2 as f64 / 1e6, bbox.3 as f64 / 1e6);
+    let (minx, miny, maxx, maxy) = (bbox.0 as f64 / 1e6, bbox.1 as f64 / 1e6, bbox.2 as f64 / 1e6, bbox.3 as f64 / 1e6);
     // box() ccw ring: (maxx,miny),(maxx,maxy),(minx,maxy),(minx,miny), closed.
     let ring = [(maxx, miny), (maxx, maxy), (minx, maxy), (minx, miny), (maxx, miny)];
-    let box_geom = Geometry::create_polygon(
-        Geometry::create_linear_ring(ring_to_coordseq(&ring)).expect("box ring"),
-        vec![],
-    )
-    .expect("box polygon");
+    let box_geom =
+        Geometry::create_polygon(Geometry::create_linear_ring(ring_to_coordseq(&ring)).expect("box ring"), vec![])
+            .expect("box polygon");
     let clipped = to_geos(geom).intersection(&box_geom).expect("intersection");
     from_geos(&clipped)
 }
@@ -327,10 +319,10 @@ pub fn clip_to_box(geom: &Geom, bbox: (i64, i64, i64, i64)) -> Geom {
 mod tests {
     use super::*;
 
-    /// R1/R2 from `tiny.osm` (lon,lat closed rings). The probe the handover §7.2
-    /// mandates *before* wiring: confirm GEOS `build_area` gives R1 → one polygon
-    /// with one hole (lake + island, even-odd rule), R2 → two disjoint polygons
-    /// (one relation → many outers), so the assembler choice is empirically sound.
+    /// R1/R2 from `tiny.osm` (lon,lat closed rings). The probe handover §7.2
+    /// mandates before wiring: confirm GEOS `build_area` gives R1 → one polygon with
+    /// one hole (lake + island, even-odd rule) and R2 → two disjoint polygons (one
+    /// relation → many outers), so the assembler choice is empirically sound.
     fn ring(pts: &[(f64, f64)]) -> Vec<(f64, f64)> {
         pts.to_vec()
     }

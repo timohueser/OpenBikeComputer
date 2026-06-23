@@ -7,9 +7,8 @@
 //! ([`track_to_gpx`]) in one streaming pass and the temp log is dropped.
 //!
 //! This is deliberately *not* the [`OBCR`](crate) route format: a route is decimated for
-//! compact drawing, whereas a recorded track wants full GPS fidelity. So the log keeps
-//! every accepted point verbatim and only the on-screen breadcrumb (host-side, in RAM) is
-//! decimated.
+//! compact drawing, whereas a recorded track wants full GPS fidelity. The log keeps every
+//! accepted point verbatim; only the on-screen breadcrumb (host-side, in RAM) is decimated.
 //!
 //! The format + the GPX writer live here in the format crate so the firmware and the
 //! simulator share one implementation, exactly like the GPX→OBCR [`convert`](crate::convert)
@@ -77,11 +76,7 @@ const BLOCK_RECORDS: usize = 64;
 /// (and on the first point), so pauses/gaps become honest segment breaks. `<time>` is
 /// intentionally omitted until the device has a real clock. A trailing partial record (a
 /// power-loss mid-write) is ignored — the log stays valid at any 16-byte boundary.
-pub fn track_to_gpx(
-    src: &dyn ByteSource,
-    name: &str,
-    sink: &mut dyn ByteSink,
-) -> Result<(), Error> {
+pub fn track_to_gpx(src: &dyn ByteSource, name: &str, sink: &mut dyn ByteSink) -> Result<(), Error> {
     let mut line: String<160> = String::new();
 
     put(sink, b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")?;

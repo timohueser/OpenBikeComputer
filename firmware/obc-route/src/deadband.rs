@@ -13,10 +13,10 @@
 //! - the app's actually-ridden barometric climb must land near that precomputed ascent
 //!   when the rider follows the route.
 //!
-//! They previously held three separate `3.0` thresholds whose comments said they had to
-//! "mirror" each other; this is the one definition they now share, so tuning the
-//! dead-band (e.g. against baro noise) can't leave one copy behind. Generic over the
-//! sample type so the converter's `f64` and the profile/app `f32` use the very same code.
+//! They previously held three separate `3.0` thresholds that had to mirror each other;
+//! this is the one definition they now share, so tuning the dead-band (e.g. against baro
+//! noise) can't leave one copy behind. Generic over the sample type so the converter's
+//! `f64` and the profile/app `f32` use the same code.
 
 use core::ops::{Add, Neg, Sub};
 
@@ -27,10 +27,8 @@ pub const ELE_DEADBAND_M: f64 = 3.0;
 
 /// A float usable as an elevation sample. Implemented for the converter's `f64` and the
 /// profile/app `f32`; both take the same [`ELE_DEADBAND_M`] dead-band, cast to the sample
-/// type via [`Elev::DEADBAND`] so the one constant stays the source of truth.
-pub trait Elev:
-    Copy + PartialOrd + Add<Output = Self> + Sub<Output = Self> + Neg<Output = Self>
-{
+/// type via [`Elev::DEADBAND`].
+pub trait Elev: Copy + PartialOrd + Add<Output = Self> + Sub<Output = Self> + Neg<Output = Self> {
     /// The additive identity for this type (`0.0`).
     const ZERO: Self;
     /// [`ELE_DEADBAND_M`] in this sample type.

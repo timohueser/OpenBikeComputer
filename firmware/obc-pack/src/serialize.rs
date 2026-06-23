@@ -1,4 +1,4 @@
-//! OBCM **v5** serializer — lay out the `.obcm` bytes.
+//! OBCM v5 serializer — lay out the `.obcm` bytes.
 //!
 //! Deterministic integer/byte work: given the same feature list and quadtree it
 //! produces the same output every run. The geometry that reaches here is already
@@ -16,6 +16,33 @@ const MAX_SEGMENT: i64 = 30_000;
 pub const HEADER_LEN: usize = 32;
 /// One LOD-table entry, `<fIIHI>`.
 pub const LOD_ENTRY_LEN: usize = 18;
+
+/// Largest map `chunk_size` (bytes) that guarantees no single feature exceeds the device
+/// reader's [`obc_reader::MAX_FEAT_PTS`] vertex cap. A chunk holds at most `chunk_size` bytes of
+/// one feature, and the densest encoding is 8-bit deltas — a 12-byte feature header then 2 bytes
+/// per vertex (`dx`, `dy`) — so a feature carries at most `(chunk_size - 12) / 2 + 1` vertices.
+/// Above this the packer can emit a feature the reader **silently truncates** (`read_ring`'s
+/// `heapless` push fails past capacity), corrupting that feature's fill/stroke with no error on
+/// either side (issue #2). The packer default (4096) sits just under it.
+pub const MAX_SAFE_CHUNK_SIZE: usize = (obc_reader::MAX_FEAT_PTS - 1) * 2 + 12;
+
+// The safe ceiling must itself fit the on-wire `u16` chunk_size field, or the bound is moot.
+const _: () = assert!(MAX_SAFE_CHUNK_SIZE <= u16::MAX as usize, "chunk_size is a u16 in the format");
+
+/// Reject a `chunk_size` the device reader can't decode without truncating a feature — see
+/// [`MAX_SAFE_CHUNK_SIZE`]. Returns a descriptive build error so a misconfigured pack fails
+/// loudly instead of producing a silently-corrupt map (issue #2).
+pub fn validate_chunk_size(chunk_size: usize) -> Result<(), String> {
+    if chunk_size > MAX_SAFE_CHUNK_SIZE {
+        return Err(format!(
+            "chunk_size {chunk_size} exceeds the safe maximum {MAX_SAFE_CHUNK_SIZE}: a single feature \
+             could then pack more than {} vertices, which the device reader silently truncates \
+             (issue #2). Lower chunk_size, or raise the LOD's simplify tolerance.",
+            obc_reader::MAX_FEAT_PTS
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -148,8 +175,7 @@ pub fn pack_feature(f: &Feature, node_bbox: (i64, i64, i64, i64)) -> Vec<u8> {
     let mut packed_rings: Vec<(usize, Vec<i64>)> = Vec::with_capacity(f.rings.len());
 
     for (i, ring) in f.rings.iter().enumerate() {
-        let raw_pts: Vec<(i64, i64)> =
-            ring.iter().map(|&(lon, lat)| (to_udeg(lon), to_udeg(lat))).collect();
+        let raw_pts: Vec<(i64, i64)> = ring.iter().map(|&(lon, lat)| (to_udeg(lon), to_udeg(lat))).collect();
 
         let start_ref = if i == 0 {
             anchor_lon = raw_pts[0].0 - node_bbox.0;
@@ -189,6 +215,15 @@ pub fn pack_feature(f: &Feature, node_bbox: (i64, i64, i64, i64)) -> Vec<u8> {
         flags |= 0x01; // 16-bit deltas
     }
 
+    // The reader decodes a whole feature (exterior + every hole) into one buffer of capacity
+    // `MAX_FEAT_PTS`; past that its `heapless` push silently drops vertices. `validate_chunk_size`
+    // keeps a packed feature under the cap, but assert the real invariant in debug (issue #2).
+    debug_assert!(
+        packed_rings.iter().map(|(n, _)| *n).sum::<usize>() <= obc_reader::MAX_FEAT_PTS,
+        "feature vertex count exceeds the reader's MAX_FEAT_PTS — chunk_size too large?"
+    );
+
+    debug_assert!(packed_rings[0].0 <= u16::MAX as usize, "exterior pt_count overflows the u16 field");
     let ext_pt_count = packed_rings[0].0 as u16;
     let mut data = Vec::new();
     data.push(f.style_id);
@@ -202,6 +237,7 @@ pub fn pack_feature(f: &Feature, node_bbox: (i64, i64, i64, i64)) -> Vec<u8> {
     if flags & 0x04 != 0 {
         data.push((packed_rings.len() - 1) as u8);
         for (pt_count, deltas) in &packed_rings[1..] {
+            debug_assert!(*pt_count <= u16::MAX as usize, "hole pt_count overflows the u16 field");
             data.extend_from_slice(&(*pt_count as u16).to_le_bytes());
             push_deltas(&mut data, deltas, is16);
         }
@@ -211,11 +247,7 @@ pub fn pack_feature(f: &Feature, node_bbox: (i64, i64, i64, i64)) -> Vec<u8> {
 
 /// Pack features into a fixed-size chunk, padded with `0xFF`. A feature that
 /// would overflow the chunk (and every feature after it) is dropped.
-pub fn pack_chunk(
-    features: &[Feature],
-    node_bbox: (i64, i64, i64, i64),
-    chunk_size: usize,
-) -> Vec<u8> {
+pub fn pack_chunk(features: &[Feature], node_bbox: (i64, i64, i64, i64), chunk_size: usize) -> Vec<u8> {
     let mut data = Vec::new();
     for f in features {
         let packed = pack_feature(f, node_bbox);
@@ -452,10 +484,35 @@ mod tests {
         densify((0, 0), (100, 200), &mut out2);
         assert_eq!(out2, vec![(100, 200)]);
 
-        // Exactly at the threshold (30000) is NOT densified (`> _MAX_SEGMENT`).
+        // Exactly at the threshold (30000) is NOT densified (`> MAX_SEGMENT`).
         let mut out3 = Vec::new();
         densify((0, 0), (30000, -30000), &mut out3);
         assert_eq!(out3, vec![(30000, -30000)]);
+    }
+
+    #[test]
+    fn max_safe_chunk_size_keeps_features_within_reader_cap() {
+        // A feature packed to exactly fill a `MAX_SAFE_CHUNK_SIZE` chunk must carry no more than
+        // the reader's `MAX_FEAT_PTS` vertices — otherwise the device silently truncates it (#2).
+        let n = obc_reader::MAX_FEAT_PTS;
+        // `n` points 1 µdeg apart: tiny deltas ⇒ 8-bit encoding (2 bytes/vertex — the densest
+        // case), no densification (steps « MAX_SEGMENT).
+        let coords: Vec<(f64, f64)> = (0..n).map(|i| (i as f64 * 1e-6, 0.0)).collect();
+        let f = Feature { style_id: 1, kind: Kind::Line, rings: vec![coords] };
+        let packed = pack_feature(&f, (0, 0, n as i64, 1));
+
+        let ext_pt_count = u16::from_le_bytes([packed[1], packed[2]]) as usize;
+        assert_eq!(ext_pt_count, n, "a cap-sized feature keeps every vertex");
+        assert!(ext_pt_count <= obc_reader::MAX_FEAT_PTS, "must not exceed the reader cap");
+        assert!(packed.len() <= MAX_SAFE_CHUNK_SIZE, "and fits the safe-max chunk: {} bytes", packed.len());
+    }
+
+    #[test]
+    fn validate_chunk_size_accepts_safe_rejects_oversize() {
+        assert!(validate_chunk_size(4096).is_ok(), "the packer default must pass");
+        assert!(validate_chunk_size(MAX_SAFE_CHUNK_SIZE).is_ok(), "the boundary is inclusive");
+        assert!(validate_chunk_size(MAX_SAFE_CHUNK_SIZE + 1).is_err(), "one over the cap is rejected");
+        assert!(validate_chunk_size(8192).is_err(), "a chunk_size that could truncate is rejected (#2)");
     }
 
     #[test]
@@ -472,11 +529,7 @@ mod tests {
             LodLayer {
                 max_mpp: Some(100.0),
                 chunk_size: 256,
-                root: crate::quadtree::build_lod(
-                    [(1u8, Geom::Line(vec![(0.1, 0.1), (0.9, 0.9)]))],
-                    bbox,
-                    256,
-                ),
+                root: crate::quadtree::build_lod([(1u8, Geom::Line(vec![(0.1, 0.1), (0.9, 0.9)]))], bbox, 256),
             },
             LodLayer {
                 max_mpp: None,

@@ -3,7 +3,7 @@
 
 use embedded_graphics::draw_target::DrawTarget;
 use obc_reader::Reader;
-use obc_render::{zoom_for_mpp, MapRenderer, RenderStats, Viewport};
+use obc_render::{zoom_for_mpp, Clock, MapRenderer, NoopClock, RenderStats, Viewport};
 use obc_route::{Profile, RouteMatch, RouteReader, TrackPoint};
 
 use crate::activity::{Activity, Mode};
@@ -69,7 +69,7 @@ pub struct Pan {
     pub north_up: bool,
     /// The frozen heading-up rotation (radians CW from north), snapshotted on entry
     /// and re-snapshotted whenever `hold` flips back to heading-up — so the map never
-    /// rotates *while* you pan.
+    /// rotates *while* panning.
     pub frozen_course_rad: f32,
 }
 
@@ -100,7 +100,7 @@ pub struct AppState {
     /// user in either orientation, and the simulator can rotate while mouse-panning.
     pub heading_up: bool,
     /// The most recent fix from the [`LocationSource`], or `None` before the
-    /// first one. Drives the heading-up rotation and the (future) user marker.
+    /// first one. Drives the heading-up rotation and the user marker.
     pub user_fix: Option<Fix>,
     /// Pan mode, or `None` on the normal Follow map. `Some` detaches the camera and
     /// freezes the rotation (see [`Pan`]); the Map screen binds the encoder/Back to
@@ -261,14 +261,7 @@ impl AppState {
     /// zero-sized viewport — the screen centre cancels out of the inverse projection,
     /// so this needs no display dimensions and the projection math stays in one place.
     fn pan_by_pixels(&mut self, dx: f32, dy: f32) {
-        let vp = Viewport::new_rotated(
-            0.0,
-            0.0,
-            self.cam_lon,
-            self.cam_lat,
-            self.zoom,
-            self.course_rad(),
-        );
+        let vp = Viewport::new_rotated(0.0, 0.0, self.cam_lon, self.cam_lat, self.zoom, self.course_rad());
         let (lon, lat) = vp.to_map(dx, dy);
         self.cam_lon = lon;
         self.cam_lat = lat;
@@ -280,8 +273,8 @@ impl AppState {
 const RIDING_MPP: f32 = 0.5;
 
 /// Camera travel **per encoder detent** in pan mode, in screen pixels. A *screen*
-/// amount (not ground metres), so panning is finer when zoomed in — "panning always
-/// happens at the current zoom level". The single knob for pan speed; tune here.
+/// amount (not ground metres), so panning is finer when zoomed in. The single knob
+/// for pan speed; tune here.
 pub const PAN_STEP_PX: f32 = 40.0;
 
 /// Capacity of [`handle_input`](App::handle_input)'s per-frame gesture buffer — the
@@ -327,7 +320,7 @@ pub struct App {
     /// pan/zoom and control panel can read and adjust it directly (the Map screen
     /// renders from the very same state).
     pub state: AppState,
-    /// The ride mode + (later) tracking accumulators.
+    /// The ride mode + tracking accumulators.
     pub activity: Activity,
     /// The resident route catalog (summaries), populated by the host from its store
     /// ([`set_routes`](App::set_routes)). The Route menu lists it; `active_route`
@@ -418,6 +411,55 @@ impl App {
             now_ms: 0,
             // Force the host's first frame: nothing has been drawn yet, so the map is dirty.
             map_dirty: true,
+        }
+    }
+
+    /// Build the idle power-on [`App`] **in place** at `slot` — the by-reference
+    /// twin of [`new_idle`](App::new_idle), and the placement path the firmware uses
+    /// to construct the ~200 KB resident `App` straight into its reserved SDRAM block
+    /// without ever materializing it (or its renderer scratch) on the 192 KB stack.
+    ///
+    /// `new_idle` returns the `App` by value, which only stays off the stack thanks to
+    /// the optimizer's return-value optimization — a fragile guarantee that a debug
+    /// build, a different toolchain, or a tighter target could drop, overflowing the
+    /// stack (issue #67). This writes each field through `addr_of_mut!` exactly once,
+    /// so no by-value `App` is ever formed: there is no stack temporary to elide. The
+    /// only field big enough to matter is the renderer, zeroed in place via
+    /// [`MapRenderer::init_zeroed`] rather than built-and-moved; the rest are small.
+    ///
+    /// The end state is identical to `new_idle`'s — keep the two in sync.
+    ///
+    /// # Safety
+    /// `slot` must be a valid, aligned `*mut App` the caller exclusively owns and into
+    /// which a full `App` may be written (e.g. the device's reserved SDRAM region). On
+    /// return the slot is fully initialized; read it via `&mut *slot`.
+    pub unsafe fn init_idle(slot: *mut App, state: AppState) {
+        use core::ptr::addr_of_mut;
+        // SAFETY: `slot` is a valid, owned, aligned `App` region (caller's contract).
+        // Every field below is written exactly once before any read, in declaration
+        // order, so the slot is fully initialized on return and no field is read while
+        // uninitialized.
+        unsafe {
+            addr_of_mut!((*slot).state).write(state);
+            addr_of_mut!((*slot).activity).write(Activity::new(Mode::Idle));
+            addr_of_mut!((*slot).catalog).write(Catalog::new());
+            // The screen stack: empty in place, then push the always-present Home root.
+            // `heapless::Vec::push` isn't `const`, so the root can't be part of a literal.
+            addr_of_mut!((*slot).stack).write(Stack::new());
+            let _ = (*slot).stack.push(Screen::Home(HomeScreen::new()));
+            addr_of_mut!((*slot).profile).write(None);
+            addr_of_mut!((*slot).profile_route).write(None);
+            addr_of_mut!((*slot).route_match).write(RouteMatch::new());
+            addr_of_mut!((*slot).matched_route).write(None);
+            addr_of_mut!((*slot).ride_session).write(None);
+            addr_of_mut!((*slot).breadcrumb).write(Breadcrumb::new());
+            // The ~200 KB scratch renderer: an empty renderer *is* the all-zero bit
+            // pattern, so it is zeroed straight into the slot — never on the stack.
+            MapRenderer::init_zeroed(addr_of_mut!((*slot).renderer));
+            addr_of_mut!((*slot).input).write(InputPlane::new());
+            addr_of_mut!((*slot).now_ms).write(0);
+            // Force the host's first frame: nothing has been drawn yet, so the map is dirty.
+            addr_of_mut!((*slot).map_dirty).write(true);
         }
     }
 
@@ -548,6 +590,16 @@ impl App {
         &self.catalog
     }
 
+    /// **Debug/benchmark hook** (the USB-CDC `Z` command): set the map camera to exactly `mpp`
+    /// meters-per-pixel and force one map redraw. Drives the zoom directly — independent of the
+    /// encoder's fixed 1.2× detents — so a host render sweep can pin an exact scale per sample,
+    /// and always dirties the map (even at an unchanged scale) so each command yields one fresh
+    /// frame to time. Part of the strippable render-instrumentation seam; no other caller.
+    pub fn set_map_mpp(&mut self, mpp: f32) {
+        self.state.zoom = zoom_for_mpp(mpp);
+        self.map_dirty = true;
+    }
+
     /// Recognise this frame's raw control input and apply each resulting gesture to the top
     /// screen, then advance the visible screens' timed content. The convenience that fuses the
     /// two planes into one call for the simulator and the firmware's single-executor fallback;
@@ -628,9 +680,8 @@ impl App {
     ///
     /// This is the single-target convenience that draws a whole frame:
     /// [`render_map`](App::render_map) then [`render_overlay`](App::render_overlay)
-    /// into the *same* target, in that order, so the result is byte-identical to the
-    /// old monolithic path. Hosts that keep the map and overlay on separate
-    /// buffers/layers (dual-layer display) call the two halves directly instead.
+    /// into the *same* target, in that order. Hosts that keep the map and overlay on
+    /// separate buffers/layers (dual-layer display) call the two halves directly instead.
     pub fn render_frame<D, F>(
         &mut self,
         target: &mut D,
@@ -672,6 +723,31 @@ impl App {
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
+        // Untimed: the host's `NoopClock` leaves the map's per-stage `*_us` fields at 0. The
+        // device uses `render_map_timed` with a real clock for the render benchmark.
+        self.render_map_timed(target, reader, route, w, h, color_fn, &NoopClock)
+    }
+
+    /// Like [`render_map`](App::render_map) but threads `clock` to the Map screen's
+    /// [`render_timed`](obc_render::MapRenderer::render_timed), so the returned [`RenderStats`]
+    /// carries the map's per-stage timings (`collect_us` / `sort_us` / `draw_us`). The device's
+    /// render benchmark uses this with its own microsecond clock; every other host calls the plain
+    /// [`render_map`](App::render_map). Part of the strippable render-instrumentation seam.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_map_timed<D, F>(
+        &mut self,
+        target: &mut D,
+        reader: &Reader,
+        route: Option<&RouteReader>,
+        w: f32,
+        h: f32,
+        color_fn: F,
+        clock: &dyn Clock,
+    ) -> RenderStats
+    where
+        D: DrawTarget,
+        F: Fn(u16) -> D::Color,
+    {
         // Rebuild the cached elevation profile when the active route changes — it
         // streams every chunk, so it's built here once on load, never per frame. Keyed
         // on the active-route index (same simplification as the host's route reload):
@@ -689,8 +765,7 @@ impl App {
         // dirties the map (issue #47), so the map (and this fill) doesn't redraw mid-charge; the
         // live confirmation is the overlay bulge on its own high-priority plane.
         let hold_progress = self.input.encoder_hold_progress();
-        let App { state, activity, catalog, renderer, stack, now_ms, profile, breadcrumb, .. } =
-            self;
+        let App { state, activity, catalog, renderer, stack, now_ms, profile, breadcrumb, .. } = self;
         let mut rx = Render {
             reader,
             renderer,
@@ -704,6 +779,7 @@ impl App {
             h,
             now_ms: *now_ms,
             hold_progress,
+            clock,
         };
         let mut stats = RenderStats::default();
         for (i, scr) in stack.iter().enumerate().skip(base) {
@@ -766,10 +842,7 @@ impl App {
     /// drives the overlay from its *own* [`InputPlane::take_overlay_dirty`]; this `App` owns
     /// only the map plane there. The single-loop hosts use both.)
     pub fn take_dirty(&mut self) -> Dirty {
-        Dirty {
-            map: core::mem::take(&mut self.map_dirty),
-            overlay: self.input.take_overlay_dirty(),
-        }
+        Dirty { map: core::mem::take(&mut self.map_dirty), overlay: self.input.take_overlay_dirty() }
     }
 
     /// The most recently recognized gesture (host input readout), if any.
@@ -889,5 +962,38 @@ mod tests {
         app.state.heading_up = false; // north-up never consults the compass
         tick_with(&mut app, Fix::at(0, 0), 200.0);
         assert_eq!(app.state.compass_deg, None);
+    }
+
+    // --- in-place SDRAM placement (issue #67) ---
+
+    /// `init_idle` writing field-by-field into a slot must land the same power-on state
+    /// `new_idle` builds by value — Home root, Idle, nothing loaded, map dirty — with the
+    /// renderer zeroed in place. Guards against a field being forgotten in the in-place path.
+    #[test]
+    fn init_idle_matches_new_idle() {
+        use core::mem::MaybeUninit;
+        let state = AppState::new(1, 2, 3.0);
+        // Placement target. ~200 KB on the host test stack is fine; the point being exercised
+        // is that no *second* `App`-sized temporary is formed (init_idle writes straight in).
+        let mut slot = MaybeUninit::<App>::uninit();
+        // SAFETY: `slot` is a valid, aligned, exclusively-owned `App` region; init_idle fully
+        // initializes it before assume_init_ref reads it.
+        let placed = unsafe {
+            App::init_idle(slot.as_mut_ptr(), state);
+            slot.assume_init_ref()
+        };
+
+        assert_eq!(placed.state, state, "camera state is preserved verbatim");
+        assert_eq!(placed.activity.mode, Mode::Idle, "boots Idle, not Riding");
+        assert!(placed.map_dirty, "first frame must paint");
+        assert_eq!(placed.now_ms, 0);
+        assert!(placed.profile.is_none() && placed.profile_route.is_none());
+        assert!(placed.matched_route.is_none() && placed.ride_session.is_none());
+        assert!(placed.breadcrumb.is_empty(), "no breadcrumb before any ride");
+        // The stack is exactly the Home root, like `new_idle`.
+        let reference = App::new_idle(state);
+        assert_eq!(placed.stack.len(), reference.stack.len());
+        assert_eq!(placed.stack.len(), 1);
+        assert!(matches!(placed.stack[0], Screen::Home(_)), "Home is the stack root");
     }
 }

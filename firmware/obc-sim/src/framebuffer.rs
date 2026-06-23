@@ -1,11 +1,9 @@
 //! A plain in-memory `DrawTarget` — a packed RGB888 pixel buffer the host owns.
 //!
-//! This is the simulator's replacement for embedded-graphics-simulator's
-//! `SimulatorDisplay`: the shared [`obc_render::MapRenderer`] runs the exact same
-//! rendering code as the firmware, but draws into a buffer we control, with no SDL
-//! uploads the buffer to a GPU texture (the eframe screen window) or encodes it
-//! to a PNG (`--png`). The device firmware draws into its real LS021B7DD02 driver
-//! instead; only this host-side target differs.
+//! The shared [`obc_render::MapRenderer`] runs the exact same rendering code as the
+//! firmware, but draws into this buffer; the host then uploads it to a GPU texture
+//! (the eframe screen window) or encodes it to a PNG (`--png`). The device firmware
+//! draws into its real LS021B7DD02 driver instead; only this host-side target differs.
 
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
 
@@ -70,8 +68,8 @@ impl DrawTarget for Framebuffer {
         Ok(())
     }
 
-    /// Fast path for the renderer's scanline fills (it calls this per polygon row
-    /// and to clear): fill a clipped rectangle directly instead of per-pixel.
+    /// Fast path for the renderer's rectangle fills (per polygon-fill scanline row,
+    /// and HUD strips): fill a clipped rectangle directly instead of per-pixel.
     fn fill_solid(&mut self, area: &Rectangle, color: Self::Color) -> Result<(), Self::Error> {
         let clipped = area.intersection(&self.bounding_box());
         if let Some(br) = clipped.bottom_right() {
@@ -126,8 +124,7 @@ mod tests {
     fn fill_solid_fills_subrect_and_clips() {
         let mut fb = Framebuffer::new(4, 4);
         // Rectangle straddling the right/bottom edge: only the in-bounds part fills.
-        fb.fill_solid(&Rectangle::new(Point::new(2, 2), Size::new(10, 10)), Rgb888::new(255, 0, 0))
-            .unwrap();
+        fb.fill_solid(&Rectangle::new(Point::new(2, 2), Size::new(10, 10)), Rgb888::new(255, 0, 0)).unwrap();
         assert_eq!(pixel(&fb, 1, 1), (0, 0, 0)); // outside
         assert_eq!(pixel(&fb, 2, 2), (255, 0, 0)); // inside corner
         assert_eq!(pixel(&fb, 3, 3), (255, 0, 0)); // last in-bounds pixel
@@ -139,7 +136,7 @@ mod tests {
         let green = Rgb888::new(0, 255, 0);
         fb.draw_iter([
             Pixel(Point::new(0, 1), green),
-            Pixel(Point::new(5, 5), green), // off-screen: silently dropped
+            Pixel(Point::new(5, 5), green),  // off-screen: silently dropped
             Pixel(Point::new(-1, 0), green), // off-screen: silently dropped
         ])
         .unwrap();

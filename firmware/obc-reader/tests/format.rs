@@ -33,13 +33,7 @@ fn decode_chunk(r: &Reader, lod: usize, chunk_id: u32, node: &BBox) -> Vec<Featu
 
 /// Like [`decode_chunk`] but only the features for which `keep(style_id)` is
 /// true are decoded and returned; the rest are skipped in the reader.
-fn decode_filtered(
-    r: &Reader,
-    lod: usize,
-    chunk_id: u32,
-    node: &BBox,
-    keep: impl Fn(u8) -> bool,
-) -> Vec<Feature> {
+fn decode_filtered(r: &Reader, lod: usize, chunk_id: u32, node: &BBox, keep: impl Fn(u8) -> bool) -> Vec<Feature> {
     let mut out = Vec::new();
     let mut points = heapless::Vec::<_, MAX_FEAT_PTS>::new();
     let mut ring_lens = heapless::Vec::<_, MAX_FEAT_RINGS>::new();
@@ -73,11 +67,7 @@ struct LodSpec {
 
 /// `bbox` is (min_lon, min_lat, max_lon, max_lat); `styles` are
 /// (id, z_index, color_rgb565, weight).
-fn build_file(
-    bbox: (i32, i32, i32, i32),
-    styles: &[(u8, i8, u16, u8, u8)],
-    lods: &[LodSpec],
-) -> Vec<u8> {
+fn build_file(bbox: (i32, i32, i32, i32), styles: &[(u8, i8, u16, u8, u8)], lods: &[LodSpec]) -> Vec<u8> {
     let style_off = 32usize;
 
     let mut style_bytes = vec![styles.len() as u8];
@@ -173,13 +163,7 @@ fn pack_line16(style_id: u8, ax: i32, ay: i32, deltas: &[(i16, i16)]) -> Vec<u8>
 
 /// A polygon with one hole, 8-bit deltas. Hole vertices are all deltas (first
 /// relative to the anchor), so its stored point count == hole_deltas.len().
-fn pack_poly_hole(
-    style_id: u8,
-    ax: i32,
-    ay: i32,
-    ext_deltas: &[(i8, i8)],
-    hole_deltas: &[(i8, i8)],
-) -> Vec<u8> {
+fn pack_poly_hole(style_id: u8, ax: i32, ay: i32, ext_deltas: &[(i8, i8)], hole_deltas: &[(i8, i8)]) -> Vec<u8> {
     let mut v = Vec::new();
     v.push(style_id);
     v.extend_from_slice(&((1 + ext_deltas.len()) as u16).to_le_bytes());
@@ -209,16 +193,8 @@ const STYLES: &[(u8, i8, u16, u8, u8)] = &[(1, 3, 0xF800, 2, 3), (2, -1, 0x07E0,
 
 fn two_lod_file() -> Vec<u8> {
     let line = pad(pack_line(1, 100, 200, &[(10, 0), (0, 10)]), CS);
-    let poly = pad(
-        pack_poly_hole(
-            2,
-            100,
-            100,
-            &[(100, 0), (0, 100), (-100, 0)],
-            &[(25, 25), (50, 0), (0, 50), (-50, 0)],
-        ),
-        CS,
-    );
+    let poly =
+        pad(pack_poly_hole(2, 100, 100, &[(100, 0), (0, 100), (-100, 0)], &[(25, 25), (50, 0), (0, 50), (-50, 0)]), CS);
     build_file(
         GLOBAL,
         STYLES,
@@ -325,19 +301,13 @@ fn query_single_leaf() {
     let r = Reader::new(&src, &cache).unwrap();
 
     // A view overlapping the global bbox hits the single leaf (chunk 0).
-    let hits = r.query::<64>(
-        0,
-        &obc_reader::BBox { min_lon: 100, min_lat: 100, max_lon: 200, max_lat: 200 },
-    );
+    let hits = r.query::<64>(0, &obc_reader::BBox { min_lon: 100, min_lat: 100, max_lon: 200, max_lat: 200 });
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].0, 0);
     assert_eq!(hits[0].1, r.bbox); // leaf node bbox == global bbox
 
     // A view entirely outside the global bbox hits nothing.
-    let miss = r.query::<64>(
-        0,
-        &obc_reader::BBox { min_lon: 5000, min_lat: 5000, max_lon: 6000, max_lat: 6000 },
-    );
+    let miss = r.query::<64>(0, &obc_reader::BBox { min_lon: 5000, min_lat: 5000, max_lon: 6000, max_lat: 6000 });
     assert!(miss.is_empty());
 }
 
@@ -437,11 +407,8 @@ fn quadtree_subdivision_and_node_bbox() {
         EMPTY_LEAF,     // SW
         EMPTY_LEAF,     // SE
     ];
-    let bytes = build_file(
-        GLOBAL,
-        STYLES,
-        &[LodSpec { max_mpp: f32::INFINITY, index, chunks: vec![line], chunk_size: CS }],
-    );
+    let bytes =
+        build_file(GLOBAL, STYLES, &[LodSpec { max_mpp: f32::INFINITY, index, chunks: vec![line], chunk_size: CS }]);
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
     let r = Reader::new(&src, &cache).unwrap();
@@ -449,17 +416,11 @@ fn quadtree_subdivision_and_node_bbox() {
     let nw = obc_reader::BBox { min_lon: 0, min_lat: 500, max_lon: 500, max_lat: 1000 };
 
     // View inside the NW quadrant hits the leaf, with the NW node bbox.
-    let hits = r.query::<64>(
-        0,
-        &obc_reader::BBox { min_lon: 50, min_lat: 600, max_lon: 150, max_lat: 700 },
-    );
+    let hits = r.query::<64>(0, &obc_reader::BBox { min_lon: 50, min_lat: 600, max_lon: 150, max_lat: 700 });
     assert_eq!(hits.as_slice(), &[(0, nw)]);
 
     // View inside the (empty) SE quadrant hits nothing.
-    let se = r.query::<64>(
-        0,
-        &obc_reader::BBox { min_lon: 600, min_lat: 100, max_lon: 700, max_lat: 200 },
-    );
+    let se = r.query::<64>(0, &obc_reader::BBox { min_lon: 600, min_lat: 100, max_lon: 700, max_lat: 200 });
     assert!(se.is_empty());
 
     // The feature's anchor is computed from the NW node's min corner (0,500):
@@ -474,12 +435,7 @@ fn empty_leaf_yields_nothing() {
     let bytes = build_file(
         GLOBAL,
         STYLES,
-        &[LodSpec {
-            max_mpp: f32::INFINITY,
-            index: vec![EMPTY_LEAF],
-            chunks: vec![empty],
-            chunk_size: CS,
-        }],
+        &[LodSpec { max_mpp: f32::INFINITY, index: vec![EMPTY_LEAF], chunks: vec![empty], chunk_size: CS }],
     );
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
@@ -575,8 +531,7 @@ fn filtered_decode_skips_without_drifting() {
     chunk.extend_from_slice(&pack_line16(3, 0, 0, &[(300, 400), (-200, 0)]));
     let chunk = pad(chunk, 128);
 
-    let styles: &[(u8, i8, u16, u8, u8)] =
-        &[(1, 3, 0xF800, 2, 3), (2, -1, 0x07E0, 1, 3), (3, 0, 0x001F, 1, 3)];
+    let styles: &[(u8, i8, u16, u8, u8)] = &[(1, 3, 0xF800, 2, 3), (2, -1, 0x07E0, 1, 3), (3, 0, 0x001F, 1, 3)];
     let bytes = build_file(
         GLOBAL,
         styles,
@@ -596,20 +551,11 @@ fn filtered_decode_skips_without_drifting() {
     assert!(decode_filtered(&r, 0, 0, &node, |_| false).is_empty());
 
     // Skip the middle polygon: the trailing 16-bit line must still be exact.
-    assert_eq!(
-        decode_filtered(&r, 0, 0, &node, |sid| sid != 2),
-        vec![all[0].clone(), all[2].clone()]
-    );
+    assert_eq!(decode_filtered(&r, 0, 0, &node, |sid| sid != 2), vec![all[0].clone(), all[2].clone()]);
     // Skip the leading line: both following features must be exact.
-    assert_eq!(
-        decode_filtered(&r, 0, 0, &node, |sid| sid != 1),
-        vec![all[1].clone(), all[2].clone()]
-    );
+    assert_eq!(decode_filtered(&r, 0, 0, &node, |sid| sid != 1), vec![all[1].clone(), all[2].clone()]);
     // Skip the trailing line: the leading two are unaffected.
-    assert_eq!(
-        decode_filtered(&r, 0, 0, &node, |sid| sid != 3),
-        vec![all[0].clone(), all[1].clone()]
-    );
+    assert_eq!(decode_filtered(&r, 0, 0, &node, |sid| sid != 3), vec![all[0].clone(), all[1].clone()]);
 }
 
 #[test]
@@ -629,12 +575,7 @@ fn for_each_chunk_has_no_cap() {
     let bytes = build_file(
         GLOBAL,
         STYLES,
-        &[LodSpec {
-            max_mpp: f32::INFINITY,
-            index,
-            chunks: vec![mk(), mk(), mk(), mk()],
-            chunk_size: CS,
-        }],
+        &[LodSpec { max_mpp: f32::INFINITY, index, chunks: vec![mk(), mk(), mk(), mk()], chunk_size: CS }],
     );
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
@@ -648,4 +589,80 @@ fn for_each_chunk_has_no_cap() {
     // The same query into a 2-slot buffer keeps only the first two it reaches.
     let capped = r.query::<2>(0, &r.bbox);
     assert_eq!(capped.len(), 2);
+}
+
+/// Build a forward-only quadtree index that is a single NW-chain `levels` branches deep, ending
+/// in a non-empty leaf (chunk 0). Each branch's four children are contiguous (NW, NE, SW, SE):
+/// NE/SW/SE are empty leaves and NW continues the chain, so every child index is strictly greater
+/// than its parent's — the `child > idx` invariant of a well-formed map holds, isolating the
+/// **depth** cap as the only thing that can stop the descent.
+fn nw_chain_index(levels: usize) -> Vec<u32> {
+    let mut index: Vec<u32> = vec![0]; // slot 0 is the root branch, filled below
+    let mut cur = 0usize;
+    for _ in 0..levels {
+        let base = index.len(); // the four children are appended here, after `cur`
+        index[cur] = BRANCH_BIT | base as u32;
+        index.push(0); // NW: next chain node (overwritten next iteration, or the final leaf)
+        index.push(EMPTY_LEAF); // NE
+        index.push(EMPTY_LEAF); // SW
+        index.push(EMPTY_LEAF); // SE
+        cur = base;
+    }
+    index[cur] = 0; // deepest NW is a non-empty leaf -> chunk 0
+    index
+}
+
+#[test]
+fn walk_terminates_on_back_referencing_branch() {
+    // A corrupt map whose root branch points its first child back at itself (`child == idx`).
+    // The node bbox would shrink toward the NW corner and then stay put, so `intersects(view)`
+    // never goes false — with no guard the walk recurses forever and stack-overflows (a HardFault
+    // on the MCU, which has no MMU guard page; issue #65). The `child > idx` guard rejects the
+    // back-edge, so the walk must simply return, reporting no chunks.
+    let chunk = pad(pack_line(1, 0, 0, &[(1, 1)]), CS);
+    let bytes = build_file(
+        GLOBAL,
+        STYLES,
+        &[LodSpec {
+            max_mpp: f32::INFINITY,
+            index: vec![BRANCH_BIT], // root branch, child base 0 == its own index
+            chunks: vec![chunk],
+            chunk_size: CS,
+        }],
+    );
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let r = Reader::new(&src, &cache).unwrap();
+
+    // A viewport over the whole bbox keeps intersecting the (degenerate) node every level — the
+    // condition under which the unguarded walk would never terminate.
+    let mut seen = 0;
+    r.for_each_chunk(0, &r.bbox, |_cid, _node| seen += 1);
+    assert_eq!(seen, 0);
+    // `query` walks the same path; it too must return rather than overflow.
+    assert!(r.query::<64>(0, &r.bbox).is_empty());
+}
+
+#[test]
+fn walk_caps_depth_on_forward_chain() {
+    // A forward-only NW-chain (every `child > idx`, so the back-reference guard never fires) far
+    // deeper than the depth cap (~32). The node bbox degenerates to the NW corner after ~10
+    // levels but keeps intersecting a whole-bbox viewport forever, so without the depth cap the
+    // walk would descend all `LEVELS` levels and report the leaf's chunk. With the cap it stops
+    // first, pruning the over-cap leaf — so no chunk is reported. This pins the depth cap
+    // independently of the `child > idx` guard (issue #65).
+    const LEVELS: usize = 50; // comfortably past the ~32 cap
+    let chunk = pad(pack_line(1, 0, 0, &[(1, 1)]), CS);
+    let bytes = build_file(
+        GLOBAL,
+        STYLES,
+        &[LodSpec { max_mpp: f32::INFINITY, index: nw_chain_index(LEVELS), chunks: vec![chunk], chunk_size: CS }],
+    );
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let r = Reader::new(&src, &cache).unwrap();
+
+    let mut seen = 0;
+    r.for_each_chunk(0, &r.bbox, |_cid, _node| seen += 1);
+    assert_eq!(seen, 0, "the depth cap must prune the over-cap leaf before it is reached");
 }

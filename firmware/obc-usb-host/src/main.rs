@@ -1,18 +1,19 @@
 //! OBC USB feeder — the bench stand-in for real GPS / altimeter / compass hardware (issue #38).
 //!
-//! The prototype has no sensors (and never a good fix indoors), so this little desktop app
-//! replays a recorded `.gpx` out over the device's USB-CDC debug link as fake fixes: it drives
-//! the **same** [`GpxPlayer`]/[`BaroSensor`] the simulator uses (deriving course/speed from
-//! motion, throttled to ~1 Hz), so a real recorded ride moves the rider on-device exactly as it
-//! does in the sim. A compass slider sets the heading the device shows when stopped, a button row
-//! injects encoder/Back input (taps + holds) so the UI is drivable without touching the hardware,
-//! and a readout shows the device's render-stats telemetry. It's the host twin of the sim's
-//! control panel, pointed at real glass instead of the in-process app.
+//! The prototype has no sensors (and never a good fix indoors), so this desktop app replays a
+//! recorded `.gpx` over the device's USB-CDC debug link as fake fixes. It drives the same
+//! [`GpxPlayer`]/[`BaroSensor`] the simulator uses (deriving course/speed from motion, throttled
+//! to ~1 Hz), so a recorded ride moves the rider on-device as it does in the sim. A compass slider
+//! sets the heading the device shows when stopped, a button row injects encoder/Back input (taps +
+//! holds) so the UI is drivable without touching the hardware, and a readout shows the device's
+//! render-stats telemetry. The host twin of the sim's control panel, pointed at real glass.
 //!
 //! Wire format (see `obc-platform::debug_usb`): host→device `F <lat> <lon> <course|-> <speed|->`,
-//! `A <m>`, `C <deg>`, and input injection `K t <n>` / `K e <d|u>` / `K b <d|u>`; device→host
+//! `A <m>`, `C <deg>`, `Z <mpp>` (set the map's exact meters-per-pixel — the render-benchmark
+//! hook), and input injection `K t <n>` / `K e <d|u>` / `K b <d|u>`; device→host
 //! `T <frame_us> <lod> <feat_drawn> <feat_tried> <feat_dropped> <chunks> <hits> <misses> <reads>
-//! <bytes>`. ASCII, newline-terminated.
+//! <bytes> <collect_us> <read_us> <sort_us> <draw_us> <overlay_us> <mpp_milli>` — the last six are
+//! the per-stage render breakdown + the frame's camera scale. ASCII, newline-terminated.
 //!
 //! Usage: `obc-usb-host [--gpx FILE] [--port NAME] [--baud N] [--list]`.
 
@@ -24,56 +25,18 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
-use obc_app::{AltimeterSource, Fix, LocationSource};
+use obc_app::{AltimeterSource, LocationSource};
+// The canonical USB-CDC codec, authored once on the device side (issue #71): the device→host
+// `Telemetry` + its `parse_telemetry`, and the host→device `format_fix` `F`-line encoder. Reusing
+// these is the whole point — the two halves of the protocol can no longer drift (the old local
+// copies had already diverged: `lod` was `u32` here vs. `u8` on the device). DEFAULT features only,
+// so the pure codec is pulled without embassy-sync.
+use obc_platform::debug_usb::{format_fix, parse_telemetry, Telemetry};
 use obc_replay::{BaroSensor, GpxPlayer, Track};
 
 /// How long a "hold" button keeps the edge down before releasing — past the device's ~500 ms
 /// long-press threshold, so the recogniser fires Hold / BackHold.
 const HOLD_MS: u64 = 700;
-
-/// Device→host render-stats telemetry — the integer fields of `obc-platform::debug_usb::Telemetry`
-/// (the same numbers as the RTT `map frame` log / the sim's Render Stats panel).
-#[derive(Clone, Copy, Default)]
-struct Telemetry {
-    frame_us: u32,
-    lod: u32,
-    feat_drawn: u32,
-    feat_tried: u32,
-    feat_dropped: u32,
-    chunks: u32,
-    cache_hits: u32,
-    cache_misses: u32,
-    sd_reads: u32,
-    bytes_read: u32,
-}
-
-/// Parse a `T …` telemetry line; `None` for anything else (so other device chatter is ignored).
-fn parse_telemetry(line: &str) -> Option<Telemetry> {
-    let mut it = line.split_ascii_whitespace();
-    if it.next()? != "T" {
-        return None;
-    }
-    Some(Telemetry {
-        frame_us: it.next()?.parse().ok()?,
-        lod: it.next()?.parse().ok()?,
-        feat_drawn: it.next()?.parse().ok()?,
-        feat_tried: it.next()?.parse().ok()?,
-        feat_dropped: it.next()?.parse().ok()?,
-        chunks: it.next()?.parse().ok()?,
-        cache_hits: it.next()?.parse().ok()?,
-        cache_misses: it.next()?.parse().ok()?,
-        sd_reads: it.next()?.parse().ok()?,
-        bytes_read: it.next()?.parse().ok()?,
-    })
-}
-
-/// Format a GPS fix as an `F` line. Missing course/speed (a standstill) become the `-` sentinel,
-/// so the field stays positional — mirroring `obc-platform::debug_usb::parse_line`.
-fn fix_line(f: &Fix) -> String {
-    let course = f.course.map_or_else(|| "-".to_string(), |c| format!("{c:.1}"));
-    let speed = f.speed_mps.map_or_else(|| "-".to_string(), |s| format!("{s:.2}"));
-    format!("F {} {} {} {}\n", f.lat, f.lon, course, speed)
-}
 
 /// What the serial reader thread sends up to the UI.
 enum HostEvent {
@@ -113,11 +76,7 @@ fn connect(name: &str, baud: u32) -> Result<Connection, String> {
 
 /// The reader thread: accumulate bytes into `\n`-terminated lines, surface telemetry + raw lines,
 /// and exit on a non-timeout error (unplug) or when `stop` is set.
-fn spawn_reader(
-    mut port: Box<dyn serialport::SerialPort>,
-    tx: mpsc::Sender<HostEvent>,
-    stop: Arc<AtomicBool>,
-) {
+fn spawn_reader(mut port: Box<dyn serialport::SerialPort>, tx: mpsc::Sender<HostEvent>, stop: Arc<AtomicBool>) {
     thread::spawn(move || {
         let mut acc: Vec<u8> = Vec::new();
         let mut buf = [0u8; 256];
@@ -172,9 +131,7 @@ fn parse_args() -> Result<Args, String> {
 }
 
 fn list_ports() -> Vec<String> {
-    serialport::available_ports()
-        .map(|ports| ports.into_iter().map(|p| p.port_name).collect())
-        .unwrap_or_default()
+    serialport::available_ports().map(|ports| ports.into_iter().map(|p| p.port_name).collect()).unwrap_or_default()
 }
 
 fn main() -> eframe::Result<()> {
@@ -199,9 +156,7 @@ fn main() -> eframe::Result<()> {
     }
 
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("OBC USB Feeder")
-            .with_inner_size([460.0, 720.0]),
+        viewport: egui::ViewportBuilder::default().with_title("OBC USB Feeder").with_inner_size([460.0, 720.0]),
         ..Default::default()
     };
     eframe::run_native("OBC USB Feeder", options, Box::new(|_cc| Ok(Box::new(FeederApp::new(args)))))
@@ -265,11 +220,8 @@ impl FeederApp {
             Ok(track) => {
                 let player = GpxPlayer::new(track);
                 let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("track");
-                self.gpx_label = Some(format!(
-                    "{name} — {} pts, {}",
-                    player.point_count(),
-                    fmt_clock(player.duration())
-                ));
+                self.gpx_label =
+                    Some(format!("{name} — {} pts, {}", player.point_count(), fmt_clock(player.duration())));
                 self.gpx_error = None;
                 self.player = Some(player);
                 self.baro = BaroSensor::new();
@@ -337,7 +289,9 @@ impl FeederApp {
             if let Some(s) = fix.speed_mps {
                 fix.speed_mps = Some(s * player.speed());
             }
-            self.pending.push(fix_line(&fix));
+            // `format_fix` is the device's `F`-line encoder (a heapless String); copy it into the
+            // owned `pending` queue, so device and host share one encoder.
+            self.pending.push(format_fix(&fix).to_string());
         }
         self.baro.feed(player.elevation_at(player.time()), player.time());
         if let Some(alt) = self.baro.poll() {
@@ -371,8 +325,7 @@ impl FeederApp {
     /// its threshold before the up arrives).
     fn hold(&mut self, k: char) {
         self.key(&format!("K {k} d"));
-        self.pending_ups
-            .push((Instant::now() + Duration::from_millis(HOLD_MS), format!("K {k} u")));
+        self.pending_ups.push((Instant::now() + Duration::from_millis(HOLD_MS), format!("K {k} u")));
     }
 
     /// Move any scheduled button-up edges that are now due into the outgoing queue.
@@ -543,6 +496,18 @@ impl eframe::App for FeederApp {
                             ui,
                             |ui| {
                                 row(ui, "Frame", &format!("{:.2} ms", t.frame_us as f32 / 1000.0));
+                                row(ui, "Scale", &format!("{:.3} m/px", t.mpp_milli as f32 / 1000.0));
+                                // Per-stage breakdown (render benchmark): `collect_us` includes
+                                // `read_us`, so show the CPU part of collect separately. `setup`
+                                // (Reader::new) is whatever the frame total has over the stages.
+                                let ms = |us: u32| format!("{:.2} ms", us as f32 / 1000.0);
+                                let stages = t.collect_us + t.sort_us + t.draw_us + t.overlay_us;
+                                row(ui, "· read (SD)", &ms(t.read_us));
+                                row(ui, "· collect-cpu", &ms(t.collect_us.saturating_sub(t.read_us)));
+                                row(ui, "· sort", &ms(t.sort_us));
+                                row(ui, "· draw", &ms(t.draw_us));
+                                row(ui, "· overlay", &ms(t.overlay_us));
+                                row(ui, "· setup", &ms(t.frame_us.saturating_sub(stages)));
                                 row(ui, "LOD", &t.lod.to_string());
                                 row(ui, "Features", &format!("{} / {} drawn", t.feat_drawn, t.feat_tried));
                                 ui.label("Dropped");

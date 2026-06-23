@@ -18,7 +18,7 @@ use heapless::Vec;
 
 use embedded_graphics::{
     prelude::*,
-    primitives::{Circle, Polyline, PrimitiveStyle, Rectangle},
+    primitives::{Polyline, PrimitiveStyle, Rectangle},
 };
 
 use obc_reader::{BBox, Kind, Reader};
@@ -76,8 +76,7 @@ const MCU_RENDERER_BYTES: usize = MAX_DECODE_POINTS * 8
     + MAX_SPANS * core::mem::size_of::<Span>()
     + MAX_SCREEN_POINTS * 8
     + MAX_CROSSINGS * 4;
-const _: () =
-    assert!(MCU_RENDERER_BYTES <= 200 * 1024, "MapRenderer exceeds the 200 KB MCU budget");
+const _: () = assert!(MCU_RENDERER_BYTES <= 200 * 1024, "MapRenderer exceeds the 200 KB MCU budget");
 
 /// Meters of ground per microdegree of latitude — the renderer's zoom is pixels per
 /// microdegree-lat, so this turns zoom into meters-per-pixel. Derived from the shared
@@ -86,21 +85,20 @@ const _: () =
 const METERS_PER_MICRODEG_LAT: f32 = (obc_reader::M_PER_DEG / 1_000_000.0) as f32;
 
 // Route direction chevrons (tunable). Arrowheads along the active route at riding zoom,
-// anchored to route distance (not screen) so each stays pinned to a ground spot, drawn only
-// in a window around the rider — so an out-and-back marks just the leg you're on, the right
-// way round. Spacing + window are screen-relative — a fixed pixel cadence and a chevron *count*,
-// not ground metres — so the chevrons keep an even spread across the finest LOD's zoom range
-// (no bunching when zoomed out); the ground spacing is derived per-frame from the camera's
-// m/px. Glyph sizes are screen pixels. Sweep with the app's `ROUTE_WEIGHT`.
+// anchored to route distance (not screen) so each stays pinned to a ground spot, drawn only in a
+// window around the rider — so an out-and-back marks just the current leg. Spacing + window are
+// screen-relative — a fixed pixel cadence and a chevron *count*, not ground metres — so the
+// chevrons keep an even spread across the finest LOD's zoom range (no bunching when zoomed out);
+// the ground spacing is derived per-frame from the camera's m/px. Glyph sizes are screen pixels.
+// Sweep with the app's `ROUTE_WEIGHT`.
 //
-/// On-screen gap between consecutive chevrons (px). Held in *screen* space, not ground metres:
-/// each frame the route-distance spacing is `ARROW_SPACING_PX × m/px`, so the chevrons stay
-/// evenly spread however far you zoom. At the ~0.5 m/px riding zoom this works out to ≈ 33 m
-/// apart on the ground — the original feel.
+/// On-screen gap between consecutive chevrons (px). Held in *screen* space: each frame the
+/// route-distance spacing is `ARROW_SPACING_PX × m/px`, so the chevrons stay evenly spread however
+/// far you zoom. At the ~0.5 m/px riding zoom this is ≈ 33 m apart on the ground.
 const ARROW_SPACING_PX: f32 = 66.0;
-/// How many chevrons lead *ahead* of the rider. A count (not a ground distance) so the
-/// look-ahead tracks the screen cadence — the chevrons reach a fixed way up the screen at every
-/// zoom. Off-screen ones are free, so this is generous (≈ the old 300 m at riding zoom).
+/// How many chevrons lead *ahead* of the rider. A count (not a ground distance) so the look-ahead
+/// tracks the screen cadence — the chevrons reach a fixed way up the screen at every zoom.
+/// Off-screen ones are free, so this is generous (≈ the old 300 m at riding zoom).
 const ARROW_AHEAD_COUNT: u32 = 9;
 /// How many chevrons trail *behind* the rider. Zero — the breadcrumb shows the travelled line,
 /// so chevrons only lead ahead.
@@ -111,7 +109,7 @@ const ARROW_TIP: f32 = 8.0;
 const ARROW_BACK: f32 = 2.5;
 /// Chevron base half-width (px) — half the spread of the two trailing corners. Kept under
 /// the route's half-stroke so the glyph sits *inside* the line (framed by the route colour
-/// on every side), the Garmin look — independent of whatever map colour the line crosses.
+/// on every side), independent of whatever map colour the line crosses.
 const ARROW_HALF: f32 = 4.5;
 
 /// The [`Viewport`]/`AppState` zoom (pixels per microdegree of latitude) that yields
@@ -165,14 +163,7 @@ impl Viewport {
 
     /// Like [`new`](Viewport::new) but rotated so `course_rad` (radians CW from
     /// north) points to the top of the screen.
-    pub fn new_rotated(
-        w: f32,
-        h: f32,
-        cam_lon: i32,
-        cam_lat: i32,
-        zoom: f32,
-        course_rad: f32,
-    ) -> Self {
+    pub fn new_rotated(w: f32, h: f32, cam_lon: i32, cam_lat: i32, zoom: f32, course_rad: f32) -> Self {
         Viewport {
             w,
             h,
@@ -232,12 +223,8 @@ impl Viewport {
     /// Uses all four screen corners so a *rotated* view still culls correctly —
     /// the axis-aligned box must cover the tilted rectangle's full extent.
     pub fn visible_bbox(&self) -> BBox {
-        let corners = [
-            self.to_map(0.0, 0.0),
-            self.to_map(self.w, 0.0),
-            self.to_map(0.0, self.h),
-            self.to_map(self.w, self.h),
-        ];
+        let corners =
+            [self.to_map(0.0, 0.0), self.to_map(self.w, 0.0), self.to_map(0.0, self.h), self.to_map(self.w, self.h)];
         let mut min_lon = i32::MAX;
         let mut max_lon = i32::MIN;
         let mut min_lat = i32::MAX;
@@ -308,10 +295,8 @@ impl FrameScratch {
 
         // Record utilization for the stats panel.
         stats.span_utilization = self.spans.len() as f32 / self.spans.capacity() as f32;
-        stats.point_utilization =
-            self.frame_points.len() as f32 / self.frame_points.capacity() as f32;
-        stats.ring_utilization =
-            self.frame_ring_lens.len() as f32 / self.frame_ring_lens.capacity() as f32;
+        stats.point_utilization = self.frame_points.len() as f32 / self.frame_points.capacity() as f32;
+        stats.ring_utilization = self.frame_ring_lens.len() as f32 / self.frame_ring_lens.capacity() as f32;
     }
 
     /// Append every visible feature whose style is at priority `level` to the
@@ -320,14 +305,7 @@ impl FrameScratch {
     /// [`Reader::for_each_feature_filtered`]. The leaf walk reads only the index,
     /// so the per-level re-walk is cheap; `stats.chunks_visited` is recorded once
     /// (the chunk set is identical every level).
-    fn collect_level(
-        &mut self,
-        reader: &Reader,
-        lod: usize,
-        level: u8,
-        view: &BBox,
-        stats: &mut RenderStats,
-    ) {
+    fn collect_level(&mut self, reader: &Reader, lod: usize, level: u8, view: &BBox, stats: &mut RenderStats) {
         // Split the borrow so the decode callback can fill `frame_*`/`spans` while
         // `for_each_feature_filtered` borrows the decode scratch.
         let FrameScratch { dec_points, dec_ring_lens, frame_points, frame_ring_lens, spans } = self;
@@ -404,6 +382,34 @@ struct DrawScratch {
     xs: Vec<f32, MAX_CROSSINGS>,
 }
 
+/// A monotonic microsecond clock for **stage timing** inside [`MapRenderer::render_timed`].
+///
+/// `obc-render` is `no_std` and carries no clock of its own, so a caller that wants the
+/// per-stage breakdown (collect / sort / draw) passes one in: the device an embassy-`Instant`
+/// microsecond clock, a desktop host a `std::time::Instant` clock. The plain
+/// [`MapRenderer::render`] path passes the zero-cost [`NoopClock`], so it pays nothing and leaves
+/// the stage fields at `0`.
+///
+/// This whole timing seam — the trait, [`NoopClock`], [`MapRenderer::render_timed`] and the
+/// `*_us` stage fields on [`RenderStats`] — is self-contained on purpose: it backs the
+/// render-performance benchmark and can be lifted out in one revert once that work is done.
+pub trait Clock {
+    /// Microseconds since some fixed, monotonic epoch. Only differences are taken.
+    fn now_us(&self) -> u64;
+}
+
+/// The zero-cost [`Clock`] used by the untimed [`MapRenderer::render`] path: always `0`, so
+/// every stage delta is `0` and the optimizer can fold the timing away entirely.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoopClock;
+
+impl Clock for NoopClock {
+    #[inline(always)]
+    fn now_us(&self) -> u64 {
+        0
+    }
+}
+
 /// What a single render call drew.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RenderStats {
@@ -433,8 +439,7 @@ pub struct RenderStats {
     /// visible chunks once per priority level; `map_chunk_hits` are the passes served from a
     /// resident cache slot, `map_chunk_misses` the ones that read from SD. `map_sd_reads` /
     /// `map_bytes_read` are the raw source overhead (index blocks + chunk fills) — the
-    /// "SD-read overhead per frame" the issue asks to measure. All `0` with an in-memory map
-    /// whose chunks all fit the cache only if nothing was decoded; otherwise the hit rate is
+    /// "SD-read overhead per frame" the issue asks to measure. Hit rate is
     /// `hits / (hits + misses)`.
     pub map_chunk_hits: u32,
     pub map_chunk_misses: u32,
@@ -446,6 +451,16 @@ pub struct RenderStats {
     /// device the Cortex-M DWT cycle counter) — kept on the stats so the control panel and
     /// the headless line surface it without a side channel.
     pub render_us: u32,
+    /// Per-stage wall time of the **map** render, microseconds — filled by
+    /// [`render_timed`](MapRenderer::render_timed) from the caller's [`Clock`]; left `0` on the
+    /// untimed [`render`](MapRenderer::render) path. `collect_us` is visible-feature collection
+    /// (quadtree walk + SD/cache reads + decode + cull + span build), `sort_us` the painter's-
+    /// order span sort, `draw_us` the full-screen clear + rasterization (`draw_map`). They cover
+    /// only the base map; overlays (route/marker/breadcrumb) are drawn after `render` returns, so
+    /// a caller derives overlay time as `total − (collect_us + sort_us + draw_us)`.
+    pub collect_us: u32,
+    pub sort_us: u32,
+    pub draw_us: u32,
 }
 
 /// One visible feature's draw metadata plus the ranges locating its geometry in
@@ -482,26 +497,29 @@ impl MapRenderer {
         Self::default()
     }
 
-    /// `const` constructor so the renderer can live in a `static` (or be placed
-    /// into a fixed RAM region) on an MCU without a ~200 KB stack temporary —
-    /// `heapless::Vec::new()` is `const`, and an empty `Vec` is the same all-zero
-    /// state `.bss` provides. The firmware constructs the [`App`](../obc_app)
-    /// (which embeds this) straight into SDRAM via this path; the desktop
-    /// simulator keeps using [`new`](MapRenderer::new)/`Default`.
+    /// Initialize a renderer **in place** at `slot` as the empty, ready-to-render
+    /// state — the placement path an MCU uses to build the resident renderer (and
+    /// the [`App`](../obc_app) that embeds it) straight into a fixed RAM region
+    /// without ever materializing the ~200 KB of scratch on the stack.
     ///
-    /// Re-derived from the `mcu-render-bench` branch's `new_const`, updated for the
-    /// `FrameScratch`/`DrawScratch` split this crate gained since.
-    pub const fn new_const() -> Self {
-        Self {
-            frame: FrameScratch {
-                dec_points: Vec::new(),
-                dec_ring_lens: Vec::new(),
-                frame_points: Vec::new(),
-                frame_ring_lens: Vec::new(),
-                spans: Vec::new(),
-            },
-            draw: DrawScratch { screen: Vec::new(), xs: Vec::new() },
-        }
+    /// Every scratch buffer is a [`heapless::Vec`], whose empty state is `len = 0`
+    /// over an *uninitialized* backing array — i.e. exactly the all-zero bit
+    /// pattern. So zeroing the slot yields a valid, empty renderer, and
+    /// `write_bytes(0, 1)` lowers to a `memset` of the slot with no temporary and
+    /// no reliance on the optimizer's return-value optimization. This is the same
+    /// robust trick `MapCache` uses (obc-reader); the desktop simulator keeps using
+    /// [`new`](MapRenderer::new)/`Default`, where a stack temporary is fine.
+    ///
+    /// # Safety
+    /// `slot` must be valid for writes, aligned, and exclusively owned for the call.
+    /// On return the slot holds a fully initialized, empty [`MapRenderer`].
+    pub unsafe fn init_zeroed(slot: *mut Self) {
+        // SAFETY: a renderer is `{ FrameScratch, DrawScratch }`, each only
+        // `heapless::Vec`s — no references, no enum with a non-zero discriminant, no
+        // `bool` that must be non-zero — so the all-zero bit pattern is the empty
+        // renderer (`len = 0`, write-before-read buffers). The caller guarantees the
+        // slot is a valid, owned, aligned region; `write_bytes` initializes it whole.
+        unsafe { slot.write_bytes(0u8, 1) }
     }
 
     /// Render the visible map into `target`.
@@ -525,7 +543,33 @@ impl MapRenderer {
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
+        // Untimed path: the zero-cost `NoopClock` leaves the `*_us` stage fields at 0 and lets
+        // the optimizer fold the timing away. Callers wanting the per-stage breakdown (the
+        // device render benchmark) use `render_timed` with a real clock.
+        self.render_timed(target, reader, vp, bg, color_fn, &NoopClock)
+    }
+
+    /// Like [`render`](MapRenderer::render) but fills the per-stage timings on the returned
+    /// [`RenderStats`] (`collect_us` / `sort_us` / `draw_us`) from `clock` — a `no_std`-friendly
+    /// microsecond source the caller supplies (the device's DWT cycle counter; a host an
+    /// `Instant`). The stages cover the base map only; see the [`RenderStats`] stage-field docs
+    /// and [`Clock`].
+    pub fn render_timed<D, F>(
+        &mut self,
+        target: &mut D,
+        reader: &Reader,
+        vp: &Viewport,
+        bg: D::Color,
+        color_fn: F,
+        clock: &dyn Clock,
+    ) -> RenderStats
+    where
+        D: DrawTarget,
+        F: Fn(u16) -> D::Color,
+    {
+        let t0 = clock.now_us();
         let _ = target.clear(bg);
+        let t_cleared = clock.now_us();
 
         let lod = reader.select_lod_for_mpp(vp.meters_per_pixel());
         let view = vp.visible_bbox();
@@ -544,9 +588,21 @@ impl MapRenderer {
         stats.map_chunk_misses = after.chunk_misses.wrapping_sub(before.chunk_misses);
         stats.map_sd_reads = after.sd_reads.wrapping_sub(before.sd_reads);
         stats.map_bytes_read = after.bytes_read.wrapping_sub(before.bytes_read);
+        let t_collected = clock.now_us();
 
         self.frame.spans.sort_unstable_by_key(|s| (s.z, s.seq));
+        let t_sorted = clock.now_us();
+
         self.draw_map(target, vp, &color_fn);
+        let t_drawn = clock.now_us();
+
+        // `collect` = walk + read + decode; `sort` = painter order; `draw` = the full-screen
+        // clear plus rasterization (the clear is a framebuffer write, so it belongs with draw
+        // even though it ran first). `saturating_sub` guards a momentarily non-monotonic clock;
+        // a frame is well under a second, so the `u32` µs casts never truncate.
+        stats.collect_us = t_collected.saturating_sub(t_cleared) as u32;
+        stats.sort_us = t_sorted.saturating_sub(t_collected) as u32;
+        stats.draw_us = (t_cleared.saturating_sub(t0) + t_drawn.saturating_sub(t_sorted)) as u32;
 
         stats
     }
@@ -566,33 +622,17 @@ impl MapRenderer {
         for span in frame.spans.iter() {
             let ring_start = span.ring_start as usize;
             let pt_start = span.pt_start as usize;
-            let ring_lens =
-                &frame.frame_ring_lens[ring_start..ring_start + span.ring_count as usize];
+            let ring_lens = &frame.frame_ring_lens[ring_start..ring_start + span.ring_count as usize];
             let total: usize = ring_lens.iter().sum();
             let pts = &frame.frame_points[pt_start..pt_start + total];
             let color = color_fn(span.color);
 
             match span.kind {
-                Kind::Polygon => fill_polygon_proj(
-                    target,
-                    vp,
-                    pts,
-                    ring_lens,
-                    color,
-                    &mut draw.screen,
-                    &mut draw.xs,
-                ),
+                Kind::Polygon => fill_polygon_proj(target, vp, pts, ring_lens, color, &mut draw.screen, &mut draw.xs),
                 Kind::Line => {
                     // Lines use only the exterior ring.
                     let n = ring_lens.first().copied().unwrap_or(0);
-                    draw_line(
-                        target,
-                        vp,
-                        &pts[..n],
-                        color,
-                        span.weight.max(1) as u32,
-                        &mut draw.screen,
-                    );
+                    draw_line(target, vp, &pts[..n], color, span.weight.max(1) as u32, &mut draw.screen, &mut draw.xs);
                 }
             }
         }
@@ -651,24 +691,12 @@ impl MapRenderer {
                 const TIP: f32 = 12.0;
                 const BACK: f32 = 6.0;
                 const HALF: f32 = 8.0;
-                fill_chevron(
-                    target,
-                    &mut self.draw.xs,
-                    (cx, cy),
-                    fwd,
-                    TIP,
-                    BACK,
-                    HALF,
-                    color,
-                    w,
-                    h,
-                );
+                fill_chevron(target, &mut self.draw.xs, (cx, cy), fwd, TIP, BACK, HALF, color, w, h);
             }
             // Stationary glyph: a small orientation-free diamond.
             None => {
                 const R: f32 = 7.0;
-                let pt =
-                    |x: f32, y: f32| Point::new(libm::roundf(x) as i32, libm::roundf(y) as i32);
+                let pt = |x: f32, y: f32| Point::new(libm::roundf(x) as i32, libm::roundf(y) as i32);
                 let diamond = [pt(cx, cy - R), pt(cx + R, cy), pt(cx, cy + R), pt(cx - R, cy)];
                 fill_polygon(target, &diamond, &[4], color, w, h, &mut self.draw.xs);
             }
@@ -731,7 +759,7 @@ impl MapRenderer {
                 let (x, y) = vp.to_screen(p.lon, p.lat);
                 Point::new(x, y)
             });
-            route_drawn += stroke_overlay(target, screen, projected, color, weight, w, h);
+            route_drawn += stroke_overlay(target, screen, xs, projected, color, weight, w, h);
         }
 
         // Pass 2 — chevrons, anchored to route distance and windowed around the rider.
@@ -766,35 +794,18 @@ impl MapRenderer {
                 }
                 let fwd = (dx / m, dy / m); // screen travel dir (north-up & heading-up)
                 let centre = (ax + dx * f, ay + dy * f); // chevron centre along the segment
-                fill_chevron(
-                    target,
-                    xs,
-                    centre,
-                    fwd,
-                    ARROW_TIP,
-                    ARROW_BACK,
-                    ARROW_HALF,
-                    arrow_color,
-                    w,
-                    h,
-                );
+                fill_chevron(target, xs, centre, fwd, ARROW_TIP, ARROW_BACK, ARROW_HALF, arrow_color, w, h);
             });
         }
         (route_chunks, route_points, route_drawn)
     }
 
     /// Stroke a single polyline of `(lon, lat)` microdegree points as an overlay, clipped to the
-    /// view and stroked with embedded-graphics (see [`stroke_overlay`]) — this is the recorded
-    /// **breadcrumb**, whose two tiers (spine, recent) are each one call. Call after
-    /// [`render`](MapRenderer::render) so the path sits on the map.
-    pub fn stroke_path<D, I>(
-        &mut self,
-        target: &mut D,
-        vp: &Viewport,
-        pts: I,
-        color: D::Color,
-        weight: u32,
-    ) where
+    /// view (see [`stroke_overlay`]) — this is the recorded **breadcrumb**, whose two tiers (spine,
+    /// recent) are each one call. Call after [`render`](MapRenderer::render) so the path sits on
+    /// the map.
+    pub fn stroke_path<D, I>(&mut self, target: &mut D, vp: &Viewport, pts: I, color: D::Color, weight: u32)
+    where
         D: DrawTarget,
         I: IntoIterator<Item = (i32, i32)>,
     {
@@ -803,7 +814,9 @@ impl MapRenderer {
             let (x, y) = vp.to_screen(lon, lat);
             Point::new(x, y)
         });
-        stroke_overlay(target, &mut self.draw.screen, projected, color, weight, w, h);
+        // Split the borrow so the span fills can take `xs` while the run builds in `screen`.
+        let DrawScratch { screen, xs } = &mut self.draw;
+        stroke_overlay(target, screen, xs, projected, color, weight, w, h);
     }
 }
 
@@ -826,14 +839,7 @@ fn outcode(x: f32, y: f32, xmin: f32, ymin: f32, xmax: f32, ymax: f32) -> u8 {
 
 /// Clip segment `a`→`b` to the rectangle (Cohen–Sutherland), returning the visible sub-segment
 /// rounded back to integer pixels, or `None` if it misses the rectangle entirely.
-fn clip_segment(
-    a: Point,
-    b: Point,
-    xmin: f32,
-    ymin: f32,
-    xmax: f32,
-    ymax: f32,
-) -> Option<(Point, Point)> {
+fn clip_segment(a: Point, b: Point, xmin: f32, ymin: f32, xmax: f32, ymax: f32) -> Option<(Point, Point)> {
     let (mut x0, mut y0) = (a.x as f32, a.y as f32);
     let (mut x1, mut y1) = (b.x as f32, b.y as f32);
     let mut o0 = outcode(x0, y0, xmin, ymin, xmax, ymax);
@@ -868,49 +874,138 @@ fn clip_segment(
     }
 }
 
-/// Append `c1` to the current run, first subdividing a step longer than 150 px into ≤150 px hops so
-/// embedded-graphics' thick-line intersection math stays well-behaved (no overflow in debug,
-/// no miter spikes on the MCU in release).
-fn push_run(run: &mut Vec<Point, MAX_SCREEN_POINTS>, c1: Point) {
-    if let Some(&p1) = run.last() {
-        let (dx, dy) = (c1.x - p1.x, c1.y - p1.y);
-        let dist = dx.abs().max(dy.abs());
-        if dist > 150 {
-            let steps = (dist + 149) / 150;
-            for s in 1..steps {
-                let _ = run.push(Point::new(p1.x + dx * s / steps, p1.y + dy * s / steps));
-            }
-        }
+/// The `cos²θ` threshold below which a `weight`-px thick stroke's bare butt-join is already within
+/// ½ px of a round joint, so the vertex needs no round-join disc in [`flush_run`]. The span stroke
+/// lays each segment as a rectangle whose butt ends meet at the vertex; on the outer side of a turn
+/// of `θ` (off straight) that leaves an uncovered notch about `r·sin(θ/2)` deep (`r = weight/2`).
+/// Sub-pixel means `r·sin(θ/2) ≤ ½`, i.e. `sin(θ/2) ≤ 1/weight`, so the cut-off cosine is
+/// `cosθ = 1 − 2·sin²(θ/2) = 1 − 2·(1/weight)²` — returned squared for the magnitude-folded test.
+/// At the route's weight 11 that's a ~10° cut-off; a sharper bend gets its disc.
+#[inline]
+fn joint_disc_cos2(weight: u32) -> f32 {
+    let sin_half = (1.0 / weight as f32).min(1.0); // ½px ÷ (weight/2)
+    let cos = 1.0 - 2.0 * sin_half * sin_half;
+    if cos <= 0.0 {
+        0.0 // cos ≤ 0 ⇒ every turn discs — the `dot ≤ 0` guard in `turn_is_sharp` already covers it
+    } else {
+        cos * cos
     }
-    let _ = run.push(c1);
 }
 
-/// Stroke the accumulated run with embedded-graphics' (properly jointed) thick `Polyline`,
-/// then clear it for the next run.
+/// Whether the polyline turns sharply enough at `b` (across `a → b → c`) that its butt-join notch
+/// would show — i.e. `cos²θ` falls below `cos2` ([`joint_disc_cos2`]). A reversed/obtuse turn
+/// (non-positive dot) always qualifies; otherwise compare with the segment magnitudes folded in
+/// (no `sqrt`, no `acos`).
+#[inline]
+fn turn_is_sharp(a: Point, b: Point, c: Point, cos2: f32) -> bool {
+    let (ux, uy) = ((b.x - a.x) as f32, (b.y - a.y) as f32);
+    let (vx, vy) = ((c.x - b.x) as f32, (c.y - b.y) as f32);
+    let dot = ux * vx + uy * vy;
+    if dot <= 0.0 {
+        return true; // ≥ 90° turn (or a degenerate spur): always disc it
+    }
+    // sharp ⇔ cosθ < √cos2 ⇔ dot² < cos2 · |u|²|v|²  (dot ≥ 0, so squaring keeps the sense)
+    dot * dot < cos2 * (ux * ux + uy * uy) * (vx * vx + vy * vy)
+}
+
+/// Fill a solid disc of radius `r` px centred at `(cx, cy)` as horizontal spans — one
+/// [`fill_solid`](DrawTarget::fill_solid) per row (`hw = √(r² − dy²)`), the same coalesced row
+/// fill the polygon scanline uses, rather than embedded-graphics' per-pixel `Circle`. Rounds the
+/// thick stroke's joints and caps. Rows off the top/bottom are skipped; `fill_solid` clips x.
+fn fill_disc<D>(target: &mut D, cx: i32, cy: i32, r: i32, color: D::Color, h: i32)
+where
+    D: DrawTarget,
+{
+    if r < 1 {
+        return;
+    }
+    let r2 = (r * r) as f32;
+    for dy in -r..=r {
+        let y = cy + dy;
+        if y < 0 || y >= h {
+            continue;
+        }
+        let hw = libm::sqrtf((r2 - (dy * dy) as f32).max(0.0)) as i32;
+        let _ = target.fill_solid(&Rectangle::new(Point::new(cx - hw, y), Size::new((2 * hw + 1) as u32, 1)), color);
+    }
+}
+
+/// Lay down one segment of a thick stroke as a filled rectangle (the segment swept ±`hw` px along
+/// its perpendicular) via the even-odd scanline [`fill_polygon`] — a convex quad, so every row has
+/// exactly two crossings and fills as one span. A degenerate zero-length segment is left to the
+/// joint/cap disc. Spans round **outward** (see `fill_polygon`), so adjacent quads and the joint
+/// discs overlap by ≤1 px and leave no hairline crack.
+#[allow(clippy::too_many_arguments)]
+fn fill_thick_segment<D>(
+    target: &mut D,
+    a: Point,
+    b: Point,
+    hw: f32,
+    color: D::Color,
+    w: i32,
+    h: i32,
+    xs: &mut Vec<f32, MAX_CROSSINGS>,
+) where
+    D: DrawTarget,
+{
+    let (ax, ay, bx, by) = (a.x as f32, a.y as f32, b.x as f32, b.y as f32);
+    let (dx, dy) = (bx - ax, by - ay);
+    let len = libm::sqrtf(dx * dx + dy * dy);
+    if len < 1e-3 {
+        return;
+    }
+    let (nx, ny) = (-dy / len * hw, dx / len * hw); // perpendicular × half-width
+    let rp = |x: f32, y: f32| Point::new(libm::roundf(x) as i32, libm::roundf(y) as i32);
+    let quad = [rp(ax + nx, ay + ny), rp(bx + nx, by + ny), rp(bx - nx, by - ny), rp(ax - nx, ay - ny)];
+    fill_polygon(target, &quad, &[4], color, w, h, xs);
+}
+
+/// Rasterise the accumulated run, then clear it for the next.
+///
+/// A **1 px** stroke goes through embedded-graphics' `Polyline` — a thin Bresenham line it draws
+/// well and cheaply, and the one width the span path below can't (a zero-width rectangle has no
+/// scanline crossings). **Everything ≥ 2 px** — most of the map's roads, plus the route and
+/// breadcrumb — is laid down as **spans**: a filled rectangle per segment ([`fill_thick_segment`])
+/// plus a round-join/cap disc ([`fill_disc`]) at the two run ends (always — they round the cap and,
+/// at a chunk seam, close the butt gap to the next feature) and at every interior vertex that bends
+/// sharply enough to show a notch ([`turn_is_sharp`]). Both go through the framebuffer's coalesced
+/// `fill_solid`, not the per-pixel `draw_iter` eg's thick `Polyline` + `Circle` ran through. eg's
+/// thick path was the overlay's former dominant cost, and (measured) it's ~10× a span stroke even
+/// at 2 px — the narrowest width that path enters — so the split sits at 1 px, not 2.
+#[allow(clippy::too_many_arguments)]
 fn flush_run<D>(
     target: &mut D,
     run: &mut Vec<Point, MAX_SCREEN_POINTS>,
     color: D::Color,
     weight: u32,
+    w: i32,
+    h: i32,
+    xs: &mut Vec<f32, MAX_CROSSINGS>,
 ) where
     D: DrawTarget,
 {
     if run.len() >= 2 {
-        let _ =
-            Polyline::new(run).into_styled(PrimitiveStyle::with_stroke(color, weight)).draw(target);
-        // Round joints + caps. eg joins thick segments with a flat **bevel**, so a densely
-        // sampled curve renders as a fan of facets — the scalloped "beading" on thick lines.
-        // Filling a disc (⌀ = stroke width) at each vertex turns every joint into a smooth arc,
-        // keeping full shape detail (no decimation needed). Only thick lines need it (≤2 px don't
-        // visibly facet), and the disc at a shared chunk-seam vertex also closes the butt-cap gap
-        // between adjacent features.
-        if weight > 2 {
+        if weight <= 1 {
+            let _ = Polyline::new(run).into_styled(PrimitiveStyle::with_stroke(color, weight)).draw(target);
+        } else {
+            // The body's half-width is the integer disc radius, not `weight/2` — so the rectangle
+            // and the round-join/cap disc come out the same thickness (the disc never narrower than
+            // the body it caps), and an odd `weight` lands on its nominal width instead of rounding
+            // a px fatter.
             let r = (weight / 2) as i32;
-            for p in run.iter() {
-                let _ = Circle::new(Point::new(p.x - r, p.y - r), weight)
-                    .into_styled(PrimitiveStyle::with_fill(color))
-                    .draw(target);
+            let hw = r as f32;
+            for seg in run.windows(2) {
+                fill_thick_segment(target, seg[0], seg[1], hw, color, w, h, xs);
             }
+            let cos2 = joint_disc_cos2(weight);
+            let n = run.len();
+            fill_disc(target, run[0].x, run[0].y, r, color, h);
+            for i in 1..n - 1 {
+                if turn_is_sharp(run[i - 1], run[i], run[i + 1], cos2) {
+                    fill_disc(target, run[i].x, run[i].y, r, color, h);
+                }
+            }
+            fill_disc(target, run[n - 1].x, run[n - 1].y, r, color, h);
         }
     }
     run.clear();
@@ -943,8 +1038,8 @@ fn within_eps(p: Point, a: Point, b: Point, eps: f32) -> bool {
 /// Pulled out of [`stroke_overlay`] so the main loop can feed it the *simplified* segments.
 ///
 /// Returns how many **real on-screen vertices** this segment contributed (0 if wholly clipped
-/// out) — `c1` always, plus `c0` when it (re)starts a run. Excludes [`push_run`]'s synthetic
-/// subdivision hops, so the caller's running total is the points actually rasterised, not decoded.
+/// out) — `c1` always, plus `c0` when it (re)starts a run — so the caller's running total is the
+/// points actually rasterised, not decoded.
 #[allow(clippy::too_many_arguments)]
 fn stroke_seg<D>(
     target: &mut D,
@@ -953,31 +1048,32 @@ fn stroke_seg<D>(
     b: Point,
     color: D::Color,
     weight: u32,
-    xmin: f32,
-    ymin: f32,
-    xmax: f32,
-    ymax: f32,
+    clip: (f32, f32, f32, f32),
+    w: i32,
+    h: i32,
+    xs: &mut Vec<f32, MAX_CROSSINGS>,
 ) -> usize
 where
     D: DrawTarget,
 {
+    let (xmin, ymin, xmax, ymax) = clip;
     match clip_segment(a, b, xmin, ymin, xmax, ymax) {
         None => {
-            flush_run(target, run, color, weight); // segment wholly off-screen
+            flush_run(target, run, color, weight, w, h, xs); // segment wholly off-screen
             0
         }
         Some((c0, c1)) => {
             let mut drawn = 1; // c1
                                // (Re)start a run if this segment didn't continue the previous one.
             if run.last().copied() != Some(c0) {
-                flush_run(target, run, color, weight);
+                flush_run(target, run, color, weight, w, h, xs);
                 let _ = run.push(c0);
                 drawn += 1; // c0 enters the view here
             }
-            push_run(run, c1);
+            let _ = run.push(c1);
             // Clipped at its far end → the line left the view here; close this run.
             if c1 != b {
-                flush_run(target, run, color, weight);
+                flush_run(target, run, color, weight, w, h, xs);
             }
             drawn
         }
@@ -1018,26 +1114,27 @@ where
     }
 }
 
-/// Clip a projected overlay polyline to the view and stroke the on-screen runs with
-/// embedded-graphics. eg's `Polyline` gives thick lines but rasterises width pixel-by-pixel —
-/// ruinous when the route/breadcrumb is ~96% off-screen. Clipping first (Cohen–Sutherland, into
-/// the screen grown by the stroke width so an edge-hugging line keeps its full thickness) means
-/// eg only ever pays for the visible part: the line where it crosses the view splits into
-/// separate runs, each stroked on its own (and round-jointed in [`flush_run`]).
+/// Clip a projected overlay polyline to the view and stroke the on-screen runs ([`flush_run`]).
+/// Clipping first (Cohen–Sutherland, into the screen grown by the stroke width so an edge-hugging
+/// line keeps its full thickness) means the stroker only ever pays for the visible part — vital
+/// when the route/breadcrumb is ~96% off-screen at riding zoom: the line splits into separate runs
+/// where it crosses the view, each stroked on its own.
 ///
 /// The points are first **simplified in screen space** ([`simplify`] at [`SIMPLIFY_EPS_PX`]) — a
 /// *subpixel* dedup that folds away the integer-projection staircase and same-pixel vertex
 /// pile-ups a dense route/road carries when zoomed out. It never moves the line a visible pixel,
-/// so no shape is lost (the joint smoothing that kills thick-line beading is [`flush_run`]'s
-/// round discs, not this); it just hands eg far fewer segments and discs. The `run` scratch is
-/// reused; long runs are subdivided.
+/// so no shape is lost; it just hands the stroker far fewer segments and joints. The `run` scratch
+/// is reused; `xs` is the shared crossing buffer the span fills need.
+///
 /// Returns the count of **on-screen vertices actually stroked** (after the subpixel simplify and
 /// the view clip) — far fewer than the points fed in when the line is mostly off-screen or
 /// folds to the same pixels. Callers that want the stat (the route overlay) sum it; the
 /// breadcrumb ignores it.
+#[allow(clippy::too_many_arguments)]
 fn stroke_overlay<D, I>(
     target: &mut D,
     run: &mut Vec<Point, MAX_SCREEN_POINTS>,
+    xs: &mut Vec<f32, MAX_CROSSINGS>,
     points: I,
     color: D::Color,
     weight: u32,
@@ -1050,7 +1147,7 @@ where
 {
     let weight = weight.max(1);
     let m = weight as f32 + 2.0; // clip margin ≥ half-width, so edge strokes still paint in
-    let (xmin, ymin, xmax, ymax) = (-m, -m, w as f32 + m, h as f32 + m);
+    let clip = (-m, -m, w as f32 + m, h as f32 + m);
     run.clear();
 
     // Simplify in screen space, then stroke consecutive kept vertices as clipped segments — their
@@ -1059,11 +1156,11 @@ where
     let mut drawn = 0usize;
     simplify(points, SIMPLIFY_EPS_PX, |v| {
         if let Some(a) = prev {
-            drawn += stroke_seg(target, run, a, v, color, weight, xmin, ymin, xmax, ymax);
+            drawn += stroke_seg(target, run, a, v, color, weight, clip, w, h, xs);
         }
         prev = Some(v);
     });
-    flush_run(target, run, color, weight);
+    flush_run(target, run, color, weight, w, h, xs);
     drawn
 }
 
@@ -1076,15 +1173,8 @@ where
 /// (see [`ARROW_SPACING_PX`]). Segment length is real ground metres
 /// ([`obc_route::ground_dist_m_cl`]); `cl` is the band's hoisted `cos(lat)` (the caller
 /// passes the viewport's, computed once per frame), so the walk costs no per-segment `cosf`.
-fn walk_route_arrows<F>(
-    pts: &[obc_route::RoutePoint],
-    s0: f32,
-    lo: f32,
-    hi: f32,
-    spacing_m: f32,
-    cl: f32,
-    mut emit: F,
-) where
+fn walk_route_arrows<F>(pts: &[obc_route::RoutePoint], s0: f32, lo: f32, hi: f32, spacing_m: f32, cl: f32, mut emit: F)
+where
     F: FnMut(&obc_route::RoutePoint, &obc_route::RoutePoint, f32),
 {
     let mut s = s0;
@@ -1130,10 +1220,10 @@ fn fill_polygon_proj<D>(
 /// Project and stroke one map line (its exterior ring). The draw phase's
 /// `Kind::Line` arm — factored out as the single point where per-feature line
 /// styling (dashes, casing) will branch later (see `docs/rendering_pipeline.md`
-/// §9d). Uses the same view-clipped eg stroke as the route/breadcrumb overlays:
-/// clipping spares eg the off-screen part of a line whose chunk straddles the
-/// view edge (most visible at coarse zoom) while keeping its properly-jointed
-/// thick rendering for thicker classes.
+/// §9d). Uses the same view-clipped stroke as the route/breadcrumb overlays:
+/// clipping spares the off-screen part of a line whose chunk straddles the view
+/// edge (most visible at coarse zoom), while thick classes get the span-filled
+/// rectangles + round joints and thin ones eg's `Polyline` (see [`flush_run`]).
 fn draw_line<D>(
     target: &mut D,
     vp: &Viewport,
@@ -1141,6 +1231,7 @@ fn draw_line<D>(
     color: D::Color,
     weight: u32,
     screen: &mut Vec<Point, MAX_SCREEN_POINTS>,
+    xs: &mut Vec<f32, MAX_CROSSINGS>,
 ) where
     D: DrawTarget,
 {
@@ -1148,7 +1239,7 @@ fn draw_line<D>(
         let (x, y) = vp.to_screen(lon, lat);
         Point::new(x, y)
     });
-    stroke_overlay(target, screen, projected, color, weight, vp.w as i32, vp.h as i32);
+    stroke_overlay(target, screen, xs, projected, color, weight, vp.w as i32, vp.h as i32);
 }
 
 /// Fill a 3-point direction chevron centred at `c`, pointing along the unit
@@ -1250,7 +1341,7 @@ fn fill_polygon<D>(
         while k + 1 < xs.len() {
             // Round spans *outward* (floor left, ceil right) to close hairline
             // background gaps between adjacent fills. A feature clipped across a
-            // chunk boundary (`packer/obcm/quadtree.py`) becomes two polygons whose
+            // chunk boundary (`obc-pack`'s `quadtree.rs`) becomes two polygons whose
             // shared edge is clipped independently, so their pixel staircases can
             // disagree by ≤1px (most visible along a rotated diagonal seam).
             // `to_screen`'s round-to-nearest collapses nearly all of it; this ≤1px
@@ -1259,10 +1350,8 @@ fn fill_polygon<D>(
             let x0 = (libm::floorf(xs[k]) as i32).max(0);
             let x1 = (libm::ceilf(xs[k + 1]) as i32).min(w - 1);
             if x1 >= x0 {
-                let _ = target.fill_solid(
-                    &Rectangle::new(Point::new(x0, y), Size::new((x1 - x0 + 1) as u32, 1)),
-                    color,
-                );
+                let _ =
+                    target.fill_solid(&Rectangle::new(Point::new(x0, y), Size::new((x1 - x0 + 1) as u32, 1)), color);
             }
             k += 2;
         }
@@ -1272,7 +1361,8 @@ fn fill_polygon<D>(
 #[cfg(test)]
 mod tests {
     use super::{
-        aspect_for_lat, fill_polygon, simplify, walk_route_arrows, within_eps, MAX_CROSSINGS,
+        aspect_for_lat, fill_polygon, joint_disc_cos2, simplify, turn_is_sharp, walk_route_arrows, within_eps,
+        MAX_CROSSINGS,
     };
     use embedded_graphics::prelude::Point;
     use heapless::Vec;
@@ -1296,6 +1386,23 @@ mod tests {
         // Degenerate a == b falls back to the point distance |p − a|.
         assert!(within_eps(Point::new(0, 1), a, a, 1.5));
         assert!(!within_eps(Point::new(0, 2), a, a, 1.5));
+    }
+
+    #[test]
+    fn turn_is_sharp_discs_only_notch_corners() {
+        let cos2 = joint_disc_cos2(11); // route weight ⇒ ~10° cut-off
+        let b = Point::new(100, 0);
+        // Collinear continuation: never a disc.
+        assert!(!turn_is_sharp(Point::new(0, 0), b, Point::new(200, 0), cos2));
+        // A ~6° bend stays under the cut-off — the butt-join notch is sub-pixel: no disc.
+        assert!(!turn_is_sharp(Point::new(0, 0), b, Point::new(200, 10), cos2));
+        // A ~27° bend clears it: disc.
+        assert!(turn_is_sharp(Point::new(0, 0), b, Point::new(200, 50), cos2));
+        // A right-angle and a hairpin (non-positive dot) always disc.
+        assert!(turn_is_sharp(Point::new(0, 0), b, Point::new(100, 50), cos2));
+        assert!(turn_is_sharp(Point::new(0, 0), b, Point::new(0, 10), cos2));
+        // A thinner stroke tolerates a wider bend before the notch shows (looser cut-off).
+        assert!(joint_disc_cos2(3) < joint_disc_cos2(11));
     }
 
     #[test]
@@ -1374,10 +1481,7 @@ mod tests {
         let narrow = distances(&pts, dl, lo, hi);
         assert!(!narrow.is_empty());
         for d in &narrow {
-            assert!(
-                *d as f32 >= lo - 0.5 && *d as f32 <= hi + 0.5,
-                "chevron at {d} m outside window"
-            );
+            assert!(*d as f32 >= lo - 0.5 && *d as f32 <= hi + 0.5, "chevron at {d} m outside window");
         }
         assert!(distances(&pts, dl, 0.0, dl).len() > narrow.len());
     }
@@ -1390,19 +1494,12 @@ mod tests {
         // window centred earlier and one centred later.
         let (pts, dl) = north_line();
         let band = |lo, hi| -> Vec<i32, 64> {
-            distances(&pts, dl, lo, hi)
-                .iter()
-                .copied()
-                .filter(|&d| (80..=200).contains(&d))
-                .collect()
+            distances(&pts, dl, lo, hi).iter().copied().filter(|&d| (80..=200).contains(&d)).collect()
         };
         let early = band(0.0, 210.0);
         let late = band(70.0, 280.0);
         assert!(!early.is_empty(), "the shared band should contain chevrons");
-        assert_eq!(
-            early, late,
-            "a chevron moved when the window slid — it should be ground-pinned"
-        );
+        assert_eq!(early, late, "a chevron moved when the window slid — it should be ground-pinned");
     }
 
     #[test]
@@ -1479,17 +1576,11 @@ mod tests {
 
         // Prong-band rows overflow the buffer → skipped, not mis-filled.
         for y in 0..HBASE {
-            assert_eq!(
-                target.rows[y as usize], 0,
-                "saturated prong row {y} must be left unfilled, not mis-filled"
-            );
+            assert_eq!(target.rows[y as usize], 0, "saturated prong row {y} must be left unfilled, not mis-filled");
         }
         // Base-band rows have just two crossings → filled edge to edge.
         for y in HBASE..HBOTTOM {
-            assert_eq!(
-                target.rows[y as usize], W as u32,
-                "base row {y} should fill the full width"
-            );
+            assert_eq!(target.rows[y as usize], W as u32, "base row {y} should fill the full width");
         }
     }
 }
