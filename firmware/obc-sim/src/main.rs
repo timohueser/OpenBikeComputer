@@ -48,6 +48,10 @@ mod routes;
 mod sim_compass;
 mod sim_location;
 mod track;
+// In-memory `ByteSink` shared by the route + track stores' conversions; native-only
+// (the web build has no filesystem to write to).
+#[cfg(not(target_arch = "wasm32"))]
+mod vec_sink;
 use framebuffer::Framebuffer;
 use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 use obc_route::{RouteIndex, RouteReader};
@@ -123,11 +127,9 @@ struct Args {
     start_on_map: bool,
 }
 
-impl Args {
-    /// Defaults for the web build: the device resolution, in-memory route/track
-    /// stores (the `*_dir`s are unused on wasm), and none of the headless/CLI knobs.
-    #[cfg(target_arch = "wasm32")]
-    pub(crate) fn web_default() -> Self {
+impl Default for Args {
+    /// The device resolution + all knobs off — the base for both the CLI parser and the web build.
+    fn default() -> Self {
         Args {
             map: String::new(),
             width: 240,
@@ -151,41 +153,39 @@ impl Args {
             physical: false,
             calibrate: false,
             palette: false,
-            // Warm terracotta body for the web demo (fits the parchment/forest/amber
-            // page) instead of the default slate.
-            colorway: Some("coral".to_string()),
-            start_on_map: true,
+            colorway: None,
+            start_on_map: false,
         }
     }
 }
 
+impl Args {
+    /// Defaults for the web build: the [`Args::default`] base plus in-memory route/track
+    /// stores (the `*_dir`s are unused on wasm) and the demo-friendly tweaks.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn web_default() -> Self {
+        Args {
+            // Warm terracotta body for the web demo (fits the parchment/forest/amber
+            // page) instead of the default slate.
+            colorway: Some("coral".to_string()),
+            start_on_map: true,
+            ..Args::default()
+        }
+    }
+
+    /// The `.obcr` routes folder (the device-SD stand-in), defaulting to `routes/`.
+    pub(crate) fn routes_dir(&self) -> String {
+        self.routes_dir.clone().unwrap_or_else(|| "routes".to_string())
+    }
+
+    /// The `/tracks` folder (saved `.gpx` + the in-progress `.obct` log), defaulting to `tracks/`.
+    pub(crate) fn tracks_dir(&self) -> String {
+        self.tracks_dir.clone().unwrap_or_else(|| "tracks".to_string())
+    }
+}
+
 fn parse_args() -> Result<Args, String> {
-    let mut a = Args {
-        map: String::new(),
-        width: 240,
-        height: 320,
-        scale: 1,
-        png: None,
-        screenshot: None,
-        true_color: false,
-        heading: None,
-        gpx: None,
-        at: None,
-        center: None,
-        zoom_mul: 1.0,
-        text_demo: false,
-        script: None,
-        boot: false,
-        routes_dir: None,
-        tracks_dir: None,
-        save_track: false,
-        import: None,
-        physical: false,
-        calibrate: false,
-        palette: false,
-        colorway: None,
-        start_on_map: false,
-    };
+    let mut a = Args::default();
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -384,57 +384,46 @@ fn apply_script(app: &mut App, script: &str) {
     let up = |b| InputEvent::Button(ButtonEvent::Up(b));
     let hold = obc_app::DEFAULT_HOLD_MS;
     let mut now: u32 = 100;
+
+    // A turn detent: feed it, then nudge the clock.
+    let turn = |app: &mut App, now: &mut u32, dir: i32| {
+        feed(app, *now, vec![InputEvent::Turn(dir)]);
+        *now += 30;
+    };
+    // A tap: down, then up 80 ms later (well under the long-press threshold).
+    let tap = |app: &mut App, now: &mut u32, b| {
+        feed(app, *now, vec![down(b)]);
+        *now += 80;
+        feed(app, *now, vec![up(b)]);
+        *now += 30;
+    };
+    // A long-press: hold past the threshold (one empty tick fires `Hold`/`BackHold`), then release.
+    let press_hold = |app: &mut App, now: &mut u32, b| {
+        feed(app, *now, vec![down(b)]);
+        *now += hold + 80;
+        feed(app, *now, vec![]);
+        *now += 30;
+        feed(app, *now, vec![up(b)]);
+        *now += 30;
+    };
+    // Held partway (no release, no threshold crossing): snapshots the in-flight long-press hint.
+    let partial_hold = |app: &mut App, now: &mut u32, b| {
+        feed(app, *now, vec![down(b)]);
+        *now += hold * 55 / 100; // ~55% toward the threshold
+        feed(app, *now, vec![]); // samples the in-flight progress for the render
+    };
+
     for ch in script.chars() {
         match ch {
             ' ' => {}
-            'r' => {
-                feed(app, now, vec![InputEvent::Turn(1)]);
-                now += 30;
-            }
-            'l' => {
-                feed(app, now, vec![InputEvent::Turn(-1)]);
-                now += 30;
-            }
-            'p' => {
-                feed(app, now, vec![down(Button::Encoder)]);
-                now += 80;
-                feed(app, now, vec![up(Button::Encoder)]);
-                now += 30;
-            }
-            'b' => {
-                feed(app, now, vec![down(Button::Back)]);
-                now += 80;
-                feed(app, now, vec![up(Button::Back)]);
-                now += 30;
-            }
-            'h' => {
-                feed(app, now, vec![down(Button::Encoder)]);
-                now += hold + 80;
-                feed(app, now, vec![]); // a tick past the threshold fires `Hold`
-                now += 30;
-                feed(app, now, vec![up(Button::Encoder)]);
-                now += 30;
-            }
-            'B' => {
-                feed(app, now, vec![down(Button::Back)]);
-                now += hold + 80;
-                feed(app, now, vec![]); // fires `BackHold`
-                now += 30;
-                feed(app, now, vec![up(Button::Back)]);
-                now += 30;
-            }
-            // `H`/`M`: leave the encoder / Back held partway (no release, no threshold
-            // crossing) so a headless render snapshots the in-flight long-press hint.
-            'H' => {
-                feed(app, now, vec![down(Button::Encoder)]);
-                now += hold * 55 / 100; // ~55% toward the threshold
-                feed(app, now, vec![]); // samples the in-flight progress for the render
-            }
-            'M' => {
-                feed(app, now, vec![down(Button::Back)]);
-                now += hold * 55 / 100;
-                feed(app, now, vec![]);
-            }
+            'r' => turn(app, &mut now, 1),
+            'l' => turn(app, &mut now, -1),
+            'p' => tap(app, &mut now, Button::Encoder),
+            'b' => tap(app, &mut now, Button::Back),
+            'h' => press_hold(app, &mut now, Button::Encoder),
+            'B' => press_hold(app, &mut now, Button::Back),
+            'H' => partial_hold(app, &mut now, Button::Encoder),
+            'M' => partial_hold(app, &mut now, Button::Back),
             other => eprintln!("warning: ignoring unknown --script token '{other}'"),
         }
     }
@@ -493,7 +482,7 @@ fn main() {
     // `--import` converts a GPX into the routes folder — the device's USB-drop path,
     // run on the host. Needs no map, so it comes before the map read.
     if let Some(gpx) = &args.import {
-        let dir = args.routes_dir.clone().unwrap_or_else(|| "routes".to_string());
+        let dir = args.routes_dir();
         let mut store = RouteStore::open(&dir);
         match store.import_gpx(std::path::Path::new(gpx)) {
             Ok(s) => eprintln!(
@@ -591,7 +580,7 @@ fn main() {
         let mut app = if args.boot { App::new_idle(state) } else { App::new(state) };
         // Load the routes folder so the Route menu has real entries and a picked route
         // can be drawn (the device reads the same off its SD card).
-        let mut store = RouteStore::open(args.routes_dir.clone().unwrap_or_else(|| "routes".to_string()));
+        let mut store = RouteStore::open(args.routes_dir());
         app.set_routes(store.catalog());
         // Drive the app to a specific screen before snapshotting (e.g. the Menu).
         if let Some(script) = &args.script {
@@ -608,7 +597,7 @@ fn main() {
 
         // Recorded-track store (the device-SD `/tracks` stand-in). A session started by a
         // `--script` load records here; the breadcrumb itself draws regardless.
-        let mut tracks = TrackStore::open(args.tracks_dir.clone().unwrap_or_else(|| "tracks".to_string()));
+        let mut tracks = TrackStore::open(args.tracks_dir());
 
         // Replay the track from the start up to `--at`, ticking the app each step so the
         // map-matcher locks on, the ride accumulators (done / climbed / Avg) build up, and the

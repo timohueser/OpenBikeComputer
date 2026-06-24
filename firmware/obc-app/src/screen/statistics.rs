@@ -230,12 +230,7 @@ impl StatisticsScreen {
         // Title bar: grade at the cursor, or the off-route cross-track readout
         let mut readout: heapless::String<16> = heapless::String::new();
         if off {
-            let d = rx.activity.dist_to_route_m;
-            if d >= 1000 {
-                let _ = write!(readout, "off {}km", (d + 500) / 1000);
-            } else {
-                let _ = write!(readout, "off {}m", d);
-            }
+            super::write_off_route(&mut readout, "off ", rx.activity.dist_to_route_m);
         } else {
             let _ = write!(readout, "grade {}%", grade_at(profile, total, cursor_frac));
         }
@@ -272,11 +267,11 @@ impl StatisticsScreen {
         let cur_ele = profile.at(cursor_frac).1;
         let cur_y = ele_to_y(cur_ele);
         cv.vline(cursor_x, CHART_TOP, band_bot - CHART_TOP + 1, 2, cursor_color);
-        cv.disc(Point::new(cursor_x, cur_y), 4, INK); // dark ring …
-        cv.disc(Point::new(cursor_x, cur_y), 3, cursor_color); // … around the cursor dot
-                                                               // Current-elevation readout at the cursor (updates while scrubbing). Placed below the
-                                                               // dot near the peak so the labels never overlap; else just above it, clamped inside
-                                                               // the band and clear of the baseline/bar.
+        cv.disc(Point::new(cursor_x, cur_y), 4, INK); // dark ring around the cursor dot
+        cv.disc(Point::new(cursor_x, cur_y), 3, cursor_color);
+        // Current-elevation readout at the cursor (updates while scrubbing). Placed below the
+        // dot near the peak so the labels never overlap; else just above it, clamped inside
+        // the band and clear of the baseline/bar.
         let mut ele_s: heapless::String<8> = heapless::String::new();
         let _ = write!(ele_s, "{} m", cur_ele);
         let near_peak = (cursor_frac - profile.peak_frac()).abs() < 0.07;
@@ -313,34 +308,12 @@ impl StatisticsScreen {
         // Values are **number only** — the unit lives in the tile's caption (Wahoo style),
         // so the big Display digits fit the half-width tiles instead of overrunning them.
         // Speeds keep one decimal; distances drop it past 100 km so they stay ≤ 3 digits.
-        let mut speed: heapless::String<8> = heapless::String::new();
-        match rx.state.user_fix.and_then(|f| f.speed_mps) {
-            Some(mps) => {
-                let _ = write!(speed, "{:.1}", mps * 3.6);
-            }
-            None => {
-                let _ = speed.push_str("--");
-            }
-        }
-        let mut avg: heapless::String<8> = heapless::String::new();
-        match a.avg_kmh() {
-            Some(kmh) => {
-                let _ = write!(avg, "{:.1}", kmh);
-            }
-            None => {
-                let _ = avg.push_str("--");
-            }
-        }
-        let km_done = a.ridden_m / 1000.0;
-        let km_to_go = to_go_m as f32 / 1000.0;
-        let mut done: heapless::String<8> = heapless::String::new();
-        let _ = if km_done >= 100.0 { write!(done, "{:.0}", km_done) } else { write!(done, "{:.1}", km_done) };
-        let mut to_go: heapless::String<8> = heapless::String::new();
-        let _ = if km_to_go >= 100.0 { write!(to_go, "{:.0}", km_to_go) } else { write!(to_go, "{:.1}", km_to_go) };
-        let mut climbed_s: heapless::String<8> = heapless::String::new();
-        let _ = write!(climbed_s, "{}", climbed);
-        let mut to_climb_s: heapless::String<8> = heapless::String::new();
-        let _ = write!(to_climb_s, "{}", to_climb);
+        let speed = fmt_kmh(rx.state.user_fix.and_then(|f| f.speed_mps).map(|mps| mps * 3.6));
+        let avg = fmt_kmh(a.avg_kmh());
+        let done = fmt_km(a.ridden_m / 1000.0);
+        let to_go = fmt_km(to_go_m as f32 / 1000.0);
+        let climbed_s = fmt_int(climbed);
+        let to_climb_s = fmt_int(to_climb);
 
         // (caption [unit-bearing], value [number only], climb-arrow?). The up-arrow on the
         // climb tiles reads as "elevation, metres".
@@ -375,6 +348,35 @@ fn live_frac(a: &Activity) -> f32 {
         return 0.0;
     }
     (a.progress_m as f32 / a.route_total_m as f32).clamp(0.0, 1.0)
+}
+
+/// A km figure for a stat tile: one decimal up to 100 km, none past it, so the value stays
+/// ≤ 3 digits and fits the half-width tile.
+fn fmt_km(km: f32) -> heapless::String<8> {
+    let mut s = heapless::String::new();
+    let _ = if km >= 100.0 { write!(s, "{km:.0}") } else { write!(s, "{km:.1}") };
+    s
+}
+
+/// A speed in km/h to one decimal, or `--` when unknown (no fix / no moving time yet).
+fn fmt_kmh(kmh: Option<f32>) -> heapless::String<8> {
+    let mut s = heapless::String::new();
+    match kmh {
+        Some(v) => {
+            let _ = write!(s, "{v:.1}");
+        }
+        None => {
+            let _ = s.push_str("--");
+        }
+    }
+    s
+}
+
+/// An integer-metres figure (climbed / to-climb) as plain digits.
+fn fmt_int(m: u32) -> heapless::String<8> {
+    let mut s = heapless::String::new();
+    let _ = write!(s, "{m}");
+    s
 }
 
 /// Draw a small magnifying-glass icon on a parchment chip — the wordless "Zoom mode is on"
@@ -510,7 +512,6 @@ mod tests {
         assert_eq!(s.effective_cursor(t0.wrapping_add(IDLE_MS), LIVE), LIVE);
     }
 
-    // -----------------------------------------------------------------------
     // Zoom-mode math + clamps (issue #93 item 5).
     //
     // `on_turn` in Zoom mode multiplies the zoom by `ZOOM_STEP` per detent and clamps to
@@ -518,7 +519,6 @@ mod tests {
     // covered before; the multiply loop and the saturating clamps were not. A regression that
     // dropped the clamp would let the profile zoom to a degenerate window (or below 1× and
     // invert), and one that used `+`/`pow` instead of the per-detent multiply would mis-scale.
-    // -----------------------------------------------------------------------
 
     /// A helper screen frozen in Zoom mode at full zoom — the state `Hold` lands in.
     fn zoom_screen() -> StatisticsScreen {

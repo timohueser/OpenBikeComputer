@@ -7,8 +7,6 @@
 //! pause → Ride control, `back` = the sibling Statistics view, `back-hold` = Menu,
 //! `hold` = enter Pan mode.
 
-use core::fmt::Write;
-
 use embedded_graphics::{draw_target::DrawTarget, prelude::Point};
 use obc_render::{
     rect,
@@ -187,15 +185,8 @@ where
     use super::palette::*;
     let w = rx.w as i32;
     let mut cv = Canvas::new(target, color_fn);
-    // Compact the distance to whole km past 1 km so the pill stays within the panel width
-    // at the Body glyph size (a long "...14515m" would otherwise overrun 240 px).
-    let d = rx.activity.dist_to_route_m;
     let mut s: heapless::String<20> = heapless::String::new();
-    if d >= 1000 {
-        let _ = write!(s, "off route {}km", (d + 500) / 1000);
-    } else {
-        let _ = write!(s, "off route {}m", d);
-    }
+    super::write_off_route(&mut s, "off route ", rx.activity.dist_to_route_m);
     // Bold (Body font) so it's readable at a glance over the map.
     let font = Font::Body;
     let tw = text_width(&s, font) as i32;

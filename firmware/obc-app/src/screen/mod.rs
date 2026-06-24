@@ -20,7 +20,7 @@
 
 use core::fmt::Write;
 
-use embedded_graphics::{draw_target::DrawTarget, prelude::Point};
+use embedded_graphics::{draw_target::DrawTarget, prelude::Point, primitives::Rectangle};
 use obc_reader::Reader;
 use obc_render::{
     rect,
@@ -331,6 +331,57 @@ where
     cv.text(hint, Point::new(w / 2, h / 2 + 8), Font::Label, TextAlign::Center, palette::SUBTEXT);
 }
 
+/// Append a cross-track distance after `prefix`, compacted to whole km past 1 km so the
+/// readout stays within the panel width (a long "...14515m" would overrun): `"<prefix>NNNm"`
+/// below 1 km, `"<prefix>NNkm"` above, rounded to the nearest km. Shared by the Statistics
+/// header readout and the Map's off-route pill so the two agree.
+pub(crate) fn write_off_route<const N: usize>(s: &mut heapless::String<N>, prefix: &str, d_m: u32) {
+    if d_m >= 1000 {
+        let _ = write!(s, "{prefix}{}km", (d_m + 500) / 1000);
+    } else {
+        let _ = write!(s, "{prefix}{d_m}m");
+    }
+}
+
+/// One option in a guarded-action menu (Ride control, Route swap): a static label and a
+/// `guard` flag marking the irreversible options that need a hold-to-confirm instead of a
+/// plain press.
+pub(crate) struct MenuItem {
+    pub label: &'static str,
+    pub guard: bool,
+}
+
+/// Draw a selected option row's **background** for the guarded-action menus (Ride control,
+/// Route swap): a plain `AMBER` fill for an instant option, or — when `guard` is set — a
+/// `PARCHMENT_SHADE` base that fills in `fill` (amber to confirm a save, warning-red for a
+/// destructive action) tracking the encoder `hold_progress` (0.0–1.0). `radius` is the
+/// corner radius; the caller draws the row's label text. A no-op for an unselected row.
+pub(crate) fn confirm_row<D, F>(
+    cv: &mut Canvas<D, F>,
+    row: Rectangle,
+    selected: bool,
+    guard: bool,
+    hold_progress: f32,
+    fill: u16,
+    radius: u32,
+) where
+    D: DrawTarget,
+    F: Fn(u16) -> D::Color,
+{
+    if !selected {
+        return;
+    }
+    if guard {
+        cv.round(row, radius, palette::PARCHMENT_SHADE);
+        let fill_w = (row.size.width as f32 * hold_progress.clamp(0.0, 1.0)) as i32;
+        if fill_w > 0 {
+            cv.round(rect(row.top_left.x, row.top_left.y, fill_w, row.size.height as i32), radius, fill);
+        }
+    } else {
+        cv.round(row, radius, palette::AMBER);
+    }
+}
+
 /// The "explorer's field map" palette in RGB565 (the format/style color space),
 /// so screen text and chrome quantize through the host `color_fn` exactly like
 /// map styles.
@@ -379,7 +430,6 @@ pub mod palette {
 mod tests {
     use super::step_selection;
 
-    // -----------------------------------------------------------------------
     // `step_selection` wrapping (issue #93 item 4).
     //
     // Every list screen (Menu, Route menu, Ride control) shares this `rem_euclid`-based
@@ -387,7 +437,6 @@ mod tests {
     // pin the behaviour when a turn crosses either end — exactly where a `%` regression
     // (which is negative for a backward turn at the top) would hand back a garbage index and
     // either highlight nothing or panic on the row lookup.
-    // -----------------------------------------------------------------------
 
     /// Backward off the top: `Turn(-1)` from index 0 must wrap to the *last* item, not produce a
     /// negative index. `%` would give `-1`; `rem_euclid` gives `len - 1`. This is the menu's

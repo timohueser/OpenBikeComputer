@@ -17,18 +17,12 @@ use obc_render::{
 use crate::activity::{Mode, TrackAction};
 use crate::input::Gesture;
 
-use super::{palette, Ctx, Render, Transition};
+use super::{palette, Ctx, MenuItem, Render, Transition};
 
-/// One Ride-control option. `guard` = irreversible → hold-to-confirm.
-struct Item {
-    label: &'static str,
-    guard: bool,
-}
-
-const ITEMS: [Item; 3] = [
-    Item { label: "Resume", guard: false },
-    Item { label: "Finish", guard: true },
-    Item { label: "Discard", guard: true },
+const ITEMS: [MenuItem; 3] = [
+    MenuItem { label: "Resume", guard: false },
+    MenuItem { label: "Finish", guard: true },
+    MenuItem { label: "Discard", guard: true },
 ];
 
 const FINISH: usize = 1;
@@ -116,17 +110,7 @@ impl RideControl {
         for (i, item) in ITEMS.iter().enumerate() {
             let y = first + i as i32 * (row_h + gap);
             let row = rect(px + 10, y, pw - 20, row_h);
-            if i == self.selected {
-                if item.guard {
-                    cv.round(row, 6, PARCHMENT_SHADE);
-                    let fill_w = ((pw - 20) as f32 * rx.hold_progress.clamp(0.0, 1.0)) as i32;
-                    if fill_w > 0 {
-                        cv.round(rect(px + 10, y, fill_w, row_h), 6, WARNING);
-                    }
-                } else {
-                    cv.round(row, 6, AMBER);
-                }
-            }
+            super::confirm_row(&mut cv, row, i == self.selected, item.guard, rx.hold_progress, WARNING, 6);
             cv.text(item.label, Point::new(px + 22, y + 5), Font::Body, TextAlign::Left, INK);
         }
         RenderStats::default()

@@ -222,8 +222,8 @@ impl SimGui {
         // the encoder walks Home → Route menu → Map, exactly like the device. (The
         // headless `--png` path and the web demo open straight on the map instead.)
         let app = if args.start_on_map { App::new(state) } else { App::new_idle(state) };
-        let store = RouteStore::open(args.routes_dir.clone().unwrap_or_else(|| "routes".to_string()));
-        let tracks = TrackStore::open(args.tracks_dir.clone().unwrap_or_else(|| "tracks".to_string()));
+        let store = RouteStore::open(args.routes_dir());
+        let tracks = TrackStore::open(args.tracks_dir());
         // Load any saved 1:1 calibration; `--physical` only takes effect if we have one,
         // and `--calibrate` opens the calibration screen straight away.
         let points_per_mm = crate::calib::load();
@@ -291,8 +291,7 @@ impl SimGui {
             g.app.activity.start_session();
         }
         // Auto-play the embedded ride (the Grimselpass climb, Guttannen → summit) so the
-        // page opens on a moving map. It's point-to-point, not a loop, so the restart in
-        // render_to_texture snaps back to the start and clears the trail for a fresh lap.
+        // page opens on a moving map. `render_to_texture` restarts it at the summit (see there).
         if let Ok(track) = Track::parse(include_str!("../assets/grimsel-climb.gpx")) {
             let mut player = GpxPlayer::new(track);
             // The GPX is distance-timed at a ~12 km/h base, so the multiplier reads as
@@ -655,11 +654,10 @@ impl eframe::App for SimGui {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Read the device-control keyboard shortcuts *first*, before any widget (the
-        // device-screen image, the panel) is laid out and can take focus and swallow the
-        // keys — so they drive the encoder/Back whether the screen or the control panel is
-        // focused. Turn keys are consumed (one detent per press); the Enter/Backspace
-        // button state is the live held state. Applied in `show_device_image`.
+        // Read the device-control keyboard shortcuts *first*, before any widget can take
+        // focus and swallow the keys — so they drive the encoder/Back whether the screen or
+        // the control panel is focused. Turn keys are consumed (one detent per press); the
+        // Enter/Backspace state is the live held state. Applied in `show_device_image`.
         let (kt, ke, kb) = ctx.input_mut(|i| {
             let mut t = 0;
             if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight)
