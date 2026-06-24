@@ -10,8 +10,8 @@
 //! Bring-up is phased so each hardware layer is verified (over defmt/RTT, and on glass via
 //! the webcam capture at `/tmp/obc-cam/panel.jpg`) before the next is stacked:
 //!   N0. crate skeleton + embassy bring-up: blinky + RTT + this peripheral plan          (#121)
-//!   N1. `Panel` HAL + ST7789 SPIM backend + banded RGB565 push + glass demo (RGB222 at N4) <- (#122)
-//!   N2. microSD on a dedicated SPIM (reuse obc-platform's FatFs byte adapters)           (#123)
+//!   N1. `Panel` HAL + ST7789 SPIM backend + banded RGB565 push + glass demo (RGB222 at N4)    (#122)
+//!   N2. microSD on a dedicated SPIM (reuse obc-platform's FatFs byte adapters)            <- (#123)
 //!   N3. board memory profile (host-vs-nRF) + budget assert                              (#124)
 //!   N4. RGB222 full framebuffer + full map on glass (retire `Framebuffer565`)           (#125)
 //!   N5. buttons + two-plane InterruptExecutor + fluid composite-on-push bulge           (#126)
@@ -61,11 +61,15 @@
 //! ## microSD SPIM — map/route/track storage (#123)
 //!   Instance **SERIAL22 / SPIM22** — a standard-speed instance (SD doesn't need 32 MHz),
 //!   *separate* from the display bus, on its own software CS. DK expansion-header SPI pins:
-//!   SCK P1_11 | MISO P1_07 | MOSI P1_06   (+ CS GPIO in N2)
-//!   The EYESPI connector also carries a microSD that *shares the display bus*; we leave that
-//!   slot **unpopulated** and use this dedicated SPIM instead (a clean reuse of the STM32's
-//!   standalone SD-over-SPI reader + obc-platform's FatFs adapters). P1_06/P1_07 alias VCOM's
-//!   unused RTS/CTS below — no conflict, since the VCOM link is 2-wire (TX/RX only).
+//!     SCK P1_11 | MISO P1_07 | MOSI P1_06 | CS P1_12
+//!   CS is a free GPIO held LOW for the whole session (the held-low-CS workaround embedded-sdmmc's
+//!   per-byte framing needs over embassy SPI — see `sd::NoCs`); the bus inits ≤400 kHz then
+//!   re-clocks to 8 MHz (`sd::init`). embassy-nrf's `Spim` exposes **no** internal MISO pull-up
+//!   (unlike embassy-stm32), so the card's DO line is pulled high by the breakout (or an external
+//!   10 kΩ to 3V3). The EYESPI connector also carries a microSD that *shares the display bus*; we
+//!   leave that slot **unpopulated** and use this dedicated SPIM instead (a clean reuse of the
+//!   STM32's standalone SD-over-SPI reader + obc-platform's FatFs adapters). P1_06/P1_07 alias
+//!   VCOM's unused RTS/CTS below — no conflict, since the VCOM link is 2-wire (TX/RX only).
 //!
 //! ## VCOM UARTE — debug-sensor / telemetry stream (#127)
 //!   Instance **SERIAL20 / UARTE20**, the DK's `chosen` console wired to the onboard J-Link's
@@ -99,6 +103,8 @@
 
 #[cfg(feature = "glass-demo")]
 mod demo;
+#[cfg(feature = "sd-demo")]
+mod sd;
 mod st7789;
 
 use defmt::info;
@@ -118,8 +124,12 @@ use embedded_graphics::prelude::Size;
 #[cfg(feature = "glass-demo")]
 use obc_platform::{Band, Panel};
 
+// SERIAL00 backs the display SPIM (#122); SERIAL22 the microSD SPIM (#123). Both handlers are
+// always registered (harmless when a feature is off — the peripheral is simply never constructed,
+// so its interrupt never fires); each `Spim::new` is handed `Irqs` for its instance.
 bind_interrupts!(struct Irqs {
     SERIAL00 => spim::InterruptHandler<peripherals::SERIAL00>;
+    SERIAL22 => spim::InterruptHandler<peripherals::SERIAL22>;
 });
 
 /// One band's worth of RGB565 scratch (`WIDTH * BAND_ROWS`), living in `.bss`. 20 rows ≈ 9.6 KB
@@ -136,6 +146,60 @@ async fn main(_spawner: Spawner) {
 
     // LED0 (P2_09) heartbeat — a liveness blink visible even before looking at the panel.
     let mut led = Output::new(p.P2_09, Level::Low, OutputDrive::Standard);
+
+    // --- N2 microSD bring-up (#123): mount the card on its own SPIM (SERIAL22, P1 header —
+    // separate from the display bus on SERIAL00/P2), then over RTT log the resident `.obcm` map's
+    // bbox and the `/routes` catalog, proving the obc-platform FatFs adapters + format parsers run
+    // on the nRF byte source. Runs once, then falls through to the display/heartbeat below. A
+    // missing/bad card degrades gracefully (logs + continues) — never a panic (acceptance). The
+    // SD `Storage` is wired into the real app path at N6 (#127). ---
+    #[cfg(feature = "sd-demo")]
+    {
+        // SERIAL22 SD bus on the P1 expansion header (SCK P1_11 / MISO P1_07 / MOSI P1_06), CS on
+        // P1_12. Init at ≤400 kHz (SD spec); `sd::init` re-clocks to 8 MHz once the card answers.
+        // CS idles HIGH here, then `init` holds it LOW for the session (the held-low-CS workaround,
+        // see `sd::NoCs`). `orc = 0xFF` so any over-read clocks the SD idle byte onto MOSI.
+        let mut sd_cfg = spim::Config::default();
+        sd_cfg.frequency = sd::SD_INIT_HZ;
+        sd_cfg.orc = 0xFF;
+        let sd_spi = spim::Spim::new(p.SERIAL22, Irqs, p.P1_11, p.P1_07, p.P1_06, sd_cfg);
+        let sd_cs = Output::new(p.P1_12, Level::High, OutputDrive::Standard);
+
+        match sd::init(sd_spi, sd_cs) {
+            Some(mut storage) => {
+                // Read the resident `.obcm` header (bbox) cache-free: the 277 KB streamed-map cache
+                // doesn't fit nRF RAM, and N2 only needs to prove the byte-source + parser path
+                // (the full streamed `Reader` lands with the RGB222 framebuffer at N4).
+                match storage.open_map() {
+                    Some(len) => {
+                        if let Some(src) = storage.map_source() {
+                            match obc_reader::read_header(&src) {
+                                Ok(h) => info!(
+                                    "SD map: {=u32} B, bbox lon[{=i32}..{=i32}] lat[{=i32}..{=i32}], marker {=u16:#06x}",
+                                    len, h.bbox.min_lon, h.bbox.max_lon, h.bbox.min_lat, h.bbox.max_lat, h.marker_color
+                                ),
+                                Err(e) => defmt::warn!("SD map: not valid OBCM: {}", defmt::Debug2Format(&e)),
+                            }
+                        }
+                    }
+                    None => info!("SD: no .obcm map in card root"),
+                }
+                // List `/routes/*.obcr` into the catalog (the Route-menu source at N6). `scan_routes`
+                // logs the count itself; print each entry's name + headline stats here.
+                let catalog = storage.scan_routes();
+                for (i, s) in catalog.iter().enumerate() {
+                    info!(
+                        "  route[{=usize}] {=str} — {=u32} km, +{=u32} m climb",
+                        i,
+                        s.name.as_str(),
+                        s.distance_km,
+                        s.climb_m
+                    );
+                }
+            }
+            None => defmt::warn!("SD: no card / mount failed — continuing without storage"),
+        }
+    }
 
     // --- glass-demo (#122): the font ladder + the device's 64-colour gamut, streamed to the
     // ST7789 band by band through the board-agnostic `Panel` seam, then a static heartbeat. The
