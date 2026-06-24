@@ -40,6 +40,11 @@ panic-probe = { version = "1.0", features = ["print-defmt"] }
 cortex-m = { version = "0.7", features = ["inline-asm", "critical-section-single-core"] }
 cortex-m-rt = "0.7"
 
+# embedded-hal 1.0 traits (SpiBus / OutputPin / DelayNs) the hand-rolled ST7789 panel
+# backend is generic over; embassy-nrf's `Spim` + `Output` and embassy-time's `Delay`
+# implement them. (#122)
+embedded-hal = "1.0"
+
 [profile.release]
 opt-level = 3
 lto = "fat"
