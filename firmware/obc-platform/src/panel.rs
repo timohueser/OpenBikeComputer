@@ -49,39 +49,55 @@ pub trait Panel {
     fn end_frame(&mut self);
 }
 
-/// A frame-absolute [`DrawTarget`] view of one [`Panel::flush_band`] scratch band.
+/// A frame-absolute [`DrawTarget`] view of one [`Panel::flush_band`] scratch band — or, more
+/// generally, of any rectangular **window** of the frame.
 ///
-/// Wraps the band's RGB565 slice as a [`Framebuffer565`] whose physical height is just this
-/// band's `rows`, but **reports the full frame size** ([`OriginDimensions`]) and **offsets every
-/// draw by `-y0`**. So a generator that lays out the whole 240×320 frame — reading
-/// `target.bounding_box()` for its dimensions, drawing at absolute `y` — lands its rows for this
-/// band in the scratch and has everything else clipped away by the inner framebuffer. Drawing
-/// the frame once per band thus reassembles it seam-free, and the *same* generator works against
-/// the SDRAM full-frame plane (where there is one band == the whole frame).
+/// Wraps the scratch slice as a [`Framebuffer565`] sized to just this window (`w × rows`), but
+/// **reports the full frame size** ([`OriginDimensions`]) and **offsets every draw by `(-x0, -y0)`**.
+/// So a generator that lays out the whole 240×320 frame — reading `target.bounding_box()` for its
+/// dimensions, drawing at absolute `(x, y)` — lands its pixels for this window in the scratch and
+/// has everything else clipped away by the inner framebuffer. Drawing the frame once per band thus
+/// reassembles it seam-free, and the *same* generator works against the SDRAM full-frame plane
+/// (where there is one band == the whole frame).
+///
+/// A **full-width band** ([`new`](Band::new), `x0 = 0`, `w = frame.width`) is the common case used
+/// by [`Panel::flush_band`]. A **narrow window** ([`new_window`](Band::new_window)) lets a banded
+/// backend re-push just a sub-rectangle — the nRF's composite-on-push hold bulge re-fills only the
+/// right-edge columns it touches (issue #126), reusing the same scratch + clip path.
 ///
 /// Reuses [`framebuffer::RawFb`](crate::framebuffer::RawFb)/`Pack`, so a band pixel travels the
 /// exact same pack + clip path as an SDRAM-plane pixel.
 pub struct Band<'a> {
-    /// The band's own RGB565 buffer, `frame.width × rows`. Draws land here in band-local rows.
+    /// The window's own RGB565 buffer, `w × rows`. Draws land here in window-local coords.
     fb: Framebuffer565<'a>,
-    /// This band's first frame row — subtracted from every incoming `y` so absolute coords map
-    /// into the band (rows outside `[0, rows)` clip in `fb`).
+    /// This window's first frame column — subtracted from every incoming `x` so absolute coords
+    /// map into the window (columns outside `[0, w)` clip in `fb`).
+    x0: i32,
+    /// This window's first frame row — subtracted from every incoming `y` (rows outside `[0, rows)`
+    /// clip in `fb`).
     y0: i32,
     /// The full frame size, reported to the generator so its layout spans the whole panel.
     frame: Size,
 }
 
 impl<'a> Band<'a> {
-    /// View `scratch` (this band's `frame.width × rows` RGB565 pixels) as the frame's band at
-    /// `y0`. Panics if `scratch` is shorter than `frame.width * rows` (a backend wiring bug).
+    /// View `scratch` (this band's `frame.width × rows` RGB565 pixels) as the full-width frame band
+    /// at `y0`. Panics if `scratch` is shorter than `frame.width * rows` (a backend wiring bug).
     pub fn new(scratch: &'a mut [u16], frame: Size, y0: u16, rows: u16) -> Self {
-        Self { fb: Framebuffer565::new(scratch, frame.width, rows as u32), y0: y0 as i32, frame }
+        Self::new_window(scratch, frame, 0, y0, frame.width as u16, rows)
+    }
+
+    /// View `scratch` (`w × rows` RGB565 pixels) as the frame window at `(x0, y0)`, sized `w × rows`,
+    /// reporting the full `frame`. Frame-absolute draws land offset by `(-x0, -y0)` and anything
+    /// outside the window clips. Panics if `scratch` is shorter than `w * rows`.
+    pub fn new_window(scratch: &'a mut [u16], frame: Size, x0: u16, y0: u16, w: u16, rows: u16) -> Self {
+        Self { fb: Framebuffer565::new(scratch, w as u32, rows as u32), x0: x0 as i32, y0: y0 as i32, frame }
     }
 }
 
 impl OriginDimensions for Band<'_> {
     /// The full frame — so a generator sizing itself off `bounding_box()` lays out the whole
-    /// panel, not just this band.
+    /// panel, not just this window.
     fn size(&self) -> Size {
         self.frame
     }
@@ -89,27 +105,28 @@ impl OriginDimensions for Band<'_> {
 
 impl DrawTarget for Band<'_> {
     type Color = Rgb565;
-    // The inner framebuffer can't fail; out-of-band pixels are clipped, not errors.
+    // The inner framebuffer can't fail; out-of-window pixels are clipped, not errors.
     type Error = core::convert::Infallible;
 
     fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
     where
         I: IntoIterator<Item = Pixel<Self::Color>>,
     {
-        let y0 = self.y0;
-        self.fb.draw_iter(pixels.into_iter().map(move |Pixel(p, c)| Pixel(Point::new(p.x, p.y - y0), c)))
+        let (x0, y0) = (self.x0, self.y0);
+        self.fb.draw_iter(pixels.into_iter().map(move |Pixel(p, c)| Pixel(Point::new(p.x - x0, p.y - y0), c)))
     }
 
-    /// Offset the fill rectangle into band-local space; the inner framebuffer intersects it with
-    /// the band's bounds, so a rect spanning rows outside this band fills only its slice (this is
-    /// the renderer's hot path — a per-row `fill`, kept fast by forwarding straight to `RawFb`).
+    /// Offset the fill rectangle into window-local space; the inner framebuffer intersects it with
+    /// the window's bounds, so a rect spanning rows/columns outside this window fills only its slice
+    /// (this is the renderer's hot path — a per-row `fill`, kept fast by forwarding straight to
+    /// `RawFb`).
     fn fill_solid(&mut self, area: &Rectangle, color: Self::Color) -> Result<(), Self::Error> {
-        let shifted = Rectangle::new(Point::new(area.top_left.x, area.top_left.y - self.y0), area.size);
+        let shifted = Rectangle::new(Point::new(area.top_left.x - self.x0, area.top_left.y - self.y0), area.size);
         self.fb.fill_solid(&shifted, color)
     }
 
-    /// Clear *this band's* rows to `color`. The generator calls it once per frame (per band); the
-    /// rows it doesn't subsequently draw stay this colour, matching the full-frame clear.
+    /// Clear *this window's* pixels to `color`. The generator calls it once per frame (per band);
+    /// the pixels it doesn't subsequently draw stay this colour, matching the full-frame clear.
     fn clear(&mut self, color: Self::Color) -> Result<(), Self::Error> {
         self.fb.clear(color)
     }
@@ -138,6 +155,26 @@ mod tests {
         }
         assert!(scratch[0..8].iter().all(|&p| p == 0x07E0), "frame rows 4-5 filled (band-local 0-1)");
         assert!(scratch[8..16].iter().all(|&p| p == 0x0000), "frame rows 6-7 untouched (rect ended at 5)");
+    }
+
+    /// A narrow [`Band::new_window`] reports the whole frame but writes only its own sub-rect: a
+    /// frame-absolute fill straddling the window's bounds lands offset by `(-x0, -y0)` and clips to
+    /// the window — the path the nRF composite-on-push bulge re-pushes its right-edge columns by.
+    #[test]
+    fn window_reports_full_frame_offsets_xy_and_clips() {
+        // Frame 8×8; window covers cols [4,8) × rows [2,6) (x0=4,y0=2,w=4,rows=4), scratch = 4×4.
+        let mut scratch = [0u16; 4 * 4];
+        {
+            let mut win = Band::new_window(&mut scratch, Size::new(8, 8), 4, 2, 4, 4);
+            assert_eq!(win.size(), Size::new(8, 8), "reports the FULL frame, not the window");
+            // Absolute cols 6..10 × rows 4..8 → only cols 6,7 / rows 4,5 fall in the window →
+            // window-local cols 2,3 / rows 2,3.
+            win.fill_solid(&Rectangle::new(Point::new(6, 4), Size::new(4, 4)), rgb(0xF800)).unwrap();
+        }
+        let at = |x: usize, y: usize| scratch[y * 4 + x];
+        assert_eq!(at(1, 1), 0x0000, "outside the filled sub-rect → untouched");
+        assert_eq!(at(2, 2), 0xF800, "frame (6,4) → window-local (2,2) filled");
+        assert_eq!(at(3, 3), 0xF800, "frame (7,5) → window-local (3,3), last in-window pixel");
     }
 
     /// The load-bearing property: drawing a whole-frame generator band-by-band reconstructs the
