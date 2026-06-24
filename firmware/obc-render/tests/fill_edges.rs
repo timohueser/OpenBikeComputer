@@ -13,7 +13,10 @@ use embedded_graphics::pixelcolor::Rgb888;
 use embedded_graphics::prelude::*;
 use obc_reader::{rgb565_to_rgb888, MapCache, Reader, SliceSource};
 use obc_render::text::{draw_text, Font, TextAlign};
-use obc_render::{MapRenderer, Viewport, MAX_SPANS};
+use obc_render::{MapRenderer, Viewport};
+// Only the (full-profile-only) frame-points saturation test reads this cap.
+#[cfg(not(feature = "nrf-mem"))]
+use obc_render::MAX_SPANS;
 use obcm_testkit::{build_file, pack_poly, pack_poly16, pack_poly_decl, LodSpec, Style};
 
 mod common;
@@ -152,6 +155,14 @@ fn zero_area_collinear_polygon_fills_nothing() {
 /// big ones are dropped for lack of point room. We pack many ~2000-point polygons plus one solid
 /// high-priority square: the square (collected first by the priority-1 pass) draws, while the drop
 /// count is positive and the span buffer stays far from full.
+///
+/// Full-profile only: the premise is `MAX_FRAME_POINTS` (12288) ≫ a single max feature (~2000 pts)
+/// so several pack in before the buffer saturates and `point_utilization` exceeds 0.9. The
+/// constrained `nrf-mem` profile (issue #124) sizes `MAX_FRAME_POINTS` (2560) to ≈ one max feature,
+/// so the "many big features saturate the frame buffer" setup doesn't apply; the constrained
+/// profile's panic-safety on an oversized feature is instead pinned by the compile-time
+/// `MAX_SCREEN_POINTS >= MAX_DECODE_POINTS` invariant in `obc-render`.
+#[cfg(not(feature = "nrf-mem"))]
 #[test]
 fn frame_points_saturate_before_spans_and_priority_still_wins() {
     // ~2000 points per feature. MAX_FRAME_POINTS = 12288, so ~6 fit; the 7th+ are dropped on the

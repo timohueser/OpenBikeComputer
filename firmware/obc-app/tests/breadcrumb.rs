@@ -89,10 +89,13 @@ fn long_curvy_ride_distributes_and_stays_bounded() {
     assert!(longest <= total / 20.0, "one segment spans too much: {longest:.0} m of {total:.0} m");
 
     // And the line still tracks the ride — coarser than the route (fixed budget over 200 km),
-    // but bounded, never the straight-line collapse.
+    // but bounded, never the straight-line collapse. The deviation budget scales with the spine
+    // density: the constrained `nrf-mem` profile (issue #124) halves SPINE_CAP, so the same weave
+    // is drawn with half the points and strays roughly twice as far — still bounded, not collapsed.
     let out: std::vec::Vec<(i32, i32)> = bc.points().collect();
     let dev = max_deviation_m(&input, &out);
-    assert!(dev <= 40.0, "trail strays {dev:.1} m from a 200 km weave on a fixed point budget");
+    let dev_budget = if cfg!(feature = "nrf-mem") { 80.0 } else { 40.0 };
+    assert!(dev <= dev_budget, "trail strays {dev:.1} m from a 200 km weave on a fixed point budget");
 }
 
 #[test]

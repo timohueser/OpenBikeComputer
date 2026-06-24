@@ -5,6 +5,12 @@ edition = "2021"
 publish = false  # internal firmware crate — not published to crates.io
 description = "OBCR route format reader + GPX converter (no_std) — shared by the desktop simulator and nRF firmware"
 
+[features]
+# Constrained on-device memory profile (issue #124) — shrinks the resident `RouteCache`.
+# Forwards to `obc-reader` so a single board-crate switch trims every shared crate's caps.
+# See `obc-reader`'s `nrf-mem` for the rationale. Off by default (full sizes on host/sim/tests).
+nrf-mem = ["obc-reader/nrf-mem"]
+
 [dependencies]
 heapless = "0.8"
 libm = "0.2"
