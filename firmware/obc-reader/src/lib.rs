@@ -32,8 +32,8 @@ pub use byte_io::{ByteSink, ByteSource, SliceSource};
 pub use color::rgb565_to_device64;
 pub use color::rgb565_to_rgb888;
 pub use reader::{
-    CacheStats, FeatureRef, Kind, Lod, MapCache, Reader, Style, HEADER_LEN, MAX_CHUNK_BYTES, MAX_FEAT_PTS,
-    MAX_FEAT_RINGS,
+    read_header, CacheStats, FeatureRef, Kind, Lod, MapCache, MapHeader, Reader, Style, HEADER_LEN, MAX_CHUNK_BYTES,
+    MAX_FEAT_PTS, MAX_FEAT_RINGS,
 };
 
 /// Meters of ground per degree of latitude (and of longitude at the equator) — the
