@@ -431,7 +431,16 @@ async fn input_overlay_task(
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
-    let p = embassy_nrf::init(Default::default());
+    // Run the M33 at its full **128 MHz** — embassy-nrf's `Config::default()` boots it at only
+    // 64 MHz (`ClockSpeed::CK64`), which halves the per-band RGB222->RGB565->12-bit conversion *and*
+    // keeps the high-speed SERIAL00 SPIM off the clock domain it needs for 32 MHz. Both directly
+    // gate the banded push (the visible top-to-bottom fill), so this is the single biggest frame-time
+    // lever on this panel.
+    let p = {
+        let mut config = embassy_nrf::config::Config::default();
+        config.clock_speed = embassy_nrf::config::ClockSpeed::CK128;
+        embassy_nrf::init(config)
+    };
 
     // LED0 (P2_09) heartbeat — a liveness blink visible even before looking at the panel.
     let mut led = Output::new(p.P2_09, Level::Low, OutputDrive::Standard);
@@ -454,7 +463,7 @@ async fn main(_spawner: Spawner) {
         // 8 MHz is comfortable over the jumpered bring-up bus; SERIAL00 reaches 32 MHz on a clean
         // board — worth revisiting once the panel is on a PCB.
         let mut config = spim::Config::default();
-        config.frequency = spim::Frequency::M8;
+        config.frequency = spim::Frequency::M32;
         let spi = spim::Spim::new_txonly(p.SERIAL00, Irqs, p.P2_01, p.P2_02, config);
 
         // SAFETY: the sole reference taken to BAND; the panel holds it for the rest of the program
@@ -638,10 +647,17 @@ async fn main(_spawner: Spawner) {
                 // fluid-but-unlocked framebuffer tore it).
                 let mut disp = bus.lock().await;
                 let Display { panel, fb } = &mut *disp;
+                let t_render = Instant::now();
                 let stats = {
                     let mut fbdev = FbDevice64::new(&mut fb[..], WIDTH as u32, HEIGHT as u32);
                     app.render_map(&mut fbdev, &reader, None, WIDTH as f32, HEIGHT as f32, color_fn)
                 };
+                let render_us = t_render.elapsed().as_micros();
+                // Time the push separately — the visible top-to-bottom fill. Per band it is
+                // RGB222->RGB565 expand + 12-bit pack on the M33 *then* the SPIM-DMA burst, all
+                // serialized; splitting it from the render shows where the on-glass time actually
+                // goes (CPU conversion vs. the 28.8 ms theoretical SPI bit-time at 32 MHz).
+                let t_push = Instant::now();
                 let pixels = &**fb;
                 panel.begin_frame();
                 let rows = panel.band_rows();
@@ -662,10 +678,13 @@ async fn main(_spawner: Spawner) {
                     y0 += h;
                 }
                 panel.end_frame();
+                let push_us = t_push.elapsed().as_micros();
                 drop(disp); // release the bus before logging so the input plane can push the bulge
 
                 defmt::info!(
-                    "map frame on glass: lod {=usize} | feat {=usize}/{=usize} | chunks {=usize} | map-cache {=u32} hit / {=u32} miss",
+                    "map frame: render {=u64} us + push {=u64} us (12-bit @M32) | lod {=usize} | feat {=usize}/{=usize} | chunks {=usize} | map-cache {=u32} hit / {=u32} miss",
+                    render_us,
+                    push_us,
                     stats.lod,
                     stats.features_drawn,
                     stats.features_tried,
