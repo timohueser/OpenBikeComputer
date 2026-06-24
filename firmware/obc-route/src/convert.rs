@@ -21,9 +21,15 @@ use obc_reader::BBox;
 
 /// Decimation tolerance: drop a vertex within this perpendicular distance of the chord.
 const EPSILON_M: f32 = 1.0;
-/// Force a kept vertex at least this often. Also bounds stored deltas to the `int16`
-/// range (≈3.6 km lat; ≈3.6 km·cos(lat) lon — safe to ~70° latitude).
+/// Force a kept geometry vertex at least this often, so a long near-straight run keeps shape
+/// fidelity at real (not interpolated) points. (The stored-delta `int16` bound is guaranteed
+/// unconditionally by [`MAX_SEGMENT_UDEG`] densification — even a segment with no candidate.)
 const MAX_SPAN_M: f32 = 1200.0;
+/// Largest stored per-vertex coordinate delta (µdeg). A longer segment is split with
+/// interpolated vertices so `(x - px) as i16` never wraps — including a 2-point track whose one
+/// segment has no intermediate candidate for the `MAX_SPAN_M` rule to keep (issue #110). Mirrors
+/// the OBCM packer's `MAX_SEGMENT` so both formats densify on the same threshold.
+const MAX_SEGMENT_UDEG: i64 = 30_000;
 
 /// Max bytes of one chunk's record body (`(points-1) × 6`).
 const BODY_CAP: usize = (MAX_POINTS_PER_CHUNK - 1) * 6;
@@ -97,8 +103,7 @@ pub fn gpx_to_obcr(src: &dyn ByteSource, name: &str, sink: &mut dyn ByteSink) ->
         };
         match (last_kept, pending) {
             (None, _) => {
-                enc.emit(sink, c)?;
-                emitted += 1;
+                emitted += emit_densified(&mut enc, sink, None, c)?;
                 last_kept = Some(c);
             }
             (Some(_), None) => pending = Some(c),
@@ -106,8 +111,7 @@ pub fn gpx_to_obcr(src: &dyn ByteSource, name: &str, sink: &mut dyn ByteSink) ->
                 let perp = perp_dist_m(lk, c, pd);
                 let span = (c.cum_d - lk.cum_d) as f32;
                 if perp > EPSILON_M || span > MAX_SPAN_M {
-                    enc.emit(sink, pd)?;
-                    emitted += 1;
+                    emitted += emit_densified(&mut enc, sink, Some(lk), pd)?;
                     last_kept = Some(pd);
                 }
                 pending = Some(c);
@@ -116,8 +120,7 @@ pub fn gpx_to_obcr(src: &dyn ByteSource, name: &str, sink: &mut dyn ByteSink) ->
     }
     // The final point is always kept.
     if let Some(pd) = pending {
-        enc.emit(sink, pd)?;
-        emitted += 1;
+        emitted += emit_densified(&mut enc, sink, last_kept, pd)?;
     }
 
     if emitted == 0 {
@@ -155,6 +158,53 @@ struct Cand {
     ele: i16,
     cum_d: u32,
     cum_a: u32,
+}
+
+/// Emit `c`, first inserting linearly-interpolated synthetic vertices so no stored
+/// `(Δlon, Δlat)` exceeds the `int16` range. `prev` is the last-emitted vertex (the segment
+/// start), or `None` for the very first point. Returns the count emitted (synthetic
+/// intermediates + `c`) so the caller's running total stays exact.
+///
+/// The decimator's `MAX_SPAN_M` rule only force-keeps an intermediate *raw* candidate between
+/// two kept vertices; a single raw segment with no candidate — a 2-point planner export, a
+/// sparse connector leg — was therefore stored as one oversized delta that silently wrapped
+/// (issue #110). Splitting the span itself here makes the `int16` guard candidate-independent,
+/// mirroring the OBCM packer's `densify` on the same `MAX_SEGMENT_UDEG` threshold.
+fn emit_densified(enc: &mut Encoder, sink: &mut dyn ByteSink, prev: Option<Cand>, c: Cand) -> Result<u32, Error> {
+    let prev = match prev {
+        Some(p) => p,
+        None => {
+            enc.emit(sink, c)?;
+            return Ok(1);
+        }
+    };
+    let dlon = (c.lon - prev.lon) as i64;
+    let dlat = (c.lat - prev.lat) as i64;
+    let mut emitted = 0u32;
+    let max_dist = dlon.abs().max(dlat.abs());
+    if max_dist > MAX_SEGMENT_UDEG {
+        let steps = max_dist / MAX_SEGMENT_UDEG + 1; // integer step count
+        for step in 1..steps {
+            enc.emit(sink, lerp(prev, c, step as f64 / steps as f64))?;
+            emitted += 1;
+        }
+    }
+    enc.emit(sink, c)?;
+    Ok(emitted + 1)
+}
+
+/// A synthetic candidate fraction `t` (0..1) of the way from `a` to `b`, interpolating the
+/// position, elevation and cumulative stats linearly.
+fn lerp(a: Cand, b: Cand, t: f64) -> Cand {
+    let f = |s: i32, e: i32| s + libm::round((e as f64 - s as f64) * t) as i32;
+    let g = |s: u32, e: u32| (s as f64 + (e as f64 - s as f64) * t) as u32;
+    Cand {
+        lon: f(a.lon, b.lon),
+        lat: f(a.lat, b.lat),
+        ele: round_i16(a.ele as f64 + (b.ele as f64 - a.ele as f64) * t),
+        cum_d: g(a.cum_d, b.cum_d),
+        cum_a: g(a.cum_a, b.cum_a),
+    }
 }
 
 /// Accumulates kept points into seam-sharing chunks, streaming each finished chunk's
