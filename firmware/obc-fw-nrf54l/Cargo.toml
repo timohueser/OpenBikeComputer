@@ -11,6 +11,15 @@ description = "nRF54L15-DK board firmware for OpenBikeComputer — the real hard
 # like the sibling obc-fw-stm32f429 board crate. Its own Cargo.lock is committed.
 [workspace]
 
+[features]
+# The on-glass bring-up screen — the font ladder + the device's 64-colour gamut, streamed to the
+# ST7789 band-by-band through the `Panel` seam (issue #122). The nRF analog of the STM32's
+# `glass-demo` and the simulator's `--text-demo`/`--palette`. Default-on; the real app path
+# (load → ride → save-GPX) lands at N6 (#127), at which point `not(glass-demo)` drives `obc-app`
+# instead. Kept a feature so both configs compile as the port fills in.
+default = ["glass-demo"]
+glass-demo = []
+
 [dependencies]
 # embassy HAL for the nRF54L15 app core. `nrf54l15-app-s` selects the secure-app die
 # (the only partition we use — no TF-M split, BLE deferred); `time-driver-grtc` backs
@@ -28,9 +37,9 @@ embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "execu
 embassy-time = { version = "0.5.1", features = ["defmt", "defmt-timestamp-uptime"] }
 
 # defmt logging over RTT via the DK's onboard J-Link (`cargo run` flashes + streams).
-# NOTE: embassy-nrf 0.11 is on the defmt 1.x ecosystem, whereas the shared obc-* crates are
-# still defmt 0.3 — they can't co-exist in one binary, so wiring obc-app in (N1+, #122) means
-# bumping the shared crates to defmt 1.0 first (tracked against the epic #120).
+# embassy-nrf 0.11 is on the defmt 1.x ecosystem. The shared `obc-*` + `obc-platform` crates
+# carry **no defmt dependency at all** (board crates do their own logging), so they coexist with
+# defmt 1.0 here with no version clash — wiring them in needs no defmt bump.
 defmt = "1.0"
 defmt-rtt = "1.0"
 panic-probe = { version = "1.0", features = ["print-defmt"] }
@@ -44,6 +53,18 @@ cortex-m-rt = "0.7"
 # backend is generic over; embassy-nrf's `Spim` + `Output` and embassy-time's `Delay`
 # implement them. (#122)
 embedded-hal = "1.0"
+
+# The board-agnostic glue: the `Panel` banded-display seam + the `Band` frame-absolute draw view
+# the ST7789 backend implements, and `Framebuffer565`'s `RawFb`/`Pack` the band reuses (issue
+# #122). Pulls obc-app/route/reader transitively — all no_std, all defmt-free. `debug-usb` stays
+# off (no embassy-sync) until the sensor stream at N6.
+obc-platform = { path = "../obc-platform" }
+# The shared text renderer — `draw_text` + the Terminus `Font` tiers the glass-demo's font ladder
+# draws (the same path every on-device screen uses). (#122)
+obc-render = { path = "../obc-render" }
+# `Rgb565` / `DrawTarget` / `Point` / `Rectangle` for the demo + the `Band` target; pinned to the
+# same 0.8 obc-platform/obc-render resolve so the colour + target types unify across the path.
+embedded-graphics = "0.8"
 
 [profile.release]
 opt-level = 3

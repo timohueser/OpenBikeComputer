@@ -10,7 +10,7 @@
 //! Bring-up is phased so each hardware layer is verified (over defmt/RTT, and on glass via
 //! the webcam capture at `/tmp/obc-cam/panel.jpg`) before the next is stacked:
 //!   N0. crate skeleton + embassy bring-up: blinky + RTT + this peripheral plan          (#121)
-//!   N1. `Panel` HAL + ST7789 SPIM backend + banded RGB222→RGB565 push + glass demo  <- this commit (#122)
+//!   N1. `Panel` HAL + ST7789 SPIM backend + banded RGB565 push + glass demo (RGB222 at N4) <- (#122)
 //!   N2. microSD on a dedicated SPIM (reuse obc-platform's FatFs byte adapters)           (#123)
 //!   N3. board memory profile (host-vs-nRF) + budget assert                              (#124)
 //!   N4. RGB222 full framebuffer + full map on glass (retire `Framebuffer565`)           (#125)
@@ -46,14 +46,17 @@
 //!   P2 header") and routes the pins out — no soldering on current board revisions. The whole
 //!   panel then sits on the P2 header:
 //!     SCK P2_01 | MOSI P2_02 | CS P2_05 | DC P2_03 | RST P2_00   (MISO P2_04 unused, write-only)
-//!   CS is held low (single device on the bus; embassy-nrf drives no hardware CS). The panel's
+//!   CS is toggled in software per transaction (embassy-nrf drives no hardware CS), framing each
+//!   command/data write the way the ST7789 expects — see `st7789::St7789::transaction`. The panel's
 //!   level shifters want 3–5 V logic, so the DK I/O rail must be raised from its 1.8 V default
 //!   to **3.3 V** (VDDM, also in the Board Configurator — HW guide §2.2.1); Vin is fed from the
 //!   DK's 5 V (VBUS) so the panel's onboard 3.3 V LDO keeps headroom. Putting the display on P2
 //!   leaves all of P1 free for SD (N2) + VCOM (N6) + the buttons. Band push expands the RGB222
 //!   framebuffer → RGB565 and SPIM-DMAs a CASET/RASET window (the wire format lives in
-//!   `Panel::flush_band`, the same seam the future FLPR/LS021B7DD02 reuses); that lands at N4.
-//!   N1 just streams a colour-bar test pattern to prove wiring + init + addressing.
+//!   `Panel::flush_band`, the same seam the future FLPR/LS021B7DD02 reuses); the RGB222 source
+//!   framebuffer lands at N4. N1 already drives that `Panel` seam (in RGB565) with a banded
+//!   `glass-demo` — the font ladder + the device's 64-colour gamut — to prove wiring + init +
+//!   addressing + the colour/text path end-to-end.
 //!
 //! ## microSD SPIM — map/route/track storage (#123)
 //!   Instance **SERIAL22 / SPIM22** — a standard-speed instance (SD doesn't need 32 MHz),
@@ -89,76 +92,110 @@
 
 #![no_std]
 #![no_main]
+// The ST7789 driver is wired in only by the `glass-demo` build today. In the `not(glass-demo)`
+// app-stub config (the placeholder until N6 points `obc-app` at the panel) the driver is compiled
+// but intentionally unused, so silence dead-code there rather than gate the whole module away.
+#![cfg_attr(not(feature = "glass-demo"), allow(dead_code))]
 
+#[cfg(feature = "glass-demo")]
+mod demo;
 mod st7789;
 
 use defmt::info;
 use embassy_executor::Spawner;
 use embassy_nrf::gpio::{Level, Output, OutputDrive};
 use embassy_nrf::{bind_interrupts, peripherals, spim};
-use embassy_time::{Delay, Timer};
-use st7789::{St7789, HEIGHT, WIDTH};
+use embassy_time::Timer;
 use {defmt_rtt as _, panic_probe as _};
+
+#[cfg(feature = "glass-demo")]
+use embassy_time::Delay;
+#[cfg(feature = "glass-demo")]
+use st7789::{St7789, HEIGHT, WIDTH};
+
+#[cfg(feature = "glass-demo")]
+use embedded_graphics::prelude::Size;
+#[cfg(feature = "glass-demo")]
+use obc_platform::{Band, Panel};
 
 bind_interrupts!(struct Irqs {
     SERIAL00 => spim::InterruptHandler<peripherals::SERIAL00>;
 });
 
-/// 8-bar palette in big-endian RGB565 (what the ST7789 RAMWR stream expects):
-/// white, yellow, cyan, green, magenta, red, blue, black.
-const BARS: [u16; 8] = [0xFFFF, 0xFFE0, 0x07FF, 0x07E0, 0xF81F, 0xF800, 0x001F, 0x0000];
+/// One band's worth of RGB565 scratch (`WIDTH * BAND_ROWS`), living in `.bss`. 20 rows ≈ 9.6 KB
+/// and tiles the 320-row frame in 16 bands. The `Panel` impl fills, byte-swaps, and SPIM-DMAs it
+/// per band; borrowed exactly once below (single executor → no aliasing).
+#[cfg(feature = "glass-demo")]
+const BAND_ROWS: usize = 20;
+#[cfg(feature = "glass-demo")]
+static mut BAND: [u16; WIDTH as usize * BAND_ROWS] = [0; WIDTH as usize * BAND_ROWS];
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
     let p = embassy_nrf::init(Default::default());
 
-    // LED0 (P2_09) heartbeat — toggles once per drawn frame so liveness is visible even before
-    // looking at the panel.
+    // LED0 (P2_09) heartbeat — a liveness blink visible even before looking at the panel.
     let mut led = Output::new(p.P2_09, Level::Low, OutputDrive::Standard);
 
-    // Display control lines on the (flash-freed) P2 header. CS is asserted low once and held —
-    // single device on the bus, the same trick the STM32 panel uses; embassy-nrf's Spim drives
-    // no hardware CS. RST idles high (released).
-    let _cs = Output::new(p.P2_05, Level::Low, OutputDrive::Standard);
-    let dc = Output::new(p.P2_03, Level::Low, OutputDrive::Standard);
-    let rst = Output::new(p.P2_00, Level::High, OutputDrive::Standard);
+    // --- glass-demo (#122): the font ladder + the device's 64-colour gamut, streamed to the
+    // ST7789 band by band through the board-agnostic `Panel` seam, then a static heartbeat. The
+    // shared-app path (load → ride → save-GPX) replaces this at N6 (#127). ---
+    #[cfg(feature = "glass-demo")]
+    {
+        // Display control lines on the (flash-freed) P2 header. CS idles HIGH (deasserted) and the
+        // driver pulses it low per transaction — embassy-nrf's Spim drives no hardware CS, so the
+        // panel's CSX is framed in software (the rising edge re-aligns the panel each transaction,
+        // which is what lets a warm MCU reset recover — see `st7789::St7789::transaction`). RST
+        // idles high (released).
+        let cs = Output::new(p.P2_05, Level::High, OutputDrive::Standard);
+        let dc = Output::new(p.P2_03, Level::Low, OutputDrive::Standard);
+        let rst = Output::new(p.P2_00, Level::High, OutputDrive::Standard);
 
-    // SERIAL00 as a write-only SPIM: the panel never talks back, so MISO (P2_04) is omitted.
-    // 8 MHz is comfortable over the jumpered bring-up bus (a full 240×320 frame ≈ 153 ms);
-    // SERIAL00 reaches 32 MHz on a clean board — worth revisiting once the panel is on a PCB.
-    let mut config = spim::Config::default();
-    config.frequency = spim::Frequency::M8;
-    let spi = spim::Spim::new_txonly(p.SERIAL00, Irqs, p.P2_01, p.P2_02, config);
+        // SERIAL00 as a write-only SPIM: the panel never talks back, so MISO (P2_04) is omitted.
+        // 8 MHz is comfortable over the jumpered bring-up bus; SERIAL00 reaches 32 MHz on a clean
+        // board — worth revisiting once the panel is on a PCB.
+        let mut config = spim::Config::default();
+        config.frequency = spim::Frequency::M8;
+        let spi = spim::Spim::new_txonly(p.SERIAL00, Irqs, p.P2_01, p.P2_02, config);
 
-    info!("obc-fw-nrf54l N1: ST7789 bring-up — SPIM00 @8MHz on P2.01/P2.02, DC P2.03, RST P2.00, CS P2.05");
+        // SAFETY: the sole reference taken to BAND; the panel holds it for the rest of the program
+        // and this single-executor build never aliases it.
+        let band = unsafe { &mut *core::ptr::addr_of_mut!(BAND) };
+        let mut panel = St7789::new(spi, dc, rst, cs, Delay, band);
+        panel.init();
+        info!("obc-fw-nrf54l N1: ST7789 up ({}x{}) on SPIM00@8MHz; rendering glass-demo", WIDTH, HEIGHT);
 
-    let mut panel = St7789::new(spi, dc, rst, Delay);
-    panel.init();
-    info!("ST7789 init done ({}x{}), streaming colour bars", WIDTH, HEIGHT);
-
-    // Scrolling colour bars: every frame the 8-bar palette rotates by one, so the bars march
-    // sideways — an unmistakable "alive and addressed correctly" signal on the webcam.
-    let bar_w = WIDTH / BARS.len() as u16;
-    let mut frame: usize = 0;
-    loop {
-        // Vertical bars → every row is identical, so build one row and stream it HEIGHT times.
-        let mut row = [0u8; WIDTH as usize * 2];
-        for x in 0..WIDTH {
-            let bar = (x / bar_w) as usize % BARS.len();
-            let c = BARS[(bar + frame) % BARS.len()];
-            let i = x as usize * 2;
-            row[i] = (c >> 8) as u8;
-            row[i + 1] = c as u8;
+        // Render the (static) screen once, band by band: each band gets the *whole* frame drawn
+        // into it through `Band`, which clips the draw to the band's rows — so the frame reassembles
+        // seam-free and the generator never has to know it's banded.
+        panel.begin_frame();
+        let rows = panel.band_rows();
+        let mut y0 = 0u16;
+        while y0 < HEIGHT {
+            let h = rows.min(HEIGHT - y0);
+            panel.flush_band(y0, h, |scratch| {
+                let mut t = Band::new(scratch, Size::new(WIDTH as u32, HEIGHT as u32), y0, h);
+                demo::font_palette_demo(&mut t).ok();
+            });
+            y0 += h;
         }
+        panel.end_frame();
+        info!("glass-demo rendered (font ladder + 64 swatches); heartbeat idle");
 
-        panel.set_window(0, 0, WIDTH - 1, HEIGHT - 1);
-        for _ in 0..HEIGHT {
-            panel.push(&row);
+        loop {
+            led.toggle();
+            Timer::after_millis(500).await;
         }
+    }
 
-        led.toggle();
-        info!("frame {} drawn (bars shifted {})", frame, frame % BARS.len());
-        Timer::after_millis(700).await;
-        frame = frame.wrapping_add(1);
+    // The shared-app path arrives at N6 (#127); until then a `--no-default-features` build just
+    // blinks, so both configs compile as the port fills in.
+    #[cfg(not(feature = "glass-demo"))]
+    {
+        info!("obc-fw-nrf54l: real app path lands at N6 (#127); idling with a heartbeat");
+        loop {
+            led.toggle();
+            Timer::after_millis(500).await;
+        }
     }
 }

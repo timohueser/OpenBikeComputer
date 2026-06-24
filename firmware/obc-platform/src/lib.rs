@@ -13,6 +13,8 @@
 //!   over the LTDC-scanned SDRAM framebuffers: the opaque RGB565 map plane
 //!   ([`Framebuffer565`]) and the transparent ARGB4444 overlay plane
 //!   ([`FramebufferArgb4444`], the dual-layer display's second layer — issue #46).
+//! - [`panel`] — the [`Panel`] banded-display seam + the [`Band`] frame-absolute band view, for
+//!   boards that stream a frame over SPI/DMA instead of scanning SDRAM (issue #122).
 //! - [`button_input`] — a [`ButtonInput`] debouncer over four
 //!   [`InputPin`](embedded_hal::digital::InputPin)s, feeding the shared gesture
 //!   recognizer through [`InputSource`](obc_app::InputSource).
@@ -73,6 +75,10 @@ pub mod button_input;
 // The protocol + sources move to the nRF54L unchanged.
 pub mod debug_usb;
 pub mod framebuffer;
+// The banded display seam ([`Panel`]) + the [`Band`] frame-absolute band view (issue #122). The
+// boards that ship (nRF54L and beyond) have no SDRAM scan-out, so they push a frame band-by-band
+// over SPI/DMA; `Panel` hides that behind the same whole-frame generator the SDRAM plane uses.
+pub mod panel;
 pub mod sd;
 // Always compiled — the synthetic GPS is the `debug-usb`-OFF fallback, so it must exist without
 // the `debug-usb` feature; `time` it depends on is board-agnostic embassy-time glue.
@@ -81,6 +87,7 @@ pub mod time;
 
 pub use button_input::{ButtonInput, Timing};
 pub use framebuffer::{Framebuffer565, FramebufferArgb4444};
+pub use panel::{Band, Panel};
 pub use sd::{SdByteSink, SdByteSource, SdTrackSink};
 pub use synth::SynthLocation;
 pub use time::SaturatingElapsed;
