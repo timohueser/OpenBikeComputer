@@ -134,11 +134,54 @@ bind_interrupts!(struct Irqs {
 
 /// One band's worth of RGB565 scratch (`WIDTH * BAND_ROWS`), living in `.bss`. 20 rows ≈ 9.6 KB
 /// and tiles the 320-row frame in 16 bands. The `Panel` impl fills, byte-swaps, and SPIM-DMAs it
-/// per band; borrowed exactly once below (single executor → no aliasing).
-#[cfg(feature = "glass-demo")]
+/// per band; borrowed exactly once below (single executor → no aliasing). Unconditional (the
+/// `static` is glass-demo only) so the N3 budget assert reserves it in every build config.
 const BAND_ROWS: usize = 20;
+/// The band scratch in bytes (RGB565, 2 B/px) — the resident cost the budget assert reserves.
+const BAND_BYTES: usize = st7789::WIDTH as usize * BAND_ROWS * 2;
 #[cfg(feature = "glass-demo")]
 static mut BAND: [u16; WIDTH as usize * BAND_ROWS] = [0; WIDTH as usize * BAND_ROWS];
+
+// ============================ N3 board memory budget (issue #124) ============================
+// The nRF54L15 has 256 KB RAM and no external SDRAM (unlike the STM32 prototype's 8 MB), so the
+// whole resident working set of a full map redraw must fit there. This build-time assert is the
+// nRF analog of the STM32's SDRAM-placement guard (`obc-fw-stm32f429/src/main.rs`): it fails the
+// build — rather than overflowing RAM on glass — if the shared crates' caps (trimmed by the
+// `nrf-mem` profile, enabled on the obc-app edge in Cargo.toml) ever outgrow the budget. It
+// compiles for thumbv8m (usize = 4 B), so every `size_of` here is the true on-device size.
+//
+// The binding moment is a full redraw with everything resident at once (the `nrf-mem` profile
+// trims each term — see the per-crate caps — to make this fit):
+//   - `App`        embeds the renderer scratch (`obc_render::MCU_RENDERER_BYTES`, ~74 KB nrf-mem)
+//                  plus the resident elevation `Profile` (~8.5 KB at PROFILE_COLS=1024) and
+//                  `Breadcrumb` (~6 KB at SPINE_CAP=512); ~96 KB total.
+//   - framebuffer  the single RGB222 frame (#N4): 240×320 × 1 B/px = 75 KB. Reserved here before
+//                  N4 allocates it, so N4 lands on an already-validated budget.
+//   - `MapCache`   the streamed-map geometry-chunk cache (5 slots on nrf-mem, ~41 KB).
+//   - `RouteCache` the decoded-route-chunk cache (4 slots on nrf-mem, ~12 KB).
+//   - band scratch one RGB565 `Panel` band (`BAND_BYTES`, ~9.4 KB).
+// plus `STACK_RESERVE` headroom for the main stack + embassy's executor/task arenas.
+
+/// Total SRAM the nRF54L15 app core sees (`memory.x`: RAM 256K @ 0x2000_0000).
+const NRF_RAM_BYTES: usize = 256 * 1024;
+/// Headroom kept free under the resident statics for the main stack + embassy's executor/task
+/// arenas (statics grow up from the RAM base, the stack down from the top). The resident set lands
+/// ~234 KB, so this 16 KB reserve leaves ~22 KB of true stack room; sized for the render call depth
+/// and revisited once N6 measures the real high-water mark.
+const STACK_RESERVE: usize = 16 * 1024;
+/// The single RGB222 framebuffer (#N4): one byte per pixel over the 240×320 panel = 75 KB.
+const FB_BYTES: usize = st7789::WIDTH as usize * st7789::HEIGHT as usize;
+
+/// The resident set that must coexist during a redraw (see the table above).
+const RESIDENT_BYTES: usize = core::mem::size_of::<obc_app::App>()
+    + FB_BYTES
+    + core::mem::size_of::<obc_reader::MapCache>()
+    + core::mem::size_of::<obc_route::RouteCache>()
+    + BAND_BYTES;
+const _: () = assert!(
+    RESIDENT_BYTES + STACK_RESERVE <= NRF_RAM_BYTES,
+    "nRF resident set (App + framebuffer + MapCache + RouteCache + band) + stack reserve overruns 256 KB — trim the `nrf-mem` caps (issue #124)"
+);
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
