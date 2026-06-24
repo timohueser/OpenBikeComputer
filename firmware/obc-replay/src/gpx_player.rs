@@ -151,31 +151,42 @@ impl GpxPlayer {
         Some(Fix { lat: lat.round() as i32, lon: lon.round() as i32, course, speed_mps: Some(speed) })
     }
 
+    /// The bracketing track points and interpolation factor for time `t`: the indices
+    /// `(lo, hi)` whose segment contains `t` and the fraction `f ∈ [0, 1]` from `lo`
+    /// toward `hi`. Before the first / after the last point both indices collapse to that
+    /// endpoint (so any interpolation reproduces it), and a zero-span segment uses `f = 0`.
+    /// `None` only for an empty track. `t` is assumed already clamped to `[0, duration]`.
+    ///
+    /// `partition_point` gives the count of points at or before `t`, so the bracketing
+    /// segment is `[idx-1, idx]`. Times are sorted ascending, so the predicate is monotone
+    /// as required.
+    fn bracket(&self, t: f64) -> Option<(usize, usize, f64)> {
+        let pts = &self.track.points;
+        let idx = pts.partition_point(|p| p.t <= t);
+        if idx == 0 {
+            return (!pts.is_empty()).then_some((0, 0, 0.0));
+        }
+        if idx >= pts.len() {
+            let last = pts.len() - 1;
+            return Some((last, last, 0.0));
+        }
+        let (a, b) = (&pts[idx - 1], &pts[idx]);
+        let span = b.t - a.t;
+        let f = if span > 0.0 { (t - a.t) / span } else { 0.0 };
+        Some((idx - 1, idx, f))
+    }
+
     /// The barometric elevation (m) at playback time `t`, linearly interpolated from the
     /// track's `<ele>` values — the simulator's stand-in for a pressure-altimeter reading,
     /// fed into the [`BaroSensor`](crate::baro::BaroSensor). `None` where the track carries
     /// no elevation around `t`. Deliberately separate from [`poll`](Self::poll): the baro
     /// and the GPS fix are independent sensors, sampled on their own cadences.
     pub fn elevation_at(&self, t: f64) -> Option<f32> {
-        let pts = &self.track.points;
-        if pts.is_empty() {
-            return None;
-        }
         let t = t.clamp(0.0, self.duration());
-        let idx = pts.partition_point(|p| p.t <= t);
-        if idx == 0 {
-            return pts[0].ele;
-        }
-        if idx >= pts.len() {
-            return pts.last().unwrap().ele;
-        }
-        let (a, b) = (&pts[idx - 1], &pts[idx]);
-        match (a.ele, b.ele) {
-            (Some(ea), Some(eb)) => {
-                let span = b.t - a.t;
-                let f = if span > 0.0 { (t - a.t) / span } else { 0.0 };
-                Some(ea + (eb - ea) * f as f32)
-            }
+        let (lo, hi, f) = self.bracket(t)?;
+        let pts = &self.track.points;
+        match (pts[lo].ele, pts[hi].ele) {
+            (Some(ea), Some(eb)) => Some(ea + (eb - ea) * f as f32),
             // A lone elevation on one side still gives a reading; none on either → None.
             (Some(e), None) | (None, Some(e)) => Some(e),
             (None, None) => None,
@@ -186,21 +197,10 @@ impl GpxPlayer {
     /// `t` is assumed already clamped to `[0, duration]`.
     fn interp_pos(&self, t: f64) -> (f64, f64) {
         let pts = &self.track.points;
-        // `partition_point` gives the count of points at or before `t`; the
-        // bracketing segment is therefore `[idx-1, idx]`. Times are sorted
-        // ascending, so the predicate is monotone as required.
-        let idx = pts.partition_point(|p| p.t <= t);
-        if idx == 0 {
-            return (pts[0].lat as f64, pts[0].lon as f64);
-        }
-        if idx >= pts.len() {
-            let last = pts.last().unwrap();
-            return (last.lat as f64, last.lon as f64);
-        }
-        let a = &pts[idx - 1];
-        let b = &pts[idx];
-        let span = b.t - a.t;
-        let f = if span > 0.0 { (t - a.t) / span } else { 0.0 };
+        let Some((lo, hi, f)) = self.bracket(t) else {
+            return (0.0, 0.0); // empty track — callers guard this via `fix_at`
+        };
+        let (a, b) = (&pts[lo], &pts[hi]);
         (a.lat as f64 + (b.lat - a.lat) as f64 * f, a.lon as f64 + (b.lon - a.lon) as f64 * f)
     }
 

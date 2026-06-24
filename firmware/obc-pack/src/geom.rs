@@ -131,7 +131,10 @@ fn to_geos(g: &Geom) -> Geometry {
     }
 }
 
-fn read_ring(g: &geos::ConstGeometry) -> Vec<(f64, f64)> {
+/// Read a geometry's coordinate sequence into owned `(x, y)` pairs. Used for any
+/// LineString/LinearRing — including exterior/interior ring accessors, which return
+/// a borrowed `ConstGeometry`.
+fn read_coords<G: geos::Geom>(g: &G) -> Vec<(f64, f64)> {
     let cs = g.get_coord_seq().expect("coord seq");
     let n = cs.size().expect("size");
     let mut out = Vec::with_capacity(n);
@@ -146,19 +149,11 @@ fn from_geos<G: Geom_>(g: &G) -> Geom {
         return Geom::Empty;
     }
     match g.geometry_type() {
-        Ok(GeometryTypes::LineString) | Ok(GeometryTypes::LinearRing) => {
-            let cs = g.get_coord_seq().expect("coord seq");
-            let n = cs.size().expect("size");
-            let mut out = Vec::with_capacity(n);
-            for i in 0..n {
-                out.push((cs.get_x(i).expect("x"), cs.get_y(i).expect("y")));
-            }
-            Geom::Line(out)
-        }
+        Ok(GeometryTypes::LineString) | Ok(GeometryTypes::LinearRing) => Geom::Line(read_coords(g)),
         Ok(GeometryTypes::Polygon) => {
-            let ext = read_ring(&g.get_exterior_ring().expect("ext"));
+            let ext = read_coords(&g.get_exterior_ring().expect("ext"));
             let nholes = g.get_num_interior_rings().expect("nholes");
-            let interiors = (0..nholes).map(|i| read_ring(&g.get_interior_ring_n(i).expect("hole"))).collect();
+            let interiors = (0..nholes).map(|i| read_coords(&g.get_interior_ring_n(i).expect("hole"))).collect();
             Geom::Polygon { exterior: ext, interiors }
         }
         Ok(GeometryTypes::MultiLineString)
@@ -302,15 +297,20 @@ fn build_area_from_members(members: &[Vec<(f64, f64)>], node_first: bool) -> Vec
     polys
 }
 
+/// A clip box as a GEOS polygon, in `box(minx,miny,maxx,maxy)` ccw ring order:
+/// `(maxx,miny),(maxx,maxy),(minx,maxy),(minx,miny)`, closed. Shared by
+/// [`clip_to_box`] and [`crate::land`] so both build the identical ring.
+pub(crate) fn box_polygon((minx, miny, maxx, maxy): (f64, f64, f64, f64)) -> Result<Geometry, geos::Error> {
+    let ring = [(maxx, miny), (maxx, maxy), (minx, maxy), (minx, miny), (maxx, miny)];
+    let lr = Geometry::create_linear_ring(ring_to_coordseq(&ring))?;
+    Geometry::create_polygon(lr, vec![])
+}
+
 /// Clip `geom` to the node box (integer microdegrees → degrees) via GEOS
-/// `intersection`. The clip box ring is built in `box(minx,miny,maxx,maxy)` order.
+/// `intersection`.
 pub fn clip_to_box(geom: &Geom, bbox: (i64, i64, i64, i64)) -> Geom {
     let (minx, miny, maxx, maxy) = (bbox.0 as f64 / 1e6, bbox.1 as f64 / 1e6, bbox.2 as f64 / 1e6, bbox.3 as f64 / 1e6);
-    // box() ccw ring: (maxx,miny),(maxx,maxy),(minx,maxy),(minx,miny), closed.
-    let ring = [(maxx, miny), (maxx, maxy), (minx, maxy), (minx, miny), (maxx, miny)];
-    let box_geom =
-        Geometry::create_polygon(Geometry::create_linear_ring(ring_to_coordseq(&ring)).expect("box ring"), vec![])
-            .expect("box polygon");
+    let box_geom = box_polygon((minx, miny, maxx, maxy)).expect("box polygon");
     let clipped = to_geos(geom).intersection(&box_geom).expect("intersection");
     from_geos(&clipped)
 }

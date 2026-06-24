@@ -308,6 +308,42 @@ pub fn serialize_tree(root: &Node, chunk_size: usize) -> (Vec<u8>, u32, Vec<u8>,
     (index_bytes, index.len() as u32, chunks, chunk_count)
 }
 
+/// The 32-byte OBCM header `<4sBiiiiIBIH>`: magic, version, bbox stored as
+/// lat,lon,lat,lon, header length, lod count, lod-table offset, marker color.
+/// Shared by [`serialize_lods`] and [`serialize_lods_streaming`] so the layout
+/// stays identical.
+fn header_bytes(
+    lod_count: usize,
+    marker_color: u16,
+    global_bbox: (i64, i64, i64, i64),
+    lod_table_offset: usize,
+) -> Vec<u8> {
+    let mut out = Vec::with_capacity(HEADER_LEN);
+    out.extend_from_slice(b"OBCM");
+    out.push(0x05);
+    out.extend_from_slice(&(global_bbox.1 as i32).to_le_bytes()); // min_lat
+    out.extend_from_slice(&(global_bbox.0 as i32).to_le_bytes()); // min_lon
+    out.extend_from_slice(&(global_bbox.3 as i32).to_le_bytes()); // max_lat
+    out.extend_from_slice(&(global_bbox.2 as i32).to_le_bytes()); // max_lon
+    out.extend_from_slice(&(HEADER_LEN as u32).to_le_bytes());
+    out.push(lod_count as u8);
+    out.extend_from_slice(&(lod_table_offset as u32).to_le_bytes());
+    out.extend_from_slice(&marker_color.to_le_bytes());
+    debug_assert_eq!(out.len(), HEADER_LEN);
+    out
+}
+
+/// Append one LOD-table entry `<fIIHI>`: max_mpp (`None` ⇒ `+inf`), index offset,
+/// node count, chunk size, chunk count. Same field order in both serializers.
+fn push_lod_entry(table: &mut Vec<u8>, max_mpp: Option<f64>, index_offset: u32, nc: u32, cs: usize, cc: u32) {
+    let mpp_f: f32 = max_mpp.map_or(f32::INFINITY, |v| v as f32);
+    table.extend_from_slice(&mpp_f.to_le_bytes());
+    table.extend_from_slice(&index_offset.to_le_bytes());
+    table.extend_from_slice(&nc.to_le_bytes());
+    table.extend_from_slice(&(cs as u16).to_le_bytes());
+    table.extend_from_slice(&cc.to_le_bytes());
+}
+
 /// Serialize a pyramid of LOD layers into the full v5 `.obcm` byte stream (header
 /// field order, LOD table layout, and the bbox stored as lat,lon,lat,lon).
 pub fn serialize_lods(
@@ -338,35 +374,14 @@ pub fn serialize_lods(
     let mut table = Vec::with_capacity(lod_count * LOD_ENTRY_LEN);
     let mut payload = Vec::new();
     for b in &blocks {
-        let index_offset = cursor as u32;
-        let mpp_f: f32 = match b.mpp {
-            None => f32::INFINITY,
-            Some(v) => v as f32,
-        };
-        table.extend_from_slice(&mpp_f.to_le_bytes());
-        table.extend_from_slice(&index_offset.to_le_bytes());
-        table.extend_from_slice(&b.nc.to_le_bytes());
-        table.extend_from_slice(&(b.cs as u16).to_le_bytes());
-        table.extend_from_slice(&b.cc.to_le_bytes());
+        push_lod_entry(&mut table, b.mpp, cursor as u32, b.nc, b.cs, b.cc);
         payload.extend_from_slice(&b.ib);
         payload.extend_from_slice(&b.cb);
         cursor += b.ib.len() + b.cb.len();
     }
 
-    // Header `<4sBiiiiIBIH>`: magic, version, bbox (lat,lon,lat,lon), style
-    // offset, lod count, lod table offset, marker color.
     let mut out = Vec::with_capacity(lod_table_offset + table.len() + payload.len());
-    out.extend_from_slice(b"OBCM");
-    out.push(0x05);
-    out.extend_from_slice(&(global_bbox.1 as i32).to_le_bytes()); // min_lat
-    out.extend_from_slice(&(global_bbox.0 as i32).to_le_bytes()); // min_lon
-    out.extend_from_slice(&(global_bbox.3 as i32).to_le_bytes()); // max_lat
-    out.extend_from_slice(&(global_bbox.2 as i32).to_le_bytes()); // max_lon
-    out.extend_from_slice(&(HEADER_LEN as u32).to_le_bytes());
-    out.push(lod_count as u8);
-    out.extend_from_slice(&(lod_table_offset as u32).to_le_bytes());
-    out.extend_from_slice(&marker_color.to_le_bytes());
-
+    out.extend_from_slice(&header_bytes(lod_count, marker_color, global_bbox, lod_table_offset));
     out.extend_from_slice(&style_data);
     out.extend_from_slice(&table);
     out.extend_from_slice(&payload);
@@ -404,20 +419,8 @@ where
     let lod_table_offset = HEADER_LEN + style_data.len();
     let payload_start = lod_table_offset + lod_count * LOD_ENTRY_LEN;
 
-    // 1. Header `<4sBiiiiIBIH>` (bbox stored lat,lon,lat,lon) — needs no tree.
-    let mut header = Vec::with_capacity(HEADER_LEN);
-    header.extend_from_slice(b"OBCM");
-    header.push(0x05);
-    header.extend_from_slice(&(global_bbox.1 as i32).to_le_bytes()); // min_lat
-    header.extend_from_slice(&(global_bbox.0 as i32).to_le_bytes()); // min_lon
-    header.extend_from_slice(&(global_bbox.3 as i32).to_le_bytes()); // max_lat
-    header.extend_from_slice(&(global_bbox.2 as i32).to_le_bytes()); // max_lon
-    header.extend_from_slice(&(HEADER_LEN as u32).to_le_bytes());
-    header.push(lod_count as u8);
-    header.extend_from_slice(&(lod_table_offset as u32).to_le_bytes());
-    header.extend_from_slice(&marker_color.to_le_bytes());
-    debug_assert_eq!(header.len(), HEADER_LEN);
-    w.write_all(&header)?;
+    // 1. Header (bbox stored lat,lon,lat,lon) — needs no tree.
+    w.write_all(&header_bytes(lod_count, marker_color, global_bbox, lod_table_offset))?;
 
     // 2. Style table, then a zeroed LOD table we patch in step 4.
     w.write_all(&style_data)?;
@@ -430,13 +433,7 @@ where
         let (root, chunk_size, max_mpp) = build(i);
         let (ib, nc, cb, cc) = serialize_tree(&root, chunk_size);
         drop(root); // free the tree before writing this LOD / building the next
-        let mpp_f: f32 = max_mpp.map_or(f32::INFINITY, |v| v as f32);
-        // Same field order as serialize_lods: mpp, index_offset, nc, cs, cc.
-        table.extend_from_slice(&mpp_f.to_le_bytes());
-        table.extend_from_slice(&(cursor as u32).to_le_bytes());
-        table.extend_from_slice(&nc.to_le_bytes());
-        table.extend_from_slice(&(chunk_size as u16).to_le_bytes());
-        table.extend_from_slice(&cc.to_le_bytes());
+        push_lod_entry(&mut table, max_mpp, cursor as u32, nc, chunk_size, cc);
         w.write_all(&ib)?;
         w.write_all(&cb)?;
         cursor += ib.len() + cb.len();

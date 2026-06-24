@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 
 use geos::{Geom as _, Geometry};
 
-use crate::geom::{collect_polygons, geom_from_geos, ring_to_coordseq, Geom};
+use crate::geom::{box_polygon, collect_polygons, geom_from_geos, ring_to_coordseq, Geom};
 
 /// EPSG:3857 auxiliary-sphere radius = WGS84 semi-major axis (see the `.prj`).
 const R: f64 = 6_378_137.0;
@@ -91,7 +91,7 @@ pub fn get_land_polygons(bbox_deg: (f64, f64, f64, f64)) -> Result<Vec<Geom>, St
     let (qminx, qminy) = merc_forward(min_lon, min_lat);
     let (qmaxx, qmaxy) = merc_forward(max_lon, max_lat);
     let qbox = (qminx, qminy, qmaxx, qmaxy);
-    let box_geom = box_polygon(qbox)?;
+    let box_geom = box_polygon(qbox).map_err(|e| format!("clip box: {e}"))?;
 
     let mut out = Vec::new();
     read_shapefile(&shp, qbox, &box_geom, &mut out)?;
@@ -265,14 +265,6 @@ fn geos_polygon_from_rings(rings: &[Vec<(f64, f64)>]) -> Option<Geometry> {
     }
     let mls = Geometry::create_multiline_string(lines).ok()?;
     mls.build_area().ok()
-}
-
-/// The clip box as a GEOS polygon, in `box(minx,miny,maxx,maxy)` ring order (same
-/// as [`crate::geom::clip_to_box`]).
-fn box_polygon((minx, miny, maxx, maxy): (f64, f64, f64, f64)) -> Result<Geometry, String> {
-    let ring = [(maxx, miny), (maxx, maxy), (minx, maxy), (minx, miny), (maxx, miny)];
-    let lr = Geometry::create_linear_ring(ring_to_coordseq(&ring)).map_err(|e| format!("clip box ring: {e}"))?;
-    Geometry::create_polygon(lr, vec![]).map_err(|e| format!("clip box polygon: {e}"))
 }
 
 // --- Dataset cache ---------------------------------------------------------

@@ -18,18 +18,12 @@ use obc_render::{
 use crate::activity::{Mode, TrackAction};
 use crate::input::Gesture;
 
-use super::{palette, title_frame, Ctx, MapScreen, Render, Screen, Transition};
+use super::{palette, title_frame, Ctx, MapScreen, MenuItem, Render, Screen, Transition};
 
-/// One prompt option. `guard` = ends the current session → hold-to-confirm.
-struct Item {
-    label: &'static str,
-    guard: bool,
-}
-
-const ITEMS: [Item; 3] = [
-    Item { label: "Swap route", guard: false },
-    Item { label: "Save & new", guard: true },
-    Item { label: "Cancel", guard: false },
+const ITEMS: [MenuItem; 3] = [
+    MenuItem { label: "Swap route", guard: false },
+    MenuItem { label: "Save & new", guard: true },
+    MenuItem { label: "Cancel", guard: false },
 ];
 
 const SWAP: usize = 0;
@@ -114,19 +108,9 @@ impl RouteSwapScreen {
         for (i, item) in ITEMS.iter().enumerate() {
             let y = first + i as i32 * (row_h + gap);
             let row = rect(12, y, w - 24, row_h);
-            if i == self.selected {
-                if item.guard {
-                    // Guarded: a shade base that fills amber with the hold progress (amber,
-                    // not warning-red — this confirms a save, it isn't destructive).
-                    cv.round(row, 6, PARCHMENT_SHADE);
-                    let fill_w = ((w - 24) as f32 * rx.hold_progress.clamp(0.0, 1.0)) as i32;
-                    if fill_w > 0 {
-                        cv.round(rect(12, y, fill_w, row_h), 6, AMBER);
-                    }
-                } else {
-                    cv.round(row, 6, AMBER);
-                }
-            }
+            // Guarded rows fill amber with the hold progress (amber, not warning-red — this
+            // confirms a save, it isn't destructive).
+            super::confirm_row(&mut cv, row, i == self.selected, item.guard, rx.hold_progress, AMBER, 6);
             cv.text(item.label, Point::new(28, y + 11), Font::Body, TextAlign::Left, INK);
         }
         RenderStats::default()

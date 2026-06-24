@@ -218,10 +218,7 @@ impl Encoder {
             let _ = body.extend_from_slice(&e.to_le_bytes());
         }
         for &(x, y, _) in &self.cur {
-            bbox.min_lon = bbox.min_lon.min(x);
-            bbox.min_lat = bbox.min_lat.min(y);
-            bbox.max_lon = bbox.max_lon.max(x);
-            bbox.max_lat = bbox.max_lat.max(y);
+            bbox_extend(&mut bbox, x, y);
         }
         sink.write(&body)?;
         let meta = ChunkMeta {
@@ -299,10 +296,9 @@ fn build_header(name: &str, bbox: &BBox, start: (i32, i32), index_offset: u32, s
     h
 }
 
-// geometry helpers (local equirectangular meters)
-// Segment distance / projection live in `geo` (shared with the elevation profile).
-
-/// Perpendicular distance (m) from point `p` to the chord `a → c`.
+/// Perpendicular distance (m) from point `p` to the chord `a → c`, in local-equirectangular
+/// meters. The decimator's straight-chord sibling of the matcher's clamped `project_to_segment`;
+/// segment distance / projection live in [`geo`](crate::geo), shared with the elevation profile.
 fn perp_dist_m(a: Cand, c: Cand, p: Cand) -> f32 {
     let cl = cos_lat(a.lat);
     let (cx, cy) = delta_m((a.lon, a.lat), (c.lon, c.lat), cl);
@@ -317,13 +313,19 @@ fn perp_dist_m(a: Cand, c: Cand, p: Cand) -> f32 {
 fn grow(b: Option<BBox>, lon: i32, lat: i32) -> BBox {
     match b {
         None => BBox { min_lon: lon, min_lat: lat, max_lon: lon, max_lat: lat },
-        Some(b) => BBox {
-            min_lon: b.min_lon.min(lon),
-            min_lat: b.min_lat.min(lat),
-            max_lon: b.max_lon.max(lon),
-            max_lat: b.max_lat.max(lat),
-        },
+        Some(mut b) => {
+            bbox_extend(&mut b, lon, lat);
+            b
+        }
     }
+}
+
+/// Expand `bbox` in place to include `(lon, lat)`.
+fn bbox_extend(bbox: &mut BBox, lon: i32, lat: i32) {
+    bbox.min_lon = bbox.min_lon.min(lon);
+    bbox.min_lat = bbox.min_lat.min(lat);
+    bbox.max_lon = bbox.max_lon.max(lon);
+    bbox.max_lat = bbox.max_lat.max(lat);
 }
 
 fn round_i16(m: f64) -> i16 {
