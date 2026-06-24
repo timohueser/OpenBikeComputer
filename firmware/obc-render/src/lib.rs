@@ -185,10 +185,10 @@ impl Viewport {
 
     #[inline]
     pub fn to_screen(&self, lon: i32, lat: i32) -> (i32, i32) {
-        // Integer difference preserves absolute microdegree precision up to max.
+        // Integer difference first, then cast the *small* relative delta to f32 — preserves
+        // absolute microdegree precision that casting the raw coordinates would lose.
         let delta_lon = lon.wrapping_sub(self.cam_lon);
         let delta_lat = lat.wrapping_sub(self.cam_lat);
-        // Cast the small relative delta to f32.
         let ex = (delta_lon as f32) * self.aspect;
         let ny = delta_lat as f32;
         // Rotate so `course_rad` points up; at course 0 this is (ex, -ny).
@@ -201,7 +201,16 @@ impl Viewport {
         // feeds the staircase divergence behind the chunk-seam overdraw (see the
         // `fill_polygon` comment). Round-to-nearest is symmetric and sub-pixel
         // correct. `roundf` matches the marker glyph, which already rounds.
-        (libm::roundf(x) as i32, libm::roundf(y) as i32)
+        let p = round_pt(x, y);
+        (p.x, p.y)
+    }
+
+    /// [`to_screen`](Viewport::to_screen) as an `embedded-graphics` [`Point`] — the form every
+    /// overlay stroker wants when mapping a microdegree vertex into the projected run buffer.
+    #[inline]
+    fn project(&self, lon: i32, lat: i32) -> Point {
+        let (x, y) = self.to_screen(lon, lat);
+        Point::new(x, y)
     }
 
     #[inline]
@@ -260,6 +269,13 @@ impl Viewport {
 #[inline]
 fn aspect_for_lat(cam_lat: i32) -> f32 {
     libm::cosf((cam_lat as f32 / 1e6).to_radians())
+}
+
+/// Round sub-pixel `(x, y)` to the nearest integer-pixel [`Point`] — the one rounding convention
+/// every screen-space vertex shares (see [`Viewport::to_screen`]).
+#[inline]
+fn round_pt(x: f32, y: f32) -> Point {
+    Point::new(libm::roundf(x) as i32, libm::roundf(y) as i32)
 }
 
 /// The renderer's collection scratch: per-feature decode buffers plus the frame
@@ -337,7 +353,6 @@ impl FrameScratch {
                         return;
                     }
 
-                    // Capacity check.
                     if spans.is_full()
                         || frame_points.capacity() - frame_points.len() < pts.len()
                         || frame_ring_lens.capacity() - frame_ring_lens.len() < lens.len()
@@ -696,8 +711,7 @@ impl MapRenderer {
             // Stationary glyph: a small orientation-free diamond.
             None => {
                 const R: f32 = 7.0;
-                let pt = |x: f32, y: f32| Point::new(libm::roundf(x) as i32, libm::roundf(y) as i32);
-                let diamond = [pt(cx, cy - R), pt(cx + R, cy), pt(cx, cy + R), pt(cx - R, cy)];
+                let diamond = [round_pt(cx, cy - R), round_pt(cx + R, cy), round_pt(cx, cy + R), round_pt(cx - R, cy)];
                 fill_polygon(target, &diamond, &[4], color, w, h, &mut self.draw.xs);
             }
         }
@@ -755,10 +769,7 @@ impl MapRenderer {
             // share a seam vertex, so this counts it on both — matching the points eg strokes.
             route_chunks += 1;
             route_points += pts.len();
-            let projected = pts.iter().map(|p| {
-                let (x, y) = vp.to_screen(p.lon, p.lat);
-                Point::new(x, y)
-            });
+            let projected = pts.iter().map(|p| vp.project(p.lon, p.lat));
             route_drawn += stroke_overlay(target, screen, xs, projected, color, weight, w, h);
         }
 
@@ -810,10 +821,7 @@ impl MapRenderer {
         I: IntoIterator<Item = (i32, i32)>,
     {
         let (w, h) = (vp.w as i32, vp.h as i32);
-        let projected = pts.into_iter().map(|(lon, lat)| {
-            let (x, y) = vp.to_screen(lon, lat);
-            Point::new(x, y)
-        });
+        let projected = pts.into_iter().map(|(lon, lat)| vp.project(lon, lat));
         // Split the borrow so the span fills can take `xs` while the run builds in `screen`.
         let DrawScratch { screen, xs } = &mut self.draw;
         stroke_overlay(target, screen, xs, projected, color, weight, w, h);
@@ -846,8 +854,7 @@ fn clip_segment(a: Point, b: Point, xmin: f32, ymin: f32, xmax: f32, ymax: f32) 
     let mut o1 = outcode(x1, y1, xmin, ymin, xmax, ymax);
     loop {
         if o0 | o1 == 0 {
-            let r = |x: f32, y: f32| Point::new(libm::roundf(x) as i32, libm::roundf(y) as i32);
-            return Some((r(x0, y0), r(x1, y1)));
+            return Some((round_pt(x0, y0), round_pt(x1, y1)));
         }
         if o0 & o1 != 0 {
             return None; // both ends past the same edge — wholly outside
@@ -955,8 +962,12 @@ fn fill_thick_segment<D>(
         return;
     }
     let (nx, ny) = (-dy / len * hw, dx / len * hw); // perpendicular × half-width
-    let rp = |x: f32, y: f32| Point::new(libm::roundf(x) as i32, libm::roundf(y) as i32);
-    let quad = [rp(ax + nx, ay + ny), rp(bx + nx, by + ny), rp(bx - nx, by - ny), rp(ax - nx, ay - ny)];
+    let quad = [
+        round_pt(ax + nx, ay + ny),
+        round_pt(bx + nx, by + ny),
+        round_pt(bx - nx, by - ny),
+        round_pt(ax - nx, ay - ny),
+    ];
     fill_polygon(target, &quad, &[4], color, w, h, xs);
 }
 
@@ -1211,8 +1222,7 @@ fn fill_polygon_proj<D>(
 {
     screen.clear();
     for &(lon, lat) in pts {
-        let (x, y) = vp.to_screen(lon, lat);
-        let _ = screen.push(Point::new(x, y));
+        let _ = screen.push(vp.project(lon, lat));
     }
     fill_polygon(target, screen, ring_lens, color, vp.w as i32, vp.h as i32, xs);
 }
@@ -1235,10 +1245,7 @@ fn draw_line<D>(
 ) where
     D: DrawTarget,
 {
-    let projected = pts.iter().map(|&(lon, lat)| {
-        let (x, y) = vp.to_screen(lon, lat);
-        Point::new(x, y)
-    });
+    let projected = pts.iter().map(|&(lon, lat)| vp.project(lon, lat));
     stroke_overlay(target, screen, xs, projected, color, weight, vp.w as i32, vp.h as i32);
 }
 
@@ -1266,11 +1273,10 @@ fn fill_chevron<D>(
 {
     let (fx, fy) = fwd;
     let (rx, ry) = (-fy, fx); // right perpendicular = base spread
-    let r = |x: f32, y: f32| Point::new(libm::roundf(x) as i32, libm::roundf(y) as i32);
     let tri = [
-        r(c.0 + fx * tip, c.1 + fy * tip),
-        r(c.0 - fx * back + rx * half, c.1 - fy * back + ry * half),
-        r(c.0 - fx * back - rx * half, c.1 - fy * back - ry * half),
+        round_pt(c.0 + fx * tip, c.1 + fy * tip),
+        round_pt(c.0 - fx * back + rx * half, c.1 - fy * back + ry * half),
+        round_pt(c.0 - fx * back - rx * half, c.1 - fy * back - ry * half),
     ];
     fill_polygon(target, &tri, &[3], color, w, h, xs);
 }

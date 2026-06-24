@@ -30,8 +30,6 @@ use obc_render::{rect, Canvas};
 
 use crate::screen::palette;
 
-// tunables
-
 // The bulge's base / flat-top widths and its charge / pop depths are per-control
 // (encoder vs. Back can differ); see [`Style`] on the ENCODER / BACK constants.
 
@@ -47,8 +45,6 @@ const CANCEL_MS: u32 = 150;
 /// drawn depth is remapped ([`shown`]) so the bulge emerges flat right at this point
 /// and reaches full depth at the threshold. `0.30` ≈ 150 ms of the 500 ms hold.
 const DEAD: f32 = 0.30;
-
-// placement
 
 /// Which screen edge a bulge erupts from. Both controls live on [`Right`](Edge::Right)
 /// today; the other three are the supported relocations (change a [`Style::anchor`]).
@@ -122,8 +118,6 @@ fn frac(now: u32, t0: u32, dur: u32) -> f32 {
 fn shown(progress: f32) -> f32 {
     ((progress - DEAD) / (1.0 - DEAD)).clamp(0.0, 1.0)
 }
-
-// per-control state
 
 /// A hint's transient animation, layered on top of the live charge.
 #[derive(Clone, Copy)]
@@ -252,8 +246,6 @@ where
         }
     }
 }
-
-// the overlay
 
 /// Per-control look: where the bulge sits and its size along the edge. Relocating or
 /// resizing a bulge is a one-line change to one of the [`ENCODER`] / [`BACK`]

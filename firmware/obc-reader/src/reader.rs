@@ -592,17 +592,8 @@ fn decode_chunk_into<const P: usize, const R: usize>(
         // offset arithmetic exactly — the two must stay byte-for-byte in sync.
         if !should_decode(style_id) {
             off = skip_ring(chunk, off, ext_pt_count, false, dsize);
-            if is_poly && has_holes && off < cs {
-                let hole_count = chunk[off] as usize;
-                off += 1;
-                for _ in 0..hole_count {
-                    if off + 2 > cs {
-                        break;
-                    }
-                    let hpc = rd_u16(chunk, off) as usize;
-                    off += 2;
-                    off = skip_ring(chunk, off, hpc, true, dsize);
-                }
+            if is_poly && has_holes {
+                off = for_each_hole(chunk, off, |c, o, hpc| skip_ring(c, o, hpc, true, dsize));
             }
             continue;
         }
@@ -616,19 +607,13 @@ fn decode_chunk_into<const P: usize, const R: usize>(
         off = read_ring(chunk, off, ext_pt_count, anchor, is_16, dsize, false, points, &mut bounds);
         let _ = ring_lens.push(points.len());
 
-        if is_poly && has_holes && off < cs {
-            let hole_count = chunk[off] as usize;
-            off += 1;
-            for _ in 0..hole_count {
-                if off + 2 > cs {
-                    break;
-                }
-                let hpc = rd_u16(chunk, off) as usize;
-                off += 2;
+        if is_poly && has_holes {
+            off = for_each_hole(chunk, off, |c, o, hpc| {
                 let before = points.len();
-                off = read_ring(chunk, off, hpc, anchor, is_16, dsize, true, points, &mut bounds);
+                let o = read_ring(c, o, hpc, anchor, is_16, dsize, true, points, &mut bounds);
                 let _ = ring_lens.push(points.len() - before);
-            }
+                o
+            });
         }
 
         visit(FeatureRef {
@@ -639,6 +624,30 @@ fn decode_chunk_into<const P: usize, const R: usize>(
             bbox: bounds.to_bbox(),
         });
     }
+}
+
+/// Walk a polygon's hole list: read the 1-byte hole count at `off`, then per hole read its `u16`
+/// point count and hand `(chunk, off, hpc)` to `ring`, which decodes or skips the ring and returns
+/// the post-ring offset; returns the offset past the whole block. The skip and decode paths share
+/// this framing so their byte arithmetic (count byte, each `hpc`, the bounds checks) can't drift.
+/// A no-op when `off` is already at the chunk end.
+#[inline]
+fn for_each_hole(chunk: &[u8], mut off: usize, mut ring: impl FnMut(&[u8], usize, usize) -> usize) -> usize {
+    let cs = chunk.len();
+    if off >= cs {
+        return off;
+    }
+    let hole_count = chunk[off] as usize;
+    off += 1;
+    for _ in 0..hole_count {
+        if off + 2 > cs {
+            break;
+        }
+        let hpc = rd_u16(chunk, off) as usize;
+        off += 2;
+        off = ring(chunk, off, hpc);
+    }
+    off
 }
 
 /// Advance `off` past one ring's encoded deltas without decoding them, mirroring

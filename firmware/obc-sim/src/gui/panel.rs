@@ -17,6 +17,23 @@ use super::units::{format_clock, format_distance, mpp_to_zoom, zoom_to_mpp, MAX_
 use super::SimGui;
 use crate::calib;
 
+/// The red used for inline error / warning labels across the panel.
+const ERROR_RED: egui::Color32 = egui::Color32::from_rgb(220, 80, 80);
+
+/// A 6 pt gap then a separator — the divider above most control-panel sections.
+fn separator_above(ui: &mut egui::Ui) {
+    ui.add_space(6.0);
+    ui.separator();
+}
+
+/// A labelled `0–100%` progress bar (a render-stats buffer-utilization row).
+fn util_bar(ui: &mut egui::Ui, label: &str, frac: f32) {
+    ui.horizontal(|ui| {
+        ui.label(label);
+        ui.add(egui::ProgressBar::new(frac).text(format!("{:.0}%", frac * 100.0)));
+    });
+}
+
 impl SimGui {
     /// Draw the "Controls" window — a second OS window (egui immediate viewport)
     /// that drives the simulated GPS fix. Re-declared every frame; the widgets
@@ -93,8 +110,7 @@ impl SimGui {
                         });
                     });
 
-                    ui.add_space(6.0);
-                    ui.separator();
+                    separator_above(ui);
 
                     // Heading — rides on Fix.course (degrees CW from north).
                     ui.add_enabled_ui(!replaying, |ui| {
@@ -102,8 +118,7 @@ impl SimGui {
                         ui.add(egui::Slider::new(&mut self.panel.heading_deg, 0.0..=360.0).suffix("°").step_by(1.0));
                     });
 
-                    ui.add_space(6.0);
-                    ui.separator();
+                    separator_above(ui);
 
                     // Compass — the magnetometer heading the device uses to orient the map when
                     // the rider is stopped (a real GPS drops its course at a standstill). Always
@@ -112,8 +127,7 @@ impl SimGui {
                     ui.label("Compass (heading when stopped)");
                     ui.add(egui::Slider::new(&mut self.panel.compass_deg, 0.0..=360.0).suffix("°").step_by(1.0));
 
-                    ui.add_space(6.0);
-                    ui.separator();
+                    separator_above(ui);
 
                     // Zoom — operated in meters-per-pixel on a log scale. Only
                     // write back when the user drags it, so it never fights the
@@ -138,8 +152,7 @@ impl SimGui {
                     let span = zoom_to_mpp(self.app.state.zoom) * self.dev_w as f32;
                     ui.label(format!("{} across screen", format_distance(span)));
 
-                    ui.add_space(6.0);
-                    ui.separator();
+                    separator_above(ui);
 
                     // Camera mode and Orientation — paired on one row (each a label
                     // over its toggle) to spend width instead of height. Orientation
@@ -171,8 +184,7 @@ impl SimGui {
                         self.panel.lon_deg = self.app.state.cam_lon as f64 / 1e6;
                     }
 
-                    ui.add_space(6.0);
-                    ui.separator();
+                    separator_above(ui);
 
                     // GPX replay — load a recorded track and play it back as a
                     // simulated GPS sensor (position + derived course/speed). The
@@ -188,14 +200,12 @@ impl SimGui {
                     }
                     self.show_gpx_controls(ui);
 
-                    ui.add_space(6.0);
-                    ui.separator();
+                    separator_above(ui);
 
                     // Display size — the 1:1 "actual size" toggle + ruler calibration.
                     self.show_display_controls(ui);
 
-                    ui.add_space(6.0);
-                    ui.separator();
+                    separator_above(ui);
 
                     // Expanded by default — the render stats are worth keeping an eye on.
                     egui::CollapsingHeader::new("Render Stats")
@@ -244,7 +254,7 @@ impl SimGui {
             }
         }
         if let Some(e) = &self.calib_error {
-            ui.colored_label(egui::Color32::from_rgb(220, 80, 80), e);
+            ui.colored_label(ERROR_RED, e);
         }
     }
 
@@ -256,7 +266,7 @@ impl SimGui {
     fn show_gpx_controls(&mut self, ui: &mut egui::Ui) {
         let Some(player) = self.gpx.as_mut() else {
             if let Some(err) = &self.gpx_error {
-                ui.colored_label(egui::Color32::from_rgb(220, 80, 80), err);
+                ui.colored_label(ERROR_RED, err);
             }
             return;
         };
@@ -342,8 +352,7 @@ impl SimGui {
             ui.end_row();
 
             ui.label("Dropped");
-            let drop_color =
-                if s.features_dropped > 0 { egui::Color32::from_rgb(220, 80, 80) } else { ui.visuals().text_color() };
+            let drop_color = if s.features_dropped > 0 { ERROR_RED } else { ui.visuals().text_color() };
             ui.colored_label(drop_color, format!("{}", s.features_dropped));
             ui.end_row();
 
@@ -384,29 +393,8 @@ impl SimGui {
 
         ui.add_space(4.0);
         ui.label("Buffer utilization");
-
-        // Span buffer bar
-        let span_pct = s.span_utilization;
-        ui.horizontal(|ui| {
-            ui.label("Spans");
-            let bar = egui::ProgressBar::new(span_pct).text(format!("{:.0}%", span_pct * 100.0));
-            ui.add(bar);
-        });
-
-        // Points buffer bar
-        let pt_pct = s.point_utilization;
-        ui.horizontal(|ui| {
-            ui.label("Points");
-            let bar = egui::ProgressBar::new(pt_pct).text(format!("{:.0}%", pt_pct * 100.0));
-            ui.add(bar);
-        });
-
-        // Rings buffer bar
-        let ring_pct = s.ring_utilization;
-        ui.horizontal(|ui| {
-            ui.label("Rings");
-            let bar = egui::ProgressBar::new(ring_pct).text(format!("{:.0}%", ring_pct * 100.0));
-            ui.add(bar);
-        });
+        util_bar(ui, "Spans", s.span_utilization);
+        util_bar(ui, "Points", s.point_utilization);
+        util_bar(ui, "Rings", s.ring_utilization);
     }
 }
