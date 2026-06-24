@@ -77,8 +77,12 @@ embedded-graphics = "0.8"
 # board-agnostic FatFs byte adapters live in obc-platform (`SdByteSource`/`SdByteSink`/
 # `SdTrackSink`) and the format parsers in obc-reader/obc-route — only the concrete SPIM bus type
 # is board-specific here (the STM32 analog is `obc-fw-stm32f429/src/sd.rs`).
-obc-app = { path = "../obc-app" } # MAX_ROUTES / TrackAction / TrackSink the SD `Storage` reconciles to
-obc-reader = { path = "../obc-reader" } # `read_header` — the cache-free `.obcm` bbox probe (no 277 KB MapCache)
+# `nrf-mem` (issue #124) is the constrained memory profile and forwards to obc-render/reader/route,
+# so this single edge trims every shared crate's resident buffers for the 256 KB part; Cargo's
+# feature unification then applies it to the obc-render/obc-reader/obc-route edges below (and
+# obc-platform's transitive ones) too. The board crate is the nRF, so it's always on.
+obc-app = { path = "../obc-app", features = ["nrf-mem"] } # MAX_ROUTES / TrackAction / TrackSink the SD `Storage` reconciles to + the budget assert's App/cache sizes
+obc-reader = { path = "../obc-reader" } # `read_header` — the cache-free `.obcm` bbox probe (no resident MapCache)
 obc-route = { path = "../obc-route" } # RouteSummary / RouteIndex / track_to_gpx for the `/routes` catalog + GPX
 # FatFs over SPI. `default-features = false` (no `log`/`defmt-log`): embedded-sdmmc 0.9 pins
 # `defmt = "0.3"`, which would clash with this crate's defmt 1.0 — so its internal logging stays

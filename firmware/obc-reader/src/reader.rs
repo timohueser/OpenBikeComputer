@@ -62,8 +62,16 @@ const CACHE_SLOT_BYTES: usize = 4096;
 /// (LRU can't hold a pass's set) → `miss ≈ chunks × 4` and SD I/O dominates the frame (issue #98).
 /// The worst zooms (LOD1, ~3–4 m/px) put up to ~50 chunks in view, so 64 slots keep the whole
 /// working set resident across all four passes *and* across frames (a slow camera pan re-hits the
-/// previous frame's chunks). 64 × 4 KB = 256 KB of the device's 8 MB SDRAM.
+/// previous frame's chunks). 64 × 4 KB = 256 KB of the host's ample RAM.
+///
+/// The constrained `nrf-mem` profile (issue #124) can't spare 256 KB on a 256 KB part, so it drops
+/// to 5 slots (~20 KB of slots): the four passes over a frame's working set still hit, but a set
+/// wider than 5 chunks re-reads from SD across frames — the L15's coarse-zoom cost, paid back when
+/// the 512 KB LM20 (BLE headroom) raises this.
+#[cfg(not(feature = "nrf-mem"))]
 const MAP_CHUNK_SLOTS: usize = 64;
+#[cfg(feature = "nrf-mem")]
+const MAP_CHUNK_SLOTS: usize = 5;
 
 /// Block size + count of the quadtree-index cache. The leaf walk reads 4-byte nodes (siblings
 /// adjacent in the file); caching a few aligned blocks coalesces those into a handful of SD
