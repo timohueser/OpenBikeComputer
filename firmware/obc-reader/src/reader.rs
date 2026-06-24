@@ -215,6 +215,54 @@ impl<'a> Iterator for Interiors<'a> {
     }
 }
 
+/// The OBCM header fields that describe a map without touching any geometry — what a "which map
+/// is this?" probe needs (the bring-up bbox log, a host catalog row). Read cache-free via
+/// [`read_header`], so the memory-constrained nRF can inspect a card's map without the renderer's
+/// ≈277 KB [`MapCache`]. [`Reader::new`] parses the same prefix on its way to the full reader.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MapHeader {
+    pub version: u8,
+    pub bbox: BBox,
+    /// User-position marker color (RGB565); see [`Reader::marker_color`].
+    pub marker_color: u16,
+}
+
+/// Decode + validate the fixed 32-byte OBCM header prefix (magic, version, bbox, marker color).
+/// Shared by [`read_header`] and [`Reader::new`] so the byte layout lives in one place. The
+/// caller supplies the already-read header bytes; offset constants follow `obc-pack`'s header
+/// pack (see OBCM_Spec.md).
+fn parse_header(h: &[u8; HEADER_LEN]) -> Result<MapHeader, Error> {
+    if &h[0..4] != b"OBCM" {
+        return Err(Error::BadMagic);
+    }
+    let version = h[4];
+    if version != 5 {
+        return Err(Error::BadVersion);
+    }
+    // Header field order: lat,lon,lat,lon (see `obc-pack`'s `serialize.rs` header pack).
+    let min_lat = rd_i32(h, 5);
+    let min_lon = rd_i32(h, 9);
+    let max_lat = rd_i32(h, 13);
+    let max_lon = rd_i32(h, 17);
+    let marker_color = rd_u16(h, 30);
+    Ok(MapHeader { version, bbox: BBox { min_lon, min_lat, max_lon, max_lat }, marker_color })
+}
+
+/// Read just the OBCM header (version + bbox + marker color) from `src` — no style table, LOD
+/// table, index, or geometry, so it allocates nothing and needs no [`MapCache`]. The cache-free
+/// way to answer "what map is on this card?" — the nRF logs a card's bbox at bring-up through
+/// this (the full streamed [`Reader`] + its RAM-budgeted cache lands later in the port). A map
+/// shorter than the header, with the wrong magic, or an unsupported version is rejected exactly
+/// as [`Reader::new`] would.
+pub fn read_header(src: &dyn ByteSource) -> Result<MapHeader, Error> {
+    if (src.len() as usize) < HEADER_LEN {
+        return Err(Error::TooShort);
+    }
+    let mut h = [0u8; HEADER_LEN];
+    src.read_at(0, &mut h).map_err(|_| Error::TooShort)?;
+    parse_header(&h)
+}
+
 pub struct Reader<'a> {
     /// The byte source the index + geometry chunks stream from. `&dyn` (not a generic) so the
     /// renderer / app / screen signatures that hold a `&Reader` need no `<S>` parameter — the
@@ -253,25 +301,16 @@ impl<'a> Reader<'a> {
             return Err(Error::TooShort);
         }
         // The header is the one read that's fixed-size and always present; a short read here is
-        // the streamed equivalent of the old `data.len() < HEADER_LEN`.
+        // the streamed equivalent of the old `data.len() < HEADER_LEN`. The magic / version / bbox
+        // / marker prefix is parsed by the shared [`parse_header`] (so a cache-free [`read_header`]
+        // sees identical validation); the style + LOD-table offsets that only the full reader needs
+        // are decoded here.
         let mut header = [0u8; HEADER_LEN];
         src.read_at(0, &mut header).map_err(|_| Error::TooShort)?;
-        if &header[0..4] != b"OBCM" {
-            return Err(Error::BadMagic);
-        }
-        let version = header[4];
-        if version != 5 {
-            return Err(Error::BadVersion);
-        }
-        // Header field order: lat,lon,lat,lon (see `obc-pack`'s `serialize.rs` header pack / OBCM_Spec.md).
-        let min_lat = rd_i32(&header, 5);
-        let min_lon = rd_i32(&header, 9);
-        let max_lat = rd_i32(&header, 13);
-        let max_lon = rd_i32(&header, 17);
+        let MapHeader { version, bbox, marker_color } = parse_header(&header)?;
         let style_offset = rd_u32(&header, 21) as usize;
         let lod_count = header[25] as usize;
         let lod_table_offset = rd_u32(&header, 26) as usize;
-        let marker_color = rd_u16(&header, 30);
 
         if style_offset < HEADER_LEN || style_offset > total {
             return Err(Error::BadOffset);
@@ -292,15 +331,7 @@ impl<'a> Reader<'a> {
         let styles = parse_styles(src, style_offset, total);
         let lods = parse_lod_table(src, lod_table_offset, lod_count, total)?;
 
-        Ok(Reader {
-            src,
-            version,
-            bbox: BBox { min_lon, min_lat, max_lon, max_lat },
-            marker_color,
-            lods,
-            styles,
-            cache,
-        })
+        Ok(Reader { src, version, bbox, marker_color, lods, styles, cache })
     }
 
     /// A snapshot of the geometry-chunk cache + streaming counters of the paired [`MapCache`].
@@ -1217,5 +1248,48 @@ mod tests {
         let before = inner.stats();
         inner.index_block(&src, 0).unwrap();
         assert_eq!(inner.stats().sd_reads, before.sd_reads + 1, "post-clear index read must re-read");
+    }
+
+    /// A minimal 32-byte OBCM header with the given bbox/marker, enough for the cache-free
+    /// [`read_header`] (no style/LOD tables, which it doesn't touch).
+    fn synth_header(min_lon: i32, min_lat: i32, max_lon: i32, max_lat: i32, marker: u16) -> [u8; HEADER_LEN] {
+        let mut h = [0u8; HEADER_LEN];
+        h[0..4].copy_from_slice(b"OBCM");
+        h[4] = 5;
+        h[5..9].copy_from_slice(&min_lat.to_le_bytes()); // field order is lat,lon,lat,lon
+        h[9..13].copy_from_slice(&min_lon.to_le_bytes());
+        h[13..17].copy_from_slice(&max_lat.to_le_bytes());
+        h[17..21].copy_from_slice(&max_lon.to_le_bytes());
+        h[30..32].copy_from_slice(&marker.to_le_bytes());
+        h
+    }
+
+    /// `read_header` pulls version + bbox + marker out of the header alone — the cache-free probe
+    /// the RAM-constrained board reads a card's map bbox through.
+    #[test]
+    fn read_header_decodes_bbox_and_marker() {
+        let h = synth_header(-34, 12, 78, 56, 0xBEEF);
+        let got = read_header(&SliceSource(&h)).unwrap();
+        assert_eq!(
+            got,
+            MapHeader {
+                version: 5,
+                bbox: BBox { min_lon: -34, min_lat: 12, max_lon: 78, max_lat: 56 },
+                marker_color: 0xBEEF
+            }
+        );
+    }
+
+    /// The same magic / version / length guards as `Reader::new` — a bad card never decodes to a
+    /// bogus bbox (it degrades gracefully on the device instead).
+    #[test]
+    fn read_header_rejects_short_bad_magic_and_version() {
+        assert_eq!(read_header(&SliceSource(&[0u8; HEADER_LEN - 1])), Err(Error::TooShort));
+        let mut h = synth_header(0, 0, 1, 1, 0);
+        h[0..4].copy_from_slice(b"NOPE");
+        assert_eq!(read_header(&SliceSource(&h)), Err(Error::BadMagic));
+        h[0..4].copy_from_slice(b"OBCM");
+        h[4] = 4; // unsupported version
+        assert_eq!(read_header(&SliceSource(&h)), Err(Error::BadVersion));
     }
 }
