@@ -29,20 +29,37 @@ pub mod text;
 pub use canvas::{rect, Canvas};
 pub use text::{draw_text, text_width, Font, TextAlign};
 
-// Per-frame buffer capacities. Statically allocated (heapless::Vec), tuned for an
-// MCU with 512 KB RAM — growing one costs boot RAM, not per-frame. The
-// MCU_RENDERER_BYTES assertion below guards the ~200 KB budget.
+// Per-frame buffer capacities. Statically allocated (heapless::Vec); growing one costs boot
+// RAM, not per-frame. Two memory profiles select the caps (issue #124):
+//   - default (host / sim / tests): generous, full preview fidelity.
+//   - `nrf-mem`: the constrained nRF54L15 profile — these are roughly halved so the renderer
+//     scratch (`MCU_RENDERER_BYTES` below, ~74 KB vs ~200 KB) fits the 256 KB part alongside
+//     the 75 KB RGB222 framebuffer + the map/route caches; the board crate's budget assert is
+//     the binding check. The cost is a coarse-zoom feature-density compromise: a frame whose
+//     visible-feature / vertex count exceeds a cap drops the overflow (see [`render`]), which on
+//     the constrained profile starts at busier coarse zooms than on the host.
+// The single-feature decode buffers (`MAX_DECODE_*`) are *not* trimmed — they must hold the
+// worst single feature either way, and pair with `obc_reader::MAX_FEAT_PTS` / `MAX_FEAT_RINGS`.
 
-/// Maximum visible features per frame (each is a [`Span`] — 14 bytes). At coarse
-/// zoom this is the buffer that saturates first (many small features), so it is
-/// sized generously; see the RAM-budget assertion below.
+/// Maximum visible features per frame (each is a [`Span`] — 14 bytes). At coarse zoom this is
+/// the buffer that saturates first (many small features), so on the full profile it is sized
+/// generously; see the RAM-budget assertion below.
+#[cfg(not(feature = "nrf-mem"))]
 pub const MAX_SPANS: usize = 3072;
+#[cfg(feature = "nrf-mem")]
+pub const MAX_SPANS: usize = 1280;
 
 /// Maximum total vertices across all visible features per frame (8 bytes each).
+#[cfg(not(feature = "nrf-mem"))]
 pub const MAX_FRAME_POINTS: usize = 12_288;
+#[cfg(feature = "nrf-mem")]
+pub const MAX_FRAME_POINTS: usize = 2560;
 
 /// Maximum total ring entries across all visible features per frame.
+#[cfg(not(feature = "nrf-mem"))]
 pub const MAX_FRAME_RINGS: usize = 3072;
+#[cfg(feature = "nrf-mem")]
+pub const MAX_FRAME_RINGS: usize = 768;
 
 /// Maximum vertices for a single feature during decode (reused per feature).
 pub const MAX_DECODE_POINTS: usize = 2048;
@@ -50,8 +67,14 @@ pub const MAX_DECODE_POINTS: usize = 2048;
 /// Maximum rings for a single feature during decode.
 pub const MAX_DECODE_RINGS: usize = 32;
 
-/// Maximum projected screen points for drawing one feature.
+/// Maximum projected screen points for drawing one feature. The fill/polyline path projects
+/// **every** vertex of a decoded feature into this buffer before walking it, so it must hold a
+/// whole decode buffer — kept at [`MAX_DECODE_POINTS`] on the constrained profile (the invariant
+/// is asserted below; dropping under it makes `fill_polygon` index past the projected points).
+#[cfg(not(feature = "nrf-mem"))]
 pub const MAX_SCREEN_POINTS: usize = 4096;
+#[cfg(feature = "nrf-mem")]
+pub const MAX_SCREEN_POINTS: usize = 2048;
 
 /// Maximum scanline crossings buffered for one polygon-fill row. A row whose
 /// outline crossings exceed this is skipped rather than mis-filled (see
@@ -64,18 +87,27 @@ pub const MAX_CROSSINGS: usize = 256;
 const _: () = assert!(MAX_FRAME_POINTS <= u16::MAX as usize, "Span::pt_start is u16");
 const _: () = assert!(MAX_FRAME_RINGS <= u16::MAX as usize, "Span::ring_start is u16");
 const _: () = assert!(MAX_SPANS <= u16::MAX as usize, "Span::seq is u16");
+// `fill_polygon` / the polyline path project a whole decoded feature into `screen` before walking
+// its rings (`screen[base..base + len]`), so the projected buffer must hold at least a full decode
+// buffer or it indexes past the points and panics. Held with room to spare on the full profile;
+// the `nrf-mem` profile sets them equal. Guard it so a future cap edit can't reintroduce the panic.
+const _: () = assert!(MAX_SCREEN_POINTS >= MAX_DECODE_POINTS, "`screen` must hold a whole decoded feature");
 
-/// Static RAM the [`MapRenderer`]'s scratch buffers occupy on the 32-bit MCU
-/// target (`usize` = 4 bytes there). Computed from the constants above so the
-/// assertion below fails the build if a buffer is grown past the ~200 KB budget.
-/// (`(i32, i32)` and `Point` are 8 bytes; `usize`/`f32` are 4 on the MCU.)
-const MCU_RENDERER_BYTES: usize = MAX_DECODE_POINTS * 8
+/// Static RAM the [`MapRenderer`]'s scratch buffers occupy on the 32-bit MCU target (`usize` = 4
+/// bytes there). Computed from the caps above — `pub` so a board crate's RAM-budget assert can add
+/// it to the framebuffer + caches without re-deriving the formula (issue #124). (`(i32, i32)` and
+/// `Point` are 8 bytes; `usize`/`f32` are 4 on the MCU.) ~200 KB on the full profile, ~74 KB on
+/// `nrf-mem`.
+pub const MCU_RENDERER_BYTES: usize = MAX_DECODE_POINTS * 8
     + MAX_DECODE_RINGS * 4
     + MAX_FRAME_POINTS * 8
     + MAX_FRAME_RINGS * 4
     + MAX_SPANS * core::mem::size_of::<Span>()
     + MAX_SCREEN_POINTS * 8
     + MAX_CROSSINGS * 4;
+// A loose per-crate ceiling that catches an accidental cap blow-up on either profile; the binding
+// fit check is the board crate's whole-resident-set budget assert (the nRF profile lands well under
+// this, ~74 KB). The full profile sits just under 200 KB.
 const _: () = assert!(MCU_RENDERER_BYTES <= 200 * 1024, "MapRenderer exceeds the 200 KB MCU budget");
 
 /// Meters of ground per microdegree of latitude — the renderer's zoom is pixels per

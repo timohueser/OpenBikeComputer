@@ -5,6 +5,13 @@ edition = "2021"
 publish = false  # internal firmware crate — not published to crates.io
 description = "OBC device application + hardware-abstraction traits (no_std) — shared by the desktop simulator and the nRF54L firmware"
 
+[features]
+# Constrained on-device memory profile (issue #124). Forwards to the renderer + reader + route
+# crates so the board firmware enables just `obc-app/nrf-mem` to trim every resident buffer
+# `App` embeds (renderer scratch) and the caches it pairs with. See `obc-reader`'s `nrf-mem`.
+# Off by default (full sizes on host/sim/tests).
+nrf-mem = ["obc-render/nrf-mem", "obc-reader/nrf-mem", "obc-route/nrf-mem"]
+
 [dependencies]
 # default-features = false keeps `std` OUT of the shared app layer, so this crate
 # (and everything it pulls) compiles for the nRF54L's bare-metal target. The host

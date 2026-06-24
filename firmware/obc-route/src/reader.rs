@@ -331,7 +331,14 @@ fn decode_chunk_from(
 /// real routes are a handful and only the chunks crossing the view are ever decoded, so a small
 /// LRU holds a frame's working set; sized to also absorb a wide zoomed-out view of a winding
 /// route. The win is per-redraw, not per-route — see [`RouteCache`].
+///
+/// The constrained `nrf-mem` profile (issue #124) trims this to 4 slots (~12 KB): enough for the
+/// few chunks a riding-zoom view crosses, accepting re-decodes on a wide zoomed-out pan as part of
+/// the L15 memory budget.
+#[cfg(not(feature = "nrf-mem"))]
 const ROUTE_CHUNK_SLOTS: usize = 32;
+#[cfg(feature = "nrf-mem")]
+const ROUTE_CHUNK_SLOTS: usize = 4;
 
 /// One cache slot: a decoded chunk's points, keyed by chunk index, with LRU recency.
 struct RouteSlot {

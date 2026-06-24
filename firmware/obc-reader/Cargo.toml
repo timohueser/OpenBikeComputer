@@ -5,6 +5,14 @@ edition = "2021"
 publish = false  # internal firmware crate — not published to crates.io
 description = "OBCM map format reader (no_std + alloc) — pure-parse logic for the desktop simulator and nRF54L firmware"
 
+[features]
+# Constrained on-device memory profile (issue #124). The nRF54L15 has 256 KB RAM and no
+# external SDRAM, so the board firmware enables this to shrink the resident `MapCache`
+# (fewer geometry-chunk slots) — and, via the sibling crates that forward it, the renderer
+# scratch and the `RouteCache` — to fit alongside the 75 KB RGB222 framebuffer. Off by
+# default, so host / sim / tests keep the generous full-fidelity sizes.
+nrf-mem = []
+
 [dependencies]
 heapless = "0.8"
 
