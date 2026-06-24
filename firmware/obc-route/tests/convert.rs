@@ -171,27 +171,60 @@ fn long_collinear_run_keeps_an_intermediate_vertex() {
     );
 }
 
-/// Item 8 (known gap) — **DOCUMENTS** the one geometry the densifier can't protect: a *single*
-/// segment whose Δ overflows `int16`, with **no intermediate raw point** to trigger the span
-/// rule. `MAX_SPAN_M` only force-keeps a *pending* candidate between two kept points; a 2-point
-/// GPX has no such candidate, so a 0.04° (~3.3 km) lon step is stored as `40000 as i16`, which
-/// wraps to `-25536` and decodes to a corrupt position. This test PINS the current (buggy)
-/// behaviour so a future fix is a deliberate, visible change — it is **not** an endorsement.
-/// See the PR notes (flagged for issue #94 / epic #90); a real >3.6 km single segment is rare
-/// in a decimated route but reachable from a sparsely-sampled planner GPX.
+/// Item 8 (densification / int16 safety) — **a single oversized segment with no intermediate
+/// raw candidate is split so the stored Δ never wraps** (issue #110). `MAX_SPAN_M` only
+/// force-keeps a *pending* candidate between two kept points; a 2-point GPX has none, so a 0.04°
+/// (~3.3 km) lon step (40_000 µdeg) used to be stored as `40000 as i16`, wrapping to `-25_536`
+/// and decoding to a corrupt 7_774_464. The converter now densifies the span itself — splitting
+/// it into ≤`MAX_SEGMENT_UDEG` (30_000) pieces with interpolated vertices — so the geometry
+/// round-trips exactly. This test asserts the *fixed* behaviour (was `…_overflows_int16_today`,
+/// which pinned the bug).
 #[test]
-fn single_oversized_segment_overflows_int16_today() {
-    let bytes = convert("Overflow", &gpx(&[(48.0, 7.80, Some(100.0)), (48.0, 7.84, Some(100.0))]));
+fn single_oversized_segment_is_densified() {
+    let bytes = convert("Densified", &gpx(&[(48.0, 7.80, Some(100.0)), (48.0, 7.84, Some(100.0))]));
     let src = SliceSource(&bytes);
     let ridx = RouteIndex::read(&src).unwrap();
     let r = RouteReader::new(&ridx, &src);
 
-    assert_eq!(r.point_count, 2, "two raw points → no intermediate candidate for the span rule");
+    // 40_000 µdeg > 30_000 → one synthetic midpoint, so three stored vertices.
+    assert_eq!(r.point_count, 3, "the oversized span is split with one interpolated vertex");
     let pts = decode(&r, 0);
     assert_eq!(pts[0].lon, 7_800_000, "the anchor is stored absolutely and is correct");
-    // The endpoint's Δlon (40_000 µdeg) wraps as i16: 40_000 - 65_536 = -25_536 → 7_774_464.
-    // CORRUPT — should be 7_840_000. Pinned so a future densification fix is intentional.
-    assert_eq!(pts[1].lon, 7_774_464, "DOCUMENTED int16 overflow: Δlon wraps (want 7_840_000)");
+    assert_eq!(pts[1].lon, 7_820_000, "the interpolated midpoint sits halfway along the span");
+    assert_eq!(pts[2].lon, 7_840_000, "the endpoint round-trips exactly — no int16 wrap");
+    // The interpolated vertices stay on the flat, equator-parallel line.
+    assert!(pts.iter().all(|p| p.lat == 48_000_000 && p.ele == 100), "interpolated vertices stay on the line");
+}
+
+/// Item 8 (densification, multi-step + diagonal) — **a span far past one `MAX_SEGMENT_UDEG`
+/// piece is split into several, interpolating both axes and elevation.** A 2-point diagonal of
+/// 0.09° (90_000 µdeg) in lon *and* lat needs `90_000 / 30_000 + 1 = 4` pieces (three synthetic
+/// vertices). Pins that every consecutive Δ stays inside `int16`, the endpoints round-trip
+/// exactly, and elevation is carried linearly across the inserted vertices.
+#[test]
+fn oversized_diagonal_span_splits_into_several() {
+    let bytes = convert("Diagonal", &gpx(&[(48.0, 7.80, Some(100.0)), (48.09, 7.89, Some(200.0))]));
+    let src = SliceSource(&bytes);
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
+
+    assert_eq!(r.point_count, 5, "anchor + three interpolated vertices + endpoint");
+    let pts = decode(&r, 0);
+    assert_eq!(
+        pts,
+        vec![
+            RoutePoint { lon: 7_800_000, lat: 48_000_000, ele: 100 },
+            RoutePoint { lon: 7_822_500, lat: 48_022_500, ele: 125 },
+            RoutePoint { lon: 7_845_000, lat: 48_045_000, ele: 150 },
+            RoutePoint { lon: 7_867_500, lat: 48_067_500, ele: 175 },
+            RoutePoint { lon: 7_890_000, lat: 48_090_000, ele: 200 },
+        ]
+    );
+    // No stored (Δlon, Δlat) can overflow the int16 the reader decodes them as.
+    for w in pts.windows(2) {
+        assert!((w[1].lon - w[0].lon).abs() <= i16::MAX as i32, "Δlon fits int16");
+        assert!((w[1].lat - w[0].lat).abs() <= i16::MAX as i32, "Δlat fits int16");
+    }
 }
 
 /// Item 10 (convert: carry-last-known elevation) — **a point missing `<ele>` carries the last
