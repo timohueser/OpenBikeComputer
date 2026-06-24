@@ -653,13 +653,19 @@ async fn main(_spawner: Spawner) {
                     app.render_map(&mut fbdev, &reader, None, WIDTH as f32, HEIGHT as f32, color_fn)
                 };
                 let render_us = t_render.elapsed().as_micros();
-                // Time the push separately — the visible top-to-bottom fill. Each band packs the
-                // RGB222 framebuffer rows **directly** to the panel's 12-bit RGB444 wire format (no
-                // RGB565 intermediate) then SPIM-DMAs them; the split log shows where the on-glass
-                // time goes (the pack vs. the 28.8 ms theoretical SPI bit-time at 32 MHz). The bulge
-                // is NOT composited here — the input plane repaints it on its own window push — so
-                // the hot map path is a single conversion (issue #126 perf: the old two-hop
-                // RGB222->RGB565->RGB444 expand+pack was ~71% of the push).
+                // Time the push separately — the visible top-to-bottom fill. The common path packs
+                // the RGB222 framebuffer rows **directly** to the panel's 12-bit RGB444 wire format
+                // (no RGB565 intermediate) then SPIM-DMAs them; the split log shows where the on-glass
+                // time goes (the pack vs. the 28.8 ms theoretical SPI bit-time at 32 MHz; issue #126
+                // perf: the old always-on two-hop RGB222->RGB565->RGB444 expand+pack was ~71%).
+                //
+                // BUT while a bulge is actually on screen (a brief hold), take the two-hop path and
+                // composite the bulge into each band — otherwise a map redraw mid-bulge would paint
+                // the bulge region as raw map for the whole ~76 ms push (the input plane only repaints
+                // it a tick later) and the bulge would flicker. Snapshot the flag once: a bulge can't
+                // appear from nothing within one push (it needs ~150 ms of holding first), so this
+                // can't miss the start of one. So the extra conversion only runs when it earns its keep.
+                let bulge_active = input_plane.lock(|cell| cell.borrow().overlay_active());
                 st7789::reset_push_timers();
                 let t_push = Instant::now();
                 let pixels = &**fb;
@@ -670,7 +676,19 @@ async fn main(_spawner: Spawner) {
                     let h = rows.min(HEIGHT - y0);
                     let row0 = y0 as usize * WIDTH as usize;
                     let n = WIDTH as usize * h as usize;
-                    panel.flush_band_rgb222(y0, h, &pixels[row0..row0 + n]);
+                    if bulge_active {
+                        panel.flush_band(y0, h, |scratch| {
+                            for (dst, &byte) in scratch.iter_mut().zip(&pixels[row0..]) {
+                                *dst = device64_to_rgb565(byte);
+                            }
+                            input_plane.lock(|cell| {
+                                let mut band = Band::new(scratch, Size::new(WIDTH as u32, HEIGHT as u32), y0, h);
+                                cell.borrow().render_overlay(&mut band, WIDTH as f32, HEIGHT as f32, color_fn);
+                            });
+                        });
+                    } else {
+                        panel.flush_band_rgb222(y0, h, &pixels[row0..row0 + n]);
+                    }
                     y0 += h;
                 }
                 panel.end_frame();
