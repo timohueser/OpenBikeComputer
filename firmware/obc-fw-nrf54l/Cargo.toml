@@ -33,10 +33,15 @@ glass-demo = []
 # embassy-time integration. Pinned to embassy-nrf 0.11.0 (first release with nRF54L15).
 embassy-nrf = { version = "0.11.0", features = ["defmt", "nrf54l15-app-s", "time-driver-grtc", "gpiote", "time"] }
 # embassy-executor 0.10 (same major the obc-fw-stm32f429 crate resolves). `executor-thread`
-# is the thread-mode executor `#[embassy_executor::main]` runs on; the two-plane build (#126)
-# will add `executor-interrupt` for the high-priority input/overlay plane (see the SWI note in
-# the module doc). `platform-cortex-m` for the Cortex-M arch backend.
-embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "executor-thread", "defmt"] }
+# is the thread-mode executor `#[embassy_executor::main]` runs on; `executor-interrupt` adds the
+# high-priority `InterruptExecutor` the two-plane input/overlay plane runs on (#126 — pended from
+# the SWI00 vector, see the module doc). `platform-cortex-m` for the Cortex-M arch backend.
+embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "executor-thread", "executor-interrupt", "defmt"] }
+# Cross-executor sync (#126): the lock-free `Channel` carrying recognised gestures from the
+# high-priority input plane to the thread-mode map plane, the async `Mutex` guarding the shared
+# ST7789/framebuffer bus, and the blocking `Mutex` over the `InputPlane`. ^0.8.0 is what the
+# embassy-nrf 0.11 ecosystem (and the sibling STM32 crate) resolves.
+embassy-sync = { version = "0.8.0", features = ["defmt"] }
 # `Timer` + the embassy-time backend (driven by `time-driver-grtc` above). `defmt-timestamp-uptime`
 # prefixes each RTT log line with the uptime — handy during bring-up.
 embassy-time = { version = "0.5.1", features = ["defmt", "defmt-timestamp-uptime"] }
@@ -96,6 +101,10 @@ embassy-embedded-hal = { version = "0.6.0", default-features = false }
 # `String` / `Vec` for the route catalog + GPX 8.3 names the SD `Storage` builds. Same 0.8 the
 # shared crates use, so heapless types unify.
 heapless = "0.8"
+# `StaticCell` for the runtime-initialised `'static` shared state the two planes split (#126): the
+# bus `Mutex<Display>` and the `InputPlane` mutex are built in `main` (the panel is constructed
+# there), then handed to the spawned input task + kept by the map loop as `&'static`.
+static_cell = "2"
 
 [profile.release]
 opt-level = 3

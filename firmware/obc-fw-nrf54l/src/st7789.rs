@@ -12,10 +12,33 @@
 //! Generic over embedded-hal 1.0 `SpiBus` / `OutputPin` / `DelayNs`, which embassy-nrf's
 //! `Spim` + `Output` and embassy-time's `Delay` all implement.
 
+use core::sync::atomic::{AtomicU32, Ordering};
+
+use embassy_time::Instant;
 use embedded_hal::delay::DelayNs;
 use embedded_hal::digital::OutputPin;
 use embedded_hal::spi::SpiBus;
 use obc_platform::Panel;
+
+// Strippable per-stage timing for the banded push (issue #126: pin down what makes the visible fill
+// slow — CPU format-conversion vs the SPI/DMA). Each [`flush_window`](St7789::flush_window) adds the
+// microseconds it spent in the three stages; the map loop [`reset_push_timers`]s before a frame's
+// push and reads [`push_timers`] after, so the totals are that frame's push only.
+static FILL_US: AtomicU32 = AtomicU32::new(0); // the caller's fill closure (RGB222->RGB565 expand + bulge composite)
+static PACK_US: AtomicU32 = AtomicU32::new(0); // RGB565 -> 12-bit RGB444 pack
+static SPI_US: AtomicU32 = AtomicU32::new(0); // set_window (CASET/RASET/RAMWR) + the data DMA
+
+/// Zero the per-stage push timers — call before a frame's band-push loop.
+pub fn reset_push_timers() {
+    FILL_US.store(0, Ordering::Relaxed);
+    PACK_US.store(0, Ordering::Relaxed);
+    SPI_US.store(0, Ordering::Relaxed);
+}
+
+/// `(fill_us, pack_us, spi_us)` accumulated since the last [`reset_push_timers`].
+pub fn push_timers() -> (u32, u32, u32) {
+    (FILL_US.load(Ordering::Relaxed), PACK_US.load(Ordering::Relaxed), SPI_US.load(Ordering::Relaxed))
+}
 
 /// Native panel geometry with `MADCTL = 0x00` (portrait): 240 columns × 320 rows, no offset.
 /// (The 240×240 ST7789 variants need a row offset; the full 240×320 panel starts at 0,0.)
@@ -60,8 +83,9 @@ pub struct St7789<'b, SPI, DC, RST, CS, DELAY> {
     delay: DELAY,
     /// One band's worth of RGB565 pixels (`WIDTH * band_rows`), borrowed from a board-owned
     /// `'static` buffer so it lives in `.bss`, never on the stack. [`Panel::flush_band`] fills it
-    /// (native LE `u16`), byte-swaps it to the big-endian RGB565 the ST7789 RAMWR expects, then
-    /// SPIM-DMAs it. `band_rows()` is `band.len() / WIDTH`.
+    /// (native LE `u16`), then [`flush_window`](Self::flush_window) packs it **in place** to the
+    /// ST7789's 12-bit RGB444 RAMWR stream (2 px → 3 bytes) and SPIM-DMAs it. `band_rows()` is
+    /// `band.len() / WIDTH`.
     band: &'b mut [u16],
 }
 
@@ -128,7 +152,9 @@ where
         self.cmd(cmd::SLPOUT);
         self.delay.delay_ms(120);
 
-        self.cmd_data(cmd::COLMOD, &[0x55]); // 16 bits/pixel, RGB565
+        self.cmd_data(cmd::COLMOD, &[0x53]); // 12 bits/pixel, RGB444 (2 px per 3 bytes — ~25% less
+                                             // wire data than RGB565, and the device-64 gamut fits
+                                             // 4 bits/channel losslessly; see `flush_window`)
         self.cmd_data(cmd::MADCTL, &[0x00]); // portrait, RGB order
 
         // Canonical ST7789 240×320 power/timing/gamma values (shared by most ST7789 drivers).
@@ -177,6 +203,112 @@ where
             s.spi.write(bytes).ok();
         });
     }
+
+    /// Render + push an arbitrary `w × rows` window at `(x0, y0)`: hand `fill` a `w * rows` RGB565
+    /// scratch (a prefix of `band`) to draw into, **pack it to the panel's 12-bit RGB444 RAMWR
+    /// stream** (2 px → 3 bytes), address the `[x0, x0+w) × [y0, y0+rows)` window, and SPIM-DMA it.
+    /// The full-width [`Panel::flush_band`] is the `x0 = 0, w = WIDTH` case (it delegates here); the
+    /// narrow case backs the composite-on-push hold bulge, which re-pushes only the right-edge
+    /// columns it touches without a map re-render (issue #126). `w * rows` must be **even** and fit
+    /// `band` (every nRF window is — full bands are `WIDTH`-wide and the bulge window is 16-wide).
+    pub fn flush_window(&mut self, x0: u16, y0: u16, w: u16, rows: u16, fill: impl FnOnce(&mut [u16])) {
+        let n = w as usize * rows as usize;
+        let t = Instant::now();
+        fill(&mut self.band[..n]);
+        FILL_US.fetch_add(t.elapsed().as_micros() as u32, Ordering::Relaxed);
+        let t = Instant::now();
+        // Pack the RGB565 scratch in place to the ST7789's 12-bit (RGB444) wire format: each pixel
+        // keeps the top 4 bits of every channel (the device-64 gamut only uses the top 2, so this is
+        // lossless), and two pixels share three bytes — `[Ra:Ga][Ba:Rb][Gb:Bb]`. The 3-byte output
+        // for pair `i` lands at byte `i*3`, which always trails the still-unread `u16`s at index
+        // `≥ 2i+2` (byte `≥ 4i+4`), so packing forward over the same buffer never clobbers a pixel it
+        // hasn't read yet. Saves ~25% of the wire bytes vs RGB565 (no endian swap needed either).
+        let p = self.band.as_mut_ptr() as *mut u8;
+        let mut i = 0;
+        let mut o = 0;
+        while i + 1 < n {
+            let (ra, ga, ba) = rgb565_to_rgb444(self.band[i]);
+            let (rb, gb, bb) = rgb565_to_rgb444(self.band[i + 1]);
+            // SAFETY: `o + 2 < 2n` (since `o = (i/2)*3 ≤ 1.5n` and the buffer is `2n` bytes), and the
+            // write at `o..=o+2` precedes every later pixel read (see the index argument above).
+            unsafe {
+                *p.add(o) = (ra << 4) | ga;
+                *p.add(o + 1) = (ba << 4) | rb;
+                *p.add(o + 2) = (gb << 4) | bb;
+            }
+            i += 2;
+            o += 3;
+        }
+        PACK_US.fetch_add(t.elapsed().as_micros() as u32, Ordering::Relaxed);
+        let t = Instant::now();
+        self.set_window(x0, y0, x0 + w - 1, y0 + rows - 1);
+        // The packed 12-bit stream is `n * 3 / 2` bytes at the base of `band`.
+        // SAFETY: a `[u16]` is always validly aligned for `[u8]`; the view is `n*3/2` bytes over the
+        // same allocation, the buffer outlives this blocking write, and nothing mutates it during.
+        let bytes = unsafe { core::slice::from_raw_parts(self.band.as_ptr() as *const u8, n * 3 / 2) };
+        self.push(bytes);
+        SPI_US.fetch_add(t.elapsed().as_micros() as u32, Ordering::Relaxed);
+    }
+
+    /// Push a full-width band **straight from the RGB222 framebuffer** — the map plane's fast path.
+    /// Packs `src` (`WIDTH * rows` device-64 bytes, `0b00_RR_GG_BB`) directly to the panel's 12-bit
+    /// RGB444 stream (2 px → 3 bytes), **skipping the RGB565 intermediate** the generic
+    /// [`flush_window`](Self::flush_window) goes through. `RGB222 → RGB444` is exact 2→4-bit
+    /// replication (`c<<2 | c` → the 0/5/10/15 levels), *identical* output to the two-hop
+    /// `RGB222 → RGB565 → RGB444` but ~half the CPU — the two-hop expand+pack was ~71% of the push
+    /// (issue #126 perf). No bulge composite here: the input plane repaints the bulge on its own
+    /// narrow window push (the generic `flush_window`), so the hot map path stays a single pack.
+    pub fn flush_band_rgb222(&mut self, y0: u16, rows: u16, src: &[u8]) {
+        let n = WIDTH as usize * rows as usize;
+        let t = Instant::now();
+        // Pack RGB222 `src` → 12-bit into the band scratch (`≥ 2n` bytes). `src` (the framebuffer) is
+        // a *separate* buffer from `band`, so the reads never alias the writes; `o = (i/2)*3 ≤ 1.5n`.
+        let out = self.band.as_mut_ptr() as *mut u8;
+        let mut i = 0;
+        let mut o = 0;
+        while i + 1 < n {
+            let (ra, ga, ba) = rgb222_to_rgb444(src[i]);
+            let (rb, gb, bb) = rgb222_to_rgb444(src[i + 1]);
+            // SAFETY: in-bounds per the index argument above; `band` is `[u16]` so `2n` bytes wide.
+            unsafe {
+                *out.add(o) = (ra << 4) | ga;
+                *out.add(o + 1) = (ba << 4) | rb;
+                *out.add(o + 2) = (gb << 4) | bb;
+            }
+            i += 2;
+            o += 3;
+        }
+        PACK_US.fetch_add(t.elapsed().as_micros() as u32, Ordering::Relaxed);
+        let t = Instant::now();
+        self.set_window(0, y0, WIDTH - 1, y0 + rows - 1);
+        // SAFETY: `[u16]` is aligned for `[u8]`; `n*3/2` bytes over the same allocation, held for the
+        // blocking write, unmutated during it.
+        let bytes = unsafe { core::slice::from_raw_parts(self.band.as_ptr() as *const u8, n * 3 / 2) };
+        self.push(bytes);
+        SPI_US.fetch_add(t.elapsed().as_micros() as u32, Ordering::Relaxed);
+    }
+}
+
+/// Pack one RGB565 word to RGB444 channels (top 4 bits each). The device-64 gamut only sets the top
+/// 2 bits per channel, so 4 bits hold it losslessly — re-expanding gives back the same colour.
+#[inline]
+fn rgb565_to_rgb444(c: u16) -> (u8, u8, u8) {
+    let r = ((c >> 12) & 0xF) as u8; // top 4 of the 5-bit red
+    let g = ((c >> 7) & 0xF) as u8; // top 4 of the 6-bit green
+    let b = ((c >> 1) & 0xF) as u8; // top 4 of the 5-bit blue
+    (r, g, b)
+}
+
+/// Pack one RGB222 (device-64) byte `0b00_RR_GG_BB` straight to RGB444 channels: replicate each
+/// 2-bit channel to 4 bits (`c<<2 | c` → levels 0/5/10/15). This is exactly the two-hop
+/// `RGB222 → RGB565 → RGB444` result (both land on those levels), so [`flush_band_rgb222`] produces
+/// byte-identical output to the generic path while doing one conversion instead of two.
+#[inline]
+fn rgb222_to_rgb444(byte: u8) -> (u8, u8, u8) {
+    let r = (byte >> 4) & 0x3;
+    let g = (byte >> 2) & 0x3;
+    let b = byte & 0x3;
+    ((r << 2) | r, (g << 2) | g, (b << 2) | b)
 }
 
 /// The board-agnostic [`Panel`] seam (issue #122). The caller renders a band of the frame into
@@ -199,25 +331,10 @@ where
     /// of band pushes. (A latching panel would arm its frame buffer here.)
     fn begin_frame(&mut self) {}
 
-    /// Render one band into the scratch, then put it on glass: byte-swap the native-endian RGB565
-    /// to the big-endian RAMWR stream, open a full-width `[y0, y0+rows)` window, and SPIM-DMA it.
+    /// Render one band into the scratch, then put it on glass: the full-width `[y0, y0+rows)`
+    /// case of [`flush_window`](Self::flush_window).
     fn flush_band(&mut self, y0: u16, rows: u16, fill: impl FnOnce(&mut [u16])) {
-        let n = WIDTH as usize * rows as usize;
-        let band = &mut self.band[..n];
-        fill(band);
-        // ST7789 RAMWR takes big-endian RGB565 (high byte first); the scratch is native LE `u16`,
-        // so swap each pixel in place — `to_be()` reorders its bytes hi-first in memory.
-        for px in band.iter_mut() {
-            *px = px.to_be();
-        }
-
-        self.set_window(0, y0, WIDTH - 1, y0 + rows - 1);
-
-        // Reinterpret the now-big-endian band as the RAMWR byte stream and DMA it.
-        // SAFETY: a `[u16]` is always validly aligned for `[u8]`; the view is `n*2` bytes over the
-        // same allocation, the buffer outlives this blocking write, and nothing mutates it during.
-        let bytes = unsafe { core::slice::from_raw_parts(self.band.as_ptr() as *const u8, n * 2) };
-        self.push(bytes);
+        self.flush_window(0, y0, WIDTH, rows, fill);
     }
 
     /// Nothing to present — pixels are live in GRAM as each band is pushed. (A latching panel
