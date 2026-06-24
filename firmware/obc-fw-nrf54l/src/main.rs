@@ -653,10 +653,14 @@ async fn main(_spawner: Spawner) {
                     app.render_map(&mut fbdev, &reader, None, WIDTH as f32, HEIGHT as f32, color_fn)
                 };
                 let render_us = t_render.elapsed().as_micros();
-                // Time the push separately — the visible top-to-bottom fill. Per band it is
-                // RGB222->RGB565 expand + 12-bit pack on the M33 *then* the SPIM-DMA burst, all
-                // serialized; splitting it from the render shows where the on-glass time actually
-                // goes (CPU conversion vs. the 28.8 ms theoretical SPI bit-time at 32 MHz).
+                // Time the push separately — the visible top-to-bottom fill. Each band packs the
+                // RGB222 framebuffer rows **directly** to the panel's 12-bit RGB444 wire format (no
+                // RGB565 intermediate) then SPIM-DMAs them; the split log shows where the on-glass
+                // time goes (the pack vs. the 28.8 ms theoretical SPI bit-time at 32 MHz). The bulge
+                // is NOT composited here — the input plane repaints it on its own window push — so
+                // the hot map path is a single conversion (issue #126 perf: the old two-hop
+                // RGB222->RGB565->RGB444 expand+pack was ~71% of the push).
+                st7789::reset_push_timers();
                 let t_push = Instant::now();
                 let pixels = &**fb;
                 panel.begin_frame();
@@ -665,26 +669,22 @@ async fn main(_spawner: Spawner) {
                 while y0 < HEIGHT {
                     let h = rows.min(HEIGHT - y0);
                     let row0 = y0 as usize * WIDTH as usize;
-                    panel.flush_band(y0, h, |scratch| {
-                        for (dst, &byte) in scratch.iter_mut().zip(&pixels[row0..]) {
-                            *dst = device64_to_rgb565(byte);
-                        }
-                        // Composite the live bulge over this band (clips to the bulge bands).
-                        input_plane.lock(|cell| {
-                            let mut band = Band::new(scratch, Size::new(WIDTH as u32, HEIGHT as u32), y0, h);
-                            cell.borrow().render_overlay(&mut band, WIDTH as f32, HEIGHT as f32, color_fn);
-                        });
-                    });
+                    let n = WIDTH as usize * h as usize;
+                    panel.flush_band_rgb222(y0, h, &pixels[row0..row0 + n]);
                     y0 += h;
                 }
                 panel.end_frame();
                 let push_us = t_push.elapsed().as_micros();
+                let (fill_us, pack_us, spi_us) = st7789::push_timers();
                 drop(disp); // release the bus before logging so the input plane can push the bulge
 
                 defmt::info!(
-                    "map frame: render {=u64} us + push {=u64} us (12-bit @M32) | lod {=usize} | feat {=usize}/{=usize} | chunks {=usize} | map-cache {=u32} hit / {=u32} miss",
+                    "map frame: render {=u64} us + push {=u64} us [fill {=u32} + pack {=u32} + spi {=u32}] | lod {=usize} | feat {=usize}/{=usize} | chunks {=usize} | map-cache {=u32} hit / {=u32} miss",
                     render_us,
                     push_us,
+                    fill_us,
+                    pack_us,
+                    spi_us,
                     stats.lod,
                     stats.features_drawn,
                     stats.features_tried,
