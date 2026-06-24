@@ -1,0 +1,13 @@
+# Build for the nRF54L15's Cortex-M33 (ARMv8-M Mainline, hard-float ABI), and on
+# `cargo run` flash + stream defmt/RTT over the DK's onboard SEGGER J-Link via probe-rs.
+[build]
+target = "thumbv8m.main-none-eabihf"
+
+# cfg form (not the dotted triple `[target.thumbv8m.main-none-eabihf]`, which TOML would
+# mis-parse as nested tables). `probe-rs chip list` names this die `nRF54L15` — that is the
+# M33 application core; the FLPR coprocessor is a separate probe-rs target we don't use yet.
+[target.'cfg(all(target_arch = "arm", target_os = "none"))']
+runner = "probe-rs run --chip nRF54L15"
+
+[env]
+DEFMT_LOG = "info"

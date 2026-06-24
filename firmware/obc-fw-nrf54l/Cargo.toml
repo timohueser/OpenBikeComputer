@@ -1,0 +1,47 @@
+[package]
+name = "obc-fw-nrf54l"
+version = "0.1.0"
+edition = "2021"
+publish = false  # board firmware — not published to crates.io
+description = "nRF54L15-DK board firmware for OpenBikeComputer — the real hardware target (Cortex-M33 + ST7789 EYESPI). Brings the shared obc-app up on glass to STM32F429-prototype parity; board-agnostic glue stays in obc-platform / obc-app. N0 (#121) is the embassy bring-up skeleton: blinky + RTT + the peripheral plan."
+
+# Standalone crate with its own (empty) workspace table so the firmware/ host
+# workspace — which builds its members for the host target — ignores this crate.
+# Built for thumbv8m.main-none-eabihf via the crate-local .cargo/config.toml, exactly
+# like the sibling obc-fw-stm32f429 board crate. Its own Cargo.lock is committed.
+[workspace]
+
+[dependencies]
+# embassy HAL for the nRF54L15 app core. `nrf54l15-app-s` selects the secure-app die
+# (the only partition we use — no TF-M split, BLE deferred); `time-driver-grtc` backs
+# embassy-time with the GRTC (the nRF54L has no legacy RTC time-driver); `gpiote` is the
+# GPIO task/event peripheral the button input path (#126) needs; `time` pulls the
+# embassy-time integration. Pinned to embassy-nrf 0.11.0 (first release with nRF54L15).
+embassy-nrf = { version = "0.11.0", features = ["defmt", "nrf54l15-app-s", "time-driver-grtc", "gpiote", "time"] }
+# embassy-executor 0.10 (same major the obc-fw-stm32f429 crate resolves). `executor-thread`
+# is the thread-mode executor `#[embassy_executor::main]` runs on; the two-plane build (#126)
+# will add `executor-interrupt` for the high-priority input/overlay plane (see the SWI note in
+# the module doc). `platform-cortex-m` for the Cortex-M arch backend.
+embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "executor-thread", "defmt"] }
+# `Timer` + the embassy-time backend (driven by `time-driver-grtc` above). `defmt-timestamp-uptime`
+# prefixes each RTT log line with the uptime — handy during bring-up.
+embassy-time = { version = "0.5.1", features = ["defmt", "defmt-timestamp-uptime"] }
+
+# defmt logging over RTT via the DK's onboard J-Link (`cargo run` flashes + streams).
+# NOTE: embassy-nrf 0.11 is on the defmt 1.x ecosystem, whereas the shared obc-* crates are
+# still defmt 0.3 — they can't co-exist in one binary, so wiring obc-app in (N1+, #122) means
+# bumping the shared crates to defmt 1.0 first (tracked against the epic #120).
+defmt = "1.0"
+defmt-rtt = "1.0"
+panic-probe = { version = "1.0", features = ["print-defmt"] }
+
+# Single-core critical-section impl (defmt + embassy need critical-section 1.0; like
+# embassy-stm32, embassy-nrf does not bundle one). `inline-asm` for cortex-m 0.7's asm.
+cortex-m = { version = "0.7", features = ["inline-asm", "critical-section-single-core"] }
+cortex-m-rt = "0.7"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+debug = 2
