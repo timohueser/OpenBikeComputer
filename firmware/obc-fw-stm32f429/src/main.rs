@@ -333,6 +333,17 @@ impl InputSource for NullInput {
     }
 }
 
+/// The USB-injected input stream to chain after the physical buttons: the `debug-usb` source that
+/// `try_receive`s host-injected turns/edges, or [`NullInput`] when the feature is off. One helper
+/// so both the input-plane task and the single-executor loop build it the same cfg way.
+#[cfg(not(feature = "glass-demo"))]
+fn debug_input() -> impl InputSource {
+    #[cfg(feature = "debug-usb")]
+    return obc_platform::debug_usb::DebugInput;
+    #[cfg(not(feature = "debug-usb"))]
+    NullInput
+}
+
 /// A `no_std` [`Clock`](obc_render::Clock) over embassy's monotonic `Instant`, in microseconds —
 /// the time base for the map render's per-stage timing (collect / sort / draw). It's the **same**
 /// clock as the whole-frame `Instant` total the loop already measures, so the stages reconcile
@@ -509,10 +520,7 @@ async fn input_overlay_task(
         buttons.update(now);
         // Physical buttons + (with `debug-usb`) the USB-injected events, drained into one
         // recogniser pass — so a host can drive the UI (taps/holds) like the real buttons.
-        #[cfg(feature = "debug-usb")]
-        let mut usb_in = obc_platform::debug_usb::DebugInput;
-        #[cfg(not(feature = "debug-usb"))]
-        let mut usb_in = NullInput;
+        let mut usb_in = debug_input();
         let mut input = ChainedInput { a: &mut buttons, b: &mut usb_in };
         // Recognise this frame's input on the *input* clock (wall time, preemptive). Each
         // gesture is pushed to the map plane; the bulge is animated below regardless, so the
@@ -686,6 +694,40 @@ fn flip_landed() -> bool {
     LTDC.srcr().read().vbr() != Vbr::RELOAD
 }
 
+/// Clear the `FB_PIXELS`-pixel framebuffer at `addr` to black (`0x0000` is RGB565 black /
+/// transparent ARGB4444 alike), so the panel never scans SDRAM garbage before the first frame.
+///
+/// SAFETY: `addr` must base a distinct FMC-mapped `FB_PIXELS`×u16 region with no other live `&mut`
+/// for this call. Each call site passes one of the disjoint framebuffer slots (front/back map,
+/// front/back overlay), kept clear of the others by the SDRAM layout (see [`OVERLAY_ADDR`]).
+unsafe fn clear_fb(addr: usize) {
+    unsafe { core::slice::from_raw_parts_mut(addr as *mut u16, FB_PIXELS) }.fill(0x0000);
+}
+
+/// Reprogram `layer`'s CFBLR with the RM0090 line length. embassy's `init_layer` programs
+/// CFBLL = active*bpp + 7, but RM0090 specifies + 3; that extra 4-byte line over-read carries
+/// into the next line and is the per-line horizontal shear. Both layers are 2 B/px (RGB565 /
+/// ARGB4444) at 240 wide, so the values are identical: pitch 240*2 = 480, line length 480 + 3.
+/// `set_cfbp` is written explicitly because the metapac field write zeroes the other field.
+fn fix_cfblr_shear(layer: LtdcLayer) {
+    stm32_metapac::LTDC.layer(layer as usize).cfblr().modify(|w| {
+        w.set_cfbp(480);
+        w.set_cfbll(483);
+    });
+}
+
+/// Point `layer`'s `CFBAR` at `addr` and reload it **immediately** (no vblank/interrupt wait) —
+/// the init-time placement, done via the PAC rather than `Ltdc::set_buffer().await` so bring-up
+/// never depends on the LTDC reload interrupt (a never-firing wait would hang probe-rs → stuck
+/// ST-LINK). Thereafter the layer is double-buffered and flipped at the vblank by [`flip_to`] /
+/// [`request_flip`], not via this immediate reload.
+fn point_layer_immediate(layer: LtdcLayer, addr: usize) {
+    use stm32_metapac::ltdc::vals::Imr;
+    use stm32_metapac::LTDC;
+    LTDC.layer(layer as usize).cfbar().modify(|w| w.set_cfbadd(addr as u32));
+    LTDC.srcr().write(|w| w.set_imr(Imr::RELOAD));
+}
+
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     // 168 MHz core from HSI (16/8=2 MHz -> x168 -> /2). VCO = 336 MHz so PLL_Q = 336/7 = 48 MHz
@@ -819,12 +861,10 @@ async fn main(spawner: Spawner) {
     // --- SDRAM framebuffer(s). Cleared to black up front so the panel shows black, not
     // SDRAM garbage, in the window between LTDC turn-on and the first rendered frame.
     // The LTDC starts scanning FB_ADDR (the front buffer); the app path adds a second
-    // buffer just past it and double-buffers (see the render loop), so each buffer is
-    // wrapped in its own short-lived slice instead of one long-lived `&mut` — two live
-    // `&mut` over the same SDRAM would alias.
-    // SAFETY: the FMC maps a contiguous FB_PIXELS×u16 region at FB_ADDR (verified in
-    // phase B); the borrow ends at the statement, and the LTDC only *reads* it by DMA. ---
-    unsafe { core::slice::from_raw_parts_mut(FB_ADDR as *mut u16, FB_PIXELS) }.fill(0x0000);
+    // buffer just past it and double-buffers (see the render loop).
+    // SAFETY: the FMC maps a contiguous FB_PIXELS×u16 region at FB_ADDR (verified in phase B);
+    // the LTDC only *reads* it by DMA, and this is the sole borrow. ---
+    unsafe { clear_fb(FB_ADDR) };
     defmt::info!("framebuffer ready: {=usize}x{=usize} RGB565 in SDRAM, cleared", W, H);
 
     // --- LTDC: drive the panel's RGB lines, scanning the SDRAM framebuffer ---
@@ -889,25 +929,8 @@ async fn main(spawner: Spawner) {
         window_y1: H as u16,
     };
     ltdc.init_layer(&layer_config, None);
-    // embassy's init_layer programs CFBLL = active*bpp + 7, but RM0090 specifies
-    // active*bpp + 3; that extra 4-byte line over-read carries into the next line and
-    // is the per-line horizontal shear. Reprogram CFBLR with the spec value (and set
-    // CFBP explicitly — the metapac field write zeroes the other field otherwise).
-    // RGB565: pitch 240*2 = 480, line length 480 + 3 = 483.
-    stm32_metapac::LTDC.layer(0).cfblr().modify(|w| {
-        w.set_cfbp(480);
-        w.set_cfbll(483);
-    });
-
-    // Point layer 1 at the SDRAM framebuffer and request a vblank reload. Done via the
-    // PAC rather than `Ltdc::set_buffer().await` so bring-up doesn't depend on the LTDC
-    // reload interrupt (a never-firing wait would hang probe-rs -> stuck ST-LINK).
-    {
-        use stm32_metapac::ltdc::vals::Imr;
-        use stm32_metapac::LTDC;
-        LTDC.layer(LtdcLayer::Layer1 as usize).cfbar().modify(|w| w.set_cfbadd(FB_ADDR as u32));
-        LTDC.srcr().write(|w| w.set_imr(Imr::RELOAD)); // immediate reload (no vblank/interrupt wait)
-    }
+    fix_cfblr_shear(LtdcLayer::Layer1);
+    point_layer_immediate(LtdcLayer::Layer1, FB_ADDR);
 
     // --- ILI9341 init over SPI5, now that the LTDC sync is live (panel into RGB/DPI
     // mode + display on; it locks onto the running HSYNC/VSYNC/DE) ---
@@ -978,7 +1001,7 @@ async fn main(spawner: Spawner) {
         // setup below.
         // SAFETY: OVERLAY_ADDR..+FB_BYTES is a distinct SDRAM region past both map framebuffers and
         // before the back overlay buffer / App slot; sole owner, the LTDC only DMA-reads it.
-        unsafe { core::slice::from_raw_parts_mut(OVERLAY_ADDR as *mut u16, FB_PIXELS) }.fill(0x0000);
+        unsafe { clear_fb(OVERLAY_ADDR) };
         ltdc.init_layer(
             &LtdcLayerConfig {
                 pixel_format: PixelFormat::ARGB4444,
@@ -990,23 +1013,12 @@ async fn main(spawner: Spawner) {
             },
             None,
         );
-        // Mirror the Layer-1 CFBLR fix (see the Layer-1 setup): embassy programs CFBLL = active*bpp
-        // + 7, but RM0090 specifies + 3; the extra 4-byte over-read shears each line. ARGB4444 is
-        // 2 B/px like RGB565, so the values are identical — pitch 240*2 = 480, line length 480 + 3.
-        stm32_metapac::LTDC.layer(LtdcLayer::Layer2 as usize).cfblr().modify(|w| {
-            w.set_cfbp(480);
-            w.set_cfbll(483);
-        });
-        // Point Layer 2 at its front framebuffer and reload immediately (no vblank wait, same as
-        // Layer 1 at init). Thereafter the overlay is double-buffered: each frame is rendered into
-        // the back buffer and `flip_to`d at the vblank (see the loop), so this CFBAR is updated by
-        // those flips, not held fixed.
-        {
-            use stm32_metapac::ltdc::vals::Imr;
-            use stm32_metapac::LTDC;
-            LTDC.layer(LtdcLayer::Layer2 as usize).cfbar().modify(|w| w.set_cfbadd(OVERLAY_ADDR as u32));
-            LTDC.srcr().write(|w| w.set_imr(Imr::RELOAD));
-        }
+        // Mirror the Layer-1 CFBLR shear fix and the immediate point-and-reload (see the Layer-1
+        // setup). Thereafter the overlay is double-buffered: each frame renders into the back
+        // buffer and is `flip_to`d at the vblank (see the loop), so this CFBAR is updated by those
+        // flips, not held fixed.
+        fix_cfblr_shear(LtdcLayer::Layer2);
+        point_layer_immediate(LtdcLayer::Layer2, OVERLAY_ADDR);
 
         // SDRAM layout: past the four framebuffers (the double-buffered map plane + the
         // double-buffered Layer 2 overlay, see [`OVERLAY_ADDR`]) sits the App, then the streamed
@@ -1150,7 +1162,7 @@ async fn main(spawner: Spawner) {
         // both builds. SAFETY: the back is never the buffer the LTDC is scanning.
         let mut front_addr = FB_ADDR;
         let mut back_addr = FB_ADDR + FB_BYTES;
-        unsafe { core::slice::from_raw_parts_mut(back_addr as *mut u16, FB_PIXELS) }.fill(0x0000);
+        unsafe { clear_fb(back_addr) };
 
         // --- input + overlay plane wiring (issue #48) ---
         // The pushbuttons (issue #35) + the Layer-2 overlay double-buffer belong to the *input
@@ -1265,10 +1277,7 @@ async fn main(spawner: Spawner) {
             #[cfg(feature = "single-executor")]
             {
                 buttons.update(now);
-                #[cfg(feature = "debug-usb")]
-                let mut usb_in = obc_platform::debug_usb::DebugInput;
-                #[cfg(not(feature = "debug-usb"))]
-                let mut usb_in = NullInput;
+                let mut usb_in = debug_input();
                 let mut input = ChainedInput { a: &mut buttons, b: &mut usb_in };
                 app.handle_input(InputClock(now), &mut input);
             }
@@ -1406,7 +1415,6 @@ async fn main(spawner: Spawner) {
 
             if dirty.map {
                 let t0 = Instant::now();
-                // Render into the back buffer (not the one being scanned out).
                 // SAFETY: back_addr is the buffer the LTDC is *not* scanning; the only live
                 // `&mut` over it, dropped before the flip.
                 let back = unsafe { core::slice::from_raw_parts_mut(back_addr as *mut u16, FB_PIXELS) };
@@ -1554,7 +1562,6 @@ async fn main(spawner: Spawner) {
             #[cfg(feature = "single-executor")]
             if dirty.overlay {
                 let t0 = Instant::now();
-                // Render into the back overlay buffer (not the one being scanned out).
                 // SAFETY: overlay_back is the buffer the LTDC is *not* scanning; the only live
                 // `&mut` over it, dropped before the flip.
                 let back = unsafe { core::slice::from_raw_parts_mut(overlay_back as *mut u16, FB_PIXELS) };

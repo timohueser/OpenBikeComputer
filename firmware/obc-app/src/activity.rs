@@ -433,14 +433,12 @@ mod tests {
         assert_eq!(a.ridden_m, 0.0);
     }
 
-    // -----------------------------------------------------------------------
     // Barometric climb — `record_altitude` / `climb_m` (issue #93 item 1).
     //
     // The whole climb path had zero coverage: no test ever fed an altitude through
     // `Activity`. These exercise the dead-band integrator, the NaN/inf rejection, and the
     // pause-drops-the-reference-but-keeps-the-total rule (src/activity.rs ~265-279) that
     // decides whether a climb during a rest gets booked on resume.
-    // -----------------------------------------------------------------------
 
     /// The dead-band (3.0 m, `ELE_DEADBAND_M`) is the whole reason climb isn't pure baro noise:
     /// a sub-3 m wiggle (a gust of pressure noise, a bridge) must book *nothing*, while a clean
@@ -561,10 +559,8 @@ mod tests {
         assert_eq!(a.climb_m(), 5.0, "ride two measures from its own anchor, got {}", a.climb_m());
     }
 
-    // -----------------------------------------------------------------------
     // `record_motion` numeric edges (issue #93 item 2): the gate thresholds and
     // `ground_dist_m` extremes the mid-band cases above don't reach.
-    // -----------------------------------------------------------------------
 
     /// The teleport gate (activity.rs ~242) is `implied < MAX_SPEED_MPS` (30 m/s). A move whose
     /// implied speed lands *just under* 30 m/s must still be counted, while one at/over 30 must be

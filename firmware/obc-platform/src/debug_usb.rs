@@ -128,26 +128,24 @@ fn edge(tok: &str, b: Button) -> Option<ButtonEvent> {
 /// case: `F ` + two i32 (11 chars each) + two spaces + `360.0` + ` ` + `99.99` + `\n` ≈ 38 bytes;
 /// 48 leaves slack, so the `write!`s below truly cannot truncate.
 pub fn format_fix(f: &Fix) -> heapless::String<48> {
+    /// Write an optional float at `prec` decimals, or the `-` "unknown" sentinel — the inverse of
+    /// [`parse_opt_f32`], keeping each field positional. (All `write!`/`push` are infallible for
+    /// the cap above; ignore the Result rather than panic on the MCU.)
+    fn push_opt(s: &mut heapless::String<48>, v: Option<f32>, prec: usize) {
+        match v {
+            Some(v) => {
+                let _ = write!(s, "{v:.prec$}");
+            }
+            None => {
+                let _ = s.push('-');
+            }
+        }
+    }
     let mut s = heapless::String::new();
-    // Infallible for the cap above; ignore the Result rather than panic on the MCU.
     let _ = write!(s, "F {} {} ", f.lat, f.lon);
-    match f.course {
-        Some(c) => {
-            let _ = write!(s, "{c:.1}");
-        }
-        None => {
-            let _ = s.push('-');
-        }
-    }
+    push_opt(&mut s, f.course, 1);
     let _ = s.push(' ');
-    match f.speed_mps {
-        Some(v) => {
-            let _ = write!(s, "{v:.2}");
-        }
-        None => {
-            let _ = s.push('-');
-        }
-    }
+    push_opt(&mut s, f.speed_mps, 2);
     let _ = s.push('\n');
     s
 }

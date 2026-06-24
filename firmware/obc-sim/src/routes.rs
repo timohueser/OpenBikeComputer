@@ -11,33 +11,11 @@
 use std::path::{Path, PathBuf};
 
 #[cfg(not(target_arch = "wasm32"))]
-use obc_route::{gpx_to_obcr, ByteSink, Error};
+use obc_route::gpx_to_obcr;
 use obc_route::{RouteStats, RouteSummary, SliceSource};
 
-/// A `ByteSink` over a growable `Vec` — converts a GPX to OBCR bytes in memory before
-/// they're written to the folder.
 #[cfg(not(target_arch = "wasm32"))]
-#[derive(Default)]
-struct VecSink {
-    buf: Vec<u8>,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl ByteSink for VecSink {
-    fn write(&mut self, b: &[u8]) -> Result<(), Error> {
-        self.buf.extend_from_slice(b);
-        Ok(())
-    }
-    fn patch_at(&mut self, off: u32, b: &[u8]) -> Result<(), Error> {
-        let o = off as usize;
-        let end = o.checked_add(b.len()).ok_or(Error::BadOffset)?;
-        if end > self.buf.len() {
-            return Err(Error::BadOffset);
-        }
-        self.buf[o..end].copy_from_slice(b);
-        Ok(())
-    }
-}
+use crate::vec_sink::VecSink;
 
 /// The folder-backed route store: the catalog of summaries (for the menu) plus the
 /// bytes of the one active route (for the Map to stream).
@@ -104,7 +82,7 @@ impl RouteStore {
             .map_err(|e| format!("convert {}: {e:?}", gpx_path.display()))?;
         std::fs::create_dir_all(&self.dir).map_err(|e| format!("create {}: {e}", self.dir.display()))?;
         let out = self.dir.join(format!("{stem}.obcr"));
-        std::fs::write(&out, &sink.buf).map_err(|e| format!("write {}: {e}", out.display()))?;
+        std::fs::write(&out, sink.bytes()).map_err(|e| format!("write {}: {e}", out.display()))?;
         self.rescan();
         Ok(stats)
     }

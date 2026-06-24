@@ -53,6 +53,60 @@ fn style_table(styles: &[Style]) -> Vec<u8> {
     style_bytes
 }
 
+/// The 32-byte OBCM v5 header, shared by both file builders.
+///
+/// `<4sBiiiiIBIH`: magic, ver, min_lat, min_lon, max_lat, max_lon, style_off, lod_count,
+/// lod_table_off, marker_color. `bbox` is `(min_lon, min_lat, max_lon, max_lat)`.
+fn obcm_header(
+    bbox: (i32, i32, i32, i32),
+    style_off: usize,
+    lod_count: u8,
+    lod_tab_off: usize,
+    marker: u16,
+) -> Vec<u8> {
+    let mut f = Vec::new();
+    f.extend_from_slice(b"OBCM");
+    f.push(5);
+    f.extend_from_slice(&bbox.1.to_le_bytes()); // min_lat
+    f.extend_from_slice(&bbox.0.to_le_bytes()); // min_lon
+    f.extend_from_slice(&bbox.3.to_le_bytes()); // max_lat
+    f.extend_from_slice(&bbox.2.to_le_bytes()); // max_lon
+    f.extend_from_slice(&(style_off as u32).to_le_bytes());
+    f.push(lod_count);
+    f.extend_from_slice(&(lod_tab_off as u32).to_le_bytes());
+    f.extend_from_slice(&marker.to_le_bytes());
+    assert_eq!(f.len(), 32, "header must be 32 bytes");
+    f
+}
+
+/// Start a feature record: `style_id`, the `uint16` exterior point count, the i32 anchor
+/// `(ax, ay)`, and the `flags` byte — the common prefix of every `pack_*` encoder.
+fn feature_header(style_id: u8, point_count: u16, ax: i32, ay: i32, flags: u8) -> Vec<u8> {
+    let mut v = Vec::new();
+    v.push(style_id);
+    v.extend_from_slice(&point_count.to_le_bytes());
+    v.extend_from_slice(&ax.to_le_bytes());
+    v.extend_from_slice(&ay.to_le_bytes());
+    v.push(flags);
+    v
+}
+
+/// Append 8-bit `(dx, dy)` deltas (one byte each).
+fn push_deltas8(v: &mut Vec<u8>, deltas: &[(i8, i8)]) {
+    for &(dx, dy) in deltas {
+        v.push(dx as u8);
+        v.push(dy as u8);
+    }
+}
+
+/// Append 16-bit `(dx, dy)` deltas (little-endian, two bytes each).
+fn push_deltas16(v: &mut Vec<u8>, deltas: &[(i16, i16)]) {
+    for &(dx, dy) in deltas {
+        v.extend_from_slice(&dx.to_le_bytes());
+        v.extend_from_slice(&dy.to_le_bytes());
+    }
+}
+
 /// Build a general multi-LOD `.obcm` (mirrors `serialize.py`). `bbox` is
 /// `(min_lon, min_lat, max_lon, max_lat)`; `styles` are
 /// `(id, z_index, color_rgb565, weight, priority)`; each [`LodSpec`] is one layer with
@@ -88,21 +142,7 @@ pub fn build_file(bbox: (i32, i32, i32, i32), styles: &[Style], lods: &[LodSpec]
         payload.extend_from_slice(&chunk_bytes);
     }
 
-    // Header: <4sBiiiiIBIH  magic, ver, min_lat, min_lon, max_lat, max_lon,
-    // style_off, lod_count, lod_table_off, marker_color.
-    let mut f = Vec::new();
-    f.extend_from_slice(b"OBCM");
-    f.push(5);
-    f.extend_from_slice(&bbox.1.to_le_bytes()); // min_lat
-    f.extend_from_slice(&bbox.0.to_le_bytes()); // min_lon
-    f.extend_from_slice(&bbox.3.to_le_bytes()); // max_lat
-    f.extend_from_slice(&bbox.2.to_le_bytes()); // max_lon
-    f.extend_from_slice(&(style_off as u32).to_le_bytes());
-    f.push(lods.len() as u8);
-    f.extend_from_slice(&(lod_tab_off as u32).to_le_bytes());
-    f.extend_from_slice(&MARKER.to_le_bytes());
-    assert_eq!(f.len(), 32, "header must be 32 bytes");
-
+    let mut f = obcm_header(bbox, style_off, lods.len() as u8, lod_tab_off, MARKER);
     f.extend_from_slice(&style_bytes);
     f.extend_from_slice(&table);
     f.extend_from_slice(&payload);
@@ -147,18 +187,7 @@ pub fn build_priority_tree(
     table.extend_from_slice(&(chunk_size as u16).to_le_bytes());
     table.extend_from_slice(&(chunks.len() as u32).to_le_bytes());
 
-    let mut f = Vec::new();
-    f.extend_from_slice(b"OBCM");
-    f.push(5);
-    f.extend_from_slice(&bbox.1.to_le_bytes()); // min_lat
-    f.extend_from_slice(&bbox.0.to_le_bytes()); // min_lon
-    f.extend_from_slice(&bbox.3.to_le_bytes()); // max_lat
-    f.extend_from_slice(&bbox.2.to_le_bytes()); // max_lon
-    f.extend_from_slice(&(style_off as u32).to_le_bytes());
-    f.push(1); // lod count
-    f.extend_from_slice(&(lod_tab_off as u32).to_le_bytes());
-    f.extend_from_slice(&0u16.to_le_bytes()); // marker color (unused here)
-    assert_eq!(f.len(), 32, "header must be 32 bytes");
+    let mut f = obcm_header(bbox, style_off, 1, lod_tab_off, 0); // marker unused here → 0
     f.extend_from_slice(&style_bytes);
     f.extend_from_slice(&table);
     f.extend_from_slice(&idx_bytes);
@@ -177,69 +206,38 @@ pub fn pad(mut chunk: Vec<u8>, size: usize) -> Vec<u8> {
 
 /// A line feature with 8-bit deltas. Exterior point count = `1 + deltas.len()`.
 pub fn pack_line(style_id: u8, ax: i32, ay: i32, deltas: &[(i8, i8)]) -> Vec<u8> {
-    let mut v = Vec::new();
-    v.push(style_id);
-    v.extend_from_slice(&((1 + deltas.len()) as u16).to_le_bytes());
-    v.extend_from_slice(&ax.to_le_bytes());
-    v.extend_from_slice(&ay.to_le_bytes());
-    v.push(0x00); // flags: line, 8-bit deltas
-    for &(dx, dy) in deltas {
-        v.push(dx as u8);
-        v.push(dy as u8);
-    }
+    // flags 0x00: line, 8-bit deltas
+    let mut v = feature_header(style_id, (1 + deltas.len()) as u16, ax, ay, 0x00);
+    push_deltas8(&mut v, deltas);
     v
 }
 
 /// A line feature with 16-bit deltas (flag bit 0).
 pub fn pack_line16(style_id: u8, ax: i32, ay: i32, deltas: &[(i16, i16)]) -> Vec<u8> {
-    let mut v = Vec::new();
-    v.push(style_id);
-    v.extend_from_slice(&((1 + deltas.len()) as u16).to_le_bytes());
-    v.extend_from_slice(&ax.to_le_bytes());
-    v.extend_from_slice(&ay.to_le_bytes());
-    v.push(0x01); // flags: line, 16-bit deltas
-    for &(dx, dy) in deltas {
-        v.extend_from_slice(&dx.to_le_bytes());
-        v.extend_from_slice(&dy.to_le_bytes());
-    }
+    // flags 0x01: line, 16-bit deltas
+    let mut v = feature_header(style_id, (1 + deltas.len()) as u16, ax, ay, 0x01);
+    push_deltas16(&mut v, deltas);
     v
 }
 
 /// A hole-free polygon with 8-bit deltas. `deltas` are the points after the anchor, so
 /// the stored exterior point count is `1 + deltas.len()`.
 pub fn pack_poly(style_id: u8, ax: i32, ay: i32, deltas: &[(i8, i8)]) -> Vec<u8> {
-    let mut v = Vec::new();
-    v.push(style_id);
-    v.extend_from_slice(&((1 + deltas.len()) as u16).to_le_bytes());
-    v.extend_from_slice(&ax.to_le_bytes());
-    v.extend_from_slice(&ay.to_le_bytes());
-    v.push(0x02); // flags: polygon, no holes, 8-bit deltas
-    for &(dx, dy) in deltas {
-        v.push(dx as u8);
-        v.push(dy as u8);
-    }
+    // flags 0x02: polygon, no holes, 8-bit deltas
+    let mut v = feature_header(style_id, (1 + deltas.len()) as u16, ax, ay, 0x02);
+    push_deltas8(&mut v, deltas);
     v
 }
 
 /// A polygon with one hole, 8-bit deltas. Hole vertices are all deltas (first relative
 /// to the anchor), so its stored point count == `hole_deltas.len()`.
 pub fn pack_poly_hole(style_id: u8, ax: i32, ay: i32, ext_deltas: &[(i8, i8)], hole_deltas: &[(i8, i8)]) -> Vec<u8> {
-    let mut v = Vec::new();
-    v.push(style_id);
-    v.extend_from_slice(&((1 + ext_deltas.len()) as u16).to_le_bytes());
-    v.extend_from_slice(&ax.to_le_bytes());
-    v.extend_from_slice(&ay.to_le_bytes());
-    v.push(0x06); // flags: polygon | has-holes, 8-bit deltas
-    for &(dx, dy) in ext_deltas {
-        v.push(dx as u8);
-        v.push(dy as u8);
-    }
+    // flags 0x06: polygon | has-holes, 8-bit deltas
+    let mut v = feature_header(style_id, (1 + ext_deltas.len()) as u16, ax, ay, 0x06);
+    push_deltas8(&mut v, ext_deltas);
     v.push(1u8); // hole count
     v.extend_from_slice(&(hole_deltas.len() as u16).to_le_bytes());
-    for &(dx, dy) in hole_deltas {
-        v.push(dx as u8);
-        v.push(dy as u8);
-    }
+    push_deltas8(&mut v, hole_deltas);
     v
 }
 
@@ -248,16 +246,9 @@ pub fn pack_poly_hole(style_id: u8, ax: i32, ay: i32, ext_deltas: &[(i8, i8)], h
 /// sized square for the renderer's edge-fill tests), which the 8-bit [`pack_poly`] can't express.
 /// The stored exterior point count is `1 + deltas.len()`.
 pub fn pack_poly16(style_id: u8, ax: i32, ay: i32, deltas: &[(i16, i16)]) -> Vec<u8> {
-    let mut v = Vec::new();
-    v.push(style_id);
-    v.extend_from_slice(&((1 + deltas.len()) as u16).to_le_bytes());
-    v.extend_from_slice(&ax.to_le_bytes());
-    v.extend_from_slice(&ay.to_le_bytes());
-    v.push(0x03); // flags: polygon (0x02) | 16-bit deltas (0x01)
-    for &(dx, dy) in deltas {
-        v.extend_from_slice(&dx.to_le_bytes());
-        v.extend_from_slice(&dy.to_le_bytes());
-    }
+    // flags 0x03: polygon (0x02) | 16-bit deltas (0x01)
+    let mut v = feature_header(style_id, (1 + deltas.len()) as u16, ax, ay, 0x03);
+    push_deltas16(&mut v, deltas);
     v
 }
 
@@ -267,23 +258,13 @@ pub fn pack_poly16(style_id: u8, ax: i32, ay: i32, deltas: &[(i16, i16)]) -> Vec
 /// exterior's stored point count is `1 + ext_deltas.len()`; each hole's stored count is its own
 /// `hole.len()` (every hole vertex is a delta, the first relative to the anchor).
 pub fn pack_poly_holes(style_id: u8, ax: i32, ay: i32, ext_deltas: &[(i8, i8)], holes: &[Vec<(i8, i8)>]) -> Vec<u8> {
-    let mut v = Vec::new();
-    v.push(style_id);
-    v.extend_from_slice(&((1 + ext_deltas.len()) as u16).to_le_bytes());
-    v.extend_from_slice(&ax.to_le_bytes());
-    v.extend_from_slice(&ay.to_le_bytes());
-    v.push(0x06); // flags: polygon | has-holes, 8-bit deltas
-    for &(dx, dy) in ext_deltas {
-        v.push(dx as u8);
-        v.push(dy as u8);
-    }
+    // flags 0x06: polygon | has-holes, 8-bit deltas
+    let mut v = feature_header(style_id, (1 + ext_deltas.len()) as u16, ax, ay, 0x06);
+    push_deltas8(&mut v, ext_deltas);
     v.push(holes.len() as u8); // hole count
     for hole in holes {
         v.extend_from_slice(&(hole.len() as u16).to_le_bytes());
-        for &(dx, dy) in hole {
-            v.push(dx as u8);
-            v.push(dy as u8);
-        }
+        push_deltas8(&mut v, hole);
     }
     v
 }
@@ -295,16 +276,9 @@ pub fn pack_poly_holes(style_id: u8, ax: i32, ay: i32, ext_deltas: &[(i8, i8)], 
 /// letting a test drive the scratch-overflow + truncated-ring guards of issue #96 (reader items 1
 /// and 4) that the count-correct [`pack_line`] never reaches. 8-bit deltas.
 pub fn pack_line_decl(style_id: u8, ax: i32, ay: i32, decl_count: u16, deltas: &[(i8, i8)]) -> Vec<u8> {
-    let mut v = Vec::new();
-    v.push(style_id);
-    v.extend_from_slice(&decl_count.to_le_bytes());
-    v.extend_from_slice(&ax.to_le_bytes());
-    v.extend_from_slice(&ay.to_le_bytes());
-    v.push(0x00); // flags: line, 8-bit deltas
-    for &(dx, dy) in deltas {
-        v.push(dx as u8);
-        v.push(dy as u8);
-    }
+    // flags 0x00: line, 8-bit deltas. Count is forged, not derived from `deltas`.
+    let mut v = feature_header(style_id, decl_count, ax, ay, 0x00);
+    push_deltas8(&mut v, deltas);
     v
 }
 
@@ -312,15 +286,8 @@ pub fn pack_line_decl(style_id: u8, ax: i32, ay: i32, decl_count: u16, deltas: &
 /// `deltas` written — the polygon analogue of [`pack_line_decl`], used to overrun the reader's
 /// `MAX_FEAT_PTS` exterior scratch with one big feature (issue #96, reader item 1). 8-bit deltas.
 pub fn pack_poly_decl(style_id: u8, ax: i32, ay: i32, decl_count: u16, deltas: &[(i8, i8)]) -> Vec<u8> {
-    let mut v = Vec::new();
-    v.push(style_id);
-    v.extend_from_slice(&decl_count.to_le_bytes());
-    v.extend_from_slice(&ax.to_le_bytes());
-    v.extend_from_slice(&ay.to_le_bytes());
-    v.push(0x02); // flags: polygon, no holes, 8-bit deltas
-    for &(dx, dy) in deltas {
-        v.push(dx as u8);
-        v.push(dy as u8);
-    }
+    // flags 0x02: polygon, no holes, 8-bit deltas. Count is forged, not derived from `deltas`.
+    let mut v = feature_header(style_id, decl_count, ax, ay, 0x02);
+    push_deltas8(&mut v, deltas);
     v
 }

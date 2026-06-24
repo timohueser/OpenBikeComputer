@@ -14,7 +14,8 @@ use std::path::PathBuf;
 use obc_app::{TrackAction, TrackSink};
 #[cfg(not(target_arch = "wasm32"))]
 use {
-    obc_route::{encode_record, track_to_gpx, ByteSink, Error, SliceSource, TrackPoint},
+    crate::vec_sink::VecSink,
+    obc_route::{encode_record, track_to_gpx, SliceSource, TrackPoint},
     std::fs::{self, File, OpenOptions},
     std::io::Write,
 };
@@ -101,7 +102,7 @@ impl TrackStore {
                 let mut sink = VecSink::default();
                 if track_to_gpx(&SliceSource(&bytes), &log.name, &mut sink).is_ok() {
                     let path = self.unique_gpx(&log.name);
-                    match fs::write(&path, &sink.0) {
+                    match fs::write(&path, sink.bytes()) {
                         Ok(()) => eprintln!("track: saved {}", path.display()),
                         Err(e) => eprintln!("track: cannot write {}: {e}", path.display()),
                     }
@@ -141,28 +142,6 @@ fn sanitize(name: &str) -> String {
         "ride".to_string()
     } else {
         trimmed.to_string()
-    }
-}
-
-/// A `ByteSink` collecting the GPX into a `Vec` before one `fs::write` (mirrors the route
-/// store's in-memory conversion; a ride's GPX is a few MB at most on the host).
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Default)]
-struct VecSink(Vec<u8>);
-#[cfg(not(target_arch = "wasm32"))]
-impl ByteSink for VecSink {
-    fn write(&mut self, b: &[u8]) -> Result<(), Error> {
-        self.0.extend_from_slice(b);
-        Ok(())
-    }
-    fn patch_at(&mut self, off: u32, b: &[u8]) -> Result<(), Error> {
-        let o = off as usize;
-        let end = o.checked_add(b.len()).ok_or(Error::BadOffset)?;
-        if end > self.0.len() {
-            return Err(Error::BadOffset);
-        }
-        self.0[o..end].copy_from_slice(b);
-        Ok(())
     }
 }
 

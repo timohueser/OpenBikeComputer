@@ -152,6 +152,16 @@ impl embedded_hal::digital::OutputPin for NoCs {
 }
 
 impl Storage {
+    /// Iterate `dir`'s entries with their long filenames, running `f` per entry. Wraps
+    /// `iterate_dir_lfn`'s [`LfnBuffer`] scratch setup (a 256-byte buffer is ample for an 8.3 dir),
+    /// so the `.obcm`/`.obcr` scans below don't each repeat it. The iteration error is ignored —
+    /// a partial scan still yields what it read, the same as the bare call did.
+    fn iter_dir_lfn(&self, dir: RawDirectory, mut f: impl FnMut(&embedded_sdmmc::DirEntry, Option<&str>)) {
+        let mut lfn_storage = [0u8; 256];
+        let mut lfn = LfnBuffer::new(&mut lfn_storage);
+        let _ = self.vmgr.iterate_dir_lfn(dir, &mut lfn, |e, long| f(e, long));
+    }
+
     /// Mount the first FAT volume and open the root / `routes` / `tracks` directories.
     fn mount(card: Sd, cs: Output<'static>) -> Option<Storage> {
         let vmgr = VolumeManager::new(card, NullTime);
@@ -201,9 +211,7 @@ impl Storage {
         let Some(dir) = self.routes_dir else { return catalog };
 
         let mut names: Vec<ShortFileName, MAX_ROUTES> = Vec::new();
-        let mut lfn_storage = [0u8; 256];
-        let mut lfn = LfnBuffer::new(&mut lfn_storage);
-        let _ = self.vmgr.iterate_dir_lfn(dir, &mut lfn, |e, long| {
+        self.iter_dir_lfn(dir, |e, long| {
             if !e.attributes.is_directory() && long_has_ext(long, b".obcr") && !names.is_full() {
                 let _ = names.push(e.name.clone());
             }
@@ -234,9 +242,7 @@ impl Storage {
             return Some(len);
         }
         let mut found: Option<ShortFileName> = None;
-        let mut lfn_storage = [0u8; 256];
-        let mut lfn = LfnBuffer::new(&mut lfn_storage);
-        let _ = self.vmgr.iterate_dir_lfn(self.root, &mut lfn, |e, long| {
+        self.iter_dir_lfn(self.root, |e, long| {
             if found.is_none() && !e.attributes.is_directory() && long_has_ext(long, b".obcm") {
                 found = Some(e.name.clone());
             }
