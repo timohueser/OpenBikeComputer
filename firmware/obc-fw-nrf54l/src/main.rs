@@ -9,104 +9,193 @@
 //!
 //! Bring-up is phased so each hardware layer is verified (over defmt/RTT, and on glass via
 //! the webcam capture at `/tmp/obc-cam/panel.jpg`) before the next is stacked:
-//!   N0. crate skeleton + embassy bring-up: blinky + RTT + this peripheral plan  <- this commit (#121)
-//!   N1. `Panel` HAL + ST7789 SPIM backend + banded RGB222→RGB565 push + glass demo (#122)
-//!   N2. microSD on a dedicated SPIM (reuse obc-platform's FatFs byte adapters)   (#123)
-//!   N3. board memory profile (host-vs-nRF) + budget assert                        (#124)
-//!   N4. RGB222 full framebuffer + full map on glass (retire `Framebuffer565`)     (#125)
-//!   N5. buttons + two-plane InterruptExecutor + fluid composite-on-push bulge     (#126)
-//!   N6. debug/sensor stream over VCOM UART + load→ride→save-GPX = PARITY          (#127)
-//!   N7. docs + CI (add nRF; drop STM32 from the required check)                   (#128)
+//!   N0. crate skeleton + embassy bring-up: blinky + RTT + this peripheral plan          (#121)
+//!   N1. `Panel` HAL + ST7789 SPIM backend + banded RGB565 push + glass demo (RGB222 at N4) <- (#122)
+//!   N2. microSD on a dedicated SPIM (reuse obc-platform's FatFs byte adapters)           (#123)
+//!   N3. board memory profile (host-vs-nRF) + budget assert                              (#124)
+//!   N4. RGB222 full framebuffer + full map on glass (retire `Framebuffer565`)           (#125)
+//!   N5. buttons + two-plane InterruptExecutor + fluid composite-on-push bulge           (#126)
+//!   N6. debug/sensor stream over VCOM UART + load→ride→save-GPX = PARITY                (#127)
+//!   N7. docs + CI (add nRF; drop STM32 from the required check)                         (#128)
 //!
 //! Clock: the M33 application core runs at 128 MHz; embassy-time is driven by the **GRTC**
 //! (Global RTC) via the `time-driver-grtc` feature — the nRF54L has no legacy RTC time-driver.
 //!
 //! ============================ Peripheral / pin plan ============================
-//! The allocation below is fixed now so later phases just wire to it. Pin names are the
-//! embassy-nrf `P{port}_{pin}` form (e.g. `P2_09` = GPIO port 2, pin 9). LED/button/VCOM
-//! assignments are the nRF54L15-DK's, taken from Zephyr's `nrf54l15dk` board DTS; the SPIM
-//! pin sets are the DK's default `spi00`/`spi22` pinctrl. CS/DC/RST GPIOs for the panel and
-//! the SD card are assigned in N1/N2 (left out here to avoid pinning them prematurely).
+//! Pin names are the embassy-nrf `P{port}_{pin}` form (e.g. `P2_09` = GPIO port 2, pin 9).
+//! LED/button/VCOM/SPI assignments are the nRF54L15-DK's, from Zephyr's `nrf54l15dk` DTS and
+//! the DK HW user guide pin maps (Tables 3–5). The three GPIO ports have different reach: P2 =
+//! MCU domain (fast, ≤64 MHz, the SERIAL00 home), P1 = PERI domain (≤8 MHz), P0 = LP domain.
 //!
 //! ## On-board LEDs (active-HIGH) — Zephyr `led0..3`
 //!   LED0 P2_09 | LED1 P1_10 | LED2 P2_07 | LED3 P1_14
-//! N0 blinks **LED0 (P2_09)** as the liveness proof (same pin as embassy's nRF54L blinky).
+//! N1 blinks **LED0 (P2_09)** once per drawn frame as a liveness heartbeat.
 //!
 //! ## Push-buttons (active-LOW, internal pull-up) — Zephyr `sw0..3`, the UI input (#126)
 //!   BTN0 P1_13 | BTN1 P1_09 | BTN2 P1_08 | BTN3 P0_04
 //! Map to obc-platform's board-agnostic `ButtonInput` debouncer → the shared gesture
 //! recogniser, exactly like the STM32's four GPIO buttons. (PREV/NEXT/SELECT/BACK roles
-//! assigned in N5.) Note these are read via the **GPIOTE** peripheral (the `gpiote` feature).
+//! assigned in N5.) Read via the **GPIOTE** peripheral (the `gpiote` feature). These are the
+//! DK's own buttons — no jumpers — and they stay free because the display lives on P2 (below).
 //!
-//! ## Display SPIM — ST7789 EYESPI (#122)
-//!   Instance **SERIAL00 / SPIM00** — the *only* instance that reaches 32 MHz (it lives in the
-//!   fast peripheral power domain); the ST7789 wants a fast bus, so it gets this one.
-//!   DK default pins: SCK P2_01 | MOSI P2_02 | MISO P2_04   (+ CS / DCX / RST GPIOs in N1)
-//!   MISO is unused for the write-only panel but the bus owns the pin. Band push expands the
-//!   RGB222 framebuffer → RGB565 and SPIM-DMAs a CASET/RASET window (the wire format lives in
-//!   `Panel::flush_band`, not the framebuffer — the same seam the future FLPR/LS021B7DD02 reuses).
+//! ## Display SPIM — ST7789 EYESPI stand-in (#122)
+//!   Instance **SERIAL00 / SPIM00** — the only instance that reaches 32 MHz (fast/MCU power
+//!   domain, port P2); the panel wants a fast bus so it gets this one. Its pins are the DK's
+//!   on-board QSPI-flash bus (P2.00–P2.05). We never use that flash (maps live on SD), so the
+//!   **Board Configurator** app electronically disconnects it ("external memory → GPIO on the
+//!   P2 header") and routes the pins out — no soldering on current board revisions. The whole
+//!   panel then sits on the P2 header:
+//!     SCK P2_01 | MOSI P2_02 | CS P2_05 | DC P2_03 | RST P2_00   (MISO P2_04 unused, write-only)
+//!   CS is toggled in software per transaction (embassy-nrf drives no hardware CS), framing each
+//!   command/data write the way the ST7789 expects — see `st7789::St7789::transaction`. The panel's
+//!   level shifters want 3–5 V logic, so the DK I/O rail must be raised from its 1.8 V default
+//!   to **3.3 V** (VDDM, also in the Board Configurator — HW guide §2.2.1); Vin is fed from the
+//!   DK's 5 V (VBUS) so the panel's onboard 3.3 V LDO keeps headroom. Putting the display on P2
+//!   leaves all of P1 free for SD (N2) + VCOM (N6) + the buttons. Band push expands the RGB222
+//!   framebuffer → RGB565 and SPIM-DMAs a CASET/RASET window (the wire format lives in
+//!   `Panel::flush_band`, the same seam the future FLPR/LS021B7DD02 reuses); the RGB222 source
+//!   framebuffer lands at N4. N1 already drives that `Panel` seam (in RGB565) with a banded
+//!   `glass-demo` — the font ladder + the device's 64-colour gamut — to prove wiring + init +
+//!   addressing + the colour/text path end-to-end.
 //!
 //! ## microSD SPIM — map/route/track storage (#123)
-//!   Instance **SERIAL22 / SPIM22** — a standard-speed instance (SD doesn't need 32 MHz), *separate*
-//!   from the display bus, on its own software CS. DK expansion-header SPI pins:
+//!   Instance **SERIAL22 / SPIM22** — a standard-speed instance (SD doesn't need 32 MHz),
+//!   *separate* from the display bus, on its own software CS. DK expansion-header SPI pins:
 //!   SCK P1_11 | MISO P1_07 | MOSI P1_06   (+ CS GPIO in N2)
-//!   The EYESPI connector also carries a microSD that *shares the display bus*; we leave that slot
-//!   **unpopulated** and use this dedicated SPIM instead (a clean reuse of the STM32's standalone
-//!   SD-over-SPI reader + obc-platform's FatFs adapters). P1_06/P1_07 alias VCOM's unused RTS/CTS
-//!   below — no conflict, since the VCOM link is 2-wire (TX/RX only).
+//!   The EYESPI connector also carries a microSD that *shares the display bus*; we leave that
+//!   slot **unpopulated** and use this dedicated SPIM instead (a clean reuse of the STM32's
+//!   standalone SD-over-SPI reader + obc-platform's FatFs adapters). P1_06/P1_07 alias VCOM's
+//!   unused RTS/CTS below — no conflict, since the VCOM link is 2-wire (TX/RX only).
 //!
 //! ## VCOM UARTE — debug-sensor / telemetry stream (#127)
 //!   Instance **SERIAL20 / UARTE20**, the DK's `chosen` console wired to the onboard J-Link's
 //!   USB-CDC VCOM: TX P1_04 | RX P1_05  (RTS P1_06 / CTS P1_07 available, unused).
-//!   The nRF54L15 has **no USB peripheral**, so — unlike the STM32's second USB-CDC port — the fake
-//!   GPS/baro/compass feed and ride telemetry ride this UART; defmt logs ride RTT on the same cable.
-//!   obc-platform's debug-source protocol is transport-agnostic, so it moves over from USB unchanged.
+//!   The nRF54L15 has **no USB peripheral**, so — unlike the STM32's second USB-CDC port — the
+//!   fake GPS/baro/compass feed and ride telemetry ride this UART; defmt logs ride RTT on the
+//!   same cable. obc-platform's debug-source protocol is transport-agnostic, so it moves over
+//!   from USB unchanged.
 //!
 //! ## Spare interrupt for the high-priority InterruptExecutor (#126)
 //!   The two-plane architecture runs input + the overlay on a high-priority `InterruptExecutor`
-//!   that preempts the map render. On STM32 that executor was pended from the unused UART5 vector;
-//!   the nRF analog is a dedicated **software-interrupt vector**: reserve **SWI00** for it (the M33
-//!   also has SWI01/02/03 + EGU10/EGU20 free). It pends above thread mode but below the P0 GRTC
-//!   time-driver, so `Timer`s still wake mid-render.
+//!   that preempts the map render. On STM32 that executor was pended from the unused UART5
+//!   vector; the nRF analog is a dedicated **software-interrupt vector**: reserve **SWI00** for
+//!   it (the M33 also has SWI01/02/03 + EGU10/EGU20 free). It pends above thread mode but below
+//!   the P0 GRTC time-driver, so `Timer`s still wake mid-render.
 //!
 //! ## Flash / RAM
 //!   From the `nrf54l15-app-s` `memory.x`: FLASH 1524K @ 0x0000_0000, RAM 256K @ 0x2000_0000.
 //!   A future MCUboot retrofit re-partitions flash — don't hard-code flash assumptions (see
-//!   `memory.x` and epic #120). RAM is tight (no external SDRAM, unlike the STM32 prototype): the
-//!   single RGB222 framebuffer is ~75 KB and the renderer scratch + caches must fit the rest —
-//!   the board memory profile + budget assert is N3 (#124).
+//!   `memory.x` and epic #120). RAM is tight (no external SDRAM, unlike the STM32 prototype):
+//!   the single RGB222 framebuffer is ~75 KB and the renderer scratch + caches must fit the
+//!   rest — the board memory profile + budget assert is N3 (#124).
 //! =============================================================================
 
 #![no_std]
 #![no_main]
+// The ST7789 driver is wired in only by the `glass-demo` build today. In the `not(glass-demo)`
+// app-stub config (the placeholder until N6 points `obc-app` at the panel) the driver is compiled
+// but intentionally unused, so silence dead-code there rather than gate the whole module away.
+#![cfg_attr(not(feature = "glass-demo"), allow(dead_code))]
+
+#[cfg(feature = "glass-demo")]
+mod demo;
+mod st7789;
 
 use defmt::info;
 use embassy_executor::Spawner;
 use embassy_nrf::gpio::{Level, Output, OutputDrive};
+use embassy_nrf::{bind_interrupts, peripherals, spim};
 use embassy_time::Timer;
 use {defmt_rtt as _, panic_probe as _};
+
+#[cfg(feature = "glass-demo")]
+use embassy_time::Delay;
+#[cfg(feature = "glass-demo")]
+use st7789::{St7789, HEIGHT, WIDTH};
+
+#[cfg(feature = "glass-demo")]
+use embedded_graphics::prelude::Size;
+#[cfg(feature = "glass-demo")]
+use obc_platform::{Band, Panel};
+
+bind_interrupts!(struct Irqs {
+    SERIAL00 => spim::InterruptHandler<peripherals::SERIAL00>;
+});
+
+/// One band's worth of RGB565 scratch (`WIDTH * BAND_ROWS`), living in `.bss`. 20 rows ≈ 9.6 KB
+/// and tiles the 320-row frame in 16 bands. The `Panel` impl fills, byte-swaps, and SPIM-DMAs it
+/// per band; borrowed exactly once below (single executor → no aliasing).
+#[cfg(feature = "glass-demo")]
+const BAND_ROWS: usize = 20;
+#[cfg(feature = "glass-demo")]
+static mut BAND: [u16; WIDTH as usize * BAND_ROWS] = [0; WIDTH as usize * BAND_ROWS];
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
     let p = embassy_nrf::init(Default::default());
 
-    // LED0 (DK silkscreen "LED0", green) on P2_09, active-high. The blink + the RTT log
-    // below are the N0 liveness proof: clocks, the GRTC time-driver, GPIO, and the defmt/RTT
-    // transport are all up if this toggles at ~1.6 Hz with matching log lines over the J-Link.
+    // LED0 (P2_09) heartbeat — a liveness blink visible even before looking at the panel.
     let mut led = Output::new(p.P2_09, Level::Low, OutputDrive::Standard);
 
-    info!("obc-fw-nrf54l N0: bring-up alive — M33 @128 MHz, GRTC time-driver, defmt/RTT");
+    // --- glass-demo (#122): the font ladder + the device's 64-colour gamut, streamed to the
+    // ST7789 band by band through the board-agnostic `Panel` seam, then a static heartbeat. The
+    // shared-app path (load → ride → save-GPX) replaces this at N6 (#127). ---
+    #[cfg(feature = "glass-demo")]
+    {
+        // Display control lines on the (flash-freed) P2 header. CS idles HIGH (deasserted) and the
+        // driver pulses it low per transaction — embassy-nrf's Spim drives no hardware CS, so the
+        // panel's CSX is framed in software (the rising edge re-aligns the panel each transaction,
+        // which is what lets a warm MCU reset recover — see `st7789::St7789::transaction`). RST
+        // idles high (released).
+        let cs = Output::new(p.P2_05, Level::High, OutputDrive::Standard);
+        let dc = Output::new(p.P2_03, Level::Low, OutputDrive::Standard);
+        let rst = Output::new(p.P2_00, Level::High, OutputDrive::Standard);
 
-    let mut tick: u32 = 0;
-    loop {
-        led.set_high();
-        info!("LED0 on  (tick {})", tick);
-        Timer::after_millis(300).await;
+        // SERIAL00 as a write-only SPIM: the panel never talks back, so MISO (P2_04) is omitted.
+        // 8 MHz is comfortable over the jumpered bring-up bus; SERIAL00 reaches 32 MHz on a clean
+        // board — worth revisiting once the panel is on a PCB.
+        let mut config = spim::Config::default();
+        config.frequency = spim::Frequency::M8;
+        let spi = spim::Spim::new_txonly(p.SERIAL00, Irqs, p.P2_01, p.P2_02, config);
 
-        led.set_low();
-        info!("LED0 off (tick {})", tick);
-        Timer::after_millis(300).await;
+        // SAFETY: the sole reference taken to BAND; the panel holds it for the rest of the program
+        // and this single-executor build never aliases it.
+        let band = unsafe { &mut *core::ptr::addr_of_mut!(BAND) };
+        let mut panel = St7789::new(spi, dc, rst, cs, Delay, band);
+        panel.init();
+        info!("obc-fw-nrf54l N1: ST7789 up ({}x{}) on SPIM00@8MHz; rendering glass-demo", WIDTH, HEIGHT);
 
-        tick = tick.wrapping_add(1);
+        // Render the (static) screen once, band by band: each band gets the *whole* frame drawn
+        // into it through `Band`, which clips the draw to the band's rows — so the frame reassembles
+        // seam-free and the generator never has to know it's banded.
+        panel.begin_frame();
+        let rows = panel.band_rows();
+        let mut y0 = 0u16;
+        while y0 < HEIGHT {
+            let h = rows.min(HEIGHT - y0);
+            panel.flush_band(y0, h, |scratch| {
+                let mut t = Band::new(scratch, Size::new(WIDTH as u32, HEIGHT as u32), y0, h);
+                demo::font_palette_demo(&mut t).ok();
+            });
+            y0 += h;
+        }
+        panel.end_frame();
+        info!("glass-demo rendered (font ladder + 64 swatches); heartbeat idle");
+
+        loop {
+            led.toggle();
+            Timer::after_millis(500).await;
+        }
+    }
+
+    // The shared-app path arrives at N6 (#127); until then a `--no-default-features` build just
+    // blinks, so both configs compile as the port fills in.
+    #[cfg(not(feature = "glass-demo"))]
+    {
+        info!("obc-fw-nrf54l: real app path lands at N6 (#127); idling with a heartbeat");
+        loop {
+            led.toggle();
+            Timer::after_millis(500).await;
+        }
     }
 }
