@@ -14,11 +14,18 @@ description = "nRF54L15-DK board firmware for OpenBikeComputer — the real hard
 [features]
 # The on-glass bring-up screen — the font ladder + the device's 64-colour gamut, streamed to the
 # ST7789 band-by-band through the `Panel` seam (issue #122). The nRF analog of the STM32's
-# `glass-demo` and the simulator's `--text-demo`/`--palette`. Default-on; the real app path
-# (load → ride → save-GPX) lands at N6 (#127), at which point `not(glass-demo)` drives `obc-app`
-# instead. Kept a feature so both configs compile as the port fills in.
-default = ["glass-demo"]
+# `glass-demo` and the simulator's `--text-demo`/`--palette`. The real app path (load → ride →
+# save-GPX) lands at N6 (#127), at which point `not(glass-demo)` drives `obc-app` instead. Kept a
+# feature so both configs compile as the port fills in.
+#
+# `sd-demo` is the N2 microSD bring-up (issue #123): mount the card on its own SPIM, log the
+# resident `.obcm` map's bbox + the `/routes` catalog over RTT, then fall through to the display /
+# heartbeat. Additive to `glass-demo` (separate SPIM + pins), so a default `cargo run` exercises
+# both; a missing/bad card degrades gracefully (no panic). Wired into the real app path at N6.
+# Both default-on during bring-up; build a single layer with `--no-default-features --features X`.
+default = ["glass-demo", "sd-demo"]
 glass-demo = []
+sd-demo = []
 
 [dependencies]
 # embassy HAL for the nRF54L15 app core. `nrf54l15-app-s` selects the secure-app die
@@ -65,6 +72,27 @@ obc-render = { path = "../obc-render" }
 # `Rgb565` / `DrawTarget` / `Point` / `Rectangle` for the demo + the `Band` target; pinned to the
 # same 0.8 obc-platform/obc-render resolve so the colour + target types unify across the path.
 embedded-graphics = "0.8"
+
+# microSD bring-up (issue #123, behind `sd-demo`). The card stores the map/routes/tracks; the
+# board-agnostic FatFs byte adapters live in obc-platform (`SdByteSource`/`SdByteSink`/
+# `SdTrackSink`) and the format parsers in obc-reader/obc-route — only the concrete SPIM bus type
+# is board-specific here (the STM32 analog is `obc-fw-stm32f429/src/sd.rs`).
+obc-app = { path = "../obc-app" } # MAX_ROUTES / TrackAction / TrackSink the SD `Storage` reconciles to
+obc-reader = { path = "../obc-reader" } # `read_header` — the cache-free `.obcm` bbox probe (no 277 KB MapCache)
+obc-route = { path = "../obc-route" } # RouteSummary / RouteIndex / track_to_gpx for the `/routes` catalog + GPX
+# FatFs over SPI. `default-features = false` (no `log`/`defmt-log`): embedded-sdmmc 0.9 pins
+# `defmt = "0.3"`, which would clash with this crate's defmt 1.0 — so its internal logging stays
+# the no-op fallback and card/FS errors are surfaced via this crate's `defmt::Debug2Format`.
+# Matches obc-platform's own `embedded-sdmmc` resolve so the `VolumeManager` types unify.
+embedded-sdmmc = { version = "0.9", default-features = false }
+# `ExclusiveDevice` turns the embassy-nrf `Spim` bus + a GPIO CS into the `SpiDevice` `SdCard` wants.
+embedded-hal-bus = "0.3"
+# `SetConfig` — embassy-nrf's `Spim` re-clock seam (no inherent `set_config`, unlike embassy-stm32):
+# init the card ≤400 kHz then bump to bulk speed. Pinned to the 0.6 embassy-nrf 0.11 resolves.
+embassy-embedded-hal = { version = "0.6.0", default-features = false }
+# `String` / `Vec` for the route catalog + GPX 8.3 names the SD `Storage` builds. Same 0.8 the
+# shared crates use, so heapless types unify.
+heapless = "0.8"
 
 [profile.release]
 opt-level = 3
