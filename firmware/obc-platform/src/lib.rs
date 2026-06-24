@@ -9,10 +9,11 @@
 //! `debug-usb`).
 //!
 //! Modules:
-//! - [`framebuffer`] — [`DrawTarget`](embedded_graphics::draw_target::DrawTarget)s
-//!   over the LTDC-scanned SDRAM framebuffers: the opaque RGB565 map plane
-//!   ([`Framebuffer565`]) and the transparent ARGB4444 overlay plane
-//!   ([`FramebufferArgb4444`], the dual-layer display's second layer — issue #46).
+//! - [`framebuffer`] — the board-owned [`DrawTarget`](embedded_graphics::draw_target::DrawTarget)s
+//!   the shared renderer draws into: the nRF's device-native RGB222 map plane ([`FbDevice64`], 1
+//!   byte/px — the real target, issue #125), the STM32 prototype's LTDC-scanned RGB565 plane
+//!   ([`Framebuffer565`]), and the transparent ARGB4444 overlay plane ([`FramebufferArgb4444`],
+//!   the dual-layer display's second layer — issue #46).
 //! - [`panel`] — the [`Panel`] banded-display seam + the [`Band`] frame-absolute band view, for
 //!   boards that stream a frame over SPI/DMA instead of scanning SDRAM (issue #122).
 //! - [`button_input`] — a [`ButtonInput`] debouncer over four
@@ -86,7 +87,7 @@ pub mod synth;
 pub mod time;
 
 pub use button_input::{ButtonInput, Timing};
-pub use framebuffer::{Framebuffer565, FramebufferArgb4444};
+pub use framebuffer::{device64_to_rgb565, FbDevice64, Framebuffer565, FramebufferArgb4444};
 pub use panel::{Band, Panel};
 pub use sd::{SdByteSink, SdByteSource, SdTrackSink};
 pub use synth::SynthLocation;

@@ -463,6 +463,27 @@ impl App {
         }
     }
 
+    /// Build the **map-first** [`App`] in place at `slot` — the by-reference twin of
+    /// [`new`](App::new), exactly as [`init_idle`](App::init_idle) is the twin of
+    /// [`new_idle`](App::new_idle). Initialises the idle power-on state, then drops straight onto
+    /// the live Map (stack `[Home, Map]`, Riding) so the map shows without any navigation — the
+    /// placement path a firmware bring-up uses to put the full map on glass before buttons exist
+    /// (issue #125), and the in-place analog of the simulator's headless `--png` constructor.
+    ///
+    /// # Safety
+    /// Same contract as [`init_idle`](App::init_idle): `slot` is a valid, aligned, exclusively
+    /// owned `*mut App` into which a full `App` may be written. On return it is fully initialised.
+    pub unsafe fn init_map(slot: *mut App, state: AppState) {
+        // SAFETY: caller's contract (a valid, owned, aligned slot). `init_idle` fully initialises
+        // it, so thereafter `&mut *slot` is a sound `&mut App` and the map-first tail is plain safe
+        // mutation — the exact two statements `new` runs after `new_idle` (assignment, so the just
+        // -written Idle activity is dropped, not leaked).
+        unsafe { Self::init_idle(slot, state) };
+        let app = unsafe { &mut *slot };
+        app.activity = Activity::new(Mode::Riding);
+        let _ = app.stack.push(Screen::Map(MapScreen::new()));
+    }
+
     /// Advance one tick from the sensors.
     ///
     /// Polls the GPS [`LocationSource`] (recenters the camera in Follow mode) and, with a
