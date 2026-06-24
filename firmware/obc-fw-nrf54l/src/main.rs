@@ -96,14 +96,14 @@
 
 #![no_std]
 #![no_main]
-// The ST7789 driver is wired in only by the `glass-demo` build today. In the `not(glass-demo)`
-// app-stub config (the placeholder until N6 points `obc-app` at the panel) the driver is compiled
-// but intentionally unused, so silence dead-code there rather than gate the whole module away.
-#![cfg_attr(not(feature = "glass-demo"), allow(dead_code))]
 
+// glass-demo (#122): the font/palette panel bring-up, drawn per band (no SD, no full framebuffer).
 #[cfg(feature = "glass-demo")]
 mod demo;
-#[cfg(feature = "sd-demo")]
+// microSD map storage (#123): only the default (map) build touches the card — the glass-demo panel
+// bring-up needs no SD. The module carries its own dead-code allow for the route/track write half
+// that the app wires in at N6 (#127).
+#[cfg(not(feature = "glass-demo"))]
 mod sd;
 mod st7789;
 
@@ -111,18 +111,34 @@ use defmt::info;
 use embassy_executor::Spawner;
 use embassy_nrf::gpio::{Level, Output, OutputDrive};
 use embassy_nrf::{bind_interrupts, peripherals, spim};
-use embassy_time::Timer;
+use embassy_time::{Delay, Timer};
+use st7789::{St7789, HEIGHT, WIDTH};
 use {defmt_rtt as _, panic_probe as _};
 
-#[cfg(feature = "glass-demo")]
-use embassy_time::Delay;
-#[cfg(feature = "glass-demo")]
-use st7789::{St7789, HEIGHT, WIDTH};
+// The display panel + the banded `Panel` push seam are common to both builds (glass-demo + map).
+use obc_platform::Panel;
 
+// glass-demo (#122) only: the per-band whole-frame draw helper + its frame size.
 #[cfg(feature = "glass-demo")]
 use embedded_graphics::prelude::Size;
 #[cfg(feature = "glass-demo")]
-use obc_platform::{Band, Panel};
+use obc_platform::Band;
+
+// N4 map path (#125): the shared app, the streamed-map reader + its `.bss` cache, and the
+// device-native RGB222 framebuffer the renderer draws into (`color_fn` = identity Rgb565; the
+// framebuffer quantizes to RGB222 on store, the band push expands it back for the ST7789).
+#[cfg(not(feature = "glass-demo"))]
+use core::mem::MaybeUninit;
+#[cfg(not(feature = "glass-demo"))]
+use embedded_graphics::pixelcolor::{raw::RawU16, Rgb565};
+#[cfg(not(feature = "glass-demo"))]
+use obc_app::{App, AppState};
+#[cfg(not(feature = "glass-demo"))]
+use obc_platform::{device64_to_rgb565, FbDevice64};
+#[cfg(not(feature = "glass-demo"))]
+use obc_reader::{MapCache, Reader};
+#[cfg(not(feature = "glass-demo"))]
+use obc_render::zoom_for_mpp;
 
 // SERIAL00 backs the display SPIM (#122); SERIAL22 the microSD SPIM (#123). Both handlers are
 // always registered (harmless when a feature is off — the peripheral is simply never constructed,
@@ -133,13 +149,13 @@ bind_interrupts!(struct Irqs {
 });
 
 /// One band's worth of RGB565 scratch (`WIDTH * BAND_ROWS`), living in `.bss`. 20 rows ≈ 9.6 KB
-/// and tiles the 320-row frame in 16 bands. The `Panel` impl fills, byte-swaps, and SPIM-DMAs it
-/// per band; borrowed exactly once below (single executor → no aliasing). Unconditional (the
-/// `static` is glass-demo only) so the N3 budget assert reserves it in every build config.
+/// and tiles the 320-row frame in 16 bands. The `Panel` impl fills it — the map path expands the
+/// RGB222 frame into it, the glass-demo draws the frame per band — then byte-swaps to big-endian
+/// and SPIM-DMAs it; borrowed exactly once below (single executor → no aliasing). `BAND_BYTES` is
+/// what the N3 budget assert reserves.
 const BAND_ROWS: usize = 20;
 /// The band scratch in bytes (RGB565, 2 B/px) — the resident cost the budget assert reserves.
 const BAND_BYTES: usize = st7789::WIDTH as usize * BAND_ROWS * 2;
-#[cfg(feature = "glass-demo")]
 static mut BAND: [u16; WIDTH as usize * BAND_ROWS] = [0; WIDTH as usize * BAND_ROWS];
 
 // ============================ N3 board memory budget (issue #124) ============================
@@ -155,8 +171,9 @@ static mut BAND: [u16; WIDTH as usize * BAND_ROWS] = [0; WIDTH as usize * BAND_R
 //   - `App`        embeds the renderer scratch (`obc_render::MCU_RENDERER_BYTES`, ~74 KB nrf-mem)
 //                  plus the resident elevation `Profile` (~8.5 KB at PROFILE_COLS=1024) and
 //                  `Breadcrumb` (~6 KB at SPINE_CAP=512); ~96 KB total.
-//   - framebuffer  the single RGB222 frame (#N4): 240×320 × 1 B/px = 75 KB. Reserved here before
-//                  N4 allocates it, so N4 lands on an already-validated budget.
+//   - framebuffer  the single RGB222 frame (#N4): 240×320 × 1 B/px = 75 KB — the `FB` static below
+//                  (the map path) renders into it; the glass-demo build reserves the budget without
+//                  allocating it, since it draws per band.
 //   - `MapCache`   the streamed-map geometry-chunk cache (5 slots on nrf-mem, ~41 KB).
 //   - `RouteCache` the decoded-route-chunk cache (4 slots on nrf-mem, ~12 KB).
 //   - band scratch one RGB565 `Panel` band (`BAND_BYTES`, ~9.4 KB).
@@ -183,66 +200,52 @@ const _: () = assert!(
     "nRF resident set (App + framebuffer + MapCache + RouteCache + band) + stack reserve overruns 256 KB — trim the `nrf-mem` caps (issue #124)"
 );
 
+// ============================ N4 resident set + map path (issue #125) ============================
+
+/// The resident device-native RGB222 framebuffer: one byte per pixel over the 240×320 panel
+/// (`FB_BYTES` = 75 KB), in `.bss`. [`App::render_map`](obc_app::App::render_map) quantizes into it
+/// on store ([`FbDevice64`]); the band push expands it back to RGB565 for the ST7789. Borrowed once
+/// below (single executor → no aliasing). Map-path only — the glass-demo draws per band, no full
+/// frame.
+#[cfg(not(feature = "glass-demo"))]
+static mut FB: [u8; FB_BYTES] = [0; FB_BYTES];
+
+/// The streamed-map geometry cache + the shared [`App`], placed in `.bss` and built **in place** —
+/// the nRF analog of the STM32's `ptr::write`-into-SDRAM placement: the ~96 KB `App` (incl. the
+/// ~74 KB renderer scratch) and the ~41 KB cache must never form on the 256 KB part's small stack.
+/// [`MapCache::new`](obc_reader::MapCache) is an all-zero `MaybeUninit::zeroed`, so writing it is a
+/// `.bss` memset; [`App::init_map`](obc_app::App::init_map) writes each field where it sits. (The
+/// `RouteCache` the budget assert reserves is allocated when route loading lands at N6.)
+#[cfg(not(feature = "glass-demo"))]
+static mut MAP_CACHE: MaybeUninit<MapCache> = MaybeUninit::uninit();
+#[cfg(not(feature = "glass-demo"))]
+static mut APP: MaybeUninit<App> = MaybeUninit::uninit();
+
+/// Idle camera zoom for the N4 static map, in ground metres-per-pixel (the 0.5–4 mpp riding band).
+/// A coarse-ish 2 mpp shows a town-scale overview — several roads / landuse polygons, so the
+/// 64-colour gamut is visible at a glance — rather than a tight patch. Freely tunable: the frame is
+/// a single static render until buttons land (#126).
+#[cfg(not(feature = "glass-demo"))]
+const INIT_MPP: f32 = 2.0;
+
+/// Heartbeat-only idle for an unrecoverable bring-up failure (no card, no `.obcm`, or a map that
+/// isn't valid OBCM): blink LED0 forever rather than panic — a missing/bad card must **never** fault
+/// (acceptance criterion, carried from the STM32). Diverges, so the map path below is unreachable
+/// after it.
+#[cfg(not(feature = "glass-demo"))]
+async fn idle_blink(led: &mut Output<'static>) -> ! {
+    loop {
+        led.toggle();
+        Timer::after_millis(500).await;
+    }
+}
+
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
     let p = embassy_nrf::init(Default::default());
 
     // LED0 (P2_09) heartbeat — a liveness blink visible even before looking at the panel.
     let mut led = Output::new(p.P2_09, Level::Low, OutputDrive::Standard);
-
-    // --- N2 microSD bring-up (#123): mount the card on its own SPIM (SERIAL22, P1 header —
-    // separate from the display bus on SERIAL00/P2), then over RTT log the resident `.obcm` map's
-    // bbox and the `/routes` catalog, proving the obc-platform FatFs adapters + format parsers run
-    // on the nRF byte source. Runs once, then falls through to the display/heartbeat below. A
-    // missing/bad card degrades gracefully (logs + continues) — never a panic (acceptance). The
-    // SD `Storage` is wired into the real app path at N6 (#127). ---
-    #[cfg(feature = "sd-demo")]
-    {
-        // SERIAL22 SD bus on the P1 expansion header (SCK P1_11 / MISO P1_07 / MOSI P1_06), CS on
-        // P1_12. Init at ≤400 kHz (SD spec); `sd::init` re-clocks to 8 MHz once the card answers.
-        // CS idles HIGH here, then `init` holds it LOW for the session (the held-low-CS workaround,
-        // see `sd::NoCs`). `orc = 0xFF` so any over-read clocks the SD idle byte onto MOSI.
-        let mut sd_cfg = spim::Config::default();
-        sd_cfg.frequency = sd::SD_INIT_HZ;
-        sd_cfg.orc = 0xFF;
-        let sd_spi = spim::Spim::new(p.SERIAL22, Irqs, p.P1_11, p.P1_07, p.P1_06, sd_cfg);
-        let sd_cs = Output::new(p.P1_12, Level::High, OutputDrive::Standard);
-
-        match sd::init(sd_spi, sd_cs) {
-            Some(mut storage) => {
-                // Read the resident `.obcm` header (bbox) cache-free: the 277 KB streamed-map cache
-                // doesn't fit nRF RAM, and N2 only needs to prove the byte-source + parser path
-                // (the full streamed `Reader` lands with the RGB222 framebuffer at N4).
-                match storage.open_map() {
-                    Some(len) => {
-                        if let Some(src) = storage.map_source() {
-                            match obc_reader::read_header(&src) {
-                                Ok(h) => info!(
-                                    "SD map: {=u32} B, bbox lon[{=i32}..{=i32}] lat[{=i32}..{=i32}], marker {=u16:#06x}",
-                                    len, h.bbox.min_lon, h.bbox.max_lon, h.bbox.min_lat, h.bbox.max_lat, h.marker_color
-                                ),
-                                Err(e) => defmt::warn!("SD map: not valid OBCM: {}", defmt::Debug2Format(&e)),
-                            }
-                        }
-                    }
-                    None => info!("SD: no .obcm map in card root"),
-                }
-                // List `/routes/*.obcr` into the catalog (the Route-menu source at N6). `scan_routes`
-                // logs the count itself; print each entry's name + headline stats here.
-                let catalog = storage.scan_routes();
-                for (i, s) in catalog.iter().enumerate() {
-                    info!(
-                        "  route[{=usize}] {=str} — {=u32} km, +{=u32} m climb",
-                        i,
-                        s.name.as_str(),
-                        s.distance_km,
-                        s.climb_m
-                    );
-                }
-            }
-            None => defmt::warn!("SD: no card / mount failed — continuing without storage"),
-        }
-    }
 
     // --- glass-demo (#122): the font ladder + the device's 64-colour gamut, streamed to the
     // ST7789 band by band through the board-agnostic `Panel` seam, then a static heartbeat. The
@@ -295,12 +298,131 @@ async fn main(_spawner: Spawner) {
         }
     }
 
-    // The shared-app path arrives at N6 (#127); until then a `--no-default-features` build just
-    // blinks, so both configs compile as the port fills in.
+    // --- N4 first full map on glass (#125): stream the SD `.obcm`, render it into the resident
+    // RGB222 framebuffer through the shared `obc-app`, and push it to the ST7789 band by band
+    // (expanding RGB222 → RGB565). Single-buffered, single-executor, no buttons/sensors yet
+    // (#126/#127) — the first time the real renderer paints a real map on the real target. ---
     #[cfg(not(feature = "glass-demo"))]
     {
-        info!("obc-fw-nrf54l: real app path lands at N6 (#127); idling with a heartbeat");
+        // microSD on its own SPIM (SERIAL22, P1 header — separate from the display bus on
+        // SERIAL00/P2). Init ≤400 kHz (SD spec); `sd::init` re-clocks to 8 MHz once the card
+        // answers. CS idles HIGH, then `init` holds it LOW for the session (the per-byte-CS
+        // workaround — see `sd::NoCs`). `orc = 0xFF` so any over-read clocks the SD idle byte.
+        let mut sd_cfg = spim::Config::default();
+        sd_cfg.frequency = sd::SD_INIT_HZ;
+        sd_cfg.orc = 0xFF;
+        let sd_spi = spim::Spim::new(p.SERIAL22, Irqs, p.P1_11, p.P1_07, p.P1_06, sd_cfg);
+        let sd_cs = Output::new(p.P1_12, Level::High, OutputDrive::Standard);
+        let Some(mut storage) = sd::init(sd_spi, sd_cs) else {
+            defmt::error!("SD: no card / mount failed — cannot load a map; idling with a heartbeat");
+            idle_blink(&mut led).await
+        };
+
+        // Open the `.obcm` and hold it open for the session — the map **streams** from it
+        // (issue #37), never read resident into the 256 KB part. `map_source` hands out a fresh
+        // byte source over the open handle (here it backs the streamed `Reader` below).
+        storage.open_map();
+        let Some(map_src) = storage.map_source() else {
+            defmt::error!("SD: no .obcm map in card root — idling with a heartbeat");
+            idle_blink(&mut led).await
+        };
+
+        // Place the streamed-map geometry cache in `.bss`, built in place (an all-zero
+        // `MaybeUninit::zeroed` → a `.bss` memset, never a stack temporary).
+        // SAFETY: sole owner of MAP_CACHE; single executor → no aliasing.
+        let map_cache: &MapCache = unsafe {
+            let slot = core::ptr::addr_of_mut!(MAP_CACHE) as *mut MapCache;
+            slot.write(MapCache::new());
+            &*slot
+        };
+
+        // Build the streamed `Reader` once: it validates the OBCM and yields the bbox for the idle
+        // camera centre, and backs the static render below (single frame → no per-redraw rebuild).
+        let reader = match Reader::new(&map_src, map_cache) {
+            Ok(r) => r,
+            Err(e) => {
+                defmt::error!("map: not valid OBCM: {} — idling with a heartbeat", defmt::Debug2Format(&e));
+                idle_blink(&mut led).await
+            }
+        };
+        let cam_lon = ((reader.bbox.min_lon as i64 + reader.bbox.max_lon as i64) / 2) as i32;
+        let cam_lat = ((reader.bbox.min_lat as i64 + reader.bbox.max_lat as i64) / 2) as i32;
+        info!(
+            "map: streaming from SD; bbox lon[{=i32}..{=i32}] lat[{=i32}..{=i32}] → camera ({=i32},{=i32})",
+            reader.bbox.min_lon, reader.bbox.max_lon, reader.bbox.min_lat, reader.bbox.max_lat, cam_lon, cam_lat
+        );
+
+        // Build the `App` straight onto the live Map at the bbox centre — map-first, since there
+        // are no buttons to navigate yet. Constructed **in place** in `.bss` (`init_map` writes each
+        // field where it sits; the ~74 KB renderer scratch is zeroed in place), never on the stack.
+        // SAFETY: sole owner of APP; `init_map` fully initialises it before the `&mut` below reads it.
+        let app: &mut App = unsafe {
+            let slot = core::ptr::addr_of_mut!(APP) as *mut App;
+            App::init_map(slot, AppState::new(cam_lon, cam_lat, zoom_for_mpp(INIT_MPP)));
+            &mut *slot
+        };
+
+        // Display panel on the (flash-freed) P2 header — same wiring as the glass-demo. CS idles
+        // HIGH and the driver pulses it low per transaction (the warm-reset-safe CSX framing — see
+        // `st7789::St7789::transaction`); RST idles high. SERIAL00 write-only SPIM @8 MHz.
+        let cs = Output::new(p.P2_05, Level::High, OutputDrive::Standard);
+        let dc = Output::new(p.P2_03, Level::Low, OutputDrive::Standard);
+        let rst = Output::new(p.P2_00, Level::High, OutputDrive::Standard);
+        let mut config = spim::Config::default();
+        config.frequency = spim::Frequency::M8;
+        let spi = spim::Spim::new_txonly(p.SERIAL00, Irqs, p.P2_01, p.P2_02, config);
+        // SAFETY: sole reference to BAND; the panel holds it for the rest of the program (single
+        // executor → no aliasing).
+        let band = unsafe { &mut *core::ptr::addr_of_mut!(BAND) };
+        let mut panel = St7789::new(spi, dc, rst, cs, Delay, band);
+        panel.init();
+        info!("obc-fw-nrf54l N4: ST7789 up ({}x{}); rendering the SD map", WIDTH, HEIGHT);
+
+        // The resident RGB222 framebuffer the renderer draws into.
+        // SAFETY: sole reference to FB; single executor → no aliasing.
+        let fb_buf = unsafe { &mut *core::ptr::addr_of_mut!(FB) };
+
+        // Native renderer colour → identity `Rgb565`; `FbDevice64` quantizes to RGB222 on store
+        // (the device-64 gamut the style table is tuned to — see `obc_platform::framebuffer`).
+        let color_fn = |c: u16| Rgb565::from(RawU16::new(c));
+
+        // Render-on-demand (issue #47): `App` boots map-dirty, so the first iteration renders the
+        // map once; with no input/sensors nothing then re-dirties it, so it stays clean — zero
+        // further redraws, exactly the STM32's dirty-driven idle. LED0 still ticks each loop.
         loop {
+            if app.take_dirty().map {
+                let mut fb = FbDevice64::new(&mut fb_buf[..], WIDTH as u32, HEIGHT as u32);
+                let stats = app.render_map(&mut fb, &reader, None, WIDTH as f32, HEIGHT as f32, color_fn);
+
+                // Put the rendered frame on glass band by band: read the band's RGB222 rows out of
+                // the framebuffer, expand each byte to RGB565 into the band scratch, and let the
+                // `Panel` byte-swap + SPIM-DMA it (the seam the FLPR/LS021B7DD02 backend reuses).
+                let pixels = fb.as_pixels();
+                panel.begin_frame();
+                let rows = panel.band_rows();
+                let mut y0 = 0u16;
+                while y0 < HEIGHT {
+                    let h = rows.min(HEIGHT - y0);
+                    let row0 = y0 as usize * WIDTH as usize;
+                    panel.flush_band(y0, h, |scratch| {
+                        for (dst, &byte) in scratch.iter_mut().zip(&pixels[row0..]) {
+                            *dst = device64_to_rgb565(byte);
+                        }
+                    });
+                    y0 += h;
+                }
+                panel.end_frame();
+
+                defmt::info!(
+                    "map frame on glass: lod {=usize} | feat {=usize}/{=usize} | chunks {=usize} | map-cache {=u32} hit / {=u32} miss",
+                    stats.lod,
+                    stats.features_drawn,
+                    stats.features_tried,
+                    stats.chunks_visited,
+                    stats.map_chunk_hits,
+                    stats.map_chunk_misses
+                );
+            }
             led.toggle();
             Timer::after_millis(500).await;
         }
