@@ -65,13 +65,17 @@ const CACHE_SLOT_BYTES: usize = 4096;
 /// previous frame's chunks). 64 × 4 KB = 256 KB of the host's ample RAM.
 ///
 /// The constrained `nrf-mem` profile (issue #124) can't spare 256 KB on a 256 KB part, so it drops
-/// to 5 slots (~20 KB of slots): the four passes over a frame's working set still hit, but a set
-/// wider than 5 chunks re-reads from SD across frames — the L15's coarse-zoom cost, paid back when
-/// the 512 KB LM20 (BLE headroom) raises this.
+/// to 3 slots (~25 KB): a frame's working set still hits within a redraw, but a set wider than 3
+/// chunks re-reads from SD across frames (and across the renderer's per-frame passes) — the L15's
+/// coarse-zoom cost, paid back when the 512 KB LM20 (BLE headroom) raises this. N6 (#127) shaved
+/// this from 5→3: the ride loop's render path is **deep** (per-frame `Reader::new` → the OBCM style
+/// table + streamed-chunk decode over embedded-sdmmc), and on the 256 KB part that whole-frame stack
+/// must coexist with the resident `RouteCache` + `RouteIndex` — freeing the map cache's ~16 KB is
+/// what buys the stack headroom (the route cache the user keeps, the map render fidelity stays).
 #[cfg(not(feature = "nrf-mem"))]
 const MAP_CHUNK_SLOTS: usize = 64;
 #[cfg(feature = "nrf-mem")]
-const MAP_CHUNK_SLOTS: usize = 5;
+const MAP_CHUNK_SLOTS: usize = 3;
 
 /// Block size + count of the quadtree-index cache. The leaf walk reads 4-byte nodes (siblings
 /// adjacent in the file); caching a few aligned blocks coalesces those into a handful of SD

@@ -33,13 +33,15 @@ use crate::reader::{RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
 /// doubling it doubles both. Each level must stay even (the downsample merges pairs),
 /// so keep this a power of two.
 ///
-/// The constrained `nrf-mem` profile (issue #124) halves it to 1024 (the pyramid drops to ~8.5 KB)
-/// — a coarser elevation graph on the 256-px-wide panel, freeing RAM for the renderer scratch +
-/// framebuffer on the 256 KB part. The coarsest level (128) still exceeds the panel width.
+/// The constrained `nrf-mem` profile (issue #124) trims it to 512 (the pyramid drops to ~4.6 KB) —
+/// a coarser elevation graph on the narrow panel, freeing RAM for the renderer scratch +
+/// framebuffer + the ride loop's resident route index/cache on the 256 KB part. N6 (#127) took it a
+/// step further (1024→512, a power of two so each level stays even): the zoomed-out graph upsamples
+/// from the 64-col coarsest level, the accepted L15 trade; the 512 KB LM20 restores it.
 #[cfg(not(feature = "nrf-mem"))]
 pub const PROFILE_COLS: usize = 2048;
 #[cfg(feature = "nrf-mem")]
-pub const PROFILE_COLS: usize = 1024;
+pub const PROFILE_COLS: usize = 512;
 
 /// Per-level column counts, finest first — each a clean halving of the one before so the
 /// pair-merge downsample lands exactly. On the full profile the coarsest level (256) still
