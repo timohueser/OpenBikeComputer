@@ -5,15 +5,21 @@ name: CI
 #
 #   * The firmware/ manifest is a *virtual* workspace (no targets of its own) → workspace
 #     commands need `--workspace` / `--all`.
-#   * obc-fw-stm32f429 is `exclude`d from that workspace and is its own cargo root → it needs
-#     its own invocation, run from inside the crate dir so its .cargo/config.toml selects the
-#     thumbv7em target (a `--manifest-path` from the root would build it for the host and fail
-#     on embassy-stm32). It has its own Cargo.lock, and no test harness (no_std on bare metal),
-#     so it gets `clippy`/`build` but not `--all-targets`/`test`.
+#   * obc-fw-nrf54l is the **real device target** (nRF54L15 + ST7789). It's `exclude`d from that
+#     workspace and is its own cargo root → it needs its own invocation, run from inside the
+#     crate dir so its .cargo/config.toml selects the thumbv8m target (a `--manifest-path` from
+#     the root would build it for the host and fail on embassy-nrf). It has its own Cargo.lock,
+#     and no test harness (no_std on bare metal), so it gets `clippy`/`build` but not
+#     `--all-targets`/`test`. Its three feature configs are **mutually exclusive** — `glass-demo`
+#     cfgs out the whole map path — so each is linted on its own; there is no valid
+#     `--all-features` build (it would mix the panel-demo and map paths and flag dead code).
+#   * The STM32F429 prototype crate (obc-fw-stm32f429) was a bring-up bridge, not a shipping
+#     target; nRF is now the only gated board (issue #128). It still lives in the tree for
+#     reference but is no longer built/linted here — optimise the shared crates for nRF freely.
 #   * There is no board in CI, so every embedded target is build-only.
-#   * `baked-tile` embeds a ~1.4 MB tile and overflows flash in debug → it must build --release.
-#   * The toolchain (channel + rustfmt/clippy + the thumbv7em / thumbv8m / wasm32 targets) is
-#     pinned once in //rust-toolchain.toml and shared with local dev; jobs install from it.
+#   * The toolchain (channel + rustfmt/clippy + the thumbv8m / wasm32 targets, plus thumbv7em for
+#     local STM32 dev) is pinned once in //rust-toolchain.toml and shared with local dev; jobs
+#     install from it.
 #   * `--locked` everywhere so a stale Cargo.lock (either of the two) fails CI.
 
 on:
@@ -77,8 +83,8 @@ jobs:
           echo "::group::firmware workspace"
           cargo fmt --all --check --manifest-path firmware/Cargo.toml || rc=1
           echo "::endgroup::"
-          echo "::group::obc-fw-stm32f429 (workspace-excluded)"
-          cargo fmt --check --manifest-path firmware/obc-fw-stm32f429/Cargo.toml || rc=1
+          echo "::group::obc-fw-nrf54l (workspace-excluded)"
+          cargo fmt --check --manifest-path firmware/obc-fw-nrf54l/Cargo.toml || rc=1
           echo "::endgroup::"
           exit $rc
 
@@ -122,8 +128,11 @@ jobs:
       - name: cargo test (workspace, all features)
         run: cargo test --manifest-path firmware/Cargo.toml --workspace --all-features --locked
 
-  # The board crate on its real target: clippy + every feature combination that has to build.
-  # Build-only (no board in CI). Each leg runs from the crate dir so .cargo/config.toml applies.
+  # The real device board crate (nRF54L15 + ST7789) on its thumbv8m target: clippy each feature
+  # config + a release build of the shipping default. Build-only (no board in CI). Each leg runs
+  # from the crate dir so .cargo/config.toml selects thumbv8m. The three configs are mutually
+  # exclusive (`glass-demo` cfgs out the map path), so each is linted on its own — no
+  # `--all-features` (it would flag the unused map-path helpers in the panel-demo build).
   embedded:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
@@ -132,12 +141,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: "clippy (all features)", cmd: "cargo clippy --locked --all-features -- -D warnings" }
-          - { name: "build (default)", cmd: "cargo build --locked" }
-          - { name: "build (debug-usb)", cmd: "cargo build --locked --features debug-usb" }
-          - { name: "build (single-executor)", cmd: "cargo build --locked --features single-executor" }
-          # baked-tile overflows flash in debug, so it only builds in release.
-          - { name: "build (baked-tile, release)", cmd: "cargo build --release --locked --features baked-tile" }
+          # default = the shipping map + two-plane path (square-loop GPS, no host feed).
+          - { name: "clippy (default)", cmd: "cargo clippy --locked -- -D warnings" }
+          # debug-uart = default + the VCOM host sensor/telemetry feed (the obc-platform debug codec).
+          - { name: "clippy (debug-uart)", cmd: "cargo clippy --locked --features debug-uart -- -D warnings" }
+          # glass-demo = the panel-only bring-up (font ladder + 64-colour gamut, no SD, no full FB).
+          - { name: "clippy (glass-demo)", cmd: "cargo clippy --locked --no-default-features --features glass-demo -- -D warnings" }
+          # The real flashed artifact under fat LTO + the N3 RAM-budget assert.
+          - { name: "build (default, release)", cmd: "cargo build --release --locked" }
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -145,10 +156,10 @@ jobs:
           cache: false
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: firmware/obc-fw-stm32f429
-          key: thumbv7em
-      - name: "obc-fw-stm32f429: ${{ matrix.name }}"
-        working-directory: firmware/obc-fw-stm32f429
+          workspaces: firmware/obc-fw-nrf54l
+          key: thumbv8m-nrf
+      - name: "obc-fw-nrf54l: ${{ matrix.name }}"
+        working-directory: firmware/obc-fw-nrf54l
         run: ${{ matrix.cmd }}
 
   # std-creep guard for the real device: the shared no_std stack (obc-app pulls in reader /
@@ -184,8 +195,8 @@ jobs:
           tool: cargo-deny
       - name: cargo-deny (firmware workspace)
         run: cargo deny --manifest-path firmware/Cargo.toml --all-features check --config deny.toml
-      - name: cargo-deny (obc-fw-stm32f429 board crate)
-        run: cargo deny --manifest-path firmware/obc-fw-stm32f429/Cargo.toml --all-features check --config deny.toml
+      - name: cargo-deny (obc-fw-nrf54l board crate)
+        run: cargo deny --manifest-path firmware/obc-fw-nrf54l/Cargo.toml --all-features check --config deny.toml
 
   # The web sim is the firmware's own render path compiled to wasm; build it on PRs (not just on
   # the deploy-to-Pages push) so a stack-size regression in firmware/.cargo/config.toml — which
