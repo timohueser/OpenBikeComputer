@@ -56,4 +56,4 @@ The battery, charging, and the power budget that turns the low-power display and
 
 ---
 
-The firmware is being proven on an STM32F429 prototype today; the [system architecture](../../software/architecture/) page explains how the same software targets both the prototype and the eventual nRF54L hardware unchanged.
+The firmware now runs on an nRF54L development kit, having first been proven on an STM32F429 bring-up prototype; the [system architecture](../../software/architecture/) page explains how the same software targets both unchanged.

@@ -14,7 +14,7 @@ That's what lets the simulator you can [run in your browser](../../) be the real
 The crates form a stack with dependencies pointing **one way — downward**. The foundation parses bytes; each layer up adds capability; the two *hosts* sit on top. Nothing in the shared core ever depends on a host.
 
 <figure class="fig">
-<svg viewBox="0 0 720 410" role="img" aria-label="The crate dependency stack. At the top, two hosts — obc-sim (desktop and browser) and obc-fw-stm32f429 plus obc-platform (device) — both depend on obc-app. obc-app depends on obc-render, which depends on obc-reader and obc-route. obc-route also depends on obc-reader, the foundation. Every arrow points downward, so the shared core never depends on a host.">
+<svg viewBox="0 0 720 410" role="img" aria-label="The crate dependency stack. At the top, two hosts — obc-sim (desktop and browser) and obc-fw-nrf54l plus obc-platform (device) — both depend on obc-app. obc-app depends on obc-render, which depends on obc-reader and obc-route. obc-route also depends on obc-reader, the foundation. Every arrow points downward, so the shared core never depends on a host.">
   <defs>
     <marker id="aA" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
   </defs>
@@ -25,7 +25,7 @@ The crates form a stack with dependencies pointing **one way — downward**. The
   <text class="d-label" x="240" y="78" text-anchor="middle">obc-sim</text>
   <text class="d-sub" x="240" y="93" text-anchor="middle">desktop + browser</text>
   <rect class="d-panel" x="390" y="52" width="200" height="50" rx="10" />
-  <text class="d-label" x="490" y="78" text-anchor="middle">obc-fw-stm32f429</text>
+  <text class="d-label" x="490" y="78" text-anchor="middle">obc-fw-nrf54l</text>
   <text class="d-sub" x="490" y="93" text-anchor="middle">+ obc-platform · device</text>
   <text class="d-tag" x="150" y="44" style="fill:#6b7758">hosts</text>
 
@@ -66,10 +66,10 @@ The one-way rule is the load-bearing constraint. `obc-app` builds for the bare-m
 
 ## Two hosts, one core — and the seams between them
 
-A "host" is whatever constructs an [`App`](src:firmware/obc-app/src/app.rs) and drives it. The simulator ([`obc-sim`](src:firmware/obc-sim)) is an `eframe`/`egui` desktop+wasm shell; the device firmware ([`obc-fw-stm32f429`](src:firmware/obc-fw-stm32f429), via [`obc-platform`](src:firmware/obc-platform)) is bare-metal. Each owns its window/panel, its storage, and its sensors — and hands the core four small abstractions. Those four **seams** are the entire device-specific surface area; find them and you've found every boundary that matters.
+A "host" is whatever constructs an [`App`](src:firmware/obc-app/src/app.rs) and drives it. The simulator ([`obc-sim`](src:firmware/obc-sim)) is an `eframe`/`egui` desktop+wasm shell; the device firmware ([`obc-fw-nrf54l`](src:firmware/obc-fw-nrf54l), via [`obc-platform`](src:firmware/obc-platform)) is bare-metal on the nRF54L15. (The seams were first proven on an STM32F429 prototype; the nRF is what the project ships on, and the *same* core runs on both.) Each owns its window/panel, its storage, and its sensors — and hands the core four small abstractions. Those four **seams** are the entire device-specific surface area; find them and you've found every boundary that matters.
 
 <figure class="fig">
-<svg viewBox="0 0 720 372" role="img" aria-label="The shared core sits in the middle and connects through four seams to each host. DrawTarget carries pixels out (simulator: an RGB888 framebuffer; device: an LTDC layer to the MIP panel). The colour function maps a 16-bit colour to a pixel (true-colour or 64-colour in the sim; native RGB222 on the panel). ByteSource brings bytes in (an in-memory slice in the sim; FatFs on the SD card on the device). The HAL traits bring the world in (the control panel, a GPX replay and the keyboard in the sim; GPS, a barometer and GPIO buttons on the device).">
+<svg viewBox="0 0 720 372" role="img" aria-label="The shared core sits in the middle and connects through four seams to each host. DrawTarget carries pixels out (simulator: an RGB888 framebuffer; device: a resident RGB222 framebuffer pushed to the panel a band at a time). The colour function maps a 16-bit colour to a pixel (true-colour or 64-colour in the sim; native RGB222 on the panel). ByteSource brings bytes in (an in-memory slice in the sim; FatFs on the SD card on the device). The HAL traits bring the world in (the control panel, a GPX replay and the keyboard in the sim; GPS, a barometer and GPIO buttons on the device).">
   <text class="d-tag" x="20" y="22">Everything device-specific lives at four seams</text>
 
   <!-- column headers -->
@@ -91,7 +91,7 @@ A "host" is whatever constructs an [`App`](src:firmware/obc-app/src/app.rs) and 
   <rect class="d-panel" x="20" y="112" width="180" height="38" rx="9" />
   <text class="d-sub" x="110" y="135" text-anchor="middle">RGB888 framebuffer</text>
   <rect class="d-panel" x="520" y="112" width="180" height="38" rx="9" />
-  <text class="d-sub" x="610" y="135" text-anchor="middle">LTDC layer → MIP panel</text>
+  <text class="d-sub" x="610" y="135" text-anchor="middle">RGB222 FB · banded push</text>
   <line class="d-stroke" x1="200" y1="131" x2="298" y2="131" /><line class="d-stroke" x1="422" y1="131" x2="520" y2="131" />
 
   <!-- 2 color_fn -->
@@ -204,7 +204,7 @@ This **render-on-demand** is the headline power lever. The reflective panel hold
 There's a tension on the device. A dense map frame can take tens of milliseconds to render, but a button press must feel instant. If both lived on one thread, a press during a long render would stutter. So the device splits the work into **two cooperating planes**.
 
 <figure class="fig">
-<svg viewBox="0 0 720 290" role="img" aria-label="Two planes. The input plane runs on a high-priority executor as frequent short ticks that sample the buttons, recognise gestures and animate the overlay. The map plane runs one long base-map render of tens of milliseconds. The input plane preempts the map render at intervals, and recognised gestures flow one way down a channel into the map plane. There is no shared lock, so input stays responsive while a frame draws.">
+<svg viewBox="0 0 720 290" role="img" aria-label="Two planes. The input plane runs on a high-priority executor as frequent short ticks that sample the buttons, recognise gestures and animate the overlay. The map plane runs one long base-map render of tens of milliseconds. The input plane preempts the map render at intervals, and recognised gestures flow one way down a channel into the map plane. Recognising a gesture never blocks on the render, so input stays responsive while a frame draws; the shared SPI panel is serialised by a bus mutex.">
   <defs>
     <marker id="aD" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
   </defs>
@@ -243,12 +243,12 @@ There's a tension on the device. A dense map frame can take tens of milliseconds
   <rect x="300" y="126" width="120" height="22" rx="6" style="fill:#f8efe4;stroke:#cf6a2a;stroke-width:1.2" />
   <text class="d-sub" x="360" y="141" text-anchor="middle" style="fill:#a9501c">gesture channel →</text>
 
-  <text class="d-sub" x="20" y="258" style="font-size:11px">One-way flow only — no lock the long render can hold against input. On the simulator the same two halves run inline.</text>
+  <text class="d-sub" x="20" y="258" style="font-size:11px">Gestures flow one way; the shared panel + framebuffer are serialised by a bus mutex. On the simulator both halves run inline.</text>
 </svg>
-<figcaption>The <b>input plane</b> samples buttons, recognises the five gestures, and repaints the hold-progress overlay on its own display layer — on a high-priority executor that preempts the CPU-bound <b>map plane</b> every few milliseconds. They're coupled only by a one-way <b>gesture channel</b>, so a recognised press lands a frame later without ever blocking on the render. On the simulator both halves run inline; the recognition logic is the same struct either way, so behaviour is identical.</figcaption>
+<figcaption>The <b>input plane</b> samples buttons, recognises the five gestures, and repaints the hold-progress overlay — re-pushing just its small screen window, the bulge composited over the map read back from the framebuffer — on a high-priority executor that preempts the CPU-bound <b>map plane</b> every few milliseconds. Recognition is coupled to the map plane only by a one-way <b>gesture channel</b>, so a press lands a frame later without ever blocking on the render; the shared SPI panel + framebuffer are serialised by a <b>bus mutex</b>, so a long render can briefly hold off the overlay repaint (never the recognition). On the simulator both halves run inline; the recognition logic is the same struct either way, so behaviour is identical.</figcaption>
 </figure>
 
-The split is a behaviour-preserving relocation: the same `InputPlane` either runs inline (simulator, single-executor firmware) or stands alone on the high-priority executor (two-executor firmware). Because gesture recognition depends only on the raw events plus a clock — never on app state — buffering a gesture and applying it a moment later is identical to applying it inline. That's the property that makes the whole split safe.
+The split is a behaviour-preserving relocation: the same `InputPlane` either runs inline (the simulator) or stands alone on the high-priority executor (the device). Because gesture recognition depends only on the raw events plus a clock — never on app state — buffering a gesture and applying it a moment later is identical to applying it inline. That's the property that makes the whole split safe.
 
 ## Where this lives
 
