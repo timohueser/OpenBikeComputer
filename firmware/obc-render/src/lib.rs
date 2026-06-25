@@ -46,20 +46,25 @@ pub use text::{draw_text, text_width, Font, TextAlign};
 /// generously; see the RAM-budget assertion below.
 #[cfg(not(feature = "nrf-mem"))]
 pub const MAX_SPANS: usize = 3072;
+// N6 (#127): 1280→768. This is the coarse-zoom feature-density knob (saturates first — the most
+// visible L15 cost, #124); it's trimmed hard because the ride loop's **deep per-frame render path**
+// (per-frame `Reader::new` + streamed-chunk decode over embedded-sdmmc) needs a large MSP stack that
+// must coexist with the resident `RouteCache`/`RouteIndex` on the 256 KB part — freeing scratch is
+// what buys that stack headroom. The 512 KB LM20 restores it.
 #[cfg(feature = "nrf-mem")]
-pub const MAX_SPANS: usize = 1280;
+pub const MAX_SPANS: usize = 768;
 
 /// Maximum total vertices across all visible features per frame (8 bytes each).
 #[cfg(not(feature = "nrf-mem"))]
 pub const MAX_FRAME_POINTS: usize = 12_288;
 #[cfg(feature = "nrf-mem")]
-pub const MAX_FRAME_POINTS: usize = 2560;
+pub const MAX_FRAME_POINTS: usize = 1536; // N6 (#127): 2560→1536, freeing ~8 KB toward the ride-loop residents + stack
 
 /// Maximum total ring entries across all visible features per frame.
 #[cfg(not(feature = "nrf-mem"))]
 pub const MAX_FRAME_RINGS: usize = 3072;
 #[cfg(feature = "nrf-mem")]
-pub const MAX_FRAME_RINGS: usize = 768;
+pub const MAX_FRAME_RINGS: usize = 384; // N6 (#127): 768→384, freeing RAM for the deep render path's stack
 
 /// Maximum vertices for a single feature during decode (reused per feature).
 pub const MAX_DECODE_POINTS: usize = 2048;

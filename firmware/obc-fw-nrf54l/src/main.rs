@@ -14,8 +14,8 @@
 //!   N2. microSD on a dedicated SPIM (reuse obc-platform's FatFs byte adapters)            <- (#123)
 //!   N3. board memory profile (host-vs-nRF) + budget assert                              (#124)
 //!   N4. RGB222 full framebuffer + full map on glass (retire `Framebuffer565`)           (#125)
-//!   N5. buttons + two-plane InterruptExecutor + fluid composite-on-push bulge           <- (#126)
-//!   N6. debug/sensor stream over VCOM UART + load→ride→save-GPX = PARITY                (#127)
+//!   N5. buttons + two-plane InterruptExecutor + fluid composite-on-push bulge               (#126)
+//!   N6. debug/sensor stream over VCOM UART + load→ride→save-GPX = PARITY                 <- (#127)
 //!   N7. docs + CI (add nRF; drop STM32 from the required check)                         (#128)
 //!
 //! Clock: the M33 application core runs at 128 MHz; embassy-time is driven by the **GRTC**
@@ -70,16 +70,21 @@
 //!   (unlike embassy-stm32), so the card's DO line is pulled high by the breakout (or an external
 //!   10 kΩ to 3V3). The EYESPI connector also carries a microSD that *shares the display bus*; we
 //!   leave that slot **unpopulated** and use this dedicated SPIM instead (a clean reuse of the
-//!   STM32's standalone SD-over-SPI reader + obc-platform's FatFs adapters). P1_06/P1_07 alias
-//!   VCOM's unused RTS/CTS below — no conflict, since the VCOM link is 2-wire (TX/RX only).
+//!   STM32's standalone SD-over-SPI reader + obc-platform's FatFs adapters). P1_06/P1_07 are the
+//!   VCOM's RTS/CTS pins (below) — we drive them as SD MOSI/MISO instead, which is only safe
+//!   because the VCOM runs **without** hardware flow control (HWFC OFF in the Board Configurator —
+//!   see the crate README); with HWFC on, the J-Link gates host→device bytes on the device's RTS
+//!   (P1_06), so this firmware never asserts it and host→device RX would be dead.
 //!
 //! ## VCOM UARTE — debug-sensor / telemetry stream (#127)
 //!   Instance **SERIAL20 / UARTE20**, the DK's `chosen` console wired to the onboard J-Link's
-//!   USB-CDC VCOM: TX P1_04 | RX P1_05  (RTS P1_06 / CTS P1_07 available, unused).
-//!   The nRF54L15 has **no USB peripheral**, so — unlike the STM32's second USB-CDC port — the
-//!   fake GPS/baro/compass feed and ride telemetry ride this UART; defmt logs ride RTT on the
-//!   same cable. obc-platform's debug-source protocol is transport-agnostic, so it moves over
-//!   from USB unchanged.
+//!   USB-CDC VCOM: TX P1_04 | RX P1_05. We bring it up **2-wire (no RTS/CTS)**, so the DK's VCOM
+//!   **hardware flow control must be disabled** (Board Configurator — see the crate README);
+//!   otherwise device→host telemetry still flows but host→device (the fake-sensor feed + input
+//!   injection) is silently gated off on the un-driven RTS. The nRF54L15 has **no USB peripheral**,
+//!   so — unlike the STM32's second USB-CDC port — the fake GPS/baro/compass feed and ride
+//!   telemetry ride this UART; defmt logs ride RTT on the same cable. obc-platform's debug-source
+//!   protocol is transport-agnostic, so it moves over from USB unchanged.
 //!
 //! ## Spare interrupt for the high-priority InterruptExecutor (#126)
 //!   The two-plane architecture runs input + the overlay on a high-priority `InterruptExecutor`
@@ -157,15 +162,38 @@ use embassy_time::Instant;
 #[cfg(not(feature = "glass-demo"))]
 use embedded_graphics::pixelcolor::{raw::RawU16, Rgb565};
 #[cfg(not(feature = "glass-demo"))]
-use obc_app::{App, AppState, Gesture, InputClock, InputPlane};
+use obc_app::{App, AppState, Gesture, InputClock, InputEvent, InputPlane, InputSource, RideClock, Sensors, TrackSink};
 #[cfg(not(feature = "glass-demo"))]
 use obc_platform::{device64_to_rgb565, ButtonInput, FbDevice64};
 #[cfg(not(feature = "glass-demo"))]
 use obc_reader::{MapCache, Reader};
 #[cfg(not(feature = "glass-demo"))]
 use obc_render::zoom_for_mpp;
+// The N6 ride loop (#127): the decoded-route-geometry cache, the resident per-route chunk index,
+// and the streamed route reader the matcher + map render share — the same per-frame structure the
+// STM32 ride loop uses.
 #[cfg(not(feature = "glass-demo"))]
-use static_cell::StaticCell;
+use obc_route::{RouteCache, RouteIndex, RouteReader};
+// The runtime-built shared statics (the bus `Mutex`, the `InputPlane` mutex, the VCOM ring buffers)
+// are parked in `.bss` with the same in-place `MaybeUninit` + `ptr::write` pattern as APP/MAP_CACHE/
+// ROUTE_CACHE — see `main`. Earlier this used `StaticCell`, but its one-shot `used` flag panics
+// ("already full") if it's ever non-zero on entry, which on this board's debug-reset path it was; an
+// unconditional in-place write has no such flag, so it survives a warm reset. (Hence no `static_cell`
+// dependency.)
+// The `debug-uart`-off fallback's stand-in GPS (`SynthLocation`) — always-compiled in obc-platform
+// (it *is* the no-feed path), so it's imported only when wired (the VCOM build streams a real ride
+// instead). Walks a slow square loop so a saved ride is a non-degenerate `.gpx`.
+#[cfg(all(not(feature = "glass-demo"), not(feature = "debug-uart")))]
+use obc_platform::SynthLocation;
+
+// VCOM debug-sensor / telemetry stream (#127), behind `debug-uart`: the interrupt-buffered UARTE on
+// the DK's J-Link VCOM. `BufferedUarte` keeps RX DMA continuously armed into a ring driven by the
+// SERIAL20 interrupt, so the tens-of-ms map render never drops a streamed byte (the nRF analog of
+// the STM32's interrupt-buffered OTG RX). `uarte` carries the shared `Config` (8N1 @ 115200).
+#[cfg(feature = "debug-uart")]
+use embassy_nrf::buffered_uarte::{self, BufferedUarte, BufferedUarteRx, BufferedUarteTx};
+#[cfg(feature = "debug-uart")]
+use embassy_nrf::uarte;
 
 // SERIAL00 backs the display SPIM (#122); SERIAL22 the microSD SPIM (#123). Both handlers are
 // always registered (harmless when a feature is off — the peripheral is simply never constructed,
@@ -175,12 +203,22 @@ bind_interrupts!(struct Irqs {
     SERIAL22 => spim::InterruptHandler<peripherals::SERIAL22>;
 });
 
-/// One band's worth of RGB565 scratch (`WIDTH * BAND_ROWS`), living in `.bss`. 20 rows ≈ 9.6 KB
-/// and tiles the 320-row frame in 16 bands. The `Panel` impl fills it — the map path expands the
+// VCOM UARTE20 RX/TX → the `BufferedUarte`'s interrupt-fed ring buffers (#127). A separate struct so
+// it's bound only with the sensor stream; SERIAL20 is distinct from the two SPIM instances above, so
+// the three handlers never clash.
+#[cfg(feature = "debug-uart")]
+bind_interrupts!(struct UartIrqs {
+    SERIAL20 => buffered_uarte::InterruptHandler<peripherals::SERIAL20>;
+});
+
+/// One band's worth of RGB565 scratch (`WIDTH * BAND_ROWS`), living in `.bss`. 14 rows ≈ 6.6 KB
+/// and tiles the 320-row frame in 23 bands. The `Panel` impl fills it — the map path expands the
 /// RGB222 frame into it, the glass-demo draws the frame per band — then byte-swaps to big-endian
 /// and SPIM-DMAs it; borrowed exactly once below (single executor → no aliasing). `BAND_BYTES` is
-/// what the N3 budget assert reserves.
-const BAND_ROWS: usize = 20;
+/// what the N3 budget assert reserves. (N6, #127: 20→14, freeing ~2.9 KB toward the ride-loop
+/// residents + the deep render path's stack; must stay ≥ the overlay window `OVL_W × OVL_ROWS`,
+/// asserted below — 240×14 = 3360 ≥ 16×192 = 3072.)
+const BAND_ROWS: usize = 14;
 /// The band scratch in bytes (RGB565, 2 B/px) — the resident cost the budget assert reserves.
 const BAND_BYTES: usize = st7789::WIDTH as usize * BAND_ROWS * 2;
 static mut BAND: [u16; WIDTH as usize * BAND_ROWS] = [0; WIDTH as usize * BAND_ROWS];
@@ -195,16 +233,30 @@ static mut BAND: [u16; WIDTH as usize * BAND_ROWS] = [0; WIDTH as usize * BAND_R
 //
 // The binding moment is a full redraw with everything resident at once (the `nrf-mem` profile
 // trims each term — see the per-crate caps — to make this fit):
-//   - `App`        embeds the renderer scratch (`obc_render::MCU_RENDERER_BYTES`, ~74 KB nrf-mem)
-//                  plus the resident elevation `Profile` (~8.5 KB at PROFILE_COLS=1024) and
-//                  `Breadcrumb` (~6 KB at SPINE_CAP=512); ~96 KB total.
+//   - `App`        embeds the renderer scratch (`obc_render::MCU_RENDERER_BYTES`, ~66 KB nrf-mem)
+//                  plus the resident elevation `Profile` (~4.6 KB at PROFILE_COLS=512) and
+//                  `Breadcrumb` (~6 KB at SPINE_CAP=512); ~88 KB total.
 //   - framebuffer  the single RGB222 frame (#N4): 240×320 × 1 B/px = 75 KB — the `FB` static below
 //                  (the map path) renders into it; the glass-demo build reserves the budget without
 //                  allocating it, since it draws per band.
-//   - `MapCache`   the streamed-map geometry-chunk cache (5 slots on nrf-mem, ~41 KB).
+//   - `MapCache`   the streamed-map geometry-chunk cache (3 slots on nrf-mem, ~25 KB).
 //   - `RouteCache` the decoded-route-chunk cache (4 slots on nrf-mem, ~12 KB).
-//   - band scratch one RGB565 `Panel` band (`BAND_BYTES`, ~9.4 KB).
-// plus `STACK_RESERVE` headroom for the main stack + embassy's executor/task arenas.
+//   - `RouteIndex` the active route's resident chunk index — the ride loop (#127) holds it across
+//                  frames in the map plane's task future to stream geometry without re-walking it
+//                  (128 chunks on nrf-mem, ~6 KB). Counted here because, unlike the host/STM32
+//                  (8 MB SDRAM), on the 256 KB part it materially shares the budget — and because
+//                  `RouteIndex::read` builds it on the *stack*, so keeping it ~6 KB also keeps that
+//                  transient build spike inside the stack reserve below.
+//   - band scratch one RGB565 `Panel` band (`BAND_BYTES`, ~7.5 KB).
+// plus `STACK_RESERVE` headroom for the main stack + embassy's executor/task arenas. Note the stack
+// must also absorb a per-redraw `Reader::new` (the OBCM style table → a ~2.4 KB `Reader` value built
+// as a stack temporary, plus its own ~4 KB read scratch): unlike N4/N5 (one `Reader` held in `.bss`
+// for the whole run) the ride loop rebuilds it each frame, so the stack reserve carries that spike.
+// The N6 ride loop (#127) trimmed the `nrf-mem` caps (MapCache 5→3, MAX_ROUTE_CHUNKS 512→128,
+// MAX_SPANS 1280→768, MAX_FRAME_POINTS 2560→1536, MAX_FRAME_RINGS 768→384, PROFILE_COLS 1024→512,
+// band 20→14) to make `RouteCache` + `RouteIndex` fit *and* keep ~33 KB of stack — the deep
+// per-redraw render path (`Reader::new` style-table parse + streamed-chunk decode over
+// embedded-sdmmc, with the high-priority overlay plane preempting it) overran a smaller reserve.
 
 /// Total SRAM the nRF54L15 app core sees (`memory.x`: RAM 256K @ 0x2000_0000).
 const NRF_RAM_BYTES: usize = 256 * 1024;
@@ -216,15 +268,19 @@ const STACK_RESERVE: usize = 16 * 1024;
 /// The single RGB222 framebuffer (#N4): one byte per pixel over the 240×320 panel = 75 KB.
 const FB_BYTES: usize = st7789::WIDTH as usize * st7789::HEIGHT as usize;
 
-/// The resident set that must coexist during a redraw (see the table above).
+/// The resident set that must coexist during a redraw (see the table above). Includes the active
+/// route's `RouteIndex` — the ride loop (#127) keeps it resident across frames, so on the 256 KB
+/// part it shares the budget like the caches do (the STM32 parks it in 8 MB SDRAM, so its guard
+/// omits it).
 const RESIDENT_BYTES: usize = core::mem::size_of::<obc_app::App>()
     + FB_BYTES
     + core::mem::size_of::<obc_reader::MapCache>()
     + core::mem::size_of::<obc_route::RouteCache>()
+    + core::mem::size_of::<obc_route::RouteIndex>()
     + BAND_BYTES;
 const _: () = assert!(
     RESIDENT_BYTES + STACK_RESERVE <= NRF_RAM_BYTES,
-    "nRF resident set (App + framebuffer + MapCache + RouteCache + band) + stack reserve overruns 256 KB — trim the `nrf-mem` caps (issue #124)"
+    "nRF resident set (App + framebuffer + MapCache + RouteCache + RouteIndex + band) + stack reserve overruns 256 KB — trim the `nrf-mem` caps (issue #124)"
 );
 
 // ============================ N4 resident set + map path (issue #125) ============================
@@ -248,6 +304,13 @@ static mut FB: [u8; FB_BYTES] = [0; FB_BYTES];
 static mut MAP_CACHE: MaybeUninit<MapCache> = MaybeUninit::uninit();
 #[cfg(not(feature = "glass-demo"))]
 static mut APP: MaybeUninit<App> = MaybeUninit::uninit();
+/// The decoded-route-geometry cache (#127), placed in `.bss` and built in place like [`MAP_CACHE`]
+/// ([`RouteCache::new`](obc_route::RouteCache) is an all-zero `MaybeUninit::zeroed` → a `.bss`
+/// memset, never a stack temporary). The session-long cache (issue #98 P4) a redraw of the
+/// unchanged route + the matcher's per-fix decode hit instead of re-reading `.obcr` geometry off
+/// the card every frame; the budget assert above already reserves its bytes.
+#[cfg(not(feature = "glass-demo"))]
+static mut ROUTE_CACHE: MaybeUninit<RouteCache> = MaybeUninit::uninit();
 
 /// Idle camera zoom for the N4 static map, in ground metres-per-pixel (the 0.5–4 mpp riding band).
 /// A coarse-ish 2 mpp shows a town-scale overview — several roads / landuse polygons, so the
@@ -370,6 +433,99 @@ fn fill_overlay_window(scratch: &mut [u16], fb: &[u8]) {
     }
 }
 
+/// Chains two input sources for the gesture recogniser: drains `a` (the physical buttons) fully,
+/// then `b` (the VCOM-injected `K` events with `debug-uart`, else [`NullInput`]). So a host can
+/// drive the UI (taps/holds) over the same VCOM link, interleaved with real presses — exactly the
+/// STM32's `ChainedInput`.
+#[cfg(not(feature = "glass-demo"))]
+struct ChainedInput<'a> {
+    a: &'a mut dyn InputSource,
+    b: &'a mut dyn InputSource,
+}
+#[cfg(not(feature = "glass-demo"))]
+impl InputSource for ChainedInput<'_> {
+    fn poll(&mut self) -> Option<InputEvent> {
+        self.a.poll().or_else(|| self.b.poll())
+    }
+}
+
+/// A never-yielding input source — the `debug-uart`-off stand-in for the VCOM-injected stream, so
+/// the recogniser call site is one code path in both builds.
+#[cfg(all(not(feature = "glass-demo"), not(feature = "debug-uart")))]
+struct NullInput;
+#[cfg(all(not(feature = "glass-demo"), not(feature = "debug-uart")))]
+impl InputSource for NullInput {
+    fn poll(&mut self) -> Option<InputEvent> {
+        None
+    }
+}
+
+/// The VCOM-injected input stream to chain after the physical buttons: the `debug-uart` source that
+/// drains host-injected turns/edges (`K` lines), or [`NullInput`] when the feature is off. One
+/// helper so the input plane builds it the same `cfg` way regardless.
+#[cfg(not(feature = "glass-demo"))]
+fn debug_input() -> impl InputSource {
+    #[cfg(feature = "debug-uart")]
+    return obc_platform::debug_usb::DebugInput;
+    #[cfg(not(feature = "debug-uart"))]
+    NullInput
+}
+
+/// A `no_std` [`Clock`](obc_render::Clock) over embassy's monotonic `Instant`, in microseconds — the
+/// time base for the map render's per-stage timing (collect / sort / draw) the VCOM telemetry
+/// carries. The same monotonic clock the loop's frame `Instant` reads, so the stages reconcile.
+#[cfg(not(feature = "glass-demo"))]
+struct InstantClock;
+#[cfg(not(feature = "glass-demo"))]
+impl obc_render::Clock for InstantClock {
+    fn now_us(&self) -> u64 {
+        Instant::now().as_micros()
+    }
+}
+
+/// VCOM RX → sensor signals (#127, the nRF analog of the STM32 `usb_rx_task`): read bytes from the
+/// interrupt-fed ring and feed each complete `F`/`A`/`C`/`K`/`Z` line into `obc-platform`'s
+/// fresh-fix signals, which the app's `DebugLocation`/`DebugAltimeter`/`DebugCompass`/`DebugInput`
+/// poll. A UART never "disconnects", so — unlike the CDC version — one `LineReader` lives for the
+/// whole session.
+#[cfg(feature = "debug-uart")]
+#[embassy_executor::task]
+async fn vcom_rx_task(mut rx: BufferedUarteRx<'static, peripherals::SERIAL20>) {
+    let mut buf = [0u8; 64];
+    let mut reader = obc_platform::debug_usb::LineReader::new();
+    loop {
+        match rx.read(&mut buf).await {
+            Ok(n) => obc_platform::debug_usb::feed_bytes(&mut reader, &buf[..n]),
+            Err(e) => defmt::warn!("VCOM RX error: {}", defmt::Debug2Format(&e)),
+        }
+    }
+}
+
+/// VCOM TX ← telemetry (#127, the nRF analog of the STM32 `usb_tx_task`): send one compact status
+/// line each time the app publishes telemetry (~2 Hz via `set_telemetry`), so the host's readout
+/// updates without the device polling or flooding the link. The buffered UARTE chunks the line to
+/// DMA itself, so — unlike the CDC 64-byte-packet path — no manual packet splitting is needed (the
+/// telemetry line ≤192 B fits the TX ring); just loop until the whole line is queued.
+#[cfg(feature = "debug-uart")]
+#[embassy_executor::task]
+async fn vcom_tx_task(mut tx: BufferedUarteTx<'static, peripherals::SERIAL20>) {
+    loop {
+        let t = obc_platform::debug_usb::wait_telemetry().await;
+        let line = obc_platform::debug_usb::format_telemetry(&t);
+        let mut bytes = line.as_bytes();
+        while !bytes.is_empty() {
+            match tx.write(bytes).await {
+                Ok(0) => break,
+                Ok(n) => bytes = &bytes[n..],
+                Err(e) => {
+                    defmt::warn!("VCOM TX error: {}", defmt::Debug2Format(&e));
+                    break;
+                }
+            }
+        }
+    }
+}
+
 /// The input + overlay plane. Runs on [`EXECUTOR_INPUT`], preempting the thread-mode map render:
 /// every [`LOOP_MS`] it samples the buttons, recognises gestures (pushing each into [`GESTURES`] for
 /// the map plane to apply), and — when the hold bulge changed — re-pushes just the right-edge overlay
@@ -395,7 +551,11 @@ async fn input_overlay_task(
         // drains the channel.
         let dirty = input_plane.lock(|cell| {
             let plane = &mut *cell.borrow_mut();
-            plane.recognize(InputClock(now), &mut buttons, |g| {
+            // Physical buttons + (with `debug-uart`) the VCOM-injected `K` events, drained into one
+            // recogniser pass — so a host can drive taps/holds like the real buttons.
+            let mut dbg = debug_input();
+            let mut input = ChainedInput { a: &mut buttons, b: &mut dbg };
+            plane.recognize(InputClock(now), &mut input, |g| {
                 if gestures.try_send(g).is_err() {
                     defmt::warn!("gesture channel full — dropped a gesture (map plane stalled?)");
                 }
@@ -496,12 +656,53 @@ async fn main(_spawner: Spawner) {
         }
     }
 
-    // --- N4 first full map on glass (#125): stream the SD `.obcm`, render it into the resident
-    // RGB222 framebuffer through the shared `obc-app`, and push it to the ST7789 band by band
-    // (expanding RGB222 → RGB565). Single-buffered, single-executor, no buttons/sensors yet
-    // (#126/#127) — the first time the real renderer paints a real map on the real target. ---
+    // --- N6 load → ride → save-GPX, the STM32-parity target (#127): stream the SD `.obcm` into the
+    // resident RGB222 framebuffer through the shared `obc-app`, pick a route from the card catalog,
+    // ride it (VCOM-streamed GPS or the `SynthLocation` square loop), map-match + log the track, and
+    // write a `.gpx` to `/tracks` on Finish. Builds on N4's map (#125) + N5's two-plane input (#126):
+    // the map plane (this loop) now also runs the full sensor → tick → reconcile → telemetry ride
+    // loop, the per-frame-reader structure the STM32 ride loop uses. ---
     #[cfg(not(feature = "glass-demo"))]
     {
+        // --- VCOM debug-sensor stream (#127), behind `debug-uart`. Bring it up first so the J-Link
+        // VCOM is live while the SD card + panel come up; the parsed fixes land in obc-platform's
+        // signals, ready for the app's sensor poll in the loop below. The nRF54L15 has no USB
+        // peripheral, so — unlike the STM32's USB-CDC port — the fake GPS/baro/compass feed and ride
+        // telemetry ride UARTE20 on the DK's onboard J-Link VCOM (TX P1_04 / RX P1_05); defmt logs
+        // share the same cable over RTT. The RX ring is interrupt-fed (`BufferedUarte`), so the
+        // tens-of-ms map render never drops a byte. Without the feature the app rides the always-on
+        // `SynthLocation` stand-in (no host needed). ---
+        #[cfg(feature = "debug-uart")]
+        {
+            // 'static ring buffers backing the interrupt-fed UARTE (RX accumulates streamed bytes
+            // across a long map render; TX queues the ≤192 B telemetry line). Parked in `.bss` and
+            // written in place (the warm-reset-safe pattern used for the bus statics above), then the
+            // `&'static mut` halves move into the spawned `'static` tasks.
+            static mut RX_BUF: MaybeUninit<[u8; 256]> = MaybeUninit::uninit();
+            static mut TX_BUF: MaybeUninit<[u8; 256]> = MaybeUninit::uninit();
+            // SAFETY: each ring is written once here, then handed to exactly one task half — no alias.
+            let (rx_buf, tx_buf): (&'static mut [u8; 256], &'static mut [u8; 256]) = unsafe {
+                let r = core::ptr::addr_of_mut!(RX_BUF) as *mut [u8; 256];
+                r.write([0; 256]);
+                let t = core::ptr::addr_of_mut!(TX_BUF) as *mut [u8; 256];
+                t.write([0; 256]);
+                (&mut *r, &mut *t)
+            };
+            let uart = BufferedUarte::new(
+                p.SERIAL20,
+                p.P1_05, // RXD: host → device (fixes / input injection)
+                p.P1_04, // TXD: device → host (telemetry)
+                UartIrqs,
+                uarte::Config::default(), // 8N1 @ 115200 — matches `obc-usb-host`'s default baud
+                rx_buf,
+                tx_buf,
+            );
+            let (rx, tx) = uart.split();
+            _spawner.spawn(defmt::unwrap!(vcom_rx_task(rx)));
+            _spawner.spawn(defmt::unwrap!(vcom_tx_task(tx)));
+            info!("VCOM debug sensors up on UARTE20 (J-Link VCOM, TX P1_04 / RX P1_05) @ 115200");
+        }
+
         // microSD on its own SPIM (SERIAL22, P1 header — separate from the display bus on
         // SERIAL00/P2). Init ≤400 kHz (SD spec); `sd::init` re-clocks to 8 MHz once the card
         // answers. CS idles HIGH, then `init` holds it LOW for the session (the per-byte-CS
@@ -517,18 +718,12 @@ async fn main(_spawner: Spawner) {
         };
 
         // Open the `.obcm` and hold it open for the session — the map **streams** from it
-        // (issue #37), never read resident into the 256 KB part. `map_source` hands out a fresh
-        // byte source over the open handle (here it backs the streamed `Reader` below).
+        // (issue #37), never read resident into the 256 KB part. Then fill the Route menu from the
+        // card's `/routes/*.obcr` catalog — both done here while `storage` is still freely mutable,
+        // *before* the loop's per-frame readers take their short immutable borrows. The owned `Vec`
+        // outlives those borrows and feeds `set_routes` once the app is built below.
         storage.open_map();
-        // Fill the Route menu from the card's `/routes/*.obcr` catalog (the same scan #123 logged) —
-        // done here, while `storage` is still mutably borrowable, *before* the map byte source takes
-        // an immutable borrow of it for the rest of the run. The owned `Vec` outlives that borrow and
-        // feeds `set_routes` once the app is built below.
         let catalog = storage.scan_routes();
-        let Some(map_src) = storage.map_source() else {
-            defmt::error!("SD: no .obcm map in card root — idling with a heartbeat");
-            idle_blink(&mut led).await
-        };
 
         // Place the streamed-map geometry cache in `.bss`, built in place (an all-zero
         // `MaybeUninit::zeroed` → a `.bss` memset, never a stack temporary).
@@ -539,27 +734,42 @@ async fn main(_spawner: Spawner) {
             &*slot
         };
 
-        // Build the streamed `Reader` once: it validates the OBCM and yields the bbox for the idle
-        // camera centre, and backs the static render below (single frame → no per-redraw rebuild).
-        let reader = match Reader::new(&map_src, map_cache) {
-            Ok(r) => r,
-            Err(e) => {
-                defmt::error!("map: not valid OBCM: {} — idling with a heartbeat", defmt::Debug2Format(&e));
+        // Read just the OBCM **header** for the idle camera centre — its bbox, plus the magic/version
+        // validation. Deliberately NOT a full `Reader::new`: that also reads + parses the style table
+        // into a `[Option<Style>; 256]` (a ~2.4 KB `Reader` value plus a same-size on-stack temporary
+        // and a 1.5 KB decode buffer), a frame the 256 KB part's modest stack shouldn't pay just for a
+        // camera centre. The loop's per-frame readers do the full parse where it's needed (and skip a
+        // redraw on a transient build failure), so a structurally-bad map degrades to "no map", never
+        // a fault. The throwaway source is dropped here, releasing its `storage` borrow so the loop can
+        // rebuild a fresh reader each redraw AND reconcile the card (`&mut storage`) between frames.
+        let (cam_lon, cam_lat) = {
+            let Some(init_src) = storage.map_source() else {
+                defmt::error!("SD: no .obcm map in card root — idling with a heartbeat");
                 idle_blink(&mut led).await
+            };
+            match obc_reader::read_header(&init_src) {
+                Ok(h) => {
+                    info!(
+                        "map: streaming from SD; bbox lon[{=i32}..{=i32}] lat[{=i32}..{=i32}]",
+                        h.bbox.min_lon, h.bbox.max_lon, h.bbox.min_lat, h.bbox.max_lat
+                    );
+                    (
+                        ((h.bbox.min_lon as i64 + h.bbox.max_lon as i64) / 2) as i32,
+                        ((h.bbox.min_lat as i64 + h.bbox.max_lat as i64) / 2) as i32,
+                    )
+                }
+                Err(e) => {
+                    defmt::error!("map: not valid OBCM: {} — idling with a heartbeat", defmt::Debug2Format(&e));
+                    idle_blink(&mut led).await
+                }
             }
         };
-        let cam_lon = ((reader.bbox.min_lon as i64 + reader.bbox.max_lon as i64) / 2) as i32;
-        let cam_lat = ((reader.bbox.min_lat as i64 + reader.bbox.max_lat as i64) / 2) as i32;
-        info!(
-            "map: streaming from SD; bbox lon[{=i32}..{=i32}] lat[{=i32}..{=i32}] → camera ({=i32},{=i32})",
-            reader.bbox.min_lon, reader.bbox.max_lon, reader.bbox.min_lat, reader.bbox.max_lat, cam_lon, cam_lat
-        );
 
         // Boot to **Home** (issue #126): the user drives Home → Route menu → Map with the buttons.
         // Built **in place** in `.bss` (`init_idle` writes each field where it sits; the ~74 KB
         // renderer scratch is zeroed in place), never on the stack. The Route menu is filled from the
-        // card's catalog scanned above; selecting an entry opens the Map at that route's start (route
-        // *geometry* streams at N6 — the map plane renders with `route = None` for now).
+        // card's catalog scanned above; selecting an entry opens the Map at that route's start and
+        // (N6, #127) streams its geometry into the render + the map-matcher.
         // SAFETY: sole owner of APP; `init_idle` fully initialises it before the `&mut` below reads it.
         let app: &mut App = unsafe {
             let slot = core::ptr::addr_of_mut!(APP) as *mut App;
@@ -591,14 +801,28 @@ async fn main(_spawner: Spawner) {
 
         // --- two-plane shared state (issue #126), built here (the panel is constructed above) and
         // handed out as `&'static`: the async bus mutex (panel + framebuffer), the blocking
-        // `InputPlane` mutex, and the gesture channel sender. `StaticCell` parks the runtime-built
-        // mutexes in `.bss`; the `&'static mut` they hand back coerces to the shared `&'static` both
-        // planes share. ---
-        static BUS: StaticCell<Mutex<CriticalSectionRawMutex, Display>> = StaticCell::new();
-        let bus: &'static Mutex<CriticalSectionRawMutex, Display> = BUS.init(Mutex::new(Display { panel, fb }));
-        static INPUT_PLANE: StaticCell<BlockingMutex<CriticalSectionRawMutex, RefCell<InputPlane>>> = StaticCell::new();
-        let input_plane: &'static BlockingMutex<CriticalSectionRawMutex, RefCell<InputPlane>> =
-            INPUT_PLANE.init(BlockingMutex::new(RefCell::new(InputPlane::new())));
+        // `InputPlane` mutex, and the gesture channel sender. Parked in `.bss` and written **in
+        // place** (the APP/MAP_CACHE/ROUTE_CACHE pattern) rather than via `StaticCell`: the write is
+        // unconditional, so unlike `StaticCell::init`'s one-shot flag it can't panic "already full"
+        // on a warm reset that left the flag set. Written exactly once, before either plane reads it;
+        // the `&*slot` shared `&'static` is what both planes hold. ---
+        static mut BUS: MaybeUninit<Mutex<CriticalSectionRawMutex, Display>> = MaybeUninit::uninit();
+        // SAFETY: sole writer; the slot is initialised here before the `&'static` is shared with the
+        // input plane, and never written again (single executor builds it, two planes only read it).
+        let bus: &'static Mutex<CriticalSectionRawMutex, Display> = unsafe {
+            let slot = core::ptr::addr_of_mut!(BUS) as *mut Mutex<CriticalSectionRawMutex, Display>;
+            slot.write(Mutex::new(Display { panel, fb }));
+            &*slot
+        };
+        static mut INPUT_PLANE: MaybeUninit<BlockingMutex<CriticalSectionRawMutex, RefCell<InputPlane>>> =
+            MaybeUninit::uninit();
+        // SAFETY: as BUS — sole writer, initialised before shared, never rewritten.
+        let input_plane: &'static BlockingMutex<CriticalSectionRawMutex, RefCell<InputPlane>> = unsafe {
+            let slot = core::ptr::addr_of_mut!(INPUT_PLANE)
+                as *mut BlockingMutex<CriticalSectionRawMutex, RefCell<InputPlane>>;
+            slot.write(BlockingMutex::new(RefCell::new(InputPlane::new())));
+            &*slot
+        };
 
         // The four DK push-buttons (active-low, internal pull-up; polled by `ButtonInput`). User
         // mapping: BTN0 PREV, BTN1 NEXT, BTN3 SELECT, BTN2 BACK — `new(prev, next, select, back)`.
@@ -621,11 +845,56 @@ async fn main(_spawner: Spawner) {
         // (the device-64 gamut the style table is tuned to — see `obc_platform::framebuffer`).
         let color_fn = |c: u16| Rgb565::from(RawU16::new(c));
 
-        // --- map plane (issue #126/#47): drain the gestures the input plane recognised, advance the
-        // visible screens' timed content, and re-render the map only on `dirty.map` (a gesture, a
-        // screen transition, a timed-content tick). A static screen does zero map renders, so the
-        // input plane's bulge pushes are the only bus traffic — the bulge runs at full FPS. LED0
-        // keeps a ~1 Hz heartbeat. ---
+        // Place the decoded-route-geometry cache in `.bss`, built in place (a zeroed
+        // `MaybeUninit::zeroed` → a `.bss` memset, never a stack temporary — like `MAP_CACHE`).
+        // SAFETY: sole owner of ROUTE_CACHE; single map plane → no aliasing.
+        let route_cache: &RouteCache = unsafe {
+            let slot = core::ptr::addr_of_mut!(ROUTE_CACHE) as *mut RouteCache;
+            slot.write(RouteCache::new());
+            &*slot
+        };
+
+        // Sensor sources. Default (`debug-uart`): the host-streamed GPS / altimeter / compass, parsed
+        // by the VCOM tasks into obc-platform's signals — these ZST handles just `try_take` from them
+        // on the app's ~1 Hz fresh-fix contract. Fallback: the `SynthLocation` square loop (walked
+        // from a boot-relative `start`), no altimeter/compass. Same `Sensors` either way, so the app
+        // can't tell. The loop's `now` reads `Instant::now()` directly — the same monotonic base.
+        #[cfg(feature = "debug-uart")]
+        let (mut debug_loc, mut debug_alt, mut debug_compass) = (
+            obc_platform::debug_usb::DebugLocation,
+            obc_platform::debug_usb::DebugAltimeter,
+            obc_platform::debug_usb::DebugCompass,
+        );
+        #[cfg(not(feature = "debug-uart"))]
+        let mut synth = SynthLocation::new(cam_lon, cam_lat, Instant::now());
+
+        // --- map plane (issue #126/#47) + the N6 ride loop (#127): each tick, drain the gestures the
+        // input plane recognised, advance the visible screens' timed content, reconcile the card to
+        // the app's intent (open the selected route's geometry; begin / finalise-to-GPX the ride
+        // log), feed the sensors → `tick` (integrate the fix, map-match, log the track point), then
+        // re-render the map only on `dirty.map`. A static screen does zero map renders, so the input
+        // plane's bulge pushes are the only bus traffic — the bulge runs at full FPS. LED0 keeps a
+        // ~1 Hz heartbeat. ---
+        //
+        // Per-frame ride-loop state (mirrors the STM32 loop):
+        // - `prev_route` re-centres SynthLocation onto a freshly-loaded route's start (debug-uart-off
+        //   only — the VCOM feed streams absolute positions, so it needs no re-centre);
+        // - `prev_active`/`prev_session` gate the SD reconcile on actual change (#73);
+        // - `route_index`/`index_route` cache the active route's chunk index, rebuilt only on a route
+        //   change (#44);
+        // - `pending_map_redraw` re-arms a redraw a transient SD glitch couldn't service (#66);
+        // - `last_telem*` throttle the host telemetry (debug-uart only).
+        #[cfg(not(feature = "debug-uart"))]
+        let mut prev_route: Option<usize> = None;
+        let mut prev_active: Option<usize> = None;
+        let mut prev_session: Option<u32> = None;
+        let mut route_index: Option<RouteIndex> = None;
+        let mut index_route: Option<usize> = None;
+        let mut pending_map_redraw = false;
+        #[cfg(feature = "debug-uart")]
+        let mut last_telem_ms: u32 = 0;
+        #[cfg(feature = "debug-uart")]
+        let mut last_telem = obc_platform::debug_usb::Telemetry::default();
         let mut last_led = 0u32;
         loop {
             let now = Instant::now().as_millis() as u32;
@@ -637,79 +906,244 @@ async fn main(_spawner: Spawner) {
             }
             app.advance_animations(InputClock(now));
 
-            if app.take_dirty().map {
-                // Hold the bus for the whole frame: render into the RGB222 framebuffer, then push every
-                // band, compositing the live hold bulge into each band (the strips clip to the bulge
-                // bands; others are untouched) — so a frame caught mid-pop carries the bulge. Keeping
-                // the framebuffer behind the bus means the input plane never reads a half-rendered
-                // frame, so the bulge backdrop is never torn; the cost is that the bulge can briefly
-                // stick while a big segment repaints (an artifact-free overlay is the priority — a
-                // fluid-but-unlocked framebuffer tore it).
-                let mut disp = bus.lock().await;
-                let Display { panel, fb } = &mut *disp;
-                let t_render = Instant::now();
-                let stats = {
-                    let mut fbdev = FbDevice64::new(&mut fb[..], WIDTH as u32, HEIGHT as u32);
-                    app.render_map(&mut fbdev, &reader, None, WIDTH as f32, HEIGHT as f32, color_fn)
-                };
-                let render_us = t_render.elapsed().as_micros();
-                // Time the push separately — the visible top-to-bottom fill. The common path packs
-                // the RGB222 framebuffer rows **directly** to the panel's 12-bit RGB444 wire format
-                // (no RGB565 intermediate) then SPIM-DMAs them; the split log shows where the on-glass
-                // time goes (the pack vs. the 28.8 ms theoretical SPI bit-time at 32 MHz; issue #126
-                // perf: the old always-on two-hop RGB222->RGB565->RGB444 expand+pack was ~71%).
-                //
-                // BUT while a bulge is actually on screen (a brief hold), take the two-hop path and
-                // composite the bulge into each band — otherwise a map redraw mid-bulge would paint
-                // the bulge region as raw map for the whole ~76 ms push (the input plane only repaints
-                // it a tick later) and the bulge would flicker. Snapshot the flag once: a bulge can't
-                // appear from nothing within one push (it needs ~150 ms of holding first), so this
-                // can't miss the start of one. So the extra conversion only runs when it earns its keep.
-                let bulge_active = input_plane.lock(|cell| cell.borrow().overlay_active());
-                st7789::reset_push_timers();
-                let t_push = Instant::now();
-                let pixels = &**fb;
-                panel.begin_frame();
-                let rows = panel.band_rows();
-                let mut y0 = 0u16;
-                while y0 < HEIGHT {
-                    let h = rows.min(HEIGHT - y0);
-                    let row0 = y0 as usize * WIDTH as usize;
-                    let n = WIDTH as usize * h as usize;
-                    if bulge_active {
-                        panel.flush_band(y0, h, |scratch| {
-                            for (dst, &byte) in scratch.iter_mut().zip(&pixels[row0..]) {
-                                *dst = device64_to_rgb565(byte);
-                            }
-                            input_plane.lock(|cell| {
-                                let mut band = Band::new(scratch, Size::new(WIDTH as u32, HEIGHT as u32), y0, h);
-                                cell.borrow().render_overlay(&mut band, WIDTH as f32, HEIGHT as f32, color_fn);
-                            });
-                        });
-                    } else {
-                        panel.flush_band_rgb222(y0, h, &pixels[row0..row0 + n]);
-                    }
-                    y0 += h;
-                }
-                panel.end_frame();
-                let push_us = t_push.elapsed().as_micros();
-                let (fill_us, pack_us, spi_us) = st7789::push_timers();
-                drop(disp); // release the bus before logging so the input plane can push the bulge
+            // A pending debug `Z` camera-scale command (render benchmark): pin the map to an exact
+            // meters-per-pixel and force one redraw, so a host zoom sweep gets exactly one fresh,
+            // stage-timed frame per setting instead of stepping the encoder's 1.2× detents.
+            #[cfg(feature = "debug-uart")]
+            if let Some(mpp) = obc_platform::debug_usb::take_zoom() {
+                app.set_map_mpp(mpp);
+            }
 
-                defmt::info!(
-                    "map frame: render {=u64} us + push {=u64} us [fill {=u32} + pack {=u32} + spi {=u32}] | lod {=usize} | feat {=usize}/{=usize} | chunks {=usize} | map-cache {=u32} hit / {=u32} miss",
-                    render_us,
-                    push_us,
-                    fill_us,
-                    pack_us,
-                    spi_us,
-                    stats.lod,
-                    stats.features_drawn,
-                    stats.features_tried,
-                    stats.chunks_visited,
-                    stats.map_chunk_hits,
-                    stats.map_chunk_misses
-                );
+            let active = app.activity.active_route;
+            // Re-centre the synthetic GPS onto a freshly-loaded route's start so Follow doesn't yank
+            // the camera off it (debug-uart-off only — the VCOM feed streams absolute positions).
+            #[cfg(not(feature = "debug-uart"))]
+            if active != prev_route {
+                if let Some(r) = active.and_then(|i| app.routes().get(i)) {
+                    synth.recenter(r.start_lon, r.start_lat);
+                }
+                prev_route = active;
+            }
+
+            // Reconcile the card to the app's intent: open/close the active route's geometry and the
+            // ride log (begin on load, finalise-to-GPX on Finish), reading the save name from the
+            // active route. Gated on the same edges `reconcile_*` test internally (a route swap, a
+            // session change, or a pending track action) so the dominant static frame does no per-tick
+            // `String<64>` copy or state re-walk (#73). `has_track_action` is a non-consuming peek; the
+            // actual `take_track_action` stays inside, so the one-shot is drained only when processed.
+            let session = app.activity.session;
+            if active != prev_active || session != prev_session || app.activity.has_track_action() {
+                let action = app.activity.take_track_action();
+                let mut name: heapless::String<64> = heapless::String::new();
+                if let Some(r) = active.and_then(|i| app.routes().get(i)) {
+                    let _ = name.push_str(&r.name);
+                }
+                storage.reconcile_route(active);
+                storage.reconcile_track(action, session, &name);
+                prev_active = active;
+                prev_session = session;
+            }
+
+            // Cache the active route's chunk index across frames: rebuild it (the header + full
+            // chunk-meta walk off SD) only when the route changes, or retry if a prior build failed on
+            // a flaky link. Not gated on rendering — the matcher in `tick` needs the index on every
+            // fresh fix, independent of whether the map redraws.
+            if index_route != active {
+                route_cache.clear(); // a route switch: drop stale slots (the cache keys by chunk index only)
+                match active {
+                    Some(_) => match storage.build_route_index() {
+                        Some(idx) => {
+                            route_index = Some(idx);
+                            index_route = active; // cached — no more rebuilds until the route changes
+                        }
+                        None => {
+                            // Transient SD glitch: leave the key mismatched so every frame retries,
+                            // hiding the route this frame rather than the whole ride.
+                            route_index = None;
+                            index_route = None;
+                            defmt::warn!("SD: route index read failed (flaky link?) — retrying next frame");
+                        }
+                    },
+                    None => {
+                        route_index = None;
+                        index_route = None;
+                    }
+                }
+            }
+            // This frame's route reader = the cached index + a fresh geometry source (both cheap, no
+            // I/O — the source just wraps the open handle). Geometry streams lazily where it's read:
+            // the matcher on a fresh fix, the renderer on a redraw frame. Paired with the session-long
+            // `route_cache` so a redraw of the unchanged route (and the per-fix decode) hit RAM.
+            let route_src = storage.route_source();
+            let route = match (route_index.as_ref(), route_src.as_ref()) {
+                (Some(idx), Some(src)) => Some(RouteReader::new_cached(idx, src, route_cache)),
+                _ => None,
+            };
+            // The ride-log sink, built every tick (it only wraps the open log handle, no I/O), so a
+            // fresh fix is written to the `.gpx` the moment it arrives, at the fix rate, independent of
+            // the render cadence.
+            let mut tsink = storage.track_sink();
+            let track_dyn = tsink.as_mut().map(|t| t as &mut dyn TrackSink);
+
+            // Feed the sensors → integrate the fix → map-match to the route → log the track point.
+            // Default: the VCOM-streamed GPS + altimeter + compass. Fallback: the SynthLocation square
+            // loop, no altimeter/compass. `track_dyn` is consumed either way.
+            #[cfg(feature = "debug-uart")]
+            app.tick(
+                RideClock(now),
+                Sensors {
+                    loc: &mut debug_loc,
+                    altimeter: Some(&mut debug_alt),
+                    compass: Some(&mut debug_compass),
+                    track: track_dyn,
+                },
+                route.as_ref(),
+            );
+            #[cfg(not(feature = "debug-uart"))]
+            app.tick(
+                RideClock(now),
+                Sensors { loc: &mut synth, altimeter: None, compass: None, track: track_dyn },
+                route.as_ref(),
+            );
+
+            // Drain the per-frame dirty signal now that input + tick have run, and fold back a redraw a
+            // previous frame couldn't service on a transient reader-build failure (#66).
+            let mut dirty = app.take_dirty();
+            dirty.map |= pending_map_redraw;
+            pending_map_redraw = false;
+
+            if dirty.map {
+                // Rebuild the streamed `Reader` for this frame against the session-long `MapCache`
+                // (cross-frame chunk reuse). A transient SD read failure makes the build fail; skip the
+                // redraw, keep the last frame on glass, and latch the dirty edge to retry (#66) rather
+                // than show a half-read map.
+                let map_src = storage.map_source();
+                let reader = map_src.as_ref().and_then(|s| Reader::new(s, map_cache).ok());
+                if let Some(reader) = reader {
+                    // Hold the bus for the whole frame: render into the RGB222 framebuffer, then push
+                    // every band, compositing the live hold bulge into each band (the strips clip to the
+                    // bulge bands; others are untouched) — so a frame caught mid-pop carries the bulge.
+                    // Keeping the framebuffer behind the bus means the input plane never reads a
+                    // half-rendered frame, so the bulge backdrop is never torn; the cost is that the
+                    // bulge can briefly stick while a big segment repaints (an artifact-free overlay is
+                    // the priority — a fluid-but-unlocked framebuffer tore it).
+                    let mut disp = bus.lock().await;
+                    let Display { panel, fb } = &mut *disp;
+                    let t_render = Instant::now();
+                    // `render_map_timed` threads `InstantClock` so the returned `RenderStats` carries the
+                    // per-stage `collect/sort/draw` timings the VCOM telemetry reports; `route` streams
+                    // its geometry into the render here (the route line + the user/breadcrumb overlay).
+                    let stats = {
+                        let mut fbdev = FbDevice64::new(&mut fb[..], WIDTH as u32, HEIGHT as u32);
+                        app.render_map_timed(
+                            &mut fbdev,
+                            &reader,
+                            route.as_ref(),
+                            WIDTH as f32,
+                            HEIGHT as f32,
+                            color_fn,
+                            &InstantClock,
+                        )
+                    };
+                    let render_us = t_render.elapsed().as_micros();
+                    // Snapshot this frame's render stats for the host telemetry line — the same numbers
+                    // as the RTT `map frame` log. The nRF reader isn't `TimedSource`-wrapped, so the
+                    // SD/cache I/O folds into `collect_us` (`read_us` stays 0); the bulge is composited
+                    // at push time, not within the render, so `overlay_us` stays 0.
+                    #[cfg(feature = "debug-uart")]
+                    {
+                        let mpp_milli =
+                            (app.state.viewport(WIDTH as f32, HEIGHT as f32).meters_per_pixel() * 1000.0) as u32;
+                        last_telem = obc_platform::debug_usb::Telemetry {
+                            frame_us: render_us as u32,
+                            lod: stats.lod as u8,
+                            feat_drawn: stats.features_drawn as u32,
+                            feat_tried: stats.features_tried as u32,
+                            feat_dropped: stats.features_dropped as u32,
+                            chunks: stats.chunks_visited as u32,
+                            cache_hits: stats.map_chunk_hits,
+                            cache_misses: stats.map_chunk_misses,
+                            sd_reads: stats.map_sd_reads,
+                            bytes_read: stats.map_bytes_read,
+                            collect_us: stats.collect_us,
+                            read_us: 0,
+                            sort_us: stats.sort_us,
+                            draw_us: stats.draw_us,
+                            overlay_us: 0,
+                            mpp_milli,
+                        };
+                    }
+                    // Time the push separately — the visible top-to-bottom fill. The common path packs
+                    // the RGB222 framebuffer rows **directly** to the panel's 12-bit RGB444 wire format
+                    // (no RGB565 intermediate) then SPIM-DMAs them; the split log shows where the
+                    // on-glass time goes (the pack vs. the 28.8 ms theoretical SPI bit-time at 32 MHz;
+                    // #126 perf: the old always-on two-hop RGB222->RGB565->RGB444 expand+pack was ~71%).
+                    //
+                    // BUT while a bulge is actually on screen (a brief hold), take the two-hop path and
+                    // composite the bulge into each band — otherwise a map redraw mid-bulge would paint
+                    // the bulge region as raw map for the whole ~76 ms push (the input plane only
+                    // repaints it a tick later) and the bulge would flicker. Snapshot the flag once: a
+                    // bulge can't appear from nothing within one push (it needs ~150 ms of holding
+                    // first), so the extra conversion only runs when it earns its keep.
+                    let bulge_active = input_plane.lock(|cell| cell.borrow().overlay_active());
+                    st7789::reset_push_timers();
+                    let t_push = Instant::now();
+                    let pixels = &**fb;
+                    panel.begin_frame();
+                    let rows = panel.band_rows();
+                    let mut y0 = 0u16;
+                    while y0 < HEIGHT {
+                        let h = rows.min(HEIGHT - y0);
+                        let row0 = y0 as usize * WIDTH as usize;
+                        let n = WIDTH as usize * h as usize;
+                        if bulge_active {
+                            panel.flush_band(y0, h, |scratch| {
+                                for (dst, &byte) in scratch.iter_mut().zip(&pixels[row0..]) {
+                                    *dst = device64_to_rgb565(byte);
+                                }
+                                input_plane.lock(|cell| {
+                                    let mut band = Band::new(scratch, Size::new(WIDTH as u32, HEIGHT as u32), y0, h);
+                                    cell.borrow().render_overlay(&mut band, WIDTH as f32, HEIGHT as f32, color_fn);
+                                });
+                            });
+                        } else {
+                            panel.flush_band_rgb222(y0, h, &pixels[row0..row0 + n]);
+                        }
+                        y0 += h;
+                    }
+                    panel.end_frame();
+                    let push_us = t_push.elapsed().as_micros();
+                    let (fill_us, pack_us, spi_us) = st7789::push_timers();
+                    drop(disp); // release the bus before logging so the input plane can push the bulge
+
+                    defmt::info!(
+                        "map frame: render {=u64} us + push {=u64} us [fill {=u32} + pack {=u32} + spi {=u32}] | lod {=usize} | feat {=usize}/{=usize} | chunks {=usize} | map-cache {=u32} hit / {=u32} miss",
+                        render_us,
+                        push_us,
+                        fill_us,
+                        pack_us,
+                        spi_us,
+                        stats.lod,
+                        stats.features_drawn,
+                        stats.features_tried,
+                        stats.chunks_visited,
+                        stats.map_chunk_hits,
+                        stats.map_chunk_misses
+                    );
+                } else {
+                    pending_map_redraw = true;
+                    defmt::warn!(
+                        "map: reader build failed this frame (flaky SD?) — kept frame, retrying redraw next frame"
+                    );
+                }
+            }
+
+            // Publish render-stats telemetry host-ward at ~2 Hz (#127): throttled here (not in the TX
+            // task) so the link never floods and the device never stalls on it.
+            #[cfg(feature = "debug-uart")]
+            if now.wrapping_sub(last_telem_ms) >= 500 {
+                last_telem_ms = now;
+                obc_platform::debug_usb::set_telemetry(last_telem);
             }
 
             if now.wrapping_sub(last_led) >= 500 {
