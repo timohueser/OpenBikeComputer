@@ -240,7 +240,8 @@ static mut BAND: [u16; WIDTH as usize * BAND_ROWS] = [0; WIDTH as usize * BAND_R
 //                  (the map path) renders into it; the glass-demo build reserves the budget without
 //                  allocating it, since it draws per band.
 //   - `MapCache`   the streamed-map geometry-chunk cache (3 slots on nrf-mem, ~25 KB).
-//   - `RouteCache` the decoded-route-chunk cache (4 slots on nrf-mem, ~12 KB).
+//   - `RouteCache` the decoded-route-chunk cache (3 slots on nrf-mem, ~9 KB — trimmed 4→3 as a
+//                  256 KB-DK stop-gap to claw ~3 KB back for the deep ride-loop render stack below).
 //   - `RouteIndex` the active route's resident chunk index — the ride loop (#127) holds it across
 //                  frames in the map plane's task future to stream geometry without re-walking it
 //                  (128 chunks on nrf-mem, ~6 KB). Counted here because, unlike the host/STM32
@@ -261,9 +262,10 @@ static mut BAND: [u16; WIDTH as usize * BAND_ROWS] = [0; WIDTH as usize * BAND_R
 /// Total SRAM the nRF54L15 app core sees (`memory.x`: RAM 256K @ 0x2000_0000).
 const NRF_RAM_BYTES: usize = 256 * 1024;
 /// Headroom kept free under the resident statics for the main stack + embassy's executor/task
-/// arenas (statics grow up from the RAM base, the stack down from the top). The resident set lands
-/// ~234 KB, so this 16 KB reserve leaves ~22 KB of true stack room; sized for the render call depth
-/// and revisited once N6 measures the real high-water mark.
+/// arenas (statics grow up from the RAM base, the stack down from the top). This is only the
+/// build-time *floor* the assert enforces — the real stack is the residual `RAM − statics`. After
+/// the RouteCache 4→3 trim the statics end ~221 KB in, leaving ~35 KB of true stack — enough to clear
+/// the ~33 KB deep-render peak described above.
 const STACK_RESERVE: usize = 16 * 1024;
 /// The single RGB222 framebuffer (#N4): one byte per pixel over the 240×320 panel = 75 KB.
 const FB_BYTES: usize = st7789::WIDTH as usize * st7789::HEIGHT as usize;

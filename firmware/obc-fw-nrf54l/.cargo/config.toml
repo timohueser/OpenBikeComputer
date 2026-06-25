@@ -7,7 +7,12 @@ target = "thumbv8m.main-none-eabihf"
 # mis-parse as nested tables). `probe-rs chip list` names this die `nRF54L15` — that is the
 # M33 application core; the FLPR coprocessor is a separate probe-rs target we don't use yet.
 [target.'cfg(all(target_arch = "arm", target_os = "none"))']
-runner = "probe-rs run --chip nRF54L15"
+# `--verify`: read the RRAM back after programming and confirm it matches the ELF. The nRF54L15 is
+# an RRAM part and probe-rs 0.31's program path corrupts the *first* write after a code change often
+# enough to matter — a mangled byte → a deterministic boot HardFault at a random PC (re-flashing the
+# identical bytes fixes it). `--verify` turns that silent corruption into a loud, immediate failure:
+# if it fails, just `cargo run` again. (The old "G2 intermittent first-boot panic" was this all along.)
+runner = "probe-rs run --chip nRF54L15 --verify"
 
 [env]
 DEFMT_LOG = "info"
