@@ -25,6 +25,18 @@ description = "nRF54L15-DK board firmware for OpenBikeComputer — the real hard
 default = []
 glass-demo = []
 
+# Stream fake GPS / altimeter / compass from a host over the **VCOM UART** (issue #127) — the nRF
+# analog of the STM32's `debug-usb`. The nRF54L15 has no USB peripheral, so the debug-sensor /
+# telemetry stream rides the DK's onboard J-Link USB-CDC **VCOM** (UARTE20, TX P1_04 / RX P1_05);
+# defmt logs share the same cable over RTT. Brings up a `BufferedUarte` (interrupt-fed RX ring so a
+# long map render never drops bytes) and feeds `obc-platform`'s transport-agnostic debug codec +
+# fresh-fix sources into the app, replacing the always-on `SynthLocation` stand-in. Off by default
+# — a plain `cargo run` rides the synthetic square-loop GPS (no host needed); enable with
+# `--features debug-uart` to drive the board from a recorded ride via `obc-usb-host --port <VCOM
+# tty>`. Enables the protocol + sources in obc-platform (`debug-usb` is the transport-agnostic
+# handoff gate there; the board crate owns the concrete UARTE driver).
+debug-uart = ["obc-platform/debug-usb"]
+
 [dependencies]
 # embassy HAL for the nRF54L15 app core. `nrf54l15-app-s` selects the secure-app die
 # (the only partition we use — no TF-M split, BLE deferred); `time-driver-grtc` backs
@@ -101,10 +113,9 @@ embassy-embedded-hal = { version = "0.6.0", default-features = false }
 # `String` / `Vec` for the route catalog + GPX 8.3 names the SD `Storage` builds. Same 0.8 the
 # shared crates use, so heapless types unify.
 heapless = "0.8"
-# `StaticCell` for the runtime-initialised `'static` shared state the two planes split (#126): the
-# bus `Mutex<Display>` and the `InputPlane` mutex are built in `main` (the panel is constructed
-# there), then handed to the spawned input task + kept by the map loop as `&'static`.
-static_cell = "2"
+# (The runtime-built `'static` shared state the two planes split — the bus `Mutex<Display>`, the
+# `InputPlane` mutex, the VCOM ring buffers — is parked in `.bss` via an in-place `MaybeUninit` +
+# `ptr::write`, the same warm-reset-safe pattern as APP/MAP_CACHE/ROUTE_CACHE, so no `static_cell`.)
 
 [profile.release]
 opt-level = 3
