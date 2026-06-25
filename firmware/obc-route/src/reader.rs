@@ -20,10 +20,23 @@ pub const HEADER_LEN: usize = 112;
 pub const CHUNK_META_LEN: usize = 44;
 /// Capacity of the inline route-name field, bytes.
 pub const NAME_CAP: usize = 48;
-/// Resident chunk-index capacity. With [`MAX_POINTS_PER_CHUNK`] this caps a route at
-/// ~131 k decimated points (≈ 22 KB of resident index at the cap); a longer route fails
-/// conversion with [`Error::TooLarge`] rather than being silently coarsened.
+/// Resident chunk-index capacity. With [`MAX_POINTS_PER_CHUNK`] the full profile caps a route at
+/// ~131 k decimated points (≈ 24 KB `RouteIndex` at the cap); a longer route fails conversion with
+/// [`Error::TooLarge`] rather than being silently coarsened. The constrained `nrf-mem` profile
+/// (issue #124) trims it to 128 chunks (~33 k points, ~6 KB index). Two reasons it's the L15's
+/// single most important trim, not just one of the balanced ones (#127): the N6 ride loop holds a
+/// `RouteIndex` resident across frames (in the map plane's task future) to stream geometry without
+/// re-walking it — so the index size lands in RAM directly — **and** [`read`](RouteIndex::read)
+/// builds the index/`cum_seg` `Vec`s on the *stack* before returning by value, so on the 256 KB part
+/// (with only ~16 KB of stack under the resident set) a 24 KB index would overflow the stack during
+/// the build. 128 chunks keeps both the resident copy and that build spike to ~6 KB. The packer
+/// (host) keeps the full 512, so a route packed past 128 chunks simply won't load on the L15
+/// firmware (the 512 KB LM20 restores headroom); a typical decimated bikepacking route is far under
+/// 33 k points.
+#[cfg(not(feature = "nrf-mem"))]
 pub const MAX_ROUTE_CHUNKS: usize = 512;
+#[cfg(feature = "nrf-mem")]
+pub const MAX_ROUTE_CHUNKS: usize = 128;
 /// Max points a single chunk may hold (bounds the per-chunk decode buffer).
 pub const MAX_POINTS_PER_CHUNK: usize = 256;
 
