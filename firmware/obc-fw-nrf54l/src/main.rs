@@ -70,16 +70,21 @@
 //!   (unlike embassy-stm32), so the card's DO line is pulled high by the breakout (or an external
 //!   10 kΩ to 3V3). The EYESPI connector also carries a microSD that *shares the display bus*; we
 //!   leave that slot **unpopulated** and use this dedicated SPIM instead (a clean reuse of the
-//!   STM32's standalone SD-over-SPI reader + obc-platform's FatFs adapters). P1_06/P1_07 alias
-//!   VCOM's unused RTS/CTS below — no conflict, since the VCOM link is 2-wire (TX/RX only).
+//!   STM32's standalone SD-over-SPI reader + obc-platform's FatFs adapters). P1_06/P1_07 are the
+//!   VCOM's RTS/CTS pins (below) — we drive them as SD MOSI/MISO instead, which is only safe
+//!   because the VCOM runs **without** hardware flow control (HWFC OFF in the Board Configurator —
+//!   see the crate README); with HWFC on, the J-Link gates host→device bytes on the device's RTS
+//!   (P1_06), so this firmware never asserts it and host→device RX would be dead.
 //!
 //! ## VCOM UARTE — debug-sensor / telemetry stream (#127)
 //!   Instance **SERIAL20 / UARTE20**, the DK's `chosen` console wired to the onboard J-Link's
-//!   USB-CDC VCOM: TX P1_04 | RX P1_05  (RTS P1_06 / CTS P1_07 available, unused).
-//!   The nRF54L15 has **no USB peripheral**, so — unlike the STM32's second USB-CDC port — the
-//!   fake GPS/baro/compass feed and ride telemetry ride this UART; defmt logs ride RTT on the
-//!   same cable. obc-platform's debug-source protocol is transport-agnostic, so it moves over
-//!   from USB unchanged.
+//!   USB-CDC VCOM: TX P1_04 | RX P1_05. We bring it up **2-wire (no RTS/CTS)**, so the DK's VCOM
+//!   **hardware flow control must be disabled** (Board Configurator — see the crate README);
+//!   otherwise device→host telemetry still flows but host→device (the fake-sensor feed + input
+//!   injection) is silently gated off on the un-driven RTS. The nRF54L15 has **no USB peripheral**,
+//!   so — unlike the STM32's second USB-CDC port — the fake GPS/baro/compass feed and ride
+//!   telemetry ride this UART; defmt logs ride RTT on the same cable. obc-platform's debug-source
+//!   protocol is transport-agnostic, so it moves over from USB unchanged.
 //!
 //! ## Spare interrupt for the high-priority InterruptExecutor (#126)
 //!   The two-plane architecture runs input + the overlay on a high-priority `InterruptExecutor`
