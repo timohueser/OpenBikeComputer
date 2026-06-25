@@ -28,14 +28,18 @@ static FILL_US: AtomicU32 = AtomicU32::new(0); // the caller's fill closure (RGB
 static PACK_US: AtomicU32 = AtomicU32::new(0); // RGB565 -> 12-bit RGB444 pack
 static SPI_US: AtomicU32 = AtomicU32::new(0); // set_window (CASET/RASET/RAMWR) + the data DMA
 
-/// Zero the per-stage push timers — call before a frame's band-push loop.
+/// Zero the per-stage push timers — call before a frame's band-push loop. Map-path only (the
+/// `glass-demo` panel bring-up draws a single static frame, so it never reads the push timing).
+#[cfg(not(feature = "glass-demo"))]
 pub fn reset_push_timers() {
     FILL_US.store(0, Ordering::Relaxed);
     PACK_US.store(0, Ordering::Relaxed);
     SPI_US.store(0, Ordering::Relaxed);
 }
 
-/// `(fill_us, pack_us, spi_us)` accumulated since the last [`reset_push_timers`].
+/// `(fill_us, pack_us, spi_us)` accumulated since the last [`reset_push_timers`]. Map-path only
+/// (see [`reset_push_timers`]).
+#[cfg(not(feature = "glass-demo"))]
 pub fn push_timers() -> (u32, u32, u32) {
     (FILL_US.load(Ordering::Relaxed), PACK_US.load(Ordering::Relaxed), SPI_US.load(Ordering::Relaxed))
 }
@@ -258,6 +262,9 @@ where
     /// `RGB222 → RGB565 → RGB444` but ~half the CPU — the two-hop expand+pack was ~71% of the push
     /// (issue #126 perf). No bulge composite here: the input plane repaints the bulge on its own
     /// narrow window push (the generic `flush_window`), so the hot map path stays a single pack.
+    /// Map-path only — the `glass-demo` build has no RGB222 framebuffer and pushes RGB565 bands
+    /// through the generic [`flush_window`](Self::flush_window).
+    #[cfg(not(feature = "glass-demo"))]
     pub fn flush_band_rgb222(&mut self, y0: u16, rows: u16, src: &[u8]) {
         let n = WIDTH as usize * rows as usize;
         let t = Instant::now();
@@ -302,8 +309,10 @@ fn rgb565_to_rgb444(c: u16) -> (u8, u8, u8) {
 /// Pack one RGB222 (device-64) byte `0b00_RR_GG_BB` straight to RGB444 channels: replicate each
 /// 2-bit channel to 4 bits (`c<<2 | c` → levels 0/5/10/15). This is exactly the two-hop
 /// `RGB222 → RGB565 → RGB444` result (both land on those levels), so [`flush_band_rgb222`] produces
-/// byte-identical output to the generic path while doing one conversion instead of two.
+/// byte-identical output to the generic path while doing one conversion instead of two. Used only
+/// by [`flush_band_rgb222`], so it's gated off the `glass-demo` (RGB565-only) build with it.
 #[inline]
+#[cfg(not(feature = "glass-demo"))]
 fn rgb222_to_rgb444(byte: u8) -> (u8, u8, u8) {
     let r = (byte >> 4) & 0x3;
     let g = (byte >> 2) & 0x3;
