@@ -1,10 +1,12 @@
-# LS021B7DD02 panel bring-up — protocol & DK pin spec (STATUS: L0 LANDED)
+# LS021B7DD02 panel bring-up — protocol & DK pin spec (STATUS: L1 LANDED)
 
 The **normative reference** for the Sharp **LS021B7DD02** bring-up on the nRF54L15-DK,
 driven **M33-direct** (no FLPR yet). Epic [#139]; this doc is the deliverable of
 **L0 [#140]** and the spec the firmware of L1–L4 is written against:
 
-- **L1 [#141]** — free-running COM driver (`VCOM`/`VB`/`VA`, ~60 Hz).
+- **L1 [#141]** — free-running COM driver (`VCOM`/`VB`/`VA`, ~60 Hz). ✅ **DONE** (analyzer-
+  verified 60.0 Hz / 50 %) — GPIO square wave on a timer; see [L1 COM driver](#l1-com-driver)
+  below (and the **PWM-doesn't-route** gotcha there).
 - **L2 [#142]** — power-on init → uniform **black** on glass.
 - **L3 [#143]** — full-frame solid colour (white, then R/G/B).
 - **L4 [#144]** — structured test pattern (colour bars + per-channel 4-level gradient).
@@ -21,7 +23,9 @@ the logic analyzer at a slow clock is exactly what L1–L3 do.
 > leaving `VCOM`/`VA`/`VB` static or asymmetric, which causes image-sticking/degradation
 > over time. **Rule: COM must free-run (alternate, ~60 Hz, ~50 % duty) whenever the panel
 > is powered and being driven, even for a static image.** L0 never drives COM at all (it
-> stays `Lo`); the COM driver is L1, and it is *always-on* from L1 onward.
+> stays `Lo`); the COM driver is **L1 (landed)**, a GPIO square wave on a high-priority timer
+> task so it is *always-on* and CPU-independent from L1 onward — see
+> [L1 COM driver](#l1-com-driver).
 
 ## Panel overview
 
@@ -204,5 +208,62 @@ Behaviour, **panel-safe by construction**:
    visible — the `walk_check.py` helper checks the order + the `VDD1` rail-present channel
    (D17). (The earlier 2-signal form validated `BCK`≈744 kHz / `GSP`≈60 Hz on the LA.)
 
-The next stage (L1) replaces this with the always-on COM driver; from L1 onward COM must
-free-run per the rule at the top.
+L1 (below) keeps this same boot-safe hold + `BTN0` gate, then starts the always-on COM
+driver; from L1 onward COM must free-run per the rule at the top.
+
+## L1 COM driver (`obc-fw-nrf54l/src/ls021.rs`)
+
+The first stage that actually drives a panel signal: the **free-running COM waveform**,
+`VCOM`/`VB`/`VA` (issue [#141]). It is the safety-critical, always-on signal — it must
+alternate the whole time the panel is powered, even on a static image, or the
+Memory-in-Pixel cells take a DC bias and stick. Lives in `src/ls021.rs` as the `com_task`
+(L2–L4 grow the gate/source primitives alongside it); the `ls021_bringup` bin brings it up
+on the bench.
+
+> **⚠️ Gotcha — PWM does NOT drive the COM pins on this part.** The textbook approach is a
+> PWM peripheral (zero-CPU, glitch-free, one counter → three channels with `VA` inverted via
+> the polarity bit). It compiles and `SequencePwm` reports the sequence running, but on the
+> analyzer **`PWM20` leaves `P2.07/08/10` dead `Lo`** — the PWM output does not route onto
+> that GPIO port here, even though a plain `gpio::Output` toggles the *same* pins cleanly
+> (L0's signal-walk already proved that). **Lesson for L2+: don't assume a peripheral can
+> reach these pins just because it compiles — `BCK`/`GCK`/source clocks may need GPIO or
+> GPIOTE, not PWM/SPIM-PSEL, on `P2`.** Confirm on the analyzer.
+
+So COM is the **GRTC/timer-backed GPIO square wave** the issue sanctions as the fallback —
+`com_task` flips the three `gpio::Output`s and `await`s half a period:
+
+| Line | Phase |
+|---|---|
+| `VCOM` | the reference square |
+| `VB` | toggled identically to `VCOM` — **in phase** |
+| `VA` | toggled opposite — **exact inverse** (boots `Lo`, raised on the first half-period) |
+
+**Non-blocking.** `com_task` runs on a **high-priority `InterruptExecutor` pended from
+SWI00 (P3)**, so the GRTC wakeup preempts thread-mode and COM never stalls behind a busy
+thread-mode loop. The L1 bin proves it by spinning a blocking CPU busy-loop forever while
+COM keeps toggling. The crossings are three back-to-back register writes (tens of ns apart,
+far below the ~100 µs edge spec) — no meaningful overlap glitch.
+
+**Numbers:** half-period `1 / 60 / 2 ≈ 8333 µs` → **60.0 Hz, 50 % duty**, inside the
+datasheet `f_VCOM` 54–66 Hz / 48–52 % window.
+
+**Drive + load.** Each COM line is a real **56–77 nF** load, so the three are configured
+**high-drive (H0H1)** GPIO (~2.5 mA) to slew inside the ≤100 µs rise/fall. The bench scope
+showed clean edges into the real panel load — **no external buffering needed** (revisit
+this note if a later panel/cable shows rounding).
+
+**Enable model (for L2).** The COM pins boot `Output(Lo)` and stay `Lo` until `com_task` is
+spawned — that *is* the "COM held `Lo` during init" state the power-on sequence needs. L2
+spawns it after the `T4 ≥ 30 µs` wait; the bin auto-starts it after a brief settle window so
+the bench capture is hands-free.
+
+**Verified on the analyzer** (`com_check.py`, capture `VCOM` D16 / `VB` D6 / `VA` D7):
+
+| Check | Result |
+|---|---|
+| Frequency (54–66 Hz) | `VCOM`/`VB`/`VA` all **60.00 Hz** ✓ |
+| Duty (48–52 %) | **50.1 % / 50.1 % / 49.9 %** ✓ |
+| `VB` in phase with `VCOM` | **100 %** of samples agree ✓ |
+| `VA` inverse of `VCOM` | **100 %** of samples disagree ✓ |
+| `VCOM`/`VA` overlap glitch | 0.005 % (LA sampling at crossings) — **glitch-free** ✓ |
+| Toggles through a CPU busy-loop | yes (interrupt executor) ✓ |
