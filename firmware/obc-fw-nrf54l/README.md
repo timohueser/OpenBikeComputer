@@ -51,9 +51,10 @@ cargo run --release --features debug-uart
 # Panel-only bring-up demo (font ladder + 64-colour gamut, no SD, no map):
 cargo run --release --no-default-features --features glass-demo
 
-# LS021B7DD02 panel bring-up bench firmware (epic #139). Currently L1: boot-safe all-Lo
-# hold, then the free-running COM driver auto-starts (VCOM/VB/VA ~60 Hz GPIO square wave on
-# a high-priority timer task). No gate/source pixel data yet. See firmware/docs/ls021-bringup.md:
+# LS021B7DD02 panel bring-up bench firmware (epic #139). Currently L2: boot-safe all-Lo
+# hold, then the datasheet power-on init drives an INTB-framed all-black frame (gate scan +
+# 6-bit source shift, 640 sub-lines × 120 BCK), then the free-running COM driver starts
+# (VCOM/VB/VA ~60 Hz). Analyzer-verified. See firmware/docs/ls021-bringup.md:
 cargo run --release --bin ls021_bringup --features ls021-bringup
 ```
 

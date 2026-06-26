@@ -30,7 +30,8 @@ glass-demo = []
 # time, sharing primitives from `src/ls021.rs`: **L0** (#140) held the panel in its boot-safe
 # all-`Lo` state and walked LA test signals; **L1** (#141) adds the free-running COM driver
 # (`VCOM`/`VB`/`VA` ~60 Hz — a GPIO square wave on a high-priority timer task; PWM20 won't
-# route to the P2 COM pins). No gate/source pixel data yet (L2+). Build with
+# route to the P2 COM pins); **L2** (#142) adds the gate/source primitives (`PanelBus`) and
+# runs the datasheet power-on init → uniform-black frame. Build with
 # `--bin ls021_bringup --features ls021-bringup`. See `firmware/docs/ls021-bringup.md`.
 ls021-bringup = []
 
