@@ -19,7 +19,8 @@
     {
       "title": "Hardware",
       "pages": [
-        { "path": "hardware/index", "title": "Hardware", "soon": true }
+        { "path": "hardware/index", "title": "Hardware", "soon": true },
+        { "path": "hardware/display-protocol", "title": "The display protocol" }
       ]
     },
     {
