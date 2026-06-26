@@ -1,11 +1,12 @@
 //! **LS021B7DD02 panel driver primitives** — M33-direct, pre-FLPR (epic #139).
 //!
 //! Shared building blocks for the `ls021_bringup` bin, grown one bring-up stage at a
-//! time. It holds **L1 ([#141]): the free-running COM driver** ([`com_task`]) and
-//! **L2 ([#142]): the gate-scan / source-shift primitives** ([`PanelBus`]) that run the
-//! datasheet power-on init → all-black frame. L3–L4 grow `PanelBus` with real source data.
-//! See `firmware/docs/ls021-bringup.md` for the normative protocol/timing spec this is
-//! written against.
+//! time. It holds **L1 ([#141]): the free-running COM driver** ([`com_task`]), **L2 ([#142]):
+//! the gate-scan / source-shift primitives** ([`PanelBus`]) that run the datasheet power-on
+//! init → all-black frame, and **L3 ([#143]): full-frame solid colour** ([`PanelBus::fill_solid`])
+//! — the same scan now carrying real RGB222 data (white, then pure R/G/B). L4 grows it into
+//! spatially-varying patterns. See `firmware/docs/ls021-bringup.md` for the normative
+//! protocol/timing spec this is written against.
 //!
 //! ## COM driver ([`com_task`])
 //!
@@ -73,32 +74,59 @@ pub async fn com_task(mut vcom: Output<'static>, mut vb: Output<'static>, mut va
     }
 }
 
-// ───────────────────────────── L2: gate-scan / source-shift ─────────────────────────────
+// ──────────────────────────── L2/L3: gate-scan / source-shift ────────────────────────────
 //
 // The pixel side of the panel: the 6-bit parallel **source** bus (`R0/G0/B0` = odd pixel,
-// `R1/G1/B1` = even pixel + `BSP`/`BCK`) and the **gate** scan (`GSP`/`GCK`/`GEN`), framed
-// by `INTB`. [`PanelBus`] owns these 12 lines and clocks the datasheet power-on init frame:
-// every gate sub-line written **black** (all six data lines `Lo`). See the spec doc's
-// "Horizontal/Vertical timing" + "Power-on" sections; this is the L2 ([#142]) realization.
+// `R1/G1/B1` = even pixel + `BSP`/`BCK`) and the **gate** scan (`GSP`/`GCK`/`GEN`), enveloped
+// by `INTB`. [`PanelBus`] owns these 12 lines and clocks frames. **L2 ([#142])** ran the
+// datasheet power-on init (an all-black frame); **L3 ([#143])** drives the *same* scan with
+// real data: [`PanelBus::fill_solid`] presents a per-channel RGB222 level on every column,
+// MSB plane then LSB plane. See the spec doc's "Horizontal/Vertical timing" + "Power-on".
 //
-// ## Why bit-bang, and why synchronous
+// ## Two rules that make a pixel light correctly
 //
-// A full black frame is **640 sub-lines × 120 `BCK`** ≈ 77k clock edges. Doing that with
-// async `Timer` `.await`s would pay the scheduler cost on every edge (a frame would take
-// many seconds). So the primitives are **synchronous** and busy-wait with
-// [`cortex_m::asm::delay`] — and that is safe here because the init frame runs **once**,
-// while **COM is still held `Lo`** and nothing else needs the CPU (COM only starts, on the
-// interrupt executor, *after* the frame). Blocking thread-mode for the ~0.5 s frame is fine.
+// **Rule 1 — `INTB` high for the whole frame.** The datasheet vertical chart (§6-5) and
+// power-on sequence (§6-5-4) both hold `INTB` **high for the entire duration of *every* frame
+// write** — the power-on "Initial #0" black frame *and* every subsequent image. `INTB` low (the
+// inter-frame "Hold" state) means "no write": the panel keeps its current pixel memory whatever
+// the gate/source scan does. (L2's black init looked right because it *was* `INTB`-framed; the
+// first L3 colour attempt drove a perfect scan with `INTB` low and nothing latched — black held.)
 //
-// ## Why black is the right first scan (and forgiving)
+// **Rule 2 — MSB and LSB are the *same* gate line, selected by `GCK` *level*.** A pixel is
+// **not** two (or three) stacked gate lines. The display has **320 gate lines, one per pixel
+// row** (§6-6, the `L1..L320` map). What §6-6 draws as three stacked bands (MSB top · LSB middle
+// · MSB bottom) is the **area layout *inside one pixel cell***: the MSB block is the top+bottom
+// bands wired together = **2/3 area**, the LSB block is the middle band = **1/3 area**. Both
+// blocks live on the **same** gate line and are written when that line is selected. §6-4 says it
+// outright: "Updates Gate Line 1: First transfer MSB data of 1 line, Second transfer LSB data of
+// 1 line." The *only* thing that routes a latch to the 2/3 block vs the 1/3 block is the **`GCK`
+// level**: the horizontal chart (§6-5-2) holds `GCK` **HIGH while transferring the MSB plane and
+// LOW while transferring the LSB plane**. There is no separate MSB/LSB select pin — `GCK` level
+// is it. So one pixel row is **one `GCK` period**:
 //
-// Black = every subpixel `Lo`, so it exercises the **scan** (does every gate line address?
-// does every column shift?) independently of the **data**. A missed gate row keeps its
-// power-on garbage (an MIP panel powers up with *retained/undefined* pixels, not black), a
-// stuck column shows a stripe — so a genuinely uniform black field is the proof. It is also
-// forgiving of any source-vs-gate **phase** error (everything's `Lo`), which is exactly why
-// it comes before L3 colour: we pin the *timing relationships* down on the analyzer here,
-// then trust them when real data matters.
+//   1. raise `GCK` (this rising edge also **advances** the gate to the row) → shift MSB plane →
+//      `GEN` pulse latches the **2/3-area** cells;
+//   2. lower `GCK` (same gate line, *no* advance) → shift LSB plane → `GEN` pulse latches the
+//      **1/3-area** cells;
+//   3. next row — **one gate advance per pixel row**.
+//
+// > **The bug this replaces.** The old model treated the two planes as *separate gate lines*
+// > (advance between them) *and* fired **both** `GEN` pulses with `GCK` held `Lo`. With `GCK` low
+// > selecting the 1/3 block, both latches hit the **LSB cells** — the 2/3 MSB cells never got
+// > data (dim, only the middle band lit, MSB bands noise). And advancing between the planes put
+// > MSB on line N, LSB on line N+1, so at grey levels every *other* row toggled. All three of the
+// > observed symptoms are this one mistake.
+//
+// ## Frame geometry (datasheet §6-5)
+//
+// `INTB` high → `GSP` start pulse → **320 pixel rows**, each **one `GCK` period** (MSB phase
+// high, LSB phase low, a `GEN` latch in *each*), bracketed by a few dummy gate advances. The
+// vertical chart's ~640 `GCK` are *edges* (320 periods × 2), **not** 640 separate rows; ~648
+// total = 320 periods + a handful of dummy periods. Each sub-line is **124 `BCK`** (120
+// pixel-pairs + 4 flush dummies). That is still ~77k clock edges — far too many for async
+// `Timer` `.await`s (scheduler cost per edge) — so the primitives are **synchronous** busy-waits
+// ([`cortex_m::asm::delay`]). Safe because a fill blocks thread-mode for ~0.6 s while COM
+// free-runs on its own interrupt executor.
 //
 // ## Timing (deliberately slow; analyzer-pinned)
 //
@@ -115,46 +143,79 @@ pub async fn com_task(mut vcom: Output<'static>, mut vb: Output<'static>, mut va
 /// ~3.96 cyc/count → 128/3.96 ≈ 32). All bit-bang delays below are multiples of this.
 const COUNTS_PER_US: u32 = 32;
 
-/// Columns clocked per sub-line: 240 columns ÷ 2 pixels-per-`BCK` = **120 `BCK`**.
+/// Data columns clocked per sub-line: 240 columns ÷ 2 pixels-per-`BCK` = **120**.
 pub const COLS_PER_SUBLINE: u16 = 120;
-/// Sub-lines per frame: **320 rows × {MSB, LSB}** = **640** (every row is written twice).
-pub const SUBLINES_PER_FRAME: u16 = 640;
+/// Dummy/flush `BCK` after the 120 data clocks: the datasheet horizontal chart clocks **124**
+/// `BCK` per line (120 pixel-pairs + 4 trailing dummies that push the last pixels through the
+/// source shift register). Clocking only 120 leaves the right-edge columns unlatched.
+const BCK_DUMMY: u16 = 4;
+/// Total `BCK` per sub-line = **124** (120 data + 4 dummy).
+pub const BCK_PER_SUBLINE: u16 = COLS_PER_SUBLINE + BCK_DUMMY;
+/// Visible pixel rows in a frame. **Each pixel row is ONE gate line that carries *both* area
+/// planes** — the MSB plane in the `GCK`-high phase, the LSB plane in the `GCK`-low phase (see
+/// the module comment, Rule 2). So a frame is **320 gate advances**, one per row — *not* 640.
+pub const ROWS_PER_FRAME: u16 = 320;
+/// Dummy gate advances bracketing the 320 data rows (pipeline fill / "necessary signal" blank).
+/// The vertical chart clocks ~648 `GCK` *edges* ≈ 324 `GCK` *periods* per frame; with one period
+/// per pixel row that is 320 data rows + a few dummy periods at each end. Re-pin on the LA if the
+/// first/last visible row is off by one — the lead count sets where row 0 lands.
+const GATE_DUMMY_LEAD: u16 = 2;
+const GATE_DUMMY_TRAIL: u16 = 6;
 
 /// `BCK` half-period, each phase. ~3 µs → `BCK` ≈ 165 kHz, comfortably under the 0.758 MHz
-/// max and ≫ the 660 ns min hi/lo. (Frame ≈ 640×120×~7 µs ≈ 0.55 s — a fine one-shot.)
+/// max and ≫ the 660 ns min hi/lo. (Frame ≈ 320 rows × 2 sub-lines × ~870 µs ≈ 0.6 s.)
 const BCK_HALF: u32 = 3 * COUNTS_PER_US;
-/// Source-data stable before `BCK` rises (spec ~335 ns; we hold ~1 µs). For black the data
-/// is constant `Lo`, but the gap models where L3 presents per-column RGB222.
+/// Source-data stable before `BCK` rises (spec ~335 ns; we hold ~1 µs). For a solid fill the
+/// data is constant across the sub-line, but the gap models the per-column setup L4 needs.
 const DATA_SETUP: u32 = COUNTS_PER_US;
-/// `GCK`↔`GEN` setup *and* hold (spec ≥16.37 µs → ~17 µs each side of the `GEN` pulse).
+/// `GCK`↔`GEN` setup *and* hold (spec ≥16.37 µs → ~17 µs each side of the `GEN` pulse). On a
+/// data row the long sub-line shift already provides the `GCK`-edge→`GEN` setup; this is the
+/// guaranteed `GEN`→next-`GCK`-edge hold (and a generous floor on the setup).
 const GEN_SETUP_HOLD: u32 = 17 * COUNTS_PER_US;
-/// `GEN` high — the valid-output window (spec ≥24.56 µs → ~25 µs).
+/// `GEN` high — the valid-output window (spec ≥24.56 µs → ~25 µs). Fired once per phase: at
+/// `GCK` HIGH it latches the 2/3 block, at `GCK` LOW the 1/3 block.
 const GEN_HIGH: u32 = 25 * COUNTS_PER_US;
-/// Inter-line `GCK` low gap.
-const GCK_LOW: u32 = 5 * COUNTS_PER_US;
+/// `GCK` high pulse width for a **dummy** advance only. On a *data* row `GCK` instead stays high
+/// for the entire MSB sub-line shift (and low for the entire LSB sub-line), so this just sizes
+/// the empty pipeline-flush advances.
+const GCK_HIGH: u32 = 10 * COUNTS_PER_US;
+/// Settle after a `GCK` level change (advance edge, or the MSB→LSB phase drop) before shifting.
+const GCK_SETTLE: u32 = 5 * COUNTS_PER_US;
+/// Frame-framing setup: `INTB`→`GSP` and `GSP`→first `GCK` (chart `thsINTB`/`thsGSP`); generous.
+const FRAME_SETUP: u32 = 10 * COUNTS_PER_US;
 
 /// The 12 **gate + source** signal lines, owned together so the scan/shift primitives can
 /// clock them. COM (`VCOM`/`VB`/`VA`) is *not* here — it stays separate and free-runs on
 /// [`com_task`]; the bin starts it only after the init frame.
 ///
-/// All 12 boot `Output(Lo)` (the datasheet boot-safe state). L2 only ever drives them to
-/// produce **black** (data lines stay `Lo`); L3/L4 will present real RGB222 in
-/// [`PanelBus::write_subline_black`]'s inner loop.
+/// All 12 boot `Output(Lo)` (the datasheet boot-safe state). The gate lines scan the same
+/// way for every stage; the **data** lines carry black for the L2 init ([`PanelBus::init_black`])
+/// and a real RGB222 level for L3 solid fills ([`PanelBus::fill_solid`]).
 pub struct PanelBus {
     // Gate / frame:
     gsp: Output<'static>,  // gate start pulse (once per frame)
-    gck: Output<'static>,  // gate clock (steps each sub-line)
-    gen: Output<'static>,  // gate output enable (valid-output window)
-    intb: Output<'static>, // init-frame framing (high only during the all-black init)
+    gck: Output<'static>, // gate clock — HIGH = MSB / 2-3-area phase, LOW = LSB / 1-3-area phase; one period per pixel row
+    gen: Output<'static>, // gate output enable — pulsed once per phase (latches the block GCK level selects)
+    intb: Output<'static>, // frame envelope — HIGH for the whole frame write (every frame)
     // Source / shift:
     bsp: Output<'static>, // sub-line start pulse
-    bck: Output<'static>, // source/shift clock (120 per sub-line)
+    bck: Output<'static>, // source/shift clock (120 data + 4 dummy per sub-line)
     r0: Output<'static>,  // odd-pixel R/G/B
     g0: Output<'static>,
     b0: Output<'static>,
     r1: Output<'static>, // even-pixel R/G/B
     g1: Output<'static>,
     b1: Output<'static>,
+}
+
+/// Drive one source data line to a bit (`true` = `Hi` = subpixel shown).
+#[inline]
+fn set(pin: &mut Output<'static>, on: bool) {
+    if on {
+        pin.set_high();
+    } else {
+        pin.set_low();
+    }
 }
 
 impl PanelBus {
@@ -178,23 +239,30 @@ impl PanelBus {
         Self { gsp, gck, gen, intb, bsp, bck, r0, g0, b0, r1, g1, b1 }
     }
 
-    /// Force every source data line `Lo` — the black pixel pair. (L3 replaces this with the
-    /// per-column RGB222 present step.)
-    fn present_black(&mut self) {
-        self.r0.set_low();
-        self.g0.set_low();
-        self.b0.set_low();
-        self.r1.set_low();
-        self.g1.set_low();
-        self.b1.set_low();
+    /// Present one RGB pixel-pair on the source bus. For a uniform fill the **odd**
+    /// (`R0/G0/B0`) and **even** (`R1/G1/B1`) pixels carry the *same* bits — driving both
+    /// proves odd and even columns each fill (no every-other-column striping). Black is just
+    /// `present(false, false, false)`. (L4 will differ the two pixels for spatial patterns.)
+    fn present(&mut self, r: bool, g: bool, b: bool) {
+        set(&mut self.r0, r);
+        set(&mut self.g0, g);
+        set(&mut self.b0, b);
+        set(&mut self.r1, r);
+        set(&mut self.g1, g);
+        set(&mut self.b1, b);
     }
 
-    /// Shift one **black** sub-line: pulse `BSP`, then clock **120 `BCK`** with all six data
-    /// lines `Lo`. `BCK(1)` rises **within** `BSP` high (chart), then `BSP` drops.
-    fn write_subline_black(&mut self) {
-        self.present_black(); // data held Lo for the whole frame; L3 sets data per column here
+    /// Shift one **data** sub-line carrying the given RGB bits on every column: pulse `BSP`,
+    /// then clock **124 `BCK`** (120 data + 4 dummy). `BCK(1)` rises **within** `BSP` high
+    /// (chart), then `BSP` drops. For a solid fill the data is constant across the sub-line, so
+    /// it is presented once up front; the per-column `DATA_SETUP` gap models the setup L4 needs.
+    ///
+    /// The caller has already set `GCK` to the level for this plane (HIGH for MSB, LOW for LSB);
+    /// this routine touches only the source bus, never `GCK`/`GEN`.
+    fn write_data_subline(&mut self, r: bool, g: bool, b: bool) {
+        self.present(r, g, b);
         self.bsp.set_high();
-        for col in 0..COLS_PER_SUBLINE {
+        for col in 0..BCK_PER_SUBLINE {
             cpu_delay(DATA_SETUP); // data stable before BCK rises (spec ~335 ns)
             self.bck.set_high();
             if col == 0 {
@@ -206,44 +274,108 @@ impl PanelBus {
         }
     }
 
-    /// Advance the gate by one sub-line: a `GCK` cycle with a `GEN` valid-output window
-    /// nested inside its high time. On the **first** step of a frame, `GSP` is released here
-    /// so its high overlaps `GCK(1)` high (chart).
-    fn gate_step(&mut self, first_of_frame: bool) {
-        self.gck.set_high();
-        if first_of_frame {
-            self.gsp.set_low(); // GCK(1) high fell within GSP high — now release GSP
-        }
-        cpu_delay(GEN_SETUP_HOLD); // GCK→GEN setup ≥16.37 µs
+    /// Pulse `GEN` to latch the just-shifted source sub-line into the **currently-selected**
+    /// gate line. **The caller sets the `GCK` level first** and that level chooses the target
+    /// block: `GCK` HIGH latches the **2/3-area (MSB)** cells, `GCK` LOW the **1/3-area (LSB)**
+    /// cells. Fired clear of the `GCK` edges (`GCK`↔`GEN` setup/hold ≥16.37 µs — the long data
+    /// shift supplies the setup, the trailing delay supplies the hold).
+    fn gen_pulse(&mut self) {
+        cpu_delay(GEN_SETUP_HOLD); // data / GCK level settled → GEN setup ≥16.37 µs
         self.gen.set_high();
-        cpu_delay(GEN_HIGH); // GEN high ≥24.56 µs
+        cpu_delay(GEN_HIGH); // valid-output window ≥24.56 µs
         self.gen.set_low();
-        cpu_delay(GEN_SETUP_HOLD); // GEN→GCK hold ≥16.37 µs
+        cpu_delay(GEN_SETUP_HOLD); // GEN → next GCK edge hold ≥16.37 µs
+    }
+
+    /// Write **one pixel row** = one gate line carrying both area planes. `msb`/`lsb` are the
+    /// per-channel `(R, G, B)` bits for the 2/3-area and 1/3-area blocks of every column.
+    ///
+    /// One `GCK` period:
+    /// - **MSB phase** — raise `GCK` (the rising edge advances the gate to this row), shift the
+    ///   MSB plane, `gen_pulse` → latches the **2/3-area** cells while `GCK` is HIGH;
+    /// - **LSB phase** — drop `GCK` (same gate line, *not* an advance), shift the LSB plane,
+    ///   `gen_pulse` → latches the **1/3-area** cells while `GCK` is LOW.
+    ///
+    /// The advance to the *next* row is the `GCK` rising edge that opens the next call's MSB
+    /// phase, so there is exactly **one** gate advance per pixel row.
+    fn write_gate_line(&mut self, msb: (bool, bool, bool), lsb: (bool, bool, bool)) {
+        // ── MSB phase: GCK HIGH selects the 2/3-area block; this rising edge advances the gate ──
+        self.gck.set_high();
+        cpu_delay(GCK_SETTLE);
+        self.write_data_subline(msb.0, msb.1, msb.2);
+        self.gen_pulse(); // latch 2/3-area cells — GCK still HIGH
+
+        // ── LSB phase: GCK LOW selects the 1/3-area block; SAME gate line, no advance ──
         self.gck.set_low();
-        cpu_delay(GCK_LOW);
+        cpu_delay(GCK_SETTLE);
+        self.write_data_subline(lsb.0, lsb.1, lsb.2);
+        self.gen_pulse(); // latch 1/3-area cells — GCK now LOW
     }
 
-    /// Run **one full all-black frame**: `GSP` start pulse, then 640 sub-lines, each a
-    /// black source shift + a gate step. The caller frames this with `INTB` high (see
-    /// [`PanelBus::init_black`]). Every row is written twice — even sub-line = the MSB block,
-    /// odd = the LSB block; for black both are identical (all `Lo`), so the loop is uniform,
-    /// but the 640-count (= 320 × 2) is exactly the MSB-then-LSB double-write L3 needs.
-    pub fn frame_black(&mut self) {
-        self.gsp.set_high(); // start pulse: loads the first gate
-        for sub in 0..SUBLINES_PER_FRAME {
-            self.write_subline_black();
-            self.gate_step(sub == 0); // release GSP on the first GCK (GCK(1) ∈ GSP high)
+    /// One **dummy** gate advance: a clean `GCK` period (high→low) with `GEN`/`BCK` idle — the
+    /// pipeline-fill / "necessary signal" blank lines bracketing the 320 data rows. `release_gsp`
+    /// drops `GSP` on the rising edge (used for the very first advance of a frame, so `GSP` high
+    /// overlaps `GCK(1)` per the chart).
+    fn dummy_advance(&mut self, release_gsp: bool) {
+        self.gck.set_high();
+        if release_gsp {
+            self.gsp.set_low(); // GCK(1) rising edge within GSP high — release GSP
         }
-        self.gsp.set_low(); // belt-and-suspenders; already released on sub 0
+        cpu_delay(GCK_HIGH);
+        self.gck.set_low();
+        cpu_delay(GCK_SETTLE);
     }
 
-    /// The datasheet **power-on init**: `INTB`-framed all-black frame (step 2 of the
-    /// sequence). Pulls `INTB` high for the frame and back `Lo` after — clearing pixel
-    /// memory to a known black. COM must still be held `Lo` by the caller throughout; it is
-    /// started only after this returns (+ the `T4 ≥ 30 µs` wait).
+    /// Run **one full solid-colour frame** at the given per-channel RGB222 levels (`0..=3`,
+    /// clamped to the low 2 bits). The datasheet frame envelope:
+    /// 1. **`INTB` high for the whole frame** — *every* frame is framed this way (the power-on
+    ///    "Initial #0" black frame and every image write alike; `INTB` low between frames means
+    ///    "no write"). This is what makes pixels actually latch.
+    /// 2. **`GSP`** start pulse, then **320 pixel rows**, each **one gate line written in one
+    ///    `GCK` period** ([`write_gate_line`]): MSB plane latched into the 2/3-area block while
+    ///    `GCK` is HIGH, then LSB plane into the 1/3-area block while `GCK` is LOW — bracketed by
+    ///    dummy gate advances.
+    ///
+    /// Each channel renders as two area blocks — the **MSB** block (2/3 area) and **LSB** block
+    /// (1/3 area), each 1-bit on/off → 4 levels/channel → 64 colours. A level `l` maps to
+    /// `(msb, lsb) = (l>>1 & 1, l & 1)`: `3`→white/full, `2`→⅔ (MSB on), `1`→⅓ (LSB on),
+    /// `0`→black. (`Hi` = subpixel shown; `R/G/B[0]` = odd pixel, `[1]` = even.)
+    ///
+    /// Blocking busy-wait — fine because COM free-runs on its own interrupt executor and
+    /// preempts this thread-mode fill. The L2 black init is just `fill_solid(0, 0, 0)`.
+    pub fn fill_solid(&mut self, level_r: u8, level_g: u8, level_b: u8) {
+        // 2/3-area (MSB) and 1/3-area (LSB) bit for each channel.
+        let msb = ((level_r >> 1) & 1 != 0, (level_g >> 1) & 1 != 0, (level_b >> 1) & 1 != 0);
+        let lsb = (level_r & 1 != 0, level_g & 1 != 0, level_b & 1 != 0);
+
+        self.intb.set_high(); // frame envelope HIGH for the whole write (every frame, not just init)
+        cpu_delay(FRAME_SETUP); // thsINTB: INTB stable before GSP
+        self.gsp.set_high(); // start pulse: loads the first gate
+        cpu_delay(FRAME_SETUP); // thsGSP: GSP stable before the first GCK
+
+        // Leading dummy gate advances (GEN/BCK idle); GSP releases on the very first GCK edge.
+        for i in 0..GATE_DUMMY_LEAD {
+            self.dummy_advance(i == 0);
+        }
+        // 320 pixel rows — each ONE gate line: MSB phase (2/3 block) then LSB phase (1/3 block),
+        // one gate advance per row.
+        for _ in 0..ROWS_PER_FRAME {
+            self.write_gate_line(msb, lsb);
+        }
+        // Trailing dummy gate advances — the "necessary signal" blank.
+        for _ in 0..GATE_DUMMY_TRAIL {
+            self.dummy_advance(false);
+        }
+
+        self.gsp.set_low(); // belt-and-suspenders; already released on the first leading GCK
+        self.intb.set_low(); // end of frame — panel now holds the image
+    }
+
+    /// The datasheet power-on **Initial #0**: an all-black frame. Identical to any image write
+    /// ([`fill_solid`] raises `INTB` itself) — just black data, run while COM is still held `Lo`
+    /// — so it is simply `fill_solid(0, 0, 0)`. Clears pixel memory to a known black before COM
+    /// starts; the caller starts COM only after this returns (+ the `T4 ≥ 30 µs` wait).
     pub fn init_black(&mut self) {
-        self.intb.set_high();
-        self.frame_black();
-        self.intb.set_low();
+        self.fill_solid(0, 0, 0);
     }
 }
