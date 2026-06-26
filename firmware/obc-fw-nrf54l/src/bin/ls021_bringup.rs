@@ -31,11 +31,12 @@ use embassy_time::Timer;
 use {defmt_rtt as _, panic_probe as _};
 
 // --- LA test-signal tuning (M33 @ 128 MHz → 1 cycle ≈ 7.81 ns) ---
-// `BCK` ~0.75 MHz → ~1333 ns period → ~666 ns (~85 cyc) per half-period. `asm::delay(n)`
-// is ~n cycles; the GPIO writes + loop control add the rest, so this is set a little under
-// 85 and the *measured* frequency is what counts (the whole point of the capture). Re-tune
-// from the first sigrok capture if it lands outside the 0.746–0.758 MHz target.
-const BCK_HALF_DELAY_CYC: u32 = 64;
+// `BCK` ~0.75 MHz → ~1333 ns period → ~666 ns (~85 cyc) per half-period. Calibrated against
+// the RP2040 logic analyzer (two points: n=64→208 kHz, n=16→545 kHz) the per-half-period cost
+// is ≈ 54 + 3.96·n cycles (`asm::delay(n)` ≈ 3.96 cyc/count on this M33 @128 MHz, ~54 cyc fixed
+// for the GPIO writes + loop). n = 8 → ~85 cyc → ~0.75 MHz; GSP then follows at ~60 Hz via the
+// fixed divider below.
+const BCK_HALF_DELAY_CYC: u32 = 8;
 // One loop iteration = one full `BCK` period (~1.333 µs). `GSP` ~60 Hz → 8.33 ms
 // half-period → ~6250 `BCK` periods between `GSP` edges. `LED0` ~0.5 s heartbeat →
 // ~375000 `BCK` periods between toggles.
