@@ -218,6 +218,16 @@ fn set(pin: &mut Output<'static>, on: bool) {
     }
 }
 
+/// Split an RGB222 `(r, g, b)` level triple into the per-channel bits of one area plane: the
+/// **MSB** plane is the 2/3-area block bit (`l >> 1`), the **LSB** plane the 1/3-area bit
+/// (`l & 1`). Used by the spatial [`PanelBus::fill_with`] path (uniform [`PanelBus::fill_solid`]
+/// inlines the same split).
+#[inline]
+fn plane_bits(level: (u8, u8, u8), msb: bool) -> (bool, bool, bool) {
+    let bit = |l: u8| if msb { (l >> 1) & 1 != 0 } else { l & 1 != 0 };
+    (bit(level.0), bit(level.1), bit(level.2))
+}
+
 impl PanelBus {
     /// Take the 12 gate/source lines (already configured `Output(Lo)` by the caller). Pin
     /// order matches the L0 harness map in `firmware/docs/ls021-bringup.md`.
@@ -377,5 +387,72 @@ impl PanelBus {
     /// starts; the caller starts COM only after this returns (+ the `T4 ≥ 30 µs` wait).
     pub fn init_black(&mut self) {
         self.fill_solid(0, 0, 0);
+    }
+
+    /// Shift one sub-line of one area `plane` (MSB/LSB) where **each column's** RGB222 level comes
+    /// from `color(x, y)`. The `col`-th `BCK` clocks a pixel *pair*: column `2*col` on the odd
+    /// lines (`R0/G0/B0`), `2*col+1` on the even lines (`R1/G1/B1`). The 4 trailing dummy `BCK`
+    /// present black. Same `BSP`/`BCK` timing as [`write_data_subline`] — only the data is per
+    /// column instead of uniform (this is the L4 spatial-pattern path).
+    fn shift_subline_with<F: Fn(u16, u16) -> (u8, u8, u8)>(&mut self, y: u16, msb: bool, color: &F) {
+        self.bsp.set_high();
+        for col in 0..BCK_PER_SUBLINE {
+            if col < COLS_PER_SUBLINE {
+                let (ro, go, bo) = plane_bits(color(2 * col, y), msb);
+                let (re, ge, be) = plane_bits(color(2 * col + 1, y), msb);
+                set(&mut self.r0, ro);
+                set(&mut self.g0, go);
+                set(&mut self.b0, bo);
+                set(&mut self.r1, re);
+                set(&mut self.g1, ge);
+                set(&mut self.b1, be);
+            } else {
+                self.present(false, false, false); // trailing dummy columns → black
+            }
+            cpu_delay(DATA_SETUP);
+            self.bck.set_high();
+            if col == 0 {
+                self.bsp.set_low(); // BCK(1) high fell within BSP high — release BSP
+            }
+            cpu_delay(BCK_HALF);
+            self.bck.set_low();
+            cpu_delay(BCK_HALF);
+        }
+    }
+
+    /// Like [`write_gate_line`] but per-column: write row `y` (one gate line, both area planes)
+    /// pulling each pixel's level from `color(x, y)`. MSB plane in the `GCK`-high phase (2/3-area
+    /// block), LSB plane in the `GCK`-low phase (1/3-area block).
+    fn write_gate_line_with<F: Fn(u16, u16) -> (u8, u8, u8)>(&mut self, y: u16, color: &F) {
+        self.gck.set_high();
+        cpu_delay(GCK_SETTLE);
+        self.shift_subline_with(y, true, color); // MSB → 2/3 block, GCK HIGH
+        self.gen_pulse();
+        self.gck.set_low();
+        cpu_delay(GCK_SETTLE);
+        self.shift_subline_with(y, false, color); // LSB → 1/3 block, GCK LOW
+        self.gen_pulse();
+    }
+
+    /// Like [`fill_solid`] but **spatial**: every pixel's RGB222 level comes from `color(x, y)`
+    /// (`x` = `0..240` column, `y` = `0..320` row). Same `INTB`/`GSP`/dummy frame envelope and
+    /// `GCK`-level plane select — only the per-column data differs. This is the L4 path; e.g. a
+    /// full 64-colour palette is `fill_with(|x, y| …)`.
+    pub fn fill_with<F: Fn(u16, u16) -> (u8, u8, u8)>(&mut self, color: F) {
+        self.intb.set_high();
+        cpu_delay(FRAME_SETUP);
+        self.gsp.set_high();
+        cpu_delay(FRAME_SETUP);
+        for i in 0..GATE_DUMMY_LEAD {
+            self.dummy_advance(i == 0);
+        }
+        for y in 0..ROWS_PER_FRAME {
+            self.write_gate_line_with(y, &color);
+        }
+        for _ in 0..GATE_DUMMY_TRAIL {
+            self.dummy_advance(false);
+        }
+        self.gsp.set_low();
+        self.intb.set_low();
     }
 }
