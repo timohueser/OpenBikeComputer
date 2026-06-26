@@ -40,27 +40,32 @@ the logic analyzer at a slow clock is exactly what L1–L3 do.
 
 ## Pinout (21-pin FPC) + DK pin map
 
-21-pin FPC: 15 signals to drive + 2 rails + GND (+ NC). The **DK pin** column is the L0
-proposal, grounded in the nRF54L15-DK connector table; the **FPC #** column is left to
-confirm against the datasheet pin-assignment page and the breakout silkscreen during the
-L0 continuity check — fill it in there.
+21-pin FPC: 15 signals to drive + 2 rails + GND (NC: pins 2, 19, 21). **Verified on the
+bench** with the `ls021_bringup` signal-walk (every DK pin lit up on its expected Pico
+channel) + a meter on the rails. The harness wires each net **DK pin → panel pad → Pico LA
+channel**, so any signal can be probed live on the analyzer; the table is ordered by Pico
+channel (= the walk order). FPC pin numbers are from datasheet LCP-0620032F.
 
-| Group | Signal | Dir | FPC # | DK pin | Notes |
-|---|---|---|---|---|---|
-| Source | `BCK` | in | _tbd_ | **P2.06** | source/shift clock ~0.75 MHz; P2 MCU-fast |
-| Source data (odd) | `R0` `G0` `B0` | in | _tbd_ | **P2.00 P2.02 P2.04** | odd-column pixel |
-| Source data (even) | `R1` `G1` `B1` | in | _tbd_ | **P2.01 P2.03 P2.05** | even-column pixel |
-| Source | `BSP` | in | _tbd_ | **P1.07** | sub-line start pulse (UART1_CTS — free, HWFC off) |
-| Gate | `GSP` | in | _tbd_ | **P1.11** | frame/gate start pulse (free P1) |
-| Gate | `GCK` | in | _tbd_ | **P1.12** | gate clock, steps sub-lines (free P1) |
-| Gate | `GEN` | in | _tbd_ | **P1.04** | gate output enable (UART1_TXD — device-driven, safe) |
-| Init | `INTB` | in | _tbd_ | **P1.06** | all-black init framing (UART1_RTS — free, HWFC off) |
-| COM | `VCOM` | in | _tbd_ | **P2.07** | common; in-phase with `VB` |
-| COM | `VB` | in | _tbd_ | **P2.08** | COM, in-phase with `VCOM` (may strap to `VCOM`) |
-| COM | `VA` | in | _tbd_ | **P2.10** | COM, **inverse** phase |
-| Power | `VDD2` | — | _tbd_ | **DK 5 V / VBUS** | 5.0 V (4.85–5.15) gate driver |
-| Power | `VDD1` | — | _tbd_ | **DK VDDM 3.3 V** | 3.2 V (3.1–3.3) binary driver + pixel memory |
-| Power | `VSS` | — | _tbd_ | **GND** | |
+| Pico ch | Signal | DK pin | FPC # | Notes |
+|---|---|---|---|---|
+| D2 (GP2) | `GSP` | **P1.11** | 3 | gate start pulse (free P1) |
+| D3 (GP3) | `GCK` | **P1.12** | 4 | gate clock, steps sub-lines (free P1) |
+| D4 (GP4) | `GEN` | **P1.04** | 5 | gate output enable (UART1_TXD — device-driven, safe) |
+| D5 (GP5) | `INTB` | **P1.06** | 6 | all-black init framing (UART1_RTS — free, HWFC off) |
+| D6 (GP6) | `VB` | **P2.08** | 7 | COM, in-phase with `VCOM` (may strap to `VCOM`) |
+| D7 (GP7) | `VA` | **P2.10** | 8 | COM, **inverse** phase |
+| D8 (GP8) | `BSP` | **P1.07** | 11 | sub-line start pulse (UART1_CTS — free, HWFC off) |
+| D9 (GP9) | `BCK` | **P2.06** | 12 | source/shift clock ~0.75 MHz; P2 trace pin (fast) |
+| D10 (GP10) | `R0` | **P2.00** | 13 | odd-column R (freed ext-flash bus) |
+| D11 (GP11) | `R1` | **P2.01** | 14 | even-column R |
+| D12 (GP12) | `G0` | **P2.02** | 15 | odd-column G |
+| D13 (GP13) | `G1` | **P2.03** | 16 | even-column G |
+| D14 (GP14) | `B0` | **P2.04** | 17 | odd-column B |
+| D15 (GP15) | `B1` | **P2.05** | 18 | even-column B |
+| D16 (GP16) | `VCOM` | **P2.07** | 20 | common; in-phase with `VB` |
+| D17 (GP17) | `VDD1` 3.3 V | DK **VDDM 3.3 V** | 9 | binary driver + pixel memory; reads constant HIGH = rail present |
+| meter only | `VDD2` 5 V | DK **5 V / VBUS** | 1 | gate driver — ⛔ **never to the Pico** (5 V) |
+| Pico GND | `VSS` | DK **GND** | 10 | common ground: DK ↔ Pico ↔ panel |
 
 ### DK pin-allocation rationale & cautions
 
@@ -155,18 +160,23 @@ The rig we trust for L1–L4: an **RP2040 flashed with sigrok-pico**, driven by
 **PulseView** optional for eyeballing. Our signals are sub-MHz, so a comfortable
 **~8–10 MHz** sample rate resolves `BCK` edges (~10× oversample) and everything slower.
 
-**Channel-grouping plan** (the simple LA firmwares expose ~8 channels; we have ~14 lines
-to watch, so capture in two passes):
+**Channel plan:** the sigrok-pico **baseline** firmware exposes **21 digital channels**
+(`D2–D22` = Pico `GP2–GP22`), enough to watch all 15 signals + the `VDD1` rail in one
+capture — the harness map (above) assigns `D2..D16` to the signals and `D17` to `VDD1`.
 
-1. **Clocks + control first:** `BCK`, `BSP`, `GSP`, `GCK`, `GEN`, `INTB` (+ a COM line at
-   L1). This is the protocol skeleton — phase/order/timing.
-2. **Data lines next:** `R0 R1 G0 G1 B0 B1` — pixel content, once the skeleton checks out.
+> **Tooling note (macOS):** real `sigrok-cli`/PulseView is awkward here — Homebrew's stable
+> libsigrok lacks the `raspberrypi-pico` driver and the HEAD build needs a newer Xcode than
+> is installed. Captures are driven with **pysigrok** (`pysigrok-cli`, pure-Python; its
+> 0.3.1 Pico driver needs a one-line patch for the v2 firmware). `-O srzip -o foo.sr`
+> writes a session file stable PulseView can open for eyeballing. (Output formats are
+> `bits` + `srzip`; the `measure.py` / `walk_check.py` helpers parse `bits`.)
 
-Example capture (sub-MHz, two channels, CSV to stdout):
+Example capture (all 15 signals + rail, bits to stdout; min sample rate is 5 kHz):
 
 ```sh
-sigrok-cli --driver sigrok-pico:conn=/dev/tty.usbmodemXXXX \
-  --channels D0=BCK,D1=GSP --config samplerate=8m --samples 2000000 -O csv
+pysigrok-cli -d "raspberrypi-pico:conn=/dev/cu.usbmodemXXXX" \
+  -C D2,D3,D4,D5,D6,D7,D8,D9,D10,D11,D12,D13,D14,D15,D16,D17 \
+  -c samplerate=10000 --samples 100000 -O bits
 ```
 
 ## L0 bench firmware (`obc-fw-nrf54l`, `ls021_bringup` bin)
@@ -184,12 +194,15 @@ Behaviour, **panel-safe by construction**:
    pins `Output(Lo)`** — the datasheet boot condition. Logs the safe-state prompt over
    RTT, blinks `LED0`, and **waits for `BTN0`**. This is the quiescent window to meter
    `VDD1`/`VDD2` and idle current with every input `Lo`.
-2. **`BTN0` → LA test.** A cycle-counted busy-loop toggles **two logic lines only** —
-   `BCK` (P2.06) at ~0.75 MHz and `GSP` (P1.11) at ~60 Hz — with the other 13 pins held
-   `Lo`. **COM is never toggled**, so there is no DC bias and no pixel latch even with the
-   panel plugged in. The two pins are intentionally chosen to validate one fast P2 pin +
-   one P1 control pin (i.e. both channel groups). Frequencies are approximate by design —
-   the LA *measures* the real values; the goal is "sigrok reads both cleanly."
+2. **`BTN0` → signal walk.** Pulses **one line at a time** across all 15 signals in the
+   harness order (`GSP GCK GEN INTB VB VA BSP BCK R0 R1 G0 G1 B0 B1 VCOM` → Pico D2..D16),
+   the other 14 held `Lo`. `BCK` is pulsed at its real ~0.75 MHz (LA-calibrated busy-loop:
+   `asm::delay` ≈ 3.96 cyc/count on this M33 @128 MHz); the rest blink at ~12 Hz. Because
+   only one line moves at a time and COM lines are pulsed only briefly, there is **no
+   sustained DC bias** even with the panel plugged in. The analyzer sees each
+   DK→Pico→panel mapping light up in its own slot, so a swap / open / short is immediately
+   visible — the `walk_check.py` helper checks the order + the `VDD1` rail-present channel
+   (D17). (The earlier 2-signal form validated `BCK`≈744 kHz / `GSP`≈60 Hz on the LA.)
 
 The next stage (L1) replaces this with the always-on COM driver; from L1 onward COM must
 free-run per the rule at the top.
