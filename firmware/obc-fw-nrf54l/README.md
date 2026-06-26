@@ -56,7 +56,24 @@ cargo run --release --no-default-features --features glass-demo
 # 6-bit source shift, 640 sub-lines × 120 BCK), then the free-running COM driver starts
 # (VCOM/VB/VA ~60 Hz). Analyzer-verified. See firmware/docs/ls021-bringup.md:
 cargo run --release --bin ls021_bringup --features ls021-bringup
+
+# LS021 FLPR backend bring-up (epic #149). F0: the M33 boots the FLPR (VPR RISC-V
+# coprocessor), which blinks LED0 (P2.09) + answers a shared-RAM handshake logged over RTT.
+# Needs a RISC-V gcc for the C blob (see the toolchain note below). See firmware/docs/ls021-flpr.md:
+cargo run --release --bin ls021_flpr_bringup --features ls021-flpr
 ```
+
+### FLPR toolchain (only for the `ls021-flpr` build)
+
+The FLPR bring-up cross-compiles a tiny freestanding C blob for the RISC-V coprocessor, so it
+needs an `rv32emc`-capable GNU gcc — install once:
+
+```sh
+brew install riscv64-elf-gcc        # or set RISCV_GCC=<path> to an xPack / Zephyr-SDK toolchain
+```
+
+It's only needed for `--features ls021-flpr`; every other build (the default map firmware, the
+`glass-demo` and `ls021-bringup` bins) needs no RISC-V toolchain.
 
 If `cargo run` prompts to pick a probe (e.g. another ST-LINK is attached), pass
 `--probe <vid:pid:serial>` for the J-Link.
