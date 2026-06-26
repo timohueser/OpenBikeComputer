@@ -1,4 +1,4 @@
-# LS021B7DD02 panel bring-up — protocol & DK pin spec (STATUS: L1 LANDED)
+# LS021B7DD02 panel bring-up — protocol & DK pin spec (STATUS: L2 LANDED)
 
 The **normative reference** for the Sharp **LS021B7DD02** bring-up on the nRF54L15-DK,
 driven **M33-direct** (no FLPR yet). Epic [#139]; this doc is the deliverable of
@@ -7,7 +7,10 @@ driven **M33-direct** (no FLPR yet). Epic [#139]; this doc is the deliverable of
 - **L1 [#141]** — free-running COM driver (`VCOM`/`VB`/`VA`, ~60 Hz). ✅ **DONE** (analyzer-
   verified 60.0 Hz / 50 %) — GPIO square wave on a timer; see [L1 COM driver](#l1-com-driver)
   below (and the **PWM-doesn't-route** gotcha there).
-- **L2 [#142]** — power-on init → uniform **black** on glass.
+- **L2 [#142]** — power-on init → uniform **black** on glass. ✅ **DONE** (analyzer-verified:
+  GSP 1 pulse, **GCK 640 sub-lines**, GEN per line, **120 BCK/sub-line**, all data `Lo`) —
+  gate-scan + source-shift primitives ([`PanelBus`](#l2-init--all-black-frame)) run the
+  datasheet power-on sequence.
 - **L3 [#143]** — full-frame solid colour (white, then R/G/B).
 - **L4 [#144]** — structured test pattern (colour bars + per-channel 4-level gradient).
 
@@ -267,3 +270,87 @@ the bench capture is hands-free.
 | `VA` inverse of `VCOM` | **100 %** of samples disagree ✓ |
 | `VCOM`/`VA` overlap glitch | 0.005 % (LA sampling at crossings) — **glitch-free** ✓ |
 | Toggles through a CPU busy-loop | yes (interrupt executor) ✓ |
+
+## L2 init / all-black frame (`obc-fw-nrf54l/src/ls021.rs` — `PanelBus`)
+
+The first stage that drives **pixels**: the gate scan (`GSP`/`GCK`/`GEN`) and the 6-bit
+source shift (`BSP`/`BCK` + `R0/G0/B0`,`R1/G1/B1`), framed by `INTB`, run the datasheet
+power-on init (issue [#142]). The mandatory init step writes the whole screen **black**, so
+that is what L2 produces — and "black" is the *proof*, not the goal: a Memory-in-Pixel panel
+powers up with **retained / undefined** content, so a genuinely **uniform** black field is
+evidence that every gate line addressed and every column shifted (a missed row/column would
+leave a power-on-garbage streak). Black is also forgiving of any source-vs-gate *phase*
+error — every line is `Lo` — which is exactly why it is the right *first* scan test: we pin
+the timing **relationships** down on the analyzer here, then trust them for L3 colour.
+
+### Primitives (`PanelBus`)
+
+`PanelBus` owns the **12 gate/source/`INTB`** lines (COM stays separate on `com_task`).
+All are **synchronous, busy-wait** bit-bang (one black frame is ~77k edges; async `Timer`
+`.await`s would pay the scheduler cost per edge). That is safe because the init frame runs
+**once, while COM is held `Lo`** and nothing else needs the CPU — COM is started, on the
+interrupt executor, only *after* the frame + the `T4 ≥ 30 µs` wait.
+
+- `write_subline_black` — pulse `BSP`, then clock **120 `BCK`** with all six data lines
+  `Lo`; `BCK(1)` rises **within** `BSP` high, then `BSP` drops. (L3 slots per-column RGB222
+  into this same loop.)
+- `gate_step` — one `GCK` cycle with a nested `GEN` valid-output window (`GCK→GEN`
+  setup/hold, then `GEN` high, then hold). On the first step of a frame, `GSP` is released
+  here so its high overlaps `GCK(1)`.
+- `frame_black` — `GSP` start pulse, then **640 sub-lines** (320 rows × {MSB, LSB}); each is
+  a black source shift + a gate step. For black the MSB and LSB sub-lines are identical, so
+  the loop is uniform, but the 640-count *is* the MSB-then-LSB double-write L3 needs.
+- `init_black` — wraps `frame_black` in `INTB` high → low (the datasheet init framing).
+
+**Ordering** is *shift the source sub-line, then step the gate* — chart-read; bit-bang slow
+and confirm on the analyzer (black masks any phase error, so the on-glass result is
+unaffected while we pin it).
+
+### Timing (deliberately slow; speed is a later, FLPR concern)
+
+Every edge is bit-banged **well under** the 0.758 MHz `BCK` max so the analyzer resolves it.
+Delays are `asm::delay` counts, **L0-LA-calibrated** (~3.96 cyc/count @128 MHz → ~32/µs).
+Realized: `BCK` ≈ 165 kHz (3 µs hi / ~5 µs lo), `GEN` 25 µs hi with ~17 µs `GCK↔GEN`
+setup/hold, `GCK` ~101 µs hi. **The whole init frame takes ~726 ms** at this rate (vs the
+datasheet's ~53.67 ms at production speed) — a fine one-shot, with COM held `Lo` throughout.
+
+### Verified on the analyzer
+
+Two captures (pysigrok + the RP2040 rig) with **contiguous** channels — `init_check.py`
+parses `-O bits` and asserts:
+
+| Capture | Check | Result |
+|---|---|---|
+| Frame (200 kHz) | `GSP` start pulses | **1**, ~1030 µs, `GCK(1)` within `GSP` hi ✓ |
+| Frame | `GCK` sub-line steps | **640** (= 320 × MSB/LSB) ✓ |
+| Frame | `GEN` per `GCK`, hi | **640**, **25 µs** (≥24.56) ✓ |
+| Frame | `INTB` init framing | single span **726 ms**, `Lo` before/after ✓ |
+| Frame | `VB`/`VA` during init | **`Lo`** through the frame, 60 Hz only *after* — COM-held-`Lo` ✓ |
+| Zoom (8 MHz) | `BCK` per sub-line | **120** (exact), `BCK(1)` within `BSP` hi ✓ |
+| Zoom | `BCK` hi / lo | median **3.0 / 5.5 µs** (≥660 ns) ✓ |
+| Both | source data lines | **flat `Lo`** = black ✓ |
+
+> **⚠️ LA gotcha (for L3/L4 captures) — capture a CONTIGUOUS `Dn` range.** The macOS
+> pysigrok path runs the **v2** sigrok-pico firmware, which packs *enabled* channels
+> densely; the 0.3.1 driver's remap instead assumes disabled in-between channels occupy
+> placeholder bits, so **any gap in the `-C` set silently scrambles channel↔signal labels**
+> (we saw `BCK` read as dead `Lo`, and data lines as wild noise, until the range was made
+> contiguous). Always enable `D2..Dn` with no holes — a few unused channels are harmless;
+> `one_to_one` then holds and the mapping is exact. (Same lesson family as L1's *PWM doesn't
+> route to the COM pins* — confirm on the analyzer, don't assume.)
+
+### On glass ✅
+
+Power-on garbage (the panel boots to **retained/undefined colour noise**, not black) →
+a clean **uniform black field that holds** — no stuck rows/columns, stable under the ~60 Hz
+COM. Verified by eye (the bench webcam was offline).
+
+> **⚠️ Bring-up gotcha — VDD2 is the rail the analyzer can't see; meter it first.** First
+> light showed persistent colour noise with **no visible black** even though every logic
+> waveform was analyzer-perfect — because **`VDD2` (the 5 V gate-driver rail) was loose**.
+> The gate clocks (`GSP`/`GCK`/`GEN`) toggle cleanly at the logic pins, but with the gate
+> driver **unpowered no row is ever selected**, so the source data is never written and the
+> panel just holds its power-up garbage. `VDD2` is 5 V and **never goes to the Pico**, so it
+> is structurally invisible to the LA (only `VDD1` is on D17). **Lesson: if the scan looks
+> perfect on the analyzer but the glass stays garbage, meter `VDD2` before touching the
+> firmware.** Reseating it gave instant, persistent black.
