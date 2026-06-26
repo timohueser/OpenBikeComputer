@@ -50,6 +50,10 @@ cargo run --release --features debug-uart
 
 # Panel-only bring-up demo (font ladder + 64-colour gamut, no SD, no map):
 cargo run --release --no-default-features --features glass-demo
+
+# LS021B7DD02 panel bring-up L0 bench firmware (logic-analyzer test signals + boot-safe
+# all-Lo hold; no panel data, no COM drive). See firmware/docs/ls021-bringup.md:
+cargo run --release --bin ls021_bringup --features ls021-bringup
 ```
 
 If `cargo run` prompts to pick a probe (e.g. another ST-LINK is attached), pass
