@@ -51,8 +51,9 @@ cargo run --release --features debug-uart
 # Panel-only bring-up demo (font ladder + 64-colour gamut, no SD, no map):
 cargo run --release --no-default-features --features glass-demo
 
-# LS021B7DD02 panel bring-up L0 bench firmware (logic-analyzer test signals + boot-safe
-# all-Lo hold; no panel data, no COM drive). See firmware/docs/ls021-bringup.md:
+# LS021B7DD02 panel bring-up bench firmware (epic #139). Currently L1: boot-safe all-Lo
+# hold, then the free-running COM driver auto-starts (VCOM/VB/VA ~60 Hz GPIO square wave on
+# a high-priority timer task). No gate/source pixel data yet. See firmware/docs/ls021-bringup.md:
 cargo run --release --bin ls021_bringup --features ls021-bringup
 ```
 

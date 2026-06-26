@@ -25,10 +25,12 @@ description = "nRF54L15-DK board firmware for OpenBikeComputer — the real hard
 default = []
 glass-demo = []
 
-# `ls021-bringup` is the **LS021 panel bring-up L0** bench firmware (epic #139 / issue #140) — a
-# standalone `[[bin]]` (below), *not* a mode of the map/ride `main.rs`. It holds the LS021B7DD02 in
-# its boot-safe all-`Lo` state and emits two known square waves (BCK ~0.75 MHz, GSP ~60 Hz) to
-# validate the RP2040 logic analyzer before L1–L4. No panel data, no COM drive. Build with
+# `ls021-bringup` is the **LS021 panel bring-up** bench firmware (epic #139) — a standalone
+# `[[bin]]` (below), *not* a mode of the map/ride `main.rs`. It evolves one bring-up stage at a
+# time, sharing primitives from `src/ls021.rs`: **L0** (#140) held the panel in its boot-safe
+# all-`Lo` state and walked LA test signals; **L1** (#141) adds the free-running COM driver
+# (`VCOM`/`VB`/`VA` ~60 Hz — a GPIO square wave on a high-priority timer task; PWM20 won't
+# route to the P2 COM pins). No gate/source pixel data yet (L2+). Build with
 # `--bin ls021_bringup --features ls021-bringup`. See `firmware/docs/ls021-bringup.md`.
 ls021-bringup = []
 
@@ -44,10 +46,10 @@ ls021-bringup = []
 # handoff gate there; the board crate owns the concrete UARTE driver).
 debug-uart = ["obc-platform/debug-usb"]
 
-# The L0 bench bring-up firmware (issue #140). `required-features` keeps it out of every normal
-# build — it only compiles when explicitly asked (`--bin ls021_bringup --features ls021-bringup`),
-# so it can never be pulled into the default map/ride `src/main.rs` path. `src/main.rs` stays the
-# auto-discovered default binary.
+# The LS021 panel bring-up bench firmware (epic #139). `required-features` keeps it out of every
+# normal build — it only compiles when explicitly asked (`--bin ls021_bringup --features
+# ls021-bringup`), so it can never be pulled into the default map/ride `src/main.rs` path (which
+# never references `src/ls021.rs`). `src/main.rs` stays the auto-discovered default binary.
 [[bin]]
 name = "ls021_bringup"
 path = "src/bin/ls021_bringup.rs"
