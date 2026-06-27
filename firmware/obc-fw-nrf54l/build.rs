@@ -57,16 +57,16 @@ fn main() {
     println!("cargo:rustc-link-arg-bins=-Tdefmt.x"); // defmt's interned-string section
 }
 
-/// Cross-compile `src/flpr/{start.S,flpr_blink.c}` against `src/flpr/flpr.ld` into a raw
-/// `$OUT_DIR/flpr.bin` the M33 embeds. Freestanding (`-nostdlib -nostartfiles`, integer ops
-/// only) so the RV32E core needs no libgcc/newlib multilib — any `rv32emc`-capable GNU gcc
-/// works (`brew install riscv64-elf-gcc`, the xPack `riscv-none-elf-gcc`, etc.).
+/// Cross-compile `src/flpr/{start.S,flpr_comms.c}` against `src/flpr/flpr.ld` into a raw
+/// `$OUT_DIR/flpr.bin` the M33 embeds. Freestanding (`-nostdlib -nostartfiles`, integer ops only)
+/// so the RV32E core needs no libgcc/newlib multilib — any `rv32emc`-capable GNU gcc works
+/// (`brew install riscv64-elf-gcc`, the xPack `riscv-none-elf-gcc`, etc.).
 fn build_flpr_blob(manifest: &Path, out: &Path) {
     let flpr_dir = manifest.join("src/flpr");
     let start_s = flpr_dir.join("start.S");
-    let blink_c = flpr_dir.join("flpr_blink.c");
+    let blob_c = flpr_dir.join("flpr_comms.c");
     let script = flpr_dir.join("flpr.ld");
-    for f in [&start_s, &blink_c, &script] {
+    for f in [&start_s, &blob_c, &script] {
         println!("cargo:rerun-if-changed={}", f.display());
     }
     println!("cargo:rerun-if-env-changed=RISCV_GCC");
@@ -88,7 +88,7 @@ fn build_flpr_blob(manifest: &Path, out: &Path) {
             .arg("-T")
             .arg(&script)
             .arg(&start_s)
-            .arg(&blink_c)
+            .arg(&blob_c)
             .arg("-o")
             .arg(&elf),
         &gcc,

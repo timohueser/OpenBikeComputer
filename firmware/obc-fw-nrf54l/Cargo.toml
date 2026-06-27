@@ -35,16 +35,17 @@ glass-demo = []
 # `--bin ls021_bringup --features ls021-bringup`. See `firmware/docs/ls021-bringup.md`.
 ls021-bringup = []
 
-# `ls021-flpr` is the **LS021 FLPR bring-up** (epic #149, F0 = issue #150): the successor to
-# the M33-direct bring-up that moves the panel waveform generation onto the nRF54L15's FLPR
-# (the VPR RISC-V coprocessor). The feature gates the standalone `ls021_flpr_bringup` bin
-# (below) **and** the `build.rs` work it needs: a *carved* `memory.x` reserving the top 32 KB
-# of SRAM for the FLPR image + a cross-core handshake page, plus cross-compiling the
-# freestanding C blob in `src/flpr/` with a RISC-V gcc (`brew install riscv64-elf-gcc`). Off by
-# default so `main.rs` keeps the full 256 KB and needs no RISC-V toolchain. F0 just proves the
-# build/boot path: the M33 starts the FLPR, which toggles LED0 (P2.09) and answers a shared-RAM
-# handshake. Build with `--bin ls021_flpr_bringup --features ls021-flpr`. See
-# `firmware/docs/ls021-flpr.md`.
+# `ls021-flpr` is the **LS021 FLPR bring-up** (epic #149): the successor to the M33-direct
+# bring-up that moves the panel waveform generation onto the nRF54L15's FLPR (the VPR RISC-V
+# coprocessor). The feature gates the standalone `ls021_flpr_bringup` bin (below) **and** the
+# `build.rs` work it needs: a *carved* `memory.x` reserving the top 32 KB of SRAM for the FLPR
+# image + a cross-core control-block page, plus cross-compiling the freestanding C blob in
+# `src/flpr/` with a RISC-V gcc (`brew install riscv64-elf-gcc`). Off by default so `main.rs`
+# keeps the full 256 KB and needs no RISC-V toolchain. F0 (#150) proved the build/boot path
+# (M33 starts the FLPR; it blinks LED0 + answers a one-word handshake); **F1 (#151)** is the
+# bidirectional comms channel — a shared control block + a doorbell each way (shared-RAM sequence
+# M33→FLPR, EGU interrupt FLPR→M33; VEVIF is walled on bare metal), round-trip verified over RTT.
+# Build with `--bin ls021_flpr_bringup --features ls021-flpr`. See `firmware/docs/ls021-flpr.md`.
 ls021-flpr = []
 
 # Stream fake GPS / altimeter / compass from a host over the **VCOM UART** (issue #127) — the nRF

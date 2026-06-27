@@ -1,4 +1,4 @@
-# LS021B7DD02 FLPR backend — toolchain, memory & boot spec (STATUS: F0 LANDED)
+# LS021B7DD02 FLPR backend — toolchain, memory & boot spec (STATUS: F1 LANDED)
 
 The **normative reference** for moving the Sharp **LS021B7DD02** waveform generation off
 the Cortex-M33 and onto the nRF54L15's **FLPR** (the VPR RISC-V coprocessor). Epic [#149];
@@ -9,7 +9,10 @@ which stays the **golden reference**: the FLPR must reproduce that analyzer-veri
 - **F0 [#150]** — toolchain + blob boot + this spec; the FLPR toggles a GPIO. ✅ **DONE**
   (build/boot path stood up; FLPR blinks LED0 + answers a shared-RAM handshake — see
   [Verification](#verification)).
-- **F1 [#151]** — M33↔FLPR comms: shared control block + VEVIF doorbells, round-trip verified.
+- **F1 [#151]** — M33↔FLPR comms: shared control block + a doorbell each way, round-trip verified.
+  ✅ **DONE** (the one-word handshake is now a structured control block; M33→FLPR is a shared-RAM
+  sequence, FLPR→M33 is an EGU interrupt — VEVIF turned out walled on bare metal; the M33 sweeps
+  commands and verifies the round-trip over RTT — see [M33 ↔ FLPR comms](#m33--flpr-comms)).
 - **F2 [#152]** — FLPR drives one source sub-line from a write buffer (LA diff vs M33).
 - **F3 [#153]** — FLPR drives a full frame (init-black + solid colour on glass).
 - **F4 [#154]** — ping-pong write buffers + pack from the RGB222 framebuffer (palette + shapes).
@@ -86,7 +89,7 @@ by `build.rs` **only under the `ls021-flpr` feature** (Cargo's `CARGO_FEATURE_LS
 |---|---|---|---|
 | `RAM` | `0x2000_0000 .. 0x2003_8000` | 224 KB | **M33** `.data`/`.bss`/stack (the linked `RAM`) |
 | `FLPR_RAM` | `0x2003_8000 .. 0x2003_F000` | 28 KB | **FLPR** image + stack; `INITPC = 0x2003_8000`, `_stack_top = 0x2003_F000` |
-| `SHARED` | `0x2003_F000 .. 0x2004_0000` | 4 KB | **cross-core** handshake (F1 grows this into the control block) |
+| `SHARED` | `0x2003_F000 .. 0x2004_0000` | 4 KB | **cross-core** control block (F1 — the 64-byte `Control`/`flpr_control_t`; see [comms](#m33--flpr-comms)) |
 
 - The map lives in **two places that must agree**: `build.rs`'s carved `memory.x` (shrinks the
   M33 `RAM` to 224 KB) and `src/flpr/flpr.ld` (places the FLPR image at `0x2003_8000`,
@@ -150,35 +153,108 @@ COM, FLPR source), so the epic's rule is **absolute**:
 > VDDM settings. Discovering which is needed is part of what F0 verifies; record the answer
 > here when the board confirms it.
 
-## M33 ↔ FLPR comms (stub — filled by F1)
+## M33 ↔ FLPR comms
 
-F0 uses the crudest possible channel: **one shared word** at `SHARED` base `0x2003_F000`. The
-M33 writes `0xDEAD_BEEF` (magic) before release; the FLPR overwrites it with `0xA11E` (alive);
-the M33 polls and logs. F1 ([#151]) replaces this with a **structured control block** in the
-`SHARED` page (buffer pointers, status, frame counters) plus **VEVIF doorbells** (the VPR's
-inter-core event interface) for per-write-buffer signalling — no more polling. Until then this
-single word is the entire protocol.
+F0 used the crudest possible channel: one shared word (M33 writes magic, FLPR overwrites with
+`0xA11E`, M33 polls). **F1 ([#151])** replaces it with a **structured control block** in the
+`SHARED` page plus a **doorbell in each direction** — the comms analog of the M33 bring-up's L1,
+round-trip verified before any panel signal. The ping-pong write-buffer handoff (F4) reuses this
+block and these doorbells.
+
+> **The epic named VEVIF; the silicon said no.** The plan was to use the VPR's VEVIF mailboxes
+> both ways. On this **bare-metal** setup (no Zephyr/sysbuild VPR runtime) both directions turned
+> out to be walled — see [Why not VEVIF](#why-not-vevif) below for the full on-glass story. F1
+> ships the channel on mechanisms that **do** work here: a **shared-RAM sequence** for M33→FLPR
+> and an **EGU interrupt** for FLPR→M33. Both are exactly what F4 needs (the FLPR polls a
+> buffer-ready flag; the M33 sleeps until an IRQ says a buffer drained).
+
+### Control block (64 bytes at `0x2003_F000`)
+
+Normative layout, **identical** in `Control` (Rust, `ls021_flpr_bringup.rs`) and `flpr_control_t`
+(C, `flpr_comms.c`) — both static-assert the 64-byte size. `#[repr(C)]` + all-`u32` members ⇒ no
+padding, deterministic offsets. Little-endian; every field is accessed `volatile` (the cores write
+it concurrently).
+
+| off  | field         | writer | meaning |
+|------|---------------|--------|---------|
+| 0x00 | `magic`       | M33    | layout/version tag `0xF1C0_0001`; the FLPR refuses to act if it mismatches |
+| 0x04 | `m33_seq`     | M33    | command sequence counter — **the M33→FLPR doorbell** (bumped last, after `cmd`) |
+| 0x08 | `cmd`         | M33    | command word (F1: the value `N`) |
+| 0x0C | `flpr_seq`    | FLPR   | echoes the `m33_seq` it serviced (round-trip proof) |
+| 0x10 | `status`      | FLPR   | ack/result (F1: `cmd ^ 0xA11E`; boot: `0xA11E` alive, `0x0BAD_CAFE` = magic mismatch) |
+| 0x14 | `frame_count` | FLPR   | frames drained (F4; defined now, unused in F1) |
+| 0x18 | `buf[0..2]`   | both   | `BufDesc { ptr, len, ready, consumed }` ×2 (16 B each) — F4 ping-pong descriptors |
+| 0x38 | `reserved[2]` | —      | forward-compat headroom |
+
+### Doorbells
+
+| direction | mechanism | detail |
+|---|---|---|
+| **M33 → FLPR** | shared-RAM **sequence** | M33 writes `cmd` then bumps `m33_seq` (+`dsb`); the FLPR polls `m33_seq` and services on a change. The FLPR is a dedicated core, so polling is correct — and this is exactly F4's "buffer ready" handshake. |
+| **FLPR → M33** | **EGU20** interrupt | the FLPR writes `EGU20.TASKS_TRIGGER[0]` (secure `0x500C_9000`) — a plain peripheral store, like driving GPIO. `EGU20.EVENTS_TRIGGERED[0]` raises the M33's **`EGU20` IRQ #201**; the ISR (`Priority::P3`) clears the event + signals an `embassy_sync::Signal`. No pin, and the M33 sleeps instead of busy-waiting. |
+
+EGU is the nRF "software interrupt" peripheral and a normal, M33-writable peripheral (its `INTEN`
+accepts writes — the crux, see below). **Reserve `EGU20`** when this folds into the real firmware
+(F5) so nothing else claims it; `EGU10` is the spare alternative.
+
+### Why not VEVIF
+
+Mapped on glass, both VEVIF directions are unusable from the bare-metal secure M33:
+
+- **First**, *any* VEVIF CSR access on the FLPR (`csrr 0x7e0` etc.) **faults** until RT peripherals
+  are unlocked: write `VPRNORDICCTRL` (CSR `0x7c0`) = `NORDICKEY 0x507D`<<16 | `ENABLERTPERIPH` (=
+  `0x507D_0001`). Skipping this froze the FLPR right after the ALIVE stamp. (Cross-checked vs
+  Nordic's `nrf_vpr_csr_rtperiph_enable_set`.)
+- **M33 → FLPR (VEVIF task):** even with RT peripherals unlocked, `mstatus.MIE`=0, and the task's
+  `INTEN` CSR (`0x7e4`) enabled, an M33 `TASKS_TRIGGER[0]` write never latched into the FLPR's
+  readable `TASKS` CSR (`0x7e0`) — the FLPR never saw the doorbell.
+- **FLPR → M33 (VEVIF event):** the FLPR's `csrs 0x7e2` *does* set the app's `EVENTS_TRIGGERED[16]`,
+  but it can't be gated to the NVIC — writing the app-side `VPR00.INTEN`/`INTENSET`
+  (`0x5004_C300/304`) **does nothing** (reads back `0`; an all-ones write yields `0`), so the
+  interrupt never fires. The non-secure alias (`0x4004_Cxxx`) BusFaults, confirming VPR00 is
+  secure-only. Arming VPR00's app interrupt needs SoC-level init Zephyr does and we don't.
+
+Lesson (echoing L1's "PWM won't route to the COM pins"): on this part, *compiles + runs* ≠
+*routes*. The shared-RAM + EGU path sidesteps all of the above and is verified end-to-end.
+
+### Memory ordering
+
+A flag must never be observed before the data it guards, across cores. The rule, both directions:
+the writer fills the data fields, then writes the **sequence field last** as the guard, with a
+**barrier before signalling** — the M33 uses `cortex_m::asm::dsb()`, the FLPR a RISC-V `fence`.
+Concretely: M33 writes `cmd` then `m33_seq` (+`dsb`); the FLPR, on seeing `m33_seq` change, writes
+`status` (+`fence`) then `flpr_seq` (+`fence`) then pokes the EGU. The FLPR blob uses **no CSRs**
+(only `fence`, base ISA), so the blob builds with plain `-march=rv32emc` — no Zicsr.
 
 ## Verification
 
-F0's checks, none depending on a later stage:
+F1 subsumes F0's boot proof (the FLPR still copies in, boots, and reaches shared SRAM — now it
+stamps `status = 0xA11E` in the control block instead of a lone word) and adds the round-trip:
 
 - **Build (host/CI):**
-  - `cargo build --release --bin ls021_flpr_bringup --features ls021-flpr` — the blob
-    compiles, `objcopy` runs, the carved `memory.x` links, and `flpr.bin` (~114 B for F0)
-    embeds.
-  - `cargo build --release` (default `main.rs`) — the feature gate left the 256 KB budget
-    assert intact and needs **no** RISC-V toolchain (regression guard).
+  - `cargo build --release --bin ls021_flpr_bringup --features ls021-flpr` — the blob compiles
+    (`rv32emc`, no Zicsr), `objcopy` runs, the carved `memory.x` links, and `flpr.bin` (~214 B for
+    F1) embeds.
+  - `cargo build --release` (default `main.rs`) — the feature gate left the 256 KB budget assert
+    intact and needs **no** RISC-V toolchain (regression guard).
 - **On glass (RTT + eye):** `cargo run … --features ls021-flpr` →
-  - RTT logs **`FLPR alive`** after the handshake word reads `0xA11E` → the FLPR booted, ran
-    code, and reached shared SRAM.
-  - **LED0 (P2.09) blinks** → the FLPR has GPIO access to P2 (de-risks F2).
-  - **LED1 (P1.10) also blinks** (M33 heartbeat) → both cores run concurrently.
-  - If `FLPR alive` prints but LED0 is dark → the SPU/secure-GPIO finding above.
-- **Logic analyzer (the golden-diff tool from epic #139):** capture **P2.09** — it toggles at
-  the blob's rate **and only after `CPURUN` is set** (don't start the FLPR / hold it in reset →
-  the line stays at the M33's idle low). Later stages diff FLPR-driven panel signals against
-  the M33 `PanelBus` golden capture; F0 just confirms the pin moves under FLPR control.
+  - RTT logs **`EGU20 armed ch0 — INTEN=0x00000001`** (the EGU interrupt-enable latches — unlike
+    VPR00's) then **`FLPR alive`** (`status` read `0xA11E`) → the FLPR booted, reached shared SRAM,
+    and agreed on the control-block magic.
+  - RTT then logs **`round-trip N/5 OK`** for `N = 1..=5` → each command crossed M33→FLPR
+    (shared-RAM sequence), was serviced, and crossed back FLPR→M33 (EGU20 IRQ); the echoed
+    `status == N ^ 0xA11E` and `flpr_seq == m33_seq`. Five values prove the channel is reliable, not
+    a one-shot. A `MISMATCH`/`TIMEOUT` line prints the raw words (and, on a serviced-but-no-IRQ
+    timeout, the EGU `EVENTS`/`INTEN` state).
+  - **LED0 (P2.09) blinks `N` times** per command (FLPR response, by eye + LA); **LED1 (P1.10)**
+    toggles per command (M33 heartbeat). After the verification sweep the M33 **loops the
+    round-trip forever** (cmd cycling 1..=5) so LED0 stays continuously active for a scope/eye check
+    — the FLPR only drives LED0 *while servicing*, so a one-shot sweep is a single burst that's easy
+    to miss.
+  - If `FLPR alive` never prints → check `INITPC`/memory map; if `status` reads `0x0BAD_CAFE` → the
+    FLPR booted but saw the wrong `magic` (memory-map drift between `Control` and `flpr_control_t`).
+- **Logic analyzer (optional, the golden-diff tool from epic #139):** capture **P2.09** (the FLPR's
+  LED/response pulses) to confirm the FLPR services each command and the pulse count matches `N`.
 
 ## Build & flash
 
