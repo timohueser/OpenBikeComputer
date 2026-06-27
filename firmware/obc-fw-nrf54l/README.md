@@ -57,9 +57,10 @@ cargo run --release --no-default-features --features glass-demo
 # (VCOM/VB/VA ~60 Hz). Analyzer-verified. See firmware/docs/ls021-bringup.md:
 cargo run --release --bin ls021_bringup --features ls021-bringup
 
-# LS021 FLPR backend bring-up (epic #149). F0: the M33 boots the FLPR (VPR RISC-V
-# coprocessor), which blinks LED0 (P2.09) + answers a shared-RAM handshake logged over RTT.
-# Needs a RISC-V gcc for the C blob (see the toolchain note below). See firmware/docs/ls021-flpr.md:
+# LS021 FLPR backend bring-up (epic #149). F0 boots the FLPR (VPR RISC-V coprocessor); F1 runs
+# the M33↔FLPR comms round-trip — a shared control block + a doorbell each way (shared-RAM
+# sequence M33→FLPR, EGU interrupt FLPR→M33; VEVIF is walled on bare metal), round-trip verified
+# over RTT. Needs a RISC-V gcc for the C blob (toolchain note below). See firmware/docs/ls021-flpr.md:
 cargo run --release --bin ls021_flpr_bringup --features ls021-flpr
 ```
 
