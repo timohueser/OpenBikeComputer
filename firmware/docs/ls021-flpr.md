@@ -1,4 +1,4 @@
-# LS021B7DD02 FLPR backend — toolchain, memory & boot spec (STATUS: F2 LANDED)
+# LS021B7DD02 FLPR backend — toolchain, memory & boot spec (STATUS: F2 VERIFIED on the analyzer)
 
 The **normative reference** for moving the Sharp **LS021B7DD02** waveform generation off
 the Cortex-M33 and onto the nRF54L15's **FLPR** (the VPR RISC-V coprocessor). Epic [#149];
@@ -14,9 +14,10 @@ which stays the **golden reference**: the FLPR must reproduce that analyzer-veri
   sequence, FLPR→M33 is an EGU interrupt — VEVIF turned out walled on bare metal; the M33 sweeps
   commands and verifies the round-trip over RTT — see [M33 ↔ FLPR comms](#m33--flpr-comms)).
 - **F2 [#152]** — FLPR drives one source sub-line from a write buffer (LA diff vs M33).
-  ✅ **DONE** (the inner data-shift loop runs on the FLPR — `BSP` + 124 `BCK` + the 6 data lines
-  drained from a SHARED-page write buffer; the M33 hands it over through the F1 descriptor and
-  rings; bring-up-slow, LA-diffed against the M33 `PanelBus` sub-line — see
+  ✅ **DONE + analyzer-verified** (the inner data-shift loop runs on the FLPR — `BSP` + 124 `BCK` +
+  the 6 data lines drained from a SHARED-page write buffer; the M33 hands it over through the F1
+  descriptor and rings. On the LA: exactly 124 `BCK`/`BSP`, `BCK(1)` within `BSP` high, ~45 kHz
+  bring-up-slow, the data pattern bit-exact, `BSP` driving on **P1** — see
   [F2 — one source sub-line](#f2--one-source-sub-line)).
 - **F3 [#153]** — FLPR drives a full frame (init-black + solid colour on glass).
 - **F4 [#154]** — ping-pong write buffers + pack from the RGB222 framebuffer (palette + shapes).
@@ -320,29 +321,46 @@ bench** — the FLPR analog of the M33 path's `asm::delay` counts. Target: `BCK`
 
 > ⚠️ **The FLPR clock is unconfigured at this stage** (the blob sets no clocks), so the
 > iteration-count → wall-time mapping is unknown until measured. This is exactly the issue's open
-> question — *can the FLPR toggle P2 fast enough?* — and the answer comes **off the analyzer, not by
-> assumption** (the L1 "PWM won't route to these pins" lesson). If the LA shows `BCK` above ~0.7 MHz,
-> raise `BCK_HALF_ITERS`; the captured period + iter count together pin down the real FLPR clock.
-> **Record the measured `BCK` and the matching iter counts here once the bench confirms them.**
+> question — *can the FLPR toggle the pins fast enough?* — answered **off the analyzer, not by
+> assumption** (the L1 "PWM won't route to these pins" lesson).
+>
+> **Measured (bench, 8 MHz LA):** with `BCK_HALF_ITERS = 120`, `DATA_SETUP_ITERS = 40`, `BCK` runs
+> **~45 kHz** (hi 9.4 µs, lo 12.7 µs — the lo phase also absorbs the next column's data-present +
+> setup) — comfortably under the 0.758 MHz max and ≫ the 660 ns hi/lo floor. That `busy(120) ≈
+> 9.4 µs` ⇒ ~78 ns/iter ⇒ the **unconfigured FLPR runs ≈ 64 MHz** (half the M33's 128 MHz). So the
+> FLPR clears the `BCK` budget with enormous headroom even bit-banged and unclocked — F5's job is to
+> *speed it up* toward the panel's real ~53 ms frame, not to make it keep up. The answer to "can it
+> toggle the pins fast enough" is an emphatic yes.
 
-### Verification (LA diff vs the M33 golden sub-line)
+### Verification (LA diff vs the M33 golden sub-line) — ✅ DONE on the bench
 
 `cargo run --release --bin ls021_flpr_bringup --features ls021-flpr`:
 
-- **RTT:** `FLPR alive`, then `sub-line N/5 OK — drove 124 BCK, consumed=0xBEEF000N` for `N=1..=5`,
-  then loops forever. A `MISMATCH` dumps `status`/`consumed`/`flpr_seq`; a `TIMEOUT` localizes the
+- **RTT (verified):** `FLPR alive`, then `sub-line N/5 OK — drove 124 BCK, consumed=0xBEEF000N` for
+  `N=1..=5`, then loops forever. (`status = 124` is the FLPR's returned column count; `consumed`
+  echoes `ready`.) A `MISMATCH` dumps `status`/`consumed`/`flpr_seq`; a `TIMEOUT` localizes the
   M33→FLPR vs the EGU-return leg exactly as F1.
-- **Logic analyzer** (the L2/L3 rig + recipe, `ls021-bringup.md` → the horizontal/`zoom` capture):
-  grab `BSP` (D8), `BCK` (D9), and the 6 data lines (D10..D15 = `R0/R1/G0/G1/B0/B1`) and assert,
-  diffed against the M33 `write_data_subline` capture:
-  - exactly **124 `BCK` per `BSP`**, `BCK(1)` high within `BSP` high;
-  - `BCK` hi/lo ≥ 660 ns (slow is fine — *too fast* fails);
-  - the 6 data lines carry the test pattern — column `c`'s word is `c & 0x3F`, so each line is a clean
-    **divide-by-2ⁿ** square wave (`R0` toggles every column, `R1` every 2, … `B1` every 32). A
-    **bit-swap**, **stuck line**, or **odd/even-interleave** error shows instantly as a wrong-frequency
-    line. `BSP` toggling on **P1** also confirms the FLPR reaches a non-P2 port (the F3 prerequisite).
+- **Logic analyzer (verified, RP2040 sigrok-pico rig):** captured `BSP` (D8), `BCK` (D9), and the 6
+  data lines (D10..D15 = `R0/R1/G0/G1/B0/B1`) — a wide 2 MHz/50 ms pass for the count+pattern and an
+  8 MHz pass for the edge overlap. All invariants hold:
+  - exactly **124 `BCK` per `BSP`** on every sub-line;
+  - **`BCK(1)` within `BSP` high** — `BSP` high ~3.4 µs, `BCK(1)` rises at +3.1–3.25 µs, `BSP` falls
+    0.12–0.25 µs *after* `BCK(1)` rises (matching the M33 golden's `set BCK` → `clear BSP` order;
+    needs the 8 MHz pass to resolve — at 2 MHz the two edges share a sample);
+  - `BCK` hi 9.4 µs / lo 12.7 µs (≈45 kHz) — far under the 758 kHz max, ≫ the 660 ns floor;
+  - the 6 data lines carry the test pattern **exactly** (`data_mismatch = 0`): column `c`'s word is
+    `c & 0x3F`, so each line is a clean **divide-by-2ⁿ** square wave — the captured rise counts cascade
+    `R0:180 R1:90 G0:45 G1:22 B0:12 B1:6`. No **bit-swap**, **stuck line**, or **odd/even-interleave**
+    error. `BSP` toggling on **P1.07** confirms the FLPR reaches a non-P2 port (the F3 prerequisite).
 - **No glass** at this stage — with no gate scan and `INTB` low, nothing latches to a pixel; the
   proof is entirely on the analyzer.
+
+> **Bench note — capturing sparse bursts.** The verification sweep / forever-loop space sub-lines out
+> (hundreds of ms / `Timer` apart), and the sigrok-pico `-w` hardware trigger proved unreliable here,
+> so the captures above were taken with the forever-loop gap temporarily shortened (`Timer::after_*`)
+> so an *untriggered* window always lands on sub-lines — the same untriggered approach L2/L3 used.
+> Also: the pico pysigrok driver mis-frames a channel count that's an **exact multiple of 7** (it
+> over-reads one byte/sample) — capture **15** channels (`D2..D16`), not 14.
 
 ## Verification — F1 round-trip
 
