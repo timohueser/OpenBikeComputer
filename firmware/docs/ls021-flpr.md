@@ -1,4 +1,4 @@
-# LS021B7DD02 FLPR backend — toolchain, memory & boot spec (STATUS: F1 LANDED)
+# LS021B7DD02 FLPR backend — toolchain, memory & boot spec (STATUS: F2 VERIFIED on the analyzer)
 
 The **normative reference** for moving the Sharp **LS021B7DD02** waveform generation off
 the Cortex-M33 and onto the nRF54L15's **FLPR** (the VPR RISC-V coprocessor). Epic [#149];
@@ -14,6 +14,11 @@ which stays the **golden reference**: the FLPR must reproduce that analyzer-veri
   sequence, FLPR→M33 is an EGU interrupt — VEVIF turned out walled on bare metal; the M33 sweeps
   commands and verifies the round-trip over RTT — see [M33 ↔ FLPR comms](#m33--flpr-comms)).
 - **F2 [#152]** — FLPR drives one source sub-line from a write buffer (LA diff vs M33).
+  ✅ **DONE + analyzer-verified** (the inner data-shift loop runs on the FLPR — `BSP` + 124 `BCK` +
+  the 6 data lines drained from a SHARED-page write buffer; the M33 hands it over through the F1
+  descriptor and rings. On the LA: exactly 124 `BCK`/`BSP`, `BCK(1)` within `BSP` high, ~45 kHz
+  bring-up-slow, the data pattern bit-exact, `BSP` driving on **P1** — see
+  [F2 — one source sub-line](#f2--one-source-sub-line)).
 - **F3 [#153]** — FLPR drives a full frame (init-black + solid colour on glass).
 - **F4 [#154]** — ping-pong write buffers + pack from the RGB222 framebuffer (palette + shapes).
 - **F5 [#155]** — `obc_platform::Panel` backend + speed-tune toward the ~53 ms spec frame.
@@ -61,7 +66,7 @@ The exact invocation it runs:
 riscv64-elf-gcc -march=rv32emc -mabi=ilp32e \
     -Os -ffreestanding -nostdlib -nostartfiles -fno-pic \
     -ffunction-sections -fdata-sections -Wall -Wextra -Wl,--gc-sections \
-    -T src/flpr/flpr.ld src/flpr/start.S src/flpr/flpr_blink.c -o flpr.elf
+    -T src/flpr/flpr.ld src/flpr/start.S src/flpr/flpr_source.c -o flpr.elf
 riscv64-elf-objcopy -O binary flpr.elf flpr.bin        # raw image, no ELF headers
 ```
 
@@ -144,14 +149,45 @@ COM, FLPR source), so the epic's rule is **absolute**:
 - **F0 pins:** LED0 = **P2.09** (FLPR-driven, the source-port proof + visual check); LED1 =
   **P1.10** (M33 heartbeat). GPIO P2 secure base `0x5005_0400` (`OUT 0x00`, `OUTSET 0x04`,
   `OUTCLR 0x08`, `DIR 0x10`, `DIRSET 0x14`); LED0 mask = `1<<9`.
+- **F2 source-bus pins** (the [bring-up harness map](ls021-bringup.md#pinout-21-pin-fpc--dk-pin-map)).
+  The **timing-critical bus is single-port P2** — `BCK` and the 6 data lines sit on `P2.00..06`, so
+  the FLPR's hot 124× loop is one `OUTCLR`/`OUTSET` to present data + one to pulse `BCK`, all on the
+  fast trace domain. `BSP` is the **one exception**: pulsed once per sub-line (outside the hot loop),
+  it lives on `P1.07`, so F2 is also the first proof the FLPR can drive a **non-P2 (P1)** GPIO — the
+  thing F3's gate scan fully depends on. GPIO P1 secure base `0x500D_8200` (same offsets as P2).
 
-> **SPU / secure-GPIO fallback.** F0 drives the **secure** P2 alias (`0x5005_0400`), matching
-> the all-secure `nrf54l15-app-s` build. If the FLPR boots (handshake fires) but LED0 stays
-> dark, the FLPR lacks secure-GPIO access: try the **non-secure** alias (`0x4005_0400`) in
-> `flpr_blink.c`, and/or grant the FLPR access to GPIO P2 via the SPU `PERIPH[n].PERM`
-> ownership the way the M33 build already needs the Board-Configurator ext-mem-off / 3.3 V
-> VDDM settings. Discovering which is needed is part of what F0 verifies; record the answer
-> here when the board confirms it.
+  | line | DK pin | port.bit | mask | role |
+  |---|---|---|---|---|
+  | `R0` `G0` `B0` (odd) | P2.00/02/04 | bit 0/2/4 | — | source data, odd pixel |
+  | `R1` `G1` `B1` (even) | P2.01/03/05 | bit 1/3/5 | — | source data, even pixel |
+  | `BCK` | P2.06 | bit 6 | `1<<6` | source/shift clock (FLPR's own pulse) |
+  | `BSP` | **P1.07** | bit 7 | `1<<7` | sub-line start pulse (the lone P1 line) |
+
+  The 6 data bits, pre-shifted to their P2 positions, are exactly `DATA_MASK = 0x3F` — the
+  write-buffer word ([format below](#write-buffer-format-v0)). `COM` (`P2.07/08/10`, M33-driven) and
+  LED0 (`P2.09`) fill the rest of P2; the FLPR's masks never touch them, so the atomic-set/clear rule
+  keeps the two cores off each other's pins.
+
+> **Product pin-planning (forward note, not an F2 constraint).** P2 has only **11 pins
+> (`P2.00..10`)** — that is the whole of the FLPR's fast-toggle domain, and on the product PCB it is
+> the **scarce, contended resource**. The two things that *must* toggle fast both want it: the
+> display **source bus** (6 data + `BCK` = 7) and the SD-card **high-speed SPI** (4) — together
+> exactly 11. That fits **only if everything slow is pushed to P0/P1**: `COM` (≤60 Hz), the gate
+> lines (`GSP`/`GCK`/`GEN`/`INTB`, µs-scale), sensor **I²C** (GPS/altimeter), the **IMU SPI** can
+> share or sit on P1, the **encoder**, and buttons — none need the fast domain. **USB** (future,
+> nRF54LM20) is on dedicated USB pads, not GPIO, so it does not compete. The DK bench map here is
+> *not* this allocation — it reuses UART/SD/flash pins because nothing else runs during bring-up
+> (see the bring-up doc) — but the principle (**reserve P2 for source-bus + SD-SPI; slow signals →
+> P0/P1**) is what the custom board should follow.
+
+> **SPU / secure-GPIO fallback.** F0/F1 drive the **secure** P2 alias (`0x5005_0400`), matching
+> the all-secure `nrf54l15-app-s` build, and LED0 on P2.09 confirmed the FLPR *has* secure-GPIO
+> access on **P2**. **F2 extends the same question to P1** (`BSP` = P1.07): if the P2 source bus
+> toggles on the LA but `BSP` stays dark, the FLPR lacks secure-GPIO access on P1 — try the
+> **non-secure** alias (P1 `0x400D_8200`, P2 `0x4005_0400`) in `flpr_source.c`, and/or grant the
+> FLPR the port via the SPU `PERIPH[n].PERM` ownership the way the M33 build already needs the
+> Board-Configurator ext-mem-off / 3.3 V VDDM settings. Record the answer here when the board
+> confirms it.
 
 ## M33 ↔ FLPR comms
 
@@ -171,7 +207,7 @@ block and these doorbells.
 ### Control block (64 bytes at `0x2003_F000`)
 
 Normative layout, **identical** in `Control` (Rust, `ls021_flpr_bringup.rs`) and `flpr_control_t`
-(C, `flpr_comms.c`) — both static-assert the 64-byte size. `#[repr(C)]` + all-`u32` members ⇒ no
+(C, `flpr_source.c`) — both static-assert the 64-byte size. `#[repr(C)]` + all-`u32` members ⇒ no
 padding, deterministic offsets. Little-endian; every field is accessed `volatile` (the cores write
 it concurrently).
 
@@ -226,7 +262,107 @@ Concretely: M33 writes `cmd` then `m33_seq` (+`dsb`); the FLPR, on seeing `m33_s
 `status` (+`fence`) then `flpr_seq` (+`fence`) then pokes the EGU. The FLPR blob uses **no CSRs**
 (only `fence`, base ISA), so the blob builds with plain `-march=rv32emc` — no Zicsr.
 
-## Verification
+## F2 — one source sub-line
+
+F2 adds the **single most timing-critical piece of the epic**, isolated: the FLPR clocks out **one
+source sub-line** from a write buffer. The blob is now `src/flpr/flpr_source.c` (successor to F1's
+`flpr_comms.c`) — same control block + doorbells, plus a `CMD_SHIFT_SUBLINE` that drains `buf[0]`.
+No gate scan, no `INTB` frame, no COM, no glass: just the inner data-shift loop, bring-up-slow and
+LA-diffed against the M33 `PanelBus` (`src/ls021.rs`), which #139 already proved correct.
+
+### Write-buffer format v0
+
+One sub-line is **`BCK_PER_SUBLINE = 124` u32 words** (120 data columns + 4 trailing dummy/flush,
+matching the datasheet horizontal chart and `PanelBus`). Each word holds the **6 data bits already
+shifted to their P2 pin positions** — `bit0 R0 … bit5 B1` = `DATA_MASK 0x3F` (the [pin
+table](#pin-ownership--the-shared-p2-rule)); `BCK` is *not* in the word (it's the FLPR's own pulse).
+The 4 dummy words are `0` (black). So the FLPR inner loop is bit-twiddle-free — *store → pulse BCK →
+next* (the issue's explicit goal):
+
+```c
+data = buf[col] & 0x3F;          // 6 data bits in P2.00..05 positions
+P2.OUTCLR = (~data) & 0x3F;      // lower the 0 bits  ── present the column
+P2.OUTSET = data;                // raise the 1 bits  ──  (one xori, no 2nd word)
+busy(DATA_SETUP_ITERS);          // data setup before BCK rises
+P2.OUTSET = 1<<6;                // BCK high (latches the pixel-pair into the source SR)
+if (col == 0) P1.OUTCLR = 1<<7;  // BCK(1) rose within BSP high → release BSP
+busy(BCK_HALF_ITERS);
+P2.OUTCLR = 1<<6;                // BCK low
+busy(BCK_HALF_ITERS);
+```
+
+> **Why a set/clear word, not a raw `OUT` write.** Presenting a column is "make `P2.00..05` equal
+> these 6 bits." A single `P2.OUT = word` would do it in one store — but it would also clobber the
+> M33's `COM` pins (`P2.07/08/10`) and LED0, breaking the [shared-P2 rule](#pin-ownership--the-shared-p2-rule).
+> `OUTCLR (~w & 0x3F)` then `OUTSET (w & 0x3F)` touches only the 6 data bits, atomically; the
+> complement is one on-the-fly `xori`, so the format still needs just **one word per column**.
+
+The buffer lives in the **SHARED page** (`WRITE_BUF_ADDR = 0x2003_F100`, clear of the 64-byte control
+block at the page base) — the region both cores already reach (the FLPR reads the control block
+there; the epic's diagram puts the write buffers in shared RAM). The M33 publishes it through the
+**`buf[0]` descriptor** (`ptr`/`len`/`ready`) and the FLPR reads `ptr`/`len` *from the descriptor*,
+not a hardcoded address — exactly the F4 ping-pong handshake, exercised now with a single buffer.
+
+### The source-shift loop (FLPR) & ack
+
+`drive_subline()` mirrors `PanelBus::shift_subline_with`: `BSP` high → for each of `len` columns,
+the snippet above → leave the data lines Lo. `BSP` (P1.07) is raised once before the loop and
+released on the **first** `BCK` rising edge so `BCK(1)` falls within `BSP` high (the chart). Then the
+FLPR acks like F1 — echo `buf[0].ready → buf[0].consumed`, `status = columns driven`, `flpr_seq =
+seq` (seq last, fenced), poke EGU20 — and toggles LED0 once as a by-eye "serviced" marker (after the
+ack, so it perturbs neither the round-trip nor the captured waveform). The M33 checks `consumed ==
+ready && status == 124 && flpr_seq == seq`.
+
+### Timing — bring-up-slow & the BCK budget
+
+The delays are FLPR busy-loops (`BCK_HALF_ITERS`, `DATA_SETUP_ITERS`), **LA-calibrated on the
+bench** — the FLPR analog of the M33 path's `asm::delay` counts. Target: `BCK` well under the
+0.758 MHz spec max so the analyzer resolves every edge (speed is F5's job).
+
+> ⚠️ **The FLPR clock is unconfigured at this stage** (the blob sets no clocks), so the
+> iteration-count → wall-time mapping is unknown until measured. This is exactly the issue's open
+> question — *can the FLPR toggle the pins fast enough?* — answered **off the analyzer, not by
+> assumption** (the L1 "PWM won't route to these pins" lesson).
+>
+> **Measured (bench, 8 MHz LA):** with `BCK_HALF_ITERS = 120`, `DATA_SETUP_ITERS = 40`, `BCK` runs
+> **~45 kHz** (hi 9.4 µs, lo 12.7 µs — the lo phase also absorbs the next column's data-present +
+> setup) — comfortably under the 0.758 MHz max and ≫ the 660 ns hi/lo floor. That `busy(120) ≈
+> 9.4 µs` ⇒ ~78 ns/iter ⇒ the **unconfigured FLPR runs ≈ 64 MHz** (half the M33's 128 MHz). So the
+> FLPR clears the `BCK` budget with enormous headroom even bit-banged and unclocked — F5's job is to
+> *speed it up* toward the panel's real ~53 ms frame, not to make it keep up. The answer to "can it
+> toggle the pins fast enough" is an emphatic yes.
+
+### Verification (LA diff vs the M33 golden sub-line) — ✅ DONE on the bench
+
+`cargo run --release --bin ls021_flpr_bringup --features ls021-flpr`:
+
+- **RTT (verified):** `FLPR alive`, then `sub-line N/5 OK — drove 124 BCK, consumed=0xBEEF000N` for
+  `N=1..=5`, then loops forever. (`status = 124` is the FLPR's returned column count; `consumed`
+  echoes `ready`.) A `MISMATCH` dumps `status`/`consumed`/`flpr_seq`; a `TIMEOUT` localizes the
+  M33→FLPR vs the EGU-return leg exactly as F1.
+- **Logic analyzer (verified, RP2040 sigrok-pico rig):** captured `BSP` (D8), `BCK` (D9), and the 6
+  data lines (D10..D15 = `R0/R1/G0/G1/B0/B1`) — a wide 2 MHz/50 ms pass for the count+pattern and an
+  8 MHz pass for the edge overlap. All invariants hold:
+  - exactly **124 `BCK` per `BSP`** on every sub-line;
+  - **`BCK(1)` within `BSP` high** — `BSP` high ~3.4 µs, `BCK(1)` rises at +3.1–3.25 µs, `BSP` falls
+    0.12–0.25 µs *after* `BCK(1)` rises (matching the M33 golden's `set BCK` → `clear BSP` order;
+    needs the 8 MHz pass to resolve — at 2 MHz the two edges share a sample);
+  - `BCK` hi 9.4 µs / lo 12.7 µs (≈45 kHz) — far under the 758 kHz max, ≫ the 660 ns floor;
+  - the 6 data lines carry the test pattern **exactly** (`data_mismatch = 0`): column `c`'s word is
+    `c & 0x3F`, so each line is a clean **divide-by-2ⁿ** square wave — the captured rise counts cascade
+    `R0:180 R1:90 G0:45 G1:22 B0:12 B1:6`. No **bit-swap**, **stuck line**, or **odd/even-interleave**
+    error. `BSP` toggling on **P1.07** confirms the FLPR reaches a non-P2 port (the F3 prerequisite).
+- **No glass** at this stage — with no gate scan and `INTB` low, nothing latches to a pixel; the
+  proof is entirely on the analyzer.
+
+> **Bench note — capturing sparse bursts.** The verification sweep / forever-loop space sub-lines out
+> (hundreds of ms / `Timer` apart), and the sigrok-pico `-w` hardware trigger proved unreliable here,
+> so the captures above were taken with the forever-loop gap temporarily shortened (`Timer::after_*`)
+> so an *untriggered* window always lands on sub-lines — the same untriggered approach L2/L3 used.
+> Also: the pico pysigrok driver mis-frames a channel count that's an **exact multiple of 7** (it
+> over-reads one byte/sample) — capture **15** channels (`D2..D16`), not 14.
+
+## Verification — F1 round-trip
 
 F1 subsumes F0's boot proof (the FLPR still copies in, boots, and reaches shared SRAM — now it
 stamps `status = 0xA11E` in the control block instead of a lone word) and adds the round-trip:

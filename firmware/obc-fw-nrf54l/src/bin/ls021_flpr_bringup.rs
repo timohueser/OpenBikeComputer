@@ -1,34 +1,32 @@
-//! **LS021 FLPR bring-up F1** (issue #151, epic #149) — M33↔FLPR comms over a shared control
-//! block + a doorbell each way.
+//! **LS021 FLPR bring-up F2** (issue #152, epic #149) — the FLPR clocks out one **source sub-line**
+//! from a write buffer, diffed on the logic analyzer against the M33 golden capture.
 //!
-//! Successor to **F0** (#150), which proved the build/boot path: the M33 cross-compiles a C blob,
-//! copies it to FLPR RAM, releases the core, and the FLPR blinks LED0 + answers a single-word
-//! handshake. F1 promotes that crude one-word handshake into the real **bidirectional control
-//! channel** the ping-pong write-buffer handoff (F4) needs — a structured shared-RAM control
-//! block + a doorbell each way, round-trip verified. Still no panel signal: the comms analog of
-//! the M33 bring-up's L1. See `firmware/docs/ls021-flpr.md`.
+//! Successor to **F1** (#151, the M33↔FLPR comms channel). F2 keeps that channel — a shared control
+//! block + a doorbell each way — and adds the **single most timing-critical piece of the epic**,
+//! isolated: the inner data-shift loop. The M33 fills one SHARED-page write buffer with a known test
+//! sub-line, hands it to the FLPR through the buffer descriptor, and rings the doorbell; the FLPR
+//! drains it — pulse `BSP`, then 124 `BCK` (120 data + 4 dummy) presenting the 6 data lines from the
+//! buffer — then acks. No gate scan, no frame envelope, no glass. See `firmware/docs/ls021-flpr.md`.
 //!
-//! The round-trip, per command `N`:
-//!   1. M33 writes `cmd = N` + bumps `m33_seq` (seq last), `dsb`. The bumped sequence IS the
-//!      M33→FLPR doorbell.
-//!   2. The FLPR polls `m33_seq` in shared RAM; on a change it reads `cmd`, writes
-//!      `status = N ^ 0xA11E` and `flpr_seq = m33_seq` (seq last), pokes `EGU20.TASKS_TRIGGER[0]`,
-//!      then blinks LED0 (P2.09) `N` times as a by-eye/LA marker.
-//!   3. `EGU20.EVENTS_TRIGGERED[0]` fires the M33's **`EGU20` IRQ (#201)**. The ISR signals
-//!      `main`, which reads back `status`/`flpr_seq` and checks the round-trip over RTT.
+//! Per round:
+//!   1. M33 fills the write buffer (a distinctive per-column test pattern — see [`fill_test_subline`]),
+//!      sets `buf[0].ptr/len/ready`, writes `cmd = CMD_SHIFT_SUBLINE`, bumps `m33_seq` (seq last),
+//!      `dsb`. The bumped sequence IS the doorbell.
+//!   2. The FLPR polls `m33_seq`; on a change it reads `cmd` + the descriptor, drives the sub-line on
+//!      `BSP`/`BCK`/`R0..B1`, echoes `buf[0].ready` into `buf[0].consumed`, writes `status = columns
+//!      driven` + `flpr_seq = m33_seq` (seq last), pokes `EGU20.TASKS_TRIGGER[0]`, toggles LED0.
+//!   3. `EGU20.EVENTS_TRIGGERED[0]` fires the M33's **`EGU20` IRQ (#201)**. The ISR signals `main`,
+//!      which checks `consumed == ready` + `status == len` + `flpr_seq == m33_seq`.
 //!
-//! **Why shared RAM + EGU, not VEVIF (the bring-up lesson).** The epic named the VPR's VEVIF
-//! mailboxes, but on this bare-metal setup both VEVIF directions are walled: a VEVIF *task* the
-//! M33 rings never latches into the FLPR's TASKS CSR (even after unlocking RT-peripheral CSR
-//! access + enabling INTEN), and a VEVIF *event* the FLPR raises reaches the app's
-//! `EVENTS_TRIGGERED` but can't be gated to the NVIC — the app-side VPR00 `INTEN` refuses writes
-//! (reads back 0) without SoC-level init we don't replicate. So M33→FLPR rides the shared-RAM
-//! sequence (the FLPR is a dedicated core — polling is correct, and is exactly F4's ping-pong
-//! handshake), and FLPR→M33 is a real interrupt bounced off **EGU20** (a normal peripheral whose
-//! `INTEN` *is* writable). No pin, no busy-wait on the M33. Full story in `ls021-flpr.md`.
+//! **The F2 variable — two ports.** The timing-critical bus (6 data + `BCK`) is all on **P2**
+//! (`P2.00..06`, the FLPR fast trace domain), so the hot 124× loop is single-port. `BSP` (one pulse
+//! per sub-line) is on **P1.07** — so F2 is also the first low-stakes test that the FLPR can drive a
+//! non-P2 (P1) GPIO, which F3's gate scan (`GSP`/`GCK`/`GEN`/`INTB`, all on P1) will depend on. The
+//! M33 owns pin *configuration* (these `Output`s); the FLPR only ever pulses `OUTSET`/`OUTCLR`.
 //!
-//! Build/flash (the bin only compiles with its feature; needs a RISC-V gcc — `brew install
-//! riscv64-elf-gcc`):
+//! Build/flash (needs a RISC-V gcc for the blob — `brew install riscv64-elf-gcc`; and the
+//! Board-Configurator ext-memory-off / 3.3 V-VDDM settings the `ls021_bringup` epic already needs,
+//! so `P2.00..05` are free GPIO):
 //! ```sh
 //! cargo run --release --bin ls021_flpr_bringup --features ls021-flpr
 //! ```
@@ -54,39 +52,55 @@ static FLPR_BLOB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/flpr.bin"));
 // ── FLPR memory map (must match src/flpr/flpr.ld + the carved memory.x in build.rs) ──
 /// FLPR execution base: the M33 copies the blob here and points `INITPC` at it.
 const FLPR_RAM_BASE: usize = 0x2003_8000;
+/// The write buffer the FLPR drains, parked in the SHARED page (which both cores already reach —
+/// the FLPR reads the control block there). One source sub-line of pre-packed GPIO words; sits well
+/// clear of the 64-byte control block at the page base. F4 moves these to M33-side ping-pong buffers.
+const WRITE_BUF_ADDR: usize = 0x2003_F100;
 
 /// Shared control block at the `SHARED` page base. Layout is normative and identical to the C
-/// `flpr_control_t` in `src/flpr/flpr_comms.c` — keep them in sync (`firmware/docs/ls021-flpr.md`).
+/// `flpr_control_t` in `src/flpr/flpr_source.c` — keep them in sync (`firmware/docs/ls021-flpr.md`).
 /// All fields `u32`, little-endian; `#[repr(C)]` + all-`u32` members ⇒ deterministic offsets, no
 /// padding. Accessed only through raw volatile field reads/writes (never as a `&` reference) since
 /// the FLPR mutates it concurrently.
 #[repr(C)]
-#[allow(dead_code)] // frame_count/buf/reserved are the F4 ping-pong contract — defined now, unused here.
+#[allow(dead_code)] // frame_count/reserved are the F4 contract — defined now, unused here.
 struct Control {
     magic: u32,         // 0x00 M33: layout/version tag, checked by the FLPR before acting
     m33_seq: u32,       // 0x04 M33: command sequence counter (the doorbell payload id)
-    cmd: u32,           // 0x08 M33: command word (F1: the value N)
+    cmd: u32,           // 0x08 M33: command word (F2: a CMD_* code)
     flpr_seq: u32,      // 0x0C FLPR: echoes the m33_seq it serviced (round-trip proof)
-    status: u32,        // 0x10 FLPR: ack/result (F1: cmd ^ 0xA11E; boot: FLPR_ALIVE)
+    status: u32,        // 0x10 FLPR: ack/result (F2: columns driven; boot: FLPR_ALIVE)
     frame_count: u32,   // 0x14 FLPR: frames drained (F4)
-    buf: [BufDesc; 2],  // 0x18, 0x28 ping-pong write-buffer descriptors (F4)
+    buf: [BufDesc; 2],  // 0x18, 0x28 ping-pong write-buffer descriptors (F2 uses buf[0])
     reserved: [u32; 2], // 0x38 forward-compat headroom
 }
 #[repr(C)]
 #[allow(dead_code)]
 struct BufDesc {
-    ptr: u32,
-    len: u32,
-    ready: u32,
-    consumed: u32,
+    ptr: u32,      // write-buffer base
+    len: u32,      // length in words = BCK per sub-line
+    ready: u32,    // M33 set when filled — a token the FLPR echoes into `consumed`
+    consumed: u32, // FLPR set when drained (= the serviced `ready` token)
 }
 /// Lock the cross-language contract: the C `flpr_control_t` `_Static_assert`s the same size.
 const _: () = assert!(core::mem::size_of::<Control>() == 64);
 
 const CONTROL: *mut Control = 0x2003_F000 as *mut Control;
 const LAYOUT_MAGIC: u32 = 0xF1C0_0001; // "F1 control block" — the FLPR refuses to act otherwise
-const FLPR_ALIVE: u32 = 0x0000_A11E; // FLPR boot confirmation (also the ack XOR key)
+const FLPR_ALIVE: u32 = 0x0000_A11E; // FLPR boot confirmation
 const FLPR_BADMAG: u32 = 0x0BAD_CAFE; // FLPR booted but saw the wrong magic (memory-map drift)
+const CMD_SHIFT_SUBLINE: u32 = 0x0000_0001; // drain buf[0] as one source sub-line
+
+// ── Source sub-line geometry (matches `PanelBus` in src/ls021.rs / the datasheet horizontal chart):
+//    240 columns ÷ 2 pixels-per-BCK = 120 data clocks + 4 trailing dummy/flush = 124 BCK. ──
+const COLS_PER_SUBLINE: usize = 120;
+const BCK_PER_SUBLINE: usize = 124;
+/// The 6 source data bits within a write-buffer word, pre-shifted to their **P2 pin positions**:
+/// bit0 `R0`(P2.00) bit1 `R1`(P2.01) bit2 `G0`(P2.02) bit3 `G1`(P2.03) bit4 `B0`(P2.04) bit5
+/// `B1`(P2.05). The FLPR stores the word straight to the port (`OUTCLR` the zeros, `OUTSET` the
+/// ones); `BCK`(P2.06) is the FLPR's own pulse and is never in the word. (`R0/G0/B0` = odd pixel,
+/// `R1/G1/B1` = even.)
+const DATA_MASK: u32 = 0x3F;
 
 // ── VPR00 control (secure alias base 0x5004_C000): the M33 only launches the FLPR here. NB:
 //    VPR00's own EVENTS→app-IRQ is unusable on bare metal — the app-side INTEN won't accept writes
@@ -107,13 +121,41 @@ static ACK: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 /// FLPR → M33 return doorbell. The FLPR poked `EGU20.TASKS_TRIGGER[0]`, raising
 /// `EGU20.EVENTS_TRIGGERED[0]` and (via `INTEN[0]`) this IRQ. Clear the event so it doesn't
-/// re-fire, then wake `main`; `main` reads `status`/`flpr_seq` from the control block (the FLPR
-/// wrote them, fenced, before ringing, so they're visible here).
+/// re-fire, then wake `main`; `main` reads the ack fields from the control block (the FLPR wrote
+/// them, fenced, before ringing, so they're visible here).
 #[interrupt]
 unsafe fn EGU20() {
     EGU20_EVENTS_TRIGGERED0.write_volatile(0);
     let _ = EGU20_EVENTS_TRIGGERED0.read_volatile(); // read-back: ensure the clear lands before return
     ACK.signal(());
+}
+
+/// Fill the SHARED-page write buffer with one **distinctive** test sub-line: column `c`'s word is
+/// `c & 0x3F`, so each of the 6 data lines becomes a clean divide-by-2ⁿ square wave clocked by the
+/// columns — `R0` toggles every column, `R1` every 2, `G0` every 4, … `B1` every 32. On the LA each
+/// data line has its own distinct frequency, so a **bit swap** (e.g. `R0`↔`R1`), a **stuck line**,
+/// or an **odd/even-interleave** error shows immediately. The 4 trailing dummy columns present
+/// black. (This stands in for F4's real RGB222→wire pack — here we just need a known pattern.)
+fn fill_test_subline() {
+    let buf = WRITE_BUF_ADDR as *mut u32;
+    for col in 0..BCK_PER_SUBLINE {
+        let word = if col < COLS_PER_SUBLINE { (col as u32) & DATA_MASK } else { 0 };
+        unsafe { buf.add(col).write_volatile(word) };
+    }
+}
+
+/// Hand the buffer to the FLPR and ring the doorbell: publish the descriptor (`ptr/len/ready`), the
+/// command, then bump `m33_seq` **last** (the guard), with a `dsb` so the FLPR never sees the new
+/// sequence before the buffer + descriptor it guards.
+fn ring_shift(seq: u32, ready: u32) {
+    unsafe {
+        addr_of_mut!((*CONTROL).buf[0].ptr).write_volatile(WRITE_BUF_ADDR as u32);
+        addr_of_mut!((*CONTROL).buf[0].len).write_volatile(BCK_PER_SUBLINE as u32);
+        addr_of_mut!((*CONTROL).buf[0].ready).write_volatile(ready);
+        addr_of_mut!((*CONTROL).cmd).write_volatile(CMD_SHIFT_SUBLINE);
+        addr_of_mut!((*CONTROL).m33_seq).write_volatile(seq); // seq last = the doorbell guard
+        cortex_m::asm::dsb();
+    }
 }
 
 /// Copy the blob into FLPR RAM, set the boot vector, and release the core from reset.
@@ -137,14 +179,27 @@ async fn main(_spawner: Spawner) {
         embassy_nrf::init(config)
     };
 
-    // The M33 owns the pin configuration for LED0 (P2.09); the FLPR only ever pulses OUTSET/OUTCLR
-    // (atomic, never an OUT read-modify-write) so the two cores never collide on shared port P2.
-    // Kept alive for the life of the program so the pin stays configured as the FLPR drives it.
+    // The M33 owns pin *configuration* for every line the FLPR drives; the FLPR only ever pulses
+    // OUTSET/OUTCLR (atomic, never an OUT read-modify-write) so the two cores never collide on the
+    // shared ports. Kept alive for the life of the program so the pins stay configured.
+    //   • LED0 (P2.09): the FLPR's by-eye "serviced a sub-line" marker.
+    //   • The source bus: BSP (P1.07) + the 6 data lines (P2.00..05) + BCK (P2.06). Boot Lo (the
+    //     panel-safe state). All Standard drive, matching the M33-direct `ls021_bringup` source bus.
     let _led0 = Output::new(p.P2_09, Level::Low, OutputDrive::Standard);
+    let _src_bus = [
+        Output::new(p.P1_07, Level::Low, OutputDrive::Standard), // BSP  (P1.07 — the only P1 line)
+        Output::new(p.P2_06, Level::Low, OutputDrive::Standard), // BCK  (P2.06)
+        Output::new(p.P2_00, Level::Low, OutputDrive::Standard), // R0   (P2.00, odd)
+        Output::new(p.P2_01, Level::Low, OutputDrive::Standard), // R1   (P2.01, even)
+        Output::new(p.P2_02, Level::Low, OutputDrive::Standard), // G0   (P2.02, odd)
+        Output::new(p.P2_03, Level::Low, OutputDrive::Standard), // G1   (P2.03, even)
+        Output::new(p.P2_04, Level::Low, OutputDrive::Standard), // B0   (P2.04, odd)
+        Output::new(p.P2_05, Level::Low, OutputDrive::Standard), // B1   (P2.05, even)
+    ];
     // LED1 (P1.10) is the M33's own heartbeat — proves the M33 keeps running alongside the FLPR.
     let mut led1 = Output::new(p.P1_10, Level::Low, OutputDrive::Standard);
 
-    info!("LS021 FLPR F1: launcher up — blob is {=usize} bytes", FLPR_BLOB.len());
+    info!("LS021 FLPR F2: launcher up — blob is {=usize} bytes", FLPR_BLOB.len());
 
     // Arm the control block: zero it, then write the layout magic the FLPR checks. The FLPR reads
     // `magic` first thing, so it must be set before release.
@@ -153,25 +208,22 @@ async fn main(_spawner: Spawner) {
         addr_of_mut!((*CONTROL).magic).write_volatile(LAYOUT_MAGIC);
     }
 
-    // Arm the FLPR→M33 return doorbell on EGU20 before releasing the FLPR: enable EGU channel 0's
-    // interrupt and unmask the EGU20 IRQ in the NVIC. P3 keeps the ISR snappy (it only flips a
-    // Signal). Read INTEN back to confirm it latched (it does — EGU INTEN is writable, the whole
-    // reason we bounce off EGU instead of VPR00's unwritable INTEN).
+    // Arm the FLPR→M33 return doorbell on EGU20 before releasing the FLPR (see F1 / ls021-flpr.md).
     unsafe { EGU20_INTENSET.write_volatile(1 << ACK_EGU_CH) };
     interrupt::EGU20.set_priority(Priority::P3);
     unsafe { interrupt::EGU20.enable() };
     info!(
-        "LS021 FLPR F1: EGU20 armed ch{=u32} — INTEN=0x{=u32:08x}, nvic_enabled={=bool}",
+        "LS021 FLPR F2: EGU20 armed ch{=u32} — INTEN=0x{=u32:08x}, nvic_enabled={=bool}",
         ACK_EGU_CH,
         unsafe { EGU20_INTEN.read_volatile() },
         interrupt::EGU20.is_enabled()
     );
 
     start_flpr();
-    info!("LS021 FLPR F1: FLPR released (INITPC=0x{=u32:08x}) — waiting for alive", FLPR_RAM_BASE as u32);
+    info!("LS021 FLPR F2: FLPR released (INITPC=0x{=u32:08x}) — waiting for alive", FLPR_RAM_BASE as u32);
 
-    // Boot confirmation has no doorbell (the FLPR isn't running yet when we'd arm one), so poll
-    // the control block briefly for the FLPR's ALIVE stamp (~1 s budget).
+    // Boot confirmation has no doorbell (the FLPR isn't running yet when we'd arm one), so poll the
+    // control block briefly for the FLPR's ALIVE stamp (~1 s budget).
     let mut alive = false;
     for _ in 0..200 {
         match unsafe { addr_of!((*CONTROL).status).read_volatile() } {
@@ -181,7 +233,7 @@ async fn main(_spawner: Spawner) {
             }
             FLPR_BADMAG => {
                 error!(
-                    "LS021 FLPR F1: FLPR booted but control-block magic mismatched — memory-map drift? (ls021-flpr.md)"
+                    "LS021 FLPR F2: FLPR booted but control-block magic mismatched — memory-map drift? (ls021-flpr.md)"
                 );
                 break;
             }
@@ -189,98 +241,91 @@ async fn main(_spawner: Spawner) {
         }
     }
     if !alive {
-        warn!("LS021 FLPR F1: no alive stamp — FLPR didn't boot or can't reach shared RAM; skipping round-trip");
+        warn!("LS021 FLPR F2: no alive stamp — FLPR didn't boot or can't reach shared RAM; skipping sub-line");
         loop {
             led1.toggle();
             Timer::after_millis(500).await;
         }
     }
-    info!("LS021 FLPR F1: FLPR alive — running doorbell round-trip (cmd N=1..=5)");
 
-    // Round-trip sweep: prove the bidirectional channel is reliable, not a one-shot. For each N:
-    // write the command (the m33_seq bump is the doorbell), await the EGU return interrupt, check
-    // the echo + sequence.
+    // Fill the write buffer once — the test pattern is constant, so each round re-uses it and the LA
+    // sees a stable, repeating sub-line. (F4 re-packs the buffer per frame from the framebuffer.)
+    fill_test_subline();
+    info!(
+        "LS021 FLPR F2: FLPR alive — buffer filled ({=usize} BCK: {=usize} data + dummy). Driving sub-lines.",
+        BCK_PER_SUBLINE, COLS_PER_SUBLINE
+    );
+
+    // Verification sweep: drive the sub-line a few times and check the ack each round (consumed echo,
+    // column count, sequence). The waveform itself is verified on the logic analyzer — capture BSP +
+    // BCK + the 6 data lines and diff against the M33 golden sub-line (firmware/docs/ls021-flpr.md).
     let mut seq: u32 = 0;
     let mut all_ok = true;
     for n in 1..=5u32 {
         seq += 1;
-        // Clear any stale signal *before* ringing, so a late ACK from a timed-out earlier round
-        // can't be mistaken for this command's response.
-        ACK.reset();
-        unsafe {
-            addr_of_mut!((*CONTROL).cmd).write_volatile(n);
-            addr_of_mut!((*CONTROL).m33_seq).write_volatile(seq); // seq last = the doorbell guard
-            cortex_m::asm::dsb(); // command visible before the FLPR can observe the new sequence
-        }
+        let ready = 0xBEEF_0000 | n; // distinct token (not the seq) so the consumed echo is meaningful
+        ACK.reset(); // clear any stale signal before ringing
+        ring_shift(seq, ready);
         match with_timeout(Duration::from_millis(100), ACK.wait()).await {
             Ok(()) => {
+                let consumed = unsafe { addr_of!((*CONTROL).buf[0].consumed).read_volatile() };
                 let status = unsafe { addr_of!((*CONTROL).status).read_volatile() };
                 let flpr_seq = unsafe { addr_of!((*CONTROL).flpr_seq).read_volatile() };
-                let want = n ^ FLPR_ALIVE;
-                if status == want && flpr_seq == seq {
+                if consumed == ready && status == BCK_PER_SUBLINE as u32 && flpr_seq == seq {
                     info!(
-                        "LS021 FLPR F1: round-trip {=u32}/5 OK — cmd={=u32} → status=0x{=u32:08x}, seq matched",
-                        n, n, status
+                        "LS021 FLPR F2: sub-line {=u32}/5 OK — drove {=u32} BCK, consumed=0x{=u32:08x}, seq matched",
+                        n, status, consumed
                     );
                 } else {
                     all_ok = false;
                     error!(
-                        "LS021 FLPR F1: round-trip {=u32}/5 MISMATCH — status=0x{=u32:08x} (want 0x{=u32:08x}), flpr_seq={=u32} (want {=u32})",
-                        n, status, want, flpr_seq, seq
+                        "LS021 FLPR F2: sub-line {=u32}/5 MISMATCH — status={=u32} (want {=usize}), consumed=0x{=u32:08x} (want 0x{=u32:08x}), flpr_seq={=u32} (want {=u32})",
+                        n, status, BCK_PER_SUBLINE, consumed, ready, flpr_seq, seq
                     );
                 }
             }
             Err(_) => {
                 all_ok = false;
-                // Localize the failure: did the FLPR service the command (ack fields advanced) but
-                // the EGU return interrupt not arrive, or did it never service at all?
-                let status = unsafe { addr_of!((*CONTROL).status).read_volatile() };
+                let consumed = unsafe { addr_of!((*CONTROL).buf[0].consumed).read_volatile() };
                 let flpr_seq = unsafe { addr_of!((*CONTROL).flpr_seq).read_volatile() };
                 if flpr_seq == seq {
                     error!(
-                        "LS021 FLPR F1: round-trip {=u32}/5 TIMEOUT — FLPR serviced it (status=0x{=u32:08x}, seq matched) but no EGU20 IRQ (EVENTS[0]={=u32}, INTEN=0x{=u32:08x})",
+                        "LS021 FLPR F2: sub-line {=u32}/5 TIMEOUT — FLPR serviced it (consumed=0x{=u32:08x}, seq matched) but no EGU20 IRQ (EVENTS[0]={=u32})",
                         n,
-                        status,
-                        unsafe { EGU20_EVENTS_TRIGGERED0.read_volatile() },
-                        unsafe { EGU20_INTEN.read_volatile() }
+                        consumed,
+                        unsafe { EGU20_EVENTS_TRIGGERED0.read_volatile() }
                     );
                 } else {
                     error!(
-                        "LS021 FLPR F1: round-trip {=u32}/5 TIMEOUT — FLPR did NOT service (status=0x{=u32:08x}, flpr_seq={=u32}≠{=u32}) → M33→FLPR path is the problem",
-                        n, status, flpr_seq, seq
+                        "LS021 FLPR F2: sub-line {=u32}/5 TIMEOUT — FLPR did NOT service (flpr_seq={=u32}≠{=u32}) → M33→FLPR path is the problem",
+                        n, flpr_seq, seq
                     );
                 }
             }
         }
-        // Spacing so the FLPR's LED0 pulse bursts are distinguishable by eye / on the LA.
+        // Spacing so each sub-line is a distinct, easily-triggered capture on the analyzer.
         Timer::after_millis(400).await;
     }
     if all_ok {
-        info!("LS021 FLPR F1: all round-trips OK — bidirectional M33↔FLPR channel verified");
+        info!("LS021 FLPR F2: all sub-lines acked OK — capture BSP/BCK/R0..B1 on the LA and diff vs M33");
     } else {
-        warn!("LS021 FLPR F1: some round-trips failed — see errors above");
+        warn!("LS021 FLPR F2: some sub-lines failed — see errors above");
     }
 
-    // Keep exercising the channel forever so the activity is observable on the bench: LED0 (P2.09,
-    // FLPR-driven) blinks `cmd` times per command, LED1 (P1.10, M33) toggles each command. The
-    // FLPR only drives LED0 *while servicing*, so without this loop the verification sweep above is
-    // a single ~1 s burst that's easy to miss on a scope. Commands cycle 1..=5 so the burst length
-    // varies visibly. RTT logs only on a fault here (no per-command spam).
-    info!("LS021 FLPR F1: looping round-trips forever — LED0 = FLPR response, LED1 = M33 heartbeat");
-    let mut n = 1u32;
+    // Keep driving the sub-line forever so the analyzer sees a steady stream to trigger on: each
+    // round the FLPR re-drives the (constant) buffer, LED0 blinks per sub-line, LED1 = M33 heartbeat.
+    info!("LS021 FLPR F2: looping sub-lines forever — LED0 = FLPR serviced, LED1 = M33 heartbeat");
+    let mut n = 6u32;
     loop {
         seq += 1;
+        let ready = 0xBEEF_0000 | (n & 0xFFFF);
         ACK.reset();
-        unsafe {
-            addr_of_mut!((*CONTROL).cmd).write_volatile(n);
-            addr_of_mut!((*CONTROL).m33_seq).write_volatile(seq);
-            cortex_m::asm::dsb();
-        }
+        ring_shift(seq, ready);
         if with_timeout(Duration::from_millis(200), ACK.wait()).await.is_err() {
-            warn!("LS021 FLPR F1: keepalive round-trip (cmd={=u32}) timed out", n);
+            warn!("LS021 FLPR F2: keepalive sub-line (seq={=u32}) timed out", seq);
         }
         led1.toggle();
-        n = if n >= 5 { 1 } else { n + 1 };
+        n = n.wrapping_add(1);
         Timer::after_millis(500).await;
     }
 }
