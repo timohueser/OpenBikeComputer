@@ -39,7 +39,12 @@ the logic analyzer at a slow clock is exactly what L1–L3 do.
   format. **Consequence: every gate line is written twice — an MSB sub-line then an LSB
   sub-line.**
 - **6-bit parallel source bus, two pixels at once:** `R0/G0/B0` = the odd pixel, `R1/G1/B1`
-  = the even pixel → **120 `BCK` per sub-line** for 240 columns.
+  = the even pixel → 120 pixel-pair columns for 240 columns.
+  - ⚠️ **DDR — the panel latches on BOTH `BCK` edges** (found on glass in F5, issue #155): drive a
+    *distinct* pair on the rising edge and the next on the falling, so the 120 columns clock out in
+    **~60 `BCK` cycles** per sub-line. The original "120 `BCK` cycles, one pair held per cycle" model
+    was wrong — holding a pair across a whole `BCK` period made the panel capture it twice (half
+    horizontal resolution, right half dropped, 64 colours → 32; invisible on solids).
 - **No internal controller, no command set.** (The vendor EVK drives it through an Epson
   S1D13C00; we replace that with the M33.)
 - **Slow, bit-bang-friendly:** `BCK` ≈ 0.746–0.758 MHz; frame `f_V` ≈ 18–18.9 Hz
