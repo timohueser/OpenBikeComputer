@@ -7,7 +7,7 @@ description: How OpenBikeComputer is organised so a desktop simulator and a micr
 
 The whole project is shaped by one decision: **everything device-specific lives at the edges, and everything in the middle is shared.** The map reader, the route reader, the renderer, and the application logic are one body of `no_std` code that runs *byte-for-byte identically* on the desktop simulator and on the microcontroller. Only the outermost shell — where pixels land, where bytes come from, what a "fix" is — differs between them.
 
-That's what lets the simulator you can [run in your browser](../../) be the real thing rather than a mock-up, and it's what will let the eventual nRF54L firmware reuse the entire stack unchanged. This page is the map of that structure.
+That's what lets the simulator you can [run in your browser](../../) be the real thing rather than a mock-up, and it's what lets the nRF54L firmware reuse the entire stack unchanged. This page is the map of that structure.
 
 ## The runtime stack
 
