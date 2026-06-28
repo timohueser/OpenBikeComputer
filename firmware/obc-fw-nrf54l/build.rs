@@ -1,6 +1,14 @@
-//! Put `memory.x` where the linker can find it, and pass the bin link args
+//! Emit `$OUT_DIR/memory.x` (the linker's region map) and pass the bin link args
 //! (`--nmagic`, cortex-m-rt's `link.x`, defmt's interned-string section). Re-link
-//! if `memory.x` changes. Mirrors embassy-nrf's `nrf54l15-app` example build.rs.
+//! if the source region map changes. Mirrors embassy-nrf's `nrf54l15-app` example build.rs.
+//!
+//! ⚠️ **Why the default map lives in `memory-default.x`, not `memory.x`.** cortex-m-rt's `link.x`
+//! does `INCLUDE memory.x`, and the linker resolves that from its **CWD (the crate root) first** —
+//! ahead of the `-L $OUT_DIR` search path. So a `memory.x` committed in the crate root would
+//! **shadow** the carved copy this script writes to `$OUT_DIR`, and the FLPR carve would silently
+//! never apply (the M33 stack would start at the full-256 KB top and grow down *through* the FLPR
+//! image — issue #165: it corrupted the blob on the first deep render). Keeping the source map under
+//! a non-`memory.x` name means the *only* `memory.x` the linker can find is the one we emit here.
 //!
 //! Under the FLPR features — **`ls021-flpr`** (the bring-up bin, issue #150) or **`panel-ls021`**
 //! (the real app on the LS021 panel, issue #165) — it additionally (1) emits a *carved* `memory.x`
@@ -46,10 +54,10 @@ fn main() {
     if flpr {
         fs::write(out.join("memory.x"), FLPR_MEMORY_X).unwrap();
     } else {
-        fs::write(out.join("memory.x"), include_bytes!("memory.x")).unwrap();
+        fs::write(out.join("memory.x"), include_bytes!("memory-default.x")).unwrap();
     }
     println!("cargo:rustc-link-search={}", out.display());
-    println!("cargo:rerun-if-changed=memory.x");
+    println!("cargo:rerun-if-changed=memory-default.x");
     println!("cargo:rerun-if-changed=build.rs");
 
     if flpr {

@@ -38,7 +38,7 @@ ls021-bringup = []
 # `ls021-flpr` is the **LS021 FLPR bring-up** (epic #149): the successor to the M33-direct
 # bring-up that moves the panel waveform generation onto the nRF54L15's FLPR (the VPR RISC-V
 # coprocessor). The feature gates the standalone `ls021_flpr_bringup` bin (below) **and** the
-# `build.rs` work it needs: a *carved* `memory.x` reserving the top 32 KB of SRAM for the FLPR
+# `build.rs` work it needs: a *carved* `memory.x` reserving the top 12 KB of SRAM for the FLPR
 # image + a cross-core control-block page, plus cross-compiling the freestanding C blob in
 # `src/flpr/` with a RISC-V gcc (`brew install riscv64-elf-gcc`). Off by default so `main.rs`
 # keeps the full 256 KB and needs no RISC-V toolchain. F0 (#150) proved the build/boot path

@@ -235,6 +235,31 @@ fn spin_until(cond: impl Fn() -> bool) -> bool {
     false
 }
 
+/// Dump the full cross-core handshake state when a frame stalls — the read-back that tells *how* the
+/// FLPR died (issue #165 freeze debug). `m33_seq` ought to equal the `seq` we just rang; `flpr_seq`
+/// is where the FLPR's poll loop last got to (≪ `seq` ⇒ it never saw our doorbell); `magic` should
+/// still be `LAYOUT_MAGIC` (a different value = the SHARED page was clobbered); `frame_count` is how
+/// many frames the FLPR has *ever* run (frozen ⇒ it stopped servicing). `CPURUN.EN` reads whether
+/// the core is still released from reset. Together these separate "FLPR hung mid-loop" (CPURUN=1,
+/// flpr_seq stale, magic intact) from "FLPR reset/faulted" (CPURUN=0) from "shared RAM corrupted"
+/// (magic wrong) — which the bare "consumed/ready" line can't.
+fn dump_flpr_state(seq: u32) {
+    let (magic, m33_seq, flpr_seq, status, frames) = unsafe {
+        (
+            addr_of!((*CONTROL).magic).read_volatile(),
+            addr_of!((*CONTROL).m33_seq).read_volatile(),
+            addr_of!((*CONTROL).flpr_seq).read_volatile(),
+            addr_of!((*CONTROL).status).read_volatile(),
+            addr_of!((*CONTROL).frame_count).read_volatile(),
+        )
+    };
+    let cpurun = unsafe { VPR00_CPURUN.read_volatile() };
+    error!(
+        "LS021 FLPR: state @ stall — magic=0x{=u32:08x} (want 0x{=u32:08x}) m33_seq={=u32} (rang {=u32}) flpr_seq={=u32} status={=u32} frame_count={=u32} CPURUN.EN={=u32}",
+        magic, LAYOUT_MAGIC, m33_seq, seq, flpr_seq, status, frames, cpurun & 1
+    );
+}
+
 /// The board-agnostic [`Panel`] backend for the LS021 over the FLPR. Owns the resident RGB222
 /// framebuffer plane; the app renders the whole frame into it (the map path writes it directly as
 /// device-64 via [`fb_mut`](Self::fb_mut); a whole-frame RGB565 generator draws it band-by-band
@@ -304,6 +329,7 @@ impl<'b> Ls021Flpr<'b> {
                     "LS021 FLPR: STALLED at row {=usize} — FLPR didn't free buf[{=usize}] (consumed={=u32}, ready={=u32})",
                     row, i, buf_consumed(i), buf_ready(i)
                 );
+                dump_flpr_state(s);
                 return false;
             }
             let t0 = Instant::now();
@@ -317,6 +343,7 @@ impl<'b> Ls021Flpr<'b> {
                 "LS021 FLPR: frame TIMEOUT — FLPR never echoed seq {=u32} (the scan or a ping-pong wait stalled)",
                 s
             );
+            dump_flpr_state(s);
             return false;
         }
         let frame_us = t_frame.elapsed().as_micros();
