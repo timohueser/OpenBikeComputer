@@ -23,18 +23,27 @@
  * The M33 launcher is src/bin/ls021_flpr_bringup.rs; the spec (buffer format, pin/port map, the
  * ping-pong handshake, the LA recipe) is firmware/docs/ls021-flpr.md.
  *
+ * **Partial / dirty-row updates (issue #163).** The scan is driven by a **dirty-row span list**
+ * (`n_spans` + `spans[]`, packed `(start_row << 16) | count`, ascending + disjoint): it fast-forwards
+ * the gate over clean rows (`dummy_advance`, GEN idle — nothing latches, the row keeps its memory),
+ * writes only the spanned rows, and **stops early** after the last one (no forced scan to 320; the
+ * gates below stay parked and retain). A full frame is the degenerate `n_spans=1, spans[0]=(0,320)`.
+ * The ping-pong index toggles per **dirty** row consumed, so the buffers carry consecutive dirty
+ * rows regardless of which absolute rows they are.
+ *
  * The round-trip, per frame:
- *   M33   resets both buf[i] ready/consumed, pre-packs row 0 → buf[0] and row 1 → buf[1] from the
- *         framebuffer (each a ROW buffer: MSB sub-line [0..124) then LSB sub-line [124..248)), bumps
- *         each buf[i].ready, then writes cmd = CMD_RUN_FRAME + bumps m33_seq (seq last), dsb.
- *   FLPR  polls m33_seq; on a change, for CMD_RUN_FRAME runs one frame:
- *         INTB high → GSP → 2 dummy advances → 320 rows, each draining buf[row & 1] under the
- *         **ping-pong handshake** (wait ready != consumed, scan the gate row, set consumed = ready)
- *         → 6 dummy advances → INTB low. Meanwhile the M33 packs rows 2..319 into whichever buffer
- *         the FLPR just freed. The FLPR then bumps frame_count, writes status = rows scanned +
- *         flpr_seq = m33_seq (seq last), pokes EGU20 to fire the M33's EGU20 IRQ #201, and blinks
- *         LED0 (P2.09) once as a by-eye "drained a frame" marker.
- *   M33   wakes on the EGU20 IRQ, checks status == 320 && flpr_seq == m33_seq.
+ *   M33   resets both buf[i] ready/consumed, publishes the span list, pre-packs the first two DIRTY
+ *         rows → buf[0]/buf[1] from the framebuffer (each a ROW buffer: MSB sub-line [0..124) then
+ *         LSB sub-line [124..248)), bumps each buf[i].ready, then writes cmd = CMD_RUN_FRAME + bumps
+ *         m33_seq (seq last), dsb.
+ *   FLPR  polls m33_seq; on a change, for CMD_RUN_FRAME runs the span-masked scan:
+ *         INTB high → GSP → lead dummies → per span {fast-forward to start, then drain+write each row
+ *         under the **ping-pong handshake** (wait ready != consumed, scan the gate row, set consumed
+ *         = ready)} → trail dummies → INTB low. Meanwhile the M33 packs the remaining dirty rows into
+ *         whichever buffer the FLPR just freed. The FLPR then bumps frame_count, writes status =
+ *         dirty rows scanned + flpr_seq = m33_seq (seq last), pokes EGU20 to fire the M33's EGU20 IRQ
+ *         #201.
+ *   M33   wakes on the EGU20 IRQ, checks status == sum(span counts) && flpr_seq == m33_seq.
  *
  * **Two ports (the F2 lesson, now load-bearing).** The timing-critical bus — the 6 data lines +
  * `BCK` — is all on **P2** (the FLPR's fast trace domain), so the hot per-column loop stays single-
@@ -98,19 +107,30 @@ typedef struct {
     uint32_t consumed; /* FLPR set when drained (= the serviced `ready` token) */
 } buf_desc_t;          /* 16 bytes */
 
+/* Dirty-row span list cap (issue #163). Each frame the M33 publishes 1..=MAX_DIRTY_SPANS ascending
+ * `(start_row, count)` spans; the masked scan fast-forwards the gate over the gaps and writes only
+ * the spanned rows. 16 disjoint regions is far more than any UI produces (a full frame is ONE span
+ * `(0,320)`; the bulge is one; the future renderer dirty-region block coalesces bands into a few).
+ * **Must equal `MAX_DIRTY_SPANS` in the Rust `Control` (ls021_flpr.rs).** */
+#define MAX_DIRTY_SPANS 16u
+
 typedef struct {
     volatile uint32_t magic;       /* 0x00 M33: layout/version tag, checked before acting */
     volatile uint32_t m33_seq;     /* 0x04 M33: command sequence counter (the doorbell) */
     volatile uint32_t cmd;         /* 0x08 M33: command word (F3: a CMD_* code) */
     volatile uint32_t flpr_seq;    /* 0x0C FLPR: echoes the m33_seq it serviced (round-trip proof) */
-    volatile uint32_t status;      /* 0x10 FLPR: ack/result (F3: rows scanned; boot: FLPR_ALIVE) */
+    volatile uint32_t status;      /* 0x10 FLPR: ack/result (#163: dirty rows scanned; boot: FLPR_ALIVE) */
     volatile uint32_t frame_count; /* 0x14 FLPR: frames drained (bumped per CMD_RUN_FRAME) */
-    volatile buf_desc_t buf[2];    /* 0x18, 0x28 row-buffer descriptors — buf[0] even rows, buf[1] odd (ping-pong) */
-    volatile uint32_t reserved[2]; /* 0x38 pad — forward-compat headroom */
-} flpr_control_t;
+    volatile buf_desc_t buf[2];    /* 0x18, 0x28 row-buffer descriptors — ping-pong, toggled per DIRTY row (#163) */
+    volatile uint32_t n_spans;     /* 0x38 M33: #dirty-row spans in `spans` (1 = a full frame `(0,320)`) */
+    volatile uint32_t spans[MAX_DIRTY_SPANS]; /* 0x3C M33: packed `(start_row << 16) | count`, ascending, disjoint */
+} flpr_control_t;                  /* 0x7C = 124 bytes */
 
-/* Lock the cross-language contract: the Rust `Control` in ls021_flpr_bringup.rs asserts the same. */
-_Static_assert(sizeof(flpr_control_t) == 64, "control block must be 64 bytes (matches M33 Control)");
+/* Lock the cross-language contract: the Rust `Control` in ls021_flpr.rs asserts the same 124 bytes
+ * (the two structs alias the same shared-RAM bytes, so the size must match exactly). 124 (0x7C) also
+ * stays **below the ping-pong buffer base** (control_base + 0x100, see WRITE_BUF_ADDR), so growing it
+ * with the span list never moves the buffers. */
+_Static_assert(sizeof(flpr_control_t) == 124, "control block must be 124 bytes (matches the M33 Control; stays below 0x100)");
 
 #define CTRL ((volatile flpr_control_t *)0x2003F000u)
 
@@ -118,8 +138,10 @@ _Static_assert(sizeof(flpr_control_t) == 64, "control block must be 64 bytes (ma
 #define FLPR_ALIVE   0x0000A11Eu /* boot confirmation */
 #define FLPR_BADMAG  0x0BADCAFEu /* booted but the control-block magic mismatched */
 
-/* Command codes (M33 → FLPR via `cmd`). One piece of work: run a full frame (F4 ping-ponging the
- * two row buffers; the F2 CMD_SHIFT_SUBLINE=1 is subsumed, the F3 single-buffer reuse generalised). */
+/* Command codes (M33 → FLPR via `cmd`). One piece of work: run a frame driven by the dirty-row span
+ * list (issue #163). A full frame is the degenerate case `n_spans=1, spans[0]=(0,320)`, so this one
+ * command **subsumes** the old whole-frame scan (not a parallel path); the F2 CMD_SHIFT_SUBLINE=1 was
+ * already subsumed, the F3 single-buffer reuse generalised. */
 #define CMD_RUN_FRAME 0x00000002u
 
 /* ── Frame geometry (matches `PanelBus` in src/ls021.rs / the datasheet §6-5/§6-6 charts). ── */
@@ -281,7 +303,9 @@ static void write_gate_row(uint32_t base, uint32_t len)
 }
 
 /* Drain one row buffer under the **ping-pong handshake**, then scan its gate row. `i` selects
- * buf[i] (buf[0] = even rows, buf[1] = odd). The two per-buffer counters are the doorbell:
+ * buf[i]; the M33 toggles the ping-pong index per **dirty** row consumed (issue #163: the buffers
+ * carry consecutive *dirty* rows, not absolute even/odd rows). The two per-buffer counters are the
+ * doorbell:
  *   • the M33 fills buf[i] from the framebuffer, then bumps `ready` (data first, dsb, then ready);
  *   • the FLPR waits until `ready != consumed` (a fresh row is published), scans it, then sets
  *     `consumed = ready` (the row is drained → the M33 may refill buf[i]).
@@ -301,13 +325,27 @@ static void drain_row(uint32_t i)
     fence();                                    /* `consumed` visible before the M33 refills buf[i] */
 }
 
-/* Run one full frame, ping-ponging the two row buffers. The datasheet frame envelope is unchanged
- * from F3 (mirroring `PanelBus::fill_solid`); the only difference is that each of the 320 pixel rows
- * is drained from buf[row & 1] under the handshake (`drain_row`) instead of reusing one buffer:
+/* Run one frame as a **span-masked scan** (issue #163). The datasheet frame envelope is unchanged
+ * from F3 (mirroring `PanelBus::fill_solid`); what changed is which rows are *written* vs.
+ * *fast-forwarded*. The gate token walks a shift register top-down — `GSP` loads gate 0, every
+ * `GCK` period advances one row — so to reach row N you must clock past 0..N-1, but you can:
+ *   • **fast-forward a clean row** with `dummy_advance` (a `GCK` period, `GEN` idle) — it advances
+ *     the gate but latches nothing, so the row keeps its retained memory; and
+ *   • **stop early** — after the last dirty row + the trailing flush we drop `INTB`, leaving the
+ *     gate token parked partway. Rows below the last dirty span are never advanced → they retain.
+ * So a partial frame costs one cheap `GCK` advance per row from the top down to the lowest dirty
+ * row, plus a full source write per row actually changed; rows below cost nothing.
+ *
+ * Driven by the dirty-row descriptor (`CTRL->n_spans` + `CTRL->spans`, packed `(start<<16)|count`,
+ * ascending + disjoint). `gate` is the next visible row the scan will land on; `dirty` is the
+ * ping-pong index, toggled per **dirty** row consumed (the M33 publishes dirty rows ascending into
+ * the alternating buffers). The envelope:
  *   1. INTB high for the WHOLE frame (every frame, init-black included — INTB low = "no write").
- *   2. GSP start pulse, then 320 pixel rows (each one gate line in one GCK period), bracketed by
- *      lead/trail dummy gate advances; GSP releases on the first lead dummy's GCK edge.
- * Returns the number of rows scanned (== ROWS_PER_FRAME), which the M33 checks. */
+ *   2. GSP start pulse, lead dummy advances (GSP releases on the first's GCK edge).
+ *   3. For each span: fast-forward to its start, then drain+write each of its rows.
+ *   4. Trailing dummy flush, then INTB low (early stop — never a forced scan to row 320).
+ * A full frame is just `n_spans=1, spans[0]=(0<<16)|320`. Returns the number of **dirty** rows
+ * scanned (= sum of span counts), which the M33 cross-checks. */
 static uint32_t run_frame(void)
 {
     GPIO1_OUTSET = INTB_MASK; /* frame envelope HIGH for the whole write */
@@ -318,16 +356,32 @@ static uint32_t run_frame(void)
     for (uint32_t i = 0; i < GATE_DUMMY_LEAD; i++) {
         dummy_advance(i == 0); /* GSP releases on the very first GCK edge */
     }
-    for (uint32_t row = 0; row < ROWS_PER_FRAME; row++) {
-        drain_row(row & 1u); /* even rows ← buf[0], odd rows ← buf[1] */
+
+    uint32_t n_spans = CTRL->n_spans;
+    uint32_t gate = 0;  /* next visible row the gate token will land on (0-based) */
+    uint32_t dirty = 0; /* ping-pong index across dirty rows (NOT absolute row & 1) */
+    for (uint32_t s = 0; s < n_spans; s++) {
+        uint32_t span = CTRL->spans[s];
+        uint32_t start = span >> 16;
+        uint32_t count = span & 0xFFFFu;
+        while (gate < start) {
+            dummy_advance(0); /* fast-forward a clean row: advance the gate, GEN idle, latch nothing */
+            gate++;
+        }
+        for (uint32_t k = 0; k < count; k++) {
+            drain_row(dirty & 1u); /* write this dirty row; its leading GCK edge advances onto `gate` */
+            dirty++;
+            gate++;
+        }
     }
+
     for (uint32_t i = 0; i < GATE_DUMMY_TRAIL; i++) {
-        dummy_advance(0);
+        dummy_advance(0); /* "necessary signal" blank flush after the last dirty row */
     }
 
     GPIO1_OUTCLR = GSP_MASK;  /* belt-and-suspenders; already released on the first lead dummy */
-    GPIO1_OUTCLR = INTB_MASK; /* end of frame — the panel now holds the image */
-    return ROWS_PER_FRAME;
+    GPIO1_OUTCLR = INTB_MASK; /* end of frame — the panel now holds the image (early-stopped) */
+    return dirty;             /* total dirty rows scanned — the M33 cross-checks == sum of span counts */
 }
 
 void flpr_main(void)
@@ -357,13 +411,14 @@ void flpr_main(void)
 
         uint32_t rows = 0;
         if (cmd == CMD_RUN_FRAME) {
-            /* Scan a frame, draining buf[row & 1] under the ping-pong handshake (the per-buffer
-             * ready/consumed echo now happens per row inside drain_row, not once per frame). */
+            /* Run the span-masked scan (#163): fast-forward clean rows, drain+write the dirty spans
+             * under the ping-pong handshake (the per-buffer ready/consumed echo happens per dirty
+             * row inside drain_row), early-stop after the last dirty row. */
             rows = run_frame();
             CTRL->frame_count++; /* frames drained (liveness + the round-trip contract) */
         }
 
-        CTRL->status = rows;  /* rows scanned (0 for an unknown cmd) — the M33 cross-checks == 320 */
+        CTRL->status = rows;  /* dirty rows scanned (0 for an unknown cmd) — M33 cross-checks == sum of span counts */
         fence();              /* status/consumed visible before the seq guard */
         CTRL->flpr_seq = seq; /* seq last = the ack guard the M33 reads */
         fence();              /* ack visible before we ring the doorbell */
