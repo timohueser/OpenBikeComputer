@@ -76,6 +76,10 @@ pub mod button_input;
 // The protocol + sources move to the nRF54L unchanged.
 pub mod debug_usb;
 pub mod framebuffer;
+// The LS021B7DD02 source-bus wire pack (issue #154) — the host-tested RGB222 → FLPR-wire transform
+// the nRF's FLPR backend drains, the sibling of `framebuffer::device64_to_rgb565`. Pure integer
+// math, so it always compiles and its unit tests run in the host workspace.
+pub mod ls021_wire;
 // The banded display seam ([`Panel`]) + the [`Band`] frame-absolute band view (issue #122). The
 // boards that ship (nRF54L and beyond) have no SDRAM scan-out, so they push a frame band-by-band
 // over SPI/DMA; `Panel` hides that behind the same whole-frame generator the SDRAM plane uses.
@@ -88,6 +92,7 @@ pub mod time;
 
 pub use button_input::{ButtonInput, Timing};
 pub use framebuffer::{device64_to_rgb565, FbDevice64, Framebuffer565, FramebufferArgb4444};
+pub use ls021_wire::pack_row as ls021_pack_row;
 pub use panel::{Band, Panel};
 pub use sd::{SdByteSink, SdByteSource, SdTrackSink};
 pub use synth::SynthLocation;
