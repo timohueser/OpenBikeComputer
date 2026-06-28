@@ -200,9 +200,16 @@ What the counts mean:
 - **120 pixel-pair columns per sub-line** + a few dummy/flush columns that push the last columns through the source shift register. Because the panel is **DDR** (a pair per `BCK` *edge*, see above), those 120 columns are clocked in **~60 `BCK` cycles**, not 120.
 - **`GSP`** is pulsed once at frame start and released on the first `GCK` edge so its high overlaps `GCK(1)`.
 
-### Partial update — why this panel suits low-power UIs
+### Partial update — how the FLPR backend rewrites only what changed
 
-Because pixel memory is retained, you do **not** have to rewrite the whole frame. You can fast-forward `GCK` over the rows you are *not* changing — with `GEN` inactive so nothing latches — and only do the shift-and-latch work on the rows that changed. Skipping a row costs a single fast `GCK` advance instead of two full sub-line writes. For a UI that changes a few fields per second, that is a large power win, and it dovetails with the renderer's [redraw-only-what-changed](../../software/rendering/) design.
+Because pixel memory is retained, you do **not** have to rewrite the whole frame. The FLPR backend drives a **dirty-row span list** instead of a fixed 0→320 scan, and the panel's two axes make that cheap in one direction only:
+
+- **Vertical (320 gate lines) — freely skippable.** To *not* update a row, clock `GCK` with `GEN` inactive: a no-latch **fast-forward** that advances the gate token but writes nothing, so the row keeps its retained memory. Skipping a row costs one fast `GCK` advance instead of two full sub-line writes.
+- **Horizontal (240 columns) — all-or-nothing per touched row.** A `GEN` pulse latches the *entire* 240-wide source register, so any row you touch you rewrite **in full** (you must re-supply the kept pixels too). There is no sub-span latch.
+
+So a partial frame is a set of ascending **row spans**: fast-forward the gate to the first dirty row, full-width-rewrite each dirty row, and **stop early** — drop `INTB` after the last dirty row, leaving the gate token parked partway. Rows below it are never advanced, so they hold. A full frame is just the degenerate one-span case `(0, 320)`.
+
+The consequence for layout: **column-narrow overlays buy nothing** — a right-edge bulge spanning rows 60–280 still rewrites all 240 columns of those ~220 rows; the only saving is vertical (skip the rows above, stop below). Where partial updates shine is **vertically compact** regions — a clock in the top strip (rewrite ~40 rows, skip ~280) is an ~8× win. This is the low-power payoff: the panel is nearly free at rest, and cost scales with how much you rewrite, so it dovetails with the renderer's [redraw-only-what-changed](../../software/rendering/) design.
 
 ## Power-on, power-off, and retention
 

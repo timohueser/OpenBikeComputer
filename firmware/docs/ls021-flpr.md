@@ -245,23 +245,25 @@ block and these doorbells.
 > and an **EGU interrupt** for FLPR→M33. Both are exactly what F4 needs (the FLPR polls a
 > buffer-ready flag; the M33 sleeps until an IRQ says a buffer drained).
 
-### Control block (64 bytes at `0x2003_F000`)
+### Control block (124 bytes at `0x2003_F000`)
 
-Normative layout, **identical** in `Control` (Rust, `ls021_flpr_bringup.rs`) and `flpr_control_t`
-(C, `flpr_pingpong.c`) — both static-assert the 64-byte size. `#[repr(C)]` + all-`u32` members ⇒ no
-padding, deterministic offsets. Little-endian; every field is accessed `volatile` (the cores write
-it concurrently).
+Normative layout, **identical** in `Control` (Rust, `ls021_flpr.rs`) and `flpr_control_t`
+(C, `flpr_pingpong.c`) — both static-assert the **124-byte** size (the two structs alias the same
+shared-RAM bytes, and 124 = `0x7C` stays below the ping-pong buffer base at `control + 0x100`, so the
+span list never moves the buffers). `#[repr(C)]` + all-`u32` members ⇒ no padding, deterministic
+offsets. Little-endian; every field is accessed `volatile` (the cores write it concurrently).
 
 | off  | field         | writer | meaning |
 |------|---------------|--------|---------|
 | 0x00 | `magic`       | M33    | layout/version tag `0xF1C0_0001`; the FLPR refuses to act if it mismatches |
-| 0x04 | `m33_seq`     | M33    | command sequence counter — **the M33→FLPR doorbell** (bumped last, after `cmd`) |
-| 0x08 | `cmd`         | M33    | command word (F1: the value `N`) |
+| 0x04 | `m33_seq`     | M33    | command sequence counter — **the M33→FLPR doorbell** (bumped last, after the pre-fill) |
+| 0x08 | `cmd`         | M33    | command word (`CMD_RUN_FRAME = 2`) |
 | 0x0C | `flpr_seq`    | FLPR   | echoes the `m33_seq` it serviced (round-trip proof) |
-| 0x10 | `status`      | FLPR   | ack/result (F1: `cmd ^ 0xA11E`; boot: `0xA11E` alive, `0x0BAD_CAFE` = magic mismatch) |
-| 0x14 | `frame_count` | FLPR   | frames drained (F4; defined now, unused in F1) |
-| 0x18 | `buf[0..2]`   | both   | `BufDesc { ptr, len, ready, consumed }` ×2 (16 B each) — F4 ping-pong descriptors |
-| 0x38 | `reserved[2]` | —      | forward-compat headroom |
+| 0x10 | `status`      | FLPR   | ack/result (**#163: dirty rows scanned** = Σ span counts; boot: `0xA11E` alive, `0x0BAD_CAFE` = magic mismatch) |
+| 0x14 | `frame_count` | FLPR   | frames drained (bumped per `CMD_RUN_FRAME`) |
+| 0x18 | `buf[0..2]`   | both   | `BufDesc { ptr, len, ready, consumed }` ×2 (16 B each) — ping-pong descriptors, **toggled per dirty row** (#163) |
+| 0x38 | `n_spans`     | M33    | **#163:** number of dirty-row spans (1 = a full frame `(0, 320)`) |
+| 0x3C | `spans[16]`   | M33    | **#163:** packed `(start_row << 16) \| count`, ascending + disjoint, ≤ `MAX_DIRTY_SPANS` = 16 |
 
 ### Doorbells
 
@@ -610,11 +612,13 @@ Each `buf[i]` carries two counters, `ready` (M33) and `consumed` (FLPR):
 - **M33 back-pressure:** it waits for `consumed == ready` before refilling, so it never overwrites a
   buffer the FLPR is mid-scan on.
 
-A frame is bracketed as before: the M33 resets both descriptors, pre-packs rows 0/1, then writes
-`cmd = CMD_RUN_FRAME` + bumps `m33_seq` (the per-frame **command** doorbell, one `dsb` ordering the
-whole pre-fill); the FLPR runs the gate scan draining `buf[row & 1]` per row; at frame end it bumps
-`frame_count`, sets `status = 320` + `flpr_seq = m33_seq`, and pokes `EGU20` (the FLPR→M33 frame-done
-doorbell, IRQ #201). The M33 checks `status == 320 && flpr_seq == m33_seq`.
+A frame is bracketed as before: the M33 resets both descriptors, **publishes the dirty-row span list**
+(#163, below), pre-packs the first two *dirty* rows, then writes `cmd = CMD_RUN_FRAME` + bumps
+`m33_seq` (the per-frame **command** doorbell, one `dsb` ordering the whole pre-fill); the FLPR runs
+the span-masked gate scan draining `buf[dirty & 1]` per *dirty* row; at frame end it bumps
+`frame_count`, sets `status = #dirty rows` + `flpr_seq = m33_seq`, and pokes `EGU20` (the FLPR→M33
+frame-done doorbell, IRQ #201). The M33 checks `status == Σ span counts && flpr_seq == m33_seq`. A
+full frame (the F4/F5 behaviour) is just the one-span list `[(0, 320)]`.
 
 ### Timing — the pack-vs-drain overlap
 
@@ -769,12 +773,12 @@ the FLPR. ~97 ms full-frame (~10 fps) is the intermediate this ships on; partial
   carve shrank to 12 KB + the band drop together free the ~32 KB the FLPR feature's 244 KB demands.
   The `main.rs` budget assert is retargeted to 244 KB under `panel-ls021`; ~209 KB statics + ~35 KB
   stack fit with the same `nrf-mem` caps as the ST7789 build.
-- **COM + input coexist with the blocking push.** COM (`VCOM`/`VB`/`VA`, M33-driven) and a
-  **gesture-only** input plane share one high-priority `InterruptExecutor` (SWI00 @ P3). The map
-  plane's `push_frame` is a ~97 ms blocking busy-poll; COM keeps alternating and buttons stay
-  responsive because the executor preempts thread mode. There is **no composite-on-push hold bulge**
-  on this backend — the FLPR scans a whole frame at once, so the partial-window overlay is a #163
-  follow-up; the hold *gestures* still fire, only the fluid bulge preview is absent.
+- **COM + input coexist with the blocking push.** COM (`VCOM`/`VB`/`VA`, M33-driven) and the input
+  plane share one high-priority `InterruptExecutor` (SWI00 @ P3). The map plane's push is a blocking
+  busy-poll; COM keeps alternating and buttons stay responsive because the executor preempts thread
+  mode. (The hold bulge was *not rendered* in #165 — the partial-update mechanism it needs is
+  [#163](#163--partial--dirty-row-updates), below, which now shares the `InputPlane` and composites
+  the bulge into a dirty-row push.)
 
 ### The relocated DK pin map (⚠️ verify on your DK)
 
@@ -830,6 +834,69 @@ The app's full P1/P0 allocation (FLPR build):
   ~97 ms/frame. **⚠️ meter `VDD2` (5 V gate rail) first** if a scan looks right on the LA but the
   glass is garbage (#142). If a gate line stays dark, the relocated pin may not be broken out on the
   DK header — remap.
+
+## #163 — partial / dirty-row updates
+
+**The payoff the FLPR architecture was built for.** #165 ships full-frame pushes (~97 ms); #163 lets
+the FLPR rewrite **only the rows that changed** and fast-forward the gate scan over the rest, so a
+small overlay costs a fraction of a frame (and a fraction of the power).
+
+### Why vertical-only — the panel is row-addressed
+
+The two axes are **not** symmetric. **Vertical (320 gate lines) is freely skippable:** to *not* update
+a row, clock `GCK` with `GEN` idle — a no-latch "fast-forward" (`dummy_advance`). **Horizontal (240
+columns) is all-or-nothing per touched row:** a `GEN` pulse latches the *entire* 240-wide source
+register, so any row you touch you rewrite in full (kept pixels included). So a partial frame is a set
+of **row spans**: fast-forward to the first dirty row, full-width-rewrite the dirty rows, and **stop
+early** (the gate token parks; un-advanced rows below keep their retained memory). Column-narrow
+overlays buy nothing — a right-edge bulge over rows 60–280 still rewrites all 240 columns of those
+~220 rows; the only saving is vertical (skip above, stop below). The win shines on vertically-compact
+regions (a top-strip clock: write 40, skip 280).
+
+### The dirty-row descriptor
+
+The masked scan reads a **span list** from the control block (chosen over a 320-bit bitmap — a band
+*is* a span, fast-forward is a counted `GCK` burst, and it hands the scan its own #dirty-rows +
+early-stop point for free):
+
+| field | meaning |
+|---|---|
+| `n_spans` | number of dirty-row spans (1 = a full frame `(0, 320)`) |
+| `spans[16]` | packed `(start_row << 16) \| count`, **ascending + disjoint**, ≤ `MAX_DIRTY_SPANS` = 16 |
+
+The M33 coalesces adjacent bands into spans (trivial — `flush_band` arrives ascending). `run_frame`
+becomes the masked scan: `for span { fast-forward to start; drain+write count rows }`, trailing
+flush, `INTB` low — `CMD_RUN_FRAME` is **subsumed**, not a parallel path. The **ping-pong handshake is
+unchanged**; the only difference is the buffer index toggles per **dirty** row consumed (the M33
+publishes dirty rows ascending into the alternating buffers), not per absolute `row & 1`.
+
+### M33 seam + the hold bulge
+
+`Ls021Flpr` grows `push_spans(&[(start, count)])` (each dirty row packed straight from the clean `fb`)
+and `push_overlay_spans(spans, composite)` (each dirty row's clean pixels handed to a closure to draw
+the bulge over, then re-quantised — `fb` stays the clean-map source of truth, no readback, no `fb`
+mutation; the `device64 → rgb565 → device64` round-trip is lossless on the gamut, so untouched pixels
+reproduce the map seam-free). The `Panel` seam records each `flush_band`'s rows and `end_frame` drives
+exactly those spans, so a backend that bands only the changed rows gets a partial frame for free.
+
+The hold bulge (unrendered in #165) is now wired through this: the `InputPlane` is **shared** between
+`input_task` (recognises + animates the bulge under the lock) and the map plane (composites + pushes).
+On a static map the map plane re-pushes only the bulge's row span (~56–248); a quiet bulge gets one
+trailing clear frame (the composite from clean `fb` draws nothing → the map restored). The general
+renderer dirty-region win (which map rows changed) stays a separate, larger block — this leaves the
+seam ready for it.
+
+### Verification
+
+- **Host / CI ✅:** all four board configs (`panel-ls021`, `+debug-uart`, default, `glass-demo`) +
+  both bring-up bins build; `cargo clippy` + `cargo fmt --check` clean; `cargo test` green; the
+  124-byte control-block static-asserts agree across the C blob + Rust.
+- **On glass (pending — hardware-owner verify):** load a route, hold encoder / Back → the bulge
+  animates over the static map via a partial re-push (~192 rows); RTT shows the partial frame time <
+  a full frame; a quiet bulge restores the clean map under it.
+- **LA (pending):** a partial frame fast-forwards the clean rows (counted `GCK` burst, `GEN` idle,
+  nothing latches) and drops `INTB` after the last dirty row; frame time scales with #dirty rows;
+  `BCK` stays ≤ 0.758 MHz with clean edges.
 
 ## Verification — F1 round-trip
 
