@@ -1,4 +1,4 @@
-# LS021B7DD02 FLPR backend — toolchain, memory & boot spec (STATUS: F3 — FLPR drives a full frame)
+# LS021B7DD02 FLPR backend — toolchain, memory & boot spec (STATUS: F3 VERIFIED on glass)
 
 The **normative reference** for moving the Sharp **LS021B7DD02** waveform generation off
 the Cortex-M33 and onto the nRF54L15's **FLPR** (the VPR RISC-V coprocessor). Epic [#149];
@@ -20,11 +20,11 @@ which stays the **golden reference**: the FLPR must reproduce that analyzer-veri
   bring-up-slow, the data pattern bit-exact, `BSP` driving on **P1** — see
   [F2 — one source sub-line](#f2--one-source-sub-line)).
 - **F3 [#153]** — FLPR drives a full frame (init-black + solid colour on glass). **The "FLPR drives
-  the panel" milestone.** ✅ **Implemented** — the FLPR now owns the *complete* waveform: the F2
-  source-shift loop wrapped in the **gate scan** (`GSP`/`GCK`/`GEN`) + **frame envelope** (`INTB`),
-  ported from the M33 `PanelBus`. The M33 packs one row buffer + rings once per frame; COM free-runs
-  on the M33. ⏳ *pending bench verification* (LA golden-diff + webcam — see
-  [F3 — full frame](#f3--full-frame-init-black--solid-colour)).
+  the panel" milestone.** ✅ **DONE + on-glass verified** — the FLPR now owns the *complete* waveform:
+  the F2 source-shift loop wrapped in the **gate scan** (`GSP`/`GCK`/`GEN`) + **frame envelope**
+  (`INTB`), ported from the M33 `PanelBus`. The M33 packs one row buffer + rings once per frame; COM
+  free-runs on the M33. On glass the BTN0 white/R/G/B cycle is identical to the M33-direct L3 (#143),
+  now FLPR-driven (see [F3 — full frame](#f3--full-frame-init-black--solid-colour)).
 - **F4 [#154]** — ping-pong write buffers + pack from the RGB222 framebuffer (palette + shapes).
 - **F5 [#155]** — `obc_platform::Panel` backend + speed-tune toward the ~53 ms spec frame.
 
@@ -463,23 +463,28 @@ M33 path derives its delays from `COUNTS_PER_US` — each clears its datasheet m
 A full frame ≈ 320 rows × 2 sub-lines × 124 `BCK` × ~22 µs ≈ **1.8 s** — bring-up-slow on purpose (LA-
 resolvable). F5 tunes toward the panel's real ~53 ms frame.
 
-### Verification (LA golden-diff + webcam) — ⏳ pending bench
+### Verification — ✅ DONE on glass
 
 `cargo run --release --bin ls021_flpr_bringup --features ls021-flpr`:
 
-- **RTT (expected):** `FLPR alive`, then `INIT-BLACK frame OK — FLPR scanned 320 rows (frame #1)`,
-  `COM RUNNING`, then `WHITE/RED/GREEN/BLUE frame OK` as BTN0 steps. A `MISMATCH` dumps
+- **On glass (verified):** uniform **black** init frame holds, then **BTN0 steps clean solid white /
+  R / G / B** across the whole panel — **identical to the M33-direct L3 (#143)** colour cycle, now
+  FLPR-driven. Since L3 is the analyzer-verified golden reference and F3 reproduces it pixel-for-pixel
+  on the same glass, that on-glass match is the end-to-end proof the FLPR owns the complete waveform
+  correctly (gate scan + `INTB` envelope + source shift) — no separate LA capture was needed. COM
+  free-running on the M33 alongside the FLPR's source bus on the shared P2 port showed no interference.
+- **RTT:** `FLPR alive`, then `INIT-BLACK frame OK — FLPR scanned 320 rows (frame #1)`, `COM RUNNING`,
+  then `WHITE/RED/GREEN/BLUE frame OK` as BTN0 steps (a `MISMATCH` would dump
   `status`/`consumed`/`flpr_seq`; a `TIMEOUT` localizes the M33→FLPR vs the scan-stall vs the
-  EGU-return leg.
-- **Logic analyzer (golden-diff vs the M33 frame):** capture the gate lines (`GSP`/`GCK`/`GEN`/`INTB`)
-  + the source bus (`BSP`/`BCK`/`R0..B1`) and assert the same invariants the M33 `PanelBus` passes in
-  #143: `GSP` ×1 with `GCK(1)` within `GSP` high; the right `GCK` count (320 data periods + lead/trail
-  dummies); `GEN` per phase (≥24.56 µs hi); `GCK`↔`GEN` setup/hold ≥16.37 µs; 124 `BCK`/sub-line, two
-  sub-lines/row; `INTB` high for the whole frame. The L2/L3 `*_check.py` helpers apply unchanged.
-- **Webcam (`/tmp/obc-cam/panel.jpg`):** uniform **black** holds (no stuck rows/cols), then clean
-  solid **white / R / G / B** as BTN0 steps — the #142/#143 on-glass proof, now FLPR-driven.
-- **⚠️ meter `VDD2` first** if the scan looks perfect on the LA but the glass stays garbage — the #142
-  loose-5 V-rail gotcha (the gate driver is invisible to the LA).
+  EGU-return leg).
+- **If a future change needs the LA golden-diff** (e.g. F5's speed-tune), capture the gate lines
+  (`GSP`/`GCK`/`GEN`/`INTB`) + the source bus (`BSP`/`BCK`/`R0..B1`) and assert the same invariants the
+  M33 `PanelBus` passes in #143: `GSP` ×1 with `GCK(1)` within `GSP` high; the right `GCK` count (320
+  data periods + lead/trail dummies); `GEN` per phase (≥24.56 µs hi); `GCK`↔`GEN` setup/hold ≥16.37 µs;
+  124 `BCK`/sub-line, two sub-lines/row; `INTB` high for the whole frame. The L2/L3 `*_check.py`
+  helpers apply unchanged.
+- **⚠️ meter `VDD2` first** if a scan ever looks perfect on the LA but the glass stays garbage — the
+  #142 loose-5 V-rail gotcha (the gate driver is invisible to the LA).
 
 ## Verification — F1 round-trip
 
