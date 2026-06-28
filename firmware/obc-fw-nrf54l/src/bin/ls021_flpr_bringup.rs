@@ -508,24 +508,28 @@ async fn main(_spawner: Spawner) {
     interrupt::SWI00.set_priority(Priority::P3);
     let com_spawner = EXECUTOR_COM.start(interrupt::SWI00);
     com_spawner.spawn(defmt::unwrap!(com_task(vcom, vb, va)));
-    info!("LS021 FLPR F5: COM RUNNING — BTN0 steps GLASS-DEMO → WHITE → RED → GREEN → BLUE (MIP retains each frame)");
+    info!("LS021 FLPR F5: COM RUNNING — BTN0 steps GLASS-DEMO → LINE-TEST → WHITE → RED → GREEN → BLUE (MIP retains each frame)");
 
     // 5. BTN0 steps the screen through the Panel seam: the glass-demo (the F5 deliverable — font
-    //    ladder + 64-colour gamut, identical to the ST7789 `--features glass-demo` build) then four
-    //    solids (clean single-value waveforms for the LA speed-tune). MIP retains each; COM toggles.
+    //    ladder + 64-colour gamut, identical to the ST7789 `--features glass-demo` build), the
+    //    line/box diagnostic card (tells panel area-gradation texture apart from a pixel bug), then
+    //    four solids (clean single-value waveforms for the LA speed-tune). MIP retains each; COM toggles.
     let mut i = 0usize;
     loop {
         match i {
             0 => show(&mut panel, "GLASS-DEMO", |t| {
                 font_palette_demo(t).ok();
             }),
-            1 => show(&mut panel, "WHITE", |t| solid(t, Rgb565::WHITE)),
-            2 => show(&mut panel, "RED", |t| solid(t, Rgb565::RED)),
-            3 => show(&mut panel, "GREEN", |t| solid(t, Rgb565::GREEN)),
+            1 => show(&mut panel, "LINE-TEST", |t| {
+                demo::line_test_card(t).ok();
+            }),
+            2 => show(&mut panel, "WHITE", |t| solid(t, Rgb565::WHITE)),
+            3 => show(&mut panel, "RED", |t| solid(t, Rgb565::RED)),
+            4 => show(&mut panel, "GREEN", |t| solid(t, Rgb565::GREEN)),
             _ => show(&mut panel, "BLUE", |t| solid(t, Rgb565::BLUE)),
         }
         wait_for_press(&btn0).await;
         led1.toggle();
-        i = (i + 1) % 5;
+        i = (i + 1) % 6;
     }
 }
