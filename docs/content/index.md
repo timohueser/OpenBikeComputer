@@ -76,9 +76,9 @@ These pages are a **conceptual companion to the code**, not an API reference. Th
   <rect x="793" y="110" width="35" height="17" rx="8" fill="#3c6b39" />
   <text x="810" y="122" text-anchor="middle" style="font-family:var(--mono);font-size:9px;fill:#fff;letter-spacing:0.06em">LIVE</text>
 
-  <rect class="d-panel" x="690" y="244" width="138" height="60" rx="9" style="stroke-dasharray:5 4" />
+  <rect class="d-panel" x="690" y="244" width="138" height="60" rx="9" />
   <text class="d-label" x="759" y="268" text-anchor="middle">device firmware</text>
-  <text class="d-sub" x="759" y="286" text-anchor="middle">nRF54L · planned</text>
+  <text class="d-sub" x="759" y="286" text-anchor="middle">nRF54L · on hardware</text>
 
   <path class="d-flow" d="M650 200 C 672 196, 668 158, 688 156" marker-end="url(#ah)" />
   <path class="d-flow" d="M650 232 C 672 236, 668 274, 688 276" marker-end="url(#ah)" />
