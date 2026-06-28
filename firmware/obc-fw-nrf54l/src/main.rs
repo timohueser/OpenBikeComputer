@@ -577,24 +577,25 @@ unsafe fn SWI00() {
 #[cfg(not(feature = "glass-demo"))]
 const LOOP_MS: u64 = 8;
 
-// The hold-bulge's right-edge overlay region (issue #126/#163). Both bulges erupt from the right
-// screen edge — the encoder around rows 59–171, Back around 182–246, ≤12 px deep — so this fixed
-// column band bounds them with margin (keyed to `obc-app/src/hold_hint.rs` ENCODER/BACK anchors +
-// depths; update both together if those move). On a static map the overlay plane re-presents *only*
-// this region through `DisplayDriver::present_overlay`, compositing the bulge over the clean
-// framebuffer — **both panels** do it now (ST7789 a 16-px column window; the FLPR the full-width rows
-// of the region, #163), so the region constants are shared.
+// The hold-bulge's right-edge overlay **columns** (issue #126/#163). Both bulges erupt from the right
+// screen edge ≤12 px deep, so this fixed 16-px column band bounds them with margin. Both map panels
+// re-present the bulge through `DisplayDriver::present_overlay` over the clean framebuffer, addressing
+// only the live bulge's *rows* (`InputPlane::overlay_rows`: encoder ≈ 59–171, Back ≈ 182–246) — ST7789
+// a 16-px column window, the FLPR the full-width rows of that span — so the column constants are
+// shared; the fixed row band (`OVL_Y0`/`OVL_ROWS`) is only the ST7789 trailing-clear + band-fit bound.
 /// First overlay column: the rightmost 16 px (bulge depth ≤12 + margin).
 #[cfg(not(feature = "glass-demo"))]
 const OVL_X0: u16 = WIDTH - 16;
 /// Overlay window width (columns).
 #[cfg(not(feature = "glass-demo"))]
 const OVL_W: u16 = 16;
-/// First overlay row (a little above the encoder bulge's top).
-#[cfg(not(feature = "glass-demo"))]
+/// First overlay row of the full hint band (a little above the encoder bulge's top). ST7789-only — the
+/// FLPR addresses the *live* bulge's rows (`InputPlane::overlay_rows`), never this fixed top.
+#[cfg(all(not(feature = "glass-demo"), not(feature = "panel-ls021")))]
 const OVL_Y0: u16 = 56;
-/// Overlay window height in rows (down past the Back bulge's bottom).
-#[cfg(not(feature = "glass-demo"))]
+/// Full hint-band height in rows (down past the Back bulge's bottom) — the ST7789 trailing-clear span
+/// and the band-fit bound below. The FLPR has its own `MAX_OVERLAY_*` bound in `Ls021Flpr`.
+#[cfg(all(not(feature = "glass-demo"), not(feature = "panel-ls021")))]
 const OVL_ROWS: u16 = 192;
 /// ST7789: the overlay window must fit the shared band scratch (it borrows a prefix of it). The FLPR
 /// path has its own `MAX_OVERLAY_*` bound in `Ls021Flpr::push_overlay`.
@@ -1183,6 +1184,11 @@ async fn main(_spawner: Spawner) {
         let mut route_index: Option<RouteIndex> = None;
         let mut index_route: Option<usize> = None;
         let mut pending_map_redraw = false;
+        // The last live bulge's row span (FLPR overlay, #163): when the bulge goes quiet the trailing
+        // clear wipes exactly *these* rows — the same small push as the pop frames — rather than the
+        // whole hint band, so the animation's tail stays smooth (no full-band frame at the end).
+        #[cfg(feature = "panel-ls021")]
+        let mut last_overlay_span: Option<(u16, u16)> = None;
         #[cfg(feature = "debug-uart")]
         let mut last_telem_ms: u32 = 0;
         #[cfg(feature = "debug-uart")]
@@ -1441,8 +1447,9 @@ async fn main(_spawner: Spawner) {
             // way it is a separate push over the clean map, never baked into it. While live, present
             // **only the active bulge's rows** (encoder ≈ 59–171 OR Back ≈ 182–246) — the FLPR
             // fast-forwards the gate to the region + early-stops, a fraction of a full frame. The
-            // trailing edge (bulge just went quiet) re-presents the full band once to wipe the last
-            // bulge — unless a map present this frame already restored the clean map there.
+            // trailing edge (bulge just went quiet) wipes **the same rows** the last bulge used (kept in
+            // `last_overlay_span`), not the whole band, so the tail stays as smooth as the pop — unless
+            // a map present this frame already restored the clean map there.
             #[cfg(feature = "panel-ls021")]
             {
                 let composite = |panel: &mut Ls021Flpr, region: OverlayRegion| -> bool {
@@ -1455,15 +1462,19 @@ async fn main(_spawner: Spawner) {
                     let t_push = Instant::now();
                     let ok = composite(&mut panel, OverlayRegion { x0: OVL_X0, y0, w: OVL_W, rows });
                     let push_us = t_push.elapsed().as_micros();
+                    last_overlay_span = Some((y0, rows));
                     if ok {
                         defmt::info!("overlay frame: bulge push {=u64} us ({=u16} rows @ y{=u16})", push_us, rows, y0);
                     } else {
                         defmt::warn!("overlay frame: bulge push failed (FLPR stalled?) — retrying next overlay tick");
                     }
                 } else if overlay_dirty && !dirty.map {
-                    // Trailing clear on a static frame: re-present the full band with nothing composited
-                    // = the clean map restored under the just-gone bulge.
-                    composite(&mut panel, OverlayRegion { x0: OVL_X0, y0: OVL_Y0, w: OVL_W, rows: OVL_ROWS });
+                    // Trailing clear on a static frame: re-present just the last bulge's rows with nothing
+                    // composited = the clean map restored under the just-gone bulge (a map present this
+                    // frame would already have done it, hence the `!dirty.map`).
+                    if let Some((y0, rows)) = last_overlay_span.take() {
+                        composite(&mut panel, OverlayRegion { x0: OVL_X0, y0, w: OVL_W, rows });
+                    }
                 }
             }
 
