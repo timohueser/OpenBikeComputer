@@ -456,3 +456,65 @@ impl PanelBus {
         self.intb.set_low();
     }
 }
+
+// ──────────────────────────── Shared test patterns (L3 / F3 / F4) ────────────────────────────
+//
+// The structured cards both bring-up bins put on glass: a 64-colour palette and a black-on-white
+// shapes card, each an `fn(x, y) -> (u8, u8, u8)` of RGB222 levels (`0..=3` per channel). They
+// live here (not in either bin) so the **M33-direct** path ([`PanelBus::fill_with`], the L3
+// `ls021_bringup` bin) and the **FLPR-driven** path (the F4 `ls021_flpr_bringup` bin, which packs
+// these into the RGB222 framebuffer) render the *same* source — that identity is exactly the F4
+// on-glass verification ("visually identical to the #148 M33-direct captures").
+
+/// The 64-colour test palette: an **8×8 grid** of every RGB222 value over the 240×320 panel.
+/// `x`/`y` are pixel coordinates; the cell is `x/30` across (8 cells × 30 px = 240) and `y/40`
+/// down (8 × 40 = 320). Cell index `0..63` packs as `r<<4 | g<<2 | b`, so columns step blue/green
+/// and rows step red — every 2-bit-per-channel combination appears exactly once.
+pub fn palette(x: u16, y: u16) -> (u8, u8, u8) {
+    let col = (x / 30).min(7); // 0..7 across
+    let row = (y / 40).min(7); // 0..7 down
+    let idx = row * 8 + col; // 0..63
+    (((idx >> 4) & 3) as u8, ((idx >> 2) & 3) as u8, (idx & 3) as u8)
+}
+
+/// `true` if `(x, y)` is inside the `w × h` rectangle at `(x0, y0)`.
+fn in_rect(x: u16, y: u16, x0: u16, y0: u16, w: u16, h: u16) -> bool {
+    x >= x0 && x < x0 + w && y >= y0 && y < y0 + h
+}
+
+/// `true` if `(x, y)` is on the `t`-px border of the `w × h` rectangle at `(x0, y0)`.
+fn frame(x: u16, y: u16, x0: u16, y0: u16, w: u16, h: u16, t: u16) -> bool {
+    in_rect(x, y, x0, y0, w, h) && !in_rect(x, y, x0 + t, y0 + t, w - 2 * t, h - 2 * t)
+}
+
+/// **Black shapes on a white field** — a quick contrast / readability check. Filled squares of
+/// decreasing size (top), a line-width ramp of vertical and horizontal bars (10/6/4/2/1 px), and
+/// a thin outline frame (bottom), to see how fine a black feature stays legible on the reflective
+/// panel. Black `(0,0,0)` inside a shape, white `(3,3,3)` elsewhere.
+pub fn shapes(x: u16, y: u16) -> (u8, u8, u8) {
+    let black =
+        // Filled squares, decreasing size.
+        in_rect(x, y, 16, 16, 100, 100)
+            || in_rect(x, y, 130, 16, 60, 60)
+            || in_rect(x, y, 130, 88, 30, 30)
+            || in_rect(x, y, 172, 88, 14, 14)
+            // Vertical bars: 10 / 6 / 4 / 2 / 1 px wide.
+            || in_rect(x, y, 16, 150, 10, 100)
+            || in_rect(x, y, 44, 150, 6, 100)
+            || in_rect(x, y, 66, 150, 4, 100)
+            || in_rect(x, y, 84, 150, 2, 100)
+            || in_rect(x, y, 98, 150, 1, 100)
+            // Horizontal bars: 10 / 6 / 4 / 2 / 1 px tall.
+            || in_rect(x, y, 130, 150, 90, 10)
+            || in_rect(x, y, 130, 174, 90, 6)
+            || in_rect(x, y, 130, 192, 90, 4)
+            || in_rect(x, y, 130, 206, 90, 2)
+            || in_rect(x, y, 130, 216, 90, 1)
+            // Thin outline frame.
+            || frame(x, y, 16, 264, 208, 44, 2);
+    if black {
+        (0, 0, 0)
+    } else {
+        (3, 3, 3)
+    }
+}
