@@ -508,12 +508,18 @@ async fn main(_spawner: Spawner) {
     interrupt::SWI00.set_priority(Priority::P3);
     let com_spawner = EXECUTOR_COM.start(interrupt::SWI00);
     com_spawner.spawn(defmt::unwrap!(com_task(vcom, vb, va)));
-    info!("LS021 FLPR F5: COM RUNNING — BTN0 steps GLASS-DEMO → LINE-TEST in BLACK → RED → GREEN → BLUE (MIP retains each frame)");
+    info!("LS021 FLPR F5: COM RUNNING — BTN0 steps GLASS-DEMO → LINE-BLACK → L3-WHITE → L2-GRAY → L1-GRAY → L0-BLACK (area-plane test: are L2/L1 uniform or a comb?)");
 
     // 5. BTN0 steps the screen through the Panel seam: the glass-demo (the F5 deliverable — font
     //    ladder + 64-colour gamut, identical to the ST7789 `--features glass-demo` build), then the
     //    line/box diagnostic card in each channel (black/red/green/blue — tells panel area-gradation
     //    texture apart from a pixel bug, and per-channel isolates the source bus). MIP retains each.
+    // Device-gamut greys for the area-plane test: level 2 (MSB plane only, 2/3-area) and level 1
+    // (LSB plane only, 1/3-area). Full-screen solids — under correct same-column area gradation they
+    // are uniform greys; if the MSB/LSB sub-lines land in *separate* columns they read as a fine
+    // 2-on/2-off vertical comb (offset between L2 and L1). The decisive 64-vs-32-colour test.
+    let gray_l2 = Rgb565::new(21, 42, 21); // → device (2,2,2)
+    let gray_l1 = Rgb565::new(10, 21, 10); // → device (1,1,1)
     let mut i = 0usize;
     loop {
         match i {
@@ -523,18 +529,13 @@ async fn main(_spawner: Spawner) {
             1 => show(&mut panel, "LINE-BLACK", |t| {
                 demo::line_test_card(t, Rgb565::BLACK).ok();
             }),
-            2 => show(&mut panel, "LINE-RED", |t| {
-                demo::line_test_card(t, Rgb565::RED).ok();
-            }),
-            3 => show(&mut panel, "LINE-GREEN", |t| {
-                demo::line_test_card(t, Rgb565::GREEN).ok();
-            }),
-            _ => show(&mut panel, "LINE-BLUE", |t| {
-                demo::line_test_card(t, Rgb565::BLUE).ok();
-            }),
+            2 => show(&mut panel, "L3-WHITE", |t| solid(t, Rgb565::WHITE)),
+            3 => show(&mut panel, "L2-GRAY (MSB plane)", |t| solid(t, gray_l2)),
+            4 => show(&mut panel, "L1-GRAY (LSB plane)", |t| solid(t, gray_l1)),
+            _ => show(&mut panel, "L0-BLACK", |t| solid(t, Rgb565::BLACK)),
         }
         wait_for_press(&btn0).await;
         led1.toggle();
-        i = (i + 1) % 5;
+        i = (i + 1) % 6;
     }
 }
