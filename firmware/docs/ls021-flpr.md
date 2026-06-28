@@ -1,4 +1,4 @@
-# LS021B7DD02 FLPR backend — toolchain, memory & boot spec (STATUS: F5 implemented — bench-tune + on-glass pending)
+# LS021B7DD02 FLPR backend — toolchain, memory & boot spec (STATUS: F5 on glass — full-res 64-colour via DDR; BCK lock pending)
 
 The **normative reference** for moving the Sharp **LS021B7DD02** waveform generation off
 the Cortex-M33 and onto the nRF54L15's **FLPR** (the VPR RISC-V coprocessor). Epic [#149];
@@ -681,21 +681,38 @@ hundreds of ms, approaching the ~53 ms spec only as `BCK` nears its ceiling (the
 pipelined controller that overlaps gate and source — a partial/dirty-line follow-up, deferred). The
 `push_frame` RTT line logs the measured frame time each push — tune against that.
 
-### Verification — 🛠️ pending on glass
+### ⚠️ The source bus is DDR — the half-resolution / 32-colour fix
 
-- **Host / CI ✅:** `cargo build --release --bin ls021_flpr_bringup --features ls021-flpr` builds the
-  bin + blob; `cargo clippy` + `cargo fmt --check` clean; the default `main.rs` build is untouched
-  (everything stays behind the `ls021-flpr` feature) and `cargo test -p obc-platform` (the pack tests)
-  stays green.
-- **On glass (pending):** `cargo run --release --bin ls021_flpr_bringup --features ls021-flpr` →
-  init-black holds, then BTN0 steps **GLASS-DEMO → WHITE → R → G → B**; the glass-demo card (font
-  ladder + 64-colour gamut) must be **visually identical to the ST7789 `--features glass-demo`
-  build**, now FLPR-driven via the `Panel` seam.
-- **LA (pending):** at each speed step, `BCK ≤ 0.758 MHz` with clean edges; read the per-frame time
-  off RTT and off the analyzer. The solids give clean single-value waveforms for the edge check.
-- **Docs follow-up:** once on glass, add the FLPR-architecture section to the **public** docs
-  (`docs/content/hardware/display-protocol.md` / `software/rendering.md`) as a separate `docs:` commit
-  (per the issue), and flip this status to DONE.
+The first on-glass run of the glass-demo exposed a bug that had been latent since the M33 bring-up
+(epic #139) and survived F2–F4: fine vertical detail rendered at **half horizontal resolution** — the
+left 120 framebuffer columns stretched 2× across the panel, the right 120 dropped, and the 64-colour
+gamut showing only **32**. It was invisible on solids and coarse swatches (uniform data looks the same
+either way), so every prior verification missed it.
+
+Decoded from measured 1-px bar widths, the transform was `physical col p ← fb col 2·⌊p/4⌋ + (p&1)`
+(each pixel pair in four columns). A full-screen **level-2 / level-1** (single-area-plane) test came
+back **uniform** — so the area gradation was fine and the fault was purely horizontal: the panel
+**latches the source bus on both `BCK` edges**, and the single-edge drive held each pair across the
+whole period, so the panel captured it twice. **Fix: drive DDR** — a distinct pair on each edge (word
+`2k` before the rising edge, `2k+1` before the falling). On glass: full 240-wide, true 64 colours, and
+**sub-100 ms** (DDR ~halves the source shift, so the spec ~53 ms frame is reachable — the datasheet's
+120-`BCK`/line already assumed dual-edge throughput). Landed in the FLPR `drive_subline` and the M33
+`PanelBus::shift_subline_with` (the solid path is uniform, so it was always fine). The pack
+(`ls021_pack_row`) is unchanged — it lays pairs out in order; the rising/falling split is in the driver.
+
+### Verification — ✅ DDR fix on glass; ⏳ BCK lock pending
+
+- **Host / CI ✅:** `cargo build` (both bring-up bins + blob), `cargo clippy`, `cargo fmt --check`
+  clean; default `main.rs` untouched; `cargo test -p obc-platform` (pack tests) green.
+- **On glass ✅:** the glass-demo + line/box card render full-width, true 64 colours, no doubling,
+  sub-100 ms — FLPR-driven via the `Panel` seam.
+- **LA / BCK lock (pending):** the bench value is `BCK_HALF_ITERS = 2` (~180 ns half, **over** the
+  ≥660 ns `thwBCK`/`tlwBCK` min — works on this unit). With DDR a data edge now sits on **both** `BCK`
+  edges, so re-verify the data set-up on each edge and pick the production value (in-spec ≈
+  `BCK_HALF_ITERS = 8`).
+- **Docs ✅ (this commit):** the dual-edge/DDR correction is in the public `display-protocol.md`, this
+  doc, `ls021-bringup.md`, and the `ls021_wire.rs` / `ls021.rs` module docs. The earlier
+  "single-edge, 120-`BCK`/line" model is retracted everywhere.
 
 ## Verification — F1 round-trip
 

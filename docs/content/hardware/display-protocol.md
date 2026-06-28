@@ -125,7 +125,9 @@ The 6 data lines carry **two adjacent pixels at once** — one bit each for the 
 | `R[0]` `G[0]` `B[0]` | **odd** column  | R / G / B |
 | `R[1]` `G[1]` `B[1]` | **even** column | R / G / B |
 
-So each `BCK` clocks **one pixel pair** (two columns). 240 columns ÷ 2 = **120 clocks of data** per line.
+So each `BCK` *edge* clocks **one pixel pair** (two columns) — the panel latches the source bus on **both** edges of `BCK` (DDR). Drive a *distinct* pair on the rising edge and the next pair on the falling edge, and the 240 columns ship in **60 `BCK` cycles** of data per sub-line.
+
+> **Both edges, learned the hard way.** It's natural to assume one pair per `BCK` *cycle* (120 cycles for 240 columns) and hold the data steady across the whole period. Do that and the panel captures each pair *twice* — every pair lands in four columns, so the left half of the frame stretches to fill the screen, the right half drops, and the 64-colour gamut collapses to 32. It's invisible on solid fills (uniform either way), which is why it can hide for a long time; fine vertical detail (1-px lines, text) is what exposes it. The fix is to feed a new pair on each edge (DDR), which also clocks the line out ~2× faster — and is why the panel's ~53 ms full-frame spec is actually achievable at the rated `BCK`.
 
 ## One gate line, two area blocks
 
@@ -181,10 +183,10 @@ leading dummy gate advances           # pipeline fill (a few GCK periods, no GEN
                                       # release GSP on the very first GCK edge
 for each of 320 pixel rows:           # one GCK PERIOD per row — RULE 2
     GCK = HIGH                        #   rising edge advances the gate to this row
-    shift MSB plane  (BSP + 124 BCK)  #   2/3-area data on the 6 source lines
+    shift MSB plane  (BSP + 60 DDR BCK) #  2/3-area data, a pair per BCK edge
     GEN = pulse                       #   latch the 2/3 (MSB) block  [GCK still HIGH]
     GCK = LOW                         #   same gate line, NOT an advance
-    shift LSB plane  (BSP + 124 BCK)  #   1/3-area data
+    shift LSB plane  (BSP + 60 DDR BCK) #  1/3-area data
     GEN = pulse                       #   latch the 1/3 (LSB) block  [GCK LOW]
 trailing dummy gate advances          # flush / "necessary signal" blank
 INTB = LOW                            # end of frame; panel now holds the image
@@ -195,7 +197,7 @@ What the counts mean:
 - **`INTB` HIGH = "write enabled" for the whole frame.** `INTB` LOW is the inter-frame **Hold** state: the panel ignores the gate/source scan and keeps its current memory.
 - **One `GCK` *period* per pixel row → 320 gate advances**, not 640. The vertical-timing chart shows ~640 `GCK` marks because those are **edges** (320 periods × 2 phases); with the bracketing dummies it totals ~648 edges.
 - **Two `GEN` pulses per row** — one in the MSB (high) phase, one in the LSB (low) phase.
-- **124 `BCK` per sub-line** = 120 pixel-pair data clocks + **4 dummy/flush** clocks that push the last columns through the source shift register.
+- **120 pixel-pair columns per sub-line** + a few dummy/flush columns that push the last columns through the source shift register. Because the panel is **DDR** (a pair per `BCK` *edge*, see above), those 120 columns are clocked in **~60 `BCK` cycles**, not 120.
 - **`GSP`** is pulsed once at frame start and released on the first `GCK` edge so its high overlaps `GCK(1)`.
 
 ### Partial update — why this panel suits low-power UIs
