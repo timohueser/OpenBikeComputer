@@ -1,4 +1,4 @@
-# LS021B7DD02 FLPR backend — toolchain, memory & boot spec (STATUS: F4 implemented + host-tested; on-glass pending)
+# LS021B7DD02 FLPR backend — toolchain, memory & boot spec (STATUS: F4 VERIFIED on glass)
 
 The **normative reference** for moving the Sharp **LS021B7DD02** waveform generation off
 the Cortex-M33 and onto the nRF54L15's **FLPR** (the VPR RISC-V coprocessor). Epic [#149];
@@ -26,13 +26,13 @@ which stays the **golden reference**: the FLPR must reproduce that analyzer-veri
   free-runs on the M33. On glass the BTN0 white/R/G/B cycle is identical to the M33-direct L3 (#143),
   now FLPR-driven (see [F3 — full frame](#f3--full-frame-init-black--solid-colour)).
 - **F4 [#154]** — ping-pong write buffers + pack from the RGB222 framebuffer (palette + shapes).
-  **The epic's headline deliverable.** 🟡 **Implemented + host-tested (on-glass pending)** — two
-  row buffers ping-pong (`buf[0]` even rows, `buf[1]` odd) under the per-buffer ready/consumed
-  handshake; the M33 renders the palette/shapes into a resident 75 KB `FbDevice64` framebuffer and
-  packs it a row at a time through the **host-tested** `obc_platform::ls021_pack_row`; the FLPR
-  scans one buffer while the M33 fills the other. Builds + the pack unit tests pass in CI; the
-  bench checklist (glass match vs #148, LA no-gap-on-swap, RTT pack≪drain overlap) is in
-  [F4 — ping-pong frame](#f4--ping-pong-from-the-framebuffer).
+  **The epic's headline deliverable.** ✅ **DONE + on-glass verified** — two row buffers ping-pong
+  (`buf[0]` even rows, `buf[1]` odd) under the per-buffer ready/consumed handshake; the M33 renders
+  the palette/shapes into a resident 75 KB `FbDevice64` framebuffer and packs it a row at a time
+  through the **host-tested** `obc_platform::ls021_pack_row`; the FLPR scans one buffer while the M33
+  fills the other. On glass the W/R/G/B + palette + shapes cycle is identical to the M33-direct L3
+  (#148), now framebuffer-sourced + FLPR-driven; RTT shows the pack overlapping the drain by ~54×
+  (see [F4 — ping-pong frame](#f4--ping-pong-from-the-framebuffer)).
 - **F5 [#155]** — `obc_platform::Panel` backend + speed-tune toward the ~53 ms spec frame.
 
 > **What F0 proves, and why it's first.** The whole epic rests on one untested assumption:
@@ -587,27 +587,35 @@ handful of µs, so the M33 races far ahead and spends the frame mostly *waiting*
 the whole point: the pipeline overlaps, the M33 is never the bottleneck. The launcher logs it per
 frame: the FLPR's frame time, the M33's **summed** pack time over the 318 in-frame rows, and the
 per-row averages. `pack_total ≪ frame_us` (avg pack µs ≪ avg drain ms) is the RTT proof the issue
-asks for. F5 speeds the FLPR side toward the panel's real ~53 ms frame; the M33 already has orders of
-magnitude of slack.
+asks for.
 
-### Verification — bench checklist (host/CI ✅, on-glass pending)
+> **Measured on glass:** FLPR **5663 µs/row → 1.812 s/frame**; M33 pack **105 µs/row avg (124 µs max),
+> 33.6 ms summed** over the 318 in-frame rows. So the M33 is active **1.85 %** of the frame and idle
+> ~98 % — a **~54× per-row margin** (it could pack 54 rows in the time the FLPR drains one). The
+> ping-pong is genuinely concurrent with the depth-2 buffer never the constraint; pack time is flat
+> across solids vs the palette/shapes (the pack does fixed per-row work). F5 speeds the FLPR side
+> toward the panel's real ~53 ms frame; the M33 already has orders of magnitude of slack.
 
-- **Host / CI (done):** `cargo test -p obc-platform` runs the `ls021_wire` pack tests (no hardware);
+### Verification — ✅ DONE on glass
+
+- **Host / CI ✅:** `cargo test -p obc-platform` runs the `ls021_wire` pack tests (no hardware);
   `cargo build --release --bin ls021_flpr_bringup --features ls021-flpr` builds the bin + blob, and
   the default `main.rs` build + the workspace `ci` gate stay green.
-- **On glass (pending bench run):** `cargo run --release --bin ls021_flpr_bringup --features
-  ls021-flpr` → init-black holds, then BTN0 steps **WHITE → R → G → B → 64-colour palette → shapes**,
-  each FLPR-driven from the framebuffer over the ping-pong path. The palette + shapes must be
-  **visually identical to the M33-direct L3 (#148)** captures — same shared pattern fns, so any pack
-  bug (a channel swap, an odd/even interleave error, an MSB/LSB mix-up) shows as a wrong card.
-- **RTT:** `… frame OK — FLPR scanned 320 rows … in N µs; M33 packed 318 rows in M µs … pack ≪ drain`
-  per frame — the overlap proof. A `MISMATCH`/`TIMEOUT`/`STALLED` line localizes the leg (the command
-  doorbell, the per-row ping-pong wait, the scan, or the EGU return).
-- **LA (optional golden-diff):** the F3 gate/source invariants still hold (the waveform is unchanged);
-  the new thing to spot-check is that **swapping buffers introduces no gap or glitch between rows** —
-  capture `GCK`/`GEN` + the source bus across a row boundary and confirm the inter-row spacing matches
-  F3's single-buffer scan (the M33 is always ahead, so there should be none).
-- **⚠️ meter `VDD2` first** if the scan looks perfect on the LA but the glass stays garbage (#142).
+- **On glass ✅:** `cargo run --release --bin ls021_flpr_bringup --features ls021-flpr` → init-black
+  holds, then BTN0 steps **WHITE → R → G → B → 64-colour palette → shapes**, each FLPR-driven from the
+  framebuffer over the ping-pong path, **visually identical to the M33-direct L3 (#148)** — the same
+  shared `palette`/`shapes` fns render both, so a clean match is the end-to-end proof the pack is
+  right (no channel swap, odd/even interleave error, or MSB/LSB mix-up). Since L3 is the
+  analyzer-verified golden reference, the on-glass match needed no separate LA capture.
+- **RTT ✅:** every frame `frame OK` (`status == 320`, `flpr_seq` matched, `frame_count` 1→7), no
+  `MISMATCH`/`TIMEOUT`/`STALLED`, and the overlap line shows **`pack ≪ drain`** with the measured
+  margin above (105 µs pack vs 5663 µs drain per row). The fault-localizing error lines were not hit.
+- **LA (optional, not needed):** the waveform is byte-identical to F3 (already analyzer-verified), and
+  the M33 races ~54× ahead so a buffer swap can't open an inter-row gap — confirmed indirectly by the
+  clean glass + the timing margin. Recipe kept for F5's speed-tune (capture `GCK`/`GEN` + the source
+  bus across a row boundary).
+- **⚠️ meter `VDD2` first** if a future change ever looks perfect on the LA but the glass stays
+  garbage (#142).
 
 ## Verification — F1 round-trip
 
