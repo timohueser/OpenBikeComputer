@@ -124,6 +124,11 @@ mod st7789;
 mod ls021;
 #[cfg(all(feature = "panel-ls021", not(feature = "glass-demo")))]
 mod ls021_flpr;
+// The board's display-driver seam — the single screen-write interface both panels implement, so the
+// map plane drives either through one path (`fb_mut` + `present`). The glass-demo bring-up draws
+// straight through the `Panel` band seam, so it doesn't pull this in.
+#[cfg(not(feature = "glass-demo"))]
+mod display;
 
 use defmt::info;
 use embassy_executor::Spawner;
@@ -168,6 +173,8 @@ use obc_platform::{Band, Panel};
 use core::cell::RefCell;
 #[cfg(not(feature = "glass-demo"))]
 use core::mem::MaybeUninit;
+#[cfg(not(feature = "glass-demo"))]
+use display::DisplayDriver;
 #[cfg(not(feature = "glass-demo"))]
 use embassy_executor::InterruptExecutor;
 #[cfg(not(feature = "glass-demo"))]
@@ -436,6 +443,51 @@ type DisplayPanel = St7789<'static, Spim<'static>, Output<'static>, Output<'stat
 struct Display {
     panel: DisplayPanel,
     fb: &'static mut [u8],
+}
+
+#[cfg(all(not(feature = "glass-demo"), not(feature = "panel-ls021")))]
+impl DisplayDriver for Display {
+    fn fb_mut(&mut self) -> &mut [u8] {
+        self.fb
+    }
+
+    /// Push the whole RGB222 framebuffer to the ST7789, band by band, **straight from RGB222 to the
+    /// panel's 12-bit RGB444 wire** ([`flush_band_rgb222`](st7789::St7789::flush_band_rgb222) — the
+    /// fast path, no RGB565 intermediate). The transient hold bulge is **not** drawn here: it rides
+    /// its own overlay re-push on the input plane (issue #126/#163), so the map present stays a single
+    /// clean pack with no overlay coupling. ST7789 GRAM writes don't fault, so always `true`.
+    fn present(&mut self) -> bool {
+        let Display { panel, fb } = self;
+        st7789::reset_push_timers();
+        panel.begin_frame();
+        let rows = panel.band_rows();
+        let mut y0 = 0u16;
+        while y0 < HEIGHT {
+            let h = rows.min(HEIGHT - y0);
+            let row0 = y0 as usize * WIDTH as usize;
+            let n = WIDTH as usize * h as usize;
+            panel.flush_band_rgb222(y0, h, &fb[row0..row0 + n]);
+            y0 += h;
+        }
+        panel.end_frame();
+        let (fill_us, pack_us, spi_us) = st7789::push_timers();
+        defmt::info!("ST7789 push: fill {=u32} + pack {=u32} + spi {=u32} us", fill_us, pack_us, spi_us);
+        true
+    }
+}
+
+/// The FLPR LS021 backend behind the same seam: the app renders into the resident plane, then this
+/// drives it in one masked full-frame push (the FLPR scans all 320 rows). The hold bulge is **not**
+/// composited here — it rides `present_overlay` (issue #163). A stalled FLPR returns `false` so the
+/// caller keeps the last frame and retries.
+#[cfg(all(feature = "panel-ls021", not(feature = "glass-demo")))]
+impl DisplayDriver for Ls021Flpr<'_> {
+    fn fb_mut(&mut self) -> &mut [u8] {
+        Ls021Flpr::fb_mut(self)
+    }
+    fn present(&mut self) -> bool {
+        self.push_frame()
+    }
 }
 
 /// Bound of the input→map gesture channel. One frame yields a couple of gestures and the map plane
@@ -923,8 +975,9 @@ async fn main(_spawner: Spawner) {
         interrupt::SWI00.set_priority(Priority::P3);
 
         // ============= ST7789 backend (default): two-plane display + input/overlay (issue #126) =====
-        // Build the panel + the shared `&'static` two-plane state, spawn the input/overlay plane, and
-        // hand the map plane back `(bus, input_plane)` for the loop. Display on the (flash-freed) P2
+        // Build the panel + the shared `&'static` two-plane state, spawn the input/overlay plane (which
+        // owns the bulge re-push), and hand the map plane back just the `bus` for the unified present.
+        // Display on the (flash-freed) P2
         // header — CS idles HIGH and the driver pulses it low per transaction (the warm-reset-safe CSX
         // framing — see `st7789::St7789::transaction`); RST idles high. SERIAL00 write-only SPIM at
         // **32 MHz** (the max SERIAL00 reaches on the MCU-domain P2 pins) so a full-frame banded push
@@ -932,7 +985,7 @@ async fn main(_spawner: Spawner) {
         // `.bss` + written **in place** (the APP/MAP_CACHE pattern) rather than via `StaticCell`,
         // whose one-shot flag can panic "already full" on a warm reset.
         #[cfg(not(feature = "panel-ls021"))]
-        let (bus, input_plane) = {
+        let bus = {
             let cs = Output::new(p.P2_05, Level::High, OutputDrive::Standard);
             let dc = Output::new(p.P2_03, Level::Low, OutputDrive::Standard);
             let rst = Output::new(p.P2_00, Level::High, OutputDrive::Standard);
@@ -968,7 +1021,7 @@ async fn main(_spawner: Spawner) {
             let input_spawner = EXECUTOR_INPUT.start(interrupt::SWI00);
             input_spawner.spawn(defmt::unwrap!(input_overlay_task(buttons, input_plane, bus, GESTURES.sender())));
             info!("input plane: SWI00 interrupt executor @ P3 (preempts the map render); map plane: thread mode");
-            (bus, input_plane)
+            bus
         };
 
         // ============= FLPR LS021 backend (`--features panel-ls021`, issue #165) =====================
@@ -1218,115 +1271,84 @@ async fn main(_spawner: Spawner) {
                 let map_src = storage.map_source();
                 let reader = map_src.as_ref().and_then(|s| Reader::new(s, map_cache).ok());
                 if let Some(reader) = reader {
-                    // ---- ST7789 backend: hold the bus, render into the framebuffer, then push every
-                    // band (compositing the live hold bulge into the bulge bands). The map plane writes
-                    // the framebuffer under the bus mutex, so the input plane never reads a torn frame. --
+                    // Acquire the display through the seam — the **only** per-backend line in the map
+                    // present. ST7789 holds the shared bus mutex for the whole frame, so the input/
+                    // overlay plane never reads a torn framebuffer (the map render writes it under this
+                    // lock); the FLPR map plane owns its panel outright (its overlay rides this same
+                    // plane, so there is no concurrent push to serialise). Everything below is one path.
                     #[cfg(not(feature = "panel-ls021"))]
-                    {
-                        // Hold the bus for the whole frame: render into the RGB222 framebuffer, then push
-                        // every band, compositing the live hold bulge into each band (the strips clip to the
-                        // bulge bands; others are untouched) — so a frame caught mid-pop carries the bulge.
-                        // Keeping the framebuffer behind the bus means the input plane never reads a
-                        // half-rendered frame, so the bulge backdrop is never torn; the cost is that the
-                        // bulge can briefly stick while a big segment repaints (an artifact-free overlay is
-                        // the priority — a fluid-but-unlocked framebuffer tore it).
-                        let mut disp = bus.lock().await;
-                        let Display { panel, fb } = &mut *disp;
-                        let t_render = Instant::now();
-                        // `render_map_timed` threads `InstantClock` so the returned `RenderStats` carries the
-                        // per-stage `collect/sort/draw` timings the VCOM telemetry reports; `route` streams
-                        // its geometry into the render here (the route line + the user/breadcrumb overlay).
-                        let stats = {
-                            let mut fbdev = FbDevice64::new(&mut fb[..], WIDTH as u32, HEIGHT as u32);
-                            app.render_map_timed(
-                                &mut fbdev,
-                                &reader,
-                                route.as_ref(),
-                                WIDTH as f32,
-                                HEIGHT as f32,
-                                color_fn,
-                                &InstantClock,
-                            )
-                        };
-                        let render_us = t_render.elapsed().as_micros();
-                        // Snapshot this frame's render stats for the host telemetry line — the same numbers
-                        // as the RTT `map frame` log. The nRF reader isn't `TimedSource`-wrapped, so the
-                        // SD/cache I/O folds into `collect_us` (`read_us` stays 0); the bulge is composited
-                        // at push time, not within the render, so `overlay_us` stays 0.
-                        #[cfg(feature = "debug-uart")]
-                        {
-                            let mpp_milli =
-                                (app.state.viewport(WIDTH as f32, HEIGHT as f32).meters_per_pixel() * 1000.0) as u32;
-                            last_telem = obc_platform::debug_usb::Telemetry {
-                                frame_us: render_us as u32,
-                                lod: stats.lod as u8,
-                                feat_drawn: stats.features_drawn as u32,
-                                feat_tried: stats.features_tried as u32,
-                                feat_dropped: stats.features_dropped as u32,
-                                chunks: stats.chunks_visited as u32,
-                                cache_hits: stats.map_chunk_hits,
-                                cache_misses: stats.map_chunk_misses,
-                                sd_reads: stats.map_sd_reads,
-                                bytes_read: stats.map_bytes_read,
-                                collect_us: stats.collect_us,
-                                read_us: 0,
-                                sort_us: stats.sort_us,
-                                draw_us: stats.draw_us,
-                                overlay_us: 0,
-                                mpp_milli,
-                            };
-                        }
-                        // Time the push separately — the visible top-to-bottom fill. The common path packs
-                        // the RGB222 framebuffer rows **directly** to the panel's 12-bit RGB444 wire format
-                        // (no RGB565 intermediate) then SPIM-DMAs them; the split log shows where the
-                        // on-glass time goes (the pack vs. the 28.8 ms theoretical SPI bit-time at 32 MHz;
-                        // #126 perf: the old always-on two-hop RGB222->RGB565->RGB444 expand+pack was ~71%).
-                        //
-                        // BUT while a bulge is actually on screen (a brief hold), take the two-hop path and
-                        // composite the bulge into each band — otherwise a map redraw mid-bulge would paint
-                        // the bulge region as raw map for the whole ~76 ms push (the input plane only
-                        // repaints it a tick later) and the bulge would flicker. Snapshot the flag once: a
-                        // bulge can't appear from nothing within one push (it needs ~150 ms of holding
-                        // first), so the extra conversion only runs when it earns its keep.
-                        let bulge_active = input_plane.lock(|cell| cell.borrow().overlay_active());
-                        st7789::reset_push_timers();
-                        let t_push = Instant::now();
-                        let pixels = &**fb;
-                        panel.begin_frame();
-                        let rows = panel.band_rows();
-                        let mut y0 = 0u16;
-                        while y0 < HEIGHT {
-                            let h = rows.min(HEIGHT - y0);
-                            let row0 = y0 as usize * WIDTH as usize;
-                            let n = WIDTH as usize * h as usize;
-                            if bulge_active {
-                                panel.flush_band(y0, h, |scratch| {
-                                    for (dst, &byte) in scratch.iter_mut().zip(&pixels[row0..]) {
-                                        *dst = device64_to_rgb565(byte);
-                                    }
-                                    input_plane.lock(|cell| {
-                                        let mut band =
-                                            Band::new(scratch, Size::new(WIDTH as u32, HEIGHT as u32), y0, h);
-                                        cell.borrow().render_overlay(&mut band, WIDTH as f32, HEIGHT as f32, color_fn);
-                                    });
-                                });
-                            } else {
-                                panel.flush_band_rgb222(y0, h, &pixels[row0..row0 + n]);
-                            }
-                            y0 += h;
-                        }
-                        panel.end_frame();
-                        let push_us = t_push.elapsed().as_micros();
-                        let (fill_us, pack_us, spi_us) = st7789::push_timers();
-                        drop(disp); // release the bus before logging so the input plane can push the bulge
+                    let mut guard = bus.lock().await;
+                    #[cfg(not(feature = "panel-ls021"))]
+                    let display: &mut dyn DisplayDriver = &mut *guard;
+                    #[cfg(feature = "panel-ls021")]
+                    let display: &mut dyn DisplayDriver = &mut panel;
 
-                        defmt::info!(
-                        "map frame: render {=u64} us + push {=u64} us [fill {=u32} + pack {=u32} + spi {=u32}] | lod {=usize} | feat {=usize}/{=usize} | chunks {=usize} | map-cache {=u32} hit / {=u32} miss",
+                    // Render the whole frame into the resident RGB222 plane, then present it through the
+                    // seam. `render_map_timed` threads `InstantClock` so the returned `RenderStats`
+                    // carries the per-stage collect/sort/draw timings the VCOM telemetry reports;
+                    // `route` streams its geometry into the render (the route line + the user/breadcrumb
+                    // overlay). The hold bulge is **not** composited here — it rides `present_overlay`
+                    // on its own plane (issue #163), so the framebuffer stays the clean map.
+                    let t_render = Instant::now();
+                    let stats = {
+                        let mut fbdev = FbDevice64::new(display.fb_mut(), WIDTH as u32, HEIGHT as u32);
+                        app.render_map_timed(
+                            &mut fbdev,
+                            &reader,
+                            route.as_ref(),
+                            WIDTH as f32,
+                            HEIGHT as f32,
+                            color_fn,
+                            &InstantClock,
+                        )
+                    };
+                    let render_us = t_render.elapsed().as_micros();
+
+                    // Snapshot this frame's render stats for the host telemetry line — the same numbers
+                    // as the RTT `map frame` log. The nRF reader isn't `TimedSource`-wrapped, so the
+                    // SD/cache I/O folds into `collect_us` (`read_us` stays 0); the bulge composites on
+                    // its own overlay push, not within the render, so `overlay_us` stays 0.
+                    #[cfg(feature = "debug-uart")]
+                    {
+                        let mpp_milli =
+                            (app.state.viewport(WIDTH as f32, HEIGHT as f32).meters_per_pixel() * 1000.0) as u32;
+                        last_telem = obc_platform::debug_usb::Telemetry {
+                            frame_us: render_us as u32,
+                            lod: stats.lod as u8,
+                            feat_drawn: stats.features_drawn as u32,
+                            feat_tried: stats.features_tried as u32,
+                            feat_dropped: stats.features_dropped as u32,
+                            chunks: stats.chunks_visited as u32,
+                            cache_hits: stats.map_chunk_hits,
+                            cache_misses: stats.map_chunk_misses,
+                            sd_reads: stats.map_sd_reads,
+                            bytes_read: stats.map_bytes_read,
+                            collect_us: stats.collect_us,
+                            read_us: 0,
+                            sort_us: stats.sort_us,
+                            draw_us: stats.draw_us,
+                            overlay_us: 0,
+                            mpp_milli,
+                        };
+                    }
+
+                    // Present the whole clean frame to glass (blocking; each backend logs its own push
+                    // breakdown — ST7789 fill/pack/spi, the FLPR frame/pack). A transport fault
+                    // (`present` → false, e.g. a stalled FLPR) latches a retry like the reader-build
+                    // failure (#66) rather than faulting.
+                    let t_push = Instant::now();
+                    let ok = display.present();
+                    let push_us = t_push.elapsed().as_micros();
+                    // Release the ST7789 bus before logging so the input plane can push its bulge.
+                    #[cfg(not(feature = "panel-ls021"))]
+                    drop(guard);
+                    if !ok {
+                        pending_map_redraw = true;
+                    }
+                    defmt::info!(
+                        "map frame: render {=u64} us + push {=u64} us | lod {=usize} | feat {=usize}/{=usize} | chunks {=usize} | map-cache {=u32} hit / {=u32} miss",
                         render_us,
                         push_us,
-                        fill_us,
-                        pack_us,
-                        spi_us,
                         stats.lod,
                         stats.features_drawn,
                         stats.features_tried,
@@ -1334,76 +1356,6 @@ async fn main(_spawner: Spawner) {
                         stats.map_chunk_hits,
                         stats.map_chunk_misses
                     );
-                    }
-
-                    // ---- FLPR LS021 backend: render the whole frame into the resident plane, then
-                    // drive it in one blocking `push_frame` (the FLPR scans all 320 rows). No bulge
-                    // composite — the hold overlay is a partial-update follow-up here (#163). ----
-                    #[cfg(feature = "panel-ls021")]
-                    {
-                        let t_render = Instant::now();
-                        // `render_map_timed` threads `InstantClock` so `RenderStats` carries the
-                        // per-stage timings; `route` streams its geometry into the render here.
-                        let stats = {
-                            let mut fbdev = FbDevice64::new(panel.fb_mut(), WIDTH as u32, HEIGHT as u32);
-                            app.render_map_timed(
-                                &mut fbdev,
-                                &reader,
-                                route.as_ref(),
-                                WIDTH as f32,
-                                HEIGHT as f32,
-                                color_fn,
-                                &InstantClock,
-                            )
-                        };
-                        let render_us = t_render.elapsed().as_micros();
-                        // Host telemetry snapshot — the same numbers as the RTT line. The nRF reader
-                        // isn't `TimedSource`-wrapped, so SD/cache I/O folds into `collect_us`; the FLPR
-                        // path has no push-time overlay, so `overlay_us`/`read_us` stay 0.
-                        #[cfg(feature = "debug-uart")]
-                        {
-                            let mpp_milli =
-                                (app.state.viewport(WIDTH as f32, HEIGHT as f32).meters_per_pixel() * 1000.0) as u32;
-                            last_telem = obc_platform::debug_usb::Telemetry {
-                                frame_us: render_us as u32,
-                                lod: stats.lod as u8,
-                                feat_drawn: stats.features_drawn as u32,
-                                feat_tried: stats.features_tried as u32,
-                                feat_dropped: stats.features_dropped as u32,
-                                chunks: stats.chunks_visited as u32,
-                                cache_hits: stats.map_chunk_hits,
-                                cache_misses: stats.map_chunk_misses,
-                                sd_reads: stats.map_sd_reads,
-                                bytes_read: stats.map_bytes_read,
-                                collect_us: stats.collect_us,
-                                read_us: 0,
-                                sort_us: stats.sort_us,
-                                draw_us: stats.draw_us,
-                                overlay_us: 0,
-                                mpp_milli,
-                            };
-                        }
-                        // Drive the whole frame to glass (blocking; COM free-runs on its own executor).
-                        // `push_frame` logs the FLPR-side frame/pack timing + flags STALLED/TIMEOUT/
-                        // MISMATCH; on a failed push, latch a retry like the reader-build failure (#66).
-                        let t_push = Instant::now();
-                        let ok = panel.push_frame();
-                        let push_us = t_push.elapsed().as_micros();
-                        if !ok {
-                            pending_map_redraw = true;
-                        }
-                        defmt::info!(
-                            "map frame: render {=u64} us + push {=u64} us | lod {=usize} | feat {=usize}/{=usize} | chunks {=usize} | map-cache {=u32} hit / {=u32} miss",
-                            render_us,
-                            push_us,
-                            stats.lod,
-                            stats.features_drawn,
-                            stats.features_tried,
-                            stats.chunks_visited,
-                            stats.map_chunk_hits,
-                            stats.map_chunk_misses
-                        );
-                    }
                 } else {
                     pending_map_redraw = true;
                     defmt::warn!(
