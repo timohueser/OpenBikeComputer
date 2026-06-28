@@ -183,28 +183,44 @@ static void busy(uint32_t iters)
     }
 }
 
-/* Drain one source sub-line from `base` (a byte address into the row buffer): pulse BSP, then `len`
- * BCK presenting each word's 6 data bits on P2.00..05. Unchanged from F2 (`PanelBus::shift_subline_
- * with` timing): BSP high envelopes BCK(1) (released on the first BCK rising edge), data is set up
- * DATA_SETUP before each BCK rise, data lines left Lo after. The caller has already set GCK to this
- * plane's level — this touches only the source bus, never GCK/GEN. */
+/* Drain one source sub-line from `base` (a byte address into the row buffer): pulse BSP, then clock
+ * the `len` data words out over P2.00..05.
+ *
+ * **DDR EXPERIMENT (F5 column-doubling fix, issues #155).** On-glass, a uniform sub-line fills all
+ * 240 columns correctly, but a *spatially-varying* one shows each pixel-pair in FOUR physical columns
+ * (left half stretched 2×, right half dropped, 64→32 colours) — identical on the M33-direct PanelBus
+ * and the FLPR, at every BCK speed. The only model that fits is that the panel **latches the source
+ * bus on BOTH BCK edges**; holding a pair constant across a whole BCK period then captures it twice.
+ * So drive **DDR**: present word `2k` before the **rising** edge and word `2k+1` before the **falling**
+ * edge — one distinct pair per edge, `len/2` BCK cycles for `len` words. If the panel is dual-edge
+ * this delivers all 120 pairs → the full 240 columns; if it is single-edge the image gets *worse*
+ * (only the rising-edge pairs show), which tells us the doubling is a harness issue instead.
+ *
+ * `len` is even (124). BSP high envelopes the first rising edge (released on it). The caller has set
+ * GCK to this plane's level — this touches only the source bus, never GCK/GEN. */
 static void drive_subline(uint32_t base, uint32_t len)
 {
     const volatile uint32_t *buf = (const volatile uint32_t *)(uintptr_t)base;
 
     GPIO1_OUTSET = BSP_MASK; /* BSP high — start of the sub-line (the chart's BSP envelope) */
-    for (uint32_t col = 0; col < len; col++) {
-        uint32_t data = buf[col] & DATA_MASK;
-        GPIO2_OUTCLR = (~data) & DATA_MASK; /* lower the 0 data bits (P2.00..05 only) */
-        GPIO2_OUTSET = data;                /* raise the 1 data bits — column now presented */
-        busy(DATA_SETUP_ITERS);             /* data stable before BCK rises (spec ~335 ns) */
-
-        GPIO2_OUTSET = BCK_MASK;            /* BCK rising edge latches this pixel-pair into the SR */
-        if (col == 0) {
-            GPIO1_OUTCLR = BSP_MASK;        /* BCK(1) rose within BSP high — now release BSP */
+    for (uint32_t k = 0; k < len; k += 2) {
+        /* ── rising-edge column: word k ── */
+        uint32_t d0 = buf[k] & DATA_MASK;
+        GPIO2_OUTCLR = (~d0) & DATA_MASK;
+        GPIO2_OUTSET = d0;
+        busy(DATA_SETUP_ITERS);  /* data stable before the BCK rising edge */
+        GPIO2_OUTSET = BCK_MASK; /* rising edge latches word k */
+        if (k == 0) {
+            GPIO1_OUTCLR = BSP_MASK; /* BCK(1) rose within BSP high — now release BSP */
         }
         busy(BCK_HALF_ITERS);
-        GPIO2_OUTCLR = BCK_MASK;            /* BCK low */
+
+        /* ── falling-edge column: word k+1 ── */
+        uint32_t d1 = buf[k + 1] & DATA_MASK;
+        GPIO2_OUTCLR = (~d1) & DATA_MASK;
+        GPIO2_OUTSET = d1;
+        busy(DATA_SETUP_ITERS);  /* data stable before the BCK falling edge */
+        GPIO2_OUTCLR = BCK_MASK; /* falling edge latches word k+1 */
         busy(BCK_HALF_ITERS);
     }
     GPIO2_OUTCLR = DATA_MASK; /* leave the data lines Lo (boot-safe) after the sub-line */
