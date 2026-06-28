@@ -32,6 +32,19 @@
 //! fault the caller may retry) — no async-in-trait. The two-plane concurrency (which executor drives
 //! each path, the bus mutex) lives in `main.rs`, *outside* the seam.
 
+use obc_platform::Band;
+
+/// A dirty rectangle of the frame to re-present with the overlay composited over it — today the hold
+/// bulge's right-edge window (issue #126/#163). A column-addressable panel (ST7789) re-pushes exactly
+/// this rectangle; a row-addressed panel (LS021) widens it to full-width rows internally (it can't
+/// latch a sub-span of columns) but still only touches rows `[y0, y0 + rows)`.
+pub struct OverlayRegion {
+    pub x0: u16,
+    pub y0: u16,
+    pub w: u16,
+    pub rows: u16,
+}
+
 /// The board's swappable display backend — see the module docs. The map plane renders the frame into
 /// [`fb_mut`](Self::fb_mut), then [`present`](Self::present)s it; the overlay plane re-pushes a dirty
 /// region with the bulge composited via [`present_overlay`](Self::present_overlay) (issue #163).
@@ -44,4 +57,13 @@ pub trait DisplayDriver {
     /// Push the whole resident framebuffer to glass. Returns `false` on a transport fault (a stalled
     /// FLPR, an SPI error) so the caller keeps the last frame and retries, rather than faulting.
     fn present(&mut self) -> bool;
+
+    /// Re-present `region` with `draw_overlay` composited over the **clean framebuffer backdrop** — no
+    /// map re-render (issue #163). `draw_overlay` paints the transient chrome (the hold bulge)
+    /// frame-absolute into the [`Band`] window the driver hands it, over the backdrop the driver reads
+    /// from the framebuffer. The driver calls `draw_overlay` **once** (over the whole region) — never
+    /// per row — so the caller's brief `InputPlane` lock inside it is taken once per overlay frame, and
+    /// the framebuffer stays the clean map (the overlay is never written into it). Returns `false` on a
+    /// transport fault.
+    fn present_overlay(&mut self, region: OverlayRegion, draw_overlay: &mut dyn FnMut(&mut Band)) -> bool;
 }
