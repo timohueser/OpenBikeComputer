@@ -169,8 +169,8 @@ static inline void fence(void)
  * machinery the deferred partial/dirty-line epic wants; tracked as an F5 follow-up. `push_frame` logs
  * the measured frame time each push — tune against that. ── */
 #define ITERS_PER_US      13u /* bench calibration: busy(120) ≈ 9.4 µs on the unconfigured FLPR */
-#define BCK_HALF_ITERS    4u                    /* each BCK phase — pushing toward the 0.758 MHz ceiling; LA-verify the actual BCK and back off if over */
-#define DATA_SETUP_ITERS  3u                    /* source data stable before the BCK rising edge (spec ~335 ns) */
+#define BCK_HALF_ITERS    3u                    /* each BCK phase — EXPERIMENTAL: ~775 kHz, just OVER the 0.758 MHz max; LA-verify BCK + data setup, fall back to 4 (~680 kHz, in spec) if columns garble */
+#define DATA_SETUP_ITERS  3u                    /* source data stable before the BCK rising edge (~280 ns at this clock — near the spec ~335 ns min; LA-verify) */
 #define GCK_SETTLE_ITERS  (5u * ITERS_PER_US)   /* settle after a GCK level change before shifting */
 #define GEN_SETUP_ITERS   (17u * ITERS_PER_US)  /* GCK↔GEN setup AND hold (spec ≥16.37 µs) */
 #define GEN_HIGH_ITERS    (25u * ITERS_PER_US)  /* GEN valid-output window (spec ≥24.56 µs) */
@@ -353,10 +353,8 @@ void flpr_main(void)
 
         EGU20_TRIGGER0 = 1u; /* ring the M33: EGU20.EVENTS_TRIGGERED[0] -> M33 EGU20 IRQ (#201) */
 
-        /* By-eye liveness marker, *after* the ack and the captured waveform so it perturbs neither:
-         * one LED0 blink per drained frame. */
-        GPIO2_OUTSET = LED0_MASK;
-        busy(200000u);
-        GPIO2_OUTCLR = LED0_MASK;
+        /* (F5: the per-frame LED0 "drained a frame" blink was dropped — its busy() spun the FLPR a
+         * pointless ~19 ms after every frame. LED0 stays idle; the M33's EGU20 ack is the liveness
+         * proof now.) */
     }
 }
