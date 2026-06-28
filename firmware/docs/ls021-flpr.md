@@ -1,4 +1,4 @@
-# LS021B7DD02 FLPR backend — toolchain, memory & boot spec (STATUS: F5 on glass — full-res 64-colour via DDR; BCK lock pending)
+# LS021B7DD02 FLPR backend — toolchain, memory & boot spec (STATUS: epic done; the **real app runs on the LS021 via the FLPR** — `--features panel-ls021`, issue #165)
 
 The **normative reference** for moving the Sharp **LS021B7DD02** waveform generation off
 the Cortex-M33 and onto the nRF54L15's **FLPR** (the VPR RISC-V coprocessor). Epic [#149];
@@ -34,11 +34,16 @@ which stays the **golden reference**: the FLPR must reproduce that analyzer-veri
   (#148), now framebuffer-sourced + FLPR-driven; RTT shows the pack overlapping the drain by ~54×
   (see [F4 — ping-pong frame](#f4--ping-pong-from-the-framebuffer)).
 - **F5 [#155]** — `obc_platform::Panel` backend + speed-tune toward the ~53 ms spec frame. **The
-  bridge to running the app.** 🛠️ **Implemented — bench-tune + on-glass pending** — the FLPR push
-  now sits behind the board-agnostic `obc_platform::Panel` seam (`Ls021Flpr` in the bin), so the
-  glass-demo generator that drives the ST7789 (`demo::font_palette_demo`) drives the real LS021 with
-  no panel-specific code; the blob clocks took a first conservative speed step with the bench dial-in
-  toward `BCK ≤ 0.758 MHz` documented (see [F5 — Panel backend](#f5--panel-backend--speed-tune)).
+  bridge to running the app.** ✅ **DONE (PR #162)** — the FLPR push sits behind the board-agnostic
+  `obc_platform::Panel` seam (`Ls021Flpr`), so the glass-demo generator that drives the ST7789
+  (`demo::font_palette_demo`) drives the real LS021 with no panel-specific code; the DDR fix landed
+  full-res 64-colour, sub-100 ms (see [F5 — Panel backend](#f5--panel-backend--speed-tune)).
+- **#165 — the real app on the LS021 (the FLPR app build).** ✅ **integrated; on-glass pending** —
+  `src/main.rs --features panel-ls021` runs the real `obc_app::App` (map + ride) on the LS021 through
+  the FLPR `Panel` backend instead of the bring-up ST7789. The `Ls021Flpr` backend moved out of the
+  bin into the shared `src/ls021_flpr.rs` module (used by both), the carve-out shrank to 12 KB to fit
+  the app's resident set, and the gate/`BSP` lines relocated off the SD/VCOM bus the app needs (see
+  [#165 — the app on glass](#165--the-real-app-on-the-ls021)).
 
 > **What F0 proves, and why it's first.** The whole epic rests on one untested assumption:
 > that we can *build* code for the FLPR, *boot* it from the M33, and have it *drive a pin*.
@@ -102,33 +107,48 @@ RISC-V toolchain** and keeps the full 256 KB.
 
 The FLPR executes from on-chip SRAM at the **M33-visible address** (no remap on this part):
 the M33 copies the blob to the region base and writes that base into `INITPC`. Nordic's
-guidance is **≤96 KB to the FLPR**. F0 reserves a generous-but-modest top slice; the
-production backend (F4/F5) will shrink it (see the coexistence note). The carve-out is emitted
-by `build.rs` **only under the `ls021-flpr` feature** (Cargo's `CARGO_FEATURE_LS021_FLPR`), so
-`main.rs` is untouched.
+guidance is **≤96 KB to the FLPR**. F0 reserved a generous 28 KB top slice; #165 shrank it to
+the production **8 KB** (the blob is ~660 B + a shallow scan stack), handing ~20 KB back to the
+M33 so the full app + framebuffer fit. The carve-out is emitted by `build.rs` under **either**
+FLPR feature (`CARGO_FEATURE_LS021_FLPR` for the bin, `CARGO_FEATURE_PANEL_LS021` for the app),
+so the default ST7789 `main.rs` is untouched and keeps the full 256 KB.
 
 | Region | Range | Size | Owner / contents |
 |---|---|---|---|
-| `RAM` | `0x2000_0000 .. 0x2003_8000` | 224 KB | **M33** `.data`/`.bss`/stack (the linked `RAM`) |
-| `FLPR_RAM` | `0x2003_8000 .. 0x2003_F000` | 28 KB | **FLPR** image + stack; `INITPC = 0x2003_8000`, `_stack_top = 0x2003_F000` |
+| `RAM` | `0x2000_0000 .. 0x2003_D000` | 244 KB | **M33** `.data`/`.bss`/stack (the linked `RAM`) |
+| `FLPR_RAM` | `0x2003_D000 .. 0x2003_F000` | 8 KB | **FLPR** image + stack; `INITPC = 0x2003_D000`, `_stack_top = 0x2003_F000` |
 | `SHARED` | `0x2003_F000 .. 0x2004_0000` | 4 KB | **cross-core** control block (F1 — the 64-byte `Control`/`flpr_control_t`; see [comms](#m33--flpr-comms)) |
 
-- The map lives in **two places that must agree**: `build.rs`'s carved `memory.x` (shrinks the
-  M33 `RAM` to 224 KB) and `src/flpr/flpr.ld` (places the FLPR image at `0x2003_8000`,
-  `_stack_top` at `0x2003_F000`). The M33 reaches `FLPR_RAM`/`SHARED` **only by hardcoded
-  address** (`memcpy` + the handshake word in `ls021_flpr_bringup.rs`), never via the linker —
-  so shrinking `RAM` is the entire M33-side change.
-- **The FLPR region is `rwx` to the FLPR but the M33's `RAM` stops at `0x2003_8000`**, so the
+- The map lives in **three places that must agree**: `build.rs`'s carved `memory.x` (shrinks the
+  M33 `RAM` to 244 KB), `src/flpr/flpr.ld` (places the FLPR image at `0x2003_D000`, `_stack_top`
+  at `0x2003_F000`), and the `FLPR_RAM_BASE` const in `src/ls021_flpr.rs`. The M33 reaches
+  `FLPR_RAM`/`SHARED` **only by hardcoded address** (`memcpy` + the handshake word), never via the
+  linker — so shrinking `RAM` is the entire M33-side change. The `SHARED` page is unchanged, so the
+  control-block + ping-pong-buffer addresses did **not** move.
+- **The FLPR region is `rwx` to the FLPR but the M33's `RAM` stops at `0x2003_D000`**, so the
   M33 linker never allocates into it. The M33 *can still write* there (it's plain SRAM) — that
   is exactly how it loads the blob and the handshake.
+- ⚠️ **The carved `memory.x` must be the *only* one the linker can find.** cortex-m-rt's `link.x`
+  does `INCLUDE memory.x` and sets `_stack_start = ORIGIN(RAM) + LENGTH(RAM)`, and the linker
+  resolves the `INCLUDE` from its **CWD (the crate root) before** the `-L $OUT_DIR` search path. A
+  `memory.x` committed in the crate root therefore **shadows** the carved copy `build.rs` writes to
+  `OUT_DIR`, the linker reads `RAM = 256 K`, and `_stack_start` lands at `0x2004_0000` — the M33
+  stack then grows down **through the FLPR image** and corrupts the blob/control block on the first
+  deep render (issue #165: it presented as a freeze the instant a route loaded). The default region
+  map is kept as **`memory-default.x`** (not `memory.x`) for exactly this reason; never reintroduce
+  a crate-root `memory.x`. Confirm the carve took with `llvm-nm <elf> | grep _stack_start` — it must
+  read `2003d000` for the FLPR builds, `20040000` for the default build.
 
-> **Coexistence with the 75 KB framebuffer (F4/F5, flagged not solved).** The production map
-> firmware's resident set (`App` scratch + caches + the 75 KB `FbDevice64` + stack) already
-> fills ~254 KB of the 256 KB (the `main.rs` `nrf-mem` budget assert, issue #124). The FLPR
-> backend's real need is small — the blob (~few KB) + two write buffers (~1 KB) + FLPR stack —
-> so F4/F5 will reserve a **much smaller** `FLPR_RAM` (≈8–16 KB) and retune `nrf-mem` to free
-> it. F0's 28 KB is bring-up headroom, not the final budget. This is the "pin the memory map"
-> task the epic called out.
+> **Coexistence with the 75 KB framebuffer (#165, SOLVED).** The production map firmware's resident
+> set (`App` scratch + caches + the 75 KB `FbDevice64` + stack) already filled ~254 KB of 256 KB (the
+> `nrf-mem` budget assert, issue #124), and the FLPR feature leaves the M33 only 244 KB — so ~32 KB
+> had to be freed. Without re-trimming the `nrf-mem` caps, two levers did it: (1) the **carve shrank
+> 32 → 12 KB** (the blob's real need is tiny — ~660 B + the ping-pong buffers, which already live in
+> the 4 KB `SHARED` page — so 28 KB of bring-up headroom became 8 KB), and (2) the FLPR map path
+> **drops the ~6.6 KB RGB565 band scratch** the ST7789 push needs (it packs the device-64 framebuffer
+> straight to the wire via `ls021_pack_row`). The result: ~209 KB statics + ~35 KB stack in the
+> 244 KB — the `main.rs` budget assert (retargeted to 244 KB under `panel-ls021`) passes with the same
+> caps as the ST7789 build.
 
 ## Boot sequence (M33 launcher)
 
@@ -141,10 +161,10 @@ Via the **VPR00** peripheral (secure alias base `0x5004_C000`; offsets from the 
 
 The M33 (`ls021_flpr_bringup.rs::start_flpr`) does, in order:
 
-1. `copy_nonoverlapping(blob, 0x2003_8000, blob.len())` — load the image.
+1. `copy_nonoverlapping(blob, 0x2003_D000, blob.len())` — load the image (`FLPR_RAM_BASE`).
 2. `dsb()` — make the blob **and** the pre-written handshake magic visible to the other core
    before release.
-3. `INITPC = 0x2003_8000`.
+3. `INITPC = 0x2003_D000`.
 4. `CPURUN = 1` — the FLPR begins executing at `INITPC` (i.e. `_start` in `start.S`).
 
 `_start` sets `sp = _stack_top`, zeroes `.bss` (empty for the F0 blob), and calls
@@ -178,12 +198,16 @@ COM, FLPR source), so the epic's rule is **absolute**:
   | `R0` `G0` `B0` (odd) | P2.00/02/04 | bit 0/2/4 | — | source data, odd pixel |
   | `R1` `G1` `B1` (even) | P2.01/03/05 | bit 1/3/5 | — | source data, even pixel |
   | `BCK` | P2.06 | bit 6 | `1<<6` | source/shift clock (FLPR's own pulse) |
-  | `BSP` | **P1.07** | bit 7 | `1<<7` | sub-line start pulse (the lone P1 line) |
+  | `BSP` | **P1.14** | bit 14 | `1<<14` | sub-line start pulse (the lone P1 source line) |
 
   The 6 data bits, pre-shifted to their P2 positions, are exactly `DATA_MASK = 0x3F` — the
   write-buffer word ([format below](#write-buffer-format-v0)). `COM` (`P2.07/08/10`, M33-driven) and
   LED0 (`P2.09`) fill the rest of P2; the FLPR's masks never touch them, so the atomic-set/clear rule
   keeps the two cores off each other's pins.
+
+  > **`BSP` was P1.07 during bring-up.** It (and the four F3 gate lines) moved to free P1 pins for the
+  > app integration (#165) — P1.06/07/11/12 are the SD-SPI bus the app needs and P1.04 the VCOM. See
+  > [#165 — the app on glass](#165--the-real-app-on-the-ls021) for the full relocated map.
 
 > **Product pin-planning (forward note, not an F2 constraint).** P2 has only **11 pins
 > (`P2.00..10`)** — that is the whole of the FLPR's fast-toggle domain, and on the product PCB it is
@@ -407,10 +431,17 @@ reserved for the source bus); the harness map is the [bring-up doc](ls021-bringu
 
 | line | DK pin | port.bit | mask | role |
 |---|---|---|---|---|
-| `GSP` | P1.11 | bit 11 | `1<<11` | gate start pulse (once per frame) |
-| `GCK` | P1.12 | bit 12 | `1<<12` | gate clock — HIGH = MSB/2-3 phase, LOW = LSB/1-3 phase |
-| `GEN` | P1.04 | bit 4 | `1<<4` | gate output enable — latches the GCK-level-selected block |
-| `INTB` | P1.06 | bit 6 | `1<<6` | frame envelope — HIGH for the whole frame write |
+| `GSP` | P1.00 | bit 0 | `1<<0` | gate start pulse (once per frame) |
+| `GCK` | P1.01 | bit 1 | `1<<1` | gate clock — HIGH = MSB/2-3 phase, LOW = LSB/1-3 phase |
+| `GEN` | P1.12 | bit 12 | `1<<12` | gate output enable — latches the GCK-level-selected block |
+| `INTB` | P1.10 | bit 10 | `1<<10` | frame envelope — HIGH for the whole frame write (LED1) |
+
+> **These are the relocated (#165) pins.** During F2–F5 bring-up the gate lines sat on P1.11/12/04/06
+> (and `BSP` on P1.07) — the SD/UART pins, "safe this epic only". The real app needs the SD bus
+> (P1.06/07/11/12) + VCOM (P1.04/05), so all five moved to free P1 pins; the masks in
+> `flpr_pingpong.c`, the M33 `Output::new` pins in both bins + `main.rs`, and the harness must agree.
+> The DK breaks out only **P1.00–14** (P1.02/03 are NFC) = one pin short for everything on P1, so SD
+> `CS` moved to **P0.00** to free P1.12 for `GEN` (and `INTB` took P1.10 / LED1).
 
 > **Both cores drive the shared P2 port at once — new in F3.** Until now COM never ran while the FLPR
 > drove the source bus. F3 starts COM (`VCOM`/`VB`/`VA` = P2.07/08/10, **M33**-driven) right after the
@@ -714,6 +745,92 @@ whole period, so the panel captured it twice. **Fix: drive DDR** — a distinct 
   doc, `ls021-bringup.md`, and the `ls021_wire.rs` / `ls021.rs` module docs. The earlier
   "single-edge, 120-`BCK`/line" model is retracted everywhere.
 
+## #165 — the real app on the LS021
+
+F5 proved the FLPR drives the panel through the `obc_platform::Panel` seam with **test patterns**.
+#165 makes the seam carry the **real app**: `src/main.rs --features panel-ls021` runs the same
+`obc_app::App` (map + ride) the ST7789 default build runs, but presents it on the reflective LS021 via
+the FLPR. ~97 ms full-frame (~10 fps) is the intermediate this ships on; partial/dirty-row updates
+(#163) make incremental updates instant later.
+
+### What changed (M33-side glue + budget; the blob, pack, and ping-pong are unchanged)
+
+- **`Ls021Flpr` lifted to a shared module.** The `Panel` backend, the FLPR launch/handshake, and the
+  ping-pong push moved out of the bring-up bin into `src/ls021_flpr.rs`, so both the bin *and*
+  `main.rs` use them. The bin keeps its bring-up sequence (settle → launch → init-black → COM → BTN0
+  step); the app wires the same backend into its load → ride → save-GPX loop.
+- **Backend-select feature.** `panel-ls021` makes `main.rs` build with the FLPR LS021 backend instead
+  of the ST7789 (mutually exclusive with `glass-demo`). It pulls the same `build.rs` carve + RISC-V
+  blob the bin does. The default build is untouched (full 256 KB, no RISC-V toolchain).
+- **One framebuffer, no band scratch.** The app renders the whole frame into the resident 75 KB
+  `FbDevice64` plane the `Ls021Flpr` owns, and `push_frame` packs it straight to the wire — so the
+  FLPR map path needs **no RGB565 band scratch** (the ST7789 push's ~6.6 KB is freed).
+- **Budget.** See the [coexistence note](#flpr-memory-map-nrf54l15-256-kb-sram--0x2000_0000): the
+  carve shrank to 12 KB + the band drop together free the ~32 KB the FLPR feature's 244 KB demands.
+  The `main.rs` budget assert is retargeted to 244 KB under `panel-ls021`; ~209 KB statics + ~35 KB
+  stack fit with the same `nrf-mem` caps as the ST7789 build.
+- **COM + input coexist with the blocking push.** COM (`VCOM`/`VB`/`VA`, M33-driven) and a
+  **gesture-only** input plane share one high-priority `InterruptExecutor` (SWI00 @ P3). The map
+  plane's `push_frame` is a ~97 ms blocking busy-poll; COM keeps alternating and buttons stay
+  responsive because the executor preempts thread mode. There is **no composite-on-push hold bulge**
+  on this backend — the FLPR scans a whole frame at once, so the partial-window overlay is a #163
+  follow-up; the hold *gestures* still fire, only the fluid bulge preview is absent.
+
+### The relocated DK pin map (⚠️ verify on your DK)
+
+The bring-up reused the SD/UART pins ("safe this epic only"). The app needs the SD bus to load the
+map + the VCOM for sensors, so the five P1 gate/`BSP` lines moved to free P1 pins. The source bus,
+`BCK`, and COM stay on P2 exactly as before. **The gate/`BSP` map must agree in three places** — the
+masks in `flpr_pingpong.c`, the M33 `Output::new` pins in `main.rs` + both bring-up bins, and the
+physical harness:
+
+| line | DK pin | mask | was (bring-up) |
+|---|---|---|---|
+| `GSP` | P1.00 | `1<<0` | P1.11 |
+| `GCK` | P1.01 | `1<<1` | P1.12 |
+| `GEN` | P1.12 | `1<<12` | P1.04 |
+| `INTB` | P1.10 (LED1) | `1<<10` | P1.06 |
+| `BSP` | P1.14 (LED3) | `1<<14` | P1.07 |
+| source `R0..B1` + `BCK` | P2.00..06 | `0x3F` + `1<<6` | unchanged |
+| `COM` `VCOM`/`VB`/`VA` | P2.07/08/10 | M33-driven | unchanged |
+| heartbeat | P2.09 (LED0) | M33-driven | unchanged |
+
+> **The DK breaks out only P1.00–14** (15 pins; P1.02/03 are NFC, GPIO only behind `nfc-pins-as-gpio`)
+> = 13 usable, but the app puts **14** signals on P1 (5 gate/`BSP` + 4 SD + 2 VCOM + 3 buttons). One
+> had to leave P1, so **SD `CS` moves to P0.00** — it's a plain M33 GPIO (the `sd::NoCs` held-low CS,
+> not a SPIM-bus pin), and the M33 already drives P0 (it reads BTN3 on P0.04), so it's known-good; one
+> jumper on the SD breakout. That frees P1.12 for `GEN`; `INTB` takes P1.10 (LED1 — it lights while a
+> frame draws). All FLPR-driven lines therefore stay on P1, the port its access is already proven on
+> (no FLPR-on-P0 unknown). `panel-ls021`-only — the ST7789 default keeps SD `CS` on P1.12.
+
+The app's full P1/P0 allocation (FLPR build):
+
+| DK pin | use | DK pin | use |
+|---|---|---|---|
+| P1.00 | `GSP` (FLPR) | P1.09 | BTN1 NEXT |
+| P1.01 | `GCK` (FLPR) | P1.10 | `INTB` (FLPR, LED1) |
+| P1.04 | VCOM TX | P1.11 | SD SCK |
+| P1.05 | VCOM RX | P1.12 | `GEN` (FLPR) |
+| P1.06 | SD MOSI | P1.13 | BTN0 PREV |
+| P1.07 | SD MISO | P1.14 | `BSP` (FLPR, LED3) |
+| P1.08 | BTN2 BACK | P0.00 | **SD CS** (moved) |
+| | | P0.04 | BTN3 SELECT |
+
+### Verification
+
+- **Host / CI ✅:** `cargo build --release` (default ST7789, no RISC-V, 256 KB) green; `cargo build
+  --release --features panel-ls021` (+ `,debug-uart`) builds the app + blob + carved `memory.x` and
+  the retargeted budget assert passes; both bring-up bins (`ls021_bringup`, `ls021_flpr_bringup`)
+  still build; `cargo clippy` + `cargo fmt --check` clean; `cargo test -p obc-platform` (pack tests)
+  green.
+- **On glass (pending — hardware-owner verify):** `cargo run --release --features panel-ls021,debug-uart`
+  → the real map/ride app on the LS021 (webcam `/tmp/obc-cam/panel.jpg`): the map/ride screen
+  identical to the ST7789 render, full 240×320, true 64 colours, no doubling; buttons step screens;
+  the ride loop ticks; RTT shows `frame OK`, no `STALLED`/`TIMEOUT`/`MISMATCH`, COM free-running,
+  ~97 ms/frame. **⚠️ meter `VDD2` (5 V gate rail) first** if a scan looks right on the LA but the
+  glass is garbage (#142). If a gate line stays dark, the relocated pin may not be broken out on the
+  DK header — remap.
+
 ## Verification — F1 round-trip
 
 F1 subsumes F0's boot proof (the FLPR still copies in, boots, and reaches shared SRAM — now it
@@ -749,7 +866,13 @@ stamps `status = 0xA11E` in the control block instead of a lone word) and adds t
 ```sh
 # From firmware/obc-fw-nrf54l/ (standalone crate, thumbv8m.main-none-eabihf). Needs a RISC-V
 # gcc for the FLPR blob: brew install riscv64-elf-gcc
+
+# The bring-up bench bin — test patterns (glass-demo / solids) through the FLPR Panel seam:
 cargo run --release --bin ls021_flpr_bringup --features ls021-flpr
+
+# The real map/ride app on the LS021 via the FLPR (issue #165). Add ,debug-uart to stream a
+# recorded ride from a host (obc-usb-host). Needs the Board-Configurator settings (README).
+cargo run --release --features panel-ls021,debug-uart
 ```
 
 [#149]: https://github.com/timohueser/OpenBikeComputer/issues/149

@@ -73,12 +73,17 @@ async fn main(_spawner: Spawner) {
     // The 12 gate/source lines, all boot `Output(Lo)` (datasheet boot-safe state). DK pins
     // are the L0 harness map in `firmware/docs/ls021-bringup.md`. `PanelBus` owns them and
     // clocks the init frame. Standard drive (these are logic lines, not the COM cap load).
+    //
+    // The gate + `BSP` lines use the **same DK pins as the FLPR builds** (relocated off the SD/VCOM
+    // bus for the app integration, issue #165 — see `firmware/docs/ls021-flpr.md`) so the *whole*
+    // LS021 toolchain (this M33-direct bench bin, the FLPR bring-up bin, the FLPR app) shares one
+    // physical panel harness. The source bus + BCK + COM stay on P2 as before.
     let mut bus = PanelBus::new(
-        Output::new(p.P1_11, Level::Low, OutputDrive::Standard), // GSP
-        Output::new(p.P1_12, Level::Low, OutputDrive::Standard), // GCK
-        Output::new(p.P1_04, Level::Low, OutputDrive::Standard), // GEN
-        Output::new(p.P1_06, Level::Low, OutputDrive::Standard), // INTB
-        Output::new(p.P1_07, Level::Low, OutputDrive::Standard), // BSP
+        Output::new(p.P1_00, Level::Low, OutputDrive::Standard), // GSP
+        Output::new(p.P1_01, Level::Low, OutputDrive::Standard), // GCK
+        Output::new(p.P1_12, Level::Low, OutputDrive::Standard), // GEN
+        Output::new(p.P1_10, Level::Low, OutputDrive::Standard), // INTB (LED1)
+        Output::new(p.P1_14, Level::Low, OutputDrive::Standard), // BSP
         Output::new(p.P2_06, Level::Low, OutputDrive::Standard), // BCK
         Output::new(p.P2_00, Level::Low, OutputDrive::Standard), // R0 (odd)
         Output::new(p.P2_02, Level::Low, OutputDrive::Standard), // G0 (odd)
