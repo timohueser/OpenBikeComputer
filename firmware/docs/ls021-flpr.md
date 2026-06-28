@@ -423,13 +423,15 @@ reserved for the source bus); the harness map is the [bring-up doc](ls021-bringu
 |---|---|---|---|---|
 | `GSP` | P1.00 | bit 0 | `1<<0` | gate start pulse (once per frame) |
 | `GCK` | P1.01 | bit 1 | `1<<1` | gate clock — HIGH = MSB/2-3 phase, LOW = LSB/1-3 phase |
-| `GEN` | P1.15 | bit 15 | `1<<15` | gate output enable — latches the GCK-level-selected block |
-| `INTB` | P1.16 | bit 16 | `1<<16` | frame envelope — HIGH for the whole frame write |
+| `GEN` | P1.12 | bit 12 | `1<<12` | gate output enable — latches the GCK-level-selected block |
+| `INTB` | P1.10 | bit 10 | `1<<10` | frame envelope — HIGH for the whole frame write (LED1) |
 
 > **These are the relocated (#165) pins.** During F2–F5 bring-up the gate lines sat on P1.11/12/04/06
 > (and `BSP` on P1.07) — the SD/UART pins, "safe this epic only". The real app needs the SD bus
 > (P1.06/07/11/12) + VCOM (P1.04/05), so all five moved to free P1 pins; the masks in
 > `flpr_pingpong.c`, the M33 `Output::new` pins in both bins + `main.rs`, and the harness must agree.
+> The DK breaks out only **P1.00–14** (P1.02/03 are NFC) = one pin short for everything on P1, so SD
+> `CS` moved to **P0.00** to free P1.12 for `GEN` (and `INTB` took P1.10 / LED1).
 
 > **Both cores drive the shared P2 port at once — new in F3.** Until now COM never ran while the FLPR
 > drove the source bus. F3 starts COM (`VCOM`/`VB`/`VA` = P2.07/08/10, **M33**-driven) right after the
@@ -768,26 +770,41 @@ the FLPR. ~97 ms full-frame (~10 fps) is the intermediate this ships on; partial
 
 The bring-up reused the SD/UART pins ("safe this epic only"). The app needs the SD bus to load the
 map + the VCOM for sensors, so the five P1 gate/`BSP` lines moved to free P1 pins. The source bus,
-`BCK`, and COM stay on P2 exactly as before. **These must agree in three places** — the masks in
-`flpr_pingpong.c`, the M33 `Output::new` pins in `main.rs` + both bring-up bins, and the physical
-harness:
+`BCK`, and COM stay on P2 exactly as before. **The gate/`BSP` map must agree in three places** — the
+masks in `flpr_pingpong.c`, the M33 `Output::new` pins in `main.rs` + both bring-up bins, and the
+physical harness:
 
 | line | DK pin | mask | was (bring-up) |
 |---|---|---|---|
 | `GSP` | P1.00 | `1<<0` | P1.11 |
 | `GCK` | P1.01 | `1<<1` | P1.12 |
-| `GEN` | P1.15 | `1<<15` | P1.04 |
-| `INTB` | P1.16 | `1<<16` | P1.06 |
-| `BSP` | P1.14 | `1<<14` | P1.07 |
+| `GEN` | P1.12 | `1<<12` | P1.04 |
+| `INTB` | P1.10 (LED1) | `1<<10` | P1.06 |
+| `BSP` | P1.14 (LED3) | `1<<14` | P1.07 |
 | source `R0..B1` + `BCK` | P2.00..06 | `0x3F` + `1<<6` | unchanged |
 | `COM` `VCOM`/`VB`/`VA` | P2.07/08/10 | M33-driven | unchanged |
-| SD-SPI (app) | P1.06/07/11/12 | — | — |
-| VCOM (app) | P1.04/05 | — | — |
+| heartbeat | P2.09 (LED0) | M33-driven | unchanged |
 
-> P1.02/03 are **NFC pins** on this part (GPIO only behind `nfc-pins-as-gpio`), so they were avoided;
-> P1.15/16 + P1.00/01 are free GPIO. They compile (the embassy `Peripherals` exposes them), but
-> whether each is **broken out on a given DK header** is unverified here — confirm on glass and remap
-> the three sites together if not.
+> **The DK breaks out only P1.00–14** (15 pins; P1.02/03 are NFC, GPIO only behind `nfc-pins-as-gpio`)
+> = 13 usable, but the app puts **14** signals on P1 (5 gate/`BSP` + 4 SD + 2 VCOM + 3 buttons). One
+> had to leave P1, so **SD `CS` moves to P0.00** — it's a plain M33 GPIO (the `sd::NoCs` held-low CS,
+> not a SPIM-bus pin), and the M33 already drives P0 (it reads BTN3 on P0.04), so it's known-good; one
+> jumper on the SD breakout. That frees P1.12 for `GEN`; `INTB` takes P1.10 (LED1 — it lights while a
+> frame draws). All FLPR-driven lines therefore stay on P1, the port its access is already proven on
+> (no FLPR-on-P0 unknown). `panel-ls021`-only — the ST7789 default keeps SD `CS` on P1.12.
+
+The app's full P1/P0 allocation (FLPR build):
+
+| DK pin | use | DK pin | use |
+|---|---|---|---|
+| P1.00 | `GSP` (FLPR) | P1.09 | BTN1 NEXT |
+| P1.01 | `GCK` (FLPR) | P1.10 | `INTB` (FLPR, LED1) |
+| P1.04 | VCOM TX | P1.11 | SD SCK |
+| P1.05 | VCOM RX | P1.12 | `GEN` (FLPR) |
+| P1.06 | SD MOSI | P1.13 | BTN0 PREV |
+| P1.07 | SD MISO | P1.14 | `BSP` (FLPR, LED3) |
+| P1.08 | BTN2 BACK | P0.00 | **SD CS** (moved) |
+| | | P0.04 | BTN3 SELECT |
 
 ### Verification
 
