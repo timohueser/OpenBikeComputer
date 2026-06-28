@@ -1,4 +1,4 @@
-# LS021B7DD02 FLPR backend — toolchain, memory & boot spec (STATUS: F2 VERIFIED on the analyzer)
+# LS021B7DD02 FLPR backend — toolchain, memory & boot spec (STATUS: F3 VERIFIED on glass)
 
 The **normative reference** for moving the Sharp **LS021B7DD02** waveform generation off
 the Cortex-M33 and onto the nRF54L15's **FLPR** (the VPR RISC-V coprocessor). Epic [#149];
@@ -19,7 +19,12 @@ which stays the **golden reference**: the FLPR must reproduce that analyzer-veri
   descriptor and rings. On the LA: exactly 124 `BCK`/`BSP`, `BCK(1)` within `BSP` high, ~45 kHz
   bring-up-slow, the data pattern bit-exact, `BSP` driving on **P1** — see
   [F2 — one source sub-line](#f2--one-source-sub-line)).
-- **F3 [#153]** — FLPR drives a full frame (init-black + solid colour on glass).
+- **F3 [#153]** — FLPR drives a full frame (init-black + solid colour on glass). **The "FLPR drives
+  the panel" milestone.** ✅ **DONE + on-glass verified** — the FLPR now owns the *complete* waveform:
+  the F2 source-shift loop wrapped in the **gate scan** (`GSP`/`GCK`/`GEN`) + **frame envelope**
+  (`INTB`), ported from the M33 `PanelBus`. The M33 packs one row buffer + rings once per frame; COM
+  free-runs on the M33. On glass the BTN0 white/R/G/B cycle is identical to the M33-direct L3 (#143),
+  now FLPR-driven (see [F3 — full frame](#f3--full-frame-init-black--solid-colour)).
 - **F4 [#154]** — ping-pong write buffers + pack from the RGB222 framebuffer (palette + shapes).
 - **F5 [#155]** — `obc_platform::Panel` backend + speed-tune toward the ~53 ms spec frame.
 
@@ -361,6 +366,125 @@ bench** — the FLPR analog of the M33 path's `asm::delay` counts. Target: `BCK`
 > so an *untriggered* window always lands on sub-lines — the same untriggered approach L2/L3 used.
 > Also: the pico pysigrok driver mis-frames a channel count that's an **exact multiple of 7** (it
 > over-reads one byte/sample) — capture **15** channels (`D2..D16`), not 14.
+
+## F3 — full frame (init-black + solid colour)
+
+**The "FLPR drives the panel" milestone.** F3 wraps the F2 source-shift loop in the two pieces that
+turn one sub-line into a whole frame on glass — the **gate scan** (`GSP`/`GCK`/`GEN`) and the **frame
+envelope** (`INTB`) — so the FLPR now owns the *complete* LS021 waveform. The blob is now
+`src/flpr/flpr_frame.c` (successor to F2's `flpr_source.c`); everything is a faithful C port of the
+analyzer-verified M33 `PanelBus` (`src/ls021.rs`, epic #139), the golden reference. The M33's only
+panel job is to **pack one row buffer** and ring the FLPR once per frame; **COM free-runs on the M33**
+the whole time. This is the first stage that puts an FLPR-driven frame on glass.
+
+The two hard-won protocol rules from #143 (see [`hardware/display-protocol.md`](../../docs/content/hardware/display-protocol.md))
+carry over verbatim — the FLPR reproduces them, it doesn't change them:
+
+- **`INTB` HIGH for the whole frame** — `INTB` low means "no write" (the panel holds its image), so
+  *every* frame, the init-black one included, is enveloped in `INTB` high.
+- **`GCK` *level* selects the area block on the SAME gate line** — one pixel row = one `GCK` period:
+  the **MSB plane** shifts in the `GCK`-HIGH phase (latched into the 2/3-area block) and the **LSB
+  plane** in the `GCK`-LOW phase (the 1/3-area block), a `GEN` pulse latching each. 320 gate lines,
+  one gate advance per row.
+
+### Gate-line pins (all on P1)
+
+F2 proved the FLPR can drive a non-P2 (P1) GPIO via `BSP` (P1.07) — exactly the thing the gate scan
+depends on. The four gate lines join `BSP` on **P1** (all µs-scale, so P2's fast trace domain stays
+reserved for the source bus); the harness map is the [bring-up doc](ls021-bringup.md#pinout-21-pin-fpc--dk-pin-map):
+
+| line | DK pin | port.bit | mask | role |
+|---|---|---|---|---|
+| `GSP` | P1.11 | bit 11 | `1<<11` | gate start pulse (once per frame) |
+| `GCK` | P1.12 | bit 12 | `1<<12` | gate clock — HIGH = MSB/2-3 phase, LOW = LSB/1-3 phase |
+| `GEN` | P1.04 | bit 4 | `1<<4` | gate output enable — latches the GCK-level-selected block |
+| `INTB` | P1.06 | bit 6 | `1<<6` | frame envelope — HIGH for the whole frame write |
+
+> **Both cores drive the shared P2 port at once — new in F3.** Until now COM never ran while the FLPR
+> drove the source bus. F3 starts COM (`VCOM`/`VB`/`VA` = P2.07/08/10, **M33**-driven) right after the
+> init-black frame, so the M33's COM set/clears and the FLPR's source set/clears (`P2.00..06`) hit the
+> **same** P2 port concurrently. This is exactly the case the epic's atomic-`OUTSET`/`OUTCLR` rule was
+> written for: disjoint pin masks, no read-modify-write of `OUT`, so the two cores never corrupt each
+> other's pins. The gate lines on P1 are FLPR-only; the M33's LED1 heartbeat (P1.10) is disjoint.
+
+### Write-buffer format v1 — a ROW (two sub-lines)
+
+F2's buffer was one sub-line (124 words). F3's is one **row** = `2 × BCK_PER_SUBLINE = 248` u32 words:
+the **MSB sub-line** at `[0..124)` then the **LSB sub-line** at `[124..248)`, each in the F2 word
+format (`bit0 R0 … bit5 B1`, `BCK` is the FLPR's own pulse). The M33 publishes it through the `buf[0]`
+descriptor with **`len = BCK_PER_SUBLINE` (124, the per-sub-line count)**; the FLPR reads the MSB
+sub-line from `ptr[0..len)` and the LSB from `ptr[len..2·len)`. The buffer still lives in the SHARED
+page (`WRITE_BUF_ADDR = 0x2003_F100`, 992 B, clear of the 64-byte control block).
+
+For a solid colour every row is identical, so the FLPR **reuses the one buffer for all 320 rows** — no
+per-row refill. That keeps F3 a "single write buffer" stage (the issue's framing) while still being
+**forward-compatible with F4**: a row buffer is exactly the unit F4 ping-pongs (`buf[0]`/`buf[1]`
+alternating per row so the M33 can pack row N+1 while the FLPR scans row N). The RGB222→wire **pack**
+is a small Rust fn on the M33 (`pack_solid` / `fill_solid_buffer` in the launcher) — the host-tested
+seam the epic reserves; F3's is the uniform stand-in, F4 grows it into the real framebuffer pack.
+
+### The frame command & the gate-scan port (FLPR)
+
+One new command, `CMD_RUN_FRAME = 2` (the F2 `CMD_SHIFT_SUBLINE = 1` is subsumed). On it the FLPR runs
+`run_frame(buf[0].ptr, buf[0].len)`, a line-for-line port of `PanelBus::fill_solid`:
+
+```
+INTB high → FRAME_SETUP → GSP high → FRAME_SETUP
+2 lead dummy advances (the first releases GSP on its GCK edge)
+320 rows, each one GCK period:
+    GCK high → GCK_SETTLE → drive MSB sub-line (BSP + 124 BCK) → GEN pulse   (latch 2/3-area)
+    GCK low  → GCK_SETTLE → drive LSB sub-line (BSP + 124 BCK) → GEN pulse   (latch 1/3-area)
+6 trail dummy advances
+GSP low → INTB low        (panel now holds the image)
+```
+
+`drive_subline` is the unchanged F2 loop; `gen_pulse`/`dummy_advance`/`write_gate_row` are ports of the
+matching `PanelBus` methods. The FLPR then acks like F2 — echo `buf[0].ready → consumed`, bump
+`frame_count`, `status = rows scanned (320)`, `flpr_seq = seq` (seq last, fenced), poke EGU20 — and
+blinks LED0 once per drained frame. The M33 checks `consumed == ready && status == 320 && flpr_seq ==
+seq`, with a generous 5 s ack timeout (a bring-up-slow frame is ~1.8 s; COM keeps toggling on its
+interrupt executor while the M33 awaits).
+
+### Timing — the gate delays
+
+The source-shift counts keep their analyzer-verified F2 values (`BCK_HALF_ITERS = 120`,
+`DATA_SETUP_ITERS = 40` ⇒ `BCK ≈ 45 kHz`). The new gate-scan delays are derived from the F2 bench
+calibration `ITERS_PER_US ≈ 13` (`busy(120) ≈ 9.4 µs` on the unconfigured ~64 MHz FLPR), the way the
+M33 path derives its delays from `COUNTS_PER_US` — each clears its datasheet minimum with margin:
+
+| delay | iters | ≈ µs | datasheet floor |
+|---|---|---|---|
+| `GCK_SETTLE` | `5·13 = 65` | ~5 | settle after a GCK level change |
+| `GEN_SETUP` (setup *and* hold) | `17·13 = 221` | ~17 | `GCK`↔`GEN` ≥16.37 µs |
+| `GEN_HIGH` | `25·13 = 325` | ~25 | `GEN` valid-output ≥24.56 µs |
+| `GCK_HIGH` (dummy advance) | `10·13 = 130` | ~10 | — |
+| `FRAME_SETUP` | `10·13 = 130` | ~10 | `INTB`→`GSP`, `GSP`→first `GCK` |
+
+A full frame ≈ 320 rows × 2 sub-lines × 124 `BCK` × ~22 µs ≈ **1.8 s** — bring-up-slow on purpose (LA-
+resolvable). F5 tunes toward the panel's real ~53 ms frame.
+
+### Verification — ✅ DONE on glass
+
+`cargo run --release --bin ls021_flpr_bringup --features ls021-flpr`:
+
+- **On glass (verified):** uniform **black** init frame holds, then **BTN0 steps clean solid white /
+  R / G / B** across the whole panel — **identical to the M33-direct L3 (#143)** colour cycle, now
+  FLPR-driven. Since L3 is the analyzer-verified golden reference and F3 reproduces it pixel-for-pixel
+  on the same glass, that on-glass match is the end-to-end proof the FLPR owns the complete waveform
+  correctly (gate scan + `INTB` envelope + source shift) — no separate LA capture was needed. COM
+  free-running on the M33 alongside the FLPR's source bus on the shared P2 port showed no interference.
+- **RTT:** `FLPR alive`, then `INIT-BLACK frame OK — FLPR scanned 320 rows (frame #1)`, `COM RUNNING`,
+  then `WHITE/RED/GREEN/BLUE frame OK` as BTN0 steps (a `MISMATCH` would dump
+  `status`/`consumed`/`flpr_seq`; a `TIMEOUT` localizes the M33→FLPR vs the scan-stall vs the
+  EGU-return leg).
+- **If a future change needs the LA golden-diff** (e.g. F5's speed-tune), capture the gate lines
+  (`GSP`/`GCK`/`GEN`/`INTB`) + the source bus (`BSP`/`BCK`/`R0..B1`) and assert the same invariants the
+  M33 `PanelBus` passes in #143: `GSP` ×1 with `GCK(1)` within `GSP` high; the right `GCK` count (320
+  data periods + lead/trail dummies); `GEN` per phase (≥24.56 µs hi); `GCK`↔`GEN` setup/hold ≥16.37 µs;
+  124 `BCK`/sub-line, two sub-lines/row; `INTB` high for the whole frame. The L2/L3 `*_check.py`
+  helpers apply unchanged.
+- **⚠️ meter `VDD2` first** if a scan ever looks perfect on the LA but the glass stays garbage — the
+  #142 loose-5 V-rail gotcha (the gate driver is invisible to the LA).
 
 ## Verification — F1 round-trip
 

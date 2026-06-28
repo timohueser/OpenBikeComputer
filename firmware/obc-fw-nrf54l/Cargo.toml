@@ -45,9 +45,12 @@ ls021-bringup = []
 # (M33 starts the FLPR; it blinks LED0 + answers a one-word handshake); F1 (#151) is the
 # bidirectional comms channel — a shared control block + a doorbell each way (shared-RAM sequence
 # M33→FLPR, EGU interrupt FLPR→M33; VEVIF is walled on bare metal), round-trip verified over RTT.
-# **F2 (#152)** drives the inner data-shift loop on the FLPR: one source sub-line (BSP + 124 BCK +
-# the 6 data lines) drained from a SHARED-page write buffer the M33 hands over via the F1 descriptor,
-# bring-up-slow and LA-diffed against the M33 PanelBus. Build with `--bin ls021_flpr_bringup
+# F2 (#152) drove the inner data-shift loop on the FLPR: one source sub-line (BSP + 124 BCK + the 6
+# data lines) drained from a SHARED-page write buffer the M33 hands over via the F1 descriptor.
+# **F3 (#153)** wraps that loop in the gate scan (GSP/GCK/GEN) + frame envelope (INTB), so the FLPR
+# drives a whole frame on glass — an INTB-framed all-black init frame then solid white / R / G / B,
+# the M33 packing a row buffer + ringing once per frame, COM free-running on the M33. Bring-up-slow,
+# LA-diffed against the M33 PanelBus and webcam-verified. Build with `--bin ls021_flpr_bringup
 # --features ls021-flpr`. See `firmware/docs/ls021-flpr.md`.
 ls021-flpr = []
 
@@ -72,10 +75,10 @@ name = "ls021_bringup"
 path = "src/bin/ls021_bringup.rs"
 required-features = ["ls021-bringup"]
 
-# The LS021 **FLPR** bring-up F0 bin (epic #149 / issue #150). Same pattern as `ls021_bringup`:
-# `required-features` keeps it out of every normal build — it only compiles when explicitly
-# asked (`--bin ls021_flpr_bringup --features ls021-flpr`), so the FLPR carve-out + RISC-V
-# blob build in `build.rs` never touch the default `src/main.rs` map/ride path.
+# The LS021 **FLPR** bring-up bin (epic #149), evolved one stage at a time (currently F3, #153).
+# Same pattern as `ls021_bringup`: `required-features` keeps it out of every normal build — it only
+# compiles when explicitly asked (`--bin ls021_flpr_bringup --features ls021-flpr`), so the FLPR
+# carve-out + RISC-V blob build in `build.rs` never touch the default `src/main.rs` map/ride path.
 [[bin]]
 name = "ls021_flpr_bringup"
 path = "src/bin/ls021_flpr_bringup.rs"
