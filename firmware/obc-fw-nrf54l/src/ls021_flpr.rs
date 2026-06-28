@@ -52,7 +52,9 @@ use defmt::{error, info};
 use embassy_time::{Instant, Timer};
 // The host-tested RGB222 → LS021-wire pack (#154) with its sub-line/row word counts.
 use obc_platform::ls021_wire::{BCK_PER_SUBLINE, ROW_WORDS, WIDTH};
-use obc_platform::{ls021_pack_row, Band, Panel};
+// `device64_to_rgb565` expands a clean framebuffer byte to RGB565 so the overlay-composite path
+// (#163) draws the hold bulge over it through a `Band` before re-quantising back to the wire.
+use obc_platform::{device64_to_rgb565, ls021_pack_row, Band, Panel};
 // The host-tested RGB565 → device-64 quantiser — the same one the glass-demo's gamut is drawn from,
 // so `flush_band` lands a band on the panel's RGB222 gamut exactly as the ST7789 stand-in shows it.
 use obc_reader::rgb565_to_device64;
@@ -132,6 +134,13 @@ pub const ROWS_PER_FRAME: u32 = 320;
 pub const FB_W: usize = WIDTH;
 /// Framebuffer height = the visible row count.
 pub const FB_H: usize = ROWS_PER_FRAME as usize;
+
+/// Max overlay region [`push_overlay`](Ls021Flpr::push_overlay)'s composite scratch holds — the hold
+/// bulge's right-edge window (16 cols × 192 rows, issue #126/#163). A region must fit this (asserted);
+/// the `[u16; COLS×ROWS]` RGB565 scratch is the only extra RAM the FLPR overlay path needs (~6 KB,
+/// transient on the overlay-only frame's shallow stack — never live during a deep map render).
+const MAX_OVERLAY_COLS: usize = 16;
+const MAX_OVERLAY_ROWS: usize = 192;
 
 /// Busy-poll cap while waiting on the FLPR (a free ping-pong buffer or the frame ack). A spin cap,
 /// not a duration — sized large enough that even a full slow frame never trips it, so it only fires
@@ -426,6 +435,70 @@ impl<'b> Ls021Flpr<'b> {
     /// `&[(0, FB_H)]` (init-black + every full map redraw), byte-identical to the F5 full-frame scan.
     pub fn push_frame(&mut self) -> bool {
         self.push_spans(&[(0, FB_H as u16)])
+    }
+
+    /// Re-present **only the rows of an overlay region** with `draw_overlay` composited over the clean
+    /// framebuffer backdrop (issue #163) — the few-ms partial push the hold bulge rides over a static
+    /// map, keeping `fb` the clean map (never mutated). The LS021 is row-addressed (touching a row
+    /// re-latches all 240 columns), so this rewrites the full-width rows `[y0, y0+rows)` while only the
+    /// `[x0, x0+w)` columns carry the overlay; the FLPR fast-forwards the gate to `y0` and early-stops
+    /// after `y0+rows`, so the cost scales to the region's row span, not the whole frame.
+    ///
+    /// **Stack-frugal + lock-light** — the explicit fix for the old per-row overflow: the overlay is
+    /// rendered into a small RGB565 window scratch **once** (one `draw_overlay` call ⇒ the caller's
+    /// `InputPlane` lock is taken once per overlay frame, not per row), then each dirty row is packed
+    /// as the clean `fb` columns with the `[x0, x0+w)` columns swapped for the composited window
+    /// (re-quantised inline) — no per-row lock and no per-row re-render.
+    pub fn push_overlay(
+        &mut self,
+        x0: u16,
+        y0: u16,
+        w: u16,
+        rows: u16,
+        draw_overlay: &mut dyn FnMut(&mut Band),
+    ) -> bool {
+        let (x0, y0, w, rows) = (x0 as usize, y0 as usize, w as usize, rows as usize);
+        assert!(
+            w <= MAX_OVERLAY_COLS && rows <= MAX_OVERLAY_ROWS && x0 + w <= FB_W && y0 + rows <= FB_H,
+            "overlay region out of bounds / larger than the composite scratch"
+        );
+
+        // 1. Render the overlay ONCE into a window scratch over the clean backdrop: pre-fill the window
+        //    from `fb` (RGB222 → RGB565), then `draw_overlay` paints the bulge over it through a
+        //    frame-absolute `Band`. `win` then holds the composited region; `fb` is untouched.
+        let mut win = [0u16; MAX_OVERLAY_COLS * MAX_OVERLAY_ROWS];
+        let n = w * rows;
+        for row in 0..rows {
+            let fb_base = (y0 + row) * FB_W + x0;
+            for c in 0..w {
+                win[row * w + c] = device64_to_rgb565(self.fb[fb_base + c]);
+            }
+        }
+        {
+            let frame = Size::new(FB_W as u32, FB_H as u32);
+            let mut band = Band::new_window(&mut win[..n], frame, x0 as u16, y0 as u16, w as u16, rows as u16);
+            draw_overlay(&mut band);
+        }
+
+        // 2. Drive the full-width span `[y0, y0+rows)`: each dirty row = the clean `fb` columns with the
+        //    `[x0, x0+w)` columns replaced by the composited window (re-quantised to device-64). One
+        //    reused 240-byte row, packed straight to the ping-pong buffer — no lock, no re-render.
+        self.run_masked(&[(y0 as u16, rows as u16)], |fb, buf_i, abs_row| {
+            let srow = abs_row - y0;
+            let mut row_dev = [0u8; FB_W];
+            row_dev.copy_from_slice(&fb[abs_row * FB_W..abs_row * FB_W + FB_W]);
+            for c in 0..w {
+                // rgb565_to_device64 returns 0/85/170/255 per channel; /85 recovers the 2-bit level.
+                let (r, g, b) = rgb565_to_device64(win[srow * w + c]);
+                row_dev[x0 + c] = ((r / 85) << 4) | ((g / 85) << 2) | (b / 85);
+            }
+            // SAFETY: `out` is the SHARED-page write buffer at a fixed address no Rust object aliases.
+            let out = unsafe { core::slice::from_raw_parts_mut(WRITE_BUF_ADDR[buf_i] as *mut u32, ROW_WORDS) };
+            ls021_pack_row(&row_dev, out);
+            cortex_m::asm::dsb(); // buffer words complete before the ready bump the FLPR waits on
+            let next = buf_ready(buf_i).wrapping_add(1);
+            unsafe { addr_of_mut!((*CONTROL).buf[buf_i].ready).write_volatile(next) };
+        })
     }
 }
 

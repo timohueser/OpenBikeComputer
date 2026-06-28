@@ -153,14 +153,17 @@ use st7789::St7789;
 #[cfg(all(feature = "glass-demo", feature = "panel-ls021"))]
 compile_error!("`glass-demo` and `panel-ls021` are mutually exclusive display backends");
 
-// The per-band/per-window frame-absolute draw view (`Band`) + its `Panel` seam + frame `Size`: the
-// glass-demo draws the whole frame through them, and the ST7789 map path composites the hold bulge
-// through them. The FLPR map path renders device-64 straight into its plane (no banding), so it needs
-// none of these.
+// The frame-absolute draw view `Band` is used by every build — the glass-demo draws the whole frame
+// through it, and the `present_overlay` drawer paints the hold bulge into it on both map panels
+// (issue #163). `Size` (the frame size for `Band::new_window`) + the banded `Panel` trait are the
+// ST7789 / glass-demo path's: the ST7789 map composites the bulge window + bands the framebuffer to
+// the panel, and the glass-demo draws bands through `Panel`; the FLPR path renders device-64 straight
+// into its plane (no banding) and composites inside `Ls021Flpr::push_overlay`.
 #[cfg(not(feature = "panel-ls021"))]
 use embedded_graphics::prelude::Size;
+use obc_platform::Band;
 #[cfg(not(feature = "panel-ls021"))]
-use obc_platform::{Band, Panel};
+use obc_platform::Panel;
 
 // N4 map path (#125): the shared app, the streamed-map reader + its `.bss` cache, and the
 // device-native RGB222 framebuffer the renderer draws into (`color_fn` = identity Rgb565; the
@@ -169,12 +172,15 @@ use obc_platform::{Band, Panel};
 // plane, the lock-free gesture channel to the thread-mode map plane, the async bus mutex over the
 // shared panel + framebuffer, and the blocking mutex over the `InputPlane` both planes draw the
 // bulge from.
-#[cfg(all(not(feature = "glass-demo"), not(feature = "panel-ls021")))]
+// The blocking `InputPlane` mutex both planes touch — on ST7789 the input plane re-pushes the overlay
+// window from it; on the FLPR build (issue #163) the input plane recognises + animates the bulge under
+// it while the map plane composites it into the partial push. Both map builds share it now.
+#[cfg(not(feature = "glass-demo"))]
 use core::cell::RefCell;
 #[cfg(not(feature = "glass-demo"))]
 use core::mem::MaybeUninit;
 #[cfg(not(feature = "glass-demo"))]
-use display::DisplayDriver;
+use display::{DisplayDriver, OverlayRegion};
 #[cfg(not(feature = "glass-demo"))]
 use embassy_executor::InterruptExecutor;
 #[cfg(not(feature = "glass-demo"))]
@@ -187,7 +193,7 @@ use embassy_nrf::interrupt::{InterruptExt, Priority};
 use embassy_nrf::spim::Spim;
 #[cfg(not(feature = "glass-demo"))]
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-#[cfg(all(not(feature = "glass-demo"), not(feature = "panel-ls021")))]
+#[cfg(not(feature = "glass-demo"))]
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 #[cfg(not(feature = "glass-demo"))]
 use embassy_sync::channel::{Channel, Sender};
@@ -474,6 +480,35 @@ impl DisplayDriver for Display {
         defmt::info!("ST7789 push: fill {=u32} + pack {=u32} + spi {=u32} us", fill_us, pack_us, spi_us);
         true
     }
+
+    /// Re-push just the overlay rectangle: the ST7789 is column-addressable, so it addresses exactly
+    /// the `region` window (`flush_window`). Fill the scratch from the clean framebuffer backdrop
+    /// (RGB222 → RGB565), composite the bulge over it via `draw_overlay`, then DMA the window — no map
+    /// re-render, no torn frame (the caller holds the bus). GRAM writes don't fault, so always `true`.
+    fn present_overlay(&mut self, region: OverlayRegion, draw_overlay: &mut dyn FnMut(&mut Band)) -> bool {
+        let Display { panel, fb } = self;
+        let fb: &[u8] = fb;
+        panel.flush_window(region.x0, region.y0, region.w, region.rows, |scratch| {
+            let w = region.w as usize;
+            for row in 0..region.rows as usize {
+                let fb_row = (region.y0 as usize + row) * WIDTH as usize + region.x0 as usize;
+                let dst = &mut scratch[row * w..(row + 1) * w];
+                for (px, &byte) in dst.iter_mut().zip(&fb[fb_row..fb_row + w]) {
+                    *px = device64_to_rgb565(byte);
+                }
+            }
+            let mut band = Band::new_window(
+                scratch,
+                Size::new(WIDTH as u32, HEIGHT as u32),
+                region.x0,
+                region.y0,
+                region.w,
+                region.rows,
+            );
+            draw_overlay(&mut band);
+        });
+        true
+    }
 }
 
 /// The FLPR LS021 backend behind the same seam: the app renders into the resident plane, then this
@@ -487,6 +522,14 @@ impl DisplayDriver for Ls021Flpr<'_> {
     }
     fn present(&mut self) -> bool {
         self.push_frame()
+    }
+
+    /// Re-present the overlay rectangle's **rows** with the bulge composited (issue #163): the LS021
+    /// can't latch a sub-span of columns, so the FLPR rewrites the full-width rows `[y0, y0+rows)`
+    /// (only `[x0, x0+w)` carry the overlay) and fast-forwards the gate over the rest — see
+    /// [`push_overlay`](Ls021Flpr::push_overlay) for the stack-frugal, lock-once composite.
+    fn present_overlay(&mut self, region: OverlayRegion, draw_overlay: &mut dyn FnMut(&mut Band)) -> bool {
+        self.push_overlay(region.x0, region.y0, region.w, region.rows, draw_overlay)
     }
 }
 
@@ -534,45 +577,30 @@ unsafe fn SWI00() {
 #[cfg(not(feature = "glass-demo"))]
 const LOOP_MS: u64 = 8;
 
-// The hold-bulge's right-edge overlay window (issue #126). Both bulges erupt from the right screen
-// edge — the encoder around rows 59–171, Back around 182–246, ≤12 px deep — so this fixed column
-// band bounds them with margin (keyed to `obc-app/src/hold_hint.rs` ENCODER/BACK anchors + depths;
-// update both together if those move). On a static map the input plane re-pushes *only* this window
-// (read back from the framebuffer + composited), so the bulge animates at full FPS with no map
-// re-render. 16×192 px reuses the `BAND` scratch (≤ its WIDTH×BAND_ROWS).
-// The right-edge overlay window is the ST7789 composite-on-push bulge (a *partial* re-push); the FLPR
-// backend can only scan a whole frame at once, so it has no partial-window path — the hold bulge is a
-// partial-update follow-up there (#163). Hence this whole block is ST7789-only.
+// The hold-bulge's right-edge overlay region (issue #126/#163). Both bulges erupt from the right
+// screen edge — the encoder around rows 59–171, Back around 182–246, ≤12 px deep — so this fixed
+// column band bounds them with margin (keyed to `obc-app/src/hold_hint.rs` ENCODER/BACK anchors +
+// depths; update both together if those move). On a static map the overlay plane re-presents *only*
+// this region through `DisplayDriver::present_overlay`, compositing the bulge over the clean
+// framebuffer — **both panels** do it now (ST7789 a 16-px column window; the FLPR the full-width rows
+// of the region, #163), so the region constants are shared.
 /// First overlay column: the rightmost 16 px (bulge depth ≤12 + margin).
-#[cfg(all(not(feature = "glass-demo"), not(feature = "panel-ls021")))]
+#[cfg(not(feature = "glass-demo"))]
 const OVL_X0: u16 = WIDTH - 16;
 /// Overlay window width (columns).
-#[cfg(all(not(feature = "glass-demo"), not(feature = "panel-ls021")))]
+#[cfg(not(feature = "glass-demo"))]
 const OVL_W: u16 = 16;
 /// First overlay row (a little above the encoder bulge's top).
-#[cfg(all(not(feature = "glass-demo"), not(feature = "panel-ls021")))]
+#[cfg(not(feature = "glass-demo"))]
 const OVL_Y0: u16 = 56;
 /// Overlay window height in rows (down past the Back bulge's bottom).
-#[cfg(all(not(feature = "glass-demo"), not(feature = "panel-ls021")))]
+#[cfg(not(feature = "glass-demo"))]
 const OVL_ROWS: u16 = 192;
-/// The overlay window must fit the shared band scratch (it borrows a prefix of it).
+/// ST7789: the overlay window must fit the shared band scratch (it borrows a prefix of it). The FLPR
+/// path has its own `MAX_OVERLAY_*` bound in `Ls021Flpr::push_overlay`.
 #[cfg(all(not(feature = "glass-demo"), not(feature = "panel-ls021")))]
 const _: () =
     assert!(OVL_W as usize * OVL_ROWS as usize <= WIDTH as usize * BAND_ROWS, "overlay window larger than BAND");
-
-/// Fill `scratch` (an `OVL_W × OVL_ROWS` window, row-major) from the overlay region of the RGB222
-/// framebuffer, expanding each byte to RGB565 ([`device64_to_rgb565`]) — the static-map backdrop the
-/// bulge is composited over.
-#[cfg(all(not(feature = "glass-demo"), not(feature = "panel-ls021")))]
-fn fill_overlay_window(scratch: &mut [u16], fb: &[u8]) {
-    for row in 0..OVL_ROWS as usize {
-        let fb_row = (OVL_Y0 as usize + row) * WIDTH as usize + OVL_X0 as usize;
-        let dst = &mut scratch[row * OVL_W as usize..(row + 1) * OVL_W as usize];
-        for (px, &byte) in dst.iter_mut().zip(&fb[fb_row..fb_row + OVL_W as usize]) {
-            *px = device64_to_rgb565(byte);
-        }
-    }
-}
 
 /// Chains two input sources for the gesture recogniser: drains `a` (the physical buttons) fully,
 /// then `b` (the VCOM-injected `K` events with `debug-uart`, else [`NullInput`]). So a host can
@@ -705,60 +733,53 @@ async fn input_overlay_task(
         });
 
         // Repaint the bulge only when it changed (plus the one trailing clear `take_overlay_dirty`
-        // reports): re-push just the right-edge window over a static map. Awaiting the bus yields to
-        // the (thread-mode) map plane if it is mid-frame, so this never spins.
+        // reports): re-present just the right-edge region over a static map through the seam.
+        // `present_overlay` fills the window from the clean framebuffer + composites the bulge (the
+        // `InputPlane` lock is taken once, inside the drawer). Awaiting the bus yields to the
+        // (thread-mode) map plane if it is mid-frame, so this never spins.
         if dirty {
-            let mut disp = bus.lock().await;
-            let Display { panel, fb } = &mut *disp;
-            let fb = &**fb;
-            panel.flush_window(OVL_X0, OVL_Y0, OVL_W, OVL_ROWS, |scratch| {
-                fill_overlay_window(scratch, fb);
-                input_plane.lock(|cell| {
-                    let mut win = Band::new_window(
-                        scratch,
-                        Size::new(WIDTH as u32, HEIGHT as u32),
-                        OVL_X0,
-                        OVL_Y0,
-                        OVL_W,
-                        OVL_ROWS,
-                    );
-                    cell.borrow().render_overlay(&mut win, WIDTH as f32, HEIGHT as f32, color_fn);
-                });
+            let region = OverlayRegion { x0: OVL_X0, y0: OVL_Y0, w: OVL_W, rows: OVL_ROWS };
+            bus.lock().await.present_overlay(region, &mut |band: &mut Band| {
+                input_plane.lock(|cell| cell.borrow().render_overlay(band, WIDTH as f32, HEIGHT as f32, color_fn));
             });
         }
         Timer::after_millis(LOOP_MS).await;
     }
 }
 
-/// The FLPR build's input plane (issue #165): a **gesture-only** version of [`input_overlay_task`].
+/// The FLPR build's input plane (issues #165/#163): recognises gestures + animates the hold bulge.
 /// Runs on [`EXECUTOR_HP`] beside COM, preempting the thread-mode map render, so press latency + the
-/// auto-repeat cadence stay exact across the ~97 ms blocking whole-frame push. Each [`LOOP_MS`] it
-/// samples the buttons + (with `debug-uart`) the VCOM-injected `K` events, recognises gestures into
-/// [`GESTURES`] for the map plane to apply, and advances the recogniser.
+/// auto-repeat cadence stay exact across the blocking whole-frame push. Each [`LOOP_MS`] it samples
+/// the buttons + (with `debug-uart`) the VCOM-injected `K` events and recognises gestures into
+/// [`GESTURES`] for the map plane to apply — **under the shared [`InputPlane`] lock**, so the live
+/// hold-bulge state it advances is the same one the map plane composites into its partial overlay push.
 ///
-/// Unlike the ST7789 plane there is **no overlay-window push**: the FLPR scans a whole frame at once,
-/// so the hold bulge can't be re-pushed on its own (it's a partial-update follow-up, #163). The
-/// recogniser still drives the *gestures* (taps + the hold completions that fire actions); only the
-/// fluid on-glass bulge preview is absent. The [`InputPlane`] is owned here outright (only this task
-/// touches it), so — unlike the ST7789 build's shared `InputPlane` mutex — no lock is needed.
+/// Unlike the ST7789 plane this task does **not** push to glass: the FLPR scans whole frames, so the
+/// *map plane* owns every push (no shared SPI bus to serialise against). It re-presents only the bulge
+/// rows when the overlay is dirty — see the map loop. This task is purely the recogniser; the brief
+/// lock is never held across the `await`.
 #[cfg(all(feature = "panel-ls021", not(feature = "glass-demo")))]
 #[embassy_executor::task]
 async fn input_task(
     mut buttons: ButtonInput<Input<'static>>,
+    input_plane: &'static BlockingMutex<CriticalSectionRawMutex, RefCell<InputPlane>>,
     gestures: Sender<'static, CriticalSectionRawMutex, Gesture, GESTURE_QUEUE>,
 ) {
-    let mut plane = InputPlane::new();
     loop {
         let now = Instant::now().as_millis() as u32;
         buttons.update(now);
-        // Physical buttons + (with `debug-uart`) the VCOM-injected `K` events, drained into one
-        // recogniser pass — so a host can drive taps/holds like the real buttons.
-        let mut dbg = debug_input();
-        let mut input = ChainedInput { a: &mut buttons, b: &mut dbg };
-        plane.recognize(InputClock(now), &mut input, |g| {
-            if gestures.try_send(g).is_err() {
-                defmt::warn!("gesture channel full — dropped a gesture (map plane stalled?)");
-            }
+        // Recognise + animate the bulge under the shared lock (a brief critical section, never held
+        // across the await), so the bulge state the map plane composites is the one this advanced.
+        // Physical buttons + (with `debug-uart`) the VCOM-injected `K` events, one recogniser pass.
+        input_plane.lock(|cell| {
+            let plane = &mut *cell.borrow_mut();
+            let mut dbg = debug_input();
+            let mut input = ChainedInput { a: &mut buttons, b: &mut dbg };
+            plane.recognize(InputClock(now), &mut input, |g| {
+                if gestures.try_send(g).is_err() {
+                    defmt::warn!("gesture channel full — dropped a gesture (map plane stalled?)");
+                }
+            });
         });
         Timer::after_millis(LOOP_MS).await;
     }
@@ -1035,7 +1056,7 @@ async fn main(_spawner: Spawner) {
         // is broken out on your DK and remap all three together if not (the source bus, BCK, and COM
         // stay on P2 exactly as the bring-up bin has them).
         #[cfg(feature = "panel-ls021")]
-        let (mut panel, _flpr_gate_bus, _flpr_src_bus) = {
+        let (mut panel, input_plane, _flpr_gate_bus, _flpr_src_bus) = {
             // Gate + frame lines (P1) — GSP P1.00, GCK P1.01, GEN P1.12, INTB P1.10; held configured.
             // The DK breaks out only P1.00–14 (P1.02/03 are NFC, off-limits), which is one pin short
             // for everything on P1 — so SD `CS` moved to P0.00 (below), freeing P1.12 for GEN, and
@@ -1085,11 +1106,27 @@ async fn main(_spawner: Spawner) {
             // is still held `Lo`. Then T4 ≥ 30 µs, then start COM — from here it free-runs forever.
             panel.push_frame();
             Timer::after_micros(50).await;
+
+            // The shared `InputPlane` (issue #163): `input_task` recognises + animates the bulge under
+            // this lock; the map plane composites it into a partial overlay push. Parked in `.bss` +
+            // written **in place** (the APP/FB pattern, not `StaticCell` — its one-shot flag can panic
+            // "already full" on a warm reset).
+            static mut INPUT_PLANE: MaybeUninit<BlockingMutex<CriticalSectionRawMutex, RefCell<InputPlane>>> =
+                MaybeUninit::uninit();
+            // SAFETY: sole writer; initialised before the `&'static` is shared with the input plane,
+            // never rewritten (single executor builds it, two planes only read it).
+            let input_plane: &'static BlockingMutex<CriticalSectionRawMutex, RefCell<InputPlane>> = unsafe {
+                let slot = core::ptr::addr_of_mut!(INPUT_PLANE)
+                    as *mut BlockingMutex<CriticalSectionRawMutex, RefCell<InputPlane>>;
+                slot.write(BlockingMutex::new(RefCell::new(InputPlane::new())));
+                &*slot
+            };
+
             let hp = EXECUTOR_HP.start(interrupt::SWI00);
             hp.spawn(defmt::unwrap!(com_task(vcom, vb, va)));
-            hp.spawn(defmt::unwrap!(input_task(buttons, GESTURES.sender())));
-            info!("FLPR LS021: COM + gesture plane on SWI00 @ P3; map plane: thread mode (blocking full-frame push)");
-            (panel, gate_bus, src_bus)
+            hp.spawn(defmt::unwrap!(input_task(buttons, input_plane, GESTURES.sender())));
+            info!("FLPR LS021: COM + gesture/bulge plane on SWI00 @ P3; map plane: thread mode (blocking masked push)");
+            (panel, input_plane, gate_bus, src_bus)
         };
 
         // Native renderer colour → identity `Rgb565`; `FbDevice64` quantizes to RGB222 on store
@@ -1263,6 +1300,16 @@ async fn main(_spawner: Spawner) {
             dirty.map |= pending_map_redraw;
             pending_map_redraw = false;
 
+            // FLPR: the hold bulge rides the map plane (there is no shared SPI bus, so no concurrent
+            // overlay push to serialise against). Sample the overlay-dirty edge once per frame from the
+            // shared `InputPlane` — the map plane is the single owner of that bookkeeping here
+            // (`take_overlay_dirty` is true while the bulge is live, plus one trailing clear). Drained
+            // before the map redraw so an overlay-only frame (no map change) re-presents just the bulge
+            // rows below; the ST7789 build drives its bulge from the input plane instead, so it has no
+            // overlay work in this loop.
+            #[cfg(feature = "panel-ls021")]
+            let overlay_dirty = input_plane.lock(|c| c.borrow_mut().take_overlay_dirty());
+
             if dirty.map {
                 // The map pipeline runs **only when the base screen actually draws the map** (the Map
                 // view). On a menu / Statistics / Home redraw it's skipped entirely — no SD style-table
@@ -1378,6 +1425,27 @@ async fn main(_spawner: Spawner) {
                             push_us
                         );
                     }
+                }
+            }
+
+            // FLPR overlay-only frame (issue #163): the hold bulge animated over a STATIC map (no map
+            // redraw this tick) — re-present **only** the bulge rows from the clean framebuffer,
+            // compositing the live bulge. The FLPR fast-forwards the gate to the region + early-stops,
+            // so it's a fraction of a full frame; the trailing `take_overlay_dirty` edge re-presents the
+            // region once more with nothing composited = the clean map restored under it. A failed push
+            // isn't latched as a map redraw — the bulge re-presents on the next overlay tick anyway.
+            #[cfg(feature = "panel-ls021")]
+            if !dirty.map && overlay_dirty {
+                let region = OverlayRegion { x0: OVL_X0, y0: OVL_Y0, w: OVL_W, rows: OVL_ROWS };
+                let t_push = Instant::now();
+                let ok = panel.present_overlay(region, &mut |band: &mut Band| {
+                    input_plane.lock(|cell| cell.borrow().render_overlay(band, WIDTH as f32, HEIGHT as f32, color_fn));
+                });
+                let push_us = t_push.elapsed().as_micros();
+                if ok {
+                    defmt::info!("overlay frame: bulge push {=u64} us ({=u16} rows)", push_us, OVL_ROWS);
+                } else {
+                    defmt::warn!("overlay frame: bulge push failed (FLPR stalled?) — retrying next overlay tick");
                 }
             }
 
