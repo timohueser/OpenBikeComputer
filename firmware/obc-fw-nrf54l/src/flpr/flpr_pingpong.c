@@ -1,6 +1,8 @@
-/* flpr_pingpong.c — LS021 FLPR F4 ping-pong frame blob (issue #154, epic #149).
+/* flpr_pingpong.c — LS021 FLPR ping-pong frame blob (issues #154/#155, epic #149).
  *
- * **The epic's headline deliverable.** Successor to the F3 full-frame blob (flpr_frame.c, #153):
+ * **The epic's headline deliverable** (F4), reused unchanged by F5 (#155) behind the
+ * `obc_platform::Panel` seam — F5 only ratchets the bit-bang timing toward the spec frame (see the
+ * "F5 speed-tune" note on the delay constants). Successor to the F3 full-frame blob (flpr_frame.c, #153):
  * keeps the *complete* LS021 waveform F3 built — the gate scan (`GSP`/`GCK`/`GEN`), the frame
  * envelope (`INTB`), and the F2 inner data-shift loop (`drive_subline`) — and changes exactly one
  * thing: where each pixel row's source words come from. F3 reused a single solid-colour buffer for
@@ -127,15 +129,42 @@ static inline void fence(void)
 }
 
 /* ── Bit-bang delays (busy-loops). The FLPR clock is unconfigured at this stage, so these are
- * **LA-calibrated on the bench**, exactly like the M33 path's asm::delay counts. Target: bring-up-
- * slow so the analyzer resolves every edge — speed is F5's job. F2 measured `busy(120) ≈ 9.4 µs` on
- * the unconfigured (~64 MHz) FLPR ⇒ **~13 iters/µs**; the gate-scan delays below are derived from
- * that the way the M33 path derives its delays from COUNTS_PER_US, so each clears its datasheet
- * minimum with margin. The source-shift counts (BCK_HALF/DATA_SETUP) keep their analyzer-verified
- * F2 values. ── */
+ * **LA-calibrated on the bench**, exactly like the M33 path's asm::delay counts. F2 measured
+ * `busy(120) ≈ 9.4 µs` on the unconfigured (~64 MHz) FLPR ⇒ **~13 iters/µs**; the gate-scan delays
+ * are derived from that the way the M33 path derives its from COUNTS_PER_US, so each clears its
+ * datasheet minimum with margin.
+ *
+ * ## DDR drive + speed (issue #155) — the panel latches BOTH BCK edges
+ *
+ * **Cracked on glass:** the panel clocks the source register on **both** `BCK` edges. The original
+ * single-edge drive held each pair constant across a whole `BCK` period, so the panel captured it
+ * twice → every pair landed in 4 columns (left half stretched 2×, right half dropped, 64→32 colours)
+ * — invisible on solids, which is why F2–F4 + the M33 bring-up missed it. `drive_subline` now drives
+ * **DDR** (a distinct pair on each edge: word `2k` before the rising edge, word `2k+1` before the
+ * falling edge), so the 240-wide line ships in **60 BCK cycles** and reassembles correctly — and the
+ * source shift runs ~2× faster as a bonus, which is exactly why the spec **~53 ms / 64-colour** frame
+ * is reachable (the datasheet's 120-BCK/line already assumes this dual-edge throughput).
+ *
+ * The clock levers:
+ *   - `BCK_HALF_ITERS` / `DATA_SETUP_ITERS` set each `BCK` half-period. **With DDR a data transition
+ *     now sits on BOTH edges**, so each half must satisfy the panel spec independently: `BCK` width
+ *     ≥660 ns (high AND low, `thwBCK`/`tlwBCK`) and data set-up ≥335 ns before *each* edge (`tsRGB`).
+ *     `BCK_HALF_ITERS = 8` ≈ 660 ns half (in-spec); `DATA_SETUP_ITERS = 4` ≈ 335 ns. **Re-verify on
+ *     the LA after the DDR change** — the falling-edge data timing is new. (Lower values run over-spec
+ *     but worked on the bench unit; characterise before trusting across units.)
+ *   - The gate timings (`GCK_SETTLE`/`GEN_SETUP`/`GEN_HIGH`) are panel **electrical minimums**
+ *     (GCK↔GEN setup/hold ≥16.37 µs, GEN valid ≥24.56 µs). **Do NOT lower below their µs values** —
+ *     they are correctness, not slack. (`gen_pulse` drops its *leading* setup busy — the long data
+ *     shift before it already supplies the GCK↔GEN setup — and keeps the GEN-high + trailing hold.)
+ *
+ * The FLPR runs at the **full PLL clock** (the M33 boots it with `ClockSpeed::CK128`; there is no
+ * separate VPR clock divider on this part — the early F2 "~64 MHz" was a busy-loop estimate, not a
+ * lever). With DDR the per-frame floor is the source (320 rows × 2 sub-lines × 60 BCK ÷ 0.758 MHz ≈
+ * **51 ms**) overlapping the gate-minimum total (~37 ms) — i.e. the spec frame. `push_frame` logs the
+ * measured frame time each push — tune against that. ── */
 #define ITERS_PER_US      13u /* bench calibration: busy(120) ≈ 9.4 µs on the unconfigured FLPR */
-#define BCK_HALF_ITERS    120u                  /* each BCK phase — F2-verified ~9.4 µs (≈45 kHz BCK) */
-#define DATA_SETUP_ITERS  40u                   /* source data stable before the BCK rising edge */
+#define BCK_HALF_ITERS    2u                    /* each BCK half-period — ⚠️ OVER-SPEC bench value (~180 ns vs the ≥660 ns thwBCK/tlwBCK min; works on this unit). DDR puts data on BOTH edges → set 8 (~660 ns) for in-spec; LA-verify */
+#define DATA_SETUP_ITERS  3u                    /* source data stable before EACH BCK edge (~280 ns — under the spec ~335 ns min; set 4 for in-spec, LA-verify) */
 #define GCK_SETTLE_ITERS  (5u * ITERS_PER_US)   /* settle after a GCK level change before shifting */
 #define GEN_SETUP_ITERS   (17u * ITERS_PER_US)  /* GCK↔GEN setup AND hold (spec ≥16.37 µs) */
 #define GEN_HIGH_ITERS    (25u * ITERS_PER_US)  /* GEN valid-output window (spec ≥24.56 µs) */
@@ -148,28 +177,43 @@ static void busy(uint32_t iters)
     }
 }
 
-/* Drain one source sub-line from `base` (a byte address into the row buffer): pulse BSP, then `len`
- * BCK presenting each word's 6 data bits on P2.00..05. Unchanged from F2 (`PanelBus::shift_subline_
- * with` timing): BSP high envelopes BCK(1) (released on the first BCK rising edge), data is set up
- * DATA_SETUP before each BCK rise, data lines left Lo after. The caller has already set GCK to this
- * plane's level — this touches only the source bus, never GCK/GEN. */
+/* Drain one source sub-line from `base` (a byte address into the row buffer): pulse BSP, then clock
+ * the `len` data words out over P2.00..05.
+ *
+ * **DDR drive (F5 column-doubling fix, issue #155) — verified on glass.** The panel latches the
+ * source bus on **BOTH BCK edges**. The original single-edge drive held each pair constant across a
+ * whole BCK period, so the panel captured it twice → every pair landed in FOUR columns (left half
+ * stretched 2×, right half dropped, 64→32 colours) — invisible on solids, so F2–F4 + the M33 bring-up
+ * all missed it. Driving **DDR** — word `2k` set up before the **rising** edge, word `2k+1` before the
+ * **falling** edge, one distinct pair per edge, `len/2` BCK cycles for `len` words — feeds all 120
+ * pairs into the full 240 columns AND clocks the sub-line out ~2× faster (the spec ~53 ms frame
+ * already assumes this dual-edge throughput).
+ *
+ * `len` is even (124). BSP high envelopes the first rising edge (released on it). The caller has set
+ * GCK to this plane's level — this touches only the source bus, never GCK/GEN. */
 static void drive_subline(uint32_t base, uint32_t len)
 {
     const volatile uint32_t *buf = (const volatile uint32_t *)(uintptr_t)base;
 
     GPIO1_OUTSET = BSP_MASK; /* BSP high — start of the sub-line (the chart's BSP envelope) */
-    for (uint32_t col = 0; col < len; col++) {
-        uint32_t data = buf[col] & DATA_MASK;
-        GPIO2_OUTCLR = (~data) & DATA_MASK; /* lower the 0 data bits (P2.00..05 only) */
-        GPIO2_OUTSET = data;                /* raise the 1 data bits — column now presented */
-        busy(DATA_SETUP_ITERS);             /* data stable before BCK rises (spec ~335 ns) */
-
-        GPIO2_OUTSET = BCK_MASK;            /* BCK rising edge latches this pixel-pair into the SR */
-        if (col == 0) {
-            GPIO1_OUTCLR = BSP_MASK;        /* BCK(1) rose within BSP high — now release BSP */
+    for (uint32_t k = 0; k < len; k += 2) {
+        /* ── rising-edge column: word k ── */
+        uint32_t d0 = buf[k] & DATA_MASK;
+        GPIO2_OUTCLR = (~d0) & DATA_MASK;
+        GPIO2_OUTSET = d0;
+        busy(DATA_SETUP_ITERS);  /* data stable before the BCK rising edge */
+        GPIO2_OUTSET = BCK_MASK; /* rising edge latches word k */
+        if (k == 0) {
+            GPIO1_OUTCLR = BSP_MASK; /* BCK(1) rose within BSP high — now release BSP */
         }
         busy(BCK_HALF_ITERS);
-        GPIO2_OUTCLR = BCK_MASK;            /* BCK low */
+
+        /* ── falling-edge column: word k+1 ── */
+        uint32_t d1 = buf[k + 1] & DATA_MASK;
+        GPIO2_OUTCLR = (~d1) & DATA_MASK;
+        GPIO2_OUTSET = d1;
+        busy(DATA_SETUP_ITERS);  /* data stable before the BCK falling edge */
+        GPIO2_OUTCLR = BCK_MASK; /* falling edge latches word k+1 */
         busy(BCK_HALF_ITERS);
     }
     GPIO2_OUTCLR = DATA_MASK; /* leave the data lines Lo (boot-safe) after the sub-line */
@@ -178,11 +222,12 @@ static void drive_subline(uint32_t base, uint32_t len)
 /* Pulse GEN to latch the just-shifted sub-line into the **currently-selected** gate line. The caller
  * has set the GCK level first and that level chooses the target block: GCK HIGH → the 2/3-area (MSB)
  * cells, GCK LOW → the 1/3-area (LSB) cells. Fired clear of the GCK edges (GCK↔GEN setup/hold
- * ≥16.37 µs — the long data shift supplies the setup, the trailing delay the hold). Mirrors
- * `PanelBus::gen_pulse`. */
+ * ≥16.37 µs). The **GCK↔GEN setup is already supplied by the long data shift** that ran before this
+ * call (hundreds of µs of GCK-stable time ≫ 16.37 µs), so the *leading* setup busy is redundant and
+ * dropped (an F5 speed-tune saving ~11 ms/frame); only the GEN-high window and the *trailing* hold
+ * (GEN-low → the next GCK edge, which follows immediately) remain. Mirrors `PanelBus::gen_pulse`. */
 static void gen_pulse(void)
 {
-    busy(GEN_SETUP_ITERS); /* data / GCK level settled → GEN setup ≥16.37 µs */
     GPIO1_OUTSET = GEN_MASK;
     busy(GEN_HIGH_ITERS);  /* valid-output window ≥24.56 µs */
     GPIO1_OUTCLR = GEN_MASK;
@@ -317,10 +362,8 @@ void flpr_main(void)
 
         EGU20_TRIGGER0 = 1u; /* ring the M33: EGU20.EVENTS_TRIGGERED[0] -> M33 EGU20 IRQ (#201) */
 
-        /* By-eye liveness marker, *after* the ack and the captured waveform so it perturbs neither:
-         * one LED0 blink per drained frame. */
-        GPIO2_OUTSET = LED0_MASK;
-        busy(200000u);
-        GPIO2_OUTCLR = LED0_MASK;
+        /* (F5: the per-frame LED0 "drained a frame" blink was dropped — its busy() spun the FLPR a
+         * pointless ~19 ms after every frame. LED0 stays idle; the M33's EGU20 ack is the liveness
+         * proof now.) */
     }
 }

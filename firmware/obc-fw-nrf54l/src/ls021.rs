@@ -164,7 +164,7 @@ const GATE_DUMMY_TRAIL: u16 = 6;
 
 /// `BCK` half-period, each phase. ~3 µs → `BCK` ≈ 165 kHz, comfortably under the 0.758 MHz
 /// max and ≫ the 660 ns min hi/lo. (Frame ≈ 320 rows × 2 sub-lines × ~870 µs ≈ 0.6 s.)
-const BCK_HALF: u32 = 3 * COUNTS_PER_US;
+const BCK_HALF: u32 = 2 * COUNTS_PER_US;
 /// Source-data stable before `BCK` rises (spec ~335 ns; we hold ~1 µs). For a solid fill the
 /// data is constant across the sub-line, but the gap models the per-column setup L4 needs.
 const DATA_SETUP: u32 = COUNTS_PER_US;
@@ -394,29 +394,51 @@ impl PanelBus {
     /// lines (`R0/G0/B0`), `2*col+1` on the even lines (`R1/G1/B1`). The 4 trailing dummy `BCK`
     /// present black. Same `BSP`/`BCK` timing as [`write_data_subline`] — only the data is per
     /// column instead of uniform (this is the L4 spatial-pattern path).
+    /// Present one `BCK`-column's pixel pair on the source bus: column `2*col` on `R0/G0/B0`,
+    /// `2*col+1` on `R1/G1/B1`, for the given area plane. Columns `≥ COLS_PER_SUBLINE` are the
+    /// trailing dummy columns → black.
+    fn present_pair<F: Fn(u16, u16) -> (u8, u8, u8)>(&mut self, col: u16, y: u16, msb: bool, color: &F) {
+        if col < COLS_PER_SUBLINE {
+            let (ro, go, bo) = plane_bits(color(2 * col, y), msb);
+            let (re, ge, be) = plane_bits(color(2 * col + 1, y), msb);
+            set(&mut self.r0, ro);
+            set(&mut self.g0, go);
+            set(&mut self.b0, bo);
+            set(&mut self.r1, re);
+            set(&mut self.g1, ge);
+            set(&mut self.b1, be);
+        } else {
+            self.present(false, false, false); // trailing dummy columns → black
+        }
+    }
+
+    /// Shift one spatial source sub-line **DDR** — a *distinct* `BCK`-column on each clock edge.
+    ///
+    /// The panel latches the source bus on **both** `BCK` edges (cracked on glass, issue #155): the
+    /// original single-edge drive held each pair constant across the whole `BCK` period, so the panel
+    /// captured it twice → every pixel pair landed in four columns (left half stretched 2×, right
+    /// half dropped, 64→32 colours). Driving DDR — column `2k` set up before the **rising** edge,
+    /// column `2k+1` before the **falling** edge — feeds one distinct pair per edge, so the `120`
+    /// data columns ship in `60` `BCK` cycles and reassemble as the full 240-wide line (and the
+    /// sub-line clocks out ~2× faster). `BCK(1)` (the first rising edge) is still enveloped by `BSP`.
     fn shift_subline_with<F: Fn(u16, u16) -> (u8, u8, u8)>(&mut self, y: u16, msb: bool, color: &F) {
         self.bsp.set_high();
-        for col in 0..BCK_PER_SUBLINE {
-            if col < COLS_PER_SUBLINE {
-                let (ro, go, bo) = plane_bits(color(2 * col, y), msb);
-                let (re, ge, be) = plane_bits(color(2 * col + 1, y), msb);
-                set(&mut self.r0, ro);
-                set(&mut self.g0, go);
-                set(&mut self.b0, bo);
-                set(&mut self.r1, re);
-                set(&mut self.g1, ge);
-                set(&mut self.b1, be);
-            } else {
-                self.present(false, false, false); // trailing dummy columns → black
-            }
+        let mut col = 0;
+        while col < BCK_PER_SUBLINE {
+            // ── rising-edge column: 2*col / 2*col+1 ──
+            self.present_pair(col, y, msb, color);
             cpu_delay(DATA_SETUP);
-            self.bck.set_high();
+            self.bck.set_high(); // rising edge latches this column
             if col == 0 {
-                self.bsp.set_low(); // BCK(1) high fell within BSP high — release BSP
+                self.bsp.set_low(); // BCK(1) rose within BSP high — release BSP
             }
             cpu_delay(BCK_HALF);
-            self.bck.set_low();
+            // ── falling-edge column: the next one ──
+            self.present_pair(col + 1, y, msb, color);
+            cpu_delay(DATA_SETUP);
+            self.bck.set_low(); // falling edge latches the next column
             cpu_delay(BCK_HALF);
+            col += 2;
         }
     }
 

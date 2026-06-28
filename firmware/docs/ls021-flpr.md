@@ -1,4 +1,4 @@
-# LS021B7DD02 FLPR backend — toolchain, memory & boot spec (STATUS: F4 VERIFIED on glass)
+# LS021B7DD02 FLPR backend — toolchain, memory & boot spec (STATUS: F5 on glass — full-res 64-colour via DDR; BCK lock pending)
 
 The **normative reference** for moving the Sharp **LS021B7DD02** waveform generation off
 the Cortex-M33 and onto the nRF54L15's **FLPR** (the VPR RISC-V coprocessor). Epic [#149];
@@ -33,7 +33,12 @@ which stays the **golden reference**: the FLPR must reproduce that analyzer-veri
   fills the other. On glass the W/R/G/B + palette + shapes cycle is identical to the M33-direct L3
   (#148), now framebuffer-sourced + FLPR-driven; RTT shows the pack overlapping the drain by ~54×
   (see [F4 — ping-pong frame](#f4--ping-pong-from-the-framebuffer)).
-- **F5 [#155]** — `obc_platform::Panel` backend + speed-tune toward the ~53 ms spec frame.
+- **F5 [#155]** — `obc_platform::Panel` backend + speed-tune toward the ~53 ms spec frame. **The
+  bridge to running the app.** 🛠️ **Implemented — bench-tune + on-glass pending** — the FLPR push
+  now sits behind the board-agnostic `obc_platform::Panel` seam (`Ls021Flpr` in the bin), so the
+  glass-demo generator that drives the ST7789 (`demo::font_palette_demo`) drives the real LS021 with
+  no panel-specific code; the blob clocks took a first conservative speed step with the bench dial-in
+  toward `BCK ≤ 0.758 MHz` documented (see [F5 — Panel backend](#f5--panel-backend--speed-tune)).
 
 > **What F0 proves, and why it's first.** The whole epic rests on one untested assumption:
 > that we can *build* code for the FLPR, *boot* it from the M33, and have it *drive a pin*.
@@ -616,6 +621,98 @@ asks for.
   bus across a row boundary).
 - **⚠️ meter `VDD2` first** if a future change ever looks perfect on the LA but the glass stays
   garbage (#142).
+
+## F5 — Panel backend + speed-tune
+
+**The bridge to running the app.** F4 proved the FLPR can drive a frame from a resident framebuffer
+over the ping-pong path; F5 wraps that push behind the board-agnostic **`obc_platform::Panel`** seam
+so the *same* whole-frame generators that drive the ST7789 drive the real LS021, and ratchets the
+bit-bang clocks toward the panel's ~53 ms spec frame. The blob, the pack, and the ping-pong handshake
+are all **unchanged** from F4 — F5 is M33-side glue plus a timing tune.
+
+### `Ls021Flpr` — the Panel backend
+
+`src/bin/ls021_flpr_bringup.rs` now defines `Ls021Flpr`, an `obc_platform::Panel` impl over the
+resident 75 KB RGB222 framebuffer:
+
+- **`band_rows`** — the RGB565 band scratch height (`BAND_ROWS = 16` full-width rows; the frame is
+  resident in `FB`, so the band is only a transient per-band draw buffer).
+- **`begin_frame`** — a no-op (the plane is filled band-by-band, then driven once).
+- **`flush_band(y0, rows, fill)`** — hands the generator a `WIDTH × rows` RGB565 scratch, then
+  **quantises it into the resident plane** at rows `[y0, y0+rows)`: each pixel is snapped to the
+  device-64 gamut by the host-tested `obc_reader::rgb565_to_device64` (`0/85/170/255 → /85 →` the
+  2-bit level) and stored as a `0b00_RR_GG_BB` byte — the same quantiser the glass-demo's swatches
+  are drawn from, so a band lands on the panel's gamut exactly as the ST7789 stand-in shows it.
+- **`end_frame`** — runs the **whole-frame** FLPR push (the F4 `push_frame`: pre-pack rows 0/1, ring
+  `CMD_RUN_FRAME`, pack the rest under the ping-pong handshake, busy-wait the ack).
+
+### Why full-frame push per `end_frame`
+
+The FLPR scans the *whole* frame top-to-bottom in one `CMD_RUN_FRAME` — a band can't reach glass on
+its own — so the seam is **full-frame push per `end_frame`**, not a band-incremental feed: `flush_band`
+only *fills* the plane, `end_frame` drives all 320 rows once. This is the natural shape for a
+scan-the-whole-frame backend and keeps the ping-pong (M33 packs row N+1 while the FLPR scans row N)
+exactly as F4 built it. The same generator (`demo::font_palette_demo`, drawn through `Band`) thus
+drives the banded ST7789 *and* this full-frame plane unchanged — the proof the seam is panel-agnostic.
+
+### Blocking push (the sync `Panel` seam)
+
+`Panel` is synchronous, so `end_frame` **busy-polls** (`spin_until`) rather than awaiting the F4
+EGU20 IRQ: it spins on each `buf[i].consumed == ready` (the M33 is a dedicated packer) and on the
+FLPR's `flpr_seq` ack. COM still free-runs on its own high-priority `InterruptExecutor`, so blocking
+the thread-mode M33 for a frame is benign — the same shape as the ST7789 path blocking on its SPI-DMA
+write. The blob still pokes `EGU20` after each frame; with its IRQ unarmed here that write is a
+harmless no-op (the FLPR→M33 doorbell returns when N7 makes the push async behind the app loop).
+
+### Speed-tune — what is safe, and how far
+
+F2–F4 ran deliberately bring-up-slow (`BCK_HALF_ITERS = 120` ≈ 9.4 µs half ⇒ ~53 kHz `BCK`, ~16×
+under the panel's 0.758 MHz max) so the analyzer resolved every edge. The **source-shift counts are
+the only safe lever**: F5 takes a first conservative step to **half** the F2 value
+(`BCK_HALF_ITERS = 60` ≈ 106 kHz `BCK`, still 7× under max — edges stay clean), roughly halving frame
+time. On the bench, dial `BCK_HALF_ITERS` down toward **~9** (and `DATA_SETUP_ITERS` toward ~5) while
+LA-checking `BCK ≤ 0.758 MHz` with clean edges.
+
+The gate timings (`GCK_SETTLE`/`GEN_SETUP`/`GEN_HIGH`) are panel **electrical minimums** (GCK↔GEN
+setup/hold ≥16.37 µs, GEN valid ≥24.56 µs) — **not** slack; do not lower below their µs values.
+Because this driver is sequential (gate then source per row), the summed gate time (~38 ms over 320
+rows) is the frame-time **floor**: even with `BCK` at max the bit-banged frame lands in the low
+hundreds of ms, approaching the ~53 ms spec only as `BCK` nears its ceiling (the spec frame assumes a
+pipelined controller that overlaps gate and source — a partial/dirty-line follow-up, deferred). The
+`push_frame` RTT line logs the measured frame time each push — tune against that.
+
+### ⚠️ The source bus is DDR — the half-resolution / 32-colour fix
+
+The first on-glass run of the glass-demo exposed a bug that had been latent since the M33 bring-up
+(epic #139) and survived F2–F4: fine vertical detail rendered at **half horizontal resolution** — the
+left 120 framebuffer columns stretched 2× across the panel, the right 120 dropped, and the 64-colour
+gamut showing only **32**. It was invisible on solids and coarse swatches (uniform data looks the same
+either way), so every prior verification missed it.
+
+Decoded from measured 1-px bar widths, the transform was `physical col p ← fb col 2·⌊p/4⌋ + (p&1)`
+(each pixel pair in four columns). A full-screen **level-2 / level-1** (single-area-plane) test came
+back **uniform** — so the area gradation was fine and the fault was purely horizontal: the panel
+**latches the source bus on both `BCK` edges**, and the single-edge drive held each pair across the
+whole period, so the panel captured it twice. **Fix: drive DDR** — a distinct pair on each edge (word
+`2k` before the rising edge, `2k+1` before the falling). On glass: full 240-wide, true 64 colours, and
+**sub-100 ms** (DDR ~halves the source shift, so the spec ~53 ms frame is reachable — the datasheet's
+120-`BCK`/line already assumed dual-edge throughput). Landed in the FLPR `drive_subline` and the M33
+`PanelBus::shift_subline_with` (the solid path is uniform, so it was always fine). The pack
+(`ls021_pack_row`) is unchanged — it lays pairs out in order; the rising/falling split is in the driver.
+
+### Verification — ✅ DDR fix on glass; ⏳ BCK lock pending
+
+- **Host / CI ✅:** `cargo build` (both bring-up bins + blob), `cargo clippy`, `cargo fmt --check`
+  clean; default `main.rs` untouched; `cargo test -p obc-platform` (pack tests) green.
+- **On glass ✅:** the glass-demo + line/box card render full-width, true 64 colours, no doubling,
+  sub-100 ms — FLPR-driven via the `Panel` seam.
+- **LA / BCK lock (pending):** the bench value is `BCK_HALF_ITERS = 2` (~180 ns half, **over** the
+  ≥660 ns `thwBCK`/`tlwBCK` min — works on this unit). With DDR a data edge now sits on **both** `BCK`
+  edges, so re-verify the data set-up on each edge and pick the production value (in-spec ≈
+  `BCK_HALF_ITERS = 8`).
+- **Docs ✅ (this commit):** the dual-edge/DDR correction is in the public `display-protocol.md`, this
+  doc, `ls021-bringup.md`, and the `ls021_wire.rs` / `ls021.rs` module docs. The earlier
+  "single-edge, 120-`BCK`/line" model is retracted everywhere.
 
 ## Verification — F1 round-trip
 
