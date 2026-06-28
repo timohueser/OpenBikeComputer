@@ -1,4 +1,4 @@
-# LS021B7DD02 FLPR backend — toolchain, memory & boot spec (STATUS: F3 VERIFIED on glass)
+# LS021B7DD02 FLPR backend — toolchain, memory & boot spec (STATUS: F4 VERIFIED on glass)
 
 The **normative reference** for moving the Sharp **LS021B7DD02** waveform generation off
 the Cortex-M33 and onto the nRF54L15's **FLPR** (the VPR RISC-V coprocessor). Epic [#149];
@@ -26,6 +26,13 @@ which stays the **golden reference**: the FLPR must reproduce that analyzer-veri
   free-runs on the M33. On glass the BTN0 white/R/G/B cycle is identical to the M33-direct L3 (#143),
   now FLPR-driven (see [F3 — full frame](#f3--full-frame-init-black--solid-colour)).
 - **F4 [#154]** — ping-pong write buffers + pack from the RGB222 framebuffer (palette + shapes).
+  **The epic's headline deliverable.** ✅ **DONE + on-glass verified** — two row buffers ping-pong
+  (`buf[0]` even rows, `buf[1]` odd) under the per-buffer ready/consumed handshake; the M33 renders
+  the palette/shapes into a resident 75 KB `FbDevice64` framebuffer and packs it a row at a time
+  through the **host-tested** `obc_platform::ls021_pack_row`; the FLPR scans one buffer while the M33
+  fills the other. On glass the W/R/G/B + palette + shapes cycle is identical to the M33-direct L3
+  (#148), now framebuffer-sourced + FLPR-driven; RTT shows the pack overlapping the drain by ~54×
+  (see [F4 — ping-pong frame](#f4--ping-pong-from-the-framebuffer)).
 - **F5 [#155]** — `obc_platform::Panel` backend + speed-tune toward the ~53 ms spec frame.
 
 > **What F0 proves, and why it's first.** The whole epic rests on one untested assumption:
@@ -71,7 +78,7 @@ The exact invocation it runs:
 riscv64-elf-gcc -march=rv32emc -mabi=ilp32e \
     -Os -ffreestanding -nostdlib -nostartfiles -fno-pic \
     -ffunction-sections -fdata-sections -Wall -Wextra -Wl,--gc-sections \
-    -T src/flpr/flpr.ld src/flpr/start.S src/flpr/flpr_source.c -o flpr.elf
+    -T src/flpr/flpr.ld src/flpr/start.S src/flpr/flpr_pingpong.c -o flpr.elf
 riscv64-elf-objcopy -O binary flpr.elf flpr.bin        # raw image, no ELF headers
 ```
 
@@ -189,7 +196,7 @@ COM, FLPR source), so the epic's rule is **absolute**:
 > the all-secure `nrf54l15-app-s` build, and LED0 on P2.09 confirmed the FLPR *has* secure-GPIO
 > access on **P2**. **F2 extends the same question to P1** (`BSP` = P1.07): if the P2 source bus
 > toggles on the LA but `BSP` stays dark, the FLPR lacks secure-GPIO access on P1 — try the
-> **non-secure** alias (P1 `0x400D_8200`, P2 `0x4005_0400`) in `flpr_source.c`, and/or grant the
+> **non-secure** alias (P1 `0x400D_8200`, P2 `0x4005_0400`) in `flpr_pingpong.c`, and/or grant the
 > FLPR the port via the SPU `PERIPH[n].PERM` ownership the way the M33 build already needs the
 > Board-Configurator ext-mem-off / 3.3 V VDDM settings. Record the answer here when the board
 > confirms it.
@@ -212,7 +219,7 @@ block and these doorbells.
 ### Control block (64 bytes at `0x2003_F000`)
 
 Normative layout, **identical** in `Control` (Rust, `ls021_flpr_bringup.rs`) and `flpr_control_t`
-(C, `flpr_source.c`) — both static-assert the 64-byte size. `#[repr(C)]` + all-`u32` members ⇒ no
+(C, `flpr_pingpong.c`) — both static-assert the 64-byte size. `#[repr(C)]` + all-`u32` members ⇒ no
 padding, deterministic offsets. Little-endian; every field is accessed `volatile` (the cores write
 it concurrently).
 
@@ -485,6 +492,130 @@ resolvable). F5 tunes toward the panel's real ~53 ms frame.
   helpers apply unchanged.
 - **⚠️ meter `VDD2` first** if a scan ever looks perfect on the LA but the glass stays garbage — the
   #142 loose-5 V-rail gotcha (the gate driver is invisible to the LA).
+
+## F4 — ping-pong from the framebuffer
+
+**The epic's headline deliverable.** F4 keeps the *complete* waveform F3 built — the gate scan, the
+`INTB` envelope, the source shift, the two protocol rules — and changes exactly one thing: where each
+pixel row's source words come from. F3 packed one solid-colour row buffer and reused it for all 320
+rows; F4 sources the rows from a **real 75 KB RGB222 framebuffer**, packs them **one at a time**
+through a host-tested Rust fn, and feeds them to the FLPR over **two ping-pong write buffers** so the
+M33 packs row N+1 while the FLPR scans row N. That makes the source spatially-varying (the 64-colour
+palette, the shapes card) on a fixed two-buffer footprint. The blob is now `src/flpr/flpr_pingpong.c`
+(successor to F3's `flpr_frame.c`).
+
+### The ping-pong unit
+
+**One gate line = one row buffer = the MSB sub-line + the LSB sub-line** (`ROW_WORDS = 248` u32). The
+M33 packs a whole row into one buffer and rings; the FLPR drains that whole row (both area planes)
+before swapping. `buf[0]` carries the **even** rows, `buf[1]` the **odd** — they alternate by
+`row & 1`, so each is refilled while the other is scanned.
+
+> **Why the row, not the sub-line.** A single-sub-line unit (swap between the MSB and LSB plane of
+> the *same* row) is possible and halves the buffer, but it doubles the handshake traffic and splits
+> a single physical gate-line write across two producer/consumer round-trips for no real RAM win (a
+> row buffer is < 1 KB). The row is the natural atom: it matches `PanelBus::write_gate_line`, the
+> FLPR's `drain_row`, and the eventual partial-update unit (a *changed row*). Two row buffers (≈ 2 KB)
+> sit comfortably in the 4 KB `SHARED` page beside the 64-byte control block.
+
+### Write-buffer format v2 — two ROW buffers
+
+F3 had one row buffer; F4 has **two**, at `WRITE_BUF_ADDR = [0x2003_F100, 0x2003_F100 + ROW_WORDS·4]`,
+each in the F3 row layout (MSB sub-line `[0..124)` then LSB sub-line `[124..248)`, the F2 word format
+`bit0 R0 … bit5 B1`). The M33 publishes both through the `buf[0]`/`buf[1]` descriptors with `len =
+BCK_PER_SUBLINE` (124); the FLPR reads each `buf[i].ptr`/`len` from its descriptor. The word format
+itself is **unchanged** from F2/F3 — only the *source* of the words (the framebuffer pack) and the
+*count* of buffers (two, ping-ponged) are new.
+
+### The pack fn — host-tested Rust, off the C blob
+
+The trickiest piece — turning RGB222 pixels into the panel's MSB/LSB-split, odd/even-interleaved,
+pre-shifted GPIO words — is deliberately **not** in the C blob. It is one pure Rust fn,
+[`obc_platform::ls021_pack_row`](../obc-platform/src/ls021_wire.rs), unit-tested on the host and run
+in CI (the board crate has no test harness, so this lives in the shared `obc-platform` workspace
+crate — the sibling of `device64_to_rgb565`, the ST7789's expand). It packs one row of
+[`FbDevice64`](../obc-platform/src/framebuffer.rs) device-64 bytes (`0b00_RR_GG_BB`) into the 248
+write-buffer words:
+
+- **area-gradation split** — each channel's 2-bit level → the MSB plane's 2/3-area bit (`level >> 1`)
+  and the LSB plane's 1/3-area bit (`level & 1`), exactly `PanelBus::plane_bits`;
+- **odd/even column interleave** — each `BCK` clocks a pixel *pair*: the even-`x` pixel on `R0/G0/B0`
+  (bits 0/2/4), the odd-`x` pixel on `R1/G1/B1` (bits 1/3/5);
+- **pre-shift** — the 6 bits land already at their P2 GPIO positions (`= DATA_MASK 0x3F`), so the
+  FLPR inner loop stays the bit-twiddle-free `store → pulse BCK` from F2;
+- **4 trailing dummy/flush columns** per sub-line = black.
+
+The tests assert byte-for-byte agreement against an independent longhand re-derivation of
+`plane_bits` + the `R0..B1` bit positions across a spatial pattern, and pin the catch cases (R/G/B
+swap, odd/even interleave, the level-2 MSB-only / level-1 LSB-only split, black → all-zero). The C
+blob never packs a pixel — it only drains pre-packed words, so the format can't drift untested.
+
+### The framebuffer source
+
+The M33 holds a resident **`FbDevice64`-format 75 KB `.bss` framebuffer** (240×320 device-64 bytes) —
+the production map plane's exact type and size. F4 fills it with the **shared** `palette` / `shapes`
+pattern fns (moved into `src/ls021.rs` so the M33-direct L3 path and the FLPR path render the *same*
+source — that identity is the on-glass check), then packs one row of it per ping-pong buffer fill.
+F5 swaps the pattern fill for the real `App` render behind the `Panel` seam; the pack + ping-pong
+path is unchanged.
+
+### The handshake — back-pressure both ways
+
+Each `buf[i]` carries two counters, `ready` (M33) and `consumed` (FLPR):
+
+| step | actor | action |
+|---|---|---|
+| fill | M33 | pack a fresh row into `buf[i]`, `dsb`, then `ready += 1` (data before the guard) |
+| drain | FLPR | wait `ready != consumed`, `fence`, scan the gate row, then `consumed = ready` (`fence`) |
+
+- **FLPR back-pressure:** it waits for `ready != consumed` before scanning, so it never reads a
+  half-filled buffer. The wait sits *before* the gate row with `GCK` low, so even a (never-observed)
+  stall just holds the inter-row gap with `INTB` high and no `GEN` — nothing latches.
+- **M33 back-pressure:** it waits for `consumed == ready` before refilling, so it never overwrites a
+  buffer the FLPR is mid-scan on.
+
+A frame is bracketed as before: the M33 resets both descriptors, pre-packs rows 0/1, then writes
+`cmd = CMD_RUN_FRAME` + bumps `m33_seq` (the per-frame **command** doorbell, one `dsb` ordering the
+whole pre-fill); the FLPR runs the gate scan draining `buf[row & 1]` per row; at frame end it bumps
+`frame_count`, sets `status = 320` + `flpr_seq = m33_seq`, and pokes `EGU20` (the FLPR→M33 frame-done
+doorbell, IRQ #201). The M33 checks `status == 320 && flpr_seq == m33_seq`.
+
+### Timing — the pack-vs-drain overlap
+
+At bring-up `BCK` the FLPR drains a row in ~5.6 ms (a frame is ~1.8 s) while the M33 packs one in a
+handful of µs, so the M33 races far ahead and spends the frame mostly *waiting* on the FLPR — which is
+the whole point: the pipeline overlaps, the M33 is never the bottleneck. The launcher logs it per
+frame: the FLPR's frame time, the M33's **summed** pack time over the 318 in-frame rows, and the
+per-row averages. `pack_total ≪ frame_us` (avg pack µs ≪ avg drain ms) is the RTT proof the issue
+asks for.
+
+> **Measured on glass:** FLPR **5663 µs/row → 1.812 s/frame**; M33 pack **105 µs/row avg (124 µs max),
+> 33.6 ms summed** over the 318 in-frame rows. So the M33 is active **1.85 %** of the frame and idle
+> ~98 % — a **~54× per-row margin** (it could pack 54 rows in the time the FLPR drains one). The
+> ping-pong is genuinely concurrent with the depth-2 buffer never the constraint; pack time is flat
+> across solids vs the palette/shapes (the pack does fixed per-row work). F5 speeds the FLPR side
+> toward the panel's real ~53 ms frame; the M33 already has orders of magnitude of slack.
+
+### Verification — ✅ DONE on glass
+
+- **Host / CI ✅:** `cargo test -p obc-platform` runs the `ls021_wire` pack tests (no hardware);
+  `cargo build --release --bin ls021_flpr_bringup --features ls021-flpr` builds the bin + blob, and
+  the default `main.rs` build + the workspace `ci` gate stay green.
+- **On glass ✅:** `cargo run --release --bin ls021_flpr_bringup --features ls021-flpr` → init-black
+  holds, then BTN0 steps **WHITE → R → G → B → 64-colour palette → shapes**, each FLPR-driven from the
+  framebuffer over the ping-pong path, **visually identical to the M33-direct L3 (#148)** — the same
+  shared `palette`/`shapes` fns render both, so a clean match is the end-to-end proof the pack is
+  right (no channel swap, odd/even interleave error, or MSB/LSB mix-up). Since L3 is the
+  analyzer-verified golden reference, the on-glass match needed no separate LA capture.
+- **RTT ✅:** every frame `frame OK` (`status == 320`, `flpr_seq` matched, `frame_count` 1→7), no
+  `MISMATCH`/`TIMEOUT`/`STALLED`, and the overlap line shows **`pack ≪ drain`** with the measured
+  margin above (105 µs pack vs 5663 µs drain per row). The fault-localizing error lines were not hit.
+- **LA (optional, not needed):** the waveform is byte-identical to F3 (already analyzer-verified), and
+  the M33 races ~54× ahead so a buffer swap can't open an inter-row gap — confirmed indirectly by the
+  clean glass + the timing margin. Recipe kept for F5's speed-tune (capture `GCK`/`GEN` + the source
+  bus across a row boundary).
+- **⚠️ meter `VDD2` first** if a future change ever looks perfect on the LA but the glass stays
+  garbage (#142).
 
 ## Verification — F1 round-trip
 

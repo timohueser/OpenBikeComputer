@@ -90,7 +90,8 @@ impl Pack for PackOpaqueArgb4444 {
 /// The renderer stays `Rgb565`-typed throughout; the framebuffer quantizes on store here, and the
 /// banded [`Panel`](crate::Panel) push expands each byte back to RGB565
 /// ([`device64_to_rgb565`]) for the ST7789 — or, on the FLPR/LS021B7DD02, packs it to that
-/// panel's wire bytes. The byte value `0..64` doubles as the device-64 palette index.
+/// panel's wire bytes ([`ls021_wire::pack_row`](crate::ls021_wire::pack_row)). The byte value
+/// `0..64` doubles as the device-64 palette index.
 pub struct PackDevice64;
 impl Pack for PackDevice64 {
     type Pixel = u8;
