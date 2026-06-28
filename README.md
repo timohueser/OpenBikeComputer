@@ -9,25 +9,27 @@ that share **one** rendering path. The target hardware is an **nRF54L** driving 
 **LS021B7DD02** memory LCD (240×320, 64 colors), but everything here runs and is
 developed on the desktop today.
 
+**Docs & live demo:** the conceptual guide — system architecture, the render
+pipeline, the data formats, the UI, the display protocol — lives at
+<https://timohueser.github.io/OpenBikeComputer/>, which also runs the firmware's
+own render path **live in your browser** (compiled to wasm).
+
 ```
   .osm.pbf  ──►  obc-pack  ──►  *.obcm (v5)  ─┐
  (OSM data)    (Rust packer)   (binary map)   │
                                               ├─►  obc-app  ──►  obc-sim   (desktop simulator, today)
-  *.gpx     ──►  obc-route ──►  *.obcr        │   (shared        └─►  nRF54L firmware (planned)
+  *.gpx     ──►  obc-route ──►  *.obcr        │   (shared        └─►  nRF54L firmware (on the DK)
  (a route)    (route import)  (binary route) ─┘    app + render)
 ```
 
-The whole project is built around two compact binary formats designed to be read
-*directly* by a microcontroller — no JSON, no reparsing, no heap churn on the
-device:
-
-- **OBCM** (`.obcm`, "OSM Binary Compact Map") — a self-contained LOD pyramid:
-  a global style table plus, per zoom tier, a quadtree of geometry chunks.
-  Readers are fully table-driven — nothing depends on specific style-ID values.
-  Spec: [`OBCM_Spec.md`](OBCM_Spec.md).
-- **OBCR** (`.obcr`, the on-device route format) — a route reduced to what the
-  device needs for drawing, map-matching, and an elevation profile.
-  Spec: [`OBCR_Spec.md`](OBCR_Spec.md).
+The whole project is built around two compact binary formats — **OBCM** (`.obcm`,
+maps: a self-contained LOD pyramid of quadtree-indexed geometry) and **OBCR**
+(`.obcr`, routes: geometry + map-matching + an elevation profile) — designed to
+be read *directly* off flash by a microcontroller, with no JSON, reparsing, or
+heap churn. How they work: the
+[data-formats guide](https://timohueser.github.io/OpenBikeComputer/software/formats/);
+the normative byte layouts: [`OBCM_Spec.md`](OBCM_Spec.md) /
+[`OBCR_Spec.md`](OBCR_Spec.md).
 
 ---
 
@@ -207,16 +209,6 @@ The route workflow mirrors what the device will do:
 
 ---
 
-## Style IDs
-
-Style IDs are a purely internal `uint8` reference into each file's style table;
-no reader depends on a specific value, only on uniqueness. You therefore **don't
-author them** — the packer assigns them deterministically (1..N, in document
-order) at config-load time, so collisions are impossible by construction.
-`config.json` carries no `id` fields and the web builder has no ID column.
-
----
-
 ## Testing
 
 ```sh
@@ -232,19 +224,22 @@ The `obc-pack` tests use fixtures under `packer/tests/corpus/` — the committed
 
 ## Status & roadmap
 
-The full app runs on the desktop simulator today; the shared stack
-(`obc-reader`, `obc-route`, `obc-render`, `obc-app`) compiles `no_std` for the
-device target.
+The full app runs on the desktop simulator **and on the nRF54L15-DK** today: the
+shared stack (`obc-reader`, `obc-route`, `obc-render`, `obc-app`) runs `no_std`
+on the device, streaming maps/routes from a microSD card and driving the panel
+over SPI.
 
-**Working now:** OBCM v5 packing (CLI + web builder), the shared LOD-pyramid
+**Working now:** OBCM v5 packing (CLI + web builder); the shared LOD-pyramid
 renderer (quadtree query, polygon fill with holes, weighted lines, z-ordering,
-RGB565 → RGB222 quantization), the on-device UI (screen stack + encoder/Back
-input), route loading with live map-matching, ride logging, and GPX export.
+RGB565 → RGB222 quantization); the on-device UI (screen stack + encoder/Back
+input); route loading with live map-matching, ride logging, and GPX export; and
+the nRF54L firmware booting into the full load → ride → save loop on the DK (see
+[`firmware/obc-fw-nrf54l`](firmware/obc-fw-nrf54l)).
 
-**Next:** Settings / Shutdown screens and a Ride-control rework; richer line
-styling (dashed / two-color lines — a future OBCM v6 — and road casing); then the
-real nRF54L front-end (embassy + LS021B7DD02 driver, GPS / GPIO / storage) as a
-second host beside `obc-sim`, once the hardware is in hand.
+**Next:** the reflective **LS021B7DD02** panel driver (in bring-up, with the
+waveform backend moving onto the nRF54L's FLPR coprocessor); Settings / Shutdown
+screens and a Ride-control rework; and richer line styling (dashed / two-color
+lines — a future OBCM v6 — and road casing).
 
 > The packer was originally a Python pipeline; it has been ported to Rust
 > (`firmware/obc-pack`) and the Python pipeline removed. The port's design notes

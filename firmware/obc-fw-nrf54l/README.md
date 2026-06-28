@@ -1,11 +1,15 @@
 # obc-fw-nrf54l — nRF54L15-DK firmware
 
 The **real hardware target** for OpenBikeComputer: the shared `obc-app` running on
-an nRF54L15-DK (Cortex-M33) driving an Adafruit **ST7789** EYESPI panel (240×320),
-with map/routes/tracks streamed from a microSD card. It brings the shared render
-path up to STM32-prototype parity — load a route, ride it (fake-sensor fed), and
-save a GPX. See the module doc in [`src/main.rs`](src/main.rs) for the full
-peripheral/pin plan; this README is just the **board setup + flashing** guide.
+an nRF54L15-DK (Cortex-M33), with map/routes/tracks streamed from a microSD card —
+load a route, ride it (fake-sensor fed), and save a GPX. The default firmware
+drives an Adafruit **ST7789** EYESPI panel (240×320) as the bring-up display; the
+final panel is the reflective **LS021B7DD02** memory LCD, whose driver is brought
+up in the separate `ls021-*` binaries below (protocol on the [display-protocol
+docs page](https://timohueser.github.io/OpenBikeComputer/hardware/display-protocol/)).
+
+See the module doc in [`src/main.rs`](src/main.rs) for the full peripheral/pin
+plan; this README is the **board setup + build/flash** guide.
 
 ## One-time board configuration (nRF Connect **Board Configurator**)
 
@@ -51,19 +55,14 @@ cargo run --release --features debug-uart
 # Panel-only bring-up demo (font ladder + 64-colour gamut, no SD, no map):
 cargo run --release --no-default-features --features glass-demo
 
-# LS021B7DD02 panel bring-up bench firmware (epic #139). Currently L2: boot-safe all-Lo
-# hold, then the datasheet power-on init drives an INTB-framed all-black frame (gate scan +
-# 6-bit source shift, 640 sub-lines × 120 BCK), then the free-running COM driver starts
-# (VCOM/VB/VA ~60 Hz). Analyzer-verified. See firmware/docs/ls021-bringup.md:
+# LS021B7DD02 panel bring-up bench (epic #139): M33-direct bit-bang driver —
+# power-on init, solid colours, the 64-colour palette, and shapes on real glass.
+# Protocol: the display-protocol docs page; bench notes: firmware/docs/ls021-bringup.md.
 cargo run --release --bin ls021_bringup --features ls021-bringup
 
-# LS021 FLPR backend bring-up (epic #149). F0 boots the FLPR (VPR RISC-V coprocessor); F1 runs
-# the M33↔FLPR comms round-trip (shared control block + a doorbell each way — shared-RAM sequence
-# M33→FLPR, EGU interrupt FLPR→M33; VEVIF is walled on bare metal). Currently F2: the FLPR clocks
-# out one source sub-line (BSP + 124 BCK + the 6 data lines) drained from a SHARED-page write
-# buffer the M33 hands over via the buffer descriptor — bring-up-slow, diffed on the logic analyzer
-# against the M33 PanelBus. Needs a RISC-V gcc for the C blob (toolchain note below). See
-# firmware/docs/ls021-flpr.md:
+# LS021 FLPR backend bring-up (epic #149): moving the waveform generation onto the
+# nRF54L FLPR (VPR RISC-V coprocessor). Needs a RISC-V gcc for the C blob (below).
+# Notes: firmware/docs/ls021-flpr.md.
 cargo run --release --bin ls021_flpr_bringup --features ls021-flpr
 ```
 
