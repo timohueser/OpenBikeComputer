@@ -128,6 +128,16 @@ so the default ST7789 `main.rs` is untouched and keeps the full 256 KB.
 - **The FLPR region is `rwx` to the FLPR but the M33's `RAM` stops at `0x2003_D000`**, so the
   M33 linker never allocates into it. The M33 *can still write* there (it's plain SRAM) — that
   is exactly how it loads the blob and the handshake.
+- ⚠️ **The carved `memory.x` must be the *only* one the linker can find.** cortex-m-rt's `link.x`
+  does `INCLUDE memory.x` and sets `_stack_start = ORIGIN(RAM) + LENGTH(RAM)`, and the linker
+  resolves the `INCLUDE` from its **CWD (the crate root) before** the `-L $OUT_DIR` search path. A
+  `memory.x` committed in the crate root therefore **shadows** the carved copy `build.rs` writes to
+  `OUT_DIR`, the linker reads `RAM = 256 K`, and `_stack_start` lands at `0x2004_0000` — the M33
+  stack then grows down **through the FLPR image** and corrupts the blob/control block on the first
+  deep render (issue #165: it presented as a freeze the instant a route loaded). The default region
+  map is kept as **`memory-default.x`** (not `memory.x`) for exactly this reason; never reintroduce
+  a crate-root `memory.x`. Confirm the carve took with `llvm-nm <elf> | grep _stack_start` — it must
+  read `2003d000` for the FLPR builds, `20040000` for the default build.
 
 > **Coexistence with the 75 KB framebuffer (#165, SOLVED).** The production map firmware's resident
 > set (`App` scratch + caches + the 75 KB `FbDevice64` + stack) already filled ~254 KB of 256 KB (the
@@ -151,10 +161,10 @@ Via the **VPR00** peripheral (secure alias base `0x5004_C000`; offsets from the 
 
 The M33 (`ls021_flpr_bringup.rs::start_flpr`) does, in order:
 
-1. `copy_nonoverlapping(blob, 0x2003_8000, blob.len())` — load the image.
+1. `copy_nonoverlapping(blob, 0x2003_D000, blob.len())` — load the image (`FLPR_RAM_BASE`).
 2. `dsb()` — make the blob **and** the pre-written handshake magic visible to the other core
    before release.
-3. `INITPC = 0x2003_8000`.
+3. `INITPC = 0x2003_D000`.
 4. `CPURUN = 1` — the FLPR begins executing at `INITPC` (i.e. `_start` in `start.S`).
 
 `_start` sets `sp = _stack_top`, zeroes `.bss` (empty for the F0 blob), and calls
