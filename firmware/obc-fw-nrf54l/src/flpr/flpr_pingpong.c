@@ -1,13 +1,16 @@
-/* flpr_frame.c — LS021 FLPR F3 full-frame blob (issue #153, epic #149).
+/* flpr_pingpong.c — LS021 FLPR F4 ping-pong frame blob (issue #154, epic #149).
  *
- * **The "FLPR drives the panel" milestone.** Successor to the F2 source-shift blob
- * (flpr_source.c, #152): keeps the same control block + doorbells and the F2 inner data-shift
- * loop (`drive_subline`), and adds the two pieces that turn one sub-line into a whole frame on
- * glass — the **gate scan** (`GSP`/`GCK`/`GEN`) and the **frame envelope** (`INTB`). The FLPR now
- * owns the *complete* LS021 waveform; the M33 only packs the pixel words and rings once per frame.
+ * **The epic's headline deliverable.** Successor to the F3 full-frame blob (flpr_frame.c, #153):
+ * keeps the *complete* LS021 waveform F3 built — the gate scan (`GSP`/`GCK`/`GEN`), the frame
+ * envelope (`INTB`), and the F2 inner data-shift loop (`drive_subline`) — and changes exactly one
+ * thing: where each pixel row's source words come from. F3 reused a single solid-colour buffer for
+ * all 320 rows; F4 **ping-pongs two row buffers** (`buf[0]` = even rows, `buf[1]` = odd rows) so the
+ * M33 packs row N+1 from the real RGB222 framebuffer into one buffer while the FLPR scans row N out
+ * of the other. That makes the source spatially-varying (the 64-colour palette, the shapes card)
+ * without ever needing more than two row buffers in shared RAM.
  *
- * Ported from the analyzer-verified M33 `PanelBus` (`src/ls021.rs`, epic #139) — the golden
- * reference the FLPR must reproduce. The two hard-won protocol rules from #143 carry over verbatim:
+ * Still ported line-for-line from the analyzer-verified M33 `PanelBus` (`src/ls021.rs`, epic #139) —
+ * the golden reference. The two hard-won protocol rules from #143 carry over verbatim:
  *   • **`INTB` HIGH for the whole frame** — `INTB` low means "no write" (the panel holds its image),
  *     so every frame, the init-black one included, is enveloped in `INTB` high.
  *   • **`GCK` *level* selects the area block on the SAME gate line** — one pixel row = one `GCK`
@@ -16,20 +19,20 @@
  *     There is no MSB/LSB select pin; `GCK` level is it. 320 gate lines, one gate advance per row.
  *
  * The M33 launcher is src/bin/ls021_flpr_bringup.rs; the spec (buffer format, pin/port map, the
- * gate-scan port, the LA recipe) is firmware/docs/ls021-flpr.md.
+ * ping-pong handshake, the LA recipe) is firmware/docs/ls021-flpr.md.
  *
  * The round-trip, per frame:
- *   M33   packs one ROW buffer in the SHARED page — the solid colour's MSB sub-line (124 words)
- *         then its LSB sub-line (124 words) — sets buf[0].ptr/len/ready, writes cmd = CMD_RUN_FRAME,
- *         bumps m33_seq (seq last), dsb.
- *   FLPR  polls m33_seq; on a change reads cmd and, for CMD_RUN_FRAME, runs one frame from buf[0]:
- *         INTB high → GSP → 2 dummy advances → 320 rows (each = MSB sub-line in GCK-high + GEN, then
- *         LSB sub-line in GCK-low + GEN) → 6 dummy advances → INTB low. The colour is solid, so it
- *         reuses the one buffer for every row (F4 makes buf[0]/buf[1] a per-row ping-pong). It then
- *         echoes buf[0].ready into buf[0].consumed, bumps frame_count, writes status = rows scanned
- *         + flpr_seq = m33_seq (seq last), pokes EGU20 to fire the M33's EGU20 IRQ #201, and blinks
+ *   M33   resets both buf[i] ready/consumed, pre-packs row 0 → buf[0] and row 1 → buf[1] from the
+ *         framebuffer (each a ROW buffer: MSB sub-line [0..124) then LSB sub-line [124..248)), bumps
+ *         each buf[i].ready, then writes cmd = CMD_RUN_FRAME + bumps m33_seq (seq last), dsb.
+ *   FLPR  polls m33_seq; on a change, for CMD_RUN_FRAME runs one frame:
+ *         INTB high → GSP → 2 dummy advances → 320 rows, each draining buf[row & 1] under the
+ *         **ping-pong handshake** (wait ready != consumed, scan the gate row, set consumed = ready)
+ *         → 6 dummy advances → INTB low. Meanwhile the M33 packs rows 2..319 into whichever buffer
+ *         the FLPR just freed. The FLPR then bumps frame_count, writes status = rows scanned +
+ *         flpr_seq = m33_seq (seq last), pokes EGU20 to fire the M33's EGU20 IRQ #201, and blinks
  *         LED0 (P2.09) once as a by-eye "drained a frame" marker.
- *   M33   wakes on the EGU20 IRQ, checks consumed == ready && status == 320 && flpr_seq == m33_seq.
+ *   M33   wakes on the EGU20 IRQ, checks status == 320 && flpr_seq == m33_seq.
  *
  * **Two ports (the F2 lesson, now load-bearing).** The timing-critical bus — the 6 data lines +
  * `BCK` — is all on **P2** (the FLPR's fast trace domain), so the hot per-column loop stays single-
@@ -92,7 +95,7 @@ typedef struct {
     volatile uint32_t flpr_seq;    /* 0x0C FLPR: echoes the m33_seq it serviced (round-trip proof) */
     volatile uint32_t status;      /* 0x10 FLPR: ack/result (F3: rows scanned; boot: FLPR_ALIVE) */
     volatile uint32_t frame_count; /* 0x14 FLPR: frames drained (bumped per CMD_RUN_FRAME) */
-    volatile buf_desc_t buf[2];    /* 0x18, 0x28 row-buffer descriptors (F3 uses buf[0]; F4 ping-pongs) */
+    volatile buf_desc_t buf[2];    /* 0x18, 0x28 row-buffer descriptors — buf[0] even rows, buf[1] odd (ping-pong) */
     volatile uint32_t reserved[2]; /* 0x38 pad — forward-compat headroom */
 } flpr_control_t;
 
@@ -105,8 +108,9 @@ _Static_assert(sizeof(flpr_control_t) == 64, "control block must be 64 bytes (ma
 #define FLPR_ALIVE   0x0000A11Eu /* boot confirmation */
 #define FLPR_BADMAG  0x0BADCAFEu /* booted but the control-block magic mismatched */
 
-/* Command codes (M33 → FLPR via `cmd`). F3 has exactly one piece of work: run a full frame. */
-#define CMD_RUN_FRAME 0x00000002u /* drive one full frame from buf[0] (the F2 CMD_SHIFT_SUBLINE=1 is subsumed) */
+/* Command codes (M33 → FLPR via `cmd`). One piece of work: run a full frame (F4 ping-ponging the
+ * two row buffers; the F2 CMD_SHIFT_SUBLINE=1 is subsumed, the F3 single-buffer reuse generalised). */
+#define CMD_RUN_FRAME 0x00000002u
 
 /* ── Frame geometry (matches `PanelBus` in src/ls021.rs / the datasheet §6-5/§6-6 charts). ── */
 #define COLS_PER_SUBLINE 120u /* 240 columns ÷ 2 pixels-per-BCK */
@@ -223,14 +227,35 @@ static void write_gate_row(uint32_t base, uint32_t len)
     gen_pulse();                         /* latch 1/3-area cells — GCK now LOW */
 }
 
-/* Run one full frame from the row buffer at `base` (len words per sub-line). The datasheet frame
- * envelope, mirroring `PanelBus::fill_solid`:
+/* Drain one row buffer under the **ping-pong handshake**, then scan its gate row. `i` selects
+ * buf[i] (buf[0] = even rows, buf[1] = odd). The two per-buffer counters are the doorbell:
+ *   • the M33 fills buf[i] from the framebuffer, then bumps `ready` (data first, dsb, then ready);
+ *   • the FLPR waits until `ready != consumed` (a fresh row is published), scans it, then sets
+ *     `consumed = ready` (the row is drained → the M33 may refill buf[i]).
+ * So the M33 never overwrites a buffer the FLPR is mid-scan on, and the FLPR never scans a
+ * half-filled one. At bring-up BCK the M33 (µs/row) races far ahead of the FLPR (ms/row), so the
+ * wait is virtually always already satisfied — it is backpressure insurance. The wait sits *before*
+ * the gate row, with GCK still LOW from the previous row's LSB phase, so even a (never-observed)
+ * stall just holds the inter-row gap with INTB high and no GEN — benign, nothing latches. */
+static void drain_row(uint32_t i)
+{
+    while (CTRL->buf[i].ready == CTRL->buf[i].consumed) {
+        /* spin for the M33's "row ready" — dedicated core, polling is correct (the F1 channel) */
+    }
+    fence(); /* `ready` seen before we read the buffer words it guards */
+    write_gate_row(CTRL->buf[i].ptr, CTRL->buf[i].len);
+    CTRL->buf[i].consumed = CTRL->buf[i].ready; /* echo the ready token = "drained, buffer free" */
+    fence();                                    /* `consumed` visible before the M33 refills buf[i] */
+}
+
+/* Run one full frame, ping-ponging the two row buffers. The datasheet frame envelope is unchanged
+ * from F3 (mirroring `PanelBus::fill_solid`); the only difference is that each of the 320 pixel rows
+ * is drained from buf[row & 1] under the handshake (`drain_row`) instead of reusing one buffer:
  *   1. INTB high for the WHOLE frame (every frame, init-black included — INTB low = "no write").
  *   2. GSP start pulse, then 320 pixel rows (each one gate line in one GCK period), bracketed by
  *      lead/trail dummy gate advances; GSP releases on the first lead dummy's GCK edge.
- * For a solid colour every row is identical, so all 320 rows reuse the one buffer (F4 ping-pongs a
- * per-row buffer). Returns the number of rows scanned (== ROWS_PER_FRAME), which the M33 checks. */
-static uint32_t run_frame(uint32_t base, uint32_t len)
+ * Returns the number of rows scanned (== ROWS_PER_FRAME), which the M33 checks. */
+static uint32_t run_frame(void)
 {
     GPIO1_OUTSET = INTB_MASK; /* frame envelope HIGH for the whole write */
     busy(FRAME_SETUP_ITERS);  /* thsINTB: INTB stable before GSP */
@@ -241,7 +266,7 @@ static uint32_t run_frame(uint32_t base, uint32_t len)
         dummy_advance(i == 0); /* GSP releases on the very first GCK edge */
     }
     for (uint32_t row = 0; row < ROWS_PER_FRAME; row++) {
-        write_gate_row(base, len);
+        drain_row(row & 1u); /* even rows ← buf[0], odd rows ← buf[1] */
     }
     for (uint32_t i = 0; i < GATE_DUMMY_TRAIL; i++) {
         dummy_advance(0);
@@ -266,9 +291,9 @@ void flpr_main(void)
 
     uint32_t last_seq = 0;
     for (;;) {
-        /* M33→FLPR doorbell: poll the shared-RAM sequence (M33 writes the buffer + cmd then
-         * m33_seq+dsb). The FLPR is a dedicated core, so polling is correct — and is exactly the
-         * F4 ping-pong "buffer ready" handshake. */
+        /* M33→FLPR command doorbell: poll the shared-RAM sequence (M33 pre-fills both buffers + cmd
+         * then m33_seq+dsb). The FLPR is a dedicated core, so polling is correct. This starts a
+         * frame; the per-row ping-pong then runs on the separate buf[i] ready/consumed handshake. */
         uint32_t seq = CTRL->m33_seq;
         if (seq == last_seq) {
             continue;
@@ -279,12 +304,10 @@ void flpr_main(void)
 
         uint32_t rows = 0;
         if (cmd == CMD_RUN_FRAME) {
-            /* Read the row-buffer location/length from the descriptor (the F4 contract), then scan. */
-            uint32_t base = CTRL->buf[0].ptr;
-            uint32_t len = CTRL->buf[0].len;
-            rows = run_frame(base, len);
-            CTRL->buf[0].consumed = CTRL->buf[0].ready; /* echo the ready token = "drained" */
-            CTRL->frame_count++;                        /* frames drained (liveness + F4 contract) */
+            /* Scan a frame, draining buf[row & 1] under the ping-pong handshake (the per-buffer
+             * ready/consumed echo now happens per row inside drain_row, not once per frame). */
+            rows = run_frame();
+            CTRL->frame_count++; /* frames drained (liveness + the round-trip contract) */
         }
 
         CTRL->status = rows;  /* rows scanned (0 for an unknown cmd) — the M33 cross-checks == 320 */

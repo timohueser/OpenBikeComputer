@@ -48,7 +48,7 @@ use {defmt_rtt as _, panic_probe as _};
 
 #[path = "../ls021.rs"]
 mod ls021;
-use ls021::{com_task, PanelBus};
+use ls021::{com_task, palette, shapes, PanelBus};
 
 /// High-priority executor the COM driver runs on, pended from the unused SWI00 software-
 /// interrupt vector (SWI00 carries no peripheral; we only borrow its vector as the pend
@@ -149,7 +149,7 @@ async fn main(_spawner: Spawner) {
 }
 
 /// A cycleable test pattern: a uniform RGB222 `Solid`, or a `Spatial` per-pixel pattern (the
-/// palette, the shapes card) drawn via [`PanelBus::fill_with`].
+/// [`palette`], the [`shapes`] card) drawn via [`PanelBus::fill_with`].
 enum Draw {
     Solid(u8, u8, u8),
     Spatial(fn(u16, u16) -> (u8, u8, u8)),
@@ -174,58 +174,5 @@ async fn wait_for_press(btn: &Input<'_>) {
             }
         }
         Timer::after_millis(5).await;
-    }
-}
-
-/// The 64-colour test palette: an **8×8 grid** of every RGB222 value over the 240×320 panel.
-/// `x`/`y` are pixel coordinates; the cell is `x/30` across (8 cells × 30 px = 240) and `y/40`
-/// down (8 × 40 = 320). Cell index `0..63` packs as `r<<4 | g<<2 | b`, so columns step blue/green
-/// and rows step red — every 2-bit-per-channel combination appears exactly once.
-fn palette(x: u16, y: u16) -> (u8, u8, u8) {
-    let col = (x / 30).min(7); // 0..7 across
-    let row = (y / 40).min(7); // 0..7 down
-    let idx = row * 8 + col; // 0..63
-    (((idx >> 4) & 3) as u8, ((idx >> 2) & 3) as u8, (idx & 3) as u8)
-}
-
-/// `true` if `(x, y)` is inside the `w × h` rectangle at `(x0, y0)`.
-fn in_rect(x: u16, y: u16, x0: u16, y0: u16, w: u16, h: u16) -> bool {
-    x >= x0 && x < x0 + w && y >= y0 && y < y0 + h
-}
-
-/// `true` if `(x, y)` is on the `t`-px border of the `w × h` rectangle at `(x0, y0)`.
-fn frame(x: u16, y: u16, x0: u16, y0: u16, w: u16, h: u16, t: u16) -> bool {
-    in_rect(x, y, x0, y0, w, h) && !in_rect(x, y, x0 + t, y0 + t, w - 2 * t, h - 2 * t)
-}
-
-/// **Black shapes on a white field** — a quick contrast / readability check. Filled squares of
-/// decreasing size (top), a line-width ramp of vertical and horizontal bars (10/6/4/2/1 px), and
-/// a thin outline frame (bottom), to see how fine a black feature stays legible on the reflective
-/// panel. Black `(0,0,0)` inside a shape, white `(3,3,3)` elsewhere.
-fn shapes(x: u16, y: u16) -> (u8, u8, u8) {
-    let black =
-        // Filled squares, decreasing size.
-        in_rect(x, y, 16, 16, 100, 100)
-            || in_rect(x, y, 130, 16, 60, 60)
-            || in_rect(x, y, 130, 88, 30, 30)
-            || in_rect(x, y, 172, 88, 14, 14)
-            // Vertical bars: 10 / 6 / 4 / 2 / 1 px wide.
-            || in_rect(x, y, 16, 150, 10, 100)
-            || in_rect(x, y, 44, 150, 6, 100)
-            || in_rect(x, y, 66, 150, 4, 100)
-            || in_rect(x, y, 84, 150, 2, 100)
-            || in_rect(x, y, 98, 150, 1, 100)
-            // Horizontal bars: 10 / 6 / 4 / 2 / 1 px tall.
-            || in_rect(x, y, 130, 150, 90, 10)
-            || in_rect(x, y, 130, 174, 90, 6)
-            || in_rect(x, y, 130, 192, 90, 4)
-            || in_rect(x, y, 130, 206, 90, 2)
-            || in_rect(x, y, 130, 216, 90, 1)
-            // Thin outline frame.
-            || frame(x, y, 16, 264, 208, 44, 2);
-    if black {
-        (0, 0, 0)
-    } else {
-        (3, 3, 3)
     }
 }
