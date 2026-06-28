@@ -508,28 +508,33 @@ async fn main(_spawner: Spawner) {
     interrupt::SWI00.set_priority(Priority::P3);
     let com_spawner = EXECUTOR_COM.start(interrupt::SWI00);
     com_spawner.spawn(defmt::unwrap!(com_task(vcom, vb, va)));
-    info!("LS021 FLPR F5: COM RUNNING — BTN0 steps GLASS-DEMO → LINE-TEST → WHITE → RED → GREEN → BLUE (MIP retains each frame)");
+    info!("LS021 FLPR F5: COM RUNNING — BTN0 steps GLASS-DEMO → LINE-TEST in BLACK → RED → GREEN → BLUE (MIP retains each frame)");
 
     // 5. BTN0 steps the screen through the Panel seam: the glass-demo (the F5 deliverable — font
-    //    ladder + 64-colour gamut, identical to the ST7789 `--features glass-demo` build), the
-    //    line/box diagnostic card (tells panel area-gradation texture apart from a pixel bug), then
-    //    four solids (clean single-value waveforms for the LA speed-tune). MIP retains each; COM toggles.
+    //    ladder + 64-colour gamut, identical to the ST7789 `--features glass-demo` build), then the
+    //    line/box diagnostic card in each channel (black/red/green/blue — tells panel area-gradation
+    //    texture apart from a pixel bug, and per-channel isolates the source bus). MIP retains each.
     let mut i = 0usize;
     loop {
         match i {
             0 => show(&mut panel, "GLASS-DEMO", |t| {
                 font_palette_demo(t).ok();
             }),
-            1 => show(&mut panel, "LINE-TEST", |t| {
-                demo::line_test_card(t).ok();
+            1 => show(&mut panel, "LINE-BLACK", |t| {
+                demo::line_test_card(t, Rgb565::BLACK).ok();
             }),
-            2 => show(&mut panel, "WHITE", |t| solid(t, Rgb565::WHITE)),
-            3 => show(&mut panel, "RED", |t| solid(t, Rgb565::RED)),
-            4 => show(&mut panel, "GREEN", |t| solid(t, Rgb565::GREEN)),
-            _ => show(&mut panel, "BLUE", |t| solid(t, Rgb565::BLUE)),
+            2 => show(&mut panel, "LINE-RED", |t| {
+                demo::line_test_card(t, Rgb565::RED).ok();
+            }),
+            3 => show(&mut panel, "LINE-GREEN", |t| {
+                demo::line_test_card(t, Rgb565::GREEN).ok();
+            }),
+            _ => show(&mut panel, "LINE-BLUE", |t| {
+                demo::line_test_card(t, Rgb565::BLUE).ok();
+            }),
         }
         wait_for_press(&btn0).await;
         led1.toggle();
-        i = (i + 1) % 6;
+        i = (i + 1) % 5;
     }
 }
