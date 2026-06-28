@@ -60,13 +60,13 @@ channel (= the walk order). FPC pin numbers are from datasheet LCP-0620032F.
 
 | Pico ch | Signal | DK pin | FPC # | Notes |
 |---|---|---|---|---|
-| D2 (GP2) | `GSP` | **P1.11** | 3 | gate start pulse (free P1) |
-| D3 (GP3) | `GCK` | **P1.12** | 4 | gate clock, steps sub-lines (free P1) |
-| D4 (GP4) | `GEN` | **P1.04** | 5 | gate output enable (UART1_TXD — device-driven, safe) |
-| D5 (GP5) | `INTB` | **P1.06** | 6 | all-black init framing (UART1_RTS — free, HWFC off) |
+| D2 (GP2) | `GSP` | **P1.00** | 3 | gate start pulse (free P1; was P1.11, moved #165) |
+| D3 (GP3) | `GCK` | **P1.01** | 4 | gate clock, steps sub-lines (free P1; was P1.12) |
+| D4 (GP4) | `GEN` | **P1.15** | 5 | gate output enable (free P1; was P1.04) |
+| D5 (GP5) | `INTB` | **P1.16** | 6 | all-black init framing (free P1; was P1.06) |
 | D6 (GP6) | `VB` | **P2.08** | 7 | COM, in-phase with `VCOM` (may strap to `VCOM`) |
 | D7 (GP7) | `VA` | **P2.10** | 8 | COM, **inverse** phase |
-| D8 (GP8) | `BSP` | **P1.07** | 11 | sub-line start pulse (UART1_CTS — free, HWFC off) |
+| D8 (GP8) | `BSP` | **P1.14** | 11 | sub-line start pulse (free P1; was P1.07) |
 | D9 (GP9) | `BCK` | **P2.06** | 12 | source/shift clock ~0.75 MHz; P2 trace pin (fast) |
 | D10 (GP10) | `R0` | **P2.00** | 13 | odd-column R (freed ext-flash bus) |
 | D11 (GP11) | `R1` | **P2.01** | 14 | even-column R |
@@ -91,9 +91,12 @@ channel (= the walk order). FPC pin numbers are from datasheet LCP-0620032F.
   strength is moot at L0 (COM held `Lo`).
 - **Do NOT drive `P1.05`** — it's the J-Link VCOM's **host-driven** UART RX line; an
   output there contends with the interface MCU. It is the one P1 pin we leave alone.
-- Reusing the UART/RTS-CTS pins (`P1.04/06/07`) is safe **this epic only** — no VCOM UART
-  and no SD bus run during bring-up. The eventual custom PCB has none of these
-  constraints; this map is for the DK bench, not the product.
+- **The gate + `BSP` lines now sit on free P1 pins** (`GSP P1.00 / GCK P1.01 / GEN P1.15 /
+  INTB P1.16 / BSP P1.14`). The original bench map reused the UART/RTS-CTS pins
+  (`P1.04/06/07/11/12`) — "safe this epic only" — but the **real app** (issue #165) needs the
+  SD-SPI bus (P1.06/07/11/12) + VCOM (P1.04/05), so they relocated; all the LS021 binaries (this
+  M33-direct bench bin, the FLPR bring-up bin, the FLPR app) now share this one map. The eventual
+  custom PCB has none of these constraints (see `ls021-flpr.md`).
 - **`BTN0` (P1.13)** is read (input) as the L0 "start LA test" gate; LEDs/other buttons
   stay on their on-board functions. `LED0` (P2.09) is the heartbeat.
 
