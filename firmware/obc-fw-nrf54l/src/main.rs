@@ -63,7 +63,7 @@
 //! ## microSD SPIM — map/route/track storage (#123)
 //!   Instance **SERIAL22 / SPIM22** — a standard-speed instance (SD doesn't need 32 MHz),
 //!   *separate* from the display bus, on its own software CS. DK expansion-header SPI pins:
-//!     SCK P1_11 | MISO P1_07 | MOSI P1_06 | CS P1_12
+//!     SCK P1_11 | MISO P1_07 | MOSI P1_06 | CS P1_12   (FLPR build moves CS → P0_00, see #165 below)
 //!   CS is a free GPIO held LOW for the whole session (the held-low-CS workaround embedded-sdmmc's
 //!   per-byte framing needs over embassy SPI — see `sd::NoCs`); the bus inits ≤400 kHz then
 //!   re-clocks to 8 MHz (`sd::init`). embassy-nrf's `Spim` exposes **no** internal MISO pull-up
@@ -834,7 +834,15 @@ async fn main(_spawner: Spawner) {
         sd_cfg.frequency = sd::SD_INIT_HZ;
         sd_cfg.orc = 0xFF;
         let sd_spi = spim::Spim::new(p.SERIAL22, Irqs, p.P1_11, p.P1_07, p.P1_06, sd_cfg);
+        // CS is a plain GPIO held LOW for the session (the `sd::NoCs` workaround), not a SPIM-bus
+        // pin — so it can sit on any free GPIO. Default (ST7789): P1.12. FLPR build (`panel-ls021`):
+        // P1.12 carries GEN, and the DK's P1.00–14 are one pin short, so CS moves to **P0.00** (M33
+        // GPIO, the same port + drive as BTN3) — one jumper on the SD breakout. The SPIM bus pins
+        // (SCK/MISO/MOSI on P1.11/07/06) are unchanged in both builds.
+        #[cfg(not(feature = "panel-ls021"))]
         let sd_cs = Output::new(p.P1_12, Level::High, OutputDrive::Standard);
+        #[cfg(feature = "panel-ls021")]
+        let sd_cs = Output::new(p.P0_00, Level::High, OutputDrive::Standard);
         let Some(mut storage) = sd::init(sd_spi, sd_cs) else {
             defmt::error!("SD: no card / mount failed — cannot load a map; idling with a heartbeat");
             idle_blink(&mut led).await
@@ -975,13 +983,15 @@ async fn main(_spawner: Spawner) {
         // stay on P2 exactly as the bring-up bin has them).
         #[cfg(feature = "panel-ls021")]
         let (mut panel, _flpr_gate_bus, _flpr_src_bus) = {
-            // Gate + frame lines (P1) — GSP P1.00, GCK P1.01, GEN P1.15, INTB P1.16; held configured.
-            // (P1.02/03 are NFC pins on this part, GPIO only behind `nfc-pins-as-gpio` — avoided.)
+            // Gate + frame lines (P1) — GSP P1.00, GCK P1.01, GEN P1.12, INTB P1.10; held configured.
+            // The DK breaks out only P1.00–14 (P1.02/03 are NFC, off-limits), which is one pin short
+            // for everything on P1 — so SD `CS` moved to P0.00 (below), freeing P1.12 for GEN, and
+            // INTB takes P1.10 (LED1 — it glows while a frame is drawing, a free activity indicator).
             let gate_bus = [
                 Output::new(p.P1_00, Level::Low, OutputDrive::Standard), // GSP
                 Output::new(p.P1_01, Level::Low, OutputDrive::Standard), // GCK
-                Output::new(p.P1_15, Level::Low, OutputDrive::Standard), // GEN
-                Output::new(p.P1_16, Level::Low, OutputDrive::Standard), // INTB
+                Output::new(p.P1_12, Level::Low, OutputDrive::Standard), // GEN  (freed SD-CS pin)
+                Output::new(p.P1_10, Level::Low, OutputDrive::Standard), // INTB (LED1)
             ];
             // Source bus: BSP on P1.14 (the lone P1 source line), BCK + the 6 data lines on P2.
             let src_bus = [

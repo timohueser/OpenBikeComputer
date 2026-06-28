@@ -82,8 +82,8 @@
 #define BSP_MASK  (1u << 14)   /* P1.14 = BSP  (sub-line start pulse) */
 #define GSP_MASK  (1u << 0)    /* P1.00 = GSP  (gate start pulse, once per frame) */
 #define GCK_MASK  (1u << 1)    /* P1.01 = GCK  (gate clock — HIGH = MSB/2-3 phase, LOW = LSB/1-3 phase) */
-#define GEN_MASK  (1u << 15)   /* P1.15 = GEN  (gate output enable — latches the GCK-level-selected block) */
-#define INTB_MASK (1u << 16)   /* P1.16 = INTB (frame envelope — HIGH for the whole frame write) */
+#define GEN_MASK  (1u << 12)   /* P1.12 = GEN  (gate output enable — latches the GCK-level-selected block) */
+#define INTB_MASK (1u << 10)   /* P1.10 = INTB (frame envelope — HIGH for the whole frame write; LED1) */
 
 /* FLPR → M33 doorbell via EGU20 (secure 0x500C_9000) — see ls021-flpr.md. */
 #define EGU20_TRIGGER0 (*(volatile uint32_t *)0x500C9000u)

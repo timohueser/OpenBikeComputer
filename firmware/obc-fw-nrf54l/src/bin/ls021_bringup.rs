@@ -81,8 +81,8 @@ async fn main(_spawner: Spawner) {
     let mut bus = PanelBus::new(
         Output::new(p.P1_00, Level::Low, OutputDrive::Standard), // GSP
         Output::new(p.P1_01, Level::Low, OutputDrive::Standard), // GCK
-        Output::new(p.P1_15, Level::Low, OutputDrive::Standard), // GEN
-        Output::new(p.P1_16, Level::Low, OutputDrive::Standard), // INTB
+        Output::new(p.P1_12, Level::Low, OutputDrive::Standard), // GEN
+        Output::new(p.P1_10, Level::Low, OutputDrive::Standard), // INTB (LED1)
         Output::new(p.P1_14, Level::Low, OutputDrive::Standard), // BSP
         Output::new(p.P2_06, Level::Low, OutputDrive::Standard), // BCK
         Output::new(p.P2_00, Level::Low, OutputDrive::Standard), // R0 (odd)
