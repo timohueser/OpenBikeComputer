@@ -317,6 +317,38 @@ impl HoldHints {
         self.encoder.active(now) || self.back.active(now)
     }
 
+    /// The bounding **rows** `[y0, y0 + rows)` of every hint live at `now` — the dirty region a
+    /// partial-overlay host re-presents (issue #163), so it re-pushes only the active bulge's rows
+    /// (encoder ≈ 59–171, Back ≈ 182–246) instead of the whole hint band. `None` exactly when
+    /// [`active`](HoldHints::active) is `false`. Both current bulges sit on the right edge (vertical),
+    /// so each spans `cc ± base_half` rows; a horizontal relocation maps to the edge's `pop_depth`
+    /// rows instead, kept correct here so the region tracks the bulge if an anchor moves.
+    pub fn active_rows(&self, now: u32, w: i32, h: i32) -> Option<(u16, u16)> {
+        let span = |hint: &Hint, style: &Style| -> Option<(i32, i32)> {
+            if !hint.active(now) {
+                return None;
+            }
+            let place = style.anchor.place(w, h, style.base_half);
+            Some(if place.vertical {
+                (place.cc - style.base_half, place.cc + style.base_half)
+            } else {
+                let depth = style.pop_depth as i32;
+                let near = if place.inward < 0 { place.outer - depth } else { place.outer };
+                (near, near + depth)
+            })
+        };
+        let merged = match (span(&self.encoder, &ENCODER), span(&self.back, &BACK)) {
+            (Some((a0, a1)), Some((b0, b1))) => Some((a0.min(b0), a1.max(b1))),
+            (Some(s), None) | (None, Some(s)) => Some(s),
+            (None, None) => None,
+        };
+        merged.map(|(lo, hi)| {
+            let lo = lo.clamp(0, h);
+            let hi = hi.clamp(0, h);
+            (lo as u16, (hi - lo).max(0) as u16)
+        })
+    }
+
     /// Draw both hints above the current screen, into a `w`×`h` target.
     pub fn draw<D, F>(&self, target: &mut D, color_fn: &F, w: i32, h: i32, now: u32)
     where

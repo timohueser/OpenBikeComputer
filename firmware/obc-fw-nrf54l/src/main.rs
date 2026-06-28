@@ -718,7 +718,7 @@ async fn input_overlay_task(
         // never held across an await/push). Each gesture is pushed to the map plane; the bulge is
         // advanced regardless, so the press is confirmed on screen below even before the map plane
         // drains the channel.
-        let dirty = input_plane.lock(|cell| {
+        let (dirty, overlay_span) = input_plane.lock(|cell| {
             let plane = &mut *cell.borrow_mut();
             // Physical buttons + (with `debug-uart`) the VCOM-injected `K` events, drained into one
             // recogniser pass — so a host can drive taps/holds like the real buttons.
@@ -729,16 +729,20 @@ async fn input_overlay_task(
                     defmt::warn!("gesture channel full — dropped a gesture (map plane stalled?)");
                 }
             });
-            plane.take_overlay_dirty()
+            (plane.take_overlay_dirty(), plane.overlay_rows(WIDTH as i32, HEIGHT as i32))
         });
 
         // Repaint the bulge only when it changed (plus the one trailing clear `take_overlay_dirty`
-        // reports): re-present just the right-edge region over a static map through the seam.
-        // `present_overlay` fills the window from the clean framebuffer + composites the bulge (the
-        // `InputPlane` lock is taken once, inside the drawer). Awaiting the bus yields to the
-        // (thread-mode) map plane if it is mid-frame, so this never spins.
+        // reports): re-present just the right-edge region over a static map through the seam — while
+        // live, **only the active bulge's rows** (issue #163), and the full band on the trailing clear
+        // to wipe the last bulge. `present_overlay` fills the window from the clean framebuffer +
+        // composites the bulge (the `InputPlane` lock is taken once, inside the drawer). Awaiting the
+        // bus yields to the (thread-mode) map plane if it is mid-frame, so this never spins.
         if dirty {
-            let region = OverlayRegion { x0: OVL_X0, y0: OVL_Y0, w: OVL_W, rows: OVL_ROWS };
+            let region = match overlay_span {
+                Some((y0, rows)) => OverlayRegion { x0: OVL_X0, y0, w: OVL_W, rows },
+                None => OverlayRegion { x0: OVL_X0, y0: OVL_Y0, w: OVL_W, rows: OVL_ROWS },
+            };
             bus.lock().await.present_overlay(region, &mut |band: &mut Band| {
                 input_plane.lock(|cell| cell.borrow().render_overlay(band, WIDTH as f32, HEIGHT as f32, color_fn));
             });
@@ -1301,14 +1305,17 @@ async fn main(_spawner: Spawner) {
             pending_map_redraw = false;
 
             // FLPR: the hold bulge rides the map plane (there is no shared SPI bus, so no concurrent
-            // overlay push to serialise against). Sample the overlay-dirty edge once per frame from the
-            // shared `InputPlane` — the map plane is the single owner of that bookkeeping here
-            // (`take_overlay_dirty` is true while the bulge is live, plus one trailing clear). Drained
-            // before the map redraw so an overlay-only frame (no map change) re-presents just the bulge
-            // rows below; the ST7789 build drives its bulge from the input plane instead, so it has no
-            // overlay work in this loop.
+            // overlay push to serialise against). Sample the overlay state once per frame from the
+            // shared `InputPlane` — the map plane is the single owner of that bookkeeping here: the
+            // dirty edge (`take_overlay_dirty` is true while the bulge is live, plus one trailing clear)
+            // and the live bulge's **row span** (`None` when quiet), so the push below re-presents only
+            // the active bulge's rows (issue #163), not the whole hint band. The ST7789 build drives its
+            // bulge from the input plane instead, so it has no overlay work in this loop.
             #[cfg(feature = "panel-ls021")]
-            let overlay_dirty = input_plane.lock(|c| c.borrow_mut().take_overlay_dirty());
+            let (overlay_dirty, overlay_span) = input_plane.lock(|c| {
+                let p = &mut *c.borrow_mut();
+                (p.take_overlay_dirty(), p.overlay_rows(WIDTH as i32, HEIGHT as i32))
+            });
 
             if dirty.map {
                 // The map pipeline runs **only when the base screen actually draws the map** (the Map
@@ -1428,24 +1435,35 @@ async fn main(_spawner: Spawner) {
                 }
             }
 
-            // FLPR overlay-only frame (issue #163): the hold bulge animated over a STATIC map (no map
-            // redraw this tick) — re-present **only** the bulge rows from the clean framebuffer,
-            // compositing the live bulge. The FLPR fast-forwards the gate to the region + early-stops,
-            // so it's a fraction of a full frame; the trailing `take_overlay_dirty` edge re-presents the
-            // region once more with nothing composited = the clean map restored under it. A failed push
-            // isn't latched as a map redraw — the bulge re-presents on the next overlay tick anyway.
+            // FLPR hold bulge (issue #163). The bulge lives on the map plane, so it is **re-applied on
+            // top after a map present** (a redraw mid-hold — e.g. the screen transition a completed hold
+            // fires — would otherwise blink the pop animation off) and on overlay-only frames; either
+            // way it is a separate push over the clean map, never baked into it. While live, present
+            // **only the active bulge's rows** (encoder ≈ 59–171 OR Back ≈ 182–246) — the FLPR
+            // fast-forwards the gate to the region + early-stops, a fraction of a full frame. The
+            // trailing edge (bulge just went quiet) re-presents the full band once to wipe the last
+            // bulge — unless a map present this frame already restored the clean map there.
             #[cfg(feature = "panel-ls021")]
-            if !dirty.map && overlay_dirty {
-                let region = OverlayRegion { x0: OVL_X0, y0: OVL_Y0, w: OVL_W, rows: OVL_ROWS };
-                let t_push = Instant::now();
-                let ok = panel.present_overlay(region, &mut |band: &mut Band| {
-                    input_plane.lock(|cell| cell.borrow().render_overlay(band, WIDTH as f32, HEIGHT as f32, color_fn));
-                });
-                let push_us = t_push.elapsed().as_micros();
-                if ok {
-                    defmt::info!("overlay frame: bulge push {=u64} us ({=u16} rows)", push_us, OVL_ROWS);
-                } else {
-                    defmt::warn!("overlay frame: bulge push failed (FLPR stalled?) — retrying next overlay tick");
+            {
+                let composite = |panel: &mut Ls021Flpr, region: OverlayRegion| -> bool {
+                    panel.present_overlay(region, &mut |band: &mut Band| {
+                        input_plane
+                            .lock(|cell| cell.borrow().render_overlay(band, WIDTH as f32, HEIGHT as f32, color_fn));
+                    })
+                };
+                if let Some((y0, rows)) = overlay_span {
+                    let t_push = Instant::now();
+                    let ok = composite(&mut panel, OverlayRegion { x0: OVL_X0, y0, w: OVL_W, rows });
+                    let push_us = t_push.elapsed().as_micros();
+                    if ok {
+                        defmt::info!("overlay frame: bulge push {=u64} us ({=u16} rows @ y{=u16})", push_us, rows, y0);
+                    } else {
+                        defmt::warn!("overlay frame: bulge push failed (FLPR stalled?) — retrying next overlay tick");
+                    }
+                } else if overlay_dirty && !dirty.map {
+                    // Trailing clear on a static frame: re-present the full band with nothing composited
+                    // = the clean map restored under the just-gone bulge.
+                    composite(&mut panel, OverlayRegion { x0: OVL_X0, y0: OVL_Y0, w: OVL_W, rows: OVL_ROWS });
                 }
             }
 
