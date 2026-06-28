@@ -118,17 +118,18 @@ async fn main(_spawner: Spawner) {
     //
     // ⚠️ **Gate/BSP pins relocated for the app integration (issue #165).** The bench map reused the
     // SD/VCOM pins ("safe this epic only"); the real app needs those, so the five P1 gate/BSP lines
-    // moved to free P1 pins. **They must match `flpr_pingpong.c`'s masks and `main.rs`'s pins** —
-    // confirm each is broken out on your DK and remap all three together if not.
-    //   • Gate + frame (P1): GSP P1.00, GCK P1.01, GEN P1.15, INTB P1.16.
-    //     (P1.02/03 are NFC pins on this part, GPIO only behind `nfc-pins-as-gpio` — avoided.)
+    // moved to free P1 pins. The DK breaks out only P1.00–14 (P1.02/03 are NFC, off-limits) = one pin
+    // short for everything the app puts on P1, so SD `CS` moved to P0.00 (in `main.rs`), freeing P1.12
+    // for GEN; INTB took P1.10 (LED1). **These must match `flpr_pingpong.c`'s masks + `main.rs`'s pins**
+    // — remap all three together if a pin isn't broken out on your DK.
+    //   • Gate + frame (P1): GSP P1.00, GCK P1.01, GEN P1.12, INTB P1.10 (LED1).
     //   • Source bus: BSP P1.14 (P1) + BCK P2.06 + the 6 data lines P2.00..05 (P2).
-    //   • LED0 P2.09: spare M33 marker.
+    //   • Heartbeat: LED0 P2.09 (below).
     let _gate_bus = [
         Output::new(p.P1_00, Level::Low, OutputDrive::Standard), // GSP  (gate start pulse)
         Output::new(p.P1_01, Level::Low, OutputDrive::Standard), // GCK  (gate clock / area-plane select)
-        Output::new(p.P1_15, Level::Low, OutputDrive::Standard), // GEN  (gate output enable)
-        Output::new(p.P1_16, Level::Low, OutputDrive::Standard), // INTB (frame envelope)
+        Output::new(p.P1_12, Level::Low, OutputDrive::Standard), // GEN  (gate output enable)
+        Output::new(p.P1_10, Level::Low, OutputDrive::Standard), // INTB (frame envelope; LED1)
     ];
     let _src_bus = [
         Output::new(p.P1_14, Level::Low, OutputDrive::Standard), // BSP  (the lone P1 source line)
@@ -140,16 +141,15 @@ async fn main(_spawner: Spawner) {
         Output::new(p.P2_04, Level::Low, OutputDrive::Standard), // B0   (P2.04, odd)
         Output::new(p.P2_05, Level::Low, OutputDrive::Standard), // B1   (P2.05, even)
     ];
-    let _led0 = Output::new(p.P2_09, Level::Low, OutputDrive::Standard); // spare M33 marker
-
     // COM lines as high-drive GPIO (56–77 nF load each), boot `Lo` (safe state); held `Lo` through
     // the init frame, then moved into `com_task`. VCOM=P2.07, VB=P2.08, VA=P2.10 (M33-driven).
     let vcom = Output::new(p.P2_07, Level::Low, OutputDrive::HighDrive);
     let vb = Output::new(p.P2_08, Level::Low, OutputDrive::HighDrive);
     let va = Output::new(p.P2_10, Level::Low, OutputDrive::HighDrive);
 
-    // LED1 (P1.10) = the M33's heartbeat — proves the M33 keeps running alongside the FLPR.
-    let mut led1 = Output::new(p.P1_10, Level::Low, OutputDrive::Standard);
+    // LED0 (P2.09) = the M33's heartbeat — proves the M33 keeps running alongside the FLPR. (Moved off
+    // LED1/P1.10, which now carries INTB.)
+    let mut led1 = Output::new(p.P2_09, Level::Low, OutputDrive::Standard);
     let btn0 = Input::new(p.P1_13, Pull::Up); // DK BTN0 — active-LOW (pressed = Lo); steps the screen
 
     info!("LS021 FLPR bring-up: launcher up");
