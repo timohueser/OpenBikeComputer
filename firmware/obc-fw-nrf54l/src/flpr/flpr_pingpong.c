@@ -1,6 +1,8 @@
-/* flpr_pingpong.c — LS021 FLPR F4 ping-pong frame blob (issue #154, epic #149).
+/* flpr_pingpong.c — LS021 FLPR ping-pong frame blob (issues #154/#155, epic #149).
  *
- * **The epic's headline deliverable.** Successor to the F3 full-frame blob (flpr_frame.c, #153):
+ * **The epic's headline deliverable** (F4), reused unchanged by F5 (#155) behind the
+ * `obc_platform::Panel` seam — F5 only ratchets the bit-bang timing toward the spec frame (see the
+ * "F5 speed-tune" note on the delay constants). Successor to the F3 full-frame blob (flpr_frame.c, #153):
  * keeps the *complete* LS021 waveform F3 built — the gate scan (`GSP`/`GCK`/`GEN`), the frame
  * envelope (`INTB`), and the F2 inner data-shift loop (`drive_subline`) — and changes exactly one
  * thing: where each pixel row's source words come from. F3 reused a single solid-colour buffer for
@@ -127,15 +129,29 @@ static inline void fence(void)
 }
 
 /* ── Bit-bang delays (busy-loops). The FLPR clock is unconfigured at this stage, so these are
- * **LA-calibrated on the bench**, exactly like the M33 path's asm::delay counts. Target: bring-up-
- * slow so the analyzer resolves every edge — speed is F5's job. F2 measured `busy(120) ≈ 9.4 µs` on
- * the unconfigured (~64 MHz) FLPR ⇒ **~13 iters/µs**; the gate-scan delays below are derived from
- * that the way the M33 path derives its delays from COUNTS_PER_US, so each clears its datasheet
- * minimum with margin. The source-shift counts (BCK_HALF/DATA_SETUP) keep their analyzer-verified
- * F2 values. ── */
+ * **LA-calibrated on the bench**, exactly like the M33 path's asm::delay counts. F2 measured
+ * `busy(120) ≈ 9.4 µs` on the unconfigured (~64 MHz) FLPR ⇒ **~13 iters/µs**; the gate-scan delays
+ * are derived from that the way the M33 path derives its from COUNTS_PER_US, so each clears its
+ * datasheet minimum with margin.
+ *
+ * ## F5 speed-tune (issue #155) — what is safe to lower, and how far
+ *
+ * F2–F4 ran deliberately **bring-up-slow** (`BCK_HALF_ITERS = 120` ≈ 9.4 µs half ⇒ ~53 kHz BCK,
+ * ~16× under the panel's 0.758 MHz max) so the analyzer resolved every edge. F5 ratchets toward the
+ * spec ~53 ms frame. The source-shift counts are the **only** safe lever:
+ *   - `BCK_HALF_ITERS` / `DATA_SETUP_ITERS` set the source clock. The first step here is **half** the
+ *     F2 value (≈106 kHz BCK — still 7× under the 0.758 MHz max, so the edges stay clean). On the
+ *     bench, dial `BCK_HALF_ITERS` down toward **~9** (and `DATA_SETUP_ITERS` toward ~5) while
+ *     LA-checking that `BCK ≤ 0.758 MHz` with clean edges and the data lines settle before each rise.
+ *   - The gate timings (`GCK_SETTLE`/`GEN_SETUP`/`GEN_HIGH`) are panel **electrical minimums**
+ *     (GCK↔GEN setup/hold ≥16.37 µs, GEN valid ≥24.56 µs). **Do NOT lower below their µs values** —
+ *     they are correctness, not slack. Because this driver is sequential (gate then source per row),
+ *     the summed gate time (~38 ms over 320 rows) is the frame-time floor: even with BCK at max the
+ *     bit-banged frame lands in the low hundreds of ms, approaching the ~53 ms spec only as BCK nears
+ *     its ceiling. `push_frame` logs the measured frame time each push — tune against that. ── */
 #define ITERS_PER_US      13u /* bench calibration: busy(120) ≈ 9.4 µs on the unconfigured FLPR */
-#define BCK_HALF_ITERS    120u                  /* each BCK phase — F2-verified ~9.4 µs (≈45 kHz BCK) */
-#define DATA_SETUP_ITERS  40u                   /* source data stable before the BCK rising edge */
+#define BCK_HALF_ITERS    60u                   /* each BCK phase — F5 first step, ~4.7 µs (≈106 kHz BCK) */
+#define DATA_SETUP_ITERS  20u                   /* source data stable before the BCK rising edge (~1.5 µs) */
 #define GCK_SETTLE_ITERS  (5u * ITERS_PER_US)   /* settle after a GCK level change before shifting */
 #define GEN_SETUP_ITERS   (17u * ITERS_PER_US)  /* GCK↔GEN setup AND hold (spec ≥16.37 µs) */
 #define GEN_HIGH_ITERS    (25u * ITERS_PER_US)  /* GEN valid-output window (spec ≥24.56 µs) */
