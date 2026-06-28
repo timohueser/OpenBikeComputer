@@ -1,48 +1,55 @@
-//! **LS021 FLPR bring-up F4** (issue #154, epic #149) — the FLPR drives a frame from the **real
-//! RGB222 framebuffer** through **two ping-pong write buffers**: a uniform **black** init frame,
-//! then **solid white / R / G / B**, the **64-colour palette**, and the **black-on-white shapes**
-//! card. **The epic's headline deliverable.**
+//! **LS021 FLPR bring-up F5** (issue #155, epic #149) — **the bridge to running the app.** The
+//! FLPR-driven frame push now lives behind the board-agnostic [`obc_platform::Panel`] seam, so the
+//! whole-frame generators that already drive the ST7789 (`demo::font_palette_demo`, and ultimately
+//! [`App::render_frame`](obc_app::App::render_frame)) put pixels on the real LS021 with **no
+//! panel-specific code** — and the waveform clocks step toward the panel's real ~53 ms full-frame
+//! speed (vs the ~1.8 s bring-up rate).
 //!
-//! Successor to **F3** (#153, the FLPR driving a whole *solid* frame from one reused row buffer).
-//! F4 keeps the complete waveform F3 built (gate scan + `INTB` envelope + source shift, ported from
-//! the analyzer-verified M33 [`PanelBus`](../ls021.rs), epic #139) and changes only the **source**:
-//!   - the M33 renders a pattern into a resident **75 KB RGB222 framebuffer**
-//!     ([`FbDevice64`](obc_platform::FbDevice64)-format bytes, `0b00_RR_GG_BB`);
-//!   - it packs that, **one row at a time**, into the LS021 source-bus wire words via the
-//!     host-tested [`obc_platform::ls021_pack_row`] (the trickiest logic — area-gradation split +
-//!     odd/even column interleave + GPIO pre-shift — lives in a unit-tested Rust fn, not the C blob);
-//!   - the two row buffers **ping-pong**: the M33 packs row N+1 into one buffer while the FLPR scans
-//!     row N out of the other, swapping on the FLPR's per-buffer "drained" echo.
+//! Successor to **F4** (#154, the FLPR driving a frame from the RGB222 framebuffer over two
+//! ping-pong write buffers). F5 keeps the complete waveform + ping-pong pipeline F4 built and adds:
+//!   - **[`Ls021Flpr`]** — an `obc_platform::Panel` backend whose `begin_frame` / `flush_band` /
+//!     `end_frame` route a band's RGB565 pixels onto glass through the F4 path (framebuffer → pack →
+//!     ping-pong → FLPR). It owns the resident 75 KB RGB222 [`FB`] plane; the generator draws the
+//!     frame band-by-band through [`obc_platform::Band`], `flush_band` quantises each band into the
+//!     plane, and **`end_frame` runs the whole-frame FLPR push**.
+//!   - the **glass-demo** (`demo::font_palette_demo` — the font ladder + 64-colour gamut the ST7789
+//!     `--features glass-demo` build renders) driven through that backend, on the real panel.
+//!   - a first **speed step** in the C blob (`src/flpr/flpr_pingpong.c`) toward the spec frame, with
+//!     the remaining bench dial-in (LA edges clean at `BCK ≤ 0.758 MHz`) documented there.
 //!
-//! **The ping-pong unit is one gate line = MSB sub-line + LSB sub-line** (a 248-word row buffer);
-//! `buf[0]` carries even rows, `buf[1]` odd. Per-buffer back-pressure runs both ways: the FLPR waits
-//! for `ready != consumed` before scanning a buffer (never a half-filled one), the M33 waits for
-//! `consumed == ready` before refilling it (never one the FLPR is mid-scan on). COM (`VCOM`/`VB`/`VA`)
-//! free-runs on the M33 the whole time. See `firmware/docs/ls021-flpr.md`.
+//! ## Full-frame push per `end_frame` (the design choice)
 //!
-//! Power-on sequence (datasheet §6-2, mirroring the L3 `ls021_bringup` bin):
-//!   1. **Settle (~2 s)** — rails up, all inputs `Lo`, COM `Lo`. Hands-free so a power-cycle gives a
-//!      deterministic LA capture; LED1 blinks.
-//!   2. **Launch the FLPR**, arm the EGU20 return doorbell, wait for its `ALIVE` stamp (F1/F2 boot).
-//!   3. **Init #0 — `INTB`-framed all-black frame**, FLPR-driven from a black framebuffer. COM `Lo`.
+//! The FLPR scans the *whole* frame top-to-bottom in **one** `CMD_RUN_FRAME`, so there is no natural
+//! "band-incremental feed" to the panel: a band push can't reach glass on its own. Hence the seam is
+//! **full-frame push per `end_frame`** — `flush_band` only *fills* the resident framebuffer plane
+//! (RGB565 → device-64), and `end_frame` packs all 320 rows through the ping-pong buffers and drives
+//! the frame once. This matches how the FLPR works and keeps the ping-pong (M33 packs row N+1 while
+//! the FLPR scans row N) exactly as F4 proved it.
+//!
+//! ## Blocking push (sync `Panel` seam)
+//!
+//! [`Panel`] is a synchronous trait, so [`Ls021Flpr::end_frame`] **busy-polls** rather than awaiting:
+//! it spins on each ping-pong buffer's `consumed == ready` (the M33 is a dedicated packer here) and
+//! on the FLPR's `flpr_seq` ack — no EGU20 IRQ needed (the F4 async return doorbell). COM still
+//! free-runs on its own high-priority `InterruptExecutor`, so blocking the thread-mode M33 for a
+//! frame is benign (the same shape as the ST7789 path blocking on its SPI-DMA write). The blob still
+//! pokes `EGU20` after each frame; with its IRQ unarmed here that write is a harmless no-op.
+//!
+//! Power-on sequence (datasheet §6-2, mirroring the L3/F4 bins):
+//!   1. **Settle (~2 s)** — rails up, all inputs `Lo`, COM `Lo`. Hands-free for a deterministic LA
+//!      capture at reset; LED1 blinks.
+//!   2. **Launch the FLPR**, wait for its `ALIVE` stamp (F1/F2 boot).
+//!   3. **Init #0 — `INTB`-framed all-black frame** through the `Panel` seam (a black `clear`). COM `Lo`.
 //!   4. **Wait `T4 ≥ 30 µs`, then start COM** on a high-priority `InterruptExecutor` — runs forever.
-//!   5. **BTN0 steps** the pattern: white → R → G → B → 64-colour palette → shapes → wrap. Each is
-//!      rendered into the framebuffer then FLPR-driven once (MIP retains it); BTN0 is polled
-//!      responsively for the next press. The on-glass result must be **identical to the M33-direct
-//!      L3 (#148)** — both paths render the same shared [`palette`]/[`shapes`] source.
-//!
-//! Per frame: the M33 pre-packs rows 0/1 into `buf[0]`/`buf[1]`, writes `cmd = CMD_RUN_FRAME` + bumps
-//! `m33_seq` (the command doorbell), then packs the remaining rows into whichever buffer the FLPR
-//! just freed; the FLPR runs the gate scan, draining the ping-pong buffers, and acks via the `EGU20`
-//! IRQ (#201). The M33 checks `status == 320 && flpr_seq == m33_seq` and logs the **pack-vs-drain
-//! overlap** (the M33 pack time is a tiny fraction of the FLPR's frame time → the pipeline overlaps).
-//! The waveform is verified on the logic analyzer against the M33 golden frame, the result on glass
-//! via the webcam (`/tmp/obc-cam/panel.jpg`).
+//!   5. **BTN0 steps** the screen: GLASS-DEMO → white → red → green → blue → wrap. Each is drawn
+//!      through the `Panel`/`Band` seam and FLPR-driven once (MIP retains it). The glass-demo card
+//!      must look identical to the ST7789 `--features glass-demo` build; the solids give clean
+//!      single-value waveforms for the LA speed-tune.
 //!
 //! **Both cores on P2 at once (since F3).** The FLPR drives the source bus on `P2.00..06`; the M33
 //! drives COM on `P2.07/08/10` from `com_task`. Safe because every GPIO touch on either core is an
-//! atomic `OUTSET`/`OUTCLR` of disjoint pin masks (never an `OUT` read-modify-write). The gate lines
-//! (`GSP`/`GCK`/`GEN`/`INTB`) + `BSP` are all on **P1**, FLPR-driven.
+//! atomic `OUTSET`/`OUTCLR` of disjoint pin masks. The gate lines (`GSP`/`GCK`/`GEN`/`INTB`) + `BSP`
+//! are all on **P1**, FLPR-driven.
 //!
 //! Build/flash (needs a RISC-V gcc for the blob — `brew install riscv64-elf-gcc`; and the
 //! Board-Configurator ext-memory-off / 3.3 V-VDDM settings the `ls021_bringup` epic already needs):
@@ -60,21 +67,27 @@ use embassy_executor::{InterruptExecutor, Spawner};
 use embassy_nrf::gpio::{Input, Level, Output, OutputDrive, Pull};
 use embassy_nrf::interrupt;
 use embassy_nrf::interrupt::{InterruptExt, Priority};
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::signal::Signal;
-use embassy_time::{with_timeout, Duration, Instant, Timer};
-// The host-tested RGB222 → LS021-wire pack (issue #154) + its sub-line/row word counts.
-use obc_platform::ls021_pack_row;
+use embassy_time::{Instant, Timer};
+use embedded_graphics::{pixelcolor::Rgb565, prelude::*};
+// The board-agnostic display seam + its frame-absolute band view, and the host-tested RGB222 →
+// LS021-wire pack (#154) with its sub-line/row word counts.
 use obc_platform::ls021_wire::{BCK_PER_SUBLINE, ROW_WORDS, WIDTH};
+use obc_platform::{ls021_pack_row, Band, Panel};
+// The host-tested RGB565 → device-64 quantiser — the same one the glass-demo's gamut is drawn from,
+// so `flush_band` lands a band on the panel's RGB222 gamut exactly as the ST7789 stand-in shows it.
+use obc_reader::rgb565_to_device64;
 use {defmt_rtt as _, panic_probe as _};
 
-// The free-running COM driver + the shared test patterns are panel-board-agnostic infrastructure
-// (not the M33-direct PanelBus, which the FLPR replaces). Pull in `com_task` + `palette`/`shapes`;
-// the rest of the module (PanelBus etc.) is unused here, hence the module-level allow.
+// The free-running COM driver is panel-board-agnostic infrastructure (not the M33-direct PanelBus,
+// which the FLPR replaces). Pull in `com_task`; the rest of the module is unused here (module-level
+// allow). The glass-demo generator is shared verbatim with the ST7789 `--features glass-demo` build.
+#[path = "../demo.rs"]
+mod demo;
 #[path = "../ls021.rs"]
 #[allow(dead_code)]
 mod ls021;
-use ls021::{com_task, palette, shapes};
+use demo::font_palette_demo;
+use ls021::com_task;
 
 /// The FLPR program image, cross-compiled by `build.rs` into `$OUT_DIR/flpr.bin`.
 static FLPR_BLOB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/flpr.bin"));
@@ -84,10 +97,8 @@ static FLPR_BLOB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/flpr.bin"));
 const FLPR_RAM_BASE: usize = 0x2003_8000;
 /// The **two ping-pong row buffers** the FLPR drains, parked in the SHARED page (which both cores
 /// already reach — the FLPR reads the control block there). Each row buffer is `ROW_WORDS` (248)
-/// u32 = MSB sub-line [0..124) then LSB sub-line [124..248); `buf[0]` is at the first address,
-/// `buf[1]` one row buffer above it. Both sit clear of the 64-byte control block at the page base,
-/// and together (2 × 992 B) fit the 4 KB SHARED page with room to spare. `buf[0]` carries even
-/// rows, `buf[1]` odd — the M33 packs one while the FLPR scans the other.
+/// u32 = MSB sub-line [0..124) then LSB sub-line [124..248); `buf[0]` carries even rows, `buf[1]`
+/// odd — the M33 packs one while the FLPR scans the other.
 const WRITE_BUF_ADDR: [usize; 2] = [0x2003_F100, 0x2003_F100 + ROW_WORDS * 4];
 
 /// Shared control block at the `SHARED` page base. Layout is normative and identical to the C
@@ -96,12 +107,12 @@ const WRITE_BUF_ADDR: [usize; 2] = [0x2003_F100, 0x2003_F100 + ROW_WORDS * 4];
 /// padding. Accessed only through raw volatile field reads/writes (never as a `&` reference) since
 /// the FLPR mutates it concurrently.
 #[repr(C)]
-#[allow(dead_code)] // reserved is forward-compat headroom — defined now, unused here.
+#[allow(dead_code)] // reserved / EGU-era fields are forward-compat headroom kept in the contract.
 struct Control {
     magic: u32,         // 0x00 M33: layout/version tag, checked by the FLPR before acting
     m33_seq: u32,       // 0x04 M33: command sequence counter (the per-frame command doorbell)
     cmd: u32,           // 0x08 M33: command word (a CMD_* code)
-    flpr_seq: u32,      // 0x0C FLPR: echoes the m33_seq it serviced (round-trip proof)
+    flpr_seq: u32,      // 0x0C FLPR: echoes the m33_seq it serviced (the ack the M33 polls)
     status: u32,        // 0x10 FLPR: ack/result (rows scanned; boot: FLPR_ALIVE)
     frame_count: u32,   // 0x14 FLPR: frames drained (bumped per CMD_RUN_FRAME)
     buf: [BufDesc; 2],  // 0x18, 0x28 ping-pong row-buffer descriptors (buf[0] even rows, buf[1] odd)
@@ -128,92 +139,39 @@ const FLPR_ALIVE: u32 = 0x0000_A11E; // FLPR boot confirmation
 const FLPR_BADMAG: u32 = 0x0BAD_CAFE; // FLPR booted but saw the wrong magic (memory-map drift)
 const CMD_RUN_FRAME: u32 = 0x0000_0002; // drive one full frame, ping-ponging buf[0]/buf[1]
 
-// ── Frame geometry. The wire-word counts (`WIDTH` 240, `BCK_PER_SUBLINE` 124, `ROW_WORDS` 248)
-//    come from `obc_platform::ls021_wire` — the same constants the host-tested pack uses and the
-//    FLPR reads as `buf[i].len` (a row buffer is `2 × BCK_PER_SUBLINE = ROW_WORDS` words). ──
+// ── VPR00 control (secure alias base 0x5004_C000): the M33 only launches the FLPR here. ──
+const VPR00_INITPC: *mut u32 = 0x5004_C808 as *mut u32; // initial PC at core start
+const VPR00_CPURUN: *mut u32 = 0x5004_C800 as *mut u32; // CPURUN.EN bit0 = run
+
+// ── Frame geometry. The wire-word counts (`WIDTH` 240, `BCK_PER_SUBLINE` 124, `ROW_WORDS` 248) come
+//    from `obc_platform::ls021_wire`. The framebuffer is `WIDTH × ROWS_PER_FRAME` device-64 bytes. ──
 /// Visible pixel rows the FLPR scans per frame — the `status` the M33 cross-checks, and the
 /// framebuffer height.
 const ROWS_PER_FRAME: u32 = 320;
-
-// ── Resident RGB222 framebuffer (the F4 source). 240×320 device-64 bytes (`0b00_RR_GG_BB`, the
-//    [`FbDevice64`](obc_platform::FbDevice64)/`PackDevice64` format) = 75 KB in the M33's `.bss` —
-//    the production map plane's type/size, here filled with the bring-up test patterns instead of a
-//    rendered map (F5 plugs the real `App` render in behind the `Panel` seam). `ls021_pack_row`
-//    reads one row of it per ping-pong buffer fill. ──
 /// Framebuffer width = the panel width.
 const FB_W: usize = WIDTH;
 /// Framebuffer height = the visible row count.
 const FB_H: usize = ROWS_PER_FRAME as usize;
-/// Resident RGB222 (device-64) framebuffer, one byte per pixel. 75 KB; fits the 224 KB M33 region.
+/// Resident RGB222 (device-64) framebuffer, one byte per pixel (`0b00_RR_GG_BB`, the
+/// [`FbDevice64`](obc_platform::FbDevice64)/`PackDevice64` format). 75 KB; fits the 224 KB M33
+/// region. This is the production map plane's type/size — F5 fills it via the `Panel` seam, N7 plugs
+/// the real `App` render in behind the *same* seam. `ls021_pack_row` reads one row per buffer fill.
 static mut FB: [u8; FB_W * FB_H] = [0u8; FB_W * FB_H];
 
-// ── VPR00 control (secure alias base 0x5004_C000): the M33 only launches the FLPR here. NB:
-//    VPR00's own EVENTS→app-IRQ is unusable on bare metal — the app-side INTEN won't accept writes
-//    from the M33 (reads back 0) — so the FLPR→M33 return doorbell uses EGU20 instead. ──
-const VPR00_INITPC: *mut u32 = 0x5004_C808 as *mut u32; // initial PC at core start
-const VPR00_CPURUN: *mut u32 = 0x5004_C800 as *mut u32; // CPURUN.EN bit0 = run
-
-// ── EGU20 (secure 0x500C_9000, IRQ #201): the FLPR→M33 return doorbell. The FLPR pokes
-//    TASKS_TRIGGER[0] (a plain peripheral write, like it drives GPIO); EGU20.EVENTS_TRIGGERED[0]
-//    then raises the EGU20 IRQ on the M33. EGU is a normal peripheral whose INTEN *is* writable. ──
-const EGU20_EVENTS_TRIGGERED0: *mut u32 = 0x500C_9100 as *mut u32;
-const EGU20_INTEN: *mut u32 = 0x500C_9300 as *mut u32;
-const EGU20_INTENSET: *mut u32 = 0x500C_9304 as *mut u32;
-const ACK_EGU_CH: u32 = 0; // EGU channel 0
-
-/// Set by the `EGU20` ISR when the FLPR rings the return doorbell; awaited by `main`.
-static ACK: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+/// One band's worth of RGB565 scratch the [`Panel`] seam hands the generator (`BAND_ROWS` full
+/// `WIDTH`-pixel rows). The frame is resident in [`FB`]; this is only the transient per-band buffer
+/// the generator draws into before `flush_band` quantises it into the plane, so it can be small.
+const BAND_ROWS: usize = 16;
+static mut BAND: [u16; FB_W * BAND_ROWS] = [0u16; FB_W * BAND_ROWS];
 
 /// High-priority executor the COM driver runs on, pended from the unused SWI00 software-interrupt
-/// vector (we only borrow its vector as the pend line). COM at P3 preempts thread-mode so it
-/// free-runs CPU-independently while the M33 awaits the FLPR's per-frame ack.
+/// vector. COM at P3 preempts thread-mode so it free-runs CPU-independently while the M33 busy-polls
+/// the FLPR's per-frame ack.
 static EXECUTOR_COM: InterruptExecutor = InterruptExecutor::new();
 
 #[interrupt]
 unsafe fn SWI00() {
     EXECUTOR_COM.on_interrupt();
-}
-
-/// FLPR → M33 return doorbell. The FLPR poked `EGU20.TASKS_TRIGGER[0]`, raising
-/// `EGU20.EVENTS_TRIGGERED[0]` and (via `INTEN[0]`) this IRQ. Clear the event so it doesn't
-/// re-fire, then wake `main`; `main` reads the ack fields from the control block (the FLPR wrote
-/// them, fenced, before ringing, so they're visible here).
-#[interrupt]
-unsafe fn EGU20() {
-    EGU20_EVENTS_TRIGGERED0.write_volatile(0);
-    let _ = EGU20_EVENTS_TRIGGERED0.read_volatile(); // read-back: ensure the clear lands before return
-    ACK.signal(());
-}
-
-/// A cycleable F4 test pattern rendered into the framebuffer: a uniform RGB222 `Solid`, or a
-/// `Spatial` per-pixel pattern (the [`palette`], the [`shapes`] card). Both fill the *same*
-/// resident `FbDevice64` source the ping-pong pack then reads — solids exercise the path, palette +
-/// shapes exercise per-column (spatial) data.
-#[derive(Clone, Copy)]
-enum Pattern {
-    Solid(u8, u8, u8),
-    Spatial(fn(u16, u16) -> (u8, u8, u8)),
-}
-
-/// Render one pattern into the resident RGB222 framebuffer ([`FB`]) as device-64 bytes
-/// (`0b00_RR_GG_BB`, the `FbDevice64`/`PackDevice64` format). A `Solid` is one `fill`; a `Spatial`
-/// evaluates the shared pattern fn per pixel — the same source the M33-direct L3 path renders, so
-/// the FLPR-driven card must look identical.
-fn render_into_fb(pat: Pattern) {
-    // SAFETY: single-threaded bench use — FB is touched only here (fill) and in `pack_row_into`
-    // (read), never concurrently (the COM/ACK interrupts don't touch it).
-    let fb = unsafe { &mut *addr_of_mut!(FB) };
-    match pat {
-        Pattern::Solid(r, g, b) => fb.fill((r << 4) | (g << 2) | b),
-        Pattern::Spatial(f) => {
-            for (y, row) in fb.chunks_mut(FB_W).enumerate() {
-                for (x, px) in row.iter_mut().enumerate() {
-                    let (r, g, b) = f(x as u16, y as u16);
-                    *px = (r << 4) | (g << 2) | b;
-                }
-            }
-        }
-    }
 }
 
 // ── Per-buffer ping-pong descriptor access (volatile; the FLPR mutates `consumed` concurrently). ──
@@ -242,12 +200,10 @@ fn reset_descriptors() {
 /// [`ls021_pack_row`] writes the 248 wire words (MSB sub-line then LSB sub-line), a `dsb` orders
 /// those stores before the `ready` bump, then `ready += 1` hands the buffer to the FLPR. The FLPR
 /// `fence`s on seeing `ready` change, so it never reads the words before they land.
-fn publish_row(i: usize, row: usize) {
-    // SAFETY: `fb_row` reads the framebuffer (filled by render_into_fb); `out` is the SHARED-page
-    // write buffer at a fixed address no Rust object aliases. Disjoint regions, single-threaded.
-    let fb_row = unsafe { core::slice::from_raw_parts((addr_of!(FB) as *const u8).add(row * FB_W), FB_W) };
+fn publish_row(fb: &[u8], i: usize, row: usize) {
+    // SAFETY: `out` is the SHARED-page write buffer at a fixed address no Rust object aliases.
     let out = unsafe { core::slice::from_raw_parts_mut(WRITE_BUF_ADDR[i] as *mut u32, ROW_WORDS) };
-    ls021_pack_row(fb_row, out);
+    ls021_pack_row(&fb[row * FB_W..row * FB_W + FB_W], out);
     cortex_m::asm::dsb(); // buffer words complete before the ready bump the FLPR waits on
     let next = buf_ready(i).wrapping_add(1);
     unsafe { addr_of_mut!((*CONTROL).buf[i].ready).write_volatile(next) };
@@ -264,108 +220,151 @@ fn ring_cmd(seq: u32) {
     }
 }
 
-/// Poll interval / cap while waiting for the FLPR to free a ping-pong buffer. A bring-up-slow row
-/// drains in ~5.6 ms, so a free buffer is usually seen within a poll or two; the cap (`* WAIT_POLLS`
-/// ≈ 5 s) only fires if the FLPR has stalled, turning a hang into a reported error.
-const WAIT_POLL_US: u64 = 100;
-const WAIT_POLLS: u32 = 50_000;
+/// Busy-poll cap while waiting on the FLPR (a free ping-pong buffer or the frame ack). A spin cap,
+/// not a duration — sized large enough that even a full slow frame never trips it, so it only fires
+/// if the FLPR has genuinely stalled, turning a hang into a reported error.
+const SPIN_CAP: u32 = 50_000_000;
 
-/// Wait (async, non-blocking) for the FLPR to drain buf[i] — i.e. `consumed == ready`, the buffer is
-/// free for the M33 to refill. Returns `false` on the timeout cap (a stalled FLPR). Async so the
-/// executor keeps running (COM is on its own interrupt executor regardless).
-async fn wait_buffer_free(i: usize) -> bool {
-    for _ in 0..WAIT_POLLS {
-        if buf_consumed(i) == buf_ready(i) {
+/// The board-agnostic [`Panel`] backend for the LS021 over the FLPR. Owns the resident RGB222
+/// framebuffer plane; the generator draws the frame band-by-band into the RGB565 `band` scratch via
+/// [`flush_band`](Panel::flush_band), which quantises each band into the plane, and
+/// [`end_frame`](Panel::end_frame) drives the whole frame to glass through the F4 ping-pong path.
+struct Ls021Flpr<'b> {
+    /// Resident RGB222 (device-64) frame plane, `FB_W × FB_H`. `flush_band` writes it, `end_frame`
+    /// packs + pushes it.
+    fb: &'b mut [u8],
+    /// One band of RGB565 scratch the seam hands the generator; quantised into `fb` per band.
+    band: &'b mut [u16],
+    /// Per-frame command sequence — bumped each push, echoed back by the FLPR as the ack.
+    seq: u32,
+}
+
+impl Ls021Flpr<'_> {
+    /// Drive the resident framebuffer to glass through the **ping-pong** path and busy-wait the
+    /// frame ack. Pre-packs rows 0/1 into `buf[0]`/`buf[1]`, rings the FLPR, then packs each
+    /// remaining row into whichever buffer the FLPR just freed (`buf[row & 1]`) — the M33 stays one
+    /// buffer ahead while the FLPR scans. Returns `true` if the ack checks out (`status ==
+    /// ROWS_PER_FRAME && flpr_seq == seq`). Logs the **pack-vs-frame overlap** + the frame time
+    /// (the F5 speed-tune metric — drive the blob clocks down until this nears the spec ~53 ms).
+    fn push_frame(&mut self) -> bool {
+        self.seq += 1;
+        let s = self.seq;
+
+        // Reset + pre-fill both buffers while the FLPR is idle (it starts only on the m33_seq bump).
+        reset_descriptors();
+        publish_row(self.fb, 0, 0); // row 0 → buf[0] (even)
+        publish_row(self.fb, 1, 1); // row 1 → buf[1] (odd)
+
+        let t_frame = Instant::now();
+        ring_cmd(s);
+
+        // Pack the remaining 318 rows, each paced by the FLPR freeing its buffer (the ping-pong).
+        let mut pack_total_us: u64 = 0;
+        for row in 2..FB_H {
+            let i = row & 1;
+            if !spin_until(|| buf_consumed(i) == buf_ready(i)) {
+                error!(
+                    "LS021 FLPR F5: STALLED at row {=usize} — FLPR didn't free buf[{=usize}] (consumed={=u32}, ready={=u32})",
+                    row, i, buf_consumed(i), buf_ready(i)
+                );
+                return false;
+            }
+            let t0 = Instant::now();
+            publish_row(self.fb, i, row);
+            pack_total_us += t0.elapsed().as_micros();
+        }
+
+        // Every row packed — busy-wait the FLPR's whole-frame ack (`flpr_seq` echoes our seq).
+        if !spin_until(|| unsafe { addr_of!((*CONTROL).flpr_seq).read_volatile() } == s) {
+            error!(
+                "LS021 FLPR F5: frame TIMEOUT — FLPR never echoed seq {=u32} (the scan or a ping-pong wait stalled)",
+                s
+            );
+            return false;
+        }
+        let frame_us = t_frame.elapsed().as_micros();
+        let status = unsafe { addr_of!((*CONTROL).status).read_volatile() };
+        let frames = unsafe { addr_of!((*CONTROL).frame_count).read_volatile() };
+        if status != ROWS_PER_FRAME {
+            error!("LS021 FLPR F5: frame MISMATCH — status={=u32} (want {=u32})", status, ROWS_PER_FRAME);
+            return false;
+        }
+        info!(
+            "LS021 FLPR F5: frame OK — FLPR scanned {=u32} rows (frame #{=u32}) in {=u64} µs (~{=u64} µs/row); M33 packed {=u32} rows in {=u64} µs → pack ≪ drain, pipeline overlaps",
+            status,
+            frames,
+            frame_us,
+            frame_us / ROWS_PER_FRAME as u64,
+            ROWS_PER_FRAME - 2,
+            pack_total_us
+        );
+        true
+    }
+}
+
+/// Spin (bounded by [`SPIN_CAP`]) until `cond` holds. Returns `false` if the cap trips first (a
+/// stalled FLPR). Pure busy-poll — correct here because the M33 is a dedicated packer and COM runs
+/// on its own interrupt executor, so there is nothing else for this core to yield to.
+fn spin_until(cond: impl Fn() -> bool) -> bool {
+    for _ in 0..SPIN_CAP {
+        if cond() {
             return true;
         }
-        Timer::after_micros(WAIT_POLL_US).await;
+        core::hint::spin_loop();
     }
     false
 }
 
-/// Drive one frame from the framebuffer through the FLPR over the two **ping-pong** buffers, and
-/// wait for the frame-done ack. Pre-packs rows 0/1 into `buf[0]`/`buf[1]`, rings the FLPR, then packs
-/// each remaining row into whichever buffer the FLPR just freed (`buf[row & 1]`) — the M33 stays one
-/// buffer ahead while the FLPR scans. Returns `true` if the ack checks out (`status ==
-/// ROWS_PER_FRAME && flpr_seq == seq`); the waveform/glass proof is on the LA + webcam.
-///
-/// Logs the **pack-vs-drain overlap**: the M33's summed pack time is a tiny fraction of the FLPR's
-/// frame time, so the M33 spends the frame mostly waiting on the FLPR — the pipeline genuinely
-/// overlaps (the M33 is never the bottleneck), the property the F4 issue asks to demonstrate.
-async fn push_frame(name: &str, seq: &mut u32) -> bool {
-    *seq += 1;
-    let s = *seq;
-
-    // Reset + pre-fill both buffers while the FLPR is idle (it starts only on the m33_seq bump).
-    reset_descriptors();
-    publish_row(0, 0); // row 0 → buf[0] (even)
-    publish_row(1, 1); // row 1 → buf[1] (odd)
-
-    ACK.reset(); // clear any stale signal before ringing
-    let t_frame = Instant::now();
-    ring_cmd(s);
-
-    // Pack the remaining 318 rows, each paced by the FLPR freeing its buffer (the ping-pong).
-    let mut pack_total_us: u64 = 0;
-    let mut pack_max_us: u64 = 0;
-    for row in 2..ROWS_PER_FRAME as usize {
-        let i = row & 1;
-        if !wait_buffer_free(i).await {
-            error!(
-                "LS021 FLPR F4: {=str} STALLED at row {=usize} — FLPR didn't free buf[{=usize}] (consumed={=u32}, ready={=u32})",
-                name, row, i, buf_consumed(i), buf_ready(i)
-            );
-            return false;
-        }
-        let t0 = Instant::now();
-        publish_row(i, row);
-        let dt = t0.elapsed().as_micros();
-        pack_total_us += dt;
-        pack_max_us = pack_max_us.max(dt);
+impl Panel for Ls021Flpr<'_> {
+    /// Band height = however many full `WIDTH`-pixel rows the RGB565 scratch holds.
+    fn band_rows(&self) -> u16 {
+        (self.band.len() / FB_W) as u16
     }
 
-    // The M33 has packed every row; wait for the FLPR's whole-frame ack (a bring-up-slow frame is
-    // ~1.8 s, so the timeout is generous). COM free-runs on its interrupt executor throughout.
-    match with_timeout(Duration::from_secs(8), ACK.wait()).await {
-        Ok(()) => {
-            let status = unsafe { addr_of!((*CONTROL).status).read_volatile() };
-            let flpr_seq = unsafe { addr_of!((*CONTROL).flpr_seq).read_volatile() };
-            let frames = unsafe { addr_of!((*CONTROL).frame_count).read_volatile() };
-            if status == ROWS_PER_FRAME && flpr_seq == s {
-                let frame_us = t_frame.elapsed().as_micros();
-                let packed = ROWS_PER_FRAME - 2; // rows packed inside the frame (2 were pre-filled)
-                let avg_drain = frame_us / ROWS_PER_FRAME as u64; // FLPR per-row scan time
-                let avg_pack = pack_total_us / packed as u64; // M33 per-row pack time
-                info!(
-                    "LS021 FLPR F4: {=str} frame OK — FLPR scanned {=u32} rows (frame #{=u32}) in {=u64} µs (~{=u64} µs/row); M33 packed {=u32} rows in {=u64} µs (avg {=u64} / max {=u64} µs/row) → pack ≪ drain, pipeline overlaps",
-                    name, status, frames, frame_us, avg_drain, packed, pack_total_us, avg_pack, pack_max_us
-                );
-                true
-            } else {
-                error!(
-                    "LS021 FLPR F4: {=str} frame MISMATCH — status={=u32} (want {=u32}), flpr_seq={=u32} (want {=u32})",
-                    name, status, ROWS_PER_FRAME, flpr_seq, s
-                );
-                false
-            }
-        }
-        Err(_) => {
-            let flpr_seq = unsafe { addr_of!((*CONTROL).flpr_seq).read_volatile() };
-            if flpr_seq == s {
-                error!(
-                    "LS021 FLPR F4: {=str} frame TIMEOUT — FLPR serviced it (flpr_seq matched) but no EGU20 IRQ (EVENTS[0]={=u32})",
-                    name,
-                    unsafe { EGU20_EVENTS_TRIGGERED0.read_volatile() }
-                );
-            } else {
-                error!(
-                    "LS021 FLPR F4: {=str} frame TIMEOUT — FLPR did NOT finish (flpr_seq={=u32}≠{=u32}) → the scan or a ping-pong wait stalled",
-                    name, flpr_seq, s
-                );
-            }
-            false
+    /// Nothing to set up — the resident plane is filled band-by-band, then driven by `end_frame`.
+    fn begin_frame(&mut self) {}
+
+    /// Render one band into the RGB565 scratch, then **quantise it into the resident RGB222 plane**
+    /// at rows `[y0, y0 + rows)`: each pixel is snapped to the device-64 gamut by the host-tested
+    /// [`rgb565_to_device64`] (the same quantiser the glass-demo's swatches are drawn from) and
+    /// stored as a `0b00_RR_GG_BB` byte. No panel signal here — `end_frame` drives the whole plane.
+    fn flush_band(&mut self, y0: u16, rows: u16, fill: impl FnOnce(&mut [u16])) {
+        let n = FB_W * rows as usize;
+        fill(&mut self.band[..n]);
+        let base = y0 as usize * FB_W;
+        for (i, &px) in self.band[..n].iter().enumerate() {
+            // rgb565_to_device64 returns 0/85/170/255 per channel; /85 recovers the 2-bit level.
+            let (r, g, b) = rgb565_to_device64(px);
+            self.fb[base + i] = ((r / 85) << 4) | ((g / 85) << 2) | (b / 85);
         }
     }
+
+    /// Drive the now-filled resident plane to glass over the ping-pong path (one `CMD_RUN_FRAME`),
+    /// then busy-wait the ack. The full-frame push the seam is built around — see the module doc.
+    fn end_frame(&mut self) {
+        self.push_frame();
+    }
+}
+
+/// Draw a whole-frame generator onto the panel through the [`Panel`]/[`Band`] seam: clear/fill the
+/// resident plane band-by-band (each band gets the *whole* frame drawn into it, clipped to its rows
+/// by [`Band`], so it reassembles seam-free), then drive the frame. The exact loop `main.rs`'s
+/// ST7789 glass-demo uses — proof the same generator drives both panels unchanged.
+fn show(panel: &mut Ls021Flpr, name: &str, gen: impl Fn(&mut Band)) {
+    info!("LS021 FLPR F5: SHOW {=str} — press BTN0 for next", name);
+    panel.begin_frame();
+    let rows = panel.band_rows();
+    let frame = Size::new(FB_W as u32, FB_H as u32);
+    let mut y0 = 0u16;
+    while (y0 as usize) < FB_H {
+        let h = rows.min(FB_H as u16 - y0);
+        panel.flush_band(y0, h, |scratch| {
+            let mut t = Band::new(scratch, frame, y0, h);
+            gen(&mut t);
+        });
+        y0 += h;
+    }
+    panel.end_frame();
 }
 
 /// Copy the blob into FLPR RAM, set the boot vector, and release the core from reset.
@@ -381,7 +380,7 @@ fn start_flpr() {
 }
 
 /// Wait for one clean BTN0 press: drain any still-held press (so a held button can't double-step),
-/// then poll every ~5 ms for a debounced press edge. (Same as the L3 `ls021_bringup` helper.)
+/// then poll every ~5 ms for a debounced press edge. (Same as the L3/F4 bins.)
 async fn wait_for_press(btn: &Input<'_>) {
     while btn.is_low() {
         Timer::after_millis(5).await;
@@ -396,6 +395,12 @@ async fn wait_for_press(btn: &Input<'_>) {
         }
         Timer::after_millis(5).await;
     }
+}
+
+/// Clear `t` to a solid RGB565 colour — a whole-frame generator for the BTN0 solid cards (the clean
+/// single-value waveforms the LA speed-tune reads). The device snaps each to its RGB222 gamut.
+fn solid(t: &mut Band, c: Rgb565) {
+    t.clear(c).ok();
 }
 
 #[embassy_executor::main]
@@ -441,37 +446,26 @@ async fn main(_spawner: Spawner) {
 
     // LED1 (P1.10) = the M33's heartbeat — proves the M33 keeps running alongside the FLPR.
     let mut led1 = Output::new(p.P1_10, Level::Low, OutputDrive::Standard);
-    let btn0 = Input::new(p.P1_13, Pull::Up); // DK BTN0 — active-LOW (pressed = Lo); steps the colour
+    let btn0 = Input::new(p.P1_13, Pull::Up); // DK BTN0 — active-LOW (pressed = Lo); steps the screen
 
-    info!("LS021 FLPR F4: launcher up — blob is {=usize} bytes", FLPR_BLOB.len());
+    info!("LS021 FLPR F5: launcher up — blob is {=usize} bytes", FLPR_BLOB.len());
 
     // 1. Settle window (~2 s, LED1 ~2 Hz): all inputs `Lo`, COM `Lo`. Meter window; hands-free so the
     //    bench LA capture at reset is deterministic.
-    info!("LS021 FLPR F4: SETTLE (~2s, all inputs Lo, COM held Lo) — then FLPR boot, init-black, COM, colours");
+    info!("LS021 FLPR F5: SETTLE (~2s, all inputs Lo, COM held Lo) — then FLPR boot, init-black, COM, glass-demo");
     for _ in 0..8 {
         led1.toggle();
         Timer::after_millis(250).await;
     }
 
-    // 2. Arm the control block, launch the FLPR, wait for its ALIVE stamp.
+    // 2. Arm the control block, launch the FLPR, poll for its ALIVE stamp.
     unsafe {
         core::ptr::write_bytes(CONTROL as *mut u8, 0, core::mem::size_of::<Control>());
         addr_of_mut!((*CONTROL).magic).write_volatile(LAYOUT_MAGIC); // FLPR reads magic first thing
     }
-    unsafe { EGU20_INTENSET.write_volatile(1 << ACK_EGU_CH) }; // arm the FLPR→M33 return doorbell
-    interrupt::EGU20.set_priority(Priority::P3);
-    unsafe { interrupt::EGU20.enable() };
-    info!(
-        "LS021 FLPR F4: EGU20 armed ch{=u32} — INTEN=0x{=u32:08x}, nvic_enabled={=bool}",
-        ACK_EGU_CH,
-        unsafe { EGU20_INTEN.read_volatile() },
-        interrupt::EGU20.is_enabled()
-    );
     start_flpr();
-    info!("LS021 FLPR F4: FLPR released (INITPC=0x{=u32:08x}) — waiting for alive", FLPR_RAM_BASE as u32);
+    info!("LS021 FLPR F5: FLPR released (INITPC=0x{=u32:08x}) — waiting for alive", FLPR_RAM_BASE as u32);
 
-    // Boot confirmation has no doorbell (the FLPR isn't running yet when we'd arm one), so poll the
-    // control block briefly for the FLPR's ALIVE stamp (~1 s budget).
     let mut alive = false;
     for _ in 0..200 {
         match unsafe { addr_of!((*CONTROL).status).read_volatile() } {
@@ -481,7 +475,7 @@ async fn main(_spawner: Spawner) {
             }
             FLPR_BADMAG => {
                 error!(
-                    "LS021 FLPR F4: FLPR booted but control-block magic mismatched — memory-map drift? (ls021-flpr.md)"
+                    "LS021 FLPR F5: FLPR booted but control-block magic mismatched — memory-map drift? (ls021-flpr.md)"
                 );
                 break;
             }
@@ -489,23 +483,23 @@ async fn main(_spawner: Spawner) {
         }
     }
     if !alive {
-        warn!("LS021 FLPR F4: no alive stamp — FLPR didn't boot or can't reach shared RAM; halting (LED1 blink)");
+        warn!("LS021 FLPR F5: no alive stamp — FLPR didn't boot or can't reach shared RAM; halting (LED1 blink)");
         loop {
             led1.toggle();
             Timer::after_millis(500).await;
         }
     }
-    info!("LS021 FLPR F4: FLPR alive — driving the init-black frame (COM still Lo)");
+    info!("LS021 FLPR F5: FLPR alive — building the Panel backend, driving the init-black frame (COM still Lo)");
 
-    // 3. Init #0 — the FLPR drives an INTB-framed all-black frame from a black framebuffer, over the
-    //    ping-pong path (every frame, init included, runs the same pack → ping-pong → FLPR pipeline).
-    //    COM is not running yet.
-    let mut seq: u32 = 0;
+    // Build the Panel backend over the resident framebuffer + the band scratch.
+    // SAFETY: the sole references taken to FB/BAND; held by `panel` for the rest of the program and
+    // this single-executor build never aliases them (COM/SWI touch neither).
+    let mut panel =
+        Ls021Flpr { fb: unsafe { &mut *addr_of_mut!(FB) }, band: unsafe { &mut *addr_of_mut!(BAND) }, seq: 0 };
+
+    // 3. Init #0 — an INTB-framed all-black frame, FLPR-driven through the Panel seam. COM not yet up.
     led1.set_high(); // LED1 steady-on marks the init frame on the bench
-    render_into_fb(Pattern::Solid(0, 0, 0));
-    if !push_frame("INIT-BLACK", &mut seq).await {
-        warn!("LS021 FLPR F4: init-black frame failed — see error above; continuing to COM + patterns anyway");
-    }
+    show(&mut panel, "INIT-BLACK", |t| solid(t, Rgb565::BLACK));
     led1.set_low();
 
     // 4. T4 ≥ 30 µs, then start COM on the high-priority interrupt executor (P3). From here COM
@@ -514,31 +508,34 @@ async fn main(_spawner: Spawner) {
     interrupt::SWI00.set_priority(Priority::P3);
     let com_spawner = EXECUTOR_COM.start(interrupt::SWI00);
     com_spawner.spawn(defmt::unwrap!(com_task(vcom, vb, va)));
-    info!(
-        "LS021 FLPR F4: COM RUNNING — BTN0 steps WHITE → R → G → B → PALETTE → SHAPES (MIP retains each frame; COM toggles)"
-    );
+    info!("LS021 FLPR F5: COM RUNNING — BTN0 steps GLASS-DEMO → LINE-BLACK → L3-WHITE → L2-GRAY → L1-GRAY → L0-BLACK (area-plane test: are L2/L1 uniform or a comb?)");
 
-    // 5. BTN0 steps the pattern: white → red → green → blue → 64-colour palette → shapes → wrap.
-    //    Each is rendered into the framebuffer then FLPR-driven once over the ping-pong path (MIP
-    //    retains it — no refresh), then BTN0 is polled responsively for the next press. LED1 toggles
-    //    on each accepted press. The palette + shapes are the *same* shared pattern fns the
-    //    M33-direct L3 (#148) draws, so the on-glass cards must match it pixel-for-pixel.
-    const PATTERNS: [(&str, Pattern); 6] = [
-        ("WHITE", Pattern::Solid(3, 3, 3)),
-        ("RED", Pattern::Solid(3, 0, 0)),
-        ("GREEN", Pattern::Solid(0, 3, 0)),
-        ("BLUE", Pattern::Solid(0, 0, 3)),
-        ("PALETTE", Pattern::Spatial(palette)),
-        ("SHAPES", Pattern::Spatial(shapes)),
-    ];
+    // 5. BTN0 steps the screen through the Panel seam: the glass-demo (the F5 deliverable — font
+    //    ladder + 64-colour gamut, identical to the ST7789 `--features glass-demo` build), then the
+    //    line/box diagnostic card in each channel (black/red/green/blue — tells panel area-gradation
+    //    texture apart from a pixel bug, and per-channel isolates the source bus). MIP retains each.
+    // Device-gamut greys for the area-plane test: level 2 (MSB plane only, 2/3-area) and level 1
+    // (LSB plane only, 1/3-area). Full-screen solids — under correct same-column area gradation they
+    // are uniform greys; if the MSB/LSB sub-lines land in *separate* columns they read as a fine
+    // 2-on/2-off vertical comb (offset between L2 and L1). The decisive 64-vs-32-colour test.
+    let gray_l2 = Rgb565::new(21, 42, 21); // → device (2,2,2)
+    let gray_l1 = Rgb565::new(10, 21, 10); // → device (1,1,1)
     let mut i = 0usize;
     loop {
-        let (name, pat) = PATTERNS[i];
-        info!("LS021 FLPR F4: SHOW {=str} — press BTN0 for next", name);
-        render_into_fb(pat);
-        push_frame(name, &mut seq).await;
+        match i {
+            0 => show(&mut panel, "GLASS-DEMO", |t| {
+                font_palette_demo(t).ok();
+            }),
+            1 => show(&mut panel, "LINE-BLACK", |t| {
+                demo::line_test_card(t, Rgb565::BLACK).ok();
+            }),
+            2 => show(&mut panel, "L3-WHITE", |t| solid(t, Rgb565::WHITE)),
+            3 => show(&mut panel, "L2-GRAY (MSB plane)", |t| solid(t, gray_l2)),
+            4 => show(&mut panel, "L1-GRAY (LSB plane)", |t| solid(t, gray_l1)),
+            _ => show(&mut panel, "L0-BLACK", |t| solid(t, Rgb565::BLACK)),
+        }
         wait_for_press(&btn0).await;
         led1.toggle();
-        i = (i + 1) % PATTERNS.len();
+        i = (i + 1) % 6;
     }
 }

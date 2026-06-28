@@ -21,12 +21,19 @@
 //!
 //! ## What one word is
 //!
-//! Each `BCK` clocks a **pixel pair**: the even-`x` pixel on the `*0` lines (`R0/G0/B0`) and the
+//! Each word is one **pixel pair**: the even-`x` pixel on the `*0` lines (`R0/G0/B0`) and the
 //! odd-`x` pixel on the `*1` lines (`R1/G1/B1`). A packed word holds those 6 data bits already
 //! shifted to their P2 GPIO positions — `bit0 R0, bit1 R1, bit2 G0, bit3 G1, bit4 B0, bit5 B1`
 //! (`= DATA_MASK 0x3F`) — so the FLPR presents a column with one `OUTCLR (~w & 0x3F)` + one
 //! `OUTSET (w & 0x3F)` and no bit-twiddling. `BCK` is *not* in the word; it is the FLPR's own pulse.
 //! The 4 trailing dummy/flush columns of each sub-line are black (`0`).
+//!
+//! **The panel is DDR** (issue #155): it latches the source bus on *both* `BCK` edges, so the FLPR
+//! drains these words **one per edge** — word `2k` before the rising edge, word `2k+1` before the
+//! falling — clocking the 120 pairs out in ~60 `BCK` cycles. The pack itself is edge-agnostic (it
+//! just lays the pairs out in order); the rising/falling split lives in the FLPR's `drive_subline`
+//! and the M33 `PanelBus`. (The original single-edge drive held each pair across a whole `BCK`
+//! period and the panel captured it twice → half horizontal resolution + 32 colours.)
 //!
 //! ## Area-gradation split
 //!
