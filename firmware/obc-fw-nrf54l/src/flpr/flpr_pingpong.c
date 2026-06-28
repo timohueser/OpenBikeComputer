@@ -69,13 +69,21 @@
 #define BCK_MASK  (1u << 6)    /* P2.06 = BCK (source/shift clock) */
 #define LED0_MASK (1u << 9)    /* P2.09 = on-board LED0 — by-eye "drained a frame" marker */
 
-/* Gate + frame pin masks on P1 (bit position = P1 pin index; same harness map). All µs-scale, so
- * P1 is fine — P2 is reserved for the fast bus. BSP is the F2 P1 line; F3 adds the four gate lines. */
-#define BSP_MASK  (1u << 7)    /* P1.07 = BSP  (sub-line start pulse) */
-#define GSP_MASK  (1u << 11)   /* P1.11 = GSP  (gate start pulse, once per frame) */
-#define GCK_MASK  (1u << 12)   /* P1.12 = GCK  (gate clock — HIGH = MSB/2-3 phase, LOW = LSB/1-3 phase) */
-#define GEN_MASK  (1u << 4)    /* P1.04 = GEN  (gate output enable — latches the GCK-level-selected block) */
-#define INTB_MASK (1u << 6)    /* P1.06 = INTB (frame envelope — HIGH for the whole frame write) */
+/* Gate + frame pin masks on P1 (bit position = P1 pin index). All µs-scale, so P1 is fine — P2 is
+ * reserved for the fast bus.
+ *
+ * ⚠️ **DK gate/BSP pin map — moved for the app integration (issue #165).** The bring-up bench map
+ * (GSP P1.11, GCK P1.12, GEN P1.04, INTB P1.06, BSP P1.07) reused the SD-SPI + VCOM-UART pins,
+ * which was "safe this epic only — no VCOM and no SD bus run during bring-up". The *real app* needs
+ * the SD bus (P1.06/07/11/12) to load the map + the VCOM (P1.04/05) for sensors, so the five gate/
+ * BSP lines relocate to free P1 pins (they are µs-scale, so any GPIO works). **These masks MUST stay
+ * in lock-step with the M33 `Output::new` pins in BOTH `main.rs` (the app) and the bring-up bin** —
+ * if a pin is not broken out on your DK, remap it here *and* there. */
+#define BSP_MASK  (1u << 14)   /* P1.14 = BSP  (sub-line start pulse) */
+#define GSP_MASK  (1u << 0)    /* P1.00 = GSP  (gate start pulse, once per frame) */
+#define GCK_MASK  (1u << 1)    /* P1.01 = GCK  (gate clock — HIGH = MSB/2-3 phase, LOW = LSB/1-3 phase) */
+#define GEN_MASK  (1u << 12)   /* P1.12 = GEN  (gate output enable — latches the GCK-level-selected block) */
+#define INTB_MASK (1u << 10)   /* P1.10 = INTB (frame envelope — HIGH for the whole frame write; LED1) */
 
 /* FLPR → M33 doorbell via EGU20 (secure 0x500C_9000) — see ls021-flpr.md. */
 #define EGU20_TRIGGER0 (*(volatile uint32_t *)0x500C9000u)

@@ -1,30 +1,42 @@
-//! Put `memory.x` where the linker can find it, and pass the bin link args
+//! Emit `$OUT_DIR/memory.x` (the linker's region map) and pass the bin link args
 //! (`--nmagic`, cortex-m-rt's `link.x`, defmt's interned-string section). Re-link
-//! if `memory.x` changes. Mirrors embassy-nrf's `nrf54l15-app` example build.rs.
+//! if the source region map changes. Mirrors embassy-nrf's `nrf54l15-app` example build.rs.
 //!
-//! Under the **`ls021-flpr`** feature (issue #150, epic #149) it additionally (1) emits a
-//! *carved* `memory.x` that reserves the top 32 KB of SRAM for the FLPR image + the
-//! cross-core handshake, and (2) cross-compiles the freestanding FLPR C blob with a RISC-V
-//! gcc into `$OUT_DIR/flpr.bin` for the M33 bin to `include_bytes!`. Both are gated on the
-//! feature so the default `main.rs` build keeps the full 256 KB (its `nrf-mem` budget is
-//! tight) and needs no RISC-V toolchain. See `firmware/docs/ls021-flpr.md`.
+//! ⚠️ **Why the default map lives in `memory-default.x`, not `memory.x`.** cortex-m-rt's `link.x`
+//! does `INCLUDE memory.x`, and the linker resolves that from its **CWD (the crate root) first** —
+//! ahead of the `-L $OUT_DIR` search path. So a `memory.x` committed in the crate root would
+//! **shadow** the carved copy this script writes to `$OUT_DIR`, and the FLPR carve would silently
+//! never apply (the M33 stack would start at the full-256 KB top and grow down *through* the FLPR
+//! image — issue #165: it corrupted the blob on the first deep render). Keeping the source map under
+//! a non-`memory.x` name means the *only* `memory.x` the linker can find is the one we emit here.
+//!
+//! Under the FLPR features — **`ls021-flpr`** (the bring-up bin, issue #150) or **`panel-ls021`**
+//! (the real app on the LS021 panel, issue #165) — it additionally (1) emits a *carved* `memory.x`
+//! that reserves the top **12 KB** of SRAM for the FLPR image + the cross-core handshake, and (2)
+//! cross-compiles the freestanding FLPR C blob with a RISC-V gcc into `$OUT_DIR/flpr.bin` for the
+//! M33 binary to `include_bytes!`. Both are gated on those features so the default ST7789 `main.rs`
+//! build keeps the full 256 KB (its `nrf-mem` budget is tight) and needs no RISC-V toolchain. See
+//! `firmware/docs/ls021-flpr.md`.
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Carved SRAM layout for the FLPR bring-up: the M33 keeps the low 224 KB; the top 32 KB
-/// (`0x2003_8000..0x2004_0000`) is the FLPR's — 28 KB image/stack + a 4 KB shared handshake
-/// page. The M33 reaches the FLPR region only by hardcoded address (`memcpy` + the handshake
-/// word), never via the linker, so shrinking `RAM` is all that's needed here. Mirrors the
-/// region table in `src/flpr/flpr.ld` and `firmware/docs/ls021-flpr.md`.
+/// Carved SRAM layout for the FLPR builds: the M33 keeps the low **244 KB**; the top 12 KB
+/// (`0x2003_D000..0x2004_0000`) is the FLPR's — an 8 KB image/stack + a 4 KB shared handshake
+/// page. (F0's bring-up `FLPR_RAM` was 28 KB; the production blob is ~660 B + a shallow stack, so
+/// #165 shrank it to 8 KB, handing ~20 KB back to the M33 so the full app + framebuffer fit — the
+/// `SHARED` page is unchanged, so the control-block + ping-pong-buffer addresses did not move.) The
+/// M33 reaches the FLPR region only by hardcoded address (`memcpy` + the handshake word), never via
+/// the linker, so shrinking `RAM` is all that's needed here. Mirrors the region table in
+/// `src/flpr/flpr.ld` and `firmware/docs/ls021-flpr.md`.
 const FLPR_MEMORY_X: &str = "\
 MEMORY
 {
     FLASH    : ORIGIN = 0x00000000, LENGTH = 1524K
-    RAM      : ORIGIN = 0x20000000, LENGTH = 224K   /* M33 .data/.bss/stack */
+    RAM      : ORIGIN = 0x20000000, LENGTH = 244K   /* M33 .data/.bss/stack */
     /* Reserved for the FLPR (not linked by the M33; see src/flpr/flpr.ld):
-         FLPR_RAM 0x20038000 .. 0x2003F000  (28K)  FLPR image + stack (INITPC = 0x20038000)
+         FLPR_RAM 0x2003D000 .. 0x2003F000  (8K)   FLPR image + stack (INITPC = 0x2003D000)
          SHARED   0x2003F000 .. 0x20040000  (4K)   cross-core handshake word */
 }
 ";
@@ -33,17 +45,19 @@ fn main() {
     let out = PathBuf::from(env::var("OUT_DIR").unwrap());
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
 
-    // Cargo sets CARGO_FEATURE_<NAME> for the build script when a feature is enabled; the F0
-    // bin `required-features = ["ls021-flpr"]`, so `main.rs` builds with this unset.
-    let flpr = env::var_os("CARGO_FEATURE_LS021_FLPR").is_some();
+    // Cargo sets CARGO_FEATURE_<NAME> for the build script when a feature is enabled. The carve +
+    // blob are needed by **either** FLPR feature: `ls021-flpr` (the bring-up bin) or `panel-ls021`
+    // (the real app on the LS021 panel, issue #165). The default ST7789 `main.rs` build has both
+    // unset, so it keeps the full 256 KB and needs no RISC-V toolchain.
+    let flpr = env::var_os("CARGO_FEATURE_LS021_FLPR").is_some() || env::var_os("CARGO_FEATURE_PANEL_LS021").is_some();
 
     if flpr {
         fs::write(out.join("memory.x"), FLPR_MEMORY_X).unwrap();
     } else {
-        fs::write(out.join("memory.x"), include_bytes!("memory.x")).unwrap();
+        fs::write(out.join("memory.x"), include_bytes!("memory-default.x")).unwrap();
     }
     println!("cargo:rustc-link-search={}", out.display());
-    println!("cargo:rerun-if-changed=memory.x");
+    println!("cargo:rerun-if-changed=memory-default.x");
     println!("cargo:rerun-if-changed=build.rs");
 
     if flpr {

@@ -38,7 +38,7 @@ ls021-bringup = []
 # `ls021-flpr` is the **LS021 FLPR bring-up** (epic #149): the successor to the M33-direct
 # bring-up that moves the panel waveform generation onto the nRF54L15's FLPR (the VPR RISC-V
 # coprocessor). The feature gates the standalone `ls021_flpr_bringup` bin (below) **and** the
-# `build.rs` work it needs: a *carved* `memory.x` reserving the top 32 KB of SRAM for the FLPR
+# `build.rs` work it needs: a *carved* `memory.x` reserving the top 12 KB of SRAM for the FLPR
 # image + a cross-core control-block page, plus cross-compiling the freestanding C blob in
 # `src/flpr/` with a RISC-V gcc (`brew install riscv64-elf-gcc`). Off by default so `main.rs`
 # keeps the full 256 KB and needs no RISC-V toolchain. F0 (#150) proved the build/boot path
@@ -53,6 +53,19 @@ ls021-bringup = []
 # LA-diffed against the M33 PanelBus and webcam-verified. Build with `--bin ls021_flpr_bringup
 # --features ls021-flpr`. See `firmware/docs/ls021-flpr.md`.
 ls021-flpr = []
+
+# `panel-ls021` runs the **real map/ride app on the reflective LS021B7DD02 panel** (issue #165),
+# driven by the FLPR (the VPR RISC-V coprocessor) instead of the bring-up ST7789. It is a *backend
+# select* for `src/main.rs`, not a separate bin: the shared `Ls021Flpr` `obc_platform::Panel` backend
+# (`src/ls021_flpr.rs`, also used by the `ls021_flpr_bringup` bin) replaces the ST7789, the app
+# renders the whole frame into the resident RGB222 plane and the FLPR scans it in one push, and COM +
+# the gesture input plane free-run on a high-priority executor. Like `ls021-flpr` it pulls the
+# `build.rs` carve-out (the M33 shrinks to 244 KB; the top 12 KB is the FLPR image + handshake page)
+# and cross-compiles the RISC-V blob, so it needs a RISC-V gcc (`brew install riscv64-elf-gcc`) and
+# the Board-Configurator settings (3.3 V VDDM, ext-memory-off, VCOM HWFC off). Mutually exclusive
+# with `glass-demo`. Build with `--features panel-ls021` (add `,debug-uart` to stream a recorded ride
+# from a host). See `firmware/docs/ls021-flpr.md` + the crate README.
+panel-ls021 = []
 
 # Stream fake GPS / altimeter / compass from a host over the **VCOM UART** (issue #127) — the nRF
 # analog of the STM32's `debug-usb`. The nRF54L15 has no USB peripheral, so the debug-sensor /

@@ -64,7 +64,31 @@ cargo run --release --bin ls021_bringup --features ls021-bringup
 # nRF54L FLPR (VPR RISC-V coprocessor). Needs a RISC-V gcc for the C blob (below).
 # Notes: firmware/docs/ls021-flpr.md.
 cargo run --release --bin ls021_flpr_bringup --features ls021-flpr
+
+# The **real map/ride app on the reflective LS021 panel** via the FLPR (issue #165) — the
+# same load→ride→save-GPX firmware as the default, but on the LS021 instead of the ST7789.
+# Also needs the RISC-V gcc (it builds the FLPR blob). See firmware/docs/ls021-flpr.md.
+cargo run --release --features panel-ls021,debug-uart
 ```
+
+### LS021 FLPR builds — DK wiring (issue #165)
+
+The `panel-ls021` app (and the `ls021_*` bring-up bins) drive the panel itself, not the ST7789.
+The source bus + `BCK` + COM stay on **P2** (P2.00–06 data/clock, P2.07/08/10 COM, P2.09 heartbeat
+LED); the four gate lines + `BSP` sit on **free P1 pins** — `GSP P1.00 / GCK P1.01 / GEN P1.12 /
+INTB P1.10 / BSP P1.14` — deliberately **off** the SD-SPI bus (P1.06/07/11/12) and VCOM (P1.04/05)
+the app needs.
+
+The DK breaks out only **P1.00–14** (P1.02/03 are NFC), which is one pin short for everything the app
+puts on P1 — so in the **`panel-ls021` build only**, SD **`CS` moves from P1.12 to P0.00** (one jumper
+on the SD breakout; it's a plain GPIO, and the M33 already drives P0 for BTN3). That frees P1.12 for
+`GEN`. The SD bus pins (SCK P1.11 / MISO P1.07 / MOSI P1.06) are unchanged; the default ST7789 build
+keeps `CS` on P1.12.
+
+The five gate/`BSP` DK pins, the masks in `src/flpr/flpr_pingpong.c`, and the physical 21-pin FPC
+harness must all agree; if a gate line stays dark on glass, confirm the pin is broken out on your DK
+header and remap all three together. Full pin/protocol detail:
+[firmware/docs/ls021-flpr.md](../docs/ls021-flpr.md).
 
 ### FLPR toolchain (only for the `ls021-flpr` build)
 
