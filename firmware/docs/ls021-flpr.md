@@ -1,4 +1,4 @@
-# LS021B7DD02 FLPR backend — toolchain, memory & boot spec (STATUS: F4 VERIFIED on glass)
+# LS021B7DD02 FLPR backend — toolchain, memory & boot spec (STATUS: F5 implemented — bench-tune + on-glass pending)
 
 The **normative reference** for moving the Sharp **LS021B7DD02** waveform generation off
 the Cortex-M33 and onto the nRF54L15's **FLPR** (the VPR RISC-V coprocessor). Epic [#149];
@@ -33,7 +33,12 @@ which stays the **golden reference**: the FLPR must reproduce that analyzer-veri
   fills the other. On glass the W/R/G/B + palette + shapes cycle is identical to the M33-direct L3
   (#148), now framebuffer-sourced + FLPR-driven; RTT shows the pack overlapping the drain by ~54×
   (see [F4 — ping-pong frame](#f4--ping-pong-from-the-framebuffer)).
-- **F5 [#155]** — `obc_platform::Panel` backend + speed-tune toward the ~53 ms spec frame.
+- **F5 [#155]** — `obc_platform::Panel` backend + speed-tune toward the ~53 ms spec frame. **The
+  bridge to running the app.** 🛠️ **Implemented — bench-tune + on-glass pending** — the FLPR push
+  now sits behind the board-agnostic `obc_platform::Panel` seam (`Ls021Flpr` in the bin), so the
+  glass-demo generator that drives the ST7789 (`demo::font_palette_demo`) drives the real LS021 with
+  no panel-specific code; the blob clocks took a first conservative speed step with the bench dial-in
+  toward `BCK ≤ 0.758 MHz` documented (see [F5 — Panel backend](#f5--panel-backend--speed-tune)).
 
 > **What F0 proves, and why it's first.** The whole epic rests on one untested assumption:
 > that we can *build* code for the FLPR, *boot* it from the M33, and have it *drive a pin*.
@@ -616,6 +621,81 @@ asks for.
   bus across a row boundary).
 - **⚠️ meter `VDD2` first** if a future change ever looks perfect on the LA but the glass stays
   garbage (#142).
+
+## F5 — Panel backend + speed-tune
+
+**The bridge to running the app.** F4 proved the FLPR can drive a frame from a resident framebuffer
+over the ping-pong path; F5 wraps that push behind the board-agnostic **`obc_platform::Panel`** seam
+so the *same* whole-frame generators that drive the ST7789 drive the real LS021, and ratchets the
+bit-bang clocks toward the panel's ~53 ms spec frame. The blob, the pack, and the ping-pong handshake
+are all **unchanged** from F4 — F5 is M33-side glue plus a timing tune.
+
+### `Ls021Flpr` — the Panel backend
+
+`src/bin/ls021_flpr_bringup.rs` now defines `Ls021Flpr`, an `obc_platform::Panel` impl over the
+resident 75 KB RGB222 framebuffer:
+
+- **`band_rows`** — the RGB565 band scratch height (`BAND_ROWS = 16` full-width rows; the frame is
+  resident in `FB`, so the band is only a transient per-band draw buffer).
+- **`begin_frame`** — a no-op (the plane is filled band-by-band, then driven once).
+- **`flush_band(y0, rows, fill)`** — hands the generator a `WIDTH × rows` RGB565 scratch, then
+  **quantises it into the resident plane** at rows `[y0, y0+rows)`: each pixel is snapped to the
+  device-64 gamut by the host-tested `obc_reader::rgb565_to_device64` (`0/85/170/255 → /85 →` the
+  2-bit level) and stored as a `0b00_RR_GG_BB` byte — the same quantiser the glass-demo's swatches
+  are drawn from, so a band lands on the panel's gamut exactly as the ST7789 stand-in shows it.
+- **`end_frame`** — runs the **whole-frame** FLPR push (the F4 `push_frame`: pre-pack rows 0/1, ring
+  `CMD_RUN_FRAME`, pack the rest under the ping-pong handshake, busy-wait the ack).
+
+### Why full-frame push per `end_frame`
+
+The FLPR scans the *whole* frame top-to-bottom in one `CMD_RUN_FRAME` — a band can't reach glass on
+its own — so the seam is **full-frame push per `end_frame`**, not a band-incremental feed: `flush_band`
+only *fills* the plane, `end_frame` drives all 320 rows once. This is the natural shape for a
+scan-the-whole-frame backend and keeps the ping-pong (M33 packs row N+1 while the FLPR scans row N)
+exactly as F4 built it. The same generator (`demo::font_palette_demo`, drawn through `Band`) thus
+drives the banded ST7789 *and* this full-frame plane unchanged — the proof the seam is panel-agnostic.
+
+### Blocking push (the sync `Panel` seam)
+
+`Panel` is synchronous, so `end_frame` **busy-polls** (`spin_until`) rather than awaiting the F4
+EGU20 IRQ: it spins on each `buf[i].consumed == ready` (the M33 is a dedicated packer) and on the
+FLPR's `flpr_seq` ack. COM still free-runs on its own high-priority `InterruptExecutor`, so blocking
+the thread-mode M33 for a frame is benign — the same shape as the ST7789 path blocking on its SPI-DMA
+write. The blob still pokes `EGU20` after each frame; with its IRQ unarmed here that write is a
+harmless no-op (the FLPR→M33 doorbell returns when N7 makes the push async behind the app loop).
+
+### Speed-tune — what is safe, and how far
+
+F2–F4 ran deliberately bring-up-slow (`BCK_HALF_ITERS = 120` ≈ 9.4 µs half ⇒ ~53 kHz `BCK`, ~16×
+under the panel's 0.758 MHz max) so the analyzer resolved every edge. The **source-shift counts are
+the only safe lever**: F5 takes a first conservative step to **half** the F2 value
+(`BCK_HALF_ITERS = 60` ≈ 106 kHz `BCK`, still 7× under max — edges stay clean), roughly halving frame
+time. On the bench, dial `BCK_HALF_ITERS` down toward **~9** (and `DATA_SETUP_ITERS` toward ~5) while
+LA-checking `BCK ≤ 0.758 MHz` with clean edges.
+
+The gate timings (`GCK_SETTLE`/`GEN_SETUP`/`GEN_HIGH`) are panel **electrical minimums** (GCK↔GEN
+setup/hold ≥16.37 µs, GEN valid ≥24.56 µs) — **not** slack; do not lower below their µs values.
+Because this driver is sequential (gate then source per row), the summed gate time (~38 ms over 320
+rows) is the frame-time **floor**: even with `BCK` at max the bit-banged frame lands in the low
+hundreds of ms, approaching the ~53 ms spec only as `BCK` nears its ceiling (the spec frame assumes a
+pipelined controller that overlaps gate and source — a partial/dirty-line follow-up, deferred). The
+`push_frame` RTT line logs the measured frame time each push — tune against that.
+
+### Verification — 🛠️ pending on glass
+
+- **Host / CI ✅:** `cargo build --release --bin ls021_flpr_bringup --features ls021-flpr` builds the
+  bin + blob; `cargo clippy` + `cargo fmt --check` clean; the default `main.rs` build is untouched
+  (everything stays behind the `ls021-flpr` feature) and `cargo test -p obc-platform` (the pack tests)
+  stays green.
+- **On glass (pending):** `cargo run --release --bin ls021_flpr_bringup --features ls021-flpr` →
+  init-black holds, then BTN0 steps **GLASS-DEMO → WHITE → R → G → B**; the glass-demo card (font
+  ladder + 64-colour gamut) must be **visually identical to the ST7789 `--features glass-demo`
+  build**, now FLPR-driven via the `Panel` seam.
+- **LA (pending):** at each speed step, `BCK ≤ 0.758 MHz` with clean edges; read the per-frame time
+  off RTT and off the analyzer. The solids give clean single-value waveforms for the edge check.
+- **Docs follow-up:** once on glass, add the FLPR-architecture section to the **public** docs
+  (`docs/content/hardware/display-protocol.md` / `software/rendering.md`) as a separate `docs:` commit
+  (per the issue), and flip this status to DONE.
 
 ## Verification — F1 round-trip
 
