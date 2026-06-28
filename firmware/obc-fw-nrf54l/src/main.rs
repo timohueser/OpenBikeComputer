@@ -1264,13 +1264,24 @@ async fn main(_spawner: Spawner) {
             pending_map_redraw = false;
 
             if dirty.map {
-                // Rebuild the streamed `Reader` for this frame against the session-long `MapCache`
-                // (cross-frame chunk reuse). A transient SD read failure makes the build fail; skip the
-                // redraw, keep the last frame on glass, and latch the dirty edge to retry (#66) rather
-                // than show a half-read map.
-                let map_src = storage.map_source();
+                // The map pipeline runs **only when the base screen actually draws the map** (the Map
+                // view). On a menu / Statistics / Home redraw it's skipped entirely — no SD style-table
+                // parse, no `Reader` build (so no stack spike for it), no map render — and that screen
+                // draws just its own chrome (it ignores the reader). So nothing map-related runs when no
+                // map is on screen; a non-map frame costs only its own draw + the push.
+                let needs_map = app.base_draws_map();
+                // Build the streamed `Reader` (against the session-long `MapCache` for cross-frame chunk
+                // reuse) **only** on a map frame, `None` otherwise. A transient SD read failure on a map
+                // frame fails the build → skip the redraw, keep the last frame, latch a retry (#66)
+                // rather than show a half-read map.
+                let map_src = if needs_map { storage.map_source() } else { None };
                 let reader = map_src.as_ref().and_then(|s| Reader::new(s, map_cache).ok());
-                if let Some(reader) = reader {
+                if needs_map && reader.is_none() {
+                    pending_map_redraw = true;
+                    defmt::warn!(
+                        "map: reader build failed this frame (flaky SD?) — kept frame, retrying redraw next frame"
+                    );
+                } else {
                     // Acquire the display through the seam — the **only** per-backend line in the map
                     // present. ST7789 holds the shared bus mutex for the whole frame, so the input/
                     // overlay plane never reads a torn framebuffer (the map render writes it under this
@@ -1294,7 +1305,7 @@ async fn main(_spawner: Spawner) {
                         let mut fbdev = FbDevice64::new(display.fb_mut(), WIDTH as u32, HEIGHT as u32);
                         app.render_map_timed(
                             &mut fbdev,
-                            &reader,
+                            reader.as_ref(),
                             route.as_ref(),
                             WIDTH as f32,
                             HEIGHT as f32,
@@ -1345,22 +1356,28 @@ async fn main(_spawner: Spawner) {
                     if !ok {
                         pending_map_redraw = true;
                     }
-                    defmt::info!(
-                        "map frame: render {=u64} us + push {=u64} us | lod {=usize} | feat {=usize}/{=usize} | chunks {=usize} | map-cache {=u32} hit / {=u32} miss",
-                        render_us,
-                        push_us,
-                        stats.lod,
-                        stats.features_drawn,
-                        stats.features_tried,
-                        stats.chunks_visited,
-                        stats.map_chunk_hits,
-                        stats.map_chunk_misses
-                    );
-                } else {
-                    pending_map_redraw = true;
-                    defmt::warn!(
-                        "map: reader build failed this frame (flaky SD?) — kept frame, retrying redraw next frame"
-                    );
+                    // A map frame carries the map render stats; a non-map (menu / Statistics / Home)
+                    // frame is just a screen redraw + push, so log it as such — no meaningless
+                    // lod/feat/chunks, and it reads clearly that the map pipeline did not run.
+                    if needs_map {
+                        defmt::info!(
+                            "map frame: render {=u64} us + push {=u64} us | lod {=usize} | feat {=usize}/{=usize} | chunks {=usize} | map-cache {=u32} hit / {=u32} miss",
+                            render_us,
+                            push_us,
+                            stats.lod,
+                            stats.features_drawn,
+                            stats.features_tried,
+                            stats.chunks_visited,
+                            stats.map_chunk_hits,
+                            stats.map_chunk_misses
+                        );
+                    } else {
+                        defmt::info!(
+                            "ui frame: render {=u64} us + push {=u64} us (screen redraw, no map)",
+                            render_us,
+                            push_us
+                        );
+                    }
                 }
             }
 
