@@ -151,20 +151,26 @@ static inline void fence(void)
  *
  * ## The bit-bang floor (why this won't hit ~53 ms without more)
  *
- * This driver is **sequential** (gate scan *then* source shift, per row) and bit-bangs every edge on
- * the unconfigured **~64 MHz** FLPR. Two hard floors remain even with BCK maxed:
+ * This driver is **sequential** (gate scan *then* source shift, per row) and bit-bangs every edge.
+ * The FLPR already runs at the **full PLL clock** (the M33 boots it with `ClockSpeed::CK128`; there
+ * is no separate VPR clock divider on this part — the only clock controls are the global HFXO/PLL —
+ * so the FLPR is already maxed, *not* the ~64 MHz the early F2 busy-loop estimate suggested). Two
+ * hard floors remain even with BCK at its ceiling:
+ *   - **Source at max BCK** — 124 BCK × 2 sub-lines × 320 rows ÷ 0.758 MHz ≈ **105 ms**, irreducible
+ *     without driving the bus faster than the panel allows.
  *   - **Gate minimums** — 2 `GEN` pulses/row at the spec mins ≈ 116 µs/row × 320 ≈ **37 ms**.
- *   - **GPIO/loop overhead** — ~4 GPIO writes + loop control per BCK column, ~0.67 µs each ⇒
- *     **~0.6 ms/row** that does *not* shrink with the delay counts.
- * So the sequential bit-bang floors around **~150–300 ms**, not 53 ms. The ~53 ms spec assumes a
- * **pipelined** controller that overlaps the source shift with the gate scan. Getting there needs a
- * structural change, not a smaller busy count: **(a)** clock the FLPR to 128 MHz (a clean ~2×), and
- * **(b)** drive the source bus from hardware (SPIM/DMA clocking BCK + data) so the CPU runs the gate
- * scan *concurrently* — the same machinery the deferred partial/dirty-line epic wants. Tracked as an
- * F5 follow-up. `push_frame` logs the measured frame time each push — tune against that. ── */
+ *   - **GPIO/loop overhead** — ~4 GPIO writes + loop control per BCK column, a fixed ~0.6 ms/row that
+ *     does *not* shrink with the delay counts.
+ * So the sequential bit-bang floors around **~150 ms** at the BCK ceiling, not 53 ms. The ~53 ms spec
+ * assumes a **pipelined** controller that overlaps the source shift with the gate scan. Getting there
+ * needs a structural change, not a smaller busy count: **drive the source bus from hardware** (a
+ * SPIM/SPI peripheral clocking `BCK` + the data lines by DMA) so the CPU runs the gate scan
+ * *concurrently* with the shift — collapsing the ~105 ms source onto the ~37 ms gate. That is the same
+ * machinery the deferred partial/dirty-line epic wants; tracked as an F5 follow-up. `push_frame` logs
+ * the measured frame time each push — tune against that. ── */
 #define ITERS_PER_US      13u /* bench calibration: busy(120) ≈ 9.4 µs on the unconfigured FLPR */
-#define BCK_HALF_ITERS    8u                    /* each BCK phase — near the spec ceiling (~0.5–0.6 MHz BCK); LA-verify */
-#define DATA_SETUP_ITERS  5u                    /* source data stable before the BCK rising edge (spec ~335 ns) */
+#define BCK_HALF_ITERS    4u                    /* each BCK phase — pushing toward the 0.758 MHz ceiling; LA-verify the actual BCK and back off if over */
+#define DATA_SETUP_ITERS  3u                    /* source data stable before the BCK rising edge (spec ~335 ns) */
 #define GCK_SETTLE_ITERS  (5u * ITERS_PER_US)   /* settle after a GCK level change before shifting */
 #define GEN_SETUP_ITERS   (17u * ITERS_PER_US)  /* GCK↔GEN setup AND hold (spec ≥16.37 µs) */
 #define GEN_HIGH_ITERS    (25u * ITERS_PER_US)  /* GEN valid-output window (spec ≥24.56 µs) */
