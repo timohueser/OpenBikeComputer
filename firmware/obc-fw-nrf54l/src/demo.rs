@@ -79,3 +79,83 @@ where
     draw_text(target, "RIGHT", Point::new(w - 8, align_y), Font::Label, TextAlign::Right, ink);
     Ok(())
 }
+
+/// A **line / box diagnostic card** (issue #155 bench) — to tell apart "the font is drawn wrong"
+/// from "the panel's area-gradation cell structure is just visible on solid strokes".
+///
+/// The `Display` font draws as a clean 1:1 Terminus 16×32 bitmap, so any fine-line texture in it
+/// must come from the panel, not the renderer. This card isolates that: it draws **full-level black**
+/// (device `0,0,0` — whole cell off) bars and a box at the **same stroke widths as the font**, beside
+/// the actual `Display` digits. Two outcomes:
+///   - the black bars/box show the **same** striations as the font → it's the panel's per-pixel area
+///     blocks (the 2/3-area MSB + 1/3-area LSB sub-cells), inherent to how it makes 64 colours;
+///   - the black bars/box are **clean** while the font is striped → a real pixel/pack bug, dig in.
+///
+/// The right-hand column is the explicit gradation reference — solid boxes at device levels 3/2/1:
+/// level 3 lights the whole cell, level 2 only the 2/3 (MSB) area, level 1 only the 1/3 (LSB) area,
+/// so 2 and 1 **should** look textured/dim by design while 0 and 3 are whole-cell. The 1-px combs at
+/// the bottom expose any odd/even column interleave or row-drop error (they'd break the regular
+/// alternation). Same `DrawTarget` contract as [`font_palette_demo`], so it drives any backend.
+// Wired into the FLPR bring-up bin's BTN0 cycle (`ls021-flpr`); the ST7789 `glass-demo` build pulls
+// in this shared module but only draws `font_palette_demo`, so it's unused there.
+#[cfg_attr(feature = "glass-demo", allow(dead_code))]
+pub fn line_test_card<D>(target: &mut D) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    /// Fill one axis-aligned box — a free helper so it borrows `target` only per call (a closure
+    /// capturing `target` would hold the borrow across the `draw_text` calls below).
+    fn bar<D: DrawTarget<Color = Rgb565>>(
+        t: &mut D,
+        x: i32,
+        y: i32,
+        w: u32,
+        h: u32,
+        c: Rgb565,
+    ) -> Result<(), D::Error> {
+        t.fill_solid(&Rectangle::new(Point::new(x, y), Size::new(w, h)), c)
+    }
+
+    let white = c565(255, 255, 255); // device (3,3,3) — whole cell on
+    let black = c565(0, 0, 0); // device (0,0,0) — whole cell off (== the `ink` text colour)
+    let gray2 = c565(170, 170, 170); // device (2,2,2) — only the 2/3-area (MSB) block
+    let gray1 = c565(85, 85, 85); // device (1,1,1) — only the 1/3-area (LSB) block
+    let w = target.bounding_box().size.width as i32;
+
+    target.clear(white)?;
+    draw_text(target, "LINE / BOX TEST", Point::new(w / 2, 2), Font::Label, TextAlign::Center, black);
+
+    // Full-level BLACK vertical bars, widths 1..8 px (the font strokes are ~3-4 px).
+    let mut x = 6;
+    for bw in [1u32, 2, 3, 4, 5, 6, 8] {
+        bar(target, x, 22, bw, 52, black)?;
+        x += bw as i32 + 14;
+    }
+
+    // Full-level BLACK horizontal bars, widths 1..8 px.
+    let mut y = 84;
+    for bw in [1u32, 2, 3, 4, 5, 6, 8] {
+        bar(target, 6, y, 150, bw, black)?;
+        y += bw as i32 + 9;
+    }
+
+    // Gradation reference column: solid boxes at device levels 0 / 2 / 1 (whole / 2-3 / 1-3 area).
+    bar(target, 184, 22, 44, 40, black)?; // level 0 — whole cell off
+    bar(target, 184, 70, 44, 40, gray2)?; // level 2 — 2/3-area only (should look textured)
+    bar(target, 184, 118, 44, 40, gray1)?; // level 1 — 1/3-area only (should look textured/dimmer)
+
+    // Direct A/B: a solid black box the height of the Display cap, beside the actual Display digits.
+    bar(target, 6, 200, 40, 32, black)?;
+    draw_text(target, "12.5", Point::new(54, 196), Font::Display, TextAlign::Left, black);
+
+    // 1-px combs: alternating columns then alternating rows. A clean regular pattern means columns
+    // and rows are addressed right; a broken/solid/doubled patch means an interleave or row-drop bug.
+    let cy = 248;
+    for gx in (6..150).step_by(2) {
+        bar(target, gx, cy, 1, 22, black)?; // vertical comb (every other column)
+    }
+    for gry in (cy + 30..cy + 52).step_by(2) {
+        bar(target, 6, gry, 150, 1, black)?; // horizontal comb (every other row)
+    }
+    Ok(())
+}
