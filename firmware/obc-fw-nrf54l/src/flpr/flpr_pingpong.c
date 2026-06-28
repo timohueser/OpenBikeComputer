@@ -169,8 +169,8 @@ static inline void fence(void)
  * machinery the deferred partial/dirty-line epic wants; tracked as an F5 follow-up. `push_frame` logs
  * the measured frame time each push — tune against that. ── */
 #define ITERS_PER_US      13u /* bench calibration: busy(120) ≈ 9.4 µs on the unconfigured FLPR */
-#define BCK_HALF_ITERS    3u                    /* each BCK phase — EXPERIMENTAL: ~775 kHz, just OVER the 0.758 MHz max; LA-verify BCK + data setup, fall back to 4 (~680 kHz, in spec) if columns garble */
-#define DATA_SETUP_ITERS  3u                    /* source data stable before the BCK rising edge (~280 ns at this clock — near the spec ~335 ns min; LA-verify) */
+#define BCK_HALF_ITERS    2u                    /* each BCK phase — EXPERIMENTAL char point: ~930 kHz (~23% OVER the 0.758 MHz max), BCK high pulse only ~184 ns (~3.5x under nominal). Verify on the GLASS-DEMO (text + swatch edges — solids hide dropped latches); in-spec value is 4, =3 is the "works-with-margin" point */
+#define DATA_SETUP_ITERS  3u                    /* source data stable before the BCK rising edge (~280 ns — under the spec ~335 ns min at this clock; LA-verify) */
 #define GCK_SETTLE_ITERS  (5u * ITERS_PER_US)   /* settle after a GCK level change before shifting */
 #define GEN_SETUP_ITERS   (17u * ITERS_PER_US)  /* GCK↔GEN setup AND hold (spec ≥16.37 µs) */
 #define GEN_HIGH_ITERS    (25u * ITERS_PER_US)  /* GEN valid-output window (spec ≥24.56 µs) */
