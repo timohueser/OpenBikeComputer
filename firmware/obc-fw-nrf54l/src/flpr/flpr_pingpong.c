@@ -138,20 +138,33 @@ static inline void fence(void)
  *
  * F2–F4 ran deliberately **bring-up-slow** (`BCK_HALF_ITERS = 120` ≈ 9.4 µs half ⇒ ~53 kHz BCK,
  * ~16× under the panel's 0.758 MHz max) so the analyzer resolved every edge. F5 ratchets toward the
- * spec ~53 ms frame. The source-shift counts are the **only** safe lever:
- *   - `BCK_HALF_ITERS` / `DATA_SETUP_ITERS` set the source clock. The first step here is **half** the
- *     F2 value (≈106 kHz BCK — still 7× under the 0.758 MHz max, so the edges stay clean). On the
- *     bench, dial `BCK_HALF_ITERS` down toward **~9** (and `DATA_SETUP_ITERS` toward ~5) while
- *     LA-checking that `BCK ≤ 0.758 MHz` with clean edges and the data lines settle before each rise.
+ * spec ~53 ms frame. The **source shift is ~77 % of the frame** (124 BCK × 2 sub-lines × 320 rows),
+ * so `BCK_HALF_ITERS` / `DATA_SETUP_ITERS` are the dominant — and the *only correctness-free* — lever:
+ *   - These are now set **near the panel's BCK ceiling** (`BCK_HALF_ITERS = 8` ⇒ ~0.5–0.6 MHz BCK,
+ *     under the 0.758 MHz max). **LA-verify on the bench:** confirm `BCK ≤ 0.758 MHz` with clean
+ *     edges and the data lines settled before each rise. There is margin to go lower still
+ *     (`BCK_HALF_ITERS = 5` ≈ 0.7 MHz) if the edges stay clean; back off if they don't.
  *   - The gate timings (`GCK_SETTLE`/`GEN_SETUP`/`GEN_HIGH`) are panel **electrical minimums**
  *     (GCK↔GEN setup/hold ≥16.37 µs, GEN valid ≥24.56 µs). **Do NOT lower below their µs values** —
- *     they are correctness, not slack. Because this driver is sequential (gate then source per row),
- *     the summed gate time (~38 ms over 320 rows) is the frame-time floor: even with BCK at max the
- *     bit-banged frame lands in the low hundreds of ms, approaching the ~53 ms spec only as BCK nears
- *     its ceiling. `push_frame` logs the measured frame time each push — tune against that. ── */
+ *     they are correctness, not slack. (`gen_pulse` drops its *leading* setup busy — the long data
+ *     shift before it already supplies the GCK↔GEN setup — and keeps the GEN-high + trailing hold.)
+ *
+ * ## The bit-bang floor (why this won't hit ~53 ms without more)
+ *
+ * This driver is **sequential** (gate scan *then* source shift, per row) and bit-bangs every edge on
+ * the unconfigured **~64 MHz** FLPR. Two hard floors remain even with BCK maxed:
+ *   - **Gate minimums** — 2 `GEN` pulses/row at the spec mins ≈ 116 µs/row × 320 ≈ **37 ms**.
+ *   - **GPIO/loop overhead** — ~4 GPIO writes + loop control per BCK column, ~0.67 µs each ⇒
+ *     **~0.6 ms/row** that does *not* shrink with the delay counts.
+ * So the sequential bit-bang floors around **~150–300 ms**, not 53 ms. The ~53 ms spec assumes a
+ * **pipelined** controller that overlaps the source shift with the gate scan. Getting there needs a
+ * structural change, not a smaller busy count: **(a)** clock the FLPR to 128 MHz (a clean ~2×), and
+ * **(b)** drive the source bus from hardware (SPIM/DMA clocking BCK + data) so the CPU runs the gate
+ * scan *concurrently* — the same machinery the deferred partial/dirty-line epic wants. Tracked as an
+ * F5 follow-up. `push_frame` logs the measured frame time each push — tune against that. ── */
 #define ITERS_PER_US      13u /* bench calibration: busy(120) ≈ 9.4 µs on the unconfigured FLPR */
-#define BCK_HALF_ITERS    60u                   /* each BCK phase — F5 first step, ~4.7 µs (≈106 kHz BCK) */
-#define DATA_SETUP_ITERS  20u                   /* source data stable before the BCK rising edge (~1.5 µs) */
+#define BCK_HALF_ITERS    8u                    /* each BCK phase — near the spec ceiling (~0.5–0.6 MHz BCK); LA-verify */
+#define DATA_SETUP_ITERS  5u                    /* source data stable before the BCK rising edge (spec ~335 ns) */
 #define GCK_SETTLE_ITERS  (5u * ITERS_PER_US)   /* settle after a GCK level change before shifting */
 #define GEN_SETUP_ITERS   (17u * ITERS_PER_US)  /* GCK↔GEN setup AND hold (spec ≥16.37 µs) */
 #define GEN_HIGH_ITERS    (25u * ITERS_PER_US)  /* GEN valid-output window (spec ≥24.56 µs) */
@@ -194,11 +207,12 @@ static void drive_subline(uint32_t base, uint32_t len)
 /* Pulse GEN to latch the just-shifted sub-line into the **currently-selected** gate line. The caller
  * has set the GCK level first and that level chooses the target block: GCK HIGH → the 2/3-area (MSB)
  * cells, GCK LOW → the 1/3-area (LSB) cells. Fired clear of the GCK edges (GCK↔GEN setup/hold
- * ≥16.37 µs — the long data shift supplies the setup, the trailing delay the hold). Mirrors
- * `PanelBus::gen_pulse`. */
+ * ≥16.37 µs). The **GCK↔GEN setup is already supplied by the long data shift** that ran before this
+ * call (hundreds of µs of GCK-stable time ≫ 16.37 µs), so the *leading* setup busy is redundant and
+ * dropped (an F5 speed-tune saving ~11 ms/frame); only the GEN-high window and the *trailing* hold
+ * (GEN-low → the next GCK edge, which follows immediately) remain. Mirrors `PanelBus::gen_pulse`. */
 static void gen_pulse(void)
 {
-    busy(GEN_SETUP_ITERS); /* data / GCK level settled → GEN setup ≥16.37 µs */
     GPIO1_OUTSET = GEN_MASK;
     busy(GEN_HIGH_ITERS);  /* valid-output window ≥24.56 µs */
     GPIO1_OUTCLR = GEN_MASK;
