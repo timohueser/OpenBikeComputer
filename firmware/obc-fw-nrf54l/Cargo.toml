@@ -54,6 +54,19 @@ ls021-bringup = []
 # --features ls021-flpr`. See `firmware/docs/ls021-flpr.md`.
 ls021-flpr = []
 
+# `panel-ls021` runs the **real map/ride app on the reflective LS021B7DD02 panel** (issue #165),
+# driven by the FLPR (the VPR RISC-V coprocessor) instead of the bring-up ST7789. It is a *backend
+# select* for `src/main.rs`, not a separate bin: the shared `Ls021Flpr` `obc_platform::Panel` backend
+# (`src/ls021_flpr.rs`, also used by the `ls021_flpr_bringup` bin) replaces the ST7789, the app
+# renders the whole frame into the resident RGB222 plane and the FLPR scans it in one push, and COM +
+# the gesture input plane free-run on a high-priority executor. Like `ls021-flpr` it pulls the
+# `build.rs` carve-out (the M33 shrinks to 244 KB; the top 12 KB is the FLPR image + handshake page)
+# and cross-compiles the RISC-V blob, so it needs a RISC-V gcc (`brew install riscv64-elf-gcc`) and
+# the Board-Configurator settings (3.3 V VDDM, ext-memory-off, VCOM HWFC off). Mutually exclusive
+# with `glass-demo`. Build with `--features panel-ls021` (add `,debug-uart` to stream a recorded ride
+# from a host). See `firmware/docs/ls021-flpr.md` + the crate README.
+panel-ls021 = []
+
 # Stream fake GPS / altimeter / compass from a host over the **VCOM UART** (issue #127) — the nRF
 # analog of the STM32's `debug-usb`. The nRF54L15 has no USB peripheral, so the debug-sensor /
 # telemetry stream rides the DK's onboard J-Link USB-CDC **VCOM** (UARTE20, TX P1_04 / RX P1_05);

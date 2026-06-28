@@ -130,9 +130,14 @@ jobs:
 
   # The real device board crate (nRF54L15 + ST7789) on its thumbv8m target: clippy each feature
   # config + a release build of the shipping default. Build-only (no board in CI). Each leg runs
-  # from the crate dir so .cargo/config.toml selects thumbv8m. The three configs are mutually
+  # from the crate dir so .cargo/config.toml selects thumbv8m. These configs are mutually
   # exclusive (`glass-demo` cfgs out the map path), so each is linted on its own — no
   # `--all-features` (it would flag the unused map-path helpers in the panel-demo build).
+  #
+  # NOTE: the FLPR configs (`--features ls021-flpr` / `panel-ls021`, the LS021 panel via the VPR
+  # coprocessor) are NOT built here — they cross-compile a RISC-V C blob via `build.rs`, so they
+  # need a `rv32emc` gcc on the runner. Built locally instead (firmware/docs/ls021-flpr.md); adding
+  # a CI leg with the RISC-V toolchain is an nRF-CI follow-up (issue #128).
   embedded:
     needs: changes
     if: needs.changes.outputs.rust == 'true'

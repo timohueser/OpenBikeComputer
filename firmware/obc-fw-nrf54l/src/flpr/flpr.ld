@@ -6,9 +6,10 @@
    the very first byte at the base address — KEEP it first below.
 
    Region matches the feature-gated `memory.x` carve-out (build.rs) and
-   firmware/docs/ls021-flpr.md:
+   firmware/docs/ls021-flpr.md (shrunk 28K→8K for the app integration, issue #165 — the blob is
+   ~660 B + a shallow scan stack, so 8 KB is generous and hands ~20 KB back to the M33):
 
-     FLPR_RAM 0x2003_8000 .. 0x2003_F000  (28 KB) — this image + the FLPR stack
+     FLPR_RAM 0x2003_D000 .. 0x2003_F000  (8 KB)  — this image + the FLPR stack
      SHARED   0x2003_F000 .. 0x2004_0000  (4 KB)  — cross-core handshake (NOT linked here;
                                                     both cores reach it by hardcoded address)
 
@@ -17,7 +18,7 @@
 
 MEMORY
 {
-    FLPR_RAM (rwx) : ORIGIN = 0x20038000, LENGTH = 28K
+    FLPR_RAM (rwx) : ORIGIN = 0x2003D000, LENGTH = 8K
 }
 
 /* Stack grows down from the top of FLPR_RAM, i.e. the boundary with the SHARED block. */
