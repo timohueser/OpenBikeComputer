@@ -206,7 +206,7 @@ Because pixel memory is retained you do **not** have to rewrite the whole frame,
 
 The grain is a **whole row**, though: touching any row re-latches all 240 of its columns — the source shift register feeds the entire line — so there is no cheap "just these few columns." A partial update is a set of full-width row-spans; a 16-px-wide right-edge overlay still rewrites its rows full-width, and is cheap only because it touches *few rows*, not few columns.
 
-The hold-progress bulge rides exactly this: as it animates, only its rows re-push — a fraction of a full-frame scan — while the rest of the map stays untouched and asleep. It's the renderer's [redraw-only-what-changed](../../software/rendering/) design carried onto the glass, and for a UI that changes a few fields per second, a large power win.
+The hold-progress bulge rides exactly this: as it animates, only its rows re-push — a fraction of a full-frame scan — while the rest of the map stays untouched and asleep. And the **map present** rides it too: it keeps a per-row hash of the last-pushed frame and feeds the masked scan only the rows that actually changed, so an idle Home clock ticking a minute repaints its clock band and nothing else — no per-screen code, the change detected automatically in the present layer. It's the renderer's [redraw-only-what-changed](../../software/rendering/) design carried onto the glass, and for a UI that changes a few fields per second, a large power win.
 
 ## Power-on, power-off, and retention
 
