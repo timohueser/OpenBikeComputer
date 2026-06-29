@@ -216,9 +216,10 @@ impl DateTimeScreen {
                 }
             }
             // Hairline separators (menu style) with a wider gap so they sit clear of a selected
-            // row's amber bar: one under the GPS-clock toggle, one above the Offset row (under the
-            // Local time info row) — grouping the clock source apart from the editable values.
-            let sep = matches!(kind, RowKind::Toggle | RowKind::LocalTime);
+            // row's amber bar: under the GPS-clock toggle, between DATE and TIME (manual), and
+            // above the Offset row (GPS, i.e. under the Local time info row) — grouping the clock
+            // source apart from the editable values.
+            let sep = matches!(kind, RowKind::Toggle | RowKind::Date | RowKind::LocalTime);
             if sep {
                 cv.hline(20, y + rh + 7, w - 40, palette::RULE);
             }

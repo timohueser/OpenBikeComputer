@@ -385,6 +385,14 @@ pub struct App {
     ///
     /// [`take_settings_dirty`]: App::take_settings_dirty
     settings_dirty: bool,
+    /// Host-supplied encoder hold-progress (0.0–1.0) for the in-screen confirm fills (the factory
+    /// Reset bar; the [`RideControl`](crate::screen::RideControl) confirm rows). `None` on the
+    /// single-loop hosts (the sim), where the render reads progress from `App`'s own
+    /// [`InputPlane`]. The **two-plane firmware** recognises holds on a *separate* high-priority
+    /// `InputPlane`, so `App`'s own one stays at `0` there; that host feeds the live progress in
+    /// each frame via [`set_hold_progress`](App::set_hold_progress). Cleared back when the host
+    /// reports `0` (hold released), so it tracks the live hold either way.
+    hold_progress_override: Option<f32>,
 }
 
 impl App {
@@ -424,6 +432,7 @@ impl App {
             map_dirty: true,
             settings: Settings::default(),
             settings_dirty: false,
+            hold_progress_override: None,
         }
     }
 
@@ -475,6 +484,7 @@ impl App {
             addr_of_mut!((*slot).map_dirty).write(true);
             addr_of_mut!((*slot).settings).write(Settings::default());
             addr_of_mut!((*slot).settings_dirty).write(false);
+            addr_of_mut!((*slot).hold_progress_override).write(None);
         }
     }
 
@@ -844,7 +854,9 @@ impl App {
         // `0.0` — which matches the render-on-demand behaviour anyway: a pure hold-charge never
         // dirties the map (issue #47), so the map (and this fill) doesn't redraw mid-charge; the
         // live confirmation is the overlay bulge on its own high-priority plane.
-        let hold_progress = self.input.encoder_hold_progress();
+        // Prefer a host-supplied hold-progress (the two-plane firmware's separate input plane); fall
+        // back to `App`'s own input on the single-loop hosts (the sim) that never set the override.
+        let hold_progress = self.hold_progress_override.unwrap_or_else(|| self.input.encoder_hold_progress());
         let App { state, activity, settings, catalog, renderer, stack, now_ms, profile, breadcrumb, .. } = self;
         let mut rx = Render {
             reader,
@@ -934,6 +946,17 @@ impl App {
     /// In-flight encoder hold-progress (0.0–1.0) for the confirm-ring readout.
     pub fn encoder_hold_progress(&self) -> f32 {
         self.input.encoder_hold_progress()
+    }
+
+    /// Feed the live encoder hold-progress (0.0–1.0) used by the in-screen confirm fills (the
+    /// factory Reset bar). The **two-plane firmware** calls this each frame from its high-priority
+    /// [`InputPlane`], whose hold state `App`'s own plane doesn't see — without it the Reset bar
+    /// never fills on the device. The single-loop hosts (the sim) never call it; the render then
+    /// reads `App`'s own input. Pairs with [`base_draws_map`](App::base_draws_map): the host
+    /// forces a redraw while a hold charges on a cheap (non-map) screen so the fill actually
+    /// animates (a pure hold-charge doesn't otherwise dirty the map — issue #47).
+    pub fn set_hold_progress(&mut self, progress: f32) {
+        self.hold_progress_override = Some(progress);
     }
 
     /// In-flight Back hold-progress (0.0–1.0).
