@@ -286,8 +286,9 @@ mod tests {
         let rows = 5;
         let prev_fb = [0u8; 5 * 2];
         let mut cur_fb = prev_fb;
-        cur_fb[2] = 9; // change row 1 (byte 1*stride)
-        cur_fb[6] = 9; // change row 3 (byte 3*stride)
+        // Change rows 1 and 3 (bytes 1*stride and 3*stride).
+        cur_fb[2] = 9;
+        cur_fb[6] = 9;
         // Run the real diff to get the spans, then check the oracle is satisfied.
         let mut store = [0u32; 5];
         let _ = diff(&mut store, &prev_fb, stride); // seed the store from prev_fb
