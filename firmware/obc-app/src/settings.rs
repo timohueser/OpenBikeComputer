@@ -220,6 +220,41 @@ impl DateTime {
     pub fn step_minute(&mut self, n: i32) {
         self.minute = wrap_inclusive(self.minute as u16, n, 0, 59) as u8;
     }
+
+    /// Advance the stamp **forward** by `mins` minutes, carrying minute → hour → day → month →
+    /// year (leap-aware via [`month_len`](DateTime::month_len)). This is a real clock advance, the
+    /// opposite of the field [`step_minute`](DateTime::step_minute)/… steppers that wrap *within a
+    /// single field* for the editor: here 23:59 + 1 rolls into the next day, Dec 31 into the next
+    /// year, and Feb 28 → Mar 1 except in a leap year. Pure (returns a new value), forward-only —
+    /// the [`WallClock`](crate::WallClock) only ever advances its set-point by elapsed monotonic
+    /// time, never backwards. The day-walk loop runs once per crossed month boundary (a couple of
+    /// iterations even for the u32-millis-wrap maximum of ~50 days), so it stays cheap.
+    pub fn add_minutes(self, mins: u32) -> DateTime {
+        let mut dt = self;
+        let total_min = dt.minute as u32 + mins;
+        dt.minute = (total_min % 60) as u8;
+        let total_hour = dt.hour as u32 + total_min / 60;
+        dt.hour = (total_hour % 24) as u8;
+        let mut days = total_hour / 24;
+        // Walk whole days so each month/year boundary re-evaluates `month_len` (so February's
+        // length tracks the leap year we land in, not the one we left).
+        while days > 0 {
+            let room = Self::month_len(dt.year, dt.month) as u32 - dt.day as u32; // days left this month
+            if days <= room {
+                dt.day += days as u8;
+                break;
+            }
+            days -= room + 1; // step onto the 1st of the next month, then keep going
+            dt.day = 1;
+            if dt.month == 12 {
+                dt.month = 1;
+                dt.year += 1; // a naturally advancing clock climbs past MAX_YEAR; only HH:MM is ever shown
+            } else {
+                dt.month += 1;
+            }
+        }
+        dt
+    }
 }
 
 /// UTC-offset stepper bounds + granularity (minutes). 15-minute steps cover the real-world
@@ -436,6 +471,41 @@ mod tests {
         assert_eq!(d.minute, 0, "minute wraps 59 → 0");
         d.step_year(-1);
         assert_eq!(d.year, DateTime::MAX_YEAR, "and backward off the bottom wraps to the top");
+    }
+
+    /// `add_minutes` carries across every boundary the field steppers deliberately *don't*:
+    /// minute → hour → day → month → year, and through the leap-day specifically.
+    #[test]
+    fn datetime_add_minutes_carries_across_fields() {
+        let base = DateTime { year: 2025, month: 6, day: 29, hour: 14, minute: 40 };
+        // Within the minute field.
+        assert_eq!(base.add_minutes(5).minute, 45);
+        // Minute → hour carry (40 + 25 = 65 → 15, hour +1).
+        let h = base.add_minutes(25);
+        assert_eq!((h.hour, h.minute), (15, 5));
+        // Minute → hour → day carry: 23:59 + 1 = next day 00:00.
+        let midnight = DateTime { year: 2025, month: 6, day: 29, hour: 23, minute: 59 };
+        let d = midnight.add_minutes(1);
+        assert_eq!((d.day, d.hour, d.minute), (30, 0, 0), "23:59 + 1 rolls into the next day");
+        // Day → month carry: Jun 30 23:00 + 2 h → Jul 1 01:00 (June has 30 days).
+        let m = DateTime { year: 2025, month: 6, day: 30, hour: 23, minute: 0 }.add_minutes(120);
+        assert_eq!((m.month, m.day, m.hour), (7, 1, 1), "end of June rolls into July");
+        // Month → year carry: Dec 31 23:59 + 1 → Jan 1 of the next year.
+        let y = DateTime { year: 2025, month: 12, day: 31, hour: 23, minute: 59 }.add_minutes(1);
+        assert_eq!((y.year, y.month, y.day, y.hour, y.minute), (2026, 1, 1, 0, 0), "new year");
+    }
+
+    /// February's length is taken from the year the advance *lands* in, so a leap-year Feb 28 + 1
+    /// day is Feb 29 while a common-year one is Mar 1.
+    #[test]
+    fn datetime_add_minutes_is_leap_aware() {
+        let leap = DateTime { year: 2024, month: 2, day: 28, hour: 0, minute: 0 }.add_minutes(24 * 60);
+        assert_eq!((leap.month, leap.day), (2, 29), "2024 has a Feb 29 to land on");
+        let common = DateTime { year: 2025, month: 2, day: 28, hour: 0, minute: 0 }.add_minutes(24 * 60);
+        assert_eq!((common.month, common.day), (3, 1), "2025 skips straight to March");
+        // A multi-day advance that *crosses* Feb 29 counts it: Feb 27 2024 + 3 days = Mar 1.
+        let across = DateTime { year: 2024, month: 2, day: 27, hour: 0, minute: 0 }.add_minutes(3 * 24 * 60);
+        assert_eq!((across.month, across.day), (3, 1), "the leap day is one of the three crossed");
     }
 
     /// The unit conversions are no-ops for metric and the right scale for imperial.
