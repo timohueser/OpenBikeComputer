@@ -14,6 +14,7 @@ use crate::input::Gesture;
 use crate::input_plane::InputPlane;
 use crate::route::{Catalog, RouteSummary};
 use crate::screen::{self, Ctx, HomeScreen, MapScreen, Render, Screen, Stack};
+use crate::settings::Settings;
 
 /// How the camera relates to the user's position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -374,6 +375,24 @@ pub struct App {
     /// overlay-plane flag isn't accumulated here — it's derived from the live hold-bulge state
     /// at drain time, owned by [`InputPlane`]; see [`take_dirty`](App::take_dirty).)
     map_dirty: bool,
+    /// The persisted device settings, seeded from the host's store at boot
+    /// ([`set_settings`](App::set_settings)) and edited in place by the settings screens.
+    settings: Settings,
+    /// Whether [`settings`](App::settings) changed since the last [`take_settings_dirty`]; set
+    /// by [`apply_gesture`](App::apply_gesture)'s before/after compare, drained by the host to
+    /// decide when to persist. Starts `false`: the boot value either came from the store or is
+    /// the default, so nothing needs writing until the user actually changes something.
+    ///
+    /// [`take_settings_dirty`]: App::take_settings_dirty
+    settings_dirty: bool,
+    /// Host-supplied encoder hold-progress (0.0–1.0) for the in-screen confirm fills (the factory
+    /// Reset bar; the [`RideControl`](crate::screen::RideControl) confirm rows). `None` on the
+    /// single-loop hosts (the sim), where the render reads progress from `App`'s own
+    /// [`InputPlane`]. The **two-plane firmware** recognises holds on a *separate* high-priority
+    /// `InputPlane`, so `App`'s own one stays at `0` there; that host feeds the live progress in
+    /// each frame via [`set_hold_progress`](App::set_hold_progress). Cleared back when the host
+    /// reports `0` (hold released), so it tracks the live hold either way.
+    hold_progress_override: Option<f32>,
 }
 
 impl App {
@@ -411,6 +430,9 @@ impl App {
             now_ms: 0,
             // Force the host's first frame: nothing has been drawn yet, so the map is dirty.
             map_dirty: true,
+            settings: Settings::default(),
+            settings_dirty: false,
+            hold_progress_override: None,
         }
     }
 
@@ -460,6 +482,9 @@ impl App {
             addr_of_mut!((*slot).now_ms).write(0);
             // Force the host's first frame: nothing has been drawn yet, so the map is dirty.
             addr_of_mut!((*slot).map_dirty).write(true);
+            addr_of_mut!((*slot).settings).write(Settings::default());
+            addr_of_mut!((*slot).settings_dirty).write(false);
+            addr_of_mut!((*slot).hold_progress_override).write(None);
         }
     }
 
@@ -623,6 +648,30 @@ impl App {
         &self.catalog
     }
 
+    /// Seed the live settings from the host's persistent store at boot. The host calls this
+    /// once after construction with [`SettingsStore::load`](crate::hal::SettingsStore::load)'s
+    /// value (or [`Settings::default`] when nothing is stored); it leaves the dirty flag clear,
+    /// so seeding the boot value never triggers a needless write-back.
+    pub fn set_settings(&mut self, settings: Settings) {
+        self.settings = settings;
+        self.settings_dirty = false;
+    }
+
+    /// The live device settings — read by the host to persist them, and by anything that needs
+    /// the current units / clock / GPS-interval outside the screen draw path.
+    pub fn settings(&self) -> &Settings {
+        &self.settings
+    }
+
+    /// Drain the "settings changed" flag set since the last call. The host checks this **once
+    /// per frame** after [`handle_input`](App::handle_input) and, when set, persists
+    /// [`settings`](App::settings) via its [`SettingsStore`](crate::hal::SettingsStore) — the
+    /// settings analogue of [`take_dirty`](App::take_dirty)'s render demand. Idempotent: a
+    /// frame with no settings edit returns `false` and writes nothing.
+    pub fn take_settings_dirty(&mut self) -> bool {
+        core::mem::take(&mut self.settings_dirty)
+    }
+
     /// **Debug/benchmark hook** (the USB-CDC `Z` command): set the map camera to exactly `mpp`
     /// meters-per-pixel and force one map redraw. Drives the zoom directly — independent of the
     /// encoder's fixed 1.2× detents — so a host render sweep can pin an exact scale per sample,
@@ -677,10 +726,17 @@ impl App {
         // still costs one redraw), which is what keeps the idle path exact: no gesture is
         // recognized, so `apply_gesture` never runs and the map stays clean — zero idle renders.
         self.map_dirty = true;
-        let App { state, activity, catalog, stack, now_ms, .. } = self;
-        let mut cx = Ctx { state, activity, routes: catalog.as_slice(), now_ms: *now_ms };
+        // Snapshot the settings so a settings-screen edit is detected by one `==` (Settings is
+        // `Copy + Eq`) — the same before/after trick `tick` uses on the camera `AppState`. A
+        // change flags a save for the host to pick up via `take_settings_dirty`.
+        let settings_before = self.settings;
+        let App { state, activity, settings, catalog, stack, now_ms, .. } = self;
+        let mut cx = Ctx { state, activity, settings, routes: catalog.as_slice(), now_ms: *now_ms };
         let t = stack.last_mut().expect("the stack always has the Home root").handle(g, &mut cx);
         screen::apply(stack, t);
+        if self.settings != settings_before {
+            self.settings_dirty = true;
+        }
     }
 
     /// Advance the **map plane's** clock to `clock` and let each visible screen surface any
@@ -798,13 +854,16 @@ impl App {
         // `0.0` — which matches the render-on-demand behaviour anyway: a pure hold-charge never
         // dirties the map (issue #47), so the map (and this fill) doesn't redraw mid-charge; the
         // live confirmation is the overlay bulge on its own high-priority plane.
-        let hold_progress = self.input.encoder_hold_progress();
-        let App { state, activity, catalog, renderer, stack, now_ms, profile, breadcrumb, .. } = self;
+        // Prefer a host-supplied hold-progress (the two-plane firmware's separate input plane); fall
+        // back to `App`'s own input on the single-loop hosts (the sim) that never set the override.
+        let hold_progress = self.hold_progress_override.unwrap_or_else(|| self.input.encoder_hold_progress());
+        let App { state, activity, settings, catalog, renderer, stack, now_ms, profile, breadcrumb, .. } = self;
         let mut rx = Render {
             reader,
             renderer,
             state,
             activity,
+            settings,
             routes: catalog.as_slice(),
             route,
             profile: profile.as_ref(),
@@ -887,6 +946,17 @@ impl App {
     /// In-flight encoder hold-progress (0.0–1.0) for the confirm-ring readout.
     pub fn encoder_hold_progress(&self) -> f32 {
         self.input.encoder_hold_progress()
+    }
+
+    /// Feed the live encoder hold-progress (0.0–1.0) used by the in-screen confirm fills (the
+    /// factory Reset bar). The **two-plane firmware** calls this each frame from its high-priority
+    /// [`InputPlane`], whose hold state `App`'s own plane doesn't see — without it the Reset bar
+    /// never fills on the device. The single-loop hosts (the sim) never call it; the render then
+    /// reads `App`'s own input. Pairs with [`base_draws_map`](App::base_draws_map): the host
+    /// forces a redraw while a hold charges on a cheap (non-map) screen so the fill actually
+    /// animates (a pure hold-charge doesn't otherwise dirty the map — issue #47).
+    pub fn set_hold_progress(&mut self, progress: f32) {
+        self.hold_progress_override = Some(progress);
     }
 
     /// In-flight Back hold-progress (0.0–1.0).
@@ -1087,5 +1157,44 @@ mod tests {
         tick_alt(&mut app, 160.0, 5000); // re-anchors at the current height
         tick_alt(&mut app, 165.0, 6000); // a real +5 m after resuming
         assert_eq!(app.activity.climb_m(), 15.0, "only genuine post-resume climb adds through tick");
+    }
+
+    // --- settings persistence signal (the host's save trigger) ---
+
+    /// A settings edit applied through `apply_gesture` flags `take_settings_dirty` (so the host
+    /// persists it); a gesture that changes no setting does not. Drives the real navigation
+    /// Home → Menu → Settings → Units, so the whole `Ctx { settings }` plumbing is exercised.
+    #[test]
+    fn a_settings_edit_flags_dirty_and_a_noop_does_not() {
+        use crate::settings::Units;
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        // Walk to the Units screen (Menu = Routes/Settings; Settings list = Date&Time/Units/…).
+        app.apply_gesture(Gesture::BackHold); // Home → Menu
+        app.apply_gesture(Gesture::Turn(1)); // → Settings row
+        app.apply_gesture(Gesture::Press); // → Settings list
+        app.apply_gesture(Gesture::Turn(1)); // → Units row
+        app.apply_gesture(Gesture::Press); // → Units screen
+        assert!(!app.take_settings_dirty(), "navigation changed no setting, so nothing to save");
+
+        let before = app.settings().units;
+        app.apply_gesture(Gesture::Press); // flip units
+        assert_ne!(app.settings().units, before, "the Units screen flipped the system");
+        assert_eq!(app.settings().units, Units::Imperial, "default Metric → Imperial");
+        assert!(app.take_settings_dirty(), "a real settings change flags a save");
+        assert!(!app.take_settings_dirty(), "and the flag drains — only saved once");
+
+        app.apply_gesture(Gesture::Back); // leave Units (no settings change)
+        assert!(!app.take_settings_dirty(), "a non-settings gesture leaves the flag clear");
+    }
+
+    /// `set_settings` seeds the boot value without arming a save (the value came from the store /
+    /// the default — re-persisting it would be a pointless write).
+    #[test]
+    fn set_settings_does_not_flag_dirty() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        let seeded = crate::settings::Settings { units: crate::settings::Units::Imperial, ..Default::default() };
+        app.set_settings(seeded);
+        assert_eq!(app.settings().units, crate::settings::Units::Imperial);
+        assert!(!app.take_settings_dirty(), "seeding the boot value must not trigger a write-back");
     }
 }

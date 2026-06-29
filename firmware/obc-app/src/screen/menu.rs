@@ -2,9 +2,9 @@
 //! the route-list mock (`docs/bikepacking_portrait_screens.html`): a dark wood
 //! frame around a panel, a wood title strip with a `n / total` counter, big rows
 //! with a pointer bullet and an amber selection highlight, and hairline separators.
-//! Partly stubbed — Routes opens the Route menu and `back` returns to the caller, but
-//! Settings and the Shutdown prompt (`back-hold`) land in later slices — but it doubles
-//! as the worked example of the framework's drawing surface ([`Canvas`]).
+//! Routes opens the Route menu and Settings the [`SettingsScreen`](super::SettingsScreen) tree;
+//! `back` returns to the caller. (The Shutdown prompt on `back-hold` is still a later slice.) It
+//! doubles as the worked example of the framework's drawing surface ([`Canvas`]).
 
 use embedded_graphics::prelude::{DrawTarget, Point};
 use obc_render::{
@@ -15,7 +15,7 @@ use obc_render::{
 
 use crate::input::Gesture;
 
-use super::{list_frame, palette, Ctx, Render, RouteMenuScreen, Screen, Transition, LIST_TOP};
+use super::{list_frame, palette, Ctx, Render, RouteMenuScreen, Screen, SettingsScreen, Transition, LIST_TOP};
 
 const ITEMS: [&str; 2] = ["Routes", "Settings"];
 
@@ -41,7 +41,7 @@ impl MenuScreen {
             }
             Gesture::Press => match self.selected {
                 0 => Transition::Push(Screen::RouteMenu(RouteMenuScreen::new())), // Routes
-                _ => Transition::None,                                            // Settings — later slice
+                _ => Transition::Push(Screen::Settings(SettingsScreen::new())),   // Settings
             },
             Gesture::Back => Transition::Pop, // return to caller (Home or Map)
             Gesture::Hold => Transition::None,

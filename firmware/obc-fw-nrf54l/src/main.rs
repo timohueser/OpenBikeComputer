@@ -122,6 +122,9 @@ mod ls021_flpr;
 // The board's display-driver seam — the single screen-write interface both panels implement, so the
 // map plane drives either through one path (`fb_mut` + `present`).
 mod display;
+// Persistent device settings over on-chip RRAM (the SD-independent settings store); the RRAM I/O is
+// stubbed pending on-glass work, but the boot-load + save-on-dirty calls are wired in `run_app`.
+mod settings;
 
 use defmt::info;
 use embassy_executor::Spawner;
@@ -175,7 +178,10 @@ use embassy_sync::channel::{Channel, Sender};
 use embassy_sync::mutex::Mutex;
 use embassy_time::Instant;
 use embedded_graphics::pixelcolor::{raw::RawU16, Rgb565};
-use obc_app::{App, AppState, Gesture, InputClock, InputEvent, InputPlane, InputSource, RideClock, Sensors, TrackSink};
+use obc_app::{
+    App, AppState, Gesture, InputClock, InputEvent, InputPlane, InputSource, RideClock, Sensors, SettingsStore,
+    TrackSink,
+};
 use obc_platform::{ButtonInput, FbDevice64};
 use obc_reader::{MapCache, MapTables, Reader};
 use obc_render::{zoom_for_mpp, RenderStats};
@@ -815,6 +821,14 @@ impl MapDisplay {
     /// No-op: the ST7789 hold bulge is pushed by the input/overlay plane, not the map loop.
     #[inline(always)]
     fn present_bulge(&mut self, _span: Option<(u16, u16)>, _dirty: bool, _map_redrew: bool) {}
+
+    /// The ST7789 map loop can't see the input plane (its bulge rides the overlay plane), so the
+    /// in-screen hold fills (the Reset bar) aren't driven on this dev-only backend — report no
+    /// hold. The overlay bulge is still the live hold feedback here.
+    #[inline(always)]
+    fn hold_progress(&self) -> f32 {
+        0.0
+    }
 }
 
 /// FLPR LS021 (default): the map plane owns the panel outright (whole-frame scan per push → no shared
@@ -845,6 +859,14 @@ impl MapDisplay {
             let p = &mut *c.borrow_mut();
             (p.take_overlay_dirty(), p.overlay_rows(WIDTH as i32, HEIGHT as i32))
         })
+    }
+
+    /// The live encoder hold-progress from the shared input plane (0.0–1.0). Fed to the map render
+    /// so the in-screen confirm fills (the factory-Reset bar) track the hold — `App`'s own input
+    /// plane isn't driven on the two-plane firmware, so without this the bar never fills.
+    #[inline(always)]
+    fn hold_progress(&self) -> f32 {
+        self.input_plane.lock(|c| c.borrow().encoder_hold_progress())
     }
 
     /// Render the clean frame into the owned panel and scan it to glass. With a live bulge, present
@@ -976,6 +998,12 @@ async fn run_app(
     // shows up immediately instead of as a silent overflow (issue #175). Harmless on the 512 KB target.
     let mut stack_hw = 0usize;
     let mut last_led = 0u32;
+
+    // Settings: seed the app from the persistent RRAM store at boot (defaults until the store's
+    // RRAM I/O lands — see `settings`), then persist on any change the settings screens make.
+    let mut settings_store = settings::RramSettingsStore::new();
+    app.set_settings(settings_store.load().unwrap_or_default());
+
     loop {
         let now = Instant::now().as_millis() as u32;
         let hw = stackmeter::used();
@@ -990,6 +1018,12 @@ async fn run_app(
             app.apply_gesture(g);
         }
         app.advance_animations(InputClock(now));
+
+        // Persist settings the moment a settings screen changes one (the save-on-dirty path the
+        // simulator shares). A no-op until the RRAM store's write lands; cheap when nothing changed.
+        if app.take_settings_dirty() {
+            settings_store.save(app.settings());
+        }
 
         // A pending debug `Z` camera-scale command (render benchmark): pin the map to an exact
         // meters-per-pixel and force one redraw, so a host zoom sweep gets exactly one fresh,
@@ -1088,11 +1122,24 @@ async fn run_app(
             route.as_ref(),
         );
 
+        // Feed the high-priority plane's encoder hold-progress to the map render so the in-screen
+        // confirm fills (the factory-Reset bar) track the hold — `App`'s own input plane isn't
+        // driven here, so the render would otherwise read 0 and the bar would never fill.
+        let hold_p = display.hold_progress();
+        app.set_hold_progress(hold_p);
+
         // Drain the per-frame dirty signal now that input + tick have run, and fold back a redraw a
         // previous frame couldn't service on a transient reader-build failure (#66).
         let mut dirty = app.take_dirty();
         dirty.map |= pending_map_redraw;
         pending_map_redraw = false;
+        // While a hold *charges* on a cheap (non-map) screen — the factory-Reset prompt — redraw it
+        // each frame so its bar tracks the live progress. A pure hold-charge emits no gesture, so
+        // nothing else dirties the map (issue #47). Gated on `!base_draws_map` so the expensive map
+        // view is never re-rendered for a hold; there the overlay bulge is the live feedback.
+        if hold_p > 0.0 && !app.base_draws_map() {
+            dirty.map = true;
+        }
 
         // This frame's hold-bulge state, sampled once through the seam — `(false, None)` on ST7789
         // (its bulge rides the input plane); the live dirty edge + row span on the FLPR (issue #163).

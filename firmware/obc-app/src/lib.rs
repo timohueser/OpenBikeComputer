@@ -39,6 +39,7 @@ pub mod input;
 pub mod input_plane;
 pub mod route;
 pub mod screen;
+pub mod settings;
 
 pub use activity::{Activity, Mode, TrackAction};
 pub use app::{App, AppState, CameraMode, Pan, PanAxis};
@@ -46,10 +47,11 @@ pub use breadcrumb::Breadcrumb;
 pub use dirty::Dirty;
 pub use hal::{
     AltimeterSource, Button, ButtonEvent, CompassSource, Fix, InputClock, InputEvent, InputSource, LocationSource,
-    RideClock, Sensors, TrackSink,
+    RideClock, Sensors, SettingsStore, TrackSink,
 };
 pub use hold_hint::HoldHints;
 pub use input::{Gesture, Gestures, DEFAULT_HOLD_MS};
 pub use input_plane::InputPlane;
 pub use route::{Catalog, RouteSummary, MAX_ROUTES};
 pub use screen::{Screen, Transition};
+pub use settings::{DateTime, Settings, Units};
