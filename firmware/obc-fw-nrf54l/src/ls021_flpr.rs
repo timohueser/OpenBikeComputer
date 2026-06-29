@@ -52,9 +52,10 @@ use defmt::{error, info};
 use embassy_time::{Instant, Timer};
 // The host-tested RGB222 → LS021-wire pack (#154) with its sub-line/row word counts.
 use obc_platform::ls021_wire::{BCK_PER_SUBLINE, ROW_WORDS, WIDTH};
-// `device64_to_rgb565` expands a clean framebuffer byte to RGB565 so the overlay-composite path
-// (#163) draws the hold bulge over it through a `Band` before re-quantising back to the wire.
-use obc_platform::{device64_to_rgb565, ls021_pack_row, Band, Panel};
+// `composite_overlay_window` is the shared overlay-composite core (#174): fill a window scratch from
+// the clean framebuffer (device-64 → RGB565) + draw the hold bulge over it through a `Band` — the same
+// step the ST7789 backend runs, before this backend re-quantises it back to the wire.
+use obc_platform::{composite_overlay_window, ls021_pack_row, Band, Panel};
 // The host-tested RGB565 → device-64 quantiser — the same one the glass-demo's gamut is drawn from,
 // so `flush_band` lands a band on the panel's RGB222 gamut exactly as the ST7789 stand-in shows it.
 use obc_reader::rgb565_to_device64;
@@ -463,22 +464,22 @@ impl<'b> Ls021Flpr<'b> {
             "overlay region out of bounds / larger than the composite scratch"
         );
 
-        // 1. Render the overlay ONCE into a window scratch over the clean backdrop: pre-fill the window
-        //    from `fb` (RGB222 → RGB565), then `draw_overlay` paints the bulge over it through a
-        //    frame-absolute `Band`. `win` then holds the composited region; `fb` is untouched.
+        // 1. Composite the overlay ONCE into a window scratch over the clean `fb` backdrop, via the
+        //    shared `composite_overlay_window` (#174): it fills the window from `fb` (device-64 → RGB565)
+        //    and lets `draw_overlay` paint the bulge over it through a frame-absolute `Band`. `win` then
+        //    holds the composited region; `fb` is untouched. This is the exact step the ST7789 backend
+        //    runs — only the re-quantising wire-pack below is LS021-specific.
         let mut win = [0u16; MAX_OVERLAY_COLS * MAX_OVERLAY_ROWS];
-        let n = w * rows;
-        for row in 0..rows {
-            let fb_base = (y0 + row) * FB_W + x0;
-            for c in 0..w {
-                win[row * w + c] = device64_to_rgb565(self.fb[fb_base + c]);
-            }
-        }
-        {
-            let frame = Size::new(FB_W as u32, FB_H as u32);
-            let mut band = Band::new_window(&mut win[..n], frame, x0 as u16, y0 as u16, w as u16, rows as u16);
-            draw_overlay(&mut band);
-        }
+        composite_overlay_window(
+            self.fb,
+            Size::new(FB_W as u32, FB_H as u32),
+            x0 as u16,
+            y0 as u16,
+            w as u16,
+            rows as u16,
+            &mut win,
+            draw_overlay,
+        );
 
         // 2. Drive the full-width span `[y0, y0+rows)`: each dirty row = the clean `fb` columns with the
         //    `[x0, x0+w)` columns replaced by the composited window (re-quantised to device-64). One
