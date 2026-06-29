@@ -16,7 +16,7 @@ use embassy_nrf::spim::Spim;
 use embassy_time::Delay;
 use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::Rectangle;
-use obc_platform::{composite_overlay_window, Band, Panel};
+use obc_platform::{composite_overlay_window, Band};
 
 use super::{DisplayDriver, OverlayRegion};
 use crate::st7789::{self, St7789, HEIGHT, WIDTH};
@@ -48,7 +48,6 @@ impl DisplayDriver for Display {
     fn present(&mut self) -> bool {
         let Display { panel, fb } = self;
         st7789::reset_push_timers();
-        panel.begin_frame();
         let rows = panel.band_rows();
         let mut y0 = 0u16;
         while y0 < HEIGHT {
@@ -58,7 +57,6 @@ impl DisplayDriver for Display {
             panel.flush_band_rgb222(y0, h, &fb[row0..row0 + n]);
             y0 += h;
         }
-        panel.end_frame();
         let (fill_us, pack_us, spi_us) = st7789::push_timers();
         defmt::info!("ST7789 push: fill {=u32} + pack {=u32} + spi {=u32} us", fill_us, pack_us, spi_us);
         true

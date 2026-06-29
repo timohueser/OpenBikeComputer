@@ -7,7 +7,7 @@
 //! [`obc_app::App::render_frame`](../../obc_app)) runs the exact same rendering
 //! code on the host and on the MCU, drawing into a buffer the board owns. On the nRF (no external
 //! RAM, no scan-out engine) that buffer is a resident `.bss` frame the banded
-//! [`Panel`](crate::Panel) push streams to the panel a band at a time over SPI/DMA; a board with a
+//! display push streams to the panel a band at a time over SPI/DMA; a board with a
 //! hardware scan-out plane would instead let its display controller rescan the buffer directly,
 //! with no explicit push.
 //!
@@ -51,7 +51,7 @@ pub trait Pack {
 }
 
 /// Identity pack for the native-RGB565 plane: the stored `u16` is the colour's own storage word.
-/// Backs the RGB565 [`Band`](crate::Band) scratch the [`Panel`](crate::Panel) backend reformats
+/// Backs the RGB565 [`Band`](crate::Band) scratch the banded display backend reformats
 /// per push (and would back any board with a native-RGB565 scan-out plane).
 pub struct PackRgb565;
 impl Pack for PackRgb565 {
@@ -70,7 +70,7 @@ impl Pack for PackRgb565 {
 /// (`obc_reader::rgb565_to_device64`), so storing it is the target format, not a loss.
 ///
 /// The renderer stays `Rgb565`-typed throughout; the framebuffer quantizes on store here, and the
-/// banded [`Panel`](crate::Panel) push expands each byte back to RGB565
+/// banded display push expands each byte back to RGB565
 /// ([`device64_to_rgb565`]) for the ST7789 — or, on the FLPR/LS021B7DD02, packs it to that
 /// panel's wire bytes ([`ls021_wire::pack_row`](crate::ls021_wire::pack_row)). The byte value
 /// `0..64` doubles as the device-64 palette index.
@@ -101,7 +101,7 @@ pub struct RawFb<'a, P: Pack> {
 }
 
 /// The native-RGB565 plane: every pixel stored as its own RGB565 word. On the shipping nRF this
-/// backs the per-band [`Band`](crate::Band) scratch the [`Panel`] push reformats; a board with a
+/// backs the per-band [`Band`](crate::Band) scratch the banded display push reformats; a board with a
 /// hardware scan-out plane would rescan a full-frame instance of it directly.
 pub type Framebuffer565<'a> = RawFb<'a, PackRgb565>;
 
@@ -109,7 +109,7 @@ pub type Framebuffer565<'a> = RawFb<'a, PackRgb565>;
 /// see [`PackDevice64`]), so the whole 240×320 frame is 75 KB and fits the nRF's on-chip SRAM.
 /// The shared [`obc_app::App::render_map`](obc_app::App) draws into it exactly as it does the
 /// RGB565 plane (the renderer is `Rgb565`-typed; the framebuffer quantizes on store), then the
-/// banded [`Panel`](crate::Panel) push reads it back row by row, expanding each byte to RGB565
+/// banded display push reads it back row by row, expanding each byte to RGB565
 /// ([`device64_to_rgb565`]) for the ST7789 (issue #125). This is the device path the project
 /// ships on; [`Framebuffer565`] survives only as the [`Band`](crate::Band) scratch interchange.
 pub type FbDevice64<'a> = RawFb<'a, PackDevice64>;
@@ -212,7 +212,7 @@ fn rgb565_to_device64_byte(c: Rgb565) -> u8 {
 }
 
 /// Expand a **device-64 (RGB222)** byte (`0b00_RR_GG_BB`, see [`rgb565_to_device64_byte`]) back to
-/// an [`Rgb565`] storage word, for the banded [`Panel`](crate::Panel) push to feed an RGB565 panel
+/// an [`Rgb565`] storage word, for the banded display push to feed an RGB565 panel
 /// (the ST7789). Each 2-bit channel is bit-replicated up to its RGB565 width (5 or 6 bits) — which,
 /// for these four levels, lands on exactly the values `round(level * max / 3)`, i.e. the same
 /// `{0, ⅓, ⅔, 1}` ramp the simulator previews via `obc_reader::rgb565_to_device64`. Lossless on the
@@ -355,7 +355,7 @@ mod tests {
 
     /// Expansion is the exact inverse of the pack on the gamut: byte → RGB565 → byte round-trips,
     /// so the banded push reconstructs the stored colour losslessly. (The RGB565 it produces also
-    /// re-quantizes to the same byte — the property the Panel push relies on.)
+    /// re-quantizes to the same byte — the property the banded push relies on.)
     #[test]
     fn device64_expand_roundtrips_every_byte() {
         for byte in 0u8..64 {
