@@ -132,6 +132,15 @@ impl InputPlane {
         self.hold_hints.active(self.now_ms)
     }
 
+    /// The bounding rows `[y0, y0 + rows)` of the live hold bulge at the plane's clock — the dirty
+    /// region a partial-overlay host re-presents (issue #163), so it can re-push only the active
+    /// bulge's rows instead of the whole hint band. `Some` exactly when
+    /// [`overlay_active`](InputPlane::overlay_active) is `true`. `w`/`h` size the frame the bulge
+    /// is anchored in.
+    pub fn overlay_rows(&self, w: i32, h: i32) -> Option<(u16, u16)> {
+        self.hold_hints.active_rows(self.now_ms, w, h)
+    }
+
     /// Whether the overlay layer must be repainted this frame: while the bulge is live, plus
     /// exactly one trailing frame after it goes quiet so the last bulge can be cleared off the
     /// layer. The trailing edge is tracked across calls, so call this **once per frame**.

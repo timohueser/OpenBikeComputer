@@ -95,12 +95,17 @@ impl MapScreen {
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
+        // The Map screen is the *only* one that reads the map `Reader`, so a host that isn't drawing
+        // the map passes `None` and never builds it. The Map screen is only ever the base when the
+        // host *is* drawing the map, so `None` here is unreachable in practice — draw nothing rather
+        // than fault if it ever happens.
+        let Some(reader) = rx.reader else { return RenderStats::default() };
         let vp = rx.state.viewport(rx.w, rx.h);
-        let bg565 = rx.reader.backdrop_style().map_or(DEFAULT_BG_RGB565, |s| s.color);
+        let bg565 = reader.backdrop_style().map_or(DEFAULT_BG_RGB565, |s| s.color);
         let bg = color_fn(bg565);
         // `render_timed` fills the per-stage map timings (collect/sort/draw) from `rx.clock`; with
         // the host's `NoopClock` it's the same as `render` with the stage fields left at 0.
-        let mut stats = rx.renderer.render_timed(target, rx.reader, &vp, bg, color_fn, rx.clock);
+        let mut stats = rx.renderer.render_timed(target, reader, &vp, bg, color_fn, rx.clock);
 
         // Direction chevrons ride the route only at riding zoom: the plain stroke shows at every
         // zoom, the chevrons appear once the view is zoomed in past `CHEVRON_MAX_MPP`, anchored to
@@ -138,7 +143,7 @@ impl MapScreen {
         // rider has strayed; the route + breadcrumb stay drawn — the line back),
         // else the map's marker colour. Shared by the marker and the pan pin so the
         // off-screen pin matches the on-screen marker.
-        let marker565 = if rx.activity.off_route { super::palette::WARNING } else { rx.reader.marker_color };
+        let marker565 = if rx.activity.off_route { super::palette::WARNING } else { reader.marker_color };
         if let Some(fix) = rx.state.user_fix {
             rx.renderer.draw_marker(target, &vp, fix.lon, fix.lat, fix.course, color_fn(marker565));
         }
