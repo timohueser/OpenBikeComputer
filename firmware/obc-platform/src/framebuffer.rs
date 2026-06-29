@@ -1,14 +1,15 @@
 //! `DrawTarget`s the board owns and the shared renderer draws into: the nRF's device-native
-//! RGB222 [`FbDevice64`] map plane (the real target) and the STM32 prototype's LTDC-scanned
-//! RGB565 [`Framebuffer565`] plane.
+//! RGB222 [`FbDevice64`] map plane (the real target) and the [`Framebuffer565`] RGB565 plane
+//! (now the per-band scratch the [`Band`](crate::Band) view wraps).
 //!
 //! The on-device counterpart of the simulator's `obc-sim/src/framebuffer.rs`: the
 //! shared [`obc_render::MapRenderer`](../../obc_render) (driven through
 //! [`obc_app::App::render_frame`](../../obc_app)) runs the exact same rendering
-//! code on the host and on the MCU, drawing into a buffer the board owns. On the STM32 that buffer
-//! is the LTDC-scanned SDRAM framebuffer — hardware-rescanned to the panel every frame, so a
-//! written pixel is on glass with no blit; on the nRF (no SDRAM, no scan-out) it's a resident
-//! `.bss` frame the banded [`Panel`](crate::Panel) push streams to the ST7789 over SPI/DMA.
+//! code on the host and on the MCU, drawing into a buffer the board owns. On the nRF (no external
+//! RAM, no scan-out engine) that buffer is a resident `.bss` frame the banded
+//! [`Panel`](crate::Panel) push streams to the panel a band at a time over SPI/DMA; a board with a
+//! hardware scan-out plane would instead let its display controller rescan the buffer directly,
+//! with no explicit push.
 //!
 //! The `color_fn` the app is rendered with is the **identity** `RGB565 -> Rgb565`
 //! (`|c| Rgb565::from(RawU16::new(c))`) on every board — the renderer stays `Rgb565`-typed. The
@@ -40,7 +41,7 @@ use embedded_graphics::{pixelcolor::Rgb565, prelude::*, primitives::Rectangle};
 /// The stored pixel is associated, not fixed at `u16`, so a board's native byte width comes for
 /// free: the RGB565 plane stores a `u16`, while the nRF's device-native RGB222 plane
 /// ([`PackDevice64`]) stores a single `u8` — half the RAM for a frame the board has to fit in
-/// on-chip SRAM (no SDRAM).
+/// on-chip SRAM (no external RAM).
 pub trait Pack {
     /// The stored pixel type — `u16` for the RGB565 plane, `u8` for the 1-byte
     /// device-64 (RGB222) plane.
@@ -50,8 +51,8 @@ pub trait Pack {
 }
 
 /// Identity pack for the native-RGB565 plane: the stored `u16` is the colour's own storage word.
-/// Backs the STM32's LTDC-scanned plane and, on the banded boards, the RGB565 [`Band`](crate::Band)
-/// scratch the [`Panel`](crate::Panel) backend reformats per push.
+/// Backs the RGB565 [`Band`](crate::Band) scratch the [`Panel`](crate::Panel) backend reformats
+/// per push (and would back any board with a native-RGB565 scan-out plane).
 pub struct PackRgb565;
 impl Pack for PackRgb565 {
     type Pixel = u16;
@@ -64,7 +65,7 @@ impl Pack for PackRgb565 {
 /// Device-64 (RGB222) pack for the nRF's device-native full-frame plane: the top 2 bits of each
 /// RGB565 channel, packed into a single byte (`0b00_RR_GG_BB`) — one byte per pixel, so a 240×320
 /// frame is 75 KB instead of RGB565's 150 KB, which is what lets it live in the nRF's 256 KB
-/// on-chip SRAM (it has no SDRAM to scan). The 2-bit-per-channel quantization *is* the
+/// on-chip SRAM (it has no external RAM). The 2-bit-per-channel quantization *is* the
 /// LS021B7DD02's intended fidelity — the style colours are already tuned to this 64-colour gamut
 /// (`obc_reader::rgb565_to_device64`), so storing it is the target format, not a loss.
 ///
@@ -85,8 +86,8 @@ impl Pack for PackDevice64 {
 /// A `DrawTarget` wrapping a borrowed `width * height` buffer (one pixel per stored cell,
 /// row-major), generic over how an [`Rgb565`] colour is packed into a stored pixel — and over
 /// the *type* of that pixel ([`Pack::Pixel`]: `u16` for RGB565, `u8` for device-64).
-/// The buffer is the board's — a slice over the STM32's LTDC-scanned SDRAM, or the nRF's resident
-/// RGB222 frame in `.bss` — so this owns nothing and only writes pixels.
+/// The buffer is the board's — the nRF's resident RGB222 frame in `.bss`, or a per-band RGB565
+/// scratch — so this owns nothing and only writes pixels.
 ///
 /// Every display plane is this one type with a different [`Pack`]: the opaque RGB565 map plane
 /// ([`Framebuffer565`], [`PackRgb565`]) and the nRF's device-native RGB222 plane ([`FbDevice64`],
@@ -99,8 +100,9 @@ pub struct RawFb<'a, P: Pack> {
     _pack: PhantomData<P>,
 }
 
-/// The native-RGB565 map plane: the LTDC's opaque bottom layer. Every pixel is stored
-/// as its own RGB565 word, hardware-rescanned to the panel each frame.
+/// The native-RGB565 plane: every pixel stored as its own RGB565 word. On the shipping nRF this
+/// backs the per-band [`Band`](crate::Band) scratch the [`Panel`] push reformats; a board with a
+/// hardware scan-out plane would rescan a full-frame instance of it directly.
 pub type Framebuffer565<'a> = RawFb<'a, PackRgb565>;
 
 /// The nRF's device-native **RGB222** full-frame plane: one byte per pixel (top 2 bits/channel,
@@ -109,8 +111,7 @@ pub type Framebuffer565<'a> = RawFb<'a, PackRgb565>;
 /// RGB565 plane (the renderer is `Rgb565`-typed; the framebuffer quantizes on store), then the
 /// banded [`Panel`](crate::Panel) push reads it back row by row, expanding each byte to RGB565
 /// ([`device64_to_rgb565`]) for the ST7789 (issue #125). This is the device path the project
-/// ships on; [`Framebuffer565`] survives only as the STM32 prototype's LTDC plane and the
-/// [`Band`](crate::Band) scratch interchange.
+/// ships on; [`Framebuffer565`] survives only as the [`Band`](crate::Band) scratch interchange.
 pub type FbDevice64<'a> = RawFb<'a, PackDevice64>;
 
 impl<'a, P: Pack> RawFb<'a, P> {

@@ -1,7 +1,6 @@
 //! nRF54L15-DK board firmware for OpenBikeComputer — the **real hardware target**.
 //!
-//! The nRF54L15 + ST7789 EYESPI panel is what the project ships on (the HAL seams were
-//! first proven on a now-removed STM32F429 bring-up prototype). This crate ports the
+//! The nRF54L15 + ST7789 EYESPI panel is what the project ships on. This crate ports the
 //! shared `obc-app` onto it (load route → ride → save GPX on
 //! glass, fake-sensor fed). Nothing app-facing lives here: `obc-render` / `obc-app` /
 //! `obc-reader` / `obc-route` + `obc-platform` stay board-agnostic; only the nRF HAL
@@ -16,7 +15,7 @@
 //!   N4. RGB222 full framebuffer + full map on glass (retire `Framebuffer565`)           (#125)
 //!   N5. buttons + two-plane InterruptExecutor + fluid composite-on-push bulge               (#126)
 //!   N6. debug/sensor stream over VCOM UART + load→ride→save-GPX = PARITY                 <- (#127)
-//!   N7. docs + CI (add nRF; drop STM32 from the required check)                         (#128)
+//!   N7. docs + CI (add nRF to the docs + the required check)                            (#128)
 //!
 //! Clock: the M33 application core runs at 128 MHz; embassy-time is driven by the **GRTC**
 //! (Global RTC) via the `time-driver-grtc` feature — the nRF54L has no legacy RTC time-driver.
@@ -34,7 +33,7 @@
 //! ## Push-buttons (active-LOW, internal pull-up) — Zephyr `sw0..3`, the UI input (#126)
 //!   BTN0 P1_13 PREV | BTN1 P1_09 NEXT | BTN2 P1_08 BACK | BTN3 P0_04 SELECT
 //! Map to obc-platform's board-agnostic `ButtonInput` debouncer → the shared gesture
-//! recogniser, exactly like the STM32's four GPIO buttons. Roles (N5): BTN0/1 → encoder
+//! recogniser, from four GPIO buttons. Roles (N5): BTN0/1 → encoder
 //! Turn∓1, BTN3 → encoder press/hold, BTN2 → Back/back-hold (`ButtonInput::new` order is
 //! prev, next, select, back). Read as plain **polled** `gpio::Input` (the debouncer samples
 //! levels each loop — no GPIOTE async wait needed). These are the DK's own buttons — no
@@ -66,11 +65,11 @@
 //!     SCK P1_11 | MISO P1_07 | MOSI P1_06 | CS P1_12   (FLPR build moves CS → P0_00, see #165 below)
 //!   CS is a free GPIO held LOW for the whole session (the held-low-CS workaround embedded-sdmmc's
 //!   per-byte framing needs over embassy SPI — see `sd::NoCs`); the bus inits ≤400 kHz then
-//!   re-clocks to 8 MHz (`sd::init`). embassy-nrf's `Spim` exposes **no** internal MISO pull-up
-//!   (unlike embassy-stm32), so the card's DO line is pulled high by the breakout (or an external
+//!   re-clocks to 8 MHz (`sd::init`). embassy-nrf's `Spim` exposes **no** internal MISO pull-up,
+//!   so the card's DO line is pulled high by the breakout (or an external
 //!   10 kΩ to 3V3). The EYESPI connector also carries a microSD that *shares the display bus*; we
-//!   leave that slot **unpopulated** and use this dedicated SPIM instead (a clean reuse of the
-//!   STM32's standalone SD-over-SPI reader + obc-platform's FatFs adapters). P1_06/P1_07 are the
+//!   leave that slot **unpopulated** and use this dedicated SPIM instead (a standalone SD-over-SPI
+//!   reader feeding obc-platform's FatFs adapters). P1_06/P1_07 are the
 //!   VCOM's RTS/CTS pins (below) — we drive them as SD MOSI/MISO instead, which is only safe
 //!   because the VCOM runs **without** hardware flow control (HWFC OFF in the Board Configurator —
 //!   see the crate README); with HWFC on, the J-Link gates host→device bytes on the device's RTS
@@ -82,21 +81,20 @@
 //!   **hardware flow control must be disabled** (Board Configurator — see the crate README);
 //!   otherwise device→host telemetry still flows but host→device (the fake-sensor feed + input
 //!   injection) is silently gated off on the un-driven RTS. The nRF54L15 has **no USB peripheral**,
-//!   so — unlike the STM32's second USB-CDC port — the fake GPS/baro/compass feed and ride
+//!   so the fake GPS/baro/compass feed and ride
 //!   telemetry ride this UART; defmt logs ride RTT on the same cable. obc-platform's debug-source
-//!   protocol is transport-agnostic, so it moves over from USB unchanged.
+//!   protocol is transport-agnostic, so it runs over the UART unchanged.
 //!
 //! ## Spare interrupt for the high-priority InterruptExecutor (#126)
 //!   The two-plane architecture runs input + the overlay on a high-priority `InterruptExecutor`
-//!   that preempts the map render. On STM32 that executor was pended from the unused UART5
-//!   vector; the nRF analog is a dedicated **software-interrupt vector**: **SWI00** (the M33 also
-//!   has SWI01/02/03 + EGU10/EGU20 free). N5 runs it at **P3** — above thread mode (so it preempts
+//!   that preempts the map render, pended from a dedicated **software-interrupt vector**: **SWI00**
+//!   (the M33 also has SWI01/02/03 + EGU10/EGU20 free). N5 runs it at **P3** — above thread mode (so it preempts
 //!   the map render) but below the P0 GRTC time-driver (so `Timer`s still wake mid-render).
 //!
 //! ## Flash / RAM
 //!   From the `nrf54l15-app-s` `memory.x`: FLASH 1524K @ 0x0000_0000, RAM 256K @ 0x2000_0000.
 //!   A future MCUboot retrofit re-partitions flash — don't hard-code flash assumptions (see
-//!   `memory.x` and epic #120). RAM is tight (no external SDRAM, unlike the STM32 prototype):
+//!   `memory.x` and epic #120). RAM is tight (no external RAM):
 //!   the single RGB222 framebuffer is ~75 KB and the renderer scratch + caches must fit the
 //!   rest — the board memory profile + budget assert is N3 (#124).
 //! =============================================================================
@@ -216,8 +214,7 @@ use obc_reader::{MapCache, Reader};
 #[cfg(not(feature = "glass-demo"))]
 use obc_render::zoom_for_mpp;
 // The N6 ride loop (#127): the decoded-route-geometry cache, the resident per-route chunk index,
-// and the streamed route reader the matcher + map render share — the same per-frame structure the
-// STM32 ride loop uses.
+// and the streamed route reader the matcher + map render share — one per-frame structure.
 #[cfg(not(feature = "glass-demo"))]
 use obc_route::{RouteCache, RouteIndex, RouteReader};
 // The runtime-built shared statics (the bus `Mutex`, the `InputPlane` mutex, the VCOM ring buffers)
@@ -243,8 +240,8 @@ use ls021_flpr::{launch_flpr, FlprError, Ls021Flpr};
 
 // VCOM debug-sensor / telemetry stream (#127), behind `debug-uart`: the interrupt-buffered UARTE on
 // the DK's J-Link VCOM. `BufferedUarte` keeps RX DMA continuously armed into a ring driven by the
-// SERIAL20 interrupt, so the tens-of-ms map render never drops a streamed byte (the nRF analog of
-// the STM32's interrupt-buffered OTG RX). `uarte` carries the shared `Config` (8N1 @ 115200).
+// SERIAL20 interrupt, so the tens-of-ms map render never drops a streamed byte. `uarte` carries the
+// shared `Config` (8N1 @ 115200).
 #[cfg(feature = "debug-uart")]
 use embassy_nrf::buffered_uarte::{self, BufferedUarte, BufferedUarteRx, BufferedUarteTx};
 #[cfg(feature = "debug-uart")]
@@ -287,7 +284,7 @@ const BAND_BYTES: usize = st7789::WIDTH as usize * BAND_ROWS * 2;
 static mut BAND: [u16; WIDTH as usize * BAND_ROWS] = [0; WIDTH as usize * BAND_ROWS];
 
 // ============================ N3 board memory budget (issue #124) ============================
-// The nRF54L15 has 256 KB RAM and no external SDRAM, so the whole resident working set of a full
+// The nRF54L15 has 256 KB RAM and no external RAM, so the whole resident working set of a full
 // map redraw must fit there. This build-time assert fails the
 // build — rather than overflowing RAM on glass — if the shared crates' caps (trimmed by the
 // `nrf-mem` profile, enabled on the obc-app edge in Cargo.toml) ever outgrow the budget. It
@@ -306,8 +303,8 @@ static mut BAND: [u16; WIDTH as usize * BAND_ROWS] = [0; WIDTH as usize * BAND_R
 //                  256 KB-DK stop-gap to claw ~3 KB back for the deep ride-loop render stack below).
 //   - `RouteIndex` the active route's resident chunk index — the ride loop (#127) holds it across
 //                  frames in the map plane's task future to stream geometry without re-walking it
-//                  (128 chunks on nrf-mem, ~6 KB). Counted here because, unlike the host/STM32
-//                  (8 MB SDRAM), on the 256 KB part it materially shares the budget — and because
+//                  (128 chunks on nrf-mem, ~6 KB). Counted here because, unlike the host, on the
+//                  256 KB part it materially shares the budget — and because
 //                  `RouteIndex::read` builds it on the *stack*, so keeping it ~6 KB also keeps that
 //                  transient build spike inside the stack reserve below.
 //   - band scratch one RGB565 `Panel` band (`BAND_BYTES`, ~7.5 KB).
@@ -345,8 +342,7 @@ const FB_BYTES: usize = st7789::WIDTH as usize * st7789::HEIGHT as usize;
 
 /// The resident set that must coexist during a redraw (see the table above). Includes the active
 /// route's `RouteIndex` — the ride loop (#127) keeps it resident across frames, so on the 256 KB
-/// part it shares the budget like the caches do (the STM32 parks it in 8 MB SDRAM, so its guard
-/// omits it).
+/// part it shares the budget like the caches do.
 const RESIDENT_BYTES: usize = core::mem::size_of::<obc_app::App>()
     + FB_BYTES
     + core::mem::size_of::<obc_reader::MapCache>()
@@ -376,8 +372,8 @@ const _: () = assert!(
 #[cfg(not(feature = "glass-demo"))]
 static mut FB: [u8; FB_BYTES] = [0; FB_BYTES];
 
-/// The streamed-map geometry cache + the shared [`App`], placed in `.bss` and built **in place** —
-/// the nRF analog of the STM32's `ptr::write`-into-SDRAM placement: the ~96 KB `App` (incl. the
+/// The streamed-map geometry cache + the shared [`App`], placed in `.bss` and built **in place**
+/// (a `ptr::write` into the reserved region): the ~96 KB `App` (incl. the
 /// ~74 KB renderer scratch) and the ~41 KB cache must never form on the 256 KB part's small stack.
 /// [`MapCache::new`](obc_reader::MapCache) is an all-zero `MaybeUninit::zeroed`, so writing it is a
 /// `.bss` memset; [`App::init_map`](obc_app::App::init_map) writes each field where it sits. (The
@@ -403,7 +399,7 @@ const INIT_MPP: f32 = 2.0;
 
 /// Heartbeat-only idle for an unrecoverable bring-up failure (no card, no `.obcm`, or a map that
 /// isn't valid OBCM): blink LED0 forever rather than panic — a missing/bad card must **never** fault
-/// (acceptance criterion, carried from the STM32). Diverges, so the map path below is unreachable
+/// (acceptance criterion). Diverges, so the map path below is unreachable
 /// after it.
 #[cfg(not(feature = "glass-demo"))]
 async fn idle_blink(led: &mut Output<'static>) -> ! {
@@ -416,15 +412,15 @@ async fn idle_blink(led: &mut Output<'static>) -> ! {
 // ============================ N5 two-plane input + overlay (issue #126) ============================
 // The map render (`render_map` + the banded push) is a CPU- and SPI-bound call that would block its
 // executor for tens of ms. To keep input + the hold bulge responsive *during* that, the device runs
-// two planes — the STM32 #48 structure, adapted from two LTDC layers to one shared SPI panel:
+// two planes (issue #48), here built around one shared SPI panel:
 //   - Map plane (thread mode, the `main` loop): drains the gesture channel → `apply_gesture`,
 //     advances screen animations, and re-renders the map only on `dirty.map`, compositing the live
 //     bulge into each pushed band.
 //   - Input plane (`input_overlay_task`, on a high-priority `InterruptExecutor` pended from SWI00):
 //     samples the buttons, recognises gestures (into the channel), and re-pushes just the right-edge
 //     overlay window so the bulge animates over a static map at full FPS with no map re-render.
-// The shared resource is the panel SPI bus + the framebuffer (the nRF analog of the STM32 LTDC vblank
-// bit): the async `BUS` mutex serialises pushes — and, since the map render runs inside it, the
+// The shared resource is the panel SPI bus + the framebuffer: the async `BUS` mutex serialises
+// pushes — and, since the map render runs inside it, the
 // framebuffer write against the input plane's window read — without disabling interrupts (the GRTC
 // time-driver + the input executor keep running while it's held). Keeping the framebuffer *inside*
 // the mutex means the input plane never reads a half-rendered frame, so the bulge backdrop is always
@@ -534,7 +530,7 @@ impl DisplayDriver for Ls021Flpr<'_> {
 
 /// Bound of the input→map gesture channel. One frame yields a couple of gestures and the map plane
 /// drains it each loop, so even across a slow map push it never fills; `try_send` drops on the
-/// (unreachable) overflow rather than block the high-priority plane. (Mirrors the STM32 GESTURE_QUEUE.)
+/// (unreachable) overflow rather than block the high-priority plane.
 #[cfg(not(feature = "glass-demo"))]
 const GESTURE_QUEUE: usize = 16;
 
@@ -628,8 +624,7 @@ fn map_rows_around(y0: u16, rows: u16) -> heapless::Vec<(u16, u16), 2> {
 
 /// Chains two input sources for the gesture recogniser: drains `a` (the physical buttons) fully,
 /// then `b` (the VCOM-injected `K` events with `debug-uart`, else [`NullInput`]). So a host can
-/// drive the UI (taps/holds) over the same VCOM link, interleaved with real presses — exactly the
-/// STM32's `ChainedInput`.
+/// drive the UI (taps/holds) over the same VCOM link, interleaved with real presses.
 #[cfg(not(feature = "glass-demo"))]
 struct ChainedInput<'a> {
     a: &'a mut dyn InputSource,
@@ -676,7 +671,7 @@ impl obc_render::Clock for InstantClock {
     }
 }
 
-/// VCOM RX → sensor signals (#127, the nRF analog of the STM32 `usb_rx_task`): read bytes from the
+/// VCOM RX → sensor signals (#127): read bytes from the
 /// interrupt-fed ring and feed each complete `F`/`A`/`C`/`K`/`Z` line into `obc-platform`'s
 /// fresh-fix signals, which the app's `DebugLocation`/`DebugAltimeter`/`DebugCompass`/`DebugInput`
 /// poll. A UART never "disconnects", so — unlike the CDC version — one `LineReader` lives for the
@@ -694,7 +689,7 @@ async fn vcom_rx_task(mut rx: BufferedUarteRx<'static, peripherals::SERIAL20>) {
     }
 }
 
-/// VCOM TX ← telemetry (#127, the nRF analog of the STM32 `usb_tx_task`): send one compact status
+/// VCOM TX ← telemetry (#127): send one compact status
 /// line each time the app publishes telemetry (~2 Hz via `set_telemetry`), so the host's readout
 /// updates without the device polling or flooding the link. The buffered UARTE chunks the line to
 /// DMA itself, so — unlike the CDC 64-byte-packet path — no manual packet splitting is needed (the
@@ -880,18 +875,18 @@ async fn main(_spawner: Spawner) {
         }
     }
 
-    // --- N6 load → ride → save-GPX, the STM32-parity target (#127): stream the SD `.obcm` into the
+    // --- N6 load → ride → save-GPX (#127): stream the SD `.obcm` into the
     // resident RGB222 framebuffer through the shared `obc-app`, pick a route from the card catalog,
     // ride it (VCOM-streamed GPS or the `SynthLocation` square loop), map-match + log the track, and
     // write a `.gpx` to `/tracks` on Finish. Builds on N4's map (#125) + N5's two-plane input (#126):
     // the map plane (this loop) now also runs the full sensor → tick → reconcile → telemetry ride
-    // loop, the per-frame-reader structure the STM32 ride loop uses. ---
+    // loop, on a per-frame-reader structure. ---
     #[cfg(not(feature = "glass-demo"))]
     {
         // --- VCOM debug-sensor stream (#127), behind `debug-uart`. Bring it up first so the J-Link
         // VCOM is live while the SD card + panel come up; the parsed fixes land in obc-platform's
         // signals, ready for the app's sensor poll in the loop below. The nRF54L15 has no USB
-        // peripheral, so — unlike the STM32's USB-CDC port — the fake GPS/baro/compass feed and ride
+        // peripheral, so the fake GPS/baro/compass feed and ride
         // telemetry ride UARTE20 on the DK's onboard J-Link VCOM (TX P1_04 / RX P1_05); defmt logs
         // share the same cable over RTT. The RX ring is interrupt-fed (`BufferedUarte`), so the
         // tens-of-ms map render never drops a byte. Without the feature the app rides the always-on
@@ -1192,7 +1187,7 @@ async fn main(_spawner: Spawner) {
         // plane's bulge pushes are the only bus traffic — the bulge runs at full FPS. LED0 keeps a
         // ~1 Hz heartbeat. ---
         //
-        // Per-frame ride-loop state (mirrors the STM32 loop):
+        // Per-frame ride-loop state:
         // - `prev_route` re-centres SynthLocation onto a freshly-loaded route's start (debug-uart-off
         //   only — the VCOM feed streams absolute positions, so it needs no re-centre);
         // - `prev_active`/`prev_session` gate the SD reconcile on actual change (#73);

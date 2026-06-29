@@ -6,11 +6,10 @@
 //! format code live in [`obc_platform::sd`] ([`SdByteSource`]/[`SdByteSink`]/[`SdTrackSink`]);
 //! everything here is nRF-specific (a dedicated SPIM + a GPIO chip-select).
 //!
-//! Only the concrete [`SdCard`] **bus type** differs from the STM32 module — the `Storage` impl
-//! and every adapter below are generic over it (they speak `embedded_sdmmc`'s `BlockDevice` /
-//! `TimeSource`). So routes and the chosen map both **stream** from the card (issue #37) and the
-//! ride is logged to a temp `.obct` converted to a `<route>.gpx` on Finish, identically to the
-//! prototype.
+//! The `Storage` impl and every adapter below are generic over the concrete [`SdCard`] **bus type**
+//! (they speak `embedded_sdmmc`'s `BlockDevice` / `TimeSource`). So routes and the chosen map both
+//! **stream** from the card (issue #37) and the ride is logged to a temp `.obct` converted to a
+//! `<route>.gpx` on Finish.
 //!
 //! ## Card layout (FAT16/FAT32)
 //!   `/<name>.obcm`   — the map tile (first one found in the root is loaded)
@@ -21,14 +20,14 @@
 //! ## SPI wiring (nRF54L15-DK, **SERIAL22 / SPIM22** — its own bus, separate from the display)
 //!   SCK P1_11 · MISO P1_07 · MOSI P1_06 · CS **P1_12** (software, held low) · GND · 3V3.
 //! The card is initialised at [`SD_INIT_HZ`] (≤400 kHz, SD spec) then the bus is re-clocked to
-//! [`SD_FAST_HZ`] for bulk transfer — see [`init`]. **Unlike the STM32**, embassy-nrf's `Spim`
+//! [`SD_FAST_HZ`] for bulk transfer — see [`init`]. embassy-nrf's `Spim`
 //! exposes no internal MISO pull-up (its `Config` has no `miso_pull`), so the card's DO line must
 //! be pulled high externally — most microSD breakouts include this; if not, add a 10 kΩ from
 //! MISO (P1_07) to 3V3. (DO floating low during init reads `0x00`, which looks like a hung card.)
 
 // The route-selection + track/GPX-save half of this module (`reconcile_route`/`reconcile_track`,
-// `track_sink`, the GPX namer, `TRACK_TMP`) is the SD `Storage`'s full API — the same one the
-// STM32 app drives — but the N2 bring-up demo only mounts + reads (`open_map`/`map_source`/
+// `track_sink`, the GPX namer, `TRACK_TMP`) is the SD `Storage`'s full API, but the N2 bring-up
+// demo only mounts + reads (`open_map`/`map_source`/
 // `scan_routes`). The write path is exercised once the shared `obc-app` is wired onto the panel at
 // N6 (#127); let it sit unused until then rather than carve up a module that ports as one piece.
 #![allow(dead_code)]
@@ -54,7 +53,7 @@ pub const SD_INIT_HZ: Frequency = Frequency::K250;
 
 /// SD clock for bulk transfer once the card is initialised. [`Frequency::M8`] (8 MHz) is the
 /// fastest SERIAL22 reaches on the PERI-domain P1 header (its 16 MHz base ÷2) and well within the
-/// 25 MHz default-speed limit — conservative for breadboard jumpers, like the STM32's ~11 MHz.
+/// 25 MHz default-speed limit — conservative for breadboard jumpers.
 const SD_FAST_HZ: Frequency = Frequency::M8;
 
 /// The in-progress ride log on the card — a header-less array of fixed track records (8.3
@@ -124,9 +123,9 @@ pub fn init(mut spi: SdSpi, mut cs: Output<'static>) -> Option<Storage> {
     // ≥74 wake-up clocks with CS high (SD spec), then hold CS LOW for the whole session.
     // `ExclusiveDevice` drives a no-op [`NoCs`], so the real CS never toggles high between a
     // command and its reply — which embassy's SPI can't survive (the card drops the bus and
-    // CMD0's `0x01` is lost). The STM32 validated this on glass (toggling = CardNotFound, held
-    // low = mounts); embassy-nrf's per-byte `SpiDevice` framing has the same hazard, so we reuse
-    // the held-low pattern rather than re-discover it.
+    // CMD0's `0x01` is lost). Validated on glass (toggling = CardNotFound, held low = mounts):
+    // embassy-nrf's per-byte `SpiDevice` framing has this hazard, so we hold CS low for the whole
+    // session.
     cs.set_high();
     let _ = spi.blocking_write(&[0xFFu8; 10]);
     cs.set_low();
@@ -157,7 +156,7 @@ pub fn init(mut spi: SdSpi, mut cs: Output<'static>) -> Option<Storage> {
 /// `SpiDevice` op, so a real CS would toggle high between a command and its reply — which
 /// embassy's SPI doesn't survive (the card drops the bus in the gap; CMD0's `0x01` is lost).
 /// Holding the *real* CS low for the whole session and feeding `ExclusiveDevice` this no-op
-/// keeps the card selected across commands (the STM32's validated workaround, ported verbatim).
+/// keeps the card selected across commands (the validated held-low workaround).
 /// `pub(crate)` only because it surfaces in the adapter return types (like [`NullTime`]).
 pub(crate) struct NoCs;
 impl embedded_hal::digital::ErrorType for NoCs {

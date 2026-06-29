@@ -11,10 +11,10 @@
 //! Modules:
 //! - [`framebuffer`] — the board-owned [`DrawTarget`](embedded_graphics::draw_target::DrawTarget)s
 //!   the shared renderer draws into: the nRF's device-native RGB222 map plane ([`FbDevice64`], 1
-//!   byte/px — the real target, issue #125) and the STM32 prototype's LTDC-scanned RGB565 plane
-//!   ([`Framebuffer565`]).
+//!   byte/px — the real target, issue #125) and the [`Framebuffer565`] RGB565 plane the banded
+//!   [`Band`] scratch reuses.
 //! - [`panel`] — the [`Panel`] banded-display seam + the [`Band`] frame-absolute band view, for
-//!   boards that stream a frame over SPI/DMA instead of scanning SDRAM (issue #122).
+//!   boards that stream a frame to the panel over SPI/DMA a band at a time (issue #122).
 //! - [`button_input`] — a [`ButtonInput`] debouncer over four
 //!   [`InputPin`](embedded_hal::digital::InputPin)s, feeding the shared gesture
 //!   recognizer through [`InputSource`](obc_app::InputSource).
@@ -30,7 +30,7 @@
 //!
 //! Each board's main loop should run the device on **two planes across two executors**, so
 //! input + the overlay stay responsive *while a map frame renders*. `render_map` is a
-//! CPU-bound call (24–51 ms on the F429 prototype) that never `.await`s, so it blocks
+//! CPU-bound call (tens of ms) that never `.await`s, so it blocks
 //! whatever executor it runs on; dirty-tracking (issue #47) cuts how *often* it runs but not
 //! the during-render case (panning re-renders rapidly while a button is held). The fix is
 //! preemption:
@@ -54,9 +54,10 @@
 //! `Channel<Gesture>` plus the two **disjoint** framebuffers — so the long map render holds
 //! no lock against the input plane. UX: the bulge confirms a press *instantly* on the overlay
 //! layer; the screen transition lands a frame later when the map plane drains the channel.
-//! The one piece of shared hardware (the LTDC's single vblank-reload bit, written by both
-//! planes' framebuffer flips) is guarded by a short critical section in the board's flip
-//! helper. The board's `main` may also offer a `single-executor` fallback that drives both
+//! Whatever display resource the two planes genuinely share (the framebuffer / its transport on
+//! a banded board, or a frame-flip register on a scan-out board) is guarded by a short critical
+//! section in the board's present helper. The board's `main` may also offer a `single-executor`
+//! fallback that drives both
 //! planes inline through [`App::handle_input`](obc_app::App::handle_input) — proving the seam
 //! composes — but the preemptive split is the shipping default. The concrete board wiring
 //! lives in `obc-fw-nrf54l`'s `main`, which uses the embassy `InterruptExecutor` pattern.
@@ -77,8 +78,9 @@ pub mod framebuffer;
 // math, so it always compiles and its unit tests run in the host workspace.
 pub mod ls021_wire;
 // The banded display seam ([`Panel`]) + the [`Band`] frame-absolute band view (issue #122). The
-// boards that ship (nRF54L and beyond) have no SDRAM scan-out, so they push a frame band-by-band
-// over SPI/DMA; `Panel` hides that behind the same whole-frame generator the SDRAM plane uses.
+// boards that ship (nRF54L and beyond) have no hardware scan-out, so they push a frame band-by-band
+// over SPI/DMA; `Panel` hides that behind the same whole-frame generator a scan-out plane would
+// drive directly.
 pub mod panel;
 pub mod sd;
 // Always compiled — the synthetic GPS is the `debug-usb`-OFF fallback, so it must exist without

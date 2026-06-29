@@ -51,9 +51,9 @@ the normative byte layouts: [`OBCM_Spec.md`](OBCM_Spec.md) /
 | `firmware/docs/`, `packer/docs/` | Design notes and handover docs (UI spec, rendering pipeline, line-style plans, packer port stages…). |
 
 The crate dependency direction is `obc-sim → obc-app → obc-render → obc-reader`
-(with `obc-route` shared alongside). The real nRF54L firmware will become a
-*second host* beside `obc-sim`, reusing `obc-app` / `obc-render` / `obc-reader` /
-`obc-route` unchanged.
+(with `obc-route` shared alongside). The nRF54L firmware is a *second host*
+beside `obc-sim`, reusing `obc-app` / `obc-render` / `obc-reader` / `obc-route`
+unchanged.
 
 ---
 
@@ -153,7 +153,7 @@ It drives the `obc-pack` binary you built above (override its path with the
 
 ## Viewing & simulating
 
-`obc-sim` renders `.obcm` maps through the exact code path the firmware will run.
+`obc-sim` renders `.obcm` maps through the exact code path the firmware runs.
 Maps must be **v5**.
 
 ```sh
@@ -232,14 +232,14 @@ over SPI.
 **Working now:** OBCM v5 packing (CLI + web builder); the shared LOD-pyramid
 renderer (quadtree query, polygon fill with holes, weighted lines, z-ordering,
 RGB565 → RGB222 quantization); the on-device UI (screen stack + encoder/Back
-input); route loading with live map-matching, ride logging, and GPX export; and
-the nRF54L firmware booting into the full load → ride → save loop on the DK (see
-[`firmware/obc-fw-nrf54l`](firmware/obc-fw-nrf54l)).
+input); route loading with live map-matching, ride logging, and GPX export; the
+nRF54L firmware booting into the full load → ride → save loop on the DK (see
+[`firmware/obc-fw-nrf54l`](firmware/obc-fw-nrf54l)); and the reflective
+**LS021B7DD02** panel driver, its waveform backend running on the nRF54L's FLPR
+coprocessor with partial / dirty-row updates.
 
-**Next:** the reflective **LS021B7DD02** panel driver (in bring-up, with the
-waveform backend moving onto the nRF54L's FLPR coprocessor); Settings / Shutdown
-screens and a Ride-control rework; and richer line styling (dashed / two-color
-lines — a future OBCM v6 — and road casing).
+**Next:** Settings / Shutdown screens and a Ride-control rework; and richer line
+styling (dashed / two-color lines — a future OBCM v6 — and road casing).
 
 > The packer was originally a Python pipeline; it has been ported to Rust
 > (`firmware/obc-pack`) and the Python pipeline removed. The port's design notes

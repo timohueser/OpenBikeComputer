@@ -3,7 +3,7 @@ name = "obc-platform"
 version = "0.1.0"
 edition = "2021"
 publish = false  # internal firmware crate — not published to crates.io
-description = "Board-agnostic no_std firmware glue between obc-app and a concrete board — written once, reused by every OBC board crate. For now: the SDRAM/framebuffer DrawTarget. Later: FatFs ByteSource/Sink adapters, the input debouncer, the USB-CDC debug protocol."
+description = "Board-agnostic no_std firmware glue between obc-app and a concrete board — written once, reused by every OBC board crate: the framebuffer DrawTargets, the banded Panel seam, FatFs ByteSource/Sink adapters, the input debouncer, the synthetic GPS, and the USB-CDC debug protocol."
 
 [features]
 # USB-CDC fake-sensor debug protocol (issue #38). The pure codec in `debug_usb` (line parser,
@@ -12,7 +12,7 @@ description = "Board-agnostic no_std firmware glue between obc-app and a concret
 # default features. This feature adds only the embassy-sync `Signal`/`Channel` hand-off plus the
 # LocationSource/AltimeterSource/CompassSource impls that bridge parsed samples to the app poll
 # (the fresh-fix latch); the board crate owns the actual embassy-usb CDC driver. Off by default so
-# the host workspace build never pulls embassy-sync; the F429 firmware turns it on in its own
+# the host workspace build never pulls embassy-sync; the board firmware turns it on in its own
 # default features.
 debug-usb = ["dep:embassy-sync"]
 
