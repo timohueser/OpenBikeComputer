@@ -821,6 +821,14 @@ impl MapDisplay {
     /// No-op: the ST7789 hold bulge is pushed by the input/overlay plane, not the map loop.
     #[inline(always)]
     fn present_bulge(&mut self, _span: Option<(u16, u16)>, _dirty: bool, _map_redrew: bool) {}
+
+    /// The ST7789 map loop can't see the input plane (its bulge rides the overlay plane), so the
+    /// in-screen hold fills (the Reset bar) aren't driven on this dev-only backend — report no
+    /// hold. The overlay bulge is still the live hold feedback here.
+    #[inline(always)]
+    fn hold_progress(&self) -> f32 {
+        0.0
+    }
 }
 
 /// FLPR LS021 (default): the map plane owns the panel outright (whole-frame scan per push → no shared
@@ -851,6 +859,14 @@ impl MapDisplay {
             let p = &mut *c.borrow_mut();
             (p.take_overlay_dirty(), p.overlay_rows(WIDTH as i32, HEIGHT as i32))
         })
+    }
+
+    /// The live encoder hold-progress from the shared input plane (0.0–1.0). Fed to the map render
+    /// so the in-screen confirm fills (the factory-Reset bar) track the hold — `App`'s own input
+    /// plane isn't driven on the two-plane firmware, so without this the bar never fills.
+    #[inline(always)]
+    fn hold_progress(&self) -> f32 {
+        self.input_plane.lock(|c| c.borrow().encoder_hold_progress())
     }
 
     /// Render the clean frame into the owned panel and scan it to glass. With a live bulge, present
@@ -1106,11 +1122,24 @@ async fn run_app(
             route.as_ref(),
         );
 
+        // Feed the high-priority plane's encoder hold-progress to the map render so the in-screen
+        // confirm fills (the factory-Reset bar) track the hold — `App`'s own input plane isn't
+        // driven here, so the render would otherwise read 0 and the bar would never fill.
+        let hold_p = display.hold_progress();
+        app.set_hold_progress(hold_p);
+
         // Drain the per-frame dirty signal now that input + tick have run, and fold back a redraw a
         // previous frame couldn't service on a transient reader-build failure (#66).
         let mut dirty = app.take_dirty();
         dirty.map |= pending_map_redraw;
         pending_map_redraw = false;
+        // While a hold *charges* on a cheap (non-map) screen — the factory-Reset prompt — redraw it
+        // each frame so its bar tracks the live progress. A pure hold-charge emits no gesture, so
+        // nothing else dirties the map (issue #47). Gated on `!base_draws_map` so the expensive map
+        // view is never re-rendered for a hold; there the overlay bulge is the live feedback.
+        if hold_p > 0.0 && !app.base_draws_map() {
+            dirty.map = true;
+        }
 
         // This frame's hold-bulge state, sampled once through the seam — `(false, None)` on ST7789
         // (its bulge rides the input plane); the live dirty edge + row span on the FLPR (issue #163).
