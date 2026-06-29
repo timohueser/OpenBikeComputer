@@ -66,19 +66,15 @@ cargo run --release --features tft
 # Panel-only bring-up demo (font ladder + 64-colour gamut, no SD, no map) — ST7789:
 cargo run --release --no-default-features --features glass-demo
 
-# LS021B7DD02 panel bring-up bench (epic #139): M33-direct bit-bang driver —
-# power-on init, solid colours, the 64-colour palette, and shapes on real glass.
-# Protocol: the display-protocol docs page; bench notes: firmware/docs/ls021-bringup.md.
-cargo run --release --bin ls021_bringup --features ls021-bringup
-
 # LS021 FLPR backend bring-up (epic #149): the standalone FLPR waveform bench (the same
 # RISC-V blob the default build uses, exercised in isolation). Notes: firmware/docs/ls021-flpr.md.
+# (The earlier M33-direct bit-bang bench bin was retired in #176 — the FLPR drives frames now.)
 cargo run --release --bin ls021_flpr_bringup --features ls021-flpr
 ```
 
 ### LS021 FLPR builds — DK wiring (issue #165)
 
-The default build (and the `ls021_*` bring-up bins) drive the LS021 panel itself, not the ST7789.
+The default build (and the `ls021_flpr_bringup` bring-up bin) drive the LS021 panel itself, not the ST7789.
 The source bus + `BCK` + COM stay on **P2** (P2.00–06 data/clock, P2.07/08/10 COM, P2.09 heartbeat
 LED); the four gate lines + `BSP` sit on **free P1 pins** — `GSP P1.00 / GCK P1.01 / GEN P1.12 /
 INTB P1.10 / BSP P1.14` — deliberately **off** the SD-SPI bus (P1.06/07/11/12) and VCOM (P1.04/05)
@@ -104,10 +100,10 @@ needs an `rv32emc`-capable GNU gcc — install once:
 brew install riscv64-elf-gcc        # or set RISCV_GCC=<path> to an xPack / Zephyr-SDK toolchain
 ```
 
-It's needed by every FLPR build — the **default** map firmware and `--features ls021-flpr`. The
-opt-in **`--features tft`** ST7789 firmware, the `glass-demo` demo, and the `ls021-bringup` bench bin
-need **no** RISC-V toolchain (CI installs the gcc only on the FLPR legs; `build.rs` keys the blob on
-the absence of `tft`). On Linux/CI the apt package `gcc-riscv64-unknown-elf` works too.
+It's needed by every FLPR build — the **default** map firmware and `--features ls021-flpr`. Only the
+opt-in **`--features tft`** ST7789 firmware (and the `glass-demo` demo it implies) needs **no** RISC-V
+toolchain (CI installs the gcc only on the FLPR legs; `build.rs` keys the blob on the absence of
+`tft`). On Linux/CI the apt package `gcc-riscv64-unknown-elf` works too.
 
 If `cargo run` prompts to pick a probe (e.g. another ST-LINK is attached), pass
 `--probe <vid:pid:serial>` for the J-Link.
