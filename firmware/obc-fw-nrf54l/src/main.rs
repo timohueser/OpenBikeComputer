@@ -389,6 +389,29 @@ static mut APP: MaybeUninit<App> = MaybeUninit::uninit();
 #[cfg(not(feature = "glass-demo"))]
 static mut ROUTE_CACHE: MaybeUninit<RouteCache> = MaybeUninit::uninit();
 
+/// Build a `'static` value into a `.bss` [`MaybeUninit`] slot, returning the sole `&'static mut` to
+/// it — the warm-reset-safe replacement for `StaticCell` that every runtime-built shared static (the
+/// bus mutex, the `InputPlane` mutex, the VCOM rings, the map/route caches) is created through.
+/// `StaticCell`'s one-shot `used` flag panics ("already full") if it is ever non-zero on entry, which
+/// on this board's debug-reset path it can be; an unconditional in-place [`ptr::write`](core::ptr)
+/// carries no such flag, so it survives a warm reset. Centralises the open-coded `addr_of_mut!` +
+/// cast + `write` idiom into one `unsafe` + SAFETY contract. `#[inline(always)]` so the by-value
+/// `val` never lands on the stack — a zeroed `MaybeUninit::new` (the big caches) packs straight to a
+/// `.bss` memset, exactly as the open-coded `slot.write(..)` did.
+///
+/// # Safety
+/// `slot` must point at a `static mut MaybeUninit<T>` that is initialised **exactly once** for the
+/// program's life through this call and never aliased elsewhere — the returned reference is the only
+/// one handed out. (`MaybeUninit<T>` shares `T`'s layout, so the cast is sound.) Each call site
+/// passes a distinct slot.
+#[cfg(not(feature = "glass-demo"))]
+#[inline(always)]
+unsafe fn init_static<T>(slot: *mut MaybeUninit<T>, val: T) -> &'static mut T {
+    let ptr = slot as *mut T;
+    ptr.write(val);
+    &mut *ptr
+}
+
 /// Idle camera zoom for the N4 static map, in ground metres-per-pixel (the 0.5–4 mpp riding band).
 /// A coarse-ish 2 mpp shows a town-scale overview — several roads / landuse polygons, so the
 /// 64-colour gamut is visible at a glance — rather than a tight patch. Freely tunable: the frame is
@@ -806,11 +829,10 @@ async fn main(_spawner: Spawner) {
             static mut TX_BUF: MaybeUninit<[u8; 256]> = MaybeUninit::uninit();
             // SAFETY: each ring is written once here, then handed to exactly one task half — no alias.
             let (rx_buf, tx_buf): (&'static mut [u8; 256], &'static mut [u8; 256]) = unsafe {
-                let r = core::ptr::addr_of_mut!(RX_BUF) as *mut [u8; 256];
-                r.write([0; 256]);
-                let t = core::ptr::addr_of_mut!(TX_BUF) as *mut [u8; 256];
-                t.write([0; 256]);
-                (&mut *r, &mut *t)
+                (
+                    init_static(core::ptr::addr_of_mut!(RX_BUF), [0; 256]),
+                    init_static(core::ptr::addr_of_mut!(TX_BUF), [0; 256]),
+                )
             };
             let uart = BufferedUarte::new(
                 p.SERIAL20,
@@ -860,11 +882,7 @@ async fn main(_spawner: Spawner) {
         // Place the streamed-map geometry cache in `.bss`, built in place (an all-zero
         // `MaybeUninit::zeroed` → a `.bss` memset, never a stack temporary).
         // SAFETY: sole owner of MAP_CACHE; single executor → no aliasing.
-        let map_cache: &MapCache = unsafe {
-            let slot = core::ptr::addr_of_mut!(MAP_CACHE) as *mut MapCache;
-            slot.write(MapCache::new());
-            &*slot
-        };
+        let map_cache: &MapCache = unsafe { init_static(core::ptr::addr_of_mut!(MAP_CACHE), MapCache::new()) };
 
         // Parse the OBCM **header + style table + LOD pyramid once at boot** into the resident
         // [`MAP_TABLES`] (issue #179). These tables are immutable for the session, so the loop's
@@ -956,19 +974,13 @@ async fn main(_spawner: Spawner) {
             static mut BUS: MaybeUninit<Mutex<CriticalSectionRawMutex, Display>> = MaybeUninit::uninit();
             // SAFETY: sole writer; initialised here before the `&'static` is shared with the input
             // plane, never written again (single executor builds it, two planes only read it).
-            let bus: &'static Mutex<CriticalSectionRawMutex, Display> = unsafe {
-                let slot = core::ptr::addr_of_mut!(BUS) as *mut Mutex<CriticalSectionRawMutex, Display>;
-                slot.write(Mutex::new(Display { panel, fb }));
-                &*slot
-            };
+            let bus: &'static Mutex<CriticalSectionRawMutex, Display> =
+                unsafe { init_static(core::ptr::addr_of_mut!(BUS), Mutex::new(Display { panel, fb })) };
             static mut INPUT_PLANE: MaybeUninit<BlockingMutex<CriticalSectionRawMutex, RefCell<InputPlane>>> =
                 MaybeUninit::uninit();
             // SAFETY: as BUS — sole writer, initialised before shared, never rewritten.
             let input_plane: &'static BlockingMutex<CriticalSectionRawMutex, RefCell<InputPlane>> = unsafe {
-                let slot = core::ptr::addr_of_mut!(INPUT_PLANE)
-                    as *mut BlockingMutex<CriticalSectionRawMutex, RefCell<InputPlane>>;
-                slot.write(BlockingMutex::new(RefCell::new(InputPlane::new())));
-                &*slot
+                init_static(core::ptr::addr_of_mut!(INPUT_PLANE), BlockingMutex::new(RefCell::new(InputPlane::new())))
             };
 
             let input_spawner = EXECUTOR_INPUT.start(interrupt::SWI00);
@@ -1048,10 +1060,7 @@ async fn main(_spawner: Spawner) {
             // SAFETY: sole writer; initialised before the `&'static` is shared with the input plane,
             // never rewritten (single executor builds it, two planes only read it).
             let input_plane: &'static BlockingMutex<CriticalSectionRawMutex, RefCell<InputPlane>> = unsafe {
-                let slot = core::ptr::addr_of_mut!(INPUT_PLANE)
-                    as *mut BlockingMutex<CriticalSectionRawMutex, RefCell<InputPlane>>;
-                slot.write(BlockingMutex::new(RefCell::new(InputPlane::new())));
-                &*slot
+                init_static(core::ptr::addr_of_mut!(INPUT_PLANE), BlockingMutex::new(RefCell::new(InputPlane::new())))
             };
 
             let hp = EXECUTOR_HP.start(interrupt::SWI00);
@@ -1068,11 +1077,7 @@ async fn main(_spawner: Spawner) {
         // Place the decoded-route-geometry cache in `.bss`, built in place (a zeroed
         // `MaybeUninit::zeroed` → a `.bss` memset, never a stack temporary — like `MAP_CACHE`).
         // SAFETY: sole owner of ROUTE_CACHE; single map plane → no aliasing.
-        let route_cache: &RouteCache = unsafe {
-            let slot = core::ptr::addr_of_mut!(ROUTE_CACHE) as *mut RouteCache;
-            slot.write(RouteCache::new());
-            &*slot
-        };
+        let route_cache: &RouteCache = unsafe { init_static(core::ptr::addr_of_mut!(ROUTE_CACHE), RouteCache::new()) };
 
         // Sensor sources. Default (`debug-uart`): the host-streamed GPS / altimeter / compass, parsed
         // by the VCOM tasks into obc-platform's signals — these ZST handles just `try_take` from them
