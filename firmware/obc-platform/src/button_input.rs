@@ -176,12 +176,6 @@ impl<P: InputPin> ButtonInput<P> {
         Self::edge(&mut self.back, Button::Back, now_ms, t.debounce_ms, &mut self.queue);
     }
 
-    /// Whether [`update`](Self::update) queued any events this sample (i.e. before the
-    /// app drains them). A board's render loop can use this to redraw only on input.
-    pub fn has_pending(&self) -> bool {
-        !self.queue.is_empty()
-    }
-
     /// PREV/NEXT handling: a debounced press emits one detent and arms auto-repeat; a
     /// release disarms it; while held, a detent is emitted each time the repeat falls
     /// due (rebased to `now`, so a stalled loop emits one catch-up detent, not a burst).

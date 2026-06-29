@@ -9,7 +9,6 @@
 //! always-compiled module (NOT behind the `debug-usb` feature) precisely because it *is* the
 //! debug-usb-off path: the board picks it when the USB feed is off.
 
-use crate::time::SaturatingElapsed;
 use embassy_time::Instant;
 use obc_app::{Fix, LocationSource};
 
@@ -67,7 +66,11 @@ impl LocationSource for SynthLocation {
         // Emit on the GPS's own ~1 Hz cadence, `None` between — the exact fresh-fix contract a
         // real receiver (and #38's USB feed) honours, so the prototype walks the same
         // integrate-one-sample path rather than the every-tick replay that masked issue #43.
-        let elapsed_ms = self.start.saturating_elapsed().as_millis();
+        // `saturating_duration_since`, not `Instant::elapsed()`: embassy's `elapsed()` `unwrap!`s a
+        // `checked_sub`, so it panics → HardFault if `now()` momentarily reads *before* `start` (a
+        // known embassy time-driver race when a narrow hardware timer is extended to 64-bit ticks).
+        // A transient backwards read meaning "zero time passed" is harmless here, so clamp it.
+        let elapsed_ms = Instant::now().saturating_duration_since(self.start).as_millis();
         if let Some(last) = self.last_fix_ms {
             if elapsed_ms.wrapping_sub(last) < SYNTH_FIX_INTERVAL_MS {
                 return None;
