@@ -431,6 +431,70 @@ async fn idle_blink(led: &mut Output<'static>) -> ! {
     }
 }
 
+/// Scan the card's `/routes/*.obcr` catalog into the app's Route menu. Deliberately its **own
+/// `#[inline(never)]` frame**: the ~5 KB [`Catalog`](obc_app::Catalog) (`Vec<RouteSummary,
+/// MAX_ROUTES>`, 64 × ~84 B) lives here and is popped on return, so it never sits on `main`'s frame
+/// *beneath* the long-lived [`run_app`] ride loop. (When the loop was inline in `main`, LLVM could
+/// reuse the catalog's dead stack slot for the loop's locals; once the loop moved into its own
+/// function the two frames stop sharing, and a resident 5 KB catalog there silently steals from the
+/// deep route-load render path's stack — overflowing the 256 KB part. Issue #175.)
+#[cfg(not(feature = "glass-demo"))]
+#[inline(never)]
+fn load_routes(storage: &mut sd::Storage, app: &mut App) {
+    let catalog = storage.scan_routes();
+    app.set_routes(&catalog);
+}
+
+/// Stack high-water guard (issue #175): [`paint`] fills the free stack with a sentinel early in
+/// `main`; [`used`] then reports the deepest reach by finding the lowest still-painted word (the
+/// stack runs `_stack_start` top → `_stack_end` bottom, and a deep call overwrites the sentinel). The
+/// ride loop logs only on a *new* peak, so it's silent once warm but flags any future change that
+/// creeps the deep route-load render toward the 256 KB-DK's ~36 KB ceiling — the exact silent
+/// overflow this issue chased. Cheap (one boot paint + a per-frame scan); harmless on the 512 KB
+/// nRF54LM20 target, where the stack budget is no longer tight.
+#[cfg(not(feature = "glass-demo"))]
+mod stackmeter {
+    const PAINT: u32 = 0xC0DE_DEAD;
+    extern "C" {
+        static _stack_start: u32;
+        static _stack_end: u32;
+    }
+    #[inline(always)]
+    fn top() -> usize {
+        core::ptr::addr_of!(_stack_start) as usize
+    }
+    #[inline(always)]
+    fn bottom() -> usize {
+        core::ptr::addr_of!(_stack_end) as usize
+    }
+    /// Paint everything below the current SP (minus a margin) down to the stack bottom.
+    pub fn paint() {
+        let sp = cortex_m::register::msp::read() as usize;
+        let mut a = bottom();
+        let stop = sp.saturating_sub(512);
+        while a < stop {
+            unsafe { (a as *mut u32).write_volatile(PAINT) };
+            a += 4;
+        }
+    }
+    /// Bytes of stack used at the deepest point reached so far (the high-water mark).
+    pub fn used() -> usize {
+        let (top, bottom) = (top(), bottom());
+        let mut a = bottom;
+        while a < top {
+            if unsafe { (a as *const u32).read_volatile() } != PAINT {
+                break;
+            }
+            a += 4;
+        }
+        top - a
+    }
+    /// Total usable stack (`_stack_start - _stack_end`).
+    pub fn total() -> usize {
+        top() - bottom()
+    }
+}
+
 // ============================ N5 two-plane input + overlay (issue #126) ============================
 // The map render (`render_map` + the banded push) is a CPU- and SPI-bound call that would block its
 // executor for tens of ms. To keep input + the hold bulge responsive *during* that, the device runs
@@ -770,17 +834,21 @@ struct MapDisplay {
 impl MapDisplay {
     /// The ST7789 bulge rides the input/overlay plane, so the map loop never has a live span: always
     /// "clean".
+    #[inline(always)]
     fn poll_overlay(&mut self) -> (bool, Option<(u16, u16)>) {
         (false, None)
     }
 
     /// Lock the shared bus, render the clean frame into the framebuffer through the seam, and band
     /// the whole frame to GRAM. `overlay_span` is unused (the bulge is a separate fast plane).
-    /// Dropping the guard on return lets the input plane push its bulge again.
+    /// Dropping the guard on return lets the input plane push its bulge again. `#[inline(always)]` +
+    /// a generic (non-`dyn`) `render` so the deep render folds into the caller's frame rather than
+    /// nesting another (the #175 stack regression — see [`run_app`]).
+    #[inline(always)]
     async fn render_present(
         &mut self,
         _overlay_span: Option<(u16, u16)>,
-        render: &mut dyn FnMut(&mut dyn DisplayDriver) -> RenderStats,
+        mut render: impl FnMut(&mut dyn DisplayDriver) -> RenderStats,
     ) -> FramePresent {
         let mut guard = self.bus.lock().await;
         let display: &mut dyn DisplayDriver = &mut *guard;
@@ -794,6 +862,7 @@ impl MapDisplay {
     }
 
     /// No-op: the ST7789 hold bulge is pushed by the input/overlay plane, not the map loop.
+    #[inline(always)]
     fn present_bulge(&mut self, _span: Option<(u16, u16)>, _dirty: bool, _map_redrew: bool) {}
 }
 
@@ -819,6 +888,7 @@ impl MapDisplay {
     /// overlay bookkeeping): the dirty edge (live while the bulge animates, plus one trailing clear)
     /// and the live bulge's **row span** (`None` when quiet), so the map present can go *around* it
     /// and `present_bulge` can re-present it (issue #163).
+    #[inline(always)]
     fn poll_overlay(&mut self) -> (bool, Option<(u16, u16)>) {
         self.input_plane.lock(|c| {
             let p = &mut *c.borrow_mut();
@@ -829,11 +899,14 @@ impl MapDisplay {
     /// Render the clean frame into the owned panel and scan it to glass. With a live bulge, present
     /// the spans *around* its rows (`map_rows_around`) and leave those rows for `present_bulge` — the
     /// FLPR's ~100 ms full-frame scan would otherwise blank the bulge for that whole scan (the
-    /// pop-flicker, issue #163). No shared bus: the map plane owns every push here.
+    /// pop-flicker, issue #163). No shared bus: the map plane owns every push here. Marked
+    /// `#[inline(always)]` with a generic (non-`dyn`) `render` so the deep render folds into the
+    /// caller's frame rather than nesting another (the #175 stack regression).
+    #[inline(always)]
     async fn render_present(
         &mut self,
         overlay_span: Option<(u16, u16)>,
-        render: &mut dyn FnMut(&mut dyn DisplayDriver) -> RenderStats,
+        mut render: impl FnMut(&mut dyn DisplayDriver) -> RenderStats,
     ) -> FramePresent {
         let t_render = Instant::now();
         let stats = render(&mut self.panel);
@@ -853,6 +926,7 @@ impl MapDisplay {
     /// mid-pop. Only the active bulge's rows are touched (the FLPR fast-forwards the gate to them +
     /// early-stops). The trailing clear (bulge just went quiet) wipes **the same rows** the last bulge
     /// used, unless a map present this frame already restored the clean map there (`map_redrew`).
+    #[inline(always)]
     fn present_bulge(&mut self, overlay_span: Option<(u16, u16)>, overlay_dirty: bool, map_redrew: bool) {
         let color_fn = |c: u16| Rgb565::from(RawU16::new(c));
         let input_plane = self.input_plane;
@@ -893,7 +967,12 @@ impl MapDisplay {
 /// telemetry vs. the `SynthLocation` stand-in), not the display backend — that is wholly behind
 /// `MapDisplay`.
 #[cfg(not(feature = "glass-demo"))]
-#[allow(clippy::too_many_arguments)] // a one-call internal builder; the params are all distinct residents
+#[allow(clippy::too_many_arguments)]
+// a one-call internal builder; the params are all distinct residents
+// `#[inline(always)]`: this is a single-call-site `-> !` future. Inlining folds it (and the present
+// methods above) back into `main`'s frame — recovering the ~5 KB of stack the bare extraction cost
+// (the deep route-load render then overran the 256 KB part's stack). Keeps the clean source split.
+#[inline(always)]
 async fn run_app(
     mut display: MapDisplay,
     app: &mut App,
@@ -942,9 +1021,18 @@ async fn run_app(
     let mut last_telem_ms: u32 = 0;
     #[cfg(feature = "debug-uart")]
     let mut last_telem = obc_platform::debug_usb::Telemetry::default();
+    // Stack-guard bookkeeping: log only when a new deepest reach is seen (silent once warmed up), so
+    // a future change that pushes the deep render path closer to the 256 KB-DK's ~36 KB stack ceiling
+    // shows up immediately instead of as a silent overflow (issue #175). Harmless on the 512 KB target.
+    let mut stack_hw = 0usize;
     let mut last_led = 0u32;
     loop {
         let now = Instant::now().as_millis() as u32;
+        let hw = stackmeter::used();
+        if hw > stack_hw {
+            stack_hw = hw;
+            defmt::info!("stack high-water {=usize} / {=usize} B (new peak)", hw, stackmeter::total());
+        }
 
         // Apply the high-priority plane's recognised gestures, in order, then advance animations.
         // The screen transition lands a frame after the overlay already confirmed the press.
@@ -1085,7 +1173,7 @@ async fn run_app(
                 // the composite below paints them, issue #163). `render_map_timed` threads
                 // `InstantClock` so the stats carry the collect/sort/draw timings; the hold bulge is
                 // **not** composited here — it rides `present_bulge` on its own plane.
-                let mut render = |d: &mut dyn DisplayDriver| {
+                let render = |d: &mut dyn DisplayDriver| {
                     let mut fbdev = FbDevice64::new(d.fb_mut(), WIDTH as u32, HEIGHT as u32);
                     app.render_map_timed(
                         &mut fbdev,
@@ -1097,7 +1185,7 @@ async fn run_app(
                         &InstantClock,
                     )
                 };
-                let fp = display.render_present(overlay_span, &mut render).await;
+                let fp = display.render_present(overlay_span, render).await;
 
                 // Snapshot this frame's render stats for the host telemetry line — the same numbers as
                 // the RTT `map frame` log. The nRF reader isn't `TimedSource`-wrapped, so the SD/cache
@@ -1190,6 +1278,10 @@ async fn main(_spawner: Spawner) {
         config.clock_speed = embassy_nrf::config::ClockSpeed::CK128;
         embassy_nrf::init(config)
     };
+
+    // Paint the stack now (still shallow) so the ride loop's high-water guard can read the peak (#175).
+    #[cfg(not(feature = "glass-demo"))]
+    stackmeter::paint();
 
     // LED0 (P2_09) heartbeat — a liveness blink visible even before looking at the panel.
     let mut led = Output::new(p.P2_09, Level::Low, OutputDrive::Standard);
@@ -1313,13 +1405,11 @@ async fn main(_spawner: Spawner) {
             idle_blink(&mut led).await
         };
 
-        // Open the `.obcm` and hold it open for the session — the map **streams** from it
-        // (issue #37), never read resident into the 256 KB part. Then fill the Route menu from the
-        // card's `/routes/*.obcr` catalog — both done here while `storage` is still freely mutable,
-        // *before* the loop's per-frame readers take their short immutable borrows. The owned `Vec`
-        // outlives those borrows and feeds `set_routes` once the app is built below.
+        // Open the `.obcm` and hold it open for the session — the map **streams** from it (issue
+        // #37), never read resident into the 256 KB part. (The `/routes/*.obcr` catalog is scanned
+        // into the app's Route menu by `load_routes` *after* the app is built — in its own frame, so
+        // the ~5 KB `Catalog` never sits on `main`'s stack beneath the long-lived ride loop, #175.)
         storage.open_map();
-        let catalog = storage.scan_routes();
 
         // Place the streamed-map geometry cache in `.bss`, built in place (an all-zero
         // `MaybeUninit::zeroed` → a `.bss` memset, never a stack temporary).
@@ -1372,7 +1462,7 @@ async fn main(_spawner: Spawner) {
             App::init_idle(slot, AppState::new(cam_lon, cam_lat, zoom_for_mpp(INIT_MPP)));
             &mut *slot
         };
-        app.set_routes(&catalog);
+        load_routes(&mut storage, app);
 
         // The four DK push-buttons (active-low, internal pull-up; polled by `ButtonInput`). User
         // mapping: BTN0 PREV, BTN1 NEXT, BTN3 SELECT, BTN2 BACK — `new(prev, next, select, back)`.
