@@ -257,7 +257,7 @@ Gesture::Hold => match self.selected {     // reaching this arm IS the confirmat
 },
 ```
 
-The factory **Reset** screen is the one place this earns its keep on purpose: it's destructive, so a stray tap can't fire it — you hold, a bar fills with the live progress, and only a completed hold clears the settings to their defaults.
+The factory **Reset** screen is the one place a hold guards a *destructive* action. The hold threshold is a fixed ~500 ms — too short to feel safe alone — so reset is **two deliberate steps**: a press *arms* the screen, then a hold *erases*. A stray hold on an un-armed screen does nothing; only an armed, completed hold clears the settings (with a bar filling on the live progress).
 
 ## Settings: a second level of focus
 
@@ -301,7 +301,7 @@ Most screens have one focus: the row cursor. The **Settings** screens — Date &
     <text class="d-sub" x="438" y="174" style="font-size:10.5px">back &nbsp;— step out of the field</text>
   </g>
 </svg>
-<figcaption>The settings editors reuse the five gestures at two levels: the row cursor, then a live field. Pressing a value row drops focus in; pressing past the last field (or <code>back</code>) lifts it back out. Edits are applied <i>live</i> as you turn, so <code>Save &amp; exit</code> is just a normal <code>back</code> — there's no staging buffer to commit.</figcaption>
+<figcaption>The settings editors reuse the five gestures at two levels: the row cursor, then a live field. Pressing a value row drops focus in; pressing past the last field (or <code>back</code>) lifts it back out. Edits apply <i>live</i> as you turn — there's no save button and no staging buffer: <code>back</code> just exits, and the change was already made.</figcaption>
 </figure>
 
 ### Settings survive a reboot — independent of the SD card
