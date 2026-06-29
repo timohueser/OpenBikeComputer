@@ -9,7 +9,7 @@
 //! Bring-up is phased so each hardware layer is verified (over defmt/RTT, and on glass via
 //! the webcam capture at `/tmp/obc-cam/panel.jpg`) before the next is stacked:
 //!   N0. crate skeleton + embassy bring-up: blinky + RTT + this peripheral plan          (#121)
-//!   N1. `Panel` HAL + ST7789 SPIM backend + banded RGB565 push + glass demo (RGB222 at N4)    (#122)
+//!   N1. `Panel` HAL + ST7789 SPIM backend + banded RGB565 push + font/colour demo (RGB222 at N4) (#122)
 //!   N2. microSD on a dedicated SPIM (reuse obc-platform's FatFs byte adapters)            <- (#123)
 //!   N3. board memory profile (host-vs-nRF) + budget assert                              (#124)
 //!   N4. RGB222 full framebuffer + full map on glass (retire `Framebuffer565`)           (#125)
@@ -55,9 +55,10 @@
 //!   leaves all of P1 free for SD (N2) + VCOM (N6) + the buttons. Band push expands the RGB222
 //!   framebuffer → RGB565 and SPIM-DMAs a CASET/RASET window (the wire format lives in
 //!   `Panel::flush_band`, the same seam the future FLPR/LS021B7DD02 reuses); the RGB222 source
-//!   framebuffer lands at N4. N1 already drives that `Panel` seam (in RGB565) with a banded
-//!   `glass-demo` — the font ladder + the device's 64-colour gamut — to prove wiring + init +
-//!   addressing + the colour/text path end-to-end.
+//!   framebuffer lands at N4. N1 first drove that `Panel` seam (in RGB565) with a banded font/colour
+//!   bring-up screen — the font ladder + the device's 64-colour gamut — proving wiring + init +
+//!   addressing + the colour/text path end-to-end before the real app rendered through it (that
+//!   standalone demo was retired once the app drove both panels, issue #177).
 //!
 //! ## microSD SPIM — map/route/track storage (#123)
 //!   Instance **SERIAL22 / SPIM22** — a standard-speed instance (SD doesn't need 32 MHz),
@@ -102,16 +103,11 @@
 #![no_std]
 #![no_main]
 
-// glass-demo (#122): the font/palette panel bring-up, drawn per band (no SD, no full framebuffer).
-#[cfg(feature = "glass-demo")]
-mod demo;
-// microSD map storage (#123): only the default (map) build touches the card — the glass-demo panel
-// bring-up needs no SD. The module carries its own dead-code allow for the route/track write half
-// that the app wires in at N6 (#127).
-#[cfg(not(feature = "glass-demo"))]
+// microSD map storage (#123): the module carries its own dead-code allow for the route/track write
+// half that the app wires in at N6 (#127).
 mod sd;
 // The ST7789 panel geometry (`WIDTH`/`HEIGHT`) is shared by both display backends; the `St7789`
-// driver itself is the opt-in `tft` map/glass-demo backend (the default FLPR build below replaces it).
+// driver itself is the opt-in `tft` map backend (the default FLPR build below replaces it).
 mod st7789;
 // LS021 FLPR backend (issue #165) — the **default** display: `main.rs` runs the real app on the
 // reflective LS021 panel via the FLPR (the VPR coprocessor) unless `--features tft` selects the
@@ -123,9 +119,7 @@ mod com;
 #[cfg(not(feature = "tft"))]
 mod ls021_flpr;
 // The board's display-driver seam — the single screen-write interface both panels implement, so the
-// map plane drives either through one path (`fb_mut` + `present`). The glass-demo bring-up draws
-// straight through the `Panel` band seam, so it doesn't pull this in.
-#[cfg(not(feature = "glass-demo"))]
+// map plane drives either through one path (`fb_mut` + `present`).
 mod display;
 
 use defmt::info;
@@ -136,25 +130,21 @@ use embassy_time::Timer;
 use st7789::{HEIGHT, WIDTH};
 use {defmt_rtt as _, panic_probe as _};
 
-// `Delay` (the ST7789 power-on waits) + the `St7789` driver type are the default (and glass-demo)
-// backend; the FLPR build replaces them with the `Ls021Flpr` `Panel` backend, so neither is there.
+// `Delay` (the ST7789 power-on waits) + the `St7789` driver type are the opt-in `tft` backend; the
+// default FLPR build replaces them with the `Ls021Flpr` `Panel` backend, so neither is there.
 #[cfg(feature = "tft")]
 use embassy_time::Delay;
 #[cfg(feature = "tft")]
 use st7789::St7789;
 
-// `glass-demo` is an ST7789 build, so it pulls in `tft` (see Cargo.toml) — that's why every
-// ST7789-backend `cfg` below keys on `feature = "tft"` alone and the rest of the file can treat
-// `not(feature = "tft")` as "the default FLPR/LS021 path."
+// The ST7789 is the opt-in `tft` backend, so every ST7789-backend `cfg` below keys on
+// `feature = "tft"` and the rest of the file treats `not(feature = "tft")` as "the default
+// FLPR/LS021 path."
 //
 // The frame-absolute draw view `Band` is used by every build — both map backends' `present_overlay`
-// drawers paint the hold bulge into it (issue #163), and the glass-demo draws the whole frame through
-// it. The banded `Panel` trait + its frame `Size` are now **glass-demo-only** in `main.rs`: the
-// ST7789 map's banding + bulge composite moved behind the seam into `display::st7789` (issue #174), so
-// the only remaining direct `Panel` user here is the glass-demo's band-by-band `show` loop.
+// drawers paint the hold bulge into it (issue #163). The ST7789 map's banding + bulge composite live
+// behind the seam in `display::st7789` (issue #174).
 use obc_platform::Band;
-#[cfg(feature = "glass-demo")]
-use {embedded_graphics::prelude::Size, obc_platform::Panel};
 
 // N4 map path (#125): the shared app, the streamed-map reader + its `.bss` cache, and the
 // device-native RGB222 framebuffer the renderer draws into (`color_fn` = identity Rgb565; the
@@ -166,47 +156,30 @@ use {embedded_graphics::prelude::Size, obc_platform::Panel};
 // The blocking `InputPlane` mutex both planes touch — on ST7789 the input plane re-pushes the overlay
 // window from it; on the FLPR build (issue #163) the input plane recognises + animates the bulge under
 // it while the map plane composites it into the partial push. Both map builds share it now.
-#[cfg(not(feature = "glass-demo"))]
 use core::cell::RefCell;
-#[cfg(not(feature = "glass-demo"))]
 use core::mem::MaybeUninit;
-#[cfg(not(feature = "glass-demo"))]
 use display::{DisplayDriver, OverlayRegion};
 // The ST7789 `Display` backend (panel + framebuffer) now lives behind the seam in `display::st7789`
 // (issue #174); the map plane builds it into [`BUS`] and drives it only through `DisplayDriver`.
-#[cfg(all(not(feature = "glass-demo"), feature = "tft"))]
+#[cfg(feature = "tft")]
 use display::Display;
-#[cfg(not(feature = "glass-demo"))]
 use embassy_executor::InterruptExecutor;
-#[cfg(not(feature = "glass-demo"))]
 use embassy_nrf::gpio::{Input, Pull};
-#[cfg(not(feature = "glass-demo"))]
 use embassy_nrf::interrupt;
-#[cfg(not(feature = "glass-demo"))]
 use embassy_nrf::interrupt::{InterruptExt, Priority};
-#[cfg(not(feature = "glass-demo"))]
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-#[cfg(not(feature = "glass-demo"))]
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
-#[cfg(not(feature = "glass-demo"))]
 use embassy_sync::channel::{Channel, Sender};
-#[cfg(all(not(feature = "glass-demo"), feature = "tft"))]
+#[cfg(feature = "tft")]
 use embassy_sync::mutex::Mutex;
-#[cfg(not(feature = "glass-demo"))]
 use embassy_time::Instant;
-#[cfg(not(feature = "glass-demo"))]
 use embedded_graphics::pixelcolor::{raw::RawU16, Rgb565};
-#[cfg(not(feature = "glass-demo"))]
 use obc_app::{App, AppState, Gesture, InputClock, InputEvent, InputPlane, InputSource, RideClock, Sensors, TrackSink};
-#[cfg(not(feature = "glass-demo"))]
 use obc_platform::{ButtonInput, FbDevice64};
-#[cfg(not(feature = "glass-demo"))]
 use obc_reader::{MapCache, MapTables, Reader};
-#[cfg(not(feature = "glass-demo"))]
 use obc_render::{zoom_for_mpp, RenderStats};
 // The N6 ride loop (#127): the decoded-route-geometry cache, the resident per-route chunk index,
 // and the streamed route reader the matcher + map render share — one per-frame structure.
-#[cfg(not(feature = "glass-demo"))]
 use obc_route::{RouteCache, RouteIndex, RouteReader};
 // The runtime-built shared statics (the bus `Mutex`, the `InputPlane` mutex, the VCOM ring buffers)
 // are parked in `.bss` with the same in-place `MaybeUninit` + `ptr::write` pattern as APP/MAP_CACHE/
@@ -217,7 +190,7 @@ use obc_route::{RouteCache, RouteIndex, RouteReader};
 // The `debug-uart`-off fallback's stand-in GPS (`SynthLocation`) — always-compiled in obc-platform
 // (it *is* the no-feed path), so it's imported only when wired (the VCOM build streams a real ride
 // instead). Walks a slow square loop so a saved ride is a non-degenerate `.gpx`.
-#[cfg(all(not(feature = "glass-demo"), not(feature = "debug-uart")))]
+#[cfg(not(feature = "debug-uart"))]
 use obc_platform::SynthLocation;
 
 // LS021 FLPR backend (issue #165): the resident-framebuffer `Panel` backend + its launch, and the
@@ -256,7 +229,7 @@ bind_interrupts!(struct UartIrqs {
 
 /// One band's worth of RGB565 scratch (`WIDTH * BAND_ROWS`), living in `.bss`. 14 rows ≈ 6.6 KB
 /// and tiles the 320-row frame in 23 bands. The `Panel` impl fills it — the map path expands the
-/// RGB222 frame into it, the glass-demo draws the frame per band — then byte-swaps to big-endian
+/// RGB222 frame into it — then byte-swaps to big-endian
 /// and SPIM-DMAs it; borrowed exactly once below (single executor → no aliasing). `BAND_BYTES` is
 /// what the N3 budget assert reserves. (N6, #127: 20→14, freeing ~2.9 KB toward the ride-loop
 /// residents + the deep render path's stack; must stay ≥ the overlay window `OVL_W × OVL_ROWS`,
@@ -286,9 +259,8 @@ static mut BAND: [u16; WIDTH as usize * BAND_ROWS] = [0; WIDTH as usize * BAND_R
 //   - `App`        embeds the renderer scratch (`obc_render::MCU_RENDERER_BYTES`, ~66 KB nrf-mem)
 //                  plus the resident elevation `Profile` (~4.6 KB at PROFILE_COLS=512) and
 //                  `Breadcrumb` (~6 KB at SPINE_CAP=512); ~88 KB total.
-//   - framebuffer  the single RGB222 frame (#N4): 240×320 × 1 B/px = 75 KB — the `FB` static below
-//                  (the map path) renders into it; the glass-demo build reserves the budget without
-//                  allocating it, since it draws per band.
+//   - framebuffer  the single RGB222 frame (#N4): 240×320 × 1 B/px = 75 KB — the `FB` static below,
+//                  which the map path renders into.
 //   - `MapCache`   the streamed-map geometry-chunk cache (3 slots on nrf-mem, ~25 KB).
 //   - `RouteCache` the decoded-route-chunk cache (3 slots on nrf-mem, ~9 KB — trimmed 4→3 as a
 //                  256 KB-DK stop-gap to claw ~3 KB back for the deep ride-loop render stack below).
@@ -360,8 +332,7 @@ const _: () = assert!(
 /// [`BUS`] and the band push expands it back to RGB565, so the two planes (#126) reach it only under
 /// that mutex (no aliasing, no torn frame). On the default **FLPR** path (issue #165) it is
 /// owned by the `Ls021Flpr` panel — the map plane renders into it and `push_frame` packs it straight
-/// to the LS021 wire. Map-path only — the glass-demo draws per band, no full frame.
-#[cfg(not(feature = "glass-demo"))]
+/// to the LS021 wire.
 static mut FB: [u8; FB_BYTES] = [0; FB_BYTES];
 
 /// The streamed-map geometry cache + the shared [`App`], placed in `.bss` and built **in place**
@@ -370,22 +341,18 @@ static mut FB: [u8; FB_BYTES] = [0; FB_BYTES];
 /// [`MapCache::new`](obc_reader::MapCache) is an all-zero `MaybeUninit::zeroed`, so writing it is a
 /// `.bss` memset; [`App::init_map`](obc_app::App::init_map) writes each field where it sits. (The
 /// `RouteCache` the budget assert reserves is allocated when route loading lands at N6.)
-#[cfg(not(feature = "glass-demo"))]
 static mut MAP_CACHE: MaybeUninit<MapCache> = MaybeUninit::uninit();
 /// The immutable map tables (header scalars + style table + LOD pyramid), parsed **once at boot**
 /// into `.bss` and borrowed by every per-frame [`Reader`] (issue #179). Resident so the per-frame
 /// render reader carries no styles/LODs of its own — no per-frame style-table SD read, no ~4 KB parse
 /// stack spike on the deep render path (the lever that kept that path inside the 256 KB stack).
-#[cfg(not(feature = "glass-demo"))]
 static mut MAP_TABLES: MaybeUninit<MapTables> = MaybeUninit::uninit();
-#[cfg(not(feature = "glass-demo"))]
 static mut APP: MaybeUninit<App> = MaybeUninit::uninit();
 /// The decoded-route-geometry cache (#127), placed in `.bss` and built in place like [`MAP_CACHE`]
 /// ([`RouteCache::new`](obc_route::RouteCache) is an all-zero `MaybeUninit::zeroed` → a `.bss`
 /// memset, never a stack temporary). The session-long cache (issue #98 P4) a redraw of the
 /// unchanged route + the matcher's per-fix decode hit instead of re-reading `.obcr` geometry off
 /// the card every frame; the budget assert above already reserves its bytes.
-#[cfg(not(feature = "glass-demo"))]
 static mut ROUTE_CACHE: MaybeUninit<RouteCache> = MaybeUninit::uninit();
 
 /// Build a `'static` value into a `.bss` [`MaybeUninit`] slot, returning the sole `&'static mut` to
@@ -403,7 +370,6 @@ static mut ROUTE_CACHE: MaybeUninit<RouteCache> = MaybeUninit::uninit();
 /// program's life through this call and never aliased elsewhere — the returned reference is the only
 /// one handed out. (`MaybeUninit<T>` shares `T`'s layout, so the cast is sound.) Each call site
 /// passes a distinct slot.
-#[cfg(not(feature = "glass-demo"))]
 #[inline(always)]
 unsafe fn init_static<T>(slot: *mut MaybeUninit<T>, val: T) -> &'static mut T {
     let ptr = slot as *mut T;
@@ -415,14 +381,12 @@ unsafe fn init_static<T>(slot: *mut MaybeUninit<T>, val: T) -> &'static mut T {
 /// A coarse-ish 2 mpp shows a town-scale overview — several roads / landuse polygons, so the
 /// 64-colour gamut is visible at a glance — rather than a tight patch. Freely tunable: the frame is
 /// a single static render until buttons land (#126).
-#[cfg(not(feature = "glass-demo"))]
 const INIT_MPP: f32 = 2.0;
 
 /// Heartbeat-only idle for an unrecoverable bring-up failure (no card, no `.obcm`, or a map that
 /// isn't valid OBCM): blink LED0 forever rather than panic — a missing/bad card must **never** fault
 /// (acceptance criterion). Diverges, so the map path below is unreachable
 /// after it.
-#[cfg(not(feature = "glass-demo"))]
 async fn idle_blink(led: &mut Output<'static>) -> ! {
     loop {
         led.toggle();
@@ -437,7 +401,6 @@ async fn idle_blink(led: &mut Output<'static>) -> ! {
 /// reuse the catalog's dead stack slot for the loop's locals; once the loop moved into its own
 /// function the two frames stop sharing, and a resident 5 KB catalog there silently steals from the
 /// deep route-load render path's stack — overflowing the 256 KB part. Issue #175.)
-#[cfg(not(feature = "glass-demo"))]
 #[inline(never)]
 fn load_routes(storage: &mut sd::Storage, app: &mut App) {
     let catalog = storage.scan_routes();
@@ -451,7 +414,6 @@ fn load_routes(storage: &mut sd::Storage, app: &mut App) {
 /// creeps the deep route-load render toward the 256 KB-DK's ~36 KB ceiling — the exact silent
 /// overflow this issue chased. Cheap (one boot paint + a per-frame scan); harmless on the 512 KB
 /// nRF54LM20 target, where the stack budget is no longer tight.
-#[cfg(not(feature = "glass-demo"))]
 mod stackmeter {
     const PAINT: u32 = 0xC0DE_DEAD;
     extern "C" {
@@ -522,23 +484,21 @@ mod stackmeter {
 /// Bound of the input→map gesture channel. One frame yields a couple of gestures and the map plane
 /// drains it each loop, so even across a slow map push it never fills; `try_send` drops on the
 /// (unreachable) overflow rather than block the high-priority plane.
-#[cfg(not(feature = "glass-demo"))]
 const GESTURE_QUEUE: usize = 16;
 
 /// Recognised gestures flowing from the input plane (high priority) to the map plane (thread mode) —
 /// the only lock-free shared state between the two planes.
-#[cfg(not(feature = "glass-demo"))]
 static GESTURES: Channel<CriticalSectionRawMutex, Gesture, GESTURE_QUEUE> = Channel::new();
 
 /// The high-priority executor the input/overlay plane runs on, pended from the SWI00 vector (an
 /// unused software-interrupt line — see the module doc). Started in `main`; driven by the SWI00 ISR.
 /// The FLPR build uses [`EXECUTOR_HP`] instead (it also free-runs COM there).
-#[cfg(all(not(feature = "glass-demo"), feature = "tft"))]
+#[cfg(feature = "tft")]
 static EXECUTOR_INPUT: InterruptExecutor = InterruptExecutor::new();
 
 /// SWI00 ISR → poll the input-plane executor. SWI00 has no peripheral; we only borrow its interrupt
 /// vector as the executor's pend line (its priority is set + the executor started in `main`).
-#[cfg(all(not(feature = "glass-demo"), feature = "tft"))]
+#[cfg(feature = "tft")]
 #[interrupt]
 unsafe fn SWI00() {
     EXECUTOR_INPUT.on_interrupt();
@@ -560,7 +520,6 @@ unsafe fn SWI00() {
 /// Input-plane loop period (ms): buttons sampled + gestures recognised + the bulge animated this
 /// often, on the high-priority executor that preempts the map render — so press-to-feedback latency
 /// and the auto-repeat cadence stay exact regardless of how long a map frame takes.
-#[cfg(not(feature = "glass-demo"))]
 const LOOP_MS: u64 = 8;
 
 // The hold-bulge's right-edge overlay **columns** (issue #126/#163). Both bulges erupt from the right
@@ -570,22 +529,20 @@ const LOOP_MS: u64 = 8;
 // a 16-px column window, the FLPR the full-width rows of that span — so the column constants are
 // shared; the fixed row band (`OVL_Y0`/`OVL_ROWS`) is only the ST7789 trailing-clear + band-fit bound.
 /// First overlay column: the rightmost 16 px (bulge depth ≤12 + margin).
-#[cfg(not(feature = "glass-demo"))]
 const OVL_X0: u16 = WIDTH - 16;
 /// Overlay window width (columns).
-#[cfg(not(feature = "glass-demo"))]
 const OVL_W: u16 = 16;
 /// First overlay row of the full hint band (a little above the encoder bulge's top). ST7789-only — the
 /// FLPR addresses the *live* bulge's rows (`InputPlane::overlay_rows`), never this fixed top.
-#[cfg(all(not(feature = "glass-demo"), feature = "tft"))]
+#[cfg(feature = "tft")]
 const OVL_Y0: u16 = 56;
 /// Full hint-band height in rows (down past the Back bulge's bottom) — the ST7789 trailing-clear span
 /// and the band-fit bound below. The FLPR has its own `MAX_OVERLAY_*` bound in `Ls021Flpr`.
-#[cfg(all(not(feature = "glass-demo"), feature = "tft"))]
+#[cfg(feature = "tft")]
 const OVL_ROWS: u16 = 192;
 /// ST7789: the overlay window must fit the shared band scratch (it borrows a prefix of it). The FLPR
 /// path has its own `MAX_OVERLAY_*` bound in `Ls021Flpr::push_overlay`.
-#[cfg(all(not(feature = "glass-demo"), feature = "tft"))]
+#[cfg(feature = "tft")]
 const _: () =
     assert!(OVL_W as usize * OVL_ROWS as usize <= WIDTH as usize * BAND_ROWS, "overlay window larger than BAND");
 
@@ -616,12 +573,10 @@ fn map_rows_around(y0: u16, rows: u16) -> heapless::Vec<(u16, u16), 2> {
 /// Chains two input sources for the gesture recogniser: drains `a` (the physical buttons) fully,
 /// then `b` (the VCOM-injected `K` events with `debug-uart`, else [`NullInput`]). So a host can
 /// drive the UI (taps/holds) over the same VCOM link, interleaved with real presses.
-#[cfg(not(feature = "glass-demo"))]
 struct ChainedInput<'a> {
     a: &'a mut dyn InputSource,
     b: &'a mut dyn InputSource,
 }
-#[cfg(not(feature = "glass-demo"))]
 impl InputSource for ChainedInput<'_> {
     fn poll(&mut self) -> Option<InputEvent> {
         self.a.poll().or_else(|| self.b.poll())
@@ -630,9 +585,9 @@ impl InputSource for ChainedInput<'_> {
 
 /// A never-yielding input source — the `debug-uart`-off stand-in for the VCOM-injected stream, so
 /// the recogniser call site is one code path in both builds.
-#[cfg(all(not(feature = "glass-demo"), not(feature = "debug-uart")))]
+#[cfg(not(feature = "debug-uart"))]
 struct NullInput;
-#[cfg(all(not(feature = "glass-demo"), not(feature = "debug-uart")))]
+#[cfg(not(feature = "debug-uart"))]
 impl InputSource for NullInput {
     fn poll(&mut self) -> Option<InputEvent> {
         None
@@ -642,7 +597,6 @@ impl InputSource for NullInput {
 /// The VCOM-injected input stream to chain after the physical buttons: the `debug-uart` source that
 /// drains host-injected turns/edges (`K` lines), or [`NullInput`] when the feature is off. One
 /// helper so the input plane builds it the same `cfg` way regardless.
-#[cfg(not(feature = "glass-demo"))]
 fn debug_input() -> impl InputSource {
     #[cfg(feature = "debug-uart")]
     return obc_platform::debug_usb::DebugInput;
@@ -653,9 +607,7 @@ fn debug_input() -> impl InputSource {
 /// A `no_std` [`Clock`](obc_render::Clock) over embassy's monotonic `Instant`, in microseconds — the
 /// time base for the map render's per-stage timing (collect / sort / draw) the VCOM telemetry
 /// carries. The same monotonic clock the loop's frame `Instant` reads, so the stages reconcile.
-#[cfg(not(feature = "glass-demo"))]
 struct InstantClock;
-#[cfg(not(feature = "glass-demo"))]
 impl obc_render::Clock for InstantClock {
     fn now_us(&self) -> u64 {
         Instant::now().as_micros()
@@ -711,7 +663,7 @@ async fn vcom_tx_task(mut tx: BufferedUarteTx<'static, peripherals::SERIAL20>) {
 /// window: read its columns back from the framebuffer (RGB222→RGB565) and composite the bulge over
 /// them. No renderer scratch, no map re-render → the bulge animates fluidly over a static map. The
 /// panel is reached only through `bus`, the recogniser/overlay only through `input_plane`.
-#[cfg(all(not(feature = "glass-demo"), feature = "tft"))]
+#[cfg(feature = "tft")]
 #[embassy_executor::task]
 async fn input_overlay_task(
     mut buttons: ButtonInput<Input<'static>>,
@@ -813,7 +765,6 @@ async fn input_task(
 /// What [`MapDisplay::render_present`] reports for one map frame: whether the push reached glass
 /// (`false` → a transport fault to retry, #66), the render's [`RenderStats`], and the render / push
 /// timings (µs) the RTT log + the VCOM telemetry carry.
-#[cfg(not(feature = "glass-demo"))]
 struct FramePresent {
     ok: bool,
     stats: RenderStats,
@@ -824,12 +775,12 @@ struct FramePresent {
 /// ST7789 (`--features tft`): the map plane's handle is just the `&'static` bus mutex it shares with
 /// the input/overlay plane. That plane owns the hold-bulge re-push, so the map loop has no overlay
 /// bookkeeping here.
-#[cfg(all(not(feature = "glass-demo"), feature = "tft"))]
+#[cfg(feature = "tft")]
 struct MapDisplay {
     bus: &'static Mutex<CriticalSectionRawMutex, Display>,
 }
 
-#[cfg(all(not(feature = "glass-demo"), feature = "tft"))]
+#[cfg(feature = "tft")]
 impl MapDisplay {
     /// The ST7789 bulge rides the input/overlay plane, so the map loop never has a live span: always
     /// "clean".
@@ -868,7 +819,7 @@ impl MapDisplay {
 /// FLPR LS021 (default): the map plane owns the panel outright (whole-frame scan per push → no shared
 /// bus), plus the shared `InputPlane` it composites the bulge from and the gate/source GPIO lines it
 /// must keep driven for the program's life.
-#[cfg(all(not(feature = "glass-demo"), not(feature = "tft")))]
+#[cfg(not(feature = "tft"))]
 struct MapDisplay {
     panel: Ls021Flpr<'static>,
     input_plane: &'static BlockingMutex<CriticalSectionRawMutex, RefCell<InputPlane>>,
@@ -881,7 +832,7 @@ struct MapDisplay {
     _src_bus: [Output<'static>; 8],
 }
 
-#[cfg(all(not(feature = "glass-demo"), not(feature = "tft")))]
+#[cfg(not(feature = "tft"))]
 impl MapDisplay {
     /// Sample the shared `InputPlane` once per frame (the map plane is the sole owner of the FLPR
     /// overlay bookkeeping): the dirty edge (live while the bulge animates, plus one trailing clear)
@@ -965,7 +916,6 @@ impl MapDisplay {
 /// The remaining `#[cfg]`s here are the orthogonal `debug-uart` *feature* (a host sensor feed +
 /// telemetry vs. the `SynthLocation` stand-in), not the display backend — that is wholly behind
 /// `MapDisplay`.
-#[cfg(not(feature = "glass-demo"))]
 #[allow(clippy::too_many_arguments)]
 // a one-call internal builder; the params are all distinct residents
 // `#[inline(always)]`: this is a single-call-site `-> !` future. Inlining folds it (and the present
@@ -1279,62 +1229,10 @@ async fn main(_spawner: Spawner) {
     };
 
     // Paint the stack now (still shallow) so the ride loop's high-water guard can read the peak (#175).
-    #[cfg(not(feature = "glass-demo"))]
     stackmeter::paint();
 
     // LED0 (P2_09) heartbeat — a liveness blink visible even before looking at the panel.
     let mut led = Output::new(p.P2_09, Level::Low, OutputDrive::Standard);
-
-    // --- glass-demo (#122): the font ladder + the device's 64-colour gamut, streamed to the
-    // ST7789 band by band through the board-agnostic `Panel` seam, then a static heartbeat. The
-    // shared-app path (load → ride → save-GPX) replaces this at N6 (#127). ---
-    #[cfg(feature = "glass-demo")]
-    {
-        // Display control lines on the (flash-freed) P2 header. CS idles HIGH (deasserted) and the
-        // driver pulses it low per transaction — embassy-nrf's Spim drives no hardware CS, so the
-        // panel's CSX is framed in software (the rising edge re-aligns the panel each transaction,
-        // which is what lets a warm MCU reset recover — see `st7789::St7789::transaction`). RST
-        // idles high (released).
-        let cs = Output::new(p.P2_05, Level::High, OutputDrive::Standard);
-        let dc = Output::new(p.P2_03, Level::Low, OutputDrive::Standard);
-        let rst = Output::new(p.P2_00, Level::High, OutputDrive::Standard);
-
-        // SERIAL00 as a write-only SPIM: the panel never talks back, so MISO (P2_04) is omitted.
-        // 8 MHz is comfortable over the jumpered bring-up bus; SERIAL00 reaches 32 MHz on a clean
-        // board — worth revisiting once the panel is on a PCB.
-        let mut config = spim::Config::default();
-        config.frequency = spim::Frequency::M32;
-        let spi = spim::Spim::new_txonly(p.SERIAL00, Irqs, p.P2_01, p.P2_02, config);
-
-        // SAFETY: the sole reference taken to BAND; the panel holds it for the rest of the program
-        // and this single-executor build never aliases it.
-        let band = unsafe { &mut *core::ptr::addr_of_mut!(BAND) };
-        let mut panel = St7789::new(spi, dc, rst, cs, Delay, band);
-        panel.init();
-        info!("obc-fw-nrf54l N1: ST7789 up ({}x{}) on SPIM00@8MHz; rendering glass-demo", WIDTH, HEIGHT);
-
-        // Render the (static) screen once, band by band: each band gets the *whole* frame drawn
-        // into it through `Band`, which clips the draw to the band's rows — so the frame reassembles
-        // seam-free and the generator never has to know it's banded.
-        panel.begin_frame();
-        let rows = panel.band_rows();
-        let mut y0 = 0u16;
-        while y0 < HEIGHT {
-            let h = rows.min(HEIGHT - y0);
-            panel.flush_band(y0, h, |scratch| {
-                let mut t = Band::new(scratch, Size::new(WIDTH as u32, HEIGHT as u32), y0, h);
-                demo::font_palette_demo(&mut t).ok();
-            });
-            y0 += h;
-        }
-        panel.end_frame();
-        info!("glass-demo rendered (font ladder + 64 swatches); heartbeat idle");
-
-        loop {
-            led.toggle();
-            Timer::after_millis(500).await;
-        }
-    }
 
     // --- N6 load → ride → save-GPX (#127): stream the SD `.obcm` into the
     // resident RGB222 framebuffer through the shared `obc-app`, pick a route from the card catalog,
@@ -1342,7 +1240,6 @@ async fn main(_spawner: Spawner) {
     // write a `.gpx` to `/tracks` on Finish. Builds on N4's map (#125) + N5's two-plane input (#126):
     // the map plane (this loop) now also runs the full sensor → tick → reconcile → telemetry ride
     // loop, on a per-frame-reader structure. ---
-    #[cfg(not(feature = "glass-demo"))]
     {
         // --- VCOM debug-sensor stream (#127), behind `debug-uart`. Bring it up first so the J-Link
         // VCOM is live while the SD card + panel come up; the parsed fixes land in obc-platform's
@@ -1527,9 +1424,8 @@ async fn main(_spawner: Spawner) {
         // share the one high-priority executor (COM must keep alternating during the blocking push).
         //
         // ⚠️ **Gate/BSP pins relocated off the SD/VCOM bus for the integration.** These five P1 lines
-        // **must match `src/flpr/flpr_pingpong.c`'s masks and the bring-up bin's pins** — confirm each
-        // is broken out on your DK and remap all three together if not (the source bus, BCK, and COM
-        // stay on P2 exactly as the bring-up bin has them).
+        // **must match `src/flpr/flpr_pingpong.c`'s masks** — confirm each is broken out on your DK and
+        // remap all three together if not (the source bus, BCK, and COM stay on P2).
         #[cfg(not(feature = "tft"))]
         let display = {
             // Gate + frame lines (P1) — GSP P1.00, GCK P1.01, GEN P1.12, INTB P1.10; held configured.

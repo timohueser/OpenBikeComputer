@@ -10,13 +10,12 @@
 //! image — issue #165: it corrupted the blob on the first deep render). Keeping the source map under
 //! a non-`memory.x` name means the *only* `memory.x` the linker can find is the one we emit here.
 //!
-//! For the FLPR builds — the **default** LS021 map/ride `main.rs` (the real app on the LS021 panel,
-//! issue #165 / #173) or the **`ls021-flpr`** bring-up bin (issue #150) — it additionally (1) emits a
-//! *carved* `memory.x` that reserves the top **12 KB** of SRAM for the FLPR image + the cross-core
-//! handshake, and (2) cross-compiles the freestanding FLPR C blob with a RISC-V gcc into
-//! `$OUT_DIR/flpr.bin` for the M33 binary to `include_bytes!`. Only the opt-in `tft` ST7789 build
-//! skips both, keeping the full 256 KB and needing no RISC-V toolchain (see the `flpr` gate in
-//! `main` below). See `firmware/docs/ls021-flpr.md`.
+//! For the FLPR build — the **default** LS021 map/ride `main.rs` (the real app on the LS021 panel,
+//! issue #165 / #173) — it additionally (1) emits a *carved* `memory.x` that reserves the top
+//! **12 KB** of SRAM for the FLPR image + the cross-core handshake, and (2) cross-compiles the
+//! freestanding FLPR C blob with a RISC-V gcc into `$OUT_DIR/flpr.bin` for the M33 binary to
+//! `include_bytes!`. Only the opt-in `tft` ST7789 build skips both, keeping the full 256 KB and
+//! needing no RISC-V toolchain (see the `flpr` gate in `main` below). See `firmware/docs/ls021-flpr.md`.
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -46,12 +45,11 @@ fn main() {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
 
     // Cargo sets CARGO_FEATURE_<NAME> for the build script when a feature is enabled. The carve +
-    // blob are needed wherever the FLPR drives the panel: the `ls021-flpr` bring-up bin, **and** the
-    // default LS021 map/ride `main.rs` build (issue #173) — which is the *baseline*, selected by the
-    // absence of `tft`. Only the opt-in `tft` ST7789 build keeps the full 256 KB and needs no RISC-V
-    // toolchain (`glass-demo` pulls `tft`, so it's covered).
+    // blob are needed wherever the FLPR drives the panel: the default LS021 map/ride `main.rs` build
+    // (issue #173) — the *baseline*, selected by the absence of `tft`. Only the opt-in `tft` ST7789
+    // build keeps the full 256 KB and needs no RISC-V toolchain.
     let tft = env::var_os("CARGO_FEATURE_TFT").is_some();
-    let flpr = env::var_os("CARGO_FEATURE_LS021_FLPR").is_some() || !tft;
+    let flpr = !tft;
 
     if flpr {
         fs::write(out.join("memory.x"), FLPR_MEMORY_X).unwrap();
