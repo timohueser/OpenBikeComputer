@@ -116,11 +116,10 @@ mod st7789;
 // LS021 FLPR backend (issue #165) — the **default** display: `main.rs` runs the real app on the
 // reflective LS021 panel via the FLPR (the VPR coprocessor) unless `--features tft` selects the
 // ST7789 bring-up panel instead (issue #173). The FLPR `Panel` backend + launch live in `ls021_flpr`;
-// `ls021::com_task` free-runs the COM lines (the rest of `ls021` — the M33-direct `PanelBus` — is
-// unused here, hence the dead-code allow).
+// `com::com_task` free-runs the COM lines (the M33-direct `PanelBus` bench driver was retired in
+// issue #176 — the FLPR drives frames now; only the COM electrode square wave stays on the M33).
 #[cfg(not(feature = "tft"))]
-#[allow(dead_code)]
-mod ls021;
+mod com;
 #[cfg(not(feature = "tft"))]
 mod ls021_flpr;
 // The board's display-driver seam — the single screen-write interface both panels implement, so the
@@ -226,7 +225,7 @@ use obc_platform::SynthLocation;
 // `Display`/bus mutex here — the map plane owns the panel, COM + the gesture-input plane run on the
 // shared high-priority executor (see `main`).
 #[cfg(not(feature = "tft"))]
-use ls021::com_task;
+use com::com_task;
 #[cfg(not(feature = "tft"))]
 use ls021_flpr::{launch_flpr, FlprError, Ls021Flpr};
 

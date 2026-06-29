@@ -66,7 +66,7 @@ which stays the **golden reference**: the FLPR must reproduce that analyzer-veri
   `riscv32emc-unknown-none-elf` is tier-3, so the blob is a small freestanding C program built
   with a RISC-V gcc, emitted to a `.bin`, and `include_bytes!`'d into the M33 image. All
   non-trivial logic (the RGB222→wire pack) stays host-tested Rust on the M33 (F4).
-- **COM stays on the M33.** The proven L1 timer task (`ls021.rs::com_task`) keeps `VCOM`/`VB`/
+- **COM stays on the M33.** The proven L1 timer task (`com.rs::com_task`) keeps `VCOM`/`VB`/
   `VA` free-running independent of FLPR state — if the FLPR faults the panel never takes a DC
   bias. The FLPR owns gate + source only. F0 runs neither (no panel signal yet).
 
@@ -309,7 +309,7 @@ F2 adds the **single most timing-critical piece of the epic**, isolated: the FLP
 source sub-line** from a write buffer. The blob is now `src/flpr/flpr_source.c` (successor to F1's
 `flpr_comms.c`) — same control block + doorbells, plus a `CMD_SHIFT_SUBLINE` that drains `buf[0]`.
 No gate scan, no `INTB` frame, no COM, no glass: just the inner data-shift loop, bring-up-slow and
-LA-diffed against the M33 `PanelBus` (`src/ls021.rs`), which #139 already proved correct.
+LA-diffed against the M33 `PanelBus` (epic #139), which #139 already proved correct.
 
 ### Write-buffer format v0
 
@@ -409,7 +409,8 @@ bench** — the FLPR analog of the M33 path's `asm::delay` counts. Target: `BCK`
 turn one sub-line into a whole frame on glass — the **gate scan** (`GSP`/`GCK`/`GEN`) and the **frame
 envelope** (`INTB`) — so the FLPR now owns the *complete* LS021 waveform. The blob is now
 `src/flpr/flpr_frame.c` (successor to F2's `flpr_source.c`); everything is a faithful C port of the
-analyzer-verified M33 `PanelBus` (`src/ls021.rs`, epic #139), the golden reference. The M33's only
+analyzer-verified M33 `PanelBus` (epic #139; the bit-bang driver itself was retired in #176), the
+golden reference. The M33's only
 panel job is to **pack one row buffer** and ring the FLPR once per frame; **COM free-runs on the M33**
 the whole time. This is the first stage that puts an FLPR-driven frame on glass.
 
@@ -589,11 +590,9 @@ blob never packs a pixel — it only drains pre-packed words, so the format can'
 ### The framebuffer source
 
 The M33 holds a resident **`FbDevice64`-format 75 KB `.bss` framebuffer** (240×320 device-64 bytes) —
-the production map plane's exact type and size. F4 fills it with the **shared** `palette` / `shapes`
-pattern fns (moved into `src/ls021.rs` so the M33-direct L3 path and the FLPR path render the *same*
-source — that identity is the on-glass check), then packs one row of it per ping-pong buffer fill.
-F5 swaps the pattern fill for the real `App` render behind the `Panel` seam; the pack + ping-pong
-path is unchanged.
+the production map plane's exact type and size. F4 fills it with shared whole-frame pattern fns (the
+bench test cards), then packs one row of it per ping-pong buffer fill. F5 swaps the pattern fill for
+the real `App` render behind the `Panel` seam; the pack + ping-pong path is unchanged.
 
 ### The handshake — back-pressure both ways
 
@@ -742,7 +741,7 @@ whole period, so the panel captured it twice. **Fix: drive DDR** — a distinct 
   edges, so re-verify the data set-up on each edge and pick the production value (in-spec ≈
   `BCK_HALF_ITERS = 8`).
 - **Docs ✅ (this commit):** the dual-edge/DDR correction is in the public `display-protocol.md`, this
-  doc, `ls021-bringup.md`, and the `ls021_wire.rs` / `ls021.rs` module docs. The earlier
+  doc, `ls021-bringup.md`, and the `ls021_wire.rs` module docs. The earlier
   "single-edge, 120-`BCK`/line" model is retracted everywhere.
 
 ## #165 — the real app on the LS021

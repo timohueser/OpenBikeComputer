@@ -27,7 +27,7 @@
 //! `main` and the masks in `src/flpr/flpr_pingpong.c`).
 //!
 //! Build/flash (needs a RISC-V gcc for the blob — `brew install riscv64-elf-gcc`; and the
-//! Board-Configurator ext-memory-off / 3.3 V-VDDM settings the `ls021_bringup` epic already needs):
+//! Board-Configurator ext-memory-off / 3.3 V-VDDM settings the LS021 panel already needs):
 //! ```sh
 //! cargo run --release --bin ls021_flpr_bringup --features ls021-flpr
 //! ```
@@ -45,18 +45,17 @@ use embedded_graphics::{pixelcolor::Rgb565, prelude::*};
 use {defmt_rtt as _, panic_probe as _};
 
 // The free-running COM driver is panel-board-agnostic infrastructure (not the M33-direct PanelBus,
-// which the FLPR replaces). Pull in `com_task`; the rest of the module is unused here (module-level
-// allow). The glass-demo generator is shared verbatim with the ST7789 `--features glass-demo` build.
+// which the FLPR replaces). The glass-demo generator is shared verbatim with the ST7789
+// `--features glass-demo` build.
+#[path = "../com.rs"]
+mod com;
 #[path = "../demo.rs"]
 mod demo;
-#[path = "../ls021.rs"]
-#[allow(dead_code)]
-mod ls021;
 // The shared FLPR `Panel` backend (#165): boot/launch + the resident-framebuffer ping-pong push.
 #[path = "../ls021_flpr.rs"]
 mod ls021_flpr;
+use com::com_task;
 use demo::font_palette_demo;
-use ls021::com_task;
 use ls021_flpr::{launch_flpr, show, FlprError, Ls021Flpr, FB_H, FB_W};
 
 /// Resident RGB222 (device-64) framebuffer, one byte per pixel — the production map plane's exact
