@@ -102,6 +102,6 @@ pub use framebuffer::{device64_to_rgb565, FbDevice64, Framebuffer565};
 pub use fuel::StubFuelGauge;
 pub use ls021_wire::pack_row as ls021_pack_row;
 pub use panel::{composite_overlay_window, Band};
-pub use rowdiff::{diff_rows, row_hash, spans_missed_changes, RowDiff};
+pub use rowdiff::{clip_span, diff_rows, row_hash, spans_missed_changes, RowDiff};
 pub use sd::{SdByteSink, SdByteSource, SdTrackSink};
 pub use synth::SynthLocation;
