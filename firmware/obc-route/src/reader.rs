@@ -273,7 +273,7 @@ impl<'a> RouteReader<'a> {
 
     /// Like [`new`](Self::new), but back [`decode_chunk`](Self::decode_chunk) with a resident
     /// [`RouteCache`] (issue #98 P4). The cache is caller-owned and lives across frames (the
-    /// device places one in SDRAM, like the map's `MapCache`), so a redraw of an unchanged route
+    /// device places one in its reserved region, like the map's `MapCache`), so a redraw of an unchanged route
     /// — and the matcher's per-fix chunk decode — hit RAM instead of re-reading the geometry from
     /// the SD card on every frame. The cache keys slots by chunk index only, so the caller must
     /// [`RouteCache::clear`] it whenever the active route changes.
@@ -369,8 +369,8 @@ struct RouteSlot {
 /// per-fix decode) re-pulls the same visible chunks from the SD card every time. Holding the
 /// decoded points resident turns those repeats into RAM copies (issue #98 P4).
 ///
-/// Caller-owned and reused across frames: the device places one in SDRAM for the session (like
-/// `MapCache`) and pairs it with the per-frame [`RouteReader`] via
+/// Caller-owned and reused across frames: the device places one in its reserved region for the
+/// session (like `MapCache`) and pairs it with the per-frame [`RouteReader`] via
 /// [`new_cached`](RouteReader::new_cached); the host just skips it. Slots are keyed by chunk
 /// index only (a route has its own source), so [`clear`](Self::clear) **must** be called when the
 /// active route changes, or a new route's chunk `k` would hit the old route's stale slot.
@@ -395,8 +395,8 @@ impl Default for RouteCache {
 }
 
 impl RouteCache {
-    /// A fresh, empty cache (~99 KB of zeroed slots). On the device, place it once in SDRAM (e.g.
-    /// `ptr::write`, like the `App` / `MapCache`) so it stays off the main stack.
+    /// A fresh, empty cache (~99 KB of zeroed slots). On the device, place it once in the reserved
+    /// region (e.g. `ptr::write`, like the `App` / `MapCache`) so it stays off the main stack.
     pub fn new() -> Self {
         RouteCache { inner: RefCell::new(RouteCacheInner::new()) }
     }

@@ -564,7 +564,7 @@ Each is just another polyline through the stroker or a triangle through the poly
 
 ## To the panel: the banded push
 
-Everything above is shared — byte-for-byte identical on the simulator and the device. This last step is where they part, because the device has neither the memory nor the display hardware a desktop takes for granted. On the simulator the `DrawTarget` is a true-colour framebuffer the window blits in one call. The nRF54L15 has **256 KB of RAM and no external memory**, and — unlike the STM32F429 prototype's LTDC — **no scan-out engine** that streams a framebuffer to the panel on its own. So the device does two things a PC never has to: it draws into a *device-native* framebuffer, and then it ships that framebuffer to the panel itself, a strip at a time.
+Everything above is shared — byte-for-byte identical on the simulator and the device. This last step is where they part, because the device has neither the memory nor the display hardware a desktop takes for granted. On the simulator the `DrawTarget` is a true-colour framebuffer the window blits in one call. The nRF54L15 has **256 KB of RAM and no external memory**, and **no scan-out engine** that would stream a framebuffer to the panel on its own. So the device does two things a PC never has to: it draws into a *device-native* framebuffer, and then it ships that framebuffer to the panel itself, a strip at a time.
 
 ### The RGB222 framebuffer
 

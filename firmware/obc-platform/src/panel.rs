@@ -1,21 +1,21 @@
 //! The board-agnostic [`Panel`] display seam + the [`Band`] draw helper.
 //!
-//! The STM32 prototype scans a *full* SDRAM framebuffer with hardware (the LTDC), so its
-//! board glue is just the [`Framebuffer565`] `DrawTarget` — write a pixel and it's on glass.
-//! The boards this project actually ships on have no such luxury: the nRF54L has no external
-//! SDRAM (256 KB total) and no scan-out engine, so a frame is pushed to the panel a **band**
-//! (a few rows) at a time over SPI/DMA. [`Panel`] is the seam that hides that difference: the
-//! caller renders into a small RGB565 band the backend hands it, and the backend reformats +
-//! transports the band however its panel wants (ST7789: byte-swap to big-endian RGB565 +
-//! SPIM-DMA a CASET/RASET window; a future FLPR/LS021B7DD02: pack RGB222 → 6-line wire bytes;
-//! the simulator: blit the band into its image). **No board/panel types appear in the trait**,
-//! so the same generator drives every backend.
+//! A display with a hardware scan-out engine (an LCD controller that continuously rescans a full
+//! framebuffer from memory) needs only a [`Framebuffer565`] `DrawTarget` — write a pixel and it's
+//! on glass. The boards this project ships on have no such luxury: the nRF54L has no external RAM
+//! (256 KB total) and no scan-out engine, so a frame is pushed to the panel a **band** (a few
+//! rows) at a time over SPI/DMA. [`Panel`] is the seam that hides that difference: the caller
+//! renders into a small RGB565 band the backend hands it, and the backend reformats + transports
+//! the band however its panel wants (ST7789: byte-swap to big-endian RGB565 + SPIM-DMA a
+//! CASET/RASET window; the FLPR/LS021B7DD02: pack RGB222 → 6-line wire bytes; the simulator: blit
+//! the band into its image). **No board/panel types appear in the trait**, so the same generator
+//! drives every backend.
 //!
 //! [`Band`] is the small piece that makes "render the whole frame, band at a time" invisible to
 //! the drawing code: it wraps one `flush_band` scratch slice as a [`Framebuffer565`] with the
 //! band's `y0` baked in, yet reports the **full frame** size. A whole-frame generator (the
 //! `glass-demo`, and later [`App::render_frame`](obc_app::App::render_frame)) draws in absolute
-//! frame coordinates exactly as it would against the SDRAM plane; [`Band`] shifts each draw up
+//! frame coordinates exactly as it would against a full-frame scan-out plane; [`Band`] shifts each draw up
 //! by `y0` and the inner framebuffer clips away whatever falls outside this band's rows — so the
 //! frame reassembles seam-free across the bands with the generator none the wiser.
 
@@ -24,8 +24,8 @@ use embedded_graphics::{pixelcolor::Rgb565, prelude::*, primitives::Rectangle};
 use crate::framebuffer::Framebuffer565;
 
 /// A banded display, pushed a few rows at a time. The board-agnostic seam between a whole-frame
-/// generator and a concrete panel's wire format + transport — the analog of the STM32's
-/// LTDC-scanned [`Framebuffer565`], for boards that have to stream the frame themselves.
+/// generator and a concrete panel's wire format + transport — the banded analog of a full-frame
+/// scan-out plane, for boards that have to stream the frame themselves.
 ///
 /// One frame is: [`begin_frame`](Self::begin_frame), then [`flush_band`](Self::flush_band) for
 /// each band of [`band_rows`](Self::band_rows) rows from `y0 = 0` upward, then
@@ -57,7 +57,7 @@ pub trait Panel {
 /// So a generator that lays out the whole 240×320 frame — reading `target.bounding_box()` for its
 /// dimensions, drawing at absolute `(x, y)` — lands its pixels for this window in the scratch and
 /// has everything else clipped away by the inner framebuffer. Drawing the frame once per band thus
-/// reassembles it seam-free, and the *same* generator works against the SDRAM full-frame plane
+/// reassembles it seam-free, and the *same* generator works against a full-frame scan-out plane
 /// (where there is one band == the whole frame).
 ///
 /// A **full-width band** ([`new`](Band::new), `x0 = 0`, `w = frame.width`) is the common case used
@@ -66,7 +66,7 @@ pub trait Panel {
 /// right-edge columns it touches (issue #126), reusing the same scratch + clip path.
 ///
 /// Reuses [`framebuffer::RawFb`](crate::framebuffer::RawFb)/`Pack`, so a band pixel travels the
-/// exact same pack + clip path as an SDRAM-plane pixel.
+/// exact same pack + clip path as a full-frame-plane pixel.
 pub struct Band<'a> {
     /// The window's own RGB565 buffer, `w × rows`. Draws land here in window-local coords.
     fb: Framebuffer565<'a>,

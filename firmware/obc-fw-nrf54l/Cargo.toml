@@ -3,7 +3,7 @@ name = "obc-fw-nrf54l"
 version = "0.1.0"
 edition = "2021"
 publish = false  # board firmware — not published to crates.io
-description = "nRF54L15-DK board firmware for OpenBikeComputer — the real hardware target (Cortex-M33 + ST7789 EYESPI). Brings the shared obc-app up on glass to STM32F429-prototype parity; board-agnostic glue stays in obc-platform / obc-app. N0 (#121) is the embassy bring-up skeleton: blinky + RTT + the peripheral plan."
+description = "nRF54L15-DK board firmware for OpenBikeComputer — the real hardware target (Cortex-M33 + ST7789 EYESPI). Brings the shared obc-app up on glass; board-agnostic glue stays in obc-platform / obc-app."
 
 # Standalone crate with its own (empty) workspace table so the firmware/ host
 # workspace — which builds its members for the host target — ignores this crate.
@@ -19,7 +19,7 @@ description = "nRF54L15-DK board firmware for OpenBikeComputer — the real hard
 #
 # `glass-demo` swaps that for the panel-only bring-up screen — the font ladder + the device's
 # 64-colour gamut, drawn band-by-band through the `Panel` seam (issue #122), no SD and no full
-# framebuffer. The nRF analog of the STM32's `glass-demo` and the simulator's `--text-demo`. Kept
+# framebuffer. The analog of the simulator's `--text-demo`. Kept
 # so the panel/colour/text path can be verified in isolation; build it with
 # `--no-default-features --features glass-demo`.
 default = []
@@ -67,8 +67,8 @@ ls021-flpr = []
 # from a host). See `firmware/docs/ls021-flpr.md` + the crate README.
 panel-ls021 = []
 
-# Stream fake GPS / altimeter / compass from a host over the **VCOM UART** (issue #127) — the nRF
-# analog of the STM32's `debug-usb`. The nRF54L15 has no USB peripheral, so the debug-sensor /
+# Stream fake GPS / altimeter / compass from a host over the **VCOM UART** (issue #127). The
+# nRF54L15 has no USB peripheral, so the debug-sensor /
 # telemetry stream rides the DK's onboard J-Link USB-CDC **VCOM** (UARTE20, TX P1_04 / RX P1_05);
 # defmt logs share the same cable over RTT. Brings up a `BufferedUarte` (interrupt-fed RX ring so a
 # long map render never drops bytes) and feeds `obc-platform`'s transport-agnostic debug codec +
@@ -112,7 +112,7 @@ embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "execu
 # Cross-executor sync (#126): the lock-free `Channel` carrying recognised gestures from the
 # high-priority input plane to the thread-mode map plane, the async `Mutex` guarding the shared
 # ST7789/framebuffer bus, and the blocking `Mutex` over the `InputPlane`. ^0.8.0 is what the
-# embassy-nrf 0.11 ecosystem (and the sibling STM32 crate) resolves.
+# embassy-nrf 0.11 ecosystem resolves.
 embassy-sync = { version = "0.8.0", features = ["defmt"] }
 # `Timer` + the embassy-time backend (driven by `time-driver-grtc` above). `defmt-timestamp-uptime`
 # prefixes each RTT log line with the uptime — handy during bring-up.
@@ -126,8 +126,8 @@ defmt = "1.0"
 defmt-rtt = "1.0"
 panic-probe = { version = "1.0", features = ["print-defmt"] }
 
-# Single-core critical-section impl (defmt + embassy need critical-section 1.0; like
-# embassy-stm32, embassy-nrf does not bundle one). `inline-asm` for cortex-m 0.7's asm.
+# Single-core critical-section impl (defmt + embassy need critical-section 1.0; embassy-nrf does
+# not bundle one). `inline-asm` for cortex-m 0.7's asm.
 cortex-m = { version = "0.7", features = ["inline-asm", "critical-section-single-core"] }
 cortex-m-rt = "0.7"
 
@@ -166,7 +166,7 @@ obc-route = { path = "../obc-route" } # RouteSummary / RouteIndex / track_to_gpx
 embedded-sdmmc = { version = "0.9", default-features = false }
 # `ExclusiveDevice` turns the embassy-nrf `Spim` bus + a GPIO CS into the `SpiDevice` `SdCard` wants.
 embedded-hal-bus = "0.3"
-# `SetConfig` — embassy-nrf's `Spim` re-clock seam (no inherent `set_config`, unlike embassy-stm32):
+# `SetConfig` — embassy-nrf's `Spim` re-clock seam (no inherent `set_config`):
 # init the card ≤400 kHz then bump to bulk speed. Pinned to the 0.6 embassy-nrf 0.11 resolves.
 embassy-embedded-hal = { version = "0.6.0", default-features = false }
 # `String` / `Vec` for the route catalog + GPX 8.3 names the SD `Storage` builds. Same 0.8 the

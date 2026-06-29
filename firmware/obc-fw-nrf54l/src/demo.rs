@@ -10,7 +10,7 @@
 //! Crucially this generator is **band-oblivious**: it sizes itself off `target.bounding_box()`
 //! and draws the full 240×320 frame. The nRF host streams it through [`obc_platform::Band`], which
 //! reports the full frame but clips each draw to one band — so the same code drives the banded
-//! ST7789 push here and would drive a full-frame SDRAM plane unchanged. Behind the `glass-demo`
+//! ST7789 push here and would drive a full-frame scan-out plane unchanged. Behind the `glass-demo`
 //! feature.
 //!
 //! Unlike the LS021B7DD02 it previews, the ST7789 stand-in is a true RGB565 panel, so the gamut
@@ -25,7 +25,7 @@ use obc_render::text::{draw_text, Font, TextAlign};
 const LEVELS: [u8; 4] = [0, 85, 170, 255];
 
 /// Pack an 8-bit-per-channel colour into native RGB565, so the palette below reads as plain hexes
-/// (like the simulator's `rgb565()` / the STM32 demo's `c565()`).
+/// (like the simulator's `rgb565()`).
 fn c565(r: u8, g: u8, b: u8) -> Rgb565 {
     Rgb565::new(r >> 3, g >> 2, b >> 3)
 }
