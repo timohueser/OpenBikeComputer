@@ -7,7 +7,7 @@
 //! The reader **streams** through a [`ByteSource`] (issue #37): only the small
 //! header / style table / LOD table are read resident at [`Reader::new`]; the
 //! quadtree index and geometry chunks are pulled on demand via `read_at`, so the
-//! whole `.obcm` never has to fit in RAM (the nRF54L has 256 KB, no SDRAM). A
+//! whole `.obcm` never has to fit in RAM (the nRF54L has 256 KB, no external RAM). A
 //! [`SliceSource`](crate::SliceSource) makes "the whole file is resident" a
 //! one-line wrapper for the simulator and tests, exactly as the route reader does.
 //!
@@ -293,7 +293,8 @@ pub struct Reader<'a> {
     styles: [Option<Style>; 256],
     /// Borrowed lazy-read cache for the streamed index + geometry. **Borrowed**, not owned, so
     /// the ≈84 KB of buffers live in a caller-provided [`MapCache`] (the device places it once
-    /// in SDRAM and rebuilds the small `Reader` per frame, reusing the cache across frames; the
+    /// in its reserved region and rebuilds the small `Reader` per frame, reusing the cache across
+    /// frames; the
     /// host just makes one on the stack). `MapCache` keeps its own `RefCell` because `read_at`
     /// (and so `for_each_chunk`/`for_each_feature_filtered`) take `&self` but the cache mutates;
     /// the borrows are tightly scoped so the index-node read and the chunk decode never overlap.
@@ -882,7 +883,7 @@ struct IndexBlock {
 /// The streamed-map cache: an LRU set of geometry-chunk slots (the issue-#37 chunk cache that
 /// absorbs the renderer's per-priority-pass re-reads) plus a small block cache for the
 /// quadtree-node reads, with the streaming counters. Caller-owned and reusable across frames —
-/// the device places one in SDRAM for the whole session and rebuilds the small [`Reader`] each
+/// the device places one in its reserved region for the whole session and rebuilds the small [`Reader`] each
 /// frame against it (so a chunk read one frame can hit the next), while the host just makes one
 /// per render. ≈277 KB, dominated by the slots + the decode scratch; tune the slot count /
 /// `CACHE_SLOT_BYTES` against the on-device RAM budget.
@@ -901,8 +902,8 @@ impl Default for MapCache {
 }
 
 impl MapCache {
-    /// A fresh, empty cache. ≈277 KB of zeroed buffers — on the device, place it once in SDRAM
-    /// (e.g. `ptr::write`, like the `App`) so it stays off the 192 KB main stack.
+    /// A fresh, empty cache. ≈277 KB of zeroed buffers — on the device, place it once in the
+    /// reserved region (e.g. `ptr::write`, like the `App`) so it stays off the 192 KB main stack.
     pub fn new() -> Self {
         MapCache { inner: RefCell::new(MapCacheInner::new()) }
     }

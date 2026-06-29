@@ -11,7 +11,7 @@
 //! On the firmware the input plane runs on a **high-priority interrupt executor** that
 //! preempts the CPU-bound map render every few milliseconds: it samples the buttons,
 //! recognises gestures (pushing each into a channel the map plane drains), and animates +
-//! repaints the hold bulge on its own LTDC layer — so the press-to-feedback latency and
+//! repaints the hold bulge on its own overlay layer — so the press-to-feedback latency and
 //! the auto-repeat cadence stay bounded regardless of how long a map frame takes. On the
 //! simulator (and the firmware's single-executor fallback) the same plane is driven inline
 //! by [`App::handle_input`](crate::App::handle_input), which recognises and applies in one

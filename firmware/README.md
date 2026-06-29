@@ -33,9 +33,9 @@ cargo build --release        # → target/release/{obc-sim, obc-pack}
 cargo build -p obc-app --target thumbv8m.main-none-eabihf
 ```
 
-The board crates are built from **inside** their own directory (their target is
+The board crate is built from **inside** its own directory (its target is
 discovered from `.cargo/config.toml` by the working directory, not by
-`--manifest-path` — building a board crate via `--manifest-path` from here
+`--manifest-path` — building it via `--manifest-path` from here
 silently targets the host and fails):
 
 ```sh
@@ -49,7 +49,7 @@ cargo test            # the whole host workspace
 cargo test -p obc-pack    # just the packer (fixtures under ../packer/tests/corpus/)
 ```
 
-`cargo test` does **not** touch the excluded board crates.
+`cargo test` does **not** touch the excluded board crate.
 
 ## Format
 

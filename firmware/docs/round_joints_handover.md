@@ -1,5 +1,10 @@
 # Thick-line round joints + subpixel stroke simplification — HANDOVER (STATUS: EXPERIMENTAL)
 
+> **⚠️ Superseded (2026-06-29):** the STM32F429 prototype this note targets for profiling is gone
+> (issue #170). The technique stands, but if it's revived, profile the per-vertex disc-fill cost on
+> the **nRF54L**, not the F429 — every "profile on the STM32F429" instruction and F429 timing below
+> is historical.
+
 > **Experimental, landed as one commit on `develop` so it can be reverted wholesale.** Fixes the
 > "beading"/scalloping on thick lines (route + thick roads) without coarsening them. The risk is
 > per-vertex disc fill cost on the MCU — **must be profiled on the STM32F429 before this is
