@@ -11,8 +11,9 @@
  * of the other. That makes the source spatially-varying (the 64-colour palette, the shapes card)
  * without ever needing more than two row buffers in shared RAM.
  *
- * Still ported line-for-line from the analyzer-verified M33 `PanelBus` (`src/ls021.rs`, epic #139) —
- * the golden reference. The two hard-won protocol rules from #143 carry over verbatim:
+ * Still ported line-for-line from the analyzer-verified M33 `PanelBus` driver (epic #139; the
+ * bit-bang driver itself was retired in #176, the protocol it proved is the golden reference). The
+ * two hard-won protocol rules from #143 carry over verbatim:
  *   • **`INTB` HIGH for the whole frame** — `INTB` low means "no write" (the panel holds its image),
  *     so every frame, the init-black one included, is enveloped in `INTB` high.
  *   • **`GCK` *level* selects the area block on the SAME gate line** — one pixel row = one `GCK`
@@ -144,7 +145,7 @@ _Static_assert(sizeof(flpr_control_t) == 124, "control block must be 124 bytes (
  * was already subsumed, the F3 single-buffer reuse generalised. */
 #define CMD_RUN_FRAME 0x00000002u
 
-/* ── Frame geometry (matches `PanelBus` in src/ls021.rs / the datasheet §6-5/§6-6 charts). ── */
+/* ── Frame geometry (the datasheet §6-5/§6-6 charts; mirrors the retired M33 `PanelBus`). ── */
 #define COLS_PER_SUBLINE 120u /* 240 columns ÷ 2 pixels-per-BCK */
 #define BCK_PER_SUBLINE  124u /* 120 data + 4 trailing dummy/flush BCK per sub-line */
 #define ROWS_PER_FRAME   320u /* visible pixel rows = gate advances; each row carries BOTH area planes */
