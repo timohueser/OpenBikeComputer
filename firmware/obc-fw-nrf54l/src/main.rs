@@ -953,6 +953,8 @@ async fn run_app(
     map_cache: &MapCache,
     route_cache: &RouteCache,
     led: &mut Output<'static>,
+    // The persistent RRAM settings store (#193): seeds the app at boot, persists on a settings edit.
+    mut settings_store: settings::RramSettingsStore,
     // The OBCM bbox centre (lon, lat) — only the `SynthLocation` stand-in needs it (no host feed).
     #[cfg(not(feature = "debug-uart"))] cam_center: (i32, i32),
 ) -> ! {
@@ -999,9 +1001,8 @@ async fn run_app(
     let mut stack_hw = 0usize;
     let mut last_led = 0u32;
 
-    // Settings: seed the app from the persistent RRAM store at boot (defaults until the store's
-    // RRAM I/O lands — see `settings`), then persist on any change the settings screens make.
-    let mut settings_store = settings::RramSettingsStore::new();
+    // Settings: seed the app from the persistent RRAM store at boot (a blank/corrupt page decodes
+    // to `None` → defaults), then persist on any change the settings screens make.
     app.set_settings(settings_store.load().unwrap_or_default());
 
     loop {
@@ -1020,7 +1021,7 @@ async fn run_app(
         app.advance_animations(InputClock(now));
 
         // Persist settings the moment a settings screen changes one (the save-on-dirty path the
-        // simulator shares). A no-op until the RRAM store's write lands; cheap when nothing changed.
+        // simulator shares): one in-place 16-byte RRAM line. Cheap, and skipped when nothing changed.
         if app.take_settings_dirty() {
             settings_store.save(app.settings());
         }
@@ -1550,14 +1551,30 @@ async fn main(_spawner: Spawner) {
         // SAFETY: sole owner of ROUTE_CACHE; single map plane → no aliasing.
         let route_cache: &RouteCache = unsafe { init_static(core::ptr::addr_of_mut!(ROUTE_CACHE), RouteCache::new()) };
 
+        // The persistent settings store (#193): takes the `RRAMC` peripheral, reads/writes the
+        // 16-byte blob in the carved RRAM page. Built here (where `p` is live) and moved into the
+        // ride loop, which seeds the app at boot and saves on a settings edit.
+        let settings_store = settings::RramSettingsStore::new(p.RRAMC);
+
         // Hand the built display + the resident set to the shared, backend-agnostic ride loop. The
         // `display` (one of the two `MapDisplay` definitions) is the only per-backend value crossing
         // this seam; the loop drives present through it with no further `#[cfg]` (issue #175). The
         // `debug-uart` split is the host-feed *feature*, not the backend: it threads the OBCM bbox
         // centre through for the `SynthLocation` stand-in when no host GPS is streamed.
         #[cfg(feature = "debug-uart")]
-        run_app(display, app, &mut storage, map_tables, map_cache, route_cache, &mut led).await;
+        run_app(display, app, &mut storage, map_tables, map_cache, route_cache, &mut led, settings_store).await;
         #[cfg(not(feature = "debug-uart"))]
-        run_app(display, app, &mut storage, map_tables, map_cache, route_cache, &mut led, (cam_lon, cam_lat)).await;
+        run_app(
+            display,
+            app,
+            &mut storage,
+            map_tables,
+            map_cache,
+            route_cache,
+            &mut led,
+            settings_store,
+            (cam_lon, cam_lat),
+        )
+        .await;
     }
 }
