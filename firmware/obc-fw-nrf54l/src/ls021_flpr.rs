@@ -1,10 +1,9 @@
-//! **The LS021B7DD02 FLPR `Panel` backend, shared between the bring-up bin and the real app.**
+//! **The LS021B7DD02 FLPR display backend, driving the real app's map/ride render.**
 //!
-//! Lifted out of `src/bin/ls021_flpr_bringup.rs` (epic #149, F5/PR #162) so `main.rs` can run the
-//! real [`obc_app::App`](obc_app) on the reflective LS021 panel through the *same* board-agnostic
-//! [`obc_platform::Panel`] seam the ST7789 uses (issue #165). The bring-up bin keeps driving test
-//! patterns through it; `main.rs` drives the live map/ride render through it — no panel-specific code
-//! in either.
+//! Lifted out of the (since-retired) `ls021_flpr_bringup` bench bin (epic #149, F5/PR #162) so
+//! `main.rs` can run the real [`obc_app::App`](obc_app) on the reflective LS021 panel through the
+//! board-agnostic [`DisplayDriver`](crate::display::DisplayDriver) seam (issue #174) the ST7789 also
+//! implements — no panel-specific code in the map plane.
 //!
 //! What lives here is everything that talks to the **FLPR** (the nRF54L15's VPR RISC-V coprocessor):
 //!   - the cross-core [`Control`] block + ping-pong [`BufDesc`]s + the dirty-row span list (the
@@ -12,39 +11,35 @@
 //!     both static-assert 124 bytes);
 //!   - [`launch_flpr`] — copy the blob into FLPR RAM, arm the control block, release the core, and
 //!     wait for its `ALIVE` stamp;
-//!   - [`Ls021Flpr`] — the resident-framebuffer [`Panel`] backend whose pushes pack the dirty rows of
-//!     the RGB222 plane through the two ping-pong buffers and busy-wait one masked `CMD_RUN_FRAME`
+//!   - [`Ls021Flpr`] — the resident-framebuffer backend whose pushes pack the dirty rows of the
+//!     RGB222 plane through the two ping-pong buffers and busy-wait one masked `CMD_RUN_FRAME`
 //!     ([`push_frame`](Ls021Flpr::push_frame) = the whole frame, [`push_spans`](Ls021Flpr::push_spans)
 //!     = only the changed rows, the FLPR fast-forwarding the gate over the rest — issue #163).
+//!
+//! The `DisplayDriver` adapter (present / present_overlay) lives in `display::ls021_flpr` (issue
+//! #174); this root module owns the FLPR transport it calls into.
 //!
 //! **COM stays on the M33** (`com::com_task`) and **is not here** — if the FLPR ever faults, COM
 //! must keep alternating so the panel never takes a DC bias (the epic's safety rule). The caller
 //! owns COM + the high-priority `InterruptExecutor` it free-runs on.
 //!
-//! ## Full-frame push per `end_frame` (the design choice)
+//! ## Whole-frame push (the design choice)
 //!
-//! The FLPR scans the *whole* frame top-to-bottom in **one** `CMD_RUN_FRAME`, so a band push can't
-//! reach glass on its own: the seam is **full-frame push per `end_frame`**. The app renders the whole
-//! frame into the resident RGB222 plane first — the map path writes it directly as device-64
-//! ([`FbDevice64`](obc_platform::FbDevice64)) via [`fb_mut`](Ls021Flpr::fb_mut); the glass-demo draws
-//! it band-by-band through [`flush_band`](Panel::flush_band), which quantises each RGB565 band into
-//! the plane — and then `end_frame` drives all 320 rows once. This matches how the FLPR works and
-//! keeps the ping-pong (M33 packs row N+1 while the FLPR scans row N) exactly as F4 proved it.
+//! The FLPR scans the *whole* frame top-to-bottom in **one** `CMD_RUN_FRAME`, so a partial push can't
+//! reach glass on its own. The app renders the whole frame into the resident RGB222 plane first — the
+//! map path writes it directly as device-64 ([`FbDevice64`](obc_platform::FbDevice64)) via
+//! [`fb_mut`](Ls021Flpr::fb_mut) — and then [`push_frame`](Ls021Flpr::push_frame) drives all 320 rows
+//! once. This keeps the ping-pong (M33 packs row N+1 while the FLPR scans row N) exactly as F4 proved it.
 //!
-//! ## Blocking push (sync `Panel` seam)
+//! ## Blocking push
 //!
-//! [`Panel`] is synchronous, so [`Ls021Flpr::end_frame`] **busy-polls** rather than awaiting: it
-//! spins on each ping-pong buffer's `consumed == ready` (the M33 is a dedicated packer here) and on
-//! the FLPR's `flpr_seq` ack — no EGU20 IRQ needed (the F4 async return doorbell). COM free-runs on
-//! its own high-priority `InterruptExecutor`, so blocking the thread-mode M33 for a frame is benign
-//! (the same shape as the ST7789 path blocking on its SPI-DMA write). The blob still pokes `EGU20`
-//! after each frame; with its IRQ unarmed here that write is a harmless no-op.
-
-// This module is consumed two ways: the bring-up bin drives whole-frame RGB565 generators through the
-// banded `Panel` path (`new_banded` + `show`), while the app renders device-64 straight into the plane
-// (`new_fb` + `fb_mut`). Each binary leaves the *other's* constructor/path unused, so allow dead code
-// here rather than tag the constructors per-consumer.
-#![allow(dead_code)]
+//! The push is synchronous: [`push_frame`](Ls021Flpr::push_frame) / [`push_spans`](Ls021Flpr::push_spans)
+//! **busy-poll** rather than awaiting — they spin on each ping-pong buffer's `consumed == ready` (the
+//! M33 is a dedicated packer here) and on the FLPR's `flpr_seq` ack (no EGU20 IRQ needed — the F4 async
+//! return doorbell). COM free-runs on its own high-priority `InterruptExecutor`, so blocking the
+//! thread-mode M33 for a frame is benign (the same shape as the ST7789 path blocking on its SPI-DMA
+//! write). The blob still pokes `EGU20` after each frame; with its IRQ unarmed here that write is a
+//! harmless no-op.
 
 use core::ptr::{addr_of, addr_of_mut};
 
@@ -55,9 +50,9 @@ use obc_platform::ls021_wire::{BCK_PER_SUBLINE, ROW_WORDS, WIDTH};
 // `composite_overlay_window` is the shared overlay-composite core (#174): fill a window scratch from
 // the clean framebuffer (device-64 → RGB565) + draw the hold bulge over it through a `Band` — the same
 // step the ST7789 backend runs, before this backend re-quantises it back to the wire.
-use obc_platform::{composite_overlay_window, ls021_pack_row, Band, Panel};
-// The host-tested RGB565 → device-64 quantiser — the same one the glass-demo's gamut is drawn from,
-// so `flush_band` lands a band on the panel's RGB222 gamut exactly as the ST7789 stand-in shows it.
+use obc_platform::{composite_overlay_window, ls021_pack_row, Band};
+// The host-tested RGB565 → device-64 quantiser — the same one the map style table is tuned to, so the
+// re-quantised overlay window lands on the panel's RGB222 gamut exactly as the ST7789 stand-in shows it.
 use obc_reader::rgb565_to_device64;
 
 use embedded_graphics::prelude::*;
@@ -132,7 +127,7 @@ const VPR00_CPURUN: *mut u32 = 0x5004_C800 as *mut u32; // CPURUN.EN bit0 = run
 /// Visible pixel rows the FLPR scans per frame — the `status` the M33 cross-checks, and the
 /// framebuffer height.
 pub const ROWS_PER_FRAME: u32 = 320;
-/// Framebuffer width = the panel width (re-exported for the resident-plane sizing in the bin/app).
+/// Framebuffer width = the panel width (re-exported for the resident-plane sizing in the app).
 pub const FB_W: usize = WIDTH;
 /// Framebuffer height = the visible row count.
 pub const FB_H: usize = ROWS_PER_FRAME as usize;
@@ -300,39 +295,27 @@ fn dump_flpr_state(seq: u32) {
     );
 }
 
-/// The board-agnostic [`Panel`] backend for the LS021 over the FLPR. Owns the resident RGB222
-/// framebuffer plane; the app renders the whole frame into it (the map path writes it directly as
-/// device-64 via [`fb_mut`](Self::fb_mut); a whole-frame RGB565 generator draws it band-by-band
-/// through [`flush_band`](Panel::flush_band)), and [`end_frame`](Panel::end_frame) /
-/// [`push_frame`](Self::push_frame) drive the whole frame to glass over the ping-pong path.
+/// The LS021-over-FLPR display backend. Owns the resident RGB222 framebuffer plane; the app renders
+/// the whole frame into it (the map path writes it directly as device-64 via [`fb_mut`](Self::fb_mut)),
+/// and [`push_frame`](Self::push_frame) / [`push_spans`](Self::push_spans) drive it to glass over the
+/// ping-pong path. The board-agnostic [`DisplayDriver`](crate::display::DisplayDriver) impl
+/// (present / present_overlay) lives in `display::ls021_flpr` (issue #174).
 pub struct Ls021Flpr<'b> {
-    /// Resident RGB222 (device-64) frame plane, `FB_W × FB_H`. `flush_band`/`fb_mut` write it,
-    /// `end_frame`/`push_frame` pack + push it.
+    /// Resident RGB222 (device-64) frame plane, `FB_W × FB_H`. `fb_mut` writes it,
+    /// `push_frame`/`push_spans` pack + push it.
     fb: &'b mut [u8],
-    /// One band of RGB565 scratch the seam hands a whole-frame generator; quantised into `fb` per
-    /// band. **Empty for the map path** ([`new_fb`](Self::new_fb)) — the app renders device-64
-    /// straight into `fb`, never through `flush_band`, so no RGB565 band scratch is allocated (the
-    /// ~7.5 KB the ST7789 path needs is freed here, issue #165).
-    band: &'b mut [u16],
     /// Per-frame command sequence — bumped each push, echoed back by the FLPR as the ack.
     seq: u32,
 }
 
 impl<'b> Ls021Flpr<'b> {
-    /// Backend for the **device-64 map/ride path** (`main.rs`): the app quantises to the device-64
-    /// gamut itself ([`FbDevice64`](obc_platform::FbDevice64)) and renders straight into `fb`, then
-    /// [`push_frame`](Self::push_frame) drives it. No RGB565 band scratch — `flush_band` is unused on
-    /// this path (the empty `band` is never touched), which is what frees the ~7.5 KB the ST7789 band
-    /// push needs (issue #165). `fb` must be `FB_W × FB_H` device-64 bytes.
+    /// Build the backend over the resident **device-64 map/ride plane** (`main.rs`): the app quantises
+    /// to the device-64 gamut itself ([`FbDevice64`](obc_platform::FbDevice64)) and renders straight
+    /// into `fb`, then [`push_frame`](Self::push_frame) drives it. The FLPR packs `fb` straight to the
+    /// wire, so there is no RGB565 band scratch (the ~7.5 KB the ST7789 band push needs is freed here,
+    /// issue #165). `fb` must be `FB_W × FB_H` device-64 bytes.
     pub fn new_fb(fb: &'b mut [u8]) -> Self {
-        Self { fb, band: &mut [], seq: 0 }
-    }
-
-    /// Backend for **whole-frame RGB565 generators** (the bring-up glass-demo): [`flush_band`] hands
-    /// the generator a `band` of RGB565 scratch and quantises each band into `fb`. `band` sizes the
-    /// band height (`band.len() / FB_W` rows). (Bin-only — the app uses [`new_fb`](Self::new_fb).)
-    pub fn new_banded(fb: &'b mut [u8], band: &'b mut [u16]) -> Self {
-        Self { fb, band, seq: 0 }
+        Self { fb, seq: 0 }
     }
 
     /// The resident RGB222 plane, for the map path to render into (device-64, `0b00_RR_GG_BB` per
@@ -494,58 +477,4 @@ impl<'b> Ls021Flpr<'b> {
             unsafe { addr_of_mut!((*CONTROL).buf[buf_i].ready).write_volatile(next) };
         })
     }
-}
-
-impl Panel for Ls021Flpr<'_> {
-    /// Band height = however many full `WIDTH`-pixel rows the RGB565 scratch holds (0 for the
-    /// `new_fb` map path, which never bands).
-    fn band_rows(&self) -> u16 {
-        (self.band.len() / FB_W) as u16
-    }
-
-    /// Nothing to set up — the resident plane is filled band-by-band, then driven by `end_frame`.
-    fn begin_frame(&mut self) {}
-
-    /// Render one band into the RGB565 scratch, then **quantise it into the resident RGB222 plane**
-    /// at rows `[y0, y0 + rows)`: each pixel is snapped to the device-64 gamut by the host-tested
-    /// [`rgb565_to_device64`] (the same quantiser the glass-demo's swatches are drawn from) and
-    /// stored as a `0b00_RR_GG_BB` byte. No panel signal here — `end_frame` drives the whole plane.
-    /// Only the glass-demo path uses this; the map path renders device-64 directly via [`fb_mut`].
-    fn flush_band(&mut self, y0: u16, rows: u16, fill: impl FnOnce(&mut [u16])) {
-        let n = FB_W * rows as usize;
-        fill(&mut self.band[..n]);
-        let base = y0 as usize * FB_W;
-        for (i, &px) in self.band[..n].iter().enumerate() {
-            // rgb565_to_device64 returns 0/85/170/255 per channel; /85 recovers the 2-bit level.
-            let (r, g, b) = rgb565_to_device64(px);
-            self.fb[base + i] = ((r / 85) << 4) | ((g / 85) << 2) | (b / 85);
-        }
-    }
-
-    /// Drive the now-filled resident plane to glass over the ping-pong path (one `CMD_RUN_FRAME`),
-    /// then busy-wait the ack. The full-frame push the seam is built around — see the module doc.
-    fn end_frame(&mut self) {
-        self.push_frame();
-    }
-}
-
-/// Draw a whole-frame RGB565 generator onto the panel through the [`Panel`]/[`Band`] seam: clear/fill
-/// the resident plane band-by-band (each band gets the *whole* frame drawn into it, clipped to its
-/// rows by [`Band`], so it reassembles seam-free), then drive the frame. The exact loop the ST7789
-/// `glass-demo` uses — proof the same generator drives both panels unchanged. (Map/ride frames skip
-/// this and render device-64 straight into [`fb_mut`](Ls021Flpr::fb_mut).)
-pub fn show(panel: &mut Ls021Flpr, gen: impl Fn(&mut Band)) {
-    panel.begin_frame();
-    let rows = panel.band_rows();
-    let frame = Size::new(FB_W as u32, FB_H as u32);
-    let mut y0 = 0u16;
-    while (y0 as usize) < FB_H {
-        let h = rows.min(FB_H as u16 - y0);
-        panel.flush_band(y0, h, |scratch| {
-            let mut t = Band::new(scratch, frame, y0, h);
-            gen(&mut t);
-        });
-        y0 += h;
-    }
-    panel.end_frame();
 }

@@ -1,11 +1,11 @@
 //! **LS021B7DD02 COM (common-electrode) driver** — the free-running `VCOM`/`VB`/`VA` square wave.
 //!
 //! This is the one piece of the M33-direct bring-up (epic #139) that survives into the shipping
-//! firmware. The pixel-side gate-scan / source-shift driver (`PanelBus`) and the `ls021_bringup`
-//! bench bin were retired (issue #176) once the FLPR path ([`crate::ls021_flpr`]) took over driving
-//! frames — but COM is **panel-board-agnostic infrastructure** that must run no matter who clocks
-//! the pixels, so it stays on the M33 here and is used by both the default FLPR app build and the
-//! `ls021_flpr_bringup` bench bin.
+//! firmware. The pixel-side gate-scan / source-shift driver (`PanelBus`) + the `ls021_bringup` bench
+//! bin (issue #176), and the `ls021_flpr_bringup` FLPR bench bin (issue #177), were all retired once
+//! the FLPR path ([`crate::ls021_flpr`]) took over driving frames — but COM is **panel-board-agnostic
+//! infrastructure** that must run no matter who clocks the pixels, so it stays on the M33 here, driven
+//! by the default FLPR app build.
 //!
 //! ## Why COM has to free-run
 //!

@@ -32,38 +32,6 @@ default = []
 # and no RISC-V toolchain — it links the full 256 KB. Build with `cargo run --release --features tft`.
 tft = []
 
-# `glass-demo` swaps the map app for the panel-only bring-up screen — the font ladder + the device's
-# 64-colour gamut, drawn band-by-band through the `Panel` seam (issue #122), no SD and no full
-# framebuffer. The analog of the simulator's `--text-demo`. It draws through the ST7789 `Panel`
-# backend, so it **implies `tft`** (which is why every ST7789-backend `cfg` keys on `feature = "tft"`
-# alone). Kept so the panel/colour/text path can be verified in isolation; build it with
-# `--no-default-features --features glass-demo`.
-glass-demo = ["tft"]
-
-# `ls021-flpr` is the **LS021 FLPR bring-up** (epic #149): the successor to the M33-direct
-# bring-up that moves the panel waveform generation onto the nRF54L15's FLPR (the VPR RISC-V
-# coprocessor). The feature gates the standalone `ls021_flpr_bringup` bin (below) **and** the
-# `build.rs` work it needs: a *carved* `memory.x` reserving the top 12 KB of SRAM for the FLPR
-# image + a cross-core control-block page, plus cross-compiling the freestanding C blob in
-# `src/flpr/` with a RISC-V gcc (`brew install riscv64-elf-gcc`) — the same carve + blob the default
-# LS021 build pulls (it shares the `Ls021Flpr` backend), keyed in `build.rs` on this feature **or**
-# the absence of `tft`. F0 (#150) proved the build/boot path
-# (M33 starts the FLPR; it blinks LED0 + answers a one-word handshake); F1 (#151) is the
-# bidirectional comms channel — a shared control block + a doorbell each way (shared-RAM sequence
-# M33→FLPR, EGU interrupt FLPR→M33; VEVIF is walled on bare metal), round-trip verified over RTT.
-# F2 (#152) drove the inner data-shift loop on the FLPR: one source sub-line (BSP + 124 BCK + the 6
-# data lines) drained from a SHARED-page write buffer the M33 hands over via the F1 descriptor.
-# **F3 (#153)** wraps that loop in the gate scan (GSP/GCK/GEN) + frame envelope (INTB), so the FLPR
-# drives a whole frame on glass — an INTB-framed all-black init frame then solid white / R / G / B,
-# the M33 packing a row buffer + ringing once per frame, COM free-running on the M33. Bring-up-slow,
-# LA-diffed against the M33 PanelBus and webcam-verified. Build with `--bin ls021_flpr_bringup
-# --features ls021-flpr`. See `firmware/docs/ls021-flpr.md`.
-#
-# (The **real app** on the LS021 — same `Ls021Flpr` backend, but driving the full map/ride `main.rs`
-# instead of this bench bin — is now the **default build**, not a feature: see `default` above and
-# issue #173. This `ls021-flpr` feature stays the standalone bring-up bin.)
-ls021-flpr = []
-
 # Stream fake GPS / altimeter / compass from a host over the **VCOM UART** (issue #127). The
 # nRF54L15 has no USB peripheral, so the debug-sensor /
 # telemetry stream rides the DK's onboard J-Link USB-CDC **VCOM** (UARTE20, TX P1_04 / RX P1_05);
@@ -75,16 +43,6 @@ ls021-flpr = []
 # tty>`. Enables the protocol + sources in obc-platform (`debug-usb` is the transport-agnostic
 # handoff gate there; the board crate owns the concrete UARTE driver).
 debug-uart = ["obc-platform/debug-usb"]
-
-# The LS021 **FLPR** bring-up bin (epic #149), evolved one stage at a time (currently F3, #153).
-# `required-features` keeps it out of every normal build — it only compiles when explicitly asked
-# (`--bin ls021_flpr_bringup --features ls021-flpr`), so the FLPR carve-out + RISC-V blob build in
-# `build.rs` never touch the default `src/main.rs` map/ride path. `src/main.rs` stays the
-# auto-discovered default binary.
-[[bin]]
-name = "ls021_flpr_bringup"
-path = "src/bin/ls021_flpr_bringup.rs"
-required-features = ["ls021-flpr"]
 
 [dependencies]
 # embassy HAL for the nRF54L15 app core. `nrf54l15-app-s` selects the secure-app die
@@ -130,12 +88,11 @@ embedded-hal = "1.0"
 # #122). Pulls obc-app/route/reader transitively — all no_std, all defmt-free. `debug-usb` stays
 # off (no embassy-sync) until the sensor stream at N6.
 obc-platform = { path = "../obc-platform" }
-# The shared text renderer — `draw_text` + the Terminus `Font` tiers the glass-demo's font ladder
-# draws (the same path every on-device screen uses). (#122)
+# The shared text renderer — `draw_text` + the Terminus `Font` tiers every on-device screen uses. (#122)
 obc-render = { path = "../obc-render" }
-# `Rgb565` / `DrawTarget` / `Point` / `Rectangle` for the map path's `color_fn` + the glass-demo's
-# `Band` target; pinned to the same 0.8 obc-platform/obc-render resolve so the colour + target types
-# unify across the path.
+# `Rgb565` / `DrawTarget` / `Point` / `Rectangle` for the map path's `color_fn` + the hold-bulge
+# overlay composite's `Band` target; pinned to the same 0.8 obc-platform/obc-render resolve so the
+# colour + target types unify across the path.
 embedded-graphics = "0.8"
 
 # microSD map storage (issue #123). The card stores the map/routes/tracks; the board-agnostic FatFs

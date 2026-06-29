@@ -13,8 +13,8 @@
 //!
 //! [`Band`] is the small piece that makes "render the whole frame, band at a time" invisible to
 //! the drawing code: it wraps one `flush_band` scratch slice as a [`Framebuffer565`] with the
-//! band's `y0` baked in, yet reports the **full frame** size. A whole-frame generator (the
-//! `glass-demo`, and later [`App::render_frame`](obc_app::App::render_frame)) draws in absolute
+//! band's `y0` baked in, yet reports the **full frame** size. A whole-frame generator
+//! ([`App::render_frame`](obc_app::App::render_frame)) draws in absolute
 //! frame coordinates exactly as it would against a full-frame scan-out plane; [`Band`] shifts each draw up
 //! by `y0` and the inner framebuffer clips away whatever falls outside this band's rows — so the
 //! frame reassembles seam-free across the bands with the generator none the wiser.

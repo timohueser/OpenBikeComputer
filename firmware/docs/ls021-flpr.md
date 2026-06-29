@@ -35,8 +35,8 @@ which stays the **golden reference**: the FLPR must reproduce that analyzer-veri
   (see [F4 — ping-pong frame](#f4--ping-pong-from-the-framebuffer)).
 - **F5 [#155]** — `obc_platform::Panel` backend + speed-tune toward the ~53 ms spec frame. **The
   bridge to running the app.** ✅ **DONE (PR #162)** — the FLPR push sits behind the board-agnostic
-  `obc_platform::Panel` seam (`Ls021Flpr`), so the glass-demo generator that drives the ST7789
-  (`demo::font_palette_demo`) drives the real LS021 with no panel-specific code; the DDR fix landed
+  `obc_platform::Panel` seam (`Ls021Flpr`), so a whole-frame generator (the bring-up bin's test cards,
+  and later the real `App::render_frame`) drives the LS021 with no panel-specific code; the DDR fix landed
   full-res 64-colour, sub-100 ms (see [F5 — Panel backend](#f5--panel-backend--speed-tune)).
 - **#165 — the real app on the LS021 (the FLPR app build).** ✅ **integrated; on-glass pending** —
   `src/main.rs --features panel-ls021` runs the real `obc_app::App` (map + ride) on the LS021 through
@@ -81,8 +81,8 @@ Homebrew's `riscv64-elf-gcc`:
 brew install riscv64-elf-gcc        # GCC 16.x, bottled; same formula family as riscv64-elf-gdb
 ```
 
-`build.rs` (under the `ls021-flpr` feature only) compiles `src/flpr/` into `$OUT_DIR/flpr.bin`.
-The exact invocation it runs:
+`build.rs` (on every FLPR build — i.e. whenever `tft` is absent) compiles `src/flpr/` into
+`$OUT_DIR/flpr.bin`. The exact invocation it runs:
 
 ```sh
 riscv64-elf-gcc -march=rv32emc -mabi=ilp32e \
@@ -671,8 +671,8 @@ resident 75 KB RGB222 framebuffer:
 - **`flush_band(y0, rows, fill)`** — hands the generator a `WIDTH × rows` RGB565 scratch, then
   **quantises it into the resident plane** at rows `[y0, y0+rows)`: each pixel is snapped to the
   device-64 gamut by the host-tested `obc_reader::rgb565_to_device64` (`0/85/170/255 → /85 →` the
-  2-bit level) and stored as a `0b00_RR_GG_BB` byte — the same quantiser the glass-demo's swatches
-  are drawn from, so a band lands on the panel's gamut exactly as the ST7789 stand-in shows it.
+  2-bit level) and stored as a `0b00_RR_GG_BB` byte — the same quantiser the bring-up bin's test
+  cards are drawn from, so a band lands on the panel's gamut exactly as the ST7789 stand-in shows it.
 - **`end_frame`** — runs the **whole-frame** FLPR push (the F4 `push_frame`: pre-pack rows 0/1, ring
   `CMD_RUN_FRAME`, pack the rest under the ping-pong handshake, busy-wait the ack).
 
@@ -682,8 +682,9 @@ The FLPR scans the *whole* frame top-to-bottom in one `CMD_RUN_FRAME` — a band
 its own — so the seam is **full-frame push per `end_frame`**, not a band-incremental feed: `flush_band`
 only *fills* the plane, `end_frame` drives all 320 rows once. This is the natural shape for a
 scan-the-whole-frame backend and keeps the ping-pong (M33 packs row N+1 while the FLPR scans row N)
-exactly as F4 built it. The same generator (`demo::font_palette_demo`, drawn through `Band`) thus
-drives the banded ST7789 *and* this full-frame plane unchanged — the proof the seam is panel-agnostic.
+exactly as F4 built it. The same whole-frame generator (the bring-up bin's `line_test_card`, and the
+real `obc_app::App::render_frame`, drawn through `Band`) thus drives the banded ST7789 *and* this
+full-frame plane unchanged — the proof the seam is panel-agnostic.
 
 ### Blocking push (the sync `Panel` seam)
 
@@ -713,7 +714,7 @@ pipelined controller that overlaps gate and source — a partial/dirty-line foll
 
 ### ⚠️ The source bus is DDR — the half-resolution / 32-colour fix
 
-The first on-glass run of the glass-demo exposed a bug that had been latent since the M33 bring-up
+The first on-glass run of the bring-up test screen exposed a bug that had been latent since the M33 bring-up
 (epic #139) and survived F2–F4: fine vertical detail rendered at **half horizontal resolution** — the
 left 120 framebuffer columns stretched 2× across the panel, the right 120 dropped, and the 64-colour
 gamut showing only **32**. It was invisible on solids and coarse swatches (uniform data looks the same
@@ -734,8 +735,8 @@ whole period, so the panel captured it twice. **Fix: drive DDR** — a distinct 
 
 - **Host / CI ✅:** `cargo build` (both bring-up bins + blob), `cargo clippy`, `cargo fmt --check`
   clean; default `main.rs` untouched; `cargo test -p obc-platform` (pack tests) green.
-- **On glass ✅:** the glass-demo + line/box card render full-width, true 64 colours, no doubling,
-  sub-100 ms — FLPR-driven via the `Panel` seam.
+- **On glass ✅:** the bring-up cards (font/colour + line/box) render full-width, true 64 colours, no
+  doubling, sub-100 ms — FLPR-driven via the `Panel` seam.
 - **LA / BCK lock (pending):** the bench value is `BCK_HALF_ITERS = 2` (~180 ns half, **over** the
   ≥660 ns `thwBCK`/`tlwBCK` min — works on this unit). With DDR a data edge now sits on **both** `BCK`
   edges, so re-verify the data set-up on each edge and pick the production value (in-spec ≈
@@ -759,8 +760,8 @@ the FLPR. ~97 ms full-frame (~10 fps) is the intermediate this ships on; partial
   `main.rs` use them. The bin keeps its bring-up sequence (settle → launch → init-black → COM → BTN0
   step); the app wires the same backend into its load → ride → save-GPX loop.
 - **Backend-select feature.** `panel-ls021` makes `main.rs` build with the FLPR LS021 backend instead
-  of the ST7789 (mutually exclusive with `glass-demo`). It pulls the same `build.rs` carve + RISC-V
-  blob the bin does. The default build is untouched (full 256 KB, no RISC-V toolchain).
+  of the ST7789. It pulls the same `build.rs` carve + RISC-V blob the bin does. The default build is
+  untouched (full 256 KB, no RISC-V toolchain).
 - **One framebuffer, no band scratch.** The app renders the whole frame into the resident 75 KB
   `FbDevice64` plane the `Ls021Flpr` owns, and `push_frame` packs it straight to the wire — so the
   FLPR map path needs **no RGB565 band scratch** (the ST7789 push's ~6.6 KB is freed).
@@ -862,16 +863,20 @@ stamps `status = 0xA11E` in the control block instead of a lone word) and adds t
 
 ## Build & flash
 
+> **Note (issue #177):** the standalone `ls021_flpr_bringup` bench bin + its `ls021-flpr` feature
+> were **retired** once the real app drove the LS021 on glass — the FLPR is now the *default* backend
+> (selected by the absence of `tft`), so the transport in `src/ls021_flpr.rs` is exercised by every
+> normal build. The bench bin is in git history if a panel-isolation bring-up is ever needed again.
+
 ```sh
 # From firmware/obc-fw-nrf54l/ (standalone crate, thumbv8m.main-none-eabihf). Needs a RISC-V
 # gcc for the FLPR blob: brew install riscv64-elf-gcc
 
-# The bring-up bench bin — test patterns (glass-demo / solids) through the FLPR Panel seam:
-cargo run --release --bin ls021_flpr_bringup --features ls021-flpr
-
-# The real map/ride app on the LS021 via the FLPR (issue #165). Add ,debug-uart to stream a
-# recorded ride from a host (obc-usb-host). Needs the Board-Configurator settings (README).
-cargo run --release --features panel-ls021,debug-uart
+# The real map/ride app on the LS021 via the FLPR (issue #165) — the default build. Add
+# --features debug-uart to stream a recorded ride from a host (obc-usb-host). Needs the
+# Board-Configurator settings (README).
+cargo run --release
+cargo run --release --features debug-uart
 ```
 
 [#149]: https://github.com/timohueser/OpenBikeComputer/issues/149
