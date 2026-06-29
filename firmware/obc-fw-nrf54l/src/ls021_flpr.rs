@@ -444,6 +444,17 @@ impl<'b> Ls021Flpr<'b> {
         self.push_spans(&[(0, FB_H as u16)])
     }
 
+    /// Re-arm the self-diffing present so the next [`present_within`](Self::present_within) pushes the
+    /// **whole** frame again and re-seeds the store — the recovery path when a push failed to reach
+    /// glass (a stalled FLPR). [`present_within`] advances the row-hash store *before* the push, so
+    /// after a fault the store already records the (un-pushed) current frame; a plain retry would then
+    /// diff identical `fb` against an up-to-date store and re-push **nothing**, stranding the rows that
+    /// missed glass. Resetting forces the retry to repaint every row. Delegates to
+    /// [`RowDiff::reset`](obc_platform::RowDiff::reset).
+    pub fn reset_diff(&mut self) {
+        self.diff.reset();
+    }
+
     /// The **self-diffing present** (issue #201): re-hash every framebuffer row against the
     /// [`RowDiff`] store and push only the rows that actually changed, optionally clipping the live
     /// hold bulge's rows out (`exclude`) so [`push_overlay`](Self::push_overlay) owns them (the

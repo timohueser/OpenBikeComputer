@@ -395,10 +395,11 @@ pub struct App {
     /// [`apply_gesture`](App::apply_gesture); read into [`Render::now`] for the draw and into
     /// [`animate`](Screen::animate) for the once-a-minute repaint. See [`WallClock`].
     wall_clock: WallClock,
-    /// Whether [`settings`](App::settings) changed since the last [`take_settings_dirty`]; set
-    /// by [`apply_gesture`](App::apply_gesture)'s before/after compare, drained by the host to
-    /// decide when to persist. Starts `false`: the boot value either came from the store or is
-    /// the default, so nothing needs writing until the user actually changes something.
+    /// Whether a [`settings`](App::settings) edit is **pending persistence**; set by
+    /// [`apply_gesture`](App::apply_gesture)'s before/after compare, and drained by
+    /// [`take_settings_dirty`] once the user leaves the settings subtree (the save is debounced to
+    /// screen exit, not fired per detent — see there). Starts `false`: the boot value either came from
+    /// the store or is the default, so nothing needs writing until the user actually changes something.
     ///
     /// [`take_settings_dirty`]: App::take_settings_dirty
     settings_dirty: bool,
@@ -736,13 +737,37 @@ impl App {
         self.wall_clock.now(self.now_ms)
     }
 
-    /// Drain the "settings changed" flag set since the last call. The host checks this **once
-    /// per frame** after [`handle_input`](App::handle_input) and, when set, persists
-    /// [`settings`](App::settings) via its [`SettingsStore`](crate::hal::SettingsStore) — the
-    /// settings analogue of [`take_dirty`](App::take_dirty)'s render demand. Idempotent: a
-    /// frame with no settings edit returns `false` and writes nothing.
+    /// Whether a settings edit is pending persistence **and the user has left the settings subtree** —
+    /// the host's cue to persist [`settings`](App::settings) via its
+    /// [`SettingsStore`](crate::hal::SettingsStore), checked **once per frame** after
+    /// [`handle_input`](App::handle_input). Drains the flag when it fires.
+    ///
+    /// The save is **debounced to leaving the settings screens** rather than fired on every in-edit
+    /// detent: a stepper sweep (spinning the year, the GPS interval, …) would otherwise drive one store
+    /// write *per detent* — on the device, dozens of blocking in-place RRAM line writes to the same
+    /// address (endurance + a per-detent loop stall). Holding the pending edit until the top screen is
+    /// no longer a settings screen coalesces a whole edit session into a single write. This relies on
+    /// the invariant that **only the settings screens mutate [`settings`](App::settings)** (so a pending
+    /// edit always lives under the settings subtree); the trade-off is that an edit left un-exited when
+    /// power is cut is lost — which the single-slot store already tolerates (a torn write loses at most
+    /// the in-flight edit).
     pub fn take_settings_dirty(&mut self) -> bool {
-        core::mem::take(&mut self.settings_dirty)
+        if self.settings_dirty && !self.top_is_settings() {
+            self.settings_dirty = false;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Whether the top (input-receiving) screen is one of the settings screens — the gate
+    /// [`take_settings_dirty`](App::take_settings_dirty) uses to hold a pending save until the user
+    /// leaves the settings subtree (so a multi-detent edit persists once, on exit, not per detent).
+    fn top_is_settings(&self) -> bool {
+        matches!(
+            self.stack.last(),
+            Some(Screen::Settings(_) | Screen::DateTime(_) | Screen::Units(_) | Screen::Power(_) | Screen::Reset(_))
+        )
     }
 
     /// **Debug/benchmark hook** (the USB-CDC `Z` command): set the map camera to exactly `mpp`
@@ -1287,11 +1312,13 @@ mod tests {
 
     // --- settings persistence signal (the host's save trigger) ---
 
-    /// A settings edit applied through `apply_gesture` flags `take_settings_dirty` (so the host
-    /// persists it); a gesture that changes no setting does not. Drives the real navigation
-    /// Home → Menu → Settings → Units, so the whole `Ctx { settings }` plumbing is exercised.
+    /// A settings edit applied through `apply_gesture` flags a save — but the save is **debounced to
+    /// leaving the settings subtree**: while still on a settings screen the pending edit is held (so a
+    /// multi-detent edit coalesces into one store write, not one blocking write per detent), and it
+    /// surfaces once on the frame after navigating out. Drives the real Home → Menu → Settings → Units
+    /// navigation, so the whole `Ctx { settings }` plumbing is exercised.
     #[test]
-    fn a_settings_edit_flags_dirty_and_a_noop_does_not() {
+    fn a_settings_edit_flags_dirty_on_leaving_the_settings_subtree() {
         use crate::settings::Units;
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         // Walk to the Units screen (Menu = Routes/Settings; Settings list = Date&Time/Units/…).
@@ -1303,14 +1330,17 @@ mod tests {
         assert!(!app.take_settings_dirty(), "navigation changed no setting, so nothing to save");
 
         let before = app.settings().units;
-        app.apply_gesture(Gesture::Press); // flip units
+        app.apply_gesture(Gesture::Press); // flip units (live immediately, but persistence is debounced)
         assert_ne!(app.settings().units, before, "the Units screen flipped the system");
         assert_eq!(app.settings().units, Units::Imperial, "default Metric → Imperial");
-        assert!(app.take_settings_dirty(), "a real settings change flags a save");
-        assert!(!app.take_settings_dirty(), "and the flag drains — only saved once");
+        assert!(!app.take_settings_dirty(), "still on a settings screen → the save is held, not fired per detent");
 
-        app.apply_gesture(Gesture::Back); // leave Units (no settings change)
-        assert!(!app.take_settings_dirty(), "a non-settings gesture leaves the flag clear");
+        app.apply_gesture(Gesture::Back); // Units → Settings list (still inside the settings subtree)
+        assert!(!app.take_settings_dirty(), "the Settings list is itself a settings screen — save stays held");
+
+        app.apply_gesture(Gesture::Back); // Settings list → Menu (left the settings subtree)
+        assert!(app.take_settings_dirty(), "leaving settings flushes the pending edit — one coalesced save");
+        assert!(!app.take_settings_dirty(), "and the flag drains — only saved once");
     }
 
     /// `set_settings` seeds the boot value without arming a save (the value came from the store /
