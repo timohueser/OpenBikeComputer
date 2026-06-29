@@ -1,16 +1,15 @@
 # OpenBikeComputer — notes for Claude
 
 Open-source bikepacking GPS computer: an **nRF54L** MCU driving a reflective
-Sharp memory-LCD (LS021B7DD02). The nRF54L is THE target; the STM32F429 was a
-bring-up bridge and is **not** a CI gate — optimize freely for nRF even if it
-breaks the STM32 crate, but keep the *shared* crates board-agnostic and the
-simulator + tests first-class.
+Sharp memory-LCD (LS021B7DD02). The nRF54L is THE target (an STM32F429 was the
+original bring-up bridge, now removed) — keep the *shared* crates board-agnostic
+and the simulator + tests first-class.
 
 ## Layout
 
 - `firmware/` — all Rust. Shared `no_std` render path, hosts at the edges:
-  obc-reader → obc-route → obc-render → obc-app → hosts (obc-sim, the two
-  obc-fw-* board crates). `obc-pack` is the std-host map packer (OSM `.osm.pbf`
+  obc-reader → obc-route → obc-render → obc-app → hosts (obc-sim, the
+  obc-fw-nrf54l board crate). `obc-pack` is the std-host map packer (OSM `.osm.pbf`
   → `.obcm`). Per-crate roles + build/run: [firmware/README.md](firmware/README.md).
 - `docs/` — the public docs site (below), published at
   <https://timohueser.github.io/OpenBikeComputer/>: it's the **conceptual**
@@ -27,12 +26,12 @@ where it belongs — don't re-explain the architecture in a README.
 ## Build & verify
 
 - Host crates + sim: `cargo build --release` and `cargo test` from `firmware/`.
-- The `firmware/` workspace **excludes** the board crates `obc-fw-stm32f429`
-  and `obc-fw-nrf54l` — they're standalone (own target + `.cargo/config.toml`),
-  so workspace `cargo test`/`build` does **not** touch them. Build each on its
-  own. nRF specifics + on-glass gotchas: [firmware/obc-fw-nrf54l/README.md](firmware/obc-fw-nrf54l/README.md).
+- The `firmware/` workspace **excludes** the board crate `obc-fw-nrf54l` — it's
+  standalone (own target + `.cargo/config.toml`), so workspace `cargo test`/`build`
+  does **not** touch it. Build it on its own. nRF specifics + on-glass gotchas:
+  [firmware/obc-fw-nrf54l/README.md](firmware/obc-fw-nrf54l/README.md).
 - `cargo fmt` is a **two-step**: `cargo fmt --all` for the workspace **plus** a
-  separate `cargo fmt` inside *each* excluded board crate, or the fmt CI guard
+  separate `cargo fmt` inside the excluded board crate, or the fmt CI guard
   fails. (rustfmt config is committed — let it do style; don't hand-format.)
 - Required CI check is the `ci` job in `.github/workflows/ci.yml`.
 

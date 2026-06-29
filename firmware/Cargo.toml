@@ -1,7 +1,7 @@
 [workspace]
 members = ["obc-reader", "obc-route", "obc-render", "obc-app", "obc-sim", "obc-pack", "obc-platform", "obc-replay", "obc-usb-host", "obcm-testkit"]
-# obc-fw-stm32f429 / obc-fw-nrf54l are standalone board crates (own target +
-# .cargo/config.toml, own empty [workspace]); each is built on its own, not as part of
-# this host workspace (which builds its members for the host target).
-exclude = ["obc-fw-stm32f429", "obc-fw-nrf54l"]
+# obc-fw-nrf54l is a standalone board crate (own target + .cargo/config.toml, own empty
+# [workspace]); it's built on its own, not as part of this host workspace (which builds its
+# members for the host target).
+exclude = ["obc-fw-nrf54l"]
 resolver = "2"

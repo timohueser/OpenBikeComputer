@@ -1,7 +1,6 @@
 //! microSD storage for the nRF54L15 board: map / routes / track log over FatFs (issue #123).
 //!
-//! This is the nRF half of "data on SD" and the direct analog of `obc-fw-stm32f429/src/sd.rs`:
-//! it owns the concrete SPI bus → [`SdCard`] → [`VolumeManager`] stack and reconciles the FAT
+//! This owns the concrete SPI bus → [`SdCard`] → [`VolumeManager`] stack and reconciles the FAT
 //! filesystem to the shared app's *intent*, exactly as the simulator's `RouteStore`/`TrackStore`
 //! reconcile a folder of files on the host. The reusable, board-agnostic adapters it hands the
 //! format code live in [`obc_platform::sd`] ([`SdByteSource`]/[`SdByteSink`]/[`SdTrackSink`]);

@@ -1,8 +1,8 @@
 //! nRF54L15-DK board firmware for OpenBikeComputer — the **real hardware target**.
 //!
-//! Unlike the STM32F429 prototype (a bridge that made the HAL seams concrete), the
-//! nRF54L15 + ST7789 EYESPI panel is what the project ships on. This crate ports the
-//! shared `obc-app` onto it to STM32-prototype parity (load route → ride → save GPX on
+//! The nRF54L15 + ST7789 EYESPI panel is what the project ships on (the HAL seams were
+//! first proven on a now-removed STM32F429 bring-up prototype). This crate ports the
+//! shared `obc-app` onto it (load route → ride → save GPX on
 //! glass, fake-sensor fed). Nothing app-facing lives here: `obc-render` / `obc-app` /
 //! `obc-reader` / `obc-route` + `obc-platform` stay board-agnostic; only the nRF HAL
 //! wiring + the ST7789 `Panel` backend are board-specific. See epic #120.
@@ -287,9 +287,8 @@ const BAND_BYTES: usize = st7789::WIDTH as usize * BAND_ROWS * 2;
 static mut BAND: [u16; WIDTH as usize * BAND_ROWS] = [0; WIDTH as usize * BAND_ROWS];
 
 // ============================ N3 board memory budget (issue #124) ============================
-// The nRF54L15 has 256 KB RAM and no external SDRAM (unlike the STM32 prototype's 8 MB), so the
-// whole resident working set of a full map redraw must fit there. This build-time assert is the
-// nRF analog of the STM32's SDRAM-placement guard (`obc-fw-stm32f429/src/main.rs`): it fails the
+// The nRF54L15 has 256 KB RAM and no external SDRAM, so the whole resident working set of a full
+// map redraw must fit there. This build-time assert fails the
 // build — rather than overflowing RAM on glass — if the shared crates' caps (trimmed by the
 // `nrf-mem` profile, enabled on the obc-app edge in Cargo.toml) ever outgrow the budget. It
 // compiles for thumbv8m (usize = 4 B), so every `size_of` here is the true on-device size.

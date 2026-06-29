@@ -125,8 +125,8 @@ impl<P: InputPin> Debounced<P> {
 }
 
 /// Four pushbuttons → raw [`InputEvent`]s for the shared app. Generic over any
-/// [`InputPin`], so the same type serves the F429 (`embassy_stm32::gpio::Input`) and
-/// the future nRF board. Drive it as: [`update`](Self::update) once per loop with the
+/// [`InputPin`], so the same type serves the nRF board (`embassy_nrf::gpio::Input`)
+/// and the host test mock. Drive it as: [`update`](Self::update) once per loop with the
 /// current millis, then hand `&mut self` to
 /// [`App::handle_input`](obc_app) — which drains it through [`InputSource`].
 pub struct ButtonInput<P> {

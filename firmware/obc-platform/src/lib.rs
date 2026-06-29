@@ -1,7 +1,7 @@
 //! Board-agnostic firmware glue between the shared [`obc_app`](../obc_app) and a
-//! concrete board crate (`obc-fw-stm32f429`, a future `obc-fw-nrf54l`).
+//! concrete board crate (`obc-fw-nrf54l`).
 //!
-//! `no_std`, over `embedded-hal` / `embedded-graphics`, so the board crates stay
+//! `no_std`, over `embedded-hal` / `embedded-graphics`, so the board crate stays
 //! thin (clocks, concrete pins, the main loop) and everything reusable lives here:
 //! written once, ported to the next board by re-pointing the pins. Today that is the
 //! framebuffer `DrawTarget`s, the button debouncer, the FatFs `ByteSource`/`Sink`
@@ -61,9 +61,8 @@
 //! planes' framebuffer flips) is guarded by a short critical section in the board's flip
 //! helper. The board's `main` may also offer a `single-executor` fallback that drives both
 //! planes inline through [`App::handle_input`](obc_app::App::handle_input) — proving the seam
-//! composes — but the preemptive split is the shipping default and the structure the future
-//! `obc-fw-nrf54l` adopts unchanged (the nRF supports the identical embassy
-//! `InterruptExecutor` pattern). The concrete F429 wiring lives in `obc-fw-stm32f429`'s `main`.
+//! composes — but the preemptive split is the shipping default. The concrete board wiring
+//! lives in `obc-fw-nrf54l`'s `main`, which uses the embassy `InterruptExecutor` pattern.
 
 #![no_std]
 
