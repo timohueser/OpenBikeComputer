@@ -603,6 +603,30 @@ const OVL_ROWS: u16 = 192;
 const _: () =
     assert!(OVL_W as usize * OVL_ROWS as usize <= WIDTH as usize * BAND_ROWS, "overlay window larger than BAND");
 
+/// The map row-spans **outside** a live bulge's rows `[y0, y0 + rows)` — the complement the FLPR map
+/// plane presents when it redraws *while the bulge is live*, leaving the bulge's rows for the overlay
+/// composite that immediately follows (issue #163).
+///
+/// Why not just present the whole frame and re-composite the bulge after? The FLPR's full-frame scan
+/// is ~100 ms; presenting the bulge rows clean here would blank the bulge for that entire scan before
+/// the composite repaints it — the "pop flicker" the user sees when a redraw lands mid-pop (the screen
+/// transition a completed long-press fires). Skipping the bulge rows leaves them holding the previous
+/// bulge on glass (the gate fast-forwards over them, latching nothing) until the composite repaints
+/// them with the fresh map backdrop + bulge, so the bulge never flashes off. Returns 0–2 ascending,
+/// disjoint spans (a bulge mid-panel splits the frame in two; one flush against an edge yields one).
+#[cfg(feature = "panel-ls021")]
+fn map_rows_around(y0: u16, rows: u16) -> heapless::Vec<(u16, u16), 2> {
+    let mut spans = heapless::Vec::new();
+    if y0 > 0 {
+        let _ = spans.push((0, y0));
+    }
+    let end = y0 + rows;
+    if end < HEIGHT {
+        let _ = spans.push((end, HEIGHT - end));
+    }
+    spans
+}
+
 /// Chains two input sources for the gesture recogniser: drains `a` (the physical buttons) fully,
 /// then `b` (the VCOM-injected `K` events with `debug-uart`, else [`NullInput`]). So a host can
 /// drive the UI (taps/holds) over the same VCOM link, interleaved with real presses — exactly the
@@ -1403,12 +1427,25 @@ async fn main(_spawner: Spawner) {
                         };
                     }
 
-                    // Present the whole clean frame to glass (blocking; each backend logs its own push
+                    // Present the clean frame to glass (blocking; each backend logs its own push
                     // breakdown — ST7789 fill/pack/spi, the FLPR frame/pack). A transport fault
                     // (`present` → false, e.g. a stalled FLPR) latches a retry like the reader-build
                     // failure (#66) rather than faulting.
+                    //
+                    // FLPR + a live bulge: present the map **around** the bulge's rows (the spans
+                    // *outside* `overlay_span`, via `map_rows_around`) and leave those rows for the
+                    // composite just below — the FLPR's ~100 ms full-frame scan would otherwise blank
+                    // the bulge for that whole scan before the composite repaints it (the pop flicker
+                    // when a redraw lands mid-pop). ST7789 pushes the whole frame: its bulge rides a
+                    // separate fast plane, so there is no visible gap to design around.
                     let t_push = Instant::now();
+                    #[cfg(not(feature = "panel-ls021"))]
                     let ok = display.present();
+                    #[cfg(feature = "panel-ls021")]
+                    let ok = match overlay_span {
+                        Some((y0, rows)) => panel.push_spans(&map_rows_around(y0, rows)),
+                        None => panel.present(),
+                    };
                     let push_us = t_push.elapsed().as_micros();
                     // Release the ST7789 bus before logging so the input plane can push its bulge.
                     #[cfg(not(feature = "panel-ls021"))]
@@ -1441,15 +1478,16 @@ async fn main(_spawner: Spawner) {
                 }
             }
 
-            // FLPR hold bulge (issue #163). The bulge lives on the map plane, so it is **re-applied on
-            // top after a map present** (a redraw mid-hold — e.g. the screen transition a completed hold
-            // fires — would otherwise blink the pop animation off) and on overlay-only frames; either
-            // way it is a separate push over the clean map, never baked into it. While live, present
-            // **only the active bulge's rows** (encoder ≈ 59–171 OR Back ≈ 182–246) — the FLPR
-            // fast-forwards the gate to the region + early-stops, a fraction of a full frame. The
-            // trailing edge (bulge just went quiet) wipes **the same rows** the last bulge used (kept in
-            // `last_overlay_span`), not the whole band, so the tail stays as smooth as the pop — unless
-            // a map present this frame already restored the clean map there.
+            // FLPR hold bulge (issue #163). The bulge lives on the map plane and is a separate push
+            // over the clean map, never baked into it. When the map *also* redrew this frame it presented
+            // **around** these rows (`map_rows_around` above), so the composite here paints them with the
+            // fresh map backdrop + bulge — the bulge never flashes off mid-pop (the redraw a completed
+            // hold's screen transition fires). On an overlay-only frame it just repaints the bulge over
+            // the unchanged map. Either way only the **active bulge's rows** are touched (encoder ≈ 59–171
+            // OR Back ≈ 182–246) — the FLPR fast-forwards the gate to the region + early-stops, a fraction
+            // of a full frame. The trailing edge (bulge just went quiet) wipes **the same rows** the last
+            // bulge used (kept in `last_overlay_span`), not the whole band, so the tail stays as smooth as
+            // the pop — unless a map present this frame already restored the clean map there.
             #[cfg(feature = "panel-ls021")]
             {
                 let composite = |panel: &mut Ls021Flpr, region: OverlayRegion| -> bool {
