@@ -4,12 +4,12 @@
 //! shared `obc-app` onto it (load route → ride → save GPX on
 //! glass, fake-sensor fed). Nothing app-facing lives here: `obc-render` / `obc-app` /
 //! `obc-reader` / `obc-route` + `obc-platform` stay board-agnostic; only the nRF HAL
-//! wiring + the ST7789 `Panel` backend are board-specific. See epic #120.
+//! wiring + the ST7789 `DisplayDriver` backend are board-specific. See epic #120.
 //!
 //! Bring-up is phased so each hardware layer is verified (over defmt/RTT, and on glass via
 //! the webcam capture at `/tmp/obc-cam/panel.jpg`) before the next is stacked:
 //!   N0. crate skeleton + embassy bring-up: blinky + RTT + this peripheral plan          (#121)
-//!   N1. `Panel` HAL + ST7789 SPIM backend + banded RGB565 push + font/colour demo (RGB222 at N4) (#122)
+//!   N1. display HAL + ST7789 SPIM backend + banded RGB565 push + font/colour demo (RGB222 at N4) (#122)
 //!   N2. microSD on a dedicated SPIM (reuse obc-platform's FatFs byte adapters)            <- (#123)
 //!   N3. board memory profile (host-vs-nRF) + budget assert                              (#124)
 //!   N4. RGB222 full framebuffer + full map on glass (retire `Framebuffer565`)           (#125)
@@ -53,9 +53,10 @@
 //!   to **3.3 V** (VDDM, also in the Board Configurator — HW guide §2.2.1); Vin is fed from the
 //!   DK's 5 V (VBUS) so the panel's onboard 3.3 V LDO keeps headroom. Putting the display on P2
 //!   leaves all of P1 free for SD (N2) + VCOM (N6) + the buttons. Band push expands the RGB222
-//!   framebuffer → RGB565 and SPIM-DMAs a CASET/RASET window (the wire format lives in
-//!   `Panel::flush_band`, the same seam the future FLPR/LS021B7DD02 reuses); the RGB222 source
-//!   framebuffer lands at N4. N1 first drove that `Panel` seam (in RGB565) with a banded font/colour
+//!   framebuffer → RGB565 and SPIM-DMAs a CASET/RASET window (the wire-pack lives in the ST7789
+//!   backend's `flush_window`, behind the board-agnostic `DisplayDriver` seam the FLPR/LS021B7DD02
+//!   backend implements too); the RGB222 source framebuffer lands at N4. N1 first drove that seam
+//!   (in RGB565) with a banded font/colour
 //!   bring-up screen — the font ladder + the device's 64-colour gamut — proving wiring + init +
 //!   addressing + the colour/text path end-to-end before the real app rendered through it (that
 //!   standalone demo was retired once the app drove both panels, issue #177).
@@ -111,7 +112,7 @@ mod sd;
 mod st7789;
 // LS021 FLPR backend (issue #165) — the **default** display: `main.rs` runs the real app on the
 // reflective LS021 panel via the FLPR (the VPR coprocessor) unless `--features tft` selects the
-// ST7789 bring-up panel instead (issue #173). The FLPR `Panel` backend + launch live in `ls021_flpr`;
+// ST7789 bring-up panel instead (issue #173). The FLPR `DisplayDriver` backend + launch live in `ls021_flpr`;
 // `com::com_task` free-runs the COM lines (the M33-direct `PanelBus` bench driver was retired in
 // issue #176 — the FLPR drives frames now; only the COM electrode square wave stays on the M33).
 #[cfg(not(feature = "tft"))]
@@ -131,7 +132,7 @@ use st7789::{HEIGHT, WIDTH};
 use {defmt_rtt as _, panic_probe as _};
 
 // `Delay` (the ST7789 power-on waits) + the `St7789` driver type are the opt-in `tft` backend; the
-// default FLPR build replaces them with the `Ls021Flpr` `Panel` backend, so neither is there.
+// default FLPR build replaces them with the `Ls021Flpr` `DisplayDriver` backend, so neither is there.
 #[cfg(feature = "tft")]
 use embassy_time::Delay;
 #[cfg(feature = "tft")]
@@ -193,7 +194,7 @@ use obc_route::{RouteCache, RouteIndex, RouteReader};
 #[cfg(not(feature = "debug-uart"))]
 use obc_platform::SynthLocation;
 
-// LS021 FLPR backend (issue #165): the resident-framebuffer `Panel` backend + its launch, and the
+// LS021 FLPR backend (issue #165): the resident-framebuffer `DisplayDriver` backend + its launch, and the
 // free-running COM driver. The FLPR scans the whole frame in one push, so there is no banded ST7789
 // `Display`/bus mutex here — the map plane owns the panel, COM + the gesture-input plane run on the
 // shared high-priority executor (see `main`).
@@ -228,7 +229,7 @@ bind_interrupts!(struct UartIrqs {
 });
 
 /// One band's worth of RGB565 scratch (`WIDTH * BAND_ROWS`), living in `.bss`. 14 rows ≈ 6.6 KB
-/// and tiles the 320-row frame in 23 bands. The `Panel` impl fills it — the map path expands the
+/// and tiles the 320-row frame in 23 bands. The banded push fills it — the map path expands the
 /// RGB222 frame into it — then byte-swaps to big-endian
 /// and SPIM-DMAs it; borrowed exactly once below (single executor → no aliasing). `BAND_BYTES` is
 /// what the N3 budget assert reserves. (N6, #127: 20→14, freeing ~2.9 KB toward the ride-loop
@@ -270,7 +271,7 @@ static mut BAND: [u16; WIDTH as usize * BAND_ROWS] = [0; WIDTH as usize * BAND_R
 //                  256 KB part it materially shares the budget — and because
 //                  `RouteIndex::read` builds it on the *stack*, so keeping it ~6 KB also keeps that
 //                  transient build spike inside the stack reserve below.
-//   - band scratch one RGB565 `Panel` band (`BAND_BYTES`, ~7.5 KB).
+//   - band scratch one RGB565 display band (`BAND_BYTES`, ~7.5 KB).
 // plus `STACK_RESERVE` headroom for the main stack + embassy's executor/task arenas. Note the stack
 // must also absorb a per-redraw `Reader::new` (the OBCM style table → a ~2.4 KB `Reader` value built
 // as a stack temporary, plus its own ~4 KB read scratch): unlike N4/N5 (one `Reader` held in `.bss`

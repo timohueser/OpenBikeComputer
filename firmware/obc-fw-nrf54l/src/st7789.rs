@@ -1,7 +1,8 @@
 //! Minimal ST7789 driver for the Adafruit 2.0" 240×320 EYESPI stand-in panel (#122).
 //!
 //! Hand-rolled (no external display crate) on purpose: this command / address-window /
-//! RAMWR-stream path backs the board-agnostic [`obc_platform::Panel`] `flush_band` (impl below),
+//! RAMWR-stream path backs the board's banded present path ([`flush_band_rgb222`](St7789::flush_band_rgb222)
+//! / [`flush_window`](St7789::flush_window) below, driven by the board's `DisplayDriver`),
 //! so we want to own it rather than wrap someone else's lifecycle. Write-only — the panel never
 //! talks back, so there is no MISO. CS is **framed per transaction** (pulsed low around each
 //! command/data write, idle high) rather than tied low: the CSX rising edge re-aligns the
@@ -24,7 +25,6 @@ use embassy_time::Instant;
 use embedded_hal::delay::DelayNs;
 use embedded_hal::digital::OutputPin;
 use embedded_hal::spi::SpiBus;
-use obc_platform::Panel;
 
 // Strippable per-stage timing for the banded push (issue #126: pin down what makes the visible fill
 // slow — CPU format-conversion vs the SPI/DMA). Each [`flush_window`](St7789::flush_window) adds the
@@ -80,7 +80,7 @@ mod cmd {
 
 /// ST7789 over SPI: data/command line `dc`, hardware-reset line `rst`, chip-select `cs` (pulsed
 /// low per transaction by [`transaction`](Self::transaction)), a `delay` for the
-/// datasheet-mandated power-on waits, and a borrowed RGB565 `band` scratch the [`Panel`] impl
+/// datasheet-mandated power-on waits, and a borrowed RGB565 `band` scratch the band-push path
 /// fills + DMAs (its length picks the band height).
 pub struct St7789<'b, SPI, DC, RST, CS, DELAY> {
     spi: SPI,
@@ -89,9 +89,9 @@ pub struct St7789<'b, SPI, DC, RST, CS, DELAY> {
     cs: CS,
     delay: DELAY,
     /// One band's worth of RGB565 pixels (`WIDTH * band_rows`), borrowed from a board-owned
-    /// `'static` buffer so it lives in `.bss`, never on the stack. [`Panel::flush_band`] fills it
-    /// (native LE `u16`), then [`flush_window`](Self::flush_window) packs it **in place** to the
-    /// ST7789's 12-bit RGB444 RAMWR stream (2 px → 3 bytes) and SPIM-DMAs it. `band_rows()` is
+    /// `'static` buffer so it lives in `.bss`, never on the stack. [`flush_window`](Self::flush_window)
+    /// hands `fill` this scratch (native LE `u16`), then packs it **in place** to the ST7789's 12-bit
+    /// RGB444 RAMWR stream (2 px → 3 bytes) and SPIM-DMAs it. [`band_rows()`](Self::band_rows) is
     /// `band.len() / WIDTH`.
     band: &'b mut [u16],
 }
@@ -214,7 +214,7 @@ where
     /// Render + push an arbitrary `w × rows` window at `(x0, y0)`: hand `fill` a `w * rows` RGB565
     /// scratch (a prefix of `band`) to draw into, **pack it to the panel's 12-bit RGB444 RAMWR
     /// stream** (2 px → 3 bytes), address the `[x0, x0+w) × [y0, y0+rows)` window, and SPIM-DMA it.
-    /// The full-width [`Panel::flush_band`] is the `x0 = 0, w = WIDTH` case (it delegates here); the
+    /// The full-width band push is the `x0 = 0, w = WIDTH` case; the
     /// narrow case backs the composite-on-push hold bulge, which re-pushes only the right-edge
     /// columns it touches without a map re-render (issue #126). `w * rows` must be **even** and fit
     /// `band` (every nRF window is — full bands are `WIDTH`-wide and the bulge window is 16-wide).
@@ -294,6 +294,12 @@ where
         self.push(bytes);
         SPI_US.fetch_add(t.elapsed().as_micros() as u32, Ordering::Relaxed);
     }
+
+    /// Band height = however many full `WIDTH`-pixel rows the board-owned scratch holds
+    /// (`band.len() / WIDTH`). The `DisplayDriver::present` loop bands the frame in chunks of this.
+    pub fn band_rows(&self) -> u16 {
+        (self.band.len() / WIDTH as usize) as u16
+    }
 }
 
 /// Pack one RGB565 word to RGB444 channels (top 4 bits each). The device-64 gamut only sets the top
@@ -316,35 +322,4 @@ fn rgb222_to_rgb444(byte: u8) -> (u8, u8, u8) {
     let g = (byte >> 2) & 0x3;
     let b = byte & 0x3;
     ((r << 2) | r, (g << 2) | g, (b << 2) | b)
-}
-
-/// The board-agnostic [`Panel`] seam (issue #122). The caller renders a band of the frame into
-/// the RGB565 scratch; this backend addresses the band's rows and streams them to GRAM. The same
-/// seam the future FLPR/LS021B7DD02 backend implements — only the reformat + transport differ.
-impl<SPI, DC, RST, CS, DELAY> Panel for St7789<'_, SPI, DC, RST, CS, DELAY>
-where
-    SPI: SpiBus,
-    DC: OutputPin,
-    RST: OutputPin,
-    CS: OutputPin,
-    DELAY: DelayNs,
-{
-    /// Band height = however many full `WIDTH`-pixel rows the board-owned scratch holds.
-    fn band_rows(&self) -> u16 {
-        (self.band.len() / WIDTH as usize) as u16
-    }
-
-    /// Nothing to set up — each `flush_band` addresses its own window, so a frame is just a run
-    /// of band pushes. (A latching panel would arm its frame buffer here.)
-    fn begin_frame(&mut self) {}
-
-    /// Render one band into the scratch, then put it on glass: the full-width `[y0, y0+rows)`
-    /// case of [`flush_window`](Self::flush_window).
-    fn flush_band(&mut self, y0: u16, rows: u16, fill: impl FnOnce(&mut [u16])) {
-        self.flush_window(0, y0, WIDTH, rows, fill);
-    }
-
-    /// Nothing to present — pixels are live in GRAM as each band is pushed. (A latching panel
-    /// would toggle VCOM / present here.)
-    fn end_frame(&mut self) {}
 }
