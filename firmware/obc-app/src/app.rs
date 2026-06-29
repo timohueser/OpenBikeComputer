@@ -559,10 +559,6 @@ impl App {
     /// once per load.
     pub fn tick(&mut self, clock: RideClock, sensors: Sensors, route: Option<&RouteReader>) {
         let now_ms = clock.0;
-        // The camera state before this tick's fix, so a fresh fix that actually moved the
-        // camera / marker / heading is detected below by one `AppState` comparison (it's
-        // `Copy` + `PartialEq`).
-        let state_before = self.state;
         // The matcher follows the *navigated route*: a load or a "Swap route only" re-locks it.
         if self.activity.active_route != self.matched_route {
             self.route_match.reset();
@@ -608,6 +604,15 @@ impl App {
                 }
             }
         }
+        // The state before this tick's *fix*, snapshotted **after** the battery poll above so a pure
+        // battery delta is never mistaken for a fix that moved the camera / marker / heading: a fresh
+        // fix that actually moves one of those is detected below by one `AppState` comparison (it's
+        // `Copy` + `PartialEq`). `battery_pct` lives in `AppState` but is drawn only on Home, so the
+        // gauge repaint is the Home-only gate above — counting it toward the `shows_live_data` redraw
+        // would force a full ~97 ms map render every 30 s on the riding views that don't draw it
+        // (issue #209). Nothing between here and the fix mutates `self.state` except that poll, so the
+        // only thing this placement excludes is the battery delta.
+        let state_before = self.state;
         // Barometric altitude on its own cadence → climb + the elevation stamped on the log.
         // Polled before the fix so a point logged this tick carries the freshest altitude.
         if let Some(altimeter) = altimeter {
