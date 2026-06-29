@@ -13,8 +13,11 @@
 //!     wait for its `ALIVE` stamp;
 //!   - [`Ls021Flpr`] — the resident-framebuffer backend whose pushes pack the dirty rows of the
 //!     RGB222 plane through the two ping-pong buffers and busy-wait one masked `CMD_RUN_FRAME`
-//!     ([`push_frame`](Ls021Flpr::push_frame) = the whole frame, [`push_spans`](Ls021Flpr::push_spans)
-//!     = only the changed rows, the FLPR fast-forwarding the gate over the rest — issue #163).
+//!     ([`push_spans`](Ls021Flpr::push_spans) = only the listed rows, the FLPR fast-forwarding the
+//!     gate over the rest — issue #163; [`push_frame`](Ls021Flpr::push_frame) = the whole frame, the
+//!     degenerate one-span case). [`present_within`](Ls021Flpr::present_within) is the **self-diffing
+//!     present** (issue #201): it derives those spans automatically from a per-row hash of the
+//!     last-pushed frame, so an idle redraw pushes only the rows that actually changed.
 //!
 //! The `DisplayDriver` adapter (present / present_overlay) lives in `display::ls021_flpr` (issue
 //! #174); this root module owns the FLPR transport it calls into.
@@ -23,13 +26,16 @@
 //! must keep alternating so the panel never takes a DC bias (the epic's safety rule). The caller
 //! owns COM + the high-priority `InterruptExecutor` it free-runs on.
 //!
-//! ## Whole-frame push (the design choice)
+//! ## Whole-frame render, masked push (the design choice)
 //!
-//! The FLPR scans the *whole* frame top-to-bottom in **one** `CMD_RUN_FRAME`, so a partial push can't
-//! reach glass on its own. The app renders the whole frame into the resident RGB222 plane first — the
-//! map path writes it directly as device-64 ([`FbDevice64`](obc_platform::FbDevice64)) via
-//! [`fb_mut`](Ls021Flpr::fb_mut) — and then [`push_frame`](Ls021Flpr::push_frame) drives all 320 rows
-//! once. This keeps the ping-pong (M33 packs row N+1 while the FLPR scans row N) exactly as F4 proved it.
+//! The app still **renders** the whole frame into the resident RGB222 plane each redraw — the screens
+//! are immediate-mode, they `clear()` and redraw (the map path writes device-64
+//! ([`FbDevice64`](obc_platform::FbDevice64)) straight via [`fb_mut`](Ls021Flpr::fb_mut)). What the
+//! self-diffing **present** then changes is the *push*: a single `CMD_RUN_FRAME` masked to the changed
+//! rows, the FLPR fast-forwarding its gate scan over the unchanged ones and early-stopping after the
+//! last. Render CPU is unchanged (a full draw), but the push — the dominant ~97 ms cost — scales to the
+//! changed-row span. The ping-pong (M33 packs the next dirty row while the FLPR scans the current) is
+//! exactly as F4 proved it; a full redraw is just the degenerate "every row changed" case.
 //!
 //! ## Blocking push
 //!
@@ -49,8 +55,10 @@ use embassy_time::{Instant, Timer};
 use obc_platform::ls021_wire::{BCK_PER_SUBLINE, ROW_WORDS, WIDTH};
 // `composite_overlay_window` is the shared overlay-composite core (#174): fill a window scratch from
 // the clean framebuffer (device-64 → RGB565) + draw the hold bulge over it through a `Band` — the same
-// step the ST7789 backend runs, before this backend re-quantises it back to the wire.
-use obc_platform::{composite_overlay_window, ls021_pack_row, Band};
+// step the ST7789 backend runs, before this backend re-quantises it back to the wire. `RowDiff` is the
+// self-diffing present store (#200): a per-row hash of the last-pushed frame so a present pushes only
+// the rows that actually changed (issue #201).
+use obc_platform::{clip_span, composite_overlay_window, ls021_pack_row, Band, RowDiff};
 // The host-tested RGB565 → device-64 quantiser — the same one the map style table is tuned to, so the
 // re-quantised overlay window lands on the panel's RGB222 gamut exactly as the ST7789 stand-in shows it.
 use obc_reader::rgb565_to_device64;
@@ -304,6 +312,14 @@ pub struct Ls021Flpr<'b> {
     /// Resident RGB222 (device-64) frame plane, `FB_W × FB_H`. `fb_mut` writes it,
     /// `push_frame`/`push_spans` pack + push it.
     fb: &'b mut [u8],
+    /// The **self-diffing present** store (issue #201/#200): a per-row hash of the last-pushed
+    /// framebuffer, so [`present_within`](Self::present_within) re-hashes the frame and pushes only the
+    /// rows that actually changed — a Home clock tick repaints its clock band (a few ms) instead of all
+    /// 320 rows (~97 ms). Borrowed from a `.bss` static (`main`), parallel to `fb` (it must outlive the
+    /// pushes); `FB_H` rows = 1.28 KB. The hashes track the clean `fb`, never the composited bulge (the
+    /// bulge rides its own [`push_overlay`](Self::push_overlay) plane), so the store stays the source of
+    /// truth for what the map present last put on glass.
+    diff: &'b mut RowDiff<FB_H>,
     /// Per-frame command sequence — bumped each push, echoed back by the FLPR as the ack.
     seq: u32,
 }
@@ -311,11 +327,12 @@ pub struct Ls021Flpr<'b> {
 impl<'b> Ls021Flpr<'b> {
     /// Build the backend over the resident **device-64 map/ride plane** (`main.rs`): the app quantises
     /// to the device-64 gamut itself ([`FbDevice64`](obc_platform::FbDevice64)) and renders straight
-    /// into `fb`, then [`push_frame`](Self::push_frame) drives it. The FLPR packs `fb` straight to the
-    /// wire, so there is no RGB565 band scratch (the ~7.5 KB the ST7789 band push needs is freed here,
-    /// issue #165). `fb` must be `FB_W × FB_H` device-64 bytes.
-    pub fn new_fb(fb: &'b mut [u8]) -> Self {
-        Self { fb, seq: 0 }
+    /// into `fb`, then [`present_within`](Self::present_within) diffs + drives it. The FLPR packs `fb`
+    /// straight to the wire, so there is no RGB565 band scratch (the ~7.5 KB the ST7789 band push needs
+    /// is freed here, issue #165). `fb` must be `FB_W × FB_H` device-64 bytes; `diff` is the
+    /// `FB_H`-row [`RowDiff`] store the self-diffing present compares against (issue #201).
+    pub fn new_fb(fb: &'b mut [u8], diff: &'b mut RowDiff<FB_H>) -> Self {
+        Self { fb, diff, seq: 0 }
     }
 
     /// The resident RGB222 plane, for the map path to render into (device-64, `0b00_RR_GG_BB` per
@@ -417,9 +434,52 @@ impl<'b> Ls021Flpr<'b> {
     }
 
     /// Drive the **whole** resident framebuffer to glass — the degenerate one-span frame
-    /// `&[(0, FB_H)]` (init-black + every full map redraw), byte-identical to the F5 full-frame scan.
+    /// `&[(0, FB_H)]` (init-black + a forced full repaint), byte-identical to the F5 full-frame scan.
+    /// Does **not** touch the [`RowDiff`] store (it's a raw push, not a diff), so the next
+    /// [`present_within`](Self::present_within) still re-seeds the store from a clean comparison.
     pub fn push_frame(&mut self) -> bool {
         self.push_spans(&[(0, FB_H as u16)])
+    }
+
+    /// The **self-diffing present** (issue #201): re-hash every framebuffer row against the
+    /// [`RowDiff`] store and push only the rows that actually changed, optionally clipping the live
+    /// hold bulge's rows out (`exclude`) so [`push_overlay`](Self::push_overlay) owns them (the
+    /// `map_rows_around` discipline, now inside the present path — issue #163). The first call after
+    /// boot / a [`RowDiff::reset`](obc_platform::RowDiff::reset) pushes the whole frame and seeds the
+    /// store; thereafter an idle Home clock tick repaints just its clock band.
+    ///
+    /// `exclude = None` ⇒ the whole frame is eligible (no bulge); `Some((y0, rows))` ⇒ the rows
+    /// `[y0, y0+rows)` are left for the overlay composite. The store is updated for **every** row
+    /// (including the clipped ones) — it tracks the clean `fb`, so when the bulge later goes quiet the
+    /// trailing clear re-pushes those rows clean and the store already agrees (no stale row). Returns
+    /// `false` on a transport fault (a stalled FLPR) so the caller keeps the last frame and retries.
+    pub fn present_within(&mut self, exclude: Option<(u16, u16)>) -> bool {
+        // Half-open bulge interval [e0, e1) the clip removes from each changed span.
+        let ex = exclude.map(|(y0, rows)| (y0, y0 + rows));
+        let mut spans: heapless::Vec<(u16, u16), MAX_DIRTY_SPANS> = heapless::Vec::new();
+        let mut overflow = false;
+        // Diff the whole frame (the store is updated for every row), emitting each changed span clipped
+        // around the bulge. The diff piggybacks on a single per-row hash pass over `fb`.
+        self.diff.diff(self.fb, FB_W, |y0, n| {
+            clip_span(y0, n, ex, &mut |s, c| {
+                if spans.push((s, c)).is_err() {
+                    overflow = true;
+                }
+            });
+        });
+        if overflow {
+            // Pathological fragmentation (> MAX_DIRTY_SPANS disjoint changed regions — a UI never
+            // produces this): fall back to the whole frame minus the bulge (the `map_rows_around`
+            // ceiling) rather than silently dropping spans and stranding rows.
+            spans.clear();
+            clip_span(0, FB_H as u16, ex, &mut |s, c| {
+                let _ = spans.push((s, c));
+            });
+        }
+        if spans.is_empty() {
+            return true; // nothing changed outside the bulge — push nothing (the whole point).
+        }
+        self.push_spans(&spans)
     }
 
     /// Re-present **only the rows of an overlay region** with `draw_overlay` composited over the clean
