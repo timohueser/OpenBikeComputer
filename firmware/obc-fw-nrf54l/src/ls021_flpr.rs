@@ -17,7 +17,7 @@
 //!     ([`push_frame`](Ls021Flpr::push_frame) = the whole frame, [`push_spans`](Ls021Flpr::push_spans)
 //!     = only the changed rows, the FLPR fast-forwarding the gate over the rest — issue #163).
 //!
-//! **COM stays on the M33** (`ls021::com_task`) and **is not here** — if the FLPR ever faults, COM
+//! **COM stays on the M33** (`com::com_task`) and **is not here** — if the FLPR ever faults, COM
 //! must keep alternating so the panel never takes a DC bias (the epic's safety rule). The caller
 //! owns COM + the high-priority `InterruptExecutor` it free-runs on.
 //!

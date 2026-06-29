@@ -14,9 +14,9 @@
 //! issue #165 / #173) or the **`ls021-flpr`** bring-up bin (issue #150) — it additionally (1) emits a
 //! *carved* `memory.x` that reserves the top **12 KB** of SRAM for the FLPR image + the cross-core
 //! handshake, and (2) cross-compiles the freestanding FLPR C blob with a RISC-V gcc into
-//! `$OUT_DIR/flpr.bin` for the M33 binary to `include_bytes!`. The opt-in `tft` ST7789 build and the
-//! M33-direct `ls021-bringup` bench bin skip both, keeping the full 256 KB and needing no RISC-V
-//! toolchain (see the `flpr` gate in `main` below). See `firmware/docs/ls021-flpr.md`.
+//! `$OUT_DIR/flpr.bin` for the M33 binary to `include_bytes!`. Only the opt-in `tft` ST7789 build
+//! skips both, keeping the full 256 KB and needing no RISC-V toolchain (see the `flpr` gate in
+//! `main` below). See `firmware/docs/ls021-flpr.md`.
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -48,12 +48,10 @@ fn main() {
     // Cargo sets CARGO_FEATURE_<NAME> for the build script when a feature is enabled. The carve +
     // blob are needed wherever the FLPR drives the panel: the `ls021-flpr` bring-up bin, **and** the
     // default LS021 map/ride `main.rs` build (issue #173) — which is the *baseline*, selected by the
-    // absence of `tft`. Two builds keep the full 256 KB and need no RISC-V toolchain: the opt-in
-    // `tft` ST7789 build (`glass-demo` pulls `tft`, so it's covered), and the M33-direct
-    // `ls021-bringup` bench bin (it bit-bangs the panel itself, no FLPR).
+    // absence of `tft`. Only the opt-in `tft` ST7789 build keeps the full 256 KB and needs no RISC-V
+    // toolchain (`glass-demo` pulls `tft`, so it's covered).
     let tft = env::var_os("CARGO_FEATURE_TFT").is_some();
-    let ls021_bringup = env::var_os("CARGO_FEATURE_LS021_BRINGUP").is_some();
-    let flpr = env::var_os("CARGO_FEATURE_LS021_FLPR").is_some() || (!tft && !ls021_bringup);
+    let flpr = env::var_os("CARGO_FEATURE_LS021_FLPR").is_some() || !tft;
 
     if flpr {
         fs::write(out.join("memory.x"), FLPR_MEMORY_X).unwrap();
