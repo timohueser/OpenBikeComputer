@@ -205,6 +205,9 @@ impl StatisticsScreen {
 
         let total = route.total_distance_m;
         let off = rx.activity.off_route;
+        // The selected unit system re-captions + re-scales every readout below (speed, distance,
+        // elevation); grade is unit-agnostic so it stays a bare percentage.
+        let units = rx.settings.units;
 
         // Live position (matched progress) drives the traveled shading + progress bar; the
         // cursor may be a scrub ahead of / behind it, and in zoom mode it's the zoom centre.
@@ -230,7 +233,7 @@ impl StatisticsScreen {
         // Title bar: grade at the cursor, or the off-route cross-track readout
         let mut readout: heapless::String<16> = heapless::String::new();
         if off {
-            super::write_off_route(&mut readout, "off ", rx.activity.dist_to_route_m);
+            super::write_off_route(&mut readout, "off ", rx.activity.dist_to_route_m, units);
         } else {
             let _ = write!(readout, "grade {}%", grade_at(profile, total, cursor_frac));
         }
@@ -273,7 +276,7 @@ impl StatisticsScreen {
         // dot near the peak so the labels never overlap; else just above it, clamped inside
         // the band and clear of the baseline/bar.
         let mut ele_s: heapless::String<8> = heapless::String::new();
-        let _ = write!(ele_s, "{} m", cur_ele);
+        let _ = write!(ele_s, "{} {}", units.elev(cur_ele as f32) as i32, units.elev_label());
         let near_peak = (cursor_frac - profile.peak_frac()).abs() < 0.07;
         let label_y = (if near_peak { cur_y + 9 } else { cur_y - 5 }).clamp(CHART_TOP + 2, band_bot - 24);
         if cursor_x < w - 44 {
@@ -307,21 +310,25 @@ impl StatisticsScreen {
 
         // Values are **number only** — the unit lives in the tile's caption (Wahoo style),
         // so the big Display digits fit the half-width tiles instead of overrunning them.
-        // Speeds keep one decimal; distances drop it past 100 km so they stay ≤ 3 digits.
-        let speed = fmt_kmh(rx.state.user_fix.and_then(|f| f.speed_mps).map(|mps| mps * 3.6));
-        let avg = fmt_kmh(a.avg_kmh());
-        let done = fmt_km(a.ridden_m / 1000.0);
-        let to_go = fmt_km(to_go_m as f32 / 1000.0);
-        let climbed_s = fmt_int(climbed);
-        let to_climb_s = fmt_int(to_climb);
+        // Speeds keep one decimal; distances drop it past 100 so they stay ≤ 3 digits. Every
+        // figure is converted through `units` (no-op for metric); the captions follow suit.
+        let speed = fmt_kmh(rx.state.user_fix.and_then(|f| f.speed_mps).map(|mps| units.speed(mps * 3.6)));
+        let avg = fmt_kmh(a.avg_kmh().map(|kmh| units.speed(kmh)));
+        let done = fmt_km(units.dist(a.ridden_m / 1000.0));
+        let to_go = fmt_km(units.dist(to_go_m as f32 / 1000.0));
+        let climbed_s = fmt_int(units.elev(climbed as f32) as u32);
+        let to_climb_s = fmt_int(units.elev(to_climb as f32) as u32);
 
+        // Unit-dependent captions (metric → imperial): speed KPH→MPH, distance KM→MI; the climb
+        // tiles keep their word caption (the up-arrow + the global unit imply m vs ft).
+        let imp = units.is_imperial();
         // (caption [unit-bearing], value [number only], climb-arrow?). The up-arrow on the
-        // climb tiles reads as "elevation, metres".
+        // climb tiles reads as "elevation".
         let cells: [(&str, &str, bool); 6] = [
-            ("KPH", &speed, false),
-            ("AVG KPH", &avg, false),
-            ("KM DONE", &done, false),
-            ("KM TO GO", &to_go, false),
+            (if imp { "MPH" } else { "KPH" }, &speed, false),
+            (if imp { "AVG MPH" } else { "AVG KPH" }, &avg, false),
+            (if imp { "MI DONE" } else { "KM DONE" }, &done, false),
+            (if imp { "MI TO GO" } else { "KM TO GO" }, &to_go, false),
             ("CLIMBED", &climbed_s, true),
             ("TO CLIMB", &to_climb_s, true),
         ];

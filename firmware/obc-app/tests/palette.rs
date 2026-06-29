@@ -25,6 +25,7 @@ fn palette_quantizes_to_documented_device64() {
         ("RULE", RULE, (170, 170, 85)),
         ("AMBER", AMBER, (255, 170, 0)),
         ("WARNING", WARNING, (255, 85, 0)),
+        ("ON", ON, (0, 170, 0)),
         ("ROUTE", ROUTE, (255, 0, 255)),
         ("BREADCRUMB", BREADCRUMB, (0, 0, 170)),
     ];

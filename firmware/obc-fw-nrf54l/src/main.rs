@@ -122,6 +122,9 @@ mod ls021_flpr;
 // The board's display-driver seam — the single screen-write interface both panels implement, so the
 // map plane drives either through one path (`fb_mut` + `present`).
 mod display;
+// Persistent device settings over on-chip RRAM (the SD-independent settings store); the RRAM I/O is
+// stubbed pending on-glass work, but the boot-load + save-on-dirty calls are wired in `run_app`.
+mod settings;
 
 use defmt::info;
 use embassy_executor::Spawner;
@@ -175,7 +178,10 @@ use embassy_sync::channel::{Channel, Sender};
 use embassy_sync::mutex::Mutex;
 use embassy_time::Instant;
 use embedded_graphics::pixelcolor::{raw::RawU16, Rgb565};
-use obc_app::{App, AppState, Gesture, InputClock, InputEvent, InputPlane, InputSource, RideClock, Sensors, TrackSink};
+use obc_app::{
+    App, AppState, Gesture, InputClock, InputEvent, InputPlane, InputSource, RideClock, Sensors, SettingsStore,
+    TrackSink,
+};
 use obc_platform::{ButtonInput, FbDevice64};
 use obc_reader::{MapCache, MapTables, Reader};
 use obc_render::{zoom_for_mpp, RenderStats};
@@ -976,6 +982,12 @@ async fn run_app(
     // shows up immediately instead of as a silent overflow (issue #175). Harmless on the 512 KB target.
     let mut stack_hw = 0usize;
     let mut last_led = 0u32;
+
+    // Settings: seed the app from the persistent RRAM store at boot (defaults until the store's
+    // RRAM I/O lands — see `settings`), then persist on any change the settings screens make.
+    let mut settings_store = settings::RramSettingsStore::new();
+    app.set_settings(settings_store.load().unwrap_or_default());
+
     loop {
         let now = Instant::now().as_millis() as u32;
         let hw = stackmeter::used();
@@ -990,6 +1002,12 @@ async fn run_app(
             app.apply_gesture(g);
         }
         app.advance_animations(InputClock(now));
+
+        // Persist settings the moment a settings screen changes one (the save-on-dirty path the
+        // simulator shares). A no-op until the RRAM store's write lands; cheap when nothing changed.
+        if app.take_settings_dirty() {
+            settings_store.save(app.settings());
+        }
 
         // A pending debug `Z` camera-scale command (render benchmark): pin the map to an exact
         // meters-per-pixel and force one redraw, so a host zoom sweep gets exactly one fresh,
