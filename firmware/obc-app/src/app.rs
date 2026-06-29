@@ -14,7 +14,8 @@ use crate::input::Gesture;
 use crate::input_plane::InputPlane;
 use crate::route::{Catalog, RouteSummary};
 use crate::screen::{self, Ctx, HomeScreen, MapScreen, Render, Screen, Stack};
-use crate::settings::Settings;
+use crate::settings::{DateTime, Settings};
+use crate::wall_clock::WallClock;
 
 /// How the camera relates to the user's position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -387,6 +388,13 @@ pub struct App {
     /// The persisted device settings, seeded from the host's store at boot
     /// ([`set_settings`](App::set_settings)) and edited in place by the settings screens.
     settings: Settings,
+    /// The live wall clock: [`settings.clock`](Settings::clock) (a set-point) advanced by the
+    /// elapsed monotonic millis since it was stamped — there's no RTC, so this is how a static
+    /// readout actually ticks. Re-stamped whenever the clock set-point changes (a Date & Time edit
+    /// today, a GPS fix later) in [`set_settings`](App::set_settings) /
+    /// [`apply_gesture`](App::apply_gesture); read into [`Render::now`] for the draw and into
+    /// [`animate`](Screen::animate) for the once-a-minute repaint. See [`WallClock`].
+    wall_clock: WallClock,
     /// Whether [`settings`](App::settings) changed since the last [`take_settings_dirty`]; set
     /// by [`apply_gesture`](App::apply_gesture)'s before/after compare, drained by the host to
     /// decide when to persist. Starts `false`: the boot value either came from the store or is
@@ -451,6 +459,9 @@ impl App {
             // Force the host's first frame: nothing has been drawn yet, so the map is dirty.
             map_dirty: true,
             settings: Settings::default(),
+            // The wall clock starts from the same default set-point at the boot origin; the host's
+            // `set_settings` re-stamps it from the persisted clock a moment later.
+            wall_clock: WallClock::new(Settings::default().clock),
             settings_dirty: false,
             hold_progress_override: None,
             last_battery_poll_ms: None,
@@ -504,6 +515,7 @@ impl App {
             // Force the host's first frame: nothing has been drawn yet, so the map is dirty.
             addr_of_mut!((*slot).map_dirty).write(true);
             addr_of_mut!((*slot).settings).write(Settings::default());
+            addr_of_mut!((*slot).wall_clock).write(WallClock::new(Settings::default().clock));
             addr_of_mut!((*slot).settings_dirty).write(false);
             addr_of_mut!((*slot).hold_progress_override).write(None);
             addr_of_mut!((*slot).last_battery_poll_ms).write(None);
@@ -705,6 +717,9 @@ impl App {
     /// so seeding the boot value never triggers a needless write-back.
     pub fn set_settings(&mut self, settings: Settings) {
         self.settings = settings;
+        // Stamp the wall clock to the persisted set-point as of now (boot millis), so it resumes
+        // ticking from the stored time rather than the `new`/`init` default.
+        self.wall_clock.set(self.settings.clock, self.now_ms);
         self.settings_dirty = false;
     }
 
@@ -712,6 +727,13 @@ impl App {
     /// the current units / clock / GPS-interval outside the screen draw path.
     pub fn settings(&self) -> &Settings {
         &self.settings
+    }
+
+    /// The live wall-clock time right now — the persisted clock set-point advanced by the elapsed
+    /// monotonic millis (see [`WallClock`]). What a screen draws as `HH:MM`; exposed for a host that
+    /// wants the current time outside the draw path (a status line, a log stamp).
+    pub fn wall_clock_now(&self) -> DateTime {
+        self.wall_clock.now(self.now_ms)
     }
 
     /// Drain the "settings changed" flag set since the last call. The host checks this **once
@@ -798,6 +820,12 @@ impl App {
         }
         if self.settings != settings_before {
             self.settings_dirty = true;
+            // A clock set-point edit re-stamps the wall clock so it resumes ticking from the new
+            // value (the GPS-time path will re-stamp the same way). Only an actual `clock` change —
+            // flipping units or the GPS interval leaves the running clock and its epoch alone.
+            if self.settings.clock != settings_before.clock {
+                self.wall_clock.set(self.settings.clock, self.now_ms);
+            }
         }
     }
 
@@ -812,10 +840,13 @@ impl App {
     /// firmware calls it directly on its map plane (its input lives on a separate executor).
     pub fn advance_animations(&mut self, clock: InputClock) {
         self.now_ms = clock.0;
+        // The current wall-clock time, so a clock-bearing screen's `animate` can fire its
+        // once-a-minute repaint (Home today) the same way Statistics' cursor spring-back fires.
+        let now = self.wall_clock.now(self.now_ms);
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
         let mut animated = false;
         for scr in self.stack.iter_mut().skip(base) {
-            animated |= scr.animate(self.now_ms);
+            animated |= scr.animate(self.now_ms, now);
         }
         self.map_dirty |= animated;
     }
@@ -909,6 +940,9 @@ impl App {
             self.profile_route = self.activity.active_route;
         }
 
+        // The live wall-clock time for any screen drawing a clock (Home), computed from the set-
+        // point + elapsed millis before the field borrow below splits `self`.
+        let now = self.wall_clock.now(self.now_ms);
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
         // The in-screen confirm fill (RideControl / RouteSwap) tracks the encoder hold-progress
         // owned by the input plane. On the single-loop hosts that is `App`'s own, kept live by
@@ -933,6 +967,7 @@ impl App {
             w,
             h,
             now_ms: *now_ms,
+            now,
             hold_progress,
             clock,
         };
@@ -1287,5 +1322,72 @@ mod tests {
         app.set_settings(seeded);
         assert_eq!(app.settings().units, crate::settings::Units::Imperial);
         assert!(!app.take_settings_dirty(), "seeding the boot value must not trigger a write-back");
+    }
+
+    // --- the live wall clock (issue #196) ---
+
+    /// Seeding the persisted clock stamps the wall clock, which then advances with the monotonic
+    /// millis — the static set-point actually ticks (carrying minute → hour here).
+    #[test]
+    fn wall_clock_advances_from_the_seeded_setpoint() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        let seeded = crate::settings::Settings {
+            clock: DateTime { year: 2026, month: 6, day: 29, hour: 14, minute: 40 },
+            ..Default::default()
+        };
+        app.set_settings(seeded); // stamps the wall clock at now_ms = 0
+        assert_eq!(app.wall_clock_now(), seeded.clock, "at the boot stamp it reads the set-point");
+        app.now_ms = 25 * 60_000; // 25 minutes of monotonic time later
+        let now = app.wall_clock_now();
+        assert_eq!((now.hour, now.minute), (15, 5), "the clock advanced 25 min, carrying into the hour");
+    }
+
+    /// Editing the time on the Date & Time screen re-stamps the wall clock, so it resumes ticking
+    /// from the freshly set value rather than carrying the pre-edit monotonic offset into it.
+    /// Drives the real navigation (Home → Menu → Settings → Date & Time → TIME → minute).
+    #[test]
+    fn editing_the_clock_restamps_the_wall_clock() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        // Ten minutes of monotonic time since boot: with a stale epoch the display would read the
+        // set-point + 10 min, so the re-stamp is exactly what makes it read the edited value.
+        app.now_ms = 10 * 60_000;
+        app.apply_gesture(Gesture::BackHold); // Home → Menu
+        app.apply_gesture(Gesture::Turn(1)); // → Settings row
+        app.apply_gesture(Gesture::Press); // → Settings list (row 0 = Date & Time)
+        app.apply_gesture(Gesture::Press); // → Date & Time
+        app.apply_gesture(Gesture::Turn(2)); // Toggle → DATE → TIME row
+        app.apply_gesture(Gesture::Press); // open the hour field
+        app.apply_gesture(Gesture::Press); // step to the minute field
+        let before = app.settings().clock.minute;
+        app.apply_gesture(Gesture::Turn(1)); // minute + 1 → a real clock edit
+        let edited = app.settings().clock;
+        assert_ne!(edited.minute, before, "the edit moved the minute");
+        assert_eq!(app.wall_clock_now(), edited, "the edit re-stamped the clock to the new set-point");
+        app.now_ms += 60_000;
+        assert_eq!(app.wall_clock_now().minute, (edited.minute + 1) % 60, "ticks on from the new stamp");
+    }
+
+    /// On the Home screensaver, `advance_animations` self-dirties exactly once per minute as the
+    /// wall clock rolls over — the timed repaint that makes the static `HH:MM` actually advance —
+    /// and nothing in between (the render-on-demand contract, issue #47).
+    #[test]
+    fn home_self_dirties_once_a_minute() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0)); // base = Home
+        app.set_settings(crate::settings::Settings {
+            clock: DateTime { year: 2025, month: 1, day: 1, hour: 12, minute: 0 },
+            ..Default::default()
+        });
+        let _ = app.take_dirty(); // clear the boot-dirty so we observe only the clock's effect
+        app.advance_animations(InputClock(0));
+        assert!(
+            !app.take_dirty().map,
+            "the first frame only initialises the ticker — the boot paint already showed the clock"
+        );
+        app.advance_animations(InputClock(30_000));
+        assert!(!app.take_dirty().map, "mid-minute the clock is unchanged — no repaint");
+        app.advance_animations(InputClock(60_000));
+        assert!(app.take_dirty().map, "the minute rolled over → exactly one repaint");
+        app.advance_animations(InputClock(90_000));
+        assert!(!app.take_dirty().map, "and it settles back to quiet until the next minute");
     }
 }

@@ -34,7 +34,7 @@ use crate::app::AppState;
 use crate::breadcrumb::Breadcrumb;
 use crate::input::Gesture;
 use crate::route::RouteSummary;
-use crate::settings::{Settings, Units};
+use crate::settings::{DateTime, Settings, Units};
 
 mod home;
 mod map;
@@ -161,6 +161,10 @@ pub struct Render<'a, 'd> {
     pub w: f32,
     pub h: f32,
     pub now_ms: u32,
+    /// The live wall-clock time this frame (the clock set-point advanced by elapsed millis — see
+    /// [`WallClock`](crate::WallClock)). The Home screensaver draws it as `HH:MM`; a screen wanting
+    /// the boot-relative millis instead uses [`now_ms`](Render::now_ms).
+    pub now: DateTime,
     pub hold_progress: f32,
     /// Microsecond clock for the map render's per-stage timing (collect / sort / draw), passed
     /// straight to [`MapRenderer::render_timed`] by the Map screen. Hosts that don't profile pass
@@ -240,13 +244,15 @@ impl Screen {
     /// Advance this screen's **time-driven** content one frame, returning whether the drawn
     /// output changed so the render-on-demand host marks the map dirty (issue #47). Most
     /// screens change only on input or a fresh fix and return `false`; the Statistics view's
-    /// cursor springs back to the live position on an idle timer — a change driven by neither
-    /// input nor a fix — so it reports that here. The host calls this each frame on every drawn
-    /// screen; a future clock/battery readout would hook in the same way (a small region it
-    /// owns, not the whole map, ticking on its own interval).
-    pub fn animate(&mut self, now_ms: u32) -> bool {
+    /// cursor springs back to the live position on an idle timer (off `now_ms`), and the Home
+    /// screensaver's clock ticks over to a new minute (off the wall-clock `now`) — changes driven
+    /// by neither input nor a fix, so they report it here. The host calls this each frame on every
+    /// drawn screen; each takes whichever of the two clocks it needs (a screen that needs neither
+    /// ignores both).
+    pub fn animate(&mut self, now_ms: u32, now: DateTime) -> bool {
         match self {
             Screen::Statistics(s) => s.animate(now_ms),
+            Screen::Home(s) => s.animate(now),
             _ => false,
         }
     }
