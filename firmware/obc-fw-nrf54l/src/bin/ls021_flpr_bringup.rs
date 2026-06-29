@@ -15,8 +15,10 @@
 //!   2. **Launch the FLPR**, wait for its `ALIVE` stamp ([`launch_flpr`]).
 //!   3. **Init #0 — `INTB`-framed all-black frame** through the `Panel` seam (a black `clear`). COM `Lo`.
 //!   4. **Wait `T4 ≥ 30 µs`, then start COM** on a high-priority `InterruptExecutor` — runs forever.
-//!   5. **BTN0 steps** the screen: GLASS-DEMO → line card → white → greys → black → wrap. Each is
-//!      drawn through the `Panel`/`Band` seam and FLPR-driven once (MIP retains it).
+//!   5. **BTN0 steps** the screen: GLASS-DEMO → line card → white → greys → black → **partial-update
+//!      demo** → wrap. The first six are drawn through the `Panel`/`Band` seam and FLPR-driven once
+//!      (MIP retains each); the last (issue #163) re-pushes only a top strip via `push_spans` to prove
+//!      the dirty-row masked scan — the backdrop below holds, the frame time scales to the strip.
 //!
 //! **Both cores on P2 at once.** The FLPR drives the source bus on `P2.00..06`; the M33 drives COM
 //! on `P2.07/08/10` from `com_task`. Safe because every GPIO touch on either core is an atomic
@@ -100,6 +102,58 @@ async fn wait_for_press(btn: &Input<'_>) {
 /// single-value waveforms the LA speed-tune reads). The device snaps each to its RGB222 gamut.
 fn solid(t: &mut obc_platform::Band, c: Rgb565) {
     t.clear(c).ok();
+}
+
+/// Top-strip height (rows) the partial-update demo re-pushes — small enough to make the big vertical
+/// win obvious on the LA (40 of 320 rows scanned ⇒ a frame ~⅛ the full one) yet visible on glass.
+const STRIP_H: u16 = 40;
+
+/// **Partial / dirty-row update demo (issue #163)** — the headline proof of the masked scan, in
+/// isolation. Draws a full backdrop once (the line card), then repeatedly re-pushes **only the top
+/// [`STRIP_H`] rows** via [`push_spans`](Ls021Flpr::push_spans): the FLPR fast-forwards the clean
+/// rows below (`GEN` idle, nothing latches) and early-stops, so the backdrop **holds** while the
+/// strip animates and the per-frame time scales to ~`STRIP_H/320` of a full frame (each push logs
+/// it). On the LA: a short data burst then a `GCK` fast-forward burst with `GEN` idle, `INTB`
+/// dropping right after the last dirty row. Runs until BTN0 advances out (debounced like
+/// [`wait_for_press`]).
+async fn partial_update_demo(panel: &mut Ls021Flpr<'_>, btn0: &Input<'_>) {
+    // Full backdrop once, so the retained region below the strip is recognizable on glass.
+    show(panel, |t| {
+        demo::line_test_card(t, Rgb565::BLACK).ok();
+    });
+    info!(
+        "LS021 FLPR: PARTIAL-UPDATE demo — re-pushing only the top {=u16} of {=usize} rows; the line card below holds",
+        STRIP_H, FB_H
+    );
+
+    let mut tick = 0usize;
+    loop {
+        // Repaint ONLY the top strip of the resident framebuffer (device-64 bytes, 0b00_RR_GG_BB):
+        // a black field with a 16-px WHITE bar (0x3F = level 3/3/3) sliding across, so each partial
+        // push visibly changes the strip while everything below stays put.
+        let fb = panel.fb_mut();
+        let bar = (tick * 12) % (FB_W - 16);
+        for row in 0..STRIP_H as usize {
+            let base = row * FB_W;
+            fb[base..base + FB_W].fill(0x00); // black
+            fb[base + bar..base + bar + 16].fill(0x3F); // white bar (R=G=B=3)
+        }
+        // Drive ONLY rows [0, STRIP_H): the FLPR fast-forwards [STRIP_H, FB_H) and early-stops.
+        panel.push_spans(&[(0, STRIP_H)]);
+        tick += 1;
+
+        // Poll BTN0 to advance out of the demo (debounced + drained, like `wait_for_press`).
+        if btn0.is_low() {
+            Timer::after_millis(15).await;
+            if btn0.is_low() {
+                while btn0.is_low() {
+                    Timer::after_millis(5).await;
+                }
+                return;
+            }
+        }
+        Timer::after_millis(350).await;
+    }
 }
 
 #[embassy_executor::main]
@@ -194,7 +248,7 @@ async fn main(_spawner: Spawner) {
     interrupt::SWI00.set_priority(Priority::P3);
     let com_spawner = EXECUTOR_COM.start(interrupt::SWI00);
     com_spawner.spawn(defmt::unwrap!(com_task(vcom, vb, va)));
-    info!("LS021 FLPR: COM RUNNING — BTN0 steps GLASS-DEMO → LINE-BLACK → L3-WHITE → L2-GRAY → L1-GRAY → L0-BLACK");
+    info!("LS021 FLPR: COM RUNNING — BTN0 steps GLASS-DEMO → LINE-BLACK → L3-WHITE → L2-GRAY → L1-GRAY → L0-BLACK → PARTIAL-UPDATE");
 
     // 5. BTN0 steps the screen through the Panel seam: the glass-demo (font ladder + 64-colour
     //    gamut, identical to the ST7789 `--features glass-demo` build), the line/box diagnostic card,
@@ -203,39 +257,45 @@ async fn main(_spawner: Spawner) {
     let gray_l1 = Rgb565::new(10, 21, 10); // → device (1,1,1)  (LSB plane, 1/3-area)
     let mut i = 0usize;
     loop {
-        match i {
-            0 => {
-                info!("LS021 FLPR: SHOW GLASS-DEMO");
-                show(&mut panel, |t| {
-                    font_palette_demo(t).ok();
-                });
+        // The partial-update demo (issue #163) owns its own animate-until-press loop; the rest are
+        // draw-once full frames the MIP retains until the next BTN0 step.
+        if i == 6 {
+            partial_update_demo(&mut panel, &btn0).await;
+        } else {
+            match i {
+                0 => {
+                    info!("LS021 FLPR: SHOW GLASS-DEMO");
+                    show(&mut panel, |t| {
+                        font_palette_demo(t).ok();
+                    });
+                }
+                1 => {
+                    info!("LS021 FLPR: SHOW LINE-BLACK");
+                    show(&mut panel, |t| {
+                        demo::line_test_card(t, Rgb565::BLACK).ok();
+                    });
+                }
+                2 => {
+                    info!("LS021 FLPR: SHOW L3-WHITE");
+                    show(&mut panel, |t| solid(t, Rgb565::WHITE));
+                }
+                3 => {
+                    info!("LS021 FLPR: SHOW L2-GRAY (MSB plane)");
+                    show(&mut panel, |t| solid(t, gray_l2));
+                }
+                4 => {
+                    info!("LS021 FLPR: SHOW L1-GRAY (LSB plane)");
+                    show(&mut panel, |t| solid(t, gray_l1));
+                }
+                _ => {
+                    info!("LS021 FLPR: SHOW L0-BLACK");
+                    show(&mut panel, |t| solid(t, Rgb565::BLACK));
+                }
             }
-            1 => {
-                info!("LS021 FLPR: SHOW LINE-BLACK");
-                show(&mut panel, |t| {
-                    demo::line_test_card(t, Rgb565::BLACK).ok();
-                });
-            }
-            2 => {
-                info!("LS021 FLPR: SHOW L3-WHITE");
-                show(&mut panel, |t| solid(t, Rgb565::WHITE));
-            }
-            3 => {
-                info!("LS021 FLPR: SHOW L2-GRAY (MSB plane)");
-                show(&mut panel, |t| solid(t, gray_l2));
-            }
-            4 => {
-                info!("LS021 FLPR: SHOW L1-GRAY (LSB plane)");
-                show(&mut panel, |t| solid(t, gray_l1));
-            }
-            _ => {
-                info!("LS021 FLPR: SHOW L0-BLACK");
-                show(&mut panel, |t| solid(t, Rgb565::BLACK));
-            }
+            wait_for_press(&btn0).await;
         }
-        wait_for_press(&btn0).await;
         led1.toggle();
-        i = (i + 1) % 6;
+        i = (i + 1) % 7;
     }
 }
 

@@ -125,7 +125,13 @@ pub struct Ctx<'a> {
 /// `Reader`, the reusable `MapRenderer`, and the in-flight encoder hold-progress
 /// (0.0–1.0) the guarded-action confirm ring fills with.
 pub struct Render<'a, 'd> {
-    pub reader: &'a Reader<'d>,
+    /// The streamed-map `Reader` — **`None` when the base screen doesn't draw the map** (a menu,
+    /// the Statistics view, Home). Only the [`Map`](crate::screen::map) screen reads it, so a host
+    /// can skip building the `Reader` (its SD style-table parse + stack spike) entirely on a non-map
+    /// frame and pass `None`; every other screen ignores it. The single-target convenience entries
+    /// [`render_map`](crate::App::render_map) / [`render_frame`](crate::App::render_frame) always
+    /// pass `Some` (their callers are drawing the map).
+    pub reader: Option<&'a Reader<'d>>,
     pub renderer: &'a mut MapRenderer,
     pub state: &'a AppState,
     pub activity: &'a Activity,

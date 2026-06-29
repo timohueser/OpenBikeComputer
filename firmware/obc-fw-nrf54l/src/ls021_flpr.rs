@@ -7,12 +7,15 @@
 //! in either.
 //!
 //! What lives here is everything that talks to the **FLPR** (the nRF54L15's VPR RISC-V coprocessor):
-//!   - the cross-core [`Control`] block + ping-pong [`BufDesc`]s (the normative contract with the C
-//!     blob `src/flpr/flpr_pingpong.c` — kept byte-for-byte in sync, both static-assert 64 bytes);
+//!   - the cross-core [`Control`] block + ping-pong [`BufDesc`]s + the dirty-row span list (the
+//!     normative contract with the C blob `src/flpr/flpr_pingpong.c` — kept byte-for-byte in sync,
+//!     both static-assert 124 bytes);
 //!   - [`launch_flpr`] — copy the blob into FLPR RAM, arm the control block, release the core, and
 //!     wait for its `ALIVE` stamp;
-//!   - [`Ls021Flpr`] — the resident-framebuffer [`Panel`] backend whose `end_frame` packs the whole
-//!     RGB222 plane through the two ping-pong buffers and busy-waits one `CMD_RUN_FRAME`.
+//!   - [`Ls021Flpr`] — the resident-framebuffer [`Panel`] backend whose pushes pack the dirty rows of
+//!     the RGB222 plane through the two ping-pong buffers and busy-wait one masked `CMD_RUN_FRAME`
+//!     ([`push_frame`](Ls021Flpr::push_frame) = the whole frame, [`push_spans`](Ls021Flpr::push_spans)
+//!     = only the changed rows, the FLPR fast-forwarding the gate over the rest — issue #163).
 //!
 //! **COM stays on the M33** (`ls021::com_task`) and **is not here** — if the FLPR ever faults, COM
 //! must keep alternating so the panel never takes a DC bias (the epic's safety rule). The caller
@@ -49,7 +52,9 @@ use defmt::{error, info};
 use embassy_time::{Instant, Timer};
 // The host-tested RGB222 → LS021-wire pack (#154) with its sub-line/row word counts.
 use obc_platform::ls021_wire::{BCK_PER_SUBLINE, ROW_WORDS, WIDTH};
-use obc_platform::{ls021_pack_row, Band, Panel};
+// `device64_to_rgb565` expands a clean framebuffer byte to RGB565 so the overlay-composite path
+// (#163) draws the hold bulge over it through a `Band` before re-quantising back to the wire.
+use obc_platform::{device64_to_rgb565, ls021_pack_row, Band, Panel};
 // The host-tested RGB565 → device-64 quantiser — the same one the glass-demo's gamut is drawn from,
 // so `flush_band` lands a band on the panel's RGB222 gamut exactly as the ST7789 stand-in shows it.
 use obc_reader::rgb565_to_device64;
@@ -78,17 +83,21 @@ const WRITE_BUF_ADDR: [usize; 2] = [0x2003_F100, 0x2003_F100 + ROW_WORDS * 4];
 /// padding. Accessed only through raw volatile field reads/writes (never as a `&` reference) since
 /// the FLPR mutates it concurrently.
 #[repr(C)]
-#[allow(dead_code)] // reserved / EGU-era fields are forward-compat headroom kept in the contract.
+#[allow(dead_code)] // fields are touched only through raw `addr_of` field projections, never as `.field`.
 struct Control {
-    magic: u32,         // 0x00 M33: layout/version tag, checked by the FLPR before acting
-    m33_seq: u32,       // 0x04 M33: command sequence counter (the per-frame command doorbell)
-    cmd: u32,           // 0x08 M33: command word (a CMD_* code)
-    flpr_seq: u32,      // 0x0C FLPR: echoes the m33_seq it serviced (the ack the M33 polls)
-    status: u32,        // 0x10 FLPR: ack/result (rows scanned; boot: FLPR_ALIVE)
-    frame_count: u32,   // 0x14 FLPR: frames drained (bumped per CMD_RUN_FRAME)
-    buf: [BufDesc; 2],  // 0x18, 0x28 ping-pong row-buffer descriptors (buf[0] even rows, buf[1] odd)
-    reserved: [u32; 2], // 0x38 forward-compat headroom
+    magic: u32,                    // 0x00 M33: layout/version tag, checked by the FLPR before acting
+    m33_seq: u32,                  // 0x04 M33: command sequence counter (the per-frame command doorbell)
+    cmd: u32,                      // 0x08 M33: command word (a CMD_* code)
+    flpr_seq: u32,                 // 0x0C FLPR: echoes the m33_seq it serviced (the ack the M33 polls)
+    status: u32,                   // 0x10 FLPR: ack/result (#163: dirty rows scanned; boot: FLPR_ALIVE)
+    frame_count: u32,              // 0x14 FLPR: frames drained (bumped per CMD_RUN_FRAME)
+    buf: [BufDesc; 2],             // 0x18, 0x28 ping-pong row-buffer descriptors (toggled per DIRTY row, #163)
+    n_spans: u32,                  // 0x38 M33: #dirty-row spans (1 = a full frame `(0, FB_H)`)
+    spans: [u32; MAX_DIRTY_SPANS], // 0x3C M33: packed `(start_row << 16) | count`, ascending + disjoint
 }
+/// Dirty-row span-list cap (issue #163) — **must equal `MAX_DIRTY_SPANS` in the C `flpr_pingpong.c`**.
+/// 16 disjoint regions is far more than any UI produces (a full frame is one span, the bulge is one).
+const MAX_DIRTY_SPANS: usize = 16;
 /// One ping-pong row-buffer descriptor. `ready`/`consumed` are the per-buffer handshake counters:
 /// the M33 bumps `ready` after packing a fresh row into the buffer; the FLPR sets `consumed = ready`
 /// after it has finished scanning that row out. `ready != consumed` ⇒ a row is waiting to be
@@ -101,8 +110,10 @@ struct BufDesc {
     ready: u32,    // M33: bumped after packing a row into this buffer
     consumed: u32, // FLPR: set = ready after draining this buffer
 }
-/// Lock the cross-language contract: the C `flpr_control_t` `_Static_assert`s the same size.
-const _: () = assert!(core::mem::size_of::<Control>() == 64);
+/// Lock the cross-language contract: the C `flpr_control_t` `_Static_assert`s the same 124 bytes (the
+/// two structs alias the same shared-RAM bytes), which also stays below the ping-pong buffer base at
+/// `control + 0x100` (see [`WRITE_BUF_ADDR`]) so the span list never moves the buffers.
+const _: () = assert!(core::mem::size_of::<Control>() == 124);
 
 const CONTROL: *mut Control = 0x2003_F000 as *mut Control;
 const LAYOUT_MAGIC: u32 = 0xF1C0_0001; // "F1 control block" — the FLPR refuses to act otherwise
@@ -123,6 +134,13 @@ pub const ROWS_PER_FRAME: u32 = 320;
 pub const FB_W: usize = WIDTH;
 /// Framebuffer height = the visible row count.
 pub const FB_H: usize = ROWS_PER_FRAME as usize;
+
+/// Max overlay region [`push_overlay`](Ls021Flpr::push_overlay)'s composite scratch holds — the hold
+/// bulge's right-edge window (16 cols × 192 rows, issue #126/#163). A region must fit this (asserted);
+/// the `[u16; COLS×ROWS]` RGB565 scratch is the only extra RAM the FLPR overlay path needs (~6 KB,
+/// transient on the overlay-only frame's shallow stack — never live during a deep map render).
+const MAX_OVERLAY_COLS: usize = 16;
+const MAX_OVERLAY_ROWS: usize = 192;
 
 /// Busy-poll cap while waiting on the FLPR (a free ping-pong buffer or the frame ack). A spin cap,
 /// not a duration — sized large enough that even a full slow frame never trips it, so it only fires
@@ -222,6 +240,26 @@ fn ring_cmd(seq: u32) {
     }
 }
 
+/// Publish the **dirty-row span list** the FLPR's masked scan reads (issue #163): each span a packed
+/// `(start_row << 16) | count`, written ascending. Capped at [`MAX_DIRTY_SPANS`] (a UI never produces
+/// more — a full frame is one span `(0, FB_H)`, the bulge one). Written before [`ring_cmd`] bumps
+/// `m33_seq` (its `dsb` orders the whole pre-fill, including these words, before the doorbell).
+fn set_spans(spans: &[(u16, u16)]) {
+    let n = spans.len().min(MAX_DIRTY_SPANS);
+    unsafe {
+        for (s, &(start, count)) in spans.iter().take(n).enumerate() {
+            let packed = ((start as u32) << 16) | count as u32;
+            addr_of_mut!((*CONTROL).spans[s]).write_volatile(packed);
+        }
+        addr_of_mut!((*CONTROL).n_spans).write_volatile(n as u32);
+    }
+}
+
+/// Total rows across `spans` — the FLPR's dirty-row count, which `status` must echo back.
+fn span_row_total(spans: &[(u16, u16)]) -> usize {
+    spans.iter().take(MAX_DIRTY_SPANS).map(|&(_, count)| count as usize).sum()
+}
+
 /// Spin (bounded by [`SPIN_CAP`]) until `cond` holds. Returns `false` if the cap trips first (a
 /// stalled FLPR). Pure busy-poll — correct here because the M33 is a dedicated packer and COM runs
 /// on its own interrupt executor, so there is nothing else for this core to yield to.
@@ -302,42 +340,61 @@ impl<'b> Ls021Flpr<'b> {
         self.fb
     }
 
-    /// Drive the resident framebuffer to glass through the **ping-pong** path and busy-wait the
-    /// frame ack. Pre-packs rows 0/1 into `buf[0]`/`buf[1]`, rings the FLPR, then packs each
-    /// remaining row into whichever buffer the FLPR just freed (`buf[row & 1]`) — the M33 stays one
-    /// buffer ahead while the FLPR scans. Returns `true` if the ack checks out (`status ==
-    /// ROWS_PER_FRAME && flpr_seq == seq`). Logs the **pack-vs-frame overlap** + the frame time
-    /// (the speed-tune metric — drive the blob clocks down until this nears the spec ~53 ms).
-    pub fn push_frame(&mut self) -> bool {
+    /// Drive a **span-masked** frame to glass through the ping-pong path and busy-wait the ack — the
+    /// engine behind [`push_spans`](Self::push_spans) and [`push_frame`](Self::push_frame) (issue
+    /// #163). Publishes the span list, pre-packs the first two **dirty** rows into `buf[0]`/`buf[1]`,
+    /// rings the FLPR, then packs each remaining dirty row into whichever buffer the FLPR just freed —
+    /// the M33 stays one buffer ahead while the FLPR fast-forwards the clean rows and scans the dirty
+    /// ones. `publish(fb, buf_i, abs_row)` packs absolute `abs_row` into `buf[buf_i]` + bumps `ready`
+    /// (straight from `fb`, or composited for the bulge — issue #163). The ping-pong index toggles
+    /// per **dirty** row (ascending across spans), matching the FLPR's `drain_row(dirty & 1)`.
+    /// Returns `true` if the ack checks out (`status == #dirty rows && flpr_seq == seq`). Logs the
+    /// **pack-vs-frame overlap** + frame time (the speed-tune metric).
+    fn run_masked(&mut self, spans: &[(u16, u16)], mut publish: impl FnMut(&[u8], usize, usize)) -> bool {
+        let total = span_row_total(spans);
+        if total == 0 {
+            return true; // nothing dirty — a no-op frame (defensive; callers pass ≥1 row)
+        }
         self.seq += 1;
         let s = self.seq;
 
-        // Reset + pre-fill both buffers while the FLPR is idle (it starts only on the m33_seq bump).
+        // Reset + publish the span list + pre-fill up to two dirty rows while the FLPR is idle (it
+        // starts only on the m33_seq bump). Dirty rows walk ascending across spans; the buffer index
+        // toggles per dirty row (`k & 1`), exactly as the FLPR's `drain_row(dirty & 1)` consumes them.
         reset_descriptors();
-        publish_row(self.fb, 0, 0); // row 0 → buf[0] (even)
-        publish_row(self.fb, 1, 1); // row 1 → buf[1] (odd)
+        set_spans(spans);
+        let mut rows = spans
+            .iter()
+            .take(MAX_DIRTY_SPANS)
+            .flat_map(|&(start, count)| start as usize..start as usize + count as usize)
+            .enumerate();
+        for _ in 0..2 {
+            if let Some((k, row)) = rows.next() {
+                publish(self.fb, k & 1, row);
+            }
+        }
 
         let t_frame = Instant::now();
         ring_cmd(s);
 
-        // Pack the remaining 318 rows, each paced by the FLPR freeing its buffer (the ping-pong).
+        // Pack the remaining dirty rows, each paced by the FLPR freeing its buffer (the ping-pong).
         let mut pack_total_us: u64 = 0;
-        for row in 2..FB_H {
-            let i = row & 1;
+        for (k, row) in rows {
+            let i = k & 1;
             if !spin_until(|| buf_consumed(i) == buf_ready(i)) {
                 error!(
-                    "LS021 FLPR: STALLED at row {=usize} — FLPR didn't free buf[{=usize}] (consumed={=u32}, ready={=u32})",
-                    row, i, buf_consumed(i), buf_ready(i)
+                    "LS021 FLPR: STALLED at dirty row {=usize} (abs {=usize}) — FLPR didn't free buf[{=usize}] (consumed={=u32}, ready={=u32})",
+                    k, row, i, buf_consumed(i), buf_ready(i)
                 );
                 dump_flpr_state(s);
                 return false;
             }
             let t0 = Instant::now();
-            publish_row(self.fb, i, row);
+            publish(self.fb, i, row);
             pack_total_us += t0.elapsed().as_micros();
         }
 
-        // Every row packed — busy-wait the FLPR's whole-frame ack (`flpr_seq` echoes our seq).
+        // Every dirty row packed — busy-wait the FLPR's frame ack (`flpr_seq` echoes our seq).
         if !spin_until(|| unsafe { addr_of!((*CONTROL).flpr_seq).read_volatile() } == s) {
             error!(
                 "LS021 FLPR: frame TIMEOUT — FLPR never echoed seq {=u32} (the scan or a ping-pong wait stalled)",
@@ -349,20 +406,99 @@ impl<'b> Ls021Flpr<'b> {
         let frame_us = t_frame.elapsed().as_micros();
         let status = unsafe { addr_of!((*CONTROL).status).read_volatile() };
         let frames = unsafe { addr_of!((*CONTROL).frame_count).read_volatile() };
-        if status != ROWS_PER_FRAME {
-            error!("LS021 FLPR: frame MISMATCH — status={=u32} (want {=u32})", status, ROWS_PER_FRAME);
+        if status != total as u32 {
+            error!("LS021 FLPR: frame MISMATCH — status={=u32} (want {=usize} dirty rows)", status, total);
             return false;
         }
         info!(
-            "LS021 FLPR: frame OK — FLPR scanned {=u32} rows (frame #{=u32}) in {=u64} µs (~{=u64} µs/row); M33 packed {=u32} rows in {=u64} µs",
-            status,
+            "LS021 FLPR: frame OK — FLPR scanned {=usize} dirty rows (frame #{=u32}) in {=u64} µs (~{=u64} µs/row); M33 packed {=usize} rows in {=u64} µs",
+            total,
             frames,
             frame_us,
-            frame_us / ROWS_PER_FRAME as u64,
-            ROWS_PER_FRAME - 2,
+            frame_us / total as u64,
+            total.saturating_sub(2),
             pack_total_us
         );
         true
+    }
+
+    /// Drive **only the rows in `spans`** to glass (issue #163), packing each straight from the clean
+    /// framebuffer. The FLPR fast-forwards the gate over the gaps and early-stops after the last dirty
+    /// row, so a vertically-compact region costs a fraction of a full frame. Spans are
+    /// `(start_row, count)`, ascending + disjoint, ≤ [`MAX_DIRTY_SPANS`]. A full frame is
+    /// `&[(0, FB_H)]` (= [`push_frame`](Self::push_frame)).
+    pub fn push_spans(&mut self, spans: &[(u16, u16)]) -> bool {
+        self.run_masked(spans, publish_row)
+    }
+
+    /// Drive the **whole** resident framebuffer to glass — the degenerate one-span frame
+    /// `&[(0, FB_H)]` (init-black + every full map redraw), byte-identical to the F5 full-frame scan.
+    pub fn push_frame(&mut self) -> bool {
+        self.push_spans(&[(0, FB_H as u16)])
+    }
+
+    /// Re-present **only the rows of an overlay region** with `draw_overlay` composited over the clean
+    /// framebuffer backdrop (issue #163) — the few-ms partial push the hold bulge rides over a static
+    /// map, keeping `fb` the clean map (never mutated). The LS021 is row-addressed (touching a row
+    /// re-latches all 240 columns), so this rewrites the full-width rows `[y0, y0+rows)` while only the
+    /// `[x0, x0+w)` columns carry the overlay; the FLPR fast-forwards the gate to `y0` and early-stops
+    /// after `y0+rows`, so the cost scales to the region's row span, not the whole frame.
+    ///
+    /// **Stack-frugal + lock-light** — the explicit fix for the old per-row overflow: the overlay is
+    /// rendered into a small RGB565 window scratch **once** (one `draw_overlay` call ⇒ the caller's
+    /// `InputPlane` lock is taken once per overlay frame, not per row), then each dirty row is packed
+    /// as the clean `fb` columns with the `[x0, x0+w)` columns swapped for the composited window
+    /// (re-quantised inline) — no per-row lock and no per-row re-render.
+    pub fn push_overlay(
+        &mut self,
+        x0: u16,
+        y0: u16,
+        w: u16,
+        rows: u16,
+        draw_overlay: &mut dyn FnMut(&mut Band),
+    ) -> bool {
+        let (x0, y0, w, rows) = (x0 as usize, y0 as usize, w as usize, rows as usize);
+        assert!(
+            w <= MAX_OVERLAY_COLS && rows <= MAX_OVERLAY_ROWS && x0 + w <= FB_W && y0 + rows <= FB_H,
+            "overlay region out of bounds / larger than the composite scratch"
+        );
+
+        // 1. Render the overlay ONCE into a window scratch over the clean backdrop: pre-fill the window
+        //    from `fb` (RGB222 → RGB565), then `draw_overlay` paints the bulge over it through a
+        //    frame-absolute `Band`. `win` then holds the composited region; `fb` is untouched.
+        let mut win = [0u16; MAX_OVERLAY_COLS * MAX_OVERLAY_ROWS];
+        let n = w * rows;
+        for row in 0..rows {
+            let fb_base = (y0 + row) * FB_W + x0;
+            for c in 0..w {
+                win[row * w + c] = device64_to_rgb565(self.fb[fb_base + c]);
+            }
+        }
+        {
+            let frame = Size::new(FB_W as u32, FB_H as u32);
+            let mut band = Band::new_window(&mut win[..n], frame, x0 as u16, y0 as u16, w as u16, rows as u16);
+            draw_overlay(&mut band);
+        }
+
+        // 2. Drive the full-width span `[y0, y0+rows)`: each dirty row = the clean `fb` columns with the
+        //    `[x0, x0+w)` columns replaced by the composited window (re-quantised to device-64). One
+        //    reused 240-byte row, packed straight to the ping-pong buffer — no lock, no re-render.
+        self.run_masked(&[(y0 as u16, rows as u16)], |fb, buf_i, abs_row| {
+            let srow = abs_row - y0;
+            let mut row_dev = [0u8; FB_W];
+            row_dev.copy_from_slice(&fb[abs_row * FB_W..abs_row * FB_W + FB_W]);
+            for c in 0..w {
+                // rgb565_to_device64 returns 0/85/170/255 per channel; /85 recovers the 2-bit level.
+                let (r, g, b) = rgb565_to_device64(win[srow * w + c]);
+                row_dev[x0 + c] = ((r / 85) << 4) | ((g / 85) << 2) | (b / 85);
+            }
+            // SAFETY: `out` is the SHARED-page write buffer at a fixed address no Rust object aliases.
+            let out = unsafe { core::slice::from_raw_parts_mut(WRITE_BUF_ADDR[buf_i] as *mut u32, ROW_WORDS) };
+            ls021_pack_row(&row_dev, out);
+            cortex_m::asm::dsb(); // buffer words complete before the ready bump the FLPR waits on
+            let next = buf_ready(buf_i).wrapping_add(1);
+            unsafe { addr_of_mut!((*CONTROL).buf[buf_i].ready).write_volatile(next) };
+        })
     }
 }
 

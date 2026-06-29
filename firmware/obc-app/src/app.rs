@@ -596,6 +596,18 @@ impl App {
         matches!(self.stack.get(base), Some(Screen::Map(_) | Screen::Statistics(_)))
     }
 
+    /// Whether the base (lowest opaque) screen actually draws the **map** — i.e. the
+    /// [`Map`](crate::screen::map) screen, the only one that reads the streamed-map [`Reader`].
+    /// A render-on-demand host polls this to skip the whole map pipeline on a non-map frame: don't
+    /// build the `Reader` (an SD style-table parse + its stack spike) and pass `None` to
+    /// [`render_map_timed`](App::render_map_timed) — a menu / Statistics / Home redraw then draws
+    /// only its own chrome, with zero map I/O. (An overlay like Ride-control sits *over* the Map, so
+    /// the base is still `Map` and this stays `true`.)
+    pub fn base_draws_map(&self) -> bool {
+        let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
+        matches!(self.stack.get(base), Some(Screen::Map(_)))
+    }
+
     /// Replace the resident route catalog from the host's store (the simulator's
     /// folder scan / the firmware's SD-card scan). Clones up to
     /// [`MAX_ROUTES`](crate::MAX_ROUTES) summaries; any beyond that are ignored.
@@ -745,8 +757,9 @@ impl App {
         F: Fn(u16) -> D::Color,
     {
         // Untimed: the host's `NoopClock` leaves the map's per-stage `*_us` fields at 0. The
-        // device uses `render_map_timed` with a real clock for the render benchmark.
-        self.render_map_timed(target, reader, route, w, h, color_fn, &NoopClock)
+        // device uses `render_map_timed` with a real clock for the render benchmark. This
+        // convenience entry is always drawing the map, so it passes `Some`.
+        self.render_map_timed(target, Some(reader), route, w, h, color_fn, &NoopClock)
     }
 
     /// Like [`render_map`](App::render_map) but threads `clock` to the Map screen's
@@ -758,7 +771,7 @@ impl App {
     pub fn render_map_timed<D, F>(
         &mut self,
         target: &mut D,
-        reader: &Reader,
+        reader: Option<&Reader>,
         route: Option<&RouteReader>,
         w: f32,
         h: f32,

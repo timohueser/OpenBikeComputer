@@ -1451,9 +1451,12 @@ async fn main(spawner: Spawner) {
                         // never carries the bulge and is re-rendered only when the map changes.
                         // `render_map_timed` fills the per-stage map timings via `InstantClock`.
                         let frame_t0 = Instant::now();
+                        // The STM32 prototype's loop always renders the map view, so it always has a
+                        // `Reader` to draw with — `Some`. (The nRF host skips the map pipeline on a
+                        // non-map screen via `App::base_draws_map`; the STM32 keeps the simpler path.)
                         let stats = app.render_map_timed(
                             &mut fb,
-                            &reader,
+                            Some(&reader),
                             route.as_ref(),
                             W as f32,
                             H as f32,
