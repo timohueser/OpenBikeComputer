@@ -12,18 +12,33 @@ description = "nRF54L15-DK board firmware for OpenBikeComputer — the real hard
 [workspace]
 
 [features]
-# Default build = the **N4 full map on glass** (issue #125): mount the SD card, stream the `.obcm`,
-# render it into the resident RGB222 framebuffer through the shared `obc-app`, and push it to the
-# ST7789 band by band. This is the real target path; it grows buttons (#126) and sensors/GPX (#127)
-# in place.
-#
-# `glass-demo` swaps that for the panel-only bring-up screen — the font ladder + the device's
-# 64-colour gamut, drawn band-by-band through the `Panel` seam (issue #122), no SD and no full
-# framebuffer. The analog of the simulator's `--text-demo`. Kept
-# so the panel/colour/text path can be verified in isolation; build it with
-# `--no-default-features --features glass-demo`.
+# Default build = the **real map/ride app on the reflective LS021B7DD02 panel** (issues #165 / #173),
+# driven by the FLPR (the VPR RISC-V coprocessor): mount the SD card, stream the `.obcm`, render it
+# into the resident RGB222 framebuffer through the shared `obc-app`, and have the FLPR scan the whole
+# frame to the LS021 in one push. This is the shipping target path (buttons #126, sensors/GPX #127).
+# LS021 is the *baseline* — it's selected by the **absence** of `tft` — so every FLPR/LS021 `cfg` in
+# the crate keys on `not(feature = "tft")`. Like the old `panel-ls021` opt-in it pulls the `build.rs`
+# carve-out (the M33 shrinks to 244 KB; the top 12 KB is the FLPR image + handshake page) and
+# cross-compiles the RISC-V blob, so the default build needs a RISC-V gcc (`brew install
+# riscv64-elf-gcc`) and the Board-Configurator settings (3.3 V VDDM, ext-memory-off, VCOM HWFC off).
+# Build with `cargo run --release` (add `--features debug-uart` to stream a recorded ride from a host).
+# See `firmware/docs/ls021-flpr.md` + the crate README.
 default = []
-glass-demo = []
+
+# `tft` selects the **ST7789** EYESPI panel (240×320) instead of the LS021 — the original bring-up
+# display, kept as an opt-in second backend. It is a *backend select* for `src/main.rs`: the
+# hand-rolled `St7789` SPIM driver (`src/st7789.rs`) replaces the FLPR `Ls021Flpr` backend, the app
+# renders into the same RGB222 plane and the band push expands it to RGB565 over SPI. No FLPR carve
+# and no RISC-V toolchain — it links the full 256 KB. Build with `cargo run --release --features tft`.
+tft = []
+
+# `glass-demo` swaps the map app for the panel-only bring-up screen — the font ladder + the device's
+# 64-colour gamut, drawn band-by-band through the `Panel` seam (issue #122), no SD and no full
+# framebuffer. The analog of the simulator's `--text-demo`. It draws through the ST7789 `Panel`
+# backend, so it **implies `tft`** (which is why every ST7789-backend `cfg` keys on `feature = "tft"`
+# alone). Kept so the panel/colour/text path can be verified in isolation; build it with
+# `--no-default-features --features glass-demo`.
+glass-demo = ["tft"]
 
 # `ls021-bringup` is the **LS021 panel bring-up** bench firmware (epic #139) — a standalone
 # `[[bin]]` (below), *not* a mode of the map/ride `main.rs`. It evolves one bring-up stage at a
@@ -40,8 +55,9 @@ ls021-bringup = []
 # coprocessor). The feature gates the standalone `ls021_flpr_bringup` bin (below) **and** the
 # `build.rs` work it needs: a *carved* `memory.x` reserving the top 12 KB of SRAM for the FLPR
 # image + a cross-core control-block page, plus cross-compiling the freestanding C blob in
-# `src/flpr/` with a RISC-V gcc (`brew install riscv64-elf-gcc`). Off by default so `main.rs`
-# keeps the full 256 KB and needs no RISC-V toolchain. F0 (#150) proved the build/boot path
+# `src/flpr/` with a RISC-V gcc (`brew install riscv64-elf-gcc`) — the same carve + blob the default
+# LS021 build pulls (it shares the `Ls021Flpr` backend), keyed in `build.rs` on this feature **or**
+# the absence of `tft`. F0 (#150) proved the build/boot path
 # (M33 starts the FLPR; it blinks LED0 + answers a one-word handshake); F1 (#151) is the
 # bidirectional comms channel — a shared control block + a doorbell each way (shared-RAM sequence
 # M33→FLPR, EGU interrupt FLPR→M33; VEVIF is walled on bare metal), round-trip verified over RTT.
@@ -52,20 +68,11 @@ ls021-bringup = []
 # the M33 packing a row buffer + ringing once per frame, COM free-running on the M33. Bring-up-slow,
 # LA-diffed against the M33 PanelBus and webcam-verified. Build with `--bin ls021_flpr_bringup
 # --features ls021-flpr`. See `firmware/docs/ls021-flpr.md`.
+#
+# (The **real app** on the LS021 — same `Ls021Flpr` backend, but driving the full map/ride `main.rs`
+# instead of this bench bin — is now the **default build**, not a feature: see `default` above and
+# issue #173. This `ls021-flpr` feature stays the standalone bring-up bin.)
 ls021-flpr = []
-
-# `panel-ls021` runs the **real map/ride app on the reflective LS021B7DD02 panel** (issue #165),
-# driven by the FLPR (the VPR RISC-V coprocessor) instead of the bring-up ST7789. It is a *backend
-# select* for `src/main.rs`, not a separate bin: the shared `Ls021Flpr` `obc_platform::Panel` backend
-# (`src/ls021_flpr.rs`, also used by the `ls021_flpr_bringup` bin) replaces the ST7789, the app
-# renders the whole frame into the resident RGB222 plane and the FLPR scans it in one push, and COM +
-# the gesture input plane free-run on a high-priority executor. Like `ls021-flpr` it pulls the
-# `build.rs` carve-out (the M33 shrinks to 244 KB; the top 12 KB is the FLPR image + handshake page)
-# and cross-compiles the RISC-V blob, so it needs a RISC-V gcc (`brew install riscv64-elf-gcc`) and
-# the Board-Configurator settings (3.3 V VDDM, ext-memory-off, VCOM HWFC off). Mutually exclusive
-# with `glass-demo`. Build with `--features panel-ls021` (add `,debug-uart` to stream a recorded ride
-# from a host). See `firmware/docs/ls021-flpr.md` + the crate README.
-panel-ls021 = []
 
 # Stream fake GPS / altimeter / compass from a host over the **VCOM UART** (issue #127). The
 # nRF54L15 has no USB peripheral, so the debug-sensor /
