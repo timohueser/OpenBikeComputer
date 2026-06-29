@@ -887,6 +887,14 @@ impl MapDisplay {
             None => self.panel.present(),
             Some(_) => self.panel.present_within(overlay_span),
         };
+        if !ok {
+            // The push didn't reach glass (a stalled FLPR), but the self-diffing present already
+            // advanced its row-hash store to this frame — so the caller's latched `pending_map_redraw`
+            // retry would diff the identical `fb` against an up-to-date store and re-push *nothing*,
+            // stranding the rows that missed glass. Re-arm a full push so the retry re-seeds the store
+            // and repaints every row (issue #201).
+            self.panel.reset_diff();
+        }
         let push_us = t_push.elapsed().as_micros();
         FramePresent { ok, stats, render_us, push_us }
     }
@@ -897,14 +905,21 @@ impl MapDisplay {
     /// no mid-pop flash). Only the active bulge's rows are touched (the FLPR fast-forwards the gate to
     /// them + early-stops).
     ///
-    /// The trailing clear (bulge just went quiet, `overlay_dirty` with no span) wipes **the same rows**
-    /// the last bulge used — **unconditionally**, because the self-diffing map present no longer
-    /// guarantees it touched those rows: the bulge composited glass content the row-hash diff can't see
-    /// (the store tracks the clean `fb`), so if the map content there is unchanged the diff skips it and
-    /// the stale bulge would strand without this clear (issue #201). The clear re-pushes the clean `fb`
-    /// rows, which the store already agrees with, so the next present stays quiet there.
+    /// The trailing clear (bulge just went quiet) wipes **the same rows** the last bulge used, because
+    /// the self-diffing map present no longer guarantees it touched those rows: the bulge composited
+    /// glass content the row-hash diff can't see (the store tracks the clean `fb`), so if the map
+    /// content there is unchanged the diff skips it and the stale bulge would strand without this clear
+    /// (issue #201). The clear re-pushes the clean `fb` rows, which the store already agrees with, so
+    /// the next present stays quiet there. It is driven off [`last_overlay_span`](Self#) (cleared only
+    /// on a **successful** push), not the one-shot `overlay_dirty` edge — so a one-frame FLPR stall
+    /// during the clear is retried on the next frame rather than stranding the bulge with no edge left
+    /// to re-fire it.
     #[inline(always)]
     fn present_bulge(&mut self, overlay_span: Option<(u16, u16)>, overlay_dirty: bool) {
+        // `overlay_dirty` (the one-shot trailing edge) no longer gates the clear: a stalled clear has
+        // to be retried on later frames too, so `last_overlay_span` (dropped only on a successful push)
+        // drives it instead — see the doc above.
+        let _ = overlay_dirty;
         let color_fn = |c: u16| Rgb565::from(RawU16::new(c));
         let input_plane = self.input_plane;
         let composite = |panel: &mut Ls021Flpr, region: OverlayRegion| -> bool {
@@ -923,12 +938,15 @@ impl MapDisplay {
             } else {
                 defmt::warn!("overlay frame: bulge push failed (FLPR stalled?) — retrying next overlay tick");
             }
-        } else if overlay_dirty {
+        } else if let Some((y0, rows)) = self.last_overlay_span {
             // Trailing clear: re-present just the last bulge's rows with nothing composited = the clean
             // map restored under the just-gone bulge (the self-diffing map present may have skipped
-            // them, so this is unconditional — see the method docs).
-            if let Some((y0, rows)) = self.last_overlay_span.take() {
-                composite(&mut self.panel, OverlayRegion { x0: OVL_X0, y0, w: OVL_W, rows });
+            // them, so this is what actually wipes the bulge — see the method docs). Drop
+            // `last_overlay_span` only when the push lands, so a stalled FLPR retries next frame.
+            if composite(&mut self.panel, OverlayRegion { x0: OVL_X0, y0, w: OVL_W, rows }) {
+                self.last_overlay_span = None;
+            } else {
+                defmt::warn!("overlay frame: trailing clear failed (FLPR stalled?) — retrying next frame");
             }
         }
     }
