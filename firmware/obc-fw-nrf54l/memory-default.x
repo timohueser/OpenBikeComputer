@@ -14,6 +14,13 @@
    hard-code any flash offset/size elsewhere — treat this purely as the whole-image
    budget for now (see epic #120).
 
+   The **top 4K** is carved off into a named `SETTINGS` region (#193): the persistent
+   on-chip settings store (`src/settings.rs`) writes its 16-byte blob there via the RRAMC
+   — RRAM is byte-writable, no SD card needed. Shrinking FLASH to 1520K keeps the app
+   image clear of it; `__settings_base` (= `ORIGIN(SETTINGS)`) hands the base to Rust so
+   nothing hard-codes the address, and the named region is what a future MCUboot partition
+   map (#120) adopts. The FLPR build (build.rs) carves the same page — keep the two in sync.
+
    RAM 256K @ 0x2000_0000 — the full on-chip SRAM. embassy's example reserves the top
    128K for its FLPR coprocessor demo; the default map firmware reclaims all of it: the
    ST7789 display path runs on the M33 via SPIM-DMA (#122). The renderer scratch + caches
@@ -25,6 +32,9 @@
    firmware/docs/ls021-flpr.md + build.rs. A future BLE controller would carve here too. */
 MEMORY
 {
-    FLASH : ORIGIN = 0x00000000, LENGTH = 1524K
-    RAM   : ORIGIN = 0x20000000, LENGTH = 256K
+    FLASH    : ORIGIN = 0x00000000, LENGTH = 1520K
+    SETTINGS : ORIGIN = 0x0017C000, LENGTH = 4K    /* persistent settings page (#193) — top of RRAM */
+    RAM      : ORIGIN = 0x20000000, LENGTH = 256K
 }
+/* Base of the carved settings page, read at runtime by `settings::region_offset` (no magic address). */
+PROVIDE(__settings_base = ORIGIN(SETTINGS));

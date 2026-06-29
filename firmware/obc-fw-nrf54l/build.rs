@@ -28,16 +28,21 @@ use std::process::Command;
 /// `SHARED` page is unchanged, so the control-block + ping-pong-buffer addresses did not move.) The
 /// M33 reaches the FLPR region only by hardcoded address (`memcpy` + the handshake word), never via
 /// the linker, so shrinking `RAM` is all that's needed here. Mirrors the region table in
-/// `src/flpr/flpr.ld` and `firmware/docs/ls021-flpr.md`.
+/// `src/flpr/flpr.ld` and `firmware/docs/ls021-flpr.md`. It *also* carves the top **4 KB of FLASH**
+/// into the named `SETTINGS` region for the persistent settings store (#193) — identical to
+/// `memory-default.x`, so keep the two in sync.
 const FLPR_MEMORY_X: &str = "\
 MEMORY
 {
-    FLASH    : ORIGIN = 0x00000000, LENGTH = 1524K
+    FLASH    : ORIGIN = 0x00000000, LENGTH = 1520K
+    SETTINGS : ORIGIN = 0x0017C000, LENGTH = 4K    /* persistent settings page (#193) — top of RRAM */
     RAM      : ORIGIN = 0x20000000, LENGTH = 244K   /* M33 .data/.bss/stack */
     /* Reserved for the FLPR (not linked by the M33; see src/flpr/flpr.ld):
          FLPR_RAM 0x2003D000 .. 0x2003F000  (8K)   FLPR image + stack (INITPC = 0x2003D000)
          SHARED   0x2003F000 .. 0x20040000  (4K)   cross-core handshake word */
 }
+/* Base of the carved settings page (#193) — kept in sync with memory-default.x. */
+PROVIDE(__settings_base = ORIGIN(SETTINGS));
 ";
 
 fn main() {
