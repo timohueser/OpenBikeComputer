@@ -14,7 +14,8 @@
 use embassy_nrf::gpio::Output;
 use embassy_nrf::spim::Spim;
 use embassy_time::Delay;
-use embedded_graphics::prelude::Size;
+use embedded_graphics::prelude::*;
+use embedded_graphics::primitives::Rectangle;
 use obc_platform::{composite_overlay_window, Band, Panel};
 
 use super::{DisplayDriver, OverlayRegion};
@@ -72,16 +73,11 @@ impl DisplayDriver for Display {
         let Display { panel, fb } = self;
         let fb: &[u8] = fb;
         panel.flush_window(region.x0, region.y0, region.w, region.rows, |scratch| {
-            composite_overlay_window(
-                fb,
-                Size::new(WIDTH as u32, HEIGHT as u32),
-                region.x0,
-                region.y0,
-                region.w,
-                region.rows,
-                scratch,
-                draw_overlay,
+            let window = Rectangle::new(
+                Point::new(region.x0 as i32, region.y0 as i32),
+                Size::new(region.w as u32, region.rows as u32),
             );
+            composite_overlay_window(fb, Size::new(WIDTH as u32, HEIGHT as u32), window, scratch, draw_overlay);
         });
         true
     }
