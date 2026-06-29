@@ -1424,9 +1424,8 @@ async fn main(_spawner: Spawner) {
         // share the one high-priority executor (COM must keep alternating during the blocking push).
         //
         // ⚠️ **Gate/BSP pins relocated off the SD/VCOM bus for the integration.** These five P1 lines
-        // **must match `src/flpr/flpr_pingpong.c`'s masks and the bring-up bin's pins** — confirm each
-        // is broken out on your DK and remap all three together if not (the source bus, BCK, and COM
-        // stay on P2 exactly as the bring-up bin has them).
+        // **must match `src/flpr/flpr_pingpong.c`'s masks** — confirm each is broken out on your DK and
+        // remap all three together if not (the source bus, BCK, and COM stay on P2).
         #[cfg(not(feature = "tft"))]
         let display = {
             // Gate + frame lines (P1) — GSP P1.00, GCK P1.01, GEN P1.12, INTB P1.10; held configured.
