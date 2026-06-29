@@ -61,6 +61,7 @@ use obc_platform::{composite_overlay_window, ls021_pack_row, Band, Panel};
 use obc_reader::rgb565_to_device64;
 
 use embedded_graphics::prelude::*;
+use embedded_graphics::primitives::Rectangle;
 
 /// The FLPR program image, cross-compiled by `build.rs` into `$OUT_DIR/flpr.bin`.
 static FLPR_BLOB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/flpr.bin"));
@@ -470,16 +471,8 @@ impl<'b> Ls021Flpr<'b> {
         //    holds the composited region; `fb` is untouched. This is the exact step the ST7789 backend
         //    runs — only the re-quantising wire-pack below is LS021-specific.
         let mut win = [0u16; MAX_OVERLAY_COLS * MAX_OVERLAY_ROWS];
-        composite_overlay_window(
-            self.fb,
-            Size::new(FB_W as u32, FB_H as u32),
-            x0 as u16,
-            y0 as u16,
-            w as u16,
-            rows as u16,
-            &mut win,
-            draw_overlay,
-        );
+        let window = Rectangle::new(Point::new(x0 as i32, y0 as i32), Size::new(w as u32, rows as u32));
+        composite_overlay_window(self.fb, Size::new(FB_W as u32, FB_H as u32), window, &mut win, draw_overlay);
 
         // 2. Drive the full-width span `[y0, y0+rows)`: each dirty row = the clean `fb` columns with the
         //    `[x0, x0+w)` columns replaced by the composited window (re-quantised to device-64). One

@@ -143,32 +143,31 @@ impl DrawTarget for Band<'_> {
 /// region; `fb` (the resident clean map, the source of truth) is **never** written, so the overlay
 /// costs no map re-render to clear again.
 ///
-/// Backend-agnostic: a column-addressable panel (ST7789) DMAs `scratch` straight to its `(x0, y0)`
-/// window; a row-addressed panel (LS021/FLPR) re-quantizes `scratch` back into its full-width dirty
-/// rows. The only per-panel code left is that final wire-pack.
+/// Backend-agnostic: a column-addressable panel (ST7789) DMAs `scratch` straight to its `window`; a
+/// row-addressed panel (LS021/FLPR) re-quantizes `scratch` back into its full-width dirty rows. The
+/// only per-panel code left is that final wire-pack.
 ///
-/// `fb` is the resident device-64 (`0b00_RR_GG_BB`) plane, `frame` its full size. Panics if `scratch`
-/// is shorter than `w * rows` or the window runs past `frame` (a caller wiring bug).
+/// `fb` is the resident device-64 (`0b00_RR_GG_BB`) plane, `frame` its full size, `window` the dirty
+/// rectangle within it. Panics if `scratch` is shorter than `window`'s area or the window runs past
+/// `frame` (a caller wiring bug).
 pub fn composite_overlay_window(
     fb: &[u8],
     frame: Size,
-    x0: u16,
-    y0: u16,
-    w: u16,
-    rows: u16,
+    window: Rectangle,
     scratch: &mut [u16],
     draw_overlay: &mut dyn FnMut(&mut Band),
 ) {
-    let fw = frame.width as usize;
-    let (x0u, y0u, wu, rowsu) = (x0 as usize, y0 as usize, w as usize, rows as usize);
-    for row in 0..rowsu {
+    let (x0, y0) = (window.top_left.x as u16, window.top_left.y as u16);
+    let (w, rows) = (window.size.width as u16, window.size.height as u16);
+    let (fw, x0u, y0u, wu) = (frame.width as usize, x0 as usize, y0 as usize, w as usize);
+    for row in 0..rows as usize {
         let fb_base = (y0u + row) * fw + x0u;
         let dst = &mut scratch[row * wu..row * wu + wu];
         for (px, &byte) in dst.iter_mut().zip(&fb[fb_base..fb_base + wu]) {
             *px = device64_to_rgb565(byte);
         }
     }
-    let mut band = Band::new_window(&mut scratch[..wu * rowsu], frame, x0, y0, w, rows);
+    let mut band = Band::new_window(&mut scratch[..wu * rows as usize], frame, x0, y0, w, rows);
     draw_overlay(&mut band);
 }
 
@@ -271,7 +270,8 @@ mod tests {
         let frame = Size::new(8, 8);
         // Window cols [4,8) × rows [2,6); the drawer paints frame-absolute (5,3) red.
         let mut scratch = [0u16; 4 * 4];
-        composite_overlay_window(&fb, frame, 4, 2, 4, 4, &mut scratch, &mut |band| {
+        let window = Rectangle::new(Point::new(4, 2), Size::new(4, 4));
+        composite_overlay_window(&fb, frame, window, &mut scratch, &mut |band| {
             band.fill_solid(&Rectangle::new(Point::new(5, 3), Size::new(1, 1)), rgb(0xF800)).ok();
         });
 
