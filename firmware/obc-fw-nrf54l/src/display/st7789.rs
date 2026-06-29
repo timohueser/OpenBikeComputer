@@ -73,8 +73,10 @@ impl DisplayDriver for Display {
                 y0 += h;
             }
         });
+        // Per-stage push breakdown (per present) — `debug` so the loop's frame line stays the one
+        // info-level per-frame log; opt in with `DEFMT_LOG=debug` for push perf-tuning.
         let (fill_us, pack_us, spi_us) = st7789::push_timers();
-        defmt::info!("ST7789 push: fill {=u32} + pack {=u32} + spi {=u32} us", fill_us, pack_us, spi_us);
+        defmt::debug!("ST7789 push: fill {=u32} + pack {=u32} + spi {=u32} us", fill_us, pack_us, spi_us);
         true
     }
 
