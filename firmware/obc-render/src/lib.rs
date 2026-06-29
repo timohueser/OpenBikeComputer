@@ -507,6 +507,11 @@ pub struct RenderStats {
     pub collect_us: u32,
     pub sort_us: u32,
     pub draw_us: u32,
+    /// Wall time (µs) to compute + stroke the **Home screensaver's contour backdrop** (the
+    /// marching-squares pass), filled by `HomeScreen::draw` from the caller's [`Clock`]; `0` on
+    /// every non-Home frame and on the untimed [`NoopClock`] path. A diagnostic for the one
+    /// screen that does heavier per-draw arithmetic than a plain chrome redraw.
+    pub contour_us: u32,
 }
 
 /// One visible feature's draw metadata plus the ranges locating its geometry in

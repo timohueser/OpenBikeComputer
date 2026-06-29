@@ -112,6 +112,11 @@ pub struct AppState {
     /// map, so the orientation follows the compass instead of snapping to north; only
     /// adopted on ticks where it would actually drive the rotation (see [`App::tick`]).
     pub compass_deg: Option<f32>,
+    /// Battery charge, 0–100 %. [`App::tick`] writes it from the [`FuelGauge`](crate::FuelGauge)
+    /// each tick (a fixed-value stub until the real PMIC gauge is wired); the Home screen draws
+    /// the gauge from it, colouring the filled bars by level (red < 20 %, green > 80 %, amber
+    /// between) and the empty bars dim grey.
+    pub battery_pct: u8,
 }
 
 impl AppState {
@@ -128,6 +133,9 @@ impl AppState {
             user_fix: None,
             pan: None,
             compass_deg: None,
+            // Stand-in until a [`FuelGauge`](crate::FuelGauge) feeds a real reading; the host's
+            // boot stub (75 % on device) overwrites it on the first tick.
+            battery_pct: 75,
         }
     }
 
@@ -310,6 +318,7 @@ const GESTURE_BUF: usize = 16;
 ///         altimeter: Some(&mut baro),
 ///         compass: Some(&mut compass),
 ///         track: Some(&mut track_log),
+///         fuel: Some(&mut fuel_gauge),
 ///     };
 ///     app.tick(RideClock(now_ms), sensors, route.as_ref());
 ///     app.handle_input(InputClock(now_ms), &mut input_source); // encoder + Back → gestures
@@ -393,7 +402,18 @@ pub struct App {
     /// each frame via [`set_hold_progress`](App::set_hold_progress). Cleared back when the host
     /// reports `0` (hold released), so it tracks the live hold either way.
     hold_progress_override: Option<f32>,
+    /// Millis of the last battery [`FuelGauge`](crate::FuelGauge) poll, or `None` before the
+    /// first. The gauge is read on a slow cadence ([`BATTERY_POLL_MS`]) — *not* every tick — so a
+    /// real PMIC read never spins the I²C bus at the frame rate; battery charge changes far too
+    /// slowly to want more. See [`tick`](App::tick).
+    last_battery_poll_ms: Option<u32>,
 }
+
+/// How often [`App::tick`] reads the battery [`FuelGauge`](crate::FuelGauge). Battery state of
+/// charge drifts over minutes/hours, so a ~30 s cadence keeps the Home gauge fresh while reading
+/// the PMIC a few times a minute at most — the per-frame poll would be pure waste (and bus
+/// traffic on a real gauge). Independent of redraws: an unchanged reading repaints nothing.
+const BATTERY_POLL_MS: u32 = 30_000;
 
 impl App {
     /// Build the app straight onto the live map: the stack is `[Home, Map]`, with Home
@@ -433,6 +453,7 @@ impl App {
             settings: Settings::default(),
             settings_dirty: false,
             hold_progress_override: None,
+            last_battery_poll_ms: None,
         }
     }
 
@@ -485,6 +506,7 @@ impl App {
             addr_of_mut!((*slot).settings).write(Settings::default());
             addr_of_mut!((*slot).settings_dirty).write(false);
             addr_of_mut!((*slot).hold_progress_override).write(None);
+            addr_of_mut!((*slot).last_battery_poll_ms).write(None);
         }
     }
 
@@ -553,7 +575,26 @@ impl App {
             self.map_dirty = true;
         }
 
-        let Sensors { loc, altimeter, compass, track } = sensors;
+        let Sensors { loc, altimeter, compass, track, fuel } = sensors;
+        // Battery state of charge from the PMIC fuel gauge, on a slow ~30 s cadence — *not* every
+        // tick, so a real I²C read never spins at the frame rate (battery charge changes far too
+        // slowly to want more). And a reading only repaints the Home screensaver — the one screen
+        // that draws the gauge — when the level **actually changes**: an unchanged reading (the
+        // common case, and always so for a constant stub) costs nothing and redraws nothing. The
+        // `shows_live_data` gate below is for the riding views, not Home, so dirty it here.
+        let battery_due = self.last_battery_poll_ms.is_none_or(|last| now_ms.wrapping_sub(last) >= BATTERY_POLL_MS);
+        if battery_due {
+            self.last_battery_poll_ms = Some(now_ms);
+            if let Some(soc) = fuel.and_then(|f| f.poll()) {
+                if soc != self.state.battery_pct {
+                    self.state.battery_pct = soc;
+                    let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
+                    if matches!(self.stack.get(base), Some(Screen::Home(_))) {
+                        self.map_dirty = true;
+                    }
+                }
+            }
+        }
         // Barometric altitude on its own cadence → climb + the elevation stamped on the log.
         // Polled before the fix so a point logged this tick carries the freshest altitude.
         if let Some(altimeter) = altimeter {
@@ -648,6 +689,16 @@ impl App {
         &self.catalog
     }
 
+    /// Re-roll the Home screensaver's contour pattern to `seed` (see
+    /// [`HomeScreen::reseed`](crate::screen::HomeScreen::reseed)). The app does this itself when
+    /// the stack returns to Home; this is the host-facing hook for previewing a specific pattern
+    /// (the sim's `--home-seed`).
+    pub fn reseed_home(&mut self, seed: u32) {
+        if let Some(Screen::Home(home)) = self.stack.first_mut() {
+            home.reseed(seed);
+        }
+    }
+
     /// Seed the live settings from the host's persistent store at boot. The host calls this
     /// once after construction with [`SettingsStore::load`](crate::hal::SettingsStore::load)'s
     /// value (or [`Settings::default`] when nothing is stored); it leaves the dirty flag clear,
@@ -733,7 +784,18 @@ impl App {
         let App { state, activity, settings, catalog, stack, now_ms, .. } = self;
         let mut cx = Ctx { state, activity, settings, routes: catalog.as_slice(), now_ms: *now_ms };
         let t = stack.last_mut().expect("the stack always has the Home root").handle(g, &mut cx);
+        let depth_before = stack.len();
         screen::apply(stack, t);
+        // Returning to the bare Home root (the stack shrank back to just `[Home]`) re-opens the
+        // screensaver — re-roll its contour seed so the topo peaks drift a little for this visit.
+        // Gated on the *edge* (was deeper, now 1) so it fires once per return, never on a Home
+        // gesture that stays on Home; and it's in `apply_gesture`, so a clock/battery re-render
+        // (which never touches the stack) leaves the pattern put — the behaviour the look wants.
+        if stack.len() == 1 && depth_before > 1 {
+            if let Some(Screen::Home(home)) = stack.first_mut() {
+                home.reseed(*now_ms);
+            }
+        }
         if self.settings != settings_before {
             self.settings_dirty = true;
         }
@@ -983,6 +1045,35 @@ mod tests {
         }
     }
 
+    /// The Home root's current backdrop seed.
+    fn home_seed(app: &App) -> u32 {
+        match app.stack.first() {
+            Some(Screen::Home(h)) => h.seed(),
+            _ => panic!("Home is always the stack root"),
+        }
+    }
+
+    /// The backdrop re-rolls when the stack *returns* to the bare Home root — once per return, on
+    /// the edge — and stays put for any gesture that doesn't reach Home. (A clock/battery re-render
+    /// goes through `tick`/render, never `apply_gesture`, so by construction it can't reseed.)
+    #[test]
+    fn returning_to_home_rerolls_the_backdrop_seed() {
+        let mut app = App::new_idle(AppState::new(0, 0, 0.05)); // [Home], the canonical seed
+        assert_eq!(home_seed(&app), 0, "boot starts on the un-jittered massif");
+
+        app.now_ms = 4242;
+        app.apply_gesture(Gesture::BackHold); // Home → Menu (stack grows)
+        assert_eq!(home_seed(&app), 0, "going deeper than Home does not reseed");
+
+        app.apply_gesture(Gesture::Back); // Menu → Pop → back to [Home]
+        assert_eq!(home_seed(&app), 4242, "returning to Home re-rolls from the wall clock");
+
+        // A gesture Home ignores leaves the stack — and so the pattern — untouched.
+        app.now_ms = 9999;
+        app.apply_gesture(Gesture::Turn(1));
+        assert_eq!(home_seed(&app), 4242, "a no-op gesture on Home keeps the same pattern");
+    }
+
     /// A compass that always reports the same heading.
     struct ConstCompass(f32);
     impl CompassSource for ConstCompass {
@@ -1048,7 +1139,7 @@ mod tests {
         let mut compass = ConstCompass(compass_deg);
         app.tick(
             RideClock(1000),
-            Sensors { loc: &mut loc, altimeter: None, compass: Some(&mut compass), track: None },
+            Sensors { loc: &mut loc, altimeter: None, compass: Some(&mut compass), track: None, fuel: None },
             None,
         );
     }
@@ -1121,7 +1212,7 @@ mod tests {
         let mut alt = OneAlt(Some(alt_m));
         app.tick(
             RideClock(now_ms),
-            Sensors { loc: &mut loc, altimeter: Some(&mut alt), compass: None, track: None },
+            Sensors { loc: &mut loc, altimeter: Some(&mut alt), compass: None, track: None, fuel: None },
             None,
         );
     }

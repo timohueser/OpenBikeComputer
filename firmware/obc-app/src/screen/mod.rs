@@ -456,6 +456,10 @@ pub mod palette {
     pub const RULE: u16 = rgb565(180, 170, 100); // → (170,170,85) tan
     pub const AMBER: u16 = rgb565(227, 165, 43); // → (255,170,0) accent
     pub const WARNING: u16 = rgb565(192, 73, 46); // → (255,85,0) warning
+    /// Faint neutral grey — the panel's one mid-grey, over the near-black [`HUD`]. Used for the
+    /// Home screensaver's code-generated contour lines and its empty battery cells: dim enough to
+    /// sit behind the clock without competing, bright enough to read as fine topo lines.
+    pub const CONTOUR: u16 = rgb565(96, 96, 96); // → (85,85,85) grey
     /// Green — the "on" state of a settings toggle pill (black/ink = off). The one green on
     /// the panel, kept for this single semantic so it always reads as "enabled".
     pub const ON: u16 = rgb565(0, 170, 0); // → (0,170,0) green

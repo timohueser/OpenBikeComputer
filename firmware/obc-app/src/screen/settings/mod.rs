@@ -182,6 +182,7 @@ fn cap_height(font: Font) -> i32 {
         Font::Label => 18,
         Font::Body => 22,
         Font::Display => 26,
+        Font::Huge => 52, // 2× Display; the Home clock only, never a stepper field
     }
 }
 

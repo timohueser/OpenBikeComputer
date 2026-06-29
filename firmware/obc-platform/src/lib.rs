@@ -26,6 +26,8 @@
 //!   [`LocationSource`](obc_app::LocationSource) — the `debug-usb`-off fallback fake GPS that
 //!   walks a slow square loop (always compiled, *not* behind `debug-usb`, since it *is* the
 //!   debug-usb-off path).
+//! - [`fuel`] — [`StubFuelGauge`], a fixed-level [`FuelGauge`](obc_app::FuelGauge) stand-in
+//!   until the nPM1300 PMIC fuel gauge is wired in.
 //!
 //! ## Two-plane architecture — input/overlay vs. map (issue #48)
 //!
@@ -82,6 +84,8 @@ pub mod ls021_wire;
 // (issue #122). The boards that ship (nRF54L and beyond) have no hardware scan-out, so they push a
 // frame band-by-band over SPI/DMA; `Band` lets a whole-frame generator draw each band in absolute
 // coordinates while each board's `DisplayDriver` owns the actual band push.
+// Stand-in battery fuel gauge — a fixed level until the nPM1300 PMIC gauge is wired in.
+pub mod fuel;
 pub mod panel;
 pub mod sd;
 // Always compiled — the synthetic GPS is the `debug-usb`-OFF fallback, so it must exist without
@@ -90,6 +94,7 @@ pub mod synth;
 
 pub use button_input::{ButtonInput, Timing};
 pub use framebuffer::{device64_to_rgb565, FbDevice64, Framebuffer565};
+pub use fuel::StubFuelGauge;
 pub use ls021_wire::pack_row as ls021_pack_row;
 pub use panel::{composite_overlay_window, Band};
 pub use sd::{SdByteSink, SdByteSource, SdTrackSink};
