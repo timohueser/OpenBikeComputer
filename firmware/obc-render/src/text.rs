@@ -33,6 +33,9 @@ pub enum Font {
     Body,
     /// Terminus 16×32 (cap ≈ 2.71 mm) — glanceable numbers (speed, the big stat tiles).
     Display,
+    /// Terminus 32×64 (cap ≈ 5.4 mm) — the one oversized readout: the Home-screen clock.
+    /// Pixel-doubled from `Display` (see [`font_data::TER_U64B`](crate::font_data)).
+    Huge,
 }
 
 impl Font {
@@ -43,6 +46,7 @@ impl Font {
             Font::Label => &font_data::TER_U24B,
             Font::Body => &font_data::TER_U28B,
             Font::Display => &font_data::TER_U32B,
+            Font::Huge => &font_data::TER_U64B,
         }
     }
 
