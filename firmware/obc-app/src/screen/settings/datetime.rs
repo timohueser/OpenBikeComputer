@@ -197,10 +197,20 @@ impl DateTimeScreen {
                     info_row(&mut cv, area, "GPS fix", &v);
                 }
                 RowKind::LocalTime => {
-                    // Local = UTC + offset, so this is what the offset stepper moves.
-                    let (lh, lm) = local_time_hm(s);
+                    // Local = UTC + offset, so this is what the offset stepper moves. The offset can
+                    // carry across midnight, so take the whole local stamp — *date and time* — from
+                    // `local_clock`, not the raw UTC date beside an offset-shifted hour.
+                    let local = s.local_clock();
                     let mut v: heapless::String<24> = heapless::String::new();
-                    let _ = write!(v, "{} {} {}  {:02}:{:02}", s.clock.year, s.clock.month_name(), s.clock.day, lh, lm);
+                    let _ = write!(
+                        v,
+                        "{} {} {}  {:02}:{:02}",
+                        local.year,
+                        local.month_name(),
+                        local.day,
+                        local.hour,
+                        local.minute
+                    );
                     info_row(&mut cv, area, "Local time", &v);
                 }
                 RowKind::Offset => {
@@ -328,13 +338,6 @@ fn fmt_offset(min: i16) -> heapless::String<8> {
     s
 }
 
-/// The local time-of-day = the UTC anchor (`clock`) plus the offset, wrapped within the day. The
-/// date roll across midnight is elided in this compact readout (a stub until real GPS time lands).
-fn local_time_hm(s: &Settings) -> (u8, u8) {
-    let total = (s.clock.hour as i32 * 60 + s.clock.minute as i32 + s.utc_offset_min as i32).rem_euclid(24 * 60);
-    ((total / 60) as u8, (total % 60) as u8)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -401,16 +404,39 @@ mod tests {
         assert!(matches!(run(&mut scr, &mut s, Gesture::Back), Transition::Pop), "back again exits");
     }
 
-    /// The UTC offset shifts the **local** time, not the UTC anchor (the fix the user reported).
+    /// The UTC offset shifts the **local** time shown in the Local time row, not the UTC anchor
+    /// (the fix the user reported) — the row now reads the whole `local_clock`.
     #[test]
     fn offset_shifts_local_time_not_utc() {
         let mut s = Settings { gps_time: true, ..Settings::default() };
         s.clock.hour = 12;
         s.clock.minute = 0;
         s.utc_offset_min = 0;
-        assert_eq!(local_time_hm(&s), (12, 0), "at +00:00 local matches the UTC anchor");
+        let local = s.local_clock();
+        assert_eq!((local.hour, local.minute), (12, 0), "at +00:00 local matches the UTC anchor");
         s.utc_offset_min = 120; // +02:00
-        assert_eq!(local_time_hm(&s), (14, 0), "offset moves local forward; the 12:00 UTC anchor is unchanged");
+        let local = s.local_clock();
+        assert_eq!((local.hour, local.minute), (14, 0), "offset moves local forward");
         assert_eq!((s.clock.hour, s.clock.minute), (12, 0), "the stored UTC anchor did not move");
+    }
+
+    /// The Local time row's *date* rolls with the offset across midnight (issue #207, #2): it no
+    /// longer prints the raw UTC date beside an offset-shifted hour.
+    #[test]
+    fn local_time_date_rolls_across_midnight() {
+        let mut s = Settings { gps_time: true, ..Settings::default() };
+        s.clock.year = 2025;
+        s.clock.month = 6;
+        s.clock.day = 29;
+        s.clock.hour = 23;
+        s.clock.minute = 0;
+        s.utc_offset_min = 120; // 23:00 UTC +02:00 → Jun 30 01:00 local
+        let local = s.local_clock();
+        assert_eq!((local.month, local.day, local.hour), (6, 30, 1), "forward offset advances the local date");
+        s.clock.day = 29;
+        s.clock.hour = 1;
+        s.utc_offset_min = -120; // 01:00 UTC −02:00 → Jun 28 23:00 local
+        let local = s.local_clock();
+        assert_eq!((local.month, local.day, local.hour), (6, 28, 23), "backward offset rolls the local date back");
     }
 }

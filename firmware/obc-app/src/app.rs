@@ -462,7 +462,7 @@ impl App {
             settings: Settings::default(),
             // The wall clock starts from the same default set-point at the boot origin; the host's
             // `set_settings` re-stamps it from the persisted clock a moment later.
-            wall_clock: WallClock::new(Settings::default().clock),
+            wall_clock: WallClock::new(Settings::default().local_clock()),
             settings_dirty: false,
             hold_progress_override: None,
             last_battery_poll_ms: None,
@@ -516,7 +516,7 @@ impl App {
             // Force the host's first frame: nothing has been drawn yet, so the map is dirty.
             addr_of_mut!((*slot).map_dirty).write(true);
             addr_of_mut!((*slot).settings).write(Settings::default());
-            addr_of_mut!((*slot).wall_clock).write(WallClock::new(Settings::default().clock));
+            addr_of_mut!((*slot).wall_clock).write(WallClock::new(Settings::default().local_clock()));
             addr_of_mut!((*slot).settings_dirty).write(false);
             addr_of_mut!((*slot).hold_progress_override).write(None);
             addr_of_mut!((*slot).last_battery_poll_ms).write(None);
@@ -718,9 +718,11 @@ impl App {
     /// so seeding the boot value never triggers a needless write-back.
     pub fn set_settings(&mut self, settings: Settings) {
         self.settings = settings;
-        // Stamp the wall clock to the persisted set-point as of now (boot millis), so it resumes
-        // ticking from the stored time rather than the `new`/`init` default.
-        self.wall_clock.set(self.settings.clock, self.now_ms);
+        // Stamp the wall clock to the persisted *local* set-point as of now (boot millis), so it
+        // resumes ticking from the stored time rather than the `new`/`init` default. `local_clock`
+        // folds in the UTC offset when the clock is GPS-stamped (see [`Settings::local_clock`]), so
+        // the Home clock shows local time, not the raw UTC anchor.
+        self.wall_clock.set(self.settings.local_clock(), self.now_ms);
         self.settings_dirty = false;
     }
 
@@ -845,11 +847,13 @@ impl App {
         }
         if self.settings != settings_before {
             self.settings_dirty = true;
-            // A clock set-point edit re-stamps the wall clock so it resumes ticking from the new
-            // value (the GPS-time path will re-stamp the same way). Only an actual `clock` change —
-            // flipping units or the GPS interval leaves the running clock and its epoch alone.
-            if self.settings.clock != settings_before.clock {
-                self.wall_clock.set(self.settings.clock, self.now_ms);
+            // A change to the *local* set-point re-stamps the wall clock so it resumes ticking from
+            // the new value: the manual clock edit, but also — in GPS mode — a UTC-offset turn or a
+            // GPS-clock toggle, both of which shift local time (`local_clock` folds the offset in).
+            // Flipping units or the GPS interval leaves the local clock and its epoch alone.
+            let local_now = self.settings.local_clock();
+            if local_now != settings_before.local_clock() {
+                self.wall_clock.set(local_now, self.now_ms);
             }
         }
     }
@@ -1395,6 +1399,24 @@ mod tests {
         assert_eq!(app.wall_clock_now(), edited, "the edit re-stamped the clock to the new set-point");
         app.now_ms += 60_000;
         assert_eq!(app.wall_clock_now().minute, (edited.minute + 1) % 60, "ticks on from the new stamp");
+    }
+
+    /// In GPS mode the Home wall clock shows **local** time — the UTC anchor shifted by the offset
+    /// — so it agrees with the Date & Time screen's "Local time" row instead of trailing it by the
+    /// whole offset (issue #207).
+    #[test]
+    fn gps_mode_wall_clock_shows_local_time() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        let seeded = crate::settings::Settings {
+            gps_time: true,
+            clock: DateTime { year: 2026, month: 6, day: 29, hour: 12, minute: 0 }, // the UTC anchor
+            utc_offset_min: 120,                                                    // +02:00
+            ..Default::default()
+        };
+        app.set_settings(seeded);
+        let now = app.wall_clock_now();
+        assert_eq!((now.hour, now.minute), (14, 0), "Home shows local = UTC + offset, not the raw UTC anchor");
+        assert_eq!(now, seeded.local_clock(), "and it matches the local_clock the Local time row reads");
     }
 
     /// On the Home screensaver, `advance_animations` self-dirties exactly once per minute as the
