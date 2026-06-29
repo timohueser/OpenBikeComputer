@@ -144,25 +144,18 @@ use embassy_time::Delay;
 #[cfg(feature = "tft")]
 use st7789::St7789;
 
-// The display panel + the banded `Panel` push seam, the per-band/per-window frame-absolute draw
-// view (`Band` — the glass-demo draws the whole frame through it; the map path composites the hold
-// bulge through it), and its frame `Size` are common to both builds.
-//
 // `glass-demo` is an ST7789 build, so it pulls in `tft` (see Cargo.toml) — that's why every
 // ST7789-backend `cfg` below keys on `feature = "tft"` alone and the rest of the file can treat
 // `not(feature = "tft")` as "the default FLPR/LS021 path."
-
-// The frame-absolute draw view `Band` is used by every build — the glass-demo draws the whole frame
-// through it, and the `present_overlay` drawer paints the hold bulge into it on both map panels
-// (issue #163). `Size` (the frame size for `Band::new_window`) + the banded `Panel` trait are the
-// ST7789 / glass-demo path's: the ST7789 map composites the bulge window + bands the framebuffer to
-// the panel, and the glass-demo draws bands through `Panel`; the FLPR path renders device-64 straight
-// into its plane (no banding) and composites inside `Ls021Flpr::push_overlay`.
-#[cfg(feature = "tft")]
-use embedded_graphics::prelude::Size;
+//
+// The frame-absolute draw view `Band` is used by every build — both map backends' `present_overlay`
+// drawers paint the hold bulge into it (issue #163), and the glass-demo draws the whole frame through
+// it. The banded `Panel` trait + its frame `Size` are now **glass-demo-only** in `main.rs`: the
+// ST7789 map's banding + bulge composite moved behind the seam into `display::st7789` (issue #174), so
+// the only remaining direct `Panel` user here is the glass-demo's band-by-band `show` loop.
 use obc_platform::Band;
-#[cfg(feature = "tft")]
-use obc_platform::Panel;
+#[cfg(feature = "glass-demo")]
+use {embedded_graphics::prelude::Size, obc_platform::Panel};
 
 // N4 map path (#125): the shared app, the streamed-map reader + its `.bss` cache, and the
 // device-native RGB222 framebuffer the renderer draws into (`color_fn` = identity Rgb565; the
@@ -180,6 +173,10 @@ use core::cell::RefCell;
 use core::mem::MaybeUninit;
 #[cfg(not(feature = "glass-demo"))]
 use display::{DisplayDriver, OverlayRegion};
+// The ST7789 `Display` backend (panel + framebuffer) now lives behind the seam in `display::st7789`
+// (issue #174); the map plane builds it into [`BUS`] and drives it only through `DisplayDriver`.
+#[cfg(all(not(feature = "glass-demo"), feature = "tft"))]
+use display::Display;
 #[cfg(not(feature = "glass-demo"))]
 use embassy_executor::InterruptExecutor;
 #[cfg(not(feature = "glass-demo"))]
@@ -188,8 +185,6 @@ use embassy_nrf::gpio::{Input, Pull};
 use embassy_nrf::interrupt;
 #[cfg(not(feature = "glass-demo"))]
 use embassy_nrf::interrupt::{InterruptExt, Priority};
-#[cfg(all(not(feature = "glass-demo"), feature = "tft"))]
-use embassy_nrf::spim::Spim;
 #[cfg(not(feature = "glass-demo"))]
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 #[cfg(not(feature = "glass-demo"))]
@@ -206,10 +201,6 @@ use embedded_graphics::pixelcolor::{raw::RawU16, Rgb565};
 use obc_app::{App, AppState, Gesture, InputClock, InputEvent, InputPlane, InputSource, RideClock, Sensors, TrackSink};
 #[cfg(not(feature = "glass-demo"))]
 use obc_platform::{ButtonInput, FbDevice64};
-// `device64_to_rgb565` expands the RGB222 framebuffer to RGB565 for the ST7789 bulge composite +
-// overlay window — the FLPR map path packs device-64 straight to the wire, so it isn't needed there.
-#[cfg(all(not(feature = "glass-demo"), feature = "tft"))]
-use obc_platform::device64_to_rgb565;
 #[cfg(not(feature = "glass-demo"))]
 use obc_reader::{MapCache, Reader};
 #[cfg(not(feature = "glass-demo"))]
@@ -430,104 +421,10 @@ async fn idle_blink(led: &mut Output<'static>) -> ! {
 // fluid-but-unlocked framebuffer tore the bulge. The `InputPlane` both planes draw the bulge from is
 // behind a brief blocking mutex; lock order is always BUS-outer, INPUT_PLANE-inner.
 
-/// The concrete display panel type behind [`BUS`]: the ST7789 over the SERIAL00 SPIM, its three GPIO
-/// control lines, and the `'static` RGB565 band scratch. Named so [`Display`] + the mutex can be
-/// `'static`. (`Spim`/`Output` aren't generic over the instance, so this fully specifies the type.)
-/// ST7789-only — the FLPR build's map plane owns its `Ls021Flpr` panel directly (no two-plane bus
-/// mutex, since there is no partial-window overlay push to serialise against).
-#[cfg(all(not(feature = "glass-demo"), feature = "tft"))]
-type DisplayPanel = St7789<'static, Spim<'static>, Output<'static>, Output<'static>, Output<'static>, Delay>;
-
-/// The shared display the two planes split: the ST7789 panel + the resident RGB222 framebuffer it
-/// pushes. Both reach both only through [`BUS`], so the map render's framebuffer write is serialised
-/// against the input plane's overlay-window read — the bulge backdrop is never torn.
-#[cfg(all(not(feature = "glass-demo"), feature = "tft"))]
-struct Display {
-    panel: DisplayPanel,
-    fb: &'static mut [u8],
-}
-
-#[cfg(all(not(feature = "glass-demo"), feature = "tft"))]
-impl DisplayDriver for Display {
-    fn fb_mut(&mut self) -> &mut [u8] {
-        self.fb
-    }
-
-    /// Push the whole RGB222 framebuffer to the ST7789, band by band, **straight from RGB222 to the
-    /// panel's 12-bit RGB444 wire** ([`flush_band_rgb222`](st7789::St7789::flush_band_rgb222) — the
-    /// fast path, no RGB565 intermediate). The transient hold bulge is **not** drawn here: it rides
-    /// its own overlay re-push on the input plane (issue #126/#163), so the map present stays a single
-    /// clean pack with no overlay coupling. ST7789 GRAM writes don't fault, so always `true`.
-    fn present(&mut self) -> bool {
-        let Display { panel, fb } = self;
-        st7789::reset_push_timers();
-        panel.begin_frame();
-        let rows = panel.band_rows();
-        let mut y0 = 0u16;
-        while y0 < HEIGHT {
-            let h = rows.min(HEIGHT - y0);
-            let row0 = y0 as usize * WIDTH as usize;
-            let n = WIDTH as usize * h as usize;
-            panel.flush_band_rgb222(y0, h, &fb[row0..row0 + n]);
-            y0 += h;
-        }
-        panel.end_frame();
-        let (fill_us, pack_us, spi_us) = st7789::push_timers();
-        defmt::info!("ST7789 push: fill {=u32} + pack {=u32} + spi {=u32} us", fill_us, pack_us, spi_us);
-        true
-    }
-
-    /// Re-push just the overlay rectangle: the ST7789 is column-addressable, so it addresses exactly
-    /// the `region` window (`flush_window`). Fill the scratch from the clean framebuffer backdrop
-    /// (RGB222 → RGB565), composite the bulge over it via `draw_overlay`, then DMA the window — no map
-    /// re-render, no torn frame (the caller holds the bus). GRAM writes don't fault, so always `true`.
-    fn present_overlay(&mut self, region: OverlayRegion, draw_overlay: &mut dyn FnMut(&mut Band)) -> bool {
-        let Display { panel, fb } = self;
-        let fb: &[u8] = fb;
-        panel.flush_window(region.x0, region.y0, region.w, region.rows, |scratch| {
-            let w = region.w as usize;
-            for row in 0..region.rows as usize {
-                let fb_row = (region.y0 as usize + row) * WIDTH as usize + region.x0 as usize;
-                let dst = &mut scratch[row * w..(row + 1) * w];
-                for (px, &byte) in dst.iter_mut().zip(&fb[fb_row..fb_row + w]) {
-                    *px = device64_to_rgb565(byte);
-                }
-            }
-            let mut band = Band::new_window(
-                scratch,
-                Size::new(WIDTH as u32, HEIGHT as u32),
-                region.x0,
-                region.y0,
-                region.w,
-                region.rows,
-            );
-            draw_overlay(&mut band);
-        });
-        true
-    }
-}
-
-/// The FLPR LS021 backend behind the same seam: the app renders into the resident plane, then this
-/// drives it in one masked full-frame push (the FLPR scans all 320 rows). The hold bulge is **not**
-/// composited here — it rides `present_overlay` (issue #163). A stalled FLPR returns `false` so the
-/// caller keeps the last frame and retries.
-#[cfg(not(feature = "tft"))]
-impl DisplayDriver for Ls021Flpr<'_> {
-    fn fb_mut(&mut self) -> &mut [u8] {
-        Ls021Flpr::fb_mut(self)
-    }
-    fn present(&mut self) -> bool {
-        self.push_frame()
-    }
-
-    /// Re-present the overlay rectangle's **rows** with the bulge composited (issue #163): the LS021
-    /// can't latch a sub-span of columns, so the FLPR rewrites the full-width rows `[y0, y0+rows)`
-    /// (only `[x0, x0+w)` carry the overlay) and fast-forwards the gate over the rest — see
-    /// [`push_overlay`](Ls021Flpr::push_overlay) for the stack-frugal, lock-once composite.
-    fn present_overlay(&mut self, region: OverlayRegion, draw_overlay: &mut dyn FnMut(&mut Band)) -> bool {
-        self.push_overlay(region.x0, region.y0, region.w, region.rows, draw_overlay)
-    }
-}
+// The two [`DisplayDriver`] backends now live behind the seam in their own modules (issue #174):
+// `display::st7789` (the `Display` panel + framebuffer, opt-in `tft`) and `display::ls021_flpr` (the
+// default FLPR backend). `main.rs` builds + drives whichever is compiled only through the seam — the
+// ST7789 `Display` (re-exported here) behind [`BUS`], the FLPR `Ls021Flpr` owned by the map plane.
 
 /// Bound of the input→map gesture channel. One frame yields a couple of gestures and the map plane
 /// drains it each loop, so even across a slow map push it never fills; `try_send` drops on the
