@@ -95,7 +95,7 @@ impl PowerScreen {
         super::row_label(&mut cv, r0, "GPS Fix", Some("interval"));
         let mut val: heapless::String<8> = heapless::String::new();
         let _ = write!(val, "{} s", rx.settings.fix_interval_s);
-        let (cw, ch) = (64, 26);
+        let (cw, ch) = (76, 32);
         let cell = rect(r0.top_left.x + r0.size.width as i32 - cw - 6, r0.top_left.y + (ROW_H - ch) / 2, cw, ch);
         super::stepper_field(&mut cv, cell, &val, editing, Font::Label);
 
@@ -105,7 +105,6 @@ impl PowerScreen {
         super::row_label(&mut cv, r1, "Power save", Some("low power"));
         super::toggle_slider(&mut cv, r1, rx.settings.power_saver);
 
-        super::back_hint(&mut cv, w, h, "press to edit");
         RenderStats::default()
     }
 }
