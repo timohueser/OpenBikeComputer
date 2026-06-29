@@ -21,7 +21,7 @@
 
 use embedded_graphics::{pixelcolor::Rgb565, prelude::*, primitives::Rectangle};
 
-use crate::framebuffer::Framebuffer565;
+use crate::framebuffer::{device64_to_rgb565, Framebuffer565};
 
 /// A banded display, pushed a few rows at a time. The board-agnostic seam between a whole-frame
 /// generator and a concrete panel's wire format + transport — the banded analog of a full-frame
@@ -132,6 +132,45 @@ impl DrawTarget for Band<'_> {
     }
 }
 
+/// Composite a transient overlay over the **clean RGB222 framebuffer backdrop** into `scratch`
+/// (issue #163) — the one piece of the partial-update path that is byte-for-byte the same on every
+/// banded backend, so it lives here beside [`Band`] rather than being re-implemented per panel.
+///
+/// Fills `scratch[..w * rows]` with the framebuffer window `[x0, x0+w) × [y0, y0+rows)` expanded
+/// device-64 → RGB565 ([`device64_to_rgb565`]), then runs `draw_overlay` over it through a
+/// frame-absolute [`Band::new_window`] — so the drawer paints the chrome (the hold bulge) in whole-
+/// frame coordinates and anything outside the window clips. On return `scratch` holds the composited
+/// region; `fb` (the resident clean map, the source of truth) is **never** written, so the overlay
+/// costs no map re-render to clear again.
+///
+/// Backend-agnostic: a column-addressable panel (ST7789) DMAs `scratch` straight to its `window`; a
+/// row-addressed panel (LS021/FLPR) re-quantizes `scratch` back into its full-width dirty rows. The
+/// only per-panel code left is that final wire-pack.
+///
+/// `fb` is the resident device-64 (`0b00_RR_GG_BB`) plane, `frame` its full size, `window` the dirty
+/// rectangle within it. Panics if `scratch` is shorter than `window`'s area or the window runs past
+/// `frame` (a caller wiring bug).
+pub fn composite_overlay_window(
+    fb: &[u8],
+    frame: Size,
+    window: Rectangle,
+    scratch: &mut [u16],
+    draw_overlay: &mut dyn FnMut(&mut Band),
+) {
+    let (x0, y0) = (window.top_left.x as u16, window.top_left.y as u16);
+    let (w, rows) = (window.size.width as u16, window.size.height as u16);
+    let (fw, x0u, y0u, wu) = (frame.width as usize, x0 as usize, y0 as usize, w as usize);
+    for row in 0..rows as usize {
+        let fb_base = (y0u + row) * fw + x0u;
+        let dst = &mut scratch[row * wu..row * wu + wu];
+        for (px, &byte) in dst.iter_mut().zip(&fb[fb_base..fb_base + wu]) {
+            *px = device64_to_rgb565(byte);
+        }
+    }
+    let mut band = Band::new_window(&mut scratch[..wu * rows as usize], frame, x0, y0, w, rows);
+    draw_overlay(&mut band);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,5 +255,32 @@ mod tests {
         }
 
         assert_eq!(full, assembled, "banded render must be byte-identical to the full-frame render");
+    }
+
+    /// [`composite_overlay_window`] fills the scratch with the clean framebuffer window expanded to
+    /// RGB565, then lets the drawer paint over it in frame-absolute coords — and never touches `fb`.
+    #[test]
+    fn composite_overlay_reads_backdrop_then_draws_over_it() {
+        // Frame 8×8; every fb pixel a distinct device-64 byte (its index, masked to 6 bits).
+        let mut fb = [0u8; 8 * 8];
+        for (i, px) in fb.iter_mut().enumerate() {
+            *px = (i as u8) & 0b0011_1111;
+        }
+        let fb_snapshot = fb;
+        let frame = Size::new(8, 8);
+        // Window cols [4,8) × rows [2,6); the drawer paints frame-absolute (5,3) red.
+        let mut scratch = [0u16; 4 * 4];
+        let window = Rectangle::new(Point::new(4, 2), Size::new(4, 4));
+        composite_overlay_window(&fb, frame, window, &mut scratch, &mut |band| {
+            band.fill_solid(&Rectangle::new(Point::new(5, 3), Size::new(1, 1)), rgb(0xF800)).ok();
+        });
+
+        let at = |x: usize, y: usize| scratch[y * 4 + x];
+        // Backdrop: window-local (0,0) = frame (4,2) = fb byte 2*8+4 = 20, expanded to RGB565.
+        assert_eq!(at(0, 0), device64_to_rgb565(20), "backdrop = clean fb expanded to RGB565");
+        assert_eq!(at(3, 3), device64_to_rgb565(5 * 8 + 7), "backdrop window corner = frame (7,5)");
+        // Overlay: frame (5,3) → window-local (1,1) painted red over the backdrop.
+        assert_eq!(at(1, 1), 0xF800, "drawer painted frame-absolute (5,3) into the window");
+        assert_eq!(fb, fb_snapshot, "the clean framebuffer is never written");
     }
 }

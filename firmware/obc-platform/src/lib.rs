@@ -90,6 +90,6 @@ pub mod synth;
 pub use button_input::{ButtonInput, Timing};
 pub use framebuffer::{device64_to_rgb565, FbDevice64, Framebuffer565};
 pub use ls021_wire::pack_row as ls021_pack_row;
-pub use panel::{Band, Panel};
+pub use panel::{composite_overlay_window, Band, Panel};
 pub use sd::{SdByteSink, SdByteSource, SdTrackSink};
 pub use synth::SynthLocation;

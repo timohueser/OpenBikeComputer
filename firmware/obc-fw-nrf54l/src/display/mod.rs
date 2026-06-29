@@ -34,6 +34,18 @@
 
 use obc_platform::Band;
 
+// The two backends, each a thin [`DisplayDriver`] impl in its own module behind this seam (issue
+// #174). The shared overlay-composite plumbing lives in `obc_platform::composite_overlay_window`;
+// each module supplies **only** its panel's wire-pack + window math. Exactly one is compiled per
+// build (`tft` selects the ST7789). The low-level transports they drive (`crate::st7789`,
+// `crate::ls021_flpr`) stay at the crate root because the bring-up bins include them directly.
+#[cfg(feature = "tft")]
+mod st7789;
+#[cfg(feature = "tft")]
+pub use st7789::Display;
+#[cfg(not(feature = "tft"))]
+mod ls021_flpr;
+
 /// A dirty rectangle of the frame to re-present with the overlay composited over it — today the hold
 /// bulge's right-edge window (issue #126/#163). A column-addressable panel (ST7789) re-pushes exactly
 /// this rectangle; a row-addressed panel (LS021) widens it to full-width rows internally (it can't
