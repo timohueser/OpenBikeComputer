@@ -5,14 +5,16 @@ name: CI
 #
 #   * The firmware/ manifest is a *virtual* workspace (no targets of its own) → workspace
 #     commands need `--workspace` / `--all`.
-#   * obc-fw-nrf54l is the **real device target** (nRF54L15 + ST7789). It's `exclude`d from that
-#     workspace and is its own cargo root → it needs its own invocation, run from inside the
+#   * obc-fw-nrf54l is the **real device target** (nRF54L15; the default display is the LS021 panel
+#     via the FLPR coprocessor, with the ST7789 as the opt-in `tft` backend). It's `exclude`d from
+#     that workspace and is its own cargo root → it needs its own invocation, run from inside the
 #     crate dir so its .cargo/config.toml selects the thumbv8m target (a `--manifest-path` from
 #     the root would build it for the host and fail on embassy-nrf). It has its own Cargo.lock,
 #     and no test harness (no_std on bare metal), so it gets `clippy`/`build` but not
-#     `--all-targets`/`test`. Its three feature configs are **mutually exclusive** — `glass-demo`
-#     cfgs out the whole map path — so each is linted on its own; there is no valid
-#     `--all-features` build (it would mix the panel-demo and map paths and flag dead code).
+#     `--all-targets`/`test`. Its backend feature configs are **mutually exclusive** — `glass-demo`
+#     cfgs out the whole map path, `tft` swaps the FLPR backend for the ST7789 — so each is linted on
+#     its own; there is no valid `--all-features` build (it would mix the panel-demo and map paths
+#     and flag dead code). The default LS021/FLPR legs cross-compile a RISC-V blob (see `embedded`).
 #   * nRF is the only board in the tree — optimise the shared crates for nRF freely.
 #   * There is no board in CI, so every embedded target is build-only.
 #   * The toolchain (channel + rustfmt/clippy + the thumbv8m / wasm32 targets) is pinned once in
@@ -125,16 +127,16 @@ jobs:
       - name: cargo test (workspace, all features)
         run: cargo test --manifest-path firmware/Cargo.toml --workspace --all-features --locked
 
-  # The real device board crate (nRF54L15 + ST7789) on its thumbv8m target: clippy each feature
-  # config + a release build of the shipping default. Build-only (no board in CI). Each leg runs
-  # from the crate dir so .cargo/config.toml selects thumbv8m. These configs are mutually
-  # exclusive (`glass-demo` cfgs out the map path), so each is linted on its own — no
-  # `--all-features` (it would flag the unused map-path helpers in the panel-demo build).
+  # The real device board crate (nRF54L15) on its thumbv8m target: clippy each feature config + a
+  # release build of the shipping default. Build-only (no board in CI). Each leg runs from the crate
+  # dir so .cargo/config.toml selects thumbv8m. The backend configs are mutually exclusive
+  # (`glass-demo` cfgs out the map path; `tft` swaps the FLPR backend for the ST7789), so each is
+  # linted on its own — no `--all-features` (it would flag the unused path's helpers).
   #
-  # NOTE: the FLPR configs (`--features ls021-flpr` / `panel-ls021`, the LS021 panel via the VPR
-  # coprocessor) are NOT built here — they cross-compile a RISC-V C blob via `build.rs`, so they
-  # need a `rv32emc` gcc on the runner. Built locally instead (firmware/docs/ls021-flpr.md); adding
-  # a CI leg with the RISC-V toolchain is an nRF-CI follow-up (issue #128).
+  # The **default** build is the LS021 panel via the FLPR (the VPR RISC-V coprocessor, issue #173):
+  # it cross-compiles a `rv32emc` C blob via `build.rs`, so those legs (`flpr: true`) install a
+  # RISC-V gcc first. The `tft` (ST7789) and `glass-demo` legs skip it — they keep the full 256 KB
+  # and need no RISC-V toolchain.
   embedded:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
@@ -143,14 +145,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # default = the shipping map + two-plane path (square-loop GPS, no host feed).
-          - { name: "clippy (default)", cmd: "cargo clippy --locked -- -D warnings" }
+          # default = the shipping LS021/FLPR map + two-plane path (square-loop GPS, no host feed).
+          - { name: "clippy (default = LS021/FLPR)", cmd: "cargo clippy --locked -- -D warnings", flpr: true }
           # debug-uart = default + the VCOM host sensor/telemetry feed (the obc-platform debug codec).
-          - { name: "clippy (debug-uart)", cmd: "cargo clippy --locked --features debug-uart -- -D warnings" }
-          # glass-demo = the panel-only bring-up (font ladder + 64-colour gamut, no SD, no full FB).
-          - { name: "clippy (glass-demo)", cmd: "cargo clippy --locked --no-default-features --features glass-demo -- -D warnings" }
-          # The real flashed artifact under fat LTO + the N3 RAM-budget assert.
-          - { name: "build (default, release)", cmd: "cargo build --release --locked" }
+          - { name: "clippy (debug-uart)", cmd: "cargo clippy --locked --features debug-uart -- -D warnings", flpr: true }
+          # tft = the opt-in ST7789 backend driving the same map + ride path (no FLPR, no RISC-V gcc).
+          - { name: "clippy (tft)", cmd: "cargo clippy --locked --features tft -- -D warnings", flpr: false }
+          # glass-demo = the panel-only bring-up (font ladder + 64-colour gamut, no SD, no full FB); ST7789.
+          - { name: "clippy (glass-demo)", cmd: "cargo clippy --locked --no-default-features --features glass-demo -- -D warnings", flpr: false }
+          # The real flashed default artifact (LS021/FLPR) under fat LTO + the N3 RAM-budget assert.
+          - { name: "build (default = LS021/FLPR, release)", cmd: "cargo build --release --locked", flpr: true }
+          # The shipping ST7789 artifact under fat LTO (keeps the opt-in TFT path building).
+          - { name: "build (tft, release)", cmd: "cargo build --release --locked --features tft", flpr: false }
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -160,6 +166,11 @@ jobs:
         with:
           workspaces: firmware/obc-fw-nrf54l
           key: thumbv8m-nrf
+      # The FLPR `build.rs` cross-compiles src/flpr/*.c for the VPR with an rv32emc GNU gcc; the
+      # apt package ships `riscv64-unknown-elf-gcc` (+ matching objcopy), which build.rs auto-detects.
+      - name: Install RISC-V GCC for the FLPR blob
+        if: matrix.flpr
+        run: sudo apt-get update && sudo apt-get install -y gcc-riscv64-unknown-elf
       - name: "obc-fw-nrf54l: ${{ matrix.name }}"
         working-directory: firmware/obc-fw-nrf54l
         run: ${{ matrix.cmd }}

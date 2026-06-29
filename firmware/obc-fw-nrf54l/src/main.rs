@@ -111,16 +111,17 @@ mod demo;
 #[cfg(not(feature = "glass-demo"))]
 mod sd;
 // The ST7789 panel geometry (`WIDTH`/`HEIGHT`) is shared by both display backends; the `St7789`
-// driver itself is the default-build map/glass-demo backend (the FLPR build below replaces it).
+// driver itself is the opt-in `tft` map/glass-demo backend (the default FLPR build below replaces it).
 mod st7789;
-// LS021 FLPR backend (issue #165): build `main.rs` with `--features panel-ls021` to run the real app
-// on the reflective LS021 panel via the FLPR (the VPR coprocessor) instead of the ST7789. The FLPR
-// `Panel` backend + launch live in `ls021_flpr`; `ls021::com_task` free-runs the COM lines (the rest
-// of `ls021` — the M33-direct `PanelBus` — is unused here, hence the dead-code allow).
-#[cfg(all(feature = "panel-ls021", not(feature = "glass-demo")))]
+// LS021 FLPR backend (issue #165) — the **default** display: `main.rs` runs the real app on the
+// reflective LS021 panel via the FLPR (the VPR coprocessor) unless `--features tft` selects the
+// ST7789 bring-up panel instead (issue #173). The FLPR `Panel` backend + launch live in `ls021_flpr`;
+// `ls021::com_task` free-runs the COM lines (the rest of `ls021` — the M33-direct `PanelBus` — is
+// unused here, hence the dead-code allow).
+#[cfg(not(feature = "tft"))]
 #[allow(dead_code)]
 mod ls021;
-#[cfg(all(feature = "panel-ls021", not(feature = "glass-demo")))]
+#[cfg(not(feature = "tft"))]
 mod ls021_flpr;
 // The board's display-driver seam — the single screen-write interface both panels implement, so the
 // map plane drives either through one path (`fb_mut` + `present`). The glass-demo bring-up draws
@@ -138,18 +139,18 @@ use {defmt_rtt as _, panic_probe as _};
 
 // `Delay` (the ST7789 power-on waits) + the `St7789` driver type are the default (and glass-demo)
 // backend; the FLPR build replaces them with the `Ls021Flpr` `Panel` backend, so neither is there.
-#[cfg(not(feature = "panel-ls021"))]
+#[cfg(feature = "tft")]
 use embassy_time::Delay;
-#[cfg(not(feature = "panel-ls021"))]
+#[cfg(feature = "tft")]
 use st7789::St7789;
 
 // The display panel + the banded `Panel` push seam, the per-band/per-window frame-absolute draw
 // view (`Band` — the glass-demo draws the whole frame through it; the map path composites the hold
 // bulge through it), and its frame `Size` are common to both builds.
-// `glass-demo` and `panel-ls021` are mutually exclusive display backends — guarding it here lets the
-// rest of the file treat `panel-ls021` as implying `not(glass-demo)`.
-#[cfg(all(feature = "glass-demo", feature = "panel-ls021"))]
-compile_error!("`glass-demo` and `panel-ls021` are mutually exclusive display backends");
+//
+// `glass-demo` is an ST7789 build, so it pulls in `tft` (see Cargo.toml) — that's why every
+// ST7789-backend `cfg` below keys on `feature = "tft"` alone and the rest of the file can treat
+// `not(feature = "tft")` as "the default FLPR/LS021 path."
 
 // The frame-absolute draw view `Band` is used by every build — the glass-demo draws the whole frame
 // through it, and the `present_overlay` drawer paints the hold bulge into it on both map panels
@@ -157,10 +158,10 @@ compile_error!("`glass-demo` and `panel-ls021` are mutually exclusive display ba
 // ST7789 / glass-demo path's: the ST7789 map composites the bulge window + bands the framebuffer to
 // the panel, and the glass-demo draws bands through `Panel`; the FLPR path renders device-64 straight
 // into its plane (no banding) and composites inside `Ls021Flpr::push_overlay`.
-#[cfg(not(feature = "panel-ls021"))]
+#[cfg(feature = "tft")]
 use embedded_graphics::prelude::Size;
 use obc_platform::Band;
-#[cfg(not(feature = "panel-ls021"))]
+#[cfg(feature = "tft")]
 use obc_platform::Panel;
 
 // N4 map path (#125): the shared app, the streamed-map reader + its `.bss` cache, and the
@@ -187,7 +188,7 @@ use embassy_nrf::gpio::{Input, Pull};
 use embassy_nrf::interrupt;
 #[cfg(not(feature = "glass-demo"))]
 use embassy_nrf::interrupt::{InterruptExt, Priority};
-#[cfg(all(not(feature = "glass-demo"), not(feature = "panel-ls021")))]
+#[cfg(all(not(feature = "glass-demo"), feature = "tft"))]
 use embassy_nrf::spim::Spim;
 #[cfg(not(feature = "glass-demo"))]
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -195,7 +196,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 #[cfg(not(feature = "glass-demo"))]
 use embassy_sync::channel::{Channel, Sender};
-#[cfg(all(not(feature = "glass-demo"), not(feature = "panel-ls021")))]
+#[cfg(all(not(feature = "glass-demo"), feature = "tft"))]
 use embassy_sync::mutex::Mutex;
 #[cfg(not(feature = "glass-demo"))]
 use embassy_time::Instant;
@@ -207,7 +208,7 @@ use obc_app::{App, AppState, Gesture, InputClock, InputEvent, InputPlane, InputS
 use obc_platform::{ButtonInput, FbDevice64};
 // `device64_to_rgb565` expands the RGB222 framebuffer to RGB565 for the ST7789 bulge composite +
 // overlay window — the FLPR map path packs device-64 straight to the wire, so it isn't needed there.
-#[cfg(all(not(feature = "glass-demo"), not(feature = "panel-ls021")))]
+#[cfg(all(not(feature = "glass-demo"), feature = "tft"))]
 use obc_platform::device64_to_rgb565;
 #[cfg(not(feature = "glass-demo"))]
 use obc_reader::{MapCache, Reader};
@@ -233,9 +234,9 @@ use obc_platform::SynthLocation;
 // free-running COM driver. The FLPR scans the whole frame in one push, so there is no banded ST7789
 // `Display`/bus mutex here — the map plane owns the panel, COM + the gesture-input plane run on the
 // shared high-priority executor (see `main`).
-#[cfg(all(feature = "panel-ls021", not(feature = "glass-demo")))]
+#[cfg(not(feature = "tft"))]
 use ls021::com_task;
-#[cfg(all(feature = "panel-ls021", not(feature = "glass-demo")))]
+#[cfg(not(feature = "tft"))]
 use ls021_flpr::{launch_flpr, FlprError, Ls021Flpr};
 
 // VCOM debug-sensor / telemetry stream (#127), behind `debug-uart`: the interrupt-buffered UARTE on
@@ -271,16 +272,16 @@ bind_interrupts!(struct UartIrqs {
 /// residents + the deep render path's stack; must stay ≥ the overlay window `OVL_W × OVL_ROWS`,
 /// asserted below — 240×14 = 3360 ≥ 16×192 = 3072.)
 ///
-/// **ST7789-only.** The FLPR map path (`--features panel-ls021`, issue #165) packs the RGB222
+/// **ST7789-only** (`--features tft`). The default FLPR map path (issue #165) packs the RGB222
 /// framebuffer straight to the LS021 wire (`ls021_pack_row`) and renders device-64 directly, so it
 /// needs no RGB565 band scratch — freeing these ~6.6 KB is one of the levers that fits the app in the
 /// 244 KB the FLPR carve-out leaves (the FLPR build drops `BAND_BYTES` from the budget below).
-#[cfg(not(feature = "panel-ls021"))]
+#[cfg(feature = "tft")]
 const BAND_ROWS: usize = 14;
 /// The band scratch in bytes (RGB565, 2 B/px) — the resident cost the budget assert reserves.
-#[cfg(not(feature = "panel-ls021"))]
+#[cfg(feature = "tft")]
 const BAND_BYTES: usize = st7789::WIDTH as usize * BAND_ROWS * 2;
-#[cfg(not(feature = "panel-ls021"))]
+#[cfg(feature = "tft")]
 static mut BAND: [u16; WIDTH as usize * BAND_ROWS] = [0; WIDTH as usize * BAND_ROWS];
 
 // ============================ N3 board memory budget (issue #124) ============================
@@ -324,12 +325,12 @@ static mut BAND: [u16; WIDTH as usize * BAND_ROWS] = [0; WIDTH as usize * BAND_R
 // ~660 B so the carve shrank 32→12 KB (≈20 KB more M33 RAM than F0's 28 KB carve), and the FLPR map
 // path drops the ~6.6 KB RGB565 band scratch — a net loosening, so the same caps clear the budget.
 
-/// Total SRAM the M33 app core sees. The default ST7789 build links the full 256 KB
-/// (`memory.x`: RAM 256K @ 0x2000_0000); the FLPR build (`--features panel-ls021`) links only 244 KB
+/// Total SRAM the M33 app core sees. The opt-in ST7789 build (`--features tft`) links the full 256 KB
+/// (`memory.x`: RAM 256K @ 0x2000_0000); the default FLPR build links only 244 KB
 /// — the top 12 KB is the carved FLPR image + the shared handshake page (`build.rs` / `flpr.ld`).
-#[cfg(not(feature = "panel-ls021"))]
+#[cfg(feature = "tft")]
 const NRF_RAM_BYTES: usize = 256 * 1024;
-#[cfg(feature = "panel-ls021")]
+#[cfg(not(feature = "tft"))]
 const NRF_RAM_BYTES: usize = 244 * 1024;
 /// Headroom kept free under the resident statics for the main stack + embassy's executor/task
 /// arenas (statics grow up from the RAM base, the stack down from the top). This is only the
@@ -351,9 +352,9 @@ const RESIDENT_BYTES: usize = core::mem::size_of::<obc_app::App>()
     + BAND_RESERVE;
 /// The RGB565 band scratch the budget reserves: `BAND_BYTES` on the ST7789 path, **zero** on the FLPR
 /// path (it packs the framebuffer straight to the wire — see [`BAND_ROWS`]).
-#[cfg(not(feature = "panel-ls021"))]
+#[cfg(feature = "tft")]
 const BAND_RESERVE: usize = BAND_BYTES;
-#[cfg(feature = "panel-ls021")]
+#[cfg(not(feature = "tft"))]
 const BAND_RESERVE: usize = 0;
 const _: () = assert!(
     RESIDENT_BYTES + STACK_RESERVE <= NRF_RAM_BYTES,
@@ -366,7 +367,7 @@ const _: () = assert!(
 /// (`FB_BYTES` = 75 KB), in `.bss`. [`App::render_map`](obc_app::App::render_map) quantizes into it
 /// on store ([`FbDevice64`]). On the **ST7789** path it is borrowed into the [`Display`] behind
 /// [`BUS`] and the band push expands it back to RGB565, so the two planes (#126) reach it only under
-/// that mutex (no aliasing, no torn frame). On the **FLPR** path (`panel-ls021`, issue #165) it is
+/// that mutex (no aliasing, no torn frame). On the default **FLPR** path (issue #165) it is
 /// owned by the `Ls021Flpr` panel — the map plane renders into it and `push_frame` packs it straight
 /// to the LS021 wire. Map-path only — the glass-demo draws per band, no full frame.
 #[cfg(not(feature = "glass-demo"))]
@@ -434,19 +435,19 @@ async fn idle_blink(led: &mut Output<'static>) -> ! {
 /// `'static`. (`Spim`/`Output` aren't generic over the instance, so this fully specifies the type.)
 /// ST7789-only — the FLPR build's map plane owns its `Ls021Flpr` panel directly (no two-plane bus
 /// mutex, since there is no partial-window overlay push to serialise against).
-#[cfg(all(not(feature = "glass-demo"), not(feature = "panel-ls021")))]
+#[cfg(all(not(feature = "glass-demo"), feature = "tft"))]
 type DisplayPanel = St7789<'static, Spim<'static>, Output<'static>, Output<'static>, Output<'static>, Delay>;
 
 /// The shared display the two planes split: the ST7789 panel + the resident RGB222 framebuffer it
 /// pushes. Both reach both only through [`BUS`], so the map render's framebuffer write is serialised
 /// against the input plane's overlay-window read — the bulge backdrop is never torn.
-#[cfg(all(not(feature = "glass-demo"), not(feature = "panel-ls021")))]
+#[cfg(all(not(feature = "glass-demo"), feature = "tft"))]
 struct Display {
     panel: DisplayPanel,
     fb: &'static mut [u8],
 }
 
-#[cfg(all(not(feature = "glass-demo"), not(feature = "panel-ls021")))]
+#[cfg(all(not(feature = "glass-demo"), feature = "tft"))]
 impl DisplayDriver for Display {
     fn fb_mut(&mut self) -> &mut [u8] {
         self.fb
@@ -510,7 +511,7 @@ impl DisplayDriver for Display {
 /// drives it in one masked full-frame push (the FLPR scans all 320 rows). The hold bulge is **not**
 /// composited here — it rides `present_overlay` (issue #163). A stalled FLPR returns `false` so the
 /// caller keeps the last frame and retries.
-#[cfg(all(feature = "panel-ls021", not(feature = "glass-demo")))]
+#[cfg(not(feature = "tft"))]
 impl DisplayDriver for Ls021Flpr<'_> {
     fn fb_mut(&mut self) -> &mut [u8] {
         Ls021Flpr::fb_mut(self)
@@ -542,12 +543,12 @@ static GESTURES: Channel<CriticalSectionRawMutex, Gesture, GESTURE_QUEUE> = Chan
 /// The high-priority executor the input/overlay plane runs on, pended from the SWI00 vector (an
 /// unused software-interrupt line — see the module doc). Started in `main`; driven by the SWI00 ISR.
 /// The FLPR build uses [`EXECUTOR_HP`] instead (it also free-runs COM there).
-#[cfg(all(not(feature = "glass-demo"), not(feature = "panel-ls021")))]
+#[cfg(all(not(feature = "glass-demo"), feature = "tft"))]
 static EXECUTOR_INPUT: InterruptExecutor = InterruptExecutor::new();
 
 /// SWI00 ISR → poll the input-plane executor. SWI00 has no peripheral; we only borrow its interrupt
 /// vector as the executor's pend line (its priority is set + the executor started in `main`).
-#[cfg(all(not(feature = "glass-demo"), not(feature = "panel-ls021")))]
+#[cfg(all(not(feature = "glass-demo"), feature = "tft"))]
 #[interrupt]
 unsafe fn SWI00() {
     EXECUTOR_INPUT.on_interrupt();
@@ -557,10 +558,10 @@ unsafe fn SWI00() {
 /// (which must keep alternating `VCOM`/`VB`/`VA` so the panel never DC-biases, even while the M33
 /// busy-polls a frame push) **and** the gesture-input plane (so button latency stays exact during the
 /// ~97 ms blocking whole-frame push). Pended from the same unused SWI00 vector @ P3.
-#[cfg(all(feature = "panel-ls021", not(feature = "glass-demo")))]
+#[cfg(not(feature = "tft"))]
 static EXECUTOR_HP: InterruptExecutor = InterruptExecutor::new();
 
-#[cfg(all(feature = "panel-ls021", not(feature = "glass-demo")))]
+#[cfg(not(feature = "tft"))]
 #[interrupt]
 unsafe fn SWI00() {
     EXECUTOR_HP.on_interrupt();
@@ -586,15 +587,15 @@ const OVL_X0: u16 = WIDTH - 16;
 const OVL_W: u16 = 16;
 /// First overlay row of the full hint band (a little above the encoder bulge's top). ST7789-only — the
 /// FLPR addresses the *live* bulge's rows (`InputPlane::overlay_rows`), never this fixed top.
-#[cfg(all(not(feature = "glass-demo"), not(feature = "panel-ls021")))]
+#[cfg(all(not(feature = "glass-demo"), feature = "tft"))]
 const OVL_Y0: u16 = 56;
 /// Full hint-band height in rows (down past the Back bulge's bottom) — the ST7789 trailing-clear span
 /// and the band-fit bound below. The FLPR has its own `MAX_OVERLAY_*` bound in `Ls021Flpr`.
-#[cfg(all(not(feature = "glass-demo"), not(feature = "panel-ls021")))]
+#[cfg(all(not(feature = "glass-demo"), feature = "tft"))]
 const OVL_ROWS: u16 = 192;
 /// ST7789: the overlay window must fit the shared band scratch (it borrows a prefix of it). The FLPR
 /// path has its own `MAX_OVERLAY_*` bound in `Ls021Flpr::push_overlay`.
-#[cfg(all(not(feature = "glass-demo"), not(feature = "panel-ls021")))]
+#[cfg(all(not(feature = "glass-demo"), feature = "tft"))]
 const _: () =
     assert!(OVL_W as usize * OVL_ROWS as usize <= WIDTH as usize * BAND_ROWS, "overlay window larger than BAND");
 
@@ -609,7 +610,7 @@ const _: () =
 /// bulge on glass (the gate fast-forwards over them, latching nothing) until the composite repaints
 /// them with the fresh map backdrop + bulge, so the bulge never flashes off. Returns 0–2 ascending,
 /// disjoint spans (a bulge mid-panel splits the frame in two; one flush against an edge yields one).
-#[cfg(feature = "panel-ls021")]
+#[cfg(not(feature = "tft"))]
 fn map_rows_around(y0: u16, rows: u16) -> heapless::Vec<(u16, u16), 2> {
     let mut spans = heapless::Vec::new();
     if y0 > 0 {
@@ -720,7 +721,7 @@ async fn vcom_tx_task(mut tx: BufferedUarteTx<'static, peripherals::SERIAL20>) {
 /// window: read its columns back from the framebuffer (RGB222→RGB565) and composite the bulge over
 /// them. No renderer scratch, no map re-render → the bulge animates fluidly over a static map. The
 /// panel is reached only through `bus`, the recogniser/overlay only through `input_plane`.
-#[cfg(all(not(feature = "glass-demo"), not(feature = "panel-ls021")))]
+#[cfg(all(not(feature = "glass-demo"), feature = "tft"))]
 #[embassy_executor::task]
 async fn input_overlay_task(
     mut buttons: ButtonInput<Input<'static>>,
@@ -781,7 +782,7 @@ async fn input_overlay_task(
 /// *map plane* owns every push (no shared SPI bus to serialise against). It re-presents only the bulge
 /// rows when the overlay is dirty — see the map loop. This task is purely the recogniser; the brief
 /// lock is never held across the `await`.
-#[cfg(all(feature = "panel-ls021", not(feature = "glass-demo")))]
+#[cfg(not(feature = "tft"))]
 #[embassy_executor::task]
 async fn input_task(
     mut buttons: ButtonInput<Input<'static>>,
@@ -931,13 +932,13 @@ async fn main(_spawner: Spawner) {
         sd_cfg.orc = 0xFF;
         let sd_spi = spim::Spim::new(p.SERIAL22, Irqs, p.P1_11, p.P1_07, p.P1_06, sd_cfg);
         // CS is a plain GPIO held LOW for the session (the `sd::NoCs` workaround), not a SPIM-bus
-        // pin — so it can sit on any free GPIO. Default (ST7789): P1.12. FLPR build (`panel-ls021`):
+        // pin — so it can sit on any free GPIO. ST7789 build (`--features tft`): P1.12. Default FLPR:
         // P1.12 carries GEN, and the DK's P1.00–14 are one pin short, so CS moves to **P0.00** (M33
         // GPIO, the same port + drive as BTN3) — one jumper on the SD breakout. The SPIM bus pins
         // (SCK/MISO/MOSI on P1.11/07/06) are unchanged in both builds.
-        #[cfg(not(feature = "panel-ls021"))]
+        #[cfg(feature = "tft")]
         let sd_cs = Output::new(p.P1_12, Level::High, OutputDrive::Standard);
-        #[cfg(feature = "panel-ls021")]
+        #[cfg(not(feature = "tft"))]
         let sd_cs = Output::new(p.P0_00, Level::High, OutputDrive::Standard);
         let Some(mut storage) = sd::init(sd_spi, sd_cs) else {
             defmt::error!("SD: no card / mount failed — cannot load a map; idling with a heartbeat");
@@ -1028,7 +1029,7 @@ async fn main(_spawner: Spawner) {
         // is ~38 ms; drop to `M16` if the jumpered bring-up bus sparkles. The shared state is parked in
         // `.bss` + written **in place** (the APP/MAP_CACHE pattern) rather than via `StaticCell`,
         // whose one-shot flag can panic "already full" on a warm reset.
-        #[cfg(not(feature = "panel-ls021"))]
+        #[cfg(feature = "tft")]
         let bus = {
             let cs = Output::new(p.P2_05, Level::High, OutputDrive::Standard);
             let dc = Output::new(p.P2_03, Level::Low, OutputDrive::Standard);
@@ -1068,7 +1069,7 @@ async fn main(_spawner: Spawner) {
             bus
         };
 
-        // ============= FLPR LS021 backend (`--features panel-ls021`, issue #165) =====================
+        // ============= FLPR LS021 backend (default; ST7789 is `--features tft`, issue #165) ==========
         // The map plane owns the `Ls021Flpr` panel directly (it scans a whole frame per push, so there
         // is no partial-window overlay to serialise — no bus mutex). The M33 configures every line the
         // FLPR drives (held as outputs for the program's life); `com_task` + the gesture `input_task`
@@ -1078,7 +1079,7 @@ async fn main(_spawner: Spawner) {
         // **must match `src/flpr/flpr_pingpong.c`'s masks and the bring-up bin's pins** — confirm each
         // is broken out on your DK and remap all three together if not (the source bus, BCK, and COM
         // stay on P2 exactly as the bring-up bin has them).
-        #[cfg(feature = "panel-ls021")]
+        #[cfg(not(feature = "tft"))]
         let (mut panel, input_plane, _flpr_gate_bus, _flpr_src_bus) = {
             // Gate + frame lines (P1) — GSP P1.00, GCK P1.01, GEN P1.12, INTB P1.10; held configured.
             // The DK breaks out only P1.00–14 (P1.02/03 are NFC, off-limits), which is one pin short
@@ -1205,7 +1206,7 @@ async fn main(_spawner: Spawner) {
         // The last live bulge's row span (FLPR overlay, #163): when the bulge goes quiet the trailing
         // clear wipes exactly *these* rows — the same small push as the pop frames — rather than the
         // whole hint band, so the animation's tail stays smooth (no full-band frame at the end).
-        #[cfg(feature = "panel-ls021")]
+        #[cfg(not(feature = "tft"))]
         let mut last_overlay_span: Option<(u16, u16)> = None;
         #[cfg(feature = "debug-uart")]
         let mut last_telem_ms: u32 = 0;
@@ -1335,7 +1336,7 @@ async fn main(_spawner: Spawner) {
             // and the live bulge's **row span** (`None` when quiet), so the push below re-presents only
             // the active bulge's rows (issue #163), not the whole hint band. The ST7789 build drives its
             // bulge from the input plane instead, so it has no overlay work in this loop.
-            #[cfg(feature = "panel-ls021")]
+            #[cfg(not(feature = "tft"))]
             let (overlay_dirty, overlay_span) = input_plane.lock(|c| {
                 let p = &mut *c.borrow_mut();
                 (p.take_overlay_dirty(), p.overlay_rows(WIDTH as i32, HEIGHT as i32))
@@ -1365,11 +1366,11 @@ async fn main(_spawner: Spawner) {
                     // overlay plane never reads a torn framebuffer (the map render writes it under this
                     // lock); the FLPR map plane owns its panel outright (its overlay rides this same
                     // plane, so there is no concurrent push to serialise). Everything below is one path.
-                    #[cfg(not(feature = "panel-ls021"))]
+                    #[cfg(feature = "tft")]
                     let mut guard = bus.lock().await;
-                    #[cfg(not(feature = "panel-ls021"))]
+                    #[cfg(feature = "tft")]
                     let display: &mut dyn DisplayDriver = &mut *guard;
-                    #[cfg(feature = "panel-ls021")]
+                    #[cfg(not(feature = "tft"))]
                     let display: &mut dyn DisplayDriver = &mut panel;
 
                     // Render the whole frame into the resident RGB222 plane, then present it through the
@@ -1433,16 +1434,16 @@ async fn main(_spawner: Spawner) {
                     // when a redraw lands mid-pop). ST7789 pushes the whole frame: its bulge rides a
                     // separate fast plane, so there is no visible gap to design around.
                     let t_push = Instant::now();
-                    #[cfg(not(feature = "panel-ls021"))]
+                    #[cfg(feature = "tft")]
                     let ok = display.present();
-                    #[cfg(feature = "panel-ls021")]
+                    #[cfg(not(feature = "tft"))]
                     let ok = match overlay_span {
                         Some((y0, rows)) => panel.push_spans(&map_rows_around(y0, rows)),
                         None => panel.present(),
                     };
                     let push_us = t_push.elapsed().as_micros();
                     // Release the ST7789 bus before logging so the input plane can push its bulge.
-                    #[cfg(not(feature = "panel-ls021"))]
+                    #[cfg(feature = "tft")]
                     drop(guard);
                     if !ok {
                         pending_map_redraw = true;
@@ -1482,7 +1483,7 @@ async fn main(_spawner: Spawner) {
             // of a full frame. The trailing edge (bulge just went quiet) wipes **the same rows** the last
             // bulge used (kept in `last_overlay_span`), not the whole band, so the tail stays as smooth as
             // the pop — unless a map present this frame already restored the clean map there.
-            #[cfg(feature = "panel-ls021")]
+            #[cfg(not(feature = "tft"))]
             {
                 let composite = |panel: &mut Ls021Flpr, region: OverlayRegion| -> bool {
                     panel.present_overlay(region, &mut |band: &mut Band| {

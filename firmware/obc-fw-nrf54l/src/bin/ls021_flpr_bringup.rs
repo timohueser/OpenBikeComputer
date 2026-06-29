@@ -1,6 +1,6 @@
 //! **LS021 FLPR bring-up bench bin** (epic #149) — drives the FLPR `Panel` backend through test
 //! patterns on real glass. Since #165 the backend itself ([`Ls021Flpr`]) lives in the shared
-//! `src/ls021_flpr.rs` module so the *real app* (`main.rs --features panel-ls021`) drives the same
+//! `src/ls021_flpr.rs` module so the *real app* (the default `main.rs` build) drives the same
 //! LS021 panel through the same [`obc_platform::Panel`] seam; this bin keeps it exercised in
 //! isolation — boot the FLPR, draw the glass-demo + line/box + solid cards through the seam, step
 //! them with BTN0 — without the SD/sensor/app machinery.
