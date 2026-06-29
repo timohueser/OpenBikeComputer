@@ -56,6 +56,18 @@ impl DisplayDriver for Display {
     /// plane (issue #126/#163), so the map present stays a single clean pack with no overlay coupling —
     /// and the diff, pushing fewer rows, clobbers the live bulge's columns *less* than the old
     /// whole-frame push did. ST7789 GRAM writes don't fault, so always `true`.
+    ///
+    /// **Bulge coordination is dev-only-best-effort here** (issue #208), unlike the FLPR path. This
+    /// present takes no `exclude`: the map plane can't see the input plane on this backend
+    /// ([`MapDisplay::poll_overlay`](crate) always reports "clean"), so a `dirty.map` redraw landing
+    /// while a hold bulge is live pushes the changed clean `fb` rows over the bulge's rows, flashing it
+    /// off until the overlay task's next ~8 ms tick repaints it. The FLPR path avoids this by clipping
+    /// the live bulge's rows out of the present (its `present_within` + `clip_span`); the ST7789
+    /// deliberately does **not** add that `exclude` plumbing because it is the
+    /// opt-in `--features tft` bring-up backend, not the shipping panel, and the deeper "store tracks
+    /// glass, not `fb`" redesign (issue #208 item 2) would remove the `exclude` plumbing on *both*
+    /// backends anyway. A one-tick flash on a dev panel is an accepted trade for not carrying
+    /// soon-to-be-dead coordination code.
     fn present(&mut self) -> bool {
         let Display { panel, fb, diff } = self;
         st7789::reset_push_timers();
