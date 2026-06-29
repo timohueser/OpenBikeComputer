@@ -15,7 +15,7 @@ use obc_app::{
     App, AppState, Button, ButtonEvent, CameraMode, Fix, Gesture, InputClock, InputEvent, Mode, PanAxis, RideClock,
     RouteSummary, Sensors, TrackAction, MAX_ROUTES,
 };
-use obc_reader::{rgb565_to_rgb888, BBox, MapCache, Reader, SliceSource};
+use obc_reader::{rgb565_to_rgb888, BBox, MapCache, MapTables, Reader, SliceSource};
 
 mod common;
 // `ReplayFix` is the always-the-same-fix source (the old `OneFix(Fix)` here, distinct
@@ -474,7 +474,8 @@ fn render(app: &mut App, bytes: &[u8]) -> Buf {
     app.tick(RideClock(0), Sensors { loc: &mut NoFix, altimeter: None, compass: None, track: None }, None);
     let cache = MapCache::new();
     let src = SliceSource(bytes);
-    let reader = Reader::new(&src, &cache).expect("valid v5 file");
+    let tables = MapTables::parse(&src).expect("valid v5 file");
+    let reader = Reader::new(&src, &tables, &cache);
     let mut buf = Buf::new(120, 120);
     app.render_frame(&mut buf, &reader, None, 120.0, 120.0, |c| {
         let (r, g, b) = rgb565_to_rgb888(c);

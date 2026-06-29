@@ -11,7 +11,7 @@
 
 use embedded_graphics::pixelcolor::Rgb888;
 use embedded_graphics::prelude::*;
-use obc_reader::{rgb565_to_rgb888, MapCache, Reader, SliceSource};
+use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader, SliceSource};
 use obc_render::text::{draw_text, Font, TextAlign};
 use obc_render::{MapRenderer, Viewport};
 // Only the (full-profile-only) frame-points saturation test reads this cap.
@@ -42,7 +42,8 @@ fn one_chunk_map(bbox: (i32, i32, i32, i32), styles: &[Style], chunk: Vec<u8>, c
 fn render_into(buf: &mut Buf, bytes: &[u8], vp: &Viewport) -> obc_render::RenderStats {
     let cache = MapCache::new();
     let src = SliceSource(bytes);
-    let reader = Reader::new(&src, &cache).expect("valid v5 file");
+    let tables = MapTables::parse(&src).expect("valid v5 file");
+    let reader = Reader::new(&src, &tables, &cache);
     MapRenderer::new().render(buf, &reader, vp, Rgb888::BLACK, green565)
 }
 
@@ -232,7 +233,8 @@ fn frame_points_saturate_before_spans_and_priority_still_wins() {
     let mut buf = Buf::new(200, 200);
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let reader = Reader::new(&src, &cache).expect("valid v5 file");
+    let tables = MapTables::parse(&src).expect("valid v5 file");
+    let reader = Reader::new(&src, &tables, &cache);
     let stats = MapRenderer::new().render(&mut buf, &reader, &vp, Rgb888::BLACK, green565);
 
     // The point buffer saturated and dropped features…

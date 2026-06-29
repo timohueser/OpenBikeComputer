@@ -10,7 +10,7 @@
 //! Each test asserts a concrete decoded value (exact truncated ring length, exact bbox over the
 //! dropped points, exact cache hit/miss counts) rather than "didn't panic".
 
-use obc_reader::{BBox, Kind, MapCache, Reader, SliceSource, MAX_CHUNK_BYTES, MAX_FEAT_PTS, MAX_FEAT_RINGS};
+use obc_reader::{BBox, Kind, MapCache, MapTables, Reader, SliceSource, MAX_CHUNK_BYTES, MAX_FEAT_PTS, MAX_FEAT_RINGS};
 use obcm_testkit::{build_file, pack_line, pack_line_decl, pack_poly_decl, pack_poly_holes, pad, LodSpec, Style};
 
 const STYLES: &[Style] = &[(1, 3, 0xF800, 2, 3), (2, -1, 0x07E0, 1, 3)];
@@ -79,7 +79,8 @@ fn exterior_past_max_feat_pts_truncates_ring_but_bbox_spans_dropped_points() {
     let bytes = single_leaf(GLOBAL, chunk, MAX_CHUNK_BYTES);
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let r = Reader::new(&src, &cache).unwrap();
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
 
     let feats = decode(&r, 0, 0, &r.bbox);
     assert_eq!(feats.len(), 1);
@@ -115,7 +116,8 @@ fn holes_past_max_feat_rings_are_dropped_at_capacity() {
     let bytes = single_leaf(GLOBAL, chunk, MAX_CHUNK_BYTES);
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let r = Reader::new(&src, &cache).unwrap();
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
 
     let feats = decode(&r, 0, 0, &r.bbox);
     assert_eq!(feats.len(), 1);
@@ -146,7 +148,8 @@ fn oversized_chunk_decodes_through_scratch_and_never_caches() {
     let bytes = single_leaf(GLOBAL, chunk, CS);
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let r = Reader::new(&src, &cache).unwrap();
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
     assert_eq!(r.lods()[0].chunk_size, CS);
 
     // First decode: the oversized chunk reads through the scratch — a miss, never a slot.
@@ -185,7 +188,8 @@ fn second_pass_over_same_chunk_hits_the_cache_via_public_api() {
     let bytes = single_leaf(GLOBAL, chunk, CS);
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let r = Reader::new(&src, &cache).unwrap();
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
 
     // Pass 1: cold — the chunk read is a miss that fills a slot.
     let s0 = r.chunk_cache_stats();
@@ -250,7 +254,8 @@ fn lru_evicts_the_oldest_chunk_at_the_reader_level() {
     let bytes = build_file(GLOBAL, STYLES, &[LodSpec { max_mpp: f32::INFINITY, index, chunks, chunk_size: CS }]);
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let r = Reader::new(&src, &cache).unwrap();
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
 
     // Collect the chunk ids in walk order — the order they touch the cache (oldest first).
     let mut walk_order: Vec<u32> = Vec::new();
@@ -299,7 +304,8 @@ fn truncated_ring_decodes_partial_then_stops() {
     let bytes = single_leaf(GLOBAL, chunk, CS);
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let r = Reader::new(&src, &cache).unwrap();
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
 
     let feats = decode(&r, 0, 0, &r.bbox);
     assert_eq!(feats.len(), 1, "the partial feature still decodes (it doesn't panic or vanish)");
@@ -330,7 +336,8 @@ fn header_straddling_chunk_end_is_not_misread() {
     let bytes = single_leaf(GLOBAL, chunk, cs);
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let r = Reader::new(&src, &cache).unwrap();
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
 
     let feats = decode(&r, 0, 0, &r.bbox);
     assert_eq!(feats.len(), 1, "only the one whole feature decodes; the runt header tail is skipped");
@@ -358,7 +365,8 @@ fn truncated_style_table_parses_only_present_records() {
 
     let cache = MapCache::new();
     let src = SliceSource(&forged);
-    let r = Reader::new(&src, &cache).unwrap();
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
     // The two real styles parse from the bytes that are present…
     assert!(r.style(1).is_some(), "the first real style still parses");
     assert!(r.style(2).is_some(), "the second real style still parses");
@@ -371,8 +379,8 @@ fn truncated_style_table_parses_only_present_records() {
 /// `style_offset` pointing at or past the end of the file must yield an empty style table, not a
 /// panic. `parse_styles` returns the all-`None` table when `style_offset >= total` (reader.rs
 /// ~713). A `style_offset` *equal to* the file length is the boundary the format suite never hits;
-/// `Reader::new` accepts `style_offset == total` (its guard is `> total`), so the reader is built
-/// but every style lookup is `None`.
+/// `MapTables::parse` accepts `style_offset == total` (its guard is `> total`), so the reader is
+/// built but every style lookup is `None`.
 #[test]
 fn style_offset_at_eof_yields_no_styles() {
     let bytes = single_leaf(GLOBAL, pack_line(1, 10, 10, &[(1, 1)]), 64);
@@ -382,7 +390,8 @@ fn style_offset_at_eof_yields_no_styles() {
 
     let cache = MapCache::new();
     let src = SliceSource(&forged);
-    let r = Reader::new(&src, &cache).expect("style_offset == total is accepted (guard is > total)");
+    let tables = MapTables::parse(&src).expect("style_offset == total is accepted (guard is > total)");
+    let r = Reader::new(&src, &tables, &cache);
     assert!(r.style(1).is_none(), "no style parses from a table at EOF");
     assert!(r.backdrop_style().is_none(), "no backdrop without styles");
 }
@@ -432,7 +441,8 @@ fn index_read_crosses_block_boundary() {
         build_file(GLOBAL, STYLES, &[LodSpec { max_mpp: f32::INFINITY, index, chunks: vec![chunk], chunk_size: CS }]);
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let r = Reader::new(&src, &cache).unwrap();
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
 
     // A whole-bbox view intersects every node, so the walk reads all 341 nodes (crossing the block
     // seam repeatedly) and finds the single non-empty leaf past index 128.
@@ -470,7 +480,8 @@ fn negative_microdegrees_decode_with_correct_sign() {
     let bytes = single_leaf(bbox, chunk, 64);
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let r = Reader::new(&src, &cache).unwrap();
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
 
     // Header bbox round-trips with the negative values intact (no sign-extension slip).
     assert_eq!(r.bbox, BBox { min_lon: -2000, min_lat: -1000, max_lon: 500, max_lat: 500 });
@@ -497,7 +508,8 @@ fn polygon_exterior_overflow_truncates_like_a_line() {
     let bytes = single_leaf((0, 0, 1_000_000, 1_000_000), chunk, MAX_CHUNK_BYTES);
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let r = Reader::new(&src, &cache).unwrap();
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
 
     let feats = decode(&r, 0, 0, &r.bbox);
     assert_eq!(feats.len(), 1);
