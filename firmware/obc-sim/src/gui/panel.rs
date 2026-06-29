@@ -389,6 +389,20 @@ impl SimGui {
                 ui.colored_label(if d.overlay { on } else { off }, "overlay");
             });
             ui.end_row();
+
+            // Self-diffing present (epic #199 / issue #200): rows actually *pushed* this frame vs.
+            // the full 320, decided by the per-row hash diff. This is the live readout the epic is
+            // about — idle/spurious redraw → 0 rows (free), a Home minute tick → a few clock rows,
+            // a map pan → ~all. An exact full-frame diff oracle backs each number (a miss panics).
+            let p = self.present.stats;
+            ui.label("Present");
+            if p.total_rows == 0 {
+                ui.label("—");
+            } else {
+                let pct = 100.0 * p.pushed_rows as f32 / p.total_rows as f32;
+                ui.label(format!("{} / {} rows · {} spans ({:.0}%)", p.pushed_rows, p.total_rows, p.spans, pct));
+            }
+            ui.end_row();
         });
 
         ui.add_space(4.0);

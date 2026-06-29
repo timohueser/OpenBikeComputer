@@ -2423,6 +2423,7 @@ dependencies = [
  "image",
  "log",
  "obc-app",
+ "obc-platform",
  "obc-reader",
  "obc-render",
  "obc-replay",
