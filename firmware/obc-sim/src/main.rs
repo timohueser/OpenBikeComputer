@@ -40,6 +40,9 @@ mod calib;
 mod device_input;
 mod framebuffer;
 mod gui;
+// The self-diffing present backend (epic #199 / issue #200): diff the rendered frame against a
+// per-row hash store, push only the changed spans, and assert an exact full-frame diff agrees.
+mod present;
 // `--palette` is a native-only standalone window (its own eframe::run_native); the
 // web build never uses it, so keep its native APIs out of the wasm compile.
 #[cfg(not(target_arch = "wasm32"))]
