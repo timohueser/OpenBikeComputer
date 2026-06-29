@@ -16,7 +16,7 @@ use std::path::Path;
 
 use eframe::egui;
 use obc_app::{App, AppState, Button, CameraMode, Dirty, Fix, InputClock, RideClock, Sensors};
-use obc_reader::{MapCache, Reader, SliceSource};
+use obc_reader::{MapCache, MapTables, Reader, SliceSource};
 use obc_route::{RouteIndex, RouteReader};
 
 use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
@@ -117,6 +117,9 @@ pub fn run_web() {
 struct SimGui {
     /// Map file bytes; `Reader` borrows these each frame.
     bytes: Vec<u8>,
+    /// The immutable map tables (style table + LOD pyramid), parsed once at startup and borrowed by
+    /// the cheap per-frame `Reader` — mirroring the device, which parses them once at boot (#179).
+    map_tables: MapTables,
     /// The streamed-map cache (issue #37), kept for the whole session and reused across frames —
     /// exactly as the device holds one in its reserved region. A persistent cache lets a chunk read one frame
     /// hit the next, so the "Map SD" stats track real device behaviour (a panned-into view warms
@@ -191,10 +194,11 @@ struct SimGui {
 
 impl SimGui {
     fn new(bytes: Vec<u8>, args: Args) -> Self {
+        let map_tables = MapTables::parse(&SliceSource(&bytes)).expect("map validated in main()");
         let (cx, cy, zoom) = {
             let cache = MapCache::new();
             let src = SliceSource(&bytes);
-            let reader = Reader::new(&src, &cache).expect("map validated in main()");
+            let reader = Reader::new(&src, &map_tables, &cache);
             crate::initial_camera(&reader, args.width)
         };
         let mut state = AppState::new(cx, cy, zoom);
@@ -257,6 +261,7 @@ impl SimGui {
             screenshot: args.screenshot,
             screenshot_requested: false,
             bytes,
+            map_tables,
             map_cache: MapCache::new(),
             last_stats: obc_render::RenderStats::default(),
             last_dirty: Dirty::CLEAN,
@@ -335,7 +340,7 @@ impl SimGui {
         // Reuse the session-long cache (see the field doc) — the same cross-frame reuse the
         // device gets, so the "Map SD" stats panel mirrors on-glass behaviour.
         let map_src = SliceSource(&self.bytes);
-        let reader = Reader::new(&map_src, &self.map_cache).expect("map validated in main()");
+        let reader = Reader::new(&map_src, &self.map_tables, &self.map_cache);
         let tc = self.true_color;
 
         // Open the active route's geometry *before* ticking, so the map-matcher gets it

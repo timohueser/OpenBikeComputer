@@ -202,7 +202,7 @@ use obc_app::{App, AppState, Gesture, InputClock, InputEvent, InputPlane, InputS
 #[cfg(not(feature = "glass-demo"))]
 use obc_platform::{ButtonInput, FbDevice64};
 #[cfg(not(feature = "glass-demo"))]
-use obc_reader::{MapCache, Reader};
+use obc_reader::{MapCache, MapTables, Reader};
 #[cfg(not(feature = "glass-demo"))]
 use obc_render::zoom_for_mpp;
 // The N6 ride loop (#127): the decoded-route-geometry cache, the resident per-route chunk index,
@@ -338,6 +338,7 @@ const FB_BYTES: usize = st7789::WIDTH as usize * st7789::HEIGHT as usize;
 const RESIDENT_BYTES: usize = core::mem::size_of::<obc_app::App>()
     + FB_BYTES
     + core::mem::size_of::<obc_reader::MapCache>()
+    + core::mem::size_of::<obc_reader::MapTables>()
     + core::mem::size_of::<obc_route::RouteCache>()
     + core::mem::size_of::<obc_route::RouteIndex>()
     + BAND_RESERVE;
@@ -349,7 +350,7 @@ const BAND_RESERVE: usize = BAND_BYTES;
 const BAND_RESERVE: usize = 0;
 const _: () = assert!(
     RESIDENT_BYTES + STACK_RESERVE <= NRF_RAM_BYTES,
-    "nRF resident set (App + framebuffer + MapCache + RouteCache + RouteIndex + band) + stack reserve overruns RAM — trim the `nrf-mem` caps (issue #124)"
+    "nRF resident set (App + framebuffer + MapCache + MapTables + RouteCache + RouteIndex + band) + stack reserve overruns RAM — trim the `nrf-mem` caps (issue #124)"
 );
 
 // ============================ N4 resident set + map path (issue #125) ============================
@@ -372,6 +373,12 @@ static mut FB: [u8; FB_BYTES] = [0; FB_BYTES];
 /// `RouteCache` the budget assert reserves is allocated when route loading lands at N6.)
 #[cfg(not(feature = "glass-demo"))]
 static mut MAP_CACHE: MaybeUninit<MapCache> = MaybeUninit::uninit();
+/// The immutable map tables (header scalars + style table + LOD pyramid), parsed **once at boot**
+/// into `.bss` and borrowed by every per-frame [`Reader`] (issue #179). Resident so the per-frame
+/// render reader carries no styles/LODs of its own — no per-frame style-table SD read, no ~4 KB parse
+/// stack spike on the deep render path (the lever that kept that path inside the 256 KB stack).
+#[cfg(not(feature = "glass-demo"))]
+static mut MAP_TABLES: MaybeUninit<MapTables> = MaybeUninit::uninit();
 #[cfg(not(feature = "glass-demo"))]
 static mut APP: MaybeUninit<App> = MaybeUninit::uninit();
 /// The decoded-route-geometry cache (#127), placed in `.bss` and built in place like [`MAP_CACHE`]
@@ -859,29 +866,26 @@ async fn main(_spawner: Spawner) {
             &*slot
         };
 
-        // Read just the OBCM **header** for the idle camera centre — its bbox, plus the magic/version
-        // validation. Deliberately NOT a full `Reader::new`: that also reads + parses the style table
-        // into a `[Option<Style>; 256]` (a ~2.4 KB `Reader` value plus a same-size on-stack temporary
-        // and a 1.5 KB decode buffer), a frame the 256 KB part's modest stack shouldn't pay just for a
-        // camera centre. The loop's per-frame readers do the full parse where it's needed (and skip a
-        // redraw on a transient build failure), so a structurally-bad map degrades to "no map", never
-        // a fault. The throwaway source is dropped here, releasing its `storage` borrow so the loop can
-        // rebuild a fresh reader each redraw AND reconcile the card (`&mut storage`) between frames.
-        let (cam_lon, cam_lat) = {
+        // Parse the OBCM **header + style table + LOD pyramid once at boot** into the resident
+        // [`MAP_TABLES`] (issue #179). These tables are immutable for the session, so the loop's
+        // per-frame readers *borrow* them instead of re-parsing — no per-frame style-table SD read and
+        // no ~4 KB parse stack spike (a 1536-byte style scratch + the ~2.3 KB style array) on the deep
+        // render path, which is what kept that path overrunning the 256 KB part's stack. The transient
+        // parse cost is paid **here**, at boot, where the call stack is shallow; a missing or
+        // structurally-bad map idles with a heartbeat (never faults). The idle camera centre is the
+        // parsed bbox. `init_src`'s `storage` borrow ends with this block, so the loop can rebuild a
+        // fresh source each redraw AND reconcile the card (`&mut storage`) between frames.
+        // SAFETY: sole owner of MAP_TABLES; single executor → no aliasing; written exactly once here.
+        let map_tables: &MapTables = unsafe {
             let Some(init_src) = storage.map_source() else {
                 defmt::error!("SD: no .obcm map in card root — idling with a heartbeat");
                 idle_blink(&mut led).await
             };
-            match obc_reader::read_header(&init_src) {
-                Ok(h) => {
-                    info!(
-                        "map: streaming from SD; bbox lon[{=i32}..{=i32}] lat[{=i32}..{=i32}]",
-                        h.bbox.min_lon, h.bbox.max_lon, h.bbox.min_lat, h.bbox.max_lat
-                    );
-                    (
-                        ((h.bbox.min_lon as i64 + h.bbox.max_lon as i64) / 2) as i32,
-                        ((h.bbox.min_lat as i64 + h.bbox.max_lat as i64) / 2) as i32,
-                    )
+            let slot = core::ptr::addr_of_mut!(MAP_TABLES) as *mut MapTables;
+            match MapTables::parse(&init_src) {
+                Ok(t) => {
+                    slot.write(t);
+                    &*slot
                 }
                 Err(e) => {
                     defmt::error!("map: not valid OBCM: {} — idling with a heartbeat", defmt::Debug2Format(&e));
@@ -889,6 +893,13 @@ async fn main(_spawner: Spawner) {
                 }
             }
         };
+        let b = map_tables.bbox;
+        info!(
+            "map: streaming from SD; bbox lon[{=i32}..{=i32}] lat[{=i32}..{=i32}]",
+            b.min_lon, b.max_lon, b.min_lat, b.max_lat
+        );
+        let (cam_lon, cam_lat) =
+            (((b.min_lon as i64 + b.max_lon as i64) / 2) as i32, ((b.min_lat as i64 + b.max_lat as i64) / 2) as i32);
 
         // Boot to **Home** (issue #126): the user drives Home → Route menu → Map with the buttons.
         // Built **in place** in `.bss` (`init_idle` writes each field where it sits; the ~74 KB
@@ -1246,12 +1257,13 @@ async fn main(_spawner: Spawner) {
                 // draws just its own chrome (it ignores the reader). So nothing map-related runs when no
                 // map is on screen; a non-map frame costs only its own draw + the push.
                 let needs_map = app.base_draws_map();
-                // Build the streamed `Reader` (against the session-long `MapCache` for cross-frame chunk
-                // reuse) **only** on a map frame, `None` otherwise. A transient SD read failure on a map
-                // frame fails the build → skip the redraw, keep the last frame, latch a retry (#66)
-                // rather than show a half-read map.
+                // Build the streamed `Reader` **only** on a map frame, `None` otherwise. Now a *cheap*
+                // borrow of the boot-parsed [`MAP_TABLES`] + a fresh `src` + the session-long
+                // `MapCache` (issue #179) — no style-table SD read, no parse, no stack spike. The only
+                // per-frame failure left is the source handle being momentarily unavailable (a flaky
+                // SD link); skip the redraw, keep the last frame, latch a retry (#66).
                 let map_src = if needs_map { storage.map_source() } else { None };
-                let reader = map_src.as_ref().and_then(|s| Reader::new(s, map_cache).ok());
+                let reader = map_src.as_ref().map(|s| Reader::new(s, map_tables, map_cache));
                 if needs_map && reader.is_none() {
                     pending_map_redraw = true;
                     defmt::warn!(

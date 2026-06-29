@@ -16,7 +16,7 @@
 
 use embedded_graphics::pixelcolor::Rgb888;
 use embedded_graphics::prelude::*;
-use obc_reader::{rgb565_to_rgb888, MapCache, Reader, SliceSource};
+use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader, SliceSource};
 use obc_render::{MapRenderer, Viewport, MAX_SPANS};
 use obcm_testkit::{build_priority_tree, pack_poly, Style};
 
@@ -66,7 +66,8 @@ fn priority_one_survives_saturation_across_chunks() {
     let bytes = build_priority_tree((0, 0, 1000, 1000), styles, chunk_size, nw_chunks, ne);
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let reader = Reader::new(&src, &cache).expect("valid v5 file");
+    let tables = MapTables::parse(&src).expect("valid v5 file");
+    let reader = Reader::new(&src, &tables, &cache);
 
     // North-up view centered on the bbox; the whole 1000×1000 map fits on screen.
     let vp = Viewport::new(200.0, 200.0, 500, 500, 0.15);

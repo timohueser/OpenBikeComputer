@@ -275,49 +275,40 @@ pub fn read_header(src: &dyn ByteSource) -> Result<MapHeader, Error> {
     parse_header(&h)
 }
 
-pub struct Reader<'a> {
-    /// The byte source the index + geometry chunks stream from. `&dyn` (not a generic) so the
-    /// renderer / app / screen signatures that hold a `&Reader` need no `<S>` parameter — the
-    /// same monomorphic shape the route [`RouteReader`](../../obc_route/struct.RouteReader.html)
-    /// uses.
-    src: &'a dyn ByteSource,
+/// The session-resident, immutable map tables — everything [`Reader`] needs that does **not** change
+/// frame to frame: the header scalars plus the style table and LOD pyramid. Parsed **once** per
+/// `.obcm` by [`MapTables::parse`]; a cheap per-frame [`Reader::new`] then borrows it alongside a
+/// fresh `src` + the [`MapCache`]. This keeps the device's per-frame reader ~tens of bytes — no
+/// re-parse, no 1536-byte style scratch, no per-frame style-table SD read (issue #179) — which is
+/// what kept the deep route-load render path inside the nRF's stack reserve; a host that doesn't
+/// care just keeps one on the stack and rebuilds it freely.
+pub struct MapTables {
     pub version: u8,
     pub bbox: BBox,
-    /// User-position marker color (RGB565), a global map-presentation property
-    /// stored in the header — resolved to a device pixel by the host's color
-    /// policy just like style colors, then drawn by [`obc_render`].
+    /// User-position marker color (RGB565), a global map-presentation property stored in the
+    /// header — resolved to a device pixel by the host's color policy just like style colors.
     pub marker_color: u16,
     /// LOD layers ordered coarsest (0) → finest (N-1). Always at least one.
     lods: Vec<Lod, 16>,
     /// Styles indexed by id (0..=255) for O(1) lookup during rendering.
     styles: [Option<Style>; 256],
-    /// Borrowed lazy-read cache for the streamed index + geometry. **Borrowed**, not owned, so
-    /// the ≈84 KB of buffers live in a caller-provided [`MapCache`] (the device places it once
-    /// in its reserved region and rebuilds the small `Reader` per frame, reusing the cache across
-    /// frames; the
-    /// host just makes one on the stack). `MapCache` keeps its own `RefCell` because `read_at`
-    /// (and so `for_each_chunk`/`for_each_feature_filtered`) take `&self` but the cache mutates;
-    /// the borrows are tightly scoped so the index-node read and the chunk decode never overlap.
-    cache: &'a MapCache,
 }
 
-impl<'a> Reader<'a> {
-    /// Parse the resident header / styles / LOD table from `src`, pairing the result with a
-    /// `cache` the geometry + index reads stream through. The cache is caller-owned and reusable
-    /// across frames (a chunk read last frame stays resident); pass a fresh [`MapCache::new`] if
-    /// you don't keep one around. Both borrows live as long as the `Reader`. Reusing one cache is
-    /// only sound while the *source is the same map* — if you point a new `Reader` at a different
-    /// `.obcm`, call [`MapCache::clear`] first or the old map's resident chunks cross-serve.
-    pub fn new(src: &'a dyn ByteSource, cache: &'a MapCache) -> Result<Reader<'a>, Error> {
+impl MapTables {
+    /// Parse the header scalars + style table + LOD pyramid from `src`. This is the one expensive,
+    /// allocating step — a 1536-byte style scratch plus the style/LOD-table SD reads — so do it
+    /// **once** per map and hand the result to [`Reader::new`] each frame (issue #179). A map shorter
+    /// than the header, with the wrong magic / version, or with out-of-range table offsets is
+    /// rejected exactly as the old `Reader::new` was. The magic / version / bbox / marker prefix is
+    /// parsed by the shared [`parse_header`] (so a cache-free [`read_header`] sees identical
+    /// validation); the style + LOD-table offsets that only the full reader needs are decoded here.
+    pub fn parse(src: &dyn ByteSource) -> Result<MapTables, Error> {
         let total = src.len() as usize;
         if total < HEADER_LEN {
             return Err(Error::TooShort);
         }
-        // The header is the one read that's fixed-size and always present; a short read here is
-        // the streamed equivalent of the old `data.len() < HEADER_LEN`. The magic / version / bbox
-        // / marker prefix is parsed by the shared [`parse_header`] (so a cache-free [`read_header`]
-        // sees identical validation); the style + LOD-table offsets that only the full reader needs
-        // are decoded here.
+        // The header is the one read that's fixed-size and always present; a short read here is the
+        // streamed equivalent of the old `data.len() < HEADER_LEN`.
         let mut header = [0u8; HEADER_LEN];
         src.read_at(0, &mut header).map_err(|_| Error::TooShort)?;
         let MapHeader { version, bbox, marker_color } = parse_header(&header)?;
@@ -343,8 +334,46 @@ impl<'a> Reader<'a> {
 
         let styles = parse_styles(src, style_offset, total);
         let lods = parse_lod_table(src, lod_table_offset, lod_count, total)?;
+        Ok(MapTables { version, bbox, marker_color, lods, styles })
+    }
+}
 
-        Ok(Reader { src, version, bbox, marker_color, lods, styles, cache })
+pub struct Reader<'a> {
+    /// The byte source the index + geometry chunks stream from. `&dyn` (not a generic) so the
+    /// renderer / app / screen signatures that hold a `&Reader` need no `<S>` parameter — the
+    /// same monomorphic shape the route [`RouteReader`](../../obc_route/struct.RouteReader.html)
+    /// uses.
+    src: &'a dyn ByteSource,
+    /// The header scalars, **copied** from [`MapTables`] (a handful of bytes) so existing
+    /// `reader.version` / `reader.bbox` / `reader.marker_color` field access is unchanged while the
+    /// big style/LOD tables stay borrowed below.
+    pub version: u8,
+    pub bbox: BBox,
+    pub marker_color: u16,
+    /// The session-resident immutable tables (style table + LOD pyramid), parsed once and
+    /// **borrowed** here — so a per-frame `Reader` carries no styles/lods of its own (issue #179).
+    tables: &'a MapTables,
+    /// Borrowed lazy-read cache for the streamed index + geometry. **Borrowed**, not owned, so
+    /// the ≈84 KB of buffers live in a caller-provided [`MapCache`] (the device places it once
+    /// in its reserved region and rebuilds the small `Reader` per frame, reusing the cache across
+    /// frames; the
+    /// host just makes one on the stack). `MapCache` keeps its own `RefCell` because `read_at`
+    /// (and so `for_each_chunk`/`for_each_feature_filtered`) take `&self` but the cache mutates;
+    /// the borrows are tightly scoped so the index-node read and the chunk decode never overlap.
+    cache: &'a MapCache,
+}
+
+impl<'a> Reader<'a> {
+    /// Build a per-frame reader over the pre-parsed [`MapTables`], a fresh byte `src`, and a `cache`
+    /// the geometry + index reads stream through. **Cheap**: it borrows the resident tables and
+    /// copies only the header scalars — no parse, no SD read (issue #179). The cache is caller-owned
+    /// and reusable across frames (a chunk read last frame stays resident); pass a fresh
+    /// [`MapCache::new`] if you don't keep one around. All three borrows live as long as the
+    /// `Reader`. Reusing one cache is only sound while the *source is the same map* — point a new
+    /// reader at a different `.obcm` and you must [`MapCache::clear`] first (and re-`parse` the
+    /// tables) or the old map's resident chunks cross-serve.
+    pub fn new(src: &'a dyn ByteSource, tables: &'a MapTables, cache: &'a MapCache) -> Reader<'a> {
+        Reader { src, version: tables.version, bbox: tables.bbox, marker_color: tables.marker_color, tables, cache }
     }
 
     /// A snapshot of the geometry-chunk cache + streaming counters of the paired [`MapCache`].
@@ -359,12 +388,12 @@ impl<'a> Reader<'a> {
     /// The parsed LOD pyramid (coarsest first).
     #[inline]
     pub fn lods(&self) -> &[Lod] {
-        &self.lods
+        &self.tables.lods
     }
 
     #[inline]
     pub fn style(&self, id: u8) -> Option<&Style> {
-        self.styles.get(id as usize).and_then(|s| s.as_ref())
+        self.tables.styles.get(id as usize).and_then(|s| s.as_ref())
     }
 
     /// The backdrop style: the one at the bottom of the paint order (lowest
@@ -372,7 +401,7 @@ impl<'a> Reader<'a> {
     /// background style sits here, so its color fills the screen before any
     /// geometry is drawn. Returns `None` only for an empty style table.
     pub fn backdrop_style(&self) -> Option<&Style> {
-        self.styles.iter().filter_map(|s| s.as_ref()).min_by_key(|s| (s.z_index, s.id))
+        self.tables.styles.iter().filter_map(|s| s.as_ref()).min_by_key(|s| (s.z_index, s.id))
     }
 
     /// Pick the finest LOD whose range still covers `mpp` (meters/pixel). The
@@ -380,7 +409,7 @@ impl<'a> Reader<'a> {
     /// valid index in `0..lods().len()`.
     pub fn select_lod_for_mpp(&self, mpp: f32) -> usize {
         let mut chosen = 0;
-        for (i, lod) in self.lods.iter().enumerate() {
+        for (i, lod) in self.tables.lods.iter().enumerate() {
             if lod.max_mpp >= mpp {
                 chosen = i;
             }
@@ -430,7 +459,7 @@ impl<'a> Reader<'a> {
     /// leaves. The walk only reads the index (bbox tests over `u32` nodes), so
     /// re-running it once per priority pass is cheap relative to decoding.
     pub fn for_each_chunk(&self, lod: usize, view: &BBox, mut visit: impl FnMut(u32, BBox)) {
-        if let Some(l) = self.lods.get(lod) {
+        if let Some(l) = self.tables.lods.get(lod) {
             if l.node_count > 0 {
                 self.walk_leaves(l, 0, self.bbox, view, 0, &mut visit);
             }
@@ -527,7 +556,7 @@ impl<'a> Reader<'a> {
         should_decode: impl Fn(u8) -> bool,
         visit: impl FnMut(FeatureRef),
     ) {
-        let l = match self.lods.get(lod) {
+        let l = match self.tables.lods.get(lod) {
             Some(l) => l,
             None => return,
         };
@@ -549,7 +578,7 @@ impl<'a> Reader<'a> {
         }
         // Pull the chunk through the cache (a hit if a prior priority pass read it this frame),
         // then decode from the resident bytes. The borrow is held across `decode_chunk_into` —
-        // safe because `should_decode`/`visit` only touch `self.styles`, never the cache.
+        // safe because `should_decode`/`visit` only touch `self.tables.styles`, never the cache.
         let mut cache = self.cache.borrow_mut();
         let loc = match cache.load_chunk(self.src, lod as u8, chunk_id, start as u32, len) {
             Ok(loc) => loc,

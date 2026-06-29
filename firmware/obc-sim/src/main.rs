@@ -33,7 +33,7 @@ use obc_app::{
     App, AppState, Button, ButtonEvent, CompassSource, Fix, InputClock, InputEvent, InputSource, LocationSource,
     RideClock, Sensors, TrackAction, TrackSink,
 };
-use obc_reader::{rgb565_to_device64, rgb565_to_rgb888, MapCache, Reader, SliceSource};
+use obc_reader::{rgb565_to_device64, rgb565_to_rgb888, MapCache, MapTables, Reader, SliceSource};
 use obc_render::text::{draw_text, Font, TextAlign};
 
 mod calib;
@@ -513,10 +513,11 @@ fn main() {
     {
         let cache = MapCache::new();
         let src = SliceSource(&bytes);
-        let reader = Reader::new(&src, &cache).unwrap_or_else(|e| {
+        let tables = MapTables::parse(&src).unwrap_or_else(|e| {
             eprintln!("invalid OBCM file: {e:?}");
             std::process::exit(1);
         });
+        let reader = Reader::new(&src, &tables, &cache);
         eprintln!(
             "OBCM v{} | bbox {:?} | {} LODs | {} styles",
             reader.version,
@@ -536,7 +537,8 @@ fn main() {
     if let Some(path) = &args.png {
         let cache = MapCache::new();
         let src = SliceSource(&bytes);
-        let reader = Reader::new(&src, &cache).expect("validated above");
+        let tables = MapTables::parse(&src).expect("validated above");
+        let reader = Reader::new(&src, &tables, &cache);
         let (mut cx, mut cy, mut zoom) = initial_camera(&reader, args.width);
         if let Some((lon, lat)) = args.center {
             cx = lon;

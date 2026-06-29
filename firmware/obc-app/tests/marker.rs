@@ -5,7 +5,7 @@
 
 use embedded_graphics::pixelcolor::Rgb888;
 use obc_app::{App, AppState, CameraMode, Fix, RideClock, Sensors};
-use obc_reader::{rgb565_to_rgb888, MapCache, Reader, SliceSource};
+use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader, SliceSource};
 
 mod common;
 use common::{build_min_obcm, Buf, ReplayFix};
@@ -19,7 +19,8 @@ const RED: Rgb888 = Rgb888::new(255, 0, 0);
 fn render(app: &mut App, bytes: &[u8]) -> Buf {
     let cache = MapCache::new();
     let src = SliceSource(bytes);
-    let reader = Reader::new(&src, &cache).expect("valid v5 file");
+    let tables = MapTables::parse(&src).expect("valid v5 file");
+    let reader = Reader::new(&src, &tables, &cache);
     let mut buf = Buf::new(120, 120);
     app.render_frame(&mut buf, &reader, None, 120.0, 120.0, |c| {
         let (r, g, b) = rgb565_to_rgb888(c);
