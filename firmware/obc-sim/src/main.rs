@@ -126,6 +126,14 @@ struct Args {
     /// Home/Idle screensaver. The native GUI always boots to Home; the web demo sets
     /// this so the page opens on the moving map.
     start_on_map: bool,
+    /// Initial battery charge (0–100 %) shown on the Home gauge; the device has no fuel gauge
+    /// wired yet, so this stands in for it. Defaults to full. Handy to preview the level
+    /// colours (`--battery 15` → red, `--battery 50` → amber, `--battery 90` → green).
+    battery: Option<u8>,
+    /// Seed for the Home screensaver's contour pattern, to preview the per-open jitter (`0` =
+    /// the canonical massif). On the device the seed is the wall-clock millis at each return to
+    /// Home; this pins it for a headless render.
+    home_seed: Option<u32>,
 }
 
 impl Default for Args {
@@ -156,6 +164,8 @@ impl Default for Args {
             palette: false,
             colorway: None,
             start_on_map: false,
+            battery: None,
+            home_seed: None,
         }
     }
 }
@@ -230,6 +240,14 @@ fn parse_args() -> Result<Args, String> {
             "--calibrate" => a.calibrate = true,
             "--palette" => a.palette = true,
             "--colorway" => a.colorway = Some(it.next().ok_or("--colorway needs a name")?),
+            "--battery" => {
+                a.battery = Some(
+                    it.next().and_then(|s| s.parse().ok()).filter(|&b| b <= 100).ok_or("--battery needs 0..=100")?,
+                )
+            }
+            "--home-seed" => {
+                a.home_seed = Some(it.next().and_then(|s| s.parse().ok()).ok_or("--home-seed needs a u32")?)
+            }
             other => {
                 if a.map.is_empty() {
                     a.map = other.to_string();
@@ -342,7 +360,7 @@ fn replay_step<'s>(
     player.advance(dt);
     baro.feed(player.elevation_at(player.time()), player.time());
     let now_ms = (player.time() * 1000.0) as u32;
-    let sensors = Sensors { loc: player, altimeter: Some(baro), compass, track };
+    let sensors = Sensors { loc: player, altimeter: Some(baro), compass, track, fuel: None };
     app.tick(RideClock(now_ms), sensors, route);
 }
 
@@ -449,7 +467,7 @@ fn main() {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: obc-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate] [--colorway NAME]");
+            eprintln!("error: {e}\nusage: obc-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--home-seed N]");
             std::process::exit(2);
         }
     };
@@ -554,6 +572,9 @@ fn main() {
         }
         zoom *= args.zoom_mul;
         let mut state = AppState::new(cx, cy, zoom);
+        if let Some(b) = args.battery {
+            state.battery_pct = b;
+        }
         // `--heading` renders a rotated (heading-up) frame headlessly; the rotation
         // is derived from the fix's course, so seed one at the map center.
         if let Some(deg) = args.heading {
@@ -588,6 +609,9 @@ fn main() {
             }
         }
         let mut app = if args.boot { App::new_idle(state) } else { App::new(state) };
+        if let Some(seed) = args.home_seed {
+            app.reseed_home(seed);
+        }
         // Load the routes folder so the Route menu has real entries and a picked route
         // can be drawn (the device reads the same off its SD card).
         let mut store = RouteStore::open(args.routes_dir());

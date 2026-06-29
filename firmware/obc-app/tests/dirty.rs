@@ -9,7 +9,8 @@
 //! first (the host's mandatory first paint) and then asserts about the *next* frame.
 
 use obc_app::{
-    App, AppState, Button, Dirty, Fix, InputClock, InputEvent, LocationSource, RideClock, RouteSummary, Sensors,
+    App, AppState, Button, Dirty, Fix, FuelGauge, InputClock, InputEvent, LocationSource, RideClock, RouteSummary,
+    Sensors,
 };
 use obc_reader::BBox;
 
@@ -22,7 +23,7 @@ const BERLIN: (i32, i32) = (52_520_000, 13_405_000); // (lat, lon) µdeg
 
 /// Tick with one (or no) fix at `t`, no route, no other sensors.
 fn tick(app: &mut App, loc: &mut dyn LocationSource, t: u32) {
-    app.tick(RideClock(t), Sensors { loc, altimeter: None, compass: None, track: None }, None);
+    app.tick(RideClock(t), Sensors { loc, altimeter: None, compass: None, track: None, fuel: None }, None);
 }
 /// Drive a full frame (input + tick) and drain it. `evs` is this frame's input.
 fn frame(app: &mut App, loc: &mut dyn LocationSource, t: u32, evs: &[InputEvent]) -> Dirty {
@@ -146,4 +147,55 @@ fn statistics_spring_back_is_wired_into_the_dirty_signal() {
     assert!(idle_frame(&mut app, 30 + 4_000).map, "the spring-back dirties the map at the deadline");
     // One-shot: the frame after is quiet again.
     assert_eq!(idle_frame(&mut app, 30 + 4_100), Dirty::CLEAN, "spring-back fires only once");
+}
+
+// --- the battery gauge: slow polling + redraw only on an actual change -------
+
+/// A [`FuelGauge`] that counts its polls and reports a settable level — so a test can prove the
+/// app reads it on a *cadence* (not every frame) and only on a real change repaints.
+struct CountingGauge {
+    value: u8,
+    polls: u32,
+}
+impl FuelGauge for CountingGauge {
+    fn poll(&mut self) -> Option<u8> {
+        self.polls += 1;
+        Some(self.value)
+    }
+}
+
+#[test]
+fn battery_is_polled_on_a_slow_cadence_and_redraws_home_only_on_change() {
+    // The two guarantees the gauge must honour: it is read a few times a minute, *not* every
+    // ~8 ms frame (so a real I²C read never spins), and an unchanged level repaints nothing.
+    let mut app = App::new_idle(AppState::new(0, 0, 0.05)); // [Home]; battery_pct defaults to 75
+    let _ = app.take_dirty(); // drain the mandatory first frame
+
+    let mut gauge = CountingGauge { value: 75, polls: 0 };
+    // Tick on Home with the gauge, returning whether Home (the map plane) was dirtied.
+    let beat = |app: &mut App, gauge: &mut CountingGauge, t: u32| {
+        let s = Sensors { loc: &mut NoFix, altimeter: None, compass: None, track: None, fuel: Some(gauge) };
+        app.tick(RideClock(t), s, None);
+        app.take_dirty().map
+    };
+
+    // The first tick forces a read; 75 % matches the boot default, so nothing redraws.
+    assert!(!beat(&mut app, &mut gauge, 0), "an unchanged level redraws nothing");
+    assert_eq!(gauge.polls, 1, "polled once on the first tick");
+
+    // A burst of frames inside the 30 s window: the gauge is NOT re-read, nothing redraws.
+    for t in [10, 250, 5_000, 29_999] {
+        assert!(!beat(&mut app, &mut gauge, t), "no redraw between cadence reads");
+    }
+    assert_eq!(gauge.polls, 1, "not re-read every frame — no per-frame I²C traffic");
+
+    // At the cadence it is read again, but the value is unchanged ⇒ Home still does not redraw.
+    assert!(!beat(&mut app, &mut gauge, 30_000), "an unchanged reading at the cadence still redraws nothing");
+    assert_eq!(gauge.polls, 2, "read once the 30 s cadence elapsed");
+
+    // A changed level is only seen at the next cadence — and then it repaints Home and is stored.
+    gauge.value = 60;
+    assert!(!beat(&mut app, &mut gauge, 45_000), "still inside the window since the last read");
+    assert!(beat(&mut app, &mut gauge, 60_000), "a changed level repaints Home");
+    assert_eq!(app.state.battery_pct, 60, "and the new level is stored");
 }

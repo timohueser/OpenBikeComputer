@@ -16,7 +16,7 @@
 
 use embedded_graphics::{
     prelude::*,
-    primitives::{Circle, PrimitiveStyle, Rectangle, RoundedRectangle, Triangle},
+    primitives::{Circle, Line, PointsIter, PrimitiveStyle, Rectangle, RoundedRectangle, Triangle},
 };
 
 use crate::text::{draw_text, Font, TextAlign};
@@ -84,6 +84,18 @@ where
     /// line. `w` widens it to a solid bar.
     pub fn vline(&mut self, x: i32, y: i32, len: i32, w: i32, color: u16) {
         self.fill(rect(x, y, w.max(1), len), color);
+    }
+
+    /// A 1px straight line between two points — e.g. one marching-squares contour
+    /// segment on the Home background.
+    ///
+    /// Draws the bare Bresenham pixel stream (`points()`), **not** a styled 1px stroke: the Home
+    /// contour emits *thousands* of tiny segments per frame, and the styled-stroke path rebuilds
+    /// its thick-line (perpendicular-extent) machinery on every one — pure per-segment overhead at
+    /// width 1. Walking the points straight into `draw_iter` skips all of it.
+    pub fn line(&mut self, a: Point, b: Point, color: u16) {
+        let color = self.c(color);
+        let _ = self.target.draw_iter(Line::new(a, b).points().map(|p| Pixel(p, color)));
     }
 
     /// A filled triangle (e.g. a list pointer bullet).

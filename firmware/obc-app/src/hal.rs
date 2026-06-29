@@ -88,6 +88,25 @@ pub trait CompassSource {
     fn poll(&mut self) -> Option<f32>;
 }
 
+/// Source of the **battery state of charge** from the device's PMIC fuel gauge (e.g. an
+/// nPM1300 over I²C). Unlike the other sensors, the app polls this on a **slow cadence** (~30 s,
+/// not every tick — see `App::tick`), since battery charge drifts over minutes and a real I²C
+/// read shouldn't run at the frame rate. It stores the reading in
+/// [`AppState::battery_pct`](crate::AppState::battery_pct), where the Home gauge draws it. Until a
+/// real gauge is wired, a host supplies a fixed-value stub (`obc_platform::StubFuelGauge`); a sim
+/// may drive it from a control.
+///
+/// [`poll`](FuelGauge::poll) returns `Some(percent)` (0–100) when a reading is available and
+/// `None` otherwise (gauge not ready / bus error) — the app keeps the last value on `None`. A
+/// reading that *changes* the stored level repaints the screensaver; an unchanged one is free (so
+/// a constant stub never redraws). Out-of-range values are the host's to clamp. Because the app
+/// already throttles the call, an implementation may read the hardware directly each `poll`
+/// without its own rate-limit.
+pub trait FuelGauge {
+    /// The latest battery charge in percent (0–100), or `None` if no reading is available.
+    fn poll(&mut self) -> Option<u8>;
+}
+
 /// Sink for the recorded ride **track** — where each accepted fix is logged so the ride can
 /// be saved as a `.gpx`. The app encodes the [`TrackPoint`](obc_route::TrackPoint) (so the
 /// firmware and sim share one record format) and hands it here; the host appends the bytes
@@ -118,6 +137,10 @@ pub struct Sensors<'a> {
     /// The recorded-track sink, or `None` when nothing is logging (the sim's manual panel,
     /// tests) — the ride then simply isn't recorded.
     pub track: Option<&'a mut dyn TrackSink>,
+    /// The battery fuel gauge, or `None` when none is wired (tests) — the gauge then holds its
+    /// last value (the boot stand-in). Read on the app's slow battery cadence (~30 s), on every
+    /// screen, since the Home screensaver shows the battery while idle, not just while riding.
+    pub fuel: Option<&'a mut dyn FuelGauge>,
 }
 
 /// Persistent store for the device [`Settings`] — the seam that keeps the *what* (the

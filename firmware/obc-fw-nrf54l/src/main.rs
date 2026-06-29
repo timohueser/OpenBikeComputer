@@ -199,6 +199,8 @@ use obc_route::{RouteCache, RouteIndex, RouteReader};
 // instead). Walks a slow square loop so a saved ride is a non-degenerate `.gpx`.
 #[cfg(not(feature = "debug-uart"))]
 use obc_platform::SynthLocation;
+// Battery fuel gauge: a fixed-level stand-in until the nPM1300 PMIC gauge is read (issue follow-up).
+use obc_platform::StubFuelGauge;
 
 // LS021 FLPR backend (issue #165): the resident-framebuffer `DisplayDriver` backend + its launch, and the
 // free-running COM driver. The FLPR scans the whole frame in one push, so there is no banded ST7789
@@ -974,6 +976,9 @@ async fn run_app(
     );
     #[cfg(not(feature = "debug-uart"))]
     let mut synth = SynthLocation::new(cam_center.0, cam_center.1, Instant::now());
+    // Battery: a fixed 75 % stand-in until the nPM1300 PMIC fuel gauge is wired in (see
+    // `obc_platform::fuel`). Polled in `Sensors` like any other sensor, on both build paths.
+    let mut fuel = StubFuelGauge::new(75);
 
     // Per-frame ride-loop state:
     // - `prev_route` re-centres SynthLocation onto a freshly-loaded route's start (debug-uart-off
@@ -1113,13 +1118,14 @@ async fn run_app(
                 altimeter: Some(&mut debug_alt),
                 compass: Some(&mut debug_compass),
                 track: track_dyn,
+                fuel: Some(&mut fuel),
             },
             route.as_ref(),
         );
         #[cfg(not(feature = "debug-uart"))]
         app.tick(
             RideClock(now),
-            Sensors { loc: &mut synth, altimeter: None, compass: None, track: track_dyn },
+            Sensors { loc: &mut synth, altimeter: None, compass: None, track: track_dyn, fuel: Some(&mut fuel) },
             route.as_ref(),
         );
 
@@ -1233,10 +1239,13 @@ async fn run_app(
                         fp.stats.map_chunk_misses
                     );
                 } else {
+                    // `contour_us` is non-zero only on the Home screensaver (its marching-squares
+                    // backdrop); it's 0 for the menus / Statistics, where the line reads "contour 0 us".
                     defmt::info!(
-                        "ui frame: render {=u64} us + push {=u64} us (screen redraw, no map)",
+                        "ui frame: render {=u64} us + push {=u64} us | contour {=u32} us (screen redraw, no map)",
                         fp.render_us,
-                        fp.push_us
+                        fp.push_us,
+                        fp.stats.contour_us
                     );
                 }
             }
