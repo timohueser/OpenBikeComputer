@@ -9,11 +9,10 @@ in the [repo README](../README.md#repository-layout).
 
 The host workspace (`firmware/Cargo.toml`) builds the shared `no_std` crates
 (`obc-reader`, `obc-route`, `obc-render`, `obc-app`), the desktop simulator
-(`obc-sim`), the map packer (`obc-pack`), and the test/host helpers. The two
-**board crates** — `obc-fw-stm32f429` and `obc-fw-nrf54l` — are **`exclude`d**
-from the workspace (each has its own MCU target + `.cargo/config.toml`) and are
-built on their own; see [`obc-fw-nrf54l/README.md`](obc-fw-nrf54l/README.md) for
-the real-hardware target.
+(`obc-sim`), the map packer (`obc-pack`), and the test/host helpers. The
+**board crate** — `obc-fw-nrf54l` — is **`exclude`d** from the workspace (it has
+its own MCU target + `.cargo/config.toml`) and is built on its own; see
+[`obc-fw-nrf54l/README.md`](obc-fw-nrf54l/README.md) for the real-hardware target.
 
 ## Prerequisites
 
@@ -57,13 +56,12 @@ cargo test -p obc-pack    # just the packer (fixtures under ../packer/tests/corp
 `rustfmt.toml` is committed (`max_width = 120`, `use_small_heuristics = "Max"`),
 so let rustfmt own style — don't hand-format. Formatting takes **two
 invocations**, and CI checks both (the workspace is a *virtual* manifest, so
-`--all` is required or it formats nothing; the board crates are excluded, so
-`--all` skips them):
+`--all` is required or it formats nothing; the board crate is excluded, so
+`--all` skips it):
 
 ```sh
-cargo fmt --all                                       # the workspace
-cargo fmt --manifest-path obc-fw-stm32f429/Cargo.toml # each board crate,
-cargo fmt --manifest-path obc-fw-nrf54l/Cargo.toml    #   separately
+cargo fmt --all                                    # the workspace
+cargo fmt --manifest-path obc-fw-nrf54l/Cargo.toml # the board crate, separately
 ```
 
 ## Run the simulator

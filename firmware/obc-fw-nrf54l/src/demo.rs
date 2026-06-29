@@ -1,6 +1,5 @@
-//! On-glass font + palette bring-up demo — the nRF analog of the STM32's
-//! [`demo.rs`](../../obc-fw-stm32f429/src/demo.rs) (issue #33) and the simulator's
-//! `--text-demo` / `--palette` modes.
+//! On-glass font + palette bring-up demo (issue #33) — the nRF analog of the
+//! simulator's `--text-demo` / `--palette` modes.
 //!
 //! It draws two things, in frame-absolute coordinates: the **Terminus font ladder** (the three
 //! size tiers, `obc_render::text`) and the device's **64-colour gamut** (the LS021B7DD02's RGB222
