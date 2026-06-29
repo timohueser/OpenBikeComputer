@@ -11,9 +11,8 @@
 //! Modules:
 //! - [`framebuffer`] — the board-owned [`DrawTarget`](embedded_graphics::draw_target::DrawTarget)s
 //!   the shared renderer draws into: the nRF's device-native RGB222 map plane ([`FbDevice64`], 1
-//!   byte/px — the real target, issue #125), the STM32 prototype's LTDC-scanned RGB565 plane
-//!   ([`Framebuffer565`]), and the transparent ARGB4444 overlay plane ([`FramebufferArgb4444`],
-//!   the dual-layer display's second layer — issue #46).
+//!   byte/px — the real target, issue #125) and the STM32 prototype's LTDC-scanned RGB565 plane
+//!   ([`Framebuffer565`]).
 //! - [`panel`] — the [`Panel`] banded-display seam + the [`Band`] frame-absolute band view, for
 //!   boards that stream a frame over SPI/DMA instead of scanning SDRAM (issue #122).
 //! - [`button_input`] — a [`ButtonInput`] debouncer over four
@@ -22,8 +21,6 @@
 //! - [`sd`] — FatFs [`ByteSource`](obc_route::ByteSource)/[`ByteSink`](obc_route::ByteSink)
 //!   and [`TrackSink`](obc_app::TrackSink) adapters over an [`embedded_sdmmc`] SD card, so
 //!   maps/routes load and rides save against a real card (issue #36).
-//! - [`time`] — [`SaturatingElapsed`], the panic-free `Instant::elapsed()` (issue #51); a
-//!   generic embassy-time property, so every board reuses one copy rather than re-deriving it.
 //! - [`synth`] — [`SynthLocation`], a board-agnostic synthetic moving
 //!   [`LocationSource`](obc_app::LocationSource) — the `debug-usb`-off fallback fake GPS that
 //!   walks a slow square loop (always compiled, *not* behind `debug-usb`, since it *is* the
@@ -85,14 +82,12 @@ pub mod ls021_wire;
 pub mod panel;
 pub mod sd;
 // Always compiled — the synthetic GPS is the `debug-usb`-OFF fallback, so it must exist without
-// the `debug-usb` feature; `time` it depends on is board-agnostic embassy-time glue.
+// the `debug-usb` feature.
 pub mod synth;
-pub mod time;
 
 pub use button_input::{ButtonInput, Timing};
-pub use framebuffer::{device64_to_rgb565, FbDevice64, Framebuffer565, FramebufferArgb4444};
+pub use framebuffer::{device64_to_rgb565, FbDevice64, Framebuffer565};
 pub use ls021_wire::pack_row as ls021_pack_row;
 pub use panel::{Band, Panel};
 pub use sd::{SdByteSink, SdByteSource, SdTrackSink};
 pub use synth::SynthLocation;
-pub use time::SaturatingElapsed;
