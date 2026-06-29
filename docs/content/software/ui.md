@@ -486,7 +486,7 @@ The UI is styled like a weatherproof field map — a wood frame, a parchment pan
   <text class="d-sub" x="596" y="129" style="font-size:9px">Settings</text>
   <line x1="566" y1="138" x2="674" y2="138" stroke="#aaaa55" stroke-width="1" />
 </svg>
-<figcaption>Drawing happens through a small <code>Canvas</code> in the renderer (rounded rects, text in three font tiers, triangles, rules) — the same primitives for every screen, so the Menu, the Route list and the Elevation header share one look. There's no theming engine; the palette is a handful of named constants.</figcaption>
+<figcaption>Drawing happens through a small <code>Canvas</code> in the renderer (rounded rects, text in four font tiers, triangles, lines, rules) — the same primitives for every screen, so the Menu, the Route list and the Elevation header share one look. There's no theming engine; the palette is a handful of named constants.</figcaption>
 </figure>
 
 ---
