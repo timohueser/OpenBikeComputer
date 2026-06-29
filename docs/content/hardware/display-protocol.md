@@ -200,9 +200,13 @@ What the counts mean:
 - **120 pixel-pair columns per sub-line** + a few dummy/flush columns that push the last columns through the source shift register. Because the panel is **DDR** (a pair per `BCK` *edge*, see above), those 120 columns are clocked in **~60 `BCK` cycles**, not 120.
 - **`GSP`** is pulsed once at frame start and released on the first `GCK` edge so its high overlaps `GCK(1)`.
 
-### Partial update — why this panel suits low-power UIs
+### Partial update — a span-masked gate scan
 
-Because pixel memory is retained, you do **not** have to rewrite the whole frame. You can fast-forward `GCK` over the rows you are *not* changing — with `GEN` inactive so nothing latches — and only do the shift-and-latch work on the rows that changed. Skipping a row costs a single fast `GCK` advance instead of two full sub-line writes. For a UI that changes a few fields per second, that is a large power win, and it dovetails with the renderer's [redraw-only-what-changed](../../software/rendering/) design.
+Because pixel memory is retained you do **not** have to rewrite the whole frame, and the firmware doesn't. The FLPR backend drives a **span-masked scan**: given the row-spans that changed, it fast-forwards `GCK` over every clean row — `GEN` inactive, so nothing latches — does the shift-and-latch work only on the dirty rows, and **stops early** after the last one (drop `INTB`; the panel holds everything below). A skipped row costs one fast `GCK` advance instead of two full sub-line writes, so a frame scales with the number of *changed rows*, not a flat 320.
+
+The grain is a **whole row**, though: touching any row re-latches all 240 of its columns — the source shift register feeds the entire line — so there is no cheap "just these few columns." A partial update is a set of full-width row-spans; a 16-px-wide right-edge overlay still rewrites its rows full-width, and is cheap only because it touches *few rows*, not few columns.
+
+The hold-progress bulge rides exactly this: as it animates, only its rows re-push — a fraction of a full-frame scan — while the rest of the map stays untouched and asleep. It's the renderer's [redraw-only-what-changed](../../software/rendering/) design carried onto the glass, and for a UI that changes a few fields per second, a large power win.
 
 ## Power-on, power-off, and retention
 
