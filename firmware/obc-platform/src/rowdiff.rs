@@ -140,6 +140,35 @@ impl<const H: usize> Default for RowDiff<H> {
     }
 }
 
+/// Emit the changed-row span `[y0, y0+n)` with the half-open `exclude` interval `[e0, e1)` removed, as
+/// up to two ascending, disjoint sub-spans — the **bulge-coordination clip** the LS021/FLPR
+/// self-diffing present runs (issue #201/#163).
+///
+/// When the hold bulge is live, the map present pushes the changed rows *around* it and leaves the
+/// bulge's rows for the overlay composite that immediately follows: presenting them clean here would
+/// blank the bulge until the composite repaints them (the "pop flicker" when a redraw lands mid-pop, on
+/// the long-press screen transition). So a changed span straddling the bulge splits in two, a span
+/// entirely inside it emits nothing, and a span clear of it passes through whole. `None` ⇒ no live
+/// bulge, the span always passes through. (Pure span arithmetic, kept here beside [`diff_rows`] so its
+/// edge cases are exercised in CI rather than only on glass.)
+pub fn clip_span(y0: u16, n: u16, exclude: Option<(u16, u16)>, emit: &mut impl FnMut(u16, u16)) {
+    let (a, b) = (y0, y0 + n); // the changed span [a, b)
+    let (e0, e1) = match exclude {
+        Some(e) => e,
+        None => return emit(a, n),
+    };
+    // Left piece: rows of [a, b) below the bulge start.
+    let left_end = b.min(e0);
+    if a < left_end {
+        emit(a, left_end - a);
+    }
+    // Right piece: rows of [a, b) at/after the bulge end.
+    let right_start = a.max(e1);
+    if right_start < b {
+        emit(right_start, b - right_start);
+    }
+}
+
 /// The exact-diff **oracle** (epic #199): count how many rows that *actually* changed between
 /// `prev_fb` and `cur_fb` the hash-diff's `spans` failed to cover. `0` ⇒ the hash-diff covered every
 /// real change (the honest case); non-zero ⇒ a *systematic* miss — a hash-diff bug for CI to fail
@@ -278,6 +307,46 @@ mod tests {
         spans.clear();
         rd.diff(&fb, 3, |y0, n| spans.push((y0, n)));
         assert_eq!(spans, vec![(0, 6)]);
+    }
+
+    /// Collect [`clip_span`]'s emitted sub-spans for `[y0, y0+n)` minus `exclude`.
+    fn clip(y0: u16, n: u16, exclude: Option<(u16, u16)>) -> Vec<(u16, u16)> {
+        let mut out = Vec::new();
+        clip_span(y0, n, exclude, &mut |s, c| out.push((s, c)));
+        out
+    }
+
+    #[test]
+    fn clip_span_no_exclude_passes_through() {
+        assert_eq!(clip(10, 5, None), vec![(10, 5)]);
+    }
+
+    #[test]
+    fn clip_span_clear_of_exclude_passes_through() {
+        // Span entirely below the bulge, and entirely above it.
+        assert_eq!(clip(0, 10, Some((20, 30))), vec![(0, 10)]);
+        assert_eq!(clip(40, 10, Some((20, 30))), vec![(40, 10)]);
+    }
+
+    #[test]
+    fn clip_span_straddling_exclude_splits_in_two() {
+        // [0, 100) minus the bulge [40, 60) → [0, 40) and [60, 100).
+        assert_eq!(clip(0, 100, Some((40, 60))), vec![(0, 40), (60, 40)]);
+    }
+
+    #[test]
+    fn clip_span_inside_exclude_emits_nothing() {
+        // A changed span fully within the bulge is owned by the overlay composite — push nothing.
+        assert_eq!(clip(45, 10, Some((40, 60))), Vec::new());
+    }
+
+    #[test]
+    fn clip_span_boundaries_are_half_open() {
+        // Touching the exclude start from below keeps the [a, e0) part; reaching exactly e1 keeps from e1.
+        assert_eq!(clip(30, 20, Some((40, 60))), vec![(30, 10)]); // [30,50) minus [40,60) → [30,40)
+        assert_eq!(clip(50, 20, Some((40, 60))), vec![(60, 10)]); // [50,70) minus [40,60) → [60,70)
+                                                                  // A span that exactly equals the exclude interval emits nothing.
+        assert_eq!(clip(40, 20, Some((40, 60))), Vec::new());
     }
 
     #[test]

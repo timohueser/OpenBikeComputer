@@ -182,7 +182,7 @@ use obc_app::{
     App, AppState, Gesture, InputClock, InputEvent, InputPlane, InputSource, RideClock, Sensors, SettingsStore,
     TrackSink,
 };
-use obc_platform::{ButtonInput, FbDevice64};
+use obc_platform::{ButtonInput, FbDevice64, RowDiff};
 use obc_reader::{MapCache, MapTables, Reader};
 use obc_render::{zoom_for_mpp, RenderStats};
 // The N6 ride loop (#127): the decoded-route-geometry cache, the resident per-route chunk index,
@@ -317,6 +317,7 @@ const FB_BYTES: usize = st7789::WIDTH as usize * st7789::HEIGHT as usize;
 /// part it shares the budget like the caches do.
 const RESIDENT_BYTES: usize = core::mem::size_of::<obc_app::App>()
     + FB_BYTES
+    + core::mem::size_of::<RowDiff<{ HEIGHT as usize }>>() // the self-diffing present store (#201, 1.28 KB)
     + core::mem::size_of::<obc_reader::MapCache>()
     + core::mem::size_of::<obc_reader::MapTables>()
     + core::mem::size_of::<obc_route::RouteCache>()
@@ -343,6 +344,14 @@ const _: () = assert!(
 /// owned by the `Ls021Flpr` panel — the map plane renders into it and `push_frame` packs it straight
 /// to the LS021 wire.
 static mut FB: [u8; FB_BYTES] = [0; FB_BYTES];
+
+/// The **self-diffing present** store (issue #201/#200): one 32-bit hash per framebuffer row of the
+/// last-pushed frame, in `.bss` (320 rows = 1.28 KB). The active display backend borrows it (`&mut`)
+/// and, on present, re-hashes each row and pushes only the rows whose hash changed — so a Home clock
+/// tick re-presents its clock band instead of all 320 rows (~97 ms → a few ms on the FLPR). One store,
+/// borrowed by whichever backend is compiled (only one is). `RowDiff::new()` is all-zero (+ the unprimed
+/// flag) ⇒ a `.bss` static, and the first present force-pushes the whole frame to seed it.
+static mut ROW_DIFF: RowDiff<{ HEIGHT as usize }> = RowDiff::new();
 
 /// The streamed-map geometry cache + the shared [`App`], placed in `.bss` and built **in place**
 /// (a `ptr::write` into the reserved region): the ~96 KB `App` (incl. the
@@ -555,29 +564,11 @@ const OVL_ROWS: u16 = 192;
 const _: () =
     assert!(OVL_W as usize * OVL_ROWS as usize <= WIDTH as usize * BAND_ROWS, "overlay window larger than BAND");
 
-/// The map row-spans **outside** a live bulge's rows `[y0, y0 + rows)` — the complement the FLPR map
-/// plane presents when it redraws *while the bulge is live*, leaving the bulge's rows for the overlay
-/// composite that immediately follows (issue #163).
-///
-/// Why not just present the whole frame and re-composite the bulge after? The FLPR's full-frame scan
-/// is ~100 ms; presenting the bulge rows clean here would blank the bulge for that entire scan before
-/// the composite repaints it — the "pop flicker" the user sees when a redraw lands mid-pop (the screen
-/// transition a completed long-press fires). Skipping the bulge rows leaves them holding the previous
-/// bulge on glass (the gate fast-forwards over them, latching nothing) until the composite repaints
-/// them with the fresh map backdrop + bulge, so the bulge never flashes off. Returns 0–2 ascending,
-/// disjoint spans (a bulge mid-panel splits the frame in two; one flush against an edge yields one).
-#[cfg(not(feature = "tft"))]
-fn map_rows_around(y0: u16, rows: u16) -> heapless::Vec<(u16, u16), 2> {
-    let mut spans = heapless::Vec::new();
-    if y0 > 0 {
-        let _ = spans.push((0, y0));
-    }
-    let end = y0 + rows;
-    if end < HEIGHT {
-        let _ = spans.push((end, HEIGHT - end));
-    }
-    spans
-}
+// The live-bulge "present the rows *around* it" discipline (issue #163) now lives **inside** the
+// self-diffing present: the FLPR map plane passes the bulge's row span to `Ls021Flpr::present_within`,
+// which clips it out of the changed-row spans it pushes (`obc_platform::clip_span`). The map present
+// leaves those rows for `MapDisplay::present_bulge`, exactly as the old free-standing `map_rows_around`
+// did — but only the *changed* rows around the bulge are pushed now, not the whole complement.
 
 /// Chains two input sources for the gesture recogniser: drains `a` (the physical buttons) fully,
 /// then `b` (the VCOM-injected `K` events with `debug-uart`, else [`NullInput`]). So a host can
@@ -822,7 +813,7 @@ impl MapDisplay {
 
     /// No-op: the ST7789 hold bulge is pushed by the input/overlay plane, not the map loop.
     #[inline(always)]
-    fn present_bulge(&mut self, _span: Option<(u16, u16)>, _dirty: bool, _map_redrew: bool) {}
+    fn present_bulge(&mut self, _span: Option<(u16, u16)>, _dirty: bool) {}
 
     /// The ST7789 map loop can't see the input plane (its bulge rides the overlay plane), so the
     /// in-screen hold fills (the Reset bar) aren't driven on this dev-only backend — report no
@@ -871,12 +862,15 @@ impl MapDisplay {
         self.input_plane.lock(|c| c.borrow().encoder_hold_progress())
     }
 
-    /// Render the clean frame into the owned panel and scan it to glass. With a live bulge, present
-    /// the spans *around* its rows (`map_rows_around`) and leave those rows for `present_bulge` — the
-    /// FLPR's ~100 ms full-frame scan would otherwise blank the bulge for that whole scan (the
-    /// pop-flicker, issue #163). No shared bus: the map plane owns every push here. Marked
-    /// `#[inline(always)]` with a generic (non-`dyn`) `render` so the deep render folds into the
+    /// Render the clean frame into the owned panel and **self-diff** it to glass (issue #201): push
+    /// only the rows that changed since the last present. With a live bulge, [`present_within`] clips
+    /// its rows out (`overlay_span`) and leaves them for `present_bulge` — the FLPR's ~100 ms full-frame
+    /// scan would otherwise blank the bulge for that whole scan (the pop-flicker, issue #163), and even
+    /// a partial clean push would flash it off. No shared bus: the map plane owns every push here.
+    /// Marked `#[inline(always)]` with a generic (non-`dyn`) `render` so the deep render folds into the
     /// caller's frame rather than nesting another (the #175 stack regression).
+    ///
+    /// [`present_within`]: Ls021Flpr::present_within
     #[inline(always)]
     async fn render_present(
         &mut self,
@@ -887,22 +881,30 @@ impl MapDisplay {
         let stats = render(&mut self.panel);
         let render_us = t_render.elapsed().as_micros();
         let t_push = Instant::now();
+        // Self-diffing present: the whole frame when quiet (the seam's `present`), or clipped around a
+        // live bulge's rows (`present_within`) so `present_bulge` owns them (issue #163/#201).
         let ok = match overlay_span {
-            Some((y0, rows)) => self.panel.push_spans(&map_rows_around(y0, rows)),
             None => self.panel.present(),
+            Some(_) => self.panel.present_within(overlay_span),
         };
         let push_us = t_push.elapsed().as_micros();
         FramePresent { ok, stats, render_us, push_us }
     }
 
     /// Present the hold bulge over the clean map (the FLPR bulge rides this map plane — no shared SPI
-    /// bus to serialise against). When the map *also* redrew this frame it presented **around** these
-    /// rows, so this paints them with the fresh backdrop + bulge — the bulge never flashes off
-    /// mid-pop. Only the active bulge's rows are touched (the FLPR fast-forwards the gate to them +
-    /// early-stops). The trailing clear (bulge just went quiet) wipes **the same rows** the last bulge
-    /// used, unless a map present this frame already restored the clean map there (`map_redrew`).
+    /// bus to serialise against). While the bulge is live this re-composites its rows every frame (the
+    /// map present clipped them out via [`present_within`], so the fresh backdrop + bulge land here —
+    /// no mid-pop flash). Only the active bulge's rows are touched (the FLPR fast-forwards the gate to
+    /// them + early-stops).
+    ///
+    /// The trailing clear (bulge just went quiet, `overlay_dirty` with no span) wipes **the same rows**
+    /// the last bulge used — **unconditionally**, because the self-diffing map present no longer
+    /// guarantees it touched those rows: the bulge composited glass content the row-hash diff can't see
+    /// (the store tracks the clean `fb`), so if the map content there is unchanged the diff skips it and
+    /// the stale bulge would strand without this clear (issue #201). The clear re-pushes the clean `fb`
+    /// rows, which the store already agrees with, so the next present stays quiet there.
     #[inline(always)]
-    fn present_bulge(&mut self, overlay_span: Option<(u16, u16)>, overlay_dirty: bool, map_redrew: bool) {
+    fn present_bulge(&mut self, overlay_span: Option<(u16, u16)>, overlay_dirty: bool) {
         let color_fn = |c: u16| Rgb565::from(RawU16::new(c));
         let input_plane = self.input_plane;
         let composite = |panel: &mut Ls021Flpr, region: OverlayRegion| -> bool {
@@ -920,10 +922,10 @@ impl MapDisplay {
             } else {
                 defmt::warn!("overlay frame: bulge push failed (FLPR stalled?) — retrying next overlay tick");
             }
-        } else if overlay_dirty && !map_redrew {
-            // Trailing clear on a static frame: re-present just the last bulge's rows with nothing
-            // composited = the clean map restored under the just-gone bulge (a map present this frame
-            // would already have done it, hence the `!map_redrew`).
+        } else if overlay_dirty {
+            // Trailing clear: re-present just the last bulge's rows with nothing composited = the clean
+            // map restored under the just-gone bulge (the self-diffing map present may have skipped
+            // them, so this is unconditional — see the method docs).
             if let Some((y0, rows)) = self.last_overlay_span.take() {
                 composite(&mut self.panel, OverlayRegion { x0: OVL_X0, y0, w: OVL_W, rows });
             }
@@ -1252,10 +1254,11 @@ async fn run_app(
         }
 
         // The hold bulge (issue #163): the FLPR re-presents it from this map plane, compositing over
-        // the clean map (the map present above already went *around* a live bulge's rows, so this
-        // paints them fresh — no mid-pop flash). On ST7789 this is a no-op — its bulge rides the
+        // the clean map (the map present above clipped a live bulge's rows out via `present_within`, so
+        // this paints them fresh — no mid-pop flash; the trailing clear is unconditional now that the
+        // self-diffing present may skip those rows). On ST7789 this is a no-op — its bulge rides the
         // input/overlay plane on the shared bus.
-        display.present_bulge(overlay_span, overlay_dirty, dirty.map);
+        display.present_bulge(overlay_span, overlay_dirty);
 
         // Publish render-stats telemetry host-ward at ~2 Hz (#127): throttled here (not in the TX
         // task) so the link never floods and the device never stalls on it.
@@ -1455,13 +1458,16 @@ async fn main(_spawner: Spawner) {
             let mut panel = St7789::new(spi, dc, rst, cs, Delay, band);
             panel.init();
             let fb: &'static mut [u8] = unsafe { &mut *core::ptr::addr_of_mut!(FB) };
+            // SAFETY: sole reference to ROW_DIFF; held by `Display` behind the bus mutex for the rest of
+            // the program (the map plane is its only writer), never aliased.
+            let diff: &'static mut RowDiff<{ HEIGHT as usize }> = unsafe { &mut *core::ptr::addr_of_mut!(ROW_DIFF) };
             info!("obc-fw-nrf54l N5: ST7789 up ({}x{}); two-plane input + map", WIDTH, HEIGHT);
 
             static mut BUS: MaybeUninit<Mutex<CriticalSectionRawMutex, Display>> = MaybeUninit::uninit();
             // SAFETY: sole writer; initialised here before the `&'static` is shared with the input
             // plane, never written again (single executor builds it, two planes only read it).
             let bus: &'static Mutex<CriticalSectionRawMutex, Display> =
-                unsafe { init_static(core::ptr::addr_of_mut!(BUS), Mutex::new(Display { panel, fb })) };
+                unsafe { init_static(core::ptr::addr_of_mut!(BUS), Mutex::new(Display { panel, fb, diff })) };
             static mut INPUT_PLANE: MaybeUninit<BlockingMutex<CriticalSectionRawMutex, RefCell<InputPlane>>> =
                 MaybeUninit::uninit();
             // SAFETY: as BUS — sole writer, initialised before shared, never rewritten.
@@ -1527,10 +1533,13 @@ async fn main(_spawner: Spawner) {
                 }
             }
 
-            // The resident RGB222 plane the app renders into and the FLPR packs to the wire.
-            // SAFETY: sole reference to FB; held by `panel` for the rest of the program, never aliased.
+            // The resident RGB222 plane the app renders into and the FLPR packs to the wire, plus the
+            // self-diffing present store the masked push derives its dirty rows from (issue #201).
+            // SAFETY: sole references to FB / ROW_DIFF; held by `panel` for the rest of the program
+            // (the map plane is their only owner), never aliased.
             let fb: &'static mut [u8] = unsafe { &mut *core::ptr::addr_of_mut!(FB) };
-            let mut panel = Ls021Flpr::new_fb(fb);
+            let diff: &'static mut RowDiff<{ HEIGHT as usize }> = unsafe { &mut *core::ptr::addr_of_mut!(ROW_DIFF) };
+            let mut panel = Ls021Flpr::new_fb(fb, diff);
             // Datasheet Initial #0: an INTB-framed all-black frame (FB boots zeroed = black) while COM
             // is still held `Lo`. Then T4 ≥ 30 µs, then start COM — from here it free-runs forever.
             panel.push_frame();
