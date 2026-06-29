@@ -62,16 +62,16 @@ cargo run --release --features debug-uart
 # The same map/ride app on the **ST7789** bring-up panel instead of the LS021 (opt-in
 # backend) — no FLPR, no RISC-V gcc, links the full 256 KB. ST7789 wiring (below).
 cargo run --release --features tft
-
-# LS021 FLPR backend bring-up (epic #149): the standalone FLPR waveform bench (the same
-# RISC-V blob the default build uses, exercised in isolation). Notes: firmware/docs/ls021-flpr.md.
-# (The earlier M33-direct bit-bang bench bin was retired in #176 — the FLPR drives frames now.)
-cargo run --release --bin ls021_flpr_bringup --features ls021-flpr
 ```
+
+(The standalone FLPR waveform bench bin `ls021_flpr_bringup` was retired in #177 once the app drove
+the LS021 on glass; the M33-direct `ls021_bringup` bench was retired earlier in #176. Both are in git
+history if a panel-isolation bring-up is ever needed again — the FLPR transport is `src/ls021_flpr.rs`,
+exercised by the default build.)
 
 ### LS021 FLPR builds — DK wiring (issue #165)
 
-The default build (and the `ls021_flpr_bringup` bring-up bin) drive the LS021 panel itself, not the ST7789.
+The default build drives the LS021 panel itself, not the ST7789.
 The source bus + `BCK` + COM stay on **P2** (P2.00–06 data/clock, P2.07/08/10 COM, P2.09 heartbeat
 LED); the four gate lines + `BSP` sit on **free P1 pins** — `GSP P1.00 / GCK P1.01 / GEN P1.12 /
 INTB P1.10 / BSP P1.14` — deliberately **off** the SD-SPI bus (P1.06/07/11/12) and VCOM (P1.04/05)
@@ -88,7 +88,7 @@ harness must all agree; if a gate line stays dark on glass, confirm the pin is b
 header and remap all three together. Full pin/protocol detail:
 [firmware/docs/ls021-flpr.md](../docs/ls021-flpr.md).
 
-### FLPR toolchain (the default build + `ls021-flpr`)
+### FLPR toolchain (the default build)
 
 The FLPR backend cross-compiles a tiny freestanding C blob for the RISC-V coprocessor, so it
 needs an `rv32emc`-capable GNU gcc — install once:
@@ -97,10 +97,9 @@ needs an `rv32emc`-capable GNU gcc — install once:
 brew install riscv64-elf-gcc        # or set RISCV_GCC=<path> to an xPack / Zephyr-SDK toolchain
 ```
 
-It's needed by every FLPR build — the **default** map firmware and `--features ls021-flpr`. Only the
-opt-in **`--features tft`** ST7789 firmware needs **no** RISC-V toolchain (CI installs the gcc only on
-the FLPR legs; `build.rs` keys the blob on the absence of `tft`). On Linux/CI the apt package
-`gcc-riscv64-unknown-elf` works too.
+It's needed by the **default** (FLPR) map firmware. Only the opt-in **`--features tft`** ST7789
+firmware needs **no** RISC-V toolchain (CI installs the gcc only on the FLPR legs; `build.rs` keys the
+blob on the absence of `tft`). On Linux/CI the apt package `gcc-riscv64-unknown-elf` works too.
 
 If `cargo run` prompts to pick a probe (e.g. another ST-LINK is attached), pass
 `--probe <vid:pid:serial>` for the J-Link.

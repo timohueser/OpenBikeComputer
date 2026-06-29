@@ -81,8 +81,8 @@ Homebrew's `riscv64-elf-gcc`:
 brew install riscv64-elf-gcc        # GCC 16.x, bottled; same formula family as riscv64-elf-gdb
 ```
 
-`build.rs` (under the `ls021-flpr` feature only) compiles `src/flpr/` into `$OUT_DIR/flpr.bin`.
-The exact invocation it runs:
+`build.rs` (on every FLPR build — i.e. whenever `tft` is absent) compiles `src/flpr/` into
+`$OUT_DIR/flpr.bin`. The exact invocation it runs:
 
 ```sh
 riscv64-elf-gcc -march=rv32emc -mabi=ilp32e \
@@ -863,16 +863,20 @@ stamps `status = 0xA11E` in the control block instead of a lone word) and adds t
 
 ## Build & flash
 
+> **Note (issue #177):** the standalone `ls021_flpr_bringup` bench bin + its `ls021-flpr` feature
+> were **retired** once the real app drove the LS021 on glass — the FLPR is now the *default* backend
+> (selected by the absence of `tft`), so the transport in `src/ls021_flpr.rs` is exercised by every
+> normal build. The bench bin is in git history if a panel-isolation bring-up is ever needed again.
+
 ```sh
 # From firmware/obc-fw-nrf54l/ (standalone crate, thumbv8m.main-none-eabihf). Needs a RISC-V
 # gcc for the FLPR blob: brew install riscv64-elf-gcc
 
-# The bring-up bench bin — test patterns (line/box card / solids) through the FLPR Panel seam:
-cargo run --release --bin ls021_flpr_bringup --features ls021-flpr
-
-# The real map/ride app on the LS021 via the FLPR (issue #165). Add ,debug-uart to stream a
-# recorded ride from a host (obc-usb-host). Needs the Board-Configurator settings (README).
-cargo run --release --features panel-ls021,debug-uart
+# The real map/ride app on the LS021 via the FLPR (issue #165) — the default build. Add
+# --features debug-uart to stream a recorded ride from a host (obc-usb-host). Needs the
+# Board-Configurator settings (README).
+cargo run --release
+cargo run --release --features debug-uart
 ```
 
 [#149]: https://github.com/timohueser/OpenBikeComputer/issues/149
