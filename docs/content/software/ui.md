@@ -357,7 +357,7 @@ A reflective memory-LCD holds its image with no redraw, and a map frame is the e
 
 The dirty signal has two independent planes, mirroring the [two-plane architecture](../architecture/#staying-responsive-the-two-planes):
 
-- **map** — the screen stack. Set when a gesture was applied, when a fresh GPS fix moved the camera *on a view that shows live data*, when the route or ride session changed, or when a screen's own timed `animate` reported a change (the Statistics cursor springing back to the live position). On a static Home screen none of these fire, so the map stays clean.
+- **map** — the screen stack. Set when a gesture was applied, when a fresh GPS fix moved the camera *on a view that shows live data*, when the route or ride session changed, or when a screen's own timed `animate` reported a change — the Statistics cursor springing back to the live position, or the Home screensaver's wall clock crossing into a new minute. A parked Home screen fires none of the first three, so between those once-a-minute clock ticks the map stays clean.
 - **overlay** — the transient hold "bulge" and confirm ring. Derived from the live hold state by the input plane, which on the device runs preemptively so press-feedback latency never waits on a long map render.
 
 ```rust
