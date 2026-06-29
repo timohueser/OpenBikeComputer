@@ -15,7 +15,7 @@
 use std::path::Path;
 
 use eframe::egui;
-use obc_app::{App, AppState, Button, CameraMode, Dirty, Fix, InputClock, RideClock, Sensors};
+use obc_app::{App, AppState, Button, CameraMode, Dirty, Fix, InputClock, RideClock, Sensors, SettingsStore};
 use obc_reader::{MapCache, MapTables, Reader, SliceSource};
 use obc_route::{RouteIndex, RouteReader};
 
@@ -24,6 +24,7 @@ use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 use crate::device_input::DeviceInput;
 use crate::framebuffer::Framebuffer;
 use crate::routes::RouteStore;
+use crate::settings_store::FileSettingsStore;
 use crate::sim_compass::SimCompass;
 use crate::sim_location::SimLocationSource;
 use crate::track::TrackStore;
@@ -131,6 +132,9 @@ struct SimGui {
     /// The tracks folder (device-SD `/tracks` stand-in): the in-progress `.obct` ride log +
     /// saved `.gpx` files. Reconciled to the app's tracking session each frame.
     tracks: TrackStore,
+    /// The persisted-settings store (device-RRAM stand-in): seeds the app at boot and is written
+    /// whenever the settings screens change something, so settings survive a relaunch.
+    settings_store: FileSettingsStore,
     loc: SimLocationSource,
     fb: Framebuffer,
     dev_w: u32,
@@ -225,9 +229,13 @@ impl SimGui {
         // Boot at the device's real power-on state (Home / Idle, no route): pressing
         // the encoder walks Home → Route menu → Map, exactly like the device. (The
         // headless `--png` path and the web demo open straight on the map instead.)
-        let app = if args.start_on_map { App::new(state) } else { App::new_idle(state) };
+        let mut app = if args.start_on_map { App::new(state) } else { App::new_idle(state) };
         let store = RouteStore::open(args.routes_dir());
         let tracks = TrackStore::open(args.tracks_dir());
+        // Seed the live settings from the persisted store (the device's RRAM stand-in), falling
+        // back to defaults on a first run / unreadable file — exactly the device's boot path.
+        let mut settings_store = FileSettingsStore::open(args.settings_path());
+        app.set_settings(settings_store.load().unwrap_or_default());
         // Load any saved 1:1 calibration; `--physical` only takes effect if we have one,
         // and `--calibrate` opens the calibration screen straight away.
         let points_per_mm = crate::calib::load();
@@ -238,6 +246,7 @@ impl SimGui {
             app,
             store,
             tracks,
+            settings_store,
             loc,
             fb: Framebuffer::new(args.width, args.height),
             dev_w: args.width,
@@ -524,6 +533,11 @@ impl SimGui {
             self.input.set_button(Button::Back, back_down);
             let now = self.input.now_ms();
             self.app.handle_input(InputClock(now), &mut self.input);
+            // Persist settings the moment a settings screen changes one (the device's
+            // save-on-dirty path) so they survive a relaunch.
+            if self.app.take_settings_dirty() {
+                self.settings_store.save(self.app.settings());
+            }
 
             // Mirror the live control state onto the housing so the encoder/Back animate.
             // The knurl eases toward the new angle so each detent reads as a little turn.

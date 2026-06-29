@@ -16,6 +16,8 @@ __pycache__/
 firmware/routes/
 firmware/tracks/
 *.obct
+# The simulator's persisted-settings file (the device-RRAM stand-in) — a runtime artifact.
+firmware/obc-settings.bin
 .pytest_cache/
 user_config.json
 .worktrees/

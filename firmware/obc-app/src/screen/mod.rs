@@ -34,6 +34,7 @@ use crate::app::AppState;
 use crate::breadcrumb::Breadcrumb;
 use crate::input::Gesture;
 use crate::route::RouteSummary;
+use crate::settings::{Settings, Units};
 
 mod home;
 mod map;
@@ -41,6 +42,7 @@ mod menu;
 mod ride_control;
 mod route_menu;
 mod route_swap;
+mod settings;
 mod statistics;
 
 pub use home::HomeScreen;
@@ -49,6 +51,7 @@ pub use menu::MenuScreen;
 pub use ride_control::RideControl;
 pub use route_menu::RouteMenuScreen;
 pub use route_swap::RouteSwapScreen;
+pub use settings::{DateTimeScreen, PowerScreen, ResetScreen, SettingsScreen, UnitsScreen};
 pub use statistics::StatisticsScreen;
 
 /// Maximum overlay depth (Home → Map → Ride control / Menu → …). Sized with
@@ -114,6 +117,10 @@ pub struct Ctx<'a> {
     pub state: &'a mut AppState,
     /// The ride mode + tracking accumulators.
     pub activity: &'a mut Activity,
+    /// The persisted device settings — the settings screens edit this in place; a change is
+    /// detected by [`App::apply_gesture`](crate::App::apply_gesture) (a single `==`) and
+    /// flagged for the host to save. Every other screen leaves it untouched.
+    pub settings: &'a mut Settings,
     /// The route catalog (read-only) — the Route menu navigates it and centers the
     /// camera on the picked route's bbox from here, no I/O needed.
     pub routes: &'a [RouteSummary],
@@ -135,6 +142,10 @@ pub struct Render<'a, 'd> {
     pub renderer: &'a mut MapRenderer,
     pub state: &'a AppState,
     pub activity: &'a Activity,
+    /// The persisted device settings (read-only here) — the riding views read
+    /// [`units`](Settings::units) to caption + scale their readouts, and the settings screens
+    /// draw their current values from it.
+    pub settings: &'a Settings,
     /// The route catalog, for the Route-menu list.
     pub routes: &'a [RouteSummary],
     /// The active route's geometry (the Map strokes it), or `None` when no route is
@@ -170,6 +181,11 @@ pub enum Screen {
     Menu(MenuScreen),
     RouteMenu(RouteMenuScreen),
     RouteSwap(RouteSwapScreen),
+    Settings(SettingsScreen),
+    DateTime(DateTimeScreen),
+    Units(UnitsScreen),
+    Power(PowerScreen),
+    Reset(ResetScreen),
 }
 
 impl Screen {
@@ -183,6 +199,11 @@ impl Screen {
             Screen::Menu(s) => s.handle(g, cx),
             Screen::RouteMenu(s) => s.handle(g, cx),
             Screen::RouteSwap(s) => s.handle(g, cx),
+            Screen::Settings(s) => s.handle(g, cx),
+            Screen::DateTime(s) => s.handle(g, cx),
+            Screen::Units(s) => s.handle(g, cx),
+            Screen::Power(s) => s.handle(g, cx),
+            Screen::Reset(s) => s.handle(g, cx),
         }
     }
 
@@ -201,6 +222,11 @@ impl Screen {
             Screen::Menu(s) => s.draw(target, rx, color_fn),
             Screen::RouteMenu(s) => s.draw(target, rx, color_fn),
             Screen::RouteSwap(s) => s.draw(target, rx, color_fn),
+            Screen::Settings(s) => s.draw(target, rx, color_fn),
+            Screen::DateTime(s) => s.draw(target, rx, color_fn),
+            Screen::Units(s) => s.draw(target, rx, color_fn),
+            Screen::Power(s) => s.draw(target, rx, color_fn),
+            Screen::Reset(s) => s.draw(target, rx, color_fn),
         }
     }
 
@@ -337,12 +363,21 @@ where
     cv.text(hint, Point::new(w / 2, h / 2 + 8), Font::Label, TextAlign::Center, palette::SUBTEXT);
 }
 
-/// Append a cross-track distance after `prefix`, compacted to whole km past 1 km so the
-/// readout stays within the panel width (a long "...14515m" would overrun): `"<prefix>NNNm"`
-/// below 1 km, `"<prefix>NNkm"` above, rounded to the nearest km. Shared by the Statistics
-/// header readout and the Map's off-route pill so the two agree.
-pub(crate) fn write_off_route<const N: usize>(s: &mut heapless::String<N>, prefix: &str, d_m: u32) {
-    if d_m >= 1000 {
+/// Append a cross-track distance after `prefix`, compacted to a whole large unit past the
+/// cross-over so the readout stays within the panel width (a long "...14515m" would overrun).
+/// In **metric**: `"<prefix>NNNm"` below 1 km, `"<prefix>NNkm"` above, rounded to the nearest
+/// km. In **imperial**: `"<prefix>NNNft"` below a mile, `"<prefix>NNmi"` above. Shared by the
+/// Statistics header readout and the Map's off-route pill so the two agree.
+pub(crate) fn write_off_route<const N: usize>(s: &mut heapless::String<N>, prefix: &str, d_m: u32, units: Units) {
+    use crate::settings::{FT_PER_M, FT_PER_MI};
+    if units.is_imperial() {
+        let ft = (d_m as f32 * FT_PER_M) as u32;
+        if ft >= FT_PER_MI {
+            let _ = write!(s, "{prefix}{}mi", (ft + FT_PER_MI / 2) / FT_PER_MI);
+        } else {
+            let _ = write!(s, "{prefix}{ft}ft");
+        }
+    } else if d_m >= 1000 {
         let _ = write!(s, "{prefix}{}km", (d_m + 500) / 1000);
     } else {
         let _ = write!(s, "{prefix}{d_m}m");
@@ -421,6 +456,9 @@ pub mod palette {
     pub const RULE: u16 = rgb565(180, 170, 100); // → (170,170,85) tan
     pub const AMBER: u16 = rgb565(227, 165, 43); // → (255,170,0) accent
     pub const WARNING: u16 = rgb565(192, 73, 46); // → (255,85,0) warning
+    /// Green — the "on" state of a settings toggle pill (black/ink = off). The one green on
+    /// the panel, kept for this single semantic so it always reads as "enabled".
+    pub const ON: u16 = rgb565(0, 170, 0); // → (0,170,0) green
     /// Magenta — the **planned route** line on the Map, the boldest thing on screen.
     /// The classic GPS route-line hue (Garmin / RideWithGPS / Komoot): it lands on no
     /// base-map feature (greens, azure water, greys, warm roads), so it always reads as

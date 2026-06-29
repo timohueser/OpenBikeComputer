@@ -45,6 +45,7 @@ mod gui;
 #[cfg(not(target_arch = "wasm32"))]
 mod palette;
 mod routes;
+mod settings_store;
 mod sim_compass;
 mod sim_location;
 mod track;
@@ -181,6 +182,13 @@ impl Args {
     /// The `/tracks` folder (saved `.gpx` + the in-progress `.obct` log), defaulting to `tracks/`.
     pub(crate) fn tracks_dir(&self) -> String {
         self.tracks_dir.clone().unwrap_or_else(|| "tracks".to_string())
+    }
+
+    /// The persisted-settings file (the device's RRAM stand-in), defaulting to
+    /// `obc-settings.bin` in the working dir. Holds the shared [`obc_app::settings`] blob, so
+    /// quitting and relaunching restores units / clock / intervals.
+    pub(crate) fn settings_path(&self) -> String {
+        "obc-settings.bin".to_string()
     }
 }
 

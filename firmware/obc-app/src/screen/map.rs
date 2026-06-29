@@ -191,7 +191,7 @@ where
     let w = rx.w as i32;
     let mut cv = Canvas::new(target, color_fn);
     let mut s: heapless::String<20> = heapless::String::new();
-    super::write_off_route(&mut s, "off route ", rx.activity.dist_to_route_m);
+    super::write_off_route(&mut s, "off route ", rx.activity.dist_to_route_m, rx.settings.units);
     // Bold (Body font) so it's readable at a glance over the map.
     let font = Font::Body;
     let tw = text_width(&s, font) as i32;
