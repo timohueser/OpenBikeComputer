@@ -2,12 +2,12 @@
 //! patterns on real glass. Since #165 the backend itself ([`Ls021Flpr`]) lives in the shared
 //! `src/ls021_flpr.rs` module so the *real app* (the default `main.rs` build) drives the same
 //! LS021 panel through the same [`obc_platform::Panel`] seam; this bin keeps it exercised in
-//! isolation — boot the FLPR, draw the glass-demo + line/box + solid cards through the seam, step
-//! them with BTN0 — without the SD/sensor/app machinery.
+//! isolation — boot the FLPR, draw the line/box + solid cards through the seam, step them with
+//! BTN0 — without the SD/sensor/app machinery.
 //!
-//! The FLPR scans the whole frame top-to-bottom in one `CMD_RUN_FRAME` (see the module doc): the
-//! whole-frame generators that drive the ST7789 (`demo::font_palette_demo`, and the real
-//! `App::render_frame`) put pixels on the LS021 with **no panel-specific code**.
+//! The FLPR scans the whole frame top-to-bottom in one `CMD_RUN_FRAME` (see the module doc): a
+//! whole-frame generator (this bin's `line_test_card`, and the real `App::render_frame`) puts
+//! pixels on the LS021 with **no panel-specific code**.
 //!
 //! Power-on sequence (datasheet §6-2, mirroring the L3 bin):
 //!   1. **Settle (~2 s)** — rails up, all inputs `Lo`, COM `Lo`. Hands-free for a deterministic LA
@@ -15,9 +15,9 @@
 //!   2. **Launch the FLPR**, wait for its `ALIVE` stamp ([`launch_flpr`]).
 //!   3. **Init #0 — `INTB`-framed all-black frame** through the `Panel` seam (a black `clear`). COM `Lo`.
 //!   4. **Wait `T4 ≥ 30 µs`, then start COM** on a high-priority `InterruptExecutor` — runs forever.
-//!   5. **BTN0 steps** the screen: GLASS-DEMO → line card → white → greys → black → **partial-update
-//!      demo** → wrap. The first six are drawn through the `Panel`/`Band` seam and FLPR-driven once
-//!      (MIP retains each); the last (issue #163) re-pushes only a top strip via `push_spans` to prove
+//!   5. **BTN0 steps** the screen: line card → white → greys → black → **partial-update demo** →
+//!      wrap. The first five are drawn through the `Panel`/`Band` seam and FLPR-driven once (MIP
+//!      retains each); the last (issue #163) re-pushes only a top strip via `push_spans` to prove
 //!      the dirty-row masked scan — the backdrop below holds, the frame time scales to the strip.
 //!
 //! **Both cores on P2 at once.** The FLPR drives the source bus on `P2.00..06`; the M33 drives COM
@@ -41,25 +41,22 @@ use embassy_nrf::gpio::{Input, Level, Output, OutputDrive, Pull};
 use embassy_nrf::interrupt;
 use embassy_nrf::interrupt::{InterruptExt, Priority};
 use embassy_time::Timer;
-use embedded_graphics::{pixelcolor::Rgb565, prelude::*};
+use embedded_graphics::{pixelcolor::Rgb565, prelude::*, primitives::Rectangle};
+use obc_render::text::{draw_text, Font, TextAlign};
 use {defmt_rtt as _, panic_probe as _};
 
 // The free-running COM driver is panel-board-agnostic infrastructure (not the M33-direct PanelBus,
-// which the FLPR replaces). The glass-demo generator is shared verbatim with the ST7789
-// `--features glass-demo` build.
+// which the FLPR replaces).
 #[path = "../com.rs"]
 mod com;
-#[path = "../demo.rs"]
-mod demo;
 // The shared FLPR `Panel` backend (#165): boot/launch + the resident-framebuffer ping-pong push.
 #[path = "../ls021_flpr.rs"]
 mod ls021_flpr;
 use com::com_task;
-use demo::font_palette_demo;
 use ls021_flpr::{launch_flpr, show, FlprError, Ls021Flpr, FB_H, FB_W};
 
 /// Resident RGB222 (device-64) framebuffer, one byte per pixel — the production map plane's exact
-/// type/size. `Ls021Flpr` owns it; `flush_band` fills it (the glass-demo's RGB565 → device-64
+/// type/size. `Ls021Flpr` owns it; `flush_band` fills it (the test cards' RGB565 → device-64
 /// quantise), `push_frame` packs + drives it.
 static mut FB: [u8; FB_W * FB_H] = [0u8; FB_W * FB_H];
 
@@ -103,6 +100,93 @@ fn solid(t: &mut obc_platform::Band, c: Rgb565) {
     t.clear(c).ok();
 }
 
+/// Pack an 8-bit-per-channel colour into native RGB565, so the test card below reads as plain hexes.
+fn c565(r: u8, g: u8, b: u8) -> Rgb565 {
+    Rgb565::new(r >> 3, g >> 2, b >> 3)
+}
+
+/// A **line / box diagnostic card** (issue #155 bench) — to tell apart "the font is drawn wrong"
+/// from "the panel's area-gradation cell structure is just visible on solid strokes".
+///
+/// The `Display` font draws as a clean 1:1 Terminus 16×32 bitmap, so any fine-line texture in it
+/// must come from the panel, not the renderer. This card isolates that: it draws bars and a box in
+/// the foreground colour `fg` at the **same stroke widths as the font**, beside the actual `Display`
+/// digits (also in `fg`). Two outcomes:
+///   - the `fg` bars/box show the **same** striations as the font → it's the panel's per-pixel area
+///     blocks (the 2/3-area MSB + 1/3-area LSB sub-cells), inherent to how it makes 64 colours;
+///   - the `fg` bars/box are **clean** while the font is striped → a real pixel/pack bug, dig in.
+///
+/// **`fg` recolours the bars/box/combs/digits** so the *identical* card can be drawn per channel
+/// (black / red / green / blue). Red/green/blue each ride a different source-bus line pair
+/// (`R0/R1` · `G0/G1` · `B0/B1`), so if the artifact changes with colour it points at the source
+/// shift, not the gate scan; if it's identical across all four it's the gate / area structure.
+///
+/// The right-hand column is a fixed (colour-independent) gradation reference — solid boxes at device
+/// levels 0/2/1: level 2 lights only the 2/3 (MSB) area, level 1 only the 1/3 (LSB) area, so they
+/// **should** look textured/dim by design while level 0 is a whole (off) cell. The 1-px combs at the
+/// bottom expose any odd/even column interleave or row-drop error (they'd break the regular
+/// alternation). Drawn through any [`DrawTarget`], so it drives the `Panel`/`Band` seam unchanged.
+fn line_test_card<D>(target: &mut D, fg: Rgb565) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    /// Fill one axis-aligned box — a free helper so it borrows `target` only per call (a closure
+    /// capturing `target` would hold the borrow across the `draw_text` calls below).
+    fn bar<D: DrawTarget<Color = Rgb565>>(
+        t: &mut D,
+        x: i32,
+        y: i32,
+        w: u32,
+        h: u32,
+        c: Rgb565,
+    ) -> Result<(), D::Error> {
+        t.fill_solid(&Rectangle::new(Point::new(x, y), Size::new(w, h)), c)
+    }
+
+    let white = c565(255, 255, 255); // device (3,3,3) — whole cell on (background)
+    let black = c565(0, 0, 0); // device (0,0,0) — whole cell off (gradation level-0 reference)
+    let gray2 = c565(170, 170, 170); // device (2,2,2) — only the 2/3-area (MSB) block
+    let gray1 = c565(85, 85, 85); // device (1,1,1) — only the 1/3-area (LSB) block
+    let w = target.bounding_box().size.width as i32;
+
+    target.clear(white)?;
+    draw_text(target, "LINE / BOX TEST", Point::new(w / 2, 2), Font::Label, TextAlign::Center, fg);
+
+    // Foreground (fg) vertical bars, widths 1..8 px (the font strokes are ~3-4 px).
+    let mut x = 6;
+    for bw in [1u32, 2, 3, 4, 5, 6, 8] {
+        bar(target, x, 22, bw, 52, fg)?;
+        x += bw as i32 + 14;
+    }
+
+    // Foreground (fg) horizontal bars, widths 1..8 px.
+    let mut y = 84;
+    for bw in [1u32, 2, 3, 4, 5, 6, 8] {
+        bar(target, 6, y, 150, bw, fg)?;
+        y += bw as i32 + 9;
+    }
+
+    // Fixed gradation reference column: solid boxes at device levels 0 / 2 / 1 (whole / 2-3 / 1-3 area).
+    bar(target, 184, 22, 44, 40, black)?; // level 0 — whole cell off
+    bar(target, 184, 70, 44, 40, gray2)?; // level 2 — 2/3-area only (should look textured)
+    bar(target, 184, 118, 44, 40, gray1)?; // level 1 — 1/3-area only (should look textured/dimmer)
+
+    // Direct A/B: a solid fg box the height of the Display cap, beside the actual Display digits.
+    bar(target, 6, 200, 40, 32, fg)?;
+    draw_text(target, "12.5", Point::new(54, 196), Font::Display, TextAlign::Left, fg);
+
+    // 1-px combs: alternating columns then alternating rows. A clean regular pattern means columns
+    // and rows are addressed right; a broken/solid/doubled patch means an interleave or row-drop bug.
+    let cy = 248;
+    for gx in (6..150).step_by(2) {
+        bar(target, gx, cy, 1, 22, fg)?; // vertical comb (every other column)
+    }
+    for gry in (cy + 30..cy + 52).step_by(2) {
+        bar(target, 6, gry, 150, 1, fg)?; // horizontal comb (every other row)
+    }
+    Ok(())
+}
+
 /// Top-strip height (rows) the partial-update demo re-pushes — small enough to make the big vertical
 /// win obvious on the LA (40 of 320 rows scanned ⇒ a frame ~⅛ the full one) yet visible on glass.
 const STRIP_H: u16 = 40;
@@ -118,7 +202,7 @@ const STRIP_H: u16 = 40;
 async fn partial_update_demo(panel: &mut Ls021Flpr<'_>, btn0: &Input<'_>) {
     // Full backdrop once, so the retained region below the strip is recognizable on glass.
     show(panel, |t| {
-        demo::line_test_card(t, Rgb565::BLACK).ok();
+        line_test_card(t, Rgb565::BLACK).ok();
     });
     info!(
         "LS021 FLPR: PARTIAL-UPDATE demo — re-pushing only the top {=u16} of {=usize} rows; the line card below holds",
@@ -209,7 +293,7 @@ async fn main(_spawner: Spawner) {
 
     // 1. Settle window (~2 s, LED1 ~2 Hz): all inputs `Lo`, COM `Lo`. Meter window; hands-free so the
     //    bench LA capture at reset is deterministic.
-    info!("LS021 FLPR: SETTLE (~2s, all inputs Lo, COM held Lo) — then FLPR boot, init-black, COM, glass-demo");
+    info!("LS021 FLPR: SETTLE (~2s, all inputs Lo, COM held Lo) — then FLPR boot, init-black, COM, line card");
     for _ in 0..8 {
         led1.toggle();
         Timer::after_millis(250).await;
@@ -247,42 +331,35 @@ async fn main(_spawner: Spawner) {
     interrupt::SWI00.set_priority(Priority::P3);
     let com_spawner = EXECUTOR_COM.start(interrupt::SWI00);
     com_spawner.spawn(defmt::unwrap!(com_task(vcom, vb, va)));
-    info!("LS021 FLPR: COM RUNNING — BTN0 steps GLASS-DEMO → LINE-BLACK → L3-WHITE → L2-GRAY → L1-GRAY → L0-BLACK → PARTIAL-UPDATE");
+    info!("LS021 FLPR: COM RUNNING — BTN0 steps LINE-BLACK → L3-WHITE → L2-GRAY → L1-GRAY → L0-BLACK → PARTIAL-UPDATE");
 
-    // 5. BTN0 steps the screen through the Panel seam: the glass-demo (font ladder + 64-colour
-    //    gamut, identical to the ST7789 `--features glass-demo` build), the line/box diagnostic card,
-    //    then solids. MIP retains each.
+    // 5. BTN0 steps the screen through the Panel seam: the line/box diagnostic card, then solids.
+    //    MIP retains each.
     let gray_l2 = Rgb565::new(21, 42, 21); // → device (2,2,2)  (MSB plane, 2/3-area)
     let gray_l1 = Rgb565::new(10, 21, 10); // → device (1,1,1)  (LSB plane, 1/3-area)
     let mut i = 0usize;
     loop {
         // The partial-update demo (issue #163) owns its own animate-until-press loop; the rest are
         // draw-once full frames the MIP retains until the next BTN0 step.
-        if i == 6 {
+        if i == 5 {
             partial_update_demo(&mut panel, &btn0).await;
         } else {
             match i {
                 0 => {
-                    info!("LS021 FLPR: SHOW GLASS-DEMO");
+                    info!("LS021 FLPR: SHOW LINE-BLACK");
                     show(&mut panel, |t| {
-                        font_palette_demo(t).ok();
+                        line_test_card(t, Rgb565::BLACK).ok();
                     });
                 }
                 1 => {
-                    info!("LS021 FLPR: SHOW LINE-BLACK");
-                    show(&mut panel, |t| {
-                        demo::line_test_card(t, Rgb565::BLACK).ok();
-                    });
-                }
-                2 => {
                     info!("LS021 FLPR: SHOW L3-WHITE");
                     show(&mut panel, |t| solid(t, Rgb565::WHITE));
                 }
-                3 => {
+                2 => {
                     info!("LS021 FLPR: SHOW L2-GRAY (MSB plane)");
                     show(&mut panel, |t| solid(t, gray_l2));
                 }
-                4 => {
+                3 => {
                     info!("LS021 FLPR: SHOW L1-GRAY (LSB plane)");
                     show(&mut panel, |t| solid(t, gray_l1));
                 }
@@ -294,7 +371,7 @@ async fn main(_spawner: Spawner) {
             wait_for_press(&btn0).await;
         }
         led1.toggle();
-        i = (i + 1) % 7;
+        i = (i + 1) % 6;
     }
 }
 

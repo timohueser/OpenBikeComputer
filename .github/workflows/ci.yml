@@ -11,10 +11,10 @@ name: CI
 #     crate dir so its .cargo/config.toml selects the thumbv8m target (a `--manifest-path` from
 #     the root would build it for the host and fail on embassy-nrf). It has its own Cargo.lock,
 #     and no test harness (no_std on bare metal), so it gets `clippy`/`build` but not
-#     `--all-targets`/`test`. Its backend feature configs are **mutually exclusive** — `glass-demo`
-#     cfgs out the whole map path, `tft` swaps the FLPR backend for the ST7789 — so each is linted on
-#     its own; there is no valid `--all-features` build (it would mix the panel-demo and map paths
-#     and flag dead code). The default LS021/FLPR legs cross-compile a RISC-V blob (see `embedded`).
+#     `--all-targets`/`test`. Its two display backends are **mutually exclusive** — `tft`
+#     swaps the FLPR backend for the ST7789 — so each is linted on its own; there is no valid
+#     `--all-features` build (it would mix the two backends and flag dead code). The default
+#     LS021/FLPR legs cross-compile a RISC-V blob (see `embedded`).
 #   * nRF is the only board in the tree — optimise the shared crates for nRF freely.
 #   * There is no board in CI, so every embedded target is build-only.
 #   * The toolchain (channel + rustfmt/clippy + the thumbv8m / wasm32 targets) is pinned once in
@@ -129,14 +129,14 @@ jobs:
 
   # The real device board crate (nRF54L15) on its thumbv8m target: clippy each feature config + a
   # release build of the shipping default. Build-only (no board in CI). Each leg runs from the crate
-  # dir so .cargo/config.toml selects thumbv8m. The backend configs are mutually exclusive
-  # (`glass-demo` cfgs out the map path; `tft` swaps the FLPR backend for the ST7789), so each is
-  # linted on its own — no `--all-features` (it would flag the unused path's helpers).
+  # dir so .cargo/config.toml selects thumbv8m. The two backends are mutually exclusive (`tft` swaps
+  # the FLPR backend for the ST7789), so each is linted on its own — no `--all-features` (it would
+  # flag the unused backend's helpers).
   #
   # The **default** build is the LS021 panel via the FLPR (the VPR RISC-V coprocessor, issue #173):
   # it cross-compiles a `rv32emc` C blob via `build.rs`, so those legs (`flpr: true`) install a
-  # RISC-V gcc first. The `tft` (ST7789) and `glass-demo` legs skip it — they keep the full 256 KB
-  # and need no RISC-V toolchain.
+  # RISC-V gcc first. The `tft` (ST7789) leg skips it — it keeps the full 256 KB and needs no
+  # RISC-V toolchain.
   embedded:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
@@ -151,8 +151,6 @@ jobs:
           - { name: "clippy (debug-uart)", cmd: "cargo clippy --locked --features debug-uart -- -D warnings", flpr: true }
           # tft = the opt-in ST7789 backend driving the same map + ride path (no FLPR, no RISC-V gcc).
           - { name: "clippy (tft)", cmd: "cargo clippy --locked --features tft -- -D warnings", flpr: false }
-          # glass-demo = the panel-only bring-up (font ladder + 64-colour gamut, no SD, no full FB); ST7789.
-          - { name: "clippy (glass-demo)", cmd: "cargo clippy --locked --no-default-features --features glass-demo -- -D warnings", flpr: false }
           # The real flashed default artifact (LS021/FLPR) under fat LTO + the N3 RAM-budget assert.
           - { name: "build (default = LS021/FLPR, release)", cmd: "cargo build --release --locked", flpr: true }
           # The shipping ST7789 artifact under fat LTO (keeps the opt-in TFT path building).
