@@ -13,7 +13,7 @@
 use embedded_graphics::pixelcolor::Rgb888;
 use obc_app::screen::palette;
 use obc_app::{App, AppState, Button, InputClock};
-use obc_reader::{rgb565_to_rgb888, MapCache, Reader, SliceSource};
+use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader, SliceSource};
 
 mod common;
 use common::{build_min_obcm, down, keys, up, Buf};
@@ -29,7 +29,8 @@ fn render_overlay_touches_only_overlay_pixels() {
     let bytes = build_min_obcm(0);
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let reader = Reader::new(&src, &cache).expect("valid v5 file");
+    let tables = MapTables::parse(&src).expect("valid v5 file");
+    let reader = Reader::new(&src, &tables, &cache);
     let (w, h) = (240i32, 320i32);
     let hud = rgb(palette::HUD); // the near-black bulge color
 
@@ -70,7 +71,8 @@ fn render_frame_equals_map_then_overlay() {
     let bytes = build_min_obcm(0);
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let reader = Reader::new(&src, &cache).expect("valid v5 file");
+    let tables = MapTables::parse(&src).expect("valid v5 file");
+    let reader = Reader::new(&src, &tables, &cache);
     let (w, h) = (240i32, 320i32);
 
     // Same app state rendered two ways: the thin `render_frame` convenience vs. the
