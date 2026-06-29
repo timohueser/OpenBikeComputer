@@ -13,8 +13,9 @@
 //!   the shared renderer draws into: the nRF's device-native RGB222 map plane ([`FbDevice64`], 1
 //!   byte/px — the real target, issue #125) and the [`Framebuffer565`] RGB565 plane the banded
 //!   [`Band`] scratch reuses.
-//! - [`panel`] — the [`Panel`] banded-display seam + the [`Band`] frame-absolute band view, for
-//!   boards that stream a frame to the panel over SPI/DMA a band at a time (issue #122).
+//! - [`panel`] — the [`Band`] frame-absolute band/window view + the [`composite_overlay_window`]
+//!   overlay helper, for boards that stream a frame to the panel over SPI/DMA a band at a time
+//!   (issue #122). The banded present loop itself lives behind each board's `DisplayDriver`.
 //! - [`button_input`] — a [`ButtonInput`] debouncer over four
 //!   [`InputPin`](embedded_hal::digital::InputPin)s, feeding the shared gesture
 //!   recognizer through [`InputSource`](obc_app::InputSource).
@@ -77,10 +78,10 @@ pub mod framebuffer;
 // the nRF's FLPR backend drains, the sibling of `framebuffer::device64_to_rgb565`. Pure integer
 // math, so it always compiles and its unit tests run in the host workspace.
 pub mod ls021_wire;
-// The banded display seam ([`Panel`]) + the [`Band`] frame-absolute band view (issue #122). The
-// boards that ship (nRF54L and beyond) have no hardware scan-out, so they push a frame band-by-band
-// over SPI/DMA; `Panel` hides that behind the same whole-frame generator a scan-out plane would
-// drive directly.
+// The [`Band`] frame-absolute band/window view + the `composite_overlay_window` overlay helper
+// (issue #122). The boards that ship (nRF54L and beyond) have no hardware scan-out, so they push a
+// frame band-by-band over SPI/DMA; `Band` lets a whole-frame generator draw each band in absolute
+// coordinates while each board's `DisplayDriver` owns the actual band push.
 pub mod panel;
 pub mod sd;
 // Always compiled — the synthetic GPS is the `debug-usb`-OFF fallback, so it must exist without
@@ -90,6 +91,6 @@ pub mod synth;
 pub use button_input::{ButtonInput, Timing};
 pub use framebuffer::{device64_to_rgb565, FbDevice64, Framebuffer565};
 pub use ls021_wire::pack_row as ls021_pack_row;
-pub use panel::{composite_overlay_window, Band, Panel};
+pub use panel::{composite_overlay_window, Band};
 pub use sd::{SdByteSink, SdByteSource, SdTrackSink};
 pub use synth::SynthLocation;

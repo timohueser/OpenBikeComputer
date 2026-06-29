@@ -1,18 +1,17 @@
-//! The board-agnostic [`Panel`] display seam + the [`Band`] draw helper.
+//! [`Band`] — a frame-absolute draw view of one band (or window) of the frame — plus the
+//! [`composite_overlay_window`] overlay helper.
 //!
 //! A display with a hardware scan-out engine (an LCD controller that continuously rescans a full
 //! framebuffer from memory) needs only a [`Framebuffer565`] `DrawTarget` — write a pixel and it's
 //! on glass. The boards this project ships on have no such luxury: the nRF54L has no external RAM
-//! (256 KB total) and no scan-out engine, so a frame is pushed to the panel a **band** (a few
-//! rows) at a time over SPI/DMA. [`Panel`] is the seam that hides that difference: the caller
-//! renders into a small RGB565 band the backend hands it, and the backend reformats + transports
-//! the band however its panel wants (ST7789: byte-swap to big-endian RGB565 + SPIM-DMA a
-//! CASET/RASET window; the FLPR/LS021B7DD02: pack RGB222 → 6-line wire bytes; the simulator: blit
-//! the band into its image). **No board/panel types appear in the trait**, so the same generator
-//! drives every backend.
+//! and no scan-out engine, so a frame is pushed to the panel a **band** (a few rows) at a time over
+//! SPI/DMA. Each board's `DisplayDriver` (in the board crate) owns that push: it hands the renderer
+//! a small RGB565 band, then reformats + transports it however its panel wants (ST7789: pack
+//! RGB222 → 12-bit RGB444 + SPIM-DMA a CASET/RASET window; the FLPR/LS021B7DD02: pack to the
+//! source-line wire bytes). This module supplies the board-agnostic pieces both backends share.
 //!
 //! [`Band`] is the small piece that makes "render the whole frame, band at a time" invisible to
-//! the drawing code: it wraps one `flush_band` scratch slice as a [`Framebuffer565`] with the
+//! the drawing code: it wraps one band's scratch slice as a [`Framebuffer565`] with the
 //! band's `y0` baked in, yet reports the **full frame** size. A whole-frame generator
 //! ([`App::render_frame`](obc_app::App::render_frame)) draws in absolute
 //! frame coordinates exactly as it would against a full-frame scan-out plane; [`Band`] shifts each draw up
@@ -23,33 +22,7 @@ use embedded_graphics::{pixelcolor::Rgb565, prelude::*, primitives::Rectangle};
 
 use crate::framebuffer::{device64_to_rgb565, Framebuffer565};
 
-/// A banded display, pushed a few rows at a time. The board-agnostic seam between a whole-frame
-/// generator and a concrete panel's wire format + transport — the banded analog of a full-frame
-/// scan-out plane, for boards that have to stream the frame themselves.
-///
-/// One frame is: [`begin_frame`](Self::begin_frame), then [`flush_band`](Self::flush_band) for
-/// each band of [`band_rows`](Self::band_rows) rows from `y0 = 0` upward, then
-/// [`end_frame`](Self::end_frame). The caller fills the RGB565 band the backend passes to
-/// `fill`; the backend owns how that band reaches glass. Wrap the band in a [`Band`] to draw it
-/// in frame-absolute coordinates.
-pub trait Panel {
-    /// Rows per band — the backend's choice, sized to its scratch buffer. The frame height need
-    /// not be a multiple of it; the last band is whatever rows remain (passed as `rows`).
-    fn band_rows(&self) -> u16;
-
-    /// Start a frame (e.g. reset internal band state). May be a no-op.
-    fn begin_frame(&mut self);
-
-    /// Render + transport one band. `fill` receives this band's RGB565 scratch — exactly
-    /// `width * rows` pixels, row-major — to draw into; on return the backend reformats it to
-    /// the panel's wire format and pushes it to rows `[y0, y0 + rows)`. `rows ≤ band_rows()`.
-    fn flush_band(&mut self, y0: u16, rows: u16, fill: impl FnOnce(&mut [u16]));
-
-    /// Finish a frame (e.g. latch / VCOM toggle / present). May be a no-op.
-    fn end_frame(&mut self);
-}
-
-/// A frame-absolute [`DrawTarget`] view of one [`Panel::flush_band`] scratch band — or, more
+/// A frame-absolute [`DrawTarget`] view of one band's scratch slice — or, more
 /// generally, of any rectangular **window** of the frame.
 ///
 /// Wraps the scratch slice as a [`Framebuffer565`] sized to just this window (`w × rows`), but
@@ -60,8 +33,8 @@ pub trait Panel {
 /// reassembles it seam-free, and the *same* generator works against a full-frame scan-out plane
 /// (where there is one band == the whole frame).
 ///
-/// A **full-width band** ([`new`](Band::new), `x0 = 0`, `w = frame.width`) is the common case used
-/// by [`Panel::flush_band`]. A **narrow window** ([`new_window`](Band::new_window)) lets a banded
+/// A **full-width band** ([`new`](Band::new), `x0 = 0`, `w = frame.width`) is the common case a
+/// banded backend's present loop draws. A **narrow window** ([`new_window`](Band::new_window)) lets a banded
 /// backend re-push just a sub-rectangle — the nRF's composite-on-push hold bulge re-fills only the
 /// right-edge columns it touches (issue #126), reusing the same scratch + clip path.
 ///
