@@ -117,6 +117,5 @@ cargo run -p obc-usb-host -- --gpx ../kandel.gpx        # add --port <VCOM tty> 
 `obc-usb-host` streams the `.gpx` as fake GPS fixes (plus a baro/compass slider and an
 on-screen button row that injects encoder/Back presses), and shows the device's
 render-stats telemetry coming back. It's the same `obc-platform::debug_usb` wire
-protocol the simulator and the STM32 prototype use — only the transport differs (VCOM
-UART here vs. USB-CDC on the STM32). `--list` enumerates serial ports; the VCOM is the
-J-Link CDC port.
+protocol the simulator uses — only the transport differs (a VCOM UART here). `--list`
+enumerates serial ports; the VCOM is the J-Link CDC port.
