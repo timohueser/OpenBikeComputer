@@ -23,6 +23,7 @@ use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 
 use crate::device_input::DeviceInput;
 use crate::framebuffer::Framebuffer;
+use crate::present::Present;
 use crate::routes::RouteStore;
 use crate::settings_store::FileSettingsStore;
 use crate::sim_compass::SimCompass;
@@ -137,6 +138,10 @@ struct SimGui {
     settings_store: FileSettingsStore,
     loc: SimLocationSource,
     fb: Framebuffer,
+    /// The self-diffing present backend (epic #199 / issue #200): diffs each rendered frame against
+    /// a per-row hash store, pushes only the changed spans into its own buffer (uploaded to the
+    /// texture), and runs an exact-diff oracle. Its [`stats`](Present::stats) feed the panel.
+    present: Present,
     dev_w: u32,
     dev_h: u32,
     scale: u32,
@@ -255,6 +260,7 @@ impl SimGui {
             settings_store,
             loc,
             fb: Framebuffer::new(args.width, args.height),
+            present: Present::new(args.width, args.height),
             dev_w: args.width,
             dev_h: args.height,
             scale: args.scale,
@@ -438,7 +444,13 @@ impl SimGui {
         // have re-rendered this frame, so the render-on-demand logic can be watched live.
         self.last_dirty = self.app.take_dirty();
 
-        let image = egui::ColorImage::from_rgb([self.dev_w as usize, self.dev_h as usize], self.fb.as_rgb888());
+        // Present through the self-diffing backend (epic #199 / issue #200): it diffs the rendered
+        // frame against its per-row hash store, pushes only the changed spans into its own buffer
+        // (asserting an exact full-frame diff agrees), and hands that buffer back. Uploading *it* —
+        // reconstructed from partial pushes, not a whole-frame copy — means a diff bug would show as
+        // a stale row on glass. The push metric (`present.stats`) lands in the render-stats panel.
+        let presented = self.present.present(self.fb.as_rgb888());
+        let image = egui::ColorImage::from_rgb([self.dev_w as usize, self.dev_h as usize], presented);
         let opts = egui::TextureOptions::NEAREST;
         match &mut self.texture {
             Some(t) => t.set(image, opts),
