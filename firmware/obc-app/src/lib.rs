@@ -40,6 +40,7 @@ pub mod input_plane;
 pub mod route;
 pub mod screen;
 pub mod settings;
+pub mod wall_clock;
 
 pub use activity::{Activity, Mode, TrackAction};
 pub use app::{App, AppState, CameraMode, Pan, PanAxis};
@@ -55,3 +56,4 @@ pub use input_plane::InputPlane;
 pub use route::{Catalog, RouteSummary, MAX_ROUTES};
 pub use screen::{Screen, Transition};
 pub use settings::{DateTime, Settings, Units};
+pub use wall_clock::{MinuteTicker, WallClock};
