@@ -82,6 +82,10 @@ cortex-m-rt = "0.7"
 # backend is generic over; embassy-nrf's `Spim` + `Output` and embassy-time's `Delay`
 # implement them. (#122)
 embedded-hal = "1.0"
+# `NorFlash`/`ReadNorFlash` — the traits embassy-nrf's `Rramc` (RRAM controller) driver implements;
+# the persistent settings store (#193) reads/writes its 16-byte blob to the carved RRAM page through
+# them. Pinned to the 0.3 embassy-nrf 0.11 resolves so the trait types unify.
+embedded-storage = "0.3"
 
 # The board-agnostic glue: the `Panel` banded-display seam + the `Band` frame-absolute draw view
 # the ST7789 backend implements, and `Framebuffer565`'s `RawFb`/`Pack` the band reuses (issue

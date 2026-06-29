@@ -766,6 +766,7 @@ dependencies = [
  "embedded-hal 1.0.0",
  "embedded-hal-bus",
  "embedded-sdmmc",
+ "embedded-storage",
  "heapless 0.8.0",
  "obc-app",
  "obc-platform",
