@@ -49,7 +49,7 @@ fn main() {
     // blob are needed wherever the FLPR drives the panel: the `ls021-flpr` bring-up bin, **and** the
     // default LS021 map/ride `main.rs` build (issue #173) — which is the *baseline*, selected by the
     // absence of `tft`. Only the opt-in `tft` ST7789 build keeps the full 256 KB and needs no RISC-V
-    // toolchain (`glass-demo` pulls `tft`, so it's covered).
+    // toolchain.
     let tft = env::var_os("CARGO_FEATURE_TFT").is_some();
     let flpr = env::var_os("CARGO_FEATURE_LS021_FLPR").is_some() || !tft;
 

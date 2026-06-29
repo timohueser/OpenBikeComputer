@@ -26,9 +26,9 @@
 //! The FLPR scans the *whole* frame top-to-bottom in **one** `CMD_RUN_FRAME`, so a band push can't
 //! reach glass on its own: the seam is **full-frame push per `end_frame`**. The app renders the whole
 //! frame into the resident RGB222 plane first — the map path writes it directly as device-64
-//! ([`FbDevice64`](obc_platform::FbDevice64)) via [`fb_mut`](Ls021Flpr::fb_mut); the glass-demo draws
-//! it band-by-band through [`flush_band`](Panel::flush_band), which quantises each RGB565 band into
-//! the plane — and then `end_frame` drives all 320 rows once. This matches how the FLPR works and
+//! ([`FbDevice64`](obc_platform::FbDevice64)) via [`fb_mut`](Ls021Flpr::fb_mut); the bring-up bin's
+//! RGB565 test cards draw band-by-band through [`flush_band`](Panel::flush_band), which quantises each
+//! band into the plane — and then `end_frame` drives all 320 rows once. This matches how the FLPR works and
 //! keeps the ping-pong (M33 packs row N+1 while the FLPR scans row N) exactly as F4 proved it.
 //!
 //! ## Blocking push (sync `Panel` seam)
@@ -56,8 +56,8 @@ use obc_platform::ls021_wire::{BCK_PER_SUBLINE, ROW_WORDS, WIDTH};
 // the clean framebuffer (device-64 → RGB565) + draw the hold bulge over it through a `Band` — the same
 // step the ST7789 backend runs, before this backend re-quantises it back to the wire.
 use obc_platform::{composite_overlay_window, ls021_pack_row, Band, Panel};
-// The host-tested RGB565 → device-64 quantiser — the same one the glass-demo's gamut is drawn from,
-// so `flush_band` lands a band on the panel's RGB222 gamut exactly as the ST7789 stand-in shows it.
+// The host-tested RGB565 → device-64 quantiser — the same one the map style table is tuned to, so
+// `flush_band` lands a band on the panel's RGB222 gamut exactly as the ST7789 stand-in shows it.
 use obc_reader::rgb565_to_device64;
 
 use embedded_graphics::prelude::*;
@@ -328,9 +328,9 @@ impl<'b> Ls021Flpr<'b> {
         Self { fb, band: &mut [], seq: 0 }
     }
 
-    /// Backend for **whole-frame RGB565 generators** (the bring-up glass-demo): [`flush_band`] hands
-    /// the generator a `band` of RGB565 scratch and quantises each band into `fb`. `band` sizes the
-    /// band height (`band.len() / FB_W` rows). (Bin-only — the app uses [`new_fb`](Self::new_fb).)
+    /// Backend for **whole-frame RGB565 generators** (the bring-up bin's test cards): [`flush_band`]
+    /// hands the generator a `band` of RGB565 scratch and quantises each band into `fb`. `band` sizes
+    /// the band height (`band.len() / FB_W` rows). (Bin-only — the app uses [`new_fb`](Self::new_fb).)
     pub fn new_banded(fb: &'b mut [u8], band: &'b mut [u16]) -> Self {
         Self { fb, band, seq: 0 }
     }
@@ -508,9 +508,9 @@ impl Panel for Ls021Flpr<'_> {
 
     /// Render one band into the RGB565 scratch, then **quantise it into the resident RGB222 plane**
     /// at rows `[y0, y0 + rows)`: each pixel is snapped to the device-64 gamut by the host-tested
-    /// [`rgb565_to_device64`] (the same quantiser the glass-demo's swatches are drawn from) and
-    /// stored as a `0b00_RR_GG_BB` byte. No panel signal here — `end_frame` drives the whole plane.
-    /// Only the glass-demo path uses this; the map path renders device-64 directly via [`fb_mut`].
+    /// [`rgb565_to_device64`] and stored as a `0b00_RR_GG_BB` byte. No panel signal here — `end_frame`
+    /// drives the whole plane. Only the bring-up bin's banded path uses this; the map path renders
+    /// device-64 directly via [`fb_mut`].
     fn flush_band(&mut self, y0: u16, rows: u16, fill: impl FnOnce(&mut [u16])) {
         let n = FB_W * rows as usize;
         fill(&mut self.band[..n]);
@@ -531,9 +531,9 @@ impl Panel for Ls021Flpr<'_> {
 
 /// Draw a whole-frame RGB565 generator onto the panel through the [`Panel`]/[`Band`] seam: clear/fill
 /// the resident plane band-by-band (each band gets the *whole* frame drawn into it, clipped to its
-/// rows by [`Band`], so it reassembles seam-free), then drive the frame. The exact loop the ST7789
-/// `glass-demo` uses — proof the same generator drives both panels unchanged. (Map/ride frames skip
-/// this and render device-64 straight into [`fb_mut`](Ls021Flpr::fb_mut).)
+/// rows by [`Band`], so it reassembles seam-free), then drive the frame. The band-by-band draw helper
+/// the bring-up bin's test cards use. (Map/ride frames skip this and render device-64 straight into
+/// [`fb_mut`](Ls021Flpr::fb_mut).)
 pub fn show(panel: &mut Ls021Flpr, gen: impl Fn(&mut Band)) {
     panel.begin_frame();
     let rows = panel.band_rows();
