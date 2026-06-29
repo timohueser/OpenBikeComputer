@@ -118,7 +118,7 @@ struct SimGui {
     /// Map file bytes; `Reader` borrows these each frame.
     bytes: Vec<u8>,
     /// The streamed-map cache (issue #37), kept for the whole session and reused across frames —
-    /// exactly as the device holds one in SDRAM. A persistent cache lets a chunk read one frame
+    /// exactly as the device holds one in its reserved region. A persistent cache lets a chunk read one frame
     /// hit the next, so the "Map SD" stats track real device behaviour (a panned-into view warms
     /// up, then settles to 100% hit) rather than the cold ≤75% a per-frame cache would show.
     map_cache: MapCache,

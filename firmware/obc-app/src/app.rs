@@ -416,7 +416,7 @@ impl App {
 
     /// Build the idle power-on [`App`] **in place** at `slot` — the by-reference
     /// twin of [`new_idle`](App::new_idle), and the placement path the firmware uses
-    /// to construct the ~200 KB resident `App` straight into its reserved SDRAM block
+    /// to construct the ~200 KB resident `App` straight into its reserved memory region
     /// without ever materializing it (or its renderer scratch) on the 192 KB stack.
     ///
     /// `new_idle` returns the `App` by value, which only stays off the stack thanks to
@@ -431,7 +431,7 @@ impl App {
     ///
     /// # Safety
     /// `slot` must be a valid, aligned `*mut App` the caller exclusively owns and into
-    /// which a full `App` may be written (e.g. the device's reserved SDRAM region). On
+    /// which a full `App` may be written (e.g. the device's reserved memory region). On
     /// return the slot is fully initialized; read it via `&mut *slot`.
     pub unsafe fn init_idle(slot: *mut App, state: AppState) {
         use core::ptr::addr_of_mut;
@@ -1007,7 +1007,7 @@ mod tests {
         assert_eq!(app.state.compass_deg, None);
     }
 
-    // --- in-place SDRAM placement (issue #67) ---
+    // --- in-place placement into the reserved region (issue #67) ---
 
     /// `init_idle` writing field-by-field into a slot must land the same power-on state
     /// `new_idle` builds by value — Home root, Idle, nothing loaded, map dirty — with the

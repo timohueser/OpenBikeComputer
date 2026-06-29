@@ -13,8 +13,7 @@ name: CI
 #     `--all-targets`/`test`. Its three feature configs are **mutually exclusive** — `glass-demo`
 #     cfgs out the whole map path — so each is linted on its own; there is no valid
 #     `--all-features` build (it would mix the panel-demo and map paths and flag dead code).
-#   * nRF is the only board in the tree; the STM32F429 bring-up prototype has been deleted
-#     (issue #170). Optimise the shared crates for nRF freely.
+#   * nRF is the only board in the tree — optimise the shared crates for nRF freely.
 #   * There is no board in CI, so every embedded target is build-only.
 #   * The toolchain (channel + rustfmt/clippy + the thumbv8m / wasm32 targets) is pinned once in
 #     //rust-toolchain.toml and shared with local dev; jobs install from it.

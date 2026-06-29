@@ -2,11 +2,10 @@
 
 /// Which display planes changed this frame and so must be repainted.
 ///
-/// The dual-layer display composites two planes independently (issue #46): the
-/// expensive **map** (LTDC Layer 1 — the base-map render, 24–51 ms on the prototype) and
-/// the cheap transient **overlay** chrome (Layer 2 — the hold bulge / confirm ring, a
-/// couple of ms). Tracking the two separately is what lets an animating ring repaint over
-/// an unchanged map without re-rendering the map.
+/// The display composites two planes independently (issue #46): the expensive **map**
+/// (the base-map render, tens of ms) and the cheap transient **overlay** chrome (the hold
+/// bulge / confirm ring, a couple of ms). Tracking the two separately is what lets an
+/// animating ring repaint over an unchanged map without re-rendering the map.
 ///
 /// [`App`](crate::App) accumulates this as state mutates, and the host drains it once per
 /// frame with [`App::take_dirty`](crate::App::take_dirty) — rendering

@@ -1,7 +1,7 @@
 //! OBC desktop simulator — host shell around the shared renderer.
 //!
 //! All map drawing (projection, LOD selection, polygon fill, lines) lives in
-//! `obc_render`, the same code the nRF54L firmware will run against the
+//! `obc_render`, the same code the nRF54L firmware runs against the
 //! LS021B7DD02. This binary only owns the host concerns: argument parsing, the
 //! eframe window + pan/zoom event loop, PNG output, and the color policy (device
 //! 64-color quantization by default, or `--true-color`).

@@ -1,8 +1,8 @@
 //! A board-agnostic synthetic moving [`LocationSource`] — the **`debug-usb`-off fallback**
 //! fake GPS, lifted out of the board crate so every OBC board reuses one copy.
 //!
-//! A board with no real receiver (the F429 prototype; a future nRF54L bring-up) but a need to
-//! exercise the ride loop drives [`SynthLocation`] in place of a chip: the fix walks a slow
+//! A board with no real receiver but a need to exercise the ride loop drives [`SynthLocation`] in
+//! place of a chip: the fix walks a slow
 //! square loop around a centre, on the wall clock. Unlike a constant fix, this gives the ride
 //! accumulators, breadcrumb and `.obct` log real motion — so a saved ride is a non-degenerate
 //! `.gpx` that re-imports cleanly (issue #36's save-loop deliverable). It is in its own

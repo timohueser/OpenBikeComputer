@@ -19,13 +19,13 @@
 //! ## Wiring convention — active-low
 //! Each switch connects its GPIO to the shared **GND** common pin, and the input uses
 //! its **internal pull-up** (no external parts). So a released line reads high and a
-//! press pulls it low: pressed ≡ [`InputPin::is_low`]. (This is also the natural
-//! convention for the future nRF board, where this debouncer is reused.)
+//! press pulls it low: pressed ≡ [`InputPin::is_low`]. (This is the convention the nRF
+//! board wires up, reusing this debouncer.)
 //!
 //! ## Time
 //! Debounce and auto-repeat need a clock, but [`InputSource::poll`] is clockless, so
 //! the board calls [`ButtonInput::update`] with the current wall-clock millis (an
-//! embassy `Instant` on the F429) once per loop *before* `handle_input`; `update`
+//! embassy `Instant` on the nRF) once per loop *before* `handle_input`; `update`
 //! samples the pins and queues events, and `poll` drains the queue. Injecting the
 //! clock (rather than reaching for a timer here) keeps the crate board-agnostic and
 //! host-testable.
