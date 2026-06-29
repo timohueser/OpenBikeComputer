@@ -199,3 +199,30 @@ fn battery_is_polled_on_a_slow_cadence_and_redraws_home_only_on_change() {
     assert!(beat(&mut app, &mut gauge, 60_000), "a changed level repaints Home");
     assert_eq!(app.state.battery_pct, 60, "and the new level is stored");
 }
+
+/// The #209 flip side: the riding views (Map / Statistics) don't draw the gauge, so a battery level
+/// change must **not** dirty the map there — otherwise a stationary rider eats a wasted ~97 ms full
+/// render every 30 s battery tick. (The bug snapshotted the live-data comparison's baseline *before*
+/// the battery poll, so a pure `battery_pct` delta tripped the `state != state_before` check on a
+/// view that shows live data; the sibling test above proves the same change *does* repaint Home.)
+#[test]
+fn a_battery_change_does_not_redraw_the_riding_views() {
+    let mut app = App::new(AppState::new(0, 0, 0.05)); // [Home, Map] → base is Map, which shows live data
+    let _ = app.take_dirty(); // drain the mandatory first frame
+
+    let mut gauge = CountingGauge { value: 75, polls: 0 }; // 75 % = the boot default
+    let beat = |app: &mut App, gauge: &mut CountingGauge, t: u32| {
+        let s = Sensors { loc: &mut NoFix, altimeter: None, compass: None, track: None, fuel: Some(gauge) };
+        app.tick(RideClock(t), s, None);
+        app.take_dirty().map
+    };
+
+    // First poll matches the default, so nothing changes regardless of the screen.
+    assert!(!beat(&mut app, &mut gauge, 0), "an unchanged level redraws nothing");
+
+    // A genuinely changed level at the next cadence: it is stored, but the Map view must stay put —
+    // the gauge isn't on it, so the riding render-on-demand budget isn't spent on a battery tick.
+    gauge.value = 60;
+    assert!(!beat(&mut app, &mut gauge, 30_000), "a battery delta must not dirty the riding map (#209)");
+    assert_eq!(app.state.battery_pct, 60, "the new level is still stored, just not drawn on the riding view");
+}
