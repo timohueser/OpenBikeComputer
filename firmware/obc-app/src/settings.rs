@@ -221,39 +221,96 @@ impl DateTime {
         self.minute = wrap_inclusive(self.minute as u16, n, 0, 59) as u8;
     }
 
+    /// The next calendar day — the day → month → year carry, leap-aware via
+    /// [`month_len`](DateTime::month_len), saturating at Dec 31 [`MAX_YEAR`](DateTime::MAX_YEAR)
+    /// rather than rolling to year 2100+. Shared by the forward clock advance
+    /// ([`add_minutes`](DateTime::add_minutes)) and the positive-offset side of
+    /// [`with_offset`](DateTime::with_offset).
+    const fn next_day(self) -> DateTime {
+        let mut dt = self;
+        if dt.day < Self::month_len(dt.year, dt.month) {
+            dt.day += 1;
+        } else if dt.month < 12 {
+            dt.month += 1;
+            dt.day = 1;
+        } else if dt.year < Self::MAX_YEAR {
+            dt.year += 1;
+            dt.month = 1;
+            dt.day = 1;
+        } // else already the last representable day — saturate (stay put).
+        dt
+    }
+
+    /// The previous calendar day — the symmetric day → month → year *borrow*, saturating at Jan 1
+    /// [`MIN_YEAR`](DateTime::MIN_YEAR). The negative-offset side of
+    /// [`with_offset`](DateTime::with_offset).
+    const fn prev_day(self) -> DateTime {
+        let mut dt = self;
+        if dt.day > 1 {
+            dt.day -= 1;
+        } else if dt.month > 1 {
+            dt.month -= 1;
+            dt.day = Self::month_len(dt.year, dt.month);
+        } else if dt.year > Self::MIN_YEAR {
+            dt.year -= 1;
+            dt.month = 12;
+            dt.day = 31;
+        } // else already the first representable day — saturate (stay put).
+        dt
+    }
+
     /// Advance the stamp **forward** by `mins` minutes, carrying minute → hour → day → month →
     /// year (leap-aware via [`month_len`](DateTime::month_len)). This is a real clock advance, the
     /// opposite of the field [`step_minute`](DateTime::step_minute)/… steppers that wrap *within a
     /// single field* for the editor: here 23:59 + 1 rolls into the next day, Dec 31 into the next
     /// year, and Feb 28 → Mar 1 except in a leap year. Pure (returns a new value), forward-only —
     /// the [`WallClock`](crate::WallClock) only ever advances its set-point by elapsed monotonic
-    /// time, never backwards. The day-walk loop runs once per crossed month boundary (a couple of
-    /// iterations even for the u32-millis-wrap maximum of ~50 days), so it stays cheap.
+    /// time, never backwards. The day-walk steps one [`next_day`](DateTime::next_day) at a time so
+    /// each boundary re-evaluates `month_len` and the year saturates at `MAX_YEAR`; the count is
+    /// small — minute resolution caps a single advance at the ~50-day u32-millis wrap.
     pub fn add_minutes(self, mins: u32) -> DateTime {
         let mut dt = self;
+        // Defensive re-pin: `next_day` (and any `month_len − day` arithmetic) assumes an in-range
+        // date. An unsanitised stamp — a future raw GPS-fix path, never the always-`sanitize`d
+        // manual set-point — could carry a day past the month length and panic / yield garbage, so
+        // clamp the date fields before walking them.
+        dt.month = dt.month.clamp(1, 12);
+        dt.day = dt.day.clamp(1, Self::month_len(dt.year, dt.month));
         let total_min = dt.minute as u32 + mins;
         dt.minute = (total_min % 60) as u8;
         let total_hour = dt.hour as u32 + total_min / 60;
         dt.hour = (total_hour % 24) as u8;
         let mut days = total_hour / 24;
-        // Walk whole days so each month/year boundary re-evaluates `month_len` (so February's
-        // length tracks the leap year we land in, not the one we left).
         while days > 0 {
-            let room = Self::month_len(dt.year, dt.month) as u32 - dt.day as u32; // days left this month
-            if days <= room {
-                dt.day += days as u8;
-                break;
-            }
-            days -= room + 1; // step onto the 1st of the next month, then keep going
-            dt.day = 1;
-            if dt.month == 12 {
-                dt.month = 1;
-                dt.year += 1; // a naturally advancing clock climbs past MAX_YEAR; only HH:MM is ever shown
-            } else {
-                dt.month += 1;
-            }
+            dt = dt.next_day();
+            days -= 1;
         }
         dt
+    }
+
+    /// This stamp shifted by a signed minute `offset` (a UTC offset), rolling the **date** across
+    /// midnight in *either* direction — the GPS UTC-anchor → local-time conversion. A positive
+    /// offset steps [`next_day`](DateTime::next_day), a negative one
+    /// [`prev_day`](DateTime::prev_day); the loops run at most once for a real ±14 h zone (and stay
+    /// bounded for any `i16`). Unlike [`add_minutes`](DateTime::add_minutes) this goes both ways,
+    /// since an offset can move the local clock earlier than the anchor.
+    pub fn with_offset(self, offset: i16) -> DateTime {
+        // Total minutes since the anchor's midnight, ± the offset; split into a whole-day carry and
+        // the local time-of-day so the date rolls and the clock re-pins independently.
+        let tod = self.hour as i32 * 60 + self.minute as i32 + offset as i32;
+        let local_tod = tod.rem_euclid(24 * 60);
+        let mut day_shift = tod.div_euclid(24 * 60);
+        let mut date = DateTime { hour: 0, minute: 0, ..self };
+        while day_shift > 0 {
+            date = date.next_day();
+            day_shift -= 1;
+        }
+        while day_shift < 0 {
+            date = date.prev_day();
+            day_shift += 1;
+        }
+        // Re-pin the local time-of-day: a sub-day `add_minutes` only sets HH:MM, never re-rolling.
+        date.add_minutes(local_tod as u32)
     }
 }
 
@@ -304,6 +361,21 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// The **local** wall-clock set-point the device actually shows: the hand-set [`clock`](Settings::clock)
+    /// verbatim in manual mode, or — when the clock is GPS-stamped ([`gps_time`](Settings::gps_time)) —
+    /// the UTC anchor shifted into local time by [`utc_offset_min`](Settings::utc_offset_min) (via
+    /// [`DateTime::with_offset`], so a shift across midnight rolls the date too). The single seam the
+    /// [`WallClock`](crate::WallClock) ticks and the Date & Time screen's "Local time" row reads, so the
+    /// Home clock and that row can never disagree by the offset. In manual mode the clock is already
+    /// local, so the offset is deliberately *not* applied (it would double-count).
+    pub fn local_clock(&self) -> DateTime {
+        if self.gps_time {
+            self.clock.with_offset(self.utc_offset_min)
+        } else {
+            self.clock
+        }
+    }
+
     /// Clamp every field into its valid range — applied after a decode (see [`decode`]).
     fn sanitize(&mut self) {
         self.clock.sanitize();
@@ -506,6 +578,53 @@ mod tests {
         // A multi-day advance that *crosses* Feb 29 counts it: Feb 27 2024 + 3 days = Mar 1.
         let across = DateTime { year: 2024, month: 2, day: 27, hour: 0, minute: 0 }.add_minutes(3 * 24 * 60);
         assert_eq!((across.month, across.day), (3, 1), "the leap day is one of the three crossed");
+    }
+
+    /// `with_offset` shifts a stamp by a signed minute offset, rolling the *date* in either
+    /// direction when the shift crosses midnight (the GPS UTC-anchor → local-time conversion).
+    #[test]
+    fn datetime_with_offset_rolls_the_date_both_ways() {
+        let base = DateTime { year: 2025, month: 6, day: 29, hour: 23, minute: 30 };
+        assert_eq!(base.with_offset(0), base, "a zero offset is identity");
+        let within = base.with_offset(15); // still the same day
+        assert_eq!((within.day, within.hour, within.minute), (29, 23, 45));
+        let next = base.with_offset(60); // 23:30 + 01:00 → 00:30 the next day
+        assert_eq!((next.day, next.hour, next.minute), (30, 0, 30), "forward across midnight rolls the day");
+        let early = DateTime { year: 2025, month: 6, day: 29, hour: 0, minute: 30 };
+        let prev = early.with_offset(-45); // 00:30 − 00:45 → 23:45 the previous day (a :45 zone)
+        assert_eq!((prev.day, prev.hour, prev.minute), (28, 23, 45), "backward across midnight rolls back");
+        // A backward roll across a month boundary borrows the previous month's length.
+        let month_edge = DateTime { year: 2025, month: 7, day: 1, hour: 0, minute: 0 };
+        let back = month_edge.with_offset(-60); // → Jun 30 23:00
+        assert_eq!((back.month, back.day, back.hour), (6, 30, 23), "the borrow steps into June (30 days)");
+    }
+
+    /// `add_minutes` is defensive against an unsanitised stamp: a day past the month length doesn't
+    /// underflow the unsigned day-walk (a debug panic / garbage day), and a huge advance saturates
+    /// at the end of `MAX_YEAR` rather than rolling to year 2100+.
+    #[test]
+    fn add_minutes_guards_bad_input_and_saturates_the_year() {
+        // Day 99 in a 30-day month: clamped, not underflowed — and no panic.
+        let bad = DateTime { year: 2025, month: 6, day: 99, hour: 0, minute: 0 };
+        assert!((1..=30).contains(&bad.add_minutes(0).day), "an over-long day is re-pinned into the month");
+        // Near the top of the range + two years of minutes pins at the last representable day.
+        let near_max = DateTime { year: DateTime::MAX_YEAR, month: 12, day: 31, hour: 12, minute: 0 };
+        let sat = near_max.add_minutes(2 * 365 * 24 * 60);
+        assert_eq!(sat.year, DateTime::MAX_YEAR, "the year never climbs past MAX_YEAR");
+        assert_eq!((sat.month, sat.day), (12, 31), "it saturates at Dec 31 rather than rolling over");
+    }
+
+    /// `local_clock` applies the UTC offset **only** in GPS mode — the hand-set manual clock is
+    /// already local, so applying the offset there would double-count it.
+    #[test]
+    fn local_clock_applies_offset_only_in_gps_mode() {
+        let clock = DateTime { year: 2025, month: 6, day: 29, hour: 12, minute: 0 };
+        let manual = Settings { gps_time: false, clock, utc_offset_min: 120, ..Settings::default() };
+        assert_eq!(manual.local_clock(), clock, "manual: the clock is already local, offset ignored");
+        let gps = Settings { gps_time: true, clock, utc_offset_min: 120, ..Settings::default() };
+        let local = gps.local_clock();
+        assert_eq!((local.hour, local.minute), (14, 0), "GPS: local = UTC anchor + offset");
+        assert_eq!((gps.clock.hour, gps.clock.minute), (12, 0), "the stored UTC anchor itself did not move");
     }
 
     /// The unit conversions are no-ops for metric and the right scale for imperial.
