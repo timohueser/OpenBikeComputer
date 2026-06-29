@@ -63,9 +63,6 @@ cargo run --release --features debug-uart
 # backend) — no FLPR, no RISC-V gcc, links the full 256 KB. ST7789 wiring (below).
 cargo run --release --features tft
 
-# Panel-only bring-up demo (font ladder + 64-colour gamut, no SD, no map) — ST7789:
-cargo run --release --no-default-features --features glass-demo
-
 # LS021 FLPR backend bring-up (epic #149): the standalone FLPR waveform bench (the same
 # RISC-V blob the default build uses, exercised in isolation). Notes: firmware/docs/ls021-flpr.md.
 # (The earlier M33-direct bit-bang bench bin was retired in #176 — the FLPR drives frames now.)
@@ -101,9 +98,9 @@ brew install riscv64-elf-gcc        # or set RISCV_GCC=<path> to an xPack / Zeph
 ```
 
 It's needed by every FLPR build — the **default** map firmware and `--features ls021-flpr`. Only the
-opt-in **`--features tft`** ST7789 firmware (and the `glass-demo` demo it implies) needs **no** RISC-V
-toolchain (CI installs the gcc only on the FLPR legs; `build.rs` keys the blob on the absence of
-`tft`). On Linux/CI the apt package `gcc-riscv64-unknown-elf` works too.
+opt-in **`--features tft`** ST7789 firmware needs **no** RISC-V toolchain (CI installs the gcc only on
+the FLPR legs; `build.rs` keys the blob on the absence of `tft`). On Linux/CI the apt package
+`gcc-riscv64-unknown-elf` works too.
 
 If `cargo run` prompts to pick a probe (e.g. another ST-LINK is attached), pass
 `--probe <vid:pid:serial>` for the J-Link.
