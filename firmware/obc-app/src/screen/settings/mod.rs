@@ -1,7 +1,7 @@
 //! The Settings tree — the `Menu → Settings` family from the Claude Design mock
 //! (`firmware/designs/Settings Screens.html`), in the same field-map style as the rest of the
 //! UI. This module owns the **list** screen ([`SettingsScreen`]) and the reusable drawing
-//! **kit** every settings screen shares (the toggle pill, the value/stepper field, the row
+//! **kit** every settings screen shares (the slider toggle, the value/stepper field, the row
 //! cursor); the individual screens live one file each ([`datetime`], [`units`], [`power`],
 //! [`reset`]).
 //!
@@ -13,10 +13,10 @@
 //! - **Back** steps out of an open field, else climbs one screen up.
 //! - **Long-press** is reserved for the one guarded action, the factory [`reset`].
 //!
-//! Editing is **live**: a stepper writes straight into the shared [`Settings`](crate::Settings)
-//! (so `Save & exit` is just a `Pop`, and stepping `back` out of a field is consistent with
-//! that). [`App::apply_gesture`](crate::App::apply_gesture) notices the change with one `==` and
-//! flags the host to persist it.
+//! Editing is **live**: a stepper writes straight into the shared [`Settings`](crate::Settings) —
+//! there's no save button, so `back` just exits (and stepping `back` out of a field is consistent
+//! with that). [`App::apply_gesture`](crate::App::apply_gesture) notices the change with one `==`
+//! and flags the host to persist it.
 
 use embedded_graphics::{
     prelude::{DrawTarget, Point},
@@ -204,14 +204,4 @@ where
         cv.triangle(Point::new(cx - 6, bot + 3), Point::new(cx + 6, bot + 3), Point::new(cx, bot + 10), palette::INK);
     }
     cv.text(text, Point::new(cx, ty), font, TextAlign::Center, palette::INK);
-}
-
-/// The shared `back tap = cancel / climb` footer hint, centred near the bottom — used by the
-/// edit-flow screens so the single-tap exit is always discoverable.
-pub(super) fn back_hint<D, F>(cv: &mut Canvas<D, F>, w: i32, h: i32, text: &str)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
-    cv.text(text, Point::new(w / 2, h - 26), Font::Label, TextAlign::Center, palette::SUBTEXT);
 }

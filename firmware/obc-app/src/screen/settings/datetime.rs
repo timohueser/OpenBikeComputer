@@ -66,7 +66,7 @@ impl RowKind {
     fn height(self) -> i32 {
         match self {
             RowKind::Date | RowKind::Time => 78,
-            RowKind::Offset => 52,
+            RowKind::Offset => 56,
             RowKind::GpsFix | RowKind::LocalTime => 48,
             RowKind::Toggle => 46,
         }
@@ -205,9 +205,9 @@ impl DateTimeScreen {
                 }
                 RowKind::Offset => {
                     super::row_label(&mut cv, area, "Offset", None);
-                    let (cw, ch) = (78, 28);
+                    let (cw, ch) = (84, 32);
                     let cell = rect(
-                        area.top_left.x + area.size.width as i32 - cw - 8,
+                        area.top_left.x + area.size.width as i32 - cw - 6,
                         area.top_left.y + (area.size.height as i32 - ch) / 2,
                         cw,
                         ch,
@@ -215,7 +215,14 @@ impl DateTimeScreen {
                     super::stepper_field(&mut cv, cell, &fmt_offset(s.utc_offset_min), editing == Some(0), Font::Label);
                 }
             }
-            y += rh + 4;
+            // Hairline separators (menu style) with a wider gap so they sit clear of a selected
+            // row's amber bar: one under the GPS-clock toggle, one above the Offset row (under the
+            // Local time info row) — grouping the clock source apart from the editable values.
+            let sep = matches!(kind, RowKind::Toggle | RowKind::LocalTime);
+            if sep {
+                cv.hline(20, y + rh + 7, w - 40, palette::RULE);
+            }
+            y += rh + if sep { 15 } else { 4 };
         }
         RenderStats::default()
     }

@@ -15,7 +15,7 @@
 use embedded_graphics::prelude::{DrawTarget, Point};
 use obc_render::{
     rect,
-    text::{Font, TextAlign},
+    text::{text_width, Font, TextAlign},
     Canvas, RenderStats,
 };
 
@@ -97,7 +97,13 @@ impl ResetScreen {
                 SUBTEXT,
             );
             cv.text("& saved time.", Point::new(w / 2, TITLE_BAR_H + 144), Font::Label, TextAlign::Center, SUBTEXT);
-            cv.text("Press to confirm", Point::new(w / 2, TITLE_BAR_H + 188), Font::Body, TextAlign::Center, INK);
+            // The arm action drawn as a button: an amber rounded button with ink text. Short
+            // label so it stays an inset button rather than a full-width bar.
+            let label = "Confirm";
+            let (bw, bh) = (text_width(label, Font::Body) as i32 + 44, 42);
+            let (bx, by) = (w / 2 - bw / 2, TITLE_BAR_H + 170);
+            cv.round(rect(bx, by, bw, bh), 8, AMBER);
+            cv.text(label, Point::new(w / 2, by + (bh - 22) / 2), Font::Body, TextAlign::Center, INK);
             return RenderStats::default();
         }
 
