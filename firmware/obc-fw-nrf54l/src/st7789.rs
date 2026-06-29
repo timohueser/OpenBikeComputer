@@ -12,11 +12,11 @@
 //! Generic over embedded-hal 1.0 `SpiBus` / `OutputPin` / `DelayNs`, which embassy-nrf's
 //! `Spim` + `Output` and embassy-time's `Delay` all implement.
 
-// The FLPR build (`panel-ls021`, issue #165) still compiles this module for its `WIDTH`/`HEIGHT`
+// The default FLPR build (issue #165) still compiles this module for its `WIDTH`/`HEIGHT`
 // geometry, but replaces the ST7789 driver with the LS021 FLPR backend — so the whole driver (the
 // `cmd` set, the `St7789` type, the push fast paths) is unused there. Allow it only in that build;
-// the default + glass-demo builds keep dead-code enforced.
-#![cfg_attr(feature = "panel-ls021", allow(dead_code))]
+// the `tft` map + glass-demo builds keep dead-code enforced.
+#![cfg_attr(not(feature = "tft"), allow(dead_code))]
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
