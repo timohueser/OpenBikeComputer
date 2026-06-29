@@ -40,7 +40,7 @@ fn marker_drawn_only_when_a_fix_is_set() {
     // A fix at the camera center → the marker is drawn.
     app.tick(
         RideClock(0),
-        Sensors { loc: &mut ReplayFix(Some(Fix::at(0, 0))), altimeter: None, compass: None, track: None },
+        Sensors { loc: &mut ReplayFix(Some(Fix::at(0, 0))), altimeter: None, compass: None, track: None, fuel: None },
         None,
     );
     assert!(render(&mut app, &bytes).count(RED) > 0, "fix ⇒ marker drawn");
@@ -61,6 +61,7 @@ fn dot_and_chevron_glyphs_differ_by_course() {
             altimeter: None,
             compass: None,
             track: None,
+            fuel: None,
         },
         None,
     );
@@ -74,6 +75,7 @@ fn dot_and_chevron_glyphs_differ_by_course() {
             altimeter: None,
             compass: None,
             track: None,
+            fuel: None,
         },
         None,
     );

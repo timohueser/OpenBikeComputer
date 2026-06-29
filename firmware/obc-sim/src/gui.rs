@@ -206,6 +206,9 @@ impl SimGui {
             crate::initial_camera(&reader, args.width)
         };
         let mut state = AppState::new(cx, cy, zoom);
+        if let Some(b) = args.battery {
+            state.battery_pct = b;
+        }
         // Start in Free so the mouse drives the camera; the Follow toggle lands
         // with the control panel. The fix is still seeded (map center) so the loop
         // and the future user marker have something to track.
@@ -230,6 +233,9 @@ impl SimGui {
         // the encoder walks Home → Route menu → Map, exactly like the device. (The
         // headless `--png` path and the web demo open straight on the map instead.)
         let mut app = if args.start_on_map { App::new(state) } else { App::new_idle(state) };
+        if let Some(seed) = args.home_seed {
+            app.reseed_home(seed);
+        }
         let store = RouteStore::open(args.routes_dir());
         let tracks = TrackStore::open(args.tracks_dir());
         // Seed the live settings from the persisted store (the device's RRAM stand-in), falling
@@ -411,6 +417,8 @@ impl SimGui {
                 altimeter: None,
                 compass: Some(&mut self.compass),
                 track: self.tracks.sink(),
+                // The battery is set once from `--battery` (default 75 %); no live sim gauge.
+                fuel: None,
             };
             self.app.tick(RideClock(now_ms), sensors, route.as_ref());
         }

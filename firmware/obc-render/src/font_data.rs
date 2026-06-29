@@ -58,3 +58,10 @@ pub static TER_U28B: MonoFont = mono(include_bytes!("../fonts/terminus/ter_u28b.
 /// Terminus 16×32 bold — cap 20 px (≈ 2.71 mm). The `Display` tier (big numbers); the
 /// largest native Terminus cut.
 pub static TER_U32B: MonoFont = mono(include_bytes!("../fonts/terminus/ter_u32b.raw"), (16, 32), 26);
+
+/// Terminus 16×32 bold, integer-doubled to 32×64 — cap 40 px (≈ 5.4 mm). The `Huge` tier,
+/// the one oversized readout (the Home-screen clock). 2× is past Terminus' largest native cut,
+/// so this strip is pixel-doubled from `ter_u32b.raw` (`fonts/double_strip.py`, nearest-neighbour
+/// 2×2 blocks) rather than rendered from the BDF; the chunky doubled edges read as deliberate at
+/// clock size. `ascent`/`cell` are 2× the `Display` cut's.
+pub static TER_U64B: MonoFont = mono(include_bytes!("../fonts/terminus/ter_u64b.raw"), (32, 64), 52);
