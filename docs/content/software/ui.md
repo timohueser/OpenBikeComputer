@@ -1,6 +1,6 @@
 ---
 title: The UI system
-description: How OpenBikeComputer's on-device interface works — screens as plain values, navigation as a return value, five gestures from two buttons, render-on-demand, and the "field map" look — all no_std and zero-allocation.
+description: How OpenBikeComputer's on-device interface works — screens as plain values, navigation as a return value, five gestures from two buttons, in-place settings editing that persists to RRAM, render-on-demand, and the "field map" look — all no_std and zero-allocation.
 ---
 
 # The UI system
@@ -14,7 +14,7 @@ This page is about *how that works* — the handful of abstractions that make a 
 The core idea: each screen is an enum variant wrapping a little struct of typed state, and the set of screens is one `enum Screen` dispatched by `match`. There are no trait objects and no heap — adding a screen is a **local edit**.
 
 <figure class="fig">
-<svg viewBox="0 0 720 300" role="img" aria-label="On the left, the Screen enum lists its seven variants: Home, Map, Statistics, RideControl, Menu, RouteMenu, RouteSwap. The Map variant points to its module on the right, which holds typed state, a handle method returning a Transition, and a draw method emitting pixels. A tag notes static match dispatch, no dyn and no allocation.">
+<svg viewBox="0 0 720 300" role="img" aria-label="On the left, the Screen enum lists its variants: Home, Map, Statistics, RideControl, Menu, RouteMenu, RouteSwap, plus the Settings tree. The Map variant points to its module on the right, which holds typed state, a handle method returning a Transition, and a draw method emitting pixels. A tag notes static match dispatch, no dyn and no allocation.">
   <defs>
     <marker id="aU1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
   </defs>
@@ -61,6 +61,8 @@ The core idea: each screen is an enum variant wrapping a little struct of typed 
 pub enum Screen {
     Home(HomeScreen), Map(MapScreen), Statistics(StatisticsScreen),
     RideControl(RideControl), Menu(MenuScreen), RouteMenu(RouteMenuScreen), RouteSwap(RouteSwapScreen),
+    // The Settings tree — a list plus one screen each for Date & Time, Units, Power and Reset.
+    Settings(SettingsScreen), DateTime(DateTimeScreen), Units(UnitsScreen), Power(PowerScreen), Reset(ResetScreen),
 }
 
 // Each variant is a module with typed state and exactly two methods:
@@ -146,7 +148,7 @@ fn handle(&mut self, g: Gesture, _cx: &mut Ctx) -> Transition {
         Gesture::Turn(n) => { self.selected = step_selection(self.selected, n, ITEMS.len()); Transition::None }
         Gesture::Press   => match self.selected {
             0 => Transition::Push(Screen::RouteMenu(RouteMenuScreen::new())), // Routes
-            _ => Transition::None,                                            // Settings (later)
+            _ => Transition::Push(Screen::Settings(SettingsScreen::new())),   // Settings
         },
         Gesture::Back    => Transition::Pop, // return to whoever opened the Menu
         _ => Transition::None,
@@ -255,6 +257,66 @@ Gesture::Hold => match self.selected {     // reaching this arm IS the confirmat
 },
 ```
 
+The factory **Reset** screen is the one place this earns its keep on purpose: it's destructive, so a stray tap can't fire it — you hold, a bar fills with the live progress, and only a completed hold clears the settings to their defaults.
+
+## Settings: a second level of focus
+
+Most screens have one focus: the row cursor. The **Settings** screens — Date & Time, Units, Power, and the factory Reset — add a *second* level. A value isn't a separate sub-screen; it's edited **in place**. Rotating still moves the amber row cursor, but once you press a value row, focus drops *into* a field: a `▲▼` box marks the live one, rotating now changes *its* value, pressing steps to the next field, and back steps out. The same two-level model drives every editor — a date, a UTC offset, a fix interval — and the same toggle row flips GPS-set-time or the power saver. No new gestures; the existing five just mean different things at each level.
+
+<figure class="fig">
+<svg viewBox="0 0 720 232" role="img" aria-label="Settings screens have two focus levels. In row focus, rotate moves the amber row cursor, press flips a toggle or opens a value row's stepper, and back climbs one screen. Pressing a value row enters field focus, where rotate changes the live field's value shown in an up-down arrow box, press advances to the next field, and back — or pressing past the last field — steps back out to row focus.">
+  <defs>
+    <marker id="aU8" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24">Two levels of focus — rows, then fields</text>
+
+  <!-- Row focus -->
+  <rect class="d-panel" x="40" y="46" width="262" height="160" rx="12" />
+  <text class="d-label" x="60" y="70">Row focus</text>
+  <rect x="58" y="80" width="226" height="24" rx="5" class="d-amber" />
+  <text class="d-sub" x="68" y="96" style="fill:#000;font-size:10px">amber bar = the cursor</text>
+  <g font-family="var(--mono)">
+    <text class="d-sub" x="60" y="130" style="font-size:10.5px">rotate — move the cursor</text>
+    <text class="d-sub" x="60" y="152" style="font-size:10.5px">press &nbsp;— toggle / open a value</text>
+    <text class="d-sub" x="60" y="174" style="font-size:10.5px">back &nbsp;— climb one screen up</text>
+  </g>
+
+  <!-- transitions -->
+  <line class="d-flow" x1="304" y1="104" x2="416" y2="104" marker-end="url(#aU8)" />
+  <text class="d-sub" x="360" y="96" text-anchor="middle" style="font-size:9px">press a value row</text>
+  <line class="d-flow" x1="416" y1="150" x2="304" y2="150" marker-end="url(#aU8)" />
+  <text class="d-sub" x="360" y="166" text-anchor="middle" style="font-size:9px">back / past last field</text>
+
+  <!-- Field focus -->
+  <rect class="d-panel-2" x="418" y="46" width="262" height="160" rx="12" />
+  <text class="d-label" x="438" y="70">Field focus</text>
+  <path d="M452 80 l7 -9 l7 9 z" fill="#ffaa00" />
+  <rect x="445" y="84" width="42" height="22" rx="4" class="d-muted" style="stroke:#ffaa00;stroke-width:1.5" />
+  <text class="d-sub" x="466" y="99" text-anchor="middle" style="font-size:10px">2025</text>
+  <path d="M452 110 l7 9 l7 -9 z" fill="#ffaa00" />
+  <text class="d-sub" x="500" y="99" style="font-size:10px">box = the live field</text>
+  <g font-family="var(--mono)">
+    <text class="d-sub" x="438" y="130" style="font-size:10.5px">rotate — change the value</text>
+    <text class="d-sub" x="438" y="152" style="font-size:10.5px">press &nbsp;— step to the next field</text>
+    <text class="d-sub" x="438" y="174" style="font-size:10.5px">back &nbsp;— step out of the field</text>
+  </g>
+</svg>
+<figcaption>The settings editors reuse the five gestures at two levels: the row cursor, then a live field. Pressing a value row drops focus in; pressing past the last field (or <code>back</code>) lifts it back out. Edits are applied <i>live</i> as you turn, so <code>Save &amp; exit</code> is just a normal <code>back</code> — there's no staging buffer to commit.</figcaption>
+</figure>
+
+### Settings survive a reboot — independent of the SD card
+
+A setting is worthless if it's forgotten on power-off, so settings persist. The values live in a small `Settings` value (`Copy`, no floats) that the screens edit; the *medium* is a host concern behind one more trait, exactly like the sensor seams. The app seeds itself from `load()` at boot and asks the host to `save()` only when something actually changed — detected by the same one-`==` before/after compare the camera uses to decide it's dirty.
+
+```rust
+pub trait SettingsStore {
+    fn load(&mut self) -> Option<Settings>; // None (blank/corrupt) → start from Settings::default()
+    fn save(&mut self, s: &Settings);       // encode the blob, persist it
+}
+```
+
+The simulator writes the blob to a file; the device writes it to a reserved slice of the nRF54L's on-chip **RRAM** — its program memory is RRAM, which is byte-writable with no flash-style erase cycle, so a tiny key-value store is cheap and needs no SD card present. Both sides share one versioned, CRC-checked byte codec, so a blank or corrupted read cleanly falls back to defaults rather than loading garbage — and the factory Reset is just writing the default blob back.
+
 ## Logic and drawing get different views of the world
 
 `handle` and `draw` are handed deliberately different contexts. `handle` gets `Ctx` — the **mutable** slice of app state a screen is allowed to change (the camera, the ride mode, the clock). `draw` gets `Render` — a **read-only** view plus the resources it needs to paint (the map reader, the renderer, the active route, its elevation profile, the breadcrumb, the in-flight hold-progress). A screen literally cannot mutate state while drawing, because it isn't given the means to.
@@ -268,10 +330,11 @@ Gesture::Hold => match self.selected {     // reaching this arm IS the confirmat
   <text class="d-label" x="56" y="68">handle(g, &amp;mut Ctx)</text>
   <text class="d-tag" x="56" y="84">mutable — change the world</text>
   <g font-family="var(--mono)">
-    <text class="d-sub" x="56" y="108">state &nbsp;&nbsp;— camera · zoom · pan</text>
-    <text class="d-sub" x="56" y="130">activity — ride mode · accumulators</text>
-    <text class="d-sub" x="56" y="152">routes &nbsp;— the catalog (read)</text>
-    <text class="d-sub" x="56" y="174">now_ms &nbsp;— the clock</text>
+    <text class="d-sub" x="56" y="104">state &nbsp;&nbsp;— camera · zoom · pan</text>
+    <text class="d-sub" x="56" y="124">activity — ride mode · accumulators</text>
+    <text class="d-sub" x="56" y="144">settings — units · clock · intervals</text>
+    <text class="d-sub" x="56" y="164">routes &nbsp;— the catalog (read)</text>
+    <text class="d-sub" x="56" y="184">now_ms &nbsp;— the clock</text>
   </g>
 
   <!-- Render -->
@@ -431,6 +494,8 @@ The UI is styled like a weatherproof field map — a wood frame, a parchment pan
 ## Where this lives
 
 - The screen system, stack, and `Transition`: [`obc-app/src/screen/mod.rs`](src:firmware/obc-app/src/screen/mod.rs)
+- The settings screens (the two-level editors + the shared kit): [`obc-app/src/screen/settings/`](src:firmware/obc-app/src/screen/settings)
+- The `Settings` value + its byte codec, and the `SettingsStore` seam: [`obc-app/src/settings.rs`](src:firmware/obc-app/src/settings.rs), [`obc-app/src/hal.rs`](src:firmware/obc-app/src/hal.rs)
 - The gesture recognizer: [`obc-app/src/input.rs`](src:firmware/obc-app/src/input.rs)
 - The input + overlay plane: [`obc-app/src/input_plane.rs`](src:firmware/obc-app/src/input_plane.rs)
 - The app driver (frame loop, render-on-demand, compositing): [`obc-app/src/app.rs`](src:firmware/obc-app/src/app.rs)
