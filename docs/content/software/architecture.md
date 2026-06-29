@@ -197,7 +197,7 @@ loop {
 }
 ```
 
-This **render-on-demand** is the headline power lever. The reflective panel holds its image without power, so the goal is to *not draw*: a parked bike on the Home screen issues zero map renders, frame after frame. The map only dirties when something the map shows actually moves — a fresh fix on a riding screen, an applied gesture, a route load — so redraws happen exactly when the picture would change and never otherwise. (The two clocks are deliberate: ride stats use a sample-relative `RideClock` so a fast GPX replay doesn't distort moving-time, while button holds use a real-time `InputClock`.)
+This **render-on-demand** is the headline power lever. The reflective panel holds its image without power, so the goal is to *not draw*: a parked bike on the Home screen issues no map renders frame after frame — the lone exception is one cheap chrome repaint a minute, when the wall clock ticks the displayed `HH:MM` over (no map data is read, so it costs almost nothing). The map only dirties when something the picture shows actually changes — a fresh fix on a riding screen, an applied gesture, a route load, the clock crossing into a new minute — so redraws happen exactly when the picture would change and never otherwise. (The two clocks are deliberate: ride stats use a sample-relative `RideClock` so a fast GPX replay doesn't distort moving-time, while button holds use a real-time `InputClock`.)
 
 ## Staying responsive: the two planes
 

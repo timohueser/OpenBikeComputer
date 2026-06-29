@@ -22,6 +22,8 @@ use obc_render::{
 };
 
 use crate::input::Gesture;
+use crate::settings::DateTime;
+use crate::wall_clock::MinuteTicker;
 
 use super::{palette, Ctx, MenuScreen, Render, RouteMenuScreen, Screen, Transition};
 
@@ -33,6 +35,9 @@ pub struct HomeScreen {
     /// across clock/battery re-renders — so the pattern drifts when you *return* to Home, not while
     /// you sit on it. `0` (the boot default) is the canonical, un-jittered massif.
     seed: u32,
+    /// Fires a repaint once each minute the wall clock rolls over (see [`animate`](HomeScreen::animate)),
+    /// so the displayed `HH:MM` advances on the render-on-demand host without polling.
+    ticker: MinuteTicker,
 }
 
 impl HomeScreen {
@@ -61,6 +66,16 @@ impl HomeScreen {
         }
     }
 
+    /// Self-dirty once the wall clock crosses into a new minute so the `HH:MM` readout repaints —
+    /// the Home half of the screens' timed-`animate` contract (the Statistics spring-back is the
+    /// other). `now` is the live wall-clock time the host computes once per frame; the
+    /// [`MinuteTicker`] reports only the actual minute rollover, so an idle Home repaints at most
+    /// once a minute and nothing more often. The whole screen redraws (contours included) — cheap
+    /// and accepted (the contour cost is logged via [`RenderStats::contour_us`]).
+    pub fn animate(&mut self, now: DateTime) -> bool {
+        self.ticker.changed(now)
+    }
+
     pub fn draw<D, F>(&self, target: &mut D, rx: &mut Render, color_fn: &F) -> RenderStats
     where
         D: DrawTarget,
@@ -77,9 +92,11 @@ impl HomeScreen {
         contours(&mut cv, w, h, self.seed);
         let contour_us = rx.clock.now_us().saturating_sub(t0) as u32;
 
-        // The wall clock: HH:MM in the oversized Huge tier, centred in the upper third.
+        // The wall clock: HH:MM in the oversized Huge tier, centred in the upper third. `rx.now` is
+        // the live time (the set-point advanced by elapsed millis), not the frozen set-point, so it
+        // actually ticks; `animate` repaints it each minute.
         let mut clock: heapless::String<8> = heapless::String::new();
-        let _ = write!(clock, "{:02}:{:02}", rx.settings.clock.hour, rx.settings.clock.minute);
+        let _ = write!(clock, "{:02}:{:02}", rx.now.hour, rx.now.minute);
         let clock_top = h * 40 / 100 - Font::Huge.line_height() as i32 / 2;
         cv.text(&clock, Point::new(w / 2, clock_top), Font::Huge, TextAlign::Center, palette::PARCHMENT);
 
