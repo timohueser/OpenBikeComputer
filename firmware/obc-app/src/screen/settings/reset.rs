@@ -1,15 +1,16 @@
-//! The Factory Reset screen — the one guarded, destructive action, so it earns the long-press:
-//! you **hold** to erase and a progress ring/bar fills as you hold; let go early and nothing
-//! happens (a stray tap can't fire it). On completion the settings drop back to
-//! [`Settings::default`] and a brief "done" state shows before any key returns Home.
+//! The Factory Reset screen — the one guarded, destructive action. The encoder long-press fires
+//! at a fixed ~500 ms threshold (a global gesture constant, not tunable per screen), which is too
+//! short to feel safe on its own, so reset is **two deliberate steps**: *press* to arm, then
+//! *hold* to erase. A stray hold on an un-armed screen does nothing; on completion the settings
+//! drop back to [`Settings::default`] and a brief "done" state shows.
 //!
 //! Scope note: this resets the **persisted settings** (units, clock, intervals) — it does *not*
 //! delete routes or saved tracks from the SD card (that destructive filesystem wipe is a
 //! deliberate follow-up). The copy says exactly what it does.
 //!
-//! The fill is driven by [`Render::hold_progress`](crate::screen::Render) — the same in-flight
-//! encoder-hold value the [`RideControl`](crate::screen::RideControl) confirm uses. As there, the
-//! global hold-bulge overlay is the always-live feedback; this bar is the on-screen echo.
+//! The hold bar is driven by [`Render::hold_progress`](crate::screen::Render) — the same in-flight
+//! encoder-hold value the [`RideControl`](crate::screen::RideControl) confirm uses; the global
+//! hold-bulge overlay is the always-live feedback and this bar is the on-screen echo.
 
 use embedded_graphics::prelude::{DrawTarget, Point};
 use obc_render::{
@@ -22,31 +23,42 @@ use crate::input::Gesture;
 use crate::screen::{palette, title_frame, Ctx, Render, Transition, TITLE_BAR_H};
 use crate::settings::Settings;
 
-/// The Factory Reset prompt. `done` flips once the hold completes and the reset has been applied;
-/// the screen then shows its confirmation until dismissed.
+/// The Factory Reset screen. `armed` is set by the first press (you must arm before a hold can
+/// erase); `done` is set once the hold completes and the reset has been applied.
 #[derive(Debug, Default)]
 pub struct ResetScreen {
+    armed: bool,
     done: bool,
 }
 
 impl ResetScreen {
     pub fn new() -> Self {
-        ResetScreen { done: false }
+        ResetScreen { armed: false, done: false }
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
+        if self.done {
+            // The reset is applied; any key clears the whole stack back to Home (the device would
+            // reboot here; the sim just lands home).
+            return match g {
+                Gesture::Press | Gesture::Back => Transition::Home,
+                _ => Transition::None,
+            };
+        }
         match g {
-            // The guarded confirm: a completed hold erases the settings to defaults. The
-            // before/after diff in `apply_gesture` then flags the host to persist the cleared blob.
-            Gesture::Hold if !self.done => {
+            // Step 1: press arms the screen (does nothing destructive on its own).
+            Gesture::Press if !self.armed => {
+                self.armed = true;
+                Transition::None
+            }
+            // Step 2: once armed, a completed hold erases the settings to defaults. The before/after
+            // diff in `apply_gesture` then flags the host to persist the cleared blob.
+            Gesture::Hold if self.armed => {
                 *cx.settings = Settings::default();
                 self.done = true;
                 Transition::None
             }
-            // From the done state, any key clears the whole settings stack back to Home (the
-            // device would reboot here; the sim just lands home).
-            Gesture::Press | Gesture::Back if self.done => Transition::Home,
-            // Before completion, back is the single-tap cancel — nothing erased.
+            // Back always exits to the Settings list — nothing erased.
             Gesture::Back => Transition::Pop,
             _ => Transition::None,
         }
@@ -61,41 +73,81 @@ impl ResetScreen {
         let (w, h) = (rx.w as i32, rx.h as i32);
         let mut cv = Canvas::new(target, color_fn);
         title_frame(&mut cv, w, h, "RESET", "");
+        // All body content is positioned from the title bar (not the panel centre), so the
+        // armed/idle layouts stack cleanly without colliding.
 
         if self.done {
-            cv.text("Reset complete", Point::new(w / 2, h / 2 - 24), Font::Body, TextAlign::Center, INK);
+            draw_check(&mut cv, w / 2, TITLE_BAR_H + 64, 26);
+            cv.text("Reset complete", Point::new(w / 2, TITLE_BAR_H + 110), Font::Body, TextAlign::Center, INK);
+            cv.text("Restarting", Point::new(w / 2, TITLE_BAR_H + 142), Font::Label, TextAlign::Center, SUBTEXT);
+            return RenderStats::default();
+        }
+
+        // Warning icon + title (kept short so nothing overruns the 240 px panel).
+        draw_warning(&mut cv, w / 2, TITLE_BAR_H + 50, 24);
+        cv.text("Factory reset", Point::new(w / 2, TITLE_BAR_H + 90), Font::Body, TextAlign::Center, WARNING);
+
+        if !self.armed {
+            // Step 1: the consequence + the arm prompt. (Back exits — no need to say so.)
             cv.text(
-                "settings restored to defaults",
-                Point::new(w / 2, h / 2 + 8),
+                "Erases all settings",
+                Point::new(w / 2, TITLE_BAR_H + 124),
                 Font::Label,
                 TextAlign::Center,
                 SUBTEXT,
             );
-            super::back_hint(&mut cv, w, h, "press to continue");
+            cv.text("& saved time.", Point::new(w / 2, TITLE_BAR_H + 144), Font::Label, TextAlign::Center, SUBTEXT);
+            cv.text("Press to confirm", Point::new(w / 2, TITLE_BAR_H + 188), Font::Body, TextAlign::Center, INK);
             return RenderStats::default();
         }
 
-        let body_top = TITLE_BAR_H + 24;
-        cv.text("Factory reset", Point::new(w / 2, body_top), Font::Body, TextAlign::Center, WARNING);
-        cv.text("Resets all settings", Point::new(w / 2, body_top + 34), Font::Label, TextAlign::Center, SUBTEXT);
-        cv.text("to factory defaults.", Point::new(w / 2, body_top + 54), Font::Label, TextAlign::Center, SUBTEXT);
-
-        // Hold-to-erase progress bar: a parchment-shade track filling warning-red with the live
-        // encoder hold. Empty at rest; full at the hold threshold (which fires `Gesture::Hold`).
+        // Step 2: armed → the hold-to-erase prompt over a bar that fills with the live encoder hold.
         let p = rx.hold_progress.clamp(0.0, 1.0);
-        let (bx, bw, by, bh) = (40, w - 80, h / 2 + 6, 16);
+        let prompt = if p > 0.02 { "Keep holding" } else { "Hold to erase" };
+        cv.text(prompt, Point::new(w / 2, TITLE_BAR_H + 150), Font::Body, TextAlign::Center, INK);
+        let (bx, bw, by, bh) = (40, w - 80, TITLE_BAR_H + 184, 16);
         let radius = (bh / 2) as u32;
         cv.round(rect(bx, by, bw, bh), radius, PARCHMENT_SHADE);
         let fill = (bw as f32 * p) as i32;
         if fill > 0 {
             cv.round(rect(bx, by, fill, bh), radius, WARNING);
         }
-
-        let prompt = if p > 0.02 { "Keep holding" } else { "Hold to reset" };
-        cv.text(prompt, Point::new(w / 2, by + bh + 14), Font::Body, TextAlign::Center, INK);
-        super::back_hint(&mut cv, w, h, "tap back to cancel");
         RenderStats::default()
     }
+}
+
+/// Draw a warning sign — an amber triangle (apex up) with an ink exclamation — centred at
+/// `(cx, cy)` with half-size `sz`.
+fn draw_warning<D, F>(cv: &mut Canvas<D, F>, cx: i32, cy: i32, sz: i32)
+where
+    D: DrawTarget,
+    F: Fn(u16) -> D::Color,
+{
+    use palette::*;
+    cv.triangle(Point::new(cx, cy - sz), Point::new(cx - sz, cy + sz), Point::new(cx + sz, cy + sz), AMBER);
+    // Exclamation: a short vertical bar over a dot, in ink so it reads on the amber.
+    cv.vline(cx, cy - sz / 4, sz / 2, 3, INK);
+    cv.disc(Point::new(cx, cy + sz / 2 + 1), 2, INK);
+}
+
+/// Draw a check mark in amber, centred near `(cx, cy)` with half-size `sz` — two thick strokes
+/// stepped out of discs (the canvas has no diagonal line primitive).
+fn draw_check<D, F>(cv: &mut Canvas<D, F>, cx: i32, cy: i32, sz: i32)
+where
+    D: DrawTarget,
+    F: Fn(u16) -> D::Color,
+{
+    let seg = |cv: &mut Canvas<D, F>, a: (i32, i32), b: (i32, i32)| {
+        const N: i32 = 14;
+        for k in 0..=N {
+            let x = a.0 + (b.0 - a.0) * k / N;
+            let y = a.1 + (b.1 - a.1) * k / N;
+            cv.disc(Point::new(x, y), 3, palette::AMBER);
+        }
+    };
+    // Short down-stroke to the low point, then the long up-stroke to the top-right.
+    seg(cv, (cx - sz, cy), (cx - sz / 3, cy + sz * 2 / 3));
+    seg(cv, (cx - sz / 3, cy + sz * 2 / 3), (cx + sz, cy - sz * 2 / 3));
 }
 
 #[cfg(test)]
@@ -111,13 +163,22 @@ mod tests {
         scr.handle(g, &mut cx)
     }
 
-    /// A completed hold erases the settings to defaults and enters the done state (it does not
-    /// leave the screen yet — the confirmation shows until dismissed).
+    /// The two-step guard: a hold does nothing until the screen is armed by a press; press then
+    /// hold erases the settings to defaults and enters the done state.
     #[test]
-    fn hold_resets_to_defaults() {
+    fn arm_then_hold_resets_to_defaults() {
         let mut s = Settings { units: Units::Imperial, power_saver: true, fix_interval_s: 30, ..Settings::default() };
+        let before = s;
         let mut scr = ResetScreen::new();
-        let t = run(&mut scr, &mut s, Gesture::Hold);
+
+        // A hold before arming must not erase anything.
+        run(&mut scr, &mut s, Gesture::Hold);
+        assert!(!scr.done, "an un-armed hold does nothing");
+        assert_eq!(s, before, "and changes no settings");
+
+        run(&mut scr, &mut s, Gesture::Press); // arm
+        assert!(scr.armed && !scr.done);
+        let t = run(&mut scr, &mut s, Gesture::Hold); // erase
         assert!(matches!(t, Transition::None), "stays to show the done message");
         assert_eq!(s, Settings::default(), "settings were cleared to factory defaults");
         assert!(scr.done);
@@ -125,14 +186,17 @@ mod tests {
         assert!(matches!(run(&mut scr, &mut s, Gesture::Press), Transition::Home));
     }
 
-    /// Back before the hold completes is the single-tap cancel — nothing is erased.
+    /// Back always exits (from the un-armed or armed state) and erases nothing.
     #[test]
-    fn back_cancels_without_erasing() {
+    fn back_exits_without_erasing() {
         let mut s = Settings { units: Units::Imperial, ..Settings::default() };
         let before = s;
         let mut scr = ResetScreen::new();
         assert!(matches!(run(&mut scr, &mut s, Gesture::Back), Transition::Pop));
-        assert!(!scr.done);
-        assert_eq!(s, before, "cancel left the settings untouched");
+        assert_eq!(s, before, "back from the prompt left the settings untouched");
+
+        run(&mut scr, &mut s, Gesture::Press); // arm…
+        assert!(matches!(run(&mut scr, &mut s, Gesture::Back), Transition::Pop), "…and back still exits");
+        assert_eq!(s, before, "still nothing erased");
     }
 }

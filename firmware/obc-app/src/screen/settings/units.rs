@@ -4,8 +4,6 @@
 //! turn) flips in place — no field sub-mode needed. Built to grow later (separate distance /
 //! elevation / temperature rows) without changing the navigation.
 
-use core::fmt::Write;
-
 use embedded_graphics::prelude::{DrawTarget, Point};
 use obc_render::{
     text::{Font, TextAlign},
@@ -48,21 +46,34 @@ impl UnitsScreen {
         let mut cv = Canvas::new(target, color_fn);
         title_frame(&mut cv, w, h, "UNITS", "");
 
-        // The single value row, always the cursor — the current system (Metric / Imperial)
-        // centred and bold. The title already says UNITS, so no left label is needed (and it
-        // would crowd the longer "Imperial" on the 240 px row).
+        // The single value row, always the cursor — the current system centred and bold, flanked
+        // by left/right arrows so it reads as "rotate to switch" (the title already says UNITS).
         let area = super::row_rect(0, LIST_TOP + 8, w, 50);
         super::row_cursor(&mut cv, area, true, false);
+        let midy = area.top_left.y + area.size.height as i32 / 2;
         cv.text(units.name(), Point::new(w / 2, area.top_left.y + (50 - 22) / 2), Font::Body, TextAlign::Center, INK);
+        // ◄ and ► as filled triangles, inset from the row edges.
+        let ax = area.top_left.x + 18;
+        cv.triangle(Point::new(ax, midy - 9), Point::new(ax, midy + 9), Point::new(ax - 11, midy), INK);
+        let bx = area.top_left.x + area.size.width as i32 - 18;
+        cv.triangle(Point::new(bx, midy - 9), Point::new(bx, midy + 9), Point::new(bx + 11, midy), INK);
 
-        // A compact reminder of what that system means for each readout (ASCII only — the panel
-        // font has no middle-dot), so flipping it shows the effect at a glance.
-        let mut summary: heapless::String<24> = heapless::String::new();
-        let _ = write!(summary, "{} / {} / {}", units.dist_label(), units.speed_label(), units.elev_label());
-        cv.text(&summary, Point::new(w / 2, LIST_TOP + 80), Font::Body, TextAlign::Center, SUBTEXT);
-        cv.text("dist / speed / elev", Point::new(w / 2, LIST_TOP + 112), Font::Label, TextAlign::Center, SUBTEXT);
-
-        super::back_hint(&mut cv, w, h, "press to switch");
+        // What the system means for each readout, one per line down the open space below — label
+        // left, unit right (ASCII only; the panel font has no middle-dot).
+        let rows: [(&str, &str); 3] =
+            [("Distance", units.dist_label()), ("Speed", units.speed_label()), ("Elevation", units.elev_label())];
+        let mut ry = LIST_TOP + 96;
+        for (label, value) in rows {
+            cv.text(label, Point::new(area.top_left.x + 12, ry), Font::Body, TextAlign::Left, SUBTEXT);
+            cv.text(
+                value,
+                Point::new(area.top_left.x + area.size.width as i32 - 12, ry),
+                Font::Body,
+                TextAlign::Right,
+                INK,
+            );
+            ry += 44;
+        }
         RenderStats::default()
     }
 }

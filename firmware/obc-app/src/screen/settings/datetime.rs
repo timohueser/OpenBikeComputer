@@ -1,13 +1,15 @@
-//! The Date & Time screen — the richest of the settings screens and the one the mock's input
-//! flow is built around. A `Set from GPS` toggle switches between two row sets:
+//! The Date & Time screen — the richest of the settings screens. A `GPS clock` slider switches
+//! between two row sets:
 //!
-//! - **Manual** (GPS off): `DATE` (year / month / day) and `TIME` (hour : minute) steppers, then
-//!   `Save & exit`. Rotate moves the row cursor; press opens a value row's `▲▼` stepper on its
-//!   first field; press steps field→field; back steps out.
-//! - **GPS** (GPS on): the stamp is locked, so only `UTC offset` is editable. `GPS fix` and
-//!   `Local time` are read-only info rows the cursor **skips** over.
+//! - **Manual** (GPS off): a `DATE` row (year / month / day) and a `TIME` row (hour : minute),
+//!   each a caption above its in-place steppers. Rotate moves the row cursor; press opens a value
+//!   row's first field; press steps field→field; back steps out.
+//! - **GPS** (GPS on): GPS supplies UTC, so the stamp is locked and only the `UTC offset` is
+//!   yours — turning it shifts the **local** time (UTC + offset). `GPS fix` and `Local time` are
+//!   read-only info rows the cursor **skips**.
 //!
-//! Edits are live (see the [module docs](super)); `Save & exit` is just a `Pop`.
+//! There is no save button: edits apply live and `back` exits — the implicit-save model the other
+//! settings screens use.
 
 use core::fmt::Write;
 
@@ -25,11 +27,11 @@ use crate::input::Gesture;
 use crate::screen::{palette, title_frame, Ctx, Render, Transition, LIST_TOP};
 use crate::settings::{Settings, UTC_OFFSET_MAX, UTC_OFFSET_MIN, UTC_OFFSET_STEP};
 
-/// One row of the Date & Time screen. The set in play depends on `Set from GPS`; the two info
-/// rows are present only in GPS mode and are never the cursor.
+/// One row of the Date & Time screen. The set in play depends on `GPS clock`; the two info rows
+/// are present only in GPS mode and are never the cursor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RowKind {
-    /// `Set from GPS` — the mode toggle (always row 0).
+    /// `GPS clock` — the mode toggle (always row 0).
     Toggle,
     /// `DATE` year/month/day steppers (manual only).
     Date,
@@ -37,12 +39,10 @@ enum RowKind {
     Time,
     /// Read-only GPS fix status (GPS only).
     GpsFix,
-    /// Read-only derived local time (GPS only).
+    /// Read-only local time = UTC + offset (GPS only).
     LocalTime,
     /// `UTC offset` stepper (GPS only).
     Offset,
-    /// `Save & exit` action.
-    Save,
 }
 
 impl RowKind {
@@ -51,7 +51,7 @@ impl RowKind {
         !matches!(self, RowKind::GpsFix | RowKind::LocalTime)
     }
 
-    /// How many editable fields this row's stepper has (0 = a toggle / action / info row).
+    /// How many editable fields this row's stepper has (0 = a toggle / info row).
     fn fields(self) -> u8 {
         match self {
             RowKind::Date => 3,
@@ -61,20 +61,20 @@ impl RowKind {
         }
     }
 
-    /// Row height (px) — the steppers are taller to clear the `▲▼` arrows; the info rows are
-    /// tall enough to stack a caption over its value.
+    /// Row height (px). The Date/Time rows are tall — a caption over big steppers (with arrow
+    /// clearance); the info rows stack a caption over a value.
     fn height(self) -> i32 {
         match self {
-            RowKind::Date | RowKind::Time => 58,
+            RowKind::Date | RowKind::Time => 78,
             RowKind::Offset => 52,
             RowKind::GpsFix | RowKind::LocalTime => 48,
-            RowKind::Toggle | RowKind::Save => 46,
+            RowKind::Toggle => 46,
         }
     }
 }
 
-const MANUAL_ROWS: [RowKind; 4] = [RowKind::Toggle, RowKind::Date, RowKind::Time, RowKind::Save];
-const GPS_ROWS: [RowKind; 5] = [RowKind::Toggle, RowKind::GpsFix, RowKind::LocalTime, RowKind::Offset, RowKind::Save];
+const MANUAL_ROWS: [RowKind; 3] = [RowKind::Toggle, RowKind::Date, RowKind::Time];
+const GPS_ROWS: [RowKind; 4] = [RowKind::Toggle, RowKind::GpsFix, RowKind::LocalTime, RowKind::Offset];
 
 /// The row set in play for the current mode.
 fn rows(gps_time: bool) -> &'static [RowKind] {
@@ -85,8 +85,8 @@ fn rows(gps_time: bool) -> &'static [RowKind] {
     }
 }
 
-/// The Date & Time screen. `selected` indexes the current row set; `editing` is the open
-/// field's index within the selected row, or `None` for row-level focus.
+/// The Date & Time screen. `selected` indexes the current row set; `editing` is the open field's
+/// index within the selected row, or `None` for row-level focus.
 #[derive(Debug, Default)]
 pub struct DateTimeScreen {
     selected: usize,
@@ -126,11 +126,10 @@ impl DateTimeScreen {
                     };
                     Transition::None
                 }
-                // Save & exit: edits are already live, so this is just the climb out.
-                RowKind::Save => Transition::Pop,
                 RowKind::GpsFix | RowKind::LocalTime => Transition::None,
             },
-            // Back steps out of an open field first, else climbs to the Settings list.
+            // Back steps out of an open field first, else exits to the Settings list (edits are
+            // already live, so this is the implicit save).
             Gesture::Back => {
                 if self.editing.is_some() {
                     self.editing = None;
@@ -170,8 +169,6 @@ impl DateTimeScreen {
         let rows = rows(s.gps_time);
         let has_fix = rx.state.user_fix.is_some();
         let mut cv = Canvas::new(target, color_fn);
-        // The mode is shown by the GPS-clock toggle row, so the title needs no MANUAL/GPS tag
-        // (it would only collide with the long title on the 240 px bar).
         title_frame(&mut cv, w, h, "DATE & TIME", "");
 
         let mut y = LIST_TOP + 4;
@@ -185,51 +182,37 @@ impl DateTimeScreen {
             match kind {
                 RowKind::Toggle => {
                     super::row_label(&mut cv, area, "GPS clock", None);
-                    super::toggle_pill(&mut cv, area, s.gps_time);
+                    super::toggle_slider(&mut cv, area, s.gps_time);
                 }
                 RowKind::Date => draw_date(&mut cv, area, s, editing),
                 RowKind::Time => draw_time(&mut cv, area, s, editing),
                 RowKind::GpsFix => {
+                    // The UTC anchor GPS supplies — fixed, independent of the offset.
                     let mut v: heapless::String<24> = heapless::String::new();
                     if has_fix {
-                        let _ = write!(v, "UTC {}", fmt_utc(s));
+                        let _ = write!(v, "UTC {:02}:{:02}", s.clock.hour, s.clock.minute);
                     } else {
                         let _ = v.push_str("Searching for fix");
                     }
                     info_row(&mut cv, area, "GPS fix", &v);
                 }
                 RowKind::LocalTime => {
+                    // Local = UTC + offset, so this is what the offset stepper moves.
+                    let (lh, lm) = local_time_hm(s);
                     let mut v: heapless::String<24> = heapless::String::new();
-                    let _ = write!(
-                        v,
-                        "{} {} {}  {:02}:{:02}",
-                        s.clock.year,
-                        s.clock.month_name(),
-                        s.clock.day,
-                        s.clock.hour,
-                        s.clock.minute
-                    );
+                    let _ = write!(v, "{} {} {}  {:02}:{:02}", s.clock.year, s.clock.month_name(), s.clock.day, lh, lm);
                     info_row(&mut cv, area, "Local time", &v);
                 }
                 RowKind::Offset => {
                     super::row_label(&mut cv, area, "Offset", None);
-                    let (cw, ch) = (72, 26);
+                    let (cw, ch) = (78, 28);
                     let cell = rect(
                         area.top_left.x + area.size.width as i32 - cw - 8,
                         area.top_left.y + (area.size.height as i32 - ch) / 2,
                         cw,
                         ch,
                     );
-                    super::stepper_field(&mut cv, cell, &fmt_offset(s.utc_offset_min), editing == Some(0));
-                }
-                RowKind::Save => {
-                    cv.text(
-                        "Save & exit",
-                        Point::new(area.top_left.x + area.size.width as i32 / 2, area.top_left.y + 12),
-                        Font::Body,
-                        TextAlign::Center,
-                        palette::INK,
-                    );
+                    super::stepper_field(&mut cv, cell, &fmt_offset(s.utc_offset_min), editing == Some(0), Font::Label);
                 }
             }
             y += rh + 4;
@@ -254,63 +237,70 @@ fn step_field(s: &mut Settings, kind: RowKind, field: u8, n: i32) {
     }
 }
 
-/// Draw the `DATE` row: a left `DATE` label + year / month / day stepper cells, right-aligned.
+/// Draw a Date/Time row: a left caption above a centred group of big (Body) stepper cells. The
+/// `cells` are `(text, width)` pairs laid out left→right with `gap` between; `active` is the open
+/// field's index (or `None`). Shared by [`draw_date`] and [`draw_time`].
+fn draw_stepper_row<D, F>(
+    cv: &mut Canvas<D, F>,
+    area: Rectangle,
+    label: &str,
+    cells: &[(&str, i32)],
+    gap: i32,
+    active: Option<u8>,
+) where
+    D: DrawTarget,
+    F: Fn(u16) -> D::Color,
+{
+    let top = area.top_left.y;
+    cv.text(label, Point::new(area.top_left.x + 12, top + 2), Font::Label, TextAlign::Left, palette::SUBTEXT);
+    let ch = 32;
+    let cy = top + 34;
+    let total: i32 = cells.iter().map(|c| c.1).sum::<i32>() + gap * (cells.len() as i32 - 1);
+    let mut x = area.top_left.x + (area.size.width as i32 - total) / 2;
+    for (idx, &(text, cw)) in cells.iter().enumerate() {
+        super::stepper_field(cv, rect(x, cy, cw, ch), text, active == Some(idx as u8), Font::Body);
+        x += cw + gap;
+    }
+}
+
+/// Draw the `DATE` row: `DATE` over year / month / day Body steppers.
 fn draw_date<D, F>(cv: &mut Canvas<D, F>, area: Rectangle, s: &Settings, editing: Option<u8>)
 where
     D: DrawTarget,
     F: Fn(u16) -> D::Color,
 {
-    cv.text(
-        "DATE",
-        Point::new(area.top_left.x + 10, area.top_left.y + (area.size.height as i32 - 18) / 2),
-        Font::Label,
-        TextAlign::Left,
-        palette::SUBTEXT,
-    );
-    let ch = 26;
-    let cy = area.top_left.y + (area.size.height as i32 - ch) / 2;
-    let right = area.top_left.x + area.size.width as i32 - 8;
-    let (yw, mw, dw, gap) = (54, 42, 30, 5);
-    let yx = right - yw - gap - mw - gap - dw;
     let (mut yr, mut mo, mut da) =
         (heapless::String::<8>::new(), heapless::String::<8>::new(), heapless::String::<8>::new());
     let _ = write!(yr, "{}", s.clock.year);
     let _ = mo.push_str(s.clock.month_name());
     let _ = write!(da, "{}", s.clock.day);
-    super::stepper_field(cv, rect(yx, cy, yw, ch), &yr, editing == Some(0));
-    super::stepper_field(cv, rect(yx + yw + gap, cy, mw, ch), &mo, editing == Some(1));
-    super::stepper_field(cv, rect(yx + yw + gap + mw + gap, cy, dw, ch), &da, editing == Some(2));
+    draw_stepper_row(cv, area, "DATE", &[(&yr, 70), (&mo, 56), (&da, 44)], 8, editing);
 }
 
-/// Draw the `TIME` row: a left `TIME` label + hour : minute stepper cells, right-aligned.
+/// Draw the `TIME` row: `TIME` over hour : minute Body steppers.
 fn draw_time<D, F>(cv: &mut Canvas<D, F>, area: Rectangle, s: &Settings, editing: Option<u8>)
 where
     D: DrawTarget,
     F: Fn(u16) -> D::Color,
 {
-    cv.text(
-        "TIME",
-        Point::new(area.top_left.x + 10, area.top_left.y + (area.size.height as i32 - 18) / 2),
-        Font::Label,
-        TextAlign::Left,
-        palette::SUBTEXT,
-    );
-    let ch = 26;
-    let cy = area.top_left.y + (area.size.height as i32 - ch) / 2;
-    let right = area.top_left.x + area.size.width as i32 - 8;
-    let (cw, colon) = (44, 12);
-    let hx = right - cw - colon - cw;
     let (mut hh, mut mm) = (heapless::String::<8>::new(), heapless::String::<8>::new());
     let _ = write!(hh, "{:02}", s.clock.hour);
     let _ = write!(mm, "{:02}", s.clock.minute);
-    super::stepper_field(cv, rect(hx, cy, cw, ch), &hh, editing == Some(0));
-    cv.text(":", Point::new(hx + cw + colon / 2, cy + 2), Font::Body, TextAlign::Center, palette::INK);
-    super::stepper_field(cv, rect(hx + cw + colon, cy, cw, ch), &mm, editing == Some(1));
+    // The colon is drawn as a cell so the layout centres the whole "HH : MM" group.
+    draw_stepper_row(cv, area, "TIME", &[(&hh, 58), (":", 16), (&mm, 58)], 4, time_active(editing));
 }
 
-/// A read-only info row (no cursor): a muted caption stacked over its value, both left-aligned —
-/// stacked rather than side-by-side because a long value (the date stamp, "Searching for fix")
-/// would otherwise collide with the caption on the 240 px line.
+/// Map the Time row's two editable fields (hour, minute) onto the three-cell layout (hour, colon,
+/// minute) so the colon cell is never the active one.
+fn time_active(editing: Option<u8>) -> Option<u8> {
+    match editing {
+        Some(0) => Some(0), // hour
+        Some(1) => Some(2), // minute (skip the colon cell at index 1)
+        _ => None,
+    }
+}
+
+/// A read-only info row (no cursor): a muted caption stacked over its value, both left-aligned.
 fn info_row<D, F>(cv: &mut Canvas<D, F>, area: Rectangle, label: &str, value: &str)
 where
     D: DrawTarget,
@@ -330,14 +320,11 @@ fn fmt_offset(min: i16) -> heapless::String<8> {
     s
 }
 
-/// The UTC time-of-day derived from the local clock and offset (`HH:MM`, wrapping within the
-/// day — the date roll is elided in this compact status readout).
-fn fmt_utc(s: &Settings) -> heapless::String<8> {
-    let mut out = heapless::String::new();
-    let local = s.clock.hour as i32 * 60 + s.clock.minute as i32;
-    let utc = (local - s.utc_offset_min as i32).rem_euclid(24 * 60);
-    let _ = write!(out, "{:02}:{:02}", utc / 60, utc % 60);
-    out
+/// The local time-of-day = the UTC anchor (`clock`) plus the offset, wrapped within the day. The
+/// date roll across midnight is elided in this compact readout (a stub until real GPS time lands).
+fn local_time_hm(s: &Settings) -> (u8, u8) {
+    let total = (s.clock.hour as i32 * 60 + s.clock.minute as i32 + s.utc_offset_min as i32).rem_euclid(24 * 60);
+    ((total / 60) as u8, (total % 60) as u8)
 }
 
 #[cfg(test)]
@@ -354,23 +341,22 @@ mod tests {
         scr.handle(g, &mut cx)
     }
 
-    /// Flipping `Set from GPS` swaps the row set; the cursor then skips the two read-only info
-    /// rows, landing on `UTC offset` and then `Save` — never on `GPS fix` / `Local time`.
+    /// Flipping `GPS clock` swaps the row set; the cursor then skips the two read-only info rows,
+    /// landing on `UTC offset`, and wraps back to the toggle (offset is the last selectable row).
     #[test]
     fn gps_toggle_swaps_rows_and_cursor_skips_info_rows() {
         let mut s = Settings::default();
         let mut scr = DateTimeScreen::new();
-        // Row 0 is the toggle in both modes; pressing it turns GPS time on.
         assert!(!s.gps_time);
         run(&mut scr, &mut s, Gesture::Press);
         assert!(s.gps_time, "press on the toggle row enabled GPS time");
         assert_eq!(scr.selected, 0, "still on the toggle row after the flip");
-        // One detent down skips GpsFix (1) and LocalTime (2) to UTC offset (3)…
+        // GPS rows = [Toggle, GpsFix, LocalTime, Offset]; one detent skips the info rows to Offset.
         run(&mut scr, &mut s, Gesture::Turn(1));
         assert_eq!(scr.selected, 3, "cursor skipped the info rows to UTC offset");
-        // …and the next lands on Save (4).
+        // Offset is the last selectable row, so the next detent wraps back to the toggle.
         run(&mut scr, &mut s, Gesture::Turn(1));
-        assert_eq!(scr.selected, 4, "and on to Save");
+        assert_eq!(scr.selected, 0, "wraps past the end back to the toggle");
     }
 
     /// Manual edit flow: rotate to DATE, press to open the year field, rotate to change it, press
@@ -394,27 +380,29 @@ mod tests {
         assert_eq!(scr.editing, None);
     }
 
-    /// Back steps out of an open field first (handled in place), then climbs to the Settings list.
+    /// Back steps out of an open field first (handled in place), then exits to the Settings list —
+    /// there's no Save button; back is the implicit save.
     #[test]
-    fn back_steps_out_then_climbs() {
+    fn back_steps_out_then_exits() {
         let mut s = Settings::default();
         let mut scr = DateTimeScreen::new();
         run(&mut scr, &mut s, Gesture::Turn(1)); // → DATE
         run(&mut scr, &mut s, Gesture::Press); // open year
         assert!(matches!(run(&mut scr, &mut s, Gesture::Back), Transition::None));
         assert_eq!(scr.editing, None, "back closed the field without leaving the screen");
-        assert!(matches!(run(&mut scr, &mut s, Gesture::Back), Transition::Pop), "back again climbs out");
+        assert!(matches!(run(&mut scr, &mut s, Gesture::Back), Transition::Pop), "back again exits");
     }
 
-    /// `Save & exit` is a plain `Pop` — edits were already applied live.
+    /// The UTC offset shifts the **local** time, not the UTC anchor (the fix the user reported).
     #[test]
-    fn save_pops() {
-        let mut s = Settings::default(); // manual rows: [Toggle, Date, Time, Save]
-        let mut scr = DateTimeScreen::new();
-        for _ in 0..3 {
-            run(&mut scr, &mut s, Gesture::Turn(1));
-        }
-        assert_eq!(scr.selected, 3, "on Save");
-        assert!(matches!(run(&mut scr, &mut s, Gesture::Press), Transition::Pop));
+    fn offset_shifts_local_time_not_utc() {
+        let mut s = Settings { gps_time: true, ..Settings::default() };
+        s.clock.hour = 12;
+        s.clock.minute = 0;
+        s.utc_offset_min = 0;
+        assert_eq!(local_time_hm(&s), (12, 0), "at +00:00 local matches the UTC anchor");
+        s.utc_offset_min = 120; // +02:00
+        assert_eq!(local_time_hm(&s), (14, 0), "offset moves local forward; the 12:00 UTC anchor is unchanged");
+        assert_eq!((s.clock.hour, s.clock.minute), (12, 0), "the stored UTC anchor did not move");
     }
 }
