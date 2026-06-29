@@ -49,7 +49,7 @@
 
 use core::ptr::{addr_of, addr_of_mut};
 
-use defmt::{error, info};
+use defmt::{debug, error, info};
 use embassy_time::{Instant, Timer};
 // The host-tested RGB222 → LS021-wire pack (#154) with its sub-line/row word counts.
 use obc_platform::ls021_wire::{BCK_PER_SUBLINE, ROW_WORDS, WIDTH};
@@ -412,7 +412,10 @@ impl<'b> Ls021Flpr<'b> {
             error!("LS021 FLPR: frame MISMATCH — status={=u32} (want {=usize} dirty rows)", status, total);
             return false;
         }
-        info!(
+        // The loop's `map frame` / `ui frame` line already reports the push time at `info`; this is the
+        // per-push internal breakdown (dirty rows, µs/row, M33 pack overlap), kept at `debug` so a build
+        // can opt into it for perf-tuning without flooding the default log every frame.
+        debug!(
             "LS021 FLPR: frame OK — FLPR scanned {=usize} dirty rows (frame #{=u32}) in {=u64} µs (~{=u64} µs/row); M33 packed {=usize} rows in {=u64} µs",
             total,
             frames,

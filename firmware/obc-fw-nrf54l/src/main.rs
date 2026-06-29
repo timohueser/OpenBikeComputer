@@ -918,7 +918,8 @@ impl MapDisplay {
             let push_us = t_push.elapsed().as_micros();
             self.last_overlay_span = Some((y0, rows));
             if ok {
-                defmt::info!("overlay frame: bulge push {=u64} us ({=u16} rows @ y{=u16})", push_us, rows, y0);
+                // Per-tick during a hold (~every 8 ms) — `debug` so it doesn't flood the default log.
+                defmt::debug!("overlay frame: bulge push {=u64} us ({=u16} rows @ y{=u16})", push_us, rows, y0);
             } else {
                 defmt::warn!("overlay frame: bulge push failed (FLPR stalled?) — retrying next overlay tick");
             }
@@ -1241,13 +1242,12 @@ async fn run_app(
                         fp.stats.map_chunk_misses
                     );
                 } else {
-                    // `contour_us` is non-zero only on the Home screensaver (its marching-squares
-                    // backdrop); it's 0 for the menus / Statistics, where the line reads "contour 0 us".
+                    // A menu / Statistics / Home redraw: just its own chrome + the (now self-diffed)
+                    // push, so the partial-push win shows as a small `push` next to the full `render`.
                     defmt::info!(
-                        "ui frame: render {=u64} us + push {=u64} us | contour {=u32} us (screen redraw, no map)",
+                        "ui frame: render {=u64} us + push {=u64} us (screen redraw, no map)",
                         fp.render_us,
-                        fp.push_us,
-                        fp.stats.contour_us
+                        fp.push_us
                     );
                 }
             }
