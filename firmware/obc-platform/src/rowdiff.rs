@@ -31,10 +31,11 @@
 //!   miss for CI to fail on.
 //!
 //! Pixel-format-agnostic: the diff is over raw row bytes with a caller-supplied stride, so it works
-//! on the device's 1-byte/px RGB222 plane and the simulator's 3-byte/px RGB888 alike. On a banded
-//! device backend the per-row hash **piggybacks** on the pack pass that already reads every byte; in
-//! the simulator (which uploads a whole texture) it is a cheap separate pass — the simulator is the
-//! oracle, not the perf target.
+//! on the device's 1-byte/px RGB222 plane and the simulator's 3-byte/px RGB888 alike. The diff is a
+//! **separate** full-framebuffer hash pass run *before* the present — it reads every row once, and
+//! the device backend then packs/pushes only the changed rows it reports (the simulator uploads a
+//! whole texture; it's the oracle, not the perf target). That extra read is a small fixed cost that
+//! earns back far more than it spends against the LS021/FLPR's ~97 ms full-frame push.
 
 /// FNV-1a (32-bit) over one framebuffer row's bytes — the per-row hash the self-diff compares.
 ///
