@@ -6,7 +6,7 @@
 use core::fmt::Write;
 
 use embedded_graphics::prelude::DrawTarget;
-use obc_render::{rect, Canvas, RenderStats};
+use obc_render::{rect, text::Font, Canvas, RenderStats};
 
 use crate::input::Gesture;
 use crate::screen::{title_frame, Ctx, Render, Transition, LIST_TOP};
@@ -97,13 +97,13 @@ impl PowerScreen {
         let _ = write!(val, "{} s", rx.settings.fix_interval_s);
         let (cw, ch) = (64, 26);
         let cell = rect(r0.top_left.x + r0.size.width as i32 - cw - 6, r0.top_left.y + (ROW_H - ch) / 2, cw, ch);
-        super::stepper_field(&mut cv, cell, &val, editing);
+        super::stepper_field(&mut cv, cell, &val, editing, Font::Label);
 
         // Row 1 — Power Saver (toggle).
         let r1 = super::row_rect(1, LIST_TOP + 8 + ROW_H + 6, w, ROW_H);
         super::row_cursor(&mut cv, r1, self.selected == POWER_SAVER, false);
         super::row_label(&mut cv, r1, "Power save", Some("low power"));
-        super::toggle_pill(&mut cv, r1, rx.settings.power_saver);
+        super::toggle_slider(&mut cv, r1, rx.settings.power_saver);
 
         super::back_hint(&mut cv, w, h, "press to edit");
         RenderStats::default()

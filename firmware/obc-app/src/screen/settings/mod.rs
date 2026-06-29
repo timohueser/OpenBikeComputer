@@ -155,46 +155,55 @@ where
     }
 }
 
-/// Draw an OFF/ON toggle pill at the right of `area` — black (ink) for off, green for on, with
-/// the state word in parchment. The mock's "black off · green on" toggle.
-pub(super) fn toggle_pill<D, F>(cv: &mut Canvas<D, F>, area: Rectangle, on: bool)
+/// Draw a **slider toggle** at the right of `area` — a classic switch whose white knob slides
+/// left (off) / right (on), the rounded-rect track dark for off and green for on. No on/off
+/// text: the knob position and track colour carry the state.
+pub(super) fn toggle_slider<D, F>(cv: &mut Canvas<D, F>, area: Rectangle, on: bool)
 where
     D: DrawTarget,
     F: Fn(u16) -> D::Color,
 {
-    let (pw, ph) = (46, 24);
-    let px = area.top_left.x + area.size.width as i32 - pw - 6;
-    let py = area.top_left.y + (area.size.height as i32 - ph) / 2;
-    let r = rect(px, py, pw, ph);
-    cv.round(r, (ph / 2) as u32, if on { palette::ON } else { palette::INK });
-    cv.text(
-        if on { "ON" } else { "OFF" },
-        Point::new(px + pw / 2, py + 4),
-        Font::Label,
-        TextAlign::Center,
-        palette::PARCHMENT,
-    );
+    let (tw, th) = (50, 28);
+    let tx = area.top_left.x + area.size.width as i32 - tw - 4;
+    let ty = area.top_left.y + (area.size.height as i32 - th) / 2;
+    // Track: a rounded rectangle (small corners, not a pill).
+    cv.round(rect(tx, ty, tw, th), 6, if on { palette::ON } else { palette::INK });
+    // Knob: a white rounded square at the on/off end, with an even margin.
+    let m = 4;
+    let k = th - 2 * m;
+    let kx = if on { tx + tw - m - k } else { tx + m };
+    cv.round(rect(kx, ty + m, k, k), 4, palette::PARCHMENT);
 }
 
-/// Draw a **stepper field** cell holding `text`. When `active`, it's the live field: an amber
-/// outline plus an up-triangle above and a down-triangle below (the mock's `▲▼` box — rotate to
-/// change it). `cell` must leave ~10 px of clearance above and below for the arrows.
-pub(super) fn stepper_field<D, F>(cv: &mut Canvas<D, F>, cell: Rectangle, text: &str, active: bool)
+/// Cap height (px) of each font tier — the vertical span the glyphs occupy, used to centre text
+/// in a cell. Approximate but stable; tuned alongside the Terminus tiers in `obc-render`.
+fn cap_height(font: Font) -> i32 {
+    match font {
+        Font::Label => 18,
+        Font::Body => 22,
+        Font::Display => 26,
+    }
+}
+
+/// Draw a **stepper field** cell holding `text` in `font`. Inactive: just the text, **no
+/// background**. Active (the live field): an amber fill plus an up-triangle above and a
+/// down-triangle below (rotate to change it). `cell` must leave ~10 px of clearance above and
+/// below for the arrows.
+pub(super) fn stepper_field<D, F>(cv: &mut Canvas<D, F>, cell: Rectangle, text: &str, active: bool, font: Font)
 where
     D: DrawTarget,
     F: Fn(u16) -> D::Color,
 {
-    cv.round(cell, 4, palette::PARCHMENT_SHADE);
     let cx = cell.top_left.x + cell.size.width as i32 / 2;
-    let ty = cell.top_left.y + (cell.size.height as i32 - 18) / 2;
+    let ty = cell.top_left.y + (cell.size.height as i32 - cap_height(font)) / 2;
     if active {
-        cv.round_outline(cell, 4, palette::AMBER);
+        cv.round(cell, 4, palette::AMBER);
         let top = cell.top_left.y;
         let bot = cell.top_left.y + cell.size.height as i32;
-        cv.triangle(Point::new(cx - 6, top - 3), Point::new(cx + 6, top - 3), Point::new(cx, top - 10), palette::AMBER);
-        cv.triangle(Point::new(cx - 6, bot + 3), Point::new(cx + 6, bot + 3), Point::new(cx, bot + 10), palette::AMBER);
+        cv.triangle(Point::new(cx - 6, top - 3), Point::new(cx + 6, top - 3), Point::new(cx, top - 10), palette::INK);
+        cv.triangle(Point::new(cx - 6, bot + 3), Point::new(cx + 6, bot + 3), Point::new(cx, bot + 10), palette::INK);
     }
-    cv.text(text, Point::new(cx, ty), Font::Label, TextAlign::Center, palette::INK);
+    cv.text(text, Point::new(cx, ty), font, TextAlign::Center, palette::INK);
 }
 
 /// The shared `back tap = cancel / climb` footer hint, centred near the bottom — used by the
