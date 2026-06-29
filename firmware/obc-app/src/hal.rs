@@ -4,6 +4,8 @@
 //! **simulator**, the control panel (and later a GPX replay) implement them. The
 //! app polls the traits and is oblivious to which side it's running on.
 
+use crate::settings::Settings;
+
 /// A position/orientation fix, however it was obtained (GPS chip, GPX replay,
 /// manual control-panel override).
 ///
@@ -116,6 +118,26 @@ pub struct Sensors<'a> {
     /// The recorded-track sink, or `None` when nothing is logging (the sim's manual panel,
     /// tests) — the ride then simply isn't recorded.
     pub track: Option<&'a mut dyn TrackSink>,
+}
+
+/// Persistent store for the device [`Settings`] — the seam that keeps the *what* (the
+/// settings model + its screens, all shared) apart from the *where* (file vs. on-chip RRAM).
+///
+/// The host owns the medium: the simulator reads/writes a file, the firmware a reserved
+/// region of the nRF54L's on-chip RRAM — independent of the SD card, so settings survive a
+/// reboot with no card present. The app seeds itself from [`load`](SettingsStore::load) at
+/// boot (via [`App::set_settings`](crate::App::set_settings)) and asks the host to
+/// [`save`](SettingsStore::save) whenever [`App::take_settings_dirty`](crate::App::take_settings_dirty)
+/// reports a change — so persistence is the host's job and the shared layer stays oblivious to it.
+pub trait SettingsStore {
+    /// The persisted settings, or `None` when none are stored yet or the blob is unreadable
+    /// (blank/corrupt) — the caller then starts from [`Settings::default`]. Implementations
+    /// decode through [`settings::decode`](crate::settings::decode), so a `Some` is always valid.
+    fn load(&mut self) -> Option<Settings>;
+    /// Persist `s` (encoded via [`settings::encode`](crate::settings::encode)). Best-effort: a
+    /// write failure is the host's to log, not the app's to handle — settings stay live in RAM
+    /// regardless.
+    fn save(&mut self, s: &Settings);
 }
 
 /// A physical button on the device. There are exactly two: the rotary encoder's
