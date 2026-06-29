@@ -1,5 +1,12 @@
 # LS021B7DD02 panel bring-up — protocol & DK pin spec (STATUS: L2 LANDED)
 
+> **⚠️ Historical (epic #139 closed).** The M33-direct bring-up this doc describes is retired:
+> the `ls021_bringup` bin and the `PanelBus` bit-bang driver were deleted in **#176** once the
+> **FLPR** path ([ls021-flpr.md](ls021-flpr.md)) took over driving frames. Only the **L1 COM
+> driver** (`com_task`, now in `src/com.rs`) survives in the shipping firmware. This doc stays as
+> the **protocol & pinout reference** the FLPR work was ported from and still links into; treat the
+> bin/`PanelBus`/`src/ls021.rs` references below as the historical record, not current code.
+
 The **normative reference** for the Sharp **LS021B7DD02** bring-up on the nRF54L15-DK,
 driven **M33-direct** (no FLPR yet). Epic [#139]; this doc is the deliverable of
 **L0 [#140]** and the spec the firmware of L1–L4 is written against:
