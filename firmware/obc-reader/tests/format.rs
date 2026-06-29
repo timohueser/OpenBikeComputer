@@ -7,7 +7,7 @@
 //! either drifts, these break. The builder lives in `obcm-testkit` so the same layout
 //! is shared with `obc-render`'s priority test and a format bump edits one place.
 
-use obc_reader::{BBox, Error, Kind, MapCache, Reader, SliceSource, MAX_FEAT_PTS, MAX_FEAT_RINGS};
+use obc_reader::{BBox, Error, Kind, MapCache, MapTables, Reader, SliceSource, MAX_FEAT_PTS, MAX_FEAT_RINGS};
 use obcm_testkit::{
     build_file, pack_line, pack_line16, pack_poly_hole, pad, LodSpec, Style, BRANCH_BIT, EMPTY_LEAF, MARKER,
 };
@@ -87,7 +87,8 @@ fn header_and_lod_table() {
     let bytes = two_lod_file();
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let r = Reader::new(&src, &cache).unwrap();
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
 
     assert_eq!(r.version, 5);
     assert_eq!(r.marker_color, MARKER);
@@ -112,7 +113,8 @@ fn marker_color_round_trips() {
     let bytes = two_lod_file();
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let r = Reader::new(&src, &cache).unwrap();
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
     assert_eq!(r.marker_color, MARKER);
 }
 
@@ -121,7 +123,8 @@ fn styles_parse() {
     let bytes = two_lod_file();
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let r = Reader::new(&src, &cache).unwrap();
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
 
     let s1 = r.style(1).expect("style 1");
     assert_eq!(s1.z_index, 3);
@@ -144,7 +147,8 @@ fn backdrop_is_lowest_z_regardless_of_id() {
     let bytes = two_lod_file();
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let r = Reader::new(&src, &cache).unwrap();
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
 
     let bg = r.backdrop_style().expect("a backdrop");
     assert_eq!(bg.id, 2);
@@ -157,7 +161,8 @@ fn select_lod_for_mpp_picks_finest_covering() {
     let bytes = two_lod_file(); // max_mpp = [+inf, 50]
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let r = Reader::new(&src, &cache).unwrap();
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
 
     assert_eq!(r.select_lod_for_mpp(1000.0), 0); // only +inf covers
     assert_eq!(r.select_lod_for_mpp(51.0), 0); // 50 doesn't cover
@@ -171,7 +176,8 @@ fn query_single_leaf() {
     let bytes = two_lod_file();
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let r = Reader::new(&src, &cache).unwrap();
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
 
     // A view overlapping the global bbox hits the single leaf (chunk 0).
     let hits = r.query::<64>(0, &obc_reader::BBox { min_lon: 100, min_lat: 100, max_lon: 200, max_lat: 200 });
@@ -189,7 +195,8 @@ fn decode_line() {
     let bytes = two_lod_file();
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let r = Reader::new(&src, &cache).unwrap();
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
     let node = r.bbox;
 
     let feats = decode_chunk(&r, 0, 0, &node);
@@ -206,7 +213,8 @@ fn decode_polygon_with_hole() {
     let bytes = two_lod_file();
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let r = Reader::new(&src, &cache).unwrap();
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
     let node = r.bbox;
 
     let feats = decode_chunk(&r, 1, 0, &node);
@@ -224,7 +232,8 @@ fn visitor_matches_owned_decode() {
     let bytes = two_lod_file();
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let r = Reader::new(&src, &cache).unwrap();
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
     let node = r.bbox;
 
     // The borrowing for_each_feature must yield exactly what decode_chunk does.
@@ -260,7 +269,8 @@ fn decode_16bit_deltas() {
     );
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let r = Reader::new(&src, &cache).unwrap();
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
     let feats = decode_chunk(&r, 0, 0, &r.bbox);
     assert_eq!(feats.len(), 1);
     assert_eq!(feats[0].exterior, vec![(0, 0), (300, 400), (100, 400)]);
@@ -284,7 +294,8 @@ fn quadtree_subdivision_and_node_bbox() {
         build_file(GLOBAL, STYLES, &[LodSpec { max_mpp: f32::INFINITY, index, chunks: vec![line], chunk_size: CS }]);
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let r = Reader::new(&src, &cache).unwrap();
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
 
     let nw = obc_reader::BBox { min_lon: 0, min_lat: 500, max_lon: 500, max_lat: 1000 };
 
@@ -312,15 +323,16 @@ fn empty_leaf_yields_nothing() {
     );
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let r = Reader::new(&src, &cache).unwrap();
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
     assert!(r.query::<64>(0, &r.bbox).is_empty());
 }
 
 #[test]
 fn rejects_bad_input() {
-    // Reader isn't Debug, so match the Err arm rather than using unwrap_err.
-    let cache = MapCache::new();
-    let err = |b: &[u8]| match Reader::new(&SliceSource(b), &cache) {
+    // MapTables isn't Debug, so match the Err arm rather than using unwrap_err. The validation
+    // (magic / version / length) moved to `MapTables::parse`; `Reader::new` is now infallible.
+    let err = |b: &[u8]| match MapTables::parse(&SliceSource(b)) {
         Ok(_) => panic!("expected Err"),
         Err(e) => e,
     };
@@ -347,7 +359,8 @@ fn out_of_range_chunk_id_decodes_nothing() {
     let bytes = two_lod_file();
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let r = Reader::new(&src, &cache).unwrap();
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
     let node = r.bbox;
     assert!(decode_chunk(&r, 0, 1, &node).is_empty());
     assert!(decode_chunk(&r, 0, u32::MAX, &node).is_empty());
@@ -365,7 +378,7 @@ fn rejects_overflowing_lod_table_offset() {
     // front; on the 64-bit host the same value simply exceeds data.len().
     let mut bytes = two_lod_file();
     bytes[26..30].copy_from_slice(&0xFFFF_FFF0u32.to_le_bytes()); // header lod_table_offset
-    assert!(matches!(Reader::new(&SliceSource(&bytes), &MapCache::new()), Err(Error::BadOffset)));
+    assert!(matches!(MapTables::parse(&SliceSource(&bytes)), Err(Error::BadOffset)));
 }
 
 #[test]
@@ -381,7 +394,7 @@ fn rejects_overflowing_chunk_region() {
     let chunk_count_at = lod_tab_off + 14;
     bytes[chunk_size_at..chunk_size_at + 2].copy_from_slice(&u16::MAX.to_le_bytes());
     bytes[chunk_count_at..chunk_count_at + 4].copy_from_slice(&u32::MAX.to_le_bytes());
-    assert!(matches!(Reader::new(&SliceSource(&bytes), &MapCache::new()), Err(Error::BadOffset)));
+    assert!(matches!(MapTables::parse(&SliceSource(&bytes)), Err(Error::BadOffset)));
 }
 
 #[test]
@@ -412,7 +425,8 @@ fn filtered_decode_skips_without_drifting() {
     );
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let r = Reader::new(&src, &cache).unwrap();
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
     let node = r.bbox;
 
     let all = decode_chunk(&r, 0, 0, &node);
@@ -452,7 +466,8 @@ fn for_each_chunk_has_no_cap() {
     );
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let r = Reader::new(&src, &cache).unwrap();
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
 
     // A view over the whole bbox overlaps all four leaves.
     let mut seen = 0;
@@ -505,7 +520,8 @@ fn walk_terminates_on_back_referencing_branch() {
     );
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let r = Reader::new(&src, &cache).unwrap();
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
 
     // A viewport over the whole bbox keeps intersecting the (degenerate) node every level — the
     // condition under which the unguarded walk would never terminate.
@@ -533,7 +549,8 @@ fn walk_caps_depth_on_forward_chain() {
     );
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let r = Reader::new(&src, &cache).unwrap();
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
 
     let mut seen = 0;
     r.for_each_chunk(0, &r.bbox, |_cid, _node| seen += 1);

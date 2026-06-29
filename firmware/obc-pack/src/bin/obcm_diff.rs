@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 use std::process::ExitCode;
 
-use obc_reader::{BBox, Kind, MapCache, Reader, SliceSource, Style, MAX_FEAT_PTS, MAX_FEAT_RINGS};
+use obc_reader::{BBox, Kind, MapCache, MapTables, Reader, SliceSource, Style, MAX_FEAT_PTS, MAX_FEAT_RINGS};
 
 /// Canonical, hashable identity of a decoded feature (geometry in microdegrees).
 type FeatureKey = (u8, bool, Vec<(i32, i32)>, Vec<Vec<(i32, i32)>>);
@@ -147,20 +147,22 @@ fn main() -> ExitCode {
     let b_cache = MapCache::new();
     let a_src = SliceSource(&a_bytes);
     let b_src = SliceSource(&b_bytes);
-    let ra = match Reader::new(&a_src, &a_cache) {
-        Ok(r) => r,
+    let a_tables = match MapTables::parse(&a_src) {
+        Ok(t) => t,
         Err(e) => {
             eprintln!("parse {a_path}: {e:?}");
             return ExitCode::FAILURE;
         }
     };
-    let rb = match Reader::new(&b_src, &b_cache) {
-        Ok(r) => r,
+    let b_tables = match MapTables::parse(&b_src) {
+        Ok(t) => t,
         Err(e) => {
             eprintln!("parse {b_path}: {e:?}");
             return ExitCode::FAILURE;
         }
     };
+    let ra = Reader::new(&a_src, &a_tables, &a_cache);
+    let rb = Reader::new(&b_src, &b_tables, &b_cache);
 
     let mut ok = true;
     macro_rules! check {

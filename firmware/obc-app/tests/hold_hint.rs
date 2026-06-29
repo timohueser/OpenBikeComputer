@@ -8,7 +8,7 @@
 use embedded_graphics::pixelcolor::Rgb888;
 use obc_app::screen::palette;
 use obc_app::{App, AppState, Button, InputClock};
-use obc_reader::{rgb565_to_rgb888, MapCache, Reader, SliceSource};
+use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader, SliceSource};
 
 mod common;
 use common::{build_min_obcm, down, keys, Buf};
@@ -25,7 +25,8 @@ fn rgb(c: u16) -> Rgb888 {
 fn render(app: &mut App, bytes: &[u8]) -> Buf {
     let cache = MapCache::new();
     let src = SliceSource(bytes);
-    let reader = Reader::new(&src, &cache).expect("valid v5 file");
+    let tables = MapTables::parse(&src).expect("valid v5 file");
+    let reader = Reader::new(&src, &tables, &cache);
     let mut buf = Buf::new(240, 320);
     app.render_frame(&mut buf, &reader, None, 240.0, 320.0, rgb);
     buf
