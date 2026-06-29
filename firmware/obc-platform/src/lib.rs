@@ -87,6 +87,11 @@ pub mod ls021_wire;
 // Stand-in battery fuel gauge — a fixed level until the nPM1300 PMIC gauge is wired in.
 pub mod fuel;
 pub mod panel;
+// The self-diffing present core (epic #199 / issue #200): a per-row framebuffer hash so the present
+// path pushes only the rows that changed. Pure integer math over row bytes, so it always compiles
+// and its unit tests run in the host workspace — and the simulator drives the same `diff_rows` core
+// under its exact-diff oracle. The device present path adopts the `RowDiff` store in D2 (issue #201).
+pub mod rowdiff;
 pub mod sd;
 // Always compiled — the synthetic GPS is the `debug-usb`-OFF fallback, so it must exist without
 // the `debug-usb` feature.
@@ -97,5 +102,6 @@ pub use framebuffer::{device64_to_rgb565, FbDevice64, Framebuffer565};
 pub use fuel::StubFuelGauge;
 pub use ls021_wire::pack_row as ls021_pack_row;
 pub use panel::{composite_overlay_window, Band};
+pub use rowdiff::{diff_rows, row_hash, spans_missed_changes, RowDiff};
 pub use sd::{SdByteSink, SdByteSource, SdTrackSink};
 pub use synth::SynthLocation;
