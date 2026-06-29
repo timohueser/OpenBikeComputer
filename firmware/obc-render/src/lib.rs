@@ -214,12 +214,6 @@ impl Viewport {
         }
     }
 
-    /// Recompute the longitude aspect correction for the current camera latitude.
-    /// Call after panning north/south so far-apart latitudes stay shaped right.
-    pub fn refresh_aspect(&mut self) {
-        self.aspect = aspect_for_lat(self.cam_lat);
-    }
-
     #[inline]
     pub fn to_screen(&self, lon: i32, lat: i32) -> (i32, i32) {
         // Integer difference first, then cast the *small* relative delta to f32 — preserves
