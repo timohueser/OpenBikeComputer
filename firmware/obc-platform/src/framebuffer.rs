@@ -1,6 +1,6 @@
 //! `DrawTarget`s the board owns and the shared renderer draws into: the nRF's device-native
-//! RGB222 [`FbDevice64`] map plane (the real target), the STM32 prototype's LTDC-scanned RGB565
-//! [`Framebuffer565`] plane, and the transparent [`FramebufferArgb4444`] overlay plane.
+//! RGB222 [`FbDevice64`] map plane (the real target) and the STM32 prototype's LTDC-scanned
+//! RGB565 [`Framebuffer565`] plane.
 //!
 //! The on-device counterpart of the simulator's `obc-sim/src/framebuffer.rs`: the
 //! shared [`obc_render::MapRenderer`](../../obc_render) (driven through
@@ -17,23 +17,15 @@
 //! `obc_reader::rgb565_to_device64` is what the nRF actually stores and shows — not a host-only
 //! concern any more.
 //!
-//! [`FramebufferArgb4444`] is the second, per-pixel-alpha-blended LTDC layer (issue
-//! #46): the UI overlay (the hold-bulge / confirm ring) renders into it so the LTDC
-//! composites it over the map in hardware, and the overlay repaints without ever
-//! touching the map plane. It shares the *same* `Color` and `color_fn` as
-//! [`Framebuffer565`] — every drawn pixel is stored opaque, transparency is only the
-//! cleared state — so the shared overlay renderer is board- and layer-agnostic.
-//!
 //! Every plane is the *same* `DrawTarget`: a borrowed `width * height` buffer, a clipped pixel
 //! `put`, a scanline `fill_solid` and a `clear`. The planes differ by exactly two things — the
-//! stored pixel *type* and how an [`Rgb565`] colour is packed into it: native RGB565 (`u16`),
-//! opaque ARGB4444 (`u16`), or the nRF's device-native RGB222 (`u8`, [`FbDevice64`] — the real
-//! target, half the RAM). Both are captured by the zero-sized [`Pack`] marker and its associated
-//! [`Pixel`](Pack::Pixel) type, so the framebuffer body is written **once**, generic over
-//! `P: Pack`, and [`Framebuffer565`] / [`FramebufferArgb4444`] / [`FbDevice64`] are thin type
-//! aliases. `P::pack` is a static (monomorphized) call — no per-pixel indirection in the hot
-//! render loop — and the markers are zero-sized, so a [`RawFb`] is the same size as a bare
-//! `{ width, height, buf }` struct.
+//! stored pixel *type* and how an [`Rgb565`] colour is packed into it: native RGB565 (`u16`) or
+//! the nRF's device-native RGB222 (`u8`, [`FbDevice64`] — the real target, half the RAM). Both
+//! are captured by the zero-sized [`Pack`] marker and its associated [`Pixel`](Pack::Pixel) type,
+//! so the framebuffer body is written **once**, generic over `P: Pack`, and [`Framebuffer565`] /
+//! [`FbDevice64`] are thin type aliases. `P::pack` is a static (monomorphized) call — no per-pixel
+//! indirection in the hot render loop — and the markers are zero-sized, so a [`RawFb`] is the same
+//! size as a bare `{ width, height, buf }` struct.
 
 use core::marker::PhantomData;
 
@@ -46,11 +38,11 @@ use embedded_graphics::{pixelcolor::Rgb565, prelude::*, primitives::Rectangle};
 /// compiler folds in — never a `fn`-pointer / `dyn` indirection in the per-pixel render loop.
 ///
 /// The stored pixel is associated, not fixed at `u16`, so a board's native byte width comes for
-/// free: the RGB565 / ARGB4444 planes store a `u16`, while the nRF's device-native RGB222 plane
+/// free: the RGB565 plane stores a `u16`, while the nRF's device-native RGB222 plane
 /// ([`PackDevice64`]) stores a single `u8` — half the RAM for a frame the board has to fit in
 /// on-chip SRAM (no SDRAM).
 pub trait Pack {
-    /// The stored pixel type — `u16` for the RGB565 / ARGB4444 planes, `u8` for the 1-byte
+    /// The stored pixel type — `u16` for the RGB565 plane, `u8` for the 1-byte
     /// device-64 (RGB222) plane.
     type Pixel: Copy;
     /// Pack a rendered colour into its stored representation.
@@ -66,17 +58,6 @@ impl Pack for PackRgb565 {
     #[inline]
     fn pack(c: Rgb565) -> u16 {
         c.into_storage()
-    }
-}
-
-/// Opaque-ARGB4444 pack for the overlay plane: every drawn pixel is forced opaque
-/// (alpha `0xF`) via [`opaque_argb4444`]; transparency is only ever the cleared state.
-pub struct PackOpaqueArgb4444;
-impl Pack for PackOpaqueArgb4444 {
-    type Pixel = u16;
-    #[inline]
-    fn pack(c: Rgb565) -> u16 {
-        opaque_argb4444(c)
     }
 }
 
@@ -103,13 +84,12 @@ impl Pack for PackDevice64 {
 
 /// A `DrawTarget` wrapping a borrowed `width * height` buffer (one pixel per stored cell,
 /// row-major), generic over how an [`Rgb565`] colour is packed into a stored pixel — and over
-/// the *type* of that pixel ([`Pack::Pixel`]: `u16` for RGB565/ARGB4444, `u8` for device-64).
+/// the *type* of that pixel ([`Pack::Pixel`]: `u16` for RGB565, `u8` for device-64).
 /// The buffer is the board's — a slice over the STM32's LTDC-scanned SDRAM, or the nRF's resident
 /// RGB222 frame in `.bss` — so this owns nothing and only writes pixels.
 ///
 /// Every display plane is this one type with a different [`Pack`]: the opaque RGB565 map plane
-/// ([`Framebuffer565`], [`PackRgb565`]), the transparent overlay plane ([`FramebufferArgb4444`],
-/// [`PackOpaqueArgb4444`]), and the nRF's device-native RGB222 plane ([`FbDevice64`],
+/// ([`Framebuffer565`], [`PackRgb565`]) and the nRF's device-native RGB222 plane ([`FbDevice64`],
 /// [`PackDevice64`]). The `_pack` marker is zero-sized, so this is the same size as a bare
 /// `{ width, height, buf }`.
 pub struct RawFb<'a, P: Pack> {
@@ -133,22 +113,6 @@ pub type Framebuffer565<'a> = RawFb<'a, PackRgb565>;
 /// [`Band`](crate::Band) scratch interchange.
 pub type FbDevice64<'a> = RawFb<'a, PackDevice64>;
 
-/// The transparent ARGB4444 overlay plane (issue #46) — the dual-layer display's
-/// second layer. Where [`Framebuffer565`] backs the LTDC's opaque map layer, this
-/// backs the per-pixel-alpha-blended layer above it: the LTDC composites the two in
-/// hardware (`BC = α·overlay + (1−α)·map`), so the overlay (the hold-bulge / confirm
-/// ring) repaints without re-rendering — or even reading — the map plane.
-///
-/// The [`Color`](DrawTarget::Color) is [`Rgb565`], **identical** to [`Framebuffer565`],
-/// so the same `color_fn` drives both layers and the shared overlay renderer is
-/// layer-agnostic. The overlay only ever draws *opaque* pixels (the near-black bulge),
-/// so every write is packed opaque ([`opaque_argb4444`]); the only transparency is the
-/// cleared background, reset by
-/// [`clear_transparent`](RawFb::<PackOpaqueArgb4444>::clear_transparent). 4-bit channels
-/// are ample for the flat near-black bulge, and at 2 bytes/px the buffer is the same
-/// 150 KB as the RGB565 map buffer.
-pub type FramebufferArgb4444<'a> = RawFb<'a, PackOpaqueArgb4444>;
-
 impl<'a, P: Pack> RawFb<'a, P> {
     /// Wrap `buf` as a `width`×`height` target. `buf` must hold at least
     /// `width * height` pixels; a shorter slice is a board wiring bug, so it panics
@@ -167,13 +131,6 @@ impl<'a, P: Pack> RawFb<'a, P> {
         self.height
     }
 
-    /// The raw stored pixels — `width * height` long. Handy for tests, and for a board that reads
-    /// the buffer back itself: the nRF's banded push reads the RGB222 [`FbDevice64`] bytes here and
-    /// expands them per band ([`device64_to_rgb565`]).
-    pub fn as_pixels(&self) -> &[P::Pixel] {
-        self.buf
-    }
-
     /// Write one already-packed pixel, clipping silently to the buffer bounds (the
     /// renderer projects geometry that can land off-screen).
     #[inline]
@@ -182,19 +139,6 @@ impl<'a, P: Pack> RawFb<'a, P> {
             return;
         }
         self.buf[y as usize * self.width as usize + x as usize] = raw;
-    }
-}
-
-/// The overlay plane's transparent reset — inherent to the ARGB4444 alias only, since
-/// transparency is meaningless on the opaque RGB565 plane.
-impl<'a> RawFb<'a, PackOpaqueArgb4444> {
-    /// Reset the whole plane to **fully transparent** (alpha `0x0` everywhere), so the
-    /// map on the layer below shows through wherever the next `render_overlay` doesn't
-    /// draw. Called once at the start of each overlay frame, before the bulge is drawn.
-    /// (This is the transparent reset; the `DrawTarget` `clear` fills an *opaque* field
-    /// of a colour instead.)
-    pub fn clear_transparent(&mut self) {
-        self.buf.fill(0x0000);
     }
 }
 
@@ -242,31 +186,13 @@ impl<P: Pack> DrawTarget for RawFb<'_, P> {
         Ok(())
     }
 
-    /// Fill the whole plane with `color`. For RGB565 this is the map redraw's clear; for
-    /// ARGB4444 it fills an *opaque* field of the colour (the overlay path never calls
-    /// this — it uses [`clear_transparent`](RawFb::<PackOpaqueArgb4444>::clear_transparent)
-    /// for the transparent reset — but it honours the trait).
+    /// Fill the whole plane with `color` — the map redraw's clear.
     fn clear(&mut self, color: Self::Color) -> Result<(), Self::Error> {
         // `fill` lowers to a burstable memset across the wait-stated FMC, far cheaper than a
         // per-pixel store on every map redraw.
         self.buf.fill(P::pack(color));
         Ok(())
     }
-}
-
-/// Pack an [`Rgb565`] colour into a **fully-opaque** ARGB4444 pixel: the alpha nibble
-/// is forced to `0xF` and the top four bits of each RGB565 channel are kept. Every
-/// pixel the overlay renderer writes is opaque; transparency is only ever the cleared
-/// state ([`clear_transparent`](RawFb::<PackOpaqueArgb4444>::clear_transparent), alpha
-/// `0x0`), so a single opaque-pack covers every draw. (`0x0000` is transparent; opaque
-/// black is `0xF000` — the distinction the whole layer turns on.)
-#[inline]
-fn opaque_argb4444(c: Rgb565) -> u16 {
-    let rgb = c.into_storage(); // RRRRR GGGGGG BBBBB
-    let r = (rgb >> 12) & 0xF; // top 4 of the 5-bit red
-    let g = (rgb >> 7) & 0xF; // top 4 of the 6-bit green
-    let b = (rgb >> 1) & 0xF; // top 4 of the 5-bit blue
-    0xF000 | (r << 8) | (g << 4) | b
 }
 
 /// Pack an [`Rgb565`] colour into a **device-64 (RGB222)** byte: the top 2 bits of each channel
@@ -371,94 +297,6 @@ mod tests {
     fn too_small_buffer_panics() {
         let mut buf = [0u16; 3];
         let _ = Framebuffer565::new(&mut buf, 2, 2); // needs 4
-    }
-
-    // --- ARGB4444 overlay plane ---
-
-    fn ovl(buf: &mut [u16], w: u32, h: u32) -> FramebufferArgb4444<'_> {
-        FramebufferArgb4444::new(buf, w, h)
-    }
-
-    #[test]
-    fn opaque_pack_keeps_top_bits_and_forces_alpha() {
-        // Pure channels keep their top nibble; alpha is always 0xF.
-        assert_eq!(opaque_argb4444(Rgb565::from(RawU16::new(0xF800))), 0xFF00); // red
-        assert_eq!(opaque_argb4444(Rgb565::from(RawU16::new(0x07E0))), 0xF0F0); // green
-        assert_eq!(opaque_argb4444(Rgb565::from(RawU16::new(0x001F))), 0xF00F); // blue
-        assert_eq!(opaque_argb4444(Rgb565::from(RawU16::new(0xFFFF))), 0xFFFF); // white
-                                                                                // The load-bearing case: black packs to *opaque* black (0xF000), never the
-                                                                                // transparent 0x0000 that clear_transparent paints.
-        assert_eq!(opaque_argb4444(Rgb565::from(RawU16::new(0x0000))), 0xF000);
-    }
-
-    #[test]
-    fn draw_writes_opaque_argb4444_and_clips() {
-        let mut buf = [0xABCDu16; 2 * 2]; // garbage start state
-        let mut fb = ovl(&mut buf, 2, 2);
-        let red = Rgb565::from(RawU16::new(0xF800));
-        fb.draw_iter([
-            Pixel(Point::new(0, 1), red),
-            Pixel(Point::new(5, 5), red),  // off-screen: dropped
-            Pixel(Point::new(-1, 0), red), // off-screen: dropped
-        ])
-        .unwrap();
-        assert_eq!(buf, [0xABCD, 0xABCD, 0xFF00, 0xABCD]); // only (0,1) written, opaque red
-    }
-
-    #[test]
-    fn clear_transparent_zeros_alpha_everywhere() {
-        let mut buf = [0xFF00u16; 4 * 3]; // opaque red
-        ovl(&mut buf, 4, 3).clear_transparent();
-        assert!(buf.iter().all(|&p| p == 0x0000), "every pixel fully transparent");
-    }
-
-    #[test]
-    fn trait_clear_fills_opaque_field() {
-        // The DrawTarget `clear` is the opaque sibling of clear_transparent.
-        let mut buf = [0u16; 2 * 2];
-        ovl(&mut buf, 2, 2).clear(Rgb565::from(RawU16::new(0x0000))).unwrap();
-        assert!(buf.iter().all(|&p| p == 0xF000), "opaque black, not transparent");
-    }
-
-    #[test]
-    fn overlay_fill_solid_fills_subrect_opaque_and_clips() {
-        let mut buf = [0x0000u16; 4 * 4]; // transparent start
-        {
-            let mut fb = ovl(&mut buf, 4, 4);
-            fb.fill_solid(
-                &Rectangle::new(Point::new(2, 2), Size::new(10, 10)),
-                Rgb565::from(RawU16::new(0x001F)), // blue
-            )
-            .unwrap();
-        }
-        let at = |x: usize, y: usize| buf[y * 4 + x];
-        assert_eq!(at(1, 1), 0x0000); // untouched → still transparent
-        assert_eq!(at(2, 2), 0xF00F); // opaque blue
-        assert_eq!(at(3, 3), 0xF00F); // last in-bounds pixel
-    }
-
-    /// Item 10 on the overlay plane: a negative top-left must clip the same way (the
-    /// intersection clamps to the bounding box) and pack the clipped fill opaque, never
-    /// indexing the buffer with a negative coordinate.
-    #[test]
-    fn overlay_fill_solid_clips_a_negative_top_left() {
-        let mut buf = [0x0000u16; 4 * 4]; // transparent start
-        {
-            let mut fb = ovl(&mut buf, 4, 4);
-            fb.fill_solid(&Rectangle::new(Point::new(-2, -2), Size::new(4, 4)), Rgb565::from(RawU16::new(0x001F)))
-                .unwrap();
-        }
-        let at = |x: usize, y: usize| buf[y * 4 + x];
-        assert_eq!(at(0, 0), 0xF00F); // clipped origin, opaque blue
-        assert_eq!(at(1, 1), 0xF00F); // last covered pixel
-        assert_eq!(at(2, 2), 0x0000); // beyond the rect: still transparent
-    }
-
-    #[test]
-    #[should_panic]
-    fn overlay_too_small_buffer_panics() {
-        let mut buf = [0u16; 3];
-        let _ = FramebufferArgb4444::new(&mut buf, 2, 2); // needs 4
     }
 
     // --- device-64 (RGB222) plane (issue #125) ---
