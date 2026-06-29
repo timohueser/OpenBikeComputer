@@ -700,6 +700,13 @@ async fn input_overlay_task(
         // to wipe the last bulge. `present_overlay` fills the window from the clean framebuffer +
         // composites the bulge (the `InputPlane` lock is taken once, inside the drawer). Awaiting the
         // bus yields to the (thread-mode) map plane if it is mid-frame, so this never spins.
+        //
+        // Dev-only-best-effort (issue #208): the trailing clear is the **one** frame `take_overlay_dirty`
+        // flags, not a retry-until-acked loop like the FLPR map plane's `last_overlay_span` clear. The
+        // `bus.lock().await` here can't be dropped (it always eventually acquires), so in practice the
+        // clear lands — but the coordination isn't hardened the way the shipping FLPR path is, by design:
+        // this is the opt-in `tft` bring-up backend, and the issue #208 item-2 redesign would replace
+        // this whole dance on both backends.
         if dirty {
             let region = match overlay_span {
                 Some((y0, rows)) => OverlayRegion { x0: OVL_X0, y0, w: OVL_W, rows },
@@ -782,8 +789,11 @@ struct MapDisplay {
 
 #[cfg(feature = "tft")]
 impl MapDisplay {
-    /// The ST7789 bulge rides the input/overlay plane, so the map loop never has a live span: always
-    /// "clean".
+    /// The ST7789 bulge rides the input/overlay plane (`input_overlay_task`), which the map loop holds
+    /// no handle to — so the map loop never has a live bulge span: always "clean". This is *why* the
+    /// ST7789 map present can't clip a live bulge the way the FLPR path does, and the coordination is
+    /// accepted as dev-only-best-effort on this opt-in `tft` backend (issue #208 — see the caveat on
+    /// [`Display::present`](crate::display)).
     #[inline(always)]
     fn poll_overlay(&mut self) -> (bool, Option<(u16, u16)>) {
         (false, None)
