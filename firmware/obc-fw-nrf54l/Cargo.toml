@@ -7,8 +7,8 @@ description = "nRF54L15-DK board firmware for OpenBikeComputer — the real hard
 
 # Standalone crate with its own (empty) workspace table so the firmware/ host
 # workspace — which builds its members for the host target — ignores this crate.
-# Built for thumbv8m.main-none-eabihf via the crate-local .cargo/config.toml, exactly
-# like the sibling obc-fw-stm32f429 board crate. Its own Cargo.lock is committed.
+# Built for thumbv8m.main-none-eabihf via the crate-local .cargo/config.toml. Its
+# own Cargo.lock is committed.
 [workspace]
 
 [features]
@@ -104,7 +104,7 @@ required-features = ["ls021-flpr"]
 # GPIO task/event peripheral the button input path (#126) needs; `time` pulls the
 # embassy-time integration. Pinned to embassy-nrf 0.11.0 (first release with nRF54L15).
 embassy-nrf = { version = "0.11.0", features = ["defmt", "nrf54l15-app-s", "time-driver-grtc", "gpiote", "time"] }
-# embassy-executor 0.10 (same major the obc-fw-stm32f429 crate resolves). `executor-thread`
+# embassy-executor 0.10. `executor-thread`
 # is the thread-mode executor `#[embassy_executor::main]` runs on; `executor-interrupt` adds the
 # high-priority `InterruptExecutor` the two-plane input/overlay plane runs on (#126 — pended from
 # the SWI00 vector, see the module doc). `platform-cortex-m` for the Cortex-M arch backend.
@@ -151,8 +151,7 @@ embedded-graphics = "0.8"
 
 # microSD map storage (issue #123). The card stores the map/routes/tracks; the board-agnostic FatFs
 # byte adapters live in obc-platform (`SdByteSource`/`SdByteSink`/`SdTrackSink`) and the format
-# parsers in obc-reader/obc-route — only the concrete SPIM bus type is board-specific here (the
-# STM32 analog is `obc-fw-stm32f429/src/sd.rs`).
+# parsers in obc-reader/obc-route — only the concrete SPIM bus type is board-specific here.
 # `nrf-mem` (issue #124) is the constrained memory profile and forwards to obc-render/reader/route,
 # so this single edge trims every shared crate's resident buffers for the 256 KB part; Cargo's
 # feature unification then applies it to the obc-render/obc-reader/obc-route edges below (and

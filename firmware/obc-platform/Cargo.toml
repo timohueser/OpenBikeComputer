@@ -26,9 +26,8 @@ embedded-graphics = "0.8"
 # `App::handle_input`. obc-app is no_std, so this stays a clean no_std dep.
 obc-app = { path = "../obc-app" }
 
-# The GPIO trait the debouncer is generic over (`InputPin`). 1.0 — embassy-stm32's
-# `gpio::Input` (and the future nRF board's pins) implement this, so `ButtonInput`
-# is board-agnostic.
+# The GPIO trait the debouncer is generic over (`InputPin`). 1.0 — embassy-nrf's
+# `gpio::Input` implements this, so `ButtonInput` is board-agnostic.
 embedded-hal = "1.0"
 
 # The small event ring the debouncer buffers between `update` and the app's drain.
@@ -47,15 +46,15 @@ obc-route = { path = "../obc-route" }
 embedded-sdmmc = { version = "0.9", default-features = false }
 
 # `Signal` for the `debug-usb` fresh-fix hand-off (USB task → app poll). Pinned to the 0.8 the
-# F429 crate already resolves so the board build shares one embassy-sync. Optional — only the
-# `debug-usb` feature pulls it.
+# nRF board crate already resolves so the board build shares one embassy-sync. Optional — only
+# the `debug-usb` feature pulls it.
 embassy-sync = { version = "0.8", optional = true }
 
 # `Instant`/`Duration` for the `time::SaturatingElapsed` fix (issue #51) and the `synth`
-# stand-in GPS's wall-clock cadence. Pinned to the same 0.5.1 the F429 board resolves so
+# stand-in GPS's wall-clock cadence. Pinned to the same 0.5.1 the nRF board resolves so
 # `Instant` unifies across the two crates (the trait impl applies to the board's `Instant`).
 # `default-features = false` here; the board adds `defmt` itself and cargo unions the features.
-# NB: no time-*driver* is selected — the MCU build links embassy-stm32's, and the host *test*
+# NB: no time-*driver* is selected — the MCU build links embassy-nrf's, and the host *test*
 # build links the `std` driver from the dev-dependency below.
 embassy-time = { version = "0.5.1", default-features = false }
 
@@ -68,5 +67,5 @@ critical-section = { version = "1.1", features = ["std"] }
 # The host time-driver for tests: `embassy_time::Instant::now()` (reached by `SaturatingElapsed`
 # and `SynthLocation`) needs a *linked* time driver or the test binary fails to link. `std`
 # registers `driver_std` on the host. Dev-only, so the MCU lib build never pulls it — there the
-# board's embassy-stm32 driver is the one linked.
+# board's embassy-nrf driver is the one linked.
 embassy-time = { version = "0.5.1", features = ["std"] }
