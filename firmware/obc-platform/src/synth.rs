@@ -1,4 +1,4 @@
-//! A board-agnostic synthetic moving [`LocationSource`] — the **`debug-usb`-off fallback**
+//! A board-agnostic synthetic moving [`LocationSource`] — the **`debug-link`-off fallback**
 //! fake GPS, lifted out of the board crate so every OBC board reuses one copy.
 //!
 //! A board with no real receiver but a need to exercise the ride loop drives [`SynthLocation`] in
@@ -6,21 +6,21 @@
 //! square loop around a centre, on the wall clock. Unlike a constant fix, this gives the ride
 //! accumulators, breadcrumb and `.obct` log real motion — so a saved ride is a non-degenerate
 //! `.gpx` that re-imports cleanly (issue #36's save-loop deliverable). It is in its own
-//! always-compiled module (NOT behind the `debug-usb` feature) precisely because it *is* the
-//! debug-usb-off path: the board picks it when the USB feed is off.
+//! always-compiled module (NOT behind the `debug-link` feature) precisely because it *is* the
+//! debug-link-off path: the board picks it when the host feed is off.
 
 use embassy_time::Instant;
 use obc_app::{Fix, LocationSource};
 
-/// Stand-in moving GPS — the **`debug-usb`-off fallback** (the default board build streams a real
-/// ride over USB instead, see issue #38): side length (m) and speed (m/s) of the square loop
+/// Stand-in moving GPS — the **`debug-link`-off fallback** (the default board build streams a real
+/// ride over the debug link instead, see issue #38): side length (m) and speed (m/s) of the square loop
 /// [`SynthLocation`] walks. Slow enough to watch the user marker / breadcrumb crawl, big enough
 /// that a saved ride is a real ~0.8 km loop that re-imports as a sane route.
 const SYNTH_LEG_M: f32 = 200.0;
 const SYNTH_SPEED_MPS: f32 = 5.0;
 
 /// The synthetic GPS emits a fresh fix at this cadence (ms), `None` between — so the prototype
-/// drives the app on the same ~1 Hz fresh-fix contract a real receiver (and the USB feed)
+/// drives the app on the same ~1 Hz fresh-fix contract a real receiver (and the host feed)
 /// honours, exercising the integrate-one-sample path instead of an every-tick replay (#43).
 const SYNTH_FIX_INTERVAL_MS: u64 = 1000;
 
@@ -28,8 +28,8 @@ const SYNTH_FIX_INTERVAL_MS: u64 = 1000;
 /// scales this by 1/cos(lat), via [`obc_route::cos_lat`].
 const UDEG_PER_M: f32 = 1_000_000.0 / 111_320.0;
 
-/// A stand-in moving [`LocationSource`] for the **`debug-usb`-off** build (the default streams a
-/// real GPS over USB-CDC, issue #38): the fix walks a slow square loop around a centre, driven by
+/// A stand-in moving [`LocationSource`] for the **`debug-link`-off** build (the default streams a
+/// real GPS over the debug link, issue #38): the fix walks a slow square loop around a centre, driven by
 /// the wall clock. Unlike a constant fix, this gives the ride accumulators, breadcrumb and `.obct`
 /// log real motion — so a saved ride is a non-degenerate `.gpx` that re-imports cleanly (issue
 /// #36's save-loop deliverable). The centre is the map (or loaded route's) start, re-pointed via

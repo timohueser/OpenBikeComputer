@@ -5,7 +5,7 @@
 # Checks advisories (RustSec), licenses, banned crates, and dependency sources.
 
 [graph]
-# Resolve every feature so feature-gated deps (debug-usb, the sim's eframe stack...) are
+# Resolve every feature so feature-gated deps (debug-link, the sim's eframe stack...) are
 # in scope for the license/advisory scan, not just the default set.
 all-features = true
 
