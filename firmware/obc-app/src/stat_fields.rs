@@ -51,7 +51,7 @@ pub enum StatField {
     ToClimb = 5,
     /// Grade (%) at the live position.
     Grade = 6,
-    /// Current elevation.
+    /// Current elevation — the live barometric altitude (issue #222).
     Elevation = 7,
     /// Moving time this ride.
     RideTime = 8,
@@ -150,8 +150,10 @@ impl StatField {
                 StatCell::new(cap("GRADE", ""), value, false)
             }
             StatField::Elevation => {
-                let e = rx.profile.map_or(0, |p| p.at(live).1 as i32);
-                StatCell::new(cap("ELEV ", units.elev_label()), fmt_int(units.elev(e as f32) as u32), false)
+                // The **live barometric** altitude (issue #222) — not the route profile, so it reads
+                // the current height with no route loaded / off-route, and `--` until the first sample.
+                let v = rx.activity.current_elevation_m().map(|m| units.elev(m));
+                StatCell::new(cap("ELEV ", units.elev_label()), fmt_elev(v), false)
             }
             StatField::RideTime => StatCell::new(cap("RIDE", ""), fmt_hms(rx.activity.moving_s), false),
             StatField::Clock => {
@@ -413,10 +415,27 @@ fn fmt_speed(v: Option<f32>) -> heapless::String<8> {
     s
 }
 
-/// An integer figure (climb / elevation) as plain digits.
+/// An integer figure (climb) as plain digits.
 fn fmt_int(m: u32) -> heapless::String<8> {
     let mut s = heapless::String::new();
     let _ = write!(s, "{m}");
+    s
+}
+
+/// A live-elevation figure: rounded to a whole unit (signed, so a sub-sea-level reading shows a
+/// `-` rather than wrapping), or `--` when there's no altimeter sample yet (issue #222). Rounds
+/// half away from zero without `libm` (the codebase keeps elevation maths off the math lib).
+fn fmt_elev(v: Option<f32>) -> heapless::String<8> {
+    let mut s = heapless::String::new();
+    match v {
+        Some(v) => {
+            let rounded = (v + if v >= 0.0 { 0.5 } else { -0.5 }) as i32;
+            let _ = write!(s, "{rounded}");
+        }
+        None => {
+            let _ = s.push_str("--");
+        }
+    }
     s
 }
 
@@ -574,6 +593,57 @@ mod tests {
         assert_eq!(l.as_slice(), &[StatField::Speed, StatField::Clock]);
         l.remove(0);
         assert_eq!(l.as_slice(), &[StatField::Clock]);
+    }
+
+    /// The Elevation tile reads the **live barometric altitude** (issue #222), not the route
+    /// profile: it shows the current height with no route loaded, converts to the active unit, and
+    /// reads `--` before the first altimeter sample.
+    #[test]
+    fn elevation_tile_reads_live_barometric_altitude() {
+        use crate::activity::{Activity, Mode};
+        use crate::breadcrumb::Breadcrumb;
+        use crate::settings::{DateTime, Settings, Units};
+        use crate::AppState;
+        use obc_render::{MapRenderer, NoopClock};
+
+        let state = AppState::new(0, 0, 1.0);
+        let breadcrumb = Breadcrumb::new();
+        let mut renderer = MapRenderer::new();
+        let now = DateTime::default();
+        // Build a minimal `Render` for one `Elevation` cell — no route/profile (the field must no
+        // longer need either), reading the live altitude off `activity`.
+        let value = |settings: &Settings, activity: &Activity, renderer: &mut MapRenderer| {
+            let rx = Render {
+                reader: None,
+                renderer,
+                state: &state,
+                activity,
+                settings,
+                routes: &[],
+                route: None,
+                profile: None,
+                breadcrumb: &breadcrumb,
+                w: 240.0,
+                h: 320.0,
+                now_ms: 0,
+                now,
+                hold_progress: 0.0,
+                clock: &NoopClock,
+            };
+            StatField::Elevation.cell(&rx).value
+        };
+
+        let metric = Settings::default();
+        let mut activity = Activity::new(Mode::Riding);
+        // No sample yet → placeholder, even with no route (the old route-profile field showed 0).
+        assert_eq!(value(&metric, &activity, &mut renderer).as_str(), "--", "no altimeter sample yet");
+
+        activity.record_altitude(144.0);
+        assert_eq!(value(&metric, &activity, &mut renderer).as_str(), "144", "metric shows whole metres");
+
+        let imperial = Settings { units: Units::Imperial, ..Settings::default() };
+        // 144 m × 3.28084 ≈ 472.4 ft → rounds to 472.
+        assert_eq!(value(&imperial, &activity, &mut renderer).as_str(), "472", "imperial converts to feet");
     }
 
     /// Discriminants round-trip through `from_u8`, and an unknown byte is dropped.
