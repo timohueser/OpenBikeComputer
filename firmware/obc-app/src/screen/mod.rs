@@ -169,6 +169,11 @@ pub struct Render<'a, 'd> {
     /// the boot-relative millis instead uses [`now_ms`](Render::now_ms).
     pub now: DateTime,
     pub hold_progress: f32,
+    /// Whether there's **no current GPS fix** this frame (issue #224): no fix yet (acquiring) or the
+    /// last one has gone stale (lost). The riding views (Map / Statistics) draw the "No GPS Fix"
+    /// banner when set — and the Map suppresses the off-route pill, since with no fix the match is
+    /// stale. Computed by [`App::has_live_fix`](crate::App::has_live_fix).
+    pub no_fix: bool,
     /// Microsecond clock for the map render's per-stage timing (collect / sort / draw), passed
     /// straight to [`MapRenderer::render_timed`] by the Map screen. Hosts that don't profile pass
     /// [`NoopClock`](obc_render::NoopClock) (via [`App::render_map`]); the device passes its
