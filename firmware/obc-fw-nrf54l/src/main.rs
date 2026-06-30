@@ -599,7 +599,7 @@ impl InputSource for NullInput {
 /// helper so the input plane builds it the same `cfg` way regardless.
 fn debug_input() -> impl InputSource {
     #[cfg(feature = "debug-uart")]
-    return obc_platform::debug_usb::DebugInput;
+    return obc_platform::debug_link::DebugInput;
     #[cfg(not(feature = "debug-uart"))]
     NullInput
 }
@@ -623,10 +623,10 @@ impl obc_render::Clock for InstantClock {
 #[embassy_executor::task]
 async fn vcom_rx_task(mut rx: BufferedUarteRx<'static, peripherals::SERIAL20>) {
     let mut buf = [0u8; 64];
-    let mut reader = obc_platform::debug_usb::LineReader::new();
+    let mut reader = obc_platform::debug_link::LineReader::new();
     loop {
         match rx.read(&mut buf).await {
-            Ok(n) => obc_platform::debug_usb::feed_bytes(&mut reader, &buf[..n]),
+            Ok(n) => obc_platform::debug_link::feed_bytes(&mut reader, &buf[..n]),
             Err(e) => defmt::warn!("VCOM RX error: {}", defmt::Debug2Format(&e)),
         }
     }
@@ -641,8 +641,8 @@ async fn vcom_rx_task(mut rx: BufferedUarteRx<'static, peripherals::SERIAL20>) {
 #[embassy_executor::task]
 async fn vcom_tx_task(mut tx: BufferedUarteTx<'static, peripherals::SERIAL20>) {
     loop {
-        let t = obc_platform::debug_usb::wait_telemetry().await;
-        let line = obc_platform::debug_usb::format_telemetry(&t);
+        let t = obc_platform::debug_link::wait_telemetry().await;
+        let line = obc_platform::debug_link::format_telemetry(&t);
         let mut bytes = line.as_bytes();
         while !bytes.is_empty() {
             match tx.write(bytes).await {
@@ -1001,9 +1001,9 @@ async fn run_app(
     // boot-relative `start`), no altimeter/compass. Same `Sensors` either way, so the app can't tell.
     #[cfg(feature = "debug-uart")]
     let (mut debug_loc, mut debug_alt, mut debug_compass) = (
-        obc_platform::debug_usb::DebugLocation,
-        obc_platform::debug_usb::DebugAltimeter,
-        obc_platform::debug_usb::DebugCompass,
+        obc_platform::debug_link::DebugLocation,
+        obc_platform::debug_link::DebugAltimeter,
+        obc_platform::debug_link::DebugCompass,
     );
     #[cfg(not(feature = "debug-uart"))]
     let mut synth = SynthLocation::new(cam_center.0, cam_center.1, Instant::now());
@@ -1030,7 +1030,7 @@ async fn run_app(
     #[cfg(feature = "debug-uart")]
     let mut last_telem_ms: u32 = 0;
     #[cfg(feature = "debug-uart")]
-    let mut last_telem = obc_platform::debug_usb::Telemetry::default();
+    let mut last_telem = obc_platform::debug_link::Telemetry::default();
     // Stack-guard bookkeeping: log only when a new deepest reach is seen (silent once warmed up), so
     // a future change that pushes the deep render path closer to the 256 KB-DK's ~36 KB stack ceiling
     // shows up immediately instead of as a silent overflow (issue #175). Harmless on the 512 KB target.
@@ -1066,7 +1066,7 @@ async fn run_app(
         // meters-per-pixel and force one redraw, so a host zoom sweep gets exactly one fresh,
         // stage-timed frame per setting instead of stepping the encoder's 1.2× detents.
         #[cfg(feature = "debug-uart")]
-        if let Some(mpp) = obc_platform::debug_usb::take_zoom() {
+        if let Some(mpp) = obc_platform::debug_link::take_zoom() {
             app.set_map_mpp(mpp);
         }
 
@@ -1230,7 +1230,7 @@ async fn run_app(
                 {
                     let mpp_milli =
                         (app.state.viewport(WIDTH as f32, HEIGHT as f32).meters_per_pixel() * 1000.0) as u32;
-                    last_telem = obc_platform::debug_usb::Telemetry {
+                    last_telem = obc_platform::debug_link::Telemetry {
                         frame_us: fp.render_us as u32,
                         lod: fp.stats.lod as u8,
                         feat_drawn: fp.stats.features_drawn as u32,
@@ -1293,7 +1293,7 @@ async fn run_app(
         #[cfg(feature = "debug-uart")]
         if now.wrapping_sub(last_telem_ms) >= 500 {
             last_telem_ms = now;
-            obc_platform::debug_usb::set_telemetry(last_telem);
+            obc_platform::debug_link::set_telemetry(last_telem);
         }
 
         if now.wrapping_sub(last_led) >= 500 {

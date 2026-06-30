@@ -5,8 +5,8 @@
 //! thin (clocks, concrete pins, the main loop) and everything reusable lives here:
 //! written once, ported to the next board by re-pointing the pins. Today that is the
 //! framebuffer `DrawTarget`s, the button debouncer, the FatFs `ByteSource`/`Sink`
-//! adapters (issue #36), and the USB-CDC debug-sensor protocol (issue #38, behind
-//! `debug-usb`).
+//! adapters (issue #36), and the transport-agnostic debug-sensor protocol (issue #38, behind
+//! `debug-link`).
 //!
 //! Modules:
 //! - [`framebuffer`] — the board-owned [`DrawTarget`](embedded_graphics::draw_target::DrawTarget)s
@@ -23,9 +23,9 @@
 //!   and [`TrackSink`](obc_app::TrackSink) adapters over an [`embedded_sdmmc`] SD card, so
 //!   maps/routes load and rides save against a real card (issue #36).
 //! - [`synth`] — [`SynthLocation`], a board-agnostic synthetic moving
-//!   [`LocationSource`](obc_app::LocationSource) — the `debug-usb`-off fallback fake GPS that
-//!   walks a slow square loop (always compiled, *not* behind `debug-usb`, since it *is* the
-//!   debug-usb-off path).
+//!   [`LocationSource`](obc_app::LocationSource) — the `debug-link`-off fallback fake GPS that
+//!   walks a slow square loop (always compiled, *not* behind `debug-link`, since it *is* the
+//!   debug-link-off path).
 //! - [`fuel`] — [`StubFuelGauge`], a fixed-level [`FuelGauge`](obc_app::FuelGauge) stand-in
 //!   until the nPM1300 PMIC fuel gauge is wired in.
 //!
@@ -68,13 +68,13 @@
 #![no_std]
 
 pub mod button_input;
-// USB-CDC fake-sensor protocol + sources + telemetry (issue #38). The **pure codec** (line
-// parser, `Telemetry`/fix encoders, `LineReader`) is always compiled so the host feeder reuses one
-// canonical wire format; only the embassy-sync `Signal`/`Channel` plumbing + HAL-trait sources are
-// gated *inside* the module behind `debug-usb`, so the host workspace build never pulls
-// embassy-sync. The board crate enables the feature and owns the actual embassy-usb CDC driver.
-// The protocol + sources move to the nRF54L unchanged.
-pub mod debug_usb;
+// Transport-agnostic fake-sensor protocol + sources + telemetry (issue #38). The **pure codec**
+// (line parser, `Telemetry`/fix encoders, `LineReader`) is always compiled so the host feeder
+// reuses one canonical wire format; only the embassy-sync `Signal`/`Channel` plumbing + HAL-trait
+// sources are gated *inside* the module behind `debug-link`, so the host workspace build never pulls
+// embassy-sync. The board crate enables the feature and owns the actual transport driver (UART/VCOM
+// on the nRF54L). The protocol + sources move to any board unchanged.
+pub mod debug_link;
 pub mod framebuffer;
 // The LS021B7DD02 source-bus wire pack (issue #154) — the host-tested RGB222 → FLPR-wire transform
 // the nRF's FLPR backend drains, the sibling of `framebuffer::device64_to_rgb565`. Pure integer
@@ -93,8 +93,8 @@ pub mod panel;
 // under its exact-diff oracle. The device present path adopts the `RowDiff` store in D2 (issue #201).
 pub mod rowdiff;
 pub mod sd;
-// Always compiled — the synthetic GPS is the `debug-usb`-OFF fallback, so it must exist without
-// the `debug-usb` feature.
+// Always compiled — the synthetic GPS is the `debug-link`-OFF fallback, so it must exist without
+// the `debug-link` feature.
 pub mod synth;
 
 pub use button_input::{ButtonInput, Timing};
