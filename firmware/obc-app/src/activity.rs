@@ -142,6 +142,15 @@ impl Activity {
         self.climb.ascent()
     }
 
+    /// The current barometric elevation (m): the latest altimeter sample, or `None` before the
+    /// first one (no altimeter wired, or still warming up). Unlike [`climb_m`](Activity::climb_m)
+    /// (dead-banded *ascent*) this is the raw present height — it follows the altimeter in any
+    /// [`Mode`], since it's just "how high am I now". The
+    /// [`Elevation`](crate::stat_fields::StatField::Elevation) tile reads it (issue #222).
+    pub fn current_elevation_m(&self) -> Option<f32> {
+        self.last_alt
+    }
+
     /// Begin a fresh tracking session (a route load from Idle, or "Save & start new"),
     /// assigning the next monotonic [`session`](Activity::session) id. The host opens a new
     /// ride log when it sees the id change; [`App`](crate::App) resets the accumulators +
