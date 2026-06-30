@@ -16,6 +16,13 @@ description = "Board-agnostic no_std firmware glue between obc-app and a concret
 # turns it on in its own default features.
 debug-link = ["dep:embassy-sync"]
 
+# Real-sensor cross-task hand-off (issue #218). Like `debug-link`, the pure decode (`ubx`, `bmp581`)
+# is always compiled — board-agnostic, dependency-light — so it host-tests with default features.
+# This feature adds only the embassy-sync `Signal` plumbing + the LocationSource/AltimeterSource/
+# TemperatureSource impls (`sensor_link`) that bridge the board's I²C sensor task to the app poll.
+# The board firmware turns it on in its default features; the host workspace never pulls embassy-sync.
+sensor-link = ["dep:embassy-sync"]
+
 [dependencies]
 # The `DrawTarget` / `Rgb565` the framebuffer implements — pinned to the same 0.8
 # the renderer and app use so the target type unifies across the path deps.
@@ -33,6 +40,10 @@ embedded-hal = "1.0"
 # The small event ring the debouncer buffers between `update` and the app's drain.
 # Same 0.8 the rest of the OBC stack uses.
 heapless = "0.8"
+
+# `powf` for the BMP581 barometric pressure→altitude formula (issue #218): no `std` in this no_std
+# crate, so transcendental math goes through libm — the same 0.2 obc-render/obc-route already use.
+libm = "0.2"
 
 # The OBCR byte I/O the SD adapters implement (`ByteSource`/`ByteSink`/`Error`) plus the
 # track record codec — so `SdByteSource` drops into `RouteReader`/`RouteSummary::read` and

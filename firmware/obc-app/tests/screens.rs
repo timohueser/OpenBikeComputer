@@ -479,7 +479,11 @@ fn ride_control_composites_over_the_map() {
 // --- tiny render harness (mirrors marker.rs) ---
 
 fn render(app: &mut App, bytes: &[u8]) -> Buf {
-    app.tick(RideClock(0), Sensors { loc: &mut NoFix, altimeter: None, compass: None, track: None, fuel: None }, None);
+    app.tick(
+        RideClock(0),
+        Sensors { loc: &mut NoFix, altimeter: None, temperature: None, compass: None, track: None, fuel: None },
+        None,
+    );
     let cache = MapCache::new();
     let src = SliceSource(bytes);
     let tables = MapTables::parse(&src).expect("valid v5 file");
