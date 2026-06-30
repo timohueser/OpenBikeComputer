@@ -31,7 +31,7 @@ description: The OpenBikeComputer hardware — reflective memory-LCD, nRF54L mic
   <text class="d-label" x="548" y="98">reflective MIP panel</text>
   <text class="d-sub" x="548" y="114">sunlight-readable · holds its image</text>
   <line class="d-stroke" x1="296" y1="60" x2="180" y2="60" />
-  <text class="d-label" x="172" y="57" text-anchor="end">nRF54L</text>
+  <text class="d-label" x="172" y="57" text-anchor="end">nRF54LM20</text>
   <text class="d-sub" x="172" y="73" text-anchor="end">Cortex-M33 · BLE</text>
 </svg>
 <figcaption>The shape of the thing: a portrait reflective display, one rotary encoder, one back button — no touchscreen. Final hardware specifics are still being finalised.</figcaption>
@@ -43,7 +43,7 @@ description: The OpenBikeComputer hardware — reflective memory-LCD, nRF54L mic
 A **reflective memory-LCD (MIP) panel** in the LS021B7DD02 class — 240×320 portrait, 64 colours, matte and sunlight-readable, and able to hold its image without power. Designing for it (flat fills, dithered shading, crisp 1px lines, redraw-only-on-change) shapes the whole software look.
 
 ### The microcontroller
-A **Nordic nRF54L** (Cortex-M33 with BLE) running the firmware. How it drives the panel, stores maps and routes, and talks to a companion app.
+A **Nordic nRF54LM20** (Cortex-M33 with BLE) running the firmware. How it drives the panel, stores maps and routes, and talks to a companion app.
 
 ### Schematic
 The full schematic — power, the display interface, the encoder and button, sensors, and connectivity — with the design rationale.
