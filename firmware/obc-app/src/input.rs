@@ -15,6 +15,13 @@ use crate::hal::{Button, ButtonEvent, InputEvent};
 /// (tune later); 500 ms is a comfortable start.
 pub const DEFAULT_HOLD_MS: u32 = 500;
 
+/// Default short-press (tap) window (ms): a release within this counts as a `Press`/`Back`. A
+/// release *after* it but *before* [`DEFAULT_HOLD_MS`] is a **cancelled long-press** — the rider
+/// started a hold and let go early — and fires **nothing**, rather than surprising them with a tap.
+/// So the three outcomes are: release ≤ tap → press; tap < release < hold → ignored; held ≥ hold →
+/// long-press.
+pub const DEFAULT_TAP_MS: u32 = 200;
+
 /// The five UI gestures (input model in `docs/ui_framework_brief.md`), recognized
 /// from raw [`InputEvent`]s + a millis clock by [`Gestures`]. A screen's `handle`
 /// reacts to exactly these.
@@ -22,7 +29,7 @@ pub const DEFAULT_HOLD_MS: u32 = 500;
 pub enum Gesture {
     /// Encoder rotated; `n` signed detents (positive = clockwise / "next").
     Turn(i32),
-    /// Encoder short press (released before the hold threshold).
+    /// Encoder short press (released within the tap window).
     Press,
     /// Encoder long press (held past the threshold).
     Hold,
@@ -57,20 +64,25 @@ impl Held {
 /// frame with the current millis; it emits [`Gesture`]s and exposes hold-progress
 /// (0.0–1.0) for the guarded-action confirm ring.
 ///
-/// `press` fires on *release before* the threshold; `hold` fires the instant the
-/// threshold is crossed *while still held* (so the ring completes and the action
-/// commits without waiting for release) — hence both an event hook and a per-frame
-/// `tick`.
+/// `press` fires on a *release within the tap window*; a release between the tap
+/// window and the hold threshold (a cancelled long-press) fires nothing; `hold`
+/// fires the instant the threshold is crossed *while still held* (so the ring
+/// completes and the action commits without waiting for release) — hence both an
+/// event hook and a per-frame `tick`.
 pub struct Gestures {
     hold_ms: u32,
+    /// Max press duration that still counts as a tap (see [`DEFAULT_TAP_MS`]); a release between this
+    /// and `hold_ms` is a cancelled long-press and fires nothing. Clamped to `hold_ms` so a tiny
+    /// custom hold threshold can't invert the window.
+    tap_ms: u32,
     encoder: Held,
     back: Held,
 }
 
 impl Gestures {
-    /// A recognizer with a custom long-press threshold (ms).
+    /// A recognizer with a custom long-press threshold (ms) and the [`DEFAULT_TAP_MS`] tap window.
     pub fn new(hold_ms: u32) -> Self {
-        Gestures { hold_ms, encoder: Held::default(), back: Held::default() }
+        Gestures { hold_ms, tap_ms: DEFAULT_TAP_MS.min(hold_ms), encoder: Held::default(), back: Held::default() }
     }
 
     /// A recognizer with the [`DEFAULT_HOLD_MS`] threshold.
@@ -79,9 +91,11 @@ impl Gestures {
     }
 
     /// Feed one raw event captured at time `now` (ms). Returns the gesture it
-    /// completes, if any: `Turn` fires immediately; `Press`/`Back` fire on release
-    /// before the threshold (a release *after* the long-press already fired yields
-    /// nothing, since the `Hold`/`BackHold` was the gesture).
+    /// completes, if any: `Turn` fires immediately; `Press`/`Back` fire on a release
+    /// **within the tap window** ([`tap_ms`](Self::tap_ms)). A release *after* the tap
+    /// window but *before* the hold threshold is a **cancelled long-press** and yields
+    /// nothing; a release *after* the long-press already fired likewise yields nothing
+    /// (the `Hold`/`BackHold` was the gesture).
     pub fn on_event(&mut self, ev: InputEvent, now: u32) -> Option<Gesture> {
         match ev {
             InputEvent::Turn(0) => None,
@@ -93,17 +107,18 @@ impl Gestures {
                 None
             }
             InputEvent::Button(ButtonEvent::Up(b)) => {
+                let tap_ms = self.tap_ms;
                 let h = self.btn(b);
+                let since = h.since;
                 let fired = h.fired_long;
                 *h = Held::default();
-                if fired {
-                    None
-                } else {
-                    Some(match b {
-                        Button::Encoder => Gesture::Press,
-                        Button::Back => Gesture::Back,
-                    })
-                }
+                // A tap only registers if released within the tap window. A longer-but-not-held-enough
+                // release is a cancelled long-press → nothing (neither tap nor hold).
+                let is_tap = !fired && matches!(since, Some(t0) if now.wrapping_sub(t0) <= tap_ms);
+                is_tap.then_some(match b {
+                    Button::Encoder => Gesture::Press,
+                    Button::Back => Gesture::Back,
+                })
             }
         }
     }
@@ -177,7 +192,34 @@ mod tests {
         let mut g = Gestures::new(500);
         assert_eq!(g.on_event(down(Button::Encoder), 0), None);
         assert_eq!(g.tick(100), None, "no long-press before the threshold");
-        assert_eq!(g.on_event(up(Button::Encoder), 200), Some(Gesture::Press));
+        assert_eq!(g.on_event(up(Button::Encoder), 150), Some(Gesture::Press), "a quick release taps");
+    }
+
+    /// A press released *after* the tap window but *before* the hold threshold is a cancelled
+    /// long-press — the rider started to hold and let go early — and must fire **nothing** (not a
+    /// surprise tap). Covers both the encoder and Back.
+    #[test]
+    fn cancelled_long_press_fires_nothing() {
+        let mut g = Gestures::new(500);
+        g.on_event(down(Button::Encoder), 0);
+        assert!(g.encoder_progress(300) > 0.0, "the hold was visibly in progress");
+        assert_eq!(g.tick(300), None, "no long-press yet");
+        assert_eq!(g.on_event(up(Button::Encoder), 300), None, "a release in the dead zone fires nothing");
+
+        // Same for Back: started to BackHold, let go at 350 ms → nothing.
+        g.on_event(down(Button::Back), 1000);
+        assert_eq!(g.on_event(up(Button::Back), 1350), None, "a cancelled Back-hold fires nothing");
+    }
+
+    /// The tap window is inclusive at [`DEFAULT_TAP_MS`]: a release at exactly the window taps, one
+    /// millisecond past it is a cancelled long-press.
+    #[test]
+    fn tap_window_boundary() {
+        let mut g = Gestures::new(500);
+        g.on_event(down(Button::Encoder), 0);
+        assert_eq!(g.on_event(up(Button::Encoder), DEFAULT_TAP_MS), Some(Gesture::Press), "exactly at the window taps");
+        g.on_event(down(Button::Encoder), 1000);
+        assert_eq!(g.on_event(up(Button::Encoder), 1000 + DEFAULT_TAP_MS + 1), None, "one ms past is cancelled");
     }
 
     #[test]

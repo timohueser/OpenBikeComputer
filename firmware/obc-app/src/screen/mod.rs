@@ -51,7 +51,10 @@ pub use menu::MenuScreen;
 pub use ride_control::RideControl;
 pub use route_menu::RouteMenuScreen;
 pub use route_swap::RouteSwapScreen;
-pub use settings::{DateTimeScreen, PowerScreen, ResetScreen, SettingsScreen, UnitsScreen};
+pub use settings::{
+    AddFieldScreen, DateTimeScreen, PowerScreen, ResetScreen, SettingsScreen, StatFieldsScreen, StatsScreen,
+    UnitsScreen,
+};
 pub use statistics::StatisticsScreen;
 
 /// Maximum overlay depth (Home → Map → Ride control / Menu → …). Sized with
@@ -188,6 +191,9 @@ pub enum Screen {
     Settings(SettingsScreen),
     DateTime(DateTimeScreen),
     Units(UnitsScreen),
+    Stats(StatsScreen),
+    StatFields(StatFieldsScreen),
+    AddField(AddFieldScreen),
     Power(PowerScreen),
     Reset(ResetScreen),
 }
@@ -206,6 +212,9 @@ impl Screen {
             Screen::Settings(s) => s.handle(g, cx),
             Screen::DateTime(s) => s.handle(g, cx),
             Screen::Units(s) => s.handle(g, cx),
+            Screen::Stats(s) => s.handle(g, cx),
+            Screen::StatFields(s) => s.handle(g, cx),
+            Screen::AddField(s) => s.handle(g, cx),
             Screen::Power(s) => s.handle(g, cx),
             Screen::Reset(s) => s.handle(g, cx),
         }
@@ -229,6 +238,9 @@ impl Screen {
             Screen::Settings(s) => s.draw(target, rx, color_fn),
             Screen::DateTime(s) => s.draw(target, rx, color_fn),
             Screen::Units(s) => s.draw(target, rx, color_fn),
+            Screen::Stats(s) => s.draw(target, rx, color_fn),
+            Screen::StatFields(s) => s.draw(target, rx, color_fn),
+            Screen::AddField(s) => s.draw(target, rx, color_fn),
             Screen::Power(s) => s.draw(target, rx, color_fn),
             Screen::Reset(s) => s.draw(target, rx, color_fn),
         }
@@ -249,9 +261,10 @@ impl Screen {
     /// by neither input nor a fix, so they report it here. The host calls this each frame on every
     /// drawn screen; each takes whichever of the two clocks it needs (a screen that needs neither
     /// ignores both).
-    pub fn animate(&mut self, now_ms: u32, now: DateTime) -> bool {
+    /// (The Statistics view also reads [`settings`](Settings) for its grid's auto-cycle period + page count.)
+    pub fn animate(&mut self, now_ms: u32, now: DateTime, settings: &Settings) -> bool {
         match self {
-            Screen::Statistics(s) => s.animate(now_ms),
+            Screen::Statistics(s) => s.animate(now_ms, settings),
             Screen::Home(s) => s.animate(now),
             _ => false,
         }

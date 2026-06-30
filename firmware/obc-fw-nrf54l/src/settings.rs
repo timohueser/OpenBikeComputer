@@ -7,9 +7,9 @@
 //! The nRF54L's program memory *is* RRAM (resistive RAM), not NOR flash — see the crate's
 //! `memory-default.x` (`FLASH … the application-core RRAM`). RRAM is **byte-writable with no
 //! page-erase**, so a tiny key-value blob is genuinely cheap: a 4 KB page is carved off the top of
-//! the RRAM image (the named `SETTINGS` linker region, see below), the 16-byte
-//! [`obc_app::settings`] blob (version + fields + CRC) is written into it, and read back at boot.
-//! No wear-levelling gymnastics, no SD card, survives a reboot.
+//! the RRAM image (the named `SETTINGS` linker region, see below), the fixed-length
+//! [`obc_app::settings`] blob (version + fields + CRC, padded to the RRAM line) is written into it,
+//! and read back at boot. No wear-levelling gymnastics, no SD card, survives a reboot.
 //!
 //! # Region & power-loss safety
 //!
@@ -32,7 +32,8 @@ use obc_app::{Settings, SettingsStore};
 
 /// Bytes the settings slot holds — one encoded blob. Kept here so the RRAM carve sizes from the
 /// shared codec rather than a magic number. The RRAMC writes 16-byte lines, so the blob must be a
-/// 16-byte multiple (it is — `ENCODED_LEN == 16`); the assert below pins that for a future bump.
+/// 16-byte multiple — the shared codec rounds `ENCODED_LEN` up to one (currently 32 B: the v2
+/// field-selection tail pushed it past 16); the assert below pins that for a future bump.
 pub const SLOT_LEN: usize = obc_app::settings::ENCODED_LEN;
 
 /// RRAM write granularity (one 128-bit line). The slot length must be a whole number of these, or
