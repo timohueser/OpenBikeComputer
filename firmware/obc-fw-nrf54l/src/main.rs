@@ -981,6 +981,23 @@ impl MapDisplay {
     }
 }
 
+/// The GPS power state the ride wants (issue #225): deep-sleep when not tracking, full-power fixes
+/// while riding, or the M10's low-power tracking when the `power_saver` toggle is on. Recomputed each
+/// frame in [`run_app`] and pushed to the sensor task (via [`sensor_link::set_power`]) only on a
+/// change. Real-sensor build only — the `synth` / `debug-uart` feeds have no power-managed receiver.
+#[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+fn desired_gps_power(app: &App) -> sensor_link::GpsPower {
+    if app.activity.is_tracking() {
+        if app.settings().power_saver {
+            sensor_link::GpsPower::LowPower
+        } else {
+            sensor_link::GpsPower::Active
+        }
+    } else {
+        sensor_link::GpsPower::Sleep
+    }
+}
+
 /// The shared map plane + N6 ride loop (#127), driving present through [`MapDisplay`] so it carries
 /// **no backend `#[cfg]`** (issue #175). Each tick: drain the gestures the input plane recognised,
 /// advance the visible screens' timed content, reconcile the card to the app's intent (open the
@@ -1078,6 +1095,14 @@ async fn run_app(
     #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
     sensor_link::set_rate(prev_interval);
 
+    // Drive the GPS power state (#225): the sensor task acquires one boot fix regardless, then honours
+    // this — Sleep while idle (booted to Home → not tracking), Active/LowPower once a ride starts.
+    // Pushed once at boot, then again whenever tracking or the `power_saver` toggle changes.
+    #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+    let mut prev_power = desired_gps_power(app);
+    #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+    sensor_link::set_power(prev_power);
+
     loop {
         let now = Instant::now().as_millis() as u32;
         let hw = stackmeter::used();
@@ -1102,6 +1127,18 @@ async fn run_app(
             if app.settings().fix_interval_s != prev_interval {
                 prev_interval = app.settings().fix_interval_s;
                 sensor_link::set_rate(prev_interval);
+            }
+        }
+
+        // Reconcile the GPS power state to the ride (#225): Sleep when not tracking, Active (or
+        // LowPower with `power_saver`) while riding. Recomputed every frame off the (cheap) tracking
+        // + settings state, pushed to the sensor task only on a change so an unrelated frame is free.
+        #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+        {
+            let power = desired_gps_power(app);
+            if power != prev_power {
+                prev_power = power;
+                sensor_link::set_power(power);
             }
         }
 
