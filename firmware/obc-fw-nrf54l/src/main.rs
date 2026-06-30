@@ -125,6 +125,11 @@ mod display;
 // Persistent device settings over on-chip RRAM (the SD-independent settings store); the RRAM I/O is
 // stubbed pending on-glass work, but the boot-load + save-on-dirty calls are wired in `run_app`.
 mod settings;
+// Real GPS (SAM-M10Q) + altimeter (BMP581) on a shared TWIM30 I²C bus (issue #218) — the concrete
+// transport + the event-driven sensor task. Compiled only on the **real-sensor** build (the default:
+// neither `synth` nor `debug-uart`), since `synth`/`debug-uart` supply the location source instead.
+#[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+mod sensors;
 
 use defmt::info;
 use embassy_executor::Spawner;
@@ -171,6 +176,9 @@ use embassy_executor::InterruptExecutor;
 use embassy_nrf::gpio::{Input, Pull};
 use embassy_nrf::interrupt;
 use embassy_nrf::interrupt::{InterruptExt, Priority};
+// The shared GPS/altimeter I²C bus (#218) — real-sensor build only.
+#[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+use embassy_nrf::twim::{self, Twim};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::channel::{Channel, Sender};
@@ -194,11 +202,15 @@ use obc_route::{RouteCache, RouteIndex, RouteReader};
 // ("already full") if it's ever non-zero on entry, which on this board's debug-reset path it was; an
 // unconditional in-place write has no such flag, so it survives a warm reset. (Hence no `static_cell`
 // dependency.)
-// The `debug-uart`-off fallback's stand-in GPS (`SynthLocation`) — always-compiled in obc-platform
-// (it *is* the no-feed path), so it's imported only when wired (the VCOM build streams a real ride
-// instead). Walks a slow square loop so a saved ride is a non-degenerate `.gpx`.
-#[cfg(not(feature = "debug-uart"))]
+// The `synth`-build stand-in GPS (`SynthLocation`) — always-compiled in obc-platform, imported only
+// on the `synth` build (the default streams the real SAM-M10Q; `debug-uart` a recorded host ride).
+// Walks a slow square loop so a saved ride is a non-degenerate `.gpx`.
+#[cfg(all(not(feature = "debug-uart"), feature = "synth"))]
 use obc_platform::SynthLocation;
+// The real-sensor `Signal` sources (#218): the `GpsLocation`/`BaroAltimeter`/`SensorTemp` ZSTs the
+// ride loop polls, fed by `sensors::sensor_task`. Real-sensor build only (the default).
+#[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+use obc_platform::sensor_link;
 // Battery fuel gauge: a fixed-level stand-in until the nPM1300 PMIC gauge is read (issue follow-up).
 use obc_platform::StubFuelGauge;
 
@@ -234,6 +246,13 @@ bind_interrupts!(struct Irqs {
 #[cfg(feature = "debug-uart")]
 bind_interrupts!(struct UartIrqs {
     SERIAL20 => buffered_uarte::InterruptHandler<peripherals::SERIAL20>;
+});
+
+// TWIM30 (== SERIAL30) backs the shared GPS + altimeter I²C bus (#218); bound only on the real-sensor
+// build, so it never clashes with the SPIM/UARTE handlers above (a distinct instance either way).
+#[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+bind_interrupts!(struct SensorIrqs {
+    SERIAL30 => twim::InterruptHandler<peripherals::SERIAL30>;
 });
 
 /// One band's worth of RGB565 scratch (`WIDTH * BAND_ROWS`), living in `.bss`. 14 rows ≈ 6.6 KB
@@ -988,39 +1007,44 @@ async fn run_app(
     led: &mut Output<'static>,
     // The persistent RRAM settings store (#193): seeds the app at boot, persists on a settings edit.
     mut settings_store: settings::RramSettingsStore,
-    // The OBCM bbox centre (lon, lat) — only the `SynthLocation` stand-in needs it (no host feed).
-    #[cfg(not(feature = "debug-uart"))] cam_center: (i32, i32),
+    // The OBCM bbox centre (lon, lat) — only the `SynthLocation` stand-in needs it (the host feed and
+    // the real GPS both stream absolute positions). So it's threaded only on the `synth` build.
+    #[cfg(all(not(feature = "debug-uart"), feature = "synth"))] cam_center: (i32, i32),
 ) -> ! {
     // Native renderer colour → identity `Rgb565`; `FbDevice64` quantizes to RGB222 on store (the
     // device-64 gamut the style table is tuned to — see `obc_platform::framebuffer`).
     let color_fn = |c: u16| Rgb565::from(RawU16::new(c));
 
-    // Sensor sources. Default (`debug-uart`): the host-streamed GPS / altimeter / compass, parsed by
-    // the VCOM tasks into obc-platform's signals — these ZST handles just `try_take` from them on the
-    // app's ~1 Hz fresh-fix contract. Fallback: the `SynthLocation` square loop (walked from a
-    // boot-relative `start`), no altimeter/compass. Same `Sensors` either way, so the app can't tell.
+    // Sensor sources — three builds, one `Sensors` either way (the app can't tell which):
+    // - `debug-uart`: the host-streamed GPS / altimeter / compass, parsed by the VCOM tasks into
+    //   obc-platform's debug-link signals; these ZST handles just `try_take` on the ~1 Hz contract.
+    // - default (real sensors, #218): the SAM-M10Q + BMP581 task publishes through `sensor_link`;
+    //   these ZSTs drain its `Signal`s. Absolute positions, so no camera re-centre below.
+    // - `synth`: the `SynthLocation` square loop (walked from a boot-relative `start`), no baro.
     #[cfg(feature = "debug-uart")]
     let (mut debug_loc, mut debug_alt, mut debug_compass) = (
         obc_platform::debug_link::DebugLocation,
         obc_platform::debug_link::DebugAltimeter,
         obc_platform::debug_link::DebugCompass,
     );
-    #[cfg(not(feature = "debug-uart"))]
+    #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+    let (mut gps, mut baro, mut temp) = (sensor_link::GpsLocation, sensor_link::BaroAltimeter, sensor_link::SensorTemp);
+    #[cfg(all(not(feature = "debug-uart"), feature = "synth"))]
     let mut synth = SynthLocation::new(cam_center.0, cam_center.1, Instant::now());
     // Battery: a fixed 75 % stand-in until the nPM1300 PMIC fuel gauge is wired in (see
     // `obc_platform::fuel`). Polled in `Sensors` like any other sensor, on both build paths.
     let mut fuel = StubFuelGauge::new(75);
 
     // Per-frame ride-loop state:
-    // - `prev_route` re-centres SynthLocation onto a freshly-loaded route's start (debug-uart-off
-    //   only — the VCOM feed streams absolute positions, so it needs no re-centre);
+    // - `prev_route` re-centres SynthLocation onto a freshly-loaded route's start (`synth` build
+    //   only — the host feed and the real GPS stream absolute positions, so they need no re-centre);
     // - `prev_active`/`prev_session` gate the SD reconcile on actual change (#73);
     // - `route_index`/`index_route` cache the active route's chunk index, rebuilt only on a route
     //   change (#44);
     // - `pending_map_redraw` re-arms a redraw a transient SD glitch couldn't service (#66);
     // - `last_telem*` throttle the host telemetry (debug-uart only).
     // (The FLPR bulge's last-row-span bookkeeping moved into `MapDisplay`.)
-    #[cfg(not(feature = "debug-uart"))]
+    #[cfg(all(not(feature = "debug-uart"), feature = "synth"))]
     let mut prev_route: Option<usize> = None;
     let mut prev_active: Option<usize> = None;
     let mut prev_session: Option<u32> = None;
@@ -1045,6 +1069,14 @@ async fn run_app(
     // to `None` → defaults), then persist on any change the settings screens make.
     app.set_settings(settings_store.load().unwrap_or_default());
 
+    // Align the GPS to the persisted fix interval (#117): push it to the sensor task once at boot
+    // (the task boots at a 1 s default), then again whenever the Power screen edits it. `prev_interval`
+    // gates the re-VALSET so an unrelated settings change (units, clock) doesn't reconfigure the M10.
+    #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+    let mut prev_interval = app.settings().fix_interval_s;
+    #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+    sensor_link::set_rate(prev_interval);
+
     loop {
         let now = Instant::now().as_millis() as u32;
         let hw = stackmeter::used();
@@ -1064,6 +1096,12 @@ async fn run_app(
         // simulator shares): one in-place 16-byte RRAM line. Cheap, and skipped when nothing changed.
         if app.take_settings_dirty() {
             settings_store.save(app.settings());
+            // Push a changed GPS fix interval to the sensor task → it re-VALSETs the M10's rate (#117).
+            #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+            if app.settings().fix_interval_s != prev_interval {
+                prev_interval = app.settings().fix_interval_s;
+                sensor_link::set_rate(prev_interval);
+            }
         }
 
         // A pending debug `Z` camera-scale command (render benchmark): pin the map to an exact
@@ -1076,8 +1114,8 @@ async fn run_app(
 
         let active = app.activity.active_route;
         // Re-centre the synthetic GPS onto a freshly-loaded route's start so Follow doesn't yank the
-        // camera off it (debug-uart-off only — the VCOM feed streams absolute positions).
-        #[cfg(not(feature = "debug-uart"))]
+        // camera off it (`synth` build only — the host feed and the real GPS stream absolute positions).
+        #[cfg(all(not(feature = "debug-uart"), feature = "synth"))]
         if active != prev_route {
             if let Some(r) = active.and_then(|i| app.routes().get(i)) {
                 synth.recenter(r.start_lon, r.start_lat);
@@ -1142,25 +1180,47 @@ async fn run_app(
         let mut tsink = storage.track_sink();
         let track_dyn = tsink.as_mut().map(|t| t as &mut dyn TrackSink);
 
-        // Feed the sensors → integrate the fix → map-match to the route → log the track point.
-        // Default: the VCOM-streamed GPS + altimeter + compass. Fallback: the SynthLocation square
-        // loop, no altimeter/compass. `track_dyn` is consumed either way.
+        // Feed the sensors → integrate the fix → map-match to the route → log the track point. Three
+        // builds: the VCOM-streamed GPS + altimeter + compass (`debug-uart`); the real SAM-M10Q +
+        // BMP581 GPS + altimeter + temperature, coherent per fix (default, #218); or the SynthLocation
+        // square loop, no other sensors (`synth`). `track_dyn` is consumed either way.
         #[cfg(feature = "debug-uart")]
         app.tick(
             RideClock(now),
             Sensors {
                 loc: &mut debug_loc,
                 altimeter: Some(&mut debug_alt),
+                temperature: None,
                 compass: Some(&mut debug_compass),
                 track: track_dyn,
                 fuel: Some(&mut fuel),
             },
             route.as_ref(),
         );
-        #[cfg(not(feature = "debug-uart"))]
+        #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
         app.tick(
             RideClock(now),
-            Sensors { loc: &mut synth, altimeter: None, compass: None, track: track_dyn, fuel: Some(&mut fuel) },
+            Sensors {
+                loc: &mut gps,
+                altimeter: Some(&mut baro),
+                temperature: Some(&mut temp),
+                compass: None,
+                track: track_dyn,
+                fuel: Some(&mut fuel),
+            },
+            route.as_ref(),
+        );
+        #[cfg(all(not(feature = "debug-uart"), feature = "synth"))]
+        app.tick(
+            RideClock(now),
+            Sensors {
+                loc: &mut synth,
+                altimeter: None,
+                temperature: None,
+                compass: None,
+                track: track_dyn,
+                fuel: Some(&mut fuel),
+            },
             route.as_ref(),
         );
 
@@ -1470,6 +1530,34 @@ async fn main(_spawner: Spawner) {
         // and below the P0 GRTC time-driver (so their `Timer`s still wake mid-render). Shared vector.
         interrupt::SWI00.set_priority(Priority::P3);
 
+        // --- Real GPS + altimeter on the shared TWIM30 I²C bus (issue #218). Default build only
+        // (neither `synth` nor `debug-uart`). Build the bus + the TX-Ready interrupt line on the free
+        // P0 pins and spawn the event-driven sensor task on the thread-mode executor; it probes both
+        // chips, configures the M10, and publishes coherent (fix, altitude, temperature) datapoints
+        // through `obc_platform::sensor_link`, which `run_app`'s `GpsLocation`/`BaroAltimeter`/
+        // `SensorTemp` sources drain. The task is fully async (TWIM is DMA-backed), so it cooperates
+        // with the loop; 1 Hz fix latency is a non-issue. SERIAL30's ISR runs at P3 (below the GRTC). ---
+        #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+        {
+            // EasyDMA can't fetch a write buffer from flash, so byte-literal register writes need a
+            // RAM bounce buffer; 32 B covers the widest VALSET frame. Parked in `.bss` + written in
+            // place (the warm-reset-safe pattern), then moved into the `Twim`.
+            static mut TWIM_TX_BUF: MaybeUninit<[u8; 32]> = MaybeUninit::uninit();
+            // SAFETY: written once here, then owned solely by the `Twim` for the program's life.
+            let twim_tx = unsafe { init_static(core::ptr::addr_of_mut!(TWIM_TX_BUF), [0u8; 32]) };
+            let mut twim_cfg = twim::Config::default();
+            twim_cfg.frequency = twim::Frequency::K400; // fast-mode; both chips' DDC/I²C support it
+            twim_cfg.sda_pullup = true; // belt-and-braces over the Qwiic board's external pull-ups
+            twim_cfg.scl_pullup = true;
+            let twim = Twim::new(p.SERIAL30, SensorIrqs, p.P0_01, p.P0_02, twim_cfg, twim_tx);
+            interrupt::SERIAL30.set_priority(Priority::P3);
+            // TX-Ready (DDC data-ready) on the lone spare GPIO. Active-high, so pull down: a floating
+            // / unconfigured line then reads low and the task's poll fallback drives fixes instead.
+            let txready = Input::new(p.P0_03, Pull::Down);
+            _spawner.spawn(defmt::unwrap!(sensors::sensor_task(twim, txready)));
+            info!("sensors: SAM-M10Q + BMP581 task spawned on TWIM30 (SDA P0.01 / SCL P0.02, TX-Ready P0.03)");
+        }
+
         // ============= ST7789 backend (default): two-plane display + input/overlay (issue #126) =====
         // Build the panel + the shared `&'static` two-plane state, spawn the input/overlay plane (which
         // owns the bulge re-push), and hand the map plane back just the `bus` for the unified present.
@@ -1615,9 +1703,11 @@ async fn main(_spawner: Spawner) {
         // this seam; the loop drives present through it with no further `#[cfg]` (issue #175). The
         // `debug-uart` split is the host-feed *feature*, not the backend: it threads the OBCM bbox
         // centre through for the `SynthLocation` stand-in when no host GPS is streamed.
-        #[cfg(feature = "debug-uart")]
+        // `cam_center` is threaded only on the `synth` build (the host feed + the real GPS stream
+        // absolute positions, so they need no synthetic-loop centre).
+        #[cfg(any(feature = "debug-uart", not(feature = "synth")))]
         run_app(display, app, &mut storage, map_tables, map_cache, route_cache, &mut led, settings_store).await;
-        #[cfg(not(feature = "debug-uart"))]
+        #[cfg(all(not(feature = "debug-uart"), feature = "synth"))]
         run_app(
             display,
             app,
