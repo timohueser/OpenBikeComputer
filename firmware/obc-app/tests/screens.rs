@@ -481,7 +481,15 @@ fn ride_control_composites_over_the_map() {
 fn render(app: &mut App, bytes: &[u8]) -> Buf {
     app.tick(
         RideClock(0),
-        Sensors { loc: &mut NoFix, altimeter: None, temperature: None, compass: None, track: None, fuel: None },
+        Sensors {
+            loc: &mut NoFix,
+            altimeter: None,
+            temperature: None,
+            clock: None,
+            compass: None,
+            track: None,
+            fuel: None,
+        },
         None,
     );
     let cache = MapCache::new();

@@ -19,7 +19,7 @@
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
-use obc_app::{AltimeterSource, Fix, LocationSource, TemperatureSource};
+use obc_app::{AltimeterSource, ClockSource, Fix, GpsTime, LocationSource, TemperatureSource};
 
 /// Latest GPS fix, fresh-fix semantics (`try_take` yields it once) — set by the sensor task on a
 /// valid NAV-PVT, drained by [`GpsLocation`]. **Public** so the event-driven main loop (issue #219)
@@ -30,6 +30,10 @@ static FIX: Signal<CriticalSectionRawMutex, Fix> = Signal::new();
 static ALT: Signal<CriticalSectionRawMutex, f32> = Signal::new();
 /// Latest ambient temperature (°C) from the BMP581's per-fix reading, drained by [`SensorTemp`].
 static TEMP: Signal<CriticalSectionRawMutex, f32> = Signal::new();
+/// Latest GPS UTC time (issue #223), set by the sensor task on any NAV-PVT whose time the receiver
+/// has fully resolved — **independent of the position fix** ([`FIX`]), so the clock can set during
+/// acquisition (before a 3D lock). Drained by [`GpsClock`].
+static GPS_TIME: Signal<CriticalSectionRawMutex, GpsTime> = Signal::new();
 /// Desired GPS fix interval (seconds) — set by the ride loop when the #117 Power-screen setting
 /// changes, awaited by the sensor task ([`wait_rate`]) to re-issue the M10 `CFG-RATE` VALSET. A
 /// `Signal` (latch), not a queue: only the newest requested rate matters.
@@ -49,6 +53,12 @@ pub fn dispatch_alt(m: f32) {
 /// Publish a fresh ambient temperature in °C (the sensor task, from the same BMP581 read).
 pub fn dispatch_temp(c: f32) {
     TEMP.signal(c);
+}
+
+/// Publish a fresh GPS UTC time (the sensor task, on a NAV-PVT with resolved time — independent of
+/// a valid position fix). Overwrites any unconsumed value; the app only wants the freshest.
+pub fn dispatch_time(t: GpsTime) {
+    GPS_TIME.signal(t);
 }
 
 /// Request a new GPS fix interval (seconds) — the ride loop calls this when the persisted
@@ -91,5 +101,14 @@ pub struct SensorTemp;
 impl TemperatureSource for SensorTemp {
     fn poll(&mut self) -> Option<f32> {
         TEMP.try_take()
+    }
+}
+
+/// The GPS UTC clock from the real receiver. Hand `&mut GpsClock` to `Sensors::clock`; the app
+/// stamps the wall clock from it when "Set from GPS" is on (issue #223).
+pub struct GpsClock;
+impl ClockSource for GpsClock {
+    fn poll(&mut self) -> Option<GpsTime> {
+        GPS_TIME.try_take()
     }
 }
