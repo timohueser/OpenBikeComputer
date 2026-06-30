@@ -423,6 +423,8 @@ impl SimGui {
                 altimeter: None,
                 // No thermometer in manual control — the BMP581 temperature is device-only (#218).
                 temperature: None,
+                // No GPS time in the sim — the clock stays whatever was set by hand (#223).
+                clock: None,
                 compass: Some(&mut self.compass),
                 track: self.tracks.sink(),
                 // The battery is set once from `--battery` (default 75 %); no live sim gauge.

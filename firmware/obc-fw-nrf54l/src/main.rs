@@ -1028,7 +1028,8 @@ async fn run_app(
         obc_platform::debug_link::DebugCompass,
     );
     #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
-    let (mut gps, mut baro, mut temp) = (sensor_link::GpsLocation, sensor_link::BaroAltimeter, sensor_link::SensorTemp);
+    let (mut gps, mut baro, mut temp, mut gps_clock) =
+        (sensor_link::GpsLocation, sensor_link::BaroAltimeter, sensor_link::SensorTemp, sensor_link::GpsClock);
     #[cfg(all(not(feature = "debug-uart"), feature = "synth"))]
     let mut synth = SynthLocation::new(cam_center.0, cam_center.1, Instant::now());
     // Battery: a fixed 75 % stand-in until the nPM1300 PMIC fuel gauge is wired in (see
@@ -1191,6 +1192,7 @@ async fn run_app(
                 loc: &mut debug_loc,
                 altimeter: Some(&mut debug_alt),
                 temperature: None,
+                clock: None, // the host feed streams no GPS time yet
                 compass: Some(&mut debug_compass),
                 track: track_dyn,
                 fuel: Some(&mut fuel),
@@ -1204,6 +1206,7 @@ async fn run_app(
                 loc: &mut gps,
                 altimeter: Some(&mut baro),
                 temperature: Some(&mut temp),
+                clock: Some(&mut gps_clock), // SAM-M10Q UTC → the wall clock when "Set from GPS" is on (#223)
                 compass: None,
                 track: track_dyn,
                 fuel: Some(&mut fuel),
@@ -1217,6 +1220,7 @@ async fn run_app(
                 loc: &mut synth,
                 altimeter: None,
                 temperature: None,
+                clock: None, // the synthetic loop has no clock source
                 compass: None,
                 track: track_dyn,
                 fuel: Some(&mut fuel),

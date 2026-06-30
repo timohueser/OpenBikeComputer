@@ -363,7 +363,8 @@ fn replay_step<'s>(
     player.advance(dt);
     baro.feed(player.elevation_at(player.time()), player.time());
     let now_ms = (player.time() * 1000.0) as u32;
-    let sensors = Sensors { loc: player, altimeter: Some(baro), temperature: None, compass, track, fuel: None };
+    let sensors =
+        Sensors { loc: player, altimeter: Some(baro), temperature: None, clock: None, compass, track, fuel: None };
     app.tick(RideClock(now_ms), sensors, route);
 }
 
