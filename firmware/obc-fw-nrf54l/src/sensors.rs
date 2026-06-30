@@ -78,7 +78,7 @@ pub async fn sensor_task(mut twim: Twim<'static>, mut txready: Input<'static>) {
     let mut interval_s = DEFAULT_INTERVAL_S;
     let mut had_fix = false; // for the fix-acquired / fix-lost edge logs
     let mut txready_seen = false; // true once an edge fires → event-driven path live
-    let mut warned_no_txready = false; // so the poll-fallback warning fires once, not every cycle
+    let mut noted_poll_fallback = false; // so the poll-fallback notice logs once, not every cycle
     let mut last_itow: Option<u32> = None; // de-dup a re-read of the same epoch
 
     loop {
@@ -93,9 +93,12 @@ pub async fn sensor_task(mut twim: Twim<'static>, mut txready: Input<'static>) {
                 }
             }
             Either3::Second(()) => {
-                if !txready_seen && !warned_no_txready {
-                    warn!("sensors: no TX-Ready edge yet — polling DDC at the fix rate (check P0.03 wiring / TX-Ready PIO)");
-                    warned_no_txready = true;
+                if !txready_seen && !noted_poll_fallback {
+                    // Expected on the SparkFun GPS-21834 (it doesn't break out TX-Ready) — the DDC
+                    // poll at the fix rate is the normal path there, not a fault. On a board that
+                    // *does* route TX-Ready, a missing edge points at the P0.03 wiring / TX-Ready PIO.
+                    info!("sensors: TX-Ready not seen — using the DDC-poll fallback at the fix rate (expected without a TX-Ready line)");
+                    noted_poll_fallback = true;
                 }
             }
             Either3::Third(new_s) => {
