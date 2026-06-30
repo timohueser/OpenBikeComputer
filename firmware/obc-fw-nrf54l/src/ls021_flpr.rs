@@ -473,7 +473,8 @@ impl<'b> Ls021Flpr<'b> {
         let mut spans: heapless::Vec<(u16, u16), MAX_DIRTY_SPANS> = heapless::Vec::new();
         let mut overflow = false;
         // Diff the whole frame (the store is updated for every row), emitting each changed span clipped
-        // around the bulge. The diff piggybacks on a single per-row hash pass over `fb`.
+        // around the bulge — one full per-row hash pass over `fb`, separate from the masked push that
+        // follows (which touches only the changed rows).
         self.diff.diff(self.fb, FB_W, |y0, n| {
             clip_span(y0, n, ex, &mut |s, c| {
                 if spans.push((s, c)).is_err() {

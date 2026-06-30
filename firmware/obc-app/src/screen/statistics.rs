@@ -319,16 +319,20 @@ impl StatisticsScreen {
         let climbed_s = fmt_int(units.elev(climbed as f32) as u32);
         let to_climb_s = fmt_int(units.elev(to_climb as f32) as u32);
 
-        // Unit-dependent captions (metric → imperial): speed KPH→MPH, distance KM→MI; the climb
-        // tiles keep their word caption (the up-arrow + the global unit imply m vs ft).
-        let imp = units.is_imperial();
+        // Unit-bearing captions: `Units` is the one source of truth for the metric→imperial labels
+        // (speed KPH→MPH, distance KM→MI), shared with the Units screen. The composite captions glue
+        // a fixed word onto that label; the climb tiles keep their word caption (the up-arrow + the
+        // global unit imply m vs ft).
+        let avg_cap = cap("AVG ", units.speed_label());
+        let done_cap = cap(units.dist_label(), " DONE");
+        let to_go_cap = cap(units.dist_label(), " TO GO");
         // (caption [unit-bearing], value [number only], climb-arrow?). The up-arrow on the
         // climb tiles reads as "elevation".
         let cells: [(&str, &str, bool); 6] = [
-            (if imp { "MPH" } else { "KPH" }, &speed, false),
-            (if imp { "AVG MPH" } else { "AVG KPH" }, &avg, false),
-            (if imp { "MI DONE" } else { "KM DONE" }, &done, false),
-            (if imp { "MI TO GO" } else { "KM TO GO" }, &to_go, false),
+            (units.speed_label(), &speed, false),
+            (&avg_cap, &avg, false),
+            (&done_cap, &done, false),
+            (&to_go_cap, &to_go, false),
             ("CLIMBED", &climbed_s, true),
             ("TO CLIMB", &to_climb_s, true),
         ];
@@ -383,6 +387,15 @@ fn fmt_kmh(kmh: Option<f32>) -> heapless::String<8> {
 fn fmt_int(m: u32) -> heapless::String<8> {
     let mut s = heapless::String::new();
     let _ = write!(s, "{m}");
+    s
+}
+
+/// Glue two caption fragments into a stat-tile caption (e.g. `"AVG "` + `Units::speed_label()`,
+/// or `Units::dist_label()` + `" TO GO"`), keeping the unit label as the single source of truth.
+fn cap(a: &str, b: &str) -> heapless::String<12> {
+    let mut s = heapless::String::new();
+    let _ = s.push_str(a);
+    let _ = s.push_str(b);
     s
 }
 

@@ -61,6 +61,19 @@ impl Font {
     pub fn line_height(self) -> u32 {
         self.mono().character_size.height
     }
+
+    /// Cap height in pixels — the vertical span the glyphs actually occupy (≤ the cell
+    /// [`line_height`](Self::line_height)), for centring text in a cell. Approximate but stable;
+    /// tuned alongside the Terminus tiers, so all font-tier metrics live in one place.
+    #[inline]
+    pub fn cap_height(self) -> u32 {
+        match self {
+            Font::Label => 18,
+            Font::Body => 22,
+            Font::Display => 26,
+            Font::Huge => 52, // 2× Display; the Home clock only
+        }
+    }
 }
 
 /// Horizontal placement of a string relative to its anchor's x.
