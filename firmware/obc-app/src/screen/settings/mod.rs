@@ -175,17 +175,6 @@ where
     cv.round(rect(kx, ty + m, k, k), 4, palette::PARCHMENT);
 }
 
-/// Cap height (px) of each font tier — the vertical span the glyphs occupy, used to centre text
-/// in a cell. Approximate but stable; tuned alongside the Terminus tiers in `obc-render`.
-fn cap_height(font: Font) -> i32 {
-    match font {
-        Font::Label => 18,
-        Font::Body => 22,
-        Font::Display => 26,
-        Font::Huge => 52, // 2× Display; the Home clock only, never a stepper field
-    }
-}
-
 /// Draw a **stepper field** cell holding `text` in `font`. Inactive: just the text, **no
 /// background**. Active (the live field): an amber fill plus an up-triangle above and a
 /// down-triangle below (rotate to change it). `cell` must leave ~10 px of clearance above and
@@ -196,7 +185,7 @@ where
     F: Fn(u16) -> D::Color,
 {
     let cx = cell.top_left.x + cell.size.width as i32 / 2;
-    let ty = cell.top_left.y + (cell.size.height as i32 - cap_height(font)) / 2;
+    let ty = cell.top_left.y + (cell.size.height as i32 - font.cap_height() as i32) / 2;
     if active {
         cv.round(cell, 4, palette::AMBER);
         let top = cell.top_left.y;

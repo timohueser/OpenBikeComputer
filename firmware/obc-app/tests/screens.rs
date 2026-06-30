@@ -22,22 +22,23 @@ mod common;
 // from `dirty.rs`'s emit-once source); `keys`/`NoFix`/`Buf`/`build_min_obcm` are shared.
 use common::{build_min_obcm, keys, Buf, NoFix, ReplayFix};
 
+/// A throwaway default [`Settings`] block satisfying [`Ctx`]'s `&mut` borrow. The non-settings
+/// screens under test here never touch `settings`, so each call leaks a fresh block — fine in a
+/// short-lived test process, and a fresh allocation per call so the leaked blocks never alias. The
+/// settings screens' own navigation is unit-tested in `src/screen/settings/*` with a real local one.
+fn leaked_settings() -> &'static mut Settings {
+    Box::leak(Box::new(Settings::default()))
+}
+
 /// A handle [`Ctx`] over freshly-made state/activity for a one-gesture test. Most
 /// screens ignore the catalog; the Route-menu tests pass their own via [`route_ctx`].
-///
-/// The non-settings screens under test here never touch `settings`, so each call leaks a
-/// throwaway default block to satisfy the `&mut` borrow — fine in a short-lived test process,
-/// and a fresh allocation per call so the leaked blocks never alias. The settings screens'
-/// own navigation is unit-tested in `src/screen/settings/*` with a real local `Settings`.
 fn ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity) -> Ctx<'a> {
-    let settings = Box::leak(Box::new(Settings::default()));
-    Ctx { state, activity, settings, routes: &[], now_ms: 0 }
+    Ctx { state, activity, settings: leaked_settings(), routes: &[], now_ms: 0 }
 }
 
 /// A handle [`Ctx`] carrying a route catalog, for the Route-menu tests.
 fn route_ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity, routes: &'a [RouteSummary]) -> Ctx<'a> {
-    let settings = Box::leak(Box::new(Settings::default()));
-    Ctx { state, activity, settings, routes, now_ms: 0 }
+    Ctx { state, activity, settings: leaked_settings(), routes, now_ms: 0 }
 }
 
 /// A small synthetic route catalog (names + totals + a unit bbox to center on).
