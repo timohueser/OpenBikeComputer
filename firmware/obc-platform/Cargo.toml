@@ -23,6 +23,13 @@ debug-link = ["dep:embassy-sync"]
 # The board firmware turns it on in its default features; the host workspace never pulls embassy-sync.
 sensor-link = ["dep:embassy-sync"]
 
+# Async button edge-wake (issue #219). Adds `ButtonInput::wait_for_any_press` — the input plane
+# `await`s a falling edge on any button instead of polling at the loop rate, so an idle device sleeps
+# until a press. Pulls only the `embedded-hal-async` `Wait` trait (which `embassy_nrf::gpio::Input`
+# implements) + `embassy-futures` for the 4-way `select`. Off by default so the host/sim build never
+# pulls async input machinery (`is_idle` is plain and always compiled); the board firmware turns it on.
+input-wait = ["dep:embedded-hal-async", "dep:embassy-futures"]
+
 [dependencies]
 # The `DrawTarget` / `Rgb565` the framebuffer implements — pinned to the same 0.8
 # the renderer and app use so the target type unifies across the path deps.
@@ -36,6 +43,15 @@ obc-app = { path = "../obc-app" }
 # The GPIO trait the debouncer is generic over (`InputPin`). 1.0 — embassy-nrf's
 # `gpio::Input` implements this, so `ButtonInput` is board-agnostic.
 embedded-hal = "1.0"
+
+# The async `Wait` trait the `input-wait` edge-wake speaks (issue #219), board-agnostic like
+# `embedded-hal`'s `InputPin`: `embassy_nrf::gpio::Input` implements it, so `wait_for_any_press` stays
+# generic. Optional — only the `input-wait` feature pulls it.
+embedded-hal-async = { version = "1.0", optional = true }
+
+# `select` over the four buttons' edge-wait futures for `input-wait` (issue #219). Optional — only
+# that feature pulls it; pinned to the 0.1 the nRF board crate already resolves.
+embassy-futures = { version = "0.1", optional = true }
 
 # The small event ring the debouncer buffers between `update` and the app's drain.
 # Same 0.8 the rest of the OBC stack uses.

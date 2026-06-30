@@ -274,6 +274,21 @@ impl Screen {
             _ => false,
         }
     }
+
+    /// Milliseconds until this screen's next *timed* redraw, or `None` if it changes only on input /
+    /// a fix. The event-driven host (issue #219) folds this across the visible stack into a **single
+    /// wake deadline** and arms one timer to it, so the M33 sleeps instead of free-running the loop to
+    /// *discover* a minute ticked or a cursor sprang back. The mirror of [`animate`](Screen::animate):
+    /// the two screens that repaint on a timer report when, the rest report `None`. `ms_to_next_minute`
+    /// is the wall-clock minute boundary the host pre-computes (it owns the clock); a clock-bearing
+    /// screen (Home) just adopts it, while Statistics reports its own input-clock deadlines.
+    pub fn next_wake_in(&self, now_ms: u32, ms_to_next_minute: u32, settings: &Settings) -> Option<u32> {
+        match self {
+            Screen::Statistics(s) => s.next_wake_in(now_ms, settings),
+            Screen::Home(_) => Some(ms_to_next_minute),
+            _ => None,
+        }
+    }
 }
 
 /// Height of the wood title bar. Sized for the Body-tier title (28 px cell, ≈18 px caps)

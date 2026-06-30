@@ -326,6 +326,12 @@ mod handoff {
     /// board's map loop drains it each frame and applies it via `App::set_map_mpp` (render
     /// benchmark — see the `Z` wire command).
     static ZOOM: Signal<CriticalSectionRawMutex, f32> = Signal::new();
+    /// A single "a datapoint arrived" wake (issue #219), the `debug-uart` twin of
+    /// `sensor_link::EVENT`: pulsed by [`dispatch`] on any host-streamed sensor sample (fix /
+    /// altitude / compass / zoom) so the event-driven main loop's [`wait_event`] wakes the render
+    /// exactly once. Injected *input* (`Msg::Input`) does **not** pulse it — that wakes the loop via
+    /// the gesture channel after the input plane recognises it, like a physical press.
+    static EVENT: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
     /// Injected input events (encoder turns / button edges), queued in order for the input plane to
     /// drain alongside the physical buttons. A queue, not a latch: a tap is a down+up *pair* and a
@@ -337,15 +343,34 @@ mod handoff {
     /// poll). The board passes this to [`LineReader::feed`]; [`feed_bytes`] bundles both.
     pub fn dispatch(msg: Msg) {
         match msg {
-            Msg::Fix(f) => FIX.signal(f),
-            Msg::Alt(a) => ALT.signal(a),
-            Msg::Compass(c) => COMPASS.signal(c),
-            Msg::Zoom(z) => ZOOM.signal(z),
-            // Drop on the (unreachable) overflow rather than block the RX task.
+            Msg::Fix(f) => {
+                FIX.signal(f);
+                EVENT.signal(());
+            }
+            Msg::Alt(a) => {
+                ALT.signal(a);
+                EVENT.signal(());
+            }
+            Msg::Compass(c) => {
+                COMPASS.signal(c);
+                EVENT.signal(());
+            }
+            Msg::Zoom(z) => {
+                ZOOM.signal(z);
+                EVENT.signal(());
+            }
+            // Drop on the (unreachable) overflow rather than block the RX task. No `EVENT` pulse —
+            // injected input wakes the loop through the gesture channel, like a physical press.
             Msg::Input(ev) => {
                 let _ = INPUT.try_send(ev);
             }
         }
+    }
+
+    /// Await the next host-streamed datapoint (issue #219) — the `debug-uart` twin of
+    /// `sensor_link::wait_event`, the single sensor wake the event-driven main loop selects on.
+    pub async fn wait_event() {
+        EVENT.wait().await
     }
 
     /// Convenience for the board's link RX loop: accumulate `bytes` and dispatch every complete line
@@ -413,8 +438,8 @@ mod handoff {
 // (`debug_link::DebugLocation`, `debug_link::feed_bytes`, …) are unchanged by the split.
 #[cfg(feature = "debug-link")]
 pub use handoff::{
-    dispatch, feed_bytes, set_telemetry, take_zoom, wait_telemetry, DebugAltimeter, DebugCompass, DebugInput,
-    DebugLocation,
+    dispatch, feed_bytes, set_telemetry, take_zoom, wait_event, wait_telemetry, DebugAltimeter, DebugCompass,
+    DebugInput, DebugLocation,
 };
 
 #[cfg(test)]

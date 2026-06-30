@@ -29,7 +29,7 @@ description = "nRF54L15-DK board firmware for OpenBikeComputer — the real hard
 # without a sky view build `--features synth` (the square-loop stand-in) or `--features debug-uart`.
 # Build with `cargo run --release` (add `--features debug-uart` to stream a recorded ride from a host).
 # See `firmware/docs/ls021-flpr.md` + the crate README.
-default = ["obc-platform/sensor-link"]
+default = ["obc-platform/sensor-link", "obc-platform/input-wait"]
 
 # Replace the real GPS/altimeter with the always-compiled `SynthLocation` square-loop stand-in (no
 # I²C hardware needed) — indoor testing without a sky view, where a real fix never comes. A runtime
@@ -56,6 +56,15 @@ tft = []
 # (`debug-link` is the transport-agnostic handoff gate there; the board crate owns the concrete UARTE
 # driver). Takes precedence over the real sensors + `synth`.
 debug-uart = ["obc-platform/debug-link"]
+
+# Zero-CPU hardware COM driver (issue #219): generate the LS021 `VCOM`/`VB`/`VA` square wave from a
+# **TIMER → DPPI → GPIOTE** toggle chain instead of the M33 `com_task` GPIO toggle, so the panel's
+# anti-DC-bias COM keeps alternating with **no CPU wakes** and the M33 can WFI between events — the
+# lever that turns the event-driven loop into a real idle-power win. Requires the three COM lines on
+# **GPIOTE-capable pins** (P1/P3 → GPIOTE20, or P0 → GPIOTE30); on the DK they're stuck on P2 (no
+# GPIOTE), so this is **off by default** (the DK keeps `com_task`) and is the path the production
+# board — which routes COM onto P1/P3 — turns on. See `src/com_hw.rs` + the crate README pin map.
+com-hw = []
 
 [dependencies]
 # embassy HAL for the nRF54L15 app core. `nrf54l15-app-s` selects the secure-app die
