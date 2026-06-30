@@ -61,8 +61,11 @@ The core idea: each screen is an enum variant wrapping a little struct of typed 
 pub enum Screen {
     Home(HomeScreen), Map(MapScreen), Statistics(StatisticsScreen),
     RideControl(RideControl), Menu(MenuScreen), RouteMenu(RouteMenuScreen), RouteSwap(RouteSwapScreen),
-    // The Settings tree — a list plus one screen each for Date & Time, Units, Power and Reset.
-    Settings(SettingsScreen), DateTime(DateTimeScreen), Units(UnitsScreen), Power(PowerScreen), Reset(ResetScreen),
+    // The Settings tree — a list plus one screen each for Date & Time, Units, Power, Reset, and
+    // Stats (which opens onto Fields → AddField, the stat-grid panel manager).
+    Settings(SettingsScreen), DateTime(DateTimeScreen), Units(UnitsScreen),
+    Stats(StatsScreen), StatFields(StatFieldsScreen), AddField(AddFieldScreen),
+    Power(PowerScreen), Reset(ResetScreen),
 }
 
 // Each variant is a module with typed state and exactly two methods:
@@ -208,21 +211,28 @@ That the recognizer is fed by an injected `InputSource` is the key boundary: on 
 
 ## Hold to confirm
 
-Some actions are irreversible — finishing or discarding a ride. Rather than a modal "are you sure?", the UI uses a **guarded-action** pattern that's reusable across screens: a guarded option fires only on a *completed* `Hold`, and its row fills with a warning bar tracking the live hold-progress. Let go early and nothing happens.
+Some actions are irreversible — finishing or discarding a ride. Rather than a modal "are you sure?", the UI uses a **guarded-action** pattern that's reusable across screens: a guarded option fires only on a *completed* `Hold`, and its row fills with a warning bar tracking the live hold-progress. Let go early and nothing happens — the recognizer makes that clean at the gesture level: a press is a `Press` only if released within a brief tap window (~200 ms); released *after* the window but *before* the hold completes, it's a **cancelled long-press** that yields nothing, never a surprise tap.
 
 <figure class="fig">
-<svg viewBox="0 0 720 250" role="img" aria-label="Top: a timeline showing the encoder pressed down. A release before the 500ms threshold yields a Press. Holding past the threshold yields a Hold the instant it crosses, while releasing early cancels. Bottom: a Discard row filling left to right with a warning bar at 0 percent, 60 percent holding, and 100 percent commit.">
+<svg viewBox="0 0 720 250" role="img" aria-label="Top: a timeline showing the encoder pressed down. A release within the 200ms tap window yields a Press; a release after the window but before the 500ms hold threshold is a cancelled long-press and yields nothing; holding past 500ms yields a Hold the instant it crosses. Bottom: a Discard row filling left to right with a warning bar at 0 percent, 60 percent holding, and 100 percent commit.">
   <text class="d-tag" x="20" y="24">Hold to confirm — the guarded-action pattern</text>
 
   <!-- timeline -->
   <line x1="40" y1="70" x2="540" y2="70" stroke="#9aa884" stroke-width="1.5" />
   <circle cx="40" cy="70" r="5" class="d-forest" /><text class="d-sub" x="40" y="58" text-anchor="middle" style="font-size:9px">down</text>
+  <!-- thresholds: the tap window and the hold threshold -->
+  <line x1="168" y1="56" x2="168" y2="84" stroke="#9aa884" stroke-width="1.4" stroke-dasharray="3 3" />
+  <text class="d-sub" x="168" y="98" text-anchor="middle" style="font-size:9px">tap · 200 ms</text>
   <line x1="360" y1="56" x2="360" y2="84" stroke="#c0492e" stroke-width="1.6" stroke-dasharray="3 3" />
-  <text class="d-sub" x="360" y="98" text-anchor="middle" style="fill:#c0492e;font-size:9px">threshold · 500 ms</text>
-  <!-- press branch -->
-  <circle cx="250" cy="70" r="5" class="d-amber" />
-  <text class="d-sub" x="250" y="58" text-anchor="middle" style="font-size:9px">release</text>
-  <text class="d-label" x="250" y="36" text-anchor="middle" style="font-size:11px">→ Press</text>
+  <text class="d-sub" x="360" y="98" text-anchor="middle" style="fill:#c0492e;font-size:9px">hold · 500 ms</text>
+  <!-- press branch (release within the tap window) -->
+  <circle cx="108" cy="70" r="5" class="d-amber" />
+  <text class="d-sub" x="108" y="58" text-anchor="middle" style="font-size:9px">release</text>
+  <text class="d-label" x="108" y="36" text-anchor="middle" style="font-size:11px">→ Press</text>
+  <!-- cancelled branch (release between the two thresholds) -->
+  <circle cx="264" cy="70" r="5" class="d-muted" />
+  <text class="d-sub" x="264" y="58" text-anchor="middle" style="font-size:9px">release</text>
+  <text class="d-sub" x="264" y="36" text-anchor="middle" style="font-size:11px">→ nothing</text>
   <!-- hold branch -->
   <circle cx="430" cy="70" r="5" class="d-hot-fill" />
   <text class="d-label" x="470" y="62" style="font-size:11px;fill:#a9501c">→ Hold fires</text>
@@ -261,7 +271,9 @@ The factory **Reset** screen is the one place a hold guards a *destructive* acti
 
 ## Settings: a second level of focus
 
-Most screens have one focus: the row cursor. The **Settings** screens — Date & Time, Units, Power, and the factory Reset — add a *second* level. A value isn't a separate sub-screen; it's edited **in place**. Rotating still moves the amber row cursor, but once you press a value row, focus drops *into* a field: a `▲▼` box marks the live one, rotating now changes *its* value, pressing steps to the next field, and back steps out. The same two-level model drives every editor — a date, a UTC offset, a fix interval — and the same toggle row flips GPS-set-time or the power saver. No new gestures; the existing five just mean different things at each level.
+Most screens have one focus: the row cursor. The **Settings** screens — Date & Time, Units, Stats, Power, and the factory Reset — add a *second* level. A value isn't a separate sub-screen; it's edited **in place**. Rotating still moves the amber row cursor, but once you press a value row, focus drops *into* a field: a `▲▼` box marks the live one, rotating now changes *its* value, pressing steps to the next field, and back steps out. The same two-level model drives every editor — a date, a UTC offset, a fix interval — and the same toggle row flips GPS-set-time or the power saver. No new gestures; the existing five just mean different things at each level.
+
+The **Stats** screen configures the riding grid itself. Its *Page cycle* row sets how fast the grid auto-flips between pages; *Fields* opens a manager for the data panels. The grid draws from a predefined, in-code catalogue of fields (speed, distance, climb, grade, elevation, clock, …) — the rider picks which to show and in what order, and a field is either one column or a full-width two. Reordering reuses the grab idiom: press *lifts* a panel (it holds pinned mid-screen while the rest slide past it), rotating moves it through the order — a two-column panel always begins a row — and press drops it. A panel is removed by a **hold-to-delete** bar, the same guarded hold as Reset's. The chosen panels lay out six to a page (3×2) and auto-cycle on the timer, so a long list stays glanceable. The selection and period live in the same persisted `Settings` value, so they survive a reboot like every other setting.
 
 <figure class="fig">
 <svg viewBox="0 0 720 232" role="img" aria-label="Settings screens have two focus levels. In row focus, rotate moves the amber row cursor, press flips a toggle or opens a value row's stepper, and back climbs one screen. Pressing a value row enters field focus, where rotate changes the live field's value shown in an up-down arrow box, press advances to the next field, and back — or pressing past the last field — steps back out to row focus.">

@@ -9,6 +9,8 @@
 //! firmware to a reserved RRAM region (see [`SettingsStore`](crate::hal::SettingsStore)) — so
 //! a blank or corrupt read falls back to [`Settings::default`] rather than loading garbage.
 
+use crate::stat_fields::{StatFieldList, MAX_STAT_FIELDS};
+
 /// Measurement system for the ride readouts. The one setting with reach beyond the
 /// settings screens: it re-captions and re-scales the [`Statistics`](crate::screen) tiles and
 /// the off-route distance ([`write_off_route`](crate::screen::write_off_route)).
@@ -325,6 +327,14 @@ pub const UTC_OFFSET_STEP: i16 = 15;
 pub const FIX_INTERVAL_MIN: u16 = 1;
 pub const FIX_INTERVAL_MAX: u16 = 120;
 
+/// Stats-grid page auto-cycle period stepper bounds (seconds). With the elevation chart keeping the
+/// encoder's `turn`/`hold`, a second page is only reachable by the auto-cycle — so there's no "off",
+/// the minimum is a brisk-but-readable 2 s.
+pub const STAT_CYCLE_MIN: u16 = 2;
+pub const STAT_CYCLE_MAX: u16 = 20;
+/// Default auto-cycle period — only matters once a rider pins more than one page of fields.
+pub const STAT_CYCLE_DEFAULT: u16 = 5;
+
 /// The whole persisted settings set. Plain old data — `Copy` + `Eq`, no floats — so a
 /// before/after `==` flags a save and the codec is a trivial field-by-field pack.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -345,6 +355,10 @@ pub struct Settings {
     pub fix_interval_s: u16,
     /// GPS low-power mode (the Power screen's toggle).
     pub power_saver: bool,
+    /// The rider's ordered Statistics-grid field selection (the Stat Fields screen edits it).
+    pub stat_fields: StatFieldList,
+    /// Seconds the Statistics grid dwells on each page before auto-cycling to the next.
+    pub stat_cycle_s: u16,
 }
 
 impl Default for Settings {
@@ -356,6 +370,8 @@ impl Default for Settings {
             utc_offset_min: 0,
             fix_interval_s: 1,
             power_saver: false,
+            stat_fields: StatFieldList::default(),
+            stat_cycle_s: STAT_CYCLE_DEFAULT,
         }
     }
 }
@@ -376,21 +392,34 @@ impl Settings {
         }
     }
 
-    /// Clamp every field into its valid range — applied after a decode (see [`decode`]).
+    /// Clamp every field into its valid range — applied after a decode (see [`decode`]). The
+    /// `stat_fields` selection is sanitised by [`StatFieldList::decode`] as it is parsed.
     fn sanitize(&mut self) {
         self.clock.sanitize();
         self.utc_offset_min = self.utc_offset_min.clamp(UTC_OFFSET_MIN, UTC_OFFSET_MAX);
         self.fix_interval_s = self.fix_interval_s.clamp(FIX_INTERVAL_MIN, FIX_INTERVAL_MAX);
+        self.stat_cycle_s = self.stat_cycle_s.clamp(STAT_CYCLE_MIN, STAT_CYCLE_MAX);
     }
 }
 
 /// Codec version — bump when the byte layout changes; [`decode`] rejects any other version
 /// (the host then falls back to [`Settings::default`], i.e. settings reset on a format change).
-pub const VERSION: u8 = 1;
+/// v2 appended the Statistics-grid field selection + page-cycle period.
+pub const VERSION: u8 = 2;
 
-/// Fixed encoded length: 14 payload bytes + a 2-byte CRC. A fixed size means the RRAM store
-/// reads a known span and the file store needs no length framing.
-pub const ENCODED_LEN: usize = 16;
+/// Fixed encoded length: the [`PAYLOAD_LEN`] CRC-covered bytes + a 2-byte CRC, **rounded up to the
+/// device RRAM's 16-byte write line** (the firmware store writes whole 128-bit lines, and asserts
+/// this multiple) — so a codec bump never needs the device store re-padded. A fixed size means the
+/// RRAM store reads a known span and the file store needs no length framing. Bytes past the CRC are
+/// unused zero padding.
+pub const ENCODED_LEN: usize = (PAYLOAD_LEN + 2).div_ceil(16) * 16;
+
+/// Payload size before the trailing CRC: the v1 head (14 bytes) + the v2 tail (a `stat_fields`
+/// length byte, [`MAX_STAT_FIELDS`] discriminant bytes, and the 2-byte `stat_cycle_s`). The CRC
+/// follows immediately at this offset.
+const PAYLOAD_LEN: usize = 14 + 1 + MAX_STAT_FIELDS + 2;
+/// Byte offset of the v2 tail (right after the v1 head).
+const STAT_FIELDS_OFF: usize = 14;
 
 /// CRC-16/CCITT-FALSE (poly `0x1021`, init `0xFFFF`) over `data` — small, table-free, and
 /// plenty to reject a blank/half-written blob. Guards the codec on both stores.
@@ -421,8 +450,13 @@ pub fn encode(s: &Settings) -> [u8; ENCODED_LEN] {
     b[9..11].copy_from_slice(&s.utc_offset_min.to_le_bytes());
     b[11..13].copy_from_slice(&s.fix_interval_s.to_le_bytes());
     b[13] = s.power_saver as u8;
-    let crc = crc16(&b[0..14]);
-    b[14..16].copy_from_slice(&crc.to_le_bytes());
+    // v2 tail: the field selection (length + fixed-width discriminants) then the cycle period.
+    let (len, ids) = s.stat_fields.encode();
+    b[STAT_FIELDS_OFF] = len;
+    b[STAT_FIELDS_OFF + 1..STAT_FIELDS_OFF + 1 + MAX_STAT_FIELDS].copy_from_slice(&ids);
+    b[PAYLOAD_LEN - 2..PAYLOAD_LEN].copy_from_slice(&s.stat_cycle_s.to_le_bytes());
+    let crc = crc16(&b[0..PAYLOAD_LEN]);
+    b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
     b
 }
 
@@ -437,8 +471,8 @@ pub fn decode(bytes: &[u8]) -> Option<Settings> {
     if b[0] != VERSION {
         return None;
     }
-    let crc = u16::from_le_bytes([b[14], b[15]]);
-    if crc != crc16(&b[0..14]) {
+    let crc = u16::from_le_bytes([b[PAYLOAD_LEN], b[PAYLOAD_LEN + 1]]);
+    if crc != crc16(&b[0..PAYLOAD_LEN]) {
         return None;
     }
     let mut s = Settings {
@@ -448,6 +482,11 @@ pub fn decode(bytes: &[u8]) -> Option<Settings> {
         utc_offset_min: i16::from_le_bytes([b[9], b[10]]),
         fix_interval_s: u16::from_le_bytes([b[11], b[12]]),
         power_saver: b[13] != 0,
+        stat_fields: StatFieldList::decode(
+            b[STAT_FIELDS_OFF],
+            &b[STAT_FIELDS_OFF + 1..STAT_FIELDS_OFF + 1 + MAX_STAT_FIELDS],
+        ),
+        stat_cycle_s: u16::from_le_bytes([b[PAYLOAD_LEN - 2], b[PAYLOAD_LEN - 1]]),
     };
     s.sanitize();
     Some(s)
@@ -457,9 +496,13 @@ pub fn decode(bytes: &[u8]) -> Option<Settings> {
 mod tests {
     use super::*;
 
-    /// A non-default settings value round-trips through the codec byte-for-byte.
+    /// A non-default settings value — including a customised, reordered field selection with a
+    /// two-span tile — round-trips through the codec byte-for-byte.
     #[test]
     fn codec_round_trips() {
+        let mut stat_fields = StatFieldList::default();
+        stat_fields.remove(0); // drop a default tile…
+        assert!(stat_fields.push(crate::stat_fields::StatField::Clock)); // …and pin the wide clock
         let s = Settings {
             units: Units::Imperial,
             gps_time: true,
@@ -467,8 +510,29 @@ mod tests {
             utc_offset_min: 120,
             fix_interval_s: 5,
             power_saver: true,
+            stat_fields,
+            stat_cycle_s: 8,
         };
         assert_eq!(decode(&encode(&s)), Some(s));
+    }
+
+    /// The v2 tail sanitises on decode: an out-of-range cycle period is clamped, and an unknown
+    /// field discriminant (a stale/newer writer) is dropped rather than loaded as a garbage tile.
+    #[test]
+    fn codec_sanitises_stat_tail() {
+        let mut s = Settings { stat_cycle_s: 9999, ..Settings::default() };
+        let mut b = encode(&s);
+        // Corrupt a stored discriminant to an unknown value, then re-stamp the CRC so only the
+        // payload (not the framing) is "wrong" — decode must still reject the bad tile.
+        b[STAT_FIELDS_OFF + 1] = 250;
+        let crc = crc16(&b[0..PAYLOAD_LEN]);
+        b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
+        let got = decode(&b).expect("valid CRC → Some, just sanitised");
+        assert!(got.stat_cycle_s <= STAT_CYCLE_MAX, "the cycle period is clamped into range");
+        assert_eq!(got.stat_fields.len(), s.stat_fields.len() - 1, "the unknown discriminant is dropped");
+        // The default selection (minus the dropped head) decodes in order.
+        s.stat_fields.remove(0);
+        assert_eq!(got.stat_fields.as_slice(), s.stat_fields.as_slice());
     }
 
     /// The default round-trips too (the blank-store-falls-back path still produces a clean read).
@@ -502,10 +566,9 @@ mod tests {
         s.clock.month = 13;
         s.clock.day = 99;
         s.fix_interval_s = 9999;
-        // Re-encode by hand so the CRC matches the bogus payload.
-        let mut b = encode(&s);
-        let crc = crc16(&b[0..14]);
-        b[14..16].copy_from_slice(&crc.to_le_bytes());
+        // `encode` already stamps a correct CRC over the whole (bogus-but-in-layout) payload, so the
+        // blob is valid-CRC; `decode` must accept it and sanitise the out-of-range fields.
+        let b = encode(&s);
         let got = decode(&b).expect("valid CRC → Some, just sanitised");
         assert!((1..=12).contains(&got.clock.month));
         assert!(got.clock.day >= 1 && got.clock.day <= 31);
