@@ -189,6 +189,34 @@ impl StatisticsScreen {
         }
     }
 
+    /// Milliseconds until this screen's next *timed* redraw — the wake deadline the event-driven
+    /// host arms a single timer to (issue #219), so the loop sleeps instead of polling [`animate`]
+    /// to discover the moment. The soonest of the two timers [`animate`](Self::animate) drives:
+    /// the cursor spring-back (`IDLE_MS` after the last scrub, Cursor mode with a live scrub only)
+    /// and the grid page auto-cycle (`stat_cycle_s` per page, only with more than one page). `None`
+    /// when neither is pending (no scrub to retire, one page) — the view is then static until input.
+    /// Mirrors `animate`'s gating exactly, so the host wakes precisely when `animate` would fire.
+    pub fn next_wake_in(&self, now_ms: u32, settings: &Settings) -> Option<u32> {
+        // Spring-back: pending only while a scrub is live in Cursor mode (Zoom never springs back).
+        // `animate` ran first this frame, so any *due* spring-back already fired and cleared the
+        // cursor — the remainder here is strictly positive.
+        let spring = (self.mode == Mode::Cursor && self.cursor.is_some())
+            .then(|| IDLE_MS.saturating_sub(now_ms.wrapping_sub(self.last_scrub_ms)))
+            .filter(|&r| r > 0);
+        // Page cycle: pending only with more than one page; the dwell is anchored lazily, so before
+        // the first frame anchors it the whole period remains.
+        let page = (stat_fields::page_count(&settings.stat_fields) > 1).then(|| {
+            let period_ms = settings.stat_cycle_s.max(1) as u32 * 1000;
+            let last = self.last_flip_ms.unwrap_or(now_ms);
+            period_ms.saturating_sub(now_ms.wrapping_sub(last)).max(1)
+        });
+        // The soonest pending deadline (whichever timer fires first), or `None` if neither is armed.
+        match (spring, page) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
     /// The cursor fraction in effect now: the scrub position while it's still live,
     /// otherwise the live position it has sprung back to.
     fn effective_cursor(&self, now_ms: u32, live: f32) -> f32 {
@@ -498,6 +526,40 @@ mod tests {
         assert!(!s.animate(1_000, &cfg));
         assert!(!s.animate(1_000_000, &cfg), "one page never flips");
         assert_eq!(s.page, 0);
+    }
+
+    /// `next_wake_in` is the deadline twin of `animate` (issue #219): it reports the time left until
+    /// the same timer would fire, so the event-driven host sleeps until then. A live scrub counts down
+    /// to its `IDLE_MS` spring-back; an untouched single-page view has no timed redraw (`None`).
+    #[test]
+    fn next_wake_in_counts_down_to_the_spring_back() {
+        let cfg = Settings::default(); // single page → only the cursor spring-back can be pending
+        let mut s = StatisticsScreen::new();
+        assert_eq!(s.next_wake_in(1_000, &cfg), None, "an untouched view needs no timed wake");
+        s.on_turn(1, LIVE, 1_000); // scrub → the spring-back timer is now armed
+        assert_eq!(s.next_wake_in(1_000, &cfg), Some(IDLE_MS), "the full idle window remains at the scrub");
+        assert_eq!(s.next_wake_in(1_000 + 1_000, &cfg), Some(IDLE_MS - 1_000), "counts down as time passes");
+        // Once it has sprung back (animate fired), there's nothing left to wake for.
+        assert!(s.animate(1_000 + IDLE_MS, &cfg));
+        assert_eq!(s.next_wake_in(1_000 + IDLE_MS, &cfg), None, "sprung back → no further timed wake");
+    }
+
+    /// With more than one page the auto-cycle is always pending, so `next_wake_in` tracks the dwell
+    /// remaining (and, when both timers are live, the spring-back wins if it's sooner).
+    #[test]
+    fn next_wake_in_tracks_the_page_dwell_and_takes_the_soonest() {
+        let mut cfg = Settings::default();
+        assert!(cfg.stat_fields.push(crate::stat_fields::StatField::Grade), "7 fields → two pages");
+        cfg.stat_cycle_s = 5;
+        let period = cfg.stat_cycle_s as u32 * 1000;
+        let mut s = StatisticsScreen::new();
+        // Before the first frame anchors the dwell, the whole period remains.
+        assert_eq!(s.next_wake_in(10_000, &cfg), Some(period), "unanchored dwell = the full period");
+        let _ = s.animate(10_000, &cfg); // anchor the dwell at t = 10 s
+        assert_eq!(s.next_wake_in(10_000 + 2_000, &cfg), Some(period - 2_000), "2 s into the dwell");
+        // A fresh scrub arms the spring-back too; IDLE_MS (4 s) < the 3 s left? no — 3 s page wins.
+        s.on_turn(1, LIVE, 10_000 + 2_000);
+        assert_eq!(s.next_wake_in(10_000 + 2_000, &cfg), Some(period - 2_000), "the sooner of the two deadlines");
     }
 
     /// The page timer is wrap-safe like the cursor spring-back: anchored just before the `u32` millis

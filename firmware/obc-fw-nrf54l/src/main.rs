@@ -117,6 +117,20 @@ mod st7789;
 // issue #176 — the FLPR drives frames now; only the COM electrode square wave stays on the M33).
 #[cfg(not(feature = "tft"))]
 mod com;
+// Zero-CPU hardware COM (issue #219): drive the COM square wave from a TIMER→DPPI→GPIOTE toggle chain
+// instead of the M33 `com_task`, so the panel's anti-DC-bias COM keeps alternating with no core wakes
+// and the M33 can WFI between events. Opt-in (`com-hw`) + production-board-only — the DK wires COM on
+// P2, which has no GPIOTE — so the default DK build keeps `com::com_task`. See `com_hw.rs`.
+#[cfg(all(feature = "com-hw", not(feature = "tft")))]
+mod com_hw;
+// `com-hw` drives the LS021 panel's COM, so it's meaningless on the ST7789 (`tft`) backend; and its
+// placeholder COM pins (P1.04/05) are the VCOM-UART pins the `debug-uart` host feed uses, so the two
+// can't share the board. Both are nonsensical combinations — fail fast with a clear message rather
+// than a confusing double-consume error (issue #219).
+#[cfg(all(feature = "com-hw", feature = "tft"))]
+compile_error!("`com-hw` drives the LS021 COM lines — it has no effect with `tft` (the ST7789 backend)");
+#[cfg(all(feature = "com-hw", feature = "debug-uart"))]
+compile_error!("`com-hw` and `debug-uart` both claim P1.04/P1.05 — the hardware-COM build is the production low-power path, not the host-feed dev build");
 #[cfg(not(feature = "tft"))]
 mod ls021_flpr;
 // The board's display-driver seam — the single screen-write interface both panels implement, so the
@@ -181,6 +195,9 @@ use embassy_nrf::interrupt::{InterruptExt, Priority};
 use embassy_nrf::twim::{self, Twim};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
+// The event-driven loop's wake select (issue #219): `select3` over gesture / sensor / deadline on the
+// map plane, `select` over a button edge / guard tick on the idle input plane.
+use embassy_futures::select::{select, select3};
 use embassy_sync::channel::{Channel, Sender};
 #[cfg(feature = "tft")]
 use embassy_sync::mutex::Mutex;
@@ -218,8 +235,12 @@ use obc_platform::StubFuelGauge;
 // free-running COM driver. The FLPR scans the whole frame in one push, so there is no banded ST7789
 // `Display`/bus mutex here — the map plane owns the panel, COM + the gesture-input plane run on the
 // shared high-priority executor (see `main`).
-#[cfg(not(feature = "tft"))]
+// The M33 COM task is the DK/default path; the `com-hw` build drives COM from hardware instead, so
+// the task isn't spawned there (issue #219).
+#[cfg(all(not(feature = "tft"), not(feature = "com-hw")))]
 use com::com_task;
+#[cfg(all(feature = "com-hw", not(feature = "tft")))]
+use com_hw::HwCom;
 #[cfg(not(feature = "tft"))]
 use ls021_flpr::{launch_flpr, FlprError, Ls021Flpr};
 
@@ -559,6 +580,41 @@ unsafe fn SWI00() {
 /// and the auto-repeat cadence stay exact regardless of how long a map frame takes.
 const LOOP_MS: u64 = 8;
 
+/// Insurance re-poll cadence (ms) for the **idle** input plane (issue #219): once every button is
+/// released + settled, the plane sleeps on a button falling edge ([`ButtonInput::wait_for_any_press`])
+/// instead of polling at [`LOOP_MS`], so a parked device burns no CPU sampling unchanging pins. This
+/// long guard wakes it occasionally regardless, so a (level-triggered `wait_for_low` makes it
+/// near-impossible) missed edge can never strand the UI. Generous — 30 s is negligible even once COM
+/// is off-core and this is the only idle input wake.
+#[cfg(not(feature = "debug-uart"))]
+const IDLE_REPOLL_MS: u64 = 30_000;
+
+/// Synthetic-walk advance cadence (ms) on the `synth` build (issue #219): the stand-in GPS publishes
+/// no `Signal`, so the event-driven loop has no sensor event to wake on and falls back to this timer
+/// to step the square-loop walk. Dev-only (no real fix indoors); coarse is fine — the walk position
+/// is time-based, so a slower tick just lowers the demo frame rate.
+#[cfg(all(not(feature = "debug-uart"), feature = "synth"))]
+const SYNTH_TICK_MS: u64 = 250;
+
+/// The single sensor/host wake the event-driven map loop selects on (issue #219) — one `await` that
+/// covers the whole sensor set so the loop sleeps until a datapoint actually arrives. Three builds:
+/// - default (real sensors): the unified [`sensor_link::wait_event`] datapoint edge (fix / baro /
+///   temp / GPS time / heading) — exactly one wake per published sample, zero I²C at the frame rate;
+/// - `debug-uart`: the host-streamed datapoint edge from the VCOM debug link;
+/// - `synth`: no event source, so a coarse timer steps the synthetic walk.
+#[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+async fn wait_sensor_event() {
+    sensor_link::wait_event().await
+}
+#[cfg(feature = "debug-uart")]
+async fn wait_sensor_event() {
+    obc_platform::debug_link::wait_event().await
+}
+#[cfg(all(not(feature = "debug-uart"), feature = "synth"))]
+async fn wait_sensor_event() {
+    Timer::after_millis(SYNTH_TICK_MS).await
+}
+
 // The hold-bulge's right-edge overlay **columns** (issue #126/#163). Both bulges erupt from the right
 // screen edge ≤12 px deep, so this fixed 16-px column band bounds them with margin. Both map panels
 // re-present the bulge through `DisplayDriver::present_overlay` over the clean framebuffer, addressing
@@ -699,7 +755,7 @@ async fn input_overlay_task(
         // never held across an await/push). Each gesture is pushed to the map plane; the bulge is
         // advanced regardless, so the press is confirmed on screen below even before the map plane
         // drains the channel.
-        let (dirty, overlay_span) = input_plane.lock(|cell| {
+        let (dirty, overlay_span, overlay_active) = input_plane.lock(|cell| {
             let plane = &mut *cell.borrow_mut();
             // Physical buttons + (with `debug-uart`) the VCOM-injected `K` events, drained into one
             // recogniser pass — so a host can drive taps/holds like the real buttons.
@@ -710,7 +766,8 @@ async fn input_overlay_task(
                     defmt::warn!("gesture channel full — dropped a gesture (map plane stalled?)");
                 }
             });
-            (plane.take_overlay_dirty(), plane.overlay_rows(WIDTH as i32, HEIGHT as i32))
+            // `overlay_active` (the bulge is still live, incl. its retract) gates the idle sleep below.
+            (plane.take_overlay_dirty(), plane.overlay_rows(WIDTH as i32, HEIGHT as i32), plane.overlay_active())
         });
 
         // Repaint the bulge only when it changed (plus the one trailing clear `take_overlay_dirty`
@@ -735,7 +792,20 @@ async fn input_overlay_task(
                 input_plane.lock(|cell| cell.borrow().render_overlay(band, WIDTH as f32, HEIGHT as f32, color_fn));
             });
         }
-        Timer::after_millis(LOOP_MS).await;
+        // Event-driven sleep (issue #219): idle (all buttons released + settled, no live bulge) → sleep
+        // on a button falling edge; otherwise keep the 8 ms poll so debounce / auto-repeat / the bulge
+        // animation stay exact. `debug-uart` always polls (prompt host-injected input).
+        #[cfg(feature = "debug-uart")]
+        {
+            let _ = overlay_active;
+            Timer::after_millis(LOOP_MS).await;
+        }
+        #[cfg(not(feature = "debug-uart"))]
+        if buttons.is_idle() && !overlay_active {
+            let _ = select(buttons.wait_for_any_press(), Timer::after_millis(IDLE_REPOLL_MS)).await;
+        } else {
+            Timer::after_millis(LOOP_MS).await;
+        }
     }
 }
 
@@ -763,7 +833,9 @@ async fn input_task(
         // Recognise + animate the bulge under the shared lock (a brief critical section, never held
         // across the await), so the bulge state the map plane composites is the one this advanced.
         // Physical buttons + (with `debug-uart`) the VCOM-injected `K` events, one recogniser pass.
-        input_plane.lock(|cell| {
+        // Also read whether the hold bulge is still live (charging / popping / retracting): the input
+        // plane must keep animating it even after the button is released, so it gates the idle sleep.
+        let overlay_active = input_plane.lock(|cell| {
             let plane = &mut *cell.borrow_mut();
             let mut dbg = debug_input();
             let mut input = ChainedInput { a: &mut buttons, b: &mut dbg };
@@ -772,8 +844,24 @@ async fn input_task(
                     defmt::warn!("gesture channel full — dropped a gesture (map plane stalled?)");
                 }
             });
+            plane.overlay_active()
         });
-        Timer::after_millis(LOOP_MS).await;
+        // Event-driven sleep (issue #219): once every button is released + settled and no bulge is
+        // animating, sleep on a button falling edge instead of polling — a parked device burns no CPU
+        // here. While a button is down / debouncing / repeating, or a bulge is live, keep the 8 ms poll
+        // so debounce + auto-repeat + the bulge animation stay exact. The `debug-uart` dev build always
+        // polls so host-injected `K` input is seen promptly (power isn't the concern there).
+        #[cfg(feature = "debug-uart")]
+        {
+            let _ = overlay_active;
+            Timer::after_millis(LOOP_MS).await;
+        }
+        #[cfg(not(feature = "debug-uart"))]
+        if buttons.is_idle() && !overlay_active {
+            let _ = select(buttons.wait_for_any_press(), Timer::after_millis(IDLE_REPOLL_MS)).await;
+        } else {
+            Timer::after_millis(LOOP_MS).await;
+        }
     }
 }
 
@@ -867,6 +955,11 @@ struct MapDisplay {
     /// program's life (never touched after launch); dropping them would float the panel.
     _gate_bus: [Output<'static>; 4],
     _src_bus: [Output<'static>; 8],
+    /// The zero-CPU hardware COM generator (issue #219, `com-hw` build): held for the program's life
+    /// like the gate/source buses — dropping it would stop the toggle and let the panel DC-bias. The
+    /// default DK build has no field here (the M33 `com_task` owns the COM pins instead).
+    #[cfg(feature = "com-hw")]
+    _com_hw: HwCom,
 }
 
 #[cfg(not(feature = "tft"))]
@@ -1414,7 +1507,33 @@ async fn run_app(
             led.toggle();
             last_led = now;
         }
-        Timer::after_millis(LOOP_MS).await;
+
+        // ===================== Event-driven sleep (issue #219) =====================
+        // Instead of a fixed ~8 ms tick, block until the next *real* wake: a recognised gesture
+        // (`GESTURES` non-empty — a non-consuming `ready_to_receive`, so the drain at the loop top
+        // still gets it), a fresh sensor/host datapoint (`wait_sensor_event`), or the soonest screen
+        // animation deadline the app reports. The body's reconciles are all edge-gated, so running
+        // them only on a wake is correct — a parked Home screen now wakes ~once a minute (the clock
+        // minute-tick) instead of 125×/s, and an idle device with the GPS asleep (#225) wakes only on
+        // a button or that minute tick. While something is **actively animating** — a live hold bulge
+        // (`overlay_*`, incl. its retract), a charging in-screen hold (`hold_p`), or a redraw a flaky
+        // SD glitch couldn't service (`pending_map_redraw`) — keep the short cadence so it stays fluid;
+        // otherwise arm the app's single next-wake deadline, or sleep indefinitely until input/sensor
+        // when nothing on screen is time-animating.
+        let animating = hold_p > 0.0 || pending_map_redraw || overlay_dirty || overlay_span.is_some();
+        let next_ms = if animating { Some(LOOP_MS as u32) } else { app.ms_until_next_wake(now) };
+        // debug-uart host build: keep a ~2 Hz floor so streamed telemetry / `Z` zoom commands stay
+        // responsive even on an otherwise-quiet screen (a dev build — power isn't the concern there).
+        #[cfg(feature = "debug-uart")]
+        let next_ms = Some(next_ms.unwrap_or(u32::MAX).min(500));
+        match next_ms {
+            Some(ms) => {
+                let _ = select3(GESTURES.ready_to_receive(), wait_sensor_event(), Timer::after_millis(ms as u64)).await;
+            }
+            None => {
+                let _ = select(GESTURES.ready_to_receive(), wait_sensor_event()).await;
+            }
+        }
     }
 }
 
@@ -1683,11 +1802,31 @@ async fn main(_spawner: Spawner) {
                 Output::new(p.P2_04, Level::Low, OutputDrive::Standard), // B0
                 Output::new(p.P2_05, Level::Low, OutputDrive::Standard), // B1
             ];
-            // COM lines as high-drive GPIO (56–77 nF load each), boot `Lo`; held `Lo` through the init
-            // frame, then moved into `com_task`. VCOM=P2.07, VB=P2.08, VA=P2.10 (M33-driven).
-            let vcom = Output::new(p.P2_07, Level::Low, OutputDrive::HighDrive);
-            let vb = Output::new(p.P2_08, Level::Low, OutputDrive::HighDrive);
-            let va = Output::new(p.P2_10, Level::Low, OutputDrive::HighDrive);
+            // COM electrode lines (56–77 nF load each → high-drive), boot `Lo` and held `Lo` through
+            // the init-black frame below, then started. Default (DK): three plain `Output`s the M33
+            // `com_task` toggles at 60 Hz — COM is on P2, which has **no GPIOTE**, so it must be
+            // M33-driven (VCOM=P2.07, VB=P2.08 in phase, VA=P2.10 inverse). With `com-hw` (issue #219,
+            // production board): the COM lines are GPIOTE **toggle** channels a TIMER+DPPI free-runs
+            // with zero CPU, so the M33 can WFI between events — so they move off P2 onto GPIOTE-capable
+            // P1 pins (all on GPIOTE20 → one DPPI channel toggles them in lockstep). The pins here are
+            // **placeholders** (P1.04/05/15) to be matched to the production board's COM routing; the
+            // freed P2.07/08/10 then go unused. All three boot `Low` (held `Lo` through init-black);
+            // `HwCom::start` establishes VA's inverse phase before enabling the toggle.
+            #[cfg(not(feature = "com-hw"))]
+            let (vcom, vb, va) = (
+                Output::new(p.P2_07, Level::Low, OutputDrive::HighDrive),
+                Output::new(p.P2_08, Level::Low, OutputDrive::HighDrive),
+                Output::new(p.P2_10, Level::Low, OutputDrive::HighDrive),
+            );
+            #[cfg(feature = "com-hw")]
+            let (vcom, vb, va) = {
+                use embassy_nrf::gpiote::{OutputChannel, OutputChannelPolarity::Toggle};
+                (
+                    OutputChannel::new(p.GPIOTE20_CH0, p.P1_04, Level::Low, OutputDrive::HighDrive, Toggle),
+                    OutputChannel::new(p.GPIOTE20_CH1, p.P1_05, Level::Low, OutputDrive::HighDrive, Toggle),
+                    OutputChannel::new(p.GPIOTE20_CH2, p.P1_15, Level::Low, OutputDrive::HighDrive, Toggle),
+                )
+            };
 
             // Launch the FLPR (copy the blob, arm the control block, wait ALIVE). A launch failure must
             // never fault — degrade to a heartbeat idle, exactly like a missing/bad map card.
@@ -1728,10 +1867,30 @@ async fn main(_spawner: Spawner) {
             };
 
             let hp = EXECUTOR_HP.start(interrupt::SWI00);
+            // COM starts only **now**, after the COM-held-`Lo` init-black frame above. Default: the M33
+            // `com_task` on the high-priority executor (it must keep toggling during the blocking
+            // whole-frame push). `com-hw` (issue #219): the zero-CPU TIMER+DPPI+GPIOTE driver — no task,
+            // no core wakes — so the M33 can WFI between events; `HwCom` is held in `MapDisplay` for the
+            // program's life (like the gate/source buses).
+            #[cfg(not(feature = "com-hw"))]
             hp.spawn(defmt::unwrap!(com_task(vcom, vb, va)));
+            #[cfg(feature = "com-hw")]
+            let com_hw = {
+                let c = HwCom::start(p.TIMER21, p.PPI20_CH0, vcom, vb, va);
+                info!("FLPR LS021: COM on hardware TIMER21+DPPI+GPIOTE20 (zero-CPU); M33 can WFI between events");
+                c
+            };
             hp.spawn(defmt::unwrap!(input_task(buttons, input_plane, GESTURES.sender())));
-            info!("FLPR LS021: COM + gesture/bulge plane on SWI00 @ P3; map plane: thread mode (blocking masked push)");
-            MapDisplay { panel, input_plane, last_overlay_span: None, _gate_bus: gate_bus, _src_bus: src_bus }
+            info!("FLPR LS021: gesture/bulge plane on SWI00 @ P3; map plane: thread mode (event-driven, #219)");
+            MapDisplay {
+                panel,
+                input_plane,
+                last_overlay_span: None,
+                _gate_bus: gate_bus,
+                _src_bus: src_bus,
+                #[cfg(feature = "com-hw")]
+                _com_hw: com_hw,
+            }
         };
 
         // Place the decoded-route-geometry cache in `.bss`, built in place (a zeroed

@@ -48,6 +48,13 @@ static RATE: Signal<CriticalSectionRawMutex, u16> = Signal::new();
 /// `power_saver` toggle, awaited by the sensor task ([`wait_power`]). A `Signal` (latch): only the
 /// newest requested state matters.
 static POWER: Signal<CriticalSectionRawMutex, GpsPower> = Signal::new();
+/// A single "a datapoint arrived" wake (issue #219), pulsed by **every** `dispatch_*` above. The
+/// event-driven main loop selects on [`wait_event`] so **one** await covers the whole sensor set —
+/// not just a fix but the independently-published heading (~5 Hz while stopped) and GPS time (during
+/// acquisition) — and then drains whichever per-source mailboxes have data via the normal `poll`
+/// path. Carries no payload (`()`): it's purely the "wake the render" edge; the values still flow
+/// through the typed signals above with their fresh-fix `try_take` semantics intact.
+static EVENT: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 /// The GPS receiver's requested power state (issue #225). The ride loop derives one from whether a
 /// ride is active and the Power-screen `power_saver` toggle, and the sensor task drives the M10 to
@@ -66,31 +73,36 @@ pub enum GpsPower {
 }
 
 /// Publish a fresh GPS [`Fix`] (the sensor task, on a valid NAV-PVT). Overwrites any unconsumed
-/// value — the app only wants the freshest.
+/// value — the app only wants the freshest. Pulses [`EVENT`] so the event-driven loop wakes.
 pub fn dispatch_fix(f: Fix) {
     FIX.signal(f);
+    EVENT.signal(());
 }
 
 /// Publish a fresh barometric altitude in metres (the sensor task, coherent with the fix).
 pub fn dispatch_alt(m: f32) {
     ALT.signal(m);
+    EVENT.signal(());
 }
 
 /// Publish a fresh ambient temperature in °C (the sensor task, from the same BMP581 read).
 pub fn dispatch_temp(c: f32) {
     TEMP.signal(c);
+    EVENT.signal(());
 }
 
 /// Publish a fresh GPS UTC time (the sensor task, on a NAV-PVT with resolved time — independent of
 /// a valid position fix). Overwrites any unconsumed value; the app only wants the freshest.
 pub fn dispatch_time(t: GpsTime) {
     GPS_TIME.signal(t);
+    EVENT.signal(());
 }
 
 /// Publish a fresh compass heading in degrees CW from north (the sensor task, from the magnetometer
 /// read taken with each fix). Overwrites any unconsumed value; the app only wants the freshest.
 pub fn dispatch_heading(deg: f32) {
     HEADING.signal(deg);
+    EVENT.signal(());
 }
 
 /// Request a new GPS fix interval (seconds) — the ride loop calls this when the persisted
@@ -111,6 +123,16 @@ pub fn set_power(p: GpsPower) {
 /// [`GpsLocation::poll`]; a loop that waits here drives the source instead of polling it.)
 pub async fn wait_fix() -> Fix {
     FIX.wait().await
+}
+
+/// Await the next *any-sensor* datapoint (issue #219) — the single wake the event-driven main loop
+/// selects on. Completes whenever any `dispatch_*` published (fix, altitude, temperature, GPS time,
+/// or heading), so one await covers the whole sensor set; the loop then drains the typed mailboxes
+/// via the normal `poll` path. Prefer this over [`wait_fix`] in the loop: a heading-only or
+/// time-only update (no position fix) must still wake the render, and consuming `FIX` here would
+/// steal it from [`GpsLocation::poll`].
+pub async fn wait_event() {
+    EVENT.wait().await
 }
 
 /// Await the next requested fix interval (seconds) — the sensor task selects on this to apply a

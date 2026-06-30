@@ -55,6 +55,18 @@ impl WallClock {
         let elapsed_min = now_ms.wrapping_sub(self.epoch_ms) / 60_000;
         self.base.add_minutes(elapsed_min)
     }
+
+    /// Milliseconds from `now_ms` until the displayed `HH:MM` next rolls over — i.e. how long a
+    /// clock-bearing screen can sleep before its [`MinuteTicker`] would fire. This is the timed-redraw
+    /// deadline the **event-driven** host arms a single wake timer to (issue #219): rather than the
+    /// loop free-running to *discover* a minute changed, the app reports exactly when it will, so the
+    /// M33 can WFI until then. The set-point itself carries no seconds, so the boundary is measured
+    /// from the millis offset into the current minute (`elapsed mod 60 s`); `wrapping_sub` keeps it
+    /// correct across the ~49.7-day u32 wrap, exactly like [`now`](WallClock::now). Always in
+    /// `1..=60_000` (it never returns 0 — at an exact boundary the full minute remains).
+    pub fn ms_to_next_minute(&self, now_ms: u32) -> u32 {
+        60_000 - now_ms.wrapping_sub(self.epoch_ms) % 60_000
+    }
 }
 
 /// A per-minute repaint edge for a screen drawing an `HH:MM` clock. The screen holds one and calls
@@ -129,6 +141,23 @@ mod tests {
         c.set(dt(9, 30), 100_000); // user sets 09:30 at t = 100 s
         assert_eq!(c.now(100_000), dt(9, 30));
         assert_eq!(c.now(100_000 + 2 * 60_000), dt(9, 32), "advances from the new stamp");
+    }
+
+    /// `ms_to_next_minute` reports the time left until the displayed minute rolls over — the wake
+    /// deadline the event-driven loop arms (issue #219). Measured from the offset into the current
+    /// minute, never 0, and wrap-safe like `now`.
+    #[test]
+    fn ms_to_next_minute_counts_down_to_the_rollover() {
+        let mut c = WallClock::new(dt(14, 40));
+        c.set(dt(14, 40), 1_000); // stamped at t = 1 s
+        assert_eq!(c.ms_to_next_minute(1_000), 60_000, "at a minute boundary the whole minute remains");
+        assert_eq!(c.ms_to_next_minute(1_000 + 25_000), 35_000, "25 s in, 35 s to go");
+        assert_eq!(c.ms_to_next_minute(1_000 + 59_999), 1, "just before the rollover, 1 ms left");
+        assert_eq!(c.ms_to_next_minute(1_000 + 60_000), 60_000, "and resets a full minute after rolling");
+        // Wrap-safe: stamped just before the u32 millis wrap, read past it — still the true remainder.
+        let mut w = WallClock::new(dt(0, 0));
+        w.set(dt(0, 0), u32::MAX - 30_000);
+        assert_eq!(w.ms_to_next_minute(u32::MAX.wrapping_add(10_000)), 20_000, "wrap-safe: 40 s elapsed → 20 s left");
     }
 
     /// The ticker initialises silently on the first observation, then fires only when the minute

@@ -122,6 +122,13 @@ impl<P: InputPin> Debounced<P> {
             None
         }
     }
+
+    /// Whether this button is fully released *and* settled — neither committed-pressed nor mid-bounce
+    /// toward a press. The idle check the event-driven input plane gates its edge-wake on (issue
+    /// #219): only when every button is here is there nothing in flight to keep polling for.
+    fn settled_released(&self) -> bool {
+        !self.pressed && !self.candidate
+    }
 }
 
 /// Four pushbuttons → raw [`InputEvent`]s for the shared app. Generic over any
@@ -176,6 +183,20 @@ impl<P: InputPin> ButtonInput<P> {
         Self::edge(&mut self.back, Button::Back, now_ms, t.debounce_ms, &mut self.queue);
     }
 
+    /// Whether nothing is in flight: every button is released + settled and the event queue is
+    /// drained. The event-driven input plane (issue #219) polls at the loop rate only while *not*
+    /// idle (a press is debouncing, a hold is repeating); once idle it stops polling and
+    /// [`wait_for_any_press`](ButtonInput::wait_for_any_press) sleeps until the next falling edge — so
+    /// a parked device burns no CPU sampling unchanging pins. (Auto-repeat is disarmed on release, so
+    /// a settled-released set implies no pending repeat.)
+    pub fn is_idle(&self) -> bool {
+        self.queue.is_empty()
+            && self.prev.settled_released()
+            && self.next.settled_released()
+            && self.select.settled_released()
+            && self.back.settled_released()
+    }
+
     /// PREV/NEXT handling: a debounced press emits one detent and arms auto-repeat; a
     /// release disarms it; while held, a detent is emitted each time the repeat falls
     /// due (rebased to `now`, so a stalled loop emits one catch-up detent, not a burst).
@@ -225,6 +246,35 @@ impl<P: InputPin> ButtonInput<P> {
 impl<P: InputPin> InputSource for ButtonInput<P> {
     fn poll(&mut self) -> Option<InputEvent> {
         self.queue.pop_front()
+    }
+}
+
+/// Async edge-wake for the event-driven input plane (issue #219), gated behind the `input-wait`
+/// feature so the host/sim build never pulls the async machinery. Available when the pin type also
+/// implements the async [`Wait`](embedded_hal_async::digital::Wait) trait —
+/// `embassy_nrf::gpio::Input` does, so the board stays generic.
+#[cfg(feature = "input-wait")]
+impl<P: embedded_hal::digital::InputPin + embedded_hal_async::digital::Wait> ButtonInput<P> {
+    /// Resolve as soon as **any** of the four buttons goes low (a press) — the edge that ends an idle
+    /// sleep. The input plane calls this only once [`is_idle`](ButtonInput::is_idle) holds, then
+    /// resumes its debounce-rate polling, so a parked device sleeps until a real press instead of
+    /// sampling 125×/s. Active-low, so a press pulls the line low; `wait_for_low` completes
+    /// immediately if a button is already down (no missed press across the poll→sleep handoff). Awaits
+    /// the four pins in parallel and returns on the first.
+    pub async fn wait_for_any_press(&mut self) {
+        use embassy_futures::select::{select4, Either4};
+        // `Infallible` on real GPIO; ignore an error rather than surface it (a dead wait would just
+        // fall through to the input plane's guard-tick re-poll).
+        let _ = match select4(
+            self.prev.pin.wait_for_low(),
+            self.next.pin.wait_for_low(),
+            self.select.pin.wait_for_low(),
+            self.back.pin.wait_for_low(),
+        )
+        .await
+        {
+            Either4::First(r) | Either4::Second(r) | Either4::Third(r) | Either4::Fourth(r) => r,
+        };
     }
 }
 
@@ -295,6 +345,30 @@ mod tests {
         bi.update(28); // settled → Up
         assert_eq!(bi.poll(), Some(InputEvent::Button(ButtonEvent::Up(Button::Encoder))));
         assert!(bi.poll().is_none());
+    }
+
+    /// `is_idle` gates the event-driven edge-wake (issue #219): true only when every button is
+    /// released + settled and the queue is drained. A press makes it non-idle (keep polling for the
+    /// debounce/hold), and it stays non-idle until the edge is drained, then returns to idle on release.
+    #[test]
+    fn is_idle_tracks_in_flight_input() {
+        let pins = Pins::new();
+        let mut bi = pins.input();
+        assert!(bi.is_idle(), "a fresh, untouched set is idle");
+
+        pins.select.set(true);
+        bi.update(0); // candidate flips — a press is now bouncing
+        assert!(!bi.is_idle(), "mid-bounce toward a press is not idle");
+        bi.update(8); // committed Down → an event is queued
+        assert!(!bi.is_idle(), "a held button with a queued edge is not idle");
+        assert!(bi.poll().is_some()); // drain the Down
+
+        assert!(!bi.is_idle(), "still held (committed-pressed) → keep polling for the hold/release");
+        pins.select.set(false);
+        bi.update(20);
+        bi.update(28); // settled released → Up queued
+        assert!(bi.poll().is_some()); // drain the Up
+        assert!(bi.is_idle(), "released, settled, queue drained → idle again");
     }
 
     #[test]
