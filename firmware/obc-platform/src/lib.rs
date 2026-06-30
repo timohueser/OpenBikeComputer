@@ -103,6 +103,13 @@ pub mod synth;
 // samples to the app's HAL traits lives in [`sensor_link`], gated behind `sensor-link`.
 pub mod bmp581;
 pub mod ubx;
+// Electronic-compass pure logic (IMU/compass bring-up): the chip-agnostic 3-axis-magnetometer →
+// heading geometry ([`compass`]) and the ICM-20948 / AK09916 register map + raw→µT scaling
+// ([`icm20948`]). Same always-compiled, host-tested split as the GPS/baro decode above; the magnet
+// sample reaches the app's `CompassSource` through [`sensor_link`]'s `MagCompass`. `compass` stays
+// chip-independent so the expected swap to a standalone 3-axis magnetometer only touches `icm20948`.
+pub mod compass;
+pub mod icm20948;
 // The embassy-sync `Signal` hand-off bridging the board's I²C sensor task to the app's HAL poll
 // (issue #218) — the real-hardware sibling of `debug_link`'s handoff. Gated behind `sensor-link`
 // (it pulls embassy-sync) exactly like `debug-link`; the pure `ubx`/`bmp581` decode above is not.
