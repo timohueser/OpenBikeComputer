@@ -25,7 +25,7 @@ const BERLIN: (i32, i32) = (52_520_000, 13_405_000); // (lat, lon) µdeg
 fn tick(app: &mut App, loc: &mut dyn LocationSource, t: u32) {
     app.tick(
         RideClock(t),
-        Sensors { loc, altimeter: None, temperature: None, compass: None, track: None, fuel: None },
+        Sensors { loc, altimeter: None, temperature: None, clock: None, compass: None, track: None, fuel: None },
         None,
     );
 }
@@ -182,6 +182,7 @@ fn battery_is_polled_on_a_slow_cadence_and_redraws_home_only_on_change() {
             loc: &mut NoFix,
             altimeter: None,
             temperature: None,
+            clock: None,
             compass: None,
             track: None,
             fuel: Some(gauge),
@@ -227,6 +228,7 @@ fn a_battery_change_does_not_redraw_the_riding_views() {
             loc: &mut NoFix,
             altimeter: None,
             temperature: None,
+            clock: None,
             compass: None,
             track: None,
             fuel: Some(gauge),

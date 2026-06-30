@@ -21,7 +21,7 @@
 //! it returns the **freshest** NAV-PVT in a buffer plus the bytes to drain, leaving any trailing
 //! partial frame for the next read.
 
-use obc_app::Fix;
+use obc_app::{DateTime, Fix, GpsTime};
 
 /// UBX sync chars — every frame starts `0xB5 0x62`.
 const SYNC1: u8 = 0xB5;
@@ -33,6 +33,11 @@ pub const ID_NAV_PVT: u8 = 0x07;
 /// NAV-PVT payload length. The receiver may append fields in a future protocol revision, so the
 /// parser accepts `>=` this and reads by fixed offset; today the M10 emits exactly 92.
 pub const NAV_PVT_LEN: usize = 92;
+
+/// NAV-PVT `valid` bitfield: bit0 `validDate`, bit1 `validTime`, bit2 `fullyResolved` (UTC settled,
+/// no leap-second ambiguity). All three ⇒ the receiver's UTC date+time is trustworthy — the gate
+/// [`NavPvt::utc_time`] applies before it stamps the clock (issue #223).
+pub const VALID_TIME_RESOLVED: u8 = 0x07;
 
 /// `UBX-ACK` class with its ACK / NAK ids — the receiver answers each `CFG-VALSET` with one, so the
 /// config step can confirm (or log a NAK) per key. See [`ack_status`].
@@ -226,6 +231,23 @@ impl NavPvt {
     #[inline]
     pub fn gnss_fix_ok(&self) -> bool {
         self.flags & 0x01 != 0
+    }
+
+    /// The receiver's UTC date+time as a [`GpsTime`] **iff** the `valid` bitfield marks the date,
+    /// time, **and** full resolution all good — else `None`, so the app never stamps the clock from
+    /// a half-resolved epoch (issue #223). Deliberately **independent of**
+    /// [`to_fix`](NavPvt::to_fix)'s position gate: the receiver resolves time before a 3D position,
+    /// so this can deliver a stamp during acquisition while there's still no usable fix. `second`
+    /// carries the seconds-into-the-minute for the wall-clock epoch back-date; a leap-second `60` is
+    /// clamped to `59`.
+    pub fn utc_time(&self) -> Option<GpsTime> {
+        if self.valid & VALID_TIME_RESOLVED != VALID_TIME_RESOLVED {
+            return None;
+        }
+        Some(GpsTime {
+            utc: DateTime { year: self.year, month: self.month, day: self.day, hour: self.hour, minute: self.min },
+            second: self.sec.min(59),
+        })
     }
 
     /// Whether this is a usable position fix: a 3D (or GNSS+DR) solution the receiver flags OK.
@@ -466,6 +488,34 @@ mod tests {
         let fix = parse_nav_pvt(&p).unwrap().to_fix().unwrap();
         assert_eq!(fix.course, None);
         assert_eq!(fix.speed_mps, Some(0.1));
+    }
+
+    /// `utc_time` (issue #223) is gated on `validDate | validTime | fullyResolved` and is
+    /// **independent of the position fix** (here `fixType = 0`, no lock): it carries the date/time
+    /// through and keeps the seconds for the wall-clock back-date, clamping a leap-second `60`.
+    #[test]
+    fn utc_time_gated_on_resolved_validity_and_independent_of_fix() {
+        let mut p = [0u8; NAV_PVT_LEN]; // fixType stays 0 → no usable fix, yet time can be valid
+        p[4..6].copy_from_slice(&2026u16.to_le_bytes());
+        p[6] = 6; // month
+        p[7] = 30; // day
+        p[8] = 14; // hour
+        p[9] = 37; // min
+        p[10] = 56; // sec
+        assert!(parse_nav_pvt(&p).unwrap().to_fix().is_none(), "no position fix this epoch");
+
+        p[11] = 0x00; // no valid bits → rejected even though the fields are populated
+        assert_eq!(parse_nav_pvt(&p).unwrap().utc_time(), None, "unresolved time is rejected");
+        p[11] = 0x03; // validDate | validTime but NOT fullyResolved → still rejected
+        assert_eq!(parse_nav_pvt(&p).unwrap().utc_time(), None, "not fully resolved → rejected");
+
+        p[11] = 0x07; // all three → accepted
+        let t = parse_nav_pvt(&p).unwrap().utc_time().expect("resolved time → Some");
+        assert_eq!((t.utc.year, t.utc.month, t.utc.day), (2026, 6, 30));
+        assert_eq!((t.utc.hour, t.utc.minute, t.second), (14, 37, 56), "seconds kept for the back-date");
+
+        p[10] = 60; // a leap second is clamped so the epoch back-date never under-runs a minute
+        assert_eq!(parse_nav_pvt(&p).unwrap().utc_time().unwrap().second, 59, "leap second clamped to 59");
     }
 
     #[test]

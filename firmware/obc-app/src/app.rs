@@ -318,6 +318,7 @@ const GESTURE_BUF: usize = 16;
 ///         loc: &mut location_source,
 ///         altimeter: Some(&mut baro),
 ///         temperature: Some(&mut thermometer),
+///         clock: Some(&mut gps_clock),
 ///         compass: Some(&mut compass),
 ///         track: Some(&mut track_log),
 ///         fuel: Some(&mut fuel_gauge),
@@ -594,7 +595,7 @@ impl App {
             self.map_dirty = true;
         }
 
-        let Sensors { loc, altimeter, temperature, compass, track, fuel } = sensors;
+        let Sensors { loc, altimeter, temperature, clock, compass, track, fuel } = sensors;
         // Battery state of charge from the PMIC fuel gauge, on a slow ~30 s cadence — *not* every
         // tick, so a real I²C read never spins at the frame rate (battery charge changes far too
         // slowly to want more). And a reading only repaints the Home screensaver — the one screen
@@ -636,6 +637,28 @@ impl App {
         if let Some(temperature) = temperature {
             if let Some(c) = temperature.poll() {
                 self.temp_c = Some(c);
+            }
+        }
+        // GPS UTC time → the wall clock (issue #223), but **only** when the rider chose "Set from
+        // GPS". The receiver resolves time before a 3D position, so this lands during acquisition —
+        // the clock can be right while the "No GPS Fix" banner is still up. Not flagged
+        // `settings_dirty`: we don't persist on every fix (the set-point self-heals from GPS each
+        // boot, and a per-second RRAM write would thrash the store — it persists only on a manual
+        // edit). Drained only in GPS mode, so a manual clock is never overwritten; the freshest
+        // stamp then applies the instant the user toggles GPS on.
+        if self.settings.gps_time {
+            if let Some(t) = clock.and_then(|c| c.poll()) {
+                self.settings.clock = t.utc;
+                // Stamp against the **map-plane** clock `self.now_ms` (not the sensor-timebase
+                // `RideClock`), since that's the clock `WallClock::now` is later read with — the same
+                // base `set_settings` / the manual edit re-stamp through; on the device the two
+                // coincide (`advance_animations(now)` runs right before `tick(now)`). Back-date it by
+                // the seconds-into-the-minute so the displayed minute rolls at the true instant, not
+                // up to a fix-interval late (a 30 s interval would otherwise lag the rollover). A
+                // clock-bearing screen's `MinuteTicker` repaints when the minute changes, so a
+                // correcting stamp surfaces on the next frame.
+                let epoch = self.now_ms.wrapping_sub(t.second as u32 * 1000);
+                self.wall_clock.set(self.settings.local_clock(), epoch);
             }
         }
         // GPS fix → camera + map-match + ridden distance/time (only on a fresh fix, so a
@@ -1194,8 +1217,77 @@ mod tests {
         }
     }
 
+    /// A clock source that yields one GPS UTC time then runs dry (one fresh stamp per `tick`).
+    struct OneClock(Option<crate::hal::GpsTime>);
+    impl crate::hal::ClockSource for OneClock {
+        fn poll(&mut self) -> Option<crate::hal::GpsTime> {
+            self.0.take()
+        }
+    }
+
     fn moving(course: f32) -> Fix {
         Fix { lat: 0, lon: 0, course: Some(course), speed_mps: Some(5.0) }
+    }
+
+    /// Tick once with only a GPS clock source (no fix / other sensors), at the map-plane clock
+    /// `now_ms` — the timebase `wall_clock_now` reads, set here so the stamp + read agree.
+    fn tick_clock(app: &mut App, t: crate::hal::GpsTime, now_ms: u32) {
+        app.now_ms = now_ms; // mirror `advance_animations(now)` running right before `tick(now)`
+        let mut loc = OneFix(None);
+        let mut clock = OneClock(Some(t));
+        app.tick(
+            RideClock(now_ms),
+            Sensors {
+                loc: &mut loc,
+                altimeter: None,
+                temperature: None,
+                clock: Some(&mut clock),
+                compass: None,
+                track: None,
+                fuel: None,
+            },
+            None,
+        );
+    }
+
+    fn gps_time(hour: u8, minute: u8, second: u8) -> crate::hal::GpsTime {
+        crate::hal::GpsTime { utc: DateTime { year: 2026, month: 6, day: 30, hour, minute }, second }
+    }
+
+    /// In "Set from GPS" mode a resolved GPS UTC stamps the wall clock — the UTC anchor shifted
+    /// into local time by the offset — while in manual mode the GPS time is ignored, so a hand-set
+    /// clock is never overwritten (issue #223). The set-point is updated without flagging a save.
+    #[test]
+    fn gps_time_sets_the_wall_clock_only_in_gps_mode() {
+        // Manual mode: GPS time is ignored; the hand-set clock stands.
+        let mut manual = App::new(AppState::new(0, 0, 1.0));
+        let hand_set = DateTime { year: 2025, month: 1, day: 1, hour: 9, minute: 0 };
+        manual.set_settings(Settings { gps_time: false, clock: hand_set, ..Settings::default() });
+        tick_clock(&mut manual, gps_time(14, 37, 0), 1000);
+        assert_eq!(manual.wall_clock_now(), hand_set, "manual mode ignores GPS time");
+        assert!(!manual.take_settings_dirty(), "a GPS stamp never flags a settings save");
+
+        // GPS mode with a +02:00 offset: local = UTC anchor + offset = 16:37.
+        let mut gps = App::new(AppState::new(0, 0, 1.0));
+        gps.set_settings(Settings { gps_time: true, utc_offset_min: 120, ..Settings::default() });
+        tick_clock(&mut gps, gps_time(14, 37, 0), 1000);
+        let now = gps.wall_clock_now();
+        assert_eq!((now.hour, now.minute), (16, 37), "GPS UTC 14:37 + 02:00 → local 16:37");
+        assert_eq!(gps.settings().clock, gps_time(14, 37, 0).utc, "the stored anchor is the raw UTC");
+    }
+
+    /// The seconds-into-the-minute back-date makes the displayed minute roll over at the true
+    /// instant, not up to a fix-interval late: a 14:37:56 stamp rolls to 14:38 just 4 s later.
+    #[test]
+    fn gps_time_back_dates_the_epoch_by_seconds() {
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        app.set_settings(Settings { gps_time: true, ..Settings::default() });
+        tick_clock(&mut app, gps_time(14, 37, 56), 10_000); // stamped 56 s into the minute
+        assert_eq!((app.wall_clock_now().hour, app.wall_clock_now().minute), (14, 37));
+        // 4 s on (56 + 4 = 60 s since the minute's true start) the minute must have rolled.
+        app.now_ms = 14_000;
+        assert_eq!((app.wall_clock_now().hour, app.wall_clock_now().minute), (14, 38), "rolls 4 s later");
+        // Without the back-date the same stamp would still read 14:37 here — 4 s isn't a full minute.
     }
 
     // --- the heading fallback chain (course_rad / live_course_rad) ---
@@ -1246,6 +1338,7 @@ mod tests {
                 loc: &mut loc,
                 altimeter: None,
                 temperature: None,
+                clock: None,
                 compass: Some(&mut compass),
                 track: None,
                 fuel: None,
@@ -1326,6 +1419,7 @@ mod tests {
                 loc: &mut loc,
                 altimeter: Some(&mut alt),
                 temperature: None,
+                clock: None,
                 compass: None,
                 track: None,
                 fuel: None,
