@@ -50,7 +50,7 @@
 use core::ptr::{addr_of, addr_of_mut};
 
 use defmt::{debug, error, info};
-use embassy_time::{Instant, Timer};
+use embassy_time::{Duration, Instant, Timer};
 // The host-tested RGB222 → LS021-wire pack (#154) with its sub-line/row word counts.
 use obc_platform::ls021_wire::{BCK_PER_SUBLINE, ROW_WORDS, WIDTH};
 // `composite_overlay_window` is the shared overlay-composite core (#174): fill a window scratch from
@@ -147,10 +147,12 @@ pub const FB_H: usize = ROWS_PER_FRAME as usize;
 const MAX_OVERLAY_COLS: usize = 16;
 const MAX_OVERLAY_ROWS: usize = 192;
 
-/// Busy-poll cap while waiting on the FLPR (a free ping-pong buffer or the frame ack). A spin cap,
-/// not a duration — sized large enough that even a full slow frame never trips it, so it only fires
-/// if the FLPR has genuinely stalled, turning a hang into a reported error.
-const SPIN_CAP: u32 = 50_000_000;
+/// Wall-clock bound on a single FLPR busy-wait (a free ping-pong buffer or the frame ack). A
+/// duration, not an iteration count (issue #181), so the stall window is a deterministic real-time
+/// bound rather than drifting with the M33/FLPR clock. Sized large enough that even the slowest full
+/// (~97 ms) frame's per-row / ack waits never trip it, so it only fires if the FLPR has genuinely
+/// stalled — turning a hang into a reported error.
+const SPIN_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// Why [`launch_flpr`] gave up — surfaced to the caller so a panel that can't come up degrades to a
 /// heartbeat idle rather than driving an un-launched FLPR (the same "never fault on bad hardware"
@@ -265,17 +267,20 @@ fn span_row_total(spans: &[(u16, u16)]) -> usize {
     spans.iter().take(MAX_DIRTY_SPANS).map(|&(_, count)| count as usize).sum()
 }
 
-/// Spin (bounded by [`SPIN_CAP`]) until `cond` holds. Returns `false` if the cap trips first (a
-/// stalled FLPR). Pure busy-poll — correct here because the M33 is a dedicated packer and COM runs
-/// on its own interrupt executor, so there is nothing else for this core to yield to.
+/// Spin until `cond` holds or [`SPIN_TIMEOUT`] elapses. Returns `false` on timeout (a stalled FLPR).
+/// Pure busy-poll — correct here because the M33 is a dedicated packer and COM runs on its own
+/// interrupt executor, so there is nothing else for this core to yield to.
 fn spin_until(cond: impl Fn() -> bool) -> bool {
-    for _ in 0..SPIN_CAP {
+    let deadline = Instant::now() + SPIN_TIMEOUT;
+    loop {
         if cond() {
             return true;
         }
+        if Instant::now() >= deadline {
+            return false;
+        }
         core::hint::spin_loop();
     }
-    false
 }
 
 /// Dump the full cross-core handshake state when a frame stalls — the read-back that tells *how* the
