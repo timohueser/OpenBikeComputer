@@ -16,12 +16,21 @@
 //! dead — and RTT says so. A NAV-PVT with no fix (`fixType < 3`, cold start / tunnel) publishes
 //! **nothing**, so `LocationSource::poll` returns `None` and the camera never teleports; climb
 //! simply pauses. Every stage logs over RTT (defmt) so acquisition is watchable live.
+//!
+//! ## Power management (issue #225)
+//! Continuous tracking is ~20 mA — left on while idle it would flatten the pack in days. So after one
+//! **boot fix** (which sets the clock #223 + warms the ephemeris), the task follows the app's
+//! [`GpsPower`] request: **deep-sleep** (`RXM-PMREQ` backup, ~µA, zero bus traffic) whenever a ride
+//! isn't running, waking on a DDC poke for a fast *warm* fix when one starts; full-power fixes while
+//! riding, or the M10's on-chip **low-power** tracking when the `power_saver` toggle is on. The
+//! `RXM-PMREQ` / `CFG-PM` encodings live host-tested in [`obc_platform::ubx`].
 
 use defmt::{debug, error, info, warn};
-use embassy_futures::select::{select3, Either3};
+use embassy_futures::select::{select, select4, Either, Either4};
 use embassy_nrf::gpio::Input;
 use embassy_nrf::twim::Twim;
-use embassy_time::{Duration, Timer};
+use embassy_time::{Duration, Instant, Timer};
+use obc_platform::sensor_link::GpsPower;
 use obc_platform::{bmp581, sensor_link, ubx};
 
 /// SAM-M10Q I²C (DDC) slave address.
@@ -51,11 +60,37 @@ const DEADLINE_MARGIN_MS: u64 = 300;
 /// tail bytes carry to the next read. 300 B holds ~3 NAV-PVTs (100 B each) plus slack.
 const ACC_CAP: usize = 300;
 
-/// The event-driven sensor task (issue #218). Probes both chips, configures the M10 (NAV-PVT on I²C
-/// at the fix rate, NMEA off, TX-Ready on) + the BMP581 (oversampling), then loops: wait for a
-/// TX-Ready edge (or a fix-rate-interval timeout, or a rate change) → drain the DDC → parse the
-/// freshest NAV-PVT → on a **valid fix**, take a coincident BMP581 forced reading and publish the
-/// coherent `(fix, altitude, temperature)` datapoint. Spawned once from `main`; never returns.
+/// Bound on the boot-fix acquisition (issue #225): the task holds awake at most this long for the
+/// first fix — which sets the clock (#223) + warms the ephemeris — before dropping into the
+/// power-managed steady state, so a boot under cover (no sky) still eventually deep-sleeps when idle.
+const BOOT_ACQUIRE_TIMEOUT_S: u64 = 150;
+
+/// Per-run state the wait loops + [`drain_and_publish`] thread between cycles: the fix-edge logs,
+/// the TX-Ready-vs-poll-fallback notices (each logged once), and the iTOW de-dup.
+#[derive(Default)]
+struct FixState {
+    /// For the fix-acquired / fix-lost edge logs.
+    had_fix: bool,
+    /// True once a TX-Ready edge fires → the event-driven path is live.
+    txready_seen: bool,
+    /// So the poll-fallback notice logs once, not every cycle.
+    noted_poll_fallback: bool,
+    /// De-dup a re-read of the same epoch (a fallback poll can re-read it).
+    last_itow: Option<u32>,
+}
+
+/// The sensor task (issue #218 + #225 power management). Probes both chips, configures the M10
+/// (NAV-PVT on I²C at the fix rate, NMEA off, TX-Ready on) + the BMP581, then runs two phases:
+///
+/// 1. **Boot acquisition** — hold awake until the first valid fix (which sets the clock #223 + warms
+///    the ephemeris) or [`BOOT_ACQUIRE_TIMEOUT_S`], **ignoring** the app's power request so an idle
+///    boot still gets one fix before it can deep-sleep.
+/// 2. **Steady state** — honour the app's [`GpsPower`] request: deep-sleep (`RXM-PMREQ` backup, zero
+///    bus traffic) when idle; full- (or `power_saver` low-) power fixes while riding. Each waking
+///    cycle waits for a TX-Ready edge / poll timeout / rate change / power change, then drains +
+///    publishes through [`drain_and_publish`].
+///
+/// Spawned once from `main`; never returns.
 #[embassy_executor::task]
 pub async fn sensor_task(mut twim: Twim<'static>, mut txready: Input<'static>) {
     info!("sensors: TWIM30 up (SDA P0.01 / SCL P0.02); probing the I²C bus…");
@@ -76,106 +111,237 @@ pub async fn sensor_task(mut twim: Twim<'static>, mut txready: Input<'static>) {
     let mut acc = [0u8; ACC_CAP];
     let mut acc_len = 0usize;
     let mut interval_s = DEFAULT_INTERVAL_S;
-    let mut had_fix = false; // for the fix-acquired / fix-lost edge logs
-    let mut txready_seen = false; // true once an edge fires → event-driven path live
-    let mut noted_poll_fallback = false; // so the poll-fallback notice logs once, not every cycle
-    let mut last_itow: Option<u32> = None; // de-dup a re-read of the same epoch
+    let mut st = FixState::default();
 
+    // --- Phase 1: boot acquisition (issue #225). Hold awake until the first valid fix or a bounded
+    // timeout, ignoring the app's power request — so the clock (#223) gets set and the ephemeris
+    // warms even on an idle boot, before the steady state below is allowed to deep-sleep. ---
+    info!("sensors: boot acquisition — holding awake for the first fix (≤ {=u64}s)", BOOT_ACQUIRE_TIMEOUT_S);
+    let boot_deadline = Instant::now() + Duration::from_secs(BOOT_ACQUIRE_TIMEOUT_S);
     loop {
-        // Wait for whichever comes first: the TX-Ready edge, the poll timeout (≈ the fix interval,
-        // the fallback that makes TX-Ready optional), or a #117 fix-rate change.
+        wait_data_event(&mut txready, interval_s, &mut st).await;
+        if drain_and_publish(&mut twim, &mut acc, &mut acc_len, baro_addr, &mut st).await {
+            break; // got the boot fix
+        }
+        if Instant::now() >= boot_deadline {
+            warn!(
+                "sensors: no boot fix within {=u64}s — proceeding; the clock stays unset until a fix",
+                BOOT_ACQUIRE_TIMEOUT_S
+            );
+            break;
+        }
+    }
+
+    // --- Phase 2: power-managed steady state (issue #225). Honour the app's requested GpsPower —
+    // deep-sleep when idle, full / low-power fixes while riding — and keep streaming fixes. ---
+    let mut power = GpsPower::Active;
+    let mut asleep = false; // so backup is commanded once on entry, not re-sent each parked iteration
+    loop {
+        if power == GpsPower::Sleep {
+            if !asleep {
+                enter_backup(&mut twim).await;
+                asleep = true;
+            }
+            // Asleep: zero DDC traffic. Wait only for a power change (or a rate change to apply on
+            // the next wake — `CFG-RATE` can't take effect while the receiver is in backup).
+            match select(sensor_link::wait_power(), sensor_link::wait_rate()).await {
+                Either::First(p) => power = p,
+                Either::Second(s) => {
+                    interval_s = s.max(1);
+                    continue; // still asleep — re-park; the new rate applies on the next wake
+                }
+            }
+            if power == GpsPower::Sleep {
+                continue; // a redundant Sleep request — stay parked
+            }
+            // Woken → poke the receiver out of backup and re-assert config at the current rate/mode.
+            asleep = false;
+            wake_receiver(&mut twim).await;
+            configure_m10(&mut twim, interval_s).await;
+            set_power_mode(&mut twim, power).await;
+            st.had_fix = false; // re-acquiring from a warm start
+            continue;
+        }
+
+        // Active / LowPower: wait for a data event (TX-Ready edge or poll timeout), a #117 rate
+        // change, or a power change.
         let deadline = Duration::from_millis(interval_s as u64 * 1000 + DEADLINE_MARGIN_MS);
-        match select3(txready.wait_for_rising_edge(), Timer::after(deadline), sensor_link::wait_rate()).await {
-            Either3::First(()) => {
-                if !txready_seen {
-                    info!("sensors: first TX-Ready edge seen — event-driven path live");
-                    txready_seen = true;
-                }
-            }
-            Either3::Second(()) => {
-                if !txready_seen && !noted_poll_fallback {
-                    // Expected on the SparkFun GPS-21834 (it doesn't break out TX-Ready) — the DDC
-                    // poll at the fix rate is the normal path there, not a fault. On a board that
-                    // *does* route TX-Ready, a missing edge points at the P0.03 wiring / TX-Ready PIO.
-                    info!("sensors: TX-Ready not seen — using the DDC-poll fallback at the fix rate (expected without a TX-Ready line)");
-                    noted_poll_fallback = true;
-                }
-            }
-            Either3::Third(new_s) => {
+        match select4(
+            txready.wait_for_rising_edge(),
+            Timer::after(deadline),
+            sensor_link::wait_rate(),
+            sensor_link::wait_power(),
+        )
+        .await
+        {
+            Either4::First(()) => note_wait_edge(&mut st, true),
+            Either4::Second(()) => note_wait_edge(&mut st, false),
+            Either4::Third(new_s) => {
                 interval_s = new_s.max(1);
                 info!("sensors: fix interval → {=u16}s (#117); reconfiguring M10", interval_s);
                 configure_m10(&mut twim, interval_s).await;
                 continue;
             }
-        }
-
-        // Drain the DDC into the accumulator's free tail, then parse the freshest complete NAV-PVT.
-        let n = read_ddc(&mut twim, &mut acc[acc_len..]).await;
-        if n == 0 {
-            continue;
-        }
-        acc_len += n;
-        let res = ubx::parse_stream(&acc[..acc_len]);
-        if res.consumed > 0 {
-            acc.copy_within(res.consumed..acc_len, 0);
-            acc_len -= res.consumed;
-        } else if acc_len == ACC_CAP {
-            // Full buffer, no complete frame: noise on the bus. Reset rather than wedge.
-            warn!("sensors: UBX accumulator full with no frame ({} B) — resetting", acc_len);
-            acc_len = 0;
-        }
-
-        let Some(pvt) = res.nav_pvt else {
-            debug!("sensors: {=usize} DDC bytes, no NAV-PVT yet", n);
-            continue;
-        };
-
-        // The key acquisition line — watch fixType climb 0→3 and hAcc fall as the receiver locks.
-        debug!(
-            "NAV-PVT fix={=u8} sats={=u8} hAcc={=u32}mm pDOP={=u16} lat={=i32} lon={=i32}",
-            pvt.fix_type, pvt.num_sv, pvt.hacc_mm, pvt.pdop, pvt.lat, pvt.lon
-        );
-
-        // Publish the receiver's UTC time (issue #223) the moment it's valid + fully resolved —
-        // **before** the position-fix gate below, so "Set from GPS" can set the clock during
-        // acquisition, while there's still no usable fix. A `None` (unresolved) publishes nothing.
-        if let Some(t) = pvt.utc_time() {
-            sensor_link::dispatch_time(t);
-        }
-
-        let Some(fix) = pvt.to_fix() else {
-            // No usable fix this epoch (cold start / outage). Publish nothing → poll() stays None.
-            if had_fix {
-                warn!("GPS fix LOST (fixType={=u8} sats={=u8})", pvt.fix_type, pvt.num_sv);
-                had_fix = false;
-            }
-            continue;
-        };
-
-        // De-dup: a fallback poll can re-read the same epoch. Skip a repeat (same iTOW) so the app
-        // never integrates one fix twice; distinct stationary epochs (new iTOW) still pass through.
-        if last_itow == Some(pvt.itow) {
-            continue;
-        }
-        last_itow = Some(pvt.itow);
-
-        // Valid fix → take a coincident BMP581 forced reading and publish the coherent datapoint.
-        // Altitude/temperature are published only on a valid fix, so climb couples to the fix (the
-        // documented coherence tradeoff): a GPS outage pauses climb, no position is logged anyway.
-        if let Some(addr) = baro_addr {
-            if let Some((pa, c)) = read_bmp581_forced(&mut twim, addr).await {
-                let m = bmp581::pa_to_m(pa);
-                debug!("BMP581 forced: {=f32} Pa  {=f32} °C  → {=f32} m", pa, c, m);
-                sensor_link::dispatch_alt(m);
-                sensor_link::dispatch_temp(c);
+            Either4::Fourth(p) => {
+                if p != power {
+                    power = p;
+                    if power == GpsPower::Sleep {
+                        info!("sensors: tracking stopped → GPS will deep-sleep");
+                    } else {
+                        info!("sensors: GPS power → {=str}", power_name(power));
+                        set_power_mode(&mut twim, power).await;
+                    }
+                }
+                continue; // Sleep is entered at the top of the loop
             }
         }
-        sensor_link::dispatch_fix(fix);
-        if !had_fix {
-            info!("GPS FIX acquired: fixType={=u8} sats={=u8} hAcc={=u32}mm", pvt.fix_type, pvt.num_sv, pvt.hacc_mm);
-            had_fix = true;
+        drain_and_publish(&mut twim, &mut acc, &mut acc_len, baro_addr, &mut st).await;
+    }
+}
+
+/// Wait for one DDC data event: a TX-Ready rising edge, or the poll-timeout fallback (≈ the fix
+/// interval) that makes TX-Ready optional. Logs each path's first occurrence. The boot loop uses
+/// this directly; the steady loop instead inlines `select4` to *also* catch rate / power changes.
+async fn wait_data_event(txready: &mut Input<'static>, interval_s: u16, st: &mut FixState) {
+    let deadline = Duration::from_millis(interval_s as u64 * 1000 + DEADLINE_MARGIN_MS);
+    let edge = matches!(select(txready.wait_for_rising_edge(), Timer::after(deadline)).await, Either::First(()));
+    note_wait_edge(st, edge);
+}
+
+/// Log the TX-Ready / poll-fallback edge the first time each is observed (issue #218): a TX-Ready
+/// edge means the event-driven path is live; the timeout fallback is the normal path on a board that
+/// doesn't break TX-Ready out (and points at the P0.03 wiring / PIO on one that does).
+fn note_wait_edge(st: &mut FixState, txready_edge: bool) {
+    if txready_edge {
+        if !st.txready_seen {
+            info!("sensors: first TX-Ready edge seen — event-driven path live");
+            st.txready_seen = true;
+        }
+    } else if !st.txready_seen && !st.noted_poll_fallback {
+        info!("sensors: TX-Ready not seen — using the DDC-poll fallback at the fix rate (expected without a TX-Ready line)");
+        st.noted_poll_fallback = true;
+    }
+}
+
+/// One DDC drain → parse → publish cycle (issue #218/#223). Drains the receiver's DDC into the
+/// accumulator's free tail, parses the freshest complete NAV-PVT, publishes the resolved UTC time
+/// (independent of the position fix, so the clock can set during acquisition) and — on a **valid**
+/// fix — a coincident BMP581 reading + the coherent `(fix, altitude, temperature)` datapoint.
+/// Returns whether a valid position fix was published. Shared by the boot-acquire + steady loops.
+async fn drain_and_publish(
+    twim: &mut Twim<'static>,
+    acc: &mut [u8; ACC_CAP],
+    acc_len: &mut usize,
+    baro_addr: Option<u8>,
+    st: &mut FixState,
+) -> bool {
+    let n = read_ddc(twim, &mut acc[*acc_len..]).await;
+    if n == 0 {
+        return false;
+    }
+    *acc_len += n;
+    let res = ubx::parse_stream(&acc[..*acc_len]);
+    if res.consumed > 0 {
+        acc.copy_within(res.consumed..*acc_len, 0);
+        *acc_len -= res.consumed;
+    } else if *acc_len == ACC_CAP {
+        // Full buffer, no complete frame: noise on the bus. Reset rather than wedge.
+        warn!("sensors: UBX accumulator full with no frame ({} B) — resetting", *acc_len);
+        *acc_len = 0;
+    }
+
+    let Some(pvt) = res.nav_pvt else {
+        debug!("sensors: {=usize} DDC bytes, no NAV-PVT yet", n);
+        return false;
+    };
+
+    // The key acquisition line — watch fixType climb 0→3 and hAcc fall as the receiver locks.
+    debug!(
+        "NAV-PVT fix={=u8} sats={=u8} hAcc={=u32}mm pDOP={=u16} lat={=i32} lon={=i32}",
+        pvt.fix_type, pvt.num_sv, pvt.hacc_mm, pvt.pdop, pvt.lat, pvt.lon
+    );
+
+    // Publish the receiver's UTC time (issue #223) the moment it's valid + fully resolved — **before**
+    // the position-fix gate below, so "Set from GPS" can set the clock during acquisition, while
+    // there's still no usable fix. A `None` (unresolved) publishes nothing.
+    if let Some(t) = pvt.utc_time() {
+        sensor_link::dispatch_time(t);
+    }
+
+    let Some(fix) = pvt.to_fix() else {
+        // No usable fix this epoch (cold start / outage). Publish nothing → poll() stays None.
+        if st.had_fix {
+            warn!("GPS fix LOST (fixType={=u8} sats={=u8})", pvt.fix_type, pvt.num_sv);
+            st.had_fix = false;
+        }
+        return false;
+    };
+
+    // De-dup: a fallback poll can re-read the same epoch. Skip a repeat (same iTOW) so the app never
+    // integrates one fix twice; distinct stationary epochs (new iTOW) still pass through.
+    if st.last_itow == Some(pvt.itow) {
+        return false;
+    }
+    st.last_itow = Some(pvt.itow);
+
+    // Valid fix → take a coincident BMP581 forced reading and publish the coherent datapoint.
+    // Altitude/temperature are published only on a valid fix, so climb couples to the fix (the
+    // documented coherence tradeoff): a GPS outage pauses climb, no position is logged anyway.
+    if let Some(addr) = baro_addr {
+        if let Some((pa, c)) = read_bmp581_forced(twim, addr).await {
+            let m = bmp581::pa_to_m(pa);
+            debug!("BMP581 forced: {=f32} Pa  {=f32} °C  → {=f32} m", pa, c, m);
+            sensor_link::dispatch_alt(m);
+            sensor_link::dispatch_temp(c);
         }
     }
+    sensor_link::dispatch_fix(fix);
+    if !st.had_fix {
+        info!("GPS FIX acquired: fixType={=u8} sats={=u8} hAcc={=u32}mm", pvt.fix_type, pvt.num_sv, pvt.hacc_mm);
+        st.had_fix = true;
+    }
+    true
+}
+
+/// A short defmt-printable name for a [`GpsPower`] (the cross-crate enum doesn't derive `Format`).
+fn power_name(p: GpsPower) -> &'static str {
+    match p {
+        GpsPower::Active => "full",
+        GpsPower::LowPower => "low (PSMOO)",
+        GpsPower::Sleep => "sleep",
+    }
+}
+
+/// Put the M10 into **backup** deep sleep (issue #225) — `RXM-PMREQ`, infinite duration. The
+/// receiver keeps its RTC + ephemeris on ~µA and wakes on the next DDC activity, so the restart is a
+/// fast *warm* fix. Best-effort: a failed write is logged, not fatal.
+async fn enter_backup(twim: &mut Twim<'static>) {
+    let mut frame = [0u8; 24];
+    let Some(n) = ubx::pmreq_backup(&mut frame) else { return };
+    if twim.write(M10_ADDR, &frame[..n]).await.is_err() {
+        warn!("sensors: RXM-PMREQ (sleep) write failed — GPS may keep tracking");
+    } else {
+        info!("sensors: GPS → deep sleep (RXM-PMREQ backup); zero bus traffic until tracking resumes");
+    }
+}
+
+/// Wake the M10 from backup (issue #225): any DDC activity wakes it, but the first transaction can be
+/// lost while it powers up, so poke the byte-count register a few times with a short settle.
+async fn wake_receiver(twim: &mut Twim<'static>) {
+    for _ in 0..3 {
+        let mut cnt = [0u8; 2];
+        let _ = twim.write_read(M10_ADDR, &[DDC_COUNT_REG], &mut cnt).await;
+        Timer::after_millis(20).await;
+    }
+    info!("sensors: GPS woken from backup");
+}
+
+/// Set the M10's tracking power mode (issue #225): full power, or the on-chip low-power tracking when
+/// `power_saver` is on. Best-effort VALSET, ACK-logged like the other config keys — **verify the
+/// `CFG-PM-OPERATEMODE` key + value semantics on first bring-up** (see [`ubx::KEY_PM_OPERATEMODE`]).
+async fn set_power_mode(twim: &mut Twim<'static>, power: GpsPower) {
+    let mode = if power == GpsPower::LowPower { 1u8 } else { 0u8 }; // 1 = PSMOO low-power, 0 = full
+    valset8(twim, "PM-OPERATEMODE", ubx::KEY_PM_OPERATEMODE, mode).await;
 }
 
 /// Probe the BMP581 at its two possible addresses, returning the one that answers (and logging the
