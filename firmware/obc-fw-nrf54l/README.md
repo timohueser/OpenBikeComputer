@@ -45,6 +45,54 @@ For the opt-in **`--features tft`** build, the **ST7789** sits on the flash-free
 header (SCK P2_01 / MOSI P2_02 / CS P2_05 / DC P2_03 / RST P2_00, Vin←5 V, logic at 3.3 V)
 and SD `CS` stays on P1.12.
 
+### Full pin map (default LS021 / FLPR build)
+
+**Port P2 — MCU/fast domain (panel source bus + COM) — all 11 pins used:**
+
+| Pin   | Signal | Notes                                   |
+|-------|--------|-----------------------------------------|
+| P2.00 | R0     | source data (odd-pixel R)               |
+| P2.01 | R1     | source data (even-pixel R)              |
+| P2.02 | G0     |                                         |
+| P2.03 | G1     |                                         |
+| P2.04 | B0     |                                         |
+| P2.05 | B1     |                                         |
+| P2.06 | BCK    | source shift clock                      |
+| P2.07 | VCOM   | COM electrode (HighDrive); LED2 pin     |
+| P2.08 | VB     | COM                                     |
+| P2.09 | LED0   | per-frame heartbeat blink               |
+| P2.10 | VA     | COM                                     |
+
+**Port P1 — PERI domain ≤8 MHz (gate/BSP + SD + VCOM + buttons) — all broken-out pins used:**
+
+| Pin   | Signal  | Notes                                  |
+|-------|---------|----------------------------------------|
+| P1.00 | GSP     | gate start pulse                       |
+| P1.01 | GCK     | gate clock                             |
+| P1.02 | —       | **NFC, off-limits**                    |
+| P1.03 | —       | **NFC, off-limits**                    |
+| P1.04 | VCOM TX | UARTE20 → host                         |
+| P1.05 | VCOM RX | UARTE20 ← host (needs HWFC OFF)        |
+| P1.06 | SD MOSI | SPIM22                                 |
+| P1.07 | SD MISO | SPIM22 (external pull-up to 3V3)       |
+| P1.08 | BTN2    | BACK                                   |
+| P1.09 | BTN1    | NEXT                                   |
+| P1.10 | INTB    | frame envelope; LED1 pin               |
+| P1.11 | SD SCK  | SPIM22                                 |
+| P1.12 | GEN     | gate enable (the freed SD-CS pin)      |
+| P1.13 | BTN0    | PREV                                   |
+| P1.14 | BSP     | source sub-line start                  |
+
+**Port P0 — low-power domain (P0.00–P0.04):**
+
+| Pin   | Signal   | Notes                                 |
+|-------|----------|---------------------------------------|
+| P0.00 | SD CS    | moved here in the FLPR build (held LOW)|
+| P0.01 | **free** | →                                     |
+| P0.02 | **free** | → spare for expansion (I²C below)     |
+| P0.03 | **free** | →                                     |
+| P0.04 | BTN3     | SELECT                                |
+
 ## Build & flash
 
 From this crate directory (it's a standalone crate built for `thumbv8m.main-none-eabihf`;
