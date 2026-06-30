@@ -1,12 +1,24 @@
-//! Real GPS (u-blox **SAM-M10Q**) + barometric altimeter (Bosch **BMP581**) on a shared I²C bus
-//! (issue #218) — the board-specific transport + the event-driven sensor task.
+//! Real GPS (u-blox **SAM-M10Q**) + barometric altimeter (Bosch **BMP581**) + electronic compass
+//! (the **AK09916** magnetometer inside a TDK **ICM-20948**) on a shared I²C bus (issue #218 +
+//! IMU/compass bring-up) — the board-specific transport + the event-driven sensor task.
 //!
-//! Both chips sit on one **TWIM30** I²C bus on the low-power P0 domain (SDA P0.01 / SCL P0.02); the
-//! GPS **TX-Ready** line is the single interrupt (P0.03). The pure decode — UBX NAV-PVT framing,
-//! NAV-PVT → [`Fix`](obc_app::Fix), BMP581 raw → metres — lives host-tested in
-//! [`obc_platform::ubx`] / [`obc_platform::bmp581`]; this module owns only the concrete `Twim`
-//! transactions and the [`sensor_task`] that coalesces a GPS fix + a coincident baro reading into
-//! one coherent datapoint and publishes it through [`obc_platform::sensor_link`].
+//! All three chips sit on one **TWIM30** I²C bus on the low-power P0 domain (SDA P0.01 / SCL P0.02);
+//! the GPS **TX-Ready** line is the single interrupt (P0.03). The pure decode — UBX NAV-PVT framing,
+//! NAV-PVT → [`Fix`](obc_app::Fix), BMP581 raw → metres, magnetometer axes → heading — lives
+//! host-tested in [`obc_platform::ubx`] / [`obc_platform::bmp581`] / [`obc_platform::compass`] /
+//! [`obc_platform::icm20948`]; this module owns only the concrete `Twim` transactions and the
+//! [`sensor_task`] that coalesces a GPS fix + a coincident baro + magnetometer reading into one
+//! coherent datapoint and publishes it through [`obc_platform::sensor_link`].
+//!
+//! ## Compass: magnetometer only, via I²C bypass
+//! Only the ICM-20948's **3 magnetometer axes** are used — the accel/gyro stay asleep. The AK09916 is
+//! reached by putting the ICM in **I²C bypass** (its aux bus tied to the host pins), so it answers
+//! directly at `0x0C` as if it were a standalone 3-axis compass. That's deliberate: the shipping
+//! board is expected to drop the ICM for a plain magnetometer, and swapping it is then a new chip
+//! module like [`obc_platform::icm20948`] plus new transaction calls here — the heading geometry
+//! ([`obc_platform::compass`]) and the app's `CompassSource` seam don't move. The heading is read
+//! coincident with each GPS fix (single measurement, like the baro), so the app's heading-up-while-
+//! stopped orientation tracks the magnetometer.
 //!
 //! ## Event-driven, with a robust fallback (the "no fix" story)
 //! The task waits on the **TX-Ready edge** so it does **zero** bus work between fixes. But TX-Ready
@@ -31,7 +43,7 @@ use embassy_nrf::gpio::Input;
 use embassy_nrf::twim::Twim;
 use embassy_time::{Duration, Instant, Timer};
 use obc_platform::sensor_link::GpsPower;
-use obc_platform::{bmp581, sensor_link, ubx};
+use obc_platform::{bmp581, compass, icm20948, sensor_link, ubx};
 
 /// SAM-M10Q I²C (DDC) slave address.
 const M10_ADDR: u8 = 0x42;
@@ -65,6 +77,24 @@ const ACC_CAP: usize = 300;
 /// power-managed steady state, so a boot under cover (no sky) still eventually deep-sleeps when idle.
 const BOOT_ACQUIRE_TIMEOUT_S: u64 = 150;
 
+/// Per-board **hard-iron offset** (µT) subtracted from each magnetometer axis before the heading.
+/// Hard iron (nearby steel/magnets) shifts the field by a fixed vector; uncalibrated, the compass
+/// heading skews. Zero until a calibration routine fills it — **TODO** (rotate-the-device cal). The
+/// only essential per-board mag calibration; soft-iron is a later refinement.
+const HARD_IRON_UT: (f32, f32, f32) = (0.0, 0.0, 0.0);
+
+/// Magnetic **declination** (degrees east) applied to turn the magnetometer's magnetic heading into
+/// the *true*-north heading the GPS course + map use. `0.0` = raw magnetic heading; a future
+/// refinement derives the local value from the GPS position (WMM / coarse table) — **TODO**, and a
+/// pure add at [`compass::heading_deg`] when it lands.
+const DECLINATION_DEG: f32 = 0.0;
+
+/// Conversion budget for one AK09916 single measurement (≈ a few ms typical): poll DRDY this many
+/// times at [`MAG_POLL_MS`] before reading the sample anyway (the data registers hold the last
+/// conversion regardless). Mirrors the BMP581 forced-read budget.
+const MAG_POLL_TRIES: u8 = 10;
+const MAG_POLL_MS: u64 = 3;
+
 /// Per-run state the wait loops + [`drain_and_publish`] thread between cycles: the fix-edge logs,
 /// the TX-Ready-vs-poll-fallback notices (each logged once), and the iTOW de-dup.
 #[derive(Default)]
@@ -79,8 +109,9 @@ struct FixState {
     last_itow: Option<u32>,
 }
 
-/// The sensor task (issue #218 + #225 power management). Probes both chips, configures the M10
-/// (NAV-PVT on I²C at the fix rate, NMEA off, TX-Ready on) + the BMP581, then runs two phases:
+/// The sensor task (issue #218 + #225 power management + compass). Probes all three chips, configures
+/// the M10 (NAV-PVT on I²C at the fix rate, NMEA off, TX-Ready on) + the BMP581 + the ICM-20948
+/// magnetometer (bypass), then runs two phases:
 ///
 /// 1. **Boot acquisition** — hold awake until the first valid fix (which sets the clock #223 + warms
 ///    the ephemeris) or [`BOOT_ACQUIRE_TIMEOUT_S`], **ignoring** the app's power request so an idle
@@ -97,16 +128,24 @@ pub async fn sensor_task(mut twim: Twim<'static>, mut txready: Input<'static>) {
 
     // --- Boot probe: loud RTT so a wiring/power fault is obvious before anything else. ---
     let baro_addr = probe_bmp581(&mut twim).await;
+    let icm_addr = probe_icm20948(&mut twim).await;
     let gps_ok = probe_m10(&mut twim).await;
 
     if let Some(addr) = baro_addr {
         configure_bmp581(&mut twim, addr).await;
+    }
+    if let Some(addr) = icm_addr {
+        configure_icm20948(&mut twim, addr).await;
     }
     if gps_ok {
         configure_m10(&mut twim, DEFAULT_INTERVAL_S).await;
     } else {
         warn!("sensors: GPS not answering — the loop will keep polling so a late-powered module is picked up");
     }
+
+    // Whether the compass is live — the AK09916 magnetometer is read at AK_ADDR through the ICM's
+    // bypass, so only its *presence* (a successful ICM probe + config) matters at read time.
+    let compass_ok = icm_addr.is_some();
 
     let mut acc = [0u8; ACC_CAP];
     let mut acc_len = 0usize;
@@ -120,7 +159,7 @@ pub async fn sensor_task(mut twim: Twim<'static>, mut txready: Input<'static>) {
     let boot_deadline = Instant::now() + Duration::from_secs(BOOT_ACQUIRE_TIMEOUT_S);
     loop {
         wait_data_event(&mut txready, interval_s, &mut st).await;
-        if drain_and_publish(&mut twim, &mut acc, &mut acc_len, baro_addr, &mut st).await {
+        if drain_and_publish(&mut twim, &mut acc, &mut acc_len, baro_addr, compass_ok, &mut st).await {
             break; // got the boot fix
         }
         if Instant::now() >= boot_deadline {
@@ -195,7 +234,7 @@ pub async fn sensor_task(mut twim: Twim<'static>, mut txready: Input<'static>) {
                 continue; // Sleep is entered at the top of the loop
             }
         }
-        drain_and_publish(&mut twim, &mut acc, &mut acc_len, baro_addr, &mut st).await;
+        drain_and_publish(&mut twim, &mut acc, &mut acc_len, baro_addr, compass_ok, &mut st).await;
     }
 }
 
@@ -223,16 +262,18 @@ fn note_wait_edge(st: &mut FixState, txready_edge: bool) {
     }
 }
 
-/// One DDC drain → parse → publish cycle (issue #218/#223). Drains the receiver's DDC into the
-/// accumulator's free tail, parses the freshest complete NAV-PVT, publishes the resolved UTC time
+/// One DDC drain → parse → publish cycle (issue #218/#223 + compass). Drains the receiver's DDC into
+/// the accumulator's free tail, parses the freshest complete NAV-PVT, publishes the resolved UTC time
 /// (independent of the position fix, so the clock can set during acquisition) and — on a **valid**
-/// fix — a coincident BMP581 reading + the coherent `(fix, altitude, temperature)` datapoint.
-/// Returns whether a valid position fix was published. Shared by the boot-acquire + steady loops.
+/// fix — a coincident BMP581 reading + AK09916 magnetometer heading + the coherent
+/// `(fix, altitude, temperature, heading)` datapoint. Returns whether a valid position fix was
+/// published. Shared by the boot-acquire + steady loops.
 async fn drain_and_publish(
     twim: &mut Twim<'static>,
     acc: &mut [u8; ACC_CAP],
     acc_len: &mut usize,
     baro_addr: Option<u8>,
+    compass_ok: bool,
     st: &mut FixState,
 ) -> bool {
     let n = read_ddc(twim, &mut acc[*acc_len..]).await;
@@ -293,6 +334,15 @@ async fn drain_and_publish(
             debug!("BMP581 forced: {=f32} Pa  {=f32} °C  → {=f32} m", pa, c, m);
             sensor_link::dispatch_alt(m);
             sensor_link::dispatch_temp(c);
+        }
+    }
+    // Coincident magnetometer heading (single measurement, like the baro). Coupled to the fix for the
+    // same reason: the app only uses the compass to orient a heading-up *map* while stopped, which
+    // already needs a fix. A None (overflow / I²C hiccup) just holds the last heading.
+    if compass_ok {
+        if let Some(deg) = read_mag_heading(twim).await {
+            debug!("compass: heading {=f32}° (AK09916)", deg);
+            sensor_link::dispatch_heading(deg);
         }
     }
     sensor_link::dispatch_fix(fix);
@@ -518,4 +568,108 @@ async fn read_bmp581_forced(twim: &mut Twim<'static>, addr: u8) -> Option<(f32, 
     let temp_raw = bmp581::raw24_signed(d[0], d[1], d[2]);
     let press_raw = bmp581::raw24_unsigned(d[3], d[4], d[5]);
     Some((bmp581::raw_to_pa(press_raw), bmp581::raw_to_c(temp_raw)))
+}
+
+/// Probe the ICM-20948 at its two strap addresses, returning the one whose `WHO_AM_I` reads `0xEA`
+/// (else `None` → compass heading disabled). Unlike the baro probe this is strict: the whole bypass
+/// path below assumes it's really an ICM, so a wrong/mismatched id isn't accepted.
+async fn probe_icm20948(twim: &mut Twim<'static>) -> Option<u8> {
+    for addr in [icm20948::ADDR_AD0_HIGH, icm20948::ADDR_AD0_LOW] {
+        // Be defensive about the register bank (WHO_AM_I lives in bank 0) after any stray reset.
+        let _ = twim.write(addr, &[icm20948::REG_BANK_SEL, icm20948::BANK_0]).await;
+        let mut id = [0u8; 1];
+        if twim.write_read(addr, &[icm20948::WHO_AM_I], &mut id).await.is_ok() && id[0] == icm20948::WHO_AM_I_VAL {
+            info!("ICM-20948 found @ {=u8:#04x} (who_am_i {=u8:#04x})", addr, id[0]);
+            return Some(addr);
+        }
+    }
+    error!(
+        "ICM-20948 not found at {=u8:#04x} or {=u8:#04x} (I²C NAK / bad id) — compass heading disabled",
+        icm20948::ADDR_AD0_HIGH,
+        icm20948::ADDR_AD0_LOW
+    );
+    None
+}
+
+/// Bring up the ICM-20948 for **magnetometer-only** use: wake it (reset leaves it asleep) and route
+/// its auxiliary I²C bus straight to the host pins ([`icm20948::INT_PIN_CFG_BYPASS_EN`]) so the
+/// AK09916 answers directly at [`icm20948::AK_ADDR`]. The accel/gyro stay disabled (we read only the
+/// 3 mag axes — see [`compass`]) and the internal I²C master is already off after reset, so bypass is
+/// just that one bit. Then soft-reset the AK09916 and confirm it's reachable through the bypass.
+async fn configure_icm20948(twim: &mut Twim<'static>, addr: u8) {
+    let wake = twim.write(addr, &[icm20948::PWR_MGMT_1, icm20948::PWR_MGMT_1_WAKE]).await;
+    let bypass = twim.write(addr, &[icm20948::INT_PIN_CFG, icm20948::INT_PIN_CFG_BYPASS_EN]).await;
+    if wake.is_err() || bypass.is_err() {
+        warn!("ICM-20948: config write failed (PWR_MGMT_1 / INT_PIN_CFG) — compass heading may be dead");
+        return;
+    }
+    Timer::after_millis(10).await; // let the bypass mux settle before touching the AK09916
+    let _ = twim.write(icm20948::AK_ADDR, &[icm20948::AK_CNTL3, icm20948::AK_CNTL3_SRST]).await;
+    Timer::after_millis(10).await;
+    let mut wia = [0u8; 1];
+    if twim.write_read(icm20948::AK_ADDR, &[icm20948::AK_WIA2], &mut wia).await.is_ok()
+        && wia[0] == icm20948::AK_WIA2_VAL
+    {
+        info!(
+            "ICM-20948 magnetometer (AK09916) up via bypass @ {=u8:#04x} (wia2 {=u8:#04x})",
+            icm20948::AK_ADDR,
+            wia[0]
+        );
+    } else {
+        warn!(
+            "ICM-20948: AK09916 not answering through bypass @ {=u8:#04x} (got {=u8:#04x}) — compass heading may be dead",
+            icm20948::AK_ADDR,
+            wia[0]
+        );
+    }
+}
+
+/// Trigger one AK09916 single measurement (the magnetometer analogue of the BMP581 forced read,
+/// coincident with the GPS fix), wait for it, and return the heading in degrees CW from north — or
+/// `None` on an I²C error or a saturated (overflowed) sample. The board-mounting axis remap +
+/// hard-iron offset land the sample in the device frame; [`compass::heading_deg`] then does the
+/// chip-agnostic geometry.
+async fn read_mag_heading(twim: &mut Twim<'static>) -> Option<f32> {
+    if twim.write(icm20948::AK_ADDR, &[icm20948::AK_CNTL2, icm20948::AK_CNTL2_SINGLE]).await.is_err() {
+        warn!("compass: AK09916 single-measure trigger failed");
+        return None;
+    }
+    // Wait for DRDY; the budget exceeds the worst-case measurement time, so even if the bit never
+    // shows we read the completed sample anyway (like the baro).
+    let mut ready = false;
+    for _ in 0..MAG_POLL_TRIES {
+        Timer::after_millis(MAG_POLL_MS).await;
+        let mut st = [0u8; 1];
+        if twim.write_read(icm20948::AK_ADDR, &[icm20948::AK_ST1], &mut st).await.is_ok()
+            && st[0] & icm20948::AK_ST1_DRDY != 0
+        {
+            ready = true;
+            break;
+        }
+    }
+    // Burst HXL..=ST2 in one transaction — reading ST2 (the last byte) is what releases the
+    // measurement for the next cycle.
+    let mut d = [0u8; icm20948::AK_DATA_LEN];
+    if twim.write_read(icm20948::AK_ADDR, &[icm20948::AK_HXL], &mut d).await.is_err() {
+        warn!("compass: AK09916 data read failed");
+        return None;
+    }
+    if !ready {
+        debug!("compass: AK09916 DRDY didn't assert in budget — read the sample anyway");
+    }
+    if icm20948::overflowed(&d) {
+        debug!("compass: AK09916 magnetic overflow — dropping sample");
+        return None;
+    }
+    let (sx, sy, sz) = icm20948::axes_ut(&d)?;
+    Some(compass::heading_deg(mag_to_device(sx, sy, sz), DECLINATION_DEG))
+}
+
+/// Remap the AK09916's own `(x, y, z)` axes (µT) into the **device frame** ([`compass::MagSample`]:
+/// X forward / Y right / Z down) and remove the [`HARD_IRON_UT`] offset. The remap is **identity**
+/// for now — **VERIFY on glass**: rotate the device and confirm the heading tracks and *increases
+/// clockwise*; fix any axis swap or sign flip here. This is the one board-mounting-specific knob; it
+/// lives next to the transactions (not in the chip-agnostic [`compass`] module) by design.
+fn mag_to_device(sx: f32, sy: f32, sz: f32) -> compass::MagSample {
+    compass::MagSample::new(sx - HARD_IRON_UT.0, sy - HARD_IRON_UT.1, sz - HARD_IRON_UT.2)
 }
