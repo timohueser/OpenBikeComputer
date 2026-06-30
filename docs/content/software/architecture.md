@@ -140,9 +140,11 @@ pub trait ByteSource {
 
 `read_at` takes `&self` (not `&mut self`) so the reader can hold one shared `&dyn ByteSource` and stay simple; a seeking medium uses interior mutability behind it. The same seam serves the route reader, and a small resident cache keeps recently-read chunks hot across frames so streaming doesn't re-hit the card.
 
-**The HAL — the world, abstracted.** GPS fixes, barometric altitude, ambient temperature, the recorded-track log, and raw button/encoder events each arrive through their own trait in [`hal.rs`](src:firmware/obc-app/src/hal.rs), bundled into a `Sensors` set the app polls once per tick. The app integrates each stream on its own asynchronous cadence and is completely oblivious to whether a fix came from a satellite or a GPX replay.
+**The HAL — the world, abstracted.** GPS fixes, the GPS receiver's UTC time, barometric altitude, ambient temperature, the recorded-track log, and raw button/encoder events each arrive through their own trait in [`hal.rs`](src:firmware/obc-app/src/hal.rs), bundled into a `Sensors` set the app polls once per tick. The app integrates each stream on its own asynchronous cadence and is completely oblivious to whether a fix came from a satellite or a GPX replay.
 
 Each `poll` is a **mailbox drain**, not a bus transaction: it returns `Some` only on the tick a fresh sample arrived and `None` between. On the device this is event-driven — a high-priority task drives the I²C bus (a u-blox SAM-M10Q GPS + a Bosch BMP581 altimeter on one shared bus) only when the GPS signals a fix is ready, so there is **zero** bus traffic at the frame rate. That task also makes the sample **coherent**: it reads the barometer on each GPS fix, so position and altitude share one instant. The one tradeoff is that climb then accrues only while fixes arrive — a GPS outage (a tunnel) pauses it — but during an outage there's no position to log anyway. A cold start or a dropout simply yields `None`, so the camera never teleports onto a stale fix.
+
+The receiver's UTC time rides the same mailbox model but is published **independent of the position fix** — the GPS resolves time before a 3D lock — so when *Set from GPS* is on (Date & Time settings) the clock can be set during acquisition, while there's still no usable fix. There is no battery-backed RTC, so the wall clock is a stored set-point advanced by the monotonic timer; a GPS stamp simply re-establishes that set-point, and between stamps (or with the option off) it free-runs from the last value.
 
 ## The per-frame loop
 
