@@ -32,19 +32,25 @@ use crate::input::Gesture;
 
 use super::{list_frame, palette, Ctx, Render, Screen, Transition, LIST_TOP};
 
+mod add_field;
 mod datetime;
+mod fields;
 mod power;
 mod reset;
+mod stats;
 mod units;
 
+pub use add_field::AddFieldScreen;
 pub use datetime::DateTimeScreen;
+pub use fields::StatFieldsScreen;
 pub use power::PowerScreen;
 pub use reset::ResetScreen;
+pub use stats::StatsScreen;
 pub use units::UnitsScreen;
 
-/// The Settings list entries, in order. `Units` is ours (the mock predates the metric/imperial
-/// work); the other three are the mock's. Each row pushes its sub-screen.
-const ITEMS: [&str; 4] = ["Date & Time", "Units", "Power", "Reset"];
+/// The Settings list entries, in order. `Units` + `Stats` are ours (display config); the others are
+/// the mock's. Each row pushes its sub-screen (`Stats` itself opens onto the field manager).
+const ITEMS: [&str; 5] = ["Date & Time", "Units", "Stats", "Power", "Reset"];
 
 /// Per-row height of the list — matches the main [`Menu`](super::MenuScreen) so the two read
 /// identically.
@@ -71,7 +77,8 @@ impl SettingsScreen {
             Gesture::Press => match self.selected {
                 0 => Transition::Push(Screen::DateTime(DateTimeScreen::new())),
                 1 => Transition::Push(Screen::Units(UnitsScreen::new())),
-                2 => Transition::Push(Screen::Power(PowerScreen::new())),
+                2 => Transition::Push(Screen::Stats(StatsScreen::new())),
+                3 => Transition::Push(Screen::Power(PowerScreen::new())),
                 _ => Transition::Push(Screen::Reset(ResetScreen::new())),
             },
             Gesture::Back => Transition::Pop, // climb back to the main Menu
@@ -194,4 +201,24 @@ where
         cv.triangle(Point::new(cx - 6, bot + 3), Point::new(cx + 6, bot + 3), Point::new(cx, bot + 10), palette::INK);
     }
     cv.text(text, Point::new(cx, ty), font, TextAlign::Center, palette::INK);
+}
+
+/// Draw a **span badge** at the right of a row: a single small square for a one-column field, a wider
+/// two-square bar for a full-width (two-column) one — the glance-readable "how big is this tile" cue
+/// shared by the Stat Fields list and the Add Field picker. `color` is the badge ink (the caller
+/// picks ink-on-amber for a selected row, muted otherwise).
+pub(super) fn span_badge<D, F>(cv: &mut Canvas<D, F>, area: Rectangle, span: u8, color: u16)
+where
+    D: DrawTarget,
+    F: Fn(u16) -> D::Color,
+{
+    let cell = 11;
+    let gap = 3;
+    let cy = area.top_left.y + (area.size.height as i32 - cell) / 2;
+    let right = area.top_left.x + area.size.width as i32 - 10;
+    // One cell for a single, two for a two-span, laid out right-to-left from the row edge.
+    for i in 0..span as i32 {
+        let x = right - (i + 1) * cell - i * gap;
+        cv.round(rect(x, cy, cell, cell), 2, color);
+    }
 }

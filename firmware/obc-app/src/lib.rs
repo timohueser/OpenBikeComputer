@@ -40,6 +40,7 @@ pub mod input_plane;
 pub mod route;
 pub mod screen;
 pub mod settings;
+pub mod stat_fields;
 pub mod wall_clock;
 
 pub use activity::{Activity, Mode, TrackAction};
@@ -51,9 +52,10 @@ pub use hal::{
     LocationSource, RideClock, Sensors, SettingsStore, TrackSink,
 };
 pub use hold_hint::HoldHints;
-pub use input::{Gesture, Gestures, DEFAULT_HOLD_MS};
+pub use input::{Gesture, Gestures, DEFAULT_HOLD_MS, DEFAULT_TAP_MS};
 pub use input_plane::InputPlane;
 pub use route::{Catalog, RouteSummary, MAX_ROUTES};
 pub use screen::{Screen, Transition};
 pub use settings::{DateTime, Settings, Units};
+pub use stat_fields::{StatField, StatFieldList};
 pub use wall_clock::{MinuteTicker, WallClock};
