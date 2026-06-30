@@ -14,5 +14,20 @@ target = "thumbv8m.main-none-eabihf"
 # if it fails, just `cargo run` again. (The old "G2 intermittent first-boot panic" was this all along.)
 runner = "probe-rs run --chip nRF54L15 --verify"
 
+# `cargo rtt` — **attach** to an already-flashed, running board and stream defmt/RTT. `probe-rs
+# attach` re-downloads only when the built ELF *differs* from what's on the chip; when it matches
+# (the reconnect / re-watch case) it skips the flash and just attaches (no erase, no program, no
+# reset). It must override the **same `cfg(...)` runner key** the file sets above — an exact-triple
+# `--config` override is silently ignored when a `cfg()` runner is already present, which falls the
+# alias back to the flashing `probe-rs run`. Array form so the runner string's spaces survive.
+#
+# NB two things make it *re-flash*: (1) defmt levels are compile-time, so if you flashed with
+# `DEFMT_LOG=debug cargo run` but `cargo rtt` rebuilds at the `info` default below, the ELF differs
+# and attach re-downloads — keep the level the same (or set `DEFMT_LOG=debug` here during bring-up);
+# (2) any source edit since the flash. To attach to *whatever* is running with zero rebuild, skip
+# cargo and run `probe-rs attach --chip nRF54L15 <the ELF>` directly.
+[alias]
+rtt = ["run", "--release", "--config", "target.'cfg(all(target_arch = \"arm\", target_os = \"none\"))'.runner = 'probe-rs attach --chip nRF54L15'"]
+
 [env]
 DEFMT_LOG = "info"

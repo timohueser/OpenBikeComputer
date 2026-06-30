@@ -93,9 +93,21 @@ pub mod panel;
 // under its exact-diff oracle. The device present path adopts the `RowDiff` store in D2 (issue #201).
 pub mod rowdiff;
 pub mod sd;
-// Always compiled — the synthetic GPS is the `debug-link`-OFF fallback, so it must exist without
-// the `debug-link` feature.
+// Always compiled — the synthetic GPS is the `synth`-feature fallback, so it must exist without
+// the real-sensor / `sensor-link` features.
 pub mod synth;
+// Real-sensor pure logic (issue #218): the host-tested UBX NAV-PVT decode for the SAM-M10Q GPS
+// ([`ubx`]) and the BMP581 altimeter register map + raw→unit conversions ([`bmp581`]). Both are
+// dependency-light pure `fn`s over bytes (no embassy, no hardware), so they always compile and their
+// unit tests run in the host workspace. The embassy-sync `Signal` hand-off that bridges parsed
+// samples to the app's HAL traits lives in [`sensor_link`], gated behind `sensor-link`.
+pub mod bmp581;
+pub mod ubx;
+// The embassy-sync `Signal` hand-off bridging the board's I²C sensor task to the app's HAL poll
+// (issue #218) — the real-hardware sibling of `debug_link`'s handoff. Gated behind `sensor-link`
+// (it pulls embassy-sync) exactly like `debug-link`; the pure `ubx`/`bmp581` decode above is not.
+#[cfg(feature = "sensor-link")]
+pub mod sensor_link;
 
 pub use button_input::{ButtonInput, Timing};
 pub use framebuffer::{device64_to_rgb565, FbDevice64, Framebuffer565};

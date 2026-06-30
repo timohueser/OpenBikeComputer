@@ -317,6 +317,7 @@ const GESTURE_BUF: usize = 16;
 ///     let sensors = Sensors {
 ///         loc: &mut location_source,
 ///         altimeter: Some(&mut baro),
+///         temperature: Some(&mut thermometer),
 ///         compass: Some(&mut compass),
 ///         track: Some(&mut track_log),
 ///         fuel: Some(&mut fuel_gauge),
@@ -416,6 +417,13 @@ pub struct App {
     /// real PMIC read never spins the I²C bus at the frame rate; battery charge changes far too
     /// slowly to want more. See [`tick`](App::tick).
     last_battery_poll_ms: Option<u32>,
+    /// Last ambient temperature (°C) from the [`TemperatureSource`](crate::TemperatureSource), or
+    /// `None` before the first sample / when no thermometer is wired. Held across ticks (a `None`
+    /// poll keeps the last value). No screen consumes it yet (issue #218 added the seam; a
+    /// Statistics-grid readout is a follow-up), so it lives **off** [`AppState`] — storing it there
+    /// would gate a needless map redraw on every reading, breaking render-on-demand (#47). Read via
+    /// [`temperature_c`](App::temperature_c).
+    temp_c: Option<f32>,
 }
 
 /// How often [`App::tick`] reads the battery [`FuelGauge`](crate::FuelGauge). Battery state of
@@ -466,6 +474,7 @@ impl App {
             settings_dirty: false,
             hold_progress_override: None,
             last_battery_poll_ms: None,
+            temp_c: None,
         }
     }
 
@@ -520,6 +529,7 @@ impl App {
             addr_of_mut!((*slot).settings_dirty).write(false);
             addr_of_mut!((*slot).hold_progress_override).write(None);
             addr_of_mut!((*slot).last_battery_poll_ms).write(None);
+            addr_of_mut!((*slot).temp_c).write(None);
         }
     }
 
@@ -584,7 +594,7 @@ impl App {
             self.map_dirty = true;
         }
 
-        let Sensors { loc, altimeter, compass, track, fuel } = sensors;
+        let Sensors { loc, altimeter, temperature, compass, track, fuel } = sensors;
         // Battery state of charge from the PMIC fuel gauge, on a slow ~30 s cadence — *not* every
         // tick, so a real I²C read never spins at the frame rate (battery charge changes far too
         // slowly to want more). And a reading only repaints the Home screensaver — the one screen
@@ -618,6 +628,14 @@ impl App {
         if let Some(altimeter) = altimeter {
             if let Some(alt) = altimeter.poll() {
                 self.activity.record_altitude(alt);
+            }
+        }
+        // Ambient temperature (issue #218): on the device the BMP581 reports it free alongside the
+        // per-fix pressure read. Stored off `AppState` (no screen draws it yet) so it never gates a
+        // map redraw; `None` between samples holds the last value.
+        if let Some(temperature) = temperature {
+            if let Some(c) = temperature.poll() {
+                self.temp_c = Some(c);
             }
         }
         // GPS fix → camera + map-match + ridden distance/time (only on a fresh fix, so a
@@ -735,6 +753,13 @@ impl App {
     /// the current units / clock / GPS-interval outside the screen draw path.
     pub fn settings(&self) -> &Settings {
         &self.settings
+    }
+
+    /// The last ambient temperature (°C) sampled from the [`TemperatureSource`](crate::TemperatureSource),
+    /// or `None` before the first reading / when no thermometer is wired (issue #218). No screen draws
+    /// it yet; exposed for a future readout (a Statistics-grid field) and for host introspection.
+    pub fn temperature_c(&self) -> Option<f32> {
+        self.temp_c
     }
 
     /// The live wall-clock time right now — the persisted clock set-point advanced by the elapsed
@@ -1217,7 +1242,14 @@ mod tests {
         let mut compass = ConstCompass(compass_deg);
         app.tick(
             RideClock(1000),
-            Sensors { loc: &mut loc, altimeter: None, compass: Some(&mut compass), track: None, fuel: None },
+            Sensors {
+                loc: &mut loc,
+                altimeter: None,
+                temperature: None,
+                compass: Some(&mut compass),
+                track: None,
+                fuel: None,
+            },
             None,
         );
     }
@@ -1290,7 +1322,14 @@ mod tests {
         let mut alt = OneAlt(Some(alt_m));
         app.tick(
             RideClock(now_ms),
-            Sensors { loc: &mut loc, altimeter: Some(&mut alt), compass: None, track: None, fuel: None },
+            Sensors {
+                loc: &mut loc,
+                altimeter: Some(&mut alt),
+                temperature: None,
+                compass: None,
+                track: None,
+                fuel: None,
+            },
             None,
         );
     }
