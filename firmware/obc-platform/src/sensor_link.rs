@@ -38,6 +38,26 @@ static GPS_TIME: Signal<CriticalSectionRawMutex, GpsTime> = Signal::new();
 /// changes, awaited by the sensor task ([`wait_rate`]) to re-issue the M10 `CFG-RATE` VALSET. A
 /// `Signal` (latch), not a queue: only the newest requested rate matters.
 static RATE: Signal<CriticalSectionRawMutex, u16> = Signal::new();
+/// Desired GPS power state (issue #225) — set by the ride loop from the tracking state + the
+/// `power_saver` toggle, awaited by the sensor task ([`wait_power`]). A `Signal` (latch): only the
+/// newest requested state matters.
+static POWER: Signal<CriticalSectionRawMutex, GpsPower> = Signal::new();
+
+/// The GPS receiver's requested power state (issue #225). The ride loop derives one from whether a
+/// ride is active and the Power-screen `power_saver` toggle, and the sensor task drives the M10 to
+/// match: deep sleep when idle (so an idle device draws ~µA, not the ~20 mA of continuous tracking),
+/// full-power fixes while riding, or the M10's on-chip low-power tracking when `power_saver` is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GpsPower {
+    /// Riding, full-power continuous fixes at the configured rate.
+    Active,
+    /// Riding with `power_saver` on — the M10's low-power tracking mode (lower power, same rate, at
+    /// the cost of some fix latency).
+    LowPower,
+    /// Not tracking — deep sleep (`RXM-PMREQ` backup); woken on the next [`Active`](GpsPower::Active)
+    /// / [`LowPower`](GpsPower::LowPower) request for a fast warm fix.
+    Sleep,
+}
 
 /// Publish a fresh GPS [`Fix`] (the sensor task, on a valid NAV-PVT). Overwrites any unconsumed
 /// value — the app only wants the freshest.
@@ -67,6 +87,13 @@ pub fn set_rate(secs: u16) {
     RATE.signal(secs);
 }
 
+/// Request a GPS power state (issue #225) — the ride loop calls this when the ride starts/stops or
+/// `power_saver` changes; the sensor task transitions the M10 (sleep / wake / power mode) on the
+/// next [`wait_power`].
+pub fn set_power(p: GpsPower) {
+    POWER.signal(p);
+}
+
 /// Await the next published fix — for the event-driven main loop (issue #219) to `select` on, so a
 /// fix both updates state and wakes the render exactly once. (Consumes the signal like
 /// [`GpsLocation::poll`]; a loop that waits here drives the source instead of polling it.)
@@ -78,6 +105,12 @@ pub async fn wait_fix() -> Fix {
 /// #117 rate change without sharing the I²C bus with the ride loop.
 pub async fn wait_rate() -> u16 {
     RATE.wait().await
+}
+
+/// Await the next requested GPS power state (issue #225) — the sensor task selects on this to sleep
+/// when a ride ends and wake (warm) when one starts.
+pub async fn wait_power() -> GpsPower {
+    POWER.wait().await
 }
 
 /// The user's location from the real GPS. Hand `&mut GpsLocation` to `Sensors::loc`.

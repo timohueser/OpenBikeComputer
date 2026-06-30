@@ -50,6 +50,11 @@ pub const ID_ACK_NAK: u8 = 0x00;
 pub const CLASS_CFG: u8 = 0x06;
 pub const ID_CFG_VALSET: u8 = 0x8A;
 
+/// `UBX-RXM` class + the `PMREQ` (power-management request) message id — the deep-sleep command the
+/// driver issues when tracking stops (issue #225). See [`pmreq_backup`].
+pub const CLASS_RXM: u8 = 0x02;
+pub const ID_RXM_PMREQ: u8 = 0x41;
+
 // ---------------------------------------------------------------------------------------------
 // Little-endian field readers — UBX is little-endian throughout. Each returns 0 if the slice is
 // too short (the callers gate on length first, so this is just a panic-free fallback).
@@ -373,6 +378,13 @@ pub const KEY_TXREADY_PIN: u32 = 0x20a2_0003;
 pub const KEY_TXREADY_THRESHOLD: u32 = 0x30a2_0004;
 /// `CFG-TXREADY-INTERFACE` (U1): 0 = I²C, 1 = SPI.
 pub const KEY_TXREADY_INTERFACE: u32 = 0x20a2_0005;
+/// `CFG-PM-OPERATEMODE` (U1): receiver power mode while tracking — `0` full power, `1` PSMOO
+/// (power-save on/off), `2` PSMCT (cyclic tracking). The `power_saver` toggle drives this to `1`
+/// while riding for the M10's on-chip low-power tracking (issue #225). **VERIFY this key + the value
+/// semantics against the SAM-M10Q interface manual on first bring-up** — like the TX-Ready keys, the
+/// driver applies it best-effort and RTT-logs the ACK/NAK, so a wrong id degrades to full power, not
+/// a fault.
+pub const KEY_PM_OPERATEMODE: u32 = 0x20d0_0001;
 
 /// Frame a UBX message (`B5 62 | class | id | len | payload | ck`) into `out`. Returns the total
 /// frame length, or `None` if `out` is too small. Pure — the inverse of [`scan_ubx`], so a built
@@ -411,6 +423,26 @@ pub fn valset_u16(out: &mut [u8], key: u32, val: u16) -> Option<usize> {
     valset_header(&mut payload, key);
     payload[8..10].copy_from_slice(&val.to_le_bytes());
     frame(out, CLASS_CFG, ID_CFG_VALSET, &payload)
+}
+
+/// `RXM-PMREQ` `flags`: request **backup** mode (deep sleep, RTC + RAM retained) and **force** it
+/// even with active comms. Woken by activity on the comms port (the driver pokes the DDC).
+const PMREQ_FLAG_BACKUP: u32 = 0x02;
+const PMREQ_FLAG_FORCE: u32 = 0x04;
+
+/// Build a `UBX-RXM-PMREQ` frame requesting **backup** (deep sleep) for an infinite duration —
+/// the M10 retains its RTC + ephemeris on ~microamps and wakes on the next DDC activity, so a
+/// restart is a fast *warm* fix (issue #225). 16-byte v0 payload: `version(1) | reserved(3) |
+/// duration(4 LE, 0 = until woken) | flags(4 LE, backup|force) | wakeupSources(4, 0 = comms
+/// activity)`. Returns the frame length written to `out` (24 B), or `None` if `out` is too small.
+pub fn pmreq_backup(out: &mut [u8]) -> Option<usize> {
+    let mut payload = [0u8; 16];
+    payload[0] = 0x00; // version 0
+                       // payload[1..4] reserved, payload[4..8] duration = 0 (infinite, until woken)
+    let flags = PMREQ_FLAG_BACKUP | PMREQ_FLAG_FORCE;
+    payload[8..12].copy_from_slice(&flags.to_le_bytes());
+    // payload[12..16] wakeupSources = 0 — any traffic on the (I²C) comms port wakes it.
+    frame(out, CLASS_RXM, ID_RXM_PMREQ, &payload)
 }
 
 /// Common VALSET payload prefix (first 8 bytes): `version=0 | layers=RAM | reserved(2) | key(4 LE)`.
@@ -596,6 +628,27 @@ mod tests {
                 assert_eq!(frame.payload[1], 0x01, "RAM layer");
                 assert_eq!(&frame.payload[4..8], &KEY_MSGOUT_NAV_PVT_I2C.to_le_bytes());
                 assert_eq!(frame.payload[8], 1, "value byte follows the 8-byte header at offset 8");
+            }
+            other => panic!("expected a frame, got {other:?}"),
+        }
+    }
+
+    /// `pmreq_backup` (issue #225) frames a valid RXM-PMREQ requesting backup + force for an
+    /// infinite duration — round-tripping through `scan_ubx` with the right class/id and flags.
+    #[test]
+    fn pmreq_backup_frames_an_infinite_backup_request() {
+        let mut out = [0u8; 24];
+        let n = pmreq_backup(&mut out).unwrap();
+        match scan_ubx(&out[..n]) {
+            Scan::Frame { frame, consumed } => {
+                assert_eq!((frame.class, frame.id), (CLASS_RXM, ID_RXM_PMREQ));
+                assert_eq!(consumed, n);
+                assert_eq!(frame.payload.len(), 16, "v0 PMREQ payload");
+                assert_eq!(frame.payload[0], 0, "version 0");
+                assert_eq!(&frame.payload[4..8], &[0, 0, 0, 0], "duration 0 = until woken");
+                let flags =
+                    u32::from_le_bytes([frame.payload[8], frame.payload[9], frame.payload[10], frame.payload[11]]);
+                assert_eq!(flags, 0x06, "backup | force");
             }
             other => panic!("expected a frame, got {other:?}"),
         }
