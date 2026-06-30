@@ -21,9 +21,21 @@ description = "nRF54L15-DK board firmware for OpenBikeComputer — the real hard
 # carve-out (the M33 shrinks to 244 KB; the top 12 KB is the FLPR image + handshake page) and
 # cross-compiles the RISC-V blob, so the default build needs a RISC-V gcc (`brew install
 # riscv64-elf-gcc`) and the Board-Configurator settings (3.3 V VDDM, ext-memory-off, VCOM HWFC off).
+# The default build also drives the **real sensors** (issue #218): a u-blox SAM-M10Q GPS + a Bosch
+# BMP581 altimeter on a shared TWIM30 I²C bus (P0.01/02/03). `obc-platform/sensor-link` pulls the
+# embassy-sync `Signal` hand-off the board's `sensors::sensor_task` publishes through. Real sensors
+# are the *baseline* — selected by the **absence** of `synth`/`debug-uart` — so a board with no Qwiic
+# hardware attached still builds and idles waiting for a fix (RTT shows the probes); for indoor work
+# without a sky view build `--features synth` (the square-loop stand-in) or `--features debug-uart`.
 # Build with `cargo run --release` (add `--features debug-uart` to stream a recorded ride from a host).
 # See `firmware/docs/ls021-flpr.md` + the crate README.
-default = []
+default = ["obc-platform/sensor-link"]
+
+# Replace the real GPS/altimeter with the always-compiled `SynthLocation` square-loop stand-in (no
+# I²C hardware needed) — indoor testing without a sky view, where a real fix never comes. A runtime
+# *source* override, orthogonal to the panel backend; `sensor-link` stays linked (its Signals just go
+# unused) since Cargo can't disable a default feature. See issue #218.
+synth = []
 
 # `tft` selects the **ST7789** EYESPI panel (240×320) instead of the LS021 — the original bring-up
 # display, kept as an opt-in second backend. It is a *backend select* for `src/main.rs`: the
@@ -37,11 +49,12 @@ tft = []
 # telemetry stream rides the DK's onboard J-Link USB-CDC **VCOM** (UARTE20, TX P1_04 / RX P1_05);
 # defmt logs share the same cable over RTT. Brings up a `BufferedUarte` (interrupt-fed RX ring so a
 # long map render never drops bytes) and feeds `obc-platform`'s transport-agnostic debug codec +
-# fresh-fix sources into the app, replacing the always-on `SynthLocation` stand-in. Off by default
-# — a plain `cargo run` rides the synthetic square-loop GPS (no host needed); enable with
+# fresh-fix sources into the app, replacing the real-sensor path with a recorded host ride. Off by
+# default — a plain `cargo run` drives the **real** SAM-M10Q/BMP581 sensors (issue #218); enable with
 # `--features debug-uart` to drive the board from a recorded ride via `obc-usb-host --port <VCOM
-# tty>`. Enables the protocol + sources in obc-platform (`debug-link` is the transport-agnostic
-# handoff gate there; the board crate owns the concrete UARTE driver).
+# tty>` (the indoor path that needs no sky view). Enables the protocol + sources in obc-platform
+# (`debug-link` is the transport-agnostic handoff gate there; the board crate owns the concrete UARTE
+# driver). Takes precedence over the real sensors + `synth`.
 debug-uart = ["obc-platform/debug-link"]
 
 [dependencies]
@@ -64,6 +77,9 @@ embassy-sync = { version = "0.8.0", features = ["defmt"] }
 # `Timer` + the embassy-time backend (driven by `time-driver-grtc` above). `defmt-timestamp-uptime`
 # prefixes each RTT log line with the uptime — handy during bring-up.
 embassy-time = { version = "0.5.1", features = ["defmt", "defmt-timestamp-uptime"] }
+# `select3` for the sensor task (issue #218): race the GPS TX-Ready edge against the DDC-poll timeout
+# (the fallback that makes TX-Ready optional) and a #117 fix-rate change. Tiny, no-alloc embassy util.
+embassy-futures = "0.1"
 
 # defmt logging over RTT via the DK's onboard J-Link (`cargo run` flashes + streams).
 # embassy-nrf 0.11 is on the defmt 1.x ecosystem. The shared `obc-*` + `obc-platform` crates

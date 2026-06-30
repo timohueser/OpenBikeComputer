@@ -2,7 +2,8 @@
 
 The **real hardware target** for OpenBikeComputer: the shared `obc-app` running on
 an nRF54L15-DK (Cortex-M33), with map/routes/tracks streamed from a microSD card —
-load a route, ride it (fake-sensor fed), and save a GPX. The default firmware drives
+load a route, ride it (driven by the **real SAM-M10Q GPS + BMP581 altimeter** on the shared I²C
+bus, issue #218, or a `--features synth`/`debug-uart` stand-in for indoor work), and save a GPX. The default firmware drives
 the reflective **LS021B7DD02** memory LCD (the panel the project ships on) via the
 nRF54L's **FLPR** (the VPR RISC-V coprocessor); the Adafruit **ST7789** EYESPI panel
 (240×320) is kept as the opt-in `--features tft` bring-up backend. The LS021 protocol
@@ -85,13 +86,25 @@ and SD `CS` stays on P1.12.
 
 **Port P0 — low-power domain (P0.00–P0.04):**
 
-| Pin   | Signal   | Notes                                 |
-|-------|----------|---------------------------------------|
-| P0.00 | SD CS    | moved here in the FLPR build (held LOW)|
-| P0.01 | **free** | →                                     |
-| P0.02 | **free** | → spare for expansion (I²C below)     |
-| P0.03 | **free** | →                                     |
-| P0.04 | BTN3     | SELECT                                |
+| Pin   | Signal     | Notes                                          |
+|-------|------------|------------------------------------------------|
+| P0.00 | SD CS      | moved here in the FLPR build (held LOW)         |
+| P0.01 | I²C SDA    | shared GPS + altimeter bus (TWIM30, #218)       |
+| P0.02 | I²C SCL    | shared GPS + altimeter bus (TWIM30, #218)       |
+| P0.03 | GPS TX-Ready | DDC data-ready interrupt (active-high)        |
+| P0.04 | BTN3       | SELECT                                          |
+
+The shared **I²C / Qwiic** bus on TWIM30 (the low-power-domain instance that reaches P0) carries
+both real sensors (issue #218): the u-blox **SAM-M10Q** GNSS (DDC address `0x42`) and the Bosch
+**BMP581** altimeter (`0x47`, or `0x46` if the breakout straps `SDO` low). The addresses don't
+clash, so they share SDA/SCL. The GPS **TX-Ready** line on P0.03 — the single spare GPIO — is the
+only interrupt: it asserts when a NAV-PVT message is ready, waking the event-driven sensor task so
+the bus does **zero** work between fixes. If TX-Ready is unwired/misconfigured the task falls back to
+polling the DDC at the fix rate (RTT says so), so bring-up still works.
+
+**Power tip:** wire **V_BCKP** on the SAM-M10Q to an always-on rail / supercap / coin cell. It backs
+the receiver's RTC + ephemeris across a power-off, turning every cold ~30 s fix into a hot/warm fix
+in seconds — the biggest UX win for a device switched off at each stop.
 
 ## Build & flash
 
@@ -100,15 +113,21 @@ From this crate directory (it's a standalone crate built for `thumbv8m.main-none
 
 ```sh
 # Default: full map + ride loop on the **LS021 panel via the FLPR** (issues #165 / #173),
-# GPS faked by the on-board SynthLocation square loop (no host needed). Builds the RISC-V
-# blob, so it needs an rv32emc gcc (below) + the LS021 wiring + Board-Configurator settings.
+# driving the **real SAM-M10Q GPS + BMP581 altimeter** on the shared I²C bus (issue #218).
+# Builds the RISC-V blob, so it needs an rv32emc gcc (below) + the LS021 wiring + Board-Configurator
+# settings. With no Qwiic hardware attached it still boots and idles waiting for a fix (watch RTT).
 cargo run --release
 
-# Default + the VCOM debug-sensor feed (issue #127) — needs HWFC OFF (above):
+# Indoor / no-hardware: replace the real GPS with the on-board SynthLocation square loop, so the
+# ride loop runs without a sky view (or any Qwiic sensors).
+cargo run --release --features synth
+
+# Indoor: stream a recorded ride from a host over the VCOM debug-sensor feed (issue #127) — needs
+# HWFC OFF (above). Replaces the real sensors with the host feed.
 cargo run --release --features debug-uart
 
 # The same map/ride app on the **ST7789** bring-up panel instead of the LS021 (opt-in
-# backend) — no FLPR, no RISC-V gcc, links the full 256 KB. ST7789 wiring (below).
+# backend) — no FLPR, no RISC-V gcc, links the full 256 KB. Real sensors still apply. ST7789 wiring (below).
 cargo run --release --features tft
 ```
 

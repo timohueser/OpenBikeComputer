@@ -57,12 +57,18 @@ pub trait LocationSource {
 }
 
 /// Source of barometric altitude — the device's **pressure altimeter**, a sensor
-/// entirely separate from the GPS (its own bus, its own sample rate). The app polls it
-/// each tick like a [`LocationSource`], but the two are **asynchronous**: a baro sample
-/// and a GPS fix do not arrive together. So [`poll`](AltimeterSource::poll) returns
-/// `Some(meters)` only when a *fresh* sample is available and `None` otherwise — the app
-/// integrates climb from this stream independently of position fixes, so going off-route
-/// (or briefly losing GPS) never stops the climb total.
+/// separate from the GPS. The app polls it each tick like a [`LocationSource`]; so
+/// [`poll`](AltimeterSource::poll) returns `Some(meters)` only when a *fresh* sample is available
+/// and `None` otherwise — the app integrates climb from this stream.
+///
+/// **Sample coupling (issue #218).** The trait is *written* to allow an independent baro cadence,
+/// and a host that has one (the simulator's manual slider, a free-running baro) should drive it that
+/// way. But the shipping nRF54L driver takes a **coherent** sample: it reads the BMP581 on each GPS
+/// **fix** (forced-mode, one reading per fix) so the altitude is from the same instant as the
+/// position. The tradeoff that buys: **climb only accrues while GPS fixes arrive** — a GPS outage
+/// (a tunnel) pauses climb until the fix returns. Accepted because during an outage there's no
+/// position to log anyway; the only lost case is *moving + climbing + no fix*. A host wanting climb
+/// to survive a dropout must poll the baro on its own clock instead of coupling it to the fix.
 ///
 /// Why a dedicated sensor rather than GPS altitude: GPS vertical accuracy is poor and
 /// noisy, whereas a barometric altimeter resolves the *relative* height changes that make
@@ -70,6 +76,20 @@ pub trait LocationSource {
 /// (weather drift) is irrelevant — the climb accumulator dead-bands small wiggles anyway.
 pub trait AltimeterSource {
     /// The latest barometric altitude in meters, or `None` if no new sample this tick.
+    fn poll(&mut self) -> Option<f32>;
+}
+
+/// Source of **ambient temperature** in °C — on the device, the BMP581 altimeter reports it nearly
+/// free alongside each pressure reading (issue #218), so the GPS-coherent baro read publishes a
+/// temperature sample on the same instant. Polled each tick like the other sensors, on its own
+/// cadence: [`poll`](TemperatureSource::poll) returns `Some(celsius)` only when a *fresh* reading is
+/// available and `None` otherwise. The app keeps the last value (a `None` between samples holds it).
+///
+/// `None` on a host with no temperature sensor (the simulator's manual panel, tests) — the app then
+/// simply has no temperature to show. No screen consumes it yet; it's stored for a future readout
+/// (e.g. a Statistics-grid field), so an implementation needs no rate-limit of its own.
+pub trait TemperatureSource {
+    /// The latest ambient temperature in °C, or `None` if no new sample this tick.
     fn poll(&mut self) -> Option<f32>;
 }
 
@@ -130,6 +150,10 @@ pub struct Sensors<'a> {
     /// The barometric altimeter, or `None` when no altitude source is wired (e.g. the
     /// simulator's manual control) — climb then simply doesn't accumulate.
     pub altimeter: Option<&'a mut dyn AltimeterSource>,
+    /// The ambient-temperature source, or `None` when none is wired (the sim's manual panel, tests)
+    /// — the app then has no temperature to store. On the device it's the BMP581's per-fix reading,
+    /// coherent with the altitude (issue #218).
+    pub temperature: Option<&'a mut dyn TemperatureSource>,
     /// The electronic compass, or `None` when no heading source is wired (tests, a host that
     /// only streams position) — the heading-up map then just holds north / the last GPS course
     /// while stopped, instead of following a magnetometer.

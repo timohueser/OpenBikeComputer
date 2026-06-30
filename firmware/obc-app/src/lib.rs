@@ -49,7 +49,7 @@ pub use breadcrumb::Breadcrumb;
 pub use dirty::Dirty;
 pub use hal::{
     AltimeterSource, Button, ButtonEvent, CompassSource, Fix, FuelGauge, InputClock, InputEvent, InputSource,
-    LocationSource, RideClock, Sensors, SettingsStore, TrackSink,
+    LocationSource, RideClock, Sensors, SettingsStore, TemperatureSource, TrackSink,
 };
 pub use hold_hint::HoldHints;
 pub use input::{Gesture, Gestures, DEFAULT_HOLD_MS, DEFAULT_TAP_MS};
