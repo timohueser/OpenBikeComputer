@@ -3,18 +3,18 @@ name = "obc-platform"
 version = "0.1.0"
 edition = "2021"
 publish = false  # internal firmware crate — not published to crates.io
-description = "Board-agnostic no_std firmware glue between obc-app and a concrete board — written once, reused by every OBC board crate: the framebuffer DrawTargets, the banded Panel seam, FatFs ByteSource/Sink adapters, the input debouncer, the synthetic GPS, and the USB-CDC debug protocol."
+description = "Board-agnostic no_std firmware glue between obc-app and a concrete board — written once, reused by every OBC board crate: the framebuffer DrawTargets, the banded Panel seam, FatFs ByteSource/Sink adapters, the input debouncer, the synthetic GPS, and the transport-agnostic debug protocol."
 
 [features]
-# USB-CDC fake-sensor debug protocol (issue #38). The pure codec in `debug_usb` (line parser,
-# `Telemetry`/fix encoders, `LineReader`) is always compiled — board-agnostic and dependency-light
-# (only `obc_app` types + heapless) — so the host feeder reuses one canonical wire format with
-# default features. This feature adds only the embassy-sync `Signal`/`Channel` hand-off plus the
-# LocationSource/AltimeterSource/CompassSource impls that bridge parsed samples to the app poll
-# (the fresh-fix latch); the board crate owns the actual embassy-usb CDC driver. Off by default so
-# the host workspace build never pulls embassy-sync; the board firmware turns it on in its own
-# default features.
-debug-usb = ["dep:embassy-sync"]
+# Transport-agnostic fake-sensor debug protocol (issue #38). The pure codec in `debug_link` (line
+# parser, `Telemetry`/fix encoders, `LineReader`) is always compiled — board-agnostic and
+# dependency-light (only `obc_app` types + heapless) — so the host feeder reuses one canonical wire
+# format with default features. This feature adds only the embassy-sync `Signal`/`Channel` hand-off
+# plus the LocationSource/AltimeterSource/CompassSource impls that bridge parsed samples to the app
+# poll (the fresh-fix latch); the board crate owns the actual transport driver (the nRF runs it over
+# UART/VCOM). Off by default so the host workspace build never pulls embassy-sync; the board firmware
+# turns it on in its own default features.
+debug-link = ["dep:embassy-sync"]
 
 [dependencies]
 # The `DrawTarget` / `Rgb565` the framebuffer implements — pinned to the same 0.8
@@ -45,9 +45,9 @@ obc-route = { path = "../obc-route" }
 # board logs over defmt/RTT itself); the adapters add no logging of their own.
 embedded-sdmmc = { version = "0.9", default-features = false }
 
-# `Signal` for the `debug-usb` fresh-fix hand-off (USB task → app poll). Pinned to the 0.8 the
+# `Signal` for the `debug-link` fresh-fix hand-off (transport task → app poll). Pinned to the 0.8 the
 # nRF board crate already resolves so the board build shares one embassy-sync. Optional — only
-# the `debug-usb` feature pulls it.
+# the `debug-link` feature pulls it.
 embassy-sync = { version = "0.8", optional = true }
 
 # `Instant`/`Duration` for the `time::SaturatingElapsed` fix (issue #51) and the `synth`
@@ -59,7 +59,7 @@ embassy-sync = { version = "0.8", optional = true }
 embassy-time = { version = "0.5.1", default-features = false }
 
 [dev-dependencies]
-# `cargo test --features debug-usb` compiles the Signal-based sources, which reference
+# `cargo test --features debug-link` compiles the Signal-based sources, which reference
 # `critical_section::with`; the std impl satisfies the link on the host. Dev-only — it never
 # reaches the firmware build (which provides cortex-m's single-core impl), so no double impl.
 critical-section = { version = "1.1", features = ["std"] }
