@@ -262,9 +262,12 @@ impl StatisticsScreen {
         let live_color = if off { WARNING } else { AMBER };
         let cursor_color = if off && !scrubbing { WARNING } else { AMBER };
 
-        // Title bar: grade at the cursor, or the off-route cross-track readout
+        // Title bar: "no GPS" while there's no current fix (issue #224 — the live readouts are then
+        // stale), else the off-route cross-track distance, else the grade at the cursor.
         let mut readout: heapless::String<16> = heapless::String::new();
-        if off {
+        if rx.no_fix {
+            let _ = readout.push_str("no GPS");
+        } else if off {
             super::write_off_route(&mut readout, "off ", rx.activity.dist_to_route_m, units);
         } else {
             let _ = write!(readout, "grade {}%", stat_fields::grade_at(profile, total, cursor_frac));

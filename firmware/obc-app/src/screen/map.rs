@@ -148,9 +148,13 @@ impl MapScreen {
             rx.renderer.draw_marker(target, &vp, fix.lon, fix.lat, fix.course, color_fn(marker565));
         }
 
-        // Off-route pill: a small parchment chip with the cross-track distance, shown
-        // *only* while off-route so the map's steady state stays chrome-free ("map only").
-        if rx.activity.off_route {
+        // Top-center status pill, shown *only* when there's something to say so the map's steady
+        // state stays chrome-free ("map only"). "No GPS Fix" (issue #224) takes priority over the
+        // off-route chip: with no current fix the map-match is stale, so the cross-track distance
+        // would be meaningless — say "searching" instead.
+        if rx.no_fix {
+            draw_no_fix_pill(target, rx, color_fn);
+        } else if rx.activity.off_route {
             draw_off_route_pill(target, rx, color_fn);
         }
 
@@ -178,6 +182,29 @@ fn handle_pan(g: Gesture, cx: &mut Ctx) -> Transition {
         Gesture::BackHold => cx.state.exit_pan(),
     }
     Transition::None
+}
+
+/// A compact "No GPS Fix" chip centered at the top of the map (issue #224) — appears while the
+/// device has no current fix (acquiring at the start of a ride, or after the signal drops) and
+/// vanishes the moment a fix lands, so the map is otherwise free of chrome. Same parchment +
+/// warning-outline look as the off-route pill, with which it shares the top-center slot.
+fn draw_no_fix_pill<D, F>(target: &mut D, rx: &Render, color_fn: &F)
+where
+    D: DrawTarget,
+    F: Fn(u16) -> D::Color,
+{
+    use super::palette::*;
+    let w = rx.w as i32;
+    let mut cv = Canvas::new(target, color_fn);
+    let s = "No GPS Fix";
+    let font = Font::Body;
+    let tw = text_width(s, font) as i32;
+    let (pw, ph) = (tw + 28, 36);
+    let px = (w - pw) / 2;
+    let py = 10;
+    cv.round(rect(px, py, pw, ph), 9, PARCHMENT);
+    cv.round_outline(rect(px, py, pw, ph), 9, WARNING);
+    cv.text(s, Point::new(w / 2, py + 5), font, TextAlign::Center, WARNING);
 }
 
 /// A compact "off route NNNm" chip centered at the top of the map — appears only while

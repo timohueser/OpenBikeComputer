@@ -425,7 +425,25 @@ pub struct App {
     /// would gate a needless map redraw on every reading, breaking render-on-demand (#47). Read via
     /// [`temperature_c`](App::temperature_c).
     temp_c: Option<f32>,
+    /// Map-plane millis of the last accepted GPS fix, or `None` before the first ever (issue #224).
+    /// Drives the "No GPS Fix" banner via [`has_live_fix`](App::has_live_fix): a fix older than the
+    /// staleness window (or none yet) means the banner shows. Lives **off** [`AppState`] — like
+    /// [`temp_c`](App::temp_c) — so advancing it on every fix (including a stationary one that moves
+    /// nothing) never trips the `state != state_before` redraw gate (#47/#209); the banner's own
+    /// repaint edge is surfaced from [`advance_animations`](App::advance_animations) instead.
+    last_fix_ms: Option<u32>,
+    /// The no-fix state at the previous [`advance_animations`](App::advance_animations), so the timer
+    /// edge that flips the "No GPS Fix" banner (a fix going stale with no new sample, or returning)
+    /// dirties the live-data views exactly once. Starts `true` — there is no fix at boot.
+    prev_no_fix: bool,
 }
+
+/// A fix older than this (map-plane millis) means "no current GPS fix" (issue #224). The window is
+/// the larger of this floor and a few fix intervals (see [`App::no_fix_window_ms`]), so a long
+/// configured interval doesn't false-trip the banner between its own expected fixes.
+const NO_FIX_FLOOR_MS: u32 = 5_000;
+/// How many configured fix intervals of silence count as "lost" before the floor takes over.
+const NO_FIX_INTERVALS: u32 = 3;
 
 /// How often [`App::tick`] reads the battery [`FuelGauge`](crate::FuelGauge). Battery state of
 /// charge drifts over minutes/hours, so a ~30 s cadence keeps the Home gauge fresh while reading
@@ -476,6 +494,8 @@ impl App {
             hold_progress_override: None,
             last_battery_poll_ms: None,
             temp_c: None,
+            last_fix_ms: None,
+            prev_no_fix: true,
         }
     }
 
@@ -531,6 +551,8 @@ impl App {
             addr_of_mut!((*slot).hold_progress_override).write(None);
             addr_of_mut!((*slot).last_battery_poll_ms).write(None);
             addr_of_mut!((*slot).temp_c).write(None);
+            addr_of_mut!((*slot).last_fix_ms).write(None);
+            addr_of_mut!((*slot).prev_no_fix).write(true);
         }
     }
 
@@ -665,6 +687,11 @@ impl App {
         // dropout doesn't re-run the matcher or double-count). A *logged* fix also feeds the
         // breadcrumb + the ride log.
         if let Some(fix) = self.state.update(loc) {
+            // Stamp the fix-freshness clock (issue #224) against `self.now_ms` — the map-plane clock
+            // the banner's staleness check + render read with — so a stamp and a check agree (on the
+            // device the two coincide, as for the GPS-clock epoch). Off `AppState`, so a stationary
+            // fix that moves nothing still doesn't force a redraw here.
+            self.last_fix_ms = Some(self.now_ms);
             if let Some(route) = route {
                 let m = self.route_match.update(fix.lon, fix.lat, route);
                 self.activity.apply_match(m);
@@ -708,6 +735,19 @@ impl App {
         if self.state != state_before && self.shows_live_data() {
             self.map_dirty = true;
         }
+        // The "No GPS Fix" banner (issue #224) flips on a *timer* — a fix going stale with no new
+        // sample (lost), or the first/returning fix (acquired) — which the `state` comparison above
+        // can miss: it's tracked off `AppState` so a stationary fix never forces a redraw, and a fix
+        // lost to silence is no fix at all. Surface that edge here, at the **end** of `tick` (after
+        // `last_fix_ms` is stamped, every frame), so it's same-frame and reads the exact `no_fix` the
+        // render will — dirtying only the live-data views that draw the banner, exactly once per flip.
+        let no_fix = !self.has_live_fix(self.now_ms);
+        if no_fix != self.prev_no_fix {
+            self.prev_no_fix = no_fix;
+            if self.shows_live_data() {
+                self.map_dirty = true;
+            }
+        }
     }
 
     /// Whether the screen currently drawing the base view shows live sensor data (the user
@@ -731,6 +771,22 @@ impl App {
     pub fn base_draws_map(&self) -> bool {
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
         matches!(self.stack.get(base), Some(Screen::Map(_)))
+    }
+
+    /// The fix-staleness window (map-plane millis): the larger of [`NO_FIX_FLOOR_MS`] and a few
+    /// configured fix intervals, so a long interval (the Power screen can set up to 120 s) doesn't
+    /// flag "no fix" in the normal gap *between* its own fixes — only when several in a row are
+    /// missed. A 1 s interval gives the 5 s floor; a 30 s interval gives 90 s (issue #224).
+    fn no_fix_window_ms(&self) -> u32 {
+        (self.settings.fix_interval_s as u32 * 1000 * NO_FIX_INTERVALS).max(NO_FIX_FLOOR_MS)
+    }
+
+    /// Whether there's a **current** GPS fix at `now_ms` (issue #224): a fix has been accepted and it
+    /// is no older than [`no_fix_window_ms`](App::no_fix_window_ms). `false` before the first fix ever
+    /// (acquiring) and once the signal drops (lost) — exactly when the "No GPS Fix" banner shows.
+    /// `now_ms` is the map-plane clock, the same base [`last_fix_ms`](App::last_fix_ms) is stamped in.
+    pub fn has_live_fix(&self, now_ms: u32) -> bool {
+        self.last_fix_ms.is_some_and(|t| now_ms.wrapping_sub(t) <= self.no_fix_window_ms())
     }
 
     /// Replace the resident route catalog from the host's store (the simulator's
@@ -1044,6 +1100,9 @@ impl App {
         // Prefer a host-supplied hold-progress (the two-plane firmware's separate input plane); fall
         // back to `App`'s own input on the single-loop hosts (the sim) that never set the override.
         let hold_progress = self.hold_progress_override.unwrap_or_else(|| self.input.encoder_hold_progress());
+        // Whether the riding views should show the "No GPS Fix" banner (issue #224) — computed before
+        // the borrow split below so it can read `self`.
+        let no_fix = !self.has_live_fix(self.now_ms);
         let App { state, activity, settings, catalog, renderer, stack, now_ms, profile, breadcrumb, .. } = self;
         let mut rx = Render {
             reader,
@@ -1060,6 +1119,7 @@ impl App {
             now_ms: *now_ms,
             now,
             hold_progress,
+            no_fix,
             clock,
         };
         let mut stats = RenderStats::default();
@@ -1288,6 +1348,167 @@ mod tests {
         app.now_ms = 14_000;
         assert_eq!((app.wall_clock_now().hour, app.wall_clock_now().minute), (14, 38), "rolls 4 s later");
         // Without the back-date the same stamp would still read 14:37 here — 4 s isn't a full minute.
+    }
+
+    // --- no-GPS-fix freshness + banner edge (issue #224) ---
+
+    /// Tick once with a single fix at the map-plane clock `now_ms` (set so `last_fix_ms` and
+    /// `has_live_fix` share a timebase), no route / other sensors.
+    fn tick_fix(app: &mut App, fix: Fix, now_ms: u32) {
+        app.now_ms = now_ms; // mirror `advance_animations(now)` running right before `tick(now)`
+        let mut loc = OneFix(Some(fix));
+        app.tick(
+            RideClock(now_ms),
+            Sensors {
+                loc: &mut loc,
+                altimeter: None,
+                temperature: None,
+                clock: None,
+                compass: None,
+                track: None,
+                fuel: None,
+            },
+            None,
+        );
+    }
+
+    /// Tick once with no fix at all (the quiet per-frame tick), at the map-plane clock `now_ms`.
+    fn tick_idle(app: &mut App, now_ms: u32) {
+        app.now_ms = now_ms;
+        let mut loc = OneFix(None);
+        app.tick(
+            RideClock(now_ms),
+            Sensors {
+                loc: &mut loc,
+                altimeter: None,
+                temperature: None,
+                clock: None,
+                compass: None,
+                track: None,
+                fuel: None,
+            },
+            None,
+        );
+    }
+
+    /// `has_live_fix` is `false` before the first fix (acquiring) and once the last fix ages past the
+    /// staleness window (lost), and `true` in between — the exact condition the "No GPS Fix" banner
+    /// reads. The default 1 s fix interval gives the 5 s floor window.
+    #[test]
+    fn has_live_fix_tracks_freshness_within_the_window() {
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        assert!(!app.has_live_fix(0), "no fix yet → not live (acquiring)");
+
+        tick_fix(&mut app, Fix::at(0, 0), 1_000);
+        assert!(app.has_live_fix(1_000), "just got a fix → live");
+        assert!(app.has_live_fix(1_000 + 5_000), "still live at the window edge");
+        assert!(!app.has_live_fix(1_000 + 5_001), "past the window → lost");
+    }
+
+    /// The window scales with the configured fix interval, so a long interval doesn't false-trip the
+    /// banner in the normal gap between its own (expected) fixes — only when several are missed.
+    #[test]
+    fn no_fix_window_scales_with_the_fix_interval() {
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        app.set_settings(Settings { fix_interval_s: 30, ..Settings::default() }); // window = 30·3 = 90 s
+        tick_fix(&mut app, Fix::at(0, 0), 1_000);
+        assert!(app.has_live_fix(1_000 + 60_000), "a 60 s gap is within a 30 s-interval window");
+        assert!(!app.has_live_fix(1_000 + 90_001), "but past 90 s the fix is lost");
+    }
+
+    /// The banner edge is surfaced from the end of `tick` (which runs every frame): a fix aging into
+    /// silence dirties the live-data view so the banner appears, and the first/returning fix dirties
+    /// it so the banner clears — each exactly once. A stationary returning fix moves the camera
+    /// nowhere, so its banner-clear *must* come from this edge, not the fresh-fix redraw path.
+    #[test]
+    fn no_fix_flip_dirties_the_live_view() {
+        let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map] → base Map (live data)
+        tick_fix(&mut app, Fix::at(0, 0), 1_000); // first fix: banner clears (flip true→false)
+        let _ = app.take_dirty();
+
+        tick_idle(&mut app, 3_000);
+        assert!(!app.take_dirty().map, "still inside the window → no flip");
+
+        tick_idle(&mut app, 6_001);
+        assert!(app.take_dirty().map, "fix went stale → banner appears (map dirtied)");
+        tick_idle(&mut app, 7_000);
+        assert!(!app.take_dirty().map, "an unchanged no-fix state doesn't re-dirty");
+
+        // A stationary returning fix recenters the camera onto the spot it already sits, so the only
+        // thing that changed is the banner — the clear comes from the flip, not a camera move.
+        tick_fix(&mut app, Fix::at(0, 0), 20_000);
+        assert!(app.take_dirty().map, "fix returned → banner clears (map dirtied)");
+    }
+
+    /// The flip never dirties a static Home (it doesn't draw the banner), so a parked idle device
+    /// stays clean as a fix ages out — the "static Home does zero renders" criterion still holds.
+    #[test]
+    fn no_fix_flip_does_not_dirty_idle_home() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0)); // [Home], Idle — not a live-data view
+        tick_fix(&mut app, Fix::at(0, 0), 1_000); // flip true→false, but Home isn't a live view
+        let _ = app.take_dirty();
+        tick_idle(&mut app, 1_000 + 6_001); // the fix ages out → flip false→true, still not live
+        assert!(!app.take_dirty().map, "the no-fix flip never dirties a static Home");
+    }
+
+    /// A track sink that counts recorded points.
+    #[derive(Default)]
+    struct CountSink(usize);
+    impl crate::hal::TrackSink for CountSink {
+        fn record(&mut self, _p: obc_route::TrackPoint) {
+            self.0 += 1;
+        }
+    }
+
+    /// Arm-and-record (issue #224): starting a ride with no fix yet arms the session immediately
+    /// (Riding, banner up) but records nothing and books no moving time — then the first fix logs the
+    /// segment anchor and clears the banner. This is how other bike computers handle "start before
+    /// lock".
+    #[test]
+    fn tracking_arms_without_a_fix_and_records_on_first_fix() {
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        app.activity.start_session(); // a route load arms a tracking session
+
+        // A tick with no fix: armed, but nothing recorded and no moving time accrued.
+        let mut sink = CountSink::default();
+        let mut loc = OneFix(None);
+        app.now_ms = 1_000;
+        app.tick(
+            RideClock(1_000),
+            Sensors {
+                loc: &mut loc,
+                altimeter: None,
+                temperature: None,
+                clock: None,
+                compass: None,
+                track: Some(&mut sink),
+                fuel: None,
+            },
+            None,
+        );
+        assert!(app.activity.is_tracking(), "the session is armed immediately, fix or not");
+        assert!(!app.has_live_fix(1_000), "no fix yet → the banner is up");
+        assert_eq!(sink.0, 0, "nothing recorded while searching");
+        assert_eq!(app.activity.moving_s, 0.0, "moving time idles until the first fix");
+
+        // The first fix lands → it's logged (the segment anchor) and the banner clears.
+        let mut loc = OneFix(Some(Fix::at(0, 0)));
+        app.now_ms = 2_000;
+        app.tick(
+            RideClock(2_000),
+            Sensors {
+                loc: &mut loc,
+                altimeter: None,
+                temperature: None,
+                clock: None,
+                compass: None,
+                track: Some(&mut sink),
+                fuel: None,
+            },
+            None,
+        );
+        assert!(app.has_live_fix(2_000), "the fix landed → banner clears");
+        assert_eq!(sink.0, 1, "the first fix logs the segment anchor");
     }
 
     // --- the heading fallback chain (course_rad / live_course_rad) ---
