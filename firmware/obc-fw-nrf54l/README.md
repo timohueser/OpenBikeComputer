@@ -100,10 +100,13 @@ real sensors (issue #218 + compass): the u-blox **SAM-M10Q** GNSS (DDC address `
 — the **AK09916** magnetometer inside a TDK **ICM-20948** (the IMU itself at `0x68`/`0x69`; the ICM is
 put in **I²C bypass** so the magnetometer answers directly at `0x0C`). None of the addresses clash, so
 all three share SDA/SCL with no extra pins. **Only the 3 magnetometer axes are used** — accel/gyro are
-left asleep — and the heading is read once per GPS fix, so the bus stays quiet between fixes. The
-compass supplies the heading-up orientation while the rider is *stopped* (the GPS reports no course
-below walking pace); the shipping board is expected to drop the 9-axis IMU for a plain 3-axis
-magnetometer, which the [`obc_platform::compass`] / [`obc_platform::icm20948`] split is designed for.
+left asleep. The compass supplies the heading-up orientation while the rider is *stopped* (the GPS
+reports no course below walking pace); once moving, the GPS course is the heading. Because the heading
+is never logged, it's **decoupled from the GPS fix** — read on its own ~5 Hz cadence *while stationary*
+(so the map stays lively as you turn the device, independent of a slow / power-saving fix rate), and
+silent while moving or idle. A dead-band suppresses noise-only updates. The shipping board is expected
+to drop the 9-axis IMU for a plain 3-axis magnetometer, which the [`obc_platform::compass`] (heading
+geometry) / [`obc_platform::icm20948`] (chip register map) split is designed for.
 
 The GPS **TX-Ready** line on P0.03 is an *optional* data-ready interrupt: when present it asserts as a
 NAV-PVT message becomes ready and wakes the event-driven sensor task, so the bus does **zero** work
