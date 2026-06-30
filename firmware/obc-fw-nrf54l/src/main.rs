@@ -1036,6 +1036,10 @@ async fn run_app(
     // shows up immediately instead of as a silent overflow (issue #175). Harmless on the 512 KB target.
     let mut stack_hw = 0usize;
     let mut last_led = 0u32;
+    // Previous frame's hold-progress, so a hold that retracts on a non-map screen (released early, or
+    // just completed) gets one trailing redraw to clear its on-screen bar — the falling edge the
+    // charging redraw below would otherwise miss now that a cancelled long-press emits no gesture.
+    let mut prev_hold_p = 0.0f32;
 
     // Settings: seed the app from the persistent RRAM store at boot (a blank/corrupt page decodes
     // to `None` → defaults), then persist on any change the settings screens make.
@@ -1171,13 +1175,17 @@ async fn run_app(
         let mut dirty = app.take_dirty();
         dirty.map |= pending_map_redraw;
         pending_map_redraw = false;
-        // While a hold *charges* on a cheap (non-map) screen — the factory-Reset prompt — redraw it
-        // each frame so its bar tracks the live progress. A pure hold-charge emits no gesture, so
-        // nothing else dirties the map (issue #47). Gated on `!base_draws_map` so the expensive map
-        // view is never re-rendered for a hold; there the overlay bulge is the live feedback.
-        if hold_p > 0.0 && !app.base_draws_map() {
+        // While a hold *charges* on a cheap (non-map) screen — the factory-Reset prompt, the
+        // hold-to-delete bar — redraw it each frame so its bar tracks the live progress, **and** once
+        // more on the frame the hold drops back to 0 (the falling edge), so an early release clears
+        // the bar instead of leaving it stuck mid-fill. A pure hold-charge (and a *cancelled* one)
+        // emits no gesture, so nothing else dirties the map (issue #47). Gated on `!base_draws_map` so
+        // the expensive map view is never re-rendered for a hold; there the overlay bulge is the live
+        // feedback.
+        if (hold_p > 0.0 || prev_hold_p > 0.0) && !app.base_draws_map() {
             dirty.map = true;
         }
+        prev_hold_p = hold_p;
 
         // This frame's hold-bulge state, sampled once through the seam — `(false, None)` on ST7789
         // (its bulge rides the input plane); the live dirty edge + row span on the FLPR (issue #163).
