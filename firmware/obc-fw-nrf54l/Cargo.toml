@@ -40,9 +40,9 @@ tft = []
 # fresh-fix sources into the app, replacing the always-on `SynthLocation` stand-in. Off by default
 # — a plain `cargo run` rides the synthetic square-loop GPS (no host needed); enable with
 # `--features debug-uart` to drive the board from a recorded ride via `obc-usb-host --port <VCOM
-# tty>`. Enables the protocol + sources in obc-platform (`debug-usb` is the transport-agnostic
+# tty>`. Enables the protocol + sources in obc-platform (`debug-link` is the transport-agnostic
 # handoff gate there; the board crate owns the concrete UARTE driver).
-debug-uart = ["obc-platform/debug-usb"]
+debug-uart = ["obc-platform/debug-link"]
 
 [dependencies]
 # embassy HAL for the nRF54L15 app core. `nrf54l15-app-s` selects the secure-app die
@@ -89,7 +89,7 @@ embedded-storage = "0.3"
 
 # The board-agnostic glue: the `Panel` banded-display seam + the `Band` frame-absolute draw view
 # the ST7789 backend implements, and `Framebuffer565`'s `RawFb`/`Pack` the band reuses (issue
-# #122). Pulls obc-app/route/reader transitively — all no_std, all defmt-free. `debug-usb` stays
+# #122). Pulls obc-app/route/reader transitively — all no_std, all defmt-free. `debug-link` stays
 # off (no embassy-sync) until the sensor stream at N6.
 obc-platform = { path = "../obc-platform" }
 # The shared text renderer — `draw_text` + the Terminus `Font` tiers every on-device screen uses. (#122)

@@ -1,12 +1,13 @@
-//! USB-CDC fake-sensor debug protocol (issue #38) — the board-agnostic half.
+//! Transport-agnostic fake-sensor debug protocol (issue #38) — the board-agnostic half.
 //!
 //! There's no GPS / compass / altimeter hardware on the prototype (and never a good fix at the
-//! bench), so a host streams a recorded ride over USB-CDC and this module turns it into the
+//! bench), so a host streams a recorded ride over a debug link and this module turns it into the
 //! `obc-app` HAL traits the app already polls — [`DebugLocation`], [`DebugAltimeter`] and
 //! [`DebugCompass`]. The app can't tell them from real drivers, and because the protocol +
-//! sources live here (not in the board crate) they move to the nRF54L unchanged. The board crate
-//! owns only the concrete embassy-usb CDC driver; it feeds received bytes to [`feed_bytes`] and
-//! `await`s [`wait_telemetry`] to send the device→host status line.
+//! sources live here (not in the board crate) they move to any board unchanged. The board crate
+//! owns only the concrete transport driver — on the shipping nRF54L it's a UART/VCOM link, not USB
+//! (the nRF54L has no USB peripheral); it feeds received bytes to [`feed_bytes`] and `await`s
+//! [`wait_telemetry`] to send the device→host status line.
 //!
 //! ## Wire format (ASCII, one message per `\n`-terminated line)
 //! Host → device:
@@ -31,7 +32,7 @@
 //! floods. The trailing six are the render-benchmark fields: the per-stage wall-time breakdown
 //! and the frame's camera scale (see [`Telemetry`]).
 //!
-//! ## Fresh-fix contract (#43) — behind `debug-usb`
+//! ## Fresh-fix contract (#43) — behind `debug-link`
 //! Each parsed *sensor* sample is handed across to the app through an embassy `Signal`, whose
 //! `try_take` returns a value exactly **once** per signal — so `DebugLocation::poll` yields
 //! `Some` only on the tick a new fix arrived and `None` between, the same cadence a real ~1 Hz
@@ -40,7 +41,7 @@
 //! input events instead go through a small `Channel` (a queue, not a latch) so a burst of edges
 //! is delivered in order, exactly as the button debouncer's ring would. This hand-off (the
 //! `Signal`/`Channel` statics + the [`DebugLocation`]/[`DebugAltimeter`]/[`DebugCompass`]/
-//! [`DebugInput`] sources) lives behind the `debug-usb` feature; the pure codec above does not.
+//! [`DebugInput`] sources) lives behind the `debug-link` feature; the pure codec above does not.
 
 use core::fmt::Write;
 
@@ -48,7 +49,7 @@ use core::fmt::Write;
 // types — no embassy-sync — so it is **always** compiled and the host feeder (`obc-usb-host`) can
 // reuse the one canonical codec with default features. The `Signal`/`Channel` plumbing that
 // bridges parsed samples to the app's HAL traits pulls embassy-sync, so it stays behind
-// `debug-usb` (with its source-trait imports) at the bottom of the file.
+// `debug-link` (with its source-trait imports) at the bottom of the file.
 use obc_app::{Button, ButtonEvent, Fix, InputEvent};
 
 /// Longest line we accept. The widest message is an `F` with full i32 lat/lon and float
@@ -150,8 +151,8 @@ pub fn format_fix(f: &Fix) -> heapless::String<48> {
     s
 }
 
-/// Accumulates raw CDC bytes into lines, parsing each complete `\n`-terminated line. CDC delivers
-/// bytes in arbitrary chunks, so the board calls [`feed`](LineReader::feed) (or the convenience
+/// Accumulates raw link bytes into lines, parsing each complete `\n`-terminated line. The transport
+/// delivers bytes in arbitrary chunks, so the board calls [`feed`](LineReader::feed) (or the convenience
 /// [`feed_bytes`]) with each read; over-long lines (no newline within [`LINE_MAX`]) are dropped to
 /// the next newline rather than split.
 pub struct LineReader {
@@ -239,7 +240,7 @@ pub struct Telemetry {
     pub mpp_milli: u32,
 }
 
-/// Format a telemetry line (`T … \n`) into a small heap-free string the board writes to CDC.
+/// Format a telemetry line (`T … \n`) into a small heap-free string the board writes to the link.
 /// Cap sized to the worst case: `T` + sixteen `u32::MAX` (10-digit) fields each space-separated
 /// (16 spaces) + `\n` = 1 + 160 + 16 + 1 = 178 bytes, so the `write!` below truly cannot truncate.
 pub fn format_telemetry(t: &Telemetry) -> heapless::String<192> {
@@ -301,9 +302,10 @@ pub fn parse_telemetry(line: &str) -> Option<Telemetry> {
 // --- the cross-task hand-off: parsed samples in, telemetry out ---
 //
 // Everything below pulls embassy-sync (`Signal`/`Channel`) and the app's source traits, so it is
-// gated behind `debug-usb`. The board crate enables the feature and owns the embassy-usb CDC
-// driver; the host feeder builds without it and reuses only the pure codec above.
-#[cfg(feature = "debug-usb")]
+// gated behind `debug-link`. The board crate enables the feature and owns the concrete transport
+// driver (UART/VCOM on the nRF54L); the host feeder builds without it and reuses only the pure codec
+// above.
+#[cfg(feature = "debug-link")]
 mod handoff {
     use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
     use embassy_sync::channel::Channel;
@@ -318,7 +320,7 @@ mod handoff {
     static ALT: Signal<CriticalSectionRawMutex, f32> = Signal::new();
     /// Latest compass heading (degrees CW from north).
     static COMPASS: Signal<CriticalSectionRawMutex, f32> = Signal::new();
-    /// Latest device telemetry to send host-ward; the app sets it, the CDC task awaits it.
+    /// Latest device telemetry to send host-ward; the app sets it, the transport's TX task awaits it.
     static TELEMETRY: Signal<CriticalSectionRawMutex, Telemetry> = Signal::new();
     /// Latest debug camera-scale command (meters-per-pixel), `try_take`-once like a sensor. The
     /// board's map loop drains it each frame and applies it via `App::set_map_mpp` (render
@@ -331,7 +333,7 @@ mod handoff {
     const INPUT_QUEUE: usize = 16;
     static INPUT: Channel<CriticalSectionRawMutex, InputEvent, INPUT_QUEUE> = Channel::new();
 
-    /// Route a decoded [`Msg`] to its signal/queue (the bridge from the USB RX task to the app
+    /// Route a decoded [`Msg`] to its signal/queue (the bridge from the link RX task to the app
     /// poll). The board passes this to [`LineReader::feed`]; [`feed_bytes`] bundles both.
     pub fn dispatch(msg: Msg) {
         match msg {
@@ -346,13 +348,13 @@ mod handoff {
         }
     }
 
-    /// Convenience for the board's CDC RX loop: accumulate `bytes` and dispatch every complete line
+    /// Convenience for the board's link RX loop: accumulate `bytes` and dispatch every complete line
     /// to the sensor signals. `reader` persists across reads (it holds the partial-line buffer).
     pub fn feed_bytes(reader: &mut LineReader, bytes: &[u8]) {
         reader.feed(bytes, dispatch);
     }
 
-    /// The user's location, streamed over USB. Hand `&mut DebugLocation` to `Sensors::loc`.
+    /// The user's location, streamed over the debug link. Hand `&mut DebugLocation` to `Sensors::loc`.
     pub struct DebugLocation;
     impl LocationSource for DebugLocation {
         fn poll(&mut self) -> Option<Fix> {
@@ -360,7 +362,7 @@ mod handoff {
         }
     }
 
-    /// The barometric altimeter, streamed over USB. Hand `&mut DebugAltimeter` to
+    /// The barometric altimeter, streamed over the debug link. Hand `&mut DebugAltimeter` to
     /// `Sensors::altimeter`.
     pub struct DebugAltimeter;
     impl AltimeterSource for DebugAltimeter {
@@ -369,7 +371,7 @@ mod handoff {
         }
     }
 
-    /// The electronic compass, streamed over USB. Hand `&mut DebugCompass` to `Sensors::compass`.
+    /// The electronic compass, streamed over the debug link. Hand `&mut DebugCompass` to `Sensors::compass`.
     pub struct DebugCompass;
     impl CompassSource for DebugCompass {
         fn poll(&mut self) -> Option<f32> {
@@ -400,16 +402,16 @@ mod handoff {
         TELEMETRY.signal(t);
     }
 
-    /// Await the next published telemetry (the CDC TX task), so the send cadence is driven by the
-    /// app's [`set_telemetry`] calls — no polling, no flooding.
+    /// Await the next published telemetry (the transport's TX task), so the send cadence is driven by
+    /// the app's [`set_telemetry`] calls — no polling, no flooding.
     pub async fn wait_telemetry() -> Telemetry {
         TELEMETRY.wait().await
     }
 }
 
 // Re-export the gated hand-off at the module root so the board crate's call sites
-// (`debug_usb::DebugLocation`, `debug_usb::feed_bytes`, …) are unchanged by the split.
-#[cfg(feature = "debug-usb")]
+// (`debug_link::DebugLocation`, `debug_link::feed_bytes`, …) are unchanged by the split.
+#[cfg(feature = "debug-link")]
 pub use handoff::{
     dispatch, feed_bytes, set_telemetry, take_zoom, wait_telemetry, DebugAltimeter, DebugCompass, DebugInput,
     DebugLocation,
@@ -487,7 +489,7 @@ mod tests {
     fn line_reader_splits_and_dispatches_multiple_lines() {
         let mut r = LineReader::new();
         let mut got = heapless::Vec::<Msg, 8>::new();
-        // Two lines plus a partial third, fed as separate chunks (as CDC would).
+        // Two lines plus a partial third, fed as separate chunks (as the link would).
         r.feed(b"F 1 2 - -\nA 100", |m| got.push(m).unwrap());
         r.feed(b".5\nC 45\n", |m| got.push(m).unwrap());
         assert_eq!(got.as_slice(), &[Msg::Fix(Fix::at(1, 2)), Msg::Alt(100.5), Msg::Compass(45.0)]);

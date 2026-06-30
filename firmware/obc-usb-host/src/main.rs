@@ -8,7 +8,7 @@
 //! holds) so the UI is drivable without touching the hardware, and a readout shows the device's
 //! render-stats telemetry. The host twin of the sim's control panel, pointed at real glass.
 //!
-//! Wire format (see `obc-platform::debug_usb`): host→device `F <lat> <lon> <course|-> <speed|->`,
+//! Wire format (see `obc-platform::debug_link`): host→device `F <lat> <lon> <course|-> <speed|->`,
 //! `A <m>`, `C <deg>`, `Z <mpp>` (set the map's exact meters-per-pixel — the render-benchmark
 //! hook), and input injection `K t <n>` / `K e <d|u>` / `K b <d|u>`; device→host
 //! `T <frame_us> <lod> <feat_drawn> <feat_tried> <feat_dropped> <chunks> <hits> <misses> <reads>
@@ -31,7 +31,7 @@ use obc_app::{AltimeterSource, LocationSource};
 // these is the whole point — the two halves of the protocol can no longer drift (the old local
 // copies had already diverged: `lod` was `u32` here vs. `u8` on the device). DEFAULT features only,
 // so the pure codec is pulled without embassy-sync.
-use obc_platform::debug_usb::{format_fix, parse_telemetry, Telemetry};
+use obc_platform::debug_link::{format_fix, parse_telemetry, Telemetry};
 use obc_replay::{BaroSensor, GpxPlayer, Track};
 
 /// How long a "hold" button keeps the edge down before releasing — past the device's ~500 ms
