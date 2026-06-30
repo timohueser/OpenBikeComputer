@@ -91,16 +91,22 @@ and SD `CS` stays on P1.12.
 | P0.00 | SD CS      | moved here in the FLPR build (held LOW)         |
 | P0.01 | I²C SDA    | shared GPS + altimeter bus (TWIM30, #218)       |
 | P0.02 | I²C SCL    | shared GPS + altimeter bus (TWIM30, #218)       |
-| P0.03 | GPS TX-Ready | DDC data-ready interrupt (active-high)        |
+| P0.03 | GPS TX-Ready | *optional* DDC data-ready IRQ (active-high)     |
 | P0.04 | BTN3       | SELECT                                          |
 
 The shared **I²C / Qwiic** bus on TWIM30 (the low-power-domain instance that reaches P0) carries
 both real sensors (issue #218): the u-blox **SAM-M10Q** GNSS (DDC address `0x42`) and the Bosch
 **BMP581** altimeter (`0x47`, or `0x46` if the breakout straps `SDO` low). The addresses don't
-clash, so they share SDA/SCL. The GPS **TX-Ready** line on P0.03 — the single spare GPIO — is the
-only interrupt: it asserts when a NAV-PVT message is ready, waking the event-driven sensor task so
-the bus does **zero** work between fixes. If TX-Ready is unwired/misconfigured the task falls back to
-polling the DDC at the fix rate (RTT says so), so bring-up still works.
+clash, so they share SDA/SCL.
+
+The GPS **TX-Ready** line on P0.03 is an *optional* data-ready interrupt: when present it asserts as a
+NAV-PVT message becomes ready and wakes the event-driven sensor task, so the bus does **zero** work
+between fixes. **The SparkFun SAM-M10Q breakout (GPS-21834) does not break out TX-Ready** (it exposes
+SDA/SCL/INT/SAFE/RST/PPS — where `INT` is the EXTINT *wake input*, not data-ready), so on that board
+the task runs on its DDC-poll fallback: it reads the freshest NAV-PVT once per fix interval, sleeping
+on a timer in between, so the M33 still wakes only ~once a second (the same cadence TX-Ready would
+give at 1 Hz — no real cost). TX-Ready support stays in the driver for a board that *does* route it;
+nothing to wire on the GPS-21834.
 
 **Power tip:** wire **V_BCKP** on the SAM-M10Q to an always-on rail / supercap / coin cell. It backs
 the receiver's RTC + ephemeris across a power-off, turning every cold ~30 s fix into a hot/warm fix
