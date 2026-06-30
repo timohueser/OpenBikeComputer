@@ -87,6 +87,23 @@ pub fn normalize_deg(mut deg: f32) -> f32 {
     deg
 }
 
+/// The smallest absolute angular distance between two headings in degrees — always in `[0, 180]`,
+/// taking the short way around the circle (so `350°` and `10°` are `20°` apart, not `340°`). A
+/// magnetometer driver uses this to **dead-band** its output: only publish a new heading once it has
+/// moved more than some threshold, so sensor noise while the device is held still doesn't repaint a
+/// heading-up map. Pure subtraction + a wrap, no `libm`.
+pub fn angle_diff(a: f32, b: f32) -> f32 {
+    let mut d = a - b;
+    if d < 0.0 {
+        d = -d;
+    }
+    if d > 180.0 {
+        360.0 - d
+    } else {
+        d
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,5 +148,15 @@ mod tests {
         close(normalize_deg(450.0), 90.0);
         close(normalize_deg(0.0), 0.0);
         close(normalize_deg(359.999), 359.999);
+    }
+
+    #[test]
+    fn angle_diff_takes_the_short_way() {
+        close(angle_diff(10.0, 20.0), 10.0);
+        close(angle_diff(20.0, 10.0), 10.0); // symmetric
+        close(angle_diff(350.0, 10.0), 20.0); // wraps across 0
+        close(angle_diff(10.0, 350.0), 20.0);
+        close(angle_diff(0.0, 180.0), 180.0); // antipodal is the max
+        close(angle_diff(90.0, 90.0), 0.0);
     }
 }
