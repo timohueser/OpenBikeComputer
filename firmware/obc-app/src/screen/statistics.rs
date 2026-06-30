@@ -35,10 +35,11 @@ use obc_render::{
     text::{Font, TextAlign},
     Canvas, RenderStats,
 };
-use obc_route::Profile;
 
 use crate::activity::Activity;
 use crate::input::Gesture;
+use crate::settings::Settings;
+use crate::stat_fields;
 
 use super::{palette, title_frame, Ctx, MapScreen, Render, Screen, Transition};
 
@@ -84,6 +85,12 @@ pub struct StatisticsScreen {
     /// deadline — so the `wrapping_sub` elapsed check stays correct across the `u32`
     /// millis wrap, matching the gesture/hold-hint timers.
     last_scrub_ms: u32,
+    /// Which page of the customizable stat grid is showing. The grid auto-cycles (the chart keeps
+    /// the encoder, so there's no manual flip); [`animate`](Self::animate) advances it on a timer.
+    page: usize,
+    /// Instant of the last page flip (same wrap-safe `wrapping_sub` scheme as `last_scrub_ms`).
+    /// `None` until the first frame anchors it, so the first page gets a full dwell on entry.
+    last_flip_ms: Option<u32>,
 }
 
 impl Default for StatisticsScreen {
@@ -94,7 +101,7 @@ impl Default for StatisticsScreen {
 
 impl StatisticsScreen {
     pub fn new() -> Self {
-        StatisticsScreen { mode: Mode::Cursor, cursor: None, zoom: 1.0, last_scrub_ms: 0 }
+        StatisticsScreen { mode: Mode::Cursor, cursor: None, zoom: 1.0, last_scrub_ms: 0, page: 0, last_flip_ms: None }
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
@@ -148,13 +155,38 @@ impl StatisticsScreen {
     /// reports `false` and the host renders nothing. This eagerly clears the same scrub that
     /// [`effective_cursor`](Self::effective_cursor) already retires lazily, so the two agree;
     /// it just makes the moment observable. Idempotent: once sprung back it returns `false`.
-    pub fn animate(&mut self, now_ms: u32) -> bool {
+    pub fn animate(&mut self, now_ms: u32, settings: &Settings) -> bool {
         let sprung_back =
             self.mode == Mode::Cursor && self.cursor.is_some() && now_ms.wrapping_sub(self.last_scrub_ms) >= IDLE_MS;
         if sprung_back {
             self.cursor = None;
         }
-        sprung_back
+        sprung_back | self.advance_page(now_ms, settings)
+    }
+
+    /// Advance the grid's page auto-cycle, returning whether the page flipped (so the host repaints).
+    /// With more than one page, the view dwells [`stat_cycle_s`](Settings::stat_cycle_s) on each
+    /// before stepping to the next; with one page it pins page 0 and re-anchors the timer so a later
+    /// expansion (the rider adds fields) starts a fresh dwell rather than flipping instantly. The
+    /// anchor is wrap-safe (`wrapping_sub`) and lazily set on the first frame, so entering the screen
+    /// gives the first page its full dwell.
+    fn advance_page(&mut self, now_ms: u32, settings: &Settings) -> bool {
+        let pages = stat_fields::page_count(&settings.stat_fields);
+        let last = *self.last_flip_ms.get_or_insert(now_ms);
+        if pages <= 1 {
+            self.page = 0;
+            self.last_flip_ms = Some(now_ms);
+            return false;
+        }
+        self.page = self.page.min(pages - 1);
+        let period_ms = settings.stat_cycle_s.max(1) as u32 * 1000;
+        if now_ms.wrapping_sub(last) >= period_ms {
+            self.page = (self.page + 1) % pages;
+            self.last_flip_ms = Some(now_ms);
+            true
+        } else {
+            false
+        }
     }
 
     /// The cursor fraction in effect now: the scrub position while it's still live,
@@ -235,7 +267,7 @@ impl StatisticsScreen {
         if off {
             super::write_off_route(&mut readout, "off ", rx.activity.dist_to_route_m, units);
         } else {
-            let _ = write!(readout, "grade {}%", grade_at(profile, total, cursor_frac));
+            let _ = write!(readout, "grade {}%", stat_fields::grade_at(profile, total, cursor_frac));
         }
         title_frame(&mut cv, w, h, "STATS", &readout);
 
@@ -298,54 +330,23 @@ impl StatisticsScreen {
             cv.round(rect(chart_x, prog_y, fill_w, 8), 4, live_color);
         }
 
-        // 2×3 stat grid
-        // done/climbed are *actually-ridden* (the rider's effort, keep counting off-route);
-        // to-go/to-climb are necessarily *route-relative* (remaining along the route).
-        let a: &Activity = rx.activity;
-        let to_go_m = total.saturating_sub(a.progress_m);
-        let climbed = a.climb_m() as u32;
-        // Remaining climb is route-relative: the route's total ascent minus what's been
-        // climbed by the live position, read from the profile at column resolution.
-        let to_climb = route.total_ascent_m.saturating_sub(profile.ascent_to(live_frac));
+        // Customizable stat grid: the rider's selected fields, paginated SLOTS_PER_PAGE (3x2) to a
+        // page and auto-cycled by `animate` (the chart above keeps the encoder, so paging is timed).
+        // Each placed field renders its own tile via the registry; a two-span field fills a whole row.
+        // No page indicator: the panels get the full height — paging is just the timed auto-cycle.
+        let fields = &rx.settings.stat_fields;
+        let page = self.page.min(stat_fields::page_count(fields) - 1);
 
-        // Values are **number only** — the unit lives in the tile's caption (Wahoo style),
-        // so the big Display digits fit the half-width tiles instead of overrunning them.
-        // Speeds keep one decimal; distances drop it past 100 so they stay ≤ 3 digits. Every
-        // figure is converted through `units` (no-op for metric); the captions follow suit.
-        let speed = fmt_kmh(rx.state.user_fix.and_then(|f| f.speed_mps).map(|mps| units.speed(mps * 3.6)));
-        let avg = fmt_kmh(a.avg_kmh().map(|kmh| units.speed(kmh)));
-        let done = fmt_km(units.dist(a.ridden_m / 1000.0));
-        let to_go = fmt_km(units.dist(to_go_m as f32 / 1000.0));
-        let climbed_s = fmt_int(units.elev(climbed as f32) as u32);
-        let to_climb_s = fmt_int(units.elev(to_climb as f32) as u32);
-
-        // Unit-bearing captions: `Units` is the one source of truth for the metric→imperial labels
-        // (speed KPH→MPH, distance KM→MI), shared with the Units screen. The composite captions glue
-        // a fixed word onto that label; the climb tiles keep their word caption (the up-arrow + the
-        // global unit imply m vs ft).
-        let avg_cap = cap("AVG ", units.speed_label());
-        let done_cap = cap(units.dist_label(), " DONE");
-        let to_go_cap = cap(units.dist_label(), " TO GO");
-        // (caption [unit-bearing], value [number only], climb-arrow?). The up-arrow on the
-        // climb tiles reads as "elevation".
-        let cells: [(&str, &str, bool); 6] = [
-            (units.speed_label(), &speed, false),
-            (&avg_cap, &avg, false),
-            (&done_cap, &done, false),
-            (&to_go_cap, &to_go, false),
-            ("CLIMBED", &climbed_s, true),
-            ("TO CLIMB", &to_climb_s, true),
-        ];
         let gap = 6;
         let col_w = (chart_w - gap) / 2;
-        // Tuck the grid up a little under the progress bar so the three rows get more
-        // height (≈54 px), giving the big value room to sit off the tile's bottom edge.
         let grid_top = prog_y + 16;
-        let row_h = ((h - 10 - grid_top - 2 * gap) / 3).max(20);
-        for (i, &(label, value, arrow)) in cells.iter().enumerate() {
-            let x = chart_x + (i % 2) as i32 * (col_w + gap);
-            let y = grid_top + (i / 2) as i32 * (row_h + gap);
-            tile(&mut cv, rect(x, y, col_w, row_h), label, value, arrow);
+        let row_h = ((h - 10 - grid_top - 2 * gap) / stat_fields::ROWS_PER_PAGE as i32).max(20);
+        for placed in stat_fields::page_fields(fields, page) {
+            let cell = placed.field.cell(rx);
+            let x = chart_x + placed.col as i32 * (col_w + gap);
+            let y = grid_top + placed.row as i32 * (row_h + gap);
+            let tile_w = if placed.field.span() == 2 { chart_w } else { col_w };
+            tile(&mut cv, rect(x, y, tile_w, row_h), &cell.caption, &cell.value, cell.arrow);
         }
 
         RenderStats::default()
@@ -359,44 +360,6 @@ fn live_frac(a: &Activity) -> f32 {
         return 0.0;
     }
     (a.progress_m as f32 / a.route_total_m as f32).clamp(0.0, 1.0)
-}
-
-/// A km figure for a stat tile: one decimal up to 100 km, none past it, so the value stays
-/// ≤ 3 digits and fits the half-width tile.
-fn fmt_km(km: f32) -> heapless::String<8> {
-    let mut s = heapless::String::new();
-    let _ = if km >= 100.0 { write!(s, "{km:.0}") } else { write!(s, "{km:.1}") };
-    s
-}
-
-/// A speed in km/h to one decimal, or `--` when unknown (no fix / no moving time yet).
-fn fmt_kmh(kmh: Option<f32>) -> heapless::String<8> {
-    let mut s = heapless::String::new();
-    match kmh {
-        Some(v) => {
-            let _ = write!(s, "{v:.1}");
-        }
-        None => {
-            let _ = s.push_str("--");
-        }
-    }
-    s
-}
-
-/// An integer-metres figure (climbed / to-climb) as plain digits.
-fn fmt_int(m: u32) -> heapless::String<8> {
-    let mut s = heapless::String::new();
-    let _ = write!(s, "{m}");
-    s
-}
-
-/// Glue two caption fragments into a stat-tile caption (e.g. `"AVG "` + `Units::speed_label()`,
-/// or `Units::dist_label()` + `" TO GO"`), keeping the unit label as the single source of truth.
-fn cap(a: &str, b: &str) -> heapless::String<12> {
-    let mut s = heapless::String::new();
-    let _ = s.push_str(a);
-    let _ = s.push_str(b);
-    s
 }
 
 /// Draw a small magnifying-glass icon on a parchment chip — the wordless "Zoom mode is on"
@@ -448,25 +411,6 @@ where
     cv.text(value, Point::new(vx, vy), Font::Display, TextAlign::Left, INK);
 }
 
-/// The grade (%) at fractional position `frac`: rise over run across a small fixed window
-/// of the route around it, using each end's mid-band elevation (base level). Zero when the
-/// run is degenerate.
-fn grade_at(profile: &Profile, total_distance_m: u32, frac: f32) -> i32 {
-    // ±1.5 % of the route — a touch of smoothing.
-    const HALF: f32 = 0.015;
-    let lo = (frac - HALF).max(0.0);
-    let hi = (frac + HALF).min(1.0);
-    let mid = |t: f32| {
-        let (a, b) = profile.at(t);
-        (a as i32 + b as i32) / 2
-    };
-    let run_m = (hi - lo) * total_distance_m as f32;
-    if run_m < 1.0 {
-        return 0;
-    }
-    ((mid(hi) - mid(lo)) as f32 / run_m * 100.0) as i32
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -495,26 +439,78 @@ mod tests {
     /// frozen cursor draws the same thing, so the host renders nothing); after it, `false`.
     #[test]
     fn animate_reports_the_spring_back_once_at_the_deadline() {
+        // Default settings = the six classic tiles = a single page, so the page auto-cycle never
+        // fires here and this isolates the cursor spring-back.
+        let cfg = Settings::default();
         let mut s = StatisticsScreen::new();
         // Untouched: tracking the live position already, nothing to settle.
-        assert!(!s.animate(1_000), "an untouched view never self-dirties");
+        assert!(!s.animate(1_000, &cfg), "an untouched view never self-dirties");
 
         s.on_turn(1, LIVE, 1_000); // scrub the cursor away from live
-        assert!(!s.animate(1_000), "the scrub frame itself isn't a spring-back");
-        assert!(!s.animate(1_000 + IDLE_MS - 1), "still frozen inside the idle window");
-        assert!(s.animate(1_000 + IDLE_MS), "springs back exactly at the deadline → dirty once");
+        assert!(!s.animate(1_000, &cfg), "the scrub frame itself isn't a spring-back");
+        assert!(!s.animate(1_000 + IDLE_MS - 1, &cfg), "still frozen inside the idle window");
+        assert!(s.animate(1_000 + IDLE_MS, &cfg), "springs back exactly at the deadline → dirty once");
         assert_eq!(s.effective_cursor(1_000 + IDLE_MS, LIVE), LIVE, "and it really is back at live");
-        assert!(!s.animate(1_000 + IDLE_MS + 5_000), "and only once — it stays put afterwards");
+        assert!(!s.animate(1_000 + IDLE_MS + 5_000, &cfg), "and only once — it stays put afterwards");
     }
 
     /// Zoom mode is exempt from the spring-back (the frozen cursor is the zoom centre), so
     /// `animate` must never fire there.
     #[test]
     fn animate_never_springs_back_in_zoom_mode() {
+        let cfg = Settings::default();
         let mut s = StatisticsScreen::new();
         s.on_turn(1, LIVE, 0); // a scrub…
         s.mode = Mode::Zoom; // …then into zoom (as `Hold` would)
-        assert!(!s.animate(IDLE_MS * 3), "zoom mode holds the cursor — no spring-back");
+        assert!(!s.animate(IDLE_MS * 3, &cfg), "zoom mode holds the cursor — no spring-back");
+    }
+
+    /// A seven-field selection (two pages) auto-cycles: the first frame anchors a full dwell, the
+    /// page flips exactly at each period, and wraps back round — the timed paging the grid relies on
+    /// now that the chart keeps the encoder.
+    #[test]
+    fn page_auto_cycles_on_the_timer() {
+        let mut cfg = Settings::default();
+        assert!(cfg.stat_fields.push(crate::stat_fields::StatField::Grade), "7 fields → two pages");
+        cfg.stat_cycle_s = 5;
+        let period = cfg.stat_cycle_s as u32 * 1000;
+        let mut s = StatisticsScreen::new();
+        // First frame anchors the timer — page 0 gets a full dwell, no flip.
+        assert!(!s.animate(10_000, &cfg), "the anchoring frame doesn't flip");
+        assert_eq!(s.page, 0);
+        assert!(!s.animate(10_000 + period - 1, &cfg), "still dwelling just before the deadline");
+        assert_eq!(s.page, 0);
+        assert!(s.animate(10_000 + period, &cfg), "flips to page 1 at the deadline → dirty");
+        assert_eq!(s.page, 1);
+        assert!(s.animate(10_000 + 2 * period, &cfg), "and wraps back to page 0 a period later");
+        assert_eq!(s.page, 0);
+    }
+
+    /// A single-page selection (the default six) never auto-cycles, however long we wait, and pins
+    /// page 0 — so the dots/cycle machinery stays invisible until the rider overfills a page.
+    #[test]
+    fn single_page_grid_never_flips() {
+        let cfg = Settings::default();
+        let mut s = StatisticsScreen::new();
+        assert!(!s.animate(1_000, &cfg));
+        assert!(!s.animate(1_000_000, &cfg), "one page never flips");
+        assert_eq!(s.page, 0);
+    }
+
+    /// The page timer is wrap-safe like the cursor spring-back: anchored just before the `u32` millis
+    /// wrap, it still flips exactly one period later (the `wrapping_sub` elapsed check), not instantly.
+    #[test]
+    fn page_cycle_is_wrap_safe() {
+        let mut cfg = Settings::default();
+        assert!(cfg.stat_fields.push(crate::stat_fields::StatField::Grade));
+        cfg.stat_cycle_s = 5;
+        let period = cfg.stat_cycle_s as u32 * 1000;
+        let t0 = u32::MAX - 1_000; // anchor 1 s before the wrap
+        let mut s = StatisticsScreen::new();
+        assert!(!s.animate(t0, &cfg), "the anchoring frame doesn't flip");
+        assert!(!s.animate(t0.wrapping_add(period - 1), &cfg), "still dwelling across the wrap");
+        assert!(s.animate(t0.wrapping_add(period), &cfg), "flips a full period later, across the wrap");
+        assert_eq!(s.page, 1);
     }
 
     /// The fix (issue #6): near the `u32` millis wrap, the old `now + IDLE_MS` deadline

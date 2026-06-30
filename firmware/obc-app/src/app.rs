@@ -773,7 +773,16 @@ impl App {
     fn top_is_settings(&self) -> bool {
         matches!(
             self.stack.last(),
-            Some(Screen::Settings(_) | Screen::DateTime(_) | Screen::Units(_) | Screen::Power(_) | Screen::Reset(_))
+            Some(
+                Screen::Settings(_)
+                    | Screen::DateTime(_)
+                    | Screen::Units(_)
+                    | Screen::Stats(_)
+                    | Screen::StatFields(_)
+                    | Screen::AddField(_)
+                    | Screen::Power(_)
+                    | Screen::Reset(_)
+            )
         )
     }
 
@@ -880,7 +889,7 @@ impl App {
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
         let mut animated = false;
         for scr in self.stack.iter_mut().skip(base) {
-            animated |= scr.animate(self.now_ms, now);
+            animated |= scr.animate(self.now_ms, now, &self.settings);
         }
         self.map_dirty |= animated;
     }
