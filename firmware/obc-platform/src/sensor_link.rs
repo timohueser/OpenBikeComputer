@@ -3,23 +3,25 @@
 //! `poll`.
 //!
 //! This is the real-hardware sibling of [`crate::debug_link`]'s `handoff`: a high-priority embassy
-//! task in the board crate drives the I²C bus (SAM-M10Q GPS + BMP581 baro), and on each coherent
-//! sample [`signal`](embassy_sync::signal::Signal)s the values across to these statics. The HAL-trait
-//! impls here — [`GpsLocation`], [`BaroAltimeter`], [`SensorTemp`] — just **drain** them with
-//! `try_take`, so the app's `LocationSource::poll` / `AltimeterSource::poll` /
-//! `TemperatureSource::poll` yield `Some` only on the tick a fresh sample arrived and `None`
-//! between (a cold start, a GPS dropout, or the gap between fixes). That gives the app the exact
-//! fresh-fix mailbox semantics the seam documents — **zero I²C traffic at the frame rate**, and no
-//! teleport on a stale fix (issue #43) — for free.
+//! task in the board crate drives the I²C bus (SAM-M10Q GPS + BMP581 baro + an ICM-20948 magnetometer),
+//! and on each coherent sample [`signal`](embassy_sync::signal::Signal)s the values across to these
+//! statics. The HAL-trait impls here — [`GpsLocation`], [`BaroAltimeter`], [`SensorTemp`], [`GpsClock`],
+//! [`MagCompass`] — just **drain** them with `try_take`, so the app's `LocationSource::poll` /
+//! `AltimeterSource::poll` / `TemperatureSource::poll` / `ClockSource::poll` / `CompassSource::poll`
+//! yield `Some` only on the tick a fresh sample arrived and `None` between (a cold start, a GPS
+//! dropout, or the gap between fixes). That gives the app the exact fresh-fix mailbox semantics the
+//! seam documents — **zero I²C traffic at the frame rate**, and no teleport on a stale fix (issue
+//! #43) — for free.
 //!
-//! The pure decode this bridges (UBX framing, NAV-PVT → [`Fix`], BMP581 raw → metres) lives in the
-//! always-compiled [`crate::ubx`] / [`crate::bmp581`] modules; only this embassy-sync plumbing pulls
-//! `embassy-sync`, so it is gated behind the `sensor-link` feature (the board firmware enables it in
-//! its default features; the host workspace never pulls it).
+//! The pure decode this bridges (UBX framing, NAV-PVT → [`Fix`], BMP581 raw → metres, magnetometer
+//! axes → heading) lives in the always-compiled [`crate::ubx`] / [`crate::bmp581`] / [`crate::compass`]
+//! / [`crate::icm20948`] modules; only this embassy-sync plumbing pulls `embassy-sync`, so it is gated
+//! behind the `sensor-link` feature (the board firmware enables it in its default features; the host
+//! workspace never pulls it).
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
-use obc_app::{AltimeterSource, ClockSource, Fix, GpsTime, LocationSource, TemperatureSource};
+use obc_app::{AltimeterSource, ClockSource, CompassSource, Fix, GpsTime, LocationSource, TemperatureSource};
 
 /// Latest GPS fix, fresh-fix semantics (`try_take` yields it once) — set by the sensor task on a
 /// valid NAV-PVT, drained by [`GpsLocation`]. **Public** so the event-driven main loop (issue #219)
@@ -34,6 +36,10 @@ static TEMP: Signal<CriticalSectionRawMutex, f32> = Signal::new();
 /// has fully resolved — **independent of the position fix** ([`FIX`]), so the clock can set during
 /// acquisition (before a 3D lock). Drained by [`GpsClock`].
 static GPS_TIME: Signal<CriticalSectionRawMutex, GpsTime> = Signal::new();
+/// Latest electronic-compass heading (degrees CW from north), set by the sensor task from the
+/// magnetometer read coincident with each fix, drained by [`MagCompass`]. Independent of the GPS
+/// course — it's the heading the app uses while stopped.
+static HEADING: Signal<CriticalSectionRawMutex, f32> = Signal::new();
 /// Desired GPS fix interval (seconds) — set by the ride loop when the #117 Power-screen setting
 /// changes, awaited by the sensor task ([`wait_rate`]) to re-issue the M10 `CFG-RATE` VALSET. A
 /// `Signal` (latch), not a queue: only the newest requested rate matters.
@@ -79,6 +85,12 @@ pub fn dispatch_temp(c: f32) {
 /// a valid position fix). Overwrites any unconsumed value; the app only wants the freshest.
 pub fn dispatch_time(t: GpsTime) {
     GPS_TIME.signal(t);
+}
+
+/// Publish a fresh compass heading in degrees CW from north (the sensor task, from the magnetometer
+/// read taken with each fix). Overwrites any unconsumed value; the app only wants the freshest.
+pub fn dispatch_heading(deg: f32) {
+    HEADING.signal(deg);
 }
 
 /// Request a new GPS fix interval (seconds) — the ride loop calls this when the persisted
@@ -143,5 +155,14 @@ pub struct GpsClock;
 impl ClockSource for GpsClock {
     fn poll(&mut self) -> Option<GpsTime> {
         GPS_TIME.try_take()
+    }
+}
+
+/// The electronic compass from the real magnetometer. Hand `&mut MagCompass` to `Sensors::compass`;
+/// the app adopts it as the heading-up orientation while the rider is stopped (no GPS course).
+pub struct MagCompass;
+impl CompassSource for MagCompass {
+    fn poll(&mut self) -> Option<f32> {
+        HEADING.try_take()
     }
 }

@@ -89,15 +89,21 @@ and SD `CS` stays on P1.12.
 | Pin   | Signal     | Notes                                          |
 |-------|------------|------------------------------------------------|
 | P0.00 | SD CS      | moved here in the FLPR build (held LOW)         |
-| P0.01 | I²C SDA    | shared GPS + altimeter bus (TWIM30, #218)       |
-| P0.02 | I²C SCL    | shared GPS + altimeter bus (TWIM30, #218)       |
+| P0.01 | I²C SDA    | shared GPS + altimeter + compass bus (TWIM30, #218) |
+| P0.02 | I²C SCL    | shared GPS + altimeter + compass bus (TWIM30, #218) |
 | P0.03 | GPS TX-Ready | *optional* DDC data-ready IRQ (active-high)     |
 | P0.04 | BTN3       | SELECT                                          |
 
-The shared **I²C / Qwiic** bus on TWIM30 (the low-power-domain instance that reaches P0) carries
-both real sensors (issue #218): the u-blox **SAM-M10Q** GNSS (DDC address `0x42`) and the Bosch
-**BMP581** altimeter (`0x47`, or `0x46` if the breakout straps `SDO` low). The addresses don't
-clash, so they share SDA/SCL.
+The shared **I²C / Qwiic** bus on TWIM30 (the low-power-domain instance that reaches P0) carries the
+real sensors (issue #218 + compass): the u-blox **SAM-M10Q** GNSS (DDC address `0x42`), the Bosch
+**BMP581** altimeter (`0x47`, or `0x46` if the breakout straps `SDO` low), and an electronic compass
+— the **AK09916** magnetometer inside a TDK **ICM-20948** (the IMU itself at `0x68`/`0x69`; the ICM is
+put in **I²C bypass** so the magnetometer answers directly at `0x0C`). None of the addresses clash, so
+all three share SDA/SCL with no extra pins. **Only the 3 magnetometer axes are used** — accel/gyro are
+left asleep — and the heading is read once per GPS fix, so the bus stays quiet between fixes. The
+compass supplies the heading-up orientation while the rider is *stopped* (the GPS reports no course
+below walking pace); the shipping board is expected to drop the 9-axis IMU for a plain 3-axis
+magnetometer, which the [`obc_platform::compass`] / [`obc_platform::icm20948`] split is designed for.
 
 The GPS **TX-Ready** line on P0.03 is an *optional* data-ready interrupt: when present it asserts as a
 NAV-PVT message becomes ready and wakes the event-driven sensor task, so the bus does **zero** work
