@@ -998,6 +998,21 @@ impl App {
         self.map_dirty |= animated;
     }
 
+    /// The single "next wake deadline" the event-driven host arms one timer to (issue #219): the
+    /// soonest, in millis from `now_ms`, that any visible screen needs a *timed* redraw — or `None`
+    /// when nothing on screen is time-animating, so the host can sleep until an input or sensor event
+    /// instead. Folds [`Screen::next_wake_in`] over the same visible range
+    /// [`advance_animations`](App::advance_animations) animates (topmost opaque screen upward), with
+    /// the wall-clock minute boundary pre-computed here since [`App`] owns the clock. **Call right
+    /// after `advance_animations`** with the same `now_ms`: any *due* animation has then already
+    /// fired, so the returned deadline is strictly in the future. Pure policy — the host turns it into
+    /// a `Timer` and selects it against the input/sensor wakes; the loop period is gone.
+    pub fn ms_until_next_wake(&self, now_ms: u32) -> Option<u32> {
+        let ms_to_next_minute = self.wall_clock.ms_to_next_minute(now_ms);
+        let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
+        self.stack.iter().skip(base).filter_map(|s| s.next_wake_in(now_ms, ms_to_next_minute, &self.settings)).min()
+    }
+
     /// Render the current screen and any overlays above it into `target`, a
     /// `w`×`h` pixel display. Draws from the topmost *opaque* screen upward, so an
     /// overlay (Ride control) composites over the still-visible map. Returns the
@@ -1809,5 +1824,27 @@ mod tests {
         assert!(app.take_dirty().map, "the minute rolled over → exactly one repaint");
         app.advance_animations(InputClock(90_000));
         assert!(!app.take_dirty().map, "and it settles back to quiet until the next minute");
+    }
+
+    /// `ms_until_next_wake` reports the soonest timed-redraw deadline across the visible stack — the
+    /// single timer the event-driven host arms (issue #219). On Home it's the wall-clock minute
+    /// boundary; on a static menu it's `None` (sleep until input). The fold mirrors the same visible
+    /// range `advance_animations` walks, so the host wakes exactly when a screen would self-dirty.
+    #[test]
+    fn ms_until_next_wake_reports_the_home_minute_then_none_on_a_static_menu() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0)); // base = Home
+        app.set_settings(crate::settings::Settings {
+            clock: DateTime { year: 2025, month: 1, day: 1, hour: 12, minute: 0 },
+            ..Default::default()
+        });
+        // Home shows a clock → the deadline is the time left until the displayed minute rolls over.
+        app.advance_animations(InputClock(0));
+        assert_eq!(app.ms_until_next_wake(0), Some(60_000), "at a boundary the whole minute remains");
+        app.advance_animations(InputClock(25_000));
+        assert_eq!(app.ms_until_next_wake(25_000), Some(35_000), "25 s in, 35 s until the next repaint");
+        // Navigate to the static Menu (BackHold): it animates on nothing, so there is no deadline —
+        // the host sleeps until the next input or sensor event.
+        app.apply_gesture(Gesture::BackHold);
+        assert_eq!(app.ms_until_next_wake(25_000), None, "a static menu needs no timed wake");
     }
 }

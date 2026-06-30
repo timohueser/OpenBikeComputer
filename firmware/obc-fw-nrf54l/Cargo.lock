@@ -781,10 +781,12 @@ dependencies = [
 name = "obc-platform"
 version = "0.1.0"
 dependencies = [
+ "embassy-futures",
  "embassy-sync",
  "embassy-time",
  "embedded-graphics",
  "embedded-hal 1.0.0",
+ "embedded-hal-async",
  "embedded-sdmmc",
  "heapless 0.8.0",
  "libm",
