@@ -628,6 +628,7 @@ mod tests {
                 now_ms: 0,
                 now,
                 hold_progress: 0.0,
+                no_fix: false,
                 clock: &NoopClock,
             };
             StatField::Elevation.cell(&rx).value
