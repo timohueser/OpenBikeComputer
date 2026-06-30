@@ -136,6 +136,13 @@ pub async fn sensor_task(mut twim: Twim<'static>, mut txready: Input<'static>) {
             pvt.fix_type, pvt.num_sv, pvt.hacc_mm, pvt.pdop, pvt.lat, pvt.lon
         );
 
+        // Publish the receiver's UTC time (issue #223) the moment it's valid + fully resolved —
+        // **before** the position-fix gate below, so "Set from GPS" can set the clock during
+        // acquisition, while there's still no usable fix. A `None` (unresolved) publishes nothing.
+        if let Some(t) = pvt.utc_time() {
+            sensor_link::dispatch_time(t);
+        }
+
         let Some(fix) = pvt.to_fix() else {
             // No usable fix this epoch (cold start / outage). Publish nothing → poll() stays None.
             if had_fix {

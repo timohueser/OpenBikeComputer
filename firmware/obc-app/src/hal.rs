@@ -4,7 +4,7 @@
 //! **simulator**, the control panel (and later a GPX replay) implement them. The
 //! app polls the traits and is oblivious to which side it's running on.
 
-use crate::settings::Settings;
+use crate::settings::{DateTime, Settings};
 
 /// A position/orientation fix, however it was obtained (GPS chip, GPX replay,
 /// manual control-panel override).
@@ -93,6 +93,35 @@ pub trait TemperatureSource {
     fn poll(&mut self) -> Option<f32>;
 }
 
+/// A UTC timestamp from the GPS receiver (issue #223) — the [`ClockSource`] hands one over so the
+/// app can set the wall clock from GPS. Minute-resolution [`DateTime`] (the device only shows
+/// `HH:MM`) **plus** the seconds-into-the-minute, kept separately because [`DateTime`] carries no
+/// seconds: the app back-dates the [`WallClock`](crate::WallClock) epoch by `second` so the
+/// displayed minute rolls over at the true instant rather than up to a fix-interval late.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GpsTime {
+    /// The receiver's UTC date + time of day (no seconds — see the struct docs).
+    pub utc: DateTime,
+    /// Seconds into the current minute (0–59), for the epoch back-date.
+    pub second: u8,
+}
+
+/// Source of **UTC time** from the GPS receiver (issue #223) — what makes the "Set from GPS" clock
+/// option actually work. Polled each tick like the other sensors:
+/// [`poll`](ClockSource::poll) returns `Some` only when a *fresh* resolved UTC time is available
+/// and `None` otherwise (no time lock yet, or the gap between fixes). The receiver resolves time
+/// *before* a 3D position, so this can deliver a stamp during acquisition — the app sets the clock
+/// even while the "No GPS Fix" banner is still up.
+///
+/// The app consumes it **only** when [`Settings::gps_time`](crate::Settings::gps_time) is set, and
+/// does **not** persist on every stamp (the set-point self-heals from GPS each boot; a per-second
+/// write would thrash the store). `None` on a host with no GPS time (the simulator, tests) — the
+/// clock then stays whatever the user set by hand.
+pub trait ClockSource {
+    /// The latest resolved UTC time from the receiver, or `None` if none is fresh this tick.
+    fn poll(&mut self) -> Option<GpsTime>;
+}
+
 /// Source of the rider's **heading** from a magnetometer (electronic compass) — the direction
 /// the device is pointing, independent of motion. Its one job is the heading when the GPS can't
 /// supply a course: a real receiver drops [`Fix::course`] to `None` below walking pace (see
@@ -154,6 +183,10 @@ pub struct Sensors<'a> {
     /// — the app then has no temperature to store. On the device it's the BMP581's per-fix reading,
     /// coherent with the altitude (issue #218).
     pub temperature: Option<&'a mut dyn TemperatureSource>,
+    /// The GPS UTC time source, or `None` when none is wired (the sim, tests) — the clock then
+    /// stays whatever the user set by hand. On the device it's the SAM-M10Q's resolved time, used
+    /// only when "Set from GPS" is on (issue #223).
+    pub clock: Option<&'a mut dyn ClockSource>,
     /// The electronic compass, or `None` when no heading source is wired (tests, a host that
     /// only streams position) — the heading-up map then just holds north / the last GPS course
     /// while stopped, instead of following a magnetometer.
