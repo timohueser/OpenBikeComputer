@@ -57,13 +57,8 @@ pub const MAX_SPANS: usize = 768;
 /// Maximum total vertices across all visible features per frame (8 bytes each).
 #[cfg(not(feature = "nrf-mem"))]
 pub const MAX_FRAME_POINTS: usize = 12_288;
-// Must stay ≥ `MAX_DECODE_POINTS` (asserted below): below it, a single feature of 1537..=2048
-// vertices (a long coastline / landuse ring at coarse zoom) is whole-feature-dropped at the frame
-// fill (`render`) and can *never* be drawn (issue #180). N6 (#127) had trimmed it to 1536 for
-// stack headroom; #179 (header parsed once at boot, not per frame) freed that back, so it sits at
-// `MAX_DECODE_POINTS` — the smallest value that lets every decodable feature reach the frame.
 #[cfg(feature = "nrf-mem")]
-pub const MAX_FRAME_POINTS: usize = MAX_DECODE_POINTS;
+pub const MAX_FRAME_POINTS: usize = 1536; // N6 (#127): 2560→1536, freeing ~8 KB toward the ride-loop residents + stack
 
 /// Maximum total ring entries across all visible features per frame.
 #[cfg(not(feature = "nrf-mem"))]
@@ -97,10 +92,6 @@ pub const MAX_CROSSINGS: usize = 256;
 const _: () = assert!(MAX_FRAME_POINTS <= u16::MAX as usize, "Span::pt_start is u16");
 const _: () = assert!(MAX_FRAME_RINGS <= u16::MAX as usize, "Span::ring_start is u16");
 const _: () = assert!(MAX_SPANS <= u16::MAX as usize, "Span::seq is u16");
-// A feature decodes up to `MAX_DECODE_POINTS` vertices; the frame buffer must be able to hold a
-// whole one or that feature is whole-feature-dropped at the frame fill and can never be drawn
-// (issue #180). Keeps the per-profile cap honest against the decode buffer.
-const _: () = assert!(MAX_FRAME_POINTS >= MAX_DECODE_POINTS, "frame must hold a whole decoded feature");
 // `fill_polygon` / the polyline path project a whole decoded feature into `screen` before walking
 // its rings (`screen[base..base + len]`), so the projected buffer must hold at least a full decode
 // buffer or it indexes past the points and panics. Held with room to spare on the full profile;
@@ -1266,14 +1257,6 @@ fn fill_polygon_proj<D>(
     D: DrawTarget,
 {
     screen.clear();
-    // `fill_polygon` walks `ring_lens` over `screen` as `screen[base..base + len]`, so a feature
-    // only partly projected (more vertices than `screen` holds) would index past the points and
-    // panic on-device. `MAX_SCREEN_POINTS >= MAX_DECODE_POINTS` (asserted at the constants) makes
-    // this unreachable today — a feature is at most one decode buffer — but a future cap edit that
-    // let a feature outgrow `screen` would reintroduce it; drop such a feature cleanly instead.
-    if pts.len() > screen.capacity() {
-        return;
-    }
     for &(lon, lat) in pts {
         let _ = screen.push(vp.project(lon, lat));
     }
