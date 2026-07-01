@@ -10,6 +10,7 @@
 		1F69783C6BDF4B68008643A9 /* OBCUI in Frameworks */ = {isa = PBXBuildFile; productRef = F36D240ABD9B3BD22B7361D6 /* OBCUI */; };
 		381F3D661B6D93D535F1B08E /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DBBC2F121AB1951FD912F9D /* RootView.swift */; };
 		5E713787D6892F949C215D70 /* OBCMock in Frameworks */ = {isa = PBXBuildFile; productRef = DD8B1F44D9B64524AB5825E1 /* OBCMock */; };
+		A46E501EFF36545E13D8EA29 /* GalleryLaunchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E99516A090B9A4E907F609D4 /* GalleryLaunchTests.swift */; };
 		A57F14D5122AC017DA1EDD93 /* OBCCompanionApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E65FA62E1F2D28ACDD97577 /* OBCCompanionApp.swift */; };
 		B12FD7496DD1AC79DE5DD29B /* DevMockOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8847F668482A0FF17814B592 /* DevMockOverlay.swift */; };
 		CC2C394178B45BFA476BFD56 /* ScenarioLaunchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34BE4BBD9BB3B75A4E34EDE3 /* ScenarioLaunchTests.swift */; };
@@ -40,6 +41,7 @@
 		8847F668482A0FF17814B592 /* DevMockOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevMockOverlay.swift; sourceTree = "<group>"; };
 		8E65FA62E1F2D28ACDD97577 /* OBCCompanionApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OBCCompanionApp.swift; sourceTree = "<group>"; };
 		CC647C477B2AA83C35D9BB92 /* OBCCompanionUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = OBCCompanionUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		E99516A090B9A4E907F609D4 /* GalleryLaunchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryLaunchTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -91,6 +93,7 @@
 		C5B8EA0DEC23F4CC94F614B4 /* OBCCompanionUITests */ = {
 			isa = PBXGroup;
 			children = (
+				E99516A090B9A4E907F609D4 /* GalleryLaunchTests.swift */,
 				3C66022BB56F762B09E9C0BF /* OBCCompanionUITests.swift */,
 				34BE4BBD9BB3B75A4E34EDE3 /* ScenarioLaunchTests.swift */,
 			);
@@ -208,6 +211,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A46E501EFF36545E13D8EA29 /* GalleryLaunchTests.swift in Sources */,
 				DC688D4C547902CF9C650940 /* OBCCompanionUITests.swift in Sources */,
 				CC2C394178B45BFA476BFD56 /* ScenarioLaunchTests.swift in Sources */,
 			);
