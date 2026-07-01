@@ -12,6 +12,15 @@ import OBCMock
 /// `BLETransport`; mock/panel code only inside `#if DEBUG`.
 @main
 struct OBCCompanionApp: App {
+    #if DEBUG
+    /// The B1P launch surface, parsed once (`-OBCScenario …`, see CLAUDE.md).
+    private static let launchOptions = MockLaunchOptions.parse()
+    /// The live control shared by the Debug transport, the dev panel, and the
+    /// HUD — `nil` when `-OBCTransport ble` forces the real path.
+    static let mockControl: MockControl? =
+        launchOptions.useBLETransport ? nil : launchOptions.makeControl()
+    #endif
+
     init() {
         #if DEBUG
         // Log a DEBUG-only symbol at launch so the mock-exclusion seam is exercised
@@ -24,17 +33,24 @@ struct OBCCompanionApp: App {
     var body: some Scene {
         WindowGroup {
             RootView(transport: Self.makeTransport())
+            #if DEBUG
+                .devMockOverlay(
+                    control: Self.mockControl,
+                    showPanelAtLaunch: Self.launchOptions.showDevPanel
+                )
+            #endif
         }
     }
 
-    /// Debug defaults to the fixture-backed mock (no BLE in the simulator);
-    /// Release wires the real `BLETransport` (B1). This is the **only** place a
-    /// concrete transport is chosen — everything below sees `any DeviceTransport`.
+    /// Debug defaults to the fixture-backed mock (no BLE in the simulator),
+    /// booted into whatever the launch arguments asked for; `-OBCTransport ble`
+    /// (or Release, always) wires the real `BLETransport`. This is the **only**
+    /// place a concrete transport is chosen — everything below sees
+    /// `any DeviceTransport`.
     static func makeTransport() -> any DeviceTransport {
         #if DEBUG
-        return MockTransport()
-        #else
-        return BLETransport()
+        if let mockControl { return MockTransport(control: mockControl) }
         #endif
+        return BLETransport()
     }
 }

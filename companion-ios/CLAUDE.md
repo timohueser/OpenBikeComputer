@@ -226,8 +226,9 @@ VPN & Device Management.
 ## Running against the mock
 
 **Debug defaults to `MockTransport`** — there is no Bluetooth in the simulator,
-so the mock *is* the default dev target. `OBCCompanionApp.makeTransport()`
-returns `MockTransport()` under `#if DEBUG`.
+so the mock *is* the default dev target. `OBCCompanionApp.makeTransport()` wires
+the mock under `#if DEBUG` (booted into whatever the launch arguments ask for);
+`-OBCTransport ble` forces the real `BLETransport` on a Debug device build.
 
 **B1M** ([#238](https://github.com/timohueser/OpenBikeComputer/issues/238)) landed
 the fixture-backed mock: a live `MockControl` fault-injection surface, editable JSON
@@ -261,15 +262,38 @@ RootView(transport: MockTransport(scenario: .outOfRange))   // or: control.apply
 (H5) and `syncUpToDate` (H9) are pure UI-layer states — their preset is a happy link
 and the UI branches on `scenario`; the rest are transport-driven.
 
-Selecting a scenario via **launch args** (`-OBCScenario …`) + a dev control panel is
-still **B1P** — the seam is documented here so it's ready to wire:
+### Launch arguments (B1P, [#239](https://github.com/timohueser/OpenBikeComputer/issues/239))
 
-| launch arg (B1P) | drives | design screens |
+**These names are stable automation API** (XCUITests + screenshot scripts depend
+on them — parsing lives in
+[`MockLaunchOptions.swift`](Packages/OBCKit/Sources/OBCMock/MockLaunchOptions.swift),
+consumed once at the composition root). Unknown values degrade to defaults, never
+crash. Env fallbacks in parentheses apply when the argument is absent.
+
+| launch arg | values | effect |
 |---|---|---|
-| `-OBCScenario happyPath` | connected, routes present | C1/C2, E1–E3 |
-| `-OBCScenario emptyLibrary` | no routes | S1 |
-| `-OBCScenario outOfRange` | link degraded | S4, D-series |
-| `-OBCScenario syncDrop` | ride sync interrupted | H10 |
+| `-OBCScenario <name>` (`OBC_SCENARIO`) | any `Scenario` rawValue | boot into that scenario |
+| `-OBCFixtures <name>` (`OBC_FIXTURES`) | `default` / `empty` / `large` | override the fixture set |
+| `-OBCConnection <state>` (`OBC_CONNECTION`) | `disconnected` / `connecting` / `connected` / `outOfRange` | override the initial link state |
+| `-OBCTransport ble` (`OBC_TRANSPORT`) | `ble` / `mock` | force the real `BLETransport` (device only) |
+| `-OBCShowDevPanel` (`OBC_SHOW_DEV_PANEL=1`) | flag | present the dev panel at launch |
+
+### Dev control panel + HUD (Debug only)
+
+**Shake the device** (sim: Device ▸ Shake, ⌃⌘Z) — or launch with
+`-OBCShowDevPanel` — to open the **Mock control** panel: live `MockControl`
+knobs (scenario preset, connection, radio, battery, latency/throughput, one-shot
+faults, synthetic events, fixture swap) you can flip while clicking through the
+app. The panel + the status HUD live in `OBCMock`
+([`MockControlPanel.swift`](Packages/OBCKit/Sources/OBCMock/MockControlPanel.swift));
+the app-side host (shake hook, sheet, overlay) is `OBCCompanion/DevMockOverlay.swift`.
+B8 adds the second entry point (a hidden Settings row).
+
+The **HUD** (bottom-right capsule) shows `scenario · connection` with
+accessibility ids `mockScenarioTag` / `mockConnectionTag` — what the XCUITests
+assert. `OBCCompanionUITests/ScenarioLaunchTests` launches every scenario by
+argument and checks the tag (plus fixture-name, connection-override, and
+panel-presentation smoke tests); run them with `test_sim {}` / `xcodebuild test`.
 
 ---
 
