@@ -130,12 +130,15 @@ Routes and rides both cross the wire as **compact binary**, never XML:
 
 - **Routes** — the phone converts the imported track to the compact binary route
   format; **the device never parses XML**. See *Delta 2*.
-- **Rides** — stored and transferred as compact binary; any FIT/GPX conversion
-  happens on the phone.
+- **Rides** — stored and transferred as compact binary; any GPX/FIT conversion
+  happens on the phone (device bytes → canonical `Ride` → an `OBCFormats`
+  `RideFileEncoder`), never straight from the wire bytes.
 
 The byte layout of each object is owned by firmware `S0` (and, for routes, the
-existing on-device map/route formats). `B1`'s `BLEChannel` owns the codecs; this
-epic pins only the transport + object *types*, not the codecs.
+existing on-device map/route formats). The device object codecs live in
+`OBCTransport/Codecs/` (`BLEChannel` only moves bytes; the interchange *file*
+formats live in `OBCFormats`); this epic pins only the transport + object
+*types*, not the codecs.
 
 ---
 
@@ -173,9 +176,12 @@ The domain types `B1` finalizes live in `OBCKit`'s `OBCDomain` module (minimal
 | `RouteSummary` / `RouteBlob` | `Route.swift` | route metadata + opaque binary payload |
 | `RouteSource` | `Route.swift` | GPX / TCX (Delta 2) |
 | `RideSummary` | `Ride.swift` | enumerable tracked ride (`RideList`) |
+| `Ride` / `RidePoint` | `Ride.swift` | canonical full ride — device ride codec decodes into it; exports encode from it |
+| `ImportedRoute` / `RoutePoint` | `ImportedRoute.swift` | canonical parsed route — every import format decodes into it |
 | `Waypoint` | `Waypoint.swift` | route waypoint (W1) — rides in `RouteBlob` |
 | `Coordinate` / `TrackPreview` | `Geo.swift` | normalized polyline for `GPSTrackPreview` (B11) |
 | `TransferProgress` | `TransferProgress.swift` | CoC transfer progress + resume `offset` |
+| `TransferOutcome` | `TransferProgress.swift` | terminal transfer state (`TransferHandle.outcome`) — a drop stays unresolved/resumable |
 | `DeviceError` | `DeviceError.swift` | typed failures incl. `crcMismatch`, `protocolMismatch`, radio states |
 | `ConnectionState` | `ConnectionState.swift` | link lifecycle for `DeviceTransport.state` |
 

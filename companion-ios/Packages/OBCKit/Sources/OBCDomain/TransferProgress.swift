@@ -26,3 +26,14 @@ public struct TransferProgress: Equatable, Sendable {
         total > 0 ? Double(bytesDone) / Double(total) : 0
     }
 }
+
+/// How a bulk transfer ended — the terminal state `TransferHandle.outcome`
+/// resolves to, so the upload sheet (B5/F) and ride sync (B7) never have to infer
+/// completion from byte counts. A **drop is not terminal**: a dropped transfer
+/// stays unresolved (stalled at its resume offset, link `.outOfRange`) until it
+/// resumes to completion, is canceled, or fails for good.
+public enum TransferOutcome: Equatable, Sendable {
+    case completed
+    case canceled
+    case failed(DeviceError)
+}

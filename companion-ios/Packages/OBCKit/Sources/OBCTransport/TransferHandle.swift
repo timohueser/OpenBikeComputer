@@ -10,21 +10,38 @@ import OBCDomain
 /// last committed `TransferProgress.offset` (see `OBCProtocol.md` → *CoC framing*).
 public struct TransferHandle: Sendable {
     /// Progress updates as the transfer advances. Finishes when the transfer
-    /// completes, is canceled, or drops.
+    /// completes or is canceled. A **drop** does *not* finish it — the stream
+    /// stalls open at the last committed offset so `resume()` can continue into
+    /// it (the observable drop signal is `DeviceTransport.state` → `.outOfRange`).
     public let progress: AsyncStream<TransferProgress>
 
+    private let outcomePromise: AsyncPromise<TransferOutcome>
     private let onCancel: @Sendable () -> Void
     private let onResume: @Sendable () -> Void
 
     public init(
         progress: AsyncStream<TransferProgress>,
+        outcome: AsyncPromise<TransferOutcome>,
         onCancel: @escaping @Sendable () -> Void,
         onResume: @escaping @Sendable () -> Void
     ) {
         self.progress = progress
+        self.outcomePromise = outcome
         self.onCancel = onCancel
         self.onResume = onResume
     }
+
+    /// The terminal state — resolves when the transfer completes, is canceled, or
+    /// fails for good, so the UI never infers success from byte counts. A drop
+    /// keeps it unresolved (the transfer is still resumable); pair with `progress`
+    /// + `DeviceTransport.state` for the interrupted (F₂/H10) presentation.
+    public var outcome: TransferOutcome {
+        get async { await outcomePromise.value }
+    }
+
+    /// The terminal state if already reached, `nil` while the transfer is live or
+    /// dropped-but-resumable (never suspends).
+    public var currentOutcome: TransferOutcome? { outcomePromise.current }
 
     /// Abort the transfer and tear the channel down cleanly.
     public func cancel() { onCancel() }
@@ -32,12 +49,14 @@ public struct TransferHandle: Sendable {
     /// Resume a dropped transfer from its last committed offset.
     public func resume() { onResume() }
 
-    /// A degenerate handle whose progress stream is already finished and whose
-    /// controls are no-ops — for the "no transfer possible" case (not connected,
-    /// or a mock stub). Callers detect the real state via `DeviceTransport.state`.
-    public static func immediatelyFinished() -> TransferHandle {
+    /// A degenerate handle: progress already finished, controls no-ops, and
+    /// `outcome` pre-resolved — `.completed` for "nothing to do" (H9 up to date),
+    /// `.failed(.notConnected)` for "no transfer possible" (H4).
+    public static func immediatelyFinished(_ outcome: TransferOutcome = .completed) -> TransferHandle {
         let (stream, continuation) = AsyncStream<TransferProgress>.makeStream()
         continuation.finish()
-        return TransferHandle(progress: stream, onCancel: {}, onResume: {})
+        let promise = AsyncPromise<TransferOutcome>()
+        promise.fulfill(outcome)
+        return TransferHandle(progress: stream, outcome: promise, onCancel: {}, onResume: {})
     }
 }

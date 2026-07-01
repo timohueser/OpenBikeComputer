@@ -123,11 +123,12 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         return beginTransfer(start) { channel in channel.upload(route.payload) }
     }
 
-    public func downloadRides(_ ids: [RideID]) -> TransferHandle {
+    public func downloadRides(_ ids: [RideID]) -> RideDownload {
         // Real path (B7/A7): the device announces each ride via `TransferStart` over
-        // `Status` (length + CRC), then the app calls `channel.download(length:expectedCRC:)`.
-        // Until `listRides` decoding lands (S0), there's nothing to pull.
-        .immediatelyFinished()
+        // `Status` (length + CRC), the app calls `channel.download(length:expectedCRC:)`
+        // per ride and yields each verified payload into `rides`. Until `listRides`
+        // decoding lands (S0), there's nothing to pull.
+        .finished()
     }
 
     /// Announce a transfer on the control plane (`TransferControl`), then stream its
@@ -136,7 +137,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     private func beginTransfer(_ start: TransferStart, _ make: @Sendable @escaping (BLEChannel) -> TransferHandle) -> TransferHandle {
         queue.sync {
             guard let bleChannel, let peripheral, let control = characteristics[GATT.transferControl] else {
-                return TransferHandle.immediatelyFinished()
+                return TransferHandle.immediatelyFinished(.failed(.notConnected))
             }
             // Open the transfer before the first CoC byte. Exact sequencing vs the
             // stream (and the Status/committedOffset handshake for resume) is
@@ -305,31 +306,6 @@ extension BLETransport: CBPeripheralDelegate {
     private func resumeReads(_ uuid: CBUUID, _ result: Result<Data, Error>) {
         let conts = pendingReads.removeValue(forKey: uuid) ?? []
         for cont in conts { cont.resume(with: result) }
-    }
-}
-
-/// Provisional `Config` blob codec — layout is firmware-`S0`-owned. `[nameLen:
-/// u16-LE][name UTF-8][units: u8]`. Pin from the spec at `A4`; keep the mapping in
-/// this one place.
-enum ProvisionalConfigCodec {
-    static func encode(_ config: DeviceConfig) -> Data {
-        let name = Data(config.name.utf8)
-        var data = Data()
-        data.append(UInt8(name.count & 0xFF))
-        data.append(UInt8((name.count >> 8) & 0xFF))
-        data.append(name)
-        data.append(config.units.rawValue)
-        return data
-    }
-
-    static func decode(_ data: Data) throws -> DeviceConfig {
-        guard data.count >= 2 else { throw DeviceError.readFailed }
-        let b = data.startIndex
-        let nameLen = Int(data[b]) | (Int(data[b + 1]) << 8)
-        guard data.count >= 2 + nameLen + 1 else { throw DeviceError.readFailed }
-        let name = String(decoding: data[(b + 2)..<(b + 2 + nameLen)], as: UTF8.self)
-        let units = DeviceConfig.Units(rawValue: data[b + 2 + nameLen]) ?? .metric
-        return DeviceConfig(name: name, units: units)
     }
 }
 #endif

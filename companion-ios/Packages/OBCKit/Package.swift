@@ -7,6 +7,8 @@ import PackageDescription
 // Layer order (lower may not import higher):
 //   OBCDomain  → pure value types, no framework deps
 //   OBCTransport → DeviceTransport protocol + (B1) BLETransport, depends on OBCDomain
+//   OBCFormats → interchange file formats (route import / ride export seams, B6/B7),
+//                depends on OBCDomain — sits beside OBCTransport, never on it
 //   OBCMock    → #if DEBUG fixtures + MockTransport, depends on OBCTransport
 //   OBCUI      → SwiftUI component kit (B11), depends on OBCDomain
 //
@@ -26,6 +28,7 @@ let package = Package(
     products: [
         .library(name: "OBCDomain", targets: ["OBCDomain"]),
         .library(name: "OBCTransport", targets: ["OBCTransport"]),
+        .library(name: "OBCFormats", targets: ["OBCFormats"]),
         .library(name: "OBCMock", targets: ["OBCMock"]),
         .library(name: "OBCUI", targets: ["OBCUI"]),
     ],
@@ -36,6 +39,11 @@ let package = Package(
         ),
         .target(
             name: "OBCTransport",
+            dependencies: ["OBCDomain"],
+            swiftSettings: strictConcurrency
+        ),
+        .target(
+            name: "OBCFormats",
             dependencies: ["OBCDomain"],
             swiftSettings: strictConcurrency
         ),
@@ -55,6 +63,11 @@ let package = Package(
         .testTarget(
             name: "OBCTransportTests",
             dependencies: ["OBCTransport"],
+            swiftSettings: strictConcurrency
+        ),
+        .testTarget(
+            name: "OBCFormatsTests",
+            dependencies: ["OBCFormats"],
             swiftSettings: strictConcurrency
         ),
         .testTarget(
