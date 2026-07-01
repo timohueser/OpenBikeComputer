@@ -58,6 +58,8 @@ public struct DeviceTopBar: View {
                     .foregroundStyle(isLinked ? OBCTheme.ink : OBCTheme.inkFaint)
                     .lineLimit(1)
             }
+            // No explicit identifier here: an id would shadow the label-keyed
+            // lookup tests use (`staticTexts["Trailhead"]`).
             .accessibilityElement(children: .combine)
 
             Spacer(minLength: 0)
@@ -65,6 +67,7 @@ public struct DeviceTopBar: View {
             HStack(spacing: 8) {
                 OBCBatteryIndicator(percent: isLinked ? batteryPercent : nil)
                     .opacity(isLinked ? 1 : 0.5)
+                    .accessibilityIdentifier("topbar.battery")
 
                 OBCIconButton(disabled: !isLinked) {
                     onSync()
@@ -72,6 +75,7 @@ public struct DeviceTopBar: View {
                     syncIcon
                 }
                 .accessibilityLabel(syncAccessibilityLabel)
+                .accessibilityIdentifier("topbar.sync")
 
                 OBCIconButton {
                     onSettings()
@@ -80,6 +84,7 @@ public struct DeviceTopBar: View {
                         .font(.system(size: 17, weight: .medium))
                 }
                 .accessibilityLabel("Settings")
+                .accessibilityIdentifier("topbar.settings")
             }
         }
         .padding(.horizontal, 18)
