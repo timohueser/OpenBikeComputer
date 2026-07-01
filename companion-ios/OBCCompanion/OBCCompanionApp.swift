@@ -27,27 +27,14 @@ struct OBCCompanionApp: App {
         }
     }
 
-    /// Debug defaults to the fixture-backed mock (no BLE in the simulator).
-    /// Release wires the real `BLETransport` — a stand-in until B1 lands it.
+    /// Debug defaults to the fixture-backed mock (no BLE in the simulator);
+    /// Release wires the real `BLETransport` (B1). This is the **only** place a
+    /// concrete transport is chosen — everything below sees `any DeviceTransport`.
     static func makeTransport() -> any DeviceTransport {
         #if DEBUG
         return MockTransport()
         #else
-        return UnimplementedTransport()
+        return BLETransport()
         #endif
     }
 }
-
-#if !DEBUG
-import OBCDomain
-
-/// Temporary Release-only stand-in until `BLETransport` arrives in B1. Keeps the
-/// Release build honest (it links no mock code) without pretending to connect.
-private struct UnimplementedTransport: DeviceTransport {
-    func fetchDeviceInfo() async throws -> DeviceInfo {
-        throw TransportUnavailable()
-    }
-}
-
-private struct TransportUnavailable: Error {}
-#endif

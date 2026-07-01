@@ -4,12 +4,27 @@ import Foundation
 /// H7/H8 radio, H10 interrupted, protocol-mismatch banner). Kept an enum so
 /// screens switch over it exhaustively.
 ///
-/// **B-S0 skeleton** — the cases here are the contract-level failures named in
-/// `OBCProtocol.md`. `B1` finalizes the full set (radio/permission states, etc.)
-/// as it wires `BLETransport`.
+/// **B1 finalization:** adds the radio/permission (`bluetoothUnavailable`),
+/// discovery (`deviceNotFound`), and CoC-open (`channelOpenFailed`) cases that
+/// `BLETransport` actually throws, alongside the contract-level failures named in
+/// `OBCProtocol.md`.
 public enum DeviceError: Error, Equatable, Sendable {
+    /// Why the Bluetooth radio can't be used — drives the H7/H8 permission &
+    /// power states. Mirrors the actionable subset of `CBManagerState`.
+    public enum BluetoothUnavailableReason: Equatable, Sendable {
+        case poweredOff
+        case unauthorized
+        case unsupported
+    }
+
     /// Not connected to a device (link down / never bonded).
     case notConnected
+    /// The Bluetooth radio is off, denied, or unsupported (H7/H8).
+    case bluetoothUnavailable(BluetoothUnavailableReason)
+    /// Scanning finished without finding an OBC device to connect to.
+    case deviceNotFound
+    /// The L2CAP CoC channel could not be opened (PSM read or open failed).
+    case channelOpenFailed
     /// A control-plane read failed.
     case readFailed
     /// A control-plane write failed (e.g. `writeConfig`).
