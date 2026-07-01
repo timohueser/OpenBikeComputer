@@ -3,11 +3,13 @@ import SwiftUI
 import Combine
 import UIKit
 import OBCMock
+import OBCUI
 
 // B1P's app-side wiring, Debug-only in its entirety: the shake gesture that opens
 // the dev control panel, the panel sheet itself, and the status HUD the XCUITests
 // assert. The panel/HUD views live in OBCMock; this file only hosts them.
 // B8 adds the second entry point (a hidden Settings row) when Settings exists.
+// B11 adds the component-gallery sheet (`-OBCShowUIGallery`) for screenshot review.
 
 extension Notification.Name {
     /// Posted by the `UIWindow` override below on a device shake.
@@ -31,9 +33,24 @@ extension UIWindow {
 struct DevMockOverlay: ViewModifier {
     let control: MockControl?
     let showPanelAtLaunch: Bool
+    let showGalleryAtLaunch: Bool
     @State private var panelShown = false
+    @State private var galleryShown = false
 
     func body(content: Content) -> some View {
+        mockTooling(around: content)
+            // The B11 gallery presents even when the real transport is forced —
+            // it needs no MockControl.
+            .sheet(isPresented: $galleryShown) {
+                OBCComponentGallery()
+            }
+            .onAppear {
+                if showGalleryAtLaunch { galleryShown = true }
+            }
+    }
+
+    @ViewBuilder
+    private func mockTooling(around content: Content) -> some View {
         if let control {
             content
                 .overlay(alignment: .bottomTrailing) {
@@ -57,8 +74,16 @@ struct DevMockOverlay: ViewModifier {
 }
 
 extension View {
-    func devMockOverlay(control: MockControl?, showPanelAtLaunch: Bool) -> some View {
-        modifier(DevMockOverlay(control: control, showPanelAtLaunch: showPanelAtLaunch))
+    func devMockOverlay(
+        control: MockControl?,
+        showPanelAtLaunch: Bool,
+        showGalleryAtLaunch: Bool = false
+    ) -> some View {
+        modifier(DevMockOverlay(
+            control: control,
+            showPanelAtLaunch: showPanelAtLaunch,
+            showGalleryAtLaunch: showGalleryAtLaunch
+        ))
     }
 }
 #endif

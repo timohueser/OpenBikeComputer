@@ -16,9 +16,11 @@ import OBCDomain
 /// | `-OBCConnection <state>` | `disconnected` / `connecting` / `connected` / `outOfRange` | override the initial link state |
 /// | `-OBCTransport <kind>` | `ble` / `mock` | force the real `BLETransport` in a Debug build |
 /// | `-OBCShowDevPanel` | (flag) | present the dev control panel at launch |
+/// | `-OBCShowUIGallery` | (flag) | present the B11 component gallery at launch |
 ///
 /// Env fallbacks (used when the argument is absent): `OBC_SCENARIO`,
-/// `OBC_FIXTURES`, `OBC_CONNECTION`, `OBC_TRANSPORT`, `OBC_SHOW_DEV_PANEL=1`.
+/// `OBC_FIXTURES`, `OBC_CONNECTION`, `OBC_TRANSPORT`, `OBC_SHOW_DEV_PANEL=1`,
+/// `OBC_SHOW_UI_GALLERY=1`.
 public struct MockLaunchOptions: Equatable, Sendable {
     public var scenario: Scenario?
     public var fixtures: String?
@@ -27,19 +29,24 @@ public struct MockLaunchOptions: Equatable, Sendable {
     public var useBLETransport: Bool
     /// Present the dev control panel immediately at launch.
     public var showDevPanel: Bool
+    /// Present the OBCUI component gallery immediately at launch (B11
+    /// screenshot review).
+    public var showUIGallery: Bool
 
     public init(
         scenario: Scenario? = nil,
         fixtures: String? = nil,
         connection: ConnectionState? = nil,
         useBLETransport: Bool = false,
-        showDevPanel: Bool = false
+        showDevPanel: Bool = false,
+        showUIGallery: Bool = false
     ) {
         self.scenario = scenario
         self.fixtures = fixtures
         self.connection = connection
         self.useBLETransport = useBLETransport
         self.showDevPanel = showDevPanel
+        self.showUIGallery = showUIGallery
     }
 
     /// Parse process launch arguments (`-OBCKey value` pairs, flag args) with
@@ -62,13 +69,16 @@ public struct MockLaunchOptions: Equatable, Sendable {
         let transport = value("OBCTransport", env: "OBC_TRANSPORT")
         let showPanel = arguments.contains("-OBCShowDevPanel")
             || environment["OBC_SHOW_DEV_PANEL"] == "1"
+        let showGallery = arguments.contains("-OBCShowUIGallery")
+            || environment["OBC_SHOW_UI_GALLERY"] == "1"
 
         return MockLaunchOptions(
             scenario: scenario,
             fixtures: fixtures,
             connection: connection,
             useBLETransport: transport == "ble",
-            showDevPanel: showPanel
+            showDevPanel: showPanel,
+            showUIGallery: showGallery
         )
     }
 
