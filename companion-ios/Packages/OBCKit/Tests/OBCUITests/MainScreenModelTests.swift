@@ -1,0 +1,232 @@
+import XCTest
+import OBCDomain
+import OBCMock
+import OBCTransport
+@testable import OBCUI
+
+/// B3 acceptance, host-side: the main-screen model driven through
+/// `MockTransport` — lists from fixtures, the live device cluster, search,
+/// the SYNC button state machine, and swipe-delete's data path.
+@MainActor
+final class MainScreenModelTests: XCTestCase {
+    /// Short pacing so the done-hold / line-hold timers fire in test time.
+    private static let fastTiming = MainScreenModel.Timing(
+        syncDoneHold: .milliseconds(60),
+        syncedLineHold: .milliseconds(500)
+    )
+
+    private func makeModel(
+        _ scenario: Scenario,
+        timing: MainScreenModel.Timing = fastTiming
+    ) -> (MainScreenModel, MockControl) {
+        let control = MockControl(scenario: scenario)
+        control.latency = .zero
+        // Fast transfers: the pacing under test is the model's, not the mock's.
+        control.throughputBytesPerSec = 200_000_000
+        let model = MainScreenModel(transport: MockTransport(control: control), timing: timing)
+        return (model, control)
+    }
+
+    /// Poll until `condition` holds (the model moves on free-running tasks).
+    private func waitFor(
+        _ what: String,
+        timeout: Duration = .seconds(5),
+        _ condition: () -> Bool
+    ) async {
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        while !condition() {
+            if ContinuousClock.now > deadline {
+                XCTFail("timed out waiting for \(what)")
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    private func startLoaded(_ model: MainScreenModel) async {
+        model.start()
+        await waitFor("library load") { model.loadState == .loaded }
+    }
+
+    // MARK: Lists + device cluster
+
+    func testLoadPopulatesListsAndIdentityFromFixtures() async {
+        let (model, _) = makeModel(.happyPath)
+        await startLoaded(model)
+
+        XCTAssertEqual(model.routes.count, 5)
+        XCTAssertEqual(model.routes.first?.name, "Kettle Moraine Loop")
+        XCTAssertEqual(model.rides.count, 4)
+        XCTAssertEqual(model.rides[1].name, "Sunday Coffee Spin")
+        await waitFor("device identity") { model.deviceName == "Trailhead" }
+        await waitFor("battery replay") { model.battery == 82 }
+        XCTAssertEqual(model.connection, .connected)
+        XCTAssertFalse(model.showsDisconnectedBanner)
+    }
+
+    func testBatteryNudgeFlowsLive() async {
+        let (model, control) = makeModel(.happyPath)
+        await startLoaded(model)
+        await waitFor("battery replay") { model.battery == 82 }
+
+        control.battery = 55
+        await waitFor("battery nudge") { model.battery == 55 }
+    }
+
+    func testConnectionChangeDrivesTheBanner() async {
+        let (model, control) = makeModel(.happyPath)
+        await startLoaded(model)
+
+        control.connection = .outOfRange
+        await waitFor("S4 banner") { model.showsDisconnectedBanner }
+        control.connection = .connected
+        await waitFor("silent reconnect") { !model.showsDisconnectedBanner }
+    }
+
+    func testReadErrorThenRetrySucceeds() async {
+        let (model, _) = makeModel(.readError)
+        model.start()
+        await waitFor("S3 failure") { model.loadState == .failed }
+
+        model.reload()   // the one-shot fault is spent — retry succeeds
+        await waitFor("retry load") { model.loadState == .loaded }
+        XCTAssertEqual(model.routes.count, 5)
+    }
+
+    // MARK: Search
+
+    func testSearchFiltersBothTabsCaseInsensitively() async {
+        let (model, _) = makeModel(.happyPath)
+        await startLoaded(model)
+
+        model.searchText = "sugar"
+        XCTAssertEqual(model.filteredRoutes.map(\.name), ["Sugar River Trail"])
+
+        model.searchText = "COFFEE"
+        XCTAssertEqual(model.filteredRides.map(\.name), ["Sunday Coffee Spin"])
+        XCTAssertTrue(model.filteredRoutes.isEmpty)   // H6 on the other tab
+
+        model.searchText = ""
+        XCTAssertEqual(model.filteredRoutes.count, 5)
+        XCTAssertEqual(model.filteredRides.count, 4)
+    }
+
+    // MARK: Sync
+
+    func testFirstSyncPullsEverythingThenIdles() async {
+        let (model, _) = makeModel(.happyPath)
+        await startLoaded(model)
+
+        model.sync()
+        await waitFor("syncing") { model.syncState == .syncing }
+        await waitFor("done + confirm line") {
+            model.syncState == .done && model.lastSyncCount == 4
+        }
+        XCTAssertNil(model.syncProgress)
+        await waitFor("done hold expires") { model.syncState == .idle }
+        XCTAssertEqual(model.lastSyncCount, 4)   // the line outlives the check
+        await waitFor("confirm line expires") { model.lastSyncCount == nil }
+    }
+
+    func testSecondSyncIsUpToDate() async {
+        let (model, _) = makeModel(.happyPath)
+        await startLoaded(model)
+
+        model.sync()
+        await waitFor("first sync done") { model.lastSyncCount == 4 }
+        await waitFor("idle again") { model.syncState == .idle }
+
+        model.sync()
+        // H9: quiet toast, straight back to idle — never an empty "done".
+        await waitFor("up-to-date toast") { model.upToDateToastVisible }
+        XCTAssertEqual(model.syncState, .idle)
+        XCTAssertNil(model.lastSyncCount)
+    }
+
+    func testRideAddedOnDeviceSyncsAsOneNewRide() async {
+        let (model, control) = makeModel(.happyPath)
+        await startLoaded(model)
+
+        model.sync()
+        await waitFor("first sync") { model.lastSyncCount == 4 }
+        await waitFor("idle") { model.syncState == .idle }
+
+        control.emit(.rideAdded(RideSummary(
+            id: RideID("ride-new"),
+            name: "Lunch Loop",
+            date: Date(),
+            distanceMeters: 18_000,
+            movingTime: 2_800,
+            averageSpeedMps: 6.4
+        )))
+
+        model.sync()
+        await waitFor("one new ride") { model.lastSyncCount == 1 }
+        XCTAssertEqual(model.rides.first?.name, "Lunch Loop")
+    }
+
+    func testDropMidSyncKeepsPartialAndReturnsToIdle() async {
+        let (model, control) = makeModel(.happyPath)
+        await startLoaded(model)
+
+        control.dropTransfer(atFraction: 0.5)
+        model.sync()
+        // The drop flips the link out of range; the button quietly returns to
+        // idle (the H10 interrupted-banner + resume flow is B7's).
+        await waitFor("drop observed") { model.connection == .outOfRange }
+        await waitFor("back to idle") { model.syncState == .idle }
+        XCTAssertNil(model.lastSyncCount)
+        XCTAssertNil(model.syncProgress)
+
+        // What landed stays synced: the next sync pulls only the remainder.
+        control.connection = .connected
+        await waitFor("reconnect reaches the model") { model.connection == .connected }
+        model.sync()
+        await waitFor("remainder synced") {
+            model.syncState == .done && model.lastSyncCount != nil
+        }
+        let remainder = model.lastSyncCount ?? 0
+        XCTAssertGreaterThan(remainder, 0, "resumed sync should find the un-landed rides")
+        XCTAssertLessThan(remainder, 4, "partial rides must not be re-counted")
+    }
+
+    func testSyncNoOpsWhenUnreachable() async {
+        let (model, _) = makeModel(.outOfRange)
+        await startLoaded(model)   // out of range still serves cached fixtures
+
+        model.sync()
+        try? await Task.sleep(for: .milliseconds(80))
+        XCTAssertEqual(model.syncState, .idle)
+        XCTAssertFalse(model.upToDateToastVisible)
+    }
+
+    // MARK: Delete (H11 → H1)
+
+    func testDeleteRouteRemovesLocallyAndOnDevice() async {
+        let (model, control) = makeModel(.happyPath)
+        await startLoaded(model)
+
+        let id = model.routes[0].id
+        model.deleteRoute(id)
+        XCTAssertEqual(model.routes.count, 4)   // optimistic removal
+        await waitFor("device delete persists") { control.fixtures.routes.count == 4 }
+
+        model.reload()
+        await waitFor("reload") { model.loadState == .loaded }
+        XCTAssertFalse(model.routes.contains { $0.id == id })
+    }
+
+    func testDeleteRideRemovesLocallyAndStaysOutOfNewCounts() async {
+        let (model, _) = makeModel(.happyPath)
+        await startLoaded(model)
+
+        let id = model.rides[0].id
+        model.deleteRide(id)
+        XCTAssertEqual(model.rides.count, 3)
+
+        // The deleted ride must not come back as a "new" sync count.
+        model.sync()
+        await waitFor("sync done") { model.syncState == .done }
+        XCTAssertEqual(model.lastSyncCount, 3)
+    }
+}

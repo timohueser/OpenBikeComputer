@@ -1,0 +1,175 @@
+import XCTest
+
+/// B3 acceptance on the simulator: the main screen's design states (C1 / C2 /
+/// SYNC / S4 / H6 / H11→H1) driven through the real UI against the mock. The
+/// same logic is host-tested in `MainScreenModelTests`; this proves the wiring
+/// launch-arg → scenario → screen.
+final class MainScreenTests: XCTestCase {
+    override func setUp() {
+        super.setUp()
+        continueAfterFailure = false
+    }
+
+    @MainActor
+    private func launch(scenario: String) -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchArguments += ["-OBCScenario", scenario]
+        // Pin the locale: `OBCFormat` localizes numbers ("62,4 km" on a German
+        // sim), and these tests assert the design's en-US strings.
+        app.launchArguments += ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+        app.launch()
+        return app
+    }
+
+    /// Keep a named screenshot in the result bundle — the visual record of each
+    /// design screen (export with `xcresulttool export attachments`).
+    @MainActor
+    private func snap(_ app: XCUIApplication, _ name: String) {
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    @MainActor
+    private func waitForMain(_ app: XCUIApplication) {
+        XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10), "main missing")
+    }
+
+    /// C1 → C2: compact rows with the per-tab stat lines.
+    @MainActor
+    func testPlannedAndTrackedTabsShowCompactRows() {
+        let app = launch(scenario: "happyPath")
+        waitForMain(app)
+
+        XCTAssertTrue(app.staticTexts["Kettle Moraine Loop"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["62.4 km · 840 m ↑ · 3h 20m"].exists, "C1 stat line wrong")
+        snap(app, "C1-main-planned")
+
+        app.buttons["Tracked"].tap()
+        XCTAssertTrue(app.staticTexts["Sunday Coffee Spin"].waitForExistence(timeout: 5))
+        let statLine = app.staticTexts.matching(
+            NSPredicate(format: "label CONTAINS '31.6 km' AND label CONTAINS 'kph'")
+        ).firstMatch
+        XCTAssertTrue(statLine.exists, "C2 tracked stat line (date · distance · time · avg) missing")
+        snap(app, "C2-main-tracked")
+
+        app.buttons["Planned"].tap()
+        XCTAssertTrue(app.staticTexts["Kettle Moraine Loop"].waitForExistence(timeout: 5))
+    }
+
+    /// Search filters; no matches → H6 with the query kept editable.
+    @MainActor
+    func testSearchFiltersAndShowsH6OnNoMatches() {
+        let app = launch(scenario: "happyPath")
+        waitForMain(app)
+        XCTAssertTrue(app.staticTexts["Kettle Moraine Loop"].waitForExistence(timeout: 10))
+
+        let search = app.textFields.firstMatch
+        search.tap()
+        search.typeText("sugar")
+        XCTAssertTrue(app.staticTexts["Sugar River Trail"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["Kettle Moraine Loop"].exists, "filter did not apply")
+
+        search.typeText(" trail zz")
+        let noMatches = app.staticTexts["main.noMatches"]
+        XCTAssertTrue(noMatches.waitForExistence(timeout: 5), "H6 missing")
+        snap(app, "H6-search-no-matches")
+
+        app.buttons["Clear search"].tap()
+        XCTAssertTrue(app.staticTexts["Kettle Moraine Loop"].waitForExistence(timeout: 5))
+    }
+
+    /// H11 → H1: swipe reveals Delete, the confirm owns the destroy.
+    @MainActor
+    func testSwipeToDeleteRoutesThroughConfirm() {
+        let app = launch(scenario: "happyPath")
+        waitForMain(app)
+
+        let card = app.buttons["main.card.kettle-moraine-loop"]
+        XCTAssertTrue(card.waitForExistence(timeout: 10))
+        card.swipeLeft()
+
+        let reveal = app.buttons["Delete"]
+        XCTAssertTrue(reveal.waitForExistence(timeout: 5), "H11 swipe action missing")
+        snap(app, "H11-swipe-to-delete")
+        reveal.tap()
+
+        // H1 — the action sheet, destructive in warning red; row still alive.
+        let confirm = app.buttons["Delete route"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5), "H1 confirm missing")
+        snap(app, "H1-delete-confirm")
+        confirm.tap()
+
+        let gone = NSPredicate(format: "exists == false")
+        let expectation = expectation(for: gone, evaluatedWith: card)
+        wait(for: [expectation], timeout: 5)
+        XCTAssertTrue(app.staticTexts["Sugar River Trail"].exists, "other rows must survive")
+    }
+
+    /// SYNC states: idle → syncing → done + "Synced N new rides just now";
+    /// a second sync is the quiet H9 up-to-date toast.
+    @MainActor
+    func testSyncCyclesAndConfirmsThenReportsUpToDate() {
+        let app = launch(scenario: "happyPath")
+        waitForMain(app)
+        app.buttons["Tracked"].tap()
+        XCTAssertTrue(app.staticTexts["Sunday Coffee Spin"].waitForExistence(timeout: 10))
+
+        let sync = app.buttons["topbar.sync"]
+        XCTAssertTrue(sync.isEnabled)
+        sync.tap()
+
+        // The confirm line lands when the batch completes (~8 s of mock
+        // throughput); the ~2 s forest check on the button rides along.
+        let line = app.descendants(matching: .any)["main.syncLine"].firstMatch
+        XCTAssertTrue(line.waitForExistence(timeout: 5), "sync progress line missing")
+        let confirmed = NSPredicate(format: "label CONTAINS 'Synced 4 new rides just now'")
+        let expectation = expectation(for: confirmed, evaluatedWith: line)
+        wait(for: [expectation], timeout: 30)
+        snap(app, "SYNC-done-confirm-line")
+
+        sync.tap()
+        let toast = app.staticTexts.matching(
+            NSPredicate(format: "label CONTAINS 'up to date'")
+        ).firstMatch
+        XCTAssertTrue(toast.waitForExistence(timeout: 10), "H9 toast missing")
+        snap(app, "H9-up-to-date")
+    }
+
+    /// S4: out of range degrades — banner + dimmed sync, library browsable.
+    @MainActor
+    func testOutOfRangeShowsBannerAndDisablesSync() {
+        let app = launch(scenario: "outOfRange")
+        waitForMain(app)
+
+        XCTAssertTrue(app.otherElements["disconnectedBanner"].firstMatch.waitForExistence(timeout: 10)
+                      || app.staticTexts.containing(NSPredicate(format: "label CONTAINS 'out of range'")).firstMatch.exists,
+                      "S4 banner missing")
+        XCTAssertTrue(app.staticTexts["Kettle Moraine Loop"].waitForExistence(timeout: 10),
+                      "library must stay browsable")
+        XCTAssertFalse(app.buttons["topbar.sync"].isEnabled, "sync must dim when unreachable")
+        snap(app, "S4-out-of-range")
+    }
+
+    /// Card tap → route detail (B4's placeholder until it lands).
+    @MainActor
+    func testCardTapPushesDetail() {
+        let app = launch(scenario: "happyPath")
+        waitForMain(app)
+
+        let card = app.buttons["main.card.kettle-moraine-loop"]
+        XCTAssertTrue(card.waitForExistence(timeout: 10))
+        card.tap()
+        XCTAssertTrue(app.staticTexts["detailPlaceholder"].waitForExistence(timeout: 5), "detail missing")
+    }
+
+    /// S1: an empty library points at import, it doesn't dead-end.
+    @MainActor
+    func testEmptyLibraryShowsS1() {
+        let app = launch(scenario: "emptyLibrary")
+        waitForMain(app)
+        XCTAssertTrue(app.staticTexts["No planned routes yet"].waitForExistence(timeout: 10), "S1 missing")
+        snap(app, "S1-empty-library")
+    }
+}
