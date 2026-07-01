@@ -30,11 +30,19 @@ companion-ios/
       Sources/
         OBCDomain/             pure value types (DeviceInfo, Route/Ride, Waypoint,
                                TrackPreview, …). No framework deps.
-        OBCTransport/          DeviceTransport (Tier 1) + TransferHandle + AsyncMulticast;
+        OBCTransport/          DeviceTransport (Tier 1) + TransferHandle + RideDownload
+                               + AsyncMulticast;
           Transfer/            control-plane descriptors + CRC-32 (pure, host-tested)
+          Codecs/              device object layouts ↔ domain types (S0-owned bytes:
+                               Config blob now; route encoder / ride decoder when
+                               S0 pins them). Pure — a device-format change lands here.
           BLE/                 real conformer — BLETransport, BLEChannel (raw CoC
                                streaming), ByteChannel, L2CAPByteChannel, GATT.
                                **CoreBluetooth lives ONLY here.**
+        OBCFormats/            interchange file formats (phone-side edge):
+                               RouteFileDecoder + RouteImporter (GPX/TCX import, B6),
+                               RideFileEncoder + RideExporter (ride export, B7).
+                               Registries over the canonical ImportedRoute / Ride.
         OBCMock/       #DEBUG   MockTransport + MockControl + Scenario presets +
           Fixtures/            editable JSON fixture sets (default/empty/large) (B1M)
         OBCUI/                  SwiftUI component kit + feature views (→ B11)
@@ -55,8 +63,9 @@ name in `Config`; GPX **+** TCX import). It's a **mirror**: the firmware `S0`
 freeze + `obc-ble-interface-spec.md` are canonical and win on any conflict.
 
 **Layering (lower may not import higher):** `OBCDomain` → `OBCTransport` →
-`OBCMock`; `OBCUI` sits beside them on `OBCDomain`. The app target sits on top of
-all four and is the *only* target allowed to choose a concrete transport.
+`OBCMock`; `OBCUI` and `OBCFormats` sit beside them on `OBCDomain` only. The app
+target sits on top and is the *only* target allowed to choose a concrete transport
+(and, later, the concrete format registries).
 
 Why SPM-first: the domain + transport layers build and test on the Mac host
 (`swift test`) with **no simulator and no app target** — fast, and it keeps the
@@ -307,6 +316,12 @@ grow it ad hoc; do it properly in B11.
 
 - **SwiftUI + async/await + `AsyncStream`.** Transport surfaces streams
   (connection state, progress); view models consume them.
+- **File formats at the edges, canonical models in the middle.** Route files
+  decode into `ImportedRoute`, device ride bytes decode into `Ride`, and every
+  export encodes *from* `Ride` through the `RideExporter` registry (`OBCFormats`).
+  Never parse a file or generate an export anywhere else — switching the
+  tracked-file format (GPX → FIT) must stay a one-conformer change at the
+  composition root.
 - **Observation (`@Observable`) for view models.** Not `ObservableObject`.
 - **One feature per folder** under `OBCUI` (a view + its view model together).
 - **Strict concurrency is on** (`SWIFT_STRICT_CONCURRENCY: complete`, package

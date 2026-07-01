@@ -248,12 +248,37 @@ public final class MockControl: @unchecked Sendable {
         lock.withLocked { _fixtures.routes.removeAll { $0.summary.id == id } }
     }
 
-    /// Begin a throughput-paced simulated transfer of `total` bytes. Returns an
+    /// Begin a throughput-paced simulated upload of `total` bytes. Returns an
     /// immediately-finished handle if the link is down (H4). Consumes an armed
     /// drop-fraction (or a pending failure → immediate drop).
     func beginTransfer(total: Int) -> TransferHandle {
-        if connection == .disconnected { return .immediatelyFinished() }
+        if connection == .disconnected { return .immediatelyFinished(.failed(.notConnected)) }
+        return startTransfer(total: total, segments: [], rides: nil)
+    }
 
+    /// Begin a simulated ride download: one paced batch whose fixture rides land
+    /// (with synthesized payloads) as their bytes complete. Link down (H4) or
+    /// nothing to pull (H9 up to date) → both streams already finished.
+    func beginRideDownload(_ ids: [RideID]) -> RideDownload {
+        let wanted = Set(ids)
+        let segments = lock.withLocked {
+            _fixtures.rides.filter { wanted.contains($0.summary.id) }
+        }.map { MockTransfer.Segment(id: $0.summary.id, byteCount: max(1, $0.downloadByteCount)) }
+        let total = segments.reduce(0) { $0 + $1.byteCount }
+
+        if connection == .disconnected { return .finished(.failed(.notConnected)) }   // H4
+        if total == 0 { return .finished() }                                          // H9
+        let (rideStream, rideContinuation) = AsyncThrowingStream<DownloadedRide, Error>.makeStream()
+        let handle = startTransfer(total: total, segments: segments, rides: rideContinuation)
+        return RideDownload(handle: handle, rides: rideStream)
+    }
+
+    /// Shared pump setup: consume the one-shot fault knobs and start a `MockTransfer`.
+    private func startTransfer(
+        total: Int,
+        segments: [MockTransfer.Segment],
+        rides: AsyncThrowingStream<DownloadedRide, Error>.Continuation?
+    ) -> TransferHandle {
         let (dropFraction, throughput) = lock.withLocked { () -> (Double?, Int) in
             let armedFailure = _pendingFailures.isEmpty ? false : { _pendingFailures.removeFirst(); return true }()
             let drop = _dropFraction ?? (armedFailure ? 0.0 : nil)
@@ -262,25 +287,21 @@ public final class MockControl: @unchecked Sendable {
         }
 
         let (stream, continuation) = AsyncStream<TransferProgress>.makeStream()
+        let outcome = AsyncPromise<TransferOutcome>()
         let states = stateMulticast
         let transfer = MockTransfer(
             total: total, throughputBytesPerSec: throughput, dropAtFraction: dropFraction,
-            linkChange: { state in states.send(state) }, progress: continuation
+            segments: segments, rides: rides,
+            linkChange: { state in states.send(state) }, progress: continuation,
+            outcome: outcome
         )
         Task { await transfer.start() }
         return TransferHandle(
             progress: stream,
+            outcome: outcome,
             onCancel: { Task { await transfer.cancel() } },
             onResume: { Task { await transfer.resume() } }
         )
-    }
-
-    /// Total download size for the given ride ids (0 → immediately finished = H9).
-    func downloadSize(for ids: [RideID]) -> Int {
-        let wanted = Set(ids)
-        return lock.withLocked {
-            _fixtures.rides.filter { wanted.contains($0.summary.id) }.reduce(0) { $0 + $1.downloadByteCount }
-        }
     }
 }
 

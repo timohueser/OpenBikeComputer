@@ -44,9 +44,10 @@ public protocol DeviceTransport: Sendable {
     func deleteRoute(_ id: RouteID) async throws
     /// Enumerate tracked rides on the device.
     func listRides() async throws -> [RideSummary]
-    /// Download tracked rides (device → app, B7). Returns a handle for
+    /// Download tracked rides (device → app, B7). `rides` yields each ride's
+    /// compact-binary payload as it lands; `handle` carries batch
     /// progress/cancel/resume.
-    func downloadRides(_ ids: [RideID]) -> TransferHandle
+    func downloadRides(_ ids: [RideID]) -> RideDownload
     /// Read the device diagnostics/crash-log blob.
     func readDiagnostics() async throws -> Data
 }

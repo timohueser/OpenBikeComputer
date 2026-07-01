@@ -29,11 +29,13 @@ public struct BLEChannel: Sendable {
     /// last committed offset.
     public func upload(_ object: Data, from offset: Int = 0) -> TransferHandle {
         let (stream, continuation) = AsyncStream<TransferProgress>.makeStream()
+        let outcome = AsyncPromise<TransferOutcome>()
         let transfer = Uploader(channel: channel, chunkSize: chunkSize, object: object,
-                                startOffset: offset, progress: continuation)
+                                startOffset: offset, progress: continuation, outcome: outcome)
         Task { await transfer.start() }
         return TransferHandle(
             progress: stream,
+            outcome: outcome,
             onCancel: { Task { await transfer.cancel() } },
             onResume: { Task { await transfer.resume() } }
         )
@@ -44,6 +46,7 @@ public struct BLEChannel: Sendable {
     /// CRC. Returns the handle plus a task resolving to the verified object.
     public func download(length: Int, expectedCRC: UInt32) -> (handle: TransferHandle, result: Task<Data, Error>) {
         let (stream, continuation) = AsyncStream<TransferProgress>.makeStream()
+        let outcome = AsyncPromise<TransferOutcome>()
         let ch = channel
         let cs = chunkSize
         let task = Task<Data, Error> {
@@ -59,16 +62,23 @@ public struct BLEChannel: Sendable {
                 }
             } catch {
                 continuation.finish()
-                throw (error as? DeviceError) ?? .transferDropped
+                let failure = (error as? DeviceError) ?? .transferDropped
+                outcome.fulfill(.failed(failure))   // a no-op if cancel() resolved it first
+                throw failure
             }
             continuation.finish()
-            guard hasher.finalize() == expectedCRC else { throw DeviceError.crcMismatch }
+            guard hasher.finalize() == expectedCRC else {
+                outcome.fulfill(.failed(.crcMismatch))
+                throw DeviceError.crcMismatch
+            }
+            outcome.fulfill(.completed)
             return buffer
         }
         return (
             TransferHandle(
                 progress: stream,
-                onCancel: { task.cancel(); Task { await ch.close() } },
+                outcome: outcome,
+                onCancel: { outcome.fulfill(.canceled); task.cancel(); Task { await ch.close() } },
                 onResume: {}  // download resume re-opens the CoC at the transport level (A5-gated)
             ),
             task
@@ -84,6 +94,7 @@ private actor Uploader {
     let chunkSize: Int
     let object: Data
     let progress: AsyncStream<TransferProgress>.Continuation
+    let outcome: AsyncPromise<TransferOutcome>
 
     var committed: Int
     var running = false
@@ -91,12 +102,14 @@ private actor Uploader {
     var torndown = false
 
     init(channel: any ByteChannel, chunkSize: Int, object: Data, startOffset: Int,
-         progress: AsyncStream<TransferProgress>.Continuation) {
+         progress: AsyncStream<TransferProgress>.Continuation,
+         outcome: AsyncPromise<TransferOutcome>) {
         self.channel = channel
         self.chunkSize = chunkSize
         self.object = object
         self.committed = min(max(0, startOffset), object.count)
         self.progress = progress
+        self.outcome = outcome
     }
 
     func start() async { await pump() }
@@ -128,6 +141,7 @@ private actor Uploader {
             await teardown()
         } else {
             progress.finish()  // complete
+            outcome.fulfill(.completed)
         }
     }
 
@@ -148,5 +162,6 @@ private actor Uploader {
         torndown = true
         await channel.close()
         progress.finish()
+        outcome.fulfill(.canceled)
     }
 }

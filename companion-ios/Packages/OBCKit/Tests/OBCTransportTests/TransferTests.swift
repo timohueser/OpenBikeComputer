@@ -20,6 +20,8 @@ final class TransferTests: XCTestCase {
         let bytes = try await withTimeout(5) { try await received.value }
         XCTAssertEqual(bytes, object)
         XCTAssertEqual(CRC32.checksum(bytes), CRC32.checksum(object))  // CRC the phone announces
+        let outcome = await handle.outcome
+        XCTAssertEqual(outcome, .completed)
     }
 
     // MARK: Round-trip (download verifies the announced CRC)
@@ -44,13 +46,15 @@ final class TransferTests: XCTestCase {
         try await pipe.write(object)
 
         let channel = BLEChannel(channel: pipe, chunkSize: 128)
-        let (_, result) = channel.download(length: object.count, expectedCRC: CRC32.checksum(object))
+        let (handle, result) = channel.download(length: object.count, expectedCRC: CRC32.checksum(object))
         do {
             _ = try await withTimeout(5) { try await result.value }
             XCTFail("expected crcMismatch")
         } catch let error as DeviceError {
             XCTAssertEqual(error, .crcMismatch)  // rejected, never committed
         }
+        let outcome = await handle.outcome
+        XCTAssertEqual(outcome, .failed(.crcMismatch))
     }
 
     // MARK: Offset-resume after a drop
@@ -89,6 +93,8 @@ final class TransferTests: XCTestCase {
         handle.cancel()
 
         try await withTimeout(5) { for await _ in handle.progress {} }   // finishes, no hang
+        let outcome = await handle.outcome
+        XCTAssertEqual(outcome, .canceled)
         let written = await pipe.bytesWrittenSoFar
         XCTAssertLessThan(written, object.count)                        // delivery stopped short
 
