@@ -1,0 +1,487 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		1F69783C6BDF4B68008643A9 /* OBCUI in Frameworks */ = {isa = PBXBuildFile; productRef = F36D240ABD9B3BD22B7361D6 /* OBCUI */; };
+		381F3D661B6D93D535F1B08E /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DBBC2F121AB1951FD912F9D /* RootView.swift */; };
+		5E713787D6892F949C215D70 /* OBCMock in Frameworks */ = {isa = PBXBuildFile; productRef = DD8B1F44D9B64524AB5825E1 /* OBCMock */; };
+		A57F14D5122AC017DA1EDD93 /* OBCCompanionApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E65FA62E1F2D28ACDD97577 /* OBCCompanionApp.swift */; };
+		D4441FDF0EE6240E0A3702A8 /* OBCTransport in Frameworks */ = {isa = PBXBuildFile; productRef = FE08B4C629A32B4696FF6CAE /* OBCTransport */; };
+		DC688D4C547902CF9C650940 /* OBCCompanionUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C66022BB56F762B09E9C0BF /* OBCCompanionUITests.swift */; };
+		E8AF96E48897DEAED75104EA /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 87872F15DFA475D7000C6544 /* Assets.xcassets */; };
+		E952B260ED805B85E464A35D /* OBCDomain in Frameworks */ = {isa = PBXBuildFile; productRef = 0BE4E2C1659DE512546A84FC /* OBCDomain */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		4F6B52E025101ADCA3CE58E4 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 976EEEFEF43E1022789BB55B /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 1EAF54E973FBAB6A003CCB1B;
+			remoteInfo = OBCCompanion;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		04AB7DF9C84BE23CAF41E6E9 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		0DBBC2F121AB1951FD912F9D /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		3C66022BB56F762B09E9C0BF /* OBCCompanionUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OBCCompanionUITests.swift; sourceTree = "<group>"; };
+		6608359A1519230330298AA6 /* OBCCompanion.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = OBCCompanion.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		6EB5A3C284B9EBBDD680DED9 /* OBCKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = OBCKit; path = Packages/OBCKit; sourceTree = SOURCE_ROOT; };
+		87872F15DFA475D7000C6544 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		8E65FA62E1F2D28ACDD97577 /* OBCCompanionApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OBCCompanionApp.swift; sourceTree = "<group>"; };
+		CC647C477B2AA83C35D9BB92 /* OBCCompanionUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = OBCCompanionUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		176E09E2EA4F01B29FC8728D /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E952B260ED805B85E464A35D /* OBCDomain in Frameworks */,
+				D4441FDF0EE6240E0A3702A8 /* OBCTransport in Frameworks */,
+				1F69783C6BDF4B68008643A9 /* OBCUI in Frameworks */,
+				5E713787D6892F949C215D70 /* OBCMock in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		396517FF234F0DC245594D49 = {
+			isa = PBXGroup;
+			children = (
+				67DF64A8C3AD0064ACF1B697 /* OBCCompanion */,
+				C5B8EA0DEC23F4CC94F614B4 /* OBCCompanionUITests */,
+				F7AFF8A270D62832CB097367 /* Packages */,
+				509822C13279F4894F41D6F0 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		509822C13279F4894F41D6F0 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				6608359A1519230330298AA6 /* OBCCompanion.app */,
+				CC647C477B2AA83C35D9BB92 /* OBCCompanionUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		67DF64A8C3AD0064ACF1B697 /* OBCCompanion */ = {
+			isa = PBXGroup;
+			children = (
+				87872F15DFA475D7000C6544 /* Assets.xcassets */,
+				04AB7DF9C84BE23CAF41E6E9 /* Info.plist */,
+				8E65FA62E1F2D28ACDD97577 /* OBCCompanionApp.swift */,
+				0DBBC2F121AB1951FD912F9D /* RootView.swift */,
+			);
+			path = OBCCompanion;
+			sourceTree = "<group>";
+		};
+		C5B8EA0DEC23F4CC94F614B4 /* OBCCompanionUITests */ = {
+			isa = PBXGroup;
+			children = (
+				3C66022BB56F762B09E9C0BF /* OBCCompanionUITests.swift */,
+			);
+			path = OBCCompanionUITests;
+			sourceTree = "<group>";
+		};
+		F7AFF8A270D62832CB097367 /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				6EB5A3C284B9EBBDD680DED9 /* OBCKit */,
+			);
+			path = Packages;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		1EAF54E973FBAB6A003CCB1B /* OBCCompanion */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 6E5F2AFD41E82598B5AE1F3E /* Build configuration list for PBXNativeTarget "OBCCompanion" */;
+			buildPhases = (
+				79CB1C63EF5C9F28F0825162 /* Sources */,
+				15E2F9574BA905D85901C20C /* Resources */,
+				176E09E2EA4F01B29FC8728D /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = OBCCompanion;
+			packageProductDependencies = (
+				0BE4E2C1659DE512546A84FC /* OBCDomain */,
+				FE08B4C629A32B4696FF6CAE /* OBCTransport */,
+				F36D240ABD9B3BD22B7361D6 /* OBCUI */,
+				DD8B1F44D9B64524AB5825E1 /* OBCMock */,
+			);
+			productName = OBCCompanion;
+			productReference = 6608359A1519230330298AA6 /* OBCCompanion.app */;
+			productType = "com.apple.product-type.application";
+		};
+		BF59843BD43DBC9C67E00D98 /* OBCCompanionUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 6755399AB225C8C45456D068 /* Build configuration list for PBXNativeTarget "OBCCompanionUITests" */;
+			buildPhases = (
+				01F7B1227ADCB59B844AF36A /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				DF8BFD503C1A5A1A9D9DE51E /* PBXTargetDependency */,
+			);
+			name = OBCCompanionUITests;
+			packageProductDependencies = (
+			);
+			productName = OBCCompanionUITests;
+			productReference = CC647C477B2AA83C35D9BB92 /* OBCCompanionUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		976EEEFEF43E1022789BB55B /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					1EAF54E973FBAB6A003CCB1B = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+					};
+					BF59843BD43DBC9C67E00D98 = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+						TestTargetID = 1EAF54E973FBAB6A003CCB1B;
+					};
+				};
+			};
+			buildConfigurationList = 01017735689FE1976E64894D /* Build configuration list for PBXProject "OBCCompanion" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 396517FF234F0DC245594D49;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				F9979034F71FCA7DB08C4064 /* XCLocalSwiftPackageReference "Packages/OBCKit" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 509822C13279F4894F41D6F0 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				1EAF54E973FBAB6A003CCB1B /* OBCCompanion */,
+				BF59843BD43DBC9C67E00D98 /* OBCCompanionUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		15E2F9574BA905D85901C20C /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E8AF96E48897DEAED75104EA /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		01F7B1227ADCB59B844AF36A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				DC688D4C547902CF9C650940 /* OBCCompanionUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		79CB1C63EF5C9F28F0825162 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A57F14D5122AC017DA1EDD93 /* OBCCompanionApp.swift in Sources */,
+				381F3D661B6D93D535F1B08E /* RootView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		DF8BFD503C1A5A1A9D9DE51E /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 1EAF54E973FBAB6A003CCB1B /* OBCCompanion */;
+			targetProxy = 4F6B52E025101ADCA3CE58E4 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		57F790B31F0EE2581B244107 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.openbikecomputer.companion.uitests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = OBCCompanion;
+			};
+			name = Release;
+		};
+		6100C5195D9344139D506E7F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.openbikecomputer.companion.uitests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = OBCCompanion;
+			};
+			name = Debug;
+		};
+		67C042A33E7651AEB819DB4B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = "";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 0.1.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		7147DB903DA5D032DC49D50C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 0.1.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		A0CECCF7BE4F1860BCEAD949 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = OBCCompanion/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.openbikecomputer.companion;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		EC6435A0E3711D9C0C743939 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = OBCCompanion/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.openbikecomputer.companion;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		01017735689FE1976E64894D /* Build configuration list for PBXProject "OBCCompanion" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				7147DB903DA5D032DC49D50C /* Debug */,
+				67C042A33E7651AEB819DB4B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		6755399AB225C8C45456D068 /* Build configuration list for PBXNativeTarget "OBCCompanionUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				6100C5195D9344139D506E7F /* Debug */,
+				57F790B31F0EE2581B244107 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		6E5F2AFD41E82598B5AE1F3E /* Build configuration list for PBXNativeTarget "OBCCompanion" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				EC6435A0E3711D9C0C743939 /* Debug */,
+				A0CECCF7BE4F1860BCEAD949 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		F9979034F71FCA7DB08C4064 /* XCLocalSwiftPackageReference "Packages/OBCKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/OBCKit;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		0BE4E2C1659DE512546A84FC /* OBCDomain */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = OBCDomain;
+		};
+		DD8B1F44D9B64524AB5825E1 /* OBCMock */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = OBCMock;
+		};
+		F36D240ABD9B3BD22B7361D6 /* OBCUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = OBCUI;
+		};
+		FE08B4C629A32B4696FF6CAE /* OBCTransport */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = OBCTransport;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 976EEEFEF43E1022789BB55B /* Project object */;
+}
