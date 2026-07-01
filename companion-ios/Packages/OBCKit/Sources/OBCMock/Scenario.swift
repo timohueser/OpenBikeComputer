@@ -13,7 +13,7 @@ import OBCDomain
 /// | `coldRead` | S2 (skeletons) |
 /// | `readError` | S3 |
 /// | `outOfRange` | S4 + disconnected banner |
-/// | `noDevice` | A / D1 pairing; H4 on import |
+/// | `noDevice` | D1→D4 pairing flow; H4 on import |
 /// | `pairingTimeout` / `pairingRejected` | D5 |
 /// | `bluetoothOff` / `permissionDenied` | H8 / H7 |
 /// | `syncUpToDate` / `syncDrop` | H9 / H10 |
@@ -47,6 +47,10 @@ public struct ScenarioPreset: Sendable {
     public var fixtures: String
     /// Initial connection state the `state` stream replays.
     public var connection: ConnectionState
+    /// Whether the app has bonded before — the B2 launch branch (`MockBondStore`
+    /// reads it). False for the pairing-flow scenarios (D1–D5 / H7 / H8 start
+    /// unpaired); true everywhere else.
+    public var bonded: Bool
     /// Radio power/permission.
     public var radio: RadioState
     /// Per-op latency.
@@ -63,6 +67,7 @@ public struct ScenarioPreset: Sendable {
     public init(
         fixtures: String = "default",
         connection: ConnectionState = .connected,
+        bonded: Bool = true,
         radio: RadioState = .on,
         latency: Duration = .milliseconds(180),
         throughputBytesPerSec: Int = 500_000,
@@ -72,6 +77,7 @@ public struct ScenarioPreset: Sendable {
     ) {
         self.fixtures = fixtures
         self.connection = connection
+        self.bonded = bonded
         self.radio = radio
         self.latency = latency
         self.throughputBytesPerSec = throughputBytesPerSec
@@ -98,15 +104,15 @@ extension Scenario {
         case .outOfRange:
             return ScenarioPreset(connection: .outOfRange)
         case .noDevice:
-            return ScenarioPreset(connection: .disconnected)
+            return ScenarioPreset(connection: .disconnected, bonded: false)
         case .pairingTimeout:
-            return ScenarioPreset(connection: .disconnected, pairingFail: .timeout)
+            return ScenarioPreset(connection: .disconnected, bonded: false, pairingFail: .timeout)
         case .pairingRejected:
-            return ScenarioPreset(connection: .disconnected, pairingFail: .rejected)
+            return ScenarioPreset(connection: .disconnected, bonded: false, pairingFail: .rejected)
         case .bluetoothOff:
-            return ScenarioPreset(connection: .disconnected, radio: .off)
+            return ScenarioPreset(connection: .disconnected, bonded: false, radio: .off)
         case .permissionDenied:
-            return ScenarioPreset(connection: .disconnected, radio: .unauthorized)
+            return ScenarioPreset(connection: .disconnected, bonded: false, radio: .unauthorized)
         case .syncUpToDate:
             return ScenarioPreset()
         case .syncDrop:
