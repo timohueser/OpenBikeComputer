@@ -333,14 +333,58 @@ That this is the *same* quadtree the device walks closes the loop with the other
 
 ## Following a route
 
-You plan a route elsewhere and upload a GPX. Converting it to an `.obcr` — decimating the geometry for drawing while keeping the stats exact, then chunking it with shared seams — is covered on the [data formats](../formats/#obcr-the-route) page. The converter is one portable `no_std` routine, so it runs on the device or in the simulator. What's left is the interesting part of *following*: snapping each GPS fix onto that route.
+You plan a route elsewhere and upload a GPX. Converting it to an `.obcr` — decimating the geometry for drawing while keeping the stats exact, then chunking it with shared seams — is covered on the [data formats](../formats/#obcr-the-route) page. The converter is one portable `no_std` routine, so it runs on the device or in the simulator.
+
+<figure class="fig">
+<svg viewBox="0 0 760 322" role="img" aria-label="Converting a GPX track to an OBCR route in one streaming pass. Left panel, the shape: the stored line keeps only the corners (and one vertex at least every 1.2 km) — vertices within 1 metre of the line between their neighbours are dropped — yet distance and climb are summed over every original point, so the stats stay exact even though the stored geometry is sparse. Right panel, the climb: a raw elevation trace is integrated through a 3-metre dead-band; small wiggles inside the band book no ascent, and only once the trace leaves the band is the climb booked and the reference re-anchored. The same dead-band is shared by the elevation profile and the live barometric climb on the device.">
+  <text class="d-tag" x="20" y="22">GPX → OBCR · one streaming pass</text>
+  <text class="d-sub" x="20" y="38" style="font-size:9.5px">decimate the geometry, but measure distance + climb from every raw point</text>
+  <line x1="384" y1="58" x2="384" y2="300" stroke="#9aa884" stroke-opacity="0.45" stroke-width="1" />
+  <text class="d-sub" x="26" y="62" style="font-size:9px;fill:#6b7758">① the shape — decimate, keep the corners</text>
+  <polyline points="55,206 130,131 225,166 330,116" fill="none" stroke="#cf6a2a" stroke-width="2" />
+  <circle cx="75" cy="187" r="3" fill="#ece8cf" stroke="#9aa884" stroke-width="1.2" />
+  <circle cx="92" cy="169" r="3" fill="#ece8cf" stroke="#9aa884" stroke-width="1.2" />
+  <circle cx="110" cy="150" r="3" fill="#ece8cf" stroke="#9aa884" stroke-width="1.2" />
+  <circle cx="155" cy="142" r="3" fill="#ece8cf" stroke="#9aa884" stroke-width="1.2" />
+  <circle cx="180" cy="151" r="3" fill="#ece8cf" stroke="#9aa884" stroke-width="1.2" />
+  <circle cx="200" cy="160" r="3" fill="#ece8cf" stroke="#9aa884" stroke-width="1.2" />
+  <circle cx="255" cy="156" r="3" fill="#ece8cf" stroke="#9aa884" stroke-width="1.2" />
+  <circle cx="285" cy="140" r="3" fill="#ece8cf" stroke="#9aa884" stroke-width="1.2" />
+  <circle cx="305" cy="129" r="3" fill="#ece8cf" stroke="#9aa884" stroke-width="1.2" />
+  <circle cx="55" cy="206" r="3.6" fill="#cf6a2a" />
+  <circle cx="130" cy="131" r="3.6" fill="#cf6a2a" />
+  <circle cx="225" cy="166" r="3.6" fill="#cf6a2a" />
+  <circle cx="330" cy="116" r="3.6" fill="#cf6a2a" />
+  <line class="d-stroke" x1="92" y1="169" x2="92" y2="205" style="stroke-width:0.9;stroke:#9aa884;stroke-dasharray:2 2" />
+  <text class="d-sub" x="86" y="220" style="font-size:8.5px">dropped — within 1 m of the line</text>
+  <text x="130" y="121" text-anchor="middle" style="font-family:var(--mono);font-size:8.5px;fill:#a9501c">kept — a corner</text>
+  <text class="d-sub" x="330" y="107" text-anchor="middle" style="font-size:8.5px;fill:#6b7758">+ force-keep every ~1.2 km</text>
+  <rect x="34" y="246" width="320" height="42" rx="7" style="fill:#eef2df;stroke:#9aa884;stroke-width:0.8" />
+  <text x="194" y="263" text-anchor="middle" style="font-family:var(--mono);font-size:9px;fill:#3c6b39">distance &amp; climb are summed over EVERY raw point</text>
+  <text x="194" y="277" text-anchor="middle" style="font-family:var(--mono);font-size:9px;fill:#3c6b39">— exact, though the stored line is decimated</text>
+  <text class="d-sub" x="402" y="62" style="font-size:9px;fill:#6b7758">② the climb — a ±3 m dead-band</text>
+  <polyline points="430.0,232.0 444.5,237.0 459.0,227.0 473.5,229.5 488.0,222.0 502.5,212.0 517.0,202.0 531.5,192.0 546.0,187.0 560.5,189.5 575.0,197.0 589.5,187.0 604.0,172.0 618.5,157.0 633.0,147.0 647.5,152.0 662.0,137.0 676.5,122.0 691.0,112.0 705.5,117.0 720.0,107.0" fill="none" stroke="#9aa884" stroke-width="1.3" stroke-opacity="0.65" />
+  <rect x="531.5" y="177.0" width="72.5" height="30.0" fill="#cf6a2a" fill-opacity="0.08" stroke="#cf6a2a" stroke-opacity="0.35" stroke-width="0.8" stroke-dasharray="3 3" />
+  <text x="608.0" y="195.0" style="font-family:var(--mono);font-size:8.5px;fill:#a9501c">±3 m</text>
+  <polyline points="430.0,232.0 502.5,232.0 502.5,212.0 531.5,212.0 531.5,192.0 604.0,192.0 604.0,172.0 618.5,172.0 618.5,157.0 662.0,157.0 662.0,137.0 676.5,137.0 676.5,122.0 720.0,122.0 720.0,107.0 720.0,107.0" fill="none" stroke="#cf6a2a" stroke-width="2" />
+  <text class="d-sub" x="430" y="252" style="font-size:8.5px;fill:#6b7758">along the route →</text>
+  <text class="d-sub" x="402" y="100" style="font-size:8.5px;fill:#6b7758">elev</text>
+  <text class="d-sub" x="455" y="210" style="font-size:8.5px;fill:#6b7758">wiggle &lt; 3 m → ignored</text>
+  <text x="592" y="120" text-anchor="middle" style="font-family:var(--mono);font-size:8.5px;fill:#a9501c">past ±3 m → book + re-anchor</text>
+  <rect x="430" y="266" width="296" height="22" rx="7" style="fill:#eef2df;stroke:#9aa884;stroke-width:0.8" />
+  <text x="578" y="281" text-anchor="middle" style="font-family:var(--mono);font-size:9px;fill:#3c6b39">one dead-band, shared: converter · profile · live baro climb</text>
+</svg>
+<figcaption>The GPX → OBCR conversion is one streaming pass. It <b>decimates</b> the geometry for storage — dropping any vertex within a metre of the line between its neighbours, keeping the corners (and one vertex at least every ~1.2 km, so a long straight still holds its shape and the deltas stay in <code>int16</code>) — but accumulates <b>distance and climb over every original point</b>, so the route's stats are exact even though the stored line is sparse. Climb runs through a <b>±3 m dead-band</b>: a move smaller than that books nothing and doesn't move the reference, so sampling jitter can't inflate the ascent. That one dead-band is shared by the converter, the elevation profile, and the device's live barometric climb — so the three numbers can't drift apart.</figcaption>
+</figure>
+
+What's left is the interesting part of *following*: snapping each GPS fix onto that route.
 
 ### Map-matching: a forward-biased cursor
 
 The matcher keeps a cursor — *which segment of the route you're on* — and for each fix searches a **bounded window** around it for the nearest segment. On-route that window is small and looks mostly *forward*, which is the whole trick: on a loop or an out-and-back, the cursor follows you forward instead of snapping to the nearby segment you rode an hour ago.
 
 <figure class="fig">
-<svg viewBox="0 0 720 290" role="img" aria-label="A route polyline with a cursor on it. A bounded forward window of a few segments ahead (and a little behind) is highlighted around the cursor. A GPS fix off to the side is projected onto the nearest segment in that window, giving a progress distance along the route and a cross-track distance to it. A far fix is flagged off-route and freezes progress.">
+<svg viewBox="0 0 720 290" role="img" aria-label="A route polyline with a cursor on it. A bounded forward window of dozens of segments ahead (and a few behind) is highlighted around the cursor. A GPS fix off to the side is projected onto the nearest segment in that window, giving a progress distance along the route and a cross-track distance to it. A far fix is flagged off-route and freezes progress.">
   <text class="d-tag" x="20" y="24">Snap each fix to the nearest segment in a forward window</text>
 
   <!-- route -->
