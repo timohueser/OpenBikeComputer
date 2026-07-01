@@ -31,9 +31,10 @@ companion-ios/
         OBCDomain/             pure value types (DeviceInfo, Route/Ride, Waypoint,
                                TrackPreview, …). No framework deps.
         OBCTransport/          DeviceTransport (Tier 1) + TransferHandle + AsyncMulticast;
-          Framing/             frame codec, CRC-32, reassembly (pure, host-tested)
-          BLE/                 real conformer — BLETransport, BLEChannel, ByteChannel,
-                               L2CAPByteChannel, GATT. **CoreBluetooth lives ONLY here.**
+          Transfer/            control-plane descriptors + CRC-32 (pure, host-tested)
+          BLE/                 real conformer — BLETransport, BLEChannel (raw CoC
+                               streaming), ByteChannel, L2CAPByteChannel, GATT.
+                               **CoreBluetooth lives ONLY here.**
         OBCMock/       #DEBUG   MockTransport + MockControl + fixtures (→ B1M)
         OBCUI/                  SwiftUI component kit + feature views (→ B11)
       Tests/
