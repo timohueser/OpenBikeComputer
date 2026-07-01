@@ -19,6 +19,11 @@ public struct MainScreenView: View {
     private let onSettings: () -> Void
 
     @State private var emptyStatePickerShown = false
+    // Pull-to-reveal search (Mail-style): hidden until the list is tugged
+    // down past the threshold; hides again on scroll-up once the query is
+    // cleared. `scrollBaseline` is the sentinel row's resting position.
+    @State private var searchRevealed = false
+    @State private var scrollBaseline: CGFloat?
 
     public init(
         model: MainScreenModel,
@@ -80,9 +85,40 @@ public struct MainScreenView: View {
 
     // MARK: List
 
+    /// Search stays visible while a query is live regardless of scroll (H6
+    /// keeps the query editable).
+    private var searchVisible: Bool {
+        searchRevealed || !model.searchText.isEmpty
+    }
+
     private var list: some View {
         List {
+            // Zero-height sentinel: its offset in the list's space measures
+            // top over-scroll. It sits above the search row, so revealing the
+            // row doesn't move the sentinel's resting position.
+            Color.clear
+                .frame(height: 0)
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets())
+                .background(
+                    GeometryReader { geo in
+                        Color.clear
+                            .onChange(of: geo.frame(in: .named("mainList")).minY) { _, minY in
+                                handleTopOverscroll(minY)
+                            }
+                    }
+                )
+
             Group {
+                if searchVisible {
+                    OBCSearchField(
+                        text: $model.searchText,
+                        prompt: model.tab == .planned ? "Search routes" : "Search rides"
+                    )
+                    .accessibilityIdentifier("main.search")
+                }
+
                 OBCSegmentedControl(selection: tabSelection, labels: ["Planned", "Tracked"])
                     .padding(.top, 4)
                     .padding(.bottom, 2)
@@ -90,12 +126,6 @@ public struct MainScreenView: View {
                 if model.tab == .tracked {
                     syncLine
                 }
-
-                OBCSearchField(
-                    text: $model.searchText,
-                    prompt: model.tab == .planned ? "Search routes" : "Search rides"
-                )
-                .accessibilityIdentifier("main.search")
 
                 switch model.tab {
                 case .planned: plannedContent
@@ -108,6 +138,28 @@ public struct MainScreenView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
+        // The sentinel must truly be 0pt — the List default would give the
+        // empty row ~44pt and open a gap under the title.
+        .environment(\.defaultMinListRowHeight, 0)
+        .coordinateSpace(name: "mainList")
+        #if os(iOS)
+        .scrollDismissesKeyboard(.immediately)
+        #endif
+    }
+
+    private func handleTopOverscroll(_ minY: CGFloat) {
+        guard let baseline = scrollBaseline else {
+            scrollBaseline = minY
+            return
+        }
+        let pull = minY - baseline
+        if pull > 55, !searchRevealed {
+            withAnimation(.easeOut(duration: 0.2)) { searchRevealed = true }
+        } else if pull < -70, searchRevealed, model.searchText.isEmpty {
+            // Only once the (cleared) bar is already scrolled off-screen, so
+            // removing the row doesn't visibly jump.
+            withAnimation(.easeOut(duration: 0.2)) { searchRevealed = false }
+        }
     }
 
     private var tabSelection: Binding<Int> {

@@ -51,21 +51,28 @@ final class MainScreenTests: XCTestCase {
         let statLine = app.staticTexts.matching(
             NSPredicate(format: "label CONTAINS '31.6 km' AND label CONTAINS 'kph'")
         ).firstMatch
-        XCTAssertTrue(statLine.exists, "C2 tracked stat line (date · distance · time · avg) missing")
+        XCTAssertTrue(statLine.waitForExistence(timeout: 5),
+                      "C2 tracked stat line (date · distance · time · avg) missing")
         snap(app, "C2-main-tracked")
 
         app.buttons["Planned"].tap()
         XCTAssertTrue(app.staticTexts["Kettle Moraine Loop"].waitForExistence(timeout: 5))
     }
 
-    /// Search filters; no matches → H6 with the query kept editable.
+    /// Search hides until a pull-down reveals it (Mail-style); then it
+    /// filters, and no matches → H6 with the query kept editable.
     @MainActor
-    func testSearchFiltersAndShowsH6OnNoMatches() {
+    func testSearchRevealsOnPullThenFiltersAndShowsH6() {
         let app = launch(scenario: "happyPath")
         waitForMain(app)
         XCTAssertTrue(app.staticTexts["Kettle Moraine Loop"].waitForExistence(timeout: 10))
 
         let search = app.textFields.firstMatch
+        XCTAssertFalse(search.exists, "search must stay hidden until pulled")
+        snap(app, "C1-search-hidden")
+
+        app.swipeDown()   // over-scroll the list → the bar slides in
+        XCTAssertTrue(search.waitForExistence(timeout: 5), "pull did not reveal search")
         search.tap()
         search.typeText("sugar")
         XCTAssertTrue(app.staticTexts["Sugar River Trail"].waitForExistence(timeout: 5))

@@ -52,8 +52,8 @@ companion-ios/
           Launch/              B2 launch + pairing flow (LaunchFlowModel state
                                machine + the A/D1–D5/H7/H8 screens)
           Main/                B3 main screen (MainScreenModel + MainScreenView:
-                               C1/C2 compact lists, top-bar sync states, search,
-                               swipe-to-delete → H1)
+                               C1/C2 compact lists, top-bar sync states, pull-down-
+                               to-reveal search, swipe-to-delete → H1)
       Tests/
         OBCTransportTests/     domain/transport/codec unit tests (host, `swift test`);
                                incl. CoreBluetoothSeamTests (enforces the CB seam)
