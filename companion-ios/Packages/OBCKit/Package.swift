@@ -10,7 +10,9 @@ import PackageDescription
 //   OBCFormats → interchange file formats (route import / ride export seams, B6/B7),
 //                depends on OBCDomain — sits beside OBCTransport, never on it
 //   OBCMock    → #if DEBUG fixtures + MockTransport, depends on OBCTransport
-//   OBCUI      → SwiftUI component kit (B11), depends on OBCDomain
+//   OBCUI      → SwiftUI component kit (B11) + feature screens (B2+), depends on
+//                OBCDomain + OBCTransport (feature view models consume the
+//                DeviceTransport protocol — never OBCMock, never CoreBluetooth)
 //
 // Strict concurrency is on for every target (see `strictConcurrency` below).
 
@@ -58,7 +60,7 @@ let package = Package(
         ),
         .target(
             name: "OBCUI",
-            dependencies: ["OBCDomain"],
+            dependencies: ["OBCDomain", "OBCTransport"],
             swiftSettings: strictConcurrency
         ),
         .testTarget(
@@ -78,7 +80,9 @@ let package = Package(
         ),
         .testTarget(
             name: "OBCUITests",
-            dependencies: ["OBCUI"],
+            // OBCMock so the launch-flow model tests drive real scenarios
+            // through MockTransport (host-side, no simulator).
+            dependencies: ["OBCUI", "OBCMock"],
             swiftSettings: strictConcurrency
         ),
     ]

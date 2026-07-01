@@ -154,6 +154,21 @@ public struct OBCComponentGallery: View {
                     ])
                 }
 
+                section("Launch & Pairing (B2)") {
+                    launchScreen { LaunchConnectingView(deviceName: "Trailhead") }
+                    launchScreen { PairIntroView(onStart: {}) }
+                    launchScreen {
+                        PairScanningView(
+                            discovered: .init(name: "Trailhead"),
+                            onTapDevice: {},
+                            onCancel: {}
+                        )
+                    }
+                    launchScreen { PairedView(deviceName: "Trailhead", onContinue: {}) }
+                    launchScreen { PairFailedView(failure: .timeout, onRetry: {}, onHelp: {}) }
+                    launchScreen { RadioBlockedView(block: .off, onBrowseLibrary: {}) }
+                }
+
                 section("Empty / Error Layout") {
                     OBCEmptyStateView(
                         glyph: .trackTile,
@@ -182,6 +197,14 @@ public struct OBCComponentGallery: View {
             actionTitle: "Forget device"
         ) {}
         .accessibilityIdentifier("uiGallery")
+    }
+
+    /// A full launch/pairing screen shrunk into a browsable gallery cell.
+    private func launchScreen(@ViewBuilder _ content: () -> some View) -> some View {
+        content()
+            .frame(height: 620)
+            .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusLarge))
+            .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusLarge).strokeBorder(OBCTheme.line))
     }
 
     private func section(_ title: String, @ViewBuilder content: () -> some View) -> some View {

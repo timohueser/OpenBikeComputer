@@ -21,6 +21,7 @@ public struct MockControlPanel: View {
     @State private var latencyMilliseconds: Int
     @State private var throughputBytesPerSec: Int
     @State private var radio: RadioState
+    @State private var bonded: Bool
 
     public init(control: MockControl) {
         self.control = control
@@ -30,6 +31,7 @@ public struct MockControlPanel: View {
         _latencyMilliseconds = State(initialValue: control.latency.wholeMilliseconds)
         _throughputBytesPerSec = State(initialValue: control.throughputBytesPerSec)
         _radio = State(initialValue: control.radio)
+        _bonded = State(initialValue: control.bonded)
     }
 
     public var body: some View {
@@ -88,6 +90,9 @@ public struct MockControlPanel: View {
                 }
             }
             .onChange(of: radio) { _, newValue in control.radio = newValue }
+
+            Toggle("Bonded", isOn: $bonded)
+                .onChange(of: bonded) { _, newValue in control.bonded = newValue }
 
             LabeledContent("Battery \(Int(battery))%") {
                 Slider(value: $battery, in: 0...100, step: 1)
@@ -175,6 +180,7 @@ public struct MockControlPanel: View {
         latencyMilliseconds = control.latency.wholeMilliseconds
         throughputBytesPerSec = control.throughputBytesPerSec
         radio = control.radio
+        bonded = control.bonded
     }
 
     /// Fixed picker options, plus the current value if it's nonstandard (so the

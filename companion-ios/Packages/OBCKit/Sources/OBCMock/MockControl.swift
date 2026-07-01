@@ -49,6 +49,7 @@ public final class MockControl: @unchecked Sendable {
     private var _latency: Duration
     private var _throughput: Int
     private var _radio: RadioState
+    private var _bonded: Bool
     private var _pairingFail: PairingFail?
     private var _pendingFailures: [DeviceError]
     private var _dropFraction: Double?
@@ -64,6 +65,7 @@ public final class MockControl: @unchecked Sendable {
         self._latency = preset.latency
         self._throughput = preset.throughputBytesPerSec
         self._radio = preset.radio
+        self._bonded = preset.bonded
         self._pairingFail = preset.pairingFail
         self._pendingFailures = preset.pendingFailure.map { [$0] } ?? []
         self._dropFraction = preset.dropAtFraction
@@ -116,6 +118,13 @@ public final class MockControl: @unchecked Sendable {
         set { lock.withLocked { _radio = newValue } }
     }
 
+    /// Whether the app has bonded before — what `MockBondStore` serves to the
+    /// B2 launch branch. Flip it live (panel) to replay first-run pairing.
+    public var bonded: Bool {
+        get { lock.withLocked { _bonded } }
+        set { lock.withLocked { _bonded = newValue } }
+    }
+
     /// The reported device identity (mirror of `fixtures.deviceInfo`).
     public var deviceInfo: DeviceInfo {
         get { lock.withLocked { _fixtures.deviceInfo } }
@@ -139,6 +148,7 @@ public final class MockControl: @unchecked Sendable {
             _latency = preset.latency
             _throughput = preset.throughputBytesPerSec
             _radio = preset.radio
+            _bonded = preset.bonded
             _pairingFail = preset.pairingFail
             _pendingFailures = preset.pendingFailure.map { [$0] } ?? []
             _dropFraction = preset.dropAtFraction

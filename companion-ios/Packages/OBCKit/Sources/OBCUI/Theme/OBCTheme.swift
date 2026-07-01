@@ -63,6 +63,21 @@ public enum OBCTheme {
     /// `--track-end` = `--coral` — end node dot.
     public static let trackEnd = coral
 
+    // ------------------------------------------------------------- device illustration (§4)
+    // The little hardware drawing on the launch/pairing screens. Pinned by the
+    // design: `--dev-header` / `--dev-header-text` (tokens/colors.css) plus the
+    // literals of the §4 frames — these draw the *device*, not app chrome.
+    /// Device shell, warm near-black (#2a2723 in the §4 frames).
+    public static let deviceBody = Color(hex: 0x2A2723)
+    /// Device side buttons (#555).
+    public static let deviceButton = Color(hex: 0x555555)
+    /// `--dev-header` #AA5500 — the device UI's rust title bar.
+    public static let deviceHeader = Color(hex: 0xAA5500)
+    /// `--dev-header-text` #FFFFAA — cream text on the title bar.
+    public static let deviceHeaderText = Color(hex: 0xFFFFAA)
+    /// The device screen's track amber (#FFAA00, the on-glass palette).
+    public static let deviceTrack = Color(hex: 0xFFAA00)
+
     // ------------------------------------------------------------- chrome metrics (§9)
     /// iOS inline nav-bar height, 44pt.
     public static let navBarHeight: CGFloat = 44
