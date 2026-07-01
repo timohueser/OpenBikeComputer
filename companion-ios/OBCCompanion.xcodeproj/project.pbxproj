@@ -31,7 +31,7 @@
 		04AB7DF9C84BE23CAF41E6E9 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		0DBBC2F121AB1951FD912F9D /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		3C66022BB56F762B09E9C0BF /* OBCCompanionUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OBCCompanionUITests.swift; sourceTree = "<group>"; };
-		6608359A1519230330298AA6 /* OBCCompanion.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = OBCCompanion.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		6608359A1519230330298AA6 /* OBCCompanion.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OBCCompanion.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		6EB5A3C284B9EBBDD680DED9 /* OBCKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = OBCKit; path = Packages/OBCKit; sourceTree = SOURCE_ROOT; };
 		87872F15DFA475D7000C6544 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		8E65FA62E1F2D28ACDD97577 /* OBCCompanionApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OBCCompanionApp.swift; sourceTree = "<group>"; };
@@ -153,7 +153,6 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					1EAF54E973FBAB6A003CCB1B = {
-						DevelopmentTeam = "";
 						ProvisioningStyle = Automatic;
 					};
 					BF59843BD43DBC9C67E00D98 = {
@@ -395,6 +394,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = 685GP49NH2;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = OBCCompanion/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -413,6 +413,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = 685GP49NH2;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = OBCCompanion/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
