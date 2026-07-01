@@ -28,12 +28,17 @@ companion-ios/
   Packages/
     OBCKit/                    local SwiftPM package — builds/tests WITHOUT the app
       Sources/
-        OBCDomain/             pure value types (DeviceInfo, …). No framework deps.
-        OBCTransport/          DeviceTransport protocol (+ BLETransport, BLEChannel → B1)
+        OBCDomain/             pure value types (DeviceInfo, Route/Ride, Waypoint,
+                               TrackPreview, …). No framework deps.
+        OBCTransport/          DeviceTransport (Tier 1) + TransferHandle + AsyncMulticast;
+          Framing/             frame codec, CRC-32, reassembly (pure, host-tested)
+          BLE/                 real conformer — BLETransport, BLEChannel, ByteChannel,
+                               L2CAPByteChannel, GATT. **CoreBluetooth lives ONLY here.**
         OBCMock/       #DEBUG   MockTransport + MockControl + fixtures (→ B1M)
         OBCUI/                  SwiftUI component kit + feature views (→ B11)
       Tests/
-        OBCTransportTests/     domain/transport/codec unit tests (host, `swift test`)
+        OBCTransportTests/     domain/transport/codec unit tests (host, `swift test`);
+                               incl. CoreBluetoothSeamTests (enforces the CB seam)
         OBCMockTests/          mock/fixture tests
   OBCCompanionUITests/         XCUITest target — launch-arg driven (→ B1P)
   OBCProtocol.md               wire-contract mirror (B-S0): GATT + CoC + deltas
@@ -68,9 +73,14 @@ sees only the `any DeviceTransport` protocol — never `CBCentralManager`, never
 `MockTransport`. Two conformers:
 
 - **`BLETransport`** (real, **B1**) — CoreBluetooth + the `BLEChannel` byte layer
-  (GATT / L2CAP CoC, framing, CRC, codecs).
+  (GATT / L2CAP CoC, framing, CRC, codecs). Its **live path is gated on firmware
+  `A4`/`A5`**; the framing/codec layer beneath it is fully host-tested.
 - **`MockTransport`** (fake, `#if DEBUG`, **B1M**) — fixture-backed, driven by a
   `MockControl` fault-injection surface that can reproduce every design state.
+
+The CB seam is **test-enforced**: `CoreBluetoothSeamTests` (`swift test`) fails if
+`import CoreBluetooth` appears anywhere outside `OBCTransport/BLE/` or in the app's
+composition root.
 
 The mock-exclusion **seam is real and tested**: `OBCMock` is entirely behind
 `#if DEBUG`, so a Release build compiles it to an empty module. Prove it:

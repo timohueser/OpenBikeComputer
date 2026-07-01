@@ -98,6 +98,14 @@ Frame header (widths/endianness pinned by firmware S0):
 
 `firmware` is **reserved** for a future OTA type — no codec in this epic.
 
+**B1 lands this framing** in `OBCTransport`: `Frame.swift` (header codec),
+`CRC32.swift`, and `TransferAssembler.swift` (reassembly), driven by `BLEChannel`
+over a `ByteChannel` — the L2CAP CoC (`L2CAPByteChannel`) on the real path, an
+in-memory pipe in tests. The concrete field widths, little-endian layout, and
+CRC-32/IEEE variant are **provisional**, centralized in `FrameFormat` / `CRC32`
+for a single-spot repin once firmware `S0` freezes the numbers. Likewise the
+custom GATT UUIDs live provisionally in `BLE/GATT.swift`.
+
 ---
 
 ## Object formats
@@ -149,10 +157,15 @@ The domain types `B1` finalizes live in `OBCKit`'s `OBCDomain` module (minimal
 | `RouteSummary` / `RouteBlob` | `Route.swift` | route metadata + opaque binary payload |
 | `RouteSource` | `Route.swift` | GPX / TCX (Delta 2) |
 | `RideSummary` | `Ride.swift` | enumerable tracked ride (`RideList`) |
+| `Waypoint` | `Waypoint.swift` | route waypoint (W1) — rides in `RouteBlob` |
+| `Coordinate` / `TrackPreview` | `Geo.swift` | normalized polyline for `GPSTrackPreview` (B11) |
 | `TransferProgress` | `TransferProgress.swift` | CoC transfer progress + resume `offset` |
-| `DeviceError` | `DeviceError.swift` | typed failures incl. `crcMismatch`, `protocolMismatch` |
+| `DeviceError` | `DeviceError.swift` | typed failures incl. `crcMismatch`, `protocolMismatch`, radio states |
 | `ConnectionState` | `ConnectionState.swift` | link lifecycle for `DeviceTransport.state` |
 
-`RouteID` / `RideID` are thin `String` wrappers in the same files. The
-`DeviceTransport` protocol, `TransferHandle`, and `BLETransport`/`BLEChannel`
-are **B1's** deliverables ([#237](https://github.com/timohueser/OpenBikeComputer/issues/237)).
+`RouteID` / `RideID` are thin `String` wrappers in the same files. **B1
+([#237](https://github.com/timohueser/OpenBikeComputer/issues/237)) is landed:**
+the finalized `DeviceTransport` protocol + `TransferHandle` live in `OBCTransport`,
+the real conformer in `OBCTransport/BLE/` (`BLETransport`, `BLEChannel`,
+`L2CAPByteChannel`, `GATT`), and the framing/codec + domain types are unit-tested
+without hardware. The **real-path** (live GATT/CoC) is gated on firmware `A4`/`A5`.
