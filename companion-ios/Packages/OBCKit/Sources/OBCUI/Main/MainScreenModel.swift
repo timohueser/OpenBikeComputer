@@ -253,6 +253,29 @@ public final class MainScreenModel {
         syncedRideIDs.insert(id)
     }
 
+    // MARK: Rename (H12) + import landing (E1) — session-local library edits
+
+    /// Rename a planned route in the list. Local by design (H12: "renames
+    /// locally, propagates to device on next upload") — no transport op.
+    public func renameRoute(_ id: RouteID, to name: String) {
+        guard let index = routes.firstIndex(where: { $0.id == id }) else { return }
+        routes[index].name = name
+    }
+
+    /// Rename a tracked ride in the list — same local-only rule as routes.
+    public func renameRide(_ id: RideID, to name: String) {
+        guard let index = rides.firstIndex(where: { $0.id == id }) else { return }
+        rides[index].name = name
+    }
+
+    /// Land a just-imported route at the top of Planned (E1 "Save to Planned").
+    /// Session-scoped like rename: the persistent phone-side library is B7's.
+    public func addImportedRoute(_ summary: RouteSummary) {
+        routes.removeAll { $0.id == summary.id }
+        routes.insert(summary, at: 0)
+        tab = .planned
+    }
+
     // MARK: Helpers
 
     private func filtered<T>(_ items: [T], by name: KeyPath<T, String>) -> [T] {

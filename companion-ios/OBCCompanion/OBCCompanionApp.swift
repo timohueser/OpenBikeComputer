@@ -36,7 +36,11 @@ struct OBCCompanionApp: App {
 
     var body: some Scene {
         WindowGroup {
-            RootView(transport: Self.makeTransport(), bondStore: Self.makeBondStore())
+            RootView(
+                transport: Self.makeTransport(),
+                bondStore: Self.makeBondStore(),
+                importAtLaunch: Self.launchImport()
+            )
             #if DEBUG
                 .devMockOverlay(
                     control: Self.mockControl,
@@ -57,6 +61,18 @@ struct OBCCompanionApp: App {
         if let mockControl { return MockTransport(control: mockControl) }
         #endif
         return BLETransport()
+    }
+
+    /// The `-OBCImportSample` hook (B4): hand the bundled sample GPX to the
+    /// import path at launch, exactly as a Files pick would — E1 XCUITests and
+    /// demos run the real decoder. Debug-only, like every launch arg.
+    static func launchImport() -> (data: Data, fileName: String)? {
+        #if DEBUG
+        guard launchOptions.importSample else { return nil }
+        return SampleRouteFile.data().map { ($0, "sample-import.\(SampleRouteFile.fileExtension)") }
+        #else
+        return nil
+        #endif
     }
 
     /// The bond record behind the B2 launch branch. Mock runs read it from the

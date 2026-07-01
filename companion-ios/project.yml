@@ -44,6 +44,10 @@ targets:
         product: OBCDomain
       - package: OBCKit
         product: OBCTransport
+      # The file-format edge (RouteImporter + decoders) — the composition root
+      # registers the concrete formats (B4: GPX; B6 adds TCX).
+      - package: OBCKit
+        product: OBCFormats
       - package: OBCKit
         product: OBCUI
       # OBCMock is fully behind #if DEBUG → an empty module in Release, and the
