@@ -116,23 +116,32 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     // MARK: DeviceTransport — data plane
 
     public func uploadRoute(_ route: RouteBlob) -> TransferHandle {
-        transferHandle { channel in
-            channel.upload(route.payload, type: .route, objectID: 0)
-        }
+        let start = TransferStart(
+            type: .route, objectID: 0,
+            totalLen: UInt32(route.payload.count), crc32: CRC32.checksum(route.payload)
+        )
+        return beginTransfer(start) { channel in channel.upload(route.payload) }
     }
 
     public func downloadRides(_ ids: [RideID]) -> TransferHandle {
-        transferHandle { channel in
-            channel.download(objectID: 0).handle
-        }
+        // Real path (B7/A7): the device announces each ride via `TransferStart` over
+        // `Status` (length + CRC), then the app calls `channel.download(length:expectedCRC:)`.
+        // Until `listRides` decoding lands (S0), there's nothing to pull.
+        .immediatelyFinished()
     }
 
-    /// Build a `TransferHandle` from the live `BLEChannel`, or an
-    /// immediately-finished one if not connected (the caller detects the drop via
-    /// `state`).
-    private func transferHandle(_ make: @Sendable @escaping (BLEChannel) -> TransferHandle) -> TransferHandle {
+    /// Announce a transfer on the control plane (`TransferControl`), then stream its
+    /// payload over the CoC via `make`. Returns an immediately-finished handle if not
+    /// connected (caller detects the drop via `state`).
+    private func beginTransfer(_ start: TransferStart, _ make: @Sendable @escaping (BLEChannel) -> TransferHandle) -> TransferHandle {
         queue.sync {
-            guard let bleChannel else { return TransferHandle.immediatelyFinished() }
+            guard let bleChannel, let peripheral, let control = characteristics[GATT.transferControl] else {
+                return TransferHandle.immediatelyFinished()
+            }
+            // Open the transfer before the first CoC byte. Exact sequencing vs the
+            // stream (and the Status/committedOffset handshake for resume) is
+            // finalized at A5 bring-up.
+            peripheral.writeValue(start.encode(), for: control, type: .withResponse)
             return make(bleChannel)
         }
     }
