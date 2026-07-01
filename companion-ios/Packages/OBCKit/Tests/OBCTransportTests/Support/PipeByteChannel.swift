@@ -19,7 +19,8 @@ actor PipeByteChannel: ByteChannel {
     private var writeWaiter: CheckedContinuation<Void, Error>?
     private var closed = false
 
-    private var failAt: Int?  // one-shot: the write crossing this many bytes throws once
+    private var failAt: Int?      // one-shot: the write crossing this many bytes throws once
+    private var corruptAt: Int?   // one-shot: flip a bit at this delivered-byte index
 
     /// Total bytes accepted by `write` (test introspection).
     private(set) var bytesWrittenSoFar = 0
@@ -32,12 +33,23 @@ actor PipeByteChannel: ByteChannel {
     /// count past `bytes` throws `ChannelDropped` (delivering nothing), then heals.
     func failAfter(_ bytes: Int) { failAt = bytes }
 
+    /// Arm a one-shot silent corruption: flip a bit in the byte at delivered index
+    /// `index`. Models an error the BLE link CRC missed — only the end-to-end CRC
+    /// catches it.
+    func corruptByte(at index: Int) { corruptAt = index }
+
     func write(_ data: Data) async throws {
         if closed { throw ChannelDropped() }
         if let threshold = failAt, bytesWrittenSoFar + data.count > threshold {
             failAt = nil                 // heal — a subsequent resume succeeds
             faultTriggered = true
             throw ChannelDropped()       // atomic: deliver nothing
+        }
+        var data = data
+        if let index = corruptAt, index >= bytesWrittenSoFar, index < bytesWrittenSoFar + data.count {
+            corruptAt = nil
+            let local = data.index(data.startIndex, offsetBy: index - bytesWrittenSoFar)
+            data[local] ^= 0x01
         }
         // Backpressure: block until the reader drains below capacity (or we close).
         while buffer.count >= capacity, !closed {

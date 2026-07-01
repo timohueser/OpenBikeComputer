@@ -1,34 +1,36 @@
 import Foundation
 import OBCDomain
 
-/// The byte layer (Tier 2). Moves typed objects over a `ByteChannel` (the L2CAP
-/// CoC on the real path) using the frame codec: chunked, **resumable** by offset,
-/// **cancelable**, CRC-validated per frame. Backs the `TransferHandle` that
-/// `uploadRoute` (B5) and `downloadRides` (B7) return.
+/// The byte layer (Tier 2). Moves an object's **raw payload bytes** over a
+/// `ByteChannel` (the L2CAP CoC on the real path). There is **no per-chunk wire
+/// framing** — the transfer's metadata + whole-object CRC ride on the control plane
+/// (`TransferStart`/`TransferResult` over GATT), so the MCU can sink bytes straight
+/// to flash and CRC them in one pass, with no reassembly buffer.
 ///
-/// `MockTransport` **bypasses this entirely** — all wire logic lives here so the
-/// mock stays a thin fixture server (epic architecture, `OBCProtocol.md`).
-///
-/// A value type holding only immutable references — per-transfer mutable state
-/// lives in the `Uploader` actor — so `upload`/`download` are callable synchronously.
+/// Chunking here is purely **write / progress / resume granularity** (aligned to the
+/// CoC PDU), not framing. The transfer is **resumable** by offset and **cancelable**
+/// (channel teardown). `MockTransport` bypasses this entirely.
 public struct BLEChannel: Sendable {
     private let channel: any ByteChannel
     private let chunkSize: Int
 
-    public init(channel: any ByteChannel, chunkSize: Int = FrameFormat.defaultChunkSize) {
+    /// One CoC SDU on a 2M-PHY + DLE link (251-byte PDU − L2CAP header) — the write
+    /// and resume granularity. `OBCProtocol.md` → *Data plane*.
+    public static let defaultChunkSize = 244
+
+    public init(channel: any ByteChannel, chunkSize: Int = BLEChannel.defaultChunkSize) {
         self.channel = channel
         self.chunkSize = max(1, chunkSize)
     }
 
-    /// Frame `object` and stream it out (app → device). The returned handle reports
-    /// progress and drives cancel/resume.
-    public func upload(_ object: Data, type: ObjectType, objectID: UInt16) -> TransferHandle {
+    /// Stream `object[offset...]` as raw bytes (app → device). The caller has already
+    /// announced the transfer (`TransferStart`, incl. the whole-object CRC) on the
+    /// control plane. Returns the handle the UI observes; `resume()` restarts from the
+    /// last committed offset.
+    public func upload(_ object: Data, from offset: Int = 0) -> TransferHandle {
         let (stream, continuation) = AsyncStream<TransferProgress>.makeStream()
-        let transfer = Uploader(
-            channel: channel, chunkSize: chunkSize,
-            object: object, type: type, objectID: objectID,
-            progress: continuation
-        )
+        let transfer = Uploader(channel: channel, chunkSize: chunkSize, object: object,
+                                startOffset: offset, progress: continuation)
         Task { await transfer.start() }
         return TransferHandle(
             progress: stream,
@@ -37,36 +39,31 @@ public struct BLEChannel: Sendable {
         )
     }
 
-    /// Read one framed object (device → app), validating each frame's CRC and
-    /// reassembling by offset. Returns the handle the UI observes plus a task that
-    /// resolves to the committed object (or throws `DeviceError`).
-    public func download(objectID: UInt16) -> (handle: TransferHandle, result: Task<Data, Error>) {
+    /// Read `length` raw bytes (device → app), CRC-ing as they arrive and rejecting on
+    /// mismatch (`DeviceError.crcMismatch`) — the object is never committed on a bad
+    /// CRC. Returns the handle plus a task resolving to the verified object.
+    public func download(length: Int, expectedCRC: UInt32) -> (handle: TransferHandle, result: Task<Data, Error>) {
         let (stream, continuation) = AsyncStream<TransferProgress>.makeStream()
-        let reader = FrameReader(channel: channel)
         let ch = channel
+        let cs = chunkSize
         let task = Task<Data, Error> {
-            var assembler = TransferAssembler()
+            var buffer = Data(capacity: length)
+            var hasher = CRC32.Hasher()
             do {
-                while let frame = try await reader.next() {
-                    guard frame.header.objectID == objectID else { continue }
-                    let done = try assembler.ingest(header: frame.header, payload: frame.payload)
-                    continuation.yield(TransferProgress(
-                        bytesDone: assembler.committedLength,
-                        total: assembler.total ?? 0,
-                        offset: assembler.committedLength
-                    ))
-                    if done { break }
+                while buffer.count < length {
+                    let chunk = try await ch.read(maxLength: min(cs, length - buffer.count))
+                    if chunk.isEmpty { throw DeviceError.transferDropped }  // EOF before `length`
+                    hasher.update(chunk)
+                    buffer.append(chunk)
+                    continuation.yield(TransferProgress(bytesDone: buffer.count, total: length, offset: buffer.count))
                 }
-            } catch let error as FramingError {
-                continuation.finish()
-                throw error == .crcMismatch ? DeviceError.crcMismatch : DeviceError.transferDropped
             } catch {
                 continuation.finish()
-                throw DeviceError.transferDropped
+                throw (error as? DeviceError) ?? .transferDropped
             }
             continuation.finish()
-            guard let object = assembler.object else { throw DeviceError.transferDropped }
-            return object
+            guard hasher.finalize() == expectedCRC else { throw DeviceError.crcMismatch }
+            return buffer
         }
         return (
             TransferHandle(
@@ -80,29 +77,25 @@ public struct BLEChannel: Sendable {
 }
 
 /// One in-flight upload. An actor so `cancel()`/`resume()` and the send loop don't
-/// race. Tracks `committed` = end offset of the last **fully written** frame — the
-/// resume anchor after a drop (a partially written frame is never committed, so
-/// resume re-sends it whole).
+/// race. `committed` = bytes fully handed to the channel — the resume anchor after a
+/// drop (a chunk that failed to write is never committed, so resume re-sends it).
 private actor Uploader {
     let channel: any ByteChannel
     let chunkSize: Int
     let object: Data
-    let type: ObjectType
-    let objectID: UInt16
     let progress: AsyncStream<TransferProgress>.Continuation
 
-    var committed = 0
+    var committed: Int
     var running = false
     var canceled = false
     var torndown = false
 
-    init(channel: any ByteChannel, chunkSize: Int, object: Data, type: ObjectType, objectID: UInt16,
+    init(channel: any ByteChannel, chunkSize: Int, object: Data, startOffset: Int,
          progress: AsyncStream<TransferProgress>.Continuation) {
         self.channel = channel
         self.chunkSize = chunkSize
         self.object = object
-        self.type = type
-        self.objectID = objectID
+        self.committed = min(max(0, startOffset), object.count)
         self.progress = progress
     }
 
@@ -113,31 +106,16 @@ private actor Uploader {
         running = true
         let total = object.count
 
-        // A zero-length object still needs one frame so the receiver sees totalLen.
-        if total == 0, committed == 0 {
-            let frame = FrameCodec.encode(type: type, objectID: objectID, totalLen: 0, offset: 0, payload: Data())
-            try? await channel.write(frame)
-            progress.yield(TransferProgress(bytesDone: 0, total: 0, offset: 0))
-            running = false
-            progress.finish()
-            return
-        }
-
         while committed < total {
             if canceled { break }
             let end = min(committed + chunkSize, total)
-            let payload = Data(object[(object.startIndex + committed)..<(object.startIndex + end)])
-            let frame = FrameCodec.encode(
-                type: type, objectID: objectID,
-                totalLen: UInt32(total), offset: UInt32(committed), payload: payload
-            )
+            let chunk = object.subdata(in: (object.startIndex + committed)..<(object.startIndex + end))
             do {
-                try await channel.write(frame)
+                try await channel.write(chunk)
             } catch {
-                // A `cancel()` closes the channel, which surfaces here as a write
-                // error — teardown is already in flight, so just stop. Otherwise it's
-                // a genuine drop: leave `committed` at the last good boundary and stop
-                // with the stream open so `resume()` can continue into it.
+                // Drop (or a cancel that closed the channel): stop with `committed` at
+                // the last good boundary. The stream stays open so `resume()` can
+                // continue into it.
                 running = false
                 return
             }
@@ -155,8 +133,8 @@ private actor Uploader {
 
     func cancel() async {
         canceled = true
-        // Always tear down: closing the channel also unblocks a write that's parked
-        // on backpressure, so the pump can't be stranded mid-transfer.
+        // Always tear down: closing the channel also unblocks a write parked on
+        // backpressure, so the pump can't be stranded mid-transfer.
         await teardown()
     }
 
@@ -165,35 +143,10 @@ private actor Uploader {
         await pump()
     }
 
-    /// Cancel teardown: close the channel and finish the stream (idempotent). The
-    /// out-of-band abort over `TransferControl` is a `BLETransport`/GATT concern.
     private func teardown() async {
         guard !torndown else { return }
         torndown = true
         await channel.close()
         progress.finish()
-    }
-}
-
-/// Pulls whole frames off a `ByteChannel`, reassembling each from arbitrary read
-/// sizes. `next()` returns `nil` at a clean end-of-stream (frame boundary) and
-/// throws `ChannelDropped` on a mid-frame drop or `FramingError` on corruption.
-struct FrameReader: Sendable {
-    let channel: any ByteChannel
-
-    func next() async throws -> (header: FrameHeader, payload: Data)? {
-        var head = Data()
-        while head.count < FrameFormat.headerSize {
-            let chunk = try await channel.read(maxLength: FrameFormat.headerSize - head.count)
-            if chunk.isEmpty {
-                if head.isEmpty { return nil }  // clean EOF at a frame boundary
-                throw ChannelDropped()          // dropped mid-header
-            }
-            head.append(chunk)
-        }
-        let header = try FrameCodec.parseHeader(head)
-        let payload = try await channel.readExactly(Int(header.chunkLen))
-        try FrameCodec.verify(header, payload: payload)  // reject corrupt frames
-        return (header, payload)
     }
 }

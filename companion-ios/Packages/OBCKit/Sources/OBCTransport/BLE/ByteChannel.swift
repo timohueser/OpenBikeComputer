@@ -18,22 +18,8 @@ public protocol ByteChannel: Sendable {
 }
 
 /// Thrown by a `ByteChannel` when the underlying link drops mid-transfer. The
-/// framing layer catches this and leaves the transfer resumable from its last
+/// transfer layer catches this and leaves the upload resumable from its last
 /// committed offset.
 public struct ChannelDropped: Error, Sendable {
     public init() {}
-}
-
-extension ByteChannel {
-    /// Read **exactly** `count` bytes, looping over short reads. Throws
-    /// `ChannelDropped` if the stream ends first.
-    func readExactly(_ count: Int) async throws -> Data {
-        var buffer = Data(capacity: count)
-        while buffer.count < count {
-            let chunk = try await read(maxLength: count - buffer.count)
-            if chunk.isEmpty { throw ChannelDropped() }  // EOF before `count`
-            buffer.append(chunk)
-        }
-        return buffer
-    }
 }
