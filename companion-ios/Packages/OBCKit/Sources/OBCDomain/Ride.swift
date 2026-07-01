@@ -15,6 +15,37 @@ public struct RideID: Hashable, Sendable {
 /// **B1 finalization** of the B-S0 skeleton: adds moving time, average speed,
 /// climb, and the `TrackPreview`. New fields are defaulted so the B-S0 call sites
 /// keep compiling.
+/// One tracklog sample of a recorded ride.
+public struct RidePoint: Hashable, Sendable {
+    public let timestamp: Date
+    public let coordinate: Coordinate
+    /// Elevation in metres, when the device recorded one.
+    public let elevationMeters: Double?
+
+    public init(timestamp: Date, coordinate: Coordinate, elevationMeters: Double? = nil) {
+        self.timestamp = timestamp
+        self.coordinate = coordinate
+        self.elevationMeters = elevationMeters
+    }
+}
+
+/// A full tracked ride — the **canonical in-app model**. The device ride codec
+/// (compact binary, S0-owned) decodes into this, and every export format
+/// (GPX today, FIT later, connected services) encodes *from* this via a
+/// `RideFileEncoder` (see `OBCFormats`) — so a tracked-file format switch never
+/// touches storage, sync, or the screens.
+public struct Ride: Identifiable, Equatable, Sendable {
+    public var summary: RideSummary
+    public var points: [RidePoint]
+
+    public var id: RideID { summary.id }
+
+    public init(summary: RideSummary, points: [RidePoint]) {
+        self.summary = summary
+        self.points = points
+    }
+}
+
 public struct RideSummary: Identifiable, Equatable, Sendable {
     public let id: RideID
     public var name: String

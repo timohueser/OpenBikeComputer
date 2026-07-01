@@ -86,8 +86,8 @@ public struct MockTransport: DeviceTransport {
         control.beginTransfer(total: route.payload.count)
     }
 
-    public func downloadRides(_ ids: [RideID]) -> TransferHandle {
-        control.beginTransfer(total: control.downloadSize(for: ids))
+    public func downloadRides(_ ids: [RideID]) -> RideDownload {
+        control.beginRideDownload(ids)
     }
 
     // MARK: Shared op prelude
