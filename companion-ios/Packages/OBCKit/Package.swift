@@ -23,8 +23,9 @@ let strictConcurrency: [SwiftSetting] = [
 let package = Package(
     name: "OBCKit",
     // iOS is the ship target; the macOS floor only lets host tooling (`swift test`)
-    // compile the SwiftUI-using code in OBCUI. The app itself is iPhone-only.
-    platforms: [.iOS(.v17), .macOS(.v13)],
+    // compile the SwiftUI-using code (OBCUI, the OBCMock dev panel — whose
+    // two-parameter `onChange` needs 14). The app itself is iPhone-only.
+    platforms: [.iOS(.v17), .macOS(.v14)],
     products: [
         .library(name: "OBCDomain", targets: ["OBCDomain"]),
         .library(name: "OBCTransport", targets: ["OBCTransport"]),
