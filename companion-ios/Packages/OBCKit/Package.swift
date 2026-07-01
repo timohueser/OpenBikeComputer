@@ -42,6 +42,9 @@ let package = Package(
         .target(
             name: "OBCMock",
             dependencies: ["OBCTransport", "OBCDomain"],
+            // Editable JSON fixture sets (routes/rides/config/diagnostics) the mock
+            // serves. The Swift that loads them is `#if DEBUG`; these are inert data.
+            resources: [.process("Fixtures")],
             swiftSettings: strictConcurrency
         ),
         .target(
