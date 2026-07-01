@@ -43,7 +43,7 @@ struct RootView: View {
         .background(OBCTheme.parchment)
         .task {
             do {
-                info = try await transport.fetchDeviceInfo()
+                info = try await transport.deviceInfo()
             } catch {
                 didFail = true
             }
