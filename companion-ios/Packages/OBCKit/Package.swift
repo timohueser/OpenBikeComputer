@@ -76,5 +76,10 @@ let package = Package(
             dependencies: ["OBCMock"],
             swiftSettings: strictConcurrency
         ),
+        .testTarget(
+            name: "OBCUITests",
+            dependencies: ["OBCUI"],
+            swiftSettings: strictConcurrency
+        ),
     ]
 )
