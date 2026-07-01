@@ -11,6 +11,18 @@ public struct Coordinate: Hashable, Sendable {
         self.latitude = latitude
         self.longitude = longitude
     }
+
+    /// Great-circle distance to `other` in metres (haversine, spherical Earth).
+    /// Plenty for route stats and waypoint placement; no CoreLocation.
+    public func distance(to other: Coordinate) -> Double {
+        let earthRadius = 6_371_000.0
+        let lat1 = latitude * .pi / 180
+        let lat2 = other.latitude * .pi / 180
+        let dLat = lat2 - lat1
+        let dLon = (other.longitude - longitude) * .pi / 180
+        let a = sin(dLat / 2) * sin(dLat / 2) + cos(lat1) * cos(lat2) * sin(dLon / 2) * sin(dLon / 2)
+        return 2 * earthRadius * atan2(sqrt(a), sqrt(1 - a))
+    }
 }
 
 /// A **normalized** polyline for the `GPSTrackPreview` component (B11) to draw —

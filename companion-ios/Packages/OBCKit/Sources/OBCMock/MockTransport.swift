@@ -82,6 +82,22 @@ public struct MockTransport: DeviceTransport {
         return control.fixtures.rides.map(\.summary)
     }
 
+    public func routeDetail(_ id: RouteID) async throws -> RouteDetail {
+        try await preludeThrowing()
+        guard let entry = control.fixtures.routes.first(where: { $0.summary.id == id }) else {
+            throw DeviceError.readFailed
+        }
+        return entry.detail()
+    }
+
+    public func rideDetail(_ id: RideID) async throws -> RideDetail {
+        try await preludeThrowing()
+        guard let entry = control.fixtures.rides.first(where: { $0.summary.id == id }) else {
+            throw DeviceError.readFailed
+        }
+        return entry.detail()
+    }
+
     public func uploadRoute(_ route: RouteBlob) -> TransferHandle {
         control.beginTransfer(total: route.payload.count)
     }

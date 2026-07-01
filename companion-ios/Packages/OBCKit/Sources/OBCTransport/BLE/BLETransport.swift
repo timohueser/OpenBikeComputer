@@ -113,6 +113,18 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         return []
     }
 
+    public func routeDetail(_ id: RouteID) async throws -> RouteDetail {
+        // Unreachable until `listRoutes` decodes (no card to tap); the detail
+        // payload layout is S0-owned and lands with A4 bring-up.
+        _ = try await read(GATT.status)
+        throw DeviceError.readFailed
+    }
+
+    public func rideDetail(_ id: RideID) async throws -> RideDetail {
+        _ = try await read(GATT.rideList)
+        throw DeviceError.readFailed
+    }
+
     // MARK: DeviceTransport — data plane
 
     public func uploadRoute(_ route: RouteBlob) -> TransferHandle {
