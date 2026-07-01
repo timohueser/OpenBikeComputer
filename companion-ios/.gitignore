@@ -1,0 +1,26 @@
+# Xcode / SwiftPM build artifacts — the .xcodeproj itself IS committed (generated
+# from project.yml), but per-user and derived state is not.
+
+## Build output
+build/
+DerivedData/
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+## Xcode per-user state (inside the committed .xcodeproj)
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+
+## SwiftPM
+.build/
+Packages/*/.build/
+.swiftpm/xcode/package.xcworkspace/xcuserdata/
+.swiftpm/xcode/xcuserdata/
+
+## Misc
+.DS_Store
+*.moved-aside
+*.hmap
