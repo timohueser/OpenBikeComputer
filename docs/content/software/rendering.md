@@ -564,7 +564,7 @@ Each is just another polyline through the stroker or a triangle through the poly
 
 ## To the panel: the banded push
 
-Everything above is shared — byte-for-byte identical on the simulator and the device. This last step is where they part, because the device has neither the memory nor the display hardware a desktop takes for granted. On the simulator the `DrawTarget` is a true-colour framebuffer the window blits in one call. The nRF54L15 has **256 KB of RAM and no external memory**, and **no scan-out engine** that would stream a framebuffer to the panel on its own. So the device does two things a PC never has to: it draws into a *device-native* framebuffer, and then it ships that framebuffer to the panel itself, a strip at a time.
+Everything above is shared — byte-for-byte identical on the simulator and the device. This last step is where they part, because the device has neither the memory nor the display hardware a desktop takes for granted. On the simulator the `DrawTarget` is a true-colour framebuffer the window blits in one call. The nRF54LM20 has **512 KB of RAM and no external memory**, and **no scan-out engine** that would stream a framebuffer to the panel on its own. So the device does two things a PC never has to: it draws into a *device-native* framebuffer, and then it ships that framebuffer to the panel itself, a strip at a time.
 
 ### The RGB222 framebuffer
 
@@ -606,7 +606,7 @@ A finished frame now sits in RAM, but nothing is putting it on glass. With no sc
   <!-- panel (right) -->
   <rect class="d-panel" x="560" y="52" width="116" height="196" rx="8" style="fill:#e7ead8" />
   <rect x="560" y="100" width="116" height="24" class="d-hot-fill" style="fill-opacity:0.55" />
-  <text class="d-label" x="618" y="40" text-anchor="middle" style="font-size:11px">ST7789 panel</text>
+  <text class="d-label" x="618" y="40" text-anchor="middle" style="font-size:11px">ST7789 · bring-up</text>
   <text class="d-sub" x="618" y="266" text-anchor="middle">addressed window</text>
   <!-- scanline progression -->
   <line x1="690" y1="60" x2="690" y2="240" stroke="#cf6a2a" stroke-width="1.4" stroke-dasharray="3 3" marker-end="url(#aG)" />
@@ -620,6 +620,97 @@ The wire format lives behind the board's [`DisplayDriver`](src:firmware/obc-fw-n
 The panel the device is *designed* for is a reflective **memory-LCD (LS021B7DD02-class MIP)**, driven by the nRF's **FLPR** coprocessor — and the real map/ride app **already runs on it** — it's now the **default** firmware build, with the ST7789 kept as the opt-in `--features tft` backend. The FLPR scans the frame top-to-bottom in one pass, so for this backend the M33 renders into the RGB222 plane and then **presents** it — packing each line into two ping-pong buffers the FLPR drains. Worth saying plainly: the FLPR is **not** a free scan-out engine, and a *full* MIP frame (~97 ms today) is actually slower than the ST7789's. So the present doesn't rewrite the whole frame when it needn't. It keeps a **per-row hash of the last-pushed frame**, and on each present re-hashes the rows and drives a **span-masked scan** ([issue #163](https://github.com/timohueser/OpenBikeComputer/issues/163)) over only the spans whose hash changed — the FLPR fast-forwarding its gate over the unchanged rows and early-stopping after the last, so frame cost scales with *changed rows*, not a flat 320.
 
 The screens never say *where* they changed — they stay immediate-mode, clearing and redrawing the whole frame — so the present detects the changed region **automatically** ([issue #201](https://github.com/timohueser/OpenBikeComputer/issues/201)): a Home clock ticking a minute re-hashes to find just its clock band and repaints that (~97 ms → a few ms), the contour backdrop behind it untouched, with zero per-screen code. (The ST7789 present diffs the same way, a `RASET` window per changed span; the win is smaller there, where even a full push is fast.) A collision — a changed row hashing equal, so skipped — is ~2⁻³² per row-change and self-heals the next time the row changes; the simulator runs an exact full-frame diff as a CI oracle, so only random, self-healing misses ever reach glass. That's render-on-demand carried onto the glass; the overlay below rides the very same masked scan.
+
+<figure class="fig">
+<svg viewBox="0 0 800 366" role="img" aria-label="The self-diffing present. Left: the framebuffer, drawn as 16 stacked rows; an immediate-mode screen redraws all 320 rows every frame, but only a band in the middle — the clock — actually changed. Middle: a per-row FNV-1a hash (a 1.28 KB store of one 32-bit hash per row) is compared to last frame; rows whose hash equals the stored one are skipped, the contiguous run of changed rows coalesces into one span. Right: the FLPR runs one masked scan of the panel — it fast-forwards its gate over the unchanged rows, writes only the changed span, and stops early, so only those rows reach the glass and the rest of the image is retained. A one-minute clock tick costs a few rows instead of a full ~97 ms frame.">
+  <defs>
+    <marker id="rdA" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24">Redraw the whole frame — push only the rows that changed</text>
+  <text class="d-sub" x="103" y="46" text-anchor="middle" style="font-size:9px;fill:#6b7758">① the frame</text>
+  <rect class="d-panel-2" x="52" y="58" width="102" height="208" rx="4" />
+  <g stroke="#9aa884" stroke-opacity="0.45" stroke-width="1">
+    <line x1="52" y1="71" x2="154" y2="71" />
+    <line x1="52" y1="84" x2="154" y2="84" />
+    <line x1="52" y1="97" x2="154" y2="97" />
+    <line x1="52" y1="110" x2="154" y2="110" />
+    <line x1="52" y1="123" x2="154" y2="123" />
+    <line x1="52" y1="136" x2="154" y2="136" />
+    <line x1="52" y1="149" x2="154" y2="149" />
+    <line x1="52" y1="162" x2="154" y2="162" />
+    <line x1="52" y1="175" x2="154" y2="175" />
+    <line x1="52" y1="188" x2="154" y2="188" />
+    <line x1="52" y1="201" x2="154" y2="201" />
+    <line x1="52" y1="214" x2="154" y2="214" />
+    <line x1="52" y1="227" x2="154" y2="227" />
+    <line x1="52" y1="240" x2="154" y2="240" />
+    <line x1="52" y1="253" x2="154" y2="253" />
+  </g>
+  <rect x="52" y="149" width="102" height="39" fill="#cf6a2a" fill-opacity="0.5" />
+  <text x="103" y="171" text-anchor="middle" style="font-family:var(--mono);font-size:9px;fill:#7a3b16">clock</text>
+  <text class="d-label" x="103" y="288" text-anchor="middle" style="font-size:10.5px">framebuffer</text>
+  <text class="d-sub" x="103" y="302" text-anchor="middle" style="font-size:9.5px">screen redrew all 320 rows</text>
+  <line class="d-flow" x1="158" y1="162" x2="204" y2="162" marker-end="url(#rdA)" />
+  <text class="d-sub" x="181" y="154" text-anchor="middle" style="font-size:9px">hash each</text>
+  <text class="d-sub" x="232" y="46" text-anchor="middle" style="font-size:9px;fill:#6b7758">② the diff</text>
+  <rect x="216" y="60" width="32" height="9" rx="1.5" fill="#c7cdb6" fill-opacity="0.85" stroke="#9aa884" stroke-opacity="0.5" stroke-width="0.6" />
+  <rect x="216" y="73" width="32" height="9" rx="1.5" fill="#c7cdb6" fill-opacity="0.85" stroke="#9aa884" stroke-opacity="0.5" stroke-width="0.6" />
+  <rect x="216" y="86" width="32" height="9" rx="1.5" fill="#c7cdb6" fill-opacity="0.85" stroke="#9aa884" stroke-opacity="0.5" stroke-width="0.6" />
+  <rect x="216" y="99" width="32" height="9" rx="1.5" fill="#c7cdb6" fill-opacity="0.85" stroke="#9aa884" stroke-opacity="0.5" stroke-width="0.6" />
+  <rect x="216" y="112" width="32" height="9" rx="1.5" fill="#c7cdb6" fill-opacity="0.85" stroke="#9aa884" stroke-opacity="0.5" stroke-width="0.6" />
+  <rect x="216" y="125" width="32" height="9" rx="1.5" fill="#c7cdb6" fill-opacity="0.85" stroke="#9aa884" stroke-opacity="0.5" stroke-width="0.6" />
+  <rect x="216" y="138" width="32" height="9" rx="1.5" fill="#c7cdb6" fill-opacity="0.85" stroke="#9aa884" stroke-opacity="0.5" stroke-width="0.6" />
+  <rect x="216" y="151" width="32" height="9" rx="1.5" fill="#cf6a2a" fill-opacity="1" stroke="#9aa884" stroke-opacity="0.5" stroke-width="0.6" />
+  <rect x="216" y="164" width="32" height="9" rx="1.5" fill="#cf6a2a" fill-opacity="1" stroke="#9aa884" stroke-opacity="0.5" stroke-width="0.6" />
+  <rect x="216" y="177" width="32" height="9" rx="1.5" fill="#cf6a2a" fill-opacity="1" stroke="#9aa884" stroke-opacity="0.5" stroke-width="0.6" />
+  <rect x="216" y="190" width="32" height="9" rx="1.5" fill="#c7cdb6" fill-opacity="0.85" stroke="#9aa884" stroke-opacity="0.5" stroke-width="0.6" />
+  <rect x="216" y="203" width="32" height="9" rx="1.5" fill="#c7cdb6" fill-opacity="0.85" stroke="#9aa884" stroke-opacity="0.5" stroke-width="0.6" />
+  <rect x="216" y="216" width="32" height="9" rx="1.5" fill="#c7cdb6" fill-opacity="0.85" stroke="#9aa884" stroke-opacity="0.5" stroke-width="0.6" />
+  <rect x="216" y="229" width="32" height="9" rx="1.5" fill="#c7cdb6" fill-opacity="0.85" stroke="#9aa884" stroke-opacity="0.5" stroke-width="0.6" />
+  <rect x="216" y="242" width="32" height="9" rx="1.5" fill="#c7cdb6" fill-opacity="0.85" stroke="#9aa884" stroke-opacity="0.5" stroke-width="0.6" />
+  <rect x="216" y="255" width="32" height="9" rx="1.5" fill="#c7cdb6" fill-opacity="0.85" stroke="#9aa884" stroke-opacity="0.5" stroke-width="0.6" />
+  <line class="d-stroke" x1="248" y1="90" x2="262" y2="90" style="stroke-width:1;stroke:#9aa884" />
+  <text class="d-sub" x="266" y="93" style="font-size:9px">hash = stored → skip</text>
+  <path d="M254 151 h6 v35 h-6" fill="none" stroke="#cf6a2a" stroke-width="1.6" />
+  <text x="266" y="167" style="font-family:var(--mono);font-size:9px;fill:#a9501c">hash ≠ stored</text>
+  <text x="266" y="180" style="font-family:var(--mono);font-size:9.5px;fill:#a9501c">→ span (y₀, 3)</text>
+  <text class="d-sub" x="246" y="288" text-anchor="middle" style="font-size:9.5px">FNV-1a per row</text>
+  <text class="d-sub" x="246" y="302" text-anchor="middle" style="font-size:9.5px">320×u32 = 1.28 KB store</text>
+  <line class="d-flow" x1="398" y1="162" x2="484" y2="162" marker-end="url(#rdA)" />
+  <text class="d-sub" x="441" y="148" text-anchor="middle" style="font-size:9px">span list</text>
+  <text class="d-sub" x="441" y="159" text-anchor="middle" style="font-size:9px">(start, count)</text>
+  <text class="d-sub" x="556" y="46" text-anchor="middle" style="font-size:9px;fill:#6b7758">③ the push</text>
+  <line x1="491" y1="58" x2="491" y2="149" stroke="#3c6b39" stroke-opacity="0.4" stroke-width="1.5" stroke-dasharray="2 3" />
+  <line x1="491" y1="149" x2="491" y2="188" stroke="#cf6a2a" stroke-width="4" />
+  <line x1="491" y1="188" x2="491" y2="266" stroke="#9aa884" stroke-opacity="0.3" stroke-width="1.2" stroke-dasharray="1 4" />
+  <line x1="485" y1="192" x2="497" y2="192" stroke="#a9501c" stroke-width="1.6" />
+  <rect x="496" y="58" width="108" height="208" rx="4" style="fill:#e7ead8;stroke:#3c6b39;stroke-width:1.2" />
+  <rect x="500" y="59.5" width="100" height="11" fill="none" stroke="#9aa884" stroke-opacity="0.35" stroke-width="0.8" stroke-dasharray="2 3" />
+  <rect x="500" y="72.5" width="100" height="11" fill="none" stroke="#9aa884" stroke-opacity="0.35" stroke-width="0.8" stroke-dasharray="2 3" />
+  <rect x="500" y="85.5" width="100" height="11" fill="none" stroke="#9aa884" stroke-opacity="0.35" stroke-width="0.8" stroke-dasharray="2 3" />
+  <rect x="500" y="98.5" width="100" height="11" fill="none" stroke="#9aa884" stroke-opacity="0.35" stroke-width="0.8" stroke-dasharray="2 3" />
+  <rect x="500" y="111.5" width="100" height="11" fill="none" stroke="#9aa884" stroke-opacity="0.35" stroke-width="0.8" stroke-dasharray="2 3" />
+  <rect x="500" y="124.5" width="100" height="11" fill="none" stroke="#9aa884" stroke-opacity="0.35" stroke-width="0.8" stroke-dasharray="2 3" />
+  <rect x="500" y="137.5" width="100" height="11" fill="none" stroke="#9aa884" stroke-opacity="0.35" stroke-width="0.8" stroke-dasharray="2 3" />
+  <rect x="500" y="150.5" width="100" height="11" fill="#cf6a2a" fill-opacity="0.55" />
+  <rect x="500" y="163.5" width="100" height="11" fill="#cf6a2a" fill-opacity="0.55" />
+  <rect x="500" y="176.5" width="100" height="11" fill="#cf6a2a" fill-opacity="0.55" />
+  <rect x="500" y="189.5" width="100" height="11" fill="none" stroke="#9aa884" stroke-opacity="0.35" stroke-width="0.8" stroke-dasharray="2 3" />
+  <rect x="500" y="202.5" width="100" height="11" fill="none" stroke="#9aa884" stroke-opacity="0.35" stroke-width="0.8" stroke-dasharray="2 3" />
+  <rect x="500" y="215.5" width="100" height="11" fill="none" stroke="#9aa884" stroke-opacity="0.35" stroke-width="0.8" stroke-dasharray="2 3" />
+  <rect x="500" y="228.5" width="100" height="11" fill="none" stroke="#9aa884" stroke-opacity="0.35" stroke-width="0.8" stroke-dasharray="2 3" />
+  <rect x="500" y="241.5" width="100" height="11" fill="none" stroke="#9aa884" stroke-opacity="0.35" stroke-width="0.8" stroke-dasharray="2 3" />
+  <rect x="500" y="254.5" width="100" height="11" fill="none" stroke="#9aa884" stroke-opacity="0.35" stroke-width="0.8" stroke-dasharray="2 3" />
+  <text class="d-label" x="550" y="288" text-anchor="middle" style="font-size:10.5px">to glass</text>
+  <text class="d-sub" x="550" y="302" text-anchor="middle" style="font-size:9.5px">3 rows pushed, rest retained</text>
+  <text class="d-sub" x="614" y="101" style="font-size:9.5px;fill:#6b7758">fast-forward the gate</text>
+  <text x="614" y="171" style="font-family:var(--mono);font-size:9.5px;fill:#a9501c">write the span</text>
+  <text class="d-sub" x="614" y="204" style="font-size:9.5px;fill:#6b7758">stop early — rest not scanned</text>
+  <rect x="250" y="324" width="360" height="28" rx="9" style="fill:#f8efe4;stroke:#cf6a2a;stroke-width:1.3" />
+  <text x="430" y="342" text-anchor="middle" style="font-family:var(--sans);font-size:11.5px;fill:#a9501c">one-minute clock tick: <tspan font-weight="700">~97 ms full frame → a few ms</tspan></text>
+</svg>
+<figcaption>Screens stay <b>immediate-mode</b> — they clear and redraw the whole frame, so they never declare <i>where</i> they changed. The present works it out: one <b>FNV-1a hash per row</b> (320×u32 = 1.28 KB) compared against last frame, the changed rows coalesced into a single <b>span</b>, and one masked FLPR scan that fast-forwards its gate over the unchanged rows and <b>stops early</b>. A minute's clock tick then repaints a few rows, not a full ~97 ms frame — the rest of the picture is simply retained on the glass. A hash collision (a changed row skipped) is ~2⁻³² per change and self-heals; the simulator runs an exact full-frame diff as a CI oracle.</figcaption>
+</figure>
 
 ### The overlay composites on the push
 

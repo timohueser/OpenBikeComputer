@@ -14,7 +14,7 @@ That's what lets the simulator you can [run in your browser](../../) be the real
 The crates form a stack with dependencies pointing **one way — downward**. The foundation parses bytes; each layer up adds capability; the two *hosts* sit on top. Nothing in the shared core ever depends on a host.
 
 <figure class="fig">
-<svg viewBox="0 0 720 410" role="img" aria-label="The crate dependency stack. At the top, two hosts — obc-sim (desktop and browser) and obc-fw-nrf54l plus obc-platform (device) — both depend on obc-app. obc-app depends on obc-render, which depends on obc-reader and obc-route. obc-route also depends on obc-reader, the foundation. Every arrow points downward, so the shared core never depends on a host.">
+<svg viewBox="0 0 720 410" role="img" aria-label="The crate dependency stack. At the top, two hosts — obc-sim (desktop and browser) and obc-fw-nrf54l plus obc-platform (device) — both depend on obc-app. obc-app depends on obc-render and also directly on obc-reader and obc-route. obc-render depends on obc-reader and obc-route. obc-route also depends on obc-reader, the foundation. Every arrow points downward, so the shared core never depends on a host.">
   <defs>
     <marker id="aA" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
   </defs>
@@ -55,18 +55,22 @@ The crates form a stack with dependencies pointing **one way — downward**. The
   <line class="d-flow" x1="430" y1="292" x2="480" y2="330" marker-end="url(#aA)" />
   <line class="d-flow" x1="388" y1="356" x2="354" y2="356" marker-end="url(#aA)" />
 
+  <!-- app also reaches past render straight to the two foundation crates -->
+  <path class="d-flow" d="M186 202 C 170 252, 176 300, 206 330" marker-end="url(#aA)" opacity="0.8" />
+  <path class="d-flow" d="M554 202 C 570 252, 564 300, 534 330" marker-end="url(#aA)" opacity="0.8" />
+
   <text class="d-sub" x="610" y="360" style="font-size:11px">offline:</text>
   <text class="d-sub" x="610" y="374" style="font-size:11px">obc-pack</text>
   <text class="d-sub" x="610" y="386" style="font-size:11px">→ obc-reader</text>
 </svg>
-<figcaption>Hosts depend on <b>obc-app</b>; app on <b>obc-render</b>; render on <b>obc-reader</b> + <b>obc-route</b>; route on reader. Because every arrow points down, the shared core compiles and runs without <i>any</i> host — which is exactly how it's developed on the desktop today. (<b>obc-pack</b>, the offline map packer, shares the reader's format code but isn't part of the runtime stack.)</figcaption>
+<figcaption>Hosts depend on <b>obc-app</b>; app on <b>obc-render</b> — and directly on <b>obc-reader</b> + <b>obc-route</b> as well; render on reader + route; route on reader. Because every arrow points down, the shared core compiles and runs without <i>any</i> host — which is exactly how it's developed on the desktop today. (<b>obc-pack</b>, the offline map packer, shares the reader's format code but isn't part of the runtime stack.)</figcaption>
 </figure>
 
 The one-way rule is the load-bearing constraint. `obc-app` builds for the bare-metal target (`thumbv8m.main-none-eabihf`) with no host present; the simulator and the firmware are just two different things that link *against* it. Swap the host, keep the core.
 
 ## Two hosts, one core — and the seams between them
 
-A "host" is whatever constructs an [`App`](src:firmware/obc-app/src/app.rs) and drives it. The simulator ([`obc-sim`](src:firmware/obc-sim)) is an `eframe`/`egui` desktop+wasm shell; the device firmware ([`obc-fw-nrf54l`](src:firmware/obc-fw-nrf54l), via [`obc-platform`](src:firmware/obc-platform)) is bare-metal on the nRF54L15. (The seams were first proven on an STM32F429 prototype, since removed; the nRF is what the project ships on, and the *same* core ran unchanged on both.) Each owns its window/panel, its storage, and its sensors — and hands the core four small abstractions. Those four **seams** are the entire device-specific surface area; find them and you've found every boundary that matters.
+A "host" is whatever constructs an [`App`](src:firmware/obc-app/src/app.rs) and drives it. The simulator ([`obc-sim`](src:firmware/obc-sim)) is an `eframe`/`egui` desktop+wasm shell; the device firmware ([`obc-fw-nrf54l`](src:firmware/obc-fw-nrf54l), via [`obc-platform`](src:firmware/obc-platform)) is bare-metal on the nRF54LM20. (The seams were first proven on an STM32F429 prototype, since removed; the nRF is what the project ships on, and the *same* core ran unchanged on both.) Each owns its window/panel, its storage, and its sensors — and hands the core four small abstractions. Those four **seams** are the entire device-specific surface area; find them and you've found every boundary that matters.
 
 <figure class="fig">
 <svg viewBox="0 0 720 372" role="img" aria-label="The shared core sits in the middle and connects through four seams to each host. DrawTarget carries pixels out (simulator: an RGB888 framebuffer; device: a resident RGB222 framebuffer pushed to the panel a band at a time). The colour function maps a 16-bit colour to a pixel (true-colour or 64-colour in the sim; native RGB222 on the panel). ByteSource brings bytes in (an in-memory slice in the sim; FatFs on the SD card on the device). The HAL traits bring the world in (the control panel, a GPX replay and the keyboard in the sim; GPS, a barometer and GPIO buttons on the device).">
@@ -209,12 +213,55 @@ This **render-on-demand** is the headline power lever. The reflective panel hold
 
 On the device the loop goes one step further: it doesn't just skip the *drawing* when nothing changed, it skips the *waking*. Rather than tick on a fixed timer to discover that nothing changed, the loop **sleeps until a real event** — a button edge, a fresh sensor sample, or the next animation deadline — and the processor idles (WFI) in between. The app reports that deadline as a single "next wake time" (the soonest moment a visible screen needs a timed repaint — the Home clock's next minute, a settling cursor), so the host arms exactly one timer and selects it against the input and sensor wakes; when nothing on screen is animating and the GPS is asleep, there is no timer at all and the device simply waits for a press. So a parked computer wakes a handful of times a *minute*, not a hundred times a *second*. The input side is event-driven the same way: once every button is released the input plane sleeps on a button edge instead of polling. The one unavoidable heartbeat is the panel's **COM electrode** wave — the Memory-in-Pixel cells must never see a DC bias, so a ~60 Hz square wave drives them the whole time the panel is powered. On the bring-up board the processor generates that wave; on the production board it is handed to a hardware timer (a TIMER→DPPI→GPIOTE toggle chain) so it free-runs with no CPU at all, and the processor can finally sleep through the gaps between real events — the difference between *days* of battery and *weeks*.
 
+<figure class="fig">
+<svg viewBox="0 0 760 292" role="img" aria-label="The device loop sleeps until a real event. On the left, three wake sources — a button edge (a recognised gesture), a fresh sensor sample (a GPS fix, barometer reading or compass heading), and the soonest animation deadline (the next clock minute or a settling cursor) — are awaited together by a single select. Whichever fires first wakes the processor, which is otherwise idle (WFI). On waking it runs exactly one iteration — apply gestures, advance animations, tick, take_dirty, render only what changed — then arms the next wake and sleeps again. When nothing on screen is animating and the GPS is asleep there is no timer at all: it simply waits for a press.">
+  <defs>
+    <marker id="lpF" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+    <marker id="lpC" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24">On the device: sleep until a real event</text>
+  <text class="d-sub" x="26" y="58" style="font-size:9px;fill:#6b7758">three wake sources</text>
+  <rect class="d-panel-2" x="24" y="72" width="156" height="38" rx="9" />
+  <text class="d-label" x="102" y="89" text-anchor="middle" style="font-size:10.5px">button edge</text>
+  <text class="d-sub" x="102" y="102" text-anchor="middle" style="font-size:8.5px">a gesture, from the input plane</text>
+  <line class="d-flow" x1="180" y1="91" x2="214" y2="91" marker-end="url(#lpF)" />
+  <rect class="d-panel-2" x="24" y="120" width="156" height="38" rx="9" />
+  <text class="d-label" x="102" y="137" text-anchor="middle" style="font-size:10.5px">sensor sample</text>
+  <text class="d-sub" x="102" y="150" text-anchor="middle" style="font-size:8.5px">GPS fix · baro · heading</text>
+  <line class="d-flow" x1="180" y1="139" x2="214" y2="139" marker-end="url(#lpF)" />
+  <rect class="d-panel-2" x="24" y="168" width="156" height="38" rx="9" />
+  <text class="d-label" x="102" y="185" text-anchor="middle" style="font-size:10.5px">animation deadline</text>
+  <text class="d-sub" x="102" y="198" text-anchor="middle" style="font-size:8.5px">next clock minute · cursor</text>
+  <line class="d-flow" x1="180" y1="187" x2="214" y2="187" marker-end="url(#lpF)" />
+  <path d="M218 86 C 230 86, 230 145, 242 145 C 230 145, 230 204, 218 204" fill="none" stroke="#6b7758" stroke-width="1.3" />
+  <text class="d-sub" x="232" y="226" text-anchor="middle" style="font-size:9px;fill:#6b7758">select —</text>
+  <text class="d-sub" x="232" y="237" text-anchor="middle" style="font-size:9px;fill:#6b7758">first to fire</text>
+  <rect class="d-panel" x="262" y="106" width="150" height="78" rx="14" style="fill:#f4f1e3" />
+  <text class="d-title" x="337" y="140" text-anchor="middle">asleep · WFI</text>
+  <text class="d-sub" x="337" y="158" text-anchor="middle" style="font-size:9.5px">CPU idle between events</text>
+  <text x="382" y="122" style="font-family:var(--mono);font-size:9px;fill:#9aa884">z z z</text>
+  <line class="d-flow" x1="246" y1="145" x2="260" y2="145" marker-end="url(#lpF)" />
+  <line x1="412" y1="132" x2="476" y2="132" stroke="#cf6a2a" stroke-width="2.2" marker-end="url(#lpC)" />
+  <text x="444" y="124" text-anchor="middle" style="font-family:var(--mono);font-size:9.5px;fill:#a9501c">wake</text>
+  <rect class="d-hot" x="480" y="92" width="252" height="98" rx="14" style="fill:#f8efe4" />
+  <text class="d-title" x="606" y="116" text-anchor="middle" style="fill:#a9501c">run one iteration</text>
+  <text class="d-sub" x="606" y="138" text-anchor="middle" style="font-size:9.5px">apply gestures · advance animations</text>
+  <text class="d-sub" x="606" y="153" text-anchor="middle" style="font-size:9.5px">tick → take_dirty</text>
+  <text class="d-sub" x="606" y="168" text-anchor="middle" style="font-size:9.5px">→ render only what changed</text>
+  <path class="d-flow" d="M540 190 C 500 224, 420 224, 360 200" marker-end="url(#lpF)" stroke-dasharray="4 4" />
+  <text class="d-sub" x="452" y="234" text-anchor="middle" style="font-size:9.5px">arm the next wake, sleep again</text>
+  <rect x="250" y="252" width="420" height="26" rx="7" style="fill:#eef2df;stroke:#9aa884;stroke-width:0.8" />
+  <text x="460" y="269" text-anchor="middle" style="font-family:var(--mono);font-size:9.5px;fill:#3c6b39">idle (nothing animating · GPS asleep): no timer at all — wait for a press</text>
+</svg>
+<figcaption>The device loop is <b>event-driven</b>: it <code>select</code>s over three wake sources — a recognised <b>gesture</b>, a fresh <b>sensor sample</b>, and the soonest <b>animation deadline</b> the app reports — and the processor sleeps (WFI) until one fires. It then runs exactly one iteration and arms the next wake. When nothing on screen is animating and the GPS is asleep there's <i>no timer at all</i>, so a parked Home screen wakes about once a minute (the clock minute-tick) instead of 125 times a second. The input plane sleeps the same way, on a button edge; only the panel's COM wave never stops — and on the production board that's a hardware timer, not the CPU.</figcaption>
+</figure>
+
 ## Staying responsive: the two planes
 
-There's a tension on the device. A dense map frame can take tens of milliseconds to render, but a button press must feel instant. If both lived on one thread, a press during a long render would stutter. So the device splits the work into **two cooperating planes**.
+There's a tension on the device. A dense map frame can take the better part of a tenth of a second to render and push to glass, but a button press must feel instant. If both lived on one thread, a press during a long render would stutter. So the device splits the work into **two cooperating planes**.
 
 <figure class="fig">
-<svg viewBox="0 0 720 290" role="img" aria-label="Two planes. The input plane runs on a high-priority executor as frequent short ticks that sample the buttons, recognise gestures and animate the overlay. The map plane runs one long base-map render of tens of milliseconds. The input plane preempts the map render at intervals, and recognised gestures flow one way down a channel into the map plane. Recognising a gesture never blocks on the render, so input stays responsive while a frame draws; the shared SPI panel is serialised by a bus mutex.">
+<svg viewBox="0 0 720 290" role="img" aria-label="Two planes. The input plane runs on a high-priority executor as frequent short ticks that sample the buttons, recognise gestures and animate the overlay. The map plane runs one long base-map render and panel push of about 97 milliseconds. The input plane preempts the map render at intervals, and recognised gestures flow one way down a channel into the map plane. Recognising a gesture never blocks on the render, so input stays responsive while a frame draws; the shared SPI panel is serialised by a bus mutex.">
   <defs>
     <marker id="aD" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
   </defs>
@@ -238,7 +285,7 @@ There's a tension on the device. A dense map frame can take tens of milliseconds
   <text class="d-label" x="20" y="194">map plane</text>
   <text class="d-sub" x="20" y="208">the expensive render</text>
   <rect class="d-hot" x="172" y="176" width="400" height="40" rx="8" style="fill:#f8efe4" />
-  <text class="d-label" x="372" y="201" text-anchor="middle" style="fill:#a9501c">render base map · 24–51 ms</text>
+  <text class="d-label" x="372" y="201" text-anchor="middle" style="fill:#a9501c">render base map + push · ~97 ms</text>
 
   <!-- preempt marks -->
   <g stroke="#cf6a2a" stroke-width="1.3" stroke-dasharray="3 3" opacity="0.8">
