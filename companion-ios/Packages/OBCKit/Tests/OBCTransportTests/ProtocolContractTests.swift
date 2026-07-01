@@ -46,4 +46,42 @@ final class ProtocolContractTests: XCTestCase {
 
         XCTAssertEqual(ConnectionState.outOfRange, .outOfRange)
     }
+
+    func testB1DomainFinalization() {
+        // Config carries units alongside the name (Delta 1 + Settings/G).
+        let config = DeviceConfig(name: "OBC-Ridge", units: .imperial)
+        XCTAssertEqual(config.units, .imperial)
+        XCTAssertEqual(DeviceConfig(name: "x").units, .metric)  // defaults to metric
+
+        // Waypoints ride with a route (W1).
+        let waypoint = Waypoint(
+            index: 0, name: "Trailhead", note: "water",
+            distanceAlongMeters: 0, coordinate: Coordinate(latitude: 47, longitude: 8)
+        )
+        XCTAssertEqual(waypoint.id, 0)
+        let blob = RouteBlob(
+            summary: RouteSummary(id: RouteID("r"), name: "Loop", distanceMeters: 1, elevationGainMeters: 0),
+            waypoints: [waypoint], payload: Data([1, 2, 3])
+        )
+        XCTAssertEqual(blob.waypoints.count, 1)
+
+        // Extended summaries carry the fields the detail screens render.
+        let route = RouteSummary(
+            id: RouteID("r2"), name: "Ridge", distanceMeters: 42_000, elevationGainMeters: 1_200,
+            estimatedDuration: 7_200, pointCount: 500, source: .tcx, trackPreview: .empty
+        )
+        XCTAssertEqual(route.estimatedDuration, 7_200)
+        XCTAssertEqual(route.pointCount, 500)
+        XCTAssertEqual(route.source, .tcx)
+
+        let tracked = RideSummary(
+            id: RideID("k"), name: "Dawn", date: Date(), distanceMeters: 30_000,
+            movingTime: 5_400, averageSpeedMps: 5.5, climbMeters: 800
+        )
+        XCTAssertEqual(tracked.climbMeters, 800)
+
+        // New transport-error cases are equatable/typed.
+        XCTAssertEqual(DeviceError.bluetoothUnavailable(.poweredOff), .bluetoothUnavailable(.poweredOff))
+        XCTAssertNotEqual(DeviceError.bluetoothUnavailable(.poweredOff), .bluetoothUnavailable(.unauthorized))
+    }
 }
