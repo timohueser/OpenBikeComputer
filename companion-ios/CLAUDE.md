@@ -31,7 +31,8 @@ companion-ios/
         OBCDomain/             pure value types (DeviceInfo, Route/Ride, Waypoint,
                                TrackPreview, …). No framework deps.
         OBCTransport/          DeviceTransport (Tier 1) + TransferHandle + RideDownload
-                               + AsyncMulticast;
+                               + AsyncMulticast + BondStore (the B2 "have we bonded"
+                               record — UserDefaults-backed; CB owns the real bond);
           Transfer/            control-plane descriptors + CRC-32 (pure, host-tested)
           Codecs/              device object layouts ↔ domain types (S0-owned bytes:
                                Config blob now; route encoder / ride decoder when
@@ -44,8 +45,11 @@ companion-ios/
                                RideFileEncoder + RideExporter (ride export, B7).
                                Registries over the canonical ImportedRoute / Ride.
         OBCMock/       #DEBUG   MockTransport + MockControl + Scenario presets +
+                               MockBondStore (bond bit from the scenario) +
           Fixtures/            editable JSON fixture sets (default/empty/large) (B1M)
-        OBCUI/                  SwiftUI component kit + feature views (→ B11)
+        OBCUI/                  SwiftUI component kit (B11) + feature screens:
+          Launch/              B2 launch + pairing flow (LaunchFlowModel state
+                               machine + the A/D1–D5/H7/H8 screens)
       Tests/
         OBCTransportTests/     domain/transport/codec unit tests (host, `swift test`);
                                incl. CoreBluetoothSeamTests (enforces the CB seam)
@@ -63,8 +67,10 @@ name in `Config`; GPX **+** TCX import). It's a **mirror**: the firmware `S0`
 freeze + `obc-ble-interface-spec.md` are canonical and win on any conflict.
 
 **Layering (lower may not import higher):** `OBCDomain` → `OBCTransport` →
-`OBCMock`; `OBCUI` and `OBCFormats` sit beside them on `OBCDomain` only. The app
-target sits on top and is the *only* target allowed to choose a concrete transport
+`OBCMock`; `OBCUI` sits on `OBCDomain` + `OBCTransport` (feature view models
+consume the `DeviceTransport`/`BondStore` protocols — never `OBCMock`, never
+CoreBluetooth); `OBCFormats` sits on `OBCDomain` only. The app target sits on
+top and is the *only* target allowed to choose a concrete transport
 (and, later, the concrete format registries).
 
 Why SPM-first: the domain + transport layers build and test on the Mac host
@@ -251,7 +257,7 @@ RootView(transport: MockTransport(scenario: .outOfRange))   // or: control.apply
 | `coldRead` | S2 (skeletons) |
 | `readError` | S3 |
 | `outOfRange` | S4 + disconnected banner |
-| `noDevice` | A / D1; H4 on import |
+| `noDevice` | D1→D4 pairing flow; H4 on import (A = any bonded scenario + `-OBCConnection disconnected`) |
 | `pairingTimeout` / `pairingRejected` | D5 |
 | `bluetoothOff` / `permissionDenied` | H8 / H7 |
 | `syncUpToDate` / `syncDrop` | H9 / H10 |
@@ -261,6 +267,13 @@ RootView(transport: MockTransport(scenario: .outOfRange))   // or: control.apply
 `loadFixtures("empty" | "large")` swaps the library (S1 / search). `unsupportedFile`
 (H5) and `syncUpToDate` (H9) are pure UI-layer states — their preset is a happy link
 and the UI branches on `scenario`; the rest are transport-driven.
+
+Each preset also carries a **bond bit** (`ScenarioPreset.bonded`, served through
+`MockBondStore` → the B2 launch branch): the pairing-family scenarios
+(`noDevice`, `pairingTimeout`, `pairingRejected`, `bluetoothOff`,
+`permissionDenied`) boot **unpaired** into D1; everything else boots bonded
+straight toward main. H7/H8 are reached from D1 via *Start pairing* (that's when
+the app first touches the radio, matching the real permission-prompt timing).
 
 ### Launch arguments (B1P, [#239](https://github.com/timohueser/OpenBikeComputer/issues/239))
 
@@ -283,9 +296,9 @@ crash. Env fallbacks in parentheses apply when the argument is absent.
 
 **Shake the device** (sim: Device ▸ Shake, ⌃⌘Z) — or launch with
 `-OBCShowDevPanel` — to open the **Mock control** panel: live `MockControl`
-knobs (scenario preset, connection, radio, battery, latency/throughput, one-shot
-faults, synthetic events, fixture swap) you can flip while clicking through the
-app. The panel + the status HUD live in `OBCMock`
+knobs (scenario preset, connection, radio, bonded, battery, latency/throughput,
+one-shot faults, synthetic events, fixture swap) you can flip while clicking
+through the app. The panel + the status HUD live in `OBCMock`
 ([`MockControlPanel.swift`](Packages/OBCKit/Sources/OBCMock/MockControlPanel.swift));
 the app-side host (shake hook, sheet, overlay) is `OBCCompanion/DevMockOverlay.swift`.
 B8 adds the second entry point (a hidden Settings row).
@@ -294,7 +307,9 @@ The **HUD** (bottom-right capsule) shows `scenario · connection` with
 accessibility ids `mockScenarioTag` / `mockConnectionTag` — what the XCUITests
 assert. `OBCCompanionUITests/ScenarioLaunchTests` launches every scenario by
 argument and checks the tag (plus fixture-name, connection-override, and
-panel-presentation smoke tests); run them with `test_sim {}` / `xcodebuild test`.
+panel-presentation smoke tests); `PairingFlowTests` walks the B2 launch/pairing
+flow end to end per scenario (and attaches a screenshot of each design screen
+to the result bundle). Run them with `test_sim {}` / `xcodebuild test`.
 
 ---
 

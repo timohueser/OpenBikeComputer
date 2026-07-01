@@ -36,7 +36,7 @@ struct OBCCompanionApp: App {
 
     var body: some Scene {
         WindowGroup {
-            RootView(transport: Self.makeTransport())
+            RootView(transport: Self.makeTransport(), bondStore: Self.makeBondStore())
             #if DEBUG
                 .devMockOverlay(
                     control: Self.mockControl,
@@ -57,5 +57,15 @@ struct OBCCompanionApp: App {
         if let mockControl { return MockTransport(control: mockControl) }
         #endif
         return BLETransport()
+    }
+
+    /// The bond record behind the B2 launch branch. Mock runs read it from the
+    /// scenario (`MockControl.bonded` — flip it in the dev panel to replay
+    /// first-run pairing); the real path persists it in `UserDefaults`.
+    static func makeBondStore() -> any BondStore {
+        #if DEBUG
+        if let mockControl { return MockBondStore(control: mockControl) }
+        #endif
+        return UserDefaultsBondStore()
     }
 }

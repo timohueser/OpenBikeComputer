@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		02FCB23601840CB76FDA35FC /* PairingFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63D5D66C5D7F9BC903FFDF78 /* PairingFlowTests.swift */; };
 		1F69783C6BDF4B68008643A9 /* OBCUI in Frameworks */ = {isa = PBXBuildFile; productRef = F36D240ABD9B3BD22B7361D6 /* OBCUI */; };
 		381F3D661B6D93D535F1B08E /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DBBC2F121AB1951FD912F9D /* RootView.swift */; };
 		5E713787D6892F949C215D70 /* OBCMock in Frameworks */ = {isa = PBXBuildFile; productRef = DD8B1F44D9B64524AB5825E1 /* OBCMock */; };
@@ -35,7 +36,8 @@
 		0DBBC2F121AB1951FD912F9D /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		34BE4BBD9BB3B75A4E34EDE3 /* ScenarioLaunchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScenarioLaunchTests.swift; sourceTree = "<group>"; };
 		3C66022BB56F762B09E9C0BF /* OBCCompanionUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OBCCompanionUITests.swift; sourceTree = "<group>"; };
-		6608359A1519230330298AA6 /* OBCCompanion.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = OBCCompanion.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		63D5D66C5D7F9BC903FFDF78 /* PairingFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingFlowTests.swift; sourceTree = "<group>"; };
+		6608359A1519230330298AA6 /* OBCCompanion.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OBCCompanion.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		6EB5A3C284B9EBBDD680DED9 /* OBCKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = OBCKit; path = Packages/OBCKit; sourceTree = SOURCE_ROOT; };
 		87872F15DFA475D7000C6544 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		8847F668482A0FF17814B592 /* DevMockOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevMockOverlay.swift; sourceTree = "<group>"; };
@@ -95,6 +97,7 @@
 			children = (
 				E99516A090B9A4E907F609D4 /* GalleryLaunchTests.swift */,
 				3C66022BB56F762B09E9C0BF /* OBCCompanionUITests.swift */,
+				63D5D66C5D7F9BC903FFDF78 /* PairingFlowTests.swift */,
 				34BE4BBD9BB3B75A4E34EDE3 /* ScenarioLaunchTests.swift */,
 			);
 			path = OBCCompanionUITests;
@@ -162,7 +165,6 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					1EAF54E973FBAB6A003CCB1B = {
-						DevelopmentTeam = "";
 						ProvisioningStyle = Automatic;
 					};
 					BF59843BD43DBC9C67E00D98 = {
@@ -213,6 +215,7 @@
 			files = (
 				A46E501EFF36545E13D8EA29 /* GalleryLaunchTests.swift in Sources */,
 				DC688D4C547902CF9C650940 /* OBCCompanionUITests.swift in Sources */,
+				02FCB23601840CB76FDA35FC /* PairingFlowTests.swift in Sources */,
 				CC2C394178B45BFA476BFD56 /* ScenarioLaunchTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -407,6 +410,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = 685GP49NH2;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = OBCCompanion/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -425,6 +429,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = 685GP49NH2;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = OBCCompanion/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
