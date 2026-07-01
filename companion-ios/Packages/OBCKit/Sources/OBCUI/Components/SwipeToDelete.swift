@@ -14,16 +14,21 @@ public extension View {
     ///                 onDelete: { … }
     ///             )
     ///     }
+    /// `deleteTitle` labels the revealed swipe action ("Delete"); `actionTitle`
+    /// labels the confirm sheet's destructive button ("Delete route" per H1 —
+    /// defaults to `deleteTitle`).
     func obcSwipeToDelete(
         confirmTitle: String,
         message: String,
         deleteTitle: String = "Delete",
+        actionTitle: String? = nil,
         onDelete: @escaping () -> Void
     ) -> some View {
         modifier(OBCSwipeToDelete(
             confirmTitle: confirmTitle,
             message: message,
             deleteTitle: deleteTitle,
+            actionTitle: actionTitle ?? deleteTitle,
             onDelete: onDelete
         ))
     }
@@ -33,6 +38,7 @@ private struct OBCSwipeToDelete: ViewModifier {
     let confirmTitle: String
     let message: String
     let deleteTitle: String
+    let actionTitle: String
     let onDelete: () -> Void
     @State private var confirmShown = false
 
@@ -52,7 +58,7 @@ private struct OBCSwipeToDelete: ViewModifier {
                 confirmTitle,
                 isPresented: $confirmShown,
                 message: message,
-                actionTitle: deleteTitle,
+                actionTitle: actionTitle,
                 onConfirm: onDelete
             )
     }

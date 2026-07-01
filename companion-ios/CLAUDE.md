@@ -22,7 +22,8 @@ companion-ios/
   OBCCompanion.xcodeproj      generated (committed) — regenerate: `xcodegen generate`
   OBCCompanion/               app target = composition root ONLY
     OBCCompanionApp.swift      @main; the one place that picks a DeviceTransport
-    RootView.swift             placeholder root (real screen stack = B3+)
+    RootView.swift             launch gate (B2) + the main screen's NavigationStack
+                               (B3); detail destinations are placeholders until B4/B7
     Info.plist                 NSBluetoothAlwaysUsageDescription (B6 adds UTI/Share)
     Assets.xcassets            AppIcon (empty) + AccentColor (= --forest)
   Packages/
@@ -50,6 +51,9 @@ companion-ios/
         OBCUI/                  SwiftUI component kit (B11) + feature screens:
           Launch/              B2 launch + pairing flow (LaunchFlowModel state
                                machine + the A/D1–D5/H7/H8 screens)
+          Main/                B3 main screen (MainScreenModel + MainScreenView:
+                               C1/C2 compact lists, top-bar sync states, pull-down-
+                               to-reveal search, swipe-to-delete → H1)
       Tests/
         OBCTransportTests/     domain/transport/codec unit tests (host, `swift test`);
                                incl. CoreBluetoothSeamTests (enforces the CB seam)
@@ -308,8 +312,10 @@ accessibility ids `mockScenarioTag` / `mockConnectionTag` — what the XCUITests
 assert. `OBCCompanionUITests/ScenarioLaunchTests` launches every scenario by
 argument and checks the tag (plus fixture-name, connection-override, and
 panel-presentation smoke tests); `PairingFlowTests` walks the B2 launch/pairing
-flow end to end per scenario (and attaches a screenshot of each design screen
-to the result bundle). Run them with `test_sim {}` / `xcodebuild test`.
+flow end to end per scenario, and `MainScreenTests` walks the B3 main-screen
+states (C1/C2, SYNC, S4, H6, H11→H1) — both attach a screenshot of each design
+screen to the result bundle. Run them with `test_sim {}` / `xcodebuild test`.
+The B3 landing anchor the pairing tests wait for is `main.screen`.
 
 ---
 
@@ -362,7 +368,7 @@ restyle ad hoc**, and don't introduce colors outside
   `OBCIconButton`, `OBCSpinner`, `OBCSyncButtonState`), `OBCSegmentedControl`,
   `OBCGroupedSection`/`OBCListRow`/`OBCIconTile`/`OBCSoonBadge`, buttons as
   `ButtonStyle`s (`.obcPrimary/.obcGhost/.obcWarm/.obcDestructive`),
-  `OBCProgressBar`, `OBCSheetContainer`, `OBCSkeleton`/`RouteCardSkeleton`,
+  `OBCProgressBar`, `OBCSearchField`, `OBCSheetContainer`, `OBCSkeleton`/`RouteCardSkeleton`,
   `OBCInlineBanner`/`OBCToast` (`.obcToast`), `OBCEmptyStateView`,
   `ElevationProfileView`, `OBCStatStrip`/`OBCStatGrid`, `OBCDisclosureRow`,
   `WaypointRow`/`WaypointsListView`, `OBCConnectedServicesBlock`,
