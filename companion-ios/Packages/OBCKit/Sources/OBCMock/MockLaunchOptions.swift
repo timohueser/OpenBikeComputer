@@ -17,10 +17,11 @@ import OBCDomain
 /// | `-OBCTransport <kind>` | `ble` / `mock` | force the real `BLETransport` in a Debug build |
 /// | `-OBCShowDevPanel` | (flag) | present the dev control panel at launch |
 /// | `-OBCShowUIGallery` | (flag) | present the B11 component gallery at launch |
+/// | `-OBCImportSample` | (flag) | boot straight into the E1 import landing with the bundled sample GPX |
 ///
 /// Env fallbacks (used when the argument is absent): `OBC_SCENARIO`,
 /// `OBC_FIXTURES`, `OBC_CONNECTION`, `OBC_TRANSPORT`, `OBC_SHOW_DEV_PANEL=1`,
-/// `OBC_SHOW_UI_GALLERY=1`.
+/// `OBC_SHOW_UI_GALLERY=1`, `OBC_IMPORT_SAMPLE=1`.
 public struct MockLaunchOptions: Equatable, Sendable {
     public var scenario: Scenario?
     public var fixtures: String?
@@ -32,6 +33,9 @@ public struct MockLaunchOptions: Equatable, Sendable {
     /// Present the OBCUI component gallery immediately at launch (B11
     /// screenshot review).
     public var showUIGallery: Bool
+    /// Boot straight into the E1 import landing with `SampleRouteFile` (B4
+    /// XCUITests / demos — the Files picker can't be driven from automation).
+    public var importSample: Bool
 
     public init(
         scenario: Scenario? = nil,
@@ -39,7 +43,8 @@ public struct MockLaunchOptions: Equatable, Sendable {
         connection: ConnectionState? = nil,
         useBLETransport: Bool = false,
         showDevPanel: Bool = false,
-        showUIGallery: Bool = false
+        showUIGallery: Bool = false,
+        importSample: Bool = false
     ) {
         self.scenario = scenario
         self.fixtures = fixtures
@@ -47,6 +52,7 @@ public struct MockLaunchOptions: Equatable, Sendable {
         self.useBLETransport = useBLETransport
         self.showDevPanel = showDevPanel
         self.showUIGallery = showUIGallery
+        self.importSample = importSample
     }
 
     /// Parse process launch arguments (`-OBCKey value` pairs, flag args) with
@@ -71,6 +77,8 @@ public struct MockLaunchOptions: Equatable, Sendable {
             || environment["OBC_SHOW_DEV_PANEL"] == "1"
         let showGallery = arguments.contains("-OBCShowUIGallery")
             || environment["OBC_SHOW_UI_GALLERY"] == "1"
+        let importSample = arguments.contains("-OBCImportSample")
+            || environment["OBC_IMPORT_SAMPLE"] == "1"
 
         return MockLaunchOptions(
             scenario: scenario,
@@ -78,7 +86,8 @@ public struct MockLaunchOptions: Equatable, Sendable {
             connection: connection,
             useBLETransport: transport == "ble",
             showDevPanel: showPanel,
-            showUIGallery: showGallery
+            showUIGallery: showGallery,
+            importSample: importSample
         )
     }
 

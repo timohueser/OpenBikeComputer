@@ -38,12 +38,18 @@ public protocol DeviceTransport: Sendable {
 
     /// Enumerate routes stored on the device.
     func listRoutes() async throws -> [RouteSummary]
+    /// Full detail for one stored route (E2): waypoints + elevation profile.
+    /// Wire mapping is provisional until firmware `S0` pins the detail read.
+    func routeDetail(_ id: RouteID) async throws -> RouteDetail
     /// Upload a route (app → device, B5). Returns a handle for progress/cancel/resume.
     func uploadRoute(_ route: RouteBlob) -> TransferHandle
     /// Delete a route from the device.
     func deleteRoute(_ id: RouteID) async throws
     /// Enumerate tracked rides on the device.
     func listRides() async throws -> [RideSummary]
+    /// Full detail for one tracked ride (E3): the elevation profile.
+    /// Provisional like `routeDetail(_:)`.
+    func rideDetail(_ id: RideID) async throws -> RideDetail
     /// Download tracked rides (device → app, B7). `rides` yields each ride's
     /// compact-binary payload as it lands; `handle` carries batch
     /// progress/cancel/resume.
