@@ -1,0 +1,106 @@
+# XcodeGen source of truth for OBCCompanion.
+#
+# Regenerate the .xcodeproj after editing this file:
+#     cd companion-ios && xcodegen generate
+#
+# The generated OBCCompanion.xcodeproj IS committed (so a fresh clone builds
+# without running XcodeGen), but project.yml is what you edit — never hand-edit
+# the pbxproj. See companion-ios/CLAUDE.md.
+
+name: OBCCompanion
+
+options:
+  bundleIdPrefix: com.openbikecomputer
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+  generateEmptyDirectories: true
+
+# Applied to every target unless overridden.
+settings:
+  base:
+    SWIFT_VERSION: "5.0"                 # Swift 5 language mode (issue B0: 5.9+)
+    SWIFT_STRICT_CONCURRENCY: complete   # strict concurrency ON
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: ""                 # set your team id for on-device runs (see CLAUDE.md)
+    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+
+packages:
+  OBCKit:
+    path: Packages/OBCKit
+
+targets:
+  # ─────────────────────────────────────────────────────── app (composition root)
+  OBCCompanion:
+    type: application
+    platform: iOS
+    sources:
+      - path: OBCCompanion
+    dependencies:
+      - package: OBCKit
+        product: OBCDomain
+      - package: OBCKit
+        product: OBCTransport
+      - package: OBCKit
+        product: OBCUI
+      # OBCMock is fully behind #if DEBUG → an empty module in Release, and the
+      # app references it only inside #if DEBUG. Linking it is harmless; the seam
+      # is real (grep a Release build: the marker string is absent).
+      - package: OBCKit
+        product: OBCMock
+    info:
+      path: OBCCompanion/Info.plist
+      properties:
+        CFBundleDisplayName: OBC
+        # H7 copy — do not reword without updating the design source.
+        NSBluetoothAlwaysUsageDescription: "OBC uses Bluetooth to connect to your bike computer. It never leaves your phone."
+        # Document/UTI + Share Extension registration is deferred to B6 — add
+        # CFBundleDocumentTypes / UTImportedTypeDeclarations / the extension here.
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.openbikecomputer.companion
+        GENERATE_INFOPLIST_FILE: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        TARGETED_DEVICE_FAMILY: "1"      # iPhone only
+
+  # ─────────────────────────────────────────────────────── UI tests (B1P home)
+  OBCCompanionUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: OBCCompanionUITests
+    dependencies:
+      - target: OBCCompanion
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.openbikecomputer.companion.uitests
+        TEST_TARGET_NAME: OBCCompanion
+        GENERATE_INFOPLIST_FILE: YES   # test bundle needs no custom Info.plist keys
+
+schemes:
+  OBCCompanion:
+    build:
+      targets:
+        OBCCompanion: all
+        OBCCompanionUITests: [test]
+    run:
+      config: Debug            # Debug default → MockTransport (no BLE in the sim)
+    test:
+      config: Debug
+      targets:
+        - OBCCompanionUITests
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release
