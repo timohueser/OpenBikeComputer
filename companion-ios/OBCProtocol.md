@@ -15,7 +15,7 @@ L2CAP CoC data plane, the typed object model, and the two design-surfaced deltas
 >
 > Concrete values that firmware `S0` owns and this file must **not** invent: the
 > custom 128-bit service/characteristic UUIDs, the exact byte widths and endianness
-> of the frame header fields, and the CRC-32 polynomial/seed. They are named here
+> of the transfer descriptors, and the CRC-32 polynomial/seed. They are named here
 > by role; pin the numbers from the spec when it lands.
 
 **Execution-plan sources** (until the spec file lands in the repo): the BLE
@@ -76,35 +76,51 @@ advertises its dynamic PSM via the GATT `PSM` characteristic; the app (central)
 reads the PSM, then opens a `CBL2CAPChannel`. Prefer **2M PHY + DLE** (251-byte
 PDU); align the L2CAP MTU to the PDU.
 
-**One framing protocol, typed objects.** Every object is chunked behind a frame
-header:
+**Control-plane descriptor + raw byte stream.** The CoC is a **reliable, ordered**
+channel (the BLE Link Layer already CRCs and retransmits every packet), so bulk
+transfer carries **no per-chunk framing**. Instead:
 
-```
-Frame header (widths/endianness pinned by firmware S0):
-  type       enum   { route, ride, config_blob, diagnostics, firmware(reserved) }
-  object_id  id     which object this frame belongs to
-  total_len  len    full object size in bytes
-  offset     len    byte offset of this chunk within the object   ← resume anchor
-  chunk_len  len    bytes in this chunk
-  crc32      u32    checksum (validated before commit)
-```
+1. A fixed **`TransferStart`** descriptor opens the transfer over the GATT
+   `TransferControl` characteristic — *before* any payload byte:
 
-- **Resumable** — a dropped transfer restarts at the last committed `offset`
-  (`TransferProgress.offset`, `TransferHandle.resume()`).
-- **Cancelable** — an abort message over `TransferControl` + channel teardown;
-  clean on both ends.
-- **CRC validated before commit on both ends** — a failing object is **rejected,
-  never committed** (`DeviceError.crcMismatch`). App and device both check.
+   ```
+   TransferStart (15 bytes, little-endian):
+     type          u8    { route, ride, config_blob, diagnostics, firmware(reserved) }
+     object_id     u16
+     total_len     u32   full object size
+     crc32         u32   whole-object CRC-32/IEEE, verified at commit
+     resume_offset u32   byte offset to start from (0 = fresh)   ← resume anchor
+   ```
+
+2. The **CoC carries the raw payload bytes** of `object[resume_offset…]` — nothing
+   else. The receiver sinks them straight to storage, updating a running CRC (no
+   reassembly buffer — the point on a RAM-limited MCU).
+
+3. A fixed **`TransferResult`** descriptor closes it over `Status`
+   (`object_id u16 · status u8 {committed, crcMismatch, aborted, error} · committed_offset u32`).
+
+- **CRC once, end-to-end.** One whole-object CRC verified at commit — a mismatch
+  **rejects** the object (`DeviceError.crcMismatch`), never commits it. This is the
+  *end-to-end* check the link CRC can't give (encode bugs, storage errors); it is
+  **not** a redundant per-packet CRC.
+- **Resumable** — a dropped upload restarts from `committed_offset` (the device's
+  durable byte count, reported in `TransferResult`); byte-exact, no re-sent frame.
+- **Cancelable** — abort over `TransferControl` + channel teardown; clean both ends.
 
 `firmware` is **reserved** for a future OTA type — no codec in this epic.
 
-**B1 lands this framing** in `OBCTransport`: `Frame.swift` (header codec),
-`CRC32.swift`, and `TransferAssembler.swift` (reassembly), driven by `BLEChannel`
-over a `ByteChannel` — the L2CAP CoC (`L2CAPByteChannel`) on the real path, an
-in-memory pipe in tests. The concrete field widths, little-endian layout, and
-CRC-32/IEEE variant are **provisional**, centralized in `FrameFormat` / `CRC32`
-for a single-spot repin once firmware `S0` freezes the numbers. Likewise the
-custom GATT UUIDs live provisionally in `BLE/GATT.swift`.
+> **Flag to the firmware / `S0` track.** This is the **iOS recommendation** for the
+> data plane, chosen to be cheap on the nRF54L (no per-chunk headers to parse, no
+> validate buffer, one CRC pass, byte-exact resume). It supersedes an earlier
+> per-frame `{type, object_id, total_len, offset, chunk_len, crc32}` design. `S0`
+> should ratify it; if it diverges, `S0` wins and this file + the code are corrected.
+
+**B1 lands this** in `OBCTransport`: `Transfer/TransferDescriptor.swift` (the two
+descriptors), `Transfer/CRC32.swift` (whole-object + streaming `Hasher`), driven by
+`BLEChannel` (raw streaming, progress/cancel/resume) over a `ByteChannel` — the
+L2CAP CoC (`L2CAPByteChannel`) on the real path, an in-memory pipe in tests. Field
+widths, the CRC-32/IEEE variant, and the custom GATT UUIDs (`BLE/GATT.swift`) are
+**provisional**, centralized for a single-spot repin once `S0` freezes them.
 
 ---
 
