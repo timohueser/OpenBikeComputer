@@ -46,7 +46,7 @@ final class PairingFlowTests: XCTestCase {
         snap(app, "D4-paired")
         app.buttons["pair.goToRoutes"].tap()
 
-        XCTAssertTrue(app.staticTexts["mainPlaceholder"].waitForExistence(timeout: 10), "main missing after pairing")
+        XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10), "main missing after pairing")
     }
 
     /// pairingTimeout: D2 resolves to D5; Try again loops back through scanning.
@@ -93,7 +93,7 @@ final class PairingFlowTests: XCTestCase {
         snap(app, "H8-bluetooth-off")
 
         app.buttons["radio.browseLibrary"].tap()
-        XCTAssertTrue(app.staticTexts["mainPlaceholder"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10))
     }
 
     @MainActor
@@ -112,7 +112,7 @@ final class PairingFlowTests: XCTestCase {
     @MainActor
     func testBondedLaunchLandsOnMain() {
         let app = launch(scenario: "happyPath")
-        XCTAssertTrue(app.staticTexts["mainPlaceholder"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.staticTexts["pair.introTitle"].exists)
     }
 
@@ -120,7 +120,7 @@ final class PairingFlowTests: XCTestCase {
     @MainActor
     func testOutOfRangeLandsOnMainWithDisconnectedBanner() {
         let app = launch(scenario: "outOfRange")
-        XCTAssertTrue(app.staticTexts["mainPlaceholder"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.otherElements["disconnectedBanner"].firstMatch.exists
                       || app.staticTexts.containing(NSPredicate(format: "label CONTAINS 'out of range'")).firstMatch.exists,
                       "S4 banner missing")
@@ -134,6 +134,6 @@ final class PairingFlowTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments += ["-OBCScenario", "happyPath", "-OBCConnection", "disconnected"]
         app.launch()
-        XCTAssertTrue(app.staticTexts["mainPlaceholder"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 15))
     }
 }
