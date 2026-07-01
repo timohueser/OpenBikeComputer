@@ -1,0 +1,219 @@
+#if DEBUG
+import Foundation
+import OBCDomain
+
+/// A loaded fixture set — the domain objects the mock serves. Value type so the
+/// live `MockControl` can copy-mutate it (delete a route, rename, add a ride) under
+/// its lock. Built by decoding editable JSON in `OBCMock/Fixtures/` (`default`,
+/// `empty`, `large`), or the tiny `builtIn` fallback if a file is missing.
+public struct FixtureSet: Sendable {
+    public var deviceInfo: DeviceInfo
+    public var config: DeviceConfig
+    public var battery: Int
+    public var routes: [RouteEntry]
+    public var rides: [RideEntry]
+    public var diagnostics: Data
+
+    public init(deviceInfo: DeviceInfo, config: DeviceConfig, battery: Int,
+                routes: [RouteEntry], rides: [RideEntry], diagnostics: Data) {
+        self.deviceInfo = deviceInfo
+        self.config = config
+        self.battery = battery
+        self.routes = routes
+        self.rides = rides
+        self.diagnostics = diagnostics
+    }
+}
+
+/// A fixture route: the enumerable `summary` (with a normalized preview), its
+/// `waypoints`, and the declared upload payload size — the payload bytes are
+/// synthesized on demand (see `blob()`), so a multi-MB library stays cheap to hold.
+public struct RouteEntry: Sendable {
+    public var summary: RouteSummary
+    public var waypoints: [Waypoint]
+    public var payloadByteCount: Int
+
+    public init(summary: RouteSummary, waypoints: [Waypoint] = [], payloadByteCount: Int) {
+        self.summary = summary
+        self.waypoints = waypoints
+        self.payloadByteCount = payloadByteCount
+    }
+
+    /// The full uploadable route, with a deterministic synthesized payload.
+    public func blob() -> RouteBlob {
+        RouteBlob(summary: summary, waypoints: waypoints, payload: MockPayload.make(count: payloadByteCount))
+    }
+}
+
+/// A fixture ride: the enumerable `summary` plus its declared download size (used to
+/// pace `downloadRides` progress).
+public struct RideEntry: Sendable {
+    public var summary: RideSummary
+    public var downloadByteCount: Int
+
+    public init(summary: RideSummary, downloadByteCount: Int? = nil) {
+        self.summary = summary
+        // Tracklogs are chunkier than routes; ~20 B/m gives a believable sync size.
+        self.downloadByteCount = downloadByteCount ?? max(1, Int(summary.distanceMeters) * 20)
+    }
+}
+
+// MARK: - Loading
+
+extension FixtureSet {
+    /// Decode a bundled fixture set by name (`default`, `empty`, `large`). Falls back
+    /// to `builtIn` if the resource is missing or unreadable — the mock never traps.
+    public static func load(_ named: String) -> FixtureSet {
+        guard
+            let url = Bundle.module.url(forResource: named, withExtension: "json"),
+            let data = try? Data(contentsOf: url)
+        else { return .builtIn }
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard let file = try? decoder.decode(FixtureFile.self, from: data) else { return .builtIn }
+        return file.fixtureSet
+    }
+
+    /// Minimal safety net when no JSON is present (keeps the mock alive without resources).
+    public static let builtIn = FixtureSet(
+        deviceInfo: DeviceInfo(name: "OBC (mock)", firmwareVersion: "0.0.0-mock"),
+        config: DeviceConfig(name: "OBC (mock)"),
+        battery: 72, routes: [], rides: [],
+        diagnostics: Data("OBC diagnostics — built-in fallback\n".utf8)
+    )
+}
+
+/// Deterministic opaque payload bytes — stands in for the compact-binary route/ride
+/// object the real path would stream. Cheap to make; the exact bytes don't matter
+/// (the mock never frames or CRCs them — see `OBCProtocol.md`).
+public enum MockPayload {
+    public static func make(count: Int) -> Data {
+        guard count > 0 else { return Data() }
+        var data = Data(count: count)
+        data.withUnsafeMutableBytes { raw in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            for i in 0..<count { bytes[i] = UInt8((i &* 13 &+ 7) & 0xFF) }
+        }
+        return data
+    }
+}
+
+// MARK: - JSON DTOs (editable-fixture shape → domain)
+
+/// Top-level fixture file. Kept separate from `FixtureSet` so the on-disk shape (raw
+/// lat/lon tracks, string enums, optional fields) can stay human-editable.
+private struct FixtureFile: Decodable {
+    let deviceInfo: DeviceInfoDTO
+    let config: ConfigDTO
+    let battery: Int
+    let diagnostics: String?
+    let routes: [RouteDTO]
+    let rides: [RideDTO]
+
+    var fixtureSet: FixtureSet {
+        FixtureSet(
+            deviceInfo: deviceInfo.domain,
+            config: config.domain,
+            battery: battery,
+            routes: routes.map(\.entry),
+            rides: rides.map(\.entry),
+            diagnostics: Data((diagnostics ?? "").utf8)
+        )
+    }
+}
+
+private struct DeviceInfoDTO: Decodable {
+    let name: String
+    let firmwareVersion: String
+    let hardwareVersion: String?
+    let serial: String?
+    let protocolVersion: UInt16?
+
+    var domain: DeviceInfo {
+        DeviceInfo(name: name, firmwareVersion: firmwareVersion,
+                   hardwareVersion: hardwareVersion ?? "", serial: serial ?? "",
+                   protocolVersion: protocolVersion ?? OBCProtocol.version)
+    }
+}
+
+private struct ConfigDTO: Decodable {
+    let name: String
+    let units: String?
+
+    var domain: DeviceConfig {
+        DeviceConfig(name: name, units: units == "imperial" ? .imperial : .metric)
+    }
+}
+
+private struct GeoDTO: Decodable {
+    let lat: Double
+    let lon: Double
+    var coordinate: Coordinate { Coordinate(latitude: lat, longitude: lon) }
+}
+
+private struct WaypointDTO: Decodable {
+    let name: String
+    let note: String?
+    let distanceAlongMeters: Double
+    let lat: Double
+    let lon: Double
+}
+
+private struct RouteDTO: Decodable {
+    let id: String
+    let name: String
+    let distanceMeters: Double
+    let elevationGainMeters: Double
+    let estimatedDuration: TimeInterval?
+    let source: String?
+    let payloadBytes: Int?
+    let track: [GeoDTO]
+    let waypoints: [WaypointDTO]?
+
+    var routeSource: RouteSource? {
+        switch source {
+        case "gpx": return .gpx
+        case "tcx": return .tcx
+        default: return nil
+        }
+    }
+
+    var entry: RouteEntry {
+        let summary = RouteSummary(
+            id: RouteID(id), name: name,
+            distanceMeters: distanceMeters, elevationGainMeters: elevationGainMeters,
+            estimatedDuration: estimatedDuration, pointCount: track.count,
+            source: routeSource, trackPreview: TrackPreview.normalizing(track.map(\.coordinate))
+        )
+        let wps = (waypoints ?? []).enumerated().map { index, wp in
+            Waypoint(index: index, name: wp.name, note: wp.note,
+                     distanceAlongMeters: wp.distanceAlongMeters,
+                     coordinate: Coordinate(latitude: wp.lat, longitude: wp.lon))
+        }
+        return RouteEntry(summary: summary, waypoints: wps,
+                          payloadByteCount: payloadBytes ?? max(1, Int(distanceMeters)))
+    }
+}
+
+private struct RideDTO: Decodable {
+    let id: String
+    let name: String
+    let date: Date
+    let distanceMeters: Double
+    let movingTime: TimeInterval
+    let averageSpeedMps: Double
+    let climbMeters: Double
+    let payloadBytes: Int?
+    let track: [GeoDTO]
+
+    var entry: RideEntry {
+        let summary = RideSummary(
+            id: RideID(id), name: name, date: date, distanceMeters: distanceMeters,
+            movingTime: movingTime, averageSpeedMps: averageSpeedMps, climbMeters: climbMeters,
+            trackPreview: TrackPreview.normalizing(track.map(\.coordinate))
+        )
+        return RideEntry(summary: summary, downloadByteCount: payloadBytes)
+    }
+}
+#endif
