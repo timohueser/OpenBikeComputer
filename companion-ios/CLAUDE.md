@@ -35,7 +35,8 @@ companion-ios/
           BLE/                 real conformer — BLETransport, BLEChannel (raw CoC
                                streaming), ByteChannel, L2CAPByteChannel, GATT.
                                **CoreBluetooth lives ONLY here.**
-        OBCMock/       #DEBUG   MockTransport + MockControl + fixtures (→ B1M)
+        OBCMock/       #DEBUG   MockTransport + MockControl + Scenario presets +
+          Fixtures/            editable JSON fixture sets (default/empty/large) (B1M)
         OBCUI/                  SwiftUI component kit + feature views (→ B11)
       Tests/
         OBCTransportTests/     domain/transport/codec unit tests (host, `swift test`);
@@ -84,12 +85,16 @@ The CB seam is **test-enforced**: `CoreBluetoothSeamTests` (`swift test`) fails 
 composition root.
 
 The mock-exclusion **seam is real and tested**: `OBCMock` is entirely behind
-`#if DEBUG`, so a Release build compiles it to an empty module. Prove it:
+`#if DEBUG`, so a Release build compiles it to an empty module (the editable
+JSON fixtures still ship as inert bundle data — it's the *code* that's gated).
+Prove it by `strings`-grepping the compiled objects (plain `grep -r` on `.build`
+misses it — `.build/debug` is a symlink and the marker lives in a binary `.o`):
 
 ```bash
 cd companion-ios/Packages/OBCKit
-swift build -c debug   && grep -rq "OBCMock:DEBUG-only" .build/debug   && echo "debug: marker present ✓"
-swift build -c release && ! grep -rq "OBCMock:DEBUG-only" .build/release && echo "release: marker absent ✓"
+marker() { find ".build/$1/OBCMock.build" -name '*.o' -exec strings {} \; | grep -c "OBCMock:DEBUG-only"; }
+swift build -c debug   >/dev/null && echo "debug:   $(marker debug)   (expect ≥1)"
+swift build -c release >/dev/null && echo "release: $(marker release) (expect 0)"
 ```
 
 (Or grep the built `.app` binary — see the seam note under *Build/run*.)
@@ -215,25 +220,47 @@ VPN & Device Management.
 so the mock *is* the default dev target. `OBCCompanionApp.makeTransport()`
 returns `MockTransport()` under `#if DEBUG`.
 
-Once **B1P** lands the dev control panel + launch-arg hooks, scenarios are
-selectable without a rebuild via launch args (`launchArgs` in the MCP run tools,
-or the scheme's arguments):
+**B1M** ([#238](https://github.com/timohueser/OpenBikeComputer/issues/238)) landed
+the fixture-backed mock: a live `MockControl` fault-injection surface, editable JSON
+fixture sets (`OBCMock/Fixtures/*.json`), and named `Scenario` presets that reproduce
+each design state with no device and no firmware. Realism comes from **latency +
+throughput + faults**, never wire bytes — the mock serves domain objects straight
+from fixtures. Select a scenario **programmatically** today:
 
+```swift
+RootView(transport: MockTransport(scenario: .outOfRange))   // or: control.apply(.syncDrop)
 ```
--OBCScenario happyPath      -OBCConnection outOfRange
-```
 
-Planned scenario → screen mapping (authoritative table lives in **B1M**,
-[#238](https://github.com/timohueser/OpenBikeComputer/issues/238)):
+`Scenario` → design screens (the authoritative table; source of truth is
+[`Scenario.swift`](Packages/OBCKit/Sources/OBCMock/Scenario.swift)):
 
-| launch arg | drives | design screens |
+| Scenario | Reproduces |
+|---|---|
+| `happyPath` | C1 / C2 / E2 / F / F₂ |
+| `emptyLibrary` | S1 |
+| `coldRead` | S2 (skeletons) |
+| `readError` | S3 |
+| `outOfRange` | S4 + disconnected banner |
+| `noDevice` | A / D1; H4 on import |
+| `pairingTimeout` / `pairingRejected` | D5 |
+| `bluetoothOff` / `permissionDenied` | H8 / H7 |
+| `syncUpToDate` / `syncDrop` | H9 / H10 |
+| `uploadDrop` | F interrupted → resume |
+| `unsupportedFile` | H5 |
+
+`loadFixtures("empty" | "large")` swaps the library (S1 / search). `unsupportedFile`
+(H5) and `syncUpToDate` (H9) are pure UI-layer states — their preset is a happy link
+and the UI branches on `scenario`; the rest are transport-driven.
+
+Selecting a scenario via **launch args** (`-OBCScenario …`) + a dev control panel is
+still **B1P** — the seam is documented here so it's ready to wire:
+
+| launch arg (B1P) | drives | design screens |
 |---|---|---|
 | `-OBCScenario happyPath` | connected, routes present | C1/C2, E1–E3 |
-| `-OBCScenario empty` | no routes | S1 |
-| `-OBCConnection outOfRange` | disconnected / searching | S4, D-series |
-| `-OBCScenario syncError` | ride sync failure | H9/H10 |
-
-(These args are **not wired yet** — B1P. Listed here so the seam is documented.)
+| `-OBCScenario emptyLibrary` | no routes | S1 |
+| `-OBCScenario outOfRange` | link degraded | S4, D-series |
+| `-OBCScenario syncDrop` | ride sync interrupted | H10 |
 
 ---
 
