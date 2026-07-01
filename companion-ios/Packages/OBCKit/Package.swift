@@ -1,0 +1,63 @@
+// swift-tools-version: 5.9
+import PackageDescription
+
+// OBCKit — the domain + transport core of the OBC companion app, kept OUTSIDE the
+// app target so it builds and tests without a simulator (`swift test`).
+//
+// Layer order (lower may not import higher):
+//   OBCDomain  → pure value types, no framework deps
+//   OBCTransport → DeviceTransport protocol + (B1) BLETransport, depends on OBCDomain
+//   OBCMock    → #if DEBUG fixtures + MockTransport, depends on OBCTransport
+//   OBCUI      → SwiftUI component kit (B11), depends on OBCDomain
+//
+// Strict concurrency is on for every target (see `strictConcurrency` below).
+
+// Complete concurrency checking without jumping to the Swift 6 language mode
+// (issue B0: "Swift 5.9+, strict concurrency on").
+let strictConcurrency: [SwiftSetting] = [
+    .enableExperimentalFeature("StrictConcurrency")
+]
+
+let package = Package(
+    name: "OBCKit",
+    // iOS is the ship target; the macOS floor only lets host tooling (`swift test`)
+    // compile the SwiftUI-using code in OBCUI. The app itself is iPhone-only.
+    platforms: [.iOS(.v17), .macOS(.v13)],
+    products: [
+        .library(name: "OBCDomain", targets: ["OBCDomain"]),
+        .library(name: "OBCTransport", targets: ["OBCTransport"]),
+        .library(name: "OBCMock", targets: ["OBCMock"]),
+        .library(name: "OBCUI", targets: ["OBCUI"]),
+    ],
+    targets: [
+        .target(
+            name: "OBCDomain",
+            swiftSettings: strictConcurrency
+        ),
+        .target(
+            name: "OBCTransport",
+            dependencies: ["OBCDomain"],
+            swiftSettings: strictConcurrency
+        ),
+        .target(
+            name: "OBCMock",
+            dependencies: ["OBCTransport", "OBCDomain"],
+            swiftSettings: strictConcurrency
+        ),
+        .target(
+            name: "OBCUI",
+            dependencies: ["OBCDomain"],
+            swiftSettings: strictConcurrency
+        ),
+        .testTarget(
+            name: "OBCTransportTests",
+            dependencies: ["OBCTransport"],
+            swiftSettings: strictConcurrency
+        ),
+        .testTarget(
+            name: "OBCMockTests",
+            dependencies: ["OBCMock"],
+            swiftSettings: strictConcurrency
+        ),
+    ]
+)
