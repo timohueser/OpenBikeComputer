@@ -23,7 +23,8 @@ companion-ios/
   OBCCompanion/               app target = composition root ONLY
     OBCCompanionApp.swift      @main; the one place that picks a DeviceTransport
     RootView.swift             launch gate (B2) + the main screen's NavigationStack
-                               (B3); detail destinations are placeholders until B4/B7
+                               (B3) + the B4 detail routing and the import edge
+                               (RouteImporter → E1 cover); upload = B5 placeholder
     Info.plist                 NSBluetoothAlwaysUsageDescription (B6 adds UTI/Share)
     Assets.xcassets            AppIcon (empty) + AccentColor (= --forest)
   Packages/
@@ -42,7 +43,8 @@ companion-ios/
                                streaming), ByteChannel, L2CAPByteChannel, GATT.
                                **CoreBluetooth lives ONLY here.**
         OBCFormats/            interchange file formats (phone-side edge):
-                               RouteFileDecoder + RouteImporter (GPX/TCX import, B6),
+                               RouteFileDecoder + RouteImporter with GPXRouteDecoder
+                               (landed with B4; TCX + share sheet = B6),
                                RideFileEncoder + RideExporter (ride export, B7).
                                Registries over the canonical ImportedRoute / Ride.
         OBCMock/       #DEBUG   MockTransport + MockControl + Scenario presets +
@@ -54,6 +56,10 @@ companion-ios/
           Main/                B3 main screen (MainScreenModel + MainScreenView:
                                C1/C2 compact lists, top-bar sync states, pull-down-
                                to-reveal search, swipe-to-delete → H1)
+          Detail/              B4 route detail (RouteDetailModel + RouteDetailView:
+                               ONE profile layout, three dressings — E2 planned /
+                               E3 tracked / E1 import via ImportLandingView — plus
+                               the W1 waypoints push and H12 rename)
       Tests/
         OBCTransportTests/     domain/transport/codec unit tests (host, `swift test`);
                                incl. CoreBluetoothSeamTests (enforces the CB seam)
@@ -295,6 +301,7 @@ crash. Env fallbacks in parentheses apply when the argument is absent.
 | `-OBCTransport ble` (`OBC_TRANSPORT`) | `ble` / `mock` | force the real `BLETransport` (device only) |
 | `-OBCShowDevPanel` (`OBC_SHOW_DEV_PANEL=1`) | flag | present the dev panel at launch |
 | `-OBCShowUIGallery` (`OBC_SHOW_UI_GALLERY=1`) | flag | present the B11 component gallery at launch |
+| `-OBCImportSample` (`OBC_IMPORT_SAMPLE=1`) | flag | boot into the E1 import landing with the bundled sample GPX (`OBCMock/Fixtures/sample-import.gpx`, a real Komoot export) through the real decoder |
 
 ### Dev control panel + HUD (Debug only)
 
@@ -312,10 +319,13 @@ accessibility ids `mockScenarioTag` / `mockConnectionTag` — what the XCUITests
 assert. `OBCCompanionUITests/ScenarioLaunchTests` launches every scenario by
 argument and checks the tag (plus fixture-name, connection-override, and
 panel-presentation smoke tests); `PairingFlowTests` walks the B2 launch/pairing
-flow end to end per scenario, and `MainScreenTests` walks the B3 main-screen
-states (C1/C2, SYNC, S4, H6, H11→H1) — both attach a screenshot of each design
-screen to the result bundle. Run them with `test_sim {}` / `xcodebuild test`.
-The B3 landing anchor the pairing tests wait for is `main.screen`.
+flow end to end per scenario, `MainScreenTests` walks the B3 main-screen
+states (C1/C2, SYNC, S4, H6, H11→H1), and `RouteDetailTests` walks the B4
+detail dressings (E2/E3/W1/H12/H1 + E1 via `-OBCImportSample`) — all attach a
+screenshot of each design screen to the result bundle. Run them with
+`test_sim {}` / `xcodebuild test`. The B3 landing anchor the pairing tests wait
+for is `main.screen`; the detail anchor is `detail.screen` (⚠️ it sits on a
+ScrollView, so query it with `descendants(matching: .any)`, not `otherElements`).
 
 ---
 
