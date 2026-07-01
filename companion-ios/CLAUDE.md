@@ -36,8 +36,16 @@ companion-ios/
         OBCTransportTests/     domain/transport/codec unit tests (host, `swift test`)
         OBCMockTests/          mock/fixture tests
   OBCCompanionUITests/         XCUITest target — launch-arg driven (→ B1P)
+  OBCProtocol.md               wire-contract mirror (B-S0): GATT + CoC + deltas
   CLAUDE.md                    ← you are here
 ```
+
+The wire protocol the app codes against is pinned in
+[`OBCProtocol.md`](OBCProtocol.md) (**B-S0**,
+[#236](https://github.com/timohueser/OpenBikeComputer/issues/236)) — GATT control
+plane, L2CAP CoC data plane, the typed object model, and the two deltas (device
+name in `Config`; GPX **+** TCX import). It's a **mirror**: the firmware `S0`
+freeze + `obc-ble-interface-spec.md` are canonical and win on any conflict.
 
 **Layering (lower may not import higher):** `OBCDomain` → `OBCTransport` →
 `OBCMock`; `OBCUI` sits beside them on `OBCDomain`. The app target sits on top of
