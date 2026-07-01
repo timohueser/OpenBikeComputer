@@ -32,12 +32,14 @@ final class MockLaunchOptionsTests: XCTestCase {
             "-OBCConnection", "connecting",
             "-OBCTransport", "ble",
             "-OBCShowDevPanel",
+            "-OBCShowUIGallery",
         ])
         XCTAssertEqual(options.scenario, .outOfRange)
         XCTAssertEqual(options.fixtures, "large")
         XCTAssertEqual(options.connection, .connecting)
         XCTAssertTrue(options.useBLETransport)
         XCTAssertTrue(options.showDevPanel)
+        XCTAssertTrue(options.showUIGallery)
     }
 
     func testEnvironmentFallbacksApplyWhenArgsAbsent() {
@@ -45,10 +47,12 @@ final class MockLaunchOptionsTests: XCTestCase {
             "OBC_SCENARIO": "emptyLibrary",
             "OBC_CONNECTION": "outOfRange",
             "OBC_SHOW_DEV_PANEL": "1",
+            "OBC_SHOW_UI_GALLERY": "1",
         ])
         XCTAssertEqual(options.scenario, .emptyLibrary)
         XCTAssertEqual(options.connection, .outOfRange)
         XCTAssertTrue(options.showDevPanel)
+        XCTAssertTrue(options.showUIGallery)
         // The argument wins over the environment when both are present.
         let overridden = parse(["-OBCScenario", "readError"], env: ["OBC_SCENARIO": "emptyLibrary"])
         XCTAssertEqual(overridden.scenario, .readError)

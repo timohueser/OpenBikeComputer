@@ -277,6 +277,7 @@ crash. Env fallbacks in parentheses apply when the argument is absent.
 | `-OBCConnection <state>` (`OBC_CONNECTION`) | `disconnected` / `connecting` / `connected` / `outOfRange` | override the initial link state |
 | `-OBCTransport ble` (`OBC_TRANSPORT`) | `ble` / `mock` | force the real `BLETransport` (device only) |
 | `-OBCShowDevPanel` (`OBC_SHOW_DEV_PANEL=1`) | flag | present the dev panel at launch |
+| `-OBCShowUIGallery` (`OBC_SHOW_UI_GALLERY=1`) | flag | present the B11 component gallery at launch |
 
 ### Dev control panel + HUD (Debug only)
 
@@ -330,9 +331,37 @@ in the `:root` of `OBC Companion App.dc.html`:
 - `--track-start: var(--forest)`, `--track-end: var(--coral)` — track gradient.
 - Metrics: **44px** nav bar · **54px** status bar · **13px** control radius.
 
-The Swift `Color`/`Font` theme that maps these tokens is **B11**. Until then,
-`OBCUI.OBCTheme` exposes only `tint`/`parchment`/`ink` as a placeholder — don't
-grow it ad hoc; do it properly in B11.
+### The component kit (B11, [#240](https://github.com/timohueser/OpenBikeComputer/issues/240))
+
+`OBCUI` holds the full token mapping + the §9 component kit — **use it, don't
+restyle ad hoc**, and don't introduce colors outside
+[`OBCTheme`](Packages/OBCKit/Sources/OBCUI/Theme/OBCTheme.swift):
+
+- **Theme/** — `OBCTheme` (all tokens + 44/54/13 chrome metrics + radii),
+  `Font.obcSerif/obcMono` (serif = Iowan Old Style, ships with iOS — Spectral is
+  only the web stand-in), `OBCFormat` (the canonical stat-line strings:
+  "62.4 km · 840 m ↑ · 3h 20m" — pinned by unit tests, don't format inline).
+- **Components/** — `TrackPreviewView` (renders `OBCDomain.TrackPreview`;
+  basemap-free, halo + stroke + forest/coral node dots, waypoint `Marker`s),
+  `RouteCard`/`RouteCardFullBleed`, `DeviceTopBar` (+ `OBCBatteryIndicator`,
+  `OBCIconButton`, `OBCSpinner`, `OBCSyncButtonState`), `OBCSegmentedControl`,
+  `OBCGroupedSection`/`OBCListRow`/`OBCIconTile`/`OBCSoonBadge`, buttons as
+  `ButtonStyle`s (`.obcPrimary/.obcGhost/.obcWarm/.obcDestructive`),
+  `OBCProgressBar`, `OBCSheetContainer`, `OBCSkeleton`/`RouteCardSkeleton`,
+  `OBCInlineBanner`/`OBCToast` (`.obcToast`), `OBCEmptyStateView`,
+  `ElevationProfileView`, `OBCStatStrip`/`OBCStatGrid`, `OBCDisclosureRow`,
+  `WaypointRow`/`WaypointsListView`, `OBCConnectedServicesBlock`,
+  `OBCImportMenuButton` (Files picker filtered by decoder extensions),
+  `.obcSwipeToDelete` (always confirms), `.obcRenameAlert` /
+  `.obcDestructiveConfirm` (native presentations; pairing prompts stay
+  system-blue — see `OBCSystemPairing`), `OBCNavigationChrome.apply()` +
+  `OBCLargeTitleBar`.
+- **Gallery/** — `OBCComponentGallery` (`#if DEBUG`): every component with
+  design data. Launch with `-OBCShowUIGallery` for screenshot review;
+  `GalleryLaunchTests` smoke-tests it. Like the mock, it must never reach a
+  Release binary (verify with the strings recipe above).
+
+Every component file carries a `#Preview` with design sample data.
 
 ---
 
