@@ -113,6 +113,51 @@ public enum OBCFormat {
         ].joined(separator: " · ")
     }
 
+    // ------------------------------------------------------------- stat-strip parts
+    // The detail stat strips (E1–E3) render value and unit separately (`OBCStat`);
+    // these are the same numbers the joined lines above use, without the unit.
+
+    /// "62.4" under 100 km, "118" above — pair with unit "km".
+    public static func distanceValue(meters: Double, locale: Locale = .current) -> String {
+        let km = meters / 1000
+        let formatter = numberFormatter(locale: locale)
+        formatter.maximumFractionDigits = km < 100 ? 1 : 0
+        formatter.minimumFractionDigits = km < 100 ? 1 : 0
+        return formatter.string(from: NSNumber(value: km)) ?? "\(km)"
+    }
+
+    /// "840" / "1,240" — pair with unit "m".
+    public static func climbValue(meters: Double, locale: Locale = .current) -> String {
+        let formatter = numberFormatter(locale: locale)
+        formatter.maximumFractionDigits = 0
+        formatter.usesGroupingSeparator = true
+        return formatter.string(from: NSNumber(value: meters.rounded())) ?? "\(Int(meters))"
+    }
+
+    /// "20.4" from metres per second — pair with unit "kph".
+    public static func speedValue(mps: Double, locale: Locale = .current) -> String {
+        let formatter = numberFormatter(locale: locale)
+        formatter.maximumFractionDigits = 1
+        formatter.minimumFractionDigits = 1
+        return formatter.string(from: NSNumber(value: mps * 3.6)) ?? "\(mps * 3.6)"
+    }
+
+    /// E3's subtitle line: "Yesterday, 8:12 AM".
+    public static func rideDateLine(
+        _ date: Date,
+        relativeTo now: Date = Date(),
+        calendar: Calendar = .current,
+        locale: Locale = .current
+    ) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = locale
+        formatter.calendar = calendar
+        formatter.timeStyle = .short
+        formatter.dateStyle = .none
+        let time = formatter.string(from: date)
+        return "\(rideDay(date, relativeTo: now, calendar: calendar, locale: locale)), \(time)"
+    }
+
     private static func numberFormatter(locale: Locale) -> NumberFormatter {
         let formatter = NumberFormatter()
         formatter.locale = locale

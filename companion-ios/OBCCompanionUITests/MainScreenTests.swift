@@ -159,7 +159,7 @@ final class MainScreenTests: XCTestCase {
         snap(app, "S4-out-of-range")
     }
 
-    /// Card tap → route detail (B4's placeholder until it lands).
+    /// Card tap → the B4 route detail (walked in depth by `RouteDetailTests`).
     @MainActor
     func testCardTapPushesDetail() {
         let app = launch(scenario: "happyPath")
@@ -168,7 +168,7 @@ final class MainScreenTests: XCTestCase {
         let card = app.buttons["main.card.kettle-moraine-loop"]
         XCTAssertTrue(card.waitForExistence(timeout: 10))
         card.tap()
-        XCTAssertTrue(app.staticTexts["detailPlaceholder"].waitForExistence(timeout: 5), "detail missing")
+        XCTAssertTrue(app.descendants(matching: .any)["detail.screen"].firstMatch.waitForExistence(timeout: 5), "detail missing")
     }
 
     /// S1: an empty library points at import, it doesn't dead-end.

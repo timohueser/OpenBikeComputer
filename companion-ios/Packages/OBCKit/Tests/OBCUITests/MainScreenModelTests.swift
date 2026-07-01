@@ -229,4 +229,33 @@ final class MainScreenModelTests: XCTestCase {
         await waitFor("sync done") { model.syncState == .done }
         XCTAssertEqual(model.lastSyncCount, 3)
     }
+
+    // MARK: Rename (H12) + import landing (E1) — session-local edits
+
+    func testRenameUpdatesTheLists() async {
+        let (model, _) = makeModel(.happyPath)
+        await startLoaded(model)
+
+        model.renameRoute(model.routes[0].id, to: "Kettle Gravel Day")
+        XCTAssertEqual(model.routes[0].name, "Kettle Gravel Day")
+
+        model.renameRide(model.rides[1].id, to: "Sunday Espresso Spin")
+        XCTAssertEqual(model.rides[1].name, "Sunday Espresso Spin")
+    }
+
+    func testAddImportedRouteLandsOnTopOfPlanned() async {
+        let (model, _) = makeModel(.happyPath)
+        await startLoaded(model)
+        model.tab = .tracked
+
+        let summary = RouteSummary(
+            id: RouteID("imported-test"), name: "Schwarzwald Tour · Tag 2",
+            distanceMeters: 88_000, elevationGainMeters: 1_400
+        )
+        model.addImportedRoute(summary)
+
+        XCTAssertEqual(model.routes.count, 6)
+        XCTAssertEqual(model.routes[0].id, summary.id)
+        XCTAssertEqual(model.tab, .planned, "saving lands the user on the Planned list")
+    }
 }
