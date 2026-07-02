@@ -11,7 +11,7 @@ import OBCTransport
 /// done ("Synced N new rides just now", ~2 s check) → idle — driven off the
 /// `downloadRides` `RideDownload`. "New" means not in the `LibraryStore`'s
 /// synced set (B1S) — persistent, so a relaunch never re-counts. Each landed
-/// payload decodes through `ProvisionalRideCodec` into the canonical `Ride`
+/// payload decodes through `RideObjectCodec` into the canonical `Ride`
 /// and persists at once, so a drop mid-batch keeps what arrived (H10) by
 /// construction. A drop surfaces as `syncInterruption` ("Got 2 of 5 rides." +
 /// Resume); `resumeSync()` continues the same transfer from its last committed
@@ -119,7 +119,7 @@ public final class MainScreenModel {
     /// Mirror of the store's planned routes, keyed for the detail/rename paths.
     @ObservationIgnored private var plannedRecords: [RouteID: PlannedRouteRecord] = [:]
     /// Mirror of the store's synced rides — tracklogs filled at decode time
-    /// (`ProvisionalRideCodec`, B7).
+    /// (`RideObjectCodec`, B7).
     @ObservationIgnored private var rideRecords: [RideID: Ride] = [:]
     @ObservationIgnored private var started = false
     @ObservationIgnored private var streamTasks: [Task<Void, Never>] = []
@@ -282,7 +282,7 @@ public final class MainScreenModel {
                     // bytes that don't parse keep the ride summary-only rather
                     // than dropping it (wire bytes are never the stored format).
                     if let summary = fresh.first(where: { $0.id == downloaded.id }) {
-                        let decoded = try? ProvisionalRideCodec.decode(
+                        let decoded = try? RideObjectCodec.decode(
                             downloaded.payload, id: downloaded.id)
                         // The RideList summary stays canonical for display; the
                         // payload contributes the tracklog (and a preview, if

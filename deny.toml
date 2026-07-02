@@ -14,7 +14,16 @@ all-features = true
 # lockfile-drift class of bug this whole pipeline guards against). `ignore` stays empty:
 # add a specific RustSec id here, with a comment, only when one is triaged as not affecting us.
 yanked = "deny"
-ignore = []
+ignore = [
+    # quick-xml 0.30 DoS-class issues (quadratic duplicate-attribute check; unbounded
+    # namespace allocations). Reached only through the desktop sim's Linux accessibility
+    # stack (eframe -> accesskit -> atspi -> zbus), which parses D-Bus introspection XML
+    # from the local session bus — never untrusted input — and never ships on the device.
+    # atspi pins quick-xml ^0.30, so the fixed release isn't reachable without an eframe
+    # major bump; drop these when the eframe stack next moves.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+]
 # Only fail on *unmaintained* crates we depend on directly — the sim's GUI stack (eframe ->
 # egui -> accesskit) drags in deep transitive crates like `paste` (RUSTSEC-2024-0436) we can't
 # upgrade. Security *vulnerabilities* are still denied everywhere regardless of this setting.

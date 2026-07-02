@@ -276,7 +276,7 @@ public final class MockControl: @unchecked Sendable {
             _fixtures.rides.filter { wanted.contains($0.summary.id) }
         }.map {
             MockTransfer.Segment(id: $0.summary.id, byteCount: max(1, $0.downloadByteCount),
-                                 payload: ProvisionalRideCodec.encode($0.ride()))
+                                 payload: RideObjectCodec.encode($0.ride()))
         }
         let total = segments.reduce(0) { $0 + $1.byteCount }
 

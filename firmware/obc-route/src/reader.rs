@@ -14,12 +14,22 @@ use crate::byte_io::{ByteSource, Error};
 use obc_reader::codec::{rd_i16, rd_i32, rd_u16, rd_u32};
 use obc_reader::BBox;
 
-/// Fixed header length (see `OBCR_Spec.md` §1).
+/// Base header length, common to v1 and v2 (see `OBCR_Spec.md` §1). Every field the
+/// ride path needs lives in these bytes, so the reader parses only them regardless of
+/// version — the v2 extension is read on demand by [`for_each_waypoint`].
 pub const HEADER_LEN: usize = 112;
+/// Full v2 header length: the base header plus the 16-byte waypoint extension (§1.1).
+pub const HEADER_V2_LEN: usize = 128;
 /// Per-chunk index entry length (§2).
 pub const CHUNK_META_LEN: usize = 44;
 /// Capacity of the inline route-name field, bytes.
 pub const NAME_CAP: usize = 48;
+/// Fixed waypoint record length (§4).
+pub const WAYPOINT_LEN: usize = 40;
+/// Capacity of a waypoint record's inline name, bytes.
+pub const WAYPOINT_NAME_CAP: usize = 24;
+/// Waypoint-elevation sentinel: "no elevation known" (§4).
+pub const WAYPOINT_ELE_NONE: i16 = i16::MIN;
 /// Resident chunk-index capacity. With [`MAX_POINTS_PER_CHUNK`] the full profile caps a route at
 /// ~131 k decimated points (≈ 24 KB `RouteIndex` at the cap); a longer route fails conversion with
 /// [`Error::TooLarge`] rather than being silently coarsened. The constrained `nrf-mem` profile
@@ -41,7 +51,12 @@ pub const MAX_ROUTE_CHUNKS: usize = 128;
 pub const MAX_POINTS_PER_CHUNK: usize = 256;
 
 const MAGIC: &[u8; 4] = b"OBCR";
-const VERSION: u8 = 1;
+/// Accepted format versions: v1 (no waypoints) and v2 (optional waypoints section,
+/// issue #268). The v2 additions live entirely *outside* the byte ranges this reader
+/// touches — a 16-byte header extension at offset 112 and a record table reached only
+/// via that extension — so v2 routes load and ride through the exact v1 code path;
+/// waypoints are skipped by construction, not by branching.
+const VERSIONS: core::ops::RangeInclusive<u8> = 1..=2;
 
 /// One decoded route point: position in microdegrees + elevation in meters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -505,6 +520,7 @@ impl core::ops::Deref for RouteReader<'_> {
 
 /// Parsed header fields (shared by [`RouteIndex::read`] and [`RouteSummary::read`]).
 struct Header {
+    version: u8,
     bbox: BBox,
     start_lon: i32,
     start_lat: i32,
@@ -525,7 +541,7 @@ fn read_header(src: &dyn ByteSource) -> Result<Header, Error> {
     if &h[0..4] != MAGIC {
         return Err(Error::BadMagic);
     }
-    if h[4] != VERSION {
+    if !VERSIONS.contains(&h[4]) {
         return Err(Error::BadVersion);
     }
     let name_len = (h[6] as usize).min(NAME_CAP);
@@ -534,6 +550,7 @@ fn read_header(src: &dyn ByteSource) -> Result<Header, Error> {
         let _ = name.push_str(s);
     }
     Ok(Header {
+        version: h[4],
         bbox: BBox {
             min_lon: rd_i32(&h, 8),
             min_lat: rd_i32(&h, 12),
@@ -552,4 +569,55 @@ fn read_header(src: &dyn ByteSource) -> Result<Header, Error> {
         index_offset: rd_u32(&h, 56),
         name,
     })
+}
+
+/// One stored route waypoint (`OBCR_Spec.md` §4): a point of interest pinned to a
+/// position along the route. **Storage-only** on the device today (issue #268) — the
+/// section is written by the converter / the phone and skipped by the ride path;
+/// this type serves hosts, tests, and the future waypoint UI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Waypoint {
+    /// Cumulative distance from the route start to this waypoint's position, meters.
+    pub dist_along_m: u32,
+    /// The waypoint's own coordinate (microdegrees) — may sit off the polyline.
+    pub lon: i32,
+    pub lat: i32,
+    /// Elevation in meters; [`WAYPOINT_ELE_NONE`] when the source carried none.
+    pub ele: i16,
+    /// Category byte (§4); `0` = generic. Render unknown values as generic.
+    pub kind: u8,
+    pub name: String<WAYPOINT_NAME_CAP>,
+}
+
+/// Visit each stored waypoint in route order (ascending `dist_along_m`), streaming
+/// one fixed [`WAYPOINT_LEN`] record at a time — no resident table, any count. Returns
+/// the number visited; a v1 route (or a v2 route without waypoints) yields none.
+pub fn for_each_waypoint<F: FnMut(&Waypoint)>(src: &dyn ByteSource, mut f: F) -> Result<u16, Error> {
+    let h = read_header(src)?;
+    if h.version < 2 {
+        return Ok(0);
+    }
+    let mut ext = [0u8; HEADER_V2_LEN - HEADER_LEN];
+    src.read_at(HEADER_LEN as u32, &mut ext)?;
+    let offset = rd_u32(&ext, 0);
+    let count = rd_u16(&ext, 4);
+
+    let mut rec = [0u8; WAYPOINT_LEN];
+    for k in 0..count {
+        src.read_at(offset + k as u32 * WAYPOINT_LEN as u32, &mut rec)?;
+        let name_len = (rec[15] as usize).min(WAYPOINT_NAME_CAP);
+        let mut name = String::new();
+        if let Ok(s) = core::str::from_utf8(&rec[16..16 + name_len]) {
+            let _ = name.push_str(s);
+        }
+        f(&Waypoint {
+            dist_along_m: rd_u32(&rec, 0),
+            lon: rd_i32(&rec, 4),
+            lat: rd_i32(&rec, 8),
+            ele: rd_i16(&rec, 12),
+            kind: rec[14],
+            name,
+        });
+    }
+    Ok(count)
 }

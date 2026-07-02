@@ -13,8 +13,9 @@ import Foundation
 /// with O(1) state — no full-object buffering — which is exactly how a RAM-limited
 /// MCU verifies bytes as it writes them out.
 ///
-/// > **Provisional pending firmware `S0`** (owns the CRC polynomial/seed). CRC-32/IEEE
-/// > is the near-universal default; change it **here only** if `S0` differs.
+/// > **Pinned by firmware S0** (`obc-ble-interface-spec.md` §6): reflected, poly
+/// > `0xEDB88320`, init/xorout `0xFFFFFFFF`; check value `crc32("123456789") ==
+/// > 0xCBF43926` (asserted in `ProtocolVectorTests`).
 public enum CRC32 {
     private static let table: [UInt32] = {
         (0..<256).map { i -> UInt32 in
