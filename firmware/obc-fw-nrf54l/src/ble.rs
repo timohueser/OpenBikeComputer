@@ -74,9 +74,9 @@
 //!
 //! - **Route upload** ([`run_upload`]): CoC bytes sink straight into an SD temp with the running
 //!   CRC; commit validates (CRC + OBCR header) and atomically promotes (see `sd.rs` — the
-//!   held-back-magic substitute for FatFs' missing `rename`). A CoC drop parks the transfer for
-//!   the S0 §4.2 offset-resume; a whole-link drop keeps the parked state (`link_reset` only
-//!   releases handles).
+//!   held-back-magic substitute for FatFs' missing `rename`). Uploads don't resume (S0 §1
+//!   principle 4): a CoC drop, a link drop, or an `op=3` abort discards the partial and the app
+//!   re-sends the object from the start.
 //! - **Downloads** ([`run_download`]): `routeList` (+ the empty `rideList` until A7) from a
 //!   store-built buffer, route detail streamed off the card — announce descriptor first, then
 //!   raw chunks, one whole-object CRC.
@@ -277,9 +277,9 @@ fn battery() -> u8 {
 // ============================ Data-plane arming (A5/A6, S0 §4.2 / §5) ============================
 
 /// A transfer the control plane validated and handed to the data plane: the echo loopback (A5),
-/// a route upload with its ready [`Receiver`] (fresh or resumed — the store built it), or a
-/// download (the data plane opens the source itself; opening may be slow — a CRC pre-pass —
-/// and belongs off the GATT reply path).
+/// a route upload with its ready fresh [`Receiver`] (the store opened the temp), or a download
+/// (the data plane opens the source itself; opening may be slow — a CRC pre-pass — and belongs
+/// off the GATT reply path).
 #[derive(Clone, Copy)]
 enum Armed {
     Echo(TransferControl),
@@ -599,8 +599,8 @@ struct ObcControlService {
     /// settings (A6): seeded at boot, re-seeded canonical after every accepted write.
     #[characteristic(uuid = "3C920004-9916-4EBA-ABC2-342FE08F6B10", read, write)]
     config: heapless09::Vec<u8, 128>,
-    /// Open / resume / abort a CoC transfer (§4.2). Write + notify (the notify carries a
-    /// download's filled announce descriptor).
+    /// Open / abort a CoC transfer (§4.2). Write + notify (the notify carries a download's
+    /// filled announce descriptor).
     #[characteristic(uuid = "3C920005-9916-4EBA-ABC2-342FE08F6B10", write, notify, value = [0u8; 16])]
     transfer_control: [u8; 16],
     /// Reserved (§7.5 — diagnostics cross the CoC): reads return 0 bytes.
@@ -684,10 +684,10 @@ enum TransferDisposition {
 }
 
 /// Decode + classify a `transfer_control` write against the store (S0 §4.2): echo uploads (A5),
-/// route uploads (fresh / replace / resume), and route / list downloads. Everything invalid —
-/// malformed bytes, an unknown id (`notFound`), a second open mid-transfer (`busy`), an
-/// unsupported op/type combination (`error`) — is answered immediately with the S0-typed
-/// [`TransferResult`], never a hang or a bare ATT failure.
+/// route uploads (fresh or replace-by-id), and route / list downloads. Everything invalid —
+/// malformed bytes, an unknown id (`notFound`), a non-zero upload offset or a second open
+/// mid-transfer, an unsupported op/type combination — is answered immediately with the S0-typed
+/// [`TransferResult`] (`error` / `notFound` / `busy`), never a hang or a bare ATT failure.
 fn classify_transfer(data: &[u8], store: &RefCell<ObjectStore>) -> TransferDisposition {
     let Ok(desc) = TransferControl::decode(data) else {
         // A malformed descriptor — the app can't have meant a real transfer; report `error`.
@@ -697,7 +697,7 @@ fn classify_transfer(data: &[u8], store: &RefCell<ObjectStore>) -> TransferDispo
         if TRANSFER_ACTIVE.load(Ordering::Relaxed) {
             return TransferDisposition::AbortActive;
         }
-        // Nothing in flight: drop any parked partial (its resume is being given up) and confirm.
+        // Nothing in flight: discard any stray temp and confirm the abort.
         store.borrow_mut().upload_discard();
         return TransferDisposition::Answer(transfer_result(desc.object_id, TransferStatus::Aborted));
     }
@@ -729,8 +729,8 @@ fn transfer_result(object_id: u16, status: TransferStatus) -> StatusBytes {
     transfer_result_at(object_id, status, 0)
 }
 
-/// A `transferResult` carrying a real durable byte count — a committed upload (`total_len`), or
-/// a parked/aborted transfer's resume anchor (S0 §4.3).
+/// A `transferResult` carrying a real durable byte count — a committed transfer reports its
+/// `total_len` (S0 §4.3).
 fn transfer_result_at(object_id: u16, status: TransferStatus, committed_offset: u32) -> StatusBytes {
     StatusMessage::TransferResult(TransferResult::new(object_id, status, committed_offset)).encode()
 }
@@ -877,9 +877,9 @@ pub async fn run(
                 Either::First(reason) => reason,
                 Either::Second(_) => unreachable!("the background futures never return"),
             };
-            // The drop may have cancelled the data plane mid-transfer (at an await): release the
-            // store's open handles, clear the one-transfer gate, and drain any latched arm/abort
-            // so the next connection starts clean. A parked upload stays resumable (S0 §4.2).
+            // The drop may have cancelled the data plane mid-transfer (at an await): discard any
+            // in-flight upload + release the store's open handles, clear the one-transfer gate, and
+            // drain any latched arm/abort so the next connection starts clean (uploads restart).
             store.borrow_mut().link_reset();
             TRANSFER_ACTIVE.store(false, Ordering::Relaxed);
             TRANSFER_ARM.reset();
@@ -1035,8 +1035,8 @@ async fn serve_connection(
 /// uploads → SD, and route/list downloads ← SD. One armed transfer at a time (S0 §4.1); the
 /// [`TRANSFER_ACTIVE`] gate is cleared here when each concludes, and a latched abort that raced
 /// a completion is drained so it can't leak into the next transfer. A channel drop mid-transfer
-/// breaks back to re-accept (an upload parks for the offset-resume, S0 §4.2); [`select`] in
-/// `run` cancels the whole task on disconnect. Never returns (the outer `select` owns the exit).
+/// breaks back to re-accept (the in-flight upload was discarded — uploads restart, S0 §1
+/// principle 4); [`select`] in `run` cancels the whole task on disconnect. Never returns.
 async fn serve_coc(
     stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
     server: &Server<'_>,
@@ -1077,7 +1077,7 @@ async fn serve_coc(
             TRANSFER_ACTIVE.store(false, Ordering::Relaxed);
             let _ = TRANSFER_ABORT.try_take();
             if let TransferOutcome::ChannelDropped = outcome {
-                warn!("ble: [coc] channel dropped mid-transfer — re-accepting (resume by offset)");
+                warn!("ble: [coc] channel dropped mid-transfer — re-accepting (uploads restart)");
                 break;
             }
         }
@@ -1085,7 +1085,7 @@ async fn serve_coc(
 }
 
 /// Whether a transfer runner answered on `status` or the CoC dropped under it (→ [`serve_coc`]
-/// re-accepts; an upload resume arrives as a fresh arm with the parked offset, S0 §4.2).
+/// re-accepts; a re-upload arrives as a fresh arm, S0 §1 principle 4).
 enum TransferOutcome {
     Answered,
     ChannelDropped,
@@ -1109,8 +1109,8 @@ async fn publish_store_change(
 
 /// A route upload (S0 §4.2 op 1, type 1): sink CoC bytes through the [`Receiver`] into the SD
 /// temp, then commit — CRC verify, OBCR-header validate, atomic promote (see `sd.rs`) — and
-/// answer with the assigned id. A channel drop parks the transfer for the offset-resume; an
-/// abort (op 3) discards it.
+/// answer with the assigned id. Uploads don't resume (S0 §1 principle 4): a channel drop or an
+/// abort (op 3) discards the partial, and the app re-sends the object from the start.
 async fn run_upload(
     stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
     server: &Server<'_>,
@@ -1120,17 +1120,16 @@ async fn run_upload(
     mut rx: Receiver,
     buf: &mut [u8],
 ) -> TransferOutcome {
-    info!("ble: [coc] route upload start: {} bytes from offset {}", desc.total_len, desc.offset);
+    info!("ble: [coc] route upload start: {} bytes", desc.total_len);
     while !rx.is_complete() {
         let n = match select(ch.receive(stack, buf), TRANSFER_ABORT.wait()).await {
             Either::First(Ok(n)) if n > 0 => n,
             Either::First(_) => {
                 // Error or an empty SDU with bytes still expected — the channel is done for.
-                // Park for the resume and (best-effort) report the durable offset.
-                let written = store.borrow_mut().upload_park();
-                info!("ble: [coc] upload interrupted at {} — parked for resume", written);
-                notify_status(server, stack, transfer_result_at(rx.object_id(), TransferStatus::Aborted, written))
-                    .await;
+                // Discard the partial; the app re-uploads from the start.
+                store.borrow_mut().upload_discard();
+                info!("ble: [coc] upload interrupted — discarded (uploads restart)");
+                notify_status(server, stack, transfer_result(rx.object_id(), TransferStatus::Aborted)).await;
                 return TransferOutcome::ChannelDropped;
             }
             Either::Second(()) => {
@@ -1142,7 +1141,7 @@ async fn run_upload(
             }
         };
         let consumed = rx.push(&buf[..n]);
-        if !store.borrow_mut().upload_append(&buf[..consumed], &rx) {
+        if !store.borrow_mut().upload_append(&buf[..consumed]) {
             store.borrow_mut().upload_discard();
             warn!("ble: [coc] SD append failed — upload rejected");
             notify_status(server, stack, transfer_result(rx.object_id(), TransferStatus::Error)).await;
@@ -1163,8 +1162,7 @@ async fn run_upload(
 /// A download (S0 §4.2 op 2): open the source (`routeList` / empty `rideList` from the store's
 /// built buffer, a route detail straight off the card with its CRC pre-pass), notify the filled
 /// announce descriptor, then stream `object[offset…]` in CoC chunks. An abort between chunks
-/// stops cleanly; a send failure means the channel dropped (a download resume is a fresh
-/// request, S0 §4.2).
+/// stops cleanly; a send failure means the channel dropped (the app re-requests, S0 §4.2).
 async fn run_download(
     stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
     server: &Server<'_>,

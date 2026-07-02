@@ -55,26 +55,12 @@ fn upload_accepts_any_segmentation() {
 }
 
 #[test]
-fn resume_from_every_offset_commits() {
-    // Property-style: drop after k bytes, resume from k with the committed-prefix CRC, finish — the
-    // whole-object CRC must still verify at every split (spec §4.2 "keeps its running CRC state").
+fn upload_rejects_a_nonzero_offset() {
+    // Uploads are not resumable (spec §1 principle 4): a receiver only ever starts fresh, so any
+    // non-zero offset is rejected (the board answers `error` and the app restarts from 0).
     let object = payload(200);
-    let whole = upload_desc(&object);
-    for k in 0..=object.len() {
-        let mut first = Receiver::new(&whole).unwrap();
-        assert_eq!(first.push(&object[..k]), k);
-        assert_eq!(first.committed_offset(), k as u32);
-
-        // The resume descriptor differs only in offset; seed the CRC from the committed prefix.
-        let resume_desc = TransferControl { offset: k as u32, ..whole };
-        let mut second = Receiver::resumed(&resume_desc, first.crc()).unwrap();
-        assert_eq!(second.remaining(), (object.len() - k) as u32);
-        second.push(&object[k..]);
-
-        let result = second.outcome().unwrap_or_else(|| panic!("incomplete at k={k}"));
-        assert_eq!(result.status, TransferStatus::Committed, "resume at {k}");
-        assert_eq!(result.committed_offset, object.len() as u32);
-    }
+    let resume = TransferControl { offset: 100, ..upload_desc(&object) };
+    assert_eq!(Receiver::new(&resume).unwrap_err(), TransferError::OffsetPastTotal);
 }
 
 #[test]
