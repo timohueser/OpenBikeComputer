@@ -174,7 +174,10 @@ private struct PlannedRouteFile: Codable {
     var summary: RouteSummaryDTO
     var route: ImportedRouteDTO
     var sourceFileName: String
-    var uploadedToDevice: Bool
+    /// The device object id this route is stored under, `nil` when not on the
+    /// device. Optional-decoded, so a pre-B13 file (which lacked it) loads as
+    /// "not uploaded" and self-heals on the next upload/reconcile.
+    var deviceObjectID: UInt16?
     var addedAt: Date
 
     init(_ record: PlannedRouteRecord) {
@@ -182,7 +185,7 @@ private struct PlannedRouteFile: Codable {
         summary = RouteSummaryDTO(record.summary)
         route = ImportedRouteDTO(record.route)
         sourceFileName = record.sourceFileName
-        uploadedToDevice = record.uploadedToDevice
+        deviceObjectID = record.deviceObjectID
         addedAt = record.addedAt
     }
 
@@ -192,7 +195,7 @@ private struct PlannedRouteFile: Codable {
             route: route.domain,
             sourceFileName: sourceFileName,
             sourceFileData: sourceFileData,
-            uploadedToDevice: uploadedToDevice,
+            deviceObjectID: deviceObjectID,
             addedAt: addedAt
         )
     }

@@ -16,27 +16,33 @@ public struct PlannedRouteRecord: Identifiable, Equatable, Sendable {
     /// The original interchange file, byte-exact ("Schwarzwald.gpx" + bytes).
     public var sourceFileName: String
     public var sourceFileData: Data
-    /// Whether the device holds a copy — `false` for an H4 save-before-pairing
-    /// import until a later upload (or a device listing) flips it.
-    public var uploadedToDevice: Bool
+    /// The device object id this route was assigned on upload — the durable link
+    /// between a library route and its copy on the device (names/local ids can't
+    /// match across the BLE boundary). `nil` until an upload commits (an
+    /// H4 save-before-pairing import, or a route never pushed); a device-side
+    /// delete clears it again at reconcile.
+    public var deviceObjectID: UInt16?
     /// When the route entered the library — newest-first list order.
     public var addedAt: Date
 
     public var id: RouteID { summary.id }
+
+    /// Whether the device holds a copy — derived from ``deviceObjectID``.
+    public var uploadedToDevice: Bool { deviceObjectID != nil }
 
     public init(
         summary: RouteSummary,
         route: ImportedRoute,
         sourceFileName: String,
         sourceFileData: Data,
-        uploadedToDevice: Bool = false,
+        deviceObjectID: UInt16? = nil,
         addedAt: Date = Date()
     ) {
         self.summary = summary
         self.route = route
         self.sourceFileName = sourceFileName
         self.sourceFileData = sourceFileData
-        self.uploadedToDevice = uploadedToDevice
+        self.deviceObjectID = deviceObjectID
         self.addedAt = addedAt
     }
 
