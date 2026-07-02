@@ -29,6 +29,7 @@ A drift on either side fails that side's tests — the files are the contract.
 | `status-transfer-result.bin` | `status` msg 1 §4.3 | `committed`, assigned id 7, all bytes durable |
 | `status-store-changed.bin` | `status` msg 2 §4.3 | route store changed, revision 42 |
 | `object-store.bin` | `objectStore` §4.5 | revision 42 · 3 routes · 5 rides |
+| `route-list.bin` | `routeList` object §7.4 | both stored route fixtures as catalog entries (ids 7 + 8, fields from their OBCR headers) |
 
 `manifest.json` restates each fixture's expected decoded values (plus the pinned
 protocol version, UUIDs, and the CRC-32 check value) so a test suite can assert
