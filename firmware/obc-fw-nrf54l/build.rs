@@ -77,6 +77,8 @@ fn main() {
     println!("cargo:rerun-if-changed=memory-default.x");
     println!("cargo:rerun-if-changed=build.rs");
 
+    emit_fw_git();
+
     if flpr {
         build_flpr_blob(&manifest, &out);
     }
@@ -86,6 +88,25 @@ fn main() {
     println!("cargo:rustc-link-arg-bins=--nmagic");
     println!("cargo:rustc-link-arg-bins=-Tlink.x"); // cortex-m-rt; pulls in our memory.x
     println!("cargo:rustc-link-arg-bins=-Tdefmt.x"); // defmt's interned-string section
+}
+
+/// Emit `OBC_FW_GIT` — the short commit hash — for the DIS **Firmware Revision** string (A4,
+/// #272: `env!("CARGO_PKG_VERSION") + "+" + OBC_FW_GIT`). Falls back to `unknown` when git isn't
+/// reachable (a source tarball / a checkout with no `.git`), so the string is always well-formed.
+/// Re-runs when `HEAD` moves so a rebuild reflects the current commit.
+fn emit_fw_git() {
+    let hash = Command::new("git")
+        .args(["rev-parse", "--short=7", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_owned());
+    println!("cargo:rustc-env=OBC_FW_GIT={hash}");
+    // The repo root is two levels up from this crate; HEAD moving = a checkout / new commit.
+    println!("cargo:rerun-if-changed=../../.git/HEAD");
 }
 
 /// Cross-compile `src/flpr/{start.S,flpr_pingpong.c}` against `src/flpr/flpr.ld` into a raw

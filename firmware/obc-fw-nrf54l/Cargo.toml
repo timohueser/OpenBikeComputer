@@ -86,7 +86,7 @@ com-hw = []
 # RRAM settings, buttons, sensors, and the FLPR display all stay up. That exclusion is keyed on
 # the build.rs-emitted `has_map` cfg — the single line the 512 KB LM20 relaxes to run map + BLE
 # together (the budget assert then arbitrates, at compile time).
-ble = ["dep:nrf-sdc", "dep:nrf-mpsl", "dep:bt-hci", "dep:trouble-host", "dep:static_cell", "obc-platform/sensor-link", "obc-platform/input-wait"]
+ble = ["dep:nrf-sdc", "dep:nrf-mpsl", "dep:bt-hci", "dep:trouble-host", "dep:static_cell", "dep:heapless09", "obc-platform/sensor-link", "obc-platform/input-wait"]
 
 [dependencies]
 # embassy HAL for the nRF54L15 app core. `nrf54l15-app-s` selects the secure-app die
@@ -192,10 +192,15 @@ nrf-mpsl = { git = "https://github.com/alexmoon/nrf-sdc.git", rev = "abe49d22ebf
 # The HCI types nrf-sdc's controller trait + trouble-host speak; same ^0.9 both resolve.
 bt-hci = { version = "0.9", default-features = false, features = ["defmt"], optional = true }
 # The BLE host (released 0.7 pins embassy-executor 0.10 / embassy-sync 0.8 / embassy-time 0.5.1 —
-# again exactly this crate's set; its heapless 0.9 coexists with our 0.8, no types cross).
+# again exactly this crate's set). It runs on heapless **0.9**; the shared crates are on 0.8.
 # `default-packet-pool-mtu-251` sizes the pool for the config we intend to ship (ATT MTU 247 =
 # link-layer 251 with DLE), so the budget assert's RAM numbers are the shipping ones.
 trouble-host = { version = "0.7", features = ["defmt", "derive", "peripheral", "gatt", "default-packet-pool", "default-packet-pool-mtu-251"], optional = true }
+# trouble-host's `#[gatt_service]` derive impls `AsGatt` for *its* heapless (0.9) `String`/`Vec`, so
+# the A4 GATT string/blob characteristic types (DIS strings, `config`, …) must be 0.9 — the shared
+# crates' 0.8 types don't satisfy the bound. Alias 0.9 under a distinct name so both coexist; the
+# two never mix (0.8 stays the SD/route/UI world, 0.9 is only the GATT attribute values).
+heapless09 = { package = "heapless", version = "0.9", optional = true }
 # The `#[gatt_server]` macro's generated attribute-table storage references `static_cell` by name —
 # a hard requirement of trouble-host's codegen, not our statics (this crate's own runtime statics
 # stay on the warm-reset-safe `MaybeUninit`-in-`.bss` pattern; see `init_static` in main.rs).
