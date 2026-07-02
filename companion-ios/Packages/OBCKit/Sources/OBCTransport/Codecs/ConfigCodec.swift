@@ -7,10 +7,11 @@ import OBCDomain
 // so a device-format change touches a codec file, never the transport class —
 // and everything here stays pure + host-testable with no CoreBluetooth.
 
-/// Provisional `Config` blob codec — layout is firmware-`S0`-owned. `[nameLen:
-/// u16-LE][name UTF-8][units: u8]`. Pin from the spec at `A4`; keep the mapping in
-/// this one place.
-enum ProvisionalConfigCodec {
+/// The `Config` object codec — `[nameLen: u16-LE][name UTF-8 ≤ 48 B][units: u8]`,
+/// **ratified by firmware S0** (`obc-ble-interface-spec.md` §7.3; pinned against
+/// `protocol-vectors/config-v1.bin`). Append-only is the version mechanism: fields
+/// are never reordered or resized, and unknown trailing bytes are ignored.
+enum ConfigObjectCodec {
     static func encode(_ config: DeviceConfig) -> Data {
         let name = Data(config.name.utf8)
         var data = Data()

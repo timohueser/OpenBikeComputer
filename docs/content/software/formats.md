@@ -376,34 +376,38 @@ A route is a single ordered polyline with elevation, plus precomputed ride stati
 ### The file
 
 <figure class="fig">
-<svg viewBox="0 0 720 215" role="img" aria-label="The OBCR file as a horizontal ribbon: a 112-byte header, then each chunk's data back to back, then the chunk index last. One chunk is exploded below into fixed 6-byte records of delta-longitude, delta-latitude, and absolute elevation.">
+<svg viewBox="0 0 720 215" role="img" aria-label="The OBCR file as a horizontal ribbon: a 128-byte header, then each chunk's data back to back, then the chunk index, then an optional waypoint table last. One chunk is exploded below into fixed 6-byte records of delta-longitude, delta-latitude, and absolute elevation.">
   <text class="d-tag" x="20" y="24">OBCR — the route, front to back</text>
 
   <!-- ribbon -->
   <g stroke="#3c6b39" stroke-width="1.4">
-    <rect x="24"  y="56" width="96"  height="44" class="d-forest" />
-    <rect x="120" y="56" width="116" height="44" class="d-muted" />
-    <rect x="236" y="56" width="116" height="44" class="d-muted" />
-    <rect x="352" y="56" width="92"  height="44" class="d-muted" />
-    <rect x="444" y="56" width="116" height="44" class="d-muted" />
-    <rect x="560" y="56" width="136" height="44" class="d-water" />
+    <rect x="24"  y="56" width="88"  height="44" class="d-forest" />
+    <rect x="112" y="56" width="104" height="44" class="d-muted" />
+    <rect x="216" y="56" width="104" height="44" class="d-muted" />
+    <rect x="320" y="56" width="76"  height="44" class="d-muted" />
+    <rect x="396" y="56" width="104" height="44" class="d-muted" />
+    <rect x="500" y="56" width="108" height="44" class="d-water" />
+    <rect x="608" y="56" width="88"  height="44" class="d-amber" />
   </g>
-  <text class="d-label" x="72"  y="80" text-anchor="middle" style="fill:#fff">Header</text>
-  <text class="d-sub"   x="72"  y="94" text-anchor="middle" style="fill:#e7ead8">112 B</text>
-  <text class="d-label" x="178" y="82" text-anchor="middle">Chunk 0</text>
-  <text class="d-label" x="294" y="82" text-anchor="middle">Chunk 1</text>
-  <text class="d-label" x="398" y="82" text-anchor="middle">···</text>
-  <text class="d-label" x="502" y="82" text-anchor="middle">Chunk N−1</text>
-  <text class="d-label" x="628" y="80" text-anchor="middle" style="fill:#fff">Chunk index</text>
-  <text class="d-sub"   x="628" y="94" text-anchor="middle" style="fill:#dfe6e0">N × 44 B · last</text>
+  <text class="d-label" x="68"  y="80" text-anchor="middle" style="fill:#fff">Header</text>
+  <text class="d-sub"   x="68"  y="94" text-anchor="middle" style="fill:#e7ead8">128 B</text>
+  <text class="d-label" x="164" y="82" text-anchor="middle">Chunk 0</text>
+  <text class="d-label" x="268" y="82" text-anchor="middle">Chunk 1</text>
+  <text class="d-label" x="358" y="82" text-anchor="middle">···</text>
+  <text class="d-label" x="448" y="82" text-anchor="middle">Chunk N−1</text>
+  <text class="d-label" x="554" y="80" text-anchor="middle" style="fill:#fff">Chunk index</text>
+  <text class="d-sub"   x="554" y="94" text-anchor="middle" style="fill:#dfe6e0">N × 44 B</text>
+  <text class="d-label" x="652" y="80" text-anchor="middle">Waypoints</text>
+  <text class="d-sub"   x="652" y="94" text-anchor="middle">W × 40 B</text>
 
   <!-- offsets -->
-  <text class="d-sub" x="178" y="120" text-anchor="middle" style="font-size:9px">↑ Data Offset = 112</text>
-  <text class="d-sub" x="628" y="120" text-anchor="middle" style="font-size:9px">↑ Index Offset</text>
+  <text class="d-sub" x="164" y="120" text-anchor="middle" style="font-size:9px">↑ Data Offset = 128</text>
+  <text class="d-sub" x="554" y="120" text-anchor="middle" style="font-size:9px">↑ Index Offset</text>
+  <text class="d-sub" x="668" y="120" text-anchor="middle" style="font-size:9px">↑ Waypoint Offset</text>
 
   <!-- explode a chunk -->
-  <line x1="236" y1="100" x2="232" y2="150" stroke="#9aa884" stroke-width="1.2" />
-  <line x1="352" y1="100" x2="540" y2="150" stroke="#9aa884" stroke-width="1.2" />
+  <line x1="216" y1="100" x2="232" y2="150" stroke="#9aa884" stroke-width="1.2" />
+  <line x1="320" y1="100" x2="540" y2="150" stroke="#9aa884" stroke-width="1.2" />
   <rect class="d-panel-2" x="232" y="150" width="308" height="44" rx="8" />
   <text class="d-sub" x="250" y="168" style="font-size:10px">data = (point count − 1) × 6 B records:</text>
   <g stroke="#3c6b39" stroke-width="1">
@@ -415,10 +419,10 @@ A route is a single ordered polyline with elevation, plus precomputed ride stati
   <text class="d-sub" x="458" y="184" text-anchor="middle" style="font-size:8.5px">dLat</text>
   <text class="d-sub" x="502" y="184" text-anchor="middle" style="fill:#fff;font-size:8.5px">ele</text>
 </svg>
-<figcaption>The index is written <b>last</b>: a streaming converter doesn't know how many chunks a route needs until it has emitted them all, so it patches the header's offsets at the end. Because every section is reached by an explicit offset, the physical order isn't load-bearing — the reader would accept the index first just as happily.</figcaption>
+<figcaption>The index and waypoint table are written <b>last</b>: a streaming converter doesn't know how many chunks a route needs until it has emitted them all, so it patches the header's offsets at the end. Because every section is reached by an explicit offset, the physical order isn't load-bearing — the reader would accept the index first just as happily.</figcaption>
 </figure>
 
-The 112-byte header carries the route's bounding box, its start point (for centering the camera), and the **precomputed totals** — distance, ascent, descent, elevation range — plus the route name. A 44-byte index entry per chunk holds that chunk's bounding box (for the viewport query), its anchor, its point count, the **cumulative distance and ascent at its first point**, and where its bytes live.
+The header carries the route's bounding box, its start point (for centering the camera), and the **precomputed totals** — distance, ascent, descent, elevation range — plus the route name; format v2 appends a small extension pointing at the **waypoint table**: fixed 40-byte records (position along the route, coordinate, category, short name) for the points of interest a planner attaches to a route. The device stores waypoints from day one but doesn't render them yet — a reader that ignores them skips the section in O(1) by construction, which is also why v2 routes ride through unchanged v1 code. A 44-byte index entry per chunk holds that chunk's bounding box (for the viewport query), its anchor, its point count, the **cumulative distance and ascent at its first point**, and where its bytes live.
 
 Those cumulative stats are the trick that makes "42 km / 600 m to go" an O(1) subtraction once you know which segment you're on, rather than a walk over the whole route every frame.
 
@@ -478,7 +482,7 @@ for record in records {            // each record: (dLon: i16, dLat: i16, ele: i
 
 A route you draw doesn't need every GPS sample — a thinned polyline looks identical at the device's pixel pitch. But a route you *plan with* does need exact numbers. OBCR keeps both honest by separating them at conversion time: the stored geometry is **decimated** (drop a vertex within a metre of the line it sits on, but force-keep one at least every ~1.2 km), while the header totals are computed from **every raw GPX point**. So the line is cheap to draw and the "total climb" you read is real. One last guard runs the other way: a leg longer than 30 000 µdeg is **densified** with interpolated vertices, so the `i16` deltas above can't overflow even when a sparse two-point upload has no intermediate vertex to keep — the same split the [packer applies](#features-an-anchor-then-deltas) to map geometry.
 
-> **Convert where it lands.** There is no offline route step. The GPX→OBCR converter is one portable `no_std` routine: the device runs it on a USB or BLE upload, the simulator runs it on import, and both produce the same bytes. It streams the GPX in a single pass — O(1) RAM regardless of route length — emitting each finished chunk while keeping only a bounded index in memory.
+> **Convert where it lands.** There is no offline route step. The GPX→OBCR converter is one portable `no_std` routine: the device runs it on a USB upload, the simulator runs it on import, and both produce the same bytes. It streams the GPX in a single pass — O(1) RAM regardless of route length — emitting each finished chunk while keeping only a bounded index in memory. (BLE uploads arrive **already converted**: the companion app encodes imported GPX/TCX to OBCR on the phone, per the [BLE interface spec](src:obc-ble-interface-spec.md), so the device just writes the bytes to storage.)
 
 One thing the file *doesn't* store is the elevation **profile** the Statistics screen draws. That's rebuilt once when a route loads — a multi-resolution min/max pyramid over distance, the same coarse-to-fine idea as the map's LODs, so the profile can be zoomed and panned without ever re-reading geometry. It's a runtime structure rather than a format concern; the [UI page](../ui/) covers how it's drawn.
 
@@ -542,6 +546,6 @@ The map's caches matter because the [priority multi-pass](../rendering/#4-decode
 - Map reader, quadtree walk, and chunk decode: [`obc-reader/src/reader.rs`](src:firmware/obc-reader/src/reader.rs)
 - Route reader, index, and decode: [`obc-route/src/reader.rs`](src:firmware/obc-route/src/reader.rs)
 - The shared byte seam: [`obc-reader/src/byte_io.rs`](src:firmware/obc-reader/src/byte_io.rs)
-- The byte-level specs: [`OBCM_Spec.md`](src:OBCM_Spec.md) · [`OBCR_Spec.md`](src:OBCR_Spec.md)
+- The byte-level specs: [`OBCM_Spec.md`](src:OBCM_Spec.md) · [`OBCR_Spec.md`](src:OBCR_Spec.md) · [`obc-ble-interface-spec.md`](src:obc-ble-interface-spec.md) (the wire contract routes/rides cross to the companion app)
 
 Maps are produced by the packer and routes by the GPX converter — how those work, and how a route is matched to the map you're riding, is the subject of [packer & routing](../packer-routing/). For how these bytes become pixels, see the [rendering pipeline](../rendering/).

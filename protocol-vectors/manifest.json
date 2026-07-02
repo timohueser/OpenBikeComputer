@@ -1,0 +1,116 @@
+{
+  "spec": "obc-ble-interface-spec.md",
+  "protocol_version": 1,
+  "crc32_check": { "input": "123456789", "value": "0xCBF43926" },
+  "uuids": {
+    "obc_control_service": "3C920000-9916-4EBA-ABC2-342FE08F6B10",
+    "command": "3C920001-9916-4EBA-ABC2-342FE08F6B10",
+    "status": "3C920002-9916-4EBA-ABC2-342FE08F6B10",
+    "object_store": "3C920003-9916-4EBA-ABC2-342FE08F6B10",
+    "config": "3C920004-9916-4EBA-ABC2-342FE08F6B10",
+    "transfer_control": "3C920005-9916-4EBA-ABC2-342FE08F6B10",
+    "diagnostics": "3C920006-9916-4EBA-ABC2-342FE08F6B10",
+    "psm": "3C920007-9916-4EBA-ABC2-342FE08F6B10",
+    "protocol_version": "3C920008-9916-4EBA-ABC2-342FE08F6B10"
+  },
+  "fixtures": {
+    "route-waypoints.obcr": {
+      "format": "OBCR v2",
+      "byte_len": 300,
+      "crc32": "0x1F66C051",
+      "name": "Vector Loop",
+      "version": 2,
+      "point_count": 9,
+      "chunk_count": 1,
+      "total_distance_m": 2207,
+      "total_ascent_m": 76,
+      "waypoints": [
+        { "dist_along_m": 0, "lon_udeg": 7820100, "lat_udeg": 48000100, "ele_m": 238, "type": 0, "name": "Brunnen" },
+        { "dist_along_m": 1700, "lon_udeg": 7842500, "lat_udeg": 47998700, "ele_m": null, "type": 0, "name": "Pass Summit" }
+      ]
+    },
+    "route-plain.obcr": {
+      "format": "OBCR v2",
+      "byte_len": 220,
+      "identical_ride_to": "route-waypoints.obcr",
+      "waypoints": []
+    },
+    "ride-v1.bin": {
+      "format": "ride object v1 (spec 7.2)",
+      "byte_len": 74,
+      "version": 1,
+      "name": "Höhenweg",
+      "start_time_unix": 1751450000,
+      "distance_m": 42500,
+      "moving_time_s": 9000,
+      "avg_speed_cms": 472,
+      "climb_m": 810,
+      "points": [
+        { "t_offset_s": 0, "lat_1e7": 480000000, "lon_1e7": 78000000, "ele_m": 214 },
+        { "t_offset_s": 60, "lat_1e7": 480010000, "lon_1e7": 78012000, "ele_m": 219 },
+        { "t_offset_s": 120, "lat_1e7": 480020000, "lon_1e7": 78030000, "ele_m": null }
+      ]
+    },
+    "config-v1.bin": {
+      "format": "Config v1 (spec 7.3)",
+      "byte_len": 13,
+      "name": "OBC Tourer",
+      "units": "metric (0)"
+    },
+    "transfer-upload-start.bin": {
+      "format": "transferControl (spec 4.2)",
+      "op": 1,
+      "type": 1,
+      "object_id": 65535,
+      "total_len": 300,
+      "crc32": "0x1F66C051",
+      "offset": 0
+    },
+    "transfer-upload-resume.bin": {
+      "format": "transferControl (spec 4.2)",
+      "op": 1,
+      "type": 1,
+      "object_id": 65535,
+      "total_len": 300,
+      "crc32": "0x1F66C051",
+      "offset": 150
+    },
+    "transfer-download-request.bin": {
+      "format": "transferControl (spec 4.2)",
+      "op": 2,
+      "type": 7,
+      "object_id": 0,
+      "total_len": 0,
+      "crc32": "0x0",
+      "offset": 0
+    },
+    "transfer-abort.bin": {
+      "format": "transferControl (spec 4.2)",
+      "op": 3,
+      "type": 1,
+      "object_id": 65535,
+      "total_len": 0,
+      "crc32": "0x0",
+      "offset": 0
+    },
+    "status-transfer-result.bin": {
+      "format": "status msg 1 (spec 4.3)",
+      "msg": 1,
+      "object_id": 7,
+      "status": "committed (0)",
+      "committed_offset": 300
+    },
+    "status-store-changed.bin": {
+      "format": "status msg 2 (spec 4.3)",
+      "msg": 2,
+      "type": 1,
+      "revision": 42
+    },
+    "object-store.bin": {
+      "format": "objectStore (spec 4.5)",
+      "revision": 42,
+      "route_count": 3,
+      "ride_count": 5
+    }
+  }
+}

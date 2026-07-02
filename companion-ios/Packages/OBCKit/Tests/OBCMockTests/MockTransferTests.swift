@@ -57,7 +57,7 @@ final class MockTransferTests: XCTestCase {
         let entries = control.fixtures.rides
         for ride in landed {
             let entry = try XCTUnwrap(entries.first { $0.summary.id == ride.id })
-            let decoded = try ProvisionalRideCodec.decode(ride.payload, id: ride.id)
+            let decoded = try RideObjectCodec.decode(ride.payload, id: ride.id)
             XCTAssertEqual(decoded.summary.name, entry.summary.name)
             XCTAssertEqual(decoded.points.count, entry.points.count)
         }

@@ -32,7 +32,7 @@ final class RideCodecTests: XCTestCase {
 
     func testRoundTripRestoresSummaryAndTracklog() throws {
         let ride = quantizedRide()
-        let decoded = try ProvisionalRideCodec.decode(ProvisionalRideCodec.encode(ride), id: ride.id)
+        let decoded = try RideObjectCodec.decode(RideObjectCodec.encode(ride), id: ride.id)
         XCTAssertEqual(decoded, ride)
     }
 
@@ -40,14 +40,14 @@ final class RideCodecTests: XCTestCase {
         var ride = quantizedRide(pointCount: 0)
         ride.summary.name = "Feierabendrunde 🚲"
         ride.summary.trackPreview = .empty
-        let decoded = try ProvisionalRideCodec.decode(ProvisionalRideCodec.encode(ride), id: ride.id)
+        let decoded = try RideObjectCodec.decode(RideObjectCodec.encode(ride), id: ride.id)
         XCTAssertEqual(decoded, ride)
         XCTAssertTrue(decoded.points.isEmpty)
     }
 
     func testMissingElevationSurvivesAsNilNotZero() throws {
         let ride = quantizedRide()
-        let decoded = try ProvisionalRideCodec.decode(ProvisionalRideCodec.encode(ride), id: ride.id)
+        let decoded = try RideObjectCodec.decode(RideObjectCodec.encode(ride), id: ride.id)
         XCTAssertNil(decoded.points[2].elevationMeters)
         XCTAssertEqual(decoded.points[0].elevationMeters, 300)
     }
@@ -65,7 +65,7 @@ final class RideCodecTests: XCTestCase {
                                  trackPreview: TrackPreview.normalizing([point.coordinate])),
             points: [point]
         )
-        let decoded = try ProvisionalRideCodec.decode(ProvisionalRideCodec.encode(ride), id: ride.id)
+        let decoded = try RideObjectCodec.decode(RideObjectCodec.encode(ride), id: ride.id)
         XCTAssertEqual(decoded.summary.distanceMeters, 1000, accuracy: 0.5)
         XCTAssertEqual(decoded.summary.averageSpeedMps, 5.678, accuracy: 0.005)
         XCTAssertEqual(decoded.points[0].coordinate.latitude, 43.12345678, accuracy: 1e-7)
@@ -77,27 +77,27 @@ final class RideCodecTests: XCTestCase {
     func testDecodeRebuildsTheTrackPreviewFromPoints() throws {
         var ride = quantizedRide()
         ride.summary.trackPreview = nil  // the wire object carries no preview
-        let decoded = try ProvisionalRideCodec.decode(ProvisionalRideCodec.encode(ride), id: ride.id)
+        let decoded = try RideObjectCodec.decode(RideObjectCodec.encode(ride), id: ride.id)
         XCTAssertEqual(decoded.summary.trackPreview,
                        TrackPreview.normalizing(decoded.points.map(\.coordinate)))
     }
 
     func testMalformedPayloadsThrowNotCrash() {
-        let good = ProvisionalRideCodec.encode(quantizedRide())
-        XCTAssertThrowsError(try ProvisionalRideCodec.decode(Data(), id: RideID("x")))
-        XCTAssertThrowsError(try ProvisionalRideCodec.decode(Data([0xFF]), id: RideID("x")),
+        let good = RideObjectCodec.encode(quantizedRide())
+        XCTAssertThrowsError(try RideObjectCodec.decode(Data(), id: RideID("x")))
+        XCTAssertThrowsError(try RideObjectCodec.decode(Data([0xFF]), id: RideID("x")),
                              "unknown version must be rejected")
-        XCTAssertThrowsError(try ProvisionalRideCodec.decode(good.prefix(good.count / 2), id: RideID("x")),
+        XCTAssertThrowsError(try RideObjectCodec.decode(good.prefix(good.count / 2), id: RideID("x")),
                              "a truncated tracklog must not decode")
         var extra = good
         extra.append(0)
-        XCTAssertThrowsError(try ProvisionalRideCodec.decode(extra, id: RideID("x")),
+        XCTAssertThrowsError(try RideObjectCodec.decode(extra, id: RideID("x")),
                              "trailing bytes mean a layout mismatch — reject them")
     }
 
     func testDecodeTakesTheIdFromTheEnvelopeNotThePayload() throws {
         let ride = quantizedRide(id: "original")
-        let decoded = try ProvisionalRideCodec.decode(ProvisionalRideCodec.encode(ride), id: RideID("envelope"))
+        let decoded = try RideObjectCodec.decode(RideObjectCodec.encode(ride), id: RideID("envelope"))
         XCTAssertEqual(decoded.id, RideID("envelope"))
     }
 }
