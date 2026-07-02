@@ -1,13 +1,15 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// **Import Menu & Files Picker** (§9, NEW) — the large-title `+` button
-/// (I1): a popover menu whose *Import from Files* opens the system document
-/// picker filtered to the supported route extensions (`.gpx` / `.tcx` — pass
-/// `RouteImporter.supportedFileExtensions` from the composition root so the
-/// filter always matches the registered decoders). In-app import; no share
-/// sheet required.
-public struct OBCImportMenuButton: View {
+/// **Import Button & Files Picker** (§9) — the large-title `+` button (I1):
+/// opens the system document picker directly, filtered to the supported route
+/// extensions (pass `RouteImporter.supportedFileExtensions` from the
+/// composition root so the filter always matches the registered decoders).
+///
+/// Deliberately not a menu: with one in-app action, an intermediate popover is
+/// a dead click (share-from-another-app arrives via the B6 share extension,
+/// not from here).
+public struct OBCImportButton: View {
     let fileExtensions: Set<String>
     let onPick: (URL) -> Void
     @State private var pickerShown = false
@@ -24,13 +26,8 @@ public struct OBCImportMenuButton: View {
     }
 
     public var body: some View {
-        Menu {
-            Button {
-                pickerShown = true
-            } label: {
-                Label("Import from Files", systemImage: "folder")
-            }
-            Text("…or share a route to the app from Komoot, Strava, or any app.")
+        Button {
+            pickerShown = true
         } label: {
             Image(systemName: "plus")
                 .font(.system(size: 18, weight: .medium))
@@ -40,6 +37,7 @@ public struct OBCImportMenuButton: View {
                 .clipShape(Circle())
                 .overlay(Circle().strokeBorder(OBCTheme.line))
         }
+        .buttonStyle(.plain)
         .accessibilityLabel("Import a route")
         .fileImporter(
             isPresented: $pickerShown,
@@ -50,11 +48,11 @@ public struct OBCImportMenuButton: View {
     }
 }
 
-#Preview("Import menu") {
+#Preview("Import button") {
     HStack {
         Text("Routes").font(.obcSerif(size: 32)).foregroundStyle(OBCTheme.ink)
         Spacer()
-        OBCImportMenuButton(fileExtensions: ["gpx", "tcx"]) { _ in }
+        OBCImportButton(fileExtensions: ["gpx", "tcx"]) { _ in }
     }
     .padding(20)
     .background(OBCTheme.parchment)

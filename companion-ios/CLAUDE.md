@@ -382,7 +382,8 @@ restyle ad hoc**, and don't introduce colors outside
   `OBCInlineBanner`/`OBCToast` (`.obcToast`), `OBCEmptyStateView`,
   `ElevationProfileView`, `OBCStatStrip`/`OBCStatGrid`, `OBCDisclosureRow`,
   `WaypointRow`/`WaypointsListView`, `OBCConnectedServicesBlock`,
-  `OBCImportMenuButton` (Files picker filtered by decoder extensions),
+  `OBCImportButton` (opens the Files picker directly, filtered by decoder
+  extensions — deliberately no intermediate menu),
   `.obcSwipeToDelete` (always confirms), `.obcRenameAlert` /
   `.obcDestructiveConfirm` (native presentations; pairing prompts stay
   system-blue — see `OBCSystemPairing`), `OBCNavigationChrome.apply()` +
