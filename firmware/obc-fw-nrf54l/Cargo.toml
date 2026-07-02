@@ -86,7 +86,7 @@ com-hw = []
 # RRAM settings, buttons, sensors, and the FLPR display all stay up. That exclusion is keyed on
 # the build.rs-emitted `has_map` cfg — the single line the 512 KB LM20 relaxes to run map + BLE
 # together (the budget assert then arbitrates, at compile time).
-ble = ["dep:nrf-sdc", "dep:nrf-mpsl", "dep:bt-hci", "dep:trouble-host", "dep:static_cell", "dep:heapless09", "obc-platform/sensor-link", "obc-platform/input-wait"]
+ble = ["dep:nrf-sdc", "dep:nrf-mpsl", "dep:bt-hci", "dep:trouble-host", "dep:static_cell", "dep:heapless09", "dep:obc-ble", "obc-platform/sensor-link", "obc-platform/input-wait"]
 
 [dependencies]
 # embassy HAL for the nRF54L15 app core. `nrf54l15-app-s` selects the secure-app die
@@ -205,6 +205,11 @@ heapless09 = { package = "heapless", version = "0.9", optional = true }
 # a hard requirement of trouble-host's codegen, not our statics (this crate's own runtime statics
 # stay on the warm-reset-safe `MaybeUninit`-in-`.bss` pattern; see `init_static` in main.rs).
 static_cell = { version = "2", optional = true }
+# The host-tested S0 data-plane core (A5, issue #273): the transferControl / status descriptor
+# codecs, CRC-32/IEEE, and the whole-object transfer state machine (Receiver / Sender). no_std,
+# no-alloc, radio-free — this crate drives the CoC bytes through it; the shared protocol-vectors/
+# fixtures pin it to the Swift side. A workspace member built here for the M33 target.
+obc-ble = { path = "../obc-ble", optional = true }
 
 [profile.release]
 opt-level = 3
