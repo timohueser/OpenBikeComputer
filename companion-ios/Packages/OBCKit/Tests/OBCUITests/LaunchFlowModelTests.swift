@@ -55,6 +55,16 @@ final class LaunchFlowModelTests: XCTestCase {
         XCTAssertEqual(model.phase, .pairIntro)
     }
 
+    /// H2 (B8): forgetting the device drops the flow back to the D1 prompt.
+    func testForgetDeviceReturnsToPairIntro() async {
+        let (model, _) = makeModel(.happyPath)
+        model.start()
+        await waitFor("main") { model.phase == .main }
+
+        model.forgetDevice()
+        XCTAssertEqual(model.phase, .pairIntro)
+    }
+
     func testBondedColdLaunchShowsConnectingThenMain() async {
         let (model, control) = makeModel(.happyPath)
         control.connection = .disconnected  // cold boot: bonded but link down

@@ -55,6 +55,8 @@ public struct OBCListRow<Trailing: View>: View {
     let icon: String?
     let iconColor: Color
     let label: String
+    /// Overrides the label's ink — the warning-red "Forget device" row (G/H2).
+    let labelColor: Color?
     let value: String?
     var showsChevron: Bool
     var disabled: Bool
@@ -67,6 +69,7 @@ public struct OBCListRow<Trailing: View>: View {
         icon: String? = nil,
         iconColor: Color = OBCTheme.forest,
         label: String,
+        labelColor: Color? = nil,
         value: String? = nil,
         showsChevron: Bool = false,
         disabled: Bool = false,
@@ -78,6 +81,7 @@ public struct OBCListRow<Trailing: View>: View {
         self.icon = icon
         self.iconColor = iconColor
         self.label = label
+        self.labelColor = labelColor
         self.value = value
         self.showsChevron = showsChevron
         self.disabled = disabled
@@ -94,7 +98,8 @@ public struct OBCListRow<Trailing: View>: View {
             }
             Text(label)
                 .font(.system(size: 16))
-                .foregroundStyle(disabled || comingSoon ? OBCTheme.inkFaint : OBCTheme.ink)
+                .foregroundStyle(
+                    disabled || comingSoon ? OBCTheme.inkFaint : labelColor ?? OBCTheme.ink)
                 .frame(maxWidth: .infinity, alignment: .leading)
             if comingSoon {
                 OBCSoonBadge()
@@ -136,6 +141,7 @@ public extension OBCListRow where Trailing == EmptyView {
         icon: String? = nil,
         iconColor: Color = OBCTheme.forest,
         label: String,
+        labelColor: Color? = nil,
         value: String? = nil,
         showsChevron: Bool = false,
         disabled: Bool = false,
@@ -147,6 +153,7 @@ public extension OBCListRow where Trailing == EmptyView {
             icon: icon,
             iconColor: iconColor,
             label: label,
+            labelColor: labelColor,
             value: value,
             showsChevron: showsChevron,
             disabled: disabled,
@@ -159,19 +166,23 @@ public extension OBCListRow where Trailing == EmptyView {
 }
 
 /// The 28pt tinted icon tile (7pt radius, white glyph) leading a settings row.
+/// `glyphColor` covers the design's neutral tiles (parchment-3 with an
+/// ink-soft glyph — white would vanish).
 public struct OBCIconTile: View {
     let systemImage: String
     let color: Color
+    let glyphColor: Color
 
-    public init(systemImage: String, color: Color) {
+    public init(systemImage: String, color: Color, glyphColor: Color = .white) {
         self.systemImage = systemImage
         self.color = color
+        self.glyphColor = glyphColor
     }
 
     public var body: some View {
         Image(systemName: systemImage)
             .font(.system(size: 14, weight: .medium))
-            .foregroundStyle(.white)
+            .foregroundStyle(glyphColor)
             .frame(width: 28, height: 28)
             .background(color)
             .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusSmall))
