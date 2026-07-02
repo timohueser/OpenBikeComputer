@@ -155,6 +155,10 @@ jobs:
           - { name: "build (default = LS021/FLPR, release)", cmd: "cargo build --release --locked", flpr: true }
           # The shipping ST7789 artifact under fat LTO (keeps the opt-in TFT path building).
           - { name: "build (tft, release)", cmd: "cargo build --release --locked --features tft", flpr: false }
+          # The throwaway BLE controller spike (issue #269) — keeps the nrf-sdc/MPSL/TrouBLE pins
+          # compiling until A2 (#270) folds the stack into main.rs and retires the bin. Needs
+          # --no-default-features (MPSL's critical-section impl), so only this bin builds here.
+          - { name: "build (ble-spike bin)", cmd: "cargo build --release --locked --no-default-features --features ble-spike --bin ble_spike", flpr: true }
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
