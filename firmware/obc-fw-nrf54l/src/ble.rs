@@ -258,12 +258,14 @@ pub fn draw_status_screen(fb: &mut [u8], battery_pct: u8, sd_ok: bool, inputs: u
         draw_text(&mut dev, line.as_str(), Point::new(cx, 112), Font::Label, TextAlign::Center, ink);
     }
 
-    // The detail rows: one label-value line each, Body font, fixed left edge.
+    // The detail rows: one label-value line each, Body font, fixed left edge. Start + step are
+    // sized so the deepest layout (5 rows when connected) clears the 320 px panel: the last row
+    // tops out at 150 + 4×34 = 286, and a Body cell is 28 px tall → 314, inside 320.
     let x = 20;
-    let mut y = 160;
+    let mut y = 150;
     let mut row = |dev: &mut obc_platform::FbDevice64<'_>, text: &str| {
         draw_text(dev, text, Point::new(x, y), Font::Body, TextAlign::Left, ink);
-        y += 36;
+        y += 34;
     };
     let mut line: heapless::String<24> = heapless::String::new();
     // While connected, the negotiated link parameters (A3): interval · PHY · MTU on one line.
