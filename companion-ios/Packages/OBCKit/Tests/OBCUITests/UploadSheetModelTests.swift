@@ -16,12 +16,13 @@ final class UploadSheetModelTests: XCTestCase {
         _ scenario: Scenario,
         payloadBytes: Int = 100_000,
         waypoints: [Waypoint] = [],
-        onCompleted: @escaping () -> Void = {}
+        onCompleted: @escaping (UInt16?) -> Void = { _ in }
     ) -> (UploadSheetModel, MockControl) {
         let control = MockControl(scenario: scenario)
         control.latency = .zero
-        // Fast enough for test time, slow enough for several progress ticks.
-        control.throughputBytesPerSec = 2_000_000
+        // Fast enough for test time, slow enough for several progress ticks (uploads
+        // pace over a design-scale ~2 MB, so keep the throughput high).
+        control.throughputBytesPerSec = 40_000_000
         let blob = RouteBlob(
             summary: RouteSummary(
                 id: RouteID("upload-test"), name: "Kettle Moraine Loop",
@@ -58,19 +59,23 @@ final class UploadSheetModelTests: XCTestCase {
     // MARK: Happy path (F → F₂ → dismiss)
 
     func testHappyPathMovesThroughDoneAndAutoDismisses() async {
-        var completed = false
-        let (model, _) = makeModel(.happyPath, onCompleted: { completed = true })
+        var assignedObjectID: UInt16??
+        let (model, _) = makeModel(.happyPath, onCompleted: { assignedObjectID = $0 })
 
         XCTAssertEqual(model.phase, .uploading)
         XCTAssertEqual(model.fraction, 0)
         model.start()
 
         await waitFor("progress movement") { model.progress.bytesDone > 0 }
-        XCTAssertEqual(model.progress.total, 100_000)
+        // The mock paces uploads over a design-scale size (≈37 B/m), so the total
+        // reflects the paced transfer, not the tiny real OBCR payload.
+        XCTAssertGreaterThan(model.progress.total, 0)
+        XCTAssertLessThanOrEqual(model.progress.bytesDone, model.progress.total)
         XCTAssertEqual(model.phase, .uploading)
 
         await waitFor("F₂") { model.phase == .done }
-        XCTAssertTrue(completed, "onCompleted must fire on .completed")
+        XCTAssertNotNil(assignedObjectID, "onCompleted must fire on .completed")
+        XCTAssertNotNil(assignedObjectID ?? nil, "the mock reports the device-assigned object id")
         XCTAssertEqual(model.fraction, 1)
 
         await waitFor("auto-dismiss") { model.shouldDismiss }

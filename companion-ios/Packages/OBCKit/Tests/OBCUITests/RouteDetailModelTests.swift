@@ -216,6 +216,19 @@ final class RouteDetailModelTests: XCTestCase {
         XCTAssertLessThan(blob.payload.count, 10_000)
     }
 
+    func testPlannedReuploadTargetsTheDeviceObjectID() {
+        // A planned route already on the device re-uploads with its object id so
+        // the device replaces it in place instead of duplicating.
+        let control = makeControl()
+        let model = RouteDetailModel(
+            transport: MockTransport(control: control),
+            dressing: .planned(control.fixtures.routes[0].summary),
+            plannedGeometry: importedRoute,
+            deviceObjectID: 7
+        )
+        XCTAssertEqual(model.makeUploadBlob().targetObjectID, 7)
+    }
+
     func testPlannedUploadWithoutGeometrySendsNothing() {
         // A device-listed route the phone never imported has no app-side geometry.
         let route = RouteSummary(id: RouteID("42"), name: "On Device", distanceMeters: 40_000, elevationGainMeters: 300)

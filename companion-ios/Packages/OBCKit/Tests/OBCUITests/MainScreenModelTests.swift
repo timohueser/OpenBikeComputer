@@ -394,6 +394,44 @@ final class MainScreenModelTests: XCTestCase {
         XCTAssertNil(model.importedDetail(for: record.id))
     }
 
+    // MARK: "On device" badge (B13)
+
+    func testUploadCompletionLightsTheOnDeviceBadge() async {
+        let (model, _) = makeModel(.happyPath)
+        await startLoaded(model)
+        let record = importedRecord()
+        model.addImportedRoute(record)
+        XCTAssertFalse(model.isUploaded(record.id), "a fresh import isn't on the device")
+
+        // What the upload sheet's onCompleted does with the device-assigned id.
+        model.markRouteUploaded(record.id, objectID: 7)
+        XCTAssertTrue(model.isUploaded(record.id))
+        XCTAssertEqual(model.plannedDeviceObjectID(for: record.id), 7)
+
+        model.deleteRoute(record.id)
+        XCTAssertFalse(model.isUploaded(record.id), "deleting clears the badge")
+    }
+
+    func testSeededUploadedRouteShowsTheBadgeAfterRelaunch() async {
+        let library = InMemoryLibraryStore()
+        var record = importedRecord()
+        record.deviceObjectID = 9
+        library.savePlannedRoute(record)
+
+        let (model, _) = makeModel(.happyPath, library: library)
+        await startLoaded(model)
+        XCTAssertTrue(model.isUploaded(record.id), "a route on the device keeps its badge across a relaunch")
+        XCTAssertEqual(model.plannedDeviceObjectID(for: record.id), 9)
+    }
+
+    func testPlannedRouteNamedFindsACollisionCaseInsensitively() async {
+        let (model, _) = makeModel(.happyPath)
+        await startLoaded(model)
+        model.addImportedRoute(importedRecord(name: "Schwarzwald Tour · Tag 2"))
+        XCTAssertNotNil(model.plannedRoute(named: "schwarzwald tour · tag 2"))
+        XCTAssertNil(model.plannedRoute(named: "A Different Route"))
+    }
+
     // MARK: The library store (B1S) — persistence across "relaunches"
 
     /// #256 acceptance: an H4 import saved before/without a device survives a
