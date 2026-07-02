@@ -556,36 +556,14 @@ impl Storage {
         }
     }
 
-    /// Re-open the temp to append a **resumed** upload (S0 §4.2). Succeeds only when the durable
-    /// byte count equals `offset` — the anchor the device reported — so a stale or foreign temp
-    /// can never be silently continued into a corrupt object (the whole-object CRC would catch
-    /// it at commit anyway; this fails the resume up front instead).
-    pub fn upload_resume(&mut self, offset: u32) -> bool {
-        self.upload_close();
-        let Some(dir) = self.routes_dir else { return false };
-        let Ok(file) = self.vmgr.open_file_in_dir(dir, UPLOAD_TMP, Mode::ReadWriteAppend) else {
-            return false;
-        };
-        if self.vmgr.file_length(file).unwrap_or(0) != offset {
-            let _ = self.vmgr.close_file(file);
-            return false;
-        }
-        self.open_upload = Some(file);
-        true
-    }
-
     /// Append CoC payload bytes to the open temp.
     pub fn upload_append(&mut self, bytes: &[u8]) -> bool {
         let Some(file) = self.open_upload else { return false };
         self.vmgr.write(file, bytes).is_ok()
     }
 
-    /// Bytes durably in the temp — the `committed_offset` a drop reports (S0 §4.3).
-    pub fn upload_len(&self) -> u32 {
-        self.open_upload.and_then(|f| self.vmgr.file_length(f).ok()).unwrap_or(0)
-    }
-
-    /// Close the temp handle **keeping the bytes** — a CoC drop parks the partial for a resume.
+    /// Flush + close the temp handle, keeping the bytes on the card — the step [`upload_commit`]
+    /// runs before it re-opens the temp to validate + promote it.
     pub fn upload_close(&mut self) {
         if let Some(file) = self.open_upload.take() {
             let _ = self.vmgr.flush_file(file);

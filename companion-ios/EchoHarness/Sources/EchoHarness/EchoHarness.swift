@@ -9,7 +9,8 @@ import OBCTransport
 /// Two planes:
 /// - **echo** (A5, #273): round-trip N objects through the loopback, byte-identical + committed.
 /// - **route object plane** (A6, #274): upload an OBCR file → SD, list/detail/delete the catalog,
-///   and prove an offset-resume across an induced mid-transfer drop.
+///   and prove an interrupted upload is discarded + cleanly re-uploaded (uploads restart, not
+///   resume — spec §1 principle 4).
 ///
 /// Run on a Mac with the device powered + advertising:
 /// ```
@@ -18,7 +19,7 @@ import OBCTransport
 /// swift run echo-harness list
 /// swift run echo-harness detail 7 route.obcr              # download + byte-identity check
 /// swift run echo-harness delete 7
-/// swift run echo-harness resume-test route.obcr           # drop mid-upload → resume by offset
+/// swift run echo-harness abort-test route.obcr            # abort mid-upload → discard → re-upload
 /// ```
 @main
 struct EchoHarness {
@@ -48,7 +49,7 @@ struct EchoHarness {
                     throw CLIError.usage("delete <object-id>")
                 }
                 try await runDelete(id: id)
-            case "resume-test": try await runResumeTest(path: try requirePath(positionals.first, "resume-test <file.obcr>"))
+            case "abort-test": try await runAbortTest(path: try requirePath(positionals.first, "abort-test <file.obcr>"))
             default:
                 throw CLIError.usage("unknown subcommand '\(subcommand)'")
             }
@@ -147,46 +148,44 @@ struct EchoHarness {
         )
     }
 
-    /// Upload an OBCR file, **drop the CoC mid-transfer**, then re-open it and resume from the
-    /// device-reported committed offset (S0 §4.2) — the transfer must finish committed and the route
-    /// must land in the catalog. The other half of A6's "mid-upload disconnect → resume" acceptance.
-    static func runResumeTest(path: String) async throws {
+    /// Upload an OBCR file, **abort it mid-transfer** (op=3), and confirm the device discards the
+    /// partial — then re-upload the whole object and confirm it commits and lands in the catalog.
+    /// A6's "interrupted upload → discard → re-upload" acceptance (uploads restart, not resume —
+    /// spec §1 principle 4). The abort is an explicit `transferControl` write, not a CoC-close, so
+    /// it's a reliable GATT signal rather than relying on the device detecting a dropped channel.
+    static func runAbortTest(path: String) async throws {
         let bytes = try Data(contentsOf: URL(fileURLWithPath: path))
-        guard bytes.count >= 2 else { throw CLIError.usage("resume-test needs a route of at least 2 bytes") }
+        guard bytes.count >= 2 else { throw CLIError.usage("abort-test needs a route of at least 2 bytes") }
         let crc = CRC32.checksum(bytes)
         let central = EchoCentral()
         let link = try await central.connect()
+        let before = try await central.readDigest()
 
-        // 1. Announce the upload, stream only a prefix, then drop the CoC (the ACL stays up).
+        // 1. Announce the upload, stream only a prefix, then abort it (op=3).
         let start = TransferControl(
             op: .upload, type: .route, objectID: TransferControl.newObjectID,
             totalLen: UInt32(bytes.count), crc32: crc
         )
         central.writeControl(start.encode(), to: link.transferControl)
-        let half = bytes.count / 2
-        _ = await link.channel.upload(Data(bytes.prefix(half))).outcome  // prefix handed to the CoC
-        await central.closeChannel()  // induce the mid-transfer drop
+        _ = await link.channel.upload(Data(bytes.prefix(bytes.count / 2))).outcome  // prefix handed to the CoC
+        let abort = TransferControl(op: .abort, type: .route, objectID: TransferControl.newObjectID)
+        central.writeControl(abort.encode(), to: link.transferControl)
         let aborted = await central.nextTransferResult()
         guard aborted.status == .aborted else { throw HarnessError.unexpectedStatus(aborted.status) }
-        let offset = Int(aborted.committedOffset)
-        print("echo-harness: dropped after ~\(half) B → device parked at committedOffset \(offset)")
+        let afterAbort = try await central.readDigest()
+        guard afterAbort.routeCount == before.routeCount else { throw HarnessError.unexpectedStatus(.error) }
+        print("echo-harness: aborted mid-upload → device discarded the partial (routes still \(afterAbort.routeCount)) ✓")
 
-        // 2. Re-open the CoC and resume from the parked offset.
-        try await Task.sleep(nanoseconds: 400_000_000)  // let the device re-accept the channel
-        let channel = try await central.reopenChannel()
-        let resume = TransferControl(
-            op: .upload, type: .route, objectID: TransferControl.newObjectID,
-            totalLen: UInt32(bytes.count), crc32: crc, offset: UInt32(offset)
-        )
-        central.writeControl(resume.encode(), to: link.transferControl)
+        // 2. Re-upload the whole object from the start — must commit.
+        central.writeControl(start.encode(), to: link.transferControl)
         let committed = try await withTimeout(60) {
-            _ = await channel.upload(bytes, from: offset).outcome
+            _ = await link.channel.upload(bytes).outcome
             return await central.nextTransferResult()
         }
         guard committed.status == .committed else { throw HarnessError.unexpectedStatus(committed.status) }
-        print("echo-harness: resumed from \(offset) → committed as object id \(committed.objectID) ✓")
+        print("echo-harness: re-uploaded from the start → committed as object id \(committed.objectID) ✓")
 
-        // 3. Confirm the resumed route is in the catalog (same open channel).
+        // 3. Confirm the route is in the catalog.
         let entries = try await downloadRouteList(link: link, central: central)
         guard entries.contains(where: { $0.objectID == committed.objectID }) else { throw HarnessError.routeNotListed }
         print("echo-harness: id \(committed.objectID) present in routeList ✓ (\(entries.count) route(s))")
@@ -314,7 +313,7 @@ struct EchoHarness {
           list                                          download + print the routeList (§7.4)
           detail <id> [reference.obcr] [--out file]     download a route; verify CRC + byte-identity
           delete <id>                                   deleteObject; assert command ok + storeChanged
-          resume-test <file.obcr>                       drop mid-upload, resume by offset, ride-verify
+          abort-test <file.obcr>                        abort mid-upload → discard → re-upload + verify
           --help                                        this message
 
         ECHO OPTIONS

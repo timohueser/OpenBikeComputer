@@ -350,7 +350,9 @@ A6 wires that data plane to real storage — the epic's golden path (komoot GPX 
   signature. Uploads get 8.3 `RTnn.OBR` names (LFN creation isn't available); the catalog scan —
   including the **map build's** — matches `*.OBR` beside `.obcr`, so an uploaded route appears in
   the on-device Route menu after a reflash. Replace-by-id deletes the old copy only after the new
-  bytes validate; a CoC drop parks the transfer for the S0 §4.2 offset-resume.
+  bytes validate. Uploads are **not resumable** (S0 §1 principle 4): an interrupted upload (a drop
+  or an `op=3` abort) discards the partial and the app re-sends the object from the start — trivial
+  for a tens-of-kB route.
 - **List / detail / delete.** `routeList` is built from the stored OBCR headers (ids are
   session-scoped, matching the per-boot digest revision); a route detail download streams the
   stored file verbatim (whole-object CRC pre-pass, then raw CoC chunks); `deleteObject` removes
@@ -362,8 +364,9 @@ A6 wires that data plane to real storage — the epic's golden path (komoot GPX 
 
 **Verify** — the E2E golden path: share a GPX to the iOS app on a phone, upload (B5 sheet), reflash
 the **map** build, and the route is in the device menu and rideable (SD persists across flashes).
-List/detail/delete + the mid-upload disconnect-resume are exercised from the Mac harness (the app's
-list/detail screens land on the B track).
+List/detail/delete + the mid-upload abort-and-re-upload are exercised from the Mac harness
+(`companion-ios/EchoHarness`: `upload`/`list`/`detail`/`delete`/`abort-test`) — the app's
+list/detail screens land on the B track.
 
 ## Driving it from a host (`debug-uart`)
 

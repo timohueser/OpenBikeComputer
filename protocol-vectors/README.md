@@ -23,7 +23,7 @@ A drift on either side fails that side's tests — the files are the contract.
 | `ride-v1.bin` | ride object v1 (spec §7.2) | "Höhenweg", 3 points, the last without elevation |
 | `config-v1.bin` | Config v1 (spec §7.3) | name "OBC Tourer", metric |
 | `transfer-upload-start.bin` | `transferControl` §4.2 | fresh route upload, id `0xFFFF` (new); `total_len`/`crc32` are the **actual** length + CRC-32 of `route-waypoints.obcr` |
-| `transfer-upload-resume.bin` | `transferControl` §4.2 | the same upload resumed mid-object after a drop |
+| `transfer-upload-resume.bin` | `transferControl` §4.2 | a non-zero-offset upload descriptor — pins the `offset` byte layout (uploads restart, not resume; the device rejects this) |
 | `transfer-download-request.bin` | `transferControl` §4.2 | download request for the `rideList` object |
 | `transfer-abort.bin` | `transferControl` §4.2 | abort of the active upload |
 | `status-transfer-result.bin` | `status` msg 1 §4.3 | `committed`, assigned id 7, all bytes durable |

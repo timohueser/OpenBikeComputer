@@ -8,9 +8,9 @@
 //!   digest + list on every connect and never carries an id across a device reboot.
 //! - **Store revision + digest** (§4.5): bumped on every commit/delete; the BLE plane notifies
 //!   `storeChanged` + the digest characteristic from it.
-//! - **The upload state machine**: descriptor → [`Receiver`] (+ temp-file sink) → commit; a CoC
-//!   drop parks the running CRC + durable byte count in [`PendingUpload`] so a same-boot resume
-//!   continues instead of restarting (S0 §4.2).
+//! - **The upload state machine**: descriptor → [`Receiver`] (+ temp-file sink) → commit. Uploads
+//!   are not resumable (S0 §1 principle 4): an interrupted upload (a drop or an `op=3` abort) is
+//!   discarded and the app re-sends the object from the start.
 //! - **Downloads**: the `routeList` object is built into a resident buffer ([`Self::list_len`]);
 //!   a route detail is served straight off the card (CRC pre-pass, then chunk reads).
 //! - **Config ↔ settings** (§7.3): the Config blob reads from / writes through the persisted
@@ -39,19 +39,6 @@ struct RouteSlot {
     byte_len: u32,
 }
 
-/// A parked mid-upload transfer (the CoC dropped): everything a same-boot resume needs. The
-/// temp file holds the bytes; this holds the wire identity to match the resume descriptor
-/// against and the running CRC at the durable offset.
-struct PendingUpload {
-    object_id: u16,
-    total_len: u32,
-    crc32: u32,
-    /// Durable bytes in the temp — the `committed_offset` reported to the app (S0 §4.3).
-    written: u32,
-    /// The running CRC over `temp[..written]`, seeding [`Receiver::resumed`].
-    crc: Crc32,
-}
-
 /// The routeList object buffer: header + one entry per possible catalog slot.
 const LIST_BUF_LEN: usize = ListHeader::object_len(MAX_ROUTES);
 
@@ -67,8 +54,6 @@ pub struct ObjectStore {
     next_id: u16,
     /// The store revision (S0 §4.5): monotonic per boot, bumped on every commit/delete.
     revision: u32,
-    /// A parked upload awaiting a resume (S0 §4.2), if any.
-    pending: Option<PendingUpload>,
     /// The built list object a download streams from (routeList today; rideList serves the
     /// empty header until A7).
     list_buf: [u8; LIST_BUF_LEN],
@@ -86,7 +71,6 @@ impl ObjectStore {
             routes: Vec::new(),
             next_id: 0,
             revision: 1,
-            pending: None,
             list_buf: [0; LIST_BUF_LEN],
         };
         store.rescan();
@@ -180,84 +164,39 @@ impl ObjectStore {
 
     // ==================== upload (S0 §4.2 op 1) ====================
 
-    /// Open an upload from its descriptor: fresh (`offset == 0`, temp truncated) or a resume
-    /// (`offset > 0`, matched against the parked [`PendingUpload`] and the temp's durable
-    /// length). Returns the [`Receiver`] to drive, or the typed status to answer immediately.
+    /// Open a fresh upload from its descriptor (uploads restart, not resume — S0 §1 principle 4):
+    /// truncate the temp and return the [`Receiver`] to drive, or the typed status to answer
+    /// immediately. A non-zero offset is rejected (`Receiver::new`) — the app always sends 0.
     pub fn upload_open(&mut self, desc: &TransferControl) -> Result<Receiver, TransferStatus> {
         // A named id must exist (0xFFFF = fresh); check before touching the temp.
         if desc.object_id != TransferControl::NEW_OBJECT_ID && self.slot_index(desc.object_id).is_none() {
             return Err(TransferStatus::NotFound);
         }
+        let rx = Receiver::new(desc).map_err(|_| TransferStatus::Error)?;
         let Some(storage) = &mut self.storage else { return Err(TransferStatus::Error) };
-        let rx = if desc.offset == 0 {
-            let rx = Receiver::new(desc).map_err(|_| TransferStatus::Error)?;
-            if !storage.upload_begin() {
-                return Err(TransferStatus::Error);
-            }
-            rx
-        } else {
-            // Resume: the descriptor must name the parked transfer (same id/len/CRC) and its
-            // offset must equal the durable byte count — anything else is answered `error` and
-            // the app restarts fresh (S0 §4.2: the CRC covers the whole object either way).
-            let Some(p) = &self.pending else { return Err(TransferStatus::Error) };
-            if (desc.object_id, desc.total_len, desc.crc32) != (p.object_id, p.total_len, p.crc32)
-                || desc.offset != p.written
-            {
-                return Err(TransferStatus::Error);
-            }
-            let rx = Receiver::resumed(desc, p.crc).map_err(|_| TransferStatus::Error)?;
-            if !storage.upload_resume(desc.offset) {
-                return Err(TransferStatus::Error);
-            }
-            rx
-        };
-        // Park state from byte 0: a disconnect can cancel the data-plane future at any await,
-        // so the resume anchor is kept current on every append rather than written at the drop.
-        self.pending = Some(PendingUpload {
-            object_id: rx.object_id(),
-            total_len: rx.total_len(),
-            crc32: rx.expected_crc(),
-            written: rx.committed_offset(),
-            crc: rx.crc(),
-        });
+        if !storage.upload_begin() {
+            return Err(TransferStatus::Error);
+        }
         Ok(rx)
     }
 
-    /// Sink one CoC chunk: append to the temp and advance the parked resume anchor to the
-    /// receiver's state. False = storage failure (the caller aborts with `error`).
-    pub fn upload_append(&mut self, bytes: &[u8], rx: &Receiver) -> bool {
-        let ok = self.storage.as_mut().is_some_and(|s| s.upload_append(bytes));
-        if ok {
-            if let Some(p) = &mut self.pending {
-                p.written = rx.committed_offset();
-                p.crc = rx.crc();
-            }
-        }
-        ok
+    /// Sink one CoC chunk: append to the temp. False = storage failure (the caller aborts).
+    pub fn upload_append(&mut self, bytes: &[u8]) -> bool {
+        self.storage.as_mut().is_some_and(|s| s.upload_append(bytes))
     }
 
-    /// The CoC dropped mid-upload: flush + close the temp (the parked anchor is already
-    /// current) and hand back the durable offset to report
-    /// (`transferResult(aborted, committed_offset)`, S0 §4.2/§4.3).
-    pub fn upload_park(&mut self) -> u32 {
-        if let Some(storage) = &mut self.storage {
-            storage.upload_close(); // flushes — the temp now durably holds the parked count
-        }
-        self.pending.as_ref().map_or(0, |p| p.written)
-    }
-
-    /// The whole link dropped: release any open storage handles (a cancelled data-plane future
-    /// can't). A parked upload stays parked — the app can reconnect and resume it.
+    /// The whole link dropped, or the CoC dropped mid-upload, or the app aborted (op 3): discard
+    /// the partial upload and release any open storage handles a cancelled future couldn't.
+    /// Uploads don't resume, so nothing is kept — the app re-sends from the start.
     pub fn link_reset(&mut self) {
+        self.upload_discard();
         if let Some(storage) = &mut self.storage {
-            storage.upload_close();
             storage.close_object();
         }
     }
 
-    /// Abort (op 3 or a failed append): discard the temp and any parked state.
+    /// Abort/interrupt: discard the in-flight temp (S0 §4.2 — "drains and discards").
     pub fn upload_discard(&mut self) {
-        self.pending = None;
         if let Some(storage) = &mut self.storage {
             storage.upload_abort();
         }
@@ -268,7 +207,6 @@ impl ObjectStore {
     /// assigned id (S0 §4.3); on a mismatch nothing is committed and the temp is dropped.
     /// Returns `(object_id, status)` for the `transferResult`.
     pub fn upload_finish(&mut self, rx: &Receiver) -> (u16, TransferStatus) {
-        self.pending = None;
         let outcome = match rx.outcome() {
             Some(o) => o,
             None => return (rx.object_id(), TransferStatus::Error), // caller bug: not complete

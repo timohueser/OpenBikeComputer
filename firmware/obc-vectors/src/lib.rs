@@ -190,10 +190,11 @@ pub fn object_store(revision: u32, routes: u16, rides: u16) -> Vec<u8> {
 }
 
 /// Every fixture as `(file name, bytes)` — the one list `regenerate` writes and the
-/// contract test verifies. The transfer transcript models one fresh route upload
-/// (`object_id 0xFFFF` = "new"), a drop, and its offset-resume; the descriptor's
-/// `total_len`/`crc32` are the **actual** length and CRC of `route-waypoints.obcr`,
-/// tying the fixtures together end-to-end.
+/// contract test verifies. The transfer descriptors model a fresh route upload
+/// (`object_id 0xFFFF` = "new") and an abort; the descriptor's `total_len`/`crc32`
+/// are the **actual** length and CRC of `route-waypoints.obcr`, tying the fixtures
+/// together end-to-end. (`transfer-upload-resume.bin` is a non-zero-offset encoding
+/// fixture only — uploads don't resume, spec §1 principle 4.)
 pub fn all() -> Vec<(&'static str, Vec<u8>)> {
     let route_wp = build_route(ROUTE_GPX);
     let route_plain = build_route(&route_gpx_plain());
@@ -207,7 +208,9 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         ("config-v1.bin", config_v1()),
         // op=1 upload, type=1 route, id 0xFFFF (new), fresh.
         ("transfer-upload-start.bin", transfer_control(1, 1, 0xFFFF, len, crc, 0)),
-        // The same upload resumed from the device's committed offset after a drop.
+        // An upload descriptor carrying a non-zero offset — pins the `offset` field's byte layout.
+        // Uploads are NOT resumable (spec §1 principle 4): the device answers such a descriptor
+        // `error`; the app always sends offset 0. Kept as an encoding fixture, not a resume flow.
         ("transfer-upload-resume.bin", transfer_control(1, 1, 0xFFFF, len, crc, resume_offset)),
         // op=2 download request: type=7 rideList, id 0, len/crc unknown (0), fresh.
         ("transfer-download-request.bin", transfer_control(2, 7, 0, 0, 0, 0)),

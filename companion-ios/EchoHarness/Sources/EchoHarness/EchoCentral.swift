@@ -31,12 +31,6 @@ final class EchoCentral: NSObject, @unchecked Sendable {
     private var characteristics: [CBUUID: CBCharacteristic] = [:]
     private var readyCont: CheckedContinuation<EchoLink, Error>?
     private var openedChannel = false
-    /// The PSM the device published, kept so a resume can re-open the CoC without re-reading it.
-    private var lastPSM: UInt16 = 0
-    /// The live CoC byte layer — retained so the harness can close it (induce a drop) and re-open a
-    /// fresh one for an offset-resume.
-    private var currentByteChannel: L2CAPByteChannel?
-    private var channelReopenCont: CheckedContinuation<BLEChannel, Error>?
 
     // Device → app `status` messages, buffered so a waiter that registers just after a notification
     // arrives still sees it (no ordering race with the `transferControl`/`command` write that
@@ -115,25 +109,6 @@ final class EchoCentral: NSObject, @unchecked Sendable {
     /// Read the `objectStore` digest (S0 §4.5): revision + object counts.
     func readDigest() async throws -> ObjectStoreDigest {
         try ObjectStoreDigest(decoding: try await readValue(GATT.objectStore))
-    }
-
-    /// Close the live CoC — the harness's way to induce a mid-transfer drop (the ACL stays up).
-    func closeChannel() async {
-        let channel: L2CAPByteChannel? = await withCheckedContinuation { cont in
-            queue.async { [self] in cont.resume(returning: currentByteChannel) }
-        }
-        await channel?.close()
-    }
-
-    /// Re-open the CoC on the published PSM and return a fresh `BLEChannel` — the offset-resume path
-    /// (S0 §4.2: "the app re-opens the CoC and resumes by offset").
-    func reopenChannel() async throws -> BLEChannel {
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<BLEChannel, Error>) in
-            queue.async { [self] in
-                channelReopenCont = cont
-                peripheral?.openL2CAPChannel(CBL2CAPPSM(lastPSM))
-            }
-        }
     }
 
     // MARK: queue-confined helpers
@@ -257,7 +232,6 @@ extension EchoCentral: CBPeripheralDelegate {
             guard let data = characteristic.value, data.count >= 2 else { return }
             openedChannel = true
             let psm = UInt16(data[data.startIndex]) | (UInt16(data[data.startIndex + 1]) << 8)
-            lastPSM = psm
             print("echo-harness: opening L2CAP CoC on PSM \(psm)…")
             peripheral.openL2CAPChannel(CBL2CAPPSM(psm))
         case GATT.status:
@@ -275,23 +249,13 @@ extension EchoCentral: CBPeripheralDelegate {
     }
 
     func peripheral(_ peripheral: CBPeripheral, didOpen channel: CBL2CAPChannel?, error: Error?) {
-        guard let channel, error == nil else {
-            if let cont = channelReopenCont { channelReopenCont = nil; cont.resume(throwing: HarnessError.channelOpenFailed) }
-            else { fail(HarnessError.channelOpenFailed) }
+        guard let channel, error == nil, let control = characteristics[GATT.transferControl] else {
+            fail(HarnessError.channelOpenFailed)
             return
         }
-        let byteChannel = L2CAPByteChannel(channel: channel)
-        currentByteChannel = byteChannel
-        let bleChannel = BLEChannel(channel: byteChannel)
-        if let cont = channelReopenCont {
-            channelReopenCont = nil
-            cont.resume(returning: bleChannel)
-        } else if let control = characteristics[GATT.transferControl] {
-            readyCont?.resume(returning: EchoLink(peripheral: peripheral, transferControl: control, channel: bleChannel))
-            readyCont = nil
-        } else {
-            fail(HarnessError.channelOpenFailed)
-        }
+        let bleChannel = BLEChannel(channel: L2CAPByteChannel(channel: channel))
+        readyCont?.resume(returning: EchoLink(peripheral: peripheral, transferControl: control, channel: bleChannel))
+        readyCont = nil
     }
 }
 
