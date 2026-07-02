@@ -13,7 +13,9 @@
 //!
 //! ## Card layout (FAT16/FAT32)
 //!   `/<name>.obcm`   — the map tile (first one found in the root is loaded)
-//!   `/routes/*.obcr` — the route catalog the Route menu lists
+//!   `/routes/*.obcr` — the route catalog the Route menu lists (side-loaded, long filenames)
+//!   `/routes/*.OBR`  — BLE-uploaded routes (A6, 8.3 names — same OBCR bytes, same catalog);
+//!                      the in-flight upload lives here as `UPLOAD.TMP` until commit
 //!   `/tracks/`       — saved `<route>.gpx` rides (created if absent); the in-progress log
 //!                      lives here as `TRACK.OBT` and is deleted once converted.
 //!
