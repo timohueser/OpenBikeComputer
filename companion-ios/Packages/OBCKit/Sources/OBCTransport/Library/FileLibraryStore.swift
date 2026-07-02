@@ -10,6 +10,7 @@ import OBCDomain
 ///     planned/<id>/source.<ext>   the original import file, byte-exact
 ///     rides/<id>.json             versioned ride (summary + tracklog)
 ///     synced-rides.json           every ride id ever downloaded (H9)
+///     deleted-rides.json          ride ids deleted on the phone (device keeps its copy)
 ///
 /// The JSON shape is an **app-owned schema** (versioned DTOs below), decoupled
 /// from both the domain types' memberwise layout and the device wire formats —
@@ -96,6 +97,19 @@ public struct FileLibraryStore: LibraryStore, Sendable {
         write(SyncedRidesFile(version: Self.schemaVersion, ids: ids.map(\.rawValue).sorted()), to: syncedURL)
     }
 
+    public func deletedRideIDs() -> Set<RideID> {
+        guard let file: SyncedRidesFile = read(deletedURL), file.version == Self.schemaVersion
+        else { return [] }
+        return Set(file.ids.map(RideID.init))
+    }
+
+    public func markRideDeleted(_ id: RideID) {
+        var ids = deletedRideIDs()
+        guard ids.insert(id).inserted else { return }
+        ensure(directory)
+        write(SyncedRidesFile(version: Self.schemaVersion, ids: ids.map(\.rawValue).sorted()), to: deletedURL)
+    }
+
     // MARK: Paths + IO
 
     private static let schemaVersion = 1
@@ -103,6 +117,7 @@ public struct FileLibraryStore: LibraryStore, Sendable {
     private var plannedDir: URL { directory.appendingPathComponent("planned", isDirectory: true) }
     private var ridesDir: URL { directory.appendingPathComponent("rides", isDirectory: true) }
     private var syncedURL: URL { directory.appendingPathComponent("synced-rides.json") }
+    private var deletedURL: URL { directory.appendingPathComponent("deleted-rides.json") }
 
     private func rideURL(_ id: RideID) -> URL {
         ridesDir.appendingPathComponent("\(Self.fileSafe(id.rawValue)).json")

@@ -229,9 +229,18 @@ public struct RouteDetailView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.top, 2)
             case .tracked:
-                // E3 has no inline actions — the services block above carries
-                // the per-ride upload; ride delete lives on the list (H11).
-                EmptyView()
+                // The services block above carries the per-ride upload; delete
+                // matches the planned dressing (one-tap, so it confirms via H1).
+                Button("Delete ride") { deleteConfirmShown = true }
+                    .buttonStyle(.obcDestructive)
+                    .accessibilityIdentifier("detail.delete")
+                    .obcDestructiveConfirm(
+                        "Delete \"\(model.name)\"?",
+                        isPresented: $deleteConfirmShown,
+                        message: "Removes it from your phone. The ride stays on the device.",
+                        actionTitle: "Delete ride",
+                        onConfirm: { onDelete?() }
+                    )
             }
         }
         .padding(.top, 20)

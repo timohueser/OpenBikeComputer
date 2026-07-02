@@ -144,9 +144,34 @@ final class RouteDetailTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["2:51"].exists, "moving-time stat missing")
         XCTAssertTrue(app.staticTexts["Strava"].exists, "services block missing")
         XCTAssertTrue(app.staticTexts["Komoot"].exists)
-        XCTAssertFalse(app.buttons["detail.delete"].exists, "E3 has no inline delete")
         XCTAssertTrue(app.buttons["detail.rename"].exists, "E3 name must stay editable")
         snap(app, "E3-ride-detail")
+    }
+
+    /// E3 delete → H1 confirm → pops back with the ride gone (phone-side only;
+    /// the device keeps its copy).
+    @MainActor
+    func testTrackedDeleteRoutesThroughH1AndPops() {
+        let app = launch()
+        XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10))
+        app.buttons["Tracked"].tap()
+
+        let card = app.buttons["main.card.ride-kettle-moraine"]
+        XCTAssertTrue(card.waitForExistence(timeout: 10))
+        card.tap()
+
+        let delete = app.buttons["detail.delete"]
+        XCTAssertTrue(delete.waitForExistence(timeout: 5), "E3 delete missing")
+        // The actions sit at the end of the scroll, below the services block.
+        for _ in 0..<4 where !delete.isHittable { app.swipeUp(velocity: .fast) }
+        delete.tap()
+        let confirm = app.sheets.buttons["Delete ride"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5), "H1 confirm missing")
+        snap(app, "H1-delete-ride-from-detail")
+        confirm.tap()
+
+        XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 5), "should pop to the list")
+        XCTAssertFalse(card.exists, "deleted ride still listed")
     }
 
     // MARK: E1 · import landing
