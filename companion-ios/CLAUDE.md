@@ -233,7 +233,9 @@ seam .../Release-iphonesimulator/OBCCompanion.app   # → 0  (mock excluded)
 ### Signing (physical device only)
 
 Simulator builds need no signing. For a real iPhone set your team once in
-`project.yml` (then `xcodegen generate`):
+**`project.local.yml`** (merged into `project.yml` via `include:`) — **not**
+`project.yml` itself and **never** the generated pbxproj (a hand-edit there
+gets silently wiped on the next `xcodegen generate`):
 
 ```yaml
 settings:
@@ -241,9 +243,18 @@ settings:
     DEVELOPMENT_TEAM: "YOURTEAMID"   # Xcode ▸ Settings ▸ Accounts, or `security find-identity`
 ```
 
-`CODE_SIGN_STYLE` is already `Automatic`. First device run: unlock the phone,
-trust the Mac, and (free accounts) approve the profile in Settings ▸ General ▸
-VPN & Device Management.
+`project.local.yml` is tracked with an empty default so a fresh clone still
+builds for the simulator, but after setting your real team id mark it
+skip-worktree so it never shows as a diff and nothing (`xcodegen generate`,
+`git pull`) ever touches it again:
+
+```bash
+git update-index --skip-worktree companion-ios/project.local.yml
+```
+
+Then `xcodegen generate`. `CODE_SIGN_STYLE` is already `Automatic`. First
+device run: unlock the phone, trust the Mac, and (free accounts) approve the
+profile in Settings ▸ General ▸ VPN & Device Management.
 
 ---
 
