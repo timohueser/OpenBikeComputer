@@ -55,9 +55,10 @@ public final class UploadSheetModel {
     private let transport: any DeviceTransport
     private let blob: RouteBlob
     private let timing: Timing
-    /// Fires once when the upload completes — the E1 landing saves the route
-    /// here ("Uploading saves it too").
-    private let onCompleted: () -> Void
+    /// Fires once when the upload completes, carrying the **device-assigned object
+    /// id** (nil if the device didn't report one) — the E1 landing saves the route
+    /// here ("Uploading saves it too") and records it as on-device.
+    private let onCompleted: (UInt16?) -> Void
     @ObservationIgnored private var handle: TransferHandle?
     @ObservationIgnored private var watchers: [Task<Void, Never>] = []
     @ObservationIgnored private var started = false
@@ -67,7 +68,7 @@ public final class UploadSheetModel {
         blob: RouteBlob,
         deviceName: String,
         timing: Timing = Timing(),
-        onCompleted: @escaping () -> Void = {}
+        onCompleted: @escaping (UInt16?) -> Void = { _ in }
     ) {
         self.transport = transport
         self.blob = blob
@@ -133,7 +134,7 @@ public final class UploadSheetModel {
             switch outcome {
             case .completed:
                 phase = .done
-                onCompleted()
+                onCompleted(await handle.assignedObjectID)
                 try? await Task.sleep(for: timing.doneAutoDismiss)
                 shouldDismiss = true
             case .canceled:

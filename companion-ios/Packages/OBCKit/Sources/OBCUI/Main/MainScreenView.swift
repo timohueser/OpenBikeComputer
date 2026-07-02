@@ -264,7 +264,7 @@ public struct MainScreenView: View {
                 Button {
                     onSelectRoute(route)
                 } label: {
-                    RouteCard(route: route)
+                    RouteCard(route: route, isUploaded: model.isUploaded(route.id))
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("main.card.\(route.id.rawValue)")
