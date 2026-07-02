@@ -29,7 +29,15 @@ description = "nRF54L15-DK board firmware for OpenBikeComputer — the real hard
 # without a sky view build `--features synth` (the square-loop stand-in) or `--features debug-uart`.
 # Build with `cargo run --release` (add `--features debug-uart` to stream a recorded ride from a host).
 # See `firmware/docs/ls021-flpr.md` + the crate README.
-default = ["obc-platform/sensor-link", "obc-platform/input-wait"]
+default = ["obc-platform/sensor-link", "obc-platform/input-wait", "cs-single-core"]
+
+# The critical-section impl for every non-BLE build (what used to be the always-on
+# `cortex-m/critical-section-single-core`). A **feature** because it is mutually exclusive with
+# the MPSL-provided impl the BLE stack requires (`nrf-mpsl/critical-section-impl` — MPSL's radio
+# timing forbids global-interrupt-disable critical sections, and two impls = duplicate link
+# symbols). The `ble-spike` bin therefore builds with `--no-default-features` (see below); when A2
+# folds BLE into `main.rs` the ble build keeps this off for good.
+cs-single-core = ["cortex-m/critical-section-single-core"]
 
 # Replace the real GPS/altimeter with the always-compiled `SynthLocation` square-loop stand-in (no
 # I²C hardware needed) — indoor testing without a sky view, where a real fix never comes. A runtime
@@ -66,6 +74,19 @@ debug-uart = ["obc-platform/debug-link"]
 # board — which routes COM onto P1/P3 — turns on. See `src/com_hw.rs` + the crate README pin map.
 com-hw = []
 
+# BLE controller spike (issue #269, epic #267): gates the throwaway `ble_spike` bin + the
+# nrf-sdc/MPSL/TrouBLE dependency stack so ordinary builds neither compile nor link any of it.
+# Retired when A2 (#270) folds the stack into `main.rs` (this gate then becomes the real `ble`
+# feature). Build with
+#   cargo run --release --no-default-features --features ble-spike --bin ble_spike
+# (`--no-default-features` swaps the critical-section impl to MPSL's — see `cs-single-core`;
+# `main.rs` does not compile under this flag set, so always pass `--bin ble_spike`).
+ble-spike = ["dep:nrf-sdc", "dep:nrf-mpsl", "dep:bt-hci", "dep:trouble-host", "dep:static_cell"]
+
+[[bin]]
+name = "ble_spike"
+required-features = ["ble-spike"]
+
 [dependencies]
 # embassy HAL for the nRF54L15 app core. `nrf54l15-app-s` selects the secure-app die
 # (the only partition we use — no TF-M split, BLE deferred); `time-driver-grtc` backs
@@ -98,9 +119,10 @@ defmt = "1.0"
 defmt-rtt = "1.0"
 panic-probe = { version = "1.0", features = ["print-defmt"] }
 
-# Single-core critical-section impl (defmt + embassy need critical-section 1.0; embassy-nrf does
-# not bundle one). `inline-asm` for cortex-m 0.7's asm.
-cortex-m = { version = "0.7", features = ["inline-asm", "critical-section-single-core"] }
+# defmt + embassy need a critical-section 1.0 impl; embassy-nrf does not bundle one. Ours comes
+# from the `cs-single-core` default feature above (or MPSL's for BLE builds — see the feature's
+# note). `inline-asm` for cortex-m 0.7's asm.
+cortex-m = { version = "0.7", features = ["inline-asm"] }
 cortex-m-rt = "0.7"
 
 # embedded-hal 1.0 traits (SpiBus / OutputPin / DelayNs) the hand-rolled ST7789 panel
@@ -150,6 +172,31 @@ heapless = "0.8"
 # (The runtime-built `'static` shared state the two planes split — the bus `Mutex<Display>`, the
 # `InputPlane` mutex, the VCOM ring buffers — is parked in `.bss` via an in-place `MaybeUninit` +
 # `ptr::write`, the same warm-reset-safe pattern as APP/MAP_CACHE/ROUTE_CACHE, so no `static_cell`.)
+
+# --- BLE controller spike (issue #269) — all optional, pulled in only by `ble-spike` above ---
+# Nordic's SoftDevice Controller + MPSL, via alexmoon/nrf-sdc's Rust bindings. The crates.io
+# releases (nrf-sdc 0.3 / nrf-mpsl 0.3) predate nRF54L support *and* pin embassy-nrf 0.7, so this
+# is a **git pin**: main (unreleased 0.4.0) grows the `nrf54l15-app-s` feature and targets exactly
+# the embassy set this crate already ships (embassy-nrf 0.11 / embassy-sync 0.8) — no embassy bump
+# or patch needed. Pinned to the same rev TrouBLE's `examples/nrf54` pins, so the trio is a proven
+# combination. The device is peripheral-only (phone connects to us), but `central` must be on
+# anyway: trouble-host's *unconditional* Controller bound includes `LeCreateConnCancel` (its
+# cleanup path issues it even on peripheral-only hosts), and only the multirole SDC lib variant
+# exports that symbol — `peripheral` alone is a link error. Costs flash, not RAM (the Builder
+# never enables central roles, so the controller's memory stays peripheral-sized).
+nrf-sdc = { git = "https://github.com/alexmoon/nrf-sdc.git", rev = "abe49d22ebfc85fae134eb082fbfddf752016a55", features = ["defmt", "peripheral", "central", "nrf54l15-app-s"], optional = true }
+# `critical-section-impl` must live on nrf-mpsl (it *provides* the critical-section impl on
+# nRF54L, replacing cortex-m's `critical-section-single-core` — see the cortex-m dep note below).
+nrf-mpsl = { git = "https://github.com/alexmoon/nrf-sdc.git", rev = "abe49d22ebfc85fae134eb082fbfddf752016a55", features = ["defmt", "critical-section-impl"], optional = true }
+# The HCI types nrf-sdc's controller trait + trouble-host speak; same ^0.9 both resolve.
+bt-hci = { version = "0.9", default-features = false, features = ["defmt"], optional = true }
+# The BLE host (released 0.7 pins embassy-executor 0.10 / embassy-sync 0.8 / embassy-time 0.5.1 —
+# again exactly this crate's set; its heapless 0.9 coexists with our 0.8, no types cross).
+# `default-packet-pool-mtu-251` sizes the pool for the config we intend to ship (ATT MTU 247 =
+# link-layer 251 with DLE), so the spike's RAM numbers are the real ones A2 budgets against.
+trouble-host = { version = "0.7", features = ["defmt", "derive", "peripheral", "gatt", "default-packet-pool", "default-packet-pool-mtu-251"], optional = true }
+# The spike bin only (main.rs stays on the MaybeUninit-in-.bss pattern for its big statics).
+static_cell = { version = "2", optional = true }
 
 [profile.release]
 opt-level = 3

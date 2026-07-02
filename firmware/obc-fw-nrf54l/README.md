@@ -144,6 +144,11 @@ cargo run --release --features debug-uart
 # The same map/ride app on the **ST7789** bring-up panel instead of the LS021 (opt-in
 # backend) — no FLPR, no RISC-V gcc, links the full 256 KB. Real sensors still apply. ST7789 wiring (below).
 cargo run --release --features tft
+
+# Throwaway BLE controller spike (issue #269): nrf-sdc + MPSL + TrouBLE advertising `OBC-SPIKE`,
+# no app integration. `--no-default-features` is REQUIRED (it swaps the critical-section impl to
+# MPSL's; `main.rs` doesn't compile under it, so always name the bin). Retired at A2 (#270).
+cargo run --release --no-default-features --features ble-spike --bin ble_spike
 ```
 
 (The standalone FLPR waveform bench bin `ls021_flpr_bringup` was retired in #177 once the app drove
@@ -203,6 +208,41 @@ blob on the absence of `tft`). On Linux/CI the apt package `gcc-riscv64-unknown-
 
 If `cargo run` prompts to pick a probe (e.g. another ST-LINK is attached), pass
 `--probe <vid:pid:serial>` for the J-Link.
+
+## BLE stack — dependency pins & gotchas (issue #269, epic #267)
+
+The `ble-spike` bin proved `nrf-sdc` (Nordic's closed-source SoftDevice Controller + MPSL
+bindings) + `trouble-host` on this DK. What the A1 spike settled, for everything Track A builds
+on it:
+
+- **Versions.** The crates.io `nrf-sdc`/`nrf-mpsl` releases (0.3.x) predate nRF54L support and
+  pin embassy-nrf 0.7 — useless here. The **git pin** (same rev as TrouBLE's `examples/nrf54`)
+  targets exactly this crate's embassy set (embassy-nrf 0.11 / executor 0.10 / sync 0.8 /
+  time 0.5.1), and `trouble-host` **0.7 from crates.io** matches too — no embassy patch or bump
+  anywhere. Its heapless 0.9 coexists with our 0.8 (no types cross the boundary).
+- **Critical section.** MPSL ships its own mandatory `critical-section` impl
+  (`nrf-mpsl/critical-section-impl`) — global-interrupt-disable critical sections break its
+  radio timing, and two impls are a duplicate-symbol link error. So
+  `cortex-m/critical-section-single-core` moved behind the `cs-single-core` **default feature**,
+  and BLE builds pass `--no-default-features`.
+- **`central` is load-bearing.** trouble-host's Controller bound unconditionally requires
+  `LeCreateConnCancel`, which only the multirole SDC lib variant exports — a peripheral-only
+  `nrf-sdc` build is a link error. Costs flash only (the Builder never enables central roles).
+- **⚠️ Sleep clock: internal RC, not the 32 k crystal (for now).** With
+  `LfclkSource::ExternalXtal` the device advertises fine but **every connection dies at
+  establishment** (HCI 0x3E sync timeout): the nRF54L's crystal **internal load capacitors**
+  are never programmed (Nordic's DK config sets LFXO 15.5 pF / HFXO 15 pF; embassy-nrf 0.11's
+  `internal_capacitors` knob is nRF5340-only and nrf-mpsl doesn't touch them), so the LFXO runs
+  off-frequency and every anchor point is missed. The spike runs the LF **RC** oscillator with
+  MPSL's recommended calibration (4 s cadence, ±500 ppm class) — solid, negotiates 2M PHY.
+  Moving back to the xtal (better idle power) means writing the `OSCILLATORS` INTCAP registers
+  before MPSL init — an A2 follow-up.
+- **Interrupts/peripherals MPSL+SDC claim.** Vectors: `RADIO_0`, `TIMER10`, `GRTC_3` (high-prio),
+  `CLOCK_POWER`, and `SWI00` (low-prio scheduling) — **`SWI00` collides with `main.rs`'s
+  input-plane `InterruptExecutor`**, which must move (e.g. SWI01) when A2 integrates the stack.
+  Peripherals owned outright: GRTC CH7–11, `TIMER10`, `TIMER20`, `TEMP`, `CRACEN` (LL crypto RNG),
+  and a raft of PPI/PPIB channels (see `ble_spike.rs`). The HF **crystal** is an MPSL hard
+  requirement (`HfclkSource::ExternalXtal`) — `main.rs` boots on the internal RC today.
 
 ## Driving it from a host (`debug-uart`)
 
