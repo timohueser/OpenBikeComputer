@@ -34,9 +34,15 @@ binary test vectors pinning these layouts live in
    OBCR v2 bytes and is written to SD verbatim; a ride crosses as the compact
    ride object (§7.2). The phone does all format conversion (GPX/TCX → OBCR);
    the device never parses XML.
-4. **Resumable by offset, always.** Every transfer can restart from the
-   receiver's durable byte count. A drop costs the un-flushed tail, never the
-   transfer.
+4. **Interrupted transfers restart, not resume.** Objects are small — a route is
+   tens of kB, a couple of seconds on the wire — so a dropped or aborted transfer
+   is simply re-sent whole rather than continued from a durable offset. The
+   descriptor keeps an `offset` field (§4.2) for shape stability, but for an
+   **upload** it is always `0`: the device discards a partial upload on any
+   interruption and rejects a non-zero upload offset. (Offset resume was in the
+   S0 draft; it was dropped as unjustified complexity for these object sizes —
+   the device would carry a durable partial + running CRC across a reconnect to
+   save two seconds. If a large object type ever lands, resume returns with it.)
 5. **Versioned once.** A single `protocol_version` covers this whole contract.
    Object layouts carry their own version bytes where they live (OBCR header,
    ride object) so they can evolve without a protocol bump.
@@ -106,7 +112,7 @@ Base UUID (random; **not** derived from the SIG base): the 16-bit block
 | `0002` | `status` | notify | typed device → app messages (§4.3) |
 | `0003` | `objectStore` | read + notify | store digest: revision + object counts (§4.5) |
 | `0004` | `config` | read + write | the Config object (§7.3), whole-blob |
-| `0005` | `transferControl` | write + notify | open / resume / abort a CoC transfer (§4.2) |
+| `0005` | `transferControl` | write + notify | open / abort a CoC transfer (§4.2) |
 | `0006` | `diagnostics` | read | reserved — diagnostics cross the CoC (§7.5); reads return 0 bytes |
 | `0007` | `psm` | read | `u16` — the dynamic L2CAP PSM the app opens the CoC on |
 | `0008` | `protocolVersion` | read | `u16` — §1. Readable **without** encryption |
@@ -184,38 +190,39 @@ TransferControl (16 bytes, little-endian):
   object_id  u16
   total_len  u32   upload: full object size · download request / abort: 0
   crc32      u32   upload: whole-object CRC-32 (§6) · download request / abort: 0
-  offset     u32   byte offset to start from (0 = fresh) — the resume anchor
+  offset     u32   upload: always 0 (uploads restart, not resume — §1 principle 4)
+                   download request: byte offset to start streaming from
 ```
 
 **Upload (app → device).** The app writes `op=1` with the object's real
-`total_len` + `crc32`, then streams `object[offset…]` over the CoC as raw
-bytes. The device sinks them to storage, CRC-ing as it writes. When
+`total_len` + `crc32` and `offset = 0`, then streams the whole object over the
+CoC as raw bytes. The device sinks them to storage, CRC-ing as it writes. When
 `total_len` bytes have arrived it verifies the CRC and notifies a
 `transferResult` (§4.3): `committed` on match — a mismatch **rejects** the
-object (`crcMismatch`), never commits it. A resume after a drop re-writes the
-descriptor with `offset` = the `committed_offset` the device reported; the CRC
-still covers the **whole object**, so the device keeps its running CRC state
-(or re-reads the committed prefix) across the resume.
+object (`crcMismatch`), never commits it. Uploads are **not resumable** (§1
+principle 4): an interrupted upload (a dropped link or an `op=3` abort) is
+discarded, and the app re-sends the object from the start; a non-zero upload
+`offset` is answered `error`.
 
 **Download (app → device request, device → app announce).** The app writes
-`op=2` with `total_len = crc32 = 0` and the wanted `offset`. The device
-answers with a `transferControl` **notification** — the same 16 bytes, `op=2`,
-with `total_len` and `crc32` filled in — then streams `object[offset…]` over
-the CoC. The app CRCs as it reads and rejects on mismatch. End of object =
+`op=2` with `total_len = crc32 = 0` and the wanted `offset` (normally `0`). The
+device answers with a `transferControl` **notification** — the same 16 bytes,
+`op=2`, with `total_len` and `crc32` filled in — then streams `object[offset…]`
+over the CoC. The app CRCs as it reads and rejects on mismatch. End of object =
 `total_len − offset` bytes received; the device additionally notifies a
-`transferResult` (`committed`) as the explicit close. A download resume is a
-new `op=2` write with a nonzero `offset`.
+`transferResult` (`committed`) as the explicit close. An interrupted download is
+re-requested (a fresh `op=2`); the `offset` field lets a client skip a prefix it
+already holds, but the app normally just restarts from `0`.
 
 **Abort (`op=3`).** Either side stops cleanly: the app writes `op=3`
-(type/object_id echo the active transfer), the device drains and discards, and
-notifies `transferResult` with `aborted` and the durable `committed_offset`.
-An aborted upload's partial bytes may be kept for a later resume but are never
-visible as a committed object.
+(type/object_id echo the active transfer), the device drains and **discards** the
+partial, and notifies `transferResult` with `aborted` (`committed_offset = 0` —
+nothing is retained).
 
-A descriptor that names an unknown type/id, a nonsensical offset (past
-`total_len` or past the stored object), or arrives mid-transfer is answered
-with a `transferResult` carrying `error` / `notFound` / `busy` (§4.3) and does
-not disturb an active transfer.
+A descriptor that names an unknown type/id, a non-zero upload offset, an offset
+past a downloadable object, or arrives mid-transfer is answered with a
+`transferResult` carrying `error` / `notFound` / `busy` (§4.3) and does not
+disturb an active transfer.
 
 ### 4.3 `status` — typed device → app notifications
 
@@ -231,7 +238,8 @@ msg = 1  transferResult (8 bytes total):
                          3 = error         storage / internal failure
                          4 = notFound      unknown object type/id
                          5 = busy          a transfer is already active
-  committed_offset  u32       durable byte count — the resume anchor
+  committed_offset  u32       durable byte count: total_len on `committed`, else 0
+                              (a download's explicit close reports its total_len)
 
 msg = 2  storeChanged (6 bytes total):
   msg       u8   = 2
@@ -289,8 +297,8 @@ relevant list object(s).
 - Flow control is the CoC's native credit scheme; the device grants credits as
   it drains its sink. Neither side pads or aligns: a receiver must accept any
   segmentation of the byte stream.
-- If the channel drops mid-transfer, the transfer stays resumable (§4.2); the
-  app re-opens the CoC (re-reading `psm`) and resumes by offset.
+- If the channel drops mid-transfer, the device discards the partial (§4.2); the
+  app re-opens the CoC (re-reading `psm`) and re-sends the object from the start.
 
 ## 6. CRC-32
 
@@ -474,5 +482,5 @@ Firmware: the `obc-ble` workspace crate (descriptor codec + transfer state
 machine, lands with A5) and `obc-route` (OBCR v2). App:
 `companion-ios/Packages/OBCKit` (`OBCTransport/Transfer`, `Codecs/`,
 `BLE/GATT.swift`). Shared fixtures: [`protocol-vectors/`](protocol-vectors/) —
-routes with/without waypoints, a ride, a config blob, and transfer-descriptor
-transcripts (including a resume), asserted byte-exact from both languages.
+routes with/without waypoints, a ride, a config blob, the route list, and
+transfer-descriptor transcripts, asserted byte-exact from both languages.

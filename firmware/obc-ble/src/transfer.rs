@@ -3,13 +3,19 @@
 //! descriptor announces the transfer on the control plane, the CoC carries exactly the payload
 //! bytes, and one whole-object [`Crc32`] is verified at commit (spec §1 principle 2).
 //!
-//! Two directions, two types, both offset-resumable and neither buffering the whole object:
+//! Two directions, neither buffering the whole object (uploads restart rather than resume — spec §1
+//! principle 4):
 //!
 //! - [`Receiver`] — the **upload** direction (app → device) and the receive half of the A5 echo:
 //!   sink bytes with a running CRC, verify once at `total_len`, report [`TransferStatus::Committed`]
-//!   or [`TransferStatus::CrcMismatch`]. Resume by seeding the committed-prefix CRC ([`Receiver::resumed`]).
+//!   or [`TransferStatus::CrcMismatch`].
 //! - [`Sender`] — the **download** direction (device → app): emit the [`Sender::announce`] descriptor,
 //!   then hand out `object[offset…]` in CoC-sized chunks with the whole-object CRC precomputed.
+//! - [`StreamSender`] — the same download sequencing for an object that is **not resident** (a
+//!   stored route streamed off the SD card, A6): the board supplies `total_len` + the precomputed
+//!   whole-object CRC, reads each chunk from storage itself, and ticks the position through
+//!   [`StreamSender::advance`]. [`Sender`] stays the borrow-a-slice convenience for RAM-built
+//!   objects (the list objects, A7 rides in a test).
 //!
 //! The board owns the trouble-host channel and the timing; this core owns the *sequencing + CRC +
 //! typed outcome*, so all of that is `cargo test`-verified with an in-memory byte stream, exactly
@@ -24,59 +30,50 @@ use crate::descriptor::{ObjectType, Op, TransferControl, TransferResult, Transfe
 pub enum TransferError {
     /// The descriptor's `op` doesn't match the constructor (an upload fed to [`Sender`], or vice versa).
     WrongOp,
-    /// `offset > total_len` — a nonsensical resume anchor (spec §4.2 "past `total_len`").
+    /// An unusable offset: a **non-zero upload offset** (uploads restart, not resume — spec §1
+    /// principle 4), or a download offset **past the object**.
     OffsetPastTotal,
 }
 
 /// Alias kept for the crate's public surface — receiver construction shares [`TransferError`].
 pub type ReceiverError = TransferError;
 
-/// The receive half of a transfer (spec §4.2 upload): sink CoC bytes with a running CRC and report a
-/// typed outcome at `total_len`. Radio-free — the board calls [`push`] with whatever the CoC handed
-/// it (any segmentation, spec §5) and reads the outcome when [`is_complete`] flips.
+/// The receive half of an upload (spec §4.2): sink CoC bytes with a running CRC and report a typed
+/// outcome at `total_len`. Radio-free — the board calls [`push`] with whatever the CoC handed it
+/// (any segmentation, spec §5) and reads the outcome when [`is_complete`] flips.
 ///
-/// **Resume** (spec §4.2): a drop costs only the un-flushed tail. The device keeps its running CRC
-/// across the resume — snapshot [`crc`] at the committed offset, and rebuild with [`Receiver::resumed`]
-/// from the new descriptor's `offset` and that snapshot. (The A5 echo has no storage, so its
-/// committed offset after a drop is 0 and a resume just restarts fresh; real storage resumes land at A6.)
+/// Uploads are **not resumable** (spec §1 principle 4): an interrupted upload is discarded and the
+/// object re-sent from the start, so a receiver only ever starts fresh (`offset = 0`).
 ///
 /// [`push`]: Receiver::push
 /// [`is_complete`]: Receiver::is_complete
-/// [`crc`]: Receiver::crc
 #[derive(Clone, Copy, Debug)]
 pub struct Receiver {
     object_id: u16,
     total_len: u32,
     expected_crc: u32,
-    /// Absolute offset of the next expected byte — starts at the descriptor's `offset`, the
-    /// committed byte count and the resume anchor.
+    /// Absolute offset of the next expected byte — starts at 0 and advances as bytes arrive.
     position: u32,
     crc: Crc32,
 }
 
 impl Receiver {
-    /// A **fresh** receiver from an upload descriptor (`offset` must be 0 — a nonzero offset needs
-    /// the committed-prefix CRC, so use [`Receiver::resumed`]). Rejects a non-upload op.
+    /// A fresh receiver from an upload descriptor. Rejects a non-upload op, or a non-zero `offset`
+    /// (uploads restart, not resume — spec §1 principle 4; the board answers such a descriptor
+    /// `error`).
     pub fn new(desc: &TransferControl) -> Result<Self, TransferError> {
-        Self::resumed(desc, Crc32::new())
-    }
-
-    /// A **resumed** receiver: continue an upload from `desc.offset` with `prefix_crc` = the running
-    /// [`Crc32`] over the already-committed `object[..offset]` bytes. For a fresh start pass
-    /// `Crc32::new()` with `offset = 0` (that's what [`Receiver::new`] does).
-    pub fn resumed(desc: &TransferControl, prefix_crc: Crc32) -> Result<Self, TransferError> {
         if desc.op != Op::Upload {
             return Err(TransferError::WrongOp);
         }
-        if desc.offset > desc.total_len {
+        if desc.offset != 0 {
             return Err(TransferError::OffsetPastTotal);
         }
         Ok(Self {
             object_id: desc.object_id,
             total_len: desc.total_len,
             expected_crc: desc.crc32,
-            position: desc.offset,
-            crc: prefix_crc,
+            position: 0,
+            crc: Crc32::new(),
         })
     }
 
@@ -90,7 +87,7 @@ impl Receiver {
         self.total_len
     }
 
-    /// Bytes received so far — the committed offset / resume anchor.
+    /// Bytes received so far.
     pub fn committed_offset(&self) -> u32 {
         self.position
     }
@@ -98,11 +95,6 @@ impl Receiver {
     /// Bytes still expected before the transfer completes.
     pub fn remaining(&self) -> u32 {
         self.total_len - self.position
-    }
-
-    /// The running CRC — snapshot it at the committed offset to seed a [`Receiver::resumed`].
-    pub fn crc(&self) -> Crc32 {
-        self.crc
     }
 
     /// Every announced byte has arrived (ready to verify).
@@ -218,5 +210,81 @@ impl<'a> Sender<'a> {
     pub fn outcome(&self) -> Option<TransferResult> {
         self.is_complete()
             .then(|| TransferResult::new(self.object_id, TransferStatus::Committed, self.object.len() as u32))
+    }
+}
+
+/// The download sequencing of [`Sender`] for an object that never sits in RAM (spec §4.2 download):
+/// the board reads `object[position…]` from storage chunk by chunk and advances this tracker, which
+/// owns the announce descriptor, the resume offset, and the typed close. The whole-object `crc32`
+/// is precomputed by the caller (one read pass over storage) — this core never sees the bytes, so
+/// it stays radio-free *and* storage-free.
+#[derive(Clone, Copy, Debug)]
+pub struct StreamSender {
+    object_id: u16,
+    ty: ObjectType,
+    total_len: u32,
+    /// Absolute offset of the next byte to send — starts at the requested `offset`.
+    position: u32,
+    crc: u32,
+}
+
+impl StreamSender {
+    /// A sender for a download request (`op = Download`) of a stored object of `total_len` bytes
+    /// whose whole-object CRC-32 is `crc32`. The request's `offset` is where to resume from.
+    /// Rejects a non-download op or an offset past the object.
+    pub fn new(desc: &TransferControl, total_len: u32, crc32: u32) -> Result<Self, TransferError> {
+        if desc.op != Op::Download {
+            return Err(TransferError::WrongOp);
+        }
+        if desc.offset > total_len {
+            return Err(TransferError::OffsetPastTotal);
+        }
+        Ok(Self { object_id: desc.object_id, ty: desc.ty, total_len, position: desc.offset, crc: crc32 })
+    }
+
+    /// The descriptor to notify before the bytes flow — same contract as [`Sender::announce`].
+    pub fn announce(&self) -> TransferControl {
+        TransferControl {
+            op: Op::Download,
+            ty: self.ty,
+            object_id: self.object_id,
+            total_len: self.total_len,
+            crc32: self.crc,
+            offset: self.position,
+        }
+    }
+
+    /// Absolute offset of the next byte to read from storage and send.
+    pub fn position(&self) -> u32 {
+        self.position
+    }
+
+    /// Bytes still to send.
+    pub fn remaining(&self) -> u32 {
+        self.total_len - self.position
+    }
+
+    /// How many bytes the next storage read should fetch: `min(remaining, max)` for a CoC SDU of
+    /// `max` bytes. `0` once complete.
+    pub fn next_chunk_len(&self, max: usize) -> usize {
+        core::cmp::min(self.remaining() as usize, max)
+    }
+
+    /// Record that `n` bytes (read at [`position`](Self::position)) were handed to the channel.
+    /// Clamped to [`remaining`](Self::remaining) — the caller sizes reads with
+    /// [`next_chunk_len`](Self::next_chunk_len), so a clamp only masks a caller bug in release.
+    pub fn advance(&mut self, n: usize) {
+        debug_assert!(n as u32 <= self.remaining());
+        self.position += core::cmp::min(n as u32, self.remaining());
+    }
+
+    /// The whole object has been handed out.
+    pub fn is_complete(&self) -> bool {
+        self.position == self.total_len
+    }
+
+    /// The explicit close, exactly as [`Sender::outcome`].
+    pub fn outcome(&self) -> Option<TransferResult> {
+        self.is_complete().then(|| TransferResult::new(self.object_id, TransferStatus::Committed, self.total_len))
     }
 }

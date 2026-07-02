@@ -148,4 +148,25 @@ final class ProtocolVectorTests: XCTestCase {
         XCTAssertEqual(config, DeviceConfig(name: "OBC Tourer", units: .metric))
         XCTAssertEqual(ConfigObjectCodec.encode(config), bytes)
     }
+
+    func testRouteListVectorDecodesAndReEncodesByteExactly() throws {
+        let bytes = try fixture("route-list.bin")
+        let entries = try RouteList.decode(bytes)
+        XCTAssertEqual(entries.count, 2)
+
+        // Entry fields come from the stored routes' OBCR headers (ids continue the transcript's
+        // assigned id 7); byte_len sizes each stored file.
+        let waypointsRoute = try fixture("route-waypoints.obcr")
+        let plainRoute = try fixture("route-plain.obcr")
+        XCTAssertEqual(entries[0], RouteListEntry(
+            objectID: 7, byteLen: UInt32(waypointsRoute.count), distanceMeters: 2207,
+            ascentMeters: 76, pointCount: 9, waypointCount: 2, name: "Vector Loop"
+        ))
+        XCTAssertEqual(entries[1], RouteListEntry(
+            objectID: 8, byteLen: UInt32(plainRoute.count), distanceMeters: 2207,
+            ascentMeters: 76, pointCount: 9, waypointCount: 0, name: "Vector Loop"
+        ))
+
+        XCTAssertEqual(RouteList.encode(entries), bytes)  // byte-exact re-encode
+    }
 }

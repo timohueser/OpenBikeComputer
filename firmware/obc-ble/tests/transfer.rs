@@ -5,7 +5,7 @@
 
 use obc_ble::descriptor::{ObjectType, Op, TransferControl, TransferStatus};
 use obc_ble::transfer::TransferError;
-use obc_ble::{Crc32, Receiver, Sender};
+use obc_ble::{Crc32, Receiver, Sender, StreamSender};
 
 /// A deterministic pseudo-random payload of `n` bytes (a route-sized object).
 fn payload(n: usize) -> Vec<u8> {
@@ -55,26 +55,12 @@ fn upload_accepts_any_segmentation() {
 }
 
 #[test]
-fn resume_from_every_offset_commits() {
-    // Property-style: drop after k bytes, resume from k with the committed-prefix CRC, finish — the
-    // whole-object CRC must still verify at every split (spec §4.2 "keeps its running CRC state").
+fn upload_rejects_a_nonzero_offset() {
+    // Uploads are not resumable (spec §1 principle 4): a receiver only ever starts fresh, so any
+    // non-zero offset is rejected (the board answers `error` and the app restarts from 0).
     let object = payload(200);
-    let whole = upload_desc(&object);
-    for k in 0..=object.len() {
-        let mut first = Receiver::new(&whole).unwrap();
-        assert_eq!(first.push(&object[..k]), k);
-        assert_eq!(first.committed_offset(), k as u32);
-
-        // The resume descriptor differs only in offset; seed the CRC from the committed prefix.
-        let resume_desc = TransferControl { offset: k as u32, ..whole };
-        let mut second = Receiver::resumed(&resume_desc, first.crc()).unwrap();
-        assert_eq!(second.remaining(), (object.len() - k) as u32);
-        second.push(&object[k..]);
-
-        let result = second.outcome().unwrap_or_else(|| panic!("incomplete at k={k}"));
-        assert_eq!(result.status, TransferStatus::Committed, "resume at {k}");
-        assert_eq!(result.committed_offset, object.len() as u32);
-    }
+    let resume = TransferControl { offset: 100, ..upload_desc(&object) };
+    assert_eq!(Receiver::new(&resume).unwrap_err(), TransferError::OffsetPastTotal);
 }
 
 #[test]
@@ -200,4 +186,56 @@ fn sender_rejects_wrong_op_and_bad_offset() {
     assert_eq!(Sender::new(&upload, &object).unwrap_err(), TransferError::WrongOp);
     let bad = download_request(ObjectType::Ride, 101);
     assert_eq!(Sender::new(&bad, &object).unwrap_err(), TransferError::OffsetPastTotal);
+}
+
+// ---- StreamSender (download of a non-resident object, A6) ----
+
+#[test]
+fn stream_sender_matches_sender_byte_for_byte() {
+    // The SD-streamed path must produce the identical wire sequence to the in-RAM Sender: same
+    // announce, same chunk boundaries, same close — only who holds the bytes differs.
+    let object = payload(500);
+    let crc = Crc32::checksum(&object);
+    let req = download_request(ObjectType::Route, 0);
+
+    let mut resident = Sender::new(&req, &object).unwrap();
+    let mut streamed = StreamSender::new(&req, object.len() as u32, crc).unwrap();
+    assert_eq!(streamed.announce(), resident.announce());
+
+    let mut sent = Vec::new();
+    loop {
+        let n = streamed.next_chunk_len(244);
+        if n == 0 {
+            break;
+        }
+        // The board's storage read: object[position .. position + n].
+        let at = streamed.position() as usize;
+        sent.extend_from_slice(&object[at..at + n]);
+        streamed.advance(n);
+        assert_eq!(resident.next_chunk(244).unwrap().len(), n);
+    }
+    assert_eq!(sent, object);
+    assert_eq!(streamed.outcome(), resident.outcome());
+}
+
+#[test]
+fn stream_sender_resumes_by_offset() {
+    let req = download_request(ObjectType::Route, 300);
+    let mut tx = StreamSender::new(&req, 500, 0xDEAD_BEEF).unwrap();
+    assert_eq!(tx.announce().offset, 300);
+    assert_eq!(tx.announce().total_len, 500);
+    assert_eq!(tx.announce().crc32, 0xDEAD_BEEF); // still the whole-object CRC
+    assert_eq!(tx.remaining(), 200);
+
+    tx.advance(tx.next_chunk_len(244)); // 200 — the tail fits one SDU
+    assert!(tx.is_complete());
+    assert_eq!(tx.outcome().unwrap().committed_offset, 500);
+}
+
+#[test]
+fn stream_sender_rejects_wrong_op_and_bad_offset() {
+    let upload = TransferControl { op: Op::Upload, ..download_request(ObjectType::Route, 0) };
+    assert_eq!(StreamSender::new(&upload, 100, 0).unwrap_err(), TransferError::WrongOp);
+    let past = download_request(ObjectType::Route, 101);
+    assert_eq!(StreamSender::new(&past, 100, 0).unwrap_err(), TransferError::OffsetPastTotal);
 }
