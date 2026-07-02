@@ -10,6 +10,11 @@
 //!   or [`TransferStatus::CrcMismatch`]. Resume by seeding the committed-prefix CRC ([`Receiver::resumed`]).
 //! - [`Sender`] — the **download** direction (device → app): emit the [`Sender::announce`] descriptor,
 //!   then hand out `object[offset…]` in CoC-sized chunks with the whole-object CRC precomputed.
+//! - [`StreamSender`] — the same download sequencing for an object that is **not resident** (a
+//!   stored route streamed off the SD card, A6): the board supplies `total_len` + the precomputed
+//!   whole-object CRC, reads each chunk from storage itself, and ticks the position through
+//!   [`StreamSender::advance`]. [`Sender`] stays the borrow-a-slice convenience for RAM-built
+//!   objects (the list objects, A7 rides in a test).
 //!
 //! The board owns the trouble-host channel and the timing; this core owns the *sequencing + CRC +
 //! typed outcome*, so all of that is `cargo test`-verified with an in-memory byte stream, exactly
@@ -218,5 +223,81 @@ impl<'a> Sender<'a> {
     pub fn outcome(&self) -> Option<TransferResult> {
         self.is_complete()
             .then(|| TransferResult::new(self.object_id, TransferStatus::Committed, self.object.len() as u32))
+    }
+}
+
+/// The download sequencing of [`Sender`] for an object that never sits in RAM (spec §4.2 download):
+/// the board reads `object[position…]` from storage chunk by chunk and advances this tracker, which
+/// owns the announce descriptor, the resume offset, and the typed close. The whole-object `crc32`
+/// is precomputed by the caller (one read pass over storage) — this core never sees the bytes, so
+/// it stays radio-free *and* storage-free.
+#[derive(Clone, Copy, Debug)]
+pub struct StreamSender {
+    object_id: u16,
+    ty: ObjectType,
+    total_len: u32,
+    /// Absolute offset of the next byte to send — starts at the requested `offset`.
+    position: u32,
+    crc: u32,
+}
+
+impl StreamSender {
+    /// A sender for a download request (`op = Download`) of a stored object of `total_len` bytes
+    /// whose whole-object CRC-32 is `crc32`. The request's `offset` is where to resume from.
+    /// Rejects a non-download op or an offset past the object.
+    pub fn new(desc: &TransferControl, total_len: u32, crc32: u32) -> Result<Self, TransferError> {
+        if desc.op != Op::Download {
+            return Err(TransferError::WrongOp);
+        }
+        if desc.offset > total_len {
+            return Err(TransferError::OffsetPastTotal);
+        }
+        Ok(Self { object_id: desc.object_id, ty: desc.ty, total_len, position: desc.offset, crc: crc32 })
+    }
+
+    /// The descriptor to notify before the bytes flow — same contract as [`Sender::announce`].
+    pub fn announce(&self) -> TransferControl {
+        TransferControl {
+            op: Op::Download,
+            ty: self.ty,
+            object_id: self.object_id,
+            total_len: self.total_len,
+            crc32: self.crc,
+            offset: self.position,
+        }
+    }
+
+    /// Absolute offset of the next byte to read from storage and send.
+    pub fn position(&self) -> u32 {
+        self.position
+    }
+
+    /// Bytes still to send.
+    pub fn remaining(&self) -> u32 {
+        self.total_len - self.position
+    }
+
+    /// How many bytes the next storage read should fetch: `min(remaining, max)` for a CoC SDU of
+    /// `max` bytes. `0` once complete.
+    pub fn next_chunk_len(&self, max: usize) -> usize {
+        core::cmp::min(self.remaining() as usize, max)
+    }
+
+    /// Record that `n` bytes (read at [`position`](Self::position)) were handed to the channel.
+    /// Clamped to [`remaining`](Self::remaining) — the caller sizes reads with
+    /// [`next_chunk_len`](Self::next_chunk_len), so a clamp only masks a caller bug in release.
+    pub fn advance(&mut self, n: usize) {
+        debug_assert!(n as u32 <= self.remaining());
+        self.position += core::cmp::min(n as u32, self.remaining());
+    }
+
+    /// The whole object has been handed out.
+    pub fn is_complete(&self) -> bool {
+        self.position == self.total_len
+    }
+
+    /// The explicit close, exactly as [`Sender::outcome`].
+    pub fn outcome(&self) -> Option<TransferResult> {
+        self.is_complete().then(|| TransferResult::new(self.object_id, TransferStatus::Committed, self.total_len))
     }
 }

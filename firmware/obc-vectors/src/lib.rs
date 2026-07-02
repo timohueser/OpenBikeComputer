@@ -141,6 +141,44 @@ pub fn status_store_changed(ty: u8, revision: u32) -> Vec<u8> {
     v
 }
 
+/// One `routeList` entry (spec §7.4): 72 bytes, name zero-padded to 48.
+#[allow(clippy::too_many_arguments)] // mirrors the spec's field list one-to-one
+pub fn route_list_entry(
+    object_id: u16,
+    byte_len: u32,
+    distance_m: u32,
+    ascent_m: u32,
+    point_count: u32,
+    waypoint_count: u16,
+    name: &str,
+) -> Vec<u8> {
+    let mut v = Vec::new();
+    v.extend_from_slice(&le16(object_id));
+    v.extend_from_slice(&le16(0)); // reserved
+    v.extend_from_slice(&le32(byte_len));
+    v.extend_from_slice(&le32(distance_m));
+    v.extend_from_slice(&le32(ascent_m));
+    v.extend_from_slice(&le32(point_count));
+    v.extend_from_slice(&le16(waypoint_count));
+    v.push(name.len() as u8);
+    let mut padded = [0u8; 48];
+    padded[..name.len()].copy_from_slice(name.as_bytes());
+    v.extend_from_slice(&padded);
+    v.push(0); // reserved
+    assert_eq!(v.len(), 72);
+    v
+}
+
+/// A whole `routeList` object (spec §7.4): the 4-byte list header + packed 72-byte entries.
+pub fn route_list(entries: &[Vec<u8>]) -> Vec<u8> {
+    let mut v = vec![1u8, 72];
+    v.extend_from_slice(&le16(entries.len() as u16));
+    for e in entries {
+        v.extend_from_slice(e);
+    }
+    v
+}
+
 /// `objectStore` digest (spec §4.5): 10 bytes.
 pub fn object_store(revision: u32, routes: u16, rides: u16) -> Vec<u8> {
     let mut v = Vec::new();
@@ -160,6 +198,7 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
     let route_wp = build_route(ROUTE_GPX);
     let route_plain = build_route(&route_gpx_plain());
     let (len, crc) = (route_wp.len() as u32, crc32(&route_wp));
+    let plain_len = route_plain.len() as u32;
     let resume_offset = len / 2;
     vec![
         ("route-waypoints.obcr", route_wp),
@@ -178,5 +217,15 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         ("status-transfer-result.bin", status_transfer_result(7, 0, len)),
         ("status-store-changed.bin", status_store_changed(1, 42)),
         ("object-store.bin", object_store(42, 3, 5)),
+        // The catalog the device would serve with both stored route fixtures on the card: entry
+        // fields straight from their OBCR headers (distance 2207 m, ascent 76 m, 9 points), ids
+        // continuing the transcript's assigned id 7.
+        (
+            "route-list.bin",
+            route_list(&[
+                route_list_entry(7, len, 2207, 76, 9, 2, ROUTE_NAME),
+                route_list_entry(8, plain_len, 2207, 76, 9, 0, ROUTE_NAME),
+            ]),
+        ),
     ]
 }

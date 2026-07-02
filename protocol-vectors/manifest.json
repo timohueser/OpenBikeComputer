@@ -111,6 +111,33 @@
       "revision": 42,
       "route_count": 3,
       "ride_count": 5
+    },
+    "route-list.bin": {
+      "format": "routeList object (spec 7.4)",
+      "byte_len": 148,
+      "version": 1,
+      "entry_len": 72,
+      "count": 2,
+      "entries": [
+        {
+          "object_id": 7,
+          "byte_len": 300,
+          "distance_m": 2207,
+          "ascent_m": 76,
+          "point_count": 9,
+          "waypoint_count": 2,
+          "name": "Vector Loop"
+        },
+        {
+          "object_id": 8,
+          "byte_len": 220,
+          "distance_m": 2207,
+          "ascent_m": 76,
+          "point_count": 9,
+          "waypoint_count": 0,
+          "name": "Vector Loop"
+        }
+      ]
     }
   }
 }

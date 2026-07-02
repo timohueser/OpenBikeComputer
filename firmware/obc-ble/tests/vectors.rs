@@ -105,3 +105,29 @@ fn config_vector() {
 fn unknown_status_discriminator_is_ignored() {
     assert_eq!(StatusMessage::decode(&[0xEE, 0, 0, 0]), Ok(None));
 }
+
+/// The `routeList` fixture decodes through the production list codec, its entries agree with the
+/// stored route fixtures they describe, and re-encoding reproduces the file byte-for-byte.
+#[test]
+fn route_list_vector() {
+    use obc_ble::{ListHeader, RouteListEntry};
+
+    let bytes = fixture("route-list.bin");
+    let (h, entry_len) = ListHeader::decode(&bytes).unwrap();
+    assert_eq!(h.count, 2);
+    assert_eq!(bytes.len(), ListHeader::object_len(h.count as usize));
+
+    let mut rebuilt = ListHeader { count: h.count }.encode().to_vec();
+    for (k, (byte_len, waypoints)) in
+        [(fixture("route-waypoints.obcr").len(), 2u16), (fixture("route-plain.obcr").len(), 0)].iter().enumerate()
+    {
+        let off = ListHeader::ENCODED_LEN + k * entry_len;
+        let e = RouteListEntry::decode(&bytes[off..off + entry_len]).unwrap();
+        assert_eq!(e.byte_len as usize, *byte_len, "entry {k} sizes its stored file");
+        assert_eq!(e.waypoint_count, *waypoints);
+        assert_eq!(e.name, b"Vector Loop");
+        assert_eq!((e.distance_m, e.ascent_m, e.point_count), (2207, 76, 9), "OBCR header stats");
+        rebuilt.extend_from_slice(&e.encode());
+    }
+    assert_eq!(rebuilt, bytes, "re-encode");
+}
