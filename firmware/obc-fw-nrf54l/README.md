@@ -145,16 +145,20 @@ cargo run --release --features debug-uart
 # backend) — no FLPR, no RISC-V gcc, links the full 256 KB. Real sensors still apply. ST7789 wiring (below).
 cargo run --release --features tft
 
-# Throwaway BLE controller spike (issue #269): nrf-sdc + MPSL + TrouBLE advertising `OBC-SPIKE`,
-# no app integration. `--no-default-features` is REQUIRED (it swaps the critical-section impl to
-# MPSL's; `main.rs` doesn't compile under it, so always name the bin). Retired at A2 (#270).
-cargo run --release --no-default-features --features ble-spike --bin ble_spike
+# The BLE build (issue #270, epic #267): the same firmware with the nrf-sdc + MPSL + TrouBLE
+# stack folded in (`src/ble.rs`), advertising as `OBC-XXXX` (S0 §2 — the FICR serial tail). On
+# this 256 KB DK it compiles the MAP PLANE OUT (~128 KB freed) and boots a text-only BLE status
+# UI on the LS021 instead; SD, RRAM settings, buttons, and the real sensors all stay up.
+# `--no-default-features` is REQUIRED (it swaps the critical-section impl to MPSL's — a
+# compile_error catches the wrong invocation). Doesn't combine with tft/synth/debug-uart.
+cargo run --release --no-default-features --features ble
 ```
 
 (The standalone FLPR waveform bench bin `ls021_flpr_bringup` was retired in #177 once the app drove
-the LS021 on glass; the M33-direct `ls021_bringup` bench was retired earlier in #176. Both are in git
-history if a panel-isolation bring-up is ever needed again — the FLPR transport is `src/ls021_flpr.rs`,
-exercised by the default build.)
+the LS021 on glass; the M33-direct `ls021_bringup` bench was retired earlier in #176; the A1 BLE
+spike bin `ble_spike` was retired at #270 when the stack moved into `main.rs`/`src/ble.rs`. All are
+in git history if an isolation bring-up is ever needed again — the FLPR transport is
+`src/ls021_flpr.rs`, exercised by the default build.)
 
 ### LS021 FLPR builds — DK wiring (issue #165)
 
@@ -209,11 +213,12 @@ blob on the absence of `tft`). On Linux/CI the apt package `gcc-riscv64-unknown-
 If `cargo run` prompts to pick a probe (e.g. another ST-LINK is attached), pass
 `--probe <vid:pid:serial>` for the J-Link.
 
-## BLE stack — dependency pins & gotchas (issue #269, epic #267)
+## BLE stack — dependency pins & gotchas (issues #269/#270, epic #267)
 
-The `ble-spike` bin proved `nrf-sdc` (Nordic's closed-source SoftDevice Controller + MPSL
-bindings) + `trouble-host` on this DK. What the A1 spike settled, for everything Track A builds
-on it:
+The A1 spike proved `nrf-sdc` (Nordic's closed-source SoftDevice Controller + MPSL bindings) +
+`trouble-host` on this DK; A2 (#270) folded that stack into the real firmware as `src/ble.rs`
+behind the `ble` feature (build command above). What the spike settled, for everything Track A
+builds on it:
 
 - **Versions.** The crates.io `nrf-sdc`/`nrf-mpsl` releases (0.3.x) predate nRF54L support and
   pin embassy-nrf 0.7 — useless here. The **git pin** (same rev as TrouBLE's `examples/nrf54`)
@@ -236,13 +241,18 @@ on it:
   off-frequency and every anchor point is missed. The spike runs the LF **RC** oscillator with
   MPSL's recommended calibration (4 s cadence, ±500 ppm class) — solid, negotiates 2M PHY.
   Moving back to the xtal (better idle power) means writing the `OSCILLATORS` INTCAP registers
-  before MPSL init — an A2 follow-up.
+  before MPSL init — a filed follow-up.
 - **Interrupts/peripherals MPSL+SDC claim.** Vectors: `RADIO_0`, `TIMER10`, `GRTC_3` (high-prio),
-  `CLOCK_POWER`, and `SWI00` (low-prio scheduling) — **`SWI00` collides with `main.rs`'s
-  input-plane `InterruptExecutor`**, which must move (e.g. SWI01) when A2 integrates the stack.
-  Peripherals owned outright: GRTC CH7–11, `TIMER10`, `TIMER20`, `TEMP`, `CRACEN` (LL crypto RNG),
-  and a raft of PPI/PPIB channels (see `ble_spike.rs`). The HF **crystal** is an MPSL hard
-  requirement (`HfclkSource::ExternalXtal`) — `main.rs` boots on the internal RC today.
+  `CLOCK_POWER`, and `SWI00` (low-prio scheduling) — which is why `main.rs`'s high-priority
+  `InterruptExecutor` sits on **SWI01** (every build; the full priority ladder is in `main.rs`'s
+  module doc). Peripherals owned outright: GRTC CH7–11, `TIMER10`, `TIMER20`, `TEMP`, `CRACEN`
+  (LL crypto RNG), and a raft of PPI/PPIB channels (grouped in `main.rs`, consumed by
+  `ble::run`). The HF **crystal** is an MPSL hard requirement (`HfclkSource::ExternalXtal`) —
+  the `ble` build's boot config sets it; non-BLE builds keep the internal RC.
+- **RAM.** The `ble` build's statics end ~104 KB in (vs ~210 KB for the map build in 244 KB) —
+  the map plane's exclusion is what buys that. The budget assert in `main.rs` counts the BLE
+  residents (`ble::RESIDENT_BYTES`) and fails a `ble`+map build on this DK at compile time; the
+  512 KB LM20 relaxes the `has_map` line in `build.rs` to run both planes together.
 
 ## Driving it from a host (`debug-uart`)
 
