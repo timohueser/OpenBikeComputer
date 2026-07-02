@@ -178,6 +178,36 @@ final class RouteDetailModelTests: XCTestCase {
         XCTAssertNotNil(detail.maxGradePercent)
     }
 
+    // MARK: Upload blob (B5)
+
+    func testUploadBlobCarriesRenameWaypointsAndAPlausiblePayload() async {
+        let control = makeControl()
+        let route = control.fixtures.routes[0].summary  // Kettle Moraine Loop, 62.4 km
+        let model = RouteDetailModel(transport: MockTransport(control: control), dressing: .planned(route))
+        model.start()
+        await waitFor("detail fill") { !model.waypoints.isEmpty }
+        XCTAssertTrue(model.rename(to: "Kettle Gravel Day"))
+
+        let blob = model.makeUploadBlob()
+        XCTAssertEqual(blob.summary.id, route.id)
+        XCTAssertEqual(blob.summary.name, "Kettle Gravel Day", "a rename must ride along")
+        XCTAssertEqual(blob.waypoints.count, 4)
+        // Placeholder payload at the design scale: 62.4 km reads as "2.3 MB".
+        XCTAssertEqual(
+            OBCFormat.megabytesValue(blob.payload.count, locale: Locale(identifier: "en_US")), "2.3"
+        )
+    }
+
+    func testUploadBlobAndSaveDetailShareTheImportedID() {
+        let model = RouteDetailModel(
+            transport: MockTransport(control: makeControl()),
+            dressing: .imported(importedRoute, fileName: "schwarzwald.gpx")
+        )
+        // "Uploading saves it too": what went to the device and what lands in
+        // the library must be the same route.
+        XCTAssertEqual(model.makeUploadBlob().summary.id, model.makeDetail().summary.id)
+    }
+
     func testPreloadedDetailSkipsTheTransportFetch() async {
         let control = makeControl()
         // A phone-only id: the mock would throw for it — preload must cover.

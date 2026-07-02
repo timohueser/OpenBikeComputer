@@ -107,6 +107,26 @@ final class OBCFormatTests: XCTestCase {
         XCTAssertEqual(line.replacingOccurrences(of: "\u{202F}", with: " "), "Yesterday, 8:12 AM")
     }
 
+    // ------------------------------------------------------------- transfers (B5)
+
+    func testMegabytesUseOneDecimal() {
+        XCTAssertEqual(OBCFormat.megabytesValue(2_300_000, locale: en), "2.3")
+        XCTAssertEqual(OBCFormat.megabytesValue(1_400_000, locale: en), "1.4")
+        XCTAssertEqual(OBCFormat.megabytesValue(0, locale: en), "0.0")
+        XCTAssertEqual(OBCFormat.megabytesValue(480_000, locale: en), "0.5")
+    }
+
+    func testTransferSizeLineMatchesDesignF() {
+        XCTAssertEqual(
+            OBCFormat.transferSizeLine(bytesDone: 1_400_000, totalBytes: 2_300_000, hasWaypoints: true, locale: en),
+            "1.4 / 2.3 MB · route + waypoints"
+        )
+        XCTAssertEqual(
+            OBCFormat.transferSizeLine(bytesDone: 0, totalBytes: 1_180_000, hasWaypoints: false, locale: en),
+            "0.0 / 1.2 MB · route"
+        )
+    }
+
     private func date(_ year: Int, _ month: Int, _ day: Int, hour: Int = 9, minute: Int = 0) -> Date {
         cal.date(from: DateComponents(year: year, month: month, day: day, hour: hour, minute: minute))!
     }

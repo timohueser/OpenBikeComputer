@@ -197,8 +197,13 @@ public final class RouteDetailModel {
         return true
     }
 
+    /// The id an E1 save/upload lands under — stable per landing, so the
+    /// uploaded blob and the saved library entry are the same route.
+    @ObservationIgnored private lazy var importedID =
+        RouteID("imported-\(UUID().uuidString.lowercased())")
+
     /// The `RouteSummary` an E1 save/upload lands in the library — the parsed
-    /// geometry's stats under a fresh id.
+    /// geometry's stats under a fresh (per-landing) id.
     public func makeSummary() -> RouteSummary {
         let stats = importedStats ?? RouteStats(distanceMeters: distanceMeters, elevationGainMeters: climbMeters)
         var source = RouteSource.gpx
@@ -207,7 +212,7 @@ public final class RouteDetailModel {
             source = .tcx
         }
         return RouteSummary(
-            id: RouteID("imported-\(UUID().uuidString.lowercased())"),
+            id: importedID,
             name: name,
             distanceMeters: stats.distanceMeters,
             elevationGainMeters: stats.elevationGainMeters,
@@ -215,6 +220,28 @@ public final class RouteDetailModel {
             pointCount: pointCount,
             source: source,
             trackPreview: preview
+        )
+    }
+
+    /// The `RouteBlob` the upload sheet (B5) sends — the current name +
+    /// waypoints over a **placeholder payload** until the S0 route encoder
+    /// lands in `OBCTransport/Codecs` (real path, A6). The placeholder is
+    /// sized off the route length at the design's scale (2.3 MB for the
+    /// 62.4 km route ≈ 37 B/m), so the mock's pacing and the sheet's MB
+    /// readout stay realistic; the mock counts the bytes, never reads them.
+    public func makeUploadBlob() -> RouteBlob {
+        let summary: RouteSummary
+        switch dressing {
+        case .planned(var route):
+            route.name = name  // a rename rides along (H12)
+            summary = route
+        case .imported, .tracked:  // tracked never uploads (E3 has no action)
+            summary = makeSummary()
+        }
+        return RouteBlob(
+            summary: summary,
+            waypoints: waypoints,
+            payload: Data(count: max(1, Int(distanceMeters * 37)))
         )
     }
 
