@@ -114,6 +114,42 @@ impl RouteSummary {
     }
 }
 
+/// The stored-route facts a BLE `routeList` entry serves (S0 §7.4): the wire wants raw metres
+/// (not [`RouteSummary`]'s display-rounded km) plus the waypoint count, which lives in the v2
+/// header extension. Reading it is as cheap as a [`RouteSummary::read`] — the base header and,
+/// on v2, the 16-byte extension; never the chunk index.
+#[derive(Debug, Clone)]
+pub struct RouteObjectInfo {
+    pub name: String<NAME_CAP>,
+    pub distance_m: u32,
+    pub ascent_m: u32,
+    pub point_count: u32,
+    pub waypoint_count: u16,
+}
+
+impl RouteObjectInfo {
+    /// Read the header (+ v2 extension) into the wire facts. The same validation as any header
+    /// read — bad magic / version / name reject — which is what the upload commit path relies on
+    /// to keep a non-OBCR payload out of the catalog.
+    pub fn read(src: &dyn ByteSource) -> Result<RouteObjectInfo, Error> {
+        let h = read_header(src)?;
+        let waypoint_count = if h.version >= 2 {
+            let mut ext = [0u8; HEADER_V2_LEN - HEADER_LEN];
+            src.read_at(HEADER_LEN as u32, &mut ext).map_err(|_| Error::BadOffset)?;
+            rd_u16(&ext, 4)
+        } else {
+            0
+        };
+        Ok(RouteObjectInfo {
+            name: h.name,
+            distance_m: h.total_distance_m,
+            ascent_m: h.total_ascent_m,
+            point_count: h.point_count,
+            waypoint_count,
+        })
+    }
+}
+
 /// The resident, source-independent parse of a route: the header summary fields plus the
 /// chunk index and its segment prefix sums. [`read`](Self::read) does the route's only
 /// up-front cost — the header read **and the full chunk-meta walk** — so afterwards a
