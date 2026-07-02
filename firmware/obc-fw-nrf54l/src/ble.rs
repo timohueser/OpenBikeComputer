@@ -46,6 +46,25 @@
 //! completion on the L2CAP channel opening — the framing crate + transfer state machine + real
 //! object payloads are A5/A6, pairing/bonding A8.
 //!
+//! ### The CoC data plane + the echo loopback (A5, issue #273)
+//!
+//! A5 turns that drain into a **real bulk-transfer data plane**, driven by the host-tested
+//! [`obc_ble`] crate (the S0 descriptor codecs + the whole-object transfer state machine). The
+//! control plane and the data plane are separate futures that coordinate through one [`Signal`]:
+//!
+//! - **Control plane** ([`serve_connection`]): a `transfer_control` write is decoded with
+//!   [`obc_ble::TransferControl`] and classified ([`classify_transfer`]). An `echo` **upload** is
+//!   *armed* — its descriptor is signalled to the CoC task ([`TRANSFER_ARM`]) and answered later by
+//!   the data plane; every other op/type (real routes/rides are A6/A7) gets an immediate S0-typed
+//!   [`obc_ble::TransferResult`] on the `status` characteristic, and an `abort` an `aborted` result.
+//! - **Data plane** ([`serve_coc`] → [`run_echo`]): the CoC carries **only the object's payload
+//!   bytes** (no per-chunk framing, S0 §5). The echo path feeds them through an
+//!   [`obc_ble::Receiver`] — a running CRC-32 with no reassembly buffer — and streams each SDU
+//!   straight back over the same channel, verifying **one** whole-object CRC at the end and
+//!   notifying `committed` / `crcMismatch`. This is the loopback that proves the data plane end to
+//!   end with **zero storage involvement** (real objects → SD land at A6). On the first transfer the
+//!   link is asked for the fast [`conn_params`] set (throughput); the kB/s is logged over RTT.
+//!
 //! ## Interrupts / priorities (the A1 inventory, reconciled at A2)
 //!
 //! MPSL claims `RADIO_0` / `TIMER10` / `GRTC_3` at **P0** (timing-critical), `CLOCK_POWER` and
@@ -81,9 +100,13 @@ use embassy_nrf::{bind_interrupts, cracen, peripherals, Peri};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::signal::Signal;
-use embassy_time::{with_timeout, Duration, Timer};
+use embassy_time::{with_timeout, Duration, Instant, Timer};
 use nrf_sdc::mpsl::MultiprotocolServiceLayer;
 use nrf_sdc::{self as sdc, mpsl};
+use obc_ble::{
+    CommandResult, CommandStatus, Config, ObjectType, Op, Receiver, StatusMessage, TransferControl, TransferResult,
+    TransferStatus,
+};
 use trouble_host::prelude::*;
 
 use crate::init_static;
@@ -228,6 +251,15 @@ pub fn publish_battery(pct: u8) {
 fn battery() -> u8 {
     BATTERY.load(Ordering::Relaxed)
 }
+
+// ============================ Data-plane arming (A5, S0 §4.2 / §5) ============================
+
+/// The control plane → data plane hand-off: [`serve_connection`] decodes an `echo` upload
+/// `transfer_control` write and signals its [`TransferControl`] here; [`serve_coc`] wakes on it and
+/// runs the loopback over the CoC. A `Signal` (latest-value) suffices because S0 allows exactly one
+/// transfer in flight at a time (§4.1) — the app writes one descriptor and waits for its result
+/// before the next.
+static TRANSFER_ARM: Signal<CriticalSectionRawMutex, TransferControl> = Signal::new();
 
 // ============================ Identity (S0 §2 / §3.1) ============================
 
@@ -511,56 +543,66 @@ struct ObcControlService {
 }
 
 // ============================ S0 control-plane codecs (§4.3 / §7.3) ============================
+//
+// The wire layouts themselves live in `obc_ble` (the host-tested crate the shared `protocol-vectors/`
+// fixtures pin); these helpers only bridge them to the board's GATT attribute types and policy.
 
 /// The default Config blob (S0 §7.3, Config v1): the factory device name + metric units. Served on
 /// the `config` read until a write (Delta-1 rename) replaces it; persistence to storage is A6.
 fn default_config_blob() -> heapless09::Vec<u8, 128> {
     let name = device_name();
-    let nb = name.as_bytes();
+    let cfg = Config { name: name.as_bytes(), units: 0 };
+    let mut buf = [0u8; Config::MAX_ENCODED];
+    let len = cfg.encode(&mut buf).unwrap_or(0); // `OBC-XXXX` always fits
     let mut v = heapless09::Vec::new();
-    let _ = v.extend_from_slice(&(nb.len() as u16).to_le_bytes());
-    let _ = v.extend_from_slice(nb);
-    let _ = v.push(0); // units = metric
+    let _ = v.extend_from_slice(&buf[..len]);
     v
 }
 
-/// Shape-check a written Config blob (S0 §7.3): a `name_len` u16 ≤ 48 that fits, whole blob ≤ 128.
-/// A well-formed write is accepted (round-trips on read this session); a malformed one is rejected
-/// with an ATT error rather than silently stored.
-fn config_valid(data: &[u8]) -> bool {
-    if data.len() < 3 || data.len() > 128 {
-        return false;
-    }
-    let name_len = u16::from_le_bytes([data[0], data[1]]) as usize;
-    // 2 (name_len) + name_len (name) + 1 (units) bytes must fit.
-    name_len <= 48 && name_len + 3 <= data.len()
-}
+/// A `status` notification's bytes, ready to hand to `server.notify` (`&buf[..len]`). The board keeps
+/// one small stack buffer per message rather than a heapless alloc — every S0 status message fits.
+type StatusBytes = ([u8; StatusMessage::MAX_ENCODED_LEN], usize);
 
-/// Build the `commandResult` status message (S0 §4.3 `msg=3`) for a `command` write (§4.4). No
-/// object store exists until A6, so `deleteObject` (cmd 1) honestly reports `notFound`; any other
-/// command byte is `unknown`. Always 4 bytes — never a hang or a bare ATT failure.
-fn build_command_result(data: &[u8]) -> heapless::Vec<u8, 8> {
+/// The `commandResult` for a `command` write (S0 §4.3/§4.4). No object store exists until A6, so
+/// `deleteObject` (cmd 1) honestly reports `notFound`; any other byte is `unknownCommand`.
+fn command_result(data: &[u8]) -> StatusBytes {
     let cmd = data.first().copied().unwrap_or(0);
     let status = match cmd {
-        1 => 2u8, // deleteObject → notFound (no store yet)
-        _ => 1u8, // unknown command
+        1 => CommandStatus::NotFound, // deleteObject → no store yet
+        _ => CommandStatus::UnknownCommand,
     };
-    let mut v = heapless::Vec::new();
-    let _ = v.extend_from_slice(&[3, cmd, status, 0]);
-    v
+    StatusMessage::CommandResult(CommandResult::new(cmd, status)).encode()
 }
 
-/// Build the `transferResult` status message (S0 §4.3 `msg=1`) for a `transfer_control` write
-/// (§4.2). A4 has no data plane, so every open is answered `error` with a zero `committed_offset`,
-/// echoing the descriptor's `object_id` so the app can classify it. Always 8 bytes.
-fn build_transfer_result_error(data: &[u8]) -> heapless::Vec<u8, 8> {
-    let object_id = if data.len() >= 4 { u16::from_le_bytes([data[2], data[3]]) } else { 0 };
-    let mut v = heapless::Vec::new();
-    let _ = v.push(1); // msg = transferResult
-    let _ = v.extend_from_slice(&object_id.to_le_bytes());
-    let _ = v.push(3); // status = error (no data plane yet)
-    let _ = v.extend_from_slice(&0u32.to_le_bytes()); // committed_offset
-    v
+/// How the data plane should answer a decoded `transfer_control` write (S0 §4.2).
+enum TransferDisposition {
+    /// A valid `echo` upload — hand the descriptor to the CoC task; it answers when the loopback ends.
+    ArmEcho(TransferControl),
+    /// Answer immediately on `status` (abort, an unsupported type/op, or a malformed descriptor).
+    Answer(StatusBytes),
+}
+
+/// Decode + classify a `transfer_control` write (S0 §4.2). The only data plane A5 implements is the
+/// `echo` loopback (S0 reserves type 8 for it); real routes/rides are A6/A7. A malformed descriptor,
+/// an unsupported op/type, or an abort is answered immediately with the S0-typed [`TransferResult`]
+/// — never a hang or a bare ATT failure.
+fn classify_transfer(data: &[u8]) -> TransferDisposition {
+    let Ok(desc) = TransferControl::decode(data) else {
+        // A malformed descriptor — the app can't have meant a real transfer; report `error`.
+        return TransferDisposition::Answer(transfer_result(0, TransferStatus::Error));
+    };
+    match (desc.op, desc.ty) {
+        (Op::Upload, ObjectType::Echo) => TransferDisposition::ArmEcho(desc),
+        (Op::Abort, _) => TransferDisposition::Answer(transfer_result(desc.object_id, TransferStatus::Aborted)),
+        // Real object planes (route/ride/list/diagnostics) land at A6/A7 — until then, `error`.
+        _ => TransferDisposition::Answer(transfer_result(desc.object_id, TransferStatus::Error)),
+    }
+}
+
+/// A `transferResult` status message (S0 §4.3 `msg=1`) with a zero `committed_offset` — the shape
+/// for every result the control plane answers directly (nothing is durable yet, §4.2).
+fn transfer_result(object_id: u16, status: TransferStatus) -> StatusBytes {
+    StatusMessage::TransferResult(TransferResult::new(object_id, status, 0)).encode()
 }
 
 /// Bring the whole stack up and run it forever: MPSL (spawned — it must outlive everything),
@@ -682,7 +724,11 @@ pub async fn run(
             // (S0 §2: any disconnect drops straight back to advertising).
             let reason = match select(
                 serve_connection(&stack, &server, &conn),
-                join3(negotiate_link(&stack, &conn), serve_coc(&stack, &conn), battery_task(&stack, &server, &conn)),
+                join3(
+                    negotiate_link(&stack, &conn),
+                    serve_coc(&stack, &server, &conn),
+                    battery_task(&stack, &server, &conn),
+                ),
             )
             .await
             {
@@ -726,21 +772,30 @@ async fn serve_connection(
             GattConnectionEvent::Gatt { event } => {
                 // Extract what a control-plane write needs answered *before* accepting (which
                 // consumes the event), then notify the S0 `status` message — never a hang / bare
-                // ATT failure for an op we don't fully implement yet.
-                let mut status_msg: Option<heapless::Vec<u8, 8>> = None;
+                // ATT failure for an op we don't fully implement yet. An `echo` upload instead arms
+                // the CoC data plane ([`serve_coc`]), which answers when the loopback ends.
+                let mut status_msg: Option<StatusBytes> = None;
                 let reply = match event {
                     GattEvent::Write(e) => {
                         let handle = e.handle();
                         if handle == server.obc.command.handle {
-                            status_msg = Some(e.with_data(|_off, data| build_command_result(data)));
+                            status_msg = Some(e.with_data(|_off, data| command_result(data)));
                             info!("ble: [gatt] command write");
                             e.accept()
                         } else if handle == server.obc.transfer_control.handle {
-                            status_msg = Some(e.with_data(|_off, data| build_transfer_result_error(data)));
-                            info!("ble: [gatt] transfer_control write (no data plane -> error)");
+                            match e.with_data(|_off, data| classify_transfer(data)) {
+                                TransferDisposition::ArmEcho(desc) => {
+                                    info!("ble: [gatt] transfer_control: echo upload armed ({} bytes)", desc.total_len);
+                                    TRANSFER_ARM.signal(desc);
+                                }
+                                TransferDisposition::Answer(bytes) => {
+                                    info!("ble: [gatt] transfer_control: answered on status (no data plane)");
+                                    status_msg = Some(bytes);
+                                }
+                            }
                             e.accept()
                         } else if handle == server.obc.config.handle {
-                            if e.with_data(|_off, data| config_valid(data)) {
+                            if e.with_data(|_off, data| Config::decode(data).is_some()) {
                                 info!("ble: [gatt] config write accepted (in-RAM until A6)");
                                 e.accept()
                             } else {
@@ -765,8 +820,8 @@ async fn serve_connection(
                     Ok(reply) => reply.send().await,
                     Err(e) => warn!("ble: [gatt] error sending response: {:?}", e),
                 }
-                if let Some(msg) = status_msg {
-                    if let Err(e) = server.notify(stack, server.obc.status.handle, msg.as_slice()).await {
+                if let Some((buf, len)) = status_msg {
+                    if let Err(e) = server.notify(stack, server.obc.status.handle, &buf[..len]).await {
                         warn!("ble: [gatt] status notify failed: {:?}", defmt::Debug2Format(&e));
                     }
                 }
@@ -795,40 +850,142 @@ async fn serve_connection(
     reason.into_inner()
 }
 
-/// The minimal L2CAP CoC (A4): accept the app's channel on [`OBC_PSM`] and **drain/discard** its
-/// bytes. This is deliberately just enough for the app's `connect()` to complete — it gates
-/// completion on the channel opening — with no framing or storage. A5 replaces the drain with the
-/// transfer state machine (the `obc-ble` crate) that sinks these bytes to storage with a running
-/// CRC. Loops so a channel re-open on the same link is served; [`select`] in `run` cancels it on
-/// disconnect. Never returns (the outer `select` owns the link's exit).
+/// The L2CAP CoC data plane (A5): accept the app's channel on [`OBC_PSM`] and serve the transfers
+/// [`serve_connection`] arms through [`TRANSFER_ARM`]. The channel is opened once per link (the app
+/// opens it at connect and reuses it), so this accepts it, then loops serving one armed transfer at
+/// a time (S0 §4.1). The only transfer A5 implements is the [`run_echo`] loopback; real object
+/// planes (routes → SD) are A6. A channel drop mid-transfer breaks back to re-accept (a resume is a
+/// fresh arm on the re-opened channel); [`select`] in `run` cancels the whole task on disconnect.
+/// Never returns (the outer `select` owns the link's exit).
 async fn serve_coc(
     stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
+    server: &Server<'_>,
     conn: &GattConnection<'_, '_, DefaultPacketPool>,
 ) -> ! {
     let listener = L2capChannel::listen(stack, conn.raw());
     // The receive buffer must be ≥ the negotiated SDU MTU (defaults to the pool MTU − 6 = 245).
     let mut buf = [0u8; DefaultPacketPool::MTU];
+    // Ask for the fast connection-parameter set (S0 §3.4) once, on the first transfer of the link —
+    // the idle set is re-established on the next connect, so there's no per-transfer churn.
+    let mut requested_fast = false;
     loop {
-        match listener.accept(&L2capChannelConfig::default()).await {
-            Ok(mut ch) => {
-                info!("ble: [coc] channel accepted (mtu {} mps {}) — draining (A5 sinks these)", ch.mtu(), ch.mps());
-                loop {
-                    match ch.receive(stack, &mut buf).await {
-                        Ok(n) => info!("ble: [coc] drained {} bytes", n),
-                        Err(e) => {
-                            info!("ble: [coc] channel closed: {:?}", defmt::Debug2Format(&e));
-                            break;
-                        }
-                    }
-                }
-            }
+        let mut ch = match listener.accept(&L2capChannelConfig::default()).await {
+            Ok(ch) => ch,
             Err(e) => {
                 // A failed accept while the link is up shouldn't hot-spin — back off a beat. On a
                 // real disconnect the `run` `select` has already dropped this future.
                 warn!("ble: [coc] accept failed: {:?}", defmt::Debug2Format(&e));
                 Timer::after_millis(200).await;
+                continue;
+            }
+        };
+        info!("ble: [coc] channel accepted (mtu {} mps {}) — data plane ready", ch.mtu(), ch.mps());
+        loop {
+            let desc = TRANSFER_ARM.wait().await;
+            if !requested_fast {
+                requested_fast = true;
+                request_fast_conn_params(stack, conn).await;
+            }
+            if let EchoOutcome::ChannelDropped = run_echo(stack, server, &mut ch, &desc, &mut buf).await {
+                warn!("ble: [coc] channel dropped mid-echo — re-accepting (resume is a fresh arm)");
+                break;
             }
         }
+    }
+}
+
+/// Whether a [`run_echo`] answered the transfer or the CoC dropped under it (→ [`serve_coc`]
+/// re-accepts; a resume arrives as a fresh arm, S0 §4.2).
+enum EchoOutcome {
+    Answered,
+    ChannelDropped,
+}
+
+/// The A5 echo loopback (S0 object type 8): receive the announced object over the CoC and stream it
+/// straight back, byte-for-byte, verifying **one** whole-object CRC-32 at the end (S0 §6) — the data
+/// plane proven with zero storage. Sinks each SDU through an [`obc_ble::Receiver`] (a running CRC, no
+/// reassembly buffer) and echoes exactly the consumed bytes; on completion notifies the S0
+/// `transferResult` (`committed` / `crcMismatch`) and logs the throughput the issue asks for.
+async fn run_echo(
+    stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
+    server: &Server<'_>,
+    ch: &mut L2capChannel<'_, DefaultPacketPool>,
+    desc: &TransferControl,
+    buf: &mut [u8],
+) -> EchoOutcome {
+    let mut rx = match Receiver::new(desc) {
+        Ok(rx) => rx,
+        Err(_) => {
+            // A nonsensical echo descriptor (e.g. offset past total_len) — answer error, leave the
+            // channel untouched (no bytes were promised).
+            notify_status(server, stack, transfer_result(desc.object_id, TransferStatus::Error)).await;
+            return EchoOutcome::Answered;
+        }
+    };
+    info!("ble: [coc] echo start: {} bytes", rx.total_len());
+    let started = Instant::now();
+    while !rx.is_complete() {
+        let n = match ch.receive(stack, buf).await {
+            Ok(0) => {
+                // An empty SDU can't advance a transfer with bytes still expected — treat it as an
+                // end-of-stream rather than spinning the receive loop.
+                info!("ble: [coc] echo receive returned 0 bytes — ending");
+                return EchoOutcome::ChannelDropped;
+            }
+            Ok(n) => n,
+            Err(e) => {
+                info!("ble: [coc] echo receive ended: {:?}", defmt::Debug2Format(&e));
+                return EchoOutcome::ChannelDropped;
+            }
+        };
+        let consumed = rx.push(&buf[..n]);
+        if let Err(e) = ch.send(stack, &buf[..consumed]).await {
+            info!("ble: [coc] echo send failed: {:?}", defmt::Debug2Format(&e));
+            return EchoOutcome::ChannelDropped;
+        }
+    }
+    let result = rx.outcome().unwrap(); // complete ⇒ Some
+    let committed = result.status == TransferStatus::Committed;
+    let elapsed_ms = (started.elapsed().as_millis()).max(1);
+    // kB/s = bytes / seconds / 1024; kept in u64 (bytes × 1000 can't overflow a real object).
+    let kbps = (rx.total_len() as u64) * 1000 / (elapsed_ms * 1024);
+    info!(
+        "ble: [coc] echo done: {} bytes in {} ms (~{} kB/s) -> {}",
+        rx.total_len(),
+        elapsed_ms,
+        kbps,
+        if committed { "committed" } else { "crcMismatch" }
+    );
+    notify_status(server, stack, StatusMessage::TransferResult(result).encode()).await;
+    EchoOutcome::Answered
+}
+
+/// Notify one S0 `status` message (the CoC data plane's channel to the app).
+async fn notify_status(
+    server: &Server<'_>,
+    stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
+    (buf, len): StatusBytes,
+) {
+    if let Err(e) = server.notify(stack, server.obc.status.handle, &buf[..len]).await {
+        warn!("ble: [coc] status notify failed: {:?}", defmt::Debug2Format(&e));
+    }
+}
+
+/// Request the fast connection-parameter set (S0 §3.4) for a transfer's throughput — best-effort and
+/// timeout-bounded like [`negotiate_link`]'s requests (a peer that ignores it just runs slower).
+async fn request_fast_conn_params(
+    stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
+    conn: &GattConnection<'_, '_, DefaultPacketPool>,
+) {
+    let raw = conn.raw();
+    if !raw.is_connected() {
+        return;
+    }
+    let params = conn_params(true);
+    match with_timeout(HOST_OP_TIMEOUT, raw.update_connection_params(stack, &params)).await {
+        Ok(Ok(())) => info!("ble: [coc] requested fast conn params for transfer"),
+        Ok(Err(e)) => warn!("ble: [coc] fast conn params failed: {:?}", defmt::Debug2Format(&e)),
+        Err(_) => warn!("ble: [coc] fast conn params timed out"),
     }
 }
 

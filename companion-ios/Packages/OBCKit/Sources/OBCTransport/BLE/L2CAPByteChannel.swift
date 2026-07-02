@@ -11,7 +11,17 @@ import Foundation
 /// > for bring-up, but is **not yet hardware-validated** (no device advertises the
 /// > CoC PSM until `A5`). The framing above it (`BLEChannel`) is fully tested
 /// > against the in-memory pipe instead.
-final class L2CAPByteChannel: NSObject, ByteChannel, StreamDelegate, @unchecked Sendable {
+///
+/// `public` so the A5 echo harness / A9 soak rig (`EchoHarness`) wraps its own
+/// `CBL2CAPChannel` into the *same* byte layer `BLETransport` uses, rather than
+/// re-implementing the stream bridging.
+public final class L2CAPByteChannel: NSObject, ByteChannel, StreamDelegate, @unchecked Sendable {
+    /// The CoreBluetooth channel itself — retained for the byte layer's whole lifetime because
+    /// **CoreBluetooth closes the L2CAP channel when the `CBL2CAPChannel` is deallocated**. Holding
+    /// only its streams (as this class otherwise does) lets the object die at the end of the
+    /// `didOpen` delegate callback, and macOS tears the CoC down ~milliseconds later — the peer sees
+    /// `ChannelClosed` before a single byte flows.
+    private let channel: CBL2CAPChannel
     private let input: InputStream
     private let output: OutputStream
     private let lock = NSLock()
@@ -24,14 +34,23 @@ final class L2CAPByteChannel: NSObject, ByteChannel, StreamDelegate, @unchecked 
     private var closed = false
     private var failed = false
 
-    init(channel: CBL2CAPChannel) {
+    public init(channel: CBL2CAPChannel) {
+        self.channel = channel
         self.input = channel.inputStream
         self.output = channel.outputStream
-        var started: Thread!
-        self.thread = Thread { RunLoop.current.run(until: .distantFuture) }
-        started = thread
+        // A dedicated run-loop thread services the CoC's NSStream delegate events. A run loop with no
+        // input sources returns from `run()` *immediately*, so pin it alive with a `Port` — without
+        // this the thread exits before the streams are ever scheduled, no CoC bytes flow, and the peer
+        // sees the channel close. The loop wakes periodically so a `cancel()` on teardown is prompt.
+        self.thread = Thread {
+            let runLoop = RunLoop.current
+            runLoop.add(Port(), forMode: .default)
+            while !Thread.current.isCancelled {
+                runLoop.run(mode: .default, before: Date(timeIntervalSinceNow: 0.25))
+            }
+        }
         super.init()
-        started.start()
+        thread.start()
         // Schedule the streams on the run-loop thread and open them.
         perform(#selector(schedule), on: thread, with: nil, waitUntilDone: false)
     }
@@ -46,7 +65,7 @@ final class L2CAPByteChannel: NSObject, ByteChannel, StreamDelegate, @unchecked 
 
     // MARK: ByteChannel
 
-    func write(_ data: Data) async throws {
+    public func write(_ data: Data) async throws {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             lock.lock()
             if failed || closed { lock.unlock(); cont.resume(throwing: ChannelDropped()); return }
@@ -57,7 +76,7 @@ final class L2CAPByteChannel: NSObject, ByteChannel, StreamDelegate, @unchecked 
         }
     }
 
-    func read(maxLength: Int) async throws -> Data {
+    public func read(maxLength: Int) async throws -> Data {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, Error>) in
             lock.lock()
             if !inbound.isEmpty {
@@ -75,7 +94,7 @@ final class L2CAPByteChannel: NSObject, ByteChannel, StreamDelegate, @unchecked 
         }
     }
 
-    func close() async {
+    public func close() async {
         // Lock + thread-hop live in a synchronous helper (both are flagged inside
         // an async body); resuming the waiter afterward is async-safe.
         beginClose()?.resume(returning: Data())
@@ -96,11 +115,12 @@ final class L2CAPByteChannel: NSObject, ByteChannel, StreamDelegate, @unchecked 
             stream.close()
             stream.remove(from: .current, forMode: .default)
         }
+        thread.cancel() // let the run-loop thread exit (it polls isCancelled between wake-ups)
     }
 
     // MARK: StreamDelegate
 
-    func stream(_ aStream: Stream, handle eventCode: Stream.Event) {
+    public func stream(_ aStream: Stream, handle eventCode: Stream.Event) {
         switch eventCode {
         case .hasBytesAvailable:
             drainInbound()

@@ -2356,6 +2356,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "obc-ble"
+version = "0.1.0"
+dependencies = [
+ "obc-vectors",
+]
+
+[[package]]
 name = "obc-pack"
 version = "0.1.0"
 dependencies = [
