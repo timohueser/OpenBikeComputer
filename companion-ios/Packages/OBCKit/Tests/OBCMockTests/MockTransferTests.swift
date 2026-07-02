@@ -50,12 +50,16 @@ final class MockTransferTests: XCTestCase {
             for try await ride in download.rides { out.append(ride) }
             return out
         }
-        // Every requested ride lands, in transfer order, with its declared byte count.
+        // Every requested ride lands, in transfer order, carrying the real
+        // codec-encoded object (`downloadByteCount` only paces the progress —
+        // it is NOT the payload size).
         XCTAssertEqual(landed.map(\.id), ids)
         let entries = control.fixtures.rides
         for ride in landed {
             let entry = try XCTUnwrap(entries.first { $0.summary.id == ride.id })
-            XCTAssertEqual(ride.payload.count, entry.downloadByteCount)
+            let decoded = try ProvisionalRideCodec.decode(ride.payload, id: ride.id)
+            XCTAssertEqual(decoded.summary.name, entry.summary.name)
+            XCTAssertEqual(decoded.points.count, entry.points.count)
         }
     }
 

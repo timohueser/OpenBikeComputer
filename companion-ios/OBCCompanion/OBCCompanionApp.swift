@@ -82,7 +82,19 @@ struct OBCCompanionApp: App {
     /// persists to Application Support.
     static func makeLibraryStore() -> any LibraryStore {
         #if DEBUG
-        if mockControl != nil { return InMemoryLibraryStore() }
+        if let mockControl {
+            let store = InMemoryLibraryStore()
+            // H9's premise is "everything already synced" — the synced set is
+            // the library's (B1S), so the scenario seeds it here and the FIRST
+            // sync reports up to date.
+            if mockControl.scenario == .syncUpToDate {
+                for entry in mockControl.fixtures.rides {
+                    store.saveRide(entry.ride())
+                    store.markRideSynced(entry.summary.id)
+                }
+            }
+            return store
+        }
         #endif
         return FileLibraryStore.standard()
     }
