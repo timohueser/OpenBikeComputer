@@ -254,6 +254,35 @@ builds on it:
   residents (`ble::RESIDENT_BYTES`) and fails a `ble`+map build on this DK at compile time; the
   512 KB LM20 relaxes the `has_map` line in `build.rs` to run both planes together.
 
+## Connection lifecycle (A3, #271)
+
+`ble::run` is a loop with **no terminal state**: advertise → serve the link → re-advertise,
+forever, unattended. Any disconnect (any reason) drops straight back to advertising; even an
+advertise *error* only pauses a beat before retrying. What A3 added on top of A2's bare
+connect/hold:
+
+- **Advertising interval policy (S0 §2)** — *fast* (40 ms) for 30 s after boot and after every
+  disconnect, then *slow* (1000 ms) indefinitely. Legacy connectable adv doesn't self-terminate,
+  so the fast→slow switch is a host-side timer (`select` against the advertiser), not the HCI
+  duration field.
+- **Parameter negotiation on connect (S0 §3.4)** — the device *requests* 2M PHY, data-length
+  extension (251-byte PDUs), and a relaxed idle connection-parameter set; iOS accepts what the OS
+  allows. Every request is a **preference** (the protocol is correct at any MTU/PHY, just slower),
+  so each is `with_timeout`-bounded and best-effort — a stalled or rejected procedure is logged
+  and skipped, never a reason to drop the link. `conn_params(true)` pins the *fast* set A5's data
+  plane switches to during transfers.
+- **Watchdog policy** — **no hardware WDT (yet)**. The lifecycle is a *structural* watchdog: every
+  host op is timeout-bounded and the loop has no path that can block permanently, so a stuck
+  procedure degrades to a reconnect rather than a hang. A hardware `WDT` petted from the host
+  runner is deferred to A9, where it can be co-designed with the idle/WFI wake pattern.
+- **Telemetry** — connects / disconnects / last disconnect reason (named + numeric) / negotiated
+  MTU + PHY, all logged over RTT and shown on the status screen (the `link c/d xNN` and
+  `NNms 2M mMMM` lines) — the raw material for the A9 soak assertions.
+
+**Verify** with nRF Connect (the A1–A4 oracle): connect and confirm the negotiated MTU (247),
+2M PHY, and the interval settling to the idle set; disconnect/re-connect and walk out of range —
+the counters bump, the reason logs, and it always returns to advertising.
+
 ## Driving it from a host (`debug-uart`)
 
 With the `debug-uart` firmware flashed and VCOM HWFC off, replay a recorded ride over
