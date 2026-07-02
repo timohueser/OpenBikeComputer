@@ -17,11 +17,11 @@ import OBCDomain
 /// | `-OBCTransport <kind>` | `ble` / `mock` | force the real `BLETransport` in a Debug build |
 /// | `-OBCShowDevPanel` | (flag) | present the dev control panel at launch |
 /// | `-OBCShowUIGallery` | (flag) | present the B11 component gallery at launch |
-/// | `-OBCImportSample` | (flag) | boot straight into the E1 import landing with the bundled sample GPX |
+/// | `-OBCImportSample [kind]` | bare flag = `gpx`; or `gpx` / `tcx` / `bad` | feed a bundled sample file to the import path at launch (E1; `bad` → H5) |
 ///
 /// Env fallbacks (used when the argument is absent): `OBC_SCENARIO`,
 /// `OBC_FIXTURES`, `OBC_CONNECTION`, `OBC_TRANSPORT`, `OBC_SHOW_DEV_PANEL=1`,
-/// `OBC_SHOW_UI_GALLERY=1`, `OBC_IMPORT_SAMPLE=1`.
+/// `OBC_SHOW_UI_GALLERY=1`, `OBC_IMPORT_SAMPLE=1` (or a kind token).
 public struct MockLaunchOptions: Equatable, Sendable {
     public var scenario: Scenario?
     public var fixtures: String?
@@ -33,9 +33,10 @@ public struct MockLaunchOptions: Equatable, Sendable {
     /// Present the OBCUI component gallery immediately at launch (B11
     /// screenshot review).
     public var showUIGallery: Bool
-    /// Boot straight into the E1 import landing with `SampleRouteFile` (B4
-    /// XCUITests / demos — the Files picker can't be driven from automation).
-    public var importSample: Bool
+    /// Feed a `SampleRouteFile` to the import path at launch (XCUITests /
+    /// demos — the Files picker can't be driven from automation): `gpx`/`tcx`
+    /// land on E1 (or H4 when unpaired), `bad` raises H5. `nil` = no import.
+    public var importSample: SampleRouteFile.Kind?
 
     public init(
         scenario: Scenario? = nil,
@@ -44,7 +45,7 @@ public struct MockLaunchOptions: Equatable, Sendable {
         useBLETransport: Bool = false,
         showDevPanel: Bool = false,
         showUIGallery: Bool = false,
-        importSample: Bool = false
+        importSample: SampleRouteFile.Kind? = nil
     ) {
         self.scenario = scenario
         self.fixtures = fixtures
@@ -77,8 +78,21 @@ public struct MockLaunchOptions: Equatable, Sendable {
             || environment["OBC_SHOW_DEV_PANEL"] == "1"
         let showGallery = arguments.contains("-OBCShowUIGallery")
             || environment["OBC_SHOW_UI_GALLERY"] == "1"
-        let importSample = arguments.contains("-OBCImportSample")
-            || environment["OBC_IMPORT_SAMPLE"] == "1"
+        // Flag with an optional kind token: bare `-OBCImportSample` (or
+        // `OBC_IMPORT_SAMPLE=1`) means gpx; an unknown kind degrades to gpx
+        // (never crash — automation typo rule).
+        let importSample: SampleRouteFile.Kind? = {
+            if let index = arguments.firstIndex(of: "-OBCImportSample") {
+                if index + 1 < arguments.count, !arguments[index + 1].hasPrefix("-") {
+                    return SampleRouteFile.Kind(rawValue: arguments[index + 1]) ?? .gpx
+                }
+                return .gpx
+            }
+            guard let env = environment["OBC_IMPORT_SAMPLE"], !env.isEmpty, env != "0" else {
+                return nil
+            }
+            return SampleRouteFile.Kind(rawValue: env) ?? .gpx
+        }()
 
         return MockLaunchOptions(
             scenario: scenario,
