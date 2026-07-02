@@ -282,7 +282,11 @@ fn rejects_bad_input() {
     assert_eq!(err(&bytes), Error::BadMagic);
 
     let mut bytes = two_chunk_route();
-    bytes[4] = 2; // unsupported version
+    bytes[4] = 3; // unsupported version (v2 is accepted — the waypoint extension, #268)
+    assert_eq!(err(&bytes), Error::BadVersion);
+
+    let mut bytes = two_chunk_route();
+    bytes[4] = 0;
     assert_eq!(err(&bytes), Error::BadVersion);
 }
 

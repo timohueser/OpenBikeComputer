@@ -7,15 +7,18 @@
 //! plus a max span that also keeps deltas inside `int16`), and **chunks** the kept
 //! points — streaming each finished chunk out through the [`ByteSink`] while keeping
 //! only a bounded index in RAM. The header is written last (`patch_at(0, …)`) once the
-//! offsets and totals are known. See `OBCR_Spec.md` §4.
+//! offsets and totals are known. See `OBCR_Spec.md` §5.
 
 use heapless::Vec;
 
 use crate::byte_io::{ByteSink, ByteSource, Error};
 use crate::deadband::DeadBand;
 use crate::geo::{cos_lat, delta_m, seg_dist_m};
-use crate::gpx::GpxScanner;
-use crate::reader::{ChunkMeta, CHUNK_META_LEN, HEADER_LEN, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS, NAME_CAP};
+use crate::gpx::{GpxScanner, RawWaypoint, WptScanner};
+use crate::reader::{
+    ChunkMeta, CHUNK_META_LEN, HEADER_V2_LEN, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS, NAME_CAP, WAYPOINT_ELE_NONE,
+    WAYPOINT_LEN,
+};
 use obc_reader::codec::{put_i16, put_i32, put_u16, put_u32};
 use obc_reader::BBox;
 
@@ -34,6 +37,11 @@ const MAX_SEGMENT_UDEG: i64 = 30_000;
 /// Max bytes of one chunk's record body (`(points-1) × 6`).
 const BODY_CAP: usize = (MAX_POINTS_PER_CHUNK - 1) * 6;
 
+/// Converter emission cap for `<wpt>` waypoints (bounds the resident collection pass;
+/// extras past the cap are dropped). The *format* allows up to `u16::MAX` — the
+/// phone-side OBCR encoder is not bound by this.
+pub const MAX_WAYPOINTS: usize = 32;
+
 /// Stats computed during conversion (also written into the header).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RouteStats {
@@ -44,15 +52,31 @@ pub struct RouteStats {
     pub total_descent_m: u32,
     pub min_ele_m: i16,
     pub max_ele_m: i16,
+    /// Waypoints stored in the v2 section (0 when the GPX carried no `<wpt>`).
+    pub waypoint_count: u16,
 }
 
 /// Convert a GPX byte source into a `.obcr` written to `sink`, naming the route
 /// `name`. Returns the computed [`RouteStats`].
 pub fn gpx_to_obcr(src: &dyn ByteSource, name: &str, sink: &mut dyn ByteSink) -> Result<RouteStats, Error> {
-    // Reserve the header; the body follows immediately (data_offset = HEADER_LEN).
-    sink.write(&[0u8; HEADER_LEN])?;
+    // Reserve the v2 header; the body follows immediately (data_offset = HEADER_V2_LEN).
+    sink.write(&[0u8; HEADER_V2_LEN])?;
 
-    let mut enc = Encoder::new(HEADER_LEN as u32);
+    // Waypoint pass first (GPX carries `<wpt>` file-level, before the track): collect
+    // up to MAX_WAYPOINTS into a bounded resident set, then place each on the track
+    // during the main pass below. Scoped so the scanner's block buffer is gone before
+    // the track scanner's exists — the passes are sequential, never co-resident.
+    let mut wps: Vec<WpPlace, MAX_WAYPOINTS> = Vec::new();
+    {
+        let mut scan = WptScanner::new(src);
+        while let Some(wp) = scan.next_waypoint()? {
+            if wps.push(WpPlace { wp, best_d2: f32::INFINITY, along_m: 0 }).is_err() {
+                break; // cap reached — keep the first MAX_WAYPOINTS
+            }
+        }
+    }
+
+    let mut enc = Encoder::new(HEADER_V2_LEN as u32);
     let mut scan = GpxScanner::new(src);
 
     // Running stats. `cum_dist` accumulates in `f64`: each per-segment distance is a small
@@ -93,6 +117,22 @@ pub fn gpx_to_obcr(src: &dyn ByteSource, name: &str, sink: &mut dyn ByteSink) ->
 
         bbox = Some(grow(bbox, p.lon, p.lat));
 
+        // Waypoint placement: nearest **raw** track point wins; its cumulative distance
+        // is the waypoint's position along the route. Matches the phone importer's
+        // `WaypointPlacement` (nearest-point, not segment projection) so the two OBCR
+        // producers agree; raw GPX points are dense enough that the difference is noise.
+        if !wps.is_empty() {
+            let cl = cos_lat(p.lat);
+            for w in wps.iter_mut() {
+                let (dx, dy) = delta_m((p.lon, p.lat), (w.wp.lon, w.wp.lat), cl);
+                let d2 = dx * dx + dy * dy;
+                if d2 < w.best_d2 {
+                    w.best_d2 = d2;
+                    w.along_m = cum_dist as u32;
+                }
+            }
+        }
+
         // Feed the decimator; each "kept" point is emitted to the encoder.
         let c = Cand {
             lon: p.lon,
@@ -129,6 +169,7 @@ pub fn gpx_to_obcr(src: &dyn ByteSource, name: &str, sink: &mut dyn ByteSink) ->
 
     enc.finish(sink)?;
     let index_offset = enc.write_index(sink)?;
+    let wpt_offset = write_waypoints(sink, &mut wps, index_offset + enc.index.len() as u32 * CHUNK_META_LEN as u32)?;
 
     let bbox = bbox.unwrap_or(BBox { min_lon: 0, min_lat: 0, max_lon: 0, max_lat: 0 });
     if min_ele > max_ele {
@@ -143,11 +184,49 @@ pub fn gpx_to_obcr(src: &dyn ByteSource, name: &str, sink: &mut dyn ByteSink) ->
         total_descent_m: elev.descent() as u32,
         min_ele_m: min_ele,
         max_ele_m: max_ele,
+        waypoint_count: wps.len() as u16,
     };
 
-    let header = build_header(name, &bbox, start, index_offset, &stats);
+    let header = build_header(name, &bbox, start, index_offset, wpt_offset, &stats);
     sink.patch_at(0, &header)?;
     Ok(stats)
+}
+
+/// A waypoint being placed: the raw `<wpt>` plus the best (squared) distance to any
+/// raw track point seen so far and the cumulative route distance there.
+struct WpPlace {
+    wp: RawWaypoint,
+    best_d2: f32,
+    along_m: u32,
+}
+
+/// Sort the placed waypoints by position along the route and write the fixed-record
+/// table (v2 §4) at `offset` (right after the chunk index). Returns the table's file
+/// offset for the header extension — 0 when there are no waypoints.
+fn write_waypoints(sink: &mut dyn ByteSink, wps: &mut Vec<WpPlace, MAX_WAYPOINTS>, offset: u32) -> Result<u32, Error> {
+    if wps.is_empty() {
+        return Ok(0);
+    }
+    // Insertion sort by `along_m` (stable, N ≤ MAX_WAYPOINTS — no allocator).
+    for i in 1..wps.len() {
+        let mut j = i;
+        while j > 0 && wps[j - 1].along_m > wps[j].along_m {
+            wps.swap(j - 1, j);
+            j -= 1;
+        }
+    }
+    for w in wps.iter() {
+        let mut rec = [0u8; WAYPOINT_LEN];
+        put_u32(&mut rec, 0, w.along_m);
+        put_i32(&mut rec, 4, w.wp.lon);
+        put_i32(&mut rec, 8, w.wp.lat);
+        put_i16(&mut rec, 12, w.wp.ele.map_or(WAYPOINT_ELE_NONE, |e| round_i16(e as f64)));
+        rec[14] = 0; // kind: generic — GPX <sym>/<type> mapping is the phone's job
+        rec[15] = w.wp.name.len() as u8;
+        rec[16..16 + w.wp.name.len()].copy_from_slice(w.wp.name.as_bytes());
+        sink.write(&rec)?;
+    }
+    Ok(offset)
 }
 
 /// A decimation candidate: a kept point with its cumulative stats.
@@ -311,10 +390,17 @@ impl Encoder {
     }
 }
 
-fn build_header(name: &str, bbox: &BBox, start: (i32, i32), index_offset: u32, s: &RouteStats) -> [u8; HEADER_LEN] {
-    let mut h = [0u8; HEADER_LEN];
+fn build_header(
+    name: &str,
+    bbox: &BBox,
+    start: (i32, i32),
+    index_offset: u32,
+    wpt_offset: u32,
+    s: &RouteStats,
+) -> [u8; HEADER_V2_LEN] {
+    let mut h = [0u8; HEADER_V2_LEN];
     h[0..4].copy_from_slice(b"OBCR");
-    h[4] = 1; // version
+    h[4] = 2; // version
               // h[5] flags = 0, h[7] reserved = 0
 
     // Name truncated to NAME_CAP on a char boundary.
@@ -342,7 +428,10 @@ fn build_header(name: &str, bbox: &BBox, start: (i32, i32), index_offset: u32, s
     put_i16(&mut h, 50, s.max_ele_m);
     put_u32(&mut h, 52, s.chunk_count);
     put_u32(&mut h, 56, index_offset);
-    put_u32(&mut h, 60, HEADER_LEN as u32); // data_offset
+    put_u32(&mut h, 60, HEADER_V2_LEN as u32); // data_offset
+                                               // v2 waypoint extension (§1.1): table offset + count; the rest reserved.
+    put_u32(&mut h, 112, wpt_offset);
+    put_u16(&mut h, 116, s.waypoint_count);
     h
 }
 
