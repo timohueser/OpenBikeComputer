@@ -23,6 +23,67 @@ pub enum Units {
     Imperial,
 }
 
+/// The device-name byte cap — S0 §7.3's Config name field (which matches the OBCR
+/// route-name cap), so the settings blob stores exactly what the BLE Config object carries.
+pub const DEVICE_NAME_MAX: usize = 48;
+
+/// The user-facing device name (S0 §7.3: rename = write Config with a changed name). A fixed
+/// inline buffer so [`Settings`] stays `Copy`; **empty means "factory name"** — the BLE edge
+/// substitutes its serial-derived `OBC-XXXX` — so a fresh device needs no name stored and a
+/// rename can be cleared back to factory by writing an empty name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeviceName {
+    len: u8,
+    bytes: [u8; DEVICE_NAME_MAX],
+}
+
+impl Default for DeviceName {
+    fn default() -> Self {
+        Self::EMPTY
+    }
+}
+
+impl DeviceName {
+    /// The factory-name sentinel (see the type doc).
+    pub const EMPTY: DeviceName = DeviceName { len: 0, bytes: [0; DEVICE_NAME_MAX] };
+
+    /// Store `name`, truncated to the byte cap **on a char boundary** (never mid-UTF-8).
+    pub fn from_str(name: &str) -> DeviceName {
+        let mut end = name.len().min(DEVICE_NAME_MAX);
+        while end > 0 && !name.is_char_boundary(end) {
+            end -= 1;
+        }
+        let mut n = Self::EMPTY;
+        n.len = end as u8;
+        n.bytes[..end].copy_from_slice(&name.as_bytes()[..end]);
+        n
+    }
+
+    /// Rebuild from stored bytes (the codec's decode path): over-long or invalid-UTF-8 input —
+    /// a corrupt or foreign blob that still passed the CRC — sanitises to [`Self::EMPTY`]
+    /// (factory name), never to garbage the BLE edge would advertise.
+    pub fn from_bytes(bytes: &[u8]) -> DeviceName {
+        if bytes.len() > DEVICE_NAME_MAX || core::str::from_utf8(bytes).is_err() {
+            return Self::EMPTY;
+        }
+        let mut n = Self::EMPTY;
+        n.len = bytes.len() as u8;
+        n.bytes[..bytes.len()].copy_from_slice(bytes);
+        n
+    }
+
+    /// The stored name — `""` means factory.
+    pub fn as_str(&self) -> &str {
+        // Every constructor stored validated UTF-8, so this cannot fail.
+        core::str::from_utf8(&self.bytes[..self.len as usize]).unwrap_or("")
+    }
+
+    /// True when no user name is stored (the BLE edge advertises the factory name).
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
 /// Miles per kilometre — the distance/speed conversion factor (also mi·h⁻¹ per km·h⁻¹).
 pub const MI_PER_KM: f32 = 0.621_371;
 /// Feet per metre — the elevation/climb conversion factor.
@@ -359,6 +420,10 @@ pub struct Settings {
     pub stat_fields: StatFieldList,
     /// Seconds the Statistics grid dwells on each page before auto-cycling to the next.
     pub stat_cycle_s: u16,
+    /// The user-facing device name (S0 §7.3 Config; empty = factory `OBC-XXXX`). Written by the
+    /// companion app over BLE, not by any on-device screen — it lives here so the one settings
+    /// blob persists it and the Config characteristic round-trips through the same store.
+    pub device_name: DeviceName,
 }
 
 impl Default for Settings {
@@ -372,6 +437,7 @@ impl Default for Settings {
             power_saver: false,
             stat_fields: StatFieldList::default(),
             stat_cycle_s: STAT_CYCLE_DEFAULT,
+            device_name: DeviceName::EMPTY,
         }
     }
 }
@@ -404,8 +470,8 @@ impl Settings {
 
 /// Codec version — bump when the byte layout changes; [`decode`] rejects any other version
 /// (the host then falls back to [`Settings::default`], i.e. settings reset on a format change).
-/// v2 appended the Statistics-grid field selection + page-cycle period.
-pub const VERSION: u8 = 2;
+/// v2 appended the Statistics-grid field selection + page-cycle period; v3 the BLE device name.
+pub const VERSION: u8 = 3;
 
 /// Fixed encoded length: the [`PAYLOAD_LEN`] CRC-covered bytes + a 2-byte CRC, **rounded up to the
 /// device RRAM's 16-byte write line** (the firmware store writes whole 128-bit lines, and asserts
@@ -415,11 +481,16 @@ pub const VERSION: u8 = 2;
 pub const ENCODED_LEN: usize = (PAYLOAD_LEN + 2).div_ceil(16) * 16;
 
 /// Payload size before the trailing CRC: the v1 head (14 bytes) + the v2 tail (a `stat_fields`
-/// length byte, [`MAX_STAT_FIELDS`] discriminant bytes, and the 2-byte `stat_cycle_s`). The CRC
-/// follows immediately at this offset.
-const PAYLOAD_LEN: usize = 14 + 1 + MAX_STAT_FIELDS + 2;
+/// length byte, [`MAX_STAT_FIELDS`] discriminant bytes, and the 2-byte `stat_cycle_s`) + the v3
+/// tail (a name-length byte and the fixed [`DEVICE_NAME_MAX`]-byte name field). The CRC follows
+/// immediately at this offset.
+const PAYLOAD_LEN: usize = NAME_OFF + 1 + DEVICE_NAME_MAX;
 /// Byte offset of the v2 tail (right after the v1 head).
 const STAT_FIELDS_OFF: usize = 14;
+/// Byte offset of the v2 `stat_cycle_s` (right after the field selection).
+const STAT_CYCLE_OFF: usize = STAT_FIELDS_OFF + 1 + MAX_STAT_FIELDS;
+/// Byte offset of the v3 tail (right after `stat_cycle_s`).
+const NAME_OFF: usize = STAT_CYCLE_OFF + 2;
 
 /// CRC-16/CCITT-FALSE (poly `0x1021`, init `0xFFFF`) over `data` — small, table-free, and
 /// plenty to reject a blank/half-written blob. Guards the codec on both stores.
@@ -454,7 +525,11 @@ pub fn encode(s: &Settings) -> [u8; ENCODED_LEN] {
     let (len, ids) = s.stat_fields.encode();
     b[STAT_FIELDS_OFF] = len;
     b[STAT_FIELDS_OFF + 1..STAT_FIELDS_OFF + 1 + MAX_STAT_FIELDS].copy_from_slice(&ids);
-    b[PAYLOAD_LEN - 2..PAYLOAD_LEN].copy_from_slice(&s.stat_cycle_s.to_le_bytes());
+    b[STAT_CYCLE_OFF..STAT_CYCLE_OFF + 2].copy_from_slice(&s.stat_cycle_s.to_le_bytes());
+    // v3 tail: the device name (length + the fixed zero-padded field).
+    let name = s.device_name.as_str().as_bytes();
+    b[NAME_OFF] = name.len() as u8;
+    b[NAME_OFF + 1..NAME_OFF + 1 + name.len()].copy_from_slice(name);
     let crc = crc16(&b[0..PAYLOAD_LEN]);
     b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
     b
@@ -486,7 +561,13 @@ pub fn decode(bytes: &[u8]) -> Option<Settings> {
             b[STAT_FIELDS_OFF],
             &b[STAT_FIELDS_OFF + 1..STAT_FIELDS_OFF + 1 + MAX_STAT_FIELDS],
         ),
-        stat_cycle_s: u16::from_le_bytes([b[PAYLOAD_LEN - 2], b[PAYLOAD_LEN - 1]]),
+        stat_cycle_s: u16::from_le_bytes([b[STAT_CYCLE_OFF], b[STAT_CYCLE_OFF + 1]]),
+        // A stored length past the cap (corrupt-but-CRC-valid input) sanitises to the factory
+        // name, exactly like invalid UTF-8 inside `from_bytes` — never a garbage prefix.
+        device_name: match b[NAME_OFF] as usize {
+            n if n <= DEVICE_NAME_MAX => DeviceName::from_bytes(&b[NAME_OFF + 1..NAME_OFF + 1 + n]),
+            _ => DeviceName::EMPTY,
+        },
     };
     s.sanitize();
     Some(s)
@@ -512,8 +593,41 @@ mod tests {
             power_saver: true,
             stat_fields,
             stat_cycle_s: 8,
+            device_name: DeviceName::from_str("Timo's OBC"),
         };
         assert_eq!(decode(&encode(&s)), Some(s));
+    }
+
+    /// The v3 device-name tail: set → truncate on a char boundary at the 48-byte cap, and a
+    /// corrupt stored name (bad UTF-8 or an impossible length) sanitises to factory, not garbage.
+    #[test]
+    fn device_name_codec_and_sanitising() {
+        // 47 ASCII bytes + 'ü' (2 bytes) crosses the cap mid-char → truncates to the boundary.
+        let mut long: heapless::String<64> = heapless::String::new();
+        for _ in 0..47 {
+            long.push('x').unwrap();
+        }
+        long.push('ü').unwrap();
+        let name = DeviceName::from_str(&long);
+        assert_eq!(name.as_str().len(), 47, "never split a UTF-8 sequence");
+
+        let s = Settings { device_name: name, ..Settings::default() };
+        assert_eq!(decode(&encode(&s)), Some(s));
+
+        // Corrupt the stored name to invalid UTF-8, re-stamp the CRC: decode sanitises to factory.
+        let mut b = encode(&s);
+        b[NAME_OFF + 1] = 0xFF;
+        let crc = crc16(&b[0..PAYLOAD_LEN]);
+        b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
+        let got = decode(&b).expect("valid CRC → Some, just sanitised");
+        assert!(got.device_name.is_empty(), "invalid UTF-8 falls back to the factory name");
+
+        // An impossible stored length does too.
+        let mut b = encode(&s);
+        b[NAME_OFF] = 200;
+        let crc = crc16(&b[0..PAYLOAD_LEN]);
+        b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
+        assert!(decode(&b).unwrap().device_name.is_empty());
     }
 
     /// The v2 tail sanitises on decode: an out-of-range cycle period is clamped, and an unknown
