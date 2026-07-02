@@ -63,6 +63,33 @@ public struct RouteSummary: Identifiable, Equatable, Sendable {
     }
 }
 
+/// Everything the route-detail screen (E2) renders beyond the list summary:
+/// the waypoints (W1) and the elevation-profile data. Served by
+/// `DeviceTransport.routeDetail(_:)` — the wire mapping is provisional until
+/// firmware `S0` pins the detail read (see `OBCProtocol.md`).
+public struct RouteDetail: Equatable, Sendable {
+    public var summary: RouteSummary
+    /// Waypoints along the route, in ride order (W1).
+    public var waypoints: [Waypoint]
+    /// Elevation samples along the route in metres, evenly spaced start → end.
+    /// Empty when the source carried no elevation.
+    public var elevationProfile: [Double]
+    /// Steepest sustained climb grade in percent (E2's MAX stat), when known.
+    public var maxGradePercent: Double?
+
+    public init(
+        summary: RouteSummary,
+        waypoints: [Waypoint] = [],
+        elevationProfile: [Double] = [],
+        maxGradePercent: Double? = nil
+    ) {
+        self.summary = summary
+        self.waypoints = waypoints
+        self.elevationProfile = elevationProfile
+        self.maxGradePercent = maxGradePercent
+    }
+}
+
 /// A full route ready to upload: metadata + waypoints + the **compact binary
 /// payload** the device stores verbatim. `B1`'s `BLEChannel` frames `payload`
 /// over the CoC data plane; the import path (B6) produces it from GPX/TCX — the

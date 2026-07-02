@@ -9,9 +9,11 @@
 /* Begin PBXBuildFile section */
 		02FCB23601840CB76FDA35FC /* PairingFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63D5D66C5D7F9BC903FFDF78 /* PairingFlowTests.swift */; };
 		16C77CFB7DA33320566B2C81 /* MainScreenTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DF6876E865B0CEEDF19B920 /* MainScreenTests.swift */; };
-		1F69783C6BDF4B68008643A9 /* OBCUI in Frameworks */ = {isa = PBXBuildFile; productRef = F36D240ABD9B3BD22B7361D6 /* OBCUI */; };
+		1F69783C6BDF4B68008643A9 /* OBCFormats in Frameworks */ = {isa = PBXBuildFile; productRef = C59F91288F9595D77FCB1ECF /* OBCFormats */; };
 		381F3D661B6D93D535F1B08E /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DBBC2F121AB1951FD912F9D /* RootView.swift */; };
-		5E713787D6892F949C215D70 /* OBCMock in Frameworks */ = {isa = PBXBuildFile; productRef = DD8B1F44D9B64524AB5825E1 /* OBCMock */; };
+		5E713787D6892F949C215D70 /* OBCUI in Frameworks */ = {isa = PBXBuildFile; productRef = F36D240ABD9B3BD22B7361D6 /* OBCUI */; };
+		6DC09550CAE89946C31576B1 /* RouteDetailTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 751D2B0F9B5EAAA9604891B1 /* RouteDetailTests.swift */; };
+		80330AC46D1068B284F04D2D /* OBCMock in Frameworks */ = {isa = PBXBuildFile; productRef = DD8B1F44D9B64524AB5825E1 /* OBCMock */; };
 		A46E501EFF36545E13D8EA29 /* GalleryLaunchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E99516A090B9A4E907F609D4 /* GalleryLaunchTests.swift */; };
 		A57F14D5122AC017DA1EDD93 /* OBCCompanionApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E65FA62E1F2D28ACDD97577 /* OBCCompanionApp.swift */; };
 		B12FD7496DD1AC79DE5DD29B /* DevMockOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8847F668482A0FF17814B592 /* DevMockOverlay.swift */; };
@@ -41,6 +43,7 @@
 		63D5D66C5D7F9BC903FFDF78 /* PairingFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingFlowTests.swift; sourceTree = "<group>"; };
 		6608359A1519230330298AA6 /* OBCCompanion.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = OBCCompanion.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		6EB5A3C284B9EBBDD680DED9 /* OBCKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = OBCKit; path = Packages/OBCKit; sourceTree = SOURCE_ROOT; };
+		751D2B0F9B5EAAA9604891B1 /* RouteDetailTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteDetailTests.swift; sourceTree = "<group>"; };
 		87872F15DFA475D7000C6544 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		8847F668482A0FF17814B592 /* DevMockOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevMockOverlay.swift; sourceTree = "<group>"; };
 		8E65FA62E1F2D28ACDD97577 /* OBCCompanionApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OBCCompanionApp.swift; sourceTree = "<group>"; };
@@ -55,8 +58,9 @@
 			files = (
 				E952B260ED805B85E464A35D /* OBCDomain in Frameworks */,
 				D4441FDF0EE6240E0A3702A8 /* OBCTransport in Frameworks */,
-				1F69783C6BDF4B68008643A9 /* OBCUI in Frameworks */,
-				5E713787D6892F949C215D70 /* OBCMock in Frameworks */,
+				1F69783C6BDF4B68008643A9 /* OBCFormats in Frameworks */,
+				5E713787D6892F949C215D70 /* OBCUI in Frameworks */,
+				80330AC46D1068B284F04D2D /* OBCMock in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -101,6 +105,7 @@
 				0DF6876E865B0CEEDF19B920 /* MainScreenTests.swift */,
 				3C66022BB56F762B09E9C0BF /* OBCCompanionUITests.swift */,
 				63D5D66C5D7F9BC903FFDF78 /* PairingFlowTests.swift */,
+				751D2B0F9B5EAAA9604891B1 /* RouteDetailTests.swift */,
 				34BE4BBD9BB3B75A4E34EDE3 /* ScenarioLaunchTests.swift */,
 			);
 			path = OBCCompanionUITests;
@@ -133,6 +138,7 @@
 			packageProductDependencies = (
 				0BE4E2C1659DE512546A84FC /* OBCDomain */,
 				FE08B4C629A32B4696FF6CAE /* OBCTransport */,
+				C59F91288F9595D77FCB1ECF /* OBCFormats */,
 				F36D240ABD9B3BD22B7361D6 /* OBCUI */,
 				DD8B1F44D9B64524AB5825E1 /* OBCMock */,
 			);
@@ -221,6 +227,7 @@
 				16C77CFB7DA33320566B2C81 /* MainScreenTests.swift in Sources */,
 				DC688D4C547902CF9C650940 /* OBCCompanionUITests.swift in Sources */,
 				02FCB23601840CB76FDA35FC /* PairingFlowTests.swift in Sources */,
+				6DC09550CAE89946C31576B1 /* RouteDetailTests.swift in Sources */,
 				CC2C394178B45BFA476BFD56 /* ScenarioLaunchTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -488,6 +495,10 @@
 		0BE4E2C1659DE512546A84FC /* OBCDomain */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = OBCDomain;
+		};
+		C59F91288F9595D77FCB1ECF /* OBCFormats */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = OBCFormats;
 		};
 		DD8B1F44D9B64524AB5825E1 /* OBCMock */ = {
 			isa = XCSwiftPackageProductDependency;

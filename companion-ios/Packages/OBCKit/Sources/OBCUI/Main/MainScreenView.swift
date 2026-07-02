@@ -64,7 +64,7 @@ public struct MainScreenView: View {
             }
 
             OBCLargeTitleBar("Routes") {
-                OBCImportMenuButton(fileExtensions: importFileExtensions, onPick: onImportFile)
+                OBCImportButton(fileExtensions: importFileExtensions, onPick: onImportFile)
             }
 
             list
@@ -342,7 +342,7 @@ public struct MainScreenView: View {
     VStack(spacing: 0) {
         DeviceTopBar(deviceName: "Trailhead", connection: .connected, batteryPercent: 82)
         OBCLargeTitleBar("Routes") {
-            OBCImportMenuButton(fileExtensions: ["gpx", "tcx"]) { _ in }
+            OBCImportButton(fileExtensions: ["gpx", "tcx"]) { _ in }
         }
         ScrollView {
             VStack(spacing: 12) {

@@ -21,11 +21,20 @@ public struct RoutePoint: Hashable, Sendable {
 public struct ImportedRoute: Equatable, Sendable {
     /// Route name carried by the file (`nil` when it had none — the UI derives one).
     public var name: String?
+    /// The authoring tool the file names (GPX `creator`, TCX author) — feeds the
+    /// E1 "Imported from Komoot" banner. `nil` when the file doesn't say.
+    public var creator: String?
     public var points: [RoutePoint]
     public var waypoints: [Waypoint]
 
-    public init(name: String? = nil, points: [RoutePoint], waypoints: [Waypoint] = []) {
+    public init(
+        name: String? = nil,
+        creator: String? = nil,
+        points: [RoutePoint],
+        waypoints: [Waypoint] = []
+    ) {
         self.name = name
+        self.creator = creator
         self.points = points
         self.waypoints = waypoints
     }

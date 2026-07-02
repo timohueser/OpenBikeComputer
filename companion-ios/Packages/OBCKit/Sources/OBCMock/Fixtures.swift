@@ -26,16 +26,27 @@ public struct FixtureSet: Sendable {
 }
 
 /// A fixture route: the enumerable `summary` (with a normalized preview), its
-/// `waypoints`, and the declared upload payload size — the payload bytes are
-/// synthesized on demand (see `blob()`), so a multi-MB library stays cheap to hold.
+/// `waypoints`, the detail-screen elevation data, and the declared upload payload
+/// size — the payload bytes are synthesized on demand (see `blob()`), so a
+/// multi-MB library stays cheap to hold.
 public struct RouteEntry: Sendable {
     public var summary: RouteSummary
     public var waypoints: [Waypoint]
+    public var elevationProfile: [Double]
+    public var maxGradePercent: Double?
     public var payloadByteCount: Int
 
-    public init(summary: RouteSummary, waypoints: [Waypoint] = [], payloadByteCount: Int) {
+    public init(
+        summary: RouteSummary,
+        waypoints: [Waypoint] = [],
+        elevationProfile: [Double] = [],
+        maxGradePercent: Double? = nil,
+        payloadByteCount: Int
+    ) {
         self.summary = summary
         self.waypoints = waypoints
+        self.elevationProfile = elevationProfile
+        self.maxGradePercent = maxGradePercent
         self.payloadByteCount = payloadByteCount
     }
 
@@ -43,18 +54,33 @@ public struct RouteEntry: Sendable {
     public func blob() -> RouteBlob {
         RouteBlob(summary: summary, waypoints: waypoints, payload: MockPayload.make(count: payloadByteCount))
     }
+
+    /// What `routeDetail(_:)` serves for this route (E2).
+    public func detail() -> RouteDetail {
+        RouteDetail(
+            summary: summary, waypoints: waypoints,
+            elevationProfile: elevationProfile, maxGradePercent: maxGradePercent
+        )
+    }
 }
 
-/// A fixture ride: the enumerable `summary` plus its declared download size (used to
-/// pace `downloadRides` progress).
+/// A fixture ride: the enumerable `summary`, its elevation profile (E3), and its
+/// declared download size (used to pace `downloadRides` progress).
 public struct RideEntry: Sendable {
     public var summary: RideSummary
+    public var elevationProfile: [Double]
     public var downloadByteCount: Int
 
-    public init(summary: RideSummary, downloadByteCount: Int? = nil) {
+    public init(summary: RideSummary, elevationProfile: [Double] = [], downloadByteCount: Int? = nil) {
         self.summary = summary
+        self.elevationProfile = elevationProfile
         // Tracklogs are chunkier than routes; ~20 B/m gives a believable sync size.
         self.downloadByteCount = downloadByteCount ?? max(1, Int(summary.distanceMeters) * 20)
+    }
+
+    /// What `rideDetail(_:)` serves for this ride (E3).
+    public func detail() -> RideDetail {
+        RideDetail(summary: summary, elevationProfile: elevationProfile)
     }
 }
 
@@ -82,6 +108,18 @@ extension FixtureSet {
         battery: 72, routes: [], rides: [],
         diagnostics: Data("OBC diagnostics — built-in fallback\n".utf8)
     )
+}
+
+/// The bundled sample route file the `-OBCImportSample` launch hook feeds the
+/// import path — a real Komoot GPX (Schwarzwald tour, downsampled) so E1 demos
+/// and XCUITests exercise the same decoder a Files pick does.
+public enum SampleRouteFile {
+    public static let fileExtension = "gpx"
+
+    public static func data() -> Data? {
+        Bundle.module.url(forResource: "sample-import", withExtension: "gpx")
+            .flatMap { try? Data(contentsOf: $0) }
+    }
 }
 
 /// Deterministic opaque payload bytes — stands in for the compact-binary route/ride
@@ -149,6 +187,8 @@ private struct ConfigDTO: Decodable {
 private struct GeoDTO: Decodable {
     let lat: Double
     let lon: Double
+    /// Elevation in metres — feeds the detail screens' profile card (E2/E3).
+    let ele: Double?
     var coordinate: Coordinate { Coordinate(latitude: lat, longitude: lon) }
 }
 
@@ -167,6 +207,7 @@ private struct RouteDTO: Decodable {
     let elevationGainMeters: Double
     let estimatedDuration: TimeInterval?
     let source: String?
+    let maxGradePercent: Double?
     let payloadBytes: Int?
     let track: [GeoDTO]
     let waypoints: [WaypointDTO]?
@@ -192,6 +233,8 @@ private struct RouteDTO: Decodable {
                      coordinate: Coordinate(latitude: wp.lat, longitude: wp.lon))
         }
         return RouteEntry(summary: summary, waypoints: wps,
+                          elevationProfile: track.compactMap(\.ele),
+                          maxGradePercent: maxGradePercent,
                           payloadByteCount: payloadBytes ?? max(1, Int(distanceMeters)))
     }
 }
@@ -213,7 +256,8 @@ private struct RideDTO: Decodable {
             movingTime: movingTime, averageSpeedMps: averageSpeedMps, climbMeters: climbMeters,
             trackPreview: TrackPreview.normalizing(track.map(\.coordinate))
         )
-        return RideEntry(summary: summary, downloadByteCount: payloadBytes)
+        return RideEntry(summary: summary, elevationProfile: track.compactMap(\.ele),
+                         downloadByteCount: payloadBytes)
     }
 }
 #endif

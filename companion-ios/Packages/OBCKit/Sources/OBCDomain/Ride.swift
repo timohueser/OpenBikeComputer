@@ -46,6 +46,21 @@ public struct Ride: Identifiable, Equatable, Sendable {
     }
 }
 
+/// Everything the ride-detail screen (E3) renders beyond the list summary.
+/// Served by `DeviceTransport.rideDetail(_:)`; like `RouteDetail`, the wire
+/// mapping is provisional until firmware `S0` pins it.
+public struct RideDetail: Equatable, Sendable {
+    public var summary: RideSummary
+    /// Elevation samples along the ride in metres, evenly spaced start → end.
+    /// Empty when the tracklog carried no elevation.
+    public var elevationProfile: [Double]
+
+    public init(summary: RideSummary, elevationProfile: [Double] = []) {
+        self.summary = summary
+        self.elevationProfile = elevationProfile
+    }
+}
+
 public struct RideSummary: Identifiable, Equatable, Sendable {
     public let id: RideID
     public var name: String

@@ -89,7 +89,25 @@ final class OBCFormatTests: XCTestCase {
         )
     }
 
-    private func date(_ year: Int, _ month: Int, _ day: Int, hour: Int = 9) -> Date {
-        cal.date(from: DateComponents(year: year, month: month, day: day, hour: hour))!
+    // MARK: Stat-strip parts (E1–E3 value/unit split)
+
+    func testStatValuesMatchTheJoinedLines() {
+        XCTAssertEqual(OBCFormat.distanceValue(meters: 62_400, locale: en), "62.4")
+        XCTAssertEqual(OBCFormat.distanceValue(meters: 118_000, locale: en), "118")
+        XCTAssertEqual(OBCFormat.climbValue(meters: 1240, locale: en), "1,240")
+        XCTAssertEqual(OBCFormat.speedValue(mps: 20.4 / 3.6, locale: en), "20.4")
+    }
+
+    func testRideDateLineMatchesE3Subtitle() {
+        let now = date(2026, 7, 1, hour: 12)
+        let line = OBCFormat.rideDateLine(
+            date(2026, 6, 30, hour: 8, minute: 12), relativeTo: now, calendar: cal, locale: en
+        )
+        // DateFormatter separates "8:12" and "AM" with a narrow no-break space.
+        XCTAssertEqual(line.replacingOccurrences(of: "\u{202F}", with: " "), "Yesterday, 8:12 AM")
+    }
+
+    private func date(_ year: Int, _ month: Int, _ day: Int, hour: Int = 9, minute: Int = 0) -> Date {
+        cal.date(from: DateComponents(year: year, month: month, day: day, hour: hour, minute: minute))!
     }
 }
