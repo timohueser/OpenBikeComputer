@@ -5,6 +5,10 @@ __pycache__/
 # #34). It must ship in-repo so the board crate builds without a separate pack step.
 !firmware/obc-fw-stm32f429/tiles/*.obcm
 *.obcr
+# ...except the shared wire-protocol test vectors (S0, issue #268). They must ship
+# in-repo: firmware `cargo test -p obc-vectors` and the app's swift tests pin their
+# codecs to these exact bytes.
+!protocol-vectors/*.obcr
 *.osm.pbf
 # ...except the 735-byte hand-authored fixture the obc-pack ingest test reads
 # (firmware/obc-pack `ingest::tests::tiny_truth_table`). It must ship in-repo so the
@@ -23,4 +27,6 @@ user_config.json
 .worktrees/
 .DS_Store
 *.gpx
+# ...except the deterministic source the protocol-vector route fixtures regenerate from.
+!firmware/obc-vectors/src/route-source.gpx
 project/
