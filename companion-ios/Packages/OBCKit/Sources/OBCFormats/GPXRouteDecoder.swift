@@ -1,14 +1,10 @@
 import Foundation
 import OBCDomain
 
-/// GPX 1.0/1.1 → `ImportedRoute` (the first registered `RouteFileDecoder`; TCX
-/// follows with B6's share-sheet work). Reads what a route needs and nothing
+/// GPX 1.0/1.1 → `ImportedRoute`. Reads what a route needs and nothing
 /// more: `<trkpt>` (or `<rtept>`) geometry with `<ele>`, file-level `<wpt>`
 /// waypoints, the route name, and the `creator` attribute for the E1 banner.
-///
-/// GPX carries waypoints as free-standing points, so each one is projected onto
-/// the nearest track point to get its ride-order `index` + `distanceAlongMeters`
-/// (what W1 renders). Time data is ignored — a planned route has none.
+/// Time data is ignored — a planned route has none.
 public struct GPXRouteDecoder: RouteFileDecoder {
     public var fileExtensions: Set<String> { ["gpx"] }
 
@@ -29,49 +25,8 @@ public struct GPXRouteDecoder: RouteFileDecoder {
             name: collector.routeName,
             creator: collector.creator,
             points: collector.points,
-            waypoints: Self.placeWaypoints(collector.rawWaypoints, along: collector.points)
+            waypoints: WaypointPlacement.place(collector.rawWaypoints, along: collector.points)
         )
-    }
-
-    /// Order free-standing GPX waypoints along the track: nearest-track-point
-    /// projection → cumulative distance, then sort + re-index in ride order.
-    static func placeWaypoints(
-        _ raw: [GPXCollector.RawWaypoint], along points: [RoutePoint]
-    ) -> [Waypoint] {
-        guard !raw.isEmpty, points.count > 1 else { return [] }
-
-        var cumulative: [Double] = [0]
-        cumulative.reserveCapacity(points.count)
-        for i in 1..<points.count {
-            cumulative.append(cumulative[i - 1] + points[i - 1].coordinate.distance(to: points[i].coordinate))
-        }
-
-        let placed = raw.map { waypoint -> (RawPlacement) in
-            var best = (index: 0, distance: Double.infinity)
-            for (i, point) in points.enumerated() {
-                let d = waypoint.coordinate.distance(to: point.coordinate)
-                if d < best.distance { best = (i, d) }
-            }
-            return RawPlacement(waypoint: waypoint, along: cumulative[best.index])
-        }
-
-        return placed
-            .sorted { $0.along < $1.along }
-            .enumerated()
-            .map { index, placement in
-                Waypoint(
-                    index: index,
-                    name: placement.waypoint.name,
-                    note: placement.waypoint.note,
-                    distanceAlongMeters: placement.along,
-                    coordinate: placement.waypoint.coordinate
-                )
-            }
-    }
-
-    private struct RawPlacement {
-        let waypoint: GPXCollector.RawWaypoint
-        let along: Double
     }
 }
 
@@ -79,12 +34,6 @@ public struct GPXRouteDecoder: RouteFileDecoder {
 /// `XMLParserDelegate` requires `NSObject`; used strictly synchronously inside
 /// `decode(_:)`, never across a concurrency boundary.
 final class GPXCollector: NSObject, XMLParserDelegate {
-    struct RawWaypoint {
-        var name: String
-        var note: String?
-        let coordinate: Coordinate
-    }
-
     private(set) var creator: String?
     private(set) var routeName: String?
     private(set) var points: [RoutePoint] = []
