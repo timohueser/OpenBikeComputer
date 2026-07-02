@@ -283,6 +283,38 @@ connect/hold:
 2M PHY, and the interval settling to the idle set; disconnect/re-connect and walk out of range —
 the counters bump, the reason logs, and it always returns to advertising.
 
+## GATT control plane (A4, #272)
+
+`ble::run` now serves the **real** control plane the iOS app discovers on connect
+(`obc-ble-interface-spec.md` §3, the S0-frozen UUIDs). One `#[gatt_server]` in `src/ble.rs` holds
+three services — mirroring the spec section so there's one place to diff:
+
+- **DIS** (`0x180A`) — Firmware Revision (`<crate-semver>+<git-short>`, e.g. `0.1.0+ca9b336`;
+  `build.rs` emits `OBC_FW_GIT`), Hardware Revision (`nrf54l15-dk`), Serial Number (the 16-hex FICR
+  `DEVICEID`, whose last four digits are the `OBC-XXXX` advertised name).
+- **BAS** (`0x180F`) — Battery Level, read + notify, fed from the `FuelGauge` seam (the status plane
+  publishes each poll via `ble::publish_battery`; a `battery_task` re-notifies on a slow cadence).
+- **OBC Control** (`3C92XXXX-9916-4EBA-ABC2-342FE08F6B10`) — all eight characteristics: `command`,
+  `status` (notify), `objectStore`, `config`, `transferControl` (write+notify), `diagnostics`
+  (reserved, reads 0 bytes), `psm`, `protocolVersion` (= 1). The 128-bit service UUID is advertised
+  (name moves to the scan response) so the app's `scanForPeripherals(withServices:)` filter matches.
+
+Control-plane writes are answered with the S0-typed `status` envelope — never a hang or a bare ATT
+failure for an op that isn't fully wired yet: `command` → `commandResult` (`deleteObject` reports
+`notFound` until the A6 store lands), `transferControl` → `transferResult(error)` (no data plane
+until A5), `config` is shape-validated + accepted (round-trips in-session; RRAM/SD persistence is A6).
+
+A4 also stands up a **minimal L2CAP CoC**: the SPSM `0x0080` is registered on the stack and
+published in `psm`, and `serve_coc` accepts the channel and **drains/discards** its bytes. That is
+just enough for the iOS app's `connect()` to complete (it gates completion on the L2CAP channel
+opening); the framing crate + transfer state machine + real object payloads are A5/A6, bonding A8.
+
+**Verify** — nRF Connect: the full service/characteristic table matches S0, DIS strings + serial are
+real, BAS notifies, `protocolVersion` reads `1`, `psm` reads `0x0080`, and a write to
+`command`/`transferControl` yields a `status` notification. Then the iOS companion (Debug build,
+`-OBCTransport ble`): `connect()` completes end-to-end and the device row shows the real firmware
+revision — first app↔firmware contact.
+
 ## Driving it from a host (`debug-uart`)
 
 With the `debug-uart` firmware flashed and VCOM HWFC off, replay a recorded ride over

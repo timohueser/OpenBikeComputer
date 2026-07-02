@@ -30,9 +30,21 @@
 //! pattern rather than bolted onto one task. The firmware runs no watchdog today, so this build
 //! doesn't regress that.
 //!
-//! The GATT surface is still a stub battery service so a phone's discovery walk has real
-//! attributes — the real control plane (DIS + BAS + OBC Control) is A4, the CoC data plane A5,
-//! pairing/bonding A8.
+//! ### GATT control plane + a minimal CoC accept (A4, issue #272)
+//!
+//! The GATT surface is now the **real** control plane the iOS app discovers on connect
+//! (`obc-ble-interface-spec.md` §3, the S0 UUIDs): **DIS** (real firmware revision / board id /
+//! FICR serial), **BAS** (battery, notify — fed from the [`FuelGauge`] seam via [`publish_battery`]),
+//! and the custom **OBC Control** service ([`ObcControlService`]) with all eight characteristics.
+//! Writes are answered with the S0-typed `status` envelope, never a hang or a bare ATT failure:
+//! `command` → `commandResult`, `transfer_control` → `transferResult(error)` (no data plane yet),
+//! `config` is validated + accepted (round-trips in-session; storage wiring is A6).
+//!
+//! A4 also stands up a **minimal L2CAP CoC**: the SPSM [`OBC_PSM`] is registered on the stack and
+//! published in the `psm` characteristic, and [`serve_coc`] accepts the channel and drains/discards
+//! its bytes. That is deliberately *just enough* for the app's `connect()` to complete — it gates
+//! completion on the L2CAP channel opening — the framing crate + transfer state machine + real
+//! object payloads are A5/A6, pairing/bonding A8.
 //!
 //! ## Interrupts / priorities (the A1 inventory, reconciled at A2)
 //!
@@ -58,10 +70,11 @@
 
 use core::cell::Cell;
 use core::mem::MaybeUninit;
+use core::sync::atomic::{AtomicU8, Ordering};
 
 use defmt::{info, unwrap, warn};
 use embassy_executor::Spawner;
-use embassy_futures::join::join;
+use embassy_futures::join::{join, join3};
 use embassy_futures::select::{select, Either};
 use embassy_nrf::mode::Blocking;
 use embassy_nrf::{bind_interrupts, cracen, peripherals, Peri};
@@ -85,11 +98,22 @@ bind_interrupts!(struct Irqs {
 
 /// Ship config: the phone is the only peer.
 const CONNECTIONS_MAX: usize = 1;
-/// L2CAP signal + ATT; the data-plane CoC (A5) adds one more later.
-const L2CAP_CHANNELS_MAX: usize = 2;
+/// L2CAP signal + ATT + the data-plane CoC (A4 stands up the accept side; A5 gives it semantics).
+const L2CAP_CHANNELS_MAX: usize = 3;
 /// Outgoing/incoming LL buffers per link (the TrouBLE nrf54 example's values).
 const L2CAP_TXQ: u8 = 3;
 const L2CAP_RXQ: u8 = 3;
+
+/// The dynamic L2CAP SPSM the CoC server listens on (S0 §5), published in the `psm` characteristic.
+/// A fixed value in the LE dynamic range (`0x0080..=0x00FF`) — the app reads whatever we advertise,
+/// so a constant is simpler than negotiating one and equally correct.
+const OBC_PSM: u16 = 0x0080;
+
+/// The OBC Control service UUID (`3C920000-9916-4EBA-ABC2-342FE08F6B10`, S0 §3.3) as the raw
+/// **little-endian** 16 bytes the advertising AD structure wants (reverse of the display order).
+/// Advertised so the app's `scanForPeripherals(withServices:)` filter matches.
+const OBC_SERVICE_UUID_LE: [u8; 16] =
+    [0x10, 0x6B, 0x8F, 0xE0, 0x2F, 0x34, 0xC2, 0xAB, 0xBA, 0x4E, 0x16, 0x99, 0x00, 0x00, 0x92, 0x3C];
 
 /// SDC memory block, sized to `Builder::required_memory()` for this exact config — measured on
 /// glass 2026-07-02 (logged at boot; the SDC warns if the block is bigger than needed and
@@ -190,12 +214,27 @@ pub async fn wait_status_change() {
     STATUS_EDGE.wait().await
 }
 
+/// The latest battery percent for the BAS characteristic (S0 §3.2) — written by the status plane
+/// ([`publish_battery`], which owns the [`FuelGauge`]) and read by [`battery_task`] to seed + notify.
+/// Seeded to the `StubFuelGauge` default so a read before the first poll is still plausible.
+static BATTERY: AtomicU8 = AtomicU8::new(75);
+
+/// Publish the latest battery percent for BAS (called by `run_status` after each fuel poll).
+pub fn publish_battery(pct: u8) {
+    BATTERY.store(pct, Ordering::Relaxed);
+}
+
+/// The latest published battery percent (BAS seed + notify).
+fn battery() -> u8 {
+    BATTERY.load(Ordering::Relaxed)
+}
+
 // ============================ Identity (S0 §2 / §3.1) ============================
 
 /// `FICR.INFO.DEVICEID[0]` (nRF54L15: FICR `0x00FF_C000` + INFO `0x300` + DEVICEID `0x04`) — the
 /// low word of the 64-bit factory device id. Read raw: embassy-nrf's `pac` re-export is
 /// `pub(crate)` without its `unstable-pac` feature, and one always-readable FICR word doesn't
-/// justify enabling that. The full 16-hex-digit serial (S0 §3.1) is A4's DIS characteristic.
+/// justify enabling that. The full 16-hex-digit serial (S0 §3.1) is built by [`serial_string`].
 const FICR_INFO_DEVICEID0: *const u32 = 0x00FF_C304 as *const u32;
 /// `FICR.INFO.DEVICEID[1]` — the high word (the address derivation below uses both).
 const FICR_INFO_DEVICEID1: *const u32 = 0x00FF_C308 as *const u32;
@@ -209,6 +248,32 @@ pub fn device_name() -> heapless::String<8> {
     let _ = core::fmt::write(&mut s, format_args!("OBC-{:04X}", id & 0xFFFF));
     s
 }
+
+/// A GATT-typed string (trouble-host's heapless 0.9) from `format_args!` — the DIS values live in
+/// the attribute table, which is 0.9. Truncates to `N` on overflow (all callers fit by construction).
+fn gatt_str<const N: usize>(args: core::fmt::Arguments<'_>) -> heapless09::String<N> {
+    let mut s = heapless09::String::new();
+    let _ = core::fmt::write(&mut s, args);
+    s
+}
+
+/// The DIS **Serial Number** string (S0 §3.1): the 64-bit FICR `DEVICEID` as 16 uppercase hex
+/// digits, high word first — so its last four digits are [`device_name`]'s `XXXX`.
+pub fn serial_string() -> heapless09::String<16> {
+    let id0 = unsafe { FICR_INFO_DEVICEID0.read_volatile() };
+    let id1 = unsafe { FICR_INFO_DEVICEID1.read_volatile() };
+    gatt_str(format_args!("{:08X}{:08X}", id1, id0))
+}
+
+/// The DIS **Firmware Revision** string (S0 §3.1): crate semver + git short hash, e.g. `0.1.0+ca9b336`
+/// (`OBC_FW_GIT` is emitted by `build.rs`; `unknown` when git wasn't reachable at build time).
+fn firmware_revision() -> heapless09::String<24> {
+    gatt_str(format_args!("{}+{}", env!("CARGO_PKG_VERSION"), env!("OBC_FW_GIT")))
+}
+
+/// The DIS **Hardware Revision** string (S0 §3.1): the board id. The DK today; the LM20 board crate
+/// changes this const when it lands.
+const HARDWARE_REVISION: &str = "nrf54l15-dk";
 
 /// A **static random** address derived from the factory device id (top two bits must be `11` per
 /// the spec), so every board advertises a stable, distinct address. Real identity management
@@ -386,17 +451,116 @@ fn build_sdc<'d, const N: usize>(
         .build(p, rng, mpsl, mem)
 }
 
-// GATT server: a stub battery service so a discovery walk has real attributes until A4 lands
-// the real control plane (DIS + BAS + OBC Control). The fixed 75 matches `StubFuelGauge`.
+// The GATT control plane (A4, S0 §3): the two SIG services + the custom OBC Control service. The
+// attribute table is auto-sized by the derive (no `attribute_table_size`); runtime values (DIS
+// strings, the Config default) are seeded via `server.set` after `new_with_config` in `run`.
 #[gatt_server]
 struct Server {
-    battery_service: BatteryService,
+    dis: DeviceInformationService,
+    bas: BatteryService,
+    obc: ObcControlService,
 }
 
+/// Device Information Service (S0 §3.1). All read-only strings, seeded at boot; `value` can't hold
+/// a runtime string, so the macro declares them empty and `run` fills them.
+#[gatt_service(uuid = service::DEVICE_INFORMATION)]
+struct DeviceInformationService {
+    #[characteristic(uuid = characteristic::FIRMWARE_REVISION_STRING, read)]
+    firmware_revision: heapless09::String<24>,
+    #[characteristic(uuid = characteristic::HARDWARE_REVISION_STRING, read)]
+    hardware_revision: heapless09::String<16>,
+    #[characteristic(uuid = characteristic::SERIAL_NUMBER_STRING, read)]
+    serial_number: heapless09::String<16>,
+}
+
+/// Battery Service (S0 §3.2): the level, read + notify — fed from the [`FuelGauge`] seam.
 #[gatt_service(uuid = service::BATTERY)]
 struct BatteryService {
     #[characteristic(uuid = characteristic::BATTERY_LEVEL, read, notify, value = 75)]
     level: u8,
+}
+
+/// OBC Control service (S0 §3.3): the custom `3C92XXXX-…` base, the 16-bit block selecting the
+/// entity. This table mirrors the spec section one-to-one — one place to diff against S0.
+#[gatt_service(uuid = "3C920000-9916-4EBA-ABC2-342FE08F6B10")]
+struct ObcControlService {
+    /// Small imperative commands (§4.4). Write; answered by a `status` `commandResult`.
+    #[characteristic(uuid = "3C920001-9916-4EBA-ABC2-342FE08F6B10", write)]
+    command: heapless09::Vec<u8, 8>,
+    /// Typed device → app messages (§4.3). Notify-only.
+    #[characteristic(uuid = "3C920002-9916-4EBA-ABC2-342FE08F6B10", notify)]
+    status: heapless09::Vec<u8, 8>,
+    /// The store digest (§4.5): revision + object counts. Zeroed = revision 0, no objects (A6).
+    #[characteristic(uuid = "3C920003-9916-4EBA-ABC2-342FE08F6B10", read, notify, value = [0u8; 10])]
+    object_store: [u8; 10],
+    /// The Config object (§7.3), whole-blob read + write. Seeded with the default at boot.
+    #[characteristic(uuid = "3C920004-9916-4EBA-ABC2-342FE08F6B10", read, write)]
+    config: heapless09::Vec<u8, 128>,
+    /// Open / resume / abort a CoC transfer (§4.2). Write + notify; A4 answers `error` (no data plane).
+    #[characteristic(uuid = "3C920005-9916-4EBA-ABC2-342FE08F6B10", write, notify, value = [0u8; 16])]
+    transfer_control: [u8; 16],
+    /// Reserved (§7.5 — diagnostics cross the CoC): reads return 0 bytes.
+    #[characteristic(uuid = "3C920006-9916-4EBA-ABC2-342FE08F6B10", read)]
+    diagnostics: heapless09::Vec<u8, 1>,
+    /// The L2CAP CoC PSM the app opens the channel on (§3.3).
+    #[characteristic(uuid = "3C920007-9916-4EBA-ABC2-342FE08F6B10", read, value = OBC_PSM)]
+    psm: u16,
+    /// `protocol_version` (§1) — read without encryption. `1` for this contract.
+    #[characteristic(uuid = "3C920008-9916-4EBA-ABC2-342FE08F6B10", read, value = 1)]
+    protocol_version: u16,
+}
+
+// ============================ S0 control-plane codecs (§4.3 / §7.3) ============================
+
+/// The default Config blob (S0 §7.3, Config v1): the factory device name + metric units. Served on
+/// the `config` read until a write (Delta-1 rename) replaces it; persistence to storage is A6.
+fn default_config_blob() -> heapless09::Vec<u8, 128> {
+    let name = device_name();
+    let nb = name.as_bytes();
+    let mut v = heapless09::Vec::new();
+    let _ = v.extend_from_slice(&(nb.len() as u16).to_le_bytes());
+    let _ = v.extend_from_slice(nb);
+    let _ = v.push(0); // units = metric
+    v
+}
+
+/// Shape-check a written Config blob (S0 §7.3): a `name_len` u16 ≤ 48 that fits, whole blob ≤ 128.
+/// A well-formed write is accepted (round-trips on read this session); a malformed one is rejected
+/// with an ATT error rather than silently stored.
+fn config_valid(data: &[u8]) -> bool {
+    if data.len() < 3 || data.len() > 128 {
+        return false;
+    }
+    let name_len = u16::from_le_bytes([data[0], data[1]]) as usize;
+    // 2 (name_len) + name_len (name) + 1 (units) bytes must fit.
+    name_len <= 48 && name_len + 3 <= data.len()
+}
+
+/// Build the `commandResult` status message (S0 §4.3 `msg=3`) for a `command` write (§4.4). No
+/// object store exists until A6, so `deleteObject` (cmd 1) honestly reports `notFound`; any other
+/// command byte is `unknown`. Always 4 bytes — never a hang or a bare ATT failure.
+fn build_command_result(data: &[u8]) -> heapless::Vec<u8, 8> {
+    let cmd = data.first().copied().unwrap_or(0);
+    let status = match cmd {
+        1 => 2u8, // deleteObject → notFound (no store yet)
+        _ => 1u8, // unknown command
+    };
+    let mut v = heapless::Vec::new();
+    let _ = v.extend_from_slice(&[3, cmd, status, 0]);
+    v
+}
+
+/// Build the `transferResult` status message (S0 §4.3 `msg=1`) for a `transfer_control` write
+/// (§4.2). A4 has no data plane, so every open is answered `error` with a zero `committed_offset`,
+/// echoing the descriptor's `object_id` so the app can classify it. Always 8 bytes.
+fn build_transfer_result_error(data: &[u8]) -> heapless::Vec<u8, 8> {
+    let object_id = if data.len() >= 4 { u16::from_le_bytes([data[2], data[3]]) } else { 0 };
+    let mut v = heapless::Vec::new();
+    let _ = v.push(1); // msg = transferResult
+    let _ = v.extend_from_slice(&object_id.to_le_bytes());
+    let _ = v.push(3); // status = error (no data plane yet)
+    let _ = v.extend_from_slice(&0u32.to_le_bytes()); // committed_offset
+    v
 }
 
 /// Bring the whole stack up and run it forever: MPSL (spawned — it must outlive everything),
@@ -456,7 +620,8 @@ pub async fn run(
     let name = device_name();
     info!("ble: host up as '{}', address {:?}", name.as_str(), address);
 
-    let stack = trouble_host::new(sdc, resources).set_random_address(address).build();
+    // Register the CoC SPSM up front (S0 §5) so `serve_coc` can accept on it once a link is up.
+    let stack = trouble_host::new(sdc, resources).set_random_address(address).register_l2cap_spsm(OBC_PSM).build();
     let runner = stack.runner();
     let mut peripheral = stack.peripheral();
 
@@ -464,6 +629,20 @@ pub async fn run(
         name: name.as_str(),
         appearance: &appearance::cycling::CYCLING_COMPUTER,
     })));
+
+    // Seed the runtime attribute values the macro `value =` can't hold (DIS strings + the Config
+    // default). `server.set` writes the shared attribute table once — no connection needed. The
+    // scalar/array defaults (`object_store` zeros, `psm`, `protocol_version`) are baked in above.
+    let _ = server.set(&server.dis.firmware_revision, &firmware_revision());
+    let _ = server.set(&server.dis.hardware_revision, &gatt_str::<16>(format_args!("{HARDWARE_REVISION}")));
+    let _ = server.set(&server.dis.serial_number, &serial_string());
+    let _ = server.set(&server.obc.config, &default_config_blob());
+    info!(
+        "ble: DIS fw '{}' hw '{}' serial '{}'",
+        firmware_revision().as_str(),
+        HARDWARE_REVISION,
+        serial_string().as_str()
+    );
 
     // The lifecycle loop (A3): advertise → serve → re-advertise, forever, with no terminal state.
     join(host_task(runner), async {
@@ -495,12 +674,21 @@ pub async fn run(
                 s.connects += 1;
             });
 
-            // Serve the link until the peer drops it, negotiating the S0 §3.4 parameters
-            // concurrently: `serve_connection` pumps GATT + connection events (so the phone's own
-            // MTU/PHY/DLE moves are serviced) while `negotiate_link` issues our requests. `join`
-            // returns when `serve_connection` does — on disconnect — by which point `negotiate_link`
-            // has long finished. Any disconnect reason drops straight back to advertising.
-            let (reason, ()) = join(serve_connection(&server, &conn), negotiate_link(&stack, &conn)).await;
+            // Serve the link until the peer drops it. `serve_connection` pumps GATT + connection
+            // events (so the phone's own MTU/PHY/DLE moves are serviced and our control-plane writes
+            // are answered) and owns the exit — it returns the disconnect reason. The background set
+            // (parameter negotiation, the CoC accept-and-drain, and the BAS battery notify) runs
+            // concurrently and never returns, so `select` tears it all down the moment the link drops
+            // (S0 §2: any disconnect drops straight back to advertising).
+            let reason = match select(
+                serve_connection(&stack, &server, &conn),
+                join3(negotiate_link(&stack, &conn), serve_coc(&stack, &conn), battery_task(&stack, &server, &conn)),
+            )
+            .await
+            {
+                Either::First(reason) => reason,
+                Either::Second(_) => unreachable!("the background futures never return"),
+            };
             publish(|s| {
                 s.disconnects += 1;
                 s.last_disconnect_reason = reason;
@@ -522,25 +710,65 @@ async fn host_task<C: Controller, P: PacketPool>(mut runner: Runner<'_, C, P>) -
 }
 
 /// Serve GATT + connection events until the peer drops the link. Returns the disconnect reason
-/// (HCI status code); publishes the link edges the status UI shows (conn interval, PHY) and logs
-/// the rest — including every disconnect reason, named + numeric — for the `A9` soak's RTT trail.
-async fn serve_connection<P: PacketPool>(server: &Server<'_>, conn: &GattConnection<'_, '_, P>) -> u8 {
-    let level = server.battery_service.level;
+/// (HCI status code); answers the OBC Control writes with the S0-typed `status` envelope, publishes
+/// the link edges the status UI shows (conn interval, PHY) and logs the rest — including every
+/// disconnect reason, named + numeric — for the `A9` soak's RTT trail. Concrete SDC/pool types
+/// (like [`negotiate_link`]): the `status` notify needs the `stack`, and this only runs on the one
+/// controller.
+async fn serve_connection(
+    stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
+    server: &Server<'_>,
+    conn: &GattConnection<'_, '_, DefaultPacketPool>,
+) -> u8 {
     let reason = loop {
         match conn.next().await {
             GattConnectionEvent::Disconnected { reason } => break reason,
             GattConnectionEvent::Gatt { event } => {
-                match &event {
-                    GattEvent::Read(e) if e.handle() == level.handle => {
-                        info!("ble: [gatt] read battery level -> {:?}", conn.get(&level));
+                // Extract what a control-plane write needs answered *before* accepting (which
+                // consumes the event), then notify the S0 `status` message — never a hang / bare
+                // ATT failure for an op we don't fully implement yet.
+                let mut status_msg: Option<heapless::Vec<u8, 8>> = None;
+                let reply = match event {
+                    GattEvent::Write(e) => {
+                        let handle = e.handle();
+                        if handle == server.obc.command.handle {
+                            status_msg = Some(e.with_data(|_off, data| build_command_result(data)));
+                            info!("ble: [gatt] command write");
+                            e.accept()
+                        } else if handle == server.obc.transfer_control.handle {
+                            status_msg = Some(e.with_data(|_off, data| build_transfer_result_error(data)));
+                            info!("ble: [gatt] transfer_control write (no data plane -> error)");
+                            e.accept()
+                        } else if handle == server.obc.config.handle {
+                            if e.with_data(|_off, data| config_valid(data)) {
+                                info!("ble: [gatt] config write accepted (in-RAM until A6)");
+                                e.accept()
+                            } else {
+                                warn!("ble: [gatt] config write rejected (malformed)");
+                                e.reject(AttErrorCode::INVALID_ATTRIBUTE_VALUE_LENGTH)
+                            }
+                        } else {
+                            info!("ble: [gatt] write handle {}", handle);
+                            e.accept()
+                        }
                     }
-                    GattEvent::Read(e) => info!("ble: [gatt] read handle {}", e.handle()),
-                    GattEvent::Write(e) => info!("ble: [gatt] write handle {}", e.handle()),
-                    _ => info!("ble: [gatt] other event"),
-                }
-                match event.accept() {
+                    GattEvent::Read(e) => {
+                        info!("ble: [gatt] read handle {}", e.handle());
+                        e.accept()
+                    }
+                    // Permission-violating request (e.g. a write to a read-only attribute): accepting
+                    // lets the server send the proper ATT error response rather than dropping it.
+                    GattEvent::NotAllowed(e) => e.accept(),
+                    GattEvent::Other(e) => e.accept(),
+                };
+                match reply {
                     Ok(reply) => reply.send().await,
                     Err(e) => warn!("ble: [gatt] error sending response: {:?}", e),
+                }
+                if let Some(msg) = status_msg {
+                    if let Err(e) = server.notify(stack, server.obc.status.handle, msg.as_slice()).await {
+                        warn!("ble: [gatt] status notify failed: {:?}", defmt::Debug2Format(&e));
+                    }
                 }
             }
             GattConnectionEvent::PhyUpdated { tx_phy, rx_phy } => {
@@ -565,6 +793,63 @@ async fn serve_connection<P: PacketPool>(server: &Server<'_>, conn: &GattConnect
     };
     info!("ble: [conn] disconnected, reason 0x{:02X} ({:?})", reason.into_inner(), reason);
     reason.into_inner()
+}
+
+/// The minimal L2CAP CoC (A4): accept the app's channel on [`OBC_PSM`] and **drain/discard** its
+/// bytes. This is deliberately just enough for the app's `connect()` to complete — it gates
+/// completion on the channel opening — with no framing or storage. A5 replaces the drain with the
+/// transfer state machine (the `obc-ble` crate) that sinks these bytes to storage with a running
+/// CRC. Loops so a channel re-open on the same link is served; [`select`] in `run` cancels it on
+/// disconnect. Never returns (the outer `select` owns the link's exit).
+async fn serve_coc(
+    stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
+    conn: &GattConnection<'_, '_, DefaultPacketPool>,
+) -> ! {
+    let listener = L2capChannel::listen(stack, conn.raw());
+    // The receive buffer must be ≥ the negotiated SDU MTU (defaults to the pool MTU − 6 = 245).
+    let mut buf = [0u8; DefaultPacketPool::MTU];
+    loop {
+        match listener.accept(&L2capChannelConfig::default()).await {
+            Ok(mut ch) => {
+                info!("ble: [coc] channel accepted (mtu {} mps {}) — draining (A5 sinks these)", ch.mtu(), ch.mps());
+                loop {
+                    match ch.receive(stack, &mut buf).await {
+                        Ok(n) => info!("ble: [coc] drained {} bytes", n),
+                        Err(e) => {
+                            info!("ble: [coc] channel closed: {:?}", defmt::Debug2Format(&e));
+                            break;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                // A failed accept while the link is up shouldn't hot-spin — back off a beat. On a
+                // real disconnect the `run` `select` has already dropped this future.
+                warn!("ble: [coc] accept failed: {:?}", defmt::Debug2Format(&e));
+                Timer::after_millis(200).await;
+            }
+        }
+    }
+}
+
+/// Push the BAS battery level (S0 §3.2) to a subscribed central: seed on connect, then re-notify on
+/// a slow cadence. The value comes from the [`FuelGauge`] seam via [`publish_battery`] (the status
+/// plane owns the gauge). The stub is constant today — the notify *wiring* is what A4 proves.
+/// Never returns; cancelled by [`select`] in `run` on disconnect.
+async fn battery_task(
+    stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
+    server: &Server<'_>,
+    conn: &GattConnection<'_, '_, DefaultPacketPool>,
+) -> ! {
+    let level = server.bas.level;
+    loop {
+        let pct = battery();
+        let _ = conn.set(&level, &pct); // keep the readable value in step with the notify
+        if let Err(e) = server.notify(stack, level.handle, &pct).await {
+            warn!("ble: [bas] battery notify failed: {:?}", defmt::Debug2Format(&e));
+        }
+        Timer::after_secs(30).await;
+    }
 }
 
 /// Negotiate the S0 §3.4 link parameters, best-effort. Each step is a *preference* — the protocol
@@ -634,24 +919,30 @@ async fn negotiate_link(
 /// Advertise per the S0 §2 interval policy and return the accepted connection: **fast** (40 ms)
 /// for [`FAST_ADV_WINDOW`], then **slow** (1000 ms) indefinitely. Each phase is a fresh advertiser;
 /// when the fast window elapses with no central its advertiser is dropped (which stops adv) and the
-/// slow one starts. Legacy connectable adv, S0 §2 shaped: AD Flags + the complete local name
-/// (`OBC-XXXX`). The 128-bit OBC Control service UUID joins the payload at A4 (the service doesn't
-/// exist yet).
+/// slow one starts. Legacy connectable adv, S0 §2 shaped: the primary PDU carries AD Flags + the
+/// 128-bit OBC Control service UUID (so the app's `scanForPeripherals(withServices:)` filter
+/// matches), and the local name (`OBC-XXXX`) rides the scan response (S0 §2 allows this — the name
+/// would crowd the 31-byte primary PDU alongside the 18-byte UUID structure).
 async fn advertise_lifecycle<'values, 'server, C: Controller>(
     name: &'values str,
     peripheral: &mut Peripheral<'values, C, DefaultPacketPool>,
     server: &'server Server<'values>,
 ) -> Result<GattConnection<'values, 'server, DefaultPacketPool>, BleHostError<C::Error>> {
     let mut adv_data = [0u8; 31];
-    let len = AdStructure::encode_slice(
+    let adv_len = AdStructure::encode_slice(
         &[
             AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
-            AdStructure::CompleteLocalName(name.as_bytes()),
+            AdStructure::CompleteServiceUuids128(&[OBC_SERVICE_UUID_LE]),
         ],
         &mut adv_data[..],
     )?;
-    let adv_data = &adv_data[..len];
-    let adv = || Advertisement::ConnectableScannableUndirected { adv_data, scan_data: &[] };
+    let adv_data = &adv_data[..adv_len];
+
+    let mut scan_data = [0u8; 31];
+    let scan_len = AdStructure::encode_slice(&[AdStructure::CompleteLocalName(name.as_bytes())], &mut scan_data[..])?;
+    let scan_data = &scan_data[..scan_len];
+
+    let adv = || Advertisement::ConnectableScannableUndirected { adv_data, scan_data };
 
     // Fast phase: 40 ms, abandoned after FAST_ADV_WINDOW. `select` drops the losing future, so on
     // timeout the advertiser (owned by `accept`) is dropped and its `Drop` stops advertising.

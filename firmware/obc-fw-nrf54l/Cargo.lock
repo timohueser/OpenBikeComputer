@@ -1052,6 +1052,7 @@ dependencies = [
  "embedded-sdmmc",
  "embedded-storage",
  "heapless 0.8.0",
+ "heapless 0.9.3",
  "nrf-mpsl",
  "nrf-sdc",
  "obc-app",
