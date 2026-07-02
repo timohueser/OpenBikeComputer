@@ -30,6 +30,7 @@ companion-ios/
                                drift from project.yml)
   OBCCompanion/               app target = composition root ONLY
     OBCCompanionApp.swift      @main; the one place that picks a DeviceTransport
+                               (and the BondStore + LibraryStore conformers)
     RootView.swift             launch gate (B2) + the main screen's NavigationStack
                                (B3) + the B4 detail routing and the import edge
                                (RouteImporter → E1 cover + the H5 alert, hung
@@ -51,6 +52,13 @@ companion-ios/
         OBCTransport/          DeviceTransport (Tier 1) + TransferHandle + RideDownload
                                + AsyncMulticast + BondStore (the B2 "have we bonded"
                                record — UserDefaults-backed; CB owns the real bond);
+          Library/             LibraryStore (B1S) — the phone-side library seam:
+                               planned routes (imports, H4) + synced rides, read by
+                               the B3 lists, written by import/sync. FileLibraryStore
+                               (versioned JSON in App Support + byte-exact source
+                               sidecars) is the real conformer; InMemoryLibraryStore
+                               serves tests, previews, and every mock run (scenario
+                               launches must start from their fixtures alone)
           Transfer/            control-plane descriptors + CRC-32 (pure, host-tested)
           Codecs/              device object layouts ↔ domain types (S0-owned bytes:
                                Config blob now; route encoder / ride decoder when
@@ -450,6 +458,15 @@ Every component file carries a `#Preview` with design sample data.
   Never parse a file or generate an export anywhere else — switching the
   tracked-file format (GPX → FIT) must stay a one-conformer change at the
   composition root.
+- **The library persists canonical models, never wire bytes** (B1S,
+  [#256](https://github.com/timohueser/OpenBikeComputer/issues/256)):
+  `LibraryStore` holds `PlannedRouteRecord` (the parsed `ImportedRoute` + the
+  original file, byte-exact) and `Ride` — the device's compact-binary layouts
+  are firmware-`S0`-owned and get (re-)encoded/decoded at the transport edge.
+  Ride tracklogs stay empty until the S0 ride codec lands (B7 fills them at
+  sync-decode time). Screens read the store first, then reconcile with the
+  device — that's why S4 degrades to a banner instead of emptying, and why an
+  H4 import survives a relaunch.
 - **Observation (`@Observable`) for view models.** Not `ObservableObject`.
 - **One feature per folder** under `OBCUI` (a view + its view model together).
 - **Strict concurrency is on** (`SWIFT_STRICT_CONCURRENCY: complete`, package
