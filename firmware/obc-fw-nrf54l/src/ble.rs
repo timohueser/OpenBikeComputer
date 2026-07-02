@@ -62,8 +62,29 @@
 //!   [`obc_ble::Receiver`] — a running CRC-32 with no reassembly buffer — and streams each SDU
 //!   straight back over the same channel, verifying **one** whole-object CRC at the end and
 //!   notifying `committed` / `crcMismatch`. This is the loopback that proves the data plane end to
-//!   end with **zero storage involvement** (real objects → SD land at A6). On the first transfer the
+//!   end with **zero storage involvement**. On the first transfer the
 //!   link is asked for the fast [`conn_params`] set (throughput); the kB/s is logged over RTT.
+//!
+//! ### The route object plane (A6, issue #274)
+//!
+//! A6 wires the data plane to real storage through the [`ObjectStore`] (`object_store.rs`: SD
+//! catalog + object ids + the RRAM settings), shared between both planes as a `RefCell` that is
+//! **never borrowed across an `await`** (one thread-mode executor — the borrows are all inside
+//! sync sections):
+//!
+//! - **Route upload** ([`run_upload`]): CoC bytes sink straight into an SD temp with the running
+//!   CRC; commit validates (CRC + OBCR header) and atomically promotes (see `sd.rs` — the
+//!   held-back-magic substitute for FatFs' missing `rename`). A CoC drop parks the transfer for
+//!   the S0 §4.2 offset-resume; a whole-link drop keeps the parked state (`link_reset` only
+//!   releases handles).
+//! - **Downloads** ([`run_download`]): `routeList` (+ the empty `rideList` until A7) from a
+//!   store-built buffer, route detail streamed off the card — announce descriptor first, then
+//!   raw chunks, one whole-object CRC.
+//! - **`deleteObject`** ([`run_command`]) and every store movement notify `storeChanged` + the
+//!   refreshed `objectStore` digest ([`publish_store_change`]).
+//! - **Config ↔ settings** ([`config_blob`] / `apply_config`): the `config` characteristic
+//!   round-trips through the persisted settings; a rename reaches the airwaves on the next
+//!   advertise cycle ([`advertised_name`] is re-read per cycle).
 //!
 //! ## Interrupts / priorities (the A1 inventory, reconciled at A2)
 //!
@@ -87,9 +108,9 @@
 //! HCI 0x3E (advertising works — the failure needs a sync anchor). INTCAP-then-xtal is a filed
 //! follow-up. `main.rs` sets both knobs in its `ble`-build boot config.
 
-use core::cell::Cell;
+use core::cell::{Cell, RefCell};
 use core::mem::MaybeUninit;
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use defmt::{info, unwrap, warn};
 use embassy_executor::Spawner;
@@ -104,12 +125,13 @@ use embassy_time::{with_timeout, Duration, Instant, Timer};
 use nrf_sdc::mpsl::MultiprotocolServiceLayer;
 use nrf_sdc::{self as sdc, mpsl};
 use obc_ble::{
-    CommandResult, CommandStatus, Config, ObjectType, Op, Receiver, StatusMessage, TransferControl, TransferResult,
-    TransferStatus,
+    CommandResult, CommandStatus, Config, ObjectType, Op, Receiver, StatusMessage, StoreChanged, TransferControl,
+    TransferResult, TransferStatus,
 };
 use trouble_host::prelude::*;
 
 use crate::init_static;
+use crate::object_store::ObjectStore;
 
 bind_interrupts!(struct Irqs {
     SWI00 => nrf_sdc::mpsl::LowPrioInterruptHandler;
@@ -252,14 +274,36 @@ fn battery() -> u8 {
     BATTERY.load(Ordering::Relaxed)
 }
 
-// ============================ Data-plane arming (A5, S0 §4.2 / §5) ============================
+// ============================ Data-plane arming (A5/A6, S0 §4.2 / §5) ============================
 
-/// The control plane → data plane hand-off: [`serve_connection`] decodes an `echo` upload
-/// `transfer_control` write and signals its [`TransferControl`] here; [`serve_coc`] wakes on it and
-/// runs the loopback over the CoC. A `Signal` (latest-value) suffices because S0 allows exactly one
-/// transfer in flight at a time (§4.1) — the app writes one descriptor and waits for its result
-/// before the next.
-static TRANSFER_ARM: Signal<CriticalSectionRawMutex, TransferControl> = Signal::new();
+/// A transfer the control plane validated and handed to the data plane: the echo loopback (A5),
+/// a route upload with its ready [`Receiver`] (fresh or resumed — the store built it), or a
+/// download (the data plane opens the source itself; opening may be slow — a CRC pre-pass —
+/// and belongs off the GATT reply path).
+#[derive(Clone, Copy)]
+enum Armed {
+    Echo(TransferControl),
+    Upload(TransferControl, Receiver),
+    Download(TransferControl),
+}
+
+/// The control plane → data plane hand-off: [`serve_connection`] decodes a `transfer_control`
+/// write, validates it against the [`ObjectStore`], and signals the [`Armed`] transfer here;
+/// [`serve_coc`] wakes on it and drives the CoC. A `Signal` (latest-value) suffices because S0
+/// allows exactly one transfer in flight at a time (§4.1) — [`TRANSFER_ACTIVE`] turns a second
+/// open into a typed `busy` instead of a silent overwrite.
+static TRANSFER_ARM: Signal<CriticalSectionRawMutex, Armed> = Signal::new();
+
+/// One-transfer-at-a-time (S0 §4.1): set by the control plane when it arms, cleared by the data
+/// plane when the transfer concludes (answered, aborted, or the channel dropped). While set,
+/// another `transferControl` open is answered `busy`.
+static TRANSFER_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// An abort (S0 §4.2 op 3) aimed at the in-flight transfer: the control plane signals, the data
+/// plane consumes it at its next step (between SDUs / chunks), discards, and answers `aborted`
+/// with the durable offset. Latched — an abort that races the transfer's own completion is
+/// drained by [`serve_coc`] after each transfer, so it can't leak into the next one.
+static TRANSFER_ABORT: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 // ============================ Identity (S0 §2 / §3.1) ============================
 
@@ -273,11 +317,36 @@ const FICR_INFO_DEVICEID1: *const u32 = 0x00FF_C308 as *const u32;
 
 /// The factory advertising name (S0 §2): `OBC-XXXX`, the last four uppercase hex digits of the
 /// serial number — i.e. the low 16 bits of `DEVICEID[0]`, the tail of the serial's hex string.
-/// (The user-facing rename lives in the Config object at A6; factory name until then.)
+/// The default whenever no user rename is stored (A6: the Config object's name, S0 §7.3).
 pub fn device_name() -> heapless::String<8> {
     let id = unsafe { FICR_INFO_DEVICEID0.read_volatile() };
     let mut s = heapless::String::new();
     let _ = core::fmt::write(&mut s, format_args!("OBC-{:04X}", id & 0xFFFF));
+    s
+}
+
+/// How many bytes of the advertised name fit the 31-byte scan-response PDU beside the AD
+/// structure overhead (length + type = 2 bytes).
+const ADV_NAME_MAX: usize = 29;
+
+/// The name the device advertises **right now** (S0 §2/§7.3): the stored rename, or the factory
+/// name when none is set. Re-read by every advertise cycle, so a rename lands in the airwaves on
+/// the next advertising start (the current connection's GAP name keeps the boot value — the
+/// Config characteristic, not GAP, is authoritative). Truncated to the scan-response budget on a
+/// char boundary; the full name still serves on the `config` read.
+fn advertised_name(store: &ObjectStore) -> heapless::String<48> {
+    let mut s: heapless::String<48> = heapless::String::new();
+    let stored = store.settings().device_name;
+    if stored.is_empty() {
+        let _ = s.push_str(device_name().as_str());
+        return s;
+    }
+    let name = stored.as_str();
+    let mut end = name.len().min(ADV_NAME_MAX);
+    while end > 0 && !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    let _ = s.push_str(&name[..end]);
     s
 }
 
@@ -522,13 +591,16 @@ struct ObcControlService {
     /// Typed device → app messages (§4.3). Notify-only.
     #[characteristic(uuid = "3C920002-9916-4EBA-ABC2-342FE08F6B10", notify)]
     status: heapless09::Vec<u8, 8>,
-    /// The store digest (§4.5): revision + object counts. Zeroed = revision 0, no objects (A6).
+    /// The store digest (§4.5): revision + object counts. Seeded from the [`ObjectStore`] at
+    /// boot; re-set + notified on every commit/delete ([`publish_store_change`]).
     #[characteristic(uuid = "3C920003-9916-4EBA-ABC2-342FE08F6B10", read, notify, value = [0u8; 10])]
     object_store: [u8; 10],
-    /// The Config object (§7.3), whole-blob read + write. Seeded with the default at boot.
+    /// The Config object (§7.3), whole-blob read + write — round-trips through the persisted
+    /// settings (A6): seeded at boot, re-seeded canonical after every accepted write.
     #[characteristic(uuid = "3C920004-9916-4EBA-ABC2-342FE08F6B10", read, write)]
     config: heapless09::Vec<u8, 128>,
-    /// Open / resume / abort a CoC transfer (§4.2). Write + notify; A4 answers `error` (no data plane).
+    /// Open / resume / abort a CoC transfer (§4.2). Write + notify (the notify carries a
+    /// download's filled announce descriptor).
     #[characteristic(uuid = "3C920005-9916-4EBA-ABC2-342FE08F6B10", write, notify, value = [0u8; 16])]
     transfer_control: [u8; 16],
     /// Reserved (§7.5 — diagnostics cross the CoC): reads return 0 bytes.
@@ -547,13 +619,17 @@ struct ObcControlService {
 // The wire layouts themselves live in `obc_ble` (the host-tested crate the shared `protocol-vectors/`
 // fixtures pin); these helpers only bridge them to the board's GATT attribute types and policy.
 
-/// The default Config blob (S0 §7.3, Config v1): the factory device name + metric units. Served on
-/// the `config` read until a write (Delta-1 rename) replaces it; persistence to storage is A6.
-fn default_config_blob() -> heapless09::Vec<u8, 128> {
-    let name = device_name();
-    let cfg = Config { name: name.as_bytes(), units: 0 };
+/// The canonical Config blob (S0 §7.3, Config v1) from the persisted settings: the stored rename
+/// (or the factory name when unset — what the device actually advertises) + the units. Served on
+/// the `config` read; re-seeded after every accepted write so reads always return canonical bytes.
+fn config_blob(store: &ObjectStore) -> heapless09::Vec<u8, 128> {
+    let stored = store.settings().device_name;
+    let factory = device_name();
+    let name = if stored.is_empty() { factory.as_str() } else { stored.as_str() };
+    let units = if store.settings().units.is_imperial() { 1 } else { 0 };
+    let cfg = Config { name: name.as_bytes(), units };
     let mut buf = [0u8; Config::MAX_ENCODED];
-    let len = cfg.encode(&mut buf).unwrap_or(0); // `OBC-XXXX` always fits
+    let len = cfg.encode(&mut buf).unwrap_or(0); // both name sources are ≤ 48 by construction
     let mut v = heapless09::Vec::new();
     let _ = v.extend_from_slice(&buf[..len]);
     v
@@ -563,46 +639,100 @@ fn default_config_blob() -> heapless09::Vec<u8, 128> {
 /// one small stack buffer per message rather than a heapless alloc — every S0 status message fits.
 type StatusBytes = ([u8; StatusMessage::MAX_ENCODED_LEN], usize);
 
-/// The `commandResult` for a `command` write (S0 §4.3/§4.4). No object store exists until A6, so
-/// `deleteObject` (cmd 1) honestly reports `notFound`; any other byte is `unknownCommand`.
-fn command_result(data: &[u8]) -> StatusBytes {
+/// What a `command` write did: the `commandResult` to notify, plus whether the store changed
+/// (→ the caller also notifies `storeChanged` + the digest characteristic).
+struct CommandOutcome {
+    result: StatusBytes,
+    store_changed: bool,
+}
+
+/// Execute a `command` write (S0 §4.3/§4.4). `deleteObject` (cmd 1: `type u8 · object_id u16`)
+/// deletes a stored route through the [`ObjectStore`]; rides land at A7 (`notFound` until then);
+/// any other command byte is `unknownCommand`.
+fn run_command(data: &[u8], store: &RefCell<ObjectStore>) -> CommandOutcome {
     let cmd = data.first().copied().unwrap_or(0);
-    let status = match cmd {
-        1 => CommandStatus::NotFound, // deleteObject → no store yet
-        _ => CommandStatus::UnknownCommand,
+    let (status, store_changed) = match (cmd, data) {
+        (1, [_, ty, lo, hi, ..]) => {
+            let id = u16::from_le_bytes([*lo, *hi]);
+            match ObjectType::from_u8(*ty) {
+                Ok(ObjectType::Route) => {
+                    if store.borrow_mut().delete_route(id) {
+                        info!("ble: [cmd] deleted route object {}", id);
+                        (CommandStatus::Ok, true)
+                    } else {
+                        (CommandStatus::NotFound, false)
+                    }
+                }
+                // Rides are A7; anything else has nothing to delete.
+                _ => (CommandStatus::NotFound, false),
+            }
+        }
+        (1, _) => (CommandStatus::Error, false), // deleteObject with a truncated arg list
+        _ => (CommandStatus::UnknownCommand, false),
     };
-    StatusMessage::CommandResult(CommandResult::new(cmd, status)).encode()
+    CommandOutcome { result: StatusMessage::CommandResult(CommandResult::new(cmd, status)).encode(), store_changed }
 }
 
-/// How the data plane should answer a decoded `transfer_control` write (S0 §4.2).
+/// How a decoded `transfer_control` write proceeds (S0 §4.2).
 enum TransferDisposition {
-    /// A valid `echo` upload — hand the descriptor to the CoC task; it answers when the loopback ends.
-    ArmEcho(TransferControl),
-    /// Answer immediately on `status` (abort, an unsupported type/op, or a malformed descriptor).
+    /// Validated — hand to the CoC task ([`serve_coc`]), which answers when the transfer ends.
+    Arm(Armed),
+    /// Answer immediately on `status` (a reject, or an abort with nothing in flight).
     Answer(StatusBytes),
+    /// An abort aimed at the in-flight transfer — signal the data plane; *it* answers.
+    AbortActive,
 }
 
-/// Decode + classify a `transfer_control` write (S0 §4.2). The only data plane A5 implements is the
-/// `echo` loopback (S0 reserves type 8 for it); real routes/rides are A6/A7. A malformed descriptor,
-/// an unsupported op/type, or an abort is answered immediately with the S0-typed [`TransferResult`]
-/// — never a hang or a bare ATT failure.
-fn classify_transfer(data: &[u8]) -> TransferDisposition {
+/// Decode + classify a `transfer_control` write against the store (S0 §4.2): echo uploads (A5),
+/// route uploads (fresh / replace / resume), and route / list downloads. Everything invalid —
+/// malformed bytes, an unknown id (`notFound`), a second open mid-transfer (`busy`), an
+/// unsupported op/type combination (`error`) — is answered immediately with the S0-typed
+/// [`TransferResult`], never a hang or a bare ATT failure.
+fn classify_transfer(data: &[u8], store: &RefCell<ObjectStore>) -> TransferDisposition {
     let Ok(desc) = TransferControl::decode(data) else {
         // A malformed descriptor — the app can't have meant a real transfer; report `error`.
         return TransferDisposition::Answer(transfer_result(0, TransferStatus::Error));
     };
+    if desc.op == Op::Abort {
+        if TRANSFER_ACTIVE.load(Ordering::Relaxed) {
+            return TransferDisposition::AbortActive;
+        }
+        // Nothing in flight: drop any parked partial (its resume is being given up) and confirm.
+        store.borrow_mut().upload_discard();
+        return TransferDisposition::Answer(transfer_result(desc.object_id, TransferStatus::Aborted));
+    }
+    if TRANSFER_ACTIVE.load(Ordering::Relaxed) {
+        return TransferDisposition::Answer(transfer_result(desc.object_id, TransferStatus::Busy));
+    }
     match (desc.op, desc.ty) {
-        (Op::Upload, ObjectType::Echo) => TransferDisposition::ArmEcho(desc),
-        (Op::Abort, _) => TransferDisposition::Answer(transfer_result(desc.object_id, TransferStatus::Aborted)),
-        // Real object planes (route/ride/list/diagnostics) land at A6/A7 — until then, `error`.
+        (Op::Upload, ObjectType::Echo) => TransferDisposition::Arm(Armed::Echo(desc)),
+        (Op::Upload, ObjectType::Route) => match store.borrow_mut().upload_open(&desc) {
+            Ok(rx) => TransferDisposition::Arm(Armed::Upload(desc, rx)),
+            Err(status) => TransferDisposition::Answer(transfer_result(desc.object_id, status)),
+        },
+        (Op::Download, ObjectType::Route | ObjectType::RouteList | ObjectType::RideList) => {
+            // Cheap existence check here for the immediate `notFound`; the source itself (and
+            // its CRC pre-pass) opens on the data plane, off the GATT reply path.
+            if desc.ty == ObjectType::Route && !store.borrow().has_route(desc.object_id) {
+                return TransferDisposition::Answer(transfer_result(desc.object_id, TransferStatus::NotFound));
+            }
+            TransferDisposition::Arm(Armed::Download(desc))
+        }
+        // Ride objects + diagnostics are A7; uploads of list/config types are nonsensical.
         _ => TransferDisposition::Answer(transfer_result(desc.object_id, TransferStatus::Error)),
     }
 }
 
 /// A `transferResult` status message (S0 §4.3 `msg=1`) with a zero `committed_offset` — the shape
-/// for every result the control plane answers directly (nothing is durable yet, §4.2).
+/// for every result the control plane answers directly (nothing durable is being reported, §4.2).
 fn transfer_result(object_id: u16, status: TransferStatus) -> StatusBytes {
-    StatusMessage::TransferResult(TransferResult::new(object_id, status, 0)).encode()
+    transfer_result_at(object_id, status, 0)
+}
+
+/// A `transferResult` carrying a real durable byte count — a committed upload (`total_len`), or
+/// a parked/aborted transfer's resume anchor (S0 §4.3).
+fn transfer_result_at(object_id: u16, status: TransferStatus, committed_offset: u32) -> StatusBytes {
+    StatusMessage::TransferResult(TransferResult::new(object_id, status, committed_offset)).encode()
 }
 
 /// Bring the whole stack up and run it forever: MPSL (spawned — it must outlive everything),
@@ -615,7 +745,12 @@ pub async fn run(
     mpsl_p: mpsl::Peripherals<'static>,
     sdc_p: sdc::Peripherals<'static>,
     cracen_p: Peri<'static, peripherals::CRACEN>,
+    store: ObjectStore,
 ) -> ! {
+    // The object store (A6): SD catalog + RRAM settings behind one RefCell. The control plane
+    // (GATT writes) and the data plane (CoC transfers) both borrow it, always synchronously —
+    // never across an `await` — which is sound on the one thread-mode executor.
+    let store = RefCell::new(store);
     // LFCLK = the internal RC at Nordic's recommended calibration cadence (calibrate every
     // 16×0.25 s = 4 s; temp-check every 2 intervals) — guarantees the ±500 ppm class the accuracy
     // field claims. NOT the 32 k crystal — see the module doc (unprogrammed XO INTCAPs → HCI 0x3E).
@@ -659,7 +794,10 @@ pub async fn run(
 
     let resources = unsafe { init_static(core::ptr::addr_of_mut!(RESOURCES), HostResources::new()) };
     let address = device_address();
-    let name = device_name();
+    // The GAP name is pinned at boot (the attribute borrows it for the server's life); the
+    // *advertised* name is re-read from the store each advertise cycle, so a rename lands
+    // without a reboot (S0 §7.3 Delta 1 — the Config characteristic is authoritative anyway).
+    let name = advertised_name(&store.borrow());
     info!("ble: host up as '{}', address {:?}", name.as_str(), address);
 
     // Register the CoC SPSM up front (S0 §5) so `serve_coc` can accept on it once a link is up.
@@ -672,13 +810,14 @@ pub async fn run(
         appearance: &appearance::cycling::CYCLING_COMPUTER,
     })));
 
-    // Seed the runtime attribute values the macro `value =` can't hold (DIS strings + the Config
-    // default). `server.set` writes the shared attribute table once — no connection needed. The
-    // scalar/array defaults (`object_store` zeros, `psm`, `protocol_version`) are baked in above.
+    // Seed the runtime attribute values the macro `value =` can't hold (DIS strings, the Config
+    // blob from the persisted settings, the store digest). `server.set` writes the shared
+    // attribute table once — no connection needed.
     let _ = server.set(&server.dis.firmware_revision, &firmware_revision());
     let _ = server.set(&server.dis.hardware_revision, &gatt_str::<16>(format_args!("{HARDWARE_REVISION}")));
     let _ = server.set(&server.dis.serial_number, &serial_string());
-    let _ = server.set(&server.obc.config, &default_config_blob());
+    let _ = server.set(&server.obc.config, &config_blob(&store.borrow()));
+    let _ = server.set(&server.obc.object_store, &store.borrow().digest().encode());
     info!(
         "ble: DIS fw '{}' hw '{}' serial '{}'",
         firmware_revision().as_str(),
@@ -696,7 +835,10 @@ pub async fn run(
                 s.att_mtu = 0;
                 s.phy_2m = false;
             });
-            let conn = match advertise_lifecycle(name.as_str(), &mut peripheral, &server).await {
+            // Re-read the advertised name each cycle — a rename (Config write) takes effect on
+            // the next advertising start, no reboot (S0 §2: the Config name replaces factory).
+            let adv_name = advertised_name(&store.borrow());
+            let conn = match advertise_lifecycle(adv_name.as_str(), &mut peripheral, &server).await {
                 Ok(conn) => conn,
                 Err(e) => {
                     // "Always just works" (S0 §2): an advertise error must not take the firmware
@@ -723,10 +865,10 @@ pub async fn run(
             // concurrently and never returns, so `select` tears it all down the moment the link drops
             // (S0 §2: any disconnect drops straight back to advertising).
             let reason = match select(
-                serve_connection(&stack, &server, &conn),
+                serve_connection(&stack, &server, &conn, &store),
                 join3(
                     negotiate_link(&stack, &conn),
-                    serve_coc(&stack, &server, &conn),
+                    serve_coc(&stack, &server, &conn, &store),
                     battery_task(&stack, &server, &conn),
                 ),
             )
@@ -735,6 +877,13 @@ pub async fn run(
                 Either::First(reason) => reason,
                 Either::Second(_) => unreachable!("the background futures never return"),
             };
+            // The drop may have cancelled the data plane mid-transfer (at an await): release the
+            // store's open handles, clear the one-transfer gate, and drain any latched arm/abort
+            // so the next connection starts clean. A parked upload stays resumable (S0 §4.2).
+            store.borrow_mut().link_reset();
+            TRANSFER_ACTIVE.store(false, Ordering::Relaxed);
+            TRANSFER_ARM.reset();
+            TRANSFER_ABORT.reset();
             publish(|s| {
                 s.disconnects += 1;
                 s.last_disconnect_reason = reason;
@@ -765,38 +914,62 @@ async fn serve_connection(
     stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
     server: &Server<'_>,
     conn: &GattConnection<'_, '_, DefaultPacketPool>,
+    store: &RefCell<ObjectStore>,
 ) -> u8 {
     let reason = loop {
         match conn.next().await {
             GattConnectionEvent::Disconnected { reason } => break reason,
             GattConnectionEvent::Gatt { event } => {
                 // Extract what a control-plane write needs answered *before* accepting (which
-                // consumes the event), then notify the S0 `status` message — never a hang / bare
-                // ATT failure for an op we don't fully implement yet. An `echo` upload instead arms
-                // the CoC data plane ([`serve_coc`]), which answers when the loopback ends.
+                // consumes the event), then notify the S0 `status` message(s) — never a hang /
+                // bare ATT failure. A validated transfer instead arms the CoC data plane
+                // ([`serve_coc`]), which answers when it ends. Store borrows stay inside the
+                // sync `with_data` closures — never across an await.
                 let mut status_msg: Option<StatusBytes> = None;
+                let mut store_changed = false;
+                let mut config_written = false;
                 let reply = match event {
                     GattEvent::Write(e) => {
                         let handle = e.handle();
                         if handle == server.obc.command.handle {
-                            status_msg = Some(e.with_data(|_off, data| command_result(data)));
+                            let outcome = e.with_data(|_off, data| run_command(data, store));
+                            status_msg = Some(outcome.result);
+                            store_changed = outcome.store_changed;
                             info!("ble: [gatt] command write");
                             e.accept()
                         } else if handle == server.obc.transfer_control.handle {
-                            match e.with_data(|_off, data| classify_transfer(data)) {
-                                TransferDisposition::ArmEcho(desc) => {
-                                    info!("ble: [gatt] transfer_control: echo upload armed ({} bytes)", desc.total_len);
-                                    TRANSFER_ARM.signal(desc);
+                            match e.with_data(|_off, data| classify_transfer(data, store)) {
+                                TransferDisposition::Arm(armed) => {
+                                    info!("ble: [gatt] transfer_control: transfer armed");
+                                    TRANSFER_ACTIVE.store(true, Ordering::Relaxed);
+                                    TRANSFER_ARM.signal(armed);
+                                }
+                                TransferDisposition::AbortActive => {
+                                    info!("ble: [gatt] transfer_control: abort → data plane");
+                                    TRANSFER_ABORT.signal(());
                                 }
                                 TransferDisposition::Answer(bytes) => {
-                                    info!("ble: [gatt] transfer_control: answered on status (no data plane)");
+                                    info!("ble: [gatt] transfer_control: answered on status");
                                     status_msg = Some(bytes);
                                 }
                             }
                             e.accept()
                         } else if handle == server.obc.config.handle {
-                            if e.with_data(|_off, data| Config::decode(data).is_some()) {
-                                info!("ble: [gatt] config write accepted (in-RAM until A6)");
+                            // Validate + apply: units and rename persist to RRAM settings
+                            // (S0 §7.3); the advertised name follows on the next adv cycle.
+                            let applied = e.with_data(|_off, data| match Config::decode(data) {
+                                Some(cfg) => match core::str::from_utf8(cfg.name) {
+                                    Ok(name) => {
+                                        store.borrow_mut().apply_config(name, cfg.units);
+                                        true
+                                    }
+                                    Err(_) => false,
+                                },
+                                None => false,
+                            });
+                            if applied {
+                                info!("ble: [gatt] config write applied + persisted");
+                                config_written = true;
                                 e.accept()
                             } else {
                                 warn!("ble: [gatt] config write rejected (malformed)");
@@ -825,6 +998,13 @@ async fn serve_connection(
                         warn!("ble: [gatt] status notify failed: {:?}", defmt::Debug2Format(&e));
                     }
                 }
+                if store_changed {
+                    publish_store_change(stack, server, store).await;
+                }
+                if config_written {
+                    // Re-seed the characteristic with the canonical blob (what a read serves).
+                    let _ = server.set(&server.obc.config, &config_blob(&store.borrow()));
+                }
             }
             GattConnectionEvent::PhyUpdated { tx_phy, rx_phy } => {
                 info!("ble: [conn] PHY updated: tx {:?} rx {:?}", tx_phy, rx_phy);
@@ -850,17 +1030,18 @@ async fn serve_connection(
     reason.into_inner()
 }
 
-/// The L2CAP CoC data plane (A5): accept the app's channel on [`OBC_PSM`] and serve the transfers
-/// [`serve_connection`] arms through [`TRANSFER_ARM`]. The channel is opened once per link (the app
-/// opens it at connect and reuses it), so this accepts it, then loops serving one armed transfer at
-/// a time (S0 §4.1). The only transfer A5 implements is the [`run_echo`] loopback; real object
-/// planes (routes → SD) are A6. A channel drop mid-transfer breaks back to re-accept (a resume is a
-/// fresh arm on the re-opened channel); [`select`] in `run` cancels the whole task on disconnect.
-/// Never returns (the outer `select` owns the link's exit).
+/// The L2CAP CoC data plane (A5/A6): accept the app's channel on [`OBC_PSM`] and serve the
+/// transfers [`serve_connection`] arms through [`TRANSFER_ARM`] — the echo loopback, route
+/// uploads → SD, and route/list downloads ← SD. One armed transfer at a time (S0 §4.1); the
+/// [`TRANSFER_ACTIVE`] gate is cleared here when each concludes, and a latched abort that raced
+/// a completion is drained so it can't leak into the next transfer. A channel drop mid-transfer
+/// breaks back to re-accept (an upload parks for the offset-resume, S0 §4.2); [`select`] in
+/// `run` cancels the whole task on disconnect. Never returns (the outer `select` owns the exit).
 async fn serve_coc(
     stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
     server: &Server<'_>,
     conn: &GattConnection<'_, '_, DefaultPacketPool>,
+    store: &RefCell<ObjectStore>,
 ) -> ! {
     let listener = L2capChannel::listen(stack, conn.raw());
     // The receive buffer must be ≥ the negotiated SDU MTU (defaults to the pool MTU − 6 = 245).
@@ -881,25 +1062,163 @@ async fn serve_coc(
         };
         info!("ble: [coc] channel accepted (mtu {} mps {}) — data plane ready", ch.mtu(), ch.mps());
         loop {
-            let desc = TRANSFER_ARM.wait().await;
+            let armed = TRANSFER_ARM.wait().await;
             if !requested_fast {
                 requested_fast = true;
                 request_fast_conn_params(stack, conn).await;
             }
-            if let EchoOutcome::ChannelDropped = run_echo(stack, server, &mut ch, &desc, &mut buf).await {
-                warn!("ble: [coc] channel dropped mid-echo — re-accepting (resume is a fresh arm)");
+            let outcome = match armed {
+                Armed::Echo(desc) => run_echo(stack, server, &mut ch, &desc, &mut buf).await,
+                Armed::Upload(desc, rx) => run_upload(stack, server, store, &mut ch, &desc, rx, &mut buf).await,
+                Armed::Download(desc) => run_download(stack, server, store, &mut ch, &desc, &mut buf).await,
+            };
+            // The transfer concluded (or the channel died): reopen the gate, and drain an abort
+            // that raced the conclusion so it can't insta-abort the next transfer.
+            TRANSFER_ACTIVE.store(false, Ordering::Relaxed);
+            let _ = TRANSFER_ABORT.try_take();
+            if let TransferOutcome::ChannelDropped = outcome {
+                warn!("ble: [coc] channel dropped mid-transfer — re-accepting (resume by offset)");
                 break;
             }
         }
     }
 }
 
-/// Whether a [`run_echo`] answered the transfer or the CoC dropped under it (→ [`serve_coc`]
-/// re-accepts; a resume arrives as a fresh arm, S0 §4.2).
-enum EchoOutcome {
+/// Whether a transfer runner answered on `status` or the CoC dropped under it (→ [`serve_coc`]
+/// re-accepts; an upload resume arrives as a fresh arm with the parked offset, S0 §4.2).
+enum TransferOutcome {
     Answered,
     ChannelDropped,
 }
+
+/// Notify the store movement after a commit/delete: the `storeChanged` status message (which
+/// store, new revision) + the refreshed `objectStore` digest characteristic (S0 §4.3/§4.5).
+async fn publish_store_change(
+    stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
+    server: &Server<'_>,
+    store: &RefCell<ObjectStore>,
+) {
+    let digest = store.borrow().digest();
+    let _ = server.set(&server.obc.object_store, &digest.encode());
+    if let Err(e) = server.notify(stack, server.obc.object_store.handle, &digest.encode()).await {
+        warn!("ble: [store] digest notify failed: {:?}", defmt::Debug2Format(&e));
+    }
+    let msg = StatusMessage::StoreChanged(StoreChanged { ty: ObjectType::Route, revision: digest.revision });
+    notify_status(server, stack, msg.encode()).await;
+}
+
+/// A route upload (S0 §4.2 op 1, type 1): sink CoC bytes through the [`Receiver`] into the SD
+/// temp, then commit — CRC verify, OBCR-header validate, atomic promote (see `sd.rs`) — and
+/// answer with the assigned id. A channel drop parks the transfer for the offset-resume; an
+/// abort (op 3) discards it.
+async fn run_upload(
+    stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
+    server: &Server<'_>,
+    store: &RefCell<ObjectStore>,
+    ch: &mut L2capChannel<'_, DefaultPacketPool>,
+    desc: &TransferControl,
+    mut rx: Receiver,
+    buf: &mut [u8],
+) -> TransferOutcome {
+    info!("ble: [coc] route upload start: {} bytes from offset {}", desc.total_len, desc.offset);
+    while !rx.is_complete() {
+        let n = match select(ch.receive(stack, buf), TRANSFER_ABORT.wait()).await {
+            Either::First(Ok(n)) if n > 0 => n,
+            Either::First(_) => {
+                // Error or an empty SDU with bytes still expected — the channel is done for.
+                // Park for the resume and (best-effort) report the durable offset.
+                let written = store.borrow_mut().upload_park();
+                info!("ble: [coc] upload interrupted at {} — parked for resume", written);
+                notify_status(server, stack, transfer_result_at(rx.object_id(), TransferStatus::Aborted, written))
+                    .await;
+                return TransferOutcome::ChannelDropped;
+            }
+            Either::Second(()) => {
+                // The app aborted (S0 §4.2 op 3): discard and confirm.
+                store.borrow_mut().upload_discard();
+                info!("ble: [coc] upload aborted by the app");
+                notify_status(server, stack, transfer_result(rx.object_id(), TransferStatus::Aborted)).await;
+                return TransferOutcome::Answered;
+            }
+        };
+        let consumed = rx.push(&buf[..n]);
+        if !store.borrow_mut().upload_append(&buf[..consumed], &rx) {
+            store.borrow_mut().upload_discard();
+            warn!("ble: [coc] SD append failed — upload rejected");
+            notify_status(server, stack, transfer_result(rx.object_id(), TransferStatus::Error)).await;
+            return TransferOutcome::Answered;
+        }
+    }
+    let (id, status) = store.borrow_mut().upload_finish(&rx);
+    let committed = status == TransferStatus::Committed;
+    info!("ble: [coc] upload finished: id {} -> {}", id, if committed { "committed" } else { "rejected" });
+    let offset = if committed { rx.total_len() } else { 0 };
+    notify_status(server, stack, transfer_result_at(id, status, offset)).await;
+    if committed {
+        publish_store_change(stack, server, store).await;
+    }
+    TransferOutcome::Answered
+}
+
+/// A download (S0 §4.2 op 2): open the source (`routeList` / empty `rideList` from the store's
+/// built buffer, a route detail straight off the card with its CRC pre-pass), notify the filled
+/// announce descriptor, then stream `object[offset…]` in CoC chunks. An abort between chunks
+/// stops cleanly; a send failure means the channel dropped (a download resume is a fresh
+/// request, S0 §4.2).
+async fn run_download(
+    stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
+    server: &Server<'_>,
+    store: &RefCell<ObjectStore>,
+    ch: &mut L2capChannel<'_, DefaultPacketPool>,
+    desc: &TransferControl,
+    buf: &mut [u8],
+) -> TransferOutcome {
+    let (mut tx, source) = match store.borrow_mut().download_open(desc) {
+        Ok(open) => open,
+        Err(status) => {
+            notify_status(server, stack, transfer_result(desc.object_id, status)).await;
+            return TransferOutcome::Answered;
+        }
+    };
+    // Announce on `transferControl` (same 16 bytes, total_len + crc32 filled in), then stream.
+    let announce = tx.announce();
+    info!("ble: [coc] download start: {} bytes from offset {}", announce.total_len, announce.offset);
+    if let Err(e) = server.notify(stack, server.obc.transfer_control.handle, &announce.encode()).await {
+        warn!("ble: [coc] announce notify failed: {:?}", defmt::Debug2Format(&e));
+        store.borrow_mut().download_close();
+        return TransferOutcome::Answered;
+    }
+    while !tx.is_complete() {
+        if TRANSFER_ABORT.try_take().is_some() {
+            store.borrow_mut().download_close();
+            info!("ble: [coc] download aborted by the app");
+            notify_status(server, stack, transfer_result_at(desc.object_id, TransferStatus::Aborted, tx.position()))
+                .await;
+            return TransferOutcome::Answered;
+        }
+        let n = tx.next_chunk_len(CHUNK_LEN.min(buf.len()));
+        if !store.borrow_mut().download_read(source, tx.position(), &mut buf[..n]) {
+            store.borrow_mut().download_close();
+            warn!("ble: [coc] SD read failed — download abandoned");
+            notify_status(server, stack, transfer_result(desc.object_id, TransferStatus::Error)).await;
+            return TransferOutcome::Answered;
+        }
+        if let Err(e) = ch.send(stack, &buf[..n]).await {
+            info!("ble: [coc] download send ended: {:?}", defmt::Debug2Format(&e));
+            store.borrow_mut().download_close();
+            return TransferOutcome::ChannelDropped;
+        }
+        tx.advance(n);
+    }
+    store.borrow_mut().download_close();
+    let result = tx.outcome().unwrap(); // complete ⇒ Some
+    info!("ble: [coc] download done: {} bytes", result.committed_offset);
+    notify_status(server, stack, StatusMessage::TransferResult(result).encode()).await;
+    TransferOutcome::Answered
+}
+
+/// One CoC SDU's worth of download payload (S0 §3.4: 244 rides one 251-byte PDU on a DLE link).
+const CHUNK_LEN: usize = 244;
 
 /// The A5 echo loopback (S0 object type 8): receive the announced object over the CoC and stream it
 /// straight back, byte-for-byte, verifying **one** whole-object CRC-32 at the end (S0 §6) — the data
@@ -912,14 +1231,14 @@ async fn run_echo(
     ch: &mut L2capChannel<'_, DefaultPacketPool>,
     desc: &TransferControl,
     buf: &mut [u8],
-) -> EchoOutcome {
+) -> TransferOutcome {
     let mut rx = match Receiver::new(desc) {
         Ok(rx) => rx,
         Err(_) => {
             // A nonsensical echo descriptor (e.g. offset past total_len) — answer error, leave the
             // channel untouched (no bytes were promised).
             notify_status(server, stack, transfer_result(desc.object_id, TransferStatus::Error)).await;
-            return EchoOutcome::Answered;
+            return TransferOutcome::Answered;
         }
     };
     info!("ble: [coc] echo start: {} bytes", rx.total_len());
@@ -930,18 +1249,18 @@ async fn run_echo(
                 // An empty SDU can't advance a transfer with bytes still expected — treat it as an
                 // end-of-stream rather than spinning the receive loop.
                 info!("ble: [coc] echo receive returned 0 bytes — ending");
-                return EchoOutcome::ChannelDropped;
+                return TransferOutcome::ChannelDropped;
             }
             Ok(n) => n,
             Err(e) => {
                 info!("ble: [coc] echo receive ended: {:?}", defmt::Debug2Format(&e));
-                return EchoOutcome::ChannelDropped;
+                return TransferOutcome::ChannelDropped;
             }
         };
         let consumed = rx.push(&buf[..n]);
         if let Err(e) = ch.send(stack, &buf[..consumed]).await {
             info!("ble: [coc] echo send failed: {:?}", defmt::Debug2Format(&e));
-            return EchoOutcome::ChannelDropped;
+            return TransferOutcome::ChannelDropped;
         }
     }
     let result = rx.outcome().unwrap(); // complete ⇒ Some
@@ -957,7 +1276,7 @@ async fn run_echo(
         if committed { "committed" } else { "crcMismatch" }
     );
     notify_status(server, stack, StatusMessage::TransferResult(result).encode()).await;
-    EchoOutcome::Answered
+    TransferOutcome::Answered
 }
 
 /// Notify one S0 `status` message (the CoC data plane's channel to the app).
@@ -1081,7 +1400,9 @@ async fn negotiate_link(
 /// matches), and the local name (`OBC-XXXX`) rides the scan response (S0 §2 allows this — the name
 /// would crowd the 31-byte primary PDU alongside the 18-byte UUID structure).
 async fn advertise_lifecycle<'values, 'server, C: Controller>(
-    name: &'values str,
+    // Copied into the local scan-response buffer below — deliberately *not* `'values`, so the
+    // caller can pass a per-cycle name (the A6 rename) without pinning it for the server's life.
+    name: &str,
     peripheral: &mut Peripheral<'values, C, DefaultPacketPool>,
     server: &'server Server<'values>,
 ) -> Result<GattConnection<'values, 'server, DefaultPacketPool>, BleHostError<C::Error>> {
