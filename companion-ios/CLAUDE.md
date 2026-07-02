@@ -82,8 +82,11 @@ companion-ios/
           Launch/              B2 launch + pairing flow (LaunchFlowModel state
                                machine + the A/D1–D5/H7/H8 screens)
           Main/                B3 main screen (MainScreenModel + MainScreenView:
-                               C1/C2 compact lists, top-bar sync states, pull-down-
-                               to-reveal search, swipe-to-delete → H1) + the B7 sync
+                               C1/C2 compact lists, top-bar sync states, transient
+                               pull-down-to-reveal search, direct swipe-to-delete;
+                               ride deletes are phone-side only — a tombstone in
+                               the LibraryStore keeps the device's SD copy out of
+                               the lists and out of "new" counts) + the B7 sync
                                flow (payloads decode via ProvisionalRideCodec and
                                persist ride-by-ride; a drop → the H10 banner with
                                the landed count, Resume continues the SAME stalled
@@ -452,7 +455,8 @@ restyle ad hoc**, and don't introduce colors outside
   `WaypointRow`/`WaypointsListView`, `OBCConnectedServicesBlock`,
   `OBCImportButton` (opens the Files picker directly, filtered by decoder
   extensions — deliberately no intermediate menu),
-  `.obcSwipeToDelete` (always confirms), `.obcRenameAlert` /
+  `.obcSwipeToDelete` (deletes directly — the swipe reveal is the confirm; one-tap
+  detail deletes still use `.obcDestructiveConfirm`), `.obcRenameAlert` /
   `.obcDestructiveConfirm` (native presentations; pairing prompts stay
   system-blue — see `OBCSystemPairing`), `OBCNavigationChrome.apply()` +
   `OBCLargeTitleBar`.

@@ -38,6 +38,12 @@ public protocol LibraryStore: Sendable {
     /// so a deleted ride is never re-counted as "new" (idempotent re-sync, H9).
     func syncedRideIDs() -> Set<RideID>
     func markRideSynced(_ id: RideID)
+
+    /// Ride ids the user deleted *on the phone*. The device keeps its copy
+    /// (the SD card is untouched), so the list merge must hide these device
+    /// rides instead of resurrecting them on every sync/reload.
+    func deletedRideIDs() -> Set<RideID>
+    func markRideDeleted(_ id: RideID)
 }
 
 /// The no-filesystem conformer: unit tests, previews, and Debug mock runs
@@ -48,6 +54,7 @@ public final class InMemoryLibraryStore: LibraryStore, @unchecked Sendable {
     private var planned: [RouteID: PlannedRouteRecord] = [:]
     private var rideRecords: [RideID: Ride] = [:]
     private var synced: Set<RideID> = []
+    private var deleted: Set<RideID> = []
 
     public init() {}
 
@@ -81,5 +88,13 @@ public final class InMemoryLibraryStore: LibraryStore, @unchecked Sendable {
 
     public func markRideSynced(_ id: RideID) {
         lock.withLock { _ = synced.insert(id) }
+    }
+
+    public func deletedRideIDs() -> Set<RideID> {
+        lock.withLock { deleted }
+    }
+
+    public func markRideDeleted(_ id: RideID) {
+        lock.withLock { _ = deleted.insert(id) }
     }
 }

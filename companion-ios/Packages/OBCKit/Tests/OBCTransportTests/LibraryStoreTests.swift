@@ -151,6 +151,18 @@ final class LibraryStoreTests: XCTestCase {
         XCTAssertEqual(relaunched.syncedRideIDs(), [ride.id])
     }
 
+    func testDeletedTombstonesSurviveRelaunch() {
+        let (store, dir) = makeFileStore()
+        let ride = makeRide()
+        store.saveRide(ride)
+        store.markRideDeleted(ride.id)
+        store.deleteRide(ride.id)
+
+        // The tombstone is what keeps the device's copy (still on its SD card)
+        // out of the merged list after a relaunch.
+        XCTAssertEqual(FileLibraryStore(directory: dir).deletedRideIDs(), [ride.id])
+    }
+
     func testAwkwardIDsStayDistinctOnDisk() {
         // Device ride ids are firmware-owned strings — path separators and
         // near-collisions must not merge records.
@@ -178,9 +190,11 @@ final class LibraryStoreTests: XCTestCase {
         XCTAssertEqual(store.rides(), [ride])
 
         store.deletePlannedRoute(record.id)
+        store.markRideDeleted(ride.id)
         store.deleteRide(ride.id)
         XCTAssertTrue(store.plannedRoutes().isEmpty)
         XCTAssertTrue(store.rides().isEmpty)
         XCTAssertEqual(store.syncedRideIDs(), [ride.id], "the synced marker survives the delete")
+        XCTAssertEqual(store.deletedRideIDs(), [ride.id], "the tombstone survives the delete")
     }
 }
