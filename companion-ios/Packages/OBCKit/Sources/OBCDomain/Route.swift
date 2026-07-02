@@ -105,10 +105,19 @@ public struct RouteBlob: Equatable, Sendable {
     public let waypoints: [Waypoint]
     /// Opaque compact-binary route bytes — framed, not parsed, by `BLEChannel`.
     public let payload: Data
+    /// The device object id to **replace**, or `nil` for a fresh upload (the device
+    /// assigns a new id). Set when re-uploading an edited route that's already on
+    /// the device so it updates in place instead of duplicating — "uploading to an
+    /// existing id replaces that object" (`obc-ble-interface-spec.md` §4.2).
+    public let targetObjectID: UInt16?
 
-    public init(summary: RouteSummary, waypoints: [Waypoint] = [], payload: Data) {
+    public init(
+        summary: RouteSummary, waypoints: [Waypoint] = [], payload: Data,
+        targetObjectID: UInt16? = nil
+    ) {
         self.summary = summary
         self.waypoints = waypoints
         self.payload = payload
+        self.targetObjectID = targetObjectID
     }
 }

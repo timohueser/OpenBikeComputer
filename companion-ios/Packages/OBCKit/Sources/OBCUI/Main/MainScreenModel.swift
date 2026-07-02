@@ -75,6 +75,10 @@ public final class MainScreenModel {
     public private(set) var battery: Int?
     public private(set) var loadState: LoadState = .loading
     public private(set) var routes: [RouteSummary] = []
+    /// Ids of planned routes the device holds a copy of — drives the "on device"
+    /// badge (C1). Observable (unlike the `plannedRecords` mirror) so the badge
+    /// lights the instant an upload commits.
+    public private(set) var uploadedRouteIDs: Set<RouteID> = []
     public private(set) var rides: [RideSummary] = []
     public var tab: Tab = .planned
     public var searchText = ""
@@ -154,6 +158,7 @@ public final class MainScreenModel {
         // lands — or ever succeeds (offline relaunch, H4 pre-pairing import).
         let planned = library.plannedRoutes()
         plannedRecords = Dictionary(uniqueKeysWithValues: planned.map { ($0.id, $0) })
+        uploadedRouteIDs = Set(planned.filter(\.uploadedToDevice).map(\.id))
         let storedRides = library.rides()
         rideRecords = Dictionary(uniqueKeysWithValues: storedRides.map { ($0.id, $0) })
         syncedRideIDs = library.syncedRideIDs()
@@ -189,16 +194,17 @@ public final class MainScreenModel {
                 let (routes, rides) = try await (routesRead, ridesRead)
                 guard !Task.isCancelled else { return }
                 // Library-saved routes the device doesn't have yet (H4: saved
-                // before/without a device) stay listed above the device's; a
-                // saved route the device *does* list has been uploaded.
+                // before/without a device) stay listed above the device's. The
+                // "on device" badge is driven by each record's stored
+                // `deviceObjectID` (set when an upload commits), not by matching
+                // this list — a library id and a device object id can't match
+                // across the BLE boundary. (Reconciling the badge against the live
+                // list — clearing it on a device-side delete — is a follow-up.)
                 let onDevice = Set(routes.map(\.id))
                 let phoneOnly = plannedRecords.values
                     .filter { !onDevice.contains($0.id) }
                     .sorted { $0.addedAt > $1.addedAt }
                 self.routes = phoneOnly.map(\.summary) + routes
-                for id in plannedRecords.keys where onDevice.contains(id) {
-                    markRouteUploaded(id)
-                }
                 self.rides = merged(deviceRides: rides)
                 loadState = .loaded
             } catch {
@@ -349,6 +355,7 @@ public final class MainScreenModel {
     public func deleteRoute(_ id: RouteID) {
         routes.removeAll { $0.id == id }
         plannedRecords[id] = nil
+        uploadedRouteIDs.remove(id)
         library.deletePlannedRoute(id)
         Task { [transport] in
             try? await transport.deleteRoute(id)
@@ -402,10 +409,23 @@ public final class MainScreenModel {
     public func addImportedRoute(_ record: PlannedRouteRecord) {
         plannedRecords[record.id] = record
         library.savePlannedRoute(record)
+        // A re-import that replaces an existing route keeps its `deviceObjectID`
+        // (and thus its badge); a fresh import isn't on the device yet.
+        if record.uploadedToDevice { uploadedRouteIDs.insert(record.id) } else { uploadedRouteIDs.remove(record.id) }
         routes.removeAll { $0.id == record.id }
         routes.insert(record.summary, at: 0)
         tab = .planned
     }
+
+    /// A saved planned route whose name matches `name` (case-insensitively) — the
+    /// import edge asks so it can offer "replace" instead of a duplicate.
+    public func plannedRoute(named name: String) -> PlannedRouteRecord? {
+        let target = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return plannedRecords.values.first { $0.summary.name.lowercased() == target }
+    }
+
+    /// Whether the device holds a copy of this planned route (drives the C1 badge).
+    public func isUploaded(_ id: RouteID) -> Bool { uploadedRouteIDs.contains(id) }
 
     /// The kept detail for a library-saved route, with the summary refreshed
     /// from the live list (renames must show).
@@ -423,19 +443,27 @@ public final class MainScreenModel {
         plannedRecords[id]?.route
     }
 
+    /// The device object id this planned route is stored under, if any — threaded
+    /// into a re-upload so it replaces that object instead of duplicating.
+    public func plannedDeviceObjectID(for id: RouteID) -> UInt16? {
+        plannedRecords[id]?.deviceObjectID
+    }
+
     /// H3 write-through from Settings (B8) — the top bar shows the new device
     /// name at once; Settings owns the config write and the bond record.
     public func deviceRenamed(to name: String) {
         deviceName = name
     }
 
-    /// The device took a copy (a B5 upload completed, or a reconcile saw the
-    /// route in the device's list) — remembered so B3 can dress "not on
-    /// device yet" states and re-offer the upload.
-    public func markRouteUploaded(_ id: RouteID) {
-        guard var record = plannedRecords[id], !record.uploadedToDevice else { return }
-        record.uploadedToDevice = true
+    /// A B5 upload committed — record the device object id it landed under (the
+    /// durable "on device" link) so the C1 badge lights and a later re-upload
+    /// replaces that object. Idempotent; a new id (re-upload after a device-side
+    /// change) overwrites the old.
+    public func markRouteUploaded(_ id: RouteID, objectID: UInt16) {
+        guard var record = plannedRecords[id] else { return }
+        record.deviceObjectID = objectID
         plannedRecords[id] = record
+        uploadedRouteIDs.insert(id)
         library.savePlannedRoute(record)
     }
 
