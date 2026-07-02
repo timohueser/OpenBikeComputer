@@ -101,7 +101,6 @@ public struct RouteDetailView: View {
             renameTitle,
             isPresented: $renameShown,
             name: $renameDraft,
-            message: renameMessage,
             onSave: {
                 if model.rename(to: renameDraft) { onRename?(model.name) }
             }
@@ -232,18 +231,11 @@ public struct RouteDetailView: View {
         return "Waypoints"
     }
 
+    // No message under the rename title — what a rename does is obvious. The
+    // name still propagates everywhere (device on next upload, syncs, services).
     private var renameTitle: String {
         if case .tracked = model.dressing { return "Rename ride" }
         return "Rename route"
-    }
-
-    /// H12 message — the name is real everywhere (next upload carries it to
-    /// the device; syncs/services use it); only the track data is untouched.
-    private var renameMessage: String {
-        if case .tracked = model.dressing {
-            return "The ride itself is unchanged. Syncs and service uploads use the new name."
-        }
-        return "The route itself is unchanged. The new name rides to your device with the next upload."
     }
 }
 
@@ -262,7 +254,7 @@ struct WaypointsScreen: View {
                     preview: preview,
                     totalDistanceMeters: totalDistanceMeters
                 )
-                Text("Read straight from the file's waypoints. They ride to the device with the route.")
+                Text("Waypoints come from the route file and are uploaded to the device with it.")
                     .font(.system(size: 12))
                     .foregroundStyle(OBCTheme.inkFaint)
                     .multilineTextAlignment(.center)

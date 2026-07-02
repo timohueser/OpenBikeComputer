@@ -168,8 +168,8 @@ final class RouteDetailTests: XCTestCase {
                       || app.staticTexts["IMPORTED FROM KOMOOT"].waitForExistence(timeout: 5),
                       "E1 source banner missing")
         XCTAssertTrue(app.staticTexts["Schwarzwald Tour · Tag 2"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["CLIMB"].exists, "climb stat missing")
-        XCTAssertTrue(app.staticTexts["DESCENT"].exists, "descent stat missing")
+        XCTAssertTrue(app.staticTexts["CLIMB"].waitForExistence(timeout: 5), "climb stat missing")
+        XCTAssertTrue(app.staticTexts["DESCENT"].waitForExistence(timeout: 5), "descent stat missing")
 
         let waypointsRow = app.buttons["detail.waypoints"]
         XCTAssertTrue(waypointsRow.exists, "waypoints-from-file row missing")
