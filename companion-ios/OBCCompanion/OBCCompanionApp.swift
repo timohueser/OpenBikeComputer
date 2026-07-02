@@ -39,6 +39,7 @@ struct OBCCompanionApp: App {
             RootView(
                 transport: Self.makeTransport(),
                 bondStore: Self.makeBondStore(),
+                library: Self.makeLibraryStore(),
                 importAtLaunch: Self.launchImport()
             )
             #if DEBUG
@@ -73,6 +74,17 @@ struct OBCCompanionApp: App {
         #else
         return nil
         #endif
+    }
+
+    /// The phone-side library (B1S). Mock runs stay **in-memory** — every
+    /// scenario-driven launch (XCUITests, previews, demos) must start from its
+    /// fixtures alone, not whatever a previous run saved. The real path
+    /// persists to Application Support.
+    static func makeLibraryStore() -> any LibraryStore {
+        #if DEBUG
+        if mockControl != nil { return InMemoryLibraryStore() }
+        #endif
+        return FileLibraryStore.standard()
     }
 
     /// The bond record behind the B2 launch branch. Mock runs read it from the
