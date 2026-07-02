@@ -56,6 +56,18 @@ fn main() {
     let tft = env::var_os("CARGO_FEATURE_TFT").is_some();
     let flpr = !tft;
 
+    // The map-plane gate (issue #270): on the 256 KB DK the map path and the BLE stack do not
+    // coexist, so the `ble` build compiles the map plane out (`App` + `MapCache` + `RouteCache` +
+    // `RouteIndex`, ~128 KB) and boots the BLE status UI instead. **This line is the single
+    // relaxation point for the 512 KB nRF54LM20**: make `has_map` unconditionally `true` there and
+    // both planes compile back in together — the N3 budget assert in main.rs then arbitrates
+    // whether they actually fit, at compile time (`ble` + map on 256 KB fails the build).
+    let has_map = env::var_os("CARGO_FEATURE_BLE").is_none();
+    println!("cargo:rustc-check-cfg=cfg(has_map)");
+    if has_map {
+        println!("cargo:rustc-cfg=has_map");
+    }
+
     if flpr {
         fs::write(out.join("memory.x"), FLPR_MEMORY_X).unwrap();
     } else {
