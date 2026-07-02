@@ -221,6 +221,14 @@ public final class LaunchFlowModel {
         phase = .main
     }
 
+    /// H2 (Settings → Forget device): the bond record is already cleared and
+    /// the link dropped by the Settings flow — cancel anything in flight and
+    /// return to the D1 pairing prompt.
+    public func forgetDevice() {
+        flowTask?.cancel()
+        phase = .pairIntro
+    }
+
     // MARK: Helpers
 
     /// Run `connect` under the scan window; expiry throws `deviceNotFound`

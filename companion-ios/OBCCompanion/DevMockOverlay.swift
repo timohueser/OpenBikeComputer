@@ -8,7 +8,8 @@ import OBCUI
 // B1P's app-side wiring, Debug-only in its entirety: the shake gesture that opens
 // the dev control panel, the panel sheet itself, and the status HUD the XCUITests
 // assert. The panel/HUD views live in OBCMock; this file only hosts them.
-// B8 adds the second entry point (a hidden Settings row) when Settings exists.
+// B8's hidden second entry point (five taps on Settings ▸ App version) posts the
+// same shake notification — see RootView's `devPanelOpener`.
 // B11 adds the component-gallery sheet (`-OBCShowUIGallery`) for screenshot review.
 
 extension Notification.Name {
