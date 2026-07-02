@@ -14,7 +14,6 @@ struct RootView: View {
     @State private var mainModel: MainScreenModel
     @State private var path: [MainDestination] = []
     @State private var pendingImport: PendingImport?
-    @State private var uploadRequest: UploadRequest?
     @State private var importFailedToast = false
 
     private let transport: any DeviceTransport
@@ -74,11 +73,11 @@ struct RootView: View {
                         mainModel.addImportedRoute(detail)
                         pendingImport = nil
                     },
+                    // "Uploading saves it too" (B5): the route lands in Planned
+                    // the moment the upload completes; the cover closes after F₂.
+                    onUploaded: { detail in mainModel.addImportedRoute(detail) },
                     onCancel: { pendingImport = nil }
                 )
-            }
-            .sheet(item: $uploadRequest) { request in
-                UploadPlaceholderView(routeName: request.routeName)
             }
             .task {
                 if let importAtLaunch {
@@ -108,7 +107,6 @@ struct RootView: View {
                     // profile app-side; the device can't serve them.
                     preloadedDetail: mainModel.importedDetail(for: id),
                     deviceName: mainModel.deviceName,
-                    onUpload: { uploadRequest = UploadRequest(routeName: route.name) },
                     onDelete: {
                         mainModel.deleteRoute(id)
                         path.removeAll()
@@ -168,17 +166,22 @@ private struct PendingImport: Identifiable {
     let fileName: String
 }
 
+/// One presented upload (B5) — carries the sheet's model, created **once** at
+/// the Upload tap (built inline in the `.sheet` closure it would be rebuilt on
+/// every body pass, restarting the transfer).
 private struct UploadRequest: Identifiable {
     let id = UUID()
-    let routeName: String
+    let model: UploadSheetModel
 }
 
 /// Owns a stable `RouteDetailModel` for a pushed E2/E3 (a model created inline
-/// in `navigationDestination` would be rebuilt on every body pass).
+/// in `navigationDestination` would be rebuilt on every body pass) — and the
+/// B5 upload sheet, presented over the detail (the app never leaves the route).
 private struct RouteDetailScreen: View {
     @State private var model: RouteDetailModel
+    @State private var uploadRequest: UploadRequest?
+    private let transport: any DeviceTransport
     private let deviceName: String
-    private let onUpload: () -> Void
     private let onDelete: (() -> Void)?
     private let onRename: ((String) -> Void)?
     private let isRide: Bool
@@ -188,15 +191,14 @@ private struct RouteDetailScreen: View {
         dressing: RouteDetailModel.Dressing,
         preloadedDetail: RouteDetail? = nil,
         deviceName: String,
-        onUpload: @escaping () -> Void = {},
         onDelete: (() -> Void)? = nil,
         onRename: ((String) -> Void)? = nil
     ) {
         _model = State(initialValue: RouteDetailModel(
             transport: transport, dressing: dressing, preloadedDetail: preloadedDetail
         ))
+        self.transport = transport
         self.deviceName = deviceName
-        self.onUpload = onUpload
         self.onDelete = onDelete
         self.onRename = onRename
         if case .tracked = dressing { isRide = true } else { isRide = false }
@@ -206,22 +208,36 @@ private struct RouteDetailScreen: View {
         RouteDetailView(
             model: model,
             deviceName: deviceName,
-            onUpload: onUpload,
+            onUpload: {
+                uploadRequest = UploadRequest(model: UploadSheetModel(
+                    transport: transport,
+                    blob: model.makeUploadBlob(),
+                    deviceName: deviceName
+                ))
+            },
             onDelete: onDelete,
             onRename: onRename
         )
         .navigationTitle(isRide ? "Ride" : "Route")
         .navigationBarTitleDisplayMode(.inline)
+        .sheet(item: $uploadRequest) { request in
+            UploadSheetView(model: request.model)
+        }
     }
 }
 
 /// Owns a stable model for the presented E1 cover, and turns Save into the
-/// summary `MainScreenModel` lands in Planned.
+/// summary `MainScreenModel` lands in Planned. Upload presents the B5 sheet:
+/// a completed upload also saves the route ("Uploading saves it too"), and
+/// the cover closes once the sheet does.
 private struct ImportLandingHost: View {
     @State private var model: RouteDetailModel
     @State private var uploadRequest: UploadRequest?
+    @State private var uploadCompleted = false
+    private let transport: any DeviceTransport
     private let deviceName: String
     private let onSave: (RouteDetail) -> Void
+    private let onUploaded: (RouteDetail) -> Void
     private let onCancel: () -> Void
 
     init(
@@ -230,14 +246,17 @@ private struct ImportLandingHost: View {
         fileName: String,
         deviceName: String,
         onSave: @escaping (RouteDetail) -> Void,
+        onUploaded: @escaping (RouteDetail) -> Void,
         onCancel: @escaping () -> Void
     ) {
         _model = State(initialValue: RouteDetailModel(
             transport: transport,
             dressing: .imported(route, fileName: fileName)
         ))
+        self.transport = transport
         self.deviceName = deviceName
         self.onSave = onSave
+        self.onUploaded = onUploaded
         self.onCancel = onCancel
     }
 
@@ -245,35 +264,29 @@ private struct ImportLandingHost: View {
         ImportLandingView(
             model: model,
             deviceName: deviceName,
-            // TODO(B5): the real upload sheet also saves ("Uploading saves it
-            // too"); until it lands, upload shows the placeholder.
-            onUpload: { uploadRequest = UploadRequest(routeName: model.name) },
+            onUpload: {
+                uploadRequest = UploadRequest(model: UploadSheetModel(
+                    transport: transport,
+                    blob: model.makeUploadBlob(),
+                    deviceName: deviceName,
+                    onCompleted: {
+                        uploadCompleted = true
+                        onUploaded(model.makeDetail())
+                    }
+                ))
+            },
             onSave: { onSave(model.makeDetail()) },
             onCancel: onCancel
         )
-        .sheet(item: $uploadRequest) { request in
-            UploadPlaceholderView(routeName: request.routeName)
+        .sheet(
+            item: $uploadRequest,
+            // The route is already in Planned (saved on completion) — closing
+            // the F₂ sheet also closes the landing. A canceled upload stays
+            // on E1, still unsaved.
+            onDismiss: { if uploadCompleted { onCancel() } }
+        ) { request in
+            UploadSheetView(model: request.model)
         }
-    }
-}
-
-/// Where the Upload action lands until the B5 sheet (F/F₂) exists.
-private struct UploadPlaceholderView: View {
-    let routeName: String
-
-    var body: some View {
-        VStack(spacing: 10) {
-            Text(routeName)
-                .font(.obcSerif(size: 26))
-                .foregroundStyle(OBCTheme.ink)
-            Text("upload sheet · B5 lands here")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .accessibilityIdentifier("uploadPlaceholder")
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(OBCTheme.parchment.ignoresSafeArea())
-        .presentationDetents([.medium])
     }
 }
 

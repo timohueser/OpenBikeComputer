@@ -19,12 +19,22 @@ this app scaffold was **B0** ([#235](https://github.com/timohueser/OpenBikeCompu
 ```
 companion-ios/
   project.yml                 XcodeGen source of truth — EDIT THIS, not the pbxproj
-  OBCCompanion.xcodeproj      generated (committed) — regenerate: `xcodegen generate`
+  project.local.yml           personal signing team id — tracked with an empty
+                               default, meant to be edited + marked skip-worktree
+                               locally, merged via project.yml's `include:` (see
+                               *Signing*)
+  OBCCompanion.xcodeproj      XcodeGen-generated, gitignored — NOT committed; the
+                               **first step after cloning** is `xcodegen generate`
+                               (kept out of git so a personal DEVELOPMENT_TEAM never
+                               pollutes shared history and the project can't silently
+                               drift from project.yml)
   OBCCompanion/               app target = composition root ONLY
     OBCCompanionApp.swift      @main; the one place that picks a DeviceTransport
     RootView.swift             launch gate (B2) + the main screen's NavigationStack
                                (B3) + the B4 detail routing and the import edge
-                               (RouteImporter → E1 cover); upload = B5 placeholder
+                               (RouteImporter → E1 cover); the detail/landing hosts
+                               present the B5 upload sheet (upload from E1 also
+                               saves — "Uploading saves it too")
     Info.plist                 NSBluetoothAlwaysUsageDescription + the GPX
                                document type (share sheet / "open with OBC" →
                                RootView.onOpenURL → E1; TCX joins with B6)
@@ -62,6 +72,10 @@ companion-ios/
                                ONE profile layout, three dressings — E2 planned /
                                E3 tracked / E1 import via ImportLandingView — plus
                                the W1 waypoints push and H12 rename)
+          Upload/              B5 upload sheet (UploadSheetModel + UploadSheetView:
+                               F progress → F₂ done over the detail, drop →
+                               offset-resume, cancel-aborts; placeholder payload
+                               until the S0 route encoder lands in Codecs/)
       Tests/
         OBCTransportTests/     domain/transport/codec unit tests (host, `swift test`);
                                incl. CoreBluetoothSeamTests (enforces the CB seam)
@@ -133,7 +147,9 @@ swift build -c release >/dev/null && echo "release: $(marker release) (expect 0)
 ### Toolchain prerequisites (verified on this machine)
 
 - **Xcode 26.6** (iOS **26.5** SDK). `xcodebuild -version`.
-- **XcodeGen** — `brew install xcodegen` (used to (re)generate the `.xcodeproj`).
+- **XcodeGen** — `brew install xcodegen`. **Required, not optional**: the
+  `.xcodeproj` is gitignored, so `cd companion-ios && xcodegen generate` is the
+  first command to run after cloning, before anything else in this section.
 - **A modern iOS simulator runtime.** Xcode 26 will **not** pair its iOS 26.5
   simulator SDK with old runtimes (e.g. iOS 17.5) — if the only runtime is old,
   `xcodebuild -showdestinations` lists *no* simulators. Install the matching one:
@@ -198,12 +214,17 @@ once, then the build tools take no path args. Paths are relative to the repo roo
 ### Raw `xcodebuild` / `swift` (ground truth — what the MCP wraps)
 
 These are the verified commands; use them in CI or when the MCP isn't loaded.
+There's no iOS CI yet (`ci.yml` at the repo root only covers firmware), but
+this repo is **public**, so GitHub-hosted `macos-latest` runners are free —
+no dedicated Mac needed. Any iOS workflow's first step must be `xcodegen
+generate` (the `.xcodeproj` is gitignored, not committed).
 
 ```bash
 # Unit tests — host, no simulator (fast). VERIFIED ✓
 cd companion-ios/Packages/OBCKit && swift test
 
-# (Re)generate the Xcode project after editing project.yml. VERIFIED ✓
+# Generate the Xcode project — REQUIRED first step (gitignored, not committed).
+# Also re-run after editing project.yml. VERIFIED ✓
 cd companion-ios && xcodegen generate
 
 # Build the app for a simulator (Debug). Needs a modern iOS runtime installed.
@@ -227,7 +248,9 @@ seam .../Release-iphonesimulator/OBCCompanion.app   # → 0  (mock excluded)
 ### Signing (physical device only)
 
 Simulator builds need no signing. For a real iPhone set your team once in
-`project.yml` (then `xcodegen generate`):
+**`project.local.yml`** (merged into `project.yml` via `include:`) — **not**
+`project.yml` itself and **never** the generated pbxproj (a hand-edit there
+gets silently wiped on the next `xcodegen generate`):
 
 ```yaml
 settings:
@@ -235,9 +258,18 @@ settings:
     DEVELOPMENT_TEAM: "YOURTEAMID"   # Xcode ▸ Settings ▸ Accounts, or `security find-identity`
 ```
 
-`CODE_SIGN_STYLE` is already `Automatic`. First device run: unlock the phone,
-trust the Mac, and (free accounts) approve the profile in Settings ▸ General ▸
-VPN & Device Management.
+`project.local.yml` is tracked with an empty default so a fresh clone still
+builds for the simulator, but after setting your real team id mark it
+skip-worktree so it never shows as a diff and nothing (`xcodegen generate`,
+`git pull`) ever touches it again:
+
+```bash
+git update-index --skip-worktree companion-ios/project.local.yml
+```
+
+Then `xcodegen generate`. `CODE_SIGN_STYLE` is already `Automatic`. First
+device run: unlock the phone, trust the Mac, and (free accounts) approve the
+profile in Settings ▸ General ▸ VPN & Device Management.
 
 ---
 
@@ -322,9 +354,11 @@ assert. `OBCCompanionUITests/ScenarioLaunchTests` launches every scenario by
 argument and checks the tag (plus fixture-name, connection-override, and
 panel-presentation smoke tests); `PairingFlowTests` walks the B2 launch/pairing
 flow end to end per scenario, `MainScreenTests` walks the B3 main-screen
-states (C1/C2, SYNC, S4, H6, H11→H1), and `RouteDetailTests` walks the B4
-detail dressings (E2/E3/W1/H12/H1 + E1 via `-OBCImportSample`) — all attach a
-screenshot of each design screen to the result bundle. Run them with
+states (C1/C2, SYNC, S4, H6, H11→H1), `RouteDetailTests` walks the B4
+detail dressings (E2/E3/W1/H12/H1 + E1 via `-OBCImportSample`), and
+`UploadSheetTests` walks the B5 sheet (F/F₂, `uploadDrop` → resume, cancel,
+E1 upload-saves) — all attach a screenshot of each design screen to the
+result bundle. Run them with
 `test_sim {}` / `xcodebuild test`. The B3 landing anchor the pairing tests wait
 for is `main.screen`; the detail anchor is `detail.screen` (⚠️ it sits on a
 ScrollView, so query it with `descendants(matching: .any)`, not `otherElements`).
@@ -417,7 +451,9 @@ Every component file carries a `#Preview` with design sample data.
 - **Unit-test the transport/codec logic** in `OBCKit` (`swift test`) — that's the
   layer that must be right before the firmware exists. UI flows get XCUITests
   (B1P), driven by launch args.
-- **Never hand-edit the pbxproj.** Change `project.yml` and regenerate.
+- **Never hand-edit the pbxproj.** It's gitignored and regenerated on demand —
+  a hand-edit just gets silently overwritten by the next `xcodegen generate`.
+  Change `project.yml` (or `project.local.yml` for personal signing) instead.
 
 ---
 

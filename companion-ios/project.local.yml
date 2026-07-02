@@ -1,0 +1,15 @@
+# Personal, machine-local XcodeGen overrides — merged into project.yml via
+# `include:`. Tracked with an empty/safe default so a fresh clone still
+# builds for the simulator with zero setup.
+#
+# To build on a physical iPhone, set your team id below, then tell git to
+# stop tracking further changes to this file so `xcodegen generate` and
+# `git pull` never touch it again and it never shows up as a diff:
+#
+#     git update-index --skip-worktree companion-ios/project.local.yml
+#
+# (undo with --no-skip-worktree; find your team id via Xcode ▸ Settings ▸
+# Accounts, or `security find-identity`)
+settings:
+  base:
+    DEVELOPMENT_TEAM: ""
