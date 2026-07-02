@@ -19,7 +19,15 @@ this app scaffold was **B0** ([#235](https://github.com/timohueser/OpenBikeCompu
 ```
 companion-ios/
   project.yml                 XcodeGen source of truth — EDIT THIS, not the pbxproj
-  OBCCompanion.xcodeproj      generated (committed) — regenerate: `xcodegen generate`
+  project.local.yml           personal signing team id — tracked with an empty
+                               default, meant to be edited + marked skip-worktree
+                               locally, merged via project.yml's `include:` (see
+                               *Signing*)
+  OBCCompanion.xcodeproj      XcodeGen-generated, gitignored — NOT committed; the
+                               **first step after cloning** is `xcodegen generate`
+                               (kept out of git so a personal DEVELOPMENT_TEAM never
+                               pollutes shared history and the project can't silently
+                               drift from project.yml)
   OBCCompanion/               app target = composition root ONLY
     OBCCompanionApp.swift      @main; the one place that picks a DeviceTransport
     RootView.swift             launch gate (B2) + the main screen's NavigationStack
@@ -139,7 +147,9 @@ swift build -c release >/dev/null && echo "release: $(marker release) (expect 0)
 ### Toolchain prerequisites (verified on this machine)
 
 - **Xcode 26.6** (iOS **26.5** SDK). `xcodebuild -version`.
-- **XcodeGen** — `brew install xcodegen` (used to (re)generate the `.xcodeproj`).
+- **XcodeGen** — `brew install xcodegen`. **Required, not optional**: the
+  `.xcodeproj` is gitignored, so `cd companion-ios && xcodegen generate` is the
+  first command to run after cloning, before anything else in this section.
 - **A modern iOS simulator runtime.** Xcode 26 will **not** pair its iOS 26.5
   simulator SDK with old runtimes (e.g. iOS 17.5) — if the only runtime is old,
   `xcodebuild -showdestinations` lists *no* simulators. Install the matching one:
@@ -204,12 +214,17 @@ once, then the build tools take no path args. Paths are relative to the repo roo
 ### Raw `xcodebuild` / `swift` (ground truth — what the MCP wraps)
 
 These are the verified commands; use them in CI or when the MCP isn't loaded.
+There's no iOS CI yet (`ci.yml` at the repo root only covers firmware), but
+this repo is **public**, so GitHub-hosted `macos-latest` runners are free —
+no dedicated Mac needed. Any iOS workflow's first step must be `xcodegen
+generate` (the `.xcodeproj` is gitignored, not committed).
 
 ```bash
 # Unit tests — host, no simulator (fast). VERIFIED ✓
 cd companion-ios/Packages/OBCKit && swift test
 
-# (Re)generate the Xcode project after editing project.yml. VERIFIED ✓
+# Generate the Xcode project — REQUIRED first step (gitignored, not committed).
+# Also re-run after editing project.yml. VERIFIED ✓
 cd companion-ios && xcodegen generate
 
 # Build the app for a simulator (Debug). Needs a modern iOS runtime installed.
@@ -436,7 +451,9 @@ Every component file carries a `#Preview` with design sample data.
 - **Unit-test the transport/codec logic** in `OBCKit` (`swift test`) — that's the
   layer that must be right before the firmware exists. UI flows get XCUITests
   (B1P), driven by launch args.
-- **Never hand-edit the pbxproj.** Change `project.yml` and regenerate.
+- **Never hand-edit the pbxproj.** It's gitignored and regenerated on demand —
+  a hand-edit just gets silently overwritten by the next `xcodegen generate`.
+  Change `project.yml` (or `project.local.yml` for personal signing) instead.
 
 ---
 
