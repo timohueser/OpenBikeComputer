@@ -2,34 +2,221 @@
 import Foundation
 import OBCTransport
 
-/// The A5 echo harness (issue #273): scan for the OBC device, open the L2CAP CoC, and echo-round-trip
-/// N objects through the *real* app byte plane (`BLEChannel` + `L2CAPByteChannel`), asserting each
-/// comes back byte-identical and the device commits it. `--corrupt` flips a byte per object and
-/// asserts the device rejects it with the S0 `crcMismatch` status (§6). The A9 soak rig grows from
-/// here (induced disconnects + offset-resume).
+/// The BLE bring-up harness: scan for the OBC device, open the L2CAP CoC, and drive the *real* app
+/// byte plane (`BLEChannel` + `L2CAPByteChannel` + the `TransferControl`/`StatusMessage`/`RouteList`
+/// codecs) from the terminal — the oracle that isn't the iOS app, so failures localize.
+///
+/// Two planes:
+/// - **echo** (A5, #273): round-trip N objects through the loopback, byte-identical + committed.
+/// - **route object plane** (A6, #274): upload an OBCR file → SD, list/detail/delete the catalog,
+///   and prove an offset-resume across an induced mid-transfer drop.
 ///
 /// Run on a Mac with the device powered + advertising:
 /// ```
-/// swift run echo-harness --count 1000 --size 32768        # the DoD run: 1000 × 32 KB
-/// swift run echo-harness --count 50 --corrupt             # CRC fault injection
+/// swift run echo-harness echo --count 1000 --size 32768   # A5 DoD: 1000 × 32 KB
+/// swift run echo-harness upload route.obcr                 # A6 golden path
+/// swift run echo-harness list
+/// swift run echo-harness detail 7 route.obcr              # download + byte-identity check
+/// swift run echo-harness delete 7
+/// swift run echo-harness resume-test route.obcr           # drop mid-upload → resume by offset
 /// ```
 @main
 struct EchoHarness {
     static func main() async {
-        let opts = Options(CommandLine.arguments)
-        if opts.showHelp {
-            print(Options.usage)
+        let args = Array(CommandLine.arguments.dropFirst())
+        let subcommand = args.first.flatMap { $0.hasPrefix("-") ? nil : $0 } ?? "echo"
+        let positionals = args.filter { !$0.hasPrefix("-") }.dropFirst()  // after the subcommand
+        let flags = args.filter { $0.hasPrefix("-") }
+
+        if flags.contains("--help") || flags.contains("-h") {
+            print(usage)
             return
         }
 
-        let central = EchoCentral()
-        let link: EchoLink
         do {
-            link = try await central.connect()
+            switch subcommand {
+            case "echo": try await runEcho(Options(args))
+            case "upload": try await runUpload(path: try requirePath(positionals.first, "upload <file.obcr>"))
+            case "list": try await runList()
+            case "detail":
+                guard let idArg = positionals.first, let id = UInt16(idArg) else {
+                    throw CLIError.usage("detail <object-id> [reference.obcr] [--out file]")
+                }
+                try await runDetail(id: id, reference: positionals.dropFirst().first, out: flagValue("--out", flags: args))
+            case "delete":
+                guard let idArg = positionals.first, let id = UInt16(idArg) else {
+                    throw CLIError.usage("delete <object-id>")
+                }
+                try await runDelete(id: id)
+            case "resume-test": try await runResumeTest(path: try requirePath(positionals.first, "resume-test <file.obcr>"))
+            default:
+                throw CLIError.usage("unknown subcommand '\(subcommand)'")
+            }
         } catch {
-            stderr("echo-harness: connect failed: \(error)")
+            stderr("echo-harness: \(error)")
             exit(1)
         }
+    }
+
+    // MARK: - A6 route object plane (#274)
+
+    /// Upload an OBCR file to the device (S0 §4.2 op 1), assert it commits, and confirm the store
+    /// digest moved (a route was added).
+    static func runUpload(path: String) async throws {
+        let bytes = try Data(contentsOf: URL(fileURLWithPath: path))
+        let crc = CRC32.checksum(bytes)
+        let central = EchoCentral()
+        let link = try await central.connect()
+        let before = try await central.readDigest()
+        print("echo-harness: uploading \(bytes.count) B (crc \(hex(crc)))…")
+
+        let start = TransferControl(
+            op: .upload, type: .route, objectID: TransferControl.newObjectID,
+            totalLen: UInt32(bytes.count), crc32: crc
+        )
+        central.writeControl(start.encode(), to: link.transferControl)
+        let result = try await withTimeout(60) {
+            _ = await link.channel.upload(bytes).outcome  // all bytes handed to the CoC
+            return await central.nextTransferResult()
+        }
+        guard result.status == .committed else { throw HarnessError.unexpectedStatus(result.status) }
+
+        let after = try await central.readDigest()
+        guard after.revision != before.revision, after.routeCount == before.routeCount + 1 else {
+            throw HarnessError.digestUnchanged
+        }
+        print(
+            "echo-harness: committed as object id \(result.objectID) ✓ "
+                + "(routes \(before.routeCount)→\(after.routeCount), revision \(before.revision)→\(after.revision))"
+        )
+    }
+
+    /// Download + decode the `routeList` (S0 §7.4) and print the catalog.
+    static func runList() async throws {
+        let central = EchoCentral()
+        let link = try await central.connect()
+        let entries = try await downloadRouteList(link: link, central: central)
+        print("echo-harness: routeList — \(entries.count) route(s)")
+        for e in entries {
+            print(
+                "  #\(e.objectID)  \"\(e.name)\"  \(fmtKm(e.distanceMeters)) km  ↑\(e.ascentMeters) m  "
+                    + "\(e.pointCount) pts  \(e.waypointCount) wpt  \(e.byteLen) B"
+            )
+        }
+    }
+
+    /// Download a stored route (S0 §7.1: the OBCR bytes verbatim), verify its CRC, and — given a
+    /// reference file — assert byte-identity with what was uploaded.
+    static func runDetail(id: UInt16, reference: String?, out: String?) async throws {
+        let central = EchoCentral()
+        let link = try await central.connect()
+        let bytes = try await downloadObject(link: link, central: central, type: .route, objectID: id)
+        print("echo-harness: downloaded route \(id): \(bytes.count) B (crc verified)")
+        if let out {
+            try bytes.write(to: URL(fileURLWithPath: out))
+            print("echo-harness: wrote \(out)")
+        }
+        if let reference {
+            let refBytes = try Data(contentsOf: URL(fileURLWithPath: reference))
+            guard bytes == refBytes else { throw HarnessError.notByteIdentical }
+            print("echo-harness: byte-identical to \(reference) ✓")
+        }
+    }
+
+    /// Delete a stored route by object id (S0 §4.4 `deleteObject`); assert the command succeeds and
+    /// the store signals the change.
+    static func runDelete(id: UInt16) async throws {
+        let central = EchoCentral()
+        _ = try await central.connect()
+        let before = try await central.readDigest()
+        var command = Data([1, ObjectType.route.rawValue])  // cmd 1 = deleteObject · type 1 = route
+        command.append(UInt8(id & 0xFF))
+        command.append(UInt8(id >> 8))
+        central.writeCommand(command)
+
+        let (result, changed) = try await withTimeout(20) {
+            let result = await central.nextCommandResult()
+            let changed = await central.nextStoreChanged()
+            return (result, changed)
+        }
+        guard result.status == .ok else { throw HarnessError.unexpectedCommandStatus(result.status) }
+        let after = try await central.readDigest()
+        print(
+            "echo-harness: deleted id \(id) ✓ (command ok, storeChanged revision \(changed.revision), "
+                + "routes \(before.routeCount)→\(after.routeCount))"
+        )
+    }
+
+    /// Upload an OBCR file, **drop the CoC mid-transfer**, then re-open it and resume from the
+    /// device-reported committed offset (S0 §4.2) — the transfer must finish committed and the route
+    /// must land in the catalog. The other half of A6's "mid-upload disconnect → resume" acceptance.
+    static func runResumeTest(path: String) async throws {
+        let bytes = try Data(contentsOf: URL(fileURLWithPath: path))
+        guard bytes.count >= 2 else { throw CLIError.usage("resume-test needs a route of at least 2 bytes") }
+        let crc = CRC32.checksum(bytes)
+        let central = EchoCentral()
+        let link = try await central.connect()
+
+        // 1. Announce the upload, stream only a prefix, then drop the CoC (the ACL stays up).
+        let start = TransferControl(
+            op: .upload, type: .route, objectID: TransferControl.newObjectID,
+            totalLen: UInt32(bytes.count), crc32: crc
+        )
+        central.writeControl(start.encode(), to: link.transferControl)
+        let half = bytes.count / 2
+        _ = await link.channel.upload(Data(bytes.prefix(half))).outcome  // prefix handed to the CoC
+        await central.closeChannel()  // induce the mid-transfer drop
+        let aborted = await central.nextTransferResult()
+        guard aborted.status == .aborted else { throw HarnessError.unexpectedStatus(aborted.status) }
+        let offset = Int(aborted.committedOffset)
+        print("echo-harness: dropped after ~\(half) B → device parked at committedOffset \(offset)")
+
+        // 2. Re-open the CoC and resume from the parked offset.
+        try await Task.sleep(nanoseconds: 400_000_000)  // let the device re-accept the channel
+        let channel = try await central.reopenChannel()
+        let resume = TransferControl(
+            op: .upload, type: .route, objectID: TransferControl.newObjectID,
+            totalLen: UInt32(bytes.count), crc32: crc, offset: UInt32(offset)
+        )
+        central.writeControl(resume.encode(), to: link.transferControl)
+        let committed = try await withTimeout(60) {
+            _ = await channel.upload(bytes, from: offset).outcome
+            return await central.nextTransferResult()
+        }
+        guard committed.status == .committed else { throw HarnessError.unexpectedStatus(committed.status) }
+        print("echo-harness: resumed from \(offset) → committed as object id \(committed.objectID) ✓")
+
+        // 3. Confirm the resumed route is in the catalog (same open channel).
+        let entries = try await downloadRouteList(link: link, central: central)
+        guard entries.contains(where: { $0.objectID == committed.objectID }) else { throw HarnessError.routeNotListed }
+        print("echo-harness: id \(committed.objectID) present in routeList ✓ (\(entries.count) route(s))")
+    }
+
+    /// The shared download flow (S0 §4.2 op 2): write the request, await the device's announce
+    /// descriptor (total_len + crc32), stream the payload off the CoC verifying the whole-object CRC,
+    /// then consume the closing `transferResult`.
+    static func downloadObject(
+        link: EchoLink, central: EchoCentral, type: ObjectType, objectID: UInt16
+    ) async throws -> Data {
+        let request = TransferControl(op: .download, type: type, objectID: objectID)
+        central.writeControl(request.encode(), to: link.transferControl)
+        let announce = await central.nextAnnounce()
+        let (_, task) = link.channel.download(length: Int(announce.totalLen), expectedCRC: announce.crc32)
+        let bytes = try await withTimeout(60) { try await task.value }
+        let result = await central.nextTransferResult()
+        guard result.status == .committed else { throw HarnessError.unexpectedStatus(result.status) }
+        return bytes
+    }
+
+    static func downloadRouteList(link: EchoLink, central: EchoCentral) async throws -> [RouteListEntry] {
+        try RouteList.decode(try await downloadObject(link: link, central: central, type: .routeList, objectID: 0))
+    }
+
+    // MARK: - A5 echo loopback (#273)
+
+    static func runEcho(_ opts: Options) async throws {
+        let central = EchoCentral()
+        let link = try await central.connect()
         print(
             "echo-harness: link up — \(opts.count) × \(opts.size) B echoes"
                 + (opts.corrupt ? " (CRC-corruption injection)" : "")
@@ -39,7 +226,7 @@ struct EchoHarness {
         let overallStart = Date()
         for i in 1...opts.count {
             do {
-                try await runOne(index: i, of: opts.count, link: link, central: central, opts: opts)
+                try await runOneEcho(index: i, of: opts.count, link: link, central: central, opts: opts)
             } catch {
                 failures += 1
                 print("echo-harness: [\(i)/\(opts.count)] FAILED — \(error)")
@@ -51,13 +238,13 @@ struct EchoHarness {
             "echo-harness: done — \(opts.count - failures)/\(opts.count) ok in "
                 + String(format: "%.1f", elapsed) + " s (~" + String(format: "%.1f", aggregateKBps) + " kB/s aggregate)"
         )
-        exit(failures == 0 ? 0 : 1)
+        if failures != 0 { exit(1) }
     }
 
     /// One echo round-trip. Upload + download run concurrently (each `BLEChannel` call launches its
     /// own task) so the CoC's bidirectional credit flow never deadlocks; the device's `transferResult`
     /// is awaited alongside.
-    static func runOne(index: Int, of total: Int, link: EchoLink, central: EchoCentral, opts: Options) async throws {
+    static func runOneEcho(index: Int, of total: Int, link: EchoLink, central: EchoCentral, opts: Options) async throws {
         let payload = Data((0..<opts.size).map { _ in UInt8.random(in: 0...255) })
         let announcedCRC = CRC32.checksum(payload)
         // The bytes actually sent: one flipped byte when injecting a CRC fault (announced CRC unchanged).
@@ -97,39 +284,70 @@ struct EchoHarness {
         }
     }
 
+    // MARK: - helpers
+
+    static func requirePath(_ path: String?, _ usage: String) throws -> String {
+        guard let path else { throw CLIError.usage(usage) }
+        return path
+    }
+
+    static func flagValue(_ name: String, flags: [String]) -> String? {
+        guard let i = flags.firstIndex(of: name), i + 1 < flags.count else { return nil }
+        return flags[i + 1]
+    }
+
+    static func hex(_ v: UInt32) -> String { "0x" + String(v, radix: 16, uppercase: true) }
+    static func fmtKm(_ meters: UInt32) -> String { String(format: "%.1f", Double(meters) / 1000) }
+
     static func stderr(_ line: String) {
         FileHandle.standardError.write(Data((line + "\n").utf8))
     }
+
+    static let usage = """
+        echo-harness — drive the firmware BLE data planes over the real app byte layer
+
+        USAGE: swift run echo-harness <subcommand> [args]
+
+        SUBCOMMANDS
+          echo [--count N] [--size BYTES] [--corrupt]   A5 loopback (#273); default subcommand
+          upload <file.obcr>                            upload a route → SD, assert committed (A6)
+          list                                          download + print the routeList (§7.4)
+          detail <id> [reference.obcr] [--out file]     download a route; verify CRC + byte-identity
+          delete <id>                                   deleteObject; assert command ok + storeChanged
+          resume-test <file.obcr>                       drop mid-upload, resume by offset, ride-verify
+          --help                                        this message
+
+        ECHO OPTIONS
+          --count N       objects to echo (default 100; the A5 DoD run is 1000)
+          --size BYTES    bytes per object (default 32768)
+          --corrupt       flip one byte per object; expect the device to reject with crcMismatch
+        """
 }
 
-/// The harness's command-line options.
+/// The harness's command-line options (echo subcommand).
 struct Options {
     var count = 100
     var size = 32_768 // 32 KB — a route-object-scale payload
     var corrupt = false
-    var showHelp = false
-
-    static let usage = """
-        echo-harness — drive the firmware A5 L2CAP CoC echo loopback (issue #273)
-
-        USAGE: swift run echo-harness [--count N] [--size BYTES] [--corrupt]
-
-          --count N       number of objects to echo (default 100; the DoD run is 1000)
-          --size BYTES    bytes per object (default 32768)
-          --corrupt       flip one byte per object; expect the device to reject with crcMismatch
-          --help          this message
-        """
 
     init(_ args: [String]) {
-        var it = args.dropFirst().makeIterator()
+        var it = args.makeIterator()
         while let arg = it.next() {
             switch arg {
             case "--count": if let v = it.next().flatMap({ Int($0) }) { count = max(1, v) }
             case "--size": if let v = it.next().flatMap({ Int($0) }) { size = max(1, v) }
             case "--corrupt": corrupt = true
-            case "--help", "-h": showHelp = true
             default: break
             }
+        }
+    }
+}
+
+enum CLIError: Error, CustomStringConvertible {
+    case usage(String)
+    var description: String {
+        switch self {
+        case .usage(let message): return "usage: \(message)"
         }
     }
 }
