@@ -1,5 +1,9 @@
-# Xcode / SwiftPM build artifacts — the .xcodeproj itself IS committed (generated
-# from project.yml), but per-user and derived state is not.
+# Xcode / SwiftPM build artifacts. The .xcodeproj is XcodeGen-generated, NOT
+# committed — `xcodegen generate` is a required first step after cloning (see
+# companion-ios/CLAUDE.md). Committing it baked personal machine state
+# (DEVELOPMENT_TEAM signing) into shared history and risked silently drifting
+# from project.yml with nothing to catch it.
+*.xcodeproj/
 
 ## Build output
 build/
@@ -8,7 +12,7 @@ DerivedData/
 *.dSYM.zip
 *.dSYM
 
-## Xcode per-user state (inside the committed .xcodeproj)
+## Xcode per-user state (would live inside a generated .xcodeproj)
 xcuserdata/
 *.xcuserstate
 *.xcscmblueprint
