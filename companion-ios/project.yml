@@ -9,6 +9,14 @@
 
 name: OBCCompanion
 
+# project.local.yml carries your personal signing team id — tracked with an
+# empty default (so a fresh clone still builds for the simulator) but meant
+# to be edited locally and marked skip-worktree so `xcodegen generate` never
+# wipes it and it never shows up as a git diff. See companion-ios/CLAUDE.md
+# → Signing.
+include:
+  - project.local.yml
+
 options:
   bundleIdPrefix: com.openbikecomputer
   deploymentTarget:
@@ -25,8 +33,8 @@ settings:
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
     CODE_SIGN_STYLE: Automatic
-    DEVELOPMENT_TEAM: ""                 # set your team id for on-device runs (see CLAUDE.md)
     IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+    # DEVELOPMENT_TEAM comes from project.local.yml (see the `include:` above).
 
 packages:
   OBCKit:
