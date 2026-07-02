@@ -353,6 +353,12 @@ public final class MainScreenModel {
         return detail
     }
 
+    /// H3 write-through from Settings (B8) — the top bar shows the new device
+    /// name at once; Settings owns the config write and the bond record.
+    public func deviceRenamed(to name: String) {
+        deviceName = name
+    }
+
     /// The device took a copy (a B5 upload completed, or a reconcile saw the
     /// route in the device's list) — remembered so B3 can dress "not on
     /// device yet" states and re-offer the upload.

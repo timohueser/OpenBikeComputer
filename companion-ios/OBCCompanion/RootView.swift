@@ -59,7 +59,7 @@ struct RootView: View {
                         path.append(.ride(id: ride.id))
                     },
                     onSettings: {
-                        // TODO(B8): the settings screen (G).
+                        path.append(.settings)
                     }
                 )
                 // Back label for the pushed details — the main screen draws its
@@ -151,7 +151,32 @@ struct RootView: View {
                     onRename: { mainModel.renameRide(id, to: $0) }
                 )
             }
+        case .settings:
+            SettingsScreen(
+                transport: transport,
+                bondStore: bondStore,
+                onDeviceRenamed: { mainModel.deviceRenamed(to: $0) },
+                // H2: bond is cleared + link dropped by the model; pop the
+                // stack and hand the launch flow back to the D1 prompt.
+                onForget: {
+                    path.removeAll()
+                    launchModel.forgetDevice()
+                },
+                onOpenDevPanel: devPanelOpener
+            )
         }
+    }
+
+    /// The hidden dev-panel entry Settings hosts (B1P's second entry point):
+    /// Debug-only, and only when the mock is driving — Release and forced-BLE
+    /// runs pass `nil`, so the gesture goes nowhere.
+    private var devPanelOpener: (() -> Void)? {
+        #if DEBUG
+        guard OBCCompanionApp.mockControl != nil else { return nil }
+        return { NotificationCenter.default.post(name: .obcDeviceDidShake, object: nil) }
+        #else
+        return nil
+        #endif
     }
 
     // MARK: Import edge (→ E1)
@@ -189,6 +214,35 @@ struct RootView: View {
 enum MainDestination: Hashable {
     case route(id: RouteID)
     case ride(id: RideID)
+    case settings
+}
+
+/// Owns a stable `SettingsModel` for the pushed G screen (B8) — same rule as
+/// the detail hosts: a model created inline in `navigationDestination` would
+/// be rebuilt on every body pass.
+private struct SettingsScreen: View {
+    @State private var model: SettingsModel
+    private let onOpenDevPanel: (() -> Void)?
+
+    init(
+        transport: any DeviceTransport,
+        bondStore: any BondStore,
+        onDeviceRenamed: @escaping (String) -> Void,
+        onForget: @escaping () -> Void,
+        onOpenDevPanel: (() -> Void)?
+    ) {
+        _model = State(initialValue: SettingsModel(
+            transport: transport,
+            bondStore: bondStore,
+            onDeviceRenamed: onDeviceRenamed,
+            onForget: onForget
+        ))
+        self.onOpenDevPanel = onOpenDevPanel
+    }
+
+    var body: some View {
+        SettingsView(model: model, onOpenDevPanel: onOpenDevPanel)
+    }
 }
 
 private struct PendingImport: Identifiable {
