@@ -60,12 +60,15 @@ companion-ios/
                                sidecars) is the real conformer; InMemoryLibraryStore
                                serves tests, previews, and every mock run (scenario
                                launches must start from their fixtures alone)
-          Transfer/            control-plane descriptors + CRC-32 (pure, host-tested)
-          Codecs/              device object layouts ↔ domain types (S0-owned bytes:
-                               Config blob + RideObjectCodec, the compact-binary
-                               ride the sync decodes and the mock encodes (B7); route
-                               encoder when S0 pins it). Pure — a device-format
-                               change lands here.
+          Transfer/            control-plane descriptors + CRC-32 (pure, host-tested;
+                               frozen by S0 — pinned byte-exactly against the shared
+                               ../protocol-vectors/ fixtures by ProtocolVectorTests)
+          Codecs/              device object layouts ↔ domain types (S0-frozen bytes:
+                               ConfigObjectCodec + RideObjectCodec, the compact-binary
+                               ride the sync decodes and the mock encodes (B7); the
+                               OBCR v2 route encoder is still to land — S0 pinned the
+                               format, B5 uploads a placeholder blob until then). Pure
+                               — a device-format change lands here.
           BLE/                 real conformer — BLETransport, BLEChannel (raw CoC
                                streaming), ByteChannel, L2CAPByteChannel, GATT.
                                **CoreBluetooth lives ONLY here.**
