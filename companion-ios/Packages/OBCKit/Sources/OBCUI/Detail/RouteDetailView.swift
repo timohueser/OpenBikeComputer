@@ -18,6 +18,8 @@ public struct RouteDetailView: View {
     private let onDelete: (() -> Void)?
     private let onRename: ((String) -> Void)?
     private let onSaveToPlanned: (() -> Void)?
+    private let noDevicePaired: Bool
+    private let onPair: (() -> Void)?
 
     @State private var renameShown = false
     @State private var renameDraft = ""
@@ -30,7 +32,9 @@ public struct RouteDetailView: View {
         onUpload: @escaping () -> Void = {},
         onDelete: (() -> Void)? = nil,
         onRename: ((String) -> Void)? = nil,
-        onSaveToPlanned: (() -> Void)? = nil
+        onSaveToPlanned: (() -> Void)? = nil,
+        noDevicePaired: Bool = false,
+        onPair: (() -> Void)? = nil
     ) {
         self.model = model
         self.deviceName = deviceName
@@ -38,6 +42,8 @@ public struct RouteDetailView: View {
         self.onDelete = onDelete
         self.onRename = onRename
         self.onSaveToPlanned = onSaveToPlanned
+        self.noDevicePaired = noDevicePaired
+        self.onPair = onPair
     }
 
     public var body: some View {
@@ -197,6 +203,21 @@ public struct RouteDetailView: View {
                         actionTitle: "Delete route",
                         onConfirm: { onDelete?() }
                     )
+            case .imported where noDevicePaired:
+                // H4 — a share can arrive before pairing: the route still
+                // saves; upload waits until a device exists.
+                OBCInlineBanner(
+                    systemImage: "antenna.radiowaves.left.and.right.slash",
+                    title: "No device paired yet.",
+                    message: "Save it now — upload once you pair."
+                )
+                .padding(.bottom, 4)
+                Button("Save to Planned") { onSaveToPlanned?() }
+                    .buttonStyle(.obcPrimary)
+                    .accessibilityIdentifier("detail.saveToPlanned")
+                Button("Pair a device") { onPair?() }
+                    .buttonStyle(.obcGhost)
+                    .accessibilityIdentifier("detail.pairDevice")
             case .imported:
                 uploadButton
                 Button("Save to Planned") { onSaveToPlanned?() }
@@ -277,26 +298,34 @@ struct WaypointsScreen: View {
 
 /// E1 — the import landing: the same detail body framed by **Cancel / Save**
 /// chrome. Presented full-screen by the composition root when a route file
-/// decodes (Files pick, share sheet [B6], or the `-OBCImportSample` hook).
+/// decodes (Files pick, share sheet, or the `-OBCImportSample` hook). With no
+/// device paired it wears the H4 framing instead — the no-device banner plus
+/// **Save to Planned** / **Pair a device** in place of Upload.
 public struct ImportLandingView: View {
     private let model: RouteDetailModel
     private let deviceName: String
     private let onUpload: () -> Void
     private let onSave: () -> Void
     private let onCancel: () -> Void
+    private let noDevicePaired: Bool
+    private let onPair: () -> Void
 
     public init(
         model: RouteDetailModel,
         deviceName: String,
         onUpload: @escaping () -> Void = {},
         onSave: @escaping () -> Void = {},
-        onCancel: @escaping () -> Void = {}
+        onCancel: @escaping () -> Void = {},
+        noDevicePaired: Bool = false,
+        onPair: @escaping () -> Void = {}
     ) {
         self.model = model
         self.deviceName = deviceName
         self.onUpload = onUpload
         self.onSave = onSave
         self.onCancel = onCancel
+        self.noDevicePaired = noDevicePaired
+        self.onPair = onPair
     }
 
     public var body: some View {
@@ -305,7 +334,9 @@ public struct ImportLandingView: View {
                 model: model,
                 deviceName: deviceName,
                 onUpload: onUpload,
-                onSaveToPlanned: onSave
+                onSaveToPlanned: onSave,
+                noDevicePaired: noDevicePaired,
+                onPair: onPair
             )
             .navigationTitle("Imported route")
             #if os(iOS)

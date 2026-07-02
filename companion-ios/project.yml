@@ -69,10 +69,11 @@ targets:
         CFBundleDisplayName: OBC
         # H7 copy — do not reword without updating the design source.
         NSBluetoothAlwaysUsageDescription: "OBC uses Bluetooth to connect to your bike computer. It never leaves your phone."
-        # Route-file registration: puts OBC in the share sheet's app row for
-        # .gpx files (Komoot/Strava exports) and lets Files "open in" the app —
-        # delivery lands in RootView's onOpenURL. TCX joins with B6's decoder;
-        # a full Share Extension (if ever needed) also stays B6.
+        # Route-file registration (B6): puts OBC in the share sheet's app row
+        # for .gpx/.tcx files (Komoot/Strava/Garmin exports) and lets Files
+        # "open in" the app — delivery lands in RootView's onOpenURL. This IS
+        # the share-sheet entry: a dedicated Share Extension target would only
+        # add value for non-file shares (URLs/text), deliberately not built.
         LSSupportsOpeningDocumentsInPlace: true
         CFBundleDocumentTypes:
           - CFBundleTypeName: GPX route
@@ -80,6 +81,11 @@ targets:
             LSHandlerRank: Alternate
             LSItemContentTypes:
               - com.topografix.gpx
+          - CFBundleTypeName: TCX route
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - com.garmin.tcx
         UTImportedTypeDeclarations:
           - UTTypeIdentifier: com.topografix.gpx
             UTTypeDescription: GPX route
@@ -90,6 +96,15 @@ targets:
                 - gpx
               public.mime-type:
                 - application/gpx+xml
+          - UTTypeIdentifier: com.garmin.tcx
+            UTTypeDescription: TCX route
+            UTTypeConformsTo:
+              - public.xml
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - tcx
+              public.mime-type:
+                - application/vnd.garmin.tcx+xml
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false

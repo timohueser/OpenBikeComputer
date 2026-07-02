@@ -150,6 +150,16 @@ final class RouteDetailModelTests: XCTestCase {
         XCTAssertEqual(model.importedFromLine, "Imported from GPX file")
     }
 
+    func testImportedFromLineRecognizesGarmin() {
+        var route = importedRoute
+        route.creator = "Garmin Connect"
+        let model = RouteDetailModel(
+            transport: MockTransport(control: makeControl()),
+            dressing: .imported(route, fileName: "course.tcx")
+        )
+        XCTAssertEqual(model.importedFromLine, "Imported from Garmin")
+    }
+
     func testMakeSummaryCarriesTheParsedStats() {
         let model = RouteDetailModel(
             transport: MockTransport(control: makeControl()),

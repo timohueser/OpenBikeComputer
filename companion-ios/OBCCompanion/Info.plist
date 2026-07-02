@@ -20,6 +20,18 @@
 				<string>com.topografix.gpx</string>
 			</array>
 		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>TCX route</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.garmin.tcx</string>
+			</array>
+		</dict>
 	</array>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
@@ -70,6 +82,27 @@
 				<key>public.mime-type</key>
 				<array>
 					<string>application/gpx+xml</string>
+				</array>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.xml</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>TCX route</string>
+			<key>UTTypeIdentifier</key>
+			<string>com.garmin.tcx</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>tcx</string>
+				</array>
+				<key>public.mime-type</key>
+				<array>
+					<string>application/vnd.garmin.tcx+xml</string>
 				</array>
 			</dict>
 		</dict>
