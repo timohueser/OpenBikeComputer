@@ -111,9 +111,10 @@ fn whole_object_walk() {
     assert_eq!(obj.len(), ListHeader::object_len(entries.len()));
 
     let (h, entry_len) = ListHeader::decode(&obj).unwrap();
-    for k in 0..h.count as usize {
+    assert_eq!(h.count as usize, entries.len());
+    for (k, expected) in entries.iter().enumerate() {
         let off = ListHeader::ENCODED_LEN + k * entry_len;
         let d = RouteListEntry::decode(&obj[off..off + entry_len]).unwrap();
-        assert_eq!(d, entries[k]);
+        assert_eq!(&d, expected);
     }
 }

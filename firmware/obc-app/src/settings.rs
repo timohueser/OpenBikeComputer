@@ -47,8 +47,9 @@ impl DeviceName {
     /// The factory-name sentinel (see the type doc).
     pub const EMPTY: DeviceName = DeviceName { len: 0, bytes: [0; DEVICE_NAME_MAX] };
 
-    /// Store `name`, truncated to the byte cap **on a char boundary** (never mid-UTF-8).
-    pub fn from_str(name: &str) -> DeviceName {
+    /// Store `name`, truncated to the byte cap **on a char boundary** (never mid-UTF-8) —
+    /// lossy by design, hence not the std `FromStr` shape.
+    pub fn from_str_lossy(name: &str) -> DeviceName {
         let mut end = name.len().min(DEVICE_NAME_MAX);
         while end > 0 && !name.is_char_boundary(end) {
             end -= 1;
@@ -593,7 +594,7 @@ mod tests {
             power_saver: true,
             stat_fields,
             stat_cycle_s: 8,
-            device_name: DeviceName::from_str("Timo's OBC"),
+            device_name: DeviceName::from_str_lossy("Timo's OBC"),
         };
         assert_eq!(decode(&encode(&s)), Some(s));
     }
@@ -608,7 +609,7 @@ mod tests {
             long.push('x').unwrap();
         }
         long.push('ü').unwrap();
-        let name = DeviceName::from_str(&long);
+        let name = DeviceName::from_str_lossy(&long);
         assert_eq!(name.as_str().len(), 47, "never split a UTF-8 sequence");
 
         let s = Settings { device_name: name, ..Settings::default() };

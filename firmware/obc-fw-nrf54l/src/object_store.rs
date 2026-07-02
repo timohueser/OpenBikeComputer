@@ -159,7 +159,7 @@ impl ObjectStore {
     /// stored verbatim; an empty name clears back to factory (S0 §2 — the factory `OBC-XXXX`
     /// returns to the advertisement).
     pub fn apply_config(&mut self, name: &str, units: u8) {
-        self.settings.device_name = DeviceName::from_str(name);
+        self.settings.device_name = DeviceName::from_str_lossy(name);
         self.settings.units = if units == 1 { obc_app::Units::Imperial } else { obc_app::Units::Metric };
         self.settings_store.save(&self.settings);
     }
