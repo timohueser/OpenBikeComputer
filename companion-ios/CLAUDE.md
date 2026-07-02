@@ -65,10 +65,10 @@ companion-ios/
                                ../protocol-vectors/ fixtures by ProtocolVectorTests)
           Codecs/              device object layouts ↔ domain types (S0-frozen bytes:
                                ConfigObjectCodec + RideObjectCodec, the compact-binary
-                               ride the sync decodes and the mock encodes (B7); the
-                               OBCR v2 route encoder is still to land — S0 pinned the
-                               format, B5 uploads a placeholder blob until then). Pure
-                               — a device-format change lands here.
+                               ride the sync decodes and the mock encodes (B7);
+                               RouteObjectCodec, the ImportedRoute → OBCR v2 encoder
+                               B5 uploads and the reader routeDetail decodes, B12).
+                               Pure — a device-format change lands here.
           BLE/                 real conformer — BLETransport, BLEChannel (raw CoC
                                streaming), ByteChannel, L2CAPByteChannel, GATT.
                                **CoreBluetooth lives ONLY here.**
@@ -100,8 +100,8 @@ companion-ios/
                                the W1 waypoints push and H12 rename)
           Upload/              B5 upload sheet (UploadSheetModel + UploadSheetView:
                                F progress → F₂ done over the detail, drop →
-                               offset-resume, cancel-aborts; placeholder payload
-                               until the S0 route encoder lands in Codecs/)
+                               offset-resume, cancel-aborts; the real OBCR v2 payload
+                               from RouteObjectCodec, B12)
           Settings/            B8 settings (SettingsModel + SettingsView: the G
                                grouped lists — device row + H3 rename via
                                writeConfig + H2 forget → D1, OTA/services groups

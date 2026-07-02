@@ -237,22 +237,35 @@ private struct PreviewUploadTransport: DeviceTransport {
                 .sheet(isPresented: $shown) {
                     UploadSheetView(model: UploadSheetModel(
                         transport: PreviewUploadTransport(),
-                        blob: RouteBlob(
-                            summary: RouteSummary(
-                                id: RouteID("preview"), name: "Kettle Moraine Loop",
-                                distanceMeters: 62_400, elevationGainMeters: 840
-                            ),
-                            waypoints: [Waypoint(
-                                index: 0, name: "Ottawa Lake trailhead",
-                                distanceAlongMeters: 0, coordinate: Coordinate(latitude: 0, longitude: 0)
-                            )],
-                            payload: Data(count: 2_300_000)
-                        ),
+                        blob: previewBlob,
                         deviceName: "Trailhead"
                     ))
                 }
         }
     }
     return Demo()
+}
+
+/// A real OBCR route (a short synthetic climb) so the preview's size readout shows
+/// the true kB scale, not a placeholder byte count.
+private var previewBlob: RouteBlob {
+    let waypoint = Waypoint(
+        index: 0, name: "Ottawa Lake trailhead",
+        distanceAlongMeters: 0, coordinate: Coordinate(latitude: 43.02, longitude: -88.55)
+    )
+    let points = (0..<400).map { i in
+        RoutePoint(
+            coordinate: Coordinate(latitude: 43.02 + 0.0006 * Double(i), longitude: -88.55 + 0.0004 * Double(i % 2)),
+            elevationMeters: 280 + Double(i % 40)
+        )
+    }
+    return RouteBlob(
+        summary: RouteSummary(
+            id: RouteID("preview"), name: "Kettle Moraine Loop",
+            distanceMeters: 62_400, elevationGainMeters: 840
+        ),
+        waypoints: [waypoint],
+        payload: RouteObjectCodec.encode(points: points, waypoints: [waypoint], name: "Kettle Moraine Loop")
+    )
 }
 #endif

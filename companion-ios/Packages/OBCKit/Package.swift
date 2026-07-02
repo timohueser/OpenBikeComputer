@@ -65,7 +65,9 @@ let package = Package(
         ),
         .testTarget(
             name: "OBCTransportTests",
-            dependencies: ["OBCTransport"],
+            // OBCFormats so the route-encoder test can decode a real GPX export
+            // through the production decoder and encode it to OBCR end to end.
+            dependencies: ["OBCTransport", "OBCFormats"],
             swiftSettings: strictConcurrency
         ),
         .testTarget(

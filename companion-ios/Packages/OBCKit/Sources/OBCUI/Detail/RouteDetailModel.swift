@@ -48,6 +48,12 @@ public final class RouteDetailModel {
     private var pointCount = 0
     /// Stats computed for an imported file (E1) — also what `makeSummary` saves.
     private var importedStats: RouteStats?
+    /// The canonical geometry an upload encodes to OBCR. The imported dressing
+    /// carries its own; a planned route's is threaded from the library (the device
+    /// wire blob is re-encoded from it, per the B1S format rule). `nil` for a
+    /// device-only planned route with no app-side geometry — it's already on the
+    /// device, so the upload affordance reads "Uploaded" rather than re-pushing.
+    @ObservationIgnored private let uploadGeometry: ImportedRoute?
 
     public var isRenamable: Bool {
         switch dressing {
@@ -67,10 +73,15 @@ public final class RouteDetailModel {
     public init(
         transport: any DeviceTransport,
         dressing: Dressing,
-        preloadedDetail: RouteDetail? = nil
+        preloadedDetail: RouteDetail? = nil,
+        plannedGeometry: ImportedRoute? = nil
     ) {
         self.transport = transport
         self.dressing = dressing
+        switch dressing {
+        case .imported(let route, _): uploadGeometry = route  // E1 carries its own geometry
+        default: uploadGeometry = plannedGeometry
+        }
 
         switch dressing {
         case .planned(let route):
@@ -224,12 +235,11 @@ public final class RouteDetailModel {
         )
     }
 
-    /// The `RouteBlob` the upload sheet (B5) sends — the current name +
-    /// waypoints over a **placeholder payload** until the S0 route encoder
-    /// lands in `OBCTransport/Codecs` (real path, A6). The placeholder is
-    /// sized off the route length at the design's scale (2.3 MB for the
-    /// 62.4 km route ≈ 37 B/m), so the mock's pacing and the sheet's MB
-    /// readout stay realistic; the mock counts the bytes, never reads them.
+    /// The `RouteBlob` the upload sheet (B5) sends — the current name + waypoints
+    /// over the **real OBCR v2 payload** the device stores verbatim and rides
+    /// (`RouteObjectCodec`, spec §7.1). The geometry is the imported route's (E1)
+    /// or the library's for a planned route; a device-only planned route with no
+    /// app-side geometry sends nothing (it's already on the device).
     public func makeUploadBlob() -> RouteBlob {
         let summary: RouteSummary
         switch dressing {
@@ -239,11 +249,10 @@ public final class RouteDetailModel {
         case .imported, .tracked:  // tracked never uploads (E3 has no action)
             summary = makeSummary()
         }
-        return RouteBlob(
-            summary: summary,
-            waypoints: waypoints,
-            payload: Data(count: max(1, Int(distanceMeters * 37)))
-        )
+        let payload = uploadGeometry.map {
+            RouteObjectCodec.encode(points: $0.points, waypoints: waypoints, name: name)
+        } ?? Data()
+        return RouteBlob(summary: summary, waypoints: waypoints, payload: payload)
     }
 
     /// The full `RouteDetail` an E1 save keeps app-side — reopening the saved

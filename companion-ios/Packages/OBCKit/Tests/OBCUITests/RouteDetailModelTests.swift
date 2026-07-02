@@ -190,10 +190,15 @@ final class RouteDetailModelTests: XCTestCase {
 
     // MARK: Upload blob (B5)
 
-    func testUploadBlobCarriesRenameWaypointsAndAPlausiblePayload() async {
+    func testUploadBlobCarriesRenameWaypointsAndRealOBCR() async throws {
         let control = makeControl()
         let route = control.fixtures.routes[0].summary  // Kettle Moraine Loop, 62.4 km
-        let model = RouteDetailModel(transport: MockTransport(control: control), dressing: .planned(route))
+        // A planned route re-uploads the library's parsed geometry (threaded in).
+        let model = RouteDetailModel(
+            transport: MockTransport(control: control),
+            dressing: .planned(route),
+            plannedGeometry: importedRoute
+        )
         model.start()
         await waitFor("detail fill") { !model.waypoints.isEmpty }
         XCTAssertTrue(model.rename(to: "Kettle Gravel Day"))
@@ -202,10 +207,20 @@ final class RouteDetailModelTests: XCTestCase {
         XCTAssertEqual(blob.summary.id, route.id)
         XCTAssertEqual(blob.summary.name, "Kettle Gravel Day", "a rename must ride along")
         XCTAssertEqual(blob.waypoints.count, 4)
-        // Placeholder payload at the design scale: 62.4 km reads as "2.3 MB".
-        XCTAssertEqual(
-            OBCFormat.megabytesValue(blob.payload.count, locale: Locale(identifier: "en_US")), "2.3"
-        )
+
+        // The payload is a real OBCR file — decodes back with the rename + waypoints,
+        // a few kB, not the old ~2 MB of zeros.
+        let decoded = try RouteObjectCodec.decode(blob.payload)
+        XCTAssertEqual(decoded.name, "Kettle Gravel Day")
+        XCTAssertEqual(decoded.waypoints.count, 4)
+        XCTAssertLessThan(blob.payload.count, 10_000)
+    }
+
+    func testPlannedUploadWithoutGeometrySendsNothing() {
+        // A device-listed route the phone never imported has no app-side geometry.
+        let route = RouteSummary(id: RouteID("42"), name: "On Device", distanceMeters: 40_000, elevationGainMeters: 300)
+        let model = RouteDetailModel(transport: MockTransport(control: makeControl()), dressing: .planned(route))
+        XCTAssertTrue(model.makeUploadBlob().payload.isEmpty)
     }
 
     func testUploadBlobAndSaveDetailShareTheImportedID() {
