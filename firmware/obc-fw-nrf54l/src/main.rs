@@ -1693,6 +1693,7 @@ async fn run_status(
 
         if redraw {
             let battery = fuel.poll().unwrap_or(0);
+            ble::publish_battery(battery); // feed the BAS characteristic (A4) from the FuelGauge seam
             let render = |d: &mut dyn DisplayDriver| {
                 ble::draw_status_screen(d.fb_mut(), battery, sd_ok, inputs);
                 RenderStats::default()
