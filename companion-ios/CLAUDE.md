@@ -24,7 +24,9 @@ companion-ios/
     OBCCompanionApp.swift      @main; the one place that picks a DeviceTransport
     RootView.swift             launch gate (B2) + the main screen's NavigationStack
                                (B3) + the B4 detail routing and the import edge
-                               (RouteImporter → E1 cover); upload = B5 placeholder
+                               (RouteImporter → E1 cover); the detail/landing hosts
+                               present the B5 upload sheet (upload from E1 also
+                               saves — "Uploading saves it too")
     Info.plist                 NSBluetoothAlwaysUsageDescription + the GPX
                                document type (share sheet / "open with OBC" →
                                RootView.onOpenURL → E1; TCX joins with B6)
@@ -62,6 +64,10 @@ companion-ios/
                                ONE profile layout, three dressings — E2 planned /
                                E3 tracked / E1 import via ImportLandingView — plus
                                the W1 waypoints push and H12 rename)
+          Upload/              B5 upload sheet (UploadSheetModel + UploadSheetView:
+                               F progress → F₂ done over the detail, drop →
+                               offset-resume, cancel-aborts; placeholder payload
+                               until the S0 route encoder lands in Codecs/)
       Tests/
         OBCTransportTests/     domain/transport/codec unit tests (host, `swift test`);
                                incl. CoreBluetoothSeamTests (enforces the CB seam)
@@ -322,9 +328,11 @@ assert. `OBCCompanionUITests/ScenarioLaunchTests` launches every scenario by
 argument and checks the tag (plus fixture-name, connection-override, and
 panel-presentation smoke tests); `PairingFlowTests` walks the B2 launch/pairing
 flow end to end per scenario, `MainScreenTests` walks the B3 main-screen
-states (C1/C2, SYNC, S4, H6, H11→H1), and `RouteDetailTests` walks the B4
-detail dressings (E2/E3/W1/H12/H1 + E1 via `-OBCImportSample`) — all attach a
-screenshot of each design screen to the result bundle. Run them with
+states (C1/C2, SYNC, S4, H6, H11→H1), `RouteDetailTests` walks the B4
+detail dressings (E2/E3/W1/H12/H1 + E1 via `-OBCImportSample`), and
+`UploadSheetTests` walks the B5 sheet (F/F₂, `uploadDrop` → resume, cancel,
+E1 upload-saves) — all attach a screenshot of each design screen to the
+result bundle. Run them with
 `test_sim {}` / `xcodebuild test`. The B3 landing anchor the pairing tests wait
 for is `main.screen`; the detail anchor is `detail.screen` (⚠️ it sits on a
 ScrollView, so query it with `descendants(matching: .any)`, not `otherElements`).
