@@ -19,11 +19,12 @@ final class RouteStatsTests: XCTestCase {
         XCTAssertEqual(stats.distanceMeters, 2 * 1112, accuracy: 5)
     }
 
-    func testClimbUsesHysteresisAgainstJitter() {
+    func testClimbAndDescentUseHysteresisAgainstJitter() {
         // Confirmed walk: 100 → (101, 100.5 inside the ±2 band) → 105 (+5)
-        // → 103 (down-confirm) → 110 (+7) = 12.
+        // → 103 (−2 descent) → 110 (+7): climb 12, descent 2.
         let stats = RouteStats.compute(from: track([100, 101, 100.5, 105, 103, 110]))
         XCTAssertEqual(stats.elevationGainMeters, 12, accuracy: 0.001)
+        XCTAssertEqual(stats.elevationLossMeters, 2, accuracy: 0.001)
     }
 
     func testMaxGradeOverSustainedWindow() {

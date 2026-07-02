@@ -95,6 +95,9 @@ public final class MainScreenModel {
     /// Rides this app session has pulled off the device — what makes the next
     /// sync's "new". B7 replaces this with the persistent ride store.
     @ObservationIgnored private var syncedRideIDs: Set<RideID> = []
+    /// Full detail for routes saved from an import this session (see
+    /// `addImportedRoute`). B7's library store takes this over too.
+    @ObservationIgnored private var importedDetails: [RouteID: RouteDetail] = [:]
     @ObservationIgnored private var started = false
     @ObservationIgnored private var streamTasks: [Task<Void, Never>] = []
     @ObservationIgnored private var loadTask: Task<Void, Never>?
@@ -240,6 +243,7 @@ public final class MainScreenModel {
     /// Remove a planned route — optimistic locally, then on the device.
     public func deleteRoute(_ id: RouteID) {
         routes.removeAll { $0.id == id }
+        importedDetails[id] = nil
         Task { [transport] in
             try? await transport.deleteRoute(id)
         }
@@ -269,11 +273,22 @@ public final class MainScreenModel {
     }
 
     /// Land a just-imported route at the top of Planned (E1 "Save to Planned").
-    /// Session-scoped like rename: the persistent phone-side library is B7's.
-    public func addImportedRoute(_ summary: RouteSummary) {
-        routes.removeAll { $0.id == summary.id }
-        routes.insert(summary, at: 0)
+    /// The full detail (waypoints + profile) stays app-side — the device never
+    /// had this route, so `routeDetail` can't answer for it. Session-scoped
+    /// like rename: the persistent phone-side library is B7's.
+    public func addImportedRoute(_ detail: RouteDetail) {
+        importedDetails[detail.summary.id] = detail
+        routes.removeAll { $0.id == detail.summary.id }
+        routes.insert(detail.summary, at: 0)
         tab = .planned
+    }
+
+    /// The kept detail for a route saved from an import this session, with the
+    /// summary refreshed from the live list (renames must show).
+    public func importedDetail(for id: RouteID) -> RouteDetail? {
+        guard var detail = importedDetails[id] else { return nil }
+        if let live = routes.first(where: { $0.id == id }) { detail.summary = live }
+        return detail
     }
 
     // MARK: Helpers

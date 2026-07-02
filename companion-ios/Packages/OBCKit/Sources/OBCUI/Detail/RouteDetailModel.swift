@@ -43,6 +43,7 @@ public final class RouteDetailModel {
     public let subtitle: String?
     public private(set) var distanceMeters: Double = 0
     private var climbMeters: Double = 0
+    private var descentMeters: Double = 0
     private var estimatedDuration: TimeInterval?
     private var pointCount = 0
     /// Stats computed for an imported file (E1) — also what `makeSummary` saves.
@@ -60,7 +61,14 @@ public final class RouteDetailModel {
     private let transport: any DeviceTransport
     @ObservationIgnored private var started = false
 
-    public init(transport: any DeviceTransport, dressing: Dressing) {
+    /// `preloadedDetail` short-circuits the transport fetch — the composition
+    /// root passes it for routes saved from an import this session, whose
+    /// waypoints/profile live app-side, not on the device.
+    public init(
+        transport: any DeviceTransport,
+        dressing: Dressing,
+        preloadedDetail: RouteDetail? = nil
+    ) {
         self.transport = transport
         self.dressing = dressing
 
@@ -73,6 +81,12 @@ public final class RouteDetailModel {
             climbMeters = route.elevationGainMeters
             estimatedDuration = route.estimatedDuration
             pointCount = route.pointCount
+            if let detail = preloadedDetail {
+                waypoints = detail.waypoints
+                elevationProfile = detail.elevationProfile
+                maxGradePercent = detail.maxGradePercent
+                started = true  // nothing left to fetch
+            }
 
         case .tracked(let ride):
             name = ride.name
@@ -89,6 +103,7 @@ public final class RouteDetailModel {
             preview = TrackPreview.normalizing(route.points.map(\.coordinate))
             distanceMeters = stats.distanceMeters
             climbMeters = stats.elevationGainMeters
+            descentMeters = stats.elevationLossMeters
             estimatedDuration = stats.estimatedDuration
             pointCount = route.points.count
             waypoints = route.waypoints
@@ -165,8 +180,8 @@ public final class RouteDetailModel {
             [
                 OBCStat(value: OBCFormat.distanceValue(meters: distanceMeters), unit: "km", key: "Distance"),
                 OBCStat(value: OBCFormat.climbValue(meters: climbMeters), unit: "m", key: "Climb"),
+                OBCStat(value: OBCFormat.climbValue(meters: descentMeters), unit: "m", key: "Descent"),
                 OBCStat(value: estimatedDuration.map { OBCFormat.movingTime($0) } ?? "—", key: "Est. time"),
-                OBCStat(value: "\(pointCount)", key: "Points"),
             ]
         }
     }
@@ -200,6 +215,18 @@ public final class RouteDetailModel {
             pointCount: pointCount,
             source: source,
             trackPreview: preview
+        )
+    }
+
+    /// The full `RouteDetail` an E1 save keeps app-side — reopening the saved
+    /// route must not lose the parsed waypoints/profile (the device never had
+    /// them; the mock's `routeDetail` can't answer for a phone-only id).
+    public func makeDetail() -> RouteDetail {
+        RouteDetail(
+            summary: makeSummary(),
+            waypoints: waypoints,
+            elevationProfile: elevationProfile,
+            maxGradePercent: maxGradePercent
         )
     }
 }

@@ -9,6 +9,8 @@ import Foundation
 public struct RouteStats: Equatable, Sendable {
     public var distanceMeters: Double
     public var elevationGainMeters: Double
+    /// Total descent in metres (same hysteresis as the gain).
+    public var elevationLossMeters: Double
     /// Elevation samples for the profile card, downsampled to `profileSampleCount`.
     public var elevationProfile: [Double]
     /// Steepest sustained climb over a ~100 m window, in percent. `nil` when the
@@ -34,8 +36,9 @@ public struct RouteStats: Equatable, Sendable {
         }
         let distance = cumulative.last ?? 0
 
-        // Climb with hysteresis: ignore jitter smaller than the threshold.
+        // Climb + descent with hysteresis: ignore jitter smaller than the threshold.
         var climb = 0.0
+        var descent = 0.0
         var confirmed: Double?
         for point in points {
             guard let elevation = point.elevationMeters else { continue }
@@ -47,6 +50,7 @@ public struct RouteStats: Equatable, Sendable {
                 climb += elevation - last
                 confirmed = elevation
             } else if elevation <= last - climbHysteresisMeters {
+                descent += last - elevation
                 confirmed = elevation
             }
         }
@@ -74,6 +78,7 @@ public struct RouteStats: Equatable, Sendable {
         return RouteStats(
             distanceMeters: distance,
             elevationGainMeters: climb,
+            elevationLossMeters: descent,
             elevationProfile: downsample(elevations, to: profileSampleCount),
             maxGradePercent: maxGrade,
             estimatedDuration: estimateMinutes * 60
@@ -91,12 +96,14 @@ public struct RouteStats: Equatable, Sendable {
     public init(
         distanceMeters: Double,
         elevationGainMeters: Double,
+        elevationLossMeters: Double = 0,
         elevationProfile: [Double] = [],
         maxGradePercent: Double? = nil,
         estimatedDuration: TimeInterval = 0
     ) {
         self.distanceMeters = distanceMeters
         self.elevationGainMeters = elevationGainMeters
+        self.elevationLossMeters = elevationLossMeters
         self.elevationProfile = elevationProfile
         self.maxGradePercent = maxGradePercent
         self.estimatedDuration = estimatedDuration
