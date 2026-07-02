@@ -110,6 +110,12 @@ impl Receiver {
         self.crc
     }
 
+    /// The whole-object CRC the descriptor announced — a parked transfer stores it to match a
+    /// resume descriptor against (same object ⇒ same announced CRC).
+    pub fn expected_crc(&self) -> u32 {
+        self.expected_crc
+    }
+
     /// Every announced byte has arrived (ready to verify).
     pub fn is_complete(&self) -> bool {
         self.position == self.total_len

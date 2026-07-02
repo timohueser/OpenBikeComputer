@@ -175,6 +175,10 @@ mod sensors;
 // link-status plumbing + status-screen drawer [`run_status`] presents. `ble` builds only.
 #[cfg(feature = "ble")]
 mod ble;
+// The device object store (A6, issue #274): S0 object ids / revision / upload state over the SD
+// catalog, and the Config ↔ RRAM-settings bridge the BLE control plane drives. `ble` builds only.
+#[cfg(feature = "ble")]
+mod object_store;
 
 // The `ble` feature-matrix guards (issue #270). MPSL *provides* the critical-section impl (its
 // radio timing forbids global-interrupt-disable critical sections; two impls = duplicate link
@@ -259,7 +263,11 @@ use embedded_graphics::pixelcolor::{raw::RawU16, Rgb565};
 // map plane out — issue #270); the input-plane/settings types below are every build's.
 #[cfg(has_map)]
 use obc_app::{App, AppState, RideClock, Sensors, TrackSink};
-use obc_app::{Gesture, InputClock, InputEvent, InputPlane, InputSource, SettingsStore};
+// `SettingsStore` (the load/save trait) is the ride loop's seam; the `ble` build's store lives
+// inside `object_store` (which imports it itself).
+#[cfg(has_map)]
+use obc_app::SettingsStore;
+use obc_app::{Gesture, InputClock, InputEvent, InputPlane, InputSource};
 use obc_platform::{ButtonInput, RowDiff};
 // The map render's framebuffer adapter (the status screen builds its own inside `ble.rs`).
 #[cfg(has_map)]
@@ -1655,18 +1663,12 @@ async fn run_app(
 #[cfg(not(has_map))]
 async fn run_status(
     mut display: MapDisplay,
-    // The mounted card, held for the session — `None` (missing card) is a status line here, never
-    // a fault (the map isn't streamed; the object plane needs the card only from A6 on).
-    storage: Option<sd::Storage>,
-    // The RRAM settings store: loaded once at boot so the persistent-settings path stays
-    // exercised in this build too (A8's bond storage lands beside it).
-    mut settings_store: settings::RramSettingsStore,
+    // Whether a card mounted at boot — a status line, never a fault. The card itself (and the
+    // RRAM settings store) live in the BLE plane's `ObjectStore` now (A6): the object plane
+    // writes routes to it and persists Config writes through it.
+    sd_ok: bool,
     led: &mut Output<'static>,
 ) -> ! {
-    let sd_ok = storage.is_some();
-    let _storage = storage; // keep the card mounted for the session (the A6 object plane writes to it)
-    let settings = settings_store.load();
-    defmt::info!("status: RRAM settings {}", if settings.is_some() { "loaded" } else { "blank -> defaults" });
     let mut fuel = StubFuelGauge::new(75);
     // The on-screen input counter — the dumb UI's visible ack that buttons + the input plane run
     // beside the radio (every recognised gesture bumps it; nothing navigates anywhere).
@@ -2113,9 +2115,19 @@ async fn main(_spawner: Spawner) {
         let route_cache: &RouteCache = unsafe { init_static(core::ptr::addr_of_mut!(ROUTE_CACHE), RouteCache::new()) };
 
         // The persistent settings store (#193): takes the `RRAMC` peripheral, reads/writes the
-        // 16-byte blob in the carved RRAM page. Built here (where `p` is live) and moved into the
+        // blob in the carved RRAM page. Built here (where `p` is live) and moved into the
         // ride loop, which seeds the app at boot and saves on a settings edit.
         let settings_store = settings::RramSettingsStore::new(p.RRAMC);
+
+        // The `ble` build's object store (A6, issue #274): the mounted card (`None` degrades
+        // route ops to typed errors, config still works) + the RRAM settings both move in here;
+        // the BLE planes drive it. The status screen keeps only the boot-time `sd` flag.
+        #[cfg(all(feature = "ble", not(has_map)))]
+        let (ble_store, sd_ok) = {
+            let store = object_store::ObjectStore::new(storage, settings_store);
+            let sd_ok = store.sd_ok();
+            (store, sd_ok)
+        };
 
         // --- The BLE stack (issue #270), `ble` builds: group the peripheral claims from the A1
         // inventory (MPSL: GRTC CH7–11 + TIMER10/20 + TEMP + its PPI/PPIB lanes; SDC: the PPI10
@@ -2123,7 +2135,7 @@ async fn main(_spawner: Spawner) {
         // stack future — polled from the tail join below, beside the status/ride plane. Nothing
         // here clashes with the rest of `main` (embassy's GRTC time driver allocates channels from
         // CH0 up; TIMER10/20 and the PPI lanes are otherwise unused). ---
-        #[cfg(feature = "ble")]
+        #[cfg(all(feature = "ble", not(has_map)))]
         let ble_fut = {
             let mpsl_p = nrf_sdc::mpsl::Peripherals::new(
                 p.GRTC_CH7,
@@ -2160,7 +2172,7 @@ async fn main(_spawner: Spawner) {
                 p.PPIB10_CH2,
                 p.PPIB10_CH3,
             );
-            ble::run(_spawner, mpsl_p, sdc_p, p.CRACEN)
+            ble::run(_spawner, mpsl_p, sdc_p, p.CRACEN, ble_store)
         };
 
         // Hand the built display + the resident set to the shared, backend-agnostic ride loop. The
@@ -2186,12 +2198,15 @@ async fn main(_spawner: Spawner) {
         );
         #[cfg(all(has_map, not(feature = "ble")))]
         app_fut.await;
-        // The LM20 shape (map + BLE together, once build.rs relaxes `has_map`): both planes on the
-        // one thread-mode executor. Unreachable today — the DK budget assert forbids the combo.
+        // The LM20 shape (map + BLE in one image) needs the ride loop and the A6 object plane to
+        // share the SD card and the settings store — an arbitration that doesn't exist yet. The
+        // DK budget assert already forbids the combo by size; this keeps the gap explicit.
         #[cfg(all(has_map, feature = "ble"))]
-        embassy_futures::join::join(ble_fut, app_fut).await;
+        compile_error!(
+            "map + BLE in one image is the LM20 shape (#270): the A6 object plane and the ride loop must arbitrate SD/settings first"
+        );
         // The `ble` DK build: the radio + the status UI, joined forever.
         #[cfg(not(has_map))]
-        embassy_futures::join::join(ble_fut, run_status(display, storage, settings_store, &mut led)).await;
+        embassy_futures::join::join(ble_fut, run_status(display, sd_ok, &mut led)).await;
     }
 }

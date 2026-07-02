@@ -606,10 +606,7 @@ impl Storage {
     /// the temp validated — a failed CRC/validation never touches the old copy); `None` picks a
     /// free `RTnn.OBR`. Returns the final name + byte length + wire facts, or `None` with the
     /// temp deleted (invalid payload) or kept (transient copy failure).
-    pub fn upload_commit(
-        &mut self,
-        replace: Option<&ShortFileName>,
-    ) -> Option<(ShortFileName, u32, RouteObjectInfo)> {
+    pub fn upload_commit(&mut self, replace: Option<&ShortFileName>) -> Option<(ShortFileName, u32, RouteObjectInfo)> {
         self.upload_close();
         let dir = self.routes_dir?;
 
