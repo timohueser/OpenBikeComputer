@@ -267,13 +267,17 @@ public final class MockControl: @unchecked Sendable {
     }
 
     /// Begin a simulated ride download: one paced batch whose fixture rides land
-    /// (with synthesized payloads) as their bytes complete. Link down (H4) or
-    /// nothing to pull (H9 up to date) → both streams already finished.
+    /// (payload = the codec-encoded ride, so the consumer's decode is the real
+    /// one) as their bytes complete. Link down (H4) or nothing to pull (H9 up to
+    /// date) → both streams already finished.
     func beginRideDownload(_ ids: [RideID]) -> RideDownload {
         let wanted = Set(ids)
         let segments = lock.withLocked {
             _fixtures.rides.filter { wanted.contains($0.summary.id) }
-        }.map { MockTransfer.Segment(id: $0.summary.id, byteCount: max(1, $0.downloadByteCount)) }
+        }.map {
+            MockTransfer.Segment(id: $0.summary.id, byteCount: max(1, $0.downloadByteCount),
+                                 payload: ProvisionalRideCodec.encode($0.ride()))
+        }
         let total = segments.reduce(0) { $0 + $1.byteCount }
 
         if connection == .disconnected { return .finished(.failed(.notConnected)) }   // H4

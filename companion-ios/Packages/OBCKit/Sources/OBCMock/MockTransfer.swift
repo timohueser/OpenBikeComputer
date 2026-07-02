@@ -15,11 +15,13 @@ import OBCTransport
 /// behind H10) and `resume()` restores `.connected`.
 actor MockTransfer {
     /// One ride inside a download batch — `byteCount` bytes of this batch belong to
-    /// ride `id`. When the pump's committed count crosses a segment's end, the ride
-    /// is "landed" and its synthesized payload is yielded into `rides`.
+    /// ride `id` (pacing only). When the pump's committed count crosses a segment's
+    /// end, the ride is "landed" and its `payload` — the codec-encoded ride, built
+    /// up front by `beginRideDownload` — is yielded into `rides`.
     struct Segment: Sendable {
         let id: RideID
         let byteCount: Int
+        let payload: Data
     }
 
     private let total: Int
@@ -105,17 +107,16 @@ actor MockTransfer {
         await pump()
     }
 
-    /// Yield every ride whose bytes are now fully committed. Ride payloads are
-    /// synthesized on the spot (the mock's realism is timing + faults, not bytes).
-    /// A drop stops *between* rides landing, so partial batches match H10 exactly:
-    /// what was yielded stays, resume lands the rest.
+    /// Yield every ride whose bytes are now fully committed. A drop stops
+    /// *between* rides landing, so partial batches match H10 exactly: what was
+    /// yielded stays, resume lands the rest.
     private func yieldLandedRides() {
         var boundary = segments.prefix(nextSegment).reduce(0) { $0 + $1.byteCount }
         while nextSegment < segments.count {
             let segment = segments[nextSegment]
             boundary += segment.byteCount
             guard boundary <= committed else { break }
-            rides?.yield(DownloadedRide(id: segment.id, payload: MockPayload.make(count: segment.byteCount)))
+            rides?.yield(DownloadedRide(id: segment.id, payload: segment.payload))
             nextSegment += 1
         }
     }

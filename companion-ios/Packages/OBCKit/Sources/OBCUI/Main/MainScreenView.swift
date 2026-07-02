@@ -52,7 +52,21 @@ public struct MainScreenView: View {
                 onSettings: onSettings
             )
 
-            if model.showsDisconnectedBanner {
+            // One banner at a time: an interrupted sync (H10) owns the slot —
+            // it carries the link story AND the way out (Resume).
+            if let interruption = model.syncInterruption {
+                OBCInlineBanner(
+                    tone: .warning,
+                    systemImage: "exclamationmark.triangle",
+                    title: "Sync interrupted.",
+                    message: "Got \(interruption.landed) of \(interruption.total) rides.",
+                    actionTitle: "Resume",
+                    action: { model.resumeSync() }
+                )
+                .accessibilityIdentifier("syncInterruptedBanner")
+                .padding(.horizontal, 20)
+                .padding(.bottom, 6)
+            } else if model.showsDisconnectedBanner {
                 OBCInlineBanner(
                     systemImage: "wifi.slash",
                     title: "\(model.deviceName) is out of range.",
