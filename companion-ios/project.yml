@@ -61,8 +61,27 @@ targets:
         CFBundleDisplayName: OBC
         # H7 copy — do not reword without updating the design source.
         NSBluetoothAlwaysUsageDescription: "OBC uses Bluetooth to connect to your bike computer. It never leaves your phone."
-        # Document/UTI + Share Extension registration is deferred to B6 — add
-        # CFBundleDocumentTypes / UTImportedTypeDeclarations / the extension here.
+        # Route-file registration: puts OBC in the share sheet's app row for
+        # .gpx files (Komoot/Strava exports) and lets Files "open in" the app —
+        # delivery lands in RootView's onOpenURL. TCX joins with B6's decoder;
+        # a full Share Extension (if ever needed) also stays B6.
+        LSSupportsOpeningDocumentsInPlace: true
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: GPX route
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - com.topografix.gpx
+        UTImportedTypeDeclarations:
+          - UTTypeIdentifier: com.topografix.gpx
+            UTTypeDescription: GPX route
+            UTTypeConformsTo:
+              - public.xml
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - gpx
+              public.mime-type:
+                - application/gpx+xml
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false

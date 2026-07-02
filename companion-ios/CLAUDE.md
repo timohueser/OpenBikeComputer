@@ -25,7 +25,9 @@ companion-ios/
     RootView.swift             launch gate (B2) + the main screen's NavigationStack
                                (B3) + the B4 detail routing and the import edge
                                (RouteImporter → E1 cover); upload = B5 placeholder
-    Info.plist                 NSBluetoothAlwaysUsageDescription (B6 adds UTI/Share)
+    Info.plist                 NSBluetoothAlwaysUsageDescription + the GPX
+                               document type (share sheet / "open with OBC" →
+                               RootView.onOpenURL → E1; TCX joins with B6)
     Assets.xcassets            AppIcon (empty) + AccentColor (= --forest)
   Packages/
     OBCKit/                    local SwiftPM package — builds/tests WITHOUT the app

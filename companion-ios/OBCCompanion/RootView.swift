@@ -86,6 +86,12 @@ struct RootView: View {
                 }
             }
         }
+        // Share-sheet / "open with OBC" delivery: iOS hands route files here
+        // (registered in project.yml → CFBundleDocumentTypes). Same path as a
+        // Files pick, so a Komoot share lands on E1.
+        .onOpenURL { url in
+            importFile(at: url)
+        }
     }
 
     // MARK: Detail destinations (B4)
