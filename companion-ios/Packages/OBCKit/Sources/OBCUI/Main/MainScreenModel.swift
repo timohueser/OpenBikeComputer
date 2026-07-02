@@ -113,6 +113,9 @@ public final class MainScreenModel {
     private let timing: Timing
     /// Mirror of `library.syncedRideIDs()` — what makes the next sync's "new".
     @ObservationIgnored private var syncedRideIDs: Set<RideID> = []
+    /// Mirror of `library.deletedRideIDs()` — device rides deleted on the
+    /// phone; the merge hides them so a sync/reload can't resurrect them.
+    @ObservationIgnored private var deletedRideIDs: Set<RideID> = []
     /// Mirror of the store's planned routes, keyed for the detail/rename paths.
     @ObservationIgnored private var plannedRecords: [RouteID: PlannedRouteRecord] = [:]
     /// Mirror of the store's synced rides — tracklogs filled at decode time
@@ -154,6 +157,7 @@ public final class MainScreenModel {
         let storedRides = library.rides()
         rideRecords = Dictionary(uniqueKeysWithValues: storedRides.map { ($0.id, $0) })
         syncedRideIDs = library.syncedRideIDs()
+        deletedRideIDs = library.deletedRideIDs()
         routes = planned.map(\.summary)
         rides = storedRides.map(\.summary)
 
@@ -351,15 +355,18 @@ public final class MainScreenModel {
         }
     }
 
-    /// Remove a tracked ride from the list + library. Device-side it's
-    /// local-only for now (the transport has no ride delete) — the id stays
-    /// marked synced so the next sync doesn't re-count it as new.
+    /// Remove a tracked ride from the phone (list + library) — **never** from
+    /// the device: the SD-card copy stays. The tombstone keeps it that way
+    /// durably — the id stays marked synced (the next sync doesn't re-download
+    /// it) and marked deleted (the merge doesn't re-list the device's copy).
     public func deleteRide(_ id: RideID) {
         rides.removeAll { $0.id == id }
         rideRecords[id] = nil
         library.deleteRide(id)
         syncedRideIDs.insert(id)
         library.markRideSynced(id)
+        deletedRideIDs.insert(id)
+        library.markRideDeleted(id)
     }
 
     // MARK: Rename (H12) + import landing (E1) — phone-side library edits
@@ -429,13 +436,16 @@ public final class MainScreenModel {
 
     /// The Tracked list: the device's rides plus library-synced rides the
     /// device no longer holds — the phone is the archive, so a ride outlives
-    /// its device-side copy.
+    /// its device-side copy. Rides deleted on the phone are tombstoned out:
+    /// the device still lists them (its copy stays), but they must not
+    /// resurrect here.
     private func merged(deviceRides: [RideSummary]) -> [RideSummary] {
-        let onDevice = Set(deviceRides.map(\.id))
+        let kept = deviceRides.filter { !deletedRideIDs.contains($0.id) }
+        let onDevice = Set(kept.map(\.id))
         let archived = rideRecords.values.map(\.summary)
             .filter { !onDevice.contains($0.id) }
             .sorted { $0.date > $1.date }
-        return deviceRides + archived
+        return kept + archived
     }
 
     private func filtered<T>(_ items: [T], by name: KeyPath<T, String>) -> [T] {

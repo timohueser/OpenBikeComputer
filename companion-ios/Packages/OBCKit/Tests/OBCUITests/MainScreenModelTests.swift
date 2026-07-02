@@ -324,10 +324,38 @@ final class MainScreenModelTests: XCTestCase {
         model.deleteRide(id)
         XCTAssertEqual(model.rides.count, 3)
 
-        // The deleted ride must not come back as a "new" sync count.
+        // The deleted ride must not come back as a "new" sync count — and the
+        // sync's list merge must not resurrect it (the device still lists it;
+        // its SD-card copy is untouched by design).
         model.sync()
         await waitFor("sync done") { model.syncState == .done }
         XCTAssertEqual(model.lastSyncCount, 3)
+        XCTAssertFalse(model.rides.contains { $0.id == id }, "deleted ride resurrected by sync")
+        XCTAssertEqual(model.rides.count, 3)
+
+        model.reload()
+        await waitFor("reload") { model.loadState == .loaded }
+        XCTAssertFalse(model.rides.contains { $0.id == id }, "deleted ride resurrected by reload")
+    }
+
+    /// The tombstone persists: a ride deleted on the phone stays gone across a
+    /// relaunch even though the device still lists it.
+    func testDeletedRideStaysGoneAcrossRelaunch() async {
+        let library = InMemoryLibraryStore()
+        let (first, _) = makeModel(.happyPath, library: library)
+        await startLoaded(first)
+        let id = first.rides[0].id
+        first.deleteRide(id)
+
+        let (relaunched, _) = makeModel(.happyPath, library: library)
+        await startLoaded(relaunched)
+        XCTAssertFalse(relaunched.rides.contains { $0.id == id })
+
+        relaunched.sync()
+        await waitFor("sync settles") {
+            relaunched.syncState == .done || relaunched.upToDateToastVisible
+        }
+        XCTAssertFalse(relaunched.rides.contains { $0.id == id }, "tombstone lost across relaunch")
     }
 
     // MARK: Rename (H12) + import landing (E1) — session-local edits

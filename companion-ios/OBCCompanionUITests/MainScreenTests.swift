@@ -11,9 +11,10 @@ final class MainScreenTests: XCTestCase {
     }
 
     @MainActor
-    private func launch(scenario: String) -> XCUIApplication {
+    private func launch(scenario: String, fixtures: String? = nil) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments += ["-OBCScenario", scenario]
+        if let fixtures { app.launchArguments += ["-OBCFixtures", fixtures] }
         // Pin the locale: `OBCFormat` localizes numbers ("62,4 km" on a German
         // sim), and these tests assert the design's en-US strings.
         app.launchArguments += ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
@@ -87,9 +88,37 @@ final class MainScreenTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Kettle Moraine Loop"].waitForExistence(timeout: 5))
     }
 
-    /// H11 → H1: swipe reveals Delete, the confirm owns the destroy.
+    /// The bar is transient (Mail-style): once the cleared bar scrolls off the
+    /// top it un-reveals — back at the top the list is search-free again.
     @MainActor
-    func testSwipeToDeleteRoutesThroughConfirm() {
+    func testSearchHidesAgainAfterScrollingAway() {
+        let app = launch(scenario: "happyPath", fixtures: "large")
+        waitForMain(app)
+        XCTAssertTrue(app.staticTexts["Kettle Moraine Loop"].waitForExistence(timeout: 10))
+
+        app.swipeDown()
+        let search = app.textFields.firstMatch
+        XCTAssertTrue(search.waitForExistence(timeout: 5), "pull did not reveal search")
+
+        app.swipeUp(velocity: .fast)   // scroll the (empty) bar off the top
+        // Return toward the top *without* momentum — a flick would over-scroll
+        // and legitimately re-reveal the bar. Held drags don't bounce.
+        let from = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
+        let to = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.85))
+        for _ in 0..<8 where !app.buttons["Planned"].isHittable {
+            from.press(forDuration: 0.05, thenDragTo: to, withVelocity: 400, thenHoldForDuration: 0.3)
+        }
+        // The selector row is on screen, so a still-revealed bar (right below
+        // it) would be too — its absence means it re-hid.
+        XCTAssertTrue(app.buttons["Planned"].isHittable, "did not make it back to the top")
+        XCTAssertFalse(search.exists, "search must re-hide once scrolled away")
+        snap(app, "C1-search-rehidden")
+    }
+
+    /// H11: swipe reveals Delete; the tap deletes directly — the swipe reveal
+    /// is the deliberate second action, no extra confirm.
+    @MainActor
+    func testSwipeToDeleteRemovesTheRowDirectly() {
         let app = launch(scenario: "happyPath")
         waitForMain(app)
 
@@ -102,16 +131,38 @@ final class MainScreenTests: XCTestCase {
         snap(app, "H11-swipe-to-delete")
         reveal.tap()
 
-        // H1 — the action sheet, destructive in warning red; row still alive.
-        let confirm = app.buttons["Delete route"]
-        XCTAssertTrue(confirm.waitForExistence(timeout: 5), "H1 confirm missing")
-        snap(app, "H1-delete-confirm")
-        confirm.tap()
-
         let gone = NSPredicate(format: "exists == false")
         let expectation = expectation(for: gone, evaluatedWith: card)
         wait(for: [expectation], timeout: 5)
         XCTAssertTrue(app.staticTexts["Sugar River Trail"].exists, "other rows must survive")
+    }
+
+    /// A deleted ride must stay deleted: the device still lists it (its copy
+    /// stays on the SD card), but sync must neither re-download nor re-list it.
+    @MainActor
+    func testDeletedRideDoesNotResurrectOnSync() {
+        let app = launch(scenario: "happyPath")
+        waitForMain(app)
+        app.buttons["Tracked"].tap()
+
+        let card = app.buttons["main.card.ride-sunday-coffee-spin"]
+        XCTAssertTrue(card.waitForExistence(timeout: 10))
+        card.swipeLeft()
+        let reveal = app.buttons["Delete"]
+        XCTAssertTrue(reveal.waitForExistence(timeout: 5))
+        reveal.tap()
+
+        let gone = NSPredicate(format: "exists == false")
+        wait(for: [expectation(for: gone, evaluatedWith: card)], timeout: 5)
+
+        app.buttons["topbar.sync"].tap()
+        // The remaining three download ("3 of 3" → confirm line) — and the
+        // deleted ride must not come back with them.
+        let line = app.descendants(matching: .any)["main.syncLine"].firstMatch
+        let confirmed = NSPredicate(format: "label CONTAINS 'Synced 3 new rides just now'")
+        wait(for: [expectation(for: confirmed, evaluatedWith: line)], timeout: 30)
+        XCTAssertFalse(card.exists, "deleted ride resurrected by sync")
+        snap(app, "SYNC-after-delete-no-resurrect")
     }
 
     /// SYNC states: idle → syncing → done + "Synced N new rides just now";
