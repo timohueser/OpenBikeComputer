@@ -54,6 +54,10 @@ public final class RouteDetailModel {
     /// device-only planned route with no app-side geometry — it's already on the
     /// device, so the upload affordance reads "Uploaded" rather than re-pushing.
     @ObservationIgnored private let uploadGeometry: ImportedRoute?
+    /// The device object id to replace on upload — non-nil when re-uploading a
+    /// route already on the device (an edited Komoot re-import, or a planned
+    /// re-push) so it updates in place instead of duplicating.
+    @ObservationIgnored private let uploadTargetObjectID: UInt16?
 
     public var isRenamable: Bool {
         switch dressing {
@@ -74,10 +78,14 @@ public final class RouteDetailModel {
         transport: any DeviceTransport,
         dressing: Dressing,
         preloadedDetail: RouteDetail? = nil,
-        plannedGeometry: ImportedRoute? = nil
+        plannedGeometry: ImportedRoute? = nil,
+        deviceObjectID: UInt16? = nil,
+        importedRouteID: RouteID? = nil
     ) {
         self.transport = transport
         self.dressing = dressing
+        self.uploadTargetObjectID = deviceObjectID
+        self.importedID = importedRouteID ?? RouteID("imported-\(UUID().uuidString.lowercased())")
         switch dressing {
         case .imported(let route, _): uploadGeometry = route  // E1 carries its own geometry
         default: uploadGeometry = plannedGeometry
@@ -210,9 +218,10 @@ public final class RouteDetailModel {
     }
 
     /// The id an E1 save/upload lands under — stable per landing, so the
-    /// uploaded blob and the saved library entry are the same route.
-    @ObservationIgnored private lazy var importedID =
-        RouteID("imported-\(UUID().uuidString.lowercased())")
+    /// uploaded blob and the saved library entry are the same route. A re-import
+    /// **replacing** an existing route reuses that route's id (passed in) so the
+    /// save overwrites it rather than adding a duplicate.
+    @ObservationIgnored private let importedID: RouteID
 
     /// The `RouteSummary` an E1 save/upload lands in the library — the parsed
     /// geometry's stats under a fresh (per-landing) id.
@@ -252,7 +261,10 @@ public final class RouteDetailModel {
         let payload = uploadGeometry.map {
             RouteObjectCodec.encode(points: $0.points, waypoints: waypoints, name: name)
         } ?? Data()
-        return RouteBlob(summary: summary, waypoints: waypoints, payload: payload)
+        return RouteBlob(
+            summary: summary, waypoints: waypoints, payload: payload,
+            targetObjectID: uploadTargetObjectID
+        )
     }
 
     /// The full `RouteDetail` an E1 save keeps app-side — reopening the saved

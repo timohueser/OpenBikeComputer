@@ -14,19 +14,23 @@ public struct RouteCard: View {
     let title: String
     let subtitle: String
     let preview: TrackPreview?
+    /// Whether the device holds a copy — shows the small "on device" badge (C1).
+    let isUploaded: Bool
 
-    public init(title: String, subtitle: String, preview: TrackPreview?) {
+    public init(title: String, subtitle: String, preview: TrackPreview?, isUploaded: Bool = false) {
         self.title = title
         self.subtitle = subtitle
         self.preview = preview
+        self.isUploaded = isUploaded
     }
 
     /// Planned-route row: "62.4 km · 840 m ↑ · 3h 20m".
-    public init(route: RouteSummary) {
+    public init(route: RouteSummary, isUploaded: Bool = false) {
         self.init(
             title: route.name,
             subtitle: OBCFormat.plannedSubtitle(route),
-            preview: route.trackPreview
+            preview: route.trackPreview,
+            isUploaded: isUploaded
         )
     }
 
@@ -46,10 +50,13 @@ public struct RouteCard: View {
                 .overlay(alignment: .trailing) { OBCTheme.line.frame(width: 1) }
 
             VStack(alignment: .leading, spacing: 9) {
-                Text(title)
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(OBCTheme.ink)
-                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(title)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(OBCTheme.ink)
+                        .lineLimit(1)
+                    if isUploaded { OBCOnDeviceBadge() }
+                }
                 Text(subtitle)
                     .font(.obcMono(size: 12))
                     .foregroundStyle(OBCTheme.inkFaint)
@@ -64,6 +71,21 @@ public struct RouteCard: View {
         .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusCard))
         .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusCard).strokeBorder(OBCTheme.line))
         .shadow(color: OBCTheme.ink.opacity(0.05), radius: 3, y: 2)
+    }
+}
+
+/// The small "on device" badge next to a planned route's title — a forest check
+/// meaning the device already holds a copy (C1 / E2). Deliberately quiet: the app
+/// only tracks routes to push them, so "on device" is the one device fact it shows.
+public struct OBCOnDeviceBadge: View {
+    public init() {}
+
+    public var body: some View {
+        Image(systemName: "checkmark.circle.fill")
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(OBCTheme.forest)
+            .accessibilityLabel("On device")
+            .accessibilityIdentifier("route.onDeviceBadge")
     }
 }
 

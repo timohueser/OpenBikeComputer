@@ -54,6 +54,9 @@ public final class MockControl: @unchecked Sendable {
     private var _pendingFailures: [DeviceError]
     private var _dropFraction: Double?
     private var _fixtures: FixtureSet
+    /// Monotonic stand-in for the device's object-id assignment on upload — starts
+    /// above the fixture ids' (slug) range so it can't collide.
+    private var _nextObjectID: UInt16 = 1000
 
     /// Build from a named `Scenario`, loading its fixture set and applying its knobs.
     public init(scenario: Scenario = .happyPath) {
@@ -266,6 +269,29 @@ public final class MockControl: @unchecked Sendable {
         return startTransfer(total: total, segments: [], rides: nil)
     }
 
+    /// Begin a simulated route upload. On commit it reports a device object id (a
+    /// fresh monotonic id, or the `targetObjectID` when replacing) so the app can
+    /// record the route as on-device. Paced over a **design-scale fiction**
+    /// (≈37 B/m), decoupled from the real OBCR payload — a real route is only a few
+    /// kB and its F screen would flash by; the device's realism is timing + faults,
+    /// not wire bytes (the same reason ride downloads pace off `downloadByteCount`).
+    func beginRouteUpload(_ blob: RouteBlob) -> TransferHandle {
+        if connection == .disconnected { return .immediatelyFinished(.failed(.notConnected)) }
+        let assignedID = AsyncPromise<UInt16?>()
+        // Whichever is larger: an explicit test payload, or the design-scale
+        // minimum from the route length (so a real few-kB OBCR still paces long
+        // enough to see F).
+        let pacingBytes = max(blob.payload.count, Int(blob.summary.distanceMeters * 37), 1)
+        let handle = startTransfer(total: pacingBytes, segments: [], rides: nil, assignedObjectID: assignedID)
+        let objectID = blob.targetObjectID ?? lock.withLocked { () -> UInt16 in
+            let id = _nextObjectID
+            _nextObjectID &+= 1
+            return id
+        }
+        Task { assignedID.fulfill(await handle.outcome == .completed ? objectID : nil) }
+        return handle
+    }
+
     /// Begin a simulated ride download: one paced batch whose fixture rides land
     /// (payload = the codec-encoded ride, so the consumer's decode is the real
     /// one) as their bytes complete. Link down (H4) or nothing to pull (H9 up to
@@ -291,7 +317,8 @@ public final class MockControl: @unchecked Sendable {
     private func startTransfer(
         total: Int,
         segments: [MockTransfer.Segment],
-        rides: AsyncThrowingStream<DownloadedRide, Error>.Continuation?
+        rides: AsyncThrowingStream<DownloadedRide, Error>.Continuation?,
+        assignedObjectID: AsyncPromise<UInt16?>? = nil
     ) -> TransferHandle {
         let (dropFraction, throughput) = lock.withLocked { () -> (Double?, Int) in
             let armedFailure = _pendingFailures.isEmpty ? false : { _pendingFailures.removeFirst(); return true }()
@@ -313,6 +340,7 @@ public final class MockControl: @unchecked Sendable {
         return TransferHandle(
             progress: stream,
             outcome: outcome,
+            assignedObjectID: assignedObjectID,
             onCancel: { Task { await transfer.cancel() } },
             onResume: { Task { await transfer.resume() } }
         )
