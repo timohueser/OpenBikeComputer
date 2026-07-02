@@ -32,7 +32,8 @@ companion-ios/
     OBCCompanionApp.swift      @main; the one place that picks a DeviceTransport
                                (and the BondStore + LibraryStore conformers)
     RootView.swift             launch gate (B2) + the main screen's NavigationStack
-                               (B3) + the B4 detail routing and the import edge
+                               (B3) + the B4 detail / B8 settings routing and the
+                               import edge
                                (RouteImporter → E1 cover + the H5 alert, hung
                                OUTSIDE the launch gate so a share arriving before
                                pairing presents over D1 with the H4 framing); the
@@ -89,6 +90,11 @@ companion-ios/
                                F progress → F₂ done over the detail, drop →
                                offset-resume, cancel-aborts; placeholder payload
                                until the S0 route encoder lands in Codecs/)
+          Settings/            B8 settings (SettingsModel + SettingsView: the G
+                               grouped lists — device row + H3 rename via
+                               writeConfig + H2 forget → D1, OTA/services groups
+                               shipped coming-soon, About; rename is link-bound
+                               per the S4 rule)
       Tests/
         OBCTransportTests/     domain/transport/codec unit tests (host, `swift test`);
                                incl. CoreBluetoothSeamTests (enforces the CB seam)
@@ -360,7 +366,8 @@ one-shot faults, synthetic events, fixture swap) you can flip while clicking
 through the app. The panel + the status HUD live in `OBCMock`
 ([`MockControlPanel.swift`](Packages/OBCKit/Sources/OBCMock/MockControlPanel.swift));
 the app-side host (shake hook, sheet, overlay) is `OBCCompanion/DevMockOverlay.swift`.
-B8 adds the second entry point (a hidden Settings row).
+The second entry point (B8): tap **Settings ▸ App version five times** — Debug
+mock runs only; the gesture goes nowhere in Release or forced-BLE runs.
 
 The **HUD** (bottom-right capsule) shows `scenario · connection` with
 accessibility ids `mockScenarioTag` / `mockConnectionTag` — what the XCUITests
@@ -371,8 +378,9 @@ flow end to end per scenario, `MainScreenTests` walks the B3 main-screen
 states (C1/C2, SYNC, S4, H6, H11→H1), `RouteDetailTests` walks the B4
 detail dressings (E2/E3/W1/H12/H1 + E1 via `-OBCImportSample`),
 `UploadSheetTests` walks the B5 sheet (F/F₂, `uploadDrop` → resume, cancel,
-E1 upload-saves), and `ImportTests` walks B6 (TCX → E1/W1, `bad` → H5,
-`noDevice` + import → H4 incl. pairing through to the Planned list) — all
+E1 upload-saves), `ImportTests` walks B6 (TCX → E1/W1, `bad` → H5,
+`noDevice` + import → H4 incl. pairing through to the Planned list), and
+`SettingsTests` walks B8 (G groups, H3 rename across the app, H2 forget → D1) — all
 attach a screenshot of each design screen to the result bundle. Run them with
 `test_sim {}` / `xcodebuild test`. The B3 landing anchor the pairing tests wait
 for is `main.screen`; the detail anchor is `detail.screen` (⚠️ it sits on a
