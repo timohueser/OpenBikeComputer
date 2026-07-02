@@ -67,7 +67,11 @@ wildcards = "deny"
 allow-wildcard-paths = true
 
 [sources]
-# Every dependency must come from crates.io — there are no git/path deps today, and an
+# Every dependency must come from crates.io, with one reviewed exception below — an
 # unexpected git or unknown-registry source should fail rather than slip in unreviewed.
 unknown-registry = "deny"
 unknown-git = "deny"
+# nrf-sdc/nrf-mpsl (BLE controller, issue #269): the crates.io releases predate nRF54L support
+# and pin embassy-nrf 0.7, so the board crate rev-pins git main (the same rev TrouBLE's nrf54
+# example pins — see the crate README's BLE section). Drop when a ≥0.4 release ships.
+allow-git = ["https://github.com/alexmoon/nrf-sdc"]
