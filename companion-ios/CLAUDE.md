@@ -62,8 +62,10 @@ companion-ios/
                                launches must start from their fixtures alone)
           Transfer/            control-plane descriptors + CRC-32 (pure, host-tested)
           Codecs/              device object layouts ↔ domain types (S0-owned bytes:
-                               Config blob now; route encoder / ride decoder when
-                               S0 pins them). Pure — a device-format change lands here.
+                               Config blob + ProvisionalRideCodec, the compact-binary
+                               ride the sync decodes and the mock encodes (B7); route
+                               encoder when S0 pins it). Pure — a device-format
+                               change lands here.
           BLE/                 real conformer — BLETransport, BLEChannel (raw CoC
                                streaming), ByteChannel, L2CAPByteChannel, GATT.
                                **CoreBluetooth lives ONLY here.**
@@ -81,7 +83,11 @@ companion-ios/
                                machine + the A/D1–D5/H7/H8 screens)
           Main/                B3 main screen (MainScreenModel + MainScreenView:
                                C1/C2 compact lists, top-bar sync states, pull-down-
-                               to-reveal search, swipe-to-delete → H1)
+                               to-reveal search, swipe-to-delete → H1) + the B7 sync
+                               flow (payloads decode via ProvisionalRideCodec and
+                               persist ride-by-ride; a drop → the H10 banner with
+                               the landed count, Resume continues the SAME stalled
+                               transfer — the H10 banner owns the slot over S4's)
           Detail/              B4 route detail (RouteDetailModel + RouteDetailView:
                                ONE profile layout, three dressings — E2 planned /
                                E3 tracked / E1 import via ImportLandingView — plus
@@ -328,9 +334,10 @@ RootView(transport: MockTransport(scenario: .outOfRange))   // or: control.apply
 | `unsupportedFile` | H5 |
 
 `loadFixtures("empty" | "large")` swaps the library (S1 / search). `unsupportedFile`
-(H5) and `syncUpToDate` (H9) are pure UI-layer states with a happy-link preset —
-H5 is actually raised by feeding a non-route file to the import edge
-(`-OBCImportSample bad`); the rest are transport-driven.
+(H5) and `syncUpToDate` (H9) are happy-link presets raised outside the transport —
+H5 by feeding a non-route file to the import edge (`-OBCImportSample bad`), H9 by
+the composition root seeding the mock run's `InMemoryLibraryStore` as fully synced
+(so the *first* sync reports up to date); the rest are transport-driven.
 
 Each preset also carries a **bond bit** (`ScenarioPreset.bonded`, served through
 `MockBondStore` → the B2 launch branch): the pairing-family scenarios
@@ -379,8 +386,10 @@ states (C1/C2, SYNC, S4, H6, H11→H1), `RouteDetailTests` walks the B4
 detail dressings (E2/E3/W1/H12/H1 + E1 via `-OBCImportSample`),
 `UploadSheetTests` walks the B5 sheet (F/F₂, `uploadDrop` → resume, cancel,
 E1 upload-saves), `ImportTests` walks B6 (TCX → E1/W1, `bad` → H5,
-`noDevice` + import → H4 incl. pairing through to the Planned list), and
-`SettingsTests` walks B8 (G groups, H3 rename across the app, H2 forget → D1) — all
+`noDevice` + import → H4 incl. pairing through to the Planned list),
+`SettingsTests` walks B8 (G groups, H3 rename across the app, H2 forget → D1), and
+`SyncTests` walks B7's edges (`syncDrop` → H10 banner → Resume finishes the
+batch; `syncUpToDate` → H9 toast on the *first* sync) — all
 attach a screenshot of each design screen to the result bundle. Run them with
 `test_sim {}` / `xcodebuild test`. The B3 landing anchor the pairing tests wait
 for is `main.screen`; the detail anchor is `detail.screen` (⚠️ it sits on a
