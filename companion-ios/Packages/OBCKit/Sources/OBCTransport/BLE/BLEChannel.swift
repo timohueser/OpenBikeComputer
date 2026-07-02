@@ -27,7 +27,12 @@ public struct BLEChannel: Sendable {
     /// announced the transfer (`TransferControl`, incl. the whole-object CRC) on the
     /// control plane. Returns the handle the UI observes; `resume()` restarts from the
     /// last committed offset.
-    public func upload(_ object: Data, from offset: Int = 0) -> TransferHandle {
+    /// `assignedObjectID` is carried through onto the returned handle so the
+    /// transport can fulfil it from the device's closing `transferResult` (the
+    /// device-assigned object id) — the byte layer doesn't set it itself.
+    public func upload(
+        _ object: Data, from offset: Int = 0, assignedObjectID: AsyncPromise<UInt16?>? = nil
+    ) -> TransferHandle {
         let (stream, continuation) = AsyncStream<TransferProgress>.makeStream()
         let outcome = AsyncPromise<TransferOutcome>()
         let transfer = Uploader(channel: channel, chunkSize: chunkSize, object: object,
@@ -36,6 +41,7 @@ public struct BLEChannel: Sendable {
         return TransferHandle(
             progress: stream,
             outcome: outcome,
+            assignedObjectID: assignedObjectID,
             onCancel: { Task { await transfer.cancel() } },
             onResume: { Task { await transfer.resume() } }
         )

@@ -16,17 +16,20 @@ public struct TransferHandle: Sendable {
     public let progress: AsyncStream<TransferProgress>
 
     private let outcomePromise: AsyncPromise<TransferOutcome>
+    private let assignedObjectIDPromise: AsyncPromise<UInt16?>?
     private let onCancel: @Sendable () -> Void
     private let onResume: @Sendable () -> Void
 
     public init(
         progress: AsyncStream<TransferProgress>,
         outcome: AsyncPromise<TransferOutcome>,
+        assignedObjectID: AsyncPromise<UInt16?>? = nil,
         onCancel: @escaping @Sendable () -> Void,
         onResume: @escaping @Sendable () -> Void
     ) {
         self.progress = progress
         self.outcomePromise = outcome
+        self.assignedObjectIDPromise = assignedObjectID
         self.onCancel = onCancel
         self.onResume = onResume
     }
@@ -42,6 +45,14 @@ public struct TransferHandle: Sendable {
     /// The terminal state if already reached, `nil` while the transfer is live or
     /// dropped-but-resumable (never suspends).
     public var currentOutcome: TransferOutcome? { outcomePromise.current }
+
+    /// The device-assigned object id, for a **route upload** — resolves after the
+    /// transfer commits (the device reports it in the `transferResult`). `nil` when
+    /// this handle carries no id (a download, an immediately-finished handle, or a
+    /// pre-bring-up BLE path). Await *after* `outcome == .completed`.
+    public var assignedObjectID: UInt16? {
+        get async { assignedObjectIDPromise == nil ? nil : await assignedObjectIDPromise!.value }
+    }
 
     /// Abort the transfer and tear the channel down cleanly.
     public func cancel() { onCancel() }

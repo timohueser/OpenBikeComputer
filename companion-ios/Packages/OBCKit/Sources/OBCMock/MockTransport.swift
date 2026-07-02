@@ -99,7 +99,7 @@ public struct MockTransport: DeviceTransport {
     }
 
     public func uploadRoute(_ route: RouteBlob) -> TransferHandle {
-        control.beginTransfer(total: route.payload.count)
+        control.beginRouteUpload(route)
     }
 
     public func downloadRides(_ ids: [RideID]) -> RideDownload {

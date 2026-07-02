@@ -173,13 +173,22 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     // MARK: DeviceTransport — data plane
 
     public func uploadRoute(_ route: RouteBlob) -> TransferHandle {
-        // A fresh upload sends objectID 0xFFFF = "new"; the device assigns the id
-        // and reports it in the transferResult (spec §4.1/§4.3).
+        // A fresh upload sends objectID 0xFFFF = "new" (the device assigns one);
+        // re-uploading an edited route sends its stored id, which replaces that
+        // object in place (spec §4.1/§4.2). Either way the device reports the id
+        // in the closing transferResult, which we surface as `assignedObjectID`.
         let start = TransferControl(
-            op: .upload, type: .route, objectID: TransferControl.newObjectID,
+            op: .upload, type: .route, objectID: route.targetObjectID ?? TransferControl.newObjectID,
             totalLen: UInt32(route.payload.count), crc32: CRC32.checksum(route.payload)
         )
-        return beginTransfer(start) { channel in channel.upload(route.payload) }
+        let assignedID = AsyncPromise<UInt16?>()
+        let handle = beginTransfer(start) { channel in channel.upload(route.payload, assignedObjectID: assignedID) }
+        Task { [weak self] in
+            guard let self, await handle.outcome == .completed else { assignedID.fulfill(nil); return }
+            let result = await self.nextTransferResult()
+            assignedID.fulfill(result.status == .committed ? result.objectID : nil)
+        }
+        return handle
     }
 
     public func downloadRides(_ ids: [RideID]) -> RideDownload {
