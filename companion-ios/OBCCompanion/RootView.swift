@@ -14,12 +14,16 @@ struct RootView: View {
     @State private var mainModel: MainScreenModel
     @State private var path: [MainDestination] = []
     @State private var pendingImport: PendingImport?
-    @State private var importFailedToast = false
+    @State private var importFailedAlert = false
 
     private let transport: any DeviceTransport
-    /// The registered import formats. GPX landed with B4; TCX + the share-sheet
-    /// entry are B6's.
-    private let importer = RouteImporter(decoders: [GPXRouteDecoder()])
+    /// Kept for the import edge: an arriving file checks the bond to pick the
+    /// E1 vs H4 framing (the launch flow owns the record itself).
+    private let bondStore: any BondStore
+    /// The registered import formats (B6): GPX + TCX. Adding a format = one
+    /// more decoder here; the picker filter and share-sheet registration
+    /// follow `supportedFileExtensions`.
+    private let importer = RouteImporter(decoders: [GPXRouteDecoder(), TCXRouteDecoder()])
     /// A route file handed in at launch (`-OBCImportSample`) — opens E1 as soon
     /// as the main screen is up.
     private let importAtLaunch: (data: Data, fileName: String)?
@@ -30,6 +34,7 @@ struct RootView: View {
         importAtLaunch: (data: Data, fileName: String)? = nil
     ) {
         self.transport = transport
+        self.bondStore = bondStore
         self.importAtLaunch = importAtLaunch
         _launchModel = State(initialValue: LaunchFlowModel(transport: transport, bondStore: bondStore))
         _mainModel = State(initialValue: MainScreenModel(transport: transport))
@@ -59,30 +64,43 @@ struct RootView: View {
                     detailScreen(for: destination)
                 }
             }
-            .obcToast(
-                isPresented: $importFailedToast,
-                message: "Couldn't read that file. OBC imports GPX route files."
+        }
+        // Everything below hangs OUTSIDE the launch gate: a share can arrive
+        // before pairing (H4) — the E1 cover and the H5 alert must present
+        // over D1 just as they do over the main screen.
+        .fullScreenCover(item: $pendingImport) { pending in
+            ImportLandingHost(
+                transport: transport,
+                route: pending.route,
+                fileName: pending.fileName,
+                deviceName: mainModel.deviceName,
+                noDevicePaired: pending.noDevicePaired,
+                onSave: { detail in
+                    mainModel.addImportedRoute(detail)
+                    pendingImport = nil
+                },
+                // "Uploading saves it too" (B5): the route lands in Planned
+                // the moment the upload completes; the cover closes after F₂.
+                onUploaded: { detail in mainModel.addImportedRoute(detail) },
+                // H4 "Pair a device": save first (a pairing detour must not
+                // cost the import), then drop into the D2 scan.
+                onPair: { detail in
+                    mainModel.addImportedRoute(detail)
+                    pendingImport = nil
+                    launchModel.startPairing()
+                },
+                onCancel: { pendingImport = nil }
             )
-            .fullScreenCover(item: $pendingImport) { pending in
-                ImportLandingHost(
-                    transport: transport,
-                    route: pending.route,
-                    fileName: pending.fileName,
-                    deviceName: mainModel.deviceName,
-                    onSave: { detail in
-                        mainModel.addImportedRoute(detail)
-                        pendingImport = nil
-                    },
-                    // "Uploading saves it too" (B5): the route lands in Planned
-                    // the moment the upload completes; the cover closes after F₂.
-                    onUploaded: { detail in mainModel.addImportedRoute(detail) },
-                    onCancel: { pendingImport = nil }
-                )
-            }
-            .task {
-                if let importAtLaunch {
-                    openImport(data: importAtLaunch.data, fileName: importAtLaunch.fileName)
-                }
+        }
+        // H5 — the share sheet can hand over anything; say what we accept.
+        .alert("Couldn't read that file", isPresented: $importFailedAlert) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("OBC imports GPX and TCX route files. That one looked like something else.")
+        }
+        .task {
+            if let importAtLaunch {
+                openImport(data: importAtLaunch.data, fileName: importAtLaunch.fileName)
             }
         }
         // Share-sheet / "open with OBC" delivery: iOS hands route files here
@@ -132,7 +150,7 @@ struct RootView: View {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         guard let data = try? Data(contentsOf: url) else {
-            importFailedToast = true
+            importFailedAlert = true
             return
         }
         openImport(data: data, fileName: url.lastPathComponent)
@@ -144,11 +162,13 @@ struct RootView: View {
                 from: data,
                 fileExtension: (fileName as NSString).pathExtension
             )
-            pendingImport = PendingImport(route: route, fileName: fileName)
+            pendingImport = PendingImport(
+                route: route,
+                fileName: fileName,
+                noDevicePaired: bondStore.load() == nil
+            )
         } catch {
-            // TODO(B6): the full H5 screen; the toast keeps failures visible
-            // until the import flow owns its edge cases.
-            importFailedToast = true
+            importFailedAlert = true
         }
     }
 }
@@ -164,6 +184,8 @@ private struct PendingImport: Identifiable {
     let id = UUID()
     let route: ImportedRoute
     let fileName: String
+    /// Bond state at arrival — picks the E1 vs H4 framing.
+    let noDevicePaired: Bool
 }
 
 /// One presented upload (B5) — carries the sheet's model, created **once** at
@@ -236,8 +258,10 @@ private struct ImportLandingHost: View {
     @State private var uploadCompleted = false
     private let transport: any DeviceTransport
     private let deviceName: String
+    private let noDevicePaired: Bool
     private let onSave: (RouteDetail) -> Void
     private let onUploaded: (RouteDetail) -> Void
+    private let onPair: (RouteDetail) -> Void
     private let onCancel: () -> Void
 
     init(
@@ -245,8 +269,10 @@ private struct ImportLandingHost: View {
         route: ImportedRoute,
         fileName: String,
         deviceName: String,
+        noDevicePaired: Bool,
         onSave: @escaping (RouteDetail) -> Void,
         onUploaded: @escaping (RouteDetail) -> Void,
+        onPair: @escaping (RouteDetail) -> Void,
         onCancel: @escaping () -> Void
     ) {
         _model = State(initialValue: RouteDetailModel(
@@ -255,8 +281,10 @@ private struct ImportLandingHost: View {
         ))
         self.transport = transport
         self.deviceName = deviceName
+        self.noDevicePaired = noDevicePaired
         self.onSave = onSave
         self.onUploaded = onUploaded
+        self.onPair = onPair
         self.onCancel = onCancel
     }
 
@@ -276,7 +304,9 @@ private struct ImportLandingHost: View {
                 ))
             },
             onSave: { onSave(model.makeDetail()) },
-            onCancel: onCancel
+            onCancel: onCancel,
+            noDevicePaired: noDevicePaired,
+            onPair: { onPair(model.makeDetail()) }
         )
         .sheet(
             item: $uploadRequest,

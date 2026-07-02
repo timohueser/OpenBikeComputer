@@ -152,6 +152,7 @@ public final class RouteDetailModel {
         let creator = route.creator?.lowercased() ?? ""
         if creator.contains("komoot") { return "Imported from Komoot" }
         if creator.contains("strava") { return "Imported from Strava" }
+        if creator.contains("garmin") { return "Imported from Garmin" }
         let ext = (fileName as NSString).pathExtension.uppercased()
         return ext.isEmpty ? "Imported route file" : "Imported from \(ext) file"
     }

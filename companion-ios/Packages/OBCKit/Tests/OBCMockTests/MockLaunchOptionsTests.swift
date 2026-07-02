@@ -71,6 +71,30 @@ final class MockLaunchOptionsTests: XCTestCase {
         XCTAssertNil(parse(["-OBCScenario"]).scenario)
     }
 
+    func testImportSampleFlagKindsAndFallbacks() {
+        XCTAssertNil(parse([]).importSample)
+        // Bare flag = gpx — including when another -OBCKey follows.
+        XCTAssertEqual(parse(["-OBCImportSample"]).importSample, .gpx)
+        XCTAssertEqual(parse(["-OBCImportSample", "-OBCShowDevPanel"]).importSample, .gpx)
+        XCTAssertEqual(parse(["-OBCImportSample", "tcx"]).importSample, .tcx)
+        XCTAssertEqual(parse(["-OBCImportSample", "bad"]).importSample, .bad)
+        // Unknown kind degrades to gpx, never crashes.
+        XCTAssertEqual(parse(["-OBCImportSample", "fit"]).importSample, .gpx)
+        // Env fallback: 1 = gpx, kind tokens pass through, 0/empty = off.
+        XCTAssertEqual(parse([], env: ["OBC_IMPORT_SAMPLE": "1"]).importSample, .gpx)
+        XCTAssertEqual(parse([], env: ["OBC_IMPORT_SAMPLE": "tcx"]).importSample, .tcx)
+        XCTAssertNil(parse([], env: ["OBC_IMPORT_SAMPLE": "0"]).importSample)
+    }
+
+    func testSampleRouteFileServesEveryKind() {
+        for kind in [SampleRouteFile.Kind.gpx, .tcx, .bad] {
+            XCTAssertNotNil(SampleRouteFile.data(kind), "\(kind) sample must load")
+        }
+        XCTAssertEqual(SampleRouteFile.fileName(.gpx), "sample-import.gpx")
+        XCTAssertEqual(SampleRouteFile.fileName(.tcx), "sample-import.tcx")
+        XCTAssertEqual(SampleRouteFile.fileName(.bad), "packing-list.pdf")
+    }
+
     func testMakeControlAppliesScenarioThenOverrides() async throws {
         var options = MockLaunchOptions(scenario: .emptyLibrary, connection: .outOfRange)
         var control = options.makeControl()

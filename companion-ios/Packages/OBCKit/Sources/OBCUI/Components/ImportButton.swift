@@ -7,8 +7,8 @@ import UniformTypeIdentifiers
 /// composition root so the filter always matches the registered decoders).
 ///
 /// Deliberately not a menu: with one in-app action, an intermediate popover is
-/// a dead click (share-from-another-app arrives via the B6 share extension,
-/// not from here).
+/// a dead click (share-from-another-app arrives via the registered document
+/// types → `onOpenURL`, not from here).
 public struct OBCImportButton: View {
     let fileExtensions: Set<String>
     let onPick: (URL) -> Void
