@@ -1173,7 +1173,10 @@ async fn run_download(
     desc: &TransferControl,
     buf: &mut [u8],
 ) -> TransferOutcome {
-    let (mut tx, source) = match store.borrow_mut().download_open(desc) {
+    // Bind the open's result before matching — a `match store.borrow_mut().…` scrutinee
+    // temporary would keep the borrow alive through the error arm's await.
+    let opened = store.borrow_mut().download_open(desc);
+    let (mut tx, source) = match opened {
         Ok(open) => open,
         Err(status) => {
             notify_status(server, stack, transfer_result(desc.object_id, status)).await;
