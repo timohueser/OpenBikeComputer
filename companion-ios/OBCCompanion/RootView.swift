@@ -20,6 +20,9 @@ struct RootView: View {
     /// Kept for the import edge: an arriving file checks the bond to pick the
     /// E1 vs H4 framing (the launch flow owns the record itself).
     private let bondStore: any BondStore
+    /// The phone-side library (B1S) — the main screen reads it; the import
+    /// edge writes the saved `PlannedRouteRecord`s into it through the model.
+    private let library: any LibraryStore
     /// The registered import formats (B6): GPX + TCX. Adding a format = one
     /// more decoder here; the picker filter and share-sheet registration
     /// follow `supportedFileExtensions`.
@@ -31,13 +34,15 @@ struct RootView: View {
     init(
         transport: any DeviceTransport,
         bondStore: any BondStore,
+        library: any LibraryStore = InMemoryLibraryStore(),
         importAtLaunch: (data: Data, fileName: String)? = nil
     ) {
         self.transport = transport
         self.bondStore = bondStore
+        self.library = library
         self.importAtLaunch = importAtLaunch
         _launchModel = State(initialValue: LaunchFlowModel(transport: transport, bondStore: bondStore))
-        _mainModel = State(initialValue: MainScreenModel(transport: transport))
+        _mainModel = State(initialValue: MainScreenModel(transport: transport, library: library))
     }
 
     var body: some View {
@@ -76,16 +81,18 @@ struct RootView: View {
                 deviceName: mainModel.deviceName,
                 noDevicePaired: pending.noDevicePaired,
                 onSave: { detail in
-                    mainModel.addImportedRoute(detail)
+                    mainModel.addImportedRoute(pending.record(for: detail))
                     pendingImport = nil
                 },
                 // "Uploading saves it too" (B5): the route lands in Planned
                 // the moment the upload completes; the cover closes after F₂.
-                onUploaded: { detail in mainModel.addImportedRoute(detail) },
+                onUploaded: { detail in
+                    mainModel.addImportedRoute(pending.record(for: detail, uploaded: true))
+                },
                 // H4 "Pair a device": save first (a pairing detour must not
                 // cost the import), then drop into the D2 scan.
                 onPair: { detail in
-                    mainModel.addImportedRoute(detail)
+                    mainModel.addImportedRoute(pending.record(for: detail))
                     pendingImport = nil
                     launchModel.startPairing()
                 },
@@ -129,7 +136,10 @@ struct RootView: View {
                         mainModel.deleteRoute(id)
                         path.removeAll()
                     },
-                    onRename: { mainModel.renameRoute(id, to: $0) }
+                    onRename: { mainModel.renameRoute(id, to: $0) },
+                    // A later upload of an H4-saved route: remember the
+                    // device now has a copy.
+                    onUploaded: { mainModel.markRouteUploaded(id) }
                 )
             }
         case .ride(let id):
@@ -165,6 +175,7 @@ struct RootView: View {
             pendingImport = PendingImport(
                 route: route,
                 fileName: fileName,
+                fileData: data,
                 noDevicePaired: bondStore.load() == nil
             )
         } catch {
@@ -184,8 +195,22 @@ private struct PendingImport: Identifiable {
     let id = UUID()
     let route: ImportedRoute
     let fileName: String
+    /// The original bytes, kept for the library record (re-parse/debugging).
+    let fileData: Data
     /// Bond state at arrival — picks the E1 vs H4 framing.
     let noDevicePaired: Bool
+
+    /// The library record (B1S) a save/upload/pair action lands: the landing's
+    /// summary over the canonical parsed route + the original file.
+    func record(for detail: RouteDetail, uploaded: Bool = false) -> PlannedRouteRecord {
+        PlannedRouteRecord(
+            summary: detail.summary,
+            route: route,
+            sourceFileName: fileName,
+            sourceFileData: fileData,
+            uploadedToDevice: uploaded
+        )
+    }
 }
 
 /// One presented upload (B5) — carries the sheet's model, created **once** at
@@ -206,6 +231,7 @@ private struct RouteDetailScreen: View {
     private let deviceName: String
     private let onDelete: (() -> Void)?
     private let onRename: ((String) -> Void)?
+    private let onUploaded: (() -> Void)?
     private let isRide: Bool
 
     init(
@@ -214,7 +240,8 @@ private struct RouteDetailScreen: View {
         preloadedDetail: RouteDetail? = nil,
         deviceName: String,
         onDelete: (() -> Void)? = nil,
-        onRename: ((String) -> Void)? = nil
+        onRename: ((String) -> Void)? = nil,
+        onUploaded: (() -> Void)? = nil
     ) {
         _model = State(initialValue: RouteDetailModel(
             transport: transport, dressing: dressing, preloadedDetail: preloadedDetail
@@ -223,6 +250,7 @@ private struct RouteDetailScreen: View {
         self.deviceName = deviceName
         self.onDelete = onDelete
         self.onRename = onRename
+        self.onUploaded = onUploaded
         if case .tracked = dressing { isRide = true } else { isRide = false }
     }
 
@@ -234,7 +262,8 @@ private struct RouteDetailScreen: View {
                 uploadRequest = UploadRequest(model: UploadSheetModel(
                     transport: transport,
                     blob: model.makeUploadBlob(),
-                    deviceName: deviceName
+                    deviceName: deviceName,
+                    onCompleted: onUploaded ?? {}
                 ))
             },
             onDelete: onDelete,
