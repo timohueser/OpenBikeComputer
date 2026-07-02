@@ -416,6 +416,13 @@ public final class MainScreenModel {
         return detail
     }
 
+    /// The canonical parsed geometry a library-saved route re-encodes to OBCR for
+    /// upload (B12). `nil` for a device-listed route the phone never imported —
+    /// that copy already lives on the device.
+    public func plannedGeometry(for id: RouteID) -> ImportedRoute? {
+        plannedRecords[id]?.route
+    }
+
     /// H3 write-through from Settings (B8) — the top bar shows the new device
     /// name at once; Settings owns the config write and the bond record.
     public func deviceRenamed(to name: String) {

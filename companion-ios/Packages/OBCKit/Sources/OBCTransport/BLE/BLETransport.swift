@@ -38,6 +38,15 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     private var pendingReads: [CBUUID: [CheckedContinuation<Data, Error>]] = [:]
     private var pendingWrites: [CBUUID: [CheckedContinuation<Void, Error>]] = [:]
 
+    // Device → app notifications, buffered so a waiter that registers just after a
+    // notification arrives still sees it (no race with the write that provokes it) —
+    // the same discipline the EchoHarness uses to drive this flow on glass. Cleared
+    // on disconnect; a hung in-flight download surfaces as the dropped CoC channel.
+    private var pendingStatuses: [StatusMessage] = []
+    private var statusWaiters: [(pred: @Sendable (StatusMessage) -> Bool, cont: CheckedContinuation<StatusMessage, Never>)] = []
+    private var pendingAnnounces: [TransferControl] = []
+    private var announceWaiter: CheckedContinuation<TransferControl, Never>?
+
     public override init() {
         super.init()
         _ = central  // force manager creation (and a state callback)
@@ -108,22 +117,52 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     }
 
     public func listRoutes() async throws -> [RouteSummary] {
-        // Lists are CoC objects (`routeList` type 6, spec §7.4) — the digest read is
-        // wired; the object download + decode land with A5 bring-up.
-        _ = try await read(GATT.objectStore)
-        return []
+        // The `routeList` object (type 6, spec §7.4) over the CoC → the catalog.
+        // Geometry isn't downloaded here; `trackPreview`/waypoints fill on
+        // `routeDetail`.
+        let entries = try RouteList.decode(try await downloadObject(type: .routeList, objectID: 0))
+        return entries.map { entry in
+            RouteSummary(
+                id: RouteID(String(entry.objectID)),
+                name: entry.name,
+                distanceMeters: Double(entry.distanceMeters),
+                elevationGainMeters: Double(entry.ascentMeters),
+                pointCount: Int(entry.pointCount)
+            )
+        }
     }
 
     public func listRides() async throws -> [RideSummary] {
+        // The `rideList` object (type 7, spec §7.4) — the ride catalog. The
+        // per-ride payload download + `RideObjectCodec` decode is the sync path (B7).
         _ = try await read(GATT.objectStore)
         return []
     }
 
     public func routeDetail(_ id: RouteID) async throws -> RouteDetail {
-        // Pinned by S0 as "download the route object" (the stored OBCR v2 blob,
-        // spec §7.1); the CoC download + OBCR decode land with A5/A6 bring-up.
-        _ = try await read(GATT.objectStore)
-        throw DeviceError.readFailed
+        // Pinned by S0 as "download the route object" (spec §7.1): the stored OBCR
+        // v2 blob, decoded app-side for the waypoints + elevation profile — one
+        // layout, one truth.
+        guard let objectID = UInt16(id.rawValue) else { throw DeviceError.readFailed }
+        let decoded = try RouteObjectCodec.decode(try await downloadObject(type: .route, objectID: objectID))
+        // Header totals are exact (from the producer's raw-point pass); the profile
+        // + max grade come from the stored geometry, as E2 renders them.
+        let geometry = RouteStats.compute(from: decoded.points)
+        let summary = RouteSummary(
+            id: id,
+            name: decoded.name,
+            distanceMeters: Double(decoded.totalDistanceMeters),
+            elevationGainMeters: Double(decoded.totalAscentMeters),
+            estimatedDuration: geometry.estimatedDuration,
+            pointCount: decoded.points.count,
+            trackPreview: TrackPreview.normalizing(decoded.points.map(\.coordinate))
+        )
+        return RouteDetail(
+            summary: summary,
+            waypoints: decoded.waypoints,
+            elevationProfile: geometry.elevationProfile,
+            maxGradePercent: geometry.maxGradePercent
+        )
     }
 
     public func rideDetail(_ id: RideID) async throws -> RideDetail {
@@ -165,6 +204,71 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
             // finalized at A5 bring-up.
             peripheral.writeValue(start.encode(), for: control, type: .withResponse)
             return make(bleChannel)
+        }
+    }
+
+    /// Download one object over the CoC (spec §4.2 op 2): write the request, await
+    /// the device's announce descriptor (`total_len` + `crc32`), stream the payload
+    /// off the CoC verifying the whole-object CRC, then consume the closing
+    /// `transferResult`. The proven EchoHarness `downloadObject` flow, behind the
+    /// semantic transport. Throws if the link isn't up or the transfer doesn't commit.
+    private func downloadObject(type: ObjectType, objectID: UInt16) async throws -> Data {
+        let channel = try queue.sync { () -> BLEChannel in
+            guard let bleChannel else { throw DeviceError.notConnected }
+            return bleChannel
+        }
+        try await write(TransferControl(op: .download, type: type, objectID: objectID).encode(), to: GATT.transferControl)
+        let announce = await nextAnnounce()
+        let (_, task) = channel.download(length: Int(announce.totalLen), expectedCRC: announce.crc32)
+        let bytes = try await task.value
+        guard await nextTransferResult().status == .committed else { throw DeviceError.readFailed }
+        return bytes
+    }
+
+    // MARK: Status / announce notifications (queue-confined)
+
+    private func deliverStatus(_ message: StatusMessage) {
+        if let index = statusWaiters.firstIndex(where: { $0.pred(message) }) {
+            statusWaiters.remove(at: index).cont.resume(returning: message)
+        } else {
+            pendingStatuses.append(message)
+        }
+    }
+
+    private func deliverAnnounce(_ descriptor: TransferControl) {
+        if let waiter = announceWaiter {
+            announceWaiter = nil
+            waiter.resume(returning: descriptor)
+        } else {
+            pendingAnnounces.append(descriptor)
+        }
+    }
+
+    private func nextStatus(where predicate: @escaping @Sendable (StatusMessage) -> Bool) async -> StatusMessage {
+        await withCheckedContinuation { (cont: CheckedContinuation<StatusMessage, Never>) in
+            queue.async { [self] in
+                if let index = pendingStatuses.firstIndex(where: predicate) {
+                    cont.resume(returning: pendingStatuses.remove(at: index))
+                } else {
+                    statusWaiters.append((predicate, cont))
+                }
+            }
+        }
+    }
+
+    private func nextTransferResult() async -> TransferResult {
+        guard case .transferResult(let result) = await nextStatus(where: {
+            if case .transferResult = $0 { true } else { false }
+        }) else { fatalError("predicate guarantees a transferResult") }
+        return result
+    }
+
+    private func nextAnnounce() async -> TransferControl {
+        await withCheckedContinuation { (cont: CheckedContinuation<TransferControl, Never>) in
+            queue.async { [self] in
+                if pendingAnnounces.isEmpty { announceWaiter = cont }
+                else { cont.resume(returning: pendingAnnounces.removeFirst()) }
+            }
         }
     }
 
@@ -263,6 +367,10 @@ extension BLETransport: CBCentralManagerDelegate {
     public func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         characteristics.removeAll()
         bleChannel = nil
+        // Drop any buffered notifications from the dead link (a new connection
+        // re-announces); an in-flight download surfaces the drop via its CoC read.
+        pendingStatuses.removeAll()
+        pendingAnnounces.removeAll()
         stateMulticast.send(wantsConnect ? .outOfRange : .disconnected)
     }
 }
@@ -280,7 +388,9 @@ extension BLETransport: CBPeripheralDelegate {
     public func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
         for characteristic in service.characteristics ?? [] {
             characteristics[characteristic.uuid] = characteristic
-            if characteristic.uuid == GATT.batteryLevel || characteristic.uuid == GATT.status {
+            // Device → app notifications: battery, the `status` envelope, and the
+            // download-announce descriptor on `transferControl`.
+            if [GATT.batteryLevel, GATT.status, GATT.transferControl].contains(characteristic.uuid) {
                 peripheral.setNotifyValue(true, for: characteristic)
             }
         }
@@ -303,6 +413,19 @@ extension BLETransport: CBPeripheralDelegate {
             if let data = characteristic.value, data.count >= 2 {
                 let psm = UInt16(data[0]) | (UInt16(data[1]) << 8)
                 peripheral.openL2CAPChannel(CBL2CAPPSM(psm))
+            }
+            return
+        }
+        // Typed device → app `status` messages (transferResult / storeChanged / …).
+        if uuid == GATT.status {
+            if let data = characteristic.value, let message = try? StatusMessage(decoding: data) { deliverStatus(message) }
+            return
+        }
+        // A notification on `transferControl` is a download-announce (our own writes
+        // ack via didWriteValueFor, not here).
+        if uuid == GATT.transferControl {
+            if let data = characteristic.value, let descriptor = try? TransferControl(decoding: data) {
+                deliverAnnounce(descriptor)
             }
             return
         }
