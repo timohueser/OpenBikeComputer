@@ -229,4 +229,48 @@ final class MainScreenModelTests: XCTestCase {
         await waitFor("sync done") { model.syncState == .done }
         XCTAssertEqual(model.lastSyncCount, 3)
     }
+
+    // MARK: Rename (H12) + import landing (E1) — session-local edits
+
+    func testRenameUpdatesTheLists() async {
+        let (model, _) = makeModel(.happyPath)
+        await startLoaded(model)
+
+        model.renameRoute(model.routes[0].id, to: "Kettle Gravel Day")
+        XCTAssertEqual(model.routes[0].name, "Kettle Gravel Day")
+
+        model.renameRide(model.rides[1].id, to: "Sunday Espresso Spin")
+        XCTAssertEqual(model.rides[1].name, "Sunday Espresso Spin")
+    }
+
+    func testAddImportedRouteLandsOnTopOfPlannedAndKeepsItsDetail() async {
+        let (model, _) = makeModel(.happyPath)
+        await startLoaded(model)
+        model.tab = .tracked
+
+        let summary = RouteSummary(
+            id: RouteID("imported-test"), name: "Schwarzwald Tour · Tag 2",
+            distanceMeters: 88_000, elevationGainMeters: 1_400
+        )
+        let detail = RouteDetail(
+            summary: summary,
+            waypoints: [Waypoint(index: 0, name: "Start", distanceAlongMeters: 0,
+                                 coordinate: Coordinate(latitude: 48, longitude: 8))],
+            elevationProfile: [500, 600, 550]
+        )
+        model.addImportedRoute(detail)
+
+        XCTAssertEqual(model.routes.count, 6)
+        XCTAssertEqual(model.routes[0].id, summary.id)
+        XCTAssertEqual(model.tab, .planned, "saving lands the user on the Planned list")
+
+        // Reopening must not lose the parsed data; a rename must show in it.
+        model.renameRoute(summary.id, to: "Schwarzwald Day 2")
+        let kept = model.importedDetail(for: summary.id)
+        XCTAssertEqual(kept?.waypoints.count, 1)
+        XCTAssertEqual(kept?.summary.name, "Schwarzwald Day 2")
+
+        model.deleteRoute(summary.id)
+        XCTAssertNil(model.importedDetail(for: summary.id))
+    }
 }

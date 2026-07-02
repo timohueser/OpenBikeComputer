@@ -174,8 +174,10 @@ The domain types `B1` finalizes live in `OBCKit`'s `OBCDomain` module (minimal
 | `DeviceInfo` | `DeviceInfo.swift` | DIS mirror (name, fw/hw, serial, protocolVersion) |
 | `DeviceConfig` | `DeviceConfig.swift` | `Config` blob — **incl. `name`** (Delta 1) |
 | `RouteSummary` / `RouteBlob` | `Route.swift` | route metadata + opaque binary payload |
+| `RouteDetail` | `Route.swift` | detail read for E2 (waypoints + elevation profile) — **provisional**, wire mapping lands with `S0` |
 | `RouteSource` | `Route.swift` | GPX / TCX (Delta 2) |
 | `RideSummary` | `Ride.swift` | enumerable tracked ride (`RideList`) |
+| `RideDetail` | `Ride.swift` | detail read for E3 (elevation profile) — **provisional** like `RouteDetail` |
 | `Ride` / `RidePoint` | `Ride.swift` | canonical full ride — device ride codec decodes into it; exports encode from it |
 | `ImportedRoute` / `RoutePoint` | `ImportedRoute.swift` | canonical parsed route — every import format decodes into it |
 | `Waypoint` | `Waypoint.swift` | route waypoint (W1) — rides in `RouteBlob` |

@@ -32,12 +32,15 @@ public extension View {
         isPresented: Binding<Bool>,
         name: Binding<String>,
         placeholder: String = "Name",
+        message: String? = nil,
         onSave: @escaping () -> Void
     ) -> some View {
         alert(title, isPresented: isPresented) {
             TextField(placeholder, text: name)
             Button("Cancel", role: .cancel) {}
             Button("Save", action: onSave)
+        } message: {
+            if let message { Text(message) }
         }
     }
 }

@@ -25,7 +25,9 @@ public struct OBCStatStrip: View {
     public init(_ stats: [OBCStat]) { self.stats = stats }
 
     public var body: some View {
-        HStack(spacing: 0) {
+        // A fixed gutter between columns — equal-flex cells alone let a long
+        // value ("20.4 kph") run right up against its neighbour.
+        HStack(spacing: 10) {
             ForEach(stats) { stat in
                 VStack(alignment: .leading, spacing: 3) {
                     statValue(stat, size: 20, unitSize: 12)
