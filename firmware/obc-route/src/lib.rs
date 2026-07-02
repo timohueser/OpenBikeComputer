@@ -33,15 +33,16 @@ pub mod reader;
 pub mod track;
 
 pub use byte_io::{ByteSink, ByteSource, Error, SliceSource};
-pub use convert::{gpx_to_obcr, RouteStats};
+pub use convert::{gpx_to_obcr, RouteStats, MAX_WAYPOINTS};
 pub use deadband::{DeadBand, Elev, ELE_DEADBAND_M};
 pub use geo::{cos_lat, ground_dist_m, ground_dist_m_cl, tri_area_m2, tri_area_m2_cl};
-pub use gpx::{GpxScanner, RawPoint};
+pub use gpx::{GpxScanner, RawPoint, RawWaypoint, WptScanner};
 pub use matcher::{Match, RouteMatch};
 pub use profile::{Profile, Window, PROFILE_COLS};
 pub use reader::{
-    ChunkMeta, RouteCache, RouteIndex, RoutePoint, RouteReader, RouteSummary, CHUNK_META_LEN, HEADER_LEN,
-    MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS, NAME_CAP,
+    for_each_waypoint, ChunkMeta, RouteCache, RouteIndex, RoutePoint, RouteReader, RouteSummary, Waypoint,
+    CHUNK_META_LEN, HEADER_LEN, HEADER_V2_LEN, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS, NAME_CAP, WAYPOINT_ELE_NONE,
+    WAYPOINT_LEN, WAYPOINT_NAME_CAP,
 };
 pub use track::{decode_record, encode_record, track_to_gpx, TrackPoint, TRACK_RECORD_LEN};
 
