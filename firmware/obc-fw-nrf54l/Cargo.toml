@@ -35,8 +35,8 @@ default = ["obc-platform/sensor-link", "obc-platform/input-wait", "cs-single-cor
 # `cortex-m/critical-section-single-core`). A **feature** because it is mutually exclusive with
 # the MPSL-provided impl the BLE stack requires (`nrf-mpsl/critical-section-impl` — MPSL's radio
 # timing forbids global-interrupt-disable critical sections, and two impls = duplicate link
-# symbols). The `ble-spike` bin therefore builds with `--no-default-features` (see below); when A2
-# folds BLE into `main.rs` the ble build keeps this off for good.
+# symbols). The `ble` build therefore builds with `--no-default-features --features ble` (see
+# the `ble` feature below).
 cs-single-core = ["cortex-m/critical-section-single-core"]
 
 # Replace the real GPS/altimeter with the always-compiled `SynthLocation` square-loop stand-in (no
@@ -74,18 +74,19 @@ debug-uart = ["obc-platform/debug-link"]
 # board — which routes COM onto P1/P3 — turns on. See `src/com_hw.rs` + the crate README pin map.
 com-hw = []
 
-# BLE controller spike (issue #269, epic #267): gates the throwaway `ble_spike` bin + the
-# nrf-sdc/MPSL/TrouBLE dependency stack so ordinary builds neither compile nor link any of it.
-# Retired when A2 (#270) folds the stack into `main.rs` (this gate then becomes the real `ble`
-# feature). Build with
-#   cargo run --release --no-default-features --features ble-spike --bin ble_spike
-# (`--no-default-features` swaps the critical-section impl to MPSL's — see `cs-single-core`;
-# `main.rs` does not compile under this flag set, so always pass `--bin ble_spike`).
-ble-spike = ["dep:nrf-sdc", "dep:nrf-mpsl", "dep:bt-hci", "dep:trouble-host", "dep:static_cell"]
-
-[[bin]]
-name = "ble_spike"
-required-features = ["ble-spike"]
+# The BLE build (issue #270, epic #267): fold the nrf-sdc/MPSL/TrouBLE stack into `main.rs`
+# behind one feature (the A1 spike bin is retired). Build with
+#   cargo run --release --no-default-features --features ble
+# `--no-default-features` is **mandatory**: it swaps the critical-section impl from `cortex-m`'s
+# global-irq-disable one (`cs-single-core`) to MPSL's, which the radio's timing requires — a
+# `compile_error!` in main.rs catches the wrong invocation. The feature re-enables the two
+# obc-platform default legs itself, so nothing else is lost with `--no-default-features`.
+# On the 256 KB DK the `ble` build also **cfg's out the whole map path** (no `App`, `MapCache`,
+# `RouteCache`, `RouteIndex` — ~128 KB freed) and boots a text-only BLE status UI instead; SD,
+# RRAM settings, buttons, sensors, and the FLPR display all stay up. That exclusion is keyed on
+# the build.rs-emitted `has_map` cfg — the single line the 512 KB LM20 relaxes to run map + BLE
+# together (the budget assert then arbitrates, at compile time).
+ble = ["dep:nrf-sdc", "dep:nrf-mpsl", "dep:bt-hci", "dep:trouble-host", "dep:static_cell", "obc-platform/sensor-link", "obc-platform/input-wait"]
 
 [dependencies]
 # embassy HAL for the nRF54L15 app core. `nrf54l15-app-s` selects the secure-app die
@@ -173,7 +174,7 @@ heapless = "0.8"
 # `InputPlane` mutex, the VCOM ring buffers — is parked in `.bss` via an in-place `MaybeUninit` +
 # `ptr::write`, the same warm-reset-safe pattern as APP/MAP_CACHE/ROUTE_CACHE, so no `static_cell`.)
 
-# --- BLE controller spike (issue #269) — all optional, pulled in only by `ble-spike` above ---
+# --- The BLE stack (issue #270; pins proven by the #269 spike) — all optional, pulled in only by `ble` above ---
 # Nordic's SoftDevice Controller + MPSL, via alexmoon/nrf-sdc's Rust bindings. The crates.io
 # releases (nrf-sdc 0.3 / nrf-mpsl 0.3) predate nRF54L support *and* pin embassy-nrf 0.7, so this
 # is a **git pin**: main (unreleased 0.4.0) grows the `nrf54l15-app-s` feature and targets exactly
@@ -193,9 +194,11 @@ bt-hci = { version = "0.9", default-features = false, features = ["defmt"], opti
 # The BLE host (released 0.7 pins embassy-executor 0.10 / embassy-sync 0.8 / embassy-time 0.5.1 —
 # again exactly this crate's set; its heapless 0.9 coexists with our 0.8, no types cross).
 # `default-packet-pool-mtu-251` sizes the pool for the config we intend to ship (ATT MTU 247 =
-# link-layer 251 with DLE), so the spike's RAM numbers are the real ones A2 budgets against.
+# link-layer 251 with DLE), so the budget assert's RAM numbers are the shipping ones.
 trouble-host = { version = "0.7", features = ["defmt", "derive", "peripheral", "gatt", "default-packet-pool", "default-packet-pool-mtu-251"], optional = true }
-# The spike bin only (main.rs stays on the MaybeUninit-in-.bss pattern for its big statics).
+# The `#[gatt_server]` macro's generated attribute-table storage references `static_cell` by name —
+# a hard requirement of trouble-host's codegen, not our statics (this crate's own runtime statics
+# stay on the warm-reset-safe `MaybeUninit`-in-`.bss` pattern; see `init_static` in main.rs).
 static_cell = { version = "2", optional = true }
 
 [profile.release]
