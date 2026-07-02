@@ -93,7 +93,7 @@ public struct RideEntry: Sendable {
     }
 
     /// The canonical full ride — what `downloadRides` encodes into the payload
-    /// (via `ProvisionalRideCodec`), so a sync exercises the real decode path.
+    /// (via `RideObjectCodec`), so a sync exercises the real decode path.
     public func ride() -> Ride {
         Ride(summary: summary, points: points)
     }

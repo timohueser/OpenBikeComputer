@@ -62,7 +62,7 @@ companion-ios/
                                launches must start from their fixtures alone)
           Transfer/            control-plane descriptors + CRC-32 (pure, host-tested)
           Codecs/              device object layouts ↔ domain types (S0-owned bytes:
-                               Config blob + ProvisionalRideCodec, the compact-binary
+                               Config blob + RideObjectCodec, the compact-binary
                                ride the sync decodes and the mock encodes (B7); route
                                encoder when S0 pins it). Pure — a device-format
                                change lands here.
@@ -87,7 +87,7 @@ companion-ios/
                                ride deletes are phone-side only — a tombstone in
                                the LibraryStore keeps the device's SD copy out of
                                the lists and out of "new" counts) + the B7 sync
-                               flow (payloads decode via ProvisionalRideCodec and
+                               flow (payloads decode via RideObjectCodec and
                                persist ride-by-ride; a drop → the H10 banner with
                                the landed count, Resume continues the SAME stalled
                                transfer — the H10 banner owns the slot over S4's)

@@ -1,12 +1,12 @@
 import Foundation
 import OBCDomain
 
-/// Provisional **device ride codec** — the compact-binary object a ride crosses
-/// the wire as (B7). The layout is firmware-`S0`-owned; like
-/// `ProvisionalConfigCodec`, this pins a stand-in in ONE place so the repin when
-/// `S0` freezes touches only this file. Public on purpose: the mock encodes
-/// fixture rides with it and the sync flow decodes downloads through it, so the
-/// app exercises the real decode path with no firmware.
+/// The **ride object v1** codec — the compact-binary object a ride crosses the
+/// wire as (B7), **ratified byte-for-byte by firmware S0**
+/// (`obc-ble-interface-spec.md` §7.2; pinned against
+/// `protocol-vectors/ride-v1.bin` by `ProtocolVectorTests`). Public on purpose:
+/// the mock encodes fixture rides with it and the sync flow decodes downloads
+/// through it, so the app exercises the real decode path with no firmware.
 ///
 /// Layout (little-endian):
 /// ```
@@ -26,7 +26,7 @@ import OBCDomain
 /// Quantization (whole seconds/metres, ~1 cm coordinates) is deliberate — it's
 /// what a compact MCU-side format costs; the canonical `Ride` is lossy of the
 /// wire object, never the reverse.
-public enum ProvisionalRideCodec {
+public enum RideObjectCodec {
     static let version: UInt8 = 1
     static let headerLength = 1 + 2 + 4 + 4 + 4 + 2 + 2 + 4
     static let pointLength = 14

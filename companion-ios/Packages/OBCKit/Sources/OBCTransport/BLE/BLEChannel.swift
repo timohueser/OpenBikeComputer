@@ -4,7 +4,7 @@ import OBCDomain
 /// The byte layer (Tier 2). Moves an object's **raw payload bytes** over a
 /// `ByteChannel` (the L2CAP CoC on the real path). There is **no per-chunk wire
 /// framing** — the transfer's metadata + whole-object CRC ride on the control plane
-/// (`TransferStart`/`TransferResult` over GATT), so the MCU can sink bytes straight
+/// (`TransferControl`/`StatusMessage` over GATT), so the MCU can sink bytes straight
 /// to flash and CRC them in one pass, with no reassembly buffer.
 ///
 /// Chunking here is purely **write / progress / resume granularity** (aligned to the
@@ -24,7 +24,7 @@ public struct BLEChannel: Sendable {
     }
 
     /// Stream `object[offset...]` as raw bytes (app → device). The caller has already
-    /// announced the transfer (`TransferStart`, incl. the whole-object CRC) on the
+    /// announced the transfer (`TransferControl`, incl. the whole-object CRC) on the
     /// control plane. Returns the handle the UI observes; `resume()` restarts from the
     /// last committed offset.
     public func upload(_ object: Data, from offset: Int = 0) -> TransferHandle {
