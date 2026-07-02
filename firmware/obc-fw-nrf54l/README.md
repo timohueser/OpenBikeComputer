@@ -315,6 +315,28 @@ real, BAS notifies, `protocolVersion` reads `1`, `psm` reads `0x0080`, and a wri
 `-OBCTransport ble`): `connect()` completes end-to-end and the device row shows the real firmware
 revision — first app↔firmware contact.
 
+## CoC data plane + echo loopback (A5, #273)
+
+A5 turns that drain into a **real bulk-transfer data plane**, driven by the host-tested `obc-ble`
+workspace crate (the S0 descriptor codecs + the whole-object transfer state machine — `cargo test -p
+obc-ble`, pinned to `protocol-vectors/` alongside the Swift side). The control plane and the CoC are
+separate futures coordinating through one `Signal`:
+
+- A `transfer_control` write is decoded (`obc_ble::TransferControl`) and classified (`classify_transfer`):
+  an `echo` **upload** (S0 type 8) is *armed* — its descriptor signalled to the CoC task and answered by
+  the data plane; every other op/type (real routes/rides are A6/A7) still gets an immediate S0-typed
+  `transferResult(error)`, an `abort` an `aborted`.
+- `serve_coc` → `run_echo` feeds the CoC bytes through an `obc_ble::Receiver` (a running CRC-32, **no**
+  reassembly buffer, S0 §5) and streams each SDU straight back byte-for-byte, verifying **one**
+  whole-object CRC at the end and notifying `committed` / `crcMismatch`. Zero storage involvement — the
+  loopback that proves the data plane end to end (real objects → SD are A6). On the first transfer the
+  link is asked for the fast `conn_params` set; the kB/s is logged over RTT.
+
+**Verify** — the Mac echo rig `companion-ios/EchoHarness` (reuses the app's `BLEChannel` + CoC byte
+layer): `swift run echo-harness --count 1000 --size 32768` round-trips 1000 × 32 KB byte-identical;
+`--corrupt` flips a byte per object and expects the device to reject it with `crcMismatch`. Watch the
+per-echo throughput + `committed`/`crcMismatch` in the RTT log.
+
 ## Driving it from a host (`debug-uart`)
 
 With the `debug-uart` firmware flashed and VCOM HWFC off, replay a recorded ride over
