@@ -150,3 +150,124 @@ schemes:
       config: Debug
     archive:
       config: Release
+
+  # Quick-launch scenario schemes (dev convenience) — pick one from Xcode's
+  # scheme picker and hit Run instead of hand-editing "OBCCompanion"'s launch
+  # arguments every time. Each sets OBC_SCENARIO, the env-var fallback
+  # MockLaunchOptions.parse reads when no -OBCScenario argument is present
+  # (see companion-ios/CLAUDE.md → Launch arguments); env vars are order-
+  # independent, unlike a two-token "-OBCScenario noDevice" command-line pair.
+  # One scheme per Scenario case (Scenario.swift) — add one here when you add
+  # a case there.
+  OBCCompanion (happyPath):
+    build:
+      targets:
+        OBCCompanion: all
+    run:
+      config: Debug
+      environmentVariables:
+        OBC_SCENARIO: happyPath
+  OBCCompanion (emptyLibrary):
+    build:
+      targets:
+        OBCCompanion: all
+    run:
+      config: Debug
+      environmentVariables:
+        OBC_SCENARIO: emptyLibrary
+  OBCCompanion (coldRead):
+    build:
+      targets:
+        OBCCompanion: all
+    run:
+      config: Debug
+      environmentVariables:
+        OBC_SCENARIO: coldRead
+  OBCCompanion (readError):
+    build:
+      targets:
+        OBCCompanion: all
+    run:
+      config: Debug
+      environmentVariables:
+        OBC_SCENARIO: readError
+  OBCCompanion (outOfRange):
+    build:
+      targets:
+        OBCCompanion: all
+    run:
+      config: Debug
+      environmentVariables:
+        OBC_SCENARIO: outOfRange
+  OBCCompanion (noDevice):
+    build:
+      targets:
+        OBCCompanion: all
+    run:
+      config: Debug
+      environmentVariables:
+        OBC_SCENARIO: noDevice
+  OBCCompanion (pairingTimeout):
+    build:
+      targets:
+        OBCCompanion: all
+    run:
+      config: Debug
+      environmentVariables:
+        OBC_SCENARIO: pairingTimeout
+  OBCCompanion (pairingRejected):
+    build:
+      targets:
+        OBCCompanion: all
+    run:
+      config: Debug
+      environmentVariables:
+        OBC_SCENARIO: pairingRejected
+  OBCCompanion (bluetoothOff):
+    build:
+      targets:
+        OBCCompanion: all
+    run:
+      config: Debug
+      environmentVariables:
+        OBC_SCENARIO: bluetoothOff
+  OBCCompanion (permissionDenied):
+    build:
+      targets:
+        OBCCompanion: all
+    run:
+      config: Debug
+      environmentVariables:
+        OBC_SCENARIO: permissionDenied
+  OBCCompanion (syncUpToDate):
+    build:
+      targets:
+        OBCCompanion: all
+    run:
+      config: Debug
+      environmentVariables:
+        OBC_SCENARIO: syncUpToDate
+  OBCCompanion (syncDrop):
+    build:
+      targets:
+        OBCCompanion: all
+    run:
+      config: Debug
+      environmentVariables:
+        OBC_SCENARIO: syncDrop
+  OBCCompanion (uploadDrop):
+    build:
+      targets:
+        OBCCompanion: all
+    run:
+      config: Debug
+      environmentVariables:
+        OBC_SCENARIO: uploadDrop
+  OBCCompanion (unsupportedFile):
+    build:
+      targets:
+        OBCCompanion: all
+    run:
+      config: Debug
+      environmentVariables:
+        OBC_SCENARIO: unsupportedFile
