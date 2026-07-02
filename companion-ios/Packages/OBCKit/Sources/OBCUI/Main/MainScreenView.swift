@@ -6,7 +6,8 @@ import OBCTransport
 /// The hub (B3, design C1/C2): device top bar, serif "Routes" title with the
 /// trailing **+ import**, Planned | Tracked segments, search, and the compact
 /// track-left list. Connection status lives *only* in the top bar + the S4
-/// banner; swipe-left deletes route through the H1 confirm (never one-tap).
+/// banner; swipe-left deletes the row directly (the reveal is the confirm —
+/// one-tap detail deletes still go through H1).
 ///
 /// Navigation and the flows this screen *opens* stay seams the composition
 /// root wires: card tap → route detail (B4), import pick (B6), settings (B8).
@@ -118,6 +119,14 @@ public struct MainScreenView: View {
                 .background(
                     GeometryReader { geo in
                         Color.clear
+                            // Pin the baseline at rest — waiting for the first
+                            // onChange can capture it mid-pull (the sentinel
+                            // may not move at all until the first scroll).
+                            .onAppear {
+                                if scrollBaseline == nil {
+                                    scrollBaseline = geo.frame(in: .named("mainList")).minY
+                                }
+                            }
                             .onChange(of: geo.frame(in: .named("mainList")).minY) { _, minY in
                                 handleTopOverscroll(minY)
                             }
@@ -125,17 +134,26 @@ public struct MainScreenView: View {
                 )
 
             Group {
+                OBCSegmentedControl(selection: tabSelection, labels: ["Planned", "Tracked"])
+                    .padding(.top, 4)
+                    .padding(.bottom, 2)
+
                 if searchVisible {
                     OBCSearchField(
                         text: $model.searchText,
                         prompt: model.tab == .planned ? "Search routes" : "Search rides"
                     )
                     .accessibilityIdentifier("main.search")
+                    // Transient, Mail-style: once the (cleared) bar scrolls off
+                    // the top it un-reveals. The List culls the row exactly when
+                    // it leaves the viewport, so `onDisappear` IS the "scrolled
+                    // away" signal — and the row is off-screen, so removing it
+                    // can't visibly jump. (A frame observer can't do this: it's
+                    // torn down in the same cull that would cross the threshold.)
+                    .onDisappear {
+                        if model.searchText.isEmpty { searchRevealed = false }
+                    }
                 }
-
-                OBCSegmentedControl(selection: tabSelection, labels: ["Planned", "Tracked"])
-                    .padding(.top, 4)
-                    .padding(.bottom, 2)
 
                 if model.tab == .tracked {
                     syncLine
@@ -166,14 +184,11 @@ public struct MainScreenView: View {
             scrollBaseline = minY
             return
         }
-        let pull = minY - baseline
-        if pull > 55, !searchRevealed {
+        if minY - baseline > 55, !searchRevealed {
             withAnimation(.easeOut(duration: 0.2)) { searchRevealed = true }
-        } else if pull < -70, searchRevealed, model.searchText.isEmpty {
-            // Only once the (cleared) bar is already scrolled off-screen, so
-            // removing the row doesn't visibly jump.
-            withAnimation(.easeOut(duration: 0.2)) { searchRevealed = false }
         }
+        // Un-revealing is the search row's own job (frame observer above):
+        // it fires exactly when the cleared bar scrolls off the top.
     }
 
     private var tabSelection: Binding<Int> {
@@ -253,11 +268,7 @@ public struct MainScreenView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("main.card.\(route.id.rawValue)")
-                .obcSwipeToDelete(
-                    confirmTitle: "Delete \"\(route.name)\"?",
-                    message: "Removes it from your library. If it's already on the device, it stays there.",
-                    actionTitle: "Delete route"
-                ) {
+                .obcSwipeToDelete {
                     model.deleteRoute(route.id)
                 }
             }
@@ -290,11 +301,7 @@ public struct MainScreenView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("main.card.\(ride.id.rawValue)")
-                .obcSwipeToDelete(
-                    confirmTitle: "Delete \"\(ride.name)\"?",
-                    message: "Removes it from your phone. The ride stays on the device.",
-                    actionTitle: "Delete ride"
-                ) {
+                .obcSwipeToDelete {
                     model.deleteRide(ride.id)
                 }
             }

@@ -33,6 +33,10 @@ public struct OBCSegmentedControl: View {
                                     .matchedGeometryEffect(id: "thumb", in: thumb)
                             }
                         }
+                        // The whole segment must hit-test, not just the text
+                        // glyphs — a .plain Button's transparent padding is
+                        // untappable without this.
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }

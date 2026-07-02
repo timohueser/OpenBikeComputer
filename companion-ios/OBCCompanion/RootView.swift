@@ -148,6 +148,11 @@ struct RootView: View {
                     transport: transport,
                     dressing: .tracked(ride),
                     deviceName: mainModel.deviceName,
+                    // Phone-side only — the ride stays on the device's card.
+                    onDelete: {
+                        mainModel.deleteRide(id)
+                        path.removeAll()
+                    },
                     onRename: { mainModel.renameRide(id, to: $0) }
                 )
             }
