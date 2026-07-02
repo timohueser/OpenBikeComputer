@@ -70,8 +70,8 @@ struct RootView: View {
                     route: pending.route,
                     fileName: pending.fileName,
                     deviceName: mainModel.deviceName,
-                    onSave: { summary in
-                        mainModel.addImportedRoute(summary)
+                    onSave: { detail in
+                        mainModel.addImportedRoute(detail)
                         pendingImport = nil
                     },
                     onCancel: { pendingImport = nil }
@@ -98,6 +98,9 @@ struct RootView: View {
                 RouteDetailScreen(
                     transport: transport,
                     dressing: .planned(route),
+                    // Routes saved from an import keep their parsed waypoints/
+                    // profile app-side; the device can't serve them.
+                    preloadedDetail: mainModel.importedDetail(for: id),
                     deviceName: mainModel.deviceName,
                     onUpload: { uploadRequest = UploadRequest(routeName: route.name) },
                     onDelete: {
@@ -177,12 +180,15 @@ private struct RouteDetailScreen: View {
     init(
         transport: any DeviceTransport,
         dressing: RouteDetailModel.Dressing,
+        preloadedDetail: RouteDetail? = nil,
         deviceName: String,
         onUpload: @escaping () -> Void = {},
         onDelete: (() -> Void)? = nil,
         onRename: ((String) -> Void)? = nil
     ) {
-        _model = State(initialValue: RouteDetailModel(transport: transport, dressing: dressing))
+        _model = State(initialValue: RouteDetailModel(
+            transport: transport, dressing: dressing, preloadedDetail: preloadedDetail
+        ))
         self.deviceName = deviceName
         self.onUpload = onUpload
         self.onDelete = onDelete
@@ -209,7 +215,7 @@ private struct ImportLandingHost: View {
     @State private var model: RouteDetailModel
     @State private var uploadRequest: UploadRequest?
     private let deviceName: String
-    private let onSave: (RouteSummary) -> Void
+    private let onSave: (RouteDetail) -> Void
     private let onCancel: () -> Void
 
     init(
@@ -217,7 +223,7 @@ private struct ImportLandingHost: View {
         route: ImportedRoute,
         fileName: String,
         deviceName: String,
-        onSave: @escaping (RouteSummary) -> Void,
+        onSave: @escaping (RouteDetail) -> Void,
         onCancel: @escaping () -> Void
     ) {
         _model = State(initialValue: RouteDetailModel(
@@ -236,7 +242,7 @@ private struct ImportLandingHost: View {
             // TODO(B5): the real upload sheet also saves ("Uploading saves it
             // too"); until it lands, upload shows the placeholder.
             onUpload: { uploadRequest = UploadRequest(routeName: model.name) },
-            onSave: { onSave(model.makeSummary()) },
+            onSave: { onSave(model.makeDetail()) },
             onCancel: onCancel
         )
         .sheet(item: $uploadRequest) { request in

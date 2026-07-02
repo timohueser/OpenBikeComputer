@@ -243,7 +243,7 @@ final class MainScreenModelTests: XCTestCase {
         XCTAssertEqual(model.rides[1].name, "Sunday Espresso Spin")
     }
 
-    func testAddImportedRouteLandsOnTopOfPlanned() async {
+    func testAddImportedRouteLandsOnTopOfPlannedAndKeepsItsDetail() async {
         let (model, _) = makeModel(.happyPath)
         await startLoaded(model)
         model.tab = .tracked
@@ -252,10 +252,25 @@ final class MainScreenModelTests: XCTestCase {
             id: RouteID("imported-test"), name: "Schwarzwald Tour · Tag 2",
             distanceMeters: 88_000, elevationGainMeters: 1_400
         )
-        model.addImportedRoute(summary)
+        let detail = RouteDetail(
+            summary: summary,
+            waypoints: [Waypoint(index: 0, name: "Start", distanceAlongMeters: 0,
+                                 coordinate: Coordinate(latitude: 48, longitude: 8))],
+            elevationProfile: [500, 600, 550]
+        )
+        model.addImportedRoute(detail)
 
         XCTAssertEqual(model.routes.count, 6)
         XCTAssertEqual(model.routes[0].id, summary.id)
         XCTAssertEqual(model.tab, .planned, "saving lands the user on the Planned list")
+
+        // Reopening must not lose the parsed data; a rename must show in it.
+        model.renameRoute(summary.id, to: "Schwarzwald Day 2")
+        let kept = model.importedDetail(for: summary.id)
+        XCTAssertEqual(kept?.waypoints.count, 1)
+        XCTAssertEqual(kept?.summary.name, "Schwarzwald Day 2")
+
+        model.deleteRoute(summary.id)
+        XCTAssertNil(model.importedDetail(for: summary.id))
     }
 }

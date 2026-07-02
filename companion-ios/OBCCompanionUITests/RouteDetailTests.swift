@@ -168,7 +168,8 @@ final class RouteDetailTests: XCTestCase {
                       || app.staticTexts["IMPORTED FROM KOMOOT"].waitForExistence(timeout: 5),
                       "E1 source banner missing")
         XCTAssertTrue(app.staticTexts["Schwarzwald Tour · Tag 2"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["150"].exists, "Points stat missing")
+        XCTAssertTrue(app.staticTexts["CLIMB"].exists, "climb stat missing")
+        XCTAssertTrue(app.staticTexts["DESCENT"].exists, "descent stat missing")
 
         let waypointsRow = app.buttons["detail.waypoints"]
         XCTAssertTrue(waypointsRow.exists, "waypoints-from-file row missing")
@@ -178,9 +179,18 @@ final class RouteDetailTests: XCTestCase {
 
         app.buttons["detail.saveToPlanned"].tap()
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 5), "save should dismiss E1")
-        XCTAssertTrue(app.staticTexts["Schwarzwald Tour · Tag 2"].waitForExistence(timeout: 5),
-                      "saved route must land in the Planned list")
+        let savedRow = app.staticTexts["Schwarzwald Tour · Tag 2"]
+        XCTAssertTrue(savedRow.waitForExistence(timeout: 5), "saved route must land in the Planned list")
         snap(app, "C1-after-import-save")
+
+        // Reopening the saved route must keep the parsed waypoints + profile
+        // (they live app-side — the device never had this route).
+        savedRow.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["detail.screen"].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["detail.waypoints"].waitForExistence(timeout: 5),
+                      "saved import lost its waypoints")
+        XCTAssertTrue(app.staticTexts["ELEVATION PROFILE"].exists, "saved import lost its profile")
+        snap(app, "E2-saved-import")
     }
 
     /// E1 Cancel discards — nothing lands in the library.

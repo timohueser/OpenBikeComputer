@@ -101,17 +101,10 @@ public struct RouteDetailView: View {
             renameTitle,
             isPresented: $renameShown,
             name: $renameDraft,
-            message: "Just for you — the track data is unchanged.",
+            message: renameMessage,
             onSave: {
                 if model.rename(to: renameDraft) { onRename?(model.name) }
             }
-        )
-        .obcDestructiveConfirm(
-            "Delete \"\(model.name)\"?",
-            isPresented: $deleteConfirmShown,
-            message: "Removes it from your library. If it's already on the device, it stays there.",
-            actionTitle: "Delete route",
-            onConfirm: { onDelete?() }
         )
         .task { model.start() }
     }
@@ -196,6 +189,15 @@ public struct RouteDetailView: View {
                 Button("Delete route") { deleteConfirmShown = true }
                     .buttonStyle(.obcDestructive)
                     .accessibilityIdentifier("detail.delete")
+                    // Anchored to the button itself — hung off the scroll root
+                    // the H1 dialog pops up mid-screen over the title.
+                    .obcDestructiveConfirm(
+                        "Delete \"\(model.name)\"?",
+                        isPresented: $deleteConfirmShown,
+                        message: "Removes it from your library. If it's already on the device, it stays there.",
+                        actionTitle: "Delete route",
+                        onConfirm: { onDelete?() }
+                    )
             case .imported:
                 uploadButton
                 Button("Save to Planned") { onSaveToPlanned?() }
@@ -233,6 +235,15 @@ public struct RouteDetailView: View {
     private var renameTitle: String {
         if case .tracked = model.dressing { return "Rename ride" }
         return "Rename route"
+    }
+
+    /// H12 message — the name is real everywhere (next upload carries it to
+    /// the device; syncs/services use it); only the track data is untouched.
+    private var renameMessage: String {
+        if case .tracked = model.dressing {
+            return "The ride itself is unchanged. Syncs and service uploads use the new name."
+        }
+        return "The route itself is unchanged. The new name rides to your device with the next upload."
     }
 }
 
