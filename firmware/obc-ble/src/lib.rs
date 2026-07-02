@@ -28,6 +28,7 @@
 
 pub mod crc32;
 pub mod descriptor;
+pub mod list;
 pub mod transfer;
 
 pub use crc32::Crc32;
@@ -35,7 +36,8 @@ pub use descriptor::{
     CommandResult, CommandStatus, Config, DescriptorError, ObjectStoreDigest, ObjectType, Op, StatusMessage,
     StoreChanged, TransferControl, TransferResult, TransferStatus,
 };
-pub use transfer::{Receiver, ReceiverError, Sender, TransferError};
+pub use list::{ListHeader, RideListEntry, RouteListEntry, LIST_ENTRY_LEN};
+pub use transfer::{Receiver, ReceiverError, Sender, StreamSender, TransferError};
 
 /// The protocol version this crate implements (spec §1). The board serves it on the
 /// `protocolVersion` characteristic; the app reads it on connect and stops on a mismatch.

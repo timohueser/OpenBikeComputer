@@ -3,7 +3,7 @@
 import Foundation
 import OBCTransport
 
-/// A ready echo link: the control-plane characteristics + the opened CoC byte layer, all reusing
+/// A ready link: the control-plane characteristics + the opened CoC byte layer, all reusing
 /// `OBCTransport`'s real transport code (`GATT`, `BLEChannel`, `L2CAPByteChannel`).
 struct EchoLink: @unchecked Sendable {
     let peripheral: CBPeripheral
@@ -12,15 +12,16 @@ struct EchoLink: @unchecked Sendable {
     let channel: BLEChannel
 }
 
-/// A minimal CoreBluetooth central that brings up an OBC link far enough to drive the A5 echo
-/// loopback: scan for the OBC Control service, connect, discover, read the `psm` characteristic, and
-/// open the L2CAP CoC. It deliberately owns its *own* `CBCentralManager` (the app's `BLETransport`
-/// wraps the same steps behind the semantic `DeviceTransport`, which has no echo verb) but reuses
-/// the pinned `GATT` UUIDs and the `L2CAPByteChannel`/`BLEChannel` byte plane, so the bytes on the
-/// wire are exactly the app's.
+/// A minimal CoreBluetooth central that brings up an OBC link and drives both data planes: the A5
+/// echo loopback and the A6 route object plane (upload / list / detail / delete / resume). It scans
+/// for the OBC Control service, connects, discovers, reads the `psm`, and opens the L2CAP CoC. It
+/// owns its *own* `CBCentralManager` (the app's `BLETransport` wraps the same steps behind the
+/// semantic `DeviceTransport`, which has no harness verbs) but reuses the pinned `GATT` UUIDs, the
+/// `L2CAPByteChannel`/`BLEChannel` byte plane, and the `TransferControl`/`StatusMessage`/`RouteList`
+/// codecs — so the bytes on the wire are exactly the app's.
 ///
-/// All mutable state is confined to the CoreBluetooth callback `queue`; async methods hop onto it and
-/// register continuations the delegate callbacks resolve — the same confinement pattern as
+/// All mutable state is confined to the CoreBluetooth callback `queue`; async methods hop onto it
+/// and register continuations the delegate callbacks resolve — the same confinement pattern as
 /// `BLETransport`, which is why this is a plain `@unchecked Sendable` class.
 final class EchoCentral: NSObject, @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.openbikecomputer.echo-harness")
@@ -31,17 +32,26 @@ final class EchoCentral: NSObject, @unchecked Sendable {
     private var readyCont: CheckedContinuation<EchoLink, Error>?
     private var openedChannel = false
 
-    // Device → app `status` results, buffered so a `nextTransferResult()` that registers just after
-    // the notification arrives still sees it (no ordering race with the `transferControl` write).
-    private var pendingResults: [TransferResult] = []
-    private var resultWaiter: CheckedContinuation<TransferResult, Never>?
+    // Device → app `status` messages, buffered so a waiter that registers just after a notification
+    // arrives still sees it (no ordering race with the `transferControl`/`command` write that
+    // provokes it). Waiters are predicate-matched (transferResult vs storeChanged vs commandResult).
+    private var pendingStatuses: [StatusMessage] = []
+    private var statusWaiters: [(pred: @Sendable (StatusMessage) -> Bool, cont: CheckedContinuation<StatusMessage, Never>)] = []
+
+    // Download-announce notifications on the `transferControl` characteristic (the device fills in
+    // total_len + crc32 before it streams), same buffering discipline.
+    private var pendingAnnounces: [TransferControl] = []
+    private var announceWaiter: CheckedContinuation<TransferControl, Never>?
+
+    // In-flight GATT reads (the digest), keyed by characteristic.
+    private var pendingReads: [CBUUID: [CheckedContinuation<Data, Error>]] = [:]
 
     override init() {
         super.init()
         _ = central // force manager creation (and the first state callback)
     }
 
-    /// Scan → connect → discover → open the CoC. Resolves when the link is ready to echo.
+    /// Scan → connect → discover → open the CoC. Resolves when the link is ready.
     func connect() async throws -> EchoLink {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<EchoLink, Error>) in
             queue.async { [self] in
@@ -52,25 +62,81 @@ final class EchoCentral: NSObject, @unchecked Sendable {
         }
     }
 
-    /// Write the 16-byte `TransferControl` descriptor that opens/aborts a transfer (S0 §4.2).
+    /// Write the 16-byte `TransferControl` descriptor that opens/resumes/aborts a transfer (S0 §4.2).
     func writeControl(_ bytes: Data, to characteristic: CBCharacteristic) {
         queue.async { [self] in peripheral?.writeValue(bytes, for: characteristic, type: .withResponse) }
     }
 
-    /// The device's next `transferResult` (S0 §4.3) — the committed/crcMismatch verdict.
+    /// Write a `command` imperative (S0 §4.4) — e.g. `deleteObject`.
+    func writeCommand(_ bytes: Data) {
+        queue.async { [self] in
+            if let c = characteristics[GATT.command] { peripheral?.writeValue(bytes, for: c, type: .withResponse) }
+        }
+    }
+
+    /// The device's next `transferResult` (S0 §4.3) — a transfer's committed/aborted/… verdict.
     func nextTransferResult() async -> TransferResult {
-        await withCheckedContinuation { (cont: CheckedContinuation<TransferResult, Never>) in
+        guard case .transferResult(let r) = await nextStatus(where: { if case .transferResult = $0 { true } else { false } })
+        else { fatalError("predicate guarantees a transferResult") }
+        return r
+    }
+
+    /// The device's next `commandResult` (S0 §4.3/§4.4).
+    func nextCommandResult() async -> CommandResult {
+        guard case .commandResult(let c) = await nextStatus(where: { if case .commandResult = $0 { true } else { false } })
+        else { fatalError("predicate guarantees a commandResult") }
+        return c
+    }
+
+    /// The device's next `storeChanged` (S0 §4.3) — emitted after every commit/delete.
+    func nextStoreChanged() async -> StoreChanged {
+        guard case .storeChanged(let s) = await nextStatus(where: { if case .storeChanged = $0 { true } else { false } })
+        else { fatalError("predicate guarantees a storeChanged") }
+        return s
+    }
+
+    /// The device's next download-announce descriptor on `transferControl` (S0 §4.2) — the same 16
+    /// bytes as the request with `total_len`/`crc32` filled in, sent before the CoC bytes flow.
+    func nextAnnounce() async -> TransferControl {
+        await withCheckedContinuation { (cont: CheckedContinuation<TransferControl, Never>) in
             queue.async { [self] in
-                if pendingResults.isEmpty {
-                    resultWaiter = cont
-                } else {
-                    cont.resume(returning: pendingResults.removeFirst())
-                }
+                if pendingAnnounces.isEmpty { announceWaiter = cont }
+                else { cont.resume(returning: pendingAnnounces.removeFirst()) }
             }
         }
     }
 
+    /// Read the `objectStore` digest (S0 §4.5): revision + object counts.
+    func readDigest() async throws -> ObjectStoreDigest {
+        try ObjectStoreDigest(decoding: try await readValue(GATT.objectStore))
+    }
+
     // MARK: queue-confined helpers
+
+    private func readValue(_ uuid: CBUUID) async throws -> Data {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, Error>) in
+            queue.async { [self] in
+                guard let peripheral, let characteristic = characteristics[uuid] else {
+                    cont.resume(throwing: HarnessError.characteristicMissing)
+                    return
+                }
+                pendingReads[uuid, default: []].append(cont)
+                peripheral.readValue(for: characteristic)
+            }
+        }
+    }
+
+    private func nextStatus(where pred: @escaping @Sendable (StatusMessage) -> Bool) async -> StatusMessage {
+        await withCheckedContinuation { (cont: CheckedContinuation<StatusMessage, Never>) in
+            queue.async { [self] in
+                if let i = pendingStatuses.firstIndex(where: pred) {
+                    cont.resume(returning: pendingStatuses.remove(at: i))
+                } else {
+                    statusWaiters.append((pred, cont))
+                }
+            }
+        }
+    }
 
     private func startScan() {
         print("echo-harness: scanning for \(GATT.obcControlService)…")
@@ -82,12 +148,20 @@ final class EchoCentral: NSObject, @unchecked Sendable {
         readyCont = nil
     }
 
-    private func deliverResult(_ result: TransferResult) {
-        if let waiter = resultWaiter {
-            resultWaiter = nil
-            waiter.resume(returning: result)
+    private func deliverStatus(_ msg: StatusMessage) {
+        if let i = statusWaiters.firstIndex(where: { $0.pred(msg) }) {
+            statusWaiters.remove(at: i).cont.resume(returning: msg)
         } else {
-            pendingResults.append(result)
+            pendingStatuses.append(msg)
+        }
+    }
+
+    private func deliverAnnounce(_ desc: TransferControl) {
+        if let waiter = announceWaiter {
+            announceWaiter = nil
+            waiter.resume(returning: desc)
+        } else {
+            pendingAnnounces.append(desc)
         }
     }
 }
@@ -141,8 +215,9 @@ extension EchoCentral: CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
         for characteristic in service.characteristics ?? [] {
             characteristics[characteristic.uuid] = characteristic
-            if characteristic.uuid == GATT.status {
-                peripheral.setNotifyValue(true, for: characteristic) // device → app transfer results
+            // Device → app notifications: the `status` envelope and the download-announce descriptor.
+            if characteristic.uuid == GATT.status || characteristic.uuid == GATT.transferControl {
+                peripheral.setNotifyValue(true, for: characteristic)
             }
         }
         // Once the PSM is known, read it and open the CoC.
@@ -160,12 +235,16 @@ extension EchoCentral: CBPeripheralDelegate {
             print("echo-harness: opening L2CAP CoC on PSM \(psm)…")
             peripheral.openL2CAPChannel(CBL2CAPPSM(psm))
         case GATT.status:
-            // Decode the `status` notification; forward a transferResult to the waiter.
-            if let data = characteristic.value, case .transferResult(let r)? = try? StatusMessage(decoding: data) {
-                deliverResult(r)
-            }
+            if let data = characteristic.value, let msg = try? StatusMessage(decoding: data) { deliverStatus(msg) }
+        case GATT.transferControl:
+            // A device → app notification here is a download-announce (our own writes don't echo).
+            if let data = characteristic.value, let desc = try? TransferControl(decoding: data) { deliverAnnounce(desc) }
         default:
-            break
+            // A completed GATT read (the digest) — resume the oldest waiter for this characteristic.
+            guard var waiters = pendingReads[characteristic.uuid], !waiters.isEmpty else { return }
+            let cont = waiters.removeFirst()
+            pendingReads[characteristic.uuid] = waiters
+            if let error { cont.resume(throwing: error) } else { cont.resume(returning: characteristic.value ?? Data()) }
         }
     }
 
@@ -174,12 +253,8 @@ extension EchoCentral: CBPeripheralDelegate {
             fail(HarnessError.channelOpenFailed)
             return
         }
-        let link = EchoLink(
-            peripheral: peripheral,
-            transferControl: control,
-            channel: BLEChannel(channel: L2CAPByteChannel(channel: channel))
-        )
-        readyCont?.resume(returning: link)
+        let bleChannel = BLEChannel(channel: L2CAPByteChannel(channel: channel))
+        readyCont?.resume(returning: EchoLink(peripheral: peripheral, transferControl: control, channel: bleChannel))
         readyCont = nil
     }
 }
@@ -189,8 +264,12 @@ enum HarnessError: Error, CustomStringConvertible {
     case connectFailed
     case disconnected
     case channelOpenFailed
+    case characteristicMissing
     case unexpectedStatus(TransferResult.Status)
+    case unexpectedCommandStatus(CommandResult.Status)
     case notByteIdentical
+    case digestUnchanged
+    case routeNotListed
     case timedOut
 
     var description: String {
@@ -199,8 +278,12 @@ enum HarnessError: Error, CustomStringConvertible {
         case .connectFailed: return "failed to connect"
         case .disconnected: return "disconnected during bring-up"
         case .channelOpenFailed: return "L2CAP CoC failed to open"
-        case .unexpectedStatus(let s): return "unexpected device status \(s)"
-        case .notByteIdentical: return "echoed bytes are not identical to what was sent"
+        case .characteristicMissing: return "a required characteristic wasn't discovered"
+        case .unexpectedStatus(let s): return "unexpected device transfer status \(s)"
+        case .unexpectedCommandStatus(let s): return "unexpected device command status \(s)"
+        case .notByteIdentical: return "downloaded bytes are not identical to the reference"
+        case .digestUnchanged: return "the store digest revision did not change"
+        case .routeNotListed: return "the route is not in the device's routeList"
         case .timedOut: return "timed out (no CoC bytes flowed — channel likely closed)"
         }
     }

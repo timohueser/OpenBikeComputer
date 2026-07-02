@@ -3,7 +3,7 @@
 //! ride through `obc-route` — the firmware-side half of the S0 shared-vector pin
 //! (the app's `swift test` consumes the same files).
 
-use obc_route::{for_each_waypoint, RouteIndex, RouteReader, SliceSource, MAX_POINTS_PER_CHUNK};
+use obc_route::{for_each_waypoint, RouteIndex, RouteObjectInfo, RouteReader, SliceSource, MAX_POINTS_PER_CHUNK};
 use obc_vectors::{all, crc32, dir, ride_v1};
 
 fn fixture(name: &str) -> Vec<u8> {
@@ -66,6 +66,15 @@ fn route_vectors_load_and_ride_identically() {
     assert_eq!(count, 2);
     assert_eq!(names, ["Brunnen", "Pass Summit"]);
     assert_eq!(for_each_waypoint(&src_p, |_| panic!("plain route has no waypoints")).unwrap(), 0);
+
+    // The wire facts a routeList entry serves (S0 §7.4) agree with the manifest and the full index.
+    let info = RouteObjectInfo::read(&src_w).unwrap();
+    assert_eq!(info.name.as_str(), "Vector Loop");
+    assert_eq!(info.distance_m, idx_w.total_distance_m);
+    assert_eq!(info.ascent_m, idx_w.total_ascent_m);
+    assert_eq!(info.point_count, idx_w.point_count);
+    assert_eq!(info.waypoint_count, 2);
+    assert_eq!(RouteObjectInfo::read(&src_p).unwrap().waypoint_count, 0);
 }
 
 /// The upload descriptor announces the waypoint route's **actual** size and CRC —

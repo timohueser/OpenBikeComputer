@@ -300,9 +300,9 @@ three services — mirroring the spec section so there's one place to diff:
   (name moves to the scan response) so the app's `scanForPeripherals(withServices:)` filter matches.
 
 Control-plane writes are answered with the S0-typed `status` envelope — never a hang or a bare ATT
-failure for an op that isn't fully wired yet: `command` → `commandResult` (`deleteObject` reports
-`notFound` until the A6 store lands), `transferControl` → `transferResult(error)` (no data plane
-until A5), `config` is shape-validated + accepted (round-trips in-session; RRAM/SD persistence is A6).
+failure: `command` → `commandResult` (`deleteObject` is real since A6), `transferControl` →
+`transferResult` (typed `busy`/`notFound`/`error` rejects; valid transfers are armed to the data
+plane), `config` is validated + **persisted** (A6: RRAM settings, see below).
 
 A4 also stands up a **minimal L2CAP CoC**: the SPSM `0x0080` is registered on the stack and
 published in `psm`, and `serve_coc` accepts the channel and **drains/discards** its bytes. That is
@@ -336,6 +336,37 @@ separate futures coordinating through one `Signal`:
 layer): `swift run echo-harness --count 1000 --size 32768` round-trips 1000 × 32 KB byte-identical;
 `--corrupt` flips a byte per object and expects the device to reject it with `crcMismatch`. Watch the
 per-echo throughput + `committed`/`crcMismatch` in the RTT log.
+
+## Route object plane (A6, #274)
+
+A6 wires that data plane to real storage — the epic's golden path (komoot GPX → app → upload →
+**ride it**). The pieces (`object_store.rs` + the A6 half of `sd.rs`):
+
+- **Upload → SD.** A route upload streams into `/routes/UPLOAD.TMP` (running CRC, no reassembly
+  buffer); commit verifies the transfer CRC **and** that the bytes parse as OBCR, then promotes.
+  embedded-sdmmc has no `rename`, so atomicity is a copy with the 4-byte `OBCR` magic **held back
+  as zeros**, patched in as the last write — a power cut at any point leaves only files every
+  header read rejects, never a half-route in the catalog; the boot scan sweeps that exact
+  signature. Uploads get 8.3 `RTnn.OBR` names (LFN creation isn't available); the catalog scan —
+  including the **map build's** — matches `*.OBR` beside `.obcr`, so an uploaded route appears in
+  the on-device Route menu after a reflash. Replace-by-id deletes the old copy only after the new
+  bytes validate. Uploads are **not resumable** (S0 §1 principle 4): an interrupted upload (a drop
+  or an `op=3` abort) discards the partial and the app re-sends the object from the start — trivial
+  for a tens-of-kB route.
+- **List / detail / delete.** `routeList` is built from the stored OBCR headers (ids are
+  session-scoped, matching the per-boot digest revision); a route detail download streams the
+  stored file verbatim (whole-object CRC pre-pass, then raw CoC chunks); `deleteObject` removes
+  the file. Every store movement notifies `storeChanged` + the refreshed `objectStore` digest.
+- **Config ↔ settings.** The `config` characteristic round-trips through the persisted settings
+  (codec v3 adds the device name to the RRAM blob): a rename survives a power cycle and replaces
+  the advertised `OBC-XXXX` on the next advertise cycle — no reboot; an empty name clears back to
+  factory.
+
+**Verify** — the E2E golden path: share a GPX to the iOS app on a phone, upload (B5 sheet), reflash
+the **map** build, and the route is in the device menu and rideable (SD persists across flashes).
+List/detail/delete + the mid-upload abort-and-re-upload are exercised from the Mac harness
+(`companion-ios/EchoHarness`: `upload`/`list`/`detail`/`delete`/`abort-test`) — the app's
+list/detail screens land on the B track.
 
 ## Driving it from a host (`debug-uart`)
 
