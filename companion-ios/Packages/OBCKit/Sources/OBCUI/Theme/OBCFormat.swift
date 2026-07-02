@@ -169,16 +169,32 @@ public enum OBCFormat {
         return formatter.string(from: NSNumber(value: mb)) ?? "\(mb)"
     }
 
-    /// The upload sheet's size readout: "1.4 / 2.3 MB · route + waypoints"
-    /// (design F) — never raw byte counts.
+    /// The unit the transfer readout uses, chosen from the total: real OBCR routes
+    /// are tens of kB (MB would read "0.0"); rides/large payloads stay in MB.
+    private static func transferUnit(forTotalBytes total: Int) -> (label: String, divisor: Double, decimals: Int) {
+        total >= 1_000_000 ? ("MB", 1_000_000, 1) : ("kB", 1_000, 0)
+    }
+
+    private static func sizeValue(_ bytes: Int, divisor: Double, decimals: Int, locale: Locale) -> String {
+        let formatter = numberFormatter(locale: locale)
+        formatter.maximumFractionDigits = decimals
+        formatter.minimumFractionDigits = decimals
+        return formatter.string(from: NSNumber(value: Double(max(0, bytes)) / divisor)) ?? "0"
+    }
+
+    /// The upload sheet's size readout: "1.4 / 2.3 MB · route + waypoints" for a
+    /// large payload, "18 / 24 kB · route" for a real OBCR route (design F) —
+    /// never raw byte counts, and never a misleading "0.0 MB".
     public static func transferSizeLine(
         bytesDone: Int,
         totalBytes: Int,
         hasWaypoints: Bool,
         locale: Locale = .current
     ) -> String {
-        let counts = "\(megabytesValue(bytesDone, locale: locale)) / \(megabytesValue(totalBytes, locale: locale)) MB"
-        return "\(counts) · \(hasWaypoints ? "route + waypoints" : "route")"
+        let unit = transferUnit(forTotalBytes: totalBytes)
+        let done = sizeValue(bytesDone, divisor: unit.divisor, decimals: unit.decimals, locale: locale)
+        let total = sizeValue(totalBytes, divisor: unit.divisor, decimals: unit.decimals, locale: locale)
+        return "\(done) / \(total) \(unit.label) · \(hasWaypoints ? "route + waypoints" : "route")"
     }
 
     private static func numberFormatter(locale: Locale) -> NumberFormatter {

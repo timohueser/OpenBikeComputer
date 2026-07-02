@@ -131,6 +131,8 @@ struct RootView: View {
                     // Routes saved from an import keep their parsed waypoints/
                     // profile app-side; the device can't serve them.
                     preloadedDetail: mainModel.importedDetail(for: id),
+                    // …and their geometry, which an upload re-encodes to OBCR.
+                    plannedGeometry: mainModel.plannedGeometry(for: id),
                     deviceName: mainModel.deviceName,
                     onDelete: {
                         mainModel.deleteRoute(id)
@@ -297,13 +299,15 @@ private struct RouteDetailScreen: View {
         transport: any DeviceTransport,
         dressing: RouteDetailModel.Dressing,
         preloadedDetail: RouteDetail? = nil,
+        plannedGeometry: ImportedRoute? = nil,
         deviceName: String,
         onDelete: (() -> Void)? = nil,
         onRename: ((String) -> Void)? = nil,
         onUploaded: (() -> Void)? = nil
     ) {
         _model = State(initialValue: RouteDetailModel(
-            transport: transport, dressing: dressing, preloadedDetail: preloadedDetail
+            transport: transport, dressing: dressing,
+            preloadedDetail: preloadedDetail, plannedGeometry: plannedGeometry
         ))
         self.transport = transport
         self.deviceName = deviceName
