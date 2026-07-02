@@ -94,7 +94,7 @@ final class LibraryStoreTests: XCTestCase {
         store.savePlannedRoute(record)
 
         record.summary.name = "Schwarzwald Day 2"   // H12 rename
-        record.uploadedToDevice = true              // later upload
+        record.deviceObjectID = 7                    // a later upload lands on device object 7
         store.savePlannedRoute(record)
 
         let reloaded = FileLibraryStore(directory: dir).plannedRoutes()
