@@ -64,15 +64,24 @@ public struct RouteEntry: Sendable {
     }
 }
 
-/// A fixture ride: the enumerable `summary`, its elevation profile (E3), and its
-/// declared download size (used to pace `downloadRides` progress).
+/// A fixture ride: the enumerable `summary`, its tracklog (E3 + the B7 download
+/// payload), and its declared download size (used to pace `downloadRides`
+/// progress — a fiction independent of the payload; the mock's realism is
+/// timing + faults, not byte counts).
 public struct RideEntry: Sendable {
     public var summary: RideSummary
+    public var points: [RidePoint]
     public var elevationProfile: [Double]
     public var downloadByteCount: Int
 
-    public init(summary: RideSummary, elevationProfile: [Double] = [], downloadByteCount: Int? = nil) {
+    public init(
+        summary: RideSummary,
+        points: [RidePoint] = [],
+        elevationProfile: [Double] = [],
+        downloadByteCount: Int? = nil
+    ) {
         self.summary = summary
+        self.points = points
         self.elevationProfile = elevationProfile
         // Tracklogs are chunkier than routes; ~20 B/m gives a believable sync size.
         self.downloadByteCount = downloadByteCount ?? max(1, Int(summary.distanceMeters) * 20)
@@ -81,6 +90,12 @@ public struct RideEntry: Sendable {
     /// What `rideDetail(_:)` serves for this ride (E3).
     public func detail() -> RideDetail {
         RideDetail(summary: summary, elevationProfile: elevationProfile)
+    }
+
+    /// The canonical full ride — what `downloadRides` encodes into the payload
+    /// (via `ProvisionalRideCodec`), so a sync exercises the real decode path.
+    public func ride() -> Ride {
+        Ride(summary: summary, points: points)
     }
 }
 
@@ -273,7 +288,15 @@ private struct RideDTO: Decodable {
             movingTime: movingTime, averageSpeedMps: averageSpeedMps, climbMeters: climbMeters,
             trackPreview: TrackPreview.normalizing(track.map(\.coordinate))
         )
-        return RideEntry(summary: summary, elevationProfile: track.compactMap(\.ele),
+        // Fixture tracks carry no timestamps — synthesize them evenly across the
+        // moving time, so the encoded payload is a plausible recorded tracklog.
+        let step = track.count > 1 ? movingTime / Double(track.count - 1) : 0
+        let points = track.enumerated().map { index, geo in
+            RidePoint(timestamp: date.addingTimeInterval(Double(index) * step),
+                      coordinate: geo.coordinate, elevationMeters: geo.ele)
+        }
+        return RideEntry(summary: summary, points: points,
+                         elevationProfile: track.compactMap(\.ele),
                          downloadByteCount: payloadBytes)
     }
 }

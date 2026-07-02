@@ -192,29 +192,102 @@ final class MainScreenModelTests: XCTestCase {
         XCTAssertEqual(model.rides.first?.name, "Lunch Loop")
     }
 
-    func testDropMidSyncKeepsPartialAndReturnsToIdle() async {
+    /// H10: the drop freezes what landed into the banner state — button idle,
+    /// progress down, and the S4 banner yields to the interruption's.
+    func testDropMidSyncRaisesH10WithTheLandedCounts() async {
         let (model, control) = makeModel(.happyPath)
         await startLoaded(model)
 
         control.dropTransfer(atFraction: 0.5)
         model.sync()
-        // The drop flips the link out of range; the button quietly returns to
-        // idle (the H10 interrupted-banner + resume flow is B7's).
-        await waitFor("drop observed") { model.connection == .outOfRange }
-        await waitFor("back to idle") { model.syncState == .idle }
-        XCTAssertNil(model.lastSyncCount)
+        await waitFor("H10 raised") { model.syncInterruption != nil }
+        XCTAssertEqual(model.syncState, .idle)
         XCTAssertNil(model.syncProgress)
+        XCTAssertNil(model.lastSyncCount)
 
-        // What landed stays synced: the next sync pulls only the remainder.
+        let interruption = model.syncInterruption
+        XCTAssertEqual(interruption?.total, 4)
+        XCTAssertGreaterThan(interruption?.landed ?? -1, 0, "half the bytes should land some rides")
+        XCTAssertLessThan(interruption?.landed ?? 4, 4, "a drop mid-batch can't have landed them all")
+
+        XCTAssertEqual(model.connection, .outOfRange)
+        XCTAssertFalse(model.showsDisconnectedBanner,
+                       "the H10 banner tells the link story — never two banners")
+    }
+
+    /// H10 → Resume: the same transfer continues from its last committed
+    /// offset and finishes; every ride of the batch counts once.
+    func testResumeContinuesTheDroppedSyncToCompletion() async {
+        let library = InMemoryLibraryStore()
+        let (model, control) = makeModel(.happyPath, library: library)
+        await startLoaded(model)
+
+        control.dropTransfer(atFraction: 0.5)
+        model.sync()
+        await waitFor("H10 raised") { model.syncInterruption != nil }
+        let landedAtDrop = model.syncInterruption?.landed ?? 0
+
+        model.resumeSync()
+        XCTAssertNil(model.syncInterruption, "Resume takes the banner down at once")
+        XCTAssertEqual(model.syncState, .syncing)
+        XCTAssertEqual(model.syncProgress,
+                       .init(done: landedAtDrop, total: 4),
+                       "the caption picks up where the drop left it")
+
+        await waitFor("batch completes") {
+            model.syncState == .done && model.lastSyncCount == 4
+        }
+        XCTAssertEqual(model.connection, .connected, "resume restores the link")
+        XCTAssertEqual(library.syncedRideIDs().count, 4)
+        XCTAssertEqual(library.rides().count, 4, "resumed rides persist like the rest")
+    }
+
+    /// The user can also just sync again once back in range — what landed
+    /// stays synced, so the fresh batch is exactly the remainder.
+    func testFreshSyncAfterADropPullsOnlyTheRemainder() async {
+        let (model, control) = makeModel(.happyPath)
+        await startLoaded(model)
+
+        control.dropTransfer(atFraction: 0.5)
+        model.sync()
+        await waitFor("H10 raised") { model.syncInterruption != nil }
+
         control.connection = .connected
         await waitFor("reconnect reaches the model") { model.connection == .connected }
         model.sync()
+        XCTAssertNil(model.syncInterruption, "a fresh sync clears the waiting banner")
         await waitFor("remainder synced") {
             model.syncState == .done && model.lastSyncCount != nil
         }
         let remainder = model.lastSyncCount ?? 0
-        XCTAssertGreaterThan(remainder, 0, "resumed sync should find the un-landed rides")
+        XCTAssertGreaterThan(remainder, 0, "the fresh sync should find the un-landed rides")
         XCTAssertLessThan(remainder, 4, "partial rides must not be re-counted")
+    }
+
+    /// B7's decode path: a synced ride lands in the library with its tracklog
+    /// decoded from the payload — not as an empty-points summary shell.
+    func testSyncedRideCarriesTheDecodedTracklog() async {
+        let library = InMemoryLibraryStore()
+        let (model, _) = makeModel(.happyPath, library: library)
+        await startLoaded(model)
+
+        model.sync()
+        await waitFor("sync done") { model.syncState == .done }
+
+        let stored = library.rides()
+        XCTAssertEqual(stored.count, 4)
+        XCTAssertTrue(stored.allSatisfy { !$0.points.isEmpty },
+                      "every fixture payload decodes into a tracklog")
+
+        let kettle = stored.first { $0.id == RideID("ride-kettle-moraine") }
+        XCTAssertEqual(kettle?.points.count, 9, "the fixture's track survives the wire")
+        let start = kettle?.points.first
+        XCTAssertEqual(start?.coordinate.latitude ?? 0, 42.8672, accuracy: 1e-6)
+        XCTAssertEqual(start?.coordinate.longitude ?? 0, -88.4471, accuracy: 1e-6)
+        XCTAssertEqual(start?.elevationMeters ?? 0, 264, accuracy: 0.5)
+        // Timestamps synthesized across the moving time, in ride order.
+        let span = kettle.map { $0.points.last!.timestamp.timeIntervalSince($0.points.first!.timestamp) }
+        XCTAssertEqual(span ?? 0, 10_260, accuracy: 1)
     }
 
     func testSyncNoOpsWhenUnreachable() async {
