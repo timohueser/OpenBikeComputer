@@ -43,7 +43,7 @@ use embedded_sdmmc::{
 use heapless::{String, Vec};
 use obc_app::MAX_ROUTES;
 use obc_platform::{SdByteSink, SdByteSource, SdTrackSink};
-use obc_route::{track_to_gpx, RouteIndex, RouteSummary, NAME_CAP};
+use obc_route::{track_to_gpx, RouteIndex, RouteObjectInfo, RouteSummary, NAME_CAP};
 
 /// SD clock during the init handshake — the spec caps it at 400 kHz. embassy-nrf's discrete
 /// [`Frequency`] ladder has no 400 kHz step, so [`Frequency::K250`] is the fastest in-spec choice
@@ -59,6 +59,11 @@ const SD_FAST_HZ: Frequency = Frequency::M8;
 /// The in-progress ride log on the card — a header-less array of fixed track records (8.3
 /// name). Truncated-and-reused per ride, converted to `<route>.gpx`, then deleted on Finish.
 const TRACK_TMP: &str = "TRACK.OBT";
+
+/// The in-flight BLE route upload, inside `/routes` (A6, issue #274). Its extension never
+/// matches the catalog scan, so a partial upload — a drop, a power cut — is invisible until
+/// [`Storage::upload_commit`] promotes it. Truncated-and-reused per upload.
+const UPLOAD_TMP: &str = "UPLOAD.TMP";
 
 /// The concrete SD stack for this board: embassy-nrf's blocking `Spim` wrapped as the `SpiDevice`
 /// the card driver wants, an [`SdCard`], and a 4-file/4-dir [`VolumeManager`]. The chip-select is
@@ -101,6 +106,11 @@ pub struct Storage {
     open_map: Option<(RawFile, u32)>,
     /// The open ride log for the current tracking session.
     open_track: Option<OpenTrack>,
+    /// The BLE object plane's open route file (a detail download in flight): `(handle, length)`.
+    /// A separate slot from `open_route` so a download can't disturb an active ride's geometry.
+    open_object: Option<(RawFile, u32)>,
+    /// The in-flight BLE upload's open [`UPLOAD_TMP`] handle.
+    open_upload: Option<RawFile>,
     /// The real chip-select (P1_12), held LOW for the whole session so the card stays selected.
     /// embedded-sdmmc drives a no-op [`NoCs`] instead; toggling a real CS breaks CMD0 on embassy.
     /// Kept here only to keep the pin driven low — never touched after [`init`].
@@ -212,6 +222,8 @@ impl Storage {
             open_route: None,
             open_map: None,
             open_track: None,
+            open_object: None,
+            open_upload: None,
             _cs: cs,
         })
     }
@@ -232,7 +244,7 @@ impl Storage {
 
         let mut names: Vec<ShortFileName, MAX_ROUTES> = Vec::new();
         self.iter_dir_lfn(dir, |e, long| {
-            if !e.attributes.is_directory() && long_has_ext(long, b".obcr") && !names.is_full() {
+            if is_route_entry(e, long) && !names.is_full() {
                 let _ = names.push(e.name.clone());
             }
         });
@@ -459,12 +471,291 @@ impl Storage {
     }
 }
 
+// ==================== The BLE route-object plane (A6, issue #274) ====================
+//
+// The storage half of S0's route object: upload (stream → temp → validated promote), detail
+// download (an open handle + `ByteSource`), delete, and the per-file facts the `routeList`
+// entries serve. The BLE control plane serialises everything (one transfer at a time, S0 §4.1),
+// so these never contend with each other; on the `ble` build there is no ride loop, so they
+// never contend with the map plane either.
+//
+// **Atomicity without `rename`** — embedded-sdmmc 0.9 cannot rename, so the issue's
+// write-temp-then-rename plan is substituted with the same guarantee: the upload streams into
+// [`UPLOAD_TMP`] (an extension the catalog scan never matches), and `upload_commit` copies it to
+// its final `.OBR` name **with the 4-byte `OBCR` magic held back as zeros**, patching the magic
+// in as the last write. A power cut at any point leaves either the invisible temp or a
+// zero-magic final file — [`is_route_entry`] may list the latter, but every header read rejects
+// it (`BadMagic`), so it can never reach a catalog; [`Storage::is_aborted_commit`] identifies
+// exactly that signature so the boot sweep can reclaim the name.
+impl Storage {
+    /// `/routes`, created on demand — a virgin card must accept its first upload.
+    fn routes_dir_or_create(&mut self) -> Option<RawDirectory> {
+        if self.routes_dir.is_none() {
+            let _ = self.vmgr.make_dir_in_dir(self.root, "routes");
+            self.routes_dir = self.vmgr.open_dir(self.root, "routes").ok();
+        }
+        self.routes_dir
+    }
+
+    /// Visit every catalog file in `/routes` (side-loaded `.obcr` + uploaded `.OBR`).
+    pub fn for_each_route_file(&self, mut f: impl FnMut(&ShortFileName)) {
+        let Some(dir) = self.routes_dir else { return };
+        self.iter_dir_lfn(dir, |e, long| {
+            if is_route_entry(e, long) {
+                f(&e.name);
+            }
+        });
+    }
+
+    /// A stored route's byte length + the wire facts its `routeList` entry serves (S0 §7.4).
+    /// One header (+ v2 extension) read; `None` when the file doesn't parse as OBCR.
+    pub fn route_object_info(&self, name: &ShortFileName) -> Option<(u32, RouteObjectInfo)> {
+        let dir = self.routes_dir?;
+        let file = self.vmgr.open_file_in_dir(dir, name, Mode::ReadOnly).ok()?;
+        let len = self.vmgr.file_length(file).unwrap_or(0);
+        let info = RouteObjectInfo::read(&SdByteSource::new(&self.vmgr, file, len)).ok();
+        let _ = self.vmgr.close_file(file);
+        Some((len, info?))
+    }
+
+    /// Whether a catalog file is an **aborted commit** — the held-back magic still zeroed
+    /// because the commit's final patch never ran. Only that exact signature is sweepable; a
+    /// merely unreadable file (a transient bus glitch) must be kept.
+    pub fn is_aborted_commit(&self, name: &ShortFileName) -> bool {
+        let Some(dir) = self.routes_dir else { return false };
+        let Ok(file) = self.vmgr.open_file_in_dir(dir, name, Mode::ReadOnly) else {
+            return false;
+        };
+        let mut magic = [0u8; 4];
+        let zeroed = matches!(self.vmgr.read(file, &mut magic), Ok(4)) && magic == [0u8; 4];
+        let _ = self.vmgr.close_file(file);
+        zeroed
+    }
+
+    /// Delete a stored route file (the `deleteObject` command / a replace-upload's swap).
+    pub fn delete_route_file(&mut self, name: &ShortFileName) -> bool {
+        let Some(dir) = self.routes_dir else { return false };
+        self.vmgr.delete_file_in_dir(dir, name).is_ok()
+    }
+
+    /// Open (truncating) the upload temp for a fresh transfer, dropping any stale handle.
+    pub fn upload_begin(&mut self) -> bool {
+        self.upload_close();
+        let Some(dir) = self.routes_dir_or_create() else { return false };
+        match self.vmgr.open_file_in_dir(dir, UPLOAD_TMP, Mode::ReadWriteCreateOrTruncate) {
+            Ok(file) => {
+                self.open_upload = Some(file);
+                true
+            }
+            Err(e) => {
+                defmt::warn!("SD: cannot open upload temp: {}", defmt::Debug2Format(&e));
+                false
+            }
+        }
+    }
+
+    /// Re-open the temp to append a **resumed** upload (S0 §4.2). Succeeds only when the durable
+    /// byte count equals `offset` — the anchor the device reported — so a stale or foreign temp
+    /// can never be silently continued into a corrupt object (the whole-object CRC would catch
+    /// it at commit anyway; this fails the resume up front instead).
+    pub fn upload_resume(&mut self, offset: u32) -> bool {
+        self.upload_close();
+        let Some(dir) = self.routes_dir else { return false };
+        let Ok(file) = self.vmgr.open_file_in_dir(dir, UPLOAD_TMP, Mode::ReadWriteAppend) else {
+            return false;
+        };
+        if self.vmgr.file_length(file).unwrap_or(0) != offset {
+            let _ = self.vmgr.close_file(file);
+            return false;
+        }
+        self.open_upload = Some(file);
+        true
+    }
+
+    /// Append CoC payload bytes to the open temp.
+    pub fn upload_append(&mut self, bytes: &[u8]) -> bool {
+        let Some(file) = self.open_upload else { return false };
+        self.vmgr.write(file, bytes).is_ok()
+    }
+
+    /// Bytes durably in the temp — the `committed_offset` a drop reports (S0 §4.3).
+    pub fn upload_len(&self) -> u32 {
+        self.open_upload.and_then(|f| self.vmgr.file_length(f).ok()).unwrap_or(0)
+    }
+
+    /// Close the temp handle **keeping the bytes** — a CoC drop parks the partial for a resume.
+    pub fn upload_close(&mut self) {
+        if let Some(file) = self.open_upload.take() {
+            let _ = self.vmgr.flush_file(file);
+            let _ = self.vmgr.close_file(file);
+        }
+    }
+
+    /// Abort: close and delete the partial (S0 §4.2 op=3 — "drains and discards").
+    pub fn upload_abort(&mut self) {
+        if let Some(file) = self.open_upload.take() {
+            let _ = self.vmgr.close_file(file);
+        }
+        if let Some(dir) = self.routes_dir {
+            let _ = self.vmgr.delete_file_in_dir(dir, UPLOAD_TMP);
+        }
+    }
+
+    /// Promote the CRC-verified temp into the catalog (see the section doc for the power-cut
+    /// story). `replace` is the file the upload's object id already owns (deleted only *after*
+    /// the temp validated — a failed CRC/validation never touches the old copy); `None` picks a
+    /// free `RTnn.OBR`. Returns the final name + byte length + wire facts, or `None` with the
+    /// temp deleted (invalid payload) or kept (transient copy failure).
+    pub fn upload_commit(
+        &mut self,
+        replace: Option<&ShortFileName>,
+    ) -> Option<(ShortFileName, u32, RouteObjectInfo)> {
+        self.upload_close();
+        let dir = self.routes_dir?;
+
+        // Validate: the temp must parse as OBCR (magic/version/header) — the transfer CRC only
+        // proved the bytes match what the app sent, not that they are a route.
+        let src_file = self.vmgr.open_file_in_dir(dir, UPLOAD_TMP, Mode::ReadOnly).ok()?;
+        let len = self.vmgr.file_length(src_file).unwrap_or(0);
+        let info = RouteObjectInfo::read(&SdByteSource::new(&self.vmgr, src_file, len)).ok();
+        let Some(info) = info else {
+            let _ = self.vmgr.close_file(src_file);
+            let _ = self.vmgr.delete_file_in_dir(dir, UPLOAD_TMP);
+            defmt::warn!("SD: upload is not a valid OBCR — rejected");
+            return None;
+        };
+
+        // The final name: a replace reuses (and now frees) its object's file; fresh picks a slot.
+        let final_name = match replace {
+            Some(name) => {
+                let _ = self.vmgr.delete_file_in_dir(dir, name);
+                name.clone()
+            }
+            None => match self.free_upload_name(dir) {
+                Some(name) => name,
+                None => {
+                    let _ = self.vmgr.close_file(src_file);
+                    defmt::warn!("SD: no free upload slot (RT00-RT99 all taken)");
+                    return None;
+                }
+            },
+        };
+
+        // Copy temp → final, magic held back; patch it in as the commit point.
+        let copied = match self.vmgr.open_file_in_dir(dir, &final_name, Mode::ReadWriteCreateOrTruncate) {
+            Ok(dst_file) => {
+                let ok = self.copy_with_held_magic(src_file, dst_file, len);
+                let _ = self.vmgr.close_file(dst_file);
+                ok
+            }
+            Err(e) => {
+                defmt::warn!("SD: cannot create {}: {}", defmt::Debug2Format(&final_name), defmt::Debug2Format(&e));
+                false
+            }
+        };
+        let _ = self.vmgr.close_file(src_file);
+        if !copied {
+            // The final file (if any) still has a zero magic — invisible to catalogs, reclaimed
+            // by the boot sweep. Drop the temp too: a retry is a whole fresh upload.
+            let _ = self.vmgr.delete_file_in_dir(dir, UPLOAD_TMP);
+            return None;
+        }
+        let _ = self.vmgr.delete_file_in_dir(dir, UPLOAD_TMP);
+        defmt::info!("SD: route committed → routes/{} ({=u32} B)", defmt::Debug2Format(&final_name), len);
+        Some((final_name, len, info))
+    }
+
+    /// The commit's copy: `src[0..len]` → `dst` with bytes 0..4 (the OBCR magic) written as
+    /// zeros, then — after the body is flushed — patched to the real magic and flushed again.
+    /// True only when every step landed.
+    fn copy_with_held_magic(&self, src: RawFile, dst: RawFile, len: u32) -> bool {
+        if self.vmgr.file_seek_from_start(src, 0).is_err() {
+            return false;
+        }
+        let mut magic = [0u8; 4];
+        let mut buf = [0u8; 512];
+        let mut off: u32 = 0;
+        while off < len {
+            let want = ((len - off) as usize).min(buf.len());
+            let n = match self.vmgr.read(src, &mut buf[..want]) {
+                Ok(n) if n > 0 => n,
+                _ => return false,
+            };
+            if off == 0 {
+                // A validated OBCR header is ≥ 112 B, so the magic sits inside the first read.
+                magic.copy_from_slice(&buf[..4]);
+                buf[..4].fill(0);
+            }
+            if self.vmgr.write(dst, &buf[..n]).is_err() {
+                return false;
+            }
+            off += n as u32;
+        }
+        // Body durable (still invisible), then the one-write commit point.
+        self.vmgr.flush_file(dst).is_ok()
+            && self.vmgr.file_seek_from_start(dst, 0).is_ok()
+            && self.vmgr.write(dst, &magic).is_ok()
+            && self.vmgr.flush_file(dst).is_ok()
+    }
+
+    /// First confirmed-free `RTnn.OBR` (`00`–`99`) — the same confirmed-absent discipline as
+    /// [`unique_gpx`](Self::unique_gpx): only a proven-absent name is used, so a bus glitch can
+    /// never green-light overwriting a stored route.
+    fn free_upload_name(&self, dir: RawDirectory) -> Option<ShortFileName> {
+        for n in 0..100u8 {
+            let mut s: String<12> = String::new();
+            let _ = core::fmt::write(&mut s, format_args!("RT{:02}.OBR", n));
+            if self.name_is_free(dir, s.as_str()) {
+                return ShortFileName::create_from_str(s.as_str()).ok();
+            }
+        }
+        None
+    }
+
+    /// Open a stored route for a detail download (S0 §7.1: the OBCR bytes verbatim), returning
+    /// its byte length. Held in a slot separate from the ride's `open_route`.
+    pub fn open_object(&mut self, name: &ShortFileName) -> Option<u32> {
+        self.close_object();
+        let dir = self.routes_dir?;
+        let file = self.vmgr.open_file_in_dir(dir, name, Mode::ReadOnly).ok()?;
+        let len = self.vmgr.file_length(file).unwrap_or(0);
+        self.open_object = Some((file, len));
+        Some(len)
+    }
+
+    /// A [`ByteSource`](obc_route::ByteSource) over the open object — the CRC pre-pass and the
+    /// chunked sends both read through it.
+    pub fn object_source(&self) -> Option<SdByteSource<'_, Sd, NullTime>> {
+        self.open_object.map(|(f, len)| SdByteSource::new(&self.vmgr, f, len))
+    }
+
+    /// Close the detail-download handle (transfer done, aborted, or superseded).
+    pub fn close_object(&mut self) {
+        if let Some((file, _)) = self.open_object.take() {
+            let _ = self.vmgr.close_file(file);
+        }
+    }
+}
+
 /// Largest collision counter [`Storage::unique_gpx`] tries for a repeat save of the same route
 /// name: `BASE01`…`BASE99`, so up to **100 distinct GPX files** per route name (the un-suffixed
 /// `BASE.GPX` plus 99 numbered). Past that the ride is kept as the temp `.obct` rather than
 /// risking an overwrite — generous enough that the bound is never hit in practice (a route
 /// re-ridden 100 times with none of the saves ever cleared off the card).
 const GPX_COLLISION_MAX: u8 = 99;
+
+/// Whether a `/routes` directory entry belongs to the route catalog: a side-loaded `.obcr`
+/// (long-filename match, as ever) **or** a BLE-uploaded `*.OBR` (A6). Uploads get plain 8.3
+/// names because embedded-sdmmc creates short names only — the 4-char `.obcr` extension needs
+/// an LFN it can't write — so the catalog accepts the dedicated 3-char twin. Dot-prefixed
+/// clutter is excluded on both arms (an AppleDouble `._x.OBR` also fails the header read at
+/// scan, but why open it at all).
+fn is_route_entry(e: &embedded_sdmmc::DirEntry, long: Option<&str>) -> bool {
+    if e.attributes.is_directory() {
+        return false;
+    }
+    long_has_ext(long, b".obcr") || (e.name.extension() == b"OBR" && !long.is_some_and(|n| n.starts_with('.')))
+}
 
 /// Whether a directory entry's **long** name ends with `ext` (e.g. `b".obcr"`, case-
 /// insensitive) and isn't a dot-prefixed file (macOS `._*` AppleDouble / `.DS_Store`). The long
