@@ -158,6 +158,29 @@ public enum OBCFormat {
         return "\(rideDay(date, relativeTo: now, calendar: calendar, locale: locale)), \(time)"
     }
 
+    // ------------------------------------------------------------- transfers (B5/B7)
+
+    /// "2.3" from bytes — plain-English megabytes, one decimal (pair with "MB").
+    public static func megabytesValue(_ bytes: Int, locale: Locale = .current) -> String {
+        let formatter = numberFormatter(locale: locale)
+        formatter.maximumFractionDigits = 1
+        formatter.minimumFractionDigits = 1
+        let mb = Double(max(0, bytes)) / 1_000_000
+        return formatter.string(from: NSNumber(value: mb)) ?? "\(mb)"
+    }
+
+    /// The upload sheet's size readout: "1.4 / 2.3 MB · route + waypoints"
+    /// (design F) — never raw byte counts.
+    public static func transferSizeLine(
+        bytesDone: Int,
+        totalBytes: Int,
+        hasWaypoints: Bool,
+        locale: Locale = .current
+    ) -> String {
+        let counts = "\(megabytesValue(bytesDone, locale: locale)) / \(megabytesValue(totalBytes, locale: locale)) MB"
+        return "\(counts) · \(hasWaypoints ? "route + waypoints" : "route")"
+    }
+
     private static func numberFormatter(locale: Locale) -> NumberFormatter {
         let formatter = NumberFormatter()
         formatter.locale = locale

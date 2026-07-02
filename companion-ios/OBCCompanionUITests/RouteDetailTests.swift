@@ -123,15 +123,8 @@ final class RouteDetailTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Sugar River Trail"].exists, "other rows must survive")
     }
 
-    /// Upload opens the (B5-placeholder) sheet.
-    @MainActor
-    func testUploadOpensTheSheetSeam() {
-        let app = launch()
-        openPlannedDetail(app)
-
-        app.buttons["detail.upload"].tap()
-        XCTAssertTrue(app.staticTexts["uploadPlaceholder"].waitForExistence(timeout: 5), "B5 sheet seam missing")
-    }
+    // The upload action's sheet is B5's — covered end to end in
+    // `UploadSheetTests` (F / F₂ / interrupted / cancel / E1 save-on-upload).
 
     // MARK: E3 · tracked
 
