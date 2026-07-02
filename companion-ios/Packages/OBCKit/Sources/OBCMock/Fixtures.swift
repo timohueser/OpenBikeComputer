@@ -110,15 +110,32 @@ extension FixtureSet {
     )
 }
 
-/// The bundled sample route file the `-OBCImportSample` launch hook feeds the
-/// import path — a real Komoot GPX (Schwarzwald tour, downsampled) so E1 demos
-/// and XCUITests exercise the same decoder a Files pick does.
+/// The bundled sample route files the `-OBCImportSample` launch hook feeds the
+/// import path, so E1/H4/H5 demos and XCUITests exercise the same decoder a
+/// Files pick does. `gpx` is a real Komoot export (Schwarzwald tour,
+/// downsampled), `tcx` a Garmin-style course (Alpe d'Huez), and `bad` the
+/// design's I2 impostor — a PDF name over non-route bytes, for H5.
 public enum SampleRouteFile {
-    public static let fileExtension = "gpx"
+    /// Raw values are the `-OBCImportSample <kind>` launch tokens.
+    public enum Kind: String, Sendable {
+        case gpx, tcx, bad
+    }
 
-    public static func data() -> Data? {
-        Bundle.module.url(forResource: "sample-import", withExtension: "gpx")
-            .flatMap { try? Data(contentsOf: $0) }
+    public static func fileName(_ kind: Kind = .gpx) -> String {
+        switch kind {
+        case .gpx, .tcx: "sample-import.\(kind.rawValue)"
+        case .bad: "packing-list.pdf"
+        }
+    }
+
+    public static func data(_ kind: Kind = .gpx) -> Data? {
+        switch kind {
+        case .gpx, .tcx:
+            Bundle.module.url(forResource: "sample-import", withExtension: kind.rawValue)
+                .flatMap { try? Data(contentsOf: $0) }
+        case .bad:
+            Data("socks · stove · sleeping bag — definitely not a route\n".utf8)
+        }
     }
 }
 

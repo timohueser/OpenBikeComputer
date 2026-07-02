@@ -63,13 +63,13 @@ struct OBCCompanionApp: App {
         return BLETransport()
     }
 
-    /// The `-OBCImportSample` hook (B4): hand the bundled sample GPX to the
-    /// import path at launch, exactly as a Files pick would — E1 XCUITests and
-    /// demos run the real decoder. Debug-only, like every launch arg.
+    /// The `-OBCImportSample [gpx|tcx|bad]` hook: hand a bundled sample file to
+    /// the import path at launch, exactly as a Files pick would — the E1/H4/H5
+    /// XCUITests and demos run the real decoders. Debug-only, like every launch arg.
     static func launchImport() -> (data: Data, fileName: String)? {
         #if DEBUG
-        guard launchOptions.importSample else { return nil }
-        return SampleRouteFile.data().map { ($0, "sample-import.\(SampleRouteFile.fileExtension)") }
+        guard let kind = launchOptions.importSample else { return nil }
+        return SampleRouteFile.data(kind).map { ($0, SampleRouteFile.fileName(kind)) }
         #else
         return nil
         #endif

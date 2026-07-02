@@ -144,7 +144,12 @@ public final class MainScreenModel {
                 async let ridesRead = transport.listRides()
                 let (routes, rides) = try await (routesRead, ridesRead)
                 guard !Task.isCancelled else { return }
-                self.routes = routes
+                // Session-imported routes the device doesn't have yet (H4:
+                // saved before/without a device) survive the device read.
+                let imported = self.routes.filter { summary in
+                    importedDetails[summary.id] != nil && !routes.contains { $0.id == summary.id }
+                }
+                self.routes = imported + routes
                 self.rides = rides
                 loadState = .loaded
             } catch {

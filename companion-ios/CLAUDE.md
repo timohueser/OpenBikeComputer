@@ -32,12 +32,16 @@ companion-ios/
     OBCCompanionApp.swift      @main; the one place that picks a DeviceTransport
     RootView.swift             launch gate (B2) + the main screen's NavigationStack
                                (B3) + the B4 detail routing and the import edge
-                               (RouteImporter → E1 cover); the detail/landing hosts
-                               present the B5 upload sheet (upload from E1 also
-                               saves — "Uploading saves it too")
-    Info.plist                 NSBluetoothAlwaysUsageDescription + the GPX
-                               document type (share sheet / "open with OBC" →
-                               RootView.onOpenURL → E1; TCX joins with B6)
+                               (RouteImporter → E1 cover + the H5 alert, hung
+                               OUTSIDE the launch gate so a share arriving before
+                               pairing presents over D1 with the H4 framing); the
+                               detail/landing hosts present the B5 upload sheet
+                               (upload from E1 also saves — "Uploading saves it too")
+    Info.plist                 NSBluetoothAlwaysUsageDescription + the GPX/TCX
+                               document types (share sheet / "open with OBC" →
+                               RootView.onOpenURL → E1 — this IS the B6 share
+                               entry; no Share Extension target, it would only
+                               add value for non-file shares)
     Assets.xcassets            AppIcon (empty) + AccentColor (= --forest)
   Packages/
     OBCKit/                    local SwiftPM package — builds/tests WITHOUT the app
@@ -56,7 +60,8 @@ companion-ios/
                                **CoreBluetooth lives ONLY here.**
         OBCFormats/            interchange file formats (phone-side edge):
                                RouteFileDecoder + RouteImporter with GPXRouteDecoder
-                               (landed with B4; TCX + share sheet = B6),
+                               + TCXRouteDecoder (B6; shared WaypointPlacement
+                               projects file waypoints into ride order),
                                RideFileEncoder + RideExporter (ride export, B7).
                                Registries over the canonical ImportedRoute / Ride.
         OBCMock/       #DEBUG   MockTransport + MockControl + Scenario presets +
@@ -309,8 +314,9 @@ RootView(transport: MockTransport(scenario: .outOfRange))   // or: control.apply
 | `unsupportedFile` | H5 |
 
 `loadFixtures("empty" | "large")` swaps the library (S1 / search). `unsupportedFile`
-(H5) and `syncUpToDate` (H9) are pure UI-layer states — their preset is a happy link
-and the UI branches on `scenario`; the rest are transport-driven.
+(H5) and `syncUpToDate` (H9) are pure UI-layer states with a happy-link preset —
+H5 is actually raised by feeding a non-route file to the import edge
+(`-OBCImportSample bad`); the rest are transport-driven.
 
 Each preset also carries a **bond bit** (`ScenarioPreset.bonded`, served through
 `MockBondStore` → the B2 launch branch): the pairing-family scenarios
@@ -335,7 +341,7 @@ crash. Env fallbacks in parentheses apply when the argument is absent.
 | `-OBCTransport ble` (`OBC_TRANSPORT`) | `ble` / `mock` | force the real `BLETransport` (device only) |
 | `-OBCShowDevPanel` (`OBC_SHOW_DEV_PANEL=1`) | flag | present the dev panel at launch |
 | `-OBCShowUIGallery` (`OBC_SHOW_UI_GALLERY=1`) | flag | present the B11 component gallery at launch |
-| `-OBCImportSample` (`OBC_IMPORT_SAMPLE=1`) | flag | boot into the E1 import landing with the bundled sample GPX (`OBCMock/Fixtures/sample-import.gpx`, a real Komoot export) through the real decoder |
+| `-OBCImportSample [kind]` (`OBC_IMPORT_SAMPLE=1` or a kind) | bare flag = `gpx`; or `gpx` / `tcx` / `bad` | feed a bundled sample file to the import path at launch through the real decoders: `gpx` (`OBCMock/Fixtures/sample-import.gpx`, a real Komoot export) / `tcx` (`sample-import.tcx`, a Garmin-style course) land on E1 — or H4 when unpaired; `bad` (a fake `packing-list.pdf`) raises H5 |
 
 ### Dev control panel + HUD (Debug only)
 
@@ -355,10 +361,11 @@ argument and checks the tag (plus fixture-name, connection-override, and
 panel-presentation smoke tests); `PairingFlowTests` walks the B2 launch/pairing
 flow end to end per scenario, `MainScreenTests` walks the B3 main-screen
 states (C1/C2, SYNC, S4, H6, H11→H1), `RouteDetailTests` walks the B4
-detail dressings (E2/E3/W1/H12/H1 + E1 via `-OBCImportSample`), and
+detail dressings (E2/E3/W1/H12/H1 + E1 via `-OBCImportSample`),
 `UploadSheetTests` walks the B5 sheet (F/F₂, `uploadDrop` → resume, cancel,
-E1 upload-saves) — all attach a screenshot of each design screen to the
-result bundle. Run them with
+E1 upload-saves), and `ImportTests` walks B6 (TCX → E1/W1, `bad` → H5,
+`noDevice` + import → H4 incl. pairing through to the Planned list) — all
+attach a screenshot of each design screen to the result bundle. Run them with
 `test_sim {}` / `xcodebuild test`. The B3 landing anchor the pairing tests wait
 for is `main.screen`; the detail anchor is `detail.screen` (⚠️ it sits on a
 ScrollView, so query it with `descendants(matching: .any)`, not `otherElements`).
