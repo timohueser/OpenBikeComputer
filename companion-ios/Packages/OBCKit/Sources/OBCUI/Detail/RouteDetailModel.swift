@@ -10,10 +10,12 @@ import OBCTransport
 ///   • `.tracked`  — E3, a device-recorded ride from the Tracked list
 ///   • `.imported` — E1, the landing for a just-parsed route file
 ///
-/// Planned/tracked render their list summary immediately and fill in waypoints
-/// + elevation when `routeDetail`/`rideDetail` land (a failed detail read
-/// degrades quietly — the summary stats never depend on it). Imported computes
-/// everything up front from the parsed geometry (`RouteStats`).
+/// Planned routes are **library-first** (#289): the waypoints + profile come in
+/// as `preloadedDetail`, derived from the saved record's own geometry — E2
+/// never asks the device for a route the phone already holds. Tracked renders
+/// its summary immediately and fills the profile when `rideDetail` lands (a
+/// failed read degrades quietly). Imported computes everything up front from
+/// the parsed geometry (`RouteStats`).
 @MainActor @Observable
 public final class RouteDetailModel {
     /// Which of the three design dressings this instance wears.
@@ -50,9 +52,9 @@ public final class RouteDetailModel {
     private var importedStats: RouteStats?
     /// The canonical geometry an upload encodes to OBCR. The imported dressing
     /// carries its own; a planned route's is threaded from the library (the device
-    /// wire blob is re-encoded from it, per the B1S format rule). `nil` for a
-    /// device-only planned route with no app-side geometry — it's already on the
-    /// device, so the upload affordance reads "Uploaded" rather than re-pushing.
+    /// wire blob is re-encoded from it, per the B1S format rule). Planned routes
+    /// are library-first (#289), so this is always present where Upload shows;
+    /// a defensive `nil` yields an empty payload the transports reject loudly.
     @ObservationIgnored private let uploadGeometry: ImportedRoute?
     /// The device object id to replace on upload — non-nil when re-uploading a
     /// route already on the device (an edited Komoot re-import, or a planned
@@ -104,7 +106,6 @@ public final class RouteDetailModel {
                 waypoints = detail.waypoints
                 elevationProfile = detail.elevationProfile
                 maxGradePercent = detail.maxGradePercent
-                started = true  // nothing left to fetch
             }
 
         case .tracked(let ride):
@@ -131,26 +132,21 @@ public final class RouteDetailModel {
         }
     }
 
-    /// Fetch the detail read for planned/tracked (call once, from `.task`).
-    /// Imported already has everything; failures degrade quietly.
+    /// Fetch the tracked dressing's detail read (call once, from `.task`);
+    /// failures degrade quietly. Planned and imported already have everything —
+    /// planned from its library record (`preloadedDetail`), imported from the
+    /// parsed geometry.
     public func start() {
         guard !started else { return }
         started = true
         switch dressing {
-        case .planned(let route):
-            Task { [transport] in
-                guard let detail = try? await transport.routeDetail(route.id) else { return }
-                waypoints = detail.waypoints
-                elevationProfile = detail.elevationProfile
-                maxGradePercent = detail.maxGradePercent
-            }
+        case .planned, .imported:
+            break
         case .tracked(let ride):
             Task { [transport] in
                 guard let detail = try? await transport.rideDetail(ride.id) else { return }
                 elevationProfile = detail.elevationProfile
             }
-        case .imported:
-            break
         }
     }
 
@@ -247,8 +243,8 @@ public final class RouteDetailModel {
     /// The `RouteBlob` the upload sheet (B5) sends — the current name + waypoints
     /// over the **real OBCR v2 payload** the device stores verbatim and rides
     /// (`RouteObjectCodec`, spec §7.1). The geometry is the imported route's (E1)
-    /// or the library's for a planned route; a device-only planned route with no
-    /// app-side geometry sends nothing (it's already on the device).
+    /// or the library record's for a planned route (#289: every planned row is a
+    /// library save, so it's always there).
     public func makeUploadBlob() -> RouteBlob {
         let summary: RouteSummary
         switch dressing {

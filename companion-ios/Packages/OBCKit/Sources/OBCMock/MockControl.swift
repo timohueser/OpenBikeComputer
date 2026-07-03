@@ -55,7 +55,7 @@ public final class MockControl: @unchecked Sendable {
     private var _dropFraction: Double?
     private var _fixtures: FixtureSet
     /// Monotonic stand-in for the device's object-id assignment on upload — starts
-    /// above the fixture ids' (slug) range so it can't collide.
+    /// above every fixture `deviceObjectID` so a fresh id can't collide.
     private var _nextObjectID: UInt16 = 1000
 
     /// Build from a named `Scenario`, loading its fixture set and applying its knobs.
@@ -204,12 +204,21 @@ public final class MockControl: @unchecked Sendable {
         }
     }
 
-    // MARK: Full-object access (mock helper, not part of DeviceTransport)
+    // MARK: Library seeding (composition root + tests)
 
-    /// The full `RouteBlob` (summary + waypoints + a synthesized payload) for a
-    /// fixture route — what an on-device route detail / upload flow needs.
-    public func routeBlob(for id: RouteID) -> RouteBlob? {
-        lock.withLocked { _fixtures.routes.first { $0.summary.id == id } }?.blob()
+    /// Write the fixture routes into `store` as library records (B1S) — the
+    /// Planned list is library-first (#289), so a scenario's routes exist as
+    /// phone-side saves, with `deviceObjectID` marking the ones the mock device
+    /// also holds. Descending `addedAt` keeps the fixture order in the list.
+    /// Idempotent: ids already in the store are left untouched (a "relaunch"
+    /// over the same store must not reshuffle what the user saved since).
+    public func seedLibrary(into store: any LibraryStore) {
+        let existing = Set(store.plannedRoutes().map(\.id))
+        let routes = lock.withLocked { _fixtures.routes }
+        let base = Date()
+        for (index, entry) in routes.enumerated() where !existing.contains(entry.summary.id) {
+            store.savePlannedRoute(entry.record(addedAt: base.addingTimeInterval(-Double(index))))
+        }
     }
 
     // MARK: Transport-facing helpers (module-internal — MockTransport delegates here)
@@ -256,27 +265,52 @@ public final class MockControl: @unchecked Sendable {
         }
     }
 
-    /// Remove a route from the fixture set (H11 swipe-to-delete persists).
-    func removeRoute(_ id: RouteID) {
-        lock.withLocked { _fixtures.routes.removeAll { $0.summary.id == id } }
+    /// The device's route catalog — the fixture routes it holds a copy of
+    /// (`deviceObjectID != nil`), under **device-namespace ids** (the decimal
+    /// object id), exactly the shape the real `routeList` download produces.
+    /// The app consumes this only to reconcile the "on device" badge (#289) —
+    /// never as list rows.
+    func deviceRoutes() -> [RouteSummary] {
+        lock.withLocked { _fixtures.routes }.compactMap { entry -> RouteSummary? in
+            guard let objectID = entry.deviceObjectID else { return nil }
+            return RouteSummary(
+                id: RouteID(String(objectID)), name: entry.summary.name,
+                distanceMeters: entry.summary.distanceMeters,
+                elevationGainMeters: entry.summary.elevationGainMeters,
+                pointCount: entry.summary.pointCount
+            )
+        }
     }
 
-    /// Begin a throughput-paced simulated upload of `total` bytes. Returns an
-    /// immediately-finished handle if the link is down (H4). Consumes an armed
-    /// drop-fraction (or a pending failure → immediate drop).
-    func beginTransfer(total: Int) -> TransferHandle {
-        if connection == .disconnected { return .immediatelyFinished(.failed(.notConnected)) }
-        return startTransfer(total: total, segments: [], rides: nil)
+    /// The stored copy behind a device-namespace id (`routeDetail` on the mock).
+    func deviceRouteEntry(_ id: RouteID) -> RouteEntry? {
+        guard let objectID = UInt16(id.rawValue) else { return nil }
+        return lock.withLocked { _fixtures.routes.first { $0.deviceObjectID == objectID } }
+    }
+
+    /// Delete a stored route by its device-namespace id (the `deleteObject`
+    /// command): the device forgets its copy — the library record (and its list
+    /// row) is the app's own business.
+    func removeRoute(_ id: RouteID) {
+        guard let objectID = UInt16(id.rawValue) else { return }
+        lock.withLocked {
+            for index in _fixtures.routes.indices where _fixtures.routes[index].deviceObjectID == objectID {
+                _fixtures.routes[index].deviceObjectID = nil
+            }
+        }
     }
 
     /// Begin a simulated route upload. On commit it reports a device object id (a
     /// fresh monotonic id, or the `targetObjectID` when replacing) so the app can
-    /// record the route as on-device. Paced over a **design-scale fiction**
-    /// (≈37 B/m), decoupled from the real OBCR payload — a real route is only a few
-    /// kB and its F screen would flash by; the device's realism is timing + faults,
-    /// not wire bytes (the same reason ride downloads pace off `downloadByteCount`).
+    /// record the route as on-device — and the fixture set records the copy, so a
+    /// later `listRoutes()` reconcile keeps the badge lit. Paced over a
+    /// **design-scale fiction** (≈37 B/m), decoupled from the real OBCR payload —
+    /// a real route is only a few kB and its F screen would flash by; the mock's
+    /// realism is timing + faults, not wire bytes (the same reason ride downloads
+    /// pace off `downloadByteCount`).
     func beginRouteUpload(_ blob: RouteBlob) -> TransferHandle {
         if connection == .disconnected { return .immediatelyFinished(.failed(.notConnected)) }
+        if blob.payload.isEmpty { return .immediatelyFinished(.failed(.transferRejected)) }
         let assignedID = AsyncPromise<UInt16?>()
         // Whichever is larger: an explicit test payload, or the design-scale
         // minimum from the route length (so a real few-kB OBCR still paces long
@@ -288,8 +322,35 @@ public final class MockControl: @unchecked Sendable {
             _nextObjectID &+= 1
             return id
         }
-        Task { assignedID.fulfill(await handle.outcome == .completed ? objectID : nil) }
+        Task { [weak self] in
+            guard await handle.outcome == .completed else {
+                assignedID.fulfill(nil)
+                return
+            }
+            self?.recordDeviceCopy(of: blob, objectID: objectID)
+            assignedID.fulfill(objectID)
+        }
         return handle
+    }
+
+    /// A committed upload landed on the (mock) device: remember the copy in the
+    /// fixture set — replacing the entry that already owns `objectID`, or the
+    /// library twin of the same route, before appending a new device-only entry.
+    private func recordDeviceCopy(of blob: RouteBlob, objectID: UInt16) {
+        lock.withLocked {
+            if let index = _fixtures.routes.firstIndex(where: {
+                $0.deviceObjectID == objectID || $0.summary.id == blob.summary.id
+            }) {
+                _fixtures.routes[index].summary = blob.summary
+                _fixtures.routes[index].waypoints = blob.waypoints
+                _fixtures.routes[index].deviceObjectID = objectID
+            } else {
+                _fixtures.routes.append(RouteEntry(
+                    summary: blob.summary, waypoints: blob.waypoints,
+                    payloadByteCount: max(1, blob.payload.count), deviceObjectID: objectID
+                ))
+            }
+        }
     }
 
     /// Begin a simulated ride download: one paced batch whose fixture rides land

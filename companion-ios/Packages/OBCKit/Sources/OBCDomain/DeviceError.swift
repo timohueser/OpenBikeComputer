@@ -29,8 +29,12 @@ public enum DeviceError: Error, Equatable, Sendable {
     case readFailed
     /// A control-plane write failed (e.g. `writeConfig`).
     case writeFailed
-    /// A bulk transfer dropped mid-flight; resumable from `TransferProgress.offset`.
+    /// A bulk transfer dropped mid-flight; the whole object is re-sent /
+    /// re-requested (transfers restart, not resume).
     case transferDropped
+    /// The device answered a transfer with a terminal reject (`error` /
+    /// `notFound` / `busy`, spec §4.3) — nothing was committed.
+    case transferRejected
     /// A received object failed CRC validation before commit (see `OBCProtocol.md`
     /// → *CoC framing*). The object is rejected, never committed.
     case crcMismatch

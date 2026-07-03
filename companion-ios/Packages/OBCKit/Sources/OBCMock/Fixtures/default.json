@@ -12,6 +12,7 @@
   "routes": [
     {
       "id": "kettle-moraine-loop",
+      "deviceObjectID": 7,
       "name": "Kettle Moraine Loop",
       "distanceMeters": 62400,
       "elevationGainMeters": 840,
@@ -40,6 +41,7 @@
     },
     {
       "id": "sugar-river-trail",
+      "deviceObjectID": 12,
       "name": "Sugar River Trail",
       "distanceMeters": 38100,
       "elevationGainMeters": 210,

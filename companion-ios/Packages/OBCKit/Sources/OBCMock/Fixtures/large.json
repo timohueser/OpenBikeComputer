@@ -15,6 +15,7 @@
   "routes": [
     {
       "id": "lib-00-kettle-moraine-loop",
+      "deviceObjectID": 100,
       "name": "Kettle Moraine Loop",
       "distanceMeters": 119000,
       "elevationGainMeters": 840,
@@ -144,6 +145,7 @@
     },
     {
       "id": "lib-03-devils-lake-overnighter",
+      "deviceObjectID": 101,
       "name": "Devil's Lake Overnighter",
       "distanceMeters": 59000,
       "elevationGainMeters": 949,
@@ -321,6 +323,7 @@
     },
     {
       "id": "lib-06-ice-age-trail-sampler",
+      "deviceObjectID": 102,
       "name": "Ice Age Trail Sampler",
       "distanceMeters": 106000,
       "elevationGainMeters": 681,
@@ -470,6 +473,7 @@
     },
     {
       "id": "lib-09-elroy-sparta-tunnels",
+      "deviceObjectID": 103,
       "name": "Elroy-Sparta Tunnels",
       "distanceMeters": 82000,
       "elevationGainMeters": 765,
@@ -615,6 +619,7 @@
     },
     {
       "id": "lib-12-yellowstone-lake-loop",
+      "deviceObjectID": 104,
       "name": "Yellowstone Lake Loop",
       "distanceMeters": 78000,
       "elevationGainMeters": 1604,
@@ -764,6 +769,7 @@
     },
     {
       "id": "lib-15-mount-horeb-meander",
+      "deviceObjectID": 105,
       "name": "Mount Horeb Meander",
       "distanceMeters": 70000,
       "elevationGainMeters": 760,
@@ -897,6 +903,7 @@
     },
     {
       "id": "lib-18-badger-state-trail",
+      "deviceObjectID": 106,
       "name": "Badger State Trail",
       "distanceMeters": 75000,
       "elevationGainMeters": 1160,
@@ -1046,6 +1053,7 @@
     },
     {
       "id": "lib-21-driftless-dawn-patrol",
+      "deviceObjectID": 107,
       "name": "Driftless Dawn Patrol",
       "distanceMeters": 86000,
       "elevationGainMeters": 390,

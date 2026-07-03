@@ -63,6 +63,14 @@ public final class L2CAPByteChannel: NSObject, ByteChannel, StreamDelegate, @unc
         }
     }
 
+    /// Whether the channel can still move bytes — `BLETransport` checks this to
+    /// decide between reusing the CoC and re-opening it (after a teardown/drop).
+    public var isOpen: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return !closed && !failed
+    }
+
     // MARK: ByteChannel
 
     public func write(_ data: Data) async throws {

@@ -14,12 +14,23 @@ import OBCTransport
 /// payload decodes through `RideObjectCodec` into the canonical `Ride`
 /// and persists at once, so a drop mid-batch keeps what arrived (H10) by
 /// construction. A drop surfaces as `syncInterruption` ("Got 2 of 5 rides." +
-/// Resume); `resumeSync()` continues the same transfer from its last committed
-/// offset — the stalled ride stream picks up where it left off.
+/// Resume); `resumeSync()` restarts the stalled batch at **whole-ride
+/// granularity** — rides that fully landed stay, the rest are re-sent whole
+/// (transfers restart, not resume — the spec's principle 4).
 ///
-/// **Library rule (B1S):** the lists read the store first, then reconcile with
-/// the device — the store is why S4 degrades to a banner over browsable
-/// content instead of emptying, and why an H4 import survives a relaunch.
+/// **The lists' two sources of truth (#289):**
+/// - **Planned routes are library-first.** The list shows exactly the phone's
+///   saved routes; `listRoutes()` (the device catalog, device-namespace ids) is
+///   consulted *only* to reconcile each record's `deviceObjectID` — lighting
+///   and clearing the C1 "on device" badge — never to add rows. A route that
+///   exists only on the device (another phone's upload, a side-loaded file)
+///   isn't the app's to manage and never appears.
+/// - **Rides are device-first**: the device's list merged over the library's
+///   archive (the phone keeps rides the device no longer holds), minus
+///   phone-side tombstones.
+///
+/// That split is also why S4 degrades to a banner over browsable content
+/// instead of emptying, and why an H4 import survives a relaunch.
 @MainActor @Observable
 public final class MainScreenModel {
     /// The Planned | Tracked segmented split.
@@ -163,7 +174,7 @@ public final class MainScreenModel {
         rideRecords = Dictionary(uniqueKeysWithValues: storedRides.map { ($0.id, $0) })
         syncedRideIDs = library.syncedRideIDs()
         deletedRideIDs = library.deletedRideIDs()
-        routes = planned.map(\.summary)
+        routes = plannedList()
         rides = storedRides.map(\.summary)
 
         streamTasks.append(Task { [transport] in
@@ -191,27 +202,40 @@ public final class MainScreenModel {
             do {
                 async let routesRead = transport.listRoutes()
                 async let ridesRead = transport.listRides()
-                let (routes, rides) = try await (routesRead, ridesRead)
+                let (deviceRoutes, deviceRides) = try await (routesRead, ridesRead)
                 guard !Task.isCancelled else { return }
-                // Library-saved routes the device doesn't have yet (H4: saved
-                // before/without a device) stay listed above the device's. The
-                // "on device" badge is driven by each record's stored
-                // `deviceObjectID` (set when an upload commits), not by matching
-                // this list — a library id and a device object id can't match
-                // across the BLE boundary. (Reconciling the badge against the live
-                // list — clearing it on a device-side delete — is a follow-up.)
-                let onDevice = Set(routes.map(\.id))
-                let phoneOnly = plannedRecords.values
-                    .filter { !onDevice.contains($0.id) }
-                    .sorted { $0.addedAt > $1.addedAt }
-                self.routes = phoneOnly.map(\.summary) + routes
-                self.rides = merged(deviceRides: rides)
+                // Planned stays library-only (#289) — the device catalog only
+                // reconciles each record's on-device link (badge on AND off).
+                reconcileOnDevice(with: deviceRoutes)
+                routes = plannedList()
+                rides = merged(deviceRides: deviceRides)
                 loadState = .loaded
             } catch {
                 guard !Task.isCancelled else { return }
                 loadState = .failed
             }
         }
+    }
+
+    /// True-up every record's `deviceObjectID` against the device's live catalog
+    /// (device-namespace ids): a copy deleted out from under us (another phone,
+    /// the EchoHarness) clears the badge; a record whose id is still listed keeps
+    /// it. Ids are durable across device reboots (spec §4.1), so absence really
+    /// means "gone", not "renumbered".
+    private func reconcileOnDevice(with deviceRoutes: [RouteSummary]) {
+        let onDevice = Set(deviceRoutes.compactMap { UInt16($0.id.rawValue) })
+        for (id, var record) in plannedRecords {
+            guard let objectID = record.deviceObjectID, !onDevice.contains(objectID) else { continue }
+            record.deviceObjectID = nil
+            plannedRecords[id] = record
+            library.savePlannedRoute(record)
+        }
+        uploadedRouteIDs = Set(plannedRecords.values.filter(\.uploadedToDevice).map(\.id))
+    }
+
+    /// The Planned rows: the library's records, newest first.
+    private func plannedList() -> [RouteSummary] {
+        plannedRecords.values.sorted { $0.addedAt > $1.addedAt }.map(\.summary)
     }
 
     // MARK: Sync (the SYNC button)
@@ -229,9 +253,10 @@ public final class MainScreenModel {
         syncTask = Task { await runSync() }
     }
 
-    /// H10's Resume: continue the dropped download from its last committed
-    /// offset. The consuming loop never stopped — it's awaiting the stalled
-    /// stream — so rides simply start landing again.
+    /// H10's Resume: restart the dropped batch at whole-ride granularity —
+    /// rides that fully landed stay landed, the interrupted one is re-sent from
+    /// its start. The consuming loop never stopped (it's awaiting the stalled
+    /// stream), so rides simply start landing again.
     public func resumeSync() {
         guard let interruption = syncInterruption, let download = activeDownload else { return }
         syncInterruption = nil
@@ -263,8 +288,8 @@ public final class MainScreenModel {
             syncProgress = SyncProgress(done: 0, total: fresh.count)
             let download = transport.downloadRides(fresh.map(\.id))
             activeDownload = download
-            // A drop stalls the download streams open at their last committed
-            // offset (that's what makes them resumable). Watch the link and
+            // A drop stalls the download streams open (that's what makes the
+            // batch restartable, whole rides at a time). Watch the link and
             // surface H10 with what landed; the loop below just keeps awaiting
             // the stalled stream until Resume — or a new sync — moves things.
             // Held locally too: a superseded task must cancel ITS watch, never
@@ -350,16 +375,15 @@ public final class MainScreenModel {
 
     // MARK: Delete (H11 → H1, post-confirm)
 
-    /// Remove a planned route — optimistic locally (list + library), then on
-    /// the device.
+    /// Remove a planned route from the phone (list + library). **Never** from
+    /// the device — H1's promise is "If it's already on the device, it stays
+    /// there", mirroring the ride rule in reverse (each side keeps its own
+    /// copies; the record and its badge die with the library entry).
     public func deleteRoute(_ id: RouteID) {
         routes.removeAll { $0.id == id }
         plannedRecords[id] = nil
         uploadedRouteIDs.remove(id)
         library.deletePlannedRoute(id)
-        Task { [transport] in
-            try? await transport.deleteRoute(id)
-        }
     }
 
     /// Remove a tracked ride from the phone (list + library) — **never** from

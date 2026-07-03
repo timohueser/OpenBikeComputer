@@ -31,12 +31,16 @@ final class MockTransportTests: XCTestCase {
         XCTAssertEqual(info, custom)
     }
 
-    func testListsRoutesAndRidesFromDefaultFixtures() async throws {
+    func testListsTheDeviceHeldRoutesUnderDeviceNamespaceIDs() async throws {
+        // `listRoutes` is the device's catalog (reconcile input, #289): exactly
+        // the fixture routes with a `deviceObjectID`, listed under that id —
+        // never the whole library.
         let transport = MockTransport(control: fastControl())
         let routes = try await transport.listRoutes()
-        let rides = try await transport.listRides()
+        XCTAssertEqual(Set(routes.map(\.id.rawValue)), ["7", "12"])
         XCTAssertTrue(routes.contains { $0.name == "Kettle Moraine Loop" })
-        XCTAssertEqual(routes.count, 5)
+
+        let rides = try await transport.listRides()
         XCTAssertTrue(rides.contains { $0.name == "Sunday Coffee Spin" })
         XCTAssertEqual(rides.count, 4)
     }

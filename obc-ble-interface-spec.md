@@ -34,15 +34,18 @@ binary test vectors pinning these layouts live in
    OBCR v2 bytes and is written to SD verbatim; a ride crosses as the compact
    ride object (§7.2). The phone does all format conversion (GPX/TCX → OBCR);
    the device never parses XML.
-4. **Interrupted transfers restart, not resume.** Objects are small — a route is
-   tens of kB, a couple of seconds on the wire — so a dropped or aborted transfer
-   is simply re-sent whole rather than continued from a durable offset. The
-   descriptor keeps an `offset` field (§4.2) for shape stability, but for an
-   **upload** it is always `0`: the device discards a partial upload on any
-   interruption and rejects a non-zero upload offset. (Offset resume was in the
+4. **Interrupted transfers restart, not resume — in both directions.** Objects
+   are small — a route or a ride is tens of kB, a couple of seconds on the wire —
+   so a dropped or aborted transfer is simply re-sent (or re-requested) whole
+   rather than continued from a durable offset. The descriptor keeps an `offset`
+   field (§4.2) for shape stability, but it is **always `0`**: the device
+   discards a partial upload on any interruption and rejects any non-zero
+   offset, upload or download, with `error`. Multi-object flows resume at
+   **whole-object granularity**: a dropped ride sync keeps the rides that fully
+   landed and re-requests the rest from byte 0 (§7.2). (Offset resume was in the
    S0 draft; it was dropped as unjustified complexity for these object sizes —
-   the device would carry a durable partial + running CRC across a reconnect to
-   save two seconds. If a large object type ever lands, resume returns with it.)
+   and a suffix can't be verified against the whole-object CRC anyway. If a
+   large object type ever lands, resume returns with it.)
 5. **Versioned once.** A single `protocol_version` covers this whole contract.
    Object layouts carry their own version bytes where they live (OBCR header,
    ride object) so they can evolve without a protocol bump.
@@ -163,14 +166,23 @@ Every bulk payload is a typed **object**:
 | `8` | `echo` | both | dev/test only: device streams back what it received (A5's loopback) |
 | `9`–`15` | — | — | reserved (sensors, M4) |
 
-**Object ids** are `u16`, assigned by the device, stable for the life of the
-stored object, and enumerated by the list objects. Conventions:
+**Object ids** are `u16`, assigned by the device, **stable for the life of the
+stored object — including across device reboots** — and enumerated by the list
+objects. Durability is what lets the phone persist the id an upload committed
+under and later reconcile ("is my copy still on the device?") or replace that
+object in place; the reference firmware encodes the id in the stored filename
+(`RT{id}.OBR`) and never reuses a higher id than it has ever assigned.
+Conventions:
 
 - `0xFFFF` on an upload means "new" — the device assigns an id and reports it
   in the `transferResult` (§4.3). Uploading to an existing id replaces that
   object atomically (commit-then-swap; a failed CRC never touches the old copy).
 - Objects that exist once (`routeList`, `rideList`, `diagnostics`, `echo`) use
   object id `0`.
+- Ids `0xFF00`–`0xFFFE` are a **session-scoped** band for objects that exist on
+  storage without a device-assigned identity (side-loaded dev files). They are
+  valid transfer targets within a connection but must never be persisted by the
+  app — they may name a different object after a reboot.
 
 At most **one transfer is in flight at a time** — the CoC carries exactly one
 object's bytes between a `transferControl` open and its `transferResult`. A
@@ -190,8 +202,8 @@ TransferControl (16 bytes, little-endian):
   object_id  u16
   total_len  u32   upload: full object size · download request / abort: 0
   crc32      u32   upload: whole-object CRC-32 (§6) · download request / abort: 0
-  offset     u32   upload: always 0 (uploads restart, not resume — §1 principle 4)
-                   download request: byte offset to start streaming from
+  offset     u32   always 0 — transfers restart, not resume (§1 principle 4);
+                   the field exists for descriptor-shape stability only
 ```
 
 **Upload (app → device).** The app writes `op=1` with the object's real
@@ -205,24 +217,22 @@ discarded, and the app re-sends the object from the start; a non-zero upload
 `offset` is answered `error`.
 
 **Download (app → device request, device → app announce).** The app writes
-`op=2` with `total_len = crc32 = 0` and the wanted `offset` (normally `0`). The
-device answers with a `transferControl` **notification** — the same 16 bytes,
-`op=2`, with `total_len` and `crc32` filled in — then streams `object[offset…]`
-over the CoC. The app CRCs as it reads and rejects on mismatch. End of object =
-`total_len − offset` bytes received; the device additionally notifies a
-`transferResult` (`committed`) as the explicit close. An interrupted download is
-re-requested (a fresh `op=2`); the `offset` field lets a client skip a prefix it
-already holds, but the app normally just restarts from `0`.
+`op=2` with `total_len = crc32 = offset = 0`. The device answers with a
+`transferControl` **notification** — the same 16 bytes, `op=2`, with `total_len`
+and `crc32` filled in — then streams the whole object over the CoC. The app
+CRCs as it reads and rejects on mismatch. End of object = `total_len` bytes
+received; the device additionally notifies a `transferResult` (`committed`) as
+the explicit close. An interrupted download is re-requested whole (a fresh
+`op=2`, §1 principle 4); a non-zero `offset` is answered `error`.
 
 **Abort (`op=3`).** Either side stops cleanly: the app writes `op=3`
 (type/object_id echo the active transfer), the device drains and **discards** the
 partial, and notifies `transferResult` with `aborted` (`committed_offset = 0` —
 nothing is retained).
 
-A descriptor that names an unknown type/id, a non-zero upload offset, an offset
-past a downloadable object, or arrives mid-transfer is answered with a
-`transferResult` carrying `error` / `notFound` / `busy` (§4.3) and does not
-disturb an active transfer.
+A descriptor that names an unknown type/id, carries a non-zero offset, or
+arrives mid-transfer is answered with a `transferResult` carrying `error` /
+`notFound` / `busy` (§4.3) and does not disturb an active transfer.
 
 ### 4.3 `status` — typed device → app notifications
 
