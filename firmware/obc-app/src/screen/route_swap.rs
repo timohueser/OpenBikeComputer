@@ -15,7 +15,7 @@ use obc_render::{
 use crate::activity::{Mode, TrackAction};
 use crate::input::Gesture;
 
-use super::{palette, title_frame, Ctx, MapScreen, MenuItem, Render, Screen, Transition};
+use super::{list, palette, title_frame, Ctx, MapScreen, MenuItem, Render, Screen, Transition};
 
 const ITEMS: [MenuItem; 3] = [
     MenuItem { label: "Swap route", guard: false },
@@ -46,10 +46,7 @@ impl RouteSwapScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Turn(n) => {
-                self.selected = super::step_selection(self.selected, n, ITEMS.len());
-                Transition::None
-            }
+            Gesture::Turn(n) => list::on_turn(&mut self.selected, n, ITEMS.len()),
             Gesture::Press => match self.selected {
                 // Swap only: keep the session (no `start_session`), just re-navigate.
                 SWAP => self.swap_route(cx),
