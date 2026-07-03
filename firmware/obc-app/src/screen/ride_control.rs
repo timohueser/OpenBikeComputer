@@ -15,7 +15,7 @@ use obc_render::{
 use crate::activity::{Mode, TrackAction};
 use crate::input::Gesture;
 
-use super::{palette, Ctx, MenuItem, Render, Transition};
+use super::{list, palette, Ctx, MenuItem, Render, Transition};
 
 const ITEMS: [MenuItem; 3] = [
     MenuItem { label: "Resume", guard: false },
@@ -46,10 +46,7 @@ impl RideControl {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Turn(n) => {
-                self.selected = super::step_selection(self.selected, n, ITEMS.len());
-                Transition::None
-            }
+            Gesture::Turn(n) => list::on_turn(&mut self.selected, n, ITEMS.len()),
             Gesture::Press => {
                 // Instant (non-guarded) options only — i.e. Resume.
                 if ITEMS[self.selected].guard {

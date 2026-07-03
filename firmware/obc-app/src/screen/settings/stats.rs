@@ -47,7 +47,7 @@ impl StatsScreen {
                 if self.editing_cycle {
                     cx.settings.stat_cycle_s = step_cycle(cx.settings.stat_cycle_s, n);
                 } else {
-                    self.selected = crate::screen::step_selection(self.selected, n, ROWS);
+                    self.selected = crate::screen::list::step_selection(self.selected, n, ROWS);
                 }
                 Transition::None
             }

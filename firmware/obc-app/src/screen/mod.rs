@@ -26,6 +26,7 @@ use crate::route::RouteSummary;
 use crate::settings::{DateTime, Settings, Units};
 
 mod home;
+mod list;
 mod map;
 mod menu;
 mod ride_control;
@@ -35,6 +36,7 @@ mod settings;
 mod statistics;
 
 pub use home::HomeScreen;
+pub use list::window_start;
 pub use map::MapScreen;
 pub use menu::MenuScreen;
 pub use ride_control::RideControl;
@@ -342,38 +344,6 @@ pub fn title_frame(cv: &mut impl Surface, w: i32, h: i32, title: &str, right: &s
     cv.text(right, Point::new(w - 14, 10), Font::Label, TextAlign::Right, PARCHMENT);
 }
 
-/// [`title_frame`] with a `pos / total` list counter on the right — the chrome the
-/// Menu and Route menu share. The caller then draws its rows below [`LIST_TOP`].
-pub fn list_frame(cv: &mut impl Surface, w: i32, h: i32, title: &str, pos: usize, total: usize) {
-    let mut counter: heapless::String<8> = heapless::String::new();
-    let _ = write!(counter, "{pos} / {total}");
-    title_frame(cv, w, h, title, &counter);
-}
-
-/// First visible index of a scrolling list that keeps `selected` on screen within `visible` rows
-/// of `total` items. Stateless — a pure function of the selection — so list screens need no scroll
-/// state: the highlight moves down to the last visible row, then the window follows it.
-pub fn window_start(selected: usize, visible: usize, total: usize) -> usize {
-    if total <= visible || selected < visible {
-        0
-    } else {
-        (selected + 1 - visible).min(total - visible)
-    }
-}
-
-/// Draw a list scrollbar — a faint track with a proportional thumb — at the right
-/// edge, or nothing when everything fits. `top`/`height` is the windowed list
-/// area; `first` is [`window_start`]'s result.
-pub fn scrollbar(cv: &mut impl Surface, x: i32, top: i32, height: i32, total: usize, first: usize, visible: usize) {
-    if total <= visible || total == 0 {
-        return;
-    }
-    cv.round(rect(x, top, 3, height), 1, palette::RULE);
-    let thumb_h = (height * visible as i32 / total as i32).max(10);
-    let thumb_y = top + height * first as i32 / total as i32;
-    cv.round(rect(x, thumb_y, 3, thumb_h), 1, palette::WOOD);
-}
-
 /// The gestures the two riding views (Map and Statistics) bind identically: `press` pauses
 /// tracking and opens the Ride-control overlay, `back-hold` opens the Menu. Each riding screen
 /// calls this from its `Press | BackHold` arm.
@@ -386,15 +356,6 @@ pub(crate) fn riding_common(g: Gesture, cx: &mut Ctx) -> Transition {
         Gesture::BackHold => Transition::Push(Screen::Menu(MenuScreen::new())),
         _ => Transition::None,
     }
-}
-
-/// Advance a wrapping list selection by `n` detents over `len` items. Wraps at both ends; a no-op
-/// on an empty list.
-pub(crate) fn step_selection(selected: usize, n: i32, len: usize) -> usize {
-    if len == 0 {
-        return selected;
-    }
-    (selected as i32 + n).rem_euclid(len as i32) as usize
 }
 
 /// Draw a centered two-line empty state — a bold `title` over a muted `hint` — the shared
@@ -497,42 +458,4 @@ pub mod palette {
     /// Navy — the recorded breadcrumb (travelled path), stroked over the route and under the marker.
     /// Recessive so the trail behind reads quieter than the magenta route ahead.
     pub const BREADCRUMB: u16 = rgb565(0, 0, 170); // → (0,0,170) navy
-}
-
-#[cfg(test)]
-mod tests {
-    use super::step_selection;
-
-    // `step_selection` wrapping: a `%` regression is negative for a backward turn at the top, which
-    // would hand back a garbage index and highlight nothing or panic on the row lookup.
-
-    /// Backward off the top: `Turn(-1)` from index 0 wraps to the last item, not a negative index.
-    #[test]
-    fn step_selection_wraps_backward_past_the_top() {
-        assert_eq!(step_selection(0, -1, 4), 3, "up from the first item lands on the last");
-        assert_eq!(step_selection(0, -1, 1), 0, "a single-item list stays put");
-    }
-
-    /// Forward off the bottom: `Turn(1)` from the last item wraps to the first.
-    #[test]
-    fn step_selection_wraps_forward_past_the_bottom() {
-        assert_eq!(step_selection(3, 1, 4), 0, "down from the last item lands on the first");
-    }
-
-    /// A multi-detent turn larger than the list wraps cleanly, not off the end.
-    #[test]
-    fn step_selection_wraps_multiple_turns() {
-        assert_eq!(step_selection(0, 5, 3), 2, "a long forward flick wraps modulo the length");
-        assert_eq!(step_selection(0, -5, 3), 1, "a long backward flick wraps without going negative");
-        assert_eq!(step_selection(2, 3, 3), 2, "exactly one lap is a no-op");
-    }
-
-    /// An empty list is a no-op for any turn — the `len == 0` guard must short-circuit before the
-    /// `% 0` that would panic.
-    #[test]
-    fn step_selection_on_empty_list_is_a_noop() {
-        assert_eq!(step_selection(0, 1, 0), 0, "a forward turn on an empty list stays at 0");
-        assert_eq!(step_selection(0, -1, 0), 0, "a backward turn on an empty list stays at 0");
-        assert_eq!(step_selection(7, 3, 0), 7, "the selection is returned unchanged, not modulo'd");
-    }
 }

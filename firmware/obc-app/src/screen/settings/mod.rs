@@ -22,7 +22,8 @@ use obc_render::{
 
 use crate::input::Gesture;
 
-use super::{list_frame, palette, Ctx, Render, Screen, Transition, LIST_TOP};
+use super::list;
+use super::{palette, Ctx, Render, Screen, Transition};
 
 mod add_field;
 mod datetime;
@@ -43,9 +44,6 @@ pub use units::UnitsScreen;
 /// The Settings list entries, in order. Each row pushes its sub-screen.
 const ITEMS: [&str; 5] = ["Date & Time", "Units", "Stats", "Power", "Reset"];
 
-/// Per-row height — matches the main [`Menu`](super::MenuScreen) so the two read identically.
-const ROW_H: i32 = 52;
-
 /// The Settings list — a nav menu whose rows open the individual settings screens. State is the
 /// highlighted row.
 #[derive(Debug, Default)]
@@ -60,10 +58,7 @@ impl SettingsScreen {
 
     pub fn handle(&mut self, g: Gesture, _cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Turn(n) => {
-                self.selected = super::step_selection(self.selected, n, ITEMS.len());
-                Transition::None
-            }
+            Gesture::Turn(n) => list::on_turn(&mut self.selected, n, ITEMS.len()),
             Gesture::Press => match self.selected {
                 0 => Transition::Push(Screen::DateTime(DateTimeScreen::new())),
                 1 => Transition::Push(Screen::Units(UnitsScreen::new())),
@@ -77,25 +72,7 @@ impl SettingsScreen {
     }
 
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
-        use palette::*;
-        let (w, h) = (rx.w, rx.h);
-
-        list_frame(cv, w, h, "SETTINGS", self.selected + 1, ITEMS.len());
-
-        for (i, &name) in ITEMS.iter().enumerate() {
-            let y = LIST_TOP + i as i32 * ROW_H;
-            let mid = y + (ROW_H - 8) / 2;
-            let selected = i == self.selected;
-            if selected {
-                cv.round(rect(16, y, w - 32, ROW_H - 8), 6, AMBER);
-            }
-            let bullet = if selected { INK } else { SUBTEXT };
-            cv.triangle(Point::new(30, mid - 9), Point::new(30, mid + 9), Point::new(43, mid), bullet);
-            cv.text(name, Point::new(54, mid - 14), Font::Body, TextAlign::Left, INK);
-            if i + 1 < ITEMS.len() {
-                cv.hline(20, y + ROW_H - 4, w - 40, RULE);
-            }
-        }
+        list::nav_list(cv, rx.w, rx.h, "SETTINGS", &ITEMS, self.selected);
     }
 }
 
