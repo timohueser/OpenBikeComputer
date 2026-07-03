@@ -248,17 +248,14 @@ fn step_field(s: &mut Settings, kind: RowKind, field: u8, n: i32) {
 /// Draw a Date/Time row: a left caption above a centred group of big (Body) stepper cells. The
 /// `cells` are `(text, width)` pairs laid out left→right with `gap` between; `active` is the open
 /// field's index (or `None`). Shared by [`draw_date`] and [`draw_time`].
-fn draw_stepper_row<D, F>(
-    cv: &mut Canvas<D, F>,
+fn draw_stepper_row(
+    cv: &mut impl Surface,
     area: Rectangle,
     label: &str,
     cells: &[(&str, i32)],
     gap: i32,
     active: Option<u8>,
-) where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+) {
     let top = area.top_left.y;
     cv.text(label, Point::new(area.top_left.x + 12, top + 2), Font::Label, TextAlign::Left, palette::SUBTEXT);
     let ch = 32;
@@ -272,11 +269,7 @@ fn draw_stepper_row<D, F>(
 }
 
 /// Draw the `DATE` row: `DATE` over year / month / day Body steppers.
-fn draw_date<D, F>(cv: &mut Canvas<D, F>, area: Rectangle, s: &Settings, editing: Option<u8>)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+fn draw_date(cv: &mut impl Surface, area: Rectangle, s: &Settings, editing: Option<u8>) {
     let (mut yr, mut mo, mut da) =
         (heapless::String::<8>::new(), heapless::String::<8>::new(), heapless::String::<8>::new());
     let _ = write!(yr, "{}", s.clock.year);
@@ -286,11 +279,7 @@ where
 }
 
 /// Draw the `TIME` row: `TIME` over hour : minute Body steppers.
-fn draw_time<D, F>(cv: &mut Canvas<D, F>, area: Rectangle, s: &Settings, editing: Option<u8>)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+fn draw_time(cv: &mut impl Surface, area: Rectangle, s: &Settings, editing: Option<u8>) {
     let (mut hh, mut mm) = (heapless::String::<8>::new(), heapless::String::<8>::new());
     let _ = write!(hh, "{:02}", s.clock.hour);
     let _ = write!(mm, "{:02}", s.clock.minute);
@@ -309,11 +298,7 @@ fn time_active(editing: Option<u8>) -> Option<u8> {
 }
 
 /// A read-only info row (no cursor): a muted caption stacked over its value, both left-aligned.
-fn info_row<D, F>(cv: &mut Canvas<D, F>, area: Rectangle, label: &str, value: &str)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+fn info_row(cv: &mut impl Surface, area: Rectangle, label: &str, value: &str) {
     let x = area.top_left.x + 10;
     cv.text(label, Point::new(x, area.top_left.y + 2), Font::Label, TextAlign::Left, palette::SUBTEXT);
     cv.text(value, Point::new(x, area.top_left.y + 24), Font::Label, TextAlign::Left, palette::INK);
