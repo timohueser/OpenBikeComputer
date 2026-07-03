@@ -3,15 +3,14 @@ import Foundation
 
 /// In-memory `ByteChannel` for framing tests — a loopback where whatever is
 /// written becomes readable. Stands in for the L2CAP CoC so `BLEChannel`'s
-/// framing/resume/cancel run with no hardware.
+/// streaming/restart/cancel paths run with no hardware.
 ///
 /// Models two properties of the real CoC that the tests depend on:
 ///
 ///   • **Bounded buffer** (`capacity`) ≈ credit-based flow control — a writer can't
 ///     outrun a stalled reader, so a mid-transfer `cancel` genuinely stops delivery.
-///   • **Atomic drop** (`failAfter`) — a failing `write` delivers *nothing*, modeling
-///     the framing layer's per-frame commit (a partial frame never validates CRC, so
-///     the sender re-sends it whole on resume).
+///   • **Atomic drop** (`failAfter`) — a failing `write` delivers *nothing*; after a
+///     drop the whole object is re-sent (transfers restart, not resume).
 actor PipeByteChannel: ByteChannel {
     private var buffer = Data()
     private let capacity: Int
@@ -26,6 +25,8 @@ actor PipeByteChannel: ByteChannel {
     private(set) var bytesWrittenSoFar = 0
     /// Whether the one-shot `failAfter` drop has fired (test introspection).
     private(set) var faultTriggered = false
+    /// Bytes currently buffered and readable (test introspection).
+    var bufferedByteCount: Int { buffer.count }
 
     init(capacity: Int = .max) { self.capacity = capacity }
 

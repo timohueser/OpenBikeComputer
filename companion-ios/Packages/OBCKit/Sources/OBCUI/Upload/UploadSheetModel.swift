@@ -7,15 +7,17 @@ import OBCTransport
 /// from tap to terminal state, over whichever detail dressing launched it:
 ///
 ///   • `.uploading`   — F, the bar tracking `TransferHandle.progress`
-///   • `.interrupted` — the link dropped mid-transfer; **Resume** continues
-///                      from the last committed offset (no bytes re-sent)
+///   • `.interrupted` — the link dropped mid-transfer; **Resume** restarts the
+///                      upload from scratch (uploads restart, not resume — the
+///                      device discarded its partial)
 ///   • `.done`        — F₂, the brief confirm (auto-dismisses, or tap Done)
-///   • `.failed`      — the transfer failed for good (e.g. H4, no link at all)
+///   • `.failed`      — the transfer failed for good (H4 no link, or the
+///                      device rejected the object)
 ///
 /// The drop signal is `DeviceTransport.state` → `.outOfRange` — the handle's
-/// progress stream stays open, stalled at the resume offset (see
-/// `TransferHandle`). Cancel aborts the transfer; the sheet leaves no upload
-/// running behind it (`sheetDismissed()` cancels an unresolved handle).
+/// progress stream stays open, stalled (see `TransferHandle`). Cancel aborts
+/// the transfer; the sheet leaves no upload running behind it
+/// (`sheetDismissed()` cancels an unresolved handle).
 @MainActor @Observable
 public final class UploadSheetModel {
     public enum Phase: Equatable {
@@ -77,7 +79,7 @@ public final class UploadSheetModel {
         self.hasWaypoints = !blob.waypoints.isEmpty
         self.timing = timing
         self.onCompleted = onCompleted
-        self.progress = TransferProgress(bytesDone: 0, total: blob.payload.count, offset: 0)
+        self.progress = TransferProgress(bytesDone: 0, total: blob.payload.count)
     }
 
     // MARK: Derived lines (design F)
@@ -151,7 +153,7 @@ public final class UploadSheetModel {
         handle?.cancel()
     }
 
-    /// Resume a dropped transfer from its committed offset (F interrupted).
+    /// Restart a dropped transfer from scratch (F interrupted).
     public func resume() {
         guard phase == .interrupted else { return }
         handle?.resume()
