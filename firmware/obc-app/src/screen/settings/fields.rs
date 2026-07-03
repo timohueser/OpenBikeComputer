@@ -20,7 +20,8 @@ use obc_render::{
 };
 
 use crate::input::Gesture;
-use crate::screen::{scrollbar, title_frame, window_start, Ctx, Render, Screen, Transition, LIST_TOP};
+use crate::screen::list::{self, pinned_first, window_start, ListGeometry, Separators};
+use crate::screen::{Ctx, Render, Screen, Transition, LIST_TOP};
 
 use super::AddFieldScreen;
 
@@ -58,7 +59,7 @@ impl StatFieldsScreen {
                     }
                     self.selected = idx;
                 } else {
-                    self.selected = crate::screen::step_selection(self.selected, n, rows);
+                    return list::on_turn(&mut self.selected, n, rows);
                 }
                 Transition::None
             }
@@ -93,13 +94,12 @@ impl StatFieldsScreen {
         }
     }
 
-    /// First visible row, as a signed offset (can be negative). Normally [`window_start`]; while
-    /// grabbed, pin the grabbed row to the middle slot for every position by scrolling the window
-    /// virtually — so near the list ends the row stays centred with empty space above/below rather
-    /// than drifting to the edge. The draw loop skips slots outside `0..rows`.
+    /// First visible row, as a signed offset (can be negative): the plain scroll-to-reveal
+    /// [`window_start`], or [`pinned_first`] while grabbed so the moving row stays anchored
+    /// mid-window ([`list::draw_rows`] skips the out-of-range slots).
     fn window_first(&self, visible: usize, rows: usize) -> i32 {
         if self.grabbed {
-            self.selected as i32 - (visible / 2) as i32
+            pinned_first(self.selected, visible)
         } else {
             window_start(self.selected, visible, rows) as i32
         }
@@ -112,58 +112,43 @@ impl StatFieldsScreen {
         let len = fields.len();
         let add_row = len;
         let rows = len + 1;
+        // The row list fills what's left above the delete footer.
+        let geo = ListGeometry {
+            w,
+            top: LIST_TOP,
+            row_h: ROW_H,
+            row_gap: 6,
+            side_inset: super::ROW_X,
+            separators: Separators::None,
+            visible: list::visible_rows(h - FOOTER_H, ROW_H),
+        };
 
-        title_frame(cv, w, h, "FIELDS", "");
+        list::list_frame(cv, w, h, "FIELDS", self.selected + 1, rows, geo.visible);
 
-        // Window the row list to what fits above the delete footer, scrolling to keep the cursor
-        // visible (or anchoring the grabbed row).
-        let list_h = h - LIST_TOP - 6 - FOOTER_H;
-        let visible = (list_h / ROW_H).max(1) as usize;
-        let first = self.window_first(visible, rows);
-
-        for slot in 0..visible {
-            // `first` is signed: while grabbed the window can scroll past either end, so some slots
-            // map outside the list — those draw as empty space (the pinned row stays centred).
-            let idx = first + slot as i32;
-            if idx < 0 || idx as usize >= rows {
-                continue;
-            }
-            let idx = idx as usize;
-            let y = LIST_TOP + slot as i32 * ROW_H;
-            let area = super::row_rect(y, w, ROW_H - 6);
-            let selected = idx == self.selected;
-
-            if idx == add_row {
+        let first = self.window_first(geo.visible, rows);
+        list::draw_rows(cv, geo, rows, self.selected, first, |cv, row| {
+            if row.index == add_row {
                 // Add-field row: a plus + label.
-                super::row_cursor(cv, area, selected, false);
-                let midy = area.top_left.y + (area.size.height as i32 - 22) / 2;
-                let px = area.top_left.x + 14;
+                let midy = row.area.top_left.y + (row.area.size.height as i32 - 22) / 2;
+                let px = row.area.top_left.x + 14;
                 let pcy = midy + 11;
                 cv.hline(px - 6, pcy, 13, INK);
                 cv.vline(px, pcy - 6, 13, 1, INK);
                 cv.text("Add field", Point::new(px + 18, midy), Font::Body, TextAlign::Left, INK);
             } else {
-                let f = fields[idx];
-                let grabbed = selected && self.grabbed;
-                // A grabbed row gets the amber fill + move arrows; otherwise the plain row cursor
-                // (suppressed while grabbed so they don't double up).
-                super::row_cursor(cv, area, selected, grabbed);
+                let f = fields[row.index];
+                let grabbed = row.selected && self.grabbed;
+                // A grabbed row adds the move arrows to the cursor fill (the badge yields to them).
                 if grabbed {
-                    cv.round(area, 6, AMBER);
-                    move_arrows(cv, area);
+                    move_arrows(cv, row.area);
                 }
-                super::row_label(cv, area, f.name(), None);
+                super::row_label(cv, row.area, f.name(), None);
                 if !grabbed {
-                    let badge_color = if selected { INK } else { SUBTEXT };
-                    super::span_badge(cv, area, f.span(), badge_color);
+                    let badge_color = if row.selected { INK } else { SUBTEXT };
+                    super::span_badge(cv, row.area, f.span(), badge_color);
                 }
             }
-        }
-
-        // The scrollbar wants the real (clamped) window position — the grabbed virtual offset can run
-        // negative / past the end.
-        let sb_first = first.clamp(0, rows.saturating_sub(visible) as i32) as usize;
-        scrollbar(cv, w - 8, LIST_TOP, visible as i32 * ROW_H, rows, sb_first, visible);
+        });
         delete_footer(cv, w, h, self.selected < len, rx.hold_progress);
     }
 }

@@ -177,7 +177,7 @@ impl Units {
 
 /// Wrap `v` by `n` steps within the inclusive range `lo..=hi`. Shared by every
 /// [`DateTime`] stepper so a turn past either end rolls round (year 2099→2020, hour 23→0),
-/// matching the list selection's [`step_selection`](crate::screen::step_selection) feel.
+/// matching the list selection's [`step_selection`](crate::screen::list::step_selection) feel.
 fn wrap_inclusive(v: u16, n: i32, lo: u16, hi: u16) -> u16 {
     let span = (hi - lo) as i32 + 1;
     let off = (v as i32 - lo as i32 + n).rem_euclid(span);

@@ -5,7 +5,8 @@
 use obc_render::Surface;
 
 use crate::input::Gesture;
-use crate::screen::{scrollbar, title_frame, window_start, Ctx, Render, Transition, LIST_TOP};
+use crate::screen::list::{self, ListGeometry, Separators};
+use crate::screen::{Ctx, Render, Transition, LIST_TOP};
 use crate::stat_fields::StatField;
 
 /// Per-row height — matches the Stat Fields list so the two read identically.
@@ -30,10 +31,7 @@ impl AddFieldScreen {
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         let avail = hidden(&cx.settings.stat_fields);
         match g {
-            Gesture::Turn(n) => {
-                self.selected = crate::screen::step_selection(self.selected, n, avail.len());
-                Transition::None
-            }
+            Gesture::Turn(n) => list::on_turn(&mut self.selected, n, avail.len()),
             // Add the highlighted field to the end of the grid and return to the manage screen.
             Gesture::Press if !avail.is_empty() => {
                 let f = avail[self.selected.min(avail.len() - 1)];
@@ -50,34 +48,30 @@ impl AddFieldScreen {
         let (w, h) = (rx.w, rx.h);
         let avail = hidden(&rx.settings.stat_fields);
         let total = avail.len();
+        let geo = ListGeometry {
+            w,
+            top: LIST_TOP,
+            row_h: ROW_H,
+            row_gap: 6,
+            side_inset: super::ROW_X,
+            separators: Separators::None,
+            visible: list::visible_rows(h, ROW_H),
+        };
 
-        title_frame(cv, w, h, "ADD FIELD", "");
+        let sel = if total == 0 { 0 } else { self.selected.min(total - 1) };
+        list::list_frame(cv, w, h, "ADD FIELD", sel + 1, total, geo.visible);
 
         if total == 0 {
             super::super::empty_state(cv, w, h, "All fields added", "Remove one to swap");
             return;
         }
 
-        let list_h = h - LIST_TOP - 6;
-        let visible = (list_h / ROW_H).max(1) as usize;
-        let sel = self.selected.min(total - 1);
-        let first = window_start(sel, visible, total);
-
-        for slot in 0..visible {
-            let i = first + slot;
-            if i >= total {
-                break;
-            }
-            let f = avail[i];
-            let y = LIST_TOP + slot as i32 * ROW_H;
-            let area = super::row_rect(y, w, ROW_H - 6);
-            let selected = i == sel;
-            super::row_cursor(cv, area, selected, false);
-            super::row_label(cv, area, f.name(), None);
-            let badge_color = if selected { INK } else { SUBTEXT };
-            super::span_badge(cv, area, f.span(), badge_color);
-        }
-
-        scrollbar(cv, w - 8, LIST_TOP, visible as i32 * ROW_H, total, first, visible);
+        let first = list::window_start(sel, geo.visible, total) as i32;
+        list::draw_rows(cv, geo, total, sel, first, |cv, row| {
+            let f = avail[row.index];
+            super::row_label(cv, row.area, f.name(), None);
+            let badge_color = if row.selected { INK } else { SUBTEXT };
+            super::span_badge(cv, row.area, f.span(), badge_color);
+        });
     }
 }

@@ -1,19 +1,14 @@
 //! The Menu overlay — Routes / Settings, in the "explorer's field map" style: a wood frame, a title
-//! strip with an `n / total` counter, big rows with a pointer bullet and an amber highlight, and
-//! hairline separators. Routes opens the Route menu, Settings the
-//! [`SettingsScreen`](super::SettingsScreen) tree; `back` returns to the caller. (The Shutdown
-//! prompt on `back-hold` is a later slice.)
+//! strip, big rows with a pointer bullet and an amber highlight, and hairline separators. Routes
+//! opens the Route menu, Settings the [`SettingsScreen`](super::SettingsScreen) tree; `back`
+//! returns to the caller. (The Shutdown prompt on `back-hold` is a later slice.)
 
-use embedded_graphics::prelude::Point;
-use obc_render::{
-    rect,
-    text::{Font, TextAlign},
-    Surface,
-};
+use obc_render::Surface;
 
 use crate::input::Gesture;
 
-use super::{list_frame, palette, Ctx, Render, RouteMenuScreen, Screen, SettingsScreen, Transition, LIST_TOP};
+use super::list::{self, ListGeometry, Separators};
+use super::{Ctx, Render, RouteMenuScreen, Screen, SettingsScreen, Transition, LIST_TOP};
 
 const ITEMS: [&str; 2] = ["Routes", "Settings"];
 
@@ -33,10 +28,7 @@ impl MenuScreen {
 
     pub fn handle(&mut self, g: Gesture, _cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Turn(n) => {
-                self.selected = super::step_selection(self.selected, n, ITEMS.len());
-                Transition::None
-            }
+            Gesture::Turn(n) => list::on_turn(&mut self.selected, n, ITEMS.len()),
             Gesture::Press => match self.selected {
                 0 => Transition::Push(Screen::RouteMenu(RouteMenuScreen::new())), // Routes
                 _ => Transition::Push(Screen::Settings(SettingsScreen::new())),   // Settings
@@ -48,26 +40,20 @@ impl MenuScreen {
     }
 
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
-        use palette::*;
         let (w, h) = (rx.w, rx.h);
-
-        list_frame(cv, w, h, "MENU", self.selected + 1, ITEMS.len());
-
-        for (i, &name) in ITEMS.iter().enumerate() {
-            let y = LIST_TOP + i as i32 * ROW_H;
-            let mid = y + (ROW_H - 8) / 2;
-            let selected = i == self.selected;
-
-            if selected {
-                cv.round(rect(16, y, w - 32, ROW_H - 8), 6, AMBER);
-            }
-            let bullet = if selected { INK } else { SUBTEXT };
-            cv.triangle(Point::new(30, mid - 9), Point::new(30, mid + 9), Point::new(43, mid), bullet);
-            cv.text(name, Point::new(54, mid - 14), Font::Body, TextAlign::Left, INK);
-
-            if i + 1 < ITEMS.len() {
-                cv.hline(20, y + ROW_H - 4, w - 40, RULE);
-            }
-        }
+        let geo = ListGeometry {
+            w,
+            top: LIST_TOP,
+            row_h: ROW_H,
+            row_gap: 8,
+            side_inset: 16,
+            separators: Separators::All,
+            visible: list::visible_rows(h, ROW_H),
+        };
+        list::list_frame(cv, w, h, "MENU", self.selected + 1, ITEMS.len(), geo.visible);
+        let first = list::window_start(self.selected, geo.visible, ITEMS.len()) as i32;
+        list::draw_rows(cv, geo, ITEMS.len(), self.selected, first, |cv, row| {
+            list::nav_row(cv, row.area, ITEMS[row.index], row.selected);
+        });
     }
 }
