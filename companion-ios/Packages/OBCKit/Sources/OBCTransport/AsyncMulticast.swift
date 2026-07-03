@@ -27,13 +27,16 @@ public final class AsyncMulticast<Element: Sendable>: @unchecked Sendable {
     public func stream() -> AsyncStream<Element> {
         AsyncStream { continuation in
             lock.lock()
-            let replay = last
             let done = finished
             let id = UUID()
             if !done { continuations[id] = continuation }
+            // Invariant: registration + replay are atomic w.r.t. `send` — the
+            // replay is yielded under the lock so a concurrent `send` cannot
+            // slip its (newer) value in before the (older) replay. Safe because
+            // `yield` only buffers; it never reenters consumer code.
+            continuation.yield(last)
             lock.unlock()
 
-            continuation.yield(replay)
             if done { continuation.finish(); return }
 
             continuation.onTermination = { [weak self] _ in
