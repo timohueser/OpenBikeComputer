@@ -25,29 +25,43 @@ public struct FixtureSet: Sendable {
     }
 }
 
-/// A fixture route: the enumerable `summary` (with a normalized preview), its
-/// `waypoints`, the detail-screen elevation data, and the declared upload payload
-/// size — the payload bytes are synthesized on demand (see `blob()`), so a
-/// multi-MB library stays cheap to hold.
+/// A fixture route — a **library-saved planned route** (the app's Planned list is
+/// library-first, #289): the list `summary` (with a normalized preview), the
+/// parsed geometry (`points` + `waypoints`), the detail-screen elevation data,
+/// and the declared upload payload size (payload bytes are synthesized on demand,
+/// see `blob()`, so a multi-MB library stays cheap to hold).
+///
+/// `deviceObjectID` marks the routes the device also holds a copy of: they show
+/// the C1 "on device" badge, and `MockTransport.listRoutes()` serves exactly this
+/// subset — under device-namespace ids — the way the real device's `routeList`
+/// would.
 public struct RouteEntry: Sendable {
     public var summary: RouteSummary
+    public var points: [RoutePoint]
     public var waypoints: [Waypoint]
     public var elevationProfile: [Double]
     public var maxGradePercent: Double?
     public var payloadByteCount: Int
+    /// The device object id this route is stored under on the (mock) device, or
+    /// `nil` when it lives only in the phone's library.
+    public var deviceObjectID: UInt16?
 
     public init(
         summary: RouteSummary,
+        points: [RoutePoint] = [],
         waypoints: [Waypoint] = [],
         elevationProfile: [Double] = [],
         maxGradePercent: Double? = nil,
-        payloadByteCount: Int
+        payloadByteCount: Int,
+        deviceObjectID: UInt16? = nil
     ) {
         self.summary = summary
+        self.points = points
         self.waypoints = waypoints
         self.elevationProfile = elevationProfile
         self.maxGradePercent = maxGradePercent
         self.payloadByteCount = payloadByteCount
+        self.deviceObjectID = deviceObjectID
     }
 
     /// The full uploadable route, with a deterministic synthesized payload.
@@ -55,11 +69,26 @@ public struct RouteEntry: Sendable {
         RouteBlob(summary: summary, waypoints: waypoints, payload: MockPayload.make(count: payloadByteCount))
     }
 
-    /// What `routeDetail(_:)` serves for this route (E2).
+    /// What the device serves for this route (E2 detail / list reconcile).
     public func detail() -> RouteDetail {
         RouteDetail(
             summary: summary, waypoints: waypoints,
             elevationProfile: elevationProfile, maxGradePercent: maxGradePercent
+        )
+    }
+
+    /// The library record this fixture seeds (B1S) — what the composition root
+    /// writes into the mock run's `InMemoryLibraryStore` so scenarios boot with a
+    /// populated, library-first Planned list. `addedAt` fixes the list order
+    /// (newest first, so pass descending dates for stable fixture order).
+    public func record(addedAt: Date) -> PlannedRouteRecord {
+        PlannedRouteRecord(
+            summary: summary,
+            route: ImportedRoute(name: summary.name, points: points, waypoints: waypoints),
+            sourceFileName: "\(summary.id.rawValue).gpx",
+            sourceFileData: Data(),
+            deviceObjectID: deviceObjectID,
+            addedAt: addedAt
         )
     }
 }
@@ -241,6 +270,9 @@ private struct RouteDTO: Decodable {
     let source: String?
     let maxGradePercent: Double?
     let payloadBytes: Int?
+    /// The device object id when the (mock) device holds a copy — lights the C1
+    /// badge and puts the route in `listRoutes()`. Absent = phone-library only.
+    let deviceObjectID: UInt16?
     let track: [GeoDTO]
     let waypoints: [WaypointDTO]?
 
@@ -264,10 +296,13 @@ private struct RouteDTO: Decodable {
                      distanceAlongMeters: wp.distanceAlongMeters,
                      coordinate: Coordinate(latitude: wp.lat, longitude: wp.lon))
         }
-        return RouteEntry(summary: summary, waypoints: wps,
+        return RouteEntry(summary: summary,
+                          points: track.map { RoutePoint(coordinate: $0.coordinate, elevationMeters: $0.ele) },
+                          waypoints: wps,
                           elevationProfile: track.compactMap(\.ele),
                           maxGradePercent: maxGradePercent,
-                          payloadByteCount: payloadBytes ?? max(1, Int(distanceMeters)))
+                          payloadByteCount: payloadBytes ?? max(1, Int(distanceMeters)),
+                          deviceObjectID: deviceObjectID)
     }
 }
 

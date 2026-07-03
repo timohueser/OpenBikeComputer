@@ -78,24 +78,9 @@ public enum RouteList {
     public static let headerLength = 4
     public static let version: UInt8 = 1
 
-    /// Decode a `routeList` object: validate the header, then step `count` entries by the header's
-    /// announced `entryLen` — forward-compatible, so a future longer entry has its known 72-byte
-    /// prefix decoded and its tail skipped.
+    /// Decode a `routeList` object (the shared header + entry walk, see `decodeList`).
     public static func decode(_ data: Data) throws -> [RouteListEntry] {
-        guard data.count >= headerLength else { throw DescriptorError.truncated }
-        let b = data.startIndex
-        guard data[b] == version else { throw DescriptorError.unknownStatus(data[b]) }
-        let entryLen = Int(data[b + 1])
-        guard entryLen >= RouteListEntry.encodedLength else { throw DescriptorError.unknownStatus(data[b + 1]) }
-        let count: UInt16 = data.getLE(at: 2)
-        var entries: [RouteListEntry] = []
-        entries.reserveCapacity(Int(count))
-        for k in 0..<Int(count) {
-            let start = b + headerLength + k * entryLen
-            guard start + entryLen <= data.endIndex else { throw DescriptorError.truncated }
-            entries.append(try RouteListEntry(decoding: data[start..<(start + entryLen)]))
-        }
-        return entries
+        try decodeList(data) { try RouteListEntry(decoding: $0) }
     }
 
     /// Encode a `routeList` object (header + packed 72-byte entries) — the device's job, here for the
@@ -106,6 +91,110 @@ public enum RouteList {
         for entry in entries { data.append(entry.encode()) }
         return data
     }
+}
+
+/// One `rideList` entry (spec §7.4) — from the stored ride-object header. Mirrors the firmware
+/// `obc-ble` `RideListEntry` field-for-field; the device encodes (from A7), the app decodes
+/// (`listRides`).
+public struct RideListEntry: Equatable, Sendable {
+    public var objectID: UInt16
+    /// Stored file size — sizes the ride download.
+    public var byteLen: UInt32
+    /// Unix seconds.
+    public var startTime: UInt32
+    public var distanceMeters: UInt32
+    public var movingTimeSeconds: UInt32
+    public var averageSpeedCms: UInt16
+    public var climbMeters: UInt16
+    /// UTF-8, ≤ ``maxNameLength`` bytes; truncated at encode.
+    public var name: String
+
+    /// The name-field cap (§7.4 — one byte shorter than the route's: the fixed fields take one more).
+    public static let maxNameLength = 47
+
+    public init(
+        objectID: UInt16, byteLen: UInt32, startTime: UInt32, distanceMeters: UInt32,
+        movingTimeSeconds: UInt32, averageSpeedCms: UInt16, climbMeters: UInt16, name: String
+    ) {
+        self.objectID = objectID
+        self.byteLen = byteLen
+        self.startTime = startTime
+        self.distanceMeters = distanceMeters
+        self.movingTimeSeconds = movingTimeSeconds
+        self.averageSpeedCms = averageSpeedCms
+        self.climbMeters = climbMeters
+        self.name = name
+    }
+
+    public func encode() -> Data {
+        var data = Data(count: RouteListEntry.encodedLength)
+        data.putLE(objectID, at: 0)
+        // 2..4 reserved = 0
+        data.putLE(byteLen, at: 4)
+        data.putLE(startTime, at: 8)
+        data.putLE(distanceMeters, at: 12)
+        data.putLE(movingTimeSeconds, at: 16)
+        data.putLE(averageSpeedCms, at: 20)
+        data.putLE(climbMeters, at: 22)
+        let nameBytes = Array(name.utf8.prefix(Self.maxNameLength))
+        data[data.startIndex + 24] = UInt8(nameBytes.count)
+        for (i, byte) in nameBytes.enumerated() { data[data.startIndex + 25 + i] = byte }
+        return data
+    }
+
+    /// Decode one entry from the first 72 bytes of an entry slot (a longer future entry's tail is
+    /// ignored, per the header's `entryLen` rule).
+    public init(decoding data: Data) throws {
+        guard data.count >= RouteListEntry.encodedLength else { throw DescriptorError.truncated }
+        let b = data.startIndex
+        let nameLen = Int(min(data[b + 24], UInt8(Self.maxNameLength)))
+        self.init(
+            objectID: data.getLE(at: 0),
+            byteLen: data.getLE(at: 4),
+            startTime: data.getLE(at: 8),
+            distanceMeters: data.getLE(at: 12),
+            movingTimeSeconds: data.getLE(at: 16),
+            averageSpeedCms: data.getLE(at: 20),
+            climbMeters: data.getLE(at: 22),
+            name: String(decoding: data[(b + 25)..<(b + 25 + nameLen)], as: UTF8.self)
+        )
+    }
+}
+
+/// The whole `rideList` object — same 4-byte header + packed 72-byte entries as `RouteList`.
+public enum RideList {
+    /// Decode a `rideList` object exactly as ``RouteList/decode(_:)`` does its entries.
+    public static func decode(_ data: Data) throws -> [RideListEntry] {
+        try decodeList(data) { try RideListEntry(decoding: $0) }
+    }
+
+    /// Encode a `rideList` object — the device's job (A7); here for the round-trip pin.
+    public static func encode(_ entries: [RideListEntry]) -> Data {
+        var data = Data([RouteList.version, UInt8(RouteListEntry.encodedLength)])
+        data.appendLE(UInt16(entries.count))
+        for entry in entries { data.append(entry.encode()) }
+        return data
+    }
+}
+
+/// The shared list walk (spec §7.4): validate the header, then step `count` entries by the
+/// header's announced `entryLen` — forward-compatible (a future longer entry has its known
+/// 72-byte prefix decoded and its tail skipped).
+private func decodeList<Entry>(_ data: Data, entry: (Data) throws -> Entry) throws -> [Entry] {
+    guard data.count >= RouteList.headerLength else { throw DescriptorError.truncated }
+    let b = data.startIndex
+    guard data[b] == RouteList.version else { throw DescriptorError.unknownStatus(data[b]) }
+    let entryLen = Int(data[b + 1])
+    guard entryLen >= RouteListEntry.encodedLength else { throw DescriptorError.unknownStatus(data[b + 1]) }
+    let count: UInt16 = data.getLE(at: 2)
+    var entries: [Entry] = []
+    entries.reserveCapacity(Int(count))
+    for k in 0..<Int(count) {
+        let start = b + RouteList.headerLength + k * entryLen
+        guard start + entryLen <= data.endIndex else { throw DescriptorError.truncated }
+        entries.append(try entry(data[start..<(start + entryLen)]))
+    }
+    return entries
 }
 
 // MARK: - Little-endian (de)serialization

@@ -75,7 +75,9 @@ final class ProtocolVectorTests: XCTestCase {
         XCTAssertEqual(start.offset, 0)
         XCTAssertEqual(start.encode(), startBytes)
 
-        // The resume differs from the fresh start only in its offset.
+        // The historic resume descriptor differs from the fresh start only in its
+        // offset — kept as a shape-stability pin (it must DECODE byte-exactly; the
+        // device answers it `error`, transfers restart rather than resume).
         let resumeBytes = try fixture("transfer-upload-resume.bin")
         let resume = try TransferControl(decoding: resumeBytes)
         var expected = start

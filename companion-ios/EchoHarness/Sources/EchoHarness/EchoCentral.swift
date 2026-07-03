@@ -13,7 +13,7 @@ struct EchoLink: @unchecked Sendable {
 }
 
 /// A minimal CoreBluetooth central that brings up an OBC link and drives both data planes: the A5
-/// echo loopback and the A6 route object plane (upload / list / detail / delete / resume). It scans
+/// echo loopback and the A6 route object plane (upload / list / detail / delete / abort). It scans
 /// for the OBC Control service, connects, discovers, reads the `psm`, and opens the L2CAP CoC. It
 /// owns its *own* `CBCentralManager` (the app's `BLETransport` wraps the same steps behind the
 /// semantic `DeviceTransport`, which has no harness verbs) but reuses the pinned `GATT` UUIDs, the
@@ -62,7 +62,7 @@ final class EchoCentral: NSObject, @unchecked Sendable {
         }
     }
 
-    /// Write the 16-byte `TransferControl` descriptor that opens/resumes/aborts a transfer (S0 §4.2).
+    /// Write the 16-byte `TransferControl` descriptor that opens/aborts a transfer (S0 §4.2).
     func writeControl(_ bytes: Data, to characteristic: CBCharacteristic) {
         queue.async { [self] in peripheral?.writeValue(bytes, for: characteristic, type: .withResponse) }
     }

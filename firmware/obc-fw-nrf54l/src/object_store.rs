@@ -2,10 +2,14 @@
 //! SD files and RRAM settings. `obc-ble` owns the wire (descriptors, CRC, transfer sequencing);
 //! [`crate::sd::Storage`] owns FatFs; this module owns the **catalog semantics** between them:
 //!
-//! - **Object ids** (S0 §4.1): `u16`, assigned at the mount scan and monotonically for fresh
-//!   uploads, never reused within a boot. They are deliberately *session-scoped* — the store
-//!   `revision` is already "monotonic per boot; not persisted" (§4.5), so the app re-reads the
-//!   digest + list on every connect and never carries an id across a device reboot.
+//! - **Object ids** (S0 §4.1): `u16`, **durable for uploaded objects** — the id is encoded in
+//!   the SD filename (`RT{id}.OBR`, see `sd.rs`), recovered at the mount scan, and fresh ids
+//!   continue monotonically past the highest stored one. Durability matters because the phone
+//!   persists the id an upload commits under (`PlannedRouteRecord.deviceObjectID`) and uses it
+//!   to badge-reconcile and replace-in-place across device reboots. Side-loaded `.obcr` files
+//!   carry no id in their name and get a *session-scoped* one from the reserved
+//!   [`SIDELOAD_ID_BASE`] band — the app never persists those (they never come out of an
+//!   upload result).
 //! - **Store revision + digest** (§4.5): bumped on every commit/delete; the BLE plane notifies
 //!   `storeChanged` + the digest characteristic from it.
 //! - **The upload state machine**: descriptor → [`Receiver`] (+ temp-file sink) → commit. Uploads
@@ -41,6 +45,11 @@ struct RouteSlot {
 
 /// The routeList object buffer: header + one entry per possible catalog slot.
 const LIST_BUF_LEN: usize = ListHeader::object_len(MAX_ROUTES);
+
+/// First id of the reserved **session-scoped** band handed to side-loaded `.obcr` files at the
+/// mount scan (their names carry no durable id). Uploaded ids grow monotonically from 0 and
+/// reject at this floor — 65,024 lifetime uploads before a card must be cleared, i.e. never.
+const SIDELOAD_ID_BASE: u16 = 0xFF00;
 
 pub struct ObjectStore {
     /// The mounted card, or `None` (no card): every route operation then answers `error`,
@@ -82,8 +91,10 @@ impl ObjectStore {
         self.storage.is_some()
     }
 
-    /// (Re)build the id table from the card. Ids continue from `next_id` — a rescan after boot
-    /// (never needed today, but harmless) can't alias a deleted object's id.
+    /// (Re)build the id table from the card. Uploaded files carry their **durable id in the
+    /// filename** (`RT{id}.OBR`); side-loaded `.obcr` files get session ids from the
+    /// [`SIDELOAD_ID_BASE`] band. `next_id` resumes past the highest stored upload id, so a
+    /// fresh upload can't alias a stored object across reboots.
     fn rescan(&mut self) {
         self.routes.clear();
         let Some(storage) = &mut self.storage else { return };
@@ -93,11 +104,21 @@ impl ObjectStore {
                 let _ = names.push(n.clone());
             }
         });
+        let mut next_sideload = SIDELOAD_ID_BASE;
         for name in &names {
             match storage.route_object_info(name) {
                 Some((byte_len, _)) => {
-                    let id = self.next_id;
-                    self.next_id += 1;
+                    let id = match crate::sd::uploaded_route_id(name) {
+                        Some(id) => {
+                            self.next_id = self.next_id.max(id.saturating_add(1));
+                            id
+                        }
+                        None => {
+                            let id = next_sideload;
+                            next_sideload = next_sideload.saturating_add(1);
+                            id
+                        }
+                    };
                     let _ = self.routes.push(RouteSlot { id, file: name.clone(), byte_len });
                 }
                 // Unreadable: reclaim it only if it carries the aborted-commit signature (the
@@ -216,16 +237,17 @@ impl ObjectStore {
             return (rx.object_id(), outcome.status);
         }
         let fresh = rx.object_id() == TransferControl::NEW_OBJECT_ID;
-        if fresh && self.routes.is_full() {
+        if fresh && (self.routes.is_full() || self.next_id >= SIDELOAD_ID_BASE) {
             // Storage-full, typed (S0 §4.1 duplicate/storage policy): the catalog can't index
-            // another object, so reject before touching the card's name slots.
+            // another object (or the durable-id space is exhausted — practically unreachable),
+            // so reject before touching the card's name slots.
             self.upload_discard();
             return (rx.object_id(), TransferStatus::Error);
         }
         let replace_idx = if fresh { None } else { self.slot_index(rx.object_id()) };
         let Some(storage) = &mut self.storage else { return (rx.object_id(), TransferStatus::Error) };
         let replace_file = replace_idx.map(|i| self.routes[i].file.clone());
-        match storage.upload_commit(replace_file.as_ref()) {
+        match storage.upload_commit(replace_file.as_ref(), self.next_id) {
             Some((file, byte_len, _info)) => {
                 let id = match replace_idx {
                     Some(i) => {

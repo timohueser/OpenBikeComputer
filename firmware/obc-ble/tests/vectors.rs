@@ -44,7 +44,10 @@ fn transfer_control_vectors_round_trip() {
 
         let route_len = fixture("route-waypoints.obcr").len() as u32;
         if offset_is_mid {
-            assert!(desc.offset > 0 && desc.offset < route_len, "{name} resumes mid-object");
+            // Shape stability: a non-zero offset still DECODES byte-exactly — the
+            // semantic reject (transfers restart, not resume) happens in the
+            // transfer layer, not the codec.
+            assert!(desc.offset > 0 && desc.offset < route_len, "{name} carries a mid-object offset");
         }
     }
 }
