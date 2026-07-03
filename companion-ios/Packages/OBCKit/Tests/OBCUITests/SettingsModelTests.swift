@@ -85,6 +85,20 @@ final class SettingsModelTests: XCTestCase {
         XCTAssertEqual(MockBondStore(control: control).load()?.deviceName, "Summit")
     }
 
+    func testRenameCapsOverLongNamesAtTheS0Limit() async {
+        let (model, control) = makeModel(.happyPath)
+        model.start()
+        await waitFor("identity") { model.deviceName == "Trailhead" }
+
+        // 40 × 3-byte scalars = 120 UTF-8 bytes; the cap lands on a Character
+        // boundary at the 16 that fit in 48 B — so the app-side name and the
+        // device's stored name agree, and the config blob can't be corrupted.
+        XCTAssertTrue(model.rename(to: String(repeating: "名", count: 40)))
+        XCTAssertEqual(model.deviceName, String(repeating: "名", count: 16))
+        XCTAssertLessThanOrEqual(model.deviceName.utf8.count, DeviceConfig.maxNameUTF8Bytes)
+        await waitFor("config write lands") { control.deviceInfo.name == model.deviceName }
+    }
+
     func testRenameRejectsEmptyNames() async {
         let (model, control) = makeModel(.happyPath)
         model.start()

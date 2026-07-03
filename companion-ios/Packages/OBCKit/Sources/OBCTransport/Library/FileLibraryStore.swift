@@ -49,11 +49,26 @@ public struct FileLibraryStore: LibraryStore, Sendable {
         let dir = plannedDir.appendingPathComponent(Self.fileSafe(record.id.rawValue), isDirectory: true)
         ensure(dir)
         write(PlannedRouteFile(record), to: dir.appendingPathComponent("route.json"))
-        // The source bytes never change for a given record — don't rewrite a
-        // multi-MB GPX on every rename.
-        let source = dir.appendingPathComponent(Self.sourceName(for: record.sourceFileName))
-        if !FileManager.default.fileExists(atPath: source.path) {
-            try? record.sourceFileData.write(to: source, options: .atomic)
+        writeSourceSidecar(record.sourceFileData, named: record.sourceFileName, in: dir)
+    }
+
+    /// Persist the byte-exact original import file as the `source.<ext>` sidecar.
+    /// A **replace-import** reuses the record's id, so the sidecar already exists
+    /// and may carry both different bytes *and* a different extension (GPX→TCX) —
+    /// rewrite when the content changed and sweep any stale-extension sidecar, so
+    /// `plannedRoutes()` never reads the old file (or an empty `Data()`). A plain
+    /// rename keeps the same bytes, so the multi-MB write is still skipped.
+    private func writeSourceSidecar(_ data: Data, named fileName: String, in dir: URL) {
+        let targetName = Self.sourceName(for: fileName)
+        let target = dir.appendingPathComponent(targetName)
+        // Drop any earlier sidecar under a different extension (a format change).
+        for url in contents(of: dir)
+        where url.lastPathComponent.hasPrefix("source.") && url.lastPathComponent != targetName {
+            try? FileManager.default.removeItem(at: url)
+        }
+        // Only touch the file when it's missing or its bytes actually changed.
+        if (try? Data(contentsOf: target)) != data {
+            try? data.write(to: target, options: .atomic)
         }
     }
 
