@@ -356,6 +356,10 @@ public final class MainScreenModel {
                 // A hard transfer failure — fall through; `landed` keeps the
                 // partial batch either way.
             }
+            // Refresh the list from the enriched records so a ride that just
+            // landed swaps its placeholder glyph for the downloaded track preview
+            // this session, not only after the next reload.
+            if landed > 0 { rides = merged(deviceRides: onDevice) }
             // The transfer is over one way or another: the watch has done its
             // job (leaving it running would fire H10 on a later, harmless drop).
             dropWatch.cancel()
@@ -536,7 +540,14 @@ public final class MainScreenModel {
     /// the device still lists them (its copy stays), but they must not
     /// resurrect here.
     private func merged(deviceRides: [RideSummary]) -> [RideSummary] {
-        let kept = deviceRides.filter { !deletedRideIDs.contains($0.id) }
+        // The `rideList` entry (§7.4) is canonical for the stats but carries no
+        // geometry, so prefer the downloaded record's summary once we have it —
+        // same stats, but with the track preview the payload contributed (A7).
+        // Its absence is exactly why an un-synced on-device ride draws the
+        // placeholder glyph until its first sync lands.
+        let kept = deviceRides
+            .filter { !deletedRideIDs.contains($0.id) }
+            .map { rideRecords[$0.id]?.summary ?? $0 }
         let onDevice = Set(kept.map(\.id))
         let archived = rideRecords.values.map(\.summary)
             .filter { !onDevice.contains($0.id) }
