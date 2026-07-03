@@ -612,7 +612,13 @@ extension BLETransport: CBCentralManagerDelegate {
     }
 
     public func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
-        failConnect(.notConnected)
+        if connectContinuation != nil {
+            failConnect(.notConnected)
+        } else if wantsConnect {
+            // A background reconnect attempt failed — keep trying; the request
+            // sits pending in the controller until the device reappears.
+            central.connect(peripheral)
+        }
     }
 
     public func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
@@ -621,6 +627,12 @@ extension BLETransport: CBCentralManagerDelegate {
         bleChannel = nil
         failAllPending()
         stateMulticast.send(wantsConnect ? .outOfRange : .disconnected)
+        // Reconnect (S4: the banner degrades, the link keeps trying): a connect
+        // issued now has no timeout — iOS holds it pending until the peripheral
+        // advertises again, then the normal didConnect → discovery → CoC flow
+        // publishes .connected. `disconnect()` cancels it via
+        // cancelPeripheralConnection.
+        if wantsConnect { central.connect(peripheral) }
     }
 }
 
@@ -716,9 +728,11 @@ extension BLETransport: CBPeripheralDelegate {
         let waiters = channelWaiters
         channelWaiters.removeAll()
         for cont in waiters { cont.resume(returning: ble) }
-        // CoC up + services discovered → the initial link is ready (re-opens
-        // mid-session resolve their waiters without touching the connect flow).
-        if connectContinuation != nil { finishConnect() }
+        // CoC up + services discovered → the link is ready. `finishConnect`
+        // publishes .connected either way and resolves the initial connect's
+        // continuation when one is pending — a background *re*connect (after a
+        // drop) has none, but must still flip the state stream back.
+        finishConnect()
     }
 
     private func resumeReads(_ uuid: CBUUID, _ result: Result<Data, Error>) {
