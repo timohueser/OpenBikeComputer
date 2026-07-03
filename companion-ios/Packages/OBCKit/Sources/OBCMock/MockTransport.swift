@@ -29,11 +29,32 @@ public struct MockTransport: DeviceTransport {
     public var battery: AsyncStream<Int> { control.batteryMulticast.stream() }
 
     public func connect() async throws {
+        // The full link = both phases (bonded reconnect + the direct-connect tests).
+        try await discover()
+        try await authenticate()
+    }
+
+    public func discover() async throws {
+        // Phase 1 (#297): the un-gated surface. Radio/scan gate only (H7/H8 +
+        // `.timeout`); the pairing decline (D5 rejected) waits for `authenticate()`,
+        // so the D2 row appears before any passkey is modelled.
         control.connection = .connecting
         await control.delay()
         do {
-            try control.connectGate()      // radio (H7/H8) + pairing (D5)
+            try control.radioGate()
             try control.takePendingFailure()
+        } catch {
+            control.connection = .disconnected
+            throw error
+        }
+    }
+
+    public func authenticate() async throws {
+        // Phase 2 (#297): the gated ops. The pairing gate stands in for the real
+        // path's LESC passkey sheet, fired by the D2 row tap (`confirmPairing`).
+        await control.delay()
+        do {
+            try control.pairingGate()
         } catch {
             control.connection = .disconnected
             throw error

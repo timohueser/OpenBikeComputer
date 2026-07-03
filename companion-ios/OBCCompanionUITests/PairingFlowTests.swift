@@ -73,6 +73,12 @@ final class PairingFlowTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["pair.introTitle"].waitForExistence(timeout: 10))
         app.buttons["pair.start"].tap()
 
+        // #297: the row appears first (un-gated discovery); the passkey (gated) only
+        // fires on the row tap, so D5 rejected surfaces after confirming, not before.
+        let row = app.buttons["pair.deviceRow"]
+        XCTAssertTrue(row.waitForExistence(timeout: 10), "D2 discovered row missing")
+        row.tap()
+
         let failed = app.staticTexts["pair.failedTitle"]
         XCTAssertTrue(failed.waitForExistence(timeout: 10), "D5 missing")
         XCTAssertEqual(failed.label, "Pairing didn't finish")
