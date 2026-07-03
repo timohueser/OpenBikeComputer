@@ -120,8 +120,9 @@ pub(crate) async fn publish_store_change(
     store: &RefCell<ObjectStore>,
 ) {
     let digest = store.borrow().digest();
-    let _ = server.set(&server.obc.object_store, &digest.encode());
-    if let Err(e) = server.notify(stack, server.obc.object_store.handle, &digest.encode()).await {
+    let bytes = digest.encode();
+    let _ = server.set(&server.obc.object_store, &bytes);
+    if let Err(e) = server.notify(stack, server.obc.object_store.handle, &bytes).await {
         warn!("ble: [store] digest notify failed: {:?}", defmt::Debug2Format(&e));
     }
     let msg = StatusMessage::StoreChanged(StoreChanged { ty: ObjectType::Route, revision: digest.revision });
@@ -200,26 +201,24 @@ async fn run_download(
     desc: &TransferControl,
     buf: &mut [u8],
 ) -> TransferOutcome {
-    // Bind the open's result before matching — a `match store.borrow_mut().…` scrutinee
-    // temporary would keep the borrow alive through the error arm's await. Diagnostics render
-    // from the link plane's own facts (S0 §7.5), everything else opens through the catalog.
-    let opened = if desc.ty == ObjectType::Diagnostics {
-        let fw = firmware_revision();
-        let serial = serial_string();
-        let s = status();
-        let diag = DiagInput {
-            firmware: fw.as_str(),
-            hardware: HARDWARE_REVISION,
-            serial: serial.as_str(),
-            uptime_s: Instant::now().as_secs() as u32,
-            connects: s.connects,
-            disconnects: s.disconnects,
-            last_disconnect_reason: s.last_disconnect_reason,
-        };
-        store.borrow_mut().open_diagnostics_download(desc, &diag)
-    } else {
-        store.borrow_mut().download_open(desc)
+    // Assemble the link-plane facts the diagnostics blob renders (S0 §7.5); `download_open` only
+    // reads them for a `Diagnostics` request and opens everything else through the catalog, so the
+    // runner has one open path. Bind the open's result before matching — a
+    // `match store.borrow_mut().…` scrutinee temporary would keep the borrow alive through the
+    // error arm's await.
+    let fw = firmware_revision();
+    let serial = serial_string();
+    let s = status();
+    let diag = DiagInput {
+        firmware: fw.as_str(),
+        hardware: HARDWARE_REVISION,
+        serial: serial.as_str(),
+        uptime_s: Instant::now().as_secs() as u32,
+        connects: s.connects,
+        disconnects: s.disconnects,
+        last_disconnect_reason: s.last_disconnect_reason,
     };
+    let opened = store.borrow_mut().download_open(desc, &diag);
     let (mut tx, source) = match opened {
         Ok(open) => open,
         Err(status) => {
