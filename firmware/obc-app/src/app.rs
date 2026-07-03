@@ -814,20 +814,19 @@ impl App {
 
     /// Whether the top (input-receiving) screen is one of the settings screens — the gate
     /// [`take_settings_dirty`](App::take_settings_dirty) uses to hold a pending save until exit.
+    /// Reads the [`ScreenKind`](crate::screen::ScreenKind) each screen declares in its `screens!`
+    /// table row, so a new settings screen can't be forgotten here.
     fn top_is_settings(&self) -> bool {
-        matches!(
-            self.stack.last(),
-            Some(
-                Screen::Settings(_)
-                    | Screen::DateTime(_)
-                    | Screen::Units(_)
-                    | Screen::Stats(_)
-                    | Screen::StatFields(_)
-                    | Screen::AddField(_)
-                    | Screen::Power(_)
-                    | Screen::Reset(_)
-            )
-        )
+        self.stack.last().is_some_and(|s| s.kind().is_settings())
+    }
+
+    /// Whether the top screen would draw a live **hold fill** for its current selection/state —
+    /// a guarded confirm row (Ride control, Route swap), the armed factory-Reset bar, or the
+    /// Fields hold-to-delete footer over a deletable row. A render-on-demand host combines this
+    /// with the charging hold-progress to redraw only when the fill would actually animate;
+    /// holding the encoder on any other screen changes no pixels, so no repaint is owed.
+    pub fn top_wants_hold_fill(&self) -> bool {
+        self.stack.last().is_some_and(|s| s.wants_hold_fill(&self.settings))
     }
 
     /// **Debug/benchmark hook** (the USB-CDC `Z` command): set the map camera to exactly `mpp`
@@ -1102,8 +1101,9 @@ impl App {
     /// Reset bar). The **two-plane firmware** calls this each frame from its high-priority
     /// [`InputPlane`], whose hold state `App`'s own plane doesn't see — without it the Reset bar
     /// never fills. The single-loop hosts never call it (the render reads `App`'s own input). Pairs
-    /// with [`base_draws_map`](App::base_draws_map): the host forces a redraw while a hold charges
-    /// on a cheap screen so the fill animates (a pure hold-charge doesn't otherwise dirty the map).
+    /// with [`base_draws_map`](App::base_draws_map) + [`top_wants_hold_fill`](App::top_wants_hold_fill):
+    /// the host forces a redraw while a hold charges on a cheap screen that would draw the fill, so
+    /// it animates (a pure hold-charge doesn't otherwise dirty the map).
     pub fn set_hold_progress(&mut self, progress: f32) {
         self.hold_progress_override = Some(progress);
     }
@@ -1606,6 +1606,94 @@ mod tests {
         assert!(app.take_settings_dirty(), "leaving settings flushes the pending edit — one coalesced save");
         assert!(!app.take_settings_dirty(), "and the flag drains — only saved once");
     }
+
+    /// Belt-and-braces over [`ScreenKind`](crate::screen::ScreenKind): **every** settings screen
+    /// holds a pending save while it is the top screen and flushes it once on exit. Each case
+    /// pushes the screen onto the Home root, makes one real edit through the screen's own gestures
+    /// where it has one (the Settings list is pure navigation, so its case arms the flag as an
+    /// edit made deeper in the subtree would), then backs all the way out. A new settings screen
+    /// whose `screens!` row forgets `=> Settings` would flush mid-edit and fail its case here.
+    #[test]
+    fn every_settings_screen_holds_a_pending_save_until_exit() {
+        use crate::screen::{
+            apply, AddFieldScreen, DateTimeScreen, PowerScreen, ResetScreen, SettingsScreen, StatFieldsScreen,
+            StatsScreen, Transition, UnitsScreen,
+        };
+        use crate::settings::Units;
+
+        /// The screens to stack on the Home root (bottom first — parents under children, as the
+        /// real navigation leaves them) and the gesture script performing one edit on the top one.
+        type Case = (&'static str, fn() -> heapless::Vec<Screen, 2>, &'static [Gesture]);
+        fn one(s: Screen) -> heapless::Vec<Screen, 2> {
+            let mut v = heapless::Vec::new();
+            let _ = v.push(s);
+            v
+        }
+        let cases: [Case; 8] = [
+            // Pure navigation — no edit gesture of its own.
+            ("Settings list", || one(Screen::Settings(SettingsScreen::new())), &[]),
+            // Press on row 0 flips the `GPS clock` toggle.
+            ("Date & Time", || one(Screen::DateTime(DateTimeScreen::new())), &[Gesture::Press]),
+            // Press flips metric ↔ imperial.
+            ("Units", || one(Screen::Units(UnitsScreen::new())), &[Gesture::Press]),
+            // Open the page-cycle stepper, +1 s (and leave the field open — Back must still exit).
+            ("Stats", || one(Screen::Stats(StatsScreen::new())), &[Gesture::Press, Gesture::Turn(1)]),
+            // A completed hold deletes the highlighted field.
+            ("Fields", || one(Screen::StatFields(StatFieldsScreen::new())), &[Gesture::Hold]),
+            // Press adds the highlighted field and pops back onto its Fields parent — still settings.
+            (
+                "Add field",
+                || {
+                    let mut v = one(Screen::StatFields(StatFieldsScreen::new()));
+                    let _ = v.push(Screen::AddField(AddFieldScreen::new()));
+                    v
+                },
+                &[Gesture::Press],
+            ),
+            // → the Power Saver row, flip it.
+            ("Power", || one(Screen::Power(PowerScreen::new())), &[Gesture::Turn(1), Gesture::Press]),
+            // Press arms, then the completed hold erases to defaults — a real diff off the seed below.
+            ("Reset", || one(Screen::Reset(ResetScreen::new())), &[Gesture::Press, Gesture::Hold]),
+        ];
+
+        for (name, stack, edits) in cases {
+            let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+            // A non-default seed, so the factory Reset's erase-to-defaults really changes something.
+            app.set_settings(Settings { units: Units::Imperial, ..Settings::default() });
+            for s in stack() {
+                apply(&mut app.stack, Transition::Push(s));
+            }
+            assert!(app.top_is_settings(), "{name} must classify as ScreenKind::Settings");
+
+            let before = *app.settings();
+            for &g in edits {
+                app.apply_gesture(g);
+            }
+            if edits.is_empty() {
+                app.settings_dirty = true;
+            } else {
+                assert_ne!(*app.settings(), before, "{name}: the edit script changed a setting");
+            }
+            assert!(!app.take_settings_dirty(), "{name}: the save is held while the screen is on top");
+
+            // Back out to the Home root (closing any open field on the way); the save stays held
+            // for as long as any settings screen remains on top, then flushes exactly once.
+            for _ in 0..MAX_DEPTH_BACKOUT {
+                if app.stack.len() == 1 {
+                    break;
+                }
+                assert!(!app.take_settings_dirty(), "{name}: still inside the settings subtree — save held");
+                app.apply_gesture(Gesture::Back);
+            }
+            assert_eq!(app.stack.len(), 1, "{name}: backed out to the Home root");
+            assert!(app.take_settings_dirty(), "{name}: leaving the settings subtree flushes the pending save");
+            assert!(!app.take_settings_dirty(), "{name}: the flag drains — exactly one save");
+        }
+    }
+
+    /// Upper bound of `Back` presses needed to unwind any settings case above (open field + the
+    /// stacked screens), safely under test control rather than looping forever on a regression.
+    const MAX_DEPTH_BACKOUT: usize = 8;
 
     /// `set_settings` seeds the boot value without arming a save (the value came from the store /
     /// the default — re-persisting it would be a pointless write).

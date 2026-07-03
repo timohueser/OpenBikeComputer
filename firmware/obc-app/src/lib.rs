@@ -38,7 +38,7 @@ pub use hold_hint::HoldHints;
 pub use input::{Gesture, Gestures, DEFAULT_HOLD_MS, DEFAULT_TAP_MS};
 pub use input_plane::InputPlane;
 pub use route::{Catalog, RouteSummary, MAX_ROUTES};
-pub use screen::{Screen, Transition};
+pub use screen::{Screen, ScreenKind, Transition};
 pub use settings::{DateTime, Settings, Units};
 pub use stat_fields::{StatField, StatFieldList};
 pub use wall_clock::{MinuteTicker, WallClock};
