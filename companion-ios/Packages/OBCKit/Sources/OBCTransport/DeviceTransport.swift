@@ -17,9 +17,11 @@ public protocol DeviceTransport: Sendable {
     /// Link lifecycle. **Replays the latest** value to late subscribers (a fresh
     /// stream immediately yields the current state), then streams changes.
     var state: AsyncStream<ConnectionState> { get }
-    /// Begin connecting: power-on wait, scan, connect, discover, open the CoC, and
-    /// run the protocol-version check. Throws `DeviceError` on failure (never traps).
-    /// The full link = `discover()` then `authenticate()`.
+    /// Begin connecting: power-on wait, scan, connect, discover, open the CoC.
+    /// Throws `DeviceError` on failure (never traps). The full link = `discover()`
+    /// then `authenticate()`. The protocol-version check (#303) runs where
+    /// `deviceInfo()` is consumed on connect — a mismatch surfaces as a banner +
+    /// disabled sync, not a thrown connect (which would mis-degrade to S4).
     func connect() async throws
     /// **First-time-pairing phase 1** (#297): power-on wait, scan, connect, and
     /// discover services + only the **un-gated** characteristics (DIS / BAS /
