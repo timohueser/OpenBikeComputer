@@ -125,8 +125,8 @@ public struct RouteDetailView: View {
     }
 
     /// The track hero — a basemap when online, the grid otherwise. When a map is
-    /// available it's a button into the full-screen `TrackMapView`, with a small
-    /// expand affordance so the tap target reads.
+    /// available, tapping anywhere on it opens the full-screen `TrackMapView`
+    /// (no separate expand affordance — the whole hero is the tap target).
     @ViewBuilder
     private var hero: some View {
         let preview = MapTrackPreviewView(
@@ -140,9 +140,8 @@ public struct RouteDetailView: View {
         if canExpandMap {
             Button { mapShown = true } label: {
                 preview
-                    .overlay(alignment: .bottomTrailing) { expandBadge }
                     // The map ignores hits (the tap is ours), so make the whole
-                    // hero the button's tap target — not just the tiny badge.
+                    // hero the button's tap target.
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -159,18 +158,6 @@ public struct RouteDetailView: View {
             title: model.name,
             onClose: { mapShown = false }
         )
-    }
-
-    /// The tap-to-expand chip pinned in the hero's corner.
-    private var expandBadge: some View {
-        Image(systemName: "arrow.up.left.and.arrow.down.right")
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(OBCTheme.ink)
-            .padding(8)
-            .background(OBCTheme.panel.opacity(0.92))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(OBCTheme.line))
-            .padding(12)
     }
 
     /// The E1 provenance line above the hero — mono uppercase in coral.
