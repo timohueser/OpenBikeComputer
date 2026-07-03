@@ -40,7 +40,16 @@ silently targets the host and fails):
 
 ```sh
 cd obc-fw-nrf54l && cargo build --release    # see that crate's README to flash
+
+# The BLE build (companion-app link): the same firmware with the nrf-sdc + TrouBLE stack
+# folded in. The board crate README has the pins, flashing, and on-glass verify.
+cd obc-fw-nrf54l && cargo build --release --no-default-features --features ble
 ```
+
+The host-tested, radio-free BLE core (`obc-ble`) is a normal workspace member, so the
+`cargo test` below already exercises it. The wire contract those bytes cross to the phone
+is [`obc-ble-interface-spec.md`](../obc-ble-interface-spec.md); the concepts are on the docs
+site under [the companion link](https://timohueser.github.io/OpenBikeComputer/software/companion-link/).
 
 ## Test
 
