@@ -29,6 +29,10 @@ use embassy_nrf::rramc::{Rramc, Unbuffered};
 use embassy_nrf::Peri;
 use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
 use obc_app::{Settings, SettingsStore};
+#[cfg(feature = "ble")]
+use trouble_host::prelude::{
+    AddrKind, Address, BdAddr, BondInformation, Identity, IdentityResolvingKey, LongTermKey, SecurityLevel,
+};
 
 /// Bytes the settings slot holds — one encoded blob. Kept here so the RRAM carve sizes from the
 /// shared codec rather than a magic number. The RRAMC writes 16-byte lines, so the blob must be a
@@ -61,6 +65,26 @@ const BOOT_COUNT_OFFSET: u32 = 2048;
 /// The boot-counter line's tag; anything else there (a blank page, an older layout) reads as
 /// count 0 rather than garbage.
 const BOOT_COUNT_MAGIC: [u8; 4] = *b"OBCD";
+
+/// Byte offset of the **BLE bond slot** within the reserved settings page (issue #276): the one
+/// bonded peer's identity + keys (LTK/IRK), persisted so a power cycle or a firmware reflash lands
+/// straight back in the bonded-and-encrypted link. Placed in the page's upper half — clear of the
+/// settings slot @0 (which reserves the low half for a future two-slot upgrade) and the boot
+/// counter @2048. One slot: a fresh pairing replaces it (single-peer policy, S0 §8).
+#[cfg(feature = "ble")]
+const BOND_OFFSET: u32 = 3072;
+/// The bond slot's tag; anything else there (blank page, torn write, older layout) reads as
+/// "no bond" rather than garbage — the device falls back to open pairing.
+#[cfg(feature = "ble")]
+const BOND_MAGIC: [u8; 4] = *b"OBCB";
+/// Bond blob layout version (bump on any field change — an old version reads as no bond).
+#[cfg(feature = "ble")]
+const BOND_VERSION: u8 = 1;
+/// The bond slot's fixed length: 4 RRAM lines (a whole number of the 16-byte write granularity).
+/// Layout: `magic(4) · version(1) · is_bonded(1) · security_level(1) · addr_kind(1) · addr(6) ·
+/// irk_present(1) · pad(1) · LTK(16) · IRK(16) · pad(12) · crc32(4)` over bytes `[0..60]`.
+#[cfg(feature = "ble")]
+const BOND_SLOT_LEN: usize = 64;
 
 /// RRAM-backed settings store: owns the [`Rramc`] controller and reads/writes the carved page.
 pub struct RramSettingsStore {
@@ -105,6 +129,119 @@ impl RramSettingsStore {
     pub fn boot_count(&self) -> u32 {
         self.boot_count
     }
+
+    /// Load the stored BLE bond (issue #276), or `None` when the slot is blank / torn / CRC-bad —
+    /// in which case the device advertises open and pairs afresh. Reconstructs the full
+    /// [`BondInformation`] (LTK, peer identity + IRK, security level) the host adds to its resolving
+    /// list so the bonded phone's rotating RPA reconnect resolves and re-encrypts silently.
+    #[cfg(feature = "ble")]
+    pub fn load_bond(&mut self) -> Option<BondInformation> {
+        let off = region_offset() + BOND_OFFSET;
+        let mut buf = [0u8; BOND_SLOT_LEN];
+        match self.rram.read(off, &mut buf) {
+            Ok(()) => {
+                let bond = decode_bond(&buf);
+                match &bond {
+                    Some(_) => defmt::info!("settings: loaded BLE bond from RRAM @ {=u32:#010x}", off),
+                    None => defmt::info!("settings: no valid BLE bond @ {=u32:#010x} → open pairing", off),
+                }
+                bond
+            }
+            Err(e) => {
+                defmt::warn!("settings: bond RRAM read failed: {} → open pairing", e);
+                None
+            }
+        }
+    }
+
+    /// Persist the single BLE bond (issue #276) — a fresh pairing replaces whatever was here
+    /// (single-peer policy, S0 §8). One aligned write, no erase (RRAM overwrites in place).
+    #[cfg(feature = "ble")]
+    pub fn save_bond(&mut self, bond: &BondInformation) {
+        let off = region_offset() + BOND_OFFSET;
+        let bytes = encode_bond(bond);
+        match self.rram.write(off, &bytes) {
+            Ok(()) => defmt::info!("settings: wrote BLE bond to RRAM @ {=u32:#010x}", off),
+            Err(e) => defmt::warn!("settings: bond RRAM write failed: {}", e),
+        }
+    }
+
+    /// Clear the stored BLE bond (issue #276) — zero the slot so [`load_bond`](Self::load_bond)
+    /// reads "no bond" and the device returns to open pairing. Used when the peer signals it lost
+    /// its keys (the app/OS "forgot" the device) so the next contact re-pairs cleanly.
+    #[cfg(feature = "ble")]
+    pub fn clear_bond(&mut self) {
+        let off = region_offset() + BOND_OFFSET;
+        let zero = [0u8; BOND_SLOT_LEN];
+        match self.rram.write(off, &zero) {
+            Ok(()) => defmt::info!("settings: cleared BLE bond @ {=u32:#010x}", off),
+            Err(e) => defmt::warn!("settings: bond RRAM clear failed: {}", e),
+        }
+    }
+}
+
+/// Serialize a [`BondInformation`] into the fixed [`BOND_SLOT_LEN`] slot (see the layout note on
+/// [`BOND_SLOT_LEN`]), with a trailing CRC-32 over the payload so a torn write reads back invalid.
+#[cfg(feature = "ble")]
+fn encode_bond(bond: &BondInformation) -> [u8; BOND_SLOT_LEN] {
+    let mut buf = [0u8; BOND_SLOT_LEN];
+    buf[0..4].copy_from_slice(&BOND_MAGIC);
+    buf[4] = BOND_VERSION;
+    buf[5] = bond.is_bonded as u8;
+    buf[6] = match bond.security_level {
+        SecurityLevel::NoEncryption => 0,
+        SecurityLevel::Encrypted => 1,
+        SecurityLevel::EncryptedAuthenticated => 2,
+    };
+    buf[7] = bond.identity.addr.kind.into_inner();
+    buf[8..14].copy_from_slice(bond.identity.addr.addr.raw());
+    match bond.identity.irk {
+        Some(irk) => {
+            buf[14] = 1;
+            buf[32..48].copy_from_slice(&irk.to_le_bytes());
+        }
+        None => buf[14] = 0,
+    }
+    buf[16..32].copy_from_slice(&bond.ltk.to_le_bytes());
+    let mut crc = obc_ble::Crc32::new();
+    crc.update(&buf[..BOND_SLOT_LEN - 4]);
+    buf[BOND_SLOT_LEN - 4..].copy_from_slice(&crc.finalize().to_le_bytes());
+    buf
+}
+
+/// Reconstruct a [`BondInformation`] from a slot, or `None` if the magic / version / CRC don't
+/// check out (blank page, torn write, older layout).
+#[cfg(feature = "ble")]
+fn decode_bond(buf: &[u8; BOND_SLOT_LEN]) -> Option<BondInformation> {
+    if buf[0..4] != BOND_MAGIC || buf[4] != BOND_VERSION {
+        return None;
+    }
+    let mut crc = obc_ble::Crc32::new();
+    crc.update(&buf[..BOND_SLOT_LEN - 4]);
+    let stored = u32::from_le_bytes([buf[60], buf[61], buf[62], buf[63]]);
+    if crc.finalize() != stored {
+        return None;
+    }
+    let is_bonded = buf[5] != 0;
+    let security_level = match buf[6] {
+        0 => SecurityLevel::NoEncryption,
+        1 => SecurityLevel::Encrypted,
+        _ => SecurityLevel::EncryptedAuthenticated,
+    };
+    let mut addr = [0u8; 6];
+    addr.copy_from_slice(&buf[8..14]);
+    let address = Address::new(AddrKind(buf[7]), BdAddr::new(addr));
+    let irk = if buf[14] != 0 {
+        let mut b = [0u8; 16];
+        b.copy_from_slice(&buf[32..48]);
+        IdentityResolvingKey::from_le_bytes(b)
+    } else {
+        None
+    };
+    let mut ltk = [0u8; 16];
+    ltk.copy_from_slice(&buf[16..32]);
+    let identity = Identity { addr: address, irk };
+    Some(BondInformation::new(identity, LongTermKey::from_le_bytes(ltk), security_level, is_bonded))
 }
 
 impl SettingsStore for RramSettingsStore {

@@ -391,6 +391,39 @@ reflash `ble`, and the app's sync pulls them; spot-check a decoded ride against 
 same Finish wrote. Ids must survive a device power cycle (list → reboot → same ids); the boot
 counter must increment across power cycles (diagnostics read, or the `boot #N` RTT line).
 
+## Pairing + bonding (A8, #276)
+
+A8 flips security on (S0 §8): the whole OBC Control service becomes
+`permissions(authenticated)` — an **encrypted, LESC-authenticated** (MITM) link — except
+`protocolVersion`, which stays open for the connect-time version check (DIS/BAS stay open too). The
+CoC accept is refused on an unencrypted link. Pairing is **LESC passkey display**: IO capability
+`DisplayOnly`, so the device shows a 6-digit code (the status screen's big-font marquee, `Font::Huge`)
+that the rider types into the phone's system dialog. The whole thing rides `trouble-host`'s
+`security` feature (P-256 ECDH in-host) — the SMP CSPRNG **auto-seeds from the controller's `LeRand`**
+at host init, so there's no entropy to plumb; nrf-sdc exports every security HCI command
+(LTK reply, enable-encryption, the resolving-list set).
+
+The single bonded peer (LTK + peer identity/IRK + level) persists in the **RRAM SETTINGS carve** — a
+64-byte CRC-checked slot at `BOND_OFFSET` (`settings.rs`), clear of the settings slot @0 and the boot
+counter @2048, reached through `ObjectStore::{load,save,clear}_bond`. It survives power cycles **and a
+firmware reflash** (the carve sits above the application image — `probe-rs download` of the app region
+leaves it). At boot the bond is handed to the host (`add_bond_information`) so the controller's
+resolving list resolves the phone's rotating RPA and re-encrypts with the stored LTK — silent
+reconnect, no dialog. The device keeps its **stable** static-random address (no device privacy), which
+is what the phone's background reconnect keys on. `set_bondable(true)` per link lets a pairing persist
+keys (trouble's default is *not* bondable).
+
+**Single-peer policy:** one bond slot; a fresh passkey pairing replaces it — the on-screen passkey is
+the anti-stranger control, so there's no device-side "clear bond" gesture. When the phone forgets the
+device and re-pairs, trouble raises `BondLost`; we clear the stale bond and store the fresh one.
+
+**Verify** (on glass, with the iPhone app): (1) fresh pair — passkey on the panel (webcam), typed on
+the phone, bond lands; a wrong/declined code → clean re-advertise. (2) Power-cycle the device → the
+phone reconnects with no dialog; same after an app restart or a walk-away. (3) Reflash `ble` → still
+no dialog (bond survived). (4) App *Forget* + iOS *Settings ▸ Bluetooth* forget → next contact
+re-pairs with a fresh passkey. (5) A6 upload + A7 sync re-run over the encrypted link. (6) nRF Connect
+as an unbonded stranger: reads DIS/`protocolVersion`, access-denied on every gated char + the CoC.
+
 ## Driving it from a host (`debug-uart`)
 
 With the `debug-uart` firmware flashed and VCOM HWFC off, replay a recorded ride over

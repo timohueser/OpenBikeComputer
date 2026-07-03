@@ -259,6 +259,9 @@ public final class LaunchFlowModel {
             return .radioBlocked(.off)
         case DeviceError.deviceNotFound:
             return .pairFailed(.timeout)
+        case DeviceError.pairingFailed:
+            // Declined / wrong passkey, or the encrypted link was refused (A8).
+            return .pairFailed(.rejected)
         default:
             return .pairFailed(.rejected)
         }
