@@ -2119,8 +2119,12 @@ async fn main(_spawner: Spawner) {
 
         // The persistent settings store (#193): takes the `RRAMC` peripheral, reads/writes the
         // blob in the carved RRAM page. Built here (where `p` is live) and moved into the
-        // ride loop, which seeds the app at boot and saves on a settings edit.
-        let settings_store = settings::RramSettingsStore::new(p.RRAMC);
+        // ride loop, which seeds the app at boot and saves on a settings edit. Every boot —
+        // any build — also bumps the persisted boot counter, the diagnostics blob's one
+        // durable fact (A7, issue #275).
+        let mut settings_store = settings::RramSettingsStore::new(p.RRAMC);
+        let boot_count = settings_store.bump_boot_count();
+        defmt::info!("boot #{=u32}", boot_count);
 
         // The `ble` build's object store (A6, issue #274): the mounted card (`None` degrades
         // route ops to typed errors, config still works) + the RRAM settings both move in here;

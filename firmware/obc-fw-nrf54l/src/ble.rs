@@ -725,7 +725,10 @@ fn classify_transfer(data: &[u8], store: &RefCell<ObjectStore>) -> TransferDispo
             Ok(rx) => TransferDisposition::Arm(Armed::Upload(desc, rx)),
             Err(status) => TransferDisposition::Answer(transfer_result(desc.object_id, status)),
         },
-        (Op::Download, ObjectType::Route | ObjectType::Ride | ObjectType::RouteList | ObjectType::RideList) => {
+        (
+            Op::Download,
+            ObjectType::Route | ObjectType::Ride | ObjectType::RouteList | ObjectType::RideList | ObjectType::Diagnostics,
+        ) => {
             // Cheap existence check here for the immediate `notFound`; the source itself (and
             // its CRC pre-pass) opens on the data plane, off the GATT reply path.
             let known = match desc.ty {
@@ -738,7 +741,7 @@ fn classify_transfer(data: &[u8], store: &RefCell<ObjectStore>) -> TransferDispo
             }
             TransferDisposition::Arm(Armed::Download(desc))
         }
-        // Diagnostics land with the boot-counter carve; uploads of list/config types are nonsensical.
+        // Uploads of ride/list/config/diagnostics types are nonsensical.
         _ => TransferDisposition::Answer(transfer_result(desc.object_id, TransferStatus::Error)),
     }
 }
@@ -1192,8 +1195,25 @@ async fn run_download(
     buf: &mut [u8],
 ) -> TransferOutcome {
     // Bind the open's result before matching — a `match store.borrow_mut().…` scrutinee
-    // temporary would keep the borrow alive through the error arm's await.
-    let opened = store.borrow_mut().download_open(desc);
+    // temporary would keep the borrow alive through the error arm's await. Diagnostics render
+    // from the link plane's own facts (S0 §7.5), everything else opens through the catalog.
+    let opened = if desc.ty == ObjectType::Diagnostics {
+        let fw = firmware_revision();
+        let serial = serial_string();
+        let s = status();
+        let diag = crate::object_store::DiagInput {
+            firmware: fw.as_str(),
+            hardware: HARDWARE_REVISION,
+            serial: serial.as_str(),
+            uptime_s: Instant::now().as_secs() as u32,
+            connects: s.connects,
+            disconnects: s.disconnects,
+            last_disconnect_reason: s.last_disconnect_reason,
+        };
+        store.borrow_mut().open_diagnostics_download(desc, &diag)
+    } else {
+        store.borrow_mut().download_open(desc)
+    };
     let (mut tx, source) = match opened {
         Ok(open) => open,
         Err(status) => {
