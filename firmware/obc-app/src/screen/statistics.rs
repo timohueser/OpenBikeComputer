@@ -45,6 +45,10 @@ const CHART_BOT: i32 = 110;
 /// The peak elevation maps here (a few px below `CHART_TOP`) so the apex clears the bar.
 const BAND_TOP: i32 = CHART_TOP + 4;
 const SIDE_MARGIN: i32 = 12;
+/// "Near the peak" for the cursor's elevation label, in **screen px**: inside this of the peak the
+/// label drops below the dot so it can't overlap the apex. Screen-space (not a route fraction) so
+/// it stays a constant on-glass distance at every zoom; an off-window peak is never near.
+const PEAK_NEAR_PX: i32 = 36;
 
 /// What `turn` does: scrub the cursor, or zoom the view about it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -295,7 +299,8 @@ impl StatisticsScreen {
         // else just above, clamped inside the band and clear of the baseline/bar.
         let mut ele_s: heapless::String<8> = heapless::String::new();
         let _ = write!(ele_s, "{} {}", units.elev(cur_ele as f32) as i32, units.elev_label());
-        let near_peak = (cursor_frac - profile.peak_frac()).abs() < 0.07;
+        let peak_x = frac_to_x(profile.peak_frac());
+        let near_peak = (chart_x..chart_x + chart_w).contains(&peak_x) && (cursor_x - peak_x).abs() < PEAK_NEAR_PX;
         let label_y = (if near_peak { cur_y + 9 } else { cur_y - 5 }).clamp(CHART_TOP + 2, band_bot - 24);
         if cursor_x < w - 44 {
             cv.text(&ele_s, Point::new(cursor_x + 8, label_y), Font::Label, TextAlign::Left, INK);
