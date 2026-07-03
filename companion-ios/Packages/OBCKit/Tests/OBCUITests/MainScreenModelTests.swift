@@ -473,6 +473,25 @@ final class MainScreenModelTests: XCTestCase {
         XCTAssertTrue(model.isUploaded(record.id), "the device lists the fresh copy — the badge survives reconcile")
     }
 
+    /// A regained link re-reads the lists by itself: the device may have changed
+    /// while the app was away, so the badge must true-up on reconnect without a
+    /// manual reload.
+    func testReconnectReloadsAndReconcilesTheBadge() async {
+        let (model, control) = makeModel(.happyPath)
+        await startLoaded(model)
+        XCTAssertTrue(model.isUploaded(RouteID("kettle-moraine-loop")))
+
+        // The device loses the copy (another phone / the EchoHarness deleted
+        // object 7); nothing tells the model — the badge stays lit for now.
+        try? await MockTransport(control: control).deleteRoute(RouteID("7"))
+        XCTAssertTrue(model.isUploaded(RouteID("kettle-moraine-loop")))
+
+        control.connection = .outOfRange
+        await waitFor("S4 banner") { model.showsDisconnectedBanner }
+        control.connection = .connected
+        await waitFor("reconnect reconcile") { !model.isUploaded(RouteID("kettle-moraine-loop")) }
+    }
+
     func testPlannedRouteNamedFindsACollisionCaseInsensitively() async {
         let (model, _) = makeModel(.happyPath)
         await startLoaded(model)
