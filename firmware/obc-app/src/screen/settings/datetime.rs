@@ -7,14 +7,11 @@
 
 use core::fmt::Write;
 
-use embedded_graphics::{
-    prelude::{DrawTarget, Point},
-    primitives::Rectangle,
-};
+use embedded_graphics::{prelude::Point, primitives::Rectangle};
 use obc_render::{
     rect,
     text::{Font, TextAlign},
-    Canvas, RenderStats, Surface,
+    Surface,
 };
 
 use crate::input::Gesture;
@@ -152,17 +149,12 @@ impl DateTimeScreen {
         self.selected = i as usize;
     }
 
-    pub fn draw<D, F>(&self, target: &mut D, rx: &mut Render, color_fn: &F) -> RenderStats
-    where
-        D: DrawTarget,
-        F: Fn(u16) -> D::Color,
-    {
-        let (w, h) = (rx.w as i32, rx.h as i32);
+    pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
+        let (w, h) = (rx.w, rx.h);
         let s = rx.settings;
         let rows = rows(s.gps_time);
         let has_fix = rx.state.user_fix.is_some();
-        let mut cv = Canvas::new(target, color_fn);
-        title_frame(&mut cv, w, h, "DATE & TIME", "");
+        title_frame(cv, w, h, "DATE & TIME", "");
 
         let mut y = LIST_TOP + 4;
         for (i, &kind) in rows.iter().enumerate() {
@@ -170,15 +162,15 @@ impl DateTimeScreen {
             let area = super::row_rect(y, w, rh);
             let selected = i == self.selected;
             let editing = if selected { self.editing } else { None };
-            super::row_cursor(&mut cv, area, selected, editing.is_some());
+            super::row_cursor(cv, area, selected, editing.is_some());
 
             match kind {
                 RowKind::Toggle => {
-                    super::row_label(&mut cv, area, "GPS clock", None);
-                    super::toggle_slider(&mut cv, area, s.gps_time);
+                    super::row_label(cv, area, "GPS clock", None);
+                    super::toggle_slider(cv, area, s.gps_time);
                 }
-                RowKind::Date => draw_date(&mut cv, area, s, editing),
-                RowKind::Time => draw_time(&mut cv, area, s, editing),
+                RowKind::Date => draw_date(cv, area, s, editing),
+                RowKind::Time => draw_time(cv, area, s, editing),
                 RowKind::GpsFix => {
                     // The UTC anchor GPS supplies — fixed, independent of the offset.
                     let mut v: heapless::String<24> = heapless::String::new();
@@ -187,7 +179,7 @@ impl DateTimeScreen {
                     } else {
                         let _ = v.push_str("Searching for fix");
                     }
-                    info_row(&mut cv, area, "GPS fix", &v);
+                    info_row(cv, area, "GPS fix", &v);
                 }
                 RowKind::LocalTime => {
                     // The offset can carry across midnight, so take the whole local stamp (date and
@@ -203,10 +195,10 @@ impl DateTimeScreen {
                         local.hour,
                         local.minute
                     );
-                    info_row(&mut cv, area, "Local time", &v);
+                    info_row(cv, area, "Local time", &v);
                 }
                 RowKind::Offset => {
-                    super::row_label(&mut cv, area, "Offset", None);
+                    super::row_label(cv, area, "Offset", None);
                     let (cw, ch) = (84, 32);
                     let cell = rect(
                         area.top_left.x + area.size.width as i32 - cw - 6,
@@ -214,7 +206,7 @@ impl DateTimeScreen {
                         cw,
                         ch,
                     );
-                    super::stepper_field(&mut cv, cell, &fmt_offset(s.utc_offset_min), editing == Some(0), Font::Label);
+                    super::stepper_field(cv, cell, &fmt_offset(s.utc_offset_min), editing == Some(0), Font::Label);
                 }
             }
             // Hairline separators with a wider gap so they clear a selected row's amber bar,
@@ -225,7 +217,6 @@ impl DateTimeScreen {
             }
             y += rh + if sep { 15 } else { 4 };
         }
-        RenderStats::default()
     }
 }
 

@@ -12,14 +12,11 @@
 //! The `Add field` row opens the [`AddField`](super::AddFieldScreen) picker. Editing is live into
 //! [`Settings::stat_fields`](crate::Settings).
 
-use embedded_graphics::{
-    prelude::{DrawTarget, Point},
-    primitives::Rectangle,
-};
+use embedded_graphics::{prelude::Point, primitives::Rectangle};
 use obc_render::{
     rect,
     text::{Font, TextAlign},
-    Canvas, RenderStats, Surface,
+    Surface,
 };
 
 use crate::input::Gesture;
@@ -108,20 +105,15 @@ impl StatFieldsScreen {
         }
     }
 
-    pub fn draw<D, F>(&self, target: &mut D, rx: &mut Render, color_fn: &F) -> RenderStats
-    where
-        D: DrawTarget,
-        F: Fn(u16) -> D::Color,
-    {
+    pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         use crate::screen::palette::*;
-        let (w, h) = (rx.w as i32, rx.h as i32);
+        let (w, h) = (rx.w, rx.h);
         let fields = rx.settings.stat_fields.as_slice();
         let len = fields.len();
         let add_row = len;
         let rows = len + 1;
-        let mut cv = Canvas::new(target, color_fn);
 
-        title_frame(&mut cv, w, h, "FIELDS", "");
+        title_frame(cv, w, h, "FIELDS", "");
 
         // Window the row list to what fits above the delete footer, scrolling to keep the cursor
         // visible (or anchoring the grabbed row).
@@ -143,7 +135,7 @@ impl StatFieldsScreen {
 
             if idx == add_row {
                 // Add-field row: a plus + label.
-                super::row_cursor(&mut cv, area, selected, false);
+                super::row_cursor(cv, area, selected, false);
                 let midy = area.top_left.y + (area.size.height as i32 - 22) / 2;
                 let px = area.top_left.x + 14;
                 let pcy = midy + 11;
@@ -155,15 +147,15 @@ impl StatFieldsScreen {
                 let grabbed = selected && self.grabbed;
                 // A grabbed row gets the amber fill + move arrows; otherwise the plain row cursor
                 // (suppressed while grabbed so they don't double up).
-                super::row_cursor(&mut cv, area, selected, grabbed);
+                super::row_cursor(cv, area, selected, grabbed);
                 if grabbed {
                     cv.round(area, 6, AMBER);
-                    move_arrows(&mut cv, area);
+                    move_arrows(cv, area);
                 }
-                super::row_label(&mut cv, area, f.name(), None);
+                super::row_label(cv, area, f.name(), None);
                 if !grabbed {
                     let badge_color = if selected { INK } else { SUBTEXT };
-                    super::span_badge(&mut cv, area, f.span(), badge_color);
+                    super::span_badge(cv, area, f.span(), badge_color);
                 }
             }
         }
@@ -171,9 +163,8 @@ impl StatFieldsScreen {
         // The scrollbar wants the real (clamped) window position — the grabbed virtual offset can run
         // negative / past the end.
         let sb_first = first.clamp(0, rows.saturating_sub(visible) as i32) as usize;
-        scrollbar(&mut cv, w - 8, LIST_TOP, visible as i32 * ROW_H, rows, sb_first, visible);
-        delete_footer(&mut cv, w, h, self.selected < len, rx.hold_progress);
-        RenderStats::default()
+        scrollbar(cv, w - 8, LIST_TOP, visible as i32 * ROW_H, rows, sb_first, visible);
+        delete_footer(cv, w, h, self.selected < len, rx.hold_progress);
     }
 }
 

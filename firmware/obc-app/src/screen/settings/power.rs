@@ -4,8 +4,7 @@
 
 use core::fmt::Write;
 
-use embedded_graphics::prelude::DrawTarget;
-use obc_render::{rect, text::Font, Canvas, RenderStats};
+use obc_render::{rect, text::Font, Surface};
 
 use crate::input::Gesture;
 use crate::screen::{title_frame, Ctx, Render, Transition, LIST_TOP};
@@ -78,33 +77,26 @@ impl PowerScreen {
         }
     }
 
-    pub fn draw<D, F>(&self, target: &mut D, rx: &mut Render, color_fn: &F) -> RenderStats
-    where
-        D: DrawTarget,
-        F: Fn(u16) -> D::Color,
-    {
-        let (w, h) = (rx.w as i32, rx.h as i32);
-        let mut cv = Canvas::new(target, color_fn);
-        title_frame(&mut cv, w, h, "POWER", "");
+    pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
+        let (w, h) = (rx.w, rx.h);
+        title_frame(cv, w, h, "POWER", "");
 
         // Row 0 — GPS Fix interval (value row).
         let r0 = super::row_rect(LIST_TOP + 8, w, ROW_H);
         let editing = self.editing && self.selected == GPS_FIX;
-        super::row_cursor(&mut cv, r0, self.selected == GPS_FIX, editing);
-        super::row_label(&mut cv, r0, "GPS Fix", Some("interval"));
+        super::row_cursor(cv, r0, self.selected == GPS_FIX, editing);
+        super::row_label(cv, r0, "GPS Fix", Some("interval"));
         let mut val: heapless::String<8> = heapless::String::new();
         let _ = write!(val, "{} s", rx.settings.fix_interval_s);
         let (cw, ch) = (76, 32);
         let cell = rect(r0.top_left.x + r0.size.width as i32 - cw - 6, r0.top_left.y + (ROW_H - ch) / 2, cw, ch);
-        super::stepper_field(&mut cv, cell, &val, editing, Font::Label);
+        super::stepper_field(cv, cell, &val, editing, Font::Label);
 
         // Row 1 — Power Saver (toggle).
         let r1 = super::row_rect(LIST_TOP + 8 + ROW_H + 6, w, ROW_H);
-        super::row_cursor(&mut cv, r1, self.selected == POWER_SAVER, false);
-        super::row_label(&mut cv, r1, "Power save", Some("low power"));
-        super::toggle_slider(&mut cv, r1, rx.settings.power_saver);
-
-        RenderStats::default()
+        super::row_cursor(cv, r1, self.selected == POWER_SAVER, false);
+        super::row_label(cv, r1, "Power save", Some("low power"));
+        super::toggle_slider(cv, r1, rx.settings.power_saver);
     }
 }
 

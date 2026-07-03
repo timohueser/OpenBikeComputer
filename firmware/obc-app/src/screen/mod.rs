@@ -14,7 +14,7 @@ use obc_reader::Reader;
 use obc_render::{
     rect,
     text::{Font, TextAlign},
-    Clock, MapRenderer, RenderStats, Surface,
+    Canvas, Clock, MapRenderer, RenderStats, Surface,
 };
 use obc_route::{Profile, RouteReader};
 
@@ -136,8 +136,10 @@ pub struct Render<'a, 'd> {
     /// The travelled-path breadcrumb (bounded RAM); the Map strokes it under the route. Empty when
     /// nothing has been recorded yet, so the Map can skip it with [`Breadcrumb::is_empty`].
     pub breadcrumb: &'a Breadcrumb,
-    pub w: f32,
-    pub h: f32,
+    /// Panel size in device pixels. Integer, because every screen lays out in whole pixels;
+    /// the Map computes its `f32` viewport locally.
+    pub w: i32,
+    pub h: i32,
     pub now_ms: u32,
     /// The live wall-clock time this frame (set-point advanced by elapsed millis — see
     /// [`WallClock`](crate::WallClock)). The Home screensaver draws it as `HH:MM`; for boot-relative
@@ -153,6 +155,10 @@ pub struct Render<'a, 'd> {
     /// [`NoopClock`](obc_render::NoopClock); the device passes its `Instant`-based clock. Part of the
     /// strippable render-instrumentation seam.
     pub clock: &'a dyn Clock,
+    /// What the base screen's map render drew this frame, for the host's stats panel / frame log.
+    /// Reset to default by the host each frame; only the [`Map`](crate::screen::map) screen (and
+    /// Home's contour timing) write it — every other screen leaves it untouched.
+    pub stats: RenderStats,
 }
 
 /// The on-device screens. Each variant owns its typed state and forwards to that screen's
@@ -197,29 +203,30 @@ impl Screen {
         }
     }
 
-    /// Draw the screen. Returns the map [`RenderStats`] for the Map screen, and
-    /// default stats for the others (so the host's stats panel keeps working).
-    pub fn draw<D, F>(&self, target: &mut D, rx: &mut Render, color_fn: &F) -> RenderStats
+    /// Draw the screen into the frame's [`Canvas`]. The two host generics stop here: every screen
+    /// below draws through `&mut impl Surface`, except the Map, which reaches the raw target via
+    /// [`Canvas::split`] for its `MapRenderer` calls (and writes [`Render::stats`]).
+    pub fn draw<D, F>(&self, cv: &mut Canvas<D, F>, rx: &mut Render)
     where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
         match self {
-            Screen::Home(s) => s.draw(target, rx, color_fn),
-            Screen::Map(s) => s.draw(target, rx, color_fn),
-            Screen::Statistics(s) => s.draw(target, rx, color_fn),
-            Screen::RideControl(s) => s.draw(target, rx, color_fn),
-            Screen::Menu(s) => s.draw(target, rx, color_fn),
-            Screen::RouteMenu(s) => s.draw(target, rx, color_fn),
-            Screen::RouteSwap(s) => s.draw(target, rx, color_fn),
-            Screen::Settings(s) => s.draw(target, rx, color_fn),
-            Screen::DateTime(s) => s.draw(target, rx, color_fn),
-            Screen::Units(s) => s.draw(target, rx, color_fn),
-            Screen::Stats(s) => s.draw(target, rx, color_fn),
-            Screen::StatFields(s) => s.draw(target, rx, color_fn),
-            Screen::AddField(s) => s.draw(target, rx, color_fn),
-            Screen::Power(s) => s.draw(target, rx, color_fn),
-            Screen::Reset(s) => s.draw(target, rx, color_fn),
+            Screen::Home(s) => s.draw(cv, rx),
+            Screen::Map(s) => s.draw(cv, rx),
+            Screen::Statistics(s) => s.draw(cv, rx),
+            Screen::RideControl(s) => s.draw(cv, rx),
+            Screen::Menu(s) => s.draw(cv, rx),
+            Screen::RouteMenu(s) => s.draw(cv, rx),
+            Screen::RouteSwap(s) => s.draw(cv, rx),
+            Screen::Settings(s) => s.draw(cv, rx),
+            Screen::DateTime(s) => s.draw(cv, rx),
+            Screen::Units(s) => s.draw(cv, rx),
+            Screen::Stats(s) => s.draw(cv, rx),
+            Screen::StatFields(s) => s.draw(cv, rx),
+            Screen::AddField(s) => s.draw(cv, rx),
+            Screen::Power(s) => s.draw(cv, rx),
+            Screen::Reset(s) => s.draw(cv, rx),
         }
     }
 

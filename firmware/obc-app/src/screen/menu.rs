@@ -4,11 +4,11 @@
 //! [`SettingsScreen`](super::SettingsScreen) tree; `back` returns to the caller. (The Shutdown
 //! prompt on `back-hold` is a later slice.)
 
-use embedded_graphics::prelude::{DrawTarget, Point};
+use embedded_graphics::prelude::Point;
 use obc_render::{
     rect,
     text::{Font, TextAlign},
-    Canvas, RenderStats, Surface,
+    Surface,
 };
 
 use crate::input::Gesture;
@@ -47,16 +47,11 @@ impl MenuScreen {
         }
     }
 
-    pub fn draw<D, F>(&self, target: &mut D, rx: &mut Render, color_fn: &F) -> RenderStats
-    where
-        D: DrawTarget,
-        F: Fn(u16) -> D::Color,
-    {
+    pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         use palette::*;
-        let (w, h) = (rx.w as i32, rx.h as i32);
-        let mut cv = Canvas::new(target, color_fn);
+        let (w, h) = (rx.w, rx.h);
 
-        list_frame(&mut cv, w, h, "MENU", self.selected + 1, ITEMS.len());
+        list_frame(cv, w, h, "MENU", self.selected + 1, ITEMS.len());
 
         for (i, &name) in ITEMS.iter().enumerate() {
             let y = LIST_TOP + i as i32 * ROW_H;
@@ -74,6 +69,5 @@ impl MenuScreen {
                 cv.hline(20, y + ROW_H - 4, w - 40, RULE);
             }
         }
-        RenderStats::default()
     }
 }

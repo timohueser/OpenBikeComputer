@@ -13,14 +13,11 @@
 //! save button, so `back` just exits. [`App::apply_gesture`](crate::App::apply_gesture) notices the
 //! change and flags the host to persist it.
 
-use embedded_graphics::{
-    prelude::{DrawTarget, Point},
-    primitives::Rectangle,
-};
+use embedded_graphics::{prelude::Point, primitives::Rectangle};
 use obc_render::{
     rect,
     text::{Font, TextAlign},
-    Canvas, RenderStats, Surface,
+    Surface,
 };
 
 use crate::input::Gesture;
@@ -79,16 +76,11 @@ impl SettingsScreen {
         }
     }
 
-    pub fn draw<D, F>(&self, target: &mut D, rx: &mut Render, color_fn: &F) -> RenderStats
-    where
-        D: DrawTarget,
-        F: Fn(u16) -> D::Color,
-    {
+    pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         use palette::*;
-        let (w, h) = (rx.w as i32, rx.h as i32);
-        let mut cv = Canvas::new(target, color_fn);
+        let (w, h) = (rx.w, rx.h);
 
-        list_frame(&mut cv, w, h, "SETTINGS", self.selected + 1, ITEMS.len());
+        list_frame(cv, w, h, "SETTINGS", self.selected + 1, ITEMS.len());
 
         for (i, &name) in ITEMS.iter().enumerate() {
             let y = LIST_TOP + i as i32 * ROW_H;
@@ -104,7 +96,6 @@ impl SettingsScreen {
                 cv.hline(20, y + ROW_H - 4, w - 40, RULE);
             }
         }
-        RenderStats::default()
     }
 }
 

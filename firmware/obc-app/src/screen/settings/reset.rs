@@ -9,11 +9,11 @@
 //! The hold bar is driven by [`Render::hold_progress`](crate::screen::Render), the on-screen echo of
 //! the global hold-bulge overlay.
 
-use embedded_graphics::prelude::{DrawTarget, Point};
+use embedded_graphics::prelude::Point;
 use obc_render::{
     rect,
     text::{text_width, Font, TextAlign},
-    Canvas, RenderStats, Surface,
+    Surface,
 };
 
 use crate::input::Gesture;
@@ -60,26 +60,21 @@ impl ResetScreen {
         }
     }
 
-    pub fn draw<D, F>(&self, target: &mut D, rx: &mut Render, color_fn: &F) -> RenderStats
-    where
-        D: DrawTarget,
-        F: Fn(u16) -> D::Color,
-    {
+    pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         use palette::*;
-        let (w, h) = (rx.w as i32, rx.h as i32);
-        let mut cv = Canvas::new(target, color_fn);
-        title_frame(&mut cv, w, h, "RESET", "");
+        let (w, h) = (rx.w, rx.h);
+        title_frame(cv, w, h, "RESET", "");
         // Body content is positioned from the title bar so the armed/idle layouts stack cleanly.
 
         if self.done {
-            draw_check(&mut cv, w / 2, TITLE_BAR_H + 64, 26);
+            draw_check(cv, w / 2, TITLE_BAR_H + 64, 26);
             cv.text("Reset complete", Point::new(w / 2, TITLE_BAR_H + 110), Font::Body, TextAlign::Center, INK);
             cv.text("Restarting", Point::new(w / 2, TITLE_BAR_H + 142), Font::Label, TextAlign::Center, SUBTEXT);
-            return RenderStats::default();
+            return;
         }
 
         // Warning icon + title (kept short so nothing overruns the 240 px panel).
-        draw_warning(&mut cv, w / 2, TITLE_BAR_H + 50, 24);
+        draw_warning(cv, w / 2, TITLE_BAR_H + 50, 24);
         cv.text("Factory reset", Point::new(w / 2, TITLE_BAR_H + 90), Font::Body, TextAlign::Center, WARNING);
 
         if !self.armed {
@@ -98,7 +93,7 @@ impl ResetScreen {
             let (bx, by) = (w / 2 - bw / 2, TITLE_BAR_H + 170);
             cv.round(rect(bx, by, bw, bh), 8, AMBER);
             cv.text(label, Point::new(w / 2, by + (bh - 22) / 2), Font::Body, TextAlign::Center, INK);
-            return RenderStats::default();
+            return;
         }
 
         // Step 2: armed → the hold-to-erase prompt over a bar that fills with the live encoder hold.
@@ -112,7 +107,6 @@ impl ResetScreen {
         if fill > 0 {
             cv.round(rect(bx, by, fill, bh), radius, WARNING);
         }
-        RenderStats::default()
     }
 }
 

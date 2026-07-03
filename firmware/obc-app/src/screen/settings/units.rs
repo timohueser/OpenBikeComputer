@@ -2,10 +2,10 @@
 //! the Statistics readouts and the off-route distance. A binary choice, so it's a single value row
 //! that press (or a turn) flips in place — no field sub-mode.
 
-use embedded_graphics::prelude::{DrawTarget, Point};
+use embedded_graphics::prelude::Point;
 use obc_render::{
     text::{Font, TextAlign},
-    Canvas, RenderStats, Surface,
+    Surface,
 };
 
 use crate::input::Gesture;
@@ -33,21 +33,16 @@ impl UnitsScreen {
         }
     }
 
-    pub fn draw<D, F>(&self, target: &mut D, rx: &mut Render, color_fn: &F) -> RenderStats
-    where
-        D: DrawTarget,
-        F: Fn(u16) -> D::Color,
-    {
+    pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         use palette::*;
-        let (w, h) = (rx.w as i32, rx.h as i32);
+        let (w, h) = (rx.w, rx.h);
         let units = rx.settings.units;
-        let mut cv = Canvas::new(target, color_fn);
-        title_frame(&mut cv, w, h, "UNITS", "");
+        title_frame(cv, w, h, "UNITS", "");
 
         // The single value row — the current system centred, flanked by left/right arrows to read as
         // "rotate to switch".
         let area = super::row_rect(LIST_TOP + 8, w, 50);
-        super::row_cursor(&mut cv, area, true, false);
+        super::row_cursor(cv, area, true, false);
         let midy = area.top_left.y + area.size.height as i32 / 2;
         cv.text(units.name(), Point::new(w / 2, area.top_left.y + (50 - 22) / 2), Font::Body, TextAlign::Center, INK);
         // ◄ and ► as filled triangles, inset from the row edges.
@@ -71,6 +66,5 @@ impl UnitsScreen {
             );
             ry += 44;
         }
-        RenderStats::default()
     }
 }

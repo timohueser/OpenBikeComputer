@@ -2,8 +2,7 @@
 //! adds the highlighted field to the end of the selection and returns; `back` returns without adding.
 //! When every field is already shown it's a quiet empty state.
 
-use embedded_graphics::prelude::DrawTarget;
-use obc_render::{Canvas, RenderStats};
+use obc_render::Surface;
 
 use crate::input::Gesture;
 use crate::screen::{scrollbar, title_frame, window_start, Ctx, Render, Transition, LIST_TOP};
@@ -46,22 +45,17 @@ impl AddFieldScreen {
         }
     }
 
-    pub fn draw<D, F>(&self, target: &mut D, rx: &mut Render, color_fn: &F) -> RenderStats
-    where
-        D: DrawTarget,
-        F: Fn(u16) -> D::Color,
-    {
+    pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         use crate::screen::palette::*;
-        let (w, h) = (rx.w as i32, rx.h as i32);
+        let (w, h) = (rx.w, rx.h);
         let avail = hidden(&rx.settings.stat_fields);
         let total = avail.len();
-        let mut cv = Canvas::new(target, color_fn);
 
-        title_frame(&mut cv, w, h, "ADD FIELD", "");
+        title_frame(cv, w, h, "ADD FIELD", "");
 
         if total == 0 {
-            super::super::empty_state(&mut cv, w, h, "All fields added", "Remove one to swap");
-            return RenderStats::default();
+            super::super::empty_state(cv, w, h, "All fields added", "Remove one to swap");
+            return;
         }
 
         let list_h = h - LIST_TOP - 6;
@@ -78,13 +72,12 @@ impl AddFieldScreen {
             let y = LIST_TOP + slot as i32 * ROW_H;
             let area = super::row_rect(y, w, ROW_H - 6);
             let selected = i == sel;
-            super::row_cursor(&mut cv, area, selected, false);
-            super::row_label(&mut cv, area, f.name(), None);
+            super::row_cursor(cv, area, selected, false);
+            super::row_label(cv, area, f.name(), None);
             let badge_color = if selected { INK } else { SUBTEXT };
-            super::span_badge(&mut cv, area, f.span(), badge_color);
+            super::span_badge(cv, area, f.span(), badge_color);
         }
 
-        scrollbar(&mut cv, w - 8, LIST_TOP, visible as i32 * ROW_H, total, first, visible);
-        RenderStats::default()
+        scrollbar(cv, w - 8, LIST_TOP, visible as i32 * ROW_H, total, first, visible);
     }
 }

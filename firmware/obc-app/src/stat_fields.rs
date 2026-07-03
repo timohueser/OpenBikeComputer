@@ -617,13 +617,14 @@ mod tests {
                 route: None,
                 profile: None,
                 breadcrumb: &breadcrumb,
-                w: 240.0,
-                h: 320.0,
+                w: 240,
+                h: 320,
                 now_ms: 0,
                 now,
                 hold_progress: 0.0,
                 no_fix: false,
                 clock: &NoopClock,
+                stats: obc_render::RenderStats::default(),
             };
             StatField::Elevation.cell(&rx).value
         };

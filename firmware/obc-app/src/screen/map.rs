@@ -9,7 +9,7 @@ use embedded_graphics::{draw_target::DrawTarget, prelude::Point};
 use obc_render::{
     rect,
     text::{text_width, Font, TextAlign},
-    Canvas, RenderStats, Surface, Viewport,
+    Canvas, Surface, Viewport,
 };
 
 use crate::app::{Pan, PanAxis};
@@ -80,16 +80,19 @@ impl MapScreen {
         }
     }
 
-    pub fn draw<D, F>(&self, target: &mut D, rx: &mut Render, color_fn: &F) -> RenderStats
+    pub fn draw<D, F>(&self, cv: &mut Canvas<D, F>, rx: &mut Render)
     where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
         // The Map is the only screen that reads the `Reader`; `None` is unreachable in practice
         // (the host only draws the map with it) — draw nothing rather than fault.
-        let Some(reader) = rx.reader else { return RenderStats::default() };
-        let vp = rx.state.viewport(rx.w, rx.h);
+        let Some(reader) = rx.reader else { return };
+        let vp = rx.state.viewport(rx.w as f32, rx.h as f32);
         let bg565 = reader.backdrop_style().map_or(DEFAULT_BG_RGB565, |s| s.color);
+        // The base map, route, breadcrumb and marker render through the raw target + colour policy —
+        // the one consumer of the Canvas escape hatch (everything else draws via `Surface`).
+        let (target, color_fn) = cv.split();
         let bg = color_fn(bg565);
         // `render_timed` fills the per-stage timings from `rx.clock`; with a `NoopClock` it's `render`.
         let mut stats = rx.renderer.render_timed(target, reader, &vp, bg, color_fn, rx.clock);
@@ -128,23 +131,22 @@ impl MapScreen {
             rx.renderer.draw_marker(target, &vp, fix.lon, fix.lat, fix.course, color_fn(marker565));
         }
 
-        // The remaining chrome draws in the palette vocabulary — one Canvas over the same target.
-        let mut cv = Canvas::new(target, color_fn);
+        rx.stats = stats;
 
+        // The remaining chrome draws in the palette vocabulary, back through the canvas.
         // Top-center status pill, shown only when there's something to say. "No GPS Fix" takes
         // priority over off-route: with no fix the match is stale, so cross-track distance is
         // meaningless.
         if rx.no_fix {
-            draw_no_fix_pill(&mut cv, rx);
+            draw_no_fix_pill(cv, rx);
         } else if rx.activity.off_route {
-            draw_off_route_pill(&mut cv, rx);
+            draw_off_route_pill(cv, rx);
         }
 
         // Pan-mode HUD. Drawn last so it sits over the map + marker, and only while panning.
         if let Some(pan) = rx.state.pan {
-            draw_pan_hud(&mut cv, (rx.w, rx.h), pan, rx.state.user_fix, marker565, &vp);
+            draw_pan_hud(cv, (rx.w as f32, rx.h as f32), pan, rx.state.user_fix, marker565, &vp);
         }
-        stats
     }
 }
 
@@ -167,7 +169,7 @@ fn handle_pan(g: Gesture, cx: &mut Ctx) -> Transition {
 /// vanishing the moment one lands. Same look + slot as the off-route pill.
 fn draw_no_fix_pill(cv: &mut impl Surface, rx: &Render) {
     use super::palette::*;
-    let w = rx.w as i32;
+    let w = rx.w;
     let s = "No GPS Fix";
     let font = Font::Body;
     let tw = text_width(s, font) as i32;
@@ -183,7 +185,7 @@ fn draw_no_fix_pill(cv: &mut impl Surface, rx: &Render) {
 /// rejoin.
 fn draw_off_route_pill(cv: &mut impl Surface, rx: &Render) {
     use super::palette::*;
-    let w = rx.w as i32;
+    let w = rx.w;
     let mut s: heapless::String<20> = heapless::String::new();
     super::write_off_route(&mut s, "off route ", rx.activity.dist_to_route_m, rx.settings.units);
     let font = Font::Body;
