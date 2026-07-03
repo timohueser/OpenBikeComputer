@@ -22,8 +22,9 @@
 //! resident framebuffer: that would force a full map re-render to clear it again. Instead the
 //! framebuffer stays the clean map (the source of truth) and [`present_overlay`](DisplayDriver)
 //! composites the overlay over just the rows it touches and re-pushes only those — a few ms, no map
-//! redraw. So the seam has two write paths: `present` (the whole clean frame) and `present_overlay`
-//! (a dirty region with the overlay drawn on top).
+//! redraw. So the seam has two write paths: `present` (the clean frame, self-diffed, going *around*
+//! a live overlay's rows via its `exclude` parameter so a map redraw never blanks the bulge) and
+//! `present_overlay` (a dirty region with the overlay drawn on top).
 //!
 //! ## Sync, blocking
 //!
@@ -76,9 +77,15 @@ pub trait DisplayDriver {
     /// [`present`](Self::present) puts on glass. Owned by the driver; this is how the app reaches it.
     fn fb_mut(&mut self) -> &mut [u8];
 
-    /// Push the whole resident framebuffer to glass. Returns `false` on a transport fault (a stalled
-    /// FLPR, an SPI error) so the caller keeps the last frame and retries, rather than faulting.
-    fn present(&mut self) -> bool;
+    /// Push the resident framebuffer to glass, self-diffed (only the rows that changed since the
+    /// last present), optionally going **around** a live overlay: `exclude = Some((y0, rows))` means
+    /// the rows `[y0, y0+rows)` belong to the overlay plane this frame — the diff store is still
+    /// updated for them (it tracks the clean framebuffer, so no stale entry survives the overlay),
+    /// but they are **not** pushed; the overlay's own re-present / trailing clear owns repainting
+    /// them (≤ one overlay tick away). `None` ⇒ the whole frame is eligible. Returns `false` on a
+    /// transport fault (a stalled FLPR, an SPI error) so the caller keeps the last frame and
+    /// retries, rather than faulting.
+    fn present(&mut self, exclude: Option<(u16, u16)>) -> bool;
 
     /// Re-present `region` with `draw_overlay` composited over the **clean framebuffer backdrop** — no
     /// map re-render. `draw_overlay` paints the transient chrome (the hold bulge)
