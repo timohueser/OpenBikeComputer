@@ -1,7 +1,8 @@
 name: CI
 
 # Unified correctness gate for the firmware (host workspace + the workspace-excluded board
-# crate), the wasm sim, and the docs site. Build surfaces and their structural gotchas:
+# crate), the wasm sim, the docs site, and the iOS companion app. Build surfaces and their
+# structural gotchas:
 #
 #   * The firmware/ manifest is a *virtual* workspace (no targets of its own) → workspace
 #     commands need `--workspace` / `--all`.
@@ -44,6 +45,7 @@ jobs:
       rust: ${{ steps.filter.outputs.rust }}
       docs: ${{ steps.filter.outputs.docs }}
       wasm: ${{ steps.filter.outputs.wasm }}
+      ios: ${{ steps.filter.outputs.ios }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -62,6 +64,9 @@ jobs:
             wasm:
               - 'firmware/**'
               - 'docs/**'
+              - '.github/workflows/ci.yml'
+            ios:
+              - 'companion-ios/**'
               - '.github/workflows/ci.yml'
 
   # cargo fmt --check for both manifests. rustfmt walks up from each file and finds the shared
@@ -247,11 +252,75 @@ jobs:
       - name: build_docs.py --check-links
         run: python3 docs/build_docs.py --check-links
 
+  # iOS companion, fast tier: the OBCKit package suite on the macOS host (no simulator).
+  # This is what enforces the architecture rules that are otherwise only "test-enforced"
+  # locally — CoreBluetoothSeamTests (CoreBluetooth stays inside OBCTransport/BLE/), the
+  # protocol vector/contract tests, and every model test.
+  #
+  # DEVELOPER_DIR pins the Xcode toolchain (project floor is Xcode 26.x, see
+  # companion-ios/CLAUDE.md) so a runner-image update can't silently move it — when the
+  # image drops this version the job fails loudly and the pin gets bumped on purpose.
+  ios-unit:
+    needs: changes
+    if: needs.changes.outputs.ios == 'true'
+    runs-on: macos-26
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.5.app
+    steps:
+      - uses: actions/checkout@v4
+      - name: swift test (OBCKit package, host)
+        run: swift test --package-path companion-ios/Packages/OBCKit
+
+  # iOS companion, app tier: xcodegen + a simulator-SDK build of the app target (build-only —
+  # XCUITests on a booted sim are deliberately deferred; they'd be the slow/flaky tier).
+  # The pbxproj is gitignored, so running xcodegen here also validates the fresh-clone setup
+  # and catches project.yml drift. The Debug/Release pair doubles as the mock-seam gate:
+  # OBCMock's build marker must be present in the Debug binary (proves the grep isn't
+  # vacuous) and absent from Release (mock/dev-panel code must never ship).
+  ios-app:
+    needs: changes
+    if: needs.changes.outputs.ios == 'true'
+    runs-on: macos-26
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.5.app
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: xcodegen generate
+        working-directory: companion-ios
+        run: xcodegen generate
+      - name: Build (Debug, simulator SDK)
+        working-directory: companion-ios
+        run: |
+          xcodebuild build -project OBCCompanion.xcodeproj -scheme OBCCompanion \
+            -configuration Debug -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath DerivedData CODE_SIGNING_ALLOWED=NO
+      # -r -a over the whole bundle: in Debug the app code lives in the debug dylib
+      # (OBCCompanion.debug.dylib), not the stub executable; -a forces byte matching in
+      # binaries regardless of grep flavor.
+      - name: Mock marker present in Debug
+        working-directory: companion-ios
+        run: grep -raq "OBCMock:DEBUG-only" DerivedData/Build/Products/Debug-iphonesimulator/OBCCompanion.app
+      - name: Build (Release, simulator SDK)
+        working-directory: companion-ios
+        run: |
+          xcodebuild build -project OBCCompanion.xcodeproj -scheme OBCCompanion \
+            -configuration Release -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath DerivedData CODE_SIGNING_ALLOWED=NO
+      - name: Mock marker absent from Release
+        working-directory: companion-ios
+        run: |
+          if grep -raq "OBCMock:DEBUG-only" DerivedData/Build/Products/Release-iphonesimulator/OBCCompanion.app; then
+            echo "::error::OBCMock build marker found in the Release binary — mock code is shipping"
+            exit 1
+          fi
+
   # Single aggregate gate: make THIS the required status check on main/develop. It succeeds
   # only if no needed job failed or was cancelled; jobs skipped by the path filters are fine.
   ci:
     if: always()
-    needs: [changes, fmt, clippy, test, embedded, device, deny, wasm, docs]
+    needs: [changes, fmt, clippy, test, embedded, device, deny, wasm, docs, ios-unit, ios-app]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all required jobs succeeded (or were skipped)
