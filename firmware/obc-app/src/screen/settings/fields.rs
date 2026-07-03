@@ -44,6 +44,14 @@ impl StatFieldsScreen {
         StatFieldsScreen::default()
     }
 
+    /// True while the cursor sits on a deletable field row (not the trailing Add row) — the
+    /// hold-to-delete footer draws its fill then, so
+    /// [`App::top_wants_hold_fill`](crate::App::top_wants_hold_fill) reports a charging hold as
+    /// worth repainting here.
+    pub(crate) fn selection_is_deletable(&self, settings: &crate::Settings) -> bool {
+        self.selected < settings.stat_fields.len()
+    }
+
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         let len = cx.settings.stat_fields.len();
         let add_row = len; // rows: 0..len are the fields, `len` is the Add row

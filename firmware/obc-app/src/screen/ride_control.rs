@@ -37,7 +37,9 @@ impl RideControl {
         RideControl { selected: 0 }
     }
 
-    /// True if the highlighted option is guarded (needs a hold) — the host fills the confirm ring.
+    /// True if the highlighted option is guarded (needs a hold): its row fills with the live hold
+    /// progress in `draw`, so [`App::top_wants_hold_fill`](crate::App::top_wants_hold_fill) reports
+    /// a charging hold as worth repainting here.
     pub fn selection_is_guarded(&self) -> bool {
         ITEMS[self.selected].guard
     }

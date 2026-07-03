@@ -39,7 +39,9 @@ impl RouteSwapScreen {
         RouteSwapScreen { pending, selected: 0 }
     }
 
-    /// True when the highlighted option needs a hold — the host fills the confirm bar.
+    /// True when the highlighted option needs a hold: its row fills with the live hold progress in
+    /// `draw`, so [`App::top_wants_hold_fill`](crate::App::top_wants_hold_fill) reports a charging
+    /// hold as worth repainting here.
     pub fn selection_is_guarded(&self) -> bool {
         ITEMS[self.selected].guard
     }
