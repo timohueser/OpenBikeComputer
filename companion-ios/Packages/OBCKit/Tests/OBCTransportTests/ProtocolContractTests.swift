@@ -1,12 +1,12 @@
 import XCTest
 import OBCDomain
 
-/// B-S0 guardrails: the domain-type skeletons `B1` builds against compile and
-/// construct, and the pinned `protocol_version` is stated in one place. These are
-/// contract checks, not behavior — the real transport/codec coverage is `B1`.
+/// The domain-type skeletons compile and construct, and the pinned
+/// `protocol_version` is stated in one place. These are contract checks, not
+/// behavior.
 final class ProtocolContractTests: XCTestCase {
     func testProtocolVersionIsPinned() {
-        // Bump deliberately, in lockstep with firmware S0 — not by accident.
+        // Bump deliberately, in lockstep with firmware — not by accident.
         XCTAssertEqual(OBCProtocol.version, 1)
     }
 
@@ -28,10 +28,8 @@ final class ProtocolContractTests: XCTestCase {
     }
 
     func testDomainSkeletonsConstruct() {
-        // Config carries the device name (Delta 1).
         XCTAssertEqual(DeviceConfig(name: "OBC-Trailhead").name, "OBC-Trailhead")
 
-        // Routes accept both import formats (Delta 2).
         let route = RouteSummary(
             id: RouteID("r1"), name: "Ridge Loop",
             distanceMeters: 42_000, elevationGainMeters: 1_200, source: .gpx
@@ -48,12 +46,10 @@ final class ProtocolContractTests: XCTestCase {
     }
 
     func testB1DomainFinalization() {
-        // Config carries units alongside the name (Delta 1 + Settings/G).
         let config = DeviceConfig(name: "OBC-Ridge", units: .imperial)
         XCTAssertEqual(config.units, .imperial)
         XCTAssertEqual(DeviceConfig(name: "x").units, .metric)  // defaults to metric
 
-        // Waypoints ride with a route (W1).
         let waypoint = Waypoint(
             index: 0, name: "Trailhead", note: "water",
             distanceAlongMeters: 0, coordinate: Coordinate(latitude: 47, longitude: 8)
@@ -65,7 +61,6 @@ final class ProtocolContractTests: XCTestCase {
         )
         XCTAssertEqual(blob.waypoints.count, 1)
 
-        // Extended summaries carry the fields the detail screens render.
         let route = RouteSummary(
             id: RouteID("r2"), name: "Ridge", distanceMeters: 42_000, elevationGainMeters: 1_200,
             estimatedDuration: 7_200, pointCount: 500, source: .tcx, trackPreview: .empty
@@ -80,7 +75,6 @@ final class ProtocolContractTests: XCTestCase {
         )
         XCTAssertEqual(tracked.climbMeters, 800)
 
-        // New transport-error cases are equatable/typed.
         XCTAssertEqual(DeviceError.bluetoothUnavailable(.poweredOff), .bluetoothUnavailable(.poweredOff))
         XCTAssertNotEqual(DeviceError.bluetoothUnavailable(.poweredOff), .bluetoothUnavailable(.unauthorized))
     }

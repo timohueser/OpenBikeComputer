@@ -5,7 +5,7 @@ import OBCDomain
 import CoreBluetooth
 #endif
 
-/// The Swift half of the S0 shared-vector pin: the checked-in fixtures under
+/// The Swift half of the shared-vector pin: the checked-in fixtures under
 /// `protocol-vectors/` (repo root) must decode through the app's codecs to the
 /// values `manifest.json` states, and re-encode **byte-exactly**. The firmware
 /// side pins the same files (`cargo test -p obc-vectors`), so neither side can

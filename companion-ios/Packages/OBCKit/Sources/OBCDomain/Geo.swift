@@ -17,7 +17,7 @@ public struct Coordinate: Hashable, Sendable {
     /// non-failing for the trusted paths (device decode, previews); the file
     /// import edge validates against this so a malformed GPX/TCX throws
     /// `FormatError.malformed` instead of a non-finite coordinate poisoning
-    /// `distance()` (→ NaN) and everything downstream of it (#304).
+    /// `distance()` (→ NaN) and everything downstream of it.
     public var isValidGeographic: Bool {
         latitude.isFinite && longitude.isFinite
             && (-90.0...90.0).contains(latitude)
@@ -37,23 +37,23 @@ public struct Coordinate: Hashable, Sendable {
     }
 }
 
-/// A polyline for the `GPSTrackPreview` component (B11) to draw. Carries two
+/// A polyline for the `GPSTrackPreview` component to draw. Carries two
 /// parallel representations of the same downsampled track:
 ///
 ///   • `points` — the unit-square, aspect-measured projection the **grid
 ///     fallback** renderer draws directly (a dumb `Path` renderer, no basemap).
 ///   • `coordinates` — the source WGS-84 lat/lon, so the **MapKit basemap**
-///     preview (#294) can draw a real `MapPolyline` and fit a camera to the
-///     track's bounds without re-deriving geography.
+///     preview can draw a real `MapPolyline` and fit a camera to the track's
+///     bounds without re-deriving geography.
 ///
 /// The two arrays are the same length and index-aligned (same downsample). The
 /// basemap path uses `coordinates`; when it's empty (or the device is offline)
 /// the preview degrades to the `points` grid — an intentional fallback, not a
-/// bug (see `companion-ios/CLAUDE.md`).
+/// bug.
 ///
-/// Produced from route/ride geometry by both the mock fixtures (B1M) and the real
-/// decode path (`B1`/`BLEChannel`) — so the projection lives here, in the shared
-/// domain layer, not duplicated in each.
+/// Produced from route/ride geometry by both the mock fixtures and the real
+/// decode path — so the projection lives here, in the shared domain layer, not
+/// duplicated in each.
 public struct TrackPreview: Equatable, Sendable {
     /// A single point in unit space.
     public struct Point: Hashable, Sendable {

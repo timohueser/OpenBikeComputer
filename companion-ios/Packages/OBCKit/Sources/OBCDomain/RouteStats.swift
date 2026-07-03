@@ -1,7 +1,7 @@
 import Foundation
 
 /// Statistics derived from a parsed route's geometry — what the import landing
-/// (E1) shows before the route exists anywhere else, and what `RouteSummary`
+/// shows before the route exists anywhere else, and what `RouteSummary`
 /// construction on save reuses. Pure geometry: `[RoutePoint]` in, numbers out.
 ///
 /// Device-stored routes don't come through here — their stats ride in

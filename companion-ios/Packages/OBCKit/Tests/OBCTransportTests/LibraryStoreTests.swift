@@ -2,10 +2,9 @@ import XCTest
 import OBCDomain
 import OBCTransport
 
-/// B1S acceptance, store-side: the file-backed library round-trips the
-/// canonical models across instances (= app relaunches), keeps the original
-/// import bytes byte-exact, and the synced-ride set survives both a ride
-/// delete and a relaunch (idempotent re-sync, H9).
+/// The file-backed library round-trips canonical models across instances (=
+/// app relaunches), keeps the original import bytes byte-exact, and the
+/// synced-ride set survives both a ride delete and a relaunch (idempotent re-sync).
 final class LibraryStoreTests: XCTestCase {
     // MARK: Fixtures
 
@@ -88,8 +87,8 @@ final class LibraryStoreTests: XCTestCase {
         let relaunched = FileLibraryStore(directory: dir).plannedRoutes()
         XCTAssertEqual(relaunched, [newer, older], "newest first, every field intact")
         XCTAssertEqual(relaunched.first?.sourceFileData, newer.sourceFileData, "original bytes byte-exact")
-        // The basemap coordinates (#294) survive the round-trip — else a
-        // relaunched route would silently drop to the grid preview.
+        // The basemap coordinates survive the round-trip — else a relaunched
+        // route would silently drop to the grid preview.
         XCTAssertEqual(
             relaunched.first?.summary.trackPreview?.coordinates,
             newer.summary.trackPreview?.coordinates
@@ -102,7 +101,7 @@ final class LibraryStoreTests: XCTestCase {
         var record = makeRecord()
         store.savePlannedRoute(record)
 
-        record.summary.name = "Schwarzwald Day 2"   // H12 rename
+        record.summary.name = "Schwarzwald Day 2"
         record.deviceObjectID = 7                    // a later upload lands on device object 7
         store.savePlannedRoute(record)
 

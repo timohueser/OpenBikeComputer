@@ -1,8 +1,8 @@
 import XCTest
 import OBCDomain
 
-/// `RouteStats` — the derived geometry behind the E1 stat strip (and the
-/// summary an import saves). Synthetic tracks with known answers.
+/// `RouteStats` — the derived geometry behind the route detail stat strip (and
+/// the summary an import saves). Synthetic tracks with known answers.
 final class RouteStatsTests: XCTestCase {
     /// 0.01° of latitude ≈ 1112 m at any longitude.
     private func track(_ elevations: [Double?]) -> [RoutePoint] {

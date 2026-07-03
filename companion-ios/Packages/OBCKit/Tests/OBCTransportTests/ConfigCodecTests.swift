@@ -3,8 +3,8 @@ import OBCDomain
 @testable import OBCTransport
 
 /// The provisional `Config` blob codec (Codecs/ConfigCodec.swift) — round-trip +
-/// malformed-input behavior. Layout is S0-owned; when it's repinned these tests
-/// are the single spot that must move with it.
+/// malformed-input behavior. When the wire layout is repinned, these tests are
+/// the single spot that must move with it.
 final class ConfigCodecTests: XCTestCase {
     func testRoundTrip() throws {
         let config = DeviceConfig(name: "Trailhead", units: .imperial)
@@ -38,7 +38,7 @@ final class ConfigCodecTests: XCTestCase {
     }
 
     /// A name past the u16 range must not wrap the length field into a
-    /// corrupt/undersized blob — encode caps it at the S0 48-byte limit, so the
+    /// corrupt/undersized blob — encode caps it at the 48-byte limit, so the
     /// blob stays well-formed and the trailing `units` survive.
     func testEncodeCapsOverLongNameToKeepBlobWellFormed() throws {
         let huge = String(repeating: "A", count: 70_000)   // ≥ 65536 bytes

@@ -3,8 +3,8 @@ import OBCDomain
 @testable import OBCFormats
 
 /// The GPX decoder — geometry, elevation, name/creator, and the waypoint
-/// distance-along projection W1 renders. Ends on the real bundled sample
-/// (a downsampled Komoot export) as the end-to-end pin.
+/// distance-along projection. Ends on the real bundled sample (a downsampled
+/// Komoot export) as the end-to-end pin.
 final class GPXRouteDecoderTests: XCTestCase {
     private let decoder = GPXRouteDecoder()
 
@@ -152,7 +152,7 @@ final class GPXRouteDecoderTests: XCTestCase {
 
     /// End-to-end on the real bundled sample (`OBCMock/Fixtures/sample-import.gpx`,
     /// the `-OBCImportSample` file) — read via the repo path so this pins the
-    /// exact bytes the E1 XCUITest imports.
+    /// exact bytes the XCUITest imports.
     func testDecodesTheBundledKomootSample() throws {
         let url = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()   // → Tests/OBCFormatsTests

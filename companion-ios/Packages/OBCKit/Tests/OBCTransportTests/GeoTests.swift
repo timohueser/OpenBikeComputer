@@ -1,8 +1,8 @@
 import XCTest
 import OBCDomain
 
-/// `TrackPreview.normalizing` — the projection shared by the mock fixtures and the
-/// real decode that feeds the `GPSTrackPreview` (B11).
+/// `TrackPreview.normalizing` — the projection shared by the mock fixtures and
+/// the real decode that feeds the `GPSTrackPreview`.
 final class GeoTests: XCTestCase {
     func testEmptyTrackIsEmptyPreview() {
         let preview = TrackPreview.normalizing([])

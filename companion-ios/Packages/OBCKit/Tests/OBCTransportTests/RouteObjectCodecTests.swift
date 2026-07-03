@@ -3,7 +3,7 @@ import OBCDomain
 import OBCFormats
 @testable import OBCTransport
 
-/// The route encoder (B12, #286): its OBCR v2 reader pinned against the shared
+/// The route encoder: its OBCR v2 reader pinned against the shared
 /// firmware-produced fixtures (`protocol-vectors/route-*.obcr`, decoded by the
 /// production `obc-route` reader on the other side), plus encode→decode round-trips
 /// proving geometry, exact stats, and waypoints survive an upload.
@@ -93,7 +93,7 @@ final class RouteObjectCodecTests: XCTestCase {
         XCTAssertEqual(decoded.version, 2)
         XCTAssertEqual(decoded.name, "Round Trip Ridge")
 
-        // Exact stats mirror RouteStats (the E1 display) at whole-meter resolution.
+        // Exact stats mirror RouteStats (the detail-screen display) at whole-meter resolution.
         let stats = RouteStats.compute(from: points)
         XCTAssertEqual(Double(decoded.totalDistanceMeters), stats.distanceMeters, accuracy: 1)
         XCTAssertEqual(Double(decoded.totalAscentMeters), stats.elevationGainMeters, accuracy: 1)

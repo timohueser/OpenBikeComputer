@@ -3,9 +3,9 @@ import OBCDomain
 import OBCTransport
 @testable import OBCMock
 
-// Shared async helpers for the mock tests — a timeout wrapper (streams never hang a
-// test), stream probes, and a payload-sized `RouteBlob` builder. Free functions (not
-// XCTestCase methods) so the `Task {}` probes don't capture a non-Sendable `self`.
+// Shared async helpers for the mock tests: a timeout wrapper (streams never hang a
+// test), stream probes, and a payload-sized `RouteBlob` builder. Free functions, not
+// XCTestCase methods, so the `Task {}` probes don't capture a non-Sendable `self`.
 
 private struct TimeoutError: Error {}
 

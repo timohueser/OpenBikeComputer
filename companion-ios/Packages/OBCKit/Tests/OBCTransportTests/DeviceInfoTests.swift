@@ -3,7 +3,7 @@ import OBCDomain
 @testable import OBCTransport
 
 /// Proves the domain + transport layers build and test with **no simulator and
-/// no app target** (`swift test`). Real transport/codec coverage arrives in B1.
+/// no app target** (`swift test`).
 final class DeviceInfoTests: XCTestCase {
     func testDeviceInfoIsEquatableByValue() {
         let a = DeviceInfo(name: "OBC", firmwareVersion: "1.0.0")

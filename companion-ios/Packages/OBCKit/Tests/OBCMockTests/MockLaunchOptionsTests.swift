@@ -3,10 +3,9 @@ import OBCDomain
 import OBCTransport
 @testable import OBCMock
 
-/// The B1P launch-arg surface: `-OBCScenario` & friends parse into
-/// `MockLaunchOptions` and produce a correctly-configured `MockControl`. These
-/// names are stable automation API — a rename here must be deliberate (and
-/// update CLAUDE.md + the XCUITest helper).
+/// `-OBCScenario` & friends parse into `MockLaunchOptions` and produce a
+/// correctly-configured `MockControl`. These names are stable automation API —
+/// a rename here must be deliberate (and update CLAUDE.md + the XCUITest helper).
 final class MockLaunchOptionsTests: XCTestCase {
     private func parse(_ args: [String], env: [String: String] = [:]) -> MockLaunchOptions {
         // Real argv always has the executable path first; mirror that.

@@ -3,8 +3,8 @@ import OBCDomain
 @testable import OBCTransport
 
 /// The provisional device ride codec (Codecs/RideCodec.swift) — round-trip,
-/// quantization contract, and malformed-input behavior. Layout is S0-owned;
-/// when it's repinned these tests are the single spot that must move with it.
+/// quantization contract, and malformed-input behavior. When the wire layout
+/// is repinned, these tests are the single spot that must move with it.
 final class RideCodecTests: XCTestCase {
     /// A ride whose values sit exactly on the wire grid (whole seconds/metres,
     /// 1e-7° coordinates, cm/s speed) so the round-trip compares exactly.

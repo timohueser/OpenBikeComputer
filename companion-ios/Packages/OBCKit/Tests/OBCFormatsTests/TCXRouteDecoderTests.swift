@@ -188,7 +188,7 @@ final class TCXRouteDecoderTests: XCTestCase {
 
     /// End-to-end on the real bundled sample (`OBCMock/Fixtures/sample-import.tcx`,
     /// the `-OBCImportSample tcx` file) — read via the repo path so this pins the
-    /// exact bytes the E1 XCUITest imports.
+    /// exact bytes the XCUITest imports.
     func testDecodesTheBundledCourseSample() throws {
         let url = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()   // → Tests/OBCFormatsTests

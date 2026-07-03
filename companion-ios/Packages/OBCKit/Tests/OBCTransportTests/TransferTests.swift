@@ -4,7 +4,7 @@ import OBCDomain
 
 /// End-to-end bulk transfer over the in-memory `PipeByteChannel`: raw-byte streaming
 /// (no wire framing), whole-object CRC verify, whole-object restart after an induced
-/// drop, and clean cancel teardown — the B1 acceptance scenarios, with no hardware.
+/// drop, and clean cancel teardown — all with no hardware.
 final class TransferTests: XCTestCase {
     // MARK: Round-trip (upload → device reassembles + CRC matches)
 

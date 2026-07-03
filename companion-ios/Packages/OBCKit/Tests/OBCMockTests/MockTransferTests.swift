@@ -4,8 +4,8 @@ import OBCTransport
 @testable import OBCMock
 
 /// The simulated bulk-transfer path: throughput-paced progress, cancel teardown, and
-/// drop-at-fraction → resume — the B1M acceptance for uploads (F) and ride sync (H10),
-/// with no wire bytes. A high throughput keeps the paced sleeps sub-millisecond.
+/// drop-at-fraction → resume, with no wire bytes. A high throughput keeps the
+/// paced sleeps sub-millisecond.
 final class MockTransferTests: XCTestCase {
     private func fastControl() -> MockControl {
         let control = MockControl(scenario: .happyPath)
@@ -91,7 +91,7 @@ final class MockTransferTests: XCTestCase {
 
     func testEmptyDownloadFinishesImmediately() async throws {
         let transport = MockTransport(control: fastControl())
-        let download = transport.downloadRides([])   // H9 up to date → nothing to pull
+        let download = transport.downloadRides([])   // up to date → nothing to pull
         let progress = try await drain(download.handle)
         XCTAssertTrue(progress.isEmpty)
         let landed = try await withTimeout(2) { () -> [DownloadedRide] in
@@ -104,7 +104,7 @@ final class MockTransferTests: XCTestCase {
 
     func testDownloadDropKeepsPartialRidesThenResumes() async throws {
         let control = fastControl()
-        control.dropTransfer(atFraction: 0.5)        // H10 sync interrupted
+        control.dropTransfer(atFraction: 0.5)        // sync interrupted
         let transport = MockTransport(control: control)
         let ids = try await transport.listRides().map(\.id)
         let download = transport.downloadRides(ids)
@@ -124,7 +124,7 @@ final class MockTransferTests: XCTestCase {
 
     func testUploadWhileDisconnectedFinishesImmediately() async throws {
         let control = fastControl()
-        control.connection = .disconnected         // H4 on import: no device
+        control.connection = .disconnected         // no device
         let transport = MockTransport(control: control)
         let handle = transport.uploadRoute(makeRouteBlob(bytes: 100_000))
         let progress = try await drain(handle)
@@ -156,11 +156,11 @@ final class MockTransferTests: XCTestCase {
 
     func testDropAtFractionStallsThenResumesToCompletion() async throws {
         let control = fastControl()
-        control.dropTransfer(atFraction: 0.5)       // H10 / F interrupted
+        control.dropTransfer(atFraction: 0.5)       // interrupted mid-transfer
         let transport = MockTransport(control: control)
         let handle = transport.uploadRoute(makeRouteBlob(bytes: 400_000))
 
-        // The drop pushes the link out of range (the observable H10 signal).
+        // The drop pushes the link out of range (the observable signal).
         let sawDrop = await awaitState(transport.state, equals: .outOfRange)
         XCTAssertTrue(sawDrop)
 

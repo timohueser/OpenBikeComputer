@@ -32,9 +32,8 @@ final class MockTransportTests: XCTestCase {
     }
 
     func testListsTheDeviceHeldRoutesUnderDeviceNamespaceIDs() async throws {
-        // `listRoutes` is the device's catalog (reconcile input, #289): exactly
-        // the fixture routes with a `deviceObjectID`, listed under that id —
-        // never the whole library.
+        // `listRoutes` is the device's catalog: exactly the fixture routes with
+        // a `deviceObjectID`, listed under that id — never the whole library.
         let transport = MockTransport(control: fastControl())
         let routes = try await transport.listRoutes()
         XCTAssertEqual(Set(routes.map(\.id.rawValue)), ["7", "12"])
@@ -56,7 +55,7 @@ final class MockTransportTests: XCTestCase {
     }
 
     func testWriteConfigRenamesDeviceAndPersists() async throws {
-        // Delta 1: the device name lives in Config; renaming surfaces in DIS too.
+        // The device name lives in Config; renaming surfaces in DIS too.
         let transport = MockTransport(control: fastControl())
         try await transport.writeConfig(DeviceConfig(name: "Ridgeline", units: .imperial))
         let config = try await transport.readConfig()

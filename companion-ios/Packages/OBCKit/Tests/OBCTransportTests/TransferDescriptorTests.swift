@@ -3,9 +3,9 @@ import XCTest
 
 /// The control-plane descriptors that carry all transfer metadata (so the CoC is
 /// raw bytes). Fixed-size, little-endian, trivially MCU-parseable — pinned by
-/// firmware S0 (`obc-ble-interface-spec.md` §4.2/§4.3/§4.5). Byte-exactness against
-/// the shared fixtures lives in `ProtocolVectorTests`; this suite covers the
-/// round-trip + rejection behavior.
+/// `obc-ble-interface-spec.md` §4.2/§4.3/§4.5. Byte-exactness against the shared
+/// fixtures lives in `ProtocolVectorTests`; this suite covers the round-trip +
+/// rejection behavior.
 final class TransferDescriptorTests: XCTestCase {
     func testTransferControlRoundTrips() throws {
         for op in TransferControl.Op.allCases {

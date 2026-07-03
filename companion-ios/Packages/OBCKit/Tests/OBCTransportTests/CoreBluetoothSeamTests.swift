@@ -1,9 +1,8 @@
 import XCTest
 
-/// The epic's central invariant, enforced (B1 acceptance: "zero CoreBluetooth
-/// references outside `BLETransport`"). No iOS CI runs yet, so this lives as a
-/// `swift test` guard — the moment any iOS CI is wired, it enforces the seam. It
-/// scans source files on disk rather than symbols so it also catches comments/docs.
+/// Enforces "zero CoreBluetooth references outside `BLETransport`" as a
+/// `swift test` guard (no iOS CI runs yet). Scans source files on disk rather
+/// than symbols so it also catches comments/docs.
 final class CoreBluetoothSeamTests: XCTestCase {
     private let needle = ["import", "CoreBluetooth"].joined(separator: " ")
 

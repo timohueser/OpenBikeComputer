@@ -2,8 +2,8 @@ import XCTest
 import OBCTransport
 @testable import OBCMock
 
-/// The mock side of the B2 bond seam: scenario presets carry the bond bit and
-/// `MockBondStore` is a live view onto `MockControl`.
+/// Scenario presets carry the bond bit; `MockBondStore` is a live view onto
+/// `MockControl`.
 final class MockBondStoreTests: XCTestCase {
     func testPairingScenariosBootUnbonded() {
         let unbonded: [Scenario] = [

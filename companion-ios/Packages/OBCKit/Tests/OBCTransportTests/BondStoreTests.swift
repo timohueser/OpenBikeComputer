@@ -23,7 +23,7 @@ final class BondStoreTests: XCTestCase {
         store.save(BondRecord(deviceName: "Trailhead"))
         XCTAssertEqual(store.load(), BondRecord(deviceName: "Trailhead"))
 
-        // Rename (H3) refreshes the record in place.
+        // Rename refreshes the record in place.
         store.save(BondRecord(deviceName: "Ridgeline"))
         XCTAssertEqual(store.load(), BondRecord(deviceName: "Ridgeline"))
 

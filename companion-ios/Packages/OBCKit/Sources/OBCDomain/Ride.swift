@@ -8,13 +8,9 @@ public struct RideID: Hashable, Sendable {
     public init(_ rawValue: String) { self.rawValue = rawValue }
 }
 
-/// Metadata for a device-recorded ride — the Tracked-tab row (C2) and sync list.
-/// Rides download over the CoC data plane as compact binary; this is the
-/// enumerable summary the `RideList` characteristic exposes.
-///
-/// **B1 finalization** of the B-S0 skeleton: adds moving time, average speed,
-/// climb, and the `TrackPreview`. New fields are defaulted so the B-S0 call sites
-/// keep compiling.
+/// Metadata for a device-recorded ride. Rides download over the CoC data plane
+/// as compact binary; this is the enumerable summary the `RideList`
+/// characteristic exposes.
 /// One tracklog sample of a recorded ride.
 public struct RidePoint: Hashable, Sendable {
     public let timestamp: Date
@@ -30,10 +26,10 @@ public struct RidePoint: Hashable, Sendable {
 }
 
 /// A full tracked ride — the **canonical in-app model**. The device ride codec
-/// (compact binary, S0-owned) decodes into this, and every export format
-/// (GPX today, FIT later, connected services) encodes *from* this via a
-/// `RideFileEncoder` (see `OBCFormats`) — so a tracked-file format switch never
-/// touches storage, sync, or the screens.
+/// (compact binary) decodes into this, and every export format (GPX today, FIT
+/// later, connected services) encodes *from* this via a `RideFileEncoder` (see
+/// `OBCFormats`) — so a tracked-file format switch never touches storage, sync,
+/// or the screens.
 public struct Ride: Identifiable, Equatable, Sendable {
     public var summary: RideSummary
     public var points: [RidePoint]
@@ -46,9 +42,8 @@ public struct Ride: Identifiable, Equatable, Sendable {
     }
 }
 
-/// Everything the ride-detail screen (E3) renders beyond the list summary.
-/// Served by `DeviceTransport.rideDetail(_:)`; like `RouteDetail`, the wire
-/// mapping is provisional until firmware `S0` pins it.
+/// Everything the ride-detail screen renders beyond the list summary. Served
+/// by `DeviceTransport.rideDetail(_:)`.
 public struct RideDetail: Equatable, Sendable {
     public var summary: RideSummary
     /// Elevation samples along the ride in metres, evenly spaced start → end.
@@ -74,8 +69,8 @@ public struct RideSummary: Identifiable, Equatable, Sendable {
     public var averageSpeedMps: Double
     /// Total climb, in metres.
     public var climbMeters: Double
-    /// Normalized polyline for the `GPSTrackPreview` (B11). `nil` until geometry
-    /// is decoded.
+    /// Normalized polyline for the `GPSTrackPreview`. `nil` until geometry is
+    /// decoded.
     public var trackPreview: TrackPreview?
 
     public init(

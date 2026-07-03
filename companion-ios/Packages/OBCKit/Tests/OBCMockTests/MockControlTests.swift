@@ -3,8 +3,8 @@ import OBCDomain
 @testable import OBCMock
 
 /// The live fault-injection surface: forced states, one-shot faults, radio/pairing
-/// gates, and mid-session event injection — driven programmatically (feeds B1P + UI
-/// suites). One shared control instance drives both the panel and the transport.
+/// gates, and mid-session event injection, driven programmatically. One shared
+/// control instance drives both the panel and the transport.
 final class MockControlTests: XCTestCase {
     private func fastControl(_ scenario: Scenario = .happyPath) -> MockControl {
         let control = MockControl(scenario: scenario)
@@ -26,7 +26,7 @@ final class MockControlTests: XCTestCase {
         let control = fastControl()  // connected
         let transport = MockTransport(control: control)
         let probe = Task { await awaitState(transport.state, equals: .outOfRange) }
-        control.connection = .outOfRange   // force mid-session → S4 banner
+        control.connection = .outOfRange   // forced mid-session
         let saw = await probe.value
         XCTAssertTrue(saw)
     }
@@ -49,7 +49,7 @@ final class MockControlTests: XCTestCase {
             _ = try await transport.listRoutes()
             XCTFail("expected the armed failure")
         } catch let error as DeviceError {
-            XCTAssertEqual(error, .readFailed)   // S3
+            XCTAssertEqual(error, .readFailed)
         }
         // Retry succeeds — the fault was one-shot.
         let routes = try await transport.listRoutes()
@@ -58,21 +58,21 @@ final class MockControlTests: XCTestCase {
 
     func testRadioOffFailsConnectWithPoweredOff() async {
         let control = fastControl()
-        control.setRadio(.off)                 // H8
+        control.setRadio(.off)
         let transport = MockTransport(control: control)
         await assertConnectThrows(transport, .bluetoothUnavailable(.poweredOff))
     }
 
     func testRadioUnauthorizedFailsConnectWithUnauthorized() async {
         let control = fastControl()
-        control.setRadio(.unauthorized)        // H7
+        control.setRadio(.unauthorized)
         let transport = MockTransport(control: control)
         await assertConnectThrows(transport, .bluetoothUnavailable(.unauthorized))
     }
 
     func testFailPairingTimeoutThrowsOnConnect() async {
         let control = fastControl(.noDevice)
-        control.failPairing(.timeout)          // D5
+        control.failPairing(.timeout)
         let transport = MockTransport(control: control)
         await assertConnectThrows(transport, .deviceNotFound)
     }

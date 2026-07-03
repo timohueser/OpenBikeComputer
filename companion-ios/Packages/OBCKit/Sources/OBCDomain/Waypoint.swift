@@ -1,11 +1,7 @@
 import Foundation
 
-/// A point of interest along a route — what the waypoint list (W1) renders and
-/// what rides back the route detail (E-series). Waypoints travel with a
-/// `RouteBlob` (route object side-table), not as a separate wire object.
-///
-/// **B1 finalization** of the B-S0 domain set. Ordered by `index` along the
-/// route; `distanceAlongMeters` is the cumulative distance from the start.
+/// A point of interest along a route. Waypoints travel with a `RouteBlob`
+/// (route object side-table), not as a separate wire object.
 public struct Waypoint: Identifiable, Equatable, Sendable {
     /// Ordinal position along the route (0-based, monotonic). Doubles as `id`.
     public let index: Int

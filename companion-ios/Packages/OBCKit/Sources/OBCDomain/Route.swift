@@ -11,20 +11,15 @@ public struct RouteID: Hashable, Sendable {
 
 /// Where an imported route came from **as a wire format**. The phone converts
 /// **both GPX and TCX** to the compact binary route format before upload — the
-/// device never parses XML (see `OBCProtocol.md` → *Delta 2*). H5 rejects any
-/// other file type.
+/// device never parses XML.
 public enum RouteSource: Equatable, Sendable {
     case gpx
     case tcx
 }
 
-/// Lightweight route metadata for list rows (C1) and detail headers (E1/E2) —
-/// no geometry payload beyond the normalized `trackPreview`. The full binary
-/// payload rides in `RouteBlob`.
-///
-/// **B1 finalization** of the B-S0 skeleton: adds the estimated duration, point
-/// count, and the `TrackPreview` the list/detail render. New fields are defaulted
-/// so the B-S0 call sites keep compiling.
+/// Lightweight route metadata for list rows and detail headers — no geometry
+/// payload beyond the normalized `trackPreview`. The full binary payload rides
+/// in `RouteBlob`.
 public struct RouteSummary: Identifiable, Equatable, Sendable {
     public let id: RouteID
     public var name: String
@@ -38,8 +33,8 @@ public struct RouteSummary: Identifiable, Equatable, Sendable {
     public var pointCount: Int
     /// Import format lineage (`nil` for routes authored/planned on-device).
     public var source: RouteSource?
-    /// Normalized polyline for the `GPSTrackPreview` (B11). `nil` until geometry
-    /// is decoded; `.empty` for a genuinely empty track.
+    /// Normalized polyline for the `GPSTrackPreview`. `nil` until geometry is
+    /// decoded; `.empty` for a genuinely empty track.
     public var trackPreview: TrackPreview?
 
     public init(
@@ -63,18 +58,17 @@ public struct RouteSummary: Identifiable, Equatable, Sendable {
     }
 }
 
-/// Everything the route-detail screen (E2) renders beyond the list summary:
-/// the waypoints (W1) and the elevation-profile data. Served by
-/// `DeviceTransport.routeDetail(_:)` — the wire mapping is provisional until
-/// firmware `S0` pins the detail read (see `OBCProtocol.md`).
+/// Everything the route-detail screen renders beyond the list summary: the
+/// waypoints and the elevation-profile data. Served by
+/// `DeviceTransport.routeDetail(_:)`.
 public struct RouteDetail: Equatable, Sendable {
     public var summary: RouteSummary
-    /// Waypoints along the route, in ride order (W1).
+    /// Waypoints along the route, in ride order.
     public var waypoints: [Waypoint]
     /// Elevation samples along the route in metres, evenly spaced start → end.
     /// Empty when the source carried no elevation.
     public var elevationProfile: [Double]
-    /// Steepest sustained climb grade in percent (E2's MAX stat), when known.
+    /// Steepest sustained climb grade in percent, when known.
     public var maxGradePercent: Double?
 
     public init(
@@ -91,24 +85,24 @@ public struct RouteDetail: Equatable, Sendable {
 }
 
 /// A full route ready to upload: metadata + waypoints + the **compact binary
-/// payload** the device stores verbatim. `B1`'s `BLEChannel` frames `payload`
-/// over the CoC data plane; the import path (B6) produces it from GPX/TCX — the
-/// device never sees XML (see `OBCProtocol.md` → *Object formats* / *Delta 2*).
+/// payload** the device stores verbatim. `BLEChannel` frames `payload` over the
+/// CoC data plane; the import path produces it from GPX/TCX — the device never
+/// sees XML.
 ///
 /// The `payload` stays **opaque bytes** at this layer: its internal byte layout is
-/// owned by firmware `S0` + the on-device route format, and `BLEChannel` moves it
-/// without interpreting it.
+/// owned by the on-device route format, and `BLEChannel` moves it without
+/// interpreting it.
 public struct RouteBlob: Equatable, Sendable {
     public let summary: RouteSummary
-    /// Waypoints along the route (W1). Travels with the route, not as a separate
+    /// Waypoints along the route. Travels with the route, not as a separate
     /// wire object.
     public let waypoints: [Waypoint]
     /// Opaque compact-binary route bytes — framed, not parsed, by `BLEChannel`.
     public let payload: Data
     /// The device object id to **replace**, or `nil` for a fresh upload (the device
     /// assigns a new id). Set when re-uploading an edited route that's already on
-    /// the device so it updates in place instead of duplicating — "uploading to an
-    /// existing id replaces that object" (`obc-ble-interface-spec.md` §4.2).
+    /// the device so it updates in place instead of duplicating — uploading to an
+    /// existing id replaces that object.
     public let targetObjectID: UInt16?
 
     public init(

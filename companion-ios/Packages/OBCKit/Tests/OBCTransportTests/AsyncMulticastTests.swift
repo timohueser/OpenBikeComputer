@@ -1,8 +1,8 @@
 import XCTest
 @testable import OBCTransport
 
-/// `state`/`battery` replay semantics (epic #234: "replay latest so a late
-/// subscriber gets the current value").
+/// `state`/`battery` replay semantics: a late subscriber gets the current
+/// value, then live updates.
 final class AsyncMulticastTests: XCTestCase {
     func testLateSubscriberGetsLatestThenLiveUpdates() async {
         let multicast = AsyncMulticast<Int>(0)
