@@ -245,14 +245,15 @@ public struct TrackPreviewView: View {
 }
 
 extension TrackPreview {
-    /// Preview/gallery sample shaped like the design's Kettle Moraine curve.
-    public static let obcSample = TrackPreview(
-        points: [
-            .init(x: 0.02, y: 0.85), .init(x: 0.08, y: 0.55), .init(x: 0.18, y: 0.42),
-            .init(x: 0.30, y: 0.55), .init(x: 0.42, y: 0.78), .init(x: 0.55, y: 0.82),
-            .init(x: 0.66, y: 0.62), .init(x: 0.76, y: 0.35), .init(x: 0.82, y: 0.18),
-            .init(x: 0.92, y: 0.10), .init(x: 0.98, y: 0.05),
-        ],
-        aspectRatio: 1.35
-    )
+    /// Preview/gallery sample — a real Kettle Moraine (Wisconsin) loop, so both
+    /// the grid fallback and the MapKit basemap (#294) render a plausible track.
+    /// Built through `normalizing` so `points` and `coordinates` stay aligned.
+    public static let obcSample = TrackPreview.normalizing([
+        .init(latitude: 42.905, longitude: -88.520), .init(latitude: 42.918, longitude: -88.505),
+        .init(latitude: 42.930, longitude: -88.498), .init(latitude: 42.938, longitude: -88.478),
+        .init(latitude: 42.929, longitude: -88.455), .init(latitude: 42.915, longitude: -88.447),
+        .init(latitude: 42.902, longitude: -88.458), .init(latitude: 42.896, longitude: -88.480),
+        .init(latitude: 42.905, longitude: -88.500), .init(latitude: 42.918, longitude: -88.512),
+        .init(latitude: 42.905, longitude: -88.520),
+    ])
 }
