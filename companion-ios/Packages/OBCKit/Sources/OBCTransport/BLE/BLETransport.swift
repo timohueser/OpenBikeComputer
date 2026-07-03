@@ -843,8 +843,17 @@ extension BLETransport: CBCentralManagerDelegate {
 
     public func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         characteristics.removeAll()
+        // Close the dead CoC, don't just drop the reference: an `L2CAPByteChannel`
+        // owns a dedicated run-loop thread + stall `Timer` that only stop via
+        // `close()`/`teardown`. Nil-ing the refs alone orphans a thread that keeps
+        // waking every 0.25 s — one leaked per disconnect (S4 out-of-range
+        // flapping). We're already on `queue`, so drop the refs inline and fire the
+        // async close (which also resolves the channel's own parked read/write
+        // waiters); the `Task` retains the channel until teardown completes.
+        let deadChannel = byteChannel
         byteChannel = nil
         bleChannel = nil
+        if let deadChannel { Task { await deadChannel.close() } }
         failAllPending()
         // A disconnect that lands while a connect phase is still pending IS that
         // phase's failure. `failAllPending` deliberately leaves the two phase

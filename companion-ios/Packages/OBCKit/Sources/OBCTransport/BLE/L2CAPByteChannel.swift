@@ -137,8 +137,16 @@ public final class L2CAPByteChannel: NSObject, ByteChannel, StreamDelegate, @unc
         guard !closed else { lock.unlock(); return nil }
         closed = true
         let read = readWaiter; readWaiter = nil
+        let write = writeWaiter; writeWaiter = nil
         lock.unlock()
         perform(#selector(teardown), on: thread, with: nil, waitUntilDone: false)
+        // A parked writer (a backpressured `send` when the cancel/close lands) is
+        // never re-armed by a stream event on a self-initiated close, so resume it
+        // here or its continuation leaks (the awaiting `send` hangs forever). A
+        // write fails like any other drop; the read resolves to a clean EOF,
+        // returned to the async `close()`. `fail()` nils the same waiters under the
+        // lock, so at most one of the two paths resumes each.
+        write?.resume(throwing: ChannelDropped())
         return read?.cont
     }
 
