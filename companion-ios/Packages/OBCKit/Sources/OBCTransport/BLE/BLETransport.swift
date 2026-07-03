@@ -29,7 +29,8 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     private lazy var central = CBCentralManager(delegate: self, queue: queue)
 
     private let stateMulticast = AsyncMulticast<ConnectionState>(.disconnected)
-    private let batteryMulticast = AsyncMulticast<Int>(0)
+    /// `nil` until the first real BAS value — the seed must not replay as "0%".
+    private let batteryMulticast = AsyncMulticast<Int?>(nil)
 
     private var peripheral: CBPeripheral?
     private var characteristics: [CBUUID: CBCharacteristic] = [:]
@@ -70,7 +71,20 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     // MARK: DeviceTransport — lifecycle
 
     public var state: AsyncStream<ConnectionState> { stateMulticast.stream() }
-    public var battery: AsyncStream<Int> { batteryMulticast.stream() }
+    public var battery: AsyncStream<Int> {
+        // Drop the not-yet-known seed: subscribers get the first *real* reading
+        // (read at discovery + BAS notifies), never a fabricated 0%.
+        let source = batteryMulticast.stream()
+        return AsyncStream { continuation in
+            let pump = Task {
+                for await value in source {
+                    if let value { continuation.yield(value) }
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in pump.cancel() }
+        }
+    }
 
     public func connect() async throws {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
@@ -656,6 +670,13 @@ extension BLETransport: CBPeripheralDelegate {
             // download-announce descriptor on `transferControl`.
             if [GATT.batteryLevel, GATT.status, GATT.transferControl].contains(characteristic.uuid) {
                 peripheral.setNotifyValue(true, for: characteristic)
+            }
+            // The device's connect-time battery notify fires before this
+            // subscription lands (its next is ~30 s out) — read the level so the
+            // UI has it at once; the value resolves through the same
+            // didUpdateValueFor path as a notify.
+            if characteristic.uuid == GATT.batteryLevel {
+                peripheral.readValue(for: characteristic)
             }
         }
         // Once the PSM characteristic is known, open the CoC.
