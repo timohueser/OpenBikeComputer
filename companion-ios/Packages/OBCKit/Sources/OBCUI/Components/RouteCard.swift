@@ -46,7 +46,7 @@ public struct RouteCard: View {
 
     public var body: some View {
         HStack(spacing: 0) {
-            TrackPreviewView(preview, showsChrome: false)
+            MapTrackPreviewView(preview, showsChrome: false)
                 .frame(width: 128)
                 .overlay(alignment: .trailing) { OBCTheme.line.frame(width: 1) }
 
@@ -121,7 +121,7 @@ public struct RouteCardFullBleed: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            TrackPreviewView(preview, style: .hero, tag: tag, showsChrome: false)
+            MapTrackPreviewView(preview, style: .hero, tag: tag, showsChrome: false)
                 .frame(height: 160)
                 .overlay(alignment: .bottom) { OBCTheme.line.frame(height: 1) }
 
