@@ -13,7 +13,8 @@
         { "path": "software/formats", "title": "Data formats" },
         { "path": "software/rendering", "title": "Rendering pipeline" },
         { "path": "software/ui", "title": "The UI system" },
-        { "path": "software/packer-routing", "title": "Packer & routing" }
+        { "path": "software/packer-routing", "title": "Packer & routing" },
+        { "path": "software/companion-link", "title": "The companion link" }
       ]
     },
     {

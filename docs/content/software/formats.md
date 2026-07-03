@@ -548,4 +548,4 @@ The map's caches matter because the [priority multi-pass](../rendering/#4-decode
 - The shared byte seam: [`obc-reader/src/byte_io.rs`](src:firmware/obc-reader/src/byte_io.rs)
 - The byte-level specs: [`OBCM_Spec.md`](src:OBCM_Spec.md) · [`OBCR_Spec.md`](src:OBCR_Spec.md) · [`obc-ble-interface-spec.md`](src:obc-ble-interface-spec.md) (the wire contract routes/rides cross to the companion app)
 
-Maps are produced by the packer and routes by the GPX converter — how those work, and how a route is matched to the map you're riding, is the subject of [packer & routing](../packer-routing/). For how these bytes become pixels, see the [rendering pipeline](../rendering/).
+Maps are produced by the packer and routes by the GPX converter — how those work, and how a route is matched to the map you're riding, is the subject of [packer & routing](../packer-routing/). For how these bytes become pixels, see the [rendering pipeline](../rendering/). Routes and rides also cross to a phone over Bluetooth as *these same bytes* — how that link is shaped is [the companion link](../companion-link/).
