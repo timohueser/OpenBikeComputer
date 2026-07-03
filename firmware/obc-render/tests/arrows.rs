@@ -1,9 +1,7 @@
-//! Tests for the route direction-chevron overlay ([`MapRenderer::draw_route`]'s
-//! `draw_arrows` path). Builds a real `.obcr` route (GPX → converter → reader), strokes
-//! it into a tiny in-memory `DrawTarget`, and counts the distinctly-coloured arrow pixels
-//! — so the chevrons only appear when asked, and ride the line when they do. The arc-length
-//! cadence itself is unit-tested against `walk_arrows` inside the crate; this pins the
-//! end-to-end `draw_route` gate.
+//! Tests for the route direction-chevron overlay ([`MapRenderer::draw_route`]). Builds a real
+//! `.obcr` route (GPX → converter → reader), strokes it into an in-memory `DrawTarget`, and counts
+//! the distinctly-coloured arrow pixels. The arc-length cadence itself is unit-tested inside the
+//! crate; this pins the end-to-end `draw_route` gate.
 
 use embedded_graphics::pixelcolor::Rgb888;
 use obc_render::{MapRenderer, Viewport};
@@ -110,7 +108,7 @@ fn route_stroke_has_the_requested_width() {
     let mut buf = Buf::new(400, 400);
     MapRenderer::new().draw_route(&mut buf, &vp(), &route, ROUTE, 6, ARROW, None);
 
-    let row = 330; // below the route's on-screen extent? no — within it, clear of any chevron
+    let row = 330; // within the route's on-screen extent, clear of any chevron
     let width = (0..400).filter(|&x| buf.get(x, row) == ROUTE).count();
     assert!((5..=8).contains(&width), "weight-6 stroke should be ~6 px wide, got {width}");
 }
@@ -139,11 +137,10 @@ fn chevron_gaps(buf: &Buf) -> Vec<i32> {
 
 #[test]
 fn chevron_spacing_is_held_in_screen_space() {
-    // The fix: chevron spacing is a fixed *screen* cadence (ARROW_SPACING_PX) converted to ground
-    // metres at the current zoom, so the on-screen gap between chevrons stays the same as you zoom
-    // instead of collapsing when zoomed out. Render the same route at two zooms (2× apart) with the
-    // rider at the start so chevrons fill the screen upward, and the measured pixel gaps must match.
-    // With the old fixed-metre spacing the gap would scale ~2× with zoom — the bunching bug.
+    // Chevron spacing is a fixed *screen* cadence (ARROW_SPACING_PX) converted to ground metres at
+    // the current zoom, so the on-screen gap between chevrons stays the same as you zoom. Render the
+    // same route at two zooms (2× apart), rider at the start so chevrons fill upward; the measured
+    // pixel gaps must match (fixed-metre spacing would scale ~2× with zoom).
     let bytes = route_bytes(LONG_NORTH);
     let src = SliceSource(&bytes);
     let ridx = RouteIndex::read(&src).unwrap();

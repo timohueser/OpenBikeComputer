@@ -1,17 +1,13 @@
 //! 1:1 physical-size calibration for the device window.
 //!
-//! The host can render the device image at any size, but "how big is one
-//! millimetre on this screen" is a property of the monitor it can't know. So we
-//! measure it **once** — the user holds a ruler to an on-screen reference bar and
-//! types its length — and persist the resulting *points-per-millimetre*. With that
-//! plus the panel's known physical size ([`PANEL_W_MM`]/[`PANEL_H_MM`]), the GUI
-//! renders the 240×320 framebuffer at the panel's true size.
+//! "How big is one millimetre on this screen" is a monitor property the host can't know,
+//! so we measure it **once** (ruler on an on-screen reference bar) and persist the
+//! resulting *points-per-millimetre*. With that plus the panel's known physical size
+//! ([`PANEL_W_MM`]/[`PANEL_H_MM`]), the GUI renders the framebuffer at true size.
 //!
-//! Everything stays in egui **points** (not physical pixels): the reference bar is
-//! drawn in points and the device image is sized in points, so the calibration folds
-//! in the OS display-scaling (`pixels_per_point`, e.g. 2× on a Retina Mac)
-//! automatically — we never query DPI. (Re-calibrate if you move to a different
-//! monitor.)
+//! Everything stays in egui **points** (not physical pixels), so the calibration folds in
+//! the OS display-scaling (`pixels_per_point`) automatically — we never query DPI.
+//! (Re-calibrate on a different monitor.)
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
@@ -72,9 +68,9 @@ pub fn save(_points_per_mm: f32) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    /// `save` then `load` round-trips, and garbage / negative contents read back as
-    /// `None`. Redirects the config dir via `XDG_CONFIG_HOME` (edition 2021: `set_var`
-    /// is safe; this is the crate's only test, so nothing races on the env).
+    /// `save`/`load` round-trips, and garbage / negative contents read back as `None`.
+    /// Redirects the config dir via `XDG_CONFIG_HOME` (this is the only test, so nothing races
+    /// on the env).
     #[test]
     fn save_load_roundtrips_and_rejects_junk() {
         let dir = std::env::temp_dir().join(format!("obc-sim-calibtest-{}", std::process::id()));
@@ -91,10 +87,8 @@ mod tests {
         std::fs::write(dir.join("obc-sim").join("calibration"), "-3").unwrap();
         assert_eq!(load(), None, "non-positive is invalid");
 
-        // Item 14 (`load`'s filter `is_finite() && *v > 0.0` ~45): the `> 0.0` (not `>=`)
-        // and `is_finite()` boundaries. These extend the same test rather than adding a
-        // second one because `load` reads a process-global `XDG_CONFIG_HOME` that this test
-        // already owns — a parallel test would race on it.
+        // The filter's `> 0.0` (not `>=`) and `is_finite()` boundaries. Extends this test rather
+        // than adding a second, since `load` reads the process-global `XDG_CONFIG_HOME` we own.
         let cal = dir.join("obc-sim").join("calibration");
         std::fs::write(&cal, "0").unwrap();
         assert_eq!(load(), None, "exactly 0 fails `> 0.0` (a zero scale is degenerate)");

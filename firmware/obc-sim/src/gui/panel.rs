@@ -1,12 +1,9 @@
-//! The "Controls" window — the second OS window (an egui immediate viewport) that
-//! drives the simulated device: the emulated encoder + Back, the manual GPS fix
-//! (position / heading / zoom / camera / orientation), GPX replay, and the render-
-//! stats readout. Split out of [`super`]'s host loop so the panel UI lives apart
-//! from the framebuffer/texture plumbing; it is a second `impl SimGui` block, so it
-//! reads and mutates the same fields directly.
+//! The "Controls" window — a second egui immediate viewport driving the simulated device:
+//! the manual GPS fix (position / heading / zoom / camera / orientation), GPX replay, and
+//! the render-stats readout. A second `impl SimGui` block, so it mutates the same fields.
 //!
-//! The whole panel is a native development tool — the web demo shows only the device
-//! itself — so on wasm these methods are compiled but unreferenced.
+//! Native development tool only — the web demo shows just the device, so on wasm these
+//! methods are compiled but unreferenced.
 #![cfg_attr(target_arch = "wasm32", allow(dead_code))]
 
 use eframe::egui;
@@ -35,19 +32,16 @@ fn util_bar(ui: &mut egui::Ui, label: &str, frac: f32) {
 }
 
 impl SimGui {
-    /// Draw the "Controls" window — a second OS window (egui immediate viewport)
-    /// that drives the simulated GPS fix. Re-declared every frame; the widgets
-    /// edit the panel mirrors / `AppState`, then we push the mirrors into the
-    /// [`SimLocationSource`](crate::sim_location::SimLocationSource) so the next
-    /// `App::tick` picks them up.
+    /// Draw the "Controls" window. Re-declared every frame; the widgets edit the panel
+    /// mirrors / `AppState`, then the mirrors are pushed into the
+    /// [`SimLocationSource`](crate::sim_location::SimLocationSource) for the next `App::tick`.
     pub(super) fn show_control_panel(&mut self, ctx: &egui::Context) {
         ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("controls"),
             egui::ViewportBuilder::default().with_title("Controls").with_inner_size([360.0, 770.0]),
             |ctx, _class| {
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    // The device's own controls live on the housing now (click the wheel /
-                    // Back, scroll over the wheel to turn); just a reminder here.
+                    // The device controls live on the housing now; this is just a reminder.
                     ui.label(egui::RichText::new("Device — encoder + Back").strong());
                     ui.label(
                         egui::RichText::new(
@@ -59,7 +53,6 @@ impl SimGui {
                     );
                     ui.add_space(6.0);
 
-                    // Housing body color — purely cosmetic chrome (the four colorways).
                     ui.horizontal(|ui| {
                         ui.label("Device color");
                         egui::ComboBox::from_id_salt("colorway").selected_text(self.colorway.label()).show_ui(
@@ -76,18 +69,14 @@ impl SimGui {
                     ui.separator();
                     ui.add_space(6.0);
 
-                    // Let sliders span the panel width instead of egui's narrow
-                    // default — leaves room for the value box on the right.
+                    // Let sliders span the panel width, leaving room for the value box.
                     ui.spacing_mut().slider_width = (ui.available_width() - 90.0).max(140.0);
 
-                    // While a GPX track is loaded it owns the fix (like the device's
-                    // GPS would), so the manual position/heading inputs are shown
-                    // read-only and just track the replay. Camera/zoom/orientation
-                    // stay live.
+                    // A loaded GPX track owns the fix (as the device's GPS would), so the manual
+                    // position/heading inputs go read-only. Camera/zoom/orientation stay live.
                     let replaying = self.gpx.is_some();
 
                     // Position — the GPS fix, edited in degrees (stored as µdeg).
-                    // Lat and Lon share one row to spend width, not height.
                     ui.add_enabled_ui(!replaying, |ui| {
                         ui.horizontal(|ui| {
                             ui.label("Lat");
@@ -120,18 +109,16 @@ impl SimGui {
 
                     separator_above(ui);
 
-                    // Compass — the magnetometer heading the device uses to orient the map when
-                    // the rider is stopped (a real GPS drops its course at a standstill). Always
-                    // live: it only takes effect on a heading-up map with no GPS course, so during
-                    // a GPX-replay pause it visibly rotates the map, and it's a no-op otherwise.
+                    // Compass — the magnetometer heading, always live but only effective on a
+                    // heading-up map with no GPS course (so it rotates the map during a replay pause,
+                    // no-op otherwise).
                     ui.label("Compass (heading when stopped)");
                     ui.add(egui::Slider::new(&mut self.panel.compass_deg, 0.0..=360.0).suffix("°").step_by(1.0));
 
                     separator_above(ui);
 
-                    // Zoom — operated in meters-per-pixel on a log scale. Only
-                    // write back when the user drags it, so it never fights the
-                    // mouse scroll (which can range past the slider's bounds).
+                    // Zoom — meters-per-pixel on a log scale. Only write back when dragged, so it
+                    // never fights the mouse scroll (which can range past the slider's bounds).
                     ui.label("Zoom");
                     let mut mpp = zoom_to_mpp(self.app.state.zoom);
                     let resp = ui.add(
@@ -154,10 +141,8 @@ impl SimGui {
 
                     separator_above(ui);
 
-                    // Camera mode and Orientation — paired on one row (each a label
-                    // over its toggle) to spend width instead of height. Orientation
-                    // (north-up vs heading-up, rotating the map so Heading points to the
-                    // top) is independent of the camera mode.
+                    // Camera mode and Orientation — paired on one row. Orientation (north-up vs
+                    // heading-up) is independent of the camera mode.
                     let prev_mode = self.app.state.mode;
                     ui.horizontal(|ui| {
                         ui.vertical(|ui| {
@@ -176,9 +161,8 @@ impl SimGui {
                             });
                         });
                     });
-                    // Entering Follow: snap the fix onto the current camera center so the
-                    // view doesn't jump (in Free the mouse moved the camera away from the
-                    // fix) and the panel reads the followed point.
+                    // Entering Follow: snap the fix onto the camera center so the view doesn't jump
+                    // (Free moved the camera away from the fix).
                     if prev_mode == CameraMode::Free && self.app.state.mode == CameraMode::Follow {
                         self.panel.lat_deg = self.app.state.cam_lat as f64 / 1e6;
                         self.panel.lon_deg = self.app.state.cam_lon as f64 / 1e6;
@@ -186,12 +170,10 @@ impl SimGui {
 
                     separator_above(ui);
 
-                    // GPX replay — load a recorded track and play it back as a
-                    // simulated GPS sensor (position + derived course/speed). The
-                    // player is the active `LocationSource` while a track is loaded.
+                    // GPX replay — play a recorded track back as a simulated GPS sensor. The player
+                    // is the active `LocationSource` while a track is loaded.
                     ui.label("GPX replay");
-                    // Native uses an OS file picker to load a track; the web build has no
-                    // such dialog (a file-input upload path replaces it later).
+                    // Native uses an OS file picker; the web build has no such dialog.
                     #[cfg(not(target_arch = "wasm32"))]
                     if ui.button("Load GPX…").clicked() {
                         if let Some(path) = rfd::FileDialog::new().add_filter("GPX track", &["gpx"]).pick_file() {
@@ -202,12 +184,10 @@ impl SimGui {
 
                     separator_above(ui);
 
-                    // Display size — the 1:1 "actual size" toggle + ruler calibration.
                     self.show_display_controls(ui);
 
                     separator_above(ui);
 
-                    // Expanded by default — the render stats are worth keeping an eye on.
                     egui::CollapsingHeader::new("Render Stats")
                         .default_open(true)
                         .show(ui, |ui| self.show_render_stats(ui));
@@ -225,16 +205,14 @@ impl SimGui {
         self.compass.set(self.panel.compass_deg);
     }
 
-    /// Display size — the 1:1 "actual size" toggle (needs a calibration) plus a button
-    /// to (re)calibrate. The toggle and the calibration screen live in
-    /// [`super::SimGui`] ([`show_calibration`](super::SimGui::show_calibration)).
+    /// Display size — the 1:1 "actual size" toggle (needs a calibration) plus a (re)calibrate
+    /// button. The calibration screen lives in [`super::SimGui`].
     fn show_display_controls(&mut self, ui: &mut egui::Ui) {
         ui.label(egui::RichText::new("Display size").strong());
         let calibrated = self.points_per_mm.is_some();
         ui.horizontal(|ui| {
             let resp = ui.add_enabled(calibrated, egui::Checkbox::new(&mut self.physical, "Actual size (1:1)"));
             if resp.changed() {
-                // Resize the window either way: to 1:1 on, back to the --scale default off.
                 self.physical_resize_pending = true;
             }
             if ui.add_enabled(self.calib.is_none(), egui::Button::new("Calibrate…")).clicked() {
@@ -258,11 +236,9 @@ impl SimGui {
         }
     }
 
-    /// The loaded-track controls: play/pause (auto-follows), a seek scrubber, and
-    /// a 1×–10× speed slider. Shows the load error (or nothing) when no track is
-    /// loaded. Split out of [`show_control_panel`](Self::show_control_panel) so the
-    /// "eject" mutation of `self.gpx` doesn't tangle with the active `&mut` borrow
-    /// of the player.
+    /// The loaded-track controls: play/pause (auto-follows), a seek scrubber, and a 1×–10× speed
+    /// slider. Split out so the "eject" mutation of `self.gpx` doesn't tangle with the active
+    /// `&mut` borrow of the player.
     fn show_gpx_controls(&mut self, ui: &mut egui::Ui) {
         let Some(player) = self.gpx.as_mut() else {
             if let Some(err) = &self.gpx_error {
@@ -282,8 +258,7 @@ impl SimGui {
             let play_label = if player.is_playing() { "⏸ Pause" } else { "▶ Play" };
             if ui.button(play_label).clicked() {
                 player.toggle();
-                // Pressing play tracks the moving fix; the user can still switch
-                // back to Free to pan around mid-playback.
+                // Play follows the moving fix; the user can still switch back to Free mid-playback.
                 if player.is_playing() {
                     self.app.state.mode = CameraMode::Follow;
                 }
@@ -294,7 +269,6 @@ impl SimGui {
         });
 
         if dur > 0.0 {
-            // Scrubber — seek anywhere in the track, playing or paused.
             let mut t = player.time();
             let resp = ui.add(egui::Slider::new(&mut t, 0.0..=dur).show_value(false).text("seek"));
             if resp.changed() {
@@ -302,7 +276,6 @@ impl SimGui {
             }
             ui.label(format!("{} / {}", format_clock(player.time()), format_clock(dur)));
 
-            // Playback speed — real time (1×) up to 10×.
             let mut speed = player.speed();
             if ui.add(egui::Slider::new(&mut speed, 1.0..=10.0).suffix("×")).changed() {
                 player.set_speed(speed);
@@ -317,9 +290,8 @@ impl SimGui {
         }
     }
 
-    /// The collapsing render-stats readout: LOD / chunk / feature / point counts
-    /// from the last frame's [`RenderStats`](obc_render::RenderStats), plus the
-    /// span / point / ring scratch-buffer utilization bars.
+    /// The collapsing render-stats readout: last frame's [`RenderStats`](obc_render::RenderStats)
+    /// counts plus the scratch-buffer utilization bars.
     fn show_render_stats(&self, ui: &mut egui::Ui) {
         let s = &self.last_stats;
 
@@ -332,11 +304,8 @@ impl SimGui {
             ui.label(format!("{}", s.chunks_visited));
             ui.end_row();
 
-            // Streamed-map cache (issue #37): the chunk-cache hit rate + raw source overhead this
-            // frame. The map renders through 4 priority passes over the same chunks, so a healthy
-            // hit rate (passes 2–4 served from cache) keeps the SD-read overhead near one read per
-            // visible chunk. In the sim the source is an in-memory slice, so this measures the
-            // cache behaviour the device sees over real SD reads.
+            // Chunk-cache hit rate + source overhead. The map renders through 4 priority passes
+            // over the same chunks, so a healthy hit rate keeps reads near one per visible chunk.
             let cache_reqs = s.map_chunk_hits + s.map_chunk_misses;
             ui.label("Map SD");
             if cache_reqs == 0 {
@@ -360,14 +329,13 @@ impl SimGui {
             ui.label(format!("{} / {} drawn", s.points_drawn, s.points_tried));
             ui.end_row();
 
-            // Active route overlay (no LOD): points decoded vs. actually stroked, and chunks. As
-            // you zoom out `pts` climbs with the visible route, but `drawn` tracks what's on-screen
-            // (per-segment view clip + subpixel fold) — the gap is the clip doing its job.
+            // Active route overlay: points decoded vs. actually stroked. The gap (as you zoom out)
+            // is the per-segment view clip + subpixel fold doing its job.
             ui.label("Route");
             ui.label(format!("{} / {} drawn · {} chunks", s.route_points_drawn, s.route_points, s.route_chunks));
             ui.end_row();
 
-            // Host-measured frame draw time (render + route/overlays). 0 = not yet measured.
+            // Host-measured frame draw time. 0 = not yet measured.
             ui.label("Render");
             if s.render_us == 0 {
                 ui.label("—");
@@ -376,10 +344,9 @@ impl SimGui {
             }
             ui.end_row();
 
-            // Render-on-demand signal (issue #47): which planes the firmware *would* have
-            // re-rendered this frame. The sim always redraws, so this is informational — but it
-            // makes the dirty logic observable: drive the device controls and watch `map` fire on
-            // gestures / camera-moving fixes and stay quiet when idle.
+            // Render-on-demand signal: which planes the firmware *would* have re-rendered. The sim
+            // always redraws, so this is informational — `map` fires on gestures / camera-moving
+            // fixes and stays quiet when idle.
             let d = self.last_dirty;
             ui.label("Dirty");
             let on = egui::Color32::from_rgb(227, 165, 43); // amber, like the device accent
@@ -390,10 +357,9 @@ impl SimGui {
             });
             ui.end_row();
 
-            // Self-diffing present (epic #199 / issue #200): rows actually *pushed* this frame vs.
-            // the full 320, decided by the per-row hash diff. This is the live readout the epic is
-            // about — idle/spurious redraw → 0 rows (free), a Home minute tick → a few clock rows,
-            // a map pan → ~all. An exact full-frame diff oracle backs each number (a miss panics).
+            // Self-diffing present: rows actually *pushed* this frame vs. the full height, decided
+            // by the per-row hash diff — idle → 0 (free), a Home minute tick → a few clock rows, a
+            // map pan → ~all. An exact full-frame diff oracle backs each number (a miss panics).
             let p = self.present.stats;
             ui.label("Present");
             if p.total_rows == 0 {

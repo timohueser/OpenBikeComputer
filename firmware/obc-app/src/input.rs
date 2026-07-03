@@ -1,18 +1,13 @@
 //! Gesture recognition — the shared input layer.
 //!
-//! Turns raw [`InputEvent`]s (encoder detents + encoder/Back button edges) plus a
-//! millis clock into the five UI [`Gesture`]s from the input model in
-//! `docs/ui_framework_brief.md`. This is the brief's "one shared layer" with
-//! long-press detection and hold-progress identical across host and MCU: the
-//! simulator's knob/buttons and the firmware's GPIO produce the exact same
-//! gestures. `no_std`, zero-alloc, and clock-agnostic — the host/MCU passes the
-//! current time in, so there is no platform timer baked in.
+//! Turns raw [`InputEvent`]s (encoder detents + encoder/Back button edges) plus a millis clock into
+//! the five UI [`Gesture`]s, identically across host and MCU. `no_std`, zero-alloc, and
+//! clock-agnostic — the caller passes the current time in, so no platform timer is baked in.
 
 use crate::hal::{Button, ButtonEvent, InputEvent};
 
-/// Default long-press threshold (ms): how long the encoder or Back must be held
-/// to read as `Hold`/`BackHold` rather than `Press`/`Back`. Spec open item #5
-/// (tune later); 500 ms is a comfortable start.
+/// Default long-press threshold (ms): how long the encoder or Back must be held to read as
+/// `Hold`/`BackHold` rather than `Press`/`Back`.
 pub const DEFAULT_HOLD_MS: u32 = 500;
 
 /// Default short-press (tap) window (ms): a release within this counts as a `Press`/`Back`. A
@@ -22,9 +17,8 @@ pub const DEFAULT_HOLD_MS: u32 = 500;
 /// long-press.
 pub const DEFAULT_TAP_MS: u32 = 200;
 
-/// The five UI gestures (input model in `docs/ui_framework_brief.md`), recognized
-/// from raw [`InputEvent`]s + a millis clock by [`Gestures`]. A screen's `handle`
-/// reacts to exactly these.
+/// The five UI gestures, recognized from raw [`InputEvent`]s + a millis clock by [`Gestures`]. A
+/// screen's `handle` reacts to exactly these.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Gesture {
     /// Encoder rotated; `n` signed detents (positive = clockwise / "next").
@@ -59,16 +53,13 @@ impl Held {
     }
 }
 
-/// Shared gesture recognizer. Feed it raw [`InputEvent`]s as they arrive
-/// ([`on_event`](Gestures::on_event)) and call [`tick`](Gestures::tick) once per
-/// frame with the current millis; it emits [`Gesture`]s and exposes hold-progress
-/// (0.0–1.0) for the guarded-action confirm ring.
+/// Shared gesture recognizer. Feed it raw [`InputEvent`]s ([`on_event`](Gestures::on_event)) and
+/// call [`tick`](Gestures::tick) once per frame with the current millis; it emits [`Gesture`]s and
+/// exposes hold-progress (0.0–1.0) for the guarded-action confirm ring.
 ///
-/// `press` fires on a *release within the tap window*; a release between the tap
-/// window and the hold threshold (a cancelled long-press) fires nothing; `hold`
-/// fires the instant the threshold is crossed *while still held* (so the ring
-/// completes and the action commits without waiting for release) — hence both an
-/// event hook and a per-frame `tick`.
+/// `Hold` fires the instant the threshold is crossed *while still held* (so the ring completes and
+/// the action commits without waiting for release) — hence both an event hook and a per-frame
+/// `tick`.
 pub struct Gestures {
     hold_ms: u32,
     /// Max press duration that still counts as a tap (see [`DEFAULT_TAP_MS`]); a release between this
@@ -90,12 +81,10 @@ impl Gestures {
         Self::new(DEFAULT_HOLD_MS)
     }
 
-    /// Feed one raw event captured at time `now` (ms). Returns the gesture it
-    /// completes, if any: `Turn` fires immediately; `Press`/`Back` fire on a release
-    /// **within the tap window** ([`tap_ms`](Self::tap_ms)). A release *after* the tap
-    /// window but *before* the hold threshold is a **cancelled long-press** and yields
-    /// nothing; a release *after* the long-press already fired likewise yields nothing
-    /// (the `Hold`/`BackHold` was the gesture).
+    /// Feed one raw event captured at time `now` (ms). Returns the gesture it completes, if any:
+    /// `Turn` fires immediately; `Press`/`Back` fire on a release **within the tap window**
+    /// ([`tap_ms`](Self::tap_ms)). A release after the tap window (cancelled long-press) or after
+    /// the long-press already fired yields nothing.
     pub fn on_event(&mut self, ev: InputEvent, now: u32) -> Option<Gesture> {
         match ev {
             InputEvent::Turn(0) => None,
@@ -264,12 +253,9 @@ mod tests {
         assert_eq!(g.tick(600), Some(Gesture::BackHold));
     }
 
-    /// The in-frame rule the doc comment promises (input.rs ~112-113): `tick` emits **at most one**
-    /// gesture per call, so when *both* buttons cross the hold threshold in the same frame, only
-    /// the encoder's `Hold` fires now and the `BackHold` fires on the next `tick`. The existing
-    /// independence test crosses them on *different* frames; this pins the simultaneous case, where
-    /// dropping the `return` would silently swallow the second long-press. (Both pressed together is
-    /// a plausible fumble in a glove on the trail.)
+    /// `tick` emits **at most one** gesture per call, so when both buttons cross the threshold in
+    /// the same frame the encoder's `Hold` fires now and the `BackHold` on the next `tick` — the
+    /// second long-press is deferred, not dropped.
     #[test]
     fn both_holds_crossing_one_frame_fire_one_then_the_other() {
         let mut g = Gestures::new(500);

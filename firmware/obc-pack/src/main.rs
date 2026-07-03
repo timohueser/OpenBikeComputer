@@ -19,9 +19,8 @@ use obc_pack::land;
 use obc_pack::quadtree::build_lod;
 use obc_pack::serialize::serialize_lods_streaming;
 
-// Meters → degrees divisor for the simplify tolerance. Shared with the
-// reader/route/renderer so the packer's simplification scale matches the Earth
-// model everything else measures distance against.
+// Meters → degrees divisor for simplify tolerance; shared so the packer's scale
+// matches the Earth model everything else uses.
 use obc_reader::M_PER_DEG;
 
 struct Args {
@@ -46,8 +45,7 @@ fn parse_args() -> Result<Args, String> {
             _ => positional.push(a),
         }
     }
-    // CLI contract: `<pbf...> <config.json> <out.obcm>` — last two positionals
-    // are config + output, the rest are inputs.
+    // `<pbf...> <config.json> <out.obcm>`: last two positionals are config + output.
     if positional.len() < 3 {
         return Err("usage: obc-pack <pbf...> <config.json> <out.obcm> [--chunk-size N] [--no-land]".into());
     }
@@ -60,12 +58,11 @@ fn run() -> Result<(), String> {
     let args = parse_args()?;
     let config = Config::load(&args.config)?;
     let chunk_size = args.chunk_size.unwrap_or(config.chunk_size);
-    // Fail loud before any work if chunk_size would let a feature outgrow the reader's cap (#2).
+    // Fail loud before any work if chunk_size would let a feature outgrow the reader's cap.
     obc_pack::serialize::validate_chunk_size(chunk_size)?;
 
-    // --- Merge: >1 input ⇒ `osmium merge` + `osmium sort` to a temp, then ingest
-    // that (the osmium CLI is battle-tested, so we shell out to it).
-    // `_temps` keeps the temp files alive until run() returns, then drops them. ---
+    // --- Merge: >1 input ⇒ shell out to `osmium merge` + `osmium sort`, then ingest.
+    // `_temps` keeps the intermediates alive until run() returns. ---
     let mut _temps: Vec<TempPath> = Vec::new();
     let pbf_to_ingest: String = if args.pbfs.len() > 1 {
         println!("Merging {} files...", args.pbfs.len());
@@ -95,9 +92,8 @@ fn run() -> Result<(), String> {
         return Err("no features found matching config".into());
     }
 
-    // --- Global bbox over features + coastlines, then TRUNCATE toward zero
-    // (floored to whole µdeg), NOT round — a deliberate asymmetry with the
-    // serializer's round-to-nearest. ---
+    // --- Global bbox over features + coastlines, TRUNCATED toward zero (not rounded)
+    // — a deliberate asymmetry with the serializer's round-to-nearest. ---
     println!("Calculating BBox...");
     let global_bbox = compute_bbox(&ingested);
 
@@ -122,11 +118,9 @@ fn run() -> Result<(), String> {
         }
     }
 
-    // --- Build + serialize the LOD pyramid in one streaming pass (Stage 6): each
-    // LOD's tree is built (cumulative + per-level simplify),
-    // serialized, streamed to disk, and dropped before the next — so peak memory
-    // is ~one tree instead of all of them plus the whole output buffer. The bytes
-    // are identical to the in-memory serializer. ---
+    // --- Build + serialize the LOD pyramid in one streaming pass: each LOD's tree
+    // is built, serialized, streamed to disk, and dropped before the next, so peak
+    // memory is ~one tree. ---
     let styles = config.styles();
     let file = std::fs::File::create(&args.output).map_err(|e| format!("create {}: {e}", args.output))?;
     let mut w = std::io::BufWriter::new(file);
@@ -134,11 +128,10 @@ fn run() -> Result<(), String> {
         let lod = &config.lods[i];
         println!("Building Quadtree LOD {i} (simplify {}m)...", lod.simplify_m);
         let tol = if lod.simplify_m > 0.0 { lod.simplify_m / M_PER_DEG } else { 0.0 };
-        // Parallel per-feature simplify (rayon). Each closure runs wholly on
-        // one worker thread — to_geos → simplify → back — using that thread's
-        // own GEOS context, so no geometry crosses threads. `collect` preserves
-        // order, so the feature order into `build_lod` (and thus the output) is
-        // unchanged. The quadtree build below stays sequential (bounded memory).
+        // Parallel per-feature simplify: each closure runs wholly on one thread
+        // using that thread's own GEOS context, so no geometry crosses threads.
+        // `collect` preserves order, so the output is unchanged. The quadtree build
+        // stays sequential (bounded memory).
         let level: Vec<(u8, Geom)> = ingested
             .features
             .par_iter()

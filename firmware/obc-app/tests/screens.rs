@@ -1,8 +1,6 @@
-//! Screen-stack tests: navigation [`Transition`]s per gesture, the guarded-action
-//! "needs a completed hold" rule, the stack discipline ([`apply`]), and a render
-//! snapshot proving Ride control composites over the map. Mirrors the style of
-//! `obc-render/tests/priority.rs` (feed inputs, assert the outcome) and
-//! `obc-app/tests/marker.rs` (render into a tiny `DrawTarget`).
+//! Screen-stack tests: navigation [`Transition`]s per gesture, the guarded-action "needs a completed
+//! hold" rule, the stack discipline ([`apply`]), and a render snapshot proving Ride control
+//! composites over the map.
 
 use embedded_graphics::pixelcolor::Rgb888;
 use embedded_graphics::prelude::RgbColor; // for `Rgb888::r()` in the compositing snapshot
@@ -18,20 +16,17 @@ use obc_app::{
 use obc_reader::{rgb565_to_rgb888, BBox, MapCache, MapTables, Reader, SliceSource};
 
 mod common;
-// `ReplayFix` is the always-the-same-fix source (the old `OneFix(Fix)` here, distinct
-// from `dirty.rs`'s emit-once source); `keys`/`NoFix`/`Buf`/`build_min_obcm` are shared.
 use common::{build_min_obcm, keys, Buf, NoFix, ReplayFix};
 
-/// A throwaway default [`Settings`] block satisfying [`Ctx`]'s `&mut` borrow. The non-settings
-/// screens under test here never touch `settings`, so each call leaks a fresh block — fine in a
-/// short-lived test process, and a fresh allocation per call so the leaked blocks never alias. The
-/// settings screens' own navigation is unit-tested in `src/screen/settings/*` with a real local one.
+/// A throwaway default [`Settings`] satisfying [`Ctx`]'s `&mut` borrow. The non-settings screens
+/// under test never touch it, so each call leaks a fresh (non-aliasing) block — fine in a short-lived
+/// test process.
 fn leaked_settings() -> &'static mut Settings {
     Box::leak(Box::new(Settings::default()))
 }
 
-/// A handle [`Ctx`] over freshly-made state/activity for a one-gesture test. Most
-/// screens ignore the catalog; the Route-menu tests pass their own via [`route_ctx`].
+/// A handle [`Ctx`] over freshly-made state/activity. The Route-menu tests pass a catalog via
+/// [`route_ctx`].
 fn ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity) -> Ctx<'a> {
     Ctx { state, activity, settings: leaked_settings(), routes: &[], now_ms: 0 }
 }
@@ -58,9 +53,7 @@ fn test_routes() -> [RouteSummary; 3] {
     [mk("Alpha", 10, 100), mk("Beta", 20, 200), mk("Gamma", 30, 300)]
 }
 
-// ---------------------------------------------------------------------------
 // Per-gesture navigation transitions.
-// ---------------------------------------------------------------------------
 
 #[test]
 fn map_press_pauses_into_ride_control() {
@@ -79,9 +72,8 @@ fn map_turn_zooms_in_place() {
     assert!(st.zoom > z0, "clockwise turn zooms in");
 }
 
-/// Map zoom is `×ZOOM_STEP` per detent, compounding (map.rs ~74-79) — the same geometric step
-/// the Statistics zoom uses. Pins the per-detent multiply so a regression to an additive step
-/// (which would crawl, then under/overshoot) is caught. Two detents = `ZOOM_STEP²·z0`.
+/// Map zoom is `×ZOOM_STEP` per detent, compounding — pins the per-detent multiply so a regression
+/// to an additive step is caught.
 #[test]
 fn map_turn_multiplies_zoom_per_detent() {
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Riding));
@@ -93,9 +85,8 @@ fn map_turn_multiplies_zoom_per_detent() {
     assert!((st.zoom / one - one).abs() < 1e-3, "each detent is the same ×ratio, got {} then {}", one, st.zoom);
 }
 
-/// A huge forward turn saturates at the map's `MAX_ZOOM` clamp instead of overflowing to `inf`
-/// (map.rs ~79). `map_turn_zooms_in_place` only checks the in-band case; this pins the upper
-/// clamp — without it a `Turn(1000)` would multiply `1.2^1000` straight to infinity.
+/// A huge forward turn saturates at `MAX_ZOOM` instead of overflowing to `inf` (a `Turn(1000)` would
+/// multiply `1.2^1000` straight to infinity).
 #[test]
 fn map_turn_saturates_at_max_zoom() {
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Riding));
@@ -107,8 +98,8 @@ fn map_turn_saturates_at_max_zoom() {
     assert_eq!(st.zoom, saturated, "already at MAX_ZOOM — further zoom-in is a no-op");
 }
 
-/// A huge backward turn saturates at the map's `MIN_ZOOM` clamp (map.rs ~79) instead of
-/// underflowing toward 0 (which would invert / blank the view). Symmetric to the max case.
+/// A huge backward turn saturates at `MIN_ZOOM` instead of underflowing toward 0 (which would invert
+/// / blank the view).
 #[test]
 fn map_turn_saturates_at_min_zoom() {
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Riding));
@@ -178,9 +169,7 @@ fn menu_back_returns_to_caller() {
     assert!(matches!(t, Transition::Pop));
 }
 
-// ---------------------------------------------------------------------------
 // The Home → Route menu → Map flow.
-// ---------------------------------------------------------------------------
 
 #[test]
 fn home_press_opens_the_route_menu() {
@@ -225,9 +214,7 @@ fn route_menu_with_no_routes_ignores_press() {
     assert_eq!(act.active_route, None);
 }
 
-// ---------------------------------------------------------------------------
 // Loading a route mid-session: the swap / save prompt, Finish / Discard.
-// ---------------------------------------------------------------------------
 
 /// An activity that is already tracking route `r` (a session is open).
 fn tracking(r: usize) -> Activity {
@@ -346,12 +333,9 @@ fn boot_flow_walks_home_to_route_menu_to_riding_map() {
     assert_eq!(app.activity.active_route, Some(0));
 }
 
-// ---------------------------------------------------------------------------
-// Route catalog capacity (issue #93 item 3): `set_routes` truncates a host store
-// larger than the resident catalog (`MAX_ROUTES = 64`, app.rs ~583, `.take(MAX_ROUTES)`).
-// A full SD card hits exactly this; an off-by-one or a missing `.take` would overflow the
-// fixed `heapless::Vec`. The mid-size catalog cases never reach the cap.
-// ---------------------------------------------------------------------------
+// Route catalog capacity: `set_routes` truncates a host store larger than the resident catalog
+// (`MAX_ROUTES = 64`). A full SD card hits this; an off-by-one or missing `.take` would overflow the
+// fixed `heapless::Vec`.
 
 /// Build `n` distinctly-named route summaries (`R0`, `R1`, …) so the survivors are identifiable.
 fn many_routes(n: usize) -> Vec<RouteSummary> {
@@ -371,9 +355,7 @@ fn many_routes(n: usize) -> Vec<RouteSummary> {
         .collect()
 }
 
-/// A store larger than `MAX_ROUTES` is silently truncated to the first `MAX_ROUTES`, not
-/// overflowed: the catalog holds exactly 64 entries and keeps the *first* 64 in order (the SD
-/// scan's order), so the menu is bounded and well-defined on a full card.
+/// A store larger than `MAX_ROUTES` is truncated to the first `MAX_ROUTES` in order, not overflowed.
 #[test]
 fn set_routes_truncates_at_max_routes() {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
@@ -387,8 +369,8 @@ fn set_routes_truncates_at_max_routes() {
     );
 }
 
-/// Exactly `MAX_ROUTES` routes fit with none dropped — the boundary just below truncation. Pins
-/// that the cap is inclusive (`take(64)` keeps all 64), guarding a `>=`/`>` off-by-one.
+/// Exactly `MAX_ROUTES` routes fit with none dropped — the cap is inclusive, guarding a `>=`/`>`
+/// off-by-one.
 #[test]
 fn set_routes_keeps_exactly_max_routes() {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
@@ -396,8 +378,8 @@ fn set_routes_keeps_exactly_max_routes() {
     assert_eq!(app.routes().len(), MAX_ROUTES, "a card with exactly 64 routes loses none");
 }
 
-/// `set_routes` replaces, not appends: a second call clears the previous catalog first (app.rs
-/// ~582). A rescan of a now-emptied card must leave an empty catalog, not the stale entries.
+/// `set_routes` replaces, not appends: a rescan of a now-emptied card leaves an empty catalog, not
+/// the stale entries.
 #[test]
 fn set_routes_replaces_the_previous_catalog() {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
@@ -416,9 +398,7 @@ fn press(app: &mut App) {
     app.handle_input(InputClock(0), &mut s);
 }
 
-// ---------------------------------------------------------------------------
 // Stack discipline.
-// ---------------------------------------------------------------------------
 
 #[test]
 fn apply_pushes_pops_replaces_and_returns_home() {
@@ -448,9 +428,7 @@ fn apply_pushes_pops_replaces_and_returns_home() {
     assert_eq!(stack.len(), 1, "the Home root is never popped");
 }
 
-// ---------------------------------------------------------------------------
 // Render snapshot: the map, and Ride control composited over it.
-// ---------------------------------------------------------------------------
 
 #[test]
 fn ride_control_composites_over_the_map() {
@@ -475,8 +453,6 @@ fn ride_control_composites_over_the_map() {
     assert_ne!(panel, backdrop, "the overlay changed the center");
     assert!(panel.r() > backdrop.r(), "parchment panel is lighter than the sea backdrop");
 }
-
-// --- tiny render harness (mirrors marker.rs) ---
 
 fn render(app: &mut App, bytes: &[u8]) -> Buf {
     app.tick(
@@ -504,13 +480,8 @@ fn render(app: &mut App, bytes: &[u8]) -> Buf {
     buf
 }
 
-// The recording `Buf` `DrawTarget` and the `build_min_obcm` fixture now live in the
-// shared `tests/common` module, imported above.
-
-// ---------------------------------------------------------------------------
-// Pan mode (a Map sub-mode driven by the shared `AppState::pan`): enter/exit,
-// the axis + orientation toggles, panning, and the camera freeze.
-// ---------------------------------------------------------------------------
+// Pan mode (a Map sub-mode driven by the shared `AppState::pan`): enter/exit, the axis + orientation
+// toggles, panning, and the camera freeze.
 
 /// `hold` on the Follow map enters pan: the camera detaches (Free) and a pan state
 /// appears — axis Vertical, orientation matching the map (here north-up).

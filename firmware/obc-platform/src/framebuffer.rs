@@ -1,47 +1,33 @@
-//! `DrawTarget`s the board owns and the shared renderer draws into: the nRF's device-native
-//! RGB222 [`FbDevice64`] map plane (the real target) and the [`Framebuffer565`] RGB565 plane
-//! (now the per-band scratch the [`Band`](crate::Band) view wraps).
+//! `DrawTarget`s the board owns and the shared renderer draws into: the nRF's device-native RGB222
+//! [`FbDevice64`] map plane (the real target) and the [`Framebuffer565`] RGB565 plane (the per-band
+//! scratch the [`Band`](crate::Band) view wraps).
 //!
-//! The on-device counterpart of the simulator's `obc-sim/src/framebuffer.rs`: the
-//! shared [`obc_render::MapRenderer`](../../obc_render) (driven through
-//! [`obc_app::App::render_frame`](../../obc_app)) runs the exact same rendering
-//! code on the host and on the MCU, drawing into a buffer the board owns. On the nRF (no external
-//! RAM, no scan-out engine) that buffer is a resident `.bss` frame the banded
-//! display push streams to the panel a band at a time over SPI/DMA; a board with a
-//! hardware scan-out plane would instead let its display controller rescan the buffer directly,
-//! with no explicit push.
+//! The shared [`obc_render::MapRenderer`](../../obc_render) runs the same rendering code on host and
+//! MCU. On the nRF (no external RAM, no scan-out engine) the buffer is a resident `.bss` frame the
+//! banded display push streams to the panel a band at a time over SPI/DMA.
 //!
-//! The `color_fn` the app is rendered with is the **identity** `RGB565 -> Rgb565`
-//! (`|c| Rgb565::from(RawU16::new(c))`) on every board — the renderer stays `Rgb565`-typed. The
-//! per-board pixel format is then the [`Pack`]'s business: a no-op on the RGB565 planes, and the
-//! device-64 (RGB222) quantization on [`FbDevice64`]. So the gamut the simulator *previews* via
-//! `obc_reader::rgb565_to_device64` is what the nRF actually stores and shows — not a host-only
-//! concern any more.
+//! The renderer stays `Rgb565`-typed everywhere; the per-board pixel format is the [`Pack`]'s
+//! business — a no-op on the RGB565 planes, and the device-64 (RGB222) quantization on
+//! [`FbDevice64`]. So the gamut the simulator previews via `obc_reader::rgb565_to_device64` is what
+//! the nRF actually stores and shows.
 //!
-//! Every plane is the *same* `DrawTarget`: a borrowed `width * height` buffer, a clipped pixel
-//! `put`, a scanline `fill_solid` and a `clear`. The planes differ by exactly two things — the
-//! stored pixel *type* and how an [`Rgb565`] colour is packed into it: native RGB565 (`u16`) or
-//! the nRF's device-native RGB222 (`u8`, [`FbDevice64`] — the real target, half the RAM). Both
-//! are captured by the zero-sized [`Pack`] marker and its associated [`Pixel`](Pack::Pixel) type,
-//! so the framebuffer body is written **once**, generic over `P: Pack`, and [`Framebuffer565`] /
-//! [`FbDevice64`] are thin type aliases. `P::pack` is a static (monomorphized) call — no per-pixel
-//! indirection in the hot render loop — and the markers are zero-sized, so a [`RawFb`] is the same
-//! size as a bare `{ width, height, buf }` struct.
+//! Every plane is the *same* `DrawTarget` (a borrowed `width * height` buffer, clipped `put`,
+//! scanline `fill_solid`, `clear`); they differ only by the stored pixel *type* and how an
+//! [`Rgb565`] colour packs into it. Both are captured by the zero-sized [`Pack`] marker, so the
+//! framebuffer body is written **once** over `P: Pack` and the two are thin aliases. `P::pack` is a
+//! static (monomorphized) call — no per-pixel indirection in the hot render loop.
 
 use core::marker::PhantomData;
 
 use embedded_graphics::{pixelcolor::Rgb565, prelude::*, primitives::Rectangle};
 
-/// How a [`RawFb`] packs an [`Rgb565`] colour into one stored pixel, and what type that
-/// stored pixel is ([`Pixel`](Pack::Pixel)). This is the *only* per-plane difference between
-/// the framebuffers; everything else (clip, scanline fill, clear) is shared. Impls are
-/// zero-sized markers and `pack` is `#[inline]`, so a packed pixel costs a static call the
-/// compiler folds in — never a `fn`-pointer / `dyn` indirection in the per-pixel render loop.
+/// How a [`RawFb`] packs an [`Rgb565`] colour into one stored pixel, and what type that pixel is
+/// ([`Pixel`](Pack::Pixel)) — the *only* per-plane difference between the framebuffers. Impls are
+/// zero-sized markers and `pack` is `#[inline]`, so a packed pixel is a static call, never a
+/// `fn`-pointer / `dyn` indirection in the per-pixel render loop.
 ///
-/// The stored pixel is associated, not fixed at `u16`, so a board's native byte width comes for
-/// free: the RGB565 plane stores a `u16`, while the nRF's device-native RGB222 plane
-/// ([`PackDevice64`]) stores a single `u8` — half the RAM for a frame the board has to fit in
-/// on-chip SRAM (no external RAM).
+/// The associated pixel type gives a board's native byte width for free: the RGB565 plane stores a
+/// `u16`, the nRF's device-native RGB222 plane ([`PackDevice64`]) a single `u8` — half the RAM.
 pub trait Pack {
     /// The stored pixel type — `u16` for the RGB565 plane, `u8` for the 1-byte
     /// device-64 (RGB222) plane.
@@ -51,8 +37,7 @@ pub trait Pack {
 }
 
 /// Identity pack for the native-RGB565 plane: the stored `u16` is the colour's own storage word.
-/// Backs the RGB565 [`Band`](crate::Band) scratch the banded display backend reformats
-/// per push (and would back any board with a native-RGB565 scan-out plane).
+/// Backs the RGB565 [`Band`](crate::Band) scratch the banded backend reformats per push.
 pub struct PackRgb565;
 impl Pack for PackRgb565 {
     type Pixel = u16;
@@ -63,17 +48,11 @@ impl Pack for PackRgb565 {
 }
 
 /// Device-64 (RGB222) pack for the nRF's device-native full-frame plane: the top 2 bits of each
-/// RGB565 channel, packed into a single byte (`0b00_RR_GG_BB`) — one byte per pixel, so a 240×320
-/// frame is 75 KB instead of RGB565's 150 KB, which is what lets it live in the nRF's 256 KB
-/// on-chip SRAM (it has no external RAM). The 2-bit-per-channel quantization *is* the
-/// LS021B7DD02's intended fidelity — the style colours are already tuned to this 64-colour gamut
-/// (`obc_reader::rgb565_to_device64`), so storing it is the target format, not a loss.
-///
-/// The renderer stays `Rgb565`-typed throughout; the framebuffer quantizes on store here, and the
-/// banded display push expands each byte back to RGB565
-/// ([`device64_to_rgb565`]) for the ST7789 — or, on the FLPR/LS021B7DD02, packs it to that
-/// panel's wire bytes ([`ls021_wire::pack_row`](crate::ls021_wire::pack_row)). The byte value
-/// `0..64` doubles as the device-64 palette index.
+/// RGB565 channel in a single byte (`0b00_RR_GG_BB`) — one byte per pixel, so a 240×320 frame is
+/// 75 KB (vs. RGB565's 150 KB) and fits the nRF's on-chip SRAM. The 2-bit-per-channel quantization
+/// *is* the LS021B7DD02's intended fidelity — the style colours are already tuned to this 64-colour
+/// gamut (`obc_reader::rgb565_to_device64`), so it's the target format, not a loss. The byte value
+/// `0..64` doubles as the palette index.
 pub struct PackDevice64;
 impl Pack for PackDevice64 {
     type Pixel = u8;
@@ -84,15 +63,10 @@ impl Pack for PackDevice64 {
 }
 
 /// A `DrawTarget` wrapping a borrowed `width * height` buffer (one pixel per stored cell,
-/// row-major), generic over how an [`Rgb565`] colour is packed into a stored pixel — and over
-/// the *type* of that pixel ([`Pack::Pixel`]: `u16` for RGB565, `u8` for device-64).
-/// The buffer is the board's — the nRF's resident RGB222 frame in `.bss`, or a per-band RGB565
-/// scratch — so this owns nothing and only writes pixels.
-///
-/// Every display plane is this one type with a different [`Pack`]: the opaque RGB565 map plane
-/// ([`Framebuffer565`], [`PackRgb565`]) and the nRF's device-native RGB222 plane ([`FbDevice64`],
-/// [`PackDevice64`]). The `_pack` marker is zero-sized, so this is the same size as a bare
-/// `{ width, height, buf }`.
+/// row-major), generic over the [`Pack`] (and thus the stored pixel type: `u16` for RGB565, `u8`
+/// for device-64). The buffer is the board's — the nRF's resident RGB222 frame in `.bss` or a
+/// per-band RGB565 scratch — so this owns nothing and only writes pixels. The `_pack` marker is
+/// zero-sized, so this is the same size as a bare `{ width, height, buf }`.
 pub struct RawFb<'a, P: Pack> {
     width: u32,
     height: u32,
@@ -100,18 +74,14 @@ pub struct RawFb<'a, P: Pack> {
     _pack: PhantomData<P>,
 }
 
-/// The native-RGB565 plane: every pixel stored as its own RGB565 word. On the shipping nRF this
-/// backs the per-band [`Band`](crate::Band) scratch the banded display push reformats; a board with a
-/// hardware scan-out plane would rescan a full-frame instance of it directly.
+/// The native-RGB565 plane: every pixel stored as its own RGB565 word. Backs the per-band
+/// [`Band`](crate::Band) scratch the banded display push reformats.
 pub type Framebuffer565<'a> = RawFb<'a, PackRgb565>;
 
-/// The nRF's device-native **RGB222** full-frame plane: one byte per pixel (top 2 bits/channel,
-/// see [`PackDevice64`]), so the whole 240×320 frame is 75 KB and fits the nRF's on-chip SRAM.
-/// The shared [`obc_app::App::render_map`](obc_app::App) draws into it exactly as it does the
-/// RGB565 plane (the renderer is `Rgb565`-typed; the framebuffer quantizes on store), then the
-/// banded display push reads it back row by row, expanding each byte to RGB565
-/// ([`device64_to_rgb565`]) for the ST7789 (issue #125). This is the device path the project
-/// ships on; [`Framebuffer565`] survives only as the [`Band`](crate::Band) scratch interchange.
+/// The nRF's device-native **RGB222** full-frame plane: one byte per pixel (see [`PackDevice64`]),
+/// so the 240×320 frame is 75 KB and fits on-chip SRAM. The banded display push reads it back row by
+/// row, expanding each byte to RGB565 ([`device64_to_rgb565`]) for the ST7789. This is the device
+/// path the project ships on.
 pub type FbDevice64<'a> = RawFb<'a, PackDevice64>;
 
 impl<'a, P: Pack> RawFb<'a, P> {
@@ -189,18 +159,16 @@ impl<P: Pack> DrawTarget for RawFb<'_, P> {
 
     /// Fill the whole plane with `color` — the map redraw's clear.
     fn clear(&mut self, color: Self::Color) -> Result<(), Self::Error> {
-        // `fill` lowers to a burstable memset across the wait-stated FMC, far cheaper than a
-        // per-pixel store on every map redraw.
+        // `fill` lowers to a bulk memset, far cheaper than a per-pixel store on every map redraw.
         self.buf.fill(P::pack(color));
         Ok(())
     }
 }
 
-/// Pack an [`Rgb565`] colour into a **device-64 (RGB222)** byte: the top 2 bits of each channel
-/// in `0b00_RR_GG_BB`. Keeping the top 2 bits is exactly the quantization
-/// `obc_reader::rgb565_to_device64` applies (it keeps `channel8 >> 6`, and the top 2 bits of an
-/// RGB565 channel *are* the top 2 of its RGB888 expansion), so this stores the same 64-colour
-/// gamut the style table is tuned to — the byte `0..64` is that palette index. The inverse is
+/// Pack an [`Rgb565`] colour into a **device-64 (RGB222)** byte: the top 2 bits of each channel in
+/// `0b00_RR_GG_BB`. Keeping the top 2 bits is the same quantization `obc_reader::rgb565_to_device64`
+/// applies (the top 2 bits of an RGB565 channel *are* the top 2 of its RGB888 expansion), so this
+/// stores the same 64-colour gamut the style table is tuned to. The inverse is
 /// [`device64_to_rgb565`].
 #[inline]
 fn rgb565_to_device64_byte(c: Rgb565) -> u8 {
@@ -211,12 +179,10 @@ fn rgb565_to_device64_byte(c: Rgb565) -> u8 {
     (r << 4) | (g << 2) | b
 }
 
-/// Expand a **device-64 (RGB222)** byte (`0b00_RR_GG_BB`, see [`rgb565_to_device64_byte`]) back to
-/// an [`Rgb565`] storage word, for the banded display push to feed an RGB565 panel
-/// (the ST7789). Each 2-bit channel is bit-replicated up to its RGB565 width (5 or 6 bits) — which,
-/// for these four levels, lands on exactly the values `round(level * max / 3)`, i.e. the same
-/// `{0, ⅓, ⅔, 1}` ramp the simulator previews via `obc_reader::rgb565_to_device64`. Lossless on the
-/// gamut: re-packing the result with [`rgb565_to_device64_byte`] yields the original byte.
+/// Expand a **device-64 (RGB222)** byte (`0b00_RR_GG_BB`) back to an [`Rgb565`] storage word, for
+/// the banded push to feed an RGB565 panel. Each 2-bit channel is bit-replicated up to its RGB565
+/// width (5 or 6 bits), landing on `round(level * max / 3)` — the same `{0, ⅓, ⅔, 1}` ramp the
+/// simulator previews. Lossless on the gamut: re-packing the result yields the original byte.
 #[inline]
 pub fn device64_to_rgb565(byte: u8) -> u16 {
     let rq = ((byte >> 4) & 0x3) as u16;
@@ -275,10 +241,9 @@ mod tests {
         assert_eq!(at(3, 3), 0x001F); // last in-bounds pixel
     }
 
-    /// Item 10 (negative top-left clip, `fill_solid` ~184 `area.intersection`): existing
-    /// tests only overrun the right/bottom edge; a rectangle whose top-left is *negative*
-    /// must be clipped by the intersection so the fill starts at (0,0), never indexing the
-    /// buffer with a negative `x0`/`y0`. A rect at (-2,-2) sized 4×4 covers only (0,0)..(1,1).
+    /// A rectangle with a *negative* top-left must be clipped by the intersection so the fill starts
+    /// at (0,0), never indexing the buffer with a negative `x0`/`y0`. A rect at (-2,-2) sized 4×4
+    /// covers only (0,0)..(1,1).
     #[test]
     fn fill_solid_clips_a_negative_top_left() {
         let mut buf = [0u16; 4 * 4];
@@ -300,7 +265,7 @@ mod tests {
         let _ = Framebuffer565::new(&mut buf, 2, 2); // needs 4
     }
 
-    // --- device-64 (RGB222) plane (issue #125) ---
+    // --- device-64 (RGB222) plane ---
 
     fn dev(buf: &mut [u8], w: u32, h: u32) -> FbDevice64<'_> {
         FbDevice64::new(buf, w, h)

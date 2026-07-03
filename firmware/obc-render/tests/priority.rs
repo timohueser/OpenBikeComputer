@@ -1,18 +1,12 @@
-//! Render-level test for priority rendering under buffer saturation.
+//! Render-level test for priority rendering under buffer saturation: **when the frame buffers
+//! saturate, the highest-priority features survive and the lowest-priority ones are dropped —
+//! across chunks**.
 //!
-//! The reader-level invariants (`filtered_decode_skips_without_drifting`,
-//! `for_each_chunk_has_no_cap` in `obc-reader/tests/format.rs`) cover decoding,
-//! but nothing asserts the actual payoff of the priority passes in
-//! [`MapRenderer::render`]: **when the frame buffers saturate, the highest-priority
-//! features survive and the lowest-priority ones are dropped — across chunks**.
-//!
-//! The setup is the worst case for any chunk-order collector: a *late* chunk holds
-//! the single priority-1 polygon while an *early* chunk is packed with enough
-//! priority-4 polygons to overflow `MAX_SPANS` on its own. A renderer that dropped
-//! in chunk order would fill the buffer from the early chunk and drop the late
-//! priority-1 polygon entirely (no red pixels). The priority passes collect level 1
-//! first, across all chunks, so the priority-1 polygon survives. This test fails if
-//! collection ever reverts to chunk-order (non-priority) dropping.
+//! The setup is the worst case for any chunk-order collector: a *late* chunk holds the single
+//! priority-1 polygon while an *early* chunk is packed with enough priority-4 polygons to overflow
+//! `MAX_SPANS` on its own. A chunk-order dropper would fill the buffer from the early chunk and drop
+//! the late priority-1 polygon (no red pixels). The priority passes collect level 1 first, across
+//! all chunks, so it survives.
 
 use embedded_graphics::pixelcolor::Rgb888;
 use embedded_graphics::prelude::*;
@@ -32,10 +26,6 @@ const BLUE: Rgb888 = Rgb888::new(0, 0, 255);
 /// Priority-4 polygons in the early chunk: enough to overflow `MAX_SPANS` on their
 /// own, so the buffer is already full before the late chunk is even reached.
 const NUM_LOW: usize = MAX_SPANS + 64;
-
-// The byte builders (`build_priority_tree`, `pack_poly`) now live in `obcm-testkit`,
-// imported above — the same single source the reader's format tests use, so a format
-// bump edits one place.
 
 #[test]
 fn priority_one_survives_saturation_across_chunks() {

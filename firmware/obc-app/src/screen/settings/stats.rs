@@ -1,13 +1,8 @@
-//! The Stats screen — the riding [`Statistics`](crate::screen) page's configuration, the parent of
-//! the field manager. It splits the two things you tune into their own places: **Page cycle** (how
-//! fast the grid auto-flips its pages) is a stepper here, and **Fields** opens the
-//! [`StatFields`](super::StatFieldsScreen) sub-screen for the panel selection + order. Keeping the
-//! cycle period out of the field list is deliberate — mixed in among the panels it read as just
-//! another draggable row, which was confusing.
-//!
-//! Same two-level encoder model as the rest of the settings tree: rotate moves the row cursor (or,
-//! with the stepper open, edits the period); press opens the stepper / enters Fields; back closes
-//! the stepper, else climbs to the Settings list.
+//! The Stats screen — the riding [`Statistics`](crate::screen) page's configuration. **Page cycle**
+//! (how fast the grid auto-flips) is a stepper here; **Fields** opens the
+//! [`StatFields`](super::StatFieldsScreen) sub-screen for the panel selection + order. The cycle
+//! period is kept out of the field list deliberately — mixed among the panels it read as just
+//! another draggable row.
 
 use core::fmt::Write;
 
@@ -20,9 +15,8 @@ use crate::settings::{STAT_CYCLE_MAX, STAT_CYCLE_MIN};
 
 use super::StatFieldsScreen;
 
-/// Row height — fits a short main label + a muted sub-caption, with the stepper / chevron on the
-/// right. The main label is kept short ("Pages", not "Page cycle") so the big Body glyphs clear the
-/// value box on the right rather than running under it.
+/// Row height — fits a main label + sub-caption with the stepper / chevron on the right. The label
+/// is kept short ("Pages") so the big Body glyphs clear the value box.
 const ROW_H: i32 = 58;
 
 const PAGE_CYCLE: usize = 0;
@@ -100,11 +94,11 @@ impl StatsScreen {
         let cell = rect(r0.top_left.x + r0.size.width as i32 - cw - 6, r0.top_left.y + (ROW_H - ch) / 2, cw, ch);
         super::stepper_field(&mut cv, cell, &val, editing, Font::Label);
 
-        // Row 1 — Fields (a navigation row that opens the panel manager).
+        // Row 1 — Fields (opens the panel manager).
         let r1 = super::row_rect(1, LIST_TOP + 8 + ROW_H + 6, w, ROW_H);
         super::row_cursor(&mut cv, r1, self.selected == FIELDS, false);
         super::row_label(&mut cv, r1, "Fields", Some("panels & order"));
-        // A right-pointing chevron at the row's right edge says "enters a sub-screen".
+        // A right-pointing chevron says "enters a sub-screen".
         let cx0 = r1.top_left.x + r1.size.width as i32 - 22;
         let midy = r1.top_left.y + r1.size.height as i32 / 2;
         cv.triangle(Point::new(cx0, midy - 9), Point::new(cx0, midy + 9), Point::new(cx0 + 11, midy), INK);

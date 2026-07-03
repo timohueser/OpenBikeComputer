@@ -1,12 +1,9 @@
-//! OBC USB feeder — the bench stand-in for real GPS / altimeter / compass hardware (issue #38).
+//! OBC USB feeder — the bench stand-in for real GPS / altimeter / compass hardware.
 //!
-//! The prototype has no sensors (and never a good fix indoors), so this desktop app replays a
-//! recorded `.gpx` over the device's USB-CDC debug link as fake fixes. It drives the same
-//! [`GpxPlayer`]/[`BaroSensor`] the simulator uses (deriving course/speed from motion, throttled
-//! to ~1 Hz), so a recorded ride moves the rider on-device as it does in the sim. A compass slider
-//! sets the heading the device shows when stopped, a button row injects encoder/Back input (taps +
-//! holds) so the UI is drivable without touching the hardware, and a readout shows the device's
-//! render-stats telemetry. The host twin of the sim's control panel, pointed at real glass.
+//! Replays a recorded `.gpx` over the device's USB-CDC debug link as fake fixes, driving the same
+//! [`GpxPlayer`]/[`BaroSensor`] the simulator uses (deriving course/speed from motion, throttled to
+//! ~1 Hz). A compass slider sets the stopped heading, a button row injects encoder/Back input (taps
+//! + holds) so the UI is drivable without the hardware, and a readout shows render-stats telemetry.
 //!
 //! Wire format (see `obc-platform::debug_link`): host→device `F <lat> <lon> <course|-> <speed|->`,
 //! `A <m>`, `C <deg>`, `Z <mpp>` (set the map's exact meters-per-pixel — the render-benchmark
@@ -26,11 +23,9 @@ use std::time::{Duration, Instant};
 
 use eframe::egui;
 use obc_app::{AltimeterSource, LocationSource};
-// The canonical USB-CDC codec, authored once on the device side (issue #71): the device→host
-// `Telemetry` + its `parse_telemetry`, and the host→device `format_fix` `F`-line encoder. Reusing
-// these is the whole point — the two halves of the protocol can no longer drift (the old local
-// copies had already diverged: `lod` was `u32` here vs. `u8` on the device). DEFAULT features only,
-// so the pure codec is pulled without embassy-sync.
+// The canonical USB-CDC codec, authored once on the device side, so the two halves of the protocol
+// can't drift: device→host `Telemetry`/`parse_telemetry` + host→device `format_fix` `F`-line
+// encoder. DEFAULT features only, so the pure codec is pulled without embassy-sync.
 use obc_platform::debug_link::{format_fix, parse_telemetry, Telemetry};
 use obc_replay::{BaroSensor, GpxPlayer, Track};
 
@@ -282,15 +277,12 @@ impl FeederApp {
         }
         player.advance(dt);
         if let Some(mut fix) = player.poll() {
-            // GpxPlayer derives speed in *playback* time (the track's real speed), but at >1× the
-            // device sees the positions arrive faster and derives a higher average — so scale the
-            // reported instantaneous speed by the multiplier too. Then the device's KPH and AVG KPH
-            // move together, as on a real GPS where the reported speed agrees with the motion.
+            // GpxPlayer derives speed in *playback* time, but at >1× the device sees positions
+            // arrive faster and derives a higher average — so scale the reported instantaneous speed
+            // by the multiplier too, keeping the device's KPH and AVG KPH in agreement.
             if let Some(s) = fix.speed_mps {
                 fix.speed_mps = Some(s * player.speed());
             }
-            // `format_fix` is the device's `F`-line encoder (a heapless String); copy it into the
-            // owned `pending` queue, so device and host share one encoder.
             self.pending.push(format_fix(&fix).to_string());
         }
         self.baro.feed(player.elevation_at(player.time()), player.time());

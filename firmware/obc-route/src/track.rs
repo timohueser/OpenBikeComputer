@@ -9,10 +9,6 @@
 //! This is deliberately *not* the [`OBCR`](crate) route format: a route is decimated for
 //! compact drawing, whereas a recorded track wants full GPS fidelity. The log keeps every
 //! accepted point verbatim; only the on-screen breadcrumb (host-side, in RAM) is decimated.
-//!
-//! The format + the GPX writer live here in the format crate so the firmware and the
-//! simulator share one implementation, exactly like the GPX→OBCR [`convert`](crate::convert)
-//! path. The byte I/O goes through the same [`ByteSource`]/[`ByteSink`] seam.
 
 use core::fmt::Write;
 
@@ -42,8 +38,7 @@ pub const TRACK_RECORD_LEN: usize = 16;
 /// Layout: `lon`(i32) `lat`(i32) `ele`(i16) `flags`(u16, bit0 = segment_start) `t_ms`(u32).
 const FLAG_SEGMENT_START: u16 = 0x0001;
 
-/// Encode a point to its fixed 16-byte record (little-endian, matching the readers in
-/// `reader.rs` / `convert.rs`).
+/// Encode a point to its fixed 16-byte record (little-endian).
 pub fn encode_record(p: &TrackPoint) -> [u8; TRACK_RECORD_LEN] {
     let mut b = [0u8; TRACK_RECORD_LEN];
     b[0..4].copy_from_slice(&p.lon.to_le_bytes());
@@ -125,7 +120,6 @@ pub fn track_to_gpx(src: &dyn ByteSource, name: &str, sink: &mut dyn ByteSink) -
     Ok(())
 }
 
-/// Append raw bytes to the sink.
 fn put(sink: &mut dyn ByteSink, b: &[u8]) -> Result<(), Error> {
     sink.write(b)
 }

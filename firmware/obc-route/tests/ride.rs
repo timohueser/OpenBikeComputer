@@ -1,7 +1,6 @@
-//! Ride object v1 tests (issue #275): the Finish-time `.obct` → ride-object conversion
-//! (coordinate/timestamp translation, the wall-clock back-dating, the held-back version
-//! commit point) and the header reader's validation (the torn-write / length rules a BLE
-//! `rideList` build leans on).
+//! Ride object v1 tests: the Finish-time `.obct` → ride-object conversion (coordinate/timestamp
+//! translation, the wall-clock back-dating, the held-back version commit point) and the header
+//! reader's validation (the torn-write / length rules a BLE `rideList` build leans on).
 
 use obc_route::{
     encode_record, ride_object_len, track_to_ride, RideInfo, RideStats, SliceSource, TrackPoint, RIDE_HEADER_LEN,

@@ -1,16 +1,13 @@
 //! The eframe host window — the device "screen".
 //!
-//! This is the desktop counterpart to the firmware's main loop: each frame it
-//! polls the [`SimLocationSource`], advances the shared [`obc_app::App`], renders
-//! the firmware-identical path into a [`Framebuffer`], and blits that buffer to a
-//! GPU texture shown at integer scale (nearest-neighbor, so the device's hard
-//! pixel grid stays crisp). The firmware does the same with a real GPS driver and
-//! the LS021B7DD02 panel instead of these two host pieces.
+//! The desktop counterpart to the firmware's main loop: each frame it polls the
+//! [`SimLocationSource`], advances the shared [`obc_app::App`], renders the
+//! firmware-identical path into a [`Framebuffer`], and blits that buffer to a GPU
+//! texture at integer scale (nearest-neighbor, so the pixel grid stays crisp). The
+//! firmware does the same with a real GPS driver and the LS021B7DD02 panel.
 //!
-//! Mouse drag pans and scroll zooms (about the cursor); both switch the camera to
-//! [`CameraMode::Free`]. The second "Controls" viewport that drives the simulated
-//! GPS fix and the emulated encoder lives in [`panel`]; the pure zoom / formatting
-//! helpers it needs live in [`units`].
+//! The second "Controls" viewport (the simulated GPS fix + emulated encoder) lives
+//! in [`panel`]; its zoom / formatting helpers live in [`units`].
 
 use std::path::Path;
 
@@ -37,22 +34,20 @@ mod units;
 
 use housing::Colorway;
 
-/// The control panel's editable mirrors. The simulated GPS fix is stored in the
-/// [`SimLocationSource`] as integer microdegrees + a `course`; egui widgets need
-/// `&mut` floats, so the panel edits these and pushes them into the source each
-/// frame (see [`SimGui::show_control_panel`]).
+/// The control panel's editable mirrors. The [`SimLocationSource`] stores the fix as
+/// integer microdegrees + `course`; egui widgets need `&mut` floats, so the panel edits
+/// these and pushes them into the source each frame.
 struct PanelState {
     lat_deg: f64,
     lon_deg: f64,
     heading_deg: f32,
-    /// The "Compass" slider — the magnetometer heading used to orient a heading-up map while
-    /// the rider is stopped (when the GPS course drops to `None`). Pushed into [`SimCompass`].
+    /// The "Compass" slider — the magnetometer heading orienting a heading-up map while the
+    /// rider is stopped (GPS course drops to `None`). Pushed into [`SimCompass`].
     compass_deg: f32,
 }
 
-/// In-progress 1:1 size calibration: a reference bar is drawn in the device window;
-/// the user measures it with a ruler and types the millimetres here. `Some` while the
-/// calibration screen is up (see [`SimGui::show_calibration`]).
+/// In-progress 1:1 size calibration: the user measures the on-screen reference bar and
+/// types the millimetres here. `Some` while the calibration screen is up.
 #[derive(Default)]
 struct CalibState {
     measured_mm: String,
@@ -62,8 +57,8 @@ struct CalibState {
 /// [`Reader`] is a cheap view rebuilt each frame over them.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn run(bytes: Vec<u8>, args: Args) -> Result<(), eframe::Error> {
-    // The window wraps the whole device (housing + screen + a little backdrop) at
-    // `--scale`, not just the screen, so the body has room around the framebuffer.
+    // The window wraps the whole device (housing + screen + a little backdrop) at `--scale`,
+    // so the body has room around the framebuffer.
     let dev = housing::HousingStyle::default().window_size_px(egui::vec2(args.width as f32, args.height as f32));
     let win = [dev.x * args.scale as f32, dev.y * args.scale as f32];
     let options = eframe::NativeOptions {
@@ -77,11 +72,9 @@ pub fn run(bytes: Vec<u8>, args: Args) -> Result<(), eframe::Error> {
     )
 }
 
-/// Web entry point: mount the *same* `SimGui` app on the page's `<canvas>` via
-/// eframe's WebGL runner. Called from the wasm `main` (see `main.rs`). The app is
-/// identical to the native sim and to the firmware's render path, so the project
-/// site's embedded demo stays current with the code rather than drifting like a
-/// screenshot.
+/// Web entry point: mount the *same* `SimGui` app on the page's `<canvas>` via eframe's
+/// WebGL runner. The app is identical to the native sim and the firmware's render path,
+/// so the site's embedded demo can't drift from the code.
 #[cfg(target_arch = "wasm32")]
 pub fn run_web() {
     use eframe::wasm_bindgen::JsCast as _;
@@ -119,28 +112,27 @@ pub fn run_web() {
 struct SimGui {
     /// Map file bytes; `Reader` borrows these each frame.
     bytes: Vec<u8>,
-    /// The immutable map tables (style table + LOD pyramid), parsed once at startup and borrowed by
-    /// the cheap per-frame `Reader` — mirroring the device, which parses them once at boot (#179).
+    /// The immutable map tables (style table + LOD pyramid), parsed once at startup and borrowed
+    /// by the cheap per-frame `Reader` — mirroring the device, which parses them once at boot.
     map_tables: MapTables,
-    /// The streamed-map cache (issue #37), kept for the whole session and reused across frames —
-    /// exactly as the device holds one in its reserved region. A persistent cache lets a chunk read one frame
-    /// hit the next, so the "Map SD" stats track real device behaviour (a panned-into view warms
-    /// up, then settles to 100% hit) rather than the cold ≤75% a per-frame cache would show.
+    /// The streamed-map cache, kept for the whole session and reused across frames (as the device
+    /// holds one in its reserved region). Cross-frame reuse lets a panned-into view warm to 100%
+    /// hit, so the "Map SD" stats track real device behaviour rather than a cold ≤75%.
     map_cache: MapCache,
     app: App,
     /// The routes folder (the device-SD stand-in): the menu catalog + active geometry.
     store: RouteStore,
-    /// The tracks folder (device-SD `/tracks` stand-in): the in-progress `.obct` ride log +
-    /// saved `.gpx` files. Reconciled to the app's tracking session each frame.
+    /// The tracks folder (device-SD `/tracks` stand-in): the `.obct` ride log + saved `.gpx`.
+    /// Reconciled to the app's tracking session each frame.
     tracks: TrackStore,
-    /// The persisted-settings store (device-RRAM stand-in): seeds the app at boot and is written
-    /// whenever the settings screens change something, so settings survive a relaunch.
+    /// The persisted-settings store (device-RRAM stand-in): seeds the app at boot, written on
+    /// each settings change so they survive a relaunch.
     settings_store: FileSettingsStore,
     loc: SimLocationSource,
     fb: Framebuffer,
-    /// The self-diffing present backend (epic #199 / issue #200): diffs each rendered frame against
-    /// a per-row hash store, pushes only the changed spans into its own buffer (uploaded to the
-    /// texture), and runs an exact-diff oracle. Its [`stats`](Present::stats) feed the panel.
+    /// The self-diffing present backend: diffs each rendered frame against a per-row hash store,
+    /// pushes only the changed spans into its own buffer (uploaded to the texture), and runs an
+    /// exact-diff oracle. Its [`stats`](Present::stats) feed the panel.
     present: Present,
     dev_w: u32,
     dev_h: u32,
@@ -161,15 +153,14 @@ struct SimGui {
     panel: PanelState,
     /// Emulated device controls (encoder knob + Back) → shared gesture recognizer.
     input: DeviceInput,
-    /// The loaded GPX replay, if any. When `Some`, it drives the fix instead of
-    /// the manual [`SimLocationSource`] (the device's GPS would likewise override
-    /// any manual override). `None` = manual control via the panel sliders.
+    /// The loaded GPX replay, if any. When `Some`, it drives the fix instead of the manual
+    /// [`SimLocationSource`] (as the device's GPS would). `None` = manual panel control.
     gpx: Option<GpxPlayer>,
-    /// Simulated barometer, fed the replay's elevation on its own cadence (asynchronous
-    /// to the GPS fix) — the device's pressure altimeter stand-in.
+    /// Simulated barometer (device altimeter stand-in), fed the replay's elevation on its own
+    /// cadence (asynchronous to the GPS fix).
     baro: BaroSensor,
-    /// Simulated electronic compass (the panel's "Compass" slider) — sets the heading-up
-    /// orientation while stopped, when the GPS has no course. The device's magnetometer stand-in.
+    /// Simulated compass (device magnetometer stand-in) — the panel's "Compass" slider, orienting
+    /// a heading-up map while stopped when the GPS has no course.
     compass: SimCompass,
     /// A short "name — N pts, M:SS" status line for the loaded track.
     gpx_label: Option<String>,
@@ -182,19 +173,15 @@ struct SimGui {
     screenshot: Option<String>,
     screenshot_requested: bool,
     last_stats: obc_render::RenderStats,
-    /// The shared render-on-demand dirty signal ([`App::take_dirty`], issue #47), drained
-    /// once per frame and shown in the stats panel. The sim redraws continuously (it also
-    /// animates host chrome and replays GPX), so this is informational — a live readout of the
-    /// signal the firmware gates its map/overlay renders on. (Mouse pan/zoom mutates the camera
-    /// outside the app's input path, so it isn't reflected; on the device every camera change
-    /// goes through a gesture or a fix, which is.)
+    /// The shared render-on-demand dirty signal ([`App::take_dirty`]), drained once per frame for
+    /// the stats panel. The sim always redraws, so this is informational — a live readout of the
+    /// signal the firmware gates its renders on. (Mouse pan/zoom bypasses the app's input path, so
+    /// it isn't reflected; on the device every camera change goes through a gesture or a fix.)
     last_dirty: Dirty,
-    /// The device body color drawn by the housing chrome. Switchable live in the
-    /// control panel; defaults to slate (or `--colorway`). Purely cosmetic host chrome.
+    /// The device body color drawn by the housing chrome. Switchable in the control panel.
     colorway: Colorway,
-    /// This frame's device-control keyboard state, read globally at the top of `update`
-    /// (before any widget can take focus and swallow the keys), then folded into the
-    /// on-housing controls in [`show_device_image`](Self::show_device_image). Turn is
+    /// This frame's device-control keyboard state, read at the top of `update` (before a widget
+    /// can take focus and swallow the keys), then folded into the on-housing controls. Turn is
     /// edge (detents this frame); the buttons are held state.
     kbd_turn: i32,
     kbd_enc: bool,
@@ -214,16 +201,13 @@ impl SimGui {
         if let Some(b) = args.battery {
             state.battery_pct = b;
         }
-        // Start in Free so the mouse drives the camera; the Follow toggle lands
-        // with the control panel. The fix is still seeded (map center) so the loop
-        // and the future user marker have something to track.
+        // Start in Free so the mouse drives the camera; the fix is still seeded (map center)
+        // so the loop and user marker have something to track.
         state.mode = CameraMode::Free;
-        // `--heading` opens in heading-up with that course; otherwise north-up.
         state.heading_up = args.heading.is_some();
         let loc = SimLocationSource::new(Some(Fix { lat: cy, lon: cx, course: args.heading, speed_mps: None }));
 
-        // Seed the panel mirrors from the initial fix so the widgets open showing
-        // the device's actual starting position/heading.
+        // Seed the panel mirrors from the initial fix so the widgets open at the real position.
         let panel = match loc.current() {
             Some(f) => PanelState {
                 lat_deg: f.lat as f64 / 1e6,
@@ -234,24 +218,21 @@ impl SimGui {
             None => PanelState { lat_deg: 0.0, lon_deg: 0.0, heading_deg: 0.0, compass_deg: 0.0 },
         };
 
-        // Boot at the device's real power-on state (Home / Idle, no route): pressing
-        // the encoder walks Home → Route menu → Map, exactly like the device. (The
-        // headless `--png` path and the web demo open straight on the map instead.)
+        // Boot at the device's real power-on state (Home / Idle, no route) unless `start_on_map`
+        // (the headless `--png` path and web demo open straight on the map).
         let mut app = if args.start_on_map { App::new(state) } else { App::new_idle(state) };
         if let Some(seed) = args.home_seed {
             app.reseed_home(seed);
         }
         let store = RouteStore::open(args.routes_dir());
         let tracks = TrackStore::open(args.tracks_dir());
-        // Seed the live settings from the persisted store (the device's RRAM stand-in), falling
-        // back to defaults on a first run / unreadable file — exactly the device's boot path.
+        // Seed the live settings from the persisted store, falling back to defaults on a first
+        // run / unreadable file — the device's boot path.
         let mut settings_store = FileSettingsStore::open(args.settings_path());
         app.set_settings(settings_store.load().unwrap_or_default());
-        // Load any saved 1:1 calibration; `--physical` only takes effect if we have one,
-        // and `--calibrate` opens the calibration screen straight away.
+        // `--physical` only takes effect with a saved calibration; `--calibrate` opens the screen.
         let points_per_mm = crate::calib::load();
         let physical = args.physical && points_per_mm.is_some();
-        // Housing body color: `--colorway NAME`, else the slate default.
         let colorway = args.colorway.as_deref().and_then(Colorway::from_label).unwrap_or(Colorway::Slate);
         let mut gui = SimGui {
             app,
@@ -291,52 +272,45 @@ impl SimGui {
             kbd_enc: false,
             kbd_back: false,
         };
-        // Hand the Route menu its catalog (the folder scan); refreshed on GPX import.
         gui.app.set_routes(gui.store.catalog());
-        // `--gpx` opens with a track loaded (paused at the start); press play in
-        // the panel to replay it.
+        // `--gpx` opens with a track loaded, paused at the start.
         if let Some(path) = &args.gpx {
             gui.load_gpx(Path::new(path));
         }
         gui
     }
 
-    /// Web constructor: build the sim from the demo map baked into the wasm binary
-    /// and web-flavoured defaults (in-memory route/track stores, no native file
-    /// dialog or 1:1 calibration). Everything below this — the app, the render path,
-    /// the control panel — is shared verbatim with the native sim.
+    /// Web constructor: build the sim from the demo map baked into the wasm binary and
+    /// web-flavoured defaults (in-memory stores, no file dialog or 1:1 calibration).
+    /// Everything below — app, render path, control panel — is shared with the native sim.
     #[cfg(target_arch = "wasm32")]
     pub(crate) fn new_web() -> Self {
         let bytes = include_bytes!("../assets/grimsel.obcm").to_vec();
         let mut g = SimGui::new(bytes, crate::Args::web_default());
 
-        // Select the embedded demo route (catalog index 0) so its line + ride stats show,
-        // and open a tracking session so the breadcrumb + climb totals accumulate.
+        // Select the embedded demo route and open a session so its line + ride stats show.
         if !g.store.catalog().is_empty() {
             g.app.activity.active_route = Some(0);
             g.app.activity.start_session();
         }
-        // Auto-play the embedded ride (the Grimselpass climb, Guttannen → summit) so the
-        // page opens on a moving map. `render_to_texture` restarts it at the summit (see there).
+        // Auto-play the embedded ride so the page opens on a moving map. `render_to_texture`
+        // restarts it at the summit (see there).
         if let Ok(track) = Track::parse(include_str!("../assets/grimsel-climb.gpx")) {
             let mut player = GpxPlayer::new(track);
-            // The GPX is distance-timed at a ~12 km/h base, so the multiplier reads as
-            // "N× a normal climbing pace"; 3× keeps the map moving without a blur.
+            // 3× a normal climbing pace keeps the map moving without a blur.
             player.set_speed(3.0);
             player.play();
             g.gpx = Some(player);
         }
-        // Follow the rider heading-up (map rotates so travel is always up), and tighten the
-        // fit-to-whole-tile zoom to a riding view so the route's switchbacks are visible.
         g.app.state.mode = CameraMode::Follow;
         g.app.state.heading_up = true;
+        // Tighten the fit-to-whole-tile zoom to a riding view so the switchbacks are visible.
         g.app.state.zoom *= 12.0;
         g
     }
 
-    /// Parse a GPX file and load it as the active replay (paused at the start),
-    /// or record the error for the panel to show. Only reachable from native entry
-    /// points (CLI `--gpx`, file-dialog); the web build has no loader wired yet.
+    /// Parse a GPX file and load it as the active replay (paused at the start), or record the
+    /// error for the panel. Native-only (CLI `--gpx`, file-dialog).
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     fn load_gpx(&mut self, path: &Path) {
         match Track::load(path) {
@@ -358,15 +332,13 @@ impl SimGui {
 
     /// Run the shared app for one frame into the framebuffer, then upload it.
     fn render_to_texture(&mut self, ctx: &egui::Context) {
-        // Reuse the session-long cache (see the field doc) — the same cross-frame reuse the
-        // device gets, so the "Map SD" stats panel mirrors on-glass behaviour.
+        // Reuse the session-long cache (see the field doc) so the "Map SD" stats mirror glass.
         let map_src = SliceSource(&self.bytes);
         let reader = Reader::new(&map_src, &self.map_tables, &self.map_cache);
         let tc = self.true_color;
 
-        // Open the active route's geometry *before* ticking, so the map-matcher gets it
-        // (reloads only when the selection changes; the firmware does the same off its SD
-        // card). It stays borrowed through `tick` + `render_frame` below.
+        // Open the active route's geometry *before* ticking so the map-matcher gets it (reloads
+        // only on selection change). It stays borrowed through `tick` + `render_frame` below.
         self.store.sync_active(self.app.activity.active_route);
         let route_src = self.store.active_source();
         let route_index = route_src.as_ref().and_then(|s| RouteIndex::read(s).ok());
@@ -375,14 +347,11 @@ impl SimGui {
             _ => None,
         };
 
-        // Reconcile the ride log to the app's tracking session (open / finalise-to-GPX /
-        // discard) before ticking — the device does the same off its SD card.
+        // Reconcile the ride log to the app's tracking session before ticking.
         crate::reconcile_tracks(&mut self.app, &mut self.tracks);
 
-        // Drive the app from whichever location source is active. A loaded GPX replay
-        // takes over from the manual panel fix (just as the device's GPS would); we
-        // advance it by this frame's wall-clock time before ticking, and feed the
-        // barometer the track's elevation on its own (asynchronous) cadence.
+        // Drive the app from whichever location source is active. A loaded GPX replay takes over
+        // from the manual panel fix (as the device's GPS would).
         if let Some(player) = self.gpx.as_mut() {
             // Advance + tick on the playback clock (shared with the headless replay).
             let dt = ctx.input(|i| i.stable_dt) as f64;
@@ -395,18 +364,16 @@ impl SimGui {
                 route.as_ref(),
                 self.tracks.sink(),
             );
-            // Web demo: restart the climb when it reaches the summit so the page stays
-            // "alive". It's point-to-point (not a loop), so also bump the tracking session
-            // to clear the breadcrumb + ride totals — the rider snaps back to Guttannen for
-            // a fresh lap instead of dragging a trail across the map.
+            // Web demo: restart the climb at the summit so the page stays alive. It's
+            // point-to-point, so bump the tracking session to clear the breadcrumb + totals
+            // (a fresh lap instead of dragging a trail across the map).
             #[cfg(target_arch = "wasm32")]
             if !player.is_playing() {
                 player.play();
                 self.app.activity.start_session();
             }
-            // Reflect the replayed fix in the panel mirrors so the (disabled)
-            // position/heading widgets show the live values, and so manual control
-            // resumes from here if the track is ejected.
+            // Reflect the replayed fix in the panel mirrors, so manual control resumes from
+            // here if the track is ejected.
             if let Some(f) = self.app.state.user_fix {
                 self.panel.lat_deg = f.lat as f64 / 1e6;
                 self.panel.lon_deg = f.lon as f64 / 1e6;
@@ -421,21 +388,20 @@ impl SimGui {
             let sensors = Sensors {
                 loc: &mut self.loc,
                 altimeter: None,
-                // No thermometer in manual control — the BMP581 temperature is device-only (#218).
+                // No thermometer in manual control — BMP581 temperature is device-only.
                 temperature: None,
-                // No GPS time in the sim — the clock stays whatever was set by hand (#223).
+                // No GPS time in the sim — the clock stays whatever was set by hand.
                 clock: None,
                 compass: Some(&mut self.compass),
                 track: self.tracks.sink(),
-                // The battery is set once from `--battery` (default 75 %); no live sim gauge.
+                // Battery is set once from `--battery`; no live sim gauge.
                 fuel: None,
             };
             self.app.tick(RideClock(now_ms), sensors, route.as_ref());
         }
 
-        // Time the whole frame draw (render + route/overlays) and fold it into the stats
-        // as `render_us` — `obc-render` is no_std and clockless, so the host fills it (the
-        // device will use the DWT cycle counter). Surfaced in the control panel's stats.
+        // Time the whole frame draw into `render_us` (`obc-render` is clockless, so the host
+        // fills it; the device uses the DWT cycle counter).
         let t0 = web_time::Instant::now();
         let mut stats =
             self.app.render_frame(&mut self.fb, &reader, route.as_ref(), self.dev_w as f32, self.dev_h as f32, |c| {
@@ -443,16 +409,13 @@ impl SimGui {
             });
         stats.render_us = t0.elapsed().as_micros() as u32;
         self.last_stats = stats;
-        // Drain the shared dirty signal for the stats readout. The sim renders unconditionally
-        // (above), so this doesn't gate drawing — it just surfaces what the firmware *would*
-        // have re-rendered this frame, so the render-on-demand logic can be watched live.
+        // Drain the shared dirty signal for the stats readout (the sim always redraws, so this
+        // doesn't gate drawing).
         self.last_dirty = self.app.take_dirty();
 
-        // Present through the self-diffing backend (epic #199 / issue #200): it diffs the rendered
-        // frame against its per-row hash store, pushes only the changed spans into its own buffer
-        // (asserting an exact full-frame diff agrees), and hands that buffer back. Uploading *it* —
-        // reconstructed from partial pushes, not a whole-frame copy — means a diff bug would show as
-        // a stale row on glass. The push metric (`present.stats`) lands in the render-stats panel.
+        // Present through the self-diffing backend: it pushes only the changed spans into its own
+        // buffer and hands that back. Uploading *it* — reconstructed from partial pushes, not a
+        // whole-frame copy — means a diff bug shows as a stale row on glass, not just a failed assert.
         let presented = self.present.present(self.fb.as_rgb888());
         let image = egui::ColorImage::from_rgb([self.dev_w as usize, self.dev_h as usize], presented);
         let opts = egui::TextureOptions::NEAREST;
@@ -462,10 +425,9 @@ impl SimGui {
         }
     }
 
-    /// Apply mouse pan/scroll-zoom over the screen `rect`, switching to Free mode.
-    /// `scale` is the *displayed* device-pixels-to-screen-points factor (the image
-    /// is fit to the window, so it can differ from the requested `--scale`).
-    /// Native-only: the web demo disables screen pan/zoom (no touchscreen feel).
+    /// Apply mouse pan/scroll-zoom over the screen `rect`, switching to Free mode. `scale` is
+    /// the *displayed* device-pixels-to-screen-points factor (the image is fit to the window,
+    /// so it can differ from the requested `--scale`). Native-only.
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     fn handle_camera_input(&mut self, ui: &egui::Ui, resp: &egui::Response, rect: egui::Rect, scale: f32) {
         let (w, h) = (self.dev_w as f32, self.dev_h as f32);
@@ -506,12 +468,12 @@ impl SimGui {
         }
     }
 
-    /// Draw the device — the housing chrome plus the framebuffer blitted into its
-    /// screen cutout — centred, at either the integer fit scale (default) or the
-    /// panel's true physical size when 1:1 is on and calibrated.
+    /// Draw the device — housing chrome plus the framebuffer blitted into its screen cutout —
+    /// centred, at either the integer fit scale (default) or the panel's true physical size
+    /// when 1:1 is on and calibrated.
     fn show_device_image(&mut self, ctx: &egui::Context) {
-        // Native frames the device in the reference render's charcoal backdrop; the web
-        // demo drops it (transparent) so the device sits straight on the page background.
+        // Native frames the device in a charcoal backdrop; the web demo is transparent so the
+        // device sits straight on the page background.
         #[cfg(not(target_arch = "wasm32"))]
         let frame = egui::Frame::none().fill(housing::background());
         #[cfg(target_arch = "wasm32")]
@@ -536,10 +498,9 @@ impl SimGui {
             };
             let lo = style.layout(ui.available_rect_before_wrap(), disp_scale, screen);
 
-            // The device's own controls live *on the housing* now: click the encoder /
-            // Back, or scroll over the wheel to turn it. Hit-test their rects, fold in the
-            // keyboard (read at the top of `update`), and run the shared recognizer — the
-            // same path the firmware uses with real GPIO.
+            // The device controls live on the housing: click the encoder / Back, or scroll over
+            // the wheel to turn it. Hit-test their rects, fold in the keyboard, and run the shared
+            // recognizer — the same path the firmware uses with real GPIO.
             let enc = ui.interact(lo.encoder, egui::Id::new("dev_encoder"), egui::Sense::click());
             let back = ui.interact(lo.back, egui::Id::new("dev_back"), egui::Sense::click());
             let enc = enc.on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -557,22 +518,20 @@ impl SimGui {
             self.input.set_button(Button::Back, back_down);
             let now = self.input.now_ms();
             self.app.handle_input(InputClock(now), &mut self.input);
-            // Persist settings the moment a settings screen changes one (the device's
-            // save-on-dirty path) so they survive a relaunch.
+            // Persist on the settings-dirty edge (the device's save-on-dirty path).
             if self.app.take_settings_dirty() {
                 self.settings_store.save(self.app.settings());
             }
 
-            // Mirror the live control state onto the housing so the encoder/Back animate.
-            // The knurl eases toward the new angle so each detent reads as a little turn.
+            // Mirror the live control state onto the housing. The knurl eases toward the new
+            // angle so each detent reads as a little turn.
             let knob_angle =
                 ui.ctx().animate_value_with_time(egui::Id::new("knurl_phase"), self.input.knob_angle(), 0.12);
             let ctrl = housing::ControlVisual { knob_angle, encoder_down: enc_down, back_down };
             let palette = self.colorway.palette();
 
-            // Paint the housing, then blit the framebuffer into its screen rect, corners
-            // rounded to follow the bezel (revealing it behind). Clone the painter so the
-            // borrow of `ui` is released before `ui.put` takes it.
+            // Paint the housing, then blit the framebuffer into its screen rect, corners rounded
+            // to follow the bezel. Clone the painter so `ui`'s borrow is released before `ui.put`.
             let painter = ui.painter().clone();
             housing::draw(&painter, &lo, &style, &palette, &ctrl);
             let resp = ui.put(
@@ -583,9 +542,8 @@ impl SimGui {
                     .rounding(egui::Rounding::same(style.screen_radius_pts(disp_scale)))
                     .sense(egui::Sense::click_and_drag()),
             );
-            // Native: mouse drag pans / scroll zooms the map. The web demo is
-            // encoder-driven only — no screen pan/zoom, so it never feels like a
-            // touchscreen (the device has none).
+            // Native: mouse drag pans / scroll zooms. The web demo is encoder-driven only — no
+            // screen pan/zoom, so it never feels like a touchscreen (the device has none).
             #[cfg(not(target_arch = "wasm32"))]
             self.handle_camera_input(ui, &resp, resp.rect, disp_scale);
             #[cfg(target_arch = "wasm32")]
@@ -594,9 +552,8 @@ impl SimGui {
     }
 
     /// The 1:1 calibration screen: draw a reference bar of a known point-width; the user
-    /// measures it with a ruler and types the length → points-per-mm. Saved (so it's
-    /// one-time) and 1:1 switches on. `calib` is taken out of `self` so the egui closure
-    /// borrows only locals.
+    /// measures it and types the length → points-per-mm. `calib` is taken out of `self` so the
+    /// egui closure borrows only locals.
     fn show_calibration(&mut self, ctx: &egui::Context) {
         let Some(mut calib) = self.calib.take() else { return };
         let mut save_ppm: Option<f32> = None;
@@ -673,8 +630,6 @@ impl SimGui {
         if !std::mem::take(&mut self.physical_resize_pending) {
             return;
         }
-        // Either way the window wraps the whole device (housing + screen + backdrop), so
-        // the body fits around the framebuffer.
         let dev = housing::HousingStyle::default().window_size_px(egui::vec2(self.dev_w as f32, self.dev_h as f32));
         let size = match (self.physical, self.points_per_mm) {
             (true, Some(ppm)) => {
@@ -689,18 +644,16 @@ impl SimGui {
 }
 
 impl eframe::App for SimGui {
-    // Web: clear the canvas to transparent so the page background shows around the
-    // device (the central panel is transparent there too — see `show_device_image`).
+    // Web: clear the canvas to transparent so the page background shows around the device.
     #[cfg(target_arch = "wasm32")]
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         egui::Color32::TRANSPARENT.to_normalized_gamma_f32()
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Read the device-control keyboard shortcuts *first*, before any widget can take
-        // focus and swallow the keys — so they drive the encoder/Back whether the screen or
-        // the control panel is focused. Turn keys are consumed (one detent per press); the
-        // Enter/Backspace state is the live held state. Applied in `show_device_image`.
+        // Read the device-control keyboard shortcuts *first*, before a widget can take focus and
+        // swallow the keys. Turn keys are consumed (one detent per press); Enter/Backspace is the
+        // live held state. Applied in `show_device_image`.
         let (kt, ke, kb) = ctx.input_mut(|i| {
             let mut t = 0;
             if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight)
@@ -721,8 +674,7 @@ impl eframe::App for SimGui {
         self.kbd_enc = ke;
         self.kbd_back = kb;
 
-        // Drag-and-drop a `.gpx` onto the window to import it (the device's USB-drop
-        // path): convert into the routes folder and refresh the Route-menu catalog.
+        // Drag-and-drop a `.gpx` onto the window to import it (the device's USB-drop path).
         let dropped: Vec<std::path::PathBuf> =
             ctx.input(|i| i.raw.dropped_files.iter().filter_map(|f| f.path.clone()).collect());
         for path in dropped {
@@ -754,9 +706,7 @@ impl eframe::App for SimGui {
         }
         self.apply_physical_resize(ctx);
 
-        // The Controls window is a development tool (a second OS window driving the
-        // simulated GPS / encoder). The web demo shows only the device itself —
-        // housing, screen and on-housing buttons — so it's native-only.
+        // The Controls window is a native-only development tool; the web demo shows only the device.
         #[cfg(not(target_arch = "wasm32"))]
         self.show_control_panel(ctx);
 
@@ -764,14 +714,13 @@ impl eframe::App for SimGui {
             self.run_screenshot(ctx);
         }
 
-        // Closing the Controls window quits the simulator (otherwise a controls-less
-        // window lingers with no way to drive the fix).
+        // Closing the Controls window quits (otherwise a controls-less window lingers with no
+        // way to drive the fix).
         if self.quit {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
 
-        // Drive the loop continuously so control-panel / GPX changes show up
-        // without needing a mouse event to wake the window.
+        // Repaint continuously so control-panel / GPX changes show without a mouse event.
         ctx.request_repaint();
     }
 }
@@ -790,10 +739,9 @@ fn save_color_image(img: &egui::ColorImage, path: &str) -> Result<(), String> {
 }
 
 impl SimGui {
-    /// `--screenshot` flow: request a capture of the composited viewport on the
-    /// first frame, save it when egui delivers it next frame, then close. This
-    /// captures what the GPU actually displays (texture upload + draw), not just
-    /// the framebuffer the headless `--png` path dumps.
+    /// `--screenshot` flow: request a viewport capture on the first frame, save it when egui
+    /// delivers it next frame, then close. Captures what the GPU actually displays (texture
+    /// upload + draw), not just the framebuffer the headless `--png` path dumps.
     fn run_screenshot(&mut self, ctx: &egui::Context) {
         if !self.screenshot_requested {
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot);

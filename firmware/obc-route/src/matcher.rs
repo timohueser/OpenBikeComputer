@@ -32,13 +32,11 @@ const FWD_SEGS_ON: i64 = 64;
 /// Wider forward window while off-route, so a rejoin further along the route is found
 /// without an unbounded full scan.
 const FWD_SEGS_OFF: i64 = 320;
-/// Tie-break margin (m) for the **first lock only**. The initial scan covers the whole
-/// route and runs front-to-back; requiring a candidate to beat the best by this much keeps
-/// the *earliest* of several near-equal matches. On an out-and-back (start == end) the
-/// finish segment sits right on top of the start, so a few metres of cross-track offset
+/// Tie-break margin (m) for the **first lock only**. The initial scan runs front-to-back;
+/// requiring a candidate to beat the best by this much keeps the *earliest* of several
+/// near-equal matches. On an out-and-back (start == end) a few metres of cross-track offset
 /// would otherwise latch the cursor onto the finish (progress ≈ 100 %) and the forward bias
-/// could never follow the outbound leg. Only the first lock needs this; once tracking, the
-/// bounded forward window already prevents latching the far-away finish.
+/// could never follow the outbound leg. Once tracking, the bounded forward window prevents this.
 const TIE_EPS_M: f32 = 8.0;
 
 /// The result of matching one fix onto the route.

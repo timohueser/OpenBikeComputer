@@ -1,10 +1,9 @@
-//! Projection / viewport coverage for the renderer (issue #96, epic #90).
+//! Projection / viewport coverage for the renderer.
 //!
-//! The projection is the numeric heart of the renderer, yet every other render test draws
-//! north-up and probes pixels, never the `Viewport` transform itself. This file pins it directly:
-//! the `to_map`∘`to_screen` involution to sub-pixel tolerance, the rotated (heading-up) projection,
-//! `visible_bbox` over a rotated view, and `north_screen_unit` / `aspect_for_lat` — the helpers
-//! everything else builds on (lib.rs ~187-263).
+//! Every other render test draws north-up and probes pixels, never the `Viewport` transform itself.
+//! This file pins it directly: the `to_map`∘`to_screen` involution to sub-pixel tolerance, the
+//! rotated (heading-up) projection, `visible_bbox` over a rotated view, and `north_screen_unit` /
+//! `aspect_for_lat`.
 
 use obc_render::Viewport;
 
@@ -13,14 +12,9 @@ fn microdeg_per_px(zoom: f32) -> f32 {
     1.0 / zoom
 }
 
-// ---------------------------------------------------------------------------
-// Render item 1 — projection involution, rotation, visible_bbox, north unit
-// ---------------------------------------------------------------------------
-
-/// `to_map(to_screen(p)) ≈ p` — the projection is its own inverse (lib.rs ~208). `to_screen` rounds
-/// to integer pixels, so the round-trip can't be bit-exact; the only error is that ½-px
-/// quantization, which in ground units is `0.5 / zoom` microdegrees of latitude (and the
-/// aspect-scaled equivalent in longitude). We assert the round-trip stays within ~1 px of ground —
+/// `to_map(to_screen(p)) ≈ p` — the projection is its own inverse. `to_screen` rounds to integer
+/// pixels, so the round-trip can't be bit-exact; the only error is that ½-px quantization
+/// (`0.5 / zoom` µdeg of latitude, aspect-scaled in longitude). Asserting within ~1 px of ground is
 /// far tighter than the microdegree grid would allow if a sign or an aspect factor were wrong.
 #[test]
 fn to_map_inverts_to_screen_within_subpixel() {
@@ -48,8 +42,7 @@ fn to_map_inverts_to_screen_within_subpixel() {
 
 /// At north-up (course 0) a point due north of the camera (higher latitude, same longitude)
 /// projects straight up the screen — same x as the camera center, smaller y — and a point due east
-/// projects to the right. This is the baseline the rotated cases are measured against (lib.rs
-/// ~187).
+/// projects to the right. The baseline the rotated cases are measured against.
 #[test]
 fn north_up_projects_north_to_screen_up() {
     let vp = Viewport::new(200.0, 200.0, 0, 0, 1.0);
@@ -67,8 +60,8 @@ fn north_up_projects_north_to_screen_up() {
 
 /// Heading-up: with `course_rad = 90°` (camera facing east) the projection rotates so the heading
 /// points up the screen. A point due *east* of the camera (the direction of travel) must therefore
-/// project toward the **top**, and map-north must swing to the **left**. This exercises the
-/// `sin_c`/`cos_c` rotation in `to_screen` (lib.rs ~195) that the north-up suite never turns on.
+/// project toward the **top**, and map-north must swing to the **left**. Exercises the
+/// `sin_c`/`cos_c` rotation in `to_screen` that the north-up suite never turns on.
 #[test]
 fn heading_up_rotates_travel_direction_to_screen_top() {
     use core::f32::consts::FRAC_PI_2;
@@ -87,10 +80,9 @@ fn heading_up_rotates_travel_direction_to_screen_top() {
     assert!((ny - cy).abs() <= 1, "north has ~no up/down component when heading east (y={ny})");
 }
 
-/// `north_screen_unit` is the unit screen vector pointing to map-north — the compass needle (lib.rs
-/// ~255). At north-up it is straight up `(0, -1)`; under a heading-up rotation it turns by the same
-/// course. We check both, and that it stays unit length (the doc claims it needs no normalization),
-/// and that it agrees in *direction* with where `to_screen` actually puts a due-north point.
+/// `north_screen_unit` is the unit screen vector pointing to map-north — the compass needle. At
+/// north-up it is straight up `(0, -1)`; a heading-up rotation turns it by the same course. Checks
+/// both, and that it stays unit length (the doc claims it needs no normalization).
 #[test]
 fn north_screen_unit_tracks_the_rotation() {
     // North-up: straight up.
@@ -112,9 +104,8 @@ fn north_screen_unit_tracks_the_rotation() {
 
 /// `visible_bbox` over a **rotated** view must cover the tilted on-screen rectangle's full extent —
 /// it takes all four screen corners, so the axis-aligned ground box grows wider than the north-up
-/// box at the same zoom (lib.rs ~225). A 45° course is the worst case: the diagonal of the screen
-/// becomes the bbox's half-extent. We assert the rotated box strictly contains the north-up box and
-/// that the camera center is inside it.
+/// box at the same zoom. A 45° course is the worst case: the screen diagonal becomes the bbox's
+/// half-extent. Asserts the rotated box strictly contains the north-up box and holds the center.
 #[test]
 fn rotated_visible_bbox_covers_the_tilted_rectangle() {
     let up = Viewport::new(200.0, 200.0, 0, 0, 1.0);
@@ -138,9 +129,9 @@ fn rotated_visible_bbox_covers_the_tilted_rectangle() {
 
 /// Aspect correction compresses longitude away from the equator: at higher latitude a degree of
 /// longitude spans less ground, so the same µdeg-lon step projects to fewer pixels. The renderer
-/// folds this into `Viewport::aspect` (= cos(lat)); a viewport built at a high latitude must carry
-/// a smaller aspect than one at the equator, and an equatorial viewport's aspect is ~1. This pins
-/// `aspect_for_lat` (lib.rs ~261), exercised only indirectly elsewhere.
+/// folds this into `Viewport::aspect` (= cos(lat)); a viewport at high latitude carries a smaller
+/// aspect than one at the equator (whose aspect is ~1). Pins `aspect_for_lat`, exercised only
+/// indirectly elsewhere.
 #[test]
 fn aspect_compresses_longitude_with_latitude() {
     let equator = Viewport::new(200.0, 200.0, 0, 0, 1.0);

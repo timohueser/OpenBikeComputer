@@ -80,31 +80,28 @@ where
         self.fill(rect(x, y, len, 1), color);
     }
 
-    /// A vertical hairline `len` px tall starting at `(x, y)` — e.g. a cursor / marker
-    /// line. `w` widens it to a solid bar.
+    /// A vertical hairline `len` px tall starting at `(x, y)`; `w` widens it to a solid bar.
     pub fn vline(&mut self, x: i32, y: i32, len: i32, w: i32, color: u16) {
         self.fill(rect(x, y, w.max(1), len), color);
     }
 
-    /// A 1px straight line between two points — e.g. one marching-squares contour
-    /// segment on the Home background.
+    /// A 1px straight line between two points.
     ///
     /// Draws the bare Bresenham pixel stream (`points()`), **not** a styled 1px stroke: the Home
-    /// contour emits *thousands* of tiny segments per frame, and the styled-stroke path rebuilds
-    /// its thick-line (perpendicular-extent) machinery on every one — pure per-segment overhead at
-    /// width 1. Walking the points straight into `draw_iter` skips all of it.
+    /// contour emits thousands of tiny segments per frame, and the styled-stroke path rebuilds its
+    /// thick-line machinery on every one — pure per-segment overhead at width 1.
     pub fn line(&mut self, a: Point, b: Point, color: u16) {
         let color = self.c(color);
         let _ = self.target.draw_iter(Line::new(a, b).points().map(|p| Pixel(p, color)));
     }
 
-    /// A filled triangle (e.g. a list pointer bullet).
+    /// A filled triangle.
     pub fn triangle(&mut self, a: Point, b: Point, c: Point, color: u16) {
         let style = PrimitiveStyle::with_fill(self.c(color));
         let _ = Triangle::new(a, b, c).into_styled(style).draw(self.target);
     }
 
-    /// A filled circle of `radius` centered at `center` — e.g. a position dot.
+    /// A filled circle of `radius` centered at `center`.
     pub fn disc(&mut self, center: Point, radius: u32, color: u16) {
         let style = PrimitiveStyle::with_fill(self.c(color));
         let top_left = Point::new(center.x - radius as i32, center.y - radius as i32);

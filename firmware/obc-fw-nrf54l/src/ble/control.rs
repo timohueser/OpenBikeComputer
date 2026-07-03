@@ -1,21 +1,21 @@
-//! The GATT control plane (A5/A6, issues #273/#274): the per-connection event pump that answers
-//! the OBC Control writes and arms the CoC data plane.
+//! The GATT control plane: the per-connection event pump that answers the OBC Control writes and arms
+//! the CoC data plane.
 //!
 //! [`serve_connection`] owns the link until the peer drops it, servicing GATT reads/writes and the
-//! connection lifecycle (PHY/params/pairing) events. Writes are answered with the S0-typed `status`
+//! connection lifecycle (PHY/params/pairing) events. Writes are answered with the typed `status`
 //! envelope, never a hang or a bare ATT failure:
 //!
-//! - A `command` write ([`run_command`], S0 §4.4) — `deleteObject` for routes; rides are never
-//!   deleted over the link (the app tombstones them locally, S0 §7) — answers `commandResult` and,
-//!   on a store movement, notifies `storeChanged` + the refreshed digest.
-//! - A `transfer_control` write is decoded + [`classify_transfer`]-ed (S0 §4.2). A validated
-//!   transfer is **armed** — signalled to the CoC task ([`super::state::TRANSFER_ARM`]) and answered
-//!   later by the data plane; everything invalid (or an abort with nothing in flight) gets an
-//!   immediate S0-typed [`obc_ble::TransferResult`] on `status`, and an abort aimed at the in-flight
-//!   transfer is forwarded to the data plane, which answers it.
-//! - A `config` write validates + persists the rename/units to the RRAM settings (S0 §7.3); the
-//!   advertised name follows on the next advertise cycle.
-//! - The pairing/bonding events (A8, S0 §8) drive the passkey card + the single stored bond.
+//! - A `command` write ([`run_command`]) — `deleteObject` for routes; rides are never deleted over the
+//!   link (the app tombstones them locally) — answers `commandResult` and, on a store movement,
+//!   notifies `storeChanged` + the refreshed digest.
+//! - A `transfer_control` write is decoded + [`classify_transfer`]-ed. A validated transfer is
+//!   **armed** — signalled to the CoC task ([`super::state::TRANSFER_ARM`]) and answered later by the
+//!   data plane; everything invalid (or an abort with nothing in flight) gets an immediate typed
+//!   [`obc_ble::TransferResult`] on `status`, and an abort aimed at the in-flight transfer is forwarded
+//!   to the data plane, which answers it.
+//! - A `config` write validates + persists the rename/units to the RRAM settings; the advertised name
+//!   follows on the next advertise cycle.
+//! - The pairing/bonding events drive the passkey card + the single stored bond.
 //!
 //! Store borrows stay inside the synchronous `with_data` closures — never held across an `await`.
 
@@ -40,9 +40,9 @@ struct CommandOutcome {
     store_changed: bool,
 }
 
-/// Execute a `command` write (S0 §4.3/§4.4). `deleteObject` (cmd 1: `type u8 · object_id u16`)
-/// deletes a stored route through the [`ObjectStore`]. Ride deletion is **deliberately not
-/// implemented** (`notFound`): the device retains every tracked ride until a future device-side
+/// Execute a `command` write. `deleteObject` (cmd 1: `type u8 · object_id u16`) deletes a stored route
+/// through the [`ObjectStore`]. Ride deletion is **deliberately not implemented** (`notFound`): the
+/// device retains every tracked ride until a future device-side
 /// management UI — the app hides synced rides locally (tombstones) rather than deleting them
 /// here, so a re-sync can never resurrect them. Any other command byte is `unknownCommand`.
 fn run_command(data: &[u8], store: &RefCell<ObjectStore>) -> CommandOutcome {
@@ -69,7 +69,7 @@ fn run_command(data: &[u8], store: &RefCell<ObjectStore>) -> CommandOutcome {
     CommandOutcome { result: StatusMessage::CommandResult(CommandResult::new(cmd, status)).encode(), store_changed }
 }
 
-/// How a decoded `transfer_control` write proceeds (S0 §4.2).
+/// How a decoded `transfer_control` write proceeds.
 enum TransferDisposition {
     /// Validated — hand to the CoC task (`serve_coc`), which answers when the transfer ends.
     Arm(Armed),
@@ -79,11 +79,11 @@ enum TransferDisposition {
     AbortActive,
 }
 
-/// Decode + classify a `transfer_control` write against the store (S0 §4.2): echo uploads (A5),
-/// route uploads (fresh or replace-by-id), and route / list downloads. Everything invalid —
-/// malformed bytes, an unknown id (`notFound`), a non-zero upload offset or a second open
-/// mid-transfer, an unsupported op/type combination — is answered immediately with the S0-typed
-/// [`obc_ble::TransferResult`] (`error` / `notFound` / `busy`), never a hang or a bare ATT failure.
+/// Decode + classify a `transfer_control` write against the store: echo uploads, route uploads (fresh
+/// or replace-by-id), and route / list downloads. Everything invalid — malformed bytes, an unknown id
+/// (`notFound`), a non-zero upload offset or a second open mid-transfer, an unsupported op/type
+/// combination — is answered immediately with the typed [`obc_ble::TransferResult`] (`error` /
+/// `notFound` / `busy`), never a hang or a bare ATT failure.
 fn classify_transfer(data: &[u8], store: &RefCell<ObjectStore>) -> TransferDisposition {
     let Ok(desc) = TransferControl::decode(data) else {
         // A malformed descriptor — the app can't have meant a real transfer; report `error`.
@@ -131,12 +131,11 @@ fn classify_transfer(data: &[u8], store: &RefCell<ObjectStore>) -> TransferDispo
     }
 }
 
-/// Serve GATT + connection events until the peer drops the link. Returns the disconnect reason
-/// (HCI status code); answers the OBC Control writes with the S0-typed `status` envelope, publishes
-/// the link edges the status UI shows (conn interval, PHY) and logs the rest — including every
-/// disconnect reason, named + numeric — for the `A9` soak's RTT trail. Concrete SDC/pool types
-/// (like [`super::lifecycle::negotiate_link`]): the `status` notify needs the `stack`, and this
-/// only runs on the one controller.
+/// Serve GATT + connection events until the peer drops the link. Returns the disconnect reason (HCI
+/// status code); answers the OBC Control writes with the typed `status` envelope, publishes the link
+/// edges the status UI shows (conn interval, PHY) and logs the rest — including every disconnect
+/// reason, named + numeric. Concrete SDC/pool types (like [`super::lifecycle::negotiate_link`]): the
+/// `status` notify needs the `stack`, and this only runs on the one controller.
 pub(crate) async fn serve_connection(
     stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
     server: &Server<'_>,
@@ -147,11 +146,10 @@ pub(crate) async fn serve_connection(
         match conn.next().await {
             GattConnectionEvent::Disconnected { reason } => break reason,
             GattConnectionEvent::Gatt { event } => {
-                // Extract what a control-plane write needs answered *before* accepting (which
-                // consumes the event), then notify the S0 `status` message(s) — never a hang /
-                // bare ATT failure. A validated transfer instead arms the CoC data plane
-                // (`serve_coc`), which answers when it ends. Store borrows stay inside the
-                // sync `with_data` closures — never across an await.
+                // Extract what a control-plane write needs answered *before* accepting (which consumes
+                // the event), then notify the `status` message(s) — never a hang / bare ATT failure. A
+                // validated transfer instead arms the CoC data plane (`serve_coc`), which answers when
+                // it ends. Store borrows stay inside the sync `with_data` closures — never across an await.
                 let mut status_msg: Option<StatusBytes> = None;
                 let mut store_changed = false;
                 let mut config_written = false;
@@ -182,8 +180,8 @@ pub(crate) async fn serve_connection(
                             }
                             e.accept()
                         } else if handle == server.obc.config.handle {
-                            // Validate + apply: units and rename persist to RRAM settings
-                            // (S0 §7.3); the advertised name follows on the next adv cycle.
+                            // Validate + apply: units and rename persist to RRAM settings; the
+                            // advertised name follows on the next adv cycle.
                             let applied = e.with_data(|_off, data| match Config::decode(data) {
                                 Some(cfg) => match core::str::from_utf8(cfg.name) {
                                     Ok(name) => {
@@ -235,7 +233,7 @@ pub(crate) async fn serve_connection(
             }
             GattConnectionEvent::PhyUpdated { tx_phy, rx_phy } => {
                 info!("ble: [conn] PHY updated: tx {:?} rx {:?}", tx_phy, rx_phy);
-                // "2M" on the status screen only when both directions made it (S0 §3.4 target).
+                // "2M" on the status screen only when both directions made it.
                 publish(|s| s.phy_2m = matches!(tx_phy, PhyKind::Le2M) && matches!(rx_phy, PhyKind::Le2M));
             }
             GattConnectionEvent::ConnectionParamsUpdated { conn_interval, peripheral_latency, supervision_timeout } => {
@@ -251,7 +249,7 @@ pub(crate) async fn serve_connection(
                 info!("ble: [conn] data length: tx {} rx {} octets", max_tx_octets, max_rx_octets);
             }
 
-            // ---- Pairing / bonding lifecycle (A8, S0 §8) ----
+            // ---- Pairing / bonding lifecycle ----
             // The device is DisplayOnly: the phone drives passkey *entry*, so `PassKeyDisplay` is
             // the one we expect — show the 6-digit code big on the status screen; the rider types
             // it into the iOS dialog. (Confirm/Input are handled defensively for completeness.)
@@ -268,7 +266,7 @@ pub(crate) async fn serve_connection(
             }
             GattConnectionEvent::PairingComplete { security_level, bond } => {
                 info!("ble: [pair] complete — level {:?}, bonded {}", security_level, bond.is_some());
-                // Persist the single bond (S0 §8): a fresh pairing replaces whatever was stored.
+                // Persist the single bond: a fresh pairing replaces whatever was stored.
                 if let Some(bond) = bond {
                     store.borrow_mut().save_bond(&bond);
                 }

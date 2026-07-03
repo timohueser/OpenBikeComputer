@@ -11,18 +11,14 @@
 //! accurate over the short segments of a decimated route, and cheap (no per-segment
 //! haversine).
 //!
-//! **All math is `f32`.** The device's Cortex-M33 FPU is single-precision, so every
-//! `f64` op here was a soft-float library call (~10× an `f32` op) — and this runs in
-//! per-fix and per-frame hot loops. Microdegree→meter *deltas* over a decimated route's
-//! short segments are small numbers that fit `f32` with ample precision; the only place
-//! that needs the dynamic range of `f64` is a long route's *cumulative* distance, which
-//! the callers accumulate themselves (see [`convert`](crate::convert) /
-//! [`profile`](crate::profile)) on top of these per-segment `f32` measurements.
+//! **All math is `f32`.** The Cortex-M33 FPU is single-precision, so an `f64` op here is a
+//! soft-float call (~10×) — and this runs in per-fix and per-frame hot loops. Microdegree→meter
+//! *deltas* over a decimated route's short segments fit `f32` with ample precision; only a long
+//! route's *cumulative* distance needs `f64`, which the callers accumulate themselves on top of
+//! these per-segment `f32` measurements.
 //!
-//! `cos(lat)` varies slowly, so hot callers hoist [`cos_lat`] once per latitude band and
-//! pass the result down ([`delta_m`] / [`seg_dist_m_cl`] / [`project_to_segment`] /
-//! [`ground_dist_m_cl`] all take a precomputed `cl`), rather than recomputing `cosf` per
-//! segment.
+//! `cos(lat)` varies slowly, so hot callers hoist [`cos_lat`] once per latitude band and pass
+//! the result to the `_cl` helpers rather than recomputing `cosf` per segment.
 
 /// Meters per degree of latitude (and of longitude at the equator) — the `f32` form of
 /// the shared [`obc_reader::M_PER_DEG`], so the route's distances, the packer's simplify
@@ -107,10 +103,9 @@ pub fn ground_dist_m_cl(a: (i32, i32), b: (i32, i32), cl: f32) -> f32 {
     seg_dist_m_cl(a, b, cl)
 }
 
-/// Straight-line ground distance (m) between two `(lon, lat)` microdegree points. A public
-/// wrapper over [`seg_dist_m`] so the app measures actually-ridden distance with the very
-/// metric the route format stored. Prefer [`ground_dist_m_cl`] in a loop that can hoist
-/// `cos_lat`.
+/// Straight-line ground distance (m) between two `(lon, lat)` microdegree points — the public
+/// wrapper over [`seg_dist_m`], so the app measures ridden distance with the metric the route
+/// format stored. Prefer [`ground_dist_m_cl`] in a loop that can hoist `cos_lat`.
 pub fn ground_dist_m(a: (i32, i32), b: (i32, i32)) -> f32 {
     seg_dist_m(a, b)
 }

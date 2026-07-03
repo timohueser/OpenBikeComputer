@@ -1,23 +1,16 @@
-//! The cross-task hand-off for the **real** GPS + altimeter sensors (issue #218) — the
-//! board-agnostic embassy-sync bridge between the board's high-priority sensor task and the app's
-//! `poll`.
+//! The cross-task hand-off for the **real** GPS + altimeter sensors — the board-agnostic
+//! embassy-sync bridge between the board's high-priority sensor task and the app's `poll`.
 //!
-//! This is the real-hardware sibling of [`crate::debug_link`]'s `handoff`: a high-priority embassy
-//! task in the board crate drives the I²C bus (SAM-M10Q GPS + BMP581 baro + an ICM-20948 magnetometer),
-//! and on each coherent sample [`signal`](embassy_sync::signal::Signal)s the values across to these
-//! statics. The HAL-trait impls here — [`GpsLocation`], [`BaroAltimeter`], [`SensorTemp`], [`GpsClock`],
-//! [`MagCompass`] — just **drain** them with `try_take`, so the app's `LocationSource::poll` /
-//! `AltimeterSource::poll` / `TemperatureSource::poll` / `ClockSource::poll` / `CompassSource::poll`
-//! yield `Some` only on the tick a fresh sample arrived and `None` between (a cold start, a GPS
-//! dropout, or the gap between fixes). That gives the app the exact fresh-fix mailbox semantics the
-//! seam documents — **zero I²C traffic at the frame rate**, and no teleport on a stale fix (issue
-//! #43) — for free.
+//! The real-hardware sibling of [`crate::debug_link`]'s `handoff`: a high-priority embassy task
+//! drives the I²C bus (SAM-M10Q GPS + BMP581 baro + ICM-20948 magnetometer) and on each coherent
+//! sample [`signal`](embassy_sync::signal::Signal)s the values across to these statics. The
+//! HAL-trait impls here just **drain** them with `try_take`, so each source's `poll` yields `Some`
+//! only on the tick a fresh sample arrived and `None` between — the fresh-fix mailbox semantics the
+//! seam documents, with zero I²C traffic at the frame rate and no teleport on a stale fix.
 //!
-//! The pure decode this bridges (UBX framing, NAV-PVT → [`Fix`], BMP581 raw → metres, magnetometer
-//! axes → heading) lives in the always-compiled [`crate::ubx`] / [`crate::bmp581`] / [`crate::compass`]
-//! / [`crate::icm20948`] modules; only this embassy-sync plumbing pulls `embassy-sync`, so it is gated
-//! behind the `sensor-link` feature (the board firmware enables it in its default features; the host
-//! workspace never pulls it).
+//! The pure decode this bridges lives in the always-compiled [`crate::ubx`] / [`crate::bmp581`] /
+//! [`crate::compass`] / [`crate::icm20948`] modules; only this embassy-sync plumbing pulls
+//! `embassy-sync`, so it is gated behind the `sensor-link` feature.
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
@@ -32,34 +25,30 @@ static FIX: Signal<CriticalSectionRawMutex, Fix> = Signal::new();
 static ALT: Signal<CriticalSectionRawMutex, f32> = Signal::new();
 /// Latest ambient temperature (°C) from the BMP581's per-fix reading, drained by [`SensorTemp`].
 static TEMP: Signal<CriticalSectionRawMutex, f32> = Signal::new();
-/// Latest GPS UTC time (issue #223), set by the sensor task on any NAV-PVT whose time the receiver
-/// has fully resolved — **independent of the position fix** ([`FIX`]), so the clock can set during
-/// acquisition (before a 3D lock). Drained by [`GpsClock`].
+/// Latest GPS UTC time, set on any NAV-PVT whose time the receiver has fully resolved —
+/// **independent of the position fix** ([`FIX`]), so the clock can set during acquisition (before a
+/// 3D lock). Drained by [`GpsClock`].
 static GPS_TIME: Signal<CriticalSectionRawMutex, GpsTime> = Signal::new();
-/// Latest electronic-compass heading (degrees CW from north), set by the sensor task from the
-/// magnetometer read coincident with each fix, drained by [`MagCompass`]. Independent of the GPS
-/// course — it's the heading the app uses while stopped.
+/// Latest electronic-compass heading (degrees CW from north), set from the magnetometer read
+/// coincident with each fix, drained by [`MagCompass`]. Independent of the GPS course — the heading
+/// the app uses while stopped.
 static HEADING: Signal<CriticalSectionRawMutex, f32> = Signal::new();
-/// Desired GPS fix interval (seconds) — set by the ride loop when the #117 Power-screen setting
-/// changes, awaited by the sensor task ([`wait_rate`]) to re-issue the M10 `CFG-RATE` VALSET. A
-/// `Signal` (latch), not a queue: only the newest requested rate matters.
+/// Desired GPS fix interval (seconds) — set by the ride loop, awaited by the sensor task
+/// ([`wait_rate`]) to re-issue the M10 `CFG-RATE` VALSET. A latch: only the newest rate matters.
 static RATE: Signal<CriticalSectionRawMutex, u16> = Signal::new();
-/// Desired GPS power state (issue #225) — set by the ride loop from the tracking state + the
-/// `power_saver` toggle, awaited by the sensor task ([`wait_power`]). A `Signal` (latch): only the
-/// newest requested state matters.
+/// Desired GPS power state — set by the ride loop from tracking state + the `power_saver` toggle,
+/// awaited by the sensor task ([`wait_power`]). A latch: only the newest state matters.
 static POWER: Signal<CriticalSectionRawMutex, GpsPower> = Signal::new();
-/// A single "a datapoint arrived" wake (issue #219), pulsed by **every** `dispatch_*` above. The
-/// event-driven main loop selects on [`wait_event`] so **one** await covers the whole sensor set —
-/// not just a fix but the independently-published heading (~5 Hz while stopped) and GPS time (during
-/// acquisition) — and then drains whichever per-source mailboxes have data via the normal `poll`
-/// path. Carries no payload (`()`): it's purely the "wake the render" edge; the values still flow
-/// through the typed signals above with their fresh-fix `try_take` semantics intact.
+/// A single "a datapoint arrived" wake, pulsed by **every** `dispatch_*` above. The event-driven
+/// main loop selects on [`wait_event`] so **one** await covers the whole sensor set — the fix plus
+/// the independently-published heading and GPS time — then drains whichever per-source mailboxes
+/// have data via the normal `poll` path. Payload-less: purely the "wake the render" edge.
 static EVENT: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
-/// The GPS receiver's requested power state (issue #225). The ride loop derives one from whether a
-/// ride is active and the Power-screen `power_saver` toggle, and the sensor task drives the M10 to
-/// match: deep sleep when idle (so an idle device draws ~µA, not the ~20 mA of continuous tracking),
-/// full-power fixes while riding, or the M10's on-chip low-power tracking when `power_saver` is on.
+/// The GPS receiver's requested power state. The ride loop derives one from whether a ride is active
+/// and the `power_saver` toggle, and the sensor task drives the M10 to match: deep sleep when idle
+/// (~µA vs. the ~20 mA of continuous tracking), full-power fixes while riding, or the M10's on-chip
+/// low-power tracking when `power_saver` is on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpsPower {
     /// Riding, full-power continuous fixes at the configured rate.
@@ -72,77 +61,73 @@ pub enum GpsPower {
     Sleep,
 }
 
-/// Publish a fresh GPS [`Fix`] (the sensor task, on a valid NAV-PVT). Overwrites any unconsumed
-/// value — the app only wants the freshest. Pulses [`EVENT`] so the event-driven loop wakes.
+/// Publish a fresh GPS [`Fix`] (on a valid NAV-PVT) and pulse [`EVENT`] so the event-driven loop
+/// wakes.
 pub fn dispatch_fix(f: Fix) {
     FIX.signal(f);
     EVENT.signal(());
 }
 
-/// Publish a fresh barometric altitude in metres (the sensor task, coherent with the fix).
+/// Publish a fresh barometric altitude in metres (coherent with the fix).
 pub fn dispatch_alt(m: f32) {
     ALT.signal(m);
     EVENT.signal(());
 }
 
-/// Publish a fresh ambient temperature in °C (the sensor task, from the same BMP581 read).
+/// Publish a fresh ambient temperature in °C (from the same BMP581 read).
 pub fn dispatch_temp(c: f32) {
     TEMP.signal(c);
     EVENT.signal(());
 }
 
-/// Publish a fresh GPS UTC time (the sensor task, on a NAV-PVT with resolved time — independent of
-/// a valid position fix). Overwrites any unconsumed value; the app only wants the freshest.
+/// Publish a fresh GPS UTC time (on a NAV-PVT with resolved time — independent of a position fix).
 pub fn dispatch_time(t: GpsTime) {
     GPS_TIME.signal(t);
     EVENT.signal(());
 }
 
-/// Publish a fresh compass heading in degrees CW from north (the sensor task, from the magnetometer
-/// read taken with each fix). Overwrites any unconsumed value; the app only wants the freshest.
+/// Publish a fresh compass heading in degrees CW from north (from the magnetometer read with each
+/// fix).
 pub fn dispatch_heading(deg: f32) {
     HEADING.signal(deg);
     EVENT.signal(());
 }
 
-/// Request a new GPS fix interval (seconds) — the ride loop calls this when the persisted
-/// `fix_interval_s` setting changes; the sensor task reconfigures the M10 on the next [`wait_rate`].
+/// Request a new GPS fix interval (seconds); the sensor task reconfigures the M10 on the next
+/// [`wait_rate`].
 pub fn set_rate(secs: u16) {
     RATE.signal(secs);
 }
 
-/// Request a GPS power state (issue #225) — the ride loop calls this when the ride starts/stops or
-/// `power_saver` changes; the sensor task transitions the M10 (sleep / wake / power mode) on the
+/// Request a GPS power state; the sensor task transitions the M10 (sleep / wake / power mode) on the
 /// next [`wait_power`].
 pub fn set_power(p: GpsPower) {
     POWER.signal(p);
 }
 
-/// Await the next published fix — for the event-driven main loop (issue #219) to `select` on, so a
-/// fix both updates state and wakes the render exactly once. (Consumes the signal like
-/// [`GpsLocation::poll`]; a loop that waits here drives the source instead of polling it.)
+/// Await the next published fix — consumes the signal like [`GpsLocation::poll`], so a loop that
+/// waits here drives the source instead of polling it.
 pub async fn wait_fix() -> Fix {
     FIX.wait().await
 }
 
-/// Await the next *any-sensor* datapoint (issue #219) — the single wake the event-driven main loop
-/// selects on. Completes whenever any `dispatch_*` published (fix, altitude, temperature, GPS time,
-/// or heading), so one await covers the whole sensor set; the loop then drains the typed mailboxes
-/// via the normal `poll` path. Prefer this over [`wait_fix`] in the loop: a heading-only or
-/// time-only update (no position fix) must still wake the render, and consuming `FIX` here would
-/// steal it from [`GpsLocation::poll`].
+/// Await the next *any-sensor* datapoint — the single wake the event-driven main loop selects on.
+/// Completes on any `dispatch_*`, so one await covers the whole set; the loop then drains the typed
+/// mailboxes via `poll`. Prefer this over [`wait_fix`]: a heading- or time-only update (no position
+/// fix) must still wake the render, and consuming `FIX` here would steal it from
+/// [`GpsLocation::poll`].
 pub async fn wait_event() {
     EVENT.wait().await
 }
 
-/// Await the next requested fix interval (seconds) — the sensor task selects on this to apply a
-/// #117 rate change without sharing the I²C bus with the ride loop.
+/// Await the next requested fix interval (seconds) — the sensor task selects on this to apply a rate
+/// change without sharing the I²C bus with the ride loop.
 pub async fn wait_rate() -> u16 {
     RATE.wait().await
 }
 
-/// Await the next requested GPS power state (issue #225) — the sensor task selects on this to sleep
-/// when a ride ends and wake (warm) when one starts.
+/// Await the next requested GPS power state — the sensor task selects on this to sleep when a ride
+/// ends and wake (warm) when one starts.
 pub async fn wait_power() -> GpsPower {
     POWER.wait().await
 }

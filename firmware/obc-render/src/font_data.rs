@@ -1,12 +1,9 @@
 //! Generated Terminus pixel-font data — the real typeface behind [`Font`](crate::text::Font).
 //!
-//! Terminus (<https://terminus-font.sourceforge.net/>, SIL OFL — see `fonts/terminus/LICENSE`)
-//! is a bold, highly legible monospace bitmap font in the misc-fixed lineage of the old
-//! embedded-graphics built-ins, but with much larger cuts. Each tier here is one Terminus
-//! BDF converted to embedded-graphics' `MonoFont` strip layout (printable ASCII
-//! `0x20..=0x7F`, 16 glyphs per row over 6 rows, 1bpp MSB-first) by `fonts/convert_bdf.py`,
-//! so we reuse eg's public [`mapping::ASCII`] and ship only the bitmap (~17 KB total —
-//! trivial on the nRF54L flash).
+//! Terminus (<https://terminus-font.sourceforge.net/>, SIL OFL — see `fonts/terminus/LICENSE`) is a
+//! bold monospace bitmap font. Each tier is one Terminus BDF converted to embedded-graphics'
+//! `MonoFont` strip layout (printable ASCII `0x20..=0x7F`, 16 glyphs/row, 1bpp MSB-first) by
+//! `fonts/convert_bdf.py`, reusing eg's [`mapping::ASCII`] and shipping only the bitmap (~17 KB).
 //!
 //! Sizes target physical cap heights on the 240 px / 32.46 mm panel (7.39 px/mm):
 //!
@@ -16,12 +13,9 @@
 //! | `Body`    | ter-u28 bold |   18   | 2.44 |
 //! | `Display` | ter-u32 bold |   20   | 2.71 |
 //!
-//! All three are native Terminus cuts (16×32 is its largest), kept crisp at 1× — chosen
-//! over scaling up for sharper edges and narrower glyphs. They are generated with
-//! `--deslash-zero` (the `0` uses the slash-free capital-`O` ring). `baseline` is
-//! `ascent - 1` (the eg convention); the UI draws `Baseline::Top`, so it only positions the
-//! unused underline/strikethrough decorations. The converter's `--scale` path
-//! (`fonts/convert_bdf.py`) stays available if a larger tier is ever wanted.
+//! Generated with `--deslash-zero` (the `0` uses the slash-free capital-`O` ring). `baseline` is
+//! `ascent - 1` (eg convention); the UI draws `Baseline::Top`, so it only positions the unused
+//! underline/strikethrough decorations.
 //!
 //! Regenerate (from the Terminus BDFs): for each cut,
 //! `python3 fonts/convert_bdf.py ter-uNNb.bdf fonts/terminus/ter_uNNb.raw --deslash-zero`.

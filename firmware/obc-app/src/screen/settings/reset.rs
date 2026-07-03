@@ -1,16 +1,13 @@
-//! The Factory Reset screen — the one guarded, destructive action. The encoder long-press fires
-//! at a fixed ~500 ms threshold (a global gesture constant, not tunable per screen), which is too
-//! short to feel safe on its own, so reset is **two deliberate steps**: *press* to arm, then
-//! *hold* to erase. A stray hold on an un-armed screen does nothing; on completion the settings
-//! drop back to [`Settings::default`] and a brief "done" state shows.
+//! The Factory Reset screen — the one guarded, destructive action. The long-press threshold (~500 ms)
+//! is too short to feel safe on its own, so reset is two deliberate steps: *press* to arm, then
+//! *hold* to erase. A stray hold on an un-armed screen does nothing; on completion the settings drop
+//! back to [`Settings::default`] and a brief "done" state shows.
 //!
-//! Scope note: this resets the **persisted settings** (units, clock, intervals) — it does *not*
-//! delete routes or saved tracks from the SD card (that destructive filesystem wipe is a
-//! deliberate follow-up). The copy says exactly what it does.
+//! Scope: this resets the persisted settings — it does *not* delete routes or saved tracks from the
+//! SD card (a deliberate follow-up).
 //!
-//! The hold bar is driven by [`Render::hold_progress`](crate::screen::Render) — the same in-flight
-//! encoder-hold value the [`RideControl`](crate::screen::RideControl) confirm uses; the global
-//! hold-bulge overlay is the always-live feedback and this bar is the on-screen echo.
+//! The hold bar is driven by [`Render::hold_progress`](crate::screen::Render), the on-screen echo of
+//! the global hold-bulge overlay.
 
 use embedded_graphics::prelude::{DrawTarget, Point};
 use obc_render::{
@@ -38,21 +35,20 @@ impl ResetScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         if self.done {
-            // The reset is applied; any key clears the whole stack back to Home (the device would
-            // reboot here; the sim just lands home).
+            // Reset applied; any key clears back to Home (the device would reboot here).
             return match g {
                 Gesture::Press | Gesture::Back => Transition::Home,
                 _ => Transition::None,
             };
         }
         match g {
-            // Step 1: press arms the screen (does nothing destructive on its own).
+            // Step 1: press arms the screen.
             Gesture::Press if !self.armed => {
                 self.armed = true;
                 Transition::None
             }
-            // Step 2: once armed, a completed hold erases the settings to defaults. The before/after
-            // diff in `apply_gesture` then flags the host to persist the cleared blob.
+            // Step 2: once armed, a completed hold erases to defaults. The before/after diff in
+            // `apply_gesture` flags the host to persist the cleared blob.
             Gesture::Hold if self.armed => {
                 *cx.settings = Settings::default();
                 self.done = true;
@@ -73,8 +69,7 @@ impl ResetScreen {
         let (w, h) = (rx.w as i32, rx.h as i32);
         let mut cv = Canvas::new(target, color_fn);
         title_frame(&mut cv, w, h, "RESET", "");
-        // All body content is positioned from the title bar (not the panel centre), so the
-        // armed/idle layouts stack cleanly without colliding.
+        // Body content is positioned from the title bar so the armed/idle layouts stack cleanly.
 
         if self.done {
             draw_check(&mut cv, w / 2, TITLE_BAR_H + 64, 26);
@@ -88,7 +83,7 @@ impl ResetScreen {
         cv.text("Factory reset", Point::new(w / 2, TITLE_BAR_H + 90), Font::Body, TextAlign::Center, WARNING);
 
         if !self.armed {
-            // Step 1: the consequence + the arm prompt. (Back exits — no need to say so.)
+            // Step 1: the consequence + the arm prompt.
             cv.text(
                 "Erases all settings",
                 Point::new(w / 2, TITLE_BAR_H + 124),
@@ -97,8 +92,7 @@ impl ResetScreen {
                 SUBTEXT,
             );
             cv.text("& saved time.", Point::new(w / 2, TITLE_BAR_H + 144), Font::Label, TextAlign::Center, SUBTEXT);
-            // The arm action drawn as a button: an amber rounded button with ink text. Short
-            // label so it stays an inset button rather than a full-width bar.
+            // The arm action as an amber inset button.
             let label = "Confirm";
             let (bw, bh) = (text_width(label, Font::Body) as i32 + 44, 42);
             let (bx, by) = (w / 2 - bw / 2, TITLE_BAR_H + 170);
@@ -122,8 +116,7 @@ impl ResetScreen {
     }
 }
 
-/// Draw a warning sign — an amber triangle (apex up) with an ink exclamation — centred at
-/// `(cx, cy)` with half-size `sz`.
+/// Draw a warning sign — an amber triangle with an ink exclamation — centred at `(cx, cy)`.
 fn draw_warning<D, F>(cv: &mut Canvas<D, F>, cx: i32, cy: i32, sz: i32)
 where
     D: DrawTarget,
@@ -131,13 +124,13 @@ where
 {
     use palette::*;
     cv.triangle(Point::new(cx, cy - sz), Point::new(cx - sz, cy + sz), Point::new(cx + sz, cy + sz), AMBER);
-    // Exclamation: a short vertical bar over a dot, in ink so it reads on the amber.
+    // Exclamation: a bar over a dot.
     cv.vline(cx, cy - sz / 4, sz / 2, 3, INK);
     cv.disc(Point::new(cx, cy + sz / 2 + 1), 2, INK);
 }
 
-/// Draw a check mark in amber, centred near `(cx, cy)` with half-size `sz` — two thick strokes
-/// stepped out of discs (the canvas has no diagonal line primitive).
+/// Draw a check mark in amber, centred near `(cx, cy)` — two strokes stepped out of discs (the
+/// canvas has no diagonal line primitive).
 fn draw_check<D, F>(cv: &mut Canvas<D, F>, cx: i32, cy: i32, sz: i32)
 where
     D: DrawTarget,
@@ -151,7 +144,7 @@ where
             cv.disc(Point::new(x, y), 3, palette::AMBER);
         }
     };
-    // Short down-stroke to the low point, then the long up-stroke to the top-right.
+    // Down-stroke to the low point, then up-stroke to the top-right.
     seg(cv, (cx - sz, cy), (cx - sz / 3, cy + sz * 2 / 3));
     seg(cv, (cx - sz / 3, cy + sz * 2 / 3), (cx + sz, cy - sz * 2 / 3));
 }

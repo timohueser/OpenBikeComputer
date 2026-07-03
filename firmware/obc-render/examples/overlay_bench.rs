@@ -1,13 +1,7 @@
-//! Headless micro-benchmark for the route **overlay stroke** cost — the "why is drawing a few
-//! overlay lines slower than the whole map?" question. It decodes a real route once, then strokes
-//! it through the public [`MapRenderer::stroke_path`] into a target that counts on-screen pixel
-//! **writes** (the unit of work the framebuffer actually pays) and times the call, swept across
-//! zoom. Decode happens up front, so the timed loop is the *pure* stroke path (project → simplify
-//! → clip → eg thick `Polyline` + the round-joint discs) — exactly the code under test.
-//!
-//! The point of interest is the round-joint disc in `flush_run`: at weight 11 each disc is an
-//! 11×11 fill, and it used to be stamped at *every* vertex. To A/B the "disc only at real corners"
-//! change, run this, `git stash` the `obc-render/src/lib.rs` edit, run again, and diff the columns.
+//! Headless micro-benchmark for the route **overlay stroke** cost. Decodes a real route once, then
+//! strokes it through [`MapRenderer::stroke_path`] into a target that counts on-screen pixel
+//! **writes** and times the call, swept across zoom. Decode happens up front, so the timed loop is
+//! the pure stroke path (project → simplify → clip → eg thick `Polyline` + the round-joint discs).
 //!
 //!   cargo run -p obc-render --example overlay_bench --release -- firmware/routes/kandel.obcr
 

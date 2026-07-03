@@ -1,28 +1,17 @@
-//! The Statistics screen — the riding view's sibling of the [`Map`](super::MapScreen),
-//! in the same "explorer's field map" style as the menus: the route's elevation
-//! profile as a filled band under an amber top line, with a movable "you are here" /
-//! inspection cursor (carrying a current-elevation readout), an amber progress bar, and
-//! a 2×3 grid of ride stats. Same wood-framed chrome ([`title_frame`]) as the menus.
+//! The Statistics screen — the riding view's sibling of the [`Map`](super::MapScreen): the route's
+//! elevation profile as a filled band under an amber top line, with a movable inspection cursor
+//! (carrying a current-elevation readout), an amber progress bar, and a grid of ride stats.
 //!
-//! Bindings (`bikepacking-computer-ui-spec.md` §5):
-//! - **Cursor mode (default):** `turn` scrubs the cursor along the *full* profile to read
-//!   the elevation/grade at any point; it **springs back to the live position** after a
-//!   few seconds idle (a transient inspection, not a mode). `hold` enters Zoom mode.
-//! - **Zoom mode:** `turn` zooms the profile **centred on the frozen cursor** (a small
-//!   magnifying-glass icon marks the mode — no numbers, no labels). It does *not* spring
-//!   back while zooming. `hold` **or** `back` exits, springing back to the full route +
-//!   live position.
-//! - Shared: `press` = pause → Ride control, `back` (in cursor mode) = the sibling Map,
-//!   `back-hold` = Menu.
+//! Bindings:
+//! - **Cursor mode (default):** `turn` scrubs the cursor along the full profile; it springs back to
+//!   the live position after a few seconds idle. `hold` enters Zoom mode.
+//! - **Zoom mode:** `turn` zooms centred on the frozen cursor (a magnifying-glass icon marks the
+//!   mode). It does not spring back while zooming. `hold` or `back` exits, springing back.
+//! - Shared: `press` = pause → Ride control, `back` (cursor mode) = the sibling Map, `back-hold` = Menu.
 //!
-//! Zoom is cheap: the profile is a load-time [`Profile`] pyramid, so a zoom step is just
-//! [`Profile::window`] picking a level + sub-range to draw — no route re-read.
-//!
-//! The live position comes from [`Activity::progress_m`] (map-matching); the stat grid
-//! reads the actually-ridden accumulators (Speed / Avg. Speed / done / climbed) and the
-//! route-relative remainders (to go / to climb). Going off-route freezes the live position,
-//! tints it + the bar warning-red, and swaps the header's grade readout for the cross-track
-//! distance.
+//! Zoom is cheap: the profile is a load-time [`Profile`] pyramid, so a step is just
+//! [`Profile::window`] picking a level + sub-range — no route re-read. Going off-route freezes the
+//! live position, tints it + the bar warning-red, and swaps the grade readout for cross-track distance.
 
 use core::fmt::Write;
 
@@ -43,21 +32,18 @@ use crate::stat_fields;
 
 use super::{palette, title_frame, Ctx, MapScreen, Render, Screen, Transition};
 
-/// Cursor scrub per encoder detent, as a fraction of the whole route — ~42 detents end to
-/// end (independent of the base column count).
+/// Cursor scrub per encoder detent, as a fraction of the whole route — ~42 detents end to end.
 const CURSOR_STEP_FRAC: f32 = 1.0 / 42.0;
 /// Zoom multiplier per encoder detent (matches the Map's zoom feel).
 const ZOOM_STEP: f32 = 1.2;
-/// Zoom clamps: `1.0` = whole route; the max is a touch under where the 2048-col base
-/// stops adding detail for a 240-px panel (≈ base / chart width).
+/// Zoom clamps: `1.0` = whole route; the max is a touch under where the base stops adding detail.
 const MIN_ZOOM: f32 = 1.0;
 const MAX_ZOOM: f32 = 8.0;
-/// After this many millis with no input the cursor springs back to the live position —
-/// scrubbing is a transient inspection. (Zoom mode is exempt: it never springs back.)
+/// After this many millis with no input the cursor springs back to the live position. (Zoom mode
+/// is exempt: it never springs back.)
 const IDLE_MS: u32 = 4000;
 
-// Chart geometry (px), tuned for the 240×320 panel; the band fills the top, the stat
-// grid the rest. `x`/widths derive from `w` so a resized simulator window still frames.
+// Chart geometry (px), tuned for the 240×320 panel; the band fills the top, the stat grid the rest.
 const CHART_TOP: i32 = 42;
 const CHART_BOT: i32 = 110;
 /// The peak elevation maps here (a few px below `CHART_TOP`) so the apex clears the bar.
@@ -71,8 +57,8 @@ enum Mode {
     Zoom,
 }
 
-/// The Statistics / elevation-profile view. The cursor defaults to (and springs back to)
-/// the live matched position; Zoom is an explicit long-press sub-mode.
+/// The Statistics / elevation-profile view. The cursor defaults to (and springs back to) the live
+/// matched position; Zoom is an explicit long-press sub-mode.
 #[derive(Debug)]
 pub struct StatisticsScreen {
     mode: Mode,
@@ -80,16 +66,13 @@ pub struct StatisticsScreen {
     cursor: Option<f32>,
     /// Zoom factor (`1.0` = full route); only ever `> 1` while in [`Mode::Zoom`].
     zoom: f32,
-    /// Millis at the last cursor scrub; the cursor springs back to live once `IDLE_MS`
-    /// have elapsed since (Cursor mode only). Stored as the scrub *instant* — not a
-    /// deadline — so the `wrapping_sub` elapsed check stays correct across the `u32`
-    /// millis wrap, matching the gesture/hold-hint timers.
+    /// Instant of the last cursor scrub (not a deadline, so the `wrapping_sub` elapsed check stays
+    /// correct across the `u32` millis wrap). The cursor springs back once `IDLE_MS` elapse.
     last_scrub_ms: u32,
-    /// Which page of the customizable stat grid is showing. The grid auto-cycles (the chart keeps
-    /// the encoder, so there's no manual flip); [`animate`](Self::animate) advances it on a timer.
+    /// Which page of the stat grid is showing; [`animate`](Self::animate) auto-cycles it on a timer.
     page: usize,
-    /// Instant of the last page flip (same wrap-safe `wrapping_sub` scheme as `last_scrub_ms`).
-    /// `None` until the first frame anchors it, so the first page gets a full dwell on entry.
+    /// Instant of the last page flip (wrap-safe like `last_scrub_ms`). `None` until the first frame
+    /// anchors it, so the first page gets a full dwell on entry.
     last_flip_ms: Option<u32>,
 }
 
@@ -111,12 +94,11 @@ impl StatisticsScreen {
                 self.on_turn(n, live, cx.now_ms);
                 Transition::None
             }
-            // hold = enter Zoom mode / exit it (springing back to the full route + live).
+            // hold = enter/exit Zoom mode.
             Gesture::Hold => {
                 match self.mode {
                     Mode::Cursor => {
-                        // Freeze the cursor at its current spot; zoom starts at full and
-                        // the user turns to zoom in.
+                        // Freeze the cursor at its current spot; zoom starts at full.
                         self.cursor = Some(self.effective_cursor(cx.now_ms, live));
                         self.zoom = 1.0;
                         self.mode = Mode::Zoom;
@@ -126,15 +108,13 @@ impl StatisticsScreen {
                 Transition::None
             }
             Gesture::Back => match self.mode {
-                // In zoom mode `back` is the quick exit (springs back); otherwise it's the
-                // sibling toggle to the Map (the stack stays one deep).
+                // Zoom: quick exit (springs back). Cursor: sibling toggle to the Map.
                 Mode::Zoom => {
                     self.reset();
                     Transition::None
                 }
                 Mode::Cursor => Transition::Replace(Screen::Map(MapScreen::new())),
             },
-            // press = pause → Ride control, back-hold = Menu (shared by both riding views).
             Gesture::Press | Gesture::BackHold => super::riding_common(g, cx),
         }
     }
@@ -147,14 +127,11 @@ impl StatisticsScreen {
         self.last_scrub_ms = 0;
     }
 
-    /// Advance the idle spring-back on the input clock, returning whether it fired. Once
-    /// [`IDLE_MS`] have elapsed since the last scrub (Cursor mode only — Zoom never springs
-    /// back), the cursor drops back to tracking the live position. That transition is driven by
-    /// the timer, not by input or a fix, so the dirty-tracking host learns of it through here
-    /// (issue #47) — between the scrub and the deadline the drawn output is constant, so it
-    /// reports `false` and the host renders nothing. This eagerly clears the same scrub that
-    /// [`effective_cursor`](Self::effective_cursor) already retires lazily, so the two agree;
-    /// it just makes the moment observable. Idempotent: once sprung back it returns `false`.
+    /// Advance the idle spring-back on the input clock, returning whether it fired. Once [`IDLE_MS`]
+    /// elapse since the last scrub (Cursor mode only — Zoom never springs back), the cursor drops
+    /// back to tracking live. Makes observable the transition that [`effective_cursor`] already does
+    /// lazily, so the dirty-tracking host (issue #47) can redraw at the right moment. Idempotent:
+    /// once sprung back it returns `false`.
     pub fn animate(&mut self, now_ms: u32, settings: &Settings) -> bool {
         let sprung_back =
             self.mode == Mode::Cursor && self.cursor.is_some() && now_ms.wrapping_sub(self.last_scrub_ms) >= IDLE_MS;
@@ -164,12 +141,10 @@ impl StatisticsScreen {
         sprung_back | self.advance_page(now_ms, settings)
     }
 
-    /// Advance the grid's page auto-cycle, returning whether the page flipped (so the host repaints).
-    /// With more than one page, the view dwells [`stat_cycle_s`](Settings::stat_cycle_s) on each
-    /// before stepping to the next; with one page it pins page 0 and re-anchors the timer so a later
-    /// expansion (the rider adds fields) starts a fresh dwell rather than flipping instantly. The
-    /// anchor is wrap-safe (`wrapping_sub`) and lazily set on the first frame, so entering the screen
-    /// gives the first page its full dwell.
+    /// Advance the grid's page auto-cycle, returning whether the page flipped. With more than one
+    /// page, the view dwells [`stat_cycle_s`](Settings::stat_cycle_s) on each; with one page it pins
+    /// page 0 and re-anchors the timer so a later expansion starts a fresh dwell. The anchor is
+    /// wrap-safe and lazily set on the first frame, so entering the screen gives page 0 a full dwell.
     fn advance_page(&mut self, now_ms: u32, settings: &Settings) -> bool {
         let pages = stat_fields::page_count(&settings.stat_fields);
         let last = *self.last_flip_ms.get_or_insert(now_ms);
@@ -189,28 +164,22 @@ impl StatisticsScreen {
         }
     }
 
-    /// Milliseconds until this screen's next *timed* redraw — the wake deadline the event-driven
-    /// host arms a single timer to (issue #219), so the loop sleeps instead of polling [`animate`]
-    /// to discover the moment. The soonest of the two timers [`animate`](Self::animate) drives:
-    /// the cursor spring-back (`IDLE_MS` after the last scrub, Cursor mode with a live scrub only)
-    /// and the grid page auto-cycle (`stat_cycle_s` per page, only with more than one page). `None`
-    /// when neither is pending (no scrub to retire, one page) — the view is then static until input.
-    /// Mirrors `animate`'s gating exactly, so the host wakes precisely when `animate` would fire.
+    /// Milliseconds until this screen's next timed redraw — the wake deadline the event-driven host
+    /// (issue #219) arms a single timer to. The soonest of `animate`'s two timers: the cursor spring-
+    /// back and the grid page auto-cycle. `None` when neither is pending. Mirrors `animate`'s gating
+    /// exactly, so the host wakes precisely when `animate` would fire.
     pub fn next_wake_in(&self, now_ms: u32, settings: &Settings) -> Option<u32> {
-        // Spring-back: pending only while a scrub is live in Cursor mode (Zoom never springs back).
-        // `animate` ran first this frame, so any *due* spring-back already fired and cleared the
-        // cursor — the remainder here is strictly positive.
+        // Spring-back: pending only while a scrub is live in Cursor mode. `animate` ran first this
+        // frame, so any due spring-back already fired — the remainder here is strictly positive.
         let spring = (self.mode == Mode::Cursor && self.cursor.is_some())
             .then(|| IDLE_MS.saturating_sub(now_ms.wrapping_sub(self.last_scrub_ms)))
             .filter(|&r| r > 0);
-        // Page cycle: pending only with more than one page; the dwell is anchored lazily, so before
-        // the first frame anchors it the whole period remains.
+        // Page cycle: pending only with more than one page; the dwell is anchored lazily.
         let page = (stat_fields::page_count(&settings.stat_fields) > 1).then(|| {
             let period_ms = settings.stat_cycle_s.max(1) as u32 * 1000;
             let last = self.last_flip_ms.unwrap_or(now_ms);
             period_ms.saturating_sub(now_ms.wrapping_sub(last)).max(1)
         });
-        // The soonest pending deadline (whichever timer fires first), or `None` if neither is armed.
         match (spring, page) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
@@ -235,7 +204,7 @@ impl StatisticsScreen {
                 self.last_scrub_ms = now_ms;
             }
             Mode::Zoom => {
-                // Multiply per detent (no_std: no powf) — `n` is a small count.
+                // Multiply per detent (no_std: no powf).
                 let step = if n >= 0 { ZOOM_STEP } else { 1.0 / ZOOM_STEP };
                 let mut z = self.zoom;
                 for _ in 0..n.unsigned_abs() {
@@ -265,33 +234,31 @@ impl StatisticsScreen {
 
         let total = route.total_distance_m;
         let off = rx.activity.off_route;
-        // The selected unit system re-captions + re-scales every readout below (speed, distance,
-        // elevation); grade is unit-agnostic so it stays a bare percentage.
+        // Re-captions + re-scales every readout below; grade stays a bare percentage.
         let units = rx.settings.units;
 
-        // Live position (matched progress) drives the traveled shading + progress bar; the
-        // cursor may be a scrub ahead of / behind it, and in zoom mode it's the zoom centre.
+        // Live position (matched progress) drives the traveled shading + progress bar; the cursor
+        // may be a scrub ahead of / behind it, and in zoom mode it's the zoom centre.
         let live_frac = if total > 0 { (rx.activity.progress_m as f32 / total as f32).clamp(0.0, 1.0) } else { 0.0 };
         let cursor_frac = self.effective_cursor(rx.now_ms, live_frac);
         let in_zoom = self.mode == Mode::Zoom;
         let zoom = if in_zoom { self.zoom } else { 1.0 };
         let scrubbing = (cursor_frac - live_frac).abs() > 1e-4;
 
-        // The visible window: zoom mode centres on the (frozen) cursor; cursor mode is the
-        // whole route (`zoom == 1`, so the centre is moot).
+        // Zoom mode centres the window on the frozen cursor; cursor mode is the whole route.
         let chart_x = SIDE_MARGIN;
         let chart_w = w - 2 * SIDE_MARGIN;
         let win = profile.window(cursor_frac, zoom, chart_w.max(1) as u32);
         let span = (win.hi_frac - win.lo_frac).max(1e-6);
         let frac_to_x = |f: f32| chart_x + ((f - win.lo_frac) / span * chart_w as f32) as i32;
 
-        // Live indicators go warning-red off-route; the cursor stays amber while scrubbing
-        // (it's an inspection point, not "you").
+        // Live indicators go warning-red off-route; the cursor stays amber while scrubbing (it's an
+        // inspection point, not "you").
         let live_color = if off { WARNING } else { AMBER };
         let cursor_color = if off && !scrubbing { WARNING } else { AMBER };
 
-        // Title bar: "no GPS" while there's no current fix (issue #224 — the live readouts are then
-        // stale), else the off-route cross-track distance, else the grade at the cursor.
+        // Title bar: "no GPS" while there's no current fix (readouts are stale), else the off-route
+        // cross-track distance, else the grade at the cursor.
         let mut readout: heapless::String<16> = heapless::String::new();
         if rx.no_fix {
             let _ = readout.push_str("no GPS");
@@ -312,32 +279,29 @@ impl StatisticsScreen {
 
         let mut prev_top: Option<i32> = None;
         for px in 0..chart_w {
-            // The route fraction this pixel shows, read from the window's pyramid level.
             let f = win.lo_frac + span * (px as f32 / chart_w as f32);
             let top_y = ele_to_y(profile.sample(win.level, f).1);
             let x = chart_x + px;
-            // Filled band: the traveled part (left of the live position) reads darker
-            // (olive), the part still ahead lighter (tan) — the traveled-portion shading.
+            // Traveled part (left of live) reads darker olive, the part ahead lighter tan.
             let band = if f <= live_frac { SUBTEXT } else { PARCHMENT_SHADE };
             cv.vline(x, top_y, band_bot - top_y + 1, 1, band);
-            // Amber top line, connected to the previous column so it stays continuous on
-            // steep sections rather than stair-stepping into gaps.
+            // Amber top line, connected to the previous column so it stays continuous on steep
+            // sections rather than stair-stepping into gaps.
             let (y0, y1) = prev_top.map_or((top_y, top_y), |p| (p.min(top_y), p.max(top_y)));
             cv.vline(x, y0 - 1, (y1 - y0) + 2, 1, AMBER);
             prev_top = Some(top_y);
         }
         cv.hline(chart_x, band_bot + 1, chart_w, RULE); // baseline under the band
 
-        // The cursor (always in-window: scrub point, or the zoom centre)
+        // The cursor (scrub point, or the zoom centre)
         let cursor_x = frac_to_x(cursor_frac).clamp(chart_x, chart_x + chart_w - 1);
         let cur_ele = profile.at(cursor_frac).1;
         let cur_y = ele_to_y(cur_ele);
         cv.vline(cursor_x, CHART_TOP, band_bot - CHART_TOP + 1, 2, cursor_color);
-        cv.disc(Point::new(cursor_x, cur_y), 4, INK); // dark ring around the cursor dot
+        cv.disc(Point::new(cursor_x, cur_y), 4, INK);
         cv.disc(Point::new(cursor_x, cur_y), 3, cursor_color);
-        // Current-elevation readout at the cursor (updates while scrubbing). Placed below the
-        // dot near the peak so the labels never overlap; else just above it, clamped inside
-        // the band and clear of the baseline/bar.
+        // Elevation readout at the cursor. Below the dot near the peak so labels don't overlap;
+        // else just above, clamped inside the band and clear of the baseline/bar.
         let mut ele_s: heapless::String<8> = heapless::String::new();
         let _ = write!(ele_s, "{} {}", units.elev(cur_ele as f32) as i32, units.elev_label());
         let near_peak = (cursor_frac - profile.peak_frac()).abs() < 0.07;
@@ -348,7 +312,6 @@ impl StatisticsScreen {
             cv.text(&ele_s, Point::new(cursor_x - 8, label_y), Font::Label, TextAlign::Right, INK);
         }
 
-        // Zoom-mode marker: a small magnifying-glass icon (no numbers, no label)
         if in_zoom {
             draw_zoom_icon(&mut cv, chart_x + 2, CHART_TOP + 2);
         }
@@ -361,10 +324,8 @@ impl StatisticsScreen {
             cv.round(rect(chart_x, prog_y, fill_w, 8), 4, live_color);
         }
 
-        // Customizable stat grid: the rider's selected fields, paginated SLOTS_PER_PAGE (3x2) to a
-        // page and auto-cycled by `animate` (the chart above keeps the encoder, so paging is timed).
-        // Each placed field renders its own tile via the registry; a two-span field fills a whole row.
-        // No page indicator: the panels get the full height — paging is just the timed auto-cycle.
+        // Customizable stat grid: the rider's fields, paginated (3x2) and auto-cycled by `animate`.
+        // Each placed field renders its own tile via the registry; a two-span field fills a row.
         let fields = &rx.settings.stat_fields;
         let page = self.page.min(stat_fields::page_count(fields) - 1);
 
@@ -393,9 +354,8 @@ fn live_frac(a: &Activity) -> f32 {
     (a.progress_m as f32 / a.route_total_m as f32).clamp(0.0, 1.0)
 }
 
-/// Draw a small magnifying-glass icon on a parchment chip — the wordless "Zoom mode is on"
-/// marker (top-left of the chart). A lens (ink ring) with a short diagonal handle; no
-/// numbers or label, since the zoom *level* isn't useful information.
+/// Draw a magnifying-glass icon on a parchment chip — the wordless "Zoom mode is on" marker. A
+/// lens (ink ring) with a short diagonal handle.
 fn draw_zoom_icon<D, F>(cv: &mut Canvas<D, F>, x: i32, y: i32)
 where
     D: DrawTarget,
@@ -409,16 +369,14 @@ where
     let (lx, ly) = (x + 8, y + 8);
     cv.disc(Point::new(lx, ly), 5, INK);
     cv.disc(Point::new(lx, ly), 3, PARCHMENT);
-    // Handle: a few ink discs stepping out from the lower-right of the lens.
+    // Handle: ink discs stepping out from the lower-right of the lens.
     for k in 0..3 {
         cv.disc(Point::new(lx + 4 + k, ly + 4 + k), 2, INK);
     }
 }
 
-/// Draw one stat tile: a tan rounded pane with a small olive caption (unit-bearing) at
-/// the top and a big ink Display value below, optionally prefixed by an up-triangle for
-/// climb figures (the panel font has no ↑ glyph — same trick the Route menu uses). The
-/// value is number-only, so the big digits fit the half-width tile.
+/// Draw one stat tile: a tan rounded pane with an olive caption over a big ink Display value,
+/// optionally prefixed by an up-triangle for climb figures (the panel font has no ↑ glyph).
 fn tile<D, F>(cv: &mut Canvas<D, F>, area: Rectangle, label: &str, value: &str, arrow: bool)
 where
     D: DrawTarget,
@@ -427,12 +385,11 @@ where
     use palette::*;
     let (x, y) = (area.top_left.x, area.top_left.y);
     cv.round(area, 5, PARCHMENT_SHADE);
-    // Caption inset slightly less than the value so the wide unit captions (KM TO GO,
-    // TO CLIMB) sit nearer the tile's centre; the value keeps a touch more left margin.
+    // Caption inset less than the value so wide unit captions sit nearer the tile centre.
     cv.text(label, Point::new(x + 5, y + 4), Font::Label, TextAlign::Left, SUBTEXT);
     let vy = y + 22;
     let vx = if arrow {
-        // Up-triangle sized to sit alongside the Display digits (ink spans ≈ vy+6..vy+26).
+        // Up-triangle sized to sit alongside the Display digits.
         let ax = x + 8;
         cv.triangle(Point::new(ax, vy + 26), Point::new(ax + 13, vy + 26), Point::new(ax + 6, vy + 6), INK);
         x + 26
@@ -464,14 +421,11 @@ mod tests {
         assert_eq!(s.effective_cursor(1_000 + IDLE_MS, LIVE), LIVE);
     }
 
-    /// `animate` (the render-on-demand hook, issue #47) makes the spring-back *observable*:
-    /// it fires `true` exactly once, at the deadline, and agrees with the lazy spring-back
-    /// `effective_cursor` already does. Between the scrub and the deadline it's `false` (the
-    /// frozen cursor draws the same thing, so the host renders nothing); after it, `false`.
+    /// `animate` fires `true` exactly once, at the deadline, and agrees with the lazy spring-back
+    /// `effective_cursor` does. Between the scrub and the deadline it's `false`.
     #[test]
     fn animate_reports_the_spring_back_once_at_the_deadline() {
-        // Default settings = the six classic tiles = a single page, so the page auto-cycle never
-        // fires here and this isolates the cursor spring-back.
+        // Default = six tiles = one page, so the page auto-cycle never fires — isolates the spring-back.
         let cfg = Settings::default();
         let mut s = StatisticsScreen::new();
         // Untouched: tracking the live position already, nothing to settle.
@@ -497,8 +451,7 @@ mod tests {
     }
 
     /// A seven-field selection (two pages) auto-cycles: the first frame anchors a full dwell, the
-    /// page flips exactly at each period, and wraps back round — the timed paging the grid relies on
-    /// now that the chart keeps the encoder.
+    /// page flips at each period, and wraps back round.
     #[test]
     fn page_auto_cycles_on_the_timer() {
         let mut cfg = Settings::default();
@@ -517,8 +470,7 @@ mod tests {
         assert_eq!(s.page, 0);
     }
 
-    /// A single-page selection (the default six) never auto-cycles, however long we wait, and pins
-    /// page 0 — so the dots/cycle machinery stays invisible until the rider overfills a page.
+    /// A single-page selection (the default six) never auto-cycles and pins page 0.
     #[test]
     fn single_page_grid_never_flips() {
         let cfg = Settings::default();
@@ -528,9 +480,8 @@ mod tests {
         assert_eq!(s.page, 0);
     }
 
-    /// `next_wake_in` is the deadline twin of `animate` (issue #219): it reports the time left until
-    /// the same timer would fire, so the event-driven host sleeps until then. A live scrub counts down
-    /// to its `IDLE_MS` spring-back; an untouched single-page view has no timed redraw (`None`).
+    /// `next_wake_in` reports the time left until the same timer `animate` would fire. A live scrub
+    /// counts down to its `IDLE_MS` spring-back; an untouched single-page view has no timed redraw.
     #[test]
     fn next_wake_in_counts_down_to_the_spring_back() {
         let cfg = Settings::default(); // single page → only the cursor spring-back can be pending
@@ -578,9 +529,8 @@ mod tests {
         assert_eq!(s.page, 1);
     }
 
-    /// The fix (issue #6): near the `u32` millis wrap, the old `now + IDLE_MS` deadline
-    /// overflowed — a debug panic, a corrupted timer in release. The `wrapping_sub` elapsed
-    /// check must behave identically straddling the wrap.
+    /// Near the `u32` millis wrap, an `now + IDLE_MS` deadline would overflow. The `wrapping_sub`
+    /// elapsed check must behave identically straddling the wrap.
     #[test]
     fn idle_timer_is_wrap_safe() {
         let mut s = StatisticsScreen::new();
@@ -593,13 +543,9 @@ mod tests {
         assert_eq!(s.effective_cursor(t0.wrapping_add(IDLE_MS), LIVE), LIVE);
     }
 
-    // Zoom-mode math + clamps (issue #93 item 5).
-    //
-    // `on_turn` in Zoom mode multiplies the zoom by `ZOOM_STEP` per detent and clamps to
-    // [MIN_ZOOM, MAX_ZOOM] (statistics.rs ~177-185). Only the spring-back exemption was
-    // covered before; the multiply loop and the saturating clamps were not. A regression that
-    // dropped the clamp would let the profile zoom to a degenerate window (or below 1× and
-    // invert), and one that used `+`/`pow` instead of the per-detent multiply would mis-scale.
+    // Zoom-mode math + clamps: `on_turn` in Zoom multiplies by `ZOOM_STEP` per detent and clamps to
+    // [MIN_ZOOM, MAX_ZOOM]. A dropped clamp would zoom to a degenerate/inverted window; a `+`/`pow`
+    // instead of the per-detent multiply would mis-scale.
 
     /// A helper screen frozen in Zoom mode at full zoom — the state `Hold` lands in.
     fn zoom_screen() -> StatisticsScreen {
@@ -610,9 +556,8 @@ mod tests {
         s
     }
 
-    /// One detent in Zoom mode multiplies the zoom by exactly `ZOOM_STEP`, and a second detent
-    /// multiplies again (so two detents = `ZOOM_STEP²`, not `2·ZOOM_STEP`). Pins the per-detent
-    /// geometric step the profile zoom shares with the Map.
+    /// Two detents in Zoom mode compound to `ZOOM_STEP²`, not `2·ZOOM_STEP` — the per-detent
+    /// geometric step.
     #[test]
     fn zoom_in_multiplies_per_detent() {
         let mut s = zoom_screen();
@@ -622,8 +567,7 @@ mod tests {
         assert!((s.zoom - ZOOM_STEP * ZOOM_STEP).abs() < 1e-4, "two detents compound, got {}", s.zoom);
     }
 
-    /// A single multi-detent turn applies the multiply `|n|` times in one call (`ZOOM_STEP³` for
-    /// `Turn(3)`), matching three separate detents — the encoder can batch detents per frame.
+    /// A `Turn(3)` compounds to `ZOOM_STEP³` in one call, matching three separate detents.
     #[test]
     fn zoom_multi_detent_turn_compounds_in_one_call() {
         let mut s = zoom_screen();
@@ -632,8 +576,7 @@ mod tests {
         assert!((s.zoom - expect).abs() < 1e-4, "Turn(3) compounds three steps, got {}", s.zoom);
     }
 
-    /// Zooming out below full is clamped at `MIN_ZOOM` (1.0): a backward turn at full zoom can't
-    /// drive the zoom under 1× and invert the visible span. Pins the lower `clamp`.
+    /// A backward turn at full zoom can't drive the zoom under 1× and invert the span (lower clamp).
     #[test]
     fn zoom_out_at_full_is_clamped_at_min() {
         let mut s = zoom_screen(); // already at MIN_ZOOM
@@ -643,8 +586,7 @@ mod tests {
         assert_eq!(s.zoom, MIN_ZOOM, "a long backward flick saturates at full, not below");
     }
 
-    /// A huge forward turn saturates at `MAX_ZOOM` (8.0) instead of running away. A `Turn(100)`
-    /// would otherwise multiply to a vast, meaningless zoom; the clamp pins it at the cap.
+    /// A huge forward turn saturates at `MAX_ZOOM` instead of running away.
     #[test]
     fn zoom_in_saturates_at_max() {
         let mut s = zoom_screen();
@@ -652,9 +594,8 @@ mod tests {
         assert_eq!(s.zoom, MAX_ZOOM, "an enormous forward flick saturates at MAX_ZOOM, not beyond");
     }
 
-    /// Cursor-mode turns never zoom: a turn while not in Zoom scrubs the cursor and forces the
-    /// zoom back to 1.0 (statistics.rs ~174). Guards that the zoom state can't leak in from a
-    /// scrub — the spring-back exemption test covers the *cursor*, this covers the *zoom* field.
+    /// A turn in Cursor mode scrubs and forces the zoom back to 1.0, so zoom state can't leak in
+    /// from a scrub.
     #[test]
     fn cursor_mode_turn_keeps_zoom_at_full() {
         let mut s = StatisticsScreen::new(); // Cursor mode, zoom 1.0

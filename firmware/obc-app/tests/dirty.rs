@@ -1,12 +1,9 @@
-//! Render-on-demand dirty tracking ([`App::take_dirty`], issue #47). These pin the
-//! contract the firmware's render loop relies on: the map plane re-renders only when
-//! map-affecting state changed, and a static screen with no input and no motion drains
-//! [`Dirty::CLEAN`] (zero map renders) — while the overlay plane stays free to repaint on
-//! its own. The guiding rule is *over-redraw is safe, under-redraw is a bug*, so each
-//! state mutation that affects the map must set `map`.
+//! Render-on-demand dirty tracking ([`App::take_dirty`], issue #47): the map plane re-renders only
+//! when map-affecting state changed, and a static screen with no input and no motion drains
+//! [`Dirty::CLEAN`]. The guiding rule is *over-redraw is safe, under-redraw is a bug*.
 //!
-//! `take_dirty` resets the accumulator, so every test drains the construction-time frame
-//! first (the host's mandatory first paint) and then asserts about the *next* frame.
+//! `take_dirty` resets the accumulator, so every test drains the construction-time frame first and
+//! then asserts about the next frame.
 
 use obc_app::{
     App, AppState, Button, Dirty, Fix, FuelGauge, InputClock, InputEvent, LocationSource, RideClock, RouteSummary,
@@ -15,8 +12,6 @@ use obc_app::{
 use obc_reader::BBox;
 
 mod common;
-// `OnceFix` is the emit-the-fix-exactly-once source (the real one-fresh-fix-per-tick
-// contract); the scripted-hardware helpers and `NoFix` are shared too.
 use common::{down, keys, tap, turn, NoFix, OnceFix};
 
 const BERLIN: (i32, i32) = (52_520_000, 13_405_000); // (lat, lon) µdeg
@@ -72,13 +67,11 @@ fn charging_a_hold_dirties_only_the_overlay_then_fires_the_map() {
     let mut app = App::new(AppState::new(BERLIN.1, BERLIN.0, 0.05));
     let _ = app.take_dirty();
 
-    // Press-and-hold the encoder. The press *down* alone recognizes no gesture, so the map
-    // stays clean.
+    // The press down alone recognizes no gesture, so the map stays clean.
     let d = frame(&mut app, &mut NoFix, 0, &[down(Button::Encoder)]);
     assert!(!d.map, "a bare button-down changes no screen — the map stays clean");
 
-    // Once the charge crosses the dead zone the hold *ring* is live — overlay only, the map
-    // underneath is unchanged.
+    // Past the dead zone the hold ring is live — overlay only, the map underneath unchanged.
     let d = idle_frame(&mut app, 300);
     assert!(d.overlay, "the charging ring lives on the overlay plane");
     assert!(!d.map, "…and never touches the map while charging");
@@ -130,9 +123,8 @@ fn one_route() -> RouteSummary {
 
 #[test]
 fn statistics_spring_back_is_wired_into_the_dirty_signal() {
-    // Navigate Home → Route menu → load → Map → Statistics, then prove the Statistics cursor's
-    // *timed* spring-back surfaces as a map-dirty through `handle_input`'s animate sweep — with
-    // no input and no fix in between (so nothing else could have dirtied it).
+    // Navigate to Statistics, then prove the cursor's timed spring-back surfaces as a map-dirty
+    // through `handle_input`'s animate sweep — with no input and no fix in between.
     let mut app = App::new_idle(AppState::new(0, 0, 0.05)); // [Home]
     app.set_routes(&[one_route()]);
 
@@ -155,8 +147,7 @@ fn statistics_spring_back_is_wired_into_the_dirty_signal() {
 
 // --- the battery gauge: slow polling + redraw only on an actual change -------
 
-/// A [`FuelGauge`] that counts its polls and reports a settable level — so a test can prove the
-/// app reads it on a *cadence* (not every frame) and only on a real change repaints.
+/// A [`FuelGauge`] that counts its polls and reports a settable level.
 struct CountingGauge {
     value: u8,
     polls: u32,
@@ -170,8 +161,8 @@ impl FuelGauge for CountingGauge {
 
 #[test]
 fn battery_is_polled_on_a_slow_cadence_and_redraws_home_only_on_change() {
-    // The two guarantees the gauge must honour: it is read a few times a minute, *not* every
-    // ~8 ms frame (so a real I²C read never spins), and an unchanged level repaints nothing.
+    // Two guarantees: the gauge is read a few times a minute (not every ~8 ms frame, so a real I²C
+    // read never spins), and an unchanged level repaints nothing.
     let mut app = App::new_idle(AppState::new(0, 0, 0.05)); // [Home]; battery_pct defaults to 75
     let _ = app.take_dirty(); // drain the mandatory first frame
 
@@ -212,11 +203,10 @@ fn battery_is_polled_on_a_slow_cadence_and_redraws_home_only_on_change() {
     assert_eq!(app.state.battery_pct, 60, "and the new level is stored");
 }
 
-/// The #209 flip side: the riding views (Map / Statistics) don't draw the gauge, so a battery level
-/// change must **not** dirty the map there — otherwise a stationary rider eats a wasted ~97 ms full
-/// render every 30 s battery tick. (The bug snapshotted the live-data comparison's baseline *before*
-/// the battery poll, so a pure `battery_pct` delta tripped the `state != state_before` check on a
-/// view that shows live data; the sibling test above proves the same change *does* repaint Home.)
+/// The #209 flip side: the riding views don't draw the gauge, so a battery-level change must not
+/// dirty the map there — otherwise a stationary rider eats a wasted ~97 ms full render every 30 s
+/// battery tick. (The bug snapshotted the live-data baseline *before* the battery poll, so a pure
+/// `battery_pct` delta tripped the `state != state_before` check.)
 #[test]
 fn a_battery_change_does_not_redraw_the_riding_views() {
     let mut app = App::new(AppState::new(0, 0, 0.05)); // [Home, Map] → base is Map, which shows live data
