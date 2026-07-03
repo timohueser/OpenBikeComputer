@@ -14,9 +14,10 @@ import OBCTransport
 ///   • `.failed`      — the transfer failed for good (H4 no link, or the
 ///                      device rejected the object)
 ///
-/// The drop signal is `DeviceTransport.state` → `.outOfRange` — the handle's
-/// progress stream stays open, stalled (see `TransferHandle`). Cancel aborts
-/// the transfer; the sheet leaves no upload running behind it
+/// The drop signal is `DeviceTransport.state` → `.outOfRange` **or**
+/// `.disconnected` (both are a drop, matching `MainScreenModel`'s sync watch) —
+/// the handle's progress stream stays open, stalled (see `TransferHandle`).
+/// Cancel aborts the transfer; the sheet leaves no upload running behind it
 /// (`sheetDismissed()` cancels an unresolved handle).
 @MainActor @Observable
 public final class UploadSheetModel {
@@ -121,10 +122,14 @@ public final class UploadSheetModel {
         })
 
         // The drop signal: the link leaves the transfer stalled-but-resumable.
+        // Both `.outOfRange` and `.disconnected` count as a drop (the sync
+        // watch in `MainScreenModel` treats them the same) — otherwise a link
+        // that drops straight to `.disconnected` wedges the sheet in `.uploading`.
         watchers.append(Task { [weak self, transport] in
             for await state in transport.state {
                 guard let self else { return }
-                if state == .outOfRange, phase == .uploading, handle.currentOutcome == nil {
+                let dropped = state == .outOfRange || state == .disconnected
+                if dropped, phase == .uploading, handle.currentOutcome == nil {
                     phase = .interrupted
                 }
             }
@@ -133,7 +138,12 @@ public final class UploadSheetModel {
         // Terminal state — never inferred from byte counts.
         watchers.append(Task { [weak self] in
             let outcome = await handle.outcome
-            guard let self else { return }
+            // `sheetDismissed()` cancels the watchers but deliberately leaves a
+            // resolved handle alone — so a completion that raced the dismiss
+            // resumes this `await` immediately. Bail before acting on it, or the
+            // `.completed` branch re-saves the route and re-arms `shouldDismiss`
+            // on an already-torn-down sheet.
+            guard let self, !Task.isCancelled else { return }
             switch outcome {
             case .completed:
                 phase = .done
