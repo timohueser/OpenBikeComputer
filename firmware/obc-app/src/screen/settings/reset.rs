@@ -13,7 +13,7 @@ use embedded_graphics::prelude::{DrawTarget, Point};
 use obc_render::{
     rect,
     text::{text_width, Font, TextAlign},
-    Canvas, RenderStats,
+    Canvas, RenderStats, Surface,
 };
 
 use crate::input::Gesture;

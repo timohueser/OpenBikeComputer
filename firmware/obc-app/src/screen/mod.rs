@@ -14,7 +14,7 @@ use obc_reader::Reader;
 use obc_render::{
     rect,
     text::{Font, TextAlign},
-    Canvas, Clock, MapRenderer, RenderStats,
+    Canvas, Clock, MapRenderer, RenderStats, Surface,
 };
 use obc_route::{Profile, RouteReader};
 

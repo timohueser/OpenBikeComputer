@@ -21,8 +21,10 @@ use obc_reader::{BBox, Kind, Reader};
 
 pub mod canvas;
 mod font_data;
+pub mod surface;
 pub mod text;
 pub use canvas::{rect, Canvas};
+pub use surface::Surface;
 pub use text::{draw_text, text_width, Font, TextAlign};
 
 // Per-frame buffer capacities. Statically allocated (heapless::Vec); growing one costs boot

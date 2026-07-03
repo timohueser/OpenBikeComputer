@@ -14,7 +14,7 @@
 //! is a one-line edit to its [`Style::anchor`].
 
 use embedded_graphics::{draw_target::DrawTarget, primitives::Rectangle};
-use obc_render::{rect, Canvas};
+use obc_render::{rect, Canvas, Surface};
 
 use crate::screen::palette;
 
