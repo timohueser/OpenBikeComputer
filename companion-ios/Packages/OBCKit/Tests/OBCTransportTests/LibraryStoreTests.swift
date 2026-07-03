@@ -12,6 +12,8 @@ final class LibraryStoreTests: XCTestCase {
     private func makeRecord(
         id: String = "imported-1",
         name: String = "Schwarzwald Tour",
+        sourceFileName: String = "Schwarzwald Tour.gpx",
+        sourceFileData: Data = Data("<gpx>original import bytes</gpx>".utf8),
         addedAt: Date = Date(timeIntervalSince1970: 1_000)
     ) -> PlannedRouteRecord {
         let points = [
@@ -34,8 +36,8 @@ final class LibraryStoreTests: XCTestCase {
         )
         return PlannedRouteRecord(
             summary: summary, route: route,
-            sourceFileName: "Schwarzwald Tour.gpx",
-            sourceFileData: Data("<gpx>original import bytes</gpx>".utf8),
+            sourceFileName: sourceFileName,
+            sourceFileData: sourceFileData,
             addedAt: addedAt
         )
     }
@@ -107,6 +109,39 @@ final class LibraryStoreTests: XCTestCase {
         let reloaded = FileLibraryStore(directory: dir).plannedRoutes()
         XCTAssertEqual(reloaded.count, 1)
         XCTAssertEqual(reloaded.first, record)
+    }
+
+    func testReplaceImportRewritesSourceSidecar() {
+        // A re-import reuses the id, so the sidecar already exists — the new bytes
+        // must land, not be silently dropped (the old bug kept the stale file).
+        let (store, dir) = makeFileStore()
+        store.savePlannedRoute(makeRecord(sourceFileName: "trip.gpx",
+                                          sourceFileData: Data("<gpx>v1</gpx>".utf8)))
+        store.savePlannedRoute(makeRecord(sourceFileName: "trip.gpx",
+                                          sourceFileData: Data("<gpx>v2 replaced</gpx>".utf8)))
+
+        let reloaded = FileLibraryStore(directory: dir).plannedRoutes()
+        XCTAssertEqual(reloaded.count, 1)
+        XCTAssertEqual(reloaded.first?.sourceFileData, Data("<gpx>v2 replaced</gpx>".utf8))
+    }
+
+    func testReplaceImportWithFormatChangeSweepsStaleSidecar() {
+        // GPX→TCX changes the sidecar's extension: the new bytes must be readable
+        // and the old-extension sidecar swept, so `plannedRoutes()` can't read the
+        // stale file (whichever `sourceFileName` names).
+        let (store, dir) = makeFileStore()
+        store.savePlannedRoute(makeRecord(sourceFileName: "trip.gpx",
+                                          sourceFileData: Data("<gpx>from gpx</gpx>".utf8)))
+        store.savePlannedRoute(makeRecord(sourceFileName: "trip.tcx",
+                                          sourceFileData: Data("<tcx>from tcx</tcx>".utf8)))
+
+        let reloaded = FileLibraryStore(directory: dir).plannedRoutes()
+        XCTAssertEqual(reloaded.first?.sourceFileData, Data("<tcx>from tcx</tcx>".utf8))
+        // Exactly one sidecar on disk — the stale source.gpx is gone.
+        let recordDir = dir.appendingPathComponent("planned/imported-1")
+        let sidecars = ((try? FileManager.default.contentsOfDirectory(atPath: recordDir.path)) ?? [])
+            .filter { $0.hasPrefix("source.") }
+        XCTAssertEqual(sidecars, ["source.tcx"])
     }
 
     func testDeletePlannedRouteRemovesRecordAndSourceFile() {
