@@ -56,7 +56,7 @@ use obc_platform::ls021_wire::{BCK_PER_SUBLINE, ROW_WORDS, WIDTH};
 // step the ST7789 backend runs, before this backend re-quantises it back to the wire. `RowDiff` is the
 // self-diffing present store: a per-row hash of the last-pushed frame so a present pushes only the rows
 // that actually changed.
-use obc_platform::{clip_span, composite_overlay_window, ls021_pack_row, Band, RowDiff};
+use obc_platform::{composite_overlay_window, ls021_pack_row, Band, RowDiff};
 // The host-tested RGB565 → device-64 quantiser — the same one the map style table is tuned to, so the
 // re-quantised overlay window lands on the panel's RGB222 gamut exactly as the ST7789 stand-in shows it.
 use obc_reader::rgb565_to_device64;
@@ -459,45 +459,25 @@ impl<'b> Ls021Flpr<'b> {
         self.diff.reset();
     }
 
-    /// The **self-diffing present**: re-hash every framebuffer row against the [`RowDiff`] store and
-    /// push only the rows that actually changed, optionally clipping the live hold bulge's rows out
-    /// (`exclude`) so [`push_overlay`](Self::push_overlay) owns them. The first call after
-    /// boot / a [`RowDiff::reset`](obc_platform::RowDiff::reset) pushes the whole frame and seeds the
-    /// store; thereafter an idle Home clock tick repaints just its clock band.
+    /// The **self-diffing present** behind [`DisplayDriver::present`](crate::display::DisplayDriver):
+    /// re-hash every framebuffer row against the [`RowDiff`] store and push only the rows that
+    /// actually changed, optionally clipping the live hold bulge's rows out (`exclude`) so
+    /// [`push_overlay`](Self::push_overlay) owns them. The first call after boot / a
+    /// [`RowDiff::reset`](obc_platform::RowDiff::reset) pushes the whole frame and seeds the store;
+    /// thereafter an idle Home clock tick repaints just its clock band.
     ///
-    /// `exclude = None` ⇒ the whole frame is eligible (no bulge); `Some((y0, rows))` ⇒ the rows
-    /// `[y0, y0+rows)` are left for the overlay composite. The store is updated for **every** row
-    /// (including the clipped ones) — it tracks the clean `fb`, so when the bulge later goes quiet the
-    /// trailing clear re-pushes those rows clean and the store already agrees (no stale row). Returns
-    /// `false` on a transport fault (a stalled FLPR) so the caller keeps the last frame and retries.
-    pub fn present_within(&mut self, exclude: Option<(u16, u16)>) -> bool {
-        // Half-open bulge interval [e0, e1) the clip removes from each changed span.
-        let ex = exclude.map(|(y0, rows)| (y0, y0 + rows));
-        let mut spans: heapless::Vec<(u16, u16), MAX_DIRTY_SPANS> = heapless::Vec::new();
-        let mut overflow = false;
-        // Diff the whole frame (the store is updated for every row), emitting each changed span clipped
-        // around the bulge — one full per-row hash pass over `fb`, separate from the masked push that
-        // follows (which touches only the changed rows).
-        self.diff.diff(self.fb, FB_W, |y0, n| {
-            clip_span(y0, n, ex, &mut |s, c| {
-                if spans.push((s, c)).is_err() {
-                    overflow = true;
-                }
-            });
-        });
-        if overflow {
-            // Pathological fragmentation (> MAX_DIRTY_SPANS disjoint changed regions — a UI never
-            // produces this): fall back to the whole frame minus the bulge rather than silently
-            // dropping spans and stranding rows.
-            spans.clear();
-            clip_span(0, FB_H as u16, ex, &mut |s, c| {
-                let _ = spans.push((s, c));
-            });
-        }
+    /// The diff/clip/fallback skeleton is the shared [`RowDiff::diff_clipped`] (see its docs for the
+    /// exclude semantics — the store is updated for the clipped rows too, so the trailing clear finds
+    /// it already agreeing). Reached only through the seam's `present(exclude)` — `pub(crate)` solely
+    /// for the `display::ls021_flpr` adapter. Returns `false` on a transport fault (a stalled FLPR)
+    /// so the caller keeps the last frame and retries.
+    pub(crate) fn present_within(&mut self, exclude: Option<(u16, u16)>) -> bool {
+        let mut scratch = [(0u16, 0u16); MAX_DIRTY_SPANS];
+        let spans = self.diff.diff_clipped(self.fb, FB_W, exclude, &mut scratch);
         if spans.is_empty() {
             return true; // nothing changed outside the bulge — push nothing (the whole point).
         }
-        self.push_spans(&spans)
+        self.push_spans(spans)
     }
 
     /// Re-present **only the rows of an overlay region** with `draw_overlay` composited over the clean
