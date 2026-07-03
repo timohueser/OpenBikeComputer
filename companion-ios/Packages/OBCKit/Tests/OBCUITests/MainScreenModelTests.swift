@@ -92,6 +92,30 @@ final class MainScreenModelTests: XCTestCase {
         await waitFor("sync settles") { model.syncState == .idle && model.syncProgress == nil }
     }
 
+    // MARK: Stream lifecycle (#356)
+
+    /// The state/battery streams never finish — the loops must hold the model
+    /// weakly so it can deallocate with the streams still live. (The model is
+    /// app-lifetime today; this pins the convention, not a shipping leak.)
+    func testStreamTasksDoNotRetainTheModel() async {
+        let control = MockControl(scenario: .happyPath)
+        control.latency = .zero
+        weak var leaked: MainScreenModel?
+        do {
+            let model = MainScreenModel(transport: MockTransport(control: control))
+            // Let the one-shot tasks (loadTask, identity-after-load) finish —
+            // bounded work may hold the model strongly; the stream loops never.
+            await startLoaded(model)
+            await waitFor("device identity") { model.deviceName == "Trailhead" }
+            leaked = model
+        }
+        // The model's last strong ref is gone; push an event through the still-
+        // open streams so a strongly-capturing loop would show up as a live ref.
+        control.connection = .outOfRange
+        for _ in 0..<10 { await Task.yield() }
+        XCTAssertNil(leaked, "the stream loops must hold the model weakly")
+    }
+
     // MARK: Lists + device cluster
 
     func testLoadPopulatesListsAndIdentityFromFixtures() async {

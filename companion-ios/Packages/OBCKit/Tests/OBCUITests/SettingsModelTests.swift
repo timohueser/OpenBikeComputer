@@ -109,6 +109,30 @@ final class SettingsModelTests: XCTestCase {
         XCTAssertEqual(control.deviceInfo.name, "Trailhead")
     }
 
+    // MARK: Stream lifecycle (#356)
+
+    /// The state/battery streams never finish, and RootView makes a fresh model
+    /// per Settings push — the loops must not retain the model past its screen.
+    func testStreamTasksDoNotRetainTheModel() async {
+        let control = MockControl(scenario: .happyPath)
+        control.latency = .zero
+        weak var leaked: SettingsModel?
+        do {
+            let model = SettingsModel(
+                transport: MockTransport(control: control),
+                bondStore: MockBondStore(control: control)
+            )
+            model.start()
+            await waitFor("streams running") { model.connection == .connected }
+            leaked = model
+        }
+        // The model's last strong ref is gone; push an event through the still-
+        // open streams so a strongly-capturing loop would show up as a live ref.
+        control.connection = .outOfRange
+        for _ in 0..<10 { await Task.yield() }
+        XCTAssertNil(leaked, "the stream loops must hold the model weakly")
+    }
+
     // MARK: Forget (H2)
 
     func testForgetClearsTheBondAndSignalsTheHost() async {

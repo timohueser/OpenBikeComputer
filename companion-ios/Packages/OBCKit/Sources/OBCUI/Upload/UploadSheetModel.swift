@@ -185,4 +185,11 @@ public final class UploadSheetModel {
         watchers.forEach { $0.cancel() }
         watchers.removeAll()
     }
+
+    /// Backstop for a model released without `sheetDismissed()` — the watchers
+    /// are `[weak self]` so they never pin the model, but leaving them running
+    /// would keep them consuming stream events for the session.
+    deinit {
+        watchers.forEach { $0.cancel() }
+    }
 }

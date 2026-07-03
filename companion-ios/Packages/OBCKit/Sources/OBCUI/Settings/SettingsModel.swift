@@ -89,20 +89,34 @@ public final class SettingsModel {
     }
 
     /// Subscribe the live streams and read the identity (call once, from `.task`).
+    /// The stream loops are `[weak self]` + per-iteration `guard let self` — the
+    /// streams never finish, and RootView makes a fresh model per Settings push,
+    /// so a strong capture would strand every visited model for the session.
     public func start() {
         guard !started else { return }
         started = true
-        streamTasks.append(Task { [transport] in
-            for await state in transport.state { connection = state }
+        streamTasks.append(Task { [weak self, transport] in
+            for await state in transport.state {
+                guard let self else { return }
+                connection = state
+            }
         })
-        streamTasks.append(Task { [transport] in
-            for await percent in transport.battery { battery = percent }
+        streamTasks.append(Task { [weak self, transport] in
+            for await percent in transport.battery {
+                guard let self else { return }
+                battery = percent
+            }
         })
-        Task { [transport] in
+        Task { [weak self, transport] in
             guard let info = try? await transport.deviceInfo() else { return }
+            guard let self else { return }
             deviceName = info.name
             firmwareVersion = info.firmwareVersion
         }
+    }
+
+    deinit {
+        streamTasks.forEach { $0.cancel() }
     }
 
     // MARK: Rename (H3)

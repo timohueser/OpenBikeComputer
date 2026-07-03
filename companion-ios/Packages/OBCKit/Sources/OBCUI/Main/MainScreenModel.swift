@@ -194,9 +194,13 @@ public final class MainScreenModel {
         routes = plannedList()
         rides = storedRides.map(\.summary)
 
-        streamTasks.append(Task { [transport] in
+        // Open-ended stream loops are `[weak self]` + per-iteration `guard let
+        // self` (the SettingsModel/RouteDetailModel convention) — the streams
+        // never finish, so a strong capture would pin the model for the session.
+        streamTasks.append(Task { [weak self, transport] in
             var previous: ConnectionState?
             for await state in transport.state {
+                guard let self else { return }
                 connection = state
                 // A regained link (never the stream's replayed first value):
                 // re-read the lists — the reconnect is what makes the badges
@@ -205,8 +209,11 @@ public final class MainScreenModel {
                 previous = state
             }
         })
-        streamTasks.append(Task { [transport] in
-            for await percent in transport.battery { battery = percent }
+        streamTasks.append(Task { [weak self, transport] in
+            for await percent in transport.battery {
+                guard let self else { return }
+                battery = percent
+            }
         })
         reload()
         // Identity after the first library read: a fault armed for "the first
@@ -214,15 +221,23 @@ public final class MainScreenModel {
         // read carries the protocol-version check (#303) — surfaced here, on
         // connect, where `deviceInfo()` is consumed.
         let firstLoad = loadTask
-        streamTasks.append(Task { [transport] in
+        streamTasks.append(Task { [weak self, transport] in
             await firstLoad?.value
             guard let info = try? await transport.deviceInfo() else { return }
+            guard let self else { return }
             deviceName = info.name
             if case let .protocolMismatch(expected, found)? =
                 OBCProtocol.versionMismatch(reportedBy: info.protocolVersion) {
                 protocolMismatch = ProtocolMismatch(expected: expected, found: found)
             }
         })
+    }
+
+    deinit {
+        streamTasks.forEach { $0.cancel() }
+        loadTask?.cancel()
+        syncTask?.cancel()
+        syncDropWatch?.cancel()
     }
 
     /// (Re)read both lists — also the S3 "Retry" action. Cached content stays
@@ -356,9 +371,10 @@ public final class MainScreenModel {
             // the stalled stream until Resume — or a new sync — moves things.
             // Held locally too: a superseded task must cancel ITS watch, never
             // the one a newer sync installed in the shared property.
-            let dropWatch = Task { [transport] in
+            let dropWatch = Task { [weak self, transport] in
                 for await state in transport.state
                 where state == .outOfRange || state == .disconnected {
+                    guard let self else { return }
                     if Task.isCancelled { break }
                     interruptSync()
                 }
