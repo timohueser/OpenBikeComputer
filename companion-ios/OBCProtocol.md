@@ -60,7 +60,7 @@ UUID, which custom services must not use — `S0` replaced them:
 | `0002` | `status` | notify | typed device → app messages (`StatusMessage`: transferResult / storeChanged / commandResult) — spec §4.3 |
 | `0003` | `objectStore` | read + notify | 10-byte store digest (revision + route/ride counts); **full lists are CoC objects** — they outgrow the 512-byte ATT attribute cap |
 | `0004` | `config` | read + write | the Config object incl. **device name** (see *Delta 1*) → `DeviceConfig` |
-| `0005` | `transferControl` | write + notify | open / offset-resume / abort of a CoC object transfer (§ below) |
+| `0005` | `transferControl` | write + notify | open / abort a CoC object transfer (§ below) |
 | `0006` | `diagnostics` | read | **reserved** — diagnostics cross the CoC as object type 4 |
 | `0007` | `psm` | read | the dynamically-assigned L2CAP CoC PSM the app opens the channel on |
 | `0008` | `protocolVersion` | read | `u16` LE, readable without encryption — the connect-time version check |
@@ -94,13 +94,13 @@ transfer carries **no per-chunk framing**. Instead (spec §4.2/§4.3, mirrored i
      object_id  u16   0xFFFF on upload = "new" (device assigns the id)
      total_len  u32   upload: full object size · download request / abort: 0
      crc32      u32   upload: whole-object CRC-32/IEEE · download request / abort: 0
-     offset     u32   byte offset to start from (0 = fresh)   ← resume anchor
+     offset     u32   always 0 — transfers restart, not resume (shape stability only)
    ```
 
    For a **download** the device answers with the same 16 bytes as a
    *notification* — `total_len` and `crc32` filled in — before the payload flows.
 
-2. The **CoC carries the raw payload bytes** of `object[offset…]` — nothing
+2. The **CoC carries the raw payload bytes** of the whole object — nothing
    else. The receiver sinks them straight to storage, updating a running CRC (no
    reassembly buffer — the point on a RAM-limited MCU).
 
@@ -114,8 +114,10 @@ transfer carries **no per-chunk framing**. Instead (spec §4.2/§4.3, mirrored i
   **rejects** the object (`DeviceError.crcMismatch`), never commits it. This is the
   *end-to-end* check the link CRC can't give (encode bugs, storage errors); it is
   **not** a redundant per-packet CRC.
-- **Resumable** — a dropped upload restarts from `committed_offset` (the device's
-  durable byte count, reported in `TransferResult`); byte-exact, no re-sent frame.
+- **Restart, not resume** — an interrupted transfer is re-sent / re-requested
+  whole (spec §1 principle 4); the device discards partial uploads. Multi-object
+  flows (the B7 ride sync) resume at whole-object granularity: rides that fully
+  landed are kept, the rest are re-requested from byte 0.
 - **Cancelable** — abort over `TransferControl` + channel teardown; clean both ends.
 
 `firmware` is **reserved** for a future OTA type — no codec in this epic; `echo`
@@ -199,7 +201,7 @@ The domain types `B1` finalizes live in `OBCKit`'s `OBCDomain` module (minimal
 | `ImportedRoute` / `RoutePoint` | `ImportedRoute.swift` | canonical parsed route — every import format decodes into it |
 | `Waypoint` | `Waypoint.swift` | route waypoint (W1) — rides in `RouteBlob` |
 | `Coordinate` / `TrackPreview` | `Geo.swift` | normalized polyline for `GPSTrackPreview` (B11) |
-| `TransferProgress` | `TransferProgress.swift` | CoC transfer progress + resume `offset` |
+| `TransferProgress` | `TransferProgress.swift` | CoC transfer progress (bytes done / total) |
 | `TransferOutcome` | `TransferProgress.swift` | terminal transfer state (`TransferHandle.outcome`) — a drop stays unresolved/resumable |
 | `DeviceError` | `DeviceError.swift` | typed failures incl. `crcMismatch`, `protocolMismatch`, radio states |
 | `ConnectionState` | `ConnectionState.swift` | link lifecycle for `DeviceTransport.state` |

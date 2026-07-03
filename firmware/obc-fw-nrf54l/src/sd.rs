@@ -14,7 +14,7 @@
 //! ## Card layout (FAT16/FAT32)
 //!   `/<name>.obcm`   — the map tile (first one found in the root is loaded)
 //!   `/routes/*.obcr` — the route catalog the Route menu lists (side-loaded, long filenames)
-//!   `/routes/*.OBR`  — BLE-uploaded routes (A6, 8.3 names — same OBCR bytes, same catalog);
+//!   `/routes/RT{id}.OBR` — BLE-uploaded routes (A6; the durable object id lives in the name);
 //!                      the in-flight upload lives here as `UPLOAD.TMP` until commit
 //!   `/tracks/`       — saved `<route>.gpx` rides (created if absent); the in-progress log
 //!                      lives here as `TRACK.OBT` and is deleted once converted.
@@ -583,10 +583,16 @@ impl Storage {
 
     /// Promote the CRC-verified temp into the catalog (see the section doc for the power-cut
     /// story). `replace` is the file the upload's object id already owns (deleted only *after*
-    /// the temp validated — a failed CRC/validation never touches the old copy); `None` picks a
-    /// free `RTnn.OBR`. Returns the final name + byte length + wire facts, or `None` with the
-    /// temp deleted (invalid payload) or kept (transient copy failure).
-    pub fn upload_commit(&mut self, replace: Option<&ShortFileName>) -> Option<(ShortFileName, u32, RouteObjectInfo)> {
+    /// the temp validated — a failed CRC/validation never touches the old copy); `None` names
+    /// the file `RT{fresh_id}.OBR`, so the object id is durable in the filename and a rescan
+    /// after a reboot recovers it (S0 §4.1 — ids are stable for the life of the object).
+    /// Returns the final name + byte length + wire facts, or `None` with the temp deleted
+    /// (invalid payload) or kept (transient copy failure).
+    pub fn upload_commit(
+        &mut self,
+        replace: Option<&ShortFileName>,
+        fresh_id: u16,
+    ) -> Option<(ShortFileName, u32, RouteObjectInfo)> {
         self.upload_close();
         let dir = self.routes_dir?;
 
@@ -602,17 +608,19 @@ impl Storage {
             return None;
         };
 
-        // The final name: a replace reuses (and now frees) its object's file; fresh picks a slot.
+        // The final name: a replace reuses (and now frees) its object's file — the id stays in
+        // the name; fresh encodes its assigned id (confirmed absent, same discipline as
+        // `unique_gpx`: a bus glitch can never green-light overwriting a stored route).
         let final_name = match replace {
             Some(name) => {
                 let _ = self.vmgr.delete_file_in_dir(dir, name);
                 name.clone()
             }
-            None => match self.free_upload_name(dir) {
+            None => match self.fresh_upload_name(dir, fresh_id) {
                 Some(name) => name,
                 None => {
                     let _ = self.vmgr.close_file(src_file);
-                    defmt::warn!("SD: no free upload slot (RT00-RT99 all taken)");
+                    defmt::warn!("SD: upload name RT{=u16}.OBR unavailable", fresh_id);
                     return None;
                 }
             },
@@ -675,16 +683,15 @@ impl Storage {
             && self.vmgr.flush_file(dst).is_ok()
     }
 
-    /// First confirmed-free `RTnn.OBR` (`00`–`99`) — the same confirmed-absent discipline as
-    /// [`unique_gpx`](Self::unique_gpx): only a proven-absent name is used, so a bus glitch can
-    /// never green-light overwriting a stored route.
-    fn free_upload_name(&self, dir: RawDirectory) -> Option<ShortFileName> {
-        for n in 0..100u8 {
-            let mut s: String<12> = String::new();
-            let _ = core::fmt::write(&mut s, format_args!("RT{:02}.OBR", n));
-            if self.name_is_free(dir, s.as_str()) {
-                return ShortFileName::create_from_str(s.as_str()).ok();
-            }
+    /// The confirmed-free `RT{id}.OBR` name for a fresh upload (`RT0`–`RT65535` all fit 8.3).
+    /// Ids are assigned monotonically and never reused within a boot, and the rescan resumes
+    /// past the highest stored one, so the name is expected absent — `None` (a foreign file
+    /// squatting on it, or an unproven check) fails the commit rather than risk an overwrite.
+    fn fresh_upload_name(&self, dir: RawDirectory, id: u16) -> Option<ShortFileName> {
+        let mut s: String<12> = String::new();
+        let _ = core::fmt::write(&mut s, format_args!("RT{}.OBR", id));
+        if self.name_is_free(dir, s.as_str()) {
+            return ShortFileName::create_from_str(s.as_str()).ok();
         }
         None
     }
@@ -732,6 +739,32 @@ fn is_route_entry(e: &embedded_sdmmc::DirEntry, long: Option<&str>) -> bool {
         return false;
     }
     long_has_ext(long, b".obcr") || (e.name.extension() == b"OBR" && !long.is_some_and(|n| n.starts_with('.')))
+}
+
+/// The **durable object id** encoded in a BLE-uploaded route's filename — `RT{id}.OBR` → `id`
+/// (S0 §4.1: ids are stable for the life of the stored object, across reboots — the phone
+/// persists the id an upload commits under). `None` for anything else (side-loaded `.obcr`
+/// files carry no id and get a session-scoped one from the reserved band — see `object_store`).
+pub fn uploaded_route_id(name: &ShortFileName) -> Option<u16> {
+    if name.extension() != b"OBR" {
+        return None;
+    }
+    let base = name.base_name();
+    let digits = base.strip_prefix(b"RT")?;
+    if digits.is_empty() {
+        return None;
+    }
+    let mut id: u32 = 0;
+    for &b in digits {
+        if !b.is_ascii_digit() {
+            return None;
+        }
+        id = id * 10 + (b - b'0') as u32;
+        if id > u16::MAX as u32 {
+            return None;
+        }
+    }
+    Some(id as u16)
 }
 
 /// Whether a directory entry's **long** name ends with `ext` (e.g. `b".obcr"`, case-
