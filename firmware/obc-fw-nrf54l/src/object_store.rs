@@ -565,8 +565,8 @@ impl ObjectStore {
     }
 }
 
-/// The link-plane facts the diagnostics blob renders (S0 §7.5) — assembled by `ble.rs`, which
-/// owns the identity strings and the live [`crate::ble::Status`] counters; the store adds what
+/// The link-plane facts the diagnostics blob renders (S0 §7.5) — assembled by the `ble` module,
+/// which owns the identity strings and the live BLE link-status counters; the store adds what
 /// *it* owns (boot counter, catalog counts, the card).
 pub struct DiagInput<'a> {
     pub firmware: &'a str,
