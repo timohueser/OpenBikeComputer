@@ -185,7 +185,10 @@ live in `OBCTransport/Codecs/` (`BLEChannel` only moves bytes; the interchange
 The device name is a field of the wire **`Config`** object. Renaming the device
 (H3) is a **`writeConfig`** with a changed `name` — there is **no** separate
 rename command. This is a hard requirement on the contract, mirrored in
-[`DeviceConfig.name`](Packages/OBCKit/Sources/OBCDomain/DeviceConfig.swift).
+[`DeviceConfig.name`](Packages/OBCKit/Sources/OBCDomain/DeviceConfig.swift). The
+name is capped at **48 UTF-8 bytes** (spec §7.3): the codec truncates on a
+Character boundary at encode and the rename UI limits to the same, so an
+over-long name can't overflow the `u16` length field into a corrupt blob.
 
 ## Delta 2 — GPX **and** TCX import
 
