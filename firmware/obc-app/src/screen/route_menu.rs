@@ -10,7 +10,6 @@ use core::fmt::Write;
 
 use embedded_graphics::prelude::Point;
 use obc_render::{
-    rect,
     text::{Font, TextAlign},
     Surface,
 };
@@ -18,9 +17,8 @@ use obc_render::{
 use crate::activity::Mode;
 use crate::input::Gesture;
 
-use super::{
-    list_frame, palette, scrollbar, window_start, Ctx, MapScreen, Render, RouteSwapScreen, Screen, Transition, LIST_TOP,
-};
+use super::list::{self, ListGeometry, Separators};
+use super::{palette, Ctx, MapScreen, Render, RouteSwapScreen, Screen, Transition};
 
 /// Per-route pane height (two lines: name + stats), sized so four routes fill the list area.
 const ROW_H: i32 = 66;
@@ -39,10 +37,7 @@ impl RouteMenuScreen {
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         let len = cx.routes.len();
         match g {
-            Gesture::Turn(n) => {
-                self.selected = super::step_selection(self.selected, n, len);
-                Transition::None
-            }
+            Gesture::Turn(n) => list::on_turn(&mut self.selected, n, len),
             Gesture::Press if len > 0 => {
                 let i = self.selected.min(len - 1);
                 // With a session running, picking a *different* route asks whether to swap
@@ -71,36 +66,24 @@ impl RouteMenuScreen {
         let (w, h) = (rx.w, rx.h);
         let routes = rx.routes;
         let total = routes.len();
+        let geo = ListGeometry::below_title(w, h, ROW_H, 8, 12, Separators::Unselected);
 
         let pos = if total == 0 { 0 } else { self.selected.min(total - 1) + 1 };
-        list_frame(cv, w, h, "ROUTES", pos, total);
+        list::list_frame(cv, w, h, "ROUTES", pos, total, geo.visible);
 
         if total == 0 {
             super::empty_state(cv, w, h, "No routes yet", "Import a GPX file");
             return;
         }
 
-        // Window the list to the rows that fit, scrolling to keep the selection visible.
         let sel = self.selected.min(total - 1);
-        let list_h = h - LIST_TOP - 6;
-        let visible = (list_h / ROW_H).max(1) as usize;
-        let first = window_start(sel, visible, total);
-
-        for slot in 0..visible {
-            let i = first + slot;
-            if i >= total {
-                break;
-            }
-            let route = &routes[i];
-            let y = LIST_TOP + slot as i32 * ROW_H;
-            let selected = i == sel;
-
-            if selected {
-                cv.round(rect(12, y, w - 24, ROW_H - 8), 6, AMBER);
-            }
+        let first = list::window_start(sel, geo.visible, total) as i32;
+        list::draw_rows(cv, geo, total, sel, first, |cv, row| {
+            let route = &routes[row.index];
+            let y = row.area.top_left.y;
 
             // Pointer bullet + name, truncated with ".." when it overruns (no ellipsis glyph).
-            let accent = if selected { INK } else { SUBTEXT };
+            let accent = if row.selected { INK } else { SUBTEXT };
             let row_mid = y + 33;
             cv.triangle(Point::new(24, row_mid - 8), Point::new(24, row_mid + 8), Point::new(36, row_mid), accent);
             let name_max = (((w - 20) - 44) / Font::Body.char_width() as i32).max(6) as usize;
@@ -119,13 +102,7 @@ impl RouteMenuScreen {
             let mut climb: heapless::String<12> = heapless::String::new();
             let _ = write!(climb, "{} m", route.climb_m);
             cv.text(&climb, Point::new(cx0 + 16, sy), Font::Label, TextAlign::Left, accent);
-
-            if !selected && slot + 1 < visible && i + 1 < total {
-                cv.hline(16, y + ROW_H - 4, w - 32, RULE);
-            }
-        }
-
-        scrollbar(cv, w - 8, LIST_TOP, visible as i32 * ROW_H, total, first, visible);
+        });
     }
 }
 

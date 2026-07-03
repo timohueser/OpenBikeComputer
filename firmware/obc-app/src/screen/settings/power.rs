@@ -50,7 +50,7 @@ impl PowerScreen {
                 if self.editing {
                     cx.settings.fix_interval_s = step_interval(cx.settings.fix_interval_s, n);
                 } else {
-                    self.selected = crate::screen::step_selection(self.selected, n, ROWS);
+                    self.selected = crate::screen::list::step_selection(self.selected, n, ROWS);
                 }
                 Transition::None
             }
