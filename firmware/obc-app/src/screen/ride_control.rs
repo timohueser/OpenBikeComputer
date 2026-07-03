@@ -88,9 +88,12 @@ impl RideControl {
         let (pw, ph) = (210, 176);
         let (px, py) = (w / 2 - pw / 2, h / 2 - ph / 2);
 
-        // Parchment panel + dark HUD title strip over the map.
+        // Parchment panel + dark HUD title strip over the map. The strip follows the panel's
+        // 8 px top rounding (a square fill would clip the corners); its lower half is squared
+        // off so the bottom edge stays flat against the rows.
         cv.round(rect(px, py, pw, ph), 8, PARCHMENT);
-        cv.fill(rect(px, py, pw, 32), HUD);
+        cv.round(rect(px, py, pw, 32), 8, HUD);
+        cv.fill(rect(px, py + 16, pw, 16), HUD);
         cv.text_vcentered("PAUSED", w / 2, py, 32, Font::Label, TextAlign::Center, PARCHMENT);
 
         // Guarded rows fill warning-red — Finish/Discard are irreversible.
