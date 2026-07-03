@@ -161,6 +161,22 @@ pub struct Render<'a, 'd> {
     pub stats: RenderStats,
 }
 
+impl Render<'_, '_> {
+    /// The narrow live-data view the stat-field catalogue formats from — the one constructor of
+    /// [`Readout`](crate::stat_fields::Readout), so `stat_fields` stays decoupled from the full
+    /// draw context (and its `MapRenderer`).
+    pub fn readout(&self) -> crate::stat_fields::Readout<'_> {
+        crate::stat_fields::Readout {
+            fix: self.state.user_fix,
+            activity: self.activity,
+            units: self.settings.units,
+            route: self.route,
+            profile: self.profile,
+            now: self.now,
+        }
+    }
+}
+
 /// The on-device screens. Each variant owns its typed state and forwards to that screen's
 /// inherent `handle`/`draw`.
 pub enum Screen {
