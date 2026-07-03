@@ -3,8 +3,9 @@
 //! descriptor announces the transfer on the control plane, the CoC carries exactly the payload
 //! bytes, and one whole-object [`Crc32`] is verified at commit (spec §1 principle 2).
 //!
-//! Two directions, neither buffering the whole object (uploads restart rather than resume — spec §1
-//! principle 4):
+//! Two directions, neither buffering the whole object. Interrupted transfers **restart rather
+//! than resume in both directions** (spec §1 principle 4) — the descriptor's `offset` field is
+//! shape-stability only and must be 0:
 //!
 //! - [`Receiver`] — the **upload** direction (app → device) and the receive half of the A5 echo:
 //!   sink bytes with a running CRC, verify once at `total_len`, report [`TransferStatus::Committed`]
@@ -30,9 +31,9 @@ use crate::descriptor::{ObjectType, Op, TransferControl, TransferResult, Transfe
 pub enum TransferError {
     /// The descriptor's `op` doesn't match the constructor (an upload fed to [`Sender`], or vice versa).
     WrongOp,
-    /// An unusable offset: a **non-zero upload offset** (uploads restart, not resume — spec §1
-    /// principle 4), or a download offset **past the object**.
-    OffsetPastTotal,
+    /// A non-zero `offset` — transfers restart whole in **both** directions (spec §1 principle
+    /// 4); the field exists only for descriptor-shape stability and must be 0.
+    NonZeroOffset,
 }
 
 /// Alias kept for the crate's public surface — receiver construction shares [`TransferError`].
@@ -66,7 +67,7 @@ impl Receiver {
             return Err(TransferError::WrongOp);
         }
         if desc.offset != 0 {
-            return Err(TransferError::OffsetPastTotal);
+            return Err(TransferError::NonZeroOffset);
         }
         Ok(Self {
             object_id: desc.object_id,
@@ -144,34 +145,27 @@ pub struct Sender<'a> {
     object_id: u16,
     ty: ObjectType,
     object: &'a [u8],
-    /// Absolute offset of the next byte to send — starts at the requested `offset`.
+    /// Absolute offset of the next byte to send — starts at 0 (downloads restart, not resume).
     position: usize,
     crc: u32,
 }
 
 impl<'a> Sender<'a> {
-    /// A sender for a download request (`op = Download`). `object` is the whole stored object; the
-    /// request's `offset` is where to resume from (spec §4.2 download resume). Rejects a non-download
-    /// op or an offset past the object.
+    /// A sender for a download request (`op = Download`). `object` is the whole stored object,
+    /// always streamed from the start — downloads restart, not resume (spec §1 principle 4).
+    /// Rejects a non-download op or a non-zero `offset`.
     pub fn new(desc: &TransferControl, object: &'a [u8]) -> Result<Self, TransferError> {
         if desc.op != Op::Download {
             return Err(TransferError::WrongOp);
         }
-        if desc.offset as usize > object.len() {
-            return Err(TransferError::OffsetPastTotal);
+        if desc.offset != 0 {
+            return Err(TransferError::NonZeroOffset);
         }
-        Ok(Self {
-            object_id: desc.object_id,
-            ty: desc.ty,
-            object,
-            position: desc.offset as usize,
-            crc: Crc32::checksum(object),
-        })
+        Ok(Self { object_id: desc.object_id, ty: desc.ty, object, position: 0, crc: Crc32::checksum(object) })
     }
 
     /// The descriptor to notify before the bytes flow (spec §4.2): same 16 bytes as the request,
-    /// `op = Download`, with `total_len` (the whole object) and `crc32` filled in. The `offset` is
-    /// where streaming resumes from, so the app knows how many bytes to expect (`total_len - offset`).
+    /// `op = Download`, with `total_len` (the whole object) and `crc32` filled in.
     pub fn announce(&self) -> TransferControl {
         TransferControl {
             op: Op::Download,
@@ -179,7 +173,7 @@ impl<'a> Sender<'a> {
             object_id: self.object_id,
             total_len: self.object.len() as u32,
             crc32: self.crc,
-            offset: self.position as u32,
+            offset: 0,
         }
     }
 
@@ -215,7 +209,7 @@ impl<'a> Sender<'a> {
 
 /// The download sequencing of [`Sender`] for an object that never sits in RAM (spec §4.2 download):
 /// the board reads `object[position…]` from storage chunk by chunk and advances this tracker, which
-/// owns the announce descriptor, the resume offset, and the typed close. The whole-object `crc32`
+/// owns the announce descriptor and the typed close. The whole-object `crc32`
 /// is precomputed by the caller (one read pass over storage) — this core never sees the bytes, so
 /// it stays radio-free *and* storage-free.
 #[derive(Clone, Copy, Debug)]
@@ -223,23 +217,23 @@ pub struct StreamSender {
     object_id: u16,
     ty: ObjectType,
     total_len: u32,
-    /// Absolute offset of the next byte to send — starts at the requested `offset`.
+    /// Absolute offset of the next byte to send — starts at 0 (downloads restart, not resume).
     position: u32,
     crc: u32,
 }
 
 impl StreamSender {
     /// A sender for a download request (`op = Download`) of a stored object of `total_len` bytes
-    /// whose whole-object CRC-32 is `crc32`. The request's `offset` is where to resume from.
-    /// Rejects a non-download op or an offset past the object.
+    /// whose whole-object CRC-32 is `crc32` — always streamed from the start (downloads restart,
+    /// not resume). Rejects a non-download op or a non-zero `offset`.
     pub fn new(desc: &TransferControl, total_len: u32, crc32: u32) -> Result<Self, TransferError> {
         if desc.op != Op::Download {
             return Err(TransferError::WrongOp);
         }
-        if desc.offset > total_len {
-            return Err(TransferError::OffsetPastTotal);
+        if desc.offset != 0 {
+            return Err(TransferError::NonZeroOffset);
         }
-        Ok(Self { object_id: desc.object_id, ty: desc.ty, total_len, position: desc.offset, crc: crc32 })
+        Ok(Self { object_id: desc.object_id, ty: desc.ty, total_len, position: 0, crc: crc32 })
     }
 
     /// The descriptor to notify before the bytes flow — same contract as [`Sender::announce`].
