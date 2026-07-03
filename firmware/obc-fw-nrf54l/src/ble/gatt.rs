@@ -214,9 +214,9 @@ pub fn draw_status_screen(fb: &mut [u8], battery_pct: u8, sd_ok: bool, inputs: u
     let name = device_name();
 
     fb.fill(0x3F); // device-64 white — the reflective panel's paper backdrop
-    let mut dev = obc_platform::FbDevice64::new(fb, crate::st7789::WIDTH as u32, crate::st7789::HEIGHT as u32);
+    let mut dev = obc_platform::FbDevice64::new(fb, crate::display::FRAME_W as u32, crate::display::FRAME_H as u32);
     let ink = Rgb565::BLACK;
-    let cx = crate::st7789::WIDTH as i32 / 2;
+    let cx = crate::display::FRAME_W as i32 / 2;
 
     // Pairing: the screen's marquee moment — the 6-digit passkey, huge, that the rider types into the
     // phone's pairing dialog. Takes over the whole card until pairing resolves.
