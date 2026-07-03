@@ -663,9 +663,16 @@ extension BLETransport: CBPeripheralDelegate {
         }
         // PSM read → open the L2CAP channel (initial connect and re-opens alike).
         if uuid == GATT.psm, bleChannel == nil {
-            if let data = characteristic.value, data.count >= 2 {
+            if error == nil, let data = characteristic.value, data.count >= 2 {
                 let psm = UInt16(data[0]) | (UInt16(data[1]) << 8)
                 peripheral.openL2CAPChannel(CBL2CAPPSM(psm))
+            } else {
+                // A failed PSM read must not strand the open flow — fail the
+                // waiters; the next transfer retries the whole open.
+                openingChannel = false
+                let waiters = channelWaiters
+                channelWaiters.removeAll()
+                for cont in waiters { cont.resume(throwing: DeviceError.channelOpenFailed) }
             }
             return
         }
