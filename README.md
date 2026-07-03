@@ -212,6 +212,30 @@ The route workflow mirrors what the device will do:
 
 ---
 
+## The companion app
+
+Routes are usually planned on a phone and rides are worth keeping, so a SwiftUI
+**iOS companion app** ([`companion-ios/`](companion-ios)) syncs with the device
+over **Bluetooth Low Energy** — push a route, pull a ride, rename the device,
+read diagnostics. The phone does all the format conversion (GPX/TCX → OBCR) and
+the device writes the bytes to its card verbatim. How the link is shaped — the
+GATT control plane, the L2CAP data plane, pairing and reconnect — is
+[the companion link](https://timohueser.github.io/OpenBikeComputer/software/companion-link/);
+the normative byte contract is
+[`obc-ble-interface-spec.md`](obc-ble-interface-spec.md), and its host-tested
+core (descriptor codecs, CRC-32, the transfer state machine) is
+[`firmware/obc-ble/`](firmware/obc-ble), which rides the normal `cargo test`.
+
+The firmware's BLE support is a build-time variant of the board crate:
+
+```sh
+cd firmware/obc-fw-nrf54l
+cargo build --release --no-default-features --features ble
+```
+
+Flashing, the dependency pins, and the on-glass verify steps live in the
+[board crate README](firmware/obc-fw-nrf54l/README.md).
+
 ## Testing
 
 ```sh

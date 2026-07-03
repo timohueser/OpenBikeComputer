@@ -15,9 +15,10 @@ L2CAP CoC data plane, the typed object model, and the two design-surfaced deltas
 > CRC-32 parameters below are the frozen values (spec §9 was the repin checklist);
 > the shared fixtures in [`protocol-vectors/`](../protocol-vectors/) pin them
 > byte-exactly on both sides (`ProtocolVectorTests` here, `obc-vectors` in the
-> firmware workspace). The remaining firmware Track-A issues — `A4` (GATT), `A5`
-> (L2CAP CoC + transfer engine), `A8` (LESC pairing + bonding) — implement this
-> contract; this app epic only *references* it (epic
+> firmware workspace). The firmware Track-A issues that implement this contract —
+> `A4` (GATT), `A5` (L2CAP CoC + transfer engine), `A6`/`A7` (the route/ride object
+> planes), and `A8` (LESC pairing + bonding) — have **landed**; this app epic only
+> *references* the contract (epic
 > [#234](https://github.com/timohueser/OpenBikeComputer/issues/234)).
 
 ---
@@ -232,4 +233,5 @@ The domain types `B1` finalizes live in `OBCKit`'s `OBCDomain` module (minimal
 the finalized `DeviceTransport` protocol + `TransferHandle` live in `OBCTransport`,
 the real conformer in `OBCTransport/BLE/` (`BLETransport`, `BLEChannel`,
 `L2CAPByteChannel`, `GATT`), and the framing/codec + domain types are unit-tested
-without hardware. The **real-path** (live GATT/CoC) is gated on firmware `A4`/`A5`.
+without hardware. The **real-path** (live GATT/CoC) now runs against the shipped
+firmware `A4`/`A5` stack (with pairing gated on `A8`).
