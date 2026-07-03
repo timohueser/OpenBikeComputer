@@ -136,13 +136,17 @@ impl MapScreen {
         // The remaining chrome draws in the palette vocabulary, back through the canvas.
         // Top-center status pill, shown only when there's something to say. "No GPS Fix" takes
         // priority over off-route: with no fix the match is stale, so cross-track distance is
-        // meaningless.
-        if rx.no_fix {
-            draw_status_pill(cv, rx.w, "No GPS Fix");
-        } else if rx.activity.off_route {
-            let mut s: heapless::String<20> = heapless::String::new();
-            super::write_off_route(&mut s, "off route ", rx.activity.dist_to_route_m, rx.settings.units);
-            draw_status_pill(cv, rx.w, &s);
+        // meaningless. Suppressed while panning — the pan HUD owns the top edge (the chevron and
+        // compass would collide with the pill), and panning is deliberate map inspection anyway;
+        // the pill returns the moment pan exits.
+        if rx.state.pan.is_none() {
+            if rx.no_fix {
+                draw_status_pill(cv, rx.w, "No GPS Fix");
+            } else if rx.activity.off_route {
+                let mut s: heapless::String<20> = heapless::String::new();
+                super::write_off_route(&mut s, "off route ", rx.activity.dist_to_route_m, rx.settings.units);
+                draw_status_pill(cv, rx.w, &s);
+            }
         }
 
         // Pan-mode HUD. Drawn last so it sits over the map + marker, and only while panning.
