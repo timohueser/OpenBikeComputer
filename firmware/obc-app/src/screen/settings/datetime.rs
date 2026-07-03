@@ -14,7 +14,7 @@ use embedded_graphics::{
 use obc_render::{
     rect,
     text::{Font, TextAlign},
-    Canvas, RenderStats,
+    Canvas, RenderStats, Surface,
 };
 
 use crate::input::Gesture;

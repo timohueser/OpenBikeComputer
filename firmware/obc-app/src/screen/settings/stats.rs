@@ -7,7 +7,7 @@
 use core::fmt::Write;
 
 use embedded_graphics::prelude::{DrawTarget, Point};
-use obc_render::{rect, text::Font, Canvas, RenderStats};
+use obc_render::{rect, text::Font, Canvas, RenderStats, Surface};
 
 use crate::input::Gesture;
 use crate::screen::{title_frame, Ctx, Render, Screen, Transition, LIST_TOP};

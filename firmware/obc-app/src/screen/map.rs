@@ -9,7 +9,7 @@ use embedded_graphics::{draw_target::DrawTarget, prelude::Point};
 use obc_render::{
     rect,
     text::{text_width, Font, TextAlign},
-    Canvas, RenderStats, Viewport,
+    Canvas, RenderStats, Surface, Viewport,
 };
 
 use crate::app::{Pan, PanAxis};
