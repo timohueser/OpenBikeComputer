@@ -2,7 +2,8 @@
 //! framebuffer, so the present path pushes only the rows that actually changed.
 //!
 //! The map plane is render-on-demand at the *frame* granularity ([`Dirty`](obc_app::Dirty)): a
-//! coarse `animate -> bool` decides *whether* to present, but not *where* it changed. Screens stay
+//! coarse per-screen timer poll (`tick_timers`) decides *whether* to present, but not *where* it
+//! changed. Screens stay
 //! immediate-mode (`clear()` + redraw), so tracking writes would mark everything dirty. Instead the
 //! present layer keeps a 32-bit hash per row and, on present, re-hashes each row, pushes only the
 //! contiguous spans whose hash changed, and updates the store. A Home clock ticking a minute

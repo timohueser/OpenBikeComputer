@@ -357,6 +357,11 @@ pub struct App {
     /// drained once per frame. Starts `true` so the host's first frame paints. (The overlay flag
     /// isn't accumulated here — it's derived from the live hold-bulge state at drain time.)
     map_dirty: bool,
+    /// The soonest timed-redraw deadline across the visible stack, in millis from the last
+    /// [`advance_animations`](App::advance_animations) — the min-fold of each screen's
+    /// [`ScreenTick::next_wake_ms`](screen::ScreenTick::next_wake_ms), stored there and read back by
+    /// [`ms_until_next_wake`](App::ms_until_next_wake). `None` when nothing is time-animating.
+    next_wake_ms: Option<u32>,
     /// The persisted device settings, seeded from the host's store at boot
     /// ([`set_settings`](App::set_settings)) and edited in place by the settings screens.
     settings: Settings,
@@ -446,6 +451,7 @@ impl App {
             now_ms: 0,
             // Force the host's first frame: nothing has been drawn yet, so the map is dirty.
             map_dirty: true,
+            next_wake_ms: None,
             settings: Settings::default(),
             // The wall clock starts from the same default set-point at the boot origin; the host's
             // `set_settings` re-stamps it from the persisted clock a moment later.
@@ -502,6 +508,7 @@ impl App {
             addr_of_mut!((*slot).now_ms).write(0);
             // Force the host's first frame: nothing has been drawn yet, so the map is dirty.
             addr_of_mut!((*slot).map_dirty).write(true);
+            addr_of_mut!((*slot).next_wake_ms).write(None);
             addr_of_mut!((*slot).settings).write(Settings::default());
             addr_of_mut!((*slot).wall_clock).write(WallClock::new(Settings::default().local_clock()));
             addr_of_mut!((*slot).settings_dirty).write(false);
@@ -903,36 +910,44 @@ impl App {
         }
     }
 
-    /// Advance the **map plane's** clock to `clock` and let each visible screen surface any
-    /// time-driven repaint need (the Statistics cursor's spring-back, the Home clock's minute
-    /// rollover), dirtying the map if any advanced — so a screen surfaces its own timed-refresh
-    /// rather than the host re-rendering on a blind heartbeat. Cheap: a clock comparison per drawn
-    /// screen, over the same `base..` range [`render_map`](App::render_map) draws.
+    /// Advance the **map plane's** clock to `clock` and poll each visible screen's timers
+    /// ([`Screen::tick_timers`]) in one pass: any time-driven repaint that fired (the Statistics
+    /// cursor's spring-back, the Home clock's minute rollover) dirties the map — so a screen
+    /// surfaces its own timed-refresh rather than the host re-rendering on a blind heartbeat — and
+    /// the soonest residual deadline is stored for [`ms_until_next_wake`](App::ms_until_next_wake).
+    /// Cheap: a clock comparison per drawn screen, over the same `base..` range
+    /// [`render_map`](App::render_map) draws.
     ///
     /// [`handle_input`](App::handle_input) calls this for the single-loop hosts; the two-plane
     /// firmware calls it directly on its map plane.
     pub fn advance_animations(&mut self, clock: InputClock) {
         self.now_ms = clock.0;
         let now = self.wall_clock.now(self.now_ms);
+        let ms_to_next_minute = self.wall_clock.ms_to_next_minute(self.now_ms);
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
-        let mut animated = false;
+        let mut changed = false;
+        let mut next_wake = None;
         for scr in self.stack.iter_mut().skip(base) {
-            animated |= scr.animate(self.now_ms, now, &self.settings);
+            let tick = scr.tick_timers(self.now_ms, now, ms_to_next_minute, &self.settings);
+            changed |= tick.changed;
+            next_wake = next_wake.into_iter().chain(tick.next_wake_ms).min();
         }
-        self.map_dirty |= animated;
+        self.map_dirty |= changed;
+        self.next_wake_ms = next_wake;
     }
 
     /// The single "next wake deadline" the event-driven host arms one timer to: the soonest, in
     /// millis from `now_ms`, that any visible screen needs a *timed* redraw — or `None` when nothing
-    /// is time-animating (sleep until an input or sensor event). Folds [`Screen::next_wake_in`] over
-    /// the same visible range [`advance_animations`](App::advance_animations) animates, with the
-    /// wall-clock minute boundary pre-computed here. **Call right after `advance_animations`** with
-    /// the same `now_ms`: any *due* animation has then already fired, so the deadline is strictly in
-    /// the future.
+    /// is time-animating (sleep until an input or sensor event). A read of the deadline
+    /// [`advance_animations`](App::advance_animations) stored, so **call it right after
+    /// `advance_animations`** in the same frame, with the same `now_ms` (debug-asserted): any *due*
+    /// animation has then already fired, so the deadline is strictly in the future.
     pub fn ms_until_next_wake(&self, now_ms: u32) -> Option<u32> {
-        let ms_to_next_minute = self.wall_clock.ms_to_next_minute(now_ms);
-        let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
-        self.stack.iter().skip(base).filter_map(|s| s.next_wake_in(now_ms, ms_to_next_minute, &self.settings)).min()
+        debug_assert_eq!(
+            now_ms, self.now_ms,
+            "ms_until_next_wake must follow advance_animations in the same frame, with the same now_ms"
+        );
+        self.next_wake_ms
     }
 
     /// Render the current screen and any overlays above it into `target`, a `w`×`h` pixel display.
@@ -1804,8 +1819,10 @@ mod tests {
         app.advance_animations(InputClock(25_000));
         assert_eq!(app.ms_until_next_wake(25_000), Some(35_000), "25 s in, 35 s until the next repaint");
         // Navigate to the static Menu (BackHold): it animates on nothing, so there is no deadline —
-        // the host sleeps until the next input or sensor event.
+        // the host sleeps until the next input or sensor event. The same-frame `advance_animations`
+        // re-polls the now-visible stack, per `ms_until_next_wake`'s documented contract.
         app.apply_gesture(Gesture::BackHold);
+        app.advance_animations(InputClock(25_000));
         assert_eq!(app.ms_until_next_wake(25_000), None, "a static menu needs no timed wake");
     }
 }

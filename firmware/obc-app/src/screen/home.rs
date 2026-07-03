@@ -22,7 +22,7 @@ use crate::input::Gesture;
 use crate::settings::DateTime;
 use crate::wall_clock::MinuteTicker;
 
-use super::{palette, Ctx, MenuScreen, Render, RouteMenuScreen, Screen, Transition};
+use super::{palette, Ctx, MenuScreen, Render, RouteMenuScreen, Screen, ScreenTick, Transition};
 
 /// The idle home screen.
 #[derive(Debug, Default)]
@@ -32,7 +32,7 @@ pub struct HomeScreen {
     /// default) is the canonical, un-jittered massif.
     seed: u32,
     /// Fires a repaint once each minute the wall clock rolls over (see
-    /// [`animate`](HomeScreen::animate)) so `HH:MM` advances without polling.
+    /// [`tick_timers`](HomeScreen::tick_timers)) so `HH:MM` advances without polling.
     ticker: MinuteTicker,
 }
 
@@ -60,11 +60,13 @@ impl HomeScreen {
         }
     }
 
-    /// Self-dirty once the wall clock crosses into a new minute so the `HH:MM` readout repaints —
-    /// the Home half of the screens' timed-`animate` contract. The [`MinuteTicker`] reports only the
-    /// actual minute rollover, so an idle Home repaints at most once a minute.
-    pub fn animate(&mut self, now: DateTime) -> bool {
-        self.ticker.changed(now)
+    /// Poll the clock's minute tick — the Home half of the screens' timed
+    /// [`tick_timers`](Screen::tick_timers) contract: self-dirty once the wall clock crosses into a
+    /// new minute so the `HH:MM` readout repaints, then wake again at the next minute boundary
+    /// (`ms_to_next_minute`, pre-computed by the host, which owns the clock). The [`MinuteTicker`]
+    /// reports only the actual rollover, so an idle Home repaints at most once a minute.
+    pub fn tick_timers(&mut self, now: DateTime, ms_to_next_minute: u32) -> ScreenTick {
+        ScreenTick { changed: self.ticker.changed(now), next_wake_ms: Some(ms_to_next_minute) }
     }
 
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
@@ -78,7 +80,7 @@ impl HomeScreen {
         let contour_us = rx.clock.now_us().saturating_sub(t0) as u32;
 
         // The wall clock: HH:MM in the Huge tier, centred in the upper third. `rx.now` is the live
-        // time, not the frozen set-point, so it actually ticks; `animate` repaints it each minute.
+        // time, not the frozen set-point, so it actually ticks; `tick_timers` repaints it each minute.
         let mut clock: heapless::String<8> = heapless::String::new();
         let _ = write!(clock, "{:02}:{:02}", rx.now.hour, rx.now.minute);
         let clock_top = h * 40 / 100 - Font::Huge.line_height() as i32 / 2;
