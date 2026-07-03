@@ -1,15 +1,14 @@
-//! The control-plane descriptor codecs (spec §4). Small, typed, fixed-shape messages that ride GATT
-//! — the "frame codec" the S0 freeze pins — while the CoC stays raw payload bytes:
+//! The control-plane descriptor codecs — small, typed, fixed-shape messages that ride GATT while
+//! the CoC stays raw payload bytes:
 //!
-//! - [`TransferControl`] (§4.2): the fixed **16-byte** descriptor the app writes to open / resume /
-//!   abort a transfer, and the device notifies to announce a download's size + CRC.
-//! - [`StatusMessage`] (§4.3): the device → app `status` notification envelope — a `u8`
-//!   discriminator + fixed body ([`TransferResult`] / [`StoreChanged`] / [`CommandResult`]).
-//! - [`ObjectStoreDigest`] (§4.5): the 10-byte "did anything change" read/notify value.
-//! - [`Config`] (§7.3): the whole-blob Config object that crosses GATT (not the CoC).
+//! - [`TransferControl`]: the fixed **16-byte** descriptor to open / abort a transfer, or announce
+//!   a download's size + CRC.
+//! - [`StatusMessage`]: the device → app `status` notification envelope — a `u8` discriminator +
+//!   fixed body.
+//! - [`ObjectStoreDigest`]: the 10-byte "did anything change" read/notify value.
+//! - [`Config`]: the whole-blob Config object that crosses GATT (not the CoC).
 //!
-//! Every layout mirrors the app's Swift `TransferDescriptor.swift` field-for-field and is pinned by
-//! the shared `protocol-vectors/` fixtures (`tests/vectors.rs`). All integers little-endian (§0).
+//! Every layout mirrors the app's Swift codecs field-for-field. All integers little-endian.
 
 /// Why a control-plane descriptor failed to decode. Mirrors the app's `DescriptorError` so a
 /// firmware reject and an app reject classify the same wire byte the same way.
@@ -25,27 +24,24 @@ pub enum DescriptorError {
     UnknownStatus(u8),
 }
 
-/// The kind of object a bulk transfer carries (spec §4.1). `Config` is reserved on the CoC (the
-/// Config object crosses GATT whole-blob); `Firmware` is reserved for a future OTA type; `Echo` is
-/// the A5 dev/test loopback.
+/// The kind of object a bulk transfer carries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ObjectType {
     Route = 1,
     Ride = 2,
-    /// Reserved on the CoC — Config crosses GATT (§3.3).
+    /// Reserved on the CoC — Config crosses GATT whole-blob.
     ConfigBlob = 3,
     Diagnostics = 4,
-    /// Reserved (OTA, M4).
+    /// Reserved (future OTA).
     Firmware = 5,
     RouteList = 6,
     RideList = 7,
-    /// Dev/test loopback (A5): the device streams back exactly what it received.
+    /// Dev/test loopback: the device streams back exactly what it received.
     Echo = 8,
 }
 
 impl ObjectType {
-    /// The wire byte.
     pub const fn as_u8(self) -> u8 {
         self as u8
     }
@@ -66,7 +62,7 @@ impl ObjectType {
     }
 }
 
-/// The imperative a [`TransferControl`] carries (spec §4.2).
+/// The imperative a [`TransferControl`] carries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Op {
@@ -93,8 +89,8 @@ impl Op {
     }
 }
 
-/// The fixed **16-byte** transfer descriptor (spec §4.2) — one shape serves upload, download
-/// request/announce, and abort, so the CoC needs no per-chunk header.
+/// The fixed **16-byte** transfer descriptor — one shape serves upload, download request/announce,
+/// and abort, so the CoC needs no per-chunk header.
 ///
 /// ```text
 ///   op         u8    1 = upload · 2 = download · 3 = abort
@@ -115,13 +111,11 @@ pub struct TransferControl {
 }
 
 impl TransferControl {
-    /// The on-wire length (§4.2).
     pub const ENCODED_LEN: usize = 16;
 
-    /// The `object_id` an upload sends to mean "new — the device assigns the id" (§4.1).
+    /// The `object_id` an upload sends to mean "new — the device assigns the id".
     pub const NEW_OBJECT_ID: u16 = 0xFFFF;
 
-    /// Encode the fixed 16-byte descriptor.
     pub fn encode(&self) -> [u8; Self::ENCODED_LEN] {
         let mut b = [0u8; Self::ENCODED_LEN];
         b[0] = self.op.as_u8();
@@ -135,7 +129,7 @@ impl TransferControl {
 
     /// Decode a descriptor from a GATT write. Purely structural — semantic checks (e.g. an offset
     /// past `total_len`) belong to the transfer state machine, which answers them with a typed
-    /// [`TransferResult`] rather than a bare ATT failure (§4.2).
+    /// [`TransferResult`] rather than a bare ATT failure.
     pub fn decode(data: &[u8]) -> Result<Self, DescriptorError> {
         if data.len() < Self::ENCODED_LEN {
             return Err(DescriptorError::Truncated);
@@ -151,15 +145,15 @@ impl TransferControl {
     }
 }
 
-/// The outcome of a transfer, reported in a [`TransferResult`] (spec §4.3).
+/// The outcome of a transfer, reported in a [`TransferResult`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum TransferStatus {
     /// Stored + CRC verified.
     Committed = 0,
-    /// Rejected — nothing committed (§4.2).
+    /// Rejected — nothing committed.
     CrcMismatch = 1,
-    /// Cancelled by either side (§4.2 op=3).
+    /// Cancelled by either side.
     Aborted = 2,
     /// Storage / internal failure.
     Error = 3,
@@ -187,8 +181,8 @@ impl TransferStatus {
     }
 }
 
-/// The closing result of a transfer (spec §4.3, `msg = 1`). `committed_offset` is the durable byte
-/// count — the resume anchor. For a fresh upload (`object_id == 0xFFFF`) it carries the assigned id.
+/// The closing result of a transfer (`msg = 1`). `committed_offset` is the durable byte count.
+/// For a fresh upload (`object_id == 0xFFFF`) `object_id` carries the assigned id.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TransferResult {
     pub object_id: u16,
@@ -205,14 +199,14 @@ impl TransferResult {
     }
 }
 
-/// Which object store moved + its new revision (spec §4.3, `msg = 2`).
+/// Which object store moved + its new revision (`msg = 2`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StoreChanged {
     pub ty: ObjectType,
     pub revision: u32,
 }
 
-/// The result of a `command` write (spec §4.3/§4.4).
+/// The result of a `command` write.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum CommandStatus {
@@ -240,10 +234,10 @@ impl CommandStatus {
     }
 }
 
-/// The result notified after a `command` write (spec §4.3, `msg = 3`).
+/// The result notified after a `command` write (`msg = 3`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CommandResult {
-    /// Echoes the command byte (§4.4).
+    /// Echoes the command byte.
     pub command: u8,
     pub status: CommandStatus,
     /// Command-specific; 0 unless documented.
@@ -256,9 +250,8 @@ impl CommandResult {
     }
 }
 
-/// One `status` characteristic notification (spec §4.3): a `u8` discriminator + fixed body. The
-/// board encodes one of these after a control-plane write or a transfer close; the app decodes them
-/// and **ignores unknown discriminators** (forward compatibility), never failing the link over one.
+/// One `status` characteristic notification: a `u8` discriminator + fixed body. The app **ignores
+/// unknown discriminators** (forward compatibility), never failing the link over one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StatusMessage {
     /// `msg = 1`, 8 bytes.
@@ -342,8 +335,8 @@ impl StatusMessage {
     }
 }
 
-/// The `objectStore` digest (spec §4.5): the cheap "did anything change" signal that replaces
-/// polling the CoC-sized lists.
+/// The `objectStore` digest: the cheap "did anything change" signal that replaces polling the
+/// CoC-sized lists.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct ObjectStoreDigest {
     pub revision: u32,
@@ -375,13 +368,10 @@ impl ObjectStoreDigest {
     }
 }
 
-/// The Config object (spec §7.3) — the one object small enough to cross GATT whole-blob (on the
-/// `config` characteristic), not the CoC. `name` is the device name (Delta 1: rename = write Config
-/// with a changed name). Append-only: readers ignore unknown trailing bytes, absent trailing fields
-/// mean "device default".
-///
-/// Borrows its name from the wire buffer, so decoding is alloc-free; the board wraps the encoded
-/// bytes into its GATT attribute type.
+/// The Config object — the one object small enough to cross GATT whole-blob, not the CoC. Rename =
+/// write Config with a changed `name`. Append-only: readers ignore unknown trailing bytes, absent
+/// trailing fields mean "device default". Borrows `name` from the wire buffer, so decode is
+/// alloc-free.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Config<'a> {
     /// The device name, UTF-8, ≤ [`Config::MAX_NAME`] bytes.
@@ -391,15 +381,14 @@ pub struct Config<'a> {
 }
 
 impl<'a> Config<'a> {
-    /// The name-length cap (§7.3, matches the OBCR route-name cap).
+    /// The name-length cap (matches the OBCR route-name cap).
     pub const MAX_NAME: usize = 48;
-    /// The whole-blob cap (§7.3) — the GATT attribute the board serves it on.
     pub const MAX_ENCODED: usize = 128;
     /// The smallest well-formed blob: `name_len` (2) + empty name + `units` (1).
     pub const MIN_ENCODED: usize = 3;
 
-    /// Encode into `out` (must be ≥ `2 + name.len() + 1`), returning the written length. Returns
-    /// `None` if the name is over-long or the buffer is too small.
+    /// Encode into `out` (must be ≥ `2 + name.len() + 1`), returning the written length. `None` if
+    /// the name is over-long or the buffer is too small.
     pub fn encode(&self, out: &mut [u8]) -> Option<usize> {
         let len = 2 + self.name.len() + 1;
         if self.name.len() > Self::MAX_NAME || len > Self::MAX_ENCODED || out.len() < len {
@@ -411,16 +400,14 @@ impl<'a> Config<'a> {
         Some(len)
     }
 
-    /// Decode + validate a written Config blob (§7.3): a `name_len` ≤ 48 that fits, whole blob in
-    /// `[MIN_ENCODED, MAX_ENCODED]`. A trailing byte after `units` is tolerated (append-only rule) —
-    /// unknown future fields, ignored here. `None` = malformed (the board rejects it with an ATT
-    /// error rather than silently storing it).
+    /// Decode + validate a written Config blob: a `name_len` ≤ 48 that fits, whole blob in
+    /// `[MIN_ENCODED, MAX_ENCODED]`. A trailing byte after `units` is tolerated (append-only rule).
+    /// `None` = malformed (the board rejects it with an ATT error rather than silently storing it).
     pub fn decode(data: &'a [u8]) -> Option<Self> {
         if data.len() < Self::MIN_ENCODED || data.len() > Self::MAX_ENCODED {
             return None;
         }
         let name_len = u16::from_le_bytes([data[0], data[1]]) as usize;
-        // 2 (name_len) + name_len (name) + at least 1 (units) must fit.
         if name_len > Self::MAX_NAME || 2 + name_len + 1 > data.len() {
             return None;
         }

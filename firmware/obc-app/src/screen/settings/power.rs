@@ -1,7 +1,6 @@
-//! The Power screen — GPS fix interval + a power-saver toggle. Same two-level model as the rest:
-//! highlight a row, press to act. `GPS Fix` is a value row whose stepper opens in place; the
-//! interval **step adapts** (1 s up to 10 s, then 5 s) so a long interval is a few detents, not
-//! dozens. `Power Saver` is a click-to-flip toggle.
+//! The Power screen — GPS fix interval + a power-saver toggle. `GPS Fix` is a value row whose stepper
+//! opens in place; the interval step adapts (1 s up to 10 s, then 5 s) so a long interval is a few
+//! detents. `Power Saver` is a click-to-flip toggle.
 
 use core::fmt::Write;
 
@@ -20,9 +19,9 @@ const GPS_FIX: usize = 0;
 const POWER_SAVER: usize = 1;
 const ROWS: usize = 2;
 
-/// Step the fix interval by `n` detents with the **adaptive** granularity: 1 s while under 10 s,
-/// 5 s at/above it, clamped to the configured bounds. Applied per detent so a multi-detent flick
-/// compounds, and the boundary is re-checked each detent so a sweep up reads 1…10, 15, 20, ….
+/// Step the fix interval by `n` detents with adaptive granularity: 1 s under 10 s, 5 s at/above,
+/// clamped. Per-detent (multi-detent flicks compound) with the boundary re-checked each detent, so a
+/// sweep up reads 1…10, 15, 20, ….
 fn step_interval(v: u16, n: i32) -> u16 {
     let dir = n.signum();
     let mut x = v as i32;

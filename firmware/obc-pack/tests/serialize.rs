@@ -1,7 +1,5 @@
-//! Port of `packer/tests/test_serialize.py`: the same inputs must produce the
-//! same bytes. Rings are pre-closed here because shapely closes polygon rings
-//! automatically, so the geometry that reaches `pack_feature` (in Python and in
-//! the dump the harness feeds us) already has `first == last`.
+//! Byte-pinned serializer tests. Polygon rings are pre-closed (`first == last`),
+//! matching the closed geometry that reaches `pack_feature`.
 
 use obc_pack::{pack_chunk, pack_feature, pack_style_dict, serialize_lods, Feature, Kind, LodLayer, Node, Style};
 
@@ -11,7 +9,6 @@ fn line(style_id: u8, pts: &[(f64, f64)]) -> Feature {
 
 #[test]
 fn pack_style_dict_one_style() {
-    // test_pack_style_dict: id 10, z 50, color 0xF9A6, weight 4, priority 2.
     let data = pack_style_dict(&[Style { id: 10, z_index: 50, color: 0xF9A6, weight: 4, priority: 2 }]);
     assert_eq!(data.len(), 7); // count(1) + 6-byte record
     assert_eq!(data[0], 1); // count
@@ -24,7 +21,7 @@ fn pack_style_dict_one_style() {
 
 #[test]
 fn pack_feature_8bit_line() {
-    // test_pack_feature_8bit: a 2-point line, anchor at the node min corner.
+    // A 2-point line, anchor at the node min corner.
     let f = line(10, &[(1.0, 1.0), (1.0001, 1.0001)]);
     let node_bbox = (1_000_000, 1_000_000, 1_010_000, 1_010_000);
     let data = pack_feature(&f, node_bbox);
@@ -41,7 +38,6 @@ fn pack_feature_8bit_line() {
 
 #[test]
 fn pack_chunk_pads_with_ff() {
-    // test_pack_chunk_padding.
     let f = line(10, &[(1.0, 1.0), (1.0001, 1.0001)]);
     let node_bbox = (1_000_000, 1_000_000, 1_010_000, 1_010_000);
     let chunk = pack_chunk(&[f], node_bbox, 32);
@@ -51,7 +47,7 @@ fn pack_chunk_pads_with_ff() {
 
 #[test]
 fn pack_polygon_with_hole() {
-    // test_pack_polygon_small. shapely closes both rings (4 pts -> 5 stored).
+    // Rings pre-closed: 4 distinct pts -> 5 stored.
     let ext = vec![(0.0, 0.0), (0.0001, 0.0), (0.0001, 0.0001), (0.0, 0.0001), (0.0, 0.0)];
     let hole = vec![(0.00002, 0.00002), (0.00008, 0.00002), (0.00008, 0.00008), (0.00002, 0.00008), (0.00002, 0.00002)];
     let f = Feature { style_id: 20, kind: Kind::Polygon, rings: vec![ext, hole] };
@@ -67,7 +63,7 @@ fn pack_polygon_with_hole() {
 
 #[test]
 fn serialize_lods_header_single_empty_leaf() {
-    // test_serialize_lods_header: one LOD, one empty leaf, no styles.
+    // One LOD, one empty leaf, no styles.
     let lods = vec![LodLayer {
         max_mpp: None,
         chunk_size: 2048,
@@ -96,11 +92,7 @@ fn serialize_lods_header_single_empty_leaf() {
     assert_eq!(chunk_count, 0);
 }
 
-// === 16-bit delta path — byte-pinned (issue #95, item 4) =====================
-// `serialize.rs` byte-pins the 8-bit line + poly-with-hole, but the 16-bit flag
-// (0x01) and the `int16` LE delta encoding were only ever round-tripped, never
-// pinned at the byte level. A reader/writer drift on the delta width would still
-// pass round_trip.rs while corrupting every map with a >127-µdeg segment.
+// === 16-bit delta path — byte-pinned ========================================
 
 #[test]
 fn pack_feature_16bit_line() {
@@ -136,10 +128,7 @@ fn pack_feature_16bit_negative_delta() {
     assert_eq!(i16::from_le_bytes([data[14], data[15]]), -500, "dy = -500 as signed int16");
 }
 
-// === Densify byte-pinning inside pack_feature (issue #95, item 4) ============
-// `densify` is unit-tested in isolation, but its effect *inside* a real
-// `pack_feature` — the bumped exterior Pt Count and the extra delta pair on the
-// wire — was never asserted at the byte level.
+// === Densify byte-pinning inside pack_feature ===============================
 
 #[test]
 fn pack_feature_densifies_long_segment_bytes() {
@@ -161,11 +150,10 @@ fn pack_feature_densifies_long_segment_bytes() {
     assert_eq!(i16::from_le_bytes([data[18], data[19]]), 27_500); // dy to endpoint
 }
 
-// === Numeric extremes (issue #95, item 5) ====================================
-// `to_udeg` is tested for ties-even but never near the i32 range; `pack_feature`
-// casts the anchor `as i32` and deltas `as i16`. A continent-spanning anchor must
-// survive the i32 cast, and the anchor-relative deltas (kept small by the node
-// frame) must stay correct even for huge absolute coordinates.
+// === Numeric extremes =======================================================
+// `pack_feature` casts the anchor `as i32` and deltas `as i16`. A continent-
+// spanning anchor must survive the i32 cast, and the anchor-relative deltas (kept
+// small by the node frame) stay correct even for huge absolute coordinates.
 
 #[test]
 fn pack_feature_extreme_anchor_survives_i32() {
@@ -204,9 +192,9 @@ fn pack_feature_antimeridian_negative_anchor() {
     assert_eq!(data[13] as i8, 100, "dy = +100 µdeg");
 }
 
-// === Chunk-size overflow drop (issue #95, item 6) ============================
-// `pack_chunk` drops a feature (and every feature after it) that would overflow the
-// chunk. Pin that the drop happens AND the padding/contents stay consistent.
+// === Chunk-size overflow drop ===============================================
+// `pack_chunk` drops a feature (and every feature after it) that would overflow
+// the chunk; pin that the padding/contents stay consistent.
 
 #[test]
 fn pack_chunk_drops_overflowing_feature_and_the_rest() {

@@ -5,18 +5,16 @@
 //! books a change once it exceeds [`ELE_DEADBAND_M`] from the last booked reference, then
 //! re-anchors there.
 //!
-//! **Why it's shared.** Three elevation paths must agree on this dead-band or their
-//! numbers silently diverge:
+//! **Why it's shared.** Three elevation paths must agree on this dead-band or their numbers
+//! silently diverge:
 //! - the [converter](crate::convert) precomputes a route's total ascent/descent,
 //! - the [elevation profile](crate::profile) integrates the same climb per column so the
 //!   "to climb" stat reaches 0 exactly at the route's end, and
 //! - the app's actually-ridden barometric climb must land near that precomputed ascent
 //!   when the rider follows the route.
 //!
-//! They previously held three separate `3.0` thresholds that had to mirror each other;
-//! this is the one definition they now share, so tuning the dead-band (e.g. against baro
-//! noise) can't leave one copy behind. Generic over the sample type so the converter's
-//! `f64` and the profile/app `f32` use the same code.
+//! One definition, so tuning the dead-band can't leave one copy behind. Generic over the
+//! sample type so the converter's `f64` and the profile/app `f32` share the code.
 
 use core::ops::{Add, Neg, Sub};
 

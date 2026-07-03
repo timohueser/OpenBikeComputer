@@ -1,15 +1,9 @@
-//! The Date & Time screen — the richest of the settings screens. A `GPS clock` slider switches
-//! between two row sets:
+//! The Date & Time screen. A `GPS clock` slider switches between two row sets:
 //!
-//! - **Manual** (GPS off): a `DATE` row (year / month / day) and a `TIME` row (hour : minute),
-//!   each a caption above its in-place steppers. Rotate moves the row cursor; press opens a value
-//!   row's first field; press steps field→field; back steps out.
-//! - **GPS** (GPS on): GPS supplies UTC, so the stamp is locked and only the `UTC offset` is
-//!   yours — turning it shifts the **local** time (UTC + offset). `GPS fix` and `Local time` are
-//!   read-only info rows the cursor **skips**.
-//!
-//! There is no save button: edits apply live and `back` exits — the implicit-save model the other
-//! settings screens use.
+//! - **Manual** (GPS off): a `DATE` row (year / month / day) and a `TIME` row (hour : minute).
+//! - **GPS** (GPS on): GPS supplies UTC, so the stamp is locked and only the `UTC offset` is yours —
+//!   turning it shifts the *local* time (UTC + offset). `GPS fix` and `Local time` are read-only info
+//!   rows the cursor skips.
 
 use core::fmt::Write;
 
@@ -61,8 +55,7 @@ impl RowKind {
         }
     }
 
-    /// Row height (px). The Date/Time rows are tall — a caption over big steppers (with arrow
-    /// clearance); the info rows stack a caption over a value.
+    /// Row height (px). The Date/Time rows are tall (a caption over big steppers with arrow clearance).
     fn height(self) -> i32 {
         match self {
             RowKind::Date | RowKind::Time => 78,
@@ -197,9 +190,8 @@ impl DateTimeScreen {
                     info_row(&mut cv, area, "GPS fix", &v);
                 }
                 RowKind::LocalTime => {
-                    // Local = UTC + offset, so this is what the offset stepper moves. The offset can
-                    // carry across midnight, so take the whole local stamp — *date and time* — from
-                    // `local_clock`, not the raw UTC date beside an offset-shifted hour.
+                    // The offset can carry across midnight, so take the whole local stamp (date and
+                    // time) from `local_clock`, not the raw UTC date beside an offset-shifted hour.
                     let local = s.local_clock();
                     let mut v: heapless::String<24> = heapless::String::new();
                     let _ = write!(
@@ -225,10 +217,8 @@ impl DateTimeScreen {
                     super::stepper_field(&mut cv, cell, &fmt_offset(s.utc_offset_min), editing == Some(0), Font::Label);
                 }
             }
-            // Hairline separators (menu style) with a wider gap so they sit clear of a selected
-            // row's amber bar: under the GPS-clock toggle, between DATE and TIME (manual), and
-            // above the Offset row (GPS, i.e. under the Local time info row) — grouping the clock
-            // source apart from the editable values.
+            // Hairline separators with a wider gap so they clear a selected row's amber bar,
+            // grouping the clock source apart from the editable values.
             let sep = matches!(kind, RowKind::Toggle | RowKind::Date | RowKind::LocalTime);
             if sep {
                 cv.hline(20, y + rh + 7, w - 40, palette::RULE);
@@ -404,8 +394,7 @@ mod tests {
         assert!(matches!(run(&mut scr, &mut s, Gesture::Back), Transition::Pop), "back again exits");
     }
 
-    /// The UTC offset shifts the **local** time shown in the Local time row, not the UTC anchor
-    /// (the fix the user reported) — the row now reads the whole `local_clock`.
+    /// The UTC offset shifts the local time in the Local time row, not the UTC anchor.
     #[test]
     fn offset_shifts_local_time_not_utc() {
         let mut s = Settings { gps_time: true, ..Settings::default() };
@@ -420,8 +409,8 @@ mod tests {
         assert_eq!((s.clock.hour, s.clock.minute), (12, 0), "the stored UTC anchor did not move");
     }
 
-    /// The Local time row's *date* rolls with the offset across midnight (issue #207, #2): it no
-    /// longer prints the raw UTC date beside an offset-shifted hour.
+    /// The Local time row's date rolls with the offset across midnight, not the raw UTC date beside
+    /// an offset-shifted hour.
     #[test]
     fn local_time_date_rolls_across_midnight() {
         let mut s = Settings { gps_time: true, ..Settings::default() };

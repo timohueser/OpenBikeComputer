@@ -282,7 +282,7 @@ fn rejects_bad_input() {
     assert_eq!(err(&bytes), Error::BadMagic);
 
     let mut bytes = two_chunk_route();
-    bytes[4] = 3; // unsupported version (v2 is accepted — the waypoint extension, #268)
+    bytes[4] = 3; // unsupported version (v2 is accepted — the waypoint extension)
     assert_eq!(err(&bytes), Error::BadVersion);
 
     let mut bytes = two_chunk_route();
@@ -290,11 +290,8 @@ fn rejects_bad_input() {
     assert_eq!(err(&bytes), Error::BadVersion);
 }
 
-/// Item 9 (bounds: chunk count) — **`chunk_count > MAX_ROUTE_CHUNKS` is rejected** before any
-/// chunk is read (`reader.rs`, the `h.chunk_count as usize > MAX_ROUTE_CHUNKS` guard). A
-/// corrupt header claiming more chunks than the resident index can hold must fail with
-/// `TooLarge`, not overrun the fixed [`MAX_ROUTE_CHUNKS`]-capacity buffer. `rejects_bad_input`
-/// only covered magic/version/too-short; this is one of the corrupt-SD-read guards.
+/// `chunk_count > MAX_ROUTE_CHUNKS` is rejected before any chunk is read: a corrupt header must
+/// fail with `TooLarge`, not overrun the fixed-capacity index buffer.
 #[test]
 fn rejects_chunk_count_over_cap() {
     let mut bytes = two_chunk_route();
@@ -305,11 +302,8 @@ fn rejects_chunk_count_over_cap() {
     assert_eq!(RouteIndex::read(&src).err(), Some(Error::TooLarge));
 }
 
-/// Item 9 (bounds: point count) — **a chunk with `point_count > MAX_POINTS_PER_CHUNK` is
-/// rejected** (`reader.rs`, the per-chunk `point_count as usize > MAX_POINTS_PER_CHUNK` guard).
-/// The decode buffer is a fixed [`MAX_POINTS_PER_CHUNK`]-capacity `heapless::Vec`; a chunk meta
-/// claiming more points must fail with `TooLarge` up front rather than during decode. Guards
-/// against a corrupt chunk index overflowing the decode buffer.
+/// A chunk with `point_count > MAX_POINTS_PER_CHUNK` is rejected up front with `TooLarge` rather
+/// than overflowing the fixed-capacity decode buffer during decode.
 #[test]
 fn rejects_point_count_over_cap() {
     let mut bytes = two_chunk_route();
@@ -321,11 +315,8 @@ fn rejects_point_count_over_cap() {
     assert_eq!(RouteIndex::read(&src).err(), Some(Error::TooLarge));
 }
 
-/// Item 9 (bounds: data region) — **a chunk whose `byte_offset + byte_len` runs past the
-/// source is rejected** (`reader.rs`, the `end > src.len()` guard). The reader bounds-checks
-/// each chunk's data region once at parse time so the hot decode path needs no per-read check;
-/// a truncated or corrupt file that points a chunk past its own end must fail with `BadOffset`,
-/// never read out of bounds. The last of item 9's corrupt-SD-read guards.
+/// A chunk whose `byte_offset + byte_len` runs past the source is rejected with `BadOffset` at
+/// parse time (so the hot decode path needs no per-read check), never reading out of bounds.
 #[test]
 fn rejects_chunk_data_region_past_end() {
     let mut bytes = two_chunk_route();

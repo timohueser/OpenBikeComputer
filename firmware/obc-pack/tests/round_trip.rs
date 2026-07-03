@@ -1,20 +1,15 @@
-//! End-to-end round-trip: pack with the real `obc-pack` serializer, read back
-//! with the real `obc-reader`.
+//! End-to-end round-trip: pack with the real `obc-pack` serializer, read back with
+//! the real `obc-reader`.
 //!
-//! The sibling suites pin each half against *separately* hand-coded bytes —
-//! `obc-pack/tests/serialize.rs` asserts raw byte offsets, `obc-reader/tests/
-//! format.rs` builds its own buffers by hand. That leaves a gap: a writer/reader
-//! disagreement on the *shared* format (LOD-table field order, header bbox
-//! lat/lon ordering, priority-flag encoding, the 8-/16-bit delta and hole
-//! encodings) keeps both suites green while every real map is corrupt. This test
-//! closes the loop — `serialize_lods()` → `Reader::new()` → decode — and asserts
-//! the styles, marker, LOD table, and per-feature geometry survive intact.
+//! The sibling suites pin each half against separately hand-coded bytes, so a
+//! writer/reader disagreement on the shared format (LOD-table field order, header
+//! bbox lat/lon ordering, priority flags, the delta/hole encodings) keeps both
+//! green while every real map is corrupt. This test closes that loop and asserts
+//! styles, marker, LOD table, and per-feature geometry survive intact.
 //!
-//! To make decoded microdegrees comparable to the inputs, every coordinate here
-//! is an exact integer microdegree fed in as `udeg / 1e6` (so banker's-rounded
+//! Every coordinate is an exact integer microdegree fed in as `udeg / 1e6` (so
 //! `to_udeg` recovers it exactly) and every segment stays under the 30 000-µdeg
-//! densify threshold, so no synthetic midpoints are inserted and point counts
-//! are preserved.
+//! densify threshold, so no midpoints are inserted and point counts are preserved.
 
 use obc_pack::{serialize_lods, Feature, Kind as PackKind, LodLayer, Node, Style};
 use obc_reader::{BBox, Kind as ReadKind, MapCache, MapTables, Reader, SliceSource, MAX_FEAT_PTS, MAX_FEAT_RINGS};

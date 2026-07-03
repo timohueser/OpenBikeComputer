@@ -20,12 +20,10 @@ use crate::wall_clock::WallClock;
 /// How the camera relates to the user's position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CameraMode {
-    /// The camera tracks the user — every fix recenters the map on it. This is
-    /// the device's normal navigation behavior.
+    /// The camera tracks the user — every fix recenters the map on it. The normal navigation mode.
     Follow,
-    /// The camera is driven manually (the simulator's mouse pan/zoom) and ignores
-    /// the user's position; fixes are still recorded for the marker. A host-only
-    /// debugging convenience.
+    /// The camera is driven manually (the simulator's mouse pan/zoom) and ignores the user's
+    /// position; fixes are still recorded for the marker.
     Free,
 }
 
@@ -75,14 +73,13 @@ pub struct Pan {
     pub frozen_course_rad: f32,
 }
 
-/// The device's view state: where the camera looks, how zoomed in it is, what
-/// mode it's in, and the last known user fix.
+/// The device's view state: where the camera looks, how zoomed in it is, what mode it's in, and
+/// the last known user fix.
 ///
-/// This is the shared core the host renders. The host owns the display size and
-/// the [`obc_render::MapRenderer`]/draw target; each frame it calls [`update`] with the
-/// platform's [`LocationSource`], then [`viewport`] to get the camera to render
-/// through. The split keeps display dimensions (240×320 on the device, a resized
-/// window on the host) out of the shared state.
+/// The shared core the host renders. The host owns the display size and the
+/// [`obc_render::MapRenderer`]/draw target; each frame it calls [`update`] with the platform's
+/// [`LocationSource`], then [`viewport`] for the camera to render through. The split keeps display
+/// dimensions out of the shared state.
 ///
 /// [`update`]: AppState::update
 /// [`viewport`]: AppState::viewport
@@ -113,17 +110,14 @@ pub struct AppState {
     /// map, so the orientation follows the compass instead of snapping to north; only
     /// adopted on ticks where it would actually drive the rotation (see [`App::tick`]).
     pub compass_deg: Option<f32>,
-    /// Battery charge, 0–100 %. [`App::tick`] writes it from the [`FuelGauge`](crate::FuelGauge)
-    /// each tick (a fixed-value stub until the real PMIC gauge is wired); the Home screen draws
-    /// the gauge from it, colouring the filled bars by level (red < 20 %, green > 80 %, amber
-    /// between) and the empty bars dim grey.
+    /// Battery charge, 0–100 %. [`App::tick`] writes it from the [`FuelGauge`](crate::FuelGauge);
+    /// the Home screen draws the gauge from it (filled bars coloured by level, empty bars dim grey).
     pub battery_pct: u8,
 }
 
 impl AppState {
-    /// A fresh state centered at `(cam_lon, cam_lat)` microdegrees with the given
-    /// `zoom`, in [`Follow`](CameraMode::Follow) mode (the device default) and no
-    /// fix yet.
+    /// A fresh state centered at `(cam_lon, cam_lat)` microdegrees with the given `zoom`, in
+    /// [`Follow`](CameraMode::Follow) mode and no fix yet.
     pub fn new(cam_lon: i32, cam_lat: i32, zoom: f32) -> Self {
         AppState {
             cam_lon,
@@ -134,27 +128,22 @@ impl AppState {
             user_fix: None,
             pan: None,
             compass_deg: None,
-            // Stand-in until a [`FuelGauge`](crate::FuelGauge) feeds a real reading; the host's
-            // boot stub (75 % on device) overwrites it on the first tick.
+            // Stand-in until a [`FuelGauge`](crate::FuelGauge) feeds a real reading on the first tick.
             battery_pct: 75,
         }
     }
 
-    /// Advance one tick: poll the location source and, in
-    /// [`Follow`](CameraMode::Follow) mode, recenter the camera on the new fix.
-    /// In [`Free`](CameraMode::Free) mode the fix is still recorded (for the
-    /// marker) but the camera is left wherever the host's pan/zoom put it.
+    /// Advance one tick: poll the location source and, in [`Follow`](CameraMode::Follow) mode,
+    /// recenter the camera on the new fix. In [`Free`](CameraMode::Free) mode the fix is still
+    /// recorded (for the marker) but the camera stays where the host's pan/zoom put it. No fix this
+    /// tick leaves everything untouched (a dropout holds the last camera position).
     ///
-    /// No fix this tick leaves everything untouched, so a momentary GPS dropout
-    /// holds the last camera position rather than snapping anywhere.
-    ///
-    /// Returns the new [`Fix`] when one arrived this tick (so [`App::tick`] can feed it to
-    /// the map-matcher and ride accumulators), or `None` when there was no fresh fix.
+    /// Returns the new [`Fix`] when one arrived this tick, else `None`.
     pub fn update(&mut self, loc: &mut dyn LocationSource) -> Option<Fix> {
         let fix = loc.poll()?;
         self.user_fix = Some(fix);
-        // Recenter only when actually following — pan mode runs in Free, but guard on
-        // `pan` too so a frozen camera can never be yanked back by an incoming fix.
+        // Recenter only when following — guard on `pan` too so a frozen camera can't be yanked back
+        // by an incoming fix.
         if self.mode == CameraMode::Follow && self.pan.is_none() {
             self.cam_lon = fix.lon;
             self.cam_lat = fix.lat;
@@ -162,13 +151,9 @@ impl AppState {
         Some(fix)
     }
 
-    /// Project the current camera into a [`Viewport`] for a `w`×`h` pixel display.
-    /// The host supplies its own dimensions, so the same state renders correctly
-    /// to the 240×320 device panel and to a resizable simulator window.
-    ///
-    /// In [`heading_up`](AppState::heading_up) mode the projection is rotated so
-    /// the last fix's `course` points to the top of the screen; with no course (or
-    /// north-up) it stays north-up.
+    /// Project the current camera into a [`Viewport`] for a `w`×`h` pixel display. In
+    /// [`heading_up`](AppState::heading_up) mode the projection rotates so the last fix's `course`
+    /// points to the top of the screen; with no course (or north-up) it stays north-up.
     pub fn viewport(&self, w: f32, h: f32) -> Viewport {
         Viewport::new_rotated(w, h, self.cam_lon, self.cam_lat, self.zoom, self.course_rad())
     }
@@ -282,33 +267,27 @@ impl AppState {
 /// turn-by-turn riding rather than the whole-route overview.
 const RIDING_MPP: f32 = 0.5;
 
-/// Camera travel **per encoder detent** in pan mode, in screen pixels. A *screen*
-/// amount (not ground metres), so panning is finer when zoomed in. The single knob
-/// for pan speed; tune here.
+/// Camera travel **per encoder detent** in pan mode, in screen pixels — a *screen* amount (not
+/// ground metres), so panning is finer when zoomed in.
 pub const PAN_STEP_PX: f32 = 40.0;
 
-/// Capacity of [`handle_input`](App::handle_input)'s per-frame gesture buffer — the
-/// gestures recognised from one frame's raw input, held while `self.input` is borrowed and
-/// applied after. One frame yields at most one gesture per raw event (the input queue is
-/// bounded — `ButtonInput`'s is 8) plus the single per-frame long-press, so this never
-/// overflows; the slack matches the cross-executor channel the firmware's two-plane path uses.
+/// Capacity of [`handle_input`](App::handle_input)'s per-frame gesture buffer. One frame yields at
+/// most one gesture per raw event (the input queue is bounded — `ButtonInput`'s is 8) plus the
+/// single per-frame long-press, so this never overflows.
 const GESTURE_BUF: usize = 16;
 
 /// The whole device application, ready to run a frame.
 ///
-/// The single entry point both hosts share: the simulator and the firmware each
-/// construct one `App`, then per frame [`tick`](App::tick) it with their
-/// platform's [`LocationSource`], feed raw controls through
-/// [`handle_input`](App::handle_input) with their [`InputSource`] + millis clock,
-/// and [`render_frame`](App::render_frame) it to their display. `App` owns the
-/// screen stack, the input + overlay plane ([`InputPlane`]), the camera [`AppState`],
-/// the ride [`Activity`], and the reusable [`MapRenderer`]; each frame it runs
-/// poll-inputs → top-screen `handle` → apply `Transition` → draw the stack.
+/// The single entry point both hosts share: each constructs one `App`, then per frame
+/// [`tick`](App::tick)s it with their [`LocationSource`], feeds raw controls through
+/// [`handle_input`](App::handle_input), and [`render_frame`](App::render_frame)s to their display.
+/// `App` owns the screen stack, the input + overlay plane ([`InputPlane`]), the camera
+/// [`AppState`], the ride [`Activity`], and the reusable [`MapRenderer`].
 ///
-/// The firmware can also split the two planes across executors — recognising gestures on a
+/// The firmware can split the two planes across executors — recognising gestures on a
 /// high-priority [`InputPlane`] that preempts the map render and feeding them back through
-/// [`apply_gesture`](App::apply_gesture) (issue #48); [`handle_input`](App::handle_input) is
-/// just those halves fused for the single-loop hosts.
+/// [`apply_gesture`](App::apply_gesture); [`handle_input`](App::handle_input) is those halves fused
+/// for the single-loop hosts.
 ///
 /// ```ignore
 /// let mut app = App::new(AppState::new(cx, cy, zoom));
@@ -329,23 +308,20 @@ const GESTURE_BUF: usize = 16;
 /// }
 /// ```
 pub struct App {
-    /// The camera / orientation / last-fix state — public so the host's mouse
-    /// pan/zoom and control panel can read and adjust it directly (the Map screen
-    /// renders from the very same state).
+    /// The camera / orientation / last-fix state — public so the host's mouse pan/zoom and control
+    /// panel can read and adjust it directly.
     pub state: AppState,
     /// The ride mode + tracking accumulators.
     pub activity: Activity,
-    /// The resident route catalog (summaries), populated by the host from its store
-    /// ([`set_routes`](App::set_routes)). The Route menu lists it; `active_route`
-    /// indexes it.
+    /// The resident route catalog (summaries), populated by the host ([`set_routes`](App::set_routes)).
+    /// The Route menu lists it; `active_route` indexes it.
     catalog: Catalog,
-    /// The screen stack (root = Home). The top screen receives input; drawing
-    /// starts from the topmost opaque screen so overlays composite over the map.
+    /// The screen stack (root = Home). The top screen receives input; drawing starts from the
+    /// topmost opaque screen so overlays composite over the map.
     stack: Stack,
-    /// The active route's resident elevation profile, rebuilt on route load (it streams
-    /// every chunk, so never per frame) and handed to the Statistics screen via
-    /// [`Render`]. `None` when no route is loaded; [`profile_route`](App::profile_route)
-    /// tracks which route it was built for.
+    /// The active route's resident elevation profile, rebuilt on route load (it streams every
+    /// chunk, so never per frame). `None` when no route is loaded;
+    /// [`profile_route`](App::profile_route) tracks which route it was built for.
     profile: Option<Profile>,
     /// The [`active_route`](Activity::active_route) the cached [`profile`](App::profile)
     /// was built for, so a route change triggers exactly one rebuild.
@@ -364,99 +340,83 @@ pub struct App {
     /// The travelled-path breadcrumb (RAM, bounded), fed each logged fix in
     /// [`tick`](App::tick) and drawn on the Map; cleared when `ride_session` changes.
     breadcrumb: Breadcrumb,
-    /// Reused renderer; clears (not frees) its scratch each frame, so steady-state
-    /// rendering does no allocation — important on the MCU.
+    /// Reused renderer; clears (not frees) its scratch each frame, so steady-state rendering does no
+    /// allocation — important on the MCU.
     renderer: MapRenderer,
-    /// The input + overlay plane: the gesture recognizer, the long-press hint overlay, and
-    /// the live hold-progress. Relocated off `App` into [`InputPlane`] (issue #48) so the
-    /// firmware can run it on a *separate, high-priority* executor that preempts the map
-    /// render — keeping input + the overlay responsive while a map frame draws. `App` keeps
-    /// this one for the convenience [`handle_input`](App::handle_input) path (the sim, the
-    /// single-executor firmware); the two-plane firmware drives its own standalone
-    /// [`InputPlane`] and feeds the recognised gestures back through
+    /// The input + overlay plane: gesture recognizer, long-press hint overlay, live hold-progress.
+    /// Split off `App` so the firmware can run it on a *separate, high-priority* executor that
+    /// preempts the map render. `App` keeps this one for the [`handle_input`](App::handle_input)
+    /// path; the two-plane firmware drives its own and feeds gestures back through
     /// [`apply_gesture`](App::apply_gesture).
     input: InputPlane,
     /// Millis at the last [`handle_input`](App::handle_input) /
-    /// [`advance_animations`](App::advance_animations) — the **map plane's** clock, passed to
-    /// draw and to the [`Ctx`](screen::Ctx) a gesture is applied through. Distinct from the
-    /// input plane's own clock in [`InputPlane`].
+    /// [`advance_animations`](App::advance_animations) — the **map plane's** clock, distinct from
+    /// the input plane's own clock.
     now_ms: u32,
-    /// Accumulated **map-plane** repaint demand since the last [`take_dirty`](App::take_dirty):
-    /// set as [`tick`](App::tick) / [`handle_input`](App::handle_input) mutate map-affecting
-    /// state, drained once per frame. Starts `true` so the host's first frame paints. (The
-    /// overlay-plane flag isn't accumulated here — it's derived from the live hold-bulge state
-    /// at drain time, owned by [`InputPlane`]; see [`take_dirty`](App::take_dirty).)
+    /// Accumulated **map-plane** repaint demand since the last [`take_dirty`](App::take_dirty),
+    /// drained once per frame. Starts `true` so the host's first frame paints. (The overlay flag
+    /// isn't accumulated here — it's derived from the live hold-bulge state at drain time.)
     map_dirty: bool,
     /// The persisted device settings, seeded from the host's store at boot
     /// ([`set_settings`](App::set_settings)) and edited in place by the settings screens.
     settings: Settings,
-    /// The live wall clock: [`settings.clock`](Settings::clock) (a set-point) advanced by the
-    /// elapsed monotonic millis since it was stamped — there's no RTC, so this is how a static
-    /// readout actually ticks. Re-stamped whenever the clock set-point changes (a Date & Time edit
-    /// today, a GPS fix later) in [`set_settings`](App::set_settings) /
-    /// [`apply_gesture`](App::apply_gesture); read into [`Render::now`] for the draw and into
-    /// [`animate`](Screen::animate) for the once-a-minute repaint. See [`WallClock`].
+    /// The live wall clock: [`settings.clock`](Settings::clock) (a set-point) advanced by elapsed
+    /// monotonic millis — there's no RTC, so this is how a static readout ticks. Re-stamped whenever
+    /// the set-point changes in [`set_settings`](App::set_settings) /
+    /// [`apply_gesture`](App::apply_gesture). See [`WallClock`].
     wall_clock: WallClock,
     /// Whether a [`settings`](App::settings) edit is **pending persistence**; set by
-    /// [`apply_gesture`](App::apply_gesture)'s before/after compare, and drained by
+    /// [`apply_gesture`](App::apply_gesture)'s before/after compare, drained by
     /// [`take_settings_dirty`] once the user leaves the settings subtree (the save is debounced to
-    /// screen exit, not fired per detent — see there). Starts `false`: the boot value either came from
-    /// the store or is the default, so nothing needs writing until the user actually changes something.
+    /// screen exit, not fired per detent). Starts `false` — the boot value came from the store or
+    /// the default.
     ///
     /// [`take_settings_dirty`]: App::take_settings_dirty
     settings_dirty: bool,
     /// Host-supplied encoder hold-progress (0.0–1.0) for the in-screen confirm fills (the factory
-    /// Reset bar; the [`RideControl`](crate::screen::RideControl) confirm rows). `None` on the
-    /// single-loop hosts (the sim), where the render reads progress from `App`'s own
-    /// [`InputPlane`]. The **two-plane firmware** recognises holds on a *separate* high-priority
-    /// `InputPlane`, so `App`'s own one stays at `0` there; that host feeds the live progress in
-    /// each frame via [`set_hold_progress`](App::set_hold_progress). Cleared back when the host
-    /// reports `0` (hold released), so it tracks the live hold either way.
+    /// Reset bar; [`RideControl`](crate::screen::RideControl) confirm rows). `None` on the
+    /// single-loop hosts (the render reads `App`'s own [`InputPlane`]); the **two-plane firmware**
+    /// feeds live progress in each frame via [`set_hold_progress`](App::set_hold_progress), since
+    /// its holds live on a separate plane `App`'s own never sees.
     hold_progress_override: Option<f32>,
-    /// Millis of the last battery [`FuelGauge`](crate::FuelGauge) poll, or `None` before the
-    /// first. The gauge is read on a slow cadence ([`BATTERY_POLL_MS`]) — *not* every tick — so a
-    /// real PMIC read never spins the I²C bus at the frame rate; battery charge changes far too
-    /// slowly to want more. See [`tick`](App::tick).
+    /// Millis of the last battery [`FuelGauge`](crate::FuelGauge) poll, or `None` before the first.
+    /// Read on a slow cadence ([`BATTERY_POLL_MS`]) — *not* every tick — so a real PMIC read never
+    /// spins the I²C bus at the frame rate.
     last_battery_poll_ms: Option<u32>,
-    /// Last ambient temperature (°C) from the [`TemperatureSource`](crate::TemperatureSource), or
-    /// `None` before the first sample / when no thermometer is wired. Held across ticks (a `None`
-    /// poll keeps the last value). No screen consumes it yet (issue #218 added the seam; a
-    /// Statistics-grid readout is a follow-up), so it lives **off** [`AppState`] — storing it there
-    /// would gate a needless map redraw on every reading, breaking render-on-demand (#47). Read via
+    /// Last ambient temperature (°C), or `None` before the first sample / no thermometer. Held
+    /// across ticks. No screen consumes it yet, so it lives **off** [`AppState`] — storing it there
+    /// would gate a needless map redraw on every reading, breaking render-on-demand. Read via
     /// [`temperature_c`](App::temperature_c).
     temp_c: Option<f32>,
-    /// Map-plane millis of the last accepted GPS fix, or `None` before the first ever (issue #224).
-    /// Drives the "No GPS Fix" banner via [`has_live_fix`](App::has_live_fix): a fix older than the
-    /// staleness window (or none yet) means the banner shows. Lives **off** [`AppState`] — like
-    /// [`temp_c`](App::temp_c) — so advancing it on every fix (including a stationary one that moves
-    /// nothing) never trips the `state != state_before` redraw gate (#47/#209); the banner's own
-    /// repaint edge is surfaced from [`advance_animations`](App::advance_animations) instead.
+    /// Map-plane millis of the last accepted GPS fix, or `None` before the first ever. Drives the
+    /// "No GPS Fix" banner via [`has_live_fix`](App::has_live_fix). Lives **off** [`AppState`] —
+    /// like [`temp_c`](App::temp_c) — so advancing it on every fix (incl. a stationary one) never
+    /// trips the `state != state_before` redraw gate; the banner's own repaint edge comes from
+    /// [`advance_animations`](App::advance_animations) instead.
     last_fix_ms: Option<u32>,
-    /// The no-fix state at the previous [`advance_animations`](App::advance_animations), so the timer
-    /// edge that flips the "No GPS Fix" banner (a fix going stale with no new sample, or returning)
-    /// dirties the live-data views exactly once. Starts `true` — there is no fix at boot.
+    /// The no-fix state at the previous [`advance_animations`](App::advance_animations), so the
+    /// timer edge that flips the "No GPS Fix" banner dirties the live-data views exactly once.
+    /// Starts `true` — no fix at boot.
     prev_no_fix: bool,
 }
 
-/// A fix older than this (map-plane millis) means "no current GPS fix" (issue #224). The window is
-/// the larger of this floor and a few fix intervals (see [`App::no_fix_window_ms`]), so a long
-/// configured interval doesn't false-trip the banner between its own expected fixes.
+/// A fix older than this (map-plane millis) means "no current GPS fix". The window is the larger of
+/// this floor and a few fix intervals (see [`App::no_fix_window_ms`]), so a long configured
+/// interval doesn't false-trip the banner between its own expected fixes.
 const NO_FIX_FLOOR_MS: u32 = 5_000;
 /// How many configured fix intervals of silence count as "lost" before the floor takes over.
 const NO_FIX_INTERVALS: u32 = 3;
 
-/// How often [`App::tick`] reads the battery [`FuelGauge`](crate::FuelGauge). Battery state of
-/// charge drifts over minutes/hours, so a ~30 s cadence keeps the Home gauge fresh while reading
-/// the PMIC a few times a minute at most — the per-frame poll would be pure waste (and bus
-/// traffic on a real gauge). Independent of redraws: an unchanged reading repaints nothing.
+/// How often [`App::tick`] reads the battery [`FuelGauge`](crate::FuelGauge). Charge drifts over
+/// minutes, so a ~30 s cadence keeps the Home gauge fresh while reading the PMIC a few times a
+/// minute at most. Independent of redraws: an unchanged reading repaints nothing.
 const BATTERY_POLL_MS: u32 = 30_000;
 
 impl App {
-    /// Build the app straight onto the live map: the stack is `[Home, Map]`, with Home
-    /// the always-present root that Finish / Discard return to, and no route loaded — the
-    /// map shows by itself until one is picked. This is the map-first constructor the
-    /// simulator uses for headless `--png` renders (and the tests); the interactive GUI
-    /// and the device both boot via [`new_idle`](App::new_idle) (Home / Idle).
+    /// Build the app straight onto the live map: stack `[Home, Map]`, Home the always-present root
+    /// that Finish / Discard return to, no route loaded. The map-first constructor the simulator
+    /// uses for headless `--png` renders (and the tests); the GUI and device boot via
+    /// [`new_idle`](App::new_idle).
     pub fn new(state: AppState) -> Self {
         let mut app = Self::new_idle(state);
         app.activity = Activity::new(Mode::Riding);
@@ -499,25 +459,22 @@ impl App {
         }
     }
 
-    /// Build the idle power-on [`App`] **in place** at `slot` — the by-reference
-    /// twin of [`new_idle`](App::new_idle), and the placement path the firmware uses
-    /// to construct the ~200 KB resident `App` straight into its reserved memory region
-    /// without ever materializing it (or its renderer scratch) on the 192 KB stack.
+    /// Build the idle power-on [`App`] **in place** at `slot` — the by-reference twin of
+    /// [`new_idle`](App::new_idle), the placement path the firmware uses to construct the ~200 KB
+    /// resident `App` straight into its reserved region without materializing it (or its renderer
+    /// scratch) on the 192 KB stack.
     ///
-    /// `new_idle` returns the `App` by value, which only stays off the stack thanks to
-    /// the optimizer's return-value optimization — a fragile guarantee that a debug
-    /// build, a different toolchain, or a tighter target could drop, overflowing the
-    /// stack (issue #67). This writes each field through `addr_of_mut!` exactly once,
-    /// so no by-value `App` is ever formed: there is no stack temporary to elide. The
-    /// only field big enough to matter is the renderer, zeroed in place via
-    /// [`MapRenderer::init_zeroed`] rather than built-and-moved; the rest are small.
+    /// `new_idle` returns by value and only stays off the stack via return-value optimization — a
+    /// fragile guarantee a debug build or different toolchain could drop, overflowing the stack.
+    /// This writes each field through `addr_of_mut!` exactly once, so no by-value `App` is ever
+    /// formed. The renderer (the only large field) is zeroed in place via
+    /// [`MapRenderer::init_zeroed`] rather than built-and-moved.
     ///
     /// The end state is identical to `new_idle`'s — keep the two in sync.
     ///
     /// # Safety
-    /// `slot` must be a valid, aligned `*mut App` the caller exclusively owns and into
-    /// which a full `App` may be written (e.g. the device's reserved memory region). On
-    /// return the slot is fully initialized; read it via `&mut *slot`.
+    /// `slot` must be a valid, aligned `*mut App` the caller exclusively owns and into which a full
+    /// `App` may be written. On return the slot is fully initialized; read it via `&mut *slot`.
     pub unsafe fn init_idle(slot: *mut App, state: AppState) {
         use core::ptr::addr_of_mut;
         // SAFETY: `slot` is a valid, owned, aligned `App` region (caller's contract).
@@ -557,20 +514,17 @@ impl App {
     }
 
     /// Build the **map-first** [`App`] in place at `slot` — the by-reference twin of
-    /// [`new`](App::new), exactly as [`init_idle`](App::init_idle) is the twin of
-    /// [`new_idle`](App::new_idle). Initialises the idle power-on state, then drops straight onto
-    /// the live Map (stack `[Home, Map]`, Riding) so the map shows without any navigation — the
-    /// placement path a firmware bring-up uses to put the full map on glass before buttons exist
-    /// (issue #125), and the in-place analog of the simulator's headless `--png` constructor.
+    /// [`new`](App::new), as [`init_idle`](App::init_idle) is the twin of
+    /// [`new_idle`](App::new_idle). Initialises the idle state, then drops straight onto the live
+    /// Map (stack `[Home, Map]`, Riding) — the placement path a firmware bring-up uses to put the
+    /// map on glass before buttons exist.
     ///
     /// # Safety
-    /// Same contract as [`init_idle`](App::init_idle): `slot` is a valid, aligned, exclusively
-    /// owned `*mut App` into which a full `App` may be written. On return it is fully initialised.
+    /// Same contract as [`init_idle`](App::init_idle).
     pub unsafe fn init_map(slot: *mut App, state: AppState) {
-        // SAFETY: caller's contract (a valid, owned, aligned slot). `init_idle` fully initialises
-        // it, so thereafter `&mut *slot` is a sound `&mut App` and the map-first tail is plain safe
-        // mutation — the exact two statements `new` runs after `new_idle` (assignment, so the just
-        // -written Idle activity is dropped, not leaked).
+        // SAFETY: caller's contract. `init_idle` fully initialises the slot, so thereafter
+        // `&mut *slot` is sound and the map-first tail is plain safe mutation (assignment drops the
+        // just-written Idle activity, not leaks it).
         unsafe { Self::init_idle(slot, state) };
         let app = unsafe { &mut *slot };
         app.activity = Activity::new(Mode::Riding);
@@ -579,17 +533,14 @@ impl App {
 
     /// Advance one tick from the sensors.
     ///
-    /// Polls the GPS [`LocationSource`] (recenters the camera in Follow mode) and, with a
-    /// route loaded, snaps the fix onto it via [`RouteMatch`] and integrates ridden distance
-    /// / moving time. Separately polls the barometer for climb — the two streams are
-    /// asynchronous, so each accumulates on its own cadence and a missing sample just
-    /// contributes nothing this tick. Sensors arrive bundled in [`Sensors`].
+    /// Polls the GPS [`LocationSource`] (recenters the camera in Follow mode) and, with a route
+    /// loaded, snaps the fix onto it via [`RouteMatch`] and integrates ridden distance / moving
+    /// time. Separately polls the barometer for climb — the streams are asynchronous, so each
+    /// accumulates on its own cadence.
     ///
-    /// `clock` is the [`RideClock`] (fix-consistent millis — wall-clock on device, playback
-    /// time in the sim) so moving-time isn't scaled by the replay multiplier; button holds use
-    /// the separate [`InputClock`] in [`handle_input`](App::handle_input). Loading or swapping
-    /// a route ([`Activity::active_route`] change) resets the matcher and ride totals here,
-    /// once per load.
+    /// `clock` is the [`RideClock`] (fix-consistent millis) so moving-time isn't scaled by the sim's
+    /// replay multiplier; button holds use [`InputClock`] in [`handle_input`](App::handle_input).
+    /// Loading or swapping a route resets the matcher and ride totals here, once per load.
     pub fn tick(&mut self, clock: RideClock, sensors: Sensors, route: Option<&RouteReader>) {
         let now_ms = clock.0;
         // The matcher follows the *navigated route*: a load or a "Swap route only" re-locks it.
@@ -606,11 +557,10 @@ impl App {
             self.ride_session = self.activity.session;
             self.map_dirty = true; // the breadcrumb cleared — the map's travelled trail changed
         }
-        // Mirror the active route's length for the riding views (0 when none loaded). A change
-        // here means the *drawable* route just appeared or vanished — a load, or (on the device)
-        // a transient SD glitch recovering, where the geometry becomes streamable a frame or two
-        // after the load. Dirty the map so the route line is painted (or cleared) even on a frame
-        // with no fresh fix to trigger it, closing an under-redraw gap independent of `active_route`.
+        // Mirror the active route's length for the riding views (0 when none loaded). A change here
+        // means the *drawable* route appeared or vanished — a load, or a transient SD glitch
+        // recovering where the geometry becomes streamable a frame or two later. Dirty the map so
+        // the route line is painted (or cleared) even on a frame with no fresh fix.
         let route_total_before = self.activity.route_total_m;
         self.activity.route_total_m = route.map_or(0, |r| r.total_distance_m);
         if self.activity.route_total_m != route_total_before {
@@ -618,12 +568,9 @@ impl App {
         }
 
         let Sensors { loc, altimeter, temperature, clock, compass, track, fuel } = sensors;
-        // Battery state of charge from the PMIC fuel gauge, on a slow ~30 s cadence — *not* every
-        // tick, so a real I²C read never spins at the frame rate (battery charge changes far too
-        // slowly to want more). And a reading only repaints the Home screensaver — the one screen
-        // that draws the gauge — when the level **actually changes**: an unchanged reading (the
-        // common case, and always so for a constant stub) costs nothing and redraws nothing. The
-        // `shows_live_data` gate below is for the riding views, not Home, so dirty it here.
+        // Battery charge from the PMIC gauge, on the slow ~30 s cadence. A reading only repaints
+        // Home — the one screen that draws the gauge — when the level **actually changes** (the
+        // `shows_live_data` gate below is for the riding views, not Home, so dirty it here).
         let battery_due = self.last_battery_poll_ms.is_none_or(|last| now_ms.wrapping_sub(last) >= BATTERY_POLL_MS);
         if battery_due {
             self.last_battery_poll_ms = Some(now_ms);
@@ -637,60 +584,49 @@ impl App {
                 }
             }
         }
-        // The state before this tick's *fix*, snapshotted **after** the battery poll above so a pure
-        // battery delta is never mistaken for a fix that moved the camera / marker / heading: a fresh
-        // fix that actually moves one of those is detected below by one `AppState` comparison (it's
-        // `Copy` + `PartialEq`). `battery_pct` lives in `AppState` but is drawn only on Home, so the
-        // gauge repaint is the Home-only gate above — counting it toward the `shows_live_data` redraw
-        // would force a full ~97 ms map render every 30 s on the riding views that don't draw it
-        // (issue #209). Nothing between here and the fix mutates `self.state` except that poll, so the
-        // only thing this placement excludes is the battery delta.
+        // The state before this tick's *fix*, snapshotted **after** the battery poll so a pure
+        // battery delta is never mistaken for a fix that moved the camera / marker / heading (which
+        // one `AppState` comparison below detects). `battery_pct` lives in `AppState` but is drawn
+        // only on Home, so it has the Home-only gate above; counting it toward `shows_live_data`
+        // would force a full ~97 ms map render every 30 s on the riding views that don't draw it.
         let state_before = self.state;
-        // Barometric altitude on its own cadence → climb + the elevation stamped on the log.
-        // Polled before the fix so a point logged this tick carries the freshest altitude.
+        // Barometric altitude → climb + the elevation stamped on the log. Polled before the fix so a
+        // point logged this tick carries the freshest altitude.
         if let Some(altimeter) = altimeter {
             if let Some(alt) = altimeter.poll() {
                 self.activity.record_altitude(alt);
             }
         }
-        // Ambient temperature (issue #218): on the device the BMP581 reports it free alongside the
-        // per-fix pressure read. Stored off `AppState` (no screen draws it yet) so it never gates a
-        // map redraw; `None` between samples holds the last value.
+        // Ambient temperature: on device the BMP581 reports it free alongside the per-fix pressure
+        // read. Stored off `AppState` (no screen draws it yet) so it never gates a map redraw.
         if let Some(temperature) = temperature {
             if let Some(c) = temperature.poll() {
                 self.temp_c = Some(c);
             }
         }
-        // GPS UTC time → the wall clock (issue #223), but **only** when the rider chose "Set from
-        // GPS". The receiver resolves time before a 3D position, so this lands during acquisition —
-        // the clock can be right while the "No GPS Fix" banner is still up. Not flagged
-        // `settings_dirty`: we don't persist on every fix (the set-point self-heals from GPS each
-        // boot, and a per-second RRAM write would thrash the store — it persists only on a manual
-        // edit). Drained only in GPS mode, so a manual clock is never overwritten; the freshest
-        // stamp then applies the instant the user toggles GPS on.
+        // GPS UTC time → the wall clock, but **only** in "Set from GPS" mode (so a manual clock is
+        // never overwritten). The receiver resolves time before a 3D position, so this lands during
+        // acquisition — the clock can be right while the "No GPS Fix" banner is still up. Not flagged
+        // `settings_dirty`: don't persist on every fix (the set-point self-heals from GPS each boot;
+        // a per-second RRAM write would thrash the store).
         if self.settings.gps_time {
             if let Some(t) = clock.and_then(|c| c.poll()) {
                 self.settings.clock = t.utc;
                 // Stamp against the **map-plane** clock `self.now_ms` (not the sensor-timebase
-                // `RideClock`), since that's the clock `WallClock::now` is later read with — the same
-                // base `set_settings` / the manual edit re-stamp through; on the device the two
-                // coincide (`advance_animations(now)` runs right before `tick(now)`). Back-date it by
-                // the seconds-into-the-minute so the displayed minute rolls at the true instant, not
-                // up to a fix-interval late (a 30 s interval would otherwise lag the rollover). A
-                // clock-bearing screen's `MinuteTicker` repaints when the minute changes, so a
-                // correcting stamp surfaces on the next frame.
+                // `RideClock`), the clock `WallClock::now` is later read with. Back-date by the
+                // seconds-into-the-minute so the displayed minute rolls at the true instant, not up
+                // to a fix-interval late.
                 let epoch = self.now_ms.wrapping_sub(t.second as u32 * 1000);
                 self.wall_clock.set(self.settings.local_clock(), epoch);
             }
         }
-        // GPS fix → camera + map-match + ridden distance/time (only on a fresh fix, so a
-        // dropout doesn't re-run the matcher or double-count). A *logged* fix also feeds the
-        // breadcrumb + the ride log.
+        // GPS fix → camera + map-match + ridden distance/time (only on a fresh fix, so a dropout
+        // doesn't re-run the matcher or double-count). A *logged* fix also feeds the breadcrumb +
+        // ride log.
         if let Some(fix) = self.state.update(loc) {
-            // Stamp the fix-freshness clock (issue #224) against `self.now_ms` — the map-plane clock
-            // the banner's staleness check + render read with — so a stamp and a check agree (on the
-            // device the two coincide, as for the GPS-clock epoch). Off `AppState`, so a stationary
-            // fix that moves nothing still doesn't force a redraw here.
+            // Stamp the fix-freshness clock against `self.now_ms` — the map-plane clock the banner's
+            // staleness check + render read with. Off `AppState`, so a stationary fix that moves
+            // nothing doesn't force a redraw here.
             self.last_fix_ms = Some(self.now_ms);
             if let Some(route) = route {
                 let m = self.route_match.update(fix.lon, fix.lat, route);
@@ -710,13 +646,11 @@ impl App {
                 }
             }
         }
-        // Electronic compass → the heading when the GPS can't give a course. Polled after the fix
-        // so it sees this tick's movement state, and adopted into `compass_deg` *only* when it
-        // would actually drive the orientation: heading-up, not panning, and the latest fix has no
-        // course (the rider is stopped). Storing it in any other state — moving, north-up, or
-        // panning, where `course_rad` ignores it — would change `state` on every reading and force
-        // a needless map redraw, breaking the render-on-demand contract (#47). When it *is*
-        // adopted, the `state != state_before` check below redraws only if the heading changed.
+        // Electronic compass → the heading when the GPS can't give a course. Polled after the fix so
+        // it sees this tick's movement state, and adopted *only* when it would actually drive the
+        // orientation: heading-up, not panning, and the latest fix has no course (stopped). Storing
+        // it in any other state (where `course_rad` ignores it) would change `state` on every
+        // reading and force a needless map redraw.
         if let Some(compass) = compass {
             if let Some(heading) = compass.poll() {
                 let stopped = self.state.user_fix.and_then(|f| f.course).is_none();
@@ -725,22 +659,19 @@ impl App {
                 }
             }
         }
-        // A fresh fix that actually moved the camera, marker or heading dirties the map — but
-        // only on a screen that *draws* live data (the Map / Statistics riding views). On the
-        // Home screensaver and the menus the camera still follows the fix, yet nothing they draw
-        // uses it, so a fix there must not redraw them (the "static Home does zero map renders"
-        // criterion). The `AppState` comparison also makes a stationary fix that changed nothing
-        // a no-op. (The breadcrumb only grows on a *moving* logged fix, which moved `user_fix`
-        // too, so it's covered by this same comparison — no separate breadcrumb check needed.)
+        // A fresh fix that moved the camera, marker or heading dirties the map — but only on a
+        // screen that *draws* live data (Map / Statistics). On Home and the menus the camera still
+        // follows the fix, but nothing they draw uses it, so a fix there must not redraw them. The
+        // `AppState` comparison also makes a stationary fix a no-op. (The breadcrumb only grows on a
+        // moving logged fix, which moved `user_fix` too, so it's covered by the same comparison.)
         if self.state != state_before && self.shows_live_data() {
             self.map_dirty = true;
         }
-        // The "No GPS Fix" banner (issue #224) flips on a *timer* — a fix going stale with no new
-        // sample (lost), or the first/returning fix (acquired) — which the `state` comparison above
-        // can miss: it's tracked off `AppState` so a stationary fix never forces a redraw, and a fix
-        // lost to silence is no fix at all. Surface that edge here, at the **end** of `tick` (after
-        // `last_fix_ms` is stamped, every frame), so it's same-frame and reads the exact `no_fix` the
-        // render will — dirtying only the live-data views that draw the banner, exactly once per flip.
+        // The "No GPS Fix" banner flips on a *timer* — a fix going stale (lost), or the
+        // first/returning fix (acquired) — which the `state` comparison can miss (a fix lost to
+        // silence is no state change at all). Surface that edge at the **end** of `tick` (after
+        // `last_fix_ms` is stamped, every frame) so it reads the exact `no_fix` the render will,
+        // dirtying only the live-data views, once per flip.
         let no_fix = !self.has_live_fix(self.now_ms);
         if no_fix != self.prev_no_fix {
             self.prev_no_fix = no_fix;
@@ -750,47 +681,41 @@ impl App {
         }
     }
 
-    /// Whether the screen currently drawing the base view shows live sensor data (the user
-    /// fix / ride accumulators) — the Map and Statistics riding views do, so a fresh fix must
-    /// redraw them; the Home screensaver and the menus don't, so a fix (which still moves the
-    /// camera behind them) must not. The base is the lowest *opaque* drawn screen — the same one
-    /// [`render_map`](App::render_map) starts from — so an overlay (Ride control) over a riding
-    /// view still counts as live, since the map keeps moving under the pause panel.
+    /// Whether the base screen shows live sensor data (user fix / ride accumulators) — Map and
+    /// Statistics do, so a fresh fix must redraw them; Home and the menus don't. The base is the
+    /// lowest *opaque* drawn screen, so an overlay (Ride control) over a riding view still counts as
+    /// live since the map keeps moving under the pause panel.
     fn shows_live_data(&self) -> bool {
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
         matches!(self.stack.get(base), Some(Screen::Map(_) | Screen::Statistics(_)))
     }
 
-    /// Whether the base (lowest opaque) screen actually draws the **map** — i.e. the
-    /// [`Map`](crate::screen::map) screen, the only one that reads the streamed-map [`Reader`].
-    /// A render-on-demand host polls this to skip the whole map pipeline on a non-map frame: don't
-    /// build the `Reader` (an SD style-table parse + its stack spike) and pass `None` to
-    /// [`render_map_timed`](App::render_map_timed) — a menu / Statistics / Home redraw then draws
-    /// only its own chrome, with zero map I/O. (An overlay like Ride-control sits *over* the Map, so
-    /// the base is still `Map` and this stays `true`.)
+    /// Whether the base (lowest opaque) screen draws the **map** — the [`Map`](crate::screen::map)
+    /// screen, the only one that reads the streamed-map [`Reader`]. A render-on-demand host polls
+    /// this to skip the whole map pipeline on a non-map frame: don't build the `Reader` (an SD
+    /// style-table parse + its stack spike), pass `None` to
+    /// [`render_map_timed`](App::render_map_timed), and a menu / Home redraw draws only its own
+    /// chrome with zero map I/O.
     pub fn base_draws_map(&self) -> bool {
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
         matches!(self.stack.get(base), Some(Screen::Map(_)))
     }
 
     /// The fix-staleness window (map-plane millis): the larger of [`NO_FIX_FLOOR_MS`] and a few
-    /// configured fix intervals, so a long interval (the Power screen can set up to 120 s) doesn't
-    /// flag "no fix" in the normal gap *between* its own fixes — only when several in a row are
-    /// missed. A 1 s interval gives the 5 s floor; a 30 s interval gives 90 s (issue #224).
+    /// configured fix intervals, so a long interval doesn't flag "no fix" in the normal gap between
+    /// its own fixes. A 1 s interval gives the 5 s floor; a 30 s interval gives 90 s.
     fn no_fix_window_ms(&self) -> u32 {
         (self.settings.fix_interval_s as u32 * 1000 * NO_FIX_INTERVALS).max(NO_FIX_FLOOR_MS)
     }
 
-    /// Whether there's a **current** GPS fix at `now_ms` (issue #224): a fix has been accepted and it
-    /// is no older than [`no_fix_window_ms`](App::no_fix_window_ms). `false` before the first fix ever
-    /// (acquiring) and once the signal drops (lost) — exactly when the "No GPS Fix" banner shows.
-    /// `now_ms` is the map-plane clock, the same base [`last_fix_ms`](App::last_fix_ms) is stamped in.
+    /// Whether there's a **current** GPS fix at `now_ms`: a fix has been accepted and is no older
+    /// than [`no_fix_window_ms`](App::no_fix_window_ms). `false` before the first fix (acquiring)
+    /// and once the signal drops (lost) — exactly when the "No GPS Fix" banner shows.
     pub fn has_live_fix(&self, now_ms: u32) -> bool {
         self.last_fix_ms.is_some_and(|t| now_ms.wrapping_sub(t) <= self.no_fix_window_ms())
     }
 
-    /// Replace the resident route catalog from the host's store (the simulator's
-    /// folder scan / the firmware's SD-card scan). Clones up to
+    /// Replace the resident route catalog from the host's store. Clones up to
     /// [`MAX_ROUTES`](crate::MAX_ROUTES) summaries; any beyond that are ignored.
     pub fn set_routes(&mut self, summaries: &[RouteSummary]) {
         self.catalog.clear();
@@ -804,10 +729,8 @@ impl App {
         &self.catalog
     }
 
-    /// Re-roll the Home screensaver's contour pattern to `seed` (see
-    /// [`HomeScreen::reseed`](crate::screen::HomeScreen::reseed)). The app does this itself when
-    /// the stack returns to Home; this is the host-facing hook for previewing a specific pattern
-    /// (the sim's `--home-seed`).
+    /// Re-roll the Home screensaver's contour pattern to `seed`. The app does this itself when the
+    /// stack returns to Home; this is the host-facing hook for previewing a specific pattern.
     pub fn reseed_home(&mut self, seed: u32) {
         if let Some(Screen::Home(home)) = self.stack.first_mut() {
             home.reseed(seed);
@@ -821,9 +744,8 @@ impl App {
     pub fn set_settings(&mut self, settings: Settings) {
         self.settings = settings;
         // Stamp the wall clock to the persisted *local* set-point as of now (boot millis), so it
-        // resumes ticking from the stored time rather than the `new`/`init` default. `local_clock`
-        // folds in the UTC offset when the clock is GPS-stamped (see [`Settings::local_clock`]), so
-        // the Home clock shows local time, not the raw UTC anchor.
+        // resumes from the stored time. `local_clock` folds in the UTC offset in GPS mode, so the
+        // Home clock shows local time, not the raw UTC anchor.
         self.wall_clock.set(self.settings.local_clock(), self.now_ms);
         self.settings_dirty = false;
     }
@@ -834,24 +756,21 @@ impl App {
         &self.settings
     }
 
-    /// The last ambient temperature (°C) sampled from the [`TemperatureSource`](crate::TemperatureSource),
-    /// or `None` before the first reading / when no thermometer is wired (issue #218). No screen draws
-    /// it yet; exposed for a future readout (a Statistics-grid field) and for host introspection.
+    /// The last ambient temperature (°C), or `None` before the first reading / no thermometer. No
+    /// screen draws it yet; exposed for a future readout and host introspection.
     pub fn temperature_c(&self) -> Option<f32> {
         self.temp_c
     }
 
-    /// The live wall-clock time right now — the persisted clock set-point advanced by the elapsed
-    /// monotonic millis (see [`WallClock`]). What a screen draws as `HH:MM`; exposed for a host that
-    /// wants the current time outside the draw path (a status line, a log stamp).
+    /// The live wall-clock time right now (see [`WallClock`]). What a screen draws as `HH:MM`;
+    /// exposed for a host wanting the current time outside the draw path.
     pub fn wall_clock_now(&self) -> DateTime {
         self.wall_clock.now(self.now_ms)
     }
 
     /// The current **UTC** unix seconds, from the wall clock. The clock's set-point is local
     /// time, so in GPS mode the persisted UTC offset is folded back out; a hand-set clock knows
-    /// no zone, so its local reading is served as-is (the honest best available — same accuracy
-    /// class as the clock itself, which resumes from the last set-point across power-offs).
+    /// no zone, so its local reading is served as-is.
     pub fn wall_unix_now(&self) -> u32 {
         let local = self.wall_clock.unix_now(self.now_ms);
         if self.settings.gps_time {
@@ -861,9 +780,9 @@ impl App {
         }
     }
 
-    /// The ride totals + wall-clock anchor for the Finish-time ride-object save
-    /// ([`obc_route::track_to_ride`], issue #275), read in the same frame the host drains
-    /// [`TrackAction::Save`](crate::TrackAction) so the anchor pairs with the log's last points.
+    /// The ride totals + wall-clock anchor for the Finish-time ride-object save, read in the same
+    /// frame the host drains [`TrackAction::Save`](crate::TrackAction) so the anchor pairs with the
+    /// log's last points.
     pub fn ride_stats(&self) -> obc_route::RideStats {
         obc_route::RideStats {
             distance_m: self.activity.ridden_m as u32, // float→int casts saturate
@@ -875,20 +794,15 @@ impl App {
         }
     }
 
-    /// Whether a settings edit is pending persistence **and the user has left the settings subtree** —
-    /// the host's cue to persist [`settings`](App::settings) via its
-    /// [`SettingsStore`](crate::hal::SettingsStore), checked **once per frame** after
-    /// [`handle_input`](App::handle_input). Drains the flag when it fires.
+    /// Whether a settings edit is pending persistence **and the user has left the settings
+    /// subtree** — the host's cue to persist [`settings`](App::settings), checked **once per frame**
+    /// after [`handle_input`](App::handle_input). Drains the flag when it fires.
     ///
-    /// The save is **debounced to leaving the settings screens** rather than fired on every in-edit
-    /// detent: a stepper sweep (spinning the year, the GPS interval, …) would otherwise drive one store
-    /// write *per detent* — on the device, dozens of blocking in-place RRAM line writes to the same
-    /// address (endurance + a per-detent loop stall). Holding the pending edit until the top screen is
-    /// no longer a settings screen coalesces a whole edit session into a single write. This relies on
-    /// the invariant that **only the settings screens mutate [`settings`](App::settings)** (so a pending
-    /// edit always lives under the settings subtree); the trade-off is that an edit left un-exited when
-    /// power is cut is lost — which the single-slot store already tolerates (a torn write loses at most
-    /// the in-flight edit).
+    /// The save is **debounced to leaving the settings screens**: a stepper sweep would otherwise
+    /// drive one store write *per detent* — on the device, dozens of blocking in-place RRAM line
+    /// writes to the same address. This relies on the invariant that **only the settings screens
+    /// mutate [`settings`](App::settings)**; the trade-off is that an edit left un-exited when power
+    /// is cut is lost (which the single-slot store already tolerates).
     pub fn take_settings_dirty(&mut self) -> bool {
         if self.settings_dirty && !self.top_is_settings() {
             self.settings_dirty = false;
@@ -899,8 +813,7 @@ impl App {
     }
 
     /// Whether the top (input-receiving) screen is one of the settings screens — the gate
-    /// [`take_settings_dirty`](App::take_settings_dirty) uses to hold a pending save until the user
-    /// leaves the settings subtree (so a multi-detent edit persists once, on exit, not per detent).
+    /// [`take_settings_dirty`](App::take_settings_dirty) uses to hold a pending save until exit.
     fn top_is_settings(&self) -> bool {
         matches!(
             self.stack.last(),
@@ -918,34 +831,30 @@ impl App {
     }
 
     /// **Debug/benchmark hook** (the USB-CDC `Z` command): set the map camera to exactly `mpp`
-    /// meters-per-pixel and force one map redraw. Drives the zoom directly — independent of the
-    /// encoder's fixed 1.2× detents — so a host render sweep can pin an exact scale per sample,
-    /// and always dirties the map (even at an unchanged scale) so each command yields one fresh
-    /// frame to time. Part of the strippable render-instrumentation seam; no other caller.
+    /// meters-per-pixel and force one map redraw. Drives the zoom directly (bypassing the encoder's
+    /// fixed detents) so a render sweep can pin an exact scale per sample. Part of the strippable
+    /// render-instrumentation seam.
     pub fn set_map_mpp(&mut self, mpp: f32) {
         self.state.zoom = zoom_for_mpp(mpp);
         self.map_dirty = true;
     }
 
-    /// Recognise this frame's raw control input and apply each resulting gesture to the top
-    /// screen, then advance the visible screens' timed content. The convenience that fuses the
-    /// two planes into one call for the simulator and the firmware's single-executor fallback;
-    /// `clock` is the [`InputClock`] (host/MCU wall-clock millis) for hold timing. Call once per
-    /// frame even with no pending events — that is how a held button's long-press fires.
+    /// Recognise this frame's raw control input and apply each resulting gesture to the top screen,
+    /// then advance the visible screens' timed content. Fuses the two planes into one call for the
+    /// simulator and the single-executor firmware; `clock` is the [`InputClock`] for hold timing.
+    /// Call once per frame even with no pending events — that is how a held button's long-press
+    /// fires.
     ///
-    /// The two-plane firmware does **not** call this: its high-priority plane owns a separate
-    /// [`InputPlane`] that recognises gestures and feeds them back through
-    /// [`apply_gesture`](App::apply_gesture), while [`advance_animations`](App::advance_animations)
-    /// runs on the map plane. This method is exactly those two halves over `App`'s own
-    /// [`InputPlane`], so all three hosts behave identically.
+    /// The two-plane firmware does **not** call this: its high-priority plane recognises gestures
+    /// and feeds them back through [`apply_gesture`](App::apply_gesture), while
+    /// [`advance_animations`](App::advance_animations) runs on the map plane. This is exactly those
+    /// two halves over `App`'s own [`InputPlane`].
     pub fn handle_input(&mut self, clock: InputClock, input: &mut dyn InputSource) {
         self.now_ms = clock.0;
-        // Recognise raw input into gestures and apply each. The borrow split is the point:
-        // `recognize` borrows `self.input`, so the gestures are buffered there and applied
-        // *after* it returns — `apply_gesture` touches the App's other fields, never
-        // `self.input`. Recognition depends only on the raw events + the clock, so this is
-        // identical to applying each gesture inline (capacity dwarfs one frame's events —
-        // the input queue is bounded; overflow is unreachable, like `ButtonInput`'s queue).
+        // The borrow split is the point: `recognize` borrows `self.input`, so gestures are buffered
+        // there and applied *after* it returns (`apply_gesture` touches other fields, never
+        // `self.input`). Recognition depends only on the raw events + clock, so this is identical to
+        // applying inline; the buffer capacity dwarfs one frame's bounded events.
         let mut pending: heapless::Vec<Gesture, GESTURE_BUF> = heapless::Vec::new();
         self.input.recognize(clock, input, |g| {
             let _ = pending.push(g);
@@ -956,35 +865,28 @@ impl App {
         self.advance_animations(clock);
     }
 
-    /// Apply one recognised gesture to the top screen and run the navigation transition it
-    /// returns — the **map plane's** half of input handling, split out from recognition.
-    ///
-    /// The two-plane firmware drains the high-priority plane's gesture channel and calls this
-    /// for each gesture, in order, so the screen transition lands a frame after the overlay
-    /// already confirmed the press — a clean flow rather than a frozen UI. Uses the map plane's
-    /// clock ([`now_ms`](App::now_ms), set by [`advance_animations`](App::advance_animations) /
-    /// [`handle_input`](App::handle_input)) for the [`Ctx`](screen::Ctx).
+    /// Apply one recognised gesture to the top screen and run the navigation transition it returns —
+    /// the **map plane's** half of input handling, split out from recognition. The two-plane
+    /// firmware calls this per gesture from its high-priority plane's channel, so the transition
+    /// lands a frame after the overlay confirmed the press. Uses the map plane's clock
+    /// ([`now_ms`](App::now_ms)) for the [`Ctx`](screen::Ctx).
     pub fn apply_gesture(&mut self, g: Gesture) {
-        // Any recognized gesture drives the top screen, and every screen — the map, the
-        // menus, the Ride-control overlay — renders into the map plane (Layer 1), so an
-        // applied gesture dirties it. Conservative by design (a gesture a screen ignores
-        // still costs one redraw), which is what keeps the idle path exact: no gesture is
-        // recognized, so `apply_gesture` never runs and the map stays clean — zero idle renders.
+        // Every screen renders into the map plane, so an applied gesture dirties it. Conservative by
+        // design (a gesture a screen ignores still costs one redraw), which keeps the idle path
+        // exact: with no gesture recognized, `apply_gesture` never runs and the map stays clean.
         self.map_dirty = true;
         // Snapshot the settings so a settings-screen edit is detected by one `==` (Settings is
-        // `Copy + Eq`) — the same before/after trick `tick` uses on the camera `AppState`. A
-        // change flags a save for the host to pick up via `take_settings_dirty`.
+        // `Copy + Eq`). A change flags a save for the host to pick up via `take_settings_dirty`.
         let settings_before = self.settings;
         let App { state, activity, settings, catalog, stack, now_ms, .. } = self;
         let mut cx = Ctx { state, activity, settings, routes: catalog.as_slice(), now_ms: *now_ms };
         let t = stack.last_mut().expect("the stack always has the Home root").handle(g, &mut cx);
         let depth_before = stack.len();
         screen::apply(stack, t);
-        // Returning to the bare Home root (the stack shrank back to just `[Home]`) re-opens the
-        // screensaver — re-roll its contour seed so the topo peaks drift a little for this visit.
-        // Gated on the *edge* (was deeper, now 1) so it fires once per return, never on a Home
-        // gesture that stays on Home; and it's in `apply_gesture`, so a clock/battery re-render
-        // (which never touches the stack) leaves the pattern put — the behaviour the look wants.
+        // Returning to the bare Home root re-opens the screensaver — re-roll its contour seed so the
+        // topo peaks drift for this visit. Gated on the *edge* (was deeper, now 1) so it fires once
+        // per return; being in `apply_gesture` means a clock/battery re-render (which never touches
+        // the stack) leaves the pattern put.
         if stack.len() == 1 && depth_before > 1 {
             if let Some(Screen::Home(home)) = stack.first_mut() {
                 home.reseed(*now_ms);
@@ -992,10 +894,9 @@ impl App {
         }
         if self.settings != settings_before {
             self.settings_dirty = true;
-            // A change to the *local* set-point re-stamps the wall clock so it resumes ticking from
-            // the new value: the manual clock edit, but also — in GPS mode — a UTC-offset turn or a
-            // GPS-clock toggle, both of which shift local time (`local_clock` folds the offset in).
-            // Flipping units or the GPS interval leaves the local clock and its epoch alone.
+            // A change to the *local* set-point re-stamps the wall clock: the manual clock edit, but
+            // also — in GPS mode — a UTC-offset turn or GPS-clock toggle, both of which shift local
+            // time. Flipping units or the GPS interval leaves the local clock alone.
             let local_now = self.settings.local_clock();
             if local_now != settings_before.local_clock() {
                 self.wall_clock.set(local_now, self.now_ms);
@@ -1004,18 +905,15 @@ impl App {
     }
 
     /// Advance the **map plane's** clock to `clock` and let each visible screen surface any
-    /// time-driven repaint need — today the Statistics cursor's spring-back to the live
-    /// position — dirtying the map if any advanced. So a screen surfaces its own timed-refresh
-    /// rather than the host re-rendering on a blind heartbeat (issue #47). Cheap: a clock
-    /// comparison per drawn screen, over the same `base..` range [`render_map`](App::render_map)
-    /// draws (so an overlay over a riding view still lets the view underneath settle).
+    /// time-driven repaint need (the Statistics cursor's spring-back, the Home clock's minute
+    /// rollover), dirtying the map if any advanced — so a screen surfaces its own timed-refresh
+    /// rather than the host re-rendering on a blind heartbeat. Cheap: a clock comparison per drawn
+    /// screen, over the same `base..` range [`render_map`](App::render_map) draws.
     ///
     /// [`handle_input`](App::handle_input) calls this for the single-loop hosts; the two-plane
-    /// firmware calls it directly on its map plane (its input lives on a separate executor).
+    /// firmware calls it directly on its map plane.
     pub fn advance_animations(&mut self, clock: InputClock) {
         self.now_ms = clock.0;
-        // The current wall-clock time, so a clock-bearing screen's `animate` can fire its
-        // once-a-minute repaint (Home today) the same way Statistics' cursor spring-back fires.
         let now = self.wall_clock.now(self.now_ms);
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
         let mut animated = false;
@@ -1025,34 +923,29 @@ impl App {
         self.map_dirty |= animated;
     }
 
-    /// The single "next wake deadline" the event-driven host arms one timer to (issue #219): the
-    /// soonest, in millis from `now_ms`, that any visible screen needs a *timed* redraw — or `None`
-    /// when nothing on screen is time-animating, so the host can sleep until an input or sensor event
-    /// instead. Folds [`Screen::next_wake_in`] over the same visible range
-    /// [`advance_animations`](App::advance_animations) animates (topmost opaque screen upward), with
-    /// the wall-clock minute boundary pre-computed here since [`App`] owns the clock. **Call right
-    /// after `advance_animations`** with the same `now_ms`: any *due* animation has then already
-    /// fired, so the returned deadline is strictly in the future. Pure policy — the host turns it into
-    /// a `Timer` and selects it against the input/sensor wakes; the loop period is gone.
+    /// The single "next wake deadline" the event-driven host arms one timer to: the soonest, in
+    /// millis from `now_ms`, that any visible screen needs a *timed* redraw — or `None` when nothing
+    /// is time-animating (sleep until an input or sensor event). Folds [`Screen::next_wake_in`] over
+    /// the same visible range [`advance_animations`](App::advance_animations) animates, with the
+    /// wall-clock minute boundary pre-computed here. **Call right after `advance_animations`** with
+    /// the same `now_ms`: any *due* animation has then already fired, so the deadline is strictly in
+    /// the future.
     pub fn ms_until_next_wake(&self, now_ms: u32) -> Option<u32> {
         let ms_to_next_minute = self.wall_clock.ms_to_next_minute(now_ms);
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
         self.stack.iter().skip(base).filter_map(|s| s.next_wake_in(now_ms, ms_to_next_minute, &self.settings)).min()
     }
 
-    /// Render the current screen and any overlays above it into `target`, a
-    /// `w`×`h` pixel display. Draws from the topmost *opaque* screen upward, so an
-    /// overlay (Ride control) composites over the still-visible map. Returns the
-    /// map [`RenderStats`] for the host's stats panel.
+    /// Render the current screen and any overlays above it into `target`, a `w`×`h` pixel display.
+    /// Draws from the topmost *opaque* screen upward, so an overlay composites over the still-visible
+    /// map. Returns the map [`RenderStats`].
     ///
-    /// `color_fn` maps a style's RGB565 to the target's pixel color — the one
-    /// genuinely display-specific policy (the simulator picks true-color vs.
-    /// device-64 quantization; the firmware passes its panel's native mapping).
+    /// `color_fn` maps a style's RGB565 to the target's pixel color — the one genuinely
+    /// display-specific policy.
     ///
-    /// This is the single-target convenience that draws a whole frame:
-    /// [`render_map`](App::render_map) then [`render_overlay`](App::render_overlay)
-    /// into the *same* target, in that order. Hosts that keep the map and overlay on
-    /// separate buffers/layers (dual-layer display) call the two halves directly instead.
+    /// The single-target convenience that draws a whole frame: [`render_map`](App::render_map) then
+    /// [`render_overlay`](App::render_overlay) into the *same* target. Hosts that keep the map and
+    /// overlay on separate buffers call the two halves directly.
     pub fn render_frame<D, F>(
         &mut self,
         target: &mut D,
@@ -1071,16 +964,12 @@ impl App {
         stats
     }
 
-    /// Render **only the map plane** — the screen stack from the topmost opaque
-    /// screen upward (map + screen content, incl. the Ride-control overlay screen),
-    /// but **excluding** the global hold-hint chrome. Returns the map
-    /// [`RenderStats`] for the host's stats panel.
+    /// Render **only the map plane** — the screen stack from the topmost opaque screen upward, but
+    /// **excluding** the global hold-hint chrome. Returns the map [`RenderStats`].
     ///
-    /// This is the expensive half (24–51 ms on the device); a host that keeps the
-    /// transient overlay on its own buffer/layer renders this only when the map
-    /// actually changed, then repaints the cheap [`render_overlay`](App::render_overlay)
-    /// over it at a higher rate. `color_fn` is the display-specific RGB565 mapping
-    /// (see [`render_frame`](App::render_frame)).
+    /// The expensive half (24–51 ms on the device); a host that keeps the overlay on its own buffer
+    /// renders this only when the map changed, then repaints the cheap
+    /// [`render_overlay`](App::render_overlay) over it at a higher rate.
     pub fn render_map<D, F>(
         &mut self,
         target: &mut D,
@@ -1094,17 +983,15 @@ impl App {
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
-        // Untimed: the host's `NoopClock` leaves the map's per-stage `*_us` fields at 0. The
-        // device uses `render_map_timed` with a real clock for the render benchmark. This
-        // convenience entry is always drawing the map, so it passes `Some`.
+        // Untimed: `NoopClock` leaves the per-stage `*_us` fields at 0 (the device uses
+        // `render_map_timed` with a real clock for the benchmark). Always draws the map, so `Some`.
         self.render_map_timed(target, Some(reader), route, w, h, color_fn, &NoopClock)
     }
 
     /// Like [`render_map`](App::render_map) but threads `clock` to the Map screen's
     /// [`render_timed`](obc_render::MapRenderer::render_timed), so the returned [`RenderStats`]
-    /// carries the map's per-stage timings (`collect_us` / `sort_us` / `draw_us`). The device's
-    /// render benchmark uses this with its own microsecond clock; every other host calls the plain
-    /// [`render_map`](App::render_map). Part of the strippable render-instrumentation seam.
+    /// carries the map's per-stage timings. The device's render benchmark uses this with its own
+    /// microsecond clock. Part of the strippable render-instrumentation seam.
     #[allow(clippy::too_many_arguments)]
     pub fn render_map_timed<D, F>(
         &mut self,
@@ -1120,30 +1007,19 @@ impl App {
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
-        // Rebuild the cached elevation profile when the active route changes — it
-        // streams every chunk, so it's built here once on load, never per frame. Keyed
-        // on the active-route index (same simplification as the host's route reload):
-        // it clears when no route is loaded.
+        // Rebuild the cached elevation profile when the active route changes — it streams every
+        // chunk, so it's built once on load, never per frame; clears when no route is loaded.
         if self.activity.active_route != self.profile_route {
             self.profile = route.map(|r| r.elevation_profile());
             self.profile_route = self.activity.active_route;
         }
 
-        // The live wall-clock time for any screen drawing a clock (Home), computed from the set-
-        // point + elapsed millis before the field borrow below splits `self`.
+        // Computed before the field borrow below splits `self`.
         let now = self.wall_clock.now(self.now_ms);
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
-        // The in-screen confirm fill (RideControl / RouteSwap) tracks the encoder hold-progress
-        // owned by the input plane. On the single-loop hosts that is `App`'s own, kept live by
-        // `handle_input`. On the two-plane firmware `App` owns only the map plane and this reads
-        // `0.0` — which matches the render-on-demand behaviour anyway: a pure hold-charge never
-        // dirties the map (issue #47), so the map (and this fill) doesn't redraw mid-charge; the
-        // live confirmation is the overlay bulge on its own high-priority plane.
-        // Prefer a host-supplied hold-progress (the two-plane firmware's separate input plane); fall
-        // back to `App`'s own input on the single-loop hosts (the sim) that never set the override.
+        // The in-screen confirm fill's hold-progress. Prefer a host-supplied value (the two-plane
+        // firmware's separate input plane); fall back to `App`'s own input on the single-loop hosts.
         let hold_progress = self.hold_progress_override.unwrap_or_else(|| self.input.encoder_hold_progress());
-        // Whether the riding views should show the "No GPS Fix" banner (issue #224) — computed before
-        // the borrow split below so it can read `self`.
         let no_fix = !self.has_live_fix(self.now_ms);
         let App { state, activity, settings, catalog, renderer, stack, now_ms, profile, breadcrumb, .. } = self;
         let mut rx = Render {
@@ -1174,22 +1050,15 @@ impl App {
         stats
     }
 
-    /// Render **only the overlay plane** — the transient always-on-top chrome (the
-    /// global long-press hint / confirm bulge), over whatever is already in `target`.
+    /// Render **only the overlay plane** — the transient always-on-top chrome (the global
+    /// long-press hint / confirm bulge), over whatever is already in `target`.
     ///
-    /// **Compositing contract** (so this can later live on its own buffer/layer):
-    /// `render_overlay` paints *only* its own pixels — the hold-bulge strips — and
-    /// **never** clears or otherwise touches the rest of the target. It must be valid
-    /// drawn over arbitrary existing content, so a host can repaint it over an
+    /// **Compositing contract** (so this can live on its own buffer/layer): `render_overlay` paints
+    /// *only* its own pixels — the hold-bulge strips — and **never** clears the rest of the target.
+    /// It must be valid drawn over arbitrary existing content, so a host can repaint it over an
     /// unchanged map without re-running [`render_map`](App::render_map). Poll
-    /// [`overlay_active`](App::overlay_active) to decide whether a repaint is needed.
-    ///
-    /// On the simulator (and today's single-buffer firmware) this draws directly over
-    /// the map buffer, so non-overlay pixels simply keep the map underneath. On the
-    /// device's dedicated overlay layer the non-overlay pixels are *transparent*; the
-    /// exact convention (per-pixel alpha vs. chroma-key) is finalised in the
-    /// dual-layer display issue. The bulge is drawn opaque in `palette::HUD`, so it
-    /// needs no alpha and reads identically on the 8-colour panel.
+    /// [`overlay_active`](App::overlay_active) to decide whether a repaint is needed. The bulge is
+    /// opaque `palette::HUD`, so it needs no alpha and reads identically on the 8-colour panel.
     pub fn render_overlay<D, F>(&self, target: &mut D, w: f32, h: f32, color_fn: F)
     where
         D: DrawTarget,
@@ -1198,32 +1067,23 @@ impl App {
         self.input.render_overlay(target, w, h, color_fn);
     }
 
-    /// Whether the overlay plane has live content this frame — a hold bulge that is
-    /// charging, popping, or retracting. A host driving the map and overlay as
-    /// separate layers polls this to decide when [`render_overlay`](App::render_overlay)
-    /// must repaint over an unchanged map; it is `false` exactly when the overlay
-    /// would draw nothing, so the overlay layer can stay idle.
+    /// Whether the overlay plane has live content this frame — a hold bulge charging, popping, or
+    /// retracting. `false` exactly when [`render_overlay`](App::render_overlay) would draw nothing,
+    /// so a host driving the overlay as a separate layer can leave it idle.
     pub fn overlay_active(&self) -> bool {
         self.input.overlay_active()
     }
 
-    /// Drain the repaint demand accumulated since the last call, resetting to
-    /// [`Dirty::CLEAN`]. The host calls this **once per frame** after [`tick`](App::tick) +
-    /// [`handle_input`](App::handle_input), then renders [`render_map`](App::render_map) only
-    /// when [`Dirty::map`] and [`render_overlay`](App::render_overlay) only when
-    /// [`Dirty::overlay`] — the render-on-demand loop (issue #47).
+    /// Drain the repaint demand accumulated since the last call, resetting to [`Dirty::CLEAN`]. The
+    /// host calls this **once per frame** after [`tick`](App::tick) +
+    /// [`handle_input`](App::handle_input), then renders each plane only when its flag is set — the
+    /// render-on-demand loop.
     ///
-    /// [`map`](Dirty::map) is the accumulation of every map-affecting mutation since the last
-    /// drain (an applied gesture, a camera-moving fix on a riding view, a route/session change,
-    /// a screen's timed `animate`). [`overlay`](Dirty::overlay) is *derived* by the
-    /// [`InputPlane`] from the live hold-bulge state rather than accumulated: it's set while
-    /// the bulge is live, plus exactly one trailing frame after it goes quiet so the host can
-    /// clear it off Layer 2. Because that trailing edge is tracked across calls, draining twice
-    /// in one frame would swallow it — call exactly once per frame.
-    ///
-    /// (The two-plane firmware doesn't use the `overlay` flag here — its high-priority plane
-    /// drives the overlay from its *own* [`InputPlane::take_overlay_dirty`]; this `App` owns
-    /// only the map plane there. The single-loop hosts use both.)
+    /// [`map`](Dirty::map) accumulates every map-affecting mutation since the last drain.
+    /// [`overlay`](Dirty::overlay) is *derived* from the live hold-bulge state: set while the bulge
+    /// is live, plus one trailing frame after it goes quiet so the host can clear it off Layer 2.
+    /// That trailing edge is tracked across calls, so draining twice in one frame swallows it — call
+    /// exactly once per frame.
     pub fn take_dirty(&mut self) -> Dirty {
         Dirty { map: core::mem::take(&mut self.map_dirty), overlay: self.input.take_overlay_dirty() }
     }
@@ -1238,13 +1098,12 @@ impl App {
         self.input.encoder_hold_progress()
     }
 
-    /// Feed the live encoder hold-progress (0.0–1.0) used by the in-screen confirm fills (the
-    /// factory Reset bar). The **two-plane firmware** calls this each frame from its high-priority
+    /// Feed the live encoder hold-progress (0.0–1.0) for the in-screen confirm fills (the factory
+    /// Reset bar). The **two-plane firmware** calls this each frame from its high-priority
     /// [`InputPlane`], whose hold state `App`'s own plane doesn't see — without it the Reset bar
-    /// never fills on the device. The single-loop hosts (the sim) never call it; the render then
-    /// reads `App`'s own input. Pairs with [`base_draws_map`](App::base_draws_map): the host
-    /// forces a redraw while a hold charges on a cheap (non-map) screen so the fill actually
-    /// animates (a pure hold-charge doesn't otherwise dirty the map — issue #47).
+    /// never fills. The single-loop hosts never call it (the render reads `App`'s own input). Pairs
+    /// with [`base_draws_map`](App::base_draws_map): the host forces a redraw while a hold charges
+    /// on a cheap screen so the fill animates (a pure hold-charge doesn't otherwise dirty the map).
     pub fn set_hold_progress(&mut self, progress: f32) {
         self.hold_progress_override = Some(progress);
     }
@@ -1356,9 +1215,9 @@ mod tests {
         crate::hal::GpsTime { utc: DateTime { year: 2026, month: 6, day: 30, hour, minute }, second }
     }
 
-    /// In "Set from GPS" mode a resolved GPS UTC stamps the wall clock — the UTC anchor shifted
-    /// into local time by the offset — while in manual mode the GPS time is ignored, so a hand-set
-    /// clock is never overwritten (issue #223). The set-point is updated without flagging a save.
+    /// In "Set from GPS" mode a resolved GPS UTC stamps the wall clock (the UTC anchor shifted into
+    /// local time by the offset); in manual mode the GPS time is ignored so a hand-set clock is
+    /// never overwritten. The set-point updates without flagging a save.
     #[test]
     fn gps_time_sets_the_wall_clock_only_in_gps_mode() {
         // Manual mode: GPS time is ignored; the hand-set clock stands.
@@ -1392,7 +1251,7 @@ mod tests {
         // Without the back-date the same stamp would still read 14:37 here — 4 s isn't a full minute.
     }
 
-    // --- no-GPS-fix freshness + banner edge (issue #224) ---
+    // --- no-GPS-fix freshness + banner edge ---
 
     /// Tick once with a single fix at the map-plane clock `now_ms` (set so `last_fix_ms` and
     /// `has_live_fix` share a timebase), no route / other sensors.
@@ -1502,10 +1361,9 @@ mod tests {
         }
     }
 
-    /// Arm-and-record (issue #224): starting a ride with no fix yet arms the session immediately
-    /// (Riding, banner up) but records nothing and books no moving time — then the first fix logs the
-    /// segment anchor and clears the banner. This is how other bike computers handle "start before
-    /// lock".
+    /// Starting a ride with no fix yet arms the session immediately (Riding, banner up) but records
+    /// nothing and books no moving time — then the first fix logs the segment anchor and clears the
+    /// banner ("start before lock").
     #[test]
     fn tracking_arms_without_a_fix_and_records_on_first_fix() {
         let mut app = App::new(AppState::new(0, 0, 1.0));
@@ -1634,17 +1492,14 @@ mod tests {
         assert_eq!(app.state.compass_deg, None);
     }
 
-    // --- in-place placement into the reserved region (issue #67) ---
+    // --- in-place placement into the reserved region ---
 
-    /// `init_idle` writing field-by-field into a slot must land the same power-on state
-    /// `new_idle` builds by value — Home root, Idle, nothing loaded, map dirty — with the
-    /// renderer zeroed in place. Guards against a field being forgotten in the in-place path.
+    /// `init_idle` writing field-by-field into a slot must land the same power-on state `new_idle`
+    /// builds by value, with the renderer zeroed in place. Guards against a forgotten field.
     #[test]
     fn init_idle_matches_new_idle() {
         use core::mem::MaybeUninit;
         let state = AppState::new(1, 2, 3.0);
-        // Placement target. ~200 KB on the host test stack is fine; the point being exercised
-        // is that no *second* `App`-sized temporary is formed (init_idle writes straight in).
         let mut slot = MaybeUninit::<App>::uninit();
         // SAFETY: `slot` is a valid, aligned, exclusively-owned `App` region; init_idle fully
         // initializes it before assume_init_ref reads it.
@@ -1667,12 +1522,10 @@ mod tests {
         assert!(matches!(placed.stack[0], Screen::Home(_)), "Home is the stack root");
     }
 
-    // --- end-to-end barometric climb through `tick` (issue #93 item 1) ---
+    // --- end-to-end barometric climb through `tick` ---
 
-    /// Feed one altitude sample through `App::tick`'s `Sensors.altimeter` arm (app.rs ~513). No
-    /// previous test ever attached an altimeter, so the wiring from `tick` → `record_altitude` →
-    /// `climb_m` was untested end-to-end. This walks a real climb in tick-sized steps and reads
-    /// the `climbed` stat through the public `App`, proving the barometer actually drives it.
+    /// Feed one altitude sample through `App::tick`'s `Sensors.altimeter` arm, reading the `climbed`
+    /// stat back through the public `App` — the `tick` → `record_altitude` → `climb_m` wiring.
     fn tick_alt(app: &mut App, alt_m: f32, now_ms: u32) {
         let mut loc = OneFix(None); // no fix this tick — isolate the altimeter path
         let mut alt = OneAlt(Some(alt_m));
@@ -1702,10 +1555,9 @@ mod tests {
         assert_eq!(app.activity.climb_m(), 10.0, "a clean climb books through the full tick path");
     }
 
-    /// The pause rule end-to-end: with the activity paused (the Ride-control state), `tick` still
-    /// records the latest altitude but must not book climb across the rest — so a barometer drift
-    /// while stopped doesn't inflate `climbed` when riding resumes. Mirrors the unit test in
-    /// `activity.rs`, but proves the *whole tick path* honours the mode gate (app.rs ~513-516).
+    /// The pause rule end-to-end: with the activity paused, `tick` still records the latest altitude
+    /// but must not book climb across the rest, so barometer drift while stopped doesn't inflate
+    /// `climbed` on resume. Proves the whole tick path honours the mode gate.
     #[test]
     fn tick_does_not_book_climb_while_paused() {
         let mut app = App::new(AppState::new(0, 0, 1.0));
@@ -1726,11 +1578,9 @@ mod tests {
 
     // --- settings persistence signal (the host's save trigger) ---
 
-    /// A settings edit applied through `apply_gesture` flags a save — but the save is **debounced to
-    /// leaving the settings subtree**: while still on a settings screen the pending edit is held (so a
-    /// multi-detent edit coalesces into one store write, not one blocking write per detent), and it
-    /// surfaces once on the frame after navigating out. Drives the real Home → Menu → Settings → Units
-    /// navigation, so the whole `Ctx { settings }` plumbing is exercised.
+    /// A settings edit flags a save, but **debounced to leaving the settings subtree**: while still
+    /// on a settings screen the pending edit is held (coalescing a multi-detent edit into one
+    /// write), surfacing once on the frame after navigating out.
     #[test]
     fn a_settings_edit_flags_dirty_on_leaving_the_settings_subtree() {
         use crate::settings::Units;
@@ -1768,7 +1618,7 @@ mod tests {
         assert!(!app.take_settings_dirty(), "seeding the boot value must not trigger a write-back");
     }
 
-    // --- the live wall clock (issue #196) ---
+    // --- the live wall clock ---
 
     /// Seeding the persisted clock stamps the wall clock, which then advances with the monotonic
     /// millis — the static set-point actually ticks (carrying minute → hour here).
@@ -1811,9 +1661,8 @@ mod tests {
         assert_eq!(app.wall_clock_now().minute, (edited.minute + 1) % 60, "ticks on from the new stamp");
     }
 
-    /// In GPS mode the Home wall clock shows **local** time — the UTC anchor shifted by the offset
-    /// — so it agrees with the Date & Time screen's "Local time" row instead of trailing it by the
-    /// whole offset (issue #207).
+    /// In GPS mode the Home wall clock shows **local** time (the UTC anchor shifted by the offset),
+    /// so it agrees with the Date & Time screen's "Local time" row instead of trailing it.
     #[test]
     fn gps_mode_wall_clock_shows_local_time() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
@@ -1829,9 +1678,8 @@ mod tests {
         assert_eq!(now, seeded.local_clock(), "and it matches the local_clock the Local time row reads");
     }
 
-    /// On the Home screensaver, `advance_animations` self-dirties exactly once per minute as the
-    /// wall clock rolls over — the timed repaint that makes the static `HH:MM` actually advance —
-    /// and nothing in between (the render-on-demand contract, issue #47).
+    /// On Home, `advance_animations` self-dirties exactly once per minute as the wall clock rolls
+    /// over — the timed repaint that makes the static `HH:MM` advance — and nothing in between.
     #[test]
     fn home_self_dirties_once_a_minute() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0)); // base = Home
@@ -1853,10 +1701,8 @@ mod tests {
         assert!(!app.take_dirty().map, "and it settles back to quiet until the next minute");
     }
 
-    /// `ms_until_next_wake` reports the soonest timed-redraw deadline across the visible stack — the
-    /// single timer the event-driven host arms (issue #219). On Home it's the wall-clock minute
-    /// boundary; on a static menu it's `None` (sleep until input). The fold mirrors the same visible
-    /// range `advance_animations` walks, so the host wakes exactly when a screen would self-dirty.
+    /// `ms_until_next_wake` reports the soonest timed-redraw deadline across the visible stack. On
+    /// Home it's the wall-clock minute boundary; on a static menu it's `None` (sleep until input).
     #[test]
     fn ms_until_next_wake_reports_the_home_minute_then_none_on_a_static_menu() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0)); // base = Home

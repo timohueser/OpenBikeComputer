@@ -14,16 +14,16 @@
 //!     the framebuffer over SPI-DMA, [`present_overlay`] addresses a column window directly;
 //!   - the **LS021B7DD02** reflective MIP panel driven by the FLPR coprocessor (the real target): a
 //!     row-addressed panel — `present` drives a masked full-frame scan, [`present_overlay`]
-//!     fast-forwards the gate to the dirty rows (issue #163).
+//!     fast-forwards the gate to the dirty rows.
 //!
 //! ## Why the overlay is a *separate* seam method, not part of the framebuffer
 //!
 //! The transient chrome (the hold bulge, a future clock/status field) is **never** written into the
 //! resident framebuffer: that would force a full map re-render to clear it again. Instead the
-//! framebuffer stays the clean map (the source of truth) and [`present_overlay`](DisplayDriver) (issue
-//! #163, added on the partial-update mechanism) composites the overlay over just the rows it touches
-//! and re-pushes only those — a few ms, no map redraw. So the seam has two write paths: `present` (the
-//! whole clean frame) and `present_overlay` (a dirty region with the overlay drawn on top).
+//! framebuffer stays the clean map (the source of truth) and [`present_overlay`](DisplayDriver)
+//! composites the overlay over just the rows it touches and re-pushes only those — a few ms, no map
+//! redraw. So the seam has two write paths: `present` (the whole clean frame) and `present_overlay`
+//! (a dirty region with the overlay drawn on top).
 //!
 //! ## Sync, blocking
 //!
@@ -34,11 +34,11 @@
 
 use obc_platform::Band;
 
-// The two backends, each a thin [`DisplayDriver`] impl in its own module behind this seam (issue
-// #174). The shared overlay-composite plumbing lives in `obc_platform::composite_overlay_window`;
-// each module supplies **only** its panel's wire-pack + window math. Exactly one is compiled per
-// build (`tft` selects the ST7789). The low-level transports they drive (`crate::st7789`,
-// `crate::ls021_flpr`) stay at the crate root because the bring-up bins include them directly.
+// The two backends, each a thin [`DisplayDriver`] impl in its own module behind this seam. The shared
+// overlay-composite plumbing lives in `obc_platform::composite_overlay_window`; each module supplies
+// **only** its panel's wire-pack + window math. Exactly one is compiled per build (`tft` selects the
+// ST7789). The low-level transports they drive (`crate::st7789`, `crate::ls021_flpr`) stay at the
+// crate root.
 #[cfg(feature = "tft")]
 mod st7789;
 #[cfg(feature = "tft")]
@@ -47,7 +47,7 @@ pub use st7789::Display;
 mod ls021_flpr;
 
 /// A dirty rectangle of the frame to re-present with the overlay composited over it — today the hold
-/// bulge's right-edge window (issue #126/#163). A column-addressable panel (ST7789) re-pushes exactly
+/// bulge's right-edge window. A column-addressable panel (ST7789) re-pushes exactly
 /// this rectangle; a row-addressed panel (LS021) widens it to full-width rows internally (it can't
 /// latch a sub-span of columns) but still only touches rows `[y0, y0 + rows)`.
 pub struct OverlayRegion {
@@ -59,7 +59,7 @@ pub struct OverlayRegion {
 
 /// The board's swappable display backend — see the module docs. The map plane renders the frame into
 /// [`fb_mut`](Self::fb_mut), then [`present`](Self::present)s it; the overlay plane re-pushes a dirty
-/// region with the bulge composited via [`present_overlay`](Self::present_overlay) (issue #163).
+/// region with the bulge composited via [`present_overlay`](Self::present_overlay).
 pub trait DisplayDriver {
     /// The resident **RGB222 / device-64** framebuffer (`WIDTH × HEIGHT` bytes, `0b00_RR_GG_BB`) the
     /// renderer draws the whole frame into through an [`FbDevice64`](obc_platform::FbDevice64), then
@@ -71,7 +71,7 @@ pub trait DisplayDriver {
     fn present(&mut self) -> bool;
 
     /// Re-present `region` with `draw_overlay` composited over the **clean framebuffer backdrop** — no
-    /// map re-render (issue #163). `draw_overlay` paints the transient chrome (the hold bulge)
+    /// map re-render. `draw_overlay` paints the transient chrome (the hold bulge)
     /// frame-absolute into the [`Band`] window the driver hands it, over the backdrop the driver reads
     /// from the framebuffer. The driver calls `draw_overlay` **once** (over the whole region) — never
     /// per row — so the caller's brief `InputPlane` lock inside it is taken once per overlay frame, and

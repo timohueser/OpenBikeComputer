@@ -1,13 +1,11 @@
-//! The BLE stack (issue #270, epic #267): nrf-mpsl (Nordic's Multiprotocol Service Layer) +
-//! nrf-sdc (the SoftDevice Controller, LL only) + trouble-host (the Rust BLE host), folded into
-//! the real firmware behind the `ble` feature. The A1 spike (#269) proved this exact dependency
-//! trio + config on the DK; this module is its production home — the throwaway `ble_spike` bin
-//! is retired.
+//! The BLE stack: nrf-mpsl (Nordic's Multiprotocol Service Layer) + nrf-sdc (the SoftDevice
+//! Controller, LL only) + trouble-host (the Rust BLE host), folded into the real firmware behind the
+//! `ble` feature.
 //!
 //! ## Module map
 //!
-//! This file is the stack bring-up + the S0 advertise → connect → re-advertise orchestration
-//! ([`run`]); the four jobs the link does are split into focused submodules (issue #310):
+//! This file is the stack bring-up + the advertise → connect → re-advertise orchestration ([`run`]);
+//! the four jobs the link does are split into focused submodules:
 //!
 //! - [`gatt`] — the `#[gatt_server]`/`#[gatt_service]` tables, DIS/BAS seeding, FICR
 //!   serial/address identity, the Config codec, and the on-glass status screen.
@@ -16,27 +14,26 @@
 //! - [`data_plane`] — the L2CAP CoC bulk-transfer plane (echo, route upload, download, ride).
 //! - [`state`] — the shared link-status snapshot, BAS cell, and the one-transfer arming channel.
 //!
-//! ## Interrupts / priorities (the A1 inventory, reconciled at A2)
+//! ## Interrupts / priorities
 //!
-//! MPSL claims `RADIO_0` / `TIMER10` / `GRTC_3` at **P0** (timing-critical), `CLOCK_POWER` and
-//! its low-prio scheduling on **`SWI00`** at default priority. `SWI00` is why `main.rs`'s
-//! high-priority `InterruptExecutor` lives on **`SWI01`** (every build — one ladder, no per-build
-//! vector swap). The full ladder is documented in `main.rs`'s module doc.
+//! MPSL claims `RADIO_0` / `TIMER10` / `GRTC_3` at **P0** (timing-critical), `CLOCK_POWER` and its
+//! low-prio scheduling on **`SWI00`** at default priority. `SWI00` is why `main.rs`'s high-priority
+//! `InterruptExecutor` lives on **`SWI01`** (every build). The full ladder is documented in `main.rs`'s
+//! module doc.
 //!
 //! ## RAM
 //!
 //! Everything resident is a named static below (the `MaybeUninit`-in-`.bss` pattern — see
-//! [`crate::init_static`]; `StaticCell`'s one-shot flag can panic on this board's warm-reset
-//! path). [`RESIDENT_BYTES`] sums them for the N3 budget assert in `main.rs`, so the BLE build's
-//! fit on the 256 KB DK is enforced at compile time like the map build's.
+//! [`crate::init_static`]). [`RESIDENT_BYTES`] sums them for the budget assert in `main.rs`, so the BLE
+//! build's fit on the 256 KB DK is enforced at compile time like the map build's.
 //!
-//! ## Clocking (inherited from the spike — see #269)
+//! ## Clocking
 //!
-//! MPSL requires the HF **crystal**; LFCLK runs the internal **RC** with MPSL calibration, *not*
-//! the 32 k crystal: the nRF54L's XO internal load caps are never programmed by embassy-nrf 0.11
-//! or nrf-mpsl, so the LFXO runs off-frequency and every connection dies at establishment with
-//! HCI 0x3E (advertising works — the failure needs a sync anchor). INTCAP-then-xtal is a filed
-//! follow-up. `main.rs` sets both knobs in its `ble`-build boot config.
+//! MPSL requires the HF **crystal**; LFCLK runs the internal **RC** with MPSL calibration, *not* the
+//! 32 k crystal: the nRF54L's XO internal load caps are never programmed by embassy-nrf 0.11 or
+//! nrf-mpsl, so the LFXO runs off-frequency and every connection dies at establishment with HCI 0x3E
+//! (advertising works — the failure needs a sync anchor). `main.rs` sets both knobs in its `ble`-build
+//! boot config.
 
 mod control;
 mod data_plane;
@@ -85,12 +82,12 @@ bind_interrupts!(struct Irqs {
 
 /// Ship config: the phone is the only peer.
 const CONNECTIONS_MAX: usize = 1;
-/// Advertising sets — one legacy connectable set is all the S0 §2 policy needs.
+/// Advertising sets — one legacy connectable set is all the advertise policy needs.
 const ADV_SETS_MAX: usize = 1;
-/// Bonded peers stored in the host (A8, S0 §8): exactly one. A fresh pairing replaces it, so the
-/// resolving list never holds more than the single phone (matches the app's single-peer model).
+/// Bonded peers stored in the host: exactly one. A fresh pairing replaces it, so the resolving list
+/// never holds more than the single phone (matches the app's single-peer model).
 const BONDS_MAX: usize = 1;
-/// L2CAP signal + ATT + the data-plane CoC (A4 stands up the accept side; A5 gives it semantics).
+/// L2CAP signal + ATT + the data-plane CoC.
 const L2CAP_CHANNELS_MAX: usize = 3;
 /// Outgoing/incoming LL buffers per link (the TrouBLE nrf54 example's values).
 const L2CAP_TXQ: u8 = 3;
@@ -112,8 +109,8 @@ type Resources = HostResources<
     BONDS_MAX,
 >;
 
-/// The BLE build's resident statics, summed for the N3 budget assert in `main.rs` (the `ble`
-/// analogue of the map build's App/cache terms): the MPSL handle, the SDC memory block, TrouBLE's
+/// The BLE build's resident statics, summed for the budget assert in `main.rs` (the `ble` analogue of
+/// the map build's App/cache terms): the MPSL handle, the SDC memory block, TrouBLE's
 /// [`Resources`] arena, TrouBLE's **global `DEFAULT_POOL`** packet pool (`DefaultPacketPool` is a
 /// type alias for the concrete pool struct, so its `size_of` *is* the pool's ~4 KB — sized by the
 /// `default-packet-pool-mtu-251` feature), and the CRACEN RNG the LL's crypto pulls from. The
@@ -166,9 +163,9 @@ pub async fn run(
     cracen_p: Peri<'static, peripherals::CRACEN>,
     store: ObjectStore,
 ) -> ! {
-    // The object store (A6): SD catalog + RRAM settings behind one RefCell. The control plane
-    // (GATT writes) and the data plane (CoC transfers) both borrow it, always synchronously —
-    // never across an `await` — which is sound on the one thread-mode executor.
+    // The object store: SD catalog + RRAM settings behind one RefCell. The control plane (GATT writes)
+    // and the data plane (CoC transfers) both borrow it, always synchronously — never across an
+    // `await` — which is sound on the one thread-mode executor.
     let store = core::cell::RefCell::new(store);
     // LFCLK = the internal RC at Nordic's recommended calibration cadence (calibrate every
     // 16×0.25 s = 4 s; temp-check every 2 intervals) — guarantees the ±500 ppm class the accuracy
@@ -213,26 +210,25 @@ pub async fn run(
 
     let resources = unsafe { init_static(core::ptr::addr_of_mut!(RESOURCES), HostResources::new()) };
     let address = device_address();
-    // The GAP name is pinned at boot (the attribute borrows it for the server's life); the
-    // *advertised* name is re-read from the store each advertise cycle, so a rename lands
-    // without a reboot (S0 §7.3 Delta 1 — the Config characteristic is authoritative anyway).
+    // The GAP name is pinned at boot (the attribute borrows it for the server's life); the *advertised*
+    // name is re-read from the store each advertise cycle, so a rename lands without a reboot.
     let name = advertised_name(&store.borrow());
     info!("ble: host up as '{}', address {:?}", name.as_str(), address);
 
-    // Register the CoC SPSM up front (S0 §5) so `serve_coc` can accept on it once a link is up.
-    // IO = DisplayOnly (A8, S0 §8): the device shows a 6-digit passkey, the phone (keyboard)
-    // enters it → LESC passkey-entry pairing, MITM-protected. Keep the static-random address
-    // (no device privacy) — the phone stores our stable identity for instant reconnect; we
-    // resolve *its* rotating RPA from the stored peer IRK below.
+    // Register the CoC SPSM up front so `serve_coc` can accept on it once a link is up. IO =
+    // DisplayOnly: the device shows a 6-digit passkey, the phone (keyboard) enters it → LESC
+    // passkey-entry pairing, MITM-protected. Keep the static-random address (no device privacy) — the
+    // phone stores our stable identity for instant reconnect; we resolve *its* rotating RPA from the
+    // stored peer IRK below.
     let stack = trouble_host::new(sdc, resources)
         .set_random_address(address)
         .set_io_capabilities(IoCapabilities::DisplayOnly)
         .register_l2cap_spsm(OBC_PSM)
         .build();
 
-    // Re-establish the stored bond (A8, S0 §8): hand it to the host so the controller's resolving
-    // list resolves the bonded phone's RPA on reconnect and re-encrypts with the stored LTK — no
-    // dialog, no interaction ("it just works"). Absent/torn → open pairing.
+    // Re-establish the stored bond: hand it to the host so the controller's resolving list resolves the
+    // bonded phone's RPA on reconnect and re-encrypts with the stored LTK — no dialog, no interaction.
+    // Absent/torn → open pairing.
     if let Some(bond) = store.borrow_mut().load_bond() {
         match stack.add_bond_information(bond) {
             Ok(()) => info!("ble: restored stored bond — bonded reconnect armed"),
@@ -263,7 +259,7 @@ pub async fn run(
         serial_string().as_str()
     );
 
-    // The lifecycle loop (A3): advertise → serve → re-advertise, forever, with no terminal state.
+    // The lifecycle loop: advertise → serve → re-advertise, forever, with no terminal state.
     join(host_task(runner), async {
         loop {
             publish(|s| {
@@ -275,14 +271,14 @@ pub async fn run(
                 s.passkey = None;
                 s.secured = false;
             });
-            // Re-read the advertised name each cycle — a rename (Config write) takes effect on
-            // the next advertising start, no reboot (S0 §2: the Config name replaces factory).
+            // Re-read the advertised name each cycle — a rename (Config write) takes effect on the next
+            // advertising start, no reboot.
             let adv_name = advertised_name(&store.borrow());
             let conn = match advertise_lifecycle(adv_name.as_str(), &mut peripheral, &server).await {
                 Ok(conn) => conn,
                 Err(e) => {
-                    // "Always just works" (S0 §2): an advertise error must not take the firmware
-                    // down and must not wedge the loop — log it, wait a beat, and try again.
+                    // An advertise error must not take the firmware down and must not wedge the loop —
+                    // log it, wait a beat, and try again.
                     warn!("ble: advertise error: {:?} — retrying in 1 s", defmt::Debug2Format(&e));
                     Timer::after_secs(1).await;
                     continue;
@@ -298,8 +294,8 @@ pub async fn run(
                 s.connects += 1;
             });
 
-            // Allow this link to bond (A8): the trouble default is *not* bondable, so a passkey
-            // pairing wouldn't persist keys without this. Set before the peer starts SMP.
+            // Allow this link to bond: the trouble default is *not* bondable, so a passkey pairing
+            // wouldn't persist keys without this. Set before the peer starts SMP.
             if let Err(e) = conn.raw().set_bondable(true) {
                 warn!("ble: set_bondable failed: {:?}", defmt::Debug2Format(&e));
             }
@@ -309,7 +305,7 @@ pub async fn run(
             // are answered) and owns the exit — it returns the disconnect reason. The background set
             // (parameter negotiation, the CoC accept-and-drain, and the BAS battery notify) runs
             // concurrently and never returns, so `select` tears it all down the moment the link drops
-            // (S0 §2: any disconnect drops straight back to advertising).
+            // (any disconnect drops straight back to advertising).
             let reason = match select(
                 serve_connection(&stack, &server, &conn, &store),
                 join3(

@@ -1,16 +1,13 @@
-//! The Home screen — the Idle screensaver and the permanent root of the stack
-//! (so Finish / Discard always have somewhere to land via [`Transition::Home`]).
+//! The Home screen — the Idle screensaver and the permanent root of the stack (so Finish / Discard
+//! always have somewhere to land via [`Transition::Home`]).
 //!
-//! It draws a code-generated topographic backdrop, the wall clock, and the battery
-//! gauge. `press` opens the Route menu and `back-hold` the Menu.
+//! It draws a code-generated topographic backdrop, the wall clock, and the battery gauge. `press`
+//! opens the Route menu and `back-hold` the Menu.
 //!
-//! The backdrop is **procedural art**, not a map: a smooth height field (a sum of
-//! [`Bump`] Lorentzians, [`field`]) traced into iso-lines by marching squares
-//! ([`contours`]). It needs no map data or I/O, costs only arithmetic — fine, faint topo lines
-//! that sit behind the clock. Its massif structure is fixed, but the peaks **drift a little each
-//! time the screensaver re-opens** (a per-open [`seed`](HomeScreen::seed) jitters the bump
-//! centres); a clock/battery re-render keeps the same pattern, so it only changes when you return
-//! to Home, not while you sit on it.
+//! The backdrop is procedural: a smooth height field (a sum of [`Bump`] Lorentzians, [`field`])
+//! traced into iso-lines by marching squares ([`contours`]) — no map data or I/O. Its massif is
+//! fixed, but the peaks drift a little each time the screensaver re-opens (a per-open
+//! [`seed`](HomeScreen::seed) jitters the bump centres); it changes only when you return to Home.
 
 use core::fmt::Write as _;
 
@@ -30,13 +27,12 @@ use super::{palette, Ctx, MenuScreen, Render, RouteMenuScreen, Screen, Transitio
 /// The idle home screen.
 #[derive(Debug, Default)]
 pub struct HomeScreen {
-    /// Seed for the contour backdrop's per-open jitter. Re-rolled by [`reseed`](HomeScreen::reseed)
-    /// each time the screensaver re-opens (the stack shrinks back to just `[Home]`), and held
-    /// across clock/battery re-renders — so the pattern drifts when you *return* to Home, not while
-    /// you sit on it. `0` (the boot default) is the canonical, un-jittered massif.
+    /// Seed for the contour backdrop's per-open jitter, re-rolled by [`reseed`](HomeScreen::reseed)
+    /// each time the screensaver re-opens and held across clock/battery re-renders. `0` (the boot
+    /// default) is the canonical, un-jittered massif.
     seed: u32,
-    /// Fires a repaint once each minute the wall clock rolls over (see [`animate`](HomeScreen::animate)),
-    /// so the displayed `HH:MM` advances on the render-on-demand host without polling.
+    /// Fires a repaint once each minute the wall clock rolls over (see
+    /// [`animate`](HomeScreen::animate)) so `HH:MM` advances without polling.
     ticker: MinuteTicker,
 }
 
@@ -45,14 +41,12 @@ impl HomeScreen {
         HomeScreen::default()
     }
 
-    /// Re-roll the backdrop pattern. Called when the navigation stack returns to the bare Home
-    /// root; `seed` is the wall-clock millis at that moment, so each return drifts the peaks to a
-    /// new spot. Cheap — it only sets the seed; the next draw renders the jittered field.
+    /// Re-roll the backdrop pattern when the stack returns to the bare Home root. `seed` is the
+    /// wall-clock millis at that moment, so each return drifts the peaks to a new spot.
     pub fn reseed(&mut self, seed: u32) {
         self.seed = seed;
     }
 
-    /// The current backdrop seed — for the reseed-on-return regression test.
     #[cfg(test)]
     pub(crate) fn seed(&self) -> u32 {
         self.seed
@@ -67,11 +61,8 @@ impl HomeScreen {
     }
 
     /// Self-dirty once the wall clock crosses into a new minute so the `HH:MM` readout repaints —
-    /// the Home half of the screens' timed-`animate` contract (the Statistics spring-back is the
-    /// other). `now` is the live wall-clock time the host computes once per frame; the
-    /// [`MinuteTicker`] reports only the actual minute rollover, so an idle Home repaints at most
-    /// once a minute and nothing more often. The whole screen redraws (contours included) — cheap
-    /// and accepted (the contour cost is logged via [`RenderStats::contour_us`]).
+    /// the Home half of the screens' timed-`animate` contract. The [`MinuteTicker`] reports only the
+    /// actual minute rollover, so an idle Home repaints at most once a minute.
     pub fn animate(&mut self, now: DateTime) -> bool {
         self.ticker.changed(now)
     }
@@ -85,16 +76,14 @@ impl HomeScreen {
         let mut cv = Canvas::new(target, color_fn);
         cv.clear(palette::HUD);
 
-        // Time the contour backdrop — the one non-trivial per-draw computation on this screen — via
-        // the caller's `Clock` (the device's µs `InstantClock`; the zero-cost `NoopClock` on the
-        // host leaves it 0). Surfaced in `RenderStats::contour_us` for the device's RTT frame log.
+        // Time the contour backdrop via the caller's `Clock`; surfaced in `RenderStats::contour_us`
+        // for the device's RTT frame log.
         let t0 = rx.clock.now_us();
         contours(&mut cv, w, h, self.seed);
         let contour_us = rx.clock.now_us().saturating_sub(t0) as u32;
 
-        // The wall clock: HH:MM in the oversized Huge tier, centred in the upper third. `rx.now` is
-        // the live time (the set-point advanced by elapsed millis), not the frozen set-point, so it
-        // actually ticks; `animate` repaints it each minute.
+        // The wall clock: HH:MM in the Huge tier, centred in the upper third. `rx.now` is the live
+        // time, not the frozen set-point, so it actually ticks; `animate` repaints it each minute.
         let mut clock: heapless::String<8> = heapless::String::new();
         let _ = write!(clock, "{:02}:{:02}", rx.now.hour, rx.now.minute);
         let clock_top = h * 40 / 100 - Font::Huge.line_height() as i32 / 2;
@@ -110,11 +99,9 @@ impl HomeScreen {
 /// Number of discrete bars in the gauge.
 const BARS: i32 = 5;
 
-/// Draw the battery gauge centred horizontally with its body centred on `cy`: a white
-/// rounded shell + nub, all `BARS` segments drawn — the first `filled` in the **level colour**
-/// (red below 20 %, green above 80 %, amber between), the rest a dim grey — and the `NN%`
-/// readout (also the level colour) beside it. Always showing the empty cells reads as a battery
-/// at a glance even when low, while the colour carries the state.
+/// Draw the battery gauge centred horizontally, body centred on `cy`: a white rounded shell + nub,
+/// all `BARS` segments drawn — the first `filled` in the level colour (red <20 %, green >80 %,
+/// amber between), the rest dim grey — and the `NN%` readout beside it in the level colour.
 fn battery<D, F>(cv: &mut Canvas<D, F>, w: i32, cy: i32, pct: u8)
 where
     D: DrawTarget,
@@ -140,8 +127,7 @@ where
     cv.round_outline(rect(x, y, bw, bh), 6, palette::PARCHMENT);
     cv.round(rect(x + bw, cy - bh / 6, nub, bh / 3), 2, palette::PARCHMENT);
 
-    // Segments: all BARS cells are drawn — the first `filled` lit in the level colour, the rest
-    // in the panel's one dim grey (`CONTOUR`) so an empty cell still reads as part of the gauge.
+    // Segments: the first `filled` in the level colour, the rest dim grey.
     let filled = ((pct as i32 * BARS + 50) / 100).clamp(if pct > 0 { 1 } else { 0 }, BARS);
     let cell = (bw - 2 * pad) / BARS;
     let seg = cell - 2; // a 2px channel between segments
@@ -150,7 +136,6 @@ where
         cv.round(rect(x + pad + i * cell, y + pad, seg, bh - 2 * pad), 1, color);
     }
 
-    // The percentage, baseline-aligned to the shell centre, in the level colour.
     cv.text(
         &label,
         Point::new(x + bw + nub + gap, cy - Font::Body.line_height() as i32 / 2),
@@ -162,10 +147,9 @@ where
 
 // ---- Topographic backdrop -------------------------------------------------
 
-/// One smooth radial hill in the height field: a Lorentzian `amp / (1 + r²/σ²)` centred at
-/// `(u, v)` in width-normalised coordinates (`u = x/w`, so `v` runs `0..h/w`). Lorentzians
-/// have heavy tails, so a handful overlap to cover the whole panel with no flat dead corners,
-/// and they need no `exp` — just a multiply and a divide.
+/// One smooth radial hill: a Lorentzian `amp / (1 + r²/σ²)` centred at `(u, v)` in width-normalised
+/// coordinates (`u = x/w`, so `v` runs `0..h/w`). Heavy tails, so a handful cover the whole panel;
+/// no `exp` needed.
 struct Bump {
     u: f32,
     v: f32,
@@ -173,9 +157,8 @@ struct Bump {
     sg: f32,
 }
 
-/// The fixed massif. Tuned by eye (positive = peak, negative = basin) for nested closed loops
-/// around a central massif with shoulders and basins filling the rest. Changing these changes
-/// the picture — re-tune [`F_MIN`] / [`F_MAX`] to the new field range if you do.
+/// The fixed massif, tuned by eye (positive = peak, negative = basin). Changing these changes the
+/// picture — re-tune [`F_MIN`] / [`F_MAX`] to the new field range if you do.
 const BUMPS: [Bump; 8] = [
     Bump { u: 0.50, v: 0.62, amp: 1.00, sg: 0.34 }, // main massif, just above centre
     Bump { u: 0.30, v: 0.30, amp: 0.55, sg: 0.22 }, // NW shoulder
@@ -187,25 +170,23 @@ const BUMPS: [Bump; 8] = [
     Bump { u: 0.92, v: 0.78, amp: -0.30, sg: 0.20 }, // E dip
 ];
 
-/// Sampled range of [`field`] over the panel, for spacing the contour levels strictly inside
-/// it (so every level draws). Constants, not a runtime min/max pass, because the field is fixed.
+/// Sampled range of [`field`] over the panel, for spacing the contour levels strictly inside it.
+/// Constants, not a runtime min/max pass, because the field is fixed.
 const F_MIN: f32 = -0.13;
 const F_MAX: f32 = 1.15;
-/// Number of contour lines. Each level is a full marching-squares pass that strokes hundreds of
-/// segments, so this trades directly against draw cost; 6 still reads as a dense topo map.
+/// Number of contour lines. Each is a full marching-squares pass, so this trades directly against
+/// draw cost; 6 still reads as a dense topo map.
 const LEVELS: usize = 6;
-/// Sample columns across the width; rows follow to keep cells ~square. Drives both the field-eval
-/// count (∝ COLS²) and the segment count (∝ COLS), so it's the main speed knob. 28 keeps the
-/// lines smooth at the panel's 240 px (~8.5 px cells, interpolated) while ~halving the work vs 40.
+/// Sample columns across the width (rows follow to keep cells ~square). Drives the field-eval count
+/// (∝ COLS²) and the segment count (∝ COLS) — the main speed knob.
 const COLS: usize = 28;
 /// Max per-open jitter of a bump centre, in width-normalised units (≈ ±0.08·w ≈ ±19 px). Small
-/// enough to keep the massif's character — the peaks just shuffle a little, they don't reshuffle.
+/// enough to keep the massif's character.
 const JITTER: f32 = 0.08;
 
 /// The height field at width-normalised `(u, v)` — the sum of every [`Bump`] at its (possibly
-/// jittered) `centre`. `inv_sg2[i]` is the precomputed `1/σ²` of bump `i`, so the inner term is a
-/// multiply, not a divide (only the outer Lorentzian divide remains) — the per-sample divide count
-/// is the field's dominant cost.
+/// jittered) `centre`. `inv_sg2[i]` is the precomputed `1/σ²`, so the inner term is a multiply, not
+/// a divide.
 fn field(u: f32, v: f32, centres: &[(f32, f32)], inv_sg2: &[f32]) -> f32 {
     let mut s = 0.0;
     for ((c, b), &iv) in centres.iter().zip(&BUMPS).zip(inv_sg2) {
@@ -229,9 +210,8 @@ fn jitter(seed: u32, i: usize) -> (f32, f32) {
     (du, dv)
 }
 
-/// Trace [`field`] into `LEVELS` iso-lines by marching squares and stroke them in [`CONTOUR`].
-/// One pass over the grid keeping two rolling sample rows (no full-grid buffer), each cell
-/// emitting up to two segments per level. `seed` jitters the bump centres for this open.
+/// Trace [`field`] into `LEVELS` iso-lines by marching squares. One pass over the grid keeping two
+/// rolling sample rows (no full-grid buffer). `seed` jitters the bump centres for this open.
 fn contours<D, F>(cv: &mut Canvas<D, F>, w: i32, h: i32, seed: u32)
 where
     D: DrawTarget,
@@ -245,16 +225,15 @@ where
         *l = F_MIN + (F_MAX - F_MIN) * (i as f32 + 0.5) / LEVELS as f32;
     }
 
-    // Per-open jittered bump centres (each shifted a little from its `BUMPS` home), and each bump's
-    // `1/σ²`, both precomputed once — so the per-sample field loop has no divide beyond the one
-    // Lorentzian. The `1/w` normalisation is folded into the column/row scales (`sx`/`sy`).
+    // Per-open jittered bump centres and each bump's `1/σ²`, precomputed once so the per-sample loop
+    // has no divide beyond the Lorentzian. The `1/w` normalisation is folded into `sx`/`sy`.
     let centres: [(f32, f32); BUMPS.len()] = core::array::from_fn(|i| {
         let (du, dv) = jitter(seed, i);
         (BUMPS[i].u + du, BUMPS[i].v + dv)
     });
     let inv_sg2: [f32; BUMPS.len()] = core::array::from_fn(|i| 1.0 / (BUMPS[i].sg * BUMPS[i].sg));
     let (sx, sy) = (step / w as f32, stepy / w as f32);
-    // Two rolling rows of samples: `prev` = grid row r, `cur` = row r+1.
+    // Two rolling rows: `prev` = grid row r, `cur` = row r+1.
     let sample = |c: usize, r: usize| field(c as f32 * sx, r as f32 * sy, &centres, &inv_sg2);
     let mut prev = [0.0f32; COLS + 1];
     let mut cur = [0.0f32; COLS + 1];
@@ -277,9 +256,8 @@ where
     }
 }
 
-/// Marching-squares cell: stroke the segment(s) of contour `l` crossing the cell whose
-/// corners (clockwise from top-left: tl, tr, br, bl) are `vals`, linearly interpolating each
-/// edge crossing so the lines stay smooth between grid points.
+/// Marching-squares cell: stroke the segment(s) of contour `l` crossing the cell whose corners
+/// (clockwise from top-left) are `vals`, interpolating each edge crossing for smoothness.
 fn cell<D, F>(cv: &mut Canvas<D, F>, tl: (f32, f32), br: (f32, f32), vals: [f32; 4], l: f32)
 where
     D: DrawTarget,
@@ -291,9 +269,8 @@ where
         return;
     }
     let (x0, y0, x1, y1) = (tl.0, tl.1, br.0, br.1);
-    // Linear edge crossing between two corners, rounded to a pixel. `denom == 0` (both corners
-    // equal) only happens on an edge with no crossing, whose point this case won't use; guard it
-    // anyway and clamp `t` to the edge so a degenerate value can't throw the point off-cell.
+    // Edge crossing between two corners, rounded to a pixel. `denom == 0` (equal corners) only
+    // happens on an edge with no crossing, whose point this case won't use; guard + clamp anyway.
     let lerp = |a: (f32, f32), va: f32, b: (f32, f32), vb: f32| {
         let denom = vb - va;
         let t = if denom != 0.0 { ((l - va) / denom).clamp(0.0, 1.0) } else { 0.5 };

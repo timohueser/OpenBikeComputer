@@ -1,10 +1,9 @@
-//! OBCM v5 serializer — lay out the `.obcm` bytes.
+//! OBCM v5 serializer — lay out the `.obcm` bytes per `OBCM_Spec.md`.
 //!
-//! Deterministic integer/byte work: given the same feature list and quadtree it
-//! produces the same output every run. The geometry that reaches here is already
-//! clipped + simplified; this module only rounds lon/lat to microdegrees (banker's
-//! rounding — round-half-to-even), densifies long segments, delta-encodes rings,
-//! and lays out the chunk / index / LOD-table / header bytes per `OBCM_Spec.md`.
+//! Deterministic: same feature list + quadtree → same output. Geometry arrives
+//! already clipped + simplified; this module rounds lon/lat to microdegrees
+//! (round-half-to-even), densifies long segments, delta-encodes rings, and lays out
+//! the chunk / index / LOD-table / header bytes.
 
 use std::io::{self, Seek, SeekFrom, Write};
 
@@ -21,21 +20,19 @@ pub const HEADER_LEN: usize = 32;
 /// One LOD-table entry, `<fIIHI>`.
 pub const LOD_ENTRY_LEN: usize = 18;
 
-/// Largest map `chunk_size` (bytes) that guarantees no single feature exceeds the device
-/// reader's [`obc_reader::MAX_FEAT_PTS`] vertex cap. A chunk holds at most `chunk_size` bytes of
-/// one feature, and the densest encoding is 8-bit deltas — a 12-byte feature header then 2 bytes
-/// per vertex (`dx`, `dy`) — so a feature carries at most `(chunk_size - 12) / 2 + 1` vertices.
-/// Above this the packer can emit a feature the reader **silently truncates** (`read_ring`'s
-/// `heapless` push fails past capacity), corrupting that feature's fill/stroke with no error on
-/// either side (issue #2). The packer default (4096) sits just under it.
+/// Largest `chunk_size` (bytes) that keeps every feature within the reader's
+/// [`obc_reader::MAX_FEAT_PTS`] vertex cap. Densest encoding is 8-bit deltas
+/// (12-byte header + 2 bytes/vertex), so a chunk carries at most
+/// `(chunk_size - 12) / 2 + 1` vertices. Above this the reader **silently
+/// truncates** past-cap vertices (`heapless` push fails, no error either side),
+/// corrupting the feature's fill/stroke.
 pub const MAX_SAFE_CHUNK_SIZE: usize = (obc_reader::MAX_FEAT_PTS - 1) * 2 + 12;
 
 // The safe ceiling must itself fit the on-wire `u16` chunk_size field, or the bound is moot.
 const _: () = assert!(MAX_SAFE_CHUNK_SIZE <= u16::MAX as usize, "chunk_size is a u16 in the format");
 
-/// Reject a `chunk_size` the device reader can't decode without truncating a feature — see
-/// [`MAX_SAFE_CHUNK_SIZE`]. Returns a descriptive build error so a misconfigured pack fails
-/// loudly instead of producing a silently-corrupt map (issue #2).
+/// Reject a `chunk_size` the reader can't decode without truncating a feature (see
+/// [`MAX_SAFE_CHUNK_SIZE`]), so a misconfigured pack fails loudly.
 pub fn validate_chunk_size(chunk_size: usize) -> Result<(), String> {
     if chunk_size > MAX_SAFE_CHUNK_SIZE {
         return Err(format!(
@@ -65,10 +62,8 @@ pub struct Style {
     pub priority: u8,
 }
 
-/// A feature as it reaches the serializer. Geometry is f64 lon/lat — the clipped +
-/// simplified coords — rounded to microdegrees and densified here. `rings[0]` is
-/// the exterior; `rings[1..]` are interior rings (polygons only). Lines carry a
-/// single ring.
+/// f64 lon/lat, rounded to microdegrees and densified here. `rings[0]` is the
+/// exterior; `rings[1..]` are interior rings (polygons only). Lines carry one ring.
 #[derive(Debug, Clone)]
 pub struct Feature {
     pub style_id: u8,
@@ -76,9 +71,8 @@ pub struct Feature {
     pub rings: Vec<Vec<(f64, f64)>>,
 }
 
-/// One node of a serialized quadtree. `serialize_tree` only needs leaf bboxes
-/// (for anchors) and the leaf/branch shape; child bboxes are re-derived by the
-/// reader, so branches store only their four children (order NW, NE, SW, SE).
+/// Child bboxes are re-derived by the reader, so branches store only their four
+/// children (order NW, NE, SW, SE); only leaf bboxes are kept (for anchors).
 #[derive(Debug, Clone)]
 pub enum Node {
     Leaf {
@@ -98,11 +92,9 @@ pub struct LodLayer {
     pub root: Node,
 }
 
-/// `round(v * 1e6)` to microdegrees with **round-half-to-even** (banker's
-/// rounding). Rust's `f64::round` is half-*away*-from-zero, so we use
-/// `round_ties_even`; the value is integer-valued before the `as i64` truncation,
-/// so the cast is exact. (The rounding mode matters — getting it wrong shifts
-/// vertices by a microdegree.)
+/// `v * 1e6` to microdegrees, **round-half-to-even** — NOT `f64::round`
+/// (half-away-from-zero), which would shift vertices by a microdegree. The value is
+/// integer-valued before the `as i64`, so the cast is exact.
 #[inline]
 fn to_udeg(v: f64) -> i64 {
     (v * 1e6).round_ties_even() as i64
@@ -116,7 +108,7 @@ fn densify(p1: (i64, i64), p2: (i64, i64), out: &mut Vec<(i64, i64)>) {
     let dy = p2.1 - p1.1;
     let max_dist = dx.abs().max(dy.abs());
     if max_dist > MAX_SEGMENT {
-        let steps = max_dist / MAX_SEGMENT + 1; // integer step count
+        let steps = max_dist / MAX_SEGMENT + 1;
         for step in 1..steps {
             let t = step as f64 / steps as f64;
             out.push((
@@ -219,9 +211,9 @@ pub fn pack_feature(f: &Feature, node_bbox: (i64, i64, i64, i64)) -> Vec<u8> {
         flags |= FEATURE_FLAG_16BIT;
     }
 
-    // The reader decodes a whole feature (exterior + every hole) into one buffer of capacity
-    // `MAX_FEAT_PTS`; past that its `heapless` push silently drops vertices. `validate_chunk_size`
-    // keeps a packed feature under the cap, but assert the real invariant in debug (issue #2).
+    // The reader decodes a whole feature (exterior + holes) into one `MAX_FEAT_PTS`
+    // buffer; past that `heapless` silently drops vertices. `validate_chunk_size`
+    // guards it, but assert the real invariant in debug.
     debug_assert!(
         packed_rings.iter().map(|(n, _)| *n).sum::<usize>() <= obc_reader::MAX_FEAT_PTS,
         "feature vertex count exceeds the reader's MAX_FEAT_PTS — chunk_size too large?"
@@ -314,8 +306,7 @@ pub fn serialize_tree(root: &Node, chunk_size: usize) -> (Vec<u8>, u32, Vec<u8>,
 
 /// The 32-byte OBCM header `<4sBiiiiIBIH>`: magic, version, bbox stored as
 /// lat,lon,lat,lon, header length, lod count, lod-table offset, marker color.
-/// Shared by [`serialize_lods`] and [`serialize_lods_streaming`] so the layout
-/// stays identical.
+/// Shared by both serializers.
 fn header_bytes(
     lod_count: usize,
     marker_color: u16,
@@ -338,7 +329,7 @@ fn header_bytes(
 }
 
 /// Append one LOD-table entry `<fIIHI>`: max_mpp (`None` ⇒ `+inf`), index offset,
-/// node count, chunk size, chunk count. Same field order in both serializers.
+/// node count, chunk size, chunk count.
 fn push_lod_entry(table: &mut Vec<u8>, max_mpp: Option<f64>, index_offset: u32, nc: u32, cs: usize, cc: u32) {
     let mpp_f: f32 = max_mpp.map_or(f32::INFINITY, |v| v as f32);
     table.extend_from_slice(&mpp_f.to_le_bytes());
@@ -392,21 +383,18 @@ pub fn serialize_lods(
     out
 }
 
-/// Streaming counterpart to [`serialize_lods`]: writes the **same** v5 byte
-/// stream, but builds, serializes, and *drops* one LOD tree at a time, streaming
-/// each LOD's payload straight to `w`. Peak memory is ~one tree + one LOD's chunk
-/// bytes, instead of all trees plus the whole output buffer in RAM — the Stage-6
-/// memory win (freiburg's 5-LOD build peaked at ~2.7 GB here).
+/// Streaming counterpart to [`serialize_lods`]: writes the **same** v5 byte stream,
+/// but builds, serializes, and drops one LOD tree at a time. Peak memory is ~one
+/// tree + one LOD's chunk bytes rather than all trees plus the whole output buffer.
 ///
-/// The header, style table, and LOD-table *offset* are all known up front; only
-/// the per-LOD table entries need the built trees. So we write the header + style
-/// table + a **zeroed** LOD table, stream each LOD's `index ++ chunks` (recording
-/// its table entry), then `seek` back and patch the LOD table. The bytes are
-/// identical to `serialize_lods` for the same trees (asserted by
-/// `streaming_matches_in_memory`). Returns the total bytes written.
+/// The header, style table, and LOD-table offset are known up front; only per-LOD
+/// table entries need the built trees. So we write header + style table + a
+/// **zeroed** LOD table, stream each LOD's `index ++ chunks`, then `seek` back and
+/// patch the table. Byte-identical to `serialize_lods` for the same trees
+/// (asserted by `streaming_matches_in_memory`). Returns bytes written.
 ///
-/// `build(i)` produces LOD `i`'s `(root, chunk_size, max_mpp)`; it is called once
-/// per level, in order, and each tree is dropped before the next call.
+/// `build(i)` yields LOD `i`'s `(root, chunk_size, max_mpp)`, called once per level
+/// in order; each tree is dropped before the next call.
 pub fn serialize_lods_streaming<W, F>(
     w: &mut W,
     lod_count: usize,
@@ -456,9 +444,8 @@ mod tests {
 
     #[test]
     fn rounding_is_ties_even_not_away() {
-        // `round_ties_even` is round-half-to-even; `f64::round` is round-half-away-
-        // from-zero. `to_udeg` must use the former. Exact halves are representable
-        // in f64, so these pin the *mode* `to_udeg` relies on.
+        // Pins the mode `to_udeg` relies on: `round_ties_even` vs `f64::round`
+        // (half-away-from-zero). Exact halves are representable in f64.
         assert_eq!(0.5_f64.round_ties_even(), 0.0);
         assert_eq!(1.5_f64.round_ties_even(), 2.0);
         assert_eq!(2.5_f64.round_ties_even(), 2.0);
@@ -467,7 +454,6 @@ mod tests {
         // The wrong (away) mode would give 1.0 and 3.0 here — guard against it.
         assert_eq!(0.5_f64.round(), 1.0);
         assert_eq!(2.5_f64.round(), 3.0);
-        // to_udeg scales by 1e6 then rounds ties-even.
         assert_eq!(to_udeg(1.0), 1_000_000);
         assert_eq!(to_udeg(1.0001), 1_000_100);
     }
@@ -493,11 +479,9 @@ mod tests {
 
     #[test]
     fn max_safe_chunk_size_keeps_features_within_reader_cap() {
-        // A feature packed to exactly fill a `MAX_SAFE_CHUNK_SIZE` chunk must carry no more than
-        // the reader's `MAX_FEAT_PTS` vertices — otherwise the device silently truncates it (#2).
         let n = obc_reader::MAX_FEAT_PTS;
-        // `n` points 1 µdeg apart: tiny deltas ⇒ 8-bit encoding (2 bytes/vertex — the densest
-        // case), no densification (steps « MAX_SEGMENT).
+        // `n` points 1 µdeg apart: tiny deltas ⇒ densest 8-bit encoding (2 bytes/
+        // vertex), no densification.
         let coords: Vec<(f64, f64)> = (0..n).map(|i| (i as f64 * 1e-6, 0.0)).collect();
         let f = Feature { style_id: 1, kind: Kind::Line, rings: vec![coords] };
         let packed = pack_feature(&f, (0, 0, n as i64, 1));
@@ -518,9 +502,8 @@ mod tests {
 
     #[test]
     fn streaming_matches_in_memory() {
-        // The streaming serializer must be byte-identical to `serialize_lods` for
-        // the same trees. Build a small 2-LOD pyramid via the real quadtree,
-        // serialize both ways, and compare.
+        // Streaming output must be byte-identical to `serialize_lods` for the same
+        // 2-LOD pyramid.
         use crate::geom::Geom;
         use std::io::Cursor;
 

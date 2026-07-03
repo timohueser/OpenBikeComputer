@@ -1,22 +1,17 @@
-//! The Settings tree — the `Menu → Settings` family from the Claude Design mock
-//! (`firmware/designs/Settings Screens.html`), in the same field-map style as the rest of the
-//! UI. This module owns the **list** screen ([`SettingsScreen`]) and the reusable drawing
-//! **kit** every settings screen shares (the slider toggle, the value/stepper field, the row
-//! cursor); the individual screens live one file each ([`datetime`], [`units`], [`power`],
-//! [`reset`]).
+//! The Settings tree, in the field-map style of the rest of the UI. This module owns the list
+//! screen ([`SettingsScreen`]) and the reusable drawing kit every settings screen shares (the slider
+//! toggle, the value/stepper field, the row cursor); the individual screens live one file each.
 //!
-//! **The two-level encoder model** (the thing the mock is really about):
-//! - **Rotate** moves the amber row cursor between rows; while a field is open it changes that
-//!   field's value instead.
-//! - **Press** flips a toggle row, or *enters* a value row's stepper (a `▲▼` box marks the live
-//!   field); pressing again steps field→field and off the end steps back out.
+//! The two-level encoder model:
+//! - **Rotate** moves the amber row cursor; while a field is open it changes that field's value.
+//! - **Press** flips a toggle, or enters a value row's stepper (a `▲▼` box marks the live field);
+//!   pressing again steps field→field and off the end steps back out.
 //! - **Back** steps out of an open field, else climbs one screen up.
 //! - **Long-press** is reserved for the one guarded action, the factory [`reset`].
 //!
-//! Editing is **live**: a stepper writes straight into the shared [`Settings`](crate::Settings) —
-//! there's no save button, so `back` just exits (and stepping `back` out of a field is consistent
-//! with that). [`App::apply_gesture`](crate::App::apply_gesture) notices the change with one `==`
-//! and flags the host to persist it.
+//! Editing is live: a stepper writes straight into the shared [`Settings`](crate::Settings) — no
+//! save button, so `back` just exits. [`App::apply_gesture`](crate::App::apply_gesture) notices the
+//! change and flags the host to persist it.
 
 use embedded_graphics::{
     prelude::{DrawTarget, Point},
@@ -48,16 +43,14 @@ pub use reset::ResetScreen;
 pub use stats::StatsScreen;
 pub use units::UnitsScreen;
 
-/// The Settings list entries, in order. `Units` + `Stats` are ours (display config); the others are
-/// the mock's. Each row pushes its sub-screen (`Stats` itself opens onto the field manager).
+/// The Settings list entries, in order. Each row pushes its sub-screen.
 const ITEMS: [&str; 5] = ["Date & Time", "Units", "Stats", "Power", "Reset"];
 
-/// Per-row height of the list — matches the main [`Menu`](super::MenuScreen) so the two read
-/// identically.
+/// Per-row height — matches the main [`Menu`](super::MenuScreen) so the two read identically.
 const ROW_H: i32 = 52;
 
 /// The Settings list — a nav menu whose rows open the individual settings screens. State is the
-/// highlighted row; the same wrapping-list pattern as [`MenuScreen`](super::MenuScreen).
+/// highlighted row.
 #[derive(Debug, Default)]
 pub struct SettingsScreen {
     selected: usize,
@@ -115,9 +108,7 @@ impl SettingsScreen {
     }
 }
 
-// ---------------------------------------------------------------------------
-// The shared kit — the reusable parts behind every settings screen (the mock's section 5).
-// ---------------------------------------------------------------------------
+// The shared kit — the reusable parts behind every settings screen.
 
 /// Left inset of every settings row (clears the framed outline).
 pub(super) const ROW_X: i32 = 14;
@@ -128,9 +119,8 @@ pub(super) fn row_rect(i: i32, y: i32, w: i32, h: i32) -> Rectangle {
     rect(ROW_X, y, w - 2 * ROW_X, h)
 }
 
-/// Paint a row's **row-focus** cursor: the amber bar behind a highlighted-but-not-editing row.
-/// A no-op while editing (the live field's `▲▼` box is the cursor then) or when unselected — so
-/// the two focus levels never both light up.
+/// Paint a row's amber row-focus cursor. A no-op while editing (the field's `▲▼` box is the cursor
+/// then) or when unselected, so the two focus levels never both light up.
 pub(super) fn row_cursor<D, F>(cv: &mut Canvas<D, F>, area: Rectangle, selected: bool, editing: bool)
 where
     D: DrawTarget,
@@ -141,8 +131,8 @@ where
     }
 }
 
-/// Draw a row's left-hand label (Body) with an optional muted sub-caption (Label) under it.
-/// `area` is the row rect; returns nothing (the right-hand control is drawn by the caller).
+/// Draw a row's left-hand label (Body) with an optional muted sub-caption (Label) under it. The
+/// caller draws the right-hand control.
 pub(super) fn row_label<D, F>(cv: &mut Canvas<D, F>, area: Rectangle, label: &str, sub: Option<&str>)
 where
     D: DrawTarget,
@@ -155,16 +145,14 @@ where
             cv.text(sub, Point::new(x, area.top_left.y + 30), Font::Label, TextAlign::Left, palette::SUBTEXT);
         }
         None => {
-            // Single line: vertically centre the Body caps in the row.
-            let y = area.top_left.y + (area.size.height as i32 - 22) / 2;
+            let y = area.top_left.y + (area.size.height as i32 - 22) / 2; // vertically centred
             cv.text(label, Point::new(x, y), Font::Body, TextAlign::Left, palette::INK);
         }
     }
 }
 
-/// Draw a **slider toggle** at the right of `area` — a classic switch whose white knob slides
-/// left (off) / right (on), the rounded-rect track dark for off and green for on. No on/off
-/// text: the knob position and track colour carry the state.
+/// Draw a slider toggle at the right of `area` — a white knob sliding left (off) / right (on), the
+/// track dark for off and green for on. The knob position and track colour carry the state.
 pub(super) fn toggle_slider<D, F>(cv: &mut Canvas<D, F>, area: Rectangle, on: bool)
 where
     D: DrawTarget,
@@ -173,19 +161,16 @@ where
     let (tw, th) = (50, 28);
     let tx = area.top_left.x + area.size.width as i32 - tw - 4;
     let ty = area.top_left.y + (area.size.height as i32 - th) / 2;
-    // Track: a rounded rectangle (small corners, not a pill).
     cv.round(rect(tx, ty, tw, th), 6, if on { palette::ON } else { palette::INK });
-    // Knob: a white rounded square at the on/off end, with an even margin.
+    // Knob at the on/off end, with an even margin.
     let m = 4;
     let k = th - 2 * m;
     let kx = if on { tx + tw - m - k } else { tx + m };
     cv.round(rect(kx, ty + m, k, k), 4, palette::PARCHMENT);
 }
 
-/// Draw a **stepper field** cell holding `text` in `font`. Inactive: just the text, **no
-/// background**. Active (the live field): an amber fill plus an up-triangle above and a
-/// down-triangle below (rotate to change it). `cell` must leave ~10 px of clearance above and
-/// below for the arrows.
+/// Draw a stepper field cell holding `text`. Inactive: just the text, no background. Active (the
+/// live field): an amber fill plus up/down triangles. `cell` must leave ~10 px clearance for the arrows.
 pub(super) fn stepper_field<D, F>(cv: &mut Canvas<D, F>, cell: Rectangle, text: &str, active: bool, font: Font)
 where
     D: DrawTarget,
@@ -203,10 +188,8 @@ where
     cv.text(text, Point::new(cx, ty), font, TextAlign::Center, palette::INK);
 }
 
-/// Draw a **span badge** at the right of a row: a single small square for a one-column field, a wider
-/// two-square bar for a full-width (two-column) one — the glance-readable "how big is this tile" cue
-/// shared by the Stat Fields list and the Add Field picker. `color` is the badge ink (the caller
-/// picks ink-on-amber for a selected row, muted otherwise).
+/// Draw a span badge at the right of a row: one small square for a one-column field, two for a
+/// full-width one — the "how big is this tile" cue shared by the Stat Fields list and Add Field picker.
 pub(super) fn span_badge<D, F>(cv: &mut Canvas<D, F>, area: Rectangle, span: u8, color: u16)
 where
     D: DrawTarget,
@@ -216,7 +199,7 @@ where
     let gap = 3;
     let cy = area.top_left.y + (area.size.height as i32 - cell) / 2;
     let right = area.top_left.x + area.size.width as i32 - 10;
-    // One cell for a single, two for a two-span, laid out right-to-left from the row edge.
+    // Laid out right-to-left from the row edge.
     for i in 0..span as i32 {
         let x = right - (i + 1) * cell - i * gap;
         cv.round(rect(x, cy, cell, cell), 2, color);

@@ -1,19 +1,15 @@
-//! The `routeList` / `rideList` object codecs (spec §7.4) — the CoC-downloaded catalogs that
-//! outgrow the 512-byte ATT attribute cap. Shared shape: a 4-byte [`ListHeader`] + fixed
-//! **72-byte** entries, so entry `k` sits at `4 + 72k` — O(1) indexing, no string scanning.
-//!
-//! The device encodes (its catalog scan → the wire); the app decodes. Both directions live here so
-//! the round-trip is host-tested in one place and the shared `protocol-vectors/` fixture pins the
-//! layout for the Swift mirror.
+//! The `routeList` / `rideList` object codecs — the CoC-downloaded catalogs that outgrow the
+//! 512-byte ATT attribute cap. Shared shape: a 4-byte [`ListHeader`] + fixed **72-byte** entries,
+//! so entry `k` sits at `4 + 72k` — O(1) indexing, no string scanning.
 
 use crate::descriptor::DescriptorError;
 
-/// Both list objects' fixed entry size (spec §7.4). Readers are told this by
-/// [`ListHeader::entry_len`] — a future entry growth appends fields and bumps the header value,
-/// and an old reader skips the tail it doesn't know.
+/// Both list objects' fixed entry size. Readers step by the header's announced entry_len, not this
+/// constant — a future entry growth appends fields and bumps the header value, and an old reader
+/// skips the tail it doesn't know.
 pub const LIST_ENTRY_LEN: usize = 72;
 
-/// The 4-byte header both list objects share (spec §7.4).
+/// The 4-byte header both list objects share.
 ///
 /// ```text
 ///   version    u8   = 1
@@ -27,7 +23,6 @@ pub struct ListHeader {
 
 impl ListHeader {
     pub const ENCODED_LEN: usize = 4;
-    /// The list-object version this codec writes.
     pub const VERSION: u8 = 1;
 
     pub fn encode(&self) -> [u8; Self::ENCODED_LEN] {
@@ -38,9 +33,9 @@ impl ListHeader {
         b
     }
 
-    /// Decode a list header, rejecting an unknown version or a zero `entry_len` (a reader must be
-    /// able to step entries by it). The returned `entry_len` may exceed [`LIST_ENTRY_LEN`] —
-    /// forward compatibility: step by it, decode the prefix you know.
+    /// Decode a list header, rejecting an unknown version or an `entry_len` below [`LIST_ENTRY_LEN`].
+    /// The returned `entry_len` may *exceed* it — forward compatibility: step by it, decode the
+    /// prefix you know.
     pub fn decode(data: &[u8]) -> Result<(Self, usize), DescriptorError> {
         if data.len() < Self::ENCODED_LEN {
             return Err(DescriptorError::Truncated);
@@ -65,18 +60,17 @@ impl ListHeader {
         Self::ENCODED_LEN + count * LIST_ENTRY_LEN
     }
 
-    /// The bounds-checked slot for entry `k`, given the header's announced `entry_len` (from
-    /// [`decode`](Self::decode)). `None` when the object is shorter than `count` claims — so a walk
-    /// over a corrupt or inconsistent `count` rejects the entry instead of slicing past the buffer.
-    /// `decode` reads only the 4-byte header and so can't police `count`; the walk must, and this is
-    /// that guard — pass the returned slice straight to `RouteListEntry`/`RideListEntry::decode`.
+    /// The bounds-checked slot for entry `k`, given the header's announced `entry_len`. `None` when
+    /// the object is shorter than `count` claims — `decode` reads only the 4-byte header and can't
+    /// police `count`; this guards the walk from slicing past the buffer. Pass the slice straight to
+    /// `RouteListEntry`/`RideListEntry::decode`.
     pub fn entry_slice(data: &[u8], k: usize, entry_len: usize) -> Option<&[u8]> {
         let off = Self::ENCODED_LEN + k * entry_len;
         data.get(off..off.checked_add(entry_len)?)
     }
 }
 
-/// One `routeList` entry (spec §7.4) — from the stored OBCR header.
+/// One `routeList` entry — from the stored OBCR header.
 ///
 /// ```text
 ///   object_id       u16
@@ -104,7 +98,7 @@ pub struct RouteListEntry<'a> {
 }
 
 impl<'a> RouteListEntry<'a> {
-    /// The name cap (§7.4, matches the OBCR route-name field).
+    /// The name cap (matches the OBCR route-name field).
     pub const MAX_NAME: usize = 48;
 
     pub fn encode(&self) -> [u8; LIST_ENTRY_LEN] {
@@ -123,8 +117,8 @@ impl<'a> RouteListEntry<'a> {
         b
     }
 
-    /// Decode one entry (the first [`LIST_ENTRY_LEN`] bytes of an entry slot — a longer future
-    /// entry's tail is ignored, per the header's `entry_len` rule).
+    /// Decode one entry from the first [`LIST_ENTRY_LEN`] bytes of a slot — a longer future entry's
+    /// tail is ignored.
     pub fn decode(data: &'a [u8]) -> Result<Self, DescriptorError> {
         if data.len() < LIST_ENTRY_LEN {
             return Err(DescriptorError::Truncated);
@@ -142,8 +136,7 @@ impl<'a> RouteListEntry<'a> {
     }
 }
 
-/// One `rideList` entry (spec §7.4) — from the stored ride-object header. Encoded by the device at
-/// A7; the codec lands with the list shape so the layouts are pinned together.
+/// One `rideList` entry — from the stored ride-object header.
 ///
 /// ```text
 ///   object_id      u16
@@ -171,7 +164,7 @@ pub struct RideListEntry<'a> {
 }
 
 impl<'a> RideListEntry<'a> {
-    /// The name cap (§7.4 — one byte shorter than the route's: the fixed fields take one more).
+    /// One byte shorter than the route's — the fixed fields take one more.
     pub const MAX_NAME: usize = 47;
 
     pub fn encode(&self) -> [u8; LIST_ENTRY_LEN] {

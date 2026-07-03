@@ -1,12 +1,9 @@
-//! The "route already active" prompt — shown when a new route is picked mid-ride.
-//!
-//! Loading a route while a tracking session is running is ambiguous: keep recording the same
-//! ride and just re-navigate, or save this ride and begin a fresh one. This opaque prompt
-//! asks which. **Swap route** (press) keeps the session and only changes the navigated route;
-//! **Save & new** (hold-guarded, since it ends a session) finalises the current track to a
-//! `.gpx` and starts a new session on the picked route; **Cancel** (back) returns to the
-//! route list. Reached from [`RouteMenuScreen`](super::RouteMenuScreen) when a session is
-//! active and a *different* route is chosen.
+//! The "route already active" prompt — shown when a new route is picked mid-ride. Loading a route
+//! while tracking is ambiguous: keep recording and re-navigate, or save and begin fresh. **Swap
+//! route** (press) keeps the session and only changes the navigated route; **Save & new** (hold-
+//! guarded) finalises the current track to a `.gpx` and starts a new session; **Cancel** (back)
+//! returns. Reached from [`RouteMenuScreen`](super::RouteMenuScreen) when a session is active and a
+//! *different* route is chosen.
 
 use embedded_graphics::prelude::{DrawTarget, Point};
 use obc_render::{
@@ -92,8 +89,7 @@ impl RouteSwapScreen {
         let (w, h) = (rx.w as i32, rx.h as i32);
         let mut cv = Canvas::new(target, color_fn);
 
-        // Opaque full-screen prompt (not an overlay): header clears the screen, then a one-
-        // line explanation and the three options.
+        // Opaque full-screen prompt (not an overlay): a one-line explanation and three options.
         title_frame(&mut cv, w, h, "ROUTE ACTIVE", "");
         cv.text(
             "Recording a ride",
@@ -108,8 +104,7 @@ impl RouteSwapScreen {
         for (i, item) in ITEMS.iter().enumerate() {
             let y = first + i as i32 * (row_h + gap);
             let row = rect(12, y, w - 24, row_h);
-            // Guarded rows fill amber with the hold progress (amber, not warning-red — this
-            // confirms a save, it isn't destructive).
+            // Guarded rows fill amber (not warning-red — this confirms a save, it isn't destructive).
             super::confirm_row(&mut cv, row, i == self.selected, item.guard, rx.hold_progress, AMBER, 6);
             cv.text(item.label, Point::new(28, y + 11), Font::Body, TextAlign::Left, INK);
         }

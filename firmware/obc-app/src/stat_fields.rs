@@ -1,17 +1,15 @@
-//! The Statistics grid's **data fields** — the predefined, in-code catalogue the rider picks
-//! from, the ordered selection they build, and the grid-layout maths that places it.
+//! The Statistics grid's **data fields** — the predefined catalogue the rider picks from, the
+//! ordered selection they build, and the grid-layout maths that places it.
 //!
-//! The riding [`Statistics`](crate::screen) view keeps its elevation chart + cursor/zoom on top;
-//! *below* it is a customizable grid of tiles. Each tile shows one [`StatField`] — a value with a
-//! caption, either a single column or (a `2`-span) a full-width tile. The rider chooses **which**
-//! fields and **in what order** on the [`StatFields`](crate::screen) settings screen; the choice
-//! lives in [`Settings::stat_fields`](crate::Settings) and persists.
+//! Below the riding [`Statistics`](crate::screen) view's elevation chart is a customizable grid of
+//! tiles. Each shows one [`StatField`] — a value with a caption, single column or a `2`-span
+//! full-width tile. The rider chooses which fields and in what order; the choice lives in
+//! [`Settings::stat_fields`](crate::Settings) and persists.
 //!
-//! Three concerns, one module, all `no_std` / zero-alloc / pure (so each is unit-tested):
+//! Three concerns, all `no_std` / zero-alloc / pure:
 //! - **the catalogue** — [`StatField`], one variant per field, owning its span, name and value
-//!   formatter ([`StatField::cell`]). Adding a field is one variant + one match arm.
-//! - **the selection** — [`StatFieldList`], a fixed-capacity ordered list with add / remove /
-//!   reorder, the POD persisted in [`Settings`](crate::Settings).
+//!   formatter. Adding a field is one variant + one match arm.
+//! - **the selection** — [`StatFieldList`], a fixed-capacity ordered list persisted in [`Settings`].
 //! - **the layout** — [`page_count`] / [`page_fields`], walking the selection into 6-slot pages
 //!   (3 rows × 2 cols), keeping a `2`-span tile row-aligned so it never straddles a row or page.
 
@@ -51,7 +49,7 @@ pub enum StatField {
     ToClimb = 5,
     /// Grade (%) at the live position.
     Grade = 6,
-    /// Current elevation — the live barometric altitude (issue #222).
+    /// Current elevation — the live barometric altitude.
     Elevation = 7,
     /// Moving time this ride.
     RideTime = 8,
@@ -104,11 +102,10 @@ impl StatField {
         }
     }
 
-    /// The rendered tile content for this field: a unit-bearing caption, the number-only value, and
-    /// whether to prefix an up-triangle (the climb fields imply "elevation" with it). Route- and
-    /// profile-relative fields fall back to `--` when no route is loaded (the grid only draws with
-    /// one, so that path is defensive). Mirrors the Wahoo-style tiles: the unit lives in the caption
-    /// so the big [`Display`](obc_render::text::Font) digits fit the half-width tile.
+    /// The rendered tile content: a unit-bearing caption, the number-only value, and whether to
+    /// prefix an up-triangle (the climb fields). Route-relative fields fall back to `--` with no
+    /// route loaded. The unit lives in the caption so the big [`Display`](obc_render::text::Font)
+    /// digits fit the half-width tile.
     pub fn cell(self, rx: &Render) -> StatCell {
         let units = rx.settings.units;
         let live = live_frac(rx);
@@ -150,8 +147,8 @@ impl StatField {
                 StatCell::new(cap("GRADE", ""), value, false)
             }
             StatField::Elevation => {
-                // The **live barometric** altitude (issue #222) — not the route profile, so it reads
-                // the current height with no route loaded / off-route, and `--` until the first sample.
+                // The live barometric altitude, not the route profile — so it reads the current
+                // height with no route loaded, and `--` until the first sample.
                 let v = rx.activity.current_elevation_m().map(|m| units.elev(m));
                 StatCell::new(cap("ELEV ", units.elev_label()), fmt_elev(v), false)
             }
@@ -274,9 +271,8 @@ impl StatFieldList {
 
     /// Move the field at `i` one valid step in `dir` (`+1` down / `-1` up), returning its new index
     /// (unchanged if it can't move further). A single-span field moves one slot at a time; a
-    /// **two-span** field only lands where an *even number of single panels* precede it — so a
-    /// wide tile always begins a row, hopping over a pair of singles (or one wide tile) per step.
-    /// That's the rider-facing reorder rule the layout's row-alignment then renders.
+    /// **two-span** field only lands where an *even number of single panels* precede it — so a wide
+    /// tile always begins a row, hopping over a pair of singles (or one wide tile) per step.
     pub fn move_item(&mut self, i: usize, dir: i32) -> usize {
         let len = self.len as usize;
         if len == 0 || dir == 0 {
@@ -388,10 +384,8 @@ pub fn page_fields(list: &StatFieldList, page: usize) -> heapless::Vec<Placed, S
     out
 }
 
-// ---------------------------------------------------------------------------
-// Value formatters + the grade helper — moved here from the Statistics screen so the field
-// catalogue owns its own rendering. `grade_at` stays shared with the screen's header readout.
-// ---------------------------------------------------------------------------
+// Value formatters + the grade helper — the field catalogue owns its own rendering. `grade_at` is
+// shared with the Statistics header readout.
 
 /// A km figure for a tile: one decimal up to 100 km, none past it, so the value stays ≤ 3 digits
 /// and fits the half-width tile.
@@ -423,7 +417,7 @@ fn fmt_int(m: u32) -> heapless::String<8> {
 }
 
 /// A live-elevation figure: rounded to a whole unit (signed, so a sub-sea-level reading shows a
-/// `-` rather than wrapping), or `--` when there's no altimeter sample yet (issue #222). Rounds
+/// `-` rather than wrapping), or `--` when there's no altimeter sample yet. Rounds
 /// half away from zero without `libm` (the codebase keeps elevation maths off the math lib).
 fn fmt_elev(v: Option<f32>) -> heapless::String<8> {
     let mut s = heapless::String::new();
@@ -595,9 +589,9 @@ mod tests {
         assert_eq!(l.as_slice(), &[StatField::Clock]);
     }
 
-    /// The Elevation tile reads the **live barometric altitude** (issue #222), not the route
-    /// profile: it shows the current height with no route loaded, converts to the active unit, and
-    /// reads `--` before the first altimeter sample.
+    /// The Elevation tile reads the live barometric altitude, not the route profile: it shows the
+    /// current height with no route loaded, converts to the active unit, and reads `--` before the
+    /// first altimeter sample.
     #[test]
     fn elevation_tile_reads_live_barometric_altitude() {
         use crate::activity::{Activity, Mode};
@@ -610,8 +604,8 @@ mod tests {
         let breadcrumb = Breadcrumb::new();
         let mut renderer = MapRenderer::new();
         let now = DateTime::default();
-        // Build a minimal `Render` for one `Elevation` cell — no route/profile (the field must no
-        // longer need either), reading the live altitude off `activity`.
+        // A minimal `Render` for one `Elevation` cell — no route/profile, reading the live altitude
+        // off `activity`.
         let value = |settings: &Settings, activity: &Activity, renderer: &mut MapRenderer| {
             let rx = Render {
                 reader: None,
@@ -636,7 +630,6 @@ mod tests {
 
         let metric = Settings::default();
         let mut activity = Activity::new(Mode::Riding);
-        // No sample yet → placeholder, even with no route (the old route-profile field showed 0).
         assert_eq!(value(&metric, &activity, &mut renderer).as_str(), "--", "no altimeter sample yet");
 
         activity.record_altitude(144.0);

@@ -1,39 +1,30 @@
 //! Chip-agnostic **electronic-compass** maths — a 3-axis magnetometer sample → a heading in degrees
-//! clockwise from north, for the [`CompassSource`](obc_app::CompassSource) seam (the heading-when-
-//! stopped, see `obc-app/src/hal.rs`).
+//! clockwise from north, for the [`CompassSource`](obc_app::CompassSource) seam (the heading when
+//! stopped).
 //!
-//! ## Why this is its own module (the "swap the chip" story)
-//! The current bring-up reads the **AK09916** inside an ICM-20948 (register map in
-//! [`crate::icm20948`]), but the shipping board is expected to carry a **separate, plain 3-axis
-//! magnetometer**. So the only thing that should change when the chip does is the register map +
-//! raw→µT scaling in the chip module — *this* file (the heading geometry) and the whole app-facing
-//! [`CompassSource`](obc_app::CompassSource) seam stay put. Any magnetometer driver, on any bus,
-//! reduces its reading to a [`MagSample`] (3 axes, µT, in the **device frame**) and calls
-//! [`heading_deg`]; nothing here knows or cares which chip produced it.
+//! Chip-agnostic on purpose: the current bring-up reads the AK09916 inside an ICM-20948
+//! ([`crate::icm20948`]), but the shipping board may carry a plain 3-axis magnetometer. Any driver,
+//! on any bus, reduces its reading to a [`MagSample`] (3 axes, µT, in the **device frame**) and
+//! calls [`heading_deg`]; when the chip changes only the register map + raw→µT scaling move.
 //!
-//! ## Scope: flat heading only (the 3 DOF we use)
-//! We deliberately use **only** the magnetometer's three axes — no accelerometer, no gyro — so the
-//! heading is computed *flat* (assuming the device is roughly level). That's enough for its one job:
-//! standing in for [`Fix::course`](obc_app::Fix::course) on a heading-up map while the rider is
-//! stopped (the GPS drops course below walking pace). Tilt compensation would need a gravity vector
-//! from an accelerometer and is a deliberate non-goal for now — [`heading_deg`] is written so adding
-//! it later is a new function that consumes an accel vector, not a change to this signature.
+//! ## Scope: flat heading only
+//! Uses **only** the magnetometer's three axes (no accelerometer/gyro), so the heading is computed
+//! *flat* (device roughly level). Enough for its one job: standing in for
+//! [`Fix::course`](obc_app::Fix::course) on a heading-up map while the rider is stopped. Tilt
+//! compensation is a deliberate non-goal; adding it later is a new function taking an accel vector,
+//! not a change to this signature.
 //!
 //! ## Calibration is the caller's job
-//! [`heading_deg`] expects a sample that's **already** had hard-iron offset removed and been rotated
-//! into the device frame (X forward / Y right / Z down) — both are board-mounting concerns, so they
-//! live next to the I²C transactions in the board crate, not here. This module is pure geometry:
-//! `atan2` of two axes plus a magnetic-declination shift, so it unit-tests on the host with no
-//! hardware (the same split as [`crate::bmp581`] / [`crate::ubx`]).
+//! [`heading_deg`] expects a sample **already** hard-iron-corrected and rotated into the device
+//! frame (X forward / Y right / Z down) — both are board-mounting concerns living in the board
+//! crate. This module is pure geometry: `atan2` of two axes plus a declination shift.
 
-/// A single magnetometer reading: the three field-strength axes in **microtesla**, expressed in the
-/// **device frame** — `x` forward (toward the top of the screen), `y` to the right, `z` down. A
-/// magnetometer driver scales its raw counts to µT and remaps the sensor's own axes into this frame
-/// (a per-board-mounting rotation) before building one; [`heading_deg`] then needs no chip knowledge.
+/// A single magnetometer reading: the three field-strength axes in **microtesla**, in the **device
+/// frame** — `x` forward (top of screen), `y` right, `z` down. A driver scales raw counts to µT and
+/// remaps the sensor's own axes into this frame before building one.
 ///
-/// `z` is carried even though the flat heading ignores it: it's what an overflow check reads and what
-/// a future tilt-compensated heading (with an accelerometer) would consume. Keeping all three here
-/// means that upgrade doesn't churn the type.
+/// `z` is carried even though the flat heading ignores it: it's what an overflow check reads and
+/// what a future tilt-compensated heading would consume.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MagSample {
     /// Field along device-forward (top of screen), µT.
@@ -60,23 +51,20 @@ impl MagSample {
 /// `atan2(-y, x)`: facing north the horizontal field lies along +X (`y≈0` → `0°`); rotate the device
 /// 90° clockwise to face east and north shifts to the device's left (`-y` → `+90°`).
 ///
-/// `declination_deg` is the local **magnetic declination** (east-positive) that converts magnetic
-/// north to the *true* north the map and GPS course use. Pass `0.0` to get raw magnetic heading; a
-/// caller with a position fix can supply the real value later (e.g. from the WMM or a coarse table) —
-/// that's the only thing standing between this and a true-north heading, and it's a pure add here.
+/// `declination_deg` is the local **magnetic declination** (east-positive) converting magnetic north
+/// to the *true* north the map and GPS course use. Pass `0.0` for raw magnetic heading.
 ///
-/// The result is normalised to `[0, 360)`. Magnitude is irrelevant (only the *direction* of the
-/// horizontal field matters), so an uncalibrated scale factor doesn't affect the angle — but a
-/// **hard-iron offset must already be removed** by the caller, or the heading skews (see the module
-/// docs).
+/// The result is normalised to `[0, 360)`. Magnitude is irrelevant (only the field *direction*
+/// matters), so an uncalibrated scale doesn't affect the angle — but a **hard-iron offset must
+/// already be removed** by the caller, or the heading skews.
 pub fn heading_deg(s: MagSample, declination_deg: f32) -> f32 {
     let deg = libm::atan2f(-s.y, s.x) * (180.0 / core::f32::consts::PI);
     normalize_deg(deg + declination_deg)
 }
 
 /// Wrap an angle in degrees into `[0, 360)`. A bounded `+= 360` / `-= 360` rather than a float modulo
-/// so it stays exact for the small out-of-range inputs [`heading_deg`] produces (an `atan2` result in
-/// `[-180, 180]` plus a modest declination) and pulls in no extra `libm`.
+/// so it stays exact for the small out-of-range inputs [`heading_deg`] produces and pulls in no
+/// extra `libm`.
 pub fn normalize_deg(mut deg: f32) -> f32 {
     while deg < 0.0 {
         deg += 360.0;
@@ -89,9 +77,8 @@ pub fn normalize_deg(mut deg: f32) -> f32 {
 
 /// The smallest absolute angular distance between two headings in degrees — always in `[0, 180]`,
 /// taking the short way around the circle (so `350°` and `10°` are `20°` apart, not `340°`). A
-/// magnetometer driver uses this to **dead-band** its output: only publish a new heading once it has
-/// moved more than some threshold, so sensor noise while the device is held still doesn't repaint a
-/// heading-up map. Pure subtraction + a wrap, no `libm`.
+/// driver uses this to **dead-band** its output so sensor noise while held still doesn't repaint a
+/// heading-up map.
 pub fn angle_diff(a: f32, b: f32) -> f32 {
     let mut d = a - b;
     if d < 0.0 {

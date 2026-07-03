@@ -220,12 +220,10 @@ fn forward_bias_does_not_snap_back_on_a_loop() {
 }
 
 /// An out-and-back: out along a north-bowing arc A→M→B, back straight B→A′, where A′ ends
-/// ~2 m north of the A start (a real GPS retrace never lands exactly on its start). Start
-/// and finish sit nearly on top of each other, so a small north offset at the start makes
-/// the *finish* segment marginally the nearest — which latched the cursor onto progress ≈
-/// total before the first-lock earliest-bias fix, tripping spurious off-route. The bowed
-/// outbound keeps the mid-route unambiguous (the legs are tens of metres apart there), so
-/// the test isolates the genuine failure: the first lock.
+/// ~2 m north of the A start. Start and finish sit nearly on top of each other, so a small
+/// north offset at the start makes the *finish* segment marginally the nearest — the case the
+/// first-lock earliest-bias must resolve. The bowed outbound keeps the mid-route unambiguous,
+/// isolating the first-lock behaviour.
 fn out_and_back_gpx() -> String {
     gpx_from(&[
         (48.0000, 7.8000, 200.0),  // A  — start
@@ -287,11 +285,9 @@ fn zigzag_gpx(n: usize) -> String {
     gpx_from(&pts)
 }
 
-/// Item 1 — **powering on off-route.** Before `started`, the first fix scans the whole route
-/// and *always* locks on (`matcher.rs:106`); the only thing that keeps a rider who turns the
-/// device on 500 m from the route from being told "on route at 0 %" is the off-route flag +
-/// frozen progress. Guards the first impression of every ride: a far first fix must read
-/// `off_route` with progress pinned at 0, not silently snapped onto the line.
+/// Powering on off-route: the first fix scans the whole route and always locks onto a segment,
+/// so only the off-route flag + frozen progress keep a rider 500 m away from reading "on route
+/// at 0 %". A far first fix must read `off_route` with progress pinned at 0.
 #[test]
 fn first_fix_far_off_route_reports_off_and_frozen() {
     let bytes = convert("East", &gpx_from(EAST));
@@ -310,11 +306,9 @@ fn first_fix_far_off_route_reports_off_and_frozen() {
     assert!((res.dist_m as i32 - 500).abs() <= 5, "live cross-track {} m ~ 500", res.dist_m);
 }
 
-/// Item 2 — **the hysteresis-hold band (15–25 m).** `ON_M=15`/`OFF_M=25` create a band where
-/// the flag *holds its previous state* (`matcher.rs:171`); the existing tests only cross it
-/// cleanly at 50/60 m, so the held branch — the whole point of the hysteresis — was never
-/// run. A fix inside the band must keep whichever state the rider was already in, so the
-/// "off route" banner doesn't flap on and off as GPS noise hovers around the boundary.
+/// The hysteresis-hold band (`ON_M`=15..`OFF_M`=25 m): a fix inside it must keep whichever
+/// state the rider was already in, so the "off route" banner doesn't flap as GPS noise hovers
+/// around the boundary.
 #[test]
 fn hysteresis_band_holds_previous_state() {
     let bytes = convert("East", &gpx_from(EAST));
@@ -348,11 +342,9 @@ fn hysteresis_band_holds_previous_state() {
     assert_eq!(held_off.progress_m, frozen, "an off-route band fix keeps progress frozen");
 }
 
-/// Item 3 — **a single GPS teleport / jitter spike.** A lone wild outlier fix between two good
-/// ones (a momentary multipath or cold-start glitch) must not lurch the route position: the
-/// off-route freeze (`matcher.rs:177-182`) holds progress at the last good value while the
-/// spike reads off-route, and the next good fix resumes cleanly. Without the freeze a 2 km
-/// outlier would yank "distance ridden" / "to go" and the map cursor across the screen.
+/// A single GPS teleport / jitter spike: a lone wild outlier between two good fixes must not
+/// lurch the route position — the off-route freeze holds progress at the last good value while
+/// the spike reads off-route, and the next good fix resumes cleanly.
 #[test]
 fn single_teleport_spike_does_not_lurch_progress() {
     let bytes = convert("East", &gpx_from(EAST));
@@ -384,11 +376,9 @@ fn single_teleport_spike_does_not_lurch_progress() {
     assert!(after.progress_m.abs_diff(want) <= 5, "recovered progress {} ~ {want}", after.progress_m);
 }
 
-/// Item 5 — **going backwards within the `BACK_SEGS=3` slack** (`matcher.rs:28`). The forward
-/// window keeps a little backward slack so a rider doubling back a few metres (or GPS jitter)
-/// doesn't lose the lock; the existing suite only ever drives progress *up*. A small backward
-/// step must follow onto the earlier segment with progress *descending* (not frozen, not
-/// snapped forward) — so "distance ridden" tracks a rider who briefly reverses.
+/// Going backwards within the `BACK_SEGS`=3 slack: a small backward step must follow onto the
+/// earlier segment with progress *descending* (not frozen, not snapped forward), so "distance
+/// ridden" tracks a rider who briefly reverses.
 #[test]
 fn small_backward_step_descends_progress() {
     let bytes = convert("Zig", &zigzag_gpx(6));
@@ -422,11 +412,9 @@ fn small_backward_step_descends_progress() {
     assert_eq!(prev, 0, "walking all the way back reaches the route start (0 m)");
 }
 
-/// Item 5 (boundary) — **a backward jump *past* `BACK_SEGS` loses the lock, frozen.** The slack
-/// is deliberately small (3 segments); a fix that lands many segments behind the cursor falls
-/// *outside* the backward window, so the nearest in-window segment is far away → the matcher
-/// reports off-route and **freezes** progress rather than silently teleporting the cursor
-/// backwards. Pins the slack's upper edge that item 5 calls out as unasserted.
+/// A backward jump *past* `BACK_SEGS` falls outside the backward window, so the nearest
+/// in-window segment is far away → the matcher reports off-route and **freezes** progress
+/// rather than teleporting the cursor backwards.
 #[test]
 fn backward_jump_beyond_back_segs_freezes() {
     let bytes = convert("Zig", &zigzag_gpx(12));
@@ -450,12 +438,9 @@ fn backward_jump_beyond_back_segs_freezes() {
     assert_eq!(jumped.progress_m, frozen, "progress freezes; the cursor must not snap backwards");
 }
 
-/// Item 4 — **a genuine hairpin with two near-equidistant segments.** The out-and-back test
-/// deliberately *bows* its outbound leg so the midpoint is unambiguous; a real hairpin has the
-/// out and back legs only metres apart, so at the apex two segments are almost equidistant.
-/// Walking through the turn, the forward bias must keep progress monotonic — it must not snap
-/// from the inbound leg back onto the spatially-just-as-near outbound leg (which would read as
-/// the rider suddenly losing half the route's progress).
+/// A hairpin whose out and back legs are metres apart, so at the apex two segments are almost
+/// equidistant. Walking through the turn, the forward bias must keep progress monotonic — not
+/// snap from the inbound leg back onto the just-as-near outbound leg.
 #[test]
 fn hairpin_close_legs_progress_stays_monotonic() {
     // Out east along lat 48.0000, hairpin at the far end, back west along lat 48.00005 (~5.5 m
@@ -494,12 +479,9 @@ fn hairpin_close_legs_progress_stays_monotonic() {
     assert!(last as f64 > 0.9 * total as f64, "the inbound leg should finish near the {total} m total, got {last}");
 }
 
-/// Item 6 — **the 1-point / segment-less route branch** (`matcher.rs:161-163`). `convert`
-/// flushes a single GPX point as a 1-point chunk, so a route with no segment to project onto is
-/// reachable. With no segment, `best` stays `None`: every fix — even one right on the point —
-/// must read off-route, frozen at 0, and `u32::MAX` far. The rider is told "off route", never
-/// falsely "arrived". (This is the sibling of the empty-`chunks()` guard at `matcher.rs:98`,
-/// which a non-empty GPX never produces.)
+/// The 1-point / segment-less route branch: with no segment to project onto, `best` stays
+/// `None`, so every fix — even one right on the point — must read off-route, frozen at 0, and
+/// `u32::MAX` far. The rider is told "off route", never falsely "arrived".
 #[test]
 fn one_point_route_reports_off_and_far() {
     let bytes = convert("One", &gpx_from(&[(48.0, 7.8, 100.0)]));
@@ -522,11 +504,9 @@ fn one_point_route_reports_off_and_far() {
     assert_eq!(far.dist_m, u32::MAX);
 }
 
-/// Item 7 — **`cum_distance` at a chunk seam.** The multi-chunk test only checks progress is
-/// monotonic and reaches the total; it never pins an *absolute* progress value at a known seam.
 /// A fix sitting exactly on chunk 1's anchor must report progress == `chunks[1].cum_distance_m`
-/// — the O(1) remaining-distance join the Statistics "to go" readout depends on. If the
-/// per-chunk cumulative bookkeeping drifted, this catches it mid-route, not just at the ends.
+/// — the O(1) remaining-distance join the Statistics "to go" readout depends on. Catches
+/// per-chunk cumulative-bookkeeping drift mid-route, not just at the ends.
 #[test]
 fn progress_at_a_chunk_seam_equals_cum_distance() {
     let bytes = convert("Sawtooth", &sawtooth_gpx(400));

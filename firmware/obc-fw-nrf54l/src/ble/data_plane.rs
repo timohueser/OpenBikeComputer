@@ -1,28 +1,28 @@
-//! The L2CAP CoC data plane (A5/A6/A7, issues #273–#275): the bulk-transfer channel the control
-//! plane ([`super::control`]) arms through [`super::state::TRANSFER_ARM`].
+//! The L2CAP CoC data plane: the bulk-transfer channel the control plane ([`super::control`]) arms
+//! through [`super::state::TRANSFER_ARM`].
 //!
-//! The CoC carries **only the object's payload bytes** (no per-chunk framing, S0 §5); the whole
-//! transfer state machine + CRC codecs live in the host-tested [`obc_ble`] crate. One transfer at a
-//! time (S0 §4.1): the [`super::state::TRANSFER_ACTIVE`] gate is cleared here when each concludes,
-//! and a latched abort that raced a completion is drained so it can't leak into the next transfer.
+//! The CoC carries **only the object's payload bytes** (no per-chunk framing); the whole transfer state
+//! machine + CRC codecs live in the host-tested [`obc_ble`] crate. One transfer at a time: the
+//! [`super::state::TRANSFER_ACTIVE`] gate is cleared here when each concludes, and a latched abort that
+//! raced a completion is drained so it can't leak into the next transfer.
 //!
-//! - **Echo loopback** ([`run_echo`], S0 object type 8): stream each SDU straight back through an
-//!   [`obc_ble::Receiver`] (a running CRC-32, no reassembly buffer), verify **one** whole-object CRC
-//!   — the data plane proven end to end with **zero storage**.
-//! - **Route uploads** ([`run_upload`], S0 §4.2 op 1): CoC bytes sink through the [`Receiver`] into
-//!   an SD temp; commit validates (CRC + OBCR header) and atomically promotes (see `sd.rs`). Uploads
-//!   don't resume (S0 §1 principle 4): a CoC drop, a link drop, or an `op=3` abort discards the
-//!   partial and the app re-sends from the start.
-//! - **Downloads** ([`run_download`], S0 §4.2 op 2): `routeList` / `rideList` / diagnostics from a
-//!   store-built buffer, a route or ride detail streamed straight off the card — announce descriptor
-//!   first, then raw chunks, one whole-object CRC. Rides reuse the machinery wholesale because the
-//!   Finish-time save already stored each as **exactly** the S0 §7.2 wire bytes (`sd.rs`), and the
-//!   diagnostics object (§7.5) is rendered from the link plane's own facts.
+//! - **Echo loopback** ([`run_echo`]): stream each SDU straight back through an [`obc_ble::Receiver`]
+//!   (a running CRC-32, no reassembly buffer), verify **one** whole-object CRC — the data plane proven
+//!   end to end with **zero storage**.
+//! - **Route uploads** ([`run_upload`]): CoC bytes sink through the [`Receiver`] into an SD temp;
+//!   commit validates (CRC + OBCR header) and atomically promotes (see `sd.rs`). Uploads don't resume:
+//!   a CoC drop, a link drop, or an `op=3` abort discards the partial and the app re-sends from the
+//!   start.
+//! - **Downloads** ([`run_download`]): `routeList` / `rideList` / diagnostics from a store-built
+//!   buffer, a route or ride detail streamed straight off the card — announce descriptor first, then
+//!   raw chunks, one whole-object CRC. Rides reuse the machinery wholesale because the Finish-time save
+//!   already stored each as **exactly** the wire bytes (`sd.rs`), and the diagnostics object is
+//!   rendered from the link plane's own facts.
 //! - Every store movement notifies `storeChanged` + the refreshed `objectStore` digest
-//!   ([`publish_store_change`], S0 §4.3/§4.5).
+//!   ([`publish_store_change`]).
 //!
-//! On the first transfer the link is asked for the fast [`conn_params`] set (throughput); the store
-//! is shared with the control plane as a `RefCell` that is **never borrowed across an `await`**.
+//! On the first transfer the link is asked for the fast [`conn_params`] set (throughput); the store is
+//! shared with the control plane as a `RefCell` that is **never borrowed across an `await`**.
 
 use core::cell::RefCell;
 use core::sync::atomic::Ordering;
@@ -43,13 +43,13 @@ use super::state::{
     TRANSFER_ARM,
 };
 
-/// The L2CAP CoC data plane (A5/A6): accept the app's channel on the OBC SPSM and serve the
-/// transfers [`super::control::serve_connection`] arms through [`TRANSFER_ARM`] — the echo loopback,
-/// route uploads → SD, and route/list downloads ← SD. One armed transfer at a time (S0 §4.1); the
-/// [`TRANSFER_ACTIVE`] gate is cleared here when each concludes, and a latched abort that raced
-/// a completion is drained so it can't leak into the next transfer. A channel drop mid-transfer
-/// breaks back to re-accept (the in-flight upload was discarded — uploads restart, S0 §1
-/// principle 4); `select` in `run` cancels the whole task on disconnect. Never returns.
+/// The L2CAP CoC data plane: accept the app's channel on the OBC SPSM and serve the transfers
+/// [`super::control::serve_connection`] arms through [`TRANSFER_ARM`] — the echo loopback, route
+/// uploads → SD, and route/list downloads ← SD. One armed transfer at a time; the [`TRANSFER_ACTIVE`]
+/// gate is cleared here when each concludes, and a latched abort that raced a completion is drained so
+/// it can't leak into the next transfer. A channel drop mid-transfer breaks back to re-accept (the
+/// in-flight upload was discarded — uploads restart); `select` in `run` cancels the whole task on
+/// disconnect. Never returns.
 pub(crate) async fn serve_coc(
     stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
     server: &Server<'_>,
@@ -59,8 +59,8 @@ pub(crate) async fn serve_coc(
     let listener = L2capChannel::listen(stack, conn.raw());
     // The receive buffer must be ≥ the negotiated SDU MTU (defaults to the pool MTU − 6 = 245).
     let mut buf = [0u8; DefaultPacketPool::MTU];
-    // Ask for the fast connection-parameter set (S0 §3.4) once, on the first transfer of the link —
-    // the idle set is re-established on the next connect, so there's no per-transfer churn.
+    // Ask for the fast connection-parameter set once, on the first transfer of the link — the idle set
+    // is re-established on the next connect, so there's no per-transfer churn.
     let mut requested_fast = false;
     loop {
         let mut ch = match listener.accept(&L2capChannelConfig::default()).await {
@@ -73,9 +73,9 @@ pub(crate) async fn serve_coc(
                 continue;
             }
         };
-        // The CoC requires an encrypted link (A8, S0 §8): opening it plaintext is refused. In
-        // practice the app can't reach here unencrypted — `psm`/`transferControl` are both
-        // `authenticated` — but a peer that guessed the SPSM must still be turned away.
+        // The CoC requires an encrypted link: opening it plaintext is refused. In practice the app
+        // can't reach here unencrypted — `psm`/`transferControl` are both `authenticated` — but a peer
+        // that guessed the SPSM must still be turned away.
         if !matches!(conn.raw().security_level(), Ok(level) if level.encrypted()) {
             warn!("ble: [coc] channel opened on an unencrypted link — refusing (S0 §8)");
             ch.disconnect();
@@ -106,14 +106,14 @@ pub(crate) async fn serve_coc(
 }
 
 /// Whether a transfer runner answered on `status` or the CoC dropped under it (→ [`serve_coc`]
-/// re-accepts; a re-upload arrives as a fresh arm, S0 §1 principle 4).
+/// re-accepts; a re-upload arrives as a fresh arm).
 enum TransferOutcome {
     Answered,
     ChannelDropped,
 }
 
-/// Notify the store movement after a commit/delete: the `storeChanged` status message (which
-/// store, new revision) + the refreshed `objectStore` digest characteristic (S0 §4.3/§4.5).
+/// Notify the store movement after a commit/delete: the `storeChanged` status message (which store,
+/// new revision) + the refreshed `objectStore` digest characteristic.
 pub(crate) async fn publish_store_change(
     stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
     server: &Server<'_>,
@@ -129,10 +129,10 @@ pub(crate) async fn publish_store_change(
     notify_status(server, stack, msg.encode()).await;
 }
 
-/// A route upload (S0 §4.2 op 1, type 1): sink CoC bytes through the [`Receiver`] into the SD
-/// temp, then commit — CRC verify, OBCR-header validate, atomic promote (see `sd.rs`) — and
-/// answer with the assigned id. Uploads don't resume (S0 §1 principle 4): a channel drop or an
-/// abort (op 3) discards the partial, and the app re-sends the object from the start.
+/// A route upload: sink CoC bytes through the [`Receiver`] into the SD temp, then commit — CRC verify,
+/// OBCR-header validate, atomic promote (see `sd.rs`) — and answer with the assigned id. Uploads don't
+/// resume: a channel drop or an abort (op 3) discards the partial, and the app re-sends the object from
+/// the start.
 async fn run_upload(
     stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
     server: &Server<'_>,
@@ -163,7 +163,7 @@ async fn run_upload(
                 return TransferOutcome::ChannelDropped;
             }
             Either::Second(()) => {
-                // The app aborted (S0 §4.2 op 3): discard and confirm.
+                // The app aborted (op 3): discard and confirm.
                 store.borrow_mut().upload_discard();
                 info!("ble: [coc] upload aborted by the app");
                 notify_status(server, stack, transfer_result(rx.object_id(), TransferStatus::Aborted)).await;
@@ -189,10 +189,10 @@ async fn run_upload(
     TransferOutcome::Answered
 }
 
-/// A download (S0 §4.2 op 2): open the source (`routeList` / `rideList` / diagnostics from the
-/// store's built buffer, a route or ride detail straight off the card with its CRC pre-pass),
-/// notify the filled announce descriptor, then stream the object in CoC chunks. An abort between
-/// chunks stops cleanly; a send failure means the channel dropped (the app re-requests, S0 §4.2).
+/// A download: open the source (`routeList` / `rideList` / diagnostics from the store's built buffer, a
+/// route or ride detail straight off the card with its CRC pre-pass), notify the filled announce
+/// descriptor, then stream the object in CoC chunks. An abort between chunks stops cleanly; a send
+/// failure means the channel dropped (the app re-requests).
 async fn run_download(
     stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
     server: &Server<'_>,
@@ -201,8 +201,8 @@ async fn run_download(
     desc: &TransferControl,
     buf: &mut [u8],
 ) -> TransferOutcome {
-    // Assemble the link-plane facts the diagnostics blob renders (S0 §7.5); `download_open` only
-    // reads them for a `Diagnostics` request and opens everything else through the catalog, so the
+    // Assemble the link-plane facts the diagnostics blob renders; `download_open` only reads them for a
+    // `Diagnostics` request and opens everything else through the catalog, so the
     // runner has one open path. Bind the open's result before matching — a
     // `match store.borrow_mut().…` scrutinee temporary would keep the borrow alive through the
     // error arm's await.
@@ -284,14 +284,14 @@ async fn run_download(
     TransferOutcome::Answered
 }
 
-/// One CoC SDU's worth of download payload (S0 §3.4: 244 rides one 251-byte PDU on a DLE link).
+/// One CoC SDU's worth of download payload (244 rides one 251-byte PDU on a DLE link).
 const CHUNK_LEN: usize = 244;
 
-/// The A5 echo loopback (S0 object type 8): receive the announced object over the CoC and stream it
-/// straight back, byte-for-byte, verifying **one** whole-object CRC-32 at the end (S0 §6) — the data
-/// plane proven with zero storage. Sinks each SDU through an [`obc_ble::Receiver`] (a running CRC, no
-/// reassembly buffer) and echoes exactly the consumed bytes; on completion notifies the S0
-/// `transferResult` (`committed` / `crcMismatch`) and logs the throughput the issue asks for.
+/// The echo loopback: receive the announced object over the CoC and stream it straight back,
+/// byte-for-byte, verifying **one** whole-object CRC-32 at the end — the data plane proven with zero
+/// storage. Sinks each SDU through an [`obc_ble::Receiver`] (a running CRC, no reassembly buffer) and
+/// echoes exactly the consumed bytes; on completion notifies the `transferResult` (`committed` /
+/// `crcMismatch`) and logs the throughput.
 async fn run_echo(
     stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
     server: &Server<'_>,
@@ -346,7 +346,7 @@ async fn run_echo(
     TransferOutcome::Answered
 }
 
-/// Notify one S0 `status` message (the CoC data plane's channel to the app).
+/// Notify one `status` message (the CoC data plane's channel to the app).
 async fn notify_status(
     server: &Server<'_>,
     stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
@@ -357,7 +357,7 @@ async fn notify_status(
     }
 }
 
-/// Request the fast connection-parameter set (S0 §3.4) for a transfer's throughput — best-effort and
+/// Request the fast connection-parameter set for a transfer's throughput — best-effort and
 /// timeout-bounded like [`super::lifecycle::negotiate_link`]'s requests (a peer that ignores it just
 /// runs slower).
 async fn request_fast_conn_params(
@@ -376,10 +376,10 @@ async fn request_fast_conn_params(
     }
 }
 
-/// Push the BAS battery level (S0 §3.2) to a subscribed central: seed on connect, then re-notify on
-/// a slow cadence. The value comes from the `FuelGauge` seam via [`super::state::publish_battery`]
-/// (the status plane owns the gauge). The stub is constant today — the notify *wiring* is what A4
-/// proves. Never returns; cancelled by `select` in `run` on disconnect.
+/// Push the BAS battery level to a subscribed central: seed on connect, then re-notify on a slow
+/// cadence. The value comes from the `FuelGauge` seam via [`super::state::publish_battery`] (the status
+/// plane owns the gauge; the stub is constant today). Never returns; cancelled by `select` in `run` on
+/// disconnect.
 pub(crate) async fn battery_task(
     stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
     server: &Server<'_>,

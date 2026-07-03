@@ -1,20 +1,15 @@
-//! Investigation harness that set the eg↔span split in [`flush_run`] and retired the run
-//! subdivision. Kept so the choice can be re-checked when new line weights or styles land.
+//! Investigation harness that set the eg↔span split in [`flush_run`]. Kept so the choice can be
+//! re-checked when new line weights or styles land.
 //!
-//! It reports, per stroke weight: the per-frame cost of stroking a real route (writes + µs), and
-//! correctness probes on synthetic lines — the rendered body width of a horizontal stroke, whether
-//! a 45° diagonal body is gap-free, and a coverage signature for a screen-long line and a sharp
-//! zigzag. To compare the two rasterisers head-to-head, force the `flush_run` branch (set its
-//! `weight <= 1` test to `<= 999` for all-eg or `<= 0` for all-span); to re-test the (since removed)
-//! 150 px subdivision, reinstate it in `stroke_seg` and gate it. Run under `--release` and a debug
-//! build (the latter would panic on the arithmetic overflow the subdivision was said to prevent).
+//! Reports, per stroke weight: the per-frame cost of stroking a real route (writes + µs), and
+//! correctness probes on synthetic lines — horizontal body width, whether a 45° diagonal body is
+//! gap-free, and a coverage signature for a screen-long line and a sharp zigzag. To compare the two
+//! rasterisers head-to-head, force the `flush_run` branch (set its `weight <= 1` test to `<= 999`
+//! for all-eg or `<= 0` for all-span).
 //!
-//! What it found:
-//!   - eg is cheap only at **1 px** (~35 µs); at 2 px it enters eg's thick-line path and jumps ~8×.
-//!     The span path is a flat ~27 µs at every width ≥ 2 and ~10× faster than eg there — but can't
-//!     draw 1 px (a zero-width rectangle has no scanline crossings). So the split sits at 1 px.
-//!   - subdivision changed no rendered pixel at any width and never overflowed in debug (clipped
-//!     segments top out near screen size, far below eg's overflow point), so it was removed.
+//! Findings: eg is cheap only at **1 px** (~35 µs); at 2 px it enters eg's thick-line path and
+//! jumps ~8×. The span path is a flat ~27 µs at every width ≥ 2 and ~10× faster there — but can't
+//! draw 1 px (a zero-width rectangle has no scanline crossings). So the split sits at 1 px.
 //!
 //!   cargo run -p obc-render --example stroke_study --release -- firmware/routes/kandel.obcr
 
@@ -132,8 +127,7 @@ fn diagonal(r: &mut MapRenderer, weight: u32, cov: &mut Cov) -> (bool, usize) {
     (gapfree, width)
 }
 
-/// Coverage signature (painted-pixel count) of a screen-long horizontal line (clipped span ≫ 150 px,
-/// so subdivision fires) and of a tight zigzag — the inputs `push_run` was meant to keep eg sane on.
+/// Coverage signature (painted-pixel count) of a screen-long horizontal line and a tight zigzag.
 fn stress_signature(r: &mut MapRenderer, weight: u32, cov: &mut Cov) -> (usize, usize) {
     cov.clear();
     r.stroke_path(&mut *cov, &vp(), [(-400, 30), (400, 30)], LINE, weight);

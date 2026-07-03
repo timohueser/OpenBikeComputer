@@ -1,22 +1,19 @@
-//! Minimal ST7789 driver for the Adafruit 2.0" 240×320 EYESPI stand-in panel (#122).
+//! Minimal ST7789 driver for the Adafruit 2.0" 240×320 EYESPI stand-in panel.
 //!
-//! Hand-rolled (no external display crate) on purpose: this command / address-window /
-//! RAMWR-stream path backs the board's banded present path ([`flush_band_rgb222`](St7789::flush_band_rgb222)
-//! / [`flush_window`](St7789::flush_window) below, driven by the board's `DisplayDriver`),
-//! so we want to own it rather than wrap someone else's lifecycle. Write-only — the panel never
-//! talks back, so there is no MISO. CS is **framed per transaction** (pulsed low around each
-//! command/data write, idle high) rather than tied low: the CSX rising edge re-aligns the
-//! panel's input shift register, so a warm MCU reset recovers instead of needing a power cycle
-//! — see [`St7789::transaction`]. Blocking SPI + busy-wait delays are fine here: init runs once
-//! and the test-pattern push is the only hot path until N4 wires the real framebuffer through.
+//! Hand-rolled (no external display crate): this command / address-window / RAMWR-stream path backs
+//! the board's banded present path ([`flush_band_rgb222`](St7789::flush_band_rgb222) /
+//! [`flush_window`](St7789::flush_window) below, driven by the board's `DisplayDriver`). Write-only —
+//! the panel never talks back, so there is no MISO. CS is **framed per transaction** (pulsed low
+//! around each command/data write, idle high) rather than tied low: the CSX rising edge re-aligns the
+//! panel's input shift register, so a warm MCU reset recovers instead of needing a power cycle — see
+//! [`St7789::transaction`].
 //!
-//! Generic over embedded-hal 1.0 `SpiBus` / `OutputPin` / `DelayNs`, which embassy-nrf's
-//! `Spim` + `Output` and embassy-time's `Delay` all implement.
+//! Generic over embedded-hal 1.0 `SpiBus` / `OutputPin` / `DelayNs`, which embassy-nrf's `Spim` +
+//! `Output` and embassy-time's `Delay` all implement.
 
-// The default FLPR build (issue #165) still compiles this module for its `WIDTH`/`HEIGHT`
-// geometry, but replaces the ST7789 driver with the LS021 FLPR backend — so the whole driver (the
-// `cmd` set, the `St7789` type, the push fast paths) is unused there. Allow it only in that build;
-// the `tft` map build keeps dead-code enforced.
+// The default FLPR build still compiles this module for its `WIDTH`/`HEIGHT` geometry but replaces the
+// ST7789 driver with the LS021 FLPR backend — so the whole driver is unused there. Allow it only in
+// that build; the `tft` map build keeps dead-code enforced.
 #![cfg_attr(not(feature = "tft"), allow(dead_code))]
 
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -26,10 +23,10 @@ use embedded_hal::delay::DelayNs;
 use embedded_hal::digital::OutputPin;
 use embedded_hal::spi::SpiBus;
 
-// Strippable per-stage timing for the banded push (issue #126: pin down what makes the visible fill
-// slow — CPU format-conversion vs the SPI/DMA). Each [`flush_window`](St7789::flush_window) adds the
-// microseconds it spent in the three stages; the map loop [`reset_push_timers`]s before a frame's
-// push and reads [`push_timers`] after, so the totals are that frame's push only.
+// Strippable per-stage timing for the banded push (CPU format-conversion vs the SPI/DMA). Each
+// [`flush_window`](St7789::flush_window) adds the microseconds it spent in the three stages; the map
+// loop [`reset_push_timers`]s before a frame's push and reads [`push_timers`] after, so the totals are
+// that frame's push only.
 static FILL_US: AtomicU32 = AtomicU32::new(0); // the caller's fill closure (RGB222->RGB565 expand + bulge composite)
 static PACK_US: AtomicU32 = AtomicU32::new(0); // RGB565 -> 12-bit RGB444 pack
 static SPI_US: AtomicU32 = AtomicU32::new(0); // set_window (CASET/RASET/RAMWR) + the data DMA
@@ -214,10 +211,10 @@ where
     /// Render + push an arbitrary `w × rows` window at `(x0, y0)`: hand `fill` a `w * rows` RGB565
     /// scratch (a prefix of `band`) to draw into, **pack it to the panel's 12-bit RGB444 RAMWR
     /// stream** (2 px → 3 bytes), address the `[x0, x0+w) × [y0, y0+rows)` window, and SPIM-DMA it.
-    /// The full-width band push is the `x0 = 0, w = WIDTH` case; the
-    /// narrow case backs the composite-on-push hold bulge, which re-pushes only the right-edge
-    /// columns it touches without a map re-render (issue #126). `w * rows` must be **even** and fit
-    /// `band` (every nRF window is — full bands are `WIDTH`-wide and the bulge window is 16-wide).
+    /// The full-width band push is the `x0 = 0, w = WIDTH` case; the narrow case backs the
+    /// composite-on-push hold bulge, which re-pushes only the right-edge columns it touches without a
+    /// map re-render. `w * rows` must be **even** and fit `band` (every nRF window is — full bands are
+    /// `WIDTH`-wide and the bulge window is 16-wide).
     pub fn flush_window(&mut self, x0: u16, y0: u16, w: u16, rows: u16, fill: impl FnOnce(&mut [u16])) {
         let n = w as usize * rows as usize;
         let t = Instant::now();
@@ -262,9 +259,9 @@ where
     /// RGB444 stream (2 px → 3 bytes), **skipping the RGB565 intermediate** the generic
     /// [`flush_window`](Self::flush_window) goes through. `RGB222 → RGB444` is exact 2→4-bit
     /// replication (`c<<2 | c` → the 0/5/10/15 levels), *identical* output to the two-hop
-    /// `RGB222 → RGB565 → RGB444` but ~half the CPU — the two-hop expand+pack was ~71% of the push
-    /// (issue #126 perf). No bulge composite here: the input plane repaints the bulge on its own
-    /// narrow window push (the generic `flush_window`), so the hot map path stays a single pack.
+    /// `RGB222 → RGB565 → RGB444` but ~half the CPU. No bulge composite here: the input plane repaints
+    /// the bulge on its own narrow window push (the generic `flush_window`), so the hot map path stays
+    /// a single pack.
     pub fn flush_band_rgb222(&mut self, y0: u16, rows: u16, src: &[u8]) {
         let n = WIDTH as usize * rows as usize;
         let t = Instant::now();
