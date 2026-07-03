@@ -376,10 +376,15 @@ impl ObjectStore {
 
     // ==================== downloads (S0 §4.2 op 2) ====================
 
-    /// Open a download: build the list object / open the stored route (with its CRC pre-pass —
-    /// the whole-object CRC the announce carries, S0 §4.2). Returns the sender to drive plus
-    /// which source [`Self::download_read`] serves from.
-    pub fn download_open(&mut self, desc: &TransferControl) -> Result<(StreamSender, DownloadSource), TransferStatus> {
+    /// Open a download: build the list / diagnostics object, or open the stored route/ride (with
+    /// its CRC pre-pass — the whole-object CRC the announce carries, S0 §4.2). Returns the sender
+    /// to drive plus which source [`Self::download_read`] serves from. `diag` supplies the link-plane
+    /// facts the diagnostics blob renders (unused by the other types); the runner builds it once.
+    pub fn download_open(
+        &mut self,
+        desc: &TransferControl,
+        diag: &DiagInput<'_>,
+    ) -> Result<(StreamSender, DownloadSource), TransferStatus> {
         match desc.ty {
             ObjectType::RouteList | ObjectType::RideList => {
                 // No card ≠ no objects: an empty *success* here would let one flaky mount
@@ -412,23 +417,18 @@ impl ObjectStore {
                 let file = slot.file.clone();
                 self.open_object_download(desc, &file, true)
             }
+            // Diagnostics (S0 §7.5, A7): render the text blob into the object buffer and stream it
+            // like a list. Deliberately **card-independent** — diagnostics must be readable exactly
+            // when things are broken, so no `storage` gate here (the store counts then honestly read
+            // 0 with `sd: --`).
+            ObjectType::Diagnostics => {
+                let len = self.build_diagnostics(diag);
+                let crc = Crc32::checksum(&self.list_buf[..len]);
+                let tx = StreamSender::new(desc, len as u32, crc).map_err(|_| TransferStatus::Error)?;
+                Ok((tx, DownloadSource::List))
+            }
             _ => Err(TransferStatus::NotFound),
         }
-    }
-
-    /// Open a diagnostics download (S0 §7.5, A7): render the text blob into the object buffer
-    /// and stream it like a list. Deliberately **card-independent** — diagnostics must be
-    /// readable exactly when things are broken, so no `storage` gate here (the store counts
-    /// then honestly read 0 with `sd: --`).
-    pub fn open_diagnostics_download(
-        &mut self,
-        desc: &TransferControl,
-        link: &DiagInput<'_>,
-    ) -> Result<(StreamSender, DownloadSource), TransferStatus> {
-        let len = self.build_diagnostics(link);
-        let crc = Crc32::checksum(&self.list_buf[..len]);
-        let tx = StreamSender::new(desc, len as u32, crc).map_err(|_| TransferStatus::Error)?;
-        Ok((tx, DownloadSource::List))
     }
 
     /// Render the diagnostics text (S0 §7.5 — an opaque, human-readable UTF-8 blob, **not** an
@@ -518,14 +518,15 @@ impl ObjectStore {
     /// shorter than the `objectStore` digest's count would make it drop a still-present route.
     /// `None` → the caller answers a typed `error` and the app retries, keeping its links.
     fn build_list(&mut self, ty: ObjectType) -> Option<usize> {
-        let mut count: u16 = 0;
-        let mut off = ListHeader::ENCODED_LEN;
-        if let Some(storage) = &self.storage {
-            match ty {
-                ObjectType::RouteList => {
-                    for slot in &self.routes {
-                        let (byte_len, info) = storage.route_object_info(&slot.file)?;
-                        let entry = RouteListEntry {
+        // Each arm only supplies its per-entry field mapping (slot → encoded entry, `None` on a
+        // failed read); `encode_list` owns the shared header-offset arithmetic both share.
+        let (len, count) = match (&self.storage, ty) {
+            (Some(storage), ObjectType::RouteList) => Self::encode_list(
+                &mut self.list_buf,
+                self.routes.iter().map(|slot| {
+                    let (byte_len, info) = storage.route_object_info(&slot.file)?;
+                    Some(
+                        RouteListEntry {
                             object_id: slot.id,
                             byte_len,
                             distance_m: info.distance_m,
@@ -533,16 +534,17 @@ impl ObjectStore {
                             point_count: info.point_count,
                             waypoint_count: info.waypoint_count,
                             name: info.name.as_bytes(),
-                        };
-                        self.list_buf[off..off + obc_ble::LIST_ENTRY_LEN].copy_from_slice(&entry.encode());
-                        off += obc_ble::LIST_ENTRY_LEN;
-                        count += 1;
-                    }
-                }
-                ObjectType::RideList => {
-                    for slot in &self.rides {
-                        let (byte_len, info) = storage.ride_object_info(&slot.file)?;
-                        let entry = RideListEntry {
+                        }
+                        .encode(),
+                    )
+                }),
+            )?,
+            (Some(storage), ObjectType::RideList) => Self::encode_list(
+                &mut self.list_buf,
+                self.rides.iter().map(|slot| {
+                    let (byte_len, info) = storage.ride_object_info(&slot.file)?;
+                    Some(
+                        RideListEntry {
                             object_id: slot.id,
                             byte_len,
                             start_time: info.start_time,
@@ -551,17 +553,34 @@ impl ObjectStore {
                             avg_speed_cms: info.avg_speed_cms,
                             climb_m: info.climb_m,
                             name: info.name.as_bytes(),
-                        };
-                        self.list_buf[off..off + obc_ble::LIST_ENTRY_LEN].copy_from_slice(&entry.encode());
-                        off += obc_ble::LIST_ENTRY_LEN;
-                        count += 1;
-                    }
-                }
-                _ => {}
-            }
-        }
+                        }
+                        .encode(),
+                    )
+                }),
+            )?,
+            // No card, or a non-list type: an empty list — just the header.
+            _ => (ListHeader::ENCODED_LEN, 0),
+        };
         self.list_buf[..ListHeader::ENCODED_LEN].copy_from_slice(&ListHeader { count }.encode());
-        Some(off)
+        Some(len)
+    }
+
+    /// Encode `entries` into `buf` after the [`ListHeader`], returning the total byte length + entry
+    /// count. Each item is the encoded entry, or `None` for a slot that couldn't be read *now* —
+    /// which fails the whole list (see [`Self::build_list`]) by propagating out through `?`.
+    fn encode_list(
+        buf: &mut [u8],
+        entries: impl Iterator<Item = Option<[u8; obc_ble::LIST_ENTRY_LEN]>>,
+    ) -> Option<(usize, u16)> {
+        let mut off = ListHeader::ENCODED_LEN;
+        let mut count: u16 = 0;
+        for entry in entries {
+            let entry = entry?;
+            buf[off..off + obc_ble::LIST_ENTRY_LEN].copy_from_slice(&entry);
+            off += obc_ble::LIST_ENTRY_LEN;
+            count += 1;
+        }
+        Some((off, count))
     }
 }
 
