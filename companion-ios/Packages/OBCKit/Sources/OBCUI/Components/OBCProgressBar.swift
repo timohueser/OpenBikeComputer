@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// **Progress Bar** (§9, NEW) — 8pt pill, forest fill on a `parchment-3`
-/// track. Mirrors the device's own upload/sync bar for a shared mental model.
+/// Progress bar — 8pt pill, forest fill on a `parchment-3` track. Mirrors the
+/// device's own upload/sync bar for a shared mental model.
 public struct OBCProgressBar: View {
     /// 0…1 fraction complete.
     let value: Double

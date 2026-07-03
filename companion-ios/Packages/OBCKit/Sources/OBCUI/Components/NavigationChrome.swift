@@ -3,15 +3,15 @@ import SwiftUI
 import UIKit
 #endif
 
-/// **Nav Bar with serif large title** (§9, EXT) — carries the field-guide
-/// voice into native chrome. Two pieces:
+/// Nav bar with serif large title — carries the field-guide voice into native
+/// chrome. Two pieces:
 ///
 /// - `OBCNavigationChrome.apply()` restyles `UINavigationBar` globally (call
 ///   once from the composition root): Iowan Old Style 32pt bold large titles,
 ///   17pt semibold inline titles, parchment background, forest tint.
-/// - `OBCLargeTitleBar` is the design's *custom* large-title row (`.nav-lg`)
-///   for screens that pair the title with trailing circular actions (the main
-///   screen's `+`), where the system bar can't host the device top bar above it.
+/// - `OBCLargeTitleBar` is a custom large-title row for screens that pair the
+///   title with trailing circular actions (the main screen's `+`), where the
+///   system bar can't host the device top bar above it.
 public enum OBCNavigationChrome {
     /// Restyle the system navigation bar to the field-guide theme. UIKit
     /// appearance — call once at app start.
@@ -44,8 +44,8 @@ public enum OBCNavigationChrome {
     }
 }
 
-/// The design's large-title row (`.nav-lg.row-lg`): serif 32pt title, trailing
-/// 34pt circular actions bottom-aligned.
+/// The large-title row: serif 32pt title, trailing 34pt circular actions
+/// bottom-aligned.
 public struct OBCLargeTitleBar<Actions: View>: View {
     let title: String
     @ViewBuilder let actions: Actions

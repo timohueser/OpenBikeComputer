@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// **Bottom Sheet** (§9, NEW) — grabber + panel chrome for the sheets that host
-/// upload progress and confirmations without leaving the route (U1/U2, H1).
+/// Bottom sheet — grabber + panel chrome for the sheets that host upload
+/// progress and confirmations without leaving the route.
 ///
 /// Use inside a `.sheet` presentation; pair with `.presentationDetents` sized
 /// to the content:
@@ -19,8 +19,8 @@ public struct OBCSheetContainer<Content: View>: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            // The design's own grabber (38×5, ink 22%) — presentation drag
-            // indicator stays hidden so there's exactly one.
+            // Own grabber (38×5, ink 22%) — the presentation drag indicator
+            // stays hidden so there's exactly one.
             RoundedRectangle(cornerRadius: 3)
                 .fill(OBCTheme.ink.opacity(0.22))
                 .frame(width: 38, height: 5)

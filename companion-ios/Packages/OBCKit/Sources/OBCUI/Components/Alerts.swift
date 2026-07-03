@@ -1,14 +1,13 @@
 import SwiftUI
 
-// System-styled wrappers (§9): the Action Sheet, the Text-field Alert, and the
-// documented System Pairing Sheet. These are native presentations on purpose —
+// System-styled wrappers: the action sheet, the text-field alert, and the
+// documented system pairing sheet. These are native presentations on purpose —
 // the app tint (forest) carries the brand; the pairing alert stays system blue.
 
 public extension View {
-    /// **Action Sheet** (§9, NEW) — bottom-anchored destructive confirm
-    /// (delete route, forget device): warning-red action + separated Cancel on
-    /// a scrim. Every destructive path routes through this — no one-gesture
-    /// destroy (H1/H2).
+    /// Action sheet — bottom-anchored destructive confirm (delete route,
+    /// forget device): warning-red action + separated Cancel on a scrim.
+    /// Every destructive path routes through this — no one-gesture destroy.
     func obcDestructiveConfirm(
         _ title: String,
         isPresented: Binding<Bool>,
@@ -24,9 +23,8 @@ public extension View {
         }
     }
 
-    /// **Text-field Alert** (§9, NEW) — centered alert with an inline input,
-    /// shared by route rename (H12) and device rename (H3). The forest app
-    /// tint colors the caret/buttons.
+    /// Text-field alert — centered alert with an inline input, shared by route
+    /// rename and device rename. The forest app tint colors the caret/buttons.
     func obcRenameAlert(
         _ title: String,
         isPresented: Binding<Bool>,
@@ -45,20 +43,20 @@ public extension View {
     }
 }
 
-/// **System Pairing Sheet** (§9, NEW) — documentation wrapper, no custom UI.
+/// System pairing sheet — documentation wrapper, no custom UI.
 ///
-/// Pairing an OBC runs through two **native iOS prompts** that cannot and
-/// should not be themed:
-/// - The **Bluetooth permission** prompt (first CoreBluetooth use). The intent
+/// Pairing an OBC runs through two native iOS prompts that cannot and should
+/// not be themed:
+/// - The Bluetooth permission prompt (first CoreBluetooth use). The intent
 ///   string lives in the app target's Info configuration
 ///   (`NSBluetoothAlwaysUsageDescription`).
-/// - The **pairing/bonding alert** iOS raises when the device requests an
-///   encrypted link (D3). It renders in **system blue** — that is expected,
-///   not a brand slip (§9). Do not attempt a custom passkey UI.
+/// - The pairing/bonding alert iOS raises when the device requests an
+///   encrypted link. It renders in system blue — that is expected, not a
+///   brand slip. Do not attempt a custom passkey UI.
 ///
-/// What the app *does* own is everything around them: the D-series screens
-/// (`OBCEmptyStateView` for the failure paths, `OBCSpinner` while scanning)
-/// and the copy that sets the prompts up.
+/// What the app *does* own is everything around them: the empty/error states
+/// for the failure paths, the spinner while scanning, and the copy that sets
+/// the prompts up.
 public enum OBCSystemPairing {
     /// The rule, kept referencable from code review: system prompts stay
     /// system-styled.

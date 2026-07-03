@@ -2,16 +2,15 @@ import SwiftUI
 import OBCDomain
 import OBCTransport
 
-/// The Settings screen (B8, design G): grouped iOS lists — Device management
-/// up top, a firmware/OTA section present but **marked coming soon**, the
-/// clearly-future connected-services seam (disabled), and About. Nothing here
-/// implies a cloud or account (epic non-negotiable; the About footer says so
-/// in as many words).
+/// The Settings screen: grouped iOS lists — Device management up top, a
+/// firmware/OTA section present but marked coming soon, the clearly-future
+/// connected-services seam (disabled), and About. Nothing here implies a
+/// cloud or account (the About footer says so in as many words).
 public struct SettingsView: View {
     private let model: SettingsModel
-    /// Debug-only: the hidden second entry into the mock dev panel (B1P's
-    /// deferral) — five taps on the App version row. `nil` in Release wiring,
-    /// where the gesture goes nowhere.
+    /// Debug-only: the hidden second entry into the mock dev panel — five
+    /// taps on the App version row. `nil` in Release wiring, where the
+    /// gesture goes nowhere.
     private let onOpenDevPanel: (() -> Void)?
 
     @State private var renameShown = false
@@ -46,7 +45,7 @@ public struct SettingsView: View {
         #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
         #endif
-        // H3 — shared text-field alert (same component as the H12 route rename).
+        // Shared text-field alert (same component as route rename).
         .obcRenameAlert(
             "Rename device",
             isPresented: $renameShown,
@@ -84,7 +83,7 @@ public struct SettingsView: View {
                 showsDivider: false,
                 action: { forgetShown = true }
             )
-            // H2 hangs off the row, not the scroll root — confirmationDialog
+            // Hangs off the row, not the scroll root — confirmationDialog
             // anchors to the attached view on iOS 26.
             .obcDestructiveConfirm(
                 "Forget \(model.deviceName)?",
@@ -174,7 +173,7 @@ public struct SettingsView: View {
                 disabled: true,
                 showsDivider: false
             ) {
-                // The future B7 seam: present but non-functional by design.
+                // Present but non-functional by design.
                 Toggle("Auto-sync on import", isOn: .constant(false))
                     .labelsHidden()
                     .disabled(true)
@@ -204,7 +203,7 @@ public struct SettingsView: View {
                 label: "App version",
                 value: Self.appVersion,
                 showsDivider: false,
-                // The hidden dev-panel entry (Debug wiring only): five taps.
+                // Hidden dev-panel entry (Debug wiring only): five taps.
                 action: onOpenDevPanel == nil ? nil : {
                     versionTaps += 1
                     if versionTaps >= 5 {
@@ -238,8 +237,8 @@ public struct SettingsView: View {
     }
 }
 
-/// Inert transport for `#Preview` construction only — serves the design's
-/// identity (Trailhead · 82% · v0.4.2) and nothing else.
+/// Inert transport for `#Preview` construction only — serves a fixed identity
+/// (Trailhead · 82% · v0.4.2) and nothing else.
 private struct PreviewSettingsTransport: DeviceTransport {
     var state: AsyncStream<ConnectionState> {
         AsyncStream { $0.yield(.connected); $0.finish() }

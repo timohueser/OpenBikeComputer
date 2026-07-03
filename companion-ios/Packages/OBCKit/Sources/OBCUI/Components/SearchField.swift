@@ -1,8 +1,7 @@
 import SwiftUI
 
-/// **Search Field** (§9, EXT) — the design's `.search` row: a sunken
-/// `parchment-3` bar (11pt radius) with a leading magnifier and a trailing ✕
-/// once there's a query (H6 keeps the query editable). Filters the main-screen
+/// Search field — a sunken `parchment-3` bar (11pt radius) with a leading
+/// magnifier and a trailing ✕ once there's a query. Filters the main-screen
 /// list; not a system `.searchable` so it can sit inside the custom chrome.
 public struct OBCSearchField: View {
     @Binding var text: String

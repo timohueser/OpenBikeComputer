@@ -3,9 +3,9 @@ import SwiftUI
 /// The OBC design tokens mapped to SwiftUI — colors, chrome metrics, radii, and
 /// spacing. Source of truth:
 /// `project/_ds/openbikecomputer-design-system-*/tokens/*.css` plus the iOS
-/// additions declared in `project/OBC Companion App.dc.html` (§9): the track
+/// additions declared in `project/OBC Companion App.dc.html`: the track
 /// colors, `tint`, and the 44/54/13 chrome metrics. **No new colors outside
-/// these tokens** (issue #240 acceptance).
+/// these tokens.**
 public enum OBCTheme {
     // ------------------------------------------------------------- base
     /// `--parchment` #ece8cf — page base, moss-tinted cream.
@@ -51,7 +51,7 @@ public enum OBCTheme {
     /// The faint parchment grid drawn behind tracks/profiles, rgba(47,82,51,.06).
     public static let gridLine = Color(hex: 0x2F5233).opacity(0.06)
 
-    // ------------------------------------------------------------- iOS additions (§9)
+    // ------------------------------------------------------------- iOS additions
     /// `--tint` = `--forest` — the iOS control tint.
     public static let tint = forest
     /// `--track-stroke` #d99a1f — deepened amber for a bold route stroke on parchment.
@@ -63,11 +63,11 @@ public enum OBCTheme {
     /// `--track-end` = `--coral` — end node dot.
     public static let trackEnd = coral
 
-    // ------------------------------------------------------------- device illustration (§4)
+    // ------------------------------------------------------------- device illustration
     // The little hardware drawing on the launch/pairing screens. Pinned by the
-    // design: `--dev-header` / `--dev-header-text` (tokens/colors.css) plus the
-    // literals of the §4 frames — these draw the *device*, not app chrome.
-    /// Device shell, warm near-black (#2a2723 in the §4 frames).
+    // design: `--dev-header` / `--dev-header-text` (tokens/colors.css) plus
+    // matching literals — these draw the *device*, not app chrome.
+    /// Device shell, warm near-black (#2a2723).
     public static let deviceBody = Color(hex: 0x2A2723)
     /// Device side buttons (#555).
     public static let deviceButton = Color(hex: 0x555555)
@@ -78,7 +78,7 @@ public enum OBCTheme {
     /// The device screen's track amber (#FFAA00, the on-glass palette).
     public static let deviceTrack = Color(hex: 0xFFAA00)
 
-    // ------------------------------------------------------------- chrome metrics (§9)
+    // ------------------------------------------------------------- chrome metrics
     /// iOS inline nav-bar height, 44pt.
     public static let navBarHeight: CGFloat = 44
     /// iOS status-bar band, 54pt.

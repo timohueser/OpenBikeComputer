@@ -1,9 +1,9 @@
 import SwiftUI
 
-/// **Grouped List & Row** (§9, EXT) — the device `ListRow` re-cut for iOS
-/// settings: inset panel groups (14pt radius) with an uppercase header,
-/// hairline-divided rows (52pt min height), tinted 28pt icon tiles, chevrons,
-/// section footers, disabled + "coming soon" rows.
+/// Grouped list & row — the device `ListRow` re-cut for iOS settings: inset
+/// panel groups (14pt radius) with an uppercase header, hairline-divided rows
+/// (52pt min height), tinted 28pt icon tiles, chevrons, section footers,
+/// disabled + "coming soon" rows.
 ///
 ///     OBCGroupedSection("Device", footer: "…") {
 ///         OBCListRow(icon: "antenna…", iconColor: .forest, label: "Trailhead") { … }
@@ -55,7 +55,7 @@ public struct OBCListRow<Trailing: View>: View {
     let icon: String?
     let iconColor: Color
     let label: String
-    /// Overrides the label's ink — the warning-red "Forget device" row (G/H2).
+    /// Overrides the label's ink — the warning-red "Forget device" row.
     let labelColor: Color?
     let value: String?
     var showsChevron: Bool

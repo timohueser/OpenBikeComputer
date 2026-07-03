@@ -1,16 +1,14 @@
 import SwiftUI
 import OBCDomain
 
-/// **GPS Track Preview** (§9, NEW) — the basemap-free polyline on gridded
-/// parchment that identifies every route/ride in the app. Renders the
-/// normalized `TrackPreview` from `OBCDomain` (unit-square points, y-down),
-/// letterboxed to the source aspect ratio. **Never a basemap** — epic
-/// non-negotiable.
+/// GPS track preview — the basemap-free polyline on gridded parchment that
+/// identifies every route/ride in the app. Renders the normalized
+/// `TrackPreview` from `OBCDomain` (unit-square points, y-down), letterboxed to
+/// the source aspect ratio. **Never a basemap.**
 ///
-/// Design metrics (`.track` in the design HTML): panel face with a 22pt faint
-/// grid, 7pt `trackHalo` casing under a 3.4pt `trackStroke` line, start dot in
-/// forest / end dot in coral with a 2.5pt panel ring. Thumbnails use 4.5pt
-/// dots, heroes 6pt — pass `style:`.
+/// Panel face with a 22pt faint grid, 7pt `trackHalo` casing under a 3.4pt
+/// `trackStroke` line, start dot in forest / end dot in coral with a 2.5pt
+/// panel ring. Thumbnails use 4.5pt dots, heroes 6pt — pass `style:`.
 ///
 /// The card chrome (border + 14pt radius) is on by default; the compact route
 /// card turns it off for its flush left cell.
@@ -29,7 +27,7 @@ public struct TrackPreviewView: View {
         }
     }
 
-    /// Extra dots pinned on the polyline (the waypoints screen W1) — a unit
+    /// Extra dots pinned on the polyline (the waypoints screen) — a unit
     /// point plus a label drawn in an amber marker.
     public struct Marker: Identifiable {
         public let id: Int
@@ -151,7 +149,6 @@ public struct TrackPreviewView: View {
             height: max(size.height - 2 * inset, 1)
         )
         let aspect = preview.aspectRatio > 0 ? preview.aspectRatio : 1
-        // Fit a rect of the track's aspect into the available box.
         var fitted = CGSize(width: available.width, height: available.width / aspect)
         if fitted.height > available.height {
             fitted = CGSize(width: available.height * aspect, height: available.height)
@@ -171,7 +168,6 @@ public struct TrackPreviewView: View {
     private func drawGrid(in context: inout GraphicsContext, size: CGSize) {
         let step: CGFloat = 22
         var path = Path()
-        // Centered like the design's `background-position:center`.
         var x = (size.width / 2).truncatingRemainder(dividingBy: step)
         while x < size.width {
             path.move(to: CGPoint(x: x, y: 0))
@@ -195,7 +191,7 @@ public struct TrackPreviewView: View {
         context.fill(Path(ellipseIn: dot), with: .color(fill))
     }
 
-    /// W1's numbered waypoint pin: 9pt amber dot, panel ring, mono label.
+    /// Numbered waypoint pin: 9pt amber dot, panel ring, mono label.
     private func drawMarker(in context: inout GraphicsContext, at point: CGPoint, label: String) {
         let r: CGFloat = 9
         let ring = CGRect(x: point.x - r - 1.25, y: point.y - r - 1.25, width: 2 * (r + 1.25), height: 2 * (r + 1.25))
@@ -246,8 +242,8 @@ public struct TrackPreviewView: View {
 
 extension TrackPreview {
     /// Preview/gallery sample — a real Kettle Moraine (Wisconsin) loop, so both
-    /// the grid fallback and the MapKit basemap (#294) render a plausible track.
-    /// Built through `normalizing` so `points` and `coordinates` stay aligned.
+    /// the grid fallback and the MapKit basemap render a plausible track. Built
+    /// through `normalizing` so `points` and `coordinates` stay aligned.
     public static let obcSample = TrackPreview.normalizing([
         .init(latitude: 42.905, longitude: -88.520), .init(latitude: 42.918, longitude: -88.505),
         .init(latitude: 42.930, longitude: -88.498), .init(latitude: 42.938, longitude: -88.478),

@@ -1,11 +1,11 @@
 import SwiftUI
 import OBCDomain
 
-/// **Elevation Profile** (§9, NEW) — area + line over a faint horizontal grid,
-/// in a panel card (14pt radius; grid every 24pt; 2.4pt `trackStroke` line over
-/// an 18%-alpha area fill, plus high/low markers with their elevations).
-/// Renders plain elevation samples so any source (imported route, downloaded
-/// ride) feeds it after a cheap extraction.
+/// Elevation profile — area + line over a faint horizontal grid, in a panel
+/// card (14pt radius; grid every 24pt; 2.4pt `trackStroke` line over an
+/// 18%-alpha area fill, plus high/low markers with their elevations). Renders
+/// plain elevation samples so any source (imported route, downloaded ride)
+/// feeds it after a cheap extraction.
 public struct ElevationProfileView: View {
     /// Elevation samples in metres, assumed evenly spaced along the route.
     let samples: [Double]
@@ -28,7 +28,6 @@ public struct ElevationProfileView: View {
 
     public var body: some View {
         Canvas { context, size in
-            // Horizontal gridlines every 24pt, edge to edge.
             var grid = Path()
             var y: CGFloat = 0
             while y < size.height {
@@ -42,8 +41,8 @@ public struct ElevationProfileView: View {
             let lo = samples.min()!
             let hi = samples.max()!
             let span = max(hi - lo, 1)
-            // Keep the line inside the card with a little headroom, like the
-            // design SVGs (top ~18%, bottom ~2pt above the baseline).
+            // Keep the line inside the card with a little headroom (top
+            // ~18%, bottom ~2pt above the baseline).
             let top = size.height * 0.15
             let bottom = size.height - 4
             let points = samples.enumerated().map { index, sample in
@@ -85,8 +84,8 @@ public struct ElevationProfileView: View {
     }
 
     /// Dots + mono labels on the highest and lowest samples ("471 m" / "289 m").
-    /// The high label tucks below its dot (the dot rides the top of the card),
-    /// the low label above — both always have room.
+    /// The high label tucks below its dot, the low label above — both always
+    /// have room.
     private func drawExtremeMarkers(in context: inout GraphicsContext, points: [CGPoint], size: CGSize) {
         guard
             points.count == samples.count,

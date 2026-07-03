@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// **Primary / Ghost / Warm / Destructive buttons** (§9, EXT) — the OBC button
-/// re-tuned to iOS metrics: 13pt radius, 17pt semibold label, 15/20 padding,
-/// full width by default (`.btn` in the design). Disabled = 0.42 opacity.
+/// Primary / ghost / warm / destructive buttons — the OBC button re-tuned to
+/// iOS metrics: 13pt radius, 17pt semibold label, 15/20 padding, full width by
+/// default. Disabled = 0.42 opacity.
 ///
 ///     Button("Upload to Trailhead") { … }.buttonStyle(.obcPrimary)
 ///     Button("Save to Planned") { … }.buttonStyle(.obcGhost)
@@ -20,8 +20,8 @@ public struct OBCButtonStyle: ButtonStyle {
     }
 
     let kind: Kind
-    /// `.btn` is `width:100%` in the design; pass `false` for inline buttons
-    /// (the empty state's sized-to-fit CTA).
+    /// Full width by default; pass `false` for inline buttons (the empty
+    /// state's sized-to-fit CTA).
     var fullWidth = true
 
     @Environment(\.isEnabled) private var isEnabled

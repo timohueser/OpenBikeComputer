@@ -1,19 +1,18 @@
 import SwiftUI
 import OBCDomain
 
-/// **Empty / Error Layout** (§9, NEW) — centered glyph + serif line + one
-/// action. The single recipe behind S1 (no routes), H5 (bad file), H6
-/// (no results), H8 (Bluetooth off), and S3 (read error). "Empty ≠ broken":
-/// always point at the one action that fixes it — never a dead end, and never
-/// blame the rider.
+/// Empty / error layout — centered glyph + serif line + one action. The
+/// single recipe behind empty lists, bad files, no results, Bluetooth off,
+/// and read errors. "Empty ≠ broken": always point at the one action that
+/// fixes it — never a dead end, and never blame the rider.
 public struct OBCEmptyStateView: View {
-    /// The glyph treatments the design uses across S1/S3/H8.
+    /// The glyph treatments the empty/error states use.
     public enum Glyph {
-        /// S1: a 96pt gridded track tile (20pt radius) with the zigzag route mark.
+        /// A 96pt gridded track tile (20pt radius) with the zigzag route mark.
         case trackTile
-        /// S3-style: a 72pt warning-tinted circle around a system image.
+        /// A 72pt warning-tinted circle around a system image.
         case warning(systemImage: String)
-        /// H8-style: a 78pt sunken parchment circle around a system image.
+        /// A 78pt sunken parchment circle around a system image.
         case muted(systemImage: String)
     }
 

@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// The tappable **disclosure row** on route detail (`.disc-row`) — the
-/// "Waypoints · 4 ›" entry that pushes W1. A standalone panel row: 30pt
+/// The tappable disclosure row on route detail — the "Waypoints · 4 ›" entry
+/// that pushes the waypoints screen. A standalone panel row: 30pt
 /// amber-tinted icon tile (9pt radius), label, mono value, chevron.
 public struct OBCDisclosureRow: View {
     let systemImage: String

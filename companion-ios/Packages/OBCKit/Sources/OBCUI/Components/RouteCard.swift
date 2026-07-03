@@ -1,20 +1,19 @@
 import SwiftUI
 import OBCDomain
 
-/// **Route Card** (§9, NEW) — track preview + title + mono stat line. Two
-/// variants, matching the design:
-/// - `RouteCard` (compact, C1/C2) — 128pt track cell on the left, dense rows
-///   for a big library. **The finalized main-screen layout.**
+/// Route card — track preview + title + mono stat line. Two variants:
+/// - `RouteCard` (compact) — 128pt track cell on the left, dense rows for a
+///   big library. The main-screen layout.
 /// - `RouteCardFullBleed` — track on top, title + stat grid below (detail-ish
 ///   feature card).
 ///
 /// Convenience inits take `RouteSummary` (planned) or `RideSummary` (tracked)
-/// and format the design's stat lines via `OBCFormat`.
+/// and format the stat lines via `OBCFormat`.
 public struct RouteCard: View {
     let title: String
     let subtitle: String
     let preview: TrackPreview?
-    /// The device-copy state — picks the small C1 badge (check = up to date,
+    /// The device-copy state — picks the small badge (check = up to date,
     /// refresh = on device but out of date, nothing when not on the device).
     let onDevice: OnDeviceState
 
@@ -75,11 +74,11 @@ public struct RouteCard: View {
     }
 }
 
-/// The small "on device" badge next to a planned route's title (C1 / E2).
-/// A forest check = the device's copy is up to date; an amber refresh ring = the
-/// device holds this route but the phone's version has moved on (rename,
-/// re-import) — uploading again updates it in place. Deliberately quiet: the
-/// app only tracks routes to push them, so this is the one device fact it shows.
+/// The small "on device" badge next to a planned route's title. A forest check
+/// = the device's copy is up to date; an amber refresh ring = the device holds
+/// this route but the phone's version has moved on (rename, re-import) —
+/// uploading again updates it in place. Deliberately quiet: the app only
+/// tracks routes to push them, so this is the one device fact it shows.
 public struct OBCOnDeviceBadge: View {
     let upToDate: Bool
 

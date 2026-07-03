@@ -24,11 +24,11 @@ public struct OBCServiceStatus: Identifiable {
     }
 }
 
-/// **Connected-Services Sync Block** (§9, NEW) — per-service rows (Strava,
-/// Komoot) with a synced-state line and a per-ride **Upload** when auto-sync is
-/// off or a push failed (E3). **Shipped coming-soon** — the seam is designed
-/// now (`comingSoon: true` badges the header); the Settings side pairs it with
-/// an *auto-sync on import* toggle.
+/// Connected-services sync block — per-service rows (Strava, Komoot) with a
+/// synced-state line and a per-ride Upload when auto-sync is off or a push
+/// failed. Shipped coming-soon: the seam is designed now (`comingSoon: true`
+/// badges the header); the Settings side pairs it with an auto-sync-on-import
+/// toggle.
 public struct OBCConnectedServicesBlock: View {
     let services: [OBCServiceStatus]
     var comingSoon: Bool

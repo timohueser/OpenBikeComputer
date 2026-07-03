@@ -1,9 +1,9 @@
 import SwiftUI
 import OBCDomain
 
-/// One **Waypoints List** row (W1): a numbered 30pt marker (9pt radius), name +
-/// mono note, and the mono distance-along. Marker color follows the design:
-/// forest for the first point, coral for the last, amber between.
+/// One waypoints-list row: a numbered 30pt marker (9pt radius), name + mono
+/// note, and the mono distance-along. Marker color: forest for the first
+/// point, coral for the last, amber between.
 public struct WaypointRow: View {
     let waypoint: Waypoint
     let isFirst: Bool
@@ -58,7 +58,7 @@ public struct WaypointRow: View {
     }
 }
 
-/// The full **Waypoints** screen content (W1): the mini track with the middle
+/// The full waypoints-screen content: the mini track with the middle
 /// waypoints pinned as numbered amber markers, then the rows in ride order.
 public struct WaypointsListView: View {
     let waypoints: [Waypoint]
@@ -95,11 +95,10 @@ public struct WaypointsListView: View {
         }
     }
 
-    /// Middle waypoints pinned on the polyline (the start/end already have
-    /// node dots). Position = the track point nearest the waypoint's fraction
-    /// of total distance — a preview-grade approximation, honest as long as
-    /// the polyline sampling is roughly uniform (it is: `TrackPreview`
-    /// downsamples by uniform stride).
+    /// Middle waypoints pinned on the polyline (start/end already have node
+    /// dots). Position = the track point nearest the waypoint's fraction of
+    /// total distance — valid as long as the polyline sampling is uniform
+    /// (`TrackPreview` downsamples by uniform stride).
     private var markers: [TrackPreviewView.Marker] {
         guard let preview, preview.points.count > 1, totalDistanceMeters > 0 else { return [] }
         let inner = waypoints.dropFirst().dropLast()

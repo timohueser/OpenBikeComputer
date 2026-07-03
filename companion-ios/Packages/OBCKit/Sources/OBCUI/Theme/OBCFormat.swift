@@ -1,15 +1,15 @@
 import Foundation
 import OBCDomain
 
-/// Stat-line formatting for the mono lines the design shows on cards and stat
-/// strips — one place so every screen renders "62.4 km · 840 m ↑ · 3h 20m"
-/// identically. Metric-only for now (the device is metric); a unit-preference
-/// seam can wrap this later without touching call sites.
+/// Stat-line formatting for the mono lines shown on cards and stat strips —
+/// one place so every screen renders "62.4 km · 840 m ↑ · 3h 20m" identically.
+/// Metric-only for now (the device is metric); a unit-preference seam can
+/// wrap this later without touching call sites.
 ///
 /// All functions take a `locale`/`calendar` so tests can pin them; production
 /// call sites use the defaults.
 public enum OBCFormat {
-    /// "62.4 km" under 100 km, "118 km" above (design C1 rows).
+    /// "62.4 km" under 100 km, "118 km" above.
     public static func distance(meters: Double, locale: Locale = .current) -> String {
         let km = meters / 1000
         let formatter = numberFormatter(locale: locale)
@@ -19,7 +19,7 @@ public enum OBCFormat {
         return "\(value) km"
     }
 
-    /// "840 m ↑" / "1,240 m ↑" — climb with grouping (design C1 rows).
+    /// "840 m ↑" / "1,240 m ↑" — climb with grouping.
     public static func climb(meters: Double, locale: Locale = .current) -> String {
         let formatter = numberFormatter(locale: locale)
         formatter.maximumFractionDigits = 0
@@ -28,8 +28,7 @@ public enum OBCFormat {
         return "\(value) m ↑"
     }
 
-    /// Planned estimate: "3h 20m"; multi-day routes read "2 days" (C1's
-    /// overnighter row).
+    /// Planned estimate: "3h 20m"; multi-day routes read "2 days".
     public static func estimatedDuration(_ interval: TimeInterval) -> String {
         let minutes = Int((interval / 60).rounded())
         if minutes >= 24 * 60 {
@@ -42,7 +41,7 @@ public enum OBCFormat {
         return m == 0 ? "\(h)h" : "\(h)h \(m)m"
     }
 
-    /// Tracked moving time as "2:51" (h:mm — the design's ride rows).
+    /// Tracked moving time as "2:51" (h:mm).
     public static func movingTime(_ interval: TimeInterval) -> String {
         let minutes = Int((interval / 60).rounded())
         return String(format: "%d:%02d", minutes / 60, minutes % 60)
@@ -86,7 +85,7 @@ public enum OBCFormat {
     }
 
     // ------------------------------------------------------------- card subtitles
-    /// Planned-route stat line: "62.4 km · 840 m ↑ · 3h 20m" (C1).
+    /// Planned-route stat line: "62.4 km · 840 m ↑ · 3h 20m".
     public static func plannedSubtitle(_ route: RouteSummary, locale: Locale = .current) -> String {
         var parts = [
             distance(meters: route.distanceMeters, locale: locale),
@@ -98,7 +97,7 @@ public enum OBCFormat {
         return parts.joined(separator: " · ")
     }
 
-    /// Tracked-ride stat line: "Yesterday · 58.2 km · 2:51 · 20.4 kph" (C2).
+    /// Tracked-ride stat line: "Yesterday · 58.2 km · 2:51 · 20.4 kph".
     public static func trackedSubtitle(
         _ ride: RideSummary,
         relativeTo now: Date = Date(),
@@ -114,7 +113,7 @@ public enum OBCFormat {
     }
 
     // ------------------------------------------------------------- stat-strip parts
-    // The detail stat strips (E1–E3) render value and unit separately (`OBCStat`);
+    // The detail stat strips render value and unit separately (`OBCStat`);
     // these are the same numbers the joined lines above use, without the unit.
 
     /// "62.4" under 100 km, "118" above — pair with unit "km".
@@ -142,7 +141,7 @@ public enum OBCFormat {
         return formatter.string(from: NSNumber(value: mps * 3.6)) ?? "\(mps * 3.6)"
     }
 
-    /// E3's subtitle line: "Yesterday, 8:12 AM".
+    /// The ride-detail subtitle line: "Yesterday, 8:12 AM".
     public static func rideDateLine(
         _ date: Date,
         relativeTo now: Date = Date(),
@@ -158,7 +157,7 @@ public enum OBCFormat {
         return "\(rideDay(date, relativeTo: now, calendar: calendar, locale: locale)), \(time)"
     }
 
-    // ------------------------------------------------------------- transfers (B5/B7)
+    // ------------------------------------------------------------- transfers
 
     /// "2.3" from bytes — plain-English megabytes, one decimal (pair with "MB").
     public static func megabytesValue(_ bytes: Int, locale: Locale = .current) -> String {
@@ -183,8 +182,8 @@ public enum OBCFormat {
     }
 
     /// The upload sheet's size readout: "1.4 / 2.3 MB · route + waypoints" for a
-    /// large payload, "18 / 24 kB · route" for a real OBCR route (design F) —
-    /// never raw byte counts, and never a misleading "0.0 MB".
+    /// large payload, "18 / 24 kB · route" for a real OBCR route — never raw
+    /// byte counts, and never a misleading "0.0 MB".
     public static func transferSizeLine(
         bytesDone: Int,
         totalBytes: Int,

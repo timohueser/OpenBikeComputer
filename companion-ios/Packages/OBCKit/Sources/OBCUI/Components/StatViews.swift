@@ -16,17 +16,16 @@ public struct OBCStat: Identifiable {
     }
 }
 
-/// The inline **stat strip** on route/ride detail (E1–E3): equal-width stats in
-/// a panel card — 20pt mono value with a 12pt faint unit over a 9.5pt uppercase
-/// key.
+/// The inline stat strip on route/ride detail: equal-width stats in a panel
+/// card — 20pt mono value with a 12pt faint unit over a 9.5pt uppercase key.
 public struct OBCStatStrip: View {
     let stats: [OBCStat]
 
     public init(_ stats: [OBCStat]) { self.stats = stats }
 
     public var body: some View {
-        // A fixed gutter between columns — equal-flex cells alone let a long
-        // value ("20.4 kph") run right up against its neighbour.
+        // Fixed gutter: equal-flex cells alone let a long value ("20.4 kph")
+        // run right up against its neighbour.
         HStack(spacing: 10) {
             ForEach(stats) { stat in
                 VStack(alignment: .leading, spacing: 3) {
@@ -44,7 +43,7 @@ public struct OBCStatStrip: View {
     }
 }
 
-/// The 2-column **stat grid** under a full-bleed route card — hairline-divided
+/// The 2-column stat grid under a full-bleed route card — hairline-divided
 /// panel cells with a 24pt value.
 public struct OBCStatGrid: View {
     let stats: [OBCStat]

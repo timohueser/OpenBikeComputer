@@ -5,7 +5,7 @@ import UIKit
 import AppKit
 #endif
 
-/// Brand type helpers. Three faces (typography.css + the design HTML):
+/// Brand type helpers. Three faces:
 /// - **serif** — Iowan Old Style, the brand display face (ships with iOS/macOS;
 ///   Spectral is only the *web* stand-in). Large titles, headings, empty-state lines.
 /// - **ui** — SF Pro via the system font. Body, controls, chrome.
@@ -36,8 +36,8 @@ public extension Font {
     }()
 }
 
-/// The design's monospace **eyebrow** label — 10pt bold mono, uppercase,
-/// letter-spaced, ink-faint ("ELEVATION PROFILE", "CONNECTED SERVICES").
+/// The monospace eyebrow label — 10pt bold mono, uppercase, letter-spaced,
+/// ink-faint ("ELEVATION PROFILE", "CONNECTED SERVICES").
 public struct OBCEyebrow: View {
     let text: String
 

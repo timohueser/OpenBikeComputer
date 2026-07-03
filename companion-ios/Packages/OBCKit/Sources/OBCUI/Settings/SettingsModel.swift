@@ -3,21 +3,20 @@ import Observation
 import OBCDomain
 import OBCTransport
 
-/// State for the Settings screen (B8, design G) — the device identity cluster,
-/// the H3 rename, and the H2 forget. Depends only on `DeviceTransport` +
-/// `BondStore` (the golden rule); the coming-soon groups (OTA, services) are
-/// static copy in the view.
+/// State for the Settings screen — the device identity cluster, rename, and
+/// forget. Depends only on `DeviceTransport` + `BondStore` (the golden rule);
+/// the coming-soon groups (OTA, services) are static copy in the view.
 ///
-/// **Rename (H3)** is a `writeConfig` with a changed `name` — device name lives
-/// in the Config blob (B-S0 Delta 1), there is no separate rename command. The
-/// new name shows across the app at once (top bar via the composition root's
-/// callback, the bond record for the next launch greeting) and rides to the
-/// device on the config write. Link-bound, so the row dims when unreachable
-/// (the S4 rule: actions that need the link dim).
+/// **Rename** is a `writeConfig` with a changed `name` — device name lives in
+/// the Config blob, there is no separate rename command. The new name shows
+/// across the app at once (top bar via the composition root's callback, the
+/// bond record for the next launch greeting) and rides to the device on the
+/// config write. Link-bound, so the row dims when unreachable (actions that
+/// need the link dim).
 ///
-/// **Forget (H2)** clears the app's bond record and drops the link; the launch
-/// flow returns to the D1 pairing prompt. Everything on the phone stays — the
-/// library store is untouched (the design's reassurance copy is literal).
+/// **Forget** clears the app's bond record and drops the link; the launch
+/// flow returns to the pairing prompt. Everything on the phone stays — the
+/// library store is untouched.
 @MainActor @Observable
 public final class SettingsModel {
     // MARK: Observable state
@@ -31,8 +30,8 @@ public final class SettingsModel {
 
     // MARK: Derived (design G copy)
 
-    /// The device row's status line: "Connected · 82%" in forest, or the
-    /// degraded states in faint ink.
+    /// The device row's status line: "Connected · 82%", or the degraded
+    /// states.
     public var statusLine: String {
         switch connection {
         case .connected:
@@ -60,7 +59,7 @@ public final class SettingsModel {
         (firmwareDisplay ?? "—") + " · latest"
     }
 
-    /// H3 is a config write — link-bound, dimmed when unreachable (S4 rule).
+    /// Rename is a config write — link-bound, dimmed when unreachable.
     public var canRename: Bool { isConnected }
 
     // MARK: Wiring
@@ -71,7 +70,7 @@ public final class SettingsModel {
     /// screen's top bar (Settings never reaches into another feature's model).
     private let onDeviceRenamed: (String) -> Void
     /// Fires after a forget so the composition root can drop the launch flow
-    /// back to the D1 pairing prompt.
+    /// back to the pairing prompt.
     private let onForget: () -> Void
     @ObservationIgnored private var started = false
     @ObservationIgnored private var streamTasks: [Task<Void, Never>] = []
@@ -109,12 +108,12 @@ public final class SettingsModel {
 
     /// Apply a device rename: trims, rejects empty/unreachable, then updates
     /// the app side at once (screen, top-bar callback, bond record) and writes
-    /// the config to the device. Returns whether the name was accepted —
-    /// the alert's Save is a no-op otherwise, matching the H12 route rename.
+    /// the config to the device. Returns whether the name was accepted — the
+    /// alert's Save is a no-op otherwise, matching the route rename.
     public func rename(to newName: String) -> Bool {
-        // Cap at the S0 name limit so the app-side name matches what the codec
-        // actually writes to the device (§7.3); trim again in case truncation
-        // left a trailing space.
+        // Cap at the name limit so the app-side name matches what the codec
+        // actually writes to the device; trim again in case truncation left a
+        // trailing space.
         let trimmed = newName
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .truncatedToUTF8Bytes(DeviceConfig.maxNameUTF8Bytes)
@@ -124,8 +123,8 @@ public final class SettingsModel {
         bondStore.save(BondRecord(deviceName: trimmed))
         onDeviceRenamed(trimmed)
         Task { [transport] in
-            // Name rides in the Config blob (Delta 1): read-modify-write so the
-            // other fields (units, …) survive the rename.
+            // Read-modify-write so the other config fields (units, …) survive
+            // the rename.
             guard var config = try? await transport.readConfig() else { return }
             config.name = trimmed
             try? await transport.writeConfig(config)
@@ -137,7 +136,7 @@ public final class SettingsModel {
 
     /// Clear the bond and drop the link. iOS keeps the underlying BLE bond
     /// until the user removes it in Settings; the app just stops assuming it
-    /// (see `BondStore`). The library store is deliberately untouched.
+    /// (see `BondStore`). The library store is untouched.
     public func forget() {
         bondStore.clear()
         Task { [transport] in
