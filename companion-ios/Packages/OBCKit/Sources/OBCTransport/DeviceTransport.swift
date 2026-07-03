@@ -1,4 +1,3 @@
-import CoreBluetooth // TEMPORARY seam breach — proves the ios-unit CI gate trips; revert me
 import Foundation
 import OBCDomain
 
