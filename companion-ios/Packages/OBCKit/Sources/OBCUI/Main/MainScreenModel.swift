@@ -63,6 +63,16 @@ public final class MainScreenModel {
         public var total: Int
     }
 
+    /// #303 — a connected device whose reported `protocol_version` doesn't match
+    /// `OBCProtocol.version`. Feeds the incompatibility banner and disables sync;
+    /// the app must never decode an incompatible object (`OBCProtocol.md` →
+    /// *Versioning*). `found > expected` means the device is ahead (update the
+    /// app); `found < expected` means it's behind (update the OBC).
+    public struct ProtocolMismatch: Equatable, Sendable {
+        public var expected: UInt16
+        public var found: UInt16
+    }
+
     /// Pacing — injectable so the model tests run in milliseconds.
     public struct Timing: Sendable {
         /// How long the forest check holds before the button returns to idle
@@ -107,6 +117,9 @@ public final class MainScreenModel {
     /// H10: non-nil while a dropped sync waits for Resume — replaces the S4
     /// banner (one banner at a time; this one carries the link story too).
     public private(set) var syncInterruption: SyncInterruption?
+    /// #303: non-nil once a connected device reports an incompatible
+    /// `protocol_version` — drives the incompatibility banner and disables sync.
+    public private(set) var protocolMismatch: ProtocolMismatch?
 
     // MARK: Derived
 
@@ -197,11 +210,18 @@ public final class MainScreenModel {
         })
         reload()
         // Identity after the first library read: a fault armed for "the first
-        // read" (the S3 scenario) must hit the lists, not this fetch.
+        // read" (the S3 scenario) must hit the lists, not this fetch. The same
+        // read carries the protocol-version check (#303) — surfaced here, on
+        // connect, where `deviceInfo()` is consumed.
         let firstLoad = loadTask
         streamTasks.append(Task { [transport] in
             await firstLoad?.value
-            if let info = try? await transport.deviceInfo() { deviceName = info.name }
+            guard let info = try? await transport.deviceInfo() else { return }
+            deviceName = info.name
+            if case let .protocolMismatch(expected, found)? =
+                OBCProtocol.versionMismatch(reportedBy: info.protocolVersion) {
+                protocolMismatch = ProtocolMismatch(expected: expected, found: found)
+            }
         })
     }
 
@@ -209,6 +229,14 @@ public final class MainScreenModel {
     /// up while the fresh read runs; only an *empty* library shows skeletons.
     public func reload() {
         loadTask?.cancel()
+        // An incompatible device (#303): don't decode its objects — keep the
+        // library-first content up and let the banner explain. The first load
+        // (before the version is read) may still run; every reload after the
+        // mismatch is known is gated here.
+        guard protocolMismatch == nil else {
+            loadState = .loaded
+            return
+        }
         loadState = .loading
         loadTask = Task { [transport] in
             do {
@@ -272,7 +300,10 @@ public final class MainScreenModel {
     /// link-bound actions). Starting fresh over a waiting interruption is fine:
     /// what landed is marked synced, so the new batch is exactly the remainder.
     public func sync() {
-        guard connection == .connected, syncState != .syncing else { return }
+        // Disabled on an incompatible device (#303): the banner explains why, and
+        // decoding its ride objects would be the exact "silently proceed" the
+        // version check exists to prevent.
+        guard connection == .connected, syncState != .syncing, protocolMismatch == nil else { return }
         syncTask?.cancel()
         syncDropWatch?.cancel()
         // Tear down a superseded (interrupted-but-waiting) batch so its runner

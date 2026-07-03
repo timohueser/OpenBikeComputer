@@ -12,4 +12,12 @@ public enum OBCProtocol {
     /// `DeviceInfo.protocolVersion` against this; on mismatch it surfaces
     /// `DeviceError.protocolMismatch` (surface, don't crash).
     public static let version: UInt16 = 1
+
+    /// The mismatch to surface for a device reporting `deviceVersion`, or `nil`
+    /// when it matches this build (#303). Pure and total — never traps — so the
+    /// connect path can compare without a force-unwrap or a decode against an
+    /// incompatible object (`OBCProtocol.md` → *Versioning*).
+    public static func versionMismatch(reportedBy deviceVersion: UInt16) -> DeviceError? {
+        deviceVersion == version ? nil : .protocolMismatch(expected: version, found: deviceVersion)
+    }
 }

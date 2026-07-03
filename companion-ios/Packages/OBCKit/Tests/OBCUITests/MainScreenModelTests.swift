@@ -390,6 +390,47 @@ final class MainScreenModelTests: XCTestCase {
         XCTAssertFalse(model.upToDateToastVisible)
     }
 
+    // MARK: Protocol version (#303)
+
+    /// A device reporting a `protocol_version` this build doesn't speak surfaces
+    /// the mismatch (banner state) and disables sync — the app must never proceed
+    /// to decode an incompatible object.
+    func testProtocolMismatchSurfacesAndDisablesSync() async {
+        let (model, control) = makeModel(.happyPath)
+        // The device jumps a protocol version ahead of what the app speaks.
+        control.deviceInfo = DeviceInfo(
+            name: "Trailhead", firmwareVersion: "9.9.9",
+            protocolVersion: OBCProtocol.version + 1
+        )
+        await startLoaded(model)
+        await waitFor("mismatch surfaces") { model.protocolMismatch != nil }
+        XCTAssertEqual(
+            model.protocolMismatch,
+            .init(expected: OBCProtocol.version, found: OBCProtocol.version + 1)
+        )
+
+        // Disabled sync: pressing Sync must not start a transfer (no decode).
+        model.sync()
+        try? await Task.sleep(for: .milliseconds(80))
+        XCTAssertEqual(model.syncState, .idle)
+        XCTAssertNil(model.syncProgress)
+        XCTAssertFalse(model.upToDateToastVisible)
+        // A reload after the mismatch is known must not decode the device either.
+        model.reload()
+        XCTAssertEqual(model.loadState, .loaded)
+    }
+
+    /// The matched-version happy path never false-positives.
+    func testMatchingProtocolVersionDoesNotFlag() async {
+        let (model, _) = makeModel(.happyPath)   // fixtures report OBCProtocol.version
+        await startLoaded(model)
+        await waitFor("device identity") { model.deviceName == "Trailhead" }
+        XCTAssertNil(model.protocolMismatch)
+        // Sync still runs on a matched device.
+        model.sync()
+        await waitFor("sync runs") { model.syncState == .syncing || model.lastSyncCount != nil }
+    }
+
     // MARK: Delete (H11 → H1)
 
     func testDeleteRouteRemovesFromLibraryButNeverFromDevice() async {
