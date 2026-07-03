@@ -93,7 +93,8 @@ fn trailing_partial_record_is_ignored() {
 fn version_is_the_commit_point() {
     // The version byte is written 0 and patched to 1 last: a save that never reached the patch
     // (simulated by zeroing it) must be rejected, like an aborted route commit's held magic.
-    let mut ride = to_ride(&log_of(&[TrackPoint { lon: 0, lat: 0, ele: 0, t_ms: 0, segment_start: true }]), "R", &STATS);
+    let mut ride =
+        to_ride(&log_of(&[TrackPoint { lon: 0, lat: 0, ele: 0, t_ms: 0, segment_start: true }]), "R", &STATS);
     assert_eq!(ride[0], RIDE_VERSION, "a completed save carries the real version");
     ride[0] = 0;
     assert!(RideInfo::read(&SliceSource(&ride)).is_err(), "a held-back version byte is invisible");

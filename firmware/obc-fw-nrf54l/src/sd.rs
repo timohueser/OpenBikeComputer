@@ -48,7 +48,9 @@ use embedded_sdmmc::{
 use heapless::{String, Vec};
 use obc_app::MAX_ROUTES;
 use obc_platform::{SdByteSink, SdByteSource, SdTrackSink};
-use obc_route::{track_to_gpx, track_to_ride, RideInfo, RideStats, RouteIndex, RouteObjectInfo, RouteSummary, NAME_CAP};
+use obc_route::{
+    track_to_gpx, track_to_ride, RideInfo, RideStats, RouteIndex, RouteObjectInfo, RouteSummary, NAME_CAP,
+};
 
 /// SD clock during the init handshake — the spec caps it at 400 kHz. embassy-nrf's discrete
 /// [`Frequency`] ladder has no 400 kHz step, so [`Frequency::K250`] is the fastest in-spec choice
@@ -465,7 +467,10 @@ impl Storage {
                 let mut sink = SdByteSink::new(&self.vmgr, dst_file);
                 match track_to_ride(&source, name, stats, &mut sink) {
                     Ok(()) => defmt::info!("SD: ride object → tracks/RD{=u16}.ORD", id),
-                    Err(e) => defmt::warn!("SD: ride-object write failed: {} — ride kept as GPX only", defmt::Debug2Format(&e)),
+                    Err(e) => defmt::warn!(
+                        "SD: ride-object write failed: {} — ride kept as GPX only",
+                        defmt::Debug2Format(&e)
+                    ),
                 }
                 let _ = self.vmgr.flush_file(dst_file);
                 let _ = self.vmgr.close_file(dst_file);

@@ -160,7 +160,12 @@ const BLOCK_RECORDS: usize = 64;
 ///
 /// The version byte is written as `0` and patched to [`RIDE_VERSION`] as the **final** write —
 /// the commit point. A save interrupted anywhere earlier fails [`RideInfo::read`].
-pub fn track_to_ride(src: &dyn ByteSource, name: &str, stats: &RideStats, sink: &mut dyn ByteSink) -> Result<(), Error> {
+pub fn track_to_ride(
+    src: &dyn ByteSource,
+    name: &str,
+    stats: &RideStats,
+    sink: &mut dyn ByteSink,
+) -> Result<(), Error> {
     let total = (src.len() as usize) / TRACK_RECORD_LEN;
 
     let mut end = name.len().min(NAME_CAP);
