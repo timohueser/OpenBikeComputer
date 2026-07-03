@@ -53,9 +53,22 @@ public struct MainScreenView: View {
                 onSettings: onSettings
             )
 
-            // One banner at a time: an interrupted sync (H10) owns the slot —
-            // it carries the link story AND the way out (Resume).
-            if let interruption = model.syncInterruption {
+            // One banner at a time. A protocol mismatch (#303) outranks the rest:
+            // the link is up but unusable for data, so it can't be a transfer or
+            // an out-of-range story — sync is disabled until the versions match.
+            if let mismatch = model.protocolMismatch {
+                OBCInlineBanner(
+                    tone: .warning,
+                    systemImage: "exclamationmark.triangle",
+                    title: "Can't sync with \(model.deviceName).",
+                    message: mismatch.found > mismatch.expected
+                        ? "Update the app to match this OBC."
+                        : "Update the OBC to match this app."
+                )
+                .accessibilityIdentifier("protocolMismatchBanner")
+                .padding(.horizontal, 20)
+                .padding(.bottom, 6)
+            } else if let interruption = model.syncInterruption {
                 OBCInlineBanner(
                     tone: .warning,
                     systemImage: "exclamationmark.triangle",
