@@ -146,7 +146,7 @@ cargo run --release --features debug-uart
 cargo run --release --features tft
 
 # The BLE build (issue #270, epic #267): the same firmware with the nrf-sdc + MPSL + TrouBLE
-# stack folded in (`src/ble.rs`), advertising as `OBC-XXXX` (S0 §2 — the FICR serial tail). On
+# stack folded in (`src/ble/`), advertising as `OBC-XXXX` (S0 §2 — the FICR serial tail). On
 # this 256 KB DK it compiles the MAP PLANE OUT (~128 KB freed) and boots a text-only BLE status
 # UI on the LS021 instead; SD, RRAM settings, buttons, and the real sensors all stay up.
 # `--no-default-features` is REQUIRED (it swaps the critical-section impl to MPSL's — a
@@ -156,7 +156,7 @@ cargo run --release --no-default-features --features ble
 
 (The standalone FLPR waveform bench bin `ls021_flpr_bringup` was retired in #177 once the app drove
 the LS021 on glass; the M33-direct `ls021_bringup` bench was retired earlier in #176; the A1 BLE
-spike bin `ble_spike` was retired at #270 when the stack moved into `main.rs`/`src/ble.rs`. All are
+spike bin `ble_spike` was retired at #270 when the stack moved into `main.rs`/`src/ble/`. All are
 in git history if an isolation bring-up is ever needed again — the FLPR transport is
 `src/ls021_flpr.rs`, exercised by the default build.)
 
@@ -216,7 +216,7 @@ If `cargo run` prompts to pick a probe (e.g. another ST-LINK is attached), pass
 ## BLE stack — dependency pins & gotchas (issues #269/#270, epic #267)
 
 The A1 spike proved `nrf-sdc` (Nordic's closed-source SoftDevice Controller + MPSL bindings) +
-`trouble-host` on this DK; A2 (#270) folded that stack into the real firmware as `src/ble.rs`
+`trouble-host` on this DK; A2 (#270) folded that stack into the real firmware as `src/ble/`
 behind the `ble` feature (build command above). What the spike settled, for everything Track A
 builds on it:
 
@@ -286,7 +286,7 @@ the counters bump, the reason logs, and it always returns to advertising.
 ## GATT control plane (A4, #272)
 
 `ble::run` now serves the **real** control plane the iOS app discovers on connect
-(`obc-ble-interface-spec.md` §3, the S0-frozen UUIDs). One `#[gatt_server]` in `src/ble.rs` holds
+(`obc-ble-interface-spec.md` §3, the S0-frozen UUIDs). One `#[gatt_server]` in `src/ble/gatt.rs` holds
 three services — mirroring the spec section so there's one place to diff:
 
 - **DIS** (`0x180A`) — Firmware Revision (`<crate-semver>+<git-short>`, e.g. `0.1.0+ca9b336`;
