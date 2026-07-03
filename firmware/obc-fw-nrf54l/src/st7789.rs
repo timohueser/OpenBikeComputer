@@ -11,11 +11,6 @@
 //! Generic over embedded-hal 1.0 `SpiBus` / `OutputPin` / `DelayNs`, which embassy-nrf's `Spim` +
 //! `Output` and embassy-time's `Delay` all implement.
 
-// The default FLPR build still compiles this module for its `WIDTH`/`HEIGHT` geometry but replaces the
-// ST7789 driver with the LS021 FLPR backend — so the whole driver is unused there. Allow it only in
-// that build; the `tft` map build keeps dead-code enforced.
-#![cfg_attr(not(feature = "tft"), allow(dead_code))]
-
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use embassy_time::Instant;
@@ -48,6 +43,12 @@ pub fn push_timers() -> (u32, u32, u32) {
 /// (The 240×240 ST7789 variants need a row offset; the full 240×320 panel starts at 0,0.)
 pub const WIDTH: u16 = 240;
 pub const HEIGHT: u16 = 320;
+// This panel must show exactly the frame the app renders (`display::FRAME_W × FRAME_H`) — fail the
+// build if the two geometries ever fork.
+const _: () = assert!(
+    WIDTH as usize == crate::display::FRAME_W && HEIGHT as usize == crate::display::FRAME_H,
+    "ST7789 panel geometry diverged from the display::FRAME_W/FRAME_H frame the app renders"
+);
 
 /// ST7789 command set (the subset this bring-up uses).
 mod cmd {

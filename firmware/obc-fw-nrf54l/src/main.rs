@@ -1,6 +1,8 @@
 //! nRF54L15-DK board firmware for OpenBikeComputer — the **real hardware target**.
 //!
-//! The nRF54L15 + ST7789 EYESPI panel is what the project ships on. This crate ports the
+//! The nRF54L15 driving the reflective LS021B7DD02 memory-LCD through the FLPR coprocessor is
+//! what the project ships on — the **default build**; the ST7789 EYESPI TFT stays as the opt-in
+//! `tft` bring-up backend. This crate ports the
 //! shared `obc-app` onto it (load route → ride → save GPX). Nothing app-facing lives here:
 //! `obc-render` / `obc-app` / `obc-reader` / `obc-route` + `obc-platform` stay board-agnostic;
 //! only the nRF HAL wiring + the display `DisplayDriver` backends are board-specific.
@@ -111,8 +113,9 @@
 #![no_main]
 
 mod sd;
-// The ST7789 panel geometry (`WIDTH`/`HEIGHT`) is shared by both display backends; the `St7789`
-// driver itself is the opt-in `tft` map backend (the default FLPR build below replaces it).
+// The ST7789 driver — the opt-in `tft` map backend only. The frame geometry both backends share
+// lives in `display::FRAME_W`/`FRAME_H`, so the default FLPR build compiles none of this.
+#[cfg(feature = "tft")]
 mod st7789;
 // LS021 FLPR backend — the **default** display: `main.rs` runs the real app on the reflective LS021
 // panel via the FLPR (the VPR coprocessor) unless `--features tft` selects the ST7789 panel instead.
@@ -172,11 +175,11 @@ compile_error!("the `ble` status build has no ride loop — `debug-uart`'s host 
 compile_error!("the `ble` status build has no ride loop — `synth` has nothing to drive");
 
 use defmt::info;
+use display::{FRAME_H, FRAME_W};
 use embassy_executor::Spawner;
 use embassy_nrf::gpio::{Level, Output, OutputDrive};
 use embassy_nrf::{bind_interrupts, peripherals, spim};
 use embassy_time::Timer;
-use st7789::{HEIGHT, WIDTH};
 use {defmt_rtt as _, panic_probe as _};
 
 // `Delay` (the ST7789 power-on waits) + the `St7789` driver type are the opt-in `tft` backend; the
@@ -306,9 +309,9 @@ bind_interrupts!(struct SensorIrqs {
 const BAND_ROWS: usize = 14;
 /// The band scratch in bytes (RGB565, 2 B/px) — the resident cost the budget assert reserves.
 #[cfg(feature = "tft")]
-const BAND_BYTES: usize = st7789::WIDTH as usize * BAND_ROWS * 2;
+const BAND_BYTES: usize = FRAME_W * BAND_ROWS * 2;
 #[cfg(feature = "tft")]
-static mut BAND: [u16; WIDTH as usize * BAND_ROWS] = [0; WIDTH as usize * BAND_ROWS];
+static mut BAND: [u16; FRAME_W * BAND_ROWS] = [0; FRAME_W * BAND_ROWS];
 
 // ============================ Board memory budget ============================
 // The nRF54L15 has 256 KB RAM and no external RAM, so the whole resident working set of a full map
@@ -358,8 +361,8 @@ const STACK_RESERVE: usize = 34 * 1024;
 /// ride the main stack — and the ~128 KB the excluded map plane frees leaves room to be generous.
 #[cfg(not(has_map))]
 const STACK_RESERVE: usize = 32 * 1024;
-/// The single RGB222 framebuffer: one byte per pixel over the 240×320 panel = 75 KB.
-const FB_BYTES: usize = st7789::WIDTH as usize * st7789::HEIGHT as usize;
+/// The single RGB222 framebuffer: one byte per pixel over the 240×320 frame = 75 KB.
+const FB_BYTES: usize = FRAME_W * FRAME_H;
 
 /// The map plane's residents (the table above). Includes the active route's `RouteIndex`, kept
 /// resident across frames. **Zero on the `ble` DK build** — the whole plane is compiled out.
@@ -382,7 +385,7 @@ const BLE_RESIDENT: usize = 0;
 
 /// The resident set that must coexist during a redraw (see the table above).
 const RESIDENT_BYTES: usize = FB_BYTES
-    + core::mem::size_of::<RowDiff<{ HEIGHT as usize }>>() // the self-diffing present store (#201, 1.28 KB)
+    + core::mem::size_of::<RowDiff<FRAME_H>>() // the self-diffing present store (#201, 1.28 KB)
     + BAND_RESERVE
     + MAP_RESIDENT
     + BLE_RESIDENT;
@@ -410,7 +413,7 @@ static mut FB: [u8; FB_BYTES] = [0; FB_BYTES];
 /// re-hashes each row and pushes only the rows whose hash changed — so a Home clock tick re-presents
 /// its clock band instead of all 320 rows (~97 ms → a few ms on the FLPR). `RowDiff::new()` is all-zero
 /// (+ the unprimed flag) ⇒ a `.bss` static, and the first present force-pushes the whole frame to seed it.
-static mut ROW_DIFF: RowDiff<{ HEIGHT as usize }> = RowDiff::new();
+static mut ROW_DIFF: RowDiff<FRAME_H> = RowDiff::new();
 
 /// The streamed-map geometry cache + the shared [`App`], placed in `.bss` and built **in place** (a
 /// `ptr::write` into the reserved region): the ~96 KB `App` (incl. the ~74 KB renderer scratch) and the
@@ -626,7 +629,7 @@ async fn wait_sensor_event() {
 // the FLPR the full-width rows of that span — so the column constants are shared; the fixed row band
 // (`OVL_Y0`/`OVL_ROWS`) is only the ST7789 trailing-clear + band-fit bound.
 /// First overlay column: the rightmost 16 px (bulge depth ≤12 + margin).
-const OVL_X0: u16 = WIDTH - 16;
+const OVL_X0: u16 = (FRAME_W - 16) as u16;
 /// Overlay window width (columns).
 const OVL_W: u16 = 16;
 /// First overlay row of the full hint band (a little above the encoder bulge's top). ST7789-only — the
@@ -640,8 +643,7 @@ const OVL_ROWS: u16 = 192;
 /// ST7789: the overlay window must fit the shared band scratch (it borrows a prefix of it). The FLPR
 /// path has its own `MAX_OVERLAY_*` bound in `Ls021Flpr::push_overlay`.
 #[cfg(feature = "tft")]
-const _: () =
-    assert!(OVL_W as usize * OVL_ROWS as usize <= WIDTH as usize * BAND_ROWS, "overlay window larger than BAND");
+const _: () = assert!(OVL_W as usize * OVL_ROWS as usize <= FRAME_W * BAND_ROWS, "overlay window larger than BAND");
 
 // The live-bulge "present the rows *around* it" discipline lives **inside** the self-diffing present:
 // the FLPR map plane passes the bulge's row span to `Ls021Flpr::present_within`, which clips it out of
@@ -770,7 +772,7 @@ async fn input_overlay_task(
                 }
             });
             // `overlay_active` (the bulge is still live, incl. its retract) gates the idle sleep below.
-            (plane.take_overlay_dirty(), plane.overlay_rows(WIDTH as i32, HEIGHT as i32), plane.overlay_active())
+            (plane.take_overlay_dirty(), plane.overlay_rows(FRAME_W as i32, FRAME_H as i32), plane.overlay_active())
         });
 
         // Repaint the bulge only when it changed (plus the one trailing clear `take_overlay_dirty`
@@ -789,7 +791,7 @@ async fn input_overlay_task(
                 None => OverlayRegion { x0: OVL_X0, y0: OVL_Y0, w: OVL_W, rows: OVL_ROWS },
             };
             bus.lock().await.present_overlay(region, &mut |band: &mut Band| {
-                input_plane.lock(|cell| cell.borrow().render_overlay(band, WIDTH as f32, HEIGHT as f32, color_fn));
+                input_plane.lock(|cell| cell.borrow().render_overlay(band, FRAME_W as f32, FRAME_H as f32, color_fn));
             });
         }
         // Event-driven sleep (issue #219): idle (all buttons released + settled, no live bulge) → sleep
@@ -972,7 +974,7 @@ impl MapDisplay {
     fn poll_overlay(&mut self) -> (bool, Option<(u16, u16)>) {
         self.input_plane.lock(|c| {
             let p = &mut *c.borrow_mut();
-            (p.take_overlay_dirty(), p.overlay_rows(WIDTH as i32, HEIGHT as i32))
+            (p.take_overlay_dirty(), p.overlay_rows(FRAME_W as i32, FRAME_H as i32))
         })
     }
 
@@ -1044,7 +1046,7 @@ impl MapDisplay {
         let input_plane = self.input_plane;
         let composite = |panel: &mut Ls021Flpr, region: OverlayRegion| -> bool {
             panel.present_overlay(region, &mut |band: &mut Band| {
-                input_plane.lock(|cell| cell.borrow().render_overlay(band, WIDTH as f32, HEIGHT as f32, color_fn));
+                input_plane.lock(|cell| cell.borrow().render_overlay(band, FRAME_W as f32, FRAME_H as f32, color_fn));
             })
         };
         if let Some((y0, rows)) = overlay_span {
@@ -1411,13 +1413,13 @@ async fn run_app(
                 // carry the collect/sort/draw timings; the hold bulge is **not** composited here — it
                 // rides `present_bulge` on its own plane.
                 let render = |d: &mut dyn DisplayDriver| {
-                    let mut fbdev = FbDevice64::new(d.fb_mut(), WIDTH as u32, HEIGHT as u32);
+                    let mut fbdev = FbDevice64::new(d.fb_mut(), FRAME_W as u32, FRAME_H as u32);
                     app.render_map_timed(
                         &mut fbdev,
                         reader.as_ref(),
                         route.as_ref(),
-                        WIDTH as f32,
-                        HEIGHT as f32,
+                        FRAME_W as f32,
+                        FRAME_H as f32,
                         color_fn,
                         &InstantClock,
                     )
@@ -1431,7 +1433,7 @@ async fn run_app(
                 #[cfg(feature = "debug-uart")]
                 {
                     let mpp_milli =
-                        (app.state.viewport(WIDTH as f32, HEIGHT as f32).meters_per_pixel() * 1000.0) as u32;
+                        (app.state.viewport(FRAME_W as f32, FRAME_H as f32).meters_per_pixel() * 1000.0) as u32;
                     last_telem = obc_platform::debug_link::Telemetry {
                         frame_us: fp.render_us as u32,
                         lod: fp.stats.lod as u8,
@@ -1832,8 +1834,8 @@ async fn main(_spawner: Spawner) {
             let fb: &'static mut [u8] = unsafe { &mut *core::ptr::addr_of_mut!(FB) };
             // SAFETY: sole reference to ROW_DIFF; held by `Display` behind the bus mutex for the rest of
             // the program (the map plane is its only writer), never aliased.
-            let diff: &'static mut RowDiff<{ HEIGHT as usize }> = unsafe { &mut *core::ptr::addr_of_mut!(ROW_DIFF) };
-            info!("obc-fw-nrf54l N5: ST7789 up ({}x{}); two-plane input + map", WIDTH, HEIGHT);
+            let diff: &'static mut RowDiff<FRAME_H> = unsafe { &mut *core::ptr::addr_of_mut!(ROW_DIFF) };
+            info!("obc-fw-nrf54l N5: ST7789 up ({}x{}); two-plane input + map", FRAME_W, FRAME_H);
 
             static mut BUS: MaybeUninit<Mutex<CriticalSectionRawMutex, Display>> = MaybeUninit::uninit();
             // SAFETY: sole writer; initialised here before the `&'static` is shared with the input
@@ -1929,7 +1931,7 @@ async fn main(_spawner: Spawner) {
             // SAFETY: sole references to FB / ROW_DIFF; held by `panel` for the rest of the program (the
             // map plane is their only owner), never aliased.
             let fb: &'static mut [u8] = unsafe { &mut *core::ptr::addr_of_mut!(FB) };
-            let diff: &'static mut RowDiff<{ HEIGHT as usize }> = unsafe { &mut *core::ptr::addr_of_mut!(ROW_DIFF) };
+            let diff: &'static mut RowDiff<FRAME_H> = unsafe { &mut *core::ptr::addr_of_mut!(ROW_DIFF) };
             let mut panel = Ls021Flpr::new_fb(fb, diff);
             // Datasheet Initial #0: an INTB-framed all-black frame (FB boots zeroed = black) while COM is
             // still held `Lo`. Then T4 ≥ 30 µs, then start COM — from here it free-runs forever.
