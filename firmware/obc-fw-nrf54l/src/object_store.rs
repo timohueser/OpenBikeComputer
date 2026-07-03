@@ -380,6 +380,49 @@ impl ObjectStore {
         }
     }
 
+    /// Open a diagnostics download (S0 §7.5, A7): render the text blob into the object buffer
+    /// and stream it like a list. Deliberately **card-independent** — diagnostics must be
+    /// readable exactly when things are broken, so no `storage` gate here (the store counts
+    /// then honestly read 0 with `sd: --`).
+    pub fn open_diagnostics_download(
+        &mut self,
+        desc: &TransferControl,
+        link: &DiagInput<'_>,
+    ) -> Result<(StreamSender, DownloadSource), TransferStatus> {
+        let len = self.build_diagnostics(link);
+        let crc = Crc32::checksum(&self.list_buf[..len]);
+        let tx = StreamSender::new(desc, len as u32, crc).map_err(|_| TransferStatus::Error)?;
+        Ok((tx, DownloadSource::List))
+    }
+
+    /// Render the diagnostics text (S0 §7.5 — an opaque, human-readable UTF-8 blob, **not** an
+    /// API) into [`Self::list_buf`], returning its byte length: identity, the persisted boot
+    /// counter, uptime, the A3 link counters, and the store's view of the card.
+    fn build_diagnostics(&mut self, link: &DiagInput<'_>) -> usize {
+        let mut w = BufWriter { buf: &mut self.list_buf, len: 0 };
+        let _ = core::fmt::write(
+            &mut w,
+            format_args!(
+                "obc diagnostics\nfw: {}\nhw: {}\nserial: {}\nprotocol: {}\nboot_count: {}\nuptime_s: {}\n\
+                 link_connects: {}\nlink_disconnects: {}\nlink_last_reason: 0x{:02X}\n\
+                 routes: {}\nrides: {}\nsd: {}\n",
+                link.firmware,
+                link.hardware,
+                link.serial,
+                obc_ble::PROTOCOL_VERSION,
+                self.settings_store.boot_count(),
+                link.uptime_s,
+                link.connects,
+                link.disconnects,
+                link.last_disconnect_reason,
+                self.routes.len(),
+                self.rides.len(),
+                if self.storage.is_some() { "ok" } else { "--" },
+            ),
+        );
+        w.len
+    }
+
     /// Open a stored object file for a verbatim download: the handle, the CRC pre-pass (the
     /// whole-object CRC the announce carries, S0 §4.2), the [`StreamSender`].
     fn open_object_download(
@@ -483,12 +526,41 @@ impl ObjectStore {
     }
 }
 
+/// The link-plane facts the diagnostics blob renders (S0 §7.5) — assembled by `ble.rs`, which
+/// owns the identity strings and the live [`crate::ble::Status`] counters; the store adds what
+/// *it* owns (boot counter, catalog counts, the card).
+pub struct DiagInput<'a> {
+    pub firmware: &'a str,
+    pub hardware: &'a str,
+    pub serial: &'a str,
+    pub uptime_s: u32,
+    pub connects: u32,
+    pub disconnects: u32,
+    pub last_disconnect_reason: u8,
+}
+
+/// `core::fmt::Write` into a fixed byte buffer, silently truncating on overflow (the
+/// diagnostics text is a few hundred bytes against the multi-KB list buffer).
+struct BufWriter<'a> {
+    buf: &'a mut [u8],
+    len: usize,
+}
+
+impl core::fmt::Write for BufWriter<'_> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        let n = s.len().min(self.buf.len() - self.len);
+        self.buf[self.len..self.len + n].copy_from_slice(&s.as_bytes()[..n]);
+        self.len += n;
+        Ok(())
+    }
+}
+
 /// Which source an open download streams from.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum DownloadSource {
-    /// The built list object in [`ObjectStore::list_buf`].
+    /// The built list / diagnostics object in [`ObjectStore::list_buf`].
     List,
-    /// The open route file on the card.
+    /// The open route / ride file on the card.
     Object,
 }
 
