@@ -148,9 +148,6 @@ prerequisite for a cleaner item-2 fix and good on its own.
   real usage. Retune once there's device data.
 - **Within-level drops are quadtree-ordered** (same-priority features bunch NW
   under saturation). A spatial stride / importance weighting would spread them.
-- **Stale planning doc.** `firmware/docs/priority_rendering_plan.md` describes
-  the superseded boolean 2-pass design; `two_pass_descriptor_plan.md` is the
-  as-built record. Consolidate or remove the stale one.
 - **nRF54L firmware bring-up** (separate track). Renderer is MCU-ready —
   heapless, zero-alloc, budget-asserted ≤200 KB. Remaining work is the embassy +
   LS021B7DD02 `DrawTarget` front-end. See the `obcm-followups` memory.
