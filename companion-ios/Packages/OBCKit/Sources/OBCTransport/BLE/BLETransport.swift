@@ -452,10 +452,25 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     private func nextAnnounce() async throws -> TransferControl {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<TransferControl, Error>) in
             queue.async { [self] in
-                if pendingAnnounces.isEmpty {
-                    announceWaiter = cont
-                } else {
+                if !pendingAnnounces.isEmpty {
                     cont.resume(returning: pendingAnnounces.removeFirst())
+                } else if let index = pendingStatuses.firstIndex(where: {
+                    if case .transferResult = $0 { true } else { false }
+                }) {
+                    // A buffered transferResult with no announce ahead of it is a
+                    // typed reject answering *this* download — a successful download
+                    // always notifies the announce first (spec §4.2). It lands in
+                    // `pendingStatuses` when the reject beats this waiter's
+                    // registration (the write-ack → nextAnnounce hop); `deliverStatus`
+                    // only resolves the announce-as-reject case when a waiter is
+                    // already parked, so without draining it here the reject sits
+                    // buffered forever and hangs `downloadObject`.
+                    guard case .transferResult(let result) = pendingStatuses.remove(at: index) else {
+                        fatalError("predicate guarantees a transferResult")
+                    }
+                    cont.resume(throwing: rejectError(result.status))
+                } else {
+                    announceWaiter = cont
                 }
             }
         }
@@ -831,6 +846,22 @@ extension BLETransport: CBCentralManagerDelegate {
         byteChannel = nil
         bleChannel = nil
         failAllPending()
+        // A disconnect that lands while a connect phase is still pending IS that
+        // phase's failure. `failAllPending` deliberately leaves the two phase
+        // continuations alone, and a declined / wrong passkey commonly tears the
+        // link down instead of erroring the gated PSM read — so without this a
+        // fresh pair hangs `confirmPairing()` on the D3 beat forever (there is no
+        // timeout on `authenticate()`). Both helpers drop `wantsConnect`, which
+        // also stops the reconnect loop from silently re-raising the passkey sheet
+        // after a decline.
+        if discoverContinuation != nil {
+            failDiscover(.notConnected)
+            return
+        }
+        if authenticateContinuation != nil {
+            failAuthenticate(.pairingFailed)
+            return
+        }
         stateMulticast.send(wantsConnect ? .outOfRange : .disconnected)
         // Reconnect (S4: the banner degrades, the link keeps trying): a connect
         // issued now has no timeout — iOS holds it pending until the peripheral
