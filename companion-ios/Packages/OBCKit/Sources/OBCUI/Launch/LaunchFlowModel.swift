@@ -18,11 +18,13 @@ import OBCTransport
 ///                              └───┘                                  paired (D4) ─► main
 /// ```
 ///
-/// Depends only on `DeviceTransport` + `BondStore` (the golden rule) — pairing
-/// *is* `connect()`: on the real path iOS raises the system pairing sheet
-/// mid-connect once the firmware requires encryption (A8); the mock resolves it
-/// through `MockControl`'s radio/pairing gates. "Have we bonded before" comes
-/// from the `BondStore`, never a CoreBluetooth detour.
+/// Depends only on `DeviceTransport` + `BondStore` (the golden rule). Pairing is a
+/// two-phase connect (#297): `startPairing` runs the un-gated `discover()` (surfaces
+/// the D2 row), and the row tap runs the gated `authenticate()` — the op that raises
+/// the system passkey sheet once the firmware requires encryption (A8), so the sheet
+/// lands in the D3 beat, not on D2. The mock resolves both through `MockControl`'s
+/// radio/pairing gates. "Have we bonded before" comes from the `BondStore`, never a
+/// CoreBluetooth detour.
 @MainActor @Observable
 public final class LaunchFlowModel {
     /// Why pairing failed — selects the D5 copy variant.
@@ -86,8 +88,9 @@ public final class LaunchFlowModel {
         public var connectGrace: Duration
         /// The D2 scan window; expiry is the D5 "we scanned for 30 seconds" copy.
         public var scanTimeout: Duration
-        /// The D3 pause after the row tap (where the system sheet sits on the
-        /// real path).
+        /// The minimum D3 dwell after the gated `authenticate()` resolves, so the
+        /// "pairing…" beat is perceptible even when the mock authenticates instantly
+        /// (the real passkey sheet's own dwell already exceeds it).
         public var pairingBeat: Duration
 
         public init(
@@ -155,18 +158,21 @@ public final class LaunchFlowModel {
 
     // MARK: The pairing flow
 
-    /// D1 "Start pairing" (also D5 "Try again"): scan + connect under the
-    /// 30-second window, then surface the found device as the D2 row.
+    /// D1 "Start pairing" (also D5 "Try again"): scan + discover the **un-gated**
+    /// surface under the 30-second window, then surface the found device as the D2
+    /// row. Crucially this is `discover()`, not `connect()` — touching a gated
+    /// characteristic (which raises the LESC passkey sheet) is deferred to the row
+    /// tap so the sheet lands in the D3 beat, not here on D2 (#297).
     public func startPairing() {
         flowTask?.cancel()
         phase = .scanning(discovered: nil)
         flowTask = Task { [transport, timing] in
             do {
                 try await Self.withScanWindow(timing.scanTimeout) {
-                    try await transport.connect()
+                    try await transport.discover()
                 }
-                // Link up → the device exists; let the row slide in and wait
-                // for the rider's tap.
+                // Link discovered (un-gated) → the device exists; let the row slide
+                // in and wait for the rider's tap.
                 let name = (try? await transport.deviceInfo().name) ?? "OBC"
                 guard !Task.isCancelled else { return }
                 phase = .scanning(discovered: DiscoveredDevice(name: name))
@@ -177,12 +183,24 @@ public final class LaunchFlowModel {
         }
     }
 
-    /// D2 row tap: hold the D3 beat (the system pairing sheet's slot on the
-    /// real path), record the bond, celebrate.
+    /// D2 row tap: run the gated `authenticate()` — the operation that raises the
+    /// system passkey sheet on the real path (A8), now landing inside the D3
+    /// "pairing…" beat that's already on screen (#297). On success record the bond
+    /// and celebrate; a decline drops to D5.
     public func confirmPairing() {
         guard case .scanning(.some(let device)) = phase else { return }
         phase = .pairing
-        flowTask = Task { [bondStore, timing] in
+        flowTask = Task { [transport, bondStore, timing] in
+            do {
+                try await transport.authenticate()
+            } catch {
+                guard !Task.isCancelled else { return }
+                phase = Self.failurePhase(for: error)
+                return
+            }
+            // A minimum D3 dwell so success doesn't snap straight to D4 (the mock
+            // authenticates instantly; the real passkey sheet's own dwell already
+            // exceeds this).
             try? await Task.sleep(for: timing.pairingBeat)
             guard !Task.isCancelled else { return }
             bondStore.save(BondRecord(deviceName: device.name))

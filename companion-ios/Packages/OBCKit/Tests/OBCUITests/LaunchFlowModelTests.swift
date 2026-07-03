@@ -148,10 +148,17 @@ final class LaunchFlowModelTests: XCTestCase {
         await waitFor("D5 again") { model.phase == .pairFailed(.timeout) }
     }
 
+    /// #297: a declined passkey is a *gated* failure, so it surfaces on the row tap
+    /// (`confirmPairing`), not during the un-gated scan — the D2 row appears first.
     func testPairingRejectedShowsD5RejectedVariant() async {
         let (model, _) = makeModel(.pairingRejected)
         model.start()
         model.startPairing()
+        await waitFor("discovered row") {
+            model.phase == .scanning(discovered: .init(name: "Trailhead"))
+        }
+        model.confirmPairing()
+        XCTAssertEqual(model.phase, .pairing)
         await waitFor("D5 rejected") { model.phase == .pairFailed(.rejected) }
     }
 
@@ -197,6 +204,10 @@ final class LaunchFlowModelTests: XCTestCase {
         let (model, _) = makeModel(.pairingRejected)
         model.start()
         model.startPairing()
+        await waitFor("discovered row") {
+            model.phase == .scanning(discovered: .init(name: "Trailhead"))
+        }
+        model.confirmPairing()  // #297: the decline lands on the gated row tap
         await waitFor("D5") { model.phase == .pairFailed(.rejected) }
 
         model.showPairingHelp()

@@ -41,9 +41,15 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     private var openingChannel = false
     private var channelWaiters: [CheckedContinuation<BLEChannel, Error>] = []
 
-    // Outstanding operations (all touched only on `queue`).
-    private var connectContinuation: CheckedContinuation<Void, Error>?
+    // Outstanding operations (all touched only on `queue`). Connecting is a
+    // two-phase flow (#297): `discover()` (un-gated) then `authenticate()` (gated,
+    // raises the passkey sheet) — each parks its own continuation.
+    private var discoverContinuation: CheckedContinuation<Void, Error>?
+    private var authenticateContinuation: CheckedContinuation<Void, Error>?
     private var wantsConnect = false
+    /// Services still awaiting their characteristics during `discover()`; discovery
+    /// is done (the un-gated surface is ready) when it reaches zero.
+    private var pendingServiceDiscovery = 0
     private var pendingReads: [CBUUID: [CheckedContinuation<Data, Error>]] = [:]
     private var pendingWrites: [CBUUID: [CheckedContinuation<Void, Error>]] = [:]
 
@@ -87,11 +93,35 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     }
 
     public func connect() async throws {
+        // The full link is the two phases back to back. On a bonded reconnect this
+        // raises no sheet (iOS re-encrypts from the stored keys); on a fresh pair it
+        // would — which is why the launch flow calls the phases separately (#297).
+        try await discover()
+        try await authenticate()
+    }
+
+    public func discover() async throws {
+        // Phase 1 (#297): scan → connect → discover services + the un-gated
+        // characteristics only. Resolves once every service's characteristics are
+        // in hand (so `deviceInfo()` can read DIS + `protocolVersion`), without ever
+        // touching a gated characteristic.
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             queue.async { [self] in
-                connectContinuation = cont
+                discoverContinuation = cont
                 wantsConnect = true
                 startConnectIfReady()
+            }
+        }
+    }
+
+    public func authenticate() async throws {
+        // Phase 2 (#297): the gated ops (subscribe status/transferControl, read the
+        // PSM, open the CoC) that establish the encrypted, LESC-authenticated link
+        // and raise the system passkey sheet. Resolves when the CoC opens.
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            queue.async { [self] in
+                authenticateContinuation = cont
+                beginAuthenticate()
             }
         }
     }
@@ -440,21 +470,51 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
             stateMulticast.send(.connecting)
             central.scanForPeripherals(withServices: [GATT.obcControlService])
         case .poweredOff:
-            failConnect(.bluetoothUnavailable(.poweredOff))
+            failDiscover(.bluetoothUnavailable(.poweredOff))
         case .unauthorized:
-            failConnect(.bluetoothUnavailable(.unauthorized))
+            failDiscover(.bluetoothUnavailable(.unauthorized))
         case .unsupported:
-            failConnect(.bluetoothUnavailable(.unsupported))
+            failDiscover(.bluetoothUnavailable(.unsupported))
         default:
             break  // .resetting / .unknown → wait for the next state update
         }
     }
 
-    private func failConnect(_ error: DeviceError) {
+    /// Kick off phase 2 (#297): arm the gated notifies then read the PSM to open
+    /// the CoC — the first gated op is what raises the passkey sheet. Drives both
+    /// the explicit `authenticate()` call (fresh pair) and the auto-resume after a
+    /// background reconnect (bonded, no continuation waiting).
+    private func beginAuthenticate() {
+        guard let peripheral, let psm = characteristics[GATT.psm] else {
+            failAuthenticate(.notConnected)
+            return
+        }
+        for uuid in [GATT.status, GATT.transferControl] {
+            if let characteristic = characteristics[uuid] {
+                peripheral.setNotifyValue(true, for: characteristic)
+            }
+        }
+        if bleChannel == nil, !openingChannel {
+            openingChannel = true
+            peripheral.readValue(for: psm)  // → PSM update → openL2CAPChannel → didOpen
+        }
+    }
+
+    /// Phase 1 failed (radio, scan, GATT discovery) — the link never came up.
+    private func failDiscover(_ error: DeviceError) {
         wantsConnect = false
         stateMulticast.send(.disconnected)
-        connectContinuation?.resume(throwing: error)
-        connectContinuation = nil
+        discoverContinuation?.resume(throwing: error)
+        discoverContinuation = nil
+    }
+
+    /// Phase 2 failed (declined passkey / refused encryption / CoC open) — tear the
+    /// intent down so a background reconnect doesn't spin on a bond that won't take.
+    private func failAuthenticate(_ error: DeviceError) {
+        wantsConnect = false
+        stateMulticast.send(.disconnected)
+        authenticateContinuation?.resume(throwing: error)
+        authenticateContinuation = nil
     }
 
     /// Whether an ATT/CB error means the encrypted, LESC-authenticated link the
@@ -484,8 +544,8 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
 
     private func finishConnect() {
         stateMulticast.send(.connected)
-        connectContinuation?.resume()
-        connectContinuation = nil
+        authenticateContinuation?.resume()
+        authenticateContinuation = nil
     }
 
     /// The link is gone: every parked continuation must resolve (a leaked
@@ -757,8 +817,8 @@ extension BLETransport: CBCentralManagerDelegate {
     }
 
     public func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
-        if connectContinuation != nil {
-            failConnect(.notConnected)
+        if discoverContinuation != nil {
+            failDiscover(.notConnected)
         } else if wantsConnect {
             // A background reconnect attempt failed — keep trying; the request
             // sits pending in the controller until the device reappears.
@@ -786,34 +846,47 @@ extension BLETransport: CBCentralManagerDelegate {
 extension BLETransport: CBPeripheralDelegate {
     public func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         guard error == nil else {
-            failConnect(.notConnected)
+            failDiscover(.notConnected)
             return
         }
-        for service in peripheral.services ?? [] {
+        let services = peripheral.services ?? []
+        pendingServiceDiscovery = services.count
+        for service in services {
             peripheral.discoverCharacteristics(nil, for: service)
         }
     }
 
     public func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
+        guard error == nil else {
+            failDiscover(.notConnected)
+            return
+        }
         for characteristic in service.characteristics ?? [] {
             characteristics[characteristic.uuid] = characteristic
-            // Device → app notifications: battery, the `status` envelope, and the
-            // download-announce descriptor on `transferControl`.
-            if [GATT.batteryLevel, GATT.status, GATT.transferControl].contains(characteristic.uuid) {
-                peripheral.setNotifyValue(true, for: characteristic)
-            }
-            // The device's connect-time battery notify fires before this
-            // subscription lands (its next is ~30 s out) — read the level so the
-            // UI has it at once; the value resolves through the same
+            // Only the **un-gated** BAS notify is armed here (#297). The gated
+            // `status` / `transferControl` notifies and the PSM read wait for
+            // `authenticate()`, so first-time pairing doesn't raise the passkey
+            // sheet before the D2 row tap. The device's connect-time battery notify
+            // fires before this subscription lands (its next is ~30 s out) — read
+            // the level so the UI has it at once; it resolves through the same
             // didUpdateValueFor path as a notify.
             if characteristic.uuid == GATT.batteryLevel {
+                peripheral.setNotifyValue(true, for: characteristic)
                 peripheral.readValue(for: characteristic)
             }
         }
-        // Once the PSM characteristic is known, open the CoC.
-        if let psm = characteristics[GATT.psm], bleChannel == nil, !openingChannel {
-            openingChannel = true
-            peripheral.readValue(for: psm)
+        pendingServiceDiscovery -= 1
+        guard pendingServiceDiscovery <= 0 else { return }
+        // Every service's characteristics are in hand — the un-gated surface is
+        // ready. A pending `discover()` resolves here (its caller runs
+        // `authenticate()` next, on the D2 row tap); an unsolicited background
+        // reconnect (bonded, no waiter) proceeds straight to the gated phase to
+        // restore the full link.
+        if let cont = discoverContinuation {
+            discoverContinuation = nil
+            cont.resume()
+        } else {
+            beginAuthenticate()
         }
     }
 
@@ -832,19 +905,19 @@ extension BLETransport: CBPeripheralDelegate {
                 peripheral.openL2CAPChannel(CBL2CAPPSM(psm))
             } else {
                 // The PSM characteristic is `authenticated` (A8): the read is the
-                // first gated op, so a failure here is usually the pairing being
-                // declined / the wrong passkey (ATT insufficient-authentication).
-                // Fail the open waiters AND the pending connect — else `connect()`
-                // hangs until the caller's scan window expires. An auth-class error
-                // → `pairingFailed` (D5 "didn't finish"); anything else →
-                // `channelOpenFailed`. (A decline that instead *disconnects* the
-                // link lands via `didDisconnectPeripheral`; on-glass polish.)
+                // first gated op of `authenticate()`, so a failure here is usually
+                // the pairing being declined / the wrong passkey (ATT insufficient-
+                // authentication). Fail the open waiters AND the pending
+                // authenticate — else `confirmPairing()` hangs in the D3 beat. An
+                // auth-class error → `pairingFailed` (D5 "didn't finish"); anything
+                // else → `channelOpenFailed`. (A decline that instead *disconnects*
+                // the link lands via `didDisconnectPeripheral`; on-glass polish.)
                 openingChannel = false
                 let failure: DeviceError = Self.isAuthError(error) ? .pairingFailed : .channelOpenFailed
                 let waiters = channelWaiters
                 channelWaiters.removeAll()
                 for cont in waiters { cont.resume(throwing: failure) }
-                if connectContinuation != nil { failConnect(failure) }
+                if authenticateContinuation != nil { failAuthenticate(failure) }
             }
             return
         }
@@ -878,7 +951,7 @@ extension BLETransport: CBPeripheralDelegate {
             let waiters = channelWaiters
             channelWaiters.removeAll()
             for cont in waiters { cont.resume(throwing: DeviceError.channelOpenFailed) }
-            if connectContinuation != nil { failConnect(.channelOpenFailed) }
+            if authenticateContinuation != nil { failAuthenticate(.channelOpenFailed) }
             return
         }
         let byte = L2CAPByteChannel(channel: channel)
@@ -889,7 +962,7 @@ extension BLETransport: CBPeripheralDelegate {
         channelWaiters.removeAll()
         for cont in waiters { cont.resume(returning: ble) }
         // CoC up + services discovered → the link is ready. `finishConnect`
-        // publishes .connected either way and resolves the initial connect's
+        // publishes .connected either way and resolves `authenticate()`'s
         // continuation when one is pending — a background *re*connect (after a
         // drop) has none, but must still flip the state stream back.
         finishConnect()
