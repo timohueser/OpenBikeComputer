@@ -139,9 +139,11 @@ final class RouteDetailTests: XCTestCase {
         let app = launch()
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10))
         app.buttons["Tracked"].tap()
+        // Tracked is library-first (#296): sync to pull the ride in first.
+        app.buttons["topbar.sync"].tap()
 
         let card = app.buttons["main.card.ride-kettle-moraine"]
-        XCTAssertTrue(card.waitForExistence(timeout: 10))
+        XCTAssertTrue(card.waitForExistence(timeout: 30))
         card.tap()
         XCTAssertTrue(app.descendants(matching: .any)["detail.screen"].firstMatch.waitForExistence(timeout: 5))
 
@@ -160,9 +162,11 @@ final class RouteDetailTests: XCTestCase {
         let app = launch()
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10))
         app.buttons["Tracked"].tap()
+        // Tracked is library-first (#296): sync to pull the ride in first.
+        app.buttons["topbar.sync"].tap()
 
         let card = app.buttons["main.card.ride-kettle-moraine"]
-        XCTAssertTrue(card.waitForExistence(timeout: 10))
+        XCTAssertTrue(card.waitForExistence(timeout: 30))
         card.tap()
 
         let delete = app.buttons["detail.delete"]
