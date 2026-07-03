@@ -438,6 +438,49 @@ pub(crate) fn confirm_row(
     }
 }
 
+/// Layout of a guarded-action menu's option rows — the per-screen geometry
+/// [`draw_guarded_rows`] lays [`MenuItem`]s out with. The label offsets are from the row's
+/// top-left, hand-tuned per screen (the two panels frame their rows differently).
+pub(crate) struct GuardedRowsGeometry {
+    /// Left edge and width of every row.
+    pub x: i32,
+    pub w: i32,
+    /// Top of the first row.
+    pub top: i32,
+    /// Row height and the vertical gap between rows.
+    pub row_h: i32,
+    pub gap: i32,
+    /// The label anchor, relative to the row's top-left.
+    pub label_dx: i32,
+    pub label_dy: i32,
+}
+
+/// Draw a guarded-action menu's option rows (Ride control, Route swap): each [`MenuItem`] gets its
+/// [`confirm_row`] background — the amber cursor, or the hold-progress fill in `fill` on a guarded
+/// row — and its Body label. The caller draws its chrome (the PAUSED panel / the full-frame prompt)
+/// and keeps its `handle` semantics.
+pub(crate) fn draw_guarded_rows(
+    cv: &mut impl Surface,
+    items: &[MenuItem],
+    selected: usize,
+    hold_progress: f32,
+    fill: u16,
+    geo: GuardedRowsGeometry,
+) {
+    for (i, item) in items.iter().enumerate() {
+        let y = geo.top + i as i32 * (geo.row_h + geo.gap);
+        let row = rect(geo.x, y, geo.w, geo.row_h);
+        confirm_row(cv, row, i == selected, item.guard, hold_progress, fill, 6);
+        cv.text(
+            item.label,
+            Point::new(geo.x + geo.label_dx, y + geo.label_dy),
+            Font::Body,
+            TextAlign::Left,
+            palette::INK,
+        );
+    }
+}
+
 /// The "explorer's field map" palette in RGB565, so screen text and chrome quantize through the
 /// host `color_fn` exactly like map styles.
 ///
