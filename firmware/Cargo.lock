@@ -2472,6 +2472,9 @@ dependencies = [
 [[package]]
 name = "obcm-testkit"
 version = "0.1.0"
+dependencies = [
+ "obc-reader",
+]
 
 [[package]]
 name = "objc"

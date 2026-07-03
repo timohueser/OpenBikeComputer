@@ -12,6 +12,8 @@
 //! - [`reader`] — header / style / LOD-table parsing and per-LOD query + decode.
 //! - [`color`] — RGB565 → display color conversions.
 //! - [`codec`] — little-endian field readers/writers shared with the route format.
+//! - [`format`] — the OBCM flag/sentinel bit constants, shared by the reader and the packer
+//!   so the layout is defined once (issue #12).
 //!
 //! All coordinates are integer microdegrees (1e-6 degrees), as stored in the
 //! file. Projection to screen space is the renderer's job.
@@ -23,6 +25,7 @@
 pub mod byte_io;
 pub mod codec;
 pub mod color;
+pub mod format;
 pub mod reader;
 
 // The byte-I/O traits are re-exported at the crate root for convenience; its `Error` is **not**
