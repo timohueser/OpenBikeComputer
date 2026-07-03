@@ -16,34 +16,80 @@
 //! freestanding FLPR C blob with a RISC-V gcc into `$OUT_DIR/flpr.bin` for the M33 binary to
 //! `include_bytes!`. Only the opt-in `tft` ST7789 build skips both, keeping the full 256 KB and
 //! needing no RISC-V toolchain (see the `flpr` gate in `main` below). See `firmware/docs/ls021-flpr.md`.
+//!
+//! It is also the **single source of the M33↔FLPR cross-core contract** (issue #346): every
+//! constant both cores and both linker scripts must agree on — the shared addresses, the layout
+//! magic / status stamps, the command codes, the span cap — lives once in [`contract`] below and is
+//! *emitted* into `$OUT_DIR` as `flpr_contract.rs` (include!'d by `ls021_flpr.rs`),
+//! `flpr_contract.h` (included by `src/flpr/flpr_pingpong.c`), the carved `memory.x`, and the
+//! FLPR's generated `flpr.ld` — so a one-sided edit is impossible by construction.
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Carved SRAM layout for the FLPR builds: the M33 keeps the low **244 KB**; the top 12 KB
-/// (`0x2003_D000..0x2004_0000`) is the FLPR's — an 8 KB image/stack + a 4 KB shared handshake
-/// page. (F0's bring-up `FLPR_RAM` was 28 KB; the production blob is ~660 B + a shallow stack, so
-/// #165 shrank it to 8 KB, handing ~20 KB back to the M33 so the full app + framebuffer fit — the
-/// `SHARED` page is unchanged, so the control-block + ping-pong-buffer addresses did not move.) The
-/// M33 reaches the FLPR region only by hardcoded address (`memcpy` + the handshake word), never via
-/// the linker, so shrinking `RAM` is all that's needed here. Mirrors the region table in
-/// `src/flpr/flpr.ld` and `firmware/docs/ls021-flpr.md`. It *also* carves the top **4 KB of FLASH**
-/// into the named `SETTINGS` region for the persistent settings store (#193) — identical to
-/// `memory-default.x`, so keep the two in sync.
-const FLPR_MEMORY_X: &str = "\
+/// **The M33↔FLPR cross-core contract — the single definition site** (issue #346). Everything here
+/// is emitted into the generated Rust/C/linker artifacts; nothing below may be redefined by hand in
+/// `ls021_flpr.rs`, `flpr_pingpong.c`, or a linker script. The *struct layout* (the 124-byte
+/// control block) stays hand-mirrored in the `.rs`/`.c` (guarded by the twin size asserts + the
+/// boot magic); with the span cap single-sourced here the two sides can no longer disagree on the
+/// array length.
+mod contract {
+    /// M33 SRAM base — the fixed origin the carve is measured from.
+    pub const SRAM_BASE: usize = 0x2000_0000;
+    /// Top of the 256 KB SRAM — the carve grows down from here.
+    pub const SRAM_TOP: usize = 0x2004_0000;
+    /// FLPR execution base: the M33 copies the blob here and points `INITPC` at it. Everything from
+    /// here up is the FLPR's (image + stack up to [`CONTROL_ADDR`], then the SHARED page), so the
+    /// M33's carved `RAM` region ends here.
+    pub const FLPR_RAM_BASE: usize = 0x2003_D000;
+    /// The SHARED handshake page base = the control block's address (both cores reach it by this
+    /// hardcoded address, never via a linker) = the top of the FLPR's stack.
+    pub const CONTROL_ADDR: usize = 0x2003_F000;
+    /// The two ping-pong row buffers live above the control block at `CONTROL_ADDR + 0x100`
+    /// (`ls021_flpr.rs` asserts the control block stays below this).
+    pub const WRITE_BUF_BASE: usize = CONTROL_ADDR + 0x100;
+    /// Dirty-row span-list cap — the `spans[]` length on **both** sides of the contract.
+    pub const MAX_DIRTY_SPANS: usize = 16;
+    /// Control-block layout/version tag ("F1 control block") — the FLPR refuses to act otherwise.
+    pub const LAYOUT_MAGIC: u32 = 0xF1C0_0001;
+    /// FLPR boot confirmation stamp.
+    pub const FLPR_ALIVE: u32 = 0x0000_A11E;
+    /// FLPR booted but saw the wrong magic (memory-map drift).
+    pub const FLPR_BADMAG: u32 = 0x0BAD_CAFE;
+    /// M33→FLPR command: drive one span-masked frame.
+    pub const CMD_RUN_FRAME: u32 = 0x0000_0002;
+}
+
+/// The carved `memory.x` for the FLPR builds, generated from [`contract`]: the M33 keeps SRAM below
+/// [`contract::FLPR_RAM_BASE`] (244 KB); the top 12 KB is the FLPR's — an 8 KB image/stack + the
+/// 4 KB SHARED handshake page. (F0's bring-up `FLPR_RAM` was 28 KB; the production blob is ~700 B +
+/// a shallow stack, so #165 shrank it to 8 KB, handing ~20 KB back to the M33 so the full app +
+/// framebuffer fit.) The M33 reaches the FLPR region only by hardcoded address (`memcpy` + the
+/// handshake word), never via the linker, so shrinking `RAM` is all that's needed here. It *also*
+/// carves the top **4 KB of FLASH** into the named `SETTINGS` region for the persistent settings
+/// store (#193) — identical to `memory-default.x`, so keep the two in sync.
+fn flpr_memory_x() -> String {
+    use contract::*;
+    format!(
+        "\
 MEMORY
-{
+{{
     FLASH    : ORIGIN = 0x00000000, LENGTH = 1520K
     SETTINGS : ORIGIN = 0x0017C000, LENGTH = 4K    /* persistent settings page (#193) — top of RRAM */
-    RAM      : ORIGIN = 0x20000000, LENGTH = 244K   /* M33 .data/.bss/stack */
-    /* Reserved for the FLPR (not linked by the M33; see src/flpr/flpr.ld):
-         FLPR_RAM 0x2003D000 .. 0x2003F000  (8K)   FLPR image + stack (INITPC = 0x2003D000)
-         SHARED   0x2003F000 .. 0x20040000  (4K)   cross-core handshake word */
-}
+    RAM      : ORIGIN = {SRAM_BASE:#010X}, LENGTH = {ram_kb}K   /* M33 .data/.bss/stack */
+    /* Reserved for the FLPR (not linked by the M33; see the generated flpr.ld):
+         FLPR_RAM {FLPR_RAM_BASE:#010X} .. {CONTROL_ADDR:#010X}  ({flpr_kb}K)   FLPR image + stack (INITPC = {FLPR_RAM_BASE:#010X})
+         SHARED   {CONTROL_ADDR:#010X} .. {SRAM_TOP:#010X}  ({shared_kb}K)   cross-core handshake page */
+}}
 /* Base of the carved settings page (#193) — kept in sync with memory-default.x. */
 PROVIDE(__settings_base = ORIGIN(SETTINGS));
-";
+",
+        ram_kb = (FLPR_RAM_BASE - SRAM_BASE) / 1024,
+        flpr_kb = (CONTROL_ADDR - FLPR_RAM_BASE) / 1024,
+        shared_kb = (SRAM_TOP - CONTROL_ADDR) / 1024,
+    )
+}
 
 fn main() {
     let out = PathBuf::from(env::var("OUT_DIR").unwrap());
@@ -69,7 +115,7 @@ fn main() {
     }
 
     if flpr {
-        fs::write(out.join("memory.x"), FLPR_MEMORY_X).unwrap();
+        fs::write(out.join("memory.x"), flpr_memory_x()).unwrap();
     } else {
         fs::write(out.join("memory.x"), include_bytes!("memory-default.x")).unwrap();
     }
@@ -78,6 +124,7 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 
     emit_fw_git();
+    emit_flpr_contract(&out);
 
     if flpr {
         build_flpr_blob(&manifest, &out);
@@ -109,20 +156,112 @@ fn emit_fw_git() {
     println!("cargo:rerun-if-changed=../../.git/HEAD");
 }
 
-/// Cross-compile `src/flpr/{start.S,flpr_pingpong.c}` against `src/flpr/flpr.ld` into a raw
+/// Emit the [`contract`] into `$OUT_DIR` for both languages: `flpr_contract.rs` (include!'d at the
+/// top of `ls021_flpr.rs`'s memory-map section) and `flpr_contract.h` (included by
+/// `src/flpr/flpr_pingpong.c` via the `-I $OUT_DIR` the blob compile passes). Emitted on every
+/// build shape (the `.rs` costs nothing on `tft`, where the module that includes it isn't compiled).
+fn emit_flpr_contract(out: &Path) {
+    use contract::*;
+    let rs = format!(
+        "\
+// Generated by build.rs from its `contract` module — the single source of the M33↔FLPR
+// cross-core contract (issue #346). DO NOT EDIT; change build.rs instead.
+const FLPR_RAM_BASE: usize = {FLPR_RAM_BASE:#010X};
+const CONTROL_ADDR: usize = {CONTROL_ADDR:#010X};
+const WRITE_BUF_BASE: usize = {WRITE_BUF_BASE:#010X};
+const MAX_DIRTY_SPANS: usize = {MAX_DIRTY_SPANS};
+const LAYOUT_MAGIC: u32 = {LAYOUT_MAGIC:#010X};
+const FLPR_ALIVE: u32 = {FLPR_ALIVE:#010X};
+const FLPR_BADMAG: u32 = {FLPR_BADMAG:#010X};
+const CMD_RUN_FRAME: u32 = {CMD_RUN_FRAME:#010X};
+"
+    );
+    fs::write(out.join("flpr_contract.rs"), rs).unwrap();
+
+    let h = format!(
+        "\
+/* Generated by build.rs from its `contract` module — the single source of the M33<->FLPR
+ * cross-core contract (issue #346). DO NOT EDIT; change build.rs instead. */
+#ifndef FLPR_CONTRACT_H
+#define FLPR_CONTRACT_H
+#define FLPR_CONTROL_ADDR {CONTROL_ADDR:#010X}u
+#define MAX_DIRTY_SPANS {MAX_DIRTY_SPANS}u
+#define LAYOUT_MAGIC {LAYOUT_MAGIC:#010X}u
+#define FLPR_ALIVE {FLPR_ALIVE:#010X}u
+#define FLPR_BADMAG {FLPR_BADMAG:#010X}u
+#define CMD_RUN_FRAME {CMD_RUN_FRAME:#010X}u
+#endif
+"
+    );
+    fs::write(out.join("flpr_contract.h"), h).unwrap();
+}
+
+/// The FLPR's linker script, generated from [`contract`] so the image base / stack top can't fork
+/// from the carve (`memory.x`) or the M33's `INITPC`. The FLPR executes from on-chip SRAM at the
+/// *M33-visible* address (no remap); the M33 copies the image to `FLPR_RAM_BASE` and points
+/// `VPR00.INITPC` there, so the entry (`_start`, in `.text.start`) is KEPT first. The stack grows
+/// down from the top of `FLPR_RAM` — the boundary with the SHARED handshake page (`CONTROL_ADDR`),
+/// which is *not* linked on either side (both cores reach it by hardcoded address). Freestanding:
+/// no libgcc/newlib, no init/fini arrays.
+fn flpr_linker_script() -> String {
+    use contract::*;
+    format!(
+        "\
+/* Generated by build.rs from its `contract` module (issue #346). DO NOT EDIT. */
+MEMORY
+{{
+    FLPR_RAM (rwx) : ORIGIN = {FLPR_RAM_BASE:#010X}, LENGTH = {flpr_kb}K
+}}
+
+/* Stack grows down from the top of FLPR_RAM, i.e. the boundary with the SHARED block. */
+_stack_top = ORIGIN(FLPR_RAM) + LENGTH(FLPR_RAM);
+
+ENTRY(_start)
+
+SECTIONS
+{{
+    .text ORIGIN(FLPR_RAM) :
+    {{
+        KEEP(*(.text.start))      /* _start MUST be first — INITPC points right here */
+        *(.text .text.*)
+        *(.rodata .rodata.*)
+    }} > FLPR_RAM
+
+    .data : {{ *(.data .data.*) }} > FLPR_RAM
+
+    .bss :
+    {{
+        _bss_start = .;
+        *(.bss .bss.*)
+        *(COMMON)
+        _bss_end = .;
+    }} > FLPR_RAM
+
+    /* Toolchain metadata the bare-metal blob does not need. */
+    /DISCARD/ : {{ *(.eh_frame*) *(.comment) *(.riscv.attributes) *(.note*) }}
+}}
+",
+        flpr_kb = (CONTROL_ADDR - FLPR_RAM_BASE) / 1024,
+    )
+}
+
+/// Cross-compile `src/flpr/{start.S,flpr_pingpong.c}` against the generated `flpr.ld` into a raw
 /// `$OUT_DIR/flpr.bin` the M33 embeds. Freestanding (`-nostdlib -nostartfiles`, integer ops only)
 /// so the RV32E core needs no libgcc/newlib multilib — any `rv32emc`-capable GNU gcc works
-/// (`brew install riscv64-elf-gcc`, the xPack `riscv-none-elf-gcc`, etc.).
+/// (`brew install riscv64-elf-gcc`, the xPack `riscv-none-elf-gcc`, etc.). `-I $OUT_DIR` puts the
+/// generated `flpr_contract.h` on the include path.
 fn build_flpr_blob(manifest: &Path, out: &Path) {
     let flpr_dir = manifest.join("src/flpr");
     let start_s = flpr_dir.join("start.S");
     let blob_c = flpr_dir.join("flpr_pingpong.c");
-    let script = flpr_dir.join("flpr.ld");
-    for f in [&start_s, &blob_c, &script] {
+    for f in [&start_s, &blob_c] {
         println!("cargo:rerun-if-changed={}", f.display());
     }
     println!("cargo:rerun-if-env-changed=RISCV_GCC");
     println!("cargo:rerun-if-env-changed=RISCV_OBJCOPY");
+
+    let script = out.join("flpr.ld");
+    fs::write(&script, flpr_linker_script()).unwrap();
 
     let gcc = find_riscv_gcc();
     let objcopy = riscv_objcopy(&gcc);
@@ -137,6 +276,8 @@ fn build_flpr_blob(manifest: &Path, out: &Path) {
             .args(["-Os", "-ffreestanding", "-nostdlib", "-nostartfiles", "-fno-pic"])
             .args(["-ffunction-sections", "-fdata-sections", "-Wall", "-Wextra"])
             .arg("-Wl,--gc-sections")
+            .arg("-I")
+            .arg(out)
             .arg("-T")
             .arg(&script)
             .arg(&start_s)
