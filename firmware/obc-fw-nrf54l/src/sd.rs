@@ -773,6 +773,27 @@ impl Storage {
         });
     }
 
+    /// Whether a stored ride file is an **interrupted save** — the held-back version byte still
+    /// zeroed because [`track_to_ride`]'s final patch never ran. Only that exact signature is
+    /// sweepable (the ride-scan's analogue of [`is_aborted_commit`](Self::is_aborted_commit));
+    /// a merely unreadable file must be kept.
+    pub fn is_aborted_ride_object(&self, name: &ShortFileName) -> bool {
+        let Some(dir) = self.tracks_dir else { return false };
+        let Ok(file) = self.vmgr.open_file_in_dir(dir, name, Mode::ReadOnly) else {
+            return false;
+        };
+        let mut version = [0xFFu8; 1];
+        let zeroed = matches!(self.vmgr.read(file, &mut version), Ok(1)) && version[0] == 0;
+        let _ = self.vmgr.close_file(file);
+        zeroed
+    }
+
+    /// Delete a stored ride object file (the boot sweep of interrupted saves).
+    pub fn delete_ride_file(&mut self, name: &ShortFileName) -> bool {
+        let Some(dir) = self.tracks_dir else { return false };
+        self.vmgr.delete_file_in_dir(dir, name).is_ok()
+    }
+
     /// A stored ride object's byte length + the header facts its `rideList` entry serves
     /// (S0 §7.4). One header read; `None` when the file doesn't validate as a ride object v1
     /// (incl. an interrupted save's held-back version byte — see [`track_to_ride`]).
