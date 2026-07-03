@@ -4,17 +4,17 @@ import OBCDomain
 import OBCTransport
 
 /// Bluetooth radio power/permission, mapped onto the actionable `CBManagerState`
-/// subset. Drives H7 (`.unauthorized`) / H8 (`.off`) via `connect()`.
+/// subset. Gates `connect()`.
 public enum RadioState: Sendable, Equatable {
     case on
     case off
     case unauthorized
 }
 
-/// How a pairing attempt fails — drives the D5 variants. Kept mock-local (the wire
-/// contract's `DeviceError` doesn't model pairing UX). `.timeout` fails in the
+/// How a pairing attempt fails — drives the D5 copy variants. Kept mock-local (the
+/// wire contract's `DeviceError` doesn't model pairing UX). `.timeout` fails in the
 /// `discover()` phase (`radioGate`), `.rejected` in `authenticate()` (`pairingGate`),
-/// mapped onto the closest `DeviceError`; the UI keys the exact copy off `scenario`.
+/// mapped onto the closest `DeviceError`.
 public enum PairingFail: Sendable, Equatable {
     case timeout
     case rejected
@@ -32,8 +32,8 @@ public enum DeviceEvent: Sendable {
     case rideAdded(RideSummary)
 }
 
-/// The single, **live** fault-injection surface shared by the debug panel (B1P),
-/// the tests, and `MockTransport`. A reference type on purpose: mutate it from
+/// The single, **live** fault-injection surface shared by the debug panel, the
+/// tests, and `MockTransport`. A reference type on purpose: mutate it from
 /// anywhere and every `MockTransport` reading it — and every open `state`/`battery`
 /// stream — sees the change immediately.
 ///
@@ -207,12 +207,12 @@ public final class MockControl: @unchecked Sendable {
 
     // MARK: Library seeding (composition root + tests)
 
-    /// Write the fixture routes into `store` as library records (B1S) — the
-    /// Planned list is library-first (#289), so a scenario's routes exist as
-    /// phone-side saves, with `deviceObjectID` marking the ones the mock device
-    /// also holds. Descending `addedAt` keeps the fixture order in the list.
-    /// Idempotent: ids already in the store are left untouched (a "relaunch"
-    /// over the same store must not reshuffle what the user saved since).
+    /// Write the fixture routes into `store` as library records — the Planned list
+    /// is library-first, so a scenario's routes exist as phone-side saves, with
+    /// `deviceObjectID` marking the ones the mock device also holds. Descending
+    /// `addedAt` keeps the fixture order in the list. Idempotent: ids already in
+    /// the store are left untouched (a "relaunch" over the same store must not
+    /// reshuffle what the user saved since).
     public func seedLibrary(into store: any LibraryStore) {
         let existing = Set(store.plannedRoutes().map(\.id))
         let routes = lock.withLocked { _fixtures.routes }
@@ -220,9 +220,9 @@ public final class MockControl: @unchecked Sendable {
         for (index, entry) in routes.enumerated() where !existing.contains(entry.summary.id) {
             var record = entry.record(addedAt: base.addingTimeInterval(-Double(index)))
             // A fixture the mock device holds boots **up to date** — the seeded
-            // fingerprint matches what an upload of the record would send, so
-            // the C1 badge shows the check (a rename then flips it to outdated,
-            // same as on the real path).
+            // fingerprint matches what an upload of the record would send, so the
+            // "on device" badge shows the check (a rename then flips it to
+            // outdated, same as on the real path).
             if record.deviceObjectID != nil {
                 record.uploadedCRC32 = RouteObjectCodec.payloadCRC(for: record)
             }
@@ -252,9 +252,9 @@ public final class MockControl: @unchecked Sendable {
         if let error { throw error }
     }
 
-    /// Radio + scan gate for the un-gated `discover()` phase (#297): H7/H8, plus a
-    /// `.timeout` pairing fault — the device never turns up in the scan window, so
-    /// it surfaces here (before the D2 row), not at the row tap.
+    /// Radio + scan gate for the un-gated `discover()` phase: power/permission state,
+    /// plus a `.timeout` pairing fault — the device never turns up in the scan
+    /// window, so it surfaces here (before the D2 row), not at the row tap.
     func radioGate() throws {
         let (radio, pairing) = lock.withLocked { (_radio, _pairingFail) }
         switch radio {
@@ -265,10 +265,9 @@ public final class MockControl: @unchecked Sendable {
         if pairing == .timeout { throw DeviceError.deviceNotFound }
     }
 
-    /// Pairing gate for the gated `authenticate()` phase (#297): a declined / wrong
-    /// passkey (D5 rejected) — what the D2 row tap now triggers, mirroring the real
-    /// path's LESC sheet. Maps onto `pairingFailed`; the UI keys the copy off
-    /// `scenario`.
+    /// Pairing gate for the gated `authenticate()` phase: a declined / wrong passkey
+    /// (D5 rejected) — what the D2 row tap now triggers, mirroring the real path's
+    /// LESC sheet.
     func pairingGate() throws {
         if lock.withLocked({ _pairingFail }) == .rejected { throw DeviceError.pairingFailed }
     }
@@ -284,8 +283,8 @@ public final class MockControl: @unchecked Sendable {
     /// The device's route catalog — the fixture routes it holds a copy of
     /// (`deviceObjectID != nil`), under **device-namespace ids** (the decimal
     /// object id), exactly the shape the real `routeList` download produces.
-    /// The app consumes this only to reconcile the "on device" badge (#289) —
-    /// never as list rows.
+    /// The app consumes this only to reconcile the "on device" badge — never
+    /// as list rows.
     func deviceRoutes() -> [RouteSummary] {
         lock.withLocked { _fixtures.routes }.compactMap { entry -> RouteSummary? in
             guard let objectID = entry.deviceObjectID else { return nil }
@@ -319,11 +318,11 @@ public final class MockControl: @unchecked Sendable {
     /// Begin a simulated route upload. On commit it reports a device object id (a
     /// fresh monotonic id, or the `targetObjectID` when replacing) so the app can
     /// record the route as on-device — and the fixture set records the copy, so a
-    /// later `listRoutes()` reconcile keeps the badge lit. Paced over a
-    /// **design-scale fiction** (≈37 B/m), decoupled from the real OBCR payload —
-    /// a real route is only a few kB and its F screen would flash by; the mock's
-    /// realism is timing + faults, not wire bytes (the same reason ride downloads
-    /// pace off `downloadByteCount`).
+    /// later `listRoutes()` reconcile keeps the badge lit. Paced over a scale
+    /// fiction (≈37 B/m) decoupled from the real OBCR payload — a real route is
+    /// only a few kB and its progress screen would flash by; the mock's realism
+    /// is timing + faults, not wire bytes (same reasoning as ride downloads
+    /// pacing off `downloadByteCount`).
     func beginRouteUpload(_ blob: RouteBlob) -> TransferHandle {
         if connection == .disconnected { return .immediatelyFinished(.failed(.notConnected)) }
         if blob.payload.isEmpty { return .immediatelyFinished(.failed(.transferRejected)) }

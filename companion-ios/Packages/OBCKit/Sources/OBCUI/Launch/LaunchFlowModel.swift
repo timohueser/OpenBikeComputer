@@ -19,12 +19,12 @@ import OBCTransport
 /// ```
 ///
 /// Depends only on `DeviceTransport` + `BondStore` (the golden rule). Pairing is a
-/// two-phase connect (#297): `startPairing` runs the un-gated `discover()` (surfaces
-/// the D2 row), and the row tap runs the gated `authenticate()` — the op that raises
-/// the system passkey sheet once the firmware requires encryption (A8), so the sheet
-/// lands in the D3 beat, not on D2. The mock resolves both through `MockControl`'s
-/// radio/pairing gates. "Have we bonded before" comes from the `BondStore`, never a
-/// CoreBluetooth detour.
+/// two-phase connect: `startPairing` runs the un-gated `discover()` (surfaces the D2
+/// row), and the row tap runs the gated `authenticate()` — the op that raises the
+/// system passkey sheet once the firmware requires encryption, so the sheet lands in
+/// the D3 beat, not on D2. The mock resolves both through `MockControl`'s radio/pairing
+/// gates. "Have we bonded before" comes from the `BondStore`, never a CoreBluetooth
+/// detour.
 @MainActor @Observable
 public final class LaunchFlowModel {
     /// Why pairing failed — selects the D5 copy variant.
@@ -36,7 +36,7 @@ public final class LaunchFlowModel {
         case rejected
     }
 
-    /// Why the radio is unusable — H8 (off) vs the post-denial H7 state.
+    /// Why the radio is unusable — off vs access denied.
     public enum RadioBlock: Equatable, Sendable {
         case off
         case denied
@@ -74,9 +74,9 @@ public final class LaunchFlowModel {
         case paired(deviceName: String)
         /// D5 — calm timeout / failure with retry.
         case pairFailed(PairingFailure)
-        /// H8 / H7-denied — the radio is off or Bluetooth access was denied.
+        /// The radio is off or Bluetooth access was denied.
         case radioBlocked(RadioBlock)
-        /// Hand over to the main screen (B3; a placeholder until it lands).
+        /// Hand over to the main screen (a placeholder until it lands).
         case main
     }
 
@@ -162,7 +162,7 @@ public final class LaunchFlowModel {
     /// surface under the 30-second window, then surface the found device as the D2
     /// row. Crucially this is `discover()`, not `connect()` — touching a gated
     /// characteristic (which raises the LESC passkey sheet) is deferred to the row
-    /// tap so the sheet lands in the D3 beat, not here on D2 (#297).
+    /// tap so the sheet lands in the D3 beat, not here on D2.
     public func startPairing() {
         flowTask?.cancel()
         phase = .scanning(discovered: nil)
@@ -184,9 +184,9 @@ public final class LaunchFlowModel {
     }
 
     /// D2 row tap: run the gated `authenticate()` — the operation that raises the
-    /// system passkey sheet on the real path (A8), now landing inside the D3
-    /// "pairing…" beat that's already on screen (#297). On success record the bond
-    /// and celebrate; a decline drops to D5.
+    /// system passkey sheet on the real path, now landing inside the D3 "pairing…"
+    /// beat that's already on screen. On success record the bond and celebrate; a
+    /// decline drops to D5.
     public func confirmPairing() {
         guard case .scanning(.some(let device)) = phase else { return }
         phase = .pairing
@@ -233,14 +233,14 @@ public final class LaunchFlowModel {
         phase = .pairIntro
     }
 
-    /// H8/H7 secondary action — the library never locks (S-state law).
+    /// Radio-blocked secondary action — the library never locks.
     public func browseLibrary() {
         flowTask?.cancel()
         phase = .main
     }
 
-    /// H2 (Settings → Forget device): the bond record is already cleared and
-    /// the link dropped by the Settings flow — cancel anything in flight and
+    /// Settings → Forget device: the bond record is already cleared and the
+    /// link dropped by the Settings flow — cancel anything in flight and
     /// return to the D1 pairing prompt.
     public func forgetDevice() {
         flowTask?.cancel()
@@ -250,8 +250,8 @@ public final class LaunchFlowModel {
     // MARK: Helpers
 
     /// Run `connect` under the scan window; expiry throws `deviceNotFound`
-    /// (the D5 timeout copy). Note the real transport's scan keeps running
-    /// after a cancel today — stopping it early is A8 bring-up polish.
+    /// (the D5 timeout copy). The real transport's scan keeps running after a
+    /// cancel today — stopping it early is future polish.
     private static func withScanWindow(
         _ window: Duration,
         _ connect: @escaping @Sendable () async throws -> Void
@@ -278,7 +278,7 @@ public final class LaunchFlowModel {
         case DeviceError.deviceNotFound:
             return .pairFailed(.timeout)
         case DeviceError.pairingFailed:
-            // Declined / wrong passkey, or the encrypted link was refused (A8).
+            // Declined / wrong passkey, or the encrypted link was refused.
             return .pairFailed(.rejected)
         default:
             return .pairFailed(.rejected)

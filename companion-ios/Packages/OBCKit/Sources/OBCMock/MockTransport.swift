@@ -4,9 +4,9 @@ import OBCDomain
 import OBCTransport
 
 /// Build-seam marker. This symbol exists **only in Debug builds** — the entire
-/// `OBCMock` module is behind `#if DEBUG`, so a Release build compiles it to nothing
-/// and the string never reaches the Release binary. B0's acceptance test greps the
-/// built binary for this exact value (see companion-ios/CLAUDE.md → "Prove the seam").
+/// `OBCMock` module is behind `#if DEBUG`, so a Release build compiles it to
+/// nothing and the string never reaches the Release binary. An acceptance test
+/// greps the built binary for this exact value to prove the seam holds.
 public let obcMockBuildMarker = "OBCMock:DEBUG-only"
 
 /// Fixture-backed `DeviceTransport` — the default Debug transport (no BLE in the
@@ -35,9 +35,9 @@ public struct MockTransport: DeviceTransport {
     }
 
     public func discover() async throws {
-        // Phase 1 (#297): the un-gated surface. Radio/scan gate only (H7/H8 +
-        // `.timeout`); the pairing decline (D5 rejected) waits for `authenticate()`,
-        // so the D2 row appears before any passkey is modelled.
+        // Phase 1: the un-gated surface. Radio/scan gate only; the pairing decline
+        // (D5 rejected) waits for `authenticate()`, so the D2 row appears before
+        // any passkey is modelled.
         control.connection = .connecting
         await control.delay()
         do {
@@ -50,8 +50,8 @@ public struct MockTransport: DeviceTransport {
     }
 
     public func authenticate() async throws {
-        // Phase 2 (#297): the gated ops. The pairing gate stands in for the real
-        // path's LESC passkey sheet, fired by the D2 row tap (`confirmPairing`).
+        // Phase 2: the gated ops. The pairing gate stands in for the real path's
+        // LESC passkey sheet, fired by the D2 row tap (`confirmPairing`).
         await control.delay()
         do {
             try control.pairingGate()
@@ -91,7 +91,7 @@ public struct MockTransport: DeviceTransport {
     public func listRoutes() async throws -> [RouteSummary] {
         // The device's catalog under device-namespace ids — reconcile input for
         // the "on device" badge, never list rows (the Planned list is
-        // library-first, #289). Mirrors the real `routeList` download.
+        // library-first). Mirrors the real `routeList` download.
         try await preludeThrowing()
         return control.deviceRoutes()
     }

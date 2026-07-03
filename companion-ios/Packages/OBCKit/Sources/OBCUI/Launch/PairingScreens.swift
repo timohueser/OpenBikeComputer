@@ -2,7 +2,6 @@ import SwiftUI
 
 // The D-series pairing screens (design §4). Dumb views: exact design copy +
 // callbacks, no transport — `LaunchFlowView` binds them to `LaunchFlowModel`.
-// Copy is finalized in the design; match it exactly (issue #241).
 
 /// Shared page shape: centered content, bottom-pinned actions, parchment base.
 struct LaunchScreenScaffold<Content: View, Actions: View>: View {

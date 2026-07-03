@@ -4,18 +4,18 @@ import OBCDomain
 import OBCTransport
 
 /// One simulated bulk transfer. Instead of streaming real bytes over a channel, it
-/// emits `TransferProgress` ticks paced by `throughputBytesPerSec`, so a progress bar
-/// moves realistically with **no wire protocol** (the mock's realism comes from
-/// timing + faults, per the issue). An actor so `cancel()` / `resume()` and the pump
-/// loop don't race.
+/// emits `TransferProgress` ticks paced by `throughputBytesPerSec`, so a progress
+/// bar moves realistically with **no wire protocol** — the mock's realism comes
+/// from timing + faults. An actor so `cancel()` / `resume()` and the pump loop
+/// don't race.
 ///
-/// Restart semantics match the real path (spec §1 principle 4 — transfers restart,
-/// not resume): a **drop** stops with the stream *open* and toggles the link
-/// `.outOfRange` (the realistic, observable cause behind F-interrupted/H10);
-/// `resume()` restores the link and **starts over** — from byte 0 for a single
-/// upload, or from the last fully-landed ride of a download batch (whole rides are
-/// the batch's elementary unit; a partially-transferred ride is re-sent whole).
-/// A **cancel** finishes the stream terminally.
+/// Restart semantics match the real path (transfers restart, not resume): a
+/// **drop** stops with the stream *open* and toggles the link `.outOfRange` (the
+/// realistic, observable cause behind an interrupted transfer); `resume()`
+/// restores the link and **starts over** — from byte 0 for a single upload, or
+/// from the last fully-landed ride of a download batch (whole rides are the
+/// batch's elementary unit; a partially-transferred ride is re-sent whole). A
+/// **cancel** finishes the stream terminally.
 actor MockTransfer {
     /// One ride inside a download batch — `byteCount` bytes of this batch belong to
     /// ride `id` (pacing only). When the pump's committed count crosses a segment's

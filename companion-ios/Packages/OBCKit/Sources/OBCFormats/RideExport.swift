@@ -2,7 +2,7 @@ import Foundation
 import OBCDomain
 
 /// One interchange file format a tracked ride exports to. An encoder is a pure
-/// `Ride → Data` function; B7's share/services flows encode through the registry
+/// `Ride → Data` function; the share/services flows encode through the registry
 /// below, never a hardcoded format.
 public protocol RideFileEncoder: Sendable {
     /// Lowercase extension of the produced file (e.g. `"gpx"`, `"fit"`).

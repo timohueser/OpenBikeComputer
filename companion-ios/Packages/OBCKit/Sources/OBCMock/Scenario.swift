@@ -3,8 +3,8 @@ import Foundation
 import OBCDomain
 
 /// A named bundle of `MockControl` knobs that reproduces one (or a few) design
-/// screens with no device and no firmware. The `rawValue` doubles as the launch-arg
-/// token B1P will parse (`-OBCScenario happyPath`).
+/// screens with no device and no firmware. The `rawValue` doubles as the
+/// `-OBCScenario` launch-arg token.
 ///
 /// | Scenario | Reproduces |
 /// |---|---|
@@ -21,8 +21,8 @@ import OBCDomain
 /// | `unsupportedFile` | H5 |
 ///
 /// Some rows are pure UI-layer states the transport can't originate — `unsupportedFile`
-/// (H5) is import validation, `syncUpToDate` (H9) is "no new rides" — so their preset is
-/// a happy link and the UI branches on `scenario`. The rest are fully transport-driven.
+/// is import validation, `syncUpToDate` is "no new rides" — so their preset is a happy
+/// link and the UI branches on `scenario`. The rest are fully transport-driven.
 public enum Scenario: String, CaseIterable, Sendable {
     case happyPath
     case emptyLibrary
@@ -40,16 +40,16 @@ public enum Scenario: String, CaseIterable, Sendable {
     case unsupportedFile
 }
 
-/// The concrete knob values a `Scenario` expands to. Public so B1P / tests can
-/// inspect or compose presets.
+/// The concrete knob values a `Scenario` expands to. Public so the dev panel /
+/// tests can inspect or compose presets.
 public struct ScenarioPreset: Sendable {
     /// Bundled fixture-set name to load.
     public var fixtures: String
     /// Initial connection state the `state` stream replays.
     public var connection: ConnectionState
-    /// Whether the app has bonded before — the B2 launch branch (`MockBondStore`
-    /// reads it). False for the pairing-flow scenarios (D1–D5 / H7 / H8 start
-    /// unpaired); true everywhere else.
+    /// Whether the app has bonded before — the launch branch (`MockBondStore`
+    /// reads it). False for the pairing-flow scenarios (they start unpaired);
+    /// true everywhere else.
     public var bonded: Bool
     /// Radio power/permission.
     public var radio: RadioState

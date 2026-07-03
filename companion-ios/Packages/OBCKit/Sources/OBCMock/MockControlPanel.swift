@@ -3,10 +3,9 @@ import SwiftUI
 import OBCDomain
 import OBCTransport
 
-/// The in-app dev control panel (B1P): every `MockControl` knob, live, while you
-/// click through the app. Deliberately utilitarian — a grouped list of pickers
-/// and buttons, not a designed screen. Opened via shake (or `-OBCShowDevPanel`);
-/// B8 adds the hidden Settings row.
+/// The in-app dev control panel: every `MockControl` knob, live, while you click
+/// through the app. Deliberately utilitarian — a grouped list of pickers and
+/// buttons, not a designed screen. Opened via shake (or `-OBCShowDevPanel`).
 ///
 /// The panel holds `@State` mirrors of the knobs (initialized from the live
 /// control, pushed back on change); picking a scenario re-applies the whole

@@ -3,8 +3,8 @@ import Foundation
 import OBCDomain
 
 /// The launch-argument / environment surface that boots the app into a chosen
-/// mock state (B1P) — what XCUITests and screenshot automation drive. Parsed at
-/// the composition root; pure over `[String]` + env so it's host-testable.
+/// mock state — what XCUITests and screenshot automation drive. Parsed at the
+/// composition root; pure over `[String]` + env so it's host-testable.
 ///
 /// **The launch-arg names are stable API** (documented in companion-ios/CLAUDE.md
 /// — automation depends on them; don't rename):
@@ -16,9 +16,9 @@ import OBCDomain
 /// | `-OBCConnection <state>` | `disconnected` / `connecting` / `connected` / `outOfRange` | override the initial link state |
 /// | `-OBCTransport <kind>` | `ble` / `mock` | force the real `BLETransport` in a Debug build |
 /// | `-OBCShowDevPanel` | (flag) | present the dev control panel at launch |
-/// | `-OBCShowUIGallery` | (flag) | present the B11 component gallery at launch |
-/// | `-OBCImportSample [kind]` | bare flag = `gpx`; or `gpx` / `tcx` / `bad` | feed a bundled sample file to the import path at launch (E1; `bad` → H5) |
-/// | `-OBCNetwork <state>` | `offline` / `online` | pin the MapKit-basemap reachability (#294) — `offline` forces the grid fallback |
+/// | `-OBCShowUIGallery` | (flag) | present the component gallery at launch |
+/// | `-OBCImportSample [kind]` | bare flag = `gpx`; or `gpx` / `tcx` / `bad` | feed a bundled sample file to the import path at launch (`bad` = an unsupported-file test case) |
+/// | `-OBCNetwork <state>` | `offline` / `online` | pin the MapKit-basemap reachability — `offline` forces the grid fallback |
 ///
 /// Env fallbacks (used when the argument is absent): `OBC_SCENARIO`,
 /// `OBC_FIXTURES`, `OBC_CONNECTION`, `OBC_TRANSPORT`, `OBC_SHOW_DEV_PANEL=1`,
@@ -31,17 +31,15 @@ public struct MockLaunchOptions: Equatable, Sendable {
     public var useBLETransport: Bool
     /// Present the dev control panel immediately at launch.
     public var showDevPanel: Bool
-    /// Present the OBCUI component gallery immediately at launch (B11
-    /// screenshot review).
+    /// Present the OBCUI component gallery immediately at launch.
     public var showUIGallery: Bool
-    /// Feed a `SampleRouteFile` to the import path at launch (XCUITests /
-    /// demos — the Files picker can't be driven from automation): `gpx`/`tcx`
-    /// land on E1 (or H4 when unpaired), `bad` raises H5. `nil` = no import.
+    /// Feed a `SampleRouteFile` to the import path at launch (the Files picker
+    /// can't be driven from automation): `gpx`/`tcx` import normally, `bad`
+    /// raises the unsupported-file error. `nil` = no import.
     public var importSample: SampleRouteFile.Kind?
-    /// Force the MapKit-basemap reachability (#294): `false` pins the grid
-    /// fallback (offline), `true` pins the basemap; `nil` uses the real
-    /// `NWPathMonitor`. Lets XCUITests exercise the fallback without real network
-    /// flakiness.
+    /// Force the MapKit-basemap reachability: `false` pins the grid fallback
+    /// (offline), `true` pins the basemap; `nil` uses the real `NWPathMonitor`.
+    /// Lets XCUITests exercise the fallback without real network flakiness.
     public var networkOnline: Bool?
 
     public init(

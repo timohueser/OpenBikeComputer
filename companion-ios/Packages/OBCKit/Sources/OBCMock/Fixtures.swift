@@ -26,13 +26,13 @@ public struct FixtureSet: Sendable {
 }
 
 /// A fixture route — a **library-saved planned route** (the app's Planned list is
-/// library-first, #289): the list `summary` (with a normalized preview), the
-/// parsed geometry (`points` + `waypoints`), the detail-screen elevation data,
-/// and the declared upload payload size (payload bytes are synthesized on demand,
-/// see `blob()`, so a multi-MB library stays cheap to hold).
+/// library-first): the list `summary` (with a normalized preview), the parsed
+/// geometry (`points` + `waypoints`), the detail-screen elevation data, and the
+/// declared upload payload size (payload bytes are synthesized on demand, see
+/// `blob()`, so a multi-MB library stays cheap to hold).
 ///
 /// `deviceObjectID` marks the routes the device also holds a copy of: they show
-/// the C1 "on device" badge, and `MockTransport.listRoutes()` serves exactly this
+/// the "on device" badge, and `MockTransport.listRoutes()` serves exactly this
 /// subset — under device-namespace ids — the way the real device's `routeList`
 /// would.
 public struct RouteEntry: Sendable {
@@ -77,8 +77,8 @@ public struct RouteEntry: Sendable {
         )
     }
 
-    /// The library record this fixture seeds (B1S) — what the composition root
-    /// writes into the mock run's `InMemoryLibraryStore` so scenarios boot with a
+    /// The library record this fixture seeds — what the composition root writes
+    /// into the mock run's `InMemoryLibraryStore` so scenarios boot with a
     /// populated, library-first Planned list. `addedAt` fixes the list order
     /// (newest first, so pass descending dates for stable fixture order).
     public func record(addedAt: Date) -> PlannedRouteRecord {
@@ -93,10 +93,10 @@ public struct RouteEntry: Sendable {
     }
 }
 
-/// A fixture ride: the enumerable `summary`, its tracklog (E3 + the B7 download
-/// payload), and its declared download size (used to pace `downloadRides`
-/// progress — a fiction independent of the payload; the mock's realism is
-/// timing + faults, not byte counts).
+/// A fixture ride: the enumerable `summary`, its tracklog (used for the detail
+/// screen and the download payload), and its declared download size (used to
+/// pace `downloadRides` progress — a fiction independent of the payload; the
+/// mock's realism is timing + faults, not byte counts).
 public struct RideEntry: Sendable {
     public var summary: RideSummary
     public var points: [RidePoint]
@@ -116,7 +116,7 @@ public struct RideEntry: Sendable {
         self.downloadByteCount = downloadByteCount ?? max(1, Int(summary.distanceMeters) * 20)
     }
 
-    /// What `rideDetail(_:)` serves for this ride (E3).
+    /// What `rideDetail(_:)` serves for this ride.
     public func detail() -> RideDetail {
         RideDetail(summary: summary, elevationProfile: elevationProfile)
     }
@@ -155,10 +155,10 @@ extension FixtureSet {
 }
 
 /// The bundled sample route files the `-OBCImportSample` launch hook feeds the
-/// import path, so E1/H4/H5 demos and XCUITests exercise the same decoder a
-/// Files pick does. `gpx` is a real Komoot export (Schwarzwald tour,
-/// downsampled), `tcx` a Garmin-style course (Alpe d'Huez), and `bad` the
-/// design's I2 impostor — a PDF name over non-route bytes, for H5.
+/// import path, so demos and XCUITests exercise the same decoder a Files pick
+/// does. `gpx` is a real Komoot export (Schwarzwald tour, downsampled), `tcx` a
+/// Garmin-style course (Alpe d'Huez), and `bad` an impostor — a PDF name over
+/// non-route bytes, for the unsupported-file case.
 public enum SampleRouteFile {
     /// Raw values are the `-OBCImportSample <kind>` launch tokens.
     public enum Kind: String, Sendable {
@@ -270,8 +270,9 @@ private struct RouteDTO: Decodable {
     let source: String?
     let maxGradePercent: Double?
     let payloadBytes: Int?
-    /// The device object id when the (mock) device holds a copy — lights the C1
-    /// badge and puts the route in `listRoutes()`. Absent = phone-library only.
+    /// The device object id when the (mock) device holds a copy — lights the
+    /// "on device" badge and puts the route in `listRoutes()`. Absent =
+    /// phone-library only.
     let deviceObjectID: UInt16?
     let track: [GeoDTO]
     let waypoints: [WaypointDTO]?
