@@ -86,6 +86,13 @@ final class LibraryStoreTests: XCTestCase {
         let relaunched = FileLibraryStore(directory: dir).plannedRoutes()
         XCTAssertEqual(relaunched, [newer, older], "newest first, every field intact")
         XCTAssertEqual(relaunched.first?.sourceFileData, newer.sourceFileData, "original bytes byte-exact")
+        // The basemap coordinates (#294) survive the round-trip — else a
+        // relaunched route would silently drop to the grid preview.
+        XCTAssertEqual(
+            relaunched.first?.summary.trackPreview?.coordinates,
+            newer.summary.trackPreview?.coordinates
+        )
+        XCTAssertFalse(relaunched.first?.summary.trackPreview?.coordinates.isEmpty ?? true)
     }
 
     func testResaveUpdatesInPlace() {

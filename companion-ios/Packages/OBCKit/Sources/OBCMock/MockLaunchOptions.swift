@@ -18,10 +18,11 @@ import OBCDomain
 /// | `-OBCShowDevPanel` | (flag) | present the dev control panel at launch |
 /// | `-OBCShowUIGallery` | (flag) | present the B11 component gallery at launch |
 /// | `-OBCImportSample [kind]` | bare flag = `gpx`; or `gpx` / `tcx` / `bad` | feed a bundled sample file to the import path at launch (E1; `bad` → H5) |
+/// | `-OBCNetwork <state>` | `offline` / `online` | pin the MapKit-basemap reachability (#294) — `offline` forces the grid fallback |
 ///
 /// Env fallbacks (used when the argument is absent): `OBC_SCENARIO`,
 /// `OBC_FIXTURES`, `OBC_CONNECTION`, `OBC_TRANSPORT`, `OBC_SHOW_DEV_PANEL=1`,
-/// `OBC_SHOW_UI_GALLERY=1`, `OBC_IMPORT_SAMPLE=1` (or a kind token).
+/// `OBC_SHOW_UI_GALLERY=1`, `OBC_IMPORT_SAMPLE=1` (or a kind token), `OBC_NETWORK`.
 public struct MockLaunchOptions: Equatable, Sendable {
     public var scenario: Scenario?
     public var fixtures: String?
@@ -37,6 +38,11 @@ public struct MockLaunchOptions: Equatable, Sendable {
     /// demos — the Files picker can't be driven from automation): `gpx`/`tcx`
     /// land on E1 (or H4 when unpaired), `bad` raises H5. `nil` = no import.
     public var importSample: SampleRouteFile.Kind?
+    /// Force the MapKit-basemap reachability (#294): `false` pins the grid
+    /// fallback (offline), `true` pins the basemap; `nil` uses the real
+    /// `NWPathMonitor`. Lets XCUITests exercise the fallback without real network
+    /// flakiness.
+    public var networkOnline: Bool?
 
     public init(
         scenario: Scenario? = nil,
@@ -45,7 +51,8 @@ public struct MockLaunchOptions: Equatable, Sendable {
         useBLETransport: Bool = false,
         showDevPanel: Bool = false,
         showUIGallery: Bool = false,
-        importSample: SampleRouteFile.Kind? = nil
+        importSample: SampleRouteFile.Kind? = nil,
+        networkOnline: Bool? = nil
     ) {
         self.scenario = scenario
         self.fixtures = fixtures
@@ -54,6 +61,7 @@ public struct MockLaunchOptions: Equatable, Sendable {
         self.showDevPanel = showDevPanel
         self.showUIGallery = showUIGallery
         self.importSample = importSample
+        self.networkOnline = networkOnline
     }
 
     /// Parse process launch arguments (`-OBCKey value` pairs, flag args) with
@@ -93,6 +101,12 @@ public struct MockLaunchOptions: Equatable, Sendable {
             }
             return SampleRouteFile.Kind(rawValue: env) ?? .gpx
         }()
+        // Unknown tokens leave reachability on the real monitor (nil).
+        let networkOnline: Bool? = switch value("OBCNetwork", env: "OBC_NETWORK") {
+        case "offline": false
+        case "online": true
+        default: nil
+        }
 
         return MockLaunchOptions(
             scenario: scenario,
@@ -101,7 +115,8 @@ public struct MockLaunchOptions: Equatable, Sendable {
             useBLETransport: transport == "ble",
             showDevPanel: showPanel,
             showUIGallery: showGallery,
-            importSample: importSample
+            importSample: importSample,
+            networkOnline: networkOnline
         )
     }
 

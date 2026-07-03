@@ -384,6 +384,7 @@ crash. Env fallbacks in parentheses apply when the argument is absent.
 | `-OBCShowDevPanel` (`OBC_SHOW_DEV_PANEL=1`) | flag | present the dev panel at launch |
 | `-OBCShowUIGallery` (`OBC_SHOW_UI_GALLERY=1`) | flag | present the B11 component gallery at launch |
 | `-OBCImportSample [kind]` (`OBC_IMPORT_SAMPLE=1` or a kind) | bare flag = `gpx`; or `gpx` / `tcx` / `bad` | feed a bundled sample file to the import path at launch through the real decoders: `gpx` (`OBCMock/Fixtures/sample-import.gpx`, a real Komoot export) / `tcx` (`sample-import.tcx`, a Garmin-style course) land on E1 — or H4 when unpaired; `bad` (a fake `packing-list.pdf`) raises H5 |
+| `-OBCNetwork <state>` (`OBC_NETWORK`) | `offline` / `online` | pin the MapKit-basemap reachability (#294): `offline` forces the grid fallback, `online` forces the basemap; absent = the real `NWPathMonitor` |
 
 ### Dev control panel + HUD (Debug only)
 
@@ -425,6 +426,12 @@ canonical for layout, copy, and states. **Read the HTML/CSS directly** for exact
 dimensions and colors — do **not** screenshot it. Design tokens are in
 `project/_ds/openbikecomputer-design-system-*/tokens/`.
 
+**One deliberate deviation from the design (#294):** track previews draw a real
+**MapKit basemap** (standard Apple Maps styling), not the design's parchment
+grid. The grid remains the offline/no-geometry fallback; the `--track-stroke` /
+`--track-halo` tokens still colour the polyline over the map. See the **Map/**
+component-kit entry.
+
 Screen IDs are canonical and grouped by letter:
 
 | letter | area | ids |
@@ -461,8 +468,20 @@ restyle ad hoc**, and don't introduce colors outside
   `Font.obcSerif/obcMono` (serif = Iowan Old Style, ships with iOS — Spectral is
   only the web stand-in), `OBCFormat` (the canonical stat-line strings:
   "62.4 km · 840 m ↑ · 3h 20m" — pinned by unit tests, don't format inline).
-- **Components/** — `TrackPreviewView` (renders `OBCDomain.TrackPreview`;
-  basemap-free, halo + stroke + forest/coral node dots, waypoint `Marker`s),
+- **Map/** — the track previews (#294). `MapTrackPreviewView` is the **drop-in
+  used everywhere** (cards + detail hero): a real **MapKit basemap** with the
+  route polyline when online *and* the track carries coordinates, else the
+  `TrackPreviewView` grid fallback (offline, no geometry, or when it's carrying
+  unit-space waypoint `Marker`s — the W1 schematic isn't a basemap job). The
+  online/offline decision is the pure, host-tested `MapPreviewMode.resolve`;
+  reachability rides in via `\.obcIsOnline` (set once at `RootView` from a
+  `ReachabilityStore` over the `NetworkReachability` seam). `TrackMapView` is the
+  full-screen **interactive** map the detail hero opens (online only — never a
+  blank offline map). MapKit is free/keyless/no-hosting; the grid fallback is an
+  **intentional graceful degradation, not a bug**.
+- **Components/** — `TrackPreviewView` (the **grid fallback** renderer:
+  basemap-free parchment, halo + stroke + forest/coral node dots, waypoint
+  `Marker`s — reached through `MapTrackPreviewView`, not used directly),
   `RouteCard`/`RouteCardFullBleed`, `DeviceTopBar` (+ `OBCBatteryIndicator`,
   `OBCIconButton`, `OBCSpinner`, `OBCSyncButtonState`), `OBCSegmentedControl`,
   `OBCGroupedSection`/`OBCListRow`/`OBCIconTile`/`OBCSoonBadge`, buttons as
@@ -522,7 +541,6 @@ Every component file carries a `#Preview` with design sample data.
 
 ## What NOT to do
 
-- **No basemap under tracks.** Routes render on parchment, not a map tile layer.
 - **No blocking full-screen spinner.** Use inline / skeleton states (see S1–S4).
 - **No new colors** outside the OBC tokens above.
 - **No cloud / account language** anywhere — this app is phone ↔ device only, no

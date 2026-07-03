@@ -25,6 +25,9 @@ public struct RouteDetailView: View {
     @State private var renameDraft = ""
     @State private var deleteConfirmShown = false
     @State private var waypointsShown = false
+    @State private var mapShown = false
+
+    @Environment(\.obcIsOnline) private var isOnline
 
     public init(
         model: RouteDetailModel,
@@ -53,13 +56,7 @@ public struct RouteDetailView: View {
                     importedBanner(line)
                 }
 
-                TrackPreviewView(
-                    model.preview,
-                    style: .hero,
-                    tag: model.tag.text,
-                    tagColor: model.tag.isAccent ? OBCTheme.forest : OBCTheme.inkSoft
-                )
-                .frame(height: 214)
+                hero
 
                 titleBlock
 
@@ -103,6 +100,11 @@ public struct RouteDetailView: View {
                 totalDistanceMeters: model.distanceMeters
             )
         }
+        #if os(iOS)
+        .fullScreenCover(isPresented: $mapShown) { trackMapCover }
+        #else
+        .sheet(isPresented: $mapShown) { trackMapCover }
+        #endif
         .obcRenameAlert(
             renameTitle,
             isPresented: $renameShown,
@@ -115,6 +117,61 @@ public struct RouteDetailView: View {
     }
 
     // MARK: Pieces
+
+    /// Whether the hero can open the full interactive map: real geometry **and**
+    /// a network path (offline keeps the grid, no tap — never a blank map). #294.
+    private var canExpandMap: Bool {
+        isOnline && !(model.preview?.coordinates.isEmpty ?? true)
+    }
+
+    /// The track hero — a basemap when online, the grid otherwise. When a map is
+    /// available it's a button into the full-screen `TrackMapView`, with a small
+    /// expand affordance so the tap target reads.
+    @ViewBuilder
+    private var hero: some View {
+        let preview = MapTrackPreviewView(
+            model.preview,
+            style: .hero,
+            tag: model.tag.text,
+            tagColor: model.tag.isAccent ? OBCTheme.forest : OBCTheme.inkSoft
+        )
+        .frame(height: 214)
+
+        if canExpandMap {
+            Button { mapShown = true } label: {
+                preview
+                    .overlay(alignment: .bottomTrailing) { expandBadge }
+                    // The map ignores hits (the tap is ours), so make the whole
+                    // hero the button's tap target — not just the tiny badge.
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("detail.expandMap")
+            .accessibilityLabel("Open full map")
+        } else {
+            preview
+        }
+    }
+
+    private var trackMapCover: some View {
+        TrackMapView(
+            coordinates: model.preview?.coordinates ?? [],
+            title: model.name,
+            onClose: { mapShown = false }
+        )
+    }
+
+    /// The tap-to-expand chip pinned in the hero's corner.
+    private var expandBadge: some View {
+        Image(systemName: "arrow.up.left.and.arrow.down.right")
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(OBCTheme.ink)
+            .padding(8)
+            .background(OBCTheme.panel.opacity(0.92))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(OBCTheme.line))
+            .padding(12)
+    }
 
     /// The E1 provenance line above the hero — mono uppercase in coral.
     private func importedBanner(_ line: String) -> some View {
