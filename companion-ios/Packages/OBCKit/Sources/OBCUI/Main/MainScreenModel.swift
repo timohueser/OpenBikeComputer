@@ -275,6 +275,11 @@ public final class MainScreenModel {
         guard connection == .connected, syncState != .syncing else { return }
         syncTask?.cancel()
         syncDropWatch?.cancel()
+        // Tear down a superseded (interrupted-but-waiting) batch so its runner
+        // stops competing for the transfer slot and its stalled stream finishes —
+        // the cancelled old `runSync` then can't yield a late ride into the new
+        // sync's shared state.
+        activeDownload?.handle.cancel()
         syncInterruption = nil
         activeDownload = nil
         syncTask = Task { await runSync() }
@@ -331,6 +336,11 @@ public final class MainScreenModel {
             var landed = 0
             do {
                 for try await downloaded in download.rides {
+                    // A superseding sync (or a fresh sync over a waiting
+                    // interruption) cancels this task; a late ride yielded by the
+                    // old stalled stream must not mutate the new sync's shared
+                    // state (double-persist, clobbered progress / activeDownload).
+                    guard !Task.isCancelled else { return }
                     syncedRideIDs.insert(downloaded.id)
                     library.markRideSynced(downloaded.id)
                     // Persist the canonical ride the moment it lands, so an
