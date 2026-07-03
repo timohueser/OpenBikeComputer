@@ -128,13 +128,13 @@ impl StatFieldsScreen {
         let first = self.window_first(geo.visible, rows);
         list::draw_rows(cv, geo, rows, self.selected, first, |cv, row| {
             if row.index == add_row {
-                // Add-field row: a plus + label.
-                let midy = row.area.top_left.y + (row.area.size.height as i32 - 22) / 2;
+                // Add-field row: a plus (centred on the row) + a centred label.
+                let (top, rh) = (row.area.top_left.y, row.area.size.height as i32);
                 let px = row.area.top_left.x + 14;
-                let pcy = midy + 11;
+                let pcy = top + (rh - 22) / 2 + 11; // the label's cap-height midline
                 cv.hline(px - 6, pcy, 13, INK);
                 cv.vline(px, pcy - 6, 13, 1, INK);
-                cv.text("Add field", Point::new(px + 18, midy), Font::Body, TextAlign::Left, INK);
+                cv.text_vcentered("Add field", px + 18, top, rh, Font::Body, TextAlign::Left, INK);
             } else {
                 let f = fields[row.index];
                 let grabbed = row.selected && self.grabbed;

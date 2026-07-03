@@ -5,7 +5,6 @@
 //! (Finish, Discard) fire only on a completed `hold`, their row filling with a warning bar as the
 //! encoder is held (release early → no `Hold` gesture → nothing happens). `back` resumes.
 
-use embedded_graphics::prelude::Point;
 use obc_render::{
     rect,
     text::{Font, TextAlign},
@@ -92,7 +91,7 @@ impl RideControl {
         // Parchment panel + dark HUD title strip over the map.
         cv.round(rect(px, py, pw, ph), 8, PARCHMENT);
         cv.fill(rect(px, py, pw, 32), HUD);
-        cv.text("PAUSED", Point::new(w / 2, py + 7), Font::Label, TextAlign::Center, PARCHMENT);
+        cv.text_vcentered("PAUSED", w / 2, py, 32, Font::Label, TextAlign::Center, PARCHMENT);
 
         // Guarded rows fill warning-red — Finish/Discard are irreversible.
         let geo = super::GuardedRowsGeometry {
