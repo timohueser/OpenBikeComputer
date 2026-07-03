@@ -178,7 +178,15 @@ public final class MainScreenModel {
         rides = storedRides.map(\.summary)
 
         streamTasks.append(Task { [transport] in
-            for await state in transport.state { connection = state }
+            var previous: ConnectionState?
+            for await state in transport.state {
+                connection = state
+                // A regained link (never the stream's replayed first value):
+                // re-read the lists — the reconnect is what makes the badges
+                // and ride list trustworthy again.
+                if state == .connected, let was = previous, was != .connected { reload() }
+                previous = state
+            }
         })
         streamTasks.append(Task { [transport] in
             for await percent in transport.battery { battery = percent }
