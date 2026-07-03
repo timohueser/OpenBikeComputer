@@ -4,19 +4,15 @@ import OBCDomain
 import OBCTransport
 
 /// The main-screen state (B3, design C1/C2): the route/ride lists, the live
-/// device cluster (name · battery · connection), search, and the sync button's
-/// state machine. Depends only on `DeviceTransport` (the golden rule).
+/// device cluster (name · battery · connection), search, and the phone-side
+/// library edits (rename/delete/import landing). Depends only on
+/// `DeviceTransport` (the golden rule).
 ///
-/// **Sync (B7):** the SYNC button contract — idle → syncing ("N of M rides") →
-/// done ("Synced N new rides just now", ~2 s check) → idle — driven off the
-/// `downloadRides` `RideDownload`. "New" means not in the `LibraryStore`'s
-/// synced set (B1S) — persistent, so a relaunch never re-counts. Each landed
-/// payload decodes through `RideObjectCodec` into the canonical `Ride`
-/// and persists at once, so a drop mid-batch keeps what arrived (H10) by
-/// construction. A drop surfaces as `syncInterruption` ("Got 2 of 5 rides." +
-/// Resume); `resumeSync()` restarts the stalled batch at **whole-ride
-/// granularity** — rides that fully landed stay, the rest are re-sent whole
-/// (transfers restart, not resume — the spec's principle 4).
+/// **Sync (B7)** lives in `RideSyncCoordinator` (#358), exposed whole as
+/// `sync` — the view reads `sync.syncState` etc. directly rather than through
+/// duplicated properties. The coordinator persists each landed ride itself;
+/// this model only mirrors landed rides into its in-memory Tracked list (the
+/// `onRideLanded` seam) and vetoes sync on a protocol mismatch (`canSync`).
 ///
 /// **Both lists are library-first (#289, extended to rides in #296):**
 /// - **Planned routes** show exactly the phone's saved routes; `listRoutes()`
@@ -49,20 +45,6 @@ public final class MainScreenModel {
         case failed
     }
 
-    /// Ride-count progress for the syncing caption ("3 of 5 rides").
-    public struct SyncProgress: Equatable, Sendable {
-        public var done: Int
-        public var total: Int
-    }
-
-    /// H10 — a sync the link dropped out from under. Feeds the warning banner
-    /// ("Sync interrupted. Got 2 of 5 rides." + Resume). What landed is already
-    /// persisted; `resumeSync()` continues the rest.
-    public struct SyncInterruption: Equatable, Sendable {
-        public var landed: Int
-        public var total: Int
-    }
-
     /// #303 — a connected device whose reported `protocol_version` doesn't match
     /// `OBCProtocol.version`. Feeds the incompatibility banner and disables sync;
     /// the app must never decode an incompatible object (`OBCProtocol.md` →
@@ -71,23 +53,6 @@ public final class MainScreenModel {
     public struct ProtocolMismatch: Equatable, Sendable {
         public var expected: UInt16
         public var found: UInt16
-    }
-
-    /// Pacing — injectable so the model tests run in milliseconds.
-    public struct Timing: Sendable {
-        /// How long the forest check holds before the button returns to idle
-        /// (design: "Check for ~2s, then idle").
-        public var syncDoneHold: Duration
-        /// How long the C2 "Synced N new rides just now" line stays up.
-        public var syncedLineHold: Duration
-
-        public init(
-            syncDoneHold: Duration = .seconds(2),
-            syncedLineHold: Duration = .seconds(60)
-        ) {
-            self.syncDoneHold = syncDoneHold
-            self.syncedLineHold = syncedLineHold
-        }
     }
 
     // MARK: Observable state
@@ -107,19 +72,13 @@ public final class MainScreenModel {
     public private(set) var rides: [RideSummary] = []
     public var tab: Tab = .planned
     public var searchText = ""
-    public private(set) var syncState: OBCSyncButtonState = .idle
-    /// Non-nil while syncing — feeds the amber "N of M rides" caption.
-    public private(set) var syncProgress: SyncProgress?
-    /// Non-nil after a successful sync — feeds "Synced N new rides just now".
-    public private(set) var lastSyncCount: Int?
-    /// H9: a sync found nothing new (bound to the transient toast).
-    public var upToDateToastVisible = false
-    /// H10: non-nil while a dropped sync waits for Resume — replaces the S4
-    /// banner (one banner at a time; this one carries the link story too).
-    public private(set) var syncInterruption: SyncInterruption?
     /// #303: non-nil once a connected device reports an incompatible
     /// `protocol_version` — drives the incompatibility banner and disables sync.
     public private(set) var protocolMismatch: ProtocolMismatch?
+
+    /// The ride-sync state machine (B7/#358) — exposed whole so the view reads
+    /// `sync.syncState`, `sync.syncProgress`, … without duplicated mirrors.
+    public let sync: RideSyncCoordinator
 
     // MARK: Derived
 
@@ -127,7 +86,7 @@ public final class MainScreenModel {
     /// browsable content — never an error, never a blocker. While a dropped
     /// sync waits for Resume, the H10 banner tells the link story instead.
     public var showsDisconnectedBanner: Bool {
-        (connection == .outOfRange || connection == .disconnected) && syncInterruption == nil
+        (connection == .outOfRange || connection == .disconnected) && sync.syncInterruption == nil
     }
 
     public var filteredRoutes: [RouteSummary] {
@@ -142,9 +101,6 @@ public final class MainScreenModel {
 
     private let transport: any DeviceTransport
     private let library: any LibraryStore
-    private let timing: Timing
-    /// Mirror of `library.syncedRideIDs()` — what makes the next sync's "new".
-    @ObservationIgnored private var syncedRideIDs: Set<RideID> = []
     /// Mirror of `library.deletedRideIDs()` — device rides deleted on the
     /// phone; the merge hides them so a sync/reload can't resurrect them.
     @ObservationIgnored private var deletedRideIDs: Set<RideID> = []
@@ -156,22 +112,29 @@ public final class MainScreenModel {
     @ObservationIgnored private var started = false
     @ObservationIgnored private var streamTasks: [Task<Void, Never>] = []
     @ObservationIgnored private var loadTask: Task<Void, Never>?
-    @ObservationIgnored private var syncTask: Task<Void, Never>?
-    @ObservationIgnored private var syncDropWatch: Task<Void, Never>?
-    /// The running (or dropped-but-resumable) download — `resumeSync()` signals
-    /// its handle; the consuming loop in `runSync` is still awaiting its stream.
-    @ObservationIgnored private var activeDownload: RideDownload?
 
     /// The default `library` keeps persistence out of previews and tests that
     /// don't care; the composition root always passes its chosen store.
     public init(
         transport: any DeviceTransport,
         library: any LibraryStore = InMemoryLibraryStore(),
-        timing: Timing = Timing()
+        syncTiming: RideSyncCoordinator.Timing = RideSyncCoordinator.Timing()
     ) {
         self.transport = transport
         self.library = library
-        self.timing = timing
+        self.sync = RideSyncCoordinator(transport: transport, library: library, timing: syncTiming)
+        // The coordinator's seams back into this model — weak, so the closures
+        // the model's own coordinator holds can never pin the model.
+        sync.canSync = { [weak self] in self?.protocolMismatch == nil }
+        sync.onRideListRead = { [weak self] in self?.loadState = .loaded }
+        // A landed ride is already persisted (the coordinator's job) — mirror
+        // it into the session's list so newly synced rides surface at once,
+        // not only after the next reload.
+        sync.onRideLanded = { [weak self] ride in
+            guard let self else { return }
+            rideRecords[ride.id] = ride
+            rides = trackedList()
+        }
     }
 
     // MARK: Lifecycle
@@ -189,7 +152,6 @@ public final class MainScreenModel {
         refreshOnDeviceStates()
         let storedRides = library.rides()
         rideRecords = Dictionary(uniqueKeysWithValues: storedRides.map { ($0.id, $0) })
-        syncedRideIDs = library.syncedRideIDs()
         deletedRideIDs = library.deletedRideIDs()
         routes = plannedList()
         rides = storedRides.map(\.summary)
@@ -234,10 +196,10 @@ public final class MainScreenModel {
     }
 
     deinit {
+        // The sync coordinator cancels its own tasks in its deinit — this
+        // model owns (and cancels) only what it runs itself.
         streamTasks.forEach { $0.cancel() }
         loadTask?.cancel()
-        syncTask?.cancel()
-        syncDropWatch?.cancel()
     }
 
     /// (Re)read both lists — also the S3 "Retry" action. Cached content stays
@@ -308,157 +270,6 @@ public final class MainScreenModel {
         plannedRecords.values.sorted { $0.addedAt > $1.addedAt }.map(\.summary)
     }
 
-    // MARK: Sync (the SYNC button)
-
-    /// Pull new tracked rides off the device. No-ops unless the link is up and
-    /// no sync is running (the button is disabled when unreachable — S4 dims
-    /// link-bound actions). Starting fresh over a waiting interruption is fine:
-    /// what landed is marked synced, so the new batch is exactly the remainder.
-    public func sync() {
-        // Disabled on an incompatible device (#303): the banner explains why, and
-        // decoding its ride objects would be the exact "silently proceed" the
-        // version check exists to prevent.
-        guard connection == .connected, syncState != .syncing, protocolMismatch == nil else { return }
-        syncTask?.cancel()
-        syncDropWatch?.cancel()
-        // Tear down a superseded (interrupted-but-waiting) batch so its runner
-        // stops competing for the transfer slot and its stalled stream finishes —
-        // the cancelled old `runSync` then can't yield a late ride into the new
-        // sync's shared state.
-        activeDownload?.handle.cancel()
-        syncInterruption = nil
-        activeDownload = nil
-        syncTask = Task { await runSync() }
-    }
-
-    /// H10's Resume: restart the dropped batch at whole-ride granularity —
-    /// rides that fully landed stay landed, the interrupted one is re-sent from
-    /// its start. The consuming loop never stopped (it's awaiting the stalled
-    /// stream), so rides simply start landing again.
-    public func resumeSync() {
-        guard let interruption = syncInterruption, let download = activeDownload else { return }
-        syncInterruption = nil
-        syncState = .syncing
-        syncProgress = SyncProgress(done: interruption.landed, total: interruption.total)
-        download.handle.resume()
-    }
-
-    private func runSync() async {
-        syncState = .syncing
-        lastSyncCount = nil
-
-        do {
-            let onDevice = try await transport.listRides()
-            // Canceled = a newer sync superseded this one and owns the shared
-            // state now — touch nothing (same rule at every check below).
-            guard !Task.isCancelled else { return }
-            loadState = .loaded
-
-            let fresh = onDevice.filter { !syncedRideIDs.contains($0.id) }
-            guard !fresh.isEmpty else {
-                // H9 — a quiet toast, straight back to idle (no empty "done").
-                syncState = .idle
-                upToDateToastVisible = true
-                return
-            }
-
-            syncProgress = SyncProgress(done: 0, total: fresh.count)
-            let download = transport.downloadRides(fresh.map(\.id))
-            activeDownload = download
-            // A drop stalls the download streams open (that's what makes the
-            // batch restartable, whole rides at a time). Watch the link and
-            // surface H10 with what landed; the loop below just keeps awaiting
-            // the stalled stream until Resume — or a new sync — moves things.
-            // Held locally too: a superseded task must cancel ITS watch, never
-            // the one a newer sync installed in the shared property.
-            let dropWatch = Task { [weak self, transport] in
-                for await state in transport.state
-                where state == .outOfRange || state == .disconnected {
-                    guard let self else { return }
-                    if Task.isCancelled { break }
-                    interruptSync()
-                }
-            }
-            syncDropWatch = dropWatch
-            var landed = 0
-            do {
-                for try await downloaded in download.rides {
-                    // A superseding sync (or a fresh sync over a waiting
-                    // interruption) cancels this task; a late ride yielded by the
-                    // old stalled stream must not mutate the new sync's shared
-                    // state (double-persist, clobbered progress / activeDownload).
-                    guard !Task.isCancelled else { return }
-                    syncedRideIDs.insert(downloaded.id)
-                    library.markRideSynced(downloaded.id)
-                    // Persist the canonical ride the moment it lands, so an
-                    // interrupted batch keeps its partial across a relaunch
-                    // (H10). The payload decodes through the device ride codec;
-                    // bytes that don't parse keep the ride summary-only rather
-                    // than dropping it (wire bytes are never the stored format).
-                    if let summary = fresh.first(where: { $0.id == downloaded.id }) {
-                        let decoded = try? RideObjectCodec.decode(
-                            downloaded.payload, id: downloaded.id)
-                        // The RideList summary stays canonical for display; the
-                        // payload contributes the tracklog (and a preview, if
-                        // the list entry came without one).
-                        var ride = Ride(summary: summary, points: decoded?.points ?? [])
-                        if ride.summary.trackPreview == nil {
-                            ride.summary.trackPreview = decoded?.summary.trackPreview
-                        }
-                        rideRecords[ride.id] = ride
-                        library.saveRide(ride)
-                    }
-                    landed += 1
-                    syncProgress = SyncProgress(done: landed, total: fresh.count)
-                }
-            } catch {
-                // A hard transfer failure — fall through; `landed` keeps the
-                // partial batch either way.
-            }
-            // Newly synced rides are now in the library — surface them this
-            // session, not only after the next reload.
-            if landed > 0 { rides = trackedList() }
-            // The transfer is over one way or another: the watch has done its
-            // job (leaving it running would fire H10 on a later, harmless drop).
-            dropWatch.cancel()
-            guard !Task.isCancelled else { return }
-            syncProgress = nil
-            syncInterruption = nil
-            activeDownload = nil
-            guard await download.handle.outcome == .completed else {
-                syncState = .idle
-                return
-            }
-
-            lastSyncCount = landed
-            syncState = .done
-            try? await Task.sleep(for: timing.syncDoneHold)
-            guard !Task.isCancelled else { return }
-            syncState = .idle
-            try? await Task.sleep(for: timing.syncedLineHold)
-            guard !Task.isCancelled else { return }
-            lastSyncCount = nil
-        } catch {
-            // Only the ride list read can land here (transfer-stream errors are
-            // handled above) — no watch or download exists yet.
-            guard !Task.isCancelled else { return }
-            syncProgress = nil
-            syncState = .idle
-        }
-    }
-
-    /// The drop watch's H10 hand-off: freeze the counts into the banner state
-    /// and bring the progress caption down. The download stays resumable.
-    private func interruptSync() {
-        guard syncState == .syncing, activeDownload != nil else { return }
-        syncState = .idle
-        syncInterruption = SyncInterruption(
-            landed: syncProgress?.done ?? 0,
-            total: syncProgress?.total ?? 0
-        )
-        syncProgress = nil
-    }
-
     // MARK: Delete (H11 → H1, post-confirm)
 
     /// Remove a planned route from the phone (list + library). **Never** from
@@ -476,11 +287,13 @@ public final class MainScreenModel {
     /// the device: the SD-card copy stays. The tombstone keeps it that way
     /// durably — the id stays marked synced (the next sync doesn't re-download
     /// it) and marked deleted (the merge doesn't re-list the device's copy).
+    /// The sync coordinator's synced-ids mirror sees the insertion through the
+    /// library: it re-reads `syncedRideIDs()` at the start of every sync, so
+    /// `markRideSynced` here is the whole hand-off.
     public func deleteRide(_ id: RideID) {
         rides.removeAll { $0.id == id }
         rideRecords[id] = nil
         library.deleteRide(id)
-        syncedRideIDs.insert(id)
         library.markRideSynced(id)
         deletedRideIDs.insert(id)
         library.markRideDeleted(id)

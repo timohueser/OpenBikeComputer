@@ -43,13 +43,17 @@ public struct MainScreenView: View {
     }
 
     public var body: some View {
+        // The sync state machine, read straight off the model's coordinator
+        // (#358) — `@Bindable` here because `model.sync` is a `let` the
+        // model-level `@Bindable` can't project bindings through.
+        @Bindable var sync = model.sync
         VStack(spacing: 0) {
             DeviceTopBar(
                 deviceName: model.deviceName,
                 connection: model.connection,
                 batteryPercent: model.battery,
-                syncState: model.syncState,
-                onSync: { model.sync() },
+                syncState: sync.syncState,
+                onSync: { sync.sync() },
                 onSettings: onSettings
             )
 
@@ -68,14 +72,14 @@ public struct MainScreenView: View {
                 .accessibilityIdentifier("protocolMismatchBanner")
                 .padding(.horizontal, 20)
                 .padding(.bottom, 6)
-            } else if let interruption = model.syncInterruption {
+            } else if let interruption = sync.syncInterruption {
                 OBCInlineBanner(
                     tone: .warning,
                     systemImage: "exclamationmark.triangle",
                     title: "Sync interrupted.",
                     message: "Got \(interruption.landed) of \(interruption.total) rides.",
                     actionTitle: "Resume",
-                    action: { model.resumeSync() }
+                    action: { sync.resumeSync() }
                 )
                 .accessibilityIdentifier("syncInterruptedBanner")
                 .padding(.horizontal, 20)
@@ -103,7 +107,7 @@ public struct MainScreenView: View {
         .toolbar(.hidden, for: .navigationBar)
         #endif
         .obcToast(
-            isPresented: $model.upToDateToastVisible,
+            isPresented: $sync.upToDateToastVisible,
             message: "You're up to date — no new rides on \(model.deviceName)."
         )
         .accessibilityElement(children: .contain)
@@ -215,9 +219,9 @@ public struct MainScreenView: View {
     /// while syncing, the forest "Synced N new rides just now" confirm after.
     @ViewBuilder
     private var syncLine: some View {
-        if let progress = model.syncProgress {
+        if let progress = model.sync.syncProgress {
             syncLineLabel("\(progress.done) of \(progress.total) rides", color: OBCTheme.amber, icon: nil)
-        } else if let count = model.lastSyncCount {
+        } else if let count = model.sync.lastSyncCount {
             syncLineLabel(
                 "Synced \(count) new \(count == 1 ? "ride" : "rides") just now",
                 color: OBCTheme.forest,
