@@ -56,6 +56,16 @@ impl WallClock {
         self.base.add_minutes(elapsed_min)
     }
 
+    /// Unix seconds at `now_ms`, reading the set-point as UTC: the set-point's
+    /// [`to_unix`](DateTime::to_unix) plus the **full elapsed seconds** since the stamp. Unlike
+    /// [`now`](WallClock::now) this keeps the sub-minute remainder — the GPS re-stamp back-dates
+    /// `epoch_ms` by the fix's seconds-into-the-minute (issue #223), so the second-level truth
+    /// survives the minute-resolution set-point. The set-point is *local* time; the caller
+    /// ([`App::wall_unix_now`](crate::App::wall_unix_now)) folds the UTC offset back out.
+    pub fn unix_now(&self, now_ms: u32) -> u32 {
+        self.base.to_unix().wrapping_add(now_ms.wrapping_sub(self.epoch_ms) / 1000)
+    }
+
     /// Milliseconds from `now_ms` until the displayed `HH:MM` next rolls over — i.e. how long a
     /// clock-bearing screen can sleep before its [`MinuteTicker`] would fire. This is the timed-redraw
     /// deadline the **event-driven** host arms a single wake timer to (issue #219): rather than the
@@ -158,6 +168,21 @@ mod tests {
         let mut w = WallClock::new(dt(0, 0));
         w.set(dt(0, 0), u32::MAX - 30_000);
         assert_eq!(w.ms_to_next_minute(u32::MAX.wrapping_add(10_000)), 20_000, "wrap-safe: 40 s elapsed → 20 s left");
+    }
+
+    /// `unix_now` keeps the sub-minute remainder the `HH:MM` reading drops: a set-point stamped
+    /// mid-minute (the GPS back-dating) yields second-accurate unix time, wrap-safe like `now`.
+    #[test]
+    fn unix_now_keeps_seconds_and_survives_the_wrap() {
+        let base = DateTime { year: 2026, month: 7, day: 2, hour: 9, minute: 33 };
+        let mut c = WallClock::new(base);
+        c.set(base, 10_000); // 09:33:00 was true at t = 10 s
+        assert_eq!(c.unix_now(10_000), base.to_unix());
+        assert_eq!(c.unix_now(10_000 + 61_500), base.to_unix() + 61, "whole elapsed seconds, not minutes");
+        // Wrap-safe: stamped 30 s before the u32 millis wrap, read 30 s past it — 60 s elapsed.
+        let mut w = WallClock::new(base);
+        w.set(base, u32::MAX - 30_000);
+        assert_eq!(w.unix_now(u32::MAX.wrapping_add(30_000)), base.to_unix() + 60);
     }
 
     /// The ticker initialises silently on the first observation, then fires only when the minute

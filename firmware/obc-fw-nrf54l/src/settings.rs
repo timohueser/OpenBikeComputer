@@ -54,16 +54,56 @@ fn region_offset() -> u32 {
     core::ptr::addr_of!(__settings_base) as u32
 }
 
+/// Byte offset of the **boot-counter line** within the reserved settings page — the diagnostics
+/// blob's one persisted fact (issue #275). Placed at the page's midpoint so the low half stays
+/// free for the settings slot's future two-slot + sequence upgrade (module doc).
+const BOOT_COUNT_OFFSET: u32 = 2048;
+/// The boot-counter line's tag; anything else there (a blank page, an older layout) reads as
+/// count 0 rather than garbage.
+const BOOT_COUNT_MAGIC: [u8; 4] = *b"OBCD";
+
 /// RRAM-backed settings store: owns the [`Rramc`] controller and reads/writes the carved page.
 pub struct RramSettingsStore {
     rram: Rramc<'static, Unbuffered>,
+    /// This boot's ordinal, set by [`bump_boot_count`](Self::bump_boot_count); 0 before.
+    boot_count: u32,
 }
 
 impl RramSettingsStore {
     /// Take the `RRAMC` peripheral and build the unbuffered controller (the read path is a plain
     /// memory-mapped slice read; only `save` actually drives the write FSM).
     pub fn new(rram: Peri<'static, RRAMC>) -> Self {
-        RramSettingsStore { rram: Rramc::new(rram) }
+        RramSettingsStore { rram: Rramc::new(rram), boot_count: 0 }
+    }
+
+    /// Read-increment-write the persisted boot counter (one aligned 16-byte line, one RRAM write
+    /// per boot — nothing against the endurance budget) and return this boot's ordinal. Called
+    /// once from `main` on every build, so the counter reflects *device* boots, not just `ble`
+    /// ones. A missing/foreign line (blank page, torn write) restarts the count at 1 — the
+    /// diagnostics blob is a debugging artifact, not an API (S0 §7.5), so honest-and-simple wins.
+    pub fn bump_boot_count(&mut self) -> u32 {
+        let off = region_offset() + BOOT_COUNT_OFFSET;
+        let mut line = [0u8; RRAM_WRITE_LINE];
+        let stored = match self.rram.read(off, &mut line) {
+            Ok(()) if line[..4] == BOOT_COUNT_MAGIC => u32::from_le_bytes([line[4], line[5], line[6], line[7]]),
+            _ => 0,
+        };
+        let count = stored.wrapping_add(1);
+        let mut out = [0u8; RRAM_WRITE_LINE];
+        out[..4].copy_from_slice(&BOOT_COUNT_MAGIC);
+        out[4..8].copy_from_slice(&count.to_le_bytes());
+        if let Err(e) = self.rram.write(off, &out) {
+            defmt::warn!("settings: boot-counter write failed: {}", e);
+        }
+        self.boot_count = count;
+        count
+    }
+
+    /// This boot's ordinal (0 if [`bump_boot_count`](Self::bump_boot_count) hasn't run). Only
+    /// the BLE diagnostics blob reads it back today (the map build just bumps + logs).
+    #[cfg(feature = "ble")]
+    pub fn boot_count(&self) -> u32 {
+        self.boot_count
     }
 }
 

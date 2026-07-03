@@ -848,6 +848,33 @@ impl App {
         self.wall_clock.now(self.now_ms)
     }
 
+    /// The current **UTC** unix seconds, from the wall clock. The clock's set-point is local
+    /// time, so in GPS mode the persisted UTC offset is folded back out; a hand-set clock knows
+    /// no zone, so its local reading is served as-is (the honest best available — same accuracy
+    /// class as the clock itself, which resumes from the last set-point across power-offs).
+    pub fn wall_unix_now(&self) -> u32 {
+        let local = self.wall_clock.unix_now(self.now_ms);
+        if self.settings.gps_time {
+            (local as i64 - self.settings.utc_offset_min as i64 * 60) as u32
+        } else {
+            local
+        }
+    }
+
+    /// The ride totals + wall-clock anchor for the Finish-time ride-object save
+    /// ([`obc_route::track_to_ride`], issue #275), read in the same frame the host drains
+    /// [`TrackAction::Save`](crate::TrackAction) so the anchor pairs with the log's last points.
+    pub fn ride_stats(&self) -> obc_route::RideStats {
+        obc_route::RideStats {
+            distance_m: self.activity.ridden_m as u32, // float→int casts saturate
+            moving_time_s: self.activity.moving_s as u32,
+            avg_speed_cms: self.activity.avg_speed_cms(),
+            climb_m: self.activity.climb_m() as u16,
+            unix_at_anchor: self.wall_unix_now(),
+            anchor_ms: self.now_ms,
+        }
+    }
+
     /// Whether a settings edit is pending persistence **and the user has left the settings subtree** —
     /// the host's cue to persist [`settings`](App::settings) via its
     /// [`SettingsStore`](crate::hal::SettingsStore), checked **once per frame** after

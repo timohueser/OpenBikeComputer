@@ -86,6 +86,19 @@
 //!   round-trips through the persisted settings; a rename reaches the airwaves on the next
 //!   advertise cycle ([`advertised_name`] is re-read per cycle).
 //!
+//! ### The ride object plane + diagnostics (A7, issue #275)
+//!
+//! The reverse direction reuses the download machinery wholesale, because the Finish-time save
+//! (`sd.rs::write_ride_object`) already stored each ride as **exactly** the S0 §7.2 wire bytes
+//! (`/tracks/RD{id}.ORD`, the durable ride object id in the filename like `RT{id}.OBR`):
+//! `rideList` is built from the stored headers, a ride download streams the file verbatim, and
+//! ride ids survive reboots — what the app's synced-set / tombstone model keys on ("sync pulls
+//! only rides it hasn't landed; deleting a ride in the app never resurrects it"). Rides are
+//! never mutated over the link: no ride delete (`notFound`, see [`run_command`]), no replace —
+//! a tracked ride never changes after it's recorded, so there is no route-style up-to-date
+//! reconciliation. The `diagnostics` object (§7.5) is an honest text blob — identity, the
+//! RRAM boot counter, uptime, the A3 link counters, store counts — rendered on request.
+//!
 //! ## Interrupts / priorities (the A1 inventory, reconciled at A2)
 //!
 //! MPSL claims `RADIO_0` / `TIMER10` / `GRTC_3` at **P0** (timing-critical), `CLOCK_POWER` and
@@ -647,8 +660,10 @@ struct CommandOutcome {
 }
 
 /// Execute a `command` write (S0 §4.3/§4.4). `deleteObject` (cmd 1: `type u8 · object_id u16`)
-/// deletes a stored route through the [`ObjectStore`]; rides land at A7 (`notFound` until then);
-/// any other command byte is `unknownCommand`.
+/// deletes a stored route through the [`ObjectStore`]. Ride deletion is **deliberately not
+/// implemented** (`notFound`): the device retains every tracked ride until a future device-side
+/// management UI — the app hides synced rides locally (tombstones) rather than deleting them
+/// here, so a re-sync can never resurrect them. Any other command byte is `unknownCommand`.
 fn run_command(data: &[u8], store: &RefCell<ObjectStore>) -> CommandOutcome {
     let cmd = data.first().copied().unwrap_or(0);
     let (status, store_changed) = match (cmd, data) {
@@ -663,7 +678,7 @@ fn run_command(data: &[u8], store: &RefCell<ObjectStore>) -> CommandOutcome {
                         (CommandStatus::NotFound, false)
                     }
                 }
-                // Rides are A7; anything else has nothing to delete.
+                // Rides are never deleted over the link (see the fn doc); nothing else deletes.
                 _ => (CommandStatus::NotFound, false),
             }
         }
@@ -710,15 +725,27 @@ fn classify_transfer(data: &[u8], store: &RefCell<ObjectStore>) -> TransferDispo
             Ok(rx) => TransferDisposition::Arm(Armed::Upload(desc, rx)),
             Err(status) => TransferDisposition::Answer(transfer_result(desc.object_id, status)),
         },
-        (Op::Download, ObjectType::Route | ObjectType::RouteList | ObjectType::RideList) => {
+        (
+            Op::Download,
+            ObjectType::Route
+            | ObjectType::Ride
+            | ObjectType::RouteList
+            | ObjectType::RideList
+            | ObjectType::Diagnostics,
+        ) => {
             // Cheap existence check here for the immediate `notFound`; the source itself (and
             // its CRC pre-pass) opens on the data plane, off the GATT reply path.
-            if desc.ty == ObjectType::Route && !store.borrow().has_route(desc.object_id) {
+            let known = match desc.ty {
+                ObjectType::Route => store.borrow().has_route(desc.object_id),
+                ObjectType::Ride => store.borrow().has_ride(desc.object_id),
+                _ => true,
+            };
+            if !known {
                 return TransferDisposition::Answer(transfer_result(desc.object_id, TransferStatus::NotFound));
             }
             TransferDisposition::Arm(Armed::Download(desc))
         }
-        // Ride objects + diagnostics are A7; uploads of list/config types are nonsensical.
+        // Uploads of ride/list/config/diagnostics types are nonsensical.
         _ => TransferDisposition::Answer(transfer_result(desc.object_id, TransferStatus::Error)),
     }
 }
@@ -1159,10 +1186,10 @@ async fn run_upload(
     TransferOutcome::Answered
 }
 
-/// A download (S0 §4.2 op 2): open the source (`routeList` / empty `rideList` from the store's
-/// built buffer, a route detail straight off the card with its CRC pre-pass), notify the filled
-/// announce descriptor, then stream `object[offset…]` in CoC chunks. An abort between chunks
-/// stops cleanly; a send failure means the channel dropped (the app re-requests, S0 §4.2).
+/// A download (S0 §4.2 op 2): open the source (`routeList` / `rideList` / diagnostics from the
+/// store's built buffer, a route or ride detail straight off the card with its CRC pre-pass),
+/// notify the filled announce descriptor, then stream the object in CoC chunks. An abort between
+/// chunks stops cleanly; a send failure means the channel dropped (the app re-requests, S0 §4.2).
 async fn run_download(
     stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
     server: &Server<'_>,
@@ -1172,8 +1199,25 @@ async fn run_download(
     buf: &mut [u8],
 ) -> TransferOutcome {
     // Bind the open's result before matching — a `match store.borrow_mut().…` scrutinee
-    // temporary would keep the borrow alive through the error arm's await.
-    let opened = store.borrow_mut().download_open(desc);
+    // temporary would keep the borrow alive through the error arm's await. Diagnostics render
+    // from the link plane's own facts (S0 §7.5), everything else opens through the catalog.
+    let opened = if desc.ty == ObjectType::Diagnostics {
+        let fw = firmware_revision();
+        let serial = serial_string();
+        let s = status();
+        let diag = crate::object_store::DiagInput {
+            firmware: fw.as_str(),
+            hardware: HARDWARE_REVISION,
+            serial: serial.as_str(),
+            uptime_s: Instant::now().as_secs() as u32,
+            connects: s.connects,
+            disconnects: s.disconnects,
+            last_disconnect_reason: s.last_disconnect_reason,
+        };
+        store.borrow_mut().open_diagnostics_download(desc, &diag)
+    } else {
+        store.borrow_mut().download_open(desc)
+    };
     let (mut tx, source) = match opened {
         Ok(open) => open,
         Err(status) => {
