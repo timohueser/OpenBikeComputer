@@ -41,6 +41,16 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     private var openingChannel = false
     private var channelWaiters: [CheckedContinuation<BLEChannel, Error>] = []
 
+    // Watchdogs for the connect/CoC-open phases that can silently stall (#302):
+    // an empty/partial GATT DB never fires `didDiscoverCharacteristicsFor`, and a
+    // PSM read that never yields `didOpen` leaves `openingChannel` latched with
+    // every future transfer parked. Each phase arms a one-shot on entry and
+    // disarms it on the resolving callback; if it fires the phase is wedged and
+    // gets unwound. Queue-confined like everything else.
+    private var discoveryWatchdog: DispatchWorkItem?
+    private var channelWatchdog: DispatchWorkItem?
+    private static let phaseTimeout: DispatchTimeInterval = .seconds(10)
+
     // Outstanding operations (all touched only on `queue`). Connecting is a
     // two-phase flow (#297): `discover()` (un-gated) then `authenticate()` (gated,
     // raises the passkey sheet) — each parks its own continuation.
@@ -172,6 +182,12 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         // `id` is device-namespace (a decimal object id from `listRoutes`).
         guard let objectID = UInt16(id.rawValue) else { throw DeviceError.writeFailed }
         let payload = Data([1, ObjectType.route.rawValue, UInt8(objectID & 0xFF), UInt8(objectID >> 8)])
+        // Hold the transfer slot (#302): `clearPendingStatuses` and `command` /
+        // `transfer` results share one `pendingStatuses` buffer, so an ungated
+        // delete could wipe a slot-holding transfer's buffered result out from
+        // under it and hang that transfer forever. Serialize like the CoC exchanges.
+        await acquireTransferSlot()
+        defer { releaseTransferSlot() }
         clearPendingStatuses()
         try await write(payload, to: GATT.command)
         guard try await nextCommandResult().status == .ok else { throw DeviceError.writeFailed }
@@ -368,6 +384,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
                 channelWaiters.append(cont)
                 if !openingChannel {
                     openingChannel = true
+                    armChannelWatchdog()
                     byteChannel = nil
                     bleChannel = nil
                     peripheral.readValue(for: psm)  // → PSM update → openL2CAPChannel → didOpen
@@ -511,12 +528,58 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         }
         if bleChannel == nil, !openingChannel {
             openingChannel = true
+            armChannelWatchdog()
             peripheral.readValue(for: psm)  // → PSM update → openL2CAPChannel → didOpen
         }
     }
 
+    /// Arm the GATT-discovery watchdog (start of `discoverServices`). If it fires,
+    /// discovery never completed — an empty/partial DB — so fail a parked
+    /// `discover()` and drop the link; a bonded reconnect then retries clean.
+    private func armDiscoveryWatchdog() {
+        discoveryWatchdog?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.discoveryWatchdog = nil
+            if self.discoverContinuation != nil { self.failDiscover(.deviceNotFound) }
+            if let peripheral = self.peripheral { self.central.cancelPeripheralConnection(peripheral) }
+        }
+        discoveryWatchdog = item
+        queue.asyncAfter(deadline: .now() + Self.phaseTimeout, execute: item)
+    }
+
+    private func disarmDiscoveryWatchdog() {
+        discoveryWatchdog?.cancel()
+        discoveryWatchdog = nil
+    }
+
+    /// Arm the CoC-open watchdog (when `openingChannel` is raised). If it fires,
+    /// the open stalled (PSM read or `openL2CAPChannel` never yielded `didOpen`):
+    /// clear the latch, fail the parked opens, and unwind a pending authenticate —
+    /// the next transfer re-opens from scratch instead of parking forever.
+    private func armChannelWatchdog() {
+        channelWatchdog?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.channelWatchdog = nil
+            self.openingChannel = false
+            let waiters = self.channelWaiters
+            self.channelWaiters.removeAll()
+            for cont in waiters { cont.resume(throwing: DeviceError.channelOpenFailed) }
+            if self.authenticateContinuation != nil { self.failAuthenticate(.channelOpenFailed) }
+        }
+        channelWatchdog = item
+        queue.asyncAfter(deadline: .now() + Self.phaseTimeout, execute: item)
+    }
+
+    private func disarmChannelWatchdog() {
+        channelWatchdog?.cancel()
+        channelWatchdog = nil
+    }
+
     /// Phase 1 failed (radio, scan, GATT discovery) — the link never came up.
     private func failDiscover(_ error: DeviceError) {
+        disarmDiscoveryWatchdog()
         wantsConnect = false
         stateMulticast.send(.disconnected)
         discoverContinuation?.resume(throwing: error)
@@ -526,6 +589,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     /// Phase 2 failed (declined passkey / refused encryption / CoC open) — tear the
     /// intent down so a background reconnect doesn't spin on a bond that won't take.
     private func failAuthenticate(_ error: DeviceError) {
+        disarmChannelWatchdog()
         wantsConnect = false
         stateMulticast.send(.disconnected)
         authenticateContinuation?.resume(throwing: error)
@@ -558,7 +622,12 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     }
 
     private func finishConnect() {
-        stateMulticast.send(.connected)
+        // Only announce an actual transition (#302): a mid-session CoC reopen
+        // (after a canceled-transfer `teardownChannel`) re-enters here, but the
+        // link never left `.connected` — re-sending would re-fire edge-triggered
+        // observers. The authenticate continuation still resolves unconditionally
+        // (a fresh `authenticate()` completes here regardless of the state edge).
+        if stateMulticast.value != .connected { stateMulticast.send(.connected) }
         authenticateContinuation?.resume()
         authenticateContinuation = nil
     }
@@ -580,6 +649,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         pendingStatuses.removeAll()
         pendingAnnounces.removeAll()
         openingChannel = false
+        disarmChannelWatchdog()
         for cont in reads { cont.resume(throwing: DeviceError.notConnected) }
         for cont in writes { cont.resume(throwing: DeviceError.notConnected) }
         for waiter in statuses { waiter.cont.resume(throwing: DeviceError.notConnected) }
@@ -828,6 +898,7 @@ extension BLETransport: CBCentralManagerDelegate {
     }
 
     public func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        armDiscoveryWatchdog()  // bounds GATT discovery, not the scan/reconnect wait (#302)
         peripheral.discoverServices([GATT.deviceInformation, GATT.battery, GATT.obcControlService])
     }
 
@@ -843,6 +914,7 @@ extension BLETransport: CBCentralManagerDelegate {
 
     public func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         characteristics.removeAll()
+        disarmDiscoveryWatchdog()  // the channel watchdog is disarmed by failAllPending below
         // Close the dead CoC, don't just drop the reference: an `L2CAPByteChannel`
         // owns a dedicated run-loop thread + stall `Timer` that only stop via
         // `close()`/`teardown`. Nil-ing the refs alone orphans a thread that keeps
@@ -917,6 +989,7 @@ extension BLETransport: CBPeripheralDelegate {
         }
         pendingServiceDiscovery -= 1
         guard pendingServiceDiscovery <= 0 else { return }
+        disarmDiscoveryWatchdog()  // discovery completed — the un-gated surface is ready (#302)
         // Every service's characteristics are in hand — the un-gated surface is
         // ready. A pending `discover()` resolves here (its caller runs
         // `authenticate()` next, on the D2 row tap); an unsolicited background
@@ -953,6 +1026,7 @@ extension BLETransport: CBPeripheralDelegate {
                 // else → `channelOpenFailed`. (A decline that instead *disconnects*
                 // the link lands via `didDisconnectPeripheral`; on-glass polish.)
                 openingChannel = false
+                disarmChannelWatchdog()
                 let failure: DeviceError = Self.isAuthError(error) ? .pairingFailed : .channelOpenFailed
                 let waiters = channelWaiters
                 channelWaiters.removeAll()
@@ -987,6 +1061,7 @@ extension BLETransport: CBPeripheralDelegate {
 
     public func peripheral(_ peripheral: CBPeripheral, didOpen channel: CBL2CAPChannel?, error: Error?) {
         openingChannel = false
+        disarmChannelWatchdog()
         guard let channel, error == nil else {
             let waiters = channelWaiters
             channelWaiters.removeAll()
