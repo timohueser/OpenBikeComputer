@@ -7,10 +7,16 @@ import Foundation
 /// run-loop thread; `read`/`write` bridge the stream delegate callbacks to
 /// async/await via continuations.
 ///
-/// > **Real path only — gated on firmware `A5`.** This compiles and is structured
-/// > for bring-up, but is **not yet hardware-validated** (no device advertises the
-/// > CoC PSM until `A5`). The framing above it (`BLEChannel`) is fully tested
-/// > against the in-memory pipe instead.
+/// **Every stream touch happens on that thread.** `NSStream` is not thread-safe:
+/// pumping the output stream from the async caller's thread (as this class first
+/// did) races the delegate events and can silently miss a `hasSpaceAvailable`
+/// re-arm — the transfer then sits wedged forever with the link nominally up. So
+/// `write` only enqueues and hops the pump over, and a **stall watchdog** on the
+/// same run loop backstops whatever slips through anyway: a parked read/write
+/// that moves no bytes for [`stallTimeout`] fails the channel (`ChannelDropped`),
+/// which the layers above already treat as a drop — the device discards its
+/// partial when the CoC closes, and the upload sheet offers Resume instead of
+/// hanging at N%.
 ///
 /// `public` so the A5 echo harness / A9 soak rig (`EchoHarness`) wraps its own
 /// `CBL2CAPChannel` into the *same* byte layer `BLETransport` uses, rather than
@@ -27,17 +33,27 @@ public final class L2CAPByteChannel: NSObject, ByteChannel, StreamDelegate, @unc
     private let lock = NSLock()
     private let thread: Thread
 
+    /// How long a parked read/write may sit with **zero byte movement** before the
+    /// channel is declared dead. Generous: even the slowest negotiated link moves a
+    /// chunk every connection interval, and the device's longest quiet stretch (the
+    /// pre-announce CRC pass) is well under a second per megabyte.
+    private let stallTimeout: TimeInterval
+
     private var inbound = Data()
     private var outbound = Data()
     private var readWaiter: (max: Int, cont: CheckedContinuation<Data, Error>)?
     private var writeWaiter: CheckedContinuation<Void, Error>?
     private var closed = false
     private var failed = false
+    /// When bytes last moved (or a waiter parked) — the watchdog's reference point.
+    private var lastActivity = Date()
+    private var stallTimer: Timer?
 
-    public init(channel: CBL2CAPChannel) {
+    public init(channel: CBL2CAPChannel, stallTimeout: TimeInterval = 10) {
         self.channel = channel
         self.input = channel.inputStream
         self.output = channel.outputStream
+        self.stallTimeout = stallTimeout
         // A dedicated run-loop thread services the CoC's NSStream delegate events. A run loop with no
         // input sources returns from `run()` *immediately*, so pin it alive with a `Port` — without
         // this the thread exits before the streams are ever scheduled, no CoC bytes flow, and the peer
@@ -61,6 +77,11 @@ public final class L2CAPByteChannel: NSObject, ByteChannel, StreamDelegate, @unc
             stream.schedule(in: .current, forMode: .default)
             stream.open()
         }
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            self?.checkStall()
+        }
+        RunLoop.current.add(timer, forMode: .default)
+        stallTimer = timer
     }
 
     /// Whether the channel can still move bytes — `BLETransport` checks this to
@@ -79,8 +100,10 @@ public final class L2CAPByteChannel: NSObject, ByteChannel, StreamDelegate, @unc
             if failed || closed { lock.unlock(); cont.resume(throwing: ChannelDropped()); return }
             outbound.append(data)
             writeWaiter = cont
+            lastActivity = Date()
             lock.unlock()
-            pumpOutbound()
+            // The pump touches the stream, so it runs where the stream lives.
+            perform(#selector(pumpOutbound), on: thread, with: nil, waitUntilDone: false)
         }
     }
 
@@ -98,6 +121,7 @@ public final class L2CAPByteChannel: NSObject, ByteChannel, StreamDelegate, @unc
             if closed { lock.unlock(); cont.resume(returning: Data()); return }  // clean EOF
             if failed { lock.unlock(); cont.resume(throwing: ChannelDropped()); return }
             readWaiter = (maxLength, cont)
+            lastActivity = Date()
             lock.unlock()
         }
     }
@@ -119,6 +143,8 @@ public final class L2CAPByteChannel: NSObject, ByteChannel, StreamDelegate, @unc
     }
 
     @objc private func teardown() {
+        stallTimer?.invalidate()
+        stallTimer = nil
         for stream in [input, output] {
             stream.close()
             stream.remove(from: .current, forMode: .default)
@@ -135,7 +161,7 @@ public final class L2CAPByteChannel: NSObject, ByteChannel, StreamDelegate, @unc
         case .hasSpaceAvailable:
             pumpOutbound()
         case .errorOccurred, .endEncountered:
-            fail(eventCode == .endEncountered)
+            fail(cleanEnd: eventCode == .endEncountered)
         default:
             break
         }
@@ -146,7 +172,12 @@ public final class L2CAPByteChannel: NSObject, ByteChannel, StreamDelegate, @unc
         lock.lock()
         while input.hasBytesAvailable {
             let n = input.read(&scratch, maxLength: scratch.count)
-            if n > 0 { inbound.append(contentsOf: scratch[0..<n]) } else { break }
+            if n > 0 {
+                inbound.append(contentsOf: scratch[0..<n])
+                lastActivity = Date()
+            } else {
+                break
+            }
         }
         guard let waiter = readWaiter, !inbound.isEmpty else { lock.unlock(); return }
         readWaiter = nil
@@ -157,11 +188,16 @@ public final class L2CAPByteChannel: NSObject, ByteChannel, StreamDelegate, @unc
         waiter.cont.resume(returning: out)
     }
 
-    private func pumpOutbound() {
+    @objc private func pumpOutbound() {
         lock.lock()
         while output.hasSpaceAvailable, !outbound.isEmpty {
             let n = outbound.withUnsafeBytes { output.write($0.bindMemory(to: UInt8.self).baseAddress!, maxLength: outbound.count) }
-            if n > 0 { outbound.removeFirst(n) } else { break }
+            if n > 0 {
+                outbound.removeFirst(n)
+                lastActivity = Date()
+            } else {
+                break
+            }
         }
         if outbound.isEmpty, let cont = writeWaiter {
             writeWaiter = nil
@@ -172,14 +208,32 @@ public final class L2CAPByteChannel: NSObject, ByteChannel, StreamDelegate, @unc
         lock.unlock()
     }
 
-    private func fail(_ cleanEnd: Bool) {
+    /// The watchdog tick (run-loop thread): a parked waiter with no byte movement
+    /// for [`stallTimeout`] means the CoC is wedged — the link may still be "up",
+    /// but this transfer will never finish. Fail the channel so the layers above
+    /// recover (teardown → the device discards its partial → restart/Resume).
+    private func checkStall() {
         lock.lock()
+        let stalled = !closed && !failed
+            && (readWaiter != nil || writeWaiter != nil)
+            && Date().timeIntervalSince(lastActivity) > stallTimeout
+        lock.unlock()
+        if stalled { fail(cleanEnd: false) }
+    }
+
+    private func fail(cleanEnd: Bool) {
+        lock.lock()
+        guard !failed else { lock.unlock(); return }
         failed = true
         let read = readWaiter; readWaiter = nil
         let write = writeWaiter; writeWaiter = nil
         lock.unlock()
         if cleanEnd { read?.cont.resume(returning: Data()) } else { read?.cont.resume(throwing: ChannelDropped()) }
         write?.resume(throwing: ChannelDropped())
+        // A failed channel never carries another transfer (`isOpen` is false; the
+        // transport opens a fresh CoC instead) — release the streams and the
+        // thread now, and let the `CBL2CAPChannel` close when this object dies.
+        perform(#selector(teardown), on: thread, with: nil, waitUntilDone: false)
     }
 }
 #endif
