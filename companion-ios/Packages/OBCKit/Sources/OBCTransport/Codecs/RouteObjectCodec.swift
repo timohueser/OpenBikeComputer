@@ -13,9 +13,9 @@ import OBCDomain
 /// `gpx_to_obcr` is **not** a goal (the firmware only needs *valid* OBCR, and the
 /// two producers decimate independently); the geometry math here mirrors the app's
 /// own ``RouteStats`` so an uploaded route's stored header totals match exactly
-/// what E1 displayed. The `route-plain.obcr` / `route-waypoints.obcr` shared
-/// fixtures (`protocol-vectors/`, produced by the firmware converter) pin the
-/// **reader** so it can't drift from real device output.
+/// what the detail screen displayed. The `route-plain.obcr` / `route-waypoints.obcr`
+/// shared fixtures (`protocol-vectors/`, produced by the firmware converter) pin
+/// the **reader** so it can't drift from real device output.
 ///
 /// File layout (little-endian throughout, coordinates in microdegrees):
 /// ```

@@ -15,11 +15,11 @@ public struct DownloadedRide: Equatable, Sendable {
     }
 }
 
-/// A running ride sync (B7): the batch's `TransferHandle` (progress / cancel /
-/// resume) plus the rides themselves as they land. Partial results are first-class
-/// (H10 "never lose partial data"): each ride is yielded as soon as its bytes are
-/// complete and CRC-verified, so a drop mid-batch keeps everything already yielded
-/// and `handle.resume()` continues into both streams.
+/// A running ride sync: the batch's `TransferHandle` (progress / cancel /
+/// resume) plus the rides themselves as they land. Partial results are
+/// first-class: each ride is yielded as soon as its bytes are complete and
+/// CRC-verified, so a drop mid-batch keeps everything already yielded and
+/// `handle.resume()` continues into both streams.
 public struct RideDownload: Sendable {
     public let handle: TransferHandle
     /// One element per requested ride, in transfer order. Finishes when the batch
@@ -32,8 +32,8 @@ public struct RideDownload: Sendable {
     }
 
     /// A degenerate download with both streams already finished — the "nothing to
-    /// pull" cases: already up to date (H9, `.completed`, the default) or not
-    /// connected (H4, pass `.failed(.notConnected)`).
+    /// pull" cases: already up to date (`.completed`, the default) or not
+    /// connected (pass `.failed(.notConnected)`).
     public static func finished(_ outcome: TransferOutcome = .completed) -> RideDownload {
         let (stream, continuation) = AsyncThrowingStream<DownloadedRide, Error>.makeStream()
         continuation.finish()

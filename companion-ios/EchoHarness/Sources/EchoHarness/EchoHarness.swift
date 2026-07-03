@@ -7,15 +7,15 @@ import OBCTransport
 /// codecs) from the terminal — the oracle that isn't the iOS app, so failures localize.
 ///
 /// Two planes:
-/// - **echo** (A5, #273): round-trip N objects through the loopback, byte-identical + committed.
-/// - **route object plane** (A6, #274): upload an OBCR file → SD, list/detail/delete the catalog,
-///   and prove an interrupted upload is discarded + cleanly re-uploaded (uploads restart, not
-///   resume — spec §1 principle 4).
+/// - **echo**: round-trip N objects through the loopback, byte-identical + committed.
+/// - **route object plane**: upload an OBCR file → SD, list/detail/delete the catalog, and prove an
+///   interrupted upload is discarded + cleanly re-uploaded (uploads restart, not resume — spec §1
+///   principle 4).
 ///
 /// Run on a Mac with the device powered + advertising:
 /// ```
-/// swift run echo-harness echo --count 1000 --size 32768   # A5 DoD: 1000 × 32 KB
-/// swift run echo-harness upload route.obcr                 # A6 golden path
+/// swift run echo-harness echo --count 1000 --size 32768   # 1000 × 32 KB soak run
+/// swift run echo-harness upload route.obcr                 # golden path
 /// swift run echo-harness list
 /// swift run echo-harness detail 7 route.obcr              # download + byte-identity check
 /// swift run echo-harness delete 7
@@ -59,9 +59,9 @@ struct EchoHarness {
         }
     }
 
-    // MARK: - A6 route object plane (#274)
+    // MARK: - Route object plane
 
-    /// Upload an OBCR file to the device (S0 §4.2 op 1), assert it commits, and confirm the store
+    /// Upload an OBCR file to the device (spec §4.2 op 1), assert it commits, and confirm the store
     /// digest moved (a route was added).
     static func runUpload(path: String) async throws {
         let bytes = try Data(contentsOf: URL(fileURLWithPath: path))
@@ -92,7 +92,7 @@ struct EchoHarness {
         )
     }
 
-    /// Download + decode the `routeList` (S0 §7.4) and print the catalog.
+    /// Download + decode the `routeList` (spec §7.4) and print the catalog.
     static func runList() async throws {
         let central = EchoCentral()
         let link = try await central.connect()
@@ -106,7 +106,7 @@ struct EchoHarness {
         }
     }
 
-    /// Download a stored route (S0 §7.1: the OBCR bytes verbatim), verify its CRC, and — given a
+    /// Download a stored route (spec §7.1: the OBCR bytes verbatim), verify its CRC, and — given a
     /// reference file — assert byte-identity with what was uploaded.
     static func runDetail(id: UInt16, reference: String?, out: String?) async throws {
         let central = EchoCentral()
@@ -124,7 +124,7 @@ struct EchoHarness {
         }
     }
 
-    /// Delete a stored route by object id (S0 §4.4 `deleteObject`); assert the command succeeds and
+    /// Delete a stored route by object id (spec §4.4 `deleteObject`); assert the command succeeds and
     /// the store signals the change.
     static func runDelete(id: UInt16) async throws {
         let central = EchoCentral()
@@ -150,9 +150,9 @@ struct EchoHarness {
 
     /// Upload an OBCR file, **abort it mid-transfer** (op=3), and confirm the device discards the
     /// partial — then re-upload the whole object and confirm it commits and lands in the catalog.
-    /// A6's "interrupted upload → discard → re-upload" acceptance (uploads restart, not resume —
-    /// spec §1 principle 4). The abort is an explicit `transferControl` write, not a CoC-close, so
-    /// it's a reliable GATT signal rather than relying on the device detecting a dropped channel.
+    /// Proves "interrupted upload → discard → re-upload" (uploads restart, not resume — spec §1
+    /// principle 4). The abort is an explicit `transferControl` write, not a CoC-close, so it's a
+    /// reliable GATT signal rather than relying on the device detecting a dropped channel.
     static func runAbortTest(path: String) async throws {
         let bytes = try Data(contentsOf: URL(fileURLWithPath: path))
         guard bytes.count >= 2 else { throw CLIError.usage("abort-test needs a route of at least 2 bytes") }
@@ -191,7 +191,7 @@ struct EchoHarness {
         print("echo-harness: id \(committed.objectID) present in routeList ✓ (\(entries.count) route(s))")
     }
 
-    /// The shared download flow (S0 §4.2 op 2): write the request, await the device's announce
+    /// The shared download flow (spec §4.2 op 2): write the request, await the device's announce
     /// descriptor (total_len + crc32), stream the payload off the CoC verifying the whole-object CRC,
     /// then consume the closing `transferResult`.
     static func downloadObject(
@@ -212,7 +212,7 @@ struct EchoHarness {
         try RouteList.decode(try await downloadObject(link: link, central: central, type: .routeList, objectID: 0))
     }
 
-    // MARK: - A5 echo loopback (#273)
+    // MARK: - Echo loopback
 
     static func runEcho(_ opts: Options) async throws {
         let central = EchoCentral()

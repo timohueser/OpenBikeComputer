@@ -1,14 +1,13 @@
 import Foundation
 import OBCDomain
 
-// Codecs/ is the home of the **device object layouts** (firmware-`S0`-owned byte
-// formats ↔ domain types): the `Config` blob today, the compact-binary route
-// encoder and ride decoder when their layouts land. Deliberately outside `BLE/`
-// so a device-format change touches a codec file, never the transport class —
-// and everything here stays pure + host-testable with no CoreBluetooth.
+// Codecs/ is the home of the **device object layouts** (firmware-owned byte
+// formats ↔ domain types). Deliberately outside `BLE/` so a device-format change
+// touches a codec file, never the transport class — and everything here stays
+// pure + host-testable with no CoreBluetooth.
 
-/// The `Config` object codec — `[nameLen: u16-LE][name UTF-8 ≤ 48 B][units: u8]`,
-/// **ratified by firmware S0** (`obc-ble-interface-spec.md` §7.3; pinned against
+/// The `Config` object codec — `[nameLen: u16-LE][name UTF-8 ≤ 48 B][units: u8]`
+/// (`obc-ble-interface-spec.md` §7.3; pinned against
 /// `protocol-vectors/config-v1.bin`). Append-only is the version mechanism: fields
 /// are never reordered or resized, and unknown trailing bytes are ignored.
 enum ConfigObjectCodec {

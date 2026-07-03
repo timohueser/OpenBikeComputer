@@ -2,8 +2,8 @@ import Foundation
 import OBCDomain
 
 /// A running bulk transfer the UI observes and controls — the return of
-/// `uploadRoute` (B5) and `downloadRides` (B7). A `Sendable` value type backed by
-/// the runner driving the transfer: `progress` streams `TransferProgress`, and
+/// `uploadRoute` and `downloadRides`. A `Sendable` value type backed by the
+/// runner driving the transfer: `progress` streams `TransferProgress`, and
 /// `cancel()` / `resume()` signal that runner.
 ///
 /// `resume()` **restarts, it does not continue** (spec §1 principle 4): a dropped
@@ -39,8 +39,7 @@ public struct TransferHandle: Sendable {
     /// The terminal state — resolves when the transfer completes, is canceled, or
     /// fails for good, so the UI never infers success from byte counts. A drop
     /// keeps it unresolved (the transfer is still restartable); pair with
-    /// `progress` + `DeviceTransport.state` for the interrupted (F/H10)
-    /// presentation.
+    /// `progress` + `DeviceTransport.state` for the interrupted presentation.
     public var outcome: TransferOutcome {
         get async { await outcomePromise.value }
     }
@@ -64,8 +63,8 @@ public struct TransferHandle: Sendable {
     public func resume() { onResume() }
 
     /// A degenerate handle: progress already finished, controls no-ops, and
-    /// `outcome` pre-resolved — `.completed` for "nothing to do" (H9 up to date),
-    /// `.failed(.notConnected)` for "no transfer possible" (H4).
+    /// `outcome` pre-resolved — `.completed` for "nothing to do" (already up to
+    /// date), `.failed(.notConnected)` for "no transfer possible".
     public static func immediatelyFinished(_ outcome: TransferOutcome = .completed) -> TransferHandle {
         let (stream, continuation) = AsyncStream<TransferProgress>.makeStream()
         continuation.finish()

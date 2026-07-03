@@ -2,7 +2,7 @@ import Foundation
 import OBCDomain
 
 /// The real `LibraryStore`: plain JSON files in an app-owned directory — the
-/// "keep it boring" choice (#256; no CoreData/SwiftData until a real need).
+/// "keep it boring" choice (no CoreData/SwiftData until a real need).
 ///
 /// Layout under `directory`:
 ///
@@ -190,7 +190,7 @@ private struct PlannedRouteFile: Codable {
     var route: ImportedRouteDTO
     var sourceFileName: String
     /// The device object id this route is stored under, `nil` when not on the
-    /// device. Optional-decoded, so a pre-B13 file (which lacked it) loads as
+    /// device. Optional-decoded, so an older file (which lacked it) loads as
     /// "not uploaded" and self-heals on the next upload/reconcile.
     var deviceObjectID: UInt16?
     /// The committed upload payload's CRC-32 (the `OnDeviceState` fingerprint).
@@ -271,9 +271,9 @@ private struct TrackPreviewDTO: Codable {
     var points: [[Double]]
     var aspectRatio: Double
     /// `[lat, lon]` pairs, index-aligned with `points` — the source geography the
-    /// MapKit basemap preview draws (#294). Optional-decoded: a pre-#294 file
-    /// lacked it, so it loads with no coordinates and the preview falls back to
-    /// the grid until the record is re-saved.
+    /// MapKit basemap preview draws. Optional-decoded: an older file lacked it,
+    /// so it loads with no coordinates and the preview falls back to the grid
+    /// until the record is re-saved.
     var coordinates: [[Double]]?
 
     init(_ preview: TrackPreview) {

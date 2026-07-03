@@ -2,20 +2,18 @@
 @preconcurrency import CoreBluetooth
 
 /// The GATT service/characteristic map `BLETransport` discovers — the control
-/// plane of `obc-ble-interface-spec.md` (§3, **pinned by firmware S0 / PR #279**;
-/// mirrored in `OBCProtocol.md`).
+/// plane of `obc-ble-interface-spec.md` (§3; mirrored in `OBCProtocol.md`).
 ///
 /// The OBC Control UUIDs use the random base `3C92XXXX-9916-4EBA-ABC2-342FE08F6B10`
 /// where the 16-bit `XXXX` block selects the entity (`0000` = the service, `000N` =
-/// characteristic N). Custom UUIDs must not derive from the Bluetooth SIG base —
-/// which is why the earlier `0BC0…` placeholders were replaced, not ratified.
+/// characteristic N). Custom UUIDs must not derive from the Bluetooth SIG base.
 ///
 /// `CBUUID` is immutable but not `Sendable`-audited; `nonisolated(unsafe)` states
 /// the (true) invariant that these constants are safe to share.
 ///
-/// `public` so host tooling that reuses the transport primitives — the A5 echo
-/// harness / A9 soak rig (`EchoHarness`), which drives its own `CBCentralManager`
-/// — scans + discovers against the *same* pinned UUIDs, not a copy that could drift.
+/// `public` so host tooling that reuses the transport primitives — the
+/// `EchoHarness` bring-up rig, which drives its own `CBCentralManager` — scans +
+/// discovers against the *same* pinned UUIDs, not a copy that could drift.
 public enum GATT {
     // MARK: SIG services (fixed)
     nonisolated(unsafe) public static let deviceInformation = CBUUID(string: "180A")

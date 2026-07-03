@@ -12,8 +12,8 @@ struct EchoLink: @unchecked Sendable {
     let channel: BLEChannel
 }
 
-/// A minimal CoreBluetooth central that brings up an OBC link and drives both data planes: the A5
-/// echo loopback and the A6 route object plane (upload / list / detail / delete / abort). It scans
+/// A minimal CoreBluetooth central that brings up an OBC link and drives both data planes: the
+/// echo loopback and the route object plane (upload / list / detail / delete / abort). It scans
 /// for the OBC Control service, connects, discovers, reads the `psm`, and opens the L2CAP CoC. It
 /// owns its *own* `CBCentralManager` (the app's `BLETransport` wraps the same steps behind the
 /// semantic `DeviceTransport`, which has no harness verbs) but reuses the pinned `GATT` UUIDs, the
@@ -62,40 +62,40 @@ final class EchoCentral: NSObject, @unchecked Sendable {
         }
     }
 
-    /// Write the 16-byte `TransferControl` descriptor that opens/aborts a transfer (S0 §4.2).
+    /// Write the 16-byte `TransferControl` descriptor that opens/aborts a transfer (spec §4.2).
     func writeControl(_ bytes: Data, to characteristic: CBCharacteristic) {
         queue.async { [self] in peripheral?.writeValue(bytes, for: characteristic, type: .withResponse) }
     }
 
-    /// Write a `command` imperative (S0 §4.4) — e.g. `deleteObject`.
+    /// Write a `command` imperative (spec §4.4) — e.g. `deleteObject`.
     func writeCommand(_ bytes: Data) {
         queue.async { [self] in
             if let c = characteristics[GATT.command] { peripheral?.writeValue(bytes, for: c, type: .withResponse) }
         }
     }
 
-    /// The device's next `transferResult` (S0 §4.3) — a transfer's committed/aborted/… verdict.
+    /// The device's next `transferResult` (spec §4.3) — a transfer's committed/aborted/… verdict.
     func nextTransferResult() async -> TransferResult {
         guard case .transferResult(let r) = await nextStatus(where: { if case .transferResult = $0 { true } else { false } })
         else { fatalError("predicate guarantees a transferResult") }
         return r
     }
 
-    /// The device's next `commandResult` (S0 §4.3/§4.4).
+    /// The device's next `commandResult` (spec §4.3/§4.4).
     func nextCommandResult() async -> CommandResult {
         guard case .commandResult(let c) = await nextStatus(where: { if case .commandResult = $0 { true } else { false } })
         else { fatalError("predicate guarantees a commandResult") }
         return c
     }
 
-    /// The device's next `storeChanged` (S0 §4.3) — emitted after every commit/delete.
+    /// The device's next `storeChanged` (spec §4.3) — emitted after every commit/delete.
     func nextStoreChanged() async -> StoreChanged {
         guard case .storeChanged(let s) = await nextStatus(where: { if case .storeChanged = $0 { true } else { false } })
         else { fatalError("predicate guarantees a storeChanged") }
         return s
     }
 
-    /// The device's next download-announce descriptor on `transferControl` (S0 §4.2) — the same 16
+    /// The device's next download-announce descriptor on `transferControl` (spec §4.2) — the same 16
     /// bytes as the request with `total_len`/`crc32` filled in, sent before the CoC bytes flow.
     func nextAnnounce() async -> TransferControl {
         await withCheckedContinuation { (cont: CheckedContinuation<TransferControl, Never>) in
@@ -106,7 +106,7 @@ final class EchoCentral: NSObject, @unchecked Sendable {
         }
     }
 
-    /// Read the `objectStore` digest (S0 §4.5): revision + object counts.
+    /// Read the `objectStore` digest (spec §4.5): revision + object counts.
     func readDigest() async throws -> ObjectStoreDigest {
         try ObjectStoreDigest(decoding: try await readValue(GATT.objectStore))
     }

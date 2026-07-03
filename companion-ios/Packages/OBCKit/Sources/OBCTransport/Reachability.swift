@@ -1,8 +1,8 @@
 import Foundation
 
 /// Whether the phone currently has a usable network path — the one signal the
-/// MapKit basemap preview (#294) needs. MapKit tiles come off Apple's servers,
-/// so offline (or a captive/failed path) means no basemap; the preview then
+/// MapKit basemap preview needs. MapKit tiles come off Apple's servers, so
+/// offline (or a captive/failed path) means no basemap; the preview then
 /// degrades to the grid renderer. This is **infrastructure, not UI** — it lives
 /// beside `DeviceTransport` and is injected the same way (a protocol seam, so the
 /// online/offline decision is unit-testable without a real radio).

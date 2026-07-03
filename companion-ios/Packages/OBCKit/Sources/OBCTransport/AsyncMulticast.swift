@@ -1,7 +1,7 @@
 import Foundation
 
-/// A last-value multicast for `AsyncStream` — the epic's "replay latest for
-/// `state`/`battery` so a late subscriber gets the current value" (epic #234).
+/// A last-value multicast for `AsyncStream`: replay the latest value for
+/// `state`/`battery` so a late subscriber gets the current value immediately.
 /// Each `stream()` replays the most recent element, then receives live updates;
 /// `send` fans out to all live subscribers.
 ///

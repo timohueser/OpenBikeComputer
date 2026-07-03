@@ -2,11 +2,11 @@ import Foundation
 
 /// What the app remembers about its bonded device. iOS owns the actual BLE bond
 /// (there is no CoreBluetooth API to enumerate it), so the app keeps this small
-/// record as its own source of truth for the launch branch (B2): present →
-/// bonded → the quiet connecting state; absent → the pairing flow.
+/// record as its own source of truth for the launch branch: present → bonded →
+/// the quiet connecting state; absent → the pairing flow.
 public struct BondRecord: Equatable, Sendable {
     /// The device name to greet with before the link is up ("Connecting to
-    /// Trailhead…"). Updated on rename (H3) via a fresh `save`.
+    /// Trailhead…"). Updated on rename via a fresh `save`.
     public var deviceName: String
 
     public init(deviceName: String) {
@@ -14,17 +14,17 @@ public struct BondRecord: Equatable, Sendable {
     }
 }
 
-/// Persistence seam for the bond record — a `DeviceTransport`-side concern, per
-/// B2: **the launch branch never takes a CoreBluetooth detour** to ask about
-/// bonds. Conformers: `UserDefaultsBondStore` (real) and OBCMock's
-/// `MockBondStore` (scenario-driven, `#if DEBUG`).
+/// Persistence seam for the bond record — a `DeviceTransport`-side concern:
+/// **the launch branch never takes a CoreBluetooth detour** to ask about bonds.
+/// Conformers: `UserDefaultsBondStore` (real) and OBCMock's `MockBondStore`
+/// (scenario-driven, `#if DEBUG`).
 public protocol BondStore: Sendable {
     /// The remembered bond, or nil when the app has never paired (or forgot).
     func load() -> BondRecord?
-    /// Record a successful pairing (D4) — or refresh the name after a rename.
+    /// Record a successful pairing — or refresh the name after a rename.
     func save(_ record: BondRecord)
-    /// Forget the device (H2). iOS keeps the underlying bond until the user
-    /// removes it in Settings; the app just stops assuming it.
+    /// Forget the device. iOS keeps the underlying bond until the user removes
+    /// it in Settings; the app just stops assuming it.
     func clear()
 }
 

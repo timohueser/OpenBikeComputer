@@ -20,7 +20,7 @@ public enum ObjectType: UInt8, Equatable, Sendable, CaseIterable {
 /// the CoC itself stays **raw payload bytes** with no per-chunk headers for the MCU
 /// to parse or buffer.
 ///
-/// Fixed **16 bytes**, little-endian (spec §4.2, pinned by S0 / PR #279):
+/// Fixed **16 bytes**, little-endian (spec §4.2):
 /// ```
 ///   op         u8    1 = upload · 2 = download · 3 = abort
 ///   type       u8    ObjectType
