@@ -24,6 +24,9 @@ use heapless::Vec;
 
 use crate::byte_io::{ByteSource, Error as IoError};
 use crate::codec::{rd_f32, rd_i32, rd_u16, rd_u32};
+use crate::format::{
+    BRANCH_BIT, EMPTY_LEAF, FEATURE_FLAG_16BIT, FEATURE_FLAG_HOLES, FEATURE_FLAG_POLYGON, STYLE_PRIORITY_MASK,
+};
 use crate::{BBox, Error};
 
 /// Upper bound on the vertices of a single decoded feature — the capacity a caller
@@ -87,9 +90,6 @@ const INDEX_BLOCKS: usize = 8;
 // is a `u16`, so the accepted cap stays within range.
 const _: () = assert!(CACHE_SLOT_BYTES <= MAX_CHUNK_BYTES, "a cached chunk must fit the scratch");
 const _: () = assert!(MAX_CHUNK_BYTES <= u16::MAX as usize, "chunk_size is a u16 in the format");
-
-const BRANCH_BIT: u32 = 0x8000_0000;
-const EMPTY_LEAF: u32 = 0x7FFF_FFFF;
 
 /// Hard cap on quadtree recursion depth in [`Reader::walk_leaves`] (issue #65). A well-formed
 /// map's tree is far shallower: the node bbox halves each level, so it bottoms out at the
@@ -655,9 +655,9 @@ fn decode_chunk_into<const P: usize, const R: usize>(
         let flags = chunk[off + 11];
         off += 12;
 
-        let is_16 = flags & 0x01 != 0;
-        let is_poly = flags & 0x02 != 0;
-        let has_holes = flags & 0x04 != 0;
+        let is_16 = flags & FEATURE_FLAG_16BIT != 0;
+        let is_poly = flags & FEATURE_FLAG_POLYGON != 0;
+        let has_holes = flags & FEATURE_FLAG_HOLES != 0;
         let dsize = if is_16 { 2 } else { 1 };
 
         // Skip path: the caller doesn't want this style this pass, so advance
@@ -818,7 +818,7 @@ fn parse_styles(src: &dyn ByteSource, style_offset: usize, total: usize) -> [Opt
         let color = rd_u16(&buf, o + 2);
         let weight = buf[o + 4];
         let flags = buf[o + 5];
-        let priority = (flags & 0x03) + 1;
+        let priority = (flags & STYLE_PRIORITY_MASK) + 1;
         styles[id as usize] = Some(Style { id, z_index, color, weight, priority });
         o += 6;
     }
