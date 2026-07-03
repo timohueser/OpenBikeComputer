@@ -16,6 +16,10 @@ struct RootView: View {
     @State private var pendingImport: PendingImport?
     @State private var importCollision: ImportCollision?
     @State private var importFailedAlert = false
+    /// "Add as a new route" chosen from the collision dialog — holds the import
+    /// while the distinct-name prompt is up.
+    @State private var addAsNewPrompt: PendingImport?
+    @State private var newRouteName = ""
 
     private let transport: any DeviceTransport
     /// Kept for the import edge: an arriving file checks the bond to pick the
@@ -122,10 +126,29 @@ struct RootView: View {
                 importCollision = nil
             }
             Button("Add as a new route") {
-                pendingImport = collision.pending
+                // Two routes under one name would be indistinguishable (and the
+                // next import's collision check keys on the name) — a distinct
+                // name is required before the landing opens.
+                newRouteName = collision.pending.route.name ?? collision.pending.fileName
+                addAsNewPrompt = collision.pending
                 importCollision = nil
             }
             Button("Cancel", role: .cancel) { importCollision = nil }
+        }
+        .alert(
+            "Name the new route",
+            isPresented: Binding(get: { addAsNewPrompt != nil }, set: { if !$0 { addAsNewPrompt = nil } }),
+            presenting: addAsNewPrompt
+        ) { pending in
+            TextField("Name", text: $newRouteName)
+            Button("Cancel", role: .cancel) { addAsNewPrompt = nil }
+            Button("Add") {
+                pendingImport = pending.renamed(to: newRouteName.trimmingCharacters(in: .whitespacesAndNewlines))
+                addAsNewPrompt = nil
+            }
+            .disabled(!isNewRouteNameValid)
+        } message: { _ in
+            Text("A route with this name is already in your library — pick a different one.")
         }
         .task {
             if let importAtLaunch {
@@ -217,6 +240,24 @@ struct RootView: View {
 
     // MARK: Import edge (→ E1)
 
+    /// The saved planned route whose name matches, case-insensitively. Reads
+    /// the **library store directly** — a share can arrive while the launch
+    /// gate is still connecting, before the main screen (and its in-memory
+    /// mirror) ever started; the store is always current, every save writes
+    /// through it.
+    private func plannedRoute(named name: String) -> PlannedRouteRecord? {
+        let target = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return library.plannedRoutes().first { $0.summary.name.lowercased() == target }
+    }
+
+    /// Whether the "Add as a new route" prompt's current name can be accepted:
+    /// non-empty and unlike every saved route's (the collision check keys on
+    /// names, so a duplicate would just re-collide).
+    private var isNewRouteNameValid: Bool {
+        let trimmed = newRouteName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !trimmed.isEmpty && plannedRoute(named: trimmed) == nil
+    }
+
     private func importFile(at url: URL) {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
@@ -240,7 +281,7 @@ struct RootView: View {
                 noDevicePaired: bondStore.load() == nil
             )
             // A route by this name already saved → offer update-in-place vs new.
-            if let existing = mainModel.plannedRoute(named: route.name ?? fileName) {
+            if let existing = plannedRoute(named: route.name ?? fileName) {
                 importCollision = ImportCollision(pending: pending, existing: existing)
             } else {
                 pendingImport = pending
