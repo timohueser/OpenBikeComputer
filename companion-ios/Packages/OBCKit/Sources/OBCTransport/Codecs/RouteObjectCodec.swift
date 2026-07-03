@@ -65,6 +65,15 @@ public enum RouteObjectCodec {
         encode(points: route.points, waypoints: route.waypoints, name: name)
     }
 
+    /// The CRC-32 of the payload an upload of this library record would send —
+    /// the `OnDeviceState` fingerprint. **The one canonical "payload for a
+    /// record" definition**: the record's geometry + waypoints under its display
+    /// name, exactly what the detail screen's upload blob encodes; keeping both
+    /// on this function is what makes "up to date" mean byte-identical.
+    public static func payloadCRC(for record: PlannedRouteRecord) -> UInt32 {
+        CRC32.checksum(encode(points: record.route.points, waypoints: record.route.waypoints, name: record.summary.name))
+    }
+
     /// Encode geometry + waypoints into an OBCR v2 file. `waypoints` are stored
     /// verbatim (already placed along the route by `WaypointPlacement`); `points`
     /// carry the geometry and drive the exact header stats.

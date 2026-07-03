@@ -87,10 +87,11 @@ struct RootView: View {
                     pendingImport = nil
                 },
                 // "Uploading saves it too" (B5): the route lands in Planned
-                // the moment the upload completes (recorded as on-device under
-                // the id the device assigned); the cover closes after F₂.
-                onUploaded: { detail, objectID in
-                    mainModel.addImportedRoute(pending.record(for: detail, deviceObjectID: objectID))
+                // the moment the upload completes (recorded as on-device, up to
+                // date, under the id the device assigned); the cover closes
+                // after F₂.
+                onUploaded: { detail, objectID, crc in
+                    mainModel.addImportedRoute(pending.record(for: detail, deviceObjectID: objectID, uploadedCRC32: crc))
                 },
                 // H4 "Pair a device": save first (a pairing detour must not
                 // cost the import), then drop into the D2 scan.
@@ -154,18 +155,21 @@ struct RootView: View {
                     preloadedDetail: mainModel.importedDetail(for: id),
                     // …and their geometry, which an upload re-encodes to OBCR.
                     plannedGeometry: mainModel.plannedGeometry(for: id),
-                    // …and the device object id, so a re-upload replaces in place.
+                    // …and the device link (object id + committed fingerprint),
+                    // so a re-upload replaces in place and the button knows
+                    // whether the copy is current.
                     deviceObjectID: mainModel.plannedDeviceObjectID(for: id),
+                    uploadedCRC32: mainModel.plannedUploadedCRC32(for: id),
                     deviceName: mainModel.deviceName,
                     onDelete: {
                         mainModel.deleteRoute(id)
                         path.removeAll()
                     },
                     onRename: { mainModel.renameRoute(id, to: $0) },
-                    // A completed upload: record the device object id it landed
-                    // under (the badge + a future in-place replace).
-                    onUploaded: { objectID in
-                        if let objectID { mainModel.markRouteUploaded(id, objectID: objectID) }
+                    // A completed upload: record the device object id +
+                    // fingerprint it landed under (the badge + in-place replace).
+                    onUploaded: { objectID, crc in
+                        if let objectID { mainModel.markRouteUploaded(id, objectID: objectID, crc32: crc) }
                     }
                 )
             }
@@ -293,7 +297,7 @@ private struct SettingsScreen: View {
 
 private struct PendingImport: Identifiable {
     let id = UUID()
-    let route: ImportedRoute
+    var route: ImportedRoute
     let fileName: String
     /// The original bytes, kept for the library record (re-parse/debugging).
     let fileData: Data
@@ -310,17 +314,29 @@ private struct PendingImport: Identifiable {
         return copy
     }
 
+    /// A copy under a fresh name (the "Add as a new route" prompt) — a plain
+    /// new import, not a replace.
+    func renamed(to newName: String) -> PendingImport {
+        var copy = self
+        copy.route.name = newName
+        copy.replacing = nil
+        return copy
+    }
+
     /// The library record (B1S) a save/upload/pair action lands: the landing's
     /// summary over the canonical parsed route + the original file. `deviceObjectID`
-    /// is the id an upload just landed under; absent that, a replace keeps the
-    /// route it's replacing on the device (its badge stays).
-    func record(for detail: RouteDetail, deviceObjectID: UInt16? = nil) -> PlannedRouteRecord {
+    /// + `uploadedCRC32` are what an upload just committed; absent that, a
+    /// replace keeps the route it's replacing on the device — under its old
+    /// fingerprint, so the badge honestly reads **out of date** until the next
+    /// push updates the copy.
+    func record(for detail: RouteDetail, deviceObjectID: UInt16? = nil, uploadedCRC32: UInt32? = nil) -> PlannedRouteRecord {
         PlannedRouteRecord(
             summary: detail.summary,
             route: route,
             sourceFileName: fileName,
             sourceFileData: fileData,
-            deviceObjectID: deviceObjectID ?? replacing?.deviceObjectID
+            deviceObjectID: deviceObjectID ?? replacing?.deviceObjectID,
+            uploadedCRC32: uploadedCRC32 ?? replacing?.uploadedCRC32
         )
     }
 }
@@ -343,7 +359,7 @@ private struct RouteDetailScreen: View {
     private let deviceName: String
     private let onDelete: (() -> Void)?
     private let onRename: ((String) -> Void)?
-    private let onUploaded: ((UInt16?) -> Void)?
+    private let onUploaded: ((UInt16?, UInt32) -> Void)?
     private let isRide: Bool
 
     init(
@@ -352,15 +368,16 @@ private struct RouteDetailScreen: View {
         preloadedDetail: RouteDetail? = nil,
         plannedGeometry: ImportedRoute? = nil,
         deviceObjectID: UInt16? = nil,
+        uploadedCRC32: UInt32? = nil,
         deviceName: String,
         onDelete: (() -> Void)? = nil,
         onRename: ((String) -> Void)? = nil,
-        onUploaded: ((UInt16?) -> Void)? = nil
+        onUploaded: ((UInt16?, UInt32) -> Void)? = nil
     ) {
         _model = State(initialValue: RouteDetailModel(
             transport: transport, dressing: dressing,
             preloadedDetail: preloadedDetail, plannedGeometry: plannedGeometry,
-            deviceObjectID: deviceObjectID
+            deviceObjectID: deviceObjectID, uploadedCRC32: uploadedCRC32
         ))
         self.transport = transport
         self.deviceName = deviceName
@@ -379,7 +396,13 @@ private struct RouteDetailScreen: View {
                     transport: transport,
                     blob: model.makeUploadBlob(),
                     deviceName: deviceName,
-                    onCompleted: { onUploaded?($0) }
+                    onCompleted: { [model] objectID, crc in
+                        // Pin the committed id + fingerprint on the live model
+                        // too — a second Upload on this same screen must
+                        // replace, never duplicate.
+                        if let objectID { model.recordUploaded(objectID: objectID, crc32: crc) }
+                        onUploaded?(objectID, crc)
+                    }
                 ))
             },
             onDelete: onDelete,
@@ -405,7 +428,7 @@ private struct ImportLandingHost: View {
     private let deviceName: String
     private let noDevicePaired: Bool
     private let onSave: (RouteDetail) -> Void
-    private let onUploaded: (RouteDetail, UInt16?) -> Void
+    private let onUploaded: (RouteDetail, UInt16?, UInt32) -> Void
     private let onPair: (RouteDetail) -> Void
     private let onCancel: () -> Void
 
@@ -416,11 +439,12 @@ private struct ImportLandingHost: View {
         deviceName: String,
         noDevicePaired: Bool,
         // When this import replaces an existing route (name-collision → Replace),
-        // the landing reuses its id + device object id so a save/upload updates
-        // that route in place instead of adding a duplicate.
+        // the landing reuses its id + device link so a save/upload updates
+        // that route in place instead of adding a duplicate (the old fingerprint
+        // makes Upload read "Update on …").
         replacing: PlannedRouteRecord? = nil,
         onSave: @escaping (RouteDetail) -> Void,
-        onUploaded: @escaping (RouteDetail, UInt16?) -> Void,
+        onUploaded: @escaping (RouteDetail, UInt16?, UInt32) -> Void,
         onPair: @escaping (RouteDetail) -> Void,
         onCancel: @escaping () -> Void
     ) {
@@ -428,6 +452,7 @@ private struct ImportLandingHost: View {
             transport: transport,
             dressing: .imported(route, fileName: fileName),
             deviceObjectID: replacing?.deviceObjectID,
+            uploadedCRC32: replacing?.uploadedCRC32,
             importedRouteID: replacing?.id
         ))
         self.transport = transport
@@ -448,9 +473,10 @@ private struct ImportLandingHost: View {
                     transport: transport,
                     blob: model.makeUploadBlob(),
                     deviceName: deviceName,
-                    onCompleted: { objectID in
+                    onCompleted: { [model] objectID, crc in
                         uploadCompleted = true
-                        onUploaded(model.makeDetail(), objectID)
+                        if let objectID { model.recordUploaded(objectID: objectID, crc32: crc) }
+                        onUploaded(model.makeDetail(), objectID, crc)
                     }
                 ))
             },

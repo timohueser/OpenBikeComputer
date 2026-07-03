@@ -65,8 +65,40 @@ public final class RouteDetailModel {
     @ObservationIgnored private let uploadGeometry: ImportedRoute?
     /// The device object id to replace on upload — non-nil when re-uploading a
     /// route already on the device (an edited Komoot re-import, or a planned
-    /// re-push) so it updates in place instead of duplicating.
-    @ObservationIgnored private let uploadTargetObjectID: UInt16?
+    /// re-push) so it updates in place instead of duplicating. **Mutable**: the
+    /// moment an upload commits, `recordUploaded` pins the assigned id here, so
+    /// pressing Upload again on the same screen replaces that object instead of
+    /// creating another copy.
+    private var uploadTargetObjectID: UInt16?
+    /// The committed payload's CRC-32 (the `OnDeviceState` fingerprint) —
+    /// threaded from the library record, refreshed by `recordUploaded`.
+    private var uploadedCRC32: UInt32?
+    /// The current payload's CRC, encoded lazily and cached — a rename
+    /// invalidates it (the name is part of the payload).
+    @ObservationIgnored private var cachedPayloadCRC: UInt32?
+
+    /// The device-copy state behind the Upload ↔ Update ↔ up-to-date button.
+    public var deviceCopyState: OnDeviceState {
+        OnDeviceState.determine(
+            deviceObjectID: uploadTargetObjectID,
+            uploadedCRC32: uploadedCRC32,
+            currentCRC: { currentPayloadCRC() }
+        )
+    }
+
+    /// An upload committed under `objectID`: pin the id + fingerprint so the
+    /// button flips to up-to-date and any further upload replaces in place.
+    public func recordUploaded(objectID: UInt16, crc32: UInt32) {
+        uploadTargetObjectID = objectID
+        uploadedCRC32 = crc32
+    }
+
+    private func currentPayloadCRC() -> UInt32 {
+        if let cached = cachedPayloadCRC { return cached }
+        let crc = CRC32.checksum(uploadPayload())
+        cachedPayloadCRC = crc
+        return crc
+    }
 
     public var isRenamable: Bool {
         switch dressing {
@@ -90,11 +122,13 @@ public final class RouteDetailModel {
         preloadedDetail: RouteDetail? = nil,
         plannedGeometry: ImportedRoute? = nil,
         deviceObjectID: UInt16? = nil,
+        uploadedCRC32: UInt32? = nil,
         importedRouteID: RouteID? = nil
     ) {
         self.transport = transport
         self.dressing = dressing
         self.uploadTargetObjectID = deviceObjectID
+        self.uploadedCRC32 = uploadedCRC32
         self.importedID = importedRouteID ?? RouteID("imported-\(UUID().uuidString.lowercased())")
         switch dressing {
         case .imported(let route, _): uploadGeometry = route  // E1 carries its own geometry
@@ -228,6 +262,9 @@ public final class RouteDetailModel {
         let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
         name = trimmed
+        // The name rides in the payload: a rename out-dates the device copy
+        // until the next upload pushes it.
+        cachedPayloadCRC = nil
         return true
     }
 
@@ -272,13 +309,18 @@ public final class RouteDetailModel {
         case .imported, .tracked:  // tracked never uploads (E3 has no action)
             summary = makeSummary()
         }
-        let payload = uploadGeometry.map {
-            RouteObjectCodec.encode(points: $0.points, waypoints: waypoints, name: name)
-        } ?? Data()
         return RouteBlob(
-            summary: summary, waypoints: waypoints, payload: payload,
+            summary: summary, waypoints: waypoints, payload: uploadPayload(),
             targetObjectID: uploadTargetObjectID
         )
+    }
+
+    /// The OBCR payload an upload sends — also what `deviceCopyState`
+    /// fingerprints, so "up to date" always means byte-identical to this.
+    private func uploadPayload() -> Data {
+        uploadGeometry.map {
+            RouteObjectCodec.encode(points: $0.points, waypoints: waypoints, name: name)
+        } ?? Data()
     }
 
     /// The full `RouteDetail` an E1 save keeps app-side — reopening the saved

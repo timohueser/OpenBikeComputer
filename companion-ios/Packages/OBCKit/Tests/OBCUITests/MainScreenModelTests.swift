@@ -414,13 +414,62 @@ final class MainScreenModelTests: XCTestCase {
         model.addImportedRoute(record)
         XCTAssertFalse(model.isUploaded(record.id), "a fresh import isn't on the device")
 
-        // What the upload sheet's onCompleted does with the device-assigned id.
-        model.markRouteUploaded(record.id, objectID: 7)
+        // What the upload sheet's onCompleted does with the device-assigned id
+        // + the committed payload's fingerprint.
+        model.markRouteUploaded(record.id, objectID: 7, crc32: RouteObjectCodec.payloadCRC(for: record))
         XCTAssertTrue(model.isUploaded(record.id))
+        XCTAssertEqual(model.onDeviceState(record.id), .upToDate)
         XCTAssertEqual(model.plannedDeviceObjectID(for: record.id), 7)
 
         model.deleteRoute(record.id)
         XCTAssertFalse(model.isUploaded(record.id), "deleting clears the badge")
+    }
+
+    /// The update lifecycle: an uploaded route is **up to date** (nothing to
+    /// push) until its content moves — a rename out-dates it (the name rides
+    /// in the payload), and the next committed upload brings it current again
+    /// under the same object id.
+    func testRenameOutdatesTheDeviceCopyAndReuploadHeals() async {
+        let (model, _) = makeModel(.happyPath)
+        await startLoaded(model)
+        let record = importedRecord()
+        model.addImportedRoute(record)
+        model.markRouteUploaded(record.id, objectID: 7, crc32: RouteObjectCodec.payloadCRC(for: record))
+        XCTAssertEqual(model.onDeviceState(record.id), .upToDate)
+
+        model.renameRoute(record.id, to: "Schwarzwald Tour (final)")
+        XCTAssertEqual(model.onDeviceState(record.id), .outdated, "the name rides in the payload")
+        XCTAssertEqual(model.plannedDeviceObjectID(for: record.id), 7, "the device link survives the rename")
+
+        // The next upload commits the renamed payload — current again.
+        var renamed = record
+        renamed.summary.name = "Schwarzwald Tour (final)"
+        model.markRouteUploaded(record.id, objectID: 7, crc32: RouteObjectCodec.payloadCRC(for: renamed))
+        XCTAssertEqual(model.onDeviceState(record.id), .upToDate)
+    }
+
+    /// A device copy with an unknown fingerprint (a pre-fingerprint library)
+    /// reads as **out of date** — Update stays offered and the next upload
+    /// self-heals the record; calling it up to date would dead-end the route
+    /// on a disabled button.
+    func testUnknownFingerprintReadsAsOutdated() async {
+        let library = InMemoryLibraryStore()
+        var record = importedRecord()
+        record.deviceObjectID = 7
+        library.savePlannedRoute(record)
+
+        let (model, _) = makeModel(.happyPath, library: library)
+        await startLoaded(model)
+        XCTAssertEqual(model.onDeviceState(record.id), .outdated)
+        XCTAssertTrue(model.isUploaded(record.id), "the badge still shows — the copy exists")
+    }
+
+    /// The mock-seeded fixtures carry real fingerprints, so a device-held
+    /// fixture boots up to date — the C1 checkmark, not the outdated ring.
+    func testSeededDeviceCopiesBootUpToDate() async {
+        let (model, _) = makeModel(.happyPath)
+        await startLoaded(model)
+        XCTAssertEqual(model.onDeviceState(RouteID("kettle-moraine-loop")), .upToDate)
     }
 
     func testSeededUploadedRouteKeepsItsBadgeWhenTheDeviceStillHoldsIt() async {
@@ -465,7 +514,7 @@ final class MainScreenModelTests: XCTestCase {
         guard await handle.outcome == .completed, let objectID = await handle.assignedObjectID else {
             return XCTFail("mock upload must commit and assign an id")
         }
-        model.markRouteUploaded(record.id, objectID: objectID)
+        model.markRouteUploaded(record.id, objectID: objectID, crc32: CRC32.checksum(Data([1, 2, 3])))
         XCTAssertTrue(model.isUploaded(record.id))
 
         model.reload()

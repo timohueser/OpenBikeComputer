@@ -217,7 +217,15 @@ public final class MockControl: @unchecked Sendable {
         let routes = lock.withLocked { _fixtures.routes }
         let base = Date()
         for (index, entry) in routes.enumerated() where !existing.contains(entry.summary.id) {
-            store.savePlannedRoute(entry.record(addedAt: base.addingTimeInterval(-Double(index))))
+            var record = entry.record(addedAt: base.addingTimeInterval(-Double(index)))
+            // A fixture the mock device holds boots **up to date** — the seeded
+            // fingerprint matches what an upload of the record would send, so
+            // the C1 badge shows the check (a rename then flips it to outdated,
+            // same as on the real path).
+            if record.deviceObjectID != nil {
+                record.uploadedCRC32 = RouteObjectCodec.payloadCRC(for: record)
+            }
+            store.savePlannedRoute(record)
         }
     }
 

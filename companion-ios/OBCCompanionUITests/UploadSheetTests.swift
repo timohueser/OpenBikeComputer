@@ -28,12 +28,13 @@ final class UploadSheetTests: XCTestCase {
         add(attachment)
     }
 
-    /// E2 for the Kettle Moraine fixture, then tap Upload (2.3 MB at the
-    /// mock's 500 KB/s ≈ 4.6 s of design-speed progress).
+    /// E2 for the Blue Mounds fixture — a route the mock device does **not**
+    /// hold, so Upload is offered (a device-held fixture boots up to date with
+    /// the button disabled) — then tap Upload.
     @MainActor
     private func startUpload(_ app: XCUIApplication) {
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10), "main missing")
-        let card = app.buttons["main.card.kettle-moraine-loop"]
+        let card = app.buttons["main.card.blue-mounds-backroads"]
         XCTAssertTrue(card.waitForExistence(timeout: 10))
         card.tap()
         let upload = app.buttons["detail.upload"]
