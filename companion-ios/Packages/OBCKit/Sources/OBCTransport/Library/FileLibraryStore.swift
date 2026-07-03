@@ -178,6 +178,10 @@ private struct PlannedRouteFile: Codable {
     /// device. Optional-decoded, so a pre-B13 file (which lacked it) loads as
     /// "not uploaded" and self-heals on the next upload/reconcile.
     var deviceObjectID: UInt16?
+    /// The committed upload payload's CRC-32 (the `OnDeviceState` fingerprint).
+    /// Optional-decoded: a pre-fingerprint file loads as "content unknown",
+    /// which reads as outdated and self-heals on the next upload.
+    var uploadedCRC32: UInt32?
     var addedAt: Date
 
     init(_ record: PlannedRouteRecord) {
@@ -186,6 +190,7 @@ private struct PlannedRouteFile: Codable {
         route = ImportedRouteDTO(record.route)
         sourceFileName = record.sourceFileName
         deviceObjectID = record.deviceObjectID
+        uploadedCRC32 = record.uploadedCRC32
         addedAt = record.addedAt
     }
 
@@ -196,6 +201,7 @@ private struct PlannedRouteFile: Codable {
             sourceFileName: sourceFileName,
             sourceFileData: sourceFileData,
             deviceObjectID: deviceObjectID,
+            uploadedCRC32: uploadedCRC32,
             addedAt: addedAt
         )
     }
