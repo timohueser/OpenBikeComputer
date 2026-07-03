@@ -34,25 +34,32 @@ public protocol DeviceTransport: Sendable {
     /// Write the device config blob — including device rename (H3, Delta 1).
     func writeConfig(_ config: DeviceConfig) async throws
 
-    // MARK: Data plane (bulk objects — progress + cancel + resume)
+    // MARK: Data plane (bulk objects — progress + cancel + restart)
+    //
+    // Ids on this plane are **device-namespace**: a `RouteID`/`RideID` whose
+    // rawValue is the decimal object id the device's list objects enumerate
+    // (spec §4.1 — durable for the life of the stored object). Library ids
+    // never cross this boundary; `PlannedRouteRecord.deviceObjectID` is the
+    // app's durable link between the two.
 
-    /// Enumerate routes stored on the device.
+    /// Enumerate routes stored on the device — reconcile input for the
+    /// "on device" badge (#289), never Planned-list rows.
     func listRoutes() async throws -> [RouteSummary]
-    /// Full detail for one stored route (E2): waypoints + elevation profile.
-    /// Wire mapping is provisional until firmware `S0` pins the detail read.
+    /// Full detail for one stored route: the stored OBCR object, decoded
+    /// app-side (spec §7.1 — "download the route object").
     func routeDetail(_ id: RouteID) async throws -> RouteDetail
-    /// Upload a route (app → device, B5). Returns a handle for progress/cancel/resume.
+    /// Upload a route (app → device, B5). Success is the device's committed
+    /// `transferResult`; `resume()` after a drop restarts the whole upload.
     func uploadRoute(_ route: RouteBlob) -> TransferHandle
     /// Delete a route from the device.
     func deleteRoute(_ id: RouteID) async throws
     /// Enumerate tracked rides on the device.
     func listRides() async throws -> [RideSummary]
     /// Full detail for one tracked ride (E3): the elevation profile.
-    /// Provisional like `routeDetail(_:)`.
     func rideDetail(_ id: RideID) async throws -> RideDetail
     /// Download tracked rides (device → app, B7). `rides` yields each ride's
-    /// compact-binary payload as it lands; `handle` carries batch
-    /// progress/cancel/resume.
+    /// compact-binary payload as it lands; `handle` carries batch progress /
+    /// cancel / restart (whole rides are the resume granularity).
     func downloadRides(_ ids: [RideID]) -> RideDownload
     /// Read the device diagnostics/crash-log blob.
     func readDiagnostics() async throws -> Data

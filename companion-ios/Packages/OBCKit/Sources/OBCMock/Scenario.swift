@@ -17,7 +17,7 @@ import OBCDomain
 /// | `pairingTimeout` / `pairingRejected` | D5 |
 /// | `bluetoothOff` / `permissionDenied` | H8 / H7 |
 /// | `syncUpToDate` / `syncDrop` | H9 / H10 |
-/// | `uploadDrop` | F interrupted → resume |
+/// | `uploadDrop` | F interrupted → restart |
 /// | `unsupportedFile` | H5 |
 ///
 /// Some rows are pure UI-layer states the transport can't originate — `unsupportedFile`

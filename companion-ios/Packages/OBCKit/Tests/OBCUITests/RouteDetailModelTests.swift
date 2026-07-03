@@ -5,8 +5,9 @@ import OBCTransport
 @testable import OBCUI
 
 /// B4 acceptance, host-side: the detail model's three dressings against
-/// `MockTransport` — summary-first render, the async detail fill (waypoints +
-/// elevation), the per-dressing stat strips, rename, and the E1 save summary.
+/// `MockTransport` — the library-first planned render (#289: waypoints +
+/// profile from the record, no device round-trip), the tracked profile fill,
+/// the per-dressing stat strips, rename, and the E1 save summary.
 @MainActor
 final class RouteDetailModelTests: XCTestCase {
     private func makeControl() -> MockControl {
@@ -32,25 +33,31 @@ final class RouteDetailModelTests: XCTestCase {
 
     // MARK: E2 · planned
 
-    func testPlannedRendersSummaryThenFillsDetail() async {
+    func testPlannedRendersFromItsLibraryRecordWithNoDeviceRoundTrip() async {
         let control = makeControl()
-        let route = control.fixtures.routes[0].summary  // Kettle Moraine Loop
-        let model = RouteDetailModel(transport: MockTransport(control: control), dressing: .planned(route))
+        let entry = control.fixtures.routes[0]  // Kettle Moraine Loop
+        // What RootView threads in: the saved record's own detail (#289 —
+        // planned is library-first; the device is never asked for it).
+        let model = RouteDetailModel(
+            transport: MockTransport(control: control),
+            dressing: .planned(entry.summary),
+            preloadedDetail: entry.detail()
+        )
 
-        // Summary facts render before any transport round-trip.
         XCTAssertEqual(model.name, "Kettle Moraine Loop")
         XCTAssertEqual(model.tag.text, "Planned")
         XCTAssertFalse(model.tag.isAccent)
-        XCTAssertTrue(model.waypoints.isEmpty)
         XCTAssertTrue(model.isRenamable)
         XCTAssertNil(model.importedFromLine)
-
-        model.start()
-        await waitFor("detail fill") { !model.waypoints.isEmpty }
+        // Everything renders before (and without) any transport round-trip.
         XCTAssertEqual(model.waypoints.count, 4)
         XCTAssertEqual(model.waypoints.first?.name, "Ottawa Lake trailhead")
         XCTAssertEqual(model.elevationProfile.count, 10)
         XCTAssertEqual(model.maxGradePercent, 9)
+
+        model.start()
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(model.waypoints.count, 4, "start() must not clobber the record's detail")
     }
 
     func testPlannedStatStripMatchesTheDesignColumns() {
@@ -68,16 +75,16 @@ final class RouteDetailModelTests: XCTestCase {
         XCTAssertEqual(model.stats[3].value, "—")
     }
 
-    func testDetailReadFailureDegradesQuietly() async {
+    func testTrackedDetailReadFailureDegradesQuietly() async {
         let control = makeControl()
-        let route = control.fixtures.routes[0].summary
+        let ride = control.fixtures.rides[0].summary
         control.failNextOp(.readFailed)
-        let model = RouteDetailModel(transport: MockTransport(control: control), dressing: .planned(route))
+        let model = RouteDetailModel(transport: MockTransport(control: control), dressing: .tracked(ride))
 
         model.start()
         try? await Task.sleep(for: .milliseconds(100))
-        XCTAssertTrue(model.waypoints.isEmpty, "no waypoints row on a failed read")
-        XCTAssertEqual(model.name, "Kettle Moraine Loop", "summary content stays up")
+        XCTAssertTrue(model.elevationProfile.isEmpty, "no profile card on a failed read")
+        XCTAssertEqual(model.name, ride.name, "summary content stays up")
     }
 
     // MARK: E3 · tracked
@@ -192,19 +199,18 @@ final class RouteDetailModelTests: XCTestCase {
 
     func testUploadBlobCarriesRenameWaypointsAndRealOBCR() async throws {
         let control = makeControl()
-        let route = control.fixtures.routes[0].summary  // Kettle Moraine Loop, 62.4 km
+        let entry = control.fixtures.routes[0]  // Kettle Moraine Loop, 62.4 km
         // A planned route re-uploads the library's parsed geometry (threaded in).
         let model = RouteDetailModel(
             transport: MockTransport(control: control),
-            dressing: .planned(route),
+            dressing: .planned(entry.summary),
+            preloadedDetail: entry.detail(),
             plannedGeometry: importedRoute
         )
-        model.start()
-        await waitFor("detail fill") { !model.waypoints.isEmpty }
         XCTAssertTrue(model.rename(to: "Kettle Gravel Day"))
 
         let blob = model.makeUploadBlob()
-        XCTAssertEqual(blob.summary.id, route.id)
+        XCTAssertEqual(blob.summary.id, entry.summary.id)
         XCTAssertEqual(blob.summary.name, "Kettle Gravel Day", "a rename must ride along")
         XCTAssertEqual(blob.waypoints.count, 4)
 
