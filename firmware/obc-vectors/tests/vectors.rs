@@ -118,6 +118,23 @@ fn ride_vector_length_is_self_describing() {
     assert_eq!(ride.len(), 23 + name_len + 14 * point_count as usize);
 }
 
+/// The ride vector reads through the production header reader (`obc_route::RideInfo` — what the
+/// device's `rideList` build serves, A7) with the manifest's values, and the same header written
+/// by the production converter's layout agrees byte-for-byte with the hand-built fixture.
+#[test]
+fn ride_vector_reads_through_the_production_codec() {
+    let ride = fixture("ride-v1.bin");
+    let info = obc_route::RideInfo::read(&SliceSource(&ride)).unwrap();
+    assert_eq!(info.name.as_str(), "Höhenweg");
+    assert_eq!(info.start_time, 1_751_450_000);
+    assert_eq!(info.distance_m, 42_500);
+    assert_eq!(info.moving_time_s, 9_000);
+    assert_eq!(info.avg_speed_cms, 472);
+    assert_eq!(info.climb_m, 810);
+    assert_eq!(info.point_count, 3);
+    assert_eq!(ride.len() as u32, obc_route::ride_object_len(info.name.len(), info.point_count));
+}
+
 /// Rewrite every fixture from the builders. Run only after a deliberate spec change:
 /// `cargo test -p obc-vectors regenerate -- --ignored` — then hand the diff to the
 /// app side (its Swift tests pin the same files).

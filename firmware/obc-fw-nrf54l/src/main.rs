@@ -1387,8 +1387,11 @@ async fn run_app(
             if let Some(r) = active.and_then(|i| app.routes().get(i)) {
                 let _ = name.push_str(&r.name);
             }
+            // A Save also writes the durable ride object (A7): snapshot the app's ride totals +
+            // wall-clock anchor in the same frame, so the header matches the log's last points.
+            let stats = (action == Some(obc_app::TrackAction::Save)).then(|| app.ride_stats());
             storage.reconcile_route(active);
-            storage.reconcile_track(action, session, &name);
+            storage.reconcile_track(action, session, &name, stats.as_ref());
             prev_active = active;
             prev_session = session;
         }

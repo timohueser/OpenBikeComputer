@@ -16,8 +16,11 @@
 //!   `/routes/*.obcr` — the route catalog the Route menu lists (side-loaded, long filenames)
 //!   `/routes/RT{id}.OBR` — BLE-uploaded routes (A6; the durable object id lives in the name);
 //!                      the in-flight upload lives here as `UPLOAD.TMP` until commit
-//!   `/tracks/`       — saved `<route>.gpx` rides (created if absent); the in-progress log
-//!                      lives here as `TRACK.OBT` and is deleted once converted.
+//!   `/tracks/`       — saved rides (created if absent); the in-progress log lives here as
+//!                      `TRACK.OBT` and is deleted once converted. Each Finish writes **two**
+//!                      artifacts: the human `<route>.gpx` and the BLE ride object
+//!                      `RD{id}.ORD` (A7, issue #275 — the durable ride object id lives in
+//!                      the name, mirroring `RT{id}.OBR`).
 //!
 //! ## SPI wiring (nRF54L15-DK, **SERIAL22 / SPIM22** — its own bus, separate from the display)
 //!   SCK P1_11 · MISO P1_07 · MOSI P1_06 · CS **P1_12** (software, held low) · GND · 3V3.
@@ -45,7 +48,7 @@ use embedded_sdmmc::{
 use heapless::{String, Vec};
 use obc_app::MAX_ROUTES;
 use obc_platform::{SdByteSink, SdByteSource, SdTrackSink};
-use obc_route::{track_to_gpx, RouteIndex, RouteObjectInfo, RouteSummary, NAME_CAP};
+use obc_route::{track_to_gpx, track_to_ride, RideInfo, RideStats, RouteIndex, RouteObjectInfo, RouteSummary, NAME_CAP};
 
 /// SD clock during the init handshake — the spec caps it at 400 kHz. embassy-nrf's discrete
 /// [`Frequency`] ladder has no 400 kHz step, so [`Frequency::K250`] is the fastest in-spec choice
@@ -342,11 +345,18 @@ impl Storage {
     /// Reconcile the open ride log to the app's tracking intent — call once per frame *before*
     /// ticking, mirroring the sim's `TrackStore::reconcile`. Drains the one-shot disposition
     /// first (finalising / abandoning the current log), then opens a fresh log when the session
-    /// id changes. `name` is the active route's name (the save filename).
-    pub fn reconcile_track(&mut self, action: Option<obc_app::TrackAction>, session: Option<u32>, name: &str) {
+    /// id changes. `name` is the active route's name (the save filename); `stats` is the app's
+    /// ride totals + wall-clock anchor, read the same frame — the ride object's header (A7).
+    pub fn reconcile_track(
+        &mut self,
+        action: Option<obc_app::TrackAction>,
+        session: Option<u32>,
+        name: &str,
+        stats: Option<&RideStats>,
+    ) {
         use obc_app::TrackAction;
         match action {
-            Some(TrackAction::Save) => self.finalize_track(),
+            Some(TrackAction::Save) => self.finalize_track(stats),
             Some(TrackAction::Discard) => self.abandon_track(),
             None => {}
         }
@@ -377,12 +387,15 @@ impl Storage {
         }
     }
 
-    /// Convert the open `TRACK.OBT` to a non-clobbering `<name>.gpx`, deleting the temp **only
-    /// once the ride is safely in a GPX**. Any path that can't guarantee a clean save — no
-    /// confirmed-free name ([`unique_gpx`](Self::unique_gpx) returns `None`), the GPX won't
-    /// open, or the conversion errors — keeps `TRACK.OBT` so the ride isn't lost to a transient
-    /// SD glitch (it converts on a later save; a fresh ride truncates it, as before).
-    fn finalize_track(&mut self) {
+    /// Convert the open `TRACK.OBT` to a non-clobbering `<name>.gpx` **plus** the durable BLE
+    /// ride object `RD{id}.ORD` (A7), deleting the temp **only once the ride is safely in a
+    /// GPX**. Any path that can't guarantee a clean GPX save — no confirmed-free name
+    /// ([`unique_gpx`](Self::unique_gpx) returns `None`), the GPX won't open, or the conversion
+    /// errors — keeps `TRACK.OBT` so the ride isn't lost to a transient SD glitch (it converts
+    /// on a later save; a fresh ride truncates it, as before). The GPX stays the gatekeeper: a
+    /// failed ride-object write is logged and the ride survives as GPX only (the card-pull
+    /// artifact) rather than holding the temp hostage and double-saving later.
+    fn finalize_track(&mut self, stats: Option<&RideStats>) {
         let Some(ot) = self.open_track.take() else { return };
         let _ = self.vmgr.flush_file(ot.file);
         let _ = self.vmgr.close_file(ot.file);
@@ -423,11 +436,56 @@ impl Storage {
                 false
             }
         };
+        if saved {
+            if let Some(stats) = stats {
+                self.write_ride_object(dir, src_file, len, &ot.name, stats);
+            }
+        }
         let _ = self.vmgr.close_file(src_file);
         // Drop the temp only after the ride is confirmed written; otherwise keep it.
         if saved {
             let _ = self.vmgr.delete_file_in_dir(dir, TRACK_TMP);
         }
+    }
+
+    /// Write the durable ride object (A7): one streaming [`track_to_ride`] pass over the open
+    /// `TRACK.OBT` into a confirmed-free `RD{id}.ORD`, `id` = one past the highest stored ride
+    /// id. `track_to_ride` holds the version byte back and patches it in as its final write, so
+    /// a power cut mid-save leaves a file every reader rejects (and whose id-in-name still
+    /// reserves the id — a later ride can't alias it for the app's synced-set).
+    fn write_ride_object(&mut self, dir: RawDirectory, src_file: RawFile, len: u32, name: &str, stats: &RideStats) {
+        let id = self.next_ride_id(dir);
+        let Some(file_name) = self.fresh_object_name(dir, "RD", id, "ORD") else {
+            defmt::warn!("SD: ride-object name RD{=u16}.ORD unavailable — ride kept as GPX only", id);
+            return;
+        };
+        match self.vmgr.open_file_in_dir(dir, &file_name, Mode::ReadWriteCreateOrTruncate) {
+            Ok(dst_file) => {
+                let source = SdByteSource::new(&self.vmgr, src_file, len);
+                let mut sink = SdByteSink::new(&self.vmgr, dst_file);
+                match track_to_ride(&source, name, stats, &mut sink) {
+                    Ok(()) => defmt::info!("SD: ride object → tracks/RD{=u16}.ORD", id),
+                    Err(e) => defmt::warn!("SD: ride-object write failed: {} — ride kept as GPX only", defmt::Debug2Format(&e)),
+                }
+                let _ = self.vmgr.flush_file(dst_file);
+                let _ = self.vmgr.close_file(dst_file);
+            }
+            Err(e) => defmt::warn!("SD: cannot open ride object: {}", defmt::Debug2Format(&e)),
+        }
+    }
+
+    /// One past the highest ride object id stored in `/tracks` (0 on a virgin card). Rides are
+    /// never deleted on the device today (the app hides synced rides locally), so scan-max + 1
+    /// can't resurrect an id the phone has already seen; when device-side deletion lands it must
+    /// keep deleted ids reserved (the Ride Trashcan follow-up).
+    fn next_ride_id(&self, dir: RawDirectory) -> u16 {
+        let mut next = 0u16;
+        self.iter_dir_lfn(dir, |e, _| {
+            if let Some(id) = stored_ride_id(&e.name) {
+                next = next.max(id.saturating_add(1));
+            }
+        });
+        next
     }
 
     /// Drop the open log without saving (Discard, or a no-session reconcile), deleting the temp.
@@ -688,20 +746,61 @@ impl Storage {
     /// past the highest stored one, so the name is expected absent — `None` (a foreign file
     /// squatting on it, or an unproven check) fails the commit rather than risk an overwrite.
     fn fresh_upload_name(&self, dir: RawDirectory, id: u16) -> Option<ShortFileName> {
+        self.fresh_object_name(dir, "RT", id, "OBR")
+    }
+
+    /// A confirmed-free `{prefix}{id}.{ext}` 8.3 name for a durable-id object file — the shared
+    /// discipline behind `RT{id}.OBR` uploads and `RD{id}.ORD` ride objects: only a proven-absent
+    /// name (see [`name_is_free`](Self::name_is_free)) is handed back, so a squatting foreign
+    /// file or an unproven check fails the save rather than risk an overwrite.
+    fn fresh_object_name(&self, dir: RawDirectory, prefix: &str, id: u16, ext: &str) -> Option<ShortFileName> {
         let mut s: String<12> = String::new();
-        let _ = core::fmt::write(&mut s, format_args!("RT{}.OBR", id));
+        let _ = core::fmt::write(&mut s, format_args!("{prefix}{id}.{ext}"));
         if self.name_is_free(dir, s.as_str()) {
             return ShortFileName::create_from_str(s.as_str()).ok();
         }
         None
     }
 
+    /// Visit every stored ride object in `/tracks` (the `RD{id}.ORD` files, A7) with its
+    /// filename-encoded durable id. The GPX twins and any in-progress `TRACK.OBT` never match.
+    pub fn for_each_ride_file(&self, mut f: impl FnMut(u16, &ShortFileName)) {
+        let Some(dir) = self.tracks_dir else { return };
+        self.iter_dir_lfn(dir, |e, _| {
+            if let Some(id) = stored_ride_id(&e.name) {
+                f(id, &e.name);
+            }
+        });
+    }
+
+    /// A stored ride object's byte length + the header facts its `rideList` entry serves
+    /// (S0 §7.4). One header read; `None` when the file doesn't validate as a ride object v1
+    /// (incl. an interrupted save's held-back version byte — see [`track_to_ride`]).
+    pub fn ride_object_info(&self, name: &ShortFileName) -> Option<(u32, RideInfo)> {
+        let dir = self.tracks_dir?;
+        let file = self.vmgr.open_file_in_dir(dir, name, Mode::ReadOnly).ok()?;
+        let len = self.vmgr.file_length(file).unwrap_or(0);
+        let info = RideInfo::read(&SdByteSource::new(&self.vmgr, file, len)).ok();
+        let _ = self.vmgr.close_file(file);
+        Some((len, info?))
+    }
+
     /// Open a stored route for a detail download (S0 §7.1: the OBCR bytes verbatim), returning
     /// its byte length. Held in a slot separate from the ride's `open_route`.
     pub fn open_object(&mut self, name: &ShortFileName) -> Option<u32> {
+        self.open_object_in(self.routes_dir, name)
+    }
+
+    /// Open a stored ride object for a download (S0 §7.2: the stored bytes *are* the wire
+    /// object) — the `/tracks` twin of [`open_object`](Self::open_object), sharing the same
+    /// handle slot (one transfer at a time, S0 §4.1).
+    pub fn open_ride_object(&mut self, name: &ShortFileName) -> Option<u32> {
+        self.open_object_in(self.tracks_dir, name)
+    }
+
+    fn open_object_in(&mut self, dir: Option<RawDirectory>, name: &ShortFileName) -> Option<u32> {
         self.close_object();
-        let dir = self.routes_dir?;
-        let file = self.vmgr.open_file_in_dir(dir, name, Mode::ReadOnly).ok()?;
+        let file = self.vmgr.open_file_in_dir(dir?, name, Mode::ReadOnly).ok()?;
         let len = self.vmgr.file_length(file).unwrap_or(0);
         self.open_object = Some((file, len));
         Some(len)
@@ -746,11 +845,22 @@ fn is_route_entry(e: &embedded_sdmmc::DirEntry, long: Option<&str>) -> bool {
 /// persists the id an upload commits under). `None` for anything else (side-loaded `.obcr`
 /// files carry no id and get a session-scoped one from the reserved band — see `object_store`).
 pub fn uploaded_route_id(name: &ShortFileName) -> Option<u16> {
-    if name.extension() != b"OBR" {
+    id_in_name(name, b"RT", b"OBR")
+}
+
+/// The **durable ride object id** in a stored ride's filename — `RD{id}.ORD` → `id` (A7). The
+/// same durability contract as the routes': the app's synced-set and tombstones key on these
+/// ids across device reboots.
+pub fn stored_ride_id(name: &ShortFileName) -> Option<u16> {
+    id_in_name(name, b"RD", b"ORD")
+}
+
+/// Parse `{prefix}{decimal u16}.{ext}` from an 8.3 name; `None` for anything else.
+fn id_in_name(name: &ShortFileName, prefix: &[u8], ext: &[u8]) -> Option<u16> {
+    if name.extension() != ext {
         return None;
     }
-    let base = name.base_name();
-    let digits = base.strip_prefix(b"RT")?;
+    let digits = name.base_name().strip_prefix(prefix)?;
     if digits.is_empty() {
         return None;
     }
