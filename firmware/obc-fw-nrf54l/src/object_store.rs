@@ -15,8 +15,12 @@
 //! - **The upload state machine**: descriptor → [`Receiver`] (+ temp-file sink) → commit. Uploads
 //!   are not resumable (S0 §1 principle 4): an interrupted upload (a drop or an `op=3` abort) is
 //!   discarded and the app re-sends the object from the start.
-//! - **Downloads**: the `routeList` object is built into a resident buffer ([`Self::list_len`]);
-//!   a route detail is served straight off the card (CRC pre-pass, then chunk reads).
+//! - **Downloads**: the `routeList` / `rideList` objects are built into a resident buffer;
+//!   a route or ride detail is served straight off the card (CRC pre-pass, then chunk reads —
+//!   a stored `RD{id}.ORD` *is* the §7.2 wire object, so a ride download is verbatim, A7).
+//! - **Rides are read-only here** (A7): recorded by the map build's ride loop, scanned once at
+//!   boot, never mutated over the link — the device retains them until a future device-side
+//!   delete, and the app hides synced rides locally instead of deleting them.
 //! - **Config ↔ settings** (§7.3): the Config blob reads from / writes through the persisted
 //!   [`Settings`] (v3's `device_name` + `units`), so a rename survives a power cycle and feeds
 //!   the advertised name.
@@ -29,22 +33,28 @@ use heapless::Vec;
 use obc_app::settings::DeviceName;
 use obc_app::{Settings, SettingsStore, MAX_ROUTES};
 use obc_ble::{
-    Crc32, ListHeader, ObjectStoreDigest, ObjectType, Receiver, RouteListEntry, StreamSender, TransferControl,
-    TransferStatus,
+    Crc32, ListHeader, ObjectStoreDigest, ObjectType, Receiver, RideListEntry, RouteListEntry, StreamSender,
+    TransferControl, TransferStatus,
 };
 
 use crate::sd::Storage;
 use crate::settings::RramSettingsStore;
 
-/// One catalog slot: the session object id and where its bytes live.
-struct RouteSlot {
+/// One catalog slot: the object id and where its bytes live (routes and rides alike).
+struct ObjectSlot {
     id: u16,
     file: ShortFileName,
     byte_len: u32,
 }
 
-/// The routeList object buffer: header + one entry per possible catalog slot.
-const LIST_BUF_LEN: usize = ListHeader::object_len(MAX_ROUTES);
+/// Ride catalog capacity (A7). Rides accumulate — the device keeps every tracked ride until a
+/// (future) manual delete — so this is roomier than [`MAX_ROUTES`]; past it the newest rides
+/// stop being listed (warned at scan) until the card is tidied.
+pub const MAX_RIDES: usize = 128;
+
+/// The list-object buffer: header + one entry per slot of the **larger** catalog (both lists
+/// stream from the same scratch — one transfer at a time, S0 §4.1).
+const LIST_BUF_LEN: usize = ListHeader::object_len(if MAX_RIDES > MAX_ROUTES { MAX_RIDES } else { MAX_ROUTES });
 
 /// First id of the reserved **session-scoped** band handed to side-loaded `.obcr` files at the
 /// mount scan (their names carry no durable id). Uploaded ids grow monotonically from 0 and
@@ -58,13 +68,16 @@ pub struct ObjectStore {
     settings_store: RramSettingsStore,
     /// The persisted settings, loaded once at boot — the config plane's read/modify cache.
     settings: Settings,
-    routes: Vec<RouteSlot, MAX_ROUTES>,
+    routes: Vec<ObjectSlot, MAX_ROUTES>,
+    /// The stored rides (A7), scanned once at boot: the `ble` build has no ride loop, so the
+    /// catalog can't change while it runs (rides are recorded by the map build, then served
+    /// here after a reflash — same card).
+    rides: Vec<ObjectSlot, MAX_RIDES>,
     /// The next fresh-upload object id (ids are never reused within a boot).
     next_id: u16,
     /// The store revision (S0 §4.5): monotonic per boot, bumped on every commit/delete.
     revision: u32,
-    /// The built list object a download streams from (routeList today; rideList serves the
-    /// empty header until A7).
+    /// The built list / diagnostics object a download streams from.
     list_buf: [u8; LIST_BUF_LEN],
 }
 
@@ -78,11 +91,13 @@ impl ObjectStore {
             settings_store,
             settings,
             routes: Vec::new(),
+            rides: Vec::new(),
             next_id: 0,
             revision: 1,
             list_buf: [0; LIST_BUF_LEN],
         };
         store.rescan();
+        store.rescan_rides();
         store
     }
 
@@ -119,7 +134,7 @@ impl ObjectStore {
                             id
                         }
                     };
-                    let _ = self.routes.push(RouteSlot { id, file: name.clone(), byte_len });
+                    let _ = self.routes.push(ObjectSlot { id, file: name.clone(), byte_len });
                 }
                 // Unreadable: reclaim it only if it carries the aborted-commit signature (the
                 // zeroed magic) — transiently unreadable real routes must be kept.
@@ -134,9 +149,46 @@ impl ObjectStore {
         defmt::info!("store: {=usize} route object(s), next id {=u16}", self.routes.len(), self.next_id);
     }
 
-    /// The §4.5 digest (rides land at A7 — count 0 until then).
+    /// Scan `/tracks` for stored ride objects (`RD{id}.ORD`, A7) — the id is durable in the
+    /// filename, like the routes'. An interrupted save (the held-back version byte, exactly
+    /// that signature) is swept; a merely unreadable file is kept off the catalog but never
+    /// deleted. Ordered as the directory lists them; the app sorts by `start_time`.
+    fn rescan_rides(&mut self) {
+        self.rides.clear();
+        let Some(storage) = &mut self.storage else { return };
+        let mut entries: Vec<(u16, ShortFileName), MAX_RIDES> = Vec::new();
+        let mut overflow = false;
+        storage.for_each_ride_file(|id, n| {
+            if entries.push((id, n.clone())).is_err() {
+                overflow = true;
+            }
+        });
+        if overflow {
+            defmt::warn!("store: more than {=usize} ride objects — the excess is not listed", MAX_RIDES);
+        }
+        for (id, name) in &entries {
+            match storage.ride_object_info(name) {
+                Some((byte_len, _)) => {
+                    let _ = self.rides.push(ObjectSlot { id: *id, file: name.clone(), byte_len });
+                }
+                None => {
+                    if storage.is_aborted_ride_object(name) {
+                        defmt::info!("store: sweeping interrupted ride save {}", defmt::Debug2Format(name));
+                        let _ = storage.delete_ride_file(name);
+                    }
+                }
+            }
+        }
+        defmt::info!("store: {=usize} ride object(s)", self.rides.len());
+    }
+
+    /// The §4.5 digest.
     pub fn digest(&self) -> ObjectStoreDigest {
-        ObjectStoreDigest { revision: self.revision, route_count: self.routes.len() as u16, ride_count: 0 }
+        ObjectStoreDigest {
+            revision: self.revision,
+            route_count: self.routes.len() as u16,
+            ride_count: self.rides.len() as u16,
+        }
     }
 
     fn bump_revision(&mut self) -> u32 {
@@ -151,6 +203,11 @@ impl ObjectStore {
     /// Whether a route object with this id exists (the control plane's cheap `notFound` check).
     pub fn has_route(&self, id: u16) -> bool {
         self.slot_index(id).is_some()
+    }
+
+    /// Whether a ride object with this id exists (the download-request `notFound` check, A7).
+    pub fn has_ride(&self, id: u16) -> bool {
+        self.rides.iter().any(|s| s.id == id)
     }
 
     // ==================== config ↔ settings (S0 §7.3) ====================
@@ -258,7 +315,7 @@ impl ObjectStore {
                     None => {
                         let id = self.next_id;
                         self.next_id += 1;
-                        let _ = self.routes.push(RouteSlot { id, file, byte_len });
+                        let _ = self.routes.push(ObjectSlot { id, file, byte_len });
                         id
                     }
                 };
@@ -307,19 +364,83 @@ impl ObjectStore {
                     return Err(TransferStatus::NotFound);
                 };
                 let file = self.routes[idx].file.clone();
-                let Some(storage) = &mut self.storage else { return Err(TransferStatus::Error) };
-                let Some(len) = storage.open_object(&file) else {
-                    return Err(TransferStatus::Error);
+                self.open_object_download(desc, &file, false)
+            }
+            // A ride download (A7) is the same verbatim stream — the stored `RD{id}.ORD` *is*
+            // the S0 §7.2 wire object — just out of `/tracks`.
+            ObjectType::Ride => {
+                let Some(slot) = self.rides.iter().find(|s| s.id == desc.object_id) else {
+                    return Err(TransferStatus::NotFound);
                 };
-                let Some(crc) = object_crc(storage, len) else {
-                    storage.close_object();
-                    return Err(TransferStatus::Error);
-                };
-                let tx = StreamSender::new(desc, len, crc).map_err(|_| TransferStatus::Error)?;
-                Ok((tx, DownloadSource::Object))
+                let file = slot.file.clone();
+                self.open_object_download(desc, &file, true)
             }
             _ => Err(TransferStatus::NotFound),
         }
+    }
+
+    /// Open a diagnostics download (S0 §7.5, A7): render the text blob into the object buffer
+    /// and stream it like a list. Deliberately **card-independent** — diagnostics must be
+    /// readable exactly when things are broken, so no `storage` gate here (the store counts
+    /// then honestly read 0 with `sd: --`).
+    pub fn open_diagnostics_download(
+        &mut self,
+        desc: &TransferControl,
+        link: &DiagInput<'_>,
+    ) -> Result<(StreamSender, DownloadSource), TransferStatus> {
+        let len = self.build_diagnostics(link);
+        let crc = Crc32::checksum(&self.list_buf[..len]);
+        let tx = StreamSender::new(desc, len as u32, crc).map_err(|_| TransferStatus::Error)?;
+        Ok((tx, DownloadSource::List))
+    }
+
+    /// Render the diagnostics text (S0 §7.5 — an opaque, human-readable UTF-8 blob, **not** an
+    /// API) into [`Self::list_buf`], returning its byte length: identity, the persisted boot
+    /// counter, uptime, the A3 link counters, and the store's view of the card.
+    fn build_diagnostics(&mut self, link: &DiagInput<'_>) -> usize {
+        let mut w = BufWriter { buf: &mut self.list_buf, len: 0 };
+        let _ = core::fmt::write(
+            &mut w,
+            format_args!(
+                "obc diagnostics\nfw: {}\nhw: {}\nserial: {}\nprotocol: {}\nboot_count: {}\nuptime_s: {}\n\
+                 link_connects: {}\nlink_disconnects: {}\nlink_last_reason: 0x{:02X}\n\
+                 routes: {}\nrides: {}\nsd: {}\n",
+                link.firmware,
+                link.hardware,
+                link.serial,
+                obc_ble::PROTOCOL_VERSION,
+                self.settings_store.boot_count(),
+                link.uptime_s,
+                link.connects,
+                link.disconnects,
+                link.last_disconnect_reason,
+                self.routes.len(),
+                self.rides.len(),
+                if self.storage.is_some() { "ok" } else { "--" },
+            ),
+        );
+        w.len
+    }
+
+    /// Open a stored object file for a verbatim download: the handle, the CRC pre-pass (the
+    /// whole-object CRC the announce carries, S0 §4.2), the [`StreamSender`].
+    fn open_object_download(
+        &mut self,
+        desc: &TransferControl,
+        file: &ShortFileName,
+        ride: bool,
+    ) -> Result<(StreamSender, DownloadSource), TransferStatus> {
+        let Some(storage) = &mut self.storage else { return Err(TransferStatus::Error) };
+        let opened = if ride { storage.open_ride_object(file) } else { storage.open_object(file) };
+        let Some(len) = opened else {
+            return Err(TransferStatus::Error);
+        };
+        let Some(crc) = object_crc(storage, len) else {
+            storage.close_object();
+            return Err(TransferStatus::Error);
+        };
+        let tx = StreamSender::new(desc, len, crc).map_err(|_| TransferStatus::Error)?;
+        Ok((tx, DownloadSource::Object))
     }
 
     /// Read the chunk at `offset` into `buf` from the opened download source. False = read
@@ -350,31 +471,53 @@ impl ObjectStore {
     }
 
     /// Build the list object for `ty` into [`Self::list_buf`], returning its byte length.
-    /// `routeList` entries come from each stored file's header (one read per route — a full
-    /// catalog is ~64 header reads, tens of ms, done once per download); `rideList` is the
-    /// empty header until A7 stores rides.
+    /// Entries come from each stored file's header (one read per object — a full catalog is
+    /// ~a hundred header reads, tens of ms, done once per download).
     fn build_list(&mut self, ty: ObjectType) -> usize {
         let mut count: u16 = 0;
         let mut off = ListHeader::ENCODED_LEN;
-        if ty == ObjectType::RouteList {
-            if let Some(storage) = &self.storage {
-                for slot in &self.routes {
-                    let Some((byte_len, info)) = storage.route_object_info(&slot.file) else {
-                        continue; // transiently unreadable — serve the rest
-                    };
-                    let entry = RouteListEntry {
-                        object_id: slot.id,
-                        byte_len,
-                        distance_m: info.distance_m,
-                        ascent_m: info.ascent_m,
-                        point_count: info.point_count,
-                        waypoint_count: info.waypoint_count,
-                        name: info.name.as_bytes(),
-                    };
-                    self.list_buf[off..off + obc_ble::LIST_ENTRY_LEN].copy_from_slice(&entry.encode());
-                    off += obc_ble::LIST_ENTRY_LEN;
-                    count += 1;
+        if let Some(storage) = &self.storage {
+            match ty {
+                ObjectType::RouteList => {
+                    for slot in &self.routes {
+                        let Some((byte_len, info)) = storage.route_object_info(&slot.file) else {
+                            continue; // transiently unreadable — serve the rest
+                        };
+                        let entry = RouteListEntry {
+                            object_id: slot.id,
+                            byte_len,
+                            distance_m: info.distance_m,
+                            ascent_m: info.ascent_m,
+                            point_count: info.point_count,
+                            waypoint_count: info.waypoint_count,
+                            name: info.name.as_bytes(),
+                        };
+                        self.list_buf[off..off + obc_ble::LIST_ENTRY_LEN].copy_from_slice(&entry.encode());
+                        off += obc_ble::LIST_ENTRY_LEN;
+                        count += 1;
+                    }
                 }
+                ObjectType::RideList => {
+                    for slot in &self.rides {
+                        let Some((byte_len, info)) = storage.ride_object_info(&slot.file) else {
+                            continue; // transiently unreadable — serve the rest
+                        };
+                        let entry = RideListEntry {
+                            object_id: slot.id,
+                            byte_len,
+                            start_time: info.start_time,
+                            distance_m: info.distance_m,
+                            moving_time_s: info.moving_time_s,
+                            avg_speed_cms: info.avg_speed_cms,
+                            climb_m: info.climb_m,
+                            name: info.name.as_bytes(),
+                        };
+                        self.list_buf[off..off + obc_ble::LIST_ENTRY_LEN].copy_from_slice(&entry.encode());
+                        off += obc_ble::LIST_ENTRY_LEN;
+                        count += 1;
+                    }
+                }
+                _ => {}
             }
         }
         self.list_buf[..ListHeader::ENCODED_LEN].copy_from_slice(&ListHeader { count }.encode());
@@ -382,12 +525,41 @@ impl ObjectStore {
     }
 }
 
+/// The link-plane facts the diagnostics blob renders (S0 §7.5) — assembled by `ble.rs`, which
+/// owns the identity strings and the live [`crate::ble::Status`] counters; the store adds what
+/// *it* owns (boot counter, catalog counts, the card).
+pub struct DiagInput<'a> {
+    pub firmware: &'a str,
+    pub hardware: &'a str,
+    pub serial: &'a str,
+    pub uptime_s: u32,
+    pub connects: u32,
+    pub disconnects: u32,
+    pub last_disconnect_reason: u8,
+}
+
+/// `core::fmt::Write` into a fixed byte buffer, silently truncating on overflow (the
+/// diagnostics text is a few hundred bytes against the multi-KB list buffer).
+struct BufWriter<'a> {
+    buf: &'a mut [u8],
+    len: usize,
+}
+
+impl core::fmt::Write for BufWriter<'_> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        let n = s.len().min(self.buf.len() - self.len);
+        self.buf[self.len..self.len + n].copy_from_slice(&s.as_bytes()[..n]);
+        self.len += n;
+        Ok(())
+    }
+}
+
 /// Which source an open download streams from.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum DownloadSource {
-    /// The built list object in [`ObjectStore::list_buf`].
+    /// The built list / diagnostics object in [`ObjectStore::list_buf`].
     List,
-    /// The open route file on the card.
+    /// The open route / ride file on the card.
     Object,
 }
 

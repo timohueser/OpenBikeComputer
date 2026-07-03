@@ -30,6 +30,7 @@ pub mod gpx;
 pub mod matcher;
 pub mod profile;
 pub mod reader;
+pub mod ride;
 pub mod track;
 
 pub use byte_io::{ByteSink, ByteSource, Error, SliceSource};
@@ -43,6 +44,9 @@ pub use reader::{
     for_each_waypoint, ChunkMeta, RouteCache, RouteIndex, RouteObjectInfo, RoutePoint, RouteReader, RouteSummary,
     Waypoint, CHUNK_META_LEN, HEADER_LEN, HEADER_V2_LEN, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS, NAME_CAP,
     WAYPOINT_ELE_NONE, WAYPOINT_LEN, WAYPOINT_NAME_CAP,
+};
+pub use ride::{
+    ride_object_len, track_to_ride, RideInfo, RideStats, RIDE_ELE_NONE, RIDE_HEADER_LEN, RIDE_POINT_LEN, RIDE_VERSION,
 };
 pub use track::{decode_record, encode_record, track_to_gpx, TrackPoint, TRACK_RECORD_LEN};
 

@@ -170,8 +170,10 @@ Every bulk payload is a typed **object**:
 stored object — including across device reboots** — and enumerated by the list
 objects. Durability is what lets the phone persist the id an upload committed
 under and later reconcile ("is my copy still on the device?") or replace that
-object in place; the reference firmware encodes the id in the stored filename
-(`RT{id}.OBR`) and never reuses a higher id than it has ever assigned.
+object in place — and, for rides, what the app's synced-set and delete
+tombstones key on; the reference firmware encodes the id in the stored
+filename (routes `RT{id}.OBR`, rides `RD{id}.ORD`) and never reuses a higher
+id than it has ever assigned.
 Conventions:
 
 - `0xFFFF` on an upload means "new" — the device assigns an id and reports it
@@ -272,7 +274,7 @@ A write of `cmd u8` + fixed args. Every command is answered with a
 
 | `cmd` | Command | Args | Effect |
 |---|---|---|---|
-| `1` | `deleteObject` | `type u8 · object_id u16` | delete a stored route (`1`) or ride (`2`); bumps the store revision |
+| `1` | `deleteObject` | `type u8 · object_id u16` | delete a stored route (`1`); bumps the store revision. Ride (`2`) deletion is **reserved** — the reference firmware answers `notFound`: the device retains every tracked ride until a (future) device-side management UI, and the app hides synced rides locally (tombstones) so a re-sync can't resurrect them |
 | `2`–`15` | — | — | reserved (identify/find-my-device, factory reset, …) |
 
 ### 4.5 `objectStore` — the store digest
@@ -366,6 +368,10 @@ Point record (14 bytes × point_count):
 
 The byte length is fully determined: `23 + name_len + 14 × point_count` —
 a decoder must reject a payload whose length disagrees.
+
+The reference firmware stores each tracked ride as **exactly these bytes**
+(`/tracks/RD{id}.ORD`, encoded once at ride Finish), so a ride download is a
+verbatim file stream — the §7.1 discipline in the device → app direction.
 
 ### 7.3 `config` — the Config object
 

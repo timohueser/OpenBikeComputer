@@ -324,8 +324,8 @@ separate futures coordinating through one `Signal`:
 
 - A `transfer_control` write is decoded (`obc_ble::TransferControl`) and classified (`classify_transfer`):
   an `echo` **upload** (S0 type 8) is *armed* — its descriptor signalled to the CoC task and answered by
-  the data plane; every other op/type (real routes/rides are A6/A7) still gets an immediate S0-typed
-  `transferResult(error)`, an `abort` an `aborted`.
+  the data plane; real routes/rides/diagnostics ride the same arming path since A6/A7; anything
+  nonsensical still gets an immediate S0-typed `transferResult(error)`, an `abort` an `aborted`.
 - `serve_coc` → `run_echo` feeds the CoC bytes through an `obc_ble::Receiver` (a running CRC-32, **no**
   reassembly buffer, S0 §5) and streams each SDU straight back byte-for-byte, verifying **one**
   whole-object CRC at the end and notifying `committed` / `crcMismatch`. Zero storage involvement — the
@@ -353,10 +353,12 @@ A6 wires that data plane to real storage — the epic's golden path (komoot GPX 
   bytes validate. Uploads are **not resumable** (S0 §1 principle 4): an interrupted upload (a drop
   or an `op=3` abort) discards the partial and the app re-sends the object from the start — trivial
   for a tens-of-kB route.
-- **List / detail / delete.** `routeList` is built from the stored OBCR headers (ids are
-  session-scoped, matching the per-boot digest revision); a route detail download streams the
-  stored file verbatim (whole-object CRC pre-pass, then raw CoC chunks); `deleteObject` removes
-  the file. Every store movement notifies `storeChanged` + the refreshed `objectStore` digest.
+- **List / detail / delete.** `routeList` is built from the stored OBCR headers; a route detail
+  download streams the stored file verbatim (whole-object CRC pre-pass, then raw CoC chunks);
+  `deleteObject` removes the file. Object ids are **durable across reboots** (the identity
+  rework, #289): an uploaded route's id lives in its `RTnn.OBR` filename and is recovered at the
+  boot scan; only side-loaded `.obcr` files get session-scoped ids from the reserved `0xFF00`
+  band. Every store movement notifies `storeChanged` + the refreshed `objectStore` digest.
 - **Config ↔ settings.** The `config` characteristic round-trips through the persisted settings
   (codec v3 adds the device name to the RRAM blob): a rename survives a power cycle and replaces
   the advertised `OBC-XXXX` on the next advertise cycle — no reboot; an empty name clears back to
@@ -367,6 +369,27 @@ the **map** build, and the route is in the device menu and rideable (SD persists
 List/detail/delete + the mid-upload abort-and-re-upload are exercised from the Mac harness
 (`companion-ios/EchoHarness`: `upload`/`list`/`detail`/`delete`/`abort-test`) — the app's
 list/detail screens land on the B track.
+
+## Ride download + diagnostics (A7, #275)
+
+The reverse direction, and it's mostly *already built*: every ride Finish on the **map** build
+writes — beside the `.gpx` — a second file `/tracks/RDnn.ORD` that is **byte-for-byte the S0 §7.2
+ride object** (header with the ride totals + wall-clock start, 14-byte points; encoded in one
+streaming pass over the track log, the version byte held back as the commit point like the route
+upload's magic). The `ble` build then just scans `/tracks` at boot, serves `rideList` from the
+stored headers, and streams a requested ride verbatim through the same CRC-pre-pass + chunked
+download path a route detail uses. The durable ride id in the filename is what the app's
+synced-set keys on: sync pulls only rides it hasn't landed, and a ride deleted *in the app* is
+tombstoned there — never deleted here (`deleteObject` on a ride answers `notFound`, deliberately;
+the device keeps every ride until a future device-side management UI). `diagnostics` (type 4)
+downloads an honest text blob: fw/hw/serial, an RRAM-persisted **boot counter** (one 16-byte line
+in the SETTINGS carve, bumped every boot on every build), uptime, the A3 link counters, and the
+store counts — readable with no SD card, because that's when you want it.
+
+**Verify** — record 2–3 rides on the map build (`synth` indoors is fine: load a route, ride, Finish),
+reflash `ble`, and the app's sync pulls them; spot-check a decoded ride against the `.gpx` twin the
+same Finish wrote. Ids must survive a device power cycle (list → reboot → same ids); the boot
+counter must increment across power cycles (diagnostics read, or the `boot #N` RTT line).
 
 ## Driving it from a host (`debug-uart`)
 

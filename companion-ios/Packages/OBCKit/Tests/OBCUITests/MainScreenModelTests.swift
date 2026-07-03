@@ -298,6 +298,58 @@ final class MainScreenModelTests: XCTestCase {
         XCTAssertEqual(span ?? 0, 10_260, accuracy: 1)
     }
 
+    /// The real device's `rideList` (§7.4) carries no geometry, so an on-device
+    /// ride's *displayed* summary must pick the track preview up from the
+    /// downloaded payload once it lands — otherwise the detail/card draws the
+    /// placeholder glyph forever (the visible A7 bug: correct stats, no track).
+    /// Guards `merged` preferring the enriched record + the post-sync list refresh.
+    ///
+    /// The default mock `listRides` returns fixture summaries that already carry a
+    /// preview (richer than the wire), so this test injects a ride shaped like the
+    /// real device's: a **preview-less** list summary over a payload that *does*
+    /// have geometry.
+    func testSyncedOnDeviceRideShowsATrackPreview() async {
+        let library = InMemoryLibraryStore()
+        let (model, control) = makeModel(.happyPath, library: library, seedLibrary: false)
+        // Reshape the ride catalog to match the wire: the list summary has no
+        // preview (like a real `rideList` entry), but the payload has real points.
+        var fixtures = control.fixtures
+        let ridePoints = [
+            RidePoint(timestamp: Date(timeIntervalSince1970: 0),
+                      coordinate: Coordinate(latitude: 47.0, longitude: 8.0), elevationMeters: 500),
+            RidePoint(timestamp: Date(timeIntervalSince1970: 60),
+                      coordinate: Coordinate(latitude: 47.01, longitude: 8.02), elevationMeters: 540),
+            RidePoint(timestamp: Date(timeIntervalSince1970: 120),
+                      coordinate: Coordinate(latitude: 47.02, longitude: 8.05), elevationMeters: 520),
+        ]
+        fixtures.rides = [RideEntry(
+            summary: RideSummary(
+                id: RideID("42"), name: "Wire Ride", date: Date(timeIntervalSince1970: 0),
+                distanceMeters: 12_000, movingTime: 2_400, averageSpeedMps: 5, climbMeters: 60,
+                trackPreview: nil  // the §7.4 list carries no geometry
+            ),
+            points: ridePoints)]
+        control.fixtures = fixtures
+
+        await startLoaded(model)
+
+        // Before syncing, the ride is listed from the device — no geometry, so the
+        // preview is absent and the view would draw the placeholder glyph.
+        let beforeSync = model.rides.first { $0.id == RideID("42") }
+        XCTAssertNotNil(beforeSync, "the ride is listed from the device pre-sync")
+        XCTAssertNil(beforeSync?.trackPreview, "a §7.4 list entry carries no geometry")
+
+        model.sync()
+        await waitFor("sync done") { model.syncState == .done }
+
+        // The ride stays on the device, so it's still served from the list — but now
+        // its displayed summary must carry the preview the downloaded payload built.
+        let after = model.rides.first { $0.id == RideID("42") }
+        XCTAssertNotNil(after, "the ride is still listed (it stays on the device)")
+        XCTAssertFalse(after?.trackPreview?.points.isEmpty ?? true,
+                       "a synced on-device ride shows the downloaded track, not the placeholder")
+    }
+
     func testSyncNoOpsWhenUnreachable() async {
         let (model, _) = makeModel(.outOfRange)
         await startLoaded(model)   // out of range still serves cached fixtures

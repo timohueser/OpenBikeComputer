@@ -376,6 +376,23 @@ impl DateTime {
         // Re-pin the local time-of-day: a sub-day `add_minutes` only sets HH:MM, never re-rolling.
         date.add_minutes(local_tod as u32)
     }
+
+    /// Unix seconds at this stamp's `HH:MM:00`, reading the stamp **as UTC** — the caller owns
+    /// any zone shift (see [`App::wall_unix_now`](crate::App::wall_unix_now)). Days-from-civil
+    /// (the standard Gregorian era arithmetic); the whole 2020–2099 representable range fits a
+    /// `u32` (Dec 31 2099 ≈ 4.10 × 10⁹ < 2³² − 1). The ride object's `start_time` (issue #275)
+    /// is the only consumer today.
+    pub fn to_unix(self) -> u32 {
+        // Shift Jan/Feb to the tail of the previous year so the leap day ends the "March year".
+        let y = self.year as i64 - (self.month <= 2) as i64;
+        let era = y.div_euclid(400);
+        let yoe = y - era * 400; // year of era: 0..=399
+        let m = self.month as i64;
+        let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + self.day as i64 - 1;
+        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // day of era: 0..=146096
+        let days = era * 146_097 + doe - 719_468; // days since 1970-01-01
+        (days * 86_400 + self.hour as i64 * 3_600 + self.minute as i64 * 60) as u32
+    }
 }
 
 /// UTC-offset stepper bounds + granularity (minutes). 15-minute steps cover the real-world
@@ -803,6 +820,18 @@ mod tests {
         let local = gps.local_clock();
         assert_eq!((local.hour, local.minute), (14, 0), "GPS: local = UTC anchor + offset");
         assert_eq!((gps.clock.hour, gps.clock.minute), (12, 0), "the stored UTC anchor itself did not move");
+    }
+
+    /// `to_unix` against independently-computed references (`date -u +%s`), including the
+    /// leap-day and year-boundary edges the era arithmetic has to carry.
+    #[test]
+    fn to_unix_matches_reference_timestamps() {
+        let dt = |year, month, day, hour, minute| DateTime { year, month, day, hour, minute };
+        assert_eq!(dt(2020, 1, 1, 0, 0).to_unix(), 1_577_836_800);
+        assert_eq!(dt(2024, 2, 29, 12, 30).to_unix(), 1_709_209_800, "leap day");
+        assert_eq!(dt(2026, 7, 2, 9, 33).to_unix(), 1_782_984_780);
+        assert_eq!(dt(2026, 12, 31, 23, 59).to_unix(), 1_798_761_540, "year boundary");
+        assert_eq!(dt(2099, 12, 31, 23, 59).to_unix(), 4_102_444_740, "the top of the range fits u32");
     }
 
     /// The unit conversions are no-ops for metric and the right scale for imperial.
