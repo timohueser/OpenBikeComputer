@@ -14,7 +14,7 @@
 //! is a one-line edit to its [`Style::anchor`].
 
 use embedded_graphics::{draw_target::DrawTarget, primitives::Rectangle};
-use obc_render::{rect, Canvas};
+use obc_render::{rect, Canvas, Surface};
 
 use crate::screen::palette;
 
@@ -157,11 +157,7 @@ impl Hint {
     }
 
     /// Draw the hint for this control, or nothing when idle and uncharged.
-    fn draw<D, F>(&self, cv: &mut Canvas<D, F>, style: &Style, now: u32, w: i32, h: i32)
-    where
-        D: DrawTarget,
-        F: Fn(u16) -> D::Color,
-    {
+    fn draw(&self, cv: &mut impl Surface, style: &Style, now: u32, w: i32, h: i32) {
         let (base_half, flat_half) = (style.base_half, style.flat_half);
         let (charge_depth, pop_depth) = (style.depth, style.pop_depth);
         let place = style.anchor.place(w, h, base_half);
@@ -213,11 +209,7 @@ fn top_profile(i: i32, base_half: i32, flat_half: i32) -> f32 {
 /// Draw the bulge: a black hump of `base_half` base width with a `flat_half`-wide
 /// flat top, poking `depth` px inward from the edge, rasterized as edge-perpendicular
 /// strips (see [`top_profile`]). Nothing when uncharged.
-fn bulge<D, F>(cv: &mut Canvas<D, F>, place: &Place, depth: f32, base_half: i32, flat_half: i32)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+fn bulge(cv: &mut impl Surface, place: &Place, depth: f32, base_half: i32, flat_half: i32) {
     if depth < 0.5 {
         return;
     }

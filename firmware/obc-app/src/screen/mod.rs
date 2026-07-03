@@ -14,7 +14,7 @@ use obc_reader::Reader;
 use obc_render::{
     rect,
     text::{Font, TextAlign},
-    Canvas, Clock, MapRenderer, RenderStats,
+    Canvas, Clock, MapRenderer, RenderStats, Surface,
 };
 use obc_route::{Profile, RouteReader};
 
@@ -136,8 +136,10 @@ pub struct Render<'a, 'd> {
     /// The travelled-path breadcrumb (bounded RAM); the Map strokes it under the route. Empty when
     /// nothing has been recorded yet, so the Map can skip it with [`Breadcrumb::is_empty`].
     pub breadcrumb: &'a Breadcrumb,
-    pub w: f32,
-    pub h: f32,
+    /// Panel size in device pixels. Integer, because every screen lays out in whole pixels;
+    /// the Map computes its `f32` viewport locally.
+    pub w: i32,
+    pub h: i32,
     pub now_ms: u32,
     /// The live wall-clock time this frame (set-point advanced by elapsed millis — see
     /// [`WallClock`](crate::WallClock)). The Home screensaver draws it as `HH:MM`; for boot-relative
@@ -153,6 +155,10 @@ pub struct Render<'a, 'd> {
     /// [`NoopClock`](obc_render::NoopClock); the device passes its `Instant`-based clock. Part of the
     /// strippable render-instrumentation seam.
     pub clock: &'a dyn Clock,
+    /// What the base screen's map render drew this frame, for the host's stats panel / frame log.
+    /// Reset to default by the host each frame; only the [`Map`](crate::screen::map) screen (and
+    /// Home's contour timing) write it — every other screen leaves it untouched.
+    pub stats: RenderStats,
 }
 
 /// The on-device screens. Each variant owns its typed state and forwards to that screen's
@@ -197,29 +203,30 @@ impl Screen {
         }
     }
 
-    /// Draw the screen. Returns the map [`RenderStats`] for the Map screen, and
-    /// default stats for the others (so the host's stats panel keeps working).
-    pub fn draw<D, F>(&self, target: &mut D, rx: &mut Render, color_fn: &F) -> RenderStats
+    /// Draw the screen into the frame's [`Canvas`]. The two host generics stop here: every screen
+    /// below draws through `&mut impl Surface`, except the Map, which reaches the raw target via
+    /// [`Canvas::split`] for its `MapRenderer` calls (and writes [`Render::stats`]).
+    pub fn draw<D, F>(&self, cv: &mut Canvas<D, F>, rx: &mut Render)
     where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
         match self {
-            Screen::Home(s) => s.draw(target, rx, color_fn),
-            Screen::Map(s) => s.draw(target, rx, color_fn),
-            Screen::Statistics(s) => s.draw(target, rx, color_fn),
-            Screen::RideControl(s) => s.draw(target, rx, color_fn),
-            Screen::Menu(s) => s.draw(target, rx, color_fn),
-            Screen::RouteMenu(s) => s.draw(target, rx, color_fn),
-            Screen::RouteSwap(s) => s.draw(target, rx, color_fn),
-            Screen::Settings(s) => s.draw(target, rx, color_fn),
-            Screen::DateTime(s) => s.draw(target, rx, color_fn),
-            Screen::Units(s) => s.draw(target, rx, color_fn),
-            Screen::Stats(s) => s.draw(target, rx, color_fn),
-            Screen::StatFields(s) => s.draw(target, rx, color_fn),
-            Screen::AddField(s) => s.draw(target, rx, color_fn),
-            Screen::Power(s) => s.draw(target, rx, color_fn),
-            Screen::Reset(s) => s.draw(target, rx, color_fn),
+            Screen::Home(s) => s.draw(cv, rx),
+            Screen::Map(s) => s.draw(cv, rx),
+            Screen::Statistics(s) => s.draw(cv, rx),
+            Screen::RideControl(s) => s.draw(cv, rx),
+            Screen::Menu(s) => s.draw(cv, rx),
+            Screen::RouteMenu(s) => s.draw(cv, rx),
+            Screen::RouteSwap(s) => s.draw(cv, rx),
+            Screen::Settings(s) => s.draw(cv, rx),
+            Screen::DateTime(s) => s.draw(cv, rx),
+            Screen::Units(s) => s.draw(cv, rx),
+            Screen::Stats(s) => s.draw(cv, rx),
+            Screen::StatFields(s) => s.draw(cv, rx),
+            Screen::AddField(s) => s.draw(cv, rx),
+            Screen::Power(s) => s.draw(cv, rx),
+            Screen::Reset(s) => s.draw(cv, rx),
         }
     }
 
@@ -267,11 +274,7 @@ pub const LIST_TOP: i32 = TITLE_BAR_H + 8;
 /// wood title bar with `title` left-aligned and `right` (a counter, a grade readout, …) right-
 /// justified. `title` is left-aligned so a long right-hand readout never collides with it. Every
 /// framed screen draws its header through this; the caller fills the body below [`LIST_TOP`].
-pub fn title_frame<D, F>(cv: &mut Canvas<D, F>, w: i32, h: i32, title: &str, right: &str)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+pub fn title_frame(cv: &mut impl Surface, w: i32, h: i32, title: &str, right: &str) {
     use palette::*;
     cv.clear(PARCHMENT);
     cv.round_outline(rect(4, 4, w - 8, h - 8), 8, WOOD_LIGHT);
@@ -283,11 +286,7 @@ where
 
 /// [`title_frame`] with a `pos / total` list counter on the right — the chrome the
 /// Menu and Route menu share. The caller then draws its rows below [`LIST_TOP`].
-pub fn list_frame<D, F>(cv: &mut Canvas<D, F>, w: i32, h: i32, title: &str, pos: usize, total: usize)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+pub fn list_frame(cv: &mut impl Surface, w: i32, h: i32, title: &str, pos: usize, total: usize) {
     let mut counter: heapless::String<8> = heapless::String::new();
     let _ = write!(counter, "{pos} / {total}");
     title_frame(cv, w, h, title, &counter);
@@ -307,11 +306,7 @@ pub fn window_start(selected: usize, visible: usize, total: usize) -> usize {
 /// Draw a list scrollbar — a faint track with a proportional thumb — at the right
 /// edge, or nothing when everything fits. `top`/`height` is the windowed list
 /// area; `first` is [`window_start`]'s result.
-pub fn scrollbar<D, F>(cv: &mut Canvas<D, F>, x: i32, top: i32, height: i32, total: usize, first: usize, visible: usize)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+pub fn scrollbar(cv: &mut impl Surface, x: i32, top: i32, height: i32, total: usize, first: usize, visible: usize) {
     if total <= visible || total == 0 {
         return;
     }
@@ -346,11 +341,7 @@ pub(crate) fn step_selection(selected: usize, n: i32, len: usize) -> usize {
 
 /// Draw a centered two-line empty state — a bold `title` over a muted `hint` — the shared
 /// "nothing to show yet" body the Route menu and Statistics draw under their header.
-pub(crate) fn empty_state<D, F>(cv: &mut Canvas<D, F>, w: i32, h: i32, title: &str, hint: &str)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+pub(crate) fn empty_state(cv: &mut impl Surface, w: i32, h: i32, title: &str, hint: &str) {
     cv.text(title, Point::new(w / 2, h / 2 - 28), Font::Body, TextAlign::Center, palette::INK);
     cv.text(hint, Point::new(w / 2, h / 2 + 8), Font::Label, TextAlign::Center, palette::SUBTEXT);
 }
@@ -386,18 +377,15 @@ pub(crate) struct MenuItem {
 /// Draw a selected option row's background for the guarded-action menus: a plain `AMBER` fill for
 /// an instant option, or — when `guard` is set — a `PARCHMENT_SHADE` base that fills in `fill`
 /// tracking `hold_progress` (0.0–1.0). The caller draws the label. A no-op for an unselected row.
-pub(crate) fn confirm_row<D, F>(
-    cv: &mut Canvas<D, F>,
+pub(crate) fn confirm_row(
+    cv: &mut impl Surface,
     row: Rectangle,
     selected: bool,
     guard: bool,
     hold_progress: f32,
     fill: u16,
     radius: u32,
-) where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+) {
     if !selected {
         return;
     }

@@ -3,7 +3,7 @@
 
 use embedded_graphics::draw_target::DrawTarget;
 use obc_reader::Reader;
-use obc_render::{zoom_for_mpp, Clock, MapRenderer, NoopClock, RenderStats, Viewport};
+use obc_render::{zoom_for_mpp, Canvas, Clock, MapRenderer, NoopClock, RenderStats, Viewport};
 use obc_route::{Profile, RouteMatch, RouteReader, TrackPoint};
 
 use crate::activity::{Activity, Mode};
@@ -1032,22 +1032,22 @@ impl App {
             route,
             profile: profile.as_ref(),
             breadcrumb: &*breadcrumb,
-            w,
-            h,
+            w: w as i32,
+            h: h as i32,
             now_ms: *now_ms,
             now,
             hold_progress,
             no_fix,
             clock,
+            stats: RenderStats::default(),
         };
-        let mut stats = RenderStats::default();
-        for (i, scr) in stack.iter().enumerate().skip(base) {
-            let s = scr.draw(target, &mut rx, &color_fn);
-            if i == base {
-                stats = s;
-            }
+        // The one Canvas of the frame: every screen draws through it (the base screen — the only
+        // possible Map — writes `rx.stats`; the overlays above it leave the stats untouched).
+        let mut cv = Canvas::new(target, &color_fn);
+        for scr in stack.iter().skip(base) {
+            scr.draw(&mut cv, &mut rx);
         }
-        stats
+        rx.stats
     }
 
     /// Render **only the overlay plane** — the transient always-on-top chrome (the global

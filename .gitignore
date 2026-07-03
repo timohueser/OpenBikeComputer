@@ -22,6 +22,8 @@ firmware/tracks/
 *.obct
 # The simulator's persisted-settings file (the device-RRAM stand-in) — a runtime artifact.
 firmware/obc-settings.bin
+# ui-snapshots.sh output — before/after PNG sweeps are per-branch scratch, never committed.
+ui-snapshots/
 .pytest_cache/
 user_config.json
 .worktrees/

@@ -13,14 +13,11 @@
 //! save button, so `back` just exits. [`App::apply_gesture`](crate::App::apply_gesture) notices the
 //! change and flags the host to persist it.
 
-use embedded_graphics::{
-    prelude::{DrawTarget, Point},
-    primitives::Rectangle,
-};
+use embedded_graphics::{prelude::Point, primitives::Rectangle};
 use obc_render::{
     rect,
     text::{Font, TextAlign},
-    Canvas, RenderStats,
+    Surface,
 };
 
 use crate::input::Gesture;
@@ -79,16 +76,11 @@ impl SettingsScreen {
         }
     }
 
-    pub fn draw<D, F>(&self, target: &mut D, rx: &mut Render, color_fn: &F) -> RenderStats
-    where
-        D: DrawTarget,
-        F: Fn(u16) -> D::Color,
-    {
+    pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         use palette::*;
-        let (w, h) = (rx.w as i32, rx.h as i32);
-        let mut cv = Canvas::new(target, color_fn);
+        let (w, h) = (rx.w, rx.h);
 
-        list_frame(&mut cv, w, h, "SETTINGS", self.selected + 1, ITEMS.len());
+        list_frame(cv, w, h, "SETTINGS", self.selected + 1, ITEMS.len());
 
         for (i, &name) in ITEMS.iter().enumerate() {
             let y = LIST_TOP + i as i32 * ROW_H;
@@ -104,7 +96,6 @@ impl SettingsScreen {
                 cv.hline(20, y + ROW_H - 4, w - 40, RULE);
             }
         }
-        RenderStats::default()
     }
 }
 
@@ -113,19 +104,14 @@ impl SettingsScreen {
 /// Left inset of every settings row (clears the framed outline).
 pub(super) const ROW_X: i32 = 14;
 
-/// The full-width rectangle for the `i`-th row of height `h` starting at [`LIST_TOP`].
-pub(super) fn row_rect(i: i32, y: i32, w: i32, h: i32) -> Rectangle {
-    let _ = i;
+/// The full-width settings-row rectangle at `y` of height `h`.
+pub(super) fn row_rect(y: i32, w: i32, h: i32) -> Rectangle {
     rect(ROW_X, y, w - 2 * ROW_X, h)
 }
 
 /// Paint a row's amber row-focus cursor. A no-op while editing (the field's `▲▼` box is the cursor
 /// then) or when unselected, so the two focus levels never both light up.
-pub(super) fn row_cursor<D, F>(cv: &mut Canvas<D, F>, area: Rectangle, selected: bool, editing: bool)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+pub(super) fn row_cursor(cv: &mut impl Surface, area: Rectangle, selected: bool, editing: bool) {
     if selected && !editing {
         cv.round(area, 6, palette::AMBER);
     }
@@ -133,11 +119,7 @@ where
 
 /// Draw a row's left-hand label (Body) with an optional muted sub-caption (Label) under it. The
 /// caller draws the right-hand control.
-pub(super) fn row_label<D, F>(cv: &mut Canvas<D, F>, area: Rectangle, label: &str, sub: Option<&str>)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+pub(super) fn row_label(cv: &mut impl Surface, area: Rectangle, label: &str, sub: Option<&str>) {
     let x = area.top_left.x + 10;
     match sub {
         Some(sub) => {
@@ -153,11 +135,7 @@ where
 
 /// Draw a slider toggle at the right of `area` — a white knob sliding left (off) / right (on), the
 /// track dark for off and green for on. The knob position and track colour carry the state.
-pub(super) fn toggle_slider<D, F>(cv: &mut Canvas<D, F>, area: Rectangle, on: bool)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+pub(super) fn toggle_slider(cv: &mut impl Surface, area: Rectangle, on: bool) {
     let (tw, th) = (50, 28);
     let tx = area.top_left.x + area.size.width as i32 - tw - 4;
     let ty = area.top_left.y + (area.size.height as i32 - th) / 2;
@@ -171,11 +149,7 @@ where
 
 /// Draw a stepper field cell holding `text`. Inactive: just the text, no background. Active (the
 /// live field): an amber fill plus up/down triangles. `cell` must leave ~10 px clearance for the arrows.
-pub(super) fn stepper_field<D, F>(cv: &mut Canvas<D, F>, cell: Rectangle, text: &str, active: bool, font: Font)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+pub(super) fn stepper_field(cv: &mut impl Surface, cell: Rectangle, text: &str, active: bool, font: Font) {
     let cx = cell.top_left.x + cell.size.width as i32 / 2;
     let ty = cell.top_left.y + (cell.size.height as i32 - font.cap_height() as i32) / 2;
     if active {
@@ -190,11 +164,7 @@ where
 
 /// Draw a span badge at the right of a row: one small square for a one-column field, two for a
 /// full-width one — the "how big is this tile" cue shared by the Stat Fields list and Add Field picker.
-pub(super) fn span_badge<D, F>(cv: &mut Canvas<D, F>, area: Rectangle, span: u8, color: u16)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+pub(super) fn span_badge(cv: &mut impl Surface, area: Rectangle, span: u8, color: u16) {
     let cell = 11;
     let gap = 3;
     let cy = area.top_left.y + (area.size.height as i32 - cell) / 2;
