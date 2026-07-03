@@ -129,6 +129,63 @@ final class TCXRouteDecoderTests: XCTestCase {
         }
     }
 
+    // MARK: Coordinate / altitude validation (#304)
+
+    /// A non-finite position (`LatitudeDegrees` = inf) parses but must be a clean
+    /// `.malformed` reject, never a poisoning `NaN` coordinate — even with a
+    /// course point present (the `sorted` crash path).
+    func testNonFinitePositionRejectsTheFile() {
+        let bad = """
+            <TrainingCenterDatabase xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2">
+              <Courses><Course><Name>Bad</Name><Track>
+                <Trackpoint><Position><LatitudeDegrees>47.0</LatitudeDegrees><LongitudeDegrees>11.0</LongitudeDegrees></Position></Trackpoint>
+                <Trackpoint><Position><LatitudeDegrees>nan</LatitudeDegrees><LongitudeDegrees>11.0</LongitudeDegrees></Position></Trackpoint>
+                <Trackpoint><Position><LatitudeDegrees>47.02</LatitudeDegrees><LongitudeDegrees>11.0</LongitudeDegrees></Position></Trackpoint>
+              </Track>
+              <CoursePoint><Name>Left</Name><Position><LatitudeDegrees>47.01</LatitudeDegrees><LongitudeDegrees>11.0</LongitudeDegrees></Position><PointType>Left</PointType></CoursePoint>
+              </Course></Courses>
+            </TrainingCenterDatabase>
+            """
+        assertMalformed(bad)
+    }
+
+    /// An out-of-range position (`LongitudeDegrees` = 999) is finite but invalid.
+    func testOutOfRangePositionRejectsTheFile() {
+        let bad = """
+            <TrainingCenterDatabase xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2">
+              <Courses><Course><Name>Bad</Name><Track>
+                <Trackpoint><Position><LatitudeDegrees>47.0</LatitudeDegrees><LongitudeDegrees>999</LongitudeDegrees></Position></Trackpoint>
+              </Track></Course></Courses>
+            </TrainingCenterDatabase>
+            """
+        assertMalformed(bad)
+    }
+
+    /// A non-finite `<AltitudeMeters>` is dropped to `nil` — the route still
+    /// imports.
+    func testNonFiniteAltitudeBecomesNil() throws {
+        let mixed = """
+            <TrainingCenterDatabase xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2">
+              <Courses><Course><Name>Mixed</Name><Track>
+                <Trackpoint><Position><LatitudeDegrees>47.0</LatitudeDegrees><LongitudeDegrees>11.0</LongitudeDegrees></Position><AltitudeMeters>inf</AltitudeMeters></Trackpoint>
+                <Trackpoint><Position><LatitudeDegrees>47.02</LatitudeDegrees><LongitudeDegrees>11.0</LongitudeDegrees></Position><AltitudeMeters>540</AltitudeMeters></Trackpoint>
+              </Track></Course></Courses>
+            </TrainingCenterDatabase>
+            """
+        let route = try decoder.decode(Data(mixed.utf8))
+        XCTAssertEqual(route.points.count, 2)
+        XCTAssertNil(route.points[0].elevationMeters, "a non-finite altitude is dropped, not stored")
+        XCTAssertEqual(route.points[1].elevationMeters, 540)
+    }
+
+    private func assertMalformed(_ xml: String, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertThrowsError(try decoder.decode(Data(xml.utf8)), file: file, line: line) { error in
+            guard case FormatError.malformed = error else {
+                return XCTFail("expected .malformed, got \(error)", file: file, line: line)
+            }
+        }
+    }
+
     /// End-to-end on the real bundled sample (`OBCMock/Fixtures/sample-import.tcx`,
     /// the `-OBCImportSample tcx` file) — read via the repo path so this pins the
     /// exact bytes the E1 XCUITest imports.
