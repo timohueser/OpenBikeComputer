@@ -126,15 +126,23 @@ const CMD_RUN_FRAME: u32 = 0x0000_0002; // drive one full frame, ping-ponging bu
 const VPR00_INITPC: *mut u32 = 0x5004_C808 as *mut u32; // initial PC at core start
 const VPR00_CPURUN: *mut u32 = 0x5004_C800 as *mut u32; // CPURUN.EN bit0 = run
 
-// ── Frame geometry. The wire-word counts (`WIDTH` 240, `BCK_PER_SUBLINE` 124, `ROW_WORDS` 248) come
-//    from `obc_platform::ls021_wire`. The framebuffer is `WIDTH × ROWS_PER_FRAME` device-64 bytes. ──
+// ── Frame geometry. The framebuffer is the seam's `display::FRAME_W × FRAME_H` frame; the wire-word
+//    counts (`WIDTH` 240, `BCK_PER_SUBLINE` 124, `ROW_WORDS` 248) come from `obc_platform::ls021_wire`.
+//    The static asserts pin the seam geometry to the protocol constants it must equal, so the frame the
+//    app renders can never silently fork from the frame this backend scans. ──
 /// Visible pixel rows the FLPR scans per frame — the `status` the M33 cross-checks, and the
-/// framebuffer height.
+/// framebuffer height. The blob's gate scan is hard-wired to 320 rows, so the seam's `FRAME_H` must
+/// equal it (asserted below).
 pub const ROWS_PER_FRAME: u32 = 320;
-/// Framebuffer width = the panel width (re-exported for the resident-plane sizing in the app).
-pub const FB_W: usize = WIDTH;
-/// Framebuffer height = the visible row count.
-pub const FB_H: usize = ROWS_PER_FRAME as usize;
+/// Framebuffer width = the seam's frame width (re-exported for the resident-plane sizing in the app).
+pub const FB_W: usize = crate::display::FRAME_W;
+/// Framebuffer height = the seam's frame height = the visible row count.
+pub const FB_H: usize = crate::display::FRAME_H;
+// The wire pack consumes exactly one `ls021_wire::WIDTH`-pixel row per framebuffer row, and the FLPR
+// blob scans exactly `ROWS_PER_FRAME` gate lines — the seam's frame must match both.
+const _: () = assert!(FB_W == WIDTH, "display::FRAME_W diverged from the LS021 wire row width");
+const _: () =
+    assert!(FB_H == ROWS_PER_FRAME as usize, "display::FRAME_H diverged from the FLPR blob's 320-row gate scan");
 
 /// Max overlay region [`push_overlay`](Ls021Flpr::push_overlay)'s composite scratch holds — the hold
 /// bulge's right-edge window (16 cols × 192 rows). A region must fit this (asserted);

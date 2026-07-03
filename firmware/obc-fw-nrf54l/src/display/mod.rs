@@ -34,6 +34,16 @@
 
 use obc_platform::Band;
 
+/// **The frame geometry — the single authority.** The frame the app renders and both backends
+/// present: `FRAME_W × FRAME_H` device-64 bytes. Everything frame-sized derives from these two
+/// constants (`FB_BYTES`, the `RowDiff` height, the overlay-window columns, every render-call
+/// viewport); each backend statically asserts its panel-native geometry equals them, so a panel
+/// change can't silently desynchronize the framebuffer the app renders from the frame a backend
+/// scans.
+pub const FRAME_W: usize = 240;
+/// Frame height in rows — see [`FRAME_W`].
+pub const FRAME_H: usize = 320;
+
 // The two backends, each a thin [`DisplayDriver`] impl in its own module behind this seam. The shared
 // overlay-composite plumbing lives in `obc_platform::composite_overlay_window`; each module supplies
 // **only** its panel's wire-pack + window math. Exactly one is compiled per build (`tft` selects the
