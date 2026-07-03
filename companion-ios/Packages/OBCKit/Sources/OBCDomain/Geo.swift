@@ -12,6 +12,18 @@ public struct Coordinate: Hashable, Sendable {
         self.longitude = longitude
     }
 
+    /// Whether both components are finite **and** within WGS-84 range
+    /// (lat ∈ [-90, 90], lon ∈ [-180, 180]). `init` stays cheap and
+    /// non-failing for the trusted paths (device decode, previews); the file
+    /// import edge validates against this so a malformed GPX/TCX throws
+    /// `FormatError.malformed` instead of a non-finite coordinate poisoning
+    /// `distance()` (→ NaN) and everything downstream of it (#304).
+    public var isValidGeographic: Bool {
+        latitude.isFinite && longitude.isFinite
+            && (-90.0...90.0).contains(latitude)
+            && (-180.0...180.0).contains(longitude)
+    }
+
     /// Great-circle distance to `other` in metres (haversine, spherical Earth).
     /// Plenty for route stats and waypoint placement; no CoreLocation.
     public func distance(to other: Coordinate) -> Double {

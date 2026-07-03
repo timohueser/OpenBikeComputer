@@ -35,7 +35,16 @@ enum WaypointPlacement {
         }
 
         return placed
-            .sorted { $0.along < $1.along }
+            // NaN-safe order (#304): a non-finite `along` (from a non-finite
+            // route coordinate poisoning the cumulative distance) would violate
+            // `sorted`'s strict-weak-ordering precondition and *trap*. Import
+            // rejects such coordinates upstream now, but this keeps any
+            // non-import caller from crashing — non-finite sorts to the end.
+            .sorted { lhs, rhs in
+                guard lhs.along.isFinite else { return false }
+                guard rhs.along.isFinite else { return true }
+                return lhs.along < rhs.along
+            }
             .enumerated()
             .map { index, placement in
                 Waypoint(
