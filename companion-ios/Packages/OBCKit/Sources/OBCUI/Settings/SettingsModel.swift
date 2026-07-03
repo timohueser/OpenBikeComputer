@@ -112,7 +112,13 @@ public final class SettingsModel {
     /// the config to the device. Returns whether the name was accepted —
     /// the alert's Save is a no-op otherwise, matching the H12 route rename.
     public func rename(to newName: String) -> Bool {
-        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Cap at the S0 name limit so the app-side name matches what the codec
+        // actually writes to the device (§7.3); trim again in case truncation
+        // left a trailing space.
+        let trimmed = newName
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .truncatedToUTF8Bytes(DeviceConfig.maxNameUTF8Bytes)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, canRename else { return false }
         deviceName = trimmed
         bondStore.save(BondRecord(deviceName: trimmed))
