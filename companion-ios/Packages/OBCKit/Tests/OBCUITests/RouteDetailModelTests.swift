@@ -4,10 +4,10 @@ import OBCMock
 import OBCTransport
 @testable import OBCUI
 
-/// B4 acceptance, host-side: the detail model's three dressings against
-/// `MockTransport` — the library-first planned render (#289: waypoints +
-/// profile from the record, no device round-trip), the tracked profile fill,
-/// the per-dressing stat strips, rename, and the E1 save summary.
+/// The detail model's three dressings against `MockTransport` — the
+/// library-first planned render (waypoints + profile from the record, no
+/// device round-trip), the tracked profile fill, the per-dressing stat
+/// strips, rename, and the save summary.
 @MainActor
 final class RouteDetailModelTests: XCTestCase {
     private func makeControl() -> MockControl {
@@ -31,13 +31,13 @@ final class RouteDetailModelTests: XCTestCase {
         }
     }
 
-    // MARK: E2 · planned
+    // MARK: Planned
 
     func testPlannedRendersFromItsLibraryRecordWithNoDeviceRoundTrip() async {
         let control = makeControl()
         let entry = control.fixtures.routes[0]  // Kettle Moraine Loop
-        // What RootView threads in: the saved record's own detail (#289 —
-        // planned is library-first; the device is never asked for it).
+        // What RootView threads in: the saved record's own detail — planned
+        // is library-first, so the device is never asked for it.
         let model = RouteDetailModel(
             transport: MockTransport(control: control),
             dressing: .planned(entry.summary),
@@ -75,8 +75,8 @@ final class RouteDetailModelTests: XCTestCase {
         XCTAssertEqual(model.stats[3].value, "—")
     }
 
-    /// Upload is link-bound: `canUpload` follows the live connection stream
-    /// (the S4 rule — the button dims when the device isn't actually there).
+    /// Upload is link-bound: `canUpload` follows the live connection stream —
+    /// the button dims when the device isn't actually there.
     func testCanUploadFollowsTheLiveConnection() async {
         let control = makeControl()
         let route = control.fixtures.routes[0].summary
@@ -91,10 +91,10 @@ final class RouteDetailModelTests: XCTestCase {
         await waitFor("link-up gate") { model.canUpload }
     }
 
-    /// The replace-in-place fix: the moment an upload commits, the model pins
-    /// the assigned id — a second Upload on the same screen targets it (the
-    /// device replaces the object) instead of sending "new" again, and the
-    /// button reads up to date until the content moves (a rename out-dates it).
+    /// The moment an upload commits, the model pins the assigned id — a
+    /// second Upload on the same screen targets it (the device replaces the
+    /// object) instead of sending "new" again, and the button reads up to
+    /// date until the content moves (a rename out-dates it).
     func testUploadCommitPinsTheTargetAndStateFollowsContent() async {
         let control = makeControl()
         let entry = control.fixtures.routes[2]  // Blue Mounds — not on the device
@@ -131,7 +131,7 @@ final class RouteDetailModelTests: XCTestCase {
         XCTAssertEqual(model.name, ride.name, "summary content stays up")
     }
 
-    // MARK: E3 · tracked
+    // MARK: Tracked
 
     func testTrackedDressingShowsRideStatsAndFillsProfile() async {
         let control = makeControl()
@@ -149,8 +149,8 @@ final class RouteDetailModelTests: XCTestCase {
         XCTAssertEqual(model.elevationProfile.count, 9)
     }
 
-    /// #294 follow-up: a threaded `rideGeometry` feeds the interactive map at
-    /// full resolution; without it, the map falls back to the (downsampled)
+    /// A threaded `rideGeometry` feeds the interactive map at full
+    /// resolution; without it, the map falls back to the (downsampled)
     /// preview's coordinates rather than showing nothing.
     func testTrackedMapCoordinatesUseTheThreadedGeometryOrFallBackToThePreview() {
         let control = makeControl()
@@ -171,7 +171,7 @@ final class RouteDetailModelTests: XCTestCase {
         )
     }
 
-    // MARK: E1 · imported
+    // MARK: Imported
 
     private var importedRoute: ImportedRoute {
         // ~1112 m per step; rises 5 steps then falls 4 — both climb and
@@ -213,7 +213,7 @@ final class RouteDetailModelTests: XCTestCase {
         XCTAssertEqual(model.distanceMeters, 9 * 1112.0, accuracy: 20)
     }
 
-    /// #294: the imported dressing's interactive map draws the full parsed
+    /// The imported dressing's interactive map draws the full parsed
     /// geometry, never the `preview`'s 256-point downsample — the whole point
     /// of threading `mapCoordinates` separately.
     func testImportedMapCoordinatesAreFullResolutionNotThePreviewCap() {
@@ -281,7 +281,7 @@ final class RouteDetailModelTests: XCTestCase {
         XCTAssertNotNil(detail.maxGradePercent)
     }
 
-    // MARK: Upload blob (B5)
+    // MARK: Upload blob
 
     func testUploadBlobCarriesRenameWaypointsAndRealOBCR() async throws {
         let control = makeControl()
@@ -300,8 +300,8 @@ final class RouteDetailModelTests: XCTestCase {
         XCTAssertEqual(blob.summary.name, "Kettle Gravel Day", "a rename must ride along")
         XCTAssertEqual(blob.waypoints.count, 4)
 
-        // The payload is a real OBCR file — decodes back with the rename + waypoints,
-        // a few kB, not the old ~2 MB of zeros.
+        // The payload is a real OBCR file — decodes back with the rename +
+        // waypoints, a few kB.
         let decoded = try RouteObjectCodec.decode(blob.payload)
         XCTAssertEqual(decoded.name, "Kettle Gravel Day")
         XCTAssertEqual(decoded.waypoints.count, 4)
@@ -367,7 +367,7 @@ final class RouteDetailModelTests: XCTestCase {
         XCTAssertEqual(model.waypoints.count, 1, "start() must not clobber the preload")
     }
 
-    // MARK: H12 · rename
+    // MARK: Rename
 
     func testRenameTrimsAndRejectsEmpty() {
         let control = makeControl()

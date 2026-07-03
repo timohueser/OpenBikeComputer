@@ -1,9 +1,9 @@
 import XCTest
 
-/// B2 acceptance on the simulator: each pairing scenario drives its design
-/// screens end to end through the real UI. (The same branches are host-tested
-/// against the state machine in `LaunchFlowModelTests`; this proves the wiring
-/// launch-arg → scenario → screens.)
+/// Each pairing scenario drives its design screens end to end through the
+/// real UI. (The same branches are host-tested against the state machine in
+/// `LaunchFlowModelTests`; this proves the wiring launch-arg → scenario →
+/// screens.)
 final class PairingFlowTests: XCTestCase {
     override func setUp() {
         super.setUp()
@@ -28,7 +28,7 @@ final class PairingFlowTests: XCTestCase {
         add(attachment)
     }
 
-    /// noDevice: D1 → D2 (row slides in) → D3/D4 → main.
+    /// noDevice: intro → scanning (row slides in) → confirm/paired → main.
     @MainActor
     func testFirstRunPairingHappyPath() {
         let app = launch(scenario: "noDevice")
@@ -49,7 +49,8 @@ final class PairingFlowTests: XCTestCase {
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10), "main missing after pairing")
     }
 
-    /// pairingTimeout: D2 resolves to D5; Try again loops back through scanning.
+    /// pairingTimeout: scanning resolves to the failed screen; Try again loops
+    /// back through scanning.
     @MainActor
     func testPairingTimeoutShowsD5AndRetryLoops() {
         let app = launch(scenario: "pairingTimeout")
@@ -73,8 +74,9 @@ final class PairingFlowTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["pair.introTitle"].waitForExistence(timeout: 10))
         app.buttons["pair.start"].tap()
 
-        // #297: the row appears first (un-gated discovery); the passkey (gated) only
-        // fires on the row tap, so D5 rejected surfaces after confirming, not before.
+        // The row appears first (un-gated discovery); the passkey (gated) only
+        // fires on the row tap, so the rejected screen surfaces after confirming,
+        // not before.
         let row = app.buttons["pair.deviceRow"]
         XCTAssertTrue(row.waitForExistence(timeout: 10), "D2 discovered row missing")
         row.tap()
@@ -84,7 +86,7 @@ final class PairingFlowTests: XCTestCase {
         XCTAssertEqual(failed.label, "Pairing didn't finish")
     }
 
-    /// bluetoothOff: H8 — and the library never locks.
+    /// bluetoothOff: the radio-blocked screen — and the library never locks.
     @MainActor
     func testBluetoothOffShowsH8AndLibraryStaysReachable() {
         let app = launch(scenario: "bluetoothOff")
@@ -122,7 +124,8 @@ final class PairingFlowTests: XCTestCase {
         XCTAssertFalse(app.staticTexts["pair.introTitle"].exists)
     }
 
-    /// Bonded + out of range: main with the S4 banner, never an error screen.
+    /// Bonded + out of range: main with the disconnected banner, never an
+    /// error screen.
     @MainActor
     func testOutOfRangeLandsOnMainWithDisconnectedBanner() {
         let app = launch(scenario: "outOfRange")
@@ -133,8 +136,8 @@ final class PairingFlowTests: XCTestCase {
         snap(app, "S4-main-out-of-range")
     }
 
-    /// Bonded but the link is down at launch: the A state resolves to main
-    /// within the grace window (mock connect succeeds well inside it).
+    /// Bonded but the link is down at launch: resolves to main within the
+    /// grace window (mock connect succeeds well inside it).
     @MainActor
     func testBondedColdLaunchResolvesToMain() {
         let app = XCUIApplication()

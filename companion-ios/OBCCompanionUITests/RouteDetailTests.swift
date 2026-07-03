@@ -1,10 +1,10 @@
 import XCTest
 
-/// B4 acceptance on the simulator: the three detail dressings (E2 planned /
-/// E3 tracked / E1 import landing), the W1 waypoints push, H12 rename, the
-/// delete-through-H1 path, and the upload seam. Host-side logic lives in
-/// `RouteDetailModelTests`; this proves the navigation wiring end to end —
-/// including the real GPX decoder on the bundled Komoot sample (E1).
+/// The three detail dressings (planned / tracked / import landing), the
+/// waypoints push, rename, the delete-confirm path, and the upload seam.
+/// Host-side logic lives in `RouteDetailModelTests`; this proves the
+/// navigation wiring end to end — including the real GPX decoder on the
+/// bundled Komoot sample.
 final class RouteDetailTests: XCTestCase {
     override func setUp() {
         super.setUp()
@@ -31,7 +31,7 @@ final class RouteDetailTests: XCTestCase {
         add(attachment)
     }
 
-    /// Land on E2 for the Kettle Moraine fixture route.
+    /// Land on the planned detail for the Kettle Moraine fixture route.
     @MainActor
     private func openPlannedDetail(_ app: XCUIApplication) {
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10), "main missing")
@@ -41,9 +41,9 @@ final class RouteDetailTests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["detail.screen"].firstMatch.waitForExistence(timeout: 5), "detail missing")
     }
 
-    // MARK: E2 · planned
+    // MARK: Planned
 
-    /// E2: hero + stat strip + waypoints row + profile + inline actions.
+    /// Hero + stat strip + waypoints row + profile + inline actions.
     @MainActor
     func testPlannedDetailShowsTheProfileLayout() {
         let app = launch()
@@ -53,7 +53,7 @@ final class RouteDetailTests: XCTestCase {
         // A stat renders value+unit as one text element: "62.4 km".
         XCTAssertTrue(app.staticTexts["62.4 km"].exists, "distance stat missing")
         XCTAssertTrue(app.staticTexts["3:20"].exists, "est. time stat missing")
-        // MAX derives from the saved record's geometry (library-first E2, #289) —
+        // MAX derives from the saved record's geometry (library-first) —
         // pin the shape ("N %"), not a fixture constant.
         let maxGrade = app.staticTexts.matching(
             NSPredicate(format: "label MATCHES %@", "\\d+ %")
@@ -67,7 +67,7 @@ final class RouteDetailTests: XCTestCase {
         snap(app, "E2-route-detail")
     }
 
-    /// W1: the disclosure pushes the waypoint list in ride order.
+    /// The disclosure pushes the waypoint list in ride order.
     @MainActor
     func testWaypointsRowPushesW1() {
         let app = launch()
@@ -77,7 +77,7 @@ final class RouteDetailTests: XCTestCase {
         XCTAssertTrue(waypointsRow.waitForExistence(timeout: 5))
         waypointsRow.tap()
 
-        XCTAssertTrue(app.descendants(matching: .any)["waypoints.screen"].firstMatch.waitForExistence(timeout: 5), "W1 missing")
+        XCTAssertTrue(app.descendants(matching: .any)["waypoints.screen"].firstMatch.waitForExistence(timeout: 5), "waypoints screen missing")
         XCTAssertTrue(app.staticTexts["Ottawa Lake trailhead"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Emma Carlin junction"].exists)
         snap(app, "W1-waypoints")
@@ -86,7 +86,7 @@ final class RouteDetailTests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["detail.screen"].firstMatch.waitForExistence(timeout: 5))
     }
 
-    /// H12: pencil → rename alert → the title and the list row both update.
+    /// Pencil → rename alert → the title and the list row both update.
     @MainActor
     func testRenameUpdatesTitleAndList() {
         let app = launch()
@@ -94,7 +94,7 @@ final class RouteDetailTests: XCTestCase {
 
         app.buttons["detail.rename"].tap()
         let alert = app.alerts["Rename route"]
-        XCTAssertTrue(alert.waitForExistence(timeout: 5), "H12 alert missing")
+        XCTAssertTrue(alert.waitForExistence(timeout: 5), "rename alert missing")
         snap(app, "H12-rename-route")
 
         let field = alert.textFields.firstMatch
@@ -110,7 +110,7 @@ final class RouteDetailTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Kettle Gravel Day"].waitForExistence(timeout: 5), "list row kept the old name")
     }
 
-    /// E2 delete → H1 confirm → pops back with the row gone.
+    /// Delete → confirm → pops back with the row gone.
     @MainActor
     func testDeleteRoutesThroughH1AndPops() {
         let app = launch()
@@ -119,7 +119,7 @@ final class RouteDetailTests: XCTestCase {
         app.buttons["detail.delete"].tap()
         // Scoped to the sheet — the inline action shares the "Delete route" label.
         let confirm = app.sheets.buttons["Delete route"]
-        XCTAssertTrue(confirm.waitForExistence(timeout: 5), "H1 confirm missing")
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5), "delete confirm missing")
         snap(app, "H1-delete-from-detail")
         confirm.tap()
 
@@ -128,18 +128,18 @@ final class RouteDetailTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Sugar River Trail"].exists, "other rows must survive")
     }
 
-    // The upload action's sheet is B5's — covered end to end in
-    // `UploadSheetTests` (F / F₂ / interrupted / cancel / E1 save-on-upload).
+    // The upload action's sheet is covered end to end in `UploadSheetTests`
+    // (progress / done / interrupted / cancel / save-on-upload).
 
-    // MARK: E3 · tracked
+    // MARK: Tracked
 
-    /// E3: ride stats, the tracked tag, and the coming-soon services block.
+    /// Ride stats, the tracked tag, and the coming-soon services block.
     @MainActor
     func testTrackedDetailShowsRideStatsAndServices() {
         let app = launch()
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10))
         app.buttons["Tracked"].tap()
-        // Tracked is library-first (#296): sync to pull the ride in first.
+        // Tracked is library-first: sync to pull the ride in first.
         app.buttons["topbar.sync"].tap()
 
         let card = app.buttons["main.card.ride-kettle-moraine"]
@@ -151,18 +151,18 @@ final class RouteDetailTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["2:51"].exists, "moving-time stat missing")
         XCTAssertTrue(app.staticTexts["Strava"].exists, "services block missing")
         XCTAssertTrue(app.staticTexts["Komoot"].exists)
-        XCTAssertTrue(app.buttons["detail.rename"].exists, "E3 name must stay editable")
+        XCTAssertTrue(app.buttons["detail.rename"].exists, "tracked name must stay editable")
         snap(app, "E3-ride-detail")
     }
 
-    /// E3 delete → H1 confirm → pops back with the ride gone (phone-side only;
-    /// the device keeps its copy).
+    /// Delete → confirm → pops back with the ride gone (phone-side only; the
+    /// device keeps its copy).
     @MainActor
     func testTrackedDeleteRoutesThroughH1AndPops() {
         let app = launch()
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10))
         app.buttons["Tracked"].tap()
-        // Tracked is library-first (#296): sync to pull the ride in first.
+        // Tracked is library-first: sync to pull the ride in first.
         app.buttons["topbar.sync"].tap()
 
         let card = app.buttons["main.card.ride-kettle-moraine"]
@@ -170,12 +170,12 @@ final class RouteDetailTests: XCTestCase {
         card.tap()
 
         let delete = app.buttons["detail.delete"]
-        XCTAssertTrue(delete.waitForExistence(timeout: 5), "E3 delete missing")
+        XCTAssertTrue(delete.waitForExistence(timeout: 5), "tracked delete missing")
         // The actions sit at the end of the scroll, below the services block.
         for _ in 0..<4 where !delete.isHittable { app.swipeUp(velocity: .fast) }
         delete.tap()
         let confirm = app.sheets.buttons["Delete ride"]
-        XCTAssertTrue(confirm.waitForExistence(timeout: 5), "H1 confirm missing")
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5), "delete confirm missing")
         snap(app, "H1-delete-ride-from-detail")
         confirm.tap()
 
@@ -183,17 +183,17 @@ final class RouteDetailTests: XCTestCase {
         XCTAssertFalse(card.exists, "deleted ride still listed")
     }
 
-    // MARK: E1 · import landing
+    // MARK: Import landing
 
-    /// E1 end to end off the real GPX decoder: source banner, unsaved tag,
-    /// Points stat, waypoints-from-file, and Save to Planned landing in C1.
+    /// End to end off the real GPX decoder: source banner, unsaved tag,
+    /// Points stat, waypoints-from-file, and Save to Planned landing.
     @MainActor
     func testImportSampleLandsOnE1AndSavesToPlanned() {
         let app = launch(importSample: true)
 
         XCTAssertTrue(app.otherElements["detail.importedFrom"].firstMatch.waitForExistence(timeout: 10)
                       || app.staticTexts["IMPORTED FROM KOMOOT"].waitForExistence(timeout: 5),
-                      "E1 source banner missing")
+                      "import source banner missing")
         XCTAssertTrue(app.staticTexts["Schwarzwald Tour · Tag 2"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["CLIMB"].waitForExistence(timeout: 5), "climb stat missing")
         XCTAssertTrue(app.staticTexts["DESCENT"].waitForExistence(timeout: 5), "descent stat missing")
@@ -201,7 +201,7 @@ final class RouteDetailTests: XCTestCase {
         let waypointsRow = app.buttons["detail.waypoints"]
         XCTAssertTrue(waypointsRow.exists, "waypoints-from-file row missing")
         XCTAssertTrue(app.buttons["detail.saveToPlanned"].exists)
-        XCTAssertTrue(app.buttons["Cancel"].exists, "E1 must keep the Cancel escape")
+        XCTAssertTrue(app.buttons["Cancel"].exists, "import landing must keep the Cancel escape")
         snap(app, "E1-import-landing")
 
         app.buttons["detail.saveToPlanned"].tap()
@@ -220,7 +220,7 @@ final class RouteDetailTests: XCTestCase {
         snap(app, "E2-saved-import")
     }
 
-    /// E1 Cancel discards — nothing lands in the library.
+    /// Cancel discards — nothing lands in the library.
     @MainActor
     func testImportCancelDiscards() {
         let app = launch(importSample: true)

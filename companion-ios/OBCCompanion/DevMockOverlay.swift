@@ -5,12 +5,12 @@ import UIKit
 import OBCMock
 import OBCUI
 
-// B1P's app-side wiring, Debug-only in its entirety: the shake gesture that opens
+// App-side wiring, Debug-only in its entirety: the shake gesture that opens
 // the dev control panel, the panel sheet itself, and the status HUD the XCUITests
 // assert. The panel/HUD views live in OBCMock; this file only hosts them.
-// B8's hidden second entry point (five taps on Settings ▸ App version) posts the
+// A hidden second entry point (five taps on Settings ▸ App version) posts the
 // same shake notification — see RootView's `devPanelOpener`.
-// B11 adds the component-gallery sheet (`-OBCShowUIGallery`) for screenshot review.
+// The component-gallery sheet (`-OBCShowUIGallery`) is for screenshot review.
 
 extension Notification.Name {
     /// Posted by the `UIWindow` override below on a device shake.
@@ -40,7 +40,7 @@ struct DevMockOverlay: ViewModifier {
 
     func body(content: Content) -> some View {
         mockTooling(around: content)
-            // The B11 gallery presents even when the real transport is forced —
+            // The gallery presents even when the real transport is forced —
             // it needs no MockControl.
             .sheet(isPresented: $galleryShown) {
                 OBCComponentGallery()

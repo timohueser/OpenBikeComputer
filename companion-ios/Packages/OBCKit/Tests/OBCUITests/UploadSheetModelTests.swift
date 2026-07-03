@@ -4,9 +4,9 @@ import OBCMock
 import OBCTransport
 @testable import OBCUI
 
-/// B5 acceptance, host-side: the upload-sheet model driven through
-/// `MockTransport` — moving progress to F₂, cancel, the drop → interrupted →
-/// restart path (uploads restart, not resume), and the hard-failure branch.
+/// The upload-sheet model driven through `MockTransport` — moving progress
+/// to done, cancel, the drop → interrupted → restart path (uploads restart,
+/// not resume), and the hard-failure branch.
 @MainActor
 final class UploadSheetModelTests: XCTestCase {
     /// Instant F₂ auto-dismiss so tests don't sit out the design hold.
@@ -211,7 +211,7 @@ final class UploadSheetModelTests: XCTestCase {
         XCTAssertFalse(model.shouldDismiss)
     }
 
-    // MARK: Hard failure (H4 — no link at all)
+    // MARK: Hard failure (no link at all)
 
     func testUploadWithLinkDownFails() async {
         let (model, control) = makeModel(.happyPath)

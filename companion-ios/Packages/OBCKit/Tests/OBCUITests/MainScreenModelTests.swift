@@ -4,10 +4,9 @@ import OBCMock
 import OBCTransport
 @testable import OBCUI
 
-/// B3 acceptance, host-side: the main-screen model driven through
-/// `MockTransport` — the library-first Planned list (#289), the device-first
-/// Tracked list, the live device cluster, search, the SYNC button state
-/// machine, and swipe-delete's data path.
+/// The main-screen model driven through `MockTransport`: the library-first
+/// Planned list, the device-first Tracked list, the live device cluster,
+/// search, the SYNC button state machine, and swipe-delete's data path.
 @MainActor
 final class MainScreenModelTests: XCTestCase {
     /// Short pacing so the done-hold / line-hold timers fire in test time.
@@ -26,15 +25,15 @@ final class MainScreenModelTests: XCTestCase {
         control.latency = .zero
         // Fast transfers: the pacing under test is the model's, not the mock's.
         control.throughputBytesPerSec = 200_000_000
-        // What the composition root does for every mock run: the Planned list is
-        // library-first, so fixture routes exist as library records (#289).
+        // The Planned list is library-first, so fixture routes must exist as
+        // library records.
         if seedLibrary { control.seedLibrary(into: library) }
         let model = MainScreenModel(
             transport: MockTransport(control: control), library: library, timing: timing)
         return (model, control)
     }
 
-    /// A library record the way the import edge builds one (E1 save).
+    /// A library record shaped the way the import edge builds one.
     private func importedRecord(
         id: String = "imported-test",
         name: String = "Schwarzwald Tour · Tag 2"
@@ -80,9 +79,9 @@ final class MainScreenModelTests: XCTestCase {
         await waitFor("library load") { model.loadState == .loaded }
     }
 
-    /// Load, then pull the device's rides in — the Tracked list is library-first
-    /// (#296), so a ride only becomes a row once it's synced. Tests that assert
-    /// on ride rows start from here. Waits for a real post-sync marker (never the
+    /// Load, then pull the device's rides in — the Tracked list is library-first,
+    /// so a ride only becomes a row once it's synced. Tests that assert on ride
+    /// rows start from here. Waits for a real post-sync marker (never the
     /// pre-sync `.idle`, which would race the async sync task), then for it to
     /// settle back to idle.
     private func startSynced(_ model: MainScreenModel) async {
@@ -103,7 +102,7 @@ final class MainScreenModelTests: XCTestCase {
         // The badge reconcile: fixtures the device holds a copy of light up.
         XCTAssertTrue(model.isUploaded(RouteID("kettle-moraine-loop")))
         XCTAssertFalse(model.isUploaded(RouteID("blue-mounds-backroads")))
-        // Tracked is library-first (#296): the device's rides aren't rows until
+        // Tracked is library-first: the device's rides aren't rows until
         // they're synced — a plain load leaves the list empty.
         XCTAssertTrue(model.rides.isEmpty)
         model.sync()
@@ -155,7 +154,7 @@ final class MainScreenModelTests: XCTestCase {
 
         model.searchText = "COFFEE"
         XCTAssertEqual(model.filteredRides.map(\.name), ["Sunday Coffee Spin"])
-        XCTAssertTrue(model.filteredRoutes.isEmpty)   // H6 on the other tab
+        XCTAssertTrue(model.filteredRoutes.isEmpty)   // filter applies to the other tab too
 
         model.searchText = ""
         XCTAssertEqual(model.filteredRoutes.count, 5)
@@ -188,7 +187,7 @@ final class MainScreenModelTests: XCTestCase {
         await waitFor("idle again") { model.syncState == .idle }
 
         model.sync()
-        // H9: quiet toast, straight back to idle — never an empty "done".
+        // Quiet toast, straight back to idle — never an empty "done".
         await waitFor("up-to-date toast") { model.upToDateToastVisible }
         XCTAssertEqual(model.syncState, .idle)
         XCTAssertNil(model.lastSyncCount)
@@ -216,8 +215,8 @@ final class MainScreenModelTests: XCTestCase {
         XCTAssertEqual(model.rides.first?.name, "Lunch Loop")
     }
 
-    /// #294 follow-up: a synced ride's full tracklog is available for the
-    /// interactive map (never just the ride card's downsampled preview).
+    /// A synced ride's full tracklog is available for the interactive map —
+    /// never just the ride card's downsampled preview.
     func testRideGeometryIsAvailableAfterSync() async {
         let (model, _) = makeModel(.happyPath)
         await startLoaded(model)
@@ -233,8 +232,9 @@ final class MainScreenModelTests: XCTestCase {
         XCTAssertNil(model.rideGeometry(for: RideID("nonexistent")))
     }
 
-    /// H10: the drop freezes what landed into the banner state — button idle,
-    /// progress down, and the S4 banner yields to the interruption's.
+    /// A drop mid-sync freezes what landed into the banner state — button
+    /// idle, progress down, and the disconnect banner yields to the
+    /// interruption's.
     func testDropMidSyncRaisesH10WithTheLandedCounts() async {
         let (model, control) = makeModel(.happyPath)
         await startLoaded(model)
@@ -253,11 +253,11 @@ final class MainScreenModelTests: XCTestCase {
 
         XCTAssertEqual(model.connection, .outOfRange)
         XCTAssertFalse(model.showsDisconnectedBanner,
-                       "the H10 banner tells the link story — never two banners")
+                       "the interruption banner tells the link story — never two banners")
     }
 
-    /// H10 → Resume: the same transfer continues from its last committed
-    /// offset and finishes; every ride of the batch counts once.
+    /// Resume: the same transfer continues from its last committed offset
+    /// and finishes; every ride of the batch counts once.
     func testResumeContinuesTheDroppedSyncToCompletion() async {
         let library = InMemoryLibraryStore()
         let (model, control) = makeModel(.happyPath, library: library)
@@ -305,8 +305,8 @@ final class MainScreenModelTests: XCTestCase {
         XCTAssertLessThan(remainder, 4, "partial rides must not be re-counted")
     }
 
-    /// B7's decode path: a synced ride lands in the library with its tracklog
-    /// decoded from the payload — not as an empty-points summary shell.
+    /// A synced ride lands in the library with its tracklog decoded from the
+    /// payload — not as an empty-points summary shell.
     func testSyncedRideCarriesTheDecodedTracklog() async {
         let library = InMemoryLibraryStore()
         let (model, _) = makeModel(.happyPath, library: library)
@@ -331,10 +331,10 @@ final class MainScreenModelTests: XCTestCase {
         XCTAssertEqual(span ?? 0, 10_260, accuracy: 1)
     }
 
-    /// Library-first tracked (#296): an un-synced device ride isn't a row at all;
-    /// once synced, its row carries the track preview the downloaded payload built
-    /// — not the empty §7.4 list summary — so the card/detail never draws the
-    /// placeholder glyph for a ride the phone actually holds.
+    /// Library-first tracked: an un-synced device ride isn't a row at all;
+    /// once synced, its row carries the track preview the downloaded payload
+    /// built — not the empty list summary — so the card/detail never draws
+    /// the placeholder glyph for a ride the phone actually holds.
     ///
     /// The default mock `listRides` returns fixture summaries that already carry a
     /// preview (richer than the wire), so this test injects a ride shaped like the
@@ -358,7 +358,7 @@ final class MainScreenModelTests: XCTestCase {
             summary: RideSummary(
                 id: RideID("42"), name: "Wire Ride", date: Date(timeIntervalSince1970: 0),
                 distanceMeters: 12_000, movingTime: 2_400, averageSpeedMps: 5, climbMeters: 60,
-                trackPreview: nil  // the §7.4 list carries no geometry
+                trackPreview: nil  // the list carries no geometry
             ),
             points: ridePoints)]
         control.fixtures = fixtures
@@ -390,7 +390,7 @@ final class MainScreenModelTests: XCTestCase {
         XCTAssertFalse(model.upToDateToastVisible)
     }
 
-    // MARK: Protocol version (#303)
+    // MARK: Protocol version
 
     /// A device reporting a `protocol_version` this build doesn't speak surfaces
     /// the mismatch (banner state) and disables sync — the app must never proceed
@@ -431,7 +431,7 @@ final class MainScreenModelTests: XCTestCase {
         await waitFor("sync runs") { model.syncState == .syncing || model.lastSyncCount != nil }
     }
 
-    // MARK: Delete (H11 → H1)
+    // MARK: Delete
 
     func testDeleteRouteRemovesFromLibraryButNeverFromDevice() async {
         let library = InMemoryLibraryStore()
@@ -442,7 +442,7 @@ final class MainScreenModelTests: XCTestCase {
         model.deleteRoute(id)
         XCTAssertEqual(model.routes.count, 4)   // optimistic removal
         XCTAssertFalse(library.plannedRoutes().contains { $0.id == id }, "delete reaches the library")
-        // H1's promise: "If it's already on the device, it stays there."
+        // If it's already on the device, it stays there.
         XCTAssertTrue(control.fixtures.routes.contains { $0.deviceObjectID != nil })
 
         model.reload()
@@ -460,7 +460,7 @@ final class MainScreenModelTests: XCTestCase {
         XCTAssertEqual(model.rides.count, 3)
 
         // The deleted ride must not come back as a "new" sync count — its id
-        // stays marked synced, so a re-sync finds nothing fresh (H9), and it
+        // stays marked synced, so a re-sync finds nothing fresh, and it
         // never re-lists (the device's SD-card copy is untouched by design).
         model.sync()
         await waitFor("re-sync settles") { model.upToDateToastVisible || model.syncState == .done }
@@ -493,7 +493,7 @@ final class MainScreenModelTests: XCTestCase {
         XCTAssertFalse(relaunched.rides.contains { $0.id == id }, "tombstone lost across relaunch")
     }
 
-    // MARK: Rename (H12) + import landing (E1) — session-local edits
+    // MARK: Rename + import landing — session-local edits
 
     func testRenameUpdatesTheLists() async {
         let (model, _) = makeModel(.happyPath)
@@ -529,7 +529,7 @@ final class MainScreenModelTests: XCTestCase {
         XCTAssertNil(model.importedDetail(for: record.id))
     }
 
-    // MARK: "On device" badge (B13)
+    // MARK: "On device" badge
 
     func testUploadCompletionLightsTheOnDeviceBadge() async {
         let (model, _) = makeModel(.happyPath)
@@ -589,7 +589,7 @@ final class MainScreenModelTests: XCTestCase {
     }
 
     /// The mock-seeded fixtures carry real fingerprints, so a device-held
-    /// fixture boots up to date — the C1 checkmark, not the outdated ring.
+    /// fixture boots up to date — the checkmark, not the outdated ring.
     func testSeededDeviceCopiesBootUpToDate() async {
         let (model, _) = makeModel(.happyPath)
         await startLoaded(model)
@@ -608,8 +608,8 @@ final class MainScreenModelTests: XCTestCase {
         XCTAssertEqual(model.plannedDeviceObjectID(for: record.id), 7)
     }
 
-    /// #289's reconcile: a copy deleted out from under us (another phone, the
-    /// EchoHarness) clears the stored link — and the badge — on the next reload.
+    /// A copy deleted out from under us (another phone, the EchoHarness)
+    /// clears the stored link — and the badge — on the next reload.
     func testReloadClearsTheBadgeWhenTheDeviceNoLongerHoldsTheRoute() async {
         let library = InMemoryLibraryStore()
         var record = importedRecord()
@@ -673,10 +673,10 @@ final class MainScreenModelTests: XCTestCase {
         XCTAssertNil(model.plannedRoute(named: "A Different Route"))
     }
 
-    // MARK: The library store (B1S) — persistence across "relaunches"
+    // MARK: The library store — persistence across "relaunches"
 
-    /// #256 acceptance: an H4 import saved before/without a device survives a
-    /// relaunch (a second model over the same store), rename included.
+    /// An import saved before/without a device survives a relaunch (a second
+    /// model over the same store), rename included.
     func testImportedRouteSurvivesRelaunch() async {
         let library = InMemoryLibraryStore()
         let (first, _) = makeModel(.happyPath, library: library)
@@ -698,7 +698,7 @@ final class MainScreenModelTests: XCTestCase {
         XCTAssertFalse(library.plannedRoutes().contains { $0.id == record.id }, "delete reaches the library")
     }
 
-    /// #256 acceptance (H9): re-sync after a relaunch downloads nothing new.
+    /// Re-sync after a relaunch downloads nothing new.
     func testResyncAfterRelaunchIsUpToDate() async {
         let library = InMemoryLibraryStore()
         let (first, _) = makeModel(.happyPath, library: library)
@@ -716,8 +716,8 @@ final class MainScreenModelTests: XCTestCase {
         XCTAssertNil(relaunched.lastSyncCount)
     }
 
-    /// #256 acceptance (H10): a sync interrupted at N of M keeps the N across
-    /// a relaunch — the next sync pulls only the remainder.
+    /// A sync interrupted at N of M keeps the N across a relaunch — the next
+    /// sync pulls only the remainder.
     func testPartialSyncSurvivesRelaunch() async {
         let library = InMemoryLibraryStore()
         let (first, control) = makeModel(.happyPath, library: library)
@@ -739,7 +739,7 @@ final class MainScreenModelTests: XCTestCase {
     }
 
     /// The offline rule: the store is why a failed device read degrades to
-    /// browsable content instead of an empty error screen (S4/S3).
+    /// browsable content instead of an empty error screen.
     func testStoreSeededListsStayBrowsableWhenTheReadFails() async {
         let library = InMemoryLibraryStore()
         let record = importedRecord()

@@ -4,9 +4,9 @@ import OBCMock
 import OBCTransport
 @testable import OBCUI
 
-/// B2 acceptance, host-side: the launch/pairing state machine driven through
-/// `MockTransport` scenarios — every design branch (A, D1–D5, H7, H8) plus the
-/// non-blocking guarantees (out of range → main, grace-capped connect).
+/// The launch/pairing state machine driven through `MockTransport` scenarios
+/// — every design branch plus the non-blocking guarantees (out of range →
+/// main, grace-capped connect).
 @MainActor
 final class LaunchFlowModelTests: XCTestCase {
     /// Short pacing so the machine's timers fire in test time, but with enough
@@ -55,7 +55,7 @@ final class LaunchFlowModelTests: XCTestCase {
         XCTAssertEqual(model.phase, .pairIntro)
     }
 
-    /// H2 (B8): forgetting the device drops the flow back to the D1 prompt.
+    /// Forgetting the device drops the flow back to the pair-intro prompt.
     func testForgetDeviceReturnsToPairIntro() async {
         let (model, _) = makeModel(.happyPath)
         model.start()
@@ -84,7 +84,7 @@ final class LaunchFlowModelTests: XCTestCase {
         let (model, control) = makeModel(.outOfRange)
         model.start()
         await waitFor("main") { model.phase == .main }
-        // No connect attempt — the degraded link is the S4 banner's story.
+        // No connect attempt — the degraded link is the disconnected banner's story.
         XCTAssertEqual(control.connection, .outOfRange)
     }
 
@@ -148,8 +148,9 @@ final class LaunchFlowModelTests: XCTestCase {
         await waitFor("D5 again") { model.phase == .pairFailed(.timeout) }
     }
 
-    /// #297: a declined passkey is a *gated* failure, so it surfaces on the row tap
-    /// (`confirmPairing`), not during the un-gated scan — the D2 row appears first.
+    /// A declined passkey is a *gated* failure, so it surfaces on the row tap
+    /// (`confirmPairing`), not during the un-gated scan — the discovered row
+    /// appears first.
     func testPairingRejectedShowsD5RejectedVariant() async {
         let (model, _) = makeModel(.pairingRejected)
         model.start()
@@ -207,7 +208,7 @@ final class LaunchFlowModelTests: XCTestCase {
         await waitFor("discovered row") {
             model.phase == .scanning(discovered: .init(name: "Trailhead"))
         }
-        model.confirmPairing()  // #297: the decline lands on the gated row tap
+        model.confirmPairing()  // the decline lands on the gated row tap
         await waitFor("D5") { model.phase == .pairFailed(.rejected) }
 
         model.showPairingHelp()

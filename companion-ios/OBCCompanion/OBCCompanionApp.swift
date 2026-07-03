@@ -14,7 +14,7 @@ import OBCMock
 @main
 struct OBCCompanionApp: App {
     #if DEBUG
-    /// The B1P launch surface, parsed once (`-OBCScenario …`, see CLAUDE.md).
+    /// The launch-argument surface, parsed once (`-OBCScenario …`, see CLAUDE.md).
     private static let launchOptions = MockLaunchOptions.parse()
     /// The live control shared by the Debug transport, the dev panel, and the
     /// HUD — `nil` when `-OBCTransport ble` forces the real path.
@@ -24,12 +24,11 @@ struct OBCCompanionApp: App {
 
     init() {
         // Field-guide nav chrome (serif large titles, parchment bar) — the one
-        // global UIKit-appearance call the B11 kit needs (§9 "Nav Bar").
+        // global UIKit-appearance call the component kit needs.
         OBCNavigationChrome.apply()
         #if DEBUG
         // Log a DEBUG-only symbol at launch so the mock-exclusion seam is exercised
-        // by a real build and lands in the Debug binary — but never the Release one
-        // (B0 acceptance). See CLAUDE.md → "Prove the seam".
+        // by a real build and lands in the Debug binary — but never the Release one.
         print("[OBC] debug build · mock seam: \(obcMockBuildMarker)")
         #endif
     }
@@ -66,8 +65,8 @@ struct OBCCompanionApp: App {
     }
 
     /// The `-OBCImportSample [gpx|tcx|bad]` hook: hand a bundled sample file to
-    /// the import path at launch, exactly as a Files pick would — the E1/H4/H5
-    /// XCUITests and demos run the real decoders. Debug-only, like every launch arg.
+    /// the import path at launch, exactly as a Files pick would, so XCUITests
+    /// and demos run the real decoders. Debug-only, like every launch arg.
     static func launchImport() -> (data: Data, fileName: String)? {
         #if DEBUG
         guard let kind = launchOptions.importSample else { return nil }
@@ -77,7 +76,7 @@ struct OBCCompanionApp: App {
         #endif
     }
 
-    /// The phone-side library (B1S). Mock runs stay **in-memory** — every
+    /// The phone-side library. Mock runs stay **in-memory** — every
     /// scenario-driven launch (XCUITests, previews, demos) must start from its
     /// fixtures alone, not whatever a previous run saved. The real path
     /// persists to Application Support.
@@ -85,13 +84,13 @@ struct OBCCompanionApp: App {
         #if DEBUG
         if let mockControl {
             let store = InMemoryLibraryStore()
-            // The Planned list is library-first (#289): fixture routes exist as
+            // The Planned list is library-first: fixture routes exist as
             // phone-side saves, with `deviceObjectID` marking the ones the mock
-            // device also holds (the C1 badge + `listRoutes()` reconcile).
+            // device also holds (the badge + `listRoutes()` reconcile).
             mockControl.seedLibrary(into: store)
-            // H9's premise is "everything already synced" — the synced set is
-            // the library's (B1S), so the scenario seeds it here and the FIRST
-            // sync reports up to date.
+            // The "up to date" scenario's premise is "everything already
+            // synced" — the synced set is the library's, so it's seeded here
+            // and the first sync reports up to date.
             if mockControl.scenario == .syncUpToDate {
                 for entry in mockControl.fixtures.rides {
                     store.saveRide(entry.ride())
@@ -104,9 +103,9 @@ struct OBCCompanionApp: App {
         return FileLibraryStore.standard()
     }
 
-    /// The reachability seam behind the MapKit basemap (#294). The real path
-    /// watches `NWPathMonitor`; `-OBCNetwork offline|online` pins it for
-    /// automation (the grid-fallback XCUITest), Debug-only like every launch arg.
+    /// The reachability seam behind the MapKit basemap. The real path watches
+    /// `NWPathMonitor`; `-OBCNetwork offline|online` pins it for automation
+    /// (the grid-fallback XCUITest), Debug-only like every launch arg.
     static func makeReachability() -> any NetworkReachability {
         #if DEBUG
         if let online = launchOptions.networkOnline { return ConstantReachability(online) }
@@ -114,7 +113,7 @@ struct OBCCompanionApp: App {
         return PathMonitorReachability()
     }
 
-    /// The bond record behind the B2 launch branch. Mock runs read it from the
+    /// The bond record behind the launch branch. Mock runs read it from the
     /// scenario (`MockControl.bonded` — flip it in the dev panel to replay
     /// first-run pairing); the real path persists it in `UserDefaults`.
     static func makeBondStore() -> any BondStore {

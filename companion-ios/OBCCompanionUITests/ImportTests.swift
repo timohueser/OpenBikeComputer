@@ -1,8 +1,8 @@
 import XCTest
 
-/// B6 acceptance on the simulator: TCX through the real decoder onto E1, the
-/// H5 unsupported-file alert, and H4 (a share arriving before pairing — the
-/// route saves, upload waits). The GPX E1 walk lives in `RouteDetailTests`;
+/// TCX through the real decoder onto the import landing, the
+/// unsupported-file alert, and a share arriving before pairing (the route
+/// saves, upload waits). The GPX import walk lives in `RouteDetailTests`;
 /// decoder logic is host-tested in `TCXRouteDecoderTests`.
 final class ImportTests: XCTestCase {
     override func setUp() {
@@ -30,10 +30,10 @@ final class ImportTests: XCTestCase {
         add(attachment)
     }
 
-    // MARK: TCX → E1
+    // MARK: TCX import
 
-    /// A TCX course lands on E1 through the real decoder — name, author
-    /// banner, and the CoursePoint waypoints in ride order (W1).
+    /// A TCX course lands on the import landing through the real decoder —
+    /// name, author banner, and the CoursePoint waypoints in ride order.
     @MainActor
     func testTCXImportLandsOnE1WithCourseWaypoints() {
         let app = launch(importSample: "tcx")
@@ -66,52 +66,52 @@ final class ImportTests: XCTestCase {
                       "saved TCX route must land in the Planned list")
     }
 
-    // MARK: H5 · unsupported file
+    // MARK: Unsupported file
 
-    /// Anything that isn't GPX/TCX gets the plain H5 alert, and nothing imports.
+    /// Anything that isn't GPX/TCX gets the plain alert, and nothing imports.
     @MainActor
     func testUnsupportedFileShowsH5() {
         let app = launch(importSample: "bad")
 
         let alert = app.alerts["Couldn't read that file"]
-        XCTAssertTrue(alert.waitForExistence(timeout: 10), "H5 alert missing")
+        XCTAssertTrue(alert.waitForExistence(timeout: 10), "unsupported-file alert missing")
         XCTAssertTrue(alert.staticTexts["OBC imports GPX and TCX route files. That one looked like something else."].exists,
-                      "H5 copy must name the accepted formats")
+                      "alert copy must name the accepted formats")
         snap(app, "H5-unsupported-file")
 
         alert.buttons["OK"].tap()
-        XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 5), "app must carry on after H5")
+        XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 5), "app must carry on after the alert")
         XCTAssertFalse(app.descendants(matching: .any)["detail.screen"].firstMatch.exists, "nothing must import")
     }
 
-    // MARK: H4 · import with no device paired
+    // MARK: Import with no device paired
 
-    /// A share arriving before pairing presents E1 over the pairing intro with
-    /// the H4 framing: no-device banner, Save to Planned, Pair a device — and
-    /// no Upload (there is nothing to upload to).
+    /// A share arriving before pairing presents the import landing over the
+    /// pairing intro with the no-device framing: no-device banner, Save to
+    /// Planned, Pair a device — and no Upload (there is nothing to upload to).
     @MainActor
     func testImportWithNoDeviceShowsH4Framing() {
         let app = launch(scenario: "noDevice", importSample: "gpx")
 
-        XCTAssertTrue(app.staticTexts["Schwarzwald Tour · Tag 2"].waitForExistence(timeout: 10), "E1 must present over D1")
+        XCTAssertTrue(app.staticTexts["Schwarzwald Tour · Tag 2"].waitForExistence(timeout: 10), "import landing must present over the pairing intro")
         // The banner renders title+message as one combined Text — match by fragment.
         XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS 'No device paired yet'"))
                           .firstMatch.waitForExistence(timeout: 5),
-                      "H4 banner missing")
+                      "no-device banner missing")
         XCTAssertTrue(app.buttons["detail.saveToPlanned"].exists)
         XCTAssertTrue(app.buttons["detail.pairDevice"].exists)
-        XCTAssertFalse(app.buttons["detail.upload"].exists, "H4 must not offer Upload")
+        XCTAssertFalse(app.buttons["detail.upload"].exists, "no-device framing must not offer Upload")
         snap(app, "H4-import-no-device")
 
-        // Save to Planned returns to where the share interrupted — the D1 intro.
+        // Save to Planned returns to where the share interrupted — the pairing intro.
         app.buttons["detail.saveToPlanned"].tap()
         XCTAssertTrue(app.staticTexts["pair.introTitle"].firstMatch.waitForExistence(timeout: 5)
                       || app.buttons["pair.start"].waitForExistence(timeout: 5),
-                      "saving without a device should land back on D1")
+                      "saving without a device should land back on the pairing intro")
     }
 
-    /// H4 "Pair a device" keeps the route (saves it) and drops into the D2
-    /// scan; after pairing completes, the imported route is in Planned.
+    /// "Pair a device" keeps the route (saves it) and drops into the scan;
+    /// after pairing completes, the imported route is in Planned.
     @MainActor
     func testH4PairADeviceSavesAndPairsThroughToThePlannedList() {
         let app = launch(scenario: "noDevice", importSample: "gpx")
@@ -120,18 +120,18 @@ final class ImportTests: XCTestCase {
         XCTAssertTrue(pair.waitForExistence(timeout: 10))
         pair.tap()
 
-        // D2 — the scan the button started; the mock finds the device.
+        // The scan the button started; the mock finds the device.
         let row = app.buttons["pair.deviceRow"]
         XCTAssertTrue(row.waitForExistence(timeout: 15), "scan should surface the device row")
         row.tap()
 
         let goToRoutes = app.buttons["pair.goToRoutes"]
-        XCTAssertTrue(goToRoutes.waitForExistence(timeout: 10), "pairing should complete (D4)")
+        XCTAssertTrue(goToRoutes.waitForExistence(timeout: 10), "pairing should complete")
         goToRoutes.tap()
 
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.staticTexts["Schwarzwald Tour · Tag 2"].waitForExistence(timeout: 10),
-                      "the H4-saved route must survive pairing + the device list load")
+                      "the saved route must survive pairing + the device list load")
         snap(app, "C1-after-h4-pairing")
     }
 }

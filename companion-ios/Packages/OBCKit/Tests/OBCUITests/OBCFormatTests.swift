@@ -2,8 +2,8 @@ import XCTest
 import OBCDomain
 @testable import OBCUI
 
-/// The stat-line formatters must reproduce the design's strings exactly —
-/// these pin the C1/C2/E-series examples (locale fixed to en_US).
+/// The stat-line formatters must reproduce the design's strings exactly
+/// (locale fixed to en_US).
 final class OBCFormatTests: XCTestCase {
     private let en = Locale(identifier: "en_US")
     private var cal: Calendar {
@@ -89,7 +89,7 @@ final class OBCFormatTests: XCTestCase {
         )
     }
 
-    // MARK: Stat-strip parts (E1–E3 value/unit split)
+    // MARK: Stat-strip parts (value/unit split)
 
     func testStatValuesMatchTheJoinedLines() {
         XCTAssertEqual(OBCFormat.distanceValue(meters: 62_400, locale: en), "62.4")
@@ -107,7 +107,7 @@ final class OBCFormatTests: XCTestCase {
         XCTAssertEqual(line.replacingOccurrences(of: "\u{202F}", with: " "), "Yesterday, 8:12 AM")
     }
 
-    // ------------------------------------------------------------- transfers (B5)
+    // ------------------------------------------------------------- transfers
 
     func testMegabytesUseOneDecimal() {
         XCTAssertEqual(OBCFormat.megabytesValue(2_300_000, locale: en), "2.3")

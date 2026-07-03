@@ -1,9 +1,8 @@
 import XCTest
 
-/// B3 acceptance on the simulator: the main screen's design states (C1 / C2 /
-/// SYNC / S4 / H6 / H11→H1) driven through the real UI against the mock. The
-/// same logic is host-tested in `MainScreenModelTests`; this proves the wiring
-/// launch-arg → scenario → screen.
+/// The main screen's design states driven through the real UI against the
+/// mock. The same logic is host-tested in `MainScreenModelTests`; this
+/// proves the wiring launch-arg → scenario → screen.
 final class MainScreenTests: XCTestCase {
     override func setUp() {
         super.setUp()
@@ -37,26 +36,26 @@ final class MainScreenTests: XCTestCase {
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10), "main missing")
     }
 
-    /// C1 → C2: compact rows with the per-tab stat lines.
+    /// Compact rows with the per-tab stat lines.
     @MainActor
     func testPlannedAndTrackedTabsShowCompactRows() {
         let app = launch(scenario: "happyPath")
         waitForMain(app)
 
         XCTAssertTrue(app.staticTexts["Kettle Moraine Loop"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.staticTexts["62.4 km · 840 m ↑ · 3h 20m"].exists, "C1 stat line wrong")
+        XCTAssertTrue(app.staticTexts["62.4 km · 840 m ↑ · 3h 20m"].exists, "planned stat line wrong")
         snap(app, "C1-main-planned")
 
         app.buttons["Tracked"].tap()
-        // Tracked is library-first (#296): rides show only after a sync pulls
-        // them in — an un-synced device ride is never a half-empty row.
+        // Tracked is library-first: rides show only after a sync pulls them
+        // in — an un-synced device ride is never a half-empty row.
         app.buttons["topbar.sync"].tap()
         XCTAssertTrue(app.staticTexts["Sunday Coffee Spin"].waitForExistence(timeout: 30))
         let statLine = app.staticTexts.matching(
             NSPredicate(format: "label CONTAINS '31.6 km' AND label CONTAINS 'kph'")
         ).firstMatch
         XCTAssertTrue(statLine.waitForExistence(timeout: 5),
-                      "C2 tracked stat line (date · distance · time · avg) missing")
+                      "tracked stat line (date · distance · time · avg) missing")
         snap(app, "C2-main-tracked")
 
         app.buttons["Planned"].tap()
@@ -64,7 +63,7 @@ final class MainScreenTests: XCTestCase {
     }
 
     /// Search hides until a pull-down reveals it (Mail-style); then it
-    /// filters, and no matches → H6 with the query kept editable.
+    /// filters, and no matches shows an empty-state with the query kept editable.
     @MainActor
     func testSearchRevealsOnPullThenFiltersAndShowsH6() {
         let app = launch(scenario: "happyPath")
@@ -84,7 +83,7 @@ final class MainScreenTests: XCTestCase {
 
         search.typeText(" trail zz")
         let noMatches = app.staticTexts["main.noMatches"]
-        XCTAssertTrue(noMatches.waitForExistence(timeout: 5), "H6 missing")
+        XCTAssertTrue(noMatches.waitForExistence(timeout: 5), "no-matches state missing")
         snap(app, "H6-search-no-matches")
 
         app.buttons["Clear search"].tap()
@@ -118,8 +117,8 @@ final class MainScreenTests: XCTestCase {
         snap(app, "C1-search-rehidden")
     }
 
-    /// H11: swipe reveals Delete; the tap deletes directly — the swipe reveal
-    /// is the deliberate second action, no extra confirm.
+    /// Swipe reveals Delete; the tap deletes directly — the swipe reveal is
+    /// the deliberate second action, no extra confirm.
     @MainActor
     func testSwipeToDeleteRemovesTheRowDirectly() {
         let app = launch(scenario: "happyPath")
@@ -130,7 +129,7 @@ final class MainScreenTests: XCTestCase {
         card.swipeLeft()
 
         let reveal = app.buttons["Delete"]
-        XCTAssertTrue(reveal.waitForExistence(timeout: 5), "H11 swipe action missing")
+        XCTAssertTrue(reveal.waitForExistence(timeout: 5), "swipe-to-delete action missing")
         snap(app, "H11-swipe-to-delete")
         reveal.tap()
 
@@ -142,8 +141,8 @@ final class MainScreenTests: XCTestCase {
 
     /// A deleted ride must stay deleted: the device still lists it (its copy
     /// stays on the SD card), but a later sync must neither re-download nor
-    /// re-list it. Tracked is library-first (#296), so the ride is synced in
-    /// first, then deleted, then a re-sync must leave it gone.
+    /// re-list it. Tracked is library-first, so the ride is synced in first,
+    /// then deleted, then a re-sync must leave it gone.
     @MainActor
     func testDeletedRideDoesNotResurrectOnSync() {
         let app = launch(scenario: "happyPath")
@@ -169,20 +168,20 @@ final class MainScreenTests: XCTestCase {
         let toast = app.staticTexts.matching(
             NSPredicate(format: "label CONTAINS 'up to date'")
         ).firstMatch
-        XCTAssertTrue(toast.waitForExistence(timeout: 15), "expected the H9 up-to-date toast")
+        XCTAssertTrue(toast.waitForExistence(timeout: 15), "expected the up-to-date toast")
         XCTAssertFalse(card.exists, "deleted ride resurrected by sync")
         snap(app, "SYNC-after-delete-no-resurrect")
     }
 
     /// SYNC states: idle → syncing → done + "Synced N new rides just now";
-    /// a second sync is the quiet H9 up-to-date toast.
+    /// a second sync is the quiet up-to-date toast.
     @MainActor
     func testSyncCyclesAndConfirmsThenReportsUpToDate() {
         let app = launch(scenario: "happyPath")
         waitForMain(app)
         app.buttons["Tracked"].tap()
-        // Library-first (#296): no rows until the first sync — that first sync
-        // is exactly what this test drives.
+        // Library-first: no rows until the first sync — that first sync is
+        // exactly what this test drives.
         let sync = app.buttons["topbar.sync"]
         XCTAssertTrue(sync.isEnabled)
         sync.tap()
@@ -200,11 +199,11 @@ final class MainScreenTests: XCTestCase {
         let toast = app.staticTexts.matching(
             NSPredicate(format: "label CONTAINS 'up to date'")
         ).firstMatch
-        XCTAssertTrue(toast.waitForExistence(timeout: 10), "H9 toast missing")
+        XCTAssertTrue(toast.waitForExistence(timeout: 10), "up-to-date toast missing")
         snap(app, "H9-up-to-date")
     }
 
-    /// S4: out of range degrades — banner + dimmed sync, library browsable.
+    /// Out of range degrades — banner + dimmed sync, library browsable.
     @MainActor
     func testOutOfRangeShowsBannerAndDisablesSync() {
         let app = launch(scenario: "outOfRange")
@@ -212,14 +211,14 @@ final class MainScreenTests: XCTestCase {
 
         XCTAssertTrue(app.otherElements["disconnectedBanner"].firstMatch.waitForExistence(timeout: 10)
                       || app.staticTexts.containing(NSPredicate(format: "label CONTAINS 'out of range'")).firstMatch.exists,
-                      "S4 banner missing")
+                      "disconnected banner missing")
         XCTAssertTrue(app.staticTexts["Kettle Moraine Loop"].waitForExistence(timeout: 10),
                       "library must stay browsable")
         XCTAssertFalse(app.buttons["topbar.sync"].isEnabled, "sync must dim when unreachable")
         snap(app, "S4-out-of-range")
     }
 
-    /// Card tap → the B4 route detail (walked in depth by `RouteDetailTests`).
+    /// Card tap → the route detail (walked in depth by `RouteDetailTests`).
     @MainActor
     func testCardTapPushesDetail() {
         let app = launch(scenario: "happyPath")
@@ -231,7 +230,7 @@ final class MainScreenTests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["detail.screen"].firstMatch.waitForExistence(timeout: 5), "detail missing")
     }
 
-    /// I1: the + opens the Files picker directly — no intermediate menu with
+    /// The + opens the Files picker directly — no intermediate menu with
     /// dead rows.
     @MainActor
     func testImportButtonOpensFilePickerDirectly() {
@@ -247,12 +246,12 @@ final class MainScreenTests: XCTestCase {
         waitForMain(app)
     }
 
-    /// S1: an empty library points at import, it doesn't dead-end.
+    /// An empty library points at import, it doesn't dead-end.
     @MainActor
     func testEmptyLibraryShowsS1() {
         let app = launch(scenario: "emptyLibrary")
         waitForMain(app)
-        XCTAssertTrue(app.staticTexts["No planned routes yet"].waitForExistence(timeout: 10), "S1 missing")
+        XCTAssertTrue(app.staticTexts["No planned routes yet"].waitForExistence(timeout: 10), "empty state missing")
         snap(app, "S1-empty-library")
     }
 }

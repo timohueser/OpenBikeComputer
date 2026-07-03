@@ -4,16 +4,16 @@ import OBCTransport
 import OBCFormats
 import OBCUI
 
-/// The app's root: the B2 launch gate (bond check → quiet reconnect, or the
-/// D1–D5 pairing flow) in front of the main screen (B3), which pushes the B4
-/// detail screens. Holds only the seams the composition root chose —
+/// The app's root: the launch gate (bond check → quiet reconnect, or the
+/// pairing flow) in front of the main screen, which pushes the detail
+/// screens. Holds only the seams the composition root chose —
 /// `any DeviceTransport` + `any BondStore` — plus the file-format edge
-/// (`RouteImporter`) that turns a picked file into the E1 import landing.
+/// (`RouteImporter`) that turns a picked file into the import landing.
 struct RootView: View {
     @State private var launchModel: LaunchFlowModel
     @State private var mainModel: MainScreenModel
-    /// Online/offline signal for the MapKit basemap previews (#294), injected
-    /// into the whole tree as `\.obcIsOnline`.
+    /// Online/offline signal for the MapKit basemap previews, injected into
+    /// the whole tree as `\.obcIsOnline`.
     @State private var reachability: ReachabilityStore
     @State private var path: [MainDestination] = []
     @State private var pendingImport: PendingImport?
@@ -26,17 +26,17 @@ struct RootView: View {
 
     private let transport: any DeviceTransport
     /// Kept for the import edge: an arriving file checks the bond to pick the
-    /// E1 vs H4 framing (the launch flow owns the record itself).
+    /// saved-vs-no-device framing (the launch flow owns the record itself).
     private let bondStore: any BondStore
-    /// The phone-side library (B1S) — the main screen reads it; the import
-    /// edge writes the saved `PlannedRouteRecord`s into it through the model.
+    /// The phone-side library — the main screen reads it; the import edge
+    /// writes the saved `PlannedRouteRecord`s into it through the model.
     private let library: any LibraryStore
-    /// The registered import formats (B6): GPX + TCX. Adding a format = one
-    /// more decoder here; the picker filter and share-sheet registration
-    /// follow `supportedFileExtensions`.
+    /// The registered import formats: GPX + TCX. Adding a format = one more
+    /// decoder here; the picker filter and share-sheet registration follow
+    /// `supportedFileExtensions`.
     private let importer = RouteImporter(decoders: [GPXRouteDecoder(), TCXRouteDecoder()])
-    /// A route file handed in at launch (`-OBCImportSample`) — opens E1 as soon
-    /// as the main screen is up.
+    /// A route file handed in at launch (`-OBCImportSample`) — opens the
+    /// import landing as soon as the main screen is up.
     private let importAtLaunch: (data: Data, fileName: String)?
 
     init(
@@ -81,8 +81,8 @@ struct RootView: View {
             }
         }
         // Everything below hangs OUTSIDE the launch gate: a share can arrive
-        // before pairing (H4) — the E1 cover and the H5 alert must present
-        // over D1 just as they do over the main screen.
+        // before pairing — the import cover and the read-failure alert must
+        // present over the pairing flow just as they do over the main screen.
         .fullScreenCover(item: $pendingImport) { pending in
             ImportLandingHost(
                 transport: transport,
@@ -95,15 +95,15 @@ struct RootView: View {
                     mainModel.addImportedRoute(pending.record(for: detail))
                     pendingImport = nil
                 },
-                // "Uploading saves it too" (B5): the route lands in Planned
-                // the moment the upload completes (recorded as on-device, up to
+                // "Uploading saves it too": the route lands in Planned the
+                // moment the upload completes (recorded as on-device, up to
                 // date, under the id the device assigned); the cover closes
-                // after F₂.
+                // once the upload sheet does.
                 onUploaded: { detail, objectID, crc in
                     mainModel.addImportedRoute(pending.record(for: detail, deviceObjectID: objectID, uploadedCRC32: crc))
                 },
-                // H4 "Pair a device": save first (a pairing detour must not
-                // cost the import), then drop into the D2 scan.
+                // "Pair a device": save first (a pairing detour must not cost
+                // the import), then drop into the scan.
                 onPair: { detail in
                     mainModel.addImportedRoute(pending.record(for: detail))
                     pendingImport = nil
@@ -112,7 +112,7 @@ struct RootView: View {
                 onCancel: { pendingImport = nil }
             )
         }
-        // H5 — the share sheet can hand over anything; say what we accept.
+        // The share sheet can hand over anything; say what we accept.
         .alert("Couldn't read that file", isPresented: $importFailedAlert) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -163,16 +163,16 @@ struct RootView: View {
         }
         // Share-sheet / "open with OBC" delivery: iOS hands route files here
         // (registered in project.yml → CFBundleDocumentTypes). Same path as a
-        // Files pick, so a Komoot share lands on E1.
+        // Files pick, so a Komoot share lands on the import landing.
         .onOpenURL { url in
             importFile(at: url)
         }
-        // One shared online/offline signal for every basemap preview (#294) —
-        // the E1 cover + pushed details inherit it through the presentation.
+        // One shared online/offline signal for every basemap preview — the
+        // import cover + pushed details inherit it through the presentation.
         .environment(\.obcIsOnline, reachability.isOnline)
     }
 
-    // MARK: Detail destinations (B4)
+    // MARK: Detail destinations
 
     @ViewBuilder
     private func detailScreen(for destination: MainDestination) -> some View {
@@ -210,7 +210,7 @@ struct RootView: View {
                 RouteDetailScreen(
                     transport: transport,
                     dressing: .tracked(ride),
-                    // The full tracklog (#294) — the interactive map draws this,
+                    // The full tracklog — the interactive map draws this,
                     // never the ride card's downsampled preview.
                     rideGeometry: mainModel.rideGeometry(for: id),
                     deviceName: mainModel.deviceName,
@@ -227,8 +227,8 @@ struct RootView: View {
                 transport: transport,
                 bondStore: bondStore,
                 onDeviceRenamed: { mainModel.deviceRenamed(to: $0) },
-                // H2: bond is cleared + link dropped by the model; pop the
-                // stack and hand the launch flow back to the D1 prompt.
+                // Bond is cleared + link dropped by the model; pop the stack
+                // and hand the launch flow back to the pair-intro prompt.
                 onForget: {
                     path.removeAll()
                     launchModel.forgetDevice()
@@ -238,9 +238,9 @@ struct RootView: View {
         }
     }
 
-    /// The hidden dev-panel entry Settings hosts (B1P's second entry point):
-    /// Debug-only, and only when the mock is driving — Release and forced-BLE
-    /// runs pass `nil`, so the gesture goes nowhere.
+    /// The hidden dev-panel entry Settings hosts: Debug-only, and only when
+    /// the mock is driving — Release and forced-BLE runs pass `nil`, so the
+    /// gesture goes nowhere.
     private var devPanelOpener: (() -> Void)? {
         #if DEBUG
         guard OBCCompanionApp.mockControl != nil else { return nil }
@@ -250,7 +250,7 @@ struct RootView: View {
         #endif
     }
 
-    // MARK: Import edge (→ E1)
+    // MARK: Import edge
 
     /// The saved planned route whose name matches, case-insensitively. Reads
     /// the **library store directly** — a share can arrive while the launch
@@ -320,9 +320,9 @@ enum MainDestination: Hashable {
     case settings
 }
 
-/// Owns a stable `SettingsModel` for the pushed G screen (B8) — same rule as
-/// the detail hosts: a model created inline in `navigationDestination` would
-/// be rebuilt on every body pass.
+/// Owns a stable `SettingsModel` for the pushed settings screen — same rule
+/// as the detail hosts: a model created inline in `navigationDestination`
+/// would be rebuilt on every body pass.
 private struct SettingsScreen: View {
     @State private var model: SettingsModel
     private let onOpenDevPanel: (() -> Void)?
@@ -354,7 +354,7 @@ private struct PendingImport: Identifiable {
     let fileName: String
     /// The original bytes, kept for the library record (re-parse/debugging).
     let fileData: Data
-    /// Bond state at arrival — picks the E1 vs H4 framing.
+    /// Bond state at arrival — picks the saved-vs-no-device framing.
     let noDevicePaired: Bool
     /// The existing route this import replaces (name-collision → Replace), or
     /// `nil` for a fresh import. Its id + device object id carry through.
@@ -376,7 +376,7 @@ private struct PendingImport: Identifiable {
         return copy
     }
 
-    /// The library record (B1S) a save/upload/pair action lands: the landing's
+    /// The library record a save/upload/pair action lands: the landing's
     /// summary over the canonical parsed route + the original file. `deviceObjectID`
     /// + `uploadedCRC32` are what an upload just committed; absent that, a
     /// replace keeps the route it's replacing on the device — under its old
@@ -394,17 +394,18 @@ private struct PendingImport: Identifiable {
     }
 }
 
-/// One presented upload (B5) — carries the sheet's model, created **once** at
-/// the Upload tap (built inline in the `.sheet` closure it would be rebuilt on
+/// One presented upload — carries the sheet's model, created **once** at the
+/// Upload tap (built inline in the `.sheet` closure it would be rebuilt on
 /// every body pass, restarting the transfer).
 private struct UploadRequest: Identifiable {
     let id = UUID()
     let model: UploadSheetModel
 }
 
-/// Owns a stable `RouteDetailModel` for a pushed E2/E3 (a model created inline
-/// in `navigationDestination` would be rebuilt on every body pass) — and the
-/// B5 upload sheet, presented over the detail (the app never leaves the route).
+/// Owns a stable `RouteDetailModel` for a pushed detail screen (a model
+/// created inline in `navigationDestination` would be rebuilt on every body
+/// pass) — and the upload sheet, presented over the detail (the app never
+/// leaves the route).
 private struct RouteDetailScreen: View {
     @State private var model: RouteDetailModel
     @State private var uploadRequest: UploadRequest?
@@ -471,10 +472,10 @@ private struct RouteDetailScreen: View {
     }
 }
 
-/// Owns a stable model for the presented E1 cover, and turns Save into the
-/// summary `MainScreenModel` lands in Planned. Upload presents the B5 sheet:
-/// a completed upload also saves the route ("Uploading saves it too"), and
-/// the cover closes once the sheet does.
+/// Owns a stable model for the presented import cover, and turns Save into
+/// the summary `MainScreenModel` lands in Planned. Upload presents the
+/// upload sheet: a completed upload also saves the route ("Uploading saves
+/// it too"), and the cover closes once the sheet does.
 private struct ImportLandingHost: View {
     @State private var model: RouteDetailModel
     @State private var uploadRequest: UploadRequest?
@@ -543,8 +544,8 @@ private struct ImportLandingHost: View {
         .sheet(
             item: $uploadRequest,
             // The route is already in Planned (saved on completion) — closing
-            // the F₂ sheet also closes the landing. A canceled upload stays
-            // on E1, still unsaved.
+            // the sheet also closes the landing. A canceled upload stays on
+            // the landing, still unsaved.
             onDismiss: { if uploadCompleted { onCancel() } }
         ) { request in
             UploadSheetView(model: request.model)
