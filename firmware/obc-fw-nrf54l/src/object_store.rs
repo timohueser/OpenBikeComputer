@@ -119,7 +119,9 @@ impl ObjectStore {
                 let _ = names.push(n.clone());
             }
         });
-        let mut next_sideload = SIDELOAD_ID_BASE;
+        // The reserved session band is [SIDELOAD_ID_BASE, u16::MAX] — 256 ids. Track it in a u32
+        // so the exhausted case is "past u16::MAX", not a saturating collapse onto 0xFFFF.
+        let mut next_sideload: u32 = SIDELOAD_ID_BASE as u32;
         for name in &names {
             match storage.route_object_info(name) {
                 Some((byte_len, _)) => {
@@ -129,8 +131,14 @@ impl ObjectStore {
                             id
                         }
                         None => {
-                            let id = next_sideload;
-                            next_sideload = next_sideload.saturating_add(1);
+                            // Band spent (256 side-loads): skip the rest rather than saturate onto
+                            // 0xFFFF — an aliased id would serve the wrong file on download.
+                            if next_sideload > u16::MAX as u32 {
+                                defmt::warn!("store: side-load id band exhausted — a route is not listed");
+                                continue;
+                            }
+                            let id = next_sideload as u16;
+                            next_sideload += 1;
                             id
                         }
                     };
@@ -261,20 +269,28 @@ impl ObjectStore {
 
     // ==================== upload (S0 §4.2 op 1) ====================
 
-    /// Open a fresh upload from its descriptor (uploads restart, not resume — S0 §1 principle 4):
-    /// truncate the temp and return the [`Receiver`] to drive, or the typed status to answer
-    /// immediately. A non-zero offset is rejected (`Receiver::new`) — the app always sends 0.
+    /// Validate a fresh upload from its descriptor (uploads restart, not resume — S0 §1 principle
+    /// 4): return the [`Receiver`] to drive, or the typed status to answer immediately. A non-zero
+    /// offset is rejected (`Receiver::new`) — the app always sends 0. The SD temp is **not** opened
+    /// here: the data plane opens it via [`upload_begin`](Self::upload_begin) at the first CoC byte,
+    /// so an armed transfer whose CoC never opens holds no storage handle.
     pub fn upload_open(&mut self, desc: &TransferControl) -> Result<Receiver, TransferStatus> {
-        // A named id must exist (0xFFFF = fresh); check before touching the temp.
+        // A named id must exist (0xFFFF = fresh); check before arming.
         if desc.object_id != TransferControl::NEW_OBJECT_ID && self.slot_index(desc.object_id).is_none() {
             return Err(TransferStatus::NotFound);
         }
-        let rx = Receiver::new(desc).map_err(|_| TransferStatus::Error)?;
-        let Some(storage) = &mut self.storage else { return Err(TransferStatus::Error) };
-        if !storage.upload_begin() {
+        // No card ⇒ no upload; answer now rather than after the CoC opens.
+        if self.storage.is_none() {
             return Err(TransferStatus::Error);
         }
-        Ok(rx)
+        Receiver::new(desc).map_err(|_| TransferStatus::Error)
+    }
+
+    /// Open (truncating) the SD upload temp — called by the data plane when the transfer's bytes
+    /// actually start flowing (see [`upload_open`](Self::upload_open)). False = no card / open
+    /// failure (the caller answers `error`).
+    pub fn upload_begin(&mut self) -> bool {
+        self.storage.as_mut().is_some_and(|s| s.upload_begin())
     }
 
     /// Sink one CoC chunk: append to the temp. False = storage failure (the caller aborts).
@@ -373,7 +389,9 @@ impl ObjectStore {
                 if self.storage.is_none() {
                     return Err(TransferStatus::Error);
                 }
-                let len = self.build_list(desc.ty);
+                let Some(len) = self.build_list(desc.ty) else {
+                    return Err(TransferStatus::Error);
+                };
                 let crc = Crc32::checksum(&self.list_buf[..len]);
                 let tx = StreamSender::new(desc, len as u32, crc).map_err(|_| TransferStatus::Error)?;
                 Ok((tx, DownloadSource::List))
@@ -489,19 +507,24 @@ impl ObjectStore {
         }
     }
 
-    /// Build the list object for `ty` into [`Self::list_buf`], returning its byte length.
-    /// Entries come from each stored file's header (one read per object — a full catalog is
-    /// ~a hundred header reads, tens of ms, done once per download).
-    fn build_list(&mut self, ty: ObjectType) -> usize {
+    /// Build the list object for `ty` into [`Self::list_buf`], returning its byte length — or
+    /// `None` if a cataloged slot can't be read *now*. Entries come from each stored file's header
+    /// (one read per object — a full catalog is ~a hundred header reads, tens of ms, done once per
+    /// download).
+    ///
+    /// A cataloged slot was readable at the mount scan, so a read failure here is a transient
+    /// glitch. Fail the **whole** list rather than silently omit the entry: the app takes a
+    /// committed list as authoritative (it reconciles its on-device link set off it), and a list
+    /// shorter than the `objectStore` digest's count would make it drop a still-present route.
+    /// `None` → the caller answers a typed `error` and the app retries, keeping its links.
+    fn build_list(&mut self, ty: ObjectType) -> Option<usize> {
         let mut count: u16 = 0;
         let mut off = ListHeader::ENCODED_LEN;
         if let Some(storage) = &self.storage {
             match ty {
                 ObjectType::RouteList => {
                     for slot in &self.routes {
-                        let Some((byte_len, info)) = storage.route_object_info(&slot.file) else {
-                            continue; // transiently unreadable — serve the rest
-                        };
+                        let (byte_len, info) = storage.route_object_info(&slot.file)?;
                         let entry = RouteListEntry {
                             object_id: slot.id,
                             byte_len,
@@ -518,9 +541,7 @@ impl ObjectStore {
                 }
                 ObjectType::RideList => {
                     for slot in &self.rides {
-                        let Some((byte_len, info)) = storage.ride_object_info(&slot.file) else {
-                            continue; // transiently unreadable — serve the rest
-                        };
+                        let (byte_len, info) = storage.ride_object_info(&slot.file)?;
                         let entry = RideListEntry {
                             object_id: slot.id,
                             byte_len,
@@ -540,7 +561,7 @@ impl ObjectStore {
             }
         }
         self.list_buf[..ListHeader::ENCODED_LEN].copy_from_slice(&ListHeader { count }.encode());
-        off
+        Some(off)
     }
 }
 
