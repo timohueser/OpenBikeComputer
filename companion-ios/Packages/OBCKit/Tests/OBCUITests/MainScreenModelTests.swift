@@ -6,12 +6,13 @@ import OBCTransport
 
 /// B3 acceptance, host-side: the main-screen model driven through
 /// `MockTransport` — the library-first Planned list (#289), the device-first
-/// Tracked list, the live device cluster, search, the SYNC button state
-/// machine, and swipe-delete's data path.
+/// Tracked list, the live device cluster, search, and swipe-delete's data
+/// path. The SYNC state machine itself is `RideSyncCoordinatorTests`' beat
+/// (#358); syncs here only stage list/reconcile behavior.
 @MainActor
 final class MainScreenModelTests: XCTestCase {
     /// Short pacing so the done-hold / line-hold timers fire in test time.
-    private static let fastTiming = MainScreenModel.Timing(
+    private static let fastTiming = RideSyncCoordinator.Timing(
         syncDoneHold: .milliseconds(60),
         syncedLineHold: .milliseconds(500)
     )
@@ -20,7 +21,7 @@ final class MainScreenModelTests: XCTestCase {
         _ scenario: Scenario,
         library: any LibraryStore = InMemoryLibraryStore(),
         seedLibrary: Bool = true,
-        timing: MainScreenModel.Timing = fastTiming
+        timing: RideSyncCoordinator.Timing = fastTiming
     ) -> (MainScreenModel, MockControl) {
         let control = MockControl(scenario: scenario)
         control.latency = .zero
@@ -30,7 +31,7 @@ final class MainScreenModelTests: XCTestCase {
         // library-first, so fixture routes exist as library records (#289).
         if seedLibrary { control.seedLibrary(into: library) }
         let model = MainScreenModel(
-            transport: MockTransport(control: control), library: library, timing: timing)
+            transport: MockTransport(control: control), library: library, syncTiming: timing)
         return (model, control)
     }
 
@@ -87,9 +88,13 @@ final class MainScreenModelTests: XCTestCase {
     /// settle back to idle.
     private func startSynced(_ model: MainScreenModel) async {
         await startLoaded(model)
-        model.sync()
-        await waitFor("sync completes") { model.syncState == .done || model.upToDateToastVisible }
-        await waitFor("sync settles") { model.syncState == .idle && model.syncProgress == nil }
+        model.sync.sync()
+        await waitFor("sync completes") {
+            model.sync.syncState == .done || model.sync.upToDateToastVisible
+        }
+        await waitFor("sync settles") {
+            model.sync.syncState == .idle && model.sync.syncProgress == nil
+        }
     }
 
     // MARK: Stream lifecycle (#356)
@@ -130,7 +135,7 @@ final class MainScreenModelTests: XCTestCase {
         // Tracked is library-first (#296): the device's rides aren't rows until
         // they're synced — a plain load leaves the list empty.
         XCTAssertTrue(model.rides.isEmpty)
-        model.sync()
+        model.sync.sync()
         await waitFor("rides synced in") { model.rides.count == 4 }
         XCTAssertEqual(model.rides[1].name, "Sunday Coffee Spin")
         await waitFor("device identity") { model.deviceName == "Trailhead" }
@@ -186,45 +191,13 @@ final class MainScreenModelTests: XCTestCase {
         XCTAssertEqual(model.filteredRides.count, 4)
     }
 
-    // MARK: Sync
+    // MARK: Sync × the lists (the state machine itself: RideSyncCoordinatorTests)
 
-    func testFirstSyncPullsEverythingThenIdles() async {
-        let (model, _) = makeModel(.happyPath)
-        await startLoaded(model)
-
-        model.sync()
-        await waitFor("syncing") { model.syncState == .syncing }
-        await waitFor("done + confirm line") {
-            model.syncState == .done && model.lastSyncCount == 4
-        }
-        XCTAssertNil(model.syncProgress)
-        await waitFor("done hold expires") { model.syncState == .idle }
-        XCTAssertEqual(model.lastSyncCount, 4)   // the line outlives the check
-        await waitFor("confirm line expires") { model.lastSyncCount == nil }
-    }
-
-    func testSecondSyncIsUpToDate() async {
-        let (model, _) = makeModel(.happyPath)
-        await startLoaded(model)
-
-        model.sync()
-        await waitFor("first sync done") { model.lastSyncCount == 4 }
-        await waitFor("idle again") { model.syncState == .idle }
-
-        model.sync()
-        // H9: quiet toast, straight back to idle — never an empty "done".
-        await waitFor("up-to-date toast") { model.upToDateToastVisible }
-        XCTAssertEqual(model.syncState, .idle)
-        XCTAssertNil(model.lastSyncCount)
-    }
-
-    func testRideAddedOnDeviceSyncsAsOneNewRide() async {
+    /// A ride that syncs in surfaces in the Tracked list this session — the
+    /// `onRideLanded` seam feeding the in-memory list per landed ride.
+    func testRideAddedOnDeviceSurfacesInTheListAfterSync() async {
         let (model, control) = makeModel(.happyPath)
-        await startLoaded(model)
-
-        model.sync()
-        await waitFor("first sync") { model.lastSyncCount == 4 }
-        await waitFor("idle") { model.syncState == .idle }
+        await startSynced(model)
 
         control.emit(.rideAdded(RideSummary(
             id: RideID("ride-new"),
@@ -235,8 +208,8 @@ final class MainScreenModelTests: XCTestCase {
             averageSpeedMps: 6.4
         )))
 
-        model.sync()
-        await waitFor("one new ride") { model.lastSyncCount == 1 }
+        model.sync.sync()
+        await waitFor("one new ride") { model.sync.lastSyncCount == 1 }
         XCTAssertEqual(model.rides.first?.name, "Lunch Loop")
     }
 
@@ -246,8 +219,8 @@ final class MainScreenModelTests: XCTestCase {
         let (model, _) = makeModel(.happyPath)
         await startLoaded(model)
 
-        model.sync()
-        await waitFor("first sync") { model.lastSyncCount != nil }
+        model.sync.sync()
+        await waitFor("first sync") { model.sync.lastSyncCount != nil }
 
         let ride = model.rides.first { $0.name == "Kettle Moraine Loop" }
         let geometry = ride.flatMap { model.rideGeometry(for: $0.id) }
@@ -257,102 +230,21 @@ final class MainScreenModelTests: XCTestCase {
         XCTAssertNil(model.rideGeometry(for: RideID("nonexistent")))
     }
 
-    /// H10: the drop freezes what landed into the banner state — button idle,
-    /// progress down, and the S4 banner yields to the interruption's.
-    func testDropMidSyncRaisesH10WithTheLandedCounts() async {
+    /// H10 at the model level: while a dropped sync waits for Resume, the S4
+    /// banner yields to the interruption's — one banner at a time, even though
+    /// the link really is out of range. (The drop machinery itself is
+    /// coordinator-tested; this pins the model's banner arbitration.)
+    func testInterruptionBannerOutranksTheDisconnectedBanner() async {
         let (model, control) = makeModel(.happyPath)
         await startLoaded(model)
 
         control.dropTransfer(atFraction: 0.5)
-        model.sync()
-        await waitFor("H10 raised") { model.syncInterruption != nil }
-        XCTAssertEqual(model.syncState, .idle)
-        XCTAssertNil(model.syncProgress)
-        XCTAssertNil(model.lastSyncCount)
-
-        let interruption = model.syncInterruption
-        XCTAssertEqual(interruption?.total, 4)
-        XCTAssertGreaterThan(interruption?.landed ?? -1, 0, "half the bytes should land some rides")
-        XCTAssertLessThan(interruption?.landed ?? 4, 4, "a drop mid-batch can't have landed them all")
+        model.sync.sync()
+        await waitFor("H10 raised") { model.sync.syncInterruption != nil }
 
         XCTAssertEqual(model.connection, .outOfRange)
         XCTAssertFalse(model.showsDisconnectedBanner,
                        "the H10 banner tells the link story — never two banners")
-    }
-
-    /// H10 → Resume: the same transfer continues from its last committed
-    /// offset and finishes; every ride of the batch counts once.
-    func testResumeContinuesTheDroppedSyncToCompletion() async {
-        let library = InMemoryLibraryStore()
-        let (model, control) = makeModel(.happyPath, library: library)
-        await startLoaded(model)
-
-        control.dropTransfer(atFraction: 0.5)
-        model.sync()
-        await waitFor("H10 raised") { model.syncInterruption != nil }
-        let landedAtDrop = model.syncInterruption?.landed ?? 0
-
-        model.resumeSync()
-        XCTAssertNil(model.syncInterruption, "Resume takes the banner down at once")
-        XCTAssertEqual(model.syncState, .syncing)
-        XCTAssertEqual(model.syncProgress,
-                       .init(done: landedAtDrop, total: 4),
-                       "the caption picks up where the drop left it")
-
-        await waitFor("batch completes") {
-            model.syncState == .done && model.lastSyncCount == 4
-        }
-        XCTAssertEqual(model.connection, .connected, "resume restores the link")
-        XCTAssertEqual(library.syncedRideIDs().count, 4)
-        XCTAssertEqual(library.rides().count, 4, "resumed rides persist like the rest")
-    }
-
-    /// The user can also just sync again once back in range — what landed
-    /// stays synced, so the fresh batch is exactly the remainder.
-    func testFreshSyncAfterADropPullsOnlyTheRemainder() async {
-        let (model, control) = makeModel(.happyPath)
-        await startLoaded(model)
-
-        control.dropTransfer(atFraction: 0.5)
-        model.sync()
-        await waitFor("H10 raised") { model.syncInterruption != nil }
-
-        control.connection = .connected
-        await waitFor("reconnect reaches the model") { model.connection == .connected }
-        model.sync()
-        XCTAssertNil(model.syncInterruption, "a fresh sync clears the waiting banner")
-        await waitFor("remainder synced") {
-            model.syncState == .done && model.lastSyncCount != nil
-        }
-        let remainder = model.lastSyncCount ?? 0
-        XCTAssertGreaterThan(remainder, 0, "the fresh sync should find the un-landed rides")
-        XCTAssertLessThan(remainder, 4, "partial rides must not be re-counted")
-    }
-
-    /// B7's decode path: a synced ride lands in the library with its tracklog
-    /// decoded from the payload — not as an empty-points summary shell.
-    func testSyncedRideCarriesTheDecodedTracklog() async {
-        let library = InMemoryLibraryStore()
-        let (model, _) = makeModel(.happyPath, library: library)
-        await startLoaded(model)
-
-        model.sync()
-        await waitFor("sync done") { model.syncState == .done }
-
-        let stored = library.rides()
-        XCTAssertEqual(stored.count, 4)
-        XCTAssertTrue(stored.allSatisfy { !$0.points.isEmpty },
-                      "every fixture payload decodes into a tracklog")
-
-        let kettle = stored.first { $0.id == RideID("ride-kettle-moraine") }
-        XCTAssertEqual(kettle?.points.count, 9, "the fixture's track survives the wire")
-        let start = kettle?.points.first
-        XCTAssertEqual(start?.coordinate.latitude ?? 0, 42.8672, accuracy: 1e-6)
-        XCTAssertEqual(start?.coordinate.longitude ?? 0, -88.4471, accuracy: 1e-6)
-        XCTAssertEqual(start?.elevationMeters ?? 0, 264, accuracy: 0.5)
-        // Timestamps synthesized across the moving time, in ride order.
-        let span = kettle.map { $0.points.last!.timestamp.timeIntervalSince($0.points.first!.timestamp) }
-        XCTAssertEqual(span ?? 0, 10_260, accuracy: 1)
     }
 
     /// Library-first tracked (#296): an un-synced device ride isn't a row at all;
@@ -394,24 +286,14 @@ final class MainScreenModelTests: XCTestCase {
         XCTAssertNil(model.rides.first { $0.id == RideID("42") },
                      "an un-synced device ride isn't listed")
 
-        model.sync()
-        await waitFor("sync done") { model.syncState == .done }
+        model.sync.sync()
+        await waitFor("sync done") { model.sync.syncState == .done }
 
         // Synced → now a row, carrying the preview the downloaded payload built.
         let after = model.rides.first { $0.id == RideID("42") }
         XCTAssertNotNil(after, "the synced ride is now a row")
         XCTAssertFalse(after?.trackPreview?.points.isEmpty ?? true,
                        "a synced ride shows the downloaded track, not the placeholder")
-    }
-
-    func testSyncNoOpsWhenUnreachable() async {
-        let (model, _) = makeModel(.outOfRange)
-        await startLoaded(model)   // out of range still serves cached fixtures
-
-        model.sync()
-        try? await Task.sleep(for: .milliseconds(80))
-        XCTAssertEqual(model.syncState, .idle)
-        XCTAssertFalse(model.upToDateToastVisible)
     }
 
     // MARK: Protocol version (#303)
@@ -433,12 +315,13 @@ final class MainScreenModelTests: XCTestCase {
             .init(expected: OBCProtocol.version, found: OBCProtocol.version + 1)
         )
 
-        // Disabled sync: pressing Sync must not start a transfer (no decode).
-        model.sync()
+        // Disabled sync: pressing Sync must not start a transfer (no decode) —
+        // the coordinator asks the model through the injected `canSync` veto.
+        model.sync.sync()
         try? await Task.sleep(for: .milliseconds(80))
-        XCTAssertEqual(model.syncState, .idle)
-        XCTAssertNil(model.syncProgress)
-        XCTAssertFalse(model.upToDateToastVisible)
+        XCTAssertEqual(model.sync.syncState, .idle)
+        XCTAssertNil(model.sync.syncProgress)
+        XCTAssertFalse(model.sync.upToDateToastVisible)
         // A reload after the mismatch is known must not decode the device either.
         model.reload()
         XCTAssertEqual(model.loadState, .loaded)
@@ -451,8 +334,10 @@ final class MainScreenModelTests: XCTestCase {
         await waitFor("device identity") { model.deviceName == "Trailhead" }
         XCTAssertNil(model.protocolMismatch)
         // Sync still runs on a matched device.
-        model.sync()
-        await waitFor("sync runs") { model.syncState == .syncing || model.lastSyncCount != nil }
+        model.sync.sync()
+        await waitFor("sync runs") {
+            model.sync.syncState == .syncing || model.sync.lastSyncCount != nil
+        }
     }
 
     // MARK: Delete (H11 → H1)
@@ -484,10 +369,13 @@ final class MainScreenModelTests: XCTestCase {
         XCTAssertEqual(model.rides.count, 3)
 
         // The deleted ride must not come back as a "new" sync count — its id
-        // stays marked synced, so a re-sync finds nothing fresh (H9), and it
-        // never re-lists (the device's SD-card copy is untouched by design).
-        model.sync()
-        await waitFor("re-sync settles") { model.upToDateToastVisible || model.syncState == .done }
+        // stays marked synced (the coordinator re-reads the library's synced
+        // set per sync), so a re-sync finds nothing fresh (H9), and it never
+        // re-lists (the device's SD-card copy is untouched by design).
+        model.sync.sync()
+        await waitFor("re-sync settles") {
+            model.sync.upToDateToastVisible || model.sync.syncState == .done
+        }
         XCTAssertFalse(model.rides.contains { $0.id == id }, "deleted ride resurrected by sync")
         XCTAssertEqual(model.rides.count, 3)
 
@@ -510,9 +398,9 @@ final class MainScreenModelTests: XCTestCase {
         await startLoaded(relaunched)
         XCTAssertFalse(relaunched.rides.contains { $0.id == id })
 
-        relaunched.sync()
+        relaunched.sync.sync()
         await waitFor("sync settles") {
-            relaunched.syncState == .done || relaunched.upToDateToastVisible
+            relaunched.sync.syncState == .done || relaunched.sync.upToDateToastVisible
         }
         XCTAssertFalse(relaunched.rides.contains { $0.id == id }, "tombstone lost across relaunch")
     }
@@ -720,46 +608,6 @@ final class MainScreenModelTests: XCTestCase {
 
         relaunched.deleteRoute(record.id)
         XCTAssertFalse(library.plannedRoutes().contains { $0.id == record.id }, "delete reaches the library")
-    }
-
-    /// #256 acceptance (H9): re-sync after a relaunch downloads nothing new.
-    func testResyncAfterRelaunchIsUpToDate() async {
-        let library = InMemoryLibraryStore()
-        let (first, _) = makeModel(.happyPath, library: library)
-        await startLoaded(first)
-        first.sync()
-        await waitFor("first sync") { first.lastSyncCount == 4 }
-        XCTAssertEqual(library.rides().count, 4, "each landed ride persists")
-
-        let (relaunched, _) = makeModel(.happyPath, library: library)
-        await startLoaded(relaunched)
-        relaunched.sync()
-
-        await waitFor("H9 across the relaunch") { relaunched.upToDateToastVisible }
-        XCTAssertEqual(relaunched.syncState, .idle)
-        XCTAssertNil(relaunched.lastSyncCount)
-    }
-
-    /// #256 acceptance (H10): a sync interrupted at N of M keeps the N across
-    /// a relaunch — the next sync pulls only the remainder.
-    func testPartialSyncSurvivesRelaunch() async {
-        let library = InMemoryLibraryStore()
-        let (first, control) = makeModel(.happyPath, library: library)
-        await startLoaded(first)
-        control.dropTransfer(atFraction: 0.5)
-        first.sync()
-        await waitFor("drop observed") { first.connection == .outOfRange }
-        await waitFor("back to idle") { first.syncState == .idle }
-
-        let landed = library.syncedRideIDs().count
-        XCTAssertTrue((1...3).contains(landed), "the drop should leave a partial batch")
-        XCTAssertEqual(library.rides().count, landed, "what landed is already persisted")
-
-        let (relaunched, _) = makeModel(.happyPath, library: library)
-        await startLoaded(relaunched)
-        relaunched.sync()
-        await waitFor("remainder synced") { relaunched.syncState == .done }
-        XCTAssertEqual(relaunched.lastSyncCount, 4 - landed)
     }
 
     /// The offline rule: the store is why a failed device read degrades to
