@@ -54,8 +54,7 @@ pub const MAX_RIDES: usize = 128;
 
 /// The list-object buffer: header + one entry per slot of the **larger** catalog (both lists
 /// stream from the same scratch — one transfer at a time, S0 §4.1).
-const LIST_BUF_LEN: usize =
-    ListHeader::object_len(if MAX_RIDES > MAX_ROUTES { MAX_RIDES } else { MAX_ROUTES });
+const LIST_BUF_LEN: usize = ListHeader::object_len(if MAX_RIDES > MAX_ROUTES { MAX_RIDES } else { MAX_ROUTES });
 
 /// First id of the reserved **session-scoped** band handed to side-loaded `.obcr` files at the
 /// mount scan (their names carry no durable id). Uploaded ids grow monotonically from 0 and

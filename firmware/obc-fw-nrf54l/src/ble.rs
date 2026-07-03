@@ -727,7 +727,11 @@ fn classify_transfer(data: &[u8], store: &RefCell<ObjectStore>) -> TransferDispo
         },
         (
             Op::Download,
-            ObjectType::Route | ObjectType::Ride | ObjectType::RouteList | ObjectType::RideList | ObjectType::Diagnostics,
+            ObjectType::Route
+            | ObjectType::Ride
+            | ObjectType::RouteList
+            | ObjectType::RideList
+            | ObjectType::Diagnostics,
         ) => {
             // Cheap existence check here for the immediate `notFound`; the source itself (and
             // its CRC pre-pass) opens on the data plane, off the GATT reply path.
