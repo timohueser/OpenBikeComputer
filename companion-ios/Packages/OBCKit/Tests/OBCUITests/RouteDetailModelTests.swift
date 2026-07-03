@@ -75,6 +75,22 @@ final class RouteDetailModelTests: XCTestCase {
         XCTAssertEqual(model.stats[3].value, "—")
     }
 
+    /// Upload is link-bound: `canUpload` follows the live connection stream
+    /// (the S4 rule — the button dims when the device isn't actually there).
+    func testCanUploadFollowsTheLiveConnection() async {
+        let control = makeControl()
+        let route = control.fixtures.routes[0].summary
+        let model = RouteDetailModel(transport: MockTransport(control: control), dressing: .planned(route))
+
+        model.start()
+        await waitFor("connected replay") { model.canUpload }
+
+        control.connection = .outOfRange
+        await waitFor("link-down gate") { !model.canUpload }
+        control.connection = .connected
+        await waitFor("link-up gate") { model.canUpload }
+    }
+
     func testTrackedDetailReadFailureDegradesQuietly() async {
         let control = makeControl()
         let ride = control.fixtures.rides[0].summary

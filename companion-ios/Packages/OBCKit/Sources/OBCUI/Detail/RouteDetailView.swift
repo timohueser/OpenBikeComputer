@@ -253,6 +253,9 @@ public struct RouteDetailView: View {
             Label("Upload to \(deviceName)", systemImage: "square.and.arrow.up")
         }
         .buttonStyle(.obcPrimary)
+        // Link-bound, so it dims with the link (S4) — the top bar / banner
+        // already tell the disconnect story.
+        .disabled(!model.canUpload)
         .accessibilityIdentifier("detail.upload")
     }
 

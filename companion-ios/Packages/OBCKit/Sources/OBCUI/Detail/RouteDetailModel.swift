@@ -37,6 +37,13 @@ public final class RouteDetailModel {
     public private(set) var elevationProfile: [Double] = []
     /// E2's MAX stat, when the source knows it.
     public private(set) var maxGradePercent: Double?
+    /// The live link state — Upload is link-bound, so the button dims with it
+    /// (the S4 rule). Starts optimistic; the stream's replayed value corrects
+    /// it before the first frame on every transport.
+    public private(set) var connection: ConnectionState = .connected
+
+    /// Whether Upload can act right now.
+    public var canUpload: Bool { connection == .connected }
 
     // MARK: Fixed per-dressing facts
 
@@ -72,6 +79,7 @@ public final class RouteDetailModel {
 
     private let transport: any DeviceTransport
     @ObservationIgnored private var started = false
+    @ObservationIgnored private var connectionWatch: Task<Void, Never>?
 
     /// `preloadedDetail` short-circuits the transport fetch — the composition
     /// root passes it for routes saved from an import this session, whose
@@ -139,6 +147,12 @@ public final class RouteDetailModel {
     public func start() {
         guard !started else { return }
         started = true
+        connectionWatch = Task { [weak self, transport] in
+            for await state in transport.state {
+                guard let self else { return }
+                connection = state
+            }
+        }
         switch dressing {
         case .planned, .imported:
             break
@@ -148,6 +162,10 @@ public final class RouteDetailModel {
                 elevationProfile = detail.elevationProfile
             }
         }
+    }
+
+    deinit {
+        connectionWatch?.cancel()
     }
 
     // MARK: Header dressing
