@@ -21,6 +21,12 @@ public struct TCXRouteDecoder: RouteFileDecoder {
             let line = parser.parserError.map { " (\($0.localizedDescription))" } ?? ""
             throw FormatError.malformed(reason: "not valid XML\(line)")
         }
+        // A present-but-invalid coordinate (non-finite or out of WGS-84 range)
+        // is a hard reject, not a silent skip: it would poison distance math
+        // (NaN) and the waypoint sort (#304).
+        guard !collector.malformed else {
+            throw FormatError.malformed(reason: "coordinate is not finite or out of range")
+        }
         guard !collector.points.isEmpty else {
             throw FormatError.malformed(reason: "no trackpoints")
         }
@@ -41,6 +47,9 @@ final class TCXCollector: NSObject, XMLParserDelegate {
     private(set) var courseName: String?
     private(set) var points: [RoutePoint] = []
     private(set) var rawWaypoints: [RawWaypoint] = []
+    /// Set when a `<Trackpoint>`/`<CoursePoint>` carried a parseable but invalid
+    /// position — the decoder rejects the whole file (#304).
+    private(set) var malformed = false
 
     /// Whose `<Position>`/`<Name>` we're inside — TCX nests both under
     /// `<Trackpoint>` and `<CoursePoint>`, so the open container disambiguates.
@@ -93,7 +102,9 @@ final class TCXCollector: NSObject, XMLParserDelegate {
         case "LongitudeDegrees" where path.last == "Position":
             pendingLongitude = Double(value)
         case "AltitudeMeters" where container == .trackpoint:
-            pendingElevation = Double(value)
+            // A non-finite <AltitudeMeters> is dropped to nil (no elevation), not
+            // stored — it would poison ascent math (#304).
+            pendingElevation = Double(value).flatMap { $0.isFinite ? $0 : nil }
         case "Name":
             switch path.last {
             // First course's name wins — a multi-course file imports as one route.
@@ -126,8 +137,16 @@ final class TCXCollector: NSObject, XMLParserDelegate {
         text = ""
     }
 
+    /// A missing/unparseable lat or lon → `nil`, skipping the point as before.
+    /// Present but invalid (non-finite / out of range) → flags `malformed`,
+    /// which rejects the whole file (#304).
     private func pendingCoordinate() -> Coordinate? {
         guard let lat = pendingLatitude, let lon = pendingLongitude else { return nil }
-        return Coordinate(latitude: lat, longitude: lon)
+        let coordinate = Coordinate(latitude: lat, longitude: lon)
+        guard coordinate.isValidGeographic else {
+            malformed = true
+            return nil
+        }
+        return coordinate
     }
 }
