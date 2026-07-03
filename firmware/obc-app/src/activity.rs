@@ -142,6 +142,17 @@ impl Activity {
         self.climb.ascent()
     }
 
+    /// Average moving speed in cm/s — the ride object's `avg_speed` field (issue #275), the same
+    /// moving-distance-over-moving-time quotient as [`avg_kmh`](Activity::avg_kmh) in the wire's
+    /// integer unit. 0 before any moving time; clamped into the `u16` the layout carries
+    /// (655 m/s — unreachable on a bicycle).
+    pub fn avg_speed_cms(&self) -> u16 {
+        if self.moving_s <= 0.0 {
+            return 0;
+        }
+        (self.moving_m / self.moving_s * 100.0) as u16 // float→int casts saturate
+    }
+
     /// The current barometric elevation (m): the latest altimeter sample, or `None` before the
     /// first one (no altimeter wired, or still warming up). Unlike [`climb_m`](Activity::climb_m)
     /// (dead-banded *ascent*) this is the raw present height — it follows the altimeter in any
@@ -440,6 +451,21 @@ mod tests {
         assert_eq!(m, Motion::default());
         a.record_motion(Fix::at(BASE_LAT + STEP_UD, LON), 1000);
         assert_eq!(a.ridden_m, 0.0);
+    }
+
+    /// `avg_speed_cms` is the wire-unit twin of `avg_kmh`: same quotient, cm/s, 0 before any
+    /// moving time (the ride object's field must never be NaN-derived garbage).
+    #[test]
+    fn avg_speed_cms_matches_avg_kmh() {
+        let mut a = Activity::new(Mode::Riding);
+        assert_eq!(a.avg_speed_cms(), 0, "no moving time yet → 0, not NaN");
+        a.record_motion(Fix::at(BASE_LAT, LON), 0);
+        for step in 1..=4u32 {
+            a.record_motion(Fix::at(BASE_LAT + STEP_UD * step as i32, LON), step * 1000);
+        }
+        let kmh = a.avg_kmh().unwrap();
+        let cms = a.avg_speed_cms();
+        assert!((cms as f32 - kmh / 3.6 * 100.0).abs() < 1.0, "{cms} cm/s vs {kmh} km/h");
     }
 
     // Barometric climb — `record_altitude` / `climb_m` (issue #93 item 1).
