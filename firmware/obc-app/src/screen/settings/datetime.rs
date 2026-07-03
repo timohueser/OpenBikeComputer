@@ -7,14 +7,11 @@
 
 use core::fmt::Write;
 
-use embedded_graphics::{
-    prelude::{DrawTarget, Point},
-    primitives::Rectangle,
-};
+use embedded_graphics::{prelude::Point, primitives::Rectangle};
 use obc_render::{
     rect,
     text::{Font, TextAlign},
-    Canvas, RenderStats,
+    Surface,
 };
 
 use crate::input::Gesture;
@@ -152,33 +149,28 @@ impl DateTimeScreen {
         self.selected = i as usize;
     }
 
-    pub fn draw<D, F>(&self, target: &mut D, rx: &mut Render, color_fn: &F) -> RenderStats
-    where
-        D: DrawTarget,
-        F: Fn(u16) -> D::Color,
-    {
-        let (w, h) = (rx.w as i32, rx.h as i32);
+    pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
+        let (w, h) = (rx.w, rx.h);
         let s = rx.settings;
         let rows = rows(s.gps_time);
         let has_fix = rx.state.user_fix.is_some();
-        let mut cv = Canvas::new(target, color_fn);
-        title_frame(&mut cv, w, h, "DATE & TIME", "");
+        title_frame(cv, w, h, "DATE & TIME", "");
 
         let mut y = LIST_TOP + 4;
         for (i, &kind) in rows.iter().enumerate() {
             let rh = kind.height();
-            let area = super::row_rect(i as i32, y, w, rh);
+            let area = super::row_rect(y, w, rh);
             let selected = i == self.selected;
             let editing = if selected { self.editing } else { None };
-            super::row_cursor(&mut cv, area, selected, editing.is_some());
+            super::row_cursor(cv, area, selected, editing.is_some());
 
             match kind {
                 RowKind::Toggle => {
-                    super::row_label(&mut cv, area, "GPS clock", None);
-                    super::toggle_slider(&mut cv, area, s.gps_time);
+                    super::row_label(cv, area, "GPS clock", None);
+                    super::toggle_slider(cv, area, s.gps_time);
                 }
-                RowKind::Date => draw_date(&mut cv, area, s, editing),
-                RowKind::Time => draw_time(&mut cv, area, s, editing),
+                RowKind::Date => draw_date(cv, area, s, editing),
+                RowKind::Time => draw_time(cv, area, s, editing),
                 RowKind::GpsFix => {
                     // The UTC anchor GPS supplies — fixed, independent of the offset.
                     let mut v: heapless::String<24> = heapless::String::new();
@@ -187,7 +179,7 @@ impl DateTimeScreen {
                     } else {
                         let _ = v.push_str("Searching for fix");
                     }
-                    info_row(&mut cv, area, "GPS fix", &v);
+                    info_row(cv, area, "GPS fix", &v);
                 }
                 RowKind::LocalTime => {
                     // The offset can carry across midnight, so take the whole local stamp (date and
@@ -203,10 +195,10 @@ impl DateTimeScreen {
                         local.hour,
                         local.minute
                     );
-                    info_row(&mut cv, area, "Local time", &v);
+                    info_row(cv, area, "Local time", &v);
                 }
                 RowKind::Offset => {
-                    super::row_label(&mut cv, area, "Offset", None);
+                    super::row_label(cv, area, "Offset", None);
                     let (cw, ch) = (84, 32);
                     let cell = rect(
                         area.top_left.x + area.size.width as i32 - cw - 6,
@@ -214,7 +206,7 @@ impl DateTimeScreen {
                         cw,
                         ch,
                     );
-                    super::stepper_field(&mut cv, cell, &fmt_offset(s.utc_offset_min), editing == Some(0), Font::Label);
+                    super::stepper_field(cv, cell, &fmt_offset(s.utc_offset_min), editing == Some(0), Font::Label);
                 }
             }
             // Hairline separators with a wider gap so they clear a selected row's amber bar,
@@ -225,7 +217,6 @@ impl DateTimeScreen {
             }
             y += rh + if sep { 15 } else { 4 };
         }
-        RenderStats::default()
     }
 }
 
@@ -248,17 +239,14 @@ fn step_field(s: &mut Settings, kind: RowKind, field: u8, n: i32) {
 /// Draw a Date/Time row: a left caption above a centred group of big (Body) stepper cells. The
 /// `cells` are `(text, width)` pairs laid out left→right with `gap` between; `active` is the open
 /// field's index (or `None`). Shared by [`draw_date`] and [`draw_time`].
-fn draw_stepper_row<D, F>(
-    cv: &mut Canvas<D, F>,
+fn draw_stepper_row(
+    cv: &mut impl Surface,
     area: Rectangle,
     label: &str,
     cells: &[(&str, i32)],
     gap: i32,
     active: Option<u8>,
-) where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+) {
     let top = area.top_left.y;
     cv.text(label, Point::new(area.top_left.x + 12, top + 2), Font::Label, TextAlign::Left, palette::SUBTEXT);
     let ch = 32;
@@ -272,11 +260,7 @@ fn draw_stepper_row<D, F>(
 }
 
 /// Draw the `DATE` row: `DATE` over year / month / day Body steppers.
-fn draw_date<D, F>(cv: &mut Canvas<D, F>, area: Rectangle, s: &Settings, editing: Option<u8>)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+fn draw_date(cv: &mut impl Surface, area: Rectangle, s: &Settings, editing: Option<u8>) {
     let (mut yr, mut mo, mut da) =
         (heapless::String::<8>::new(), heapless::String::<8>::new(), heapless::String::<8>::new());
     let _ = write!(yr, "{}", s.clock.year);
@@ -286,11 +270,7 @@ where
 }
 
 /// Draw the `TIME` row: `TIME` over hour : minute Body steppers.
-fn draw_time<D, F>(cv: &mut Canvas<D, F>, area: Rectangle, s: &Settings, editing: Option<u8>)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+fn draw_time(cv: &mut impl Surface, area: Rectangle, s: &Settings, editing: Option<u8>) {
     let (mut hh, mut mm) = (heapless::String::<8>::new(), heapless::String::<8>::new());
     let _ = write!(hh, "{:02}", s.clock.hour);
     let _ = write!(mm, "{:02}", s.clock.minute);
@@ -309,11 +289,7 @@ fn time_active(editing: Option<u8>) -> Option<u8> {
 }
 
 /// A read-only info row (no cursor): a muted caption stacked over its value, both left-aligned.
-fn info_row<D, F>(cv: &mut Canvas<D, F>, area: Rectangle, label: &str, value: &str)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+fn info_row(cv: &mut impl Surface, area: Rectangle, label: &str, value: &str) {
     let x = area.top_left.x + 10;
     cv.text(label, Point::new(x, area.top_left.y + 2), Font::Label, TextAlign::Left, palette::SUBTEXT);
     cv.text(value, Point::new(x, area.top_left.y + 24), Font::Label, TextAlign::Left, palette::INK);

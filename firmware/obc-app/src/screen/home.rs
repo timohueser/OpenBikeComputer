@@ -11,11 +11,11 @@
 
 use core::fmt::Write as _;
 
-use embedded_graphics::prelude::{DrawTarget, Point};
+use embedded_graphics::prelude::Point;
 use obc_render::{
     rect,
     text::{text_width, Font, TextAlign},
-    Canvas, RenderStats,
+    Surface,
 };
 
 use crate::input::Gesture;
@@ -67,19 +67,14 @@ impl HomeScreen {
         self.ticker.changed(now)
     }
 
-    pub fn draw<D, F>(&self, target: &mut D, rx: &mut Render, color_fn: &F) -> RenderStats
-    where
-        D: DrawTarget,
-        F: Fn(u16) -> D::Color,
-    {
-        let (w, h) = (rx.w as i32, rx.h as i32);
-        let mut cv = Canvas::new(target, color_fn);
+    pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
+        let (w, h) = (rx.w, rx.h);
         cv.clear(palette::HUD);
 
         // Time the contour backdrop via the caller's `Clock`; surfaced in `RenderStats::contour_us`
         // for the device's RTT frame log.
         let t0 = rx.clock.now_us();
-        contours(&mut cv, w, h, self.seed);
+        contours(cv, w, h, self.seed);
         let contour_us = rx.clock.now_us().saturating_sub(t0) as u32;
 
         // The wall clock: HH:MM in the Huge tier, centred in the upper third. `rx.now` is the live
@@ -89,8 +84,8 @@ impl HomeScreen {
         let clock_top = h * 40 / 100 - Font::Huge.line_height() as i32 / 2;
         cv.text(&clock, Point::new(w / 2, clock_top), Font::Huge, TextAlign::Center, palette::PARCHMENT);
 
-        battery(&mut cv, w, h * 64 / 100, rx.state.battery_pct);
-        RenderStats { contour_us, ..RenderStats::default() }
+        battery(cv, w, h * 64 / 100, rx.state.battery_pct);
+        rx.stats.contour_us = contour_us;
     }
 }
 
@@ -102,11 +97,7 @@ const BARS: i32 = 5;
 /// Draw the battery gauge centred horizontally, body centred on `cy`: a white rounded shell + nub,
 /// all `BARS` segments drawn — the first `filled` in the level colour (red <20 %, green >80 %,
 /// amber between), the rest dim grey — and the `NN%` readout beside it in the level colour.
-fn battery<D, F>(cv: &mut Canvas<D, F>, w: i32, cy: i32, pct: u8)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+fn battery(cv: &mut impl Surface, w: i32, cy: i32, pct: u8) {
     let level = match pct {
         0..=19 => palette::WARNING,
         81..=u8::MAX => palette::ON,
@@ -212,11 +203,7 @@ fn jitter(seed: u32, i: usize) -> (f32, f32) {
 
 /// Trace [`field`] into `LEVELS` iso-lines by marching squares. One pass over the grid keeping two
 /// rolling sample rows (no full-grid buffer). `seed` jitters the bump centres for this open.
-fn contours<D, F>(cv: &mut Canvas<D, F>, w: i32, h: i32, seed: u32)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+fn contours(cv: &mut impl Surface, w: i32, h: i32, seed: u32) {
     let step = w as f32 / COLS as f32;
     let rows = ((h as f32 / step + 0.5) as usize).max(1); // round to keep cells ~square (no_std: no f32::round)
     let stepy = h as f32 / rows as f32;
@@ -258,11 +245,7 @@ where
 
 /// Marching-squares cell: stroke the segment(s) of contour `l` crossing the cell whose corners
 /// (clockwise from top-left) are `vals`, interpolating each edge crossing for smoothness.
-fn cell<D, F>(cv: &mut Canvas<D, F>, tl: (f32, f32), br: (f32, f32), vals: [f32; 4], l: f32)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+fn cell(cv: &mut impl Surface, tl: (f32, f32), br: (f32, f32), vals: [f32; 4], l: f32) {
     let [vtl, vtr, vbr, vbl] = vals;
     let case = (vtl >= l) as u8 * 8 + (vtr >= l) as u8 * 4 + (vbr >= l) as u8 * 2 + (vbl >= l) as u8;
     if case == 0 || case == 15 {

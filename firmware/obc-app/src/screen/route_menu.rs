@@ -8,11 +8,11 @@
 
 use core::fmt::Write;
 
-use embedded_graphics::prelude::{DrawTarget, Point};
+use embedded_graphics::prelude::Point;
 use obc_render::{
     rect,
     text::{Font, TextAlign},
-    Canvas, RenderStats,
+    Surface,
 };
 
 use crate::activity::Mode;
@@ -66,23 +66,18 @@ impl RouteMenuScreen {
         }
     }
 
-    pub fn draw<D, F>(&self, target: &mut D, rx: &mut Render, color_fn: &F) -> RenderStats
-    where
-        D: DrawTarget,
-        F: Fn(u16) -> D::Color,
-    {
+    pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         use palette::*;
-        let (w, h) = (rx.w as i32, rx.h as i32);
+        let (w, h) = (rx.w, rx.h);
         let routes = rx.routes;
         let total = routes.len();
-        let mut cv = Canvas::new(target, color_fn);
 
         let pos = if total == 0 { 0 } else { self.selected.min(total - 1) + 1 };
-        list_frame(&mut cv, w, h, "ROUTES", pos, total);
+        list_frame(cv, w, h, "ROUTES", pos, total);
 
         if total == 0 {
-            super::empty_state(&mut cv, w, h, "No routes yet", "Import a GPX file");
-            return RenderStats::default();
+            super::empty_state(cv, w, h, "No routes yet", "Import a GPX file");
+            return;
         }
 
         // Window the list to the rows that fit, scrolling to keep the selection visible.
@@ -130,8 +125,7 @@ impl RouteMenuScreen {
             }
         }
 
-        scrollbar(&mut cv, w - 8, LIST_TOP, visible as i32 * ROW_H, total, first, visible);
-        RenderStats::default()
+        scrollbar(cv, w - 8, LIST_TOP, visible as i32 * ROW_H, total, first, visible);
     }
 }
 
