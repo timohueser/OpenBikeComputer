@@ -1,9 +1,8 @@
-//! `config.rs` — parses the packer's `config.json`. Assigns style IDs 1-based in
-//! document order (so `serde_json`'s `preserve_order` feature is mandatory — see
-//! Cargo.toml; a hash-ordered map would scramble the IDs), and exposes everything
-//! the pipeline needs: the ordered `tag_key → value → style` map for first-match
-//! styling ([`Config::get_style`]), the style table for the serializer, the LOD
-//! tiers, the marker color, and the chunk size.
+//! `config.rs` — parse the packer's `config.json`. Assigns style IDs 1-based in
+//! document order, so `serde_json`'s `preserve_order` feature is mandatory (a
+//! hash-ordered map would scramble the IDs). Exposes the ordered `tag_key → value →
+//! style` map for first-match styling, the style table, LOD tiers, marker color,
+//! and chunk size.
 
 use std::collections::HashMap;
 
@@ -15,8 +14,7 @@ use crate::serialize::Style;
 /// 1..=254 (ID 0 left unused).
 const MAX_STYLE_ID: u32 = 254;
 
-/// A configured feature style: its assigned id + the fields the Style Table
-/// packs, plus the `min_lod` gate the pipeline filters on (not serialized).
+/// The Style Table fields plus the `min_lod` gate (filtered on, not serialized).
 #[derive(Debug, Clone)]
 pub struct FeatureStyle {
     pub id: u8,
@@ -60,14 +58,12 @@ impl Config {
         Self::parse(&text)
     }
 
-    /// Parse `config.json` text. `serde_json` must be built with `preserve_order`
-    /// (it is — see Cargo.toml) so the `features` object keeps document order.
+    /// Parse `config.json` text.
     pub fn parse(text: &str) -> Result<Config, String> {
         let root: Value = serde_json::from_str(text).map_err(|e| format!("config json: {e}"))?;
 
-        // --- features + style-ID assignment ---
         // Number every (tag_key, value) pair 1-based in document order; any `id`
-        // present in the config is deliberately ignored.
+        // present in the config is ignored.
         let mut features: Vec<(String, HashMap<String, FeatureStyle>)> = Vec::new();
         let mut next_id: u32 = 1;
         if let Some(feature_map) = root.get("features").and_then(Value::as_object) {
@@ -92,36 +88,30 @@ impl Config {
             Some(arr) if !arr.is_empty() => arr
                 .iter()
                 .map(|l| Lod {
-                    // Absent/null ⇒ None ⇒ +inf layer.
                     max_mpp: l.get("max_mpp").and_then(Value::as_f64),
-                    // Absent/null ⇒ 0.0 ⇒ no simplify.
                     simplify_m: l.get("simplify").and_then(Value::as_f64).unwrap_or(0.0),
                 })
                 .collect(),
-            // Missing or empty list ⇒ single coarsest layer, no simplify.
             _ => vec![Lod { max_mpp: None, simplify_m: 0.0 }],
         };
 
-        // The device reader parses the LOD table into a fixed `heapless::Vec<_, 16>`, and the
-        // header stores the count as a `u8` — so cap it here with a clear error rather than let
-        // `lod_count as u8` wrap or the reader silently drop layers (issue #5).
+        // The reader parses the LOD table into a fixed `heapless::Vec<_, 16>` and the
+        // header count is a `u8`, so cap here rather than let `lod_count as u8` wrap
+        // or the reader silently drop layers.
         const MAX_LODS: usize = 16;
         if lods.len() > MAX_LODS {
             return Err(format!("too many LODs: {} configured, the reader supports at most {MAX_LODS}", lods.len()));
         }
 
-        // --- marker color (default 0xF800) ---
         let marker_color =
             root.get("marker").and_then(|m| m.get("color")).map(parse_color).transpose()?.unwrap_or(0xF800);
 
-        // --- chunk_size (default 4096) ---
         let chunk_size = root.get("chunk_size").and_then(Value::as_u64).map(|v| v as usize).unwrap_or(4096);
 
         Ok(Config { features, lods, marker_color, chunk_size })
     }
 
-    /// First matching `(tag_key, value)` in document order. `tags` is the way's
-    /// tag map.
+    /// First matching `(tag_key, value)` in document order.
     pub fn get_style(&self, tags: &HashMap<&str, &str>) -> Option<&FeatureStyle> {
         for (tag_key, by_value) in &self.features {
             if let Some(val) = tags.get(tag_key.as_str()) {
@@ -133,8 +123,7 @@ impl Config {
         None
     }
 
-    /// The `natural.land` style, if the config requests land generation. Its id
-    /// + `min_lod` style the generated land polygons (see [`crate::land`]).
+    /// The `natural.land` style, if the config requests land generation.
     pub fn land_style(&self) -> Option<&FeatureStyle> {
         self.features.iter().find(|(k, _)| k == "natural").and_then(|(_, m)| m.get("land"))
     }
@@ -146,11 +135,11 @@ impl Config {
     }
 }
 
-/// `{z_index?, color, weight?, priority?, min_lod?}` → `FeatureStyle` with the
-/// `id` chosen by the caller. Defaults: z_index 0, weight 1, priority 3, min_lod 0.
-/// Each numeric field is range-checked against its on-wire width: an out-of-range
-/// value is a hard error, not a silent wrap (issue #5 — `z_index: 200` used to pack
-/// as `-56` and quietly reorder the paint stack).
+/// `{z_index?, color, weight?, priority?, min_lod?}` → `FeatureStyle`, `id` from the
+/// caller. Defaults: z_index 0, weight 1, priority 3, min_lod 0. Each numeric field
+/// is range-checked against its on-wire width: an out-of-range value is a hard error,
+/// not a silent wrap (e.g. `z_index: 200` would pack as `-56` and reorder the paint
+/// stack).
 fn parse_style(id: u8, v: &Value) -> Result<FeatureStyle, String> {
     let color = v.get("color").map(parse_color).transpose()?.ok_or("style missing `color`")?;
     Ok(FeatureStyle {
@@ -165,8 +154,7 @@ fn parse_style(id: u8, v: &Value) -> Result<FeatureStyle, String> {
 }
 
 /// Read an optional integer style field, validating it fits `lo..=hi`. Absent/null ⇒
-/// `default`. A non-integer or out-of-range value is a descriptive error — the old `as`
-/// casts silently wrapped both (issue #5).
+/// `default`; a non-integer or out-of-range value is a descriptive error, not a wrap.
 fn int_field(v: &Value, key: &str, lo: i64, hi: i64, default: i64) -> Result<i64, String> {
     match v.get(key) {
         None | Some(Value::Null) => Ok(default),
@@ -180,8 +168,8 @@ fn int_field(v: &Value, key: &str, lo: i64, hi: i64, default: i64) -> Result<i64
     }
 }
 
-/// Color is either a JSON int or a hex string like `"0xFAA0"`. A numeric value past the
-/// 16-bit RGB565 range is an error rather than a silent truncation (issue #5).
+/// Color is a JSON int or a hex string like `"0xFAA0"`. A value past the 16-bit
+/// RGB565 range is an error, not a silent truncation.
 fn parse_color(v: &Value) -> Result<u16, String> {
     match v {
         Value::String(s) => {
@@ -200,17 +188,14 @@ mod tests {
     use super::*;
 
     fn corpus_config() -> Config {
-        // The same config.json the corpus + web builder use.
         Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/config.json")).expect("load corpus config")
     }
 
     #[test]
     fn style_ids_are_1_based_document_order() {
-        // 42 styles, numbered in the order the feature types appear in config.json.
         let cfg = corpus_config();
 
-        // The first feature type's first value is id 1, and a few landmarks down
-        // the document confirm the running counter never resets per tag_key.
+        // Landmarks confirm the running counter never resets per tag_key.
         let id = |key: &str, val: &str| {
             cfg.features.iter().find(|(k, _)| k == key).and_then(|(_, m)| m.get(val)).map(|s| s.id)
         };
@@ -257,7 +242,6 @@ mod tests {
         tags.insert("building", "yes");
         let s = cfg.get_style(&tags).expect("matched");
         assert_eq!(s.id, 5); // highway=primary
-                             // Unmatched tags ⇒ None.
         let mut other = HashMap::new();
         other.insert("barrier", "fence");
         assert!(cfg.get_style(&other).is_none());
@@ -272,11 +256,9 @@ mod tests {
 
     #[test]
     fn style_numeric_fields_are_range_checked() {
-        // In-range values (and the i8 max) parse fine.
         let ok = serde_json::json!({"color": "0x1234", "z_index": 100, "weight": 3, "priority": 4});
         assert!(parse_style(1, &ok).is_ok());
 
-        // Each out-of-range field is a hard error, not a silent wrap (issue #5).
         let bad_z = serde_json::json!({"color": "0x1234", "z_index": 200}); // would wrap to -56 under `as i8`
         assert!(parse_style(1, &bad_z).is_err(), "z_index 200 must error");
         let bad_weight = serde_json::json!({"color": "0x1234", "weight": 300});
@@ -302,26 +284,19 @@ mod tests {
         assert!(Config::parse(&text).is_err(), "more LODs than the reader supports must error (#5)");
     }
 
-    /// Style IDs are a `u8` capped at `MAX_STYLE_ID` (254): id 0 is unused and 0xFF
-    /// is the end-of-features chunk sentinel. A config defining >254 styles must error
-    /// (config.rs ~78), not wrap the 255th id past the `u8` and collide with a
-    /// sentinel/lower style. Untested before (issue #95, item 10). The boundary: 254
-    /// styles is the last legal count, 255 is one too many.
+    /// Style IDs are a `u8` capped at 254 (id 0 unused, 0xFF is the chunk sentinel);
+    /// a config with >254 styles must error, not wrap the 255th id and collide.
     #[test]
     fn too_many_styles_is_rejected() {
-        // Build a `features` object with `n` distinct (key, value) pairs, each a
-        // single tag_key with one value, so the 1-based counter reaches `n`.
         let make = |n: usize| {
             let pairs: Vec<String> =
                 (0..n).map(|i| format!("\"k{i}\": {{\"v\": {{\"color\": \"0x0001\"}}}}")).collect();
             format!("{{\"features\": {{{}}}}}", pairs.join(","))
         };
 
-        // 254 styles is exactly the cap ⇒ accepted.
         let ok = Config::parse(&make(254)).expect("254 styles is the legal maximum");
         assert_eq!(ok.styles().len(), 254, "all 254 styles parsed");
 
-        // 255 styles overflows the table ⇒ hard error, not a silent u8 wrap.
         assert!(Config::parse(&make(255)).is_err(), "a 255th style must error (config.rs ~78), not wrap past u8");
     }
 }

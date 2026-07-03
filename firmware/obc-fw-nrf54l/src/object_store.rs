@@ -1,32 +1,30 @@
-//! The device object store (A6, issue #274) — the board half that turns S0's object plane into
-//! SD files and RRAM settings. `obc-ble` owns the wire (descriptors, CRC, transfer sequencing);
-//! [`crate::sd::Storage`] owns FatFs; this module owns the **catalog semantics** between them:
+//! The device object store — the board half that turns the object plane into SD files and RRAM
+//! settings. `obc-ble` owns the wire (descriptors, CRC, transfer sequencing); [`crate::sd::Storage`]
+//! owns FatFs; this module owns the **catalog semantics** between them:
 //!
-//! - **Object ids** (S0 §4.1): `u16`, **durable for uploaded objects** — the id is encoded in
-//!   the SD filename (`RT{id}.OBR`, see `sd.rs`), recovered at the mount scan, and fresh ids
-//!   continue monotonically past the highest stored one. Durability matters because the phone
-//!   persists the id an upload commits under (`PlannedRouteRecord.deviceObjectID`) and uses it
-//!   to badge-reconcile and replace-in-place across device reboots. Side-loaded `.obcr` files
-//!   carry no id in their name and get a *session-scoped* one from the reserved
-//!   [`SIDELOAD_ID_BASE`] band — the app never persists those (they never come out of an
-//!   upload result).
-//! - **Store revision + digest** (§4.5): bumped on every commit/delete; the BLE plane notifies
-//!   `storeChanged` + the digest characteristic from it.
-//! - **The upload state machine**: descriptor → [`Receiver`] (+ temp-file sink) → commit. Uploads
-//!   are not resumable (S0 §1 principle 4): an interrupted upload (a drop or an `op=3` abort) is
-//!   discarded and the app re-sends the object from the start.
-//! - **Downloads**: the `routeList` / `rideList` objects are built into a resident buffer;
-//!   a route or ride detail is served straight off the card (CRC pre-pass, then chunk reads —
-//!   a stored `RD{id}.ORD` *is* the §7.2 wire object, so a ride download is verbatim, A7).
-//! - **Rides are read-only here** (A7): recorded by the map build's ride loop, scanned once at
-//!   boot, never mutated over the link — the device retains them until a future device-side
-//!   delete, and the app hides synced rides locally instead of deleting them.
-//! - **Config ↔ settings** (§7.3): the Config blob reads from / writes through the persisted
-//!   [`Settings`] (v3's `device_name` + `units`), so a rename survives a power cycle and feeds
-//!   the advertised name.
+//! - **Object ids**: `u16`, **durable for uploaded objects** — the id is encoded in the SD filename
+//!   (`RT{id}.OBR`, see `sd.rs`), recovered at the mount scan, and fresh ids continue monotonically
+//!   past the highest stored one. Durability matters because the phone persists the id an upload
+//!   commits under (`PlannedRouteRecord.deviceObjectID`) and uses it to badge-reconcile and
+//!   replace-in-place across device reboots. Side-loaded `.obcr` files carry no id in their name and
+//!   get a *session-scoped* one from the reserved [`SIDELOAD_ID_BASE`] band — the app never persists
+//!   those.
+//! - **Store revision + digest**: bumped on every commit/delete; the BLE plane notifies `storeChanged`
+//!   + the digest characteristic from it.
+//! - **The upload state machine**: descriptor → [`Receiver`] (+ temp-file sink) → commit. Uploads are
+//!   not resumable: an interrupted upload (a drop or an `op=3` abort) is discarded and the app re-sends
+//!   the object from the start.
+//! - **Downloads**: the `routeList` / `rideList` objects are built into a resident buffer; a route or
+//!   ride detail is served straight off the card (CRC pre-pass, then chunk reads — a stored
+//!   `RD{id}.ORD` *is* the wire object, so a ride download is verbatim).
+//! - **Rides are read-only here**: recorded by the map build's ride loop, scanned once at boot, never
+//!   mutated over the link — the device retains them until a future device-side delete, and the app
+//!   hides synced rides locally instead of deleting them.
+//! - **Config ↔ settings**: the Config blob reads from / writes through the persisted [`Settings`]
+//!   (`device_name` + `units`), so a rename survives a power cycle and feeds the advertised name.
 //!
-//! Everything here is synchronous SD I/O; the BLE plane borrows the store through a `RefCell`
-//! **never across an `await`** (single executor — see `ble.rs`).
+//! Everything here is synchronous SD I/O; the BLE plane borrows the store through a `RefCell` **never
+//! across an `await`** (single executor).
 
 use embedded_sdmmc::ShortFileName;
 use heapless::Vec;
@@ -47,13 +45,13 @@ struct ObjectSlot {
     byte_len: u32,
 }
 
-/// Ride catalog capacity (A7). Rides accumulate — the device keeps every tracked ride until a
-/// (future) manual delete — so this is roomier than [`MAX_ROUTES`]; past it the newest rides
-/// stop being listed (warned at scan) until the card is tidied.
+/// Ride catalog capacity. Rides accumulate — the device keeps every tracked ride until a (future)
+/// manual delete — so this is roomier than [`MAX_ROUTES`]; past it the newest rides stop being listed
+/// (warned at scan) until the card is tidied.
 pub const MAX_RIDES: usize = 128;
 
-/// The list-object buffer: header + one entry per slot of the **larger** catalog (both lists
-/// stream from the same scratch — one transfer at a time, S0 §4.1).
+/// The list-object buffer: header + one entry per slot of the **larger** catalog (both lists stream
+/// from the same scratch — one transfer at a time).
 const LIST_BUF_LEN: usize = ListHeader::object_len(if MAX_RIDES > MAX_ROUTES { MAX_RIDES } else { MAX_ROUTES });
 
 /// First id of the reserved **session-scoped** band handed to side-loaded `.obcr` files at the
@@ -69,13 +67,13 @@ pub struct ObjectStore {
     /// The persisted settings, loaded once at boot — the config plane's read/modify cache.
     settings: Settings,
     routes: Vec<ObjectSlot, MAX_ROUTES>,
-    /// The stored rides (A7), scanned once at boot: the `ble` build has no ride loop, so the
-    /// catalog can't change while it runs (rides are recorded by the map build, then served
-    /// here after a reflash — same card).
+    /// The stored rides, scanned once at boot: the `ble` build has no ride loop, so the catalog can't
+    /// change while it runs (rides are recorded by the map build, then served here after a reflash —
+    /// same card).
     rides: Vec<ObjectSlot, MAX_RIDES>,
     /// The next fresh-upload object id (ids are never reused within a boot).
     next_id: u16,
-    /// The store revision (S0 §4.5): monotonic per boot, bumped on every commit/delete.
+    /// The store revision: monotonic per boot, bumped on every commit/delete.
     revision: u32,
     /// The built list / diagnostics object a download streams from.
     list_buf: [u8; LIST_BUF_LEN],
@@ -157,8 +155,8 @@ impl ObjectStore {
         defmt::info!("store: {=usize} route object(s), next id {=u16}", self.routes.len(), self.next_id);
     }
 
-    /// Scan `/tracks` for stored ride objects (`RD{id}.ORD`, A7) — the id is durable in the
-    /// filename, like the routes'. An interrupted save (the held-back version byte, exactly
+    /// Scan `/tracks` for stored ride objects (`RD{id}.ORD`) — the id is durable in the filename, like
+    /// the routes'. An interrupted save (the held-back version byte, exactly
     /// that signature) is swept; a merely unreadable file is kept off the catalog but never
     /// deleted. Ordered as the directory lists them; the app sorts by `start_time`.
     fn rescan_rides(&mut self) {
@@ -190,7 +188,7 @@ impl ObjectStore {
         defmt::info!("store: {=usize} ride object(s)", self.rides.len());
     }
 
-    /// The §4.5 digest.
+    /// The store digest.
     pub fn digest(&self) -> ObjectStoreDigest {
         ObjectStoreDigest {
             revision: self.revision,
@@ -213,28 +211,28 @@ impl ObjectStore {
         self.slot_index(id).is_some()
     }
 
-    /// Whether a ride object with this id exists (the download-request `notFound` check, A7).
+    /// Whether a ride object with this id exists (the download-request `notFound` check).
     pub fn has_ride(&self, id: u16) -> bool {
         self.rides.iter().any(|s| s.id == id)
     }
 
-    // ==================== config ↔ settings (S0 §7.3) ====================
+    // ==================== config ↔ settings ====================
 
     /// The current settings (the config read + the advertised-name source).
     pub fn settings(&self) -> &Settings {
         &self.settings
     }
 
-    /// Apply a validated Config write: persist name + units through the RRAM store. The name is
-    /// stored verbatim; an empty name clears back to factory (S0 §2 — the factory `OBC-XXXX`
-    /// returns to the advertisement).
+    /// Apply a validated Config write: persist name + units through the RRAM store. The name is stored
+    /// verbatim; an empty name clears back to factory (the factory `OBC-XXXX` returns to the
+    /// advertisement).
     pub fn apply_config(&mut self, name: &str, units: u8) {
         self.settings.device_name = DeviceName::from_str_lossy(name);
         self.settings.units = if units == 1 { obc_app::Units::Imperial } else { obc_app::Units::Metric };
         self.settings_store.save(&self.settings);
     }
 
-    // ==================== BLE bond ↔ RRAM (S0 §8, issue #276) ====================
+    // ==================== BLE bond ↔ RRAM ====================
     // The single bonded peer lives in the same RRAM settings carve as the config; these delegate
     // to the store so `ble.rs` reaches the bond through the one `RefCell<ObjectStore>` it holds.
 
@@ -253,7 +251,7 @@ impl ObjectStore {
         self.settings_store.clear_bond();
     }
 
-    // ==================== delete (S0 §4.4 cmd 1) ====================
+    // ==================== delete ====================
 
     /// Delete a stored route by object id. `true` = deleted (revision bumped).
     pub fn delete_route(&mut self, id: u16) -> bool {
@@ -267,10 +265,10 @@ impl ObjectStore {
         true
     }
 
-    // ==================== upload (S0 §4.2 op 1) ====================
+    // ==================== upload ====================
 
-    /// Validate a fresh upload from its descriptor (uploads restart, not resume — S0 §1 principle
-    /// 4): return the [`Receiver`] to drive, or the typed status to answer immediately. A non-zero
+    /// Validate a fresh upload from its descriptor (uploads restart, not resume): return the
+    /// [`Receiver`] to drive, or the typed status to answer immediately. A non-zero
     /// offset is rejected (`Receiver::new`) — the app always sends 0. The SD temp is **not** opened
     /// here: the data plane opens it via [`upload_begin`](Self::upload_begin) at the first CoC byte,
     /// so an armed transfer whose CoC never opens holds no storage handle.
@@ -308,17 +306,17 @@ impl ObjectStore {
         }
     }
 
-    /// Abort/interrupt: discard the in-flight temp (S0 §4.2 — "drains and discards").
+    /// Abort/interrupt: discard the in-flight temp.
     pub fn upload_discard(&mut self) {
         if let Some(storage) = &mut self.storage {
             storage.upload_abort();
         }
     }
 
-    /// All bytes arrived: verify + commit. On a CRC match the temp is promoted (fresh id
-    /// assigned / replaced file swapped), the revision bumps, and the result carries the
-    /// assigned id (S0 §4.3); on a mismatch nothing is committed and the temp is dropped.
-    /// Returns `(object_id, status)` for the `transferResult`.
+    /// All bytes arrived: verify + commit. On a CRC match the temp is promoted (fresh id assigned /
+    /// replaced file swapped), the revision bumps, and the result carries the assigned id; on a mismatch
+    /// nothing is committed and the temp is dropped. Returns `(object_id, status)` for the
+    /// `transferResult`.
     pub fn upload_finish(&mut self, rx: &Receiver) -> (u16, TransferStatus) {
         let outcome = match rx.outcome() {
             Some(o) => o,
@@ -330,9 +328,8 @@ impl ObjectStore {
         }
         let fresh = rx.object_id() == TransferControl::NEW_OBJECT_ID;
         if fresh && (self.routes.is_full() || self.next_id >= SIDELOAD_ID_BASE) {
-            // Storage-full, typed (S0 §4.1 duplicate/storage policy): the catalog can't index
-            // another object (or the durable-id space is exhausted — practically unreachable),
-            // so reject before touching the card's name slots.
+            // Storage-full, typed: the catalog can't index another object (or the durable-id space is
+            // exhausted — practically unreachable), so reject before touching the card's name slots.
             self.upload_discard();
             return (rx.object_id(), TransferStatus::Error);
         }
@@ -374,11 +371,11 @@ impl ObjectStore {
         }
     }
 
-    // ==================== downloads (S0 §4.2 op 2) ====================
+    // ==================== downloads ====================
 
-    /// Open a download: build the list / diagnostics object, or open the stored route/ride (with
-    /// its CRC pre-pass — the whole-object CRC the announce carries, S0 §4.2). Returns the sender
-    /// to drive plus which source [`Self::download_read`] serves from. `diag` supplies the link-plane
+    /// Open a download: build the list / diagnostics object, or open the stored route/ride (with its
+    /// CRC pre-pass — the whole-object CRC the announce carries). Returns the sender to drive plus which
+    /// source [`Self::download_read`] serves from. `diag` supplies the link-plane
     /// facts the diagnostics blob renders (unused by the other types); the runner builds it once.
     pub fn download_open(
         &mut self,
@@ -408,8 +405,8 @@ impl ObjectStore {
                 let file = self.routes[idx].file.clone();
                 self.open_object_download(desc, &file, false)
             }
-            // A ride download (A7) is the same verbatim stream — the stored `RD{id}.ORD` *is*
-            // the S0 §7.2 wire object — just out of `/tracks`.
+            // A ride download is the same verbatim stream — the stored `RD{id}.ORD` *is* the wire
+            // object — just out of `/tracks`.
             ObjectType::Ride => {
                 let Some(slot) = self.rides.iter().find(|s| s.id == desc.object_id) else {
                     return Err(TransferStatus::NotFound);
@@ -417,8 +414,8 @@ impl ObjectStore {
                 let file = slot.file.clone();
                 self.open_object_download(desc, &file, true)
             }
-            // Diagnostics (S0 §7.5, A7): render the text blob into the object buffer and stream it
-            // like a list. Deliberately **card-independent** — diagnostics must be readable exactly
+            // Diagnostics: render the text blob into the object buffer and stream it like a list.
+            // Deliberately **card-independent** — diagnostics must be readable exactly
             // when things are broken, so no `storage` gate here (the store counts then honestly read
             // 0 with `sd: --`).
             ObjectType::Diagnostics => {
@@ -431,9 +428,9 @@ impl ObjectStore {
         }
     }
 
-    /// Render the diagnostics text (S0 §7.5 — an opaque, human-readable UTF-8 blob, **not** an
-    /// API) into [`Self::list_buf`], returning its byte length: identity, the persisted boot
-    /// counter, uptime, the A3 link counters, and the store's view of the card.
+    /// Render the diagnostics text (an opaque, human-readable UTF-8 blob, **not** an API) into
+    /// [`Self::list_buf`], returning its byte length: identity, the persisted boot counter, uptime, the
+    /// link counters, and the store's view of the card.
     fn build_diagnostics(&mut self, link: &DiagInput<'_>) -> usize {
         let mut w = BufWriter { buf: &mut self.list_buf, len: 0 };
         let _ = core::fmt::write(
@@ -460,7 +457,7 @@ impl ObjectStore {
     }
 
     /// Open a stored object file for a verbatim download: the handle, the CRC pre-pass (the
-    /// whole-object CRC the announce carries, S0 §4.2), the [`StreamSender`].
+    /// whole-object CRC the announce carries), the [`StreamSender`].
     fn open_object_download(
         &mut self,
         desc: &TransferControl,
@@ -584,7 +581,7 @@ impl ObjectStore {
     }
 }
 
-/// The link-plane facts the diagnostics blob renders (S0 §7.5) — assembled by the `ble` module,
+/// The link-plane facts the diagnostics blob renders — assembled by the `ble` module,
 /// which owns the identity strings and the live BLE link-status counters; the store adds what
 /// *it* owns (boot counter, catalog counts, the card).
 pub struct DiagInput<'a> {

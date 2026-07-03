@@ -1,14 +1,10 @@
-//! OBCM v5 on-wire byte-layout constants — the single definition of the format's
-//! magic bit values, referenced by **both** the reader ([`crate::reader`], the decoder)
-//! and the packer (`obc-pack`, the encoder) so a layout change is one edit the compiler
-//! enforces rather than two raw literals kept in sync by hand (issue #12).
+//! OBCM v5 on-wire flag/sentinel bit constants — the single definition, referenced by **both** the
+//! reader ([`crate::reader`]) and the packer (`obc-pack`) so a layout change is one edit rather
+//! than two hand-synced literals. A one-bit drift between the two sides still parses but decodes
+//! wrong (a polygon read as a line, a branch walked as a leaf) — the hardest corruption to trace.
 //!
 //! Byte *offsets* and record *lengths* live next to the code that walks them
-//! ([`crate::HEADER_LEN`], [`crate::reader::LOD_ENTRY_LEN`]); this module is only the
-//! flag/sentinel bit patterns that a writer sets and a reader tests — the values where a
-//! one-bit drift between the two sides still parses but decodes wrong (a polygon read as a
-//! line, a branch walked as a leaf), which is the hardest class of corruption to trace.
-//! See `OBCM_Spec.md` for the readable layout tour.
+//! ([`crate::HEADER_LEN`], [`crate::reader::LOD_ENTRY_LEN`]). See `OBCM_Spec.md` for the layout tour.
 
 /// Per-feature `flags` byte — geometry deltas are 16-bit signed (else 8-bit signed).
 pub const FEATURE_FLAG_16BIT: u8 = 0x01;

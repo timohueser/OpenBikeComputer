@@ -1,19 +1,16 @@
 //! Persistent device settings + their byte codec.
 //!
-//! [`Settings`] is the small POD the settings screens edit and the host persists across a
-//! reboot. It is `Copy + PartialEq` like [`AppState`](crate::AppState), so
-//! [`App::apply_gesture`](crate::App::apply_gesture) detects a change with a single
-//! comparison and flags a save — the same before/after trick `tick` already uses on the
-//! camera state. The byte codec ([`encode`]/[`decode`]) is a versioned, CRC-checked,
-//! fixed-length blob shared by **both** stores — the simulator writes it to a file, the
-//! firmware to a reserved RRAM region (see [`SettingsStore`](crate::hal::SettingsStore)) — so
-//! a blank or corrupt read falls back to [`Settings::default`] rather than loading garbage.
+//! [`Settings`] is the small POD the settings screens edit and the host persists across a reboot.
+//! It is `Copy + PartialEq`, so [`App::apply_gesture`](crate::App::apply_gesture) detects a change
+//! with a single comparison and flags a save. The byte codec ([`encode`]/[`decode`]) is a
+//! versioned, CRC-checked, fixed-length blob shared by **both** stores (sim file, firmware RRAM
+//! region — see [`SettingsStore`](crate::hal::SettingsStore)), so a blank or corrupt read falls
+//! back to [`Settings::default`] rather than loading garbage.
 
 use crate::stat_fields::{StatFieldList, MAX_STAT_FIELDS};
 
-/// Measurement system for the ride readouts. The one setting with reach beyond the
-/// settings screens: it re-captions and re-scales the [`Statistics`](crate::screen) tiles and
-/// the off-route distance ([`write_off_route`](crate::screen::write_off_route)).
+/// Measurement system for the ride readouts. Re-captions and re-scales the
+/// [`Statistics`](crate::screen) tiles and the off-route distance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Units {
     /// km / km·h⁻¹ / m — the default.
@@ -23,14 +20,12 @@ pub enum Units {
     Imperial,
 }
 
-/// The device-name byte cap — S0 §7.3's Config name field (which matches the OBCR
-/// route-name cap), so the settings blob stores exactly what the BLE Config object carries.
+/// The device-name byte cap — the BLE Config name field (matches the OBCR route-name cap).
 pub const DEVICE_NAME_MAX: usize = 48;
 
-/// The user-facing device name (S0 §7.3: rename = write Config with a changed name). A fixed
-/// inline buffer so [`Settings`] stays `Copy`; **empty means "factory name"** — the BLE edge
-/// substitutes its serial-derived `OBC-XXXX` — so a fresh device needs no name stored and a
-/// rename can be cleared back to factory by writing an empty name.
+/// The user-facing device name. A fixed inline buffer so [`Settings`] stays `Copy`; **empty means
+/// "factory name"** — the BLE edge substitutes its serial-derived `OBC-XXXX` — so a fresh device
+/// needs no name stored and a rename can be cleared back to factory by writing an empty name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeviceName {
     len: u8,
@@ -323,21 +318,15 @@ impl DateTime {
         dt
     }
 
-    /// Advance the stamp **forward** by `mins` minutes, carrying minute → hour → day → month →
-    /// year (leap-aware via [`month_len`](DateTime::month_len)). This is a real clock advance, the
-    /// opposite of the field [`step_minute`](DateTime::step_minute)/… steppers that wrap *within a
-    /// single field* for the editor: here 23:59 + 1 rolls into the next day, Dec 31 into the next
-    /// year, and Feb 28 → Mar 1 except in a leap year. Pure (returns a new value), forward-only —
-    /// the [`WallClock`](crate::WallClock) only ever advances its set-point by elapsed monotonic
-    /// time, never backwards. The day-walk steps one [`next_day`](DateTime::next_day) at a time so
-    /// each boundary re-evaluates `month_len` and the year saturates at `MAX_YEAR`; the count is
-    /// small — minute resolution caps a single advance at the ~50-day u32-millis wrap.
+    /// Advance the stamp **forward** by `mins` minutes, carrying minute → hour → day → month → year
+    /// (leap-aware via [`month_len`](DateTime::month_len)). Unlike the field steppers (which wrap
+    /// within one field for the editor) this is a real clock advance: 23:59 + 1 rolls into the next
+    /// day. Pure, forward-only, saturating at `MAX_YEAR` — the [`WallClock`](crate::WallClock) only
+    /// ever advances its set-point by elapsed monotonic time.
     pub fn add_minutes(self, mins: u32) -> DateTime {
         let mut dt = self;
-        // Defensive re-pin: `next_day` (and any `month_len − day` arithmetic) assumes an in-range
-        // date. An unsanitised stamp — a future raw GPS-fix path, never the always-`sanitize`d
-        // manual set-point — could carry a day past the month length and panic / yield garbage, so
-        // clamp the date fields before walking them.
+        // Defensive re-pin: `next_day` assumes an in-range date. An unsanitised stamp (a future raw
+        // GPS-fix path) could carry a day past the month length and panic, so clamp before walking.
         dt.month = dt.month.clamp(1, 12);
         dt.day = dt.day.clamp(1, Self::month_len(dt.year, dt.month));
         let total_min = dt.minute as u32 + mins;
@@ -377,11 +366,9 @@ impl DateTime {
         date.add_minutes(local_tod as u32)
     }
 
-    /// Unix seconds at this stamp's `HH:MM:00`, reading the stamp **as UTC** — the caller owns
-    /// any zone shift (see [`App::wall_unix_now`](crate::App::wall_unix_now)). Days-from-civil
-    /// (the standard Gregorian era arithmetic); the whole 2020–2099 representable range fits a
-    /// `u32` (Dec 31 2099 ≈ 4.10 × 10⁹ < 2³² − 1). The ride object's `start_time` (issue #275)
-    /// is the only consumer today.
+    /// Unix seconds at this stamp's `HH:MM:00`, reading the stamp **as UTC** — the caller owns any
+    /// zone shift (see [`App::wall_unix_now`](crate::App::wall_unix_now)). Days-from-civil (standard
+    /// Gregorian era arithmetic); the whole 2020–2099 range fits a `u32` (Dec 31 2099 ≈ 4.10 × 10⁹).
     pub fn to_unix(self) -> u32 {
         // Shift Jan/Feb to the tail of the previous year so the leap day ends the "March year".
         let y = self.year as i64 - (self.month <= 2) as i64;
@@ -438,9 +425,8 @@ pub struct Settings {
     pub stat_fields: StatFieldList,
     /// Seconds the Statistics grid dwells on each page before auto-cycling to the next.
     pub stat_cycle_s: u16,
-    /// The user-facing device name (S0 §7.3 Config; empty = factory `OBC-XXXX`). Written by the
-    /// companion app over BLE, not by any on-device screen — it lives here so the one settings
-    /// blob persists it and the Config characteristic round-trips through the same store.
+    /// The user-facing device name (empty = factory `OBC-XXXX`). Written by the companion app over
+    /// BLE, not any on-device screen — it lives here so the one settings blob persists it.
     pub device_name: DeviceName,
 }
 
@@ -461,13 +447,11 @@ impl Default for Settings {
 }
 
 impl Settings {
-    /// The **local** wall-clock set-point the device actually shows: the hand-set [`clock`](Settings::clock)
-    /// verbatim in manual mode, or — when the clock is GPS-stamped ([`gps_time`](Settings::gps_time)) —
-    /// the UTC anchor shifted into local time by [`utc_offset_min`](Settings::utc_offset_min) (via
-    /// [`DateTime::with_offset`], so a shift across midnight rolls the date too). The single seam the
-    /// [`WallClock`](crate::WallClock) ticks and the Date & Time screen's "Local time" row reads, so the
-    /// Home clock and that row can never disagree by the offset. In manual mode the clock is already
-    /// local, so the offset is deliberately *not* applied (it would double-count).
+    /// The **local** wall-clock set-point the device shows: [`clock`](Settings::clock) verbatim in
+    /// manual mode, or — when GPS-stamped ([`gps_time`](Settings::gps_time)) — the UTC anchor
+    /// shifted into local time by [`utc_offset_min`](Settings::utc_offset_min) (via
+    /// [`DateTime::with_offset`], so a shift across midnight rolls the date too). In manual mode the
+    /// clock is already local, so the offset is deliberately *not* applied (it would double-count).
     pub fn local_clock(&self) -> DateTime {
         if self.gps_time {
             self.clock.with_offset(self.utc_offset_min)
@@ -486,28 +470,23 @@ impl Settings {
     }
 }
 
-/// Codec version — bump when the byte layout changes; [`decode`] rejects any other version
-/// (the host then falls back to [`Settings::default`], i.e. settings reset on a format change).
-/// v2 appended the Statistics-grid field selection + page-cycle period; v3 the BLE device name.
+/// Codec version — bump when the byte layout changes; [`decode`] rejects any other version (the
+/// host then falls back to [`Settings::default`], i.e. settings reset on a format change).
 pub const VERSION: u8 = 3;
 
 /// Fixed encoded length: the [`PAYLOAD_LEN`] CRC-covered bytes + a 2-byte CRC, **rounded up to the
-/// device RRAM's 16-byte write line** (the firmware store writes whole 128-bit lines, and asserts
-/// this multiple) — so a codec bump never needs the device store re-padded. A fixed size means the
-/// RRAM store reads a known span and the file store needs no length framing. Bytes past the CRC are
-/// unused zero padding.
+/// device RRAM's 16-byte write line** (the firmware store writes whole 128-bit lines) — so a codec
+/// bump never needs the device store re-padded, the RRAM store reads a known span, and the file
+/// store needs no length framing. Bytes past the CRC are unused zero padding.
 pub const ENCODED_LEN: usize = (PAYLOAD_LEN + 2).div_ceil(16) * 16;
 
-/// Payload size before the trailing CRC: the v1 head (14 bytes) + the v2 tail (a `stat_fields`
-/// length byte, [`MAX_STAT_FIELDS`] discriminant bytes, and the 2-byte `stat_cycle_s`) + the v3
-/// tail (a name-length byte and the fixed [`DEVICE_NAME_MAX`]-byte name field). The CRC follows
-/// immediately at this offset.
+/// Payload size before the trailing CRC. The CRC follows immediately at this offset.
 const PAYLOAD_LEN: usize = NAME_OFF + 1 + DEVICE_NAME_MAX;
-/// Byte offset of the v2 tail (right after the v1 head).
+/// Byte offset of the field selection (right after the 14-byte head).
 const STAT_FIELDS_OFF: usize = 14;
-/// Byte offset of the v2 `stat_cycle_s` (right after the field selection).
+/// Byte offset of `stat_cycle_s` (right after the field selection).
 const STAT_CYCLE_OFF: usize = STAT_FIELDS_OFF + 1 + MAX_STAT_FIELDS;
-/// Byte offset of the v3 tail (right after `stat_cycle_s`).
+/// Byte offset of the device name (right after `stat_cycle_s`).
 const NAME_OFF: usize = STAT_CYCLE_OFF + 2;
 
 /// CRC-16/CCITT-FALSE (poly `0x1021`, init `0xFFFF`) over `data` — small, table-free, and

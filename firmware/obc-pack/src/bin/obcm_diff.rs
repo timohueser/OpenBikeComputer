@@ -21,10 +21,9 @@ type FeatureKey = (u8, bool, Vec<(i32, i32)>, Vec<Vec<(i32, i32)>>);
 
 /// Canonical form of a closed ring, invariant to start vertex + winding: strip the
 /// closing duplicate, then take the lexicographically-smallest sequence over all
-/// rotations of the ring and its reversal. Used by `--canonical-polys` so that
-/// geometrically-identical closed-way polygons encoded with a different ring
-/// start/direction compare equal. Lines are never canonicalized (their vertex order
-/// is meaningful and matches both sides exactly).
+/// rotations of the ring and its reversal. Used by `--canonical-polys` so equal
+/// polygons with different ring start/direction compare equal. Lines are never
+/// canonicalized (vertex order is meaningful).
 fn canon_ring(ring: &[(i32, i32)]) -> Vec<(i32, i32)> {
     let mut pts = ring.to_vec();
     if pts.len() >= 2 && pts.first() == pts.last() {
@@ -51,8 +50,7 @@ fn canon_ring(ring: &[(i32, i32)]) -> Vec<(i32, i32)> {
 }
 
 fn collect_features(r: &Reader, lod: usize, canonical: bool) -> HashMap<FeatureKey, usize> {
-    // Gather every non-empty leaf (chunk_id + its node bbox) first, then decode —
-    // keeps the reader borrows simple.
+    // Gather every non-empty leaf first, then decode — keeps the reader borrows simple.
     let mut chunks: Vec<(u32, BBox)> = Vec::new();
     r.for_each_chunk(lod, &r.bbox, |cid, node| chunks.push((cid, node)));
 

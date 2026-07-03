@@ -26,28 +26,20 @@ use crate::deadband::DeadBand;
 use crate::geo::seg_dist_m;
 use crate::reader::{RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
 
-/// Columns in the **finest** (base) level — the resolution one load-time sweep fills,
-/// and the cap on zoom-in depth. Coarser levels halve from here. At ≈8 KB of `i16`
-/// pairs for the base (≈16 KB for the whole pyramid: 2048+1024+512+256 cols ×4 B +
-/// the 256-col ascent array = exactly 16 KB), this is the one RAM/zoom-depth knob:
-/// doubling it doubles both. Each level must stay even (the downsample merges pairs),
-/// so keep this a power of two.
-///
-/// The constrained `nrf-mem` profile (issue #124) trims it to 512 (the pyramid drops to ~4.6 KB) —
-/// a coarser elevation graph on the narrow panel, freeing RAM for the renderer scratch +
-/// framebuffer + the ride loop's resident route index/cache on the 256 KB part. N6 (#127) took it a
-/// step further (1024→512, a power of two so each level stays even): the zoomed-out graph upsamples
-/// from the 64-col coarsest level, the accepted L15 trade; the 512 KB LM20 restores it.
+/// Columns in the **finest** (base) level — the resolution one load-time sweep fills, and the
+/// cap on zoom-in depth. Coarser levels halve from here, so keep this a power of two (each level
+/// must stay even for the pair-merge downsample). The one RAM/zoom-depth knob: doubling it
+/// doubles both (~16 KB for the whole pyramid at 2048). `nrf-mem` trims to 512 (~4.6 KB) for the
+/// narrow panel, freeing RAM for the renderer + the ride loop's resident route index/cache.
 #[cfg(not(feature = "nrf-mem"))]
 pub const PROFILE_COLS: usize = 2048;
 #[cfg(feature = "nrf-mem")]
 pub const PROFILE_COLS: usize = 512;
 
-/// Per-level column counts, finest first — each a clean halving of the one before so the
-/// pair-merge downsample lands exactly. On the full profile the coarsest level (256) still
-/// covers the 240-px panel width, so the fully-zoomed-out view reads from it and a full-route
-/// draw walks ~256 columns, not the whole 2048-wide base. On `nrf-mem` the coarsest is 128 — just
-/// under the panel width, so the zoomed-out graph upsamples slightly (the accepted L15 trade).
+/// Per-level column counts, finest first — each a clean halving so the pair-merge downsample
+/// lands exactly. On the full profile the coarsest level (256) still covers the 240-px panel,
+/// so a full-route draw walks ~256 columns, not the 2048-wide base; on `nrf-mem` the coarsest
+/// (128) sits just under panel width, so the zoomed-out graph upsamples slightly.
 const LEVEL_COLS: [usize; 4] = [PROFILE_COLS, PROFILE_COLS / 2, PROFILE_COLS / 4, PROFILE_COLS / 8];
 /// Number of pyramid levels (length of [`LEVEL_COLS`]).
 const NUM_LEVELS: usize = LEVEL_COLS.len();
@@ -96,10 +88,10 @@ pub struct Window {
     pub hi_frac: f32,
 }
 
-/// A route's elevation profile as a multi-resolution pyramid: per-column min/max height
-/// at several resolutions, plus the y-axis range, the peak, and a cumulative-ascent
-/// curve — everything the Statistics screen needs to draw (at any zoom) without
-/// re-reading the route. Build with [`RouteReader::elevation_profile`] and cache it.
+/// A route's elevation profile as a multi-resolution pyramid: per-column min/max height at
+/// several resolutions, plus the y-axis range, the peak, and a cumulative-ascent curve —
+/// everything the Statistics screen draws at any zoom without re-reading the route. Build with
+/// [`RouteReader::elevation_profile`] and cache it.
 #[derive(Debug, Clone)]
 pub struct Profile {
     /// All pyramid levels packed finest-first (`level_offset`/`LEVEL_COLS` index in).

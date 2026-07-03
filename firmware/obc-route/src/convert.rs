@@ -30,8 +30,8 @@ const EPSILON_M: f32 = 1.0;
 const MAX_SPAN_M: f32 = 1200.0;
 /// Largest stored per-vertex coordinate delta (µdeg). A longer segment is split with
 /// interpolated vertices so `(x - px) as i16` never wraps — including a 2-point track whose one
-/// segment has no intermediate candidate for the `MAX_SPAN_M` rule to keep (issue #110). Mirrors
-/// the OBCM packer's `MAX_SEGMENT` so both formats densify on the same threshold.
+/// segment has no intermediate candidate for the `MAX_SPAN_M` rule to keep. Mirrors the OBCM
+/// packer's `MAX_SEGMENT` so both formats densify on the same threshold.
 const MAX_SEGMENT_UDEG: i64 = 30_000;
 
 /// Max bytes of one chunk's record body (`(points-1) × 6`).
@@ -117,10 +117,9 @@ pub fn gpx_to_obcr(src: &dyn ByteSource, name: &str, sink: &mut dyn ByteSink) ->
 
         bbox = Some(grow(bbox, p.lon, p.lat));
 
-        // Waypoint placement: nearest **raw** track point wins; its cumulative distance
-        // is the waypoint's position along the route. Matches the phone importer's
-        // `WaypointPlacement` (nearest-point, not segment projection) so the two OBCR
-        // producers agree; raw GPX points are dense enough that the difference is noise.
+        // Waypoint placement: nearest **raw** track point wins; its cumulative distance is
+        // the waypoint's position along the route. Matches the phone importer's nearest-point
+        // (not segment-projection) placement so the two OBCR producers agree.
         if !wps.is_empty() {
             let cl = cos_lat(p.lat);
             for w in wps.iter_mut() {
@@ -244,11 +243,10 @@ struct Cand {
 /// start), or `None` for the very first point. Returns the count emitted (synthetic
 /// intermediates + `c`) so the caller's running total stays exact.
 ///
-/// The decimator's `MAX_SPAN_M` rule only force-keeps an intermediate *raw* candidate between
-/// two kept vertices; a single raw segment with no candidate — a 2-point planner export, a
-/// sparse connector leg — was therefore stored as one oversized delta that silently wrapped
-/// (issue #110). Splitting the span itself here makes the `int16` guard candidate-independent,
-/// mirroring the OBCM packer's `densify` on the same `MAX_SEGMENT_UDEG` threshold.
+/// `MAX_SPAN_M` only force-keeps an intermediate *raw* candidate between two kept vertices; a
+/// single raw segment with no candidate (e.g. a 2-point export) would otherwise be stored as
+/// one oversized delta that silently wraps `int16`. Splitting the span here makes the guard
+/// candidate-independent, mirroring the OBCM packer's `densify` on `MAX_SEGMENT_UDEG`.
 fn emit_densified(enc: &mut Encoder, sink: &mut dyn ByteSink, prev: Option<Cand>, c: Cand) -> Result<u32, Error> {
     let prev = match prev {
         Some(p) => p,

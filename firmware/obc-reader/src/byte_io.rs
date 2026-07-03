@@ -1,20 +1,13 @@
 //! Byte I/O abstractions shared by the map (`obcm`) and route (`obcr`) formats.
 //!
-//! Neither reader touches a filesystem directly: they read through a [`ByteSource`] and
-//! write through a [`ByteSink`]. This is the seam that keeps the format code identical across
-//! platforms — on the host a source is backed by an in-memory slice (or a `std` file), on the
-//! device by a FatFs handle on the SD card. Only the trait impls are platform-specific.
-//!
-//! Lifted here (out of `obc-route`) so the **map** [`Reader`](crate::Reader) can stream its
-//! quadtree index + geometry chunks from the same seam the route reader already uses, rather
-//! than requiring the whole `.obcm` resident (issue #37). `obc-route` re-exports these so its
-//! public `obc_route::{ByteSource, ByteSink, SliceSource, Error}` paths are unchanged.
+//! Neither reader touches a filesystem directly: they read through a [`ByteSource`] and write
+//! through a [`ByteSink`] — the seam that keeps the format code identical across platforms. On the
+//! host a source is backed by an in-memory slice (or a `std` file), on the device by a FatFs handle
+//! on the SD card; only the trait impls are platform-specific. `obc-route` re-exports these.
 
-/// Errors from parsing, reading, or writing through the byte seam.
-///
-/// Distinct from the map-parse [`crate::Error`]: this is the I/O / format error shared with the
-/// route code (which re-exports it as `obc_route::Error`), so it carries the union of variants
-/// both formats need.
+/// Errors from parsing, reading, or writing through the byte seam. Distinct from the map-parse
+/// [`crate::Error`]: shared with the route code (re-exported as `obc_route::Error`), so it carries
+/// the union of variants both formats need.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
     /// A read ran past the end of the source, or an offset/length is out of range.

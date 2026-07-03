@@ -1,9 +1,7 @@
 //! The **ride object v1** — the compact tracked-ride layout a ride crosses the BLE link as
 //! (`obc-ble-interface-spec.md` §7.2) *and* the durable per-ride file the device stores at
-//! Finish (`/tracks/RD{id}.ORD`, issue #275). One layout, one truth: the stored file **is** the
-//! wire object, so a BLE ride download is a verbatim byte stream with no encode on the transfer
-//! path — exactly the route-detail discipline (S0 §1 principle 3, "objects are files the device
-//! already speaks").
+//! Finish (`/tracks/RD{id}.ORD`). The stored file **is** the wire object, so a BLE ride
+//! download is a verbatim byte stream with no encode on the transfer path.
 //!
 //! Layout (little-endian; pinned by `protocol-vectors/ride-v1.bin` against the Swift
 //! `RideObjectCodec`):
@@ -29,13 +27,11 @@
 //! reject a payload whose length disagrees (spec §7.2), which is also this file's power-cut
 //! guard (a torn write leaves a shorter file).
 //!
-//! [`track_to_ride`] is the Finish-time converter: one **streaming** pass over the recorded
-//! `.obct` log (the same fixed-record array [`track_to_gpx`](crate::track_to_gpx) reads), no
-//! resident whole-ride buffer. Note the coordinate translation: track records store integer
-//! **microdegrees** in `lon, lat` order; ride points store **degrees × 1e7** in `lat, lon`
-//! order. Like the OBCR writer, the converter holds the version byte back as `0` and patches it
-//! in as the final write, so an interrupted save is rejected by every reader
-//! ([`Error::BadVersion`]) instead of masquerading as a ride.
+//! [`track_to_ride`] is the Finish-time converter: one streaming pass over the recorded `.obct`
+//! log, no resident whole-ride buffer. Coordinate translation: track records store **microdegrees**
+//! in `lon, lat` order; ride points store **degrees × 1e7** in `lat, lon` order. The version byte
+//! is held back as `0` and patched in as the final write, so an interrupted save is rejected
+//! ([`Error::BadVersion`]) rather than masquerading as a ride.
 
 use heapless::String;
 
@@ -75,8 +71,8 @@ pub struct RideStats {
     pub anchor_ms: u32,
 }
 
-/// A stored ride object's header — what the BLE `rideList` entry serves (spec §7.4) without
-/// touching the point records.
+/// A stored ride object's header — what the BLE `rideList` entry serves without touching the
+/// point records.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RideInfo {
     /// Truncated to [`NAME_CAP`] on a char boundary for display; the on-disk name may be longer
@@ -91,11 +87,9 @@ pub struct RideInfo {
 }
 
 impl RideInfo {
-    /// Read + validate a stored ride object's header: the version byte (a held-back `0` — an
-    /// interrupted save — is [`Error::BadVersion`] like any unknown version) and the
-    /// fully-determined length (`23 + name_len + 14 × point_count` must equal the source's —
-    /// spec §7.2's "a decoder must reject a payload whose length disagrees", and the torn-write
-    /// guard). Point records are not touched.
+    /// Read + validate a stored ride object's header: the version byte (a held-back `0` is
+    /// [`Error::BadVersion`]) and the fully-determined length (`23 + name_len + 14 × point_count`
+    /// must equal the source's — the torn-write guard). Point records are not touched.
     pub fn read(src: &dyn ByteSource) -> Result<RideInfo, Error> {
         let mut head = [0u8; 3];
         src.read_at(0, &mut head)?;
@@ -142,9 +136,8 @@ fn utf8_prefix(b: &[u8]) -> &str {
 /// like the GPX converter's [`track_to_gpx`](crate::track_to_gpx) pass.
 const BLOCK_RECORDS: usize = 64;
 
-/// Convert a recorded `.obct` log (`src`, a flat array of [`TRACK_RECORD_LEN`]-byte records)
-/// into a ride object v1 written to `sink` — the Finish-time sibling of
-/// [`track_to_gpx`](crate::track_to_gpx), one streaming pass, no whole-ride buffer.
+/// Convert a recorded `.obct` log into a ride object v1 written to `sink` — the Finish-time
+/// sibling of [`track_to_gpx`](crate::track_to_gpx), one streaming pass, no whole-ride buffer.
 ///
 /// - `start_time` is the wall time of the **first record**: the anchor in `stats` back-dated by
 ///   the millis between that record and the anchor. An empty log dates itself at the anchor.

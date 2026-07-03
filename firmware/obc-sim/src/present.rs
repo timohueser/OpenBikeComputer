@@ -1,18 +1,16 @@
-//! The simulator's **self-diffing present backend** (epic #199 / issue #200) — the host stand-in
-//! for the device's partial-row push, with an exact-diff oracle bolted on.
+//! The simulator's **self-diffing present backend** — the host stand-in for the device's
+//! partial-row push, with an exact-diff oracle bolted on.
 //!
-//! The device present path keeps a per-row hash of the last-pushed framebuffer and re-pushes only
-//! the rows whose hash changed (the shared [`obc_platform::diff_rows`] core). This backend drives
-//! that *same* core, then does the thing the device can't afford to: it keeps a full copy of the
-//! last-presented frame and independently computes which rows *actually* changed, asserting the
-//! hash-diff's spans covered every one ([`obc_platform::spans_missed_changes`]). A real FNV-1a
-//! collision is ~2⁻³² per row-change and self-healing; this catches any *systematic* diff bug in CI.
+//! The device present path re-pushes only the rows whose per-row hash changed (the shared
+//! [`obc_platform::diff_rows`] core). This backend drives that *same* core, then does what the
+//! device can't afford: it keeps a full copy of the last-presented frame, independently computes
+//! which rows *actually* changed, and asserts the hash-diff's spans covered every one
+//! ([`obc_platform::spans_missed_changes`]) — catching any *systematic* diff bug in CI (a real
+//! FNV-1a collision is ~2⁻³² per row-change and self-healing).
 //!
-//! The displayed texture is built from [`presented`](Present::presented) — a buffer the present step
-//! mutates **only on changed spans** — not from a whole-frame copy. So this genuinely exercises the
-//! `present_rows(span)` path: a diff bug would surface as a stale row on glass, not merely a failed
-//! assert. The metric ([`PresentStats`]) feeds the control panel, making the partial-push observable
-//! (a Home minute tick → a few rows; a map pan → ~all; idle → zero).
+//! The displayed texture is built from [`presented`](Present::presented) — mutated **only on
+//! changed spans**, not a whole-frame copy — so a diff bug surfaces as a stale row on glass, not
+//! just a failed assert. The metric ([`PresentStats`]) feeds the control panel.
 
 use obc_platform::{diff_rows, row_hash, spans_missed_changes};
 
@@ -29,9 +27,8 @@ pub struct PresentStats {
 }
 
 /// The self-diffing present state: the last-pushed frame, its per-row hash store, and the oracle's
-/// coverage scratch. Sized once to the device framebuffer (the sim window height is a CLI knob, so
-/// the store is a runtime-sized `Vec` rather than the device's fixed `[u32; HEIGHT]` — but driven by
-/// the identical [`diff_rows`] core).
+/// coverage scratch. Runtime-sized `Vec`s (the sim window height is a CLI knob) rather than the
+/// device's fixed `[u32; HEIGHT]`, but driven by the identical [`diff_rows`] core.
 pub struct Present {
     /// RGB888 bytes "on glass": seeded all-black and updated only on changed spans, so the texture
     /// is reconstructed from partial pushes.
@@ -69,26 +66,23 @@ impl Present {
     }
 
     /// Present `rendered` (a full freshly-drawn RGB888 frame): diff it against the per-row hash
-    /// store, assert the hash-diff covered every row that truly changed, push only the changed spans
-    /// into [`presented`](Present::presented), and return that buffer for upload. Records the push
-    /// metric in [`stats`](Present::stats).
+    /// store, assert the hash-diff covered every truly-changed row, push only the changed spans
+    /// into [`presented`](Present::presented), and return that buffer. Records the push metric.
     pub fn present(&mut self, rendered: &[u8]) -> &[u8] {
         let (stride, rows) = (self.stride, self.rows);
 
-        // 1. Diff the rendered frame against the hash store → contiguous changed-row spans. The
-        //    store updates to this frame for every row (pushed or not) — the self-healing property.
+        // 1. Diff against the hash store → contiguous changed-row spans. The store updates to this
+        //    frame for every row (pushed or not) — the self-healing property.
         let mut spans: Vec<(u16, u16)> = Vec::new();
         diff_rows(rendered, stride, &mut self.hashes, !self.primed, row_hash, |y0, n| spans.push((y0, n)));
         self.primed = true;
 
-        // 2. Oracle: independently compute the rows that *actually* changed (the last-presented
-        //    frame vs. this one) and assert the spans covered every one. On the first present
-        //    `presented` is all-black, so the forced full-frame span covers it.
+        // 2. Oracle: independently compute the rows that *actually* changed and assert the spans
+        //    covered every one. First present: `presented` is all-black, forced full-frame span.
         let missed = spans_missed_changes(&self.presented, rendered, stride, rows, &spans, &mut self.covered);
         debug_assert_eq!(missed, 0, "self-diff missed {missed} changed row(s) — a systematic hash-diff bug");
 
-        // 3. Push only the changed spans — the `present_rows(span)` path. The displayed texture is
-        //    this partial-push buffer, so a diff bug shows as a stale row, not just a failed assert.
+        // 3. Push only the changed spans. The displayed texture is this partial-push buffer.
         let mut pushed_rows = 0;
         for &(y0, n) in &spans {
             let r = y0 as usize * stride..(y0 as usize + n as usize) * stride;
@@ -104,8 +98,7 @@ impl Present {
 mod tests {
     use super::*;
 
-    /// A `width`×`height` RGB888 frame filled with `v` (one byte repeated) plus an optional per-row
-    /// override, for building test frames that differ in known rows.
+    /// A `width`×`height` RGB888 frame filled with `v`.
     fn frame(width: u32, height: u32, v: u8) -> Vec<u8> {
         vec![v; (width * height * 3) as usize]
     }
@@ -146,10 +139,9 @@ mod tests {
         assert_eq!(out, f1, "the presented buffer matches the rendered frame after a partial push");
     }
 
-    /// The epic-#199 "Sim:" verification, driven through the real [`App`] + renderer over the demo
-    /// map: an idle Home re-render pushes **zero** rows (the coarse-dirty redraw is free), a Home
-    /// minute tick pushes only the **clock's** rows (a small span), and a map pan pushes **~all**
-    /// rows. The exact-diff oracle inside [`Present::present`] backs every count.
+    /// Driven through the real [`App`] + renderer over the demo map: an idle Home re-render pushes
+    /// **zero** rows, a Home minute tick only the **clock's** rows, and a map pan **~all**. The
+    /// oracle inside [`Present::present`] backs every count.
     #[test]
     fn app_scenarios_idle_is_free_tick_is_small_pan_is_most() {
         use obc_app::{App, AppState, InputClock};

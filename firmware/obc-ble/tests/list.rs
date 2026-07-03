@@ -1,6 +1,6 @@
-//! The §7.4 list-object codecs: byte layout pinned against the spec text (offsets spelled out by
-//! hand, not via the encoder), round-trips, name truncation, and the forward-compatibility rules
-//! (unknown version rejected, longer `entry_len` stepped over).
+//! The list-object codecs: byte layout pinned by hand (offsets spelled out, not via the encoder),
+//! round-trips, name truncation, and the forward-compatibility rules (unknown version rejected,
+//! longer `entry_len` stepped over).
 
 use obc_ble::{ListHeader, RideListEntry, RouteListEntry, LIST_ENTRY_LEN};
 
@@ -43,8 +43,8 @@ fn header_rejects_unknown_version_and_short_entries() {
 
 #[test]
 fn route_entry_layout() {
-    // Spec §7.4, offsets by hand: id, reserved, byte_len, distance, ascent, points, waypoints,
-    // name_len, name[48] zero-padded, trailing reserved byte.
+    // Offsets by hand: id, reserved, byte_len, distance, ascent, points, waypoints, name_len,
+    // name[48] zero-padded, trailing reserved byte.
     let b = route_entry().encode();
     assert_eq!(b.len(), LIST_ENTRY_LEN);
     assert_eq!(&b[0..2], &7u16.to_le_bytes());

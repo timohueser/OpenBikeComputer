@@ -16,7 +16,7 @@
 //! `memory-default.x` / `build.rs` shrink `FLASH` to 1520 KB and reserve the top 4 KB as a named
 //! `SETTINGS` region, exporting `__settings_base` (= `ORIGIN(SETTINGS)`). [`region_offset`] reads
 //! that symbol's address at runtime, so nothing hard-codes the magic offset and a future MCUboot
-//! partition map (#120) can adopt the named region as-is.
+//! partition map can adopt the named region as-is.
 //!
 //! A **single slot** is used. The CRC already rejects a half-written blob (a power-loss mid-write
 //! → `decode` fails → the app boots [`Settings::default`]), and settings only change while the user
@@ -59,18 +59,18 @@ fn region_offset() -> u32 {
 }
 
 /// Byte offset of the **boot-counter line** within the reserved settings page — the diagnostics
-/// blob's one persisted fact (issue #275). Placed at the page's midpoint so the low half stays
-/// free for the settings slot's future two-slot + sequence upgrade (module doc).
+/// blob's one persisted fact. Placed at the page's midpoint so the low half stays free for the
+/// settings slot's future two-slot + sequence upgrade (module doc).
 const BOOT_COUNT_OFFSET: u32 = 2048;
 /// The boot-counter line's tag; anything else there (a blank page, an older layout) reads as
 /// count 0 rather than garbage.
 const BOOT_COUNT_MAGIC: [u8; 4] = *b"OBCD";
 
-/// Byte offset of the **BLE bond slot** within the reserved settings page (issue #276): the one
-/// bonded peer's identity + keys (LTK/IRK), persisted so a power cycle or a firmware reflash lands
-/// straight back in the bonded-and-encrypted link. Placed in the page's upper half — clear of the
-/// settings slot @0 (which reserves the low half for a future two-slot upgrade) and the boot
-/// counter @2048. One slot: a fresh pairing replaces it (single-peer policy, S0 §8).
+/// Byte offset of the **BLE bond slot** within the reserved settings page: the one bonded peer's
+/// identity + keys (LTK/IRK), persisted so a power cycle or a firmware reflash lands straight back in
+/// the bonded-and-encrypted link. Placed in the page's upper half — clear of the settings slot @0
+/// (which reserves the low half for a future two-slot upgrade) and the boot counter @2048. One slot:
+/// a fresh pairing replaces it (single-peer policy).
 #[cfg(feature = "ble")]
 const BOND_OFFSET: u32 = 3072;
 /// The bond slot's tag; anything else there (blank page, torn write, older layout) reads as
@@ -100,11 +100,8 @@ impl RramSettingsStore {
         RramSettingsStore { rram: Rramc::new(rram), boot_count: 0 }
     }
 
-    /// Read-increment-write the persisted boot counter (one aligned 16-byte line, one RRAM write
-    /// per boot — nothing against the endurance budget) and return this boot's ordinal. Called
-    /// once from `main` on every build, so the counter reflects *device* boots, not just `ble`
-    /// ones. A missing/foreign line (blank page, torn write) restarts the count at 1 — the
-    /// diagnostics blob is a debugging artifact, not an API (S0 §7.5), so honest-and-simple wins.
+    /// Read-increment-write the persisted boot counter and return this boot's ordinal. A
+    /// missing/foreign line (blank page, torn write) restarts the count at 1.
     pub fn bump_boot_count(&mut self) -> u32 {
         let off = region_offset() + BOOT_COUNT_OFFSET;
         let mut line = [0u8; RRAM_WRITE_LINE];
@@ -130,8 +127,8 @@ impl RramSettingsStore {
         self.boot_count
     }
 
-    /// Load the stored BLE bond (issue #276), or `None` when the slot is blank / torn / CRC-bad —
-    /// in which case the device advertises open and pairs afresh. Reconstructs the full
+    /// Load the stored BLE bond, or `None` when the slot is blank / torn / CRC-bad — in which case
+    /// the device advertises open and pairs afresh. Reconstructs the full
     /// [`BondInformation`] (LTK, peer identity + IRK, security level) the host adds to its resolving
     /// list so the bonded phone's rotating RPA reconnect resolves and re-encrypts silently.
     #[cfg(feature = "ble")]
@@ -154,8 +151,8 @@ impl RramSettingsStore {
         }
     }
 
-    /// Persist the single BLE bond (issue #276) — a fresh pairing replaces whatever was here
-    /// (single-peer policy, S0 §8). One aligned write, no erase (RRAM overwrites in place).
+    /// Persist the single BLE bond — a fresh pairing replaces whatever was here (single-peer policy).
+    /// One aligned write, no erase (RRAM overwrites in place).
     #[cfg(feature = "ble")]
     pub fn save_bond(&mut self, bond: &BondInformation) {
         let off = region_offset() + BOND_OFFSET;
@@ -166,8 +163,8 @@ impl RramSettingsStore {
         }
     }
 
-    /// Clear the stored BLE bond (issue #276) — zero the slot so [`load_bond`](Self::load_bond)
-    /// reads "no bond" and the device returns to open pairing. Used when the peer signals it lost
+    /// Clear the stored BLE bond — zero the slot so [`load_bond`](Self::load_bond) reads "no bond"
+    /// and the device returns to open pairing. Used when the peer signals it lost
     /// its keys (the app/OS "forgot" the device) so the next contact re-pairs cleanly.
     #[cfg(feature = "ble")]
     pub fn clear_bond(&mut self) {

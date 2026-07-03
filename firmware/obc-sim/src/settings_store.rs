@@ -1,14 +1,11 @@
 //! Host-side persistent settings — the simulator's stand-in for the device's RRAM.
 //!
 //! Implements [`obc_app::SettingsStore`] over a single file holding the shared
-//! [`obc_app::settings`] blob (the *same* versioned, CRC'd byte layout the firmware writes to
-//! RRAM), so the codec is exercised identically on both sides. The app seeds itself from
-//! [`load`](obc_app::SettingsStore::load) at boot and the GUI calls
-//! [`save`](obc_app::SettingsStore::save) whenever the app reports a settings change — so
-//! quitting and relaunching restores units / clock / GPS interval.
+//! [`obc_app::settings`] blob — the *same* versioned, CRC'd byte layout the firmware writes to
+//! RRAM, so the codec is exercised identically on both sides.
 //!
-//! On the web (wasm) there is no filesystem, so the store is a no-op: settings live for the
-//! session only, mirroring the web [`TrackStore`](crate::track::TrackStore).
+//! On the web (wasm) there is no filesystem, so the store is a no-op (session-only settings),
+//! mirroring the web [`TrackStore`](crate::track::TrackStore).
 
 use std::path::PathBuf;
 

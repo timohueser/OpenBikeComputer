@@ -1,4 +1,4 @@
-//! microSD storage for the nRF54L15 board: map / routes / track log over FatFs (issue #123).
+//! microSD storage for the nRF54L15 board: map / routes / track log over FatFs.
 //!
 //! This owns the concrete SPI bus → [`SdCard`] → [`VolumeManager`] stack and reconciles the FAT
 //! filesystem to the shared app's *intent*, exactly as the simulator's `RouteStore`/`TrackStore`
@@ -8,33 +8,30 @@
 //!
 //! The `Storage` impl and every adapter below are generic over the concrete [`SdCard`] **bus type**
 //! (they speak `embedded_sdmmc`'s `BlockDevice` / `TimeSource`). So routes and the chosen map both
-//! **stream** from the card (issue #37) and the ride is logged to a temp `.obct` converted to a
-//! `<route>.gpx` on Finish.
+//! **stream** from the card and the ride is logged to a temp `.obct` converted to a `<route>.gpx`
+//! on Finish.
 //!
 //! ## Card layout (FAT16/FAT32)
 //!   `/<name>.obcm`   — the map tile (first one found in the root is loaded)
 //!   `/routes/*.obcr` — the route catalog the Route menu lists (side-loaded, long filenames)
-//!   `/routes/RT{id}.OBR` — BLE-uploaded routes (A6; the durable object id lives in the name);
+//!   `/routes/RT{id}.OBR` — BLE-uploaded routes (the durable object id lives in the name);
 //!                      the in-flight upload lives here as `UPLOAD.TMP` until commit
 //!   `/tracks/`       — saved rides (created if absent); the in-progress log lives here as
 //!                      `TRACK.OBT` and is deleted once converted. Each Finish writes **two**
-//!                      artifacts: the human `<route>.gpx` and the BLE ride object
-//!                      `RD{id}.ORD` (A7, issue #275 — the durable ride object id lives in
-//!                      the name, mirroring `RT{id}.OBR`).
+//!                      artifacts: the human `<route>.gpx` and the BLE ride object `RD{id}.ORD`
+//!                      (the durable ride object id lives in the name, mirroring `RT{id}.OBR`).
 //!
 //! ## SPI wiring (nRF54L15-DK, **SERIAL22 / SPIM22** — its own bus, separate from the display)
 //!   SCK P1_11 · MISO P1_07 · MOSI P1_06 · CS **P1_12** (software, held low) · GND · 3V3.
 //! The card is initialised at [`SD_INIT_HZ`] (≤400 kHz, SD spec) then the bus is re-clocked to
-//! [`SD_FAST_HZ`] for bulk transfer — see [`init`]. embassy-nrf's `Spim`
-//! exposes no internal MISO pull-up (its `Config` has no `miso_pull`), so the card's DO line must
-//! be pulled high externally — most microSD breakouts include this; if not, add a 10 kΩ from
-//! MISO (P1_07) to 3V3. (DO floating low during init reads `0x00`, which looks like a hung card.)
+//! [`SD_FAST_HZ`] for bulk transfer — see [`init`]. embassy-nrf's `Spim` exposes no internal MISO
+//! pull-up (its `Config` has no `miso_pull`), so the card's DO line must be pulled high externally
+//! — most microSD breakouts include this; if not, add a 10 kΩ from MISO (P1_07) to 3V3. (DO
+//! floating low during init reads `0x00`, which looks like a hung card.)
 
 // The route-selection + track/GPX-save half of this module (`reconcile_route`/`reconcile_track`,
-// `track_sink`, the GPX namer, `TRACK_TMP`) is the SD `Storage`'s full API, but the N2 bring-up
-// demo only mounts + reads (`open_map`/`map_source`/
-// `scan_routes`). The write path is exercised once the shared `obc-app` is wired onto the panel at
-// N6 (#127); let it sit unused until then rather than carve up a module that ports as one piece.
+// `track_sink`, the GPX namer, `TRACK_TMP`) is the SD `Storage`'s full API; let the write path sit
+// unused rather than carve up a module that ports as one piece.
 #![allow(dead_code)]
 
 use embassy_embedded_hal::SetConfig;
@@ -67,9 +64,9 @@ const SD_FAST_HZ: Frequency = Frequency::M8;
 /// name). Truncated-and-reused per ride, converted to `<route>.gpx`, then deleted on Finish.
 const TRACK_TMP: &str = "TRACK.OBT";
 
-/// The in-flight BLE route upload, inside `/routes` (A6, issue #274). Its extension never
-/// matches the catalog scan, so a partial upload — a drop, a power cut — is invisible until
-/// [`Storage::upload_commit`] promotes it. Truncated-and-reused per upload.
+/// The in-flight BLE route upload, inside `/routes`. Its extension never matches the catalog scan,
+/// so a partial upload — a drop, a power cut — is invisible until [`Storage::upload_commit`]
+/// promotes it. Truncated-and-reused per upload.
 const UPLOAD_TMP: &str = "UPLOAD.TMP";
 
 /// The concrete SD stack for this board: embassy-nrf's blocking `Spim` wrapped as the `SpiDevice`
@@ -138,11 +135,9 @@ struct OpenTrack {
 /// panicking (acceptance criterion). `spi` must already be configured at [`SD_INIT_HZ`].
 pub fn init(mut spi: SdSpi, mut cs: Output<'static>) -> Option<Storage> {
     // ≥74 wake-up clocks with CS high (SD spec), then hold CS LOW for the whole session.
-    // `ExclusiveDevice` drives a no-op [`NoCs`], so the real CS never toggles high between a
-    // command and its reply — which embassy's SPI can't survive (the card drops the bus and
-    // CMD0's `0x01` is lost). Validated on glass (toggling = CardNotFound, held low = mounts):
-    // embassy-nrf's per-byte `SpiDevice` framing has this hazard, so we hold CS low for the whole
-    // session.
+    // `ExclusiveDevice` drives a no-op [`NoCs`], so the real CS never toggles high between a command
+    // and its reply — which embassy's SPI can't survive (the card drops the bus and CMD0's `0x01` is
+    // lost; toggling = CardNotFound, held low = mounts).
     cs.set_high();
     let _ = spi.blocking_write(&[0xFFu8; 10]);
     cs.set_low();
@@ -297,10 +292,9 @@ impl Storage {
     }
 
     /// A [`ByteSource`](obc_route::ByteSource) over the open map file, for reading the header
-    /// ([`obc_reader::read_header`]) or — once the streamed [`Reader`](obc_reader::Reader) lands in
-    /// the port — building a per-frame reader. `None` if no map was opened
-    /// ([`open_map`](Self::open_map) returned `None`). Cheap — the source just wraps the
-    /// already-open handle, so it's rebuilt every redraw, keeping no borrow across the `&mut self`
+    /// ([`obc_reader::read_header`]) or building a per-frame [`Reader`](obc_reader::Reader). `None` if
+    /// no map was opened ([`open_map`](Self::open_map) returned `None`). Cheap — the source just wraps
+    /// the already-open handle, so it's rebuilt every redraw, keeping no borrow across the `&mut self`
     /// route/track operations.
     pub fn map_source(&self) -> Option<SdByteSource<'_, Sd, NullTime>> {
         self.open_map.map(|(f, len)| SdByteSource::new(&self.vmgr, f, len))
@@ -333,12 +327,12 @@ impl Storage {
         self.open_route.map(|(_, f, len)| SdByteSource::new(&self.vmgr, f, len))
     }
 
-    /// Parse the active route's [`RouteIndex`] — the header plus the **full chunk-meta walk**,
-    /// the one up-front per-route cost. The render loop builds this once when the active route
-    /// changes and reuses it across frames (issue #44): a redraw then streams only the visible
-    /// geometry chunks, instead of re-walking the whole index off the card at panel rate. `None`
-    /// when no route is open or the index read fails (a flaky link) — the loop retries the build
-    /// on a later redraw, so a transient glitch doesn't hide the route.
+    /// Parse the active route's [`RouteIndex`] — the header plus the **full chunk-meta walk**, the one
+    /// up-front per-route cost. The render loop builds this once when the active route changes and
+    /// reuses it across frames: a redraw then streams only the visible geometry chunks, instead of
+    /// re-walking the whole index off the card at panel rate. `None` when no route is open or the index
+    /// read fails (a flaky link) — the loop retries the build on a later redraw, so a transient glitch
+    /// doesn't hide the route.
     pub fn build_route_index(&self) -> Option<RouteIndex> {
         let src = self.route_source()?;
         RouteIndex::read(&src).ok()
@@ -348,7 +342,7 @@ impl Storage {
     /// ticking, mirroring the sim's `TrackStore::reconcile`. Drains the one-shot disposition
     /// first (finalising / abandoning the current log), then opens a fresh log when the session
     /// id changes. `name` is the active route's name (the save filename); `stats` is the app's
-    /// ride totals + wall-clock anchor, read the same frame — the ride object's header (A7).
+    /// ride totals + wall-clock anchor, read the same frame — the ride object's header.
     pub fn reconcile_track(
         &mut self,
         action: Option<obc_app::TrackAction>,
@@ -389,9 +383,9 @@ impl Storage {
         }
     }
 
-    /// Convert the open `TRACK.OBT` to a non-clobbering `<name>.gpx` **plus** the durable BLE
-    /// ride object `RD{id}.ORD` (A7), deleting the temp **only once the ride is safely in a
-    /// GPX**. Any path that can't guarantee a clean GPX save — no confirmed-free name
+    /// Convert the open `TRACK.OBT` to a non-clobbering `<name>.gpx` **plus** the durable BLE ride
+    /// object `RD{id}.ORD`, deleting the temp **only once the ride is safely in a GPX**. Any path that
+    /// can't guarantee a clean GPX save — no confirmed-free name
     /// ([`unique_gpx`](Self::unique_gpx) returns `None`), the GPX won't open, or the conversion
     /// errors — keeps `TRACK.OBT` so the ride isn't lost to a transient SD glitch (it converts
     /// on a later save; a fresh ride truncates it, as before). The GPX stays the gatekeeper: a
@@ -450,7 +444,7 @@ impl Storage {
         }
     }
 
-    /// Write the durable ride object (A7): one streaming [`track_to_ride`] pass over the open
+    /// Write the durable ride object: one streaming [`track_to_ride`] pass over the open
     /// `TRACK.OBT` into a confirmed-free `RD{id}.ORD`, `id` = one past the highest stored ride
     /// id. `track_to_ride` holds the version byte back and patches it in as its final write, so
     /// a power cut mid-save leaves a file every reader rejects (and whose id-in-name still
@@ -536,22 +530,22 @@ impl Storage {
     }
 }
 
-// ==================== The BLE route-object plane (A6, issue #274) ====================
+// ==================== The BLE route-object plane ====================
 //
-// The storage half of S0's route object: upload (stream → temp → validated promote), detail
+// The storage half of the route object: upload (stream → temp → validated promote), detail
 // download (an open handle + `ByteSource`), delete, and the per-file facts the `routeList`
-// entries serve. The BLE control plane serialises everything (one transfer at a time, S0 §4.1),
-// so these never contend with each other; on the `ble` build there is no ride loop, so they
-// never contend with the map plane either.
+// entries serve. The BLE control plane serialises everything (one transfer at a time), so these
+// never contend with each other; on the `ble` build there is no ride loop, so they never contend
+// with the map plane either.
 //
-// **Atomicity without `rename`** — embedded-sdmmc 0.9 cannot rename, so the issue's
-// write-temp-then-rename plan is substituted with the same guarantee: the upload streams into
-// [`UPLOAD_TMP`] (an extension the catalog scan never matches), and `upload_commit` copies it to
-// its final `.OBR` name **with the 4-byte `OBCR` magic held back as zeros**, patching the magic
-// in as the last write. A power cut at any point leaves either the invisible temp or a
-// zero-magic final file — [`is_route_entry`] may list the latter, but every header read rejects
-// it (`BadMagic`), so it can never reach a catalog; [`Storage::is_aborted_commit`] identifies
-// exactly that signature so the boot sweep can reclaim the name.
+// **Atomicity without `rename`** — embedded-sdmmc 0.9 cannot rename, so the same guarantee is got
+// another way: the upload streams into [`UPLOAD_TMP`] (an extension the catalog scan never
+// matches), and `upload_commit` copies it to its final `.OBR` name **with the 4-byte `OBCR` magic
+// held back as zeros**, patching the magic in as the last write. A power cut at any point leaves
+// either the invisible temp or a zero-magic final file — [`is_route_entry`] may list the latter,
+// but every header read rejects it (`BadMagic`), so it can never reach a catalog;
+// [`Storage::is_aborted_commit`] identifies exactly that signature so the boot sweep can reclaim
+// the name.
 impl Storage {
     /// `/routes`, created on demand — a virgin card must accept its first upload.
     fn routes_dir_or_create(&mut self) -> Option<RawDirectory> {
@@ -572,8 +566,8 @@ impl Storage {
         });
     }
 
-    /// A stored route's byte length + the wire facts its `routeList` entry serves (S0 §7.4).
-    /// One header (+ v2 extension) read; `None` when the file doesn't parse as OBCR.
+    /// A stored route's byte length + the wire facts its `routeList` entry serves. One header (+ v2
+    /// extension) read; `None` when the file doesn't parse as OBCR.
     pub fn route_object_info(&self, name: &ShortFileName) -> Option<(u32, RouteObjectInfo)> {
         let dir = self.routes_dir?;
         let file = self.vmgr.open_file_in_dir(dir, name, Mode::ReadOnly).ok()?;
@@ -634,7 +628,7 @@ impl Storage {
         }
     }
 
-    /// Abort: close and delete the partial (S0 §4.2 op=3 — "drains and discards").
+    /// Abort: close and delete the partial.
     pub fn upload_abort(&mut self) {
         if let Some(file) = self.open_upload.take() {
             let _ = self.vmgr.close_file(file);
@@ -645,11 +639,10 @@ impl Storage {
     }
 
     /// Promote the CRC-verified temp into the catalog (see the section doc for the power-cut
-    /// story). `replace` is the file the upload's object id already owns (deleted only *after*
-    /// the temp validated — a failed CRC/validation never touches the old copy); `None` names
-    /// the file `RT{fresh_id}.OBR`, so the object id is durable in the filename and a rescan
-    /// after a reboot recovers it (S0 §4.1 — ids are stable for the life of the object).
-    /// Returns the final name + byte length + wire facts, or `None` with the temp deleted
+    /// story). `replace` is the file the upload's object id already owns (deleted only *after* the
+    /// temp validated — a failed CRC/validation never touches the old copy); `None` names the file
+    /// `RT{fresh_id}.OBR`, so the object id is durable in the filename and a rescan after a reboot
+    /// recovers it. Returns the final name + byte length + wire facts, or `None` with the temp deleted
     /// (invalid payload) or kept (transient copy failure).
     pub fn upload_commit(
         &mut self,
@@ -767,8 +760,8 @@ impl Storage {
         None
     }
 
-    /// Visit every stored ride object in `/tracks` (the `RD{id}.ORD` files, A7) with its
-    /// filename-encoded durable id. The GPX twins and any in-progress `TRACK.OBT` never match.
+    /// Visit every stored ride object in `/tracks` (the `RD{id}.ORD` files) with its filename-encoded
+    /// durable id. The GPX twins and any in-progress `TRACK.OBT` never match.
     pub fn for_each_ride_file(&self, mut f: impl FnMut(u16, &ShortFileName)) {
         let Some(dir) = self.tracks_dir else { return };
         self.iter_dir_lfn(dir, |e, _| {
@@ -799,9 +792,9 @@ impl Storage {
         self.vmgr.delete_file_in_dir(dir, name).is_ok()
     }
 
-    /// A stored ride object's byte length + the header facts its `rideList` entry serves
-    /// (S0 §7.4). One header read; `None` when the file doesn't validate as a ride object v1
-    /// (incl. an interrupted save's held-back version byte — see [`track_to_ride`]).
+    /// A stored ride object's byte length + the header facts its `rideList` entry serves. One header
+    /// read; `None` when the file doesn't validate as a ride object v1 (incl. an interrupted save's
+    /// held-back version byte — see [`track_to_ride`]).
     pub fn ride_object_info(&self, name: &ShortFileName) -> Option<(u32, RideInfo)> {
         let dir = self.tracks_dir?;
         let file = self.vmgr.open_file_in_dir(dir, name, Mode::ReadOnly).ok()?;
@@ -811,15 +804,15 @@ impl Storage {
         Some((len, info?))
     }
 
-    /// Open a stored route for a detail download (S0 §7.1: the OBCR bytes verbatim), returning
-    /// its byte length. Held in a slot separate from the ride's `open_route`.
+    /// Open a stored route for a detail download (the OBCR bytes verbatim), returning its byte
+    /// length. Held in a slot separate from the ride's `open_route`.
     pub fn open_object(&mut self, name: &ShortFileName) -> Option<u32> {
         self.open_object_in(self.routes_dir, name)
     }
 
-    /// Open a stored ride object for a download (S0 §7.2: the stored bytes *are* the wire
-    /// object) — the `/tracks` twin of [`open_object`](Self::open_object), sharing the same
-    /// handle slot (one transfer at a time, S0 §4.1).
+    /// Open a stored ride object for a download (the stored bytes *are* the wire object) — the
+    /// `/tracks` twin of [`open_object`](Self::open_object), sharing the same handle slot (one
+    /// transfer at a time).
     pub fn open_ride_object(&mut self, name: &ShortFileName) -> Option<u32> {
         self.open_object_in(self.tracks_dir, name)
     }
@@ -854,7 +847,7 @@ impl Storage {
 const GPX_COLLISION_MAX: u8 = 99;
 
 /// Whether a `/routes` directory entry belongs to the route catalog: a side-loaded `.obcr`
-/// (long-filename match, as ever) **or** a BLE-uploaded `*.OBR` (A6). Uploads get plain 8.3
+/// (long-filename match) **or** a BLE-uploaded `*.OBR`. Uploads get plain 8.3
 /// names because embedded-sdmmc creates short names only — the 4-char `.obcr` extension needs
 /// an LFN it can't write — so the catalog accepts the dedicated 3-char twin. Dot-prefixed
 /// clutter is excluded on both arms (an AppleDouble `._x.OBR` also fails the header read at
@@ -866,17 +859,17 @@ fn is_route_entry(e: &embedded_sdmmc::DirEntry, long: Option<&str>) -> bool {
     long_has_ext(long, b".obcr") || (e.name.extension() == b"OBR" && !long.is_some_and(|n| n.starts_with('.')))
 }
 
-/// The **durable object id** encoded in a BLE-uploaded route's filename — `RT{id}.OBR` → `id`
-/// (S0 §4.1: ids are stable for the life of the stored object, across reboots — the phone
-/// persists the id an upload commits under). `None` for anything else (side-loaded `.obcr`
-/// files carry no id and get a session-scoped one from the reserved band — see `object_store`).
+/// The **durable object id** encoded in a BLE-uploaded route's filename — `RT{id}.OBR` → `id` (ids
+/// are stable for the life of the stored object, across reboots — the phone persists the id an
+/// upload commits under). `None` for anything else (side-loaded `.obcr` files carry no id and get a
+/// session-scoped one from the reserved band — see `object_store`).
 pub fn uploaded_route_id(name: &ShortFileName) -> Option<u16> {
     id_in_name(name, b"RT", b"OBR")
 }
 
-/// The **durable ride object id** in a stored ride's filename — `RD{id}.ORD` → `id` (A7). The
-/// same durability contract as the routes': the app's synced-set and tombstones key on these
-/// ids across device reboots.
+/// The **durable ride object id** in a stored ride's filename — `RD{id}.ORD` → `id`. The same
+/// durability contract as the routes': the app's synced-set and tombstones key on these ids across
+/// device reboots.
 pub fn stored_ride_id(name: &ShortFileName) -> Option<u16> {
     id_in_name(name, b"RD", b"ORD")
 }

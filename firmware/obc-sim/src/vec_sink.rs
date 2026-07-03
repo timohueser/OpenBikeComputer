@@ -1,8 +1,5 @@
 //! A `ByteSink` collecting OBCR/GPX output into a growable `Vec` before one `fs::write`.
-//!
-//! Both the route store (GPX → OBCR) and the track store (`.obct` log → GPX) convert in
-//! memory and write once; a host conversion is a few MB at most. Native-only — the web
-//! build has no filesystem to write to.
+//! Shared by the route store (GPX → OBCR) and track store (`.obct` log → GPX). Native-only.
 
 use obc_route::{ByteSink, Error};
 

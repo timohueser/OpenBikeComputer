@@ -1,7 +1,6 @@
-//! OBCR v2 waypoint-extension tests (issue #268): the hand-built format contract
-//! (`OBCR_Spec.md` §1.1 / §4), the converter's `<wpt>` emission, and the storage-only
-//! guarantee — a waypoint-bearing route loads and rides **identically** to the same
-//! route without waypoints.
+//! OBCR v2 waypoint-extension tests: the hand-built format contract (`OBCR_Spec.md` §1.1 / §4),
+//! the converter's `<wpt>` emission, and the storage-only guarantee — a waypoint-bearing route
+//! loads and rides **identically** to the same route without waypoints.
 
 use obc_route::{
     for_each_waypoint, gpx_to_obcr, RouteIndex, RouteReader, SliceSource, Waypoint, HEADER_V2_LEN, MAX_WAYPOINTS,

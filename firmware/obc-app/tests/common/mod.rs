@@ -1,21 +1,12 @@
-//! Shared helpers for the `obc-app` integration tests.
+//! Shared helpers for the `obc-app` integration tests:
 //!
-//! Three families of fixtures were copy-pasted across the per-test files; this module
-//! is the single source so identical names can't drift into different behaviour:
+//! - [`Buf`] — a recording `Rgb888` `DrawTarget` with per-test accessors ([`Buf::count`],
+//!   [`Buf::get`], [`Buf::edge_halves`]).
+//! - [`build_min_obcm`] — the minimal flat-backdrop `.obcm` builder.
+//! - The scripted hardware: [`Keys`] / [`keys`] / [`down`] / [`up`] / [`turn`] / [`tap`] inputs, and
+//!   the [`LocationSource`] stand-ins [`ReplayFix`] (replay forever) vs [`OnceFix`] (emit once).
 //!
-//! - [`Buf`] — the recording `Rgb888` `DrawTarget` (was duplicated in `marker.rs`,
-//!   `hold_hint.rs`, `overlay_plane.rs`, `screens.rs`). It carries the superset of the
-//!   per-test accessors ([`Buf::count`], [`Buf::get`], [`Buf::edge_halves`]).
-//! - [`build_min_obcm`] — the minimal flat-backdrop `.obcm` builder (was duplicated in
-//!   `marker.rs` / `screens.rs`, and as a marker-less variant in `hold_hint.rs` /
-//!   `overlay_plane.rs`; those now pass `0`).
-//! - The scripted hardware: [`Keys`] / [`keys`] / [`down`] / [`up`] / [`turn`] / [`tap`]
-//!   inputs, and the [`LocationSource`] stand-ins. The two replay disciplines that used
-//!   to share names ("replay this fix forever" vs "emit it once") are now the distinct
-//!   [`ReplayFix`] and [`OnceFix`], so a name means one thing.
-//!
-//! Not every test uses every helper, so `#[allow(dead_code)]` keeps the
-//! unused-per-binary items from warning.
+//! `#[allow(dead_code)]` keeps unused-per-binary items from warning.
 
 #![allow(dead_code)]
 
@@ -24,9 +15,7 @@ use std::collections::VecDeque;
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
 use obc_app::{Button, ButtonEvent, Fix, InputEvent, InputSource, LocationSource};
 
-// ---------------------------------------------------------------------------
 // Recording DrawTarget.
-// ---------------------------------------------------------------------------
 
 /// A `w`×`h` `Rgb888` buffer implementing `DrawTarget`, with clipped writes.
 pub struct Buf {
@@ -101,14 +90,12 @@ impl DrawTarget for Buf {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Minimal OBCM fixture.
-// ---------------------------------------------------------------------------
 
-/// A minimal valid v5 `.obcm`: one sea-backdrop style, one LOD with a single empty leaf
-/// and no chunks. The map renders as a flat backdrop, so the only non-backdrop pixels
-/// come from whatever is drawn on top — making overlays/markers trivial to detect.
-/// `marker` is the header's marker color (pass `0` when the test ignores it).
+/// A minimal valid v5 `.obcm`: one sea-backdrop style, one LOD with a single empty leaf and no
+/// chunks. It renders as a flat backdrop, so the only non-backdrop pixels come from whatever is drawn
+/// on top — making overlays/markers trivial to detect. `marker` is the header's marker color (pass
+/// `0` when ignored).
 pub fn build_min_obcm(marker: u16) -> Vec<u8> {
     let style_off: u32 = 32;
     // Style table: count=1, then (id=1, z=0, color=0x001F blue sea, weight=1, flags=0).
@@ -149,9 +136,7 @@ pub fn build_min_obcm(marker: u16) -> Vec<u8> {
     f
 }
 
-// ---------------------------------------------------------------------------
 // Scripted hardware.
-// ---------------------------------------------------------------------------
 
 /// A scripted `InputSource` draining a queue of raw input events, one per `poll`.
 pub struct Keys(pub VecDeque<InputEvent>);
@@ -181,12 +166,10 @@ pub fn tap(b: Button) -> [InputEvent; 2] {
     [down(b), up(b)]
 }
 
-// ---------------------------------------------------------------------------
 // Location sources. Two disciplines, kept under distinct names.
-// ---------------------------------------------------------------------------
 
-/// A `LocationSource` that replays the same fix on **every** poll — stands in for the
-/// simulator's control-panel override (which holds the last value).
+/// A `LocationSource` that replays the same fix on every poll — stands in for the simulator's
+/// control-panel override.
 pub struct ReplayFix(pub Option<Fix>);
 impl LocationSource for ReplayFix {
     fn poll(&mut self) -> Option<Fix> {

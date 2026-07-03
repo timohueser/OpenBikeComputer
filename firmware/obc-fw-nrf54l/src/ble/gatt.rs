@@ -1,13 +1,12 @@
-//! The GATT control-plane surface + device identity (A4, issue #272; S0 §3).
+//! The GATT control-plane surface + device identity.
 //!
-//! The GATT table is the **real** control plane the iOS app discovers on connect
-//! (`obc-ble-interface-spec.md` §3, the S0 UUIDs): **DIS** (real firmware revision / board id /
-//! FICR serial), **BAS** (battery, notify — fed from the `FuelGauge` seam via
-//! [`super::state::publish_battery`]), and the custom **OBC Control** service
-//! ([`ObcControlService`]) with all eight characteristics. This module owns the
-//! `#[gatt_server]`/`#[gatt_service]` tables (mirroring the spec one-to-one), the FICR-derived
-//! identity (serial, advertising name, static-random address), the Config-blob codec, and the
-//! on-glass status screen. The writes themselves are answered by [`super::control`].
+//! The GATT table is the **real** control plane the iOS app discovers on connect (see
+//! `obc-ble-interface-spec.md`): **DIS** (real firmware revision / board id / FICR serial), **BAS**
+//! (battery, notify — fed from the `FuelGauge` seam via [`super::state::publish_battery`]), and the
+//! custom **OBC Control** service ([`ObcControlService`]) with all eight characteristics. This module
+//! owns the `#[gatt_server]`/`#[gatt_service]` tables, the FICR-derived identity (serial, advertising
+//! name, static-random address), the Config-blob codec, and the on-glass status screen. The writes
+//! themselves are answered by [`super::control`].
 
 use obc_ble::Config;
 use trouble_host::prelude::*;
@@ -16,14 +15,14 @@ use crate::object_store::ObjectStore;
 
 use super::state::{status, LinkState};
 
-/// The dynamic L2CAP SPSM the CoC server listens on (S0 §5), published in the `psm` characteristic.
-/// A fixed value in the LE dynamic range (`0x0080..=0x00FF`) — the app reads whatever we advertise,
-/// so a constant is simpler than negotiating one and equally correct.
+/// The dynamic L2CAP SPSM the CoC server listens on, published in the `psm` characteristic. A fixed
+/// value in the LE dynamic range (`0x0080..=0x00FF`) — the app reads whatever we advertise, so a
+/// constant is simpler than negotiating one and equally correct.
 pub(crate) const OBC_PSM: u16 = 0x0080;
 
-// The GATT control plane (A4, S0 §3): the two SIG services + the custom OBC Control service. The
-// attribute table is auto-sized by the derive (no `attribute_table_size`); runtime values (DIS
-// strings, the Config default) are seeded via `server.set` after `new_with_config` in `run`.
+// The GATT control plane: the two SIG services + the custom OBC Control service. The attribute table
+// is auto-sized by the derive; runtime values (DIS strings, the Config default) are seeded via
+// `server.set` after `new_with_config` in `run`.
 #[gatt_server]
 pub(crate) struct Server {
     pub dis: DeviceInformationService,
@@ -31,8 +30,8 @@ pub(crate) struct Server {
     pub obc: ObcControlService,
 }
 
-/// Device Information Service (S0 §3.1). All read-only strings, seeded at boot; `value` can't hold
-/// a runtime string, so the macro declares them empty and `run` fills them.
+/// Device Information Service. All read-only strings, seeded at boot; `value` can't hold a runtime
+/// string, so the macro declares them empty and `run` fills them.
 #[gatt_service(uuid = service::DEVICE_INFORMATION)]
 pub(crate) struct DeviceInformationService {
     #[characteristic(uuid = characteristic::FIRMWARE_REVISION_STRING, read)]
@@ -43,66 +42,65 @@ pub(crate) struct DeviceInformationService {
     pub serial_number: heapless09::String<16>,
 }
 
-/// Battery Service (S0 §3.2): the level, read + notify — fed from the `FuelGauge` seam.
+/// Battery Service: the level, read + notify — fed from the `FuelGauge` seam.
 #[gatt_service(uuid = service::BATTERY)]
 pub(crate) struct BatteryService {
     #[characteristic(uuid = characteristic::BATTERY_LEVEL, read, notify, value = 75)]
     pub level: u8,
 }
 
-/// OBC Control service (S0 §3.3): the custom `3C92XXXX-…` base, the 16-bit block selecting the
-/// entity. This table mirrors the spec section one-to-one — one place to diff against S0.
+/// OBC Control service: the custom `3C92XXXX-…` base, the 16-bit block selecting the entity.
 ///
-/// **Security (A8, S0 §8):** every characteristic here is `permissions(authenticated)` — access
-/// requires an encrypted, LESC-authenticated (MITM) link — **except `protocol_version`**, which
-/// stays open so the app can version-check before pairing (S0 §1). DIS/BAS are open too (their own
-/// services). An unbonded stranger discovers the service but gets Insufficient-Authentication on
-/// every gated read/write/subscribe.
+/// **Security:** every characteristic here is `permissions(authenticated)` — access requires an
+/// encrypted, LESC-authenticated (MITM) link — **except `protocol_version`**, which stays open so the
+/// app can version-check before pairing. DIS/BAS are open too (their own services). An unbonded
+/// stranger discovers the service but gets Insufficient-Authentication on every gated
+/// read/write/subscribe.
 #[gatt_service(uuid = "3C920000-9916-4EBA-ABC2-342FE08F6B10")]
 pub(crate) struct ObcControlService {
-    /// Small imperative commands (§4.4). Write; answered by a `status` `commandResult`.
+    /// Small imperative commands. Write; answered by a `status` `commandResult`.
     #[characteristic(uuid = "3C920001-9916-4EBA-ABC2-342FE08F6B10", write, permissions(authenticated))]
     pub command: heapless09::Vec<u8, 8>,
-    /// Typed device → app messages (§4.3). Notify-only.
+    /// Typed device → app messages. Notify-only.
     #[characteristic(uuid = "3C920002-9916-4EBA-ABC2-342FE08F6B10", notify, permissions(authenticated))]
     pub status: heapless09::Vec<u8, 8>,
-    /// The store digest (§4.5): revision + object counts. Seeded from the [`ObjectStore`] at
-    /// boot; re-set + notified on every commit/delete (`publish_store_change`).
+    /// The store digest: revision + object counts. Seeded from the [`ObjectStore`] at boot; re-set +
+    /// notified on every commit/delete (`publish_store_change`).
     #[characteristic(uuid = "3C920003-9916-4EBA-ABC2-342FE08F6B10", read, notify, permissions(authenticated), value = [0u8; 10])]
     pub object_store: [u8; 10],
-    /// The Config object (§7.3), whole-blob read + write — round-trips through the persisted
-    /// settings (A6): seeded at boot, re-seeded canonical after every accepted write.
+    /// The Config object, whole-blob read + write — round-trips through the persisted settings: seeded
+    /// at boot, re-seeded canonical after every accepted write.
     #[characteristic(uuid = "3C920004-9916-4EBA-ABC2-342FE08F6B10", read, write, permissions(authenticated))]
     pub config: heapless09::Vec<u8, 128>,
-    /// Open / abort a CoC transfer (§4.2). Write + notify (the notify carries a download's
-    /// filled announce descriptor).
+    /// Open / abort a CoC transfer. Write + notify (the notify carries a download's filled announce
+    /// descriptor).
     #[characteristic(uuid = "3C920005-9916-4EBA-ABC2-342FE08F6B10", write, notify, permissions(authenticated), value = [0u8; 16])]
     pub transfer_control: [u8; 16],
-    /// Reserved (§7.5 — diagnostics cross the CoC): reads return 0 bytes.
+    /// Reserved (diagnostics cross the CoC): reads return 0 bytes.
     #[characteristic(uuid = "3C920006-9916-4EBA-ABC2-342FE08F6B10", read, permissions(authenticated))]
     pub diagnostics: heapless09::Vec<u8, 1>,
-    /// The L2CAP CoC PSM the app opens the channel on (§3.3).
+    /// The L2CAP CoC PSM the app opens the channel on.
     #[characteristic(uuid = "3C920007-9916-4EBA-ABC2-342FE08F6B10", read, permissions(authenticated), value = OBC_PSM)]
     pub psm: u16,
-    /// `protocol_version` (§1) — read **without** encryption (the connect-time version check
-    /// happens before pairing). `1` for this contract.
+    /// `protocol_version` — read **without** encryption (the connect-time version check happens before
+    /// pairing). `1` for this contract.
     #[characteristic(uuid = "3C920008-9916-4EBA-ABC2-342FE08F6B10", read, value = 1)]
     pub protocol_version: u16,
 }
 
-// ============================ Identity (S0 §2 / §3.1) ============================
+// ============================ Identity ============================
 
-/// `FICR.INFO.DEVICEID[0]` (nRF54L15: FICR `0x00FF_C000` + INFO `0x300` + DEVICEID `0x04`) — the
-/// low word of the 64-bit factory device id. Read raw: embassy-nrf's `pac` re-export is
-/// `pub(crate)` without its `unstable-pac` feature, and one always-readable FICR word doesn't
-/// justify enabling that. The full 16-hex-digit serial (S0 §3.1) is built by [`serial_string`].
+/// `FICR.INFO.DEVICEID[0]` (nRF54L15: FICR `0x00FF_C000` + INFO `0x300` + DEVICEID `0x04`) — the low
+/// word of the 64-bit factory device id. Read raw: embassy-nrf's `pac` re-export is `pub(crate)`
+/// without its `unstable-pac` feature, and one always-readable FICR word doesn't justify enabling
+/// that. The full 16-hex-digit serial is built by [`serial_string`].
 const FICR_INFO_DEVICEID0: *const u32 = 0x00FF_C304 as *const u32;
 /// `FICR.INFO.DEVICEID[1]` — the high word (the address derivation below uses both).
 const FICR_INFO_DEVICEID1: *const u32 = 0x00FF_C308 as *const u32;
 
-/// The factory advertising name (S0 §2): `OBC-XXXX`, the last four uppercase hex digits of the
-/// serial number — i.e. the low 16 bits of `DEVICEID[0]`, the tail of the serial's hex string.
-/// The default whenever no user rename is stored (A6: the Config object's name, S0 §7.3).
+/// The factory advertising name: `OBC-XXXX`, the last four uppercase hex digits of the serial number
+/// — i.e. the low 16 bits of `DEVICEID[0]`, the tail of the serial's hex string. The default whenever
+/// no user rename is stored (the Config object's name).
 pub(crate) fn device_name() -> heapless::String<8> {
     let id = unsafe { FICR_INFO_DEVICEID0.read_volatile() };
     let mut s = heapless::String::new();
@@ -114,8 +112,8 @@ pub(crate) fn device_name() -> heapless::String<8> {
 /// structure overhead (length + type = 2 bytes).
 const ADV_NAME_MAX: usize = 29;
 
-/// The device's current name (S0 §7.3): the stored rename, or the factory `OBC-XXXX` when unset.
-/// The single source both [`advertised_name`] and [`config_blob`] resolve from, so a change to how
+/// The device's current name: the stored rename, or the factory `OBC-XXXX` when unset. The single
+/// source both [`advertised_name`] and [`config_blob`] resolve from, so a change to how
 /// a cleared name falls back can't make the advertised name and the Config read disagree about what
 /// the device is called.
 fn resolved_name(store: &ObjectStore) -> heapless::String<48> {
@@ -129,8 +127,8 @@ fn resolved_name(store: &ObjectStore) -> heapless::String<48> {
     s
 }
 
-/// The name the device advertises **right now** (S0 §2/§7.3): the [`resolved_name`], re-read by
-/// every advertise cycle so a rename lands in the airwaves on the next advertising start (the
+/// The name the device advertises **right now**: the [`resolved_name`], re-read by every advertise
+/// cycle so a rename lands in the airwaves on the next advertising start (the
 /// current connection's GAP name keeps the boot value — the Config characteristic, not GAP, is
 /// authoritative). Truncated to the scan-response budget on a char boundary; the full name still
 /// serves on the `config` read.
@@ -154,27 +152,26 @@ pub(crate) fn gatt_str<const N: usize>(args: core::fmt::Arguments<'_>) -> heaple
     s
 }
 
-/// The DIS **Serial Number** string (S0 §3.1): the 64-bit FICR `DEVICEID` as 16 uppercase hex
-/// digits, high word first — so its last four digits are [`device_name`]'s `XXXX`.
+/// The DIS **Serial Number** string: the 64-bit FICR `DEVICEID` as 16 uppercase hex digits, high word
+/// first — so its last four digits are [`device_name`]'s `XXXX`.
 pub(crate) fn serial_string() -> heapless09::String<16> {
     let id0 = unsafe { FICR_INFO_DEVICEID0.read_volatile() };
     let id1 = unsafe { FICR_INFO_DEVICEID1.read_volatile() };
     gatt_str(format_args!("{:08X}{:08X}", id1, id0))
 }
 
-/// The DIS **Firmware Revision** string (S0 §3.1): crate semver + git short hash, e.g. `0.1.0+ca9b336`
+/// The DIS **Firmware Revision** string: crate semver + git short hash, e.g. `0.1.0+ca9b336`
 /// (`OBC_FW_GIT` is emitted by `build.rs`; `unknown` when git wasn't reachable at build time).
 pub(crate) fn firmware_revision() -> heapless09::String<24> {
     gatt_str(format_args!("{}+{}", env!("CARGO_PKG_VERSION"), env!("OBC_FW_GIT")))
 }
 
-/// The DIS **Hardware Revision** string (S0 §3.1): the board id. The DK today; the LM20 board crate
-/// changes this const when it lands.
+/// The DIS **Hardware Revision** string: the board id. The DK today; the LM20 board crate changes this
+/// const when it lands.
 pub(crate) const HARDWARE_REVISION: &str = "nrf54l15-dk";
 
-/// A **static random** address derived from the factory device id (top two bits must be `11` per
-/// the spec), so every board advertises a stable, distinct address. Real identity management
-/// (resolvable addresses, bonding) is A8.
+/// A **static random** address derived from the factory device id (top two bits must be `11` per the
+/// spec), so every board advertises a stable, distinct address.
 pub(crate) fn device_address() -> Address {
     let id0 = unsafe { FICR_INFO_DEVICEID0.read_volatile() }.to_le_bytes();
     let id1 = unsafe { FICR_INFO_DEVICEID1.read_volatile() }.to_le_bytes();
@@ -182,14 +179,14 @@ pub(crate) fn device_address() -> Address {
     Address::random([id0[0], id0[1], id0[2], id0[3], id1[0], id1[1] | 0xC0])
 }
 
-// ============================ S0 Config codec (§7.3) ============================
+// ============================ Config codec ============================
 //
-// The wire layouts themselves live in `obc_ble` (the host-tested crate the shared `protocol-vectors/`
-// fixtures pin); this helper only bridges them to the board's GATT attribute types and policy.
+// The wire layouts themselves live in `obc_ble` (the host-tested crate); this helper only bridges them
+// to the board's GATT attribute types and policy.
 
-/// The canonical Config blob (S0 §7.3, Config v1) from the persisted settings: the stored rename
-/// (or the factory name when unset — what the device actually advertises) + the units. Served on
-/// the `config` read; re-seeded after every accepted write so reads always return canonical bytes.
+/// The canonical Config blob (Config v1) from the persisted settings: the stored rename (or the
+/// factory name when unset — what the device actually advertises) + the units. Served on the `config`
+/// read; re-seeded after every accepted write so reads always return canonical bytes.
 pub(crate) fn config_blob(store: &ObjectStore) -> heapless09::Vec<u8, 128> {
     let name = resolved_name(store);
     let units = if store.settings().units.is_imperial() { 1 } else { 0 };
@@ -203,11 +200,11 @@ pub(crate) fn config_blob(store: &ObjectStore) -> heapless09::Vec<u8, 128> {
 
 // ============================ The status screen ============================
 
-/// Paint the whole BLE status screen into the resident RGB222 framebuffer (`run_status` presents
-/// it through the `DisplayDriver` seam; RowDiff makes the re-present cheap). Deliberately dumb —
-/// a white card of text: the factory name, the link state, the peer + negotiated interval while
-/// connected, battery / SD / lifetime counters, and an input counter so a button press visibly
-/// lands on glass. While pairing (A8) it becomes the big-font passkey card instead.
+/// Paint the whole BLE status screen into the resident RGB222 framebuffer (`run_status` presents it
+/// through the `DisplayDriver` seam; RowDiff makes the re-present cheap). Deliberately dumb — a white
+/// card of text: the factory name, the link state, the peer + negotiated interval while connected,
+/// battery / SD / lifetime counters, and an input counter so a button press visibly lands on glass.
+/// While pairing it becomes the big-font passkey card instead.
 pub fn draw_status_screen(fb: &mut [u8], battery_pct: u8, sd_ok: bool, inputs: u32) {
     use embedded_graphics::pixelcolor::{Rgb565, RgbColor};
     use embedded_graphics::prelude::Point;
@@ -221,8 +218,8 @@ pub fn draw_status_screen(fb: &mut [u8], battery_pct: u8, sd_ok: bool, inputs: u
     let ink = Rgb565::BLACK;
     let cx = crate::st7789::WIDTH as i32 / 2;
 
-    // Pairing (A8, S0 §8): the screen's marquee moment — the 6-digit passkey, huge, that the rider
-    // types into the phone's pairing dialog. Takes over the whole card until pairing resolves.
+    // Pairing: the screen's marquee moment — the 6-digit passkey, huge, that the rider types into the
+    // phone's pairing dialog. Takes over the whole card until pairing resolves.
     if let Some(code) = s.passkey {
         draw_text(&mut dev, "Pairing", Point::new(cx, 60), Font::Display, TextAlign::Center, ink);
         let mut line: heapless::String<8> = heapless::String::new();
@@ -237,7 +234,7 @@ pub fn draw_status_screen(fb: &mut [u8], battery_pct: u8, sd_ok: bool, inputs: u
     let state = match s.state {
         LinkState::Init => "starting",
         LinkState::Advertising => "advertising",
-        // "secured" once the link is encrypted (bonded, A8); plain "connected" before pairing.
+        // "secured" once the link is encrypted (bonded); plain "connected" before pairing.
         LinkState::Connected if s.secured => "secured",
         LinkState::Connected => "connected",
     };
@@ -263,7 +260,7 @@ pub fn draw_status_screen(fb: &mut [u8], battery_pct: u8, sd_ok: bool, inputs: u
         y += 34;
     };
     let mut line: heapless::String<24> = heapless::String::new();
-    // While connected, the negotiated link parameters (A3): interval · PHY · MTU on one line.
+    // While connected, the negotiated link parameters: interval · PHY · MTU on one line.
     if s.state == LinkState::Connected {
         let _ = core::fmt::write(
             &mut line,

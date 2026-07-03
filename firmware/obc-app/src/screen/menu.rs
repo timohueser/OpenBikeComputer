@@ -1,10 +1,8 @@
-//! The Menu overlay — Routes / Settings, in the "explorer's field map" style of
-//! the route-list mock (`docs/bikepacking_portrait_screens.html`): a dark wood
-//! frame around a panel, a wood title strip with a `n / total` counter, big rows
-//! with a pointer bullet and an amber selection highlight, and hairline separators.
-//! Routes opens the Route menu and Settings the [`SettingsScreen`](super::SettingsScreen) tree;
-//! `back` returns to the caller. (The Shutdown prompt on `back-hold` is still a later slice.) It
-//! doubles as the worked example of the framework's drawing surface ([`Canvas`]).
+//! The Menu overlay — Routes / Settings, in the "explorer's field map" style: a wood frame, a title
+//! strip with an `n / total` counter, big rows with a pointer bullet and an amber highlight, and
+//! hairline separators. Routes opens the Route menu, Settings the
+//! [`SettingsScreen`](super::SettingsScreen) tree; `back` returns to the caller. (The Shutdown
+//! prompt on `back-hold` is a later slice.)
 
 use embedded_graphics::prelude::{DrawTarget, Point};
 use obc_render::{
@@ -19,7 +17,7 @@ use super::{list_frame, palette, Ctx, Render, RouteMenuScreen, Screen, SettingsS
 
 const ITEMS: [&str; 2] = ["Routes", "Settings"];
 
-/// Per-row height — fits a Body-tier (28 px) row with an amber highlight + padding.
+/// Per-row height — fits a Body-tier row with an amber highlight + padding.
 const ROW_H: i32 = 52;
 
 /// The main menu. State is the highlighted row.
@@ -60,8 +58,6 @@ impl MenuScreen {
 
         list_frame(&mut cv, w, h, "MENU", self.selected + 1, ITEMS.len());
 
-        // Rows: one Body-tier label each, with a pointer bullet + amber selection,
-        // vertically centered in the row.
         for (i, &name) in ITEMS.iter().enumerate() {
             let y = LIST_TOP + i as i32 * ROW_H;
             let mid = y + (ROW_H - 8) / 2;

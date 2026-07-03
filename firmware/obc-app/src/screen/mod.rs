@@ -1,22 +1,11 @@
-//! The screen system — the modular core of the on-device UI.
+//! The screen system — `no_std`, zero-alloc, no retained widget tree. Screens are a
+//! [`Screen`] enum dispatched by `match` (static dispatch), each variant a small module
+//! with typed state. Navigation is a return value: [`handle`](Screen::handle) returns a
+//! [`Transition`] that [`apply`] runs against a [`heapless::Vec`] stack.
 //!
-//! This is the architecture the brief calls for: `no_std`, zero-alloc, **no
-//! retained widget tree**. Screens are an [`Screen`] enum dispatched by `match`
-//! (static dispatch, no `dyn`), each variant a small module with typed state.
-//! Navigation is a *return value* — a screen's [`handle`](Screen::handle) returns
-//! a [`Transition`] that [`apply`] runs against a [`heapless::Vec`] stack, so
-//! overlays Push and `back`/Resume Pop back to their caller automatically and the
-//! `back` that pops the top is the guaranteed escape.
-//!
-//! **Adding a screen is a local edit** (the modularity test): add a module with a
-//! state struct + `handle`/`draw`, add one [`Screen`] variant + its three match
-//! arms, and `Push` it from wherever it's reached. No central dispatch table, no
-//! trait objects, no allocation.
-//!
-//! The shared context is split by role: [`Ctx`] is the *logic* half handed to
-//! `handle` (the mutable camera/mode + clock), [`Render`] is the *draw* half (the
-//! read-only state plus the `Reader`, the reusable `MapRenderer`, and the
-//! in-flight hold-progress for the confirm ring).
+//! The shared context is split by role: [`Ctx`] is the logic half handed to `handle`
+//! (mutable camera/mode + clock), [`Render`] is the draw half (read-only state plus the
+//! `Reader`, the reusable `MapRenderer`, and the in-flight hold-progress for the confirm ring).
 
 use core::fmt::Write;
 
@@ -57,17 +46,14 @@ pub use settings::{
 };
 pub use statistics::StatisticsScreen;
 
-/// Maximum overlay depth (Home → Map → Ride control / Menu → …). Sized with
-/// headroom; the real flow never nests more than a few deep. Growing it costs a
-/// few enum-sized slots of static RAM, nothing per frame.
+/// Maximum overlay depth. Sized with headroom; the real flow never nests more than a few deep.
 pub const MAX_DEPTH: usize = 8;
 
 /// The screen stack: the bottom is the always-present root (Home), the top is the
 /// screen currently receiving input.
 pub type Stack = heapless::Vec<Screen, MAX_DEPTH>;
 
-/// What a screen's [`handle`](Screen::handle) asks the navigation stack to do
-/// next; [`apply`] runs it. This small closed set covers the whole spec's flow.
+/// What a screen's [`handle`](Screen::handle) asks the navigation stack to do next; [`apply`] runs it.
 pub enum Transition {
     /// Stay on this screen (the gesture was handled in place, or is unbound).
     None,
@@ -78,10 +64,8 @@ pub enum Transition {
     /// Swap this screen for `screen` without growing the stack — sibling moves
     /// (Map ↔ Elevation) and "consume this screen" steps (Route menu → Map).
     Replace(Screen),
-    /// Truncate to the Home root and push `screen`, landing on `[Home, screen]` from any
-    /// depth — "load a route and go ride it", reachable through Home or the Menu, and from
-    /// the route-swap prompt. Lands on a clean `[Home, Map]` instead of leaving stale Menu /
-    /// Route-menu screens buried under the new Map.
+    /// Truncate to the Home root and push `screen`, landing on a clean `[Home, screen]` from any
+    /// depth rather than leaving stale Menu / Route-menu screens buried under the new Map.
     Root(Screen),
     /// Clear every overlay back to the Home root — Finish / Discard / power-down.
     Home,
@@ -93,7 +77,7 @@ pub fn apply(stack: &mut Stack, t: Transition) {
     match t {
         Transition::None => {}
         Transition::Push(s) => {
-            let _ = stack.push(s); // MAX_DEPTH has headroom; an overflow just no-ops
+            let _ = stack.push(s); // an overflow just no-ops
         }
         Transition::Pop => {
             if stack.len() > 1 {
@@ -113,21 +97,16 @@ pub fn apply(stack: &mut Stack, t: Transition) {
     }
 }
 
-/// Logic context handed to [`Screen::handle`]: the mutable app state a screen
-/// adjusts (camera + mode) plus the millis clock. The render half is [`Render`].
+/// Logic context handed to [`Screen::handle`]: the mutable app state a screen adjusts. The
+/// render half is [`Render`].
 pub struct Ctx<'a> {
-    /// The camera / orientation / last-fix state (a screen may zoom, pan, …).
     pub state: &'a mut AppState,
-    /// The ride mode + tracking accumulators.
     pub activity: &'a mut Activity,
     /// The persisted device settings — the settings screens edit this in place; a change is
-    /// detected by [`App::apply_gesture`](crate::App::apply_gesture) (a single `==`) and
-    /// flagged for the host to save. Every other screen leaves it untouched.
+    /// detected by [`App::apply_gesture`](crate::App::apply_gesture) and flagged for the host
+    /// to save. Every other screen leaves it untouched.
     pub settings: &'a mut Settings,
-    /// The route catalog (read-only) — the Route menu navigates it and centers the
-    /// camera on the picked route's bbox from here, no I/O needed.
     pub routes: &'a [RouteSummary],
-    /// Current millis clock.
     pub now_ms: u32,
 }
 
@@ -135,56 +114,49 @@ pub struct Ctx<'a> {
 /// `Reader`, the reusable `MapRenderer`, and the in-flight encoder hold-progress
 /// (0.0–1.0) the guarded-action confirm ring fills with.
 pub struct Render<'a, 'd> {
-    /// The streamed-map `Reader` — **`None` when the base screen doesn't draw the map** (a menu,
-    /// the Statistics view, Home). Only the [`Map`](crate::screen::map) screen reads it, so a host
-    /// can skip building the `Reader` (its SD style-table parse + stack spike) entirely on a non-map
-    /// frame and pass `None`; every other screen ignores it. The single-target convenience entries
-    /// [`render_map`](crate::App::render_map) / [`render_frame`](crate::App::render_frame) always
-    /// pass `Some` (their callers are drawing the map).
+    /// The streamed-map `Reader` — `None` when the base screen doesn't draw the map (a menu, the
+    /// Statistics view, Home). Only the [`Map`](crate::screen::map) screen reads it, so a host can
+    /// skip building the `Reader` (its SD style-table parse + stack spike) on a non-map frame and
+    /// pass `None`. [`render_map`](crate::App::render_map) / [`render_frame`](crate::App::render_frame)
+    /// always pass `Some`.
     pub reader: Option<&'a Reader<'d>>,
     pub renderer: &'a mut MapRenderer,
     pub state: &'a AppState,
     pub activity: &'a Activity,
     /// The persisted device settings (read-only here) — the riding views read
-    /// [`units`](Settings::units) to caption + scale their readouts, and the settings screens
-    /// draw their current values from it.
+    /// [`units`](Settings::units) to caption + scale their readouts.
     pub settings: &'a Settings,
-    /// The route catalog, for the Route-menu list.
     pub routes: &'a [RouteSummary],
-    /// The active route's geometry (the Map strokes it), or `None` when no route is
-    /// loaded. Host-owned, streamed on demand; only the active route is open.
+    /// The active route's geometry (the Map strokes it), or `None` when no route is loaded.
+    /// Host-owned, streamed on demand.
     pub route: Option<&'a RouteReader<'a>>,
-    /// The active route's elevation profile (the Elevation screen draws it), rebuilt by
-    /// the app on route load and cached — `None` when no route is loaded. Resident, so
-    /// the screen never re-reads the route to draw.
+    /// The active route's elevation profile (the Elevation screen draws it), rebuilt on route load
+    /// and cached — `None` when no route is loaded. Resident, so the screen never re-reads to draw.
     pub profile: Option<&'a Profile>,
-    /// The travelled-path breadcrumb (bounded RAM); the Map strokes it under the route. Empty
-    /// when nothing has been recorded yet, so the Map can skip it with [`Breadcrumb::is_empty`].
+    /// The travelled-path breadcrumb (bounded RAM); the Map strokes it under the route. Empty when
+    /// nothing has been recorded yet, so the Map can skip it with [`Breadcrumb::is_empty`].
     pub breadcrumb: &'a Breadcrumb,
     pub w: f32,
     pub h: f32,
     pub now_ms: u32,
-    /// The live wall-clock time this frame (the clock set-point advanced by elapsed millis — see
-    /// [`WallClock`](crate::WallClock)). The Home screensaver draws it as `HH:MM`; a screen wanting
-    /// the boot-relative millis instead uses [`now_ms`](Render::now_ms).
+    /// The live wall-clock time this frame (set-point advanced by elapsed millis — see
+    /// [`WallClock`](crate::WallClock)). The Home screensaver draws it as `HH:MM`; for boot-relative
+    /// millis a screen uses [`now_ms`](Render::now_ms) instead.
     pub now: DateTime,
     pub hold_progress: f32,
-    /// Whether there's **no current GPS fix** this frame (issue #224): no fix yet (acquiring) or the
-    /// last one has gone stale (lost). The riding views (Map / Statistics) draw the "No GPS Fix"
-    /// banner when set — and the Map suppresses the off-route pill, since with no fix the match is
-    /// stale. Computed by [`App::has_live_fix`](crate::App::has_live_fix).
+    /// No current GPS fix this frame: no fix yet (acquiring) or the last has gone stale (lost). The
+    /// riding views draw the "No GPS Fix" banner when set, and the Map suppresses the off-route pill
+    /// (the match is stale). Computed by [`App::has_live_fix`](crate::App::has_live_fix).
     pub no_fix: bool,
-    /// Microsecond clock for the map render's per-stage timing (collect / sort / draw), passed
-    /// straight to [`MapRenderer::render_timed`] by the Map screen. Hosts that don't profile pass
-    /// [`NoopClock`](obc_render::NoopClock) (via [`App::render_map`]); the device passes its
-    /// `Instant`-based clock (via [`App::render_map_timed`]). Part of the strippable
-    /// render-instrumentation seam.
+    /// Microsecond clock for the map render's per-stage timing, passed to
+    /// [`MapRenderer::render_timed`]. Hosts that don't profile pass
+    /// [`NoopClock`](obc_render::NoopClock); the device passes its `Instant`-based clock. Part of the
+    /// strippable render-instrumentation seam.
     pub clock: &'a dyn Clock,
 }
 
-/// The on-device screens. Each variant owns its typed state and forwards the
-/// contract to that screen's inherent `handle`/`draw`. Adding a screen = one
-/// variant + three arms here + its module.
+/// The on-device screens. Each variant owns its typed state and forwards to that screen's
+/// inherent `handle`/`draw`.
 pub enum Screen {
     Home(HomeScreen),
     Map(MapScreen),
@@ -258,15 +230,11 @@ impl Screen {
         matches!(self, Screen::RideControl(_))
     }
 
-    /// Advance this screen's **time-driven** content one frame, returning whether the drawn
-    /// output changed so the render-on-demand host marks the map dirty (issue #47). Most
-    /// screens change only on input or a fresh fix and return `false`; the Statistics view's
-    /// cursor springs back to the live position on an idle timer (off `now_ms`), and the Home
-    /// screensaver's clock ticks over to a new minute (off the wall-clock `now`) — changes driven
-    /// by neither input nor a fix, so they report it here. The host calls this each frame on every
-    /// drawn screen; each takes whichever of the two clocks it needs (a screen that needs neither
-    /// ignores both).
-    /// (The Statistics view also reads [`settings`](Settings) for its grid's auto-cycle period + page count.)
+    /// Advance this screen's time-driven content one frame, returning whether the drawn output
+    /// changed so the render-on-demand host marks the map dirty (issue #47). Most screens change
+    /// only on input or a fresh fix and return `false`; the Statistics cursor springs back to live
+    /// on an idle timer (off `now_ms`) and the Home clock ticks over each minute (off the wall-clock
+    /// `now`), so those report it here.
     pub fn animate(&mut self, now_ms: u32, now: DateTime, settings: &Settings) -> bool {
         match self {
             Screen::Statistics(s) => s.animate(now_ms, settings),
@@ -275,13 +243,11 @@ impl Screen {
         }
     }
 
-    /// Milliseconds until this screen's next *timed* redraw, or `None` if it changes only on input /
-    /// a fix. The event-driven host (issue #219) folds this across the visible stack into a **single
-    /// wake deadline** and arms one timer to it, so the M33 sleeps instead of free-running the loop to
-    /// *discover* a minute ticked or a cursor sprang back. The mirror of [`animate`](Screen::animate):
-    /// the two screens that repaint on a timer report when, the rest report `None`. `ms_to_next_minute`
-    /// is the wall-clock minute boundary the host pre-computes (it owns the clock); a clock-bearing
-    /// screen (Home) just adopts it, while Statistics reports its own input-clock deadlines.
+    /// Milliseconds until this screen's next timed redraw, or `None` if it changes only on input /
+    /// a fix. The event-driven host (issue #219) folds this across the visible stack into a single
+    /// wake deadline so the M33 sleeps rather than free-running the loop. The mirror of
+    /// [`animate`](Screen::animate). `ms_to_next_minute` is the wall-clock minute boundary the host
+    /// pre-computes (it owns the clock); Home adopts it, Statistics reports its own input-clock deadlines.
     pub fn next_wake_in(&self, now_ms: u32, ms_to_next_minute: u32, settings: &Settings) -> Option<u32> {
         match self {
             Screen::Statistics(s) => s.next_wake_in(now_ms, settings),
@@ -291,21 +257,16 @@ impl Screen {
     }
 }
 
-/// Height of the wood title bar. Sized for the Body-tier title (28 px cell, ≈18 px caps)
-/// with even ≈8 px padding above and below.
+/// Height of the wood title bar. Sized for the Body-tier title with even ≈8 px padding.
 pub const TITLE_BAR_H: i32 = 34;
 
 /// Top of the list area (just below the title bar) shared by list screens.
 pub const LIST_TOP: i32 = TITLE_BAR_H + 8;
 
-/// Draw the shared screen chrome: a full-screen near-white background (the housing
-/// rounds the physical corners, so the panel goes edge to edge), a thin rounded
-/// outline, and a rounded wood title bar with `title` **left-aligned** and `right`
-/// (a counter, a grade readout, …) right-justified. The title is left-aligned rather
-/// than centered so a long right-hand readout (e.g. the Statistics grade / off-route
-/// distance) never collides with it at the bigger Terminus glyph sizes. Every framed
-/// screen — the Menu, the Route menu, the Elevation profile — draws its header through
-/// this, so they stay visually identical; the caller fills the body below [`LIST_TOP`].
+/// Draw the shared screen chrome: a near-white background, a thin rounded outline, and a rounded
+/// wood title bar with `title` left-aligned and `right` (a counter, a grade readout, …) right-
+/// justified. `title` is left-aligned so a long right-hand readout never collides with it. Every
+/// framed screen draws its header through this; the caller fills the body below [`LIST_TOP`].
 pub fn title_frame<D, F>(cv: &mut Canvas<D, F>, w: i32, h: i32, title: &str, right: &str)
 where
     D: DrawTarget,
@@ -315,8 +276,7 @@ where
     cv.clear(PARCHMENT);
     cv.round_outline(rect(4, 4, w - 8, h - 8), 8, WOOD_LIGHT);
     cv.round(rect(4, 4, w - 8, TITLE_BAR_H), 6, WOOD);
-    // Both rows vertically centered in the bar (centre y ≈ 21): the Body title's caps sit
-    // ≈4..22 px below its cell top, the Label readout's ≈4..19, so these y's align them.
+    // Both rows vertically centered in the bar; the two y's account for the different glyph baselines.
     cv.text(title, Point::new(14, 8), Font::Body, TextAlign::Left, PARCHMENT);
     cv.text(right, Point::new(w - 14, 10), Font::Label, TextAlign::Right, PARCHMENT);
 }
@@ -333,11 +293,9 @@ where
     title_frame(cv, w, h, title, &counter);
 }
 
-/// First visible index of a scrolling list that keeps `selected` on screen within
-/// `visible` rows of `total` items. Stateless — a pure function of the selection —
-/// so list screens need no scroll state: the highlight moves down to the last
-/// visible row, then the window follows it (and wrapping to either end lands on
-/// the first/last page).
+/// First visible index of a scrolling list that keeps `selected` on screen within `visible` rows
+/// of `total` items. Stateless — a pure function of the selection — so list screens need no scroll
+/// state: the highlight moves down to the last visible row, then the window follows it.
 pub fn window_start(selected: usize, visible: usize, total: usize) -> usize {
     if total <= visible || selected < visible {
         0
@@ -363,26 +321,22 @@ where
     cv.round(rect(x, thumb_y, 3, thumb_h), 1, palette::WOOD);
 }
 
-/// The gestures the two **riding views** (Map and Statistics) bind identically:
-/// `press` pauses tracking and opens the Ride-control overlay, and `back-hold` opens
-/// the Menu. Each riding screen calls this from its `Press | BackHold` arm, so the
-/// shared navigation lives in one place (and a future riding view inherits it for
-/// free) while the screen keeps its own `turn` / `back` / `hold`.
+/// The gestures the two riding views (Map and Statistics) bind identically: `press` pauses
+/// tracking and opens the Ride-control overlay, `back-hold` opens the Menu. Each riding screen
+/// calls this from its `Press | BackHold` arm.
 pub(crate) fn riding_common(g: Gesture, cx: &mut Ctx) -> Transition {
     match g {
         Gesture::Press => {
-            // Pause: tracking stops and the Ride-control overlay opens over the view.
             cx.activity.mode = Mode::Paused;
             Transition::Push(Screen::RideControl(RideControl::new()))
         }
         Gesture::BackHold => Transition::Push(Screen::Menu(MenuScreen::new())),
-        _ => Transition::None, // only ever called for the two arms above
+        _ => Transition::None,
     }
 }
 
-/// Advance a **wrapping** list selection by `n` detents over `len` items — the
-/// `turn`-moves-the-highlight every list screen shares (Menu, Route menu, Ride
-/// control). Wraps at both ends; a no-op on an empty list.
+/// Advance a wrapping list selection by `n` detents over `len` items. Wraps at both ends; a no-op
+/// on an empty list.
 pub(crate) fn step_selection(selected: usize, n: i32, len: usize) -> usize {
     if len == 0 {
         return selected;
@@ -390,9 +344,8 @@ pub(crate) fn step_selection(selected: usize, n: i32, len: usize) -> usize {
     (selected as i32 + n).rem_euclid(len as i32) as usize
 }
 
-/// Draw a centered two-line **empty state** — a bold `title` over a muted `hint`,
-/// vertically centered — the shared "nothing to show yet" body the Route menu (no
-/// routes) and Statistics (no route loaded) both draw under their header.
+/// Draw a centered two-line empty state — a bold `title` over a muted `hint` — the shared
+/// "nothing to show yet" body the Route menu and Statistics draw under their header.
 pub(crate) fn empty_state<D, F>(cv: &mut Canvas<D, F>, w: i32, h: i32, title: &str, hint: &str)
 where
     D: DrawTarget,
@@ -402,11 +355,10 @@ where
     cv.text(hint, Point::new(w / 2, h / 2 + 8), Font::Label, TextAlign::Center, palette::SUBTEXT);
 }
 
-/// Append a cross-track distance after `prefix`, compacted to a whole large unit past the
-/// cross-over so the readout stays within the panel width (a long "...14515m" would overrun).
-/// In **metric**: `"<prefix>NNNm"` below 1 km, `"<prefix>NNkm"` above, rounded to the nearest
-/// km. In **imperial**: `"<prefix>NNNft"` below a mile, `"<prefix>NNmi"` above. Shared by the
-/// Statistics header readout and the Map's off-route pill so the two agree.
+/// Append a cross-track distance after `prefix`, compacted to a whole large unit past the cross-
+/// over so the readout stays within the panel width. Metric: `NNNm` below 1 km, `NNkm` above
+/// (rounded). Imperial: `NNNft` below a mile, `NNmi` above. Shared by the Statistics header readout
+/// and the Map's off-route pill.
 pub(crate) fn write_off_route<const N: usize>(s: &mut heapless::String<N>, prefix: &str, d_m: u32, units: Units) {
     use crate::settings::{FT_PER_M, FT_PER_MI};
     if units.is_imperial() {
@@ -431,11 +383,9 @@ pub(crate) struct MenuItem {
     pub guard: bool,
 }
 
-/// Draw a selected option row's **background** for the guarded-action menus (Ride control,
-/// Route swap): a plain `AMBER` fill for an instant option, or — when `guard` is set — a
-/// `PARCHMENT_SHADE` base that fills in `fill` (amber to confirm a save, warning-red for a
-/// destructive action) tracking the encoder `hold_progress` (0.0–1.0). `radius` is the
-/// corner radius; the caller draws the row's label text. A no-op for an unselected row.
+/// Draw a selected option row's background for the guarded-action menus: a plain `AMBER` fill for
+/// an instant option, or — when `guard` is set — a `PARCHMENT_SHADE` base that fills in `fill`
+/// tracking `hold_progress` (0.0–1.0). The caller draws the label. A no-op for an unselected row.
 pub(crate) fn confirm_row<D, F>(
     cv: &mut Canvas<D, F>,
     row: Rectangle,
@@ -462,26 +412,21 @@ pub(crate) fn confirm_row<D, F>(
     }
 }
 
-/// The "explorer's field map" palette in RGB565 (the format/style color space),
-/// so screen text and chrome quantize through the host `color_fn` exactly like
-/// map styles.
+/// The "explorer's field map" palette in RGB565, so screen text and chrome quantize through the
+/// host `color_fn` exactly like map styles.
 ///
-/// **Tuned to the 64-color (RGB222) gamut.** The panel only has 4 levels per
-/// channel (0/85/170/255), so each value below is chosen for the *quantized*
-/// result, with the device-64 color noted. (Earlier, true-color-picked values
-/// clipped: parchment → white, the tan accents → pink.) The trailing comments are
-/// the device-64 RGB each value lands on; `tests/palette.rs` asserts every one
-/// through `rgb565_to_device64`, so a retune that forgets to update a comment fails
-/// the build rather than drifting silently.
+/// Tuned to the 64-color (RGB222) gamut: the panel has 4 levels per channel (0/85/170/255), so each
+/// value is chosen for the *quantized* result. The trailing comment on each is the device-64 RGB it
+/// lands on; `tests/palette.rs` asserts every one through `rgb565_to_device64`, so a retune that
+/// forgets to update a comment fails the build.
 pub mod palette {
     /// Pack 8-bit RGB into RGB565.
     pub const fn rgb565(r: u8, g: u8, b: u8) -> u16 {
         (((r as u16) >> 3) << 11) | (((g as u16) >> 2) << 5) | ((b as u16) >> 3)
     }
 
-    // Device-64 has no warm off-white — any blue < 192 tints it yellow ("stained
-    // paper"). So the panel is a clean near-white; the wood frame + ink + amber
-    // carry the warmth instead.
+    // Device-64 has no warm off-white — any blue < 192 tints it yellow — so this is a clean
+    // near-white; the wood frame + ink + amber carry the warmth instead.
     pub const PARCHMENT: u16 = rgb565(245, 243, 238); // → (255,255,255) white
     pub const PARCHMENT_SHADE: u16 = rgb565(180, 170, 105); // → (170,170,85) tan
     pub const HUD: u16 = rgb565(46, 37, 26); // → (0,0,0) near-black frame
@@ -495,21 +440,16 @@ pub mod palette {
     pub const RULE: u16 = rgb565(180, 170, 100); // → (170,170,85) tan
     pub const AMBER: u16 = rgb565(227, 165, 43); // → (255,170,0) accent
     pub const WARNING: u16 = rgb565(192, 73, 46); // → (255,85,0) warning
-    /// Faint neutral grey — the panel's one mid-grey, over the near-black [`HUD`]. Used for the
-    /// Home screensaver's code-generated contour lines and its empty battery cells: dim enough to
-    /// sit behind the clock without competing, bright enough to read as fine topo lines.
+    /// Faint neutral grey — the Home screensaver's contour lines and empty battery cells: dim
+    /// enough to sit behind the clock, bright enough to read as fine topo lines.
     pub const CONTOUR: u16 = rgb565(96, 96, 96); // → (85,85,85) grey
-    /// Green — the "on" state of a settings toggle pill (black/ink = off). The one green on
-    /// the panel, kept for this single semantic so it always reads as "enabled".
+    /// Green — the "on" state of a settings toggle pill (ink = off). The only green on the panel.
     pub const ON: u16 = rgb565(0, 170, 0); // → (0,170,0) green
-    /// Magenta — the **planned route** line on the Map, the boldest thing on screen.
-    /// The classic GPS route-line hue (Garmin / RideWithGPS / Komoot): it lands on no
-    /// base-map feature (greens, azure water, greys, warm roads), so it always reads as
-    /// "the line to follow". Route ahead = magenta, trail behind = the navy breadcrumb.
+    /// Magenta — the planned route line on the Map. The classic GPS route hue: it lands on no
+    /// base-map feature, so it always reads as "the line to follow".
     pub const ROUTE: u16 = rgb565(255, 0, 255); // → (255,0,255) magenta
-    /// Navy — the recorded **breadcrumb** (travelled path), stroked over the route and under
-    /// the marker. A cool, recessive line so the trail behind reads quieter than the magenta
-    /// route ahead, while staying clearly darker than the lighter azure water it may cross.
+    /// Navy — the recorded breadcrumb (travelled path), stroked over the route and under the marker.
+    /// Recessive so the trail behind reads quieter than the magenta route ahead.
     pub const BREADCRUMB: u16 = rgb565(0, 0, 170); // → (0,0,170) navy
 }
 
@@ -517,17 +457,10 @@ pub mod palette {
 mod tests {
     use super::step_selection;
 
-    // `step_selection` wrapping (issue #93 item 4).
-    //
-    // Every list screen (Menu, Route menu, Ride control) shares this `rem_euclid`-based
-    // wrap (screen/mod.rs ~315). The existing suite only ever turns *within* the list; these
-    // pin the behaviour when a turn crosses either end — exactly where a `%` regression
-    // (which is negative for a backward turn at the top) would hand back a garbage index and
-    // either highlight nothing or panic on the row lookup.
+    // `step_selection` wrapping: a `%` regression is negative for a backward turn at the top, which
+    // would hand back a garbage index and highlight nothing or panic on the row lookup.
 
-    /// Backward off the top: `Turn(-1)` from index 0 must wrap to the *last* item, not produce a
-    /// negative index. `%` would give `-1`; `rem_euclid` gives `len - 1`. This is the menu's
-    /// "scroll up past the top to reach the bottom" — a daily interaction.
+    /// Backward off the top: `Turn(-1)` from index 0 wraps to the last item, not a negative index.
     #[test]
     fn step_selection_wraps_backward_past_the_top() {
         assert_eq!(step_selection(0, -1, 4), 3, "up from the first item lands on the last");
@@ -540,21 +473,16 @@ mod tests {
         assert_eq!(step_selection(3, 1, 4), 0, "down from the last item lands on the first");
     }
 
-    /// A multi-detent turn larger than the list (a fast flick of the encoder) must wrap cleanly,
-    /// not run off the end. `Turn(n)` with `n > len` and `Turn(-n)` both land via the same modulo.
+    /// A multi-detent turn larger than the list wraps cleanly, not off the end.
     #[test]
     fn step_selection_wraps_multiple_turns() {
-        // From 0, +5 over a 3-item list: 5 mod 3 = 2.
         assert_eq!(step_selection(0, 5, 3), 2, "a long forward flick wraps modulo the length");
-        // From 0, -5 over a 3-item list: rem_euclid keeps it in 0..3 → 1.
         assert_eq!(step_selection(0, -5, 3), 1, "a long backward flick wraps without going negative");
-        // A full lap forward returns to the start.
         assert_eq!(step_selection(2, 3, 3), 2, "exactly one lap is a no-op");
     }
 
-    /// An empty list (no routes on the SD card, an empty menu) is a no-op for *any* turn — the
-    /// `len == 0` guard must short-circuit before the `% 0` that would otherwise panic. Press is
-    /// already covered elsewhere; this pins the Turn path the issue called out.
+    /// An empty list is a no-op for any turn — the `len == 0` guard must short-circuit before the
+    /// `% 0` that would panic.
     #[test]
     fn step_selection_on_empty_list_is_a_noop() {
         assert_eq!(step_selection(0, 1, 0), 0, "a forward turn on an empty list stays at 0");

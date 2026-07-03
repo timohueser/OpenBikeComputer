@@ -1,13 +1,10 @@
-//! Transport-agnostic fake-sensor debug protocol (issue #38) — the board-agnostic half.
+//! Transport-agnostic fake-sensor debug protocol — the board-agnostic half.
 //!
-//! There's no GPS / compass / altimeter hardware on the prototype (and never a good fix at the
-//! bench), so a host streams a recorded ride over a debug link and this module turns it into the
-//! `obc-app` HAL traits the app already polls — [`DebugLocation`], [`DebugAltimeter`] and
-//! [`DebugCompass`]. The app can't tell them from real drivers, and because the protocol +
-//! sources live here (not in the board crate) they move to any board unchanged. The board crate
-//! owns only the concrete transport driver — on the shipping nRF54L it's a UART/VCOM link, not USB
-//! (the nRF54L has no USB peripheral); it feeds received bytes to [`feed_bytes`] and `await`s
-//! [`wait_telemetry`] to send the device→host status line.
+//! A host streams a recorded ride over a debug link and this module turns it into the `obc-app` HAL
+//! traits the app already polls — [`DebugLocation`], [`DebugAltimeter`], [`DebugCompass`] — so the
+//! app can't tell them from real drivers. The board crate owns only the concrete transport driver
+//! (a UART/VCOM link on the nRF54L, which has no USB peripheral); it feeds received bytes to
+//! [`feed_bytes`] and `await`s [`wait_telemetry`] to send the device→host status line.
 //!
 //! ## Wire format (ASCII, one message per `\n`-terminated line)
 //! Host → device:
@@ -32,24 +29,19 @@
 //! floods. The trailing six are the render-benchmark fields: the per-stage wall-time breakdown
 //! and the frame's camera scale (see [`Telemetry`]).
 //!
-//! ## Fresh-fix contract (#43) — behind `debug-link`
-//! Each parsed *sensor* sample is handed across to the app through an embassy `Signal`, whose
-//! `try_take` returns a value exactly **once** per signal — so `DebugLocation::poll` yields
-//! `Some` only on the tick a new fix arrived and `None` between, the same cadence a real ~1 Hz
-//! receiver follows. Returning the latest fix on *every* ~8 ms poll would re-trigger the
-//! teleport-rejection bug #43 fixes; the `Signal` gives the correct semantics for free. Injected
-//! input events instead go through a small `Channel` (a queue, not a latch) so a burst of edges
-//! is delivered in order, exactly as the button debouncer's ring would. This hand-off (the
-//! `Signal`/`Channel` statics + the [`DebugLocation`]/[`DebugAltimeter`]/[`DebugCompass`]/
-//! [`DebugInput`] sources) lives behind the `debug-link` feature; the pure codec above does not.
+//! ## Fresh-fix contract — behind `debug-link`
+//! Each parsed *sensor* sample is handed to the app through an embassy `Signal`, whose `try_take`
+//! returns a value exactly **once** — so `DebugLocation::poll` yields `Some` only on the tick a new
+//! fix arrived and `None` between, the cadence a real ~1 Hz receiver follows. Returning the latest
+//! fix on *every* ~8 ms poll would re-trigger the teleport-rejection bug. Injected input events
+//! instead go through a small `Channel` (a queue, not a latch) so a burst of edges is delivered in
+//! order. This hand-off lives behind the `debug-link` feature; the pure codec above does not.
 
 use core::fmt::Write;
 
-// The pure protocol below (parser, encoders, `LineReader`, `Telemetry`) needs only these app
-// types — no embassy-sync — so it is **always** compiled and the host feeder (`obc-usb-host`) can
-// reuse the one canonical codec with default features. The `Signal`/`Channel` plumbing that
-// bridges parsed samples to the app's HAL traits pulls embassy-sync, so it stays behind
-// `debug-link` (with its source-trait imports) at the bottom of the file.
+// The pure protocol below (parser, encoders, `LineReader`, `Telemetry`) needs no embassy-sync, so
+// it is **always** compiled and the host feeder reuses one canonical codec. The `Signal`/`Channel`
+// plumbing pulls embassy-sync, so it stays behind `debug-link` at the bottom of the file.
 use obc_app::{Button, ButtonEvent, Fix, InputEvent};
 
 /// Longest line we accept. The widest message is an `F` with full i32 lat/lon and float
@@ -124,14 +116,11 @@ fn edge(tok: &str, b: Button) -> Option<ButtonEvent> {
 
 /// Encode a [`Fix`] as an `F` line (the exact inverse of the `F` arm of [`parse_line`]): `F <lat>
 /// <lon> <course|-> <speed|->\n`, with `course` at `{:.1}` and `speed` at `{:.2}`, and the `-`
-/// sentinel for a missing (standstill) field so each stays positional. The host feeder builds its
-/// outgoing fix lines through this so device and host share one encoder. Cap sized to the worst
-/// case: `F ` + two i32 (11 chars each) + two spaces + `360.0` + ` ` + `99.99` + `\n` ≈ 38 bytes;
-/// 48 leaves slack, so the `write!`s below truly cannot truncate.
+/// sentinel for a missing (standstill) field. Cap sized to the worst case (two i32 + `360.0` +
+/// `99.99` ≈ 38 bytes; 48 leaves slack) so the `write!`s below cannot truncate.
 pub fn format_fix(f: &Fix) -> heapless::String<48> {
-    /// Write an optional float at `prec` decimals, or the `-` "unknown" sentinel — the inverse of
-    /// [`parse_opt_f32`], keeping each field positional. (All `write!`/`push` are infallible for
-    /// the cap above; ignore the Result rather than panic on the MCU.)
+    /// Write an optional float at `prec` decimals, or the `-` sentinel. (Infallible for the cap
+    /// above; ignore the Result rather than panic on the MCU.)
     fn push_opt(s: &mut heapless::String<48>, v: Option<f32>, prec: usize) {
         match v {
             Some(v) => {
@@ -152,9 +141,8 @@ pub fn format_fix(f: &Fix) -> heapless::String<48> {
 }
 
 /// Accumulates raw link bytes into lines, parsing each complete `\n`-terminated line. The transport
-/// delivers bytes in arbitrary chunks, so the board calls [`feed`](LineReader::feed) (or the convenience
-/// [`feed_bytes`]) with each read; over-long lines (no newline within [`LINE_MAX`]) are dropped to
-/// the next newline rather than split.
+/// delivers bytes in arbitrary chunks; over-long lines (no newline within [`LINE_MAX`]) are dropped
+/// to the next newline rather than split.
 pub struct LineReader {
     buf: [u8; LINE_MAX],
     len: usize,
@@ -174,9 +162,8 @@ impl LineReader {
         LineReader { buf: [0; LINE_MAX], len: 0, overflow: false }
     }
 
-    /// Feed a chunk of received bytes; call `on_msg` for each complete line that parses. Kept
-    /// generic over the callback (rather than signalling globals directly) so it's pure and
-    /// unit-testable; the board passes [`dispatch`] via [`feed_bytes`].
+    /// Feed a chunk of received bytes; call `on_msg` for each complete line that parses. Generic
+    /// over the callback so it stays pure and unit-testable; the board passes [`dispatch`].
     pub fn feed(&mut self, bytes: &[u8], mut on_msg: impl FnMut(Msg)) {
         for &b in bytes {
             if b == b'\n' || b == b'\r' {
@@ -201,10 +188,10 @@ impl LineReader {
     }
 }
 
-/// The last map frame's **render stats** — the same numbers as the RTT `map frame` log and the
-/// sim's Render Stats panel (frame time, LOD, feature/chunk counts, map-cache + SD accounting).
-/// Snapshotted from [`RenderStats`](obc_render::RenderStats) by the board after each map render and
-/// sent host-ward at a low fixed rate. Integer fields only, so [`format_telemetry`] is float-free.
+/// The last map frame's **render stats** (frame time, LOD, feature/chunk counts, map-cache + SD
+/// accounting) — the same numbers as the RTT `map frame` log and the sim's Render Stats panel.
+/// Snapshotted from [`RenderStats`](obc_render::RenderStats) after each map render. Integer fields
+/// only, so [`format_telemetry`] is float-free.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Telemetry {
     /// Last map-render wall time, microseconds.
@@ -235,14 +222,12 @@ pub struct Telemetry {
     pub draw_us: u32,
     pub overlay_us: u32,
     /// Camera scale of the rendered frame, **milli-mpp** (meters-per-pixel × 1000) — lets the host
-    /// label each sample by zoom without echoing the `Z` command back. Integer to keep the line
-    /// float-free; e.g. `500` = 0.5 m/px.
+    /// label each sample by zoom. Integer to keep the line float-free; e.g. `500` = 0.5 m/px.
     pub mpp_milli: u32,
 }
 
-/// Format a telemetry line (`T … \n`) into a small heap-free string the board writes to the link.
-/// Cap sized to the worst case: `T` + sixteen `u32::MAX` (10-digit) fields each space-separated
-/// (16 spaces) + `\n` = 1 + 160 + 16 + 1 = 178 bytes, so the `write!` below truly cannot truncate.
+/// Format a telemetry line (`T … \n`) into a small heap-free string. Cap sized to the worst case
+/// (16 `u32::MAX` fields + separators = 178 bytes) so the `write!` below cannot truncate.
 pub fn format_telemetry(t: &Telemetry) -> heapless::String<192> {
     let mut s = heapless::String::new();
     // Infallible for the field count + cap; ignore the Result rather than panic on the MCU.
@@ -271,9 +256,7 @@ pub fn format_telemetry(t: &Telemetry) -> heapless::String<192> {
 
 /// Parse a `T …` telemetry line back into a [`Telemetry`] — the exact inverse of
 /// [`format_telemetry`] — or `None` for a non-`T` line or one with a missing / malformed field (so
-/// other device chatter is simply ignored). The host feeder reads its render-stats readout through
-/// this so device and host share one telemetry codec; matching [`Telemetry::lod`] it parses `lod`
-/// as a `u8`.
+/// other device chatter is ignored). `lod` is parsed as a `u8`.
 pub fn parse_telemetry(line: &str) -> Option<Telemetry> {
     let mut it = line.split_ascii_whitespace();
     if it.next()? != "T" {
@@ -299,12 +282,8 @@ pub fn parse_telemetry(line: &str) -> Option<Telemetry> {
     })
 }
 
-// --- the cross-task hand-off: parsed samples in, telemetry out ---
-//
-// Everything below pulls embassy-sync (`Signal`/`Channel`) and the app's source traits, so it is
-// gated behind `debug-link`. The board crate enables the feature and owns the concrete transport
-// driver (UART/VCOM on the nRF54L); the host feeder builds without it and reuses only the pure codec
-// above.
+// The cross-task hand-off (parsed samples in, telemetry out). Pulls embassy-sync + the app's source
+// traits, so it is gated behind `debug-link`; the host feeder builds without it.
 #[cfg(feature = "debug-link")]
 mod handoff {
     use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -322,25 +301,22 @@ mod handoff {
     static COMPASS: Signal<CriticalSectionRawMutex, f32> = Signal::new();
     /// Latest device telemetry to send host-ward; the app sets it, the transport's TX task awaits it.
     static TELEMETRY: Signal<CriticalSectionRawMutex, Telemetry> = Signal::new();
-    /// Latest debug camera-scale command (meters-per-pixel), `try_take`-once like a sensor. The
-    /// board's map loop drains it each frame and applies it via `App::set_map_mpp` (render
-    /// benchmark — see the `Z` wire command).
+    /// Latest debug camera-scale command (meters-per-pixel), `try_take`-once like a sensor (the `Z`
+    /// wire command). Drained by the map loop each frame → `App::set_map_mpp`.
     static ZOOM: Signal<CriticalSectionRawMutex, f32> = Signal::new();
-    /// A single "a datapoint arrived" wake (issue #219), the `debug-uart` twin of
-    /// `sensor_link::EVENT`: pulsed by [`dispatch`] on any host-streamed sensor sample (fix /
-    /// altitude / compass / zoom) so the event-driven main loop's [`wait_event`] wakes the render
-    /// exactly once. Injected *input* (`Msg::Input`) does **not** pulse it — that wakes the loop via
-    /// the gesture channel after the input plane recognises it, like a physical press.
+    /// A single "a datapoint arrived" wake, the `debug-uart` twin of `sensor_link::EVENT`: pulsed
+    /// by [`dispatch`] on any host-streamed sensor sample so the event-driven loop's [`wait_event`]
+    /// wakes the render once. Injected *input* (`Msg::Input`) does **not** pulse it — that wakes the
+    /// loop via the gesture channel after the input plane recognises it, like a physical press.
     static EVENT: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
-    /// Injected input events (encoder turns / button edges), queued in order for the input plane to
-    /// drain alongside the physical buttons. A queue, not a latch: a tap is a down+up *pair* and a
-    /// burst must arrive intact. Sized like the gesture channel — a frame yields at most a couple.
+    /// Injected input events (encoder turns / button edges), queued in order. A queue, not a latch:
+    /// a tap is a down+up *pair* and a burst must arrive intact.
     const INPUT_QUEUE: usize = 16;
     static INPUT: Channel<CriticalSectionRawMutex, InputEvent, INPUT_QUEUE> = Channel::new();
 
-    /// Route a decoded [`Msg`] to its signal/queue (the bridge from the link RX task to the app
-    /// poll). The board passes this to [`LineReader::feed`]; [`feed_bytes`] bundles both.
+    /// Route a decoded [`Msg`] to its signal/queue — the bridge from the link RX task to the app
+    /// poll. The board passes this to [`LineReader::feed`].
     pub fn dispatch(msg: Msg) {
         match msg {
             Msg::Fix(f) => {
@@ -367,14 +343,14 @@ mod handoff {
         }
     }
 
-    /// Await the next host-streamed datapoint (issue #219) — the `debug-uart` twin of
-    /// `sensor_link::wait_event`, the single sensor wake the event-driven main loop selects on.
+    /// Await the next host-streamed datapoint — the `debug-uart` twin of `sensor_link::wait_event`,
+    /// the single sensor wake the event-driven main loop selects on.
     pub async fn wait_event() {
         EVENT.wait().await
     }
 
-    /// Convenience for the board's link RX loop: accumulate `bytes` and dispatch every complete line
-    /// to the sensor signals. `reader` persists across reads (it holds the partial-line buffer).
+    /// Accumulate `bytes` and dispatch every complete line to the sensor signals. `reader` persists
+    /// across reads (it holds the partial-line buffer).
     pub fn feed_bytes(reader: &mut LineReader, bytes: &[u8]) {
         reader.feed(bytes, dispatch);
     }
@@ -404,9 +380,8 @@ mod handoff {
         }
     }
 
-    /// Injected input, drained by the input plane next to the physical buttons. The board chains
-    /// this after its `ButtonInput` into the gesture recogniser, so injected turns/edges become
-    /// gestures (taps and holds) identically to real presses.
+    /// Injected input, drained by the input plane next to the physical buttons — so injected
+    /// turns/edges become gestures (taps and holds) identically to real presses.
     pub struct DebugInput;
     impl InputSource for DebugInput {
         fn poll(&mut self) -> Option<InputEvent> {
@@ -414,9 +389,8 @@ mod handoff {
         }
     }
 
-    /// Take a pending debug `Z` camera-scale command (meters-per-pixel), if one arrived since the
-    /// last call — `try_take`-once, like a sensor poll. The board's map loop calls this each frame
-    /// and applies any value via `App::set_map_mpp` (render benchmark).
+    /// Take a pending debug `Z` camera-scale command (meters-per-pixel) — `try_take`-once. The map
+    /// loop calls this each frame and applies any value via `App::set_map_mpp`.
     pub fn take_zoom() -> Option<f32> {
         ZOOM.try_take()
     }
@@ -427,8 +401,8 @@ mod handoff {
         TELEMETRY.signal(t);
     }
 
-    /// Await the next published telemetry (the transport's TX task), so the send cadence is driven by
-    /// the app's [`set_telemetry`] calls — no polling, no flooding.
+    /// Await the next published telemetry (the transport's TX task), so the send cadence is driven
+    /// by [`set_telemetry`] — no polling, no flooding.
     pub async fn wait_telemetry() -> Telemetry {
         TELEMETRY.wait().await
     }
@@ -607,11 +581,9 @@ mod tests {
         assert_eq!(parse_line(format_fix(&f).as_str().trim_end()), Some(Msg::Fix(f)));
     }
 
-    /// Item 5 (`\r` / CRLF, `feed` ~183): `feed` treats `\r` and `\n` *both* as line
-    /// terminators, but every existing feed test uses only `\n`. A refactor that checked
-    /// only `b == b'\n'` would pass them all yet break a host on CRLF. Feed a bare `\r`
-    /// and a full `\r\n` and prove each line still dispatches exactly once (the `\n` after
-    /// a `\r` lands on an already-reset empty buffer, so no phantom blank line).
+    /// `feed` treats `\r` and `\n` *both* as line terminators. A bare `\r`, a `\r\n`, and a lone
+    /// `\n` each dispatch exactly once (the `\n` after a `\r` lands on an already-reset buffer, so
+    /// no phantom blank line).
     #[test]
     fn line_reader_treats_cr_and_crlf_as_terminators() {
         let mut r = LineReader::new();
@@ -625,11 +597,8 @@ mod tests {
         );
     }
 
-    /// Item 6 (blank-line guard, `feed` ~184 `self.len > 0`): empty lines from the wire
-    /// (a stray `\n`, or a CRLF's `\n` after the `\r` already flushed) must be skipped at
-    /// the `LineReader` level, not handed to `parse_line`. Only bare `parse_line("")` is
-    /// tested elsewhere; this proves the reader's guard so blank lines never even reach the
-    /// parser and produce no spurious `Msg`.
+    /// Empty lines from the wire (a stray `\n`, or a CRLF's `\n` after the `\r` flushed) are skipped
+    /// at the `LineReader` level (the `self.len > 0` guard), never reaching `parse_line`.
     #[test]
     fn line_reader_skips_blank_lines() {
         let mut r = LineReader::new();
@@ -639,11 +608,8 @@ mod tests {
         assert_eq!(got.as_slice(), &[Msg::Alt(5.0), Msg::Compass(9.0)], "blank lines produce no Msg");
     }
 
-    /// Item 7 (i32 extremes through format→parse, the worst case the 48-byte cap is sized
-    /// for, ~129): `parse_line` parses `i32::MIN`/`i32::MAX` and a mid value round-trips,
-    /// but the *extreme* lat/lon has never gone format→parse. `F -2147483648 2147483647`
-    /// is the widest fix line; this proves `format_fix` emits it within the cap (no
-    /// truncation) and `parse_line` reads the exact extremes back.
+    /// `F -2147483648 2147483647` is the widest fix line (the worst case the 48-byte cap is sized
+    /// for): `format_fix` emits it un-truncated and `parse_line` reads the exact extremes back.
     #[test]
     fn format_fix_round_trips_i32_extremes() {
         let f = Fix { lat: i32::MIN, lon: i32::MAX, course: None, speed_mps: None };
@@ -655,10 +621,8 @@ mod tests {
         );
     }
 
-    /// Item 8 (lod u8 overflow, `parse_telemetry` ~285): `lod` is parsed as `u8`, so a
-    /// line whose `lod` field exceeds 255 must make the whole parse fail (`None`), not
-    /// wrap or truncate. A value of 999 in the lod slot is the guard — every other field
-    /// is valid, so only the u8 overflow can reject the line.
+    /// `lod` is parsed as `u8`, so a `lod` field above 255 fails the whole parse (`None`), not wrap
+    /// or truncate. Every other field is valid, isolating the overflow as the cause.
     #[test]
     fn parse_telemetry_rejects_lod_above_u8() {
         // Valid T line shape, but lod = 999 (> u8::MAX) — the u8 parse fails the line.
@@ -674,11 +638,8 @@ mod tests {
         );
     }
 
-    /// Item 9 (LINE_MAX boundary, `feed` ~195 `self.len < LINE_MAX`): a line that *fills*
-    /// the 64-byte buffer exactly (64 chars, no newline yet) must NOT trip overflow — the
-    /// boundary is `< LINE_MAX` for accepting a byte, `else` overflow only on the 65th.
-    /// Only a 200-char overrun is tested elsewhere; this pins the exact-fit edge so a line
-    /// padded to precisely LINE_MAX still parses when its newline arrives.
+    /// A line that *fills* the 64-byte buffer exactly (no newline yet) must NOT trip overflow — the
+    /// boundary is `< LINE_MAX` to accept a byte, overflow only on the 65th.
     #[test]
     fn line_reader_accepts_a_line_filling_the_buffer_exactly() {
         // `Z 1` plus enough trailing spaces to total exactly LINE_MAX=64 bytes. Trailing

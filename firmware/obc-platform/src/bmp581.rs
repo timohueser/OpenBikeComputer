@@ -1,10 +1,5 @@
-//! Pure register map + conversions for the Bosch **BMP581** barometric altimeter (issue #218) —
-//! the host-testable half of the baro driver.
-//!
-//! The board crate owns the concrete I²C transactions; this module is the dependency-light,
-//! `no_std`, **pure** logic: the register addresses + bit patterns the driver pokes, and the
-//! integer-raw → physical-unit conversions, so the unit-conversion math unit-tests on the host with
-//! no hardware (the same split as [`crate::ubx`]).
+//! Pure register map + conversions for the Bosch **BMP581** barometric altimeter — the host-testable
+//! half of the baro driver (the board crate owns the concrete I²C transactions).
 //!
 //! ## How the driver uses it (forced mode)
 //! Per GPS fix the driver writes [`ODR_CONFIG`] with [`PWR_MODE_FORCED`] to trigger **one**
@@ -69,7 +64,6 @@ pub const P0_PA: f32 = 101_325.0;
 /// sign-extending from bit 23 — the temperature channel's encoding.
 pub fn raw24_signed(xlsb: u8, lsb: u8, msb: u8) -> i32 {
     let raw = (msb as u32) << 16 | (lsb as u32) << 8 | xlsb as u32;
-    // Sign-extend a 24-bit two's-complement value into i32.
     if raw & 0x80_0000 != 0 {
         (raw | 0xFF00_0000) as i32
     } else {
@@ -105,9 +99,8 @@ mod tests {
 
     #[test]
     fn assembles_24bit_samples() {
-        // Pressure: 0x064CA0 = 412_320 raw → /64 = 6442.5 Pa (just a byte-assembly check).
         assert_eq!(raw24_unsigned(0xA0, 0x4C, 0x06), 0x06_4C_A0);
-        // Temperature positive: 0x190000 = 1_638_400 → /65536 = 25.0 °C.
+        // 0x190000 = 1_638_400 → /65536 = 25.0 °C.
         assert_eq!(raw24_signed(0x00, 0x00, 0x19), 0x19_0000);
         assert!((raw_to_c(raw24_signed(0x00, 0x00, 0x19)) - 25.0).abs() < 1e-3);
     }
