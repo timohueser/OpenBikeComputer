@@ -246,10 +246,27 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     }
 
     public func downloadRides(_ ids: [RideID]) -> RideDownload {
-        // Real path (A7): one download per ride object, persisted ride-by-ride, so
-        // a drop keeps what landed and "resume" re-requests only the missing rides
-        // (whole rides are the batch's elementary unit — spec §1 principle 4).
-        .finished()
+        // Real path (A7): one ride-object download per id, persisted ride-by-ride,
+        // so a drop keeps what landed and "resume" re-requests only the missing
+        // rides (whole rides are the batch's elementary unit — spec §1 principle 4).
+        guard !ids.isEmpty else { return .finished() }                      // H9
+        if stateMulticast.value == .disconnected {
+            return .finished(.failed(.notConnected))                        // H4
+        }
+        let (rideStream, rideContinuation) = AsyncThrowingStream<DownloadedRide, Error>.makeStream()
+        let (progressStream, progressContinuation) = AsyncStream<TransferProgress>.makeStream()
+        let outcome = AsyncPromise<TransferOutcome>()
+        let runner = RideDownloadRunner(
+            transport: self, ids: ids, rides: rideContinuation,
+            progress: progressContinuation, outcome: outcome
+        )
+        Task { await runner.start() }
+        let handle = TransferHandle(
+            progress: progressStream, outcome: outcome,
+            onCancel: { Task { await runner.cancel() } },
+            onResume: { Task { await runner.start() } }
+        )
+        return RideDownload(handle: handle, rides: rideStream)
     }
 
     // MARK: One object over the CoC (queue-confined helpers around it)
@@ -258,7 +275,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     /// request, await the device's announce descriptor (`total_len` + `crc32`) —
     /// a typed reject resolves it as a throw — stream the payload off the CoC
     /// verifying the whole-object CRC, then require the committed close.
-    private func downloadObject(type: ObjectType, objectID: UInt16) async throws -> Data {
+    fileprivate func downloadObject(type: ObjectType, objectID: UInt16) async throws -> Data {
         await acquireTransferSlot()
         defer { releaseTransferSlot() }
         let channel = try await readyChannel()
@@ -603,6 +620,95 @@ private actor UploadRunner {
         progress.finish()
         outcome.fulfill(terminal)
         if terminal != .completed { assignedID.fulfill(nil) }
+    }
+}
+
+/// Drives a ride-sync batch (A7): downloads each requested ride object over the
+/// CoC and yields it the instant its bytes are complete + CRC-verified, so a drop
+/// keeps every ride already yielded and `resume()` re-requests only the rest —
+/// whole rides are the batch's elementary unit (spec §1 principle 4, "multi-object
+/// flows resume at whole-object granularity"). The download-object plumbing
+/// (`downloadObject`) owns the per-ride transfer slot, so a stalled batch never
+/// starves reconnect-time list reads. Mirrors `UploadRunner`'s lifecycle.
+private actor RideDownloadRunner {
+    private let transport: BLETransport
+    private let ids: [RideID]
+    private let rides: AsyncThrowingStream<DownloadedRide, Error>.Continuation
+    private let progress: AsyncStream<TransferProgress>.Continuation
+    private let outcome: AsyncPromise<TransferOutcome>
+    private var landed: Set<RideID> = []
+    private var attempt: Task<Void, Never>?
+    private var finished = false
+
+    init(
+        transport: BLETransport, ids: [RideID],
+        rides: AsyncThrowingStream<DownloadedRide, Error>.Continuation,
+        progress: AsyncStream<TransferProgress>.Continuation,
+        outcome: AsyncPromise<TransferOutcome>
+    ) {
+        self.transport = transport
+        self.ids = ids
+        self.rides = rides
+        self.progress = progress
+        self.outcome = outcome
+    }
+
+    /// Start (or restart after a drop). No-op while an attempt runs or after a
+    /// terminal outcome; a restart continues at the first not-yet-landed ride.
+    func start() {
+        guard attempt == nil, !finished else { return }
+        attempt = Task {
+            await runAttempt()
+            attempt = nil
+        }
+    }
+
+    /// Abort the batch: stop the pump and tear the CoC down so the device discards
+    /// any in-flight partial. Terminal — rides already yielded stay landed.
+    func cancel() async {
+        attempt?.cancel()
+        await transport.teardownChannel()
+        finish(.canceled)
+    }
+
+    private func runAttempt() async {
+        guard !finished else { return }
+        do {
+            for id in ids where !landed.contains(id) {
+                try Task.checkCancellation()
+                // A malformed id can't come from `listRides` (it stringifies a
+                // u16); skip defensively rather than fail the whole batch.
+                guard let objectID = UInt16(id.rawValue) else { continue }
+                let payload = try await transport.downloadObject(type: .ride, objectID: objectID)
+                landed.insert(id)
+                rides.yield(DownloadedRide(id: id, payload: payload))
+                progress.yield(TransferProgress(bytesDone: landed.count, total: ids.count))
+            }
+            finish(.completed)
+        } catch is CancellationError {
+            // cancel() resolves the outcome and tears the channel down.
+        } catch DeviceError.crcMismatch {
+            // A corrupt ride object is a hard, non-retryable failure (the bytes on
+            // the card are bad) — surface it into the stream and end the batch.
+            if !finished {
+                finished = true
+                progress.finish()
+                rides.finish(throwing: DeviceError.crcMismatch)
+                outcome.fulfill(.failed(.crcMismatch))
+            }
+        } catch {
+            // A link/CoC drop mid-batch (or a reconnect-needed): stay unresolved —
+            // resumable. What landed is kept (already yielded + persisted); the
+            // sync's drop watch raises H10 and `resume()` re-requests the rest.
+        }
+    }
+
+    private func finish(_ terminal: TransferOutcome) {
+        guard !finished else { return }
+        finished = true
+        progress.finish()
+        rides.finish()
+        outcome.fulfill(terminal)
     }
 }
 
