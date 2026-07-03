@@ -75,6 +75,50 @@ final class RouteDetailModelTests: XCTestCase {
         XCTAssertEqual(model.stats[3].value, "—")
     }
 
+    /// Upload is link-bound: `canUpload` follows the live connection stream
+    /// (the S4 rule — the button dims when the device isn't actually there).
+    func testCanUploadFollowsTheLiveConnection() async {
+        let control = makeControl()
+        let route = control.fixtures.routes[0].summary
+        let model = RouteDetailModel(transport: MockTransport(control: control), dressing: .planned(route))
+
+        model.start()
+        await waitFor("connected replay") { model.canUpload }
+
+        control.connection = .outOfRange
+        await waitFor("link-down gate") { !model.canUpload }
+        control.connection = .connected
+        await waitFor("link-up gate") { model.canUpload }
+    }
+
+    /// The replace-in-place fix: the moment an upload commits, the model pins
+    /// the assigned id — a second Upload on the same screen targets it (the
+    /// device replaces the object) instead of sending "new" again, and the
+    /// button reads up to date until the content moves (a rename out-dates it).
+    func testUploadCommitPinsTheTargetAndStateFollowsContent() async {
+        let control = makeControl()
+        let entry = control.fixtures.routes[2]  // Blue Mounds — not on the device
+        let model = RouteDetailModel(
+            transport: MockTransport(control: control),
+            dressing: .planned(entry.summary),
+            preloadedDetail: entry.detail(),
+            plannedGeometry: ImportedRoute(
+                name: entry.summary.name, points: entry.points, waypoints: entry.waypoints
+            )
+        )
+        XCTAssertEqual(model.deviceCopyState, .notOnDevice)
+        XCTAssertNil(model.makeUploadBlob().targetObjectID, "a fresh route uploads as new")
+
+        let committed = model.makeUploadBlob()
+        model.recordUploaded(objectID: 42, crc32: CRC32.checksum(committed.payload))
+        XCTAssertEqual(model.deviceCopyState, .upToDate)
+        XCTAssertEqual(model.makeUploadBlob().targetObjectID, 42, "a re-upload replaces, never duplicates")
+
+        XCTAssertTrue(model.rename(to: "Blue Mounds (shortcut)"))
+        XCTAssertEqual(model.deviceCopyState, .outdated, "a rename out-dates the device copy")
+        XCTAssertEqual(model.makeUploadBlob().targetObjectID, 42, "…and the update still targets the same object")
+    }
+
     func testTrackedDetailReadFailureDegradesQuietly() async {
         let control = makeControl()
         let ride = control.fixtures.rides[0].summary

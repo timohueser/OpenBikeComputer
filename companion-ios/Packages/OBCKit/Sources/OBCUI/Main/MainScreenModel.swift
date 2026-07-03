@@ -86,10 +86,11 @@ public final class MainScreenModel {
     public private(set) var battery: Int?
     public private(set) var loadState: LoadState = .loading
     public private(set) var routes: [RouteSummary] = []
-    /// Ids of planned routes the device holds a copy of — drives the "on device"
-    /// badge (C1). Observable (unlike the `plannedRecords` mirror) so the badge
-    /// lights the instant an upload commits.
-    public private(set) var uploadedRouteIDs: Set<RouteID> = []
+    /// Each planned route's proven device-copy state — drives the C1 badge
+    /// (check = up to date, refresh = on device but out of date). Observable
+    /// (unlike the `plannedRecords` mirror) so the badge moves the instant an
+    /// upload commits or a rename/re-import changes the content.
+    public private(set) var onDevice: [RouteID: OnDeviceState] = [:]
     public private(set) var rides: [RideSummary] = []
     public var tab: Tab = .planned
     public var searchText = ""
@@ -169,7 +170,7 @@ public final class MainScreenModel {
         // lands — or ever succeeds (offline relaunch, H4 pre-pairing import).
         let planned = library.plannedRoutes()
         plannedRecords = Dictionary(uniqueKeysWithValues: planned.map { ($0.id, $0) })
-        uploadedRouteIDs = Set(planned.filter(\.uploadedToDevice).map(\.id))
+        refreshOnDeviceStates()
         let storedRides = library.rides()
         rideRecords = Dictionary(uniqueKeysWithValues: storedRides.map { ($0.id, $0) })
         syncedRideIDs = library.syncedRideIDs()
@@ -178,7 +179,15 @@ public final class MainScreenModel {
         rides = storedRides.map(\.summary)
 
         streamTasks.append(Task { [transport] in
-            for await state in transport.state { connection = state }
+            var previous: ConnectionState?
+            for await state in transport.state {
+                connection = state
+                // A regained link (never the stream's replayed first value):
+                // re-read the lists — the reconnect is what makes the badges
+                // and ride list trustworthy again.
+                if state == .connected, let was = previous, was != .connected { reload() }
+                previous = state
+            }
         })
         streamTasks.append(Task { [transport] in
             for await percent in transport.battery { battery = percent }
@@ -223,14 +232,29 @@ public final class MainScreenModel {
     /// it. Ids are durable across device reboots (spec §4.1), so absence really
     /// means "gone", not "renumbered".
     private func reconcileOnDevice(with deviceRoutes: [RouteSummary]) {
-        let onDevice = Set(deviceRoutes.compactMap { UInt16($0.id.rawValue) })
+        let listed = Set(deviceRoutes.compactMap { UInt16($0.id.rawValue) })
         for (id, var record) in plannedRecords {
-            guard let objectID = record.deviceObjectID, !onDevice.contains(objectID) else { continue }
+            guard let objectID = record.deviceObjectID, !listed.contains(objectID) else { continue }
             record.deviceObjectID = nil
+            record.uploadedCRC32 = nil
             plannedRecords[id] = record
             library.savePlannedRoute(record)
         }
-        uploadedRouteIDs = Set(plannedRecords.values.filter(\.uploadedToDevice).map(\.id))
+        refreshOnDeviceStates()
+    }
+
+    /// Recompute every record's proven device-copy state — called whenever a
+    /// record's content or its device link moves (load, reconcile, upload,
+    /// rename, re-import, delete). The payload encode behind the CRC only runs
+    /// for records the device actually holds with a known fingerprint.
+    private func refreshOnDeviceStates() {
+        onDevice = plannedRecords.mapValues { record in
+            OnDeviceState.determine(
+                deviceObjectID: record.deviceObjectID,
+                uploadedCRC32: record.uploadedCRC32,
+                currentCRC: { RouteObjectCodec.payloadCRC(for: record) }
+            )
+        }
     }
 
     /// The Planned rows: the library's records, newest first.
@@ -382,7 +406,7 @@ public final class MainScreenModel {
     public func deleteRoute(_ id: RouteID) {
         routes.removeAll { $0.id == id }
         plannedRecords[id] = nil
-        uploadedRouteIDs.remove(id)
+        onDevice[id] = nil
         library.deletePlannedRoute(id)
     }
 
@@ -412,6 +436,9 @@ public final class MainScreenModel {
             record.summary.name = name
             plannedRecords[id] = record
             library.savePlannedRoute(record)
+            // The name rides in the upload payload: a rename out-dates the
+            // device copy until the next push updates it.
+            refreshOnDeviceStates()
         }
     }
 
@@ -435,7 +462,7 @@ public final class MainScreenModel {
         library.savePlannedRoute(record)
         // A re-import that replaces an existing route keeps its `deviceObjectID`
         // (and thus its badge); a fresh import isn't on the device yet.
-        if record.uploadedToDevice { uploadedRouteIDs.insert(record.id) } else { uploadedRouteIDs.remove(record.id) }
+        refreshOnDeviceStates()
         routes.removeAll { $0.id == record.id }
         routes.insert(record.summary, at: 0)
         tab = .planned
@@ -449,7 +476,10 @@ public final class MainScreenModel {
     }
 
     /// Whether the device holds a copy of this planned route (drives the C1 badge).
-    public func isUploaded(_ id: RouteID) -> Bool { uploadedRouteIDs.contains(id) }
+    public func isUploaded(_ id: RouteID) -> Bool { onDeviceState(id) != .notOnDevice }
+
+    /// The proven device-copy state behind the C1 badge.
+    public func onDeviceState(_ id: RouteID) -> OnDeviceState { onDevice[id] ?? .notOnDevice }
 
     /// The kept detail for a library-saved route, with the summary refreshed
     /// from the live list (renames must show).
@@ -473,6 +503,12 @@ public final class MainScreenModel {
         plannedRecords[id]?.deviceObjectID
     }
 
+    /// The committed upload fingerprint behind that link — threaded into the
+    /// detail so its button can tell "up to date" from "out of date".
+    public func plannedUploadedCRC32(for id: RouteID) -> UInt32? {
+        plannedRecords[id]?.uploadedCRC32
+    }
+
     /// H3 write-through from Settings (B8) — the top bar shows the new device
     /// name at once; Settings owns the config write and the bond record.
     public func deviceRenamed(to name: String) {
@@ -483,12 +519,13 @@ public final class MainScreenModel {
     /// durable "on device" link) so the C1 badge lights and a later re-upload
     /// replaces that object. Idempotent; a new id (re-upload after a device-side
     /// change) overwrites the old.
-    public func markRouteUploaded(_ id: RouteID, objectID: UInt16) {
+    public func markRouteUploaded(_ id: RouteID, objectID: UInt16, crc32: UInt32) {
         guard var record = plannedRecords[id] else { return }
         record.deviceObjectID = objectID
+        record.uploadedCRC32 = crc32
         plannedRecords[id] = record
-        uploadedRouteIDs.insert(id)
         library.savePlannedRoute(record)
+        refreshOnDeviceStates()
     }
 
     // MARK: Helpers

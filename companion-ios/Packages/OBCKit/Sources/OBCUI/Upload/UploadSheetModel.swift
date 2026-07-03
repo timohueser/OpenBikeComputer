@@ -58,9 +58,10 @@ public final class UploadSheetModel {
     private let blob: RouteBlob
     private let timing: Timing
     /// Fires once when the upload completes, carrying the **device-assigned object
-    /// id** (nil if the device didn't report one) — the E1 landing saves the route
-    /// here ("Uploading saves it too") and records it as on-device.
-    private let onCompleted: (UInt16?) -> Void
+    /// id** (nil if the device didn't report one) and the committed payload's
+    /// CRC-32 (the `OnDeviceState` fingerprint) — the E1 landing saves the route
+    /// here ("Uploading saves it too") and records it as on-device, up to date.
+    private let onCompleted: (UInt16?, UInt32) -> Void
     @ObservationIgnored private var handle: TransferHandle?
     @ObservationIgnored private var watchers: [Task<Void, Never>] = []
     @ObservationIgnored private var started = false
@@ -70,7 +71,7 @@ public final class UploadSheetModel {
         blob: RouteBlob,
         deviceName: String,
         timing: Timing = Timing(),
-        onCompleted: @escaping (UInt16?) -> Void = { _ in }
+        onCompleted: @escaping (UInt16?, UInt32) -> Void = { _, _ in }
     ) {
         self.transport = transport
         self.blob = blob
@@ -136,7 +137,7 @@ public final class UploadSheetModel {
             switch outcome {
             case .completed:
                 phase = .done
-                onCompleted(await handle.assignedObjectID)
+                onCompleted(await handle.assignedObjectID, CRC32.checksum(blob.payload))
                 try? await Task.sleep(for: timing.doneAutoDismiss)
                 shouldDismiss = true
             case .canceled:
