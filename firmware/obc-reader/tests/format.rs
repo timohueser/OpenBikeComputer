@@ -1,11 +1,9 @@
 //! Format-contract tests for the OBCM v5 reader.
 //!
-//! Each test builds a synthetic `.obcm` byte buffer with the shared `obcm-testkit`
-//! builder, which mirrors `packer/obcm/serialize.py` exactly, then asserts the reader
-//! parses it back. Building the bytes here (rather than checking in a binary
-//! fixture) keeps the Rust and Python encoders pinned to the same layout: if
-//! either drifts, these break. The builder lives in `obcm-testkit` so the same layout
-//! is shared with `obc-render`'s priority test and a format bump edits one place.
+//! Each test builds a synthetic `.obcm` with the shared `obcm-testkit` builder (which mirrors
+//! `packer/obcm/serialize.py`), then asserts the reader parses it back. Building the bytes rather
+//! than checking in a binary fixture keeps the Rust and Python encoders pinned to one layout: if
+//! either drifts, these break. `obcm-testkit` shares the layout with `obc-render`'s priority test.
 
 use obc_reader::{BBox, Error, Kind, MapCache, MapTables, Reader, SliceSource, MAX_FEAT_PTS, MAX_FEAT_RINGS};
 use obcm_testkit::{
@@ -52,10 +50,6 @@ fn decode_filtered(r: &Reader, lod: usize, chunk_id: u32, node: &BBox, keep: imp
     out
 }
 
-// The byte builders (`build_file`, `pack_line`/`pack_line16`/`pack_poly_hole`, `pad`)
-// and the `BRANCH_BIT` / `EMPTY_LEAF` / `MARKER` constants now live in `obcm-testkit`,
-// imported above — one source for the layout, shared with `obc-render`'s priority test.
-
 // A two-LOD file used by several tests: LOD0 (coarse, +inf) holds one line,
 // LOD1 (max_mpp 50) holds one polygon-with-hole. Both are single-leaf trees over
 // the global bbox (0,0,1000,1000), so the leaf's node bbox is the global bbox
@@ -77,10 +71,6 @@ fn two_lod_file() -> Vec<u8> {
         ],
     )
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[test]
 fn header_and_lod_table() {
@@ -350,12 +340,9 @@ fn rejects_bad_input() {
 
 #[test]
 fn out_of_range_chunk_id_decodes_nothing() {
-    // `chunk_id` comes from a quadtree leaf and is never otherwise constrained to
-    // `chunk_count`. LOD0 here holds a single chunk, so id 1 already points one
-    // past it — straight into LOD1's bytes. The reader must decode nothing rather
-    // than silently decode the adjacent layer (visible even on the 64-bit host)
-    // or, on the 32-bit device, wrap the offset and panic. `u32::MAX` is the
-    // arithmetic-overflow edge.
+    // `chunk_id` from a quadtree leaf is never constrained to `chunk_count`. LOD0 holds one chunk,
+    // so id 1 points one past it (into LOD1's bytes); the reader must decode nothing rather than the
+    // adjacent layer, or wrap+panic on the 32-bit device. `u32::MAX` is the overflow edge.
     let bytes = two_lod_file();
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
@@ -505,8 +492,8 @@ fn walk_terminates_on_back_referencing_branch() {
     // A corrupt map whose root branch points its first child back at itself (`child == idx`).
     // The node bbox would shrink toward the NW corner and then stay put, so `intersects(view)`
     // never goes false — with no guard the walk recurses forever and stack-overflows (a HardFault
-    // on the MCU, which has no MMU guard page; issue #65). The `child > idx` guard rejects the
-    // back-edge, so the walk must simply return, reporting no chunks.
+    // on the MCU, which has no MMU guard page). The `child > idx` guard rejects the back-edge, so
+    // the walk must simply return, reporting no chunks.
     let chunk = pad(pack_line(1, 0, 0, &[(1, 1)]), CS);
     let bytes = build_file(
         GLOBAL,
@@ -539,7 +526,7 @@ fn walk_caps_depth_on_forward_chain() {
     // levels but keeps intersecting a whole-bbox viewport forever, so without the depth cap the
     // walk would descend all `LEVELS` levels and report the leaf's chunk. With the cap it stops
     // first, pruning the over-cap leaf — so no chunk is reported. This pins the depth cap
-    // independently of the `child > idx` guard (issue #65).
+    // independently of the `child > idx` guard.
     const LEVELS: usize = 50; // comfortably past the ~32 cap
     let chunk = pad(pack_line(1, 0, 0, &[(1, 1)]), CS);
     let bytes = build_file(

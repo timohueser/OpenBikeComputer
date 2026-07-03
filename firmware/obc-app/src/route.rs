@@ -13,8 +13,8 @@
 
 pub use obc_route::RouteSummary;
 
-/// Maximum routes the resident menu catalog holds. Sized for a comfortable SD card of
-/// rides; each summary is ~80 bytes, so the cap costs a few KB of static RAM.
+/// Maximum routes the resident menu catalog holds. Each summary is ~80 bytes, so the cap costs a
+/// few KB of static RAM.
 pub const MAX_ROUTES: usize = 64;
 
 /// The app's resident route catalog: the summaries the Route menu lists and

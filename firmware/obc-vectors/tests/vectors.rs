@@ -1,7 +1,6 @@
 //! Contract tests over the checked-in `protocol-vectors/` fixtures: every file must
 //! equal its spec-derived builder byte-for-byte, and the route vectors must load and
-//! ride through `obc-route` — the firmware-side half of the S0 shared-vector pin
-//! (the app's `swift test` consumes the same files).
+//! ride through `obc-route`. The app's `swift test` consumes the same files.
 
 use obc_route::{for_each_waypoint, RouteIndex, RouteObjectInfo, RouteReader, SliceSource, MAX_POINTS_PER_CHUNK};
 use obc_vectors::{all, crc32, dir, ride_v1};
@@ -18,9 +17,8 @@ fn crc32_check_value() {
     assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
 }
 
-/// Every checked-in fixture equals its builder's output. A failure means either an
-/// accidental codec drift (fix the code) or a deliberate spec change (regenerate the
-/// fixtures **and** flag the app side — the Swift tests pin the same bytes).
+/// Every checked-in fixture equals its builder's output. A failure is either codec
+/// drift (fix the code) or a deliberate spec change (regenerate + flag the app side).
 #[test]
 fn fixtures_match_the_spec_builders() {
     for (name, bytes) in all() {
@@ -77,8 +75,8 @@ fn route_vectors_load_and_ride_identically() {
     assert_eq!(RouteObjectInfo::read(&src_p).unwrap().waypoint_count, 0);
 }
 
-/// The upload descriptor announces the waypoint route's **actual** size and CRC —
-/// the fixtures form one coherent transfer transcript, not isolated blobs.
+/// The upload descriptor announces the waypoint route's actual size and CRC, so the
+/// fixtures form one coherent transfer transcript.
 #[test]
 fn upload_transcript_is_self_consistent() {
     let route = fixture("route-waypoints.obcr");
@@ -118,9 +116,9 @@ fn ride_vector_length_is_self_describing() {
     assert_eq!(ride.len(), 23 + name_len + 14 * point_count as usize);
 }
 
-/// The ride vector reads through the production header reader (`obc_route::RideInfo` — what the
-/// device's `rideList` build serves, A7) with the manifest's values, and the same header written
-/// by the production converter's layout agrees byte-for-byte with the hand-built fixture.
+/// The ride vector reads through the production header reader (`obc_route::RideInfo`)
+/// with the manifest's values, and the production layout agrees byte-for-byte with
+/// the hand-built fixture.
 #[test]
 fn ride_vector_reads_through_the_production_codec() {
     let ride = fixture("ride-v1.bin");

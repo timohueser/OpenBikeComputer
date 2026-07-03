@@ -1,40 +1,37 @@
-//! **Zero-CPU hardware COM driver** for the LS021B7DD02 (issue #219) — the `VCOM`/`VB`/`VA` square
-//! wave generated entirely in silicon by a **TIMER → DPPI → GPIOTE** toggle chain, so the panel's
-//! anti-DC-bias COM keeps alternating with **no M33 wakes** and the core can WFI between real events.
+//! **Zero-CPU hardware COM driver** for the LS021B7DD02 — the `VCOM`/`VB`/`VA` square wave generated
+//! entirely in silicon by a **TIMER → DPPI → GPIOTE** toggle chain, so the panel's anti-DC-bias COM
+//! keeps alternating with **no M33 wakes** and the core can WFI between real events.
 //!
 //! ## Why this exists
 //!
 //! The Memory-in-Pixel cells must never see a DC bias, so `VCOM`/`VB`/`VA` have to alternate forever
-//! (~60 Hz, ~50 % duty) the whole time the panel is powered. The bring-up driver ([`crate::com`])
-//! does that from the M33 — a high-priority task toggling three GPIOs every half period — which wakes
-//! the core ~120×/s **regardless** of the event-driven loop (issue #219), capping the idle-power win.
-//! This driver moves the generation off-core: a free-running TIMER's compare event is published to a
-//! DPPI channel that three GPIOTE **toggle** tasks subscribe to, so on every half period all three
-//! lines flip simultaneously in hardware. The TIMER + DPPI + GPIOTE all run in System-ON sleep, so
-//! once it's armed the M33 never has to wake for COM again — the lever that lets a parked device WFI.
+//! (~60 Hz, ~50 % duty) the whole time the panel is powered. The M33 driver ([`crate::com`]) does that
+//! from a high-priority task toggling three GPIOs every half period — which wakes the core ~120×/s,
+//! capping the idle-power win. This driver moves the generation off-core: a free-running TIMER's
+//! compare event is published to a DPPI channel that three GPIOTE **toggle** tasks subscribe to, so on
+//! every half period all three lines flip simultaneously in hardware. The TIMER + DPPI + GPIOTE all run
+//! in System-ON sleep, so once armed the M33 never has to wake for COM again — the lever that lets a
+//! parked device WFI.
 //!
 //! ## Why GPIOTE works where PWM didn't
 //!
-//! L1 proved **PWM20 will not drive** the COM pins (the lines sat dead `Lo`); a plain `gpio::Output`
-//! on the same pins toggles cleanly, which is what [`crate::com`] relies on. GPIOTE drives the GPIO
-//! through the dedicated GPIOTE→GPIO task path (the same one a plain `Output` write uses), not the
-//! PWM output routing that failed — so a GPIOTE **toggle task** reaches the pin where PWM could not.
+//! **PWM20 will not drive** the COM pins (the lines sit dead `Lo`); GPIOTE drives the GPIO through the
+//! dedicated GPIOTE→GPIO task path (the same one a plain `Output` write uses), not the PWM output
+//! routing that failed — so a GPIOTE **toggle task** reaches the pin where PWM could not.
 //!
 //! ## Pins — must be GPIOTE-capable (P1/P3, or P0)
 //!
 //! In embassy-nrf 0.11 **only P0 (→GPIOTE30) and P1/P3 (→GPIOTE20) are GPIOTE-capable; P2 has no
-//! GPIOTE mapping** (on either the nRF54L15 or the nRF54LM20). The DK wires COM on **P2** (a bring-up
-//! artifact — COM is a slow wave that never needed P2's fast domain), so this driver **cannot** run
-//! there and the DK keeps [`crate::com`]. It is the path the **production board** turns on (the
-//! `com-hw` feature): route the three COM lines onto P1/P3 and this drives them for free. Keep all
-//! three on **one** GPIOTE instance (one power domain) so a single DPPI channel toggles them in
-//! lockstep — here GPIOTE20 (P1/P3) + TIMER21 + DPPIC20, all in the peripheral domain.
+//! GPIOTE mapping** (on either the nRF54L15 or the nRF54LM20). The DK wires COM on **P2**, so this
+//! driver **cannot** run there and the DK keeps [`crate::com`]. It is the path the **production board**
+//! turns on (the `com-hw` feature): route the three COM lines onto P1/P3 and this drives them for free.
+//! Keep all three on **one** GPIOTE instance (one power domain) so a single DPPI channel toggles them
+//! in lockstep — here GPIOTE20 (P1/P3) + TIMER21 + DPPIC20, all in the peripheral domain.
 //!
-//! ⚠️ **On-glass + logic-analyzer verification pending** (issue #219): this compiles for the target
-//! and the wiring is golden-ref'd against [`crate::com`]'s waveform, but it has not yet run on glass
-//! (no GPIOTE-COM board exists yet — the DK is P2-bound, the production board isn't fabbed). The COM
-//! phase (the in-phase `VCOM`/`VB` pair + inverse `VA`) must be confirmed with the LA before relying
-//! on it. The COM electrodes are a 56–77 nF load, so the three pins are driven **high-drive (H0H1)**.
+//! ⚠️ **On-glass + logic-analyzer verification pending**: this compiles for the target and the wiring
+//! is golden-ref'd against [`crate::com`]'s waveform, but it has not yet run on glass. The COM phase
+//! (the in-phase `VCOM`/`VB` pair + inverse `VA`) must be confirmed with the LA before relying on it.
+//! The COM electrodes are a 56–77 nF load, so the three pins are driven **high-drive (H0H1)**.
 
 use embassy_nrf::gpiote::OutputChannel;
 use embassy_nrf::peripherals::{PPI20_CH0, TIMER21};

@@ -1,26 +1,21 @@
 //! Pure register map + raw→µT scaling for the **magnetometer** of a TDK InvenSense **ICM-20948**
-//! 9-axis IMU — the host-testable, chip-specific half of the compass driver (issue: IMU/compass
-//! bring-up). The board crate owns the concrete I²C transactions; this module is the dependency-light
-//! `no_std` constants + byte assembly, the same split as [`crate::bmp581`].
+//! 9-axis IMU — the host-testable, chip-specific half of the compass driver (the board crate owns
+//! the concrete I²C transactions).
 //!
 //! ## Only the magnetometer, via I²C bypass
-//! The ICM-20948 bundles an accelerometer, gyroscope and an **AK09916** magnetometer. We use **only
-//! the AK09916's three axes** (the accel/gyro are left asleep — see [`crate::compass`] for why a flat
-//! mag-only heading is enough). The AK09916 normally hangs off the ICM's *auxiliary* I²C bus, but
-//! setting [`INT_PIN_CFG_BYPASS_EN`] connects that bus straight through to the host pins, so the
-//! AK09916 answers directly at [`AK_ADDR`] as if it were a standalone magnetometer. That's deliberate:
-//! the shipping board is expected to drop the ICM for a plain 3-axis compass, and in bypass the
-//! `AK_*` register code here **is** standalone-magnetometer code — swapping the chip is a new module
-//! like this one plus new transaction calls in the board crate, with [`crate::compass`] untouched.
+//! The ICM-20948 bundles an accel, gyro and an **AK09916** magnetometer; we use **only the AK09916's
+//! three axes** (accel/gyro left asleep — see [`crate::compass`] for why a flat mag-only heading is
+//! enough). The AK09916 normally hangs off the ICM's *auxiliary* I²C bus, but
+//! [`INT_PIN_CFG_BYPASS_EN`] connects that bus through to the host pins, so it answers directly at
+//! [`AK_ADDR`] as if it were standalone — so in bypass the `AK_*` code here **is** standalone-mag
+//! code, and swapping the chip leaves [`crate::compass`] untouched.
 //!
 //! ## Register banks
-//! The ICM's own registers are paged ([`REG_BANK_SEL`]); everything we touch lives in **bank 0**
-//! (the power-on default), so the driver only ever selects bank 0 defensively and never pages around.
-//! The AK09916's registers are *not* banked — it's a separate I²C device.
+//! The ICM's registers are paged ([`REG_BANK_SEL`]); everything we touch lives in **bank 0** (the
+//! power-on default), so the driver only selects bank 0 defensively and never pages around. The
+//! AK09916's registers are *not* banked — it's a separate I²C device.
 
-// ---------------------------------------------------------------------------------------------------
 // ICM-20948 host-side registers (bank 0). Only what bypass bring-up needs: identify, wake, bypass.
-// ---------------------------------------------------------------------------------------------------
 
 /// ICM-20948 I²C address with the `AD0` strap low; the breakout's default is [`ADDR_AD0_HIGH`]. The
 /// driver probes both.
@@ -50,10 +45,8 @@ pub const PWR_MGMT_1_WAKE: u8 = 0x01; // CLKSEL=auto, SLEEP=0
 pub const INT_PIN_CFG: u8 = 0x0F;
 pub const INT_PIN_CFG_BYPASS_EN: u8 = 0x02;
 
-// ---------------------------------------------------------------------------------------------------
-// AK09916 magnetometer (reachable directly at AK_ADDR once the ICM is in bypass). This block is, by
-// design, exactly what a standalone 3-axis magnetometer driver would carry.
-// ---------------------------------------------------------------------------------------------------
+// AK09916 magnetometer (reachable directly at AK_ADDR once the ICM is in bypass) — by design,
+// exactly what a standalone 3-axis magnetometer driver would carry.
 
 /// AK09916 I²C address (fixed).
 pub const AK_ADDR: u8 = 0x0C;

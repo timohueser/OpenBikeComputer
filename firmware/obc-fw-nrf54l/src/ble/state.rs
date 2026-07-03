@@ -19,7 +19,7 @@ use obc_ble::{Receiver, StatusMessage, TransferControl, TransferResult, Transfer
 pub(crate) enum LinkState {
     /// Stack still coming up (the boot instant, before the first advertise).
     Init,
-    /// Advertising, connectable — the powered-and-unconnected steady state (S0 §2).
+    /// Advertising, connectable — the powered-and-unconnected steady state.
     Advertising,
     /// A central holds the (single) link.
     Connected,
@@ -34,9 +34,9 @@ pub(crate) struct Status {
     pub peer: Option<[u8; 6]>,
     /// The live connection interval (ms), once the central negotiated one; 0 = not reported yet.
     pub conn_interval_ms: u32,
-    /// The negotiated ATT MTU (S0 §3.4 target 247); 0 = not exchanged yet.
+    /// The negotiated ATT MTU (target 247); 0 = not exchanged yet.
     pub att_mtu: u16,
-    /// True once the link runs on the 2M PHY (S0 §3.4 target).
+    /// True once the link runs on the 2M PHY.
     pub phy_2m: bool,
     /// Lifetime counters — the soak's at-a-glance health line.
     pub connects: u32,
@@ -44,12 +44,12 @@ pub(crate) struct Status {
     /// The HCI reason (status) code of the most recent disconnect; 0 = none yet. Logged in full
     /// (named) over RTT on each disconnect — this is the at-a-glance byte for the status screen.
     pub last_disconnect_reason: u8,
-    /// The 6-digit LESC passkey to show on glass while pairing (A8, S0 §8) — `Some` between
-    /// `PassKeyDisplay` and pairing completing/failing, `None` otherwise. When set, the status
-    /// screen becomes the big-font passkey card the rider types into the phone.
+    /// The 6-digit LESC passkey to show on glass while pairing — `Some` between `PassKeyDisplay` and
+    /// pairing completing/failing, `None` otherwise. When set, the status screen becomes the big-font
+    /// passkey card the rider types into the phone.
     pub passkey: Option<u32>,
-    /// True once the link is encrypted (a fresh pairing or a resumed bond, A8) — the status
-    /// screen's "secured" marker and the CoC's open-gate.
+    /// True once the link is encrypted (a fresh pairing or a resumed bond) — the status screen's
+    /// "secured" marker and the CoC's open-gate.
     pub secured: bool,
 }
 
@@ -93,7 +93,7 @@ pub async fn wait_status_change() {
     STATUS_EDGE.wait().await
 }
 
-/// The latest battery percent for the BAS characteristic (S0 §3.2) — written by the status plane
+/// The latest battery percent for the BAS characteristic — written by the status plane
 /// ([`publish_battery`], which owns the [`FuelGauge`]) and read by `battery_task` to seed + notify.
 /// Seeded to the `StubFuelGauge` default so a read before the first poll is still plausible.
 static BATTERY: AtomicU8 = AtomicU8::new(75);
@@ -108,12 +108,12 @@ pub(crate) fn battery() -> u8 {
     BATTERY.load(Ordering::Relaxed)
 }
 
-// ============================ Data-plane arming (A5/A6, S0 §4.2 / §5) ============================
+// ============================ Data-plane arming ============================
 
-/// A transfer the control plane validated and handed to the data plane: the echo loopback (A5),
-/// a route upload with its ready fresh [`Receiver`] (the store opened the temp), or a download
-/// (the data plane opens the source itself; opening may be slow — a CRC pre-pass — and belongs
-/// off the GATT reply path).
+/// A transfer the control plane validated and handed to the data plane: the echo loopback, a route
+/// upload with its ready fresh [`Receiver`] (the store opened the temp), or a download (the data plane
+/// opens the source itself; opening may be slow — a CRC pre-pass — and belongs off the GATT reply
+/// path).
 #[derive(Clone, Copy)]
 pub(crate) enum Armed {
     Echo(TransferControl),
@@ -121,38 +121,38 @@ pub(crate) enum Armed {
     Download(TransferControl),
 }
 
-/// The control plane → data plane hand-off: `serve_connection` decodes a `transfer_control`
-/// write, validates it against the `ObjectStore`, and signals the [`Armed`] transfer here;
-/// `serve_coc` wakes on it and drives the CoC. A `Signal` (latest-value) suffices because S0
-/// allows exactly one transfer in flight at a time (§4.1) — [`TRANSFER_ACTIVE`] turns a second
-/// open into a typed `busy` instead of a silent overwrite.
+/// The control plane → data plane hand-off: `serve_connection` decodes a `transfer_control` write,
+/// validates it against the `ObjectStore`, and signals the [`Armed`] transfer here; `serve_coc` wakes
+/// on it and drives the CoC. A `Signal` (latest-value) suffices because exactly one transfer is in
+/// flight at a time — [`TRANSFER_ACTIVE`] turns a second open into a typed `busy` instead of a silent
+/// overwrite.
 pub(crate) static TRANSFER_ARM: Signal<CriticalSectionRawMutex, Armed> = Signal::new();
 
-/// One-transfer-at-a-time (S0 §4.1): set by the control plane when it arms, cleared by the data
-/// plane when the transfer concludes (answered, aborted, or the channel dropped). While set,
-/// another `transferControl` open is answered `busy`.
+/// One-transfer-at-a-time: set by the control plane when it arms, cleared by the data plane when the
+/// transfer concludes (answered, aborted, or the channel dropped). While set, another
+/// `transferControl` open is answered `busy`.
 pub(crate) static TRANSFER_ACTIVE: AtomicBool = AtomicBool::new(false);
 
-/// An abort (S0 §4.2 op 3) aimed at the in-flight transfer: the control plane signals, the data
-/// plane consumes it at its next step (between SDUs / chunks), discards, and answers `aborted`
-/// with the durable offset. Latched — an abort that races the transfer's own completion is
-/// drained by `serve_coc` after each transfer, so it can't leak into the next one.
+/// An abort aimed at the in-flight transfer: the control plane signals, the data plane consumes it at
+/// its next step (between SDUs / chunks), discards, and answers `aborted` with the durable offset.
+/// Latched — an abort that races the transfer's own completion is drained by `serve_coc` after each
+/// transfer, so it can't leak into the next one.
 pub(crate) static TRANSFER_ABORT: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
-// ============================ S0 status-message vocabulary (§4.3) ============================
+// ============================ Status-message vocabulary ============================
 
 /// A `status` notification's bytes, ready to hand to `server.notify` (`&buf[..len]`). The board keeps
-/// one small stack buffer per message rather than a heapless alloc — every S0 status message fits.
+/// one small stack buffer per message rather than a heapless alloc — every status message fits.
 pub(crate) type StatusBytes = ([u8; StatusMessage::MAX_ENCODED_LEN], usize);
 
-/// A `transferResult` status message (S0 §4.3 `msg=1`) with a zero `committed_offset` — the shape
-/// for every result the control plane answers directly (nothing durable is being reported, §4.2).
+/// A `transferResult` status message with a zero `committed_offset` — the shape for every result the
+/// control plane answers directly (nothing durable is being reported).
 pub(crate) fn transfer_result(object_id: u16, status: TransferStatus) -> StatusBytes {
     transfer_result_at(object_id, status, 0)
 }
 
 /// A `transferResult` carrying a real durable byte count — a committed transfer reports its
-/// `total_len` (S0 §4.3).
+/// `total_len`.
 pub(crate) fn transfer_result_at(object_id: u16, status: TransferStatus, committed_offset: u32) -> StatusBytes {
     StatusMessage::TransferResult(TransferResult::new(object_id, status, committed_offset)).encode()
 }

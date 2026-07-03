@@ -8,18 +8,16 @@
 //!
 //! Modules:
 //! - [`byte_io`] — the [`ByteSource`]/[`ByteSink`] seam (+ [`SliceSource`]) the map and route
-//!   formats both stream through, so neither needs the whole file resident (issue #37).
+//!   formats both stream through, so neither needs the whole file resident.
 //! - [`reader`] — header / style / LOD-table parsing and per-LOD query + decode.
 //! - [`color`] — RGB565 → display color conversions.
 //! - [`codec`] — little-endian field readers/writers shared with the route format.
-//! - [`format`] — the OBCM flag/sentinel bit constants, shared by the reader and the packer
-//!   so the layout is defined once (issue #12).
+//! - [`format`] — the OBCM flag/sentinel bit constants, shared by the reader and the packer.
 //!
 //! All coordinates are integer microdegrees (1e-6 degrees), as stored in the
 //! file. Projection to screen space is the renderer's job.
 
-// `no_std` for every real target; the host test harness needs `std`, so allow it under `cfg(test)`
-// (the unit tests in `reader` exercise the chunk cache against a flaky `ByteSource`, issue #64).
+// `no_std` for every real target; the host test harness needs `std`, so allow it under `cfg(test)`.
 #![cfg_attr(not(test), no_std)]
 
 pub mod byte_io;
@@ -40,11 +38,8 @@ pub use reader::{
 };
 
 /// Meters of ground per degree of latitude (and of longitude at the equator) — the
-/// local-equirectangular Earth model. The single source of truth for every crate that
-/// turns microdegree coordinates into ground distance (the route converter and its
-/// elevation profile, the packer's simplify tolerance) or into screen scale (the
-/// renderer's zoom ↔ meters-per-pixel): they all derive from this one number, so a
-/// refinement to the Earth model lands everywhere at once.
+/// local-equirectangular Earth model. Every crate that turns microdegrees into ground distance or
+/// screen scale derives from this one number, so an Earth-model refinement lands everywhere at once.
 pub const M_PER_DEG: f64 = 111_320.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

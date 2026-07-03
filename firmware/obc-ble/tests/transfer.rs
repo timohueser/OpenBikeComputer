@@ -1,8 +1,6 @@
-//! The transfer state machine, exercised end-to-end over an in-memory byte stream — the
-//! host-verified half of the A5 data plane, before any of it touches the radio. Covers the happy
+//! The transfer state machine, exercised end-to-end over an in-memory byte stream. Covers the happy
 //! path, non-zero-offset rejection in both directions (transfers restart, not resume),
-//! CRC-corruption rejection, arbitrary CoC segmentation, over-run, and the echo loopback the
-//! board wires on glass.
+//! CRC-corruption rejection, arbitrary CoC segmentation, over-run, and the echo loopback.
 
 use obc_ble::descriptor::{ObjectType, Op, TransferControl, TransferStatus};
 use obc_ble::transfer::TransferError;
@@ -44,7 +42,7 @@ fn upload_happy_path_commits() {
 
 #[test]
 fn upload_accepts_any_segmentation() {
-    // The CoC delivers arbitrary byte runs (spec §5): every chunk split must reach the same commit.
+    // The CoC delivers arbitrary byte runs: every chunk split must reach the same commit.
     let object = payload(257);
     for chunk in [1usize, 2, 7, 64, 244, 256, 300] {
         let mut rx = Receiver::new(&upload_desc(&object)).unwrap();
@@ -57,8 +55,8 @@ fn upload_accepts_any_segmentation() {
 
 #[test]
 fn upload_rejects_a_nonzero_offset() {
-    // Uploads are not resumable (spec §1 principle 4): a receiver only ever starts fresh, so any
-    // non-zero offset is rejected (the board answers `error` and the app restarts from 0).
+    // Uploads are not resumable: a receiver only ever starts fresh, so any non-zero offset is
+    // rejected and the app restarts from 0.
     let object = payload(200);
     let resume = TransferControl { offset: 100, ..upload_desc(&object) };
     assert_eq!(Receiver::new(&resume).unwrap_err(), TransferError::NonZeroOffset);
@@ -79,8 +77,8 @@ fn crc_corruption_is_rejected_typed() {
 
 #[test]
 fn corrupt_payload_same_len_is_rejected() {
-    // The link delivered the right length but a wrong byte — the whole-object CRC is exactly what
-    // catches this (the on-air CRC can't; spec §6).
+    // The link delivered the right length but a wrong byte — the whole-object CRC catches this where
+    // the on-air CRC can't.
     let object = payload(128);
     let desc = upload_desc(&object);
     let mut corrupt = object.clone();
@@ -124,8 +122,8 @@ fn receiver_rejects_wrong_op_and_bad_offset() {
 
 #[test]
 fn echo_loopback_round_trips() {
-    // The A5 loopback: the device receives an echo object and streams back exactly what it received,
-    // CRC-verified — modeled here as Receiver.push → echo the consumed bytes → compare.
+    // The loopback: the device receives an echo object and streams back exactly what it received,
+    // CRC-verified — modeled as Receiver.push → echo the consumed bytes → compare.
     let object = payload(1024);
     let mut rx = Receiver::new(&upload_desc(&object)).unwrap();
     let mut echoed = Vec::with_capacity(object.len());
@@ -177,8 +175,8 @@ fn download_announces_and_streams() {
 
 #[test]
 fn download_rejects_wrong_op_and_nonzero_offset() {
-    // Downloads restart whole, exactly like uploads (spec §1 principle 4): a wrong op or a non-zero
-    // offset is rejected typed, and an interrupted download is simply re-requested from 0.
+    // Downloads restart whole, exactly like uploads: a wrong op or a non-zero offset is rejected
+    // typed, and an interrupted download is simply re-requested from 0.
     let upload = TransferControl { op: Op::Upload, ..download_request(ObjectType::Route, 0) };
     assert_eq!(StreamSender::new(&upload, 100, 0).unwrap_err(), TransferError::WrongOp);
     let resume = download_request(ObjectType::Route, 300);

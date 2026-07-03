@@ -2,24 +2,20 @@
 
 /// Which display planes changed this frame and so must be repainted.
 ///
-/// The display composites two planes independently (issue #46): the expensive **map**
-/// (the base-map render, tens of ms) and the cheap transient **overlay** chrome (the hold
-/// bulge / confirm ring, a couple of ms). Tracking the two separately is what lets an
-/// animating ring repaint over an unchanged map without re-rendering the map.
+/// The display composites two planes independently: the expensive **map** (base-map render, tens
+/// of ms) and the cheap transient **overlay** chrome (hold bulge / confirm ring, a couple of ms).
+/// Tracking them separately lets an animating ring repaint over an unchanged map without
+/// re-rendering the map.
 ///
-/// [`App`](crate::App) accumulates this as state mutates, and the host drains it once per
-/// frame with [`App::take_dirty`](crate::App::take_dirty) — rendering
-/// [`render_map`](crate::App::render_map) only when [`map`](Dirty::map) and
-/// [`render_overlay`](crate::App::render_overlay) only when [`overlay`](Dirty::overlay).
-/// A static screen with no input, no fresh fix and no pending animation drains
-/// [`Dirty::CLEAN`] and renders nothing — the render-on-demand model issue #47 calls for,
-/// replacing the blind 1 s full-map heartbeat (a 24–51 ms map render purely to keep
-/// time-based screens live, wasteful on a MIP / battery target).
+/// [`App`](crate::App) accumulates this as state mutates; the host drains it once per frame with
+/// [`App::take_dirty`](crate::App::take_dirty), rendering each plane only when its flag is set. A
+/// static screen with no input, no fresh fix and no pending animation drains [`Dirty::CLEAN`] and
+/// renders nothing (the render-on-demand model, replacing a blind full-map heartbeat wasteful on a
+/// MIP / battery target).
 ///
-/// The guiding rule is **over-redraw is safe, under-redraw is a bug**: a spuriously set
-/// flag merely costs one extra frame, whereas a missed one leaves stale pixels on the
-/// panel. So every state mutation that *might* affect a plane sets it — the flags are
-/// deliberately conservative, not minimal.
+/// Guiding rule: **over-redraw is safe, under-redraw is a bug** — a spurious flag costs one extra
+/// frame, a missed one leaves stale pixels. So every mutation that *might* affect a plane sets it;
+/// the flags are deliberately conservative, not minimal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Dirty {
     /// The map plane (Layer 1) must be re-rendered: the camera moved, the zoom or pan

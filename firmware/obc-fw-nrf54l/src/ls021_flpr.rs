@@ -1,9 +1,8 @@
 //! **The LS021B7DD02 FLPR display backend, driving the real app's map/ride render.**
 //!
-//! Lifted out of the (since-retired) `ls021_flpr_bringup` bench bin (epic #149, F5/PR #162) so
-//! `main.rs` can run the real [`obc_app::App`](obc_app) on the reflective LS021 panel through the
-//! board-agnostic [`DisplayDriver`](crate::display::DisplayDriver) seam (issue #174) the ST7789 also
-//! implements — no panel-specific code in the map plane.
+//! `main.rs` runs the real [`obc_app::App`](obc_app) on the reflective LS021 panel through the
+//! board-agnostic [`DisplayDriver`](crate::display::DisplayDriver) seam the ST7789 also implements —
+//! no panel-specific code in the map plane.
 //!
 //! What lives here is everything that talks to the **FLPR** (the nRF54L15's VPR RISC-V coprocessor):
 //!   - the cross-core [`Control`] block + ping-pong [`BufDesc`]s + the dirty-row span list (the
@@ -14,19 +13,19 @@
 //!   - [`Ls021Flpr`] — the resident-framebuffer backend whose pushes pack the dirty rows of the
 //!     RGB222 plane through the two ping-pong buffers and busy-wait one masked `CMD_RUN_FRAME`
 //!     ([`push_spans`](Ls021Flpr::push_spans) = only the listed rows, the FLPR fast-forwarding the
-//!     gate over the rest — issue #163; [`push_frame`](Ls021Flpr::push_frame) = the whole frame, the
-//!     degenerate one-span case). [`present_within`](Ls021Flpr::present_within) is the **self-diffing
-//!     present** (issue #201): it derives those spans automatically from a per-row hash of the
-//!     last-pushed frame, so an idle redraw pushes only the rows that actually changed.
+//!     gate over the rest; [`push_frame`](Ls021Flpr::push_frame) = the whole frame, the degenerate
+//!     one-span case). [`present_within`](Ls021Flpr::present_within) is the **self-diffing present**:
+//!     it derives those spans automatically from a per-row hash of the last-pushed frame, so an idle
+//!     redraw pushes only the rows that actually changed.
 //!
-//! The `DisplayDriver` adapter (present / present_overlay) lives in `display::ls021_flpr` (issue
-//! #174); this root module owns the FLPR transport it calls into.
+//! The `DisplayDriver` adapter (present / present_overlay) lives in `display::ls021_flpr`; this root
+//! module owns the FLPR transport it calls into.
 //!
-//! **COM stays on the M33** (`com::com_task`) and **is not here** — if the FLPR ever faults, COM
-//! must keep alternating so the panel never takes a DC bias (the epic's safety rule). The caller
-//! owns COM + the high-priority `InterruptExecutor` it free-runs on.
+//! **COM stays on the M33** (`com::com_task`) and **is not here** — if the FLPR ever faults, COM must
+//! keep alternating so the panel never takes a DC bias. The caller owns COM + the high-priority
+//! `InterruptExecutor` it free-runs on.
 //!
-//! ## Whole-frame render, masked push (the design choice)
+//! ## Whole-frame render, masked push
 //!
 //! The app still **renders** the whole frame into the resident RGB222 plane each redraw — the screens
 //! are immediate-mode, they `clear()` and redraw (the map path writes device-64
@@ -34,30 +33,29 @@
 //! self-diffing **present** then changes is the *push*: a single `CMD_RUN_FRAME` masked to the changed
 //! rows, the FLPR fast-forwarding its gate scan over the unchanged ones and early-stopping after the
 //! last. Render CPU is unchanged (a full draw), but the push — the dominant ~97 ms cost — scales to the
-//! changed-row span. The ping-pong (M33 packs the next dirty row while the FLPR scans the current) is
-//! exactly as F4 proved it; a full redraw is just the degenerate "every row changed" case.
+//! changed-row span. The M33 packs the next dirty row while the FLPR scans the current (the ping-pong);
+//! a full redraw is just the degenerate "every row changed" case.
 //!
 //! ## Blocking push
 //!
 //! The push is synchronous: [`push_frame`](Ls021Flpr::push_frame) / [`push_spans`](Ls021Flpr::push_spans)
 //! **busy-poll** rather than awaiting — they spin on each ping-pong buffer's `consumed == ready` (the
-//! M33 is a dedicated packer here) and on the FLPR's `flpr_seq` ack (no EGU20 IRQ needed — the F4 async
-//! return doorbell). COM free-runs on its own high-priority `InterruptExecutor`, so blocking the
-//! thread-mode M33 for a frame is benign (the same shape as the ST7789 path blocking on its SPI-DMA
-//! write). The blob still pokes `EGU20` after each frame; with its IRQ unarmed here that write is a
-//! harmless no-op.
+//! M33 is a dedicated packer here) and on the FLPR's `flpr_seq` ack (no EGU20 IRQ needed). COM
+//! free-runs on its own high-priority `InterruptExecutor`, so blocking the thread-mode M33 for a frame
+//! is benign (the same shape as the ST7789 path blocking on its SPI-DMA write). The blob still pokes
+//! `EGU20` after each frame; with its IRQ unarmed here that write is a harmless no-op.
 
 use core::ptr::{addr_of, addr_of_mut};
 
 use defmt::{debug, error, info};
 use embassy_time::{Instant, Timer};
-// The host-tested RGB222 → LS021-wire pack (#154) with its sub-line/row word counts.
+// The host-tested RGB222 → LS021-wire pack with its sub-line/row word counts.
 use obc_platform::ls021_wire::{BCK_PER_SUBLINE, ROW_WORDS, WIDTH};
-// `composite_overlay_window` is the shared overlay-composite core (#174): fill a window scratch from
-// the clean framebuffer (device-64 → RGB565) + draw the hold bulge over it through a `Band` — the same
+// `composite_overlay_window` is the shared overlay-composite core: fill a window scratch from the
+// clean framebuffer (device-64 → RGB565) + draw the hold bulge over it through a `Band` — the same
 // step the ST7789 backend runs, before this backend re-quantises it back to the wire. `RowDiff` is the
-// self-diffing present store (#200): a per-row hash of the last-pushed frame so a present pushes only
-// the rows that actually changed (issue #201).
+// self-diffing present store: a per-row hash of the last-pushed frame so a present pushes only the rows
+// that actually changed.
 use obc_platform::{clip_span, composite_overlay_window, ls021_pack_row, Band, RowDiff};
 // The host-tested RGB565 → device-64 quantiser — the same one the map style table is tuned to, so the
 // re-quantised overlay window lands on the panel's RGB222 gamut exactly as the ST7789 stand-in shows it.
@@ -70,10 +68,8 @@ use embedded_graphics::primitives::Rectangle;
 static FLPR_BLOB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/flpr.bin"));
 
 // ── FLPR memory map (must match src/flpr/flpr.ld + the carved memory.x in build.rs) ──
-// The production carve-out is **12 KB** (issue #165): the blob is ~660 B + a shallow stack, so the
-// 28 KB F0 bring-up headroom shrank to an 8 KB `FLPR_RAM`, handing ~20 KB back to the M33 (it now
-// links 244 KB instead of 224 KB). `SHARED` (the 4 KB handshake page) is unchanged, so the control
-// block + ping-pong buffer addresses below did not move.
+// The production carve-out is **12 KB**: the blob is ~660 B + a shallow stack (an 8 KB `FLPR_RAM`), so
+// the M33 links 244 KB. `SHARED` (the 4 KB handshake page) holds the control block + ping-pong buffers.
 /// FLPR execution base: the M33 copies the blob here and points `INITPC` at it (top of SRAM − 12 KB).
 const FLPR_RAM_BASE: usize = 0x2003_D000;
 /// The **two ping-pong row buffers** the FLPR drains, parked in the SHARED page (which both cores
@@ -94,13 +90,13 @@ struct Control {
     m33_seq: u32,                  // 0x04 M33: command sequence counter (the per-frame command doorbell)
     cmd: u32,                      // 0x08 M33: command word (a CMD_* code)
     flpr_seq: u32,                 // 0x0C FLPR: echoes the m33_seq it serviced (the ack the M33 polls)
-    status: u32,                   // 0x10 FLPR: ack/result (#163: dirty rows scanned; boot: FLPR_ALIVE)
+    status: u32,                   // 0x10 FLPR: ack/result (dirty rows scanned; boot: FLPR_ALIVE)
     frame_count: u32,              // 0x14 FLPR: frames drained (bumped per CMD_RUN_FRAME)
-    buf: [BufDesc; 2],             // 0x18, 0x28 ping-pong row-buffer descriptors (toggled per DIRTY row, #163)
+    buf: [BufDesc; 2],             // 0x18, 0x28 ping-pong row-buffer descriptors (toggled per DIRTY row)
     n_spans: u32,                  // 0x38 M33: #dirty-row spans (1 = a full frame `(0, FB_H)`)
     spans: [u32; MAX_DIRTY_SPANS], // 0x3C M33: packed `(start_row << 16) | count`, ascending + disjoint
 }
-/// Dirty-row span-list cap (issue #163) — **must equal `MAX_DIRTY_SPANS` in the C `flpr_pingpong.c`**.
+/// Dirty-row span-list cap — **must equal `MAX_DIRTY_SPANS` in the C `flpr_pingpong.c`**.
 /// 16 disjoint regions is far more than any UI produces (a full frame is one span, the bulge is one).
 const MAX_DIRTY_SPANS: usize = 16;
 /// One ping-pong row-buffer descriptor. `ready`/`consumed` are the per-buffer handshake counters:
@@ -141,7 +137,7 @@ pub const FB_W: usize = WIDTH;
 pub const FB_H: usize = ROWS_PER_FRAME as usize;
 
 /// Max overlay region [`push_overlay`](Ls021Flpr::push_overlay)'s composite scratch holds — the hold
-/// bulge's right-edge window (16 cols × 192 rows, issue #126/#163). A region must fit this (asserted);
+/// bulge's right-edge window (16 cols × 192 rows). A region must fit this (asserted);
 /// the `[u16; COLS×ROWS]` RGB565 scratch is the only extra RAM the FLPR overlay path needs (~6 KB,
 /// transient on the overlay-only frame's shallow stack — never live during a deep map render).
 const MAX_OVERLAY_COLS: usize = 16;
@@ -279,7 +275,7 @@ fn spin_until(cond: impl Fn() -> bool) -> bool {
 }
 
 /// Dump the full cross-core handshake state when a frame stalls — the read-back that tells *how* the
-/// FLPR died (issue #165 freeze debug). `m33_seq` ought to equal the `seq` we just rang; `flpr_seq`
+/// FLPR died. `m33_seq` ought to equal the `seq` we just rang; `flpr_seq`
 /// is where the FLPR's poll loop last got to (≪ `seq` ⇒ it never saw our doorbell); `magic` should
 /// still be `LAYOUT_MAGIC` (a different value = the SHARED page was clobbered); `frame_count` is how
 /// many frames the FLPR has *ever* run (frozen ⇒ it stopped servicing). `CPURUN.EN` reads whether
@@ -307,18 +303,18 @@ fn dump_flpr_state(seq: u32) {
 /// the whole frame into it (the map path writes it directly as device-64 via [`fb_mut`](Self::fb_mut)),
 /// and [`push_frame`](Self::push_frame) / [`push_spans`](Self::push_spans) drive it to glass over the
 /// ping-pong path. The board-agnostic [`DisplayDriver`](crate::display::DisplayDriver) impl
-/// (present / present_overlay) lives in `display::ls021_flpr` (issue #174).
+/// (present / present_overlay) lives in `display::ls021_flpr`.
 pub struct Ls021Flpr<'b> {
     /// Resident RGB222 (device-64) frame plane, `FB_W × FB_H`. `fb_mut` writes it,
     /// `push_frame`/`push_spans` pack + push it.
     fb: &'b mut [u8],
-    /// The **self-diffing present** store (issue #201/#200): a per-row hash of the last-pushed
-    /// framebuffer, so [`present_within`](Self::present_within) re-hashes the frame and pushes only the
-    /// rows that actually changed — a Home clock tick repaints its clock band (a few ms) instead of all
-    /// 320 rows (~97 ms). Borrowed from a `.bss` static (`main`), parallel to `fb` (it must outlive the
-    /// pushes); `FB_H` rows = 1.28 KB. The hashes track the clean `fb`, never the composited bulge (the
-    /// bulge rides its own [`push_overlay`](Self::push_overlay) plane), so the store stays the source of
-    /// truth for what the map present last put on glass.
+    /// The **self-diffing present** store: a per-row hash of the last-pushed framebuffer, so
+    /// [`present_within`](Self::present_within) re-hashes the frame and pushes only the rows that
+    /// actually changed — a Home clock tick repaints its clock band (a few ms) instead of all 320 rows
+    /// (~97 ms). Borrowed from a `.bss` static (`main`), parallel to `fb` (it must outlive the pushes);
+    /// `FB_H` rows = 1.28 KB. The hashes track the clean `fb`, never the composited bulge (the bulge
+    /// rides its own [`push_overlay`](Self::push_overlay) plane), so the store stays the source of truth
+    /// for what the map present last put on glass.
     diff: &'b mut RowDiff<FB_H>,
     /// Per-frame command sequence — bumped each push, echoed back by the FLPR as the ack.
     seq: u32,
@@ -329,8 +325,8 @@ impl<'b> Ls021Flpr<'b> {
     /// to the device-64 gamut itself ([`FbDevice64`](obc_platform::FbDevice64)) and renders straight
     /// into `fb`, then [`present_within`](Self::present_within) diffs + drives it. The FLPR packs `fb`
     /// straight to the wire, so there is no RGB565 band scratch (the ~7.5 KB the ST7789 band push needs
-    /// is freed here, issue #165). `fb` must be `FB_W × FB_H` device-64 bytes; `diff` is the
-    /// `FB_H`-row [`RowDiff`] store the self-diffing present compares against (issue #201).
+    /// is freed here). `fb` must be `FB_W × FB_H` device-64 bytes; `diff` is the `FB_H`-row [`RowDiff`]
+    /// store the self-diffing present compares against.
     pub fn new_fb(fb: &'b mut [u8], diff: &'b mut RowDiff<FB_H>) -> Self {
         Self { fb, diff, seq: 0 }
     }
@@ -343,13 +339,13 @@ impl<'b> Ls021Flpr<'b> {
     }
 
     /// Drive a **span-masked** frame to glass through the ping-pong path and busy-wait the ack — the
-    /// engine behind [`push_spans`](Self::push_spans) and [`push_frame`](Self::push_frame) (issue
-    /// #163). Publishes the span list, pre-packs the first two **dirty** rows into `buf[0]`/`buf[1]`,
-    /// rings the FLPR, then packs each remaining dirty row into whichever buffer the FLPR just freed —
-    /// the M33 stays one buffer ahead while the FLPR fast-forwards the clean rows and scans the dirty
-    /// ones. `publish(fb, buf_i, abs_row)` packs absolute `abs_row` into `buf[buf_i]` + bumps `ready`
-    /// (straight from `fb`, or composited for the bulge — issue #163). The ping-pong index toggles
-    /// per **dirty** row (ascending across spans), matching the FLPR's `drain_row(dirty & 1)`.
+    /// engine behind [`push_spans`](Self::push_spans) and [`push_frame`](Self::push_frame). Publishes
+    /// the span list, pre-packs the first two **dirty** rows into `buf[0]`/`buf[1]`, rings the FLPR,
+    /// then packs each remaining dirty row into whichever buffer the FLPR just freed — the M33 stays one
+    /// buffer ahead while the FLPR fast-forwards the clean rows and scans the dirty ones.
+    /// `publish(fb, buf_i, abs_row)` packs absolute `abs_row` into `buf[buf_i]` + bumps `ready`
+    /// (straight from `fb`, or composited for the bulge). The ping-pong index toggles per **dirty** row
+    /// (ascending across spans), matching the FLPR's `drain_row(dirty & 1)`.
     /// Returns `true` if the ack checks out (`status == #dirty rows && flpr_seq == seq`). Logs the
     /// **pack-vs-frame overlap** + frame time (the speed-tune metric).
     fn run_masked(&mut self, spans: &[(u16, u16)], mut publish: impl FnMut(&[u8], usize, usize)) -> bool {
@@ -427,8 +423,8 @@ impl<'b> Ls021Flpr<'b> {
         true
     }
 
-    /// Drive **only the rows in `spans`** to glass (issue #163), packing each straight from the clean
-    /// framebuffer. The FLPR fast-forwards the gate over the gaps and early-stops after the last dirty
+    /// Drive **only the rows in `spans`** to glass, packing each straight from the clean framebuffer.
+    /// The FLPR fast-forwards the gate over the gaps and early-stops after the last dirty
     /// row, so a vertically-compact region costs a fraction of a full frame. Spans are
     /// `(start_row, count)`, ascending + disjoint, ≤ [`MAX_DIRTY_SPANS`]. A full frame is
     /// `&[(0, FB_H)]` (= [`push_frame`](Self::push_frame)).
@@ -437,8 +433,8 @@ impl<'b> Ls021Flpr<'b> {
     }
 
     /// Drive the **whole** resident framebuffer to glass — the degenerate one-span frame
-    /// `&[(0, FB_H)]` (init-black + a forced full repaint), byte-identical to the F5 full-frame scan.
-    /// Does **not** touch the [`RowDiff`] store (it's a raw push, not a diff), so the next
+    /// `&[(0, FB_H)]` (init-black + a forced full repaint). Does **not** touch the [`RowDiff`] store
+    /// (it's a raw push, not a diff), so the next
     /// [`present_within`](Self::present_within) still re-seeds the store from a clean comparison.
     pub fn push_frame(&mut self) -> bool {
         self.push_spans(&[(0, FB_H as u16)])
@@ -455,10 +451,9 @@ impl<'b> Ls021Flpr<'b> {
         self.diff.reset();
     }
 
-    /// The **self-diffing present** (issue #201): re-hash every framebuffer row against the
-    /// [`RowDiff`] store and push only the rows that actually changed, optionally clipping the live
-    /// hold bulge's rows out (`exclude`) so [`push_overlay`](Self::push_overlay) owns them (the
-    /// `map_rows_around` discipline, now inside the present path — issue #163). The first call after
+    /// The **self-diffing present**: re-hash every framebuffer row against the [`RowDiff`] store and
+    /// push only the rows that actually changed, optionally clipping the live hold bulge's rows out
+    /// (`exclude`) so [`push_overlay`](Self::push_overlay) owns them. The first call after
     /// boot / a [`RowDiff::reset`](obc_platform::RowDiff::reset) pushes the whole frame and seeds the
     /// store; thereafter an idle Home clock tick repaints just its clock band.
     ///
@@ -484,8 +479,8 @@ impl<'b> Ls021Flpr<'b> {
         });
         if overflow {
             // Pathological fragmentation (> MAX_DIRTY_SPANS disjoint changed regions — a UI never
-            // produces this): fall back to the whole frame minus the bulge (the `map_rows_around`
-            // ceiling) rather than silently dropping spans and stranding rows.
+            // produces this): fall back to the whole frame minus the bulge rather than silently
+            // dropping spans and stranding rows.
             spans.clear();
             clip_span(0, FB_H as u16, ex, &mut |s, c| {
                 let _ = spans.push((s, c));
@@ -498,8 +493,8 @@ impl<'b> Ls021Flpr<'b> {
     }
 
     /// Re-present **only the rows of an overlay region** with `draw_overlay` composited over the clean
-    /// framebuffer backdrop (issue #163) — the few-ms partial push the hold bulge rides over a static
-    /// map, keeping `fb` the clean map (never mutated). The LS021 is row-addressed (touching a row
+    /// framebuffer backdrop — the few-ms partial push the hold bulge rides over a static map, keeping
+    /// `fb` the clean map (never mutated). The LS021 is row-addressed (touching a row
     /// re-latches all 240 columns), so this rewrites the full-width rows `[y0, y0+rows)` while only the
     /// `[x0, x0+w)` columns carry the overlay; the FLPR fast-forwards the gate to `y0` and early-stops
     /// after `y0+rows`, so the cost scales to the region's row span, not the whole frame.
@@ -524,8 +519,8 @@ impl<'b> Ls021Flpr<'b> {
         );
 
         // 1. Composite the overlay ONCE into a window scratch over the clean `fb` backdrop, via the
-        //    shared `composite_overlay_window` (#174): it fills the window from `fb` (device-64 → RGB565)
-        //    and lets `draw_overlay` paint the bulge over it through a frame-absolute `Band`. `win` then
+        //    shared `composite_overlay_window`: it fills the window from `fb` (device-64 → RGB565) and
+        //    lets `draw_overlay` paint the bulge over it through a frame-absolute `Band`. `win` then
         //    holds the composited region; `fb` is untouched. This is the exact step the ST7789 backend
         //    runs — only the re-quantising wire-pack below is LS021-specific.
         let mut win = [0u16; MAX_OVERLAY_COLS * MAX_OVERLAY_ROWS];

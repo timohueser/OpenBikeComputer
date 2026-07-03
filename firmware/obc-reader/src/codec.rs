@@ -1,14 +1,12 @@
-//! Little-endian field codecs for the binary map/route formats.
+//! Little-endian field codecs for the binary map (`OBCM`) and route (`OBCR`) formats, both
+//! fixed-offset little-endian records.
 //!
-//! Both on-disk formats — `OBCM` (map) here and `OBCR` (route) in `obc-route` — are
-//! fixed-offset little-endian records. These read/write one field at a time over an
-//! already-bounds-checked slice: the readers validate a record's whole length up front,
-//! so these helpers stay branch-free and simply index, panicking only on a truly
+//! These read/write one field over an already-bounds-checked slice: callers validate a record's
+//! whole length up front, so these stay branch-free and simply index, panicking only on a truly
 //! out-of-range offset (a format/bounds bug, not untrusted input).
 //!
-//! One copy here so the map reader ([`crate::reader`]), the route reader, and the route
-//! writer can't disagree on byte order or field width — the kind of skew that corrupts a
-//! file silently. `obc-route` reaches these through its dependency on `obc-reader`.
+//! One copy so the map reader, route reader, and route writer can't disagree on byte order or field
+//! width — the kind of skew that corrupts a file silently.
 
 /// Read a little-endian `i16` at byte offset `o`.
 #[inline]

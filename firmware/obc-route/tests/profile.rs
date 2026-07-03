@@ -186,13 +186,9 @@ fn window_zoom_narrows_span_and_chooses_finer_levels() {
     assert_eq!(p.window(0.5, 8.0, 216).level, 0);
 }
 
-/// A route with **no `<ele>` anywhere** — a planner GPX export. The converter stores a flat
-/// 0 m elevation and a 0..0 header range, so the profile's `(min, max)` is `(0, 0)` and the
-/// band must still be gap-free (the `fill_gaps` header fallback in `profile.rs`, ~line 341 —
-/// the only path that uses the fallback). Item 10 calls this out: every other fixture has
-/// `<ele>` on every point, so the no-elevation fallback was untested though planner GPX
-/// frequently lacks elevation. Build the GPX by hand here (the `convert` fixtures all carry
-/// `<ele>`).
+/// A route with **no `<ele>` anywhere** (planner GPX). The converter stores flat 0 m elevation
+/// and a 0..0 header range, so the profile's `(min, max)` is `(0, 0)` and the band must still be
+/// gap-free via `fill_gaps`'s header fallback — the only path that exercises the fallback.
 const NO_ELE: &str = r#"<?xml version="1.0"?>
 <gpx><trk><trkseg>
   <trkpt lat="48.0000" lon="7.8000"/>

@@ -1,15 +1,11 @@
 //! Quadtree build — bucket a LOD's features into chunks.
 //!
-//! Per LOD: insert every feature into a quadtree over the global bbox, splitting
-//! a leaf once its accumulated size (`12 + pt_count*4` per feature) exceeds the
-//! chunk size. Features fully inside a node are inserted as-is; straddling
-//! features are clipped to the node box via GEOS `intersection` (see [`crate::geom`]).
-//! The result converts to a [`serialize::Node`] tree, which the serializer walks
-//! in BFS order.
+//! Insert every feature into a quadtree over the global bbox, splitting a leaf once
+//! its accumulated size (`12 + pt_count*4` per feature) exceeds the chunk size.
+//! Contained features go in as-is; straddling ones are clipped to the node box.
 //!
 //! Overlap/containment tests and clipping run in **degree space** (bbox / 1e6), so
-//! leaf membership stays consistent with the node bounds the reader recomputes at
-//! render time.
+//! leaf membership matches the node bounds the reader recomputes at render time.
 
 use crate::geom::{clip_to_box, pt_count, to_feature, Bounds, Geom};
 use crate::serialize::Node;
@@ -173,7 +169,6 @@ mod tests {
         Geom::Line(coords.to_vec())
     }
 
-    // Helpers to inspect the produced Node tree.
     fn leaf_feature_count(n: &Node) -> usize {
         match n {
             Node::Leaf { features, .. } => features.len(),
@@ -184,8 +179,7 @@ mod tests {
         matches!(n, Node::Branch(_))
     }
 
-    // These cases are all containment/flatten/split/guard, so they pin the
-    // algorithm with no GEOS clip involved.
+    // Containment/flatten/split/guard, no GEOS clip involved.
 
     #[test]
     fn insertion_keeps_contained_line() {
@@ -252,13 +246,10 @@ mod tests {
         assert!(!root.should_split());
     }
 
-    // --- Split + straddle ⇒ real GEOS clip (issue #95, item 1) ----------------
-    // The six tests above all use fully-contained geometry, so the `else { clip }`
-    // arm of `insert` (quadtree.rs ~61) was never reached. These force a split and
-    // feed geometry that crosses the new child boundaries, so every clipped piece
-    // goes through `clip_to_box`. The reassembled pieces must cover the original.
+    // --- Split + straddle ⇒ real GEOS clip -----------------------------------
+    // Force a split and feed geometry crossing the new child boundaries, so every
+    // piece goes through `clip_to_box`. The reassembled pieces must cover the original.
 
-    /// A leaf as `(features, bbox)`, the unit `leaves` collects.
     type LeafRef<'a> = (&'a Vec<crate::serialize::Feature>, (i64, i64, i64, i64));
 
     /// Collect each leaf's `(features, bbox)` from the Node tree.
@@ -274,18 +265,13 @@ mod tests {
         out
     }
 
-    /// A long horizontal line across the top half of the bbox, dense enough to force
-    /// a split. After the split it straddles the NW/NE vertical midline, so the two
-    /// top children each clip it via GEOS. The surviving clipped segments must
-    /// reassemble to exactly the original x-span `[min_x, max_x]`, and every clipped
-    /// vertex must stay within its leaf's bbox (the clip is the only thing keeping a
-    /// feature inside its node — a bad clip-box ring order or `/1e6` scale would push
-    /// vertices out of bounds or drop the join point).
+    /// A dense horizontal line straddling the NW/NE midline: the two top children
+    /// each clip it via GEOS. Surviving segments must reassemble to the original
+    /// x-span, and every clipped vertex must stay within its leaf's bbox.
     #[test]
     fn split_then_clip_straddling_line_reassembles() {
-        // bbox 0..1.0° in both axes (0..1_000_000 µdeg). Horizontal line at y=0.75°
-        // (top half) spanning x = 0.05° .. 0.95°, 40 vertices → 12 + 40*4 = 172 > 100
-        // ⇒ split.
+        // bbox 0..1.0°. Line at y=0.75° spanning x=0.05°..0.95°, 40 vertices →
+        // 12 + 40*4 = 172 > 100 ⇒ split.
         let n = 40;
         let (x0, x1, y) = (0.05_f64, 0.95_f64, 0.75_f64);
         let coords: Vec<(f64, f64)> = (0..n).map(|i| (x0 + (x1 - x0) * i as f64 / (n - 1) as f64, y)).collect();
@@ -303,8 +289,6 @@ mod tests {
             for f in features {
                 assert_eq!(f.kind, crate::serialize::Kind::Line);
                 for &(px, py) in &f.rings[0] {
-                    // Each clipped vertex sits inside (or on) its leaf box — the clip
-                    // is what enforces this.
                     assert!(px >= bminx - 1e-9 && px <= bmaxx + 1e-9, "vertex x {px} inside leaf [{bminx},{bmaxx}]");
                     assert!(py >= bminy - 1e-9 && py <= bmaxy + 1e-9, "vertex y {py} inside leaf [{bminy},{bmaxy}]");
                     min_x = min_x.min(px);
@@ -321,16 +305,13 @@ mod tests {
         assert!(total_pts >= n, "clip must not drop interior vertices (got {total_pts}, had {n})");
     }
 
-    /// A polygon straddling the bbox's vertical midline splits across NW/NE after a
-    /// split: each half is clipped to its child box. The two clipped polygons'
-    /// combined x-extent must still cover the original `[min_x, max_x]`, and each
-    /// clipped polygon stays a valid closed ring inside its leaf. Exercises the
-    /// polygon branch of `clip_to_box`/`from_geos` under a real split.
+    /// A polygon straddling the vertical midline: each half clips to its child box.
+    /// The combined x-extent must still cover the original, and each clipped polygon
+    /// stays a valid closed ring inside its leaf.
     #[test]
     fn split_then_clip_straddling_polygon_covers_original() {
-        // A wide, short rectangle centered on x=0.5° so it straddles the midline,
-        // tall enough only in the top half. Make it dense (many edge points) so the
-        // accumulated size forces a split.
+        // Wide short rectangle centered on x=0.5° (straddles the midline), dense
+        // enough to force a split.
         let (x0, x1, y0, y1) = (0.1_f64, 0.9_f64, 0.55_f64, 0.95_f64);
         let edge = 12; // points per long edge
         let mut ext = Vec::new();
@@ -369,10 +350,9 @@ mod tests {
         assert!((max_x - x1).abs() < 1e-6, "right extent preserved: {max_x} vs {x1}");
     }
 
-    /// An `Empty` geometry (what simplify/clip can return) is dropped by `build_lod`
-    /// (quadtree.rs ~159), not panicked on or stored. Pairs with the geom-level
-    /// simplify tests: confirms the consumer honors the drop contract. Mixed with a
-    /// real feature so we can prove only the Empty one is gone.
+    /// An `Empty` geometry (what simplify/clip can return) is dropped by `build_lod`,
+    /// not panicked on or stored. Mixed with a real feature to prove only the Empty
+    /// one is gone.
     #[test]
     fn build_lod_drops_empty_geometry() {
         let real = line(&[(0.1, 0.1), (0.2, 0.2)]);

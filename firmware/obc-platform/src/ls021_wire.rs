@@ -1,14 +1,13 @@
-//! **LS021B7DD02 source-bus wire pack** — the host-tested RGB222 → panel-wire transform the
-//! FLPR backend drains (issue #154, epic #149).
+//! **LS021B7DD02 source-bus wire pack** — the host-tested RGB222 → panel-wire transform the FLPR
+//! backend drains (epic #149).
 //!
-//! The sibling of [`device64_to_rgb565`](crate::device64_to_rgb565): where that expands a
-//! device-64 ([`FbDevice64`](crate::FbDevice64)) byte back to RGB565 for an ST7789, this packs a
-//! whole **row** of device-64 bytes into the LS021's parallel **source bus** wire words — the
-//! format the FLPR coprocessor clocks out over `BSP`/`BCK` + the 6 data lines (`R0/G0/B0`,
-//! `R1/G1/B1`). It is the "host-tested Rust pack fn" the FLPR epic deliberately keeps off the C
-//! blob: the trickiest bit (the area-gradation split + the odd/even column interleave + the
-//! pre-shift to GPIO bit positions) lives here, unit-tested against the M33 `PanelBus` reference,
-//! so the bare-metal FLPR side stays a dumb `store → pulse BCK` loop.
+//! The sibling of [`device64_to_rgb565`](crate::device64_to_rgb565): where that expands a device-64
+//! ([`FbDevice64`](crate::FbDevice64)) byte back to RGB565 for an ST7789, this packs a whole **row**
+//! of device-64 bytes into the LS021's parallel **source bus** wire words — the format the FLPR
+//! clocks out over `BSP`/`BCK` + the 6 data lines (`R0/G0/B0`, `R1/G1/B1`). The trickiest bits (the
+//! area-gradation split, the odd/even column interleave, the pre-shift to GPIO bit positions) live
+//! here, unit-tested against the M33 `PanelBus` reference, so the FLPR side stays a dumb
+//! `store → pulse BCK` loop.
 //!
 //! ## What a packed row is
 //!
@@ -28,20 +27,18 @@
 //! `OUTSET (w & 0x3F)` and no bit-twiddling. `BCK` is *not* in the word; it is the FLPR's own pulse.
 //! The 4 trailing dummy/flush columns of each sub-line are black (`0`).
 //!
-//! **The panel is DDR** (issue #155): it latches the source bus on *both* `BCK` edges, so the FLPR
-//! drains these words **one per edge** — word `2k` before the rising edge, word `2k+1` before the
-//! falling — clocking the 120 pairs out in ~60 `BCK` cycles. The pack itself is edge-agnostic (it
-//! just lays the pairs out in order); the rising/falling split lives in the FLPR's `drive_subline`
-//! and the M33 `PanelBus`. (The original single-edge drive held each pair across a whole `BCK`
-//! period and the panel captured it twice → half horizontal resolution + 32 colours.)
+//! **The panel is DDR**: it latches the source bus on *both* `BCK` edges, so the FLPR drains these
+//! words **one per edge** — word `2k` before the rising edge, `2k+1` before the falling — clocking
+//! the 120 pairs out in ~60 `BCK` cycles. The pack is edge-agnostic (it lays the pairs out in
+//! order); the rising/falling split lives in the FLPR's `drive_subline` and the M33 `PanelBus`.
 //!
 //! ## Area-gradation split
 //!
 //! Each channel's device-64 level is 2 bits (`0..=3`): the **MSB plane** carries the high bit
 //! (`level >> 1`, the 2/3-area block), the **LSB plane** the low bit (`level & 1`, the 1/3-area
-//! block). This mirrors `PanelBus::plane_bits` / `fill_with` (`src/ls021.rs` on the board, the
-//! analyzer-verified golden reference from epic #139) — the test module re-derives that split
-//! independently and asserts byte-for-byte agreement.
+//! block). This mirrors `PanelBus::plane_bits` / `fill_with` (the board's `src/ls021.rs`
+//! analyzer-verified reference); the test module re-derives the split and asserts byte-for-byte
+//! agreement.
 
 /// Panel width in pixels — 240 columns, clocked as 120 pixel pairs per sub-line.
 pub const WIDTH: usize = 240;
@@ -103,9 +100,8 @@ mod tests {
         (r << 4) | (g << 2) | b
     }
 
-    /// Independent re-derivation of the golden reference word: this mirrors
-    /// `PanelBus::plane_bits` + the `R0..B1` bit positions from `src/ls021.rs` (epic #139),
-    /// written out longhand so the test fails if `pack_pair` ever drifts from it.
+    /// Independent longhand re-derivation of the golden reference word (mirrors `PanelBus::plane_bits`
+    /// + the `R0..B1` bit positions from `src/ls021.rs`), so the test fails if `pack_pair` drifts.
     fn golden_word(even: (u8, u8, u8), odd: (u8, u8, u8), msb: bool) -> u32 {
         // plane_bits: MSB plane = level>>1, LSB plane = level&1.
         let plane = |l: u8| if msb { (l >> 1) & 1 } else { l & 1 } as u32;

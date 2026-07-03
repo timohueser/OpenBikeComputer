@@ -1,18 +1,13 @@
-//! The simulator's **device housing** — the stylized body drawn around the screen
-//! so the sim resembles the physical bikepacking computer instead of a bare
-//! framebuffer floating in the window.
+//! The simulator's **device housing** — the stylized body drawn around the screen.
 //!
-//! This is pure host chrome: drawn with the egui painter *around* the screen
-//! texture, never through the device framebuffer and never through the 64-color
-//! device quantization (so its colors are independent of the map palette). Nothing
-//! here touches `obc-render` / `obc-app`.
+//! Pure host chrome: drawn with the egui painter *around* the screen texture, never
+//! through the device framebuffer or the 64-color quantization (so its colors are
+//! independent of the map palette). Nothing here touches `obc-render` / `obc-app`.
 //!
-//! **This is a placeholder industrial design, meant to be retuned.** Everything that
-//! defines the look lives in one place: the geometry in [`HousingStyle`] (named,
-//! commented constants in *screen-pixel units*, so the whole device scales with the
-//! display scale) and the colors in [`Colorway`] / [`HousingPalette`]. Adjust those
-//! — the drawing code derives everything from them and shouldn't need to change for
-//! a reskin.
+//! **Placeholder industrial design, meant to be retuned.** The look lives entirely in
+//! the geometry ([`HousingStyle`], in *screen-pixel units* so it scales with the display
+//! scale) and colors ([`Colorway`] / [`HousingPalette`]); the drawing code derives
+//! everything from them, so a reskin only touches those.
 
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Rounding, Stroke, Vec2};
 
@@ -25,8 +20,8 @@ pub fn background() -> Color32 {
 /// window, so it floats in a little charcoal instead of touching the edges.
 pub const WINDOW_MARGIN: f32 = 18.0;
 
-/// The four body colors the device ships in. Selectable live in the control panel
-/// (and via `--colorway`); the front wordmark always reads `OBC` regardless.
+/// The four body colors the device ships in. Selectable in the control panel (and via
+/// `--colorway`).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Colorway {
     Coral,
@@ -36,7 +31,7 @@ pub enum Colorway {
 }
 
 impl Colorway {
-    /// All four, in the reference render's order — drives the dropdown.
+    /// Drives the dropdown, in the reference render's order.
     pub const ALL: [Colorway; 4] = [Colorway::Coral, Colorway::Mint, Colorway::Mustard, Colorway::Slate];
 
     pub fn label(self) -> &'static str {
@@ -89,9 +84,7 @@ pub struct HousingPalette {
     pub knurl: Color32,
 }
 
-/// Live state of the on-device controls, so the housing animates with the user's
-/// input. Sourced from the emulated encoder/Back. (The long-press confirm feedback
-/// lives in the control panel's knob ring, not here.)
+/// Live state of the on-device controls, so the housing animates with the user's input.
 #[derive(Clone, Copy, Default)]
 pub struct ControlVisual {
     /// Encoder rotation (radians) — scrolls the scroll-wheel's knurling.
@@ -100,10 +93,9 @@ pub struct ControlVisual {
     pub back_down: bool,
 }
 
-/// All housing geometry, in **screen-pixel units** (relative to the 240×320 device
-/// screen), so a single display `scale` scales the whole device while the screen
-/// stays an exact multiple. Tweak these to reshape the housing — the draw code
-/// derives every rect from them.
+/// All housing geometry, in **screen-pixel units**, so a single display `scale` scales the
+/// whole device while the screen stays an exact multiple. The draw code derives every rect
+/// from these.
 pub struct HousingStyle {
     /// Colored body padding around the screen (left/right, above, below). The bottom
     /// is roomier to seat the `OBC` wordmark.
@@ -258,7 +250,6 @@ pub fn draw(
     // Bezel — the dark frame the (corner-rounded) screen texture is blitted over.
     painter.rect_filled(lo.bezel, Rounding::same(style.bezel_radius * scale), palette.bezel);
 
-    // Front wordmark — always "OBC".
     painter.text(
         lo.wordmark_center,
         Align2::CENTER_CENTER,
@@ -305,8 +296,7 @@ fn draw_pill(
     }
 }
 
-/// A `#rrggbb` literal → `Color32`, so the palette reads as hex codes VSCode's color
-/// picker can edit in place. Panics on a malformed literal (they're all constants above).
+/// A `#rrggbb` literal → `Color32`. Panics on a malformed literal (they're all constants above).
 fn hex(s: &str) -> Color32 {
     Color32::from_hex(s).expect("valid #rrggbb literal")
 }

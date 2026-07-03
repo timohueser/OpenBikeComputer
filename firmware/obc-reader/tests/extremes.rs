@@ -1,14 +1,10 @@
-//! Adversarial / extreme-value coverage for the OBCM v5 reader (issue #96, epic #90).
+//! Adversarial / extreme-value coverage for the OBCM v5 reader.
 //!
-//! `format.rs` pins the *happy-path* contract: well-formed, fully-contained, positive-coordinate
-//! features in 64/128-byte chunks. This file drives the paths that suite never reaches — the
+//! `format.rs` pins the *happy-path* contract; this file drives the paths it never reaches — the
 //! no_std scratch-overflow guards, the uncached oversized-chunk branch, the cross-frame chunk-cache
 //! hit through the *public* API, headers that straddle a chunk/ring end, a truncated style table,
-//! the multi-block index assembly, and negative microdegrees. Every byte buffer is built with the
-//! shared `obcm-testkit` so the layout stays pinned to `OBCM_Spec.md` (see `format.rs`'s note).
-//!
-//! Each test asserts a concrete decoded value (exact truncated ring length, exact bbox over the
-//! dropped points, exact cache hit/miss counts) rather than "didn't panic".
+//! the multi-block index assembly, and negative microdegrees. Each test asserts a concrete decoded
+//! value (exact truncated ring length, bbox, cache hit/miss counts) rather than "didn't panic".
 
 use obc_reader::{BBox, Kind, MapCache, MapTables, Reader, SliceSource, MAX_CHUNK_BYTES, MAX_FEAT_PTS, MAX_FEAT_RINGS};
 use obcm_testkit::{build_file, pack_line, pack_line_decl, pack_poly_decl, pack_poly_holes, pad, LodSpec, Style};
@@ -54,16 +50,11 @@ fn decode(r: &Reader, lod: usize, chunk_id: u32, node: &BBox) -> Vec<Decoded> {
     out
 }
 
-// ---------------------------------------------------------------------------
-// Reader item 1 — scratch-buffer overflow (MAX_FEAT_PTS / MAX_FEAT_RINGS)
-// ---------------------------------------------------------------------------
-
 /// A single feature declaring more exterior points than the caller's `MAX_FEAT_PTS` scratch holds.
-/// `read_ring` (reader.rs ~701) pushes with `let _ = out.push(...)`, so vertices past capacity are
-/// **silently dropped** — but `bounds.add` runs *before* the push guard (reader.rs ~702), so the
-/// feature bbox still widens over the dropped points. This pins both halves of that no_std
-/// behaviour: the exterior is truncated to exactly `MAX_FEAT_PTS`, yet the bbox spans the full
-/// declared extent. The happy-path suite (≤4-point features) never exercises either.
+/// `read_ring` pushes with `let _ = out.push(...)`, so vertices past capacity are silently dropped
+/// — but `bounds.add` runs *before* the push guard, so the bbox still widens over the dropped
+/// points. Pins both halves: the exterior truncates to exactly `MAX_FEAT_PTS`, yet the bbox spans
+/// the full declared extent.
 #[test]
 fn exterior_past_max_feat_pts_truncates_ring_but_bbox_spans_dropped_points() {
     // Declared 4096 points, far over MAX_FEAT_PTS (2048). Each delta is (+1,+1) so the absolute
@@ -100,10 +91,9 @@ fn exterior_past_max_feat_pts_truncates_ring_but_bbox_spans_dropped_points() {
     assert!(f.bbox.max_lon > last_kept, "bbox must extend past the truncated ring");
 }
 
-/// A polygon with more holes than the caller's `MAX_FEAT_RINGS` scratch holds. The hole loop
-/// (reader.rs ~630) pushes each ring length with `let _ = ring_lens.push(...)`, so rings past
-/// capacity are dropped. `ring_lens` holds the exterior plus `MAX_FEAT_RINGS-1` holes — exactly
-/// capacity — and no more, however many holes the feature declares.
+/// A polygon with more holes than the caller's `MAX_FEAT_RINGS` scratch holds. The hole loop pushes
+/// each ring length with `let _ = ring_lens.push(...)`, so rings past capacity are dropped:
+/// `ring_lens` holds the exterior plus `MAX_FEAT_RINGS-1` holes and no more, however many are declared.
 #[test]
 fn holes_past_max_feat_rings_are_dropped_at_capacity() {
     // Declare twice MAX_FEAT_RINGS holes; only (MAX_FEAT_RINGS - 1) can sit beside the exterior.
@@ -130,17 +120,10 @@ fn holes_past_max_feat_rings_are_dropped_at_capacity() {
     assert!(f.ring_lens[1..].iter().all(|&n| n == 3), "each kept hole has its 3 vertices");
 }
 
-// ---------------------------------------------------------------------------
-// Reader item 2 — chunk_size > CACHE_SLOT_BYTES (the uncached ChunkLoc::Scratch path)
-// ---------------------------------------------------------------------------
-
 /// A legal map whose `chunk_size` sits between the cache slot (`CACHE_SLOT_BYTES` = 4096) and the
-/// accepted cap (`MAX_CHUNK_BYTES` = 16384). `load_chunk`'s `len > CACHE_SLOT_BYTES` branch
-/// (reader.rs ~959) reads such a chunk through the *uncached* scratch every call, counting a miss +
-/// a read and **never a hit**. The format suite's 64/128-byte chunks never reach this branch, so
-/// nothing asserted the oversized chunk still decodes correctly *and* stays uncacheable across
-/// passes. Here the same chunk is decoded twice: both decodes must miss (no slot ever caches it),
-/// and the geometry must be byte-correct.
+/// accepted cap (`MAX_CHUNK_BYTES` = 16384). `load_chunk`'s `len > CACHE_SLOT_BYTES` branch reads
+/// such a chunk through the *uncached* scratch every call — a miss + read, **never a hit**. Decoded
+/// twice here: both must miss (no slot caches it), and the geometry must be byte-correct.
 #[test]
 fn oversized_chunk_decodes_through_scratch_and_never_caches() {
     const CS: usize = 8192; // 4096 < CS <= 16384 → the scratch path
@@ -172,15 +155,9 @@ fn oversized_chunk_decodes_through_scratch_and_never_caches() {
     assert_eq!(f1[0].exterior_len, f0[0].exterior_len);
 }
 
-// ---------------------------------------------------------------------------
-// Reader item 3 — cross-frame chunk-cache HIT via the public API (#37's payoff)
-// ---------------------------------------------------------------------------
-
-/// The whole point of the issue-#37 chunk cache, measured the way the renderer measures it:
-/// querying the *same* viewport twice through the public `Reader` API must serve the second pass
-/// from a resident slot — a **hit** — with no extra source read. The existing inline tests poke
-/// `MapCacheInner` directly; nothing drove a hit through `for_each_feature`. A slot-sized chunk
-/// (≤ 4096) is cacheable, so the second decode is a pure hit.
+/// The point of the chunk cache, driven through the public `Reader` API (not `MapCacheInner`):
+/// querying the *same* viewport twice must serve the second pass from a resident slot — a **hit**
+/// — with no extra source read. A slot-sized chunk (≤ 4096) is cacheable, so decode 2 is a pure hit.
 #[test]
 fn second_pass_over_same_chunk_hits_the_cache_via_public_api() {
     const CS: usize = 256; // well under CACHE_SLOT_BYTES → cacheable
@@ -284,12 +261,8 @@ fn lru_evicts_the_oldest_chunk_at_the_reader_level() {
     assert_eq!(after.chunk_hits, before.chunk_hits, "the evicted chunk is not a hit");
 }
 
-// ---------------------------------------------------------------------------
-// Reader item 4 — truncated chunk / header straddling chunk end
-// ---------------------------------------------------------------------------
-
 /// A feature header whose declared `ext_pt_count` runs past the chunk's real bytes (here past the
-/// 0xFF pad). `read_ring`'s per-delta `off + dsize*2 > chunk.len()` guard (reader.rs ~687) must
+/// 0xFF pad). `read_ring`'s per-delta `off + dsize*2 > chunk.len()` guard must
 /// stop at the last whole delta and decode a **partial** ring, never index out of bounds. We pack a
 /// line declaring 40 points but supply only 5 deltas, in a tight chunk: the decode keeps the
 /// anchor + the 5 real deltas (6 vertices) and stops — no panic, no garbage past the data.
@@ -323,7 +296,7 @@ fn truncated_ring_decodes_partial_then_stops() {
 }
 
 /// A feature header that itself straddles the chunk end: the `while off + 12 <= cs` guard
-/// (reader.rs ~574) must stop before reading a partial 12-byte header. We place one whole feature,
+/// must stop before reading a partial 12-byte header. We place one whole feature,
 /// then trailing bytes too short to be a header (and not 0xFF, so the 0xFF early-out doesn't mask
 /// the guard). The whole feature decodes; the runt tail is ignored, not misread.
 #[test]
@@ -344,12 +317,8 @@ fn header_straddling_chunk_end_is_not_misread() {
     assert_eq!(feats[0].exterior_len, 3);
 }
 
-// ---------------------------------------------------------------------------
-// Reader item 5 — truncated style table / bad style_offset
-// ---------------------------------------------------------------------------
-
 /// A style table whose count byte claims more records than the file actually holds. `parse_styles`'
-/// `o + 6 > want` break (reader.rs ~731) must stop at the last whole record, parsing only the
+/// `o + 6 > want` break must stop at the last whole record, parsing only the
 /// styles physically present rather than reading past the table. We build a valid 2-style file,
 /// then forge the count byte up to 8: the two real records still parse, the phantom six don't
 /// appear, and the reader still constructs (a truncated table is not a hard error).
@@ -396,13 +365,9 @@ fn style_offset_at_eof_yields_no_styles() {
     assert!(r.backdrop_style().is_none(), "no backdrop without styles");
 }
 
-// ---------------------------------------------------------------------------
-// Reader item 6 — index_read across a 512-byte block boundary
-// ---------------------------------------------------------------------------
-
 /// A quadtree index large enough that a node read crosses an `INDEX_BLOCK` (512-byte) cache-block
 /// edge. Each node is 4 bytes, so block 0 holds nodes 0..128 and the node at index 128 begins
-/// exactly at the block boundary; reading a node at index ≥128 forces `index_read` (reader.rs ~992)
+/// exactly at the block boundary; reading a node at index ≥128 forces `index_read`
 /// to assemble across two blocks. The format suite's ≤9-node trees never leave block 0, so the
 /// multi-block path is unexercised.
 ///
@@ -461,10 +426,6 @@ fn index_read_crosses_block_boundary() {
     assert_eq!(feats[0].exterior_len, 2);
 }
 
-// ---------------------------------------------------------------------------
-// Reader item 7 — negative microdegrees (sign-extension in rd_i32)
-// ---------------------------------------------------------------------------
-
 /// Every coordinate in the format suite is positive; a southern/western map carries negative
 /// microdegrees, which `rd_i32` must sign-extend correctly for the header bbox *and* the feature
 /// anchor. A sign-extension slip would read a small negative as a large positive. The leaf node's
@@ -495,10 +456,8 @@ fn negative_microdegrees_decode_with_correct_sign() {
     assert_eq!(f.bbox, BBox { min_lon: -1950, min_lat: -975, max_lon: -1900, max_lat: -950 });
 }
 
-/// `pack_poly_decl` is also covered indirectly by the exterior-overflow test through the line path;
-/// this confirms the polygon variant truncates the same way, so the overflow guard is pinned for
-/// both kinds (a polygon's exterior shares `read_ring` with a line's, but the `Kind` differs and
-/// the fill path downstream cares). A single huge declared-count polygon truncates to MAX_FEAT_PTS.
+/// Confirms a polygon's exterior truncates like a line's at `MAX_FEAT_PTS` — same `read_ring`, but
+/// the `Kind` differs and the downstream fill path cares, so the guard is pinned for both kinds.
 #[test]
 fn polygon_exterior_overflow_truncates_like_a_line() {
     const DECL: u16 = 3000; // > MAX_FEAT_PTS (2048)

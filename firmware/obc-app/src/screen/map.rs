@@ -1,11 +1,9 @@
 //! The Map screen — the Riding view. It owns no state of its own (the camera lives in
-//! [`AppState`](crate::AppState), shared with the host's mouse pan/zoom); `draw` renders
-//! the base map plus the route, travel chevrons, breadcrumb, user marker, off-route pill,
-//! and pan HUD.
+//! [`AppState`](crate::AppState), shared with the host's pan/zoom); `draw` renders the base map plus
+//! the route, travel chevrons, breadcrumb, user marker, off-route pill, and pan HUD.
 //!
-//! Bindings (`docs/ui_framework_brief.md` §Screens): `turn` = zoom, `press` =
-//! pause → Ride control, `back` = the sibling Statistics view, `back-hold` = Menu,
-//! `hold` = enter Pan mode.
+//! Bindings: `turn` = zoom, `press` = pause → Ride control, `back` = the sibling Statistics view,
+//! `back-hold` = Menu, `hold` = enter Pan mode.
 
 use embedded_graphics::{draw_target::DrawTarget, prelude::Point};
 use obc_render::{
@@ -29,26 +27,20 @@ const MAX_ZOOM: f32 = 1e4;
 /// Fallback backdrop when a map carries no backdrop style.
 const DEFAULT_BG_RGB565: u16 = 0x2104;
 
-/// Stroke width (px) of the active-route overlay — bold enough to read over the map and to
-/// out-weigh the heaviest base road (motorway/trunk = 3 px), so the route stays the dominant
-/// line. Sized so a direction chevron (see [`ARROW_COLOR`]) sits nicely *inside* the line at
-/// riding zoom, the Garmin look — sweep it together with the arrow consts in `obc-render`.
+/// Stroke width (px) of the active-route overlay — bold enough to out-weigh the heaviest base road
+/// (3 px), and sized so a direction chevron sits *inside* the line at riding zoom.
 const ROUTE_WEIGHT: u32 = 11;
 
-/// Colour of the route direction chevrons — white, for maximum contrast over the magenta
-/// route line (lands on `(255,255,255)` on the device-64 panel). Drawn only at riding zoom
-/// (see [`CHEVRON_MAX_MPP`] / [`MapScreen::draw`]). The chevron shape + spacing are tuned in
-/// `obc-render` (`ARROW_*`).
+/// Colour of the route direction chevrons — white, for contrast over the magenta route line. Drawn
+/// only at riding zoom (see [`CHEVRON_MAX_MPP`]).
 const ARROW_COLOR: u16 = super::palette::PARCHMENT;
 
-/// Zoom threshold (ground meters per pixel) at/below which the route direction chevrons are
-/// drawn — i.e. they appear at roughly riding scale (the riding view opens at ~0.5 m/px) and
-/// fade out on wider overviews where they'd just clutter a short on-screen route. A plain
-/// scale gate, independent of the map's LOD pyramid: tune this one number to move the cut-off.
+/// Zoom threshold (ground meters per pixel) at/below which the chevrons are drawn — roughly riding
+/// scale — fading out on wider overviews. A scale gate, independent of the map's LOD pyramid.
 const CHEVRON_MAX_MPP: f32 = 4.0;
 
-/// Stroke width (px) of the travelled-path breadcrumb — a touch thinner than the route, so
-/// the planned route stays the dominant line where the two coincide.
+/// Stroke width (px) of the breadcrumb — thinner than the route, so the route stays dominant where
+/// the two coincide.
 const BREADCRUMB_WEIGHT: u32 = 3;
 
 /// The live map / Follow view. Unit struct — all its state is the shared camera.
@@ -68,7 +60,7 @@ impl MapScreen {
         }
         match g {
             Gesture::Turn(n) => {
-                // Multiply per detent (no_std: no powf) — `n` is a small count.
+                // Multiply per detent (no_std: no powf).
                 let step = if n >= 0 { ZOOM_STEP } else { 1.0 / ZOOM_STEP };
                 let mut z = cx.state.zoom;
                 for _ in 0..n.unsigned_abs() {
@@ -82,10 +74,8 @@ impl MapScreen {
                 cx.state.enter_pan();
                 Transition::None
             }
-            // Swap to the sibling Statistics view (the stack stays one deep); its `back`
-            // swaps straight back here.
+            // Swap to the sibling Statistics view; its `back` swaps straight back here.
             Gesture::Back => Transition::Replace(Screen::Statistics(StatisticsScreen::new())),
-            // press = pause → Ride control, back-hold = Menu (shared by both riding views).
             Gesture::Press | Gesture::BackHold => super::riding_common(g, cx),
         }
     }
@@ -95,26 +85,20 @@ impl MapScreen {
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
-        // The Map screen is the *only* one that reads the map `Reader`, so a host that isn't drawing
-        // the map passes `None` and never builds it. The Map screen is only ever the base when the
-        // host *is* drawing the map, so `None` here is unreachable in practice — draw nothing rather
-        // than fault if it ever happens.
+        // The Map is the only screen that reads the `Reader`; `None` is unreachable in practice
+        // (the host only draws the map with it) — draw nothing rather than fault.
         let Some(reader) = rx.reader else { return RenderStats::default() };
         let vp = rx.state.viewport(rx.w, rx.h);
         let bg565 = reader.backdrop_style().map_or(DEFAULT_BG_RGB565, |s| s.color);
         let bg = color_fn(bg565);
-        // `render_timed` fills the per-stage map timings (collect/sort/draw) from `rx.clock`; with
-        // the host's `NoopClock` it's the same as `render` with the stage fields left at 0.
+        // `render_timed` fills the per-stage timings from `rx.clock`; with a `NoopClock` it's `render`.
         let mut stats = rx.renderer.render_timed(target, reader, &vp, bg, color_fn, rx.clock);
 
-        // Direction chevrons ride the route only at riding zoom: the plain stroke shows at every
-        // zoom, the chevrons appear once the view is zoomed in past `CHEVRON_MAX_MPP`, anchored to
-        // the rider's matched distance along the route (`progress_m`). Gated on the viewport scale
-        // directly, so it's decoupled from the map's LOD pyramid.
+        // Chevrons appear once zoomed past `CHEVRON_MAX_MPP`, anchored to the rider's matched
+        // distance (`progress_m`). Gated on the viewport scale, decoupled from the LOD pyramid.
         let arrows_at = (vp.meters_per_pixel() <= CHEVRON_MAX_MPP).then_some(rx.activity.progress_m);
 
-        // The planned route, stroked in magenta over the map (under the breadcrumb + marker),
-        // with white travel-direction chevrons near the rider at riding zoom.
+        // The planned route, stroked in magenta under the breadcrumb + marker.
         if let Some(route) = rx.route {
             let (route_chunks, route_points, route_points_drawn) = rx.renderer.draw_route(
                 target,
@@ -130,37 +114,30 @@ impl MapScreen {
             stats.route_points_drawn = route_points_drawn;
         }
 
-        // The travelled-path breadcrumb in navy, drawn *over* the route (and under the marker)
-        // so the trail behind reads navy and the route ahead reads magenta. One chained stroke
-        // (coarse spine → full-res recent tail), so the tiers never double up. Skipped when
-        // nothing is recorded yet (the bounded buffers can never overrun the scratch).
+        // The breadcrumb in navy, drawn over the route (and under the marker). One chained stroke
+        // (coarse spine → full-res recent tail), so the tiers never double up.
         if !rx.breadcrumb.is_empty() {
             let trail = color_fn(super::palette::BREADCRUMB);
             rx.renderer.stroke_path(target, &vp, rx.breadcrumb.points(), trail, BREADCRUMB_WEIGHT);
         }
 
-        // The "you" colour: warning-red while off-route (so a glance at the map shows the
-        // rider has strayed; the route + breadcrumb stay drawn — the line back),
-        // else the map's marker colour. Shared by the marker and the pan pin so the
-        // off-screen pin matches the on-screen marker.
+        // The "you" colour: warning-red while off-route, else the map's marker colour. Shared by the
+        // marker and the pan pin so the off-screen pin matches the on-screen marker.
         let marker565 = if rx.activity.off_route { super::palette::WARNING } else { reader.marker_color };
         if let Some(fix) = rx.state.user_fix {
             rx.renderer.draw_marker(target, &vp, fix.lon, fix.lat, fix.course, color_fn(marker565));
         }
 
-        // Top-center status pill, shown *only* when there's something to say so the map's steady
-        // state stays chrome-free ("map only"). "No GPS Fix" (issue #224) takes priority over the
-        // off-route chip: with no current fix the map-match is stale, so the cross-track distance
-        // would be meaningless — say "searching" instead.
+        // Top-center status pill, shown only when there's something to say. "No GPS Fix" takes
+        // priority over off-route: with no fix the match is stale, so cross-track distance is
+        // meaningless.
         if rx.no_fix {
             draw_no_fix_pill(target, rx, color_fn);
         } else if rx.activity.off_route {
             draw_off_route_pill(target, rx, color_fn);
         }
 
-        // Pan-mode HUD (axis chevrons + frozen compass + a back-to-you arrow once the
-        // rider drifts off-screen). Drawn last so it sits over the map + marker, and
-        // only while panning — the map's steady state stays chrome-free.
+        // Pan-mode HUD. Drawn last so it sits over the map + marker, and only while panning.
         if let Some(pan) = rx.state.pan {
             draw_pan_hud(target, (rx.w, rx.h), pan, rx.state.user_fix, marker565, &vp, color_fn);
         }
@@ -168,11 +145,10 @@ impl MapScreen {
     }
 }
 
-/// Pan-mode gesture bindings, active while [`AppState::pan`](crate::AppState::pan) is
-/// `Some`. `turn` pans the frozen camera along the active axis, `press` toggles the
-/// axis, `hold` flips north-up ↔ heading-up, `back` recenters on the rider (staying in
-/// pan), and `back-hold` exits back to Follow. Note this deliberately overrides the
-/// global `back-hold` = Menu while panning — exit pan first to reach the Menu.
+/// Pan-mode gesture bindings, active while [`AppState::pan`](crate::AppState::pan) is `Some`.
+/// `turn` pans along the active axis, `press` toggles the axis, `hold` flips north-up ↔ heading-up,
+/// `back` recenters on the rider (staying in pan), `back-hold` exits to Follow. This deliberately
+/// overrides the global `back-hold` = Menu while panning — exit pan first to reach the Menu.
 fn handle_pan(g: Gesture, cx: &mut Ctx) -> Transition {
     match g {
         Gesture::Turn(n) => cx.state.pan_step(n),
@@ -184,10 +160,8 @@ fn handle_pan(g: Gesture, cx: &mut Ctx) -> Transition {
     Transition::None
 }
 
-/// A compact "No GPS Fix" chip centered at the top of the map (issue #224) — appears while the
-/// device has no current fix (acquiring at the start of a ride, or after the signal drops) and
-/// vanishes the moment a fix lands, so the map is otherwise free of chrome. Same parchment +
-/// warning-outline look as the off-route pill, with which it shares the top-center slot.
+/// A compact "No GPS Fix" chip at the top of the map — shown while the device has no current fix,
+/// vanishing the moment one lands. Same look + slot as the off-route pill.
 fn draw_no_fix_pill<D, F>(target: &mut D, rx: &Render, color_fn: &F)
 where
     D: DrawTarget,
@@ -207,8 +181,8 @@ where
     cv.text(s, Point::new(w / 2, py + 5), font, TextAlign::Center, WARNING);
 }
 
-/// A compact "off route NNNm" chip centered at the top of the map — appears only while
-/// off-route and vanishes on rejoin, keeping the map otherwise free of chrome.
+/// A compact "off route NNNm" chip at the top of the map — shown only while off-route, vanishing on
+/// rejoin.
 fn draw_off_route_pill<D, F>(target: &mut D, rx: &Render, color_fn: &F)
 where
     D: DrawTarget,
@@ -219,7 +193,6 @@ where
     let mut cv = Canvas::new(target, color_fn);
     let mut s: heapless::String<20> = heapless::String::new();
     super::write_off_route(&mut s, "off route ", rx.activity.dist_to_route_m, rx.settings.units);
-    // Bold (Body font) so it's readable at a glance over the map.
     let font = Font::Body;
     let tw = text_width(&s, font) as i32;
     let (pw, ph) = (tw + 28, 36);
@@ -230,13 +203,11 @@ where
     cv.text(&s, Point::new(w / 2, py + 5), font, TextAlign::Center, WARNING);
 }
 
-/// Pan-mode HUD geometry — every tunable pixel size in one place, so there are no
-/// magic numbers buried in [`draw_pan_hud`]. (The camera-travel-per-detent knob lives
-/// with the pan logic as [`crate::app::PAN_STEP_PX`].)
+/// Pan-mode HUD geometry — every tunable pixel size in one place. (The camera-travel-per-detent
+/// knob lives with the pan logic as [`crate::app::PAN_STEP_PX`].)
 mod hud {
-    /// Active-axis chevron — an open, round-capped caret (the arrow look). Its centreline
-    /// is a "Λ": tip `REACH` ahead of the centre, back corners `BACK` behind ± `SPREAD`,
-    /// stroked at half-width `HW`. One chevron per active edge, inset `INSET` from it.
+    /// Active-axis chevron — an open, round-capped "Λ" caret: tip `REACH` ahead of the centre, back
+    /// corners `BACK` behind ± `SPREAD`, stroked at half-width `HW`, inset `INSET` from the edge.
     pub const CHEV_REACH: f32 = 9.0;
     pub const CHEV_BACK: f32 = 1.0;
     pub const CHEV_SPREAD: f32 = 10.0;
@@ -259,8 +230,7 @@ mod hud {
     pub const OFFSCREEN_MARGIN: f32 = 6.0;
 }
 
-/// Round an f32 pixel coordinate to the nearest device pixel — no_std, no `libm`
-/// (these are tiny UI glyphs, so a branch beats pulling in `roundf`).
+/// Round an f32 pixel coordinate to the nearest device pixel (no_std, no `libm`).
 #[inline]
 fn ri(v: f32) -> i32 {
     (v + if v >= 0.0 { 0.5 } else { -0.5 }) as i32
@@ -271,10 +241,9 @@ fn pt(x: f32, y: f32) -> Point {
     Point::new(ri(x), ri(y))
 }
 
-/// A filled, ink-outlined triangle pointing along the unit vector `(ux, uy)` — the
-/// solid back-to-you marker (the open chevrons are drawn separately by [`chevron`]).
-/// `h`/`w` are the half-height and base half-width; the outline is the same triangle
-/// grown by [`hud::OUTLINE`], drawn first.
+/// A filled, ink-outlined triangle pointing along `(ux, uy)` — the solid back-to-you marker.
+/// `h`/`w` are the half-height and base half-width; the outline is the same triangle grown by
+/// [`hud::OUTLINE`], drawn first.
 fn outlined_arrow<D, F>(
     cv: &mut Canvas<D, F>,
     center: (f32, f32),
@@ -300,11 +269,10 @@ fn outlined_arrow<D, F>(
     cv.triangle(t, bl, br, fill);
 }
 
-/// Draw the pan-mode HUD over the already-rendered map: a single open chevron on each
-/// of the active axis's two edges, the frozen-orientation compass, and (only once the
-/// rider is off-screen) a back-to-you marker in the rider's colour. `vp` is the map's
-/// viewport — already carrying the frozen pan rotation — so the compass needle and the
-/// off-screen test agree with what's drawn.
+/// Draw the pan-mode HUD over the already-rendered map: an open chevron on each of the active
+/// axis's edges, the frozen-orientation compass, and (only once the rider is off-screen) a back-to-
+/// you marker. `vp` carries the frozen pan rotation, so the compass needle and off-screen test
+/// agree with what's drawn.
 fn draw_pan_hud<D, F>(
     target: &mut D,
     size: (f32, f32),
@@ -322,15 +290,13 @@ fn draw_pan_hud<D, F>(
     let (w, h) = size;
     let mut cv = Canvas::new(target, color_fn);
 
-    // 1) Back-to-you marker first, so the chevrons render *over* it where they overlap
-    //    (less pretty than hiding a chevron, but less confusing — user's call). A simple
-    //    filled triangle in the rider's marker colour, at their bearing's edge crossing.
+    // 1) Back-to-you marker first, so the chevrons render over it where they overlap. A filled
+    //    triangle at the rider's bearing edge crossing.
     if let Some((bx, by, bux, buy)) = user_fix.and_then(|fix| back_to_you(w, h, vp, fix)) {
         outlined_arrow(&mut cv, (bx, by), (bux, buy), (BACK_H, BACK_W), marker, INK);
     }
 
-    // 2) Active-axis chevrons: one outward-pointing hollow caret on each of the axis's
-    //    two edges (the open-arrow look — distinct from the solid back-to-you triangle).
+    // 2) Active-axis chevrons: one hollow caret on each of the axis's two edges.
     let chevs: [((f32, f32), (f32, f32)); 2] = match pan.axis {
         PanAxis::Vertical => [((w / 2.0, CHEV_INSET), (0.0, -1.0)), ((w / 2.0, h - CHEV_INSET), (0.0, 1.0))],
         PanAxis::Horizontal => [((CHEV_INSET, h / 2.0), (-1.0, 0.0)), ((w - CHEV_INSET, h / 2.0), (1.0, 0.0))],
@@ -339,9 +305,8 @@ fn draw_pan_hud<D, F>(
         chevron(&mut cv, center, dir, AMBER, INK);
     }
 
-    // 3) Compass (top-right): parchment disc + ink ring, an amber north needle and a
-    //    wood south tail. The needle reads the (frozen) viewport rotation, so it holds
-    //    still while panning and visibly turns when `hold` flips N-up/heading-up.
+    // 3) Compass (top-right): parchment disc + ink ring, an amber north needle and a wood south
+    //    tail. The needle reads the frozen viewport rotation, so it holds still while panning.
     let (ccx, ccy) = (w - COMPASS_MARGIN, COMPASS_MARGIN);
     cv.disc(pt(ccx, ccy), COMPASS_R as u32, INK);
     cv.disc(pt(ccx, ccy), (COMPASS_R - 2.0) as u32, PARCHMENT);
@@ -383,11 +348,9 @@ fn back_to_you(w: f32, h: f32, vp: &Viewport, fix: Fix) -> Option<(f32, f32, f32
     Some((w / 2.0 + dx * t, h / 2.0 + dy * t, ux, uy))
 }
 
-/// Draw one active-axis chevron — an open, round-capped caret pointing along `dir`, with
-/// an even ink halo. Stroke the "Λ" centreline (the Canvas has no stroke primitive): two
-/// arm quads at half-width `hw` + round caps/join (a disc at each of the three vertices).
-/// Because both passes share the centreline, the halo stays uniform — unlike growing a
-/// filled polygon, which warps the arm angle and gives the ragged border it replaces.
+/// Draw one active-axis chevron — an open, round-capped "Λ" caret pointing along `dir`, with an
+/// even ink halo. Two arm quads at half-width `hw` + round caps/join. Both passes share the
+/// centreline, so the halo stays uniform — unlike growing a filled polygon, which warps the arm angle.
 fn chevron<D, F>(cv: &mut Canvas<D, F>, center: (f32, f32), dir: (f32, f32), fill: u16, outline: u16)
 where
     D: DrawTarget,

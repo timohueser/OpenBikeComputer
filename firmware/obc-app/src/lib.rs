@@ -1,31 +1,14 @@
 //! OBC device application layer + hardware-abstraction traits.
 //!
 //! `no_std`, so the **same** logic runs in the desktop simulator and on the nRF54L
-//! firmware. It owns *what the device is doing* — where the user is, where the camera
-//! looks, which mode it's in — and leaves *how pixels reach a screen* to the host. It adds
-//! no allocations of its own (the only heap use is the
+//! firmware. It owns *what the device is doing* and leaves *how pixels reach a screen* to
+//! the host. It adds no allocations of its own (the only heap use is the
 //! [`MapRenderer`](obc_render::MapRenderer) scratch, which clears-not-frees each frame).
 //!
 //! The boundary is a small hardware-abstraction layer (HAL): the app reads position from a
-//! [`LocationSource`] and buttons from an [`InputSource`], not caring whether those are a real
-//! GPS chip + GPIO (firmware) or the simulator's control panel + GPX replay (host). The host
-//! injects an implementation; the app stays identical.
-//!
-//! Modules:
-//! - [`hal`] — the injected-hardware traits ([`LocationSource`], [`InputSource`])
-//!   and their data types ([`Fix`], [`Button`], [`ButtonEvent`], [`InputEvent`]).
-//! - [`input`] — the shared gesture recognizer ([`Gestures`]) turning raw
-//!   [`InputEvent`]s + a millis clock into the five UI [`Gesture`]s.
-//! - [`input_plane`] — [`InputPlane`]: the input + overlay plane (recogniser + hold-hint
-//!   overlay + hold-progress) that the firmware runs preemptively against the map render.
-//! - [`screen`] — the modular screen system: the [`Screen`] enum, the
-//!   [`Transition`] navigation stack, and the per-screen `handle`/`draw`.
-//! - [`activity`] — the ride/tracking model ([`Activity`] + [`Mode`]).
-//! - [`app`] — [`App`]: owns the screen stack, the gesture recognizer, the camera
-//!   [`AppState`] and the renderer, and drives a frame; [`AppState`] is the camera
-//!   core projected into an [`obc_render::Viewport`].
-//! - [`dirty`] — [`Dirty`]: the per-frame "which plane changed" signal the
-//!   render-on-demand host drains via [`App::take_dirty`](app::App::take_dirty).
+//! [`LocationSource`] and buttons from an [`InputSource`], oblivious to whether those are a
+//! real GPS chip + GPIO or the simulator's control panel + GPX replay. The host injects an
+//! implementation; the app stays identical.
 
 #![no_std]
 

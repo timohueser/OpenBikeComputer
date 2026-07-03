@@ -2,12 +2,11 @@
 //!
 //! Mirrors [`RouteStore`](crate::routes::RouteStore): the shared app expresses *intent* (an
 //! active [`session`](obc_app::Activity::session) id + a one-shot
-//! [`TrackAction`](obc_app::TrackAction)) and the host reconciles it to files here each
-//! frame. While riding, every accepted fix is appended to a temp `.obct` log (the firmware
-//! would append to a FatFs file); on Finish the log is converted to a `.gpx` via
-//! [`obc_route::track_to_gpx`] and the temp dropped; on Discard the temp is dropped
-//! unconverted. The save filename is the route that *started* the session, so a later "Swap
-//! route only" can never rename a finished file.
+//! [`TrackAction`](obc_app::TrackAction)) and the host reconciles it to files each frame.
+//! While riding, each accepted fix appends to a temp `.obct` log; on Finish it's converted
+//! to `.gpx` via [`obc_route::track_to_gpx`], on Discard dropped unconverted. The save
+//! filename is the route that *started* the session, so a later "Swap route only" can't
+//! rename a finished file.
 
 use std::path::PathBuf;
 
@@ -56,9 +55,8 @@ impl TrackStore {
     }
 
     /// Reconcile the open log to the app's tracking intent — call once per frame *before*
-    /// ticking. `action` is the drained one-shot, `session` the current id, `name` the active
-    /// route's name (the save filename). Drains the action first (finalising / abandoning the
-    /// *current* log), then opens a fresh log when the session id changes.
+    /// ticking. Drains the action first (finalising / abandoning the *current* log), then opens
+    /// a fresh log when the session id changes. `name` is the save filename.
     pub fn reconcile(&mut self, action: Option<TrackAction>, session: Option<u32>, name: Option<&str>) {
         match action {
             Some(TrackAction::Save) => self.finalize(),
@@ -147,10 +145,9 @@ fn sanitize(name: &str) -> String {
 
 // --- Web (wasm32) track store ---------------------------------------------------
 //
-// No SD card / filesystem in the browser, so the web build keeps no on-disk log:
-// the on-screen breadcrumb and ride stats come from the shared app state, not from
-// this sink. It only tracks whether a ride is active so `is_recording()` stays
-// honest. Saving a finished ride to a downloadable `.gpx` is a later addition.
+// No filesystem, so no on-disk log: the breadcrumb + ride stats come from the shared app
+// state, not this sink. It only tracks whether a ride is active so `is_recording()` stays
+// honest. Downloadable-`.gpx` save is a later addition.
 #[cfg(target_arch = "wasm32")]
 pub struct TrackStore {
     recording: bool,

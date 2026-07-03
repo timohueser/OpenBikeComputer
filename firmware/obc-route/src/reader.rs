@@ -2,9 +2,8 @@
 //!
 //! [`RouteReader`] loads the fixed header and the (small) chunk index into RAM, then
 //! pulls individual geometry chunks through the [`ByteSource`] only when asked — a
-//! hundreds-of-km route never has to be resident. It is **monomorphic** (holds a
-//! `&dyn ByteSource`), so it can be threaded through the app/render layers without
-//! making them generic.
+//! hundreds-of-km route never has to be resident. It holds a `&dyn ByteSource` (not a
+//! generic), so it threads through the app/render layers without making them generic.
 
 use core::cell::RefCell;
 
@@ -14,9 +13,9 @@ use crate::byte_io::{ByteSource, Error};
 use obc_reader::codec::{rd_i16, rd_i32, rd_u16, rd_u32};
 use obc_reader::BBox;
 
-/// Base header length, common to v1 and v2 (see `OBCR_Spec.md` §1). Every field the
-/// ride path needs lives in these bytes, so the reader parses only them regardless of
-/// version — the v2 extension is read on demand by [`for_each_waypoint`].
+/// Base header length, common to v1 and v2 (`OBCR_Spec.md` §1). Every field the ride path
+/// needs is in these bytes, so the reader parses only them regardless of version; the v2
+/// extension is read on demand by [`for_each_waypoint`].
 pub const HEADER_LEN: usize = 112;
 /// Full v2 header length: the base header plus the 16-byte waypoint extension (§1.1).
 pub const HEADER_V2_LEN: usize = 128;
@@ -30,19 +29,13 @@ pub const WAYPOINT_LEN: usize = 40;
 pub const WAYPOINT_NAME_CAP: usize = 24;
 /// Waypoint-elevation sentinel: "no elevation known" (§4).
 pub const WAYPOINT_ELE_NONE: i16 = i16::MIN;
-/// Resident chunk-index capacity. With [`MAX_POINTS_PER_CHUNK`] the full profile caps a route at
-/// ~131 k decimated points (≈ 24 KB `RouteIndex` at the cap); a longer route fails conversion with
-/// [`Error::TooLarge`] rather than being silently coarsened. The constrained `nrf-mem` profile
-/// (issue #124) trims it to 128 chunks (~33 k points, ~6 KB index). Two reasons it's the L15's
-/// single most important trim, not just one of the balanced ones (#127): the N6 ride loop holds a
-/// `RouteIndex` resident across frames (in the map plane's task future) to stream geometry without
-/// re-walking it — so the index size lands in RAM directly — **and** [`read`](RouteIndex::read)
-/// builds the index/`cum_seg` `Vec`s on the *stack* before returning by value, so on the 256 KB part
-/// (with only ~16 KB of stack under the resident set) a 24 KB index would overflow the stack during
-/// the build. 128 chunks keeps both the resident copy and that build spike to ~6 KB. The packer
-/// (host) keeps the full 512, so a route packed past 128 chunks simply won't load on the L15
-/// firmware (the 512 KB LM20 restores headroom); a typical decimated bikepacking route is far under
-/// 33 k points.
+/// Resident chunk-index capacity. A route past the cap fails conversion with
+/// [`Error::TooLarge`] rather than being silently coarsened (full profile: ~131 k points,
+/// ~24 KB index; `nrf-mem`: 128 chunks, ~33 k points, ~6 KB). The `nrf-mem` trim is the
+/// tightest RAM knob because a `RouteIndex` is held resident across frames *and*
+/// [`read`](RouteIndex::read) builds the index/`cum_seg` `Vec`s on the stack before returning
+/// by value — a 24 KB index would overflow the 256 KB part's stack during that build. The
+/// host packer keeps 512, so a route packed past 128 chunks won't load on `nrf-mem` firmware.
 #[cfg(not(feature = "nrf-mem"))]
 pub const MAX_ROUTE_CHUNKS: usize = 512;
 #[cfg(feature = "nrf-mem")]
@@ -51,11 +44,10 @@ pub const MAX_ROUTE_CHUNKS: usize = 128;
 pub const MAX_POINTS_PER_CHUNK: usize = 256;
 
 const MAGIC: &[u8; 4] = b"OBCR";
-/// Accepted format versions: v1 (no waypoints) and v2 (optional waypoints section,
-/// issue #268). The v2 additions live entirely *outside* the byte ranges this reader
-/// touches — a 16-byte header extension at offset 112 and a record table reached only
-/// via that extension — so v2 routes load and ride through the exact v1 code path;
-/// waypoints are skipped by construction, not by branching.
+/// Accepted format versions: v1 (no waypoints) and v2 (optional waypoints section). The v2
+/// additions live entirely *outside* the byte ranges this reader touches — a 16-byte header
+/// extension at offset 112 and a record table reached only via it — so v2 routes ride through
+/// the exact v1 code path; waypoints are skipped by construction, not by branching.
 const VERSIONS: core::ops::RangeInclusive<u8> = 1..=2;
 
 /// One decoded route point: position in microdegrees + elevation in meters.
@@ -82,9 +74,8 @@ pub struct ChunkMeta {
     pub byte_len: u32,
 }
 
-/// The lightweight route description for the Route menu: everything the list needs,
-/// readable from the header alone (no chunk index) — so a catalog scan is one small
-/// read per file.
+/// The lightweight route description for the Route menu — readable from the header alone
+/// (no chunk index), so a catalog scan is one small read per file.
 #[derive(Debug, Clone)]
 pub struct RouteSummary {
     pub name: String<NAME_CAP>,
@@ -99,8 +90,8 @@ pub struct RouteSummary {
 }
 
 impl RouteSummary {
-    /// Read just the header into a summary — cheap enough to call for every file when
-    /// building the Route-menu catalog.
+    /// Read just the header into a summary — cheap enough to call per file when building
+    /// the Route-menu catalog.
     pub fn read(src: &dyn ByteSource) -> Result<RouteSummary, Error> {
         let h = read_header(src)?;
         Ok(RouteSummary {
@@ -114,10 +105,9 @@ impl RouteSummary {
     }
 }
 
-/// The stored-route facts a BLE `routeList` entry serves (S0 §7.4): the wire wants raw metres
-/// (not [`RouteSummary`]'s display-rounded km) plus the waypoint count, which lives in the v2
-/// header extension. Reading it is as cheap as a [`RouteSummary::read`] — the base header and,
-/// on v2, the 16-byte extension; never the chunk index.
+/// The stored-route facts a BLE `routeList` entry serves: raw metres (not
+/// [`RouteSummary`]'s display-rounded km) plus the waypoint count from the v2 header
+/// extension. Reads the base header and, on v2, the 16-byte extension; never the chunk index.
 #[derive(Debug, Clone)]
 pub struct RouteObjectInfo {
     pub name: String<NAME_CAP>,
@@ -128,9 +118,9 @@ pub struct RouteObjectInfo {
 }
 
 impl RouteObjectInfo {
-    /// Read the header (+ v2 extension) into the wire facts. The same validation as any header
-    /// read — bad magic / version / name reject — which is what the upload commit path relies on
-    /// to keep a non-OBCR payload out of the catalog.
+    /// Read the header (+ v2 extension) into the wire facts. Same validation as any header
+    /// read (bad magic/version/name reject), which the upload commit path relies on to keep
+    /// a non-OBCR payload out of the catalog.
     pub fn read(src: &dyn ByteSource) -> Result<RouteObjectInfo, Error> {
         let h = read_header(src)?;
         let waypoint_count = if h.version >= 2 {
@@ -155,10 +145,8 @@ impl RouteObjectInfo {
 /// up-front cost — the header read **and the full chunk-meta walk** — so afterwards a
 /// [`RouteReader`] streams geometry chunk-by-chunk without re-reading the index.
 ///
-/// Splitting this out of [`RouteReader`] lets a caller build it **once** when the active
-/// route changes and reuse it across frames (the firmware render loop does exactly this,
-/// the way the app caches the elevation [`Profile`](crate::Profile) — issue #44): a redraw
-/// then pays only the geometry reads, not an N+1 re-walk of the index off the SD card.
+/// Build it **once** when the active route changes and reuse it across frames, so a redraw
+/// pays only the geometry reads, not an N+1 re-walk of the index off the SD card.
 pub struct RouteIndex {
     pub bbox: BBox,
     pub start_lon: i32,
@@ -172,10 +160,10 @@ pub struct RouteIndex {
     name: String<NAME_CAP>,
     index: Vec<ChunkMeta, MAX_ROUTE_CHUNKS>,
     /// Prefix sum of segments per chunk: `cum_seg[c]` = segments before chunk `c`
-    /// (∑ `point_count − 1`, the shared seam point not double-counted). A trailing
-    /// entry holds the route's total segment count, so an index at `chunk_count` is
-    /// valid. Built once at [`read`](Self::read) so [`global_seg_index`](Self::global_seg_index)
-    /// — on the matcher's per-fix hot path — is an O(1) lookup, not a prefix scan.
+    /// (∑ `point_count − 1`, the shared seam point not double-counted). A trailing entry
+    /// holds the total segment count, so an index at `chunk_count` is valid. Built once at
+    /// [`read`](Self::read) so [`global_seg_index`](Self::global_seg_index) — on the matcher's
+    /// per-fix hot path — is O(1), not a prefix scan.
     cum_seg: Vec<u32, { MAX_ROUTE_CHUNKS + 1 }>,
 }
 
@@ -183,16 +171,15 @@ pub struct RouteIndex {
 /// frames) paired with a shared borrow of the byte source its geometry chunks stream from.
 /// Cheap to build via [`new`](Self::new) — the expensive parse lives in [`RouteIndex::read`].
 ///
-/// Derefs to its [`RouteIndex`], so the summary fields (`bbox`, `total_distance_m`, …) and
-/// the resident-only queries (`chunks`, `name`, …) read straight through `route.field` /
-/// `route.method()` as before; only [`decode_chunk`](Self::decode_chunk) needs the source.
+/// Derefs to its [`RouteIndex`], so the summary fields and resident-only queries read through
+/// `route.field` / `route.method()`; only [`decode_chunk`](Self::decode_chunk) needs the source.
 pub struct RouteReader<'a> {
     src: &'a dyn ByteSource,
     idx: &'a RouteIndex,
-    /// Optional resident decoded-chunk cache (issue #98 P4). When present,
+    /// Optional resident decoded-chunk cache: when present,
     /// [`decode_chunk`](Self::decode_chunk) serves an unchanged route from RAM instead of
-    /// re-reading its geometry from the source every redraw / matcher fix. `None` keeps the
-    /// original stream-every-call behaviour (the host store is fast, so the sim/tests skip it).
+    /// re-reading its geometry every redraw / matcher fix. `None` streams every call (the host
+    /// store is fast, so the sim/tests skip it).
     cache: Option<&'a RouteCache>,
 }
 
@@ -272,20 +259,16 @@ impl RouteIndex {
         &self.index
     }
 
-    /// Global index (from the route start) of segment `seg` in chunk `c`: how many
-    /// segments precede it. Segments per chunk = `point_count − 1` (the shared seam
-    /// point isn't double-counted). O(1) via the `cum_seg` prefix sum built at
-    /// [`read`](Self::read) — the per-fix matcher calls this on its hot path, so it
-    /// must not re-scan the chunk index. `c` past the last chunk clamps to the total.
+    /// Global index (from the route start) of segment `seg` in chunk `c`. O(1) via the
+    /// `cum_seg` prefix sum. `c` past the last chunk clamps to the total.
     pub(crate) fn global_seg_index(&self, c: usize, seg: usize) -> usize {
         let c = c.min(self.index.len());
         self.cum_seg.get(c).copied().unwrap_or(0) as usize + seg
     }
 
-    // Cumulative ascent at a position is read from the elevation [`Profile`]
-    // ([`Profile::ascent_to`](crate::Profile::ascent_to)) at column resolution, not from
-    // the coarse per-chunk `cum_ascent_m` (which, with few chunks, spread the climb
-    // uniformly over distance and left a phantom "to climb" at the top of a climb).
+    // Cumulative ascent at a position is read from the elevation `Profile`
+    // (`Profile::ascent_to`) at column resolution, not from the coarse per-chunk
+    // `cum_ascent_m` (too few chunks to place "to climb" accurately).
 
     /// A [`RouteSummary`] for this route (for the menu / centering).
     pub fn summary(&self) -> RouteSummary {
@@ -314,20 +297,16 @@ impl RouteIndex {
 
 impl<'a> RouteReader<'a> {
     /// Pair an already-parsed [`RouteIndex`] with the byte source its geometry chunks stream
-    /// from. No I/O — the expensive header + chunk-meta walk already happened in
-    /// [`RouteIndex::read`]; this just couples the resident index to a source so
-    /// [`decode_chunk`](Self::decode_chunk) can pull chunks on demand. Build the index once
-    /// per route and call this per frame (issue #44).
+    /// from. No I/O; [`decode_chunk`](Self::decode_chunk) pulls chunks on demand. Build the
+    /// index once per route and call this per frame.
     pub fn new(idx: &'a RouteIndex, src: &'a dyn ByteSource) -> RouteReader<'a> {
         RouteReader { src, idx, cache: None }
     }
 
     /// Like [`new`](Self::new), but back [`decode_chunk`](Self::decode_chunk) with a resident
-    /// [`RouteCache`] (issue #98 P4). The cache is caller-owned and lives across frames (the
-    /// device places one in its reserved region, like the map's `MapCache`), so a redraw of an unchanged route
-    /// — and the matcher's per-fix chunk decode — hit RAM instead of re-reading the geometry from
-    /// the SD card on every frame. The cache keys slots by chunk index only, so the caller must
-    /// [`RouteCache::clear`] it whenever the active route changes.
+    /// [`RouteCache`], so a redraw of an unchanged route — and the matcher's per-fix decode —
+    /// hit RAM instead of re-reading geometry from the SD card. Slots are keyed by chunk index
+    /// only, so the caller must [`RouteCache::clear`] it whenever the active route changes.
     pub fn new_cached(idx: &'a RouteIndex, src: &'a dyn ByteSource, cache: &'a RouteCache) -> RouteReader<'a> {
         RouteReader { src, idx, cache: Some(cache) }
     }
@@ -345,8 +324,7 @@ impl<'a> RouteReader<'a> {
         if n == 0 {
             return Ok(());
         }
-        // Cache fast path: a hit fills `out` with no SD read; a miss decodes from the source and
-        // stores the result, so the next redraw of the same chunk is free.
+        // A hit fills `out` with no SD read; a miss decodes and stores it.
         if let Some(cache) = self.cache {
             if cache.get(k, out) {
                 return Ok(());
@@ -359,10 +337,8 @@ impl<'a> RouteReader<'a> {
     }
 }
 
-/// Decode chunk `m` (its `n` points) from `src` into the already-cleared `out`: the anchor, then
-/// each delta-stepped point. Factored out of [`RouteReader::decode_chunk`] so both the cached and
-/// uncached paths share the one decoder (the cache only saves the read + this work, never changes
-/// the bytes produced).
+/// Decode chunk `m` (its `n` points) from `src` into the already-cleared `out`: the anchor,
+/// then each delta-stepped point. Shared by the cached and uncached decode paths.
 fn decode_chunk_from(
     src: &dyn ByteSource,
     m: &ChunkMeta,
@@ -391,16 +367,10 @@ fn decode_chunk_from(
     Ok(())
 }
 
-/// Resident decoded-route-chunk cache slots. A route is at most [`MAX_ROUTE_CHUNKS`] chunks, but
-/// real routes are a handful and only the chunks crossing the view are ever decoded, so a small
-/// LRU holds a frame's working set; sized to also absorb a wide zoomed-out view of a winding
-/// route. The win is per-redraw, not per-route — see [`RouteCache`].
-///
-/// The constrained `nrf-mem` profile (issue #124) trims this to 3 slots (~9 KB): enough for the
-/// few chunks a riding-zoom view crosses, accepting re-decodes on a wide zoomed-out pan as part of
-/// the L15 memory budget. Dropped 4→3 as a 256 KB-DK stop-gap (~3 KB more stack for the deep
-/// ride-loop render — see `obc-fw-nrf54l` budget note); the 512 KB production part has the headroom
-/// to restore it.
+/// Resident decoded-route-chunk cache slots. Only the chunks crossing the view are decoded,
+/// so a small LRU holds a frame's working set, sized to also absorb a wide zoomed-out view of
+/// a winding route. `nrf-mem` trims to 3 slots (~9 KB): enough for a riding-zoom view,
+/// accepting re-decodes on a wide zoomed-out pan.
 #[cfg(not(feature = "nrf-mem"))]
 const ROUTE_CHUNK_SLOTS: usize = 32;
 #[cfg(feature = "nrf-mem")]
@@ -415,19 +385,18 @@ struct RouteSlot {
 }
 
 /// A small resident cache of **decoded** route-geometry chunks — the route analogue of
-/// `obc_reader::MapCache`. [`RouteReader::decode_chunk`] re-reads a chunk's geometry from the
-/// byte source on every call, so without a cache a per-frame map redraw (and the matcher's
-/// per-fix decode) re-pulls the same visible chunks from the SD card every time. Holding the
-/// decoded points resident turns those repeats into RAM copies (issue #98 P4).
+/// `obc_reader::MapCache`. Without it, a per-frame map redraw and the matcher's per-fix decode
+/// re-pull the same visible chunks from the SD card every time; holding the decoded points
+/// resident turns those repeats into RAM copies.
 ///
-/// Caller-owned and reused across frames: the device places one in its reserved region for the
-/// session (like `MapCache`) and pairs it with the per-frame [`RouteReader`] via
-/// [`new_cached`](RouteReader::new_cached); the host just skips it. Slots are keyed by chunk
-/// index only (a route has its own source), so [`clear`](Self::clear) **must** be called when the
-/// active route changes, or a new route's chunk `k` would hit the old route's stale slot.
+/// Caller-owned and reused across frames (the device places one in its reserved region; the
+/// host skips it), paired with the per-frame [`RouteReader`] via
+/// [`new_cached`](RouteReader::new_cached). Slots are keyed by chunk index only, so
+/// [`clear`](Self::clear) **must** be called on a route change, or a new route's chunk `k`
+/// would hit the old route's stale slot.
 ///
-/// Wraps its state in a `RefCell` so a `&RouteCache` `decode_chunk` (an `&self` path) can fill it,
-/// mirroring `MapCache`; the borrow is scoped to a single get/put.
+/// State is in a `RefCell` so a `&RouteCache` `decode_chunk` (`&self`) can fill it; the borrow
+/// is scoped to a single get/put.
 pub struct RouteCache {
     inner: RefCell<RouteCacheInner>,
 }
@@ -446,15 +415,14 @@ impl Default for RouteCache {
 }
 
 impl RouteCache {
-    /// A fresh, empty cache (~99 KB of zeroed slots). On the device, place it once in the reserved
-    /// region (e.g. `ptr::write`, like the `App` / `MapCache`) so it stays off the main stack.
+    /// A fresh, empty cache. On the device, place it once in the reserved region (e.g.
+    /// `ptr::write`) so it stays off the main stack.
     pub fn new() -> Self {
         RouteCache { inner: RefCell::new(RouteCacheInner::new()) }
     }
 
-    /// Drop every resident slot (and zero the counters) — call on a route switch so the next
-    /// decode misses and refills from the new route's geometry. Cheap: only the `valid` flags +
-    /// counters are touched, not the point buffers.
+    /// Drop every resident slot and zero the counters — call on a route switch so the next
+    /// decode misses. Only the `valid` flags + counters are touched, not the point buffers.
     pub fn clear(&self) {
         let mut inner = self.inner.borrow_mut();
         for s in &mut inner.slots {
@@ -466,7 +434,7 @@ impl RouteCache {
     }
 
     /// Cumulative `(hits, misses)` since the last [`clear`](Self::clear) — for the device's RTT
-    /// route-cache log (the analogue of `MapCache`'s render-stats counters).
+    /// route-cache log.
     pub fn stats(&self) -> (u32, u32) {
         let inner = self.inner.borrow();
         (inner.hits, inner.misses)
@@ -506,17 +474,14 @@ impl RouteCache {
 
 impl RouteCacheInner {
     fn new() -> Self {
-        // Zero-init the whole thing. All-zero is a valid `RouteCacheInner`: `valid: false`, the
-        // integer counters 0, and each `heapless::Vec` is `{ len: 0, uninit buffer }` — a valid
-        // empty vec whose backing is never read while empty. `zeroed()` lowers to a `memset`
-        // (`.bss`), whereas a struct literal zeroing the ~99 KB of point buffers would emit a
-        // `.rodata` const that is then `memcpy`'d — which overflowed flash on the MCU for the
-        // larger `MapCache`, so it uses the same trick.
+        // `zeroed()` lowers to a `memset` (`.bss`); a struct literal zeroing the point buffers
+        // would emit a `.rodata` const then `memcpy` it — which overflowed flash for the larger
+        // `MapCache`.
         //
-        // SAFETY: `RouteCacheInner` is inhabited and valid for the all-zero bit pattern — no
-        // references, no non-zero-discriminant enums, and its only `bool`s (`RouteSlot::valid`)
-        // are false at zero. The `MaybeUninit<RoutePoint>` backing of each `Vec` is valid for any
-        // bits and is not read while `len == 0`.
+        // SAFETY: all-zero is a valid `RouteCacheInner` — no references, no non-zero-discriminant
+        // enums, its only `bool` (`RouteSlot::valid`) is false at zero, and each `heapless::Vec`
+        // is `{ len: 0, uninit buffer }` whose `MaybeUninit<RoutePoint>` backing is not read while
+        // `len == 0`.
         unsafe { core::mem::MaybeUninit::zeroed().assume_init() }
     }
 
@@ -544,9 +509,6 @@ fn route_lru(slots: impl Iterator<Item = (bool, u32)>) -> usize {
     best
 }
 
-/// Deref to the index so the summary fields and resident-only queries read straight through
-/// `route.bbox` / `route.chunks()` without forwarding boilerplate (only `decode_chunk` needs
-/// the source, and it's inherent).
 impl core::ops::Deref for RouteReader<'_> {
     type Target = RouteIndex;
     fn deref(&self) -> &RouteIndex {
@@ -607,10 +569,9 @@ fn read_header(src: &dyn ByteSource) -> Result<Header, Error> {
     })
 }
 
-/// One stored route waypoint (`OBCR_Spec.md` §4): a point of interest pinned to a
-/// position along the route. **Storage-only** on the device today (issue #268) — the
-/// section is written by the converter / the phone and skipped by the ride path;
-/// this type serves hosts, tests, and the future waypoint UI.
+/// One stored route waypoint (`OBCR_Spec.md` §4): a POI pinned to a position along the route.
+/// **Storage-only** on the device today — written by the converter / the phone and skipped by
+/// the ride path; this type serves hosts, tests, and the future waypoint UI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Waypoint {
     /// Cumulative distance from the route start to this waypoint's position, meters.

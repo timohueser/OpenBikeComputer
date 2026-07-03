@@ -1,11 +1,9 @@
-//! The Ride control overlay — the pause menu: Resume / Finish / Discard.
+//! The Ride control overlay — the pause menu: Resume / Finish / Discard, drawn over the still-
+//! visible map.
 //!
-//! This screen carries the **guarded-action** pattern the brief wants to be
-//! reusable: each option has a `guard` flag. Non-guarded options (Resume) fire on
-//! `press`; guarded, irreversible ones (Finish, Discard) fire only on a completed
-//! `hold`, and their row fills with a warning bar as the encoder is held (release
-//! early — no `Hold` gesture — and nothing happens). `back` resumes (cancels the
-//! pause). Drawn as an overlay on top of the still-visible map.
+//! Each option has a `guard` flag: non-guarded (Resume) fire on `press`; guarded, irreversible ones
+//! (Finish, Discard) fire only on a completed `hold`, their row filling with a warning bar as the
+//! encoder is held (release early → no `Hold` gesture → nothing happens). `back` resumes.
 
 use embedded_graphics::prelude::{DrawTarget, Point};
 use obc_render::{
@@ -39,8 +37,7 @@ impl RideControl {
         RideControl { selected: 0 }
     }
 
-    /// True if the highlighted option is guarded (needs a hold) — the host reads
-    /// this to know whether to fill the confirm ring while the encoder is held.
+    /// True if the highlighted option is guarded (needs a hold) — the host fills the confirm ring.
     pub fn selection_is_guarded(&self) -> bool {
         ITEMS[self.selected].guard
     }
@@ -52,7 +49,7 @@ impl RideControl {
                 Transition::None
             }
             Gesture::Press => {
-                // Activate instant (non-guarded) options only — i.e. Resume.
+                // Instant (non-guarded) options only — i.e. Resume.
                 if ITEMS[self.selected].guard {
                     Transition::None
                 } else {
@@ -61,13 +58,12 @@ impl RideControl {
                 }
             }
             Gesture::Hold => {
-                // Confirm guarded options only — Finish / Discard. The recognizer
-                // emits `Hold` exactly when the hold completes, so reaching here
-                // *is* the confirmation; releasing early never produces it.
+                // Confirm guarded options. The recognizer emits `Hold` only when the hold completes,
+                // so reaching here *is* the confirmation; releasing early never produces it.
                 match self.selected {
                     FINISH => self.end_ride(cx, TrackAction::Save),
                     DISCARD => self.end_ride(cx, TrackAction::Discard),
-                    _ => Transition::None, // Resume isn't guarded — hold does nothing
+                    _ => Transition::None,
                 }
             }
             Gesture::Back => {
@@ -104,8 +100,6 @@ impl RideControl {
         cv.fill(rect(px, py, pw, 32), HUD);
         cv.text("PAUSED", Point::new(w / 2, py + 7), Font::Label, TextAlign::Center, PARCHMENT);
 
-        // The options, each a highlighted row when selected. Guarded rows fill with
-        // a warning bar tracking the hold-progress; instant ones get a solid amber.
         let (row_h, gap, first) = (38, 6, py + 40);
         for (i, item) in ITEMS.iter().enumerate() {
             let y = first + i as i32 * (row_h + gap);

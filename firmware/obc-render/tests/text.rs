@@ -1,8 +1,7 @@
-//! Smoke tests for the shared text primitive ([`obc_render::text`]). Mirrors
-//! `marker.rs`: draws into a tiny in-memory `DrawTarget` and asserts the glyphs
-//! land where they should, in the color the caller resolved — including the
-//! slice-1 check that a palette color quantized through the device-64 `color_fn`
-//! reaches the panel intact (the same path the map styles take).
+//! Smoke tests for the shared text primitive ([`obc_render::text`]). Draws into an in-memory
+//! `DrawTarget` and asserts the glyphs land where they should, in the color the caller resolved —
+//! including that a palette color quantized through the device-64 `color_fn` reaches the panel
+//! intact (the same path the map styles take).
 
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*};
 use obc_reader::{rgb565_to_device64, rgb565_to_rgb888};
@@ -50,9 +49,8 @@ fn drawn_extent_fits_text_width() {
 
 #[test]
 fn quantized_palette_color_reaches_the_panel() {
-    // The brief's slice-1 check: text drawn in a palette color resolved through the
-    // device-64 `color_fn` shows up in *that quantized* color — not the true-color
-    // one — so on-screen text honors the 64-color gamut exactly like map styles.
+    // Text drawn in a palette color resolved through the device-64 `color_fn` shows up in *that
+    // quantized* color, not the true-color one — so text honors the 64-color gamut like map styles.
     let amber_565 = rgb565(0xE3, 0xA5, 0x2B); // accent amber #E3A52B
     let q = rgb565_to_device64(amber_565);
     let t = rgb565_to_rgb888(amber_565);
@@ -81,8 +79,7 @@ fn center_and_right_align_about_the_anchor() {
     assert!(rmaxx <= 40, "right-aligned text ends at x<=40 (got {rmaxx})");
 }
 
-/// Pack 8-bit RGB into RGB565 (the style/format color space the renderer
-/// quantizes from), so the test names its palette color the way the spec does.
+/// Pack 8-bit RGB into RGB565 (the style/format color space the renderer quantizes from).
 fn rgb565(r: u8, g: u8, b: u8) -> u16 {
     (((r as u16) >> 3) << 11) | (((g as u16) >> 2) << 5) | ((b as u16) >> 3)
 }

@@ -1,17 +1,14 @@
 //! The ride/tracking model — what the device is *doing*.
 //!
-//! [`Activity`] holds the operating [`Mode`], which route is loaded, the live
-//! map-match result (drives the riding views' cursor + off-route readout), and the
-//! **actually-ridden** accumulators (distance / moving-time / climb) that fill the
-//! Elevation stat grid. Kept separate from [`AppState`](crate::AppState) (the camera)
-//! because the mode and the totals outlive any one screen and several screens read them.
+//! [`Activity`] holds the operating [`Mode`], which route is loaded, the live map-match result
+//! (riding cursor + off-route readout), and the **actually-ridden** accumulators (distance /
+//! moving-time / climb). Kept separate from [`AppState`](crate::AppState) (the camera) because the
+//! mode and totals outlive any one screen and several screens read them.
 //!
-//! "Actually-ridden" (chosen with the user): `done`/`climbed` reflect what the rider
-//! really did, not the route-relative position — so they keep counting off-route, while
-//! `to go`/`to climb` stay route-relative (they have to). Distance comes from the GPS
-//! [`Fix`] stream and climb from the **separate** barometric
-//! [`AltimeterSource`](crate::AltimeterSource); the two integrate independently, on their
-//! own cadences. [`App::tick`](crate::App::tick) feeds both.
+//! "Actually-ridden": `done`/`climbed` reflect what the rider did, not the route-relative position
+//! — so they keep counting off-route, while `to go`/`to climb` stay route-relative. Distance comes
+//! from the GPS [`Fix`] stream and climb from the **separate** barometric
+//! [`AltimeterSource`](crate::AltimeterSource); the two integrate independently.
 
 use obc_route::{ground_dist_m, DeadBand, Match};
 
@@ -39,9 +36,8 @@ pub enum Mode {
     Paused,
 }
 
-/// A one-shot disposition for the **current** ride log, set by a screen and drained by the
-/// host (`take_track_action`) which owns the file I/O. The screens never touch storage —
-/// they record intent here, exactly as they record `active_route` for the route reader.
+/// A one-shot disposition for the **current** ride log, set by a screen and drained by the host
+/// (`take_track_action`) which owns the file I/O.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrackAction {
     /// Finalise the open log to a `.gpx` (Finish, or "Save & start new").
@@ -60,36 +56,33 @@ pub(crate) struct Motion {
 }
 
 /// The active ride: the [`Mode`], which route is loaded, the live map-match, and the
-/// actually-ridden accumulators. Small and `Copy` — the screens read it by value through
-/// [`Ctx`](crate::screen::Ctx) / [`Render`](crate::screen::Render).
+/// actually-ridden accumulators. Small and `Copy` — the screens read it by value.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Activity {
     pub mode: Mode,
-    /// Index into the app's route [`Catalog`](crate::route::Catalog) of the loaded
-    /// route, or `None` when idle. The summary is read from the catalog; the geometry
-    /// is opened separately by the host (only the active route is resident).
+    /// Index into the route [`Catalog`](crate::route::Catalog) of the loaded route, or `None` when
+    /// idle. The geometry is opened separately by the host (only the active route is resident).
     pub active_route: Option<usize>,
 
     // tracking session (distinct from the navigated route)
-    /// The active **tracking session** id, or `None` when not tracking. A session spans
-    /// from a route load (from Idle, or "Save & start new") to Finish/Discard, and survives
-    /// a "Swap route only" — so it's keyed separately from [`active_route`](Activity::active_route)
-    /// (which the matcher follows). The host reconciles the open ride log to this id.
+    /// The active **tracking session** id, or `None` when not tracking. A session spans from a
+    /// route load to Finish/Discard, and survives a "Swap route only" — so it's keyed separately
+    /// from [`active_route`](Activity::active_route) (which the matcher follows). The host
+    /// reconciles the open ride log to this id.
     pub session: Option<u32>,
-    /// Monotonic id source for [`session`](Activity::session); only ever increments, so a
-    /// new session can never collide with a just-finished one.
+    /// Monotonic id source for [`session`](Activity::session); only increments, so a new session
+    /// can't collide with a just-finished one.
     session_seq: u32,
-    /// A one-shot disposition (`Save`/`Discard`) for the open log, set by a screen and
-    /// drained by the host via [`take_track_action`](Activity::take_track_action).
+    /// A one-shot disposition for the open log, drained by the host via
+    /// [`take_track_action`](Activity::take_track_action).
     track_action: Option<TrackAction>,
 
-    // live map-match (from the GPS fix, set by `App::tick`)
-    /// Total distance of the active route (m), mirrored from its header so the riding
-    /// views can compute the progress fraction (and the Statistics `handle` can seed a
-    /// scrub from the live position) without re-reading the route. `0` when none loaded.
+    // live map-match (from the GPS fix)
+    /// Total distance of the active route (m), mirrored from its header so the riding views can
+    /// compute the progress fraction without re-reading the route. `0` when none loaded.
     pub route_total_m: u32,
-    /// Matched distance along the route (m): the riding cursor / progress bar. Frozen
-    /// while off-route.
+    /// Matched distance along the route (m): the riding cursor / progress bar. Frozen while
+    /// off-route.
     pub progress_m: u32,
     /// Whether the rider is currently off-route.
     pub off_route: bool,
@@ -97,13 +90,12 @@ pub struct Activity {
     pub dist_to_route_m: u32,
 
     // actually-ridden accumulators
-    /// Distance actually pedalled (m) — the `done` stat. Counts **every** sane fix,
-    /// including sub-threshold creep, so it's the true total covered.
+    /// Distance actually pedalled (m) — the `done` stat. Counts **every** sane fix, including
+    /// sub-threshold creep, so it's the true total covered.
     pub ridden_m: f32,
-    /// Distance covered **while moving** (m): only fixes at or above [`MOVING_MIN_MPS`] —
-    /// the numerator of Avg. Kept separate from [`ridden_m`](Activity::ridden_m) so the
-    /// average pairs moving distance with moving time; mixing total distance with
-    /// moving-only time inflated Avg (issue #4).
+    /// Distance covered **while moving** (m): only fixes at or above [`MOVING_MIN_MPS`] — the
+    /// numerator of Avg. Kept separate from [`ridden_m`](Activity::ridden_m) so the average pairs
+    /// moving distance with moving time (mixing them inflated Avg).
     moving_m: f32,
     /// Moving time (s), accumulated only above [`MOVING_MIN_MPS`] — denominator of Avg.
     pub moving_s: f32,
@@ -112,14 +104,13 @@ pub struct Activity {
     /// Previous fix + its host timestamp, to integrate distance/time between ticks.
     last_fix: Option<Fix>,
     last_ms: Option<u32>,
-    /// Dead-banded barometric climb — the `climbed` stat, read via
-    /// [`climb_m`](Activity::climb_m). The same hysteresis integrator (and dead-band) the
-    /// route converter uses, so an on-route ride lands near the route's precomputed ascent.
+    /// Dead-banded barometric climb — the `climbed` stat. The same hysteresis integrator the route
+    /// converter uses, so an on-route ride lands near the route's precomputed ascent.
     climb: DeadBand<f32>,
     /// Latest barometric altitude (m), stamped onto each logged [`TrackPoint`]'s elevation.
     last_alt: Option<f32>,
-    /// `true` when a dropped fix (GPS gap / teleport) left a hole, so the next logged point
-    /// must start a fresh track segment.
+    /// `true` when a dropped fix (GPS gap / teleport) left a hole, so the next logged point starts a
+    /// fresh track segment.
     segment_break: bool,
 }
 
@@ -129,10 +120,9 @@ impl Activity {
         Activity { mode, ..Default::default() }
     }
 
-    /// Average speed (km/h) over the moving time, or `None` before any moving time has
-    /// accrued (so the Statistics screen can show a placeholder rather than a `NaN`).
-    /// Uses the moving-only distance ([`moving_m`](Activity::moving_m)) over the moving
-    /// time, so sub-threshold creep (counted in `ridden_m`) can't inflate it (issue #4).
+    /// Average speed (km/h) over the moving time, or `None` before any moving time has accrued (so
+    /// the Statistics screen shows a placeholder, not `NaN`). Moving-only distance over moving time,
+    /// so sub-threshold creep (counted in `ridden_m`) can't inflate it.
     pub fn avg_kmh(&self) -> Option<f32> {
         (self.moving_s > 0.0).then(|| self.moving_m / self.moving_s * 3.6)
     }
@@ -142,10 +132,9 @@ impl Activity {
         self.climb.ascent()
     }
 
-    /// Average moving speed in cm/s — the ride object's `avg_speed` field (issue #275), the same
-    /// moving-distance-over-moving-time quotient as [`avg_kmh`](Activity::avg_kmh) in the wire's
-    /// integer unit. 0 before any moving time; clamped into the `u16` the layout carries
-    /// (655 m/s — unreachable on a bicycle).
+    /// Average moving speed in cm/s — the ride object's `avg_speed` field, the same quotient as
+    /// [`avg_kmh`](Activity::avg_kmh) in the wire's integer unit. 0 before any moving time; the
+    /// `u16` saturates well above any bicycle speed.
     pub fn avg_speed_cms(&self) -> u16 {
         if self.moving_s <= 0.0 {
             return 0;
@@ -154,18 +143,16 @@ impl Activity {
     }
 
     /// The current barometric elevation (m): the latest altimeter sample, or `None` before the
-    /// first one (no altimeter wired, or still warming up). Unlike [`climb_m`](Activity::climb_m)
-    /// (dead-banded *ascent*) this is the raw present height — it follows the altimeter in any
-    /// [`Mode`], since it's just "how high am I now". The
-    /// [`Elevation`](crate::stat_fields::StatField::Elevation) tile reads it (issue #222).
+    /// first. Unlike [`climb_m`](Activity::climb_m) (dead-banded *ascent*) this is the raw present
+    /// height and follows the altimeter in any [`Mode`]. Read by the
+    /// [`Elevation`](crate::stat_fields::StatField::Elevation) tile.
     pub fn current_elevation_m(&self) -> Option<f32> {
         self.last_alt
     }
 
-    /// Begin a fresh tracking session (a route load from Idle, or "Save & start new"),
-    /// assigning the next monotonic [`session`](Activity::session) id. The host opens a new
-    /// ride log when it sees the id change; [`App`](crate::App) resets the accumulators +
-    /// breadcrumb on the same change.
+    /// Begin a fresh tracking session, assigning the next monotonic
+    /// [`session`](Activity::session) id. The host opens a new ride log when it sees the id change;
+    /// [`App`](crate::App) resets the accumulators + breadcrumb on the same change.
     pub fn start_session(&mut self) {
         self.session_seq = self.session_seq.wrapping_add(1);
         self.session = Some(self.session_seq);
@@ -193,9 +180,8 @@ impl Activity {
         self.track_action.take()
     }
 
-    /// Non-consuming peek at whether a [`TrackAction`] is pending. Lets the host gate its
-    /// per-tick storage reconcile on actual change without draining the one-shot — the action is
-    /// still consumed only by [`take_track_action`](Activity::take_track_action), once processed.
+    /// Non-consuming peek at whether a [`TrackAction`] is pending — lets the host gate its per-tick
+    /// storage reconcile on actual change without draining the one-shot.
     pub fn has_track_action(&self) -> bool {
         self.track_action.is_some()
     }
@@ -206,8 +192,8 @@ impl Activity {
         self.last_alt.map_or(0, |a| a as i16)
     }
 
-    /// Clear the ride totals + match + integration state (keeps `mode`/`active_route`/
-    /// `session`). Called when a session starts — tracking accumulators begin fresh (spec §6).
+    /// Clear the ride totals + match + integration state (keeps `mode`/`active_route`/`session`).
+    /// Called when a session starts, so tracking accumulators begin fresh.
     pub(crate) fn reset_ride(&mut self) {
         self.progress_m = 0;
         self.off_route = false;
@@ -230,11 +216,10 @@ impl Activity {
     }
 
     /// Integrate one position fix into the ridden distance + moving time. By the
-    /// [`LocationSource`](crate::LocationSource) contract this is called exactly once per fresh
-    /// GPS sample (the source returns `None` between fixes), so consecutive calls are a GPS
-    /// period apart — the per-second interval the gate below is sized for. Only accumulates
-    /// while [`Riding`](Mode::Riding); a sane-interval gate drops dropouts and teleports.
-    /// Pausing drops the anchor so resuming doesn't book the gap (spec §6).
+    /// [`LocationSource`](crate::LocationSource) contract this is called once per fresh GPS sample,
+    /// so consecutive calls are a GPS period apart — the interval the gate below is sized for. Only
+    /// accumulates while [`Riding`](Mode::Riding); a sane-interval gate drops dropouts and
+    /// teleports. Pausing drops the anchor so resuming doesn't book the gap.
     pub(crate) fn record_motion(&mut self, fix: Fix, now_ms: u32) -> Motion {
         if self.mode != Mode::Riding {
             self.last_fix = None;
@@ -245,13 +230,11 @@ impl Activity {
         let mut counted = false;
         if let (Some(prev), Some(prev_ms)) = (self.last_fix, self.last_ms) {
             let dt = now_ms.saturating_sub(prev_ms) as f32 / 1000.0;
-            // Defensive guard on the fresh-fix contract: a fresh sample always carries a later
-            // `RideClock`, so `dt` is normally the GPS period (~1 s). A non-advancing clock
-            // (`dt <= 0` — two fixes stamped the same millisecond, or a misbehaving source that
-            // replays a stale fix) can't be integrated: `dist / dt` would manufacture an
-            // infinite implied speed and reject the *next* real move as a teleport. Coalesce it
-            // into the anchor instead — advance `last_fix`/`last_ms`, log nothing, and (unlike a
-            // real gap) do **not** arm a segment break, since no time and no travel elapsed.
+            // A non-advancing clock (`dt <= 0`: two fixes stamped the same ms, or a source replaying
+            // a stale fix) can't be integrated — `dist / dt` would manufacture an infinite implied
+            // speed and reject the *next* real move as a teleport. Coalesce into the anchor instead:
+            // advance `last_fix`/`last_ms`, log nothing, and do **not** arm a segment break (no time
+            // or travel elapsed).
             if dt <= 0.0 {
                 self.last_fix = Some(fix);
                 self.last_ms = Some(now_ms);
@@ -262,9 +245,8 @@ impl Activity {
             if dt < MAX_GAP_S && implied < MAX_SPEED_MPS {
                 self.ridden_m += dist;
                 if implied >= MOVING_MIN_MPS {
-                    // Above the moving threshold: book the distance *and* the time toward
-                    // Avg. Sub-threshold creep still adds to `ridden_m` above, but neither
-                    // to `moving_m` nor `moving_s`, so the two stay paired (issue #4).
+                    // Above the moving threshold: book distance *and* time toward Avg. Sub-threshold
+                    // creep adds to `ridden_m` but not here, so distance and time stay paired.
                     self.moving_m += dist;
                     self.moving_s += dt;
                 }
@@ -282,24 +264,22 @@ impl Activity {
         Motion { log, segment_start }
     }
 
-    /// Integrate one barometric altitude sample into the climbed total, dead-banded so
-    /// sensor noise doesn't inflate it. Only while [`Riding`](Mode::Riding); pausing drops
-    /// the reference so an altitude change *during* the pause isn't booked on resume.
+    /// Integrate one barometric altitude sample into the climbed total, dead-banded so sensor noise
+    /// doesn't inflate it. Only while [`Riding`](Mode::Riding); pausing drops the reference so an
+    /// altitude change *during* the pause isn't booked on resume.
     pub(crate) fn record_altitude(&mut self, alt_m: f32) {
-        // Reject a non-finite sample (a baro driver hiccup / divide-by-zero in the
-        // pressure→altitude conversion). A `NaN` delta already slips through the dead-band's
-        // comparisons, but `+inf - ref = +inf >= DEADBAND` would book *infinite* ascent —
-        // permanently poisoning the `climbed` stat — and a non-finite value must never stamp a
-        // logged track point's elevation. Drop it before it touches either.
+        // Reject non-finite samples (a baro driver hiccup): `+inf - ref = +inf >= DEADBAND` would
+        // book *infinite* ascent, permanently poisoning `climbed`, and must never stamp a logged
+        // elevation.
         if !alt_m.is_finite() {
             return;
         }
-        // The latest altitude stamps logged track points regardless of mode (it's just the
-        // current height); the climb dead-band below only runs while riding.
+        // The latest altitude stamps logged track points regardless of mode; the climb dead-band
+        // below only runs while riding.
         self.last_alt = Some(alt_m);
         if self.mode != Mode::Riding {
-            // Drop the reference so a height change *during* the pause isn't booked on
-            // resume; the accumulated climb is kept.
+            // Drop the reference so a height change during the pause isn't booked on resume; the
+            // accumulated climb is kept.
             self.climb.pause();
             return;
         }
@@ -319,10 +299,8 @@ mod tests {
     /// comfortably inside the [`MOVING_MIN_MPS`]..[`MAX_SPEED_MPS`] band.
     const STEP_UD: i32 = 45;
 
-    /// The headline #43 case: a real 1 Hz fix stream — the source returns `None` between the
-    /// per-second `Some`s, so `record_motion` runs once per fix — integrates distance and moving
-    /// time and is **never** rejected as a teleport. (The old "same fix every ~8 ms" replay made
-    /// the once-a-second move look like an 8 ms teleport and recorded nothing.)
+    /// A real 1 Hz fix stream (one `record_motion` per fix) integrates distance and moving time and
+    /// is **never** rejected as a teleport.
     #[test]
     fn one_hz_fix_stream_integrates_without_teleport_rejection() {
         let mut a = Activity::new(Mode::Riding);
@@ -368,7 +346,7 @@ mod tests {
 
     /// Avg must pair moving distance with moving time: a sub-threshold "creep" interval (a slow
     /// red-light roll, below [`MOVING_MIN_MPS`]) adds to the `done` total but *not* to Avg, so it
-    /// can't drag the reported average above any speed actually sustained (issue #4).
+    /// can't drag the reported average above any speed actually sustained.
     #[test]
     fn sub_threshold_creep_does_not_inflate_avg() {
         // ~0.56 m north over 1 s ≈ 0.56 m/s — comfortably below MOVING_MIN_MPS (0.8).
@@ -468,17 +446,10 @@ mod tests {
         assert!((cms as f32 - kmh / 3.6 * 100.0).abs() < 1.0, "{cms} cm/s vs {kmh} km/h");
     }
 
-    // Barometric climb — `record_altitude` / `climb_m` (issue #93 item 1).
-    //
-    // The whole climb path had zero coverage: no test ever fed an altitude through
-    // `Activity`. These exercise the dead-band integrator, the NaN/inf rejection, and the
-    // pause-drops-the-reference-but-keeps-the-total rule (src/activity.rs ~265-279) that
-    // decides whether a climb during a rest gets booked on resume.
+    // Barometric climb — `record_altitude` / `climb_m`.
 
-    /// The dead-band (3.0 m, `ELE_DEADBAND_M`) is the whole reason climb isn't pure baro noise:
-    /// a sub-3 m wiggle (a gust of pressure noise, a bridge) must book *nothing*, while a clean
-    /// climb past the band books its full delta. Without this, a parked bike on a breezy day
-    /// would accrue phantom ascent. Guards `record_altitude` → `DeadBand::push` (activity.rs ~278).
+    /// The dead-band (3.0 m) is why climb isn't pure baro noise: a sub-3 m wiggle books *nothing*,
+    /// while a clean climb past the band books its full delta.
     #[test]
     fn climb_ignores_sub_deadband_noise_and_books_clear_gains() {
         let mut a = Activity::new(Mode::Riding);
@@ -495,9 +466,8 @@ mod tests {
         assert_eq!(a.climb_m(), 5.0, "a clear gain past the band books its full delta, got {}", a.climb_m());
     }
 
-    /// Descending must never subtract from `climbed` — the stat is total ascent, the descent the
-    /// dead-band also tracks is read separately. A rolling profile (up 6, down 6, up 6) books
-    /// 12 m of climb, not 6. Guards that `climb_m()` reads only `ascent` (activity.rs ~141).
+    /// Descending must never subtract from `climbed` (total ascent only). A rolling profile
+    /// (up 6, down 6, up 6) books 12 m of climb, not 6.
     #[test]
     fn climb_accumulates_only_ascent_across_rolling_terrain() {
         let mut a = Activity::new(Mode::Riding);
@@ -508,10 +478,8 @@ mod tests {
         assert_eq!(a.climb_m(), 12.0, "two 6 m climbs book 12 m, the dip in between doesn't subtract");
     }
 
-    /// The headline pause rule (activity.rs ~272-277): pausing drops the dead-band *reference*
-    /// but keeps the accumulated total, so a height change *during* a rest is not booked on
-    /// resume. A rider who climbs 10 m, stops at a hut and the barometer drifts +50 m over lunch
-    /// (weather, or carrying the bike upstairs), then resumes must still read ~10 m — not 60.
+    /// Pausing drops the dead-band *reference* but keeps the accumulated total, so a height change
+    /// during a rest (weather drift, carrying the bike upstairs) is not booked on resume.
     #[test]
     fn pause_drops_reference_so_climb_during_a_rest_is_not_booked() {
         let mut a = Activity::new(Mode::Riding);
@@ -535,11 +503,8 @@ mod tests {
         assert_eq!(a.climb_m(), 15.0, "only genuine post-resume climb adds, got {}", a.climb_m());
     }
 
-    /// A NaN or infinite altitude (a baro driver hiccup / divide-by-zero in pressure→altitude)
-    /// must not corrupt the climb total. `DeadBand::push` compares the delta against `±DEADBAND`;
-    /// a NaN delta fails both `>=` and `<=`, and `+inf - ref = +inf` would otherwise book infinite
-    /// ascent. This pins that a garbage sample is silently ignored, not allowed to inflate (or
-    /// `NaN`-poison) the stat. Guards `record_altitude` against bad sensor input (activity.rs ~268).
+    /// A NaN or infinite altitude (a baro driver hiccup) must not corrupt the climb total: it's
+    /// silently ignored, never allowed to inflate or `NaN`-poison the stat.
     #[test]
     fn climb_ignores_nan_and_infinite_altitude() {
         let mut a = Activity::new(Mode::Riding);
@@ -560,10 +525,8 @@ mod tests {
         assert_eq!(a.climb_m(), 10.0, "a good sample after garbage measures from the last good ref");
     }
 
-    /// The latest altitude stamps logged track points regardless of mode (it is just the current
-    /// height) — distinct from the climb integrator, which only runs while riding. `track_ele`
-    /// must reflect the most recent sample even when paused, so a point logged during a paused
-    /// frame still carries a sane elevation. Guards `last_alt`/`track_ele` (activity.rs ~185, 271).
+    /// The latest altitude stamps logged track points regardless of mode, so a point logged during
+    /// a paused frame still carries a sane elevation (distinct from the ride-only climb integrator).
     #[test]
     fn track_ele_tracks_latest_altitude_even_when_paused() {
         let mut a = Activity::new(Mode::Riding);
@@ -575,9 +538,8 @@ mod tests {
         assert_eq!(a.track_ele(), 200, "the stamped elevation follows the latest sample even paused");
     }
 
-    /// `reset_ride` (a new tracking session) must wipe the climb total *and* its reference, so a
-    /// second ride doesn't inherit the first ride's ascent or measure its first climb against the
-    /// first ride's last altitude. Guards `reset_ride` resetting `climb`/`last_alt` (activity.rs ~198).
+    /// `reset_ride` wipes the climb total *and* its reference, so a second ride doesn't inherit the
+    /// first's ascent or measure its first climb against the first's last altitude.
     #[test]
     fn reset_ride_clears_the_climb_total_and_reference() {
         let mut a = Activity::new(Mode::Riding);
@@ -594,14 +556,11 @@ mod tests {
         assert_eq!(a.climb_m(), 5.0, "ride two measures from its own anchor, got {}", a.climb_m());
     }
 
-    // `record_motion` numeric edges (issue #93 item 2): the gate thresholds and
-    // `ground_dist_m` extremes the mid-band cases above don't reach.
+    // `record_motion` numeric edges: the gate thresholds and `ground_dist_m` extremes the mid-band
+    // cases above don't reach.
 
-    /// The teleport gate (activity.rs ~242) is `implied < MAX_SPEED_MPS` (30 m/s). A move whose
-    /// implied speed lands *just under* 30 m/s must still be counted, while one at/over 30 must be
-    /// dropped — pinning the `<` boundary so an off-by-one (`<=` vs `<`) is caught. A sub-ms `dt`
-    /// is the nastiest input: it divides a normal step by a tiny time and manufactures a huge
-    /// implied speed, exactly the case that probes the gate's upper edge.
+    /// The teleport gate is `implied < MAX_SPEED_MPS` (30 m/s): a move just under 30 m/s is counted,
+    /// at/over 30 is dropped — pinning the `<` boundary against a `<=` off-by-one.
     #[test]
     fn teleport_gate_boundary_is_just_under_max_speed() {
         // dt = 100 ms. At 30 m/s the gate trips, so a move of just under 3.0 m must pass and a
@@ -619,10 +578,9 @@ mod tests {
         assert!(a.ridden_m < 3.3, "the over-gate step booked nothing extra, got {}", a.ridden_m);
     }
 
-    /// The moving-threshold gate (activity.rs ~244) is `implied >= MOVING_MIN_MPS` (0.8 m/s):
-    /// at/above it the interval's time counts toward Avg, below it only distance does. This pins
-    /// the `>=` boundary at exactly 0.8 m/s so a `>` regression (which would drop a rider holding
-    /// a steady 0.8 m/s crawl out of the moving average) is caught. Distance is always booked.
+    /// The moving-threshold gate is `implied >= MOVING_MIN_MPS` (0.8 m/s): at/above it the
+    /// interval's time counts toward Avg, below it only distance does — pinning the `>=` boundary
+    /// against a `>` regression. Distance is always booked.
     #[test]
     fn moving_threshold_boundary_counts_at_exactly_min_speed() {
         // dt = 1 s. 0.8 m/s ⇒ a 0.8 m step. 0.8 m north ≈ 7.2 µdeg; use 8 µdeg (~0.89 m) to land
@@ -640,16 +598,11 @@ mod tests {
         assert!(below.ridden_m > 0.0, "but the creep distance is still in the done total");
     }
 
-    /// Antimeridian: `ground_dist_m` uses a local-equirectangular projection with a raw
-    /// `lon_b - lon_a` delta and **no ±180° wrap** (geo.rs `delta_m`, documented as accurate only
-    /// over a decimated route's short segments). So two points either side of the date line —
-    /// physically ~2 µdeg apart — read as a ~40 000 km jump and are rejected by the teleport gate.
-    ///
-    /// This pins the *actual current behaviour*, not an idealised one: crossing the antimeridian
-    /// is unsupported (a real but rare bikepacking edge in the Pacific / NZ). The interval is
-    /// dropped — like any other teleport — rather than crashing or booking a planet-circling
-    /// distance, and the next sane fix opens a fresh segment. If wrap handling is ever added to
-    /// the projection, flip the first assertion to expect the short real distance.
+    /// `ground_dist_m` uses a local-equirectangular projection with a raw `lon_b - lon_a` delta and
+    /// **no ±180° wrap**, so two points either side of the date line (physically ~2 µdeg apart) read
+    /// as a ~40 000 km jump and are dropped by the teleport gate. Pins the current behaviour:
+    /// crossing the antimeridian is unsupported but degrades to a dropped interval, not a crash. If
+    /// wrap handling is added, flip the first assertion to expect the short real distance.
     #[test]
     fn motion_across_antimeridian_is_dropped_as_a_teleport() {
         const NEAR_180: i32 = 179_999_990; // ~1 µdeg west of +180°

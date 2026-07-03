@@ -1,7 +1,7 @@
 //! `obc-ble`'s **production** codecs against the shared `protocol-vectors/` fixtures — the same
 //! files the app's `swift test` pins and `obc-vectors` builds from the spec. `obc-vectors` proves
-//! the *bytes* match spec-derived builders; this proves the codecs the firmware actually ships
-//! decode and re-encode those bytes exactly. A drift fails here, there, and on the Swift side.
+//! the *bytes* match spec-derived builders; this proves the shipped codecs decode and re-encode
+//! those bytes exactly. A drift fails here, there, and on the Swift side.
 
 use obc_ble::descriptor::{ObjectType, Op, StatusMessage, TransferStatus};
 use obc_ble::{Config, ObjectStoreDigest, StoreChanged, TransferControl, TransferResult};
@@ -103,7 +103,7 @@ fn config_vector() {
 }
 
 /// An unknown `status` discriminator decodes to `None` (ignored), never an error — forward
-/// compatibility (spec §4.3).
+/// compatibility.
 #[test]
 fn unknown_status_discriminator_is_ignored() {
     assert_eq!(StatusMessage::decode(&[0xEE, 0, 0, 0]), Ok(None));

@@ -1,7 +1,6 @@
-//! The Add Field picker — the [`StatFields`](super::StatFieldsScreen) screen's `Add field` row opens
-//! it to a wrapping list of every predefined field **not yet** on the grid. `press` adds the
-//! highlighted field (to the end of the selection) and returns; `back` returns without adding. When
-//! every field is already shown it's a quiet empty state rather than a blank list.
+//! The Add Field picker — a wrapping list of every predefined field not yet on the grid. `press`
+//! adds the highlighted field to the end of the selection and returns; `back` returns without adding.
+//! When every field is already shown it's a quiet empty state.
 
 use embedded_graphics::prelude::DrawTarget;
 use obc_render::{Canvas, RenderStats};

@@ -1,25 +1,18 @@
-//! Pure UBX protocol decode for the u-blox **SAM-M10Q** GNSS receiver (issue #218) — the
-//! host-testable half of the GPS driver.
-//!
-//! The board crate owns the concrete I²C (DDC) transport; this module is the dependency-light,
-//! `no_std`, **pure** logic it drives: frame the UBX byte stream, parse a `UBX-NAV-PVT` message,
-//! and convert it to an [`obc_app::Fix`]. Keeping it a set of `fn`s over `&[u8]` (no hardware, no
-//! embassy) means it unit-tests on the host against captured frames — the same style as the
-//! [`crate::debug_link`] codec and the `OneFix` / dead-band tests.
+//! Pure UBX protocol decode for the u-blox **SAM-M10Q** GNSS receiver — the host-testable half of
+//! the GPS driver (the board crate owns the concrete I²C/DDC transport).
 //!
 //! ## Why UBX NAV-PVT (not NMEA)
 //! One binary, checksummed message carries everything the ride pipeline needs —
 //! lat/lon/height/velocity/heading/`fixType`/`numSV`/accuracy/time — as **integer** fields. No
 //! ASCII float parsing, no multi-sentence reassembly. The M10 emits it on the I²C (DDC) port once
-//! per nav epoch when configured via the VALSET key-value API (see [`valset_u8`] & friends).
+//! per nav epoch when configured via the VALSET key-value API.
 //!
 //! ## Framing
 //! A UBX frame is `B5 62 | class | id | len_lo len_hi | payload[len] | ck_a ck_b`. The 8-bit
 //! Fletcher checksum ([`checksum`]) runs over `class .. payload` (**not** the two sync bytes).
-//! [`scan_ubx`] finds the next complete, checksum-valid frame and how many bytes it consumed (so a
-//! caller streaming the DDC can drain it); [`parse_stream`] is the convenience the driver uses —
-//! it returns the **freshest** NAV-PVT in a buffer plus the bytes to drain, leaving any trailing
-//! partial frame for the next read.
+//! [`scan_ubx`] finds the next complete, checksum-valid frame and how many bytes it consumed;
+//! [`parse_stream`] returns the **freshest** NAV-PVT in a buffer plus the bytes to drain, leaving
+//! any trailing partial frame for the next read.
 
 use obc_app::{DateTime, Fix, GpsTime};
 
@@ -36,29 +29,27 @@ pub const NAV_PVT_LEN: usize = 92;
 
 /// NAV-PVT `valid` bitfield: bit0 `validDate`, bit1 `validTime`, bit2 `fullyResolved` (UTC settled,
 /// no leap-second ambiguity). All three ⇒ the receiver's UTC date+time is trustworthy — the gate
-/// [`NavPvt::utc_time`] applies before it stamps the clock (issue #223).
+/// [`NavPvt::utc_time`] applies before it stamps the clock.
 pub const VALID_TIME_RESOLVED: u8 = 0x07;
 
-/// `UBX-ACK` class with its ACK / NAK ids — the receiver answers each `CFG-VALSET` with one, so the
-/// config step can confirm (or log a NAK) per key. See [`ack_status`].
+/// `UBX-ACK` class with its ACK / NAK ids — the receiver answers each `CFG-VALSET` with one. See
+/// [`ack_status`].
 pub const CLASS_ACK: u8 = 0x05;
 pub const ID_ACK_ACK: u8 = 0x01;
 pub const ID_ACK_NAK: u8 = 0x00;
 
 /// `UBX-CFG` class + the `VALSET` (set configuration value) message id — the M10 dropped the legacy
-/// `CFG-MSG`, so all runtime config goes through the key-value VALSET API ([`valset_u8`] & friends).
+/// `CFG-MSG`, so all runtime config goes through the key-value VALSET API.
 pub const CLASS_CFG: u8 = 0x06;
 pub const ID_CFG_VALSET: u8 = 0x8A;
 
 /// `UBX-RXM` class + the `PMREQ` (power-management request) message id — the deep-sleep command the
-/// driver issues when tracking stops (issue #225). See [`pmreq_backup`].
+/// driver issues when tracking stops. See [`pmreq_backup`].
 pub const CLASS_RXM: u8 = 0x02;
 pub const ID_RXM_PMREQ: u8 = 0x41;
 
-// ---------------------------------------------------------------------------------------------
 // Little-endian field readers — UBX is little-endian throughout. Each returns 0 if the slice is
-// too short (the callers gate on length first, so this is just a panic-free fallback).
-// ---------------------------------------------------------------------------------------------
+// too short (callers gate on length first).
 fn le_u16(b: &[u8], o: usize) -> u16 {
     if o + 2 > b.len() {
         return 0;
@@ -110,10 +101,10 @@ pub enum Scan<'a> {
 /// Find the next complete, checksum-valid UBX frame in `buf`.
 ///
 /// Skips leading non-sync noise, validates the length + Fletcher checksum, and on success reports
-/// how many bytes to drain. A truncated trailing frame (valid sync, not all bytes present yet)
-/// yields [`Scan::NeedMore`] with the leading junk to drop, so a streaming caller keeps only the
-/// partial frame's bytes. A **bad checksum** is treated as a false sync: we skip that one sync byte
-/// and keep scanning, so a corrupt frame can't wedge the stream.
+/// how many bytes to drain. A truncated trailing frame yields [`Scan::NeedMore`] with the leading
+/// junk to drop, so a streaming caller keeps only the partial frame's bytes. A **bad checksum** is
+/// treated as a false sync: skip that one sync byte and keep scanning, so a corrupt frame can't
+/// wedge the stream.
 pub fn scan_ubx(buf: &[u8]) -> Scan<'_> {
     let mut i = 0usize;
     while i + 1 < buf.len() {
@@ -191,8 +182,7 @@ pub fn parse_stream(buf: &[u8]) -> StreamResult {
 
 /// The decoded `UBX-NAV-PVT` fields the ride pipeline needs (a subset of the 92-byte payload, read
 /// by fixed offset). Integer units exactly as the receiver reports them; [`to_fix`](NavPvt::to_fix)
-/// does the conversion + validity gate. The accuracy/quality fields (`hacc_mm`, `pdop`, `num_sv`)
-/// are kept so the driver can RTT-log acquisition progress and optionally tighten the gate.
+/// does the conversion + validity gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NavPvt {
     /// GPS time-of-week of the nav epoch, ms.
@@ -238,13 +228,11 @@ impl NavPvt {
         self.flags & 0x01 != 0
     }
 
-    /// The receiver's UTC date+time as a [`GpsTime`] **iff** the `valid` bitfield marks the date,
-    /// time, **and** full resolution all good — else `None`, so the app never stamps the clock from
-    /// a half-resolved epoch (issue #223). Deliberately **independent of**
-    /// [`to_fix`](NavPvt::to_fix)'s position gate: the receiver resolves time before a 3D position,
-    /// so this can deliver a stamp during acquisition while there's still no usable fix. `second`
-    /// carries the seconds-into-the-minute for the wall-clock epoch back-date; a leap-second `60` is
-    /// clamped to `59`.
+    /// The receiver's UTC date+time as a [`GpsTime`] **iff** the `valid` bitfield marks date, time,
+    /// **and** full resolution all good — else `None`, so the app never stamps the clock from a
+    /// half-resolved epoch. Deliberately **independent of** [`to_fix`](NavPvt::to_fix)'s position
+    /// gate: the receiver resolves time before a 3D position, so this can deliver a stamp during
+    /// acquisition. A leap-second `60` is clamped to `59`.
     pub fn utc_time(&self) -> Option<GpsTime> {
         if self.valid & VALID_TIME_RESOLVED != VALID_TIME_RESOLVED {
             return None;
@@ -263,22 +251,19 @@ impl NavPvt {
         self.fix_type >= 3 && self.gnss_fix_ok()
     }
 
-    /// Optional accuracy gate the driver can apply on top of [`is_valid_fix`](NavPvt::is_valid_fix):
-    /// horizontal accuracy ≤ `max_hacc_mm` and pDOP ≤ `max_pdop` (each `None` to skip). Off by
-    /// default so bring-up sees marginal fixes; surfaced for a later quality tighten.
+    /// Optional accuracy gate on top of [`is_valid_fix`](NavPvt::is_valid_fix): horizontal accuracy
+    /// ≤ `max_hacc_mm` and pDOP ≤ `max_pdop` (each `None` to skip).
     #[inline]
     pub fn passes_quality(&self, max_hacc_mm: Option<u32>, max_pdop: Option<u16>) -> bool {
         max_hacc_mm.is_none_or(|m| self.hacc_mm <= m) && max_pdop.is_none_or(|m| self.pdop <= m)
     }
 
-    /// Convert to the app's [`Fix`] **iff** this is a valid fix, else `None` (the driver then signals
-    /// nothing → `LocationSource::poll` returns `None`, so a cold start / dropout never teleports the
-    /// camera). Units: lat/lon 1e-7° → 1e-6 µdeg (rounded); `gSpeed` mm/s → m/s; `headMot` 1e-5° →
-    /// deg. **Course gating:** below ~walking pace ([`COURSE_MIN_MMS`]) a real receiver's heading is
-    /// noise, so `course = None` — exactly what the [`Fix`] seam wants for a stationary rider
-    /// (heading-up then holds the last course / the compass). **No position smoothing** here: the
-    /// motion integrator + route matcher downstream own that; double-filtering adds lag and fights
-    /// map-matching.
+    /// Convert to the app's [`Fix`] **iff** this is a valid fix, else `None` (so a cold start /
+    /// dropout never teleports the camera). Units: lat/lon 1e-7° → 1e-6 µdeg (rounded); `gSpeed`
+    /// mm/s → m/s; `headMot` 1e-5° → deg. **Course gating:** below ~walking pace ([`COURSE_MIN_MMS`])
+    /// a real receiver's heading is noise, so `course = None`. **No position smoothing** here: the
+    /// motion integrator + route matcher downstream own that (double-filtering adds lag and fights
+    /// map-matching).
     pub fn to_fix(&self) -> Option<Fix> {
         if !self.is_valid_fix() {
             return None;
@@ -294,8 +279,7 @@ impl NavPvt {
 }
 
 /// Ground speed (mm/s) below which [`NavPvt::to_fix`] drops the course to `None`. 0.5 m/s ≈ slow
-/// walking pace — under it GPS heading is unreliable, matching the [`Fix`] seam's "course is only
-/// known while actually moving".
+/// walking pace — under it GPS heading is unreliable.
 pub const COURSE_MIN_MMS: i32 = 500;
 
 /// Divide `v` by `d` rounding to nearest (ties away from zero), for the 1e-7° → 1e-6° conversion.
@@ -353,11 +337,9 @@ pub fn ack_status(frame: &UbxFrame<'_>, cls: u8, id: u8) -> Option<bool> {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
 // VALSET config-key IDs (u-blox M10 interface description). Each key's top bits encode its storage
-// size; we build one VALSET per key so each can be ACK-tracked + RTT-logged individually. NB:
-// confirm these IDs + the SAM-M10Q TX-Ready PIO against the M10 interface manual on first bring-up.
-// ---------------------------------------------------------------------------------------------
+// size; one VALSET per key so each can be ACK-tracked individually. NB: confirm these IDs + the
+// SAM-M10Q TX-Ready PIO against the M10 interface manual on first bring-up.
 /// `CFG-I2COUTPROT-UBX` (L): enable UBX output on the I²C/DDC port.
 pub const KEY_I2COUTPROT_UBX: u32 = 0x1072_0001;
 /// `CFG-I2COUTPROT-NMEA` (L): NMEA output on the I²C/DDC port — we disable it (UBX only).
@@ -380,15 +362,12 @@ pub const KEY_TXREADY_THRESHOLD: u32 = 0x30a2_0004;
 pub const KEY_TXREADY_INTERFACE: u32 = 0x20a2_0005;
 /// `CFG-PM-OPERATEMODE` (U1): receiver power mode while tracking — `0` full power, `1` PSMOO
 /// (power-save on/off), `2` PSMCT (cyclic tracking). The `power_saver` toggle drives this to `1`
-/// while riding for the M10's on-chip low-power tracking (issue #225). **VERIFY this key + the value
-/// semantics against the SAM-M10Q interface manual on first bring-up** — like the TX-Ready keys, the
-/// driver applies it best-effort and RTT-logs the ACK/NAK, so a wrong id degrades to full power, not
-/// a fault.
+/// while riding. **VERIFY this key + value semantics against the SAM-M10Q manual on first bring-up**
+/// — applied best-effort (a wrong id degrades to full power, not a fault).
 pub const KEY_PM_OPERATEMODE: u32 = 0x20d0_0001;
 
 /// Frame a UBX message (`B5 62 | class | id | len | payload | ck`) into `out`. Returns the total
-/// frame length, or `None` if `out` is too small. Pure — the inverse of [`scan_ubx`], so a built
-/// frame round-trips through it in tests.
+/// frame length, or `None` if `out` is too small. The inverse of [`scan_ubx`].
 pub fn frame(out: &mut [u8], class: u8, id: u8, payload: &[u8]) -> Option<usize> {
     let total = 8 + payload.len();
     if out.len() < total {
@@ -409,7 +388,7 @@ pub fn frame(out: &mut [u8], class: u8, id: u8, payload: &[u8]) -> Option<usize>
 }
 
 /// Build a `CFG-VALSET` frame (RAM layer) setting a single `key` to a 1-byte (`L`/`U1`) value.
-/// Returns the frame length written to `out`. Payload = 4-byte header + 4-byte key + 1-byte value.
+/// Payload = 4-byte header + 4-byte key + 1-byte value.
 pub fn valset_u8(out: &mut [u8], key: u32, val: u8) -> Option<usize> {
     let mut payload = [0u8; 9];
     valset_header(&mut payload, key);
@@ -431,10 +410,10 @@ const PMREQ_FLAG_BACKUP: u32 = 0x02;
 const PMREQ_FLAG_FORCE: u32 = 0x04;
 
 /// Build a `UBX-RXM-PMREQ` frame requesting **backup** (deep sleep) for an infinite duration —
-/// the M10 retains its RTC + ephemeris on ~microamps and wakes on the next DDC activity, so a
-/// restart is a fast *warm* fix (issue #225). 16-byte v0 payload: `version(1) | reserved(3) |
-/// duration(4 LE, 0 = until woken) | flags(4 LE, backup|force) | wakeupSources(4, 0 = comms
-/// activity)`. Returns the frame length written to `out` (24 B), or `None` if `out` is too small.
+/// the M10 retains its RTC + ephemeris on ~microamps and wakes on the next DDC activity (a fast
+/// *warm* fix). 16-byte v0 payload: `version(1) | reserved(3) | duration(4 LE, 0 = until woken) |
+/// flags(4 LE, backup|force) | wakeupSources(4, 0 = comms activity)`. Returns the frame length
+/// written to `out` (24 B), or `None` if `out` is too small.
 pub fn pmreq_backup(out: &mut [u8]) -> Option<usize> {
     let mut payload = [0u8; 16];
     payload[0] = 0x00; // version 0
@@ -522,9 +501,8 @@ mod tests {
         assert_eq!(fix.speed_mps, Some(0.1));
     }
 
-    /// `utc_time` (issue #223) is gated on `validDate | validTime | fullyResolved` and is
-    /// **independent of the position fix** (here `fixType = 0`, no lock): it carries the date/time
-    /// through and keeps the seconds for the wall-clock back-date, clamping a leap-second `60`.
+    /// `utc_time` is gated on `validDate | validTime | fullyResolved` and is **independent of the
+    /// position fix** (here `fixType = 0`, no lock); it clamps a leap-second `60`.
     #[test]
     fn utc_time_gated_on_resolved_validity_and_independent_of_fix() {
         let mut p = [0u8; NAV_PVT_LEN]; // fixType stays 0 → no usable fix, yet time can be valid
@@ -633,8 +611,6 @@ mod tests {
         }
     }
 
-    /// `pmreq_backup` (issue #225) frames a valid RXM-PMREQ requesting backup + force for an
-    /// infinite duration — round-tripping through `scan_ubx` with the right class/id and flags.
     #[test]
     fn pmreq_backup_frames_an_infinite_backup_request() {
         let mut out = [0u8; 24];

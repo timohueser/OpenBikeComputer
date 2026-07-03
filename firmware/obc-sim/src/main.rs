@@ -1,29 +1,13 @@
 //! OBC desktop simulator — host shell around the shared renderer.
 //!
-//! All map drawing (projection, LOD selection, polygon fill, lines) lives in
-//! `obc_render`, the same code the nRF54L firmware runs against the
-//! LS021B7DD02. This binary only owns the host concerns: argument parsing, the
-//! eframe window + pan/zoom event loop, PNG output, and the color policy (device
-//! 64-color quantization by default, or `--true-color`).
+//! All map drawing lives in `obc_render`, the same code the nRF54L firmware runs
+//! against the LS021B7DD02. This binary owns only the host concerns: argument
+//! parsing, the eframe window + pan/zoom event loop, PNG output, and the color
+//! policy (device 64-color quantization by default, or `--true-color`).
 //!
-//! Usage:
-//!   obc-sim <map.obcm> [--size WxH] [--scale N] [--png OUT.png] [--true-color]
-//!     [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT]
-//!     [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX]
-//!
-//! `--center`/`--zoom` aim the headless `--png` camera at a spot and zoom level
-//! (e.g. to inspect a specific chunk boundary); `--zoom` multiplies the bbox-fit
-//! zoom. `--routes-dir` points at the folder of `.obcr` routes (the device-SD
-//! stand-in; default `routes/`); `--import GPX` converts a GPX into it and exits, the
-//! host-side run of the same conversion the device does on a USB drop. Routes can also
-//! be dropped onto the window to import them live.
-//!
-//! Interactive: drag to pan, scroll to zoom; close the Controls window to quit.
-//!
-//! The web build (wasm32) reuses only the shared host pieces — [`Args`],
-//! [`color_of`], [`initial_camera`], [`replay_step`], [`reconcile_tracks`] — and the
-//! eframe app; the CLI parser and headless-PNG helpers below still compile but go
-//! unreferenced there, so we quiet the resulting dead-code/import noise for wasm.
+//! The web build (wasm32) reuses only the shared host pieces and the eframe app;
+//! the CLI parser and headless-PNG helpers still compile but go unreferenced there,
+//! so we quiet the resulting dead-code/import noise for wasm.
 #![cfg_attr(target_arch = "wasm32", allow(dead_code, unused_imports))]
 
 use std::time::Instant;
@@ -40,11 +24,8 @@ mod calib;
 mod device_input;
 mod framebuffer;
 mod gui;
-// The self-diffing present backend (epic #199 / issue #200): diff the rendered frame against a
-// per-row hash store, push only the changed spans, and assert an exact full-frame diff agrees.
 mod present;
-// `--palette` is a native-only standalone window (its own eframe::run_native); the
-// web build never uses it, so keep its native APIs out of the wasm compile.
+// `--palette` is a native-only standalone window; keep its native APIs out of the wasm compile.
 #[cfg(not(target_arch = "wasm32"))]
 mod palette;
 mod routes;
@@ -52,8 +33,7 @@ mod settings_store;
 mod sim_compass;
 mod sim_location;
 mod track;
-// In-memory `ByteSink` shared by the route + track stores' conversions; native-only
-// (the web build has no filesystem to write to).
+// Native-only: the web build has no filesystem to write to.
 #[cfg(not(target_arch = "wasm32"))]
 mod vec_sink;
 use framebuffer::Framebuffer;
@@ -71,76 +51,58 @@ struct Args {
     /// Launch the GUI, save its first composited frame to this path, then exit.
     screenshot: Option<String>,
     true_color: bool,
-    /// Start in heading-up orientation with this course (degrees CW from north),
-    /// so a rotated frame can be rendered headlessly (`--png`) or shown on launch.
+    /// Start in heading-up orientation with this course (degrees CW from north).
     heading: Option<f32>,
-    /// Preload this GPX track for replay (the GUI opens with it loaded; `--png`
-    /// renders the fix at `--at`).
+    /// Preload this GPX track for replay.
     gpx: Option<String>,
-    /// With `--gpx --png`, the playback time (seconds) to render the fix at;
-    /// defaults to the track midpoint.
+    /// With `--gpx --png`, the playback time (seconds) to render the fix at; defaults
+    /// to the track midpoint.
     at: Option<f64>,
-    /// Headless camera center "lon,lat" (microdegrees); defaults to the bbox
-    /// center. Lets `--png` target a specific spot (e.g. a chunk boundary).
+    /// Headless camera center "lon,lat" (microdegrees); defaults to the bbox center.
     center: Option<(i32, i32)>,
-    /// Headless zoom multiplier applied to the bbox-fit zoom (e.g. `30` zooms in
-    /// ~30×, picking a finer LOD). Defaults to 1 (whole-map overview).
+    /// Headless zoom multiplier applied to the bbox-fit zoom (picks a finer LOD).
     zoom_mul: f32,
-    /// Render the font/palette preview instead of the map (slice-1 text check).
-    /// Needs no map; writes to `--png` (default `text_demo.png`) and exits.
+    /// Render the font/palette preview instead of the map. Needs no map.
     text_demo: bool,
-    /// A gesture script applied to the app before a headless `--png` render, so a
-    /// specific screen can be snapshotted. Tokens (one char each, spaces ignored):
-    /// `r`/`l` = turn cw/ccw, `p` = press, `h` = hold, `b` = back, `B` = back-hold,
-    /// `H`/`M` = leave the encoder / Back held partway (snapshots the in-flight
-    /// long-press hint). E.g. `--script B` opens the Menu; `--script H` shows the
-    /// encoder hold hint mid-charge.
+    /// A gesture script applied before a headless `--png` render, to snapshot a specific
+    /// screen. Tokens (one char, spaces ignored): `r`/`l` = turn cw/ccw, `p` = press,
+    /// `h` = hold, `b` = back, `B` = back-hold, `H`/`M` = leave the encoder / Back held
+    /// partway (snapshots the in-flight long-press hint).
     script: Option<String>,
-    /// Headless `--png` only: render from the device's real power-on state (Home /
-    /// Idle, no route) instead of straight from the map. Use with `--script` to walk
-    /// the Home → Route menu → Map flow. (The interactive GUI always boots to Home.)
+    /// Headless `--png` only: render from the device's real power-on state (Home / Idle,
+    /// no route) instead of straight from the map.
     boot: bool,
-    /// Folder of `.obcr` routes — the simulator's stand-in for the device SD card.
-    /// The Route menu lists these; defaults to `routes/`.
+    /// Folder of `.obcr` routes — the stand-in for the device SD card; defaults to `routes/`.
     routes_dir: Option<String>,
-    /// Folder for saved `.gpx` tracks + the in-progress `.obct` log — the stand-in for the
-    /// device's `/tracks` SD folder; defaults to `tracks/`.
+    /// Folder for saved `.gpx` tracks + the in-progress `.obct` log; defaults to `tracks/`.
     tracks_dir: Option<String>,
-    /// Headless `--gpx` only: after replaying, finalise the active ride to a `.gpx` in the
-    /// tracks folder (verifies the load→ride→save loop without the GUI).
+    /// Headless `--gpx` only: after replaying, finalise the active ride to a `.gpx`
+    /// (verifies the load→ride→save loop without the GUI).
     save_track: bool,
-    /// Convert this GPX into the routes folder and exit (the device does the same on
-    /// a USB drop). Headless; needs no map.
+    /// Convert this GPX into the routes folder and exit. Needs no map.
     import: Option<String>,
     /// Render the device window at the panel's true physical size (needs a saved
-    /// calibration; see `--calibrate`). Falls back to the normal scaled view if
-    /// uncalibrated. Toggleable live in the control panel.
+    /// calibration). Falls back to the scaled view if uncalibrated.
     physical: bool,
-    /// Open the GUI straight into the 1:1 size-calibration screen (measure the
-    /// on-screen bar with a ruler, enter mm). One-time; the result persists.
+    /// Open the GUI straight into the 1:1 size-calibration screen.
     calibrate: bool,
-    /// Show the device's 64-color gamut and nothing else — a standalone color-test
-    /// screen. Needs no map; opens a window, or writes to `--png` and exits.
+    /// Show the device's 64-color gamut and nothing else. Needs no map.
     palette: bool,
-    /// Initial housing body color: `coral` | `mint` | `mustard` | `slate` (default
-    /// slate). Cosmetic host chrome; switchable live in the control panel.
+    /// Initial housing body color: `coral` | `mint` | `mustard` | `slate` (default slate).
     colorway: Option<String>,
-    /// Boot straight onto the live Map (via [`obc_app::App::new`]) instead of the
-    /// Home/Idle screensaver. The native GUI always boots to Home; the web demo sets
-    /// this so the page opens on the moving map.
+    /// Boot straight onto the live Map instead of the Home/Idle screensaver. The native
+    /// GUI always boots to Home; the web demo sets this so the page opens on the moving map.
     start_on_map: bool,
-    /// Initial battery charge (0–100 %) shown on the Home gauge; the device has no fuel gauge
-    /// wired yet, so this stands in for it. Defaults to full. Handy to preview the level
-    /// colours (`--battery 15` → red, `--battery 50` → amber, `--battery 90` → green).
+    /// Initial battery charge (0–100 %) shown on the Home gauge; stands in for the not-yet-
+    /// wired fuel gauge. Defaults to full.
     battery: Option<u8>,
-    /// Seed for the Home screensaver's contour pattern, to preview the per-open jitter (`0` =
-    /// the canonical massif). On the device the seed is the wall-clock millis at each return to
-    /// Home; this pins it for a headless render.
+    /// Seed for the Home screensaver's contour pattern. On the device the seed is the
+    /// wall-clock millis at each return to Home; this pins it for a headless render.
     home_seed: Option<u32>,
 }
 
 impl Default for Args {
-    /// The device resolution + all knobs off — the base for both the CLI parser and the web build.
+    /// Device resolution + all knobs off — the base for both the CLI parser and the web build.
     fn default() -> Self {
         Args {
             map: String::new(),
@@ -179,27 +141,23 @@ impl Args {
     #[cfg(target_arch = "wasm32")]
     pub(crate) fn web_default() -> Self {
         Args {
-            // Warm terracotta body for the web demo (fits the parchment/forest/amber
-            // page) instead of the default slate.
+            // Warm terracotta body for the web demo, to fit the parchment/forest/amber page.
             colorway: Some("coral".to_string()),
             start_on_map: true,
             ..Args::default()
         }
     }
 
-    /// The `.obcr` routes folder (the device-SD stand-in), defaulting to `routes/`.
     pub(crate) fn routes_dir(&self) -> String {
         self.routes_dir.clone().unwrap_or_else(|| "routes".to_string())
     }
 
-    /// The `/tracks` folder (saved `.gpx` + the in-progress `.obct` log), defaulting to `tracks/`.
     pub(crate) fn tracks_dir(&self) -> String {
         self.tracks_dir.clone().unwrap_or_else(|| "tracks".to_string())
     }
 
-    /// The persisted-settings file (the device's RRAM stand-in), defaulting to
-    /// `obc-settings.bin` in the working dir. Holds the shared [`obc_app::settings`] blob, so
-    /// quitting and relaunching restores units / clock / intervals.
+    /// The persisted-settings file (the device's RRAM stand-in). Holds the shared
+    /// [`obc_app::settings`] blob, so relaunching restores units / clock / intervals.
     pub(crate) fn settings_path(&self) -> String {
         "obc-settings.bin".to_string()
     }
@@ -272,27 +230,24 @@ fn color_of(c: u16, true_color: bool) -> Rgb888 {
     Rgb888::new(r, g, b)
 }
 
-/// Pack 8-bit RGB into RGB565 (the format/style color space the renderer
-/// quantizes from), so the demo palette below can be written as the spec's hexes.
+/// Pack 8-bit RGB into RGB565 (the color space the renderer quantizes from), so the
+/// demo palette below can be written as the spec's hexes.
 const fn rgb565(r: u8, g: u8, b: u8) -> u16 {
     (((r as u16) >> 3) << 11) | (((g as u16) >> 2) << 5) | ((b as u16) >> 3)
 }
 
-// The "explorer's field map" palette from docs/bikepacking-computer-ui-spec.md,
-// in RGB565 so it travels through the same `color_of` quantization as map styles.
+// The "explorer's field map" palette, in RGB565 so it travels through the same
+// `color_of` quantization as map styles.
 const PARCHMENT: u16 = rgb565(0xEA, 0xDF, 0xC0);
-const HUD: u16 = rgb565(0x2E, 0x25, 0x1A); // wood-dark HUD strip
+const HUD: u16 = rgb565(0x2E, 0x25, 0x1A);
 const INK: u16 = rgb565(0x2C, 0x21, 0x14);
 const AMBER: u16 = rgb565(0xE3, 0xA5, 0x2B);
 const FOREST: u16 = rgb565(0x4F, 0x6B, 0x43);
 const WOOD: u16 = rgb565(0x5B, 0x3F, 0x28);
 const WARNING: u16 = rgb565(0xC0, 0x49, 0x2E);
 
-/// Slice-1 verification: render the font ladder + palette on a parchment panel
-/// with the elevation/menu HUD strip, through the device-64 `color_of` so the
-/// PNG shows exactly what the panel would. Proves text renders and that each
-/// palette color survives quantization (`--true-color` shows the un-quantized
-/// reference for comparison).
+/// Render the font ladder + palette through the device-64 `color_of`, so the PNG
+/// shows exactly what the panel would (`--true-color` shows the un-quantized reference).
 fn render_text_demo(fb: &mut Framebuffer, true_color: bool) {
     let col = |c: u16| color_of(c, true_color);
     let w = fb.width() as i32;
@@ -301,9 +256,8 @@ fn render_text_demo(fb: &mut Framebuffer, true_color: bool) {
     let _ = fb.fill_solid(&Rectangle::new(Point::zero(), Size::new(fb.width(), 28)), col(HUD));
     draw_text(fb, "TERMINUS FONT DEMO", Point::new(w / 2, 3), Font::Label, TextAlign::Center, col(PARCHMENT));
 
-    // Font ladder: each tier's caption (in Label) over a true-size sample drawn in that
-    // tier, annotated with its measured cap height in mm so the size targets are checkable
-    // at a glance — render with `--physical` to judge it at device scale.
+    // Font ladder: each tier's caption over a true-size sample, annotated with its measured
+    // cap height in mm so the size targets are checkable (render `--physical` for device scale).
     let sample = "12.5 km/h";
     let mut y = 36;
     for (caption, font) in [
@@ -317,14 +271,13 @@ fn render_text_demo(fb: &mut Framebuffer, true_color: bool) {
         y += font.line_height() as i32 + 8;
     }
 
-    // Palette — each name drawn in its own color, so the PNG shows whether amber,
-    // forest, wood and warning stay distinct and legible after device-64 quantization.
+    // Palette — each name in its own color, so the PNG shows whether they stay distinct
+    // and legible after device-64 quantization.
     for (name, c) in [("amber", AMBER), ("forest", FOREST), ("wood", WOOD), ("warning", WARNING)] {
         draw_text(fb, name, Point::new(8, y), Font::Label, TextAlign::Left, col(c));
         y += Font::Label.line_height() as i32 + 2;
     }
 
-    // Alignment row, mirroring the menu counter / stat labels.
     y += 6;
     draw_text(fb, "LEFT", Point::new(8, y), Font::Label, TextAlign::Left, col(INK));
     draw_text(fb, "CENTER", Point::new(w / 2, y), Font::Label, TextAlign::Center, col(INK));
@@ -343,11 +296,9 @@ fn initial_camera(reader: &Reader, width: u32) -> (i32, i32, f32) {
 }
 
 /// Advance the GPX replay by `dt` seconds and run one app tick on the **playback**
-/// clock. Feeds the barometer the track's elevation at the new time, then ticks the
-/// app with the player as the location source — deriving the millis from playback-time
-/// (not wall-clock) so Avg. Speed isn't scaled by the replay-speed multiplier. Shared
-/// by the live GUI loop and the headless `--png` replay so both step the simulated
-/// GPS + barometer through the app identically.
+/// clock. The millis derive from playback-time (not wall-clock), so Avg. Speed isn't
+/// scaled by the replay-speed multiplier. Shared by the live GUI loop and the headless
+/// `--png` replay.
 fn replay_step<'s>(
     app: &mut App,
     player: &'s mut GpxPlayer,
@@ -358,8 +309,7 @@ fn replay_step<'s>(
     track: Option<&'s mut dyn TrackSink>,
 ) {
     // The sensor handles share one lifetime `'s` so the invariant `Sensors<'a>` can bind them
-    // together; the caller passes disjoint borrows over a common scope. The compass only matters
-    // while the track is stationary (the GPS course drops to `None`) — then it sets the heading.
+    // together. The compass only matters while stationary (GPS course drops to `None`).
     player.advance(dt);
     baro.feed(player.elevation_at(player.time()), player.time());
     let now_ms = (player.time() * 1000.0) as u32;
@@ -368,9 +318,8 @@ fn replay_step<'s>(
     app.tick(RideClock(now_ms), sensors, route);
 }
 
-/// Reconcile the track store to the app's current tracking intent (drains the one-shot
-/// action, opens / closes the `.obct` log) — the host's per-frame storage step, shared by the
-/// headless replay and the GUI. Reads the save name from the active route's catalog entry.
+/// Reconcile the track store to the app's tracking intent (drains the one-shot action,
+/// opens / closes the `.obct` log). The save name comes from the active route's catalog entry.
 fn reconcile_tracks(app: &mut App, tracks: &mut TrackStore) {
     let action = app.activity.take_track_action();
     let session = app.activity.session;
@@ -378,8 +327,8 @@ fn reconcile_tracks(app: &mut App, tracks: &mut TrackStore) {
     tracks.reconcile(action, session, name.as_deref());
 }
 
-/// Encode a framebuffer to a PNG, upscaling by `scale` with nearest-neighbor so
-/// the device's hard pixel edges stay crisp (matching the old simulator output).
+/// Encode a framebuffer to a PNG, upscaling by `scale` with nearest-neighbor so the
+/// device's hard pixel edges stay crisp.
 fn write_png(fb: &Framebuffer, scale: u32, path: &str) -> Result<(), String> {
     let (w, h) = (fb.width(), fb.height());
     let base = image::RgbImage::from_raw(w, h, fb.as_rgb888().to_vec()).ok_or("framebuffer size mismatch")?;
@@ -405,10 +354,9 @@ fn feed(app: &mut App, now: u32, events: Vec<InputEvent>) {
     app.handle_input(InputClock(now), &mut ScriptInput(events.into()));
 }
 
-/// Apply a gesture script (see `Args::script`) to `app`, so a headless render can
-/// snapshot any screen. Synthesizes the raw encoder/Back events with a rising
-/// clock — including the threshold crossing that turns a held button into a
-/// `Hold`/`BackHold` — exactly as the real recognizer would see them.
+/// Apply a gesture script (see `Args::script`) to `app`. Synthesizes the raw encoder/Back
+/// events with a rising clock — including the threshold crossing that turns a held button
+/// into a `Hold`/`BackHold` — exactly as the real recognizer would see them.
 fn apply_script(app: &mut App, script: &str) {
     let down = |b| InputEvent::Button(ButtonEvent::Down(b));
     let up = |b| InputEvent::Button(ButtonEvent::Up(b));
@@ -460,7 +408,6 @@ fn apply_script(app: &mut App, script: &str) {
 }
 
 /// Web entry: hand the page's canvas to the shared eframe app (see [`gui::run_web`]).
-/// Trunk builds this binary to wasm and calls `main` on load.
 #[cfg(target_arch = "wasm32")]
 fn main() {
     gui::run_web();
@@ -476,8 +423,7 @@ fn main() {
         }
     };
 
-    // Slice-1 font/palette preview: render text on a blank panel and exit. Comes
-    // before the map read so it needs no map file.
+    // Font/palette preview: render text on a blank panel and exit. Before the map read (needs none).
     if args.text_demo {
         let mut fb = Framebuffer::new(args.width, args.height);
         render_text_demo(&mut fb, args.true_color);
@@ -490,9 +436,8 @@ fn main() {
         return;
     }
 
-    // `--palette`: the device's 64-color gamut on a standalone color-test screen.
-    // Needs no map. With `--png` it writes the frame headlessly (so it can be diffed
-    // in CI); otherwise it opens a minimal window. Comes before the map read.
+    // `--palette`: the device's 64-color gamut on a standalone color-test screen. Needs no
+    // map. With `--png` it writes the frame headlessly (diffable in CI); else a minimal window.
     if args.palette {
         if let Some(path) = &args.png {
             let mut fb = Framebuffer::new(args.width, args.height);
@@ -509,8 +454,7 @@ fn main() {
         return;
     }
 
-    // `--import` converts a GPX into the routes folder — the device's USB-drop path,
-    // run on the host. Needs no map, so it comes before the map read.
+    // `--import` converts a GPX into the routes folder (the device's USB-drop path). Needs no map.
     if let Some(gpx) = &args.import {
         let dir = args.routes_dir();
         let mut store = RouteStore::open(&dir);
@@ -538,8 +482,8 @@ fn main() {
         std::process::exit(1);
     });
 
-    // Validate + log once up front; the borrow ends with this block so `bytes`
-    // can move into the GUI (which rebuilds the cheap `Reader` view per frame).
+    // Validate + log once up front; the borrow ends with this block so `bytes` can move
+    // into the GUI (which rebuilds the cheap `Reader` view per frame).
     {
         let cache = MapCache::new();
         let src = SliceSource(&bytes);
@@ -579,16 +523,15 @@ fn main() {
         if let Some(b) = args.battery {
             state.battery_pct = b;
         }
-        // `--heading` renders a rotated (heading-up) frame headlessly; the rotation
-        // is derived from the fix's course, so seed one at the map center.
+        // `--heading` renders a rotated (heading-up) frame; the rotation derives from the
+        // fix's course, so seed one at the map center.
         if let Some(deg) = args.heading {
             state.heading_up = true;
             state.user_fix = Some(Fix { lat: cy, lon: cx, course: Some(deg), speed_mps: None });
         }
-        // `--gpx` renders the replayed fix at `--at` (default: track midpoint). We seed
-        // the camera/heading from that fix now, then (below, after the route opens) replay
-        // the track up to `--at` ticking the app, so the snapshot shows live riding state
-        // (matched cursor, ride stats) rather than just a static marker.
+        // `--gpx` renders the replayed fix at `--at` (default: track midpoint). Seed the
+        // camera/heading from that fix now; the replay up to `--at` runs below (after the
+        // route opens) so the snapshot shows live riding state, not just a static marker.
         let mut player: Option<GpxPlayer> = None;
         let mut replay_to = 0.0_f64;
         if let Some(path) = &args.gpx {
@@ -617,14 +560,13 @@ fn main() {
             app.reseed_home(seed);
         }
         // Load the routes folder so the Route menu has real entries and a picked route
-        // can be drawn (the device reads the same off its SD card).
+        // can be drawn.
         let mut store = RouteStore::open(args.routes_dir());
         app.set_routes(store.catalog());
-        // Drive the app to a specific screen before snapshotting (e.g. the Menu).
         if let Some(script) = &args.script {
             apply_script(&mut app, script);
         }
-        // After the script may have loaded a route, open its geometry for the Map.
+        // The script may have loaded a route; open its geometry for the Map.
         store.sync_active(app.activity.active_route);
         let route_src = store.active_source();
         let route_index = route_src.as_ref().and_then(|s| RouteIndex::read(s).ok());
@@ -633,14 +575,11 @@ fn main() {
             _ => None,
         };
 
-        // Recorded-track store (the device-SD `/tracks` stand-in). A session started by a
-        // `--script` load records here; the breadcrumb itself draws regardless.
         let mut tracks = TrackStore::open(args.tracks_dir());
 
         // Replay the track from the start up to `--at`, ticking the app each step so the
-        // map-matcher locks on, the ride accumulators (done / climbed / Avg) build up, and the
-        // breadcrumb + ride log fill. A coarse-but-bounded step keeps long tracks fast while
-        // staying under the dropout/teleport gates; the playback clock keeps Avg. Speed unscaled.
+        // map-matcher locks on and the ride accumulators + breadcrumb fill. A coarse-but-
+        // bounded step keeps long tracks fast while staying under the dropout/teleport gates.
         if let Some(p) = player.as_mut() {
             let mut baro = BaroSensor::new();
             p.seek(0.0);
@@ -668,8 +607,8 @@ fn main() {
         let mut fb = Framebuffer::new(args.width, args.height);
         let tc = args.true_color;
 
-        // Time the whole frame draw and fold it into the stats as `render_us` (the no_std
-        // renderer carries no clock, so the host fills it) — same field the live panel shows.
+        // Time the whole frame draw into `render_us` (the no_std renderer has no clock, so
+        // the host fills it) — same field the live panel shows.
         let t0 = Instant::now();
         let mut stats =
             app.render_frame(&mut fb, &reader, route.as_ref(), args.width as f32, args.height as f32, |c| {

@@ -2,21 +2,20 @@
 //! quadtree query + chunk decode.
 //!
 //! All coordinates are integer microdegrees (1e-6 degrees), as stored in the
-//! file. Projection to screen space is the renderer's job (see [`obc_render`]).
+//! file. Projection to screen space is the renderer's job.
 //!
-//! The reader **streams** through a [`ByteSource`] (issue #37): only the small
-//! header / style table / LOD table are read resident at [`Reader::new`]; the
-//! quadtree index and geometry chunks are pulled on demand via `read_at`, so the
-//! whole `.obcm` never has to fit in RAM (the nRF54L has 256 KB, no external RAM). A
-//! [`SliceSource`](crate::SliceSource) makes "the whole file is resident" a
-//! one-line wrapper for the simulator and tests, exactly as the route reader does.
+//! The reader **streams** through a [`ByteSource`]: only the small header / style
+//! table / LOD table are resident (parsed once in [`MapTables`]); the quadtree
+//! index and geometry chunks are pulled on demand via `read_at`, so the whole
+//! `.obcm` never has to fit in RAM. A [`SliceSource`](crate::SliceSource) makes
+//! "the whole file is resident" a one-line wrapper for the sim and tests.
 //!
 //! Because `read_at` takes `&self`, the lazy reads go through an internal
-//! [`MapCache`] behind a `RefCell` — a small **geometry-chunk cache** so the
-//! renderer's per-priority-pass walk (`for_each_chunk` is re-run once per level)
-//! does not re-read the same chunk from SD on every pass, plus a tiny block cache
-//! that coalesces the 4-byte quadtree-node reads. The cache changes only *when* a
-//! byte is read, never *what* decodes, so renders stay byte-identical.
+//! [`MapCache`] behind a `RefCell`: a geometry-chunk cache (the renderer re-runs
+//! `for_each_chunk` once per priority level, so this avoids re-reading a chunk per
+//! pass) plus a small block cache coalescing the 4-byte quadtree-node reads. The
+//! cache changes only *when* a byte is read, never *what* decodes, so renders stay
+//! byte-identical.
 
 use core::cell::{RefCell, RefMut};
 
@@ -42,11 +41,10 @@ pub const HEADER_LEN: usize = 32;
 pub const LOD_ENTRY_LEN: usize = 18;
 
 /// Upper bound on a single map data chunk, in bytes — the size of the decode scratch, and the
-/// largest `chunk_size` the reader accepts ([`Reader::new`] rejects a map declaring a bigger
-/// one). The format stores `chunk_size` as a `u16` (≤ 65535), but real maps pack far smaller
-/// (the packer defaults to 4096), so this caps the resident scratch well below the format
-/// ceiling to save RAM. A chunk between a cache slot and this decodes through the scratch,
-/// uncached.
+/// largest `chunk_size` the reader accepts ([`MapTables::parse`] rejects a bigger one). The
+/// format stores `chunk_size` as a `u16` (≤ 65535) but real maps pack far smaller (the packer
+/// defaults to 4096), so this caps the scratch below the format ceiling to save RAM. A chunk
+/// between a cache slot and this decodes through the scratch, uncached.
 pub const MAX_CHUNK_BYTES: usize = 16384;
 
 /// Size of one geometry-chunk **cache** slot. A chunk this size or smaller is cached (kept
@@ -56,25 +54,15 @@ pub const MAX_CHUNK_BYTES: usize = 16384;
 const CACHE_SLOT_BYTES: usize = 4096;
 
 /// Geometry-chunk cache slots (each [`CACHE_SLOT_BYTES`]). The renderer makes four priority
-/// passes over the same visible-chunk set per frame; sizing the cache to hold a riding-zoom
-/// viewport's chunks turns passes 2–4 into cache hits instead of re-reads from SD, and a wider
-/// pan into a partial hit. ≈256 KB at the default; the knob to trade RAM for hit rate.
+/// passes over the same visible-chunk set per frame, so the cache must hold the whole working set
+/// or each pass re-reads every chunk (`miss ≈ chunks × 4`) and SD I/O dominates. Size it to the
+/// **visible-chunk count**, not a fixed 16: the worst zooms (LOD1, ~3–4 m/px) put ~50 chunks in
+/// view, so 64 slots keep them resident across all four passes and across frames (a slow pan
+/// re-hits last frame's chunks). 64 × 4 KB = 256 KB.
 ///
-/// Sized to the **visible-chunk count**, not just 16: a thrash sets in the moment a frame's
-/// working set exceeds the slot count, because each of the four passes then re-reads every chunk
-/// (LRU can't hold a pass's set) → `miss ≈ chunks × 4` and SD I/O dominates the frame (issue #98).
-/// The worst zooms (LOD1, ~3–4 m/px) put up to ~50 chunks in view, so 64 slots keep the whole
-/// working set resident across all four passes *and* across frames (a slow camera pan re-hits the
-/// previous frame's chunks). 64 × 4 KB = 256 KB of the host's ample RAM.
-///
-/// The constrained `nrf-mem` profile (issue #124) can't spare 256 KB on a 256 KB part, so it drops
-/// to 3 slots (~25 KB): a frame's working set still hits within a redraw, but a set wider than 3
-/// chunks re-reads from SD across frames (and across the renderer's per-frame passes) — the L15's
-/// coarse-zoom cost, paid back when the 512 KB LM20 (BLE headroom) raises this. N6 (#127) shaved
-/// this from 5→3: the ride loop's render path is **deep** (per-frame `Reader::new` → the OBCM style
-/// table + streamed-chunk decode over embedded-sdmmc), and on the 256 KB part that whole-frame stack
-/// must coexist with the resident `RouteCache` + `RouteIndex` — freeing the map cache's ~16 KB is
-/// what buys the stack headroom (the route cache the user keeps, the map render fidelity stays).
+/// The constrained `nrf-mem` profile drops to 3 slots (~25 KB) — a frame's working set still hits
+/// within a redraw, but a wider set re-reads across passes/frames. Freeing the map cache's ~16 KB
+/// is what buys the stack headroom the deep ride-loop render path needs on the 256 KB part.
 #[cfg(not(feature = "nrf-mem"))]
 const MAP_CHUNK_SLOTS: usize = 64;
 #[cfg(feature = "nrf-mem")]
@@ -91,15 +79,11 @@ const INDEX_BLOCKS: usize = 8;
 const _: () = assert!(CACHE_SLOT_BYTES <= MAX_CHUNK_BYTES, "a cached chunk must fit the scratch");
 const _: () = assert!(MAX_CHUNK_BYTES <= u16::MAX as usize, "chunk_size is a u16 in the format");
 
-/// Hard cap on quadtree recursion depth in [`Reader::walk_leaves`] (issue #65). A well-formed
-/// map's tree is far shallower: the node bbox halves each level, so it bottoms out at the
-/// coordinate bit-width — ~26 for the packer's 10-µdeg split floor over a world-sized bbox, and
-/// 32 even for a degenerate full-`i32`-range bbox — so this never rejects a real map. The cap
-/// matters for a *corrupt* one: a hostile map can store a branch whose child pointer points
-/// backward (`child <= idx`), and once the node bbox subdivides to a degenerate point the
-/// quadrants stop shrinking while `intersects(view)` stays true, so the walk would recurse
-/// forever → stack overflow → HardFault (no MMU guard page on the MCU). Bounding the depth caps
-/// the stack regardless of file contents.
+/// Hard cap on quadtree recursion depth in [`Reader::walk_leaves`]. A well-formed tree is far
+/// shallower (the node bbox halves each level, bottoming out at the coordinate bit-width ≤32), so
+/// this never rejects a real map. It matters for a *corrupt* one: once the node bbox subdivides to
+/// a degenerate point the quadrants stop shrinking while `intersects(view)` stays true, so an
+/// unbounded walk recurses forever → stack overflow → HardFault (no MMU guard page on the MCU).
 const MAX_QUADTREE_DEPTH: u32 = 32;
 
 #[derive(Debug, Clone, Copy)]
@@ -132,19 +116,17 @@ pub struct Lod {
 impl Lod {
     /// Byte offset where this level's data chunks begin (right after its index).
     /// `None` if the arithmetic overflows `usize` — reachable on the 32-bit MCU
-    /// when `index_offset`/`node_count` come from a corrupt file.
+    /// from a corrupt `index_offset`/`node_count`.
     #[inline]
     fn data_start(&self) -> Option<usize> {
         self.node_count.checked_mul(4)?.checked_add(self.index_offset)
     }
 
-    /// Byte range `[start, end)` of chunk `chunk_id` within the file, or `None`
-    /// if `chunk_id` is out of range or any offset arithmetic overflows `usize`.
-    /// `chunk_id` comes straight from a quadtree leaf, so a corrupt or hostile
-    /// map can carry an arbitrary value; validating it against `chunk_count` and
-    /// computing the offset with checked arithmetic keeps the 32-bit device from
-    /// wrapping past the caller's file-length guard (it must not panic on a bad
-    /// map file). The caller still bounds-checks `end` against the actual buffer.
+    /// Byte range `[start, end)` of chunk `chunk_id`, or `None` if `chunk_id` is out
+    /// of range or any offset overflows `usize`. `chunk_id` comes straight from a
+    /// quadtree leaf (arbitrary in a corrupt map), so validate against `chunk_count`
+    /// with checked arithmetic to keep the 32-bit device from wrapping past the
+    /// caller's file-length guard. The caller still bounds-checks `end` against the buffer.
     #[inline]
     fn chunk_range(&self, chunk_id: u32) -> Option<(usize, usize)> {
         let id = chunk_id as usize;
@@ -157,11 +139,10 @@ impl Lod {
     }
 }
 
-/// A feature decoded into caller-owned scratch buffers, borrowed for the
-/// duration of one [`Reader::for_each_feature`] callback. No per-feature
-/// allocation: `points` holds every ring's vertices concatenated and `ring_lens`
-/// records each ring's length (`ring_lens[0]` is the exterior, the rest are
-/// holes). Coordinates are microdegrees.
+/// A feature decoded into caller-owned scratch buffers, borrowed for one
+/// [`Reader::for_each_feature`] callback. No per-feature allocation: `points`
+/// holds every ring's vertices concatenated, `ring_lens[0]` is the exterior
+/// length, the rest are holes. Coordinates are microdegrees.
 #[derive(Debug, Clone, Copy)]
 pub struct FeatureRef<'a> {
     pub style_id: u8,
@@ -172,8 +153,8 @@ pub struct FeatureRef<'a> {
 }
 
 impl<'a> FeatureRef<'a> {
-    /// Axis-aligned bounds (microdegrees) of every vertex, computed during decode
-    /// (no extra pass over the points). Empty for a zero-vertex feature.
+    /// Axis-aligned bounds (microdegrees) of every vertex, computed during decode.
+    /// Empty for a zero-vertex feature.
     #[inline]
     pub fn bbox(&self) -> BBox {
         self.bbox
@@ -194,8 +175,7 @@ impl<'a> FeatureRef<'a> {
         Interiors { points: self.points, lens: rest, offset: start }
     }
 
-    /// All rings' vertices, concatenated (exterior first). Partition with
-    /// [`FeatureRef::ring_lens`].
+    /// All rings' vertices, concatenated (exterior first); partition with [`FeatureRef::ring_lens`].
     #[inline]
     pub fn points(&self) -> &'a [(i32, i32)] {
         self.points
@@ -227,10 +207,9 @@ impl<'a> Iterator for Interiors<'a> {
     }
 }
 
-/// The OBCM header fields that describe a map without touching any geometry — what a "which map
-/// is this?" probe needs (the bring-up bbox log, a host catalog row). Read cache-free via
-/// [`read_header`], so the memory-constrained nRF can inspect a card's map without the renderer's
-/// ≈277 KB [`MapCache`]. [`Reader::new`] parses the same prefix on its way to the full reader.
+/// The OBCM header fields that describe a map without touching any geometry — a "which map is
+/// this?" probe. Read cache-free via [`read_header`] (no ≈277 KB [`MapCache`]); [`MapTables::parse`]
+/// parses the same prefix on its way to the full tables.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MapHeader {
     pub version: u8,
@@ -240,9 +219,8 @@ pub struct MapHeader {
 }
 
 /// Decode + validate the fixed 32-byte OBCM header prefix (magic, version, bbox, marker color).
-/// Shared by [`read_header`] and [`Reader::new`] so the byte layout lives in one place. The
-/// caller supplies the already-read header bytes; offset constants follow `obc-pack`'s header
-/// pack (see OBCM_Spec.md).
+/// Shared by [`read_header`] and [`MapTables::parse`] so the byte layout lives in one place.
+/// Offsets follow `obc-pack`'s header pack (see OBCM_Spec.md).
 fn parse_header(h: &[u8; HEADER_LEN]) -> Result<MapHeader, Error> {
     if &h[0..4] != b"OBCM" {
         return Err(Error::BadMagic);
@@ -260,12 +238,9 @@ fn parse_header(h: &[u8; HEADER_LEN]) -> Result<MapHeader, Error> {
     Ok(MapHeader { version, bbox: BBox { min_lon, min_lat, max_lon, max_lat }, marker_color })
 }
 
-/// Read just the OBCM header (version + bbox + marker color) from `src` — no style table, LOD
-/// table, index, or geometry, so it allocates nothing and needs no [`MapCache`]. The cache-free
-/// way to answer "what map is on this card?" — the nRF logs a card's bbox at bring-up through
-/// this (the full streamed [`Reader`] + its RAM-budgeted cache lands later in the port). A map
-/// shorter than the header, with the wrong magic, or an unsupported version is rejected exactly
-/// as [`Reader::new`] would.
+/// Read just the OBCM header (version + bbox + marker color) from `src` — no style/LOD table,
+/// index, or geometry, so it allocates nothing and needs no [`MapCache`]. A map shorter than the
+/// header, with the wrong magic, or an unsupported version is rejected exactly as parsing would.
 pub fn read_header(src: &dyn ByteSource) -> Result<MapHeader, Error> {
     if (src.len() as usize) < HEADER_LEN {
         return Err(Error::TooShort);
@@ -275,18 +250,16 @@ pub fn read_header(src: &dyn ByteSource) -> Result<MapHeader, Error> {
     parse_header(&h)
 }
 
-/// The session-resident, immutable map tables — everything [`Reader`] needs that does **not** change
-/// frame to frame: the header scalars plus the style table and LOD pyramid. Parsed **once** per
-/// `.obcm` by [`MapTables::parse`]; a cheap per-frame [`Reader::new`] then borrows it alongside a
-/// fresh `src` + the [`MapCache`]. This keeps the device's per-frame reader ~tens of bytes — no
-/// re-parse, no 1536-byte style scratch, no per-frame style-table SD read (issue #179) — which is
-/// what kept the deep route-load render path inside the nRF's stack reserve; a host that doesn't
-/// care just keeps one on the stack and rebuilds it freely.
+/// The session-resident, immutable map tables — everything [`Reader`] needs that doesn't change
+/// frame to frame: header scalars, style table, LOD pyramid. Parsed **once** per `.obcm` by
+/// [`MapTables::parse`], then borrowed by a cheap per-frame [`Reader::new`]. Keeping the per-frame
+/// reader ~tens of bytes (no re-parse, no 1536-byte style scratch, no per-frame style-table SD
+/// read) is what keeps the deep route-load render path inside the nRF's stack reserve.
 pub struct MapTables {
     pub version: u8,
     pub bbox: BBox,
-    /// User-position marker color (RGB565), a global map-presentation property stored in the
-    /// header — resolved to a device pixel by the host's color policy just like style colors.
+    /// User-position marker color (RGB565), a global header property; resolved to a device pixel
+    /// by the host's color policy like style colors.
     pub marker_color: u16,
     /// LOD layers ordered coarsest (0) → finest (N-1). Always at least one.
     lods: Vec<Lod, 16>,
@@ -295,20 +268,17 @@ pub struct MapTables {
 }
 
 impl MapTables {
-    /// Parse the header scalars + style table + LOD pyramid from `src`. This is the one expensive,
-    /// allocating step — a 1536-byte style scratch plus the style/LOD-table SD reads — so do it
-    /// **once** per map and hand the result to [`Reader::new`] each frame (issue #179). A map shorter
-    /// than the header, with the wrong magic / version, or with out-of-range table offsets is
-    /// rejected exactly as the old `Reader::new` was. The magic / version / bbox / marker prefix is
-    /// parsed by the shared [`parse_header`] (so a cache-free [`read_header`] sees identical
-    /// validation); the style + LOD-table offsets that only the full reader needs are decoded here.
+    /// Parse the header scalars + style table + LOD pyramid from `src`. The one expensive,
+    /// allocating step (a 1536-byte style scratch plus the style/LOD-table SD reads), so do it
+    /// **once** per map and hand the result to [`Reader::new`] each frame. A map shorter than the
+    /// header, with the wrong magic / version, or with out-of-range table offsets is rejected. The
+    /// magic / version / bbox / marker prefix goes through the shared [`parse_header`] (so
+    /// [`read_header`] validates identically); the style + LOD-table offsets are decoded here.
     pub fn parse(src: &dyn ByteSource) -> Result<MapTables, Error> {
         let total = src.len() as usize;
         if total < HEADER_LEN {
             return Err(Error::TooShort);
         }
-        // The header is the one read that's fixed-size and always present; a short read here is the
-        // streamed equivalent of the old `data.len() < HEADER_LEN`.
         let mut header = [0u8; HEADER_LEN];
         src.read_at(0, &mut header).map_err(|_| Error::TooShort)?;
         let MapHeader { version, bbox, marker_color } = parse_header(&header)?;
@@ -322,8 +292,8 @@ impl MapTables {
         if lod_count == 0 {
             return Err(Error::BadOffset);
         }
-        // Checked: `lod_table_offset` is an arbitrary u32 from the header, so on
-        // the 32-bit target the table-end can wrap and slip past this guard.
+        // Checked: `lod_table_offset` is an arbitrary header u32, so on the 32-bit
+        // target the table-end can wrap `usize` and slip past the guard below.
         let lod_table_end = lod_count
             .checked_mul(LOD_ENTRY_LEN)
             .and_then(|len| lod_table_offset.checked_add(len))
@@ -339,47 +309,37 @@ impl MapTables {
 }
 
 pub struct Reader<'a> {
-    /// The byte source the index + geometry chunks stream from. `&dyn` (not a generic) so the
-    /// renderer / app / screen signatures that hold a `&Reader` need no `<S>` parameter — the
-    /// same monomorphic shape the route [`RouteReader`](../../obc_route/struct.RouteReader.html)
-    /// uses.
+    /// The byte source the index + geometry chunks stream from. `&dyn` (not a generic) so
+    /// signatures holding a `&Reader` need no `<S>` parameter.
     src: &'a dyn ByteSource,
-    /// The header scalars, **copied** from [`MapTables`] (a handful of bytes) so existing
-    /// `reader.version` / `reader.bbox` / `reader.marker_color` field access is unchanged while the
-    /// big style/LOD tables stay borrowed below.
+    /// Header scalars, **copied** from [`MapTables`] so `reader.version` / `.bbox` / `.marker_color`
+    /// field access stays direct while the big tables stay borrowed.
     pub version: u8,
     pub bbox: BBox,
     pub marker_color: u16,
-    /// The session-resident immutable tables (style table + LOD pyramid), parsed once and
-    /// **borrowed** here — so a per-frame `Reader` carries no styles/lods of its own (issue #179).
+    /// The session-resident immutable tables (style table + LOD pyramid), parsed once and borrowed
+    /// here so a per-frame `Reader` carries no styles/lods of its own.
     tables: &'a MapTables,
-    /// Borrowed lazy-read cache for the streamed index + geometry. **Borrowed**, not owned, so
-    /// the ≈84 KB of buffers live in a caller-provided [`MapCache`] (the device places it once
-    /// in its reserved region and rebuilds the small `Reader` per frame, reusing the cache across
-    /// frames; the
-    /// host just makes one on the stack). `MapCache` keeps its own `RefCell` because `read_at`
-    /// (and so `for_each_chunk`/`for_each_feature_filtered`) take `&self` but the cache mutates;
-    /// the borrows are tightly scoped so the index-node read and the chunk decode never overlap.
+    /// Borrowed lazy-read cache for the streamed index + geometry — the ≈84 KB of buffers live in
+    /// the caller's [`MapCache`], reusable across frames. It keeps its own `RefCell` because
+    /// `read_at` takes `&self` but the cache mutates; the borrows are tightly scoped so the
+    /// index-node read and the chunk decode never overlap.
     cache: &'a MapCache,
 }
 
 impl<'a> Reader<'a> {
-    /// Build a per-frame reader over the pre-parsed [`MapTables`], a fresh byte `src`, and a `cache`
-    /// the geometry + index reads stream through. **Cheap**: it borrows the resident tables and
-    /// copies only the header scalars — no parse, no SD read (issue #179). The cache is caller-owned
-    /// and reusable across frames (a chunk read last frame stays resident); pass a fresh
-    /// [`MapCache::new`] if you don't keep one around. All three borrows live as long as the
-    /// `Reader`. Reusing one cache is only sound while the *source is the same map* — point a new
-    /// reader at a different `.obcm` and you must [`MapCache::clear`] first (and re-`parse` the
-    /// tables) or the old map's resident chunks cross-serve.
+    /// Build a per-frame reader over the pre-parsed [`MapTables`], a fresh `src`, and a `cache` the
+    /// geometry + index reads stream through. **Cheap**: borrows the tables and copies only the
+    /// header scalars (no parse, no SD read). The cache is caller-owned and reusable across frames;
+    /// pass a fresh [`MapCache::new`] if you don't keep one. Reusing a cache is only sound while the
+    /// *source is the same map* — pointing a reader at a different `.obcm` requires
+    /// [`MapCache::clear`] (and a re-`parse`) first, or the old map's chunks cross-serve.
     pub fn new(src: &'a dyn ByteSource, tables: &'a MapTables, cache: &'a MapCache) -> Reader<'a> {
         Reader { src, version: tables.version, bbox: tables.bbox, marker_color: tables.marker_color, tables, cache }
     }
 
-    /// A snapshot of the geometry-chunk cache + streaming counters of the paired [`MapCache`].
-    /// The renderer reports the per-frame delta, so the host stats panel / device log can show
-    /// the chunk-cache hit rate and the SD-read overhead this frame — the measured deliverables
-    /// of issue #37. (Counters are cumulative over the cache's life, hence the renderer's delta.)
+    /// Snapshot of the chunk-cache + streaming counters. Cumulative over the cache's life, so the
+    /// renderer reports the per-frame delta.
     #[inline]
     pub fn chunk_cache_stats(&self) -> CacheStats {
         self.cache.stats()
@@ -417,11 +377,10 @@ impl<'a> Reader<'a> {
         chosen
     }
 
-    /// Read quadtree node `idx` of `lod` (a `u32`), streamed through the index block cache.
-    /// `None` on a read failure — the walk then skips that subtree (the streamed equivalent of
-    /// the old in-bounds-by-construction direct read). `idx < node_count` and the index region
-    /// lies within the file (both guaranteed by `walk_leaves`/`parse_lod_table`), so the offset
-    /// never overflows `u32`.
+    /// Read quadtree node `idx` of `lod` (a `u32`), streamed through the index block cache. `None`
+    /// on a read failure — the walk then skips that subtree. `idx < node_count` and the index
+    /// region lies within the file (both guaranteed by `walk_leaves`/`parse_lod_table`), so the
+    /// offset never overflows `u32`.
     #[inline]
     fn read_node(&self, lod: &Lod, idx: usize) -> Option<u32> {
         let off = (lod.index_offset + idx * 4) as u32;
@@ -451,13 +410,11 @@ impl<'a> Reader<'a> {
         });
     }
 
-    /// Visit `(chunk_id, node_bbox)` for every non-empty leaf in `lod` that
-    /// overlaps `view`, in quadtree order. Unlike [`Reader::query`] this streams
-    /// through a callback and so has **no upper bound** on the number of chunks:
-    /// the renderer relies on this to avoid silently dropping chunks — and the
-    /// high-priority features they hold — when a wide viewport overlaps many
-    /// leaves. The walk only reads the index (bbox tests over `u32` nodes), so
-    /// re-running it once per priority pass is cheap relative to decoding.
+    /// Visit `(chunk_id, node_bbox)` for every non-empty leaf in `lod` overlapping `view`, in
+    /// quadtree order. Unlike [`Reader::query`] this streams through a callback with **no upper
+    /// bound** on the chunk count — the renderer relies on this so a wide viewport never silently
+    /// drops chunks. The walk only reads the index (bbox tests over `u32` nodes), so re-running it
+    /// once per priority pass is cheap relative to decoding.
     pub fn for_each_chunk(&self, lod: usize, view: &BBox, mut visit: impl FnMut(u32, BBox)) {
         if let Some(l) = self.tables.lods.get(lod) {
             if l.node_count > 0 {
@@ -475,14 +432,13 @@ impl<'a> Reader<'a> {
         depth: u32,
         visit: &mut F,
     ) {
-        // The depth cap is the hard stack bound: a corrupt map can cycle a branch back onto
-        // itself (see `MAX_QUADTREE_DEPTH`), so without it the walk could recurse until the MCU
-        // stack overflows into a HardFault. A well-formed tree never reaches the cap.
+        // The depth cap is the hard stack bound against a corrupt cyclic branch (see
+        // `MAX_QUADTREE_DEPTH`); a well-formed tree never reaches it.
         if idx >= lod.node_count || depth > MAX_QUADTREE_DEPTH || !node.intersects(view) {
             return;
         }
-        // Read the node *before* descending/visiting so the index-cache borrow is released by
-        // the time a leaf's `visit` triggers a geometry-chunk read (no nested `RefCell` borrow).
+        // Read the node *before* descending/visiting so the index-cache borrow is released by the
+        // time a leaf's `visit` triggers a geometry-chunk read (no nested `RefCell` borrow).
         let val = match self.read_node(lod, idx) {
             Some(v) => v,
             None => return,
@@ -494,12 +450,10 @@ impl<'a> Reader<'a> {
             return;
         }
         let child = (val & !BRANCH_BIT) as usize;
-        // A branch's four children always lie *after* it in the file — the packer flattens the
-        // quadtree breadth-first, so a parent's first-child index is always greater than its own
-        // (`serialize_tree`). `child > idx` is therefore an invariant of every well-formed map;
-        // a back-/self-reference (`child <= idx`) only appears in a corrupt one, and descending it
-        // would re-enter a node already on the stack. Reject it here — the depth cap above is the
-        // backstop, this stops the most direct cycle at its source.
+        // The packer flattens the quadtree breadth-first, so a branch's children always lie after
+        // it: `child > idx` is a well-formed-map invariant. A back-/self-reference (`child <= idx`)
+        // only appears in a corrupt map and would re-enter a node already on the stack; reject it
+        // (the depth cap above is the backstop, this stops the most direct cycle at its source).
         if child <= idx {
             return;
         }
@@ -519,12 +473,10 @@ impl<'a> Reader<'a> {
         }
     }
 
-    /// Decode every feature in a chunk of `lod`, invoking `visit` once per
-    /// feature with a [`FeatureRef`] borrowing the caller's `points`/`ring_lens`
-    /// scratch buffers. This is the allocation-free path: the buffers grow to the
-    /// largest feature once and are reused for every feature, chunk and frame, so
-    /// steady-state rendering does no heap work here. `node` is the leaf bbox
-    /// from [`Reader::query`].
+    /// Decode every feature in a chunk of `lod`, invoking `visit` once per feature with a
+    /// [`FeatureRef`] borrowing the caller's `points`/`ring_lens` scratch. Allocation-free: the
+    /// buffers grow to the largest feature once and are reused across features/chunks/frames.
+    /// `node` is the leaf bbox from [`Reader::query`].
     pub fn for_each_feature<const P: usize, const R: usize>(
         &self,
         lod: usize,
@@ -537,14 +489,11 @@ impl<'a> Reader<'a> {
         self.for_each_feature_filtered(lod, chunk_id, node, points, ring_lens, |_| true, visit);
     }
 
-    /// Like [`Reader::for_each_feature`], but `should_decode` is consulted with
-    /// each feature's style id **before** its coordinates are decoded: return
-    /// `false` to skip the feature's geometry cheaply — advancing past its bytes
-    /// with no coordinate math or buffer writes — or `true` to decode it and hand
-    /// a [`FeatureRef`] to `visit`. The renderer uses this so each priority pass
-    /// decodes only the features at its level: across all passes, a feature's
-    /// coordinates are decoded **at most once per frame** rather than once per
-    /// pass.
+    /// Like [`Reader::for_each_feature`], but `should_decode` is consulted with each feature's
+    /// style id **before** its coordinates are decoded: `false` skips the geometry cheaply
+    /// (advancing past its bytes with no coordinate math), `true` decodes it and hands a
+    /// [`FeatureRef`] to `visit`. The renderer uses this so each priority pass decodes only its own
+    /// features — across all passes a feature's coordinates decode **at most once per frame**.
     #[allow(clippy::too_many_arguments)]
     pub fn for_each_feature_filtered<const P: usize, const R: usize>(
         &self,
@@ -560,9 +509,8 @@ impl<'a> Reader<'a> {
             Some(l) => l,
             None => return,
         };
-        // `chunk_id` is unvalidated file data: reject an out-of-range id or any
-        // offset that overflows `usize` (32-bit on device) instead of panicking
-        // or decoding an adjacent region.
+        // `chunk_id` is unvalidated file data: reject an out-of-range id or an offset overflowing
+        // `usize` (32-bit on device) instead of panicking or decoding an adjacent region.
         let (start, end) = match l.chunk_range(chunk_id) {
             Some(range) => range,
             None => return,
@@ -570,15 +518,15 @@ impl<'a> Reader<'a> {
         if end > self.src.len() as usize {
             return;
         }
-        // `chunk_size` (== `end - start`) was capped at `MAX_CHUNK_BYTES` in `new`, so it fits the
-        // decode scratch; this defensive check just keeps a corrupt LOD from indexing past it.
+        // `chunk_size` was capped at `MAX_CHUNK_BYTES` in `parse`; this defensive check keeps a
+        // corrupt LOD from indexing past the decode scratch.
         let len = end - start;
         if len > MAX_CHUNK_BYTES {
             return;
         }
-        // Pull the chunk through the cache (a hit if a prior priority pass read it this frame),
-        // then decode from the resident bytes. The borrow is held across `decode_chunk_into` —
-        // safe because `should_decode`/`visit` only touch `self.tables.styles`, never the cache.
+        // Pull the chunk through the cache, then decode from the resident bytes. The borrow is held
+        // across `decode_chunk_into` — safe because `should_decode`/`visit` only touch
+        // `self.tables.styles`, never the cache.
         let mut cache = self.cache.borrow_mut();
         let loc = match cache.load_chunk(self.src, lod as u8, chunk_id, start as u32, len) {
             Ok(loc) => loc,
@@ -628,10 +576,8 @@ impl Bounds {
     }
 }
 
-/// Walk a single chunk's bytes, decoding each feature into the shared
-/// `points`/`ring_lens` buffers and handing a [`FeatureRef`] to `visit`. The
-/// buffers are cleared and refilled per feature, so the same allocation serves
-/// every feature in the chunk.
+/// Walk a single chunk's bytes, decoding each feature into the shared `points`/`ring_lens` buffers
+/// (cleared and refilled per feature) and handing a [`FeatureRef`] to `visit`.
 fn decode_chunk_into<const P: usize, const R: usize>(
     chunk: &[u8],
     node: &BBox,
@@ -700,10 +646,9 @@ fn decode_chunk_into<const P: usize, const R: usize>(
 }
 
 /// Walk a polygon's hole list: read the 1-byte hole count at `off`, then per hole read its `u16`
-/// point count and hand `(chunk, off, hpc)` to `ring`, which decodes or skips the ring and returns
-/// the post-ring offset; returns the offset past the whole block. The skip and decode paths share
-/// this framing so their byte arithmetic (count byte, each `hpc`, the bounds checks) can't drift.
-/// A no-op when `off` is already at the chunk end.
+/// point count and hand `(chunk, off, hpc)` to `ring` (which decodes or skips and returns the
+/// post-ring offset); returns the offset past the whole block. The skip and decode paths share this
+/// framing so their byte arithmetic can't drift. No-op when `off` is already at the chunk end.
 #[inline]
 fn for_each_hole(chunk: &[u8], mut off: usize, mut ring: impl FnMut(&[u8], usize, usize) -> usize) -> usize {
     let cs = chunk.len();
@@ -723,10 +668,9 @@ fn for_each_hole(chunk: &[u8], mut off: usize, mut ring: impl FnMut(&[u8], usize
     off
 }
 
-/// Advance `off` past one ring's encoded deltas without decoding them, mirroring
-/// [`read_ring`]'s offset arithmetic exactly so the skip and decode paths stay
-/// byte-for-byte aligned. `is_hole` selects the hole encoding (every point is a
-/// delta) vs the exterior encoding (the first point is the anchor, not stored).
+/// Advance `off` past one ring's encoded deltas without decoding, mirroring [`read_ring`]'s offset
+/// arithmetic exactly so skip and decode stay byte-aligned. `is_hole` selects the hole encoding
+/// (every point a delta) vs the exterior encoding (first point is the anchor, not stored).
 fn skip_ring(chunk: &[u8], mut off: usize, pt_count: usize, is_hole: bool, dsize: usize) -> usize {
     if pt_count == 0 {
         return off;
@@ -786,10 +730,9 @@ fn read_ring<const P: usize>(
     off
 }
 
-/// Parse the style table, read resident from `src` at `style_offset` (the file is `total`
-/// bytes). The table is small (≤ `1 + 256*6` bytes) so it's pulled in two reads — the count
-/// byte, then the records — and parsed exactly as the old in-memory path (same per-record
-/// in-bounds break, so a truncated table yields the same styles).
+/// Parse the style table, read resident from `src` at `style_offset` (file is `total` bytes). The
+/// table is small (≤ `1 + 256*6` bytes) so it's pulled in two reads (count byte, then records). A
+/// truncated table breaks at the last whole record rather than reading past it.
 fn parse_styles(src: &dyn ByteSource, style_offset: usize, total: usize) -> [Option<Style>; 256] {
     let mut styles = [None; 256];
     if style_offset >= total {
@@ -800,8 +743,8 @@ fn parse_styles(src: &dyn ByteSource, style_offset: usize, total: usize) -> [Opt
         return styles;
     }
     let count = cb[0] as usize;
-    // `count*6` record bytes follow the count, clamped to what the file actually holds — so the
-    // `o + 6 > want` break below fires at the same record the old `o + 6 > data.len()` did.
+    // `count*6` record bytes follow the count, clamped to what the file holds so the `o + 6 > want`
+    // break below stops at the last whole record in a truncated table.
     let avail = total - (style_offset + 1);
     let want = (count * 6).min(avail);
     let mut buf = [0u8; 256 * 6];
@@ -825,9 +768,9 @@ fn parse_styles(src: &dyn ByteSource, style_offset: usize, total: usize) -> [Opt
     styles
 }
 
-/// Parse the `lod_count` LOD-table entries (read resident from `src`); validates each layer's
+/// Parse the `lod_count` LOD-table entries (resident from `src`); validates each layer's
 /// index/chunk region lies within the file (`total` bytes) so `query`/`decode_chunk` can skip
-/// bounds math, and that its `chunk_size` fits a cache slot ([`MAX_CHUNK_BYTES`], issue #37).
+/// bounds math, and that its `chunk_size` fits the decode scratch ([`MAX_CHUNK_BYTES`]).
 fn parse_lod_table(src: &dyn ByteSource, offset: usize, lod_count: usize, total: usize) -> Result<Vec<Lod, 16>, Error> {
     let mut lods = Vec::new();
     let mut e = [0u8; LOD_ENTRY_LEN];
@@ -841,10 +784,9 @@ fn parse_lod_table(src: &dyn ByteSource, offset: usize, lod_count: usize, total:
             chunk_size: rd_u16(&e, 12) as usize,
             chunk_count: rd_u32(&e, 14) as usize,
         };
-        // Checked: a corrupt entry can advertise a `node_count`/`chunk_count`/
-        // `chunk_size` whose products wrap `usize` on the 32-bit target, so an
-        // unchecked `chunks_end` could land below `total` and admit a layer
-        // that indexes far out of the file.
+        // Checked: a corrupt entry's `node_count`/`chunk_count`/`chunk_size` products can wrap
+        // `usize` on the 32-bit target, so an unchecked `chunks_end` could land below `total` and
+        // admit a layer indexing out of the file.
         let chunks_end = lod
             .data_start()
             .and_then(|start| lod.chunk_count.checked_mul(lod.chunk_size).and_then(|len| start.checked_add(len)))
@@ -852,9 +794,8 @@ fn parse_lod_table(src: &dyn ByteSource, offset: usize, lod_count: usize, total:
         if lod.index_offset < HEADER_LEN || chunks_end > total {
             return Err(Error::BadOffset);
         }
-        // A chunk is decoded into the resident scratch, so reject a map declaring one larger than
-        // [`MAX_CHUNK_BYTES`] (well above the packer's 4096 default) rather than silently dropping
-        // its geometry at render time.
+        // A chunk decodes into the resident scratch, so reject a `chunk_size` over
+        // [`MAX_CHUNK_BYTES`] rather than silently dropping its geometry at render time.
         if lod.chunk_size > MAX_CHUNK_BYTES {
             return Err(Error::BadOffset);
         }
@@ -863,9 +804,8 @@ fn parse_lod_table(src: &dyn ByteSource, offset: usize, lod_count: usize, total:
     Ok(lods)
 }
 
-/// A snapshot of the [`Reader`]'s streaming counters: the geometry-chunk cache hit/miss tally
-/// and the raw SD-read overhead (read calls + bytes). Issue #37's measured deliverables — the
-/// renderer reports the per-frame delta to the host stats panel / device log.
+/// A snapshot of the [`Reader`]'s streaming counters: chunk-cache hit/miss tally and raw SD-read
+/// overhead (read calls + bytes). The renderer reports the per-frame delta.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CacheStats {
     /// Geometry-chunk requests served from a resident slot (no SD read).
@@ -887,9 +827,8 @@ enum ChunkLoc {
 }
 
 /// One geometry-chunk cache slot: a resident copy of a `chunk_size`-byte chunk, tagged with its
-/// `(lod, chunk_id)` and a recency stamp for LRU eviction. `valid` distinguishes a loaded slot
-/// from an empty one — chosen over `Option` so the all-zero state is a valid *empty* slot, which
-/// lets [`MapCacheInner::new`] zero-init the whole cache (see there).
+/// `(lod, chunk_id)` and a recency stamp for LRU eviction. `valid` (over `Option`) makes the
+/// all-zero state a valid *empty* slot, so [`MapCacheInner::new`] can zero-init the whole cache.
 struct ChunkSlot {
     valid: bool,
     lod: u8,
@@ -909,17 +848,14 @@ struct IndexBlock {
     buf: [u8; INDEX_BLOCK],
 }
 
-/// The streamed-map cache: an LRU set of geometry-chunk slots (the issue-#37 chunk cache that
-/// absorbs the renderer's per-priority-pass re-reads) plus a small block cache for the
-/// quadtree-node reads, with the streaming counters. Caller-owned and reusable across frames —
-/// the device places one in its reserved region for the whole session and rebuilds the small [`Reader`] each
-/// frame against it (so a chunk read one frame can hit the next), while the host just makes one
-/// per render. ≈277 KB, dominated by the slots + the decode scratch; tune the slot count /
-/// `CACHE_SLOT_BYTES` against the on-device RAM budget.
+/// The streamed-map cache: an LRU set of geometry-chunk slots (absorbing the renderer's
+/// per-priority-pass re-reads) plus a small block cache for the quadtree-node reads, with the
+/// streaming counters. Caller-owned and reusable across frames (a chunk read one frame can hit the
+/// next). ≈277 KB, dominated by the slots + decode scratch; tune the slot count / `CACHE_SLOT_BYTES`
+/// against the on-device RAM budget.
 ///
-/// Wraps its mutable state in a `RefCell` so a [`Reader`] can borrow it (`&MapCache`) yet read
-/// through it on `&self` paths; the borrows are tightly scoped (one index-node read, or one chunk
-/// load + decode) so they never overlap.
+/// Wraps its mutable state in a `RefCell` so a [`Reader`] can read through it on `&self` paths; the
+/// borrows are tightly scoped (one index-node read, or one chunk load + decode) so they never overlap.
 pub struct MapCache {
     inner: RefCell<MapCacheInner>,
 }
@@ -938,11 +874,10 @@ impl MapCache {
     }
 
     /// Drop every resident chunk + index slot. **Call this whenever you rebuild a [`Reader`] over
-    /// a *different* [`ByteSource`]** (a runtime map switch): the cache keys slots only by
+    /// a *different* [`ByteSource`]** (a runtime map switch): slots are keyed only by
     /// `(lod, chunk_id, len)` / index offset, *not* by which map produced them, so a slot left
-    /// resident from the old map would be served to the new reader as a (wrong-geometry) hit. The
-    /// device opens its map once at boot and never needs this; a host that swaps the active
-    /// `.obcm` does. Cheap — only the `valid` flags + counters are touched, not the buffers.
+    /// resident from the old map would cross-serve to the new reader as a (wrong-geometry) hit.
+    /// Cheap — only the `valid` flags + counters are touched, not the buffers.
     pub fn clear(&self) {
         self.inner.borrow_mut().clear();
     }
@@ -975,11 +910,9 @@ struct MapCacheInner {
 
 impl MapCacheInner {
     fn new() -> Self {
-        // Zero-init the whole thing. Every field is valid when all-zero — `valid: false` (empty
-        // slot), integer 0, and write-before-read byte buffers — and `zeroed()` lowers to a
-        // `memset` / `.bss`, whereas a struct literal that zeroes the ~84 KB of buffers emits
-        // them as a `.rodata` const that is then `memcpy`'d. On the device that const overflowed
-        // flash; the simulator/tests are unaffected either way (the value is identical).
+        // Zero-init via `zeroed()` (all-zero is a valid empty state for every field). This lowers
+        // to a `memset` / `.bss`, whereas a struct literal zeroing the ~84 KB of buffers emits them
+        // as a `.rodata` const that is then `memcpy`'d — which overflowed flash on the device.
         //
         // SAFETY: `MapCacheInner` is inhabited and valid for the all-zero bit pattern — it has no
         // references, no enums with a non-zero discriminant, and no `bool` that must be non-zero
@@ -987,9 +920,8 @@ impl MapCacheInner {
         unsafe { core::mem::MaybeUninit::zeroed().assume_init() }
     }
 
-    /// Drop every resident chunk + index slot and zero the counters, returning the cache to its
-    /// just-`new` state without touching the ≈84 KB of backing buffers (only the `valid` flags
-    /// and the small counters are written). Used on a map switch — see [`MapCache::clear`].
+    /// Drop every resident slot and zero the counters, touching only the `valid` flags + counters,
+    /// not the ≈84 KB of backing buffers. See [`MapCache::clear`].
     fn clear(&mut self) {
         for s in &mut self.chunks {
             s.valid = false;
@@ -1051,10 +983,9 @@ impl MapCacheInner {
             return Ok(ChunkLoc::Slot(i));
         }
         let i = lru(self.chunks.iter().map(|s| (!s.valid, s.used)));
-        // Invalidate before the read: a flaky source can fail partway through, leaving the buffer
-        // partially overwritten with the new chunk's bytes. Committing nothing until the read
-        // succeeds means a failed read leaves an empty slot, not a poisoned one keyed to the old
-        // chunk (which would later be served as a corrupt cache hit).
+        // Invalidate before the read: a flaky source can fail partway, half-overwriting the buffer.
+        // Committing `valid`/keys only after the read succeeds means a failed read leaves an empty
+        // slot, not a poisoned one keyed to the old chunk (which would serve as a corrupt hit).
         self.chunks[i].valid = false;
         src.read_at(start, &mut self.chunks[i].buf[..len])?;
         self.chunks[i].valid = true;
@@ -1138,10 +1069,10 @@ mod tests {
     use super::*;
     use crate::SliceSource;
 
-    /// A `ByteSource` that reproduces the flaky-SD failure of issue #64: the read whose offset is
-    /// `fail_at` copies `partial` bytes into the destination (a *real* partial overwrite, like
-    /// `SdByteSource` filling block-by-block) and then returns `Err`. Every other read is filled
-    /// from `data`. The host's `SliceSource` copies in one shot and so can never reproduce this.
+    /// A `ByteSource` reproducing a flaky-SD partial-overwrite: the read at offset `fail_at` copies
+    /// `partial` bytes into the destination and then returns `Err` (like `SdByteSource` filling
+    /// block-by-block). Every other read is filled from `data`. `SliceSource` copies in one shot and
+    /// can't reproduce this.
     struct FlakySource<'a> {
         data: &'a [u8],
         fail_at: u32,
@@ -1167,9 +1098,9 @@ mod tests {
         }
     }
 
-    /// A read that fails partway through must leave the evicted slot *empty*, not poisoned with
-    /// the old key over a half-overwritten buffer — otherwise a later request for the old key is
-    /// served as a (corrupt) cache hit. Regression test for issue #64.
+    /// A read that fails partway must leave the evicted slot *empty*, not poisoned with the old key
+    /// over a half-overwritten buffer — otherwise a later request for the old key is served as a
+    /// corrupt hit.
     #[test]
     fn partial_read_failure_does_not_poison_evicted_slot() {
         const LEN: usize = 64;
@@ -1216,12 +1147,11 @@ mod tests {
         }
     }
 
-    /// Two maps that share a chunk key `(lod, cid, len)` but hold *different* bytes there must not
-    /// cross-serve through a shared cache. The cache keys a slot only by `(lod, cid, len)`, not by
-    /// the source, so after a map switch the old slot would be returned as a (wrong-geometry) hit
-    /// — the latent map-switch bug of issue #68. `clear()` on the switch drops the stale slots so
-    /// the next read misses and fills from the new source. This first half *demonstrates the
-    /// hazard* (the stale hit) so the test fails loudly if `clear()` is ever dropped from the fix.
+    /// Two maps sharing a chunk key `(lod, cid, len)` but holding *different* bytes must not
+    /// cross-serve through a shared cache. Slots are keyed only by `(lod, cid, len)`, not the
+    /// source, so without a `clear()` on the switch the old slot returns as a wrong-geometry hit.
+    /// The first half *demonstrates the hazard* so the test fails loudly if `clear()` is ever
+    /// dropped from the fix.
     #[test]
     fn clear_prevents_chunk_cache_cross_serving() {
         const LEN: usize = 64;
@@ -1240,7 +1170,7 @@ mod tests {
         }
 
         // The hazard: the same key from map B *without* a clear hits A's resident slot and serves
-        // A's bytes — exactly the stale-geometry cross-serve issue #68 is about.
+        // A's bytes — the stale-geometry cross-serve a map switch must guard against.
         let before = inner.stats();
         let loc = inner.load_chunk(&sb, 0, 0, 0, LEN).unwrap();
         let after = inner.stats();
@@ -1306,8 +1236,7 @@ mod tests {
         h
     }
 
-    /// `read_header` pulls version + bbox + marker out of the header alone — the cache-free probe
-    /// the RAM-constrained board reads a card's map bbox through.
+    /// `read_header` pulls version + bbox + marker out of the header alone.
     #[test]
     fn read_header_decodes_bbox_and_marker() {
         let h = synth_header(-34, 12, 78, 56, 0xBEEF);
@@ -1322,8 +1251,8 @@ mod tests {
         );
     }
 
-    /// The same magic / version / length guards as `Reader::new` — a bad card never decodes to a
-    /// bogus bbox (it degrades gracefully on the device instead).
+    /// The same magic / version / length guards as `MapTables::parse` — a bad card never decodes to
+    /// a bogus bbox.
     #[test]
     fn read_header_rejects_short_bad_magic_and_version() {
         assert_eq!(read_header(&SliceSource(&[0u8; HEADER_LEN - 1])), Err(Error::TooShort));

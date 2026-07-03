@@ -1,19 +1,16 @@
 //! The Fields screen — choose which data fields the riding [`Statistics`](crate::screen) grid shows
-//! and in what order. Reached from the [`Stats`](super::StatsScreen) screen's *Fields* row (the
-//! page-cycle period lives up there, deliberately kept out of this list). Same field-map style +
-//! two-level encoder model as the rest of the settings tree, with two extra idioms:
+//! and in what order. Reached from the [`Stats`](super::StatsScreen) screen's *Fields* row. Two idioms
+//! on top of the shared two-level encoder model:
 //!
-//! - **Reordering.** *Press* grabs the highlighted field; rotating then moves it through the order
-//!   and *press*/*back* drops it. While grabbed the row is **anchored** on screen (it holds still and
-//!   the neighbours slide past it), so a two-span field hopping a whole row reads cleanly rather than
-//!   teleporting. A grabbed two-span field always begins a row — the rule
-//!   [`StatFieldList::move_item`](crate::stat_fields::StatFieldList::move_item) enforces.
-//! - **Removing.** A **hold-to-delete** footer (a trash can + a progress bar that fills with the live
-//!   encoder hold, like the Reset screen) erases the highlighted field — a deliberate gesture, not an
-//!   instant tap, so a stray long-press can't drop a panel.
+//! - **Reordering.** *Press* grabs the highlighted field; rotating moves it, *press*/*back* drops it.
+//!   While grabbed the row is anchored on screen (neighbours slide past it), so a two-span field
+//!   hopping a whole row reads cleanly. A grabbed two-span field always begins a row —
+//!   [`StatFieldList::move_item`](crate::stat_fields::StatFieldList::move_item) enforces it.
+//! - **Removing.** A hold-to-delete footer (trash can + progress bar) erases the highlighted field —
+//!   a deliberate gesture so a stray long-press can't drop a panel.
 //!
 //! The `Add field` row opens the [`AddField`](super::AddFieldScreen) picker. Editing is live into
-//! [`Settings::stat_fields`](crate::Settings); leaving the settings subtree persists it.
+//! [`Settings::stat_fields`](crate::Settings).
 
 use embedded_graphics::{
     prelude::{DrawTarget, Point},
@@ -33,9 +30,8 @@ use super::AddFieldScreen;
 /// Per-row height — a single Body label with room for the span badge / move arrows.
 const ROW_H: i32 = 46;
 
-/// Height of the hold-to-delete footer reserved at the bottom (trash can + progress bar on one row).
-/// Reserved whatever the cursor is on, so the list doesn't reflow as you move between field and Add
-/// rows.
+/// Height of the hold-to-delete footer reserved at the bottom. Reserved whatever the cursor is on,
+/// so the list doesn't reflow as you move between field and Add rows.
 const FOOTER_H: i32 = 34;
 
 /// The Fields screen. The row list is `[selected fields, in order] + [Add field…]`; `selected` is
@@ -100,12 +96,10 @@ impl StatFieldsScreen {
         }
     }
 
-    /// First visible row of the scrolling window, as a **signed** offset (it can be negative).
-    /// Normally [`window_start`] (scroll to reveal the cursor, always `>= 0`); **while grabbed**, pin
-    /// the grabbed row to the middle slot for *every* position by scrolling the window virtually — so
-    /// near the list ends the row stays dead-centre and empty space shows above/below, rather than the
-    /// row drifting to the edge. The draw loop skips slots whose index falls outside `0..rows`. Pure,
-    /// so the pinning is unit-tested without rendering.
+    /// First visible row, as a signed offset (can be negative). Normally [`window_start`]; while
+    /// grabbed, pin the grabbed row to the middle slot for every position by scrolling the window
+    /// virtually — so near the list ends the row stays centred with empty space above/below rather
+    /// than drifting to the edge. The draw loop skips slots outside `0..rows`.
     fn window_first(&self, visible: usize, rows: usize) -> i32 {
         if self.grabbed {
             self.selected as i32 - (visible / 2) as i32
@@ -129,8 +123,8 @@ impl StatFieldsScreen {
 
         title_frame(&mut cv, w, h, "FIELDS", "");
 
-        // Window the row list to what fits *above the reserved delete footer*, scrolling to keep the
-        // cursor visible (the Route-menu pattern), or anchoring the grabbed row.
+        // Window the row list to what fits above the delete footer, scrolling to keep the cursor
+        // visible (or anchoring the grabbed row).
         let list_h = h - LIST_TOP - 6 - FOOTER_H;
         let visible = (list_h / ROW_H).max(1) as usize;
         let first = self.window_first(visible, rows);
@@ -157,18 +151,16 @@ impl StatFieldsScreen {
                 cv.vline(px, pcy - 6, 13, 1, INK);
                 cv.text("Add field", Point::new(px + 18, midy), Font::Body, TextAlign::Left, INK);
             } else {
-                // A selected field row.
                 let f = fields[idx];
                 let grabbed = selected && self.grabbed;
-                // A grabbed row gets the amber fill plus up/down move arrows at its right edge;
-                // otherwise the plain row cursor (suppressed while grabbed so they don't double up).
+                // A grabbed row gets the amber fill + move arrows; otherwise the plain row cursor
+                // (suppressed while grabbed so they don't double up).
                 super::row_cursor(&mut cv, area, selected, grabbed);
                 if grabbed {
                     cv.round(area, 6, AMBER);
                     move_arrows(&mut cv, area);
                 }
                 super::row_label(&mut cv, area, f.name(), None);
-                // A grabbed row's right edge carries the move arrows instead of the span badge.
                 if !grabbed {
                     let badge_color = if selected { INK } else { SUBTEXT };
                     super::span_badge(&mut cv, area, f.span(), badge_color);
@@ -177,7 +169,7 @@ impl StatFieldsScreen {
         }
 
         // The scrollbar wants the real (clamped) window position — the grabbed virtual offset can run
-        // negative / past the end, which isn't a meaningful thumb position.
+        // negative / past the end.
         let sb_first = first.clamp(0, rows.saturating_sub(visible) as i32) as usize;
         scrollbar(&mut cv, w - 8, LIST_TOP, visible as i32 * ROW_H, rows, sb_first, visible);
         delete_footer(&mut cv, w, h, self.selected < len, rx.hold_progress);
@@ -185,10 +177,9 @@ impl StatFieldsScreen {
     }
 }
 
-/// Draw the hold-to-delete footer: a trash can + a progress bar (warning-red) that fills with the
-/// live encoder hold, on a single row, echoing the Reset screen's confirm bar. Drawn only when a
-/// *field* row is highlighted (`on_field`); the Add row leaves it blank (just the separator). The
-/// actual delete fires from `handle`'s `Hold` arm when the hold completes.
+/// Draw the hold-to-delete footer: a trash can + a warning-red progress bar filled by the live
+/// encoder hold. Drawn only when a field row is highlighted (`on_field`); the Add row leaves it
+/// blank. The delete itself fires from `handle`'s `Hold` arm.
 fn delete_footer<D, F>(cv: &mut Canvas<D, F>, w: i32, h: i32, on_field: bool, hold: f32)
 where
     D: DrawTarget,
@@ -203,7 +194,6 @@ where
     let p = hold.clamp(0.0, 1.0);
     let midy = fy + FOOTER_H / 2;
     draw_trash(cv, super::ROW_X + 16, midy, WARNING);
-    // The bar fills the rest of the row to the right of the can, vertically centred on it.
     let bh = 12;
     let (bx, by) = (super::ROW_X + 36, midy - bh / 2);
     let bw = w - super::ROW_X - 4 - bx;
@@ -214,8 +204,7 @@ where
     }
 }
 
-/// Draw a small trash-can glyph centred at `(cx, cy)` in `color`: a lidded can with a handle and a
-/// couple of ribs, built from the canvas's line/rect primitives.
+/// Draw a small trash-can glyph centred at `(cx, cy)`: a lidded can with a handle and ribs.
 fn draw_trash<D, F>(cv: &mut Canvas<D, F>, cx: i32, cy: i32, color: u16)
 where
     D: DrawTarget,
@@ -223,15 +212,14 @@ where
 {
     let (bw, bh) = (11, 12);
     let (bx, by) = (cx - bw / 2, cy - bh / 2 + 1);
-    cv.round_outline(rect(bx, by, bw, bh), 2, color); // the can body
-    cv.hline(bx - 2, by - 2, bw + 4, color); // the lid, slightly wider
-    cv.hline(cx - 2, by - 4, 5, color); // the lid handle
+    cv.round_outline(rect(bx, by, bw, bh), 2, color); // can body
+    cv.hline(bx - 2, by - 2, bw + 4, color); // lid
+    cv.hline(cx - 2, by - 4, 5, color); // handle
     cv.vline(cx - 2, by + 3, bh - 5, 1, color); // ribs
     cv.vline(cx + 2, by + 3, bh - 5, 1, color);
 }
 
-/// Draw the up/down move arrows on a grabbed row's right edge — the "rotate to move me" cue, echoing
-/// the stepper field's arrows but vertical.
+/// Draw the up/down move arrows on a grabbed row's right edge — the "rotate to move me" cue.
 fn move_arrows<D, F>(cv: &mut Canvas<D, F>, area: Rectangle)
 where
     D: DrawTarget,
@@ -324,10 +312,8 @@ mod tests {
         assert!(matches!(run(&mut scr, &mut s, Gesture::Back), Transition::Pop), "a second back pops");
     }
 
-    /// While a field is grabbed the window pins it to the middle slot for **every** position —
-    /// including at the very ends, where the window scrolls "negative"/past the end so the row stays
-    /// centred (empty space above/below) rather than drifting to the edge. Ungrabbed, the window is
-    /// the plain scroll-to-reveal.
+    /// While grabbed, the window pins the row to the middle slot for every position — including at
+    /// the ends, where the window scrolls negative/past the end. Ungrabbed = plain scroll-to-reveal.
     #[test]
     fn grabbed_row_stays_pinned_mid_window() {
         let (visible, rows) = (5usize, 14usize);

@@ -1,14 +1,9 @@
 //! Shared helpers for the `obc-render` integration tests.
 //!
-//! The recording `DrawTarget`s and the route-file `ByteSink` here were copy-pasted
-//! across `arrows.rs`, `marker.rs`, `priority.rs`, `stroke.rs` and `text.rs`; this
-//! module is the single source so they can't drift apart.
-//!
-//! Two recording targets are kept because the tests genuinely need different pixel
-//! stores: [`Buf`] keeps the full `Rgb888` colour (so colour-counting tests can tell
-//! features apart), while [`BitBuf`] keeps a single coverage bit per pixel (the stroke
-//! tests only ask "was this pixel painted?"). Not every test uses every method, so
-//! `#[allow(dead_code)]` keeps the unused-per-binary accessors from warning.
+//! Two recording targets for different pixel stores: [`Buf`] keeps the full `Rgb888` colour (so
+//! colour-counting tests can tell features apart), [`BitBuf`] a single coverage bit per pixel (the
+//! stroke tests only ask "was this pixel painted?"). `#[allow(dead_code)]` covers accessors unused
+//! in some binaries.
 
 #![allow(dead_code)]
 
