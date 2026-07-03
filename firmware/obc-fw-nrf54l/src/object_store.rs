@@ -290,6 +290,13 @@ impl ObjectStore {
     pub fn download_open(&mut self, desc: &TransferControl) -> Result<(StreamSender, DownloadSource), TransferStatus> {
         match desc.ty {
             ObjectType::RouteList | ObjectType::RideList => {
+                // No card ≠ no objects: an empty *success* here would let one flaky mount
+                // masquerade as "the device holds nothing" — the app takes a committed list
+                // as authoritative and durably clears its on-device links off it. Answer the
+                // typed error instead; the app keeps its links and retries later.
+                if self.storage.is_none() {
+                    return Err(TransferStatus::Error);
+                }
                 let len = self.build_list(desc.ty);
                 let crc = Crc32::checksum(&self.list_buf[..len]);
                 let tx = StreamSender::new(desc, len as u32, crc).map_err(|_| TransferStatus::Error)?;
