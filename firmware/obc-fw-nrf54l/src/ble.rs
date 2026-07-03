@@ -156,6 +156,11 @@ bind_interrupts!(struct Irqs {
 
 /// Ship config: the phone is the only peer.
 const CONNECTIONS_MAX: usize = 1;
+/// Advertising sets — one legacy connectable set is all the S0 §2 policy needs.
+const ADV_SETS_MAX: usize = 1;
+/// Bonded peers stored in the host (A8, S0 §8): exactly one. A fresh pairing replaces it, so the
+/// resolving list never holds more than the single phone (matches the app's single-peer model).
+const BONDS_MAX: usize = 1;
 /// L2CAP signal + ATT + the data-plane CoC (A4 stands up the accept side; A5 gives it semantics).
 const L2CAP_CHANNELS_MAX: usize = 3;
 /// Outgoing/incoming LL buffers per link (the TrouBLE nrf54 example's values).
@@ -178,9 +183,16 @@ const OBC_SERVICE_UUID_LE: [u8; 16] =
 /// errors if smaller). Re-measure after any Builder/buffer_cfg change.
 const SDC_MEM_SIZE: usize = 4704;
 
-/// TrouBLE's host arena for this config (connection state + the DefaultPacketPool at MTU 251).
-type Resources =
-    HostResources<nrf_sdc::SoftdeviceController<'static>, DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX>;
+/// TrouBLE's host arena for this config (connection state + the DefaultPacketPool at MTU 251 + the
+/// single-peer bond storage the `security` feature adds).
+type Resources = HostResources<
+    nrf_sdc::SoftdeviceController<'static>,
+    DefaultPacketPool,
+    CONNECTIONS_MAX,
+    L2CAP_CHANNELS_MAX,
+    ADV_SETS_MAX,
+    BONDS_MAX,
+>;
 
 /// The BLE build's resident statics, summed for the N3 budget assert in `main.rs` (the `ble`
 /// analogue of the map build's App/cache terms): the MPSL handle, the SDC memory block, TrouBLE's
@@ -232,6 +244,13 @@ pub struct Status {
     /// The HCI reason (status) code of the most recent disconnect; 0 = none yet. Logged in full
     /// (named) over RTT on each disconnect — this is the at-a-glance byte for the status screen.
     pub last_disconnect_reason: u8,
+    /// The 6-digit LESC passkey to show on glass while pairing (A8, S0 §8) — `Some` between
+    /// `PassKeyDisplay` and pairing completing/failing, `None` otherwise. When set, the status
+    /// screen becomes the big-font passkey card the rider types into the phone.
+    pub passkey: Option<u32>,
+    /// True once the link is encrypted (a fresh pairing or a resumed bond, A8) — the status
+    /// screen's "secured" marker and the CoC's open-gate.
+    pub secured: bool,
 }
 
 impl Status {
@@ -244,6 +263,8 @@ impl Status {
         connects: 0,
         disconnects: 0,
         last_disconnect_reason: 0,
+        passkey: None,
+        secured: false,
     };
 }
 
@@ -405,7 +426,7 @@ fn device_address() -> Address {
 /// it through the `DisplayDriver` seam; RowDiff makes the re-present cheap). Deliberately dumb —
 /// a white card of text: the factory name, the link state, the peer + negotiated interval while
 /// connected, battery / SD / lifetime counters, and an input counter so a button press visibly
-/// lands on glass. The A8 passkey joins this screen later.
+/// lands on glass. While pairing (A8) it becomes the big-font passkey card instead.
 pub fn draw_status_screen(fb: &mut [u8], battery_pct: u8, sd_ok: bool, inputs: u32) {
     use embedded_graphics::pixelcolor::{Rgb565, RgbColor};
     use embedded_graphics::prelude::Point;
@@ -419,10 +440,24 @@ pub fn draw_status_screen(fb: &mut [u8], battery_pct: u8, sd_ok: bool, inputs: u
     let ink = Rgb565::BLACK;
     let cx = crate::st7789::WIDTH as i32 / 2;
 
+    // Pairing (A8, S0 §8): the screen's marquee moment — the 6-digit passkey, huge, that the rider
+    // types into the phone's pairing dialog. Takes over the whole card until pairing resolves.
+    if let Some(code) = s.passkey {
+        draw_text(&mut dev, "Pairing", Point::new(cx, 60), Font::Display, TextAlign::Center, ink);
+        let mut line: heapless::String<8> = heapless::String::new();
+        let _ = core::fmt::write(&mut line, format_args!("{:06}", code));
+        draw_text(&mut dev, line.as_str(), Point::new(cx, 150), Font::Huge, TextAlign::Center, ink);
+        draw_text(&mut dev, "enter this code", Point::new(cx, 232), Font::Body, TextAlign::Center, ink);
+        draw_text(&mut dev, "on your phone", Point::new(cx, 262), Font::Body, TextAlign::Center, ink);
+        return;
+    }
+
     draw_text(&mut dev, name.as_str(), Point::new(cx, 28), Font::Display, TextAlign::Center, ink);
     let state = match s.state {
         LinkState::Init => "starting",
         LinkState::Advertising => "advertising",
+        // "secured" once the link is encrypted (bonded, A8); plain "connected" before pairing.
+        LinkState::Connected if s.secured => "secured",
         LinkState::Connected => "connected",
     };
     draw_text(&mut dev, state, Point::new(cx, 76), Font::Body, TextAlign::Center, ink);
@@ -596,33 +631,40 @@ struct BatteryService {
 
 /// OBC Control service (S0 §3.3): the custom `3C92XXXX-…` base, the 16-bit block selecting the
 /// entity. This table mirrors the spec section one-to-one — one place to diff against S0.
+///
+/// **Security (A8, S0 §8):** every characteristic here is `permissions(authenticated)` — access
+/// requires an encrypted, LESC-authenticated (MITM) link — **except `protocol_version`**, which
+/// stays open so the app can version-check before pairing (S0 §1). DIS/BAS are open too (their own
+/// services). An unbonded stranger discovers the service but gets Insufficient-Authentication on
+/// every gated read/write/subscribe.
 #[gatt_service(uuid = "3C920000-9916-4EBA-ABC2-342FE08F6B10")]
 struct ObcControlService {
     /// Small imperative commands (§4.4). Write; answered by a `status` `commandResult`.
-    #[characteristic(uuid = "3C920001-9916-4EBA-ABC2-342FE08F6B10", write)]
+    #[characteristic(uuid = "3C920001-9916-4EBA-ABC2-342FE08F6B10", write, permissions(authenticated))]
     command: heapless09::Vec<u8, 8>,
     /// Typed device → app messages (§4.3). Notify-only.
-    #[characteristic(uuid = "3C920002-9916-4EBA-ABC2-342FE08F6B10", notify)]
+    #[characteristic(uuid = "3C920002-9916-4EBA-ABC2-342FE08F6B10", notify, permissions(authenticated))]
     status: heapless09::Vec<u8, 8>,
     /// The store digest (§4.5): revision + object counts. Seeded from the [`ObjectStore`] at
     /// boot; re-set + notified on every commit/delete ([`publish_store_change`]).
-    #[characteristic(uuid = "3C920003-9916-4EBA-ABC2-342FE08F6B10", read, notify, value = [0u8; 10])]
+    #[characteristic(uuid = "3C920003-9916-4EBA-ABC2-342FE08F6B10", read, notify, permissions(authenticated), value = [0u8; 10])]
     object_store: [u8; 10],
     /// The Config object (§7.3), whole-blob read + write — round-trips through the persisted
     /// settings (A6): seeded at boot, re-seeded canonical after every accepted write.
-    #[characteristic(uuid = "3C920004-9916-4EBA-ABC2-342FE08F6B10", read, write)]
+    #[characteristic(uuid = "3C920004-9916-4EBA-ABC2-342FE08F6B10", read, write, permissions(authenticated))]
     config: heapless09::Vec<u8, 128>,
     /// Open / abort a CoC transfer (§4.2). Write + notify (the notify carries a download's
     /// filled announce descriptor).
-    #[characteristic(uuid = "3C920005-9916-4EBA-ABC2-342FE08F6B10", write, notify, value = [0u8; 16])]
+    #[characteristic(uuid = "3C920005-9916-4EBA-ABC2-342FE08F6B10", write, notify, permissions(authenticated), value = [0u8; 16])]
     transfer_control: [u8; 16],
     /// Reserved (§7.5 — diagnostics cross the CoC): reads return 0 bytes.
-    #[characteristic(uuid = "3C920006-9916-4EBA-ABC2-342FE08F6B10", read)]
+    #[characteristic(uuid = "3C920006-9916-4EBA-ABC2-342FE08F6B10", read, permissions(authenticated))]
     diagnostics: heapless09::Vec<u8, 1>,
     /// The L2CAP CoC PSM the app opens the channel on (§3.3).
-    #[characteristic(uuid = "3C920007-9916-4EBA-ABC2-342FE08F6B10", read, value = OBC_PSM)]
+    #[characteristic(uuid = "3C920007-9916-4EBA-ABC2-342FE08F6B10", read, permissions(authenticated), value = OBC_PSM)]
     psm: u16,
-    /// `protocol_version` (§1) — read without encryption. `1` for this contract.
+    /// `protocol_version` (§1) — read **without** encryption (the connect-time version check
+    /// happens before pairing). `1` for this contract.
     #[characteristic(uuid = "3C920008-9916-4EBA-ABC2-342FE08F6B10", read, value = 1)]
     protocol_version: u16,
 }
@@ -828,7 +870,26 @@ pub async fn run(
     info!("ble: host up as '{}', address {:?}", name.as_str(), address);
 
     // Register the CoC SPSM up front (S0 §5) so `serve_coc` can accept on it once a link is up.
-    let stack = trouble_host::new(sdc, resources).set_random_address(address).register_l2cap_spsm(OBC_PSM).build();
+    // IO = DisplayOnly (A8, S0 §8): the device shows a 6-digit passkey, the phone (keyboard)
+    // enters it → LESC passkey-entry pairing, MITM-protected. Keep the static-random address
+    // (no device privacy) — the phone stores our stable identity for instant reconnect; we
+    // resolve *its* rotating RPA from the stored peer IRK below.
+    let stack = trouble_host::new(sdc, resources)
+        .set_random_address(address)
+        .set_io_capabilities(IoCapabilities::DisplayOnly)
+        .register_l2cap_spsm(OBC_PSM)
+        .build();
+
+    // Re-establish the stored bond (A8, S0 §8): hand it to the host so the controller's resolving
+    // list resolves the bonded phone's RPA on reconnect and re-encrypts with the stored LTK — no
+    // dialog, no interaction ("it just works"). Absent/torn → open pairing.
+    if let Some(bond) = store.borrow_mut().load_bond() {
+        match stack.add_bond_information(bond) {
+            Ok(()) => info!("ble: restored stored bond — bonded reconnect armed"),
+            Err(e) => warn!("ble: add_bond_information failed: {:?}", defmt::Debug2Format(&e)),
+        }
+    }
+
     let runner = stack.runner();
     let mut peripheral = stack.peripheral();
 
@@ -861,6 +922,8 @@ pub async fn run(
                 s.conn_interval_ms = 0;
                 s.att_mtu = 0;
                 s.phy_2m = false;
+                s.passkey = None;
+                s.secured = false;
             });
             // Re-read the advertised name each cycle — a rename (Config write) takes effect on
             // the next advertising start, no reboot (S0 §2: the Config name replaces factory).
@@ -884,6 +947,12 @@ pub async fn run(
                 s.peer = Some(peer_bytes);
                 s.connects += 1;
             });
+
+            // Allow this link to bond (A8): the trouble default is *not* bondable, so a passkey
+            // pairing wouldn't persist keys without this. Set before the peer starts SMP.
+            if let Err(e) = conn.raw().set_bondable(true) {
+                warn!("ble: set_bondable failed: {:?}", defmt::Debug2Format(&e));
+            }
 
             // Serve the link until the peer drops it. `serve_connection` pumps GATT + connection
             // events (so the phone's own MTU/PHY/DLE moves are serviced and our control-plane writes
@@ -1050,6 +1119,52 @@ async fn serve_connection(
             GattConnectionEvent::DataLengthUpdated { max_tx_octets, max_rx_octets, .. } => {
                 info!("ble: [conn] data length: tx {} rx {} octets", max_tx_octets, max_rx_octets);
             }
+
+            // ---- Pairing / bonding lifecycle (A8, S0 §8) ----
+            // The device is DisplayOnly: the phone drives passkey *entry*, so `PassKeyDisplay` is
+            // the one we expect — show the 6-digit code big on the status screen; the rider types
+            // it into the iOS dialog. (Confirm/Input are handled defensively for completeness.)
+            GattConnectionEvent::PassKeyDisplay(passkey) => {
+                info!("ble: [pair] display passkey {=u32:06}", passkey.value());
+                publish(|s| s.passkey = Some(passkey.value()));
+            }
+            GattConnectionEvent::PassKeyConfirm(passkey) => {
+                info!("ble: [pair] confirm passkey {=u32:06}", passkey.value());
+                publish(|s| s.passkey = Some(passkey.value()));
+            }
+            GattConnectionEvent::PassKeyInput => {
+                info!("ble: [pair] peer requests passkey input");
+            }
+            GattConnectionEvent::PairingComplete { security_level, bond } => {
+                info!("ble: [pair] complete — level {:?}, bonded {}", security_level, bond.is_some());
+                // Persist the single bond (S0 §8): a fresh pairing replaces whatever was stored.
+                if let Some(bond) = bond {
+                    store.borrow_mut().save_bond(&bond);
+                }
+                publish(|s| {
+                    s.passkey = None;
+                    s.secured = true;
+                });
+            }
+            GattConnectionEvent::PairingFailed(e) => {
+                warn!("ble: [pair] failed: {:?}", defmt::Debug2Format(&e));
+                // The link usually drops on failure → the app lands on D5 and we re-advertise.
+                publish(|s| s.passkey = None);
+            }
+            GattConnectionEvent::Encrypted { security_level, bond } => {
+                // Fires for a resumed bonded session too (no pairing UI) — mark the link secured.
+                info!("ble: [pair] encrypted — level {:?}, from bond {}", security_level, bond.is_some());
+                publish(|s| {
+                    s.passkey = None;
+                    s.secured = true;
+                });
+            }
+            GattConnectionEvent::BondLost => {
+                // The peer paired again despite our stored bond ⇒ it lost its keys (the app/OS
+                // "forgot" us). Drop our stale bond so this fresh pairing is the new one.
+                warn!("ble: [pair] peer lost its bond — clearing stored bond");
+                store.borrow_mut().clear_bond();
+            }
             _ => {}
         }
     };
@@ -1087,6 +1202,14 @@ async fn serve_coc(
                 continue;
             }
         };
+        // The CoC requires an encrypted link (A8, S0 §8): opening it plaintext is refused. In
+        // practice the app can't reach here unencrypted — `psm`/`transferControl` are both
+        // `authenticated` — but a peer that guessed the SPSM must still be turned away.
+        if !matches!(conn.raw().security_level(), Ok(level) if level.encrypted()) {
+            warn!("ble: [coc] channel opened on an unencrypted link — refusing (S0 §8)");
+            ch.disconnect();
+            continue;
+        }
         info!("ble: [coc] channel accepted (mtu {} mps {}) — data plane ready", ch.mtu(), ch.mps());
         loop {
             let armed = TRANSFER_ARM.wait().await;
