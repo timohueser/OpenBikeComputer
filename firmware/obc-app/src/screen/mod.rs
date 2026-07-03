@@ -14,7 +14,7 @@ use obc_reader::Reader;
 use obc_render::{
     rect,
     text::{Font, TextAlign},
-    Canvas, Clock, MapRenderer, RenderStats, Surface,
+    Clock, MapRenderer, RenderStats, Surface,
 };
 use obc_route::{Profile, RouteReader};
 
@@ -267,11 +267,7 @@ pub const LIST_TOP: i32 = TITLE_BAR_H + 8;
 /// wood title bar with `title` left-aligned and `right` (a counter, a grade readout, …) right-
 /// justified. `title` is left-aligned so a long right-hand readout never collides with it. Every
 /// framed screen draws its header through this; the caller fills the body below [`LIST_TOP`].
-pub fn title_frame<D, F>(cv: &mut Canvas<D, F>, w: i32, h: i32, title: &str, right: &str)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+pub fn title_frame(cv: &mut impl Surface, w: i32, h: i32, title: &str, right: &str) {
     use palette::*;
     cv.clear(PARCHMENT);
     cv.round_outline(rect(4, 4, w - 8, h - 8), 8, WOOD_LIGHT);
@@ -283,11 +279,7 @@ where
 
 /// [`title_frame`] with a `pos / total` list counter on the right — the chrome the
 /// Menu and Route menu share. The caller then draws its rows below [`LIST_TOP`].
-pub fn list_frame<D, F>(cv: &mut Canvas<D, F>, w: i32, h: i32, title: &str, pos: usize, total: usize)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+pub fn list_frame(cv: &mut impl Surface, w: i32, h: i32, title: &str, pos: usize, total: usize) {
     let mut counter: heapless::String<8> = heapless::String::new();
     let _ = write!(counter, "{pos} / {total}");
     title_frame(cv, w, h, title, &counter);
@@ -307,11 +299,7 @@ pub fn window_start(selected: usize, visible: usize, total: usize) -> usize {
 /// Draw a list scrollbar — a faint track with a proportional thumb — at the right
 /// edge, or nothing when everything fits. `top`/`height` is the windowed list
 /// area; `first` is [`window_start`]'s result.
-pub fn scrollbar<D, F>(cv: &mut Canvas<D, F>, x: i32, top: i32, height: i32, total: usize, first: usize, visible: usize)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+pub fn scrollbar(cv: &mut impl Surface, x: i32, top: i32, height: i32, total: usize, first: usize, visible: usize) {
     if total <= visible || total == 0 {
         return;
     }
@@ -346,11 +334,7 @@ pub(crate) fn step_selection(selected: usize, n: i32, len: usize) -> usize {
 
 /// Draw a centered two-line empty state — a bold `title` over a muted `hint` — the shared
 /// "nothing to show yet" body the Route menu and Statistics draw under their header.
-pub(crate) fn empty_state<D, F>(cv: &mut Canvas<D, F>, w: i32, h: i32, title: &str, hint: &str)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+pub(crate) fn empty_state(cv: &mut impl Surface, w: i32, h: i32, title: &str, hint: &str) {
     cv.text(title, Point::new(w / 2, h / 2 - 28), Font::Body, TextAlign::Center, palette::INK);
     cv.text(hint, Point::new(w / 2, h / 2 + 8), Font::Label, TextAlign::Center, palette::SUBTEXT);
 }
@@ -386,18 +370,15 @@ pub(crate) struct MenuItem {
 /// Draw a selected option row's background for the guarded-action menus: a plain `AMBER` fill for
 /// an instant option, or — when `guard` is set — a `PARCHMENT_SHADE` base that fills in `fill`
 /// tracking `hold_progress` (0.0–1.0). The caller draws the label. A no-op for an unselected row.
-pub(crate) fn confirm_row<D, F>(
-    cv: &mut Canvas<D, F>,
+pub(crate) fn confirm_row(
+    cv: &mut impl Surface,
     row: Rectangle,
     selected: bool,
     guard: bool,
     hold_progress: f32,
     fill: u16,
     radius: u32,
-) where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+) {
     if !selected {
         return;
     }

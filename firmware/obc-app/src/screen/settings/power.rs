@@ -88,7 +88,7 @@ impl PowerScreen {
         title_frame(&mut cv, w, h, "POWER", "");
 
         // Row 0 — GPS Fix interval (value row).
-        let r0 = super::row_rect(0, LIST_TOP + 8, w, ROW_H);
+        let r0 = super::row_rect(LIST_TOP + 8, w, ROW_H);
         let editing = self.editing && self.selected == GPS_FIX;
         super::row_cursor(&mut cv, r0, self.selected == GPS_FIX, editing);
         super::row_label(&mut cv, r0, "GPS Fix", Some("interval"));
@@ -99,7 +99,7 @@ impl PowerScreen {
         super::stepper_field(&mut cv, cell, &val, editing, Font::Label);
 
         // Row 1 — Power Saver (toggle).
-        let r1 = super::row_rect(1, LIST_TOP + 8 + ROW_H + 6, w, ROW_H);
+        let r1 = super::row_rect(LIST_TOP + 8 + ROW_H + 6, w, ROW_H);
         super::row_cursor(&mut cv, r1, self.selected == POWER_SAVER, false);
         super::row_label(&mut cv, r1, "Power save", Some("low power"));
         super::toggle_slider(&mut cv, r1, rx.settings.power_saver);

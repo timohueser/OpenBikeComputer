@@ -84,7 +84,7 @@ impl StatsScreen {
         title_frame(&mut cv, w, h, "STATS", "");
 
         // Row 0 — Page cycle (single-line value row with a stepper on the right).
-        let r0 = super::row_rect(0, LIST_TOP + 8, w, ROW_H);
+        let r0 = super::row_rect(LIST_TOP + 8, w, ROW_H);
         let editing = self.editing_cycle && self.selected == PAGE_CYCLE;
         super::row_cursor(&mut cv, r0, self.selected == PAGE_CYCLE, editing);
         super::row_label(&mut cv, r0, "Pages", Some("auto-flip"));
@@ -95,7 +95,7 @@ impl StatsScreen {
         super::stepper_field(&mut cv, cell, &val, editing, Font::Label);
 
         // Row 1 — Fields (opens the panel manager).
-        let r1 = super::row_rect(1, LIST_TOP + 8 + ROW_H + 6, w, ROW_H);
+        let r1 = super::row_rect(LIST_TOP + 8 + ROW_H + 6, w, ROW_H);
         super::row_cursor(&mut cv, r1, self.selected == FIELDS, false);
         super::row_label(&mut cv, r1, "Fields", Some("panels & order"));
         // A right-pointing chevron says "enters a sub-screen".
