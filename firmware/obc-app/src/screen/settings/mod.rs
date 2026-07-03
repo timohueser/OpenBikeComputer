@@ -104,8 +104,8 @@ pub(super) fn row_label(cv: &mut impl Surface, area: Rectangle, label: &str, sub
             cv.text(sub, Point::new(x, area.top_left.y + 30), Font::Label, TextAlign::Left, palette::SUBTEXT);
         }
         None => {
-            let y = area.top_left.y + (area.size.height as i32 - 22) / 2; // vertically centred
-            cv.text(label, Point::new(x, y), Font::Body, TextAlign::Left, palette::INK);
+            let (top, h) = (area.top_left.y, area.size.height as i32);
+            cv.text_vcentered(label, x, top, h, Font::Body, TextAlign::Left, palette::INK);
         }
     }
 }
@@ -128,7 +128,6 @@ pub(super) fn toggle_slider(cv: &mut impl Surface, area: Rectangle, on: bool) {
 /// live field): an amber fill plus up/down triangles. `cell` must leave ~10 px clearance for the arrows.
 pub(super) fn stepper_field(cv: &mut impl Surface, cell: Rectangle, text: &str, active: bool, font: Font) {
     let cx = cell.top_left.x + cell.size.width as i32 / 2;
-    let ty = cell.top_left.y + (cell.size.height as i32 - font.cap_height() as i32) / 2;
     if active {
         cv.round(cell, 4, palette::AMBER);
         let top = cell.top_left.y;
@@ -136,7 +135,7 @@ pub(super) fn stepper_field(cv: &mut impl Surface, cell: Rectangle, text: &str, 
         cv.triangle(Point::new(cx - 6, top - 3), Point::new(cx + 6, top - 3), Point::new(cx, top - 10), palette::INK);
         cv.triangle(Point::new(cx - 6, bot + 3), Point::new(cx + 6, bot + 3), Point::new(cx, bot + 10), palette::INK);
     }
-    cv.text(text, Point::new(cx, ty), font, TextAlign::Center, palette::INK);
+    cv.text_vcentered(text, cx, cell.top_left.y, cell.size.height as i32, font, TextAlign::Center, palette::INK);
 }
 
 /// Draw a span badge at the right of a row: one small square for a one-column field, two for a

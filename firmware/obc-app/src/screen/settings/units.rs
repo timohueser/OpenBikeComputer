@@ -44,7 +44,7 @@ impl UnitsScreen {
         let area = super::row_rect(LIST_TOP + 8, w, 50);
         super::row_cursor(cv, area, true, false);
         let midy = area.top_left.y + area.size.height as i32 / 2;
-        cv.text(units.name(), Point::new(w / 2, area.top_left.y + (50 - 22) / 2), Font::Body, TextAlign::Center, INK);
+        cv.text_vcentered(units.name(), w / 2, area.top_left.y, 50, Font::Body, TextAlign::Center, INK);
         // ◄ and ► as filled triangles, inset from the row edges.
         let ax = area.top_left.x + 18;
         cv.triangle(Point::new(ax, midy - 9), Point::new(ax, midy + 9), Point::new(ax - 11, midy), INK);
