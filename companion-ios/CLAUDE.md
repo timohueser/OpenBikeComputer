@@ -478,7 +478,17 @@ restyle ad hoc**, and don't introduce colors outside
   `ReachabilityStore` over the `NetworkReachability` seam). `TrackMapView` is the
   full-screen **interactive** map the detail hero opens (online only — never a
   blank offline map). MapKit is free/keyless/no-hosting; the grid fallback is an
-  **intentional graceful degradation, not a bug**.
+  **intentional graceful degradation, not a bug**. Both `Map`s force
+  `.preferredColorScheme(.light)` — Maps' dark tiles clash with the app's
+  fixed-light field-guide palette regardless of the system appearance.
+  **Resolution:** `TrackPreview.points`/`.coordinates` stay a 256-point
+  downsample (cheap for the card/hero thumbnail); `RouteDetailModel.mapCoordinates`
+  is what the interactive map actually draws — **full resolution**, sourced from
+  the in-memory canonical geometry (imported/planned's `ImportedRoute`, or a
+  threaded `rideGeometry` for tracked) and falling back to the preview's
+  coordinates only when that's unavailable. Don't feed `preview.coordinates`
+  to `TrackMapView` directly — that's the 256-point cap re-introducing the
+  coarse-polyline bug it was built to avoid.
 - **Components/** — `TrackPreviewView` (the **grid fallback** renderer:
   basemap-free parchment, halo + stroke + forest/coral node dots, waypoint
   `Marker`s — reached through `MapTrackPreviewView`, not used directly),

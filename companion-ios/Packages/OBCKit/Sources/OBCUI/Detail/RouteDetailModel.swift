@@ -48,6 +48,15 @@ public final class RouteDetailModel {
     // MARK: Fixed per-dressing facts
 
     public private(set) var preview: TrackPreview?
+    /// The track the interactive map (#294) draws — full resolution when it's
+    /// available (imported/planned always; tracked when `rideGeometry` was
+    /// threaded in), else the preview's own downsampled coordinates. Never
+    /// empty when `preview` has geometry, so `canExpandMap`-style checks can
+    /// key on it directly.
+    public var mapCoordinates: [Coordinate] {
+        !fullTrackCoordinates.isEmpty ? fullTrackCoordinates : (preview?.coordinates ?? [])
+    }
+    @ObservationIgnored private let fullTrackCoordinates: [Coordinate]
     /// The soft line under the title (E3's "Yesterday, 8:12 AM"; E1's file name).
     public let subtitle: String?
     public private(set) var distanceMeters: Double = 0
@@ -123,7 +132,11 @@ public final class RouteDetailModel {
         plannedGeometry: ImportedRoute? = nil,
         deviceObjectID: UInt16? = nil,
         uploadedCRC32: UInt32? = nil,
-        importedRouteID: RouteID? = nil
+        importedRouteID: RouteID? = nil,
+        // The tracked dressing's full tracklog (#294 follow-up), threaded from
+        // the library's synced `Ride.points` — a ride carries no ImportedRoute,
+        // so it can't ride along on `uploadGeometry` the way planned/imported do.
+        rideGeometry: [Coordinate]? = nil
     ) {
         self.transport = transport
         self.dressing = dressing
@@ -134,6 +147,13 @@ public final class RouteDetailModel {
         case .imported(let route, _): uploadGeometry = route  // E1 carries its own geometry
         default: uploadGeometry = plannedGeometry
         }
+        // The interactive map (#294) draws this, never the downsampled `preview`
+        // — full resolution is already in memory for imported/planned (it's the
+        // same geometry `uploadGeometry` carries); `rideGeometry` threads it in
+        // for tracked. Falls back to the preview's coordinates when neither is
+        // available (a ride synced before this geometry was threaded through) —
+        // a coarser map, not a missing one.
+        fullTrackCoordinates = uploadGeometry?.points.map(\.coordinate) ?? rideGeometry ?? []
 
         switch dressing {
         case .planned(let route):

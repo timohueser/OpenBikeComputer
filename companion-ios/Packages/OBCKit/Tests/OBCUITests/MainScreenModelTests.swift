@@ -200,6 +200,23 @@ final class MainScreenModelTests: XCTestCase {
         XCTAssertEqual(model.rides.first?.name, "Lunch Loop")
     }
 
+    /// #294 follow-up: a synced ride's full tracklog is available for the
+    /// interactive map (never just the ride card's downsampled preview).
+    func testRideGeometryIsAvailableAfterSync() async {
+        let (model, _) = makeModel(.happyPath)
+        await startLoaded(model)
+
+        model.sync()
+        await waitFor("first sync") { model.lastSyncCount != nil }
+
+        let ride = model.rides.first { $0.name == "Kettle Moraine Loop" }
+        let geometry = ride.flatMap { model.rideGeometry(for: $0.id) }
+        XCTAssertNotNil(geometry, "a synced ride's points should be available for the map")
+        XCTAssertFalse(geometry?.isEmpty ?? true)
+
+        XCTAssertNil(model.rideGeometry(for: RideID("nonexistent")))
+    }
+
     /// H10: the drop freezes what landed into the banner state — button idle,
     /// progress down, and the S4 banner yields to the interruption's.
     func testDropMidSyncRaisesH10WithTheLandedCounts() async {

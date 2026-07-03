@@ -52,6 +52,11 @@ public struct TrackMapView: View {
             MapCompass()
             MapScaleView()
         }
+        // Always the light tile set — see `MapTrackPreviewView`'s note. The
+        // rest of the app doesn't lean on dark mode either (OBCTheme is a
+        // fixed light palette); this just keeps the one system-styled surface
+        // consistent with it instead of flipping to Maps' dark tiles.
+        .preferredColorScheme(.light)
         #else
         // No MapKit (host build) → nothing interactive to show.
         Color(OBCTheme.parchment)

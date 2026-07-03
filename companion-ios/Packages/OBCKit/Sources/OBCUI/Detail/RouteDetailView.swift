@@ -121,7 +121,7 @@ public struct RouteDetailView: View {
     /// Whether the hero can open the full interactive map: real geometry **and**
     /// a network path (offline keeps the grid, no tap — never a blank map). #294.
     private var canExpandMap: Bool {
-        isOnline && !(model.preview?.coordinates.isEmpty ?? true)
+        isOnline && !model.mapCoordinates.isEmpty
     }
 
     /// The track hero — a basemap when online, the grid otherwise. When a map is
@@ -155,7 +155,7 @@ public struct RouteDetailView: View {
 
     private var trackMapCover: some View {
         TrackMapView(
-            coordinates: model.preview?.coordinates ?? [],
+            coordinates: model.mapCoordinates,
             title: model.name,
             onClose: { mapShown = false }
         )
