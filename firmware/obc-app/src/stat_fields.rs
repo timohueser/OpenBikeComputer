@@ -15,7 +15,31 @@
 
 use core::fmt::Write;
 
-use crate::screen::Render;
+use obc_route::{Profile, RouteReader};
+
+use crate::activity::Activity;
+use crate::hal::Fix;
+use crate::settings::{DateTime, Units};
+
+/// The narrow live-data view a stat field formats from — exactly what [`StatField::cell`] reads,
+/// nothing more. Deliberately decoupled from the full draw context
+/// ([`Render`](crate::screen::Render), which drags in the `MapRenderer`): a cell is pure
+/// data-to-string, so a test — or a future non-draw host readout — builds a bare `Readout` instead
+/// of faking a renderer. Constructed from a frame by [`Render::readout`](crate::screen::Render).
+pub struct Readout<'a> {
+    /// The current GPS fix, `None` when there isn't one (acquiring / lost).
+    pub fix: Option<Fix>,
+    /// The ride accumulators (distance, climb, moving time, live altitude…).
+    pub activity: &'a Activity,
+    /// The active unit system — captions and scales every readout.
+    pub units: Units,
+    /// The active route's geometry totals, or `None` when no route is loaded.
+    pub route: Option<&'a RouteReader<'a>>,
+    /// The active route's elevation profile, or `None` when no route is loaded.
+    pub profile: Option<&'a Profile>,
+    /// The live wall-clock time (the [`Clock`](StatField::Clock) tile).
+    pub now: DateTime,
+}
 
 /// Grid geometry: a page is `ROWS_PER_PAGE × COLS` tiles. A single-span field fills one slot, a
 /// two-span field a whole row (both columns). When the selection needs more than [`SLOTS_PER_PAGE`]
@@ -106,39 +130,39 @@ impl StatField {
     /// prefix an up-triangle (the climb fields). Route-relative fields fall back to `--` with no
     /// route loaded. The unit lives in the caption so the big [`Display`](obc_render::text::Font)
     /// digits fit the half-width tile.
-    pub fn cell(self, rx: &Render) -> StatCell {
-        let units = rx.settings.units;
-        let live = live_frac(rx);
+    pub fn cell(&self, cx: &Readout) -> StatCell {
+        let units = cx.units;
+        let live = live_frac(cx.activity);
         match self {
             StatField::Speed => {
-                let v = rx.state.user_fix.and_then(|f| f.speed_mps).map(|mps| units.speed(mps * 3.6));
+                let v = cx.fix.and_then(|f| f.speed_mps).map(|mps| units.speed(mps * 3.6));
                 StatCell::new(cap(units.speed_label(), ""), fmt_speed(v), false)
             }
             StatField::AvgSpeed => {
-                let v = rx.activity.avg_kmh().map(|kmh| units.speed(kmh));
+                let v = cx.activity.avg_kmh().map(|kmh| units.speed(kmh));
                 StatCell::new(cap("AVG ", units.speed_label()), fmt_speed(v), false)
             }
             StatField::DistDone => StatCell::new(
                 cap(units.dist_label(), " DONE"),
-                fmt_km(units.dist(rx.activity.ridden_m / 1000.0)),
+                fmt_km(units.dist(cx.activity.ridden_m / 1000.0)),
                 false,
             ),
             StatField::DistToGo => {
-                let to_go_m = rx.route.map_or(0, |r| r.total_distance_m).saturating_sub(rx.activity.progress_m);
+                let to_go_m = cx.route.map_or(0, |r| r.total_distance_m).saturating_sub(cx.activity.progress_m);
                 StatCell::new(cap(units.dist_label(), " TO GO"), fmt_km(units.dist(to_go_m as f32 / 1000.0)), false)
             }
             StatField::Climbed => {
-                StatCell::new(cap("CLIMBED", ""), fmt_int(units.elev(rx.activity.climb_m()) as u32), true)
+                StatCell::new(cap("CLIMBED", ""), fmt_int(units.elev(cx.activity.climb_m()) as u32), true)
             }
             StatField::ToClimb => {
-                let to_climb = match (rx.route, rx.profile) {
+                let to_climb = match (cx.route, cx.profile) {
                     (Some(r), Some(p)) => r.total_ascent_m.saturating_sub(p.ascent_to(live)),
                     _ => 0,
                 };
                 StatCell::new(cap("TO CLIMB", ""), fmt_int(units.elev(to_climb as f32) as u32), true)
             }
             StatField::Grade => {
-                let g = match (rx.route, rx.profile) {
+                let g = match (cx.route, cx.profile) {
                     (Some(r), Some(p)) => grade_at(p, r.total_distance_m, live),
                     _ => 0,
                 };
@@ -149,13 +173,13 @@ impl StatField {
             StatField::Elevation => {
                 // The live barometric altitude, not the route profile — so it reads the current
                 // height with no route loaded, and `--` until the first sample.
-                let v = rx.activity.current_elevation_m().map(|m| units.elev(m));
+                let v = cx.activity.current_elevation_m().map(|m| units.elev(m));
                 StatCell::new(cap("ELEV ", units.elev_label()), fmt_elev(v), false)
             }
-            StatField::RideTime => StatCell::new(cap("RIDE", ""), fmt_hms(rx.activity.moving_s), false),
+            StatField::RideTime => StatCell::new(cap("RIDE", ""), fmt_hms(cx.activity.moving_s), false),
             StatField::Clock => {
                 let mut value: heapless::String<8> = heapless::String::new();
-                let _ = write!(value, "{:02}:{:02}", rx.now.hour, rx.now.minute);
+                let _ = write!(value, "{:02}:{:02}", cx.now.hour, cx.now.minute);
                 StatCell::new(cap("TIME", ""), value, false)
             }
         }
@@ -470,8 +494,8 @@ pub(crate) fn grade_at(profile: &obc_route::Profile, total_distance_m: u32, frac
 }
 
 /// The fractional live position (`0.0`–`1.0`) along the route; `0.0` when no length is known.
-fn live_frac(rx: &Render) -> f32 {
-    let a = rx.activity;
+/// Shared by the route-relative fields here and the Statistics screen's cursor logic.
+pub(crate) fn live_frac(a: &Activity) -> f32 {
     if a.route_total_m == 0 {
         0.0
     } else {
@@ -482,6 +506,7 @@ fn live_frac(rx: &Render) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::activity::Mode;
 
     /// A list built from a slice of fields, for the layout/reorder tests.
     fn list(fields: &[StatField]) -> StatFieldList {
@@ -589,56 +614,56 @@ mod tests {
         assert_eq!(l.as_slice(), &[StatField::Clock]);
     }
 
+    /// A bare readout over `activity` — no fix, no route, no profile. The point of [`Readout`]:
+    /// formatting a cell needs no `MapRenderer`, no `Render`.
+    fn readout(activity: &Activity, units: Units) -> Readout<'_> {
+        Readout { fix: None, activity, units, route: None, profile: None, now: DateTime::default() }
+    }
+
     /// The Elevation tile reads the live barometric altitude, not the route profile: it shows the
     /// current height with no route loaded, converts to the active unit, and reads `--` before the
     /// first altimeter sample.
     #[test]
     fn elevation_tile_reads_live_barometric_altitude() {
-        use crate::activity::{Activity, Mode};
-        use crate::breadcrumb::Breadcrumb;
-        use crate::settings::{DateTime, Settings, Units};
-        use crate::AppState;
-        use obc_render::{MapRenderer, NoopClock};
-
-        let state = AppState::new(0, 0, 1.0);
-        let breadcrumb = Breadcrumb::new();
-        let mut renderer = MapRenderer::new();
-        let now = DateTime::default();
-        // A minimal `Render` for one `Elevation` cell — no route/profile, reading the live altitude
-        // off `activity`.
-        let value = |settings: &Settings, activity: &Activity, renderer: &mut MapRenderer| {
-            let rx = Render {
-                reader: None,
-                renderer,
-                state: &state,
-                activity,
-                settings,
-                routes: &[],
-                route: None,
-                profile: None,
-                breadcrumb: &breadcrumb,
-                w: 240,
-                h: 320,
-                now_ms: 0,
-                now,
-                hold_progress: 0.0,
-                no_fix: false,
-                clock: &NoopClock,
-                stats: obc_render::RenderStats::default(),
-            };
-            StatField::Elevation.cell(&rx).value
-        };
-
-        let metric = Settings::default();
         let mut activity = Activity::new(Mode::Riding);
-        assert_eq!(value(&metric, &activity, &mut renderer).as_str(), "--", "no altimeter sample yet");
+        let value = |a: &Activity, units: Units| StatField::Elevation.cell(&readout(a, units)).value;
+
+        assert_eq!(value(&activity, Units::Metric).as_str(), "--", "no altimeter sample yet");
 
         activity.record_altitude(144.0);
-        assert_eq!(value(&metric, &activity, &mut renderer).as_str(), "144", "metric shows whole metres");
-
-        let imperial = Settings { units: Units::Imperial, ..Settings::default() };
+        assert_eq!(value(&activity, Units::Metric).as_str(), "144", "metric shows whole metres");
         // 144 m × 3.28084 ≈ 472.4 ft → rounds to 472.
-        assert_eq!(value(&imperial, &activity, &mut renderer).as_str(), "472", "imperial converts to feet");
+        assert_eq!(value(&activity, Units::Imperial).as_str(), "472", "imperial converts to feet");
+    }
+
+    /// With no fix, no route and a fresh ride, every field falls back to its documented idle
+    /// reading — `--` for the live/averaged values, zeros for the accumulators.
+    #[test]
+    fn fields_fall_back_without_data() {
+        let activity = Activity::new(Mode::Riding);
+        let cx = readout(&activity, Units::Metric);
+        let val = |f: StatField| f.cell(&cx).value;
+        assert_eq!(val(StatField::Speed).as_str(), "--", "no fix → no live speed");
+        assert_eq!(val(StatField::AvgSpeed).as_str(), "--", "no moving time → no average");
+        assert_eq!(val(StatField::Elevation).as_str(), "--", "no altimeter sample yet");
+        assert_eq!(val(StatField::DistDone).as_str(), "0.0");
+        assert_eq!(val(StatField::DistToGo).as_str(), "0.0", "no route → nothing to go");
+        assert_eq!(val(StatField::Climbed).as_str(), "0");
+        assert_eq!(val(StatField::ToClimb).as_str(), "0", "no route → nothing to climb");
+        assert_eq!(val(StatField::Grade).as_str(), "0%", "no route → flat");
+        assert_eq!(val(StatField::RideTime).as_str(), "0:00");
+        assert_eq!(val(StatField::Clock).as_str(), "12:00", "the neutral default DateTime");
+    }
+
+    /// The Speed tile reads the fix's ground speed and rescales per unit system.
+    #[test]
+    fn speed_tile_reads_the_fix() {
+        let activity = Activity::new(Mode::Riding);
+        let fix = Fix { speed_mps: Some(10.0), ..Fix::at(0, 0) };
+        let value =
+            |units: Units| StatField::Speed.cell(&Readout { fix: Some(fix), ..readout(&activity, units) }).value;
+        assert_eq!(value(Units::Metric).as_str(), "36.0", "10 m/s reads 36 km/h");
+        assert_eq!(value(Units::Imperial).as_str(), "22.4", "…and 22.4 mph");
     }
 
     /// Discriminants round-trip through `from_u8`, and an unknown byte is dropped.

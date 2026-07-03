@@ -22,7 +22,6 @@ use obc_render::{
     Surface,
 };
 
-use crate::activity::Activity;
 use crate::input::Gesture;
 use crate::settings::Settings;
 use crate::stat_fields;
@@ -85,7 +84,7 @@ impl StatisticsScreen {
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
-        let live = live_frac(cx.activity);
+        let live = stat_fields::live_frac(cx.activity);
         match g {
             Gesture::Turn(n) => {
                 self.on_turn(n, live, cx.now_ms);
@@ -325,23 +324,15 @@ impl StatisticsScreen {
         let col_w = (chart_w - gap) / 2;
         let grid_top = prog_y + 16;
         let row_h = ((h - 10 - grid_top - 2 * gap) / stat_fields::ROWS_PER_PAGE as i32).max(20);
+        let cx = rx.readout();
         for placed in stat_fields::page_fields(fields, page) {
-            let cell = placed.field.cell(rx);
+            let cell = placed.field.cell(&cx);
             let x = chart_x + placed.col as i32 * (col_w + gap);
             let y = grid_top + placed.row as i32 * (row_h + gap);
             let tile_w = if placed.field.span() == 2 { chart_w } else { col_w };
             tile(cv, rect(x, y, tile_w, row_h), &cell.caption, &cell.value, cell.arrow);
         }
     }
-}
-
-/// The fractional position (`0.0`–`1.0`) of the live matched position along the route.
-/// `0.0` when no route length is known yet.
-fn live_frac(a: &Activity) -> f32 {
-    if a.route_total_m == 0 {
-        return 0.0;
-    }
-    (a.progress_m as f32 / a.route_total_m as f32).clamp(0.0, 1.0)
 }
 
 /// Draw a magnifying-glass icon on a parchment chip — the wordless "Zoom mode is on" marker. A
