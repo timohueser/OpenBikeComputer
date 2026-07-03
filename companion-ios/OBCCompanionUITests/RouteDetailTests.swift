@@ -53,7 +53,12 @@ final class RouteDetailTests: XCTestCase {
         // A stat renders value+unit as one text element: "62.4 km".
         XCTAssertTrue(app.staticTexts["62.4 km"].exists, "distance stat missing")
         XCTAssertTrue(app.staticTexts["3:20"].exists, "est. time stat missing")
-        XCTAssertTrue(app.staticTexts["9 %"].waitForExistence(timeout: 5), "max grade stat missing")
+        // MAX derives from the saved record's geometry (library-first E2, #289) —
+        // pin the shape ("N %"), not a fixture constant.
+        let maxGrade = app.staticTexts.matching(
+            NSPredicate(format: "label MATCHES %@", "\\d+ %")
+        ).firstMatch
+        XCTAssertTrue(maxGrade.waitForExistence(timeout: 5), "max grade stat missing")
 
         let waypointsRow = app.buttons["detail.waypoints"]
         XCTAssertTrue(waypointsRow.waitForExistence(timeout: 5), "waypoints disclosure missing")

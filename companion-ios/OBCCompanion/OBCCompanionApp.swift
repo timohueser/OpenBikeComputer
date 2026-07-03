@@ -84,6 +84,10 @@ struct OBCCompanionApp: App {
         #if DEBUG
         if let mockControl {
             let store = InMemoryLibraryStore()
+            // The Planned list is library-first (#289): fixture routes exist as
+            // phone-side saves, with `deviceObjectID` marking the ones the mock
+            // device also holds (the C1 badge + `listRoutes()` reconcile).
+            mockControl.seedLibrary(into: store)
             // H9's premise is "everything already synced" — the synced set is
             // the library's (B1S), so the scenario seeds it here and the FIRST
             // sync reports up to date.

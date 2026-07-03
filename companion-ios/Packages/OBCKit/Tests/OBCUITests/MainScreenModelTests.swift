@@ -5,8 +5,9 @@ import OBCTransport
 @testable import OBCUI
 
 /// B3 acceptance, host-side: the main-screen model driven through
-/// `MockTransport` — lists from fixtures, the live device cluster, search,
-/// the SYNC button state machine, and swipe-delete's data path.
+/// `MockTransport` — the library-first Planned list (#289), the device-first
+/// Tracked list, the live device cluster, search, the SYNC button state
+/// machine, and swipe-delete's data path.
 @MainActor
 final class MainScreenModelTests: XCTestCase {
     /// Short pacing so the done-hold / line-hold timers fire in test time.
@@ -18,12 +19,16 @@ final class MainScreenModelTests: XCTestCase {
     private func makeModel(
         _ scenario: Scenario,
         library: any LibraryStore = InMemoryLibraryStore(),
+        seedLibrary: Bool = true,
         timing: MainScreenModel.Timing = fastTiming
     ) -> (MainScreenModel, MockControl) {
         let control = MockControl(scenario: scenario)
         control.latency = .zero
         // Fast transfers: the pacing under test is the model's, not the mock's.
         control.throughputBytesPerSec = 200_000_000
+        // What the composition root does for every mock run: the Planned list is
+        // library-first, so fixture routes exist as library records (#289).
+        if seedLibrary { control.seedLibrary(into: library) }
         let model = MainScreenModel(
             transport: MockTransport(control: control), library: library, timing: timing)
         return (model, control)
@@ -83,6 +88,9 @@ final class MainScreenModelTests: XCTestCase {
 
         XCTAssertEqual(model.routes.count, 5)
         XCTAssertEqual(model.routes.first?.name, "Kettle Moraine Loop")
+        // The badge reconcile: fixtures the device holds a copy of light up.
+        XCTAssertTrue(model.isUploaded(RouteID("kettle-moraine-loop")))
+        XCTAssertFalse(model.isUploaded(RouteID("blue-mounds-backroads")))
         XCTAssertEqual(model.rides.count, 4)
         XCTAssertEqual(model.rides[1].name, "Sunday Coffee Spin")
         await waitFor("device identity") { model.deviceName == "Trailhead" }
@@ -302,18 +310,21 @@ final class MainScreenModelTests: XCTestCase {
 
     // MARK: Delete (H11 → H1)
 
-    func testDeleteRouteRemovesLocallyAndOnDevice() async {
-        let (model, control) = makeModel(.happyPath)
+    func testDeleteRouteRemovesFromLibraryButNeverFromDevice() async {
+        let library = InMemoryLibraryStore()
+        let (model, control) = makeModel(.happyPath, library: library)
         await startLoaded(model)
 
         let id = model.routes[0].id
         model.deleteRoute(id)
         XCTAssertEqual(model.routes.count, 4)   // optimistic removal
-        await waitFor("device delete persists") { control.fixtures.routes.count == 4 }
+        XCTAssertFalse(library.plannedRoutes().contains { $0.id == id }, "delete reaches the library")
+        // H1's promise: "If it's already on the device, it stays there."
+        XCTAssertTrue(control.fixtures.routes.contains { $0.deviceObjectID != nil })
 
         model.reload()
         await waitFor("reload") { model.loadState == .loaded }
-        XCTAssertFalse(model.routes.contains { $0.id == id })
+        XCTAssertFalse(model.routes.contains { $0.id == id }, "the device copy must not re-list it")
     }
 
     func testDeleteRideRemovesLocallyAndStaysOutOfNewCounts() async {
@@ -412,16 +423,54 @@ final class MainScreenModelTests: XCTestCase {
         XCTAssertFalse(model.isUploaded(record.id), "deleting clears the badge")
     }
 
-    func testSeededUploadedRouteShowsTheBadgeAfterRelaunch() async {
+    func testSeededUploadedRouteKeepsItsBadgeWhenTheDeviceStillHoldsIt() async {
         let library = InMemoryLibraryStore()
         var record = importedRecord()
-        record.deviceObjectID = 9
+        record.deviceObjectID = 7   // the default fixture device holds object 7
         library.savePlannedRoute(record)
 
         let (model, _) = makeModel(.happyPath, library: library)
         await startLoaded(model)
         XCTAssertTrue(model.isUploaded(record.id), "a route on the device keeps its badge across a relaunch")
-        XCTAssertEqual(model.plannedDeviceObjectID(for: record.id), 9)
+        XCTAssertEqual(model.plannedDeviceObjectID(for: record.id), 7)
+    }
+
+    /// #289's reconcile: a copy deleted out from under us (another phone, the
+    /// EchoHarness) clears the stored link — and the badge — on the next reload.
+    func testReloadClearsTheBadgeWhenTheDeviceNoLongerHoldsTheRoute() async {
+        let library = InMemoryLibraryStore()
+        var record = importedRecord()
+        record.deviceObjectID = 999   // no fixture device object has this id
+        library.savePlannedRoute(record)
+
+        let (model, _) = makeModel(.happyPath, library: library)
+        await startLoaded(model)
+        XCTAssertFalse(model.isUploaded(record.id))
+        XCTAssertNil(model.plannedDeviceObjectID(for: record.id))
+        XCTAssertNil(library.plannedRoutes().first { $0.id == record.id }?.deviceObjectID,
+                     "the cleared link persists")
+    }
+
+    /// The full round trip: an upload's committed id keeps the badge lit through
+    /// the next reload, because the mock device now lists the copy.
+    func testUploadedRouteKeepsItsBadgeThroughReload() async {
+        let (model, control) = makeModel(.happyPath)
+        await startLoaded(model)
+        let record = importedRecord()
+        model.addImportedRoute(record)
+
+        let handle = MockTransport(control: control).uploadRoute(RouteBlob(
+            summary: record.summary, payload: Data([1, 2, 3])
+        ))
+        guard await handle.outcome == .completed, let objectID = await handle.assignedObjectID else {
+            return XCTFail("mock upload must commit and assign an id")
+        }
+        model.markRouteUploaded(record.id, objectID: objectID)
+        XCTAssertTrue(model.isUploaded(record.id))
+
+        model.reload()
+        await waitFor("reload") { model.loadState == .loaded }
+        XCTAssertTrue(model.isUploaded(record.id), "the device lists the fresh copy — the badge survives reconcile")
     }
 
     func testPlannedRouteNamedFindsACollisionCaseInsensitively() async {
@@ -447,14 +496,14 @@ final class MainScreenModelTests: XCTestCase {
         let (relaunched, _) = makeModel(.happyPath, library: library)
         await startLoaded(relaunched)
 
-        XCTAssertEqual(relaunched.routes.count, 6, "the saved import joins the device's five")
-        XCTAssertEqual(relaunched.routes.first?.id, record.id, "phone-only routes stay on top")
+        XCTAssertEqual(relaunched.routes.count, 6, "the saved import joins the seeded five")
+        XCTAssertEqual(relaunched.routes.first?.id, record.id, "the newest save stays on top")
         XCTAssertEqual(relaunched.routes.first?.name, "Schwarzwald Day 2")
         let kept = relaunched.importedDetail(for: record.id)
         XCTAssertEqual(kept?.waypoints.count, 1, "the parsed detail is derivable after relaunch")
 
         relaunched.deleteRoute(record.id)
-        XCTAssertTrue(library.plannedRoutes().isEmpty, "delete reaches the library")
+        XCTAssertFalse(library.plannedRoutes().contains { $0.id == record.id }, "delete reaches the library")
     }
 
     /// #256 acceptance (H9): re-sync after a relaunch downloads nothing new.
@@ -511,7 +560,7 @@ final class MainScreenModelTests: XCTestCase {
         library.saveRide(ride)
         library.markRideSynced(ride.id)
 
-        let (model, _) = makeModel(.readError, library: library)
+        let (model, _) = makeModel(.readError, library: library, seedLibrary: false)
         model.start()
         await waitFor("read failure") { model.loadState == .failed }
 

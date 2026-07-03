@@ -92,16 +92,27 @@ companion-ios/
                                the lists and out of "new" counts) + the B7 sync
                                flow (payloads decode via RideObjectCodec and
                                persist ride-by-ride; a drop → the H10 banner with
-                               the landed count, Resume continues the SAME stalled
-                               transfer — the H10 banner owns the slot over S4's)
+                               the landed count, Resume restarts the batch at
+                               whole-ride granularity — rides that landed stay,
+                               the rest re-send whole; the H10 banner owns the
+                               slot over S4's). The Planned list is
+                               **library-first** (#289): rows come only from the
+                               LibraryStore; the device's listRoutes() (device-
+                               namespace object ids) is consulted solely to
+                               reconcile each record's deviceObjectID — lighting
+                               AND clearing the C1 "on device" badge — never to
+                               add rows
           Detail/              B4 route detail (RouteDetailModel + RouteDetailView:
                                ONE profile layout, three dressings — E2 planned /
                                E3 tracked / E1 import via ImportLandingView — plus
                                the W1 waypoints push and H12 rename)
           Upload/              B5 upload sheet (UploadSheetModel + UploadSheetView:
                                F progress → F₂ done over the detail, drop →
-                               offset-resume, cancel-aborts; the real OBCR v2 payload
-                               from RouteObjectCodec, B12)
+                               Resume restarts the upload whole (spec: transfers
+                               restart, not resume), cancel-aborts; the real OBCR
+                               v2 payload from RouteObjectCodec, B12; success =
+                               the device's transferResult, never the local
+                               byte flush)
           Settings/            B8 settings (SettingsModel + SettingsView: the G
                                grouped lists — device row + H3 rename via
                                writeConfig + H2 forget → D1, OTA/services groups
@@ -316,7 +327,11 @@ the fixture-backed mock: a live `MockControl` fault-injection surface, editable 
 fixture sets (`OBCMock/Fixtures/*.json`), and named `Scenario` presets that reproduce
 each design state with no device and no firmware. Realism comes from **latency +
 throughput + faults**, never wire bytes — the mock serves domain objects straight
-from fixtures. Select a scenario **programmatically** today:
+from fixtures. Fixture routes are **library records** (#289): the composition root
+seeds every mock run's `InMemoryLibraryStore` via `MockControl.seedLibrary(into:)`,
+and a route's optional `deviceObjectID` marks the copy the mock device holds
+(`listRoutes()` serves exactly that subset, under device-namespace ids). Select a
+scenario **programmatically** today:
 
 ```swift
 RootView(transport: MockTransport(scenario: .outOfRange))   // or: control.apply(.syncDrop)
@@ -336,7 +351,7 @@ RootView(transport: MockTransport(scenario: .outOfRange))   // or: control.apply
 | `pairingTimeout` / `pairingRejected` | D5 |
 | `bluetoothOff` / `permissionDenied` | H8 / H7 |
 | `syncUpToDate` / `syncDrop` | H9 / H10 |
-| `uploadDrop` | F interrupted → resume |
+| `uploadDrop` | F interrupted → restart |
 | `unsupportedFile` | H5 |
 
 `loadFixtures("empty" | "large")` swaps the library (S1 / search). `unsupportedFile`
@@ -390,7 +405,7 @@ panel-presentation smoke tests); `PairingFlowTests` walks the B2 launch/pairing
 flow end to end per scenario, `MainScreenTests` walks the B3 main-screen
 states (C1/C2, SYNC, S4, H6, H11→H1), `RouteDetailTests` walks the B4
 detail dressings (E2/E3/W1/H12/H1 + E1 via `-OBCImportSample`),
-`UploadSheetTests` walks the B5 sheet (F/F₂, `uploadDrop` → resume, cancel,
+`UploadSheetTests` walks the B5 sheet (F/F₂, `uploadDrop` → restart, cancel,
 E1 upload-saves), `ImportTests` walks B6 (TCX → E1/W1, `bad` → H5,
 `noDevice` + import → H4 incl. pairing through to the Planned list),
 `SettingsTests` walks B8 (G groups, H3 rename across the app, H2 forget → D1), and
