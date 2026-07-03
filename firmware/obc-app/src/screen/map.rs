@@ -128,18 +128,21 @@ impl MapScreen {
             rx.renderer.draw_marker(target, &vp, fix.lon, fix.lat, fix.course, color_fn(marker565));
         }
 
+        // The remaining chrome draws in the palette vocabulary — one Canvas over the same target.
+        let mut cv = Canvas::new(target, color_fn);
+
         // Top-center status pill, shown only when there's something to say. "No GPS Fix" takes
         // priority over off-route: with no fix the match is stale, so cross-track distance is
         // meaningless.
         if rx.no_fix {
-            draw_no_fix_pill(target, rx, color_fn);
+            draw_no_fix_pill(&mut cv, rx);
         } else if rx.activity.off_route {
-            draw_off_route_pill(target, rx, color_fn);
+            draw_off_route_pill(&mut cv, rx);
         }
 
         // Pan-mode HUD. Drawn last so it sits over the map + marker, and only while panning.
         if let Some(pan) = rx.state.pan {
-            draw_pan_hud(target, (rx.w, rx.h), pan, rx.state.user_fix, marker565, &vp, color_fn);
+            draw_pan_hud(&mut cv, (rx.w, rx.h), pan, rx.state.user_fix, marker565, &vp);
         }
         stats
     }
@@ -162,14 +165,9 @@ fn handle_pan(g: Gesture, cx: &mut Ctx) -> Transition {
 
 /// A compact "No GPS Fix" chip at the top of the map — shown while the device has no current fix,
 /// vanishing the moment one lands. Same look + slot as the off-route pill.
-fn draw_no_fix_pill<D, F>(target: &mut D, rx: &Render, color_fn: &F)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+fn draw_no_fix_pill(cv: &mut impl Surface, rx: &Render) {
     use super::palette::*;
     let w = rx.w as i32;
-    let mut cv = Canvas::new(target, color_fn);
     let s = "No GPS Fix";
     let font = Font::Body;
     let tw = text_width(s, font) as i32;
@@ -183,14 +181,9 @@ where
 
 /// A compact "off route NNNm" chip at the top of the map — shown only while off-route, vanishing on
 /// rejoin.
-fn draw_off_route_pill<D, F>(target: &mut D, rx: &Render, color_fn: &F)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+fn draw_off_route_pill(cv: &mut impl Surface, rx: &Render) {
     use super::palette::*;
     let w = rx.w as i32;
-    let mut cv = Canvas::new(target, color_fn);
     let mut s: heapless::String<20> = heapless::String::new();
     super::write_off_route(&mut s, "off route ", rx.activity.dist_to_route_m, rx.settings.units);
     let font = Font::Body;
@@ -244,17 +237,14 @@ fn pt(x: f32, y: f32) -> Point {
 /// A filled, ink-outlined triangle pointing along `(ux, uy)` — the solid back-to-you marker.
 /// `h`/`w` are the half-height and base half-width; the outline is the same triangle grown by
 /// [`hud::OUTLINE`], drawn first.
-fn outlined_arrow<D, F>(
-    cv: &mut Canvas<D, F>,
+fn outlined_arrow(
+    cv: &mut impl Surface,
     center: (f32, f32),
     dir: (f32, f32),
     size: (f32, f32),
     fill: u16,
     outline: u16,
-) where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+) {
     let (cx, cy) = center;
     let (ux, uy) = dir;
     let (h, w) = size;
@@ -273,27 +263,15 @@ fn outlined_arrow<D, F>(
 /// axis's edges, the frozen-orientation compass, and (only once the rider is off-screen) a back-to-
 /// you marker. `vp` carries the frozen pan rotation, so the compass needle and off-screen test
 /// agree with what's drawn.
-fn draw_pan_hud<D, F>(
-    target: &mut D,
-    size: (f32, f32),
-    pan: Pan,
-    user_fix: Option<Fix>,
-    marker: u16,
-    vp: &Viewport,
-    color_fn: &F,
-) where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+fn draw_pan_hud(cv: &mut impl Surface, size: (f32, f32), pan: Pan, user_fix: Option<Fix>, marker: u16, vp: &Viewport) {
     use super::palette::*;
     use hud::*;
     let (w, h) = size;
-    let mut cv = Canvas::new(target, color_fn);
 
     // 1) Back-to-you marker first, so the chevrons render over it where they overlap. A filled
     //    triangle at the rider's bearing edge crossing.
     if let Some((bx, by, bux, buy)) = user_fix.and_then(|fix| back_to_you(w, h, vp, fix)) {
-        outlined_arrow(&mut cv, (bx, by), (bux, buy), (BACK_H, BACK_W), marker, INK);
+        outlined_arrow(cv, (bx, by), (bux, buy), (BACK_H, BACK_W), marker, INK);
     }
 
     // 2) Active-axis chevrons: one hollow caret on each of the axis's two edges.
@@ -302,7 +280,7 @@ fn draw_pan_hud<D, F>(
         PanAxis::Horizontal => [((CHEV_INSET, h / 2.0), (-1.0, 0.0)), ((w - CHEV_INSET, h / 2.0), (1.0, 0.0))],
     };
     for (center, dir) in chevs {
-        chevron(&mut cv, center, dir, AMBER, INK);
+        chevron(cv, center, dir, AMBER, INK);
     }
 
     // 3) Compass (top-right): parchment disc + ink ring, an amber north needle and a wood south
@@ -351,11 +329,7 @@ fn back_to_you(w: f32, h: f32, vp: &Viewport, fix: Fix) -> Option<(f32, f32, f32
 /// Draw one active-axis chevron — an open, round-capped "Λ" caret pointing along `dir`, with an
 /// even ink halo. Two arm quads at half-width `hw` + round caps/join. Both passes share the
 /// centreline, so the halo stays uniform — unlike growing a filled polygon, which warps the arm angle.
-fn chevron<D, F>(cv: &mut Canvas<D, F>, center: (f32, f32), dir: (f32, f32), fill: u16, outline: u16)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+fn chevron(cv: &mut impl Surface, center: (f32, f32), dir: (f32, f32), fill: u16, outline: u16) {
     use hud::*;
     let (cx, cy) = center;
     let (ux, uy) = dir;
@@ -379,11 +353,7 @@ where
 /// Stroke segment `a`→`b` as a filled quad (two triangles) of half-width `hw`. The unit
 /// normal uses the alpha-max-plus-beta-min |v| approximation (no sqrt/libm; ~4% off,
 /// invisible here).
-fn arm<D, F>(cv: &mut Canvas<D, F>, a: (f32, f32), b: (f32, f32), hw: f32, color: u16)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+fn arm(cv: &mut impl Surface, a: (f32, f32), b: (f32, f32), hw: f32, color: u16) {
     let (dx, dy) = (b.0 - a.0, b.1 - a.1);
     let m = dx.abs().max(dy.abs()) + 0.41 * dx.abs().min(dy.abs());
     let s = if m > 0.001 { hw / m } else { 0.0 };
