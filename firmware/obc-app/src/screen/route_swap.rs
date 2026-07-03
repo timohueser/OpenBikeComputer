@@ -5,11 +5,11 @@
 //! returns. Reached from [`RouteMenuScreen`](super::RouteMenuScreen) when a session is active and a
 //! *different* route is chosen.
 
-use embedded_graphics::prelude::{DrawTarget, Point};
+use embedded_graphics::prelude::Point;
 use obc_render::{
     rect,
     text::{Font, TextAlign},
-    Canvas, RenderStats, Surface,
+    Surface,
 };
 
 use crate::activity::{Mode, TrackAction};
@@ -80,17 +80,12 @@ impl RouteSwapScreen {
         Transition::Root(Screen::Map(MapScreen::new()))
     }
 
-    pub fn draw<D, F>(&self, target: &mut D, rx: &mut Render, color_fn: &F) -> RenderStats
-    where
-        D: DrawTarget,
-        F: Fn(u16) -> D::Color,
-    {
+    pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         use palette::*;
-        let (w, h) = (rx.w as i32, rx.h as i32);
-        let mut cv = Canvas::new(target, color_fn);
+        let (w, h) = (rx.w, rx.h);
 
         // Opaque full-screen prompt (not an overlay): a one-line explanation and three options.
-        title_frame(&mut cv, w, h, "ROUTE ACTIVE", "");
+        title_frame(cv, w, h, "ROUTE ACTIVE", "");
         cv.text(
             "Recording a ride",
             Point::new(w / 2, super::TITLE_BAR_H + 16),
@@ -105,9 +100,8 @@ impl RouteSwapScreen {
             let y = first + i as i32 * (row_h + gap);
             let row = rect(12, y, w - 24, row_h);
             // Guarded rows fill amber (not warning-red — this confirms a save, it isn't destructive).
-            super::confirm_row(&mut cv, row, i == self.selected, item.guard, rx.hold_progress, AMBER, 6);
+            super::confirm_row(cv, row, i == self.selected, item.guard, rx.hold_progress, AMBER, 6);
             cv.text(item.label, Point::new(28, y + 11), Font::Body, TextAlign::Left, INK);
         }
-        RenderStats::default()
     }
 }

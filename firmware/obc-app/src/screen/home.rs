@@ -11,11 +11,11 @@
 
 use core::fmt::Write as _;
 
-use embedded_graphics::prelude::{DrawTarget, Point};
+use embedded_graphics::prelude::Point;
 use obc_render::{
     rect,
     text::{text_width, Font, TextAlign},
-    Canvas, RenderStats, Surface,
+    Surface,
 };
 
 use crate::input::Gesture;
@@ -67,19 +67,14 @@ impl HomeScreen {
         self.ticker.changed(now)
     }
 
-    pub fn draw<D, F>(&self, target: &mut D, rx: &mut Render, color_fn: &F) -> RenderStats
-    where
-        D: DrawTarget,
-        F: Fn(u16) -> D::Color,
-    {
-        let (w, h) = (rx.w as i32, rx.h as i32);
-        let mut cv = Canvas::new(target, color_fn);
+    pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
+        let (w, h) = (rx.w, rx.h);
         cv.clear(palette::HUD);
 
         // Time the contour backdrop via the caller's `Clock`; surfaced in `RenderStats::contour_us`
         // for the device's RTT frame log.
         let t0 = rx.clock.now_us();
-        contours(&mut cv, w, h, self.seed);
+        contours(cv, w, h, self.seed);
         let contour_us = rx.clock.now_us().saturating_sub(t0) as u32;
 
         // The wall clock: HH:MM in the Huge tier, centred in the upper third. `rx.now` is the live
@@ -89,8 +84,8 @@ impl HomeScreen {
         let clock_top = h * 40 / 100 - Font::Huge.line_height() as i32 / 2;
         cv.text(&clock, Point::new(w / 2, clock_top), Font::Huge, TextAlign::Center, palette::PARCHMENT);
 
-        battery(&mut cv, w, h * 64 / 100, rx.state.battery_pct);
-        RenderStats { contour_us, ..RenderStats::default() }
+        battery(cv, w, h * 64 / 100, rx.state.battery_pct);
+        rx.stats.contour_us = contour_us;
     }
 }
 

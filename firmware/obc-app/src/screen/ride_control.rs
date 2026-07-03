@@ -5,11 +5,11 @@
 //! (Finish, Discard) fire only on a completed `hold`, their row filling with a warning bar as the
 //! encoder is held (release early → no `Hold` gesture → nothing happens). `back` resumes.
 
-use embedded_graphics::prelude::{DrawTarget, Point};
+use embedded_graphics::prelude::Point;
 use obc_render::{
     rect,
     text::{Font, TextAlign},
-    Canvas, RenderStats, Surface,
+    Surface,
 };
 
 use crate::activity::{Mode, TrackAction};
@@ -84,16 +84,11 @@ impl RideControl {
         Transition::Home
     }
 
-    pub fn draw<D, F>(&self, target: &mut D, rx: &mut Render, color_fn: &F) -> RenderStats
-    where
-        D: DrawTarget,
-        F: Fn(u16) -> D::Color,
-    {
+    pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         use palette::*;
-        let (w, h) = (rx.w as i32, rx.h as i32);
+        let (w, h) = (rx.w, rx.h);
         let (pw, ph) = (210, 176);
         let (px, py) = (w / 2 - pw / 2, h / 2 - ph / 2);
-        let mut cv = Canvas::new(target, color_fn);
 
         // Parchment panel + dark HUD title strip over the map.
         cv.round(rect(px, py, pw, ph), 8, PARCHMENT);
@@ -104,9 +99,8 @@ impl RideControl {
         for (i, item) in ITEMS.iter().enumerate() {
             let y = first + i as i32 * (row_h + gap);
             let row = rect(px + 10, y, pw - 20, row_h);
-            super::confirm_row(&mut cv, row, i == self.selected, item.guard, rx.hold_progress, WARNING, 6);
+            super::confirm_row(cv, row, i == self.selected, item.guard, rx.hold_progress, WARNING, 6);
             cv.text(item.label, Point::new(px + 22, y + 5), Font::Body, TextAlign::Left, INK);
         }
-        RenderStats::default()
     }
 }

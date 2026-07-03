@@ -15,14 +15,11 @@
 
 use core::fmt::Write;
 
-use embedded_graphics::{
-    prelude::{DrawTarget, Point},
-    primitives::Rectangle,
-};
+use embedded_graphics::{prelude::Point, primitives::Rectangle};
 use obc_render::{
     rect,
     text::{Font, TextAlign},
-    Canvas, RenderStats, Surface,
+    Surface,
 };
 
 use crate::activity::Activity;
@@ -215,21 +212,16 @@ impl StatisticsScreen {
         }
     }
 
-    pub fn draw<D, F>(&self, target: &mut D, rx: &mut Render, color_fn: &F) -> RenderStats
-    where
-        D: DrawTarget,
-        F: Fn(u16) -> D::Color,
-    {
+    pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         use palette::*;
-        let (w, h) = (rx.w as i32, rx.h as i32);
-        let mut cv = Canvas::new(target, color_fn);
+        let (w, h) = (rx.w, rx.h);
 
         // The screen needs both the resident profile (the band) and the route (totals +
         // cumulative climb). Either missing → the empty state, same as the Route menu's.
         let (Some(profile), Some(route)) = (rx.profile, rx.route) else {
-            title_frame(&mut cv, w, h, "STATS", "");
-            super::empty_state(&mut cv, w, h, "No route loaded", "Load one from Routes");
-            return RenderStats::default();
+            title_frame(cv, w, h, "STATS", "");
+            super::empty_state(cv, w, h, "No route loaded", "Load one from Routes");
+            return;
         };
 
         let total = route.total_distance_m;
@@ -267,7 +259,7 @@ impl StatisticsScreen {
         } else {
             let _ = write!(readout, "grade {}%", stat_fields::grade_at(profile, total, cursor_frac));
         }
-        title_frame(&mut cv, w, h, "STATS", &readout);
+        title_frame(cv, w, h, "STATS", &readout);
 
         // Elevation band + amber top line
         let band_bot = CHART_BOT;
@@ -313,7 +305,7 @@ impl StatisticsScreen {
         }
 
         if in_zoom {
-            draw_zoom_icon(&mut cv, chart_x + 2, CHART_TOP + 2);
+            draw_zoom_icon(cv, chart_x + 2, CHART_TOP + 2);
         }
 
         // Progress bar at the live fraction
@@ -338,10 +330,8 @@ impl StatisticsScreen {
             let x = chart_x + placed.col as i32 * (col_w + gap);
             let y = grid_top + placed.row as i32 * (row_h + gap);
             let tile_w = if placed.field.span() == 2 { chart_w } else { col_w };
-            tile(&mut cv, rect(x, y, tile_w, row_h), &cell.caption, &cell.value, cell.arrow);
+            tile(cv, rect(x, y, tile_w, row_h), &cell.caption, &cell.value, cell.arrow);
         }
-
-        RenderStats::default()
     }
 }
 
