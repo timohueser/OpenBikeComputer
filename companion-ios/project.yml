@@ -3,9 +3,9 @@
 # Regenerate the .xcodeproj after editing this file:
 #     cd companion-ios && xcodegen generate
 #
-# The generated OBCCompanion.xcodeproj IS committed (so a fresh clone builds
-# without running XcodeGen), but project.yml is what you edit — never hand-edit
-# the pbxproj. See companion-ios/CLAUDE.md.
+# The generated OBCCompanion.xcodeproj is gitignored — `xcodegen generate` is
+# a required first step after cloning. Edit this file, never the pbxproj.
+# Policy rationale: companion-ios/CLAUDE.md.
 
 name: OBCCompanion
 
