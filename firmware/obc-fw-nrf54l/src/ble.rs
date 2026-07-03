@@ -1271,6 +1271,14 @@ async fn run_upload(
     buf: &mut [u8],
 ) -> TransferOutcome {
     info!("ble: [coc] route upload start: {} bytes", desc.total_len);
+    // Open the SD temp here — at the first real byte of the transfer — rather than when the
+    // control plane armed it: a peer that writes `transferControl` but never opens the CoC then
+    // holds no storage handle (it only wedges its own link's one-transfer gate until it drops).
+    if !store.borrow_mut().upload_begin() {
+        warn!("ble: [coc] cannot open upload temp — rejecting");
+        notify_status(server, stack, transfer_result(rx.object_id(), TransferStatus::Error)).await;
+        return TransferOutcome::Answered;
+    }
     while !rx.is_complete() {
         let n = match select(ch.receive(stack, buf), TRANSFER_ABORT.wait()).await {
             Either::First(Ok(n)) if n > 0 => n,
@@ -1354,6 +1362,10 @@ async fn run_download(
     if let Err(e) = server.notify(stack, server.obc.transfer_control.handle, &announce.encode()).await {
         warn!("ble: [coc] announce notify failed: {:?}", defmt::Debug2Format(&e));
         store.borrow_mut().download_close();
+        // Still answer the transfer the app opened — a `status` notify can land even when the
+        // `transferControl` notify didn't (different CCCD), so the app isn't left waiting for a
+        // stream that will never start.
+        notify_status(server, stack, transfer_result(desc.object_id, TransferStatus::Error)).await;
         return TransferOutcome::Answered;
     }
     while !tx.is_complete() {
@@ -1371,10 +1383,27 @@ async fn run_download(
             notify_status(server, stack, transfer_result(desc.object_id, TransferStatus::Error)).await;
             return TransferOutcome::Answered;
         }
-        if let Err(e) = ch.send(stack, &buf[..n]).await {
-            info!("ble: [coc] download send ended: {:?}", defmt::Debug2Format(&e));
-            store.borrow_mut().download_close();
-            return TransferOutcome::ChannelDropped;
+        // Race the send against an abort so a backpressured send (peer stops crediting the CoC)
+        // can still be cancelled promptly, not just between chunks — the receive side already
+        // selects on the abort, so this keeps both directions honouring op=3 mid-SDU.
+        match select(ch.send(stack, &buf[..n]), TRANSFER_ABORT.wait()).await {
+            Either::First(Ok(())) => {}
+            Either::First(Err(e)) => {
+                info!("ble: [coc] download send ended: {:?}", defmt::Debug2Format(&e));
+                store.borrow_mut().download_close();
+                return TransferOutcome::ChannelDropped;
+            }
+            Either::Second(()) => {
+                store.borrow_mut().download_close();
+                info!("ble: [coc] download aborted by the app (mid-send)");
+                notify_status(
+                    server,
+                    stack,
+                    transfer_result_at(desc.object_id, TransferStatus::Aborted, tx.position()),
+                )
+                .await;
+                return TransferOutcome::Answered;
+            }
         }
         tx.advance(n);
     }
