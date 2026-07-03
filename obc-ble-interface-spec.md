@@ -79,10 +79,15 @@ UUIDs, descriptor layouts, object types, and status codes.
   after every disconnect, then *slow* advertising at **1000 ms** indefinitely.
 - **Policy — "always just works"**: the device advertises connectable whenever
   it is powered and unconnected. There is no advertising timeout and no
-  "pairing mode" gate for reconnection. Once bonded (A8), the device still
-  advertises generally but rejects pairing and bonded-data access from any peer
-  other than the bonded phone (§8); a fresh pairing requires the user to clear
-  the bond on the device.
+  "pairing mode" gate for reconnection. The device uses a **stable static random
+  address** (derived from `FICR.DEVICEID`) and never rotates it — so the phone,
+  which stores that identity at bonding, silently reconnects on any contact.
+  Once bonded (A8), the device still advertises generally; bonded-data access
+  (the gated OBC Control characteristics + the CoC) is denied to any peer that
+  isn't LESC-authenticated, and a new pairing requires the 6-digit passkey shown
+  on the device screen (§8) — physical possession is the gate, so there is **no
+  device-side "clear bond" step**. A new passkey pairing simply replaces the
+  single stored bond.
 
 ## 3. GATT control plane
 
@@ -442,11 +447,12 @@ over the CoC like any object (object id `0`); may be empty (`total_len = 0`).
 
 ---
 
-## 8. Security (lands with A8)
+## 8. Security (A8)
 
-- **Pairing**: LE Secure Connections, **passkey display** — the device shows a
-  6-digit code on its screen, typed into the phone's pairing dialog
-  (MITM-protected). One bonded peer at a time.
+- **Pairing**: LE Secure Connections, **passkey display** — the device is
+  `DisplayOnly`, so it shows a 6-digit code on its screen that the rider types
+  into the phone's pairing dialog (LESC passkey *entry*, MITM-protected). One
+  bonded peer at a time.
 - **Encryption requirements** once a bond exists:
 
 | Surface | Requirement |
@@ -455,10 +461,32 @@ over the CoC like any object (object id `0`); may be empty (`total_len = 0`).
 | every other OBC Control characteristic | encrypted, LESC-authenticated link |
 | the L2CAP CoC | encrypted link (opening it plaintext is refused) |
 
-- Before A8 lands, bring-up builds run everything plaintext; the levels above
-  become mandatory the moment bonding ships and are re-verified there.
-- Bonded devices reject SMP pairing attempts from other peers; clearing the
-  bond (device-side UI) returns to open pairing.
+  The gated characteristics carry an `authenticated` (LESC-MITM) access
+  permission; an unbonded peer discovers the service but gets Insufficient
+  Authentication on every gated read / write / subscribe, and the CoC accept is
+  refused on an unencrypted link.
+
+- **Bond store**: the single peer's keys (LTK, peer identity + IRK, security
+  level) persist in the device's RRAM settings carve, so a bond survives power
+  cycles **and firmware reflashes** (the carve sits above the application image;
+  a normal firmware download leaves it intact). At boot the device re-arms the
+  bond so the phone's rotating RPA reconnect resolves against the stored peer IRK
+  and re-encrypts with the stored LTK — no dialog, no interaction.
+
+- **Single-peer policy**: exactly one bond slot. A fresh passkey pairing
+  **replaces** it — the on-screen passkey (physical possession) is the control
+  against a stranger hijacking the device, so there is no separate device-side
+  "clear bond" gesture. If the phone forgets the device (app H2 + iOS Settings)
+  and re-pairs, the device sees the pairing request against its stale bond,
+  discards it, and stores the new bond — a clean re-pair with a fresh passkey.
+
+- **Reconnect policy**: the device keeps a **stable static random address** and
+  does **not** enable device-side privacy/RPA — the phone stores that identity
+  and reconnects on any adv contact, which is what CoreBluetooth's background
+  reconnect keys on. The reverse direction (identifying the phone behind its
+  rotating RPA) uses the stored peer IRK in the controller resolving list, not a
+  filter accept-list. Net: bonded + powered + in range ⇒ connected + encrypted,
+  no user interaction.
 
 ---
 
