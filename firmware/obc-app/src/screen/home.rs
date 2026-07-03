@@ -102,11 +102,7 @@ const BARS: i32 = 5;
 /// Draw the battery gauge centred horizontally, body centred on `cy`: a white rounded shell + nub,
 /// all `BARS` segments drawn — the first `filled` in the level colour (red <20 %, green >80 %,
 /// amber between), the rest dim grey — and the `NN%` readout beside it in the level colour.
-fn battery<D, F>(cv: &mut Canvas<D, F>, w: i32, cy: i32, pct: u8)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+fn battery(cv: &mut impl Surface, w: i32, cy: i32, pct: u8) {
     let level = match pct {
         0..=19 => palette::WARNING,
         81..=u8::MAX => palette::ON,
@@ -212,11 +208,7 @@ fn jitter(seed: u32, i: usize) -> (f32, f32) {
 
 /// Trace [`field`] into `LEVELS` iso-lines by marching squares. One pass over the grid keeping two
 /// rolling sample rows (no full-grid buffer). `seed` jitters the bump centres for this open.
-fn contours<D, F>(cv: &mut Canvas<D, F>, w: i32, h: i32, seed: u32)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+fn contours(cv: &mut impl Surface, w: i32, h: i32, seed: u32) {
     let step = w as f32 / COLS as f32;
     let rows = ((h as f32 / step + 0.5) as usize).max(1); // round to keep cells ~square (no_std: no f32::round)
     let stepy = h as f32 / rows as f32;
@@ -258,11 +250,7 @@ where
 
 /// Marching-squares cell: stroke the segment(s) of contour `l` crossing the cell whose corners
 /// (clockwise from top-left) are `vals`, interpolating each edge crossing for smoothness.
-fn cell<D, F>(cv: &mut Canvas<D, F>, tl: (f32, f32), br: (f32, f32), vals: [f32; 4], l: f32)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+fn cell(cv: &mut impl Surface, tl: (f32, f32), br: (f32, f32), vals: [f32; 4], l: f32) {
     let [vtl, vtr, vbr, vbl] = vals;
     let case = (vtl >= l) as u8 * 8 + (vtr >= l) as u8 * 4 + (vbr >= l) as u8 * 2 + (vbl >= l) as u8;
     if case == 0 || case == 15 {
