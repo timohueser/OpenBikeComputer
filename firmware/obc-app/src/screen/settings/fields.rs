@@ -21,7 +21,7 @@ use obc_render::{
 
 use crate::input::Gesture;
 use crate::screen::list::{self, pinned_first, window_start, ListGeometry, Separators};
-use crate::screen::{Ctx, Render, Screen, Transition, LIST_TOP};
+use crate::screen::{Ctx, Render, Screen, Transition};
 
 use super::AddFieldScreen;
 
@@ -113,15 +113,7 @@ impl StatFieldsScreen {
         let add_row = len;
         let rows = len + 1;
         // The row list fills what's left above the delete footer.
-        let geo = ListGeometry {
-            w,
-            top: LIST_TOP,
-            row_h: ROW_H,
-            row_gap: 6,
-            side_inset: super::ROW_X,
-            separators: Separators::None,
-            visible: list::visible_rows(h - FOOTER_H, ROW_H),
-        };
+        let geo = ListGeometry::below_title(w, h - FOOTER_H, ROW_H, 6, super::ROW_X, Separators::None);
 
         list::list_frame(cv, w, h, "FIELDS", self.selected + 1, rows, geo.visible);
 

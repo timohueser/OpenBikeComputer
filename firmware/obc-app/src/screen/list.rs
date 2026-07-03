@@ -54,12 +54,6 @@ pub(crate) fn pinned_first(selected: usize, visible: usize) -> i32 {
     selected as i32 - (visible / 2) as i32
 }
 
-/// Rows that fit the framed list area: from [`LIST_TOP`] down to the 6 px margin above the
-/// bottom outline. A screen reserving a footer (Fields' delete bar) passes `h` minus it.
-pub(crate) fn visible_rows(h: i32, row_h: i32) -> usize {
-    ((h - LIST_TOP - 6) / row_h).max(1) as usize
-}
-
 /// When [`draw_rows`] draws the hairline rule under a row (never under the last one).
 #[derive(Clone, Copy)]
 pub(crate) enum Separators {
@@ -73,7 +67,7 @@ pub(crate) enum Separators {
 }
 
 /// Layout of a scrolling list: the panel width, where rows start, their pitch and inset, the
-/// separator policy, and how many slots fit (a [`visible_rows`] result).
+/// separator policy, and how many slots fit the windowed area.
 #[derive(Clone, Copy)]
 pub(crate) struct ListGeometry {
     pub w: i32,
@@ -88,6 +82,16 @@ pub(crate) struct ListGeometry {
     pub separators: Separators,
     /// Slots the windowed area fits.
     pub visible: usize,
+}
+
+impl ListGeometry {
+    /// Geometry for a list filling the frame below the title bar: rows start at [`LIST_TOP`] and
+    /// fit down to the 6 px margin above the bottom outline. A screen reserving a footer (Fields'
+    /// delete bar) passes `h` minus it.
+    pub fn below_title(w: i32, h: i32, row_h: i32, row_gap: i32, side_inset: i32, separators: Separators) -> Self {
+        let visible = ((h - LIST_TOP - 6) / row_h).max(1) as usize;
+        ListGeometry { w, top: LIST_TOP, row_h, row_gap, side_inset, separators, visible }
+    }
 }
 
 /// What [`draw_rows`] hands the row body: which item this slot shows, the row area (the same
@@ -149,6 +153,17 @@ pub(crate) fn nav_row(cv: &mut impl Surface, area: Rectangle, label: &str, selec
     let bullet = if selected { palette::INK } else { palette::SUBTEXT };
     cv.triangle(Point::new(x + 14, mid - 9), Point::new(x + 14, mid + 9), Point::new(x + 27, mid), bullet);
     cv.text(label, Point::new(x + 38, mid - 14), Font::Body, TextAlign::Left, palette::INK);
+}
+
+/// A whole nav-menu draw — the chrome plus [`nav_row`]s with hairline separators — so Menu and
+/// Settings (identical apart from title and items) are each a single call.
+pub(crate) fn nav_list(cv: &mut impl Surface, w: i32, h: i32, title: &str, items: &[&str], selected: usize) {
+    /// Per-row height — fits a Body-tier row with an amber highlight + padding.
+    const ROW_H: i32 = 52;
+    let geo = ListGeometry::below_title(w, h, ROW_H, 8, 16, Separators::All);
+    list_frame(cv, w, h, title, selected + 1, items.len(), geo.visible);
+    let first = window_start(selected, geo.visible, items.len()) as i32;
+    draw_rows(cv, geo, items.len(), selected, first, |cv, row| nav_row(cv, row.area, items[row.index], row.selected));
 }
 
 /// [`title_frame`] with a `pos / total` counter on the right — but only when the list can
