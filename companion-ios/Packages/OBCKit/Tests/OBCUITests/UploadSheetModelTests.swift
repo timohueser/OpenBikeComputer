@@ -149,6 +149,68 @@ final class UploadSheetModelTests: XCTestCase {
         XCTAssertNotEqual(model.phase, .done)
     }
 
+    /// A link that drops **straight to `.disconnected`** (never routing through
+    /// `.outOfRange`) must still park the sheet in `.interrupted` — the same drop
+    /// the sync watch reacts to. Without treating `.disconnected` as a drop the
+    /// sheet wedges in `.uploading` with no Resume.
+    func testDisconnectedMidUploadInterrupts() async {
+        let (model, control) = makeModel(.happyPath, payloadBytes: 100_000)
+        // Pace the upload glacially so no progress tick fires during the window
+        // (a tick would flip `.interrupted` back to `.uploading`).
+        control.throughputBytesPerSec = 1_000
+        model.start()
+
+        control.connection = .disconnected
+        await waitFor("interrupted on .disconnected") { model.phase == .interrupted }
+        XCTAssertFalse(model.shouldDismiss, "a drop is not terminal")
+
+        model.sheetDismissed()
+    }
+
+    // MARK: Completion racing the dismiss
+
+    /// The completion↔dismiss race: the transfer resolves `.completed` and the
+    /// sheet is dismissed in the *same* turn. `sheetDismissed()` sees the resolved
+    /// handle (so it leaves it alone) and cancels the watchers; the outcome
+    /// watcher's `await` then returns immediately. It must **not** run the
+    /// `.completed` branch on the torn-down sheet — no `onCompleted`, no
+    /// resurrected `shouldDismiss`.
+    func testCompletionRacingDismissDoesNotFireOnCompleted() async {
+        let transport = ControlledUploadTransport()
+        var completedCalls = 0
+        let blob = RouteBlob(
+            summary: RouteSummary(
+                id: RouteID("race-test"), name: "Race", distanceMeters: 1_000,
+                elevationGainMeters: 10
+            ),
+            waypoints: [],
+            payload: Data(count: 1_000)
+        )
+        let model = UploadSheetModel(
+            transport: transport,
+            blob: blob,
+            deviceName: "Trailhead",
+            timing: Self.fastTiming,
+            onCompleted: { _, _ in completedCalls += 1 }
+        )
+        transport.assignedID.fulfill(7)
+        model.start()
+
+        // Let the outcome watcher reach its `await handle.outcome` suspension.
+        try? await Task.sleep(for: .milliseconds(20))
+
+        // Resolve + dismiss in one synchronous turn: fulfilling only *schedules*
+        // the watcher's resume, so `sheetDismissed()` cancels it first.
+        transport.outcomePromise.fulfill(.completed)
+        model.sheetDismissed()
+
+        // Give the cancelled watcher its chance to (not) act.
+        try? await Task.sleep(for: .milliseconds(30))
+        XCTAssertEqual(completedCalls, 0, "onCompleted must not fire after dismiss")
+        XCTAssertNotEqual(model.phase, .done, "a raced completion must not resurrect the sheet")
+        XCTAssertFalse(model.shouldDismiss)
+    }
+
     // MARK: Hard failure (H4 — no link at all)
 
     func testUploadWithLinkDownFails() async {
@@ -161,4 +223,49 @@ final class UploadSheetModelTests: XCTestCase {
         model.dismiss()
         XCTAssertTrue(model.shouldDismiss)
     }
+}
+
+/// A hand-driven transport whose upload handle the test controls: the outcome
+/// (and device-id) promises are held here so the completion↔dismiss race can be
+/// sequenced deterministically, which the timing-driven `MockTransport` can't do.
+/// Only `state` + `uploadRoute` are exercised; the rest is inert.
+private final class ControlledUploadTransport: DeviceTransport, @unchecked Sendable {
+    let outcomePromise = AsyncPromise<TransferOutcome>()
+    let assignedID = AsyncPromise<UInt16?>()
+    private let stateMulticast = AsyncMulticast<ConnectionState>(.connected)
+    private let batteryMulticast = AsyncMulticast<Int>(100)
+    private let finishedProgress: AsyncStream<TransferProgress>
+
+    init() {
+        let (stream, continuation) = AsyncStream<TransferProgress>.makeStream()
+        continuation.finish()
+        finishedProgress = stream
+    }
+
+    var state: AsyncStream<ConnectionState> { stateMulticast.stream() }
+    var battery: AsyncStream<Int> { batteryMulticast.stream() }
+
+    func uploadRoute(_ route: RouteBlob) -> TransferHandle {
+        TransferHandle(
+            progress: finishedProgress,
+            outcome: outcomePromise,
+            assignedObjectID: assignedID,
+            onCancel: { [outcomePromise] in outcomePromise.fulfill(.canceled) },
+            onResume: {}
+        )
+    }
+
+    // Unreachable in the upload-sheet tests.
+    func connect() async throws {}
+    func disconnect() async {}
+    func deviceInfo() async throws -> DeviceInfo { fatalError("unused") }
+    func readConfig() async throws -> DeviceConfig { fatalError("unused") }
+    func writeConfig(_ config: DeviceConfig) async throws {}
+    func listRoutes() async throws -> [RouteSummary] { [] }
+    func routeDetail(_ id: RouteID) async throws -> RouteDetail { fatalError("unused") }
+    func deleteRoute(_ id: RouteID) async throws {}
+    func listRides() async throws -> [RideSummary] { [] }
+    func rideDetail(_ id: RideID) async throws -> RideDetail { fatalError("unused") }
+    func downloadRides(_ ids: [RideID]) -> RideDownload { fatalError("unused") }
+    func readDiagnostics() async throws -> Data { Data() }
 }
