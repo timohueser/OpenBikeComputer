@@ -180,11 +180,7 @@ impl StatFieldsScreen {
 /// Draw the hold-to-delete footer: a trash can + a warning-red progress bar filled by the live
 /// encoder hold. Drawn only when a field row is highlighted (`on_field`); the Add row leaves it
 /// blank. The delete itself fires from `handle`'s `Hold` arm.
-fn delete_footer<D, F>(cv: &mut Canvas<D, F>, w: i32, h: i32, on_field: bool, hold: f32)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+fn delete_footer(cv: &mut impl Surface, w: i32, h: i32, on_field: bool, hold: f32) {
     use crate::screen::palette::*;
     let fy = h - FOOTER_H;
     cv.hline(super::ROW_X, fy, w - 2 * super::ROW_X, RULE);
@@ -205,11 +201,7 @@ where
 }
 
 /// Draw a small trash-can glyph centred at `(cx, cy)`: a lidded can with a handle and ribs.
-fn draw_trash<D, F>(cv: &mut Canvas<D, F>, cx: i32, cy: i32, color: u16)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+fn draw_trash(cv: &mut impl Surface, cx: i32, cy: i32, color: u16) {
     let (bw, bh) = (11, 12);
     let (bx, by) = (cx - bw / 2, cy - bh / 2 + 1);
     cv.round_outline(rect(bx, by, bw, bh), 2, color); // can body
@@ -220,11 +212,7 @@ where
 }
 
 /// Draw the up/down move arrows on a grabbed row's right edge — the "rotate to move me" cue.
-fn move_arrows<D, F>(cv: &mut Canvas<D, F>, area: Rectangle)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+fn move_arrows(cv: &mut impl Surface, area: Rectangle) {
     use crate::screen::palette::INK;
     let x = area.top_left.x + area.size.width as i32 - 16;
     let midy = area.top_left.y + area.size.height as i32 / 2;
