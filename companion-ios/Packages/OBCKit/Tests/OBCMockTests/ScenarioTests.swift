@@ -73,8 +73,10 @@ final class ScenarioTests: XCTestCase {
     }
 
     func testPairingFailures() async {
+        // #297: `.timeout` fails in the un-gated scan (`discover`), `.rejected` in
+        // the gated `authenticate` — `connect()` runs both, so both surface here.
         await assertConnectThrows(.pairingTimeout, .deviceNotFound)   // D5
-        await assertConnectThrows(.pairingRejected, .notConnected)    // D5
+        await assertConnectThrows(.pairingRejected, .pairingFailed)   // D5
     }
 
     func testRadioStates() async {

@@ -19,7 +19,20 @@ public protocol DeviceTransport: Sendable {
     var state: AsyncStream<ConnectionState> { get }
     /// Begin connecting: power-on wait, scan, connect, discover, open the CoC, and
     /// run the protocol-version check. Throws `DeviceError` on failure (never traps).
+    /// The full link = `discover()` then `authenticate()`.
     func connect() async throws
+    /// **First-time-pairing phase 1** (#297): power-on wait, scan, connect, and
+    /// discover services + only the **un-gated** characteristics (DIS / BAS /
+    /// `protocolVersion`) — enough for `deviceInfo()` and the D2 device row, but
+    /// touching **no** gated characteristic, so iOS does *not* raise the LESC
+    /// passkey sheet yet. The gated ops wait for `authenticate()`.
+    func discover() async throws
+    /// **First-time-pairing phase 2** (#297): the gated operations that establish
+    /// the encrypted, LESC-authenticated link — subscribe the `status` /
+    /// `transferControl` notifies, read the PSM, open the CoC. This is what raises
+    /// the system passkey sheet (A8); the launch flow calls it on the D2 row tap so
+    /// the sheet lands in the D3 "pairing…" beat. Requires a prior `discover()`.
+    func authenticate() async throws
     /// Tear the link down.
     func disconnect() async
 
@@ -63,4 +76,13 @@ public protocol DeviceTransport: Sendable {
     func downloadRides(_ ids: [RideID]) -> RideDownload
     /// Read the device diagnostics/crash-log blob.
     func readDiagnostics() async throws -> Data
+}
+
+extension DeviceTransport {
+    /// Default single-phase behaviour for conformers that don't split pairing
+    /// (SwiftUI previews, future stand-ins): `discover()` does the whole connect
+    /// and `authenticate()` is a no-op. `BLETransport` and `MockTransport` override
+    /// both to defer the gated ops past the D2 row tap (#297).
+    public func discover() async throws { try await connect() }
+    public func authenticate() async throws {}
 }

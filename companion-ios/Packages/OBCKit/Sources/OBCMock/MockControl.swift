@@ -12,8 +12,9 @@ public enum RadioState: Sendable, Equatable {
 }
 
 /// How a pairing attempt fails — drives the D5 variants. Kept mock-local (the wire
-/// contract's `DeviceError` doesn't model pairing UX); `connect()` maps these onto
-/// the closest existing `DeviceError` and the UI keys the exact copy off `scenario`.
+/// contract's `DeviceError` doesn't model pairing UX). `.timeout` fails in the
+/// `discover()` phase (`radioGate`), `.rejected` in `authenticate()` (`pairingGate`),
+/// mapped onto the closest `DeviceError`; the UI keys the exact copy off `scenario`.
 public enum PairingFail: Sendable, Equatable {
     case timeout
     case rejected
@@ -251,18 +252,25 @@ public final class MockControl: @unchecked Sendable {
         if let error { throw error }
     }
 
-    /// Radio + pairing gate for `connect()`.
-    func connectGate() throws {
+    /// Radio + scan gate for the un-gated `discover()` phase (#297): H7/H8, plus a
+    /// `.timeout` pairing fault — the device never turns up in the scan window, so
+    /// it surfaces here (before the D2 row), not at the row tap.
+    func radioGate() throws {
         let (radio, pairing) = lock.withLocked { (_radio, _pairingFail) }
         switch radio {
         case .on: break
         case .off: throw DeviceError.bluetoothUnavailable(.poweredOff)
         case .unauthorized: throw DeviceError.bluetoothUnavailable(.unauthorized)
         }
-        if let pairing {
-            // Lossy map onto the wire error set; the UI picks the D5 copy from `scenario`.
-            throw pairing == .timeout ? DeviceError.deviceNotFound : DeviceError.notConnected
-        }
+        if pairing == .timeout { throw DeviceError.deviceNotFound }
+    }
+
+    /// Pairing gate for the gated `authenticate()` phase (#297): a declined / wrong
+    /// passkey (D5 rejected) — what the D2 row tap now triggers, mirroring the real
+    /// path's LESC sheet. Maps onto `pairingFailed`; the UI keys the copy off
+    /// `scenario`.
+    func pairingGate() throws {
+        if lock.withLocked({ _pairingFail }) == .rejected { throw DeviceError.pairingFailed }
     }
 
     /// Update the on-device config; renaming (Delta 1) also updates the reported name.
