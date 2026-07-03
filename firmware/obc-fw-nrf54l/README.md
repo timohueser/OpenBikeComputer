@@ -254,175 +254,49 @@ builds on it:
   residents (`ble::RESIDENT_BYTES`) and fails a `ble`+map build on this DK at compile time; the
   512 KB LM20 relaxes the `has_map` line in `build.rs` to run both planes together.
 
-## Connection lifecycle (A3, #271)
+## BLE — board-specific notes & on-glass verification
 
-`ble::run` is a loop with **no terminal state**: advertise → serve the link → re-advertise,
-forever, unattended. Any disconnect (any reason) drops straight back to advertising; even an
-advertise *error* only pauses a beat before retrying. What A3 added on top of A2's bare
-connect/hold:
+The wire protocol (advertising policy, GATT services/UUIDs, CoC framing, object layouts, pairing
+security) is canonical in [`obc-ble-interface-spec.md`](../../obc-ble-interface-spec.md) — read it
+there, not here. `src/ble/` implements it; the S0 descriptor codecs + transfer state machine are the
+host-tested `obc-ble` crate (`cargo test -p obc-ble`, pinned to `protocol-vectors/`). What's
+**board/firmware-specific** and worth knowing:
 
-- **Advertising interval policy (S0 §2)** — *fast* (40 ms) for 30 s after boot and after every
-  disconnect, then *slow* (1000 ms) indefinitely. Legacy connectable adv doesn't self-terminate,
-  so the fast→slow switch is a host-side timer (`select` against the advertiser), not the HCI
-  duration field.
-- **Parameter negotiation on connect (S0 §3.4)** — the device *requests* 2M PHY, data-length
-  extension (251-byte PDUs), and a relaxed idle connection-parameter set; iOS accepts what the OS
-  allows. Every request is a **preference** (the protocol is correct at any MTU/PHY, just slower),
-  so each is `with_timeout`-bounded and best-effort — a stalled or rejected procedure is logged
-  and skipped, never a reason to drop the link. `conn_params(true)` pins the *fast* set A5's data
-  plane switches to during transfers.
-- **Watchdog policy** — **no hardware WDT (yet)**. The lifecycle is a *structural* watchdog: every
-  host op is timeout-bounded and the loop has no path that can block permanently, so a stuck
-  procedure degrades to a reconnect rather than a hang. A hardware `WDT` petted from the host
-  runner is deferred to A9, where it can be co-designed with the idle/WFI wake pattern.
-- **Telemetry** — connects / disconnects / last disconnect reason (named + numeric) / negotiated
-  MTU + PHY, all logged over RTT and shown on the status screen (the `link c/d xNN` and
-  `NNms 2M mMMM` lines) — the raw material for the A9 soak assertions.
+- **DIS identity** — Firmware Revision is `<crate-semver>+<git-short>` (`build.rs` emits
+  `OBC_FW_GIT`), Hardware Revision `nrf54l15-dk`, Serial Number the 16-hex FICR `DEVICEID` whose last
+  four digits are the `OBC-XXXX` advertised name.
+- **Storage lives on SD, ids are durable in filenames.** Uploaded routes land as 8.3 `RTnn.OBR`
+  files (the `OBCR` magic held back as zeros until commit, so a power cut never leaves a half-route
+  the boot scan accepts); the **map build's** catalog scan matches `*.OBR` beside `.obcr`, so an
+  uploaded route shows in the on-device menu after a reflash. Every ride Finish on the map build
+  writes `/tracks/RDnn.ORD` (byte-for-byte the S0 §7.2 ride object) next to the `.gpx`; the `ble`
+  build just serves those. The id in each filename is recovered at boot and is what the app's
+  synced-set keys on. App-side ride deletes are tombstoned in the app — the device keeps every ride
+  (`deleteObject` on a ride answers `notFound` deliberately).
+- **Config + bond persist in the RRAM SETTINGS carve** (`settings.rs`), which survives power cycles
+  **and a firmware reflash** (it sits above the app image, so `probe-rs download` leaves it): the
+  device name (config codec v3) @0, the boot counter @2048, the single 64-byte CRC-checked bond slot
+  (LTK + peer IRK, `ObjectStore::{load,save,clear}_bond`) @`BOND_OFFSET`. Pairing is LESC passkey
+  **display** — the 6-digit code renders on the status screen (`Font::Huge`). One bond slot; a fresh
+  pairing replaces it (no device-side clear gesture — the on-screen passkey is the anti-stranger
+  control).
 
-**Verify** with nRF Connect (the A1–A4 oracle): connect and confirm the negotiated MTU (247),
-2M PHY, and the interval settling to the idle set; disconnect/re-connect and walk out of range —
-the counters bump, the reason logs, and it always returns to advertising.
-
-## GATT control plane (A4, #272)
-
-`ble::run` now serves the **real** control plane the iOS app discovers on connect
-(`obc-ble-interface-spec.md` §3, the S0-frozen UUIDs). One `#[gatt_server]` in `src/ble/gatt.rs` holds
-three services — mirroring the spec section so there's one place to diff:
-
-- **DIS** (`0x180A`) — Firmware Revision (`<crate-semver>+<git-short>`, e.g. `0.1.0+ca9b336`;
-  `build.rs` emits `OBC_FW_GIT`), Hardware Revision (`nrf54l15-dk`), Serial Number (the 16-hex FICR
-  `DEVICEID`, whose last four digits are the `OBC-XXXX` advertised name).
-- **BAS** (`0x180F`) — Battery Level, read + notify, fed from the `FuelGauge` seam (the status plane
-  publishes each poll via `ble::publish_battery`; a `battery_task` re-notifies on a slow cadence).
-- **OBC Control** (`3C92XXXX-9916-4EBA-ABC2-342FE08F6B10`) — all eight characteristics: `command`,
-  `status` (notify), `objectStore`, `config`, `transferControl` (write+notify), `diagnostics`
-  (reserved, reads 0 bytes), `psm`, `protocolVersion` (= 1). The 128-bit service UUID is advertised
-  (name moves to the scan response) so the app's `scanForPeripherals(withServices:)` filter matches.
-
-Control-plane writes are answered with the S0-typed `status` envelope — never a hang or a bare ATT
-failure: `command` → `commandResult` (`deleteObject` is real since A6), `transferControl` →
-`transferResult` (typed `busy`/`notFound`/`error` rejects; valid transfers are armed to the data
-plane), `config` is validated + **persisted** (A6: RRAM settings, see below).
-
-A4 also stands up a **minimal L2CAP CoC**: the SPSM `0x0080` is registered on the stack and
-published in `psm`, and `serve_coc` accepts the channel and **drains/discards** its bytes. That is
-just enough for the iOS app's `connect()` to complete (it gates completion on the L2CAP channel
-opening); the framing crate + transfer state machine + real object payloads are A5/A6, bonding A8.
-
-**Verify** — nRF Connect: the full service/characteristic table matches S0, DIS strings + serial are
-real, BAS notifies, `protocolVersion` reads `1`, `psm` reads `0x0080`, and a write to
-`command`/`transferControl` yields a `status` notification. Then the iOS companion (Debug build,
-`-OBCTransport ble`): `connect()` completes end-to-end and the device row shows the real firmware
-revision — first app↔firmware contact.
-
-## CoC data plane + echo loopback (A5, #273)
-
-A5 turns that drain into a **real bulk-transfer data plane**, driven by the host-tested `obc-ble`
-workspace crate (the S0 descriptor codecs + the whole-object transfer state machine — `cargo test -p
-obc-ble`, pinned to `protocol-vectors/` alongside the Swift side). The control plane and the CoC are
-separate futures coordinating through one `Signal`:
-
-- A `transfer_control` write is decoded (`obc_ble::TransferControl`) and classified (`classify_transfer`):
-  an `echo` **upload** (S0 type 8) is *armed* — its descriptor signalled to the CoC task and answered by
-  the data plane; real routes/rides/diagnostics ride the same arming path since A6/A7; anything
-  nonsensical still gets an immediate S0-typed `transferResult(error)`, an `abort` an `aborted`.
-- `serve_coc` → `run_echo` feeds the CoC bytes through an `obc_ble::Receiver` (a running CRC-32, **no**
-  reassembly buffer, S0 §5) and streams each SDU straight back byte-for-byte, verifying **one**
-  whole-object CRC at the end and notifying `committed` / `crcMismatch`. Zero storage involvement — the
-  loopback that proves the data plane end to end (real objects → SD are A6). On the first transfer the
-  link is asked for the fast `conn_params` set; the kB/s is logged over RTT.
-
-**Verify** — the Mac echo rig `companion-ios/EchoHarness` (reuses the app's `BLEChannel` + CoC byte
-layer): `swift run echo-harness --count 1000 --size 32768` round-trips 1000 × 32 KB byte-identical;
-`--corrupt` flips a byte per object and expects the device to reject it with `crcMismatch`. Watch the
-per-echo throughput + `committed`/`crcMismatch` in the RTT log.
-
-## Route object plane (A6, #274)
-
-A6 wires that data plane to real storage — the epic's golden path (komoot GPX → app → upload →
-**ride it**). The pieces (`object_store.rs` + the A6 half of `sd.rs`):
-
-- **Upload → SD.** A route upload streams into `/routes/UPLOAD.TMP` (running CRC, no reassembly
-  buffer); commit verifies the transfer CRC **and** that the bytes parse as OBCR, then promotes.
-  embedded-sdmmc has no `rename`, so atomicity is a copy with the 4-byte `OBCR` magic **held back
-  as zeros**, patched in as the last write — a power cut at any point leaves only files every
-  header read rejects, never a half-route in the catalog; the boot scan sweeps that exact
-  signature. Uploads get 8.3 `RTnn.OBR` names (LFN creation isn't available); the catalog scan —
-  including the **map build's** — matches `*.OBR` beside `.obcr`, so an uploaded route appears in
-  the on-device Route menu after a reflash. Replace-by-id deletes the old copy only after the new
-  bytes validate. Uploads are **not resumable** (S0 §1 principle 4): an interrupted upload (a drop
-  or an `op=3` abort) discards the partial and the app re-sends the object from the start — trivial
-  for a tens-of-kB route.
-- **List / detail / delete.** `routeList` is built from the stored OBCR headers; a route detail
-  download streams the stored file verbatim (whole-object CRC pre-pass, then raw CoC chunks);
-  `deleteObject` removes the file. Object ids are **durable across reboots** (the identity
-  rework, #289): an uploaded route's id lives in its `RTnn.OBR` filename and is recovered at the
-  boot scan; only side-loaded `.obcr` files get session-scoped ids from the reserved `0xFF00`
-  band. Every store movement notifies `storeChanged` + the refreshed `objectStore` digest.
-- **Config ↔ settings.** The `config` characteristic round-trips through the persisted settings
-  (codec v3 adds the device name to the RRAM blob): a rename survives a power cycle and replaces
-  the advertised `OBC-XXXX` on the next advertise cycle — no reboot; an empty name clears back to
-  factory.
-
-**Verify** — the E2E golden path: share a GPX to the iOS app on a phone, upload (B5 sheet), reflash
-the **map** build, and the route is in the device menu and rideable (SD persists across flashes).
-List/detail/delete + the mid-upload abort-and-re-upload are exercised from the Mac harness
-(`companion-ios/EchoHarness`: `upload`/`list`/`detail`/`delete`/`abort-test`) — the app's
-list/detail screens land on the B track.
-
-## Ride download + diagnostics (A7, #275)
-
-The reverse direction, and it's mostly *already built*: every ride Finish on the **map** build
-writes — beside the `.gpx` — a second file `/tracks/RDnn.ORD` that is **byte-for-byte the S0 §7.2
-ride object** (header with the ride totals + wall-clock start, 14-byte points; encoded in one
-streaming pass over the track log, the version byte held back as the commit point like the route
-upload's magic). The `ble` build then just scans `/tracks` at boot, serves `rideList` from the
-stored headers, and streams a requested ride verbatim through the same CRC-pre-pass + chunked
-download path a route detail uses. The durable ride id in the filename is what the app's
-synced-set keys on: sync pulls only rides it hasn't landed, and a ride deleted *in the app* is
-tombstoned there — never deleted here (`deleteObject` on a ride answers `notFound`, deliberately;
-the device keeps every ride until a future device-side management UI). `diagnostics` (type 4)
-downloads an honest text blob: fw/hw/serial, an RRAM-persisted **boot counter** (one 16-byte line
-in the SETTINGS carve, bumped every boot on every build), uptime, the A3 link counters, and the
-store counts — readable with no SD card, because that's when you want it.
-
-**Verify** — record 2–3 rides on the map build (`synth` indoors is fine: load a route, ride, Finish),
-reflash `ble`, and the app's sync pulls them; spot-check a decoded ride against the `.gpx` twin the
-same Finish wrote. Ids must survive a device power cycle (list → reboot → same ids); the boot
-counter must increment across power cycles (diagnostics read, or the `boot #N` RTT line).
-
-## Pairing + bonding (A8, #276)
-
-A8 flips security on (S0 §8): the whole OBC Control service becomes
-`permissions(authenticated)` — an **encrypted, LESC-authenticated** (MITM) link — except
-`protocolVersion`, which stays open for the connect-time version check (DIS/BAS stay open too). The
-CoC accept is refused on an unencrypted link. Pairing is **LESC passkey display**: IO capability
-`DisplayOnly`, so the device shows a 6-digit code (the status screen's big-font marquee, `Font::Huge`)
-that the rider types into the phone's system dialog. The whole thing rides `trouble-host`'s
-`security` feature (P-256 ECDH in-host) — the SMP CSPRNG **auto-seeds from the controller's `LeRand`**
-at host init, so there's no entropy to plumb; nrf-sdc exports every security HCI command
-(LTK reply, enable-encryption, the resolving-list set).
-
-The single bonded peer (LTK + peer identity/IRK + level) persists in the **RRAM SETTINGS carve** — a
-64-byte CRC-checked slot at `BOND_OFFSET` (`settings.rs`), clear of the settings slot @0 and the boot
-counter @2048, reached through `ObjectStore::{load,save,clear}_bond`. It survives power cycles **and a
-firmware reflash** (the carve sits above the application image — `probe-rs download` of the app region
-leaves it). At boot the bond is handed to the host (`add_bond_information`) so the controller's
-resolving list resolves the phone's rotating RPA and re-encrypts with the stored LTK — silent
-reconnect, no dialog. The device keeps its **stable** static-random address (no device privacy), which
-is what the phone's background reconnect keys on. `set_bondable(true)` per link lets a pairing persist
-keys (trouble's default is *not* bondable).
-
-**Single-peer policy:** one bond slot; a fresh passkey pairing replaces it — the on-screen passkey is
-the anti-stranger control, so there's no device-side "clear bond" gesture. When the phone forgets the
-device and re-pairs, trouble raises `BondLost`; we clear the stale bond and store the fresh one.
-
-**Verify** (on glass, with the iPhone app): (1) fresh pair — passkey on the panel (webcam), typed on
-the phone, bond lands; a wrong/declined code → clean re-advertise. (2) Power-cycle the device → the
-phone reconnects with no dialog; same after an app restart or a walk-away. (3) Reflash `ble` → still
-no dialog (bond survived). (4) App *Forget* + iOS *Settings ▸ Bluetooth* forget → next contact
-re-pairs with a fresh passkey. (5) A6 upload + A7 sync re-run over the encrypted link. (6) nRF Connect
-as an unbonded stranger: reads DIS/`protocolVersion`, access-denied on every gated char + the CoC.
+**Verify on glass** (nRF Connect is the pre-app oracle for A3–A4; the iOS app + harness for A5+):
+- **nRF Connect** — service/char table matches the spec, DIS strings + serial real, BAS notifies,
+  `protocolVersion` reads `1`, `psm` reads `0x0080`; negotiated MTU (247) + 2M PHY, interval settles
+  to the idle set; disconnect/re-connect + walk out of range bumps the counters and always returns to
+  advertising. As an *unbonded* stranger (post-A8): DIS/`protocolVersion` readable, access-denied on
+  every gated char + the CoC.
+- **Echo/transfer harness** `companion-ios/EchoHarness` (reuses the app's `BLEChannel`):
+  `swift run echo-harness --count 1000 --size 32768` round-trips byte-identical; `--corrupt` expects a
+  `crcMismatch`. `upload`/`list`/`detail`/`delete`/`abort-test` exercise the route plane.
+- **E2E golden path** — share a GPX to the iOS app, upload (B5 sheet), reflash the **map** build; the
+  route is in the device menu and rideable (SD persists across flashes). For sync: record 2–3 rides on
+  the map build (`synth` is fine indoors), reflash `ble`, sync pulls them; spot-check a decoded ride
+  against its `.gpx` twin. Ids must survive a power cycle; the boot counter must increment across them.
+- **Pairing** — passkey on the panel (webcam) typed on the phone → bond lands; power-cycle / app
+  restart / walk-away → silent reconnect, no dialog; reflash `ble` → still no dialog; app *Forget* +
+  iOS Bluetooth forget → next contact re-pairs with a fresh passkey.
 
 ## Driving it from a host (`debug-uart`)
 
