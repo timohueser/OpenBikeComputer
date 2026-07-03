@@ -356,11 +356,7 @@ fn live_frac(a: &Activity) -> f32 {
 
 /// Draw a magnifying-glass icon on a parchment chip — the wordless "Zoom mode is on" marker. A
 /// lens (ink ring) with a short diagonal handle.
-fn draw_zoom_icon<D, F>(cv: &mut Canvas<D, F>, x: i32, y: i32)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+fn draw_zoom_icon(cv: &mut impl Surface, x: i32, y: i32) {
     use palette::*;
     let s = 22;
     cv.round(rect(x, y, s, s), 5, PARCHMENT);
@@ -377,11 +373,7 @@ where
 
 /// Draw one stat tile: a tan rounded pane with an olive caption over a big ink Display value,
 /// optionally prefixed by an up-triangle for climb figures (the panel font has no ↑ glyph).
-fn tile<D, F>(cv: &mut Canvas<D, F>, area: Rectangle, label: &str, value: &str, arrow: bool)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+fn tile(cv: &mut impl Surface, area: Rectangle, label: &str, value: &str, arrow: bool) {
     use palette::*;
     let (x, y) = (area.top_left.x, area.top_left.y);
     cv.round(area, 5, PARCHMENT_SHADE);
