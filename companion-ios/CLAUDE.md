@@ -54,6 +54,9 @@ Prereqs: **Xcode 26.x** with a modern iOS simulator runtime installed
 ```bash
 cd companion-ios && xcodegen generate      # .xcodeproj is gitignored
 ```
+The pbxproj is deliberately **not** committed (this is the canonical statement
+of that policy): committing it baked personal signing state into shared history
+and could silently drift from `project.yml` with nothing to catch it.
 
 **Unit tests — host, no simulator (fast, do this first):**
 ```bash
@@ -105,7 +108,9 @@ live in `project/_ds/…/tokens/` and are mapped in
 [`OBCTheme`](Packages/OBCKit/Sources/OBCUI/Theme/OBCTheme.swift). **Use the
 `OBCUI` component kit; never restyle ad hoc or introduce colors outside the
 tokens.** One deliberate deviation: track previews use a real MapKit basemap
-(grid fallback when offline / no geometry).
+(grid fallback when offline / no geometry). Copy is **English-only** for now —
+verbatim from the design source; don't introduce localization machinery
+piecemeal (if that ever flips, it's its own issue).
 
 ## Conventions
 

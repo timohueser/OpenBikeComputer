@@ -1,8 +1,6 @@
 # Xcode / SwiftPM build artifacts. The .xcodeproj is XcodeGen-generated, NOT
-# committed — `xcodegen generate` is a required first step after cloning (see
-# companion-ios/CLAUDE.md). Committing it baked personal machine state
-# (DEVELOPMENT_TEAM signing) into shared history and risked silently drifting
-# from project.yml with nothing to catch it.
+# committed — `xcodegen generate` is a required first step after cloning.
+# Policy rationale: companion-ios/CLAUDE.md.
 *.xcodeproj/
 
 ## Build output
