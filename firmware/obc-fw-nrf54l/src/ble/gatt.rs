@@ -114,23 +114,34 @@ pub(crate) fn device_name() -> heapless::String<8> {
 /// structure overhead (length + type = 2 bytes).
 const ADV_NAME_MAX: usize = 29;
 
-/// The name the device advertises **right now** (S0 §2/§7.3): the stored rename, or the factory
-/// name when none is set. Re-read by every advertise cycle, so a rename lands in the airwaves on
-/// the next advertising start (the current connection's GAP name keeps the boot value — the
-/// Config characteristic, not GAP, is authoritative). Truncated to the scan-response budget on a
-/// char boundary; the full name still serves on the `config` read.
-pub(crate) fn advertised_name(store: &ObjectStore) -> heapless::String<48> {
-    let mut s: heapless::String<48> = heapless::String::new();
+/// The device's current name (S0 §7.3): the stored rename, or the factory `OBC-XXXX` when unset.
+/// The single source both [`advertised_name`] and [`config_blob`] resolve from, so a change to how
+/// a cleared name falls back can't make the advertised name and the Config read disagree about what
+/// the device is called.
+fn resolved_name(store: &ObjectStore) -> heapless::String<48> {
     let stored = store.settings().device_name;
+    let mut s: heapless::String<48> = heapless::String::new();
     if stored.is_empty() {
         let _ = s.push_str(device_name().as_str());
-        return s;
+    } else {
+        let _ = s.push_str(stored.as_str());
     }
-    let name = stored.as_str();
+    s
+}
+
+/// The name the device advertises **right now** (S0 §2/§7.3): the [`resolved_name`], re-read by
+/// every advertise cycle so a rename lands in the airwaves on the next advertising start (the
+/// current connection's GAP name keeps the boot value — the Config characteristic, not GAP, is
+/// authoritative). Truncated to the scan-response budget on a char boundary; the full name still
+/// serves on the `config` read.
+pub(crate) fn advertised_name(store: &ObjectStore) -> heapless::String<48> {
+    let full = resolved_name(store);
+    let name = full.as_str();
     let mut end = name.len().min(ADV_NAME_MAX);
     while end > 0 && !name.is_char_boundary(end) {
         end -= 1;
     }
+    let mut s: heapless::String<48> = heapless::String::new();
     let _ = s.push_str(&name[..end]);
     s
 }
@@ -180,9 +191,7 @@ pub(crate) fn device_address() -> Address {
 /// (or the factory name when unset — what the device actually advertises) + the units. Served on
 /// the `config` read; re-seeded after every accepted write so reads always return canonical bytes.
 pub(crate) fn config_blob(store: &ObjectStore) -> heapless09::Vec<u8, 128> {
-    let stored = store.settings().device_name;
-    let factory = device_name();
-    let name = if stored.is_empty() { factory.as_str() } else { stored.as_str() };
+    let name = resolved_name(store);
     let units = if store.settings().units.is_imperial() { 1 } else { 0 };
     let cfg = Config { name: name.as_bytes(), units };
     let mut buf = [0u8; Config::MAX_ENCODED];
