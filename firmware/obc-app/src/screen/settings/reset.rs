@@ -117,11 +117,7 @@ impl ResetScreen {
 }
 
 /// Draw a warning sign — an amber triangle with an ink exclamation — centred at `(cx, cy)`.
-fn draw_warning<D, F>(cv: &mut Canvas<D, F>, cx: i32, cy: i32, sz: i32)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+fn draw_warning(cv: &mut impl Surface, cx: i32, cy: i32, sz: i32) {
     use palette::*;
     cv.triangle(Point::new(cx, cy - sz), Point::new(cx - sz, cy + sz), Point::new(cx + sz, cy + sz), AMBER);
     // Exclamation: a bar over a dot.
@@ -131,19 +127,15 @@ where
 
 /// Draw a check mark in amber, centred near `(cx, cy)` — two strokes stepped out of discs (the
 /// canvas has no diagonal line primitive).
-fn draw_check<D, F>(cv: &mut Canvas<D, F>, cx: i32, cy: i32, sz: i32)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
-    let seg = |cv: &mut Canvas<D, F>, a: (i32, i32), b: (i32, i32)| {
+fn draw_check(cv: &mut impl Surface, cx: i32, cy: i32, sz: i32) {
+    fn seg(cv: &mut impl Surface, a: (i32, i32), b: (i32, i32)) {
         const N: i32 = 14;
         for k in 0..=N {
             let x = a.0 + (b.0 - a.0) * k / N;
             let y = a.1 + (b.1 - a.1) * k / N;
             cv.disc(Point::new(x, y), 3, palette::AMBER);
         }
-    };
+    }
     // Down-stroke to the low point, then up-stroke to the top-right.
     seg(cv, (cx - sz, cy), (cx - sz / 3, cy + sz * 2 / 3));
     seg(cv, (cx - sz / 3, cy + sz * 2 / 3), (cx + sz, cy - sz * 2 / 3));
