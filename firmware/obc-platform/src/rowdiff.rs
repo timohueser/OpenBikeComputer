@@ -111,6 +111,50 @@ impl<const H: usize> RowDiff<H> {
         diff_rows(fb, stride, &mut self.prev, !self.primed, row_hash, push_span);
         self.primed = true;
     }
+
+    /// [`diff`](RowDiff::diff) with a live overlay's rows **clipped out** — the shared present
+    /// skeleton both display backends run (`DisplayDriver::present(exclude)`, issue #345).
+    ///
+    /// Diffs the whole frame (the store is updated for **every** row, the excluded ones included —
+    /// it tracks the clean framebuffer, so when the overlay later goes quiet its rows re-push clean
+    /// with no stale entry), clips each changed span around the exclude interval `[y0, y0+rows)`
+    /// ([`clip_span`]), and collects the clipped spans into the caller's `spans` scratch. If they
+    /// don't fit, it falls back to "the whole frame minus the exclude" (≤ 2 spans — pathological
+    /// fragmentation a UI never produces) rather than silently dropping rows. Returns the filled
+    /// prefix, ascending + disjoint; empty ⇒ nothing changed outside the overlay, push nothing.
+    ///
+    /// `spans` must hold at least 2 entries (the fallback's worst case).
+    pub fn diff_clipped<'s>(
+        &mut self,
+        fb: &[u8],
+        stride: usize,
+        exclude: Option<(u16, u16)>,
+        spans: &'s mut [(u16, u16)],
+    ) -> &'s [(u16, u16)] {
+        debug_assert!(spans.len() >= 2, "span scratch too small for the whole-frame fallback");
+        // Half-open exclude interval [e0, e1) the clip removes from each changed span.
+        let ex = exclude.map(|(y0, rows)| (y0, y0 + rows));
+        let mut n = 0;
+        let mut overflow = false;
+        self.diff(fb, stride, |y0, cnt| {
+            clip_span(y0, cnt, ex, &mut |s, c| {
+                if n < spans.len() {
+                    spans[n] = (s, c);
+                    n += 1;
+                } else {
+                    overflow = true;
+                }
+            });
+        });
+        if overflow {
+            n = 0;
+            clip_span(0, H as u16, ex, &mut |s, c| {
+                spans[n] = (s, c);
+                n += 1;
+            });
+        }
+        &spans[..n]
+    }
 }
 
 impl<const H: usize> Default for RowDiff<H> {
@@ -321,6 +365,62 @@ mod tests {
         assert_eq!(clip(50, 20, Some((40, 60))), vec![(60, 10)]); // [50,70) minus [40,60) → [60,70)
                                                                   // A span that exactly equals the exclude interval emits nothing.
         assert_eq!(clip(40, 20, Some((40, 60))), Vec::new());
+    }
+
+    /// Run `diff_clipped` over a 6-row × 2-byte frame with a 16-slot scratch (the device shape).
+    fn diff_clipped(rd: &mut RowDiff<6>, fb: &[u8], exclude: Option<(u16, u16)>) -> Vec<(u16, u16)> {
+        let mut scratch = [(0u16, 0u16); 16];
+        rd.diff_clipped(fb, 2, exclude, &mut scratch).to_vec()
+    }
+
+    #[test]
+    fn diff_clipped_clips_changed_spans_around_the_exclude() {
+        let mut rd = RowDiff::<6>::new();
+        let fb0 = [0u8; 6 * 2];
+        let _ = diff_clipped(&mut rd, &fb0, None); // prime
+        let mut fb1 = fb0;
+        // Rows 1..=4 change; the exclude [2, 4) splits the span into (1,1) and (4,1).
+        for y in 1..=4 {
+            fb1[y * 2] = 0x55;
+        }
+        assert_eq!(diff_clipped(&mut rd, &fb1, Some((2, 2))), vec![(1, 1), (4, 1)]);
+    }
+
+    #[test]
+    fn diff_clipped_updates_the_store_for_excluded_rows() {
+        let mut rd = RowDiff::<6>::new();
+        let fb0 = [0u8; 6 * 2];
+        let _ = diff_clipped(&mut rd, &fb0, None); // prime
+        let mut fb1 = fb0;
+        fb1[3 * 2] = 0x77; // row 3 changes, but is excluded this present
+        assert_eq!(diff_clipped(&mut rd, &fb1, Some((3, 1))), Vec::new());
+        // The store tracked the clean fb anyway: a later present with no exclude does NOT re-push
+        // the unchanged excluded row (the overlay plane's trailing clear owns repainting it).
+        assert_eq!(diff_clipped(&mut rd, &fb1, None), Vec::new());
+    }
+
+    #[test]
+    fn diff_clipped_priming_pushes_the_whole_frame_minus_the_exclude() {
+        let mut rd = RowDiff::<6>::new();
+        let fb = [9u8; 6 * 2];
+        // First present: everything is dirty; the exclude still clips its rows out.
+        assert_eq!(diff_clipped(&mut rd, &fb, Some((2, 2))), vec![(0, 2), (4, 2)]);
+    }
+
+    #[test]
+    fn diff_clipped_overflow_falls_back_to_whole_frame_minus_exclude() {
+        let mut rd = RowDiff::<6>::new();
+        let fb0 = [0u8; 6 * 2];
+        let _ = diff_clipped(&mut rd, &fb0, None); // prime
+        let mut fb1 = fb0;
+        // Rows 0, 2, 4 change → three disjoint spans, overflowing a 2-slot scratch: the fallback
+        // must cover the whole frame while still respecting the exclude [1, 2).
+        fb1[0] = 1;
+        fb1[2 * 2] = 1;
+        fb1[4 * 2] = 1;
+        let mut scratch = [(0u16, 0u16); 2];
+        let spans = rd.diff_clipped(&fb1, 2, Some((1, 1)), &mut scratch).to_vec();
+        assert_eq!(spans, vec![(0, 1), (2, 4)]);
     }
 
     #[test]
