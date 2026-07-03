@@ -1376,8 +1376,10 @@ async fn run_app(
         // more on the frame the hold drops back to 0 (the falling edge), so an early release clears the
         // bar instead of leaving it stuck mid-fill. A pure hold-charge (and a *cancelled* one) emits no
         // gesture, so nothing else dirties the map. Gated on `!base_draws_map` so the expensive map view
-        // is never re-rendered for a hold; there the overlay bulge is the live feedback.
-        if (hold_p > 0.0 || prev_hold_p > 0.0) && !app.base_draws_map() {
+        // is never re-rendered for a hold (there the overlay bulge is the live feedback), and on
+        // `top_wants_hold_fill` so a hold charging where no fill would draw — the menus, an un-armed
+        // Reset, the Fields Add row — repaints nothing.
+        if (hold_p > 0.0 || prev_hold_p > 0.0) && !app.base_draws_map() && app.top_wants_hold_fill() {
             dirty.map = true;
         }
         prev_hold_p = hold_p;

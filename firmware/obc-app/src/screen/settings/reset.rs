@@ -33,6 +33,13 @@ impl ResetScreen {
         ResetScreen { armed: false, done: false }
     }
 
+    /// True while the hold-to-erase bar is on screen (armed, not yet done) — it fills with the live
+    /// hold progress, so [`App::top_wants_hold_fill`](crate::App::top_wants_hold_fill) reports a
+    /// charging hold as worth repainting here.
+    pub(crate) fn hold_fill_active(&self) -> bool {
+        self.armed && !self.done
+    }
+
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         if self.done {
             // Reset applied; any key clears back to Home (the device would reboot here).
