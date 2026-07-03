@@ -501,6 +501,16 @@ public final class MainScreenModel {
         plannedRecords[id]?.route
     }
 
+    /// A synced ride's full tracklog (#294 follow-up) — the interactive map
+    /// draws this, never the downsampled `trackPreview`. `nil` when the ride
+    /// hasn't landed (shouldn't happen for a row the detail screen can open) or
+    /// carries no points (a pre-sync-codec ride); the detail degrades to the
+    /// preview's coordinates either way, not a missing map.
+    public func rideGeometry(for id: RideID) -> [Coordinate]? {
+        let points = rideRecords[id]?.points.map(\.coordinate)
+        return (points?.isEmpty ?? true) ? nil : points
+    }
+
     /// The device object id this planned route is stored under, if any — threaded
     /// into a re-upload so it replaces that object instead of duplicating.
     public func plannedDeviceObjectID(for id: RouteID) -> UInt16? {

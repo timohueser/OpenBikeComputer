@@ -255,16 +255,25 @@ private struct TrackPreviewDTO: Codable {
     /// `[x, y]` pairs in unit space — compact for the ~256-point polylines.
     var points: [[Double]]
     var aspectRatio: Double
+    /// `[lat, lon]` pairs, index-aligned with `points` — the source geography the
+    /// MapKit basemap preview draws (#294). Optional-decoded: a pre-#294 file
+    /// lacked it, so it loads with no coordinates and the preview falls back to
+    /// the grid until the record is re-saved.
+    var coordinates: [[Double]]?
 
     init(_ preview: TrackPreview) {
         points = preview.points.map { [$0.x, $0.y] }
         aspectRatio = preview.aspectRatio
+        coordinates = preview.coordinates.map { [$0.latitude, $0.longitude] }
     }
 
     var domain: TrackPreview {
         TrackPreview(
             points: points.compactMap { $0.count == 2 ? TrackPreview.Point(x: $0[0], y: $0[1]) : nil },
-            aspectRatio: aspectRatio
+            aspectRatio: aspectRatio,
+            coordinates: (coordinates ?? []).compactMap {
+                $0.count == 2 ? Coordinate(latitude: $0[0], longitude: $0[1]) : nil
+            }
         )
     }
 }

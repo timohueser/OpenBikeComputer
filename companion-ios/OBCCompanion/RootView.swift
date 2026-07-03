@@ -12,6 +12,9 @@ import OBCUI
 struct RootView: View {
     @State private var launchModel: LaunchFlowModel
     @State private var mainModel: MainScreenModel
+    /// Online/offline signal for the MapKit basemap previews (#294), injected
+    /// into the whole tree as `\.obcIsOnline`.
+    @State private var reachability: ReachabilityStore
     @State private var path: [MainDestination] = []
     @State private var pendingImport: PendingImport?
     @State private var importCollision: ImportCollision?
@@ -40,6 +43,7 @@ struct RootView: View {
         transport: any DeviceTransport,
         bondStore: any BondStore,
         library: any LibraryStore = InMemoryLibraryStore(),
+        reachability: any NetworkReachability = PathMonitorReachability(),
         importAtLaunch: (data: Data, fileName: String)? = nil
     ) {
         self.transport = transport
@@ -48,6 +52,7 @@ struct RootView: View {
         self.importAtLaunch = importAtLaunch
         _launchModel = State(initialValue: LaunchFlowModel(transport: transport, bondStore: bondStore))
         _mainModel = State(initialValue: MainScreenModel(transport: transport, library: library))
+        _reachability = State(initialValue: ReachabilityStore(reachability))
     }
 
     var body: some View {
@@ -151,6 +156,7 @@ struct RootView: View {
             Text("A route with this name is already in your library — pick a different one.")
         }
         .task {
+            reachability.start()
             if let importAtLaunch {
                 openImport(data: importAtLaunch.data, fileName: importAtLaunch.fileName)
             }
@@ -161,6 +167,9 @@ struct RootView: View {
         .onOpenURL { url in
             importFile(at: url)
         }
+        // One shared online/offline signal for every basemap preview (#294) —
+        // the E1 cover + pushed details inherit it through the presentation.
+        .environment(\.obcIsOnline, reachability.isOnline)
     }
 
     // MARK: Detail destinations (B4)
@@ -201,6 +210,9 @@ struct RootView: View {
                 RouteDetailScreen(
                     transport: transport,
                     dressing: .tracked(ride),
+                    // The full tracklog (#294) — the interactive map draws this,
+                    // never the ride card's downsampled preview.
+                    rideGeometry: mainModel.rideGeometry(for: id),
                     deviceName: mainModel.deviceName,
                     // Phone-side only — the ride stays on the device's card.
                     onDelete: {
@@ -408,6 +420,7 @@ private struct RouteDetailScreen: View {
         dressing: RouteDetailModel.Dressing,
         preloadedDetail: RouteDetail? = nil,
         plannedGeometry: ImportedRoute? = nil,
+        rideGeometry: [Coordinate]? = nil,
         deviceObjectID: UInt16? = nil,
         uploadedCRC32: UInt32? = nil,
         deviceName: String,
@@ -418,7 +431,8 @@ private struct RouteDetailScreen: View {
         _model = State(initialValue: RouteDetailModel(
             transport: transport, dressing: dressing,
             preloadedDetail: preloadedDetail, plannedGeometry: plannedGeometry,
-            deviceObjectID: deviceObjectID, uploadedCRC32: uploadedCRC32
+            deviceObjectID: deviceObjectID, uploadedCRC32: uploadedCRC32,
+            rideGeometry: rideGeometry
         ))
         self.transport = transport
         self.deviceName = deviceName

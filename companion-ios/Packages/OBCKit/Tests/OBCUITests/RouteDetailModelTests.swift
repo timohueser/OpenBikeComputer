@@ -149,6 +149,28 @@ final class RouteDetailModelTests: XCTestCase {
         XCTAssertEqual(model.elevationProfile.count, 9)
     }
 
+    /// #294 follow-up: a threaded `rideGeometry` feeds the interactive map at
+    /// full resolution; without it, the map falls back to the (downsampled)
+    /// preview's coordinates rather than showing nothing.
+    func testTrackedMapCoordinatesUseTheThreadedGeometryOrFallBackToThePreview() {
+        let control = makeControl()
+        let ride = control.fixtures.rides[0].summary
+        let fullTrack = (0..<500).map { Coordinate(latitude: 47.0 + 0.0001 * Double($0), longitude: 11.0) }
+
+        let withGeometry = RouteDetailModel(
+            transport: MockTransport(control: control), dressing: .tracked(ride), rideGeometry: fullTrack
+        )
+        XCTAssertEqual(withGeometry.mapCoordinates, fullTrack, "full resolution, not the ride card's preview cap")
+
+        let withoutGeometry = RouteDetailModel(
+            transport: MockTransport(control: control), dressing: .tracked(ride)
+        )
+        XCTAssertEqual(
+            withoutGeometry.mapCoordinates, ride.trackPreview?.coordinates ?? [],
+            "no threaded geometry → the preview's coordinates, not an empty map"
+        )
+    }
+
     // MARK: E1 · imported
 
     private var importedRoute: ImportedRoute {
@@ -189,6 +211,26 @@ final class RouteDetailModelTests: XCTestCase {
         XCTAssertEqual(model.stats[1].value, OBCFormat.climbValue(meters: 50))
         XCTAssertEqual(model.stats[2].value, OBCFormat.climbValue(meters: 40))
         XCTAssertEqual(model.distanceMeters, 9 * 1112.0, accuracy: 20)
+    }
+
+    /// #294: the imported dressing's interactive map draws the full parsed
+    /// geometry, never the `preview`'s 256-point downsample — the whole point
+    /// of threading `mapCoordinates` separately.
+    func testImportedMapCoordinatesAreFullResolutionNotThePreviewCap() {
+        let points = (0..<1_000).map {
+            RoutePoint(coordinate: Coordinate(latitude: 47.0 + 0.0001 * Double($0), longitude: 11.0))
+        }
+        let route = ImportedRoute(name: "Long Tour", points: points)
+        let model = RouteDetailModel(
+            transport: MockTransport(control: makeControl()),
+            dressing: .imported(route, fileName: "long.gpx")
+        )
+
+        XCTAssertEqual(model.mapCoordinates.count, 1_000, "full resolution for the interactive map")
+        XCTAssertLessThan(
+            model.preview?.points.count ?? 0, 1_000,
+            "the compact preview stays downsampled — that cap is intentional for the thumbnail"
+        )
     }
 
     func testImportedFromLineFallsBackToTheFileType() {

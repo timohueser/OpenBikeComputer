@@ -55,4 +55,31 @@ final class GeoTests: XCTestCase {
             XCTAssertEqual(point.y, 0.5, accuracy: 1e-9)
         }
     }
+
+    // MARK: Coordinates carrier (#294 — the MapKit basemap path)
+
+    func testRetainsSourceCoordinatesAlignedWithPoints() {
+        let coords = [
+            Coordinate(latitude: 42.0, longitude: -88.0),
+            Coordinate(latitude: 42.1, longitude: -88.1),
+            Coordinate(latitude: 42.2, longitude: -88.05),
+        ]
+        let preview = TrackPreview.normalizing(coords)
+        // Same count as the unit-square points, and the actual source lat/lon.
+        XCTAssertEqual(preview.coordinates.count, preview.points.count)
+        XCTAssertEqual(preview.coordinates, coords)
+    }
+
+    func testDownsampleKeepsCoordinatesAlignedWithPoints() {
+        let coords = (0..<1000).map { Coordinate(latitude: Double($0) * 0.001, longitude: 0) }
+        let preview = TrackPreview.normalizing(coords, maxPoints: 100)
+        XCTAssertEqual(preview.coordinates.count, 100)
+        XCTAssertEqual(preview.coordinates.count, preview.points.count)
+    }
+
+    func testEmptyAndSinglePointCoordinates() {
+        XCTAssertTrue(TrackPreview.normalizing([]).coordinates.isEmpty)
+        let one = [Coordinate(latitude: 47, longitude: 8)]
+        XCTAssertEqual(TrackPreview.normalizing(one).coordinates, one)
+    }
 }

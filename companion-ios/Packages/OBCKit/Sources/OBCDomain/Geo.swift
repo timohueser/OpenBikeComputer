@@ -25,9 +25,19 @@ public struct Coordinate: Hashable, Sendable {
     }
 }
 
-/// A **normalized** polyline for the `GPSTrackPreview` component (B11) to draw —
-/// no basemap, ever (epic non-negotiable). Points live in the unit square, already
-/// projected + aspect-measured, so the preview view is a dumb `Path` renderer.
+/// A polyline for the `GPSTrackPreview` component (B11) to draw. Carries two
+/// parallel representations of the same downsampled track:
+///
+///   • `points` — the unit-square, aspect-measured projection the **grid
+///     fallback** renderer draws directly (a dumb `Path` renderer, no basemap).
+///   • `coordinates` — the source WGS-84 lat/lon, so the **MapKit basemap**
+///     preview (#294) can draw a real `MapPolyline` and fit a camera to the
+///     track's bounds without re-deriving geography.
+///
+/// The two arrays are the same length and index-aligned (same downsample). The
+/// basemap path uses `coordinates`; when it's empty (or the device is offline)
+/// the preview degrades to the `points` grid — an intentional fallback, not a
+/// bug (see `companion-ios/CLAUDE.md`).
 ///
 /// Produced from route/ride geometry by both the mock fixtures (B1M) and the real
 /// decode path (`B1`/`BLEChannel`) — so the projection lives here, in the shared
@@ -49,12 +59,18 @@ public struct TrackPreview: Equatable, Sendable {
 
     /// The polyline in unit space. Empty when the source had no geometry.
     public let points: [Point]
+    /// The source WGS-84 coordinates for `points`, index-aligned (same
+    /// downsample). Empty when unknown (a legacy library file, or a source that
+    /// only kept the normalized shape) — the basemap preview then falls back to
+    /// the grid.
+    public let coordinates: [Coordinate]
     /// width ÷ height of the source bounding box, for aspect-correct letterboxing
     /// (1 when there's nothing to draw or the track is a point).
     public let aspectRatio: Double
 
-    public init(points: [Point], aspectRatio: Double) {
+    public init(points: [Point], aspectRatio: Double, coordinates: [Coordinate] = []) {
         self.points = points
+        self.coordinates = coordinates
         self.aspectRatio = aspectRatio
     }
 
@@ -71,7 +87,9 @@ public struct TrackPreview: Equatable, Sendable {
     /// instead of dividing by zero.
     public static func normalizing(_ coordinates: [Coordinate], maxPoints: Int = 256) -> TrackPreview {
         guard !coordinates.isEmpty else { return .empty }
-        guard coordinates.count > 1 else { return TrackPreview(points: [Point(x: 0.5, y: 0.5)], aspectRatio: 1) }
+        guard coordinates.count > 1 else {
+            return TrackPreview(points: [Point(x: 0.5, y: 0.5)], aspectRatio: 1, coordinates: coordinates)
+        }
 
         // Uniform-stride downsample, always keeping the last point.
         let sampled: [Coordinate]
@@ -100,6 +118,8 @@ public struct TrackPreview: Equatable, Sendable {
             let v = spanY > 0 ? (p.y - minY) / spanY : 0.5
             return Point(x: u, y: 1 - v)  // flip so north is at the top
         }
-        return TrackPreview(points: points, aspectRatio: aspect)
+        // `sampled` is index-aligned with `points` (both come off the same
+        // downsample), so the basemap path can draw the real lat/lon polyline.
+        return TrackPreview(points: points, aspectRatio: aspect, coordinates: sampled)
     }
 }

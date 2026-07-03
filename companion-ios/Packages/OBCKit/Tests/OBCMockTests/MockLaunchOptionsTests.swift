@@ -86,6 +86,16 @@ final class MockLaunchOptionsTests: XCTestCase {
         XCTAssertNil(parse([], env: ["OBC_IMPORT_SAMPLE": "0"]).importSample)
     }
 
+    func testParsesNetworkOverride() {
+        // Absent → nil (the real NWPathMonitor drives it).
+        XCTAssertNil(parse([]).networkOnline)
+        XCTAssertEqual(parse(["-OBCNetwork", "offline"]).networkOnline, false)
+        XCTAssertEqual(parse(["-OBCNetwork", "online"]).networkOnline, true)
+        XCTAssertEqual(parse([], env: ["OBC_NETWORK": "offline"]).networkOnline, false)
+        // Unknown token degrades to nil (real monitor), never crashes.
+        XCTAssertNil(parse(["-OBCNetwork", "sometimes"]).networkOnline)
+    }
+
     func testSampleRouteFileServesEveryKind() {
         for kind in [SampleRouteFile.Kind.gpx, .tcx, .bad] {
             XCTAssertNotNil(SampleRouteFile.data(kind), "\(kind) sample must load")

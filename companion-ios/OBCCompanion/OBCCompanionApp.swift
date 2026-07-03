@@ -40,6 +40,7 @@ struct OBCCompanionApp: App {
                 transport: Self.makeTransport(),
                 bondStore: Self.makeBondStore(),
                 library: Self.makeLibraryStore(),
+                reachability: Self.makeReachability(),
                 importAtLaunch: Self.launchImport()
             )
             #if DEBUG
@@ -101,6 +102,16 @@ struct OBCCompanionApp: App {
         }
         #endif
         return FileLibraryStore.standard()
+    }
+
+    /// The reachability seam behind the MapKit basemap (#294). The real path
+    /// watches `NWPathMonitor`; `-OBCNetwork offline|online` pins it for
+    /// automation (the grid-fallback XCUITest), Debug-only like every launch arg.
+    static func makeReachability() -> any NetworkReachability {
+        #if DEBUG
+        if let online = launchOptions.networkOnline { return ConstantReachability(online) }
+        #endif
+        return PathMonitorReachability()
     }
 
     /// The bond record behind the B2 launch branch. Mock runs read it from the
