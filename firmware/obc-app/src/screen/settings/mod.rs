@@ -22,8 +22,8 @@ use obc_render::{
 
 use crate::input::Gesture;
 
-use super::list::{self, ListGeometry, Separators};
-use super::{palette, Ctx, Render, Screen, Transition, LIST_TOP};
+use super::list;
+use super::{palette, Ctx, Render, Screen, Transition};
 
 mod add_field;
 mod datetime;
@@ -43,9 +43,6 @@ pub use units::UnitsScreen;
 
 /// The Settings list entries, in order. Each row pushes its sub-screen.
 const ITEMS: [&str; 5] = ["Date & Time", "Units", "Stats", "Power", "Reset"];
-
-/// Per-row height — matches the main [`Menu`](super::MenuScreen) so the two read identically.
-const ROW_H: i32 = 52;
 
 /// The Settings list — a nav menu whose rows open the individual settings screens. State is the
 /// highlighted row.
@@ -75,21 +72,7 @@ impl SettingsScreen {
     }
 
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
-        let (w, h) = (rx.w, rx.h);
-        let geo = ListGeometry {
-            w,
-            top: LIST_TOP,
-            row_h: ROW_H,
-            row_gap: 8,
-            side_inset: 16,
-            separators: Separators::All,
-            visible: list::visible_rows(h, ROW_H),
-        };
-        list::list_frame(cv, w, h, "SETTINGS", self.selected + 1, ITEMS.len(), geo.visible);
-        let first = list::window_start(self.selected, geo.visible, ITEMS.len()) as i32;
-        list::draw_rows(cv, geo, ITEMS.len(), self.selected, first, |cv, row| {
-            list::nav_row(cv, row.area, ITEMS[row.index], row.selected);
-        });
+        list::nav_list(cv, rx.w, rx.h, "SETTINGS", &ITEMS, self.selected);
     }
 }
 

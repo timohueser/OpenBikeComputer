@@ -18,7 +18,7 @@ use crate::activity::Mode;
 use crate::input::Gesture;
 
 use super::list::{self, ListGeometry, Separators};
-use super::{palette, Ctx, MapScreen, Render, RouteSwapScreen, Screen, Transition, LIST_TOP};
+use super::{palette, Ctx, MapScreen, Render, RouteSwapScreen, Screen, Transition};
 
 /// Per-route pane height (two lines: name + stats), sized so four routes fill the list area.
 const ROW_H: i32 = 66;
@@ -66,15 +66,7 @@ impl RouteMenuScreen {
         let (w, h) = (rx.w, rx.h);
         let routes = rx.routes;
         let total = routes.len();
-        let geo = ListGeometry {
-            w,
-            top: LIST_TOP,
-            row_h: ROW_H,
-            row_gap: 8,
-            side_inset: 12,
-            separators: Separators::Unselected,
-            visible: list::visible_rows(h, ROW_H),
-        };
+        let geo = ListGeometry::below_title(w, h, ROW_H, 8, 12, Separators::Unselected);
 
         let pos = if total == 0 { 0 } else { self.selected.min(total - 1) + 1 };
         list::list_frame(cv, w, h, "ROUTES", pos, total, geo.visible);

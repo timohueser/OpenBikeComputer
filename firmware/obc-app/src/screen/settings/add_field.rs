@@ -6,7 +6,7 @@ use obc_render::Surface;
 
 use crate::input::Gesture;
 use crate::screen::list::{self, ListGeometry, Separators};
-use crate::screen::{Ctx, Render, Transition, LIST_TOP};
+use crate::screen::{Ctx, Render, Transition};
 use crate::stat_fields::StatField;
 
 /// Per-row height — matches the Stat Fields list so the two read identically.
@@ -48,15 +48,7 @@ impl AddFieldScreen {
         let (w, h) = (rx.w, rx.h);
         let avail = hidden(&rx.settings.stat_fields);
         let total = avail.len();
-        let geo = ListGeometry {
-            w,
-            top: LIST_TOP,
-            row_h: ROW_H,
-            row_gap: 6,
-            side_inset: super::ROW_X,
-            separators: Separators::None,
-            visible: list::visible_rows(h, ROW_H),
-        };
+        let geo = ListGeometry::below_title(w, h, ROW_H, 6, super::ROW_X, Separators::None);
 
         let sel = if total == 0 { 0 } else { self.selected.min(total - 1) };
         list::list_frame(cv, w, h, "ADD FIELD", sel + 1, total, geo.visible);
