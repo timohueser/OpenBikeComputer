@@ -212,9 +212,9 @@ impl ScreenKind {
 
 /// The one screen table. Each row is `Variant(StateType) => kind`; the macro expands it into the
 /// [`Screen`] enum, the `handle`/`draw` delegation matches, and [`Screen::kind`]. **Adding a screen
-/// = adding one row here** (plus its module, and an `animate`/`next_wake_in` arm only if it has
-/// timed content) — there is no second list to keep in sync. Deliberately a dumb token-pasting
-/// table, not a framework.
+/// = adding one row here** (plus its module, and a [`tick_timers`](Screen::tick_timers) arm only if
+/// it has timed content) — there is no second list to keep in sync. Deliberately a dumb
+/// token-pasting table, not a framework.
 macro_rules! screens {
     ($( $(#[$doc:meta])* $variant:ident($state:ty) => $kind:ident, )+) => {
         /// The on-device screens. Each variant owns its typed state and forwards to that screen's
@@ -286,7 +286,7 @@ impl Screen {
     /// the Fields hold-to-delete footer over a deletable row. A render-on-demand host uses
     /// [`App::top_wants_hold_fill`](crate::App::top_wants_hold_fill) to repaint a charging hold
     /// only when the fill would actually draw. Intentionally partial, like
-    /// [`animate`](Screen::animate): most screens draw nothing hold-driven.
+    /// [`tick_timers`](Screen::tick_timers): most screens draw nothing hold-driven.
     pub(crate) fn wants_hold_fill(&self, settings: &Settings) -> bool {
         match self {
             Screen::RideControl(s) => s.selection_is_guarded(),
@@ -297,30 +297,49 @@ impl Screen {
         }
     }
 
-    /// Advance this screen's time-driven content one frame, returning whether the drawn output
-    /// changed so the render-on-demand host marks the map dirty (issue #47). Most screens change
-    /// only on input or a fresh fix and return `false`; the Statistics cursor springs back to live
-    /// on an idle timer (off `now_ms`) and the Home clock ticks over each minute (off the wall-clock
-    /// `now`), so those report it here.
-    pub fn animate(&mut self, now_ms: u32, now: DateTime, settings: &Settings) -> bool {
+    /// Poll this screen's time-driven content one frame: fire any timed change that is due and
+    /// report the residual deadline to the next one, both computed from the same gating locals so
+    /// "did it change" and "when next" can never drift apart. [`ScreenTick::changed`] is how the
+    /// render-on-demand host marks the map dirty (issue #47); [`ScreenTick::next_wake_ms`] is what
+    /// the event-driven host (issue #219) folds across the visible stack into a single wake
+    /// deadline so the M33 sleeps rather than free-running the loop.
+    ///
+    /// Most screens change only on input or a fresh fix and return [`ScreenTick::idle`]. The
+    /// Statistics view runs its cursor spring-back + page auto-cycle off `now_ms`; the Home clock
+    /// ticks over each minute off the wall-clock `now`, adopting `ms_to_next_minute` — the minute
+    /// boundary the host pre-computes (it owns the clock).
+    pub fn tick_timers(
+        &mut self,
+        now_ms: u32,
+        now: DateTime,
+        ms_to_next_minute: u32,
+        settings: &Settings,
+    ) -> ScreenTick {
         match self {
-            Screen::Statistics(s) => s.animate(now_ms, settings),
-            Screen::Home(s) => s.animate(now),
-            _ => false,
+            Screen::Statistics(s) => s.tick_timers(now_ms, settings),
+            Screen::Home(s) => s.tick_timers(now, ms_to_next_minute),
+            _ => ScreenTick::idle(),
         }
     }
+}
 
-    /// Milliseconds until this screen's next timed redraw, or `None` if it changes only on input /
-    /// a fix. The event-driven host (issue #219) folds this across the visible stack into a single
-    /// wake deadline so the M33 sleeps rather than free-running the loop. The mirror of
-    /// [`animate`](Screen::animate). `ms_to_next_minute` is the wall-clock minute boundary the host
-    /// pre-computes (it owns the clock); Home adopts it, Statistics reports its own input-clock deadlines.
-    pub fn next_wake_in(&self, now_ms: u32, ms_to_next_minute: u32, settings: &Settings) -> Option<u32> {
-        match self {
-            Screen::Statistics(s) => s.next_wake_in(now_ms, settings),
-            Screen::Home(_) => Some(ms_to_next_minute),
-            _ => None,
-        }
+/// The result of one [`Screen::tick_timers`] poll: whether a timed change just fired (the host
+/// repaints) and how long until the next one is due (the host arms its wake timer). Produced in
+/// one body per screen, so the two halves of the timing contract share their gating.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScreenTick {
+    /// A timed change fired this poll — the drawn output differs, so the map plane needs a repaint.
+    pub changed: bool,
+    /// Milliseconds until the next timed change is due, or `None` when no timer is pending (the
+    /// screen changes only on input or a fresh fix). Strictly positive: a due timer fired this
+    /// poll instead.
+    pub next_wake_ms: Option<u32>,
+}
+
+impl ScreenTick {
+    /// No timed content: nothing changed, nothing pending — the arm for every static screen.
+    pub const fn idle() -> Self {
+        ScreenTick { changed: false, next_wake_ms: None }
     }
 }
 

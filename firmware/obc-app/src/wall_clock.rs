@@ -68,7 +68,7 @@ impl WallClock {
 }
 
 /// A per-minute repaint edge for a screen drawing an `HH:MM` clock. The screen holds one and calls
-/// [`changed`](MinuteTicker::changed) from its `animate`, dirtying itself exactly once each time
+/// [`changed`](MinuteTicker::changed) from its `tick_timers`, dirtying itself exactly once each time
 /// the displayed minute rolls over — so a static screen repaints as the clock advances without
 /// polling on a blind heartbeat. The minute change subsumes every coarser rollover above it.
 ///
