@@ -148,7 +148,7 @@ Here's a whole screen's logic — the main Menu — to show how little a screen 
 ```rust
 fn handle(&mut self, g: Gesture, _cx: &mut Ctx) -> Transition {
     match g {
-        Gesture::Turn(n) => { self.selected = step_selection(self.selected, n, ITEMS.len()); Transition::None }
+        Gesture::Turn(n) => list::on_turn(&mut self.selected, n, ITEMS.len()), // move the cursor
         Gesture::Press   => match self.selected {
             0 => Transition::Push(Screen::RouteMenu(RouteMenuScreen::new())), // Routes
             _ => Transition::Push(Screen::Settings(SettingsScreen::new())),   // Settings
