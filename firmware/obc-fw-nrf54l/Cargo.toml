@@ -212,7 +212,7 @@ heapless09 = { package = "heapless", version = "0.9", optional = true }
 # stay on the warm-reset-safe `MaybeUninit`-in-`.bss` pattern; see `init_static` in main.rs).
 static_cell = { version = "2", optional = true }
 # The host-tested S0 data-plane core (A5, issue #273): the transferControl / status descriptor
-# codecs, CRC-32/IEEE, and the whole-object transfer state machine (Receiver / Sender). no_std,
+# codecs, CRC-32/IEEE, and the whole-object transfer state machine (Receiver / StreamSender). no_std,
 # no-alloc, radio-free — this crate drives the CoC bytes through it; the shared protocol-vectors/
 # fixtures pin it to the Swift side. A workspace member built here for the M33 target.
 obc-ble = { path = "../obc-ble", optional = true }
