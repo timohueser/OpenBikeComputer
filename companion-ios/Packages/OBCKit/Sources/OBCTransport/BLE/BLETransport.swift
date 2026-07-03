@@ -457,6 +457,31 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         connectContinuation = nil
     }
 
+    /// Whether an ATT/CB error means the encrypted, LESC-authenticated link the
+    /// gated characteristics require (A8) wasn't established — the passkey was
+    /// declined/wrong or the bond was refused. Distinguishes a real pairing
+    /// failure from an ordinary read/open error so the launch flow can show the
+    /// right D5 copy.
+    private static func isAuthError(_ error: Error?) -> Bool {
+        if let att = error as? CBATTError {
+            switch att.code {
+            case .insufficientAuthentication, .insufficientEncryption, .insufficientAuthorization:
+                return true
+            default:
+                return false
+            }
+        }
+        if let cb = error as? CBError {
+            switch cb.code {
+            case .encryptionTimedOut, .peerRemovedPairingInformation:
+                return true
+            default:
+                return false
+            }
+        }
+        return false
+    }
+
     private func finishConnect() {
         stateMulticast.send(.connected)
         connectContinuation?.resume()
@@ -806,12 +831,20 @@ extension BLETransport: CBPeripheralDelegate {
                 let psm = UInt16(data[0]) | (UInt16(data[1]) << 8)
                 peripheral.openL2CAPChannel(CBL2CAPPSM(psm))
             } else {
-                // A failed PSM read must not strand the open flow — fail the
-                // waiters; the next transfer retries the whole open.
+                // The PSM characteristic is `authenticated` (A8): the read is the
+                // first gated op, so a failure here is usually the pairing being
+                // declined / the wrong passkey (ATT insufficient-authentication).
+                // Fail the open waiters AND the pending connect — else `connect()`
+                // hangs until the caller's scan window expires. An auth-class error
+                // → `pairingFailed` (D5 "didn't finish"); anything else →
+                // `channelOpenFailed`. (A decline that instead *disconnects* the
+                // link lands via `didDisconnectPeripheral`; on-glass polish.)
                 openingChannel = false
+                let failure: DeviceError = Self.isAuthError(error) ? .pairingFailed : .channelOpenFailed
                 let waiters = channelWaiters
                 channelWaiters.removeAll()
-                for cont in waiters { cont.resume(throwing: DeviceError.channelOpenFailed) }
+                for cont in waiters { cont.resume(throwing: failure) }
+                if connectContinuation != nil { failConnect(failure) }
             }
             return
         }
