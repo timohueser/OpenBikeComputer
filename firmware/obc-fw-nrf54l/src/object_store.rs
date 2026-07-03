@@ -226,6 +226,25 @@ impl ObjectStore {
         self.settings_store.save(&self.settings);
     }
 
+    // ==================== BLE bond ↔ RRAM (S0 §8, issue #276) ====================
+    // The single bonded peer lives in the same RRAM settings carve as the config; these delegate
+    // to the store so `ble.rs` reaches the bond through the one `RefCell<ObjectStore>` it holds.
+
+    /// The stored bond (LTK + peer identity/IRK), or `None` for open pairing.
+    pub fn load_bond(&mut self) -> Option<trouble_host::prelude::BondInformation> {
+        self.settings_store.load_bond()
+    }
+
+    /// Persist the single bond — a fresh pairing replaces it (single-peer policy).
+    pub fn save_bond(&mut self, bond: &trouble_host::prelude::BondInformation) {
+        self.settings_store.save_bond(bond);
+    }
+
+    /// Forget the stored bond (the peer signalled it lost its keys) → next contact re-pairs.
+    pub fn clear_bond(&mut self) {
+        self.settings_store.clear_bond();
+    }
+
     // ==================== delete (S0 §4.4 cmd 1) ====================
 
     /// Delete a stored route by object id. `true` = deleted (revision bumped).

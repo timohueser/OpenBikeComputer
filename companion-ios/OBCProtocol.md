@@ -65,9 +65,27 @@ UUID, which custom services must not use — `S0` replaced them:
 | `0007` | `psm` | read | the dynamically-assigned L2CAP CoC PSM the app opens the channel on |
 | `0008` | `protocolVersion` | read | `u16` LE, readable without encryption — the connect-time version check |
 
-The app-facing characteristics require an **encrypted** link (LESC bond, firmware
-`A8`); the phone is the only bonded peer. DIS/BAS/`protocolVersion` stay open so
-the app can identity/version-check before pairing.
+The app-facing characteristics require an **encrypted, LESC-authenticated** link
+(firmware `A8`); the phone is the only bonded peer. DIS/BAS/`protocolVersion` stay
+open so the app can identity/version-check before pairing.
+
+**Pairing / bonding (A8, canonical spec §8).** The device is `DisplayOnly`: it
+shows a 6-digit **passkey** on its screen, iOS raises the system pairing dialog
+(`OBCSystemPairing`), the rider types it — LESC passkey entry, MITM-protected.
+Pairing *is* `connect()`: reading a gated characteristic / opening the CoC on the
+unencrypted link makes iOS pair, and the encrypted link completing is what
+resolves the connect. A declined / wrong passkey surfaces as a pairing failure
+(→ D5). One bonded peer; a fresh passkey pairing replaces the stored bond.
+
+**Reconnect.** The device keeps a **stable** static address, so once bonded, iOS
+reconnects silently on any contact (no dialog) — power-cycle either side, walk
+away and back. The app persists only a `BondRecord` ("we paired, with `<name>`")
+for the launch greeting; CoreBluetooth owns the real crypto bond.
+
+**Forget (H2).** `BondStore.clear()` drops the app's record, but iOS keeps the CB
+bond until the user also removes it in **Settings ▸ Bluetooth** — the H2 copy
+says so. After a true forget, the next contact re-pairs with a fresh passkey (the
+device replaces its single bond).
 
 ### Data plane = L2CAP CoC
 

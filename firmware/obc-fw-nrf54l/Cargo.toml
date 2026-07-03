@@ -195,7 +195,13 @@ bt-hci = { version = "0.9", default-features = false, features = ["defmt"], opti
 # again exactly this crate's set). It runs on heapless **0.9**; the shared crates are on 0.8.
 # `default-packet-pool-mtu-251` sizes the pool for the config we intend to ship (ATT MTU 247 =
 # link-layer 251 with DLE), so the budget assert's RAM numbers are the shipping ones.
-trouble-host = { version = "0.7", features = ["defmt", "derive", "peripheral", "gatt", "default-packet-pool", "default-packet-pool-mtu-251"], optional = true }
+# `security` (A8, issue #276) turns on the LESC/SMP/bonding host: passkey pairing, the
+# per-characteristic encryption gate, and the peer-IRK resolving list for bonded reconnect.
+# It pulls p256/aes/cmac/rand{,_core,_chacha} — all no_std here (trouble pins them
+# `default-features=false`), and the SMP CSPRNG is auto-seeded from the controller's `LeRand`
+# at host init (no app-side entropy plumbing). nrf-sdc exports every HCI command the security
+# host requires (LTK reply, enable-encryption, the resolving-list set, LeRand).
+trouble-host = { version = "0.7", features = ["defmt", "derive", "peripheral", "gatt", "security", "default-packet-pool", "default-packet-pool-mtu-251"], optional = true }
 # trouble-host's `#[gatt_service]` derive impls `AsGatt` for *its* heapless (0.9) `String`/`Vec`, so
 # the A4 GATT string/blob characteristic types (DIS strings, `config`, …) must be 0.9 — the shared
 # crates' 0.8 types don't satisfy the bound. Alias 0.9 under a distinct name so both coexist; the
