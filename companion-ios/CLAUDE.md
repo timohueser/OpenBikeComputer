@@ -116,6 +116,9 @@ tokens.** One deliberate deviation: track previews use a real MapKit basemap
   one-conformer change. Never parse/encode outside `OBCFormats`/`Codecs`.
 - **The `LibraryStore` persists canonical models, never wire bytes.** Screens
   read the store first, then reconcile with the device.
+- **Open-ended stream loops in view models** (`for await` over `transport.state`
+  etc.): `[weak self]` + `guard let self` **inside** the loop, store the `Task`,
+  cancel it in `deinit` (cancellation only — no main-actor state in `deinit`).
 - **One feature per folder** under `OBCUI` (view + its view model).
 - **Never hand-edit the pbxproj** — it's regenerated; edit `project.yml`.
 
