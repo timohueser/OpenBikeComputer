@@ -2,11 +2,11 @@ import SwiftUI
 import OBCDomain
 import OBCTransport
 
-/// The upload sheet (B5, design F/F₂) — presented over the route detail; the
-/// app never leaves the route. Uploading (F) shows the live bar, the
-/// plain-English size readout, the device-correspondence note, and an
-/// always-reachable **Cancel upload**; a drop swaps in the resume framing;
-/// completion holds the F₂ confirm briefly, then dismisses.
+/// The upload sheet — presented over the route detail; the app never leaves
+/// the route. Uploading shows the live bar, the plain-English size readout,
+/// the device-correspondence note, and an always-reachable **Cancel upload**;
+/// a drop swaps in the resume framing; completion holds the confirm briefly,
+/// then dismisses.
 ///
 /// Present inside `.sheet` — the view brings its own `OBCSheetContainer`
 /// chrome and detent, and drives dismissal through `model.shouldDismiss`.
@@ -44,8 +44,8 @@ public struct UploadSheetView: View {
         .onDisappear { model.sheetDismissed() }
     }
 
-    /// The design's sheet hugs its content — the interrupted framing carries
-    /// one extra button, F₂ the taller centered confirm.
+    /// The sheet hugs its content — the interrupted framing carries one extra
+    /// button, done the taller centered confirm.
     private var sheetHeight: CGFloat {
         switch model.phase {
         case .uploading: 280

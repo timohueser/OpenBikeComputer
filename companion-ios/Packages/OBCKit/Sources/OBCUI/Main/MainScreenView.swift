@@ -3,14 +3,14 @@ import UniformTypeIdentifiers
 import OBCDomain
 import OBCTransport
 
-/// The hub (B3, design C1/C2): device top bar, serif "Routes" title with the
-/// trailing **+ import**, Planned | Tracked segments, search, and the compact
-/// track-left list. Connection status lives *only* in the top bar + the S4
+/// The hub: device top bar, serif "Routes" title with the trailing **+
+/// import**, Planned | Tracked segments, search, and the compact track-left
+/// list. Connection status lives *only* in the top bar + the disconnected
 /// banner; swipe-left deletes the row directly (the reveal is the confirm —
-/// one-tap detail deletes still go through H1).
+/// one-tap detail deletes still go through the confirm dialog).
 ///
 /// Navigation and the flows this screen *opens* stay seams the composition
-/// root wires: card tap → route detail (B4), import pick (B6), settings (B8).
+/// root wires: card tap → route detail, import pick, settings.
 public struct MainScreenView: View {
     @Bindable private var model: MainScreenModel
     private let importFileExtensions: Set<String>
@@ -20,9 +20,9 @@ public struct MainScreenView: View {
     private let onSettings: () -> Void
 
     @State private var emptyStatePickerShown = false
-    // Pull-to-reveal search (Mail-style): hidden until the list is tugged
-    // down past the threshold; hides again on scroll-up once the query is
-    // cleared. `scrollBaseline` is the sentinel row's resting position.
+    // Pull-to-reveal search (Mail-style): hidden until the list is tugged down
+    // past the threshold; hides again on scroll-up once cleared.
+    // `scrollBaseline` is the sentinel row's resting position.
     @State private var searchRevealed = false
     @State private var scrollBaseline: CGFloat?
 
@@ -53,8 +53,8 @@ public struct MainScreenView: View {
                 onSettings: onSettings
             )
 
-            // One banner at a time. A protocol mismatch (#303) outranks the rest:
-            // the link is up but unusable for data, so it can't be a transfer or
+            // One banner at a time. A protocol mismatch outranks the rest: the
+            // link is up but unusable for data, so it can't be a transfer or
             // an out-of-range story — sync is disabled until the versions match.
             if let mismatch = model.protocolMismatch {
                 OBCInlineBanner(
@@ -113,8 +113,8 @@ public struct MainScreenView: View {
 
     // MARK: List
 
-    /// Search stays visible while a query is live regardless of scroll (H6
-    /// keeps the query editable).
+    /// Search stays visible while a query is live regardless of scroll (keeps
+    /// the query editable).
     private var searchVisible: Bool {
         searchRevealed || !model.searchText.isEmpty
     }
@@ -211,7 +211,7 @@ public struct MainScreenView: View {
         )
     }
 
-    /// The small mono line under the segments on Tracked (C2): amber ride-count
+    /// The small mono line under the segments on Tracked: amber ride-count
     /// while syncing, the forest "Synced N new rides just now" confirm after.
     @ViewBuilder
     private var syncLine: some View {
@@ -252,8 +252,7 @@ public struct MainScreenView: View {
         } else if model.filteredRoutes.isEmpty && !model.searchText.isEmpty {
             noMatches(noun: "routes", scope: "all planned routes")
         } else if model.routes.isEmpty {
-            // S1 — empty ≠ broken: point at the import that fills it (B10 owns
-            // the app-state pass; the copy is the design's).
+            // Empty ≠ broken: point at the import that fills it.
             OBCEmptyStateView(
                 glyph: .trackTile,
                 title: "No planned routes yet",
@@ -323,14 +322,14 @@ public struct MainScreenView: View {
 
     // MARK: Shared states
 
-    /// S2 — skeletons, not spinners; only an empty first read shimmers.
+    /// Skeletons, not spinners; only an empty first read shimmers.
     private var skeletons: some View {
         ForEach(0..<4, id: \.self) { _ in
             RouteCardSkeleton()
         }
     }
 
-    /// S3 — say what failed, confirm nothing was lost, offer one retry.
+    /// Say what failed, confirm nothing was lost, offer one retry.
     private var readError: some View {
         OBCEmptyStateView(
             glyph: .warning(systemImage: "exclamationmark.triangle"),
@@ -344,7 +343,7 @@ public struct MainScreenView: View {
         .accessibilityIdentifier("main.readError")
     }
 
-    /// H6 — empty results ≠ empty library; the query stays editable above.
+    /// Empty results ≠ empty library; the query stays editable above.
     private func noMatches(noun: String, scope: String) -> some View {
         VStack(spacing: 6) {
             Image(systemName: "magnifyingglass")
@@ -370,9 +369,8 @@ public struct MainScreenView: View {
 
 #if DEBUG
 #Preview("Main · C1") {
-    // Preview-only: a model against a plain placeholder transport is not
-    // available here (OBCUI can't import OBCMock) — see the app target's
-    // RootView previews for the full mock-driven screen.
+    // Preview-only placeholder (OBCUI can't import OBCMock) — see the app
+    // target's RootView previews for the full mock-driven screen.
     VStack(spacing: 0) {
         DeviceTopBar(deviceName: "Trailhead", connection: .connected, batteryPercent: 82)
         OBCLargeTitleBar("Routes") {

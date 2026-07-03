@@ -2,14 +2,14 @@ import SwiftUI
 import OBCDomain
 import OBCTransport
 
-/// The route-detail screen (B4) in the finalized **profile layout**: track hero
-/// → title (pencil = H12 on planned/tracked) → inline stat strip → Waypoints
-/// disclosure (→ W1) → elevation profile → actions **inline in the scroll**
-/// (design rule: no floating/sticky button). One view, three dressings — E2
-/// planned, E3 tracked, E1 import landing (framed by `ImportLandingView`).
+/// The route-detail screen in the **profile layout**: track hero → title
+/// (pencil = rename on planned/tracked) → inline stat strip → Waypoints
+/// disclosure → elevation profile → actions **inline in the scroll** (no
+/// floating/sticky button). One view, three dressings — planned, tracked,
+/// import landing (framed by `ImportLandingView`).
 ///
 /// What the actions *open* stays seams the composition root wires: upload →
-/// the B5 sheet, delete → pop after `MainScreenModel.deleteRoute`, save →
+/// the upload sheet, delete → pop after `MainScreenModel.deleteRoute`, save →
 /// `addImportedRoute`.
 public struct RouteDetailView: View {
     @Bindable private var model: RouteDetailModel
@@ -119,7 +119,7 @@ public struct RouteDetailView: View {
     // MARK: Pieces
 
     /// Whether the hero can open the full interactive map: real geometry **and**
-    /// a network path (offline keeps the grid, no tap — never a blank map). #294.
+    /// a network path (offline keeps the grid, no tap — never a blank map).
     private var canExpandMap: Bool {
         isOnline && !model.mapCoordinates.isEmpty
     }
@@ -160,7 +160,7 @@ public struct RouteDetailView: View {
         )
     }
 
-    /// The E1 provenance line above the hero — mono uppercase in coral.
+    /// The provenance line above the hero — mono uppercase in coral.
     private func importedBanner(_ line: String) -> some View {
         HStack(spacing: 7) {
             Image(systemName: "square.and.arrow.up")
@@ -212,8 +212,9 @@ public struct RouteDetailView: View {
         .padding(.bottom, 12)
     }
 
-    /// E3's connected-services sync block — shipped coming-soon; the per-ride
-    /// Upload affordance is the designed seam (no-op until services land).
+    /// The tracked dressing's connected-services sync block — shipped
+    /// coming-soon; the per-ride Upload affordance is the designed seam
+    /// (no-op until services land).
     private var servicesBlock: some View {
         OBCConnectedServicesBlock(services: [
             OBCServiceStatus(
@@ -239,7 +240,7 @@ public struct RouteDetailView: View {
                     .buttonStyle(.obcDestructive)
                     .accessibilityIdentifier("detail.delete")
                     // Anchored to the button itself — hung off the scroll root
-                    // the H1 dialog pops up mid-screen over the title.
+                    // the confirm dialog pops up mid-screen over the title.
                     .obcDestructiveConfirm(
                         "Delete \"\(model.name)\"?",
                         isPresented: $deleteConfirmShown,
@@ -248,8 +249,8 @@ public struct RouteDetailView: View {
                         onConfirm: { onDelete?() }
                     )
             case .imported where noDevicePaired:
-                // H4 — a share can arrive before pairing: the route still
-                // saves; upload waits until a device exists.
+                // A share can arrive before pairing: the route still saves;
+                // upload waits until a device exists.
                 OBCInlineBanner(
                     systemImage: "antenna.radiowaves.left.and.right.slash",
                     title: "No device paired yet.",
@@ -274,7 +275,7 @@ public struct RouteDetailView: View {
                     .padding(.top, 2)
             case .tracked:
                 // The services block above carries the per-ride upload; delete
-                // matches the planned dressing (one-tap, so it confirms via H1).
+                // matches the planned dressing (one-tap, confirms via dialog).
                 Button("Delete ride") { deleteConfirmShown = true }
                     .buttonStyle(.obcDestructive)
                     .accessibilityIdentifier("detail.delete")
@@ -293,7 +294,7 @@ public struct RouteDetailView: View {
     /// Upload ↔ Update ↔ up-to-date, off the proven device-copy state: a fresh
     /// route uploads, a changed one (rename, re-import) **updates the copy in
     /// place**, and a byte-identical one has nothing to push — the button says
-    /// so and stays disabled. Link-bound either way (S4: dims with the link).
+    /// so and stays disabled. Link-bound either way (dims with the link).
     private var uploadButton: some View {
         let state = model.deviceCopyState
         return Button {
@@ -326,7 +327,7 @@ public struct RouteDetailView: View {
     }
 }
 
-/// W1 — the waypoints list pushed from the disclosure row: the mini track with
+/// The waypoints list pushed from the disclosure row: the mini track with
 /// numbered pins, the rows in ride order, and the provenance footer.
 struct WaypointsScreen: View {
     let waypoints: [Waypoint]
@@ -362,11 +363,11 @@ struct WaypointsScreen: View {
     }
 }
 
-/// E1 — the import landing: the same detail body framed by **Cancel / Save**
+/// The import landing: the same detail body framed by **Cancel / Save**
 /// chrome. Presented full-screen by the composition root when a route file
 /// decodes (Files pick, share sheet, or the `-OBCImportSample` hook). With no
-/// device paired it wears the H4 framing instead — the no-device banner plus
-/// **Save to Planned** / **Pair a device** in place of Upload.
+/// device paired it wears the no-device banner plus **Save to Planned** /
+/// **Pair a device** in place of Upload.
 public struct ImportLandingView: View {
     private let model: RouteDetailModel
     private let deviceName: String

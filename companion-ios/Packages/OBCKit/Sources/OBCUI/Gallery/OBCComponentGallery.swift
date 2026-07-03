@@ -2,10 +2,10 @@
 import SwiftUI
 import OBCDomain
 
-/// The B11 **component gallery** — every kit component with design-data
-/// samples, for on-sim screenshot review (issue #240 acceptance) and quick
-/// visual regression checks. Debug-only, like the mock dev tooling; reach it
-/// with `-OBCShowUIGallery` (see `companion-ios/CLAUDE.md`).
+/// The **component gallery** — every kit component with design-data samples,
+/// for on-sim screenshot review and quick visual regression checks.
+/// Debug-only, like the mock dev tooling; reach it with `-OBCShowUIGallery`
+/// (see `companion-ios/CLAUDE.md`).
 public struct OBCComponentGallery: View {
     @State private var tab = 0
     @State private var toastShown = false

@@ -3,25 +3,25 @@ import Observation
 import OBCDomain
 import OBCTransport
 
-/// The main-screen state (B3, design C1/C2): the route/ride lists, the live
-/// device cluster (name · battery · connection), search, and the sync button's
-/// state machine. Depends only on `DeviceTransport` (the golden rule).
+/// The main-screen state: the route/ride lists, the live device cluster
+/// (name · battery · connection), search, and the sync button's state machine.
+/// Depends only on `DeviceTransport` (the golden rule).
 ///
-/// **Sync (B7):** the SYNC button contract — idle → syncing ("N of M rides") →
+/// **Sync:** the SYNC button contract — idle → syncing ("N of M rides") →
 /// done ("Synced N new rides just now", ~2 s check) → idle — driven off the
 /// `downloadRides` `RideDownload`. "New" means not in the `LibraryStore`'s
-/// synced set (B1S) — persistent, so a relaunch never re-counts. Each landed
-/// payload decodes through `RideObjectCodec` into the canonical `Ride`
-/// and persists at once, so a drop mid-batch keeps what arrived (H10) by
-/// construction. A drop surfaces as `syncInterruption` ("Got 2 of 5 rides." +
-/// Resume); `resumeSync()` restarts the stalled batch at **whole-ride
-/// granularity** — rides that fully landed stay, the rest are re-sent whole
-/// (transfers restart, not resume — the spec's principle 4).
+/// synced set — persistent, so a relaunch never re-counts. Each landed
+/// payload decodes through `RideObjectCodec` into the canonical `Ride` and
+/// persists at once, so a drop mid-batch keeps what arrived by construction.
+/// A drop surfaces as `syncInterruption` ("Got 2 of 5 rides." + Resume);
+/// `resumeSync()` restarts the stalled batch at **whole-ride granularity** —
+/// rides that fully landed stay, the rest are re-sent whole (transfers
+/// restart, not resume).
 ///
-/// **Both lists are library-first (#289, extended to rides in #296):**
+/// **Both lists are library-first:**
 /// - **Planned routes** show exactly the phone's saved routes; `listRoutes()`
 ///   (the device catalog, device-namespace ids) is consulted *only* to reconcile
-///   each record's `deviceObjectID` — lighting and clearing the C1 "on device"
+///   each record's `deviceObjectID` — lighting and clearing the "on device"
 ///   badge — never to add rows. A route that exists only on the device (another
 ///   phone's upload, a side-loaded file) isn't the app's to manage and never
 ///   appears.
@@ -32,8 +32,8 @@ import OBCTransport
 ///   `listRides()` drives the *sync* (what to fetch on Sync), never the rows;
 ///   nothing downloads until the user presses Sync.
 ///
-/// That split is also why S4 degrades to a banner over browsable content
-/// instead of emptying, and why an H4 import survives a relaunch.
+/// That split is also why a dropped connection degrades to a banner over
+/// browsable content instead of emptying, and why an import survives a relaunch.
 @MainActor @Observable
 public final class MainScreenModel {
     /// The Planned | Tracked segmented split.
@@ -42,7 +42,7 @@ public final class MainScreenModel {
         case tracked = 1
     }
 
-    /// First-read lifecycle for the lists — S2 skeletons / S3 read error.
+    /// First-read lifecycle for the lists — skeletons / read error.
     public enum LoadState: Equatable, Sendable {
         case loading
         case loaded
@@ -55,7 +55,7 @@ public final class MainScreenModel {
         public var total: Int
     }
 
-    /// H10 — a sync the link dropped out from under. Feeds the warning banner
+    /// A sync the link dropped out from under. Feeds the warning banner
     /// ("Sync interrupted. Got 2 of 5 rides." + Resume). What landed is already
     /// persisted; `resumeSync()` continues the rest.
     public struct SyncInterruption: Equatable, Sendable {
@@ -63,7 +63,7 @@ public final class MainScreenModel {
         public var total: Int
     }
 
-    /// #303 — a connected device whose reported `protocol_version` doesn't match
+    /// A connected device whose reported `protocol_version` doesn't match
     /// `OBCProtocol.version`. Feeds the incompatibility banner and disables sync;
     /// the app must never decode an incompatible object (`OBCProtocol.md` →
     /// *Versioning*). `found > expected` means the device is ahead (update the
@@ -75,10 +75,9 @@ public final class MainScreenModel {
 
     /// Pacing — injectable so the model tests run in milliseconds.
     public struct Timing: Sendable {
-        /// How long the forest check holds before the button returns to idle
-        /// (design: "Check for ~2s, then idle").
+        /// How long the forest check holds before the button returns to idle.
         public var syncDoneHold: Duration
-        /// How long the C2 "Synced N new rides just now" line stays up.
+        /// How long the "Synced N new rides just now" line stays up.
         public var syncedLineHold: Duration
 
         public init(
@@ -99,8 +98,8 @@ public final class MainScreenModel {
     public private(set) var battery: Int?
     public private(set) var loadState: LoadState = .loading
     public private(set) var routes: [RouteSummary] = []
-    /// Each planned route's proven device-copy state — drives the C1 badge
-    /// (check = up to date, refresh = on device but out of date). Observable
+    /// Each planned route's proven device-copy state — drives the "on device"
+    /// badge (check = up to date, refresh = on device but out of date). Observable
     /// (unlike the `plannedRecords` mirror) so the badge moves the instant an
     /// upload commits or a rename/re-import changes the content.
     public private(set) var onDevice: [RouteID: OnDeviceState] = [:]
@@ -112,20 +111,21 @@ public final class MainScreenModel {
     public private(set) var syncProgress: SyncProgress?
     /// Non-nil after a successful sync — feeds "Synced N new rides just now".
     public private(set) var lastSyncCount: Int?
-    /// H9: a sync found nothing new (bound to the transient toast).
+    /// A sync found nothing new (bound to the transient toast).
     public var upToDateToastVisible = false
-    /// H10: non-nil while a dropped sync waits for Resume — replaces the S4
-    /// banner (one banner at a time; this one carries the link story too).
+    /// Non-nil while a dropped sync waits for Resume — replaces the
+    /// disconnected banner (one banner at a time; this one carries the link
+    /// story too).
     public private(set) var syncInterruption: SyncInterruption?
-    /// #303: non-nil once a connected device reports an incompatible
+    /// Non-nil once a connected device reports an incompatible
     /// `protocol_version` — drives the incompatibility banner and disables sync.
     public private(set) var protocolMismatch: ProtocolMismatch?
 
     // MARK: Derived
 
-    /// The S4 rule: out of range / disconnected degrades to a banner over
-    /// browsable content — never an error, never a blocker. While a dropped
-    /// sync waits for Resume, the H10 banner tells the link story instead.
+    /// Out of range / disconnected degrades to a banner over browsable content
+    /// — never an error, never a blocker. While a dropped sync waits for
+    /// Resume, the interruption banner tells the link story instead.
     public var showsDisconnectedBanner: Bool {
         (connection == .outOfRange || connection == .disconnected) && syncInterruption == nil
     }
@@ -151,7 +151,7 @@ public final class MainScreenModel {
     /// Mirror of the store's planned routes, keyed for the detail/rename paths.
     @ObservationIgnored private var plannedRecords: [RouteID: PlannedRouteRecord] = [:]
     /// Mirror of the store's synced rides — tracklogs filled at decode time
-    /// (`RideObjectCodec`, B7).
+    /// (`RideObjectCodec`).
     @ObservationIgnored private var rideRecords: [RideID: Ride] = [:]
     @ObservationIgnored private var started = false
     @ObservationIgnored private var streamTasks: [Task<Void, Never>] = []
@@ -182,8 +182,8 @@ public final class MainScreenModel {
         guard !started else { return }
         started = true
 
-        // Library first (B1S): the lists are browsable before the device read
-        // lands — or ever succeeds (offline relaunch, H4 pre-pairing import).
+        // Library first: the lists are browsable before the device read
+        // lands — or ever succeeds (offline relaunch, pre-pairing import).
         let planned = library.plannedRoutes()
         plannedRecords = Dictionary(uniqueKeysWithValues: planned.map { ($0.id, $0) })
         refreshOnDeviceStates()
@@ -210,9 +210,9 @@ public final class MainScreenModel {
         })
         reload()
         // Identity after the first library read: a fault armed for "the first
-        // read" (the S3 scenario) must hit the lists, not this fetch. The same
-        // read carries the protocol-version check (#303) — surfaced here, on
-        // connect, where `deviceInfo()` is consumed.
+        // read" must hit the lists, not this fetch. The same read carries the
+        // protocol-version check — surfaced here, on connect, where
+        // `deviceInfo()` is consumed.
         let firstLoad = loadTask
         streamTasks.append(Task { [transport] in
             await firstLoad?.value
@@ -225,11 +225,11 @@ public final class MainScreenModel {
         })
     }
 
-    /// (Re)read both lists — also the S3 "Retry" action. Cached content stays
+    /// (Re)read both lists — also the "Retry" action. Cached content stays
     /// up while the fresh read runs; only an *empty* library shows skeletons.
     public func reload() {
         loadTask?.cancel()
-        // An incompatible device (#303): don't decode its objects — keep the
+        // An incompatible device: don't decode its objects — keep the
         // library-first content up and let the banner explain. The first load
         // (before the version is read) may still run; every reload after the
         // mismatch is known is gated here.
@@ -241,9 +241,9 @@ public final class MainScreenModel {
         loadTask = Task { [transport] in
             do {
                 // Only the route catalog is read here: Planned reconciles its
-                // on-device badges against it, and Tracked is library-first
-                // (#296) so its rows come from the local library — the device's
-                // rides are pulled only by Sync, never on a plain (re)load.
+                // on-device badges against it, and Tracked is library-first so
+                // its rows come from the local library — the device's rides
+                // are pulled only by Sync, never on a plain (re)load.
                 let deviceRoutes = try await transport.listRoutes()
                 guard !Task.isCancelled else { return }
                 reconcileOnDevice(with: deviceRoutes)
@@ -258,10 +258,10 @@ public final class MainScreenModel {
     }
 
     /// True-up every record's `deviceObjectID` against the device's live catalog
-    /// (device-namespace ids): a copy deleted out from under us (another phone,
-    /// the EchoHarness) clears the badge; a record whose id is still listed keeps
-    /// it. Ids are durable across device reboots (spec §4.1), so absence really
-    /// means "gone", not "renumbered".
+    /// (device-namespace ids): a copy deleted out from under us clears the
+    /// badge; a record whose id is still listed keeps it. Ids are durable
+    /// across device reboots (spec §4.1), so absence really means "gone", not
+    /// "renumbered".
     private func reconcileOnDevice(with deviceRoutes: [RouteSummary]) {
         let listed = Set(deviceRoutes.compactMap { UInt16($0.id.rawValue) })
         for (id, var record) in plannedRecords {
@@ -296,11 +296,11 @@ public final class MainScreenModel {
     // MARK: Sync (the SYNC button)
 
     /// Pull new tracked rides off the device. No-ops unless the link is up and
-    /// no sync is running (the button is disabled when unreachable — S4 dims
-    /// link-bound actions). Starting fresh over a waiting interruption is fine:
-    /// what landed is marked synced, so the new batch is exactly the remainder.
+    /// no sync is running (the button is disabled when unreachable). Starting
+    /// fresh over a waiting interruption is fine: what landed is marked synced,
+    /// so the new batch is exactly the remainder.
     public func sync() {
-        // Disabled on an incompatible device (#303): the banner explains why, and
+        // Disabled on an incompatible device: the banner explains why, and
         // decoding its ride objects would be the exact "silently proceed" the
         // version check exists to prevent.
         guard connection == .connected, syncState != .syncing, protocolMismatch == nil else { return }
@@ -316,9 +316,9 @@ public final class MainScreenModel {
         syncTask = Task { await runSync() }
     }
 
-    /// H10's Resume: restart the dropped batch at whole-ride granularity —
-    /// rides that fully landed stay landed, the interrupted one is re-sent from
-    /// its start. The consuming loop never stopped (it's awaiting the stalled
+    /// Resume: restart the dropped batch at whole-ride granularity — rides
+    /// that fully landed stay landed, the interrupted one is re-sent from its
+    /// start. The consuming loop never stopped (it's awaiting the stalled
     /// stream), so rides simply start landing again.
     public func resumeSync() {
         guard let interruption = syncInterruption, let download = activeDownload else { return }
@@ -341,7 +341,7 @@ public final class MainScreenModel {
 
             let fresh = onDevice.filter { !syncedRideIDs.contains($0.id) }
             guard !fresh.isEmpty else {
-                // H9 — a quiet toast, straight back to idle (no empty "done").
+                // A quiet toast, straight back to idle (no empty "done").
                 syncState = .idle
                 upToDateToastVisible = true
                 return
@@ -352,10 +352,11 @@ public final class MainScreenModel {
             activeDownload = download
             // A drop stalls the download streams open (that's what makes the
             // batch restartable, whole rides at a time). Watch the link and
-            // surface H10 with what landed; the loop below just keeps awaiting
-            // the stalled stream until Resume — or a new sync — moves things.
-            // Held locally too: a superseded task must cancel ITS watch, never
-            // the one a newer sync installed in the shared property.
+            // surface the interruption with what landed; the loop below just
+            // keeps awaiting the stalled stream until Resume — or a new sync —
+            // moves things. Held locally too: a superseded task must cancel
+            // ITS watch, never the one a newer sync installed in the shared
+            // property.
             let dropWatch = Task { [transport] in
                 for await state in transport.state
                 where state == .outOfRange || state == .disconnected {
@@ -375,10 +376,10 @@ public final class MainScreenModel {
                     syncedRideIDs.insert(downloaded.id)
                     library.markRideSynced(downloaded.id)
                     // Persist the canonical ride the moment it lands, so an
-                    // interrupted batch keeps its partial across a relaunch
-                    // (H10). The payload decodes through the device ride codec;
-                    // bytes that don't parse keep the ride summary-only rather
-                    // than dropping it (wire bytes are never the stored format).
+                    // interrupted batch keeps its partial across a relaunch.
+                    // The payload decodes through the device ride codec; bytes
+                    // that don't parse keep the ride summary-only rather than
+                    // dropping it (wire bytes are never the stored format).
                     if let summary = fresh.first(where: { $0.id == downloaded.id }) {
                         let decoded = try? RideObjectCodec.decode(
                             downloaded.payload, id: downloaded.id)
@@ -403,7 +404,8 @@ public final class MainScreenModel {
             // session, not only after the next reload.
             if landed > 0 { rides = trackedList() }
             // The transfer is over one way or another: the watch has done its
-            // job (leaving it running would fire H10 on a later, harmless drop).
+            // job (leaving it running would fire an interruption on a later,
+            // harmless drop).
             dropWatch.cancel()
             guard !Task.isCancelled else { return }
             syncProgress = nil
@@ -431,8 +433,8 @@ public final class MainScreenModel {
         }
     }
 
-    /// The drop watch's H10 hand-off: freeze the counts into the banner state
-    /// and bring the progress caption down. The download stays resumable.
+    /// The drop watch's hand-off: freeze the counts into the banner state and
+    /// bring the progress caption down. The download stays resumable.
     private func interruptSync() {
         guard syncState == .syncing, activeDownload != nil else { return }
         syncState = .idle
@@ -443,10 +445,10 @@ public final class MainScreenModel {
         syncProgress = nil
     }
 
-    // MARK: Delete (H11 → H1, post-confirm)
+    // MARK: Delete (post-confirm)
 
     /// Remove a planned route from the phone (list + library). **Never** from
-    /// the device — H1's promise is "If it's already on the device, it stays
+    /// the device — the promise is "If it's already on the device, it stays
     /// there", mirroring the ride rule in reverse (each side keeps its own
     /// copies; the record and its badge die with the library entry).
     public func deleteRoute(_ id: RouteID) {
@@ -470,11 +472,11 @@ public final class MainScreenModel {
         library.markRideDeleted(id)
     }
 
-    // MARK: Rename (H12) + import landing (E1) — phone-side library edits
+    // MARK: Rename + import landing — phone-side library edits
 
-    /// Rename a planned route in the list. Phone-local by design (H12:
-    /// "renames locally, propagates to device on next upload") — no transport
-    /// op, but a library-saved route persists the new name.
+    /// Rename a planned route in the list. Phone-local by design (renames
+    /// locally, propagates to device on next upload) — no transport op, but a
+    /// library-saved route persists the new name.
     public func renameRoute(_ id: RouteID, to name: String) {
         guard let index = routes.firstIndex(where: { $0.id == id }) else { return }
         routes[index].name = name
@@ -499,9 +501,9 @@ public final class MainScreenModel {
         }
     }
 
-    /// Land a just-imported route at the top of Planned (E1 "Save to Planned")
-    /// — and in the library, so it survives a relaunch and uploads later (H4).
-    /// The full record (canonical geometry + source file) stays app-side; the
+    /// Land a just-imported route at the top of Planned ("Save to Planned") —
+    /// and in the library, so it survives a relaunch and uploads later. The
+    /// full record (canonical geometry + source file) stays app-side; the
     /// device never had this route, so `routeDetail` can't answer for it.
     public func addImportedRoute(_ record: PlannedRouteRecord) {
         plannedRecords[record.id] = record
@@ -521,10 +523,10 @@ public final class MainScreenModel {
         return plannedRecords.values.first { $0.summary.name.lowercased() == target }
     }
 
-    /// Whether the device holds a copy of this planned route (drives the C1 badge).
+    /// Whether the device holds a copy of this planned route (drives the badge).
     public func isUploaded(_ id: RouteID) -> Bool { onDeviceState(id) != .notOnDevice }
 
-    /// The proven device-copy state behind the C1 badge.
+    /// The proven device-copy state behind the badge.
     public func onDeviceState(_ id: RouteID) -> OnDeviceState { onDevice[id] ?? .notOnDevice }
 
     /// The kept detail for a library-saved route, with the summary refreshed
@@ -536,18 +538,18 @@ public final class MainScreenModel {
         return detail
     }
 
-    /// The canonical parsed geometry a library-saved route re-encodes to OBCR for
-    /// upload (B12). `nil` for a device-listed route the phone never imported —
+    /// The canonical parsed geometry a library-saved route re-encodes to OBCR
+    /// for upload. `nil` for a device-listed route the phone never imported —
     /// that copy already lives on the device.
     public func plannedGeometry(for id: RouteID) -> ImportedRoute? {
         plannedRecords[id]?.route
     }
 
-    /// A synced ride's full tracklog (#294 follow-up) — the interactive map
-    /// draws this, never the downsampled `trackPreview`. `nil` when the ride
-    /// hasn't landed (shouldn't happen for a row the detail screen can open) or
-    /// carries no points (a pre-sync-codec ride); the detail degrades to the
-    /// preview's coordinates either way, not a missing map.
+    /// A synced ride's full tracklog — the interactive map draws this, never
+    /// the downsampled `trackPreview`. `nil` when the ride hasn't landed
+    /// (shouldn't happen for a row the detail screen can open) or carries no
+    /// points (a pre-sync-codec ride); the detail degrades to the preview's
+    /// coordinates either way, not a missing map.
     public func rideGeometry(for id: RideID) -> [Coordinate]? {
         let points = rideRecords[id]?.points.map(\.coordinate)
         return (points?.isEmpty ?? true) ? nil : points
@@ -565,14 +567,14 @@ public final class MainScreenModel {
         plannedRecords[id]?.uploadedCRC32
     }
 
-    /// H3 write-through from Settings (B8) — the top bar shows the new device
-    /// name at once; Settings owns the config write and the bond record.
+    /// Write-through from Settings — the top bar shows the new device name at
+    /// once; Settings owns the config write and the bond record.
     public func deviceRenamed(to name: String) {
         deviceName = name
     }
 
-    /// A B5 upload committed — record the device object id it landed under (the
-    /// durable "on device" link) so the C1 badge lights and a later re-upload
+    /// An upload committed — record the device object id it landed under (the
+    /// durable "on device" link) so the badge lights and a later re-upload
     /// replaces that object. Idempotent; a new id (re-upload after a device-side
     /// change) overwrites the old.
     public func markRouteUploaded(_ id: RouteID, objectID: UInt16, crc32: UInt32) {
@@ -587,12 +589,12 @@ public final class MainScreenModel {
     // MARK: Helpers
 
     /// The Tracked list: exactly the rides the phone has **synced** (its
-    /// library), newest first — library-first, like Planned (#289/#296). A ride
-    /// on the device but not yet downloaded is deliberately *not* here: it has
-    /// only summary stats, no tracklog or preview, and a half-empty card is
-    /// worse than none (the device's `listRides()` drives Sync, never the rows).
-    /// Deleted rides are already gone from `rideRecords`; the tombstone filter is
-    /// belt-and-suspenders.
+    /// library), newest first — library-first, like Planned. A ride on the
+    /// device but not yet downloaded is deliberately *not* here: it has only
+    /// summary stats, no tracklog or preview, and a half-empty card is worse
+    /// than none (the device's `listRides()` drives Sync, never the rows).
+    /// Deleted rides are already gone from `rideRecords`; the tombstone filter
+    /// is belt-and-suspenders.
     private func trackedList() -> [RideSummary] {
         rideRecords.values
             .map(\.summary)

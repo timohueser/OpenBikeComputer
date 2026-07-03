@@ -4,7 +4,7 @@ import OBCDomain
 import MapKit
 #endif
 
-/// **Track preview with a real basemap** (#294) — a drop-in for `TrackPreviewView`
+/// **Track preview with a real basemap** — a drop-in for `TrackPreviewView`
 /// that draws the route/ride polyline over Apple Maps when there's a network path
 /// and real geometry, and falls back to the grid + parchment placeholder
 /// otherwise (offline, or a track that only kept its normalized shape). The
@@ -16,7 +16,7 @@ import MapKit
 ///
 /// Same call surface as `TrackPreviewView` (style / tag / chrome / markers) so
 /// the swap is mechanical. Waypoint `markers` are unit-space (no lat/lon), so a
-/// preview that carries them stays on the grid — the numbered-pin W1 schematic
+/// preview that carries them stays on the grid — the numbered-pin schematic
 /// isn't a basemap job.
 public struct MapTrackPreviewView: View {
     let preview: TrackPreview?
@@ -75,10 +75,10 @@ public struct MapTrackPreviewView: View {
         ) {
             TrackMapContent(coordinates: coordinates, dotRadius: style.dotRadius)
         }
-        // Standard Apple Maps styling (the constraints rule out reskinning it),
-        // but always the light tile set — the design's field-guide palette is
-        // light throughout, and Maps' dark tiles clash with the parchment
-        // chrome around it regardless of the system appearance.
+        // Standard Apple Maps styling (can't reskin it), but always the light
+        // tile set — the field-guide palette is light throughout, and Maps'
+        // dark tiles clash with the parchment chrome regardless of the system
+        // appearance.
         .preferredColorScheme(.light)
         // The preview never handles gestures — the tap belongs to the card/hero.
         .allowsHitTesting(false)

@@ -3,16 +3,16 @@ import Observation
 import OBCDomain
 import OBCTransport
 
-/// State for the upload sheet (B5) — the bottom sheet that owns a route push
-/// from tap to terminal state, over whichever detail dressing launched it:
+/// State for the upload sheet — the bottom sheet that owns a route push from
+/// tap to terminal state, over whichever detail dressing launched it:
 ///
-///   • `.uploading`   — F, the bar tracking `TransferHandle.progress`
+///   • `.uploading`   — the bar tracking `TransferHandle.progress`
 ///   • `.interrupted` — the link dropped mid-transfer; **Resume** restarts the
 ///                      upload from scratch (uploads restart, not resume — the
 ///                      device discarded its partial)
-///   • `.done`        — F₂, the brief confirm (auto-dismisses, or tap Done)
-///   • `.failed`      — the transfer failed for good (H4 no link, or the
-///                      device rejected the object)
+///   • `.done`        — the brief confirm (auto-dismisses, or tap Done)
+///   • `.failed`      — the transfer failed for good (no link, or the device
+///                      rejected the object)
 ///
 /// The drop signal is `DeviceTransport.state` → `.outOfRange` **or**
 /// `.disconnected` (both are a drop, matching `MainScreenModel`'s sync watch) —
@@ -30,7 +30,7 @@ public final class UploadSheetModel {
 
     /// Pacing knobs, injectable so tests don't wait design-time holds.
     public struct Timing: Sendable {
-        /// How long F₂ holds before the sheet dismisses itself.
+        /// How long the done state holds before the sheet dismisses itself.
         public var doneAutoDismiss: Duration
 
         public init(doneAutoDismiss: Duration = .seconds(2.6)) {
@@ -42,7 +42,7 @@ public final class UploadSheetModel {
 
     public private(set) var phase: Phase = .uploading
     public private(set) var progress: TransferProgress
-    /// Flips when the sheet should go away — a finished cancel, F₂'s Done /
+    /// Flips when the sheet should go away — a finished cancel, done's Done /
     /// auto-dismiss, or Close on a failure. The view observes and dismisses.
     public private(set) var shouldDismiss = false
 
@@ -60,8 +60,8 @@ public final class UploadSheetModel {
     private let timing: Timing
     /// Fires once when the upload completes, carrying the **device-assigned object
     /// id** (nil if the device didn't report one) and the committed payload's
-    /// CRC-32 (the `OnDeviceState` fingerprint) — the E1 landing saves the route
-    /// here ("Uploading saves it too") and records it as on-device, up to date.
+    /// CRC-32 (the `OnDeviceState` fingerprint) — the import landing saves the
+    /// route here ("Uploading saves it too") and records it as on-device, up to date.
     private let onCompleted: (UInt16?, UInt32) -> Void
     @ObservationIgnored private var handle: TransferHandle?
     @ObservationIgnored private var watchers: [Task<Void, Never>] = []
