@@ -533,8 +533,7 @@ public final class MainScreenModel {
     /// A saved planned route whose name matches `name` (case-insensitively) — the
     /// import edge asks so it can offer "replace" instead of a duplicate.
     public func plannedRoute(named name: String) -> PlannedRouteRecord? {
-        let target = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return plannedRecords.values.first { $0.summary.name.lowercased() == target }
+        plannedRecords.values.plannedRoute(named: name)
     }
 
     /// Whether the device holds a copy of this planned route (drives the C1 badge).
