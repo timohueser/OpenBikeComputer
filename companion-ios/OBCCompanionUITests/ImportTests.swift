@@ -74,13 +74,13 @@ final class ImportTests: XCTestCase {
         let app = launch(importSample: "bad")
 
         let alert = app.alerts["Couldn't read that file"]
-        XCTAssertTrue(alert.waitForExistence(timeout: 10), "unsupported-file alert missing")
+        XCTAssertTrue(alert.waitForExistence(timeout: 10), "H5 alert missing")
         XCTAssertTrue(alert.staticTexts["OBC imports GPX and TCX route files. That one looked like something else."].exists,
-                      "alert copy must name the accepted formats")
+                      "H5 copy must name the accepted formats")
         snap(app, "H5-unsupported-file")
 
         alert.buttons["OK"].tap()
-        XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 5), "app must carry on after the alert")
+        XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 5), "app must carry on after H5")
         XCTAssertFalse(app.descendants(matching: .any)["detail.screen"].firstMatch.exists, "nothing must import")
     }
 
@@ -93,21 +93,21 @@ final class ImportTests: XCTestCase {
     func testImportWithNoDeviceShowsH4Framing() {
         let app = launch(scenario: "noDevice", importSample: "gpx")
 
-        XCTAssertTrue(app.staticTexts["Schwarzwald Tour · Tag 2"].waitForExistence(timeout: 10), "import landing must present over the pairing intro")
+        XCTAssertTrue(app.staticTexts["Schwarzwald Tour · Tag 2"].waitForExistence(timeout: 10), "E1 must present over D1")
         // The banner renders title+message as one combined Text — match by fragment.
         XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS 'No device paired yet'"))
                           .firstMatch.waitForExistence(timeout: 5),
-                      "no-device banner missing")
+                      "H4 banner missing")
         XCTAssertTrue(app.buttons["detail.saveToPlanned"].exists)
         XCTAssertTrue(app.buttons["detail.pairDevice"].exists)
-        XCTAssertFalse(app.buttons["detail.upload"].exists, "no-device framing must not offer Upload")
+        XCTAssertFalse(app.buttons["detail.upload"].exists, "H4 must not offer Upload")
         snap(app, "H4-import-no-device")
 
         // Save to Planned returns to where the share interrupted — the pairing intro.
         app.buttons["detail.saveToPlanned"].tap()
         XCTAssertTrue(app.staticTexts["pair.introTitle"].firstMatch.waitForExistence(timeout: 5)
                       || app.buttons["pair.start"].waitForExistence(timeout: 5),
-                      "saving without a device should land back on the pairing intro")
+                      "saving without a device should land back on D1")
     }
 
     /// "Pair a device" keeps the route (saves it) and drops into the scan;
@@ -126,12 +126,12 @@ final class ImportTests: XCTestCase {
         row.tap()
 
         let goToRoutes = app.buttons["pair.goToRoutes"]
-        XCTAssertTrue(goToRoutes.waitForExistence(timeout: 10), "pairing should complete")
+        XCTAssertTrue(goToRoutes.waitForExistence(timeout: 10), "pairing should complete (D4)")
         goToRoutes.tap()
 
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.staticTexts["Schwarzwald Tour · Tag 2"].waitForExistence(timeout: 10),
-                      "the saved route must survive pairing + the device list load")
+                      "the H4-saved route must survive pairing + the device list load")
         snap(app, "C1-after-h4-pairing")
     }
 }

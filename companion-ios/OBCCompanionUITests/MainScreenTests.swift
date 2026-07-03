@@ -43,7 +43,7 @@ final class MainScreenTests: XCTestCase {
         waitForMain(app)
 
         XCTAssertTrue(app.staticTexts["Kettle Moraine Loop"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.staticTexts["62.4 km · 840 m ↑ · 3h 20m"].exists, "planned stat line wrong")
+        XCTAssertTrue(app.staticTexts["62.4 km · 840 m ↑ · 3h 20m"].exists, "C1 stat line wrong")
         snap(app, "C1-main-planned")
 
         app.buttons["Tracked"].tap()
@@ -55,7 +55,7 @@ final class MainScreenTests: XCTestCase {
             NSPredicate(format: "label CONTAINS '31.6 km' AND label CONTAINS 'kph'")
         ).firstMatch
         XCTAssertTrue(statLine.waitForExistence(timeout: 5),
-                      "tracked stat line (date · distance · time · avg) missing")
+                      "C2 tracked stat line (date · distance · time · avg) missing")
         snap(app, "C2-main-tracked")
 
         app.buttons["Planned"].tap()
@@ -83,7 +83,7 @@ final class MainScreenTests: XCTestCase {
 
         search.typeText(" trail zz")
         let noMatches = app.staticTexts["main.noMatches"]
-        XCTAssertTrue(noMatches.waitForExistence(timeout: 5), "no-matches state missing")
+        XCTAssertTrue(noMatches.waitForExistence(timeout: 5), "H6 missing")
         snap(app, "H6-search-no-matches")
 
         app.buttons["Clear search"].tap()
@@ -129,7 +129,7 @@ final class MainScreenTests: XCTestCase {
         card.swipeLeft()
 
         let reveal = app.buttons["Delete"]
-        XCTAssertTrue(reveal.waitForExistence(timeout: 5), "swipe-to-delete action missing")
+        XCTAssertTrue(reveal.waitForExistence(timeout: 5), "H11 swipe action missing")
         snap(app, "H11-swipe-to-delete")
         reveal.tap()
 
@@ -168,7 +168,7 @@ final class MainScreenTests: XCTestCase {
         let toast = app.staticTexts.matching(
             NSPredicate(format: "label CONTAINS 'up to date'")
         ).firstMatch
-        XCTAssertTrue(toast.waitForExistence(timeout: 15), "expected the up-to-date toast")
+        XCTAssertTrue(toast.waitForExistence(timeout: 15), "expected the H9 up-to-date toast")
         XCTAssertFalse(card.exists, "deleted ride resurrected by sync")
         snap(app, "SYNC-after-delete-no-resurrect")
     }
@@ -199,7 +199,7 @@ final class MainScreenTests: XCTestCase {
         let toast = app.staticTexts.matching(
             NSPredicate(format: "label CONTAINS 'up to date'")
         ).firstMatch
-        XCTAssertTrue(toast.waitForExistence(timeout: 10), "up-to-date toast missing")
+        XCTAssertTrue(toast.waitForExistence(timeout: 10), "H9 toast missing")
         snap(app, "H9-up-to-date")
     }
 
@@ -211,7 +211,7 @@ final class MainScreenTests: XCTestCase {
 
         XCTAssertTrue(app.otherElements["disconnectedBanner"].firstMatch.waitForExistence(timeout: 10)
                       || app.staticTexts.containing(NSPredicate(format: "label CONTAINS 'out of range'")).firstMatch.exists,
-                      "disconnected banner missing")
+                      "S4 banner missing")
         XCTAssertTrue(app.staticTexts["Kettle Moraine Loop"].waitForExistence(timeout: 10),
                       "library must stay browsable")
         XCTAssertFalse(app.buttons["topbar.sync"].isEnabled, "sync must dim when unreachable")
@@ -251,7 +251,7 @@ final class MainScreenTests: XCTestCase {
     func testEmptyLibraryShowsS1() {
         let app = launch(scenario: "emptyLibrary")
         waitForMain(app)
-        XCTAssertTrue(app.staticTexts["No planned routes yet"].waitForExistence(timeout: 10), "empty state missing")
+        XCTAssertTrue(app.staticTexts["No planned routes yet"].waitForExistence(timeout: 10), "S1 missing")
         snap(app, "S1-empty-library")
     }
 }

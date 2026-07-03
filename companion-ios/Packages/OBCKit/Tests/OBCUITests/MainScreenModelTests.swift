@@ -253,7 +253,7 @@ final class MainScreenModelTests: XCTestCase {
 
         XCTAssertEqual(model.connection, .outOfRange)
         XCTAssertFalse(model.showsDisconnectedBanner,
-                       "the interruption banner tells the link story — never two banners")
+                       "the H10 banner tells the link story — never two banners")
     }
 
     /// Resume: the same transfer continues from its last committed offset

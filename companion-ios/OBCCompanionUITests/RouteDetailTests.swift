@@ -77,7 +77,7 @@ final class RouteDetailTests: XCTestCase {
         XCTAssertTrue(waypointsRow.waitForExistence(timeout: 5))
         waypointsRow.tap()
 
-        XCTAssertTrue(app.descendants(matching: .any)["waypoints.screen"].firstMatch.waitForExistence(timeout: 5), "waypoints screen missing")
+        XCTAssertTrue(app.descendants(matching: .any)["waypoints.screen"].firstMatch.waitForExistence(timeout: 5), "W1 missing")
         XCTAssertTrue(app.staticTexts["Ottawa Lake trailhead"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Emma Carlin junction"].exists)
         snap(app, "W1-waypoints")
@@ -94,7 +94,7 @@ final class RouteDetailTests: XCTestCase {
 
         app.buttons["detail.rename"].tap()
         let alert = app.alerts["Rename route"]
-        XCTAssertTrue(alert.waitForExistence(timeout: 5), "rename alert missing")
+        XCTAssertTrue(alert.waitForExistence(timeout: 5), "H12 alert missing")
         snap(app, "H12-rename-route")
 
         let field = alert.textFields.firstMatch
@@ -119,7 +119,7 @@ final class RouteDetailTests: XCTestCase {
         app.buttons["detail.delete"].tap()
         // Scoped to the sheet — the inline action shares the "Delete route" label.
         let confirm = app.sheets.buttons["Delete route"]
-        XCTAssertTrue(confirm.waitForExistence(timeout: 5), "delete confirm missing")
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5), "H1 confirm missing")
         snap(app, "H1-delete-from-detail")
         confirm.tap()
 
@@ -151,7 +151,7 @@ final class RouteDetailTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["2:51"].exists, "moving-time stat missing")
         XCTAssertTrue(app.staticTexts["Strava"].exists, "services block missing")
         XCTAssertTrue(app.staticTexts["Komoot"].exists)
-        XCTAssertTrue(app.buttons["detail.rename"].exists, "tracked name must stay editable")
+        XCTAssertTrue(app.buttons["detail.rename"].exists, "E3 name must stay editable")
         snap(app, "E3-ride-detail")
     }
 
@@ -170,12 +170,12 @@ final class RouteDetailTests: XCTestCase {
         card.tap()
 
         let delete = app.buttons["detail.delete"]
-        XCTAssertTrue(delete.waitForExistence(timeout: 5), "tracked delete missing")
+        XCTAssertTrue(delete.waitForExistence(timeout: 5), "E3 delete missing")
         // The actions sit at the end of the scroll, below the services block.
         for _ in 0..<4 where !delete.isHittable { app.swipeUp(velocity: .fast) }
         delete.tap()
         let confirm = app.sheets.buttons["Delete ride"]
-        XCTAssertTrue(confirm.waitForExistence(timeout: 5), "delete confirm missing")
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5), "H1 confirm missing")
         snap(app, "H1-delete-ride-from-detail")
         confirm.tap()
 
@@ -193,7 +193,7 @@ final class RouteDetailTests: XCTestCase {
 
         XCTAssertTrue(app.otherElements["detail.importedFrom"].firstMatch.waitForExistence(timeout: 10)
                       || app.staticTexts["IMPORTED FROM KOMOOT"].waitForExistence(timeout: 5),
-                      "import source banner missing")
+                      "E1 source banner missing")
         XCTAssertTrue(app.staticTexts["Schwarzwald Tour · Tag 2"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["CLIMB"].waitForExistence(timeout: 5), "climb stat missing")
         XCTAssertTrue(app.staticTexts["DESCENT"].waitForExistence(timeout: 5), "descent stat missing")
@@ -201,7 +201,7 @@ final class RouteDetailTests: XCTestCase {
         let waypointsRow = app.buttons["detail.waypoints"]
         XCTAssertTrue(waypointsRow.exists, "waypoints-from-file row missing")
         XCTAssertTrue(app.buttons["detail.saveToPlanned"].exists)
-        XCTAssertTrue(app.buttons["Cancel"].exists, "import landing must keep the Cancel escape")
+        XCTAssertTrue(app.buttons["Cancel"].exists, "E1 must keep the Cancel escape")
         snap(app, "E1-import-landing")
 
         app.buttons["detail.saveToPlanned"].tap()
