@@ -6,7 +6,7 @@
 
 use obc_ble::descriptor::{ObjectType, Op, TransferControl, TransferStatus};
 use obc_ble::transfer::TransferError;
-use obc_ble::{Crc32, Receiver, Sender, StreamSender};
+use obc_ble::{Crc32, Receiver, StreamSender};
 
 /// A deterministic pseudo-random payload of `n` bytes (a route-sized object).
 fn payload(n: usize) -> Vec<u8> {
@@ -137,7 +137,7 @@ fn echo_loopback_round_trips() {
     assert_eq!(rx.outcome().unwrap().status, TransferStatus::Committed);
 }
 
-// ---- Sender (download direction) ----
+// ---- StreamSender (download direction) ----
 
 fn download_request(ty: ObjectType, offset: u32) -> TransferControl {
     TransferControl { op: Op::Download, ty, object_id: 0, total_len: 0, crc32: 0, offset }
@@ -145,19 +145,30 @@ fn download_request(ty: ObjectType, offset: u32) -> TransferControl {
 
 #[test]
 fn download_announces_and_streams() {
+    // The download direction: StreamSender owns the announce + chunk sequencing + close, while the
+    // bytes live outside the core (the board reads them from the SD card, or here from a slice). A
+    // read closure stands in for that storage read — object[position .. position + n].
     let object = payload(500);
-    let mut tx = Sender::new(&download_request(ObjectType::RideList, 0), &object).unwrap();
+    let crc = Crc32::checksum(&object);
+    let read = |at: usize, n: usize| &object[at..at + n];
+    let mut tx = StreamSender::new(&download_request(ObjectType::RideList, 0), object.len() as u32, crc).unwrap();
 
     let announce = tx.announce();
     assert_eq!(announce.op, Op::Download);
     assert_eq!(announce.total_len, 500);
-    assert_eq!(announce.crc32, Crc32::checksum(&object));
+    assert_eq!(announce.crc32, crc);
     assert_eq!(announce.offset, 0);
 
     let mut sent = Vec::new();
-    while let Some(chunk) = tx.next_chunk(244) {
+    loop {
+        let n = tx.next_chunk_len(244);
+        if n == 0 {
+            break;
+        }
+        let chunk = read(tx.position() as usize, n);
         assert!(chunk.len() <= 244);
         sent.extend_from_slice(chunk);
+        tx.advance(n);
     }
     assert_eq!(sent, object);
     assert_eq!(tx.outcome().unwrap().status, TransferStatus::Committed);
@@ -165,53 +176,9 @@ fn download_announces_and_streams() {
 }
 
 #[test]
-fn download_rejects_a_nonzero_offset() {
-    // Downloads restart whole, exactly like uploads (spec §1 principle 4): a non-zero offset is
-    // rejected typed, and an interrupted download is simply re-requested from 0.
-    let object = payload(500);
-    let resume = download_request(ObjectType::Ride, 200);
-    assert_eq!(Sender::new(&resume, &object).unwrap_err(), TransferError::NonZeroOffset);
-}
-
-#[test]
-fn sender_rejects_wrong_op() {
-    let object = payload(100);
-    let upload = TransferControl { op: Op::Upload, ..download_request(ObjectType::Ride, 0) };
-    assert_eq!(Sender::new(&upload, &object).unwrap_err(), TransferError::WrongOp);
-}
-
-// ---- StreamSender (download of a non-resident object, A6) ----
-
-#[test]
-fn stream_sender_matches_sender_byte_for_byte() {
-    // The SD-streamed path must produce the identical wire sequence to the in-RAM Sender: same
-    // announce, same chunk boundaries, same close — only who holds the bytes differs.
-    let object = payload(500);
-    let crc = Crc32::checksum(&object);
-    let req = download_request(ObjectType::Route, 0);
-
-    let mut resident = Sender::new(&req, &object).unwrap();
-    let mut streamed = StreamSender::new(&req, object.len() as u32, crc).unwrap();
-    assert_eq!(streamed.announce(), resident.announce());
-
-    let mut sent = Vec::new();
-    loop {
-        let n = streamed.next_chunk_len(244);
-        if n == 0 {
-            break;
-        }
-        // The board's storage read: object[position .. position + n].
-        let at = streamed.position() as usize;
-        sent.extend_from_slice(&object[at..at + n]);
-        streamed.advance(n);
-        assert_eq!(resident.next_chunk(244).unwrap().len(), n);
-    }
-    assert_eq!(sent, object);
-    assert_eq!(streamed.outcome(), resident.outcome());
-}
-
-#[test]
-fn stream_sender_rejects_wrong_op_and_nonzero_offset() {
+fn download_rejects_wrong_op_and_nonzero_offset() {
+    // Downloads restart whole, exactly like uploads (spec §1 principle 4): a wrong op or a non-zero
+    // offset is rejected typed, and an interrupted download is simply re-requested from 0.
     let upload = TransferControl { op: Op::Upload, ..download_request(ObjectType::Route, 0) };
     assert_eq!(StreamSender::new(&upload, 100, 0).unwrap_err(), TransferError::WrongOp);
     let resume = download_request(ObjectType::Route, 300);
