@@ -46,7 +46,7 @@ impl UnitsScreen {
 
         // The single value row — the current system centred, flanked by left/right arrows to read as
         // "rotate to switch".
-        let area = super::row_rect(0, LIST_TOP + 8, w, 50);
+        let area = super::row_rect(LIST_TOP + 8, w, 50);
         super::row_cursor(&mut cv, area, true, false);
         let midy = area.top_left.y + area.size.height as i32 / 2;
         cv.text(units.name(), Point::new(w / 2, area.top_left.y + (50 - 22) / 2), Font::Body, TextAlign::Center, INK);

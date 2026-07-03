@@ -167,7 +167,7 @@ impl DateTimeScreen {
         let mut y = LIST_TOP + 4;
         for (i, &kind) in rows.iter().enumerate() {
             let rh = kind.height();
-            let area = super::row_rect(i as i32, y, w, rh);
+            let area = super::row_rect(y, w, rh);
             let selected = i == self.selected;
             let editing = if selected { self.editing } else { None };
             super::row_cursor(&mut cv, area, selected, editing.is_some());

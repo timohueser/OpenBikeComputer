@@ -138,7 +138,7 @@ impl StatFieldsScreen {
             }
             let idx = idx as usize;
             let y = LIST_TOP + slot as i32 * ROW_H;
-            let area = super::row_rect(0, y, w, ROW_H - 6);
+            let area = super::row_rect(y, w, ROW_H - 6);
             let selected = idx == self.selected;
 
             if idx == add_row {
