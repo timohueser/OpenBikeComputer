@@ -11,7 +11,7 @@ This page is about *how that works* — the handful of abstractions that make a 
 
 ## A screen is a value, not a widget tree
 
-The core idea: each screen is an enum variant wrapping a little struct of typed state, and the set of screens is one `enum Screen` dispatched by `match`. There are no trait objects and no heap — adding a screen is a **local edit**.
+The core idea: each screen is an enum variant wrapping a little struct of typed state, and the set of screens is one `enum Screen` dispatched by `match`. The enum, its `handle`/`draw` delegation matches, and each screen's classification are all generated from a single declarative `screens!` table — one row per screen — so there are no trait objects, no heap, and no second list to keep in sync: adding a screen is **one table row plus its module**.
 
 <figure class="fig">
 <svg viewBox="0 0 720 300" role="img" aria-label="On the left, the Screen enum lists its variants: Home, Map, Statistics, RideControl, Menu, RouteMenu, RouteSwap, plus the Settings tree. The Map variant points to its module on the right, which holds typed state, a handle method returning a Transition, and a draw method emitting pixels. A tag notes static match dispatch, no dyn and no allocation.">
@@ -52,20 +52,29 @@ The core idea: each screen is an enum variant wrapping a little struct of typed 
   </g>
 
   <text class="d-tag" x="324" y="240">dispatched by match — static, zero-alloc</text>
-  <text class="d-sub" x="324" y="258" style="font-size:11px">add a screen = 1 module + 1 enum variant + 3 match arms</text>
+  <text class="d-sub" x="324" y="258" style="font-size:11px">add a screen = 1 module + 1 row in the screens! table</text>
 </svg>
-<figcaption>Every screen owns its state by value and answers two calls: <b>handle</b> (react to a gesture) and <b>draw</b> (paint). The <code>Screen</code> enum forwards both through a <code>match</code> — static dispatch, no <code>dyn</code>, no allocation. There's no central registry to update and no widget tree to retain between frames.</figcaption>
+<figcaption>Every screen owns its state by value and answers two calls: <b>handle</b> (react to a gesture) and <b>draw</b> (paint). The <code>Screen</code> enum forwards both through a <code>match</code> — static dispatch, no <code>dyn</code>, no allocation. The enum and its delegation matches expand from one <code>screens!</code> table, and there's no widget tree to retain between frames.</figcaption>
 </figure>
 
 ```rust
-pub enum Screen {
-    Home(HomeScreen), Map(MapScreen), Statistics(StatisticsScreen),
-    RideControl(RideControl), Menu(MenuScreen), RouteMenu(RouteMenuScreen), RouteSwap(RouteSwapScreen),
+// The one screen table. Each row declares a variant, its state type, and its kind; a dumb local
+// macro expands it into the Screen enum, the handle/draw delegation matches, and Screen::kind().
+screens! {
+    Home(HomeScreen) => Nav,
+    Map(MapScreen) => Riding,
+    Statistics(StatisticsScreen) => Riding,
+    RideControl(RideControl) => Overlay,   // the pause menu — draws over the still-visible map
+    Menu(MenuScreen) => Nav,
+    RouteMenu(RouteMenuScreen) => Nav,
+    RouteSwap(RouteSwapScreen) => Nav,
     // The Settings tree — a list plus one screen each for Date & Time, Units, Power, Reset, and
-    // Stats (which opens onto Fields → AddField, the stat-grid panel manager).
-    Settings(SettingsScreen), DateTime(DateTimeScreen), Units(UnitsScreen),
-    Stats(StatsScreen), StatFields(StatFieldsScreen), AddField(AddFieldScreen),
-    Power(PowerScreen), Reset(ResetScreen),
+    // Stats (which opens onto Fields → AddField, the stat-grid panel manager). The `Settings`
+    // kind is what holds the debounced settings save while one of these is on top.
+    Settings(SettingsScreen) => Settings,  DateTime(DateTimeScreen) => Settings,
+    Units(UnitsScreen) => Settings,        Stats(StatsScreen) => Settings,
+    StatFields(StatFieldsScreen) => Settings, AddField(AddFieldScreen) => Settings,
+    Power(PowerScreen) => Settings,        Reset(ResetScreen) => Settings,
 }
 
 // Each variant is a module with typed state and exactly two methods:
