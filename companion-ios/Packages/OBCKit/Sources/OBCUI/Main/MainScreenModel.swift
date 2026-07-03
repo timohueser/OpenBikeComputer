@@ -18,16 +18,19 @@ import OBCTransport
 /// granularity** — rides that fully landed stay, the rest are re-sent whole
 /// (transfers restart, not resume — the spec's principle 4).
 ///
-/// **The lists' two sources of truth (#289):**
-/// - **Planned routes are library-first.** The list shows exactly the phone's
-///   saved routes; `listRoutes()` (the device catalog, device-namespace ids) is
-///   consulted *only* to reconcile each record's `deviceObjectID` — lighting
-///   and clearing the C1 "on device" badge — never to add rows. A route that
-///   exists only on the device (another phone's upload, a side-loaded file)
-///   isn't the app's to manage and never appears.
-/// - **Rides are device-first**: the device's list merged over the library's
-///   archive (the phone keeps rides the device no longer holds), minus
-///   phone-side tombstones.
+/// **Both lists are library-first (#289, extended to rides in #296):**
+/// - **Planned routes** show exactly the phone's saved routes; `listRoutes()`
+///   (the device catalog, device-namespace ids) is consulted *only* to reconcile
+///   each record's `deviceObjectID` — lighting and clearing the C1 "on device"
+///   badge — never to add rows. A route that exists only on the device (another
+///   phone's upload, a side-loaded file) isn't the app's to manage and never
+///   appears.
+/// - **Tracked rides** show exactly the rides the phone has **synced** (its
+///   library), newest first, minus phone-side tombstones. A ride sitting on the
+///   device but not yet downloaded is *not* a row — it has no tracklog or
+///   preview yet, only summary stats, and a half-empty card is worse than none.
+///   `listRides()` drives the *sync* (what to fetch on Sync), never the rows;
+///   nothing downloads until the user presses Sync.
 ///
 /// That split is also why S4 degrades to a banner over browsable content
 /// instead of emptying, and why an H4 import survives a relaunch.
@@ -209,15 +212,15 @@ public final class MainScreenModel {
         loadState = .loading
         loadTask = Task { [transport] in
             do {
-                async let routesRead = transport.listRoutes()
-                async let ridesRead = transport.listRides()
-                let (deviceRoutes, deviceRides) = try await (routesRead, ridesRead)
+                // Only the route catalog is read here: Planned reconciles its
+                // on-device badges against it, and Tracked is library-first
+                // (#296) so its rows come from the local library — the device's
+                // rides are pulled only by Sync, never on a plain (re)load.
+                let deviceRoutes = try await transport.listRoutes()
                 guard !Task.isCancelled else { return }
-                // Planned stays library-only (#289) — the device catalog only
-                // reconciles each record's on-device link (badge on AND off).
                 reconcileOnDevice(with: deviceRoutes)
                 routes = plannedList()
-                rides = merged(deviceRides: deviceRides)
+                rides = trackedList()
                 loadState = .loaded
             } catch {
                 guard !Task.isCancelled else { return }
@@ -298,7 +301,6 @@ public final class MainScreenModel {
             // Canceled = a newer sync superseded this one and owns the shared
             // state now — touch nothing (same rule at every check below).
             guard !Task.isCancelled else { return }
-            rides = merged(deviceRides: onDevice)
             loadState = .loaded
 
             let fresh = onDevice.filter { !syncedRideIDs.contains($0.id) }
@@ -356,10 +358,9 @@ public final class MainScreenModel {
                 // A hard transfer failure — fall through; `landed` keeps the
                 // partial batch either way.
             }
-            // Refresh the list from the enriched records so a ride that just
-            // landed swaps its placeholder glyph for the downloaded track preview
-            // this session, not only after the next reload.
-            if landed > 0 { rides = merged(deviceRides: onDevice) }
+            // Newly synced rides are now in the library — surface them this
+            // session, not only after the next reload.
+            if landed > 0 { rides = trackedList() }
             // The transfer is over one way or another: the watch has done its
             // job (leaving it running would fire H10 on a later, harmless drop).
             dropWatch.cancel()
@@ -544,25 +545,18 @@ public final class MainScreenModel {
 
     // MARK: Helpers
 
-    /// The Tracked list: the device's rides plus library-synced rides the
-    /// device no longer holds — the phone is the archive, so a ride outlives
-    /// its device-side copy. Rides deleted on the phone are tombstoned out:
-    /// the device still lists them (its copy stays), but they must not
-    /// resurrect here.
-    private func merged(deviceRides: [RideSummary]) -> [RideSummary] {
-        // The `rideList` entry (§7.4) is canonical for the stats but carries no
-        // geometry, so prefer the downloaded record's summary once we have it —
-        // same stats, but with the track preview the payload contributed (A7).
-        // Its absence is exactly why an un-synced on-device ride draws the
-        // placeholder glyph until its first sync lands.
-        let kept = deviceRides
+    /// The Tracked list: exactly the rides the phone has **synced** (its
+    /// library), newest first — library-first, like Planned (#289/#296). A ride
+    /// on the device but not yet downloaded is deliberately *not* here: it has
+    /// only summary stats, no tracklog or preview, and a half-empty card is
+    /// worse than none (the device's `listRides()` drives Sync, never the rows).
+    /// Deleted rides are already gone from `rideRecords`; the tombstone filter is
+    /// belt-and-suspenders.
+    private func trackedList() -> [RideSummary] {
+        rideRecords.values
+            .map(\.summary)
             .filter { !deletedRideIDs.contains($0.id) }
-            .map { rideRecords[$0.id]?.summary ?? $0 }
-        let onDevice = Set(kept.map(\.id))
-        let archived = rideRecords.values.map(\.summary)
-            .filter { !onDevice.contains($0.id) }
             .sorted { $0.date > $1.date }
-        return kept + archived
     }
 
     private func filtered<T>(_ items: [T], by name: KeyPath<T, String>) -> [T] {

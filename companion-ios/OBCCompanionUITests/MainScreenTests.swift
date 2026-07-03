@@ -48,7 +48,10 @@ final class MainScreenTests: XCTestCase {
         snap(app, "C1-main-planned")
 
         app.buttons["Tracked"].tap()
-        XCTAssertTrue(app.staticTexts["Sunday Coffee Spin"].waitForExistence(timeout: 5))
+        // Tracked is library-first (#296): rides show only after a sync pulls
+        // them in — an un-synced device ride is never a half-empty row.
+        app.buttons["topbar.sync"].tap()
+        XCTAssertTrue(app.staticTexts["Sunday Coffee Spin"].waitForExistence(timeout: 30))
         let statLine = app.staticTexts.matching(
             NSPredicate(format: "label CONTAINS '31.6 km' AND label CONTAINS 'kph'")
         ).firstMatch
@@ -138,15 +141,20 @@ final class MainScreenTests: XCTestCase {
     }
 
     /// A deleted ride must stay deleted: the device still lists it (its copy
-    /// stays on the SD card), but sync must neither re-download nor re-list it.
+    /// stays on the SD card), but a later sync must neither re-download nor
+    /// re-list it. Tracked is library-first (#296), so the ride is synced in
+    /// first, then deleted, then a re-sync must leave it gone.
     @MainActor
     func testDeletedRideDoesNotResurrectOnSync() {
         let app = launch(scenario: "happyPath")
         waitForMain(app)
         app.buttons["Tracked"].tap()
 
+        // Sync pulls the rides in (library-first).
+        app.buttons["topbar.sync"].tap()
         let card = app.buttons["main.card.ride-sunday-coffee-spin"]
-        XCTAssertTrue(card.waitForExistence(timeout: 10))
+        XCTAssertTrue(card.waitForExistence(timeout: 30))
+
         card.swipeLeft()
         let reveal = app.buttons["Delete"]
         XCTAssertTrue(reveal.waitForExistence(timeout: 5))
@@ -155,12 +163,13 @@ final class MainScreenTests: XCTestCase {
         let gone = NSPredicate(format: "exists == false")
         wait(for: [expectation(for: gone, evaluatedWith: card)], timeout: 5)
 
+        // A second sync: nothing new (the deleted ride stays tombstoned, its
+        // SD-card copy untouched) — it must not come back.
         app.buttons["topbar.sync"].tap()
-        // The remaining three download ("3 of 3" → confirm line) — and the
-        // deleted ride must not come back with them.
-        let line = app.descendants(matching: .any)["main.syncLine"].firstMatch
-        let confirmed = NSPredicate(format: "label CONTAINS 'Synced 3 new rides just now'")
-        wait(for: [expectation(for: confirmed, evaluatedWith: line)], timeout: 30)
+        let toast = app.staticTexts.matching(
+            NSPredicate(format: "label CONTAINS 'up to date'")
+        ).firstMatch
+        XCTAssertTrue(toast.waitForExistence(timeout: 15), "expected the H9 up-to-date toast")
         XCTAssertFalse(card.exists, "deleted ride resurrected by sync")
         snap(app, "SYNC-after-delete-no-resurrect")
     }
@@ -172,8 +181,8 @@ final class MainScreenTests: XCTestCase {
         let app = launch(scenario: "happyPath")
         waitForMain(app)
         app.buttons["Tracked"].tap()
-        XCTAssertTrue(app.staticTexts["Sunday Coffee Spin"].waitForExistence(timeout: 10))
-
+        // Library-first (#296): no rows until the first sync — that first sync
+        // is exactly what this test drives.
         let sync = app.buttons["topbar.sync"]
         XCTAssertTrue(sync.isEnabled)
         sync.tap()

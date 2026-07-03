@@ -80,6 +80,18 @@ final class MainScreenModelTests: XCTestCase {
         await waitFor("library load") { model.loadState == .loaded }
     }
 
+    /// Load, then pull the device's rides in — the Tracked list is library-first
+    /// (#296), so a ride only becomes a row once it's synced. Tests that assert
+    /// on ride rows start from here. Waits for a real post-sync marker (never the
+    /// pre-sync `.idle`, which would race the async sync task), then for it to
+    /// settle back to idle.
+    private func startSynced(_ model: MainScreenModel) async {
+        await startLoaded(model)
+        model.sync()
+        await waitFor("sync completes") { model.syncState == .done || model.upToDateToastVisible }
+        await waitFor("sync settles") { model.syncState == .idle && model.syncProgress == nil }
+    }
+
     // MARK: Lists + device cluster
 
     func testLoadPopulatesListsAndIdentityFromFixtures() async {
@@ -91,7 +103,11 @@ final class MainScreenModelTests: XCTestCase {
         // The badge reconcile: fixtures the device holds a copy of light up.
         XCTAssertTrue(model.isUploaded(RouteID("kettle-moraine-loop")))
         XCTAssertFalse(model.isUploaded(RouteID("blue-mounds-backroads")))
-        XCTAssertEqual(model.rides.count, 4)
+        // Tracked is library-first (#296): the device's rides aren't rows until
+        // they're synced — a plain load leaves the list empty.
+        XCTAssertTrue(model.rides.isEmpty)
+        model.sync()
+        await waitFor("rides synced in") { model.rides.count == 4 }
         XCTAssertEqual(model.rides[1].name, "Sunday Coffee Spin")
         await waitFor("device identity") { model.deviceName == "Trailhead" }
         await waitFor("battery replay") { model.battery == 82 }
@@ -132,7 +148,7 @@ final class MainScreenModelTests: XCTestCase {
 
     func testSearchFiltersBothTabsCaseInsensitively() async {
         let (model, _) = makeModel(.happyPath)
-        await startLoaded(model)
+        await startSynced(model)   // Tracked is library-first: sync so rides exist to filter
 
         model.searchText = "sugar"
         XCTAssertEqual(model.filteredRoutes.map(\.name), ["Sugar River Trail"])
@@ -315,11 +331,10 @@ final class MainScreenModelTests: XCTestCase {
         XCTAssertEqual(span ?? 0, 10_260, accuracy: 1)
     }
 
-    /// The real device's `rideList` (§7.4) carries no geometry, so an on-device
-    /// ride's *displayed* summary must pick the track preview up from the
-    /// downloaded payload once it lands — otherwise the detail/card draws the
-    /// placeholder glyph forever (the visible A7 bug: correct stats, no track).
-    /// Guards `merged` preferring the enriched record + the post-sync list refresh.
+    /// Library-first tracked (#296): an un-synced device ride isn't a row at all;
+    /// once synced, its row carries the track preview the downloaded payload built
+    /// — not the empty §7.4 list summary — so the card/detail never draws the
+    /// placeholder glyph for a ride the phone actually holds.
     ///
     /// The default mock `listRides` returns fixture summaries that already carry a
     /// preview (richer than the wire), so this test injects a ride shaped like the
@@ -350,21 +365,19 @@ final class MainScreenModelTests: XCTestCase {
 
         await startLoaded(model)
 
-        // Before syncing, the ride is listed from the device — no geometry, so the
-        // preview is absent and the view would draw the placeholder glyph.
-        let beforeSync = model.rides.first { $0.id == RideID("42") }
-        XCTAssertNotNil(beforeSync, "the ride is listed from the device pre-sync")
-        XCTAssertNil(beforeSync?.trackPreview, "a §7.4 list entry carries no geometry")
+        // Library-first: an un-synced device ride is not a row yet (no half-empty
+        // card of stats-without-track).
+        XCTAssertNil(model.rides.first { $0.id == RideID("42") },
+                     "an un-synced device ride isn't listed")
 
         model.sync()
         await waitFor("sync done") { model.syncState == .done }
 
-        // The ride stays on the device, so it's still served from the list — but now
-        // its displayed summary must carry the preview the downloaded payload built.
+        // Synced → now a row, carrying the preview the downloaded payload built.
         let after = model.rides.first { $0.id == RideID("42") }
-        XCTAssertNotNil(after, "the ride is still listed (it stays on the device)")
+        XCTAssertNotNil(after, "the synced ride is now a row")
         XCTAssertFalse(after?.trackPreview?.points.isEmpty ?? true,
-                       "a synced on-device ride shows the downloaded track, not the placeholder")
+                       "a synced ride shows the downloaded track, not the placeholder")
     }
 
     func testSyncNoOpsWhenUnreachable() async {
@@ -398,24 +411,25 @@ final class MainScreenModelTests: XCTestCase {
 
     func testDeleteRideRemovesLocallyAndStaysOutOfNewCounts() async {
         let (model, _) = makeModel(.happyPath)
-        await startLoaded(model)
+        await startSynced(model)
+        XCTAssertEqual(model.rides.count, 4)
 
         let id = model.rides[0].id
         model.deleteRide(id)
         XCTAssertEqual(model.rides.count, 3)
 
-        // The deleted ride must not come back as a "new" sync count — and the
-        // sync's list merge must not resurrect it (the device still lists it;
-        // its SD-card copy is untouched by design).
+        // The deleted ride must not come back as a "new" sync count — its id
+        // stays marked synced, so a re-sync finds nothing fresh (H9), and it
+        // never re-lists (the device's SD-card copy is untouched by design).
         model.sync()
-        await waitFor("sync done") { model.syncState == .done }
-        XCTAssertEqual(model.lastSyncCount, 3)
+        await waitFor("re-sync settles") { model.upToDateToastVisible || model.syncState == .done }
         XCTAssertFalse(model.rides.contains { $0.id == id }, "deleted ride resurrected by sync")
         XCTAssertEqual(model.rides.count, 3)
 
         model.reload()
         await waitFor("reload") { model.loadState == .loaded }
         XCTAssertFalse(model.rides.contains { $0.id == id }, "deleted ride resurrected by reload")
+        XCTAssertEqual(model.rides.count, 3)
     }
 
     /// The tombstone persists: a ride deleted on the phone stays gone across a
@@ -423,7 +437,7 @@ final class MainScreenModelTests: XCTestCase {
     func testDeletedRideStaysGoneAcrossRelaunch() async {
         let library = InMemoryLibraryStore()
         let (first, _) = makeModel(.happyPath, library: library)
-        await startLoaded(first)
+        await startSynced(first)
         let id = first.rides[0].id
         first.deleteRide(id)
 
@@ -442,7 +456,7 @@ final class MainScreenModelTests: XCTestCase {
 
     func testRenameUpdatesTheLists() async {
         let (model, _) = makeModel(.happyPath)
-        await startLoaded(model)
+        await startSynced(model)
 
         model.renameRoute(model.routes[0].id, to: "Kettle Gravel Day")
         XCTAssertEqual(model.routes[0].name, "Kettle Gravel Day")
