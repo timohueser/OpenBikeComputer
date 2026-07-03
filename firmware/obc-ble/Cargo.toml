@@ -3,7 +3,7 @@ name = "obc-ble"
 version = "0.1.0"
 edition = "2021"
 publish = false # device firmware support crate — not published to crates.io
-description = "no_std S0 BLE data-plane core (obc-ble-interface-spec.md): the transferControl / status descriptor codecs, CRC-32/IEEE, and the whole-object transfer state machine (Receiver / Sender). Radio-free and host-tested; the nRF54L board crate drives the CoC bytes through it, and the shared protocol-vectors/ fixtures pin it to the Swift side."
+description = "no_std S0 BLE data-plane core (obc-ble-interface-spec.md): the transferControl / status descriptor codecs, CRC-32/IEEE, and the whole-object transfer state machine (Receiver / StreamSender). Radio-free and host-tested; the nRF54L board crate drives the CoC bytes through it, and the shared protocol-vectors/ fixtures pin it to the Swift side."
 
 # no_std, no alloc, no radio types — a pure codec + state-machine core the board crate
 # (obc-fw-nrf54l, behind its `ble` feature) links against. Kept a workspace member so

@@ -14,8 +14,8 @@
 //!   freeze pins — there is **no per-chunk header on the CoC**.
 //! - **Data plane** (L2CAP CoC, raw bytes): the channel carries exactly the object's payload bytes.
 //!   [`Receiver`] sinks them with a running [`Crc32`] and verifies **one** whole-object CRC at
-//!   commit; [`Sender`] streams an object out the same way. Both are offset-resumable and
-//!   cancellable, and neither buffers the whole object — the RAM-limited MCU CRCs as it writes.
+//!   commit; [`StreamSender`] streams an object out the same way. Both restart rather than resume,
+//!   and neither buffers the whole object — the RAM-limited MCU CRCs as it writes.
 //!
 //! The board crate (`obc-fw-nrf54l`, `ble` feature) owns the trouble-host `L2capChannel` and the
 //! GATT attribute table; it decodes writes and encodes notifications through `descriptor`, and
@@ -37,7 +37,7 @@ pub use descriptor::{
     StoreChanged, TransferControl, TransferResult, TransferStatus,
 };
 pub use list::{ListHeader, RideListEntry, RouteListEntry, LIST_ENTRY_LEN};
-pub use transfer::{Receiver, ReceiverError, Sender, StreamSender, TransferError};
+pub use transfer::{Receiver, StreamSender, TransferError};
 
 /// The protocol version this crate implements (spec §1). The board serves it on the
 /// `protocolVersion` characteristic; the app reads it on connect and stops on a mismatch.
