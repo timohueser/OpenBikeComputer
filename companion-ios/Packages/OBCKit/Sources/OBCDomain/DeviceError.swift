@@ -25,6 +25,10 @@ public enum DeviceError: Error, Equatable, Sendable {
     case deviceNotFound
     /// The L2CAP CoC channel could not be opened (PSM read or open failed).
     case channelOpenFailed
+    /// LESC pairing didn't complete — the passkey was declined/wrong, or the
+    /// encrypted link the gated characteristics require was refused (firmware
+    /// `A8`). Drives the D5 "pairing didn't finish" state.
+    case pairingFailed
     /// A control-plane read failed.
     case readFailed
     /// A control-plane write failed (e.g. `writeConfig`).
