@@ -75,6 +75,11 @@ public struct MapTrackPreviewView: View {
         ) {
             TrackMapContent(coordinates: coordinates, dotRadius: style.dotRadius)
         }
+        // Standard Apple Maps styling (the constraints rule out reskinning it),
+        // but always the light tile set — the design's field-guide palette is
+        // light throughout, and Maps' dark tiles clash with the parchment
+        // chrome around it regardless of the system appearance.
+        .preferredColorScheme(.light)
         // The preview never handles gestures — the tap belongs to the card/hero.
         .allowsHitTesting(false)
         .overlay(alignment: .topLeading) {

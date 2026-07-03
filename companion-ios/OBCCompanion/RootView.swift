@@ -210,6 +210,9 @@ struct RootView: View {
                 RouteDetailScreen(
                     transport: transport,
                     dressing: .tracked(ride),
+                    // The full tracklog (#294) — the interactive map draws this,
+                    // never the ride card's downsampled preview.
+                    rideGeometry: mainModel.rideGeometry(for: id),
                     deviceName: mainModel.deviceName,
                     // Phone-side only — the ride stays on the device's card.
                     onDelete: {
@@ -417,6 +420,7 @@ private struct RouteDetailScreen: View {
         dressing: RouteDetailModel.Dressing,
         preloadedDetail: RouteDetail? = nil,
         plannedGeometry: ImportedRoute? = nil,
+        rideGeometry: [Coordinate]? = nil,
         deviceObjectID: UInt16? = nil,
         uploadedCRC32: UInt32? = nil,
         deviceName: String,
@@ -427,7 +431,8 @@ private struct RouteDetailScreen: View {
         _model = State(initialValue: RouteDetailModel(
             transport: transport, dressing: dressing,
             preloadedDetail: preloadedDetail, plannedGeometry: plannedGeometry,
-            deviceObjectID: deviceObjectID, uploadedCRC32: uploadedCRC32
+            deviceObjectID: deviceObjectID, uploadedCRC32: uploadedCRC32,
+            rideGeometry: rideGeometry
         ))
         self.transport = transport
         self.deviceName = deviceName
