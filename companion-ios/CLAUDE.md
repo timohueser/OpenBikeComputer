@@ -59,6 +59,8 @@ cd companion-ios && xcodegen generate      # .xcodeproj is gitignored
 ```bash
 cd companion-ios/Packages/OBCKit && swift test
 ```
+CI (the repo's `ci.yml`) runs this same `swift test` plus a simulator app build
+(Debug + Release mock-seam check) on every PR touching `companion-ios/**`.
 
 **App build/run — via XcodeBuildMCP** (preferred for agents). Set session
 defaults once, then the build tools take no path args:

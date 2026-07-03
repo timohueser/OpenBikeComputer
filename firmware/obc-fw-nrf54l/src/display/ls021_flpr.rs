@@ -23,10 +23,10 @@ impl DisplayDriver for Ls021Flpr<'_> {
         Ls021Flpr::fb_mut(self)
     }
 
-    fn present(&mut self) -> bool {
-        // Self-diffing whole-frame present: push only the rows that changed since the last present. No
-        // bulge to clip — the map plane passes the live span via `present_within` directly.
-        self.present_within(None)
+    fn present(&mut self, exclude: Option<(u16, u16)>) -> bool {
+        // Self-diffing present: push only the rows that changed since the last present, going around
+        // a live bulge's rows (`exclude`) so the map plane's overlay composite owns them.
+        self.present_within(exclude)
     }
 
     /// Re-present the overlay rectangle's **rows** with the bulge composited: the LS021

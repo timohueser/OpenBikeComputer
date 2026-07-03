@@ -29,4 +29,6 @@ user_config.json
 *.gpx
 # ...except the deterministic source the protocol-vector route fixtures regenerate from.
 !firmware/obc-vectors/src/route-source.gpx
+# ...and the iOS companion's bundled GPX import fixture (three OBCKit tests load it).
+!companion-ios/Packages/OBCKit/Sources/OBCMock/Fixtures/sample-import.gpx
 project/
