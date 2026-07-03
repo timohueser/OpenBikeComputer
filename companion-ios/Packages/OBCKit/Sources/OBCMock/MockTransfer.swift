@@ -7,12 +7,15 @@ import OBCTransport
 /// emits `TransferProgress` ticks paced by `throughputBytesPerSec`, so a progress bar
 /// moves realistically with **no wire protocol** (the mock's realism comes from
 /// timing + faults, per the issue). An actor so `cancel()` / `resume()` and the pump
-/// loop don't race — mirroring `BLEChannel`'s `Uploader`.
+/// loop don't race.
 ///
-/// Offset-resume matches the real path: a **drop** stops with the stream *open* at the
-/// last committed offset (so `resume()` continues into it); a **cancel** finishes the
-/// stream. A drop also toggles the link `.outOfRange` (the realistic, observable cause
-/// behind H10) and `resume()` restores `.connected`.
+/// Restart semantics match the real path (spec §1 principle 4 — transfers restart,
+/// not resume): a **drop** stops with the stream *open* and toggles the link
+/// `.outOfRange` (the realistic, observable cause behind F-interrupted/H10);
+/// `resume()` restores the link and **starts over** — from byte 0 for a single
+/// upload, or from the last fully-landed ride of a download batch (whole rides are
+/// the batch's elementary unit; a partially-transferred ride is re-sent whole).
+/// A **cancel** finishes the stream terminally.
 actor MockTransfer {
     /// One ride inside a download batch — `byteCount` bytes of this batch belong to
     /// ride `id` (pacing only). When the pump's committed count crosses a segment's
@@ -72,7 +75,7 @@ actor MockTransfer {
         while committed < total {
             if canceled { break }
 
-            // Armed drop point: stop with the stream open so resume() can continue.
+            // Armed drop point: stop with the stream open so resume() can restart.
             if let dropOffset, !didDrop, committed >= dropOffset {
                 didDrop = true
                 running = false
@@ -86,7 +89,7 @@ actor MockTransfer {
             if canceled { break }
 
             committed += step
-            progress.yield(TransferProgress(bytesDone: committed, total: total, offset: committed))
+            progress.yield(TransferProgress(bytesDone: committed, total: total))
             yieldLandedRides()
         }
 
@@ -99,17 +102,20 @@ actor MockTransfer {
         if !running { complete() }  // if the pump already parked (post-drop), finish now
     }
 
+    /// Restore the link and restart (spec §1 principle 4): rides that fully landed
+    /// stay landed; everything past the last segment boundary — or the whole object
+    /// for a single upload — is re-sent from its start. `didDrop` stays set so the
+    /// (one-time) drop point won't re-trigger on the second pass.
     func resume() async {
         guard !canceled, !finished, committed < total else { return }
-        // `didDrop` stays set so the pump won't re-trigger the (one-time) drop point;
-        // just restore the link and continue from the last committed offset.
+        committed = segments.prefix(nextSegment).reduce(0) { $0 + $1.byteCount }
         if didDrop { linkChange(.connected) }
         await pump()
     }
 
     /// Yield every ride whose bytes are now fully committed. A drop stops
     /// *between* rides landing, so partial batches match H10 exactly: what was
-    /// yielded stays, resume lands the rest.
+    /// yielded stays, a restart lands the rest.
     private func yieldLandedRides() {
         var boundary = segments.prefix(nextSegment).reduce(0) { $0 + $1.byteCount }
         while nextSegment < segments.count {

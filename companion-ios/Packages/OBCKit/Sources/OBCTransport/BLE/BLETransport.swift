@@ -8,13 +8,16 @@ import OBCDomain
 /// L2CAP CoC, and maps the semantic protocol onto GATT reads/writes/notifies +
 /// the `BLEChannel` byte layer.
 ///
-/// > **Real path gated on firmware `A4`/`A5` (+ `A8` for bonding).** The connection
-/// > lifecycle and the SIG-standard reads (DIS/BAS) are wired for bring-up but are
-/// > **not yet hardware-validated** — no device advertises the service or CoC PSM
-/// > until Track-A lands. The custom UUIDs and payload layouts are **pinned by
-/// > firmware S0** (`obc-ble-interface-spec.md`); the framing/codec layer beneath
-/// > (`BLEChannel`, the descriptors, the codecs) is fully host-tested, including
-/// > against the shared `protocol-vectors/` fixtures.
+/// Route/ride ids on this transport are **device-namespace**: a `RouteID`/`RideID`
+/// whose `rawValue` is the decimal object id from the device's list objects
+/// (spec §4.1). The app's library ids never cross this boundary — the link between
+/// a library route and its device copy is the persisted `deviceObjectID`.
+///
+/// Transfer discipline (spec §4.1/§4.2): **one transfer at a time** — every CoC
+/// exchange (upload or download) holds the transport's transfer slot, writes its
+/// descriptor only after the previous exchange's result landed, and treats the
+/// device's closing `transferResult` as the *only* success signal. Interrupted
+/// transfers **restart, not resume** (§1 principle 4).
 ///
 /// All mutable state is confined to a single serial `queue` (the CoreBluetooth
 /// callback queue); async methods hop onto it and register continuations that the
@@ -30,7 +33,12 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
 
     private var peripheral: CBPeripheral?
     private var characteristics: [CBUUID: CBCharacteristic] = [:]
+    /// The live CoC byte pipe (`nil` until opened, or after a teardown). The
+    /// `BLEChannel` wrapper is rebuilt around it on every (re)open.
+    private var byteChannel: L2CAPByteChannel?
     private var bleChannel: BLEChannel?
+    private var openingChannel = false
+    private var channelWaiters: [CheckedContinuation<BLEChannel, Error>] = []
 
     // Outstanding operations (all touched only on `queue`).
     private var connectContinuation: CheckedContinuation<Void, Error>?
@@ -40,12 +48,19 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
 
     // Device → app notifications, buffered so a waiter that registers just after a
     // notification arrives still sees it (no race with the write that provokes it) —
-    // the same discipline the EchoHarness uses to drive this flow on glass. Cleared
-    // on disconnect; a hung in-flight download surfaces as the dropped CoC channel.
+    // the same discipline the EchoHarness uses to drive this flow on glass. Only
+    // solicited messages (transfer/command results) are buffered — unsolicited ones
+    // (storeChanged) must not pile up for the session's life. Waiters fail and
+    // buffers clear on disconnect.
     private var pendingStatuses: [StatusMessage] = []
-    private var statusWaiters: [(pred: @Sendable (StatusMessage) -> Bool, cont: CheckedContinuation<StatusMessage, Never>)] = []
+    private var statusWaiters: [(pred: @Sendable (StatusMessage) -> Bool, cont: CheckedContinuation<StatusMessage, Error>)] = []
     private var pendingAnnounces: [TransferControl] = []
-    private var announceWaiter: CheckedContinuation<TransferControl, Never>?
+    private var announceWaiter: CheckedContinuation<TransferControl, Error>?
+
+    // The one-transfer-at-a-time gate (spec §4.1) — reloads can't interleave a
+    // list download with a running upload and cross their status notifications.
+    private var transferBusy = false
+    private var transferWaiters: [CheckedContinuation<Void, Never>] = []
 
     public override init() {
         super.init()
@@ -103,23 +118,25 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     }
 
     public func readDiagnostics() async throws -> Data {
-        // Diagnostics are a CoC object (type 4, spec §7.5); the characteristic slot
-        // is reserved. The object download lands with A5 bring-up.
-        throw DeviceError.readFailed
+        // Diagnostics are a CoC object (type 4, spec §7.5); the device serves it
+        // from A7 — until then it answers a typed reject, which throws here.
+        try await downloadObject(type: .diagnostics, objectID: 0)
     }
 
     public func deleteRoute(_ id: RouteID) async throws {
         // `deleteObject` (cmd 1): `cmd u8 · type u8 · object_id u16 LE` — spec §4.4.
-        // The commandResult status notification is consumed at A4 bring-up.
-        let objectID = UInt16(id.rawValue) ?? 0
+        // `id` is device-namespace (a decimal object id from `listRoutes`).
+        guard let objectID = UInt16(id.rawValue) else { throw DeviceError.writeFailed }
         let payload = Data([1, ObjectType.route.rawValue, UInt8(objectID & 0xFF), UInt8(objectID >> 8)])
+        clearPendingStatuses()
         try await write(payload, to: GATT.command)
+        guard try await nextCommandResult().status == .ok else { throw DeviceError.writeFailed }
     }
 
     public func listRoutes() async throws -> [RouteSummary] {
         // The `routeList` object (type 6, spec §7.4) over the CoC → the catalog.
-        // Geometry isn't downloaded here; `trackPreview`/waypoints fill on
-        // `routeDetail`.
+        // Consumed for reconcile (the "on device" badge), never as list rows —
+        // the Planned list is library-first (#289).
         let entries = try RouteList.decode(try await downloadObject(type: .routeList, objectID: 0))
         return entries.map { entry in
             RouteSummary(
@@ -133,16 +150,26 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     }
 
     public func listRides() async throws -> [RideSummary] {
-        // The `rideList` object (type 7, spec §7.4) — the ride catalog. The
-        // per-ride payload download + `RideObjectCodec` decode is the sync path (B7).
-        _ = try await read(GATT.objectStore)
-        return []
+        // The `rideList` object (type 7, spec §7.4) — the ride catalog (empty
+        // until the firmware stores rides, A7).
+        let entries = try RideList.decode(try await downloadObject(type: .rideList, objectID: 0))
+        return entries.map { entry in
+            RideSummary(
+                id: RideID(String(entry.objectID)),
+                name: entry.name,
+                date: Date(timeIntervalSince1970: TimeInterval(entry.startTime)),
+                distanceMeters: Double(entry.distanceMeters),
+                movingTime: TimeInterval(entry.movingTimeSeconds),
+                averageSpeedMps: Double(entry.averageSpeedCms) / 100,
+                climbMeters: Double(entry.climbMeters)
+            )
+        }
     }
 
     public func routeDetail(_ id: RouteID) async throws -> RouteDetail {
         // Pinned by S0 as "download the route object" (spec §7.1): the stored OBCR
         // v2 blob, decoded app-side for the waypoints + elevation profile — one
-        // layout, one truth.
+        // layout, one truth. `id` is device-namespace.
         guard let objectID = UInt16(id.rawValue) else { throw DeviceError.readFailed }
         let decoded = try RouteObjectCodec.decode(try await downloadObject(type: .route, objectID: objectID))
         // Header totals are exact (from the producer's raw-point pass); the profile
@@ -166,7 +193,8 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     }
 
     public func rideDetail(_ id: RideID) async throws -> RideDetail {
-        _ = try await read(GATT.objectStore)
+        // A ride's detail decodes from its downloaded ride object (B7/A7); the
+        // synced library copy answers this screen today.
         throw DeviceError.readFailed
     }
 
@@ -175,73 +203,154 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     public func uploadRoute(_ route: RouteBlob) -> TransferHandle {
         // A fresh upload sends objectID 0xFFFF = "new" (the device assigns one);
         // re-uploading an edited route sends its stored id, which replaces that
-        // object in place (spec §4.1/§4.2). Either way the device reports the id
-        // in the closing transferResult, which we surface as `assignedObjectID`.
-        let start = TransferControl(
+        // object in place (spec §4.1/§4.2). Success is the device's closing
+        // `transferResult` — never the local byte flush.
+        guard !route.payload.isEmpty else {
+            // Nothing to send is a caller bug (a route without geometry must not
+            // offer Upload) — fail loudly instead of "committing" nothing.
+            return .immediatelyFinished(.failed(.transferRejected))
+        }
+        let descriptor = TransferControl(
             op: .upload, type: .route, objectID: route.targetObjectID ?? TransferControl.newObjectID,
             totalLen: UInt32(route.payload.count), crc32: CRC32.checksum(route.payload)
         )
+        let (stream, continuation) = AsyncStream<TransferProgress>.makeStream()
+        let outcome = AsyncPromise<TransferOutcome>()
         let assignedID = AsyncPromise<UInt16?>()
-        let handle = beginTransfer(start) { channel in channel.upload(route.payload, assignedObjectID: assignedID) }
-        Task { [weak self] in
-            guard let self, await handle.outcome == .completed else { assignedID.fulfill(nil); return }
-            let result = await self.nextTransferResult()
-            assignedID.fulfill(result.status == .committed ? result.objectID : nil)
-        }
-        return handle
+        let runner = UploadRunner(
+            transport: self, payload: route.payload, descriptor: descriptor,
+            progress: continuation, outcome: outcome, assignedID: assignedID
+        )
+        Task { await runner.start() }
+        return TransferHandle(
+            progress: stream,
+            outcome: outcome,
+            assignedObjectID: assignedID,
+            onCancel: { Task { await runner.cancel() } },
+            onResume: { Task { await runner.start() } }
+        )
     }
 
     public func downloadRides(_ ids: [RideID]) -> RideDownload {
-        // Real path (B7/A7): per ride the app writes a download request
-        // (`TransferControl` op 2), the device answers with the same descriptor
-        // filled in (totalLen + CRC), the app calls
-        // `channel.download(length:expectedCRC:)` and yields each verified payload
-        // into `rides`. The CoC request/announce loop lands with A5 bring-up.
+        // Real path (A7): one download per ride object, persisted ride-by-ride, so
+        // a drop keeps what landed and "resume" re-requests only the missing rides
+        // (whole rides are the batch's elementary unit — spec §1 principle 4).
         .finished()
     }
 
-    /// Announce a transfer on the control plane (`transferControl`), then stream its
-    /// payload over the CoC via `make`. Returns an immediately-finished handle if not
-    /// connected (caller detects the drop via `state`).
-    private func beginTransfer(_ start: TransferControl, _ make: @Sendable @escaping (BLEChannel) -> TransferHandle) -> TransferHandle {
-        queue.sync {
-            guard let bleChannel, let peripheral, let control = characteristics[GATT.transferControl] else {
-                return TransferHandle.immediatelyFinished(.failed(.notConnected))
+    // MARK: One object over the CoC (queue-confined helpers around it)
+
+    /// Download one object (spec §4.2 op 2): take the transfer slot, write the
+    /// request, await the device's announce descriptor (`total_len` + `crc32`) —
+    /// a typed reject resolves it as a throw — stream the payload off the CoC
+    /// verifying the whole-object CRC, then require the committed close.
+    private func downloadObject(type: ObjectType, objectID: UInt16) async throws -> Data {
+        await acquireTransferSlot()
+        defer { releaseTransferSlot() }
+        let channel = try await readyChannel()
+        clearPendingStatuses()
+        try await write(TransferControl(op: .download, type: type, objectID: objectID).encode(), to: GATT.transferControl)
+        let announce = try await nextAnnounce()
+        let bytes = try await channel.receive(length: Int(announce.totalLen), expectedCRC: announce.crc32)
+        guard try await nextTransferResult().status == .committed else { throw DeviceError.readFailed }
+        return bytes
+    }
+
+    /// The transfer slot (spec §4.1: one transfer in flight). Holders release at
+    /// the end of each attempt, so a stalled (drop-waiting) upload doesn't starve
+    /// reconnect-time list reads.
+    fileprivate func acquireTransferSlot() async {
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            queue.async { [self] in
+                if transferBusy { transferWaiters.append(cont) } else {
+                    transferBusy = true
+                    cont.resume()
+                }
             }
-            // Open the transfer before the first CoC byte. Exact sequencing vs the
-            // stream (and the Status/committedOffset handshake for resume) is
-            // finalized at A5 bring-up.
-            peripheral.writeValue(start.encode(), for: control, type: .withResponse)
-            return make(bleChannel)
         }
     }
 
-    /// Download one object over the CoC (spec §4.2 op 2): write the request, await
-    /// the device's announce descriptor (`total_len` + `crc32`), stream the payload
-    /// off the CoC verifying the whole-object CRC, then consume the closing
-    /// `transferResult`. The proven EchoHarness `downloadObject` flow, behind the
-    /// semantic transport. Throws if the link isn't up or the transfer doesn't commit.
-    private func downloadObject(type: ObjectType, objectID: UInt16) async throws -> Data {
-        let channel = try queue.sync { () -> BLEChannel in
-            guard let bleChannel else { throw DeviceError.notConnected }
-            return bleChannel
+    fileprivate func releaseTransferSlot() {
+        queue.async { [self] in
+            if transferWaiters.isEmpty {
+                transferBusy = false
+            } else {
+                transferWaiters.removeFirst().resume()  // hand the slot over
+            }
         }
-        try await write(TransferControl(op: .download, type: type, objectID: objectID).encode(), to: GATT.transferControl)
-        let announce = await nextAnnounce()
-        let (_, task) = channel.download(length: Int(announce.totalLen), expectedCRC: announce.crc32)
-        let bytes = try await task.value
-        guard await nextTransferResult().status == .committed else { throw DeviceError.readFailed }
-        return bytes
+    }
+
+    /// Drop buffered results/announces from a previous exchange before writing a
+    /// fresh descriptor — a stale `aborted` (e.g. from a canceled upload's channel
+    /// teardown) must never be read as this exchange's answer. Safe because the
+    /// device can't answer a descriptor before it is written.
+    fileprivate func clearPendingStatuses() {
+        queue.async { [self] in
+            pendingStatuses.removeAll()
+            pendingAnnounces.removeAll()
+        }
+    }
+
+    /// The live CoC channel, (re)opening it if the previous one was torn down
+    /// (a canceled transfer closes the channel so the device discards its partial).
+    fileprivate func readyChannel() async throws -> BLEChannel {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<BLEChannel, Error>) in
+            queue.async { [self] in
+                if let bleChannel, byteChannel?.isOpen == true {
+                    cont.resume(returning: bleChannel)
+                    return
+                }
+                guard let peripheral, let psm = characteristics[GATT.psm] else {
+                    cont.resume(throwing: DeviceError.notConnected)
+                    return
+                }
+                channelWaiters.append(cont)
+                if !openingChannel {
+                    openingChannel = true
+                    byteChannel = nil
+                    bleChannel = nil
+                    peripheral.readValue(for: psm)  // → PSM update → openL2CAPChannel → didOpen
+                }
+            }
+        }
+    }
+
+    /// Tear the CoC down (a canceled transfer): the device sees the drop, discards
+    /// its partial, and re-listens; the next transfer re-opens via `readyChannel`.
+    fileprivate func teardownChannel() async {
+        let channel: L2CAPByteChannel? = queue.sync {
+            let current = byteChannel
+            byteChannel = nil
+            bleChannel = nil
+            return current
+        }
+        await channel?.close()
     }
 
     // MARK: Status / announce notifications (queue-confined)
 
     private func deliverStatus(_ message: StatusMessage) {
+        // A transferResult while a download announce is awaited IS the answer to
+        // that request — a typed reject (notFound / busy / error), spec §4.2.
+        if case .transferResult(let result) = message, let waiter = announceWaiter {
+            announceWaiter = nil
+            waiter.resume(throwing: rejectError(result.status))
+            return
+        }
         if let index = statusWaiters.firstIndex(where: { $0.pred(message) }) {
             statusWaiters.remove(at: index).cont.resume(returning: message)
-        } else {
-            pendingStatuses.append(message)
+            return
         }
+        switch message {
+        case .transferResult, .commandResult:
+            pendingStatuses.append(message)
+        case .storeChanged, .unknown:
+            break  // unsolicited signals are not buffered
+        }
+    }
+
+    private func rejectError(_ status: TransferResult.Status) -> DeviceError {
+        status == .crcMismatch ? .crcMismatch : .transferRejected
     }
 
     private func deliverAnnounce(_ descriptor: TransferControl) {
@@ -253,8 +362,8 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         }
     }
 
-    private func nextStatus(where predicate: @escaping @Sendable (StatusMessage) -> Bool) async -> StatusMessage {
-        await withCheckedContinuation { (cont: CheckedContinuation<StatusMessage, Never>) in
+    private func nextStatus(where predicate: @escaping @Sendable (StatusMessage) -> Bool) async throws -> StatusMessage {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<StatusMessage, Error>) in
             queue.async { [self] in
                 if let index = pendingStatuses.firstIndex(where: predicate) {
                     cont.resume(returning: pendingStatuses.remove(at: index))
@@ -265,18 +374,28 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         }
     }
 
-    private func nextTransferResult() async -> TransferResult {
-        guard case .transferResult(let result) = await nextStatus(where: {
+    fileprivate func nextTransferResult() async throws -> TransferResult {
+        guard case .transferResult(let result) = try await nextStatus(where: {
             if case .transferResult = $0 { true } else { false }
         }) else { fatalError("predicate guarantees a transferResult") }
         return result
     }
 
-    private func nextAnnounce() async -> TransferControl {
-        await withCheckedContinuation { (cont: CheckedContinuation<TransferControl, Never>) in
+    private func nextCommandResult() async throws -> CommandResult {
+        guard case .commandResult(let result) = try await nextStatus(where: {
+            if case .commandResult = $0 { true } else { false }
+        }) else { fatalError("predicate guarantees a commandResult") }
+        return result
+    }
+
+    private func nextAnnounce() async throws -> TransferControl {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<TransferControl, Error>) in
             queue.async { [self] in
-                if pendingAnnounces.isEmpty { announceWaiter = cont }
-                else { cont.resume(returning: pendingAnnounces.removeFirst()) }
+                if pendingAnnounces.isEmpty {
+                    announceWaiter = cont
+                } else {
+                    cont.resume(returning: pendingAnnounces.removeFirst())
+                }
             }
         }
     }
@@ -313,13 +432,38 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         connectContinuation = nil
     }
 
+    /// The link is gone: every parked continuation must resolve (a leaked
+    /// `CheckedContinuation` hangs its caller forever), and buffered notifications
+    /// from the dead link are dropped (a new connection re-announces).
+    private func failAllPending() {
+        let reads = pendingReads.values.flatMap { $0 }
+        pendingReads.removeAll()
+        let writes = pendingWrites.values.flatMap { $0 }
+        pendingWrites.removeAll()
+        let statuses = statusWaiters
+        statusWaiters.removeAll()
+        let announce = announceWaiter
+        announceWaiter = nil
+        let channels = channelWaiters
+        channelWaiters.removeAll()
+        pendingStatuses.removeAll()
+        pendingAnnounces.removeAll()
+        openingChannel = false
+        for cont in reads { cont.resume(throwing: DeviceError.notConnected) }
+        for cont in writes { cont.resume(throwing: DeviceError.notConnected) }
+        for waiter in statuses { waiter.cont.resume(throwing: DeviceError.notConnected) }
+        announce?.resume(throwing: DeviceError.notConnected)
+        for cont in channels { cont.resume(throwing: DeviceError.notConnected) }
+    }
+
     // MARK: Async ↔ delegate bridges (queue-confined)
 
     private func read(_ uuid: CBUUID) async throws -> Data {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, Error>) in
             queue.async { [self] in
                 guard let peripheral, let characteristic = characteristics[uuid] else {
-                    cont.resume(throwing: DeviceError.notConnected); return
+                    cont.resume(throwing: DeviceError.notConnected)
+                    return
                 }
                 pendingReads[uuid, default: []].append(cont)
                 peripheral.readValue(for: characteristic)
@@ -331,11 +475,12 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         String(decoding: try await read(uuid), as: UTF8.self)
     }
 
-    private func write(_ data: Data, to uuid: CBUUID) async throws {
+    fileprivate func write(_ data: Data, to uuid: CBUUID) async throws {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             queue.async { [self] in
                 guard let peripheral, let characteristic = characteristics[uuid] else {
-                    cont.resume(throwing: DeviceError.notConnected); return
+                    cont.resume(throwing: DeviceError.notConnected)
+                    return
                 }
                 pendingWrites[uuid, default: []].append(cont)
                 peripheral.writeValue(data, for: characteristic, type: .withResponse)
@@ -347,6 +492,103 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         await withCheckedContinuation { (cont: CheckedContinuation<String?, Never>) in
             queue.async { [self] in cont.resume(returning: peripheral?.name) }
         }
+    }
+}
+
+// MARK: - The upload runner
+
+/// One route upload from `uploadRoute` to its terminal outcome. An interrupted
+/// attempt (link/CoC drop) leaves the outcome unresolved — the F sheet shows
+/// "interrupted" via `DeviceTransport.state` — and `start()` (the handle's
+/// `resume()`) runs a **whole fresh attempt**: descriptor + all bytes from 0
+/// (uploads restart, not resume — spec §1 principle 4).
+private actor UploadRunner {
+    private let transport: BLETransport
+    private let payload: Data
+    private let descriptor: TransferControl
+    private let progress: AsyncStream<TransferProgress>.Continuation
+    private let outcome: AsyncPromise<TransferOutcome>
+    private let assignedID: AsyncPromise<UInt16?>
+    private var attempt: Task<Void, Never>?
+
+    init(
+        transport: BLETransport, payload: Data, descriptor: TransferControl,
+        progress: AsyncStream<TransferProgress>.Continuation,
+        outcome: AsyncPromise<TransferOutcome>, assignedID: AsyncPromise<UInt16?>
+    ) {
+        self.transport = transport
+        self.payload = payload
+        self.descriptor = descriptor
+        self.progress = progress
+        self.outcome = outcome
+        self.assignedID = assignedID
+    }
+
+    /// Start (or restart after a drop). No-op while an attempt runs or after a
+    /// terminal outcome.
+    func start() {
+        guard attempt == nil, outcome.current == nil else { return }
+        attempt = Task {
+            await runAttempt()
+            attempt = nil
+        }
+    }
+
+    /// Abort: stop the pump and tear the CoC down — the device sees the drop and
+    /// discards its partial (its `aborted` result is cleared before the next
+    /// exchange's descriptor). Terminal.
+    func cancel() async {
+        attempt?.cancel()
+        await transport.teardownChannel()
+        finish(.canceled)
+    }
+
+    private func runAttempt() async {
+        await transport.acquireTransferSlot()
+        defer { transport.releaseTransferSlot() }
+        guard outcome.current == nil else { return }
+
+        // No channel and no way to open one = no link at all (H4): terminal.
+        let channel: BLEChannel
+        do {
+            channel = try await transport.readyChannel()
+        } catch {
+            finish(.failed((error as? DeviceError) ?? .notConnected))
+            return
+        }
+
+        do {
+            transport.clearPendingStatuses()
+            try await transport.write(descriptor.encode(), to: GATT.transferControl)
+            let ticks = progress
+            try await channel.send(payload) { ticks.yield($0) }
+            // Bytes flushed — now the only signal that counts: the device's verdict.
+            let result = try await transport.nextTransferResult()
+            switch result.status {
+            case .committed:
+                assignedID.fulfill(result.objectID)
+                finish(.completed)
+            case .crcMismatch:
+                finish(.failed(.crcMismatch))
+            case .aborted:
+                finish(.canceled)  // our cancel raced the completion
+            case .error, .notFound, .busy:
+                finish(.failed(.transferRejected))
+            }
+        } catch is CancellationError {
+            // cancel() resolves the outcome and tears the channel down.
+        } catch DeviceError.writeFailed {
+            finish(.failed(.writeFailed))  // GATT rejected the descriptor, link up
+        } catch {
+            // The link/CoC dropped mid-attempt: stay unresolved — resumable. The
+            // device discards its partial; the next start() re-sends everything.
+        }
+    }
+
+    private func finish(_ terminal: TransferOutcome) {
+        progress.finish()
+        outcome.fulfill(terminal)
+        if terminal != .completed { assignedID.fulfill(nil) }
     }
 }
 
@@ -375,11 +617,9 @@ extension BLETransport: CBCentralManagerDelegate {
 
     public func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         characteristics.removeAll()
+        byteChannel = nil
         bleChannel = nil
-        // Drop any buffered notifications from the dead link (a new connection
-        // re-announces); an in-flight download surfaces the drop via its CoC read.
-        pendingStatuses.removeAll()
-        pendingAnnounces.removeAll()
+        failAllPending()
         stateMulticast.send(wantsConnect ? .outOfRange : .disconnected)
     }
 }
@@ -388,7 +628,10 @@ extension BLETransport: CBCentralManagerDelegate {
 
 extension BLETransport: CBPeripheralDelegate {
     public func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
-        guard error == nil else { failConnect(.notConnected); return }
+        guard error == nil else {
+            failConnect(.notConnected)
+            return
+        }
         for service in peripheral.services ?? [] {
             peripheral.discoverCharacteristics(nil, for: service)
         }
@@ -404,8 +647,9 @@ extension BLETransport: CBPeripheralDelegate {
             }
         }
         // Once the PSM characteristic is known, open the CoC.
-        if characteristics[GATT.psm] != nil, bleChannel == nil {
-            peripheral.readValue(for: characteristics[GATT.psm]!)
+        if let psm = characteristics[GATT.psm], bleChannel == nil, !openingChannel {
+            openingChannel = true
+            peripheral.readValue(for: psm)
         }
     }
 
@@ -417,7 +661,7 @@ extension BLETransport: CBPeripheralDelegate {
             batteryMulticast.send(Int(value))
             return
         }
-        // PSM read → open the L2CAP channel.
+        // PSM read → open the L2CAP channel (initial connect and re-opens alike).
         if uuid == GATT.psm, bleChannel == nil {
             if let data = characteristic.value, data.count >= 2 {
                 let psm = UInt16(data[0]) | (UInt16(data[1]) << 8)
@@ -450,10 +694,24 @@ extension BLETransport: CBPeripheralDelegate {
     }
 
     public func peripheral(_ peripheral: CBPeripheral, didOpen channel: CBL2CAPChannel?, error: Error?) {
-        guard let channel, error == nil else { failConnect(.channelOpenFailed); return }
-        bleChannel = BLEChannel(channel: L2CAPByteChannel(channel: channel))
-        // CoC up + services discovered → the link is ready.
-        finishConnect()
+        openingChannel = false
+        guard let channel, error == nil else {
+            let waiters = channelWaiters
+            channelWaiters.removeAll()
+            for cont in waiters { cont.resume(throwing: DeviceError.channelOpenFailed) }
+            if connectContinuation != nil { failConnect(.channelOpenFailed) }
+            return
+        }
+        let byte = L2CAPByteChannel(channel: channel)
+        byteChannel = byte
+        let ble = BLEChannel(channel: byte)
+        bleChannel = ble
+        let waiters = channelWaiters
+        channelWaiters.removeAll()
+        for cont in waiters { cont.resume(returning: ble) }
+        // CoC up + services discovered → the initial link is ready (re-opens
+        // mid-session resolve their waiters without touching the connect flow).
+        if connectContinuation != nil { finishConnect() }
     }
 
     private func resumeReads(_ uuid: CBUUID, _ result: Result<Data, Error>) {

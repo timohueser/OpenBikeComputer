@@ -219,7 +219,7 @@ private struct PreviewUploadTransport: DeviceTransport {
             for step in 1...100 {
                 try? await Task.sleep(for: .milliseconds(40))
                 let done = total * step / 100
-                continuation.yield(TransferProgress(bytesDone: done, total: total, offset: done))
+                continuation.yield(TransferProgress(bytesDone: done, total: total))
             }
             continuation.finish()
             outcome.fulfill(.completed)

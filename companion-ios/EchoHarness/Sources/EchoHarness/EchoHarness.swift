@@ -77,7 +77,7 @@ struct EchoHarness {
         )
         central.writeControl(start.encode(), to: link.transferControl)
         let result = try await withTimeout(60) {
-            _ = await link.channel.upload(bytes).outcome  // all bytes handed to the CoC
+            try await link.channel.send(bytes)  // all bytes handed to the CoC
             return await central.nextTransferResult()
         }
         guard result.status == .committed else { throw HarnessError.unexpectedStatus(result.status) }
@@ -167,7 +167,7 @@ struct EchoHarness {
             totalLen: UInt32(bytes.count), crc32: crc
         )
         central.writeControl(start.encode(), to: link.transferControl)
-        _ = await link.channel.upload(Data(bytes.prefix(bytes.count / 2))).outcome  // prefix handed to the CoC
+        try await link.channel.send(Data(bytes.prefix(bytes.count / 2)))  // prefix handed to the CoC
         let abort = TransferControl(op: .abort, type: .route, objectID: TransferControl.newObjectID)
         central.writeControl(abort.encode(), to: link.transferControl)
         let aborted = await central.nextTransferResult()
@@ -179,7 +179,7 @@ struct EchoHarness {
         // 2. Re-upload the whole object from the start — must commit.
         central.writeControl(start.encode(), to: link.transferControl)
         let committed = try await withTimeout(60) {
-            _ = await link.channel.upload(bytes).outcome
+            try await link.channel.send(bytes)
             return await central.nextTransferResult()
         }
         guard committed.status == .committed else { throw HarnessError.unexpectedStatus(committed.status) }
@@ -200,8 +200,9 @@ struct EchoHarness {
         let request = TransferControl(op: .download, type: type, objectID: objectID)
         central.writeControl(request.encode(), to: link.transferControl)
         let announce = await central.nextAnnounce()
-        let (_, task) = link.channel.download(length: Int(announce.totalLen), expectedCRC: announce.crc32)
-        let bytes = try await withTimeout(60) { try await task.value }
+        let bytes = try await withTimeout(60) {
+            try await link.channel.receive(length: Int(announce.totalLen), expectedCRC: announce.crc32)
+        }
         let result = await central.nextTransferResult()
         guard result.status == .committed else { throw HarnessError.unexpectedStatus(result.status) }
         return bytes
@@ -257,12 +258,15 @@ struct EchoHarness {
         // turns a stalled CoC into a reported failure instead of a silent hang.
         central.writeControl(start.encode(), to: link.transferControl)
         let deviceResult = Task { await central.nextTransferResult() }
-        let upload = link.channel.upload(sent)
-        let (_, downloadTask) = link.channel.download(length: payload.count, expectedCRC: announcedCRC)
+        // Upload + download run concurrently so the CoC's bidirectional credit
+        // flow never deadlocks.
+        let channel = link.channel
+        let uploadTask = Task { try await channel.send(sent) }
+        let downloadTask = Task { try await channel.receive(length: payload.count, expectedCRC: announcedCRC) }
 
         let clockStart = Date()
         let (echoed, result) = try await withTimeout(20) {
-            _ = await upload.outcome // all bytes handed to the CoC
+            _ = try? await uploadTask.value // all bytes handed to the CoC
             let echoed = try? await downloadTask.value // bytes streamed back (nil on the expected corrupt reject)
             let result = await deviceResult.value
             return (echoed, result)

@@ -6,7 +6,7 @@ import OBCTransport
 
 /// B5 acceptance, host-side: the upload-sheet model driven through
 /// `MockTransport` — moving progress to F₂, cancel, the drop → interrupted →
-/// offset-resume path (no bytes re-sent), and the hard-failure branch.
+/// restart path (uploads restart, not resume), and the hard-failure branch.
 @MainActor
 final class UploadSheetModelTests: XCTestCase {
     /// Instant F₂ auto-dismiss so tests don't sit out the design hold.
@@ -114,41 +114,29 @@ final class UploadSheetModelTests: XCTestCase {
         XCTAssertLessThan(model.progress.bytesDone, model.progress.total)
     }
 
-    // MARK: Drop → interrupted → resume (uploadDrop scenario)
+    // MARK: Drop → interrupted → restart (uploadDrop scenario)
 
-    func testDropInterruptsAndResumeContinuesFromTheOffset() async {
+    func testDropInterruptsAndResumeRestartsFromScratch() async {
         let (model, _) = makeModel(.uploadDrop, payloadBytes: 100_000)
         model.start()
 
         // The armed drop (62%) parks the transfer and flags the link.
         await waitFor("interrupted") { model.phase == .interrupted }
-        let stallOffset = model.progress.offset
-        XCTAssertGreaterThan(stallOffset, 0)
-        XCTAssertLessThan(stallOffset, model.progress.total)
+        let stallBytes = model.progress.bytesDone
+        XCTAssertGreaterThan(stallBytes, 0)
+        XCTAssertLessThan(stallBytes, model.progress.total)
         XCTAssertFalse(model.shouldDismiss, "a drop is not terminal")
 
         // Nothing moves while parked.
         try? await Task.sleep(for: .milliseconds(80))
-        XCTAssertEqual(model.progress.offset, stallOffset)
+        XCTAssertEqual(model.progress.bytesDone, stallBytes)
 
         model.resume()
         XCTAssertEqual(model.phase, .uploading)
-        await waitFor("completion after resume") { model.phase == .done }
-        // Offset-based resume: no byte position before the stall ever re-sent.
-        XCTAssertGreaterThanOrEqual(model.progress.bytesDone, stallOffset)
-    }
-
-    func testEveryTickAdvancesMonotonically() async {
-        // Watch the raw stream alongside the model: resume must not rewind.
-        let (model, _) = makeModel(.uploadDrop, payloadBytes: 50_000)
-        var offsets: [Int] = []
-        model.start()
-        await waitFor("interrupted") { model.phase == .interrupted }
-        offsets.append(model.progress.offset)
-        model.resume()
-        await waitFor("done") { model.phase == .done }
-        offsets.append(model.progress.offset)
-        XCTAssertEqual(offsets, offsets.sorted(), "offsets must never rewind across a resume")
+        // Restart, not resume: the whole object is re-sent (the device discarded
+        // its partial), so the bar starts over and still reaches F₂.
+        await waitFor("completion after restart") { model.phase == .done }
+        XCTAssertEqual(model.fraction, 1)
     }
 
     func testCancelWhileInterruptedDismisses() async {

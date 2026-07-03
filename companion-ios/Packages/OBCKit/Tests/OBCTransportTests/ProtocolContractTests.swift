@@ -22,9 +22,9 @@ final class ProtocolContractTests: XCTestCase {
     }
 
     func testTransferProgressFraction() {
-        XCTAssertEqual(TransferProgress(bytesDone: 25, total: 100, offset: 25).fraction, 0.25)
+        XCTAssertEqual(TransferProgress(bytesDone: 25, total: 100).fraction, 0.25)
         // Unknown total → 0, never a divide-by-zero.
-        XCTAssertEqual(TransferProgress(bytesDone: 5, total: 0, offset: 0).fraction, 0)
+        XCTAssertEqual(TransferProgress(bytesDone: 5, total: 0).fraction, 0)
     }
 
     func testDomainSkeletonsConstruct() {

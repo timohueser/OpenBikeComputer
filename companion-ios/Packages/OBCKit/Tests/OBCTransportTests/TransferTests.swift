@@ -3,82 +3,98 @@ import OBCDomain
 @testable import OBCTransport
 
 /// End-to-end bulk transfer over the in-memory `PipeByteChannel`: raw-byte streaming
-/// (no wire framing), whole-object CRC verify, offset-resume after an induced drop,
-/// and clean cancel teardown — the B1 acceptance scenarios, with no hardware.
+/// (no wire framing), whole-object CRC verify, whole-object restart after an induced
+/// drop, and clean cancel teardown — the B1 acceptance scenarios, with no hardware.
 final class TransferTests: XCTestCase {
     // MARK: Round-trip (upload → device reassembles + CRC matches)
 
-    func testUploadStreamsRawBytesAndVerifies() async throws {
+    func testSendStreamsRawBytesByteIdentical() async throws {
         let object = Data((0..<3000).map { UInt8(($0 * 13 + 7) & 0xFF) })
         let pipe = PipeByteChannel()
         let channel = BLEChannel(channel: pipe, chunkSize: 64)
 
         let received = deviceReceive(pipe, length: object.count)
-        let handle = channel.upload(object)
-        try await drainToFinish(handle)
+        try await channel.send(object)
 
         let bytes = try await withTimeout(5) { try await received.value }
         XCTAssertEqual(bytes, object)
         XCTAssertEqual(CRC32.checksum(bytes), CRC32.checksum(object))  // CRC the phone announces
-        let outcome = await handle.outcome
-        XCTAssertEqual(outcome, .completed)
+    }
+
+    func testSendReportsMonotonicProgress() async throws {
+        let object = Data(repeating: 0x5A, count: 1000)
+        let pipe = PipeByteChannel()
+        let channel = BLEChannel(channel: pipe, chunkSize: 128)
+        let ticks = Ticks()
+
+        let received = deviceReceive(pipe, length: object.count)
+        try await channel.send(object) { tick in ticks.append(tick.bytesDone) }
+        _ = try await withTimeout(5) { try await received.value }
+
+        let seen = ticks.values
+        XCTAssertEqual(seen.last, object.count)
+        XCTAssertEqual(seen, seen.sorted(), "progress never rewinds within an attempt")
     }
 
     // MARK: Round-trip (download verifies the announced CRC)
 
-    func testDownloadVerifiesCRC() async throws {
+    func testReceiveVerifiesCRC() async throws {
         let object = Data((0..<2500).map { UInt8(($0 * 5) & 0xFF) })
         let pipe = PipeByteChannel()
         try await pipe.write(object)  // device streams raw bytes
 
         let channel = BLEChannel(channel: pipe, chunkSize: 128)
-        let (_, result) = channel.download(length: object.count, expectedCRC: CRC32.checksum(object))
-        let got = try await withTimeout(5) { try await result.value }
+        let got = try await withTimeout(5) {
+            try await channel.receive(length: object.count, expectedCRC: CRC32.checksum(object))
+        }
         XCTAssertEqual(got, object)
     }
 
     // MARK: CRC reject — an error the link CRC missed
 
-    func testDownloadRejectsSilentlyCorruptedObject() async throws {
+    func testReceiveRejectsSilentlyCorruptedObject() async throws {
         let object = Data((0..<1500).map { UInt8($0 & 0xFF) })
         let pipe = PipeByteChannel()
         await pipe.corruptByte(at: 900)   // flip one bit in transit
         try await pipe.write(object)
 
         let channel = BLEChannel(channel: pipe, chunkSize: 128)
-        let (handle, result) = channel.download(length: object.count, expectedCRC: CRC32.checksum(object))
         do {
-            _ = try await withTimeout(5) { try await result.value }
+            _ = try await withTimeout(5) {
+                try await channel.receive(length: object.count, expectedCRC: CRC32.checksum(object))
+            }
             XCTFail("expected crcMismatch")
         } catch let error as DeviceError {
             XCTAssertEqual(error, .crcMismatch)  // rejected, never committed
         }
-        let outcome = await handle.outcome
-        XCTAssertEqual(outcome, .failed(.crcMismatch))
     }
 
-    // MARK: Offset-resume after a drop
+    // MARK: Drop → whole-object restart (spec §1 principle 4)
 
-    func testUploadResumesAfterDrop() async throws {
+    func testDroppedSendRestartsWhole() async throws {
         let object = Data((0..<2000).map { UInt8($0 & 0xFF) })
         let pipe = PipeByteChannel()
         await pipe.failAfter(500)  // drop partway through
         let channel = BLEChannel(channel: pipe, chunkSize: 64)
 
+        do {
+            try await channel.send(object)
+            XCTFail("expected the induced drop")
+        } catch is ChannelDropped {}
+
+        // The device discards its partial on a drop (spec §4.2) — model it by
+        // draining what did arrive before the retry.
+        while await pipe.bufferedByteCount > 0 {
+            _ = try await pipe.read(maxLength: 4096)
+        }
+
+        // Restart: the WHOLE object is re-sent from byte 0 and lands intact.
         let received = deviceReceive(pipe, length: object.count)
-        let handle = channel.upload(object)
-
-        try await waitUntil(timeout: 2) { await pipe.faultTriggered }
-        let resumer = Task { for _ in 0..<200 { handle.resume(); await Task.yield() } }
-        defer { resumer.cancel() }
-
+        try await channel.send(object)
         let bytes = try await withTimeout(5) { try await received.value }
-        XCTAssertEqual(bytes, object)                        // full object despite the drop
-        XCTAssertEqual(CRC32.checksum(bytes), CRC32.checksum(object))
-        // Byte-exact resume: raw streaming re-sends only the bytes past the last
-        // committed offset — no wasted retransmission of a whole frame.
+        XCTAssertEqual(bytes, object)
         let written = await pipe.bytesWrittenSoFar
-        XCTAssertEqual(written, object.count)
+        XCTAssertGreaterThan(written, object.count, "the partial plus the full restart crossed the pipe")
     }
 
     // MARK: Cancel tears down cleanly
@@ -88,26 +104,40 @@ final class TransferTests: XCTestCase {
         let pipe = PipeByteChannel(capacity: 256)  // backpressure: writer can't outrun a stalled reader
         let channel = BLEChannel(channel: pipe, chunkSize: 64)
 
-        let handle = channel.upload(object)
+        let sender = Task { try await channel.send(object) }
         try await waitUntil(timeout: 2) { await pipe.bytesWrittenSoFar > 0 }
-        handle.cancel()
+        // The real cancel path: stop the pump AND close the channel (the close is
+        // what unblocks a write parked on backpressure — and what makes the device
+        // discard its partial).
+        sender.cancel()
+        await channel.close()
 
-        try await withTimeout(5) { for await _ in handle.progress {} }   // finishes, no hang
-        let outcome = await handle.outcome
-        XCTAssertEqual(outcome, .canceled)
+        do {
+            try await withTimeout(5) { try await sender.value }
+            XCTFail("a canceled send must not report success")
+        } catch {}
         let written = await pipe.bytesWrittenSoFar
-        XCTAssertLessThan(written, object.count)                        // delivery stopped short
-
-        var drained = 0
-        while true {
-            let chunk = try await pipe.read(maxLength: 4096)
-            if chunk.isEmpty { break }   // channel torn down → EOF
-            drained += chunk.count
-        }
-        XCTAssertLessThan(drained, object.count)
+        XCTAssertLessThan(written, object.count)  // delivery stopped short
     }
 
     // MARK: Helpers
+
+    /// Ordered progress capture, reference-typed so the `@Sendable` tick closure
+    /// can append from the sending task.
+    private final class Ticks: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storage: [Int] = []
+        func append(_ value: Int) {
+            lock.lock()
+            storage.append(value)
+            lock.unlock()
+        }
+        var values: [Int] {
+            lock.lock()
+            defer { lock.unlock() }
+            return storage
+        }
+    }
 
     /// A concurrent "device" that reads `length` raw bytes off the pipe.
     private func deviceReceive(_ pipe: PipeByteChannel, length: Int) -> Task<Data, Error> {
@@ -120,10 +150,6 @@ final class TransferTests: XCTestCase {
             }
             return buffer
         }
-    }
-
-    private func drainToFinish(_ handle: TransferHandle) async throws {
-        try await withTimeout(5) { for await _ in handle.progress {} }
     }
 
     private func waitUntil(timeout: Double, _ condition: @Sendable () async -> Bool) async throws {
