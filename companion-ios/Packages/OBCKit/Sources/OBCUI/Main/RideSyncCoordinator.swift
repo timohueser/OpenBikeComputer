@@ -247,7 +247,13 @@ public final class RideSyncCoordinator {
             syncProgress = nil
             syncInterruption = nil
             activeDownload = nil
-            guard await download.handle.outcome == .completed else {
+            let outcome = await download.handle.outcome
+            // Re-check after the outcome await too: a superseding `sync()` can
+            // land while this task is suspended here (its `handle.cancel()` is
+            // exactly what resolves a superseded batch's outcome) — resuming
+            // without this guard would clobber the new sync's `.syncing`/counts.
+            guard !Task.isCancelled else { return }
+            guard outcome == .completed else {
                 syncState = .idle
                 return
             }
