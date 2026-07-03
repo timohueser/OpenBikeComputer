@@ -8,6 +8,10 @@
 
 use std::io::{self, Seek, SeekFrom, Write};
 
+use obc_reader::format::{
+    BRANCH_BIT, EMPTY_LEAF, FEATURE_FLAG_16BIT, FEATURE_FLAG_HOLES, FEATURE_FLAG_POLYGON, STYLE_PRIORITY_MASK,
+};
+
 /// Max delta (microdegrees) before a segment is densified to keep deltas in
 /// 16-bit range.
 const MAX_SEGMENT: i64 = 30_000;
@@ -138,7 +142,7 @@ fn push_deltas(data: &mut Vec<u8>, deltas: &[i64], is16: bool) {
 }
 
 /// Pack the style table: `Count(u8)` then, sorted by id, `<BbHBB>` per style with
-/// `flags = (priority-1) & 0x03`.
+/// `flags = (priority-1) & STYLE_PRIORITY_MASK`.
 pub fn pack_style_dict(styles: &[Style]) -> Vec<u8> {
     let mut styles = styles.to_vec();
     styles.sort_by_key(|s| s.id);
@@ -146,7 +150,7 @@ pub fn pack_style_dict(styles: &[Style]) -> Vec<u8> {
     data.push(styles.len() as u8);
     for s in &styles {
         let priority = (s.priority as i32).clamp(1, 4);
-        let flags = ((priority - 1) & 0x03) as u8;
+        let flags = (priority - 1) as u8 & STYLE_PRIORITY_MASK;
         data.push(s.id);
         data.push(s.z_index as u8);
         data.extend_from_slice(&s.color.to_le_bytes());
@@ -163,9 +167,9 @@ pub fn pack_feature(f: &Feature, node_bbox: (i64, i64, i64, i64)) -> Vec<u8> {
     let is_polygon = f.kind == Kind::Polygon;
     let mut flags: u8 = 0;
     if is_polygon {
-        flags |= 0x02; // polygon
+        flags |= FEATURE_FLAG_POLYGON;
         if f.rings.len() > 1 {
-            flags |= 0x04; // has holes
+            flags |= FEATURE_FLAG_HOLES;
         }
     }
 
@@ -212,7 +216,7 @@ pub fn pack_feature(f: &Feature, node_bbox: (i64, i64, i64, i64)) -> Vec<u8> {
 
     let is16 = max_delta > 127;
     if is16 {
-        flags |= 0x01; // 16-bit deltas
+        flags |= FEATURE_FLAG_16BIT;
     }
 
     // The reader decodes a whole feature (exterior + every hole) into one buffer of capacity
@@ -234,7 +238,7 @@ pub fn pack_feature(f: &Feature, node_bbox: (i64, i64, i64, i64)) -> Vec<u8> {
 
     push_deltas(&mut data, &packed_rings[0].1, is16);
 
-    if flags & 0x04 != 0 {
+    if flags & FEATURE_FLAG_HOLES != 0 {
         data.push((packed_rings.len() - 1) as u8);
         for (pt_count, deltas) in &packed_rings[1..] {
             debug_assert!(*pt_count <= u16::MAX as usize, "hole pt_count overflows the u16 field");
@@ -287,16 +291,16 @@ pub fn serialize_tree(root: &Node, chunk_size: usize) -> (Vec<u8>, u32, Vec<u8>,
         match node {
             Node::Leaf { bbox, features } => {
                 if features.is_empty() {
-                    index.push(0x7FFF_FFFF);
+                    index.push(EMPTY_LEAF);
                 } else {
                     let chunk_id = chunk_count;
                     chunks.extend_from_slice(&pack_chunk(features, *bbox, chunk_size));
                     chunk_count += 1;
-                    index.push(chunk_id & 0x7FFF_FFFF);
+                    index.push(chunk_id & !BRANCH_BIT);
                 }
             }
             Node::Branch(_) => {
-                index.push((first_child[idx] as u32) | 0x8000_0000);
+                index.push(first_child[idx] as u32 | BRANCH_BIT);
             }
         }
     }
