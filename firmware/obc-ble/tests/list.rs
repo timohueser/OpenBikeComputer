@@ -113,8 +113,11 @@ fn whole_object_walk() {
     let (h, entry_len) = ListHeader::decode(&obj).unwrap();
     assert_eq!(h.count as usize, entries.len());
     for (k, expected) in entries.iter().enumerate() {
-        let off = ListHeader::ENCODED_LEN + k * entry_len;
-        let d = RouteListEntry::decode(&obj[off..off + entry_len]).unwrap();
+        let slot = ListHeader::entry_slice(&obj, k, entry_len).expect("entry k is in bounds");
+        let d = RouteListEntry::decode(slot).unwrap();
         assert_eq!(&d, expected);
     }
+    // A count that overruns the buffer is rejected by the bounds-checked walk, not a panic: an
+    // entry past the last real one returns None rather than slicing off the end.
+    assert!(ListHeader::entry_slice(&obj, entries.len(), entry_len).is_none());
 }

@@ -64,6 +64,16 @@ impl ListHeader {
     pub const fn object_len(count: usize) -> usize {
         Self::ENCODED_LEN + count * LIST_ENTRY_LEN
     }
+
+    /// The bounds-checked slot for entry `k`, given the header's announced `entry_len` (from
+    /// [`decode`](Self::decode)). `None` when the object is shorter than `count` claims — so a walk
+    /// over a corrupt or inconsistent `count` rejects the entry instead of slicing past the buffer.
+    /// `decode` reads only the 4-byte header and so can't police `count`; the walk must, and this is
+    /// that guard — pass the returned slice straight to `RouteListEntry`/`RideListEntry::decode`.
+    pub fn entry_slice(data: &[u8], k: usize, entry_len: usize) -> Option<&[u8]> {
+        let off = Self::ENCODED_LEN + k * entry_len;
+        data.get(off..off.checked_add(entry_len)?)
+    }
 }
 
 /// One `routeList` entry (spec §7.4) — from the stored OBCR header.
