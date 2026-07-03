@@ -53,22 +53,22 @@ impl DisplayDriver for Display {
     /// frame and seeds the store; an idle redraw then repaints just its changed band.
     ///
     /// The transient hold bulge is **not** drawn here: it rides its own overlay re-push on the input
-    /// plane, so the map present stays a single clean pack with no overlay coupling. ST7789 GRAM writes
-    /// don't fault, so always `true`.
-    ///
-    /// **Bulge coordination is dev-only-best-effort here**, unlike the FLPR path: this present takes no
-    /// `exclude` (the map plane can't see the input plane on this backend —
-    /// [`MapDisplay::poll_overlay`](crate) always reports "clean"), so a `dirty.map` redraw landing
-    /// while a hold bulge is live pushes the changed clean `fb` rows over the bulge's rows, flashing it
-    /// off until the overlay task's next ~8 ms tick repaints it. The FLPR path avoids this by clipping
-    /// the live bulge's rows out of the present; the ST7789 (the opt-in bring-up backend) accepts the
-    /// one-tick flash.
-    fn present(&mut self) -> bool {
+    /// plane, so the map present stays a single clean pack with no overlay coupling. A live bulge's
+    /// rows are clipped out of the push (`exclude` — the shared
+    /// [`diff_clipped`](RowDiff::diff_clipped) skeleton the FLPR present also runs), so a `dirty.map`
+    /// redraw landing mid-hold no longer blanks the bulge; the excluded rows keep their on-glass
+    /// content until the overlay plane's next ~8 ms tick repaints them. ST7789 GRAM writes don't
+    /// fault, so always `true`.
+    fn present(&mut self, exclude: Option<(u16, u16)>) -> bool {
         let Display { panel, fb, diff } = self;
         st7789::reset_push_timers();
         let band_rows = panel.band_rows();
         let fb: &[u8] = fb;
-        diff.diff(fb, WIDTH as usize, |sy, sn| {
+        // Same span cap as the FLPR path's `MAX_DIRTY_SPANS`: >16 disjoint changed regions is
+        // pathological fragmentation a UI never produces; `diff_clipped` then falls back to the whole
+        // frame minus the exclude rather than dropping rows.
+        let mut scratch = [(0u16, 0u16); 16];
+        for &(sy, sn) in diff.diff_clipped(fb, WIDTH as usize, exclude, &mut scratch) {
             // Band the changed span [sy, sy+sn) in `band_rows`-tall chunks; each `flush_band_rgb222`
             // sets its own RASET window, so a partial span pushes only its rows.
             let mut y0 = sy;
@@ -79,7 +79,7 @@ impl DisplayDriver for Display {
                 panel.flush_band_rgb222(y0, h, &fb[row0..row0 + n]);
                 y0 += h;
             }
-        });
+        }
         // Per-stage push breakdown (per present) — `debug` so the loop's frame line stays the one
         // info-level per-frame log; opt in with `DEFMT_LOG=debug` for push perf-tuning.
         let (fill_us, pack_us, spi_us) = st7789::push_timers();
