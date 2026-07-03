@@ -246,13 +246,26 @@ public struct RouteDetailView: View {
         .padding(.top, 20)
     }
 
+    /// Upload ↔ Update ↔ up-to-date, off the proven device-copy state: a fresh
+    /// route uploads, a changed one (rename, re-import) **updates the copy in
+    /// place**, and a byte-identical one has nothing to push — the button says
+    /// so and stays disabled. Link-bound either way (S4: dims with the link).
     private var uploadButton: some View {
-        Button {
+        let state = model.deviceCopyState
+        return Button {
             onUpload()
         } label: {
-            Label("Upload to \(deviceName)", systemImage: "square.and.arrow.up")
+            switch state {
+            case .notOnDevice:
+                Label("Upload to \(deviceName)", systemImage: "square.and.arrow.up")
+            case .outdated:
+                Label("Update on \(deviceName)", systemImage: "arrow.triangle.2.circlepath")
+            case .upToDate:
+                Label("Up to date on \(deviceName)", systemImage: "checkmark.circle")
+            }
         }
         .buttonStyle(.obcPrimary)
+        .disabled(!model.canUpload || state == .upToDate)
         .accessibilityIdentifier("detail.upload")
     }
 

@@ -29,7 +29,8 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     private lazy var central = CBCentralManager(delegate: self, queue: queue)
 
     private let stateMulticast = AsyncMulticast<ConnectionState>(.disconnected)
-    private let batteryMulticast = AsyncMulticast<Int>(0)
+    /// `nil` until the first real BAS value — the seed must not replay as "0%".
+    private let batteryMulticast = AsyncMulticast<Int?>(nil)
 
     private var peripheral: CBPeripheral?
     private var characteristics: [CBUUID: CBCharacteristic] = [:]
@@ -70,7 +71,20 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     // MARK: DeviceTransport — lifecycle
 
     public var state: AsyncStream<ConnectionState> { stateMulticast.stream() }
-    public var battery: AsyncStream<Int> { batteryMulticast.stream() }
+    public var battery: AsyncStream<Int> {
+        // Drop the not-yet-known seed: subscribers get the first *real* reading
+        // (read at discovery + BAS notifies), never a fabricated 0%.
+        let source = batteryMulticast.stream()
+        return AsyncStream { continuation in
+            let pump = Task {
+                for await value in source {
+                    if let value { continuation.yield(value) }
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in pump.cancel() }
+        }
+    }
 
     public func connect() async throws {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
@@ -612,7 +626,13 @@ extension BLETransport: CBCentralManagerDelegate {
     }
 
     public func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
-        failConnect(.notConnected)
+        if connectContinuation != nil {
+            failConnect(.notConnected)
+        } else if wantsConnect {
+            // A background reconnect attempt failed — keep trying; the request
+            // sits pending in the controller until the device reappears.
+            central.connect(peripheral)
+        }
     }
 
     public func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
@@ -621,6 +641,12 @@ extension BLETransport: CBCentralManagerDelegate {
         bleChannel = nil
         failAllPending()
         stateMulticast.send(wantsConnect ? .outOfRange : .disconnected)
+        // Reconnect (S4: the banner degrades, the link keeps trying): a connect
+        // issued now has no timeout — iOS holds it pending until the peripheral
+        // advertises again, then the normal didConnect → discovery → CoC flow
+        // publishes .connected. `disconnect()` cancels it via
+        // cancelPeripheralConnection.
+        if wantsConnect { central.connect(peripheral) }
     }
 }
 
@@ -644,6 +670,13 @@ extension BLETransport: CBPeripheralDelegate {
             // download-announce descriptor on `transferControl`.
             if [GATT.batteryLevel, GATT.status, GATT.transferControl].contains(characteristic.uuid) {
                 peripheral.setNotifyValue(true, for: characteristic)
+            }
+            // The device's connect-time battery notify fires before this
+            // subscription lands (its next is ~30 s out) — read the level so the
+            // UI has it at once; the value resolves through the same
+            // didUpdateValueFor path as a notify.
+            if characteristic.uuid == GATT.batteryLevel {
+                peripheral.readValue(for: characteristic)
             }
         }
         // Once the PSM characteristic is known, open the CoC.
@@ -716,9 +749,11 @@ extension BLETransport: CBPeripheralDelegate {
         let waiters = channelWaiters
         channelWaiters.removeAll()
         for cont in waiters { cont.resume(returning: ble) }
-        // CoC up + services discovered → the initial link is ready (re-opens
-        // mid-session resolve their waiters without touching the connect flow).
-        if connectContinuation != nil { finishConnect() }
+        // CoC up + services discovered → the link is ready. `finishConnect`
+        // publishes .connected either way and resolves the initial connect's
+        // continuation when one is pending — a background *re*connect (after a
+        // drop) has none, but must still flip the state stream back.
+        finishConnect()
     }
 
     private func resumeReads(_ uuid: CBUUID, _ result: Result<Data, Error>) {

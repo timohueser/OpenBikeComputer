@@ -16,7 +16,7 @@ final class UploadSheetModelTests: XCTestCase {
         _ scenario: Scenario,
         payloadBytes: Int = 100_000,
         waypoints: [Waypoint] = [],
-        onCompleted: @escaping (UInt16?) -> Void = { _ in }
+        onCompleted: @escaping (UInt16?, UInt32) -> Void = { _, _ in }
     ) -> (UploadSheetModel, MockControl) {
         let control = MockControl(scenario: scenario)
         control.latency = .zero
@@ -60,7 +60,7 @@ final class UploadSheetModelTests: XCTestCase {
 
     func testHappyPathMovesThroughDoneAndAutoDismisses() async {
         var assignedObjectID: UInt16??
-        let (model, _) = makeModel(.happyPath, onCompleted: { assignedObjectID = $0 })
+        let (model, _) = makeModel(.happyPath, onCompleted: { id, _ in assignedObjectID = id })
 
         XCTAssertEqual(model.phase, .uploading)
         XCTAssertEqual(model.fraction, 0)
