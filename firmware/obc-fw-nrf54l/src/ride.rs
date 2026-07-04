@@ -49,7 +49,9 @@ const WDT_FEED_CAP_MS: u32 = 12_000;
 /// How stale [`INPUT_HB_MS`] may be before the ride loop **withholds** the feed. The idle input
 /// plane legitimately sleeps [`IDLE_REPOLL_MS`] (30 s) between stamps, so the window is 2× that
 /// plus margin — no false trip on a parked device; a wedged input plane trips the dog within
-/// roughly this window + the WDT period (~90 s worst case, fine for a last resort).
+/// roughly this window + the WDT period (~90 s worst case, fine for a last resort). A stamp
+/// slightly *newer* than the loop's own `now` (the planes race on `Instant::now()`) counts as
+/// fresh, not as a wrapped ~u32::MAX staleness.
 const INPUT_HB_STALE_MS: u32 = 65_000;
 
 /// Synthetic-walk advance cadence (ms) on the `synth` build: the stand-in GPS publishes no `Signal`,
@@ -251,8 +253,11 @@ pub(crate) async fn run_app(
         // alive, the stamp proves the P3 recognizer alive — either plane wedging stops the feed
         // and the dog resets the device within its period.
         if let Some(h) = wdt.as_mut() {
+            // The input plane stamps from its own `Instant::now()`, which can be a hair newer
+            // than this loop's `now` — the subtraction then wraps to ~u32::MAX. A wrapped
+            // (top-half) age means the heartbeat is *ahead* of us, i.e. maximally fresh.
             let age = now.wrapping_sub(INPUT_HB_MS.load(Ordering::Relaxed));
-            if age <= INPUT_HB_STALE_MS {
+            if age <= INPUT_HB_STALE_MS || age > u32::MAX / 2 {
                 h.pet();
             } else {
                 defmt::error!("WDT: input-plane heartbeat {=u32} ms stale — withholding the feed", age);
