@@ -13,8 +13,6 @@ use trouble_host::prelude::*;
 
 use crate::object_store::ObjectStore;
 
-use super::state::{status, LinkState};
-
 /// The dynamic L2CAP SPSM the CoC server listens on, published in the `psm` characteristic. A fixed
 /// value in the LE dynamic range (`0x0080..=0x00FF`) — the app reads whatever we advertise, so a
 /// constant is simpler than negotiating one and equally correct.
@@ -196,96 +194,4 @@ pub(crate) fn config_blob(store: &ObjectStore) -> heapless09::Vec<u8, 128> {
     let mut v = heapless09::Vec::new();
     let _ = v.extend_from_slice(&buf[..len]);
     v
-}
-
-// ============================ The status screen ============================
-
-/// Paint the whole BLE status screen into the resident RGB222 framebuffer (`run_status` presents it
-/// through the `DisplayDriver` seam; RowDiff makes the re-present cheap). Deliberately dumb — a white
-/// card of text: the factory name, the link state, the peer + negotiated interval while connected,
-/// battery / SD / lifetime counters, and an input counter so a button press visibly lands on glass.
-/// While pairing it becomes the big-font passkey card instead.
-pub fn draw_status_screen(fb: &mut [u8], battery_pct: u8, sd_ok: bool, inputs: u32) {
-    use embedded_graphics::pixelcolor::{Rgb565, RgbColor};
-    use embedded_graphics::prelude::Point;
-    use obc_render::{draw_text, Font, TextAlign};
-
-    let s = status();
-    let name = device_name();
-
-    fb.fill(0x3F); // device-64 white — the reflective panel's paper backdrop
-    let mut dev = obc_platform::FbDevice64::new(fb, crate::display::FRAME_W as u32, crate::display::FRAME_H as u32);
-    let ink = Rgb565::BLACK;
-    let cx = crate::display::FRAME_W as i32 / 2;
-
-    // Pairing: the screen's marquee moment — the 6-digit passkey, huge, that the rider types into the
-    // phone's pairing dialog. Takes over the whole card until pairing resolves.
-    if let Some(code) = s.passkey {
-        draw_text(&mut dev, "Pairing", Point::new(cx, 60), Font::Display, TextAlign::Center, ink);
-        let mut line: heapless::String<8> = heapless::String::new();
-        let _ = core::fmt::write(&mut line, format_args!("{:06}", code));
-        draw_text(&mut dev, line.as_str(), Point::new(cx, 150), Font::Huge, TextAlign::Center, ink);
-        draw_text(&mut dev, "enter this code", Point::new(cx, 232), Font::Body, TextAlign::Center, ink);
-        draw_text(&mut dev, "on your phone", Point::new(cx, 262), Font::Body, TextAlign::Center, ink);
-        return;
-    }
-
-    draw_text(&mut dev, name.as_str(), Point::new(cx, 28), Font::Display, TextAlign::Center, ink);
-    let state = match s.state {
-        LinkState::Init => "starting",
-        LinkState::Advertising => "advertising",
-        // "secured" once the link is encrypted (bonded); plain "connected" before pairing.
-        LinkState::Connected if s.secured => "secured",
-        LinkState::Connected => "connected",
-    };
-    draw_text(&mut dev, state, Point::new(cx, 76), Font::Body, TextAlign::Center, ink);
-
-    // The peer's address while connected (display order, MSB first) — Label so 17 chars fit.
-    if let Some(p) = s.peer {
-        let mut line: heapless::String<20> = heapless::String::new();
-        let _ = core::fmt::write(
-            &mut line,
-            format_args!("peer {:02X}{:02X}{:02X}{:02X}{:02X}{:02X}", p[5], p[4], p[3], p[2], p[1], p[0]),
-        );
-        draw_text(&mut dev, line.as_str(), Point::new(cx, 112), Font::Label, TextAlign::Center, ink);
-    }
-
-    // The detail rows: one label-value line each, Body font, fixed left edge. Start + step are
-    // sized so the deepest layout (5 rows when connected) clears the 320 px panel: the last row
-    // tops out at 150 + 4×34 = 286, and a Body cell is 28 px tall → 314, inside 320.
-    let x = 20;
-    let mut y = 150;
-    let mut row = |dev: &mut obc_platform::FbDevice64<'_>, text: &str| {
-        draw_text(dev, text, Point::new(x, y), Font::Body, TextAlign::Left, ink);
-        y += 34;
-    };
-    let mut line: heapless::String<24> = heapless::String::new();
-    // While connected, the negotiated link parameters: interval · PHY · MTU on one line.
-    if s.state == LinkState::Connected {
-        let _ = core::fmt::write(
-            &mut line,
-            format_args!("{}ms {} m{}", s.conn_interval_ms, if s.phy_2m { "2M" } else { "1M" }, s.att_mtu),
-        );
-        row(&mut dev, line.as_str());
-        line.clear();
-    }
-    let _ = core::fmt::write(&mut line, format_args!("batt {}%", battery_pct));
-    row(&mut dev, line.as_str());
-    line.clear();
-    let _ = core::fmt::write(&mut line, format_args!("sd   {}", if sd_ok { "ok" } else { "--" }));
-    row(&mut dev, line.as_str());
-    line.clear();
-    // Lifetime connect/disconnect counters + the last drop's reason byte (the soak health line).
-    if s.disconnects > 0 {
-        let _ = core::fmt::write(
-            &mut line,
-            format_args!("link {}/{} x{:02X}", s.connects, s.disconnects, s.last_disconnect_reason),
-        );
-    } else {
-        let _ = core::fmt::write(&mut line, format_args!("link {}/{}", s.connects, s.disconnects));
-    }
-    row(&mut dev, line.as_str());
-    line.clear();
-    let _ = core::fmt::write(&mut line, format_args!("in   {}", inputs));
-    row(&mut dev, line.as_str());
 }

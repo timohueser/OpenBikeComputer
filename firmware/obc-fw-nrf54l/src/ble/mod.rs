@@ -41,11 +41,6 @@ mod gatt;
 mod lifecycle;
 mod state;
 
-// The stable `ble::…` surface the rest of the crate consumes (`main.rs`'s status plane). Kept as
-// re-exports so the submodule split doesn't churn the call sites.
-pub use gatt::draw_status_screen;
-pub use state::{publish_battery, wait_status_change};
-
 use core::mem::MaybeUninit;
 use core::sync::atomic::Ordering;
 
@@ -157,19 +152,30 @@ fn build_sdc<'d, const N: usize>(
 /// link edge for the status UI. Joined against `run_status` on the thread-mode executor in
 /// `main.rs`. The MPSL/SDC peripheral sets are built in `main` (where the `Peripherals` struct
 /// is split) and handed in whole.
+/// An **embassy task**, not a plain future: its ~36 KB state machine must live in this task's
+/// `.bss` pool static, built **in place** by the spawn. As a `join`-ed local future in `main` it
+/// was a giant stack temporary inside `main`'s poll frame — which overflowed the combined build's
+/// ~36 KB stack straight into `.bss` before the first frame rendered (#270; caught by a DWT
+/// watchpoint — the corrupted task pool panicked "Busy" at the com_task spawn).
+#[embassy_executor::task]
 pub async fn run(
     spawner: Spawner,
     mpsl_p: mpsl::Peripherals<'static>,
     sdc_p: sdc::Peripherals<'static>,
     cracen_p: Peri<'static, peripherals::CRACEN>,
-    store: ObjectStore,
     shared: &'static SharedStoreMutex,
 ) -> ! {
     // The object store: the catalog/upload/digest semantics behind a RefCell — both BLE planes (GATT
     // control + CoC data) borrow it synchronously, never across an `await`. The SD card + RRAM
     // settings it operates on live in `shared` (the async mutex the ride loop shares), which each
-    // plane locks per call and passes into the store method (#270).
-    let store = core::cell::RefCell::new(store);
+    // plane locks per call and passes into the store method (#270). Built **here**, not in `main`:
+    // the ~8 KB value then lives in this task's future (its pool static) and its construction
+    // temporary lands on this task's shallow poll frame — in `main` both cost stack the combined
+    // build doesn't have (see `spawn_ble_stack`).
+    let store = {
+        let mut guard = shared.lock().await;
+        core::cell::RefCell::new(ObjectStore::new(&mut guard))
+    };
     // LFCLK = the internal RC at Nordic's recommended calibration cadence (calibrate every
     // 16×0.25 s = 4 s; temp-check every 2 intervals) — guarantees the ±500 ppm class the accuracy
     // field claims. NOT the 32 k crystal — see the module doc (unprogrammed XO INTCAPs → HCI 0x3E).

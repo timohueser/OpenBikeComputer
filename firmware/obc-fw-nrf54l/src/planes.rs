@@ -2,7 +2,7 @@
 //!
 //! Owns the high-priority input/overlay plane (the tasks, their executor statics + the SWI01 pend
 //! vector, the gesture channel) and the cfg-selected [`MapDisplay`] seam the thread-mode plane
-//! ([`run_app`](crate::ride::run_app) / `run_status`) drives the panel through. `main` still owns
+//! ([`run_app`](crate::ride::run_app)) drives the panel through. `main` still owns
 //! bring-up: it constructs the panels + `MapDisplay`, starts the executor, and spawns the tasks.
 
 use core::cell::RefCell;
