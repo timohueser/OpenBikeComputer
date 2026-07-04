@@ -87,7 +87,7 @@ struct EchoHarness {
             throw HarnessError.digestUnchanged
         }
         print(
-            "echo-harness: committed as object id \(result.objectID) ✓ "
+            "echo-harness: committed as object id \(result.objectID.map(String.init) ?? "?") ✓ "
                 + "(routes \(before.routeCount)→\(after.routeCount), revision \(before.revision)→\(after.revision))"
         )
     }
@@ -182,13 +182,15 @@ struct EchoHarness {
             try await link.channel.send(bytes)
             return await central.nextTransferResult()
         }
-        guard committed.status == .committed else { throw HarnessError.unexpectedStatus(committed.status) }
-        print("echo-harness: re-uploaded from the start → committed as object id \(committed.objectID) ✓")
+        guard committed.status == .committed, let newID = committed.objectID else {
+            throw HarnessError.unexpectedStatus(committed.status)
+        }
+        print("echo-harness: re-uploaded from the start → committed as object id \(newID) ✓")
 
         // 3. Confirm the route is in the catalog.
         let entries = try await downloadRouteList(link: link, central: central)
-        guard entries.contains(where: { $0.objectID == committed.objectID }) else { throw HarnessError.routeNotListed }
-        print("echo-harness: id \(committed.objectID) present in routeList ✓ (\(entries.count) route(s))")
+        guard entries.contains(where: { $0.objectID == newID.raw }) else { throw HarnessError.routeNotListed }
+        print("echo-harness: id \(newID) present in routeList ✓ (\(entries.count) route(s))")
     }
 
     /// The shared download flow (S0 §4.2 op 2): write the request, await the device's announce

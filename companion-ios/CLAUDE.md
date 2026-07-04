@@ -115,7 +115,8 @@ piecemeal (if that ever flips, it's its own issue).
 ## Conventions
 
 - **SwiftUI + async/await + `AsyncStream`**; `@Observable` view models (not
-  `ObservableObject`). Strict concurrency is on — keep domain types `Sendable`.
+  `ObservableObject`). Swift 6 language mode everywhere — keep domain types
+  `Sendable`.
 - **Formats at the edges, canonical models in the middle.** Files decode into
   `ImportedRoute`, device bytes into `Ride`; switching a format must stay a
   one-conformer change. Never parse/encode outside `OBCFormats`/`Codecs`.
