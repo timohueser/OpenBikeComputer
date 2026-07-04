@@ -1,16 +1,23 @@
 //! The Fields screen — choose which data fields the riding [`Statistics`](crate::screen) grid shows
-//! and in what order. Reached from the [`Stats`](super::StatsScreen) screen's *Fields* row. Two idioms
-//! on top of the shared two-level encoder model:
+//! and in what order, edited **as the grid itself**: the same 3×2 tile pages the Statistics view
+//! draws (same [`page_fields`](stat_fields::page_fields) placement, same [`tile`](crate::screen)
+//! renderer, live values), so what you arrange here is exactly what the ride shows. The cursor is
+//! the amber tile; walking past a page's last tile flips to the next page (`page / pages` in the
+//! title bar). Reached from the [`Stats`](super::StatsScreen) screen's *Fields* row. Two idioms on
+//! top of the shared two-level encoder model:
 //!
-//! - **Reordering.** *Press* grabs the highlighted field; rotating moves it, *press*/*back* drops it.
-//!   While grabbed the row is anchored on screen (neighbours slide past it), so a two-span field
-//!   hopping a whole row reads cleanly. A grabbed two-span field always begins a row —
-//!   [`StatFieldList::move_item`](crate::stat_fields::StatFieldList::move_item) enforces it.
+//! - **Reordering.** *Press* grabs the highlighted tile (move arrows appear); rotating moves it,
+//!   *press*/*back* drops it. The grid reflows live per detent, so a two-span field's row-aligned
+//!   hops ([`StatFieldList::move_item`](crate::stat_fields::StatFieldList::move_item)) are visible
+//!   rather than inferred.
 //! - **Removing.** A hold-to-delete footer (trash can + progress bar) erases the highlighted field —
 //!   a deliberate gesture so a stray long-press can't drop a panel.
 //!
-//! The `Add field` row opens the [`AddField`](super::AddFieldScreen) picker. Editing is live into
+//! The ghost `+` tile in the first free slot opens the [`AddField`](super::AddFieldScreen) picker —
+//! a new field lands exactly where the ghost sits. Editing is live into
 //! [`Settings::stat_fields`](crate::Settings).
+
+use core::fmt::Write;
 
 use embedded_graphics::{prelude::Point, primitives::Rectangle};
 use obc_render::{
@@ -20,17 +27,20 @@ use obc_render::{
 };
 
 use crate::input::Gesture;
-use crate::screen::list::{self, pinned_first, window_start, ListGeometry, Separators};
-use crate::screen::{Ctx, Render, Screen, Transition};
+use crate::screen::{list, title_frame, Ctx, Render, Screen, Transition, LIST_TOP};
+use crate::stat_fields::{self, COLS, SLOTS_PER_PAGE};
 
 use super::AddFieldScreen;
 
-/// Per-row height — a single Body label with room for the span badge / move arrows.
-const ROW_H: i32 = 46;
-
-/// Height of the hold-to-delete footer reserved at the bottom. Reserved whatever the cursor is on,
-/// so the list doesn't reflow as you move between field and Add rows.
+/// Height of the hold-to-delete footer reserved at the bottom, whatever the cursor is on, so the
+/// grid doesn't reflow as you move between field tiles and the ghost Add tile.
 const FOOTER_H: i32 = 34;
+
+/// Gap between tiles — the Statistics grid's spacing, so the arrangement reads identically.
+const GAP: i32 = 6;
+
+/// Side margin of the grid (the Statistics chart margin, near enough that tiles look the same).
+const GRID_X: i32 = 10;
 
 /// The Fields screen. The row list is `[selected fields, in order] + [Add field…]`; `selected` is
 /// the cursor over it, and `grabbed` lifts the selected field for moving.
@@ -102,53 +112,70 @@ impl StatFieldsScreen {
         }
     }
 
-    /// First visible row, as a signed offset (can be negative): the plain scroll-to-reveal
-    /// [`window_start`], or [`pinned_first`] while grabbed so the moving row stays anchored
-    /// mid-window ([`list::draw_rows`] skips the out-of-range slots).
-    fn window_first(&self, visible: usize, rows: usize) -> i32 {
-        if self.grabbed {
-            pinned_first(self.selected, visible)
-        } else {
-            window_start(self.selected, visible, rows) as i32
-        }
-    }
-
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         use crate::screen::palette::*;
         let (w, h) = (rx.w, rx.h);
-        let fields = rx.settings.stat_fields.as_slice();
-        let len = fields.len();
-        let add_row = len;
-        let rows = len + 1;
-        // The row list fills what's left above the delete footer.
-        let geo = ListGeometry::below_title(w, h - FOOTER_H, ROW_H, 6, super::ROW_X, Separators::None);
+        let list = rx.settings.stat_fields; // `Copy` — frees `rx` for the readout borrow below
+        let len = list.len();
 
-        list::list_frame(cv, w, h, "FIELDS", self.selected + 1, rows, geo.visible);
+        // The cursor's global slot decides the visible page; the ghost Add tile sits in the first
+        // free slot, so browsing to it flips to its page too.
+        let ghost_slot = stat_fields::next_free_slot(&list);
+        let cur_slot = stat_fields::slot_of(&list, self.selected).unwrap_or(ghost_slot);
+        let page = cur_slot / SLOTS_PER_PAGE;
+        let pages = ghost_slot / SLOTS_PER_PAGE + 1;
 
-        let first = self.window_first(geo.visible, rows);
-        list::draw_rows(cv, geo, rows, self.selected, first, |cv, row| {
-            if row.index == add_row {
-                // Add-field row: a plus (centred on the row) + a centred label.
-                let (top, rh) = (row.area.top_left.y, row.area.size.height as i32);
-                let px = row.area.top_left.x + 14;
-                let pcy = top + (rh - 22) / 2 + 11; // the label's cap-height midline
-                cv.hline(px - 6, pcy, 13, INK);
-                cv.vline(px, pcy - 6, 13, 1, INK);
-                cv.text_vcentered("Add field", px + 18, (top, rh), Font::Body, TextAlign::Left, INK);
-            } else {
-                let f = fields[row.index];
-                let grabbed = row.selected && self.grabbed;
-                // A grabbed row adds the move arrows to the cursor fill (the badge yields to them).
-                if grabbed {
-                    move_arrows(cv, row.area);
-                }
-                super::row_label(cv, row.area, f.name(), None);
-                if !grabbed {
-                    let badge_color = if row.selected { INK } else { SUBTEXT };
-                    super::span_badge(cv, row.area, f.span(), badge_color);
+        let mut counter: heapless::String<8> = heapless::String::new();
+        if pages > 1 {
+            let _ = write!(counter, "{} / {}", page + 1, pages);
+        }
+        title_frame(cv, w, h, "FIELDS", &counter);
+
+        // Tile geometry: the Statistics grid's columns and gaps, with the rows stretched into the
+        // space the chart occupies there — same arrangement, roomier panes.
+        let grid_w = w - 2 * GRID_X;
+        let col_w = (grid_w - GAP) / 2;
+        let row_h = (h - FOOTER_H - LIST_TOP - 2 * GAP - 6) / stat_fields::ROWS_PER_PAGE as i32;
+        let tile_rect = |slot: usize, span: u8| {
+            let s = slot % SLOTS_PER_PAGE;
+            let (col, row) = ((s % COLS) as i32, (s / COLS) as i32);
+            let tw = if span == 2 { grid_w } else { col_w };
+            rect(GRID_X + col * (col_w + GAP), LIST_TOP + row * (row_h + GAP), tw, row_h)
+        };
+
+        // The page's tiles — live cells through the same registry the Statistics grid draws with.
+        let rdt = rx.readout();
+        for (i, f) in list.as_slice().iter().enumerate() {
+            let slot = stat_fields::slot_of(&list, i).unwrap_or(0);
+            if slot / SLOTS_PER_PAGE == page {
+                let area = tile_rect(slot, f.span());
+                let is_sel = i == self.selected;
+                let cell = f.cell(&rdt);
+                let bg = if is_sel { AMBER } else { PARCHMENT_SHADE };
+                crate::screen::tile(cv, area, &cell.caption, &cell.value, cell.arrow, bg);
+                if is_sel && self.grabbed {
+                    move_arrows(cv, area);
                 }
             }
-        });
+        }
+
+        // The ghost Add tile: tile anatomy (caption + a plus where the value goes) in outline form.
+        if ghost_slot / SLOTS_PER_PAGE == page {
+            let area = tile_rect(ghost_slot, 1);
+            let is_sel = self.selected == len;
+            if is_sel {
+                cv.round(area, 5, AMBER);
+            } else {
+                cv.round_outline(area, 5, RULE);
+                cv.round_outline(rect(area.top_left.x + 1, area.top_left.y + 1, col_w - 2, row_h - 2), 5, RULE);
+            }
+            let (x, y) = (area.top_left.x, area.top_left.y);
+            cv.text("ADD", Point::new(x + 5, y + ((row_h - 48) / 2).max(4)), Font::Label, TextAlign::Left, SUBTEXT);
+            let (px, py) = (x + col_w / 2, y + row_h / 2 + 8);
+            cv.hline(px - 8, py, 17, INK);
+            cv.vline(px, py - 8, 17, 2, INK);
+        }
+
         delete_footer(cv, w, h, self.selected < len, rx.hold_progress);
     }
 }
@@ -276,26 +303,21 @@ mod tests {
         assert!(matches!(run(&mut scr, &mut s, Gesture::Back), Transition::Pop), "a second back pops");
     }
 
-    /// While grabbed, the window pins the row to the middle slot for every position — including at
-    /// the ends, where the window scrolls negative/past the end. Ungrabbed = plain scroll-to-reveal.
+    /// The editor's cursor→page mapping: with seven fields (two pages), walking the cursor past
+    /// the sixth tile lands on page 2 — and the ghost Add tile (index == len) lives on the page
+    /// after the last field's.
     #[test]
-    fn grabbed_row_stays_pinned_mid_window() {
-        let (visible, rows) = (5usize, 14usize);
-        let plain = StatFieldsScreen { selected: 8, grabbed: false };
-        assert_eq!(
-            plain.window_first(visible, rows),
-            window_start(8, visible, rows) as i32,
-            "ungrabbed = plain scroll"
-        );
-
-        // For every selection — top, interior, bottom — the grabbed row sits at the mid slot.
-        for sel in 0..rows {
-            let s = StatFieldsScreen { selected: sel, grabbed: true };
-            let slot = sel as i32 - s.window_first(visible, rows);
-            assert_eq!(slot, (visible / 2) as i32, "the grabbed row stays pinned mid-window (sel={sel})");
+    fn cursor_page_follows_the_placement_walk() {
+        let mut s = Settings::default(); // six single-span fields — page 1 exactly full
+        s.stat_fields.push(crate::stat_fields::StatField::Clock);
+        let list = s.stat_fields;
+        // Fields 0..=5 sit on page 0, the clock (index 6) on page 1.
+        for i in 0..6 {
+            assert_eq!(stat_fields::slot_of(&list, i).unwrap() / SLOTS_PER_PAGE, 0, "field {i} is on page 1");
         }
-        // At the top the window offset really does go negative (empty space above the pinned row).
-        let top = StatFieldsScreen { selected: 0, grabbed: true };
-        assert!(top.window_first(visible, rows) < 0, "grabbing the first row scrolls the window past the top");
+        assert_eq!(stat_fields::slot_of(&list, 6).unwrap() / SLOTS_PER_PAGE, 1, "the clock starts page 2");
+        // The ghost Add tile follows the clock on page 2 (the 2-span clock consumed slots 6..8).
+        assert_eq!(stat_fields::next_free_slot(&list) / SLOTS_PER_PAGE, 1, "the Add ghost shares page 2");
+        assert_eq!(stat_fields::slot_of(&list, 7), None, "past the selection there is no slot");
     }
 }

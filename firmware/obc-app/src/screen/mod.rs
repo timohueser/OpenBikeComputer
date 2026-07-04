@@ -383,6 +383,32 @@ pub(crate) fn riding_common(g: Gesture, cx: &mut Ctx) -> Transition {
     }
 }
 
+/// Draw one stat tile — a rounded pane in `bg` with an olive caption over a big ink Display value,
+/// optionally prefixed by an up-triangle for climb figures (the panel font has no ↑ glyph). Shared
+/// by the riding Statistics grid (tan panes) and the Fields editor (which draws the same tiles,
+/// amber under the cursor). The caption+value block is vertically centred, so the taller editor
+/// tiles and the chart-squeezed Statistics tiles both balance.
+pub(crate) fn tile(cv: &mut impl Surface, area: Rectangle, label: &str, value: &str, arrow: bool, bg: u16) {
+    use palette::*;
+    let (x, y) = (area.top_left.x, area.top_left.y);
+    cv.round(area, 5, bg);
+    // Content block: Label caption (cap 18) + Display value (cap 26) with the same 18 px lead the
+    // Statistics grid always had; centre it in whatever height the pane has.
+    let cy = y + ((area.size.height as i32 - 48) / 2).max(4);
+    // Caption inset less than the value so wide unit captions sit nearer the tile centre.
+    cv.text(label, Point::new(x + 5, cy), Font::Label, TextAlign::Left, SUBTEXT);
+    let vy = cy + 18;
+    let vx = if arrow {
+        // Up-triangle sized to sit alongside the Display digits.
+        let ax = x + 8;
+        cv.triangle(Point::new(ax, vy + 26), Point::new(ax + 13, vy + 26), Point::new(ax + 6, vy + 6), palette::INK);
+        x + 26
+    } else {
+        x + 8
+    };
+    cv.text(value, Point::new(vx, vy), Font::Display, TextAlign::Left, palette::INK);
+}
+
 /// Draw a centered two-line empty state — a bold `title` over a muted `hint` — the shared
 /// "nothing to show yet" body the Route menu and Statistics draw under their header.
 pub(crate) fn empty_state(cv: &mut impl Surface, w: i32, h: i32, title: &str, hint: &str) {
