@@ -22,11 +22,11 @@ keep today's flat strokes.
 - Lines and polygons are drawn **interleaved in one painter's-order loop**, sorted by `(z_index, seq)`
   ([`render` draw phase, lib.rs:461](../obc-render/src/lib.rs#L461)). Each road line is a single
   `Polyline::with_stroke(color, weight)` ([Kind::Line arm, lib.rs:478](../obc-render/src/lib.rs#L478)).
-- Roads occupy a **z-band ~24–60** ([`config.json` highway block](../../config.json#L9)); areas/water sit
+- Roads occupy a **z-band ~24–60** ([default-preset highway block](../../packer/presets/default.json#L16)); areas/water sit
   below, admin/labels above.
 - `render()` already selects and reports the LOD (`stats.lod`); the finest is
   `reader.lods().len() - 1`. The config's finest level is **LOD 2** (`simplify: 0`,
-  [config.json:5](../../config.json#L5)).
+  [default.json:13](../../packer/presets/default.json#L13)).
 - The `Span` doesn't carry `style_id`; part 2 adds it (or the fields) so the draw loop can see a style's
   casing flag + `color2`.
 
@@ -68,7 +68,7 @@ artifact); it needs a **casing pass before the fill pass** within the road band.
 - **`obc-render/src/lib.rs`** — restructure the `render` draw phase into casing-pass + main-pass; the
   casing pass needs each road span's casing flag + `color2` (via the `style_id`-in-`Span` lookup from
   part 2). Gate on finest LOD.
-- **`config.json`** — mark the cased road classes with a casing line-style + a `color2` that is a
+- **`packer/presets/default.json`** (and the other presets) — mark the cased road classes with a casing line-style + a `color2` that is a
   *darker* step on the RGB222 grid (visibly distinct from the fill — the panel is 64-colour).
 - **`screen/map.rs`** — nothing required (optional debug toggle).
 

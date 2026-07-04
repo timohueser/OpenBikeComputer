@@ -4,7 +4,9 @@
 //! `<pbf...> <config.json> <out.obcm>`, plus `--chunk-size` and `--no-land`. It
 //! prints one stage string per phase ("Merging", "Pass 1/2", "Calculating BBox",
 //! "Generating land", "Building Quadtree", "Serializing", "Writing") so the web
-//! builder UI can show progress.
+//! builder UI can show progress. `obc-pack schema` prints the config's JSON
+//! Schema envelope — the web builder serves it so the editor's capability always
+//! matches the binary that packs.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -47,7 +49,9 @@ fn parse_args() -> Result<Args, String> {
     }
     // `<pbf...> <config.json> <out.obcm>`: last two positionals are config + output.
     if positional.len() < 3 {
-        return Err("usage: obc-pack <pbf...> <config.json> <out.obcm> [--chunk-size N] [--no-land]".into());
+        return Err("usage: obc-pack <pbf...> <config.json> <out.obcm> [--chunk-size N] [--no-land]\n       \
+                    obc-pack schema   (print the config JSON Schema envelope)"
+            .into());
     }
     let output = positional.pop().unwrap();
     let config = positional.pop().unwrap();
@@ -214,6 +218,10 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--version") {
         println!("obc-pack {} (merge + ingest + relations + land + quadtree + serialize)", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
+    if args.first().map(String::as_str) == Some("schema") {
+        println!("{}", obc_pack::config::schema_envelope());
         return ExitCode::SUCCESS;
     }
     match run() {

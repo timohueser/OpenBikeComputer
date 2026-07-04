@@ -240,7 +240,8 @@ mod tests {
             "corpus fixture missing: {TINY_PBF}. It is committed; rebuild from tiny/tiny.osm via \
              packer/tests/corpus/build_corpus.sh"
         );
-        let cfg = Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/config.json")).expect("config");
+        let cfg =
+            Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/presets/default.json")).expect("config");
         let ing = ingest_osm(TINY_PBF, &cfg).expect("ingest");
 
         // W8 (way 109) is the only coastline; nodes 29,30 ⇒ 2 points.

@@ -1,0 +1,42 @@
+{
+    "_meta": {
+        "id": "minimal",
+        "name": "Minimal",
+        "description": "The big picture: major roads, rail, rivers and lakes on the land/sea base. Small files, fast builds.",
+        "version": 1,
+        "swatch": ["#FF5500", "#FFAA00", "#000000", "#55AAFF"]
+    },
+    "lods": [
+        {"max_mpp": null, "simplify": 50},
+        {"max_mpp": 120, "simplify": 12},
+        {"max_mpp": 18, "simplify": 0}
+    ],
+    "features": {
+        "highway": {
+            "motorway": {"z_index": 60, "color": "0xFAA0", "weight": 3, "min_lod": 0, "priority": 2},
+            "motorway_link": {"z_index": 58, "color": "0xFAA0", "weight": 2, "min_lod": 1, "priority": 2},
+            "trunk": {"z_index": 55, "color": "0xFAA0", "weight": 3, "min_lod": 0, "priority": 2},
+            "trunk_link": {"z_index": 53, "color": "0xFAA0", "weight": 2, "min_lod": 1, "priority": 2},
+            "primary": {"z_index": 50, "color": "0xFD40", "weight": 3, "min_lod": 0, "priority": 2},
+            "primary_link": {"z_index": 48, "color": "0xFD40", "weight": 2, "min_lod": 1, "priority": 2},
+            "secondary": {"z_index": 44, "color": "0xFD40", "weight": 2, "min_lod": 1, "priority": 2},
+            "tertiary": {"z_index": 34, "color": "0xFD40", "weight": 2, "min_lod": 1, "priority": 2}
+        },
+        "railway": {
+            "rail": {"z_index": 40, "color": "0x0000", "weight": 2, "min_lod": 1, "priority": 2}
+        },
+        "waterway": {
+            "river": {"z_index": 16, "color": "0x555F", "weight": 2, "min_lod": 0, "priority": 2},
+            "canal": {"z_index": 16, "color": "0x555F", "weight": 2, "min_lod": 1, "priority": 3}
+        },
+        "natural": {
+            "sea": {"z_index": 0, "color": "0x555F", "weight": 1, "min_lod": 0, "priority": 1},
+            "land": {"z_index": 1, "color": "0xFFFF", "weight": 1, "min_lod": 0, "priority": 1},
+            "water": {"z_index": 14, "color": "0x555F", "weight": 1, "min_lod": 1, "priority": 2}
+        },
+        "admin_level": {
+            "2": {"z_index": 100, "color": "0xAAB5", "weight": 2, "min_lod": 0, "priority": 3}
+        }
+    },
+    "marker": {"color": "0xF800"}
+}
