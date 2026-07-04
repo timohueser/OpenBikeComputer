@@ -11,6 +11,7 @@ export interface AreaSelection {
     coveringIds: string[];
     coveringNames: string[];
     areaKm2: string | null;
+    areaKm2Raw: number | null;
 }
 
 export function emptySelection(): AreaSelection {
@@ -22,6 +23,7 @@ export function emptySelection(): AreaSelection {
         coveringIds: [],
         coveringNames: [],
         areaKm2: null,
+        areaKm2Raw: null,
     };
 }
 

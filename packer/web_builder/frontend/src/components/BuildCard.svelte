@@ -10,6 +10,7 @@
 
     let filename = $state("mymap.obcm");
     let schema = $state<SchemaEnvelope | null>(null);
+    let schemaNote = $state<string | null>(null);
     let strippedNote = $state<string | null>(null);
     let validation = $state<string | null>(null);
     const tracker = new JobTracker();
@@ -18,8 +19,11 @@
         tracker.reattach();
         try {
             schema = await api.schema();
-        } catch {
-            schema = null; // submit still works; the packer validates anyway
+        } catch (e) {
+            // A 503 means obc-pack isn't built — builds will fail, so surface
+            // the server's build instructions up front.
+            schema = null;
+            schemaNote = e instanceof Error ? e.message : String(e);
         }
     });
 
@@ -65,6 +69,9 @@
     </button>
 </div>
 
+{#if schemaNote}
+    <p class="note error small">{schemaNote}</p>
+{/if}
 {#if validation}
     <p class="note error small">{validation}</p>
 {/if}

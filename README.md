@@ -67,7 +67,7 @@ unchanged.
 | Building anything Rust | A stable Rust toolchain (`rustup`). |
 | The packer (`obc-pack`) | System **GEOS** (`brew install geos`) — linked for multipolygon area assembly. Optionally the [`osmium`](https://osmcode.org/osmium-tool/) CLI on `PATH` (only used to merge/sort when you pass multiple `.pbf` inputs). |
 | The desktop simulator | Just Rust — the GUI is pure eframe/egui, **no SDL/Homebrew setup**. |
-| The web builder (optional) | Python 3.13 + the deps in `packer/requirements.txt`. |
+| The web builder (optional) | Python 3.13 + the deps in `packer/requirements.txt`, and **Node 22+** for the one-time UI build (`npm ci && npm run build` in `packer/web_builder/frontend/`). |
 | Checking the shared crates build for the device | `rustup target add thumbv8m.main-none-eabihf`. |
 
 ---
@@ -156,6 +156,20 @@ It drives the `obc-pack` binary you built above (override its path with the
   directly usable with the `obc-pack` CLI; old stylesheet exports import fine.
 - Feature/category fields autocomplete from a curated OSM tag catalog; any
   freeform tag still works.
+
+Downloads, caches, and the build queue are env-configurable (all optional):
+
+| Variable | Default | Meaning |
+| :-- | :-- | :-- |
+| `OBCM_CACHE_DIR` | `~/.cache/obcm` | Geofabrik index, PBF downloads, land polygons. |
+| `OBCM_OUTPUT_DIR` | `<cache>/builds` | Per-job build outputs, served by the download endpoint. |
+| `OBC_PACK_BIN` | `firmware/target/{release,debug}/obc-pack` | Path to the packer binary. |
+| `OBCM_MAX_CONCURRENT_JOBS` | `1` | Parallel packs (obc-pack is memory-hungry). |
+| `OBCM_KEEP_JOBS` | `20` | Finished builds kept before the sweeper evicts by count/age. |
+
+For frontend development, run the API (`.venv/bin/python -m packer.web_builder
+--no-browser`) and `npm run dev` in `packer/web_builder/frontend/` side by side —
+Vite proxies `/api` to port 8000.
 
 ---
 
