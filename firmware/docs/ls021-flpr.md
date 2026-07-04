@@ -288,7 +288,7 @@ retired history — the F-stage sections below describe it as it was built.)
 | direction | mechanism | detail |
 |---|---|---|
 | **M33 → FLPR** | shared-RAM **sequence** | M33 writes `fb_addr` + spans + `cmd`, `dsb`, then bumps `m33_seq`; the FLPR polls `m33_seq` and services on a change. The FLPR is a dedicated core, so polling is correct. |
-| **FLPR → M33** | **EGU20** interrupt | the FLPR writes `EGU20.TASKS_TRIGGER[0]` (secure `0x500C_9000`) — a plain peripheral store, like driving GPIO. `EGU20.EVENTS_TRIGGERED[0]` raises the M33's **`EGU20` IRQ #201**; the ISR (`Priority::P1`, armed in `launch_flpr`) clears the event + signals the `FRAME_ACK` `embassy_sync::Signal` the async present awaits — **the M33 runs other futures for the whole ~97 ms scan** instead of busy-waiting (#347), bounded by a 250 ms deadline that turns a stalled FLPR into a clean, retried `false`. |
+| **FLPR → M33** | **EGU20** interrupt | the FLPR writes `EGU20.TASKS_TRIGGER[0]` (secure `0x500C_9000`) — a plain peripheral store, like driving GPIO. `EGU20.EVENTS_TRIGGERED[0]` raises the M33's **`EGU20` IRQ #201**; the ISR (`Priority::P1`, armed in `launch_flpr`) clears the event + signals the `FRAME_ACK` `embassy_sync::Signal` the async present awaits — **the M33 runs other futures for the whole ~44 ms scan** instead of busy-waiting (#347), bounded by a 250 ms deadline that turns a stalled FLPR into a clean, retried `false`. |
 
 EGU is the nRF "software interrupt" peripheral and a normal, M33-writable peripheral (its `INTEN`
 accepts writes — the crux, see below). `EGU20` is reserved for this ack; `EGU10` is the spare
@@ -773,7 +773,8 @@ whole period, so the panel captured it twice. **Fix: drive DDR** — a distinct 
 F5 proved the FLPR drives the panel through the `obc_platform::Panel` seam with **test patterns**.
 #165 makes the seam carry the **real app**: `src/main.rs --features panel-ls021` runs the same
 `obc_app::App` (map + ride) the ST7789 default build runs, but presents it on the reflective LS021 via
-the FLPR. ~97 ms full-frame (~10 fps) is the intermediate this ships on; partial/dirty-row updates
+the FLPR. ~97 ms full-frame (~10 fps) was the intermediate this shipped on — the #348 timing pass
+later brought a full frame to **~44 ms** (see `flpr-timing.md`); partial/dirty-row updates
 (#163) make incremental updates instant later.
 
 ### What changed (M33-side glue + budget; the blob, pack, and ping-pong are unchanged)

@@ -30,7 +30,7 @@
 //!
 //! The write paths are **async** (`false` = a transport fault the caller may retry): the FLPR
 //! backend `await`s its coprocessor's EGU20 frame ack (issue #347 — the M33 is freed for the whole
-//! ~97 ms scan; a deadline turns a stalled FLPR into a clean `false`), while the ST7789 backend
+//! ~44 ms scan; a deadline turns a stalled FLPR into a clean `false`), while the ST7789 backend
 //! completes synchronously inside the async fn (it blocks on the SPI-DMA write, the panel's only
 //! mode). Both async methods carry `where Self: Sized`, so the trait stays object-safe for the one
 //! thing the render path needs through `&mut dyn DisplayDriver` — [`fb_mut`](DisplayDriver::fb_mut);

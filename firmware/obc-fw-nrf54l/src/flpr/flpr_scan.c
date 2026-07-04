@@ -130,30 +130,37 @@ static inline void fence(void)
     __asm__ volatile("fence" ::: "memory");
 }
 
-/* ── Bit-bang delays (busy-loops), LA-calibrated on the bench: F2 measured `busy(120) ≈ 9.4 µs`
- * ⇒ **~13 iters/µs**. The DDR drive (F5) latches the source bus on BOTH BCK edges, so each half
- * must satisfy the panel spec independently: BCK width ≥660 ns high AND low (`thwBCK`/`tlwBCK`),
- * data set-up ≥335 ns before *each* edge (`tsRGB`). The bench unit runs happily over-spec (the
- * constants below); the in-spec question is issue #348's measured decision.
+/* ── TIMING POLICY (issue #348, owner-decided 2026-07-04) — read this before touching a constant.
  *
- * ## Direct-fb pack rides inside the delay windows (issue #347)
+ * **Calibration** (software round-trip, the LA is retired; full record + method in
+ * `firmware/docs/flpr-timing.md`): one busy() iteration = **80.5 ns** at this clock (12.4 iters/µs
+ * — NOT the historical "13"), plus **~102 ns call overhead** per busy() call. `ITERS_PER_US`
+ * below keeps the legacy 13 label for the once-per-frame/µs-scale uses where 4.6 % doesn't
+ * matter; the spec-bound GEN constants are pinned in raw recalibrated iters instead.
  *
- * `drive_subline` now packs each wire word from the framebuffer itself (~20 RV32 integer ops,
- * ≈1–2 busy-iters' worth). The pack of the *next* word runs **inside the current word's data-setup
- * window** — after the data lines are presented, before the BCK edge — where the loop previously
- * just busy-spun. `DATA_SETUP_TOPUP_ITERS` is the busy() remainder that tops the window back up to
- * the old `DATA_SETUP_ITERS = 3` total (pack ≈ 2 iters + top-up 1 ≈ the old 3):
- *   - colours sparkle / wrong on glass ⇒ the pack is running shorter than budgeted on your unit —
- *     raise the top-up (2 or 3 restores the old margin at a small frame-time cost);
- *   - the frame-time log regressing vs the ~97 ms baseline ⇒ lower it / tune in #348's LA pass.
+ * **The source bus runs deliberately over-spec** — this is the accepted #348 decision, not an
+ * accident. The DDR drive (F5) latches the source bus on BOTH BCK edges; the spec asks
+ * ≥660 ns per BCK half (`thwBCK`/`tlwBCK`) and ≥335 ns data setup (`tsRGB`). Since #348 there is
+ * **no explicit wait in the hot loop at all**: the pack of the next word + the GPIO presents ARE
+ * the half-width ≈ **210 ns** (~3× under spec). Glass-verified clean (solids, map colours, fine
+ * contours, bulge — the F5 column-doubling mode checked). Caveats, in writing:
+ *   - **single-unit validation** (one bench panel, room temperature); the LM20 build must re-run
+ *     the glass check and `firmware/docs/flpr-timing.md`'s lever log;
+ *   - in-spec halves (660 ns) were *costed*: ~+36 ms/frame (~80 ms total) — declined;
+ *   - colours sparkle / doubled columns on a future unit ⇒ re-pace the hot loop: add a
+ *     `busy(k)` after each present in `drive_subline` (k=1 ≈ +183 ns/half ≈ +14 ms/frame).
  *
- * The gate timings (`GCK_SETTLE`/`GEN_SETUP`/`GEN_HIGH`) are panel **electrical minimums**
- * (GCK↔GEN setup/hold ≥16.37 µs, GEN valid ≥24.56 µs). **Do NOT lower below their µs values** —
- * they are correctness, not slack. (`gen_pulse` drops its *leading* setup busy — the long data
- * shift before it already supplies the GCK↔GEN setup — and keeps the GEN-high + trailing hold.) ── */
-#define ITERS_PER_US      13u /* bench calibration: busy(120) ≈ 9.4 µs */
-#define BCK_HALF_ITERS    2u                    /* each BCK half-period — ⚠️ OVER-SPEC bench value (~180 ns vs the ≥660 ns min; works on this unit) */
-#define DATA_SETUP_TOPUP_ITERS 1u               /* busy() after the in-window pack; pack (~2 iters) + this ≈ the old DATA_SETUP_ITERS 3 (~280 ns, under the spec ~335 ns min — see the note above) */
+ * **The gate timings are electrical minimums and stay in-spec** (GCK↔GEN setup/hold ≥16.37 µs,
+ * GEN valid ≥24.56 µs): `GEN_SETUP`/`GEN_HIGH` sit ~2 % over their minimums by *measured* time —
+ * do NOT trim further (the old 13-label had them accidentally ~7 % over; #348 reclaimed exactly
+ * that). `gen_pulse` still has no *leading* setup busy — the ≥16.37 µs GCK↔GEN setup is supplied
+ * by the ~26 µs data shift that always precedes it. `GCK_SETTLE` is NOT an enumerated minimum
+ * (audited #348): 1 µs, matching the spec's only GCK-width floor (fast-forward ≥1 µs).
+ *
+ * **VPR fast-I/O (CSR/VIO) was evaluated and declined** (#348 stretch): at ~210 ns halves the
+ * pack dominates the word, GPIO stores don't; the modelled gain (~3–4 ms) doesn't buy the Zicsr
+ * toolchain requirement or even narrower pulses. Revisit only with a measured need. ── */
+#define ITERS_PER_US      13u /* legacy µs label (true rate 12.4 — see the policy block) */
 #define GCK_SETTLE_ITERS  (1u * ITERS_PER_US)   /* settle after a GCK level change before shifting — NOT an
                                                  * enumerated spec minimum (audited #348); 1 µs matches the
                                                  * spec's only GCK-width floor (fast-forward ≥1 µs) */
