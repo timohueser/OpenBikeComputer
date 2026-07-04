@@ -73,10 +73,12 @@ export class RegionPicker {
     private pendingLatLng: L.LatLng | null = null;
     private rafPending = false;
     private popupOpen = false;
+    private resizeObs: ResizeObserver;
 
     constructor(el: HTMLElement, cb: PickerCallbacks) {
         this.cb = cb;
-        this.map = L.map(el, { worldCopyJump: true }).setView([30, 10], 2);
+        // boxZoom off: shift+drag is our draw-a-bbox gesture instead.
+        this.map = L.map(el, { worldCopyJump: true, boxZoom: false }).setView([30, 10], 2);
         L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
             maxZoom: 19,
             attribution: "&copy; OpenStreetMap contributors",
@@ -97,9 +99,41 @@ export class RegionPicker {
         });
         this.map.on("mousedown", (e) => this.onDrawStart(e));
         this.map.on("mouseup", () => this.onDrawEnd());
+
+        // Keyboard: Esc cancels an armed/mid-draw box; arrows nudge a finished
+        // box (Shift+arrows drag its south-east corner). Bound to the map
+        // container so it only fires when the map has focus.
+        el.tabIndex = 0;
+        el.addEventListener("keydown", (e) => this.onKey(e));
+
+        // Leaflet only re-measures on window resize; layout-driven size changes
+        // (grid breakpoints, panels, a container that was 0-wide at mount)
+        // need an explicit nudge or every projection is subtly wrong.
+        this.resizeObs = new ResizeObserver(() => this.map.invalidateSize());
+        this.resizeObs.observe(el);
+
+        // Shift+drag draws a box without pressing "Draw box" first. Captured
+        // before Leaflet's own mousedown listeners so the map never starts a
+        // pan for this gesture.
+        el.addEventListener(
+            "mousedown",
+            (ev) => {
+                if (!this.bboxMode || this.drawArmed || !ev.shiftKey || ev.button !== 0) return;
+                ev.stopPropagation();
+                ev.preventDefault();
+                this.armDraw();
+                const latlng = this.map.mouseEventToLatLng(ev);
+                this.bboxDrawing = true;
+                this.bboxStart = latlng;
+                this.removeBox();
+                this.bboxRect = L.rectangle(L.latLngBounds(latlng, latlng), BBOX_STYLE).addTo(this.map);
+            },
+            true,
+        );
     }
 
     destroy() {
+        this.resizeObs.disconnect();
         this.map.remove();
     }
 
@@ -136,6 +170,16 @@ export class RegionPicker {
         else this.selected.add(id);
         this.renderHighlights();
         this.clearPreview(); // selection changed under the cursor; recompute on move
+        this.cb.onSelectionChange([...this.selected]);
+    }
+
+    /** Restore a persisted selection (ids unknown to the index are dropped). */
+    setSelection(ids: string[]) {
+        this.selected.clear();
+        for (const id of ids) {
+            if (this.regionsById.has(id)) this.selected.add(id);
+        }
+        this.renderHighlights();
         this.cb.onSelectionChange([...this.selected]);
     }
 
@@ -277,6 +321,61 @@ export class RegionPicker {
         this.cb.onBboxChange(null);
     }
 
+    /** Set the box programmatically (coordinate inputs, restore, use-view). */
+    setBbox(b: Bbox, fit = false) {
+        this.bboxBounds = L.latLngBounds([b[1], b[0]], [b[3], b[2]]);
+        if (this.bboxRect) {
+            this.bboxRect.setBounds(this.bboxBounds);
+        } else {
+            this.bboxRect = L.rectangle(this.bboxBounds, BBOX_STYLE).addTo(this.map);
+            this.enableBoxDrag();
+        }
+        this.buildHandles();
+        if (fit) this.map.fitBounds(this.bboxBounds.pad(0.3));
+        this.cb.onBboxChange(this.currentBbox());
+    }
+
+    /** Box = the current viewport, inset a little so it reads as a box. */
+    useCurrentView() {
+        const b = this.map.getBounds().pad(-0.12);
+        this.setBbox([b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]);
+    }
+
+    private onKey(e: KeyboardEvent) {
+        if (!this.bboxMode) return;
+        if (e.key === "Escape") {
+            if (this.drawArmed || this.bboxDrawing) {
+                this.bboxDrawing = false;
+                this.removeBox();
+                this.cancelDraw();
+                this.cb.onBboxChange(null);
+            }
+            return;
+        }
+        if (!this.bboxBounds || !e.key.startsWith("Arrow")) return;
+        e.preventDefault();
+        const px = 6;
+        const dx = e.key === "ArrowLeft" ? -px : e.key === "ArrowRight" ? px : 0;
+        const dy = e.key === "ArrowUp" ? -px : e.key === "ArrowDown" ? px : 0;
+        const nw = this.map.latLngToContainerPoint(this.bboxBounds.getNorthWest());
+        const se = this.map.latLngToContainerPoint(this.bboxBounds.getSouthEast());
+        if (e.shiftKey) {
+            // Resize: the south-east corner follows the arrows.
+            this.bboxBounds = L.latLngBounds(
+                this.map.containerPointToLatLng(nw),
+                this.map.containerPointToLatLng(L.point(se.x + dx, se.y + dy)),
+            );
+        } else {
+            this.bboxBounds = L.latLngBounds(
+                this.map.containerPointToLatLng(L.point(nw.x + dx, nw.y + dy)),
+                this.map.containerPointToLatLng(L.point(se.x + dx, se.y + dy)),
+            );
+        }
+        this.bboxRect?.setBounds(this.bboxBounds);
+        this.positionHandles();
+        this.cb.onBboxChange(this.currentBbox());
+    }
+
     private currentBbox(): Bbox | null {
         if (!this.bboxBounds) return null;
         return [
@@ -332,7 +431,12 @@ export class RegionPicker {
                 draggable: true,
                 keyboard: false,
                 zIndexOffset: 1000,
-                icon: L.divIcon({ className: "bbox-handle", iconSize: [12, 12], iconAnchor: [6, 6] }),
+                // 16 px hit area + a directional resize cursor per corner.
+                icon: L.divIcon({
+                    className: `bbox-handle bbox-handle-${key}`,
+                    iconSize: [16, 16],
+                    iconAnchor: [8, 8],
+                }),
             }).addTo(this.map);
             m.on("drag", () => {
                 const opp = this.bboxHandles![OPPOSITE[key]]!.getLatLng();

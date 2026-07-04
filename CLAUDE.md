@@ -10,12 +10,18 @@ and the simulator + tests first-class.
 - `firmware/` — all Rust. Shared `no_std` render path, hosts at the edges:
   obc-reader → obc-route → obc-render → obc-app → hosts (obc-sim, the
   obc-fw-nrf54l board crate). `obc-pack` is the std-host map packer (OSM `.osm.pbf`
-  → `.obcm`). Per-crate roles + build/run: [firmware/README.md](firmware/README.md).
+  → `.obcm`); it also owns the config's JSON Schema (`obc-pack schema` — a config
+  parser change must extend `schema/config.schema.json` + the `schema_*` pinning
+  tests, or the web builder's editor lies). Per-crate roles + build/run:
+  [firmware/README.md](firmware/README.md).
 - `docs/` — the public docs site (below), published at
   <https://timohueser.github.io/OpenBikeComputer/>: it's the **conceptual**
   reference (architecture, formats, rendering, UI, display protocol). `docs/
   index.html` is the marketing landing, `docs/content/` the source. `packer/` —
-  the `web_builder` UI that drives `obc-pack` (the former Python packer is gone).
+  the web builder (FastAPI `web_builder/` + Svelte `web_builder/frontend/`,
+  built into `static/dist/` — gitignored, `npm run build`; CI runs the `web`
+  job) and the style presets in `packer/presets/` (each a complete, CLI-usable
+  packer config). The user's working config lives in the browser, not on disk.
 
 Division of labor: **concepts** live in the docs site; **build / run / flash**
 specifics live in the READMEs (root + `firmware/` + the board crate). Keep each
