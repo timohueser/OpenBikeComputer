@@ -136,6 +136,12 @@ jobs:
       - uses: ./.github/actions/setup-host-deps
       - name: cargo test (workspace, all features)
         run: cargo test --manifest-path firmware/Cargo.toml --workspace --all-features --locked
+      # Renderer pixel-hash tripwire (issue #327): re-render the 6 fixed bench scenes over the
+      # deterministic testkit fixture and fail if any frame hash drifts from the committed golden
+      # file. Timings are printed to the log but never gated (shared runners are noisy); an
+      # intentional rendering change regenerates hashes.txt (--write-hashes) in the same PR.
+      - name: obc-bench --check (render pixel-hash tripwire)
+        run: cargo run --manifest-path firmware/Cargo.toml -p obc-bench --release --locked -- --check firmware/obc-bench/hashes.txt
 
   # The real device board crate (nRF54L15) on its thumbv8m target: clippy each feature config + a
   # release build of the shipping default. Build-only (no board in CI). Each leg runs from the crate
