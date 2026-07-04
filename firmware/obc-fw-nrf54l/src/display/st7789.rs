@@ -59,7 +59,7 @@ impl DisplayDriver for Display {
     /// redraw landing mid-hold no longer blanks the bulge; the excluded rows keep their on-glass
     /// content until the overlay plane's next ~8 ms tick repaints them. ST7789 GRAM writes don't
     /// fault, so always `true`.
-    fn present(&mut self, exclude: Option<(u16, u16)>) -> bool {
+    async fn present(&mut self, exclude: Option<(u16, u16)>) -> bool {
         let Display { panel, fb, diff } = self;
         st7789::reset_push_timers();
         let band_rows = panel.band_rows();
@@ -92,7 +92,7 @@ impl DisplayDriver for Display {
     /// from the clean framebuffer backdrop (RGB222 → RGB565) + composites the bulge via `draw_overlay`;
     /// the panel then DMAs that window — no map re-render, no torn frame (the caller holds the bus).
     /// GRAM writes don't fault, so always `true`.
-    fn present_overlay(&mut self, region: OverlayRegion, draw_overlay: &mut dyn FnMut(&mut Band)) -> bool {
+    async fn present_overlay(&mut self, region: OverlayRegion, draw_overlay: &mut dyn FnMut(&mut Band)) -> bool {
         // The overlay reads the clean backdrop only; the row-hash store is the map present's concern.
         let Display { panel, fb, .. } = self;
         let fb: &[u8] = fb;
