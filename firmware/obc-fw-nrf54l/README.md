@@ -147,7 +147,7 @@ cargo run --release --features tft
 
 # The BLE build (issue #270, epic #267): the same firmware with the nrf-sdc + MPSL + TrouBLE
 # stack folded in (`src/ble/`), advertising as `OBC-XXXX` (S0 §2 — the FICR serial tail). On
-# this 256 KB DK it compiles the MAP PLANE OUT (~128 KB freed) and boots a text-only BLE status
+# this 256 KB DK it compiles the MAP PLANE OUT (~80 KB freed) and boots a text-only BLE status
 # UI on the LS021 instead; SD, RRAM settings, buttons, and the real sensors all stay up.
 # `--no-default-features` is REQUIRED (it swaps the critical-section impl to MPSL's — a
 # compile_error catches the wrong invocation). Doesn't combine with tft/synth/debug-uart.

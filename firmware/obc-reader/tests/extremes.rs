@@ -59,11 +59,12 @@ fn decode(r: &Reader, lod: usize, chunk_id: u32, node: &BBox) -> Vec<Decoded> {
 /// the full declared extent.
 #[test]
 fn exterior_past_max_feat_pts_truncates_ring_but_bbox_spans_dropped_points() {
-    // Declared 4096 points, far over MAX_FEAT_PTS (2048). Each delta is (+1,+1) so the absolute
-    // coords march diagonally; the last *kept* point is anchor + (MAX_FEAT_PTS-1)·(1,1), but the
-    // bbox must reach anchor + (declared-1)·(1,1) — past the truncation. 16-bit chunk room: a
-    // 16384-byte chunk fits ~8186 8-bit-delta points, comfortably over 4096.
-    const DECL: u16 = 4096;
+    // Declare more points than MAX_FEAT_PTS (2048) so the decode scratch truncates. Each delta is
+    // (+1,+1) so the absolute coords march diagonally; the last *kept* point is anchor +
+    // (MAX_FEAT_PTS-1)·(1,1), but the bbox must reach anchor + (declared-1)·(1,1) — past the
+    // truncation. Sized to also fit the *smaller* `nrf-mem` chunk cap (8 KB): at ~2 bytes per
+    // 8-bit-delta point, 2560 points pack to ~5 KB — over MAX_FEAT_PTS, inside MAX_CHUNK_BYTES.
+    const DECL: u16 = MAX_FEAT_PTS as u16 + 512;
     let anchor = (10, 20);
     let deltas: Vec<(i8, i8)> = vec![(1i8, 1i8); DECL as usize - 1];
     let chunk = pack_line_decl(1, anchor.0, anchor.1, DECL, &deltas);

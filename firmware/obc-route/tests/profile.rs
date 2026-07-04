@@ -131,22 +131,26 @@ fn flat_route_has_flat_gap_free_band() {
     }
 }
 
+/// Pyramid depth (length of the profile's per-level column table) — a structural constant across
+/// profiles; only the base width (`PROFILE_COLS`) varies with `nrf-mem`, not the number of levels.
+const PYRAMID_LEVELS: usize = 4;
+
 #[test]
 fn pyramid_downsample_keeps_extremes() {
-    // The coarse levels are min/max merges, not averages — so a coarser level still spans
-    // the route's full 200..300 m envelope, with the peak's max and the valley's min intact.
+    // The coarse levels are min/max merges, not averages — so *every* level, however coarse, still
+    // spans the route's full 200..300 m envelope, with the peak's max and the valley's min intact.
+    // (Which level a full-route `window` reads is profile-dependent — on `nrf-mem` the 256-col base
+    // already covers the panel, so it needn't be a *coarse* level — but this property holds at every
+    // level regardless; see `window_full_route_spans_everything` for the window mechanics.)
     let bytes = convert("Peaked Ridge", PEAKED);
     let src = SliceSource(&bytes);
     let ridx = RouteIndex::read(&src).unwrap();
     let r = RouteReader::new(&ridx, &src);
     let p = r.elevation_profile();
 
-    // The full-route window lands on a coarse level; its envelope must still be 200..300.
-    let full = p.window(0.5, 1.0, 216);
-    assert!(full.level > 0, "full route should read a coarse level, got {}", full.level);
-    assert_eq!(level_envelope(&p, full.level, 0.0, 1.0), (200, 300));
-    // The base level too, naturally.
-    assert_eq!(level_envelope(&p, 0, 0.0, 1.0), (200, 300));
+    for level in 0..PYRAMID_LEVELS {
+        assert_eq!(level_envelope(&p, level, 0.0, 1.0), (200, 300), "level {level} lost the envelope");
+    }
 }
 
 #[test]

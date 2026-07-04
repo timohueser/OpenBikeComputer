@@ -369,12 +369,13 @@ fn decode_chunk_from(
 
 /// Resident decoded-route-chunk cache slots. Only the chunks crossing the view are decoded,
 /// so a small LRU holds a frame's working set, sized to also absorb a wide zoomed-out view of
-/// a winding route. `nrf-mem` trims to 3 slots (~9 KB): enough for a riding-zoom view,
-/// accepting re-decodes on a wide zoomed-out pan.
+/// a winding route. `nrf-mem` trims to 2 slots (~6 KB) — the matcher's chunk plus one more for
+/// the riding-zoom view, accepting re-decodes on a wide zoomed-out pan (issue #270: the cull
+/// makes room for the BLE stack next to the map path on the 256 KB DK).
 #[cfg(not(feature = "nrf-mem"))]
 const ROUTE_CHUNK_SLOTS: usize = 32;
 #[cfg(feature = "nrf-mem")]
-const ROUTE_CHUNK_SLOTS: usize = 3;
+const ROUTE_CHUNK_SLOTS: usize = 2;
 
 /// One cache slot: a decoded chunk's points, keyed by chunk index, with LRU recency.
 struct RouteSlot {
