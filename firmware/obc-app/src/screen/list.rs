@@ -1,10 +1,10 @@
-//! The shared scrolling-list widget. Five screens (Menu, Settings, Route menu, Add field,
-//! Fields) are "a title bar over a windowed row list"; this module owns everything they have
-//! in common — the wrapping cursor ([`on_turn`]), the window math ([`window_start`] /
-//! [`pinned_first`]), and [`draw_rows`], which walks the visible slots, paints the amber
-//! row cursor and the separators, and finishes with the scrollbar. Each screen keeps only
-//! its per-row body (bullet + label, two-line route pane, span badge, …) and its Press
-//! semantics.
+//! The shared scrolling-list widget. Three screens (Settings, Route menu, Add field) are "a
+//! title bar over a windowed row list"; this module owns everything they have in common — the
+//! wrapping cursor ([`on_turn`], which the compass Menu and the Fields grid editor also step
+//! their selections with), the window math ([`window_start`]), and [`draw_rows`], which walks
+//! the visible slots, paints the amber row cursor and the separators, and finishes with the
+//! scrollbar. Each screen keeps only its per-row body (bullet + label, two-line route pane,
+//! span badge, …) and its Press semantics.
 
 use core::fmt::Write;
 
@@ -43,15 +43,6 @@ pub fn window_start(selected: usize, visible: usize, total: usize) -> usize {
     } else {
         (selected + 1 - visible).min(total - visible)
     }
-}
-
-/// The grab-pinning alternative to [`window_start`]: anchor `selected` at the middle slot for
-/// *every* position by scrolling the window virtually — so near the list ends the pinned row
-/// stays centred with empty space above/below rather than drifting to the edge. The offset can
-/// run past either end; [`draw_rows`] skips the out-of-range slots. Used by the Fields screen
-/// while a row is grabbed.
-pub(crate) fn pinned_first(selected: usize, visible: usize) -> i32 {
-    selected as i32 - (visible / 2) as i32
 }
 
 /// When [`draw_rows`] draws the hairline rule under a row (never under the last one).
@@ -104,9 +95,8 @@ pub(crate) struct RowCtx {
 
 /// Draw a windowed list: for each visible slot, the amber cursor fill (on the selected row),
 /// the screen's row body, and the separator rule; then the right-edge scrollbar. `first` is
-/// signed — [`window_start`]`as i32` normally, [`pinned_first`] while a Fields row is grabbed —
-/// and slots mapping outside `0..total` draw as empty space. The scrollbar clamps the virtual
-/// offset back into range.
+/// signed — a window may start virtually before the list, and slots mapping outside `0..total`
+/// draw as empty space. The scrollbar clamps the virtual offset back into range.
 pub(crate) fn draw_rows<S: Surface>(
     cv: &mut S,
     geo: ListGeometry,
@@ -145,7 +135,7 @@ pub(crate) fn draw_rows<S: Surface>(
     scrollbar(cv, geo.w - 8, geo.top, geo.visible as i32 * geo.row_h, total, sb_first, geo.visible);
 }
 
-/// The nav-menu row body shared by Menu and Settings: a pointer triangle and a Body-tier label,
+/// The nav-menu row body (the Settings list): a pointer triangle and a Body-tier label,
 /// vertically centred in the row area (the highlight makes the bullet ink, unselected rows muted).
 pub(crate) fn nav_row(cv: &mut impl Surface, area: Rectangle, label: &str, selected: bool) {
     let x = area.top_left.x;
@@ -155,8 +145,8 @@ pub(crate) fn nav_row(cv: &mut impl Surface, area: Rectangle, label: &str, selec
     cv.text(label, Point::new(x + 38, mid - 14), Font::Body, TextAlign::Left, palette::INK);
 }
 
-/// A whole nav-menu draw — the chrome plus [`nav_row`]s with hairline separators — so Menu and
-/// Settings (identical apart from title and items) are each a single call.
+/// A whole nav-menu draw — the chrome plus [`nav_row`]s with hairline separators — so a plain
+/// nav list (Settings; the main Menu until it became the compass) is a single call.
 pub(crate) fn nav_list(cv: &mut impl Surface, w: i32, h: i32, title: &str, items: &[&str], selected: usize) {
     /// Per-row height — fits a Body-tier row with an amber highlight + padding.
     const ROW_H: i32 = 52;
@@ -237,9 +227,9 @@ mod tests {
         assert_eq!(step_selection(7, 3, 0), 7, "the selection is returned unchanged, not modulo'd");
     }
 
-    // `draw_rows` windowing with a signed `first` — the Fields grab-pinning contract: slots
-    // mapping outside the list draw nothing, in-range items land in the *slot* positions, not
-    // clamped back to the top.
+    // `draw_rows` windowing with a signed `first` — the virtual-window contract: slots mapping
+    // outside the list draw nothing, in-range items land in the *slot* positions, not clamped
+    // back to the top.
 
     /// A draw target that swallows every primitive — the windowing tests only observe which rows
     /// the body callback is invoked for and where.
@@ -278,8 +268,8 @@ mod tests {
         seen
     }
 
-    /// A window scrolled past the top (`first < 0`, the grabbed-at-the-start case): the leading
-    /// slots stay empty and the real rows keep their slot positions further down.
+    /// A window scrolled past the top (`first < 0`): the leading slots stay empty and the real
+    /// rows keep their slot positions further down.
     #[test]
     fn draw_rows_skips_slots_before_the_list() {
         let g = geo(5);
@@ -288,7 +278,7 @@ mod tests {
         assert_eq!(&seen[..], [(0, y(2)), (1, y(3)), (2, y(4))], "slots 0–1 empty, items 0–2 in slots 2–4");
     }
 
-    /// A window scrolled past the end (grabbed-at-the-bottom): the trailing slots stay empty.
+    /// A window scrolled past the end: the trailing slots stay empty.
     #[test]
     fn draw_rows_skips_slots_past_the_list() {
         let g = geo(5);

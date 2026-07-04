@@ -31,6 +31,7 @@ mod map;
 mod menu;
 mod ride_control;
 mod route_menu;
+mod route_overview;
 mod route_swap;
 mod settings;
 mod statistics;
@@ -41,6 +42,7 @@ pub use map::MapScreen;
 pub use menu::MenuScreen;
 pub use ride_control::RideControl;
 pub use route_menu::RouteMenuScreen;
+pub use route_overview::RouteOverviewScreen;
 pub use route_swap::RouteSwapScreen;
 pub use settings::{
     AddFieldScreen, DateTimeScreen, PowerScreen, ResetScreen, SettingsScreen, StatFieldsScreen, StatsScreen,
@@ -263,10 +265,11 @@ screens! {
     Home(HomeScreen) => Nav,
     Map(MapScreen) => Riding,
     Statistics(StatisticsScreen) => Riding,
-    /// The pause menu — the only overlay: it draws over the still-visible map.
-    RideControl(RideControl) => Overlay,
+    /// The pause page: ride-so-far ledger + the guarded Resume / Finish / Discard rows.
+    RideControl(RideControl) => Nav,
     Menu(MenuScreen) => Nav,
     RouteMenu(RouteMenuScreen) => Nav,
+    RouteOverview(RouteOverviewScreen) => Nav,
     RouteSwap(RouteSwapScreen) => Nav,
     Settings(SettingsScreen) => Settings,
     DateTime(DateTimeScreen) => Settings,
@@ -311,7 +314,8 @@ impl Screen {
     /// Most screens change only on input or a fresh fix and return [`ScreenTick::idle`]. The
     /// Statistics view runs its cursor spring-back + page auto-cycle off `now_ms`; the Home clock
     /// ticks over each minute off the wall-clock `now`, adopting `ms_to_next_minute` — the minute
-    /// boundary the host pre-computes (it owns the clock).
+    /// boundary the host pre-computes (it owns the clock); the Menu sweeps its compass needle
+    /// toward the selection at frame cadence until it lands.
     pub fn tick_timers(
         &mut self,
         now_ms: u32,
@@ -322,6 +326,7 @@ impl Screen {
         match self {
             Screen::Statistics(s) => s.tick_timers(now_ms, settings),
             Screen::Home(s) => s.tick_timers(now, ms_to_next_minute),
+            Screen::Menu(s) => s.tick_timers(now_ms),
             _ => ScreenTick::idle(),
         }
     }
@@ -378,6 +383,60 @@ pub(crate) fn riding_common(g: Gesture, cx: &mut Ctx) -> Transition {
         }
         Gesture::BackHold => Transition::Push(Screen::Menu(MenuScreen::new())),
         _ => Transition::None,
+    }
+}
+
+/// Draw one stat tile — a rounded pane in `bg` with an olive caption over a big ink Display value,
+/// optionally prefixed by an up-triangle for climb figures (the panel font has no ↑ glyph). Shared
+/// by the riding Statistics grid (tan panes) and the Fields editor (which draws the same tiles,
+/// amber under the cursor). The caption+value block is vertically centred, so the taller editor
+/// tiles and the chart-squeezed Statistics tiles both balance.
+pub(crate) fn tile(cv: &mut impl Surface, area: Rectangle, label: &str, value: &str, arrow: bool, bg: u16) {
+    use palette::*;
+    let (x, y) = (area.top_left.x, area.top_left.y);
+    cv.round(area, 5, bg);
+    // Content block: Label caption (cap 18) + Display value (cap 26) with the same 18 px lead the
+    // Statistics grid always had; centre it in whatever height the pane has.
+    let cy = y + ((area.size.height as i32 - 48) / 2).max(4);
+    // Caption inset less than the value so wide unit captions sit nearer the tile centre.
+    cv.text(label, Point::new(x + 5, cy), Font::Label, TextAlign::Left, SUBTEXT);
+    let vy = cy + 18;
+    let vx = if arrow {
+        // Up-triangle sized to sit alongside the Display digits.
+        let ax = x + 8;
+        cv.triangle(Point::new(ax, vy + 26), Point::new(ax + 13, vy + 26), Point::new(ax + 6, vy + 6), INK);
+        x + 26
+    } else {
+        x + 8
+    };
+    cv.text(value, Point::new(vx, vy), Font::Display, TextAlign::Left, INK);
+}
+
+/// One stat-ledger row — olive caption on the left, the Display value right-aligned with a small
+/// unit suffix (baselines shared), and an optional climb/descent triangle just left of the value
+/// (`Some(true)` = up). All text sits on the parchment — no pane; that look is reserved for the
+/// riding grid's live tiles. Shared by the Route overview and the Paused page.
+pub(crate) fn ledger_row(
+    cv: &mut impl Surface,
+    w: i32,
+    y: i32,
+    caption: &str,
+    value: &str,
+    unit: &str,
+    arrow: Option<bool>,
+) {
+    use palette::*;
+    // Display cap is 26 from `y + 6`, Label cap 18 from `y + 14` — both bottom out at `y + 32`.
+    cv.text(caption, Point::new(16, y + 14), Font::Label, TextAlign::Left, SUBTEXT);
+    cv.text(unit, Point::new(w - 16, y + 14), Font::Label, TextAlign::Right, SUBTEXT);
+    let unit_w = unit.chars().count() as i32 * Font::Label.char_width() as i32;
+    let vx = w - 16 - unit_w - 6;
+    cv.text(value, Point::new(vx, y + 6), Font::Display, TextAlign::Right, INK);
+    if let Some(up) = arrow {
+        let value_w = value.chars().count() as i32 * Font::Display.char_width() as i32;
+        let ax = vx - value_w - 18;
+        let (flat, tip) = if up { (y + 30, y + 12) } else { (y + 12, y + 30) };
+        cv.triangle(Point::new(ax, flat), Point::new(ax + 13, flat), Point::new(ax + 6, tip), INK);
     }
 }
 
