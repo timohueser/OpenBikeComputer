@@ -476,6 +476,14 @@ impl<'a> Reader<'a> {
     /// [`FeatureRef`] borrowing the caller's `points`/`ring_lens` scratch. Allocation-free: the
     /// buffers grow to the largest feature once and are reused across features/chunks/frames.
     /// `node` is the leaf bbox yielded by [`Reader::for_each_chunk`].
+    ///
+    /// # Reentrancy
+    ///
+    /// The internal cache `RefCell` borrow is held while `visit` runs. A callback may read the
+    /// resident tables ([`Reader::style`], [`Reader::backdrop_style`], [`Reader::lods`],
+    /// [`Reader::select_lod_for_mpp`]) but must **not** call any `Reader` method that streams from
+    /// the source — [`Reader::for_each_chunk`] or another `for_each_feature*` — which re-borrows
+    /// the cache and panics at runtime with a borrow error.
     pub fn for_each_feature<const P: usize, const R: usize>(
         &self,
         lod: usize,
@@ -493,6 +501,14 @@ impl<'a> Reader<'a> {
     /// (advancing past its bytes with no coordinate math), `true` decodes it and hands a
     /// [`FeatureRef`] to `visit`. The renderer uses this so each priority pass decodes only its own
     /// features — across all passes a feature's coordinates decode **at most once per frame**.
+    ///
+    /// # Reentrancy
+    ///
+    /// The internal cache `RefCell` borrow is held while `should_decode` and `visit` run. A
+    /// callback may read the resident tables ([`Reader::style`], [`Reader::backdrop_style`],
+    /// [`Reader::lods`], [`Reader::select_lod_for_mpp`]) but must **not** call any `Reader` method
+    /// that streams from the source — [`Reader::for_each_chunk`] or another `for_each_feature*` —
+    /// which re-borrows the cache and panics at runtime with a borrow error.
     #[allow(clippy::too_many_arguments)]
     pub fn for_each_feature_filtered<const P: usize, const R: usize>(
         &self,
