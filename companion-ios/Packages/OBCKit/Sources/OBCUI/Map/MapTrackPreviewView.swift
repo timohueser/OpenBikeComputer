@@ -14,17 +14,19 @@ import MapKit
 /// enclosing card/hero button (the detail hero opens the full interactive
 /// `TrackMapView`; a card still opens the detail screen).
 ///
-/// Same call surface as `TrackPreviewView` (style / tag / chrome / markers) so
-/// the swap is mechanical. Waypoint `markers` are unit-space (no lat/lon), so a
-/// preview that carries them stays on the grid — the numbered-pin W1 schematic
-/// isn't a basemap job.
+/// Pass `waypoints` (plus the total distance) to pin the middle waypoints as
+/// numbered amber markers — the detail hero does; the main-screen cards don't.
+/// On the basemap they annotate at their real coordinates; on the grid they
+/// fall back to the distance-fraction placement (`Marker.middleWaypointPins`).
 public struct MapTrackPreviewView: View {
     let preview: TrackPreview?
     var style: TrackPreviewView.Style = .thumbnail
     var tag: String? = nil
     var tagColor: Color = OBCTheme.inkSoft
     var showsChrome: Bool = true
-    var markers: [TrackPreviewView.Marker] = []
+    var waypoints: [Waypoint] = []
+    /// Total route distance — only needed to place `waypoints` on the grid.
+    var totalDistanceMeters: Double = 0
 
     @Environment(\.obcIsOnline) private var isOnline
 
@@ -34,19 +36,19 @@ public struct MapTrackPreviewView: View {
         tag: String? = nil,
         tagColor: Color = OBCTheme.inkSoft,
         showsChrome: Bool = true,
-        markers: [TrackPreviewView.Marker] = []
+        waypoints: [Waypoint] = [],
+        totalDistanceMeters: Double = 0
     ) {
         self.preview = preview
         self.style = style
         self.tag = tag
         self.tagColor = tagColor
         self.showsChrome = showsChrome
-        self.markers = markers
+        self.waypoints = waypoints
+        self.totalDistanceMeters = totalDistanceMeters
     }
 
     private var mode: MapPreviewMode {
-        // Unit-space markers can't sit on a basemap → keep those on the grid.
-        guard markers.isEmpty else { return .grid }
         let hasCoordinates = !(preview?.coordinates.isEmpty ?? true)
         return MapPreviewMode.resolve(isOnline: isOnline, hasCoordinates: hasCoordinates)
     }
@@ -56,7 +58,10 @@ public struct MapTrackPreviewView: View {
         case .grid:
             TrackPreviewView(
                 preview, style: style, tag: tag, tagColor: tagColor,
-                showsChrome: showsChrome, markers: markers
+                showsChrome: showsChrome,
+                markers: TrackPreviewView.Marker.middleWaypointPins(
+                    waypoints, on: preview, totalDistanceMeters: totalDistanceMeters
+                )
             )
             .accessibilityIdentifier("trackPreview.grid")
         case .map:
@@ -73,7 +78,9 @@ public struct MapTrackPreviewView: View {
             initialPosition: .region(MapGeometry.boundingRegion(for: coordinates)),
             interactionModes: []
         ) {
-            TrackMapContent(coordinates: coordinates, dotRadius: style.dotRadius)
+            TrackMapContent(
+                coordinates: coordinates, dotRadius: style.dotRadius, waypoints: waypoints
+            )
         }
         // Standard Apple Maps styling (the constraints rule out reskinning it),
         // but always the light tile set — the design's field-guide palette is
@@ -94,7 +101,10 @@ public struct MapTrackPreviewView: View {
         #else
         TrackPreviewView(
             preview, style: style, tag: tag, tagColor: tagColor,
-            showsChrome: showsChrome, markers: markers
+            showsChrome: showsChrome,
+            markers: TrackPreviewView.Marker.middleWaypointPins(
+                waypoints, on: preview, totalDistanceMeters: totalDistanceMeters
+            )
         )
         #endif
     }
@@ -103,9 +113,12 @@ public struct MapTrackPreviewView: View {
 #if canImport(MapKit)
 /// The track polyline (halo + stroke) plus forest/coral start/end dots — shared
 /// by the preview and the full-screen `TrackMapView` so both look identical.
+/// `waypoints` pins the middle waypoints (the start/end already have dots) as
+/// the same numbered amber markers the grid preview draws.
 struct TrackMapContent: MapContent {
     let coordinates: [Coordinate]
     var dotRadius: CGFloat = 5
+    var waypoints: [Waypoint] = []
 
     var body: some MapContent {
         let coords = MapGeometry.clLocations(coordinates)
@@ -120,12 +133,38 @@ struct TrackMapContent: MapContent {
         if coords.count > 1, let last = coords.last {
             Annotation("", coordinate: last) { nodeDot(OBCTheme.trackEnd) }
         }
+        ForEach(Array(waypoints.dropFirst().dropLast())) { waypoint in
+            Annotation(
+                "",
+                coordinate: CLLocationCoordinate2D(
+                    latitude: waypoint.coordinate.latitude,
+                    longitude: waypoint.coordinate.longitude
+                )
+            ) {
+                WaypointPinBadge(label: "\(waypoint.index + 1)")
+            }
+        }
     }
 
     private func nodeDot(_ fill: Color) -> some View {
         Circle()
             .fill(fill)
             .frame(width: dotRadius * 2, height: dotRadius * 2)
+            .overlay(Circle().strokeBorder(OBCTheme.panel, lineWidth: 2.5))
+    }
+}
+
+/// W1's numbered waypoint pin as a live view (the grid preview draws the same
+/// mark in its `Canvas`): 9pt amber dot, panel ring, mono label.
+struct WaypointPinBadge: View {
+    let label: String
+
+    var body: some View {
+        Text(label)
+            .font(.obcMono(size: 10, weight: .bold))
+            .foregroundStyle(OBCTheme.ink)
+            .frame(width: 18, height: 18)
+            .background(Circle().fill(OBCTheme.amber))
             .overlay(Circle().strokeBorder(OBCTheme.panel, lineWidth: 2.5))
     }
 }

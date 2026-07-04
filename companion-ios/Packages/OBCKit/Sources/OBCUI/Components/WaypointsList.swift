@@ -58,54 +58,52 @@ public struct WaypointRow: View {
     }
 }
 
-/// The full **Waypoints** screen content (W1): the mini track with the middle
-/// waypoints pinned as numbered amber markers, then the rows in ride order.
-public struct WaypointsListView: View {
+/// The **Waypoints dropdown** body (W1) under the disclosure row on route
+/// detail: the rows in ride order plus the provenance footer. The track pins
+/// live on the detail hero itself (`MapTrackPreviewView`), not in here.
+public struct WaypointsDropdownContent: View {
     let waypoints: [Waypoint]
-    let preview: TrackPreview?
-    /// Total route distance, used to place markers along the polyline.
-    let totalDistanceMeters: Double
 
-    public init(waypoints: [Waypoint], preview: TrackPreview?, totalDistanceMeters: Double) {
+    public init(waypoints: [Waypoint]) {
         self.waypoints = waypoints
-        self.preview = preview
-        self.totalDistanceMeters = totalDistanceMeters
     }
 
     public var body: some View {
-        VStack(spacing: 8) {
-            TrackPreviewView(
-                preview,
-                style: .hero,
-                tag: "\(waypoints.count) points",
-                markers: markers
-            )
-            .frame(height: 150)
-
-            VStack(spacing: 0) {
-                ForEach(waypoints) { waypoint in
-                    WaypointRow(
-                        waypoint: waypoint,
-                        isFirst: waypoint.index == waypoints.first?.index,
-                        isLast: waypoint.index == waypoints.last?.index,
-                        showsDivider: waypoint.index != waypoints.last?.index
-                    )
-                }
+        VStack(spacing: 0) {
+            ForEach(waypoints) { waypoint in
+                WaypointRow(
+                    waypoint: waypoint,
+                    isFirst: waypoint.index == waypoints.first?.index,
+                    isLast: waypoint.index == waypoints.last?.index,
+                    showsDivider: waypoint.index != waypoints.last?.index
+                )
             }
+            Text("Waypoints come from the route file and are uploaded to the device with it.")
+                .font(.system(size: 12))
+                .foregroundStyle(OBCTheme.inkFaint)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
+                .padding(.top, 10)
+                .padding(.bottom, 4)
         }
     }
+}
 
+extension TrackPreviewView.Marker {
     /// Middle waypoints pinned on the polyline (the start/end already have
     /// node dots). Position = the track point nearest the waypoint's fraction
     /// of total distance — a preview-grade approximation, honest as long as
     /// the polyline sampling is roughly uniform (it is: `TrackPreview`
     /// downsamples by uniform stride).
-    private var markers: [TrackPreviewView.Marker] {
+    static func middleWaypointPins(
+        _ waypoints: [Waypoint],
+        on preview: TrackPreview?,
+        totalDistanceMeters: Double
+    ) -> [TrackPreviewView.Marker] {
         guard let preview, preview.points.count > 1, totalDistanceMeters > 0 else { return [] }
-        let inner = waypoints.dropFirst().dropLast()
-        return inner.map { waypoint in
-            let fraction = max(0, min(waypoint.distanceAlongMeters / totalDistanceMeters, 1))
-            let index = Int((fraction * Double(preview.points.count - 1)).rounded())
+        return waypoints.dropFirst().dropLast().map { waypoint in
+            let fraction = waypoint.distanceAlongMeters / totalDistanceMeters
+            let index = pointIndex(fraction: fraction, pointCount: preview.points.count)
             return TrackPreviewView.Marker(
                 id: waypoint.index,
                 point: preview.points[index],
@@ -115,22 +113,20 @@ public struct WaypointsListView: View {
     }
 
     /// The marker-placement rule, exposed for unit tests.
-    static func markerPointIndex(fraction: Double, pointCount: Int) -> Int {
+    static func pointIndex(fraction: Double, pointCount: Int) -> Int {
         Int((max(0, min(fraction, 1)) * Double(pointCount - 1)).rounded())
     }
 }
 
-#Preview("Waypoints") {
+#Preview("Waypoints dropdown") {
     ScrollView {
-        WaypointsListView(
+        WaypointsDropdownContent(
             waypoints: [
                 Waypoint(index: 0, name: "Ottawa Lake trailhead", note: "Start · parking & water", distanceAlongMeters: 0, coordinate: .init(latitude: 42.9, longitude: -88.6)),
                 Waypoint(index: 1, name: "Emma Carlin junction", note: "Water · trail crossing", distanceAlongMeters: 14200, coordinate: .init(latitude: 42.9, longitude: -88.5)),
                 Waypoint(index: 2, name: "Bald Bluff overlook", note: "Summit · 12% pitch before", distanceAlongMeters: 31600, coordinate: .init(latitude: 42.9, longitude: -88.4)),
                 Waypoint(index: 3, name: "Ottawa Lake", note: "Finish", distanceAlongMeters: 62400, coordinate: .init(latitude: 42.9, longitude: -88.6)),
-            ],
-            preview: .obcSample,
-            totalDistanceMeters: 62400
+            ]
         )
         .padding(20)
     }

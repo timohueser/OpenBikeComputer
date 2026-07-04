@@ -46,8 +46,7 @@ final class ImportTests: XCTestCase {
         XCTAssertTrue(waypointsRow.waitForExistence(timeout: 5), "CoursePoint waypoints row missing")
         snap(app, "E1-import-tcx")
 
-        waypointsRow.tap()
-        XCTAssertTrue(app.descendants(matching: .any)["waypoints.screen"].firstMatch.waitForExistence(timeout: 5))
+        waypointsRow.tap()  // fold the dropdown out in place
         XCTAssertTrue(app.staticTexts["Turn 21"].waitForExistence(timeout: 5), "first course point missing")
         XCTAssertTrue(app.staticTexts["Summit"].exists, "last course point missing")
         snap(app, "W1-tcx-coursepoints")
