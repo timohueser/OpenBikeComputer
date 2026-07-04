@@ -413,7 +413,7 @@ static mut FB: [u8; FB_BYTES] = [0; FB_BYTES];
 /// The **self-diffing present** store: one 32-bit hash per framebuffer row of the last-pushed frame,
 /// in `.bss` (320 rows = 1.28 KB). The active display backend borrows it (`&mut`) and, on present,
 /// re-hashes each row and pushes only the rows whose hash changed — so a Home clock tick re-presents
-/// its clock band instead of all 320 rows (~97 ms → a few ms on the FLPR). `RowDiff::new()` is all-zero
+/// its clock band instead of all 320 rows (~44 ms since #348 → a few ms on the FLPR). `RowDiff::new()` is all-zero
 /// (+ the unprimed flag) ⇒ a `.bss` static, and the first present force-pushes the whole frame to seed it.
 static mut ROW_DIFF: RowDiff<FRAME_H> = RowDiff::new();
 
@@ -576,7 +576,7 @@ unsafe fn SWI01() {
 
 /// The FLPR build's single high-priority executor: it free-runs **both** the COM driver (which must
 /// keep alternating `VCOM`/`VB`/`VA` so the panel never DC-biases, whatever the map plane is doing)
-/// **and** the gesture-input plane (so button latency stays exact during a ~97 ms full-frame scan —
+/// **and** the gesture-input plane (so button latency stays exact during a ~44 ms full-frame scan —
 /// the M33 now *awaits* that scan (#347), but a deep map render still occupies thread mode).
 /// Pended from the same SWI01 vector @ P3.
 #[cfg(not(feature = "tft"))]
@@ -1002,7 +1002,7 @@ impl MapDisplay {
 
     /// Render the clean frame into the owned panel and **self-diff** it to glass: push only the rows
     /// that changed since the last present. With a live bulge, the seam's `present(exclude)` clips its
-    /// rows out (`overlay_span`) and leaves them for `present_bulge` — the FLPR's ~100 ms full-frame
+    /// rows out (`overlay_span`) and leaves them for `present_bulge` — the FLPR's ~44 ms full-frame
     /// scan would otherwise blank the bulge for that whole scan (the pop-flicker), and even a partial
     /// clean push would flash it off. No shared bus: the map plane owns every push here. Marked
     /// `#[inline(always)]` with a generic (non-`dyn`) `render` so the deep render folds into the

@@ -130,34 +130,48 @@ static inline void fence(void)
     __asm__ volatile("fence" ::: "memory");
 }
 
-/* ── Bit-bang delays (busy-loops), LA-calibrated on the bench: F2 measured `busy(120) ≈ 9.4 µs`
- * ⇒ **~13 iters/µs**. The DDR drive (F5) latches the source bus on BOTH BCK edges, so each half
- * must satisfy the panel spec independently: BCK width ≥660 ns high AND low (`thwBCK`/`tlwBCK`),
- * data set-up ≥335 ns before *each* edge (`tsRGB`). The bench unit runs happily over-spec (the
- * constants below); the in-spec question is issue #348's measured decision.
+/* ── TIMING POLICY (issue #348, owner-decided 2026-07-04) — read this before touching a constant.
  *
- * ## Direct-fb pack rides inside the delay windows (issue #347)
+ * **Calibration** (software round-trip, the LA is retired; full record + method in
+ * `firmware/docs/flpr-timing.md`): one busy() iteration = **80.5 ns** at this clock (12.4 iters/µs
+ * — NOT the historical "13"), plus **~102 ns call overhead** per busy() call. `ITERS_PER_US`
+ * below keeps the legacy 13 label for the once-per-frame/µs-scale uses where 4.6 % doesn't
+ * matter; the spec-bound GEN constants are pinned in raw recalibrated iters instead.
  *
- * `drive_subline` now packs each wire word from the framebuffer itself (~20 RV32 integer ops,
- * ≈1–2 busy-iters' worth). The pack of the *next* word runs **inside the current word's data-setup
- * window** — after the data lines are presented, before the BCK edge — where the loop previously
- * just busy-spun. `DATA_SETUP_TOPUP_ITERS` is the busy() remainder that tops the window back up to
- * the old `DATA_SETUP_ITERS = 3` total (pack ≈ 2 iters + top-up 1 ≈ the old 3):
- *   - colours sparkle / wrong on glass ⇒ the pack is running shorter than budgeted on your unit —
- *     raise the top-up (2 or 3 restores the old margin at a small frame-time cost);
- *   - the frame-time log regressing vs the ~97 ms baseline ⇒ lower it / tune in #348's LA pass.
+ * **The source bus runs deliberately over-spec** — this is the accepted #348 decision, not an
+ * accident. The DDR drive (F5) latches the source bus on BOTH BCK edges; the spec asks
+ * ≥660 ns per BCK half (`thwBCK`/`tlwBCK`) and ≥335 ns data setup (`tsRGB`). Since #348 there is
+ * **no explicit wait in the hot loop at all**: the pack of the next word + the GPIO presents ARE
+ * the half-width ≈ **210 ns** (~3× under spec). Glass-verified clean (solids, map colours, fine
+ * contours, bulge — the F5 column-doubling mode checked). Caveats, in writing:
+ *   - **single-unit validation** (one bench panel, room temperature); the LM20 build must re-run
+ *     the glass check and `firmware/docs/flpr-timing.md`'s lever log;
+ *   - in-spec halves (660 ns) were *costed*: ~+36 ms/frame (~80 ms total) — declined;
+ *   - colours sparkle / doubled columns on a future unit ⇒ re-pace the hot loop: add a
+ *     `busy(k)` after each present in `drive_subline` (k=1 ≈ +183 ns/half ≈ +14 ms/frame).
  *
- * The gate timings (`GCK_SETTLE`/`GEN_SETUP`/`GEN_HIGH`) are panel **electrical minimums**
- * (GCK↔GEN setup/hold ≥16.37 µs, GEN valid ≥24.56 µs). **Do NOT lower below their µs values** —
- * they are correctness, not slack. (`gen_pulse` drops its *leading* setup busy — the long data
- * shift before it already supplies the GCK↔GEN setup — and keeps the GEN-high + trailing hold.) ── */
-#define ITERS_PER_US      13u /* bench calibration: busy(120) ≈ 9.4 µs */
-#define BCK_HALF_ITERS    2u                    /* each BCK half-period — ⚠️ OVER-SPEC bench value (~180 ns vs the ≥660 ns min; works on this unit) */
-#define DATA_SETUP_TOPUP_ITERS 1u               /* busy() after the in-window pack; pack (~2 iters) + this ≈ the old DATA_SETUP_ITERS 3 (~280 ns, under the spec ~335 ns min — see the note above) */
-#define GCK_SETTLE_ITERS  (5u * ITERS_PER_US)   /* settle after a GCK level change before shifting */
-#define GEN_SETUP_ITERS   (17u * ITERS_PER_US)  /* GCK↔GEN setup AND hold (spec ≥16.37 µs) */
-#define GEN_HIGH_ITERS    (25u * ITERS_PER_US)  /* GEN valid-output window (spec ≥24.56 µs) */
-#define GCK_HIGH_ITERS    (10u * ITERS_PER_US)  /* GCK high width for a DUMMY advance only */
+ * **The gate timings are electrical minimums and stay in-spec** (GCK↔GEN setup/hold ≥16.37 µs,
+ * GEN valid ≥24.56 µs): `GEN_SETUP`/`GEN_HIGH` sit ~2 % over their minimums by *measured* time —
+ * do NOT trim further (the old 13-label had them accidentally ~7 % over; #348 reclaimed exactly
+ * that). `gen_pulse` still has no *leading* setup busy — the ≥16.37 µs GCK↔GEN setup is supplied
+ * by the ~26 µs data shift that always precedes it. `GCK_SETTLE` is NOT an enumerated minimum
+ * (audited #348): 1 µs, matching the spec's only GCK-width floor (fast-forward ≥1 µs).
+ *
+ * **VPR fast-I/O (CSR/VIO) was evaluated and declined** (#348 stretch): at ~210 ns halves the
+ * pack dominates the word, GPIO stores don't; the modelled gain (~3–4 ms) doesn't buy the Zicsr
+ * toolchain requirement or even narrower pulses. Revisit only with a measured need. ── */
+#define ITERS_PER_US      13u /* legacy µs label (true rate 12.4 — see the policy block) */
+#define GCK_SETTLE_ITERS  (1u * ITERS_PER_US)   /* settle after a GCK level change before shifting — NOT an
+                                                 * enumerated spec minimum (audited #348); 1 µs matches the
+                                                 * spec's only GCK-width floor (fast-forward ≥1 µs) */
+#define GEN_SETUP_ITERS   207u                  /* GCK↔GEN setup AND hold (spec ≥16.37 µs): 102 ns call
+                                                 * + 207 × 80.5 ns ≈ 16.77 µs — in-spec, ~2.5 % margin
+                                                 * (recalibrated #348; 13 iters/µs was really 12.4) */
+#define GEN_HIGH_ITERS    310u                  /* GEN valid-output window (spec ≥24.56 µs): ≈ 25.06 µs
+                                                 * — in-spec, ~2 % margin (recalibrated #348) */
+#define GCK_HIGH_ITERS    (2u * ITERS_PER_US)   /* GCK high width for a DUMMY advance only (spec ≥1 µs
+                                                 * fast-forward; 2 µs = 2× margin — #348, and the dominant
+                                                 * cost of a partial push's gate fast-forward) */
 #define FRAME_SETUP_ITERS (10u * ITERS_PER_US)  /* INTB→GSP and GSP→first GCK framing setup */
 
 static void busy(uint32_t iters)
@@ -172,12 +186,15 @@ static void busy(uint32_t iters)
  * `*0` lines (bits 0/2/4), the odd-x pixel on the `*1` lines (bits 1/3/5), pre-shifted to the P2
  * GPIO positions (DATA_MASK). `shift` selects the area-gradation bit of each 2-bit device-64
  * channel (`0b00_RR_GG_BB`): 1 = the MSB plane (level>>1, the 2/3-area block), 0 = the LSB plane
- * (level&1, the 1/3-area block). The 4 trailing dummy/flush columns (k ≥ 120) are black. */
-static inline uint32_t pack_word(const volatile uint8_t *row, uint32_t k, uint32_t shift)
+ * (level&1, the 1/3-area block).
+ *
+ * #348 lever 3: the loads are **not volatile** — the fb is stable for the whole scan by contract
+ * (the M33 awaits the ack before touching it), so gcc may schedule/hoist them freely — and the
+ * old `k ≥ COLS_PER_SUBLINE → 0` bounds branch is gone from the hot loop: `drive_subline` now
+ * clocks the 4 trailing dummy/flush columns separately (they are constant black). Callers only
+ * pass k < COLS_PER_SUBLINE. */
+static inline uint32_t pack_word(const uint8_t *row, uint32_t k, uint32_t shift)
 {
-    if (k >= COLS_PER_SUBLINE) {
-        return 0; /* trailing dummy/flush columns */
-    }
     uint32_t even = row[2u * k];
     uint32_t odd = row[2u * k + 1u];
     uint32_t re = (even >> (4u + shift)) & 1u, ro = (odd >> (4u + shift)) & 1u;
@@ -199,32 +216,52 @@ static inline uint32_t pack_word(const volatile uint8_t *row, uint32_t k, uint32
  *
  * BSP high envelopes the first rising edge (released on it). The caller has set GCK to this
  * plane's level — this touches only the source bus, never GCK/GEN. */
-static void drive_subline(const volatile uint8_t *row, uint32_t shift)
+static void drive_subline(const uint8_t *row, uint32_t shift)
 {
     uint32_t w0 = pack_word(row, 0, shift); /* word 0 packed ahead of the sub-line */
+    uint32_t w1;
 
     GPIO1_OUTSET = BSP_MASK; /* BSP high — start of the sub-line (the chart's BSP envelope) */
-    for (uint32_t k = 0; k < BCK_PER_SUBLINE; k += 2) {
+    /* ── words 0..117, pipelined: each presented word's setup window / BCK half IS the pack of the
+     * next word (#348 — no explicit waits left in the hot loop). The last data pair is peeled below
+     * because its "next word" would run past the row. ── */
+    for (uint32_t k = 0; k < COLS_PER_SUBLINE - 2u; k += 2) {
         /* ── rising-edge column: word k (already packed) ── */
         GPIO2_OUTCLR = (~w0) & DATA_MASK;
         GPIO2_OUTSET = w0;
-        uint32_t w1 = pack_word(row, k + 1u, shift); /* pack word k+1 inside word k's setup window */
-        busy(DATA_SETUP_TOPUP_ITERS);
+        w1 = pack_word(row, k + 1u, shift); /* pack word k+1 IS word k's setup window */
         GPIO2_OUTSET = BCK_MASK; /* rising edge latches word k */
         if (k == 0) {
             GPIO1_OUTCLR = BSP_MASK; /* BCK(1) rose within BSP high — now release BSP */
         }
-        busy(BCK_HALF_ITERS);
 
-        /* ── falling-edge column: word k+1 ── */
+        /* ── falling-edge column: word k+1 (the presents + pack below are the BCK-high width) ── */
         GPIO2_OUTCLR = (~w1) & DATA_MASK;
         GPIO2_OUTSET = w1;
-        w0 = pack_word(row, k + 2u, shift); /* pack the next rising word inside this setup window */
-        busy(DATA_SETUP_TOPUP_ITERS);
+        w0 = pack_word(row, k + 2u, shift); /* pack the next rising word IS this setup window */
         GPIO2_OUTCLR = BCK_MASK; /* falling edge latches word k+1 */
-        busy(BCK_HALF_ITERS);
     }
-    GPIO2_OUTCLR = DATA_MASK; /* leave the data lines Lo (boot-safe) after the sub-line */
+
+    /* ── last data pair (118, 119), peeled: nothing further to pack in-window, so a busy(1)
+     * (~183 ns, ≈ the hot loop's pack time) paces the halves instead. ── */
+    GPIO2_OUTCLR = (~w0) & DATA_MASK;
+    GPIO2_OUTSET = w0;
+    w1 = pack_word(row, COLS_PER_SUBLINE - 1u, shift);
+    GPIO2_OUTSET = BCK_MASK;
+    GPIO2_OUTCLR = (~w1) & DATA_MASK;
+    GPIO2_OUTSET = w1;
+    busy(1);
+    GPIO2_OUTCLR = BCK_MASK;
+
+    /* ── 4 trailing dummy/flush columns: constant black, clocked at ~the data pace (they no longer
+     * ride the hot loop — this is what removed the per-word bounds branch from pack_word). ── */
+    GPIO2_OUTCLR = DATA_MASK; /* black, and leaves the data lines Lo (boot-safe) after the sub-line */
+    for (uint32_t i = 0; i < BCK_PER_SUBLINE - COLS_PER_SUBLINE; i += 2) {
+        busy(1);
+        GPIO2_OUTSET = BCK_MASK;
+        busy(1);
+        GPIO2_OUTCLR = BCK_MASK;
+    }
 }
 
 /* Pulse GEN to latch the just-shifted sub-line into the **currently-selected** gate line. The caller
@@ -265,7 +302,7 @@ static void dummy_advance(int release_gsp)
  *     GEN → latches the 1/3-area cells while GCK is LOW.
  * The advance to the next row is the GCK rising edge that opens the next call's MSB phase, so there
  * is exactly one gate advance per pixel row. Mirrors `PanelBus::write_gate_line`. */
-static void write_gate_row(const volatile uint8_t *row)
+static void write_gate_row(const uint8_t *row)
 {
     /* ── MSB phase: GCK HIGH selects the 2/3-area block; this rising edge advances the gate ── */
     GPIO1_OUTSET = GCK_MASK;
@@ -310,7 +347,10 @@ static uint32_t run_frame(void)
         dummy_advance(i == 0); /* GSP releases on the very first GCK edge */
     }
 
-    const volatile uint8_t *fb = (const volatile uint8_t *)(uintptr_t)CTRL->fb_addr;
+    /* The fb *pointer* comes from the (volatile) control block; the pixel bytes it points at are
+     * stable for the whole scan by contract (the M33 awaits the ack), so they are read non-volatile
+     * and gcc may schedule the pack loads freely (#348 lever 3). */
+    const uint8_t *fb = (const uint8_t *)(uintptr_t)CTRL->fb_addr;
     uint32_t n_spans = CTRL->n_spans;
     if (n_spans > MAX_DIRTY_SPANS) {
         n_spans = MAX_DIRTY_SPANS; /* distrust shared RAM: a corrupted count must not overrun spans[] */
