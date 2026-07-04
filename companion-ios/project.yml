@@ -28,8 +28,7 @@ options:
 # Applied to every target unless overridden.
 settings:
   base:
-    SWIFT_VERSION: "5.0"                 # Swift 5 language mode (issue B0: 5.9+)
-    SWIFT_STRICT_CONCURRENCY: complete   # strict concurrency ON
+    SWIFT_VERSION: "6.0"                 # Swift 6 language mode (data-race safety built in)
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
     CODE_SIGN_STYLE: Automatic
