@@ -30,12 +30,14 @@
         if (selection.mode === "bbox") {
             if (!selection.bbox) return null;
             const [w, s, e, n] = selection.bbox;
+            const huge = (selection.areaKm2Raw ?? 0) > 500_000;
             return {
                 title: `Box W ${w.toFixed(3)} · S ${s.toFixed(3)} · E ${e.toFixed(3)} · N ${n.toFixed(3)}`,
                 hint: selection.coveringNames.length
-                    ? `≈ ${selection.areaKm2} · from ${selection.coveringNames.join(", ")}`
+                    ? `≈ ${selection.areaKm2} · from ${selection.coveringNames.join(", ")}` +
+                      (huge ? " · large area — expect a long download and build" : "")
                     : "no downloadable region covers this area",
-                warn: selection.coveringNames.length === 0,
+                warn: selection.coveringNames.length === 0 || huge,
             };
         }
         if (selection.regionIds.length === 0) return null;
