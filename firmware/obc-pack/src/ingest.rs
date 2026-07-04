@@ -58,6 +58,9 @@ fn to_deg(decimicro: i32) -> f64 {
 pub fn ingest_osm(pbf_path: &str, config: &Config) -> Result<Ingested, String> {
     // --- Pass 1: node-location store + relation collection. ---
     // The PBF is node-sorted, so the store is filled before any relation is read.
+    // The stage strings are matched by the web builder's progress UI — print each
+    // when its pass actually starts, not both up front.
+    println!("Pass 1: reading nodes...");
     let mut nodes: HashMap<i64, (i32, i32)> = HashMap::new();
     let mut pending: Vec<PendingRelation> = Vec::new();
     let mut needed_ways: HashSet<i64> = HashSet::new();
@@ -76,6 +79,7 @@ pub fn ingest_osm(pbf_path: &str, config: &Config) -> Result<Ingested, String> {
         .map_err(|e| format!("pass 1 {pbf_path}: {e}"))?;
 
     // --- Pass 2: ways → features + coastlines, plus member-way geometry capture. ---
+    println!("Pass 2: processing ways...");
     let mut features = Vec::new();
     let mut coastlines = Vec::new();
     let mut member_geom: HashMap<i64, Vec<(f64, f64)>> = HashMap::with_capacity(needed_ways.len());

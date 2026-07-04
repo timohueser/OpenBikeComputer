@@ -80,7 +80,9 @@ fn packed() -> Vec<u8> {
         chunk_size: 8192, // must hold the ~4 KiB MAX_FEAT_PTS line
         root: Node::Leaf { bbox: GLOBAL, features: vec![line(1, LINE16), line(5, &big_line_points())] },
     };
-    serialize_lods(&[lod0, lod1], &styles(), MARKER, GLOBAL)
+    let (bytes, dropped) = serialize_lods(&[lod0, lod1], &styles(), MARKER, GLOBAL);
+    assert_eq!(dropped, 0, "every fixture feature fits its chunk");
+    bytes
 }
 
 /// A decoded feature in a comparable, owned form.

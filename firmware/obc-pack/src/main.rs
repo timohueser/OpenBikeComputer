@@ -88,9 +88,7 @@ fn run() -> Result<(), String> {
         args.pbfs[0].clone()
     };
 
-    // --- Ingest (two passes: nodes, then ways). ---
-    println!("Pass 1: reading nodes...");
-    println!("Pass 2: processing ways...");
+    // --- Ingest (two passes: nodes, then ways; prints its own Pass 1/2 stages). ---
     let mut ingested = ingest_osm(&pbf_to_ingest, &config)?;
     if ingested.features.is_empty() && ingested.coastlines.is_empty() {
         return Err("no features found matching config".into());
@@ -128,34 +126,46 @@ fn run() -> Result<(), String> {
     let styles = config.styles();
     let file = std::fs::File::create(&args.output).map_err(|e| format!("create {}: {e}", args.output))?;
     let mut w = std::io::BufWriter::new(file);
-    let total = serialize_lods_streaming(&mut w, config.lods.len(), &styles, config.marker_color, global_bbox, |i| {
-        let lod = &config.lods[i];
-        println!("Building Quadtree LOD {i} (simplify {}m)...", lod.simplify_m);
-        let tol = if lod.simplify_m > 0.0 { lod.simplify_m / M_PER_DEG } else { 0.0 };
-        // Parallel per-feature simplify: each closure runs wholly on one thread
-        // using that thread's own GEOS context, so no geometry crosses threads.
-        // `collect` preserves order, so the output is unchanged. The quadtree build
-        // stays sequential (bounded memory).
-        let level: Vec<(u8, Geom)> = ingested
-            .features
-            .par_iter()
-            .filter(|f| f.min_lod <= i)
-            .map(|f| {
-                let g = if tol > 0.0 { topology_preserve_simplify(&f.geom, tol) } else { f.geom.clone() };
-                (f.style_id, g)
-            })
-            .collect();
-        (build_lod(level, global_bbox, chunk_size), chunk_size, lod.max_mpp)
-    })
-    .map_err(|e| format!("write {}: {e}", args.output))?;
+    let (total, dropped) =
+        serialize_lods_streaming(&mut w, config.lods.len(), &styles, config.marker_color, global_bbox, |i| {
+            let lod = &config.lods[i];
+            println!("Building Quadtree LOD {i} (simplify {}m)...", lod.simplify_m);
+            let tol = if lod.simplify_m > 0.0 { lod.simplify_m / M_PER_DEG } else { 0.0 };
+            // Parallel per-feature simplify: each closure runs wholly on one thread
+            // using that thread's own GEOS context, so no geometry crosses threads.
+            // `collect` preserves order, so the output is unchanged. The quadtree build
+            // stays sequential (bounded memory).
+            let level: Vec<(u8, Geom)> = ingested
+                .features
+                .par_iter()
+                .filter(|f| f.min_lod <= i)
+                .map(|f| {
+                    let g = if tol > 0.0 { topology_preserve_simplify(&f.geom, tol) } else { f.geom.clone() };
+                    (f.style_id, g)
+                })
+                .collect();
+            (build_lod(level, global_bbox, chunk_size), chunk_size, lod.max_mpp)
+        })
+        .map_err(|e| format!("write {}: {e}", args.output))?;
     w.flush().map_err(|e| format!("flush {}: {e}", args.output))?;
+    // With densify-aware quadtree budgeting this should stay zero; a non-zero count
+    // means real map content is missing (a feature too big for its chunk even at
+    // the 10-µdeg split floor) and must not pass silently.
+    if dropped > 0 {
+        eprintln!(
+            "warning: {dropped} feature(s) exceeded chunk_size {chunk_size} and were dropped — \
+             raise chunk_size or the LOD simplify tolerance"
+        );
+    }
     println!("Writing {} ({total} bytes)...", args.output);
     println!("Done!");
     Ok(())
 }
 
 /// Total bounds over features + coastlines, then truncate `v*1e6` toward zero. The
-/// coords are the exact osmium f64s, so the bbox is stable across runs.
+/// coords are the exact osmium f64s, so the bbox is stable across runs. Truncation
+/// pulls the max edges (and, for negative coordinates, the min edges) inward by
+/// under 1 µdeg (~0.11 m); vertices past the shrunken edge are clipped at the root.
 fn compute_bbox(ing: &obc_pack::ingest::Ingested) -> (i64, i64, i64, i64) {
     let (mut minx, mut miny, mut maxx, mut maxy) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
     let mut widen = |x: f64, y: f64| {
@@ -174,7 +184,7 @@ fn compute_bbox(ing: &obc_pack::ingest::Ingested) -> (i64, i64, i64, i64) {
             widen(x, y);
         }
     }
-    // `as i64` truncates toward zero — the bbox floors to whole microdegrees.
+    // `as i64` truncates toward zero — NOT a floor for negatives; see the doc above.
     ((minx * 1e6) as i64, (miny * 1e6) as i64, (maxx * 1e6) as i64, (maxy * 1e6) as i64)
 }
 
