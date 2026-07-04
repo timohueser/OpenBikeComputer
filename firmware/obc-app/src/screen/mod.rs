@@ -31,6 +31,7 @@ mod map;
 mod menu;
 mod ride_control;
 mod route_menu;
+mod route_overview;
 mod route_swap;
 mod settings;
 mod statistics;
@@ -41,6 +42,7 @@ pub use map::MapScreen;
 pub use menu::MenuScreen;
 pub use ride_control::RideControl;
 pub use route_menu::RouteMenuScreen;
+pub use route_overview::RouteOverviewScreen;
 pub use route_swap::RouteSwapScreen;
 pub use settings::{
     AddFieldScreen, DateTimeScreen, PowerScreen, ResetScreen, SettingsScreen, StatFieldsScreen, StatsScreen,
@@ -267,6 +269,7 @@ screens! {
     RideControl(RideControl) => Overlay,
     Menu(MenuScreen) => Nav,
     RouteMenu(RouteMenuScreen) => Nav,
+    RouteOverview(RouteOverviewScreen) => Nav,
     RouteSwap(RouteSwapScreen) => Nav,
     Settings(SettingsScreen) => Settings,
     DateTime(DateTimeScreen) => Settings,
@@ -401,12 +404,12 @@ pub(crate) fn tile(cv: &mut impl Surface, area: Rectangle, label: &str, value: &
     let vx = if arrow {
         // Up-triangle sized to sit alongside the Display digits.
         let ax = x + 8;
-        cv.triangle(Point::new(ax, vy + 26), Point::new(ax + 13, vy + 26), Point::new(ax + 6, vy + 6), palette::INK);
+        cv.triangle(Point::new(ax, vy + 26), Point::new(ax + 13, vy + 26), Point::new(ax + 6, vy + 6), INK);
         x + 26
     } else {
         x + 8
     };
-    cv.text(value, Point::new(vx, vy), Font::Display, TextAlign::Left, palette::INK);
+    cv.text(value, Point::new(vx, vy), Font::Display, TextAlign::Left, INK);
 }
 
 /// Draw a centered two-line empty state — a bold `title` over a muted `hint` — the shared

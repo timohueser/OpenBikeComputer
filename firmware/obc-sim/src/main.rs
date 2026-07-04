@@ -612,7 +612,7 @@ fn main() {
                 app.activity.end_session();
                 reconcile_tracks(&mut app, &mut tracks);
             } else {
-                eprintln!("--save-track: no active ride (load a route first, e.g. --boot --script pp)");
+                eprintln!("--save-track: no active ride (start a route first, e.g. --boot --script ppp)");
             }
         }
 
