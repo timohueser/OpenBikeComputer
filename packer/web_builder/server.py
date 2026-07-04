@@ -1,23 +1,29 @@
 """FastAPI app for the OBCM Web Builder."""
 import json
 import os
+import subprocess
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import geofabrik, jobs
+from . import geofabrik, jobs, paths
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PROJECT_ROOT = paths.PACKER_ROOT
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
-# The default preset ships with the repo and is the read-only factory default.
-FACTORY_CONFIG = os.path.join(PROJECT_ROOT, "presets", "default.json")
+# Shipped style presets: complete packer configs + a _meta block, default first.
+PRESETS_DIR = os.path.join(PROJECT_ROOT, "presets")
+# The read-only factory default served to the legacy editor.
+FACTORY_CONFIG = os.path.join(PRESETS_DIR, "default.json")
 # user_config.json (gitignored) holds the user's persisted edits, if any.
 USER_CONFIG = os.path.join(PROJECT_ROOT, "user_config.json")
 # palette.json ships with the repo: the device's 64-color gamut offered as the
 # default color picker. Editable, with a generated fallback if it's missing.
 PALETTE_FILE = os.path.join(PROJECT_ROOT, "palette.json")
+# Repo copy of obc-pack's embedded config schema — the fallback for /api/schema
+# when the binary isn't built yet.
+SCHEMA_FILE = os.path.join(paths.REPO_ROOT, "firmware", "obc-pack", "schema", "config.schema.json")
 
 app = FastAPI(title="OBCM Web Builder")
 
@@ -71,22 +77,85 @@ def get_palette():
     return JSONResponse(_default_palette())
 
 
+@app.get("/api/presets")
+def get_presets():
+    """List the shipped style presets, default first. Each entry carries the
+    _meta fields plus the bare packer config (directly submittable / CLI-usable)."""
+    presets = []
+    for fn in sorted(os.listdir(PRESETS_DIR)):
+        if not fn.endswith(".json"):
+            continue
+        try:
+            data = _read_config(os.path.join(PRESETS_DIR, fn))
+        except Exception:
+            continue  # a malformed preset shouldn't take the endpoint down
+        meta = data.pop("_meta", {})
+        presets.append({
+            "id": meta.get("id", fn[:-5]),
+            "name": meta.get("name", fn[:-5]),
+            "description": meta.get("description", ""),
+            "version": meta.get("version", 1),
+            "swatch": meta.get("swatch", []),
+            "config": data,
+        })
+    presets.sort(key=lambda p: (p["id"] != "default", p["name"]))
+    return JSONResponse(presets)
+
+
+# /api/schema cache, keyed on the binary's mtime so a rebuilt obc-pack (e.g.
+# during v6 work) is picked up without a server restart.
+_schema_cache = {"key": None, "envelope": None}
+
+
+@app.get("/api/schema")
+def get_schema():
+    """The config JSON Schema envelope from the exact obc-pack binary that will
+    pack — the editor derives its capability from this. Falls back to the repo
+    schema file when the binary isn't built."""
+    bin_path = paths.rust_pack_bin()
+    if bin_path:
+        key = (bin_path, os.path.getmtime(bin_path))
+        if _schema_cache["key"] != key:
+            try:
+                out = subprocess.run([bin_path, "schema"], capture_output=True, text=True, timeout=10)
+                if out.returncode == 0:
+                    envelope = json.loads(out.stdout)
+                    envelope["source"] = "binary"
+                    _schema_cache.update(key=key, envelope=envelope)
+            except Exception:
+                pass  # fall through to the repo file
+        if _schema_cache["key"] == key:
+            return JSONResponse(_schema_cache["envelope"])
+    if os.path.exists(SCHEMA_FILE):
+        return JSONResponse({
+            "schema_version": 1,
+            "format_version": None,
+            "schema": _read_config(SCHEMA_FILE),
+            "source": "repo-file",
+        })
+    raise HTTPException(
+        status_code=503,
+        detail="obc-pack is not built — run `cargo build --release -p obc-pack` in "
+               "firmware/ (or set OBC_PACK_BIN to its path).",
+    )
+
+
 @app.get("/api/config")
 def get_config():
-    """Return the user's persisted config if present, else factory defaults."""
+    """DEPRECATED (legacy editor): the user's persisted config, else the default preset."""
     path = USER_CONFIG if os.path.exists(USER_CONFIG) else FACTORY_CONFIG
     return JSONResponse(_read_config(path))
 
 
 @app.get("/api/config/factory")
 def get_factory_config():
-    """Return the read-only factory-default config (config.json)."""
+    """DEPRECATED (legacy editor): the read-only factory-default config."""
     return JSONResponse(_read_config(FACTORY_CONFIG))
 
 
 @app.put("/api/config")
 def put_config(config: dict):
-    """Persist the user's working config to user_config.json."""
+    """DEPRECATED (legacy editor): persist the working config to user_config.json."""
     with open(USER_CONFIG, "w") as f:
         json.dump(config, f, indent=2)
     return {"ok": True}
@@ -94,7 +163,7 @@ def put_config(config: dict):
 
 @app.delete("/api/config")
 def reset_config():
-    """Discard user edits (delete user_config.json) and return factory defaults."""
+    """DEPRECATED (legacy editor): discard user edits and return factory defaults."""
     if os.path.exists(USER_CONFIG):
         os.remove(USER_CONFIG)
     return JSONResponse(_read_config(FACTORY_CONFIG))
@@ -108,10 +177,34 @@ def post_job(req: JobRequest):
         raise HTTPException(status_code=400, detail="Output name is required")
     if req.bbox is not None and len(req.bbox) != 4:
         raise HTTPException(status_code=400, detail="bbox must be [west, south, east, north]")
-    job = jobs.create_job(
-        req.region_ids, req.config, req.chunk_size, req.output_name.strip(), req.bbox
-    )
+    try:
+        job = jobs.create_job(
+            req.region_ids, req.config, req.chunk_size, req.output_name.strip(), req.bbox
+        )
+    except jobs.QueueFull as exc:
+        raise HTTPException(status_code=429, detail=str(exc))
     return {"job_id": job.id}
+
+
+@app.get("/api/jobs/{job_id}")
+def job_state(job_id: str):
+    """State snapshot — lets a reloaded page re-attach to a running build."""
+    job = jobs.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job")
+    return JSONResponse(job.public_state())
+
+
+@app.get("/api/jobs/{job_id}/download")
+def job_download(job_id: str):
+    job = jobs.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job")
+    if job.state != "done" or not os.path.exists(job.out_path):
+        raise HTTPException(status_code=409, detail=f"Build is not finished (state: {job.state})")
+    return FileResponse(
+        job.out_path, filename=job.download_name, media_type="application/octet-stream"
+    )
 
 
 @app.get("/api/jobs/{job_id}/events")
