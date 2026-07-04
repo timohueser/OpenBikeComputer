@@ -1411,6 +1411,15 @@ async fn run_app(
         // on ST7789 the input/overlay plane consumes that edge itself).
         let (overlay_dirty, overlay_span) = display.poll_overlay();
 
+        // The hold bulge pushes **before** any screen redraw this pass (#348 follow-up): a fired hold
+        // usually navigates, so with the bulge last its confirm pop's first frame queued behind the
+        // new screen's render + present — ~40 ms on a menu, 150–300 ms on the map view, where the
+        // whole 220 ms pop expired unseen (the "sometimes it just snaps" inconsistency). Bulge-first,
+        // the pop's attack lands on glass within ~10 ms of the fire, holds at pop depth while the new
+        // screen renders (composited over the *old* fb for that one frame — correct: that is what is
+        // on glass until the present below), and eases out on the following passes. ST7789: no-op.
+        display.present_bulge(overlay_span, overlay_dirty).await;
+
         if dirty.map {
             // The map pipeline runs **only when the base screen actually draws the map** (the Map
             // view). On a menu / Statistics / Home redraw it's skipped entirely — no SD style-table
@@ -1509,12 +1518,13 @@ async fn run_app(
             }
         }
 
-        // The hold bulge: the FLPR re-presents it from this map plane, compositing over the clean map
-        // (the map present above clipped a live bulge's rows out via its `exclude`, so this paints
-        // them fresh — no mid-pop flash; the trailing clear is unconditional now that the self-diffing
-        // present may skip those rows). On ST7789 this is a no-op — its bulge rides the input/overlay
-        // plane on the shared bus.
-        display.present_bulge(overlay_span, overlay_dirty).await;
+        // The hold bulge already pushed at the top of this pass (bulge-first, see above). But if a
+        // screen present just landed, its `exclude` skipped the bulge rows — they still show the *old*
+        // frame under the bulge. Re-composite them over the fresh fb now (a ~12 ms partial push, only
+        // on the rare pass where a redraw and a live bulge coincide) so the band never lags the screen.
+        if dirty.map && overlay_span.is_some() {
+            display.present_bulge(overlay_span, false).await;
+        }
 
         // Publish render-stats telemetry host-ward at ~2 Hz: throttled here (not in the TX task) so the
         // link never floods and the device never stalls on it.
@@ -1592,8 +1602,11 @@ async fn run_status(
         }
 
         // This frame's hold-bulge state, exactly as the ride loop samples it — the status present
-        // goes around a live bulge's rows and `present_bulge` re-composites them.
+        // goes around a live bulge's rows and `present_bulge` re-composites them. Bulge pushes
+        // FIRST, as in the ride loop (#348 follow-up): a fired hold's confirm pop must not queue
+        // behind the status redraw it triggered.
         let (overlay_dirty, overlay_span) = display.poll_overlay();
+        display.present_bulge(overlay_span, overlay_dirty).await;
 
         if redraw {
             let battery = fuel.poll().unwrap_or(0);
@@ -1605,9 +1618,11 @@ async fn run_status(
             let fp = display.render_present(overlay_span, render).await;
             redraw = !fp.ok; // a transport fault latches a retry, like the ride loop
             defmt::info!("status frame: render {=u64} us + push {=u64} us", fp.render_us, fp.push_us);
+            // Re-composite the bulge rows the present's `exclude` skipped (see the ride loop's note).
+            if overlay_span.is_some() {
+                display.present_bulge(overlay_span, false).await;
+            }
         }
-
-        display.present_bulge(overlay_span, overlay_dirty).await;
 
         if now.wrapping_sub(last_led) >= 500 {
             led.toggle();
