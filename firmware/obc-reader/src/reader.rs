@@ -18,6 +18,7 @@
 //! byte-identical.
 
 use core::cell::{RefCell, RefMut};
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use heapless::Vec;
 
@@ -268,6 +269,10 @@ pub struct MapTables {
     /// The backdrop style (bottom of the paint order; see [`Reader::backdrop_style`]), resolved
     /// once at parse so the per-frame lookup is a field read, not a 256-slot scan.
     backdrop: Option<Style>,
+    /// Session-unique parse identity, never 0 (a zeroed [`MapCache`] sits at generation 0 =
+    /// "unowned"). [`Reader::new`] hands it to the cache, which self-clears when it last served a
+    /// different parse — the structural guard against a map switch cross-serving stale chunks.
+    generation: u32,
 }
 
 impl MapTables {
@@ -310,7 +315,12 @@ impl MapTables {
         // Resolve the backdrop (lowest `z_index`, ties broken by lowest id) once here; the table is
         // immutable after parse, so `Reader::backdrop_style` never has to re-scan the 256 slots.
         let backdrop = styles.iter().filter_map(|s| s.as_ref()).min_by_key(|s| (s.z_index, s.id)).copied();
-        Ok(MapTables { version, bbox, marker_color, lods, styles, backdrop })
+        // Stamp a session-unique generation. `fetch_add + 1` starts the first parse at 1, so 0 is
+        // never live — a zero-initialized `MapCacheInner` must always read as "unowned". `Relaxed`
+        // suffices: the counter is the only shared state and only uniqueness matters.
+        static GEN: AtomicU32 = AtomicU32::new(0);
+        let generation = GEN.fetch_add(1, Ordering::Relaxed) + 1;
+        Ok(MapTables { version, bbox, marker_color, lods, styles, backdrop, generation })
     }
 }
 
@@ -337,10 +347,12 @@ impl<'a> Reader<'a> {
     /// Build a per-frame reader over the pre-parsed [`MapTables`], a fresh `src`, and a `cache` the
     /// geometry + index reads stream through. **Cheap**: borrows the tables and copies only the
     /// header scalars (no parse, no SD read). The cache is caller-owned and reusable across frames;
-    /// pass a fresh [`MapCache::new`] if you don't keep one. Reusing a cache is only sound while the
-    /// *source is the same map* — pointing a reader at a different `.obcm` requires
-    /// [`MapCache::clear`] (and a re-`parse`) first, or the old map's chunks cross-serve.
+    /// pass a fresh [`MapCache::new`] if you don't keep one. The cache *adopts* these tables' parse
+    /// generation here: building a reader over a different map's tables auto-clears the stale
+    /// slots, so a map switch (a re-`parse`) can never cross-serve the old map's chunks — no manual
+    /// [`MapCache::clear`] required.
     pub fn new(src: &'a dyn ByteSource, tables: &'a MapTables, cache: &'a MapCache) -> Reader<'a> {
+        cache.adopt(tables.generation);
         Reader { src, version: tables.version, bbox: tables.bbox, marker_color: tables.marker_color, tables, cache }
     }
 
@@ -863,13 +875,26 @@ impl MapCache {
         MapCache { inner: RefCell::new(MapCacheInner::new()) }
     }
 
-    /// Drop every resident chunk + index slot. **Call this whenever you rebuild a [`Reader`] over
-    /// a *different* [`ByteSource`]** (a runtime map switch): slots are keyed only by
-    /// `(lod, chunk_id, len)` / index offset, *not* by which map produced them, so a slot left
-    /// resident from the old map would cross-serve to the new reader as a (wrong-geometry) hit.
-    /// Cheap — only the `valid` flags + counters are touched, not the buffers.
+    /// Drop every resident chunk + index slot. Slots are keyed only by `(lod, chunk_id, len)` /
+    /// index offset, *not* by which map produced them, so a slot left resident across a map switch
+    /// would cross-serve as a (wrong-geometry) hit — but [`Reader::new`] guards that structurally
+    /// via [`MapCache::adopt`], so calling this on a switch is still correct, just no longer
+    /// load-bearing. Cheap — only the `valid` flags + counters are touched, not the buffers.
     pub fn clear(&self) {
         self.inner.borrow_mut().clear();
+    }
+
+    /// Bind the cache to a [`MapTables`] parse `generation`, running the [`MapCache::clear`] logic
+    /// first if it last served a different one. Called by [`Reader::new`], which is what makes the
+    /// forgotten-`clear()`-on-map-switch cross-serve impossible by construction. A zeroed cache
+    /// sits at generation 0 — never a live generation — so the first adopt after boot clears an
+    /// already-empty cache (harmless).
+    fn adopt(&self, generation: u32) {
+        let mut inner = self.inner.borrow_mut();
+        if inner.generation != generation {
+            inner.clear();
+            inner.generation = generation;
+        }
     }
 
     #[inline]
@@ -886,6 +911,10 @@ impl MapCache {
 /// The cache's mutable interior (see [`MapCache`]). Recency is a monotonic `tick` stamped on each
 /// access; eviction picks the lowest stamp.
 struct MapCacheInner {
+    /// The [`MapTables::parse`] generation the resident slots belong to; 0 (the zero-init state)
+    /// means "unowned". Written only by [`MapCache::adopt`] — deliberately *not* reset by `clear`,
+    /// which empties the slots and so is safe under any generation.
+    generation: u32,
     tick: u32,
     chunks: [ChunkSlot; MAP_CHUNK_SLOTS],
     index: [IndexBlock; INDEX_BLOCKS],
@@ -1139,50 +1168,63 @@ mod tests {
 
     /// Two maps sharing a chunk key `(lod, cid, len)` but holding *different* bytes must not
     /// cross-serve through a shared cache. Slots are keyed only by `(lod, cid, len)`, not the
-    /// source, so without a `clear()` on the switch the old slot returns as a wrong-geometry hit.
-    /// The first half *demonstrates the hazard* so the test fails loudly if `clear()` is ever
-    /// dropped from the fix.
+    /// source — the guarantee lives in the generation adopt inside `Reader::new`, so this drives a
+    /// map switch through the public path **without ever calling `clear()`** and asserts the
+    /// same-key load misses and serves the new map's bytes.
     #[test]
-    fn clear_prevents_chunk_cache_cross_serving() {
-        const LEN: usize = 64;
-        let a = [0xAAu8; 256]; // map A's bytes
-        let b = [0xBBu8; 256]; // map B's bytes — same key, different geometry
+    fn map_switch_without_clear_cannot_cross_serve() {
+        use obcm_testkit::{build_file, pack_line, pad, LodSpec};
+
+        // Two byte-identical layouts (same style table / index / chunk_size ⇒ same chunk key and
+        // offsets) whose one feature differs only in its delta — the decoded endpoint tells the
+        // maps apart.
+        let build = |delta: (i8, i8)| {
+            build_file(
+                (0, 0, 1000, 1000),
+                &[(1, 3, 0xF800, 2, 3)],
+                &[LodSpec {
+                    max_mpp: f32::INFINITY,
+                    index: vec![0],
+                    chunks: vec![pad(pack_line(1, 10, 10, &[delta]), 64)],
+                    chunk_size: 64,
+                }],
+            )
+        };
+        let a = build((1, 1));
+        let b = build((2, 2));
+
+        /// Decode chunk `(0, 0)` and return the feature's last exterior point + the cache stats.
+        fn last_point(r: &Reader) -> ((i32, i32), CacheStats) {
+            let mut points = Vec::<(i32, i32), 8>::new();
+            let mut ring_lens = Vec::<usize, 2>::new();
+            let mut last = (0, 0);
+            let node = r.bbox;
+            r.for_each_feature(0, 0, &node, &mut points, &mut ring_lens, |f| {
+                last = *f.exterior().last().unwrap();
+            });
+            (last, r.chunk_cache_stats())
+        }
+
         let sa = SliceSource(&a);
         let sb = SliceSource(&b);
+        let ta = MapTables::parse(&sa).unwrap();
+        let tb = MapTables::parse(&sb).unwrap();
+        assert_ne!(ta.generation, 0, "0 must stay the unowned sentinel");
+        assert_ne!(ta.generation, tb.generation, "each parse gets its own generation");
 
+        // Map A through the shared cache: a miss that leaves A's chunk resident under key (0,0,64).
         let cache = MapCache::new();
-        let mut inner = cache.borrow_mut();
+        let ra = Reader::new(&sa, &ta, &cache);
+        let (pa, stats_a) = last_point(&ra);
+        assert_eq!(pa, (11, 11), "map A's geometry");
+        assert_eq!((stats_a.chunk_hits, stats_a.chunk_misses), (0, 1));
 
-        // Map A fills slot (0, 0, LEN) with A's bytes.
-        match inner.load_chunk(&sa, 0, 0, 0, LEN).unwrap() {
-            ChunkLoc::Slot(i) => assert!(inner.chunks[i].buf[..LEN].iter().all(|&x| x == 0xAA)),
-            ChunkLoc::Scratch => panic!("a slot-sized chunk should land in a slot"),
-        }
-
-        // The hazard: the same key from map B *without* a clear hits A's resident slot and serves
-        // A's bytes — the stale-geometry cross-serve a map switch must guard against.
-        let before = inner.stats();
-        let loc = inner.load_chunk(&sb, 0, 0, 0, LEN).unwrap();
-        let after = inner.stats();
-        assert_eq!(after.chunk_hits, before.chunk_hits + 1, "same key must cross-serve before a clear");
-        match loc {
-            ChunkLoc::Slot(i) => assert!(inner.chunks[i].buf[..LEN].iter().all(|&x| x == 0xAA), "stale A bytes"),
-            ChunkLoc::Scratch => panic!("a slot-sized chunk should land in a slot"),
-        }
-        drop(inner);
-
-        // The fix: clear on the switch, then map B's read misses and returns B's bytes.
-        cache.clear();
-        let mut inner = cache.borrow_mut();
-        let before = inner.stats();
-        let loc = inner.load_chunk(&sb, 0, 0, 0, LEN).unwrap();
-        let after = inner.stats();
-        assert_eq!(after.chunk_hits, before.chunk_hits, "post-clear read must not hit a stale slot");
-        assert_eq!(after.chunk_misses, before.chunk_misses + 1, "post-clear read must miss + re-read");
-        match loc {
-            ChunkLoc::Slot(i) => assert!(inner.chunks[i].buf[..LEN].iter().all(|&x| x == 0xBB), "B bytes after clear"),
-            ChunkLoc::Scratch => panic!("a slot-sized chunk should land in a slot"),
-        }
+        // Map B over the same cache, same chunk key, *no* `clear()`: `Reader::new` adopts B's
+        // generation, so the load must miss (not hit A's resident slot) and serve B's bytes.
+        let rb = Reader::new(&sb, &tb, &cache);
+        let (pb, stats_b) = last_point(&rb);
+        assert_eq!(pb, (12, 12), "map B's geometry, not stale A bytes");
+        assert_eq!((stats_b.chunk_hits, stats_b.chunk_misses), (0, 1), "the switch must miss + re-read");
     }
 
     /// The index-block cache keys a block by its absolute offset into the index region, which means
