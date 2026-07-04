@@ -8,9 +8,15 @@ import OBCDomain
 ///
 ///     planned/<id>/route.json     versioned record (summary + canonical route)
 ///     planned/<id>/source.<ext>   the original import file, byte-exact
-///     rides/<id>.json             versioned ride (summary + tracklog)
+///     rides/<id>/summary.json     versioned ride summary (the list row)
+///     rides/<id>/points.json      versioned tracklog, compact JSON (read on demand)
 ///     synced-rides.json           every ride id ever downloaded (H9)
 ///     deleted-rides.json          ride ids deleted on the phone (device keeps its copy)
+///
+/// Rides split summary from tracklog (#360, ride schema v2) so launching never
+/// decodes a season of points to draw list rows. A v1 whole-ride file
+/// (`rides/<id>.json`) migrates lazily: the first read rewrites it split and
+/// removes the old file.
 ///
 /// The JSON shape is an **app-owned schema** (versioned DTOs below), decoupled
 /// from both the domain types' memberwise layout and the device wire formats —
@@ -79,24 +85,81 @@ public struct FileLibraryStore: LibraryStore, Sendable {
 
     // MARK: Tracked rides
 
-    public func rides() -> [Ride] {
-        contents(of: ridesDir)
-            .compactMap { url -> Ride? in
-                guard url.pathExtension == "json",
-                    let file: RideFile = read(url), file.version == Self.schemaVersion
-                else { return nil }
-                return file.ride
+    public func rideSummaries() -> [RideSummary] {
+        let entries = contents(of: ridesDir)
+        // v2 rides are directories; their names key the migration dedupe below.
+        let migrated = Set(
+            entries.filter(\.hasDirectoryPath).map(\.lastPathComponent))
+        return entries
+            .compactMap { url -> RideSummary? in
+                if url.hasDirectoryPath {
+                    guard let file: RideSummaryFile = read(url.appendingPathComponent("summary.json")),
+                        file.version == Self.rideSchemaVersion
+                    else { return nil }
+                    return file.summary.domain
+                }
+                // A v1 whole-ride file — migrate on first read (#360). If its id
+                // already has a split directory (a migration whose old-file
+                // removal didn't land), the directory wins: rewriting from the
+                // stale file would undo a later rename.
+                guard url.pathExtension == "json" else { return nil }
+                if migrated.contains(url.deletingPathExtension().lastPathComponent) {
+                    try? FileManager.default.removeItem(at: url)
+                    return nil
+                }
+                return migrateLegacyRideFile(at: url)?.summary
             }
-            .sorted { $0.summary.date > $1.summary.date }
+            .sorted { $0.date > $1.date }
+    }
+
+    public func ridePoints(_ id: RideID) -> [RidePoint]? {
+        if let file: RidePointsFile = read(rideDir(id).appendingPathComponent("points.json")),
+            file.version == Self.rideSchemaVersion {
+            return file.ridePoints
+        }
+        // Not split yet (a detail opened before any list read) — migrate now.
+        return migrateLegacyRideFile(at: legacyRideURL(id))?.points
     }
 
     public func saveRide(_ ride: Ride) {
-        ensure(ridesDir)
-        write(RideFile(ride), to: rideURL(ride.id))
+        let dir = rideDir(ride.id)
+        ensure(dir)
+        write(RideSummaryFile(ride.summary), to: dir.appendingPathComponent("summary.json"))
+        // The tracklog is the bulky file — compact JSON, written once per sync
+        // (or migration) and read one-ride-at-a-time.
+        write(RidePointsFile(ride.points), to: dir.appendingPathComponent("points.json"),
+              formatting: [.sortedKeys])
+        // A re-save of a not-yet-migrated ride must not leave the v1 file to
+        // shadow (and later clobber) the split one.
+        try? FileManager.default.removeItem(at: legacyRideURL(ride.id))
+    }
+
+    public func saveRideSummary(_ summary: RideSummary) {
+        // Split a lingering v1 file first, so the points aren't orphaned and a
+        // later lazy migration can't overwrite this rename with the stale name.
+        _ = migrateLegacyRideFile(at: legacyRideURL(summary.id))
+        let dir = rideDir(summary.id)
+        ensure(dir)
+        write(RideSummaryFile(summary), to: dir.appendingPathComponent("summary.json"))
     }
 
     public func deleteRide(_ id: RideID) {
-        try? FileManager.default.removeItem(at: rideURL(id))
+        try? FileManager.default.removeItem(at: rideDir(id))
+        try? FileManager.default.removeItem(at: legacyRideURL(id))
+    }
+
+    /// The lazy v1 → v2 migration (#360): read the whole-ride file, rewrite it
+    /// split, remove the original. `nil` (and the file left alone) when it's
+    /// unreadable or future-versioned — the skip-not-fatal rule.
+    private func migrateLegacyRideFile(at url: URL) -> Ride? {
+        guard let file: RideFile = read(url), file.version == 1 else { return nil }
+        let ride = file.ride
+        saveRide(ride)
+        // `saveRide` sweeps `legacyRideURL(ride.id)`; also remove `url` itself in
+        // case a hand-moved file's name doesn't match its id — a survivor would
+        // re-migrate on every read and clobber later renames.
+        try? FileManager.default.removeItem(at: url)
+        return ride
     }
 
     public func syncedRideIDs() -> Set<RideID> {
@@ -128,13 +191,21 @@ public struct FileLibraryStore: LibraryStore, Sendable {
     // MARK: Paths + IO
 
     private static let schemaVersion = 1
+    /// Rides split summary/points into separate files (#360); planned routes and
+    /// the id sets stay on v1.
+    private static let rideSchemaVersion = 2
 
     private var plannedDir: URL { directory.appendingPathComponent("planned", isDirectory: true) }
     private var ridesDir: URL { directory.appendingPathComponent("rides", isDirectory: true) }
     private var syncedURL: URL { directory.appendingPathComponent("synced-rides.json") }
     private var deletedURL: URL { directory.appendingPathComponent("deleted-rides.json") }
 
-    private func rideURL(_ id: RideID) -> URL {
+    private func rideDir(_ id: RideID) -> URL {
+        ridesDir.appendingPathComponent(Self.fileSafe(id.rawValue), isDirectory: true)
+    }
+
+    /// Where the v1 store kept the whole ride — read (and swept) by the migration.
+    private func legacyRideURL(_ id: RideID) -> URL {
         ridesDir.appendingPathComponent("\(Self.fileSafe(id.rawValue)).json")
     }
 
@@ -170,16 +241,22 @@ public struct FileLibraryStore: LibraryStore, Sendable {
         return try? decoder.decode(T.self, from: data)
     }
 
-    private func write<T: Encodable>(_ value: T, to url: URL) {
+    /// Small metadata files stay pretty-printed (diffable, debuggable); the bulky
+    /// points file passes `[.sortedKeys]` alone — compact is roughly a third of
+    /// the pretty size on a real tracklog.
+    private func write<T: Encodable>(
+        _ value: T, to url: URL,
+        formatting: JSONEncoder.OutputFormatting = [.prettyPrinted, .sortedKeys]
+    ) {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .secondsSince1970
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.outputFormatting = formatting
         guard let data = try? encoder.encode(value) else { return }
         try? data.write(to: url, options: .atomic)
     }
 }
 
-// MARK: - On-disk schema (v1)
+// MARK: - On-disk schema (planned v1, rides v2)
 
 // DTOs, not Codable on the domain types: the file shape is pinned here, so a
 // domain refactor can't silently re-shape saved libraries.
@@ -354,34 +431,55 @@ private struct WaypointDTO: Codable {
     }
 }
 
-private struct RideFile: Codable {
+/// `rides/<id>/summary.json` (v2) — the list row, decoded for every ride at launch.
+private struct RideSummaryFile: Codable {
     var version: Int
     var summary: RideSummaryDTO
+
+    init(_ summary: RideSummary) {
+        version = 2
+        self.summary = RideSummaryDTO(summary)
+    }
+}
+
+/// `rides/<id>/points.json` (v2) — the tracklog, decoded one ride at a time.
+private struct RidePointsFile: Codable {
+    var version: Int
     /// `[epochSeconds, lat, lon]` or `[epochSeconds, lat, lon, ele]` per sample.
     var points: [[Double]]
 
-    init(_ ride: Ride) {
-        version = 1
-        summary = RideSummaryDTO(ride.summary)
-        points = ride.points.map { point in
+    init(_ ridePoints: [RidePoint]) {
+        version = 2
+        points = ridePoints.map { point in
             let base = [point.timestamp.timeIntervalSince1970,
                         point.coordinate.latitude, point.coordinate.longitude]
             return point.elevationMeters.map { base + [$0] } ?? base
         }
     }
 
+    var ridePoints: [RidePoint] {
+        points.compactMap { values in
+            guard values.count >= 3 else { return nil }
+            return RidePoint(
+                timestamp: Date(timeIntervalSince1970: values[0]),
+                coordinate: Coordinate(latitude: values[1], longitude: values[2]),
+                elevationMeters: values.count >= 4 ? values[3] : nil
+            )
+        }
+    }
+}
+
+/// The **v1** whole-ride file (`rides/<id>.json`) — decode-only since #360; the
+/// lazy migration's source. Its point rows share `RidePointsFile`'s layout.
+private struct RideFile: Decodable {
+    var version: Int
+    var summary: RideSummaryDTO
+    var points: [[Double]]
+
     var ride: Ride {
-        Ride(
-            summary: summary.domain,
-            points: points.compactMap { values in
-                guard values.count >= 3 else { return nil }
-                return RidePoint(
-                    timestamp: Date(timeIntervalSince1970: values[0]),
-                    coordinate: Coordinate(latitude: values[1], longitude: values[2]),
-                    elevationMeters: values.count >= 4 ? values[3] : nil
-                )
-            }
-        )
+        var pointsFile = RidePointsFile([])
+        pointsFile.points = points
+        return Ride(summary: summary.domain, points: pointsFile.ridePoints)
     }
 }
 

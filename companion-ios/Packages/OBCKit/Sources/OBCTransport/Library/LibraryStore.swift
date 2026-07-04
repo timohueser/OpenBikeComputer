@@ -13,8 +13,10 @@ import OBCDomain
 ///
 /// Stores hold **canonical domain models** (`PlannedRouteRecord`, `Ride`) — never
 /// device wire bytes, whose layout is firmware-`S0`-owned (see #256). Calls are
-/// synchronous and expected from the main actor (payloads are small; B7 can move
-/// them off-main if ride tracklogs grow).
+/// synchronous and expected from the main actor. Ride reads are split (#360):
+/// the lists browse `rideSummaries()` (small), and a tracklog loads one ride at
+/// a time via `ridePoints(_:)` when a detail opens — a season of rides must
+/// never be decoded whole at launch.
 public protocol LibraryStore: Sendable {
     // MARK: Planned routes (imports, H4)
 
@@ -27,11 +29,21 @@ public protocol LibraryStore: Sendable {
 
     // MARK: Tracked rides (sync, B7)
 
-    /// Every synced ride, newest first (`summary.date` descending).
-    func rides() -> [Ride]
+    /// Every synced ride's summary, newest first (`date` descending) — the
+    /// Tracked list's whole appetite. Never decodes tracklogs (#360).
+    func rideSummaries() -> [RideSummary]
+    /// One ride's full tracklog, loaded on demand (the detail map's read).
+    /// `nil` when the ride is unknown or its points don't decode — the ride
+    /// stays summary-only rather than dropped, and the detail degrades to the
+    /// preview's coordinates.
+    func ridePoints(_ id: RideID) -> [RidePoint]?
     /// Insert or replace a ride under its id — called per ride as a sync lands
     /// it, so an interrupted batch (H10) keeps its partial across a relaunch.
     func saveRide(_ ride: Ride)
+    /// Update a ride's summary without touching its stored points — the rename
+    /// (H12) write path; re-encoding a full tracklog to change a name would be
+    /// the exact whole-ride coupling #360 removed.
+    func saveRideSummary(_ summary: RideSummary)
     func deleteRide(_ id: RideID)
 
     /// Every ride id this phone has ever downloaded. **Survives `deleteRide`**,
@@ -52,7 +64,8 @@ public protocol LibraryStore: Sendable {
 public final class InMemoryLibraryStore: LibraryStore, @unchecked Sendable {
     private let lock = NSLock()
     private var planned: [RouteID: PlannedRouteRecord] = [:]
-    private var rideRecords: [RideID: Ride] = [:]
+    private var summaries: [RideID: RideSummary] = [:]
+    private var points: [RideID: [RidePoint]] = [:]
     private var synced: Set<RideID> = []
     private var deleted: Set<RideID> = []
 
@@ -70,16 +83,30 @@ public final class InMemoryLibraryStore: LibraryStore, @unchecked Sendable {
         lock.withLock { planned[id] = nil }
     }
 
-    public func rides() -> [Ride] {
-        lock.withLock { rideRecords.values.sorted { $0.summary.date > $1.summary.date } }
+    public func rideSummaries() -> [RideSummary] {
+        lock.withLock { summaries.values.sorted { $0.date > $1.date } }
+    }
+
+    public func ridePoints(_ id: RideID) -> [RidePoint]? {
+        lock.withLock { points[id] }
     }
 
     public func saveRide(_ ride: Ride) {
-        lock.withLock { rideRecords[ride.id] = ride }
+        lock.withLock {
+            summaries[ride.id] = ride.summary
+            points[ride.id] = ride.points
+        }
+    }
+
+    public func saveRideSummary(_ summary: RideSummary) {
+        lock.withLock { summaries[summary.id] = summary }
     }
 
     public func deleteRide(_ id: RideID) {
-        lock.withLock { rideRecords[id] = nil }
+        lock.withLock {
+            summaries[id] = nil
+            points[id] = nil
+        }
     }
 
     public func syncedRideIDs() -> Set<RideID> {
