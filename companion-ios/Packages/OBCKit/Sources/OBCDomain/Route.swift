@@ -1,12 +1,47 @@
 import Foundation
 
-/// Stable identifier for a route object on the device / in the app library.
+/// Stable identifier for a route **in the app's library** — app-generated,
+/// never a device object id.
 ///
 /// A thin `String` wrapper for type safety (a route id can't be passed where a
-/// ride id is expected).
+/// ride id is expected). Route identity is split across the BLE boundary
+/// (#359): the device names its copies by ``DeviceObjectID``, and
+/// `PlannedRouteRecord.deviceObjectID` is the app's durable link between the
+/// two namespaces — a `RouteID` never crosses the transport's data plane.
 public struct RouteID: Hashable, Sendable {
     public let rawValue: String
     public init(_ rawValue: String) { self.rawValue = rawValue }
+}
+
+/// One entry of the device's route catalog (`listRoutes()` — the `routeList`
+/// object, spec §7.4): the durable device object id plus the display fields.
+/// Deliberately **not** a `RouteSummary` — the catalog is keyed by
+/// ``DeviceObjectID``, and its one consumer (reconciling the C1 "on device"
+/// badge, #289) compares those ids against `PlannedRouteRecord.deviceObjectID`;
+/// it never feeds list rows.
+public struct RouteCatalogEntry: Identifiable, Equatable, Sendable {
+    public let id: DeviceObjectID
+    public var name: String
+    /// Route length in metres.
+    public var distanceMeters: Double
+    /// Total climb in metres.
+    public var elevationGainMeters: Double
+    /// Number of geometry points in the stored route object.
+    public var pointCount: Int
+
+    public init(
+        id: DeviceObjectID,
+        name: String,
+        distanceMeters: Double,
+        elevationGainMeters: Double,
+        pointCount: Int = 0
+    ) {
+        self.id = id
+        self.name = name
+        self.distanceMeters = distanceMeters
+        self.elevationGainMeters = elevationGainMeters
+        self.pointCount = pointCount
+    }
 }
 
 /// Where an imported route came from **as a wire format**. The phone converts
@@ -109,11 +144,11 @@ public struct RouteBlob: Equatable, Sendable {
     /// assigns a new id). Set when re-uploading an edited route that's already on
     /// the device so it updates in place instead of duplicating — "uploading to an
     /// existing id replaces that object" (`obc-ble-interface-spec.md` §4.2).
-    public let targetObjectID: UInt16?
+    public let targetObjectID: DeviceObjectID?
 
     public init(
         summary: RouteSummary, waypoints: [Waypoint] = [], payload: Data,
-        targetObjectID: UInt16? = nil
+        targetObjectID: DeviceObjectID? = nil
     ) {
         self.summary = summary
         self.waypoints = waypoints

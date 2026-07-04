@@ -293,15 +293,14 @@ public final class MockControl: @unchecked Sendable {
     }
 
     /// The device's route catalog — the fixture routes it holds a copy of
-    /// (`deviceObjectID != nil`), under **device-namespace ids** (the decimal
-    /// object id), exactly the shape the real `routeList` download produces.
-    /// The app consumes this only to reconcile the "on device" badge (#289) —
-    /// never as list rows.
-    func deviceRoutes() -> [RouteSummary] {
-        lock.withLocked { _fixtures.routes }.compactMap { entry -> RouteSummary? in
+    /// (`deviceObjectID != nil`), keyed by their device object ids, exactly the
+    /// shape the real `routeList` download produces. The app consumes this only
+    /// to reconcile the "on device" badge (#289) — never as list rows.
+    func deviceRoutes() -> [RouteCatalogEntry] {
+        lock.withLocked { _fixtures.routes }.compactMap { entry -> RouteCatalogEntry? in
             guard let objectID = entry.deviceObjectID else { return nil }
-            return RouteSummary(
-                id: RouteID(String(objectID)), name: entry.summary.name,
+            return RouteCatalogEntry(
+                id: objectID, name: entry.summary.name,
                 distanceMeters: entry.summary.distanceMeters,
                 elevationGainMeters: entry.summary.elevationGainMeters,
                 pointCount: entry.summary.pointCount
@@ -309,19 +308,17 @@ public final class MockControl: @unchecked Sendable {
         }
     }
 
-    /// The stored copy behind a device-namespace id (`routeDetail` on the mock).
-    func deviceRouteEntry(_ id: RouteID) -> RouteEntry? {
-        guard let objectID = UInt16(id.rawValue) else { return nil }
-        return lock.withLocked { _fixtures.routes.first { $0.deviceObjectID == objectID } }
+    /// The stored copy behind a device object id (`routeDetail` on the mock).
+    func deviceRouteEntry(_ id: DeviceObjectID) -> RouteEntry? {
+        lock.withLocked { _fixtures.routes.first { $0.deviceObjectID == id } }
     }
 
-    /// Delete a stored route by its device-namespace id (the `deleteObject`
+    /// Delete a stored route by its device object id (the `deleteObject`
     /// command): the device forgets its copy — the library record (and its list
     /// row) is the app's own business.
-    func removeRoute(_ id: RouteID) {
-        guard let objectID = UInt16(id.rawValue) else { return }
+    func removeRoute(_ id: DeviceObjectID) {
         lock.withLocked {
-            for index in _fixtures.routes.indices where _fixtures.routes[index].deviceObjectID == objectID {
+            for index in _fixtures.routes.indices where _fixtures.routes[index].deviceObjectID == id {
                 _fixtures.routes[index].deviceObjectID = nil
             }
         }
@@ -338,16 +335,16 @@ public final class MockControl: @unchecked Sendable {
     func beginRouteUpload(_ blob: RouteBlob) -> TransferHandle {
         if connection == .disconnected { return .immediatelyFinished(.failed(.notConnected)) }
         if blob.payload.isEmpty { return .immediatelyFinished(.failed(.transferRejected)) }
-        let assignedID = AsyncPromise<UInt16?>()
+        let assignedID = AsyncPromise<DeviceObjectID?>()
         // Whichever is larger: an explicit test payload, or the design-scale
         // minimum from the route length (so a real few-kB OBCR still paces long
         // enough to see F).
         let pacingBytes = max(blob.payload.count, Int(blob.summary.distanceMeters * 37), 1)
         let handle = startTransfer(total: pacingBytes, segments: [], rides: nil, assignedObjectID: assignedID)
-        let objectID = blob.targetObjectID ?? lock.withLocked { () -> UInt16 in
+        let objectID = blob.targetObjectID ?? lock.withLocked { () -> DeviceObjectID in
             let id = _nextObjectID
             _nextObjectID &+= 1
-            return id
+            return DeviceObjectID(id)
         }
         Task { [weak self] in
             guard await handle.outcome == .completed else {
@@ -363,7 +360,7 @@ public final class MockControl: @unchecked Sendable {
     /// A committed upload landed on the (mock) device: remember the copy in the
     /// fixture set — replacing the entry that already owns `objectID`, or the
     /// library twin of the same route, before appending a new device-only entry.
-    private func recordDeviceCopy(of blob: RouteBlob, objectID: UInt16) {
+    private func recordDeviceCopy(of blob: RouteBlob, objectID: DeviceObjectID) {
         lock.withLocked {
             if let index = _fixtures.routes.firstIndex(where: {
                 $0.deviceObjectID == objectID || $0.summary.id == blob.summary.id
@@ -406,7 +403,7 @@ public final class MockControl: @unchecked Sendable {
         total: Int,
         segments: [MockTransfer.Segment],
         rides: AsyncThrowingStream<DownloadedRide, Error>.Continuation?,
-        assignedObjectID: AsyncPromise<UInt16?>? = nil
+        assignedObjectID: AsyncPromise<DeviceObjectID?>? = nil
     ) -> TransferHandle {
         let (dropFraction, throughput) = lock.withLocked { () -> (Double?, Int) in
             let armedFailure = _pendingFailures.isEmpty ? false : { _pendingFailures.removeFirst(); return true }()

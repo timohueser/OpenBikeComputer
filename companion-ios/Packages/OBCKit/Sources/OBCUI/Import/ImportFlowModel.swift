@@ -226,7 +226,7 @@ public struct PendingImport: Identifiable, Sendable {
     /// replace keeps the route it's replacing on the device — under its old
     /// fingerprint, so the badge honestly reads **out of date** until the next
     /// push updates the copy.
-    public func record(for detail: RouteDetail, deviceObjectID: UInt16? = nil, uploadedCRC32: UInt32? = nil) -> PlannedRouteRecord {
+    public func record(for detail: RouteDetail, deviceObjectID: DeviceObjectID? = nil, uploadedCRC32: UInt32? = nil) -> PlannedRouteRecord {
         PlannedRouteRecord(
             summary: detail.summary,
             route: route,

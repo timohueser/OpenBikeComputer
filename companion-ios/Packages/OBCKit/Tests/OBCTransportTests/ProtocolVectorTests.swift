@@ -107,7 +107,7 @@ final class ProtocolVectorTests: XCTestCase {
         let resultBytes = try fixture("status-transfer-result.bin")
         let result = try StatusMessage(decoding: resultBytes)
         XCTAssertEqual(result, .transferResult(TransferResult(
-            objectID: 7, status: .committed, committedOffset: UInt32(route.count)
+            objectID: DeviceObjectID(7), status: .committed, committedOffset: UInt32(route.count)
         )))
         XCTAssertEqual(result.encode(), resultBytes)
 

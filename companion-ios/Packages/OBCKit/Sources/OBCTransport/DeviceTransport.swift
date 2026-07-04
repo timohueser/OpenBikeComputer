@@ -51,23 +51,24 @@ public protocol DeviceTransport: Sendable {
 
     // MARK: Data plane (bulk objects — progress + cancel + restart)
     //
-    // Ids on this plane are **device-namespace**: a `RouteID`/`RideID` whose
-    // rawValue is the decimal object id the device's list objects enumerate
-    // (spec §4.1 — durable for the life of the stored object). Library ids
-    // never cross this boundary; `PlannedRouteRecord.deviceObjectID` is the
-    // app's durable link between the two.
+    // Ids on this plane are **device-namespace** (`DeviceObjectID`, spec §4.1 —
+    // durable for the life of the stored object). The types enforce the split
+    // (#359): route ops take `DeviceObjectID` directly (a library `RouteID`
+    // can't cross this boundary — `PlannedRouteRecord.deviceObjectID` is the
+    // app's durable link), and ride ids are minted from the catalog via
+    // `RideID(deviceObjectID:)`.
 
     /// Enumerate routes stored on the device — reconcile input for the
     /// "on device" badge (#289), never Planned-list rows.
-    func listRoutes() async throws -> [RouteSummary]
+    func listRoutes() async throws -> [RouteCatalogEntry]
     /// Full detail for one stored route: the stored OBCR object, decoded
     /// app-side (spec §7.1 — "download the route object").
-    func routeDetail(_ id: RouteID) async throws -> RouteDetail
+    func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail
     /// Upload a route (app → device, B5). Success is the device's committed
     /// `transferResult`; `resume()` after a drop restarts the whole upload.
     func uploadRoute(_ route: RouteBlob) -> TransferHandle
     /// Delete a route from the device.
-    func deleteRoute(_ id: RouteID) async throws
+    func deleteRoute(_ id: DeviceObjectID) async throws
     /// Enumerate tracked rides on the device.
     func listRides() async throws -> [RideSummary]
     /// Full detail for one tracked ride (E3): the elevation profile.

@@ -191,7 +191,9 @@ private struct PlannedRouteFile: Codable {
     var sourceFileName: String
     /// The device object id this route is stored under, `nil` when not on the
     /// device. Optional-decoded, so a pre-B13 file (which lacked it) loads as
-    /// "not uploaded" and self-heals on the next upload/reconcile.
+    /// "not uploaded" and self-heals on the next upload/reconcile. Stays a bare
+    /// `UInt16` on disk (the domain's `DeviceObjectID` wraps it at the
+    /// boundary) — no schema bump for #359.
     var deviceObjectID: UInt16?
     /// The committed upload payload's CRC-32 (the `OnDeviceState` fingerprint).
     /// Optional-decoded: a pre-fingerprint file loads as "content unknown",
@@ -204,7 +206,7 @@ private struct PlannedRouteFile: Codable {
         summary = RouteSummaryDTO(record.summary)
         route = ImportedRouteDTO(record.route)
         sourceFileName = record.sourceFileName
-        deviceObjectID = record.deviceObjectID
+        deviceObjectID = record.deviceObjectID?.raw
         uploadedCRC32 = record.uploadedCRC32
         addedAt = record.addedAt
     }
@@ -215,7 +217,7 @@ private struct PlannedRouteFile: Codable {
             route: route.domain,
             sourceFileName: sourceFileName,
             sourceFileData: sourceFileData,
-            deviceObjectID: deviceObjectID,
+            deviceObjectID: deviceObjectID.map(DeviceObjectID.init),
             uploadedCRC32: uploadedCRC32,
             addedAt: addedAt
         )

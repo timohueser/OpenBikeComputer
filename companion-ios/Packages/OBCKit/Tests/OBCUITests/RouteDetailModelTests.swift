@@ -110,13 +110,13 @@ final class RouteDetailModelTests: XCTestCase {
         XCTAssertNil(model.makeUploadBlob().targetObjectID, "a fresh route uploads as new")
 
         let committed = model.makeUploadBlob()
-        model.recordUploaded(objectID: 42, crc32: CRC32.checksum(committed.payload))
+        model.recordUploaded(objectID: DeviceObjectID(42), crc32: CRC32.checksum(committed.payload))
         XCTAssertEqual(model.deviceCopyState, .upToDate)
-        XCTAssertEqual(model.makeUploadBlob().targetObjectID, 42, "a re-upload replaces, never duplicates")
+        XCTAssertEqual(model.makeUploadBlob().targetObjectID, DeviceObjectID(42), "a re-upload replaces, never duplicates")
 
         XCTAssertTrue(model.rename(to: "Blue Mounds (shortcut)"))
         XCTAssertEqual(model.deviceCopyState, .outdated, "a rename out-dates the device copy")
-        XCTAssertEqual(model.makeUploadBlob().targetObjectID, 42, "…and the update still targets the same object")
+        XCTAssertEqual(model.makeUploadBlob().targetObjectID, DeviceObjectID(42), "…and the update still targets the same object")
     }
 
     func testTrackedDetailReadFailureDegradesQuietly() async {
@@ -316,9 +316,9 @@ final class RouteDetailModelTests: XCTestCase {
             transport: MockTransport(control: control),
             dressing: .planned(control.fixtures.routes[0].summary),
             plannedGeometry: importedRoute,
-            deviceObjectID: 7
+            deviceObjectID: DeviceObjectID(7)
         )
-        XCTAssertEqual(model.makeUploadBlob().targetObjectID, 7)
+        XCTAssertEqual(model.makeUploadBlob().targetObjectID, DeviceObjectID(7))
     }
 
     func testPlannedUploadWithoutGeometrySendsNothing() {
