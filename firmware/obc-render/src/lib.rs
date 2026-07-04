@@ -112,7 +112,8 @@ const _: () = assert!(MAX_SCREEN_POINTS >= MAX_DECODE_POINTS, "`screen` must hol
 // `read_ring` pushes with `let _ = out.push(..)`, so a smaller render-side buffer would *silently
 // truncate geometry* rather than fail. Pin the pairing at compile time so neither crate's
 // constant can drift alone.
-const _: () = assert!(MAX_DECODE_POINTS == obc_reader::MAX_FEAT_PTS, "decode scratch must hold the format's max feature");
+const _: () =
+    assert!(MAX_DECODE_POINTS == obc_reader::MAX_FEAT_PTS, "decode scratch must hold the format's max feature");
 const _: () = assert!(MAX_DECODE_RINGS == obc_reader::MAX_FEAT_RINGS, "ring scratch must hold the format's max rings");
 
 /// Static RAM the [`MapRenderer`]'s scratch buffers occupy on the 32-bit MCU target (`usize` = 4
