@@ -5,7 +5,6 @@
 //! (Finish, Discard) fire only on a completed `hold`, their row filling with a warning bar as the
 //! encoder is held (release early → no `Hold` gesture → nothing happens). `back` resumes.
 
-use embedded_graphics::prelude::Point;
 use obc_render::{
     rect,
     text::{Font, TextAlign},
@@ -89,17 +88,24 @@ impl RideControl {
         let (pw, ph) = (210, 176);
         let (px, py) = (w / 2 - pw / 2, h / 2 - ph / 2);
 
-        // Parchment panel + dark HUD title strip over the map.
+        // Parchment panel + dark HUD title strip over the map. The strip follows the panel's
+        // 8 px top rounding (a square fill would clip the corners); its lower half is squared
+        // off so the bottom edge stays flat against the rows.
         cv.round(rect(px, py, pw, ph), 8, PARCHMENT);
-        cv.fill(rect(px, py, pw, 32), HUD);
-        cv.text("PAUSED", Point::new(w / 2, py + 7), Font::Label, TextAlign::Center, PARCHMENT);
+        cv.round(rect(px, py, pw, 32), 8, HUD);
+        cv.fill(rect(px, py + 16, pw, 16), HUD);
+        cv.text_vcentered("PAUSED", w / 2, (py, 32), Font::Label, TextAlign::Center, PARCHMENT);
 
-        let (row_h, gap, first) = (38, 6, py + 40);
-        for (i, item) in ITEMS.iter().enumerate() {
-            let y = first + i as i32 * (row_h + gap);
-            let row = rect(px + 10, y, pw - 20, row_h);
-            super::confirm_row(cv, row, i == self.selected, item.guard, rx.hold_progress, WARNING, 6);
-            cv.text(item.label, Point::new(px + 22, y + 5), Font::Body, TextAlign::Left, INK);
-        }
+        // Guarded rows fill warning-red — Finish/Discard are irreversible.
+        let geo = super::GuardedRowsGeometry {
+            x: px + 10,
+            w: pw - 20,
+            top: py + 40,
+            row_h: 38,
+            gap: 6,
+            label_dx: 12,
+            label_dy: 5,
+        };
+        super::draw_guarded_rows(cv, &ITEMS, self.selected, rx.hold_progress, WARNING, geo);
     }
 }
