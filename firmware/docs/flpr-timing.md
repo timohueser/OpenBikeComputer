@@ -88,3 +88,15 @@ Each lever lands as its own commit with the before/after `frame OK` measurement 
 | 1b: drop the 2 × `BCK_HALF` busys (presents + next pack **are** the half-width) | 60 053 | −22.7 ms | ✓ contours crisp, no doubling/sparkle/banding |
 | 2: `GCK_SETTLE` 5 µs → 1 µs (not an enumerated minimum; spec's only GCK floor is the ≥1 µs fast-forward width) + dummy-advance high 10 µs → 2 µs | 57 655 | −2.4 ms | ✓ (with 2b) |
 | 2b: recalibrate `GEN_HIGH`/`GEN_SETUP` to the measured 80.5 ns/iter — 310/207 iters ≈ 25.06/16.77 µs, in-spec with ~2 % margin (were ~7 % over via the stale 13 iters/µs label) | 56 215 | −1.4 ms | ✓ (with 2) |
+| 3a: blob `-Os` → `-O2` (build.rs; blob 814 → 1 268 B, ≪ the 4 KB carve) | 47 712 | −8.5 ms | ✓ (with 3b) |
+| 3b: non-volatile fb reads + hot loop over the 118 pipelined data words only (last pair peeled, 4 flush words clocked separately — the per-word bounds branch gone) | 44 081 | −3.6 ms | ✓ home + map + bulge all clean at ~210 ns halves |
+
+**End state: 44.1 ms full frame (−54 % from 95.9 ms), past the ~53 ms stretch goal.** The
+sub-line is now 100 % useful work — pack + GPIO presents pace the wire (~210 ns BCK halves,
+~3× under the 660 ns spec minimum; owner decision 2026-07-04: keep max speed, the policy
+header documents the over-spec margins + the single-unit caveat). Fully in-spec BCK halves
+(660 ns) were costed at ~+36 ms/frame (~80 ms total) and declined per the issue's policy.
+A side effect worth knowing: bulge overlay pushes dropped ~20 → ~9 ms (5× faster gate
+fast-forward), which makes the hold-pop animation's designed "fast lunge" visibly snappier —
+the animation is wall-clock-paced (`hold_hint.rs`), so durations are unchanged; retuning
+`POP_MS`/`POP_ATTACK` is a UI preference, not a #348 regression.

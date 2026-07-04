@@ -179,12 +179,15 @@ static void busy(uint32_t iters)
  * `*0` lines (bits 0/2/4), the odd-x pixel on the `*1` lines (bits 1/3/5), pre-shifted to the P2
  * GPIO positions (DATA_MASK). `shift` selects the area-gradation bit of each 2-bit device-64
  * channel (`0b00_RR_GG_BB`): 1 = the MSB plane (level>>1, the 2/3-area block), 0 = the LSB plane
- * (level&1, the 1/3-area block). The 4 trailing dummy/flush columns (k ≥ 120) are black. */
-static inline uint32_t pack_word(const volatile uint8_t *row, uint32_t k, uint32_t shift)
+ * (level&1, the 1/3-area block).
+ *
+ * #348 lever 3: the loads are **not volatile** — the fb is stable for the whole scan by contract
+ * (the M33 awaits the ack before touching it), so gcc may schedule/hoist them freely — and the
+ * old `k ≥ COLS_PER_SUBLINE → 0` bounds branch is gone from the hot loop: `drive_subline` now
+ * clocks the 4 trailing dummy/flush columns separately (they are constant black). Callers only
+ * pass k < COLS_PER_SUBLINE. */
+static inline uint32_t pack_word(const uint8_t *row, uint32_t k, uint32_t shift)
 {
-    if (k >= COLS_PER_SUBLINE) {
-        return 0; /* trailing dummy/flush columns */
-    }
     uint32_t even = row[2u * k];
     uint32_t odd = row[2u * k + 1u];
     uint32_t re = (even >> (4u + shift)) & 1u, ro = (odd >> (4u + shift)) & 1u;
@@ -206,28 +209,52 @@ static inline uint32_t pack_word(const volatile uint8_t *row, uint32_t k, uint32
  *
  * BSP high envelopes the first rising edge (released on it). The caller has set GCK to this
  * plane's level — this touches only the source bus, never GCK/GEN. */
-static void drive_subline(const volatile uint8_t *row, uint32_t shift)
+static void drive_subline(const uint8_t *row, uint32_t shift)
 {
     uint32_t w0 = pack_word(row, 0, shift); /* word 0 packed ahead of the sub-line */
+    uint32_t w1;
 
     GPIO1_OUTSET = BSP_MASK; /* BSP high — start of the sub-line (the chart's BSP envelope) */
-    for (uint32_t k = 0; k < BCK_PER_SUBLINE; k += 2) {
+    /* ── words 0..117, pipelined: each presented word's setup window / BCK half IS the pack of the
+     * next word (#348 — no explicit waits left in the hot loop). The last data pair is peeled below
+     * because its "next word" would run past the row. ── */
+    for (uint32_t k = 0; k < COLS_PER_SUBLINE - 2u; k += 2) {
         /* ── rising-edge column: word k (already packed) ── */
         GPIO2_OUTCLR = (~w0) & DATA_MASK;
         GPIO2_OUTSET = w0;
-        uint32_t w1 = pack_word(row, k + 1u, shift); /* pack word k+1 IS word k's setup window (#348) */
+        w1 = pack_word(row, k + 1u, shift); /* pack word k+1 IS word k's setup window */
         GPIO2_OUTSET = BCK_MASK; /* rising edge latches word k */
         if (k == 0) {
             GPIO1_OUTCLR = BSP_MASK; /* BCK(1) rose within BSP high — now release BSP */
         }
 
-        /* ── falling-edge column: word k+1 (the presents + pack below are the BCK-high width, #348) ── */
+        /* ── falling-edge column: word k+1 (the presents + pack below are the BCK-high width) ── */
         GPIO2_OUTCLR = (~w1) & DATA_MASK;
         GPIO2_OUTSET = w1;
-        w0 = pack_word(row, k + 2u, shift); /* pack the next rising word IS this setup window (#348) */
-        GPIO2_OUTCLR = BCK_MASK; /* falling edge latches word k+1 (next iteration's presents+pack = the low width) */
+        w0 = pack_word(row, k + 2u, shift); /* pack the next rising word IS this setup window */
+        GPIO2_OUTCLR = BCK_MASK; /* falling edge latches word k+1 */
     }
-    GPIO2_OUTCLR = DATA_MASK; /* leave the data lines Lo (boot-safe) after the sub-line */
+
+    /* ── last data pair (118, 119), peeled: nothing further to pack in-window, so a busy(1)
+     * (~183 ns, ≈ the hot loop's pack time) paces the halves instead. ── */
+    GPIO2_OUTCLR = (~w0) & DATA_MASK;
+    GPIO2_OUTSET = w0;
+    w1 = pack_word(row, COLS_PER_SUBLINE - 1u, shift);
+    GPIO2_OUTSET = BCK_MASK;
+    GPIO2_OUTCLR = (~w1) & DATA_MASK;
+    GPIO2_OUTSET = w1;
+    busy(1);
+    GPIO2_OUTCLR = BCK_MASK;
+
+    /* ── 4 trailing dummy/flush columns: constant black, clocked at ~the data pace (they no longer
+     * ride the hot loop — this is what removed the per-word bounds branch from pack_word). ── */
+    GPIO2_OUTCLR = DATA_MASK; /* black, and leaves the data lines Lo (boot-safe) after the sub-line */
+    for (uint32_t i = 0; i < BCK_PER_SUBLINE - COLS_PER_SUBLINE; i += 2) {
+        busy(1);
+        GPIO2_OUTSET = BCK_MASK;
+        busy(1);
+        GPIO2_OUTCLR = BCK_MASK;
+    }
 }
 
 /* Pulse GEN to latch the just-shifted sub-line into the **currently-selected** gate line. The caller
@@ -268,7 +295,7 @@ static void dummy_advance(int release_gsp)
  *     GEN → latches the 1/3-area cells while GCK is LOW.
  * The advance to the next row is the GCK rising edge that opens the next call's MSB phase, so there
  * is exactly one gate advance per pixel row. Mirrors `PanelBus::write_gate_line`. */
-static void write_gate_row(const volatile uint8_t *row)
+static void write_gate_row(const uint8_t *row)
 {
     /* ── MSB phase: GCK HIGH selects the 2/3-area block; this rising edge advances the gate ── */
     GPIO1_OUTSET = GCK_MASK;
@@ -313,7 +340,10 @@ static uint32_t run_frame(void)
         dummy_advance(i == 0); /* GSP releases on the very first GCK edge */
     }
 
-    const volatile uint8_t *fb = (const volatile uint8_t *)(uintptr_t)CTRL->fb_addr;
+    /* The fb *pointer* comes from the (volatile) control block; the pixel bytes it points at are
+     * stable for the whole scan by contract (the M33 awaits the ack), so they are read non-volatile
+     * and gcc may schedule the pack loads freely (#348 lever 3). */
+    const uint8_t *fb = (const uint8_t *)(uintptr_t)CTRL->fb_addr;
     uint32_t n_spans = CTRL->n_spans;
     if (n_spans > MAX_DIRTY_SPANS) {
         n_spans = MAX_DIRTY_SPANS; /* distrust shared RAM: a corrupted count must not overrun spans[] */
