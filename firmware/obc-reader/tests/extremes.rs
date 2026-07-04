@@ -6,7 +6,9 @@
 //! the multi-block index assembly, and negative microdegrees. Each test asserts a concrete decoded
 //! value (exact truncated ring length, bbox, cache hit/miss counts) rather than "didn't panic".
 
-use obc_reader::{BBox, Kind, MapCache, MapTables, Reader, SliceSource, MAX_CHUNK_BYTES, MAX_FEAT_PTS, MAX_FEAT_RINGS};
+use obc_reader::{
+    BBox, Error, Kind, MapCache, MapTables, Reader, SliceSource, MAX_CHUNK_BYTES, MAX_FEAT_PTS, MAX_FEAT_RINGS,
+};
 use obcm_testkit::{build_file, pack_line, pack_line_decl, pack_poly_decl, pack_poly_holes, pad, LodSpec, Style};
 
 const STYLES: &[Style] = &[(1, 3, 0xF800, 2, 3), (2, -1, 0x07E0, 1, 3)];
@@ -345,24 +347,23 @@ fn truncated_style_table_parses_only_present_records() {
     assert_eq!(feats[0].style_id, 1);
 }
 
-/// `style_offset` pointing at or past the end of the file must yield an empty style table, not a
-/// panic. `parse_styles` returns the all-`None` table when `style_offset >= total` (reader.rs
-/// ~713). A `style_offset` *equal to* the file length is the boundary the format suite never hits;
-/// `MapTables::parse` accepts `style_offset == total` (its guard is `> total`), so the reader is
-/// built but every style lookup is `None`.
+/// `style_offset` pointing at or past the end of the file is a corrupt header and must be
+/// rejected (`Error::BadOffset`), not tolerated as a silently-empty style table — that map would
+/// load "fine" and render nothing. A `style_offset` *equal to* the file length is the boundary
+/// the format suite never hits: `MapTables::parse`'s own header guard accepts `== total` (it
+/// checks `> total`), so the rejection must come from `parse_styles` (there is no count byte to
+/// read at EOF).
 #[test]
-fn style_offset_at_eof_yields_no_styles() {
+fn style_offset_at_eof_is_rejected() {
     let bytes = single_leaf(GLOBAL, pack_line(1, 10, 10, &[(1, 1)]), 64);
     let total = bytes.len() as u32;
     let mut forged = bytes.clone();
     forged[21..25].copy_from_slice(&total.to_le_bytes()); // style_offset = file length
 
-    let cache = MapCache::new();
-    let src = SliceSource(&forged);
-    let tables = MapTables::parse(&src).expect("style_offset == total is accepted (guard is > total)");
-    let r = Reader::new(&src, &tables, &cache);
-    assert!(r.style(1).is_none(), "no style parses from a table at EOF");
-    assert!(r.backdrop_style().is_none(), "no backdrop without styles");
+    assert!(
+        matches!(MapTables::parse(&SliceSource(&forged)), Err(Error::BadOffset)),
+        "a style table at EOF is a corrupt header, not an empty table"
+    );
 }
 
 /// A quadtree index large enough that a node read crosses an `INDEX_BLOCK` (512-byte) cache-block
