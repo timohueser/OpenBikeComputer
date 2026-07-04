@@ -310,7 +310,8 @@ impl MapTables {
             return Err(Error::BadOffset);
         }
 
-        let styles = parse_styles(src, style_offset, total)?;
+        let mut styles = [None; 256];
+        parse_styles(src, style_offset, total, &mut styles)?;
         let lods = parse_lod_table(src, lod_table_offset, lod_count, total)?;
         // Resolve the backdrop (lowest `z_index`, ties broken by lowest id) once here; the table is
         // immutable after parse, so `Reader::backdrop_style` never has to re-scan the 256 slots.
@@ -748,14 +749,26 @@ fn read_ring<const P: usize>(
     off
 }
 
-/// Parse the style table, read resident from `src` at `style_offset` (file is `total` bytes). The
-/// table is small (≤ `1 + 256*6` bytes) so it's pulled in two reads (count byte, then records). A
-/// truncated *table* is tolerated — the `o + 6 > want` break stops at the last whole record rather
-/// than reading past it — but a failed *read* (flaky card) or a `style_offset` at/past EOF (corrupt
-/// header) is [`Error::BadOffset`]: an all-`None` table would let the map load "fine" and render
-/// nothing, with no error to surface.
-fn parse_styles(src: &dyn ByteSource, style_offset: usize, total: usize) -> Result<[Option<Style>; 256], Error> {
-    let mut styles = [None; 256];
+/// Parse the style table, read resident from `src` at `style_offset` (file is `total` bytes) into
+/// the caller's `styles` (cleared first). The table is small (≤ `1 + 256*6` bytes) so it's pulled
+/// in two reads (count byte, then records). A truncated *table* is tolerated — the `o + 6 > want`
+/// break stops at the last whole record rather than reading past it — but a failed *read* (flaky
+/// card) or a `style_offset` at/past EOF (corrupt header) is [`Error::BadOffset`]: an all-`None`
+/// table would let the map load "fine" and render nothing, with no error to surface.
+///
+/// Out-param + `inline(never)`, deliberately: with the array in the return value this single-call-
+/// site function inlined its ~3.5 KB of scratch (the 1.5 KB record buffer plus the `Result` array
+/// temporaries) into `MapTables::parse` and on into the device `main`'s **permanent** frame — every
+/// stack watermark rose by ~3.8 KB and the DK's ride path overflowed (HardFault). The scratch must
+/// stay in a frame that pops before `run_app` starts.
+#[inline(never)]
+fn parse_styles(
+    src: &dyn ByteSource,
+    style_offset: usize,
+    total: usize,
+    styles: &mut [Option<Style>; 256],
+) -> Result<(), Error> {
+    styles.fill(None);
     // `MapTables::parse`'s header guard admits `style_offset == total`; there is no count byte to
     // read there, so treat it as the corrupt header it is rather than a silently-empty table.
     if style_offset >= total {
@@ -786,7 +799,7 @@ fn parse_styles(src: &dyn ByteSource, style_offset: usize, total: usize) -> Resu
         styles[id as usize] = Some(Style { id, z_index, color, weight, priority });
         o += 6;
     }
-    Ok(styles)
+    Ok(())
 }
 
 /// Parse the `lod_count` LOD-table entries (resident from `src`); validates each layer's
