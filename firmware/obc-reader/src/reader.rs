@@ -310,7 +310,7 @@ impl MapTables {
             return Err(Error::BadOffset);
         }
 
-        let styles = parse_styles(src, style_offset, total);
+        let styles = parse_styles(src, style_offset, total)?;
         let lods = parse_lod_table(src, lod_table_offset, lod_count, total)?;
         // Resolve the backdrop (lowest `z_index`, ties broken by lowest id) once here; the table is
         // immutable after parse, so `Reader::backdrop_style` never has to re-scan the 256 slots.
@@ -734,24 +734,27 @@ fn read_ring<const P: usize>(
 
 /// Parse the style table, read resident from `src` at `style_offset` (file is `total` bytes). The
 /// table is small (≤ `1 + 256*6` bytes) so it's pulled in two reads (count byte, then records). A
-/// truncated table breaks at the last whole record rather than reading past it.
-fn parse_styles(src: &dyn ByteSource, style_offset: usize, total: usize) -> [Option<Style>; 256] {
+/// truncated *table* is tolerated — the `o + 6 > want` break stops at the last whole record rather
+/// than reading past it — but a failed *read* (flaky card) or a `style_offset` at/past EOF (corrupt
+/// header) is [`Error::BadOffset`]: an all-`None` table would let the map load "fine" and render
+/// nothing, with no error to surface.
+fn parse_styles(src: &dyn ByteSource, style_offset: usize, total: usize) -> Result<[Option<Style>; 256], Error> {
     let mut styles = [None; 256];
+    // `MapTables::parse`'s header guard admits `style_offset == total`; there is no count byte to
+    // read there, so treat it as the corrupt header it is rather than a silently-empty table.
     if style_offset >= total {
-        return styles;
+        return Err(Error::BadOffset);
     }
     let mut cb = [0u8; 1];
-    if src.read_at(style_offset as u32, &mut cb).is_err() {
-        return styles;
-    }
+    src.read_at(style_offset as u32, &mut cb).map_err(|_| Error::BadOffset)?;
     let count = cb[0] as usize;
     // `count*6` record bytes follow the count, clamped to what the file holds so the `o + 6 > want`
     // break below stops at the last whole record in a truncated table.
     let avail = total - (style_offset + 1);
     let want = (count * 6).min(avail);
     let mut buf = [0u8; 256 * 6];
-    if want > 0 && src.read_at((style_offset + 1) as u32, &mut buf[..want]).is_err() {
-        return styles;
+    if want > 0 {
+        src.read_at((style_offset + 1) as u32, &mut buf[..want]).map_err(|_| Error::BadOffset)?;
     }
     let mut o = 0usize;
     for _ in 0..count {
@@ -767,7 +770,7 @@ fn parse_styles(src: &dyn ByteSource, style_offset: usize, total: usize) -> [Opt
         styles[id as usize] = Some(Style { id, z_index, color, weight, priority });
         o += 6;
     }
-    styles
+    Ok(styles)
 }
 
 /// Parse the `lod_count` LOD-table entries (resident from `src`); validates each layer's
@@ -1225,6 +1228,36 @@ mod tests {
         let (pb, stats_b) = last_point(&rb);
         assert_eq!(pb, (12, 12), "map B's geometry, not stale A bytes");
         assert_eq!((stats_b.chunk_hits, stats_b.chunk_misses), (0, 1), "the switch must miss + re-read");
+    }
+
+    /// A style-table read that *fails* (flaky card) must surface as a parse error, not an
+    /// all-`None` table that loads "fine" and renders nothing. Exercises both reads — the count
+    /// byte and the record block — via a `FlakySource` failing at exactly that offset. (A
+    /// physically *truncated* table is still tolerated; see `extremes.rs`.)
+    #[test]
+    fn failed_style_table_read_errors_map_parse() {
+        use obcm_testkit::{build_file, pack_line, pad, LodSpec};
+        let bytes = build_file(
+            (0, 0, 1000, 1000),
+            &[(1, 3, 0xF800, 2, 3)],
+            &[LodSpec {
+                max_mpp: f32::INFINITY,
+                index: vec![0],
+                chunks: vec![pad(pack_line(1, 10, 10, &[(1, 1)]), 64)],
+                chunk_size: 64,
+            }],
+        );
+        let style_off = u32::from_le_bytes(bytes[21..25].try_into().unwrap());
+        // The count-byte read (at style_off), then the record-block read (at style_off + 1).
+        for fail_at in [style_off, style_off + 1] {
+            let src = FlakySource { data: &bytes, fail_at, partial: 0 };
+            assert!(
+                matches!(MapTables::parse(&src), Err(Error::BadOffset)),
+                "a failed style read at {fail_at} must error the parse"
+            );
+        }
+        // Control: the same bytes through a healthy source parse fine.
+        assert!(MapTables::parse(&SliceSource(&bytes)).is_ok());
     }
 
     /// The index-block cache keys a block by its absolute offset into the index region, which means
