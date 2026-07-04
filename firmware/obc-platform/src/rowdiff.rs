@@ -7,10 +7,10 @@
 //! immediate-mode (`clear()` + redraw), so tracking writes would mark everything dirty. Instead the
 //! present layer keeps a 32-bit hash per row and, on present, re-hashes each row, pushes only the
 //! contiguous spans whose hash changed, and updates the store. A Home clock ticking a minute
-//! re-presents its handful of rows instead of all 320 — on the LS021/FLPR, a few ms vs. a ~97 ms
+//! re-presents its handful of rows instead of all 320 — on the LS021/FLPR, a few ms vs. a ~44 ms
 //! full frame.
 //!
-//! - [`row_hash`] — FNV-1a over one row's bytes. 32-bit: 320 rows = 1.28 KB of store, and the only
+//! - [`row_hash`] — FNV-1a mixing over one row as `u32` words. 32-bit: 320 rows = 1.28 KB of store, and the only
 //!   failure mode (a changed row hashing equal, so skipped) is ~2⁻³² per row-change and
 //!   **self-healing** — caught systematically by the simulator's exact-diff CI oracle
 //!   ([`spans_missed_changes`]); only random collisions reach the field.
@@ -24,18 +24,29 @@
 //!
 //! Pixel-format-agnostic: the diff is over raw row bytes with a caller-supplied stride (the device's
 //! 1-byte/px RGB222 plane, the simulator's 3-byte/px RGB888). It's a separate full-framebuffer hash
-//! pass *before* the present; that extra read earns back far more than it costs against the ~97 ms
-//! full-frame push.
+//! pass *before* the present — word-at-a-time, well under a ms over the 75 KB device plane — and
+//! that extra read earns back far more than it costs against the ~44 ms full-frame push.
 
-/// FNV-1a (32-bit) over one framebuffer row's bytes — the per-row hash the self-diff compares. A
-/// byte-at-a-time mix, no table, one-line inner loop. See the module docs for the 32-bit
+/// FNV-1a (32-bit) over one framebuffer row, mixed a `u32` **word** at a time — the per-row hash
+/// the self-diff compares. The self-diffing present runs this over the *whole* framebuffer on every
+/// map-dirty present, so it's the diff pass's floor: folding four bytes per multiply (one word load
+/// on thumbv8m) instead of one cuts that pass ~4× (issue #350). The values differ from byte-FNV-1a,
+/// but the store never leaves this module, and the properties are the same in kind: any byte change
+/// changes the word stream, and misses stay ~2⁻³² per row-change — see the module docs for the
 /// collision-rate rationale.
 #[inline]
 pub fn row_hash(row: &[u8]) -> u32 {
     let mut h: u32 = 0x811c_9dc5; // FNV-1a offset basis
-    for &b in row {
-        h ^= b as u32;
+    let mut words = row.chunks_exact(4);
+    for w in &mut words {
+        h ^= u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
         h = h.wrapping_mul(0x0100_0193); // FNV prime
+    }
+    // Byte tail for strides that aren't a multiple of 4 — generality only; the device stride (240)
+    // and the simulator stride (720) are both exact.
+    for &b in words.remainder() {
+        h ^= b as u32;
+        h = h.wrapping_mul(0x0100_0193);
     }
     h
 }
@@ -246,8 +257,24 @@ mod tests {
     fn equal_rows_hash_equal_and_differ_otherwise() {
         assert_eq!(row_hash(&[1, 2, 3]), row_hash(&[1, 2, 3]));
         assert_ne!(row_hash(&[1, 2, 3]), row_hash(&[1, 2, 4]));
-        // Empty row is the bare offset basis — a stable, non-zero seed.
+        // Empty row is the bare offset basis — a stable, non-zero seed (no words, no tail, so the
+        // word-at-a-time rework left this constant intact).
         assert_eq!(row_hash(&[]), 0x811c_9dc5);
+    }
+
+    #[test]
+    fn word_and_tail_bytes_both_reach_the_hash() {
+        // A 6-byte row = one 4-byte word + a 2-byte tail (the strides above are all-tail, so this
+        // is the only test walking both loops). A change in either part must change the hash.
+        let row = [1u8, 2, 3, 4, 5, 6];
+        assert_eq!(row_hash(&row), row_hash(&row));
+        for i in 0..row.len() {
+            let mut changed = row;
+            changed[i] ^= 0x80;
+            assert_ne!(row_hash(&changed), row_hash(&row), "byte {i} didn't affect the hash");
+        }
+        // Word-path position sensitivity: swapping bytes within a word changes the word value.
+        assert_ne!(row_hash(&[1, 2, 3, 4]), row_hash(&[4, 3, 2, 1]));
     }
 
     #[test]
