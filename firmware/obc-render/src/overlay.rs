@@ -6,7 +6,7 @@ use heapless::Vec;
 use embedded_graphics::prelude::*;
 
 use crate::fill::fill_polygon;
-use crate::stroke::stroke_overlay;
+use crate::stroke::Stroker;
 use crate::viewport::round_pt;
 use crate::{DrawScratch, MapRenderer, Viewport, MAX_CROSSINGS};
 
@@ -94,7 +94,7 @@ impl MapRenderer {
     /// **after** [`render`](MapRenderer::render).
     ///
     /// Streams chunk-by-chunk — only chunks intersecting the view are decoded and stroked, via
-    /// [`stroke_overlay`] (view-clipped). Consecutive chunks share a seam vertex so the strokes join.
+    /// [`Stroker`] (view-clipped). Consecutive chunks share a seam vertex so the strokes join.
     ///
     /// `arrows_at` is the rider's matched route distance (m), or `None` to skip chevrons. When set,
     /// chevrons are drawn in a **second pass** (so they sit on top where the route doubles back)
@@ -137,7 +137,9 @@ impl MapRenderer {
             route_chunks += 1;
             route_points += pts.len();
             let projected = pts.iter().map(|p| vp.project(p.lon, p.lat));
-            route_drawn += stroke_overlay(target, screen, xs, projected, color, weight, w, h);
+            // Per-chunk `Stroker` (a handful of copies): it must drop before the chevron pass
+            // below borrows `xs` on its own.
+            route_drawn += Stroker::new(target, screen, xs, color, weight, w, h).stroke(projected);
         }
 
         // Pass 2 — chevrons, anchored to route distance and windowed around the rider.
@@ -189,7 +191,7 @@ impl MapRenderer {
         let projected = pts.into_iter().map(|(lon, lat)| vp.project(lon, lat));
         // Split the borrow so the span fills can take `xs` while the run builds in `screen`.
         let DrawScratch { screen, xs } = &mut self.draw;
-        stroke_overlay(target, screen, xs, projected, color, weight, w, h);
+        Stroker::new(target, screen, xs, color, weight, w, h).stroke(projected);
     }
 }
 
