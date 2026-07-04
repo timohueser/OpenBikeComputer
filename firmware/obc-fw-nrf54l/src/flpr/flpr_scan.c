@@ -154,10 +154,17 @@ static inline void fence(void)
 #define ITERS_PER_US      13u /* bench calibration: busy(120) ≈ 9.4 µs */
 #define BCK_HALF_ITERS    2u                    /* each BCK half-period — ⚠️ OVER-SPEC bench value (~180 ns vs the ≥660 ns min; works on this unit) */
 #define DATA_SETUP_TOPUP_ITERS 1u               /* busy() after the in-window pack; pack (~2 iters) + this ≈ the old DATA_SETUP_ITERS 3 (~280 ns, under the spec ~335 ns min — see the note above) */
-#define GCK_SETTLE_ITERS  (5u * ITERS_PER_US)   /* settle after a GCK level change before shifting */
-#define GEN_SETUP_ITERS   (17u * ITERS_PER_US)  /* GCK↔GEN setup AND hold (spec ≥16.37 µs) */
-#define GEN_HIGH_ITERS    (25u * ITERS_PER_US)  /* GEN valid-output window (spec ≥24.56 µs) */
-#define GCK_HIGH_ITERS    (10u * ITERS_PER_US)  /* GCK high width for a DUMMY advance only */
+#define GCK_SETTLE_ITERS  (1u * ITERS_PER_US)   /* settle after a GCK level change before shifting — NOT an
+                                                 * enumerated spec minimum (audited #348); 1 µs matches the
+                                                 * spec's only GCK-width floor (fast-forward ≥1 µs) */
+#define GEN_SETUP_ITERS   207u                  /* GCK↔GEN setup AND hold (spec ≥16.37 µs): 102 ns call
+                                                 * + 207 × 80.5 ns ≈ 16.77 µs — in-spec, ~2.5 % margin
+                                                 * (recalibrated #348; 13 iters/µs was really 12.4) */
+#define GEN_HIGH_ITERS    310u                  /* GEN valid-output window (spec ≥24.56 µs): ≈ 25.06 µs
+                                                 * — in-spec, ~2 % margin (recalibrated #348) */
+#define GCK_HIGH_ITERS    (2u * ITERS_PER_US)   /* GCK high width for a DUMMY advance only (spec ≥1 µs
+                                                 * fast-forward; 2 µs = 2× margin — #348, and the dominant
+                                                 * cost of a partial push's gate fast-forward) */
 #define FRAME_SETUP_ITERS (10u * ITERS_PER_US)  /* INTB→GSP and GSP→first GCK framing setup */
 
 static void busy(uint32_t iters)
