@@ -285,7 +285,7 @@ There's a tension on the device. A dense map frame can take the better part of a
   <text class="d-label" x="20" y="194">map plane</text>
   <text class="d-sub" x="20" y="208">the expensive render</text>
   <rect class="d-hot" x="172" y="176" width="400" height="40" rx="8" style="fill:#f8efe4" />
-  <text class="d-label" x="372" y="201" text-anchor="middle" style="fill:#a9501c">render base map + push · ~97 ms</text>
+  <text class="d-label" x="372" y="201" text-anchor="middle" style="fill:#a9501c">render base map + push · ~44 ms</text>
 
   <!-- preempt marks -->
   <g stroke="#cf6a2a" stroke-width="1.3" stroke-dasharray="3 3" opacity="0.8">
