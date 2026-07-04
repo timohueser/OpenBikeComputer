@@ -23,8 +23,8 @@ use std::time::Instant;
 use embedded_graphics::pixelcolor::raw::RawU16;
 use embedded_graphics::pixelcolor::Rgb565;
 use obc_platform::Framebuffer565;
-use obc_reader::{MapCache, MapTables, Reader, SliceSource};
-use obc_render::{zoom_for_mpp, Clock, MapRenderer, RenderStats, Viewport};
+use obc_reader::{ground_dist_m, BBox, MapCache, MapTables, Reader, SliceSource};
+use obc_render::{zoom_for_mpp, Clock, MapRenderer, OverlayChunk, RenderStats, RouteOverlaySource, Viewport};
 
 /// Device resolution — the LS021B7DD02 panel the shipping firmware renders at.
 const WIDTH: u32 = 240;
@@ -123,13 +123,114 @@ fn run_scene(map: &[u8], name: &str, mpp: f32, heading_deg: f32, clock: &StdCloc
     SceneResult { name: name.into(), collect_us, sort_us, draw_us, total_us, stats, hash: frame_hash(&buf) }
 }
 
+/// The `route` scene's polyline, as two chunks of `(Δlon, Δlat)` microdegree offsets from the
+/// fixture's bbox center (chunk 1 repeats chunk 0's last vertex — the seam, exactly as the OBCR
+/// reader hands chunks over). A zigzag sized to cross the mid-zoom view, so the stroke, the view
+/// clip and both chevron-window bounds are all exercised.
+const ROUTE_DELTAS: [&[(i32, i32)]; 2] =
+    [&[(-9000, -8000), (-4000, -2500), (-1500, -4000), (0, 0)], &[(0, 0), (1500, 3000), (4500, 2000), (8000, 8000)]];
+
+/// A static, deterministic [`RouteOverlaySource`] over the bench fixture — the seam is trivially
+/// fakeable, so the hash tripwire covers the route overlay (stroke + chevrons) with no OBCR file.
+struct StaticRoute {
+    /// Absolute `(lon, lat)` microdegree points per chunk.
+    chunks: Vec<Vec<(i32, i32)>>,
+    /// Cumulative route distance (m) at each chunk's first point.
+    cum_m: Vec<u32>,
+    total_m: u32,
+}
+
+impl StaticRoute {
+    /// Anchor [`ROUTE_DELTAS`] at `(cx, cy)` and accumulate the same ground metric the real
+    /// route format stores (seam vertices contribute zero between chunks).
+    fn at(cx: i32, cy: i32) -> Self {
+        let chunks: Vec<Vec<(i32, i32)>> =
+            ROUTE_DELTAS.iter().map(|c| c.iter().map(|&(dx, dy)| (cx + dx, cy + dy)).collect()).collect();
+        let (mut cum_m, mut s) = (Vec::new(), 0.0f64);
+        for c in &chunks {
+            cum_m.push(s as u32);
+            s += c.windows(2).map(|w| ground_dist_m(w[0], w[1]) as f64).sum::<f64>();
+        }
+        StaticRoute { chunks, cum_m, total_m: s as u32 }
+    }
+}
+
+impl RouteOverlaySource for StaticRoute {
+    fn chunk_count(&self) -> usize {
+        self.chunks.len()
+    }
+    fn chunk(&self, k: usize) -> OverlayChunk {
+        let mut bbox = BBox { min_lon: i32::MAX, min_lat: i32::MAX, max_lon: i32::MIN, max_lat: i32::MIN };
+        for &(lon, lat) in &self.chunks[k] {
+            bbox.min_lon = bbox.min_lon.min(lon);
+            bbox.min_lat = bbox.min_lat.min(lat);
+            bbox.max_lon = bbox.max_lon.max(lon);
+            bbox.max_lat = bbox.max_lat.max(lat);
+        }
+        OverlayChunk { bbox, cum_distance_m: self.cum_m[k] }
+    }
+    fn total_distance_m(&self) -> u32 {
+        self.total_m
+    }
+    fn visit_points(&self, k: usize, visit: &mut dyn FnMut(&[(i32, i32)])) {
+        visit(&self.chunks[k]);
+    }
+}
+
+/// The `route` scene: the mid-zoom base map plus the static route overlay — magenta stroke and
+/// white chevrons anchored at the chunk seam, so both `draw_route` passes land pixels in the hash.
+/// Same warm-up/min-of-[`ITERS`] shape as [`run_scene`]; the per-stage timings are the map's
+/// (the overlay shows up in `total`).
+fn run_route_scene(map: &[u8], clock: &StdClock) -> SceneResult {
+    let src = SliceSource(map);
+    let tables = MapTables::parse(&src).expect("bench map must parse");
+    let cache = MapCache::new();
+    let reader = Reader::new(&src, &tables, &cache);
+    let mut renderer = MapRenderer::new();
+    let mut buf = vec![0u16; (WIDTH * HEIGHT) as usize];
+
+    let bg = Rgb565::from(RawU16::new(reader.backdrop_style().map(|s| s.color).unwrap_or(0xFFFF)));
+    let color_fn = |c: u16| Rgb565::from(RawU16::new(c));
+
+    let cx = (tables.bbox.min_lon + tables.bbox.max_lon) / 2;
+    let cy = (tables.bbox.min_lat + tables.bbox.max_lat) / 2;
+    let vp = Viewport::new_rotated(WIDTH as f32, HEIGHT as f32, cx, cy, zoom_for_mpp(4.0), 0.0);
+    let route = StaticRoute::at(cx, cy);
+    // Rider at the chunk seam: the chevron window spans both chunks' distance ranges.
+    let arrows_at = Some(route.cum_m[1]);
+    // ROUTE_WEIGHT / palette from the app path: magenta 0xF81F stroke, white chevrons.
+    let (route_c, arrow_c) = (color_fn(0xF81F), color_fn(0xFFFF));
+
+    let draw = |buf: &mut [u16], renderer: &mut MapRenderer| {
+        let mut fb = Framebuffer565::new(buf, WIDTH, HEIGHT);
+        let stats = renderer.render_timed(&mut fb, &reader, &vp, bg, color_fn, clock);
+        renderer.draw_route(&mut fb, &vp, &route, route_c, 11, arrow_c, arrows_at);
+        stats
+    };
+
+    draw(&mut buf, &mut renderer); // warm-up: fills the chunk cache
+
+    let (mut collect_us, mut sort_us, mut draw_us, mut total_us) = (u32::MAX, u32::MAX, u32::MAX, u64::MAX);
+    let mut stats = RenderStats::default();
+    for _ in 0..ITERS {
+        let t0 = clock.now_us();
+        stats = draw(&mut buf, &mut renderer);
+        total_us = total_us.min(clock.now_us() - t0);
+        collect_us = collect_us.min(stats.collect_us);
+        sort_us = sort_us.min(stats.sort_us);
+        draw_us = draw_us.min(stats.draw_us);
+    }
+
+    SceneResult { name: "route".into(), collect_us, sort_us, draw_us, total_us, stats, hash: frame_hash(&buf) }
+}
+
 /// Run the full built-in matrix over the testkit fixture, asserting the overview scenes saturate
 /// (`features_dropped > 0`) — if they don't, the fixture isn't dense enough and the drop path went
 /// unexercised, so fail loudly rather than green-light a hollow benchmark.
 fn run_matrix() -> Vec<SceneResult> {
     let map = obcm_testkit::build_bench_map();
     let clock = StdClock(Instant::now());
-    SCENES
+    let mut results: Vec<SceneResult> = SCENES
         .iter()
         .map(|&(name, mpp, heading)| {
             let r = run_scene(&map, name, mpp, heading, &clock);
@@ -142,7 +243,11 @@ fn run_matrix() -> Vec<SceneResult> {
             }
             r
         })
-        .collect()
+        .collect();
+    // The route-overlay scene (issue #332): the map scenes carry no route, so this seventh frame
+    // is what puts `draw_route`'s stroke + chevrons under the hash tripwire.
+    results.push(run_route_scene(&map, &clock));
+    results
 }
 
 fn print_table(results: &[SceneResult]) {
@@ -319,6 +424,44 @@ mod tests {
         assert_eq!(riding.stats.lod, 1, "riding must select the fine LOD");
         assert_eq!(overview.stats.lod, 0, "overview must select the coarse LOD");
         assert!(riding.stats.features_drawn > 0, "riding scene must draw features");
+    }
+
+    /// The route scene must actually land overlay pixels — the magenta stroke, and *more* pixels
+    /// once chevrons are enabled — or its hash line would be pinning a route-free frame.
+    #[test]
+    fn route_scene_draws_stroke_and_chevrons() {
+        let map = obcm_testkit::build_bench_map();
+        let src = SliceSource(&map);
+        let tables = MapTables::parse(&src).expect("bench map must parse");
+        let cache = MapCache::new();
+        let reader = Reader::new(&src, &tables, &cache);
+        let mut renderer = MapRenderer::new();
+        let color_fn = |c: u16| Rgb565::from(RawU16::new(c));
+        let bg = color_fn(reader.backdrop_style().map(|s| s.color).unwrap_or(0xFFFF));
+        let cx = (tables.bbox.min_lon + tables.bbox.max_lon) / 2;
+        let cy = (tables.bbox.min_lat + tables.bbox.max_lat) / 2;
+        let vp = Viewport::new_rotated(WIDTH as f32, HEIGHT as f32, cx, cy, zoom_for_mpp(4.0), 0.0);
+        let route = StaticRoute::at(cx, cy);
+
+        let mut frame = |arrows_at: Option<u32>| {
+            let mut buf = vec![0u16; (WIDTH * HEIGHT) as usize];
+            let mut fb = Framebuffer565::new(&mut buf, WIDTH, HEIGHT);
+            renderer.render(&mut fb, &reader, &vp, bg, color_fn);
+            let (chunks, _, drawn) =
+                renderer.draw_route(&mut fb, &vp, &route, color_fn(0xF81F), 11, color_fn(0xFFFF), arrows_at);
+            (buf, chunks, drawn)
+        };
+
+        let (plain, chunks, drawn) = frame(None);
+        assert_eq!(chunks, 2, "both static chunks must intersect the mid-zoom view");
+        assert!(drawn > 0, "the route stroke must survive the view clip");
+        let magenta = plain.iter().filter(|&&p| p == 0xF81F).count();
+        assert!(magenta > 100, "expected a visible magenta route stroke, got {magenta} px");
+
+        let (arrowed, ..) = frame(Some(route.cum_m[1]));
+        let white_gain =
+            arrowed.iter().filter(|&&p| p == 0xFFFF).count() - plain.iter().filter(|&&p| p == 0xFFFF).count();
+        assert!(white_gain > 20, "chevrons must add white pixels over the stroke, gained {white_gain} px");
     }
 
     /// Two renders of the same scene hash identically — the tripwire's own repeatability.

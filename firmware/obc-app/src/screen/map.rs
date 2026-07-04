@@ -101,12 +101,13 @@ impl MapScreen {
         // distance (`progress_m`). Gated on the viewport scale, decoupled from the LOD pyramid.
         let arrows_at = (vp.meters_per_pixel() <= CHEVRON_MAX_MPP).then_some(rx.activity.progress_m);
 
-        // The planned route, stroked in magenta under the breadcrumb + marker.
+        // The planned route, stroked in magenta under the breadcrumb + marker — handed to the
+        // renderer through the `RouteOverlaySource` seam (`RouteOverlay` adapts the reader).
         if let Some(route) = rx.route {
             let (route_chunks, route_points, route_points_drawn) = rx.renderer.draw_route(
                 target,
                 &vp,
-                route,
+                &crate::route::RouteOverlay(route),
                 color_fn(super::palette::ROUTE),
                 ROUTE_WEIGHT,
                 color_fn(ARROW_COLOR),
