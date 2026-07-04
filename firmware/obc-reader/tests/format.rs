@@ -50,6 +50,14 @@ fn decode_filtered(r: &Reader, lod: usize, chunk_id: u32, node: &BBox, keep: imp
     out
 }
 
+/// Collect every leaf `for_each_chunk` yields — the uncapped replacement for the
+/// removed `Reader::query` test convenience.
+fn query_all(r: &Reader, lod: usize, view: &BBox) -> Vec<(u32, BBox)> {
+    let mut out = Vec::new();
+    r.for_each_chunk(lod, view, |cid, node| out.push((cid, node)));
+    out
+}
+
 // A two-LOD file used by several tests: LOD0 (coarse, +inf) holds one line,
 // LOD1 (max_mpp 50) holds one polygon-with-hole. Both are single-leaf trees over
 // the global bbox (0,0,1000,1000), so the leaf's node bbox is the global bbox
@@ -170,13 +178,13 @@ fn query_single_leaf() {
     let r = Reader::new(&src, &tables, &cache);
 
     // A view overlapping the global bbox hits the single leaf (chunk 0).
-    let hits = r.query::<64>(0, &obc_reader::BBox { min_lon: 100, min_lat: 100, max_lon: 200, max_lat: 200 });
+    let hits = query_all(&r, 0, &obc_reader::BBox { min_lon: 100, min_lat: 100, max_lon: 200, max_lat: 200 });
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].0, 0);
     assert_eq!(hits[0].1, r.bbox); // leaf node bbox == global bbox
 
     // A view entirely outside the global bbox hits nothing.
-    let miss = r.query::<64>(0, &obc_reader::BBox { min_lon: 5000, min_lat: 5000, max_lon: 6000, max_lat: 6000 });
+    let miss = query_all(&r, 0, &obc_reader::BBox { min_lon: 5000, min_lat: 5000, max_lon: 6000, max_lat: 6000 });
     assert!(miss.is_empty());
 }
 
@@ -290,11 +298,11 @@ fn quadtree_subdivision_and_node_bbox() {
     let nw = obc_reader::BBox { min_lon: 0, min_lat: 500, max_lon: 500, max_lat: 1000 };
 
     // View inside the NW quadrant hits the leaf, with the NW node bbox.
-    let hits = r.query::<64>(0, &obc_reader::BBox { min_lon: 50, min_lat: 600, max_lon: 150, max_lat: 700 });
+    let hits = query_all(&r, 0, &obc_reader::BBox { min_lon: 50, min_lat: 600, max_lon: 150, max_lat: 700 });
     assert_eq!(hits.as_slice(), &[(0, nw)]);
 
     // View inside the (empty) SE quadrant hits nothing.
-    let se = r.query::<64>(0, &obc_reader::BBox { min_lon: 600, min_lat: 100, max_lon: 700, max_lat: 200 });
+    let se = query_all(&r, 0, &obc_reader::BBox { min_lon: 600, min_lat: 100, max_lon: 700, max_lat: 200 });
     assert!(se.is_empty());
 
     // The feature's anchor is computed from the NW node's min corner (0,500):
@@ -315,7 +323,7 @@ fn empty_leaf_yields_nothing() {
     let src = SliceSource(&bytes);
     let tables = MapTables::parse(&src).unwrap();
     let r = Reader::new(&src, &tables, &cache);
-    assert!(r.query::<64>(0, &r.bbox).is_empty());
+    assert!(query_all(&r, 0, &r.bbox).is_empty());
 }
 
 #[test]
@@ -435,9 +443,9 @@ fn filtered_decode_skips_without_drifting() {
 #[test]
 fn for_each_chunk_has_no_cap() {
     // Root branch with four non-empty leaf quadrants. `for_each_chunk` streams
-    // every overlapping leaf through its callback with no upper bound, whereas a
-    // capacity-bounded `query` silently truncates — the exact behaviour the
-    // renderer depends on so a wide viewport never silently loses whole chunks.
+    // every overlapping leaf through its callback with no upper bound — the exact
+    // behaviour the renderer depends on so a wide viewport never silently loses
+    // whole chunks.
     let mk = || pad(pack_line(1, 1, 1, &[(1, 1)]), CS);
     let index = vec![
         BRANCH_BIT | 1, // root branch, children start at idx 1
@@ -460,10 +468,6 @@ fn for_each_chunk_has_no_cap() {
     let mut seen = 0;
     r.for_each_chunk(0, &r.bbox, |_cid, _node| seen += 1);
     assert_eq!(seen, 4);
-
-    // The same query into a 2-slot buffer keeps only the first two it reaches.
-    let capped = r.query::<2>(0, &r.bbox);
-    assert_eq!(capped.len(), 2);
 }
 
 /// Build a forward-only quadtree index that is a single NW-chain `levels` branches deep, ending
@@ -515,8 +519,8 @@ fn walk_terminates_on_back_referencing_branch() {
     let mut seen = 0;
     r.for_each_chunk(0, &r.bbox, |_cid, _node| seen += 1);
     assert_eq!(seen, 0);
-    // `query` walks the same path; it too must return rather than overflow.
-    assert!(r.query::<64>(0, &r.bbox).is_empty());
+    // Collecting over the same walk must likewise return empty rather than overflow.
+    assert!(query_all(&r, 0, &r.bbox).is_empty());
 }
 
 #[test]

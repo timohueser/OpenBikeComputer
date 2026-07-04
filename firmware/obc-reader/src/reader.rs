@@ -272,7 +272,7 @@ impl MapTables {
     /// allocating step (a 1536-byte style scratch plus the style/LOD-table SD reads), so do it
     /// **once** per map and hand the result to [`Reader::new`] each frame. A map shorter than the
     /// header, with the wrong magic / version, or with out-of-range table offsets is rejected. The
-    /// magic / version / bbox / marker prefix goes through the shared [`parse_header`] (so
+    /// magic / version / bbox / marker prefix goes through the shared (private) `parse_header` (so
     /// [`read_header`] validates identically); the style + LOD-table offsets are decoded here.
     pub fn parse(src: &dyn ByteSource) -> Result<MapTables, Error> {
         let total = src.len() as usize;
@@ -389,32 +389,12 @@ impl<'a> Reader<'a> {
         Some(u32::from_le_bytes(b))
     }
 
-    /// Collect (chunk_id, node_bbox) for every non-empty leaf in `lod` that
-    /// overlaps `view`. `lod` indexes [`Reader::lods`]; out-of-range yields empty.
-    ///
-    /// Bounded by the buffer capacity `C`: if more leaves overlap than fit, the
-    /// extras are dropped. The renderer uses [`Reader::for_each_chunk`] instead,
-    /// which streams leaves through a callback with no such cap.
-    pub fn query<const C: usize>(&self, lod: usize, view: &BBox) -> Vec<(u32, BBox), C> {
-        let mut out = Vec::new();
-        self.query_into(lod, view, &mut out);
-        out
-    }
-
-    /// Like [`Reader::query`] but appends into a caller-owned buffer (cleared
-    /// first), so a caller can reuse one allocation across calls.
-    pub fn query_into<const C: usize>(&self, lod: usize, view: &BBox, out: &mut Vec<(u32, BBox), C>) {
-        out.clear();
-        self.for_each_chunk(lod, view, |cid, node| {
-            let _ = out.push((cid, node));
-        });
-    }
-
     /// Visit `(chunk_id, node_bbox)` for every non-empty leaf in `lod` overlapping `view`, in
-    /// quadtree order. Unlike [`Reader::query`] this streams through a callback with **no upper
-    /// bound** on the chunk count — the renderer relies on this so a wide viewport never silently
-    /// drops chunks. The walk only reads the index (bbox tests over `u32` nodes), so re-running it
-    /// once per priority pass is cheap relative to decoding.
+    /// quadtree order. `lod` indexes [`Reader::lods`]; out-of-range visits nothing. Unlike a
+    /// capacity-bounded collect, this streams through a callback with **no upper bound** on the
+    /// chunk count — the renderer relies on this so a wide viewport never silently drops chunks.
+    /// The walk only reads the index (bbox tests over `u32` nodes), so re-running it once per
+    /// priority pass is cheap relative to decoding.
     pub fn for_each_chunk(&self, lod: usize, view: &BBox, mut visit: impl FnMut(u32, BBox)) {
         if let Some(l) = self.tables.lods.get(lod) {
             if l.node_count > 0 {
@@ -476,7 +456,7 @@ impl<'a> Reader<'a> {
     /// Decode every feature in a chunk of `lod`, invoking `visit` once per feature with a
     /// [`FeatureRef`] borrowing the caller's `points`/`ring_lens` scratch. Allocation-free: the
     /// buffers grow to the largest feature once and are reused across features/chunks/frames.
-    /// `node` is the leaf bbox from [`Reader::query`].
+    /// `node` is the leaf bbox yielded by [`Reader::for_each_chunk`].
     pub fn for_each_feature<const P: usize, const R: usize>(
         &self,
         lod: usize,
@@ -769,7 +749,7 @@ fn parse_styles(src: &dyn ByteSource, style_offset: usize, total: usize) -> [Opt
 }
 
 /// Parse the `lod_count` LOD-table entries (resident from `src`); validates each layer's
-/// index/chunk region lies within the file (`total` bytes) so `query`/`decode_chunk` can skip
+/// index/chunk region lies within the file (`total` bytes) so `for_each_chunk`/`decode_chunk` can skip
 /// bounds math, and that its `chunk_size` fits the decode scratch ([`MAX_CHUNK_BYTES`]).
 fn parse_lod_table(src: &dyn ByteSource, offset: usize, lod_count: usize, total: usize) -> Result<Vec<Lod, 16>, Error> {
     let mut lods = Vec::new();
