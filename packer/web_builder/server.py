@@ -11,8 +11,8 @@ from . import geofabrik, jobs
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
-# config.json ships with the repo and is the read-only factory default.
-FACTORY_CONFIG = os.path.join(PROJECT_ROOT, "config.json")
+# The default preset ships with the repo and is the read-only factory default.
+FACTORY_CONFIG = os.path.join(PROJECT_ROOT, "presets", "default.json")
 # user_config.json (gitignored) holds the user's persisted edits, if any.
 USER_CONFIG = os.path.join(PROJECT_ROOT, "user_config.json")
 # palette.json ships with the repo: the device's 64-color gamut offered as the

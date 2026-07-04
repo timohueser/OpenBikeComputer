@@ -20,6 +20,9 @@ pub const HEADER_LEN: usize = 32;
 /// One LOD-table entry, `<fIIHI>`.
 pub const LOD_ENTRY_LEN: usize = 18;
 
+/// The OBCM format version byte written into the header (`OBCM_Spec.md` §1).
+pub const OBCM_VERSION: u8 = 5;
+
 /// Largest `chunk_size` (bytes) that keeps every feature within the reader's
 /// [`obc_reader::MAX_FEAT_PTS`] vertex cap. Densest encoding is 8-bit deltas
 /// (12-byte header + 2 bytes/vertex), so a chunk carries at most
@@ -315,7 +318,7 @@ fn header_bytes(
 ) -> Vec<u8> {
     let mut out = Vec::with_capacity(HEADER_LEN);
     out.extend_from_slice(b"OBCM");
-    out.push(0x05);
+    out.push(OBCM_VERSION);
     out.extend_from_slice(&(global_bbox.1 as i32).to_le_bytes()); // min_lat
     out.extend_from_slice(&(global_bbox.0 as i32).to_le_bytes()); // min_lon
     out.extend_from_slice(&(global_bbox.3 as i32).to_le_bytes()); // max_lat

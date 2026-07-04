@@ -14,6 +14,28 @@ use crate::serialize::Style;
 /// 1..=254 (ID 0 left unused).
 const MAX_STYLE_ID: u32 = 254;
 
+/// The config's JSON Schema, embedded verbatim and printed by `obc-pack schema`.
+/// The web builder derives UI capability from it (a field present in the schema
+/// ⇔ this binary parses it), so it must stay in lock-step with the parser below
+/// — the `schema_*` tests walk this document against `parse_style` & friends.
+pub const CONFIG_SCHEMA_JSON: &str = include_str!("../schema/config.schema.json");
+
+/// Version of the `obc-pack schema` envelope itself; bump only on breaking
+/// changes to the envelope shape, not on ordinary schema field additions.
+pub const CONFIG_SCHEMA_VERSION: u32 = 1;
+
+/// The `obc-pack schema` output: the embedded schema wrapped with the envelope
+/// version and the OBCM format version this binary writes.
+pub fn schema_envelope() -> String {
+    let schema: Value = serde_json::from_str(CONFIG_SCHEMA_JSON).expect("embedded schema is valid JSON");
+    let envelope = serde_json::json!({
+        "schema_version": CONFIG_SCHEMA_VERSION,
+        "format_version": crate::serialize::OBCM_VERSION,
+        "schema": schema,
+    });
+    serde_json::to_string_pretty(&envelope).expect("envelope serializes")
+}
+
 /// The Style Table fields plus the `min_lod` gate (filtered on, not serialized).
 #[derive(Debug, Clone)]
 pub struct FeatureStyle {
@@ -139,7 +161,8 @@ impl Config {
 /// caller. Defaults: z_index 0, weight 1, priority 3, min_lod 0. Each numeric field
 /// is range-checked against its on-wire width: an out-of-range value is a hard error,
 /// not a silent wrap (e.g. `z_index: 200` would pack as `-56` and reorder the paint
-/// stack).
+/// stack). Adding a field here (e.g. v6 `line_style`/`color2`)? Extend
+/// `schema/config.schema.json` and the `schema_*` tests in the same change.
 fn parse_style(id: u8, v: &Value) -> Result<FeatureStyle, String> {
     let color = v.get("color").map(parse_color).transpose()?.ok_or("style missing `color`")?;
     Ok(FeatureStyle {
@@ -188,7 +211,8 @@ mod tests {
     use super::*;
 
     fn corpus_config() -> Config {
-        Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/config.json")).expect("load corpus config")
+        Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/presets/default.json"))
+            .expect("load corpus config")
     }
 
     #[test]
@@ -298,5 +322,106 @@ mod tests {
         assert_eq!(ok.styles().len(), 254, "all 254 styles parsed");
 
         assert!(Config::parse(&make(255)).is_err(), "a 255th style must error (config.rs ~78), not wrap past u8");
+    }
+
+    // --- schema pinning: the embedded JSON Schema (served via `obc-pack schema`)
+    // must describe exactly what this parser accepts. The web builder derives its
+    // editor capability from the schema, so drift here means a UI that lies. ---
+
+    fn embedded_schema() -> Value {
+        serde_json::from_str(CONFIG_SCHEMA_JSON).expect("embedded schema is valid JSON")
+    }
+
+    fn style_with(field: &str, v: i64) -> Value {
+        let mut m = serde_json::Map::new();
+        m.insert("color".into(), Value::String("0x0001".into()));
+        m.insert(field.into(), Value::from(v));
+        Value::Object(m)
+    }
+
+    #[test]
+    fn schema_style_bounds_match_parser() {
+        let schema = embedded_schema();
+        for field in ["z_index", "weight", "priority", "min_lod"] {
+            let prop = &schema["$defs"]["style"]["properties"][field];
+            let lo = prop["minimum"].as_i64().expect("schema minimum");
+            let hi = prop["maximum"].as_i64().expect("schema maximum");
+            assert!(parse_style(1, &style_with(field, lo)).is_ok(), "{field}: schema minimum {lo} must parse");
+            assert!(parse_style(1, &style_with(field, hi)).is_ok(), "{field}: schema maximum {hi} must parse");
+            assert!(parse_style(1, &style_with(field, lo - 1)).is_err(), "{field}: below schema minimum must error");
+            assert!(parse_style(1, &style_with(field, hi + 1)).is_err(), "{field}: above schema maximum must error");
+        }
+    }
+
+    #[test]
+    fn schema_defaults_match_parser() {
+        let schema = embedded_schema();
+        let props = &schema["$defs"]["style"]["properties"];
+
+        // Per-style defaults: a color-only style must come out as the schema says.
+        let parsed = parse_style(1, &serde_json::json!({"color": "0x0001"})).expect("minimal style");
+        assert_eq!(props["z_index"]["default"].as_i64(), Some(parsed.z_index as i64));
+        assert_eq!(props["weight"]["default"].as_i64(), Some(parsed.weight as i64));
+        assert_eq!(props["priority"]["default"].as_i64(), Some(parsed.priority as i64));
+        assert_eq!(props["min_lod"]["default"].as_i64(), Some(parsed.min_lod as i64));
+
+        // Global defaults: an empty config must come out as the schema says.
+        let cfg = Config::parse("{}").expect("empty config parses");
+        let marker_default = &schema["properties"]["marker"]["properties"]["color"]["default"];
+        assert_eq!(parse_color(marker_default).unwrap(), cfg.marker_color);
+        assert_eq!(schema["properties"]["chunk_size"]["default"].as_u64(), Some(cfg.chunk_size as u64));
+        let lods_default = schema["properties"]["lods"]["default"].as_array().expect("lods default");
+        assert_eq!(lods_default.len(), cfg.lods.len());
+        assert!(lods_default[0]["max_mpp"].is_null() && cfg.lods[0].max_mpp.is_none());
+        assert_eq!(lods_default[0]["simplify"].as_f64(), Some(cfg.lods[0].simplify_m));
+    }
+
+    #[test]
+    fn schema_caps_match_parser_and_serializer() {
+        let schema = embedded_schema();
+
+        // LOD cap: 16 parses, 17 errors (see `too_many_lods_is_rejected`).
+        assert_eq!(schema["properties"]["lods"]["maxItems"].as_u64(), Some(16));
+        let entries: Vec<String> = (0..16).map(|i| format!("{{\"max_mpp\": {}, \"simplify\": 0}}", i + 1)).collect();
+        let text = format!("{{\"features\": {{}}, \"lods\": [{}]}}", entries.join(","));
+        assert!(Config::parse(&text).is_ok(), "exactly maxItems LODs must parse");
+
+        // chunk_size cap is the serializer's safe maximum, enforced at pack time.
+        let max = schema["properties"]["chunk_size"]["maximum"].as_u64().expect("chunk_size maximum") as usize;
+        assert_eq!(max, crate::serialize::MAX_SAFE_CHUNK_SIZE);
+        assert!(crate::serialize::validate_chunk_size(max).is_ok());
+        assert!(crate::serialize::validate_chunk_size(max + 1).is_err());
+    }
+
+    #[test]
+    fn schema_color_def_matches_parser() {
+        let schema = embedded_schema();
+        let color = &schema["$defs"]["color"]["oneOf"];
+        // Pin the hex-string pattern; `parse_color` accepts optional 0x/0X + 1..=4
+        // hex digits (5 digits overflow the u16 and error — consistent both sides).
+        assert_eq!(color[0]["pattern"].as_str(), Some("^(0[xX])?[0-9A-Fa-f]{1,4}$"));
+        assert!(parse_color(&Value::String("0x12345".into())).is_err(), "5 hex digits must overflow u16");
+        assert_eq!(color[1]["minimum"].as_u64(), Some(0));
+        assert_eq!(color[1]["maximum"].as_u64(), Some(65535));
+    }
+
+    #[test]
+    fn schema_declares_exactly_the_parsed_style_fields() {
+        let schema = embedded_schema();
+        let props = schema["$defs"]["style"]["properties"].as_object().expect("style properties");
+        let mut keys: Vec<&str> = props.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        // The exact field set `parse_style` reads. Extending the parser (v6
+        // `line_style`/`color2`) must extend the schema in the same change.
+        assert_eq!(keys, ["color", "min_lod", "priority", "weight", "z_index"]);
+        assert_eq!(schema["$defs"]["style"]["required"], serde_json::json!(["color"]));
+    }
+
+    #[test]
+    fn schema_envelope_shape() {
+        let env: Value = serde_json::from_str(&schema_envelope()).expect("envelope is valid JSON");
+        assert_eq!(env["schema_version"].as_u64(), Some(CONFIG_SCHEMA_VERSION as u64));
+        assert_eq!(env["format_version"].as_u64(), Some(crate::serialize::OBCM_VERSION as u64));
+        assert!(env["schema"]["$defs"]["style"].is_object(), "envelope embeds the schema");
     }
 }
