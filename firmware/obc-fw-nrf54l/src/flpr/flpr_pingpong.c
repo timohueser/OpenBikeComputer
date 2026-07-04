@@ -61,6 +61,11 @@
 
 #include <stdint.h>
 
+/* The M33<->FLPR cross-core contract — the control-block address, layout magic / status stamps,
+ * command codes, and the span cap — generated into $OUT_DIR by build.rs (its `contract` module is
+ * the single definition site, issue #346); the blob compile passes -I $OUT_DIR. */
+#include "flpr_contract.h"
+
 /* ── GPIO, secure aliases (the all-secure nrf54l15-app-s build F1 already drives). Each OUTSET/
  * OUTCLR is one atomic write, no read-modify-write of OUT. Offsets: OUT +0x00, OUTSET +0x04,
  * OUTCLR +0x08 (nRF54L15 PAC). ──
@@ -98,9 +103,9 @@
 /* FLPR → M33 doorbell via EGU20 (secure 0x500C_9000) — see ls021-flpr.md. */
 #define EGU20_TRIGGER0 (*(volatile uint32_t *)0x500C9000u)
 
-/* ── Shared control block at the SHARED-page base 0x2003_F000 (see flpr.ld / memory.x). Layout is
- * normative and identical to the Rust `Control` in ls021_flpr_bringup.rs — keep them in sync
- * (firmware/docs/ls021-flpr.md). All fields u32, little-endian. ── */
+/* ── Shared control block at the SHARED-page base FLPR_CONTROL_ADDR (see the generated flpr.ld /
+ * memory.x). Layout is normative and identical to the Rust `Control` in ls021_flpr.rs — keep them
+ * in sync (firmware/docs/ls021-flpr.md). All fields u32, little-endian. ── */
 typedef struct {
     uint32_t ptr;      /* row-buffer base: MSB sub-line at [0..len), LSB sub-line at [len..2·len) */
     uint32_t len;      /* words per sub-line = BCK per sub-line (124); a row is 2·len words */
@@ -108,12 +113,12 @@ typedef struct {
     uint32_t consumed; /* FLPR set when drained (= the serviced `ready` token) */
 } buf_desc_t;          /* 16 bytes */
 
-/* Dirty-row span-list cap (issue #163). Each frame the M33 publishes 1..=MAX_DIRTY_SPANS ascending,
- * disjoint `(start_row, count)` spans; `run_frame` fast-forwards the gate over the gaps and writes
- * only the spanned rows. 16 disjoint regions is far more than any UI produces — a full frame is ONE
- * span `(0,320)`, the hold bulge is one, the future renderer dirty-region block coalesces map bands
- * into a few. **Must equal `MAX_DIRTY_SPANS` in the Rust `Control` (ls021_flpr.rs).** */
-#define MAX_DIRTY_SPANS 16u
+/* Dirty-row span-list cap (issue #163), from flpr_contract.h — the same generated constant sizes
+ * the Rust `Control`'s spans[], so the two sides cannot disagree on the array length. Each frame
+ * the M33 publishes 1..=MAX_DIRTY_SPANS ascending, disjoint `(start_row, count)` spans;
+ * `run_frame` fast-forwards the gate over the gaps and writes only the spanned rows. 16 disjoint
+ * regions is far more than any UI produces — a full frame is ONE span `(0,320)`, the hold bulge is
+ * one, the future renderer dirty-region block coalesces map bands into a few. */
 
 typedef struct {
     volatile uint32_t magic;       /* 0x00 M33: layout/version tag, checked before acting */
@@ -133,17 +138,13 @@ typedef struct {
  * so growing the control block with the span list never moves the buffers. */
 _Static_assert(sizeof(flpr_control_t) == 124, "control block must be 124 bytes (matches the M33 Control; stays below 0x100)");
 
-#define CTRL ((volatile flpr_control_t *)0x2003F000u)
-
-#define LAYOUT_MAGIC 0xF1C00001u /* "F1 control block" — must match the M33 */
-#define FLPR_ALIVE   0x0000A11Eu /* boot confirmation */
-#define FLPR_BADMAG  0x0BADCAFEu /* booted but the control-block magic mismatched */
-
-/* Command codes (M33 → FLPR via `cmd`). One piece of work: run a frame driven by the dirty-row
- * span list (issue #163). A full frame is the degenerate case `n_spans=1, spans[0]=(0,320)`, so this
- * one command **subsumes** the old whole-frame scan (not a parallel path); the F2 CMD_SHIFT_SUBLINE=1
- * was already subsumed, the F3 single-buffer reuse generalised. */
-#define CMD_RUN_FRAME 0x00000002u
+/* The SHARED-page control block, at the generated FLPR_CONTROL_ADDR (flpr_contract.h). The magic /
+ * status stamps and the command codes come from the same header. One piece of work: CMD_RUN_FRAME
+ * runs a frame driven by the dirty-row span list (issue #163). A full frame is the degenerate case
+ * `n_spans=1, spans[0]=(0,320)`, so this one command **subsumes** the old whole-frame scan (not a
+ * parallel path); the F2 CMD_SHIFT_SUBLINE=1 was already subsumed, the F3 single-buffer reuse
+ * generalised. */
+#define CTRL ((volatile flpr_control_t *)FLPR_CONTROL_ADDR)
 
 /* ── Frame geometry (the datasheet §6-5/§6-6 charts; mirrors the retired M33 `PanelBus`). ── */
 #define COLS_PER_SUBLINE 120u /* 240 columns ÷ 2 pixels-per-BCK */
@@ -360,6 +361,9 @@ static uint32_t run_frame(void)
     }
 
     uint32_t n_spans = CTRL->n_spans;
+    if (n_spans > MAX_DIRTY_SPANS) {
+        n_spans = MAX_DIRTY_SPANS; /* distrust shared RAM: a corrupted count must not overrun spans[] */
+    }
     uint32_t gate = 0;  /* next visible row the gate token will land on (0-based, post-lead-dummy) */
     uint32_t dirty = 0; /* ping-pong index across dirty rows (NOT absolute row & 1) */
     for (uint32_t s = 0; s < n_spans; s++) {
