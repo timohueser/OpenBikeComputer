@@ -49,6 +49,9 @@ pub trait RouteOverlaySource {
     /// Decode chunk `k` and hand its points — `(lon, lat)` microdegrees — to `visit`
     /// as one slice. Implementations own their decode scratch. A failed decode
     /// (flaky SD) simply doesn't call `visit`.
+    // The `&mut dyn FnMut(&[…])` spelling *is* the seam (object-safe, alloc-free); a type
+    // alias would only hide what implementors must write anyway.
+    #[allow(clippy::type_complexity)]
     fn visit_points(&self, k: usize, visit: &mut dyn FnMut(&[(i32, i32)]));
 }
 
