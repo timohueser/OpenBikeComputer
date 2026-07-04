@@ -1,0 +1,333 @@
+//! Host render benchmark harness + pixel-hash tripwire (issue #327, epic #326).
+//!
+//! Renders a fixed 6-scene matrix through the **real pipeline** — `obcm-testkit`'s deterministic
+//! fixture → `SliceSource` → `MapTables`/`MapCache`/`Reader` → `MapRenderer::render_timed` → the
+//! device-resolution [`Framebuffer565`] — and prints per-stage timings (min of 10 after a warm-up),
+//! the [`RenderStats`] counters, and an FNV-1a 64 hash of the frame's pixels.
+//!
+//! Two jobs, one binary:
+//! - **Benchmark** (the epic's measuring instrument): the timings are the before/after numbers every
+//!   #329 optimization lands with. Printed, never gated — shared CI runners are noisy.
+//! - **Tripwire** (`--check`): the frame hashes are deterministic (seeded fixture, integer/`libm`
+//!   math), so CI compares them against the committed `hashes.txt` and fails on any drift. A
+//!   pure-motion refactor must not touch them; an intentional rendering change updates the golden
+//!   file in the same PR — that is the review signal.
+//!
+//! Modes: default (print the table), `--write-hashes <file>`, `--check <file>` (exit 1 on
+//! mismatch), and `--map <path> --mpp <f> --heading <deg>` — a manual escape hatch to run one scene
+//! against a real local `.obcm` (never in CI: real maps aren't byte-stable fixtures).
+
+use std::process::ExitCode;
+use std::time::Instant;
+
+use embedded_graphics::pixelcolor::raw::RawU16;
+use embedded_graphics::pixelcolor::Rgb565;
+use obc_platform::Framebuffer565;
+use obc_reader::{MapCache, MapTables, Reader, SliceSource};
+use obc_render::{zoom_for_mpp, Clock, MapRenderer, RenderStats, Viewport};
+
+/// Device resolution — the LS021B7DD02 panel the shipping firmware renders at.
+const WIDTH: u32 = 240;
+const HEIGHT: u32 = 320;
+
+/// Timed iterations per scene (after one warm-up render that fills the chunk cache). The report is
+/// the **min** of each stage — the noise-floor estimator for a deterministic workload.
+const ITERS: usize = 10;
+
+/// The fixed scene matrix: `(name, meters-per-pixel, heading°)`. Rides the fixture's two LODs
+/// (riding = fine, mid/overview = coarse) both north-up and rotated; the overview pair must
+/// saturate the span buffer (`features_dropped > 0`) or the fixture has gone stale.
+const SCENES: [(&str, f32, f32); 6] = [
+    ("riding", 0.5, 0.0),
+    ("riding-rot", 0.5, 35.0),
+    ("mid", 4.0, 0.0),
+    ("mid-rot", 4.0, 35.0),
+    ("overview", 30.0, 0.0),
+    ("overview-rot", 30.0, 35.0),
+];
+
+/// [`Clock`] over [`std::time::Instant`]: µs since construction, threaded through `render_timed`
+/// so `collect_us`/`sort_us`/`draw_us` are real host wall time.
+struct StdClock(Instant);
+
+impl Clock for StdClock {
+    fn now_us(&self) -> u64 {
+        self.0.elapsed().as_micros() as u64
+    }
+}
+
+/// FNV-1a 64-bit over the framebuffer's pixels (each `u16` folded little-endian, row-major) — the
+/// stable frame fingerprint the tripwire compares. Inline per the offset-basis/prime constants;
+/// byte order is fixed explicitly so the hash never depends on host endianness.
+fn frame_hash(buf: &[u16]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for px in buf {
+        for b in px.to_le_bytes() {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    h
+}
+
+/// One scene's report: the min-of-[`ITERS`] stage timings, the last iteration's counters, and the
+/// frame hash.
+struct SceneResult {
+    name: String,
+    collect_us: u32,
+    sort_us: u32,
+    draw_us: u32,
+    total_us: u64,
+    stats: RenderStats,
+    hash: u64,
+}
+
+/// Render one scene through the steady-state device flow: parse-once tables, one `MapCache` reused
+/// across iterations, camera at the map's bbox center. Warm-up once (fills the chunk cache), then
+/// time [`ITERS`] renders and keep the min of each stage; counters come from the last iteration and
+/// the hash from the final frame.
+fn run_scene(map: &[u8], name: &str, mpp: f32, heading_deg: f32, clock: &StdClock) -> SceneResult {
+    let src = SliceSource(map);
+    let tables = MapTables::parse(&src).expect("bench map must parse");
+    let cache = MapCache::new();
+    let reader = Reader::new(&src, &tables, &cache);
+    let mut renderer = MapRenderer::new();
+    let mut buf = vec![0u16; (WIDTH * HEIGHT) as usize];
+
+    // Clear color + pixel policy: the backdrop style's color, mapped 1:1 to RGB565 — the host
+    // true-color path (the device would quantize to its RGB222 gamut instead).
+    let bg = Rgb565::from(RawU16::new(reader.backdrop_style().map(|s| s.color).unwrap_or(0xFFFF)));
+    let color_fn = |c: u16| Rgb565::from(RawU16::new(c));
+
+    let cx = (tables.bbox.min_lon + tables.bbox.max_lon) / 2;
+    let cy = (tables.bbox.min_lat + tables.bbox.max_lat) / 2;
+    let vp = Viewport::new_rotated(WIDTH as f32, HEIGHT as f32, cx, cy, zoom_for_mpp(mpp), heading_deg.to_radians());
+
+    // Warm-up: fills the chunk cache, so the timed iterations measure the steady state the device
+    // sees (a slow pan re-hits last frame's chunks), not the cold SD-fill.
+    let mut fb = Framebuffer565::new(&mut buf, WIDTH, HEIGHT);
+    renderer.render_timed(&mut fb, &reader, &vp, bg, color_fn, clock);
+
+    let (mut collect_us, mut sort_us, mut draw_us, mut total_us) = (u32::MAX, u32::MAX, u32::MAX, u64::MAX);
+    let mut stats = RenderStats::default();
+    for _ in 0..ITERS {
+        let mut fb = Framebuffer565::new(&mut buf, WIDTH, HEIGHT);
+        let t0 = clock.now_us();
+        stats = renderer.render_timed(&mut fb, &reader, &vp, bg, color_fn, clock);
+        total_us = total_us.min(clock.now_us() - t0);
+        collect_us = collect_us.min(stats.collect_us);
+        sort_us = sort_us.min(stats.sort_us);
+        draw_us = draw_us.min(stats.draw_us);
+    }
+
+    SceneResult { name: name.into(), collect_us, sort_us, draw_us, total_us, stats, hash: frame_hash(&buf) }
+}
+
+/// Run the full built-in matrix over the testkit fixture, asserting the overview scenes saturate
+/// (`features_dropped > 0`) — if they don't, the fixture isn't dense enough and the drop path went
+/// unexercised, so fail loudly rather than green-light a hollow benchmark.
+fn run_matrix() -> Vec<SceneResult> {
+    let map = obcm_testkit::build_bench_map();
+    let clock = StdClock(Instant::now());
+    SCENES
+        .iter()
+        .map(|&(name, mpp, heading)| {
+            let r = run_scene(&map, name, mpp, heading, &clock);
+            if name.starts_with("overview") {
+                assert!(
+                    r.stats.features_dropped > 0,
+                    "scene `{name}` must saturate the span buffer (features_dropped > 0); \
+                     the fixture isn't dense enough — grow obcm_testkit::build_bench_map"
+                );
+            }
+            r
+        })
+        .collect()
+}
+
+fn print_table(results: &[SceneResult]) {
+    println!(
+        "{:<13} {:>3} {:>10} {:>8} {:>9} {:>9}  {:>6} {:>6} {:>7}  {:>6} {:>9}  hash",
+        "scene", "lod", "collect", "sort", "draw", "total", "tried", "drawn", "dropped", "chunks", "hit/miss"
+    );
+    for r in results {
+        let s = &r.stats;
+        println!(
+            "{:<13} {:>3} {:>8}us {:>6}us {:>7}us {:>7}us  {:>6} {:>6} {:>7}  {:>6} {:>4}/{:<4}  0x{:016x}",
+            r.name,
+            s.lod,
+            r.collect_us,
+            r.sort_us,
+            r.draw_us,
+            r.total_us,
+            s.features_tried,
+            s.features_drawn,
+            s.features_dropped,
+            s.chunks_visited,
+            s.map_chunk_hits,
+            s.map_chunk_misses,
+            r.hash
+        );
+    }
+}
+
+/// Compare the run's hashes to the golden file (`name=0x<hex>` lines). Any mismatch, missing, or
+/// unknown scene prints both sides and fails the check.
+fn check_hashes(results: &[SceneResult], golden: &str) -> bool {
+    let mut ok = true;
+    let expected: std::collections::HashMap<&str, &str> =
+        golden.lines().filter_map(|l| l.trim().split_once('=')).collect();
+    for r in results {
+        let got = format!("0x{:016x}", r.hash);
+        match expected.get(r.name.as_str()) {
+            Some(&want) if want == got => {}
+            Some(&want) => {
+                eprintln!("HASH MISMATCH {}: golden {} != run {}", r.name, want, got);
+                ok = false;
+            }
+            None => {
+                eprintln!("HASH MISSING {}: no golden entry (run {})", r.name, got);
+                ok = false;
+            }
+        }
+    }
+    ok
+}
+
+fn hash_lines(results: &[SceneResult]) -> String {
+    results.iter().map(|r| format!("{}=0x{:016x}\n", r.name, r.hash)).collect()
+}
+
+/// What the hand-parsed CLI asked for. No CLI framework — five flags, parsed by hand.
+enum Mode {
+    Table,
+    WriteHashes(String),
+    Check(String),
+    Custom { map: String, mpp: f32, heading: f32 },
+}
+
+fn parse_args() -> Result<Mode, String> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let (mut write, mut check, mut map) = (None, None, None);
+    let (mut mpp, mut heading) = (4.0f32, 0.0f32);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let mut val = |flag: &str| it.next().cloned().ok_or(format!("{flag} needs a value"));
+        match a.as_str() {
+            "--write-hashes" => write = Some(val("--write-hashes")?),
+            "--check" => check = Some(val("--check")?),
+            "--map" => map = Some(val("--map")?),
+            "--mpp" => mpp = val("--mpp")?.parse().map_err(|e| format!("--mpp: {e}"))?,
+            "--heading" => heading = val("--heading")?.parse().map_err(|e| format!("--heading: {e}"))?,
+            other => return Err(format!("unknown argument `{other}`")),
+        }
+    }
+    Ok(match (write, check, map) {
+        (Some(f), None, None) => Mode::WriteHashes(f),
+        (None, Some(f), None) => Mode::Check(f),
+        (None, None, Some(map)) => Mode::Custom { map, mpp, heading },
+        (None, None, None) => Mode::Table,
+        _ => return Err("pick one of --write-hashes / --check / --map".into()),
+    })
+}
+
+fn main() -> ExitCode {
+    let mode = match parse_args() {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("obc-bench: {e}");
+            eprintln!(
+                "usage: obc-bench [--write-hashes <file> | --check <file> | --map <path> [--mpp <f>] [--heading <deg>]]"
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+
+    match mode {
+        Mode::Table => print_table(&run_matrix()),
+        Mode::WriteHashes(path) => {
+            let results = run_matrix();
+            print_table(&results);
+            if let Err(e) = std::fs::write(&path, hash_lines(&results)) {
+                eprintln!("obc-bench: writing {path}: {e}");
+                return ExitCode::FAILURE;
+            }
+            println!("wrote {path}");
+        }
+        Mode::Check(path) => {
+            let golden = match std::fs::read_to_string(&path) {
+                Ok(g) => g,
+                Err(e) => {
+                    eprintln!("obc-bench: reading {path}: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let results = run_matrix();
+            print_table(&results);
+            if !check_hashes(&results, &golden) {
+                eprintln!("frame hashes drifted from {path} — intentional rendering change? regenerate with --write-hashes and commit it in the same PR");
+                return ExitCode::FAILURE;
+            }
+            println!("all {} frame hashes match {path}", results.len());
+        }
+        // Manual escape hatch: one scene over a real local `.obcm`. No hash bookkeeping, no
+        // saturation assert — real maps aren't fixtures.
+        Mode::Custom { map, mpp, heading } => {
+            let bytes = match std::fs::read(&map) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("obc-bench: reading {map}: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let clock = StdClock(Instant::now());
+            print_table(&[run_scene(&bytes, "custom", mpp, heading, &clock)]);
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The fixture generator is byte-deterministic — the foundation the committed hashes stand on.
+    #[test]
+    fn bench_map_bytes_are_deterministic() {
+        assert_eq!(obcm_testkit::build_bench_map(), obcm_testkit::build_bench_map());
+    }
+
+    /// A full-map overview view must push past `MAX_SPANS` so the priority-drop path is exercised —
+    /// through the real render, exactly as the runtime assert in `run_matrix` demands.
+    #[test]
+    fn overview_scene_saturates_span_buffer() {
+        let map = obcm_testkit::build_bench_map();
+        let clock = StdClock(Instant::now());
+        let r = run_scene(&map, "overview", 30.0, 0.0, &clock);
+        assert!(r.stats.features_tried > obc_render::MAX_SPANS, "fixture density under MAX_SPANS");
+        assert!(r.stats.features_dropped > 0, "overview must overflow the span buffer");
+    }
+
+    /// The riding scenes must land on the fine LOD and the overview on the coarse one, or the
+    /// matrix isn't exercising `select_lod_for_mpp`'s switch.
+    #[test]
+    fn scene_matrix_switches_lod() {
+        let map = obcm_testkit::build_bench_map();
+        let clock = StdClock(Instant::now());
+        let riding = run_scene(&map, "riding", 0.5, 0.0, &clock);
+        let overview = run_scene(&map, "overview", 30.0, 0.0, &clock);
+        assert_eq!(riding.stats.lod, 1, "riding must select the fine LOD");
+        assert_eq!(overview.stats.lod, 0, "overview must select the coarse LOD");
+        assert!(riding.stats.features_drawn > 0, "riding scene must draw features");
+    }
+
+    /// Two renders of the same scene hash identically — the tripwire's own repeatability.
+    #[test]
+    fn frame_hash_is_repeatable() {
+        let map = obcm_testkit::build_bench_map();
+        let clock = StdClock(Instant::now());
+        let a = run_scene(&map, "mid-rot", 4.0, 35.0, &clock);
+        let b = run_scene(&map, "mid-rot", 4.0, 35.0, &clock);
+        assert_eq!(a.hash, b.hash);
+    }
+}
