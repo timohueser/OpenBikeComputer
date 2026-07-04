@@ -377,10 +377,10 @@ private struct HardFailingDownloadTransport: DeviceTransport {
     func deviceInfo() async throws -> DeviceInfo { try await base.deviceInfo() }
     func readConfig() async throws -> DeviceConfig { try await base.readConfig() }
     func writeConfig(_ config: DeviceConfig) async throws { try await base.writeConfig(config) }
-    func listRoutes() async throws -> [RouteSummary] { try await base.listRoutes() }
-    func routeDetail(_ id: RouteID) async throws -> RouteDetail { try await base.routeDetail(id) }
+    func listRoutes() async throws -> [RouteCatalogEntry] { try await base.listRoutes() }
+    func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail { try await base.routeDetail(id) }
     func uploadRoute(_ route: RouteBlob) -> TransferHandle { base.uploadRoute(route) }
-    func deleteRoute(_ id: RouteID) async throws { try await base.deleteRoute(id) }
+    func deleteRoute(_ id: DeviceObjectID) async throws { try await base.deleteRoute(id) }
     func listRides() async throws -> [RideSummary] { try await base.listRides() }
     func rideDetail(_ id: RideID) async throws -> RideDetail { try await base.rideDetail(id) }
     func readDiagnostics() async throws -> Data { try await base.readDiagnostics() }

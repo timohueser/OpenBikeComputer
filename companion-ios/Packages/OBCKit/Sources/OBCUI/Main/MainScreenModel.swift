@@ -16,7 +16,7 @@ import OBCTransport
 ///
 /// **Both lists are library-first (#289, extended to rides in #296):**
 /// - **Planned routes** show exactly the phone's saved routes; `listRoutes()`
-///   (the device catalog, device-namespace ids) is consulted *only* to reconcile
+///   (the device catalog, keyed by device object ids) is consulted *only* to reconcile
 ///   each record's `deviceObjectID` — lighting and clearing the C1 "on device"
 ///   badge — never to add rows. A route that exists only on the device (another
 ///   phone's upload, a side-loaded file) isn't the app's to manage and never
@@ -262,12 +262,12 @@ public final class MainScreenModel {
     }
 
     /// True-up every record's `deviceObjectID` against the device's live catalog
-    /// (device-namespace ids): a copy deleted out from under us (another phone,
+    /// (device object ids): a copy deleted out from under us (another phone,
     /// the EchoHarness) clears the badge; a record whose id is still listed keeps
     /// it. Ids are durable across device reboots (spec §4.1), so absence really
     /// means "gone", not "renumbered".
-    private func reconcileOnDevice(with deviceRoutes: [RouteSummary]) {
-        let listed = Set(deviceRoutes.compactMap { UInt16($0.id.rawValue) })
+    private func reconcileOnDevice(with deviceRoutes: [RouteCatalogEntry]) {
+        let listed = Set(deviceRoutes.map(\.id))
         for (id, var record) in plannedRecords {
             guard let objectID = record.deviceObjectID, !listed.contains(objectID) else { continue }
             record.deviceObjectID = nil
@@ -410,7 +410,7 @@ public final class MainScreenModel {
 
     /// The device object id this planned route is stored under, if any — threaded
     /// into a re-upload so it replaces that object instead of duplicating.
-    public func plannedDeviceObjectID(for id: RouteID) -> UInt16? {
+    public func plannedDeviceObjectID(for id: RouteID) -> DeviceObjectID? {
         plannedRecords[id]?.deviceObjectID
     }
 
@@ -430,7 +430,7 @@ public final class MainScreenModel {
     /// durable "on device" link) so the C1 badge lights and a later re-upload
     /// replaces that object. Idempotent; a new id (re-upload after a device-side
     /// change) overwrites the old.
-    public func markRouteUploaded(_ id: RouteID, objectID: UInt16, crc32: UInt32) {
+    public func markRouteUploaded(_ id: RouteID, objectID: DeviceObjectID, crc32: UInt32) {
         guard var record = plannedRecords[id] else { return }
         record.deviceObjectID = objectID
         record.uploadedCRC32 = crc32

@@ -37,7 +37,7 @@ final class MockTransportTests: XCTestCase {
         // never the whole library.
         let transport = MockTransport(control: fastControl())
         let routes = try await transport.listRoutes()
-        XCTAssertEqual(Set(routes.map(\.id.rawValue)), ["7", "12"])
+        XCTAssertEqual(Set(routes.map(\.id)), [DeviceObjectID(7), DeviceObjectID(12)])
         XCTAssertTrue(routes.contains { $0.name == "Kettle Moraine Loop" })
 
         let rides = try await transport.listRides()
