@@ -265,6 +265,9 @@ pub struct MapTables {
     lods: Vec<Lod, 16>,
     /// Styles indexed by id (0..=255) for O(1) lookup during rendering.
     styles: [Option<Style>; 256],
+    /// The backdrop style (bottom of the paint order; see [`Reader::backdrop_style`]), resolved
+    /// once at parse so the per-frame lookup is a field read, not a 256-slot scan.
+    backdrop: Option<Style>,
 }
 
 impl MapTables {
@@ -304,7 +307,10 @@ impl MapTables {
 
         let styles = parse_styles(src, style_offset, total);
         let lods = parse_lod_table(src, lod_table_offset, lod_count, total)?;
-        Ok(MapTables { version, bbox, marker_color, lods, styles })
+        // Resolve the backdrop (lowest `z_index`, ties broken by lowest id) once here; the table is
+        // immutable after parse, so `Reader::backdrop_style` never has to re-scan the 256 slots.
+        let backdrop = styles.iter().filter_map(|s| s.as_ref()).min_by_key(|s| (s.z_index, s.id)).copied();
+        Ok(MapTables { version, bbox, marker_color, lods, styles, backdrop })
     }
 }
 
@@ -359,9 +365,10 @@ impl<'a> Reader<'a> {
     /// The backdrop style: the one at the bottom of the paint order (lowest
     /// `z_index`, ties broken by lowest id). By convention the map's sea/
     /// background style sits here, so its color fills the screen before any
-    /// geometry is drawn. Returns `None` only for an empty style table.
+    /// geometry is drawn. Resolved once in [`MapTables::parse`]; returns `None`
+    /// only for an empty style table.
     pub fn backdrop_style(&self) -> Option<&Style> {
-        self.tables.styles.iter().filter_map(|s| s.as_ref()).min_by_key(|s| (s.z_index, s.id))
+        self.tables.backdrop.as_ref()
     }
 
     /// Pick the finest LOD whose range still covers `mpp` (meters/pixel). The
@@ -651,18 +658,21 @@ fn for_each_hole(chunk: &[u8], mut off: usize, mut ring: impl FnMut(&[u8], usize
 /// Advance `off` past one ring's encoded deltas without decoding, mirroring [`read_ring`]'s offset
 /// arithmetic exactly so skip and decode stay byte-aligned. `is_hole` selects the hole encoding
 /// (every point a delta) vs the exterior encoding (first point is the anchor, not stored).
-fn skip_ring(chunk: &[u8], mut off: usize, pt_count: usize, is_hole: bool, dsize: usize) -> usize {
+fn skip_ring(chunk: &[u8], off: usize, pt_count: usize, is_hole: bool, dsize: usize) -> usize {
     if pt_count == 0 {
         return off;
     }
     let num_deltas = if is_hole { pt_count } else { pt_count - 1 };
-    for _ in 0..num_deltas {
-        if off + dsize * 2 > chunk.len() {
-            break;
-        }
-        off += dsize * 2;
+    let step = dsize * 2;
+    // Common case: the whole ring fits in the chunk — one multiply, no division.
+    let want = num_deltas * step;
+    let remain = chunk.len().saturating_sub(off);
+    if want <= remain {
+        return off + want;
     }
-    off
+    // Truncated ring: advance by whole delta steps only — mirrors the old loop's
+    // `off + step > len ⇒ break`, so skip and decode stay byte-for-byte aligned.
+    off + (remain / step) * step
 }
 
 #[allow(clippy::too_many_arguments)]

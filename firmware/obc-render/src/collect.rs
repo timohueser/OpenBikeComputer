@@ -44,6 +44,16 @@ impl FrameScratch {
     /// Streams the viewport's leaves via [`Reader::for_each_chunk`] (no chunk cap) and decodes only
     /// this level's features. The leaf walk reads only the index, so the per-level re-walk is cheap.
     fn collect_level(&mut self, reader: &Reader, lod: usize, level: u8, view: &BBox, stats: &mut RenderStats) {
+        // 256-bit style mask for this pass: bit set ⇔ the style exists at priority `level`. Built
+        // once per pass (256 cheap tests) so the per-feature `should_decode` is a single bit test
+        // instead of a style-table lookup + compare; the accepted path keeps its one `style()`
+        // lookup for the color/weight/z fields.
+        let mut level_mask = [0u32; 8];
+        for id in 0..=255u8 {
+            if reader.style(id).is_some_and(|s| s.priority == level) {
+                level_mask[(id >> 5) as usize] |= 1 << (id & 31);
+            }
+        }
         // Split the borrow so the decode callback can fill `frame_*`/`spans` while
         // `for_each_feature_filtered` borrows the decode scratch.
         let FrameScratch { dec_points, dec_ring_lens, frame_points, frame_ring_lens, spans } = self;
@@ -56,7 +66,7 @@ impl FrameScratch {
                 &node,
                 dec_points,
                 dec_ring_lens,
-                |sid| reader.style(sid).is_some_and(|s| s.priority == level),
+                |sid| level_mask[(sid >> 5) as usize] & (1 << (sid & 31)) != 0,
                 |f| {
                     let style = match reader.style(f.style_id) {
                         Some(s) => s,

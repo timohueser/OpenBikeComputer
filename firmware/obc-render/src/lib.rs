@@ -28,7 +28,7 @@ mod viewport;
 pub use canvas::{rect, Canvas};
 pub use surface::Surface;
 pub use text::{draw_text, text_width, Font, TextAlign};
-pub use viewport::{mpp_for_zoom, zoom_for_mpp, Viewport};
+pub use viewport::{mpp_for_zoom, round_coord, zoom_for_mpp, Viewport};
 
 use collect::{FrameScratch, Span};
 use fill::fill_polygon_proj;
