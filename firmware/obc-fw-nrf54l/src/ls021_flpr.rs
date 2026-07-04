@@ -139,6 +139,23 @@ const CONTROL: *mut Control = CONTROL_ADDR as *mut Control;
 const VPR00_INITPC: *mut u32 = 0x5004_C808 as *mut u32; // initial PC at core start
 const VPR00_CPURUN: *mut u32 = 0x5004_C800 as *mut u32; // CPURUN.EN bit0 = run
 
+// ── VPR00 RISC-V Debug Module (`DEBUGIF`, VPR00 + 0x400) — the **force-stop** lever a wedged FLPR
+// needs (#349). `CPURUN.EN = 0` does *not* stop a running VPR core — it only parks one that
+// reaches a WFI, which neither the scan blob's poll loop nor a hung/corrupted core ever executes
+// (verified on glass: with `EN` cleared mid-run the blob kept servicing frames). The DM's
+// `haltreq` halts the hart at the next instruction boundary regardless of what it is running, and
+// `ndmreset` then resets it — so the relaunch can rebuild the blob under a genuinely stopped
+// core. Standard RISC-V DM v0.13 register layout. ──
+const VPR00_DMCONTROL: *mut u32 = 0x5004_C440 as *mut u32;
+const VPR00_DMSTATUS: *mut u32 = 0x5004_C444 as *mut u32;
+const DM_DMACTIVE: u32 = 1 << 0; // DMCONTROL: debug module enable (its own reset, active low-ish: 0 = DM reset)
+const DM_NDMRESET: u32 = 1 << 1; // DMCONTROL: reset line to everything but the DM (the hart)
+const DM_HALTREQ: u32 = 1 << 31; // DMCONTROL: halt the selected hart at the next instruction boundary
+const DMSTATUS_ALLHALTED: u32 = 1 << 9; // DMSTATUS: the hart acknowledged the halt
+/// How long a haltreq gets before the relaunch stops waiting and just fires `ndmreset` — the
+/// halt is a courtesy (a clean instruction boundary), the reset is the actual guarantee.
+const HALT_DEADLINE: Duration = Duration::from_millis(10);
+
 // ── Frame geometry. The framebuffer is the seam's `display::FRAME_W × FRAME_H` frame; the wire-word
 //    counts (`WIDTH` 240, `BCK_PER_SUBLINE` 124, `ROW_WORDS` 248) come from `obc_platform::ls021_wire`.
 //    The static asserts pin the seam geometry to the protocol constants it must equal, so the frame the
@@ -191,6 +208,12 @@ unsafe fn EGU20() {
 /// caller retries (and #349's relaunch escalation hooks).
 const FRAME_DEADLINE: Duration = Duration::from_millis(250);
 
+/// Deadline for the boot/relaunch `ALIVE` stamp: the FLPR stamps within a few of its 5 ms poll
+/// periods normally, so a full second only ever expires when the core genuinely didn't come up
+/// (no boot, or shared RAM unreachable). `Instant`-based like every other display-path wait (#349
+/// — no iteration-count spins left).
+const ALIVE_DEADLINE: Duration = Duration::from_millis(1000);
+
 /// Why [`launch_flpr`] gave up — surfaced to the caller so a panel that can't come up degrades to a
 /// heartbeat idle rather than driving an un-launched FLPR (the same "never fault on bad hardware"
 /// contract the SD/map path keeps).
@@ -228,12 +251,14 @@ pub async fn launch_flpr() -> Result<(), FlprError> {
     start_flpr();
     info!("LS021 FLPR: released (INITPC=0x{=u32:08x}) — waiting for alive", FLPR_RAM_BASE as u32);
 
-    for _ in 0..200 {
+    let deadline = Instant::now() + ALIVE_DEADLINE;
+    loop {
         match unsafe { addr_of!((*CONTROL).status).read_volatile() } {
             FLPR_ALIVE => {
                 // Arm the frame-ack doorbell (#347): EGU20 TRIGGERED[0] → its IRQ → [`FRAME_ACK`].
                 // P1 = the default peripheral lane (below the P0 GRTC time-driver; the ISR is one
-                // store + a signal). Armed before the first push so no ack is ever missed.
+                // store + a signal). Armed before the first push so no ack is ever missed. On a
+                // relaunch this re-runs — every step is idempotent (INTENSET is a set-mask write).
                 unsafe {
                     EGU20_INTENSET.write_volatile(1); // bit0 = TRIGGERED[0]
                     interrupt::EGU20.set_priority(Priority::P1);
@@ -242,10 +267,58 @@ pub async fn launch_flpr() -> Result<(), FlprError> {
                 return Ok(());
             }
             FLPR_BADMAG => return Err(FlprError::BadMagic),
+            _ if Instant::now() >= deadline => return Err(FlprError::NoBoot),
             _ => Timer::after_millis(5).await,
         }
     }
-    Err(FlprError::NoBoot)
+}
+
+/// **Full FLPR relaunch** — the recovery step #349's escalation runs on a wedged coprocessor:
+/// force-halt the hart through its Debug Module, hold it in `ndmreset`, then rerun the entire
+/// [`launch_flpr`] bring-up — re-copy the blob (a hung FLPR may have been executing corrupted
+/// instructions), zero + re-arm the control block, release the core, and await a fresh `ALIVE`.
+///
+/// The DM dance exists because **`CPURUN.EN = 0` cannot stop a wedged core** — it only parks one
+/// that executes a WFI, which the busy-polling scan blob (and any hung variant of it) never does
+/// (verified on glass). `haltreq` stops the hart wherever it is; `ndmreset` then resets it, so
+/// the blob re-copy never races live execution. The halt wait is deadline-bounded and advisory —
+/// if even the DM can't halt the hart, the reset is still the guarantee.
+///
+/// **COM is unaffected either way — the panel stays DC-bias-safe through a dead FLPR and through
+/// this relaunch.** COM never ran on the FLPR: the M33 `com_task` (or the `com-hw` TIMER+DPPI+GPIOTE
+/// generator) free-runs on its own plane, and the M33 keeps every gate/source GPIO configured
+/// (`MapDisplay::_gate_bus`/`_src_bus`), so the glass just holds its last image while the FLPR is
+/// down. That property is load-bearing — keep COM out of the FLPR whatever else moves there.
+///
+/// After an `Ok(())` the caller must force a **full repaint** (`reset_diff()` + a whole-frame
+/// present): the fresh FLPR has no history, and rows the diff store thinks are on glass may have
+/// missed it while the old FLPR was wedged. The M33-side `Ls021Flpr::seq` deliberately keeps
+/// counting across the relaunch — the blob services any `m33_seq` different from the last one it
+/// saw (zeroed to 0 here), so a stale-ack/fresh-ack mixup is impossible.
+pub async fn relaunch_flpr() -> Result<(), FlprError> {
+    // 1. Force-halt via the DM (works mid-busy-loop, unlike CPURUN), then bounded-wait for the ack.
+    unsafe {
+        VPR00_DMCONTROL.write_volatile(DM_DMACTIVE); // wake the DM first (its fields gate on dmactive)
+        VPR00_DMCONTROL.write_volatile(DM_DMACTIVE | DM_HALTREQ);
+    }
+    let deadline = Instant::now() + HALT_DEADLINE;
+    while unsafe { VPR00_DMSTATUS.read_volatile() } & DMSTATUS_ALLHALTED == 0 {
+        if Instant::now() >= deadline {
+            debug!("LS021 FLPR: relaunch — hart ignored haltreq; proceeding to ndmreset");
+            break; // the reset below is the real guarantee
+        }
+        Timer::after_micros(100).await;
+    }
+    // 2. Park the start gate, then pulse the hart reset while it's down — the blob re-copy in
+    //    `launch_flpr` must never race a live core.
+    unsafe {
+        VPR00_CPURUN.write_volatile(0); // the reset release must not restart stale code
+        VPR00_DMCONTROL.write_volatile(DM_DMACTIVE | DM_NDMRESET);
+        cortex_m::asm::dsb();
+        VPR00_DMCONTROL.write_volatile(DM_DMACTIVE); // release the hart reset (still parked: CPURUN=0)
+        VPR00_DMCONTROL.write_volatile(0); // DM back off — leave the block as boot found it
+    }
+    launch_flpr().await
 }
 
 /// Start a frame: write `cmd = CMD_RUN_FRAME`, **then** a `dsb`, **then** bump `m33_seq` (the
