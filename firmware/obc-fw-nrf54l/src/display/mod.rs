@@ -26,12 +26,16 @@
 //! a live overlay's rows via its `exclude` parameter so a map redraw never blanks the bulge) and
 //! `present_overlay` (a dirty region with the overlay drawn on top).
 //!
-//! ## Sync, blocking
+//! ## Async present
 //!
-//! Both backends present **synchronously** (ST7789 blocks on the SPI-DMA write, the FLPR busy-polls
-//! its coprocessor), so the seam is plain `&mut self` methods returning `bool` (`false` = a transport
-//! fault the caller may retry) — no async-in-trait. The two-plane concurrency (which executor drives
-//! each path, the bus mutex) lives in `main.rs`, *outside* the seam.
+//! The write paths are **async** (`false` = a transport fault the caller may retry): the FLPR
+//! backend `await`s its coprocessor's EGU20 frame ack (issue #347 — the M33 is freed for the whole
+//! ~97 ms scan; a deadline turns a stalled FLPR into a clean `false`), while the ST7789 backend
+//! completes synchronously inside the async fn (it blocks on the SPI-DMA write, the panel's only
+//! mode). Both async methods carry `where Self: Sized`, so the trait stays object-safe for the one
+//! thing the render path needs through `&mut dyn DisplayDriver` — [`fb_mut`](DisplayDriver::fb_mut);
+//! presents are always called on the concrete backend. The two-plane concurrency (which executor
+//! drives each path, the bus mutex) lives in `main.rs`, *outside* the seam.
 
 use obc_platform::Band;
 
@@ -71,6 +75,7 @@ pub struct OverlayRegion {
 /// The board's swappable display backend — see the module docs. The map plane renders the frame into
 /// [`fb_mut`](Self::fb_mut), then [`present`](Self::present)s it; the overlay plane re-pushes a dirty
 /// region with the bulge composited via [`present_overlay`](Self::present_overlay).
+#[allow(async_fn_in_trait)] // board-local seam, single-core executors — no Send bound wanted
 pub trait DisplayDriver {
     /// The resident **RGB222 / device-64** framebuffer (`WIDTH × HEIGHT` bytes, `0b00_RR_GG_BB`) the
     /// renderer draws the whole frame into through an [`FbDevice64`](obc_platform::FbDevice64), then
@@ -84,15 +89,20 @@ pub trait DisplayDriver {
     /// but they are **not** pushed; the overlay's own re-present / trailing clear owns repainting
     /// them (≤ one overlay tick away). `None` ⇒ the whole frame is eligible. Returns `false` on a
     /// transport fault (a stalled FLPR, an SPI error) so the caller keeps the last frame and
-    /// retries, rather than faulting.
-    fn present(&mut self, exclude: Option<(u16, u16)>) -> bool;
+    /// retries, rather than faulting. Async: the FLPR awaits its frame ack (the M33 runs other
+    /// futures for the whole scan); the framebuffer must not be written until it returns.
+    async fn present(&mut self, exclude: Option<(u16, u16)>) -> bool
+    where
+        Self: Sized;
 
     /// Re-present `region` with `draw_overlay` composited over the **clean framebuffer backdrop** — no
     /// map re-render. `draw_overlay` paints the transient chrome (the hold bulge)
     /// frame-absolute into the [`Band`] window the driver hands it, over the backdrop the driver reads
     /// from the framebuffer. The driver calls `draw_overlay` **once** (over the whole region) — never
     /// per row — so the caller's brief `InputPlane` lock inside it is taken once per overlay frame, and
-    /// the framebuffer stays the clean map (the overlay is never written into it). Returns `false` on a
-    /// transport fault.
-    fn present_overlay(&mut self, region: OverlayRegion, draw_overlay: &mut dyn FnMut(&mut Band)) -> bool;
+    /// the framebuffer stays the clean map (the FLPR backend composites into it transiently for the
+    /// push and restores the clean bytes before returning). Returns `false` on a transport fault.
+    async fn present_overlay(&mut self, region: OverlayRegion, draw_overlay: &mut dyn FnMut(&mut Band)) -> bool
+    where
+        Self: Sized;
 }
