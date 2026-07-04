@@ -21,7 +21,7 @@
 //! constant both cores and both linker scripts must agree on — the shared addresses, the layout
 //! magic / status stamps, the command codes, the span cap — lives once in [`contract`] below and is
 //! *emitted* into `$OUT_DIR` as `flpr_contract.rs` (include!'d by `ls021_flpr.rs`),
-//! `flpr_contract.h` (included by `src/flpr/flpr_pingpong.c`), the carved `memory.x`, and the
+//! `flpr_contract.h` (included by `src/flpr/flpr_scan.c`), the carved `memory.x`, and the
 //! FLPR's generated `flpr.ld` — so a one-sided edit is impossible by construction.
 use std::env;
 use std::fs;
@@ -30,7 +30,7 @@ use std::process::Command;
 
 /// **The M33↔FLPR cross-core contract — the single definition site** (issue #346). Everything here
 /// is emitted into the generated Rust/C/linker artifacts; nothing below may be redefined by hand in
-/// `ls021_flpr.rs`, `flpr_pingpong.c`, or a linker script. The *struct layout* (the 124-byte
+/// `ls021_flpr.rs`, `flpr_scan.c`, or a linker script. The *struct layout* (the 96-byte
 /// control block) stays hand-mirrored in the `.rs`/`.c` (guarded by the twin size asserts + the
 /// boot magic); with the span cap single-sourced here the two sides can no longer disagree on the
 /// array length.
@@ -46,13 +46,12 @@ mod contract {
     /// The SHARED handshake page base = the control block's address (both cores reach it by this
     /// hardcoded address, never via a linker) = the top of the FLPR's stack.
     pub const CONTROL_ADDR: usize = 0x2003_F000;
-    /// The two ping-pong row buffers live above the control block at `CONTROL_ADDR + 0x100`
-    /// (`ls021_flpr.rs` asserts the control block stays below this).
-    pub const WRITE_BUF_BASE: usize = CONTROL_ADDR + 0x100;
     /// Dirty-row span-list cap — the `spans[]` length on **both** sides of the contract.
     pub const MAX_DIRTY_SPANS: usize = 16;
-    /// Control-block layout/version tag ("F1 control block") — the FLPR refuses to act otherwise.
-    pub const LAYOUT_MAGIC: u32 = 0xF1C0_0001;
+    /// Control-block layout/version tag — the FLPR refuses to act otherwise. **v2** (issue #347):
+    /// the ping-pong `buf[2]` descriptors left the block; `fb_addr` (the resident framebuffer the
+    /// FLPR scans directly) took their place.
+    pub const LAYOUT_MAGIC: u32 = 0xF1C0_0002;
     /// FLPR boot confirmation stamp.
     pub const FLPR_ALIVE: u32 = 0x0000_A11E;
     /// FLPR booted but saw the wrong magic (memory-map drift).
@@ -158,7 +157,7 @@ fn emit_fw_git() {
 
 /// Emit the [`contract`] into `$OUT_DIR` for both languages: `flpr_contract.rs` (include!'d at the
 /// top of `ls021_flpr.rs`'s memory-map section) and `flpr_contract.h` (included by
-/// `src/flpr/flpr_pingpong.c` via the `-I $OUT_DIR` the blob compile passes). Emitted on every
+/// `src/flpr/flpr_scan.c` via the `-I $OUT_DIR` the blob compile passes). Emitted on every
 /// build shape (the `.rs` costs nothing on `tft`, where the module that includes it isn't compiled).
 fn emit_flpr_contract(out: &Path) {
     use contract::*;
@@ -168,7 +167,6 @@ fn emit_flpr_contract(out: &Path) {
 // cross-core contract (issue #346). DO NOT EDIT; change build.rs instead.
 const FLPR_RAM_BASE: usize = {FLPR_RAM_BASE:#010X};
 const CONTROL_ADDR: usize = {CONTROL_ADDR:#010X};
-const WRITE_BUF_BASE: usize = {WRITE_BUF_BASE:#010X};
 const MAX_DIRTY_SPANS: usize = {MAX_DIRTY_SPANS};
 const LAYOUT_MAGIC: u32 = {LAYOUT_MAGIC:#010X};
 const FLPR_ALIVE: u32 = {FLPR_ALIVE:#010X};
@@ -245,7 +243,7 @@ SECTIONS
     )
 }
 
-/// Cross-compile `src/flpr/{start.S,flpr_pingpong.c}` against the generated `flpr.ld` into a raw
+/// Cross-compile `src/flpr/{start.S,flpr_scan.c}` against the generated `flpr.ld` into a raw
 /// `$OUT_DIR/flpr.bin` the M33 embeds. Freestanding (`-nostdlib -nostartfiles`, integer ops only)
 /// so the RV32E core needs no libgcc/newlib multilib — any `rv32emc`-capable GNU gcc works
 /// (`brew install riscv64-elf-gcc`, the xPack `riscv-none-elf-gcc`, etc.). `-I $OUT_DIR` puts the
@@ -253,7 +251,7 @@ SECTIONS
 fn build_flpr_blob(manifest: &Path, out: &Path) {
     let flpr_dir = manifest.join("src/flpr");
     let start_s = flpr_dir.join("start.S");
-    let blob_c = flpr_dir.join("flpr_pingpong.c");
+    let blob_c = flpr_dir.join("flpr_scan.c");
     for f in [&start_s, &blob_c] {
         println!("cargo:rerun-if-changed={}", f.display());
     }
