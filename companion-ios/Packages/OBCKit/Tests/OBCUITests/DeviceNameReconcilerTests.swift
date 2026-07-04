@@ -154,12 +154,12 @@ final class ConfigSpyTransport: DeviceTransport, @unchecked Sendable {
     func deviceInfo() async throws -> DeviceInfo {
         DeviceInfo(name: config.name, firmwareVersion: "0.0.0")
     }
-    func listRoutes() async throws -> [RouteSummary] { [] }
-    func routeDetail(_ id: RouteID) async throws -> RouteDetail { throw DeviceError.readFailed }
+    func listRoutes() async throws -> [RouteCatalogEntry] { [] }
+    func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail { throw DeviceError.readFailed }
     func uploadRoute(_ route: RouteBlob) -> TransferHandle {
         .immediatelyFinished(.failed(.notConnected))
     }
-    func deleteRoute(_ id: RouteID) async throws {}
+    func deleteRoute(_ id: DeviceObjectID) async throws {}
     func listRides() async throws -> [RideSummary] { [] }
     func rideDetail(_ id: RideID) async throws -> RideDetail { throw DeviceError.readFailed }
     func downloadRides(_ ids: [RideID]) -> RideDownload { .finished() }

@@ -456,10 +456,10 @@ final class MainScreenModelTests: XCTestCase {
 
         // What the upload sheet's onCompleted does with the device-assigned id
         // + the committed payload's fingerprint.
-        model.markRouteUploaded(record.id, objectID: 7, crc32: RouteObjectCodec.payloadCRC(for: record))
+        model.markRouteUploaded(record.id, objectID: DeviceObjectID(7), crc32: RouteObjectCodec.payloadCRC(for: record))
         XCTAssertTrue(model.isUploaded(record.id))
         XCTAssertEqual(model.onDeviceState(record.id), .upToDate)
-        XCTAssertEqual(model.plannedDeviceObjectID(for: record.id), 7)
+        XCTAssertEqual(model.plannedDeviceObjectID(for: record.id), DeviceObjectID(7))
 
         model.deleteRoute(record.id)
         XCTAssertFalse(model.isUploaded(record.id), "deleting clears the badge")
@@ -474,17 +474,17 @@ final class MainScreenModelTests: XCTestCase {
         await startLoaded(model)
         let record = importedRecord()
         model.addImportedRoute(record)
-        model.markRouteUploaded(record.id, objectID: 7, crc32: RouteObjectCodec.payloadCRC(for: record))
+        model.markRouteUploaded(record.id, objectID: DeviceObjectID(7), crc32: RouteObjectCodec.payloadCRC(for: record))
         XCTAssertEqual(model.onDeviceState(record.id), .upToDate)
 
         model.renameRoute(record.id, to: "Schwarzwald Tour (final)")
         XCTAssertEqual(model.onDeviceState(record.id), .outdated, "the name rides in the payload")
-        XCTAssertEqual(model.plannedDeviceObjectID(for: record.id), 7, "the device link survives the rename")
+        XCTAssertEqual(model.plannedDeviceObjectID(for: record.id), DeviceObjectID(7), "the device link survives the rename")
 
         // The next upload commits the renamed payload — current again.
         var renamed = record
         renamed.summary.name = "Schwarzwald Tour (final)"
-        model.markRouteUploaded(record.id, objectID: 7, crc32: RouteObjectCodec.payloadCRC(for: renamed))
+        model.markRouteUploaded(record.id, objectID: DeviceObjectID(7), crc32: RouteObjectCodec.payloadCRC(for: renamed))
         XCTAssertEqual(model.onDeviceState(record.id), .upToDate)
     }
 
@@ -495,7 +495,7 @@ final class MainScreenModelTests: XCTestCase {
     func testUnknownFingerprintReadsAsOutdated() async {
         let library = InMemoryLibraryStore()
         var record = importedRecord()
-        record.deviceObjectID = 7
+        record.deviceObjectID = DeviceObjectID(7)
         library.savePlannedRoute(record)
 
         let (model, _) = makeModel(.happyPath, library: library)
@@ -515,13 +515,13 @@ final class MainScreenModelTests: XCTestCase {
     func testSeededUploadedRouteKeepsItsBadgeWhenTheDeviceStillHoldsIt() async {
         let library = InMemoryLibraryStore()
         var record = importedRecord()
-        record.deviceObjectID = 7   // the default fixture device holds object 7
+        record.deviceObjectID = DeviceObjectID(7)   // the default fixture device holds object 7
         library.savePlannedRoute(record)
 
         let (model, _) = makeModel(.happyPath, library: library)
         await startLoaded(model)
         XCTAssertTrue(model.isUploaded(record.id), "a route on the device keeps its badge across a relaunch")
-        XCTAssertEqual(model.plannedDeviceObjectID(for: record.id), 7)
+        XCTAssertEqual(model.plannedDeviceObjectID(for: record.id), DeviceObjectID(7))
     }
 
     /// #289's reconcile: a copy deleted out from under us (another phone, the
@@ -529,7 +529,7 @@ final class MainScreenModelTests: XCTestCase {
     func testReloadClearsTheBadgeWhenTheDeviceNoLongerHoldsTheRoute() async {
         let library = InMemoryLibraryStore()
         var record = importedRecord()
-        record.deviceObjectID = 999   // no fixture device object has this id
+        record.deviceObjectID = DeviceObjectID(999)   // no fixture device object has this id
         library.savePlannedRoute(record)
 
         let (model, _) = makeModel(.happyPath, library: library)
@@ -572,7 +572,7 @@ final class MainScreenModelTests: XCTestCase {
 
         // The device loses the copy (another phone / the EchoHarness deleted
         // object 7); nothing tells the model — the badge stays lit for now.
-        try? await MockTransport(control: control).deleteRoute(RouteID("7"))
+        try? await MockTransport(control: control).deleteRoute(DeviceObjectID(7))
         XCTAssertTrue(model.isUploaded(RouteID("kettle-moraine-loop")))
 
         control.connection = .outOfRange

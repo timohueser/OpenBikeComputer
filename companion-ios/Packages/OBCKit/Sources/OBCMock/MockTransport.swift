@@ -88,15 +88,15 @@ public struct MockTransport: DeviceTransport {
 
     // MARK: Data plane
 
-    public func listRoutes() async throws -> [RouteSummary] {
-        // The device's catalog under device-namespace ids — reconcile input for
+    public func listRoutes() async throws -> [RouteCatalogEntry] {
+        // The device's catalog under device object ids — reconcile input for
         // the "on device" badge, never list rows (the Planned list is
         // library-first, #289). Mirrors the real `routeList` download.
         try await preludeThrowing()
         return control.deviceRoutes()
     }
 
-    public func deleteRoute(_ id: RouteID) async throws {
+    public func deleteRoute(_ id: DeviceObjectID) async throws {
         try await preludeThrowing()
         control.removeRoute(id)
     }
@@ -106,8 +106,8 @@ public struct MockTransport: DeviceTransport {
         return control.fixtures.rides.map(\.summary)
     }
 
-    public func routeDetail(_ id: RouteID) async throws -> RouteDetail {
-        // Device-namespace id, exactly like the real transport ("download the
+    public func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail {
+        // A device object id, exactly like the real transport ("download the
         // route object"). Library-saved routes answer E2 from their own record
         // (`preloadedDetail`), not from here.
         try await preludeThrowing()

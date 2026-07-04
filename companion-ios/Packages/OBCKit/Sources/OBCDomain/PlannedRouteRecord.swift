@@ -20,7 +20,7 @@ public enum OnDeviceState: Equatable, Sendable {
     /// update self-heals it; calling it up-to-date would disable Upload with
     /// no way out.
     public static func determine(
-        deviceObjectID: UInt16?,
+        deviceObjectID: DeviceObjectID?,
         uploadedCRC32: UInt32?,
         currentCRC: () -> UInt32
     ) -> OnDeviceState {
@@ -51,7 +51,7 @@ public struct PlannedRouteRecord: Identifiable, Equatable, Sendable {
     /// match across the BLE boundary). `nil` until an upload commits (an
     /// H4 save-before-pairing import, or a route never pushed); a device-side
     /// delete clears it again at reconcile.
-    public var deviceObjectID: UInt16?
+    public var deviceObjectID: DeviceObjectID?
     /// The CRC-32 of the upload payload the device last **committed** — the
     /// fingerprint behind ``OnDeviceState``. Set alongside ``deviceObjectID``
     /// when an upload's result lands; `nil` when the copy's content is unknown
@@ -70,7 +70,7 @@ public struct PlannedRouteRecord: Identifiable, Equatable, Sendable {
         route: ImportedRoute,
         sourceFileName: String,
         sourceFileData: Data,
-        deviceObjectID: UInt16? = nil,
+        deviceObjectID: DeviceObjectID? = nil,
         uploadedCRC32: UInt32? = nil,
         addedAt: Date = Date()
     ) {

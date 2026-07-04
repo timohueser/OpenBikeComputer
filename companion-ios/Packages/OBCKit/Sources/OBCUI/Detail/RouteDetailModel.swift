@@ -78,7 +78,7 @@ public final class RouteDetailModel {
     /// moment an upload commits, `recordUploaded` pins the assigned id here, so
     /// pressing Upload again on the same screen replaces that object instead of
     /// creating another copy.
-    private var uploadTargetObjectID: UInt16?
+    private var uploadTargetObjectID: DeviceObjectID?
     /// The committed payload's CRC-32 (the `OnDeviceState` fingerprint) —
     /// threaded from the library record, refreshed by `recordUploaded`.
     private var uploadedCRC32: UInt32?
@@ -97,7 +97,7 @@ public final class RouteDetailModel {
 
     /// An upload committed under `objectID`: pin the id + fingerprint so the
     /// button flips to up-to-date and any further upload replaces in place.
-    public func recordUploaded(objectID: UInt16, crc32: UInt32) {
+    public func recordUploaded(objectID: DeviceObjectID, crc32: UInt32) {
         uploadTargetObjectID = objectID
         uploadedCRC32 = crc32
     }
@@ -130,7 +130,7 @@ public final class RouteDetailModel {
         dressing: Dressing,
         preloadedDetail: RouteDetail? = nil,
         plannedGeometry: ImportedRoute? = nil,
-        deviceObjectID: UInt16? = nil,
+        deviceObjectID: DeviceObjectID? = nil,
         uploadedCRC32: UInt32? = nil,
         importedRouteID: RouteID? = nil,
         // The tracked dressing's full tracklog (#294 follow-up), threaded from

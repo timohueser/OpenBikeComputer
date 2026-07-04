@@ -68,6 +68,9 @@ let package = Package(
             // OBCFormats so the route-encoder test can decode a real GPX export
             // through the production decoder and encode it to OBCR end to end.
             dependencies: ["OBCTransport", "OBCFormats"],
+            // Checked-in library files from older app versions (e.g. the v1
+            // planned-route JSON) — the persistence-compat pins.
+            resources: [.copy("Fixtures")],
             swiftSettings: strictConcurrency
         ),
         .testTarget(

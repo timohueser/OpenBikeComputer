@@ -33,8 +33,8 @@ public struct FixtureSet: Sendable {
 ///
 /// `deviceObjectID` marks the routes the device also holds a copy of: they show
 /// the C1 "on device" badge, and `MockTransport.listRoutes()` serves exactly this
-/// subset — under device-namespace ids — the way the real device's `routeList`
-/// would.
+/// subset — as `RouteCatalogEntry` values keyed by that id — the way the real
+/// device's `routeList` would.
 public struct RouteEntry: Sendable {
     public var summary: RouteSummary
     public var points: [RoutePoint]
@@ -44,7 +44,7 @@ public struct RouteEntry: Sendable {
     public var payloadByteCount: Int
     /// The device object id this route is stored under on the (mock) device, or
     /// `nil` when it lives only in the phone's library.
-    public var deviceObjectID: UInt16?
+    public var deviceObjectID: DeviceObjectID?
 
     public init(
         summary: RouteSummary,
@@ -53,7 +53,7 @@ public struct RouteEntry: Sendable {
         elevationProfile: [Double] = [],
         maxGradePercent: Double? = nil,
         payloadByteCount: Int,
-        deviceObjectID: UInt16? = nil
+        deviceObjectID: DeviceObjectID? = nil
     ) {
         self.summary = summary
         self.points = points
@@ -272,7 +272,8 @@ private struct RouteDTO: Decodable {
     let payloadBytes: Int?
     /// The device object id when the (mock) device holds a copy — lights the C1
     /// badge and puts the route in `listRoutes()`. Absent = phone-library only.
-    let deviceObjectID: UInt16?
+    /// A bare number in the JSON, wrapped into the domain's `DeviceObjectID`.
+    let deviceObjectID: DeviceObjectID?
     let track: [GeoDTO]
     let waypoints: [WaypointDTO]?
 
