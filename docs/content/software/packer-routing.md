@@ -209,10 +209,10 @@ OSM ways draw the *coast*, but not the sea or the land fill. Those come from a s
 
 ### Building the LOD pyramid
 
-Now the heart of it. The file is a [pyramid of detail levels](../formats/#the-file-front-to-back), and the packer builds each one independently. Two knobs from the config drive it: every feature's **`min_lod`** (the coarsest tier it's allowed into) and each tier's **simplify tolerance**. So the country tier holds a handful of feature types, heavily simplified; the street tier holds everything, at full detail.
+Now the heart of it. The file is a [pyramid of detail levels](../formats/#the-file-front-to-back), and the packer builds each one independently. Two knobs from the config drive it: every feature's **`min_lod`** (the coarsest tier it's allowed into) and each tier's **simplify tolerance**. So the country tier holds a handful of feature types, heavily simplified; the street tier holds everything, at full detail. The presets pick each tolerance pixel-accurately: one pixel at the finest scale the tier is drawn at, which is the next finer tier's `max_mpp` ceiling.
 
 <figure class="fig">
-<svg viewBox="0 0 720 270" role="img" aria-label="A pool of features each tagged with a min-LOD flows into three tiers. The country tier takes only features with min-LOD 0 and simplifies them at 50 metres. The region tier adds min-LOD 1 features at 12 metres. The street tier adds everything at full detail. Each tier becomes its own quadtree.">
+<svg viewBox="0 0 720 270" role="img" aria-label="A pool of features each tagged with a min-LOD flows into three tiers. The country tier takes only features with min-LOD 0 and simplifies them at 120 metres. The region tier adds min-LOD 1 features at 18 metres. The street tier adds everything at full detail. Each tier becomes its own quadtree.">
   <defs>
     <marker id="aP5" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
   </defs>
@@ -234,12 +234,12 @@ Now the heart of it. The file is a [pyramid of detail levels](../formats/#the-fi
     <line class="d-flow" x1="174" y1="100" x2="214" y2="92" marker-end="url(#aP5)" />
     <rect class="d-panel" x="220" y="62" width="220" height="42" rx="8" />
     <text class="d-label" x="234" y="80">LOD 0 · country</text>
-    <text class="d-sub" x="234" y="96" style="font-size:9px">min_lod ≤ 0 · simplify 50 m</text>
+    <text class="d-sub" x="234" y="96" style="font-size:9px">min_lod ≤ 0 · simplify 120 m</text>
 
     <line class="d-flow" x1="174" y1="135" x2="214" y2="135" marker-end="url(#aP5)" />
     <rect class="d-panel" x="220" y="114" width="220" height="42" rx="8" />
     <text class="d-label" x="234" y="132">LOD 1 · region</text>
-    <text class="d-sub" x="234" y="148" style="font-size:9px">+ min_lod ≤ 1 · simplify 12 m</text>
+    <text class="d-sub" x="234" y="148" style="font-size:9px">+ min_lod ≤ 1 · simplify 18 m</text>
 
     <line class="d-flow" x1="174" y1="170" x2="214" y2="178" marker-end="url(#aP5)" />
     <rect class="d-panel" x="220" y="166" width="220" height="42" rx="8" />
