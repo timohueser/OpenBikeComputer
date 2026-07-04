@@ -278,7 +278,7 @@ fn build_flpr_blob(manifest: &Path, out: &Path) {
     run(
         Command::new(&gcc)
             .args(["-march=rv32emc", "-mabi=ilp32e"])
-            .args(["-Os", "-ffreestanding", "-nostdlib", "-nostartfiles", "-fno-pic"])
+            .args(["-O2", "-ffreestanding", "-nostdlib", "-nostartfiles", "-fno-pic"])
             .args(["-ffunction-sections", "-fdata-sections", "-Wall", "-Wextra"])
             .arg("-Wl,--gc-sections")
             .arg("-I")
