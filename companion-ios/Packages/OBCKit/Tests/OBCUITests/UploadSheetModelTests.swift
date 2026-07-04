@@ -16,7 +16,7 @@ final class UploadSheetModelTests: XCTestCase {
         _ scenario: Scenario,
         payloadBytes: Int = 100_000,
         waypoints: [Waypoint] = [],
-        onCompleted: @escaping (UInt16?, UInt32) -> Void = { _, _ in }
+        onCompleted: @escaping (DeviceObjectID?, UInt32) -> Void = { _, _ in }
     ) -> (UploadSheetModel, MockControl) {
         let control = MockControl(scenario: scenario)
         control.latency = .zero
@@ -59,7 +59,7 @@ final class UploadSheetModelTests: XCTestCase {
     // MARK: Happy path (F → F₂ → dismiss)
 
     func testHappyPathMovesThroughDoneAndAutoDismisses() async {
-        var assignedObjectID: UInt16??
+        var assignedObjectID: DeviceObjectID??
         let (model, _) = makeModel(.happyPath, onCompleted: { id, _ in assignedObjectID = id })
 
         XCTAssertEqual(model.phase, .uploading)
@@ -193,7 +193,7 @@ final class UploadSheetModelTests: XCTestCase {
             timing: Self.fastTiming,
             onCompleted: { _, _ in completedCalls += 1 }
         )
-        transport.assignedID.fulfill(7)
+        transport.assignedID.fulfill(DeviceObjectID(7))
         model.start()
 
         // Let the outcome watcher reach its `await handle.outcome` suspension.
@@ -231,7 +231,7 @@ final class UploadSheetModelTests: XCTestCase {
 /// Only `state` + `uploadRoute` are exercised; the rest is inert.
 private final class ControlledUploadTransport: DeviceTransport, @unchecked Sendable {
     let outcomePromise = AsyncPromise<TransferOutcome>()
-    let assignedID = AsyncPromise<UInt16?>()
+    let assignedID = AsyncPromise<DeviceObjectID?>()
     private let stateMulticast = AsyncMulticast<ConnectionState>(.connected)
     private let batteryMulticast = AsyncMulticast<Int>(100)
     private let finishedProgress: AsyncStream<TransferProgress>
@@ -261,9 +261,9 @@ private final class ControlledUploadTransport: DeviceTransport, @unchecked Senda
     func deviceInfo() async throws -> DeviceInfo { fatalError("unused") }
     func readConfig() async throws -> DeviceConfig { fatalError("unused") }
     func writeConfig(_ config: DeviceConfig) async throws {}
-    func listRoutes() async throws -> [RouteSummary] { [] }
-    func routeDetail(_ id: RouteID) async throws -> RouteDetail { fatalError("unused") }
-    func deleteRoute(_ id: RouteID) async throws {}
+    func listRoutes() async throws -> [RouteCatalogEntry] { [] }
+    func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail { fatalError("unused") }
+    func deleteRoute(_ id: DeviceObjectID) async throws {}
     func listRides() async throws -> [RideSummary] { [] }
     func rideDetail(_ id: RideID) async throws -> RideDetail { fatalError("unused") }
     func downloadRides(_ ids: [RideID]) -> RideDownload { fatalError("unused") }

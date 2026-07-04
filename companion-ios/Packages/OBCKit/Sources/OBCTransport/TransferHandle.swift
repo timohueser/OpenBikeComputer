@@ -18,14 +18,14 @@ public struct TransferHandle: Sendable {
     public let progress: AsyncStream<TransferProgress>
 
     private let outcomePromise: AsyncPromise<TransferOutcome>
-    private let assignedObjectIDPromise: AsyncPromise<UInt16?>?
+    private let assignedObjectIDPromise: AsyncPromise<DeviceObjectID?>?
     private let onCancel: @Sendable () -> Void
     private let onResume: @Sendable () -> Void
 
     public init(
         progress: AsyncStream<TransferProgress>,
         outcome: AsyncPromise<TransferOutcome>,
-        assignedObjectID: AsyncPromise<UInt16?>? = nil,
+        assignedObjectID: AsyncPromise<DeviceObjectID?>? = nil,
         onCancel: @escaping @Sendable () -> Void,
         onResume: @escaping @Sendable () -> Void
     ) {
@@ -53,7 +53,7 @@ public struct TransferHandle: Sendable {
     /// transfer commits (the device reports it in the `transferResult`). `nil` when
     /// this handle carries no id (a download, an immediately-finished handle, or a
     /// pre-bring-up BLE path). Await *after* `outcome == .completed`.
-    public var assignedObjectID: UInt16? {
+    public var assignedObjectID: DeviceObjectID? {
         get async { assignedObjectIDPromise == nil ? nil : await assignedObjectIDPromise!.value }
     }
 

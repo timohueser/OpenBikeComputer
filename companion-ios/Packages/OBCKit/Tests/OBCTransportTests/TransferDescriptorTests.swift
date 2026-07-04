@@ -1,4 +1,5 @@
 import XCTest
+import OBCDomain
 @testable import OBCTransport
 
 /// The control-plane descriptors that carry all transfer metadata (so the CoC is
@@ -7,6 +8,18 @@ import XCTest
 /// the shared fixtures lives in `ProtocolVectorTests`; this suite covers the
 /// round-trip + rejection behavior.
 final class TransferDescriptorTests: XCTestCase {
+    func testTransferResultMapsTheNoObjectSentinelToNil() throws {
+        // A failed fresh upload echoes 0xFFFF ("no object", spec §4.3) — the
+        // codec surfaces it as a nil `objectID`, and encoding a nil restores
+        // the exact sentinel byte pair.
+        let msg = StatusMessage.transferResult(
+            TransferResult(objectID: nil, status: .error, committedOffset: 0))
+        let bytes = msg.encode()
+        XCTAssertEqual(bytes[bytes.startIndex + 1], 0xFF)
+        XCTAssertEqual(bytes[bytes.startIndex + 2], 0xFF)
+        XCTAssertEqual(try StatusMessage(decoding: bytes), msg)
+    }
+
     func testTransferControlRoundTrips() throws {
         for op in TransferControl.Op.allCases {
             let control = TransferControl(
@@ -29,7 +42,7 @@ final class TransferDescriptorTests: XCTestCase {
 
     func testStatusMessageRoundTrips() throws {
         for status in TransferResult.Status.allCases {
-            let msg = StatusMessage.transferResult(TransferResult(objectID: 7, status: status, committedOffset: 2_048))
+            let msg = StatusMessage.transferResult(TransferResult(objectID: DeviceObjectID(7), status: status, committedOffset: 2_048))
             let encoded = msg.encode()
             XCTAssertEqual(encoded.count, 8)
             XCTAssertEqual(try StatusMessage(decoding: encoded), msg)
@@ -87,7 +100,7 @@ final class TransferDescriptorTests: XCTestCase {
             XCTAssertEqual($0 as? DescriptorError, .unknownType(0x7F))
         }
 
-        var result = StatusMessage.transferResult(TransferResult(objectID: 1, status: .committed, committedOffset: 0)).encode()
+        var result = StatusMessage.transferResult(TransferResult(objectID: DeviceObjectID(1), status: .committed, committedOffset: 0)).encode()
         result[result.startIndex + 3] = 0x7F
         XCTAssertThrowsError(try StatusMessage(decoding: result)) {
             XCTAssertEqual($0 as? DescriptorError, .unknownStatus(0x7F))

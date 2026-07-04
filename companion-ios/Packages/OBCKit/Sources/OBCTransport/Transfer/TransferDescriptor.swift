@@ -1,4 +1,5 @@
 import Foundation
+import OBCDomain
 
 /// The kind of object a bulk transfer carries (`obc-ble-interface-spec.md` §4.1).
 /// `config` is reserved on the CoC (the Config object crosses GATT whole-blob);
@@ -89,9 +90,12 @@ public struct TransferControl: Equatable, Sendable {
 /// **Control-plane** result the device notifies inside the `status` envelope
 /// (`StatusMessage.transferResult`) at the end of a transfer. `committedOffset` is
 /// the durable byte count: the resume anchor a dropped transfer restarts from. For
-/// a fresh upload (`objectID == 0xFFFF`) the result carries the **assigned** id.
+/// a fresh upload the result carries the **assigned** id.
 ///
-/// Body: `objectID u16 · status u8 · committedOffset u32` (spec §4.3).
+/// Body: `objectID u16 · status u8 · committedOffset u32` (spec §4.3). On the
+/// wire the "no object" sentinel is `0xFFFF` (a fresh upload's echo when nothing
+/// was committed); the codec maps it to a `nil` `objectID` here so consumers
+/// never compare against the raw sentinel.
 public struct TransferResult: Equatable, Sendable {
     public enum Status: UInt8, Equatable, Sendable, CaseIterable {
         case committed = 0    // stored + CRC verified
@@ -102,11 +106,11 @@ public struct TransferResult: Equatable, Sendable {
         case busy = 5         // a transfer is already active
     }
 
-    public var objectID: UInt16
+    public var objectID: DeviceObjectID?
     public var status: Status
     public var committedOffset: UInt32
 
-    public init(objectID: UInt16, status: Status, committedOffset: UInt32) {
+    public init(objectID: DeviceObjectID?, status: Status, committedOffset: UInt32) {
         self.objectID = objectID
         self.status = status
         self.committedOffset = committedOffset
@@ -160,7 +164,7 @@ public enum StatusMessage: Equatable, Sendable {
         switch self {
         case .transferResult(let r):
             data.append(1)
-            data.appendLE(r.objectID)
+            data.appendLE(r.objectID?.raw ?? TransferControl.newObjectID)
             data.append(r.status.rawValue)
             data.appendLE(r.committedOffset)
         case .storeChanged(let s):
@@ -187,8 +191,10 @@ public enum StatusMessage: Equatable, Sendable {
             guard let status = TransferResult.Status(rawValue: data[b + 3]) else {
                 throw DescriptorError.unknownStatus(data[b + 3])
             }
+            let rawID: UInt16 = data.readLE(at: b + 1)
             self = .transferResult(TransferResult(
-                objectID: data.readLE(at: b + 1), status: status, committedOffset: data.readLE(at: b + 4)
+                objectID: rawID == TransferControl.newObjectID ? nil : DeviceObjectID(rawID),
+                status: status, committedOffset: data.readLE(at: b + 4)
             ))
         case 2:
             guard data.count >= 6 else { throw DescriptorError.truncated }

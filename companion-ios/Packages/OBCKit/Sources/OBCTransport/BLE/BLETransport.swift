@@ -8,10 +8,11 @@ import OBCDomain
 /// L2CAP CoC, and maps the semantic protocol onto GATT reads/writes/notifies +
 /// the `BLEChannel` byte layer.
 ///
-/// Route/ride ids on this transport are **device-namespace**: a `RouteID`/`RideID`
-/// whose `rawValue` is the decimal object id from the device's list objects
-/// (spec §4.1). The app's library ids never cross this boundary — the link between
-/// a library route and its device copy is the persisted `deviceObjectID`.
+/// Ids on this transport's data plane are **device-namespace** (`DeviceObjectID`,
+/// spec §4.1), enforced by the types (#359): route ops take the object id
+/// directly, and ride ids are minted here via `RideID(deviceObjectID:)`. The
+/// app's library ids never cross this boundary — the link between a library
+/// route and its device copy is the persisted `deviceObjectID`.
 ///
 /// Transfer discipline (spec §4.1/§4.2): **one transfer at a time** — every CoC
 /// exchange (upload or download) holds the transport's transfer slot, writes its
@@ -177,11 +178,9 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         try await downloadObject(type: .diagnostics, objectID: 0)
     }
 
-    public func deleteRoute(_ id: RouteID) async throws {
+    public func deleteRoute(_ id: DeviceObjectID) async throws {
         // `deleteObject` (cmd 1): `cmd u8 · type u8 · object_id u16 LE` — spec §4.4.
-        // `id` is device-namespace (a decimal object id from `listRoutes`).
-        guard let objectID = UInt16(id.rawValue) else { throw DeviceError.writeFailed }
-        let payload = Data([1, ObjectType.route.rawValue, UInt8(objectID & 0xFF), UInt8(objectID >> 8)])
+        let payload = Data([1, ObjectType.route.rawValue, UInt8(id.raw & 0xFF), UInt8(id.raw >> 8)])
         // Hold the transfer slot (#302): `clearPendingStatuses` and `command` /
         // `transfer` results share one `pendingStatuses` buffer, so an ungated
         // delete could wipe a slot-holding transfer's buffered result out from
@@ -193,14 +192,14 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         guard try await nextCommandResult().status == .ok else { throw DeviceError.writeFailed }
     }
 
-    public func listRoutes() async throws -> [RouteSummary] {
+    public func listRoutes() async throws -> [RouteCatalogEntry] {
         // The `routeList` object (type 6, spec §7.4) over the CoC → the catalog.
         // Consumed for reconcile (the "on device" badge), never as list rows —
         // the Planned list is library-first (#289).
         let entries = try RouteList.decode(try await downloadObject(type: .routeList, objectID: 0))
         return entries.map { entry in
-            RouteSummary(
-                id: RouteID(String(entry.objectID)),
+            RouteCatalogEntry(
+                id: DeviceObjectID(entry.objectID),
                 name: entry.name,
                 distanceMeters: Double(entry.distanceMeters),
                 elevationGainMeters: Double(entry.ascentMeters),
@@ -215,7 +214,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         let entries = try RideList.decode(try await downloadObject(type: .rideList, objectID: 0))
         return entries.map { entry in
             RideSummary(
-                id: RideID(String(entry.objectID)),
+                id: RideID(deviceObjectID: DeviceObjectID(entry.objectID)),
                 name: entry.name,
                 date: Date(timeIntervalSince1970: TimeInterval(entry.startTime)),
                 distanceMeters: Double(entry.distanceMeters),
@@ -226,17 +225,19 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         }
     }
 
-    public func routeDetail(_ id: RouteID) async throws -> RouteDetail {
+    public func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail {
         // Pinned by S0 as "download the route object" (spec §7.1): the stored OBCR
         // v2 blob, decoded app-side for the waypoints + elevation profile — one
-        // layout, one truth. `id` is device-namespace.
-        guard let objectID = UInt16(id.rawValue) else { throw DeviceError.readFailed }
-        let decoded = try RouteObjectCodec.decode(try await downloadObject(type: .route, objectID: objectID))
+        // layout, one truth.
+        let decoded = try RouteObjectCodec.decode(try await downloadObject(type: .route, objectID: id.raw))
         // Header totals are exact (from the producer's raw-point pass); the profile
         // + max grade come from the stored geometry, as E2 renders them.
         let geometry = RouteStats.compute(from: decoded.points)
+        // A device-stored object has no library identity — the summary rides
+        // under a placeholder id nothing keys on (the detail screen for library
+        // routes never comes through here, #289).
         let summary = RouteSummary(
-            id: id,
+            id: RouteID("device-\(id.raw)"),
             name: decoded.name,
             distanceMeters: Double(decoded.totalDistanceMeters),
             elevationGainMeters: Double(decoded.totalAscentMeters),
@@ -271,12 +272,12 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
             return .immediatelyFinished(.failed(.transferRejected))
         }
         let descriptor = TransferControl(
-            op: .upload, type: .route, objectID: route.targetObjectID ?? TransferControl.newObjectID,
+            op: .upload, type: .route, objectID: route.targetObjectID?.raw ?? TransferControl.newObjectID,
             totalLen: UInt32(route.payload.count), crc32: CRC32.checksum(route.payload)
         )
         let (stream, continuation) = AsyncStream<TransferProgress>.makeStream()
         let outcome = AsyncPromise<TransferOutcome>()
-        let assignedID = AsyncPromise<UInt16?>()
+        let assignedID = AsyncPromise<DeviceObjectID?>()
         let runner = UploadRunner(
             transport: self, payload: route.payload, descriptor: descriptor,
             progress: continuation, outcome: outcome, assignedID: assignedID
@@ -299,11 +300,22 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         if stateMulticast.value == .disconnected {
             return .finished(.failed(.notConnected))                        // H4
         }
+        // Resolve every id's device object id up front: ids on this plane come
+        // from `listRides()`, which mints them via `RideID(deviceObjectID:)`, so
+        // a non-device id is a caller bug — fail the batch loudly rather than
+        // skip it silently (#359).
+        var requests: [(id: RideID, objectID: DeviceObjectID)] = []
+        for id in ids {
+            guard let objectID = id.deviceObjectID else {
+                return .finished(.failed(.transferRejected))
+            }
+            requests.append((id, objectID))
+        }
         let (rideStream, rideContinuation) = AsyncThrowingStream<DownloadedRide, Error>.makeStream()
         let (progressStream, progressContinuation) = AsyncStream<TransferProgress>.makeStream()
         let outcome = AsyncPromise<TransferOutcome>()
         let runner = RideDownloadRunner(
-            transport: self, ids: ids, rides: rideContinuation,
+            transport: self, requests: requests, rides: rideContinuation,
             progress: progressContinuation, outcome: outcome
         )
         Task { await runner.start() }
@@ -709,13 +721,13 @@ private actor UploadRunner {
     private let descriptor: TransferControl
     private let progress: AsyncStream<TransferProgress>.Continuation
     private let outcome: AsyncPromise<TransferOutcome>
-    private let assignedID: AsyncPromise<UInt16?>
+    private let assignedID: AsyncPromise<DeviceObjectID?>
     private var attempt: Task<Void, Never>?
 
     init(
         transport: BLETransport, payload: Data, descriptor: TransferControl,
         progress: AsyncStream<TransferProgress>.Continuation,
-        outcome: AsyncPromise<TransferOutcome>, assignedID: AsyncPromise<UInt16?>
+        outcome: AsyncPromise<TransferOutcome>, assignedID: AsyncPromise<DeviceObjectID?>
     ) {
         self.transport = transport
         self.payload = payload
@@ -802,7 +814,9 @@ private actor UploadRunner {
 /// starves reconnect-time list reads. Mirrors `UploadRunner`'s lifecycle.
 private actor RideDownloadRunner {
     private let transport: BLETransport
-    private let ids: [RideID]
+    /// Each requested ride with its device object id, resolved (and validated)
+    /// by `downloadRides` before the runner exists.
+    private let requests: [(id: RideID, objectID: DeviceObjectID)]
     private let rides: AsyncThrowingStream<DownloadedRide, Error>.Continuation
     private let progress: AsyncStream<TransferProgress>.Continuation
     private let outcome: AsyncPromise<TransferOutcome>
@@ -811,13 +825,13 @@ private actor RideDownloadRunner {
     private var finished = false
 
     init(
-        transport: BLETransport, ids: [RideID],
+        transport: BLETransport, requests: [(id: RideID, objectID: DeviceObjectID)],
         rides: AsyncThrowingStream<DownloadedRide, Error>.Continuation,
         progress: AsyncStream<TransferProgress>.Continuation,
         outcome: AsyncPromise<TransferOutcome>
     ) {
         self.transport = transport
-        self.ids = ids
+        self.requests = requests
         self.rides = rides
         self.progress = progress
         self.outcome = outcome
@@ -844,15 +858,12 @@ private actor RideDownloadRunner {
     private func runAttempt() async {
         guard !finished else { return }
         do {
-            for id in ids where !landed.contains(id) {
+            for (id, objectID) in requests where !landed.contains(id) {
                 try Task.checkCancellation()
-                // A malformed id can't come from `listRides` (it stringifies a
-                // u16); skip defensively rather than fail the whole batch.
-                guard let objectID = UInt16(id.rawValue) else { continue }
-                let payload = try await transport.downloadObject(type: .ride, objectID: objectID)
+                let payload = try await transport.downloadObject(type: .ride, objectID: objectID.raw)
                 landed.insert(id)
                 rides.yield(DownloadedRide(id: id, payload: payload))
-                progress.yield(TransferProgress(bytesDone: landed.count, total: ids.count))
+                progress.yield(TransferProgress(bytesDone: landed.count, total: requests.count))
             }
             finish(.completed)
         } catch is CancellationError {

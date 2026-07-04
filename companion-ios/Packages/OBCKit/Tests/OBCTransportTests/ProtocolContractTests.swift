@@ -21,6 +21,28 @@ final class ProtocolContractTests: XCTestCase {
         XCTAssertNotEqual(err, .protocolMismatch(expected: 1, found: 3))
     }
 
+    func testDeviceObjectIDCodesAsABareNumber() throws {
+        // Persisted DTOs stored the raw u16 — the typed wrapper must not
+        // change their JSON shape (#359's no-schema-bump rule).
+        XCTAssertEqual(
+            String(decoding: try JSONEncoder().encode([DeviceObjectID(7)]), as: UTF8.self), "[7]")
+        XCTAssertEqual(
+            try JSONDecoder().decode([DeviceObjectID].self, from: Data("[7]".utf8)),
+            [DeviceObjectID(7)])
+    }
+
+    func testRideIDBridgesTheDeviceNamespace() {
+        // Ride identity is deliberately shared across the BLE boundary
+        // (#289/#290): a device-minted id round-trips through the typed
+        // accessors…
+        let id = RideID(deviceObjectID: DeviceObjectID(42))
+        XCTAssertEqual(id, RideID("42"))
+        XCTAssertEqual(id.deviceObjectID, DeviceObjectID(42))
+        // …and a library-only id (mock fixtures, tests) honestly reports that
+        // it never came from a device catalog.
+        XCTAssertNil(RideID("ride-kettle-moraine").deviceObjectID)
+    }
+
     func testTransferProgressFraction() {
         XCTAssertEqual(TransferProgress(bytesDone: 25, total: 100).fraction, 0.25)
         // Unknown total → 0, never a divide-by-zero.

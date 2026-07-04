@@ -38,7 +38,7 @@ final class ImportFlowModelTests: XCTestCase {
     private func savedRecord(
         id: String = "saved-route",
         name: String = "Schwarzwald Tour · Tag 2",
-        deviceObjectID: UInt16? = nil,
+        deviceObjectID: DeviceObjectID? = nil,
         uploadedCRC32: UInt32? = nil
     ) -> PlannedRouteRecord {
         PlannedRouteRecord(
@@ -115,7 +115,7 @@ final class ImportFlowModelTests: XCTestCase {
     /// until the next push.
     func testReplaceCarriesTheDeviceFingerprintThroughRecordFor() {
         let library = InMemoryLibraryStore()
-        let existing = savedRecord(deviceObjectID: 7, uploadedCRC32: 0xDEAD_BEEF)
+        let existing = savedRecord(deviceObjectID: DeviceObjectID(7), uploadedCRC32: 0xDEAD_BEEF)
         library.savePlannedRoute(existing)
         let model = makeModel(library: library, decodedName: "Schwarzwald Tour · Tag 2")
 
@@ -128,7 +128,7 @@ final class ImportFlowModelTests: XCTestCase {
 
         let record = pending!.record(for: detail(named: "Schwarzwald Tour · Tag 2", id: existing.id.rawValue))
         XCTAssertEqual(record.id, existing.id)
-        XCTAssertEqual(record.deviceObjectID, 7)
+        XCTAssertEqual(record.deviceObjectID, DeviceObjectID(7))
         XCTAssertEqual(record.uploadedCRC32, 0xDEAD_BEEF)
         XCTAssertEqual(record.sourceFileData, Data("<gpx2/>".utf8), "the record keeps the NEW file's bytes")
     }
@@ -136,7 +136,7 @@ final class ImportFlowModelTests: XCTestCase {
     /// …but a fresh upload's committed fingerprint wins over the carried one.
     func testRecordForPrefersAJustCommittedFingerprint() {
         let library = InMemoryLibraryStore()
-        library.savePlannedRoute(savedRecord(deviceObjectID: 7, uploadedCRC32: 0xDEAD_BEEF))
+        library.savePlannedRoute(savedRecord(deviceObjectID: DeviceObjectID(7), uploadedCRC32: 0xDEAD_BEEF))
         let model = makeModel(library: library, decodedName: "Schwarzwald Tour · Tag 2")
 
         model.open(data: Data("<gpx2/>".utf8), fileName: "tag2-v2.gpx")
@@ -144,10 +144,10 @@ final class ImportFlowModelTests: XCTestCase {
 
         let record = model.pendingImport!.record(
             for: detail(named: "Schwarzwald Tour · Tag 2", id: "saved-route"),
-            deviceObjectID: 9,
+            deviceObjectID: DeviceObjectID(9),
             uploadedCRC32: 0xC0FF_EE00
         )
-        XCTAssertEqual(record.deviceObjectID, 9)
+        XCTAssertEqual(record.deviceObjectID, DeviceObjectID(9))
         XCTAssertEqual(record.uploadedCRC32, 0xC0FF_EE00)
     }
 
@@ -208,7 +208,7 @@ final class ImportFlowModelTests: XCTestCase {
     /// route, `replacing` cleared.
     func testAcceptedRenameOpensE1AsAPlainNewImport() {
         let library = InMemoryLibraryStore()
-        library.savePlannedRoute(savedRecord(deviceObjectID: 7))
+        library.savePlannedRoute(savedRecord(deviceObjectID: DeviceObjectID(7)))
         let model = makeModel(library: library, decodedName: "Schwarzwald Tour · Tag 2")
 
         model.open(data: Data("<gpx/>".utf8), fileName: "tag2.gpx")

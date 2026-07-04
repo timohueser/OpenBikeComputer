@@ -62,7 +62,7 @@ public final class UploadSheetModel {
     /// id** (nil if the device didn't report one) and the committed payload's
     /// CRC-32 (the `OnDeviceState` fingerprint) — the E1 landing saves the route
     /// here ("Uploading saves it too") and records it as on-device, up to date.
-    private let onCompleted: (UInt16?, UInt32) -> Void
+    private let onCompleted: (DeviceObjectID?, UInt32) -> Void
     @ObservationIgnored private var handle: TransferHandle?
     @ObservationIgnored private var watchers: [Task<Void, Never>] = []
     @ObservationIgnored private var started = false
@@ -72,7 +72,7 @@ public final class UploadSheetModel {
         blob: RouteBlob,
         deviceName: String,
         timing: Timing = Timing(),
-        onCompleted: @escaping (UInt16?, UInt32) -> Void = { _, _ in }
+        onCompleted: @escaping (DeviceObjectID?, UInt32) -> Void = { _, _ in }
     ) {
         self.transport = transport
         self.blob = blob

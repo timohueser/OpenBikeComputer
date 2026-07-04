@@ -3,9 +3,30 @@ import Foundation
 /// Stable identifier for a tracked ride on the device / in the app library.
 ///
 /// A thin `String` wrapper for type safety (distinct from `RouteID`).
+///
+/// Unlike routes, ride identity is **deliberately shared** across the BLE
+/// boundary: the app reuses the device's durable ride id (spec §4.1, made
+/// durable by the #289/#290 identity rework) as the library id, so the
+/// synced/deleted tombstone sets key on it directly. The typed accessors below
+/// make that device-namespace nature explicit — the real transport **mints**
+/// ride ids via ``init(deviceObjectID:)`` and reads them back via
+/// ``deviceObjectID``, never by ad-hoc string↔int round-trips (#359).
 public struct RideID: Hashable, Sendable {
     public let rawValue: String
     public init(_ rawValue: String) { self.rawValue = rawValue }
+
+    /// A ride id in the device namespace — what `listRides()` mints from the
+    /// device's ride catalog, and what the library then stores as-is.
+    public init(deviceObjectID: DeviceObjectID) {
+        self.init(String(deviceObjectID.raw))
+    }
+
+    /// The device object id behind this ride id, or `nil` for an id that never
+    /// came from a device catalog (mock fixtures, tests). Ids on the real data
+    /// plane always parse — they were minted by ``init(deviceObjectID:)``.
+    public var deviceObjectID: DeviceObjectID? {
+        UInt16(rawValue).map(DeviceObjectID.init)
+    }
 }
 
 /// Metadata for a device-recorded ride — the Tracked-tab row (C2) and sync list.

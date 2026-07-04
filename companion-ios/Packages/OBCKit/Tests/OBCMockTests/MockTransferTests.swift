@@ -43,14 +43,14 @@ final class MockTransferTests: XCTestCase {
         let blob = RouteBlob(
             summary: RouteSummary(id: RouteID("r"), name: "Edited", distanceMeters: 1_000, elevationGainMeters: 10),
             payload: MockPayload.make(count: 40_000),
-            targetObjectID: 7   // replacing device object 7
+            targetObjectID: DeviceObjectID(7)   // replacing device object 7
         )
         let handle = transport.uploadRoute(blob)
         _ = try await drain(handle)
         let outcome = await handle.outcome
         let assigned = await handle.assignedObjectID
         XCTAssertEqual(outcome, .completed)
-        XCTAssertEqual(assigned, 7, "a replace commits under the same id, not a new one")
+        XCTAssertEqual(assigned, DeviceObjectID(7), "a replace commits under the same id, not a new one")
     }
 
     func testDownloadRidesSizesFromFixtures() async throws {

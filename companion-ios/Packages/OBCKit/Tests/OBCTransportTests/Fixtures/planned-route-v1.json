@@ -1,0 +1,77 @@
+{
+  "addedAt" : 1000,
+  "deviceObjectID" : 7,
+  "route" : {
+    "creator" : "komoot",
+    "name" : "Schwarzwald Tour",
+    "points" : [
+      [
+        48,
+        8,
+        500
+      ],
+      [
+        48.1,
+        8.1,
+        620
+      ],
+      [
+        48.2,
+        8.05
+      ]
+    ],
+    "waypoints" : [
+      {
+        "distanceAlongMeters" : 1200,
+        "index" : 0,
+        "lat" : 48.05,
+        "lon" : 8.02,
+        "name" : "Bakery",
+        "note" : "coffee"
+      }
+    ]
+  },
+  "sourceFileName" : "Schwarzwald Tour.gpx",
+  "summary" : {
+    "distanceMeters" : 24000,
+    "elevationGainMeters" : 800,
+    "estimatedDuration" : 5400,
+    "id" : "imported-v1-fixture",
+    "name" : "Schwarzwald Tour",
+    "pointCount" : 3,
+    "preview" : {
+      "aspectRatio" : 0.3339162777355173,
+      "coordinates" : [
+        [
+          48,
+          8
+        ],
+        [
+          48.1,
+          8.1
+        ],
+        [
+          48.2,
+          8.05
+        ]
+      ],
+      "points" : [
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          0.5
+        ],
+        [
+          0.5000000000000133,
+          0
+        ]
+      ]
+    },
+    "source" : "gpx"
+  },
+  "uploadedCRC32" : 3735928559,
+  "version" : 1
+}

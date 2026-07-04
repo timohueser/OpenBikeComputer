@@ -54,7 +54,7 @@ struct RouteDetailScreen: View {
     private let deviceName: String
     private let onDelete: (() -> Void)?
     private let onRename: ((String) -> Void)?
-    private let onUploaded: ((UInt16?, UInt32) -> Void)?
+    private let onUploaded: ((DeviceObjectID?, UInt32) -> Void)?
     private let isRide: Bool
 
     init(
@@ -63,12 +63,12 @@ struct RouteDetailScreen: View {
         preloadedDetail: RouteDetail? = nil,
         plannedGeometry: ImportedRoute? = nil,
         rideGeometry: [Coordinate]? = nil,
-        deviceObjectID: UInt16? = nil,
+        deviceObjectID: DeviceObjectID? = nil,
         uploadedCRC32: UInt32? = nil,
         deviceName: String,
         onDelete: (() -> Void)? = nil,
         onRename: ((String) -> Void)? = nil,
-        onUploaded: ((UInt16?, UInt32) -> Void)? = nil
+        onUploaded: ((DeviceObjectID?, UInt32) -> Void)? = nil
     ) {
         _model = State(initialValue: RouteDetailModel(
             transport: transport, dressing: dressing,
@@ -125,7 +125,7 @@ struct ImportLandingHost: View {
     private let deviceName: String
     private let noDevicePaired: Bool
     private let onSave: (RouteDetail) -> Void
-    private let onUploaded: (RouteDetail, UInt16?, UInt32) -> Void
+    private let onUploaded: (RouteDetail, DeviceObjectID?, UInt32) -> Void
     private let onPair: (RouteDetail) -> Void
     private let onCancel: () -> Void
 
@@ -141,7 +141,7 @@ struct ImportLandingHost: View {
         // makes Upload read "Update on …").
         replacing: PlannedRouteRecord? = nil,
         onSave: @escaping (RouteDetail) -> Void,
-        onUploaded: @escaping (RouteDetail, UInt16?, UInt32) -> Void,
+        onUploaded: @escaping (RouteDetail, DeviceObjectID?, UInt32) -> Void,
         onPair: @escaping (RouteDetail) -> Void,
         onCancel: @escaping () -> Void
     ) {
