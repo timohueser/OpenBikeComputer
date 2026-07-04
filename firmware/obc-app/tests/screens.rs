@@ -6,8 +6,8 @@ use embedded_graphics::pixelcolor::Rgb888;
 use embedded_graphics::prelude::RgbColor; // for `Rgb888::r()` in the compositing snapshot
 use obc_app::activity::Activity;
 use obc_app::screen::{
-    apply, Ctx, HomeScreen, MapScreen, MenuScreen, RideControl, RouteMenuScreen, RouteSwapScreen, Screen, Stack,
-    Transition,
+    apply, Ctx, HomeScreen, MapScreen, MenuScreen, RideControl, RouteMenuScreen, RouteSwapScreen, Screen, ScreenTick,
+    Stack, Transition,
 };
 use obc_app::{
     App, AppState, Button, ButtonEvent, CameraMode, Fix, Gesture, InputClock, InputEvent, Mode, PanAxis, RideClock,
@@ -167,6 +167,35 @@ fn menu_back_returns_to_caller() {
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Riding));
     let t = MenuScreen::new().handle(Gesture::Back, &mut ctx(&mut st, &mut act));
     assert!(matches!(t, Transition::Pop));
+}
+
+/// The Menu's compass-needle sweep contract: a turn arms a per-frame wake, the sweep converges in
+/// well under a second of ticks, and a settled menu is [`ScreenTick::idle`] — so a resting menu
+/// costs the event-driven host no timed repaints (the invariant
+/// `ms_until_next_wake_reports_the_home_minute_then_none_on_a_static_menu` also leans on).
+#[test]
+fn menu_needle_sweep_arms_then_settles() {
+    let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Idle));
+    let mut m = MenuScreen::new();
+    assert_eq!(m.tick_timers(0), ScreenTick::idle(), "a fresh menu has no animation pending");
+
+    m.handle(Gesture::Turn(1), &mut ctx(&mut st, &mut act));
+    let t0 = m.tick_timers(1_000);
+    assert!(t0.next_wake_ms.is_some(), "a turn puts the sweep in flight");
+
+    let mut now = 1_000;
+    let mut settled = false;
+    for _ in 0..60 {
+        now += 16;
+        let t = m.tick_timers(now);
+        if t.next_wake_ms.is_none() {
+            assert!(t.changed, "the landing tick still repaints (the final snap to target)");
+            settled = true;
+            break;
+        }
+    }
+    assert!(settled, "the sweep converges within 60 frames (~1 s)");
+    assert_eq!(m.tick_timers(now + 16), ScreenTick::idle(), "after landing the menu is idle again");
 }
 
 // The Home → Route menu → Map flow.

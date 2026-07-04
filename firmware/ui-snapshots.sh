@@ -24,20 +24,23 @@ OUT="${1:-ui-snapshots}"
 
 mkdir -p "$OUT"
 
+# Menu navigation: the compass menu is Routes / POIs / Map / Settings, so Settings is one
+# ccw detent (`l`, wrapping) from the Routes start. `w` settles the needle sweep after a turn.
 "$SIM" "$MAP" --boot --png "$OUT/home.png" --battery 45
 "$SIM" "$MAP" --boot --script "p"            --routes-dir "$ROUTES" --png "$OUT/routemenu.png"
 "$SIM" "$MAP" --boot --script "B"            --png "$OUT/menu.png"
-"$SIM" "$MAP" --boot --script "B r p"        --png "$OUT/settings.png"
-"$SIM" "$MAP" --boot --script "B r p p"      --png "$OUT/datetime.png"
-"$SIM" "$MAP" --boot --script "B r p r p"    --png "$OUT/units.png"
-"$SIM" "$MAP" --boot --script "B r p r r p"  --png "$OUT/stats-settings.png"
-"$SIM" "$MAP" --boot --script "B r p r r p r p" --png "$OUT/fields.png"
-"$SIM" "$MAP" --boot --script "B r p r r r p"   --png "$OUT/power.png"
-"$SIM" "$MAP" --boot --script "B r p r r r r p p H" --png "$OUT/reset-hold.png"
+"$SIM" "$MAP" --boot --script "B r w"        --png "$OUT/menu-pois.png"
+"$SIM" "$MAP" --boot --script "B l p"        --png "$OUT/settings.png"
+"$SIM" "$MAP" --boot --script "B l p p"      --png "$OUT/datetime.png"
+"$SIM" "$MAP" --boot --script "B l p r p"    --png "$OUT/units.png"
+"$SIM" "$MAP" --boot --script "B l p r r p"  --png "$OUT/stats-settings.png"
+"$SIM" "$MAP" --boot --script "B l p r r p r p" --png "$OUT/fields.png"
+"$SIM" "$MAP" --boot --script "B l p r r r p"   --png "$OUT/power.png"
+"$SIM" "$MAP" --boot --script "B l p r r r r p p H" --png "$OUT/reset-hold.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p"   --gpx "$GPX" --at 30 --png "$OUT/map.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p b" --gpx "$GPX" --at 30 --png "$OUT/statistics.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p" --gpx "$GPX" --at 30 --png "$OUT/ridecontrol.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p B p r p" --png "$OUT/routeswap.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p h" --png "$OUT/map-pan.png"
 
-echo "ui-snapshots: 15 screens rendered into $OUT/"
+echo "ui-snapshots: 16 screens rendered into $OUT/"

@@ -1600,9 +1600,9 @@ mod tests {
     fn a_settings_edit_flags_dirty_on_leaving_the_settings_subtree() {
         use crate::settings::Units;
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        // Walk to the Units screen (Menu = Routes/Settings; Settings list = Date&Time/Units/…).
+        // Walk to the Units screen (Menu = Routes/POIs/Map/Settings; Settings list = Date&Time/Units/…).
         app.apply_gesture(Gesture::BackHold); // Home → Menu
-        app.apply_gesture(Gesture::Turn(1)); // → Settings row
+        app.apply_gesture(Gesture::Turn(-1)); // → Settings entry (wraps back from Routes)
         app.apply_gesture(Gesture::Press); // → Settings list
         app.apply_gesture(Gesture::Turn(1)); // → Units row
         app.apply_gesture(Gesture::Press); // → Units screen
@@ -1749,7 +1749,7 @@ mod tests {
         // set-point + 10 min, so the re-stamp is exactly what makes it read the edited value.
         app.now_ms = 10 * 60_000;
         app.apply_gesture(Gesture::BackHold); // Home → Menu
-        app.apply_gesture(Gesture::Turn(1)); // → Settings row
+        app.apply_gesture(Gesture::Turn(-1)); // → Settings entry (wraps back from Routes)
         app.apply_gesture(Gesture::Press); // → Settings list (row 0 = Date & Time)
         app.apply_gesture(Gesture::Press); // → Date & Time
         app.apply_gesture(Gesture::Turn(2)); // Toggle → DATE → TIME row
