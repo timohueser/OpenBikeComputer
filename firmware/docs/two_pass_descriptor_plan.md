@@ -53,8 +53,9 @@ reads each feature's 12-byte header and consults `should_decode(style_id)`
 `Reader::for_each_chunk(lod, view, visit)` streams every overlapping leaf
 through a callback — **no `MAX_CHUNKS` cap**. The walk only reads the index
 (bbox tests over `u32` nodes, no decode), so re-running it per pass is cheap.
-`query`/`query_into` are retained (still capacity-bounded) but the renderer no
-longer uses them. Covered by `for_each_chunk_has_no_cap`.
+`query`/`query_into` (the capacity-bounded twins) have since been removed
+(#334) — their only callers were tests, which now collect via `for_each_chunk`.
+Covered by `for_each_chunk_has_no_cap`.
 
 ### 4. Renderer: one pass per priority level
 
