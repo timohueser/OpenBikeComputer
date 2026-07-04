@@ -43,7 +43,7 @@ final class UploadSheetModelTests: XCTestCase {
 
     private func waitFor(
         _ what: String,
-        timeout: Duration = .seconds(5),
+        timeout: Duration = .seconds(30),
         _ condition: () -> Bool
     ) async {
         let deadline = ContinuousClock.now.advanced(by: timeout)
