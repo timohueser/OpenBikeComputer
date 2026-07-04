@@ -2,7 +2,7 @@
 //! board-agnostic [`DisplayDriver`](super::DisplayDriver) seam.
 //!
 //! A thin adapter over the [`Ls021Flpr`](crate::ls021_flpr::Ls021Flpr) coprocessor backend (the FLPR
-//! launch + ping-pong transport stay at the crate root). The map plane renders the whole frame into the
+//! launch + direct-fb transport stay at the crate root). The map plane renders the whole frame into the
 //! resident RGB222 plane, then [`present`](DisplayDriver::present) drives it in one masked full-frame
 //! scan; [`present_overlay`](DisplayDriver::present_overlay) re-presents the bulge's rows via
 //! [`push_overlay`](crate::ls021_flpr::Ls021Flpr::push_overlay), whose composite step is the shared
@@ -23,17 +23,18 @@ impl DisplayDriver for Ls021Flpr<'_> {
         Ls021Flpr::fb_mut(self)
     }
 
-    fn present(&mut self, exclude: Option<(u16, u16)>) -> bool {
+    async fn present(&mut self, exclude: Option<(u16, u16)>) -> bool {
         // Self-diffing present: push only the rows that changed since the last present, going around
-        // a live bulge's rows (`exclude`) so the map plane's overlay composite owns them.
-        self.present_within(exclude)
+        // a live bulge's rows (`exclude`) so the map plane's overlay composite owns them. Awaits the
+        // FLPR's EGU20 frame ack — the M33 runs other futures for the whole scan (#347).
+        self.present_within(exclude).await
     }
 
     /// Re-present the overlay rectangle's **rows** with the bulge composited: the LS021
     /// can't latch a sub-span of columns, so the FLPR rewrites the full-width rows `[y0, y0+rows)`
     /// (only `[x0, x0+w)` carry the overlay) and fast-forwards the gate over the rest — see
     /// [`push_overlay`](Ls021Flpr::push_overlay) for the stack-frugal, lock-once composite.
-    fn present_overlay(&mut self, region: OverlayRegion, draw_overlay: &mut dyn FnMut(&mut Band)) -> bool {
-        self.push_overlay(region.x0, region.y0, region.w, region.rows, draw_overlay)
+    async fn present_overlay(&mut self, region: OverlayRegion, draw_overlay: &mut dyn FnMut(&mut Band)) -> bool {
+        self.push_overlay(region.x0, region.y0, region.w, region.rows, draw_overlay).await
     }
 }

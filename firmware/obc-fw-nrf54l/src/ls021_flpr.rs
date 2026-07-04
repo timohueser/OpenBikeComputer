@@ -49,18 +49,27 @@
 //! [`ls021_wire`](obc_platform::ls021_wire)) rides inside the panel's mandatory data-setup windows
 //! on the FLPR, where the old blob just busy-spun.
 //!
-//! ## Blocking push
+//! ## Async push — the M33 is freed for the whole frame
 //!
-//! The push is synchronous: [`push_frame`](Ls021Flpr::push_frame) / [`push_spans`](Ls021Flpr::push_spans)
-//! **busy-poll** the FLPR's `flpr_seq` ack (no EGU20 IRQ needed yet). COM free-runs on its own
-//! high-priority `InterruptExecutor`, so blocking the thread-mode M33 for a frame is benign (the
-//! same shape as the ST7789 path blocking on its SPI-DMA write). The blob pokes `EGU20` after each
-//! frame; with its IRQ unarmed here that write is a harmless no-op.
+//! The push is **async**: [`push_frame`](Ls021Flpr::push_frame) / [`push_spans`](Ls021Flpr::push_spans)
+//! ring the doorbell and **`await` the FLPR's EGU20 frame ack** (the blob pokes
+//! `EGU20.TASKS_TRIGGER[0]` after every frame; [`launch_flpr`] arms its `TRIGGERED[0]` IRQ, whose
+//! ISR signals [`FRAME_ACK`]). So the ~97 ms a full frame takes on the wire costs the M33
+//! **nothing**: thread mode runs other futures (SD I/O, sensor ticks, the next frame's prep) while
+//! the FLPR scans. The wait is bounded by [`FRAME_DEADLINE`]; a timeout returns `false` exactly
+//! like a transport fault — the caller keeps the last frame, re-arms the diff, and retries (and
+//! #349's relaunch escalation builds on this hook).
 
 use core::ptr::{addr_of, addr_of_mut};
 
 use defmt::{debug, error, info};
-use embassy_time::{Instant, Timer};
+// The `#[interrupt]` attribute + the `EGU20` vector both live under this name (the module carries
+// the interrupt enum, the macro registers the handler) — the same import `main.rs` uses for SWI01.
+use embassy_nrf::interrupt;
+use embassy_nrf::interrupt::{InterruptExt, Priority};
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::signal::Signal;
+use embassy_time::{with_deadline, Duration, Instant, Timer};
 // The panel width the wire pack is defined over — the C blob's pack is the line-for-line port of
 // `ls021_wire::pack_pair`/`pack_row` (the host-tested normative reference), so the seam geometry is
 // pinned to it below.
@@ -150,10 +159,32 @@ const _: () =
 const MAX_OVERLAY_COLS: usize = 16;
 const MAX_OVERLAY_ROWS: usize = 192;
 
-/// Busy-poll cap while waiting on the FLPR (a free ping-pong buffer or the frame ack). A spin cap,
-/// not a duration — sized large enough that even a full slow frame never trips it, so it only fires
-/// if the FLPR has genuinely stalled, turning a hang into a reported error.
-const SPIN_CAP: u32 = 50_000_000;
+// ── The EGU20 frame-ack doorbell (issue #347). The blob pokes `EGU20.TASKS_TRIGGER[0]` after every
+// frame; the M33 arms `TRIGGERED[0]`'s IRQ and awaits it instead of busy-polling `flpr_seq`. Raw
+// secure-alias MMIO (offsets from the nRF54L15 PAC: EVENTS_TRIGGERED[0] +0x100, INTENSET +0x304 —
+// bit n = TRIGGERED[n]) because embassy-nrf's `pac` re-export is `pub(crate)`; same precedent as
+// the VPR00 registers above and the FICR reads in `ble::gatt`. ──
+const EGU20_EVENTS_TRIGGERED0: *mut u32 = 0x500C_9100 as *mut u32;
+const EGU20_INTENSET: *mut u32 = 0x500C_9304 as *mut u32;
+
+/// The frame ack the EGU20 ISR signals — what [`Ls021Flpr`]'s pushes `await` instead of spinning.
+/// A `Signal` (not a waker) so an ack that lands *before* the await starts is not lost.
+static FRAME_ACK: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+/// EGU20 ISR — the FLPR's per-frame doorbell: clear the latched `TRIGGERED[0]` event (or the IRQ
+/// re-fires forever) and signal the awaiting push. Runs at P1 (set in [`launch_flpr`]): below the
+/// P0 GRTC time-driver, above the P3 input plane — the ack is a one-store wake, so priority is
+/// uncritical as long as it stays under P0.
+#[interrupt]
+unsafe fn EGU20() {
+    EGU20_EVENTS_TRIGGERED0.write_volatile(0);
+    FRAME_ACK.signal(());
+}
+
+/// Deadline for one frame ack: the worst full-frame scan is ~100 ms, so 250 ms (≈2×, plus margin)
+/// only ever fires when the FLPR has genuinely stalled — turning a hang into a reported error the
+/// caller retries (and #349's relaunch escalation hooks).
+const FRAME_DEADLINE: Duration = Duration::from_millis(250);
 
 /// Why [`launch_flpr`] gave up — surfaced to the caller so a panel that can't come up degrades to a
 /// heartbeat idle rather than driving an un-launched FLPR (the same "never fault on bad hardware"
@@ -194,7 +225,17 @@ pub async fn launch_flpr() -> Result<(), FlprError> {
 
     for _ in 0..200 {
         match unsafe { addr_of!((*CONTROL).status).read_volatile() } {
-            FLPR_ALIVE => return Ok(()),
+            FLPR_ALIVE => {
+                // Arm the frame-ack doorbell (#347): EGU20 TRIGGERED[0] → its IRQ → [`FRAME_ACK`].
+                // P1 = the default peripheral lane (below the P0 GRTC time-driver; the ISR is one
+                // store + a signal). Armed before the first push so no ack is ever missed.
+                unsafe {
+                    EGU20_INTENSET.write_volatile(1); // bit0 = TRIGGERED[0]
+                    interrupt::EGU20.set_priority(Priority::P1);
+                    interrupt::EGU20.enable();
+                }
+                return Ok(());
+            }
             FLPR_BADMAG => return Err(FlprError::BadMagic),
             _ => Timer::after_millis(5).await,
         }
@@ -237,19 +278,6 @@ fn span_row_total(spans: &[(u16, u16)]) -> usize {
     spans.iter().take(MAX_DIRTY_SPANS).map(|&(_, count)| count as usize).sum()
 }
 
-/// Spin (bounded by [`SPIN_CAP`]) until `cond` holds. Returns `false` if the cap trips first (a
-/// stalled FLPR). Pure busy-poll — correct here because the M33 is a dedicated packer and COM runs
-/// on its own interrupt executor, so there is nothing else for this core to yield to.
-fn spin_until(cond: impl Fn() -> bool) -> bool {
-    for _ in 0..SPIN_CAP {
-        if cond() {
-            return true;
-        }
-        core::hint::spin_loop();
-    }
-    false
-}
-
 /// Dump the full cross-core handshake state when a frame stalls — the read-back that tells *how* the
 /// FLPR died. `m33_seq` ought to equal the `seq` we just rang; `flpr_seq`
 /// is where the FLPR's poll loop last got to (≪ `seq` ⇒ it never saw our doorbell); `magic` should
@@ -277,12 +305,13 @@ fn dump_flpr_state(seq: u32) {
 
 /// The LS021-over-FLPR display backend. Owns the resident RGB222 framebuffer plane; the app renders
 /// the whole frame into it (the map path writes it directly as device-64 via [`fb_mut`](Self::fb_mut)),
-/// and [`push_frame`](Self::push_frame) / [`push_spans`](Self::push_spans) drive it to glass over the
-/// ping-pong path. The board-agnostic [`DisplayDriver`](crate::display::DisplayDriver) impl
-/// (present / present_overlay) lives in `display::ls021_flpr`.
+/// and [`push_frame`](Self::push_frame) / [`push_spans`](Self::push_spans) hand it to the FLPR to
+/// scan directly (`fb_addr` + the span list, then await the ack — #347). The board-agnostic
+/// [`DisplayDriver`](crate::display::DisplayDriver) impl (present / present_overlay) lives in
+/// `display::ls021_flpr`.
 pub struct Ls021Flpr<'b> {
-    /// Resident RGB222 (device-64) frame plane, `FB_W × FB_H`. `fb_mut` writes it,
-    /// `push_frame`/`push_spans` pack + push it.
+    /// Resident RGB222 (device-64) frame plane, `FB_W × FB_H`. `fb_mut` writes it; the FLPR reads
+    /// it directly during a push (`push_frame`/`push_spans` publish its address + await the ack).
     fb: &'b mut [u8],
     /// The **self-diffing present** store: a per-row hash of the last-pushed framebuffer, so
     /// [`present_within`](Self::present_within) re-hashes the frame and pushes only the rows that
@@ -316,12 +345,14 @@ impl<'b> Ls021Flpr<'b> {
 
     /// Drive a **span-masked** frame to glass — the engine behind [`push_spans`](Self::push_spans)
     /// and [`push_frame`](Self::push_frame). Publishes the span list + the framebuffer address,
-    /// rings the FLPR, and waits for the frame ack — **that is the M33's entire per-frame work**:
-    /// the FLPR packs every dirty row to the wire itself, straight from the resident fb (#347).
-    /// The fb must not be written until the ack returns; the map plane guarantees that by
-    /// construction (it presents, then renders — never both at once).
-    /// Returns `true` if the ack checks out (`status == #dirty rows && flpr_seq == seq`).
-    fn run_spans(&mut self, spans: &[(u16, u16)]) -> bool {
+    /// rings the FLPR, and **awaits the EGU20 frame ack** — the M33's entire per-frame work: the
+    /// FLPR packs every dirty row to the wire itself, straight from the resident fb (#347), while
+    /// thread mode runs other futures. The fb must not be written until the ack returns; the map
+    /// plane guarantees that by construction (it presents, then renders — never both at once, and
+    /// it is suspended inside this `await` for the whole push).
+    /// Returns `true` if the ack checks out (`status == #dirty rows && flpr_seq == seq`) within
+    /// [`FRAME_DEADLINE`]; `false` = a stalled FLPR (the caller keeps the last frame and retries).
+    async fn run_spans(&mut self, spans: &[(u16, u16)]) -> bool {
         let total = span_row_total(spans);
         if total == 0 {
             return true; // nothing dirty — a no-op frame (defensive; callers pass ≥1 row)
@@ -334,19 +365,33 @@ impl<'b> Ls021Flpr<'b> {
         // it); the FLPR reads it only after the `ring_cmd` doorbell below orders it.
         unsafe { addr_of_mut!((*CONTROL).fb_addr).write_volatile(self.fb.as_ptr() as u32) };
 
+        // Drop any stale ack (a late echo of an older, timed-out frame) so the await below can't
+        // be satisfied by history.
+        FRAME_ACK.reset();
         let t_frame = Instant::now();
+        let deadline = t_frame + FRAME_DEADLINE;
         ring_cmd(s);
 
-        // Busy-wait the FLPR's frame ack (`flpr_seq` echoes our seq).
-        if !spin_until(|| unsafe { addr_of!((*CONTROL).flpr_seq).read_volatile() } == s) {
-            error!("LS021 FLPR: frame TIMEOUT — FLPR never echoed seq {=u32} (the scan stalled)", s);
-            dump_flpr_state(s);
-            return false;
+        // Await the FLPR's EGU20 frame ack; on a stale echo (`flpr_seq` ≠ our seq — a late ack of
+        // an older frame racing the reset above) keep waiting for ours until the deadline.
+        loop {
+            if with_deadline(deadline, FRAME_ACK.wait()).await.is_err() {
+                error!(
+                    "LS021 FLPR: frame TIMEOUT — no EGU20 ack for seq {=u32} within {=u64} ms (the scan stalled)",
+                    s,
+                    FRAME_DEADLINE.as_millis()
+                );
+                dump_flpr_state(s);
+                return false;
+            }
+            // The FLPR writes `status`/`frame_count` *before* the `flpr_seq` ack (its fence orders
+            // them); mirror that on the read side so the ack is never reordered ahead of the values
+            // it guards (issue #346).
+            cortex_m::asm::dmb();
+            if unsafe { addr_of!((*CONTROL).flpr_seq).read_volatile() } == s {
+                break;
+            }
         }
-        // The FLPR writes `status`/`frame_count` *before* the `flpr_seq` ack (its fence orders
-        // them); mirror that on the read side so the ack is never reordered ahead of the values it
-        // guards. Pedantic on the in-order M33, but it makes the contract self-evident (issue #346).
-        cortex_m::asm::dmb();
         let frame_us = t_frame.elapsed().as_micros();
         let status = unsafe { addr_of!((*CONTROL).status).read_volatile() };
         let frames = unsafe { addr_of!((*CONTROL).frame_count).read_volatile() };
@@ -372,16 +417,16 @@ impl<'b> Ls021Flpr<'b> {
     /// so a vertically-compact region costs a fraction of a full frame. Spans are
     /// `(start_row, count)`, ascending + disjoint, ≤ `MAX_DIRTY_SPANS`. A full frame is
     /// `&[(0, FB_H)]` (= [`push_frame`](Self::push_frame)).
-    pub fn push_spans(&mut self, spans: &[(u16, u16)]) -> bool {
-        self.run_spans(spans)
+    pub async fn push_spans(&mut self, spans: &[(u16, u16)]) -> bool {
+        self.run_spans(spans).await
     }
 
     /// Drive the **whole** resident framebuffer to glass — the degenerate one-span frame
     /// `&[(0, FB_H)]` (init-black + a forced full repaint). Does **not** touch the [`RowDiff`] store
     /// (it's a raw push, not a diff), so the next
     /// [`present_within`](Self::present_within) still re-seeds the store from a clean comparison.
-    pub fn push_frame(&mut self) -> bool {
-        self.push_spans(&[(0, FB_H as u16)])
+    pub async fn push_frame(&mut self) -> bool {
+        self.push_spans(&[(0, FB_H as u16)]).await
     }
 
     /// Re-arm the self-diffing present so the next [`present_within`](Self::present_within) pushes the
@@ -407,13 +452,13 @@ impl<'b> Ls021Flpr<'b> {
     /// it already agreeing). Reached only through the seam's `present(exclude)` — `pub(crate)` solely
     /// for the `display::ls021_flpr` adapter. Returns `false` on a transport fault (a stalled FLPR)
     /// so the caller keeps the last frame and retries.
-    pub(crate) fn present_within(&mut self, exclude: Option<(u16, u16)>) -> bool {
+    pub(crate) async fn present_within(&mut self, exclude: Option<(u16, u16)>) -> bool {
         let mut scratch = [(0u16, 0u16); MAX_DIRTY_SPANS];
         let spans = self.diff.diff_clipped(self.fb, FB_W, exclude, &mut scratch);
         if spans.is_empty() {
             return true; // nothing changed outside the bulge — push nothing (the whole point).
         }
-        self.push_spans(spans)
+        self.push_spans(spans).await
     }
 
     /// Re-present **only the rows of an overlay region** with `draw_overlay` composited over the clean
@@ -437,7 +482,7 @@ impl<'b> Ls021Flpr<'b> {
     /// **once** (one `draw_overlay` call ⇒ the caller's `InputPlane` lock is taken once per overlay
     /// frame, not per row); the transient cost is the ~6 KB RGB565 scratch + the ~3 KB save window
     /// on this call's stack — an overlay-only frame, never live during a deep map render.
-    pub fn push_overlay(
+    pub async fn push_overlay(
         &mut self,
         x0: u16,
         y0: u16,
@@ -475,7 +520,7 @@ impl<'b> Ls021Flpr<'b> {
 
         // 3. Push the full-width rows `[y0, y0+rows)` — the FLPR packs them from the fb, bulge
         //    included.
-        let ok = self.run_spans(&[(y0 as u16, rows as u16)]);
+        let ok = self.run_spans(&[(y0 as u16, rows as u16)]).await;
 
         // 4. Restore the clean map under the bulge — the fb is byte-identical to before, so the
         //    RowDiff store (which tracks the clean fb) needs no touch-up.
