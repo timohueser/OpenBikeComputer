@@ -51,6 +51,7 @@ public final class MockControl: @unchecked Sendable {
     private var _throughput: Int
     private var _radio: RadioState
     private var _bonded: Bool
+    private var _bondedName: String?
     private var _pairingFail: PairingFail?
     private var _pendingFailures: [DeviceError]
     private var _dropFraction: Double?
@@ -129,6 +130,15 @@ public final class MockControl: @unchecked Sendable {
         set { lock.withLocked { _bonded = newValue } }
     }
 
+    /// The bond record's saved device name — the *desired* name after a rename,
+    /// which diverges from `deviceInfo` when the config write failed (#361;
+    /// the reconcile pass keys off exactly that gap). `nil` until a save;
+    /// `MockBondStore` then serves `deviceInfo.name` (scenario boots).
+    public var bondedName: String? {
+        get { lock.withLocked { _bondedName } }
+        set { lock.withLocked { _bondedName = newValue } }
+    }
+
     /// The reported device identity (mirror of `fixtures.deviceInfo`).
     public var deviceInfo: DeviceInfo {
         get { lock.withLocked { _fixtures.deviceInfo } }
@@ -153,6 +163,7 @@ public final class MockControl: @unchecked Sendable {
             _throughput = preset.throughputBytesPerSec
             _radio = preset.radio
             _bonded = preset.bonded
+            _bondedName = nil
             _pairingFail = preset.pairingFail
             _pendingFailures = preset.pendingFailure.map { [$0] } ?? []
             _dropFraction = preset.dropAtFraction
