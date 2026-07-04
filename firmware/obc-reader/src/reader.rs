@@ -265,6 +265,9 @@ pub struct MapTables {
     lods: Vec<Lod, 16>,
     /// Styles indexed by id (0..=255) for O(1) lookup during rendering.
     styles: [Option<Style>; 256],
+    /// The backdrop style (bottom of the paint order; see [`Reader::backdrop_style`]), resolved
+    /// once at parse so the per-frame lookup is a field read, not a 256-slot scan.
+    backdrop: Option<Style>,
 }
 
 impl MapTables {
@@ -304,7 +307,10 @@ impl MapTables {
 
         let styles = parse_styles(src, style_offset, total);
         let lods = parse_lod_table(src, lod_table_offset, lod_count, total)?;
-        Ok(MapTables { version, bbox, marker_color, lods, styles })
+        // Resolve the backdrop (lowest `z_index`, ties broken by lowest id) once here; the table is
+        // immutable after parse, so `Reader::backdrop_style` never has to re-scan the 256 slots.
+        let backdrop = styles.iter().filter_map(|s| s.as_ref()).min_by_key(|s| (s.z_index, s.id)).copied();
+        Ok(MapTables { version, bbox, marker_color, lods, styles, backdrop })
     }
 }
 
@@ -359,9 +365,10 @@ impl<'a> Reader<'a> {
     /// The backdrop style: the one at the bottom of the paint order (lowest
     /// `z_index`, ties broken by lowest id). By convention the map's sea/
     /// background style sits here, so its color fills the screen before any
-    /// geometry is drawn. Returns `None` only for an empty style table.
+    /// geometry is drawn. Resolved once in [`MapTables::parse`]; returns `None`
+    /// only for an empty style table.
     pub fn backdrop_style(&self) -> Option<&Style> {
-        self.tables.styles.iter().filter_map(|s| s.as_ref()).min_by_key(|s| (s.z_index, s.id))
+        self.tables.backdrop.as_ref()
     }
 
     /// Pick the finest LOD whose range still covers `mpp` (meters/pixel). The
