@@ -28,6 +28,7 @@ use obc_ble::{CommandResult, CommandStatus, Config, ObjectType, Op, StatusMessag
 use trouble_host::prelude::*;
 
 use crate::object_store::ObjectStore;
+use crate::{SharedStore, SharedStoreMutex};
 
 use super::data_plane::publish_store_change;
 use super::gatt::{config_blob, Server};
@@ -45,14 +46,14 @@ struct CommandOutcome {
 /// device retains every tracked ride until a future device-side
 /// management UI — the app hides synced rides locally (tombstones) rather than deleting them
 /// here, so a re-sync can never resurrect them. Any other command byte is `unknownCommand`.
-fn run_command(data: &[u8], store: &RefCell<ObjectStore>) -> CommandOutcome {
+fn run_command(data: &[u8], store: &RefCell<ObjectStore>, shared: &mut SharedStore) -> CommandOutcome {
     let cmd = data.first().copied().unwrap_or(0);
     let (status, store_changed) = match (cmd, data) {
         (1, [_, ty, lo, hi, ..]) => {
             let id = u16::from_le_bytes([*lo, *hi]);
             match ObjectType::from_u8(*ty) {
                 Ok(ObjectType::Route) => {
-                    if store.borrow_mut().delete_route(id) {
+                    if store.borrow_mut().delete_route(shared, id) {
                         info!("ble: [cmd] deleted route object {}", id);
                         (CommandStatus::Ok, true)
                     } else {
@@ -84,7 +85,7 @@ enum TransferDisposition {
 /// (`notFound`), a non-zero upload offset or a second open mid-transfer, an unsupported op/type
 /// combination — is answered immediately with the typed [`obc_ble::TransferResult`] (`error` /
 /// `notFound` / `busy`), never a hang or a bare ATT failure.
-fn classify_transfer(data: &[u8], store: &RefCell<ObjectStore>) -> TransferDisposition {
+fn classify_transfer(data: &[u8], store: &RefCell<ObjectStore>, shared: &mut SharedStore) -> TransferDisposition {
     let Ok(desc) = TransferControl::decode(data) else {
         // A malformed descriptor — the app can't have meant a real transfer; report `error`.
         return TransferDisposition::Answer(transfer_result(0, TransferStatus::Error));
@@ -94,7 +95,7 @@ fn classify_transfer(data: &[u8], store: &RefCell<ObjectStore>) -> TransferDispo
             return TransferDisposition::AbortActive;
         }
         // Nothing in flight: discard any stray temp and confirm the abort.
-        store.borrow_mut().upload_discard();
+        store.borrow_mut().upload_discard(shared);
         return TransferDisposition::Answer(transfer_result(desc.object_id, TransferStatus::Aborted));
     }
     if TRANSFER_ACTIVE.load(Ordering::Relaxed) {
@@ -102,7 +103,7 @@ fn classify_transfer(data: &[u8], store: &RefCell<ObjectStore>) -> TransferDispo
     }
     match (desc.op, desc.ty) {
         (Op::Upload, ObjectType::Echo) => TransferDisposition::Arm(Armed::Echo(desc)),
-        (Op::Upload, ObjectType::Route) => match store.borrow_mut().upload_open(&desc) {
+        (Op::Upload, ObjectType::Route) => match store.borrow_mut().upload_open(shared, &desc) {
             Ok(rx) => TransferDisposition::Arm(Armed::Upload(desc, rx)),
             Err(status) => TransferDisposition::Answer(transfer_result(desc.object_id, status)),
         },
@@ -141,11 +142,17 @@ pub(crate) async fn serve_connection(
     server: &Server<'_>,
     conn: &GattConnection<'_, '_, DefaultPacketPool>,
     store: &RefCell<ObjectStore>,
+    shared: &SharedStoreMutex,
 ) -> u8 {
     let reason = loop {
         match conn.next().await {
             GattConnectionEvent::Disconnected { reason } => break reason,
             GattConnectionEvent::Gatt { event } => {
+                // Lock the shared store for this event's synchronous store work (an SD delete / upload
+                // check / config persist), then drop the guard before the async status/store-change
+                // sends below (#270). The ride loop's map render can hold the same lock, so a control
+                // write may wait a frame for it — harmless against the seconds-long supervision timeout.
+                let mut guard = shared.lock().await;
                 // Extract what a control-plane write needs answered *before* accepting (which consumes
                 // the event), then notify the `status` message(s) — never a hang / bare ATT failure. A
                 // validated transfer instead arms the CoC data plane (`serve_coc`), which answers when
@@ -157,13 +164,13 @@ pub(crate) async fn serve_connection(
                     GattEvent::Write(e) => {
                         let handle = e.handle();
                         if handle == server.obc.command.handle {
-                            let outcome = e.with_data(|_off, data| run_command(data, store));
+                            let outcome = e.with_data(|_off, data| run_command(data, store, &mut guard));
                             status_msg = Some(outcome.result);
                             store_changed = outcome.store_changed;
                             info!("ble: [gatt] command write");
                             e.accept()
                         } else if handle == server.obc.transfer_control.handle {
-                            match e.with_data(|_off, data| classify_transfer(data, store)) {
+                            match e.with_data(|_off, data| classify_transfer(data, store, &mut guard)) {
                                 TransferDisposition::Arm(armed) => {
                                     info!("ble: [gatt] transfer_control: transfer armed");
                                     TRANSFER_ACTIVE.store(true, Ordering::Relaxed);
@@ -185,7 +192,7 @@ pub(crate) async fn serve_connection(
                             let applied = e.with_data(|_off, data| match Config::decode(data) {
                                 Some(cfg) => match core::str::from_utf8(cfg.name) {
                                     Ok(name) => {
-                                        store.borrow_mut().apply_config(name, cfg.units);
+                                        store.borrow_mut().apply_config(&mut guard, name, cfg.units);
                                         true
                                     }
                                     Err(_) => false,
@@ -214,6 +221,10 @@ pub(crate) async fn serve_connection(
                     GattEvent::NotAllowed(e) => e.accept(),
                     GattEvent::Other(e) => e.accept(),
                 };
+                // Store work for this event is done; release the shared lock before the async sends
+                // (the RefCell borrows above already ended with `reply`). `config_blob`/digest below
+                // read only the catalog + the settings cache, no card.
+                drop(guard);
                 match reply {
                     Ok(reply) => reply.send().await,
                     Err(e) => warn!("ble: [gatt] error sending response: {:?}", e),
@@ -268,7 +279,8 @@ pub(crate) async fn serve_connection(
                 info!("ble: [pair] complete — level {:?}, bonded {}", security_level, bond.is_some());
                 // Persist the single bond: a fresh pairing replaces whatever was stored.
                 if let Some(bond) = bond {
-                    store.borrow_mut().save_bond(&bond);
+                    let mut guard = shared.lock().await;
+                    store.borrow_mut().save_bond(&mut guard, &bond);
                 }
                 publish(|s| {
                     s.passkey = None;
@@ -292,7 +304,8 @@ pub(crate) async fn serve_connection(
                 // The peer paired again despite our stored bond ⇒ it lost its keys (the app/OS
                 // "forgot" us). Drop our stale bond so this fresh pairing is the new one.
                 warn!("ble: [pair] peer lost its bond — clearing stored bond");
-                store.borrow_mut().clear_bond();
+                let mut guard = shared.lock().await;
+                store.borrow_mut().clear_bond(&mut guard);
             }
             _ => {}
         }

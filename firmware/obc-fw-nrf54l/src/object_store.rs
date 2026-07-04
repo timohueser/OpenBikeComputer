@@ -23,8 +23,11 @@
 //! - **Config ↔ settings**: the Config blob reads from / writes through the persisted [`Settings`]
 //!   (`device_name` + `units`), so a rename survives a power cycle and feeds the advertised name.
 //!
-//! Everything here is synchronous SD I/O; the BLE plane borrows the store through a `RefCell` **never
-//! across an `await`** (single executor).
+//! Everything here is synchronous SD I/O. The SD card + RRAM store are **not** owned here — they
+//! live in the shared [`crate::SharedStore`] (the async mutex the map plane's ride loop also locks,
+//! #270), passed as a `&mut SharedStore` into each storage/settings method; a BLE plane locks it per
+//! call and drops the guard before its next `await`. `ObjectStore` itself (catalog + settings cache)
+//! stays behind a `RefCell` the BLE planes borrow **never across an `await`** (single executor).
 
 use embedded_sdmmc::ShortFileName;
 use heapless::Vec;
@@ -36,7 +39,7 @@ use obc_ble::{
 };
 
 use crate::sd::Storage;
-use crate::settings::RramSettingsStore;
+use crate::SharedStore;
 
 /// One catalog slot: the object id and where its bytes live (routes and rides alike).
 struct ObjectSlot {
@@ -60,11 +63,11 @@ const LIST_BUF_LEN: usize = ListHeader::object_len(if MAX_RIDES > MAX_ROUTES { M
 const SIDELOAD_ID_BASE: u16 = 0xFF00;
 
 pub struct ObjectStore {
-    /// The mounted card, or `None` (no card): every route operation then answers `error`,
-    /// while config ↔ settings (RRAM, card-independent) keeps working.
-    storage: Option<Storage>,
-    settings_store: RramSettingsStore,
-    /// The persisted settings, loaded once at boot — the config plane's read/modify cache.
+    /// The persisted settings, loaded once at boot — the config plane's read/modify cache. The SD
+    /// card and the RRAM store themselves are **not** owned here: they live in the shared
+    /// [`SharedStore`] both planes lock, which each storage/settings method takes as a `&mut` param
+    /// (#270). Keeping only the catalog + this cache in `ObjectStore` lets the BLE planes hold it
+    /// through a `RefCell` (never across an `await`) while the card is locked separately per call.
     settings: Settings,
     routes: Vec<ObjectSlot, MAX_ROUTES>,
     /// The stored rides, scanned once at boot: the `ble` build has no ride loop, so the catalog can't
@@ -81,12 +84,11 @@ pub struct ObjectStore {
 
 impl ObjectStore {
     /// Mount-time construction: load settings, scan `/routes` into the id table, and sweep
-    /// aborted commits (files whose held-back magic never got patched — see `sd.rs`).
-    pub fn new(storage: Option<Storage>, mut settings_store: RramSettingsStore) -> Self {
-        let settings = settings_store.load().unwrap_or_default();
+    /// aborted commits (files whose held-back magic never got patched — see `sd.rs`). Runs under a
+    /// boot-time lock of the shared store (`shared`), which it borrows for the settings load + scans.
+    pub fn new(shared: &mut SharedStore) -> Self {
+        let settings = shared.settings.load().unwrap_or_default();
         let mut store = ObjectStore {
-            storage,
-            settings_store,
             settings,
             routes: Vec::new(),
             rides: Vec::new(),
@@ -94,23 +96,18 @@ impl ObjectStore {
             revision: 1,
             list_buf: [0; LIST_BUF_LEN],
         };
-        store.rescan();
-        store.rescan_rides();
+        store.rescan(shared);
+        store.rescan_rides(shared);
         store
-    }
-
-    /// Whether a card is mounted (the status screen's `sd` line).
-    pub fn sd_ok(&self) -> bool {
-        self.storage.is_some()
     }
 
     /// (Re)build the id table from the card. Uploaded files carry their **durable id in the
     /// filename** (`RT{id}.OBR`); side-loaded `.obcr` files get session ids from the
     /// [`SIDELOAD_ID_BASE`] band. `next_id` resumes past the highest stored upload id, so a
     /// fresh upload can't alias a stored object across reboots.
-    fn rescan(&mut self) {
+    fn rescan(&mut self, shared: &mut SharedStore) {
         self.routes.clear();
-        let Some(storage) = &mut self.storage else { return };
+        let Some(storage) = &mut shared.storage else { return };
         let mut names: Vec<ShortFileName, MAX_ROUTES> = Vec::new();
         storage.for_each_route_file(|n| {
             if !names.is_full() {
@@ -159,9 +156,9 @@ impl ObjectStore {
     /// the routes'. An interrupted save (the held-back version byte, exactly
     /// that signature) is swept; a merely unreadable file is kept off the catalog but never
     /// deleted. Ordered as the directory lists them; the app sorts by `start_time`.
-    fn rescan_rides(&mut self) {
+    fn rescan_rides(&mut self, shared: &mut SharedStore) {
         self.rides.clear();
-        let Some(storage) = &mut self.storage else { return };
+        let Some(storage) = &mut shared.storage else { return };
         let mut entries: Vec<(u16, ShortFileName), MAX_RIDES> = Vec::new();
         let mut overflow = false;
         storage.for_each_ride_file(|id, n| {
@@ -226,10 +223,10 @@ impl ObjectStore {
     /// Apply a validated Config write: persist name + units through the RRAM store. The name is stored
     /// verbatim; an empty name clears back to factory (the factory `OBC-XXXX` returns to the
     /// advertisement).
-    pub fn apply_config(&mut self, name: &str, units: u8) {
+    pub fn apply_config(&mut self, shared: &mut SharedStore, name: &str, units: u8) {
         self.settings.device_name = DeviceName::from_str_lossy(name);
         self.settings.units = if units == 1 { obc_app::Units::Imperial } else { obc_app::Units::Metric };
-        self.settings_store.save(&self.settings);
+        shared.settings.save(&self.settings);
     }
 
     // ==================== BLE bond ↔ RRAM ====================
@@ -237,26 +234,26 @@ impl ObjectStore {
     // to the store so `ble.rs` reaches the bond through the one `RefCell<ObjectStore>` it holds.
 
     /// The stored bond (LTK + peer identity/IRK), or `None` for open pairing.
-    pub fn load_bond(&mut self) -> Option<trouble_host::prelude::BondInformation> {
-        self.settings_store.load_bond()
+    pub fn load_bond(&mut self, shared: &mut SharedStore) -> Option<trouble_host::prelude::BondInformation> {
+        shared.settings.load_bond()
     }
 
     /// Persist the single bond — a fresh pairing replaces it (single-peer policy).
-    pub fn save_bond(&mut self, bond: &trouble_host::prelude::BondInformation) {
-        self.settings_store.save_bond(bond);
+    pub fn save_bond(&mut self, shared: &mut SharedStore, bond: &trouble_host::prelude::BondInformation) {
+        shared.settings.save_bond(bond);
     }
 
     /// Forget the stored bond (the peer signalled it lost its keys) → next contact re-pairs.
-    pub fn clear_bond(&mut self) {
-        self.settings_store.clear_bond();
+    pub fn clear_bond(&mut self, shared: &mut SharedStore) {
+        shared.settings.clear_bond();
     }
 
     // ==================== delete ====================
 
     /// Delete a stored route by object id. `true` = deleted (revision bumped).
-    pub fn delete_route(&mut self, id: u16) -> bool {
+    pub fn delete_route(&mut self, shared: &mut SharedStore, id: u16) -> bool {
         let Some(idx) = self.slot_index(id) else { return false };
-        let Some(storage) = &mut self.storage else { return false };
+        let Some(storage) = &mut shared.storage else { return false };
         if !storage.delete_route_file(&self.routes[idx].file) {
             return false;
         }
@@ -272,13 +269,13 @@ impl ObjectStore {
     /// offset is rejected (`Receiver::new`) — the app always sends 0. The SD temp is **not** opened
     /// here: the data plane opens it via [`upload_begin`](Self::upload_begin) at the first CoC byte,
     /// so an armed transfer whose CoC never opens holds no storage handle.
-    pub fn upload_open(&mut self, desc: &TransferControl) -> Result<Receiver, TransferStatus> {
+    pub fn upload_open(&mut self, shared: &SharedStore, desc: &TransferControl) -> Result<Receiver, TransferStatus> {
         // A named id must exist (0xFFFF = fresh); check before arming.
         if desc.object_id != TransferControl::NEW_OBJECT_ID && self.slot_index(desc.object_id).is_none() {
             return Err(TransferStatus::NotFound);
         }
         // No card ⇒ no upload; answer now rather than after the CoC opens.
-        if self.storage.is_none() {
+        if shared.storage.is_none() {
             return Err(TransferStatus::Error);
         }
         Receiver::new(desc).map_err(|_| TransferStatus::Error)
@@ -287,28 +284,28 @@ impl ObjectStore {
     /// Open (truncating) the SD upload temp — called by the data plane when the transfer's bytes
     /// actually start flowing (see [`upload_open`](Self::upload_open)). False = no card / open
     /// failure (the caller answers `error`).
-    pub fn upload_begin(&mut self) -> bool {
-        self.storage.as_mut().is_some_and(|s| s.upload_begin())
+    pub fn upload_begin(&mut self, shared: &mut SharedStore) -> bool {
+        shared.storage.as_mut().is_some_and(|s| s.upload_begin())
     }
 
     /// Sink one CoC chunk: append to the temp. False = storage failure (the caller aborts).
-    pub fn upload_append(&mut self, bytes: &[u8]) -> bool {
-        self.storage.as_mut().is_some_and(|s| s.upload_append(bytes))
+    pub fn upload_append(&mut self, shared: &mut SharedStore, bytes: &[u8]) -> bool {
+        shared.storage.as_mut().is_some_and(|s| s.upload_append(bytes))
     }
 
     /// The whole link dropped, or the CoC dropped mid-upload, or the app aborted (op 3): discard
     /// the partial upload and release any open storage handles a cancelled future couldn't.
     /// Uploads don't resume, so nothing is kept — the app re-sends from the start.
-    pub fn link_reset(&mut self) {
-        self.upload_discard();
-        if let Some(storage) = &mut self.storage {
+    pub fn link_reset(&mut self, shared: &mut SharedStore) {
+        self.upload_discard(shared);
+        if let Some(storage) = &mut shared.storage {
             storage.close_object();
         }
     }
 
     /// Abort/interrupt: discard the in-flight temp.
-    pub fn upload_discard(&mut self) {
-        if let Some(storage) = &mut self.storage {
+    pub fn upload_discard(&mut self, shared: &mut SharedStore) {
+        if let Some(storage) = &mut shared.storage {
             storage.upload_abort();
         }
     }
@@ -317,24 +314,24 @@ impl ObjectStore {
     /// replaced file swapped), the revision bumps, and the result carries the assigned id; on a mismatch
     /// nothing is committed and the temp is dropped. Returns `(object_id, status)` for the
     /// `transferResult`.
-    pub fn upload_finish(&mut self, rx: &Receiver) -> (u16, TransferStatus) {
+    pub fn upload_finish(&mut self, shared: &mut SharedStore, rx: &Receiver) -> (u16, TransferStatus) {
         let outcome = match rx.outcome() {
             Some(o) => o,
             None => return (rx.object_id(), TransferStatus::Error), // caller bug: not complete
         };
         if outcome.status != TransferStatus::Committed {
-            self.upload_discard();
+            self.upload_discard(shared);
             return (rx.object_id(), outcome.status);
         }
         let fresh = rx.object_id() == TransferControl::NEW_OBJECT_ID;
         if fresh && (self.routes.is_full() || self.next_id >= SIDELOAD_ID_BASE) {
             // Storage-full, typed: the catalog can't index another object (or the durable-id space is
             // exhausted — practically unreachable), so reject before touching the card's name slots.
-            self.upload_discard();
+            self.upload_discard(shared);
             return (rx.object_id(), TransferStatus::Error);
         }
         let replace_idx = if fresh { None } else { self.slot_index(rx.object_id()) };
-        let Some(storage) = &mut self.storage else { return (rx.object_id(), TransferStatus::Error) };
+        let Some(storage) = &mut shared.storage else { return (rx.object_id(), TransferStatus::Error) };
         let replace_file = replace_idx.map(|i| self.routes[i].file.clone());
         match storage.upload_commit(replace_file.as_ref(), self.next_id) {
             Some((file, byte_len, _info)) => {
@@ -360,7 +357,7 @@ impl ObjectStore {
                 // drop its slot if so, so the catalog matches the card.
                 if let Some(i) = replace_idx {
                     let gone =
-                        self.storage.as_ref().is_none_or(|s| s.route_object_info(&self.routes[i].file).is_none());
+                        shared.storage.as_ref().is_none_or(|s| s.route_object_info(&self.routes[i].file).is_none());
                     if gone {
                         self.routes.remove(i);
                         self.bump_revision();
@@ -379,6 +376,7 @@ impl ObjectStore {
     /// facts the diagnostics blob renders (unused by the other types); the runner builds it once.
     pub fn download_open(
         &mut self,
+        shared: &mut SharedStore,
         desc: &TransferControl,
         diag: &DiagInput<'_>,
     ) -> Result<(StreamSender, DownloadSource), TransferStatus> {
@@ -388,10 +386,10 @@ impl ObjectStore {
                 // masquerade as "the device holds nothing" — the app takes a committed list
                 // as authoritative and durably clears its on-device links off it. Answer the
                 // typed error instead; the app keeps its links and retries later.
-                if self.storage.is_none() {
+                if shared.storage.is_none() {
                     return Err(TransferStatus::Error);
                 }
-                let Some(len) = self.build_list(desc.ty) else {
+                let Some(len) = self.build_list(shared, desc.ty) else {
                     return Err(TransferStatus::Error);
                 };
                 let crc = Crc32::checksum(&self.list_buf[..len]);
@@ -403,7 +401,7 @@ impl ObjectStore {
                     return Err(TransferStatus::NotFound);
                 };
                 let file = self.routes[idx].file.clone();
-                self.open_object_download(desc, &file, false)
+                self.open_object_download(shared, desc, &file, false)
             }
             // A ride download is the same verbatim stream — the stored `RD{id}.ORD` *is* the wire
             // object — just out of `/tracks`.
@@ -412,14 +410,14 @@ impl ObjectStore {
                     return Err(TransferStatus::NotFound);
                 };
                 let file = slot.file.clone();
-                self.open_object_download(desc, &file, true)
+                self.open_object_download(shared, desc, &file, true)
             }
             // Diagnostics: render the text blob into the object buffer and stream it like a list.
             // Deliberately **card-independent** — diagnostics must be readable exactly
             // when things are broken, so no `storage` gate here (the store counts then honestly read
             // 0 with `sd: --`).
             ObjectType::Diagnostics => {
-                let len = self.build_diagnostics(diag);
+                let len = self.build_diagnostics(shared, diag);
                 let crc = Crc32::checksum(&self.list_buf[..len]);
                 let tx = StreamSender::new(desc, len as u32, crc).map_err(|_| TransferStatus::Error)?;
                 Ok((tx, DownloadSource::List))
@@ -431,7 +429,7 @@ impl ObjectStore {
     /// Render the diagnostics text (an opaque, human-readable UTF-8 blob, **not** an API) into
     /// [`Self::list_buf`], returning its byte length: identity, the persisted boot counter, uptime, the
     /// link counters, and the store's view of the card.
-    fn build_diagnostics(&mut self, link: &DiagInput<'_>) -> usize {
+    fn build_diagnostics(&mut self, shared: &SharedStore, link: &DiagInput<'_>) -> usize {
         let mut w = BufWriter { buf: &mut self.list_buf, len: 0 };
         let _ = core::fmt::write(
             &mut w,
@@ -443,14 +441,14 @@ impl ObjectStore {
                 link.hardware,
                 link.serial,
                 obc_ble::PROTOCOL_VERSION,
-                self.settings_store.boot_count(),
+                shared.settings.boot_count(),
                 link.uptime_s,
                 link.connects,
                 link.disconnects,
                 link.last_disconnect_reason,
                 self.routes.len(),
                 self.rides.len(),
-                if self.storage.is_some() { "ok" } else { "--" },
+                if shared.storage.is_some() { "ok" } else { "--" },
             ),
         );
         w.len
@@ -460,11 +458,12 @@ impl ObjectStore {
     /// whole-object CRC the announce carries), the [`StreamSender`].
     fn open_object_download(
         &mut self,
+        shared: &mut SharedStore,
         desc: &TransferControl,
         file: &ShortFileName,
         ride: bool,
     ) -> Result<(StreamSender, DownloadSource), TransferStatus> {
-        let Some(storage) = &mut self.storage else { return Err(TransferStatus::Error) };
+        let Some(storage) = &mut shared.storage else { return Err(TransferStatus::Error) };
         let opened = if ride { storage.open_ride_object(file) } else { storage.open_object(file) };
         let Some(len) = opened else {
             return Err(TransferStatus::Error);
@@ -479,7 +478,7 @@ impl ObjectStore {
 
     /// Read the chunk at `offset` into `buf` from the opened download source. False = read
     /// failure (the caller answers `error`).
-    pub fn download_read(&mut self, source: DownloadSource, offset: u32, buf: &mut [u8]) -> bool {
+    pub fn download_read(&self, shared: &SharedStore, source: DownloadSource, offset: u32, buf: &mut [u8]) -> bool {
         match source {
             DownloadSource::List => {
                 let (start, end) = (offset as usize, offset as usize + buf.len());
@@ -489,7 +488,7 @@ impl ObjectStore {
                 buf.copy_from_slice(&self.list_buf[start..end]);
                 true
             }
-            DownloadSource::Object => self
+            DownloadSource::Object => shared
                 .storage
                 .as_ref()
                 .and_then(|s| s.object_source())
@@ -498,8 +497,8 @@ impl ObjectStore {
     }
 
     /// Close the download's storage handle (done, dropped, or superseded).
-    pub fn download_close(&mut self) {
-        if let Some(storage) = &mut self.storage {
+    pub fn download_close(&mut self, shared: &mut SharedStore) {
+        if let Some(storage) = &mut shared.storage {
             storage.close_object();
         }
     }
@@ -514,10 +513,10 @@ impl ObjectStore {
     /// committed list as authoritative (it reconciles its on-device link set off it), and a list
     /// shorter than the `objectStore` digest's count would make it drop a still-present route.
     /// `None` → the caller answers a typed `error` and the app retries, keeping its links.
-    fn build_list(&mut self, ty: ObjectType) -> Option<usize> {
+    fn build_list(&mut self, shared: &SharedStore, ty: ObjectType) -> Option<usize> {
         // Each arm only supplies its per-entry field mapping (slot → encoded entry, `None` on a
         // failed read); `encode_list` owns the shared header-offset arithmetic both share.
-        let (len, count) = match (&self.storage, ty) {
+        let (len, count) = match (&shared.storage, ty) {
             (Some(storage), ObjectType::RouteList) => Self::encode_list(
                 &mut self.list_buf,
                 self.routes.iter().map(|slot| {

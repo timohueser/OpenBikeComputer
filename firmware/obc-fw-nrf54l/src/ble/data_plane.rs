@@ -35,6 +35,7 @@ use obc_ble::{ObjectType, Receiver, StatusMessage, StoreChanged, TransferControl
 use trouble_host::prelude::*;
 
 use crate::object_store::{DiagInput, ObjectStore};
+use crate::SharedStoreMutex;
 
 use super::gatt::{firmware_revision, serial_string, Server, HARDWARE_REVISION};
 use super::lifecycle::{conn_params, HOST_OP_TIMEOUT};
@@ -55,6 +56,7 @@ pub(crate) async fn serve_coc(
     server: &Server<'_>,
     conn: &GattConnection<'_, '_, DefaultPacketPool>,
     store: &RefCell<ObjectStore>,
+    shared: &SharedStoreMutex,
 ) -> ! {
     let listener = L2capChannel::listen(stack, conn.raw());
     // The receive buffer must be ≥ the negotiated SDU MTU (defaults to the pool MTU − 6 = 245).
@@ -90,8 +92,8 @@ pub(crate) async fn serve_coc(
             }
             let outcome = match armed {
                 Armed::Echo(desc) => run_echo(stack, server, &mut ch, &desc, &mut buf).await,
-                Armed::Upload(desc, rx) => run_upload(stack, server, store, &mut ch, &desc, rx, &mut buf).await,
-                Armed::Download(desc) => run_download(stack, server, store, &mut ch, &desc, &mut buf).await,
+                Armed::Upload(desc, rx) => run_upload(stack, server, store, shared, &mut ch, &desc, rx, &mut buf).await,
+                Armed::Download(desc) => run_download(stack, server, store, shared, &mut ch, &desc, &mut buf).await,
             };
             // The transfer concluded (or the channel died): reopen the gate, and drain an abort
             // that raced the conclusion so it can't insta-abort the next transfer.
@@ -133,10 +135,12 @@ pub(crate) async fn publish_store_change(
 /// OBCR-header validate, atomic promote (see `sd.rs`) — and answer with the assigned id. Uploads don't
 /// resume: a channel drop or an abort (op 3) discards the partial, and the app re-sends the object from
 /// the start.
+#[allow(clippy::too_many_arguments)]
 async fn run_upload(
     stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
     server: &Server<'_>,
     store: &RefCell<ObjectStore>,
+    shared: &SharedStoreMutex,
     ch: &mut L2capChannel<'_, DefaultPacketPool>,
     desc: &TransferControl,
     mut rx: Receiver,
@@ -146,7 +150,15 @@ async fn run_upload(
     // Open the SD temp here — at the first real byte of the transfer — rather than when the
     // control plane armed it: a peer that writes `transferControl` but never opens the CoC then
     // holds no storage handle (it only wedges its own link's one-transfer gate until it drops).
-    if !store.borrow_mut().upload_begin() {
+    // Each store call locks the shared card just for its own duration, then releases before the next
+    // `ch.receive`/`ch.send` await — so the ride loop's map render interleaves between chunks (#270).
+    // The guard is always bound *before* `store.borrow_mut()` so the RefCell borrow never spans the
+    // lock's `.await`.
+    let began = {
+        let mut guard = shared.lock().await;
+        store.borrow_mut().upload_begin(&mut guard)
+    };
+    if !began {
         warn!("ble: [coc] cannot open upload temp — rejecting");
         notify_status(server, stack, transfer_result(rx.object_id(), TransferStatus::Error)).await;
         return TransferOutcome::Answered;
@@ -157,28 +169,44 @@ async fn run_upload(
             Either::First(_) => {
                 // Error or an empty SDU with bytes still expected — the channel is done for.
                 // Discard the partial; the app re-uploads from the start.
-                store.borrow_mut().upload_discard();
+                {
+                    let mut guard = shared.lock().await;
+                    store.borrow_mut().upload_discard(&mut guard);
+                }
                 info!("ble: [coc] upload interrupted — discarded (uploads restart)");
                 notify_status(server, stack, transfer_result(rx.object_id(), TransferStatus::Aborted)).await;
                 return TransferOutcome::ChannelDropped;
             }
             Either::Second(()) => {
                 // The app aborted (op 3): discard and confirm.
-                store.borrow_mut().upload_discard();
+                {
+                    let mut guard = shared.lock().await;
+                    store.borrow_mut().upload_discard(&mut guard);
+                }
                 info!("ble: [coc] upload aborted by the app");
                 notify_status(server, stack, transfer_result(rx.object_id(), TransferStatus::Aborted)).await;
                 return TransferOutcome::Answered;
             }
         };
         let consumed = rx.push(&buf[..n]);
-        if !store.borrow_mut().upload_append(&buf[..consumed]) {
-            store.borrow_mut().upload_discard();
+        let appended = {
+            let mut guard = shared.lock().await;
+            store.borrow_mut().upload_append(&mut guard, &buf[..consumed])
+        };
+        if !appended {
+            {
+                let mut guard = shared.lock().await;
+                store.borrow_mut().upload_discard(&mut guard);
+            }
             warn!("ble: [coc] SD append failed — upload rejected");
             notify_status(server, stack, transfer_result(rx.object_id(), TransferStatus::Error)).await;
             return TransferOutcome::Answered;
         }
     }
-    let (id, status) = store.borrow_mut().upload_finish(&rx);
+    let (id, status) = {
+        let mut guard = shared.lock().await;
+        store.borrow_mut().upload_finish(&mut guard, &rx)
+    };
     let committed = status == TransferStatus::Committed;
     info!("ble: [coc] upload finished: id {} -> {}", id, if committed { "committed" } else { "rejected" });
     let offset = if committed { rx.total_len() } else { 0 };
@@ -197,6 +225,7 @@ async fn run_download(
     stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
     server: &Server<'_>,
     store: &RefCell<ObjectStore>,
+    shared: &SharedStoreMutex,
     ch: &mut L2capChannel<'_, DefaultPacketPool>,
     desc: &TransferControl,
     buf: &mut [u8],
@@ -218,7 +247,10 @@ async fn run_download(
         disconnects: s.disconnects,
         last_disconnect_reason: s.last_disconnect_reason,
     };
-    let opened = store.borrow_mut().download_open(desc, &diag);
+    let opened = {
+        let mut guard = shared.lock().await;
+        store.borrow_mut().download_open(&mut guard, desc, &diag)
+    };
     let (mut tx, source) = match opened {
         Ok(open) => open,
         Err(status) => {
@@ -231,7 +263,10 @@ async fn run_download(
     info!("ble: [coc] download start: {} bytes from offset {}", announce.total_len, announce.offset);
     if let Err(e) = server.notify(stack, server.obc.transfer_control.handle, &announce.encode()).await {
         warn!("ble: [coc] announce notify failed: {:?}", defmt::Debug2Format(&e));
-        store.borrow_mut().download_close();
+        {
+            let mut guard = shared.lock().await;
+            store.borrow_mut().download_close(&mut guard);
+        }
         // Still answer the transfer the app opened — a `status` notify can land even when the
         // `transferControl` notify didn't (different CCCD), so the app isn't left waiting for a
         // stream that will never start.
@@ -240,15 +275,25 @@ async fn run_download(
     }
     while !tx.is_complete() {
         if TRANSFER_ABORT.try_take().is_some() {
-            store.borrow_mut().download_close();
+            {
+                let mut guard = shared.lock().await;
+                store.borrow_mut().download_close(&mut guard);
+            }
             info!("ble: [coc] download aborted by the app");
             notify_status(server, stack, transfer_result_at(desc.object_id, TransferStatus::Aborted, tx.position()))
                 .await;
             return TransferOutcome::Answered;
         }
         let n = tx.next_chunk_len(CHUNK_LEN.min(buf.len()));
-        if !store.borrow_mut().download_read(source, tx.position(), &mut buf[..n]) {
-            store.borrow_mut().download_close();
+        let read_ok = {
+            let guard = shared.lock().await;
+            store.borrow().download_read(&guard, source, tx.position(), &mut buf[..n])
+        };
+        if !read_ok {
+            {
+                let mut guard = shared.lock().await;
+                store.borrow_mut().download_close(&mut guard);
+            }
             warn!("ble: [coc] SD read failed — download abandoned");
             notify_status(server, stack, transfer_result(desc.object_id, TransferStatus::Error)).await;
             return TransferOutcome::Answered;
@@ -260,11 +305,17 @@ async fn run_download(
             Either::First(Ok(())) => {}
             Either::First(Err(e)) => {
                 info!("ble: [coc] download send ended: {:?}", defmt::Debug2Format(&e));
-                store.borrow_mut().download_close();
+                {
+                    let mut guard = shared.lock().await;
+                    store.borrow_mut().download_close(&mut guard);
+                }
                 return TransferOutcome::ChannelDropped;
             }
             Either::Second(()) => {
-                store.borrow_mut().download_close();
+                {
+                    let mut guard = shared.lock().await;
+                    store.borrow_mut().download_close(&mut guard);
+                }
                 info!("ble: [coc] download aborted by the app (mid-send)");
                 notify_status(
                     server,
@@ -277,7 +328,10 @@ async fn run_download(
         }
         tx.advance(n);
     }
-    store.borrow_mut().download_close();
+    {
+        let mut guard = shared.lock().await;
+        store.borrow_mut().download_close(&mut guard);
+    }
     let result = tx.outcome().unwrap(); // complete ⇒ Some
     info!("ble: [coc] download done: {} bytes", result.committed_offset);
     notify_status(server, stack, StatusMessage::TransferResult(result).encode()).await;

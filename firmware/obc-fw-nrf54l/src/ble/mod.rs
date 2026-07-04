@@ -62,6 +62,7 @@ use trouble_host::prelude::*;
 
 use crate::init_static;
 use crate::object_store::ObjectStore;
+use crate::SharedStoreMutex;
 
 use control::serve_connection;
 use data_plane::{battery_task, serve_coc};
@@ -162,10 +163,12 @@ pub async fn run(
     sdc_p: sdc::Peripherals<'static>,
     cracen_p: Peri<'static, peripherals::CRACEN>,
     store: ObjectStore,
+    shared: &'static SharedStoreMutex,
 ) -> ! {
-    // The object store: SD catalog + RRAM settings behind one RefCell. The control plane (GATT writes)
-    // and the data plane (CoC transfers) both borrow it, always synchronously — never across an
-    // `await` — which is sound on the one thread-mode executor.
+    // The object store: the catalog/upload/digest semantics behind a RefCell — both BLE planes (GATT
+    // control + CoC data) borrow it synchronously, never across an `await`. The SD card + RRAM
+    // settings it operates on live in `shared` (the async mutex the ride loop shares), which each
+    // plane locks per call and passes into the store method (#270).
     let store = core::cell::RefCell::new(store);
     // LFCLK = the internal RC at Nordic's recommended calibration cadence (calibrate every
     // 16×0.25 s = 4 s; temp-check every 2 intervals) — guarantees the ±500 ppm class the accuracy
@@ -229,7 +232,11 @@ pub async fn run(
     // Re-establish the stored bond: hand it to the host so the controller's resolving list resolves the
     // bonded phone's RPA on reconnect and re-encrypts with the stored LTK — no dialog, no interaction.
     // Absent/torn → open pairing.
-    if let Some(bond) = store.borrow_mut().load_bond() {
+    let stored_bond = {
+        let mut guard = shared.lock().await;
+        store.borrow_mut().load_bond(&mut guard)
+    };
+    if let Some(bond) = stored_bond {
         match stack.add_bond_information(bond) {
             Ok(()) => info!("ble: restored stored bond — bonded reconnect armed"),
             Err(e) => warn!("ble: add_bond_information failed: {:?}", defmt::Debug2Format(&e)),
@@ -307,10 +314,10 @@ pub async fn run(
             // concurrently and never returns, so `select` tears it all down the moment the link drops
             // (any disconnect drops straight back to advertising).
             let reason = match select(
-                serve_connection(&stack, &server, &conn, &store),
+                serve_connection(&stack, &server, &conn, &store, shared),
                 join3(
                     negotiate_link(&stack, &conn),
-                    serve_coc(&stack, &server, &conn, &store),
+                    serve_coc(&stack, &server, &conn, &store, shared),
                     battery_task(&stack, &server, &conn),
                 ),
             )
@@ -322,7 +329,10 @@ pub async fn run(
             // The drop may have cancelled the data plane mid-transfer (at an await): discard any
             // in-flight upload + release the store's open handles, clear the one-transfer gate, and
             // drain any latched arm/abort so the next connection starts clean (uploads restart).
-            store.borrow_mut().link_reset();
+            {
+                let mut guard = shared.lock().await;
+                store.borrow_mut().link_reset(&mut guard);
+            }
             TRANSFER_ACTIVE.store(false, Ordering::Relaxed);
             TRANSFER_ARM.reset();
             TRANSFER_ABORT.reset();
