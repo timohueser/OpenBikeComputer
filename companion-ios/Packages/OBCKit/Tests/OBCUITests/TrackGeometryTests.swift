@@ -3,7 +3,8 @@ import OBCDomain
 @testable import OBCUI
 
 /// Geometry rules behind the drawing components — the letterbox transform in
-/// `TrackPreviewView` and the waypoint-marker placement in `WaypointsListView`.
+/// `TrackPreviewView` and the waypoint-marker placement on the grid preview
+/// (`TrackPreviewView.Marker.middleWaypointPins`).
 /// `@MainActor` because the helpers are statics on `@MainActor` SwiftUI views
 /// (and the returned transform closure is non-Sendable, so it must stay there).
 @MainActor
@@ -63,11 +64,11 @@ final class TrackGeometryTests: XCTestCase {
 
     // ------------------------------------------------------- waypoint markers
     func testMarkerIndexClampsToPolyline() {
-        XCTAssertEqual(WaypointsListView.markerPointIndex(fraction: 0, pointCount: 11), 0)
-        XCTAssertEqual(WaypointsListView.markerPointIndex(fraction: 1, pointCount: 11), 10)
-        XCTAssertEqual(WaypointsListView.markerPointIndex(fraction: 0.5, pointCount: 11), 5)
+        XCTAssertEqual(TrackPreviewView.Marker.pointIndex(fraction: 0, pointCount: 11), 0)
+        XCTAssertEqual(TrackPreviewView.Marker.pointIndex(fraction: 1, pointCount: 11), 10)
+        XCTAssertEqual(TrackPreviewView.Marker.pointIndex(fraction: 0.5, pointCount: 11), 5)
         // Out-of-range fractions clamp instead of indexing out of bounds.
-        XCTAssertEqual(WaypointsListView.markerPointIndex(fraction: 1.4, pointCount: 11), 10)
-        XCTAssertEqual(WaypointsListView.markerPointIndex(fraction: -0.2, pointCount: 11), 0)
+        XCTAssertEqual(TrackPreviewView.Marker.pointIndex(fraction: 1.4, pointCount: 11), 10)
+        XCTAssertEqual(TrackPreviewView.Marker.pointIndex(fraction: -0.2, pointCount: 11), 0)
     }
 }

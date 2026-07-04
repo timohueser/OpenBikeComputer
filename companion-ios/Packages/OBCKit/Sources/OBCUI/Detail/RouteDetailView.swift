@@ -3,10 +3,11 @@ import OBCDomain
 import OBCTransport
 
 /// The route-detail screen (B4) in the finalized **profile layout**: track hero
-/// → title (pencil = H12 on planned/tracked) → inline stat strip → Waypoints
-/// disclosure (→ W1) → elevation profile → actions **inline in the scroll**
-/// (design rule: no floating/sticky button). One view, three dressings — E2
-/// planned, E3 tracked, E1 import landing (framed by `ImportLandingView`).
+/// (waypoints pinned as numbered markers) → title (pencil = H12) → inline stat
+/// strip → Waypoints dropdown (W1, folds out in place) → elevation profile →
+/// actions **inline in the scroll** (design rule: no floating/sticky button).
+/// One view, three dressings — E2 planned, E3 tracked, E1 import landing
+/// (framed by `ImportLandingView`).
 ///
 /// What the actions *open* stays seams the composition root wires: upload →
 /// the B5 sheet, delete → pop after `MainScreenModel.deleteRoute`, save →
@@ -24,7 +25,7 @@ public struct RouteDetailView: View {
     @State private var renameShown = false
     @State private var renameDraft = ""
     @State private var deleteConfirmShown = false
-    @State private var waypointsShown = false
+    @State private var waypointsExpanded = false
     @State private var mapShown = false
 
     @Environment(\.obcIsOnline) private var isOnline
@@ -66,11 +67,13 @@ public struct RouteDetailView: View {
                     OBCDisclosureRow(
                         systemImage: "mappin.and.ellipse",
                         label: waypointsLabel,
-                        value: "\(model.waypoints.count)"
+                        value: "\(model.waypoints.count)",
+                        isExpanded: $waypointsExpanded,
+                        headerAccessibilityID: "detail.waypoints"
                     ) {
-                        waypointsShown = true
+                        WaypointsDropdownContent(waypoints: model.waypoints)
+                            .accessibilityIdentifier("detail.waypointsList")
                     }
-                    .accessibilityIdentifier("detail.waypoints")
                     .padding(.top, 12)
                 }
 
@@ -93,13 +96,6 @@ public struct RouteDetailView: View {
         .background(OBCTheme.parchment.ignoresSafeArea())
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("detail.screen")
-        .navigationDestination(isPresented: $waypointsShown) {
-            WaypointsScreen(
-                waypoints: model.waypoints,
-                preview: model.preview,
-                totalDistanceMeters: model.distanceMeters
-            )
-        }
         #if os(iOS)
         .fullScreenCover(isPresented: $mapShown) { trackMapCover }
         #else
@@ -124,7 +120,8 @@ public struct RouteDetailView: View {
         isOnline && !model.mapCoordinates.isEmpty
     }
 
-    /// The track hero — a basemap when online, the grid otherwise. When a map is
+    /// The track hero — a basemap when online, the grid otherwise, with the
+    /// route's waypoints pinned as numbered markers either way. When a map is
     /// available, tapping anywhere on it opens the full-screen `TrackMapView`
     /// (no separate expand affordance — the whole hero is the tap target).
     @ViewBuilder
@@ -133,7 +130,9 @@ public struct RouteDetailView: View {
             model.preview,
             style: .hero,
             tag: model.tag.text,
-            tagColor: model.tag.isAccent ? OBCTheme.forest : OBCTheme.inkSoft
+            tagColor: model.tag.isAccent ? OBCTheme.forest : OBCTheme.inkSoft,
+            waypoints: model.waypoints,
+            totalDistanceMeters: model.distanceMeters
         )
         .frame(height: 214)
 
@@ -155,6 +154,7 @@ public struct RouteDetailView: View {
     private var trackMapCover: some View {
         TrackMapView(
             coordinates: model.mapCoordinates,
+            waypoints: model.waypoints,
             title: model.name,
             onClose: { mapShown = false }
         )
@@ -323,42 +323,6 @@ public struct RouteDetailView: View {
     private var renameTitle: String {
         if case .tracked = model.dressing { return "Rename ride" }
         return "Rename route"
-    }
-}
-
-/// W1 — the waypoints list pushed from the disclosure row: the mini track with
-/// numbered pins, the rows in ride order, and the provenance footer.
-struct WaypointsScreen: View {
-    let waypoints: [Waypoint]
-    let preview: TrackPreview?
-    let totalDistanceMeters: Double
-
-    var body: some View {
-        ScrollView {
-            VStack(spacing: 0) {
-                WaypointsListView(
-                    waypoints: waypoints,
-                    preview: preview,
-                    totalDistanceMeters: totalDistanceMeters
-                )
-                Text("Waypoints come from the route file and are uploaded to the device with it.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(OBCTheme.inkFaint)
-                    .multilineTextAlignment(.center)
-                    .padding(.top, 16)
-                    .padding(.horizontal, 24)
-            }
-            .padding(.horizontal, 20)
-            .padding(.top, 14)
-            .padding(.bottom, 24)
-        }
-        .background(OBCTheme.parchment.ignoresSafeArea())
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("waypoints.screen")
-        .navigationTitle("Waypoints")
-        #if os(iOS)
-        .navigationBarTitleDisplayMode(.inline)
-        #endif
     }
 }
 
