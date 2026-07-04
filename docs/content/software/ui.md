@@ -14,14 +14,14 @@ This page is about *how that works* — the handful of abstractions that make a 
 The core idea: each screen is an enum variant wrapping a little struct of typed state, and the set of screens is one `enum Screen` dispatched by `match`. The enum, its `handle`/`draw` delegation matches, and each screen's classification are all generated from a single declarative `screens!` table — one row per screen — so there are no trait objects, no heap, and no second list to keep in sync: adding a screen is **one table row plus its module**.
 
 <figure class="fig">
-<svg viewBox="0 0 720 300" role="img" aria-label="On the left, the Screen enum lists its variants: Home, Map, Statistics, RideControl, Menu, RouteMenu, RouteSwap, plus the Settings tree. The Map variant points to its module on the right, which holds typed state, a handle method returning a Transition, and a draw method emitting pixels. A tag notes static match dispatch, no dyn and no allocation.">
+<svg viewBox="0 0 720 300" role="img" aria-label="On the left, the Screen enum lists its variants: Home, Map, Statistics, RideControl, Menu, RouteMenu, RouteOverview, RouteSwap, plus the Settings tree. The Map variant points to its module on the right, which holds typed state, a handle method returning a Transition, and a draw method emitting pixels. A tag notes static match dispatch, no dyn and no allocation.">
   <defs>
     <marker id="aU1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
   </defs>
   <text class="d-tag" x="20" y="24">A screen is a value — no retained widget tree</text>
 
   <!-- enum Screen -->
-  <rect class="d-panel" x="36" y="44" width="210" height="210" rx="11" />
+  <rect class="d-panel" x="36" y="44" width="210" height="232" rx="11" />
   <text class="d-label" x="56" y="66">enum Screen</text>
   <g font-family="var(--mono)">
     <rect x="52" y="78"  width="178" height="22" rx="5" class="d-hot-fill" /><text class="d-sub" x="62" y="93" style="fill:#fff">Map(MapScreen)</text>
@@ -30,7 +30,8 @@ The core idea: each screen is an enum variant wrapping a little struct of typed 
     <rect x="52" y="148" width="178" height="20" rx="5" class="d-muted" /><text class="d-sub" x="62" y="162">RideControl(…)</text>
     <rect x="52" y="170" width="178" height="20" rx="5" class="d-muted" /><text class="d-sub" x="62" y="184">Menu(…)</text>
     <rect x="52" y="192" width="178" height="20" rx="5" class="d-muted" /><text class="d-sub" x="62" y="206">RouteMenu(…)</text>
-    <rect x="52" y="214" width="178" height="20" rx="5" class="d-muted" /><text class="d-sub" x="62" y="228">RouteSwap(…)</text>
+    <rect x="52" y="214" width="178" height="20" rx="5" class="d-muted" /><text class="d-sub" x="62" y="228">RouteOverview(…)</text>
+    <rect x="52" y="236" width="178" height="20" rx="5" class="d-muted" /><text class="d-sub" x="62" y="250">RouteSwap(…)</text>
   </g>
 
   <!-- arrow to module -->
@@ -64,9 +65,10 @@ screens! {
     Home(HomeScreen) => Nav,
     Map(MapScreen) => Riding,
     Statistics(StatisticsScreen) => Riding,
-    RideControl(RideControl) => Overlay,   // the pause menu — draws over the still-visible map
-    Menu(MenuScreen) => Nav,
+    RideControl(RideControl) => Nav,       // the Paused page: ride-so-far ledger + Resume/Finish/Discard
+    Menu(MenuScreen) => Nav,               // the compass dial
     RouteMenu(RouteMenuScreen) => Nav,
+    RouteOverview(RouteOverviewScreen) => Nav, // look-before-you-ride: profile + stats + START
     RouteSwap(RouteSwapScreen) => Nav,
     // The Settings tree — a list plus one screen each for Date & Time, Units, Power, Reset, and
     // Stats (which opens onto Fields → AddField, the stat-grid panel manager). The `Settings`
@@ -152,15 +154,22 @@ pub fn apply(stack: &mut Stack, t: Transition) {
 }
 ```
 
-Here's a whole screen's logic — the main Menu — to show how little a screen has to say:
+Here's a whole screen's logic — the main Menu, a compass dial whose amber needle sweeps to the
+selected station — to show how little a screen has to say. Even with an animation, the logic is
+three lines per gesture: the sweep itself runs through the same timer-poll contract the Home
+clock uses (see *Render on demand* below), so it costs nothing once the needle has landed:
 
 ```rust
 fn handle(&mut self, g: Gesture, _cx: &mut Ctx) -> Transition {
     match g {
-        Gesture::Turn(n) => list::on_turn(&mut self.selected, n, ITEMS.len()), // move the cursor
+        Gesture::Turn(n) => {
+            self.target_deg += (n * 90) as f32; // the needle chases this in tick_timers
+            list::on_turn(&mut self.selected, n, ITEMS.len()) // Routes / POIs / Map / Settings
+        }
         Gesture::Press   => match self.selected {
             0 => Transition::Push(Screen::RouteMenu(RouteMenuScreen::new())), // Routes
-            _ => Transition::Push(Screen::Settings(SettingsScreen::new())),   // Settings
+            3 => Transition::Push(Screen::Settings(SettingsScreen::new())),   // Settings
+            _ => Transition::None,                                            // future screens
         },
         Gesture::Back    => Transition::Pop, // return to whoever opened the Menu
         _ => Transition::None,
@@ -282,7 +291,7 @@ The factory **Reset** screen is the one place a hold guards a *destructive* acti
 
 Most screens have one focus: the row cursor. The **Settings** screens — Date & Time, Units, Stats, Power, and the factory Reset — add a *second* level. A value isn't a separate sub-screen; it's edited **in place**. Rotating still moves the amber row cursor, but once you press a value row, focus drops *into* a field: a `▲▼` box marks the live one, rotating now changes *its* value, pressing steps to the next field, and back steps out. The same two-level model drives every editor — a date, a UTC offset, a fix interval — and the same toggle row flips GPS-set-time or the power saver. No new gestures; the existing five just mean different things at each level.
 
-The **Stats** screen configures the riding grid itself. Its *Page cycle* row sets how fast the grid auto-flips between pages; *Fields* opens a manager for the data panels. The grid draws from a predefined, in-code catalogue of fields (speed, distance, climb, grade, elevation, clock, …) — the rider picks which to show and in what order, and a field is either one column or a full-width two. Reordering reuses the grab idiom: press *lifts* a panel (it holds pinned mid-screen while the rest slide past it), rotating moves it through the order — a two-column panel always begins a row — and press drops it. A panel is removed by a **hold-to-delete** bar, the same guarded hold as Reset's. The chosen panels lay out six to a page (3×2) and auto-cycle on the timer, so a long list stays glanceable. The selection and period live in the same persisted `Settings` value, so they survive a reboot like every other setting.
+The **Stats** screen configures the riding grid itself. Its *Page cycle* row sets how fast the grid auto-flips between pages; *Fields* opens the grid **editor — which simply *is* the grid**: the same 3×2 tile pages the riding view shows, placed by the same layout walk and painted by the same tile renderer, with live values. The grid draws from a predefined, in-code catalogue of fields (speed, distance, climb, grade, elevation, clock, …) — the rider picks which to show and in what order, and a field is either one column or a full-width two. The cursor is the amber tile (walking past a page's last tile flips pages), and reordering reuses the grab idiom: press *lifts* the tile (move arrows appear), rotating moves it through the order — the grid reflows live, so a two-column panel's row-aligned hops are something you watch, not infer — and press drops it. A ghost `+` tile in the first free slot opens the field picker, so a new panel visibly lands where the ghost sits; a panel is removed by a **hold-to-delete** bar, the same guarded hold as Reset's. The chosen panels lay out six to a page (3×2) and auto-cycle on the timer, so a long list stays glanceable. The selection and period live in the same persisted `Settings` value, so they survive a reboot like every other setting.
 
 <figure class="fig">
 <svg viewBox="0 0 720 232" role="img" aria-label="Settings screens have two focus levels. In row focus, rotate moves the amber row cursor, press flips a toggle or opens a value row's stepper, and back climbs one screen. Pressing a value row enters field focus, where rotate changes the live field's value shown in an up-down arrow box, press advances to the next field, and back — or pressing past the last field — steps back out to row focus.">
@@ -393,19 +402,19 @@ loop {
 
 The conservative rule — *any* applied gesture dirties the map — is what keeps the idle path exact: when nothing is touched, no gesture is recognised, `apply_gesture` never runs, and the panel isn't redrawn at all.
 
-## Overlays composite over a live map
+## Overlays can composite over a live map
 
-Most navigation *replaces* the view, but one screen — Ride control, the pause menu — draws *over* the still-visible map. The stack supports this directly: `render_map` finds the topmost **opaque** screen and draws from there upward, so an overlay composites on top of whatever is beneath it. And because a paused ride still receives fixes, the map keeps moving under the pause panel.
+Most navigation *replaces* the view, but the stack also supports screens that draw *over* the one below: `render_map` finds the topmost **opaque** screen and draws from there upward, so an `Overlay`-kind screen composites on top of whatever is beneath it — and because the host keeps folding in GPS fixes behind it, the map underneath doesn't visually freeze. No current screen uses the kind (the pause menu did, until it grew into the full Paused page); the mechanism is kept for what it's really shaped for — transient notifications, like a route arriving from the companion app mid-ride.
 
 <figure class="fig">
-<svg viewBox="0 0 720 250" role="img" aria-label="On the left, the stack: Home at the bottom, Map above it marked opaque, and RideControl on top marked overlay. An arrow shows render_map starts from the topmost opaque screen, Map, and draws upward. On the right, a device screen mock: the map fills it, with a PAUSED panel floating over the lower half, and a note that the map still updates underneath.">
+<svg viewBox="0 0 720 250" role="img" aria-label="On the left, the stack: Home at the bottom, Map above it marked opaque, and a notification on top marked overlay. An arrow shows render_map starts from the topmost opaque screen, Map, and draws upward. On the right, a device screen mock: the map fills it, with a small route-received toast floating over the lower half, and a note that the map still updates underneath.">
   <text class="d-tag" x="20" y="24">An overlay draws over the screen below it</text>
 
   <!-- stack -->
   <g>
     <rect x="48" y="58" width="170" height="34" rx="6" class="d-hot" style="fill:#f8efe4" />
-    <text class="d-label" x="133" y="80" text-anchor="middle" style="fill:#a9501c">RideControl</text>
-    <text class="d-sub" x="232" y="79" style="font-size:9px">overlay</text>
+    <text class="d-label" x="133" y="80" text-anchor="middle" style="fill:#a9501c">Notification</text>
+    <text class="d-sub" x="232" y="79" style="font-size:9px">overlay (future)</text>
     <rect x="48" y="98" width="170" height="34" rx="6" class="d-forest" />
     <text class="d-label" x="133" y="120" text-anchor="middle" style="fill:#fff">Map</text>
     <text class="d-sub" x="232" y="119" style="font-size:9px">← opaque · draw starts here</text>
@@ -423,16 +432,15 @@ Most navigation *replaces* the view, but one screen — Ride control, the pause 
     <path d="M482 120 L540 96 L600 132" /><path d="M500 200 L548 150 L628 168" />
   </g>
   <path d="M520 200 L560 150" stroke="#cf6a2a" stroke-width="2.5" fill="none" />
-  <!-- paused panel -->
-  <rect x="500" y="120" width="110" height="86" rx="7" style="fill:#f3f0df;stroke:#2c5230;stroke-width:1.5" />
-  <rect x="500" y="120" width="110" height="18" rx="4" style="fill:#2e251a" />
-  <text class="d-sub" x="555" y="133" text-anchor="middle" style="fill:#fff;font-size:9px">PAUSED</text>
-  <rect x="506" y="144" width="98" height="16" rx="3" class="d-amber" /><text class="d-sub" x="512" y="156" style="font-size:8.5px">Resume</text>
-  <text class="d-sub" x="512" y="174" style="font-size:8.5px">Finish</text>
-  <text class="d-sub" x="512" y="190" style="font-size:8.5px">Discard</text>
+  <!-- notification toast -->
+  <rect x="496" y="140" width="118" height="52" rx="7" style="fill:#f3f0df;stroke:#2c5230;stroke-width:1.5" />
+  <rect x="496" y="140" width="118" height="18" rx="4" style="fill:#2e251a" />
+  <text class="d-sub" x="555" y="153" text-anchor="middle" style="fill:#fff;font-size:9px">NEW ROUTE</text>
+  <text class="d-sub" x="504" y="172" style="font-size:8.5px">Kandel Loop — 42 km</text>
+  <text class="d-sub" x="504" y="186" style="font-size:8.5px">press to view</text>
   <text class="d-sub" x="555" y="232" text-anchor="middle" style="font-size:9px">map still updates underneath</text>
 </svg>
-<figcaption>Only Ride control is an overlay; everything else is opaque and replaces the view. The same mechanism that draws the pause panel over the map is what lets the host keep folding in GPS fixes behind it — the ride doesn't visually freeze just because you opened the menu.</figcaption>
+<figcaption>Every current screen is opaque and replaces the view; the <code>Overlay</code> kind stays for transient panels that should not steal the whole display — a notification composites over the map, and the host keeps folding in GPS fixes behind it, so the ride doesn't visually freeze.</figcaption>
 </figure>
 
 ## The whole flow
@@ -440,7 +448,7 @@ Most navigation *replaces* the view, but one screen — Ride control, the pause 
 Put the pieces together and the navigation graph is small and legible. Two screens are **riding views** — the Map and the Elevation/Statistics profile — and they're siblings: `back` swaps between them without growing the stack, and both share the same `press` (pause) and `back-hold` (Menu) bindings. Each also has a `hold`-entered sub-mode (Pan on the Map, Zoom on the profile).
 
 <figure class="fig">
-<svg viewBox="0 0 720 340" role="img" aria-label="A navigation graph. Home, the root, opens the Route menu on press and the Menu on back-hold. The Menu opens the Route menu (Routes). Loading a route truncates to Home and pushes the Map (Root). The Map and Statistics are siblings swapped by back. The Map opens RideControl on press (pause) and enters Pan on hold. From RideControl, Resume pops back to the Map and Finish or Discard (held) clears to Home.">
+<svg viewBox="0 0 720 340" role="img" aria-label="A navigation graph. Home, the root, opens the Route menu on press and the compass Menu on back-hold. The Menu opens the Route menu (Routes). Picking a route opens the Route overview; its START truncates to Home and pushes the Map (Root). The Map and Statistics are siblings swapped by back. The Map opens the Paused page on press and enters Pan on hold. From Paused, Resume pops back to the Map and Finish or Discard (held) clears to Home.">
   <defs>
     <marker id="aU7" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#5f7d3d" /></marker>
     <marker id="aU7c" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
@@ -450,10 +458,11 @@ Put the pieces together and the navigation graph is small and legible. Two scree
   <!-- nodes -->
   <rect class="d-panel" x="36"  y="150" width="104" height="40" rx="9" /><text class="d-label" x="88"  y="170" text-anchor="middle">Home</text><text class="d-sub" x="88" y="183" text-anchor="middle" style="font-size:8.5px">root</text>
   <rect class="d-panel-2" x="232" y="56"  width="116" height="40" rx="9" /><text class="d-label" x="290" y="76"  text-anchor="middle">Route menu</text><text class="d-sub" x="290" y="89" text-anchor="middle" style="font-size:8.5px">pick a route</text>
-  <rect class="d-panel-2" x="232" y="246" width="116" height="40" rx="9" /><text class="d-label" x="290" y="266" text-anchor="middle">Menu</text><text class="d-sub" x="290" y="279" text-anchor="middle" style="font-size:8.5px">Routes · Settings</text>
+  <rect class="d-panel-2" x="246" y="150" width="104" height="40" rx="9" /><text class="d-label" x="298" y="170" text-anchor="middle">Overview</text><text class="d-sub" x="298" y="183" text-anchor="middle" style="font-size:8.5px">profile · stats</text>
+  <rect class="d-panel-2" x="232" y="246" width="116" height="40" rx="9" /><text class="d-label" x="290" y="266" text-anchor="middle">Menu</text><text class="d-sub" x="290" y="279" text-anchor="middle" style="font-size:8.5px">compass · 4 stations</text>
   <rect class="d-forest" x="436" y="150" width="104" height="40" rx="9" /><text class="d-label" x="488" y="174" text-anchor="middle" style="fill:#fff">Map</text>
   <rect class="d-water" x="596" y="150" width="104" height="40" rx="9" /><text class="d-label" x="648" y="170" text-anchor="middle" style="fill:#fff">Statistics</text><text class="d-sub" x="648" y="183" text-anchor="middle" style="fill:#dfe6e0;font-size:8.5px">elevation</text>
-  <rect class="d-hot" x="436" y="56" width="104" height="40" rx="9" style="fill:#f8efe4" /><text class="d-label" x="488" y="80" text-anchor="middle" style="fill:#a9501c">RideControl</text>
+  <rect class="d-hot" x="436" y="56" width="104" height="40" rx="9" style="fill:#f8efe4" /><text class="d-label" x="488" y="80" text-anchor="middle" style="fill:#a9501c">Paused</text>
   <rect class="d-panel-2" x="436" y="246" width="104" height="40" rx="9" /><text class="d-label" x="488" y="270" text-anchor="middle">Pan / Zoom</text>
 
   <!-- edges from Home -->
@@ -461,21 +470,23 @@ Put the pieces together and the navigation graph is small and legible. Two scree
   <line x1="140" y1="178" x2="230" y2="258" stroke="#5f7d3d" stroke-width="1.6" marker-end="url(#aU7)" /><text class="d-sub" x="150" y="232" style="font-size:9px">back-hold</text>
   <!-- Menu -> Route menu -->
   <line x1="356" y1="250" x2="356" y2="98" stroke="#5f7d3d" stroke-width="1.6" marker-end="url(#aU7)" /><text class="d-sub" x="362" y="178" style="font-size:9px">Routes</text>
-  <!-- Route menu -> Map (load/Root) -->
-  <line x1="350" y1="84" x2="432" y2="156" stroke="#cf6a2a" stroke-width="2" marker-end="url(#aU7c)" /><text class="d-sub" x="372" y="116" style="fill:#a9501c;font-size:9px">load · Root</text>
+  <!-- Route menu -> Overview (press) -->
+  <line x1="292" y1="96" x2="296" y2="148" stroke="#5f7d3d" stroke-width="1.6" marker-end="url(#aU7)" /><text class="d-sub" x="248" y="122" style="font-size:9px">press</text>
+  <!-- Overview -> Map (START/Root) -->
+  <line x1="350" y1="170" x2="432" y2="170" stroke="#cf6a2a" stroke-width="2" marker-end="url(#aU7c)" /><text class="d-sub" x="358" y="163" style="fill:#a9501c;font-size:9px">START · Root</text>
   <!-- Map <-> Statistics -->
-  <line x1="540" y1="164" x2="596" y2="164" stroke="#5f7d3d" stroke-width="1.6" marker-end="url(#aU7)" />
-  <line x1="596" y1="176" x2="540" y2="176" stroke="#5f7d3d" stroke-width="1.6" marker-end="url(#aU7)" /><text class="d-sub" x="568" y="200" text-anchor="middle" style="font-size:9px">back ⇄</text>
-  <!-- Map -> RideControl -->
+  <line x1="540" y1="160" x2="596" y2="160" stroke="#5f7d3d" stroke-width="1.6" marker-end="url(#aU7)" />
+  <line x1="596" y1="180" x2="540" y2="180" stroke="#5f7d3d" stroke-width="1.6" marker-end="url(#aU7)" /><text class="d-sub" x="568" y="200" text-anchor="middle" style="font-size:9px">back ⇄</text>
+  <!-- Map -> Paused -->
   <line x1="482" y1="150" x2="482" y2="98" stroke="#cf6a2a" stroke-width="2" marker-end="url(#aU7c)" /><text class="d-sub" x="396" y="126" style="fill:#a9501c;font-size:9px">press · pause</text>
-  <!-- RideControl -> Map (resume) -->
+  <!-- Paused -> Map (resume) -->
   <line x1="500" y1="98" x2="500" y2="148" stroke="#5f7d3d" stroke-width="1.4" marker-end="url(#aU7)" /><text class="d-sub" x="508" y="126" style="font-size:9px">resume</text>
   <!-- Map -> Pan -->
   <line x1="488" y1="190" x2="488" y2="244" stroke="#5f7d3d" stroke-width="1.6" marker-end="url(#aU7)" /><text class="d-sub" x="496" y="220" style="font-size:9px">hold</text>
-  <!-- RideControl -> Home (finish/discard) -->
+  <!-- Paused -> Home (finish/discard) -->
   <path d="M436 66 C 250 20, 90 70, 88 148" fill="none" stroke="#cf6a2a" stroke-width="1.6" stroke-dasharray="4 4" marker-end="url(#aU7c)" /><text class="d-sub" x="250" y="34" style="fill:#a9501c;font-size:9px">Finish / Discard (hold) → Home</text>
 </svg>
-<figcaption>Green edges are ordinary moves; coral marks the "go ride / stop riding" path. Picking a route uses <code>Root</code>, so you always land on a clean <code>[Home, Map]</code> instead of a Map buried under stale menus — and picking a <i>different</i> route mid-ride detours through a guarded "swap or save &amp; start new" prompt first.</figcaption>
+<figcaption>Green edges are ordinary moves; coral marks the "go ride / stop riding" path. Picking a route opens the <b>Overview</b> — profile, distance/climb/descent, START — while the route streams open behind it; START uses <code>Root</code>, so you always land on a clean <code>[Home, Map]</code> instead of a Map buried under stale menus. Picking a <i>different</i> route mid-ride still detours through a guarded "swap or save &amp; start new" prompt, and the <b>Paused</b> page shows the ride-so-far ledger above its guarded Finish / Discard rows.</figcaption>
 </figure>
 
 ## The "field map" look
