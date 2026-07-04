@@ -199,6 +199,8 @@ use obc_platform::Band;
 
 use core::cell::RefCell;
 use core::mem::MaybeUninit;
+use core::sync::atomic::{AtomicU32, Ordering};
+
 #[cfg(feature = "tft")]
 use display::Display;
 use display::{DisplayDriver, OverlayRegion};
@@ -206,14 +208,19 @@ use embassy_executor::InterruptExecutor;
 use embassy_nrf::gpio::{Input, Pull};
 use embassy_nrf::interrupt;
 use embassy_nrf::interrupt::{InterruptExt, Priority};
+#[cfg(has_map)]
+use embassy_nrf::wdt;
 // The shared GPS/altimeter I²C bus — real-sensor build only.
 #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
 use embassy_nrf::twim::{self, Twim};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 // The event-driven loop's wake select: `select3` over gesture / sensor / deadline on the map plane,
-// `select` over a button edge / guard tick on the idle input plane.
-use embassy_futures::select::{select, select3};
+// `select` over a button edge / guard tick on the idle input plane — which the always-polling
+// `debug-uart` input plane compiles out (the status loop's `select` keeps it on `ble` builds).
+#[cfg(any(not(feature = "debug-uart"), not(has_map)))]
+use embassy_futures::select::select;
+use embassy_futures::select::select3;
 // The status loop tells a BLE status edge from a gesture/animation wake by the select arm (the
 // edge `Signal` is consumed by the await, so the arm is the information). `ble` builds only.
 #[cfg(not(has_map))]
@@ -268,7 +275,7 @@ use com::com_task;
 #[cfg(all(feature = "com-hw", not(feature = "tft")))]
 use com_hw::HwCom;
 #[cfg(not(feature = "tft"))]
-use ls021_flpr::{launch_flpr, FlprError, Ls021Flpr};
+use ls021_flpr::{launch_flpr, relaunch_flpr, FlprError, Ls021Flpr};
 
 // VCOM debug-sensor / telemetry stream, behind `debug-uart`: the interrupt-buffered UARTE on the DK's
 // J-Link VCOM. `BufferedUarte` keeps RX DMA continuously armed into a ring driven by the SERIAL20
@@ -600,6 +607,27 @@ const LOOP_MS: u64 = 8;
 #[cfg(not(feature = "debug-uart"))]
 const IDLE_REPOLL_MS: u64 = 30_000;
 
+// ── Hardware watchdog (#349): the last-resort net under a wedged plane. The ride loop feeds it,
+// gated on the input plane's heartbeat, so **either** plane wedging trips the dog — not just
+// thread mode staying alive. Deliberately generous: it must never fire on a slow frame or a deep
+// SD reconcile, only on a genuine wedge. ──
+/// Watchdog period: 24 s of 32768 Hz LFCLK ticks (the issue's 16–30 s band).
+#[cfg(has_map)]
+const WDT_TIMEOUT_TICKS: u32 = 24 * 32768;
+/// Cap (ms) on the ride loop's event-driven sleep, ~WDT/2 — an otherwise-idle device still wakes
+/// to feed the dog. One extra wake per ~12 s is negligible next to [`IDLE_REPOLL_MS`].
+#[cfg(has_map)]
+const WDT_FEED_CAP_MS: u32 = 12_000;
+/// How stale [`INPUT_HB_MS`] may be before the ride loop **withholds** the feed. The idle input
+/// plane legitimately sleeps [`IDLE_REPOLL_MS`] (30 s) between stamps, so the window is 2× that
+/// plus margin — no false trip on a parked device; a wedged input plane trips the dog within
+/// roughly this window + the WDT period (~90 s worst case, fine for a last resort).
+#[cfg(has_map)]
+const INPUT_HB_STALE_MS: u32 = 65_000;
+/// The input plane's liveness heartbeat: `Instant` millis of its last recognizer pass / idle wake,
+/// stamped by [`input_task`] / [`input_overlay_task`] and read by the ride loop's watchdog feed.
+static INPUT_HB_MS: AtomicU32 = AtomicU32::new(0);
+
 /// Synthetic-walk advance cadence (ms) on the `synth` build: the stand-in GPS publishes no `Signal`,
 /// so the event-driven loop has no sensor event to wake on and falls back to this timer to step the
 /// square-loop walk. The walk position is time-based, so a slower tick just lowers the demo frame rate.
@@ -759,6 +787,7 @@ async fn input_overlay_task(
     let color_fn = |c: u16| Rgb565::from(RawU16::new(c));
     loop {
         let now = Instant::now().as_millis() as u32;
+        INPUT_HB_MS.store(now, Ordering::Relaxed); // liveness stamp the ride loop's WDT feed gates on
         buttons.update(now);
         // Recognise this frame's input under the shared InputPlane lock (a brief critical section,
         // never held across an await/push). Each gesture is pushed to the map plane; the bulge is
@@ -838,6 +867,7 @@ async fn input_task(
 ) {
     loop {
         let now = Instant::now().as_millis() as u32;
+        INPUT_HB_MS.store(now, Ordering::Relaxed); // liveness stamp the ride loop's WDT feed gates on
         buttons.update(now);
         // Recognise + animate the bulge under the shared lock (a brief critical section, never held
         // across the await), so the bulge state the map plane composites is the one this advanced.
@@ -948,6 +978,20 @@ impl MapDisplay {
     #[inline(always)]
     async fn present_bulge(&mut self, _span: Option<(u16, u16)>, _dirty: bool) {}
 
+    /// No-op: the #349 relaunch escalation is FLPR-only (there is no coprocessor to relaunch —
+    /// a wedged ST7789 bus has no recovery lever beyond the retry the present already latches).
+    #[inline(always)]
+    fn take_relaunch_repaint(&mut self) -> bool {
+        false
+    }
+
+    /// Never degraded: see [`take_relaunch_repaint`](Self::take_relaunch_repaint).
+    #[cfg_attr(not(has_map), allow(dead_code))]
+    #[inline(always)]
+    fn degraded(&self) -> bool {
+        false
+    }
+
     /// The live encoder hold-progress from the shared input plane (0.0–1.0), so the in-screen confirm
     /// fills (the factory-Reset bar) track the hold on this backend too.
     #[inline(always)]
@@ -955,6 +999,16 @@ impl MapDisplay {
         self.input_plane.lock(|c| c.borrow().encoder_hold_progress())
     }
 }
+
+/// Consecutive failed presents that trigger one FLPR relaunch (#349): each failure already costs a
+/// full frame-deadline spin inside the transport (250 ms), so three in a row (~0.75 s) is far past any
+/// transient — the FLPR is wedged, escalate.
+#[cfg(not(feature = "tft"))]
+const PUSH_FAILS_PER_RELAUNCH: u8 = 3;
+/// Consecutive relaunches that may fail (the launch erroring, or the presents after it still timing
+/// out) before the device stops touching the FLPR and degrades to the heartbeat idle (#349).
+#[cfg(not(feature = "tft"))]
+const MAX_CONSEC_RELAUNCHES: u8 = 3;
 
 /// FLPR LS021 (default): the map plane owns the panel outright (whole-frame scan per push → no shared
 /// bus), plus the shared `InputPlane` it composites the bulge from and the gate/source GPIO lines it
@@ -965,6 +1019,19 @@ struct MapDisplay {
     input_plane: &'static BlockingMutex<CriticalSectionRawMutex, RefCell<InputPlane>>,
     /// The last live bulge's rows, so the trailing clear wipes exactly them, not the whole hint band.
     last_overlay_span: Option<(u16, u16)>,
+    /// Consecutive failed pushes (map presents **and** bulge pushes — a bulge-only wedge must
+    /// escalate too) since the last success; [`PUSH_FAILS_PER_RELAUNCH`] of them fire a relaunch.
+    push_fails: u8,
+    /// Relaunches run without a successful push in between; [`MAX_CONSEC_RELAUNCHES`] of them
+    /// degrade the device. Cleared by any push that reaches glass.
+    consec_relaunches: u8,
+    /// A relaunch landed → the ride loop must fold in a full map repaint (`take_relaunch_repaint`).
+    relaunch_repaint: bool,
+    /// Terminal (until power-cycle): the FLPR would not come back after [`MAX_CONSEC_RELAUNCHES`]
+    /// attempts. All pushes become no-ops (each would cost a frame-deadline spin against a dead
+    /// core); the ride loop drops to the heartbeat idle. COM + the M33-held panel GPIOs keep the
+    /// glass DC-bias-safe throughout — see [`relaunch_flpr`]'s doc.
+    degraded: bool,
     /// The gate + source lines the FLPR drives — held only to keep them configured as outputs for the
     /// program's life (never touched after launch); dropping them would float the panel.
     _gate_bus: [Output<'static>; 4],
@@ -1016,6 +1083,13 @@ impl MapDisplay {
         let t_render = Instant::now();
         let stats = render(&mut self.panel);
         let render_us = t_render.elapsed().as_micros();
+        if self.degraded {
+            // Terminal FLPR-down mode (#349): don't spin a frame deadline against a dead core —
+            // drop the frame, reporting `ok` so the caller doesn't latch an endless retry. The
+            // ride loop has already dropped (or is about to drop) to the heartbeat idle; the `ble`
+            // status build keeps its radio useful with the glass frozen on the last good frame.
+            return FramePresent { ok: true, stats, render_us, push_us: 0 };
+        }
         let t_push = Instant::now();
         // Self-diffing present through the seam, clipped around a live bulge's rows so
         // `present_bulge` owns them (issue #163/#201/#345). The await frees the M33 for the whole
@@ -1031,6 +1105,7 @@ impl MapDisplay {
             self.panel.reset_diff();
         }
         let push_us = t_push.elapsed().as_micros();
+        self.note_push(ok).await;
         FramePresent { ok, stats, render_us, push_us }
     }
 
@@ -1051,6 +1126,9 @@ impl MapDisplay {
     #[inline(always)]
     async fn present_bulge(&mut self, overlay_span: Option<(u16, u16)>, overlay_dirty: bool) {
         let _ = overlay_dirty; // `last_overlay_span` drives the clear so a stalled clear retries — see the doc.
+        if self.degraded {
+            return; // FLPR down for good (#349) — no push to retry against.
+        }
         if let Some((y0, rows)) = overlay_span {
             let t_push = Instant::now();
             let ok = Self::composite_push(&mut self.panel, self.input_plane, y0, rows).await;
@@ -1062,16 +1140,19 @@ impl MapDisplay {
             } else {
                 defmt::warn!("overlay frame: bulge push failed (FLPR stalled?) — retrying next overlay tick");
             }
+            self.note_push(ok).await;
         } else if let Some((y0, rows)) = self.last_overlay_span {
             // Trailing clear: re-present just the last bulge's rows with nothing composited = the clean
             // map restored under the just-gone bulge (the self-diffing map present may have skipped
             // them, so this is what actually wipes the bulge — see the method docs). Drop
             // `last_overlay_span` only when the push lands, so a stalled FLPR retries next frame.
-            if Self::composite_push(&mut self.panel, self.input_plane, y0, rows).await {
+            let ok = Self::composite_push(&mut self.panel, self.input_plane, y0, rows).await;
+            if ok {
                 self.last_overlay_span = None;
             } else {
                 defmt::warn!("overlay frame: trailing clear failed (FLPR stalled?) — retrying next frame");
             }
+            self.note_push(ok).await;
         }
     }
 
@@ -1092,6 +1173,72 @@ impl MapDisplay {
                 input_plane.lock(|cell| cell.borrow().render_overlay(band, FRAME_W as f32, FRAME_H as f32, color_fn));
             })
             .await
+    }
+
+    /// Fold one push outcome into the **relaunch escalation** (#349) — every FLPR push (map present,
+    /// bulge, trailing clear) reports here. A success clears both counters; the
+    /// [`PUSH_FAILS_PER_RELAUNCH`]th consecutive failure runs a full [`relaunch_flpr`] (the failing
+    /// push already logged its `dump_flpr_state` snapshot — hung vs reset vs corrupted shared RAM).
+    /// When [`MAX_CONSEC_RELAUNCHES`] relaunches pass without a single successful push in between,
+    /// the escalation stops for good: `degraded` latches, every later push becomes a no-op, and the
+    /// ride loop drops to the heartbeat idle. **COM never stops either way** — it runs on the M33
+    /// (`com_task` / `HwCom`), so the panel stays DC-bias-safe through a dead FLPR, a relaunch, and
+    /// the degraded idle alike (see [`relaunch_flpr`]'s doc; that property is load-bearing).
+    async fn note_push(&mut self, ok: bool) {
+        if ok {
+            self.push_fails = 0;
+            self.consec_relaunches = 0;
+            return;
+        }
+        self.push_fails += 1;
+        if self.push_fails < PUSH_FAILS_PER_RELAUNCH {
+            return;
+        }
+        self.push_fails = 0;
+        if self.consec_relaunches >= MAX_CONSEC_RELAUNCHES {
+            // The last K relaunches all failed to restore service (each proven by the next
+            // N failed pushes, or by erroring outright) — stop pounding a dead core.
+            self.degraded = true;
+            defmt::error!(
+                "FLPR: {=u8} consecutive relaunches failed — degrading to heartbeat idle (COM keeps the panel DC-bias-safe; power-cycle to retry)",
+                MAX_CONSEC_RELAUNCHES
+            );
+            return;
+        }
+        self.consec_relaunches += 1;
+        defmt::error!(
+            "FLPR: {=u8} consecutive failed pushes — full relaunch (attempt {=u8}/{=u8})",
+            PUSH_FAILS_PER_RELAUNCH,
+            self.consec_relaunches,
+            MAX_CONSEC_RELAUNCHES
+        );
+        match relaunch_flpr().await {
+            Ok(()) => {
+                // Fresh core, no frame history: the diff store may believe rows are on glass that
+                // never landed — force the next present to repaint every row, and tell the ride
+                // loop to schedule that present even if nothing else dirtied the map.
+                self.panel.reset_diff();
+                self.relaunch_repaint = true;
+                defmt::info!("FLPR: relaunch OK — alive again, full repaint armed");
+            }
+            Err(e) => defmt::error!("FLPR: relaunch failed ({}) — escalating on the next failed pushes", e),
+        }
+    }
+
+    /// One-shot: a relaunch landed since the last call, so the ride loop must fold in a full map
+    /// repaint (the fresh FLPR has no frame history; the diff store was reset).
+    #[inline(always)]
+    fn take_relaunch_repaint(&mut self) -> bool {
+        core::mem::take(&mut self.relaunch_repaint)
+    }
+
+    /// Terminal FLPR-down state (#349): [`MAX_CONSEC_RELAUNCHES`] relaunches failed. The ride loop
+    /// checks this each pass and drops to the heartbeat idle. (The status build never calls it —
+    /// there, a degraded display just freezes the glass while BLE keeps serving.)
+    #[cfg_attr(not(has_map), allow(dead_code))]
+    #[inline(always)]
+    fn degraded(&self) -> bool {
+        self.degraded
     }
 }
 
@@ -1138,6 +1285,10 @@ async fn run_app(
     led: &mut Output<'static>,
     // The persistent RRAM settings store (#193): seeds the app at boot, persists on a settings edit.
     mut settings_store: settings::RramSettingsStore,
+    // The hardware watchdog's feed handle (#349), `None` only if the boot-time `try_new` found the
+    // dog already running with a foreign config. Fed once per pass below, gated on the input
+    // plane's heartbeat.
+    mut wdt: Option<wdt::WatchdogHandle>,
     // The OBCM bbox centre (lon, lat) — only the `SynthLocation` stand-in needs it (the host feed and
     // the real GPS both stream absolute positions). So it's threaded only on the `synth` build.
     #[cfg(all(not(feature = "debug-uart"), feature = "synth"))] cam_center: (i32, i32),
@@ -1223,6 +1374,34 @@ async fn run_app(
         if hw > stack_hw {
             stack_hw = hw;
             defmt::info!("stack high-water {=usize} / {=usize} B (new peak)", hw, stackmeter::total());
+        }
+
+        // ── #349 fault tolerance, once per pass ──
+        // The FLPR degraded for good (MAX_CONSEC_RELAUNCHES relaunches failed) → drop to the
+        // heartbeat idle. This loop **keeps feeding the watchdog**: degraded is a deliberate
+        // terminal state, not a wedge — an unfed dog here would just boot-loop the device against
+        // a dead FLPR. COM + the input plane keep running (the glass holds its last image,
+        // DC-bias-safe); only a power-cycle retries the panel.
+        if display.degraded() {
+            defmt::error!("display degraded — heartbeat idle (ride loop stopped; power-cycle to retry)");
+            loop {
+                led.toggle();
+                if let Some(h) = wdt.as_mut() {
+                    h.pet();
+                }
+                Timer::after_millis(500).await;
+            }
+        }
+        // Feed the watchdog, gated on the input plane's heartbeat: this pass proves thread mode
+        // alive, the stamp proves the P3 recognizer alive — either plane wedging stops the feed
+        // and the dog resets the device within its period.
+        if let Some(h) = wdt.as_mut() {
+            let age = now.wrapping_sub(INPUT_HB_MS.load(Ordering::Relaxed));
+            if age <= INPUT_HB_STALE_MS {
+                h.pet();
+            } else {
+                defmt::error!("WDT: input-plane heartbeat {=u32} ms stale — withholding the feed", age);
+            }
         }
 
         // Apply the high-priority plane's recognised gestures, in order, then advance animations.
@@ -1393,6 +1572,9 @@ async fn run_app(
         let mut dirty = app.take_dirty();
         dirty.map |= pending_map_redraw;
         pending_map_redraw = false;
+        // A FLPR relaunch landed since the last pass (#349): the fresh core has no frame history
+        // and the diff store was reset — schedule the full repaint even if nothing else is dirty.
+        dirty.map |= display.take_relaunch_repaint();
         // While a hold *charges* on a cheap (non-map) screen — the factory-Reset prompt, the
         // hold-to-delete bar — redraw it each frame so its bar tracks the live progress, **and** once
         // more on the frame the hold drops back to 0 (the falling edge), so an early release clears the
@@ -1553,17 +1735,14 @@ async fn run_app(
         let animating = hold_p > 0.0 || pending_map_redraw || overlay_dirty || overlay_span.is_some();
         let next_ms = if animating { Some(LOOP_MS as u32) } else { app.ms_until_next_wake(now) };
         // debug-uart host build: keep a ~2 Hz floor so streamed telemetry / `Z` zoom commands stay
-        // responsive even on an otherwise-quiet screen.
+        // responsive even on an otherwise-quiet screen (well under the WDT feed cap).
         #[cfg(feature = "debug-uart")]
-        let next_ms = Some(next_ms.unwrap_or(u32::MAX).min(500));
-        match next_ms {
-            Some(ms) => {
-                let _ = select3(GESTURES.ready_to_receive(), wait_sensor_event(), Timer::after_millis(ms as u64)).await;
-            }
-            None => {
-                let _ = select(GESTURES.ready_to_receive(), wait_sensor_event()).await;
-            }
-        }
+        let ms = next_ms.unwrap_or(WDT_FEED_CAP_MS).min(500);
+        // The indefinite sleep is capped at ~WDT/2 (#349) so an otherwise-idle device still wakes
+        // to feed the watchdog — the `None` (sleep-until-input/sensor) arm becomes a long timer.
+        #[cfg(not(feature = "debug-uart"))]
+        let ms = next_ms.unwrap_or(WDT_FEED_CAP_MS).min(WDT_FEED_CAP_MS);
+        let _ = select3(GESTURES.ready_to_receive(), wait_sensor_event(), Timer::after_millis(ms as u64)).await;
     }
 }
 
@@ -1600,6 +1779,10 @@ async fn run_status(
             inputs += 1;
             redraw = true;
         }
+        // A FLPR relaunch landed (#349): repaint the status screen in full (diff store was reset).
+        // If instead the display *degraded*, presents become silent no-ops — the status build keeps
+        // its radio useful with the glass frozen, rather than idling out a working BLE link.
+        redraw |= display.take_relaunch_repaint();
 
         // This frame's hold-bulge state, exactly as the ride loop samples it — the status present
         // goes around a live bulge's rows and `present_bulge` re-composites them. Bulge pushes
@@ -1669,6 +1852,25 @@ async fn main(_spawner: Spawner) {
 
     // Paint the stack now (still shallow) so the ride loop's high-water guard can read the peak.
     stackmeter::paint();
+
+    // Why did this boot happen? (#349) `RESETREAS` @ 0x5010_E600 (the secure RESET block; raw MMIO
+    // — the same precedent as the VPR00/EGU20 registers in `ls021_flpr`). A **watchdog** reset
+    // (dog0 = our WDT31/`WDT0` instance) is logged distinctly — it means a plane wedged and the
+    // dog fired last session. Write-1-to-clear, cleared here so the *next* boot reads only its own
+    // cause; the raw mask is also annotated onto the RRAM boot-counter line below.
+    let reset_reas = {
+        const RESETREAS: *mut u32 = 0x5010_E600 as *mut u32;
+        let v = unsafe { RESETREAS.read_volatile() };
+        unsafe { RESETREAS.write_volatile(v) }; // W1C
+        if v & 0x6 != 0 {
+            // bits 1..2 = the two watchdogs. On-glass: the `WDT0` instance this build feeds
+            // (= the WDT31 block) reports as **bit 2** — don't trust the PAC's dog0/dog1 naming.
+            defmt::error!("boot: WATCHDOG reset (RESETREAS=0x{=u32:08x}) — a plane wedged last session", v);
+        } else {
+            defmt::info!("boot: RESETREAS=0x{=u32:08x}", v);
+        }
+        v
+    };
 
     // LED0 (P2_09) heartbeat — a liveness blink visible even before looking at the panel.
     let mut led = Output::new(p.P2_09, Level::Low, OutputDrive::Standard);
@@ -1951,9 +2153,18 @@ async fn main(_spawner: Spawner) {
                 )
             };
 
-            // Launch the FLPR (copy the blob, arm the control block, wait ALIVE). A launch failure must
-            // never fault — degrade to a heartbeat idle, exactly like a missing/bad map card.
-            match launch_flpr().await {
+            // Launch the FLPR (copy the blob, arm the control block, wait ALIVE), with **one full
+            // relaunch retry** on failure (#349) — a one-off cold-boot race deserves a second
+            // attempt before the device gives up on the panel. A launch failure must never fault —
+            // degrade to a heartbeat idle, exactly like a missing/bad map card.
+            let launched = match launch_flpr().await {
+                Ok(()) => Ok(()),
+                Err(e) => {
+                    defmt::warn!("FLPR: boot launch failed ({}) — one relaunch retry", e);
+                    relaunch_flpr().await
+                }
+            };
+            match launched {
                 Ok(()) => info!("obc-fw-nrf54l: FLPR alive — LS021 panel backend up; init-black then COM"),
                 Err(FlprError::BadMagic) => {
                     defmt::error!("FLPR: control-block magic mismatch (memory-map drift) — idling with a heartbeat");
@@ -2007,6 +2218,10 @@ async fn main(_spawner: Spawner) {
                 panel,
                 input_plane,
                 last_overlay_span: None,
+                push_fails: 0,
+                consec_relaunches: 0,
+                relaunch_repaint: false,
+                degraded: false,
                 _gate_bus: gate_bus,
                 _src_bus: src_bus,
                 #[cfg(feature = "com-hw")]
@@ -2025,8 +2240,32 @@ async fn main(_spawner: Spawner) {
         // app at boot and saves on a settings edit. Every boot also bumps the persisted boot counter,
         // the diagnostics blob's one durable fact.
         let mut settings_store = settings::RramSettingsStore::new(p.RRAMC);
-        let boot_count = settings_store.bump_boot_count();
+        let boot_count = settings_store.bump_boot_count(reset_reas);
         defmt::info!("boot #{=u32}", boot_count);
+
+        // The hardware watchdog (#349): the last-resort net under both planes, fed by the ride
+        // loop (gated on the input plane's heartbeat). Map builds only — the `ble` status build's
+        // loop sleeps indefinitely by design and has no feeder. 24 s is generous on purpose: the
+        // dog must never fire on a slow frame or a long SD reconcile, only on a genuine wedge. It
+        // counts through sleep but **pauses under a debugger halt** (`HaltConfig::Pause`) so a
+        // breakpoint doesn't cascade into a reset — and so probe-rs can flash with the dog live.
+        // Once started a WDT can never be stopped; a warm reset carries it over, in which case
+        // `try_new` re-adopts it if the config matches (ours is constant, so it does). A foreign
+        // config (e.g. an older image's) can't be adopted or fed — log it and run unfed: the stale
+        // period fires once and the next boot starts clean.
+        #[cfg(has_map)]
+        let wdt_handle = {
+            let mut cfg = wdt::Config::default();
+            cfg.timeout_ticks = WDT_TIMEOUT_TICKS;
+            cfg.action_during_debug_halt = wdt::HaltConfig::Pause;
+            match wdt::Watchdog::try_new::<_, 1>(p.WDT0, cfg) {
+                Ok((_wdt, [handle])) => Some(handle),
+                Err(_) => {
+                    defmt::warn!("WDT: already running with a foreign config — cannot feed it; expect one reset");
+                    None
+                }
+            }
+        };
 
         // The `ble` build's object store: the mounted card (`None` degrades route ops to typed errors,
         // config still works) + the RRAM settings both move in here; the BLE planes drive it. The status
@@ -2089,7 +2328,17 @@ async fn main(_spawner: Spawner) {
         // only on the `synth` build (the host feed + the real GPS stream absolute positions, so they need
         // no synthetic-loop centre).
         #[cfg(all(has_map, any(feature = "debug-uart", not(feature = "synth"))))]
-        let app_fut = run_app(display, app, &mut storage, map_tables, map_cache, route_cache, &mut led, settings_store);
+        let app_fut = run_app(
+            display,
+            app,
+            &mut storage,
+            map_tables,
+            map_cache,
+            route_cache,
+            &mut led,
+            settings_store,
+            wdt_handle,
+        );
         #[cfg(all(has_map, not(feature = "debug-uart"), feature = "synth"))]
         let app_fut = run_app(
             display,
@@ -2100,6 +2349,7 @@ async fn main(_spawner: Spawner) {
             route_cache,
             &mut led,
             settings_store,
+            wdt_handle,
             (cam_lon, cam_lat),
         );
         #[cfg(all(has_map, not(feature = "ble")))]
