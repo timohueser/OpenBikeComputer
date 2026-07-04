@@ -110,9 +110,10 @@ public final class MainScreenModel {
     @ObservationIgnored private var deletedRideIDs: Set<RideID> = []
     /// Mirror of the store's planned routes, keyed for the detail/rename paths.
     @ObservationIgnored private var plannedRecords: [RouteID: PlannedRouteRecord] = [:]
-    /// Mirror of the store's synced rides — tracklogs filled at decode time
-    /// (`RideObjectCodec`, B7).
-    @ObservationIgnored private var rideRecords: [RideID: Ride] = [:]
+    /// Mirror of the store's synced-ride **summaries** — tracklogs stay on disk
+    /// and load one-ride-at-a-time through `rideGeometry(for:)` (#360); pinning
+    /// a season of decoded points here is exactly what that issue removed.
+    @ObservationIgnored private var rideSummaries: [RideID: RideSummary] = [:]
     @ObservationIgnored private var started = false
     @ObservationIgnored private var streamTasks: [Task<Void, Never>] = []
     @ObservationIgnored private var loadTask: Task<Void, Never>?
@@ -138,7 +139,10 @@ public final class MainScreenModel {
         // not only after the next reload.
         sync.onRideLanded = { [weak self] ride in
             guard let self else { return }
-            rideRecords[ride.id] = ride
+            // Only the summary is kept — the ride (points included) is already
+            // persisted by the coordinator; the detail reads points back through
+            // the store when it opens.
+            rideSummaries[ride.id] = ride.summary
             rides = trackedList()
         }
     }
@@ -156,11 +160,11 @@ public final class MainScreenModel {
         let planned = library.plannedRoutes()
         plannedRecords = Dictionary(uniqueKeysWithValues: planned.map { ($0.id, $0) })
         refreshOnDeviceStates()
-        let storedRides = library.rides()
-        rideRecords = Dictionary(uniqueKeysWithValues: storedRides.map { ($0.id, $0) })
+        let storedSummaries = library.rideSummaries()
+        rideSummaries = Dictionary(uniqueKeysWithValues: storedSummaries.map { ($0.id, $0) })
         deletedRideIDs = library.deletedRideIDs()
         routes = plannedList()
-        rides = storedRides.map(\.summary)
+        rides = storedSummaries
 
         // Open-ended stream loops are `[weak self]` + per-iteration `guard let
         // self` (the SettingsModel/RouteDetailModel convention) — the streams
@@ -319,7 +323,7 @@ public final class MainScreenModel {
     /// `markRideSynced` here is the whole hand-off.
     public func deleteRide(_ id: RideID) {
         rides.removeAll { $0.id == id }
-        rideRecords[id] = nil
+        rideSummaries[id] = nil
         library.deleteRide(id)
         library.markRideSynced(id)
         deletedRideIDs.insert(id)
@@ -345,13 +349,14 @@ public final class MainScreenModel {
     }
 
     /// Rename a tracked ride in the list — same phone-local rule as routes.
+    /// A summary-only write (#360): the tracklog on disk is untouched.
     public func renameRide(_ id: RideID, to name: String) {
         guard let index = rides.firstIndex(where: { $0.id == id }) else { return }
         rides[index].name = name
-        if var ride = rideRecords[id] {
-            ride.summary.name = name
-            rideRecords[id] = ride
-            library.saveRide(ride)
+        if var summary = rideSummaries[id] {
+            summary.name = name
+            rideSummaries[id] = summary
+            library.saveRideSummary(summary)
         }
     }
 
@@ -399,12 +404,14 @@ public final class MainScreenModel {
     }
 
     /// A synced ride's full tracklog (#294 follow-up) — the interactive map
-    /// draws this, never the downsampled `trackPreview`. `nil` when the ride
-    /// hasn't landed (shouldn't happen for a row the detail screen can open) or
-    /// carries no points (a pre-sync-codec ride); the detail degrades to the
-    /// preview's coordinates either way, not a missing map.
+    /// draws this, never the downsampled `trackPreview`. Loaded from the store
+    /// on demand (#360): called once per detail push, so a synchronous one-file
+    /// read is fine — only the list rows must never pay for tracklogs. `nil`
+    /// when the ride hasn't landed (shouldn't happen for a row the detail
+    /// screen can open) or carries no points (a pre-sync-codec ride); the
+    /// detail degrades to the preview's coordinates either way, not a missing map.
     public func rideGeometry(for id: RideID) -> [Coordinate]? {
-        let points = rideRecords[id]?.points.map(\.coordinate)
+        let points = library.ridePoints(id)?.map(\.coordinate)
         return (points?.isEmpty ?? true) ? nil : points
     }
 
@@ -446,11 +453,10 @@ public final class MainScreenModel {
     /// on the device but not yet downloaded is deliberately *not* here: it has
     /// only summary stats, no tracklog or preview, and a half-empty card is
     /// worse than none (the device's `listRides()` drives Sync, never the rows).
-    /// Deleted rides are already gone from `rideRecords`; the tombstone filter is
-    /// belt-and-suspenders.
+    /// Deleted rides are already gone from `rideSummaries`; the tombstone filter
+    /// is belt-and-suspenders.
     private func trackedList() -> [RideSummary] {
-        rideRecords.values
-            .map(\.summary)
+        rideSummaries.values
             .filter { !deletedRideIDs.contains($0.id) }
             .sorted { $0.date > $1.date }
     }

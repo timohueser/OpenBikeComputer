@@ -115,7 +115,7 @@ final class RideSyncCoordinatorTests: XCTestCase {
         await startConnected(coordinator)
 
         coordinator.sync()
-        await waitFor("batch lands") { library.rides().count == 4 }
+        await waitFor("batch lands") { library.rideSummaries().count == 4 }
         // From here the machine walks count-set → done → idle → line-expiry on
         // its own; idle + nil only coexist once the whole sequence has run.
         await waitFor("confirm line expires") {
@@ -207,7 +207,7 @@ final class RideSyncCoordinatorTests: XCTestCase {
         }
         XCTAssertEqual(coordinator.connection, .connected, "resume restores the link")
         XCTAssertEqual(library.syncedRideIDs().count, 4)
-        XCTAssertEqual(library.rides().count, 4, "resumed rides persist like the rest")
+        XCTAssertEqual(library.rideSummaries().count, 4, "resumed rides persist like the rest")
     }
 
     /// The user can also just sync again once back in range — what landed
@@ -244,19 +244,19 @@ final class RideSyncCoordinatorTests: XCTestCase {
         coordinator.sync()
         await waitFor("sync done") { coordinator.syncState == .done }
 
-        let stored = library.rides()
+        let stored = library.rideSummaries()
         XCTAssertEqual(stored.count, 4)
-        XCTAssertTrue(stored.allSatisfy { !$0.points.isEmpty },
+        XCTAssertTrue(stored.allSatisfy { !(library.ridePoints($0.id) ?? []).isEmpty },
                       "every fixture payload decodes into a tracklog")
 
-        let kettle = stored.first { $0.id == RideID("ride-kettle-moraine") }
-        XCTAssertEqual(kettle?.points.count, 9, "the fixture's track survives the wire")
-        let start = kettle?.points.first
+        let kettle = library.ridePoints(RideID("ride-kettle-moraine"))
+        XCTAssertEqual(kettle?.count, 9, "the fixture's track survives the wire")
+        let start = kettle?.first
         XCTAssertEqual(start?.coordinate.latitude ?? 0, 42.8672, accuracy: 1e-6)
         XCTAssertEqual(start?.coordinate.longitude ?? 0, -88.4471, accuracy: 1e-6)
         XCTAssertEqual(start?.elevationMeters ?? 0, 264, accuracy: 0.5)
         // Timestamps synthesized across the moving time, in ride order.
-        let span = kettle.map { $0.points.last!.timestamp.timeIntervalSince($0.points.first!.timestamp) }
+        let span = kettle.map { $0.last!.timestamp.timeIntervalSince($0.first!.timestamp) }
         XCTAssertEqual(span ?? 0, 10_260, accuracy: 1)
     }
 
@@ -306,12 +306,12 @@ final class RideSyncCoordinatorTests: XCTestCase {
 
         coordinator.sync()
         // The two yielded rides land and persist before the stream throws…
-        await waitFor("partial lands") { library.rides().count == 2 }
+        await waitFor("partial lands") { library.rideSummaries().count == 2 }
         // …then the failed outcome brings the button straight back to idle.
         await waitFor("failure settles") {
             coordinator.syncState == .idle && coordinator.syncProgress == nil
         }
-        XCTAssertEqual(library.rides().count, 2, "the partial batch persists")
+        XCTAssertEqual(library.rideSummaries().count, 2, "the partial batch persists")
         XCTAssertEqual(library.syncedRideIDs().count, 2)
         // A failed outcome is terminal: no confirm line, no H10 banner (the
         // stream finished — there's nothing to resume), no up-to-date toast.
@@ -329,7 +329,7 @@ final class RideSyncCoordinatorTests: XCTestCase {
         await startConnected(first)
         first.sync()
         await waitFor("first sync") { first.lastSyncCount == 4 }
-        XCTAssertEqual(library.rides().count, 4, "each landed ride persists")
+        XCTAssertEqual(library.rideSummaries().count, 4, "each landed ride persists")
 
         let (relaunched, _) = makeCoordinator(.happyPath, library: library)
         await startConnected(relaunched)
@@ -353,7 +353,7 @@ final class RideSyncCoordinatorTests: XCTestCase {
 
         let landed = library.syncedRideIDs().count
         XCTAssertTrue((1...3).contains(landed), "the drop should leave a partial batch")
-        XCTAssertEqual(library.rides().count, landed, "what landed is already persisted")
+        XCTAssertEqual(library.rideSummaries().count, landed, "what landed is already persisted")
 
         let (relaunched, _) = makeCoordinator(.happyPath, library: library)
         await startConnected(relaunched)
