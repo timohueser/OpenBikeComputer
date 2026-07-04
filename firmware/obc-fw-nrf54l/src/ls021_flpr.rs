@@ -59,6 +59,11 @@
 //! the FLPR scans. The wait is bounded by [`FRAME_DEADLINE`]; a timeout returns `false` exactly
 //! like a transport fault — the caller keeps the last frame, re-arms the diff, and retries (and
 //! #349's relaunch escalation builds on this hook).
+//!
+//! The one exception is the **overlay push, which deliberately blocks**
+//! ([`run_spans_blocking`](Ls021Flpr::run_spans_blocking)): its ~9 KB composite/save scratch must
+//! stay a stack transient — alive across an `await` it becomes task-future state in a *static*,
+//! permanently shrinking the residual stack (the on-glass boot HardFault that taught this).
 
 use core::ptr::{addr_of, addr_of_mut};
 
@@ -357,23 +362,11 @@ impl<'b> Ls021Flpr<'b> {
         if total == 0 {
             return true; // nothing dirty — a no-op frame (defensive; callers pass ≥1 row)
         }
-        self.seq += 1;
-        let s = self.seq;
-
-        set_spans(spans);
-        // SAFETY: plain volatile store into the SHARED-page control block (no Rust object aliases
-        // it); the FLPR reads it only after the `ring_cmd` doorbell below orders it.
-        unsafe { addr_of_mut!((*CONTROL).fb_addr).write_volatile(self.fb.as_ptr() as u32) };
-
-        // Drop any stale ack (a late echo of an older, timed-out frame) so the await below can't
-        // be satisfied by history.
-        FRAME_ACK.reset();
-        let t_frame = Instant::now();
+        let (s, t_frame) = self.ring_spans(spans);
         let deadline = t_frame + FRAME_DEADLINE;
-        ring_cmd(s);
 
         // Await the FLPR's EGU20 frame ack; on a stale echo (`flpr_seq` ≠ our seq — a late ack of
-        // an older frame racing the reset above) keep waiting for ours until the deadline.
+        // an older frame racing the reset in `ring_spans`) keep waiting for ours until the deadline.
         loop {
             if with_deadline(deadline, FRAME_ACK.wait()).await.is_err() {
                 error!(
@@ -392,6 +385,64 @@ impl<'b> Ls021Flpr<'b> {
                 break;
             }
         }
+        self.check_ack(total, t_frame)
+    }
+
+    /// The **blocking** twin of [`run_spans`](Self::run_spans), for the overlay path only: identical
+    /// ring + ack contract, but spin-waits `flpr_seq` (deadline-bounded) instead of awaiting EGU20.
+    ///
+    /// **Why it exists — the #347 stack lesson.** [`push_overlay`](Self::push_overlay)'s composite
+    /// scratch + save window (~9 KB) must stay **stack transients**: alive across an `await` they
+    /// become part of the map-plane task's *static* future, permanently shrinking the residual
+    /// stack by that much (on glass: total 36.6 → 24.7 KB, and the first deep map render overflowed
+    /// into `.bss` — a BusFault at boot). An overlay push is a few ms (≤192 rows, gate
+    /// fast-forwarded), so briefly spinning costs what the pre-#347 path always cost, while the
+    /// ~97 ms map frames keep the async ack. The EGU20 ISR still fires per frame; the stale signal
+    /// it leaves is dropped by the next async push's `FRAME_ACK.reset()`.
+    fn run_spans_blocking(&mut self, spans: &[(u16, u16)]) -> bool {
+        let total = span_row_total(spans);
+        if total == 0 {
+            return true;
+        }
+        let (s, t_frame) = self.ring_spans(spans);
+        let deadline = t_frame + FRAME_DEADLINE;
+        while unsafe { addr_of!((*CONTROL).flpr_seq).read_volatile() } != s {
+            if Instant::now() > deadline {
+                error!(
+                    "LS021 FLPR: overlay frame TIMEOUT — no ack for seq {=u32} within {=u64} ms (the scan stalled)",
+                    s,
+                    FRAME_DEADLINE.as_millis()
+                );
+                dump_flpr_state(s);
+                return false;
+            }
+            core::hint::spin_loop();
+        }
+        cortex_m::asm::dmb(); // ack-read ordering, as in the async path (issue #346)
+        self.check_ack(total, t_frame)
+    }
+
+    /// Publish the span list + the framebuffer address, drop any stale ack signal, and ring one
+    /// `CMD_RUN_FRAME` — the shared front half of [`run_spans`](Self::run_spans) /
+    /// [`run_spans_blocking`](Self::run_spans_blocking). Returns the rung sequence + the frame's t0.
+    fn ring_spans(&mut self, spans: &[(u16, u16)]) -> (u32, Instant) {
+        self.seq += 1;
+        let s = self.seq;
+        set_spans(spans);
+        // SAFETY: plain volatile store into the SHARED-page control block (no Rust object aliases
+        // it); the FLPR reads it only after the `ring_cmd` doorbell below orders it.
+        unsafe { addr_of_mut!((*CONTROL).fb_addr).write_volatile(self.fb.as_ptr() as u32) };
+        // Drop any stale ack (a late echo of an older frame, or a blocking overlay push's unclaimed
+        // signal) so an async wait can't be satisfied by history.
+        FRAME_ACK.reset();
+        let t_frame = Instant::now();
+        ring_cmd(s);
+        (s, t_frame)
+    }
+
+    /// The shared back half of a push: cross-check the FLPR's `status` against the dirty-row total
+    /// and emit the per-push `debug` breakdown. The caller has already matched `flpr_seq` (+ `dmb`).
+    fn check_ack(&self, total: usize, t_frame: Instant) -> bool {
         let frame_us = t_frame.elapsed().as_micros();
         let status = unsafe { addr_of!((*CONTROL).status).read_volatile() };
         let frames = unsafe { addr_of!((*CONTROL).frame_count).read_volatile() };
@@ -482,7 +533,12 @@ impl<'b> Ls021Flpr<'b> {
     /// **once** (one `draw_overlay` call ⇒ the caller's `InputPlane` lock is taken once per overlay
     /// frame, not per row); the transient cost is the ~6 KB RGB565 scratch + the ~3 KB save window
     /// on this call's stack — an overlay-only frame, never live during a deep map render.
-    pub async fn push_overlay(
+    ///
+    /// **Deliberately blocking** (`run_spans_blocking`): if those ~9 KB lived across an `await`
+    /// they would move into the map-plane task's *static* future and permanently shrink the
+    /// residual stack — the on-glass boot HardFault that forced this shape. A bulge push is a few
+    /// ms; the ~97 ms map presents are the ones that await (see [`run_spans_blocking`]'s doc).
+    pub fn push_overlay(
         &mut self,
         x0: u16,
         y0: u16,
@@ -519,8 +575,8 @@ impl<'b> Ls021Flpr<'b> {
         }
 
         // 3. Push the full-width rows `[y0, y0+rows)` — the FLPR packs them from the fb, bulge
-        //    included.
-        let ok = self.run_spans(&[(y0 as u16, rows as u16)]).await;
+        //    included. Blocking, so `win`/`save` stay stack transients (see the method doc).
+        let ok = self.run_spans_blocking(&[(y0 as u16, rows as u16)]);
 
         // 4. Restore the clean map under the bulge — the fb is byte-identical to before, so the
         //    RowDiff store (which tracks the clean fb) needs no touch-up.
