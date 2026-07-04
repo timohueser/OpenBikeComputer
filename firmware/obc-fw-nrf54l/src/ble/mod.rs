@@ -44,7 +44,7 @@ mod state;
 // The stable `ble::…` surface the rest of the crate consumes (`main.rs`'s status plane). Kept as
 // re-exports so the submodule split doesn't churn the call sites.
 pub use gatt::draw_status_screen;
-pub use state::{publish_battery, wait_status_change};
+pub use state::{publish_battery, publish_stack_high_water, wait_status_change};
 
 use core::mem::MaybeUninit;
 use core::sync::atomic::Ordering;

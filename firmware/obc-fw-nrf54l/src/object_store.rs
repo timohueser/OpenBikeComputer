@@ -438,7 +438,7 @@ impl ObjectStore {
             format_args!(
                 "obc diagnostics\nfw: {}\nhw: {}\nserial: {}\nprotocol: {}\nboot_count: {}\nuptime_s: {}\n\
                  link_connects: {}\nlink_disconnects: {}\nlink_last_reason: 0x{:02X}\n\
-                 routes: {}\nrides: {}\nsd: {}\n",
+                 routes: {}\nrides: {}\nsd: {}\nstack_hw: {}\nstack_total: {}\n",
                 link.firmware,
                 link.hardware,
                 link.serial,
@@ -451,6 +451,11 @@ impl ObjectStore {
                 self.routes.len(),
                 self.rides.len(),
                 if self.storage.is_some() { "ok" } else { "--" },
+                // The A9 soak-rig health numbers: the deepest stack use the status loop has painted
+                // (0 until the first scan) against the total usable stack — the "stack high-water + RAM
+                // numbers posted" DoD, readable over the link with no RTT.
+                link.stack_hw,
+                crate::stackmeter::total(),
             ),
         );
         w.len
@@ -592,6 +597,8 @@ pub struct DiagInput<'a> {
     pub connects: u32,
     pub disconnects: u32,
     pub last_disconnect_reason: u8,
+    /// The status loop's deepest painted stack use (bytes); 0 before the first scan.
+    pub stack_hw: u32,
 }
 
 /// `core::fmt::Write` into a fixed byte buffer, silently truncating on overflow (the

@@ -156,6 +156,25 @@ mod status;
 // Persistent device settings over on-chip RRAM (the SD-independent settings store); boot-load +
 // save-on-dirty are wired in `run_app`.
 mod settings;
+
+// ── Hardware-watchdog discipline, shared by both thread-mode planes ──────────────────────────────
+// The map build's ride loop (`ride.rs`) and the `ble` build's status loop (`status.rs`) are mutually
+// exclusive, but both feed the *same* dog with the *same* config — so a warm reset that swaps one
+// firmware image for the other re-adopts the running WDT (`try_new` matches on config value). The
+// constants live here at the crate root so the two planes can't drift apart, and so `main`'s WDT
+// setup reads one source of truth. See #349 (map build) and #277/A9 (ble build).
+/// Watchdog period: 24 s of 32768 Hz LFCLK ticks (the #349 issue's 16–30 s band). Generous on
+/// purpose — the dog must never fire on a slow frame or a deep SD reconcile, only on a genuine wedge.
+pub(crate) const WDT_TIMEOUT_TICKS: u32 = 24 * 32768;
+/// Cap (ms) on a plane's event-driven sleep, ~WDT/2 — an otherwise-idle device still wakes to feed the
+/// dog. One extra wake per ~12 s is negligible next to the idle repoll cadence.
+pub(crate) const WDT_FEED_CAP_MS: u32 = 12_000;
+/// How stale the input plane's heartbeat ([`planes::INPUT_HB_MS`]) may be before a feeder **withholds**
+/// the feed. The idle input plane legitimately sleeps its repoll interval (30 s) between stamps, so the
+/// window is 2× that plus margin — no false trip on a parked device; a wedged input plane trips the dog
+/// within roughly this window + the WDT period (~90 s worst case, fine for a last resort). A stamp
+/// slightly *newer* than the feeder's own `now` (the planes race on `Instant::now()`) counts as fresh.
+pub(crate) const INPUT_HB_STALE_MS: u32 = 65_000;
 // Real GPS (SAM-M10Q) + altimeter (BMP581) on a shared TWIM30 I²C bus — the concrete transport + the
 // event-driven sensor task. Compiled only on the **real-sensor** build (the default: neither `synth`
 // nor `debug-uart`), since `synth`/`debug-uart` supply the location source instead.
@@ -212,7 +231,7 @@ use display::Display;
 use embassy_nrf::gpio::{Input, Pull};
 use embassy_nrf::interrupt;
 use embassy_nrf::interrupt::{InterruptExt, Priority};
-#[cfg(has_map)]
+// Both the map build's ride loop and the `ble` build's status loop feed the hardware WDT (#349, #277).
 use embassy_nrf::wdt;
 // The shared GPS/altimeter I²C bus — real-sensor build only.
 #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
@@ -985,20 +1004,21 @@ async fn main(_spawner: Spawner) {
         let boot_count = settings_store.bump_boot_count(reset_reas);
         defmt::info!("boot #{=u32}", boot_count);
 
-        // The hardware watchdog (#349): the last-resort net under both planes, fed by the ride
-        // loop (gated on the input plane's heartbeat). Map builds only — the `ble` status build's
-        // loop sleeps indefinitely by design and has no feeder. 24 s is generous on purpose: the
-        // dog must never fire on a slow frame or a long SD reconcile, only on a genuine wedge. It
-        // counts through sleep but **pauses under a debugger halt** (`HaltConfig::Pause`) so a
-        // breakpoint doesn't cascade into a reset — and so probe-rs can flash with the dog live.
-        // Once started a WDT can never be stopped; a warm reset carries it over, in which case
-        // `try_new` re-adopts it if the config matches (ours is constant, so it does). A foreign
-        // config (e.g. an older image's) can't be adopted or fed — log it and run unfed: the stale
-        // period fires once and the next boot starts clean.
-        #[cfg(has_map)]
+        // The hardware watchdog (#349 map build, #277/A9 `ble` build): the last-resort net under a
+        // wedged plane, fed by whichever thread-mode loop this build runs — the ride loop (`run_app`)
+        // or the status loop (`run_status`) — each gated on the input plane's heartbeat, so a wedge in
+        // *either* thread mode or the input plane trips the dog. Both feed the same dog with the same
+        // config ([`WDT_TIMEOUT_TICKS`], pause-on-halt), so a warm reset that swaps map⇄ble images
+        // re-adopts the running dog. 24 s is generous on purpose: it must never fire on a slow frame or
+        // a long SD reconcile, only on a genuine wedge. It counts through sleep but **pauses under a
+        // debugger halt** (`HaltConfig::Pause`) so a breakpoint doesn't cascade into a reset — and so
+        // probe-rs can flash with the dog live. Once started a WDT can never be stopped; `try_new`
+        // re-adopts a running dog when the config matches (ours is constant, so it does). A *foreign*
+        // config (an older image's) can't be adopted or fed — log it and run unfed: the stale period
+        // fires once and the next boot starts clean.
         let wdt_handle = {
             let mut cfg = wdt::Config::default();
-            cfg.timeout_ticks = ride::WDT_TIMEOUT_TICKS;
+            cfg.timeout_ticks = WDT_TIMEOUT_TICKS;
             cfg.action_during_debug_halt = wdt::HaltConfig::Pause;
             match wdt::Watchdog::try_new::<_, 1>(p.WDT0, cfg) {
                 Ok((_wdt, [handle])) => Some(handle),
@@ -1103,8 +1123,11 @@ async fn main(_spawner: Spawner) {
         compile_error!(
             "map + BLE in one image is the LM20 shape (#270): the A6 object plane and the ride loop must arbitrate SD/settings first"
         );
-        // The `ble` DK build: the radio + the status UI, joined forever.
+        // The `ble` DK build: the radio + the status UI, joined forever. The status loop feeds the
+        // hardware watchdog (gated on the input-plane heartbeat) — the last-resort net under a wedged
+        // BLE/storage plane, since a synchronous SD hang in the data plane blocks this whole thread-mode
+        // task and stops the feed.
         #[cfg(not(has_map))]
-        embassy_futures::join::join(ble_fut, status::run_status(display, sd_ok, &mut led)).await;
+        embassy_futures::join::join(ble_fut, status::run_status(display, sd_ok, &mut led, wdt_handle)).await;
     }
 }
