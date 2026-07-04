@@ -208,21 +208,17 @@ static void drive_subline(const volatile uint8_t *row, uint32_t shift)
         /* ── rising-edge column: word k (already packed) ── */
         GPIO2_OUTCLR = (~w0) & DATA_MASK;
         GPIO2_OUTSET = w0;
-        uint32_t w1 = pack_word(row, k + 1u, shift); /* pack word k+1 inside word k's setup window */
-        busy(DATA_SETUP_TOPUP_ITERS);
+        uint32_t w1 = pack_word(row, k + 1u, shift); /* pack word k+1 IS word k's setup window (#348) */
         GPIO2_OUTSET = BCK_MASK; /* rising edge latches word k */
         if (k == 0) {
             GPIO1_OUTCLR = BSP_MASK; /* BCK(1) rose within BSP high — now release BSP */
         }
-        busy(BCK_HALF_ITERS);
 
-        /* ── falling-edge column: word k+1 ── */
+        /* ── falling-edge column: word k+1 (the presents + pack below are the BCK-high width, #348) ── */
         GPIO2_OUTCLR = (~w1) & DATA_MASK;
         GPIO2_OUTSET = w1;
-        w0 = pack_word(row, k + 2u, shift); /* pack the next rising word inside this setup window */
-        busy(DATA_SETUP_TOPUP_ITERS);
-        GPIO2_OUTCLR = BCK_MASK; /* falling edge latches word k+1 */
-        busy(BCK_HALF_ITERS);
+        w0 = pack_word(row, k + 2u, shift); /* pack the next rising word IS this setup window (#348) */
+        GPIO2_OUTCLR = BCK_MASK; /* falling edge latches word k+1 (next iteration's presents+pack = the low width) */
     }
     GPIO2_OUTCLR = DATA_MASK; /* leave the data lines Lo (boot-safe) after the sub-line */
 }
