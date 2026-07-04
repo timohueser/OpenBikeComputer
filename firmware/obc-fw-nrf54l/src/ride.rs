@@ -344,8 +344,12 @@ pub(crate) async fn run_app(
             // A Save also writes the durable ride object: snapshot the app's ride totals + wall-clock
             // anchor in the same frame, so the header matches the log's last points.
             let stats = (action == Some(obc_app::TrackAction::Save)).then(|| app.ride_stats());
-            storage.reconcile_route(active);
-            storage.reconcile_track(action, session, &name, stats.as_ref());
+            // `storage` is `Option` (a card-less `ble` combined build still serves BLE, map idle); the
+            // map build always has `Some`. No card ⇒ nothing to reconcile.
+            if let Some(s) = storage.as_mut() {
+                s.reconcile_route(active);
+                s.reconcile_track(action, session, &name, stats.as_ref());
+            }
             prev_active = active;
             prev_session = session;
         }
@@ -356,7 +360,7 @@ pub(crate) async fn run_app(
         if index_route != active {
             route_cache.clear(); // a route switch: drop stale slots (the cache keys by chunk index only)
             match active {
-                Some(_) => match storage.build_route_index() {
+                Some(_) => match storage.as_ref().and_then(|s| s.build_route_index()) {
                     Some(idx) => {
                         route_index = Some(idx);
                         index_route = active; // cached — no more rebuilds until the route changes
@@ -378,14 +382,14 @@ pub(crate) async fn run_app(
         // This frame's route reader = the cached index + a fresh geometry source (both cheap, no I/O —
         // the source just wraps the open handle). Geometry streams lazily where it's read: the matcher
         // on a fresh fix, the renderer on a redraw frame.
-        let route_src = storage.route_source();
+        let route_src = storage.as_ref().and_then(|s| s.route_source());
         let route = match (route_index.as_ref(), route_src.as_ref()) {
             (Some(idx), Some(src)) => Some(RouteReader::new_cached(idx, src, route_cache)),
             _ => None,
         };
         // The ride-log sink, built every tick (it only wraps the open log handle, no I/O), so a fresh
         // fix is written to the `.gpx` the moment it arrives, at the fix rate.
-        let mut tsink = storage.track_sink();
+        let mut tsink = storage.as_ref().and_then(|s| s.track_sink());
         let track_dyn = tsink.as_mut().map(|t| t as &mut dyn TrackSink);
 
         // Feed the sensors → integrate the fix → map-match to the route → log the track point. Three
@@ -487,7 +491,7 @@ pub(crate) async fn run_app(
             // SD read, no parse, no stack spike (what kept this deep path inside the 256 KB stack). The
             // only per-frame failure left is the source handle being momentarily unavailable (a flaky SD
             // link); skip the redraw, keep the last frame, latch a retry.
-            let map_src = if needs_map { storage.map_source() } else { None };
+            let map_src = if needs_map { storage.as_ref().and_then(|s| s.map_source()) } else { None };
             let reader = map_src.as_ref().map(|s| Reader::new(s, map_tables, map_cache));
             if needs_map && reader.is_none() {
                 pending_map_redraw = true;
