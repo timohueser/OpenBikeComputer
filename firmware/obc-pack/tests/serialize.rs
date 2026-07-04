@@ -40,8 +40,9 @@ fn pack_feature_8bit_line() {
 fn pack_chunk_pads_with_ff() {
     let f = line(10, &[(1.0, 1.0), (1.0001, 1.0001)]);
     let node_bbox = (1_000_000, 1_000_000, 1_010_000, 1_010_000);
-    let chunk = pack_chunk(&[f], node_bbox, 32);
+    let (chunk, dropped) = pack_chunk(&[f], node_bbox, 32);
     assert_eq!(chunk.len(), 32);
+    assert_eq!(dropped, 0);
     assert!(chunk[14..].iter().all(|&b| b == 0xFF)); // 18 bytes of padding
 }
 
@@ -69,7 +70,8 @@ fn serialize_lods_header_single_empty_leaf() {
         chunk_size: 2048,
         root: Node::Leaf { bbox: (0, 0, 100, 100), features: vec![] },
     }];
-    let bin = serialize_lods(&lods, &[], 0xF800, (0, 0, 100, 100));
+    let (bin, dropped) = serialize_lods(&lods, &[], 0xF800, (0, 0, 100, 100));
+    assert_eq!(dropped, 0);
 
     // v5 header(32) + style count(1) + 1 LOD entry(18) + index(4) = 55.
     assert_eq!(bin.len(), 55);
@@ -192,6 +194,48 @@ fn pack_feature_antimeridian_negative_anchor() {
     assert_eq!(data[13] as i8, 100, "dy = +100 µdeg");
 }
 
+// === Quadtree budget vs real packed bytes ===================================
+// The quadtree splits on `geom::packed_size_budget`; if that ever under-counts
+// what `pack_feature` really emits, a leaf survives splitting and `pack_chunk`
+// silently drops the overflow. Pin `budget >= packed.len()` for the cases that
+// used to be under-counted: densified long segments, densified anchor→hole
+// jumps, and hole bookkeeping bytes.
+
+#[test]
+fn budget_covers_packed_bytes_for_densify_and_holes() {
+    use obc_pack::geom::{packed_size_budget, Geom};
+    let node_bbox = (0, 0, 10_000_000, 10_000_000);
+
+    let check = |name: &str, geom: &Geom, feature: &Feature| {
+        let budget = packed_size_budget(geom);
+        let packed = pack_feature(feature, node_bbox).len();
+        assert!(budget >= packed, "{name}: budget {budget} must cover packed {packed} bytes");
+    };
+
+    // A 2-point line spanning 3° of longitude densifies to ~100 midpoints.
+    let long = vec![(0.1, 0.5), (3.1, 0.5)];
+    check("densified line", &Geom::Line(long.clone()), &Feature { style_id: 1, kind: Kind::Line, rings: vec![long] });
+
+    // A polygon with two holes, each ~1° from the anchor: the anchor→hole jumps
+    // densify too, and the hole count/pt_count bookkeeping bytes must be counted.
+    let ext = vec![(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)];
+    let h1 = vec![(1.0, 1.0), (1.01, 1.0), (1.01, 1.01), (1.0, 1.01), (1.0, 1.0)];
+    let h2 = vec![(1.5, 1.5), (1.51, 1.5), (1.51, 1.51), (1.5, 1.51), (1.5, 1.5)];
+    check(
+        "polygon with far holes",
+        &Geom::Polygon { exterior: ext.clone(), interiors: vec![h1.clone(), h2.clone()] },
+        &Feature { style_id: 2, kind: Kind::Polygon, rings: vec![ext, h1, h2] },
+    );
+
+    // A small 8-bit line: the budget may be loose (16-bit worst case) but never under.
+    let small = vec![(1.0, 1.0), (1.0001, 1.0001), (1.0002, 1.0)];
+    check(
+        "small 8-bit line",
+        &Geom::Line(small.clone()),
+        &Feature { style_id: 3, kind: Kind::Line, rings: vec![small] },
+    );
+}
+
 // === Chunk-size overflow drop ===============================================
 // `pack_chunk` drops a feature (and every feature after it) that would overflow
 // the chunk; pin that the padding/contents stay consistent.
@@ -207,8 +251,9 @@ fn pack_chunk_drops_overflowing_feature_and_the_rest() {
     let node_bbox = (1_000_000, 1_000_000, 1_010_000, 1_010_000);
 
     // Chunk of 20: holds `a` (14) but not `a`+`b` (28) ⇒ b and c dropped.
-    let chunk = pack_chunk(&[a, b, c], node_bbox, 20);
+    let (chunk, dropped) = pack_chunk(&[a, b, c], node_bbox, 20);
     assert_eq!(chunk.len(), 20, "chunk is exactly chunk_size");
+    assert_eq!(dropped, 2, "b and c are reported as dropped, not lost silently");
     // First 14 bytes are feature `a` (style 10); the rest is 0xFF padding — no
     // partial second feature, and `c` is gone too (break, not continue).
     assert_eq!(chunk[0], 10, "the one feature that fit is `a`");
@@ -233,7 +278,8 @@ fn serialize_keeps_chunk_index_consistent_when_a_feature_overflows() {
         chunk_size: 20,
         root: Node::Leaf { bbox: (1_000_000, 1_000_000, 1_010_000, 1_010_000), features: vec![a, b] },
     }];
-    let bin = serialize_lods(&lods, &[], 0xF800, (1_000_000, 1_000_000, 1_010_000, 1_010_000));
+    let (bin, dropped) = serialize_lods(&lods, &[], 0xF800, (1_000_000, 1_000_000, 1_010_000, 1_010_000));
+    assert_eq!(dropped, 1, "the overflowing feature is reported dropped");
 
     // Locate the LOD table and read its node/chunk counts + index offset.
     let lod_tbl = u32::from_le_bytes([bin[26], bin[27], bin[28], bin[29]]) as usize;

@@ -1,13 +1,14 @@
 //! Quadtree build — bucket a LOD's features into chunks.
 //!
 //! Insert every feature into a quadtree over the global bbox, splitting a leaf once
-//! its accumulated size (`12 + pt_count*4` per feature) exceeds the chunk size.
+//! its accumulated size (the per-feature [`packed_size_budget`], an upper bound on
+//! the real packed bytes including densify midpoints) exceeds the chunk size.
 //! Contained features go in as-is; straddling ones are clipped to the node box.
 //!
 //! Overlap/containment tests and clipping run in **degree space** (bbox / 1e6), so
 //! leaf membership matches the node bounds the reader recomputes at render time.
 
-use crate::geom::{clip_to_box, pt_count, to_feature, Bounds, Geom};
+use crate::geom::{clip_to_box, packed_size_budget, to_feature, Bounds, Geom};
 use crate::serialize::Node;
 
 struct StoredFeature {
@@ -88,7 +89,7 @@ impl QuadtreeNode {
             }
         } else {
             // Leaf: accumulate, then split if over capacity.
-            let delta = 12 + pt_count(&f.geom) * 4;
+            let delta = packed_size_budget(&f.geom);
             self.features.push(f);
             self.current_size += delta;
             if self.should_split() {
@@ -348,6 +349,28 @@ mod tests {
         assert!(poly_pieces >= 2, "a straddling polygon clips into ≥2 leaf pieces, got {poly_pieces}");
         assert!((min_x - x0).abs() < 1e-6, "left extent preserved: {min_x} vs {x0}");
         assert!((max_x - x1).abs() < 1e-6, "right extent preserved: {max_x} vs {x1}");
+    }
+
+    /// A 2-point line spanning 3° densifies to ~100 extra vertices at pack time,
+    /// far beyond what its raw vertex count suggests (12 + 2*4 = 20 bytes). The
+    /// budget must count the densified size so the tree keeps splitting until
+    /// every leaf's REAL packed bytes fit its chunk — under raw accounting the
+    /// single leaf would overflow and `pack_chunk` would silently drop the line.
+    #[test]
+    fn budget_counts_densified_midpoints_so_nothing_drops() {
+        let g = line(&[(0.1, 3.9), (3.1, 3.9)]);
+        let tree = build_lod([(1u8, g)], (0, 0, 4_000_000, 4_000_000), 100);
+        assert!(is_branch(&tree), "densified budget must force a split (raw accounting would not)");
+        let mut populated = 0;
+        for (features, bbox) in leaves(&tree) {
+            if features.is_empty() {
+                continue;
+            }
+            let (_, dropped) = crate::serialize::pack_chunk(features, bbox, 100);
+            assert_eq!(dropped, 0, "every leaf's features must genuinely fit its chunk");
+            populated += 1;
+        }
+        assert!(populated >= 2, "the long line lands in several leaves, got {populated}");
     }
 
     /// An `Empty` geometry (what simplify/clip can return) is dropped by `build_lod`,

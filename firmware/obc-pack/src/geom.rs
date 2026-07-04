@@ -93,14 +93,59 @@ pub fn to_feature(style_id: u8, g: &Geom) -> Option<Feature> {
     }
 }
 
-/// Point count for chunk-size accounting (`12 + pt_count*4`): a polygon counts
-/// exterior + every interior ring.
-pub fn pt_count(g: &Geom) -> usize {
-    match g {
-        Geom::Line(c) => c.len(),
-        Geom::Polygon { exterior, interiors } => exterior.len() + interiors.iter().map(Vec::len).sum::<usize>(),
-        _ => 0,
+/// Vertices `densify` will insert between two µdeg points (`steps - 1`).
+#[inline]
+fn densify_extra(p1: (i64, i64), p2: (i64, i64)) -> usize {
+    let max_dist = (p2.0 - p1.0).abs().max((p2.1 - p1.1).abs());
+    if max_dist > crate::serialize::MAX_SEGMENT {
+        (max_dist / crate::serialize::MAX_SEGMENT) as usize
+    } else {
+        0
     }
+}
+
+/// Upper bound on the bytes `pack_feature` will emit for this geometry, for
+/// quadtree chunk-size accounting: `12 + pts*4` plus the hole bookkeeping bytes,
+/// where `pts` counts the **densified** vertices — the same µdeg rounding and
+/// `MAX_SEGMENT` walk the serializer uses, including the anchor→first-vertex jump
+/// of each hole. Budgeting raw vertices instead would under-count features with
+/// long segments (clipped land rectangles, coarse-LOD lines), and a leaf whose
+/// real bytes overflow the chunk gets features silently dropped at pack time.
+/// Always ≥ the packed size: deltas are budgeted at the 16-bit worst case, and
+/// the exterior's anchor vertex is counted although it packs into the header.
+pub fn packed_size_budget(g: &Geom) -> usize {
+    const NO_HOLES: &[Vec<(f64, f64)>] = &[];
+    let (exterior, interiors) = match g {
+        Geom::Line(c) => (c.as_slice(), NO_HOLES),
+        Geom::Polygon { exterior, interiors } => (exterior.as_slice(), interiors.as_slice()),
+        _ => return 0,
+    };
+    let udeg = |ring: &[(f64, f64)]| -> Vec<(i64, i64)> {
+        ring.iter().map(|&(x, y)| (crate::serialize::to_udeg(x), crate::serialize::to_udeg(y))).collect()
+    };
+    let ext = udeg(exterior);
+    if ext.is_empty() {
+        return 0;
+    }
+    let anchor = ext[0];
+    // Densified vertex count of one ring walked from `start` (the anchor for
+    // holes, the ring's own first vertex — a zero-length jump — for the exterior).
+    let ring_pts = |pts: &[(i64, i64)], start: (i64, i64)| -> usize {
+        let mut prev = start;
+        let mut n = 0;
+        for &p in pts {
+            n += 1 + densify_extra(prev, p);
+            prev = p;
+        }
+        n
+    };
+    let mut pts = ring_pts(&ext, anchor);
+    for hole in interiors {
+        pts += ring_pts(&udeg(hole), anchor);
+    }
+    // Hole bookkeeping: 1 count byte + a 2-byte pt_count per hole.
+    let hole_overhead = if interiors.is_empty() { 0 } else { 1 + 2 * interiors.len() };
+    12 + pts * 4 + hole_overhead
 }
 
 // --- GEOS bridge -----------------------------------------------------------
