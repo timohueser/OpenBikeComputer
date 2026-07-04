@@ -54,7 +54,7 @@ impl AddFieldScreen {
         list::list_frame(cv, w, h, "ADD FIELD", sel + 1, total, geo.visible);
 
         if total == 0 {
-            super::super::empty_state(cv, w, h, "All fields added", "Remove one to swap");
+            super::empty_state(cv, w, h, "All fields added", "Remove one to swap");
             return;
         }
 
