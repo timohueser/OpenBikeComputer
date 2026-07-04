@@ -82,6 +82,9 @@ struct RootView: View {
                     },
                     onSettings: {
                         path.append(.settings)
+                    },
+                    onOpenTrash: {
+                        path.append(.trash)
                     }
                 )
                 // Back label for the pushed details — the main screen draws its
@@ -219,7 +222,8 @@ struct RootView: View {
                     // never the ride card's downsampled preview.
                     rideGeometry: mainModel.rideGeometry(for: id),
                     deviceName: mainModel.deviceName,
-                    // Phone-side only — the ride stays on the device's card.
+                    // Phone-side only — the ride stays on the device's card;
+                    // app-side it lands in Recently Deleted (#292), recoverable.
                     onDelete: {
                         mainModel.deleteRide(id)
                         path.removeAll()
@@ -227,6 +231,8 @@ struct RootView: View {
                     onRename: { mainModel.renameRide(id, to: $0) }
                 )
             }
+        case .trash:
+            RecentlyDeletedView(model: mainModel)
         case .settings:
             SettingsScreen(
                 transport: transport,
@@ -261,6 +267,7 @@ struct RootView: View {
 enum MainDestination: Hashable {
     case route(id: RouteID)
     case ride(id: RideID)
+    case trash
     case settings
 }
 

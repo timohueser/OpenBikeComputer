@@ -105,17 +105,19 @@ public struct OBCDisclosureRow<Content: View>: View {
 
 extension OBCDisclosureRow where Content == EmptyView {
     /// Plain (push) variant: the whole row is a button firing `action`.
+    /// `accessibilityID` lands on that button, so UI tests can tap the row.
     public init(
         systemImage: String,
         label: String,
         value: String? = nil,
+        accessibilityID: String? = nil,
         action: @escaping () -> Void = {}
     ) {
         self.systemImage = systemImage
         self.label = label
         self.value = value
         self.isExpanded = nil
-        self.headerAccessibilityID = nil
+        self.headerAccessibilityID = accessibilityID
         self.action = action
         self.content = EmptyView()
     }

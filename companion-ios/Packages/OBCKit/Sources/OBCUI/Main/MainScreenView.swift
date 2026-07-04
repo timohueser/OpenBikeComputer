@@ -18,6 +18,7 @@ public struct MainScreenView: View {
     private let onSelectRoute: (RouteSummary) -> Void
     private let onSelectRide: (RideSummary) -> Void
     private let onSettings: () -> Void
+    private let onOpenTrash: () -> Void
 
     @State private var emptyStatePickerShown = false
     // Pull-to-reveal search (Mail-style): hidden until the list is tugged
@@ -32,7 +33,8 @@ public struct MainScreenView: View {
         onImportFile: @escaping (URL) -> Void = { _ in },
         onSelectRoute: @escaping (RouteSummary) -> Void = { _ in },
         onSelectRide: @escaping (RideSummary) -> Void = { _ in },
-        onSettings: @escaping () -> Void = {}
+        onSettings: @escaping () -> Void = {},
+        onOpenTrash: @escaping () -> Void = {}
     ) {
         self.model = model
         self.importFileExtensions = importFileExtensions
@@ -40,6 +42,7 @@ public struct MainScreenView: View {
         self.onSelectRoute = onSelectRoute
         self.onSelectRide = onSelectRide
         self.onSettings = onSettings
+        self.onOpenTrash = onOpenTrash
     }
 
     public var body: some View {
@@ -179,6 +182,21 @@ public struct MainScreenView: View {
                 switch model.tab {
                 case .planned: plannedContent
                 case .tracked: trackedContent
+                }
+
+                // Recently Deleted (#292): the entry into the trash sits under
+                // the Tracked rows (and under the empty state — deleting the
+                // last ride must not strand the trash). Hidden while a search
+                // filters the list: the row isn't a search result.
+                if model.tab == .tracked, !model.trashedRides.isEmpty, model.searchText.isEmpty {
+                    OBCDisclosureRow(
+                        systemImage: "trash",
+                        label: "Recently Deleted",
+                        value: "\(model.trashedRides.count)",
+                        accessibilityID: "main.recentlyDeleted",
+                        action: onOpenTrash
+                    )
+                    .padding(.top, 8)
                 }
             }
             .listRowSeparator(.hidden)

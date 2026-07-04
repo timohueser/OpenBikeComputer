@@ -391,6 +391,25 @@ final class LibraryStoreTests: XCTestCase {
         XCTAssertEqual(FileLibraryStore(directory: dir).deletedRideIDs(), [ride.id])
     }
 
+    func testTrashedRideMarksSurviveRelaunchAndKeepTheFiles() {
+        let (store, dir) = makeFileStore()
+        let kept = makeRide()
+        let recovered = makeRide(id: "ride-2", name: "Second")
+        store.saveRide(kept)
+        store.saveRide(recovered)
+        let trashedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        store.markRideTrashed(kept.id, at: trashedAt)
+        store.markRideTrashed(recovered.id, at: trashedAt.addingTimeInterval(60))
+        store.unmarkRideTrashed(recovered.id)
+
+        let relaunched = FileLibraryStore(directory: dir)
+        XCTAssertEqual(relaunched.trashedRideIDs(), [kept.id: trashedAt])
+        // Trash is a mark, not a move — the stored files stay readable, which
+        // is what makes Recover instant (#292).
+        XCTAssertEqual(Set(relaunched.rideSummaries().map(\.id)), [kept.id, recovered.id])
+        XCTAssertEqual(relaunched.ridePoints(kept.id), kept.points)
+    }
+
     func testAwkwardIDsStayDistinctOnDisk() {
         // Device ride ids are firmware-owned strings — path separators and
         // near-collisions must not merge records.
@@ -423,6 +442,13 @@ final class LibraryStoreTests: XCTestCase {
         store.saveRideSummary(renamed)
         XCTAssertEqual(store.rideSummaries(), [renamed])
         XCTAssertEqual(store.ridePoints(ride.id), ride.points, "a rename never touches points")
+
+        let trashedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        store.markRideTrashed(ride.id, at: trashedAt)
+        XCTAssertEqual(store.trashedRideIDs(), [ride.id: trashedAt])
+        XCTAssertEqual(store.rideSummaries(), [renamed], "trash is a mark, not a move")
+        store.unmarkRideTrashed(ride.id)
+        XCTAssertTrue(store.trashedRideIDs().isEmpty)
 
         store.deletePlannedRoute(record.id)
         store.markRideDeleted(ride.id)

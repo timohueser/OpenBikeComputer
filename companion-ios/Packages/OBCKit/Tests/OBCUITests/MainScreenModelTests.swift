@@ -24,7 +24,8 @@ final class MainScreenModelTests: XCTestCase {
         _ scenario: Scenario,
         library: any LibraryStore = InMemoryLibraryStore(),
         seedLibrary: Bool = true,
-        timing: RideSyncCoordinator.Timing = stickyTiming
+        timing: RideSyncCoordinator.Timing = stickyTiming,
+        now: @escaping () -> Date = Date.init
     ) -> (MainScreenModel, MockControl) {
         let control = MockControl(scenario: scenario)
         control.latency = .zero
@@ -34,7 +35,8 @@ final class MainScreenModelTests: XCTestCase {
         // library-first, so fixture routes exist as library records (#289).
         if seedLibrary { control.seedLibrary(into: library) }
         let model = MainScreenModel(
-            transport: MockTransport(control: control), library: library, syncTiming: timing)
+            transport: MockTransport(control: control), library: library, syncTiming: timing,
+            now: now)
         return (model, control)
     }
 
@@ -363,16 +365,21 @@ final class MainScreenModelTests: XCTestCase {
         XCTAssertFalse(model.routes.contains { $0.id == id }, "the device copy must not re-list it")
     }
 
-    func testDeleteRideRemovesLocallyAndStaysOutOfNewCounts() async {
-        let (model, _) = makeModel(.happyPath)
+    func testDeleteRideMovesToTrashAndStaysOutOfNewCounts() async {
+        let library = InMemoryLibraryStore()
+        let (model, _) = makeModel(.happyPath, library: library)
         await startSynced(model)
         XCTAssertEqual(model.rides.count, 4)
 
         let id = model.rides[0].id
         model.deleteRide(id)
         XCTAssertEqual(model.rides.count, 3)
+        // #292: delete is a move to Recently Deleted, not a destroy — the
+        // stored files stay, so Recover has something to bring back.
+        XCTAssertEqual(model.trashedRides.map(\.id), [id])
+        XCTAssertNotNil(library.ridePoints(id), "the trashed ride's tracklog must survive")
 
-        // The deleted ride must not come back as a "new" sync count — its id
+        // The trashed ride must not come back as a "new" sync count — its id
         // stays marked synced (the coordinator re-reads the library's synced
         // set per sync), so a re-sync finds nothing fresh (H9), and it never
         // re-lists (the device's SD-card copy is untouched by design).
@@ -380,18 +387,19 @@ final class MainScreenModelTests: XCTestCase {
         await waitFor("re-sync settles") {
             model.sync.upToDateToastVisible || model.sync.syncState == .done
         }
-        XCTAssertFalse(model.rides.contains { $0.id == id }, "deleted ride resurrected by sync")
+        XCTAssertFalse(model.rides.contains { $0.id == id }, "trashed ride resurrected by sync")
         XCTAssertEqual(model.rides.count, 3)
 
         model.reload()
         await waitFor("reload") { model.loadState == .loaded }
-        XCTAssertFalse(model.rides.contains { $0.id == id }, "deleted ride resurrected by reload")
+        XCTAssertFalse(model.rides.contains { $0.id == id }, "trashed ride resurrected by reload")
         XCTAssertEqual(model.rides.count, 3)
     }
 
-    /// The tombstone persists: a ride deleted on the phone stays gone across a
-    /// relaunch even though the device still lists it.
-    func testDeletedRideStaysGoneAcrossRelaunch() async {
+    /// The trash persists: a ride deleted on the phone stays out of Tracked
+    /// (and in Recently Deleted) across a relaunch, even though the device
+    /// still lists it.
+    func testTrashedRideStaysTrashedAcrossRelaunch() async {
         let library = InMemoryLibraryStore()
         let (first, _) = makeModel(.happyPath, library: library)
         await startSynced(first)
@@ -401,12 +409,88 @@ final class MainScreenModelTests: XCTestCase {
         let (relaunched, _) = makeModel(.happyPath, library: library)
         await startLoaded(relaunched)
         XCTAssertFalse(relaunched.rides.contains { $0.id == id })
+        XCTAssertEqual(relaunched.trashedRides.map(\.id), [id], "trash lost across relaunch")
 
         relaunched.sync.sync()
         await waitFor("sync settles") {
             relaunched.sync.syncState == .done || relaunched.sync.upToDateToastVisible
         }
-        XCTAssertFalse(relaunched.rides.contains { $0.id == id }, "tombstone lost across relaunch")
+        XCTAssertFalse(relaunched.rides.contains { $0.id == id }, "trash mark lost across relaunch")
+    }
+
+    /// Recover puts the ride back in Tracked (in date order, tracklog intact)
+    /// — and the recovery itself persists.
+    func testRecoverRideRestoresTheRow() async {
+        let library = InMemoryLibraryStore()
+        let (model, _) = makeModel(.happyPath, library: library)
+        await startSynced(model)
+        let id = model.rides[1].id
+        let countBefore = model.rides.count
+
+        model.deleteRide(id)
+        model.recoverRide(id)
+        XCTAssertEqual(model.rides.count, countBefore)
+        XCTAssertEqual(model.rides[1].id, id, "a recovered ride returns to its date slot")
+        XCTAssertTrue(model.trashedRides.isEmpty)
+        XCTAssertNotNil(model.rideGeometry(for: id), "the tracklog survived the round trip")
+
+        let (relaunched, _) = makeModel(.happyPath, library: library)
+        await startLoaded(relaunched)
+        XCTAssertTrue(relaunched.rides.contains { $0.id == id }, "recovery lost across relaunch")
+        XCTAssertTrue(relaunched.trashedRides.isEmpty)
+    }
+
+    /// Delete Permanently is the old hard delete: files gone, tombstone durable
+    /// — a later sync must neither re-download nor re-list the ride.
+    func testDeleteRideForeverRemovesFilesAndTombstones() async {
+        let library = InMemoryLibraryStore()
+        let (model, _) = makeModel(.happyPath, library: library)
+        await startSynced(model)
+        let id = model.rides[0].id
+
+        model.deleteRide(id)
+        model.deleteRideForever(id)
+        XCTAssertTrue(model.trashedRides.isEmpty)
+        XCTAssertNil(library.ridePoints(id), "the tracklog dies with the permanent delete")
+
+        let (relaunched, _) = makeModel(.happyPath, library: library)
+        await startLoaded(relaunched)
+        XCTAssertFalse(relaunched.rides.contains { $0.id == id })
+        XCTAssertTrue(relaunched.trashedRides.isEmpty)
+        relaunched.sync.sync()
+        await waitFor("sync settles") {
+            relaunched.sync.syncState == .done || relaunched.sync.upToDateToastVisible
+        }
+        XCTAssertFalse(relaunched.rides.contains { $0.id == id }, "purged ride resurrected by sync")
+    }
+
+    /// The retention sweep: a ride trashed longer than `trashRetentionDays`
+    /// ago is purged at the next launch; a fresher one stays recoverable.
+    func testExpiredTrashIsPurgedAtStart() async {
+        let library = InMemoryLibraryStore()
+        let (first, _) = makeModel(.happyPath, library: library)
+        await startSynced(first)
+        let expired = first.rides[0].id
+        let fresh = first.rides[1].id
+        first.deleteRide(expired)
+
+        // "Relaunch" a day short of the window: still in the trash…
+        let almost = Date().addingTimeInterval(
+            TimeInterval(MainScreenModel.trashRetentionDays - 1) * 86_400)
+        let (kept, _) = makeModel(.happyPath, library: library, now: { almost })
+        await startLoaded(kept)
+        XCTAssertEqual(kept.trashedRides.map(\.id), [expired])
+        // …and this launch trashes the second ride (dated `almost`).
+        kept.deleteRide(fresh)
+
+        // …then past it: the first purge runs, the second survives.
+        let later = Date().addingTimeInterval(
+            TimeInterval(MainScreenModel.trashRetentionDays + 1) * 86_400)
+        let (relaunched, _) = makeModel(.happyPath, library: library, now: { later })
+        await startLoaded(relaunched)
+        XCTAssertEqual(relaunched.trashedRides.map(\.id), [fresh])
+        XCTAssertNil(library.ridePoints(expired), "expired trash must be removed for good")
+        XCTAssertNotNil(library.ridePoints(fresh))
     }
 
     // MARK: Rename (H12) + import landing (E1) — session-local edits
