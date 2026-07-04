@@ -14,7 +14,7 @@ That's what lets the simulator you can [run in your browser](../../) be the real
 The crates form a stack with dependencies pointing **one way — downward**. The foundation parses bytes; each layer up adds capability; the two *hosts* sit on top. Nothing in the shared core ever depends on a host.
 
 <figure class="fig">
-<svg viewBox="0 0 720 410" role="img" aria-label="The crate dependency stack. At the top, two hosts — obc-sim (desktop and browser) and obc-fw-nrf54l plus obc-platform (device) — both depend on obc-app. obc-app depends on obc-render and also directly on obc-reader and obc-route. obc-render depends on obc-reader and obc-route. obc-route also depends on obc-reader, the foundation. Every arrow points downward, so the shared core never depends on a host.">
+<svg viewBox="0 0 720 410" role="img" aria-label="The crate dependency stack. At the top, two hosts — obc-sim (desktop and browser) and obc-fw-nrf54l plus obc-platform (device) — both depend on obc-app. obc-app depends on obc-render and also directly on obc-reader and obc-route. obc-render depends only on obc-reader — routes reach it through a narrow overlay seam the app implements. obc-route also depends on obc-reader, the foundation. Every arrow points downward, so the shared core never depends on a host.">
   <defs>
     <marker id="aA" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
   </defs>
@@ -51,8 +51,7 @@ The crates form a stack with dependencies pointing **one way — downward**. The
   <line class="d-flow" x1="240" y1="102" x2="258" y2="144" marker-end="url(#aA)" />
   <line class="d-flow" x1="490" y1="102" x2="472" y2="144" marker-end="url(#aA)" />
   <line class="d-flow" x1="370" y1="202" x2="370" y2="240" marker-end="url(#aA)" />
-  <line class="d-flow" x1="320" y1="292" x2="270" y2="330" marker-end="url(#aA)" />
-  <line class="d-flow" x1="430" y1="292" x2="480" y2="330" marker-end="url(#aA)" />
+  <line class="d-flow" x1="350" y1="292" x2="275" y2="330" marker-end="url(#aA)" />
   <line class="d-flow" x1="388" y1="356" x2="354" y2="356" marker-end="url(#aA)" />
 
   <!-- app also reaches past render straight to the two foundation crates -->
@@ -63,7 +62,7 @@ The crates form a stack with dependencies pointing **one way — downward**. The
   <text class="d-sub" x="610" y="374" style="font-size:11px">obc-pack</text>
   <text class="d-sub" x="610" y="386" style="font-size:11px">→ obc-reader</text>
 </svg>
-<figcaption>Hosts depend on <b>obc-app</b>; app on <b>obc-render</b> — and directly on <b>obc-reader</b> + <b>obc-route</b> as well; render on reader + route; route on reader. Because every arrow points down, the shared core compiles and runs without <i>any</i> host — which is exactly how it's developed on the desktop today. (<b>obc-pack</b>, the offline map packer, shares the reader's format code but isn't part of the runtime stack.)</figcaption>
+<figcaption>Hosts depend on <b>obc-app</b>; app on <b>obc-render</b> — and directly on <b>obc-reader</b> + <b>obc-route</b> as well; render on reader <i>only</i> — the app hands the active route to the renderer through a narrow overlay seam (a trait of chunked polylines), so the renderer never learns the route format; route on reader. Because every arrow points down, the shared core compiles and runs without <i>any</i> host — which is exactly how it's developed on the desktop today. (<b>obc-pack</b>, the offline map packer, shares the reader's format code but isn't part of the runtime stack.)</figcaption>
 </figure>
 
 The one-way rule is the load-bearing constraint. `obc-app` builds for the bare-metal target (`thumbv8m.main-none-eabihf`) with no host present; the simulator and the firmware are just two different things that link *against* it. Swap the host, keep the core.
