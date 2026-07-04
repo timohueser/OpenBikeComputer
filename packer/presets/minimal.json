@@ -3,12 +3,12 @@
         "id": "minimal",
         "name": "Minimal",
         "description": "The big picture: major roads, rail, rivers and lakes on the land/sea base. Small files, fast builds.",
-        "version": 1,
+        "version": 2,
         "swatch": ["#FF5500", "#FFAA00", "#000000", "#55AAFF"]
     },
     "lods": [
-        {"max_mpp": null, "simplify": 50},
-        {"max_mpp": 120, "simplify": 12},
+        {"max_mpp": null, "simplify": 120},
+        {"max_mpp": 120, "simplify": 18},
         {"max_mpp": 18, "simplify": 0}
     ],
     "features": {
