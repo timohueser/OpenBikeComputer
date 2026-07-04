@@ -1,10 +1,10 @@
-//! The shared scrolling-list widget. Five screens (Menu, Settings, Route menu, Add field,
-//! Fields) are "a title bar over a windowed row list"; this module owns everything they have
-//! in common — the wrapping cursor ([`on_turn`]), the window math ([`window_start`] /
-//! [`pinned_first`]), and [`draw_rows`], which walks the visible slots, paints the amber
-//! row cursor and the separators, and finishes with the scrollbar. Each screen keeps only
-//! its per-row body (bullet + label, two-line route pane, span badge, …) and its Press
-//! semantics.
+//! The shared scrolling-list widget. Four screens (Settings, Route menu, Add field, Fields)
+//! are "a title bar over a windowed row list"; this module owns everything they have in
+//! common — the wrapping cursor ([`on_turn`], which the compass Menu also steps its selection
+//! with), the window math ([`window_start`] / [`pinned_first`]), and [`draw_rows`], which
+//! walks the visible slots, paints the amber row cursor and the separators, and finishes with
+//! the scrollbar. Each screen keeps only its per-row body (bullet + label, two-line route
+//! pane, span badge, …) and its Press semantics.
 
 use core::fmt::Write;
 
@@ -145,7 +145,7 @@ pub(crate) fn draw_rows<S: Surface>(
     scrollbar(cv, geo.w - 8, geo.top, geo.visible as i32 * geo.row_h, total, sb_first, geo.visible);
 }
 
-/// The nav-menu row body shared by Menu and Settings: a pointer triangle and a Body-tier label,
+/// The nav-menu row body (the Settings list): a pointer triangle and a Body-tier label,
 /// vertically centred in the row area (the highlight makes the bullet ink, unselected rows muted).
 pub(crate) fn nav_row(cv: &mut impl Surface, area: Rectangle, label: &str, selected: bool) {
     let x = area.top_left.x;
@@ -155,8 +155,8 @@ pub(crate) fn nav_row(cv: &mut impl Surface, area: Rectangle, label: &str, selec
     cv.text(label, Point::new(x + 38, mid - 14), Font::Body, TextAlign::Left, palette::INK);
 }
 
-/// A whole nav-menu draw — the chrome plus [`nav_row`]s with hairline separators — so Menu and
-/// Settings (identical apart from title and items) are each a single call.
+/// A whole nav-menu draw — the chrome plus [`nav_row`]s with hairline separators — so a plain
+/// nav list (Settings; the main Menu until it became the compass) is a single call.
 pub(crate) fn nav_list(cv: &mut impl Surface, w: i32, h: i32, title: &str, items: &[&str], selected: usize) {
     /// Per-row height — fits a Body-tier row with an amber highlight + padding.
     const ROW_H: i32 = 52;

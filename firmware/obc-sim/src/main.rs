@@ -67,7 +67,8 @@ struct Args {
     /// A gesture script applied before a headless `--png` render, to snapshot a specific
     /// screen. Tokens (one char, spaces ignored): `r`/`l` = turn cw/ccw, `p` = press,
     /// `h` = hold, `b` = back, `B` = back-hold, `H`/`M` = leave the encoder / Back held
-    /// partway (snapshots the in-flight long-press hint).
+    /// partway (snapshots the in-flight long-press hint), `w` = wait ~800 ms so an
+    /// in-flight animation (the Menu needle sweep) settles before the snapshot.
     script: Option<String>,
     /// Headless `--png` only: render from the device's real power-on state (Home / Idle,
     /// no route) instead of straight from the map.
@@ -402,6 +403,17 @@ fn apply_script(app: &mut App, script: &str) {
             'B' => press_hold(app, &mut now, Button::Back),
             'H' => partial_hold(app, &mut now, Button::Encoder),
             'M' => partial_hold(app, &mut now, Button::Back),
+            // Settle: step the clock ~800 ms in animation-sized ticks (a sweep integrates a
+            // dt-capped step per poll, so one big jump would leave it mid-flight) until any
+            // time-driven animation (the Menu needle) has finished. Not for use after `H`/`M` —
+            // the empty feeds would cross the hold threshold and fire the `Hold`/`BackHold`
+            // those tokens deliberately leave armed.
+            'w' => {
+                for _ in 0..8 {
+                    now += 100;
+                    feed(app, now, vec![]);
+                }
+            }
             other => eprintln!("warning: ignoring unknown --script token '{other}'"),
         }
     }

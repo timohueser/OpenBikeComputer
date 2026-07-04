@@ -311,7 +311,8 @@ impl Screen {
     /// Most screens change only on input or a fresh fix and return [`ScreenTick::idle`]. The
     /// Statistics view runs its cursor spring-back + page auto-cycle off `now_ms`; the Home clock
     /// ticks over each minute off the wall-clock `now`, adopting `ms_to_next_minute` — the minute
-    /// boundary the host pre-computes (it owns the clock).
+    /// boundary the host pre-computes (it owns the clock); the Menu sweeps its compass needle
+    /// toward the selection at frame cadence until it lands.
     pub fn tick_timers(
         &mut self,
         now_ms: u32,
@@ -322,6 +323,7 @@ impl Screen {
         match self {
             Screen::Statistics(s) => s.tick_timers(now_ms, settings),
             Screen::Home(s) => s.tick_timers(now, ms_to_next_minute),
+            Screen::Menu(s) => s.tick_timers(now_ms),
             _ => ScreenTick::idle(),
         }
     }
