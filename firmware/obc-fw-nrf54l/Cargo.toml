@@ -82,7 +82,7 @@ com-hw = []
 # `compile_error!` in main.rs catches the wrong invocation. The feature re-enables the two
 # obc-platform default legs itself, so nothing else is lost with `--no-default-features`.
 # On the 256 KB DK the `ble` build also **cfg's out the whole map path** (no `App`, `MapCache`,
-# `RouteCache`, `RouteIndex` — ~128 KB freed) and boots a text-only BLE status UI instead; SD,
+# `RouteCache`, `RouteIndex` — ~80 KB freed) and boots a text-only BLE status UI instead; SD,
 # RRAM settings, buttons, sensors, and the FLPR display all stay up. That exclusion is keyed on
 # the build.rs-emitted `has_map` cfg — the single line the 512 KB LM20 relaxes to run map + BLE
 # together (the budget assert then arbitrates, at compile time).

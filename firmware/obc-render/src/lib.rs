@@ -38,13 +38,15 @@ use stroke::draw_line;
 // Per-frame buffer capacities. Statically allocated (heapless::Vec); growing one costs boot
 // RAM, not per-frame. Two memory profiles select the caps:
 //   - default (host / sim / tests): generous, full preview fidelity.
-//   - `nrf-mem`: constrained nRF54L15 profile — roughly halved so the renderer scratch
-//     (`MCU_RENDERER_BYTES` below, ~74 KB vs ~200 KB) fits the 256 KB part alongside the 75 KB
-//     RGB222 framebuffer + map/route caches; the board crate's budget assert is the binding check.
-//     The cost: a frame whose visible-feature / vertex count exceeds a cap drops the overflow (see
-//     [`render`]), starting at busier coarse zooms than on the host.
-// The single-feature decode buffers (`MAX_DECODE_*`) are *not* trimmed — they must hold the worst
-// single feature either way, and pair with `obc_reader::MAX_FEAT_PTS` / `MAX_FEAT_RINGS`.
+//   - `nrf-mem`: constrained nRF54L15 profile — culled hard so the renderer scratch
+//     (`MCU_RENDERER_BYTES` below, ~30 KB vs ~200 KB) fits the 256 KB DK part alongside the 75 KB
+//     RGB222 framebuffer + map/route caches **and** the BLE stack (issue #270 — map + BLE share
+//     one image); the board crate's budget assert is the binding check. The cost: a frame whose
+//     visible-feature / vertex count exceeds a cap drops the overflow (see [`render`]), starting
+//     at busier coarse zooms than on the host. These are stopgap sizes — the shipping 512 KB
+//     nRF54LM20 re-decides them (generously) when it arrives.
+// On `nrf-mem` even the single-feature decode buffers (`MAX_DECODE_*`) are trimmed below the
+// format's per-feature bound — see the truncation note at [`MAX_DECODE_POINTS`].
 
 /// Maximum visible features per frame (each is a [`Span`] — 14 bytes). Saturates first at coarse
 /// zoom (many small features).
@@ -52,34 +54,40 @@ use stroke::draw_line;
 pub const MAX_SPANS: usize = 3072;
 // Trimmed hard on nrf-mem: the ride loop's deep per-frame render path (per-frame `Reader::new` +
 // streamed-chunk decode over embedded-sdmmc) needs a large MSP stack that must coexist with the
-// resident `RouteCache`/`RouteIndex` on the 256 KB part; freeing scratch buys that stack headroom.
+// resident `RouteCache`/`RouteIndex` — and, on the combined image, the BLE stack — on the 256 KB
+// part; freeing scratch buys that headroom.
 #[cfg(feature = "nrf-mem")]
-pub const MAX_SPANS: usize = 768;
+pub const MAX_SPANS: usize = 384;
 
 /// Maximum total vertices across all visible features per frame (8 bytes each).
 ///
-/// Known `nrf-mem` oddity, kept deliberately: there the frame cap (1536) sits *below* the
-/// single-feature decode cap [`MAX_DECODE_POINTS`] (2048), so a legal max-size feature can never
-/// be admitted to the frame buffers — the capacity check drops it every frame, and it counts into
-/// `features_dropped`. It's undroppable-by-design: a 256 KB-DK artifact (the shipping LM20
-/// relaxes the trim), and real map features rarely approach 2048 points. Do not "fix" it by
-/// raising this cap or trimming the decode caps.
+/// Known `nrf-mem` oddity, kept deliberately: there the frame cap (768) sits *below* the
+/// single-feature decode cap [`MAX_DECODE_POINTS`] (1024), so a decoded max-size feature can
+/// never be admitted to the frame buffers — the capacity check drops it every frame, and it
+/// counts into `features_dropped`. It's undroppable-by-design: a 256 KB-DK artifact (the shipping
+/// LM20 relaxes the trim), and real map features rarely approach these sizes. Do not "fix" it by
+/// raising this cap.
 #[cfg(not(feature = "nrf-mem"))]
 pub const MAX_FRAME_POINTS: usize = 12_288;
 #[cfg(feature = "nrf-mem")]
-pub const MAX_FRAME_POINTS: usize = 1536;
+pub const MAX_FRAME_POINTS: usize = 768;
 
 /// Maximum total ring entries across all visible features per frame.
 #[cfg(not(feature = "nrf-mem"))]
 pub const MAX_FRAME_RINGS: usize = 3072;
 #[cfg(feature = "nrf-mem")]
-pub const MAX_FRAME_RINGS: usize = 384;
+pub const MAX_FRAME_RINGS: usize = 192;
 
-/// Maximum vertices for a single feature during decode (reused per feature). Must equal
-/// `obc_reader::MAX_FEAT_PTS` (asserted below) — never trimmed per profile. On `nrf-mem` this
-/// exceeds [`MAX_FRAME_POINTS`], so a max-size feature decodes fine but is undroppable-by-design
-/// at the frame stage (see the note there).
+/// Maximum vertices for a single feature during decode (reused per feature). On the host this
+/// equals `obc_reader::MAX_FEAT_PTS` (asserted below) — full format fidelity. On `nrf-mem` it is
+/// trimmed **below the format's per-feature bound**: the reader's `read_ring` saturates its
+/// output `Vec`, so a feature past the cap draws with silently truncated geometry (a visibly
+/// degraded large polygon) instead of failing. A deliberate 256 KB-DK compromise (issue #270 —
+/// the map path must coexist with the BLE stack); the 512 KB LM20 restores the format bound.
+#[cfg(not(feature = "nrf-mem"))]
 pub const MAX_DECODE_POINTS: usize = 2048;
+#[cfg(feature = "nrf-mem")]
+pub const MAX_DECODE_POINTS: usize = 1024;
 
 /// Maximum rings for a single feature during decode. Must equal `obc_reader::MAX_FEAT_RINGS`
 /// (asserted below).
@@ -92,7 +100,7 @@ pub const MAX_DECODE_RINGS: usize = 32;
 #[cfg(not(feature = "nrf-mem"))]
 pub const MAX_SCREEN_POINTS: usize = 4096;
 #[cfg(feature = "nrf-mem")]
-pub const MAX_SCREEN_POINTS: usize = 2048;
+pub const MAX_SCREEN_POINTS: usize = 1024;
 
 /// Maximum scanline crossings buffered for one polygon-fill row. A row whose
 /// outline crossings exceed this is skipped rather than mis-filled (see
@@ -110,17 +118,22 @@ const _: () = assert!(MAX_SPANS <= u16::MAX as usize, "Span::seq is u16");
 // past the points and panics.
 const _: () = assert!(MAX_SCREEN_POINTS >= MAX_DECODE_POINTS, "`screen` must hold a whole decoded feature");
 // The decode scratch pairs with the reader's format bounds across the crate seam: the reader's
-// `read_ring` pushes with `let _ = out.push(..)`, so a smaller render-side buffer would *silently
-// truncate geometry* rather than fail. Pin the pairing at compile time so neither crate's
-// constant can drift alone.
+// `read_ring` pushes with `let _ = out.push(..)`, so a smaller render-side buffer *silently
+// truncates geometry* rather than failing. On the host that must never happen — equality is
+// pinned so neither crate's constant can drift alone. On `nrf-mem` the trim below the format
+// bound is deliberate (see [`MAX_DECODE_POINTS`]); only the direction is pinned so the caps
+// can't accidentally *exceed* what the reader hands out.
+#[cfg(not(feature = "nrf-mem"))]
 const _: () =
     assert!(MAX_DECODE_POINTS == obc_reader::MAX_FEAT_PTS, "decode scratch must hold the format's max feature");
+const _: () =
+    assert!(MAX_DECODE_POINTS <= obc_reader::MAX_FEAT_PTS, "decode scratch cannot exceed the format's max feature");
 const _: () = assert!(MAX_DECODE_RINGS == obc_reader::MAX_FEAT_RINGS, "ring scratch must hold the format's max rings");
 
 /// Static RAM the [`MapRenderer`]'s scratch buffers occupy on the 32-bit MCU target (`usize` = 4
 /// bytes there). `pub` so a board crate's RAM-budget assert can add it to the framebuffer + caches
 /// without re-deriving the formula. (`(i32, i32)` and `Point` are 8 bytes; `usize`/`f32` are 4 on
-/// the MCU.) ~200 KB on the full profile, ~74 KB on `nrf-mem`.
+/// the MCU.) ~200 KB on the full profile, ~30 KB on `nrf-mem`.
 pub const MCU_RENDERER_BYTES: usize = MAX_DECODE_POINTS * 8
     + MAX_DECODE_RINGS * 4
     + MAX_FRAME_POINTS * 8
