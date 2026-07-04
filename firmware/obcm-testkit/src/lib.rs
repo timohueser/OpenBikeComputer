@@ -9,12 +9,14 @@
 //! format bump would have meant editing the same layout in two places. This crate is
 //! the single source: a v6 bump edits it once.
 //!
-//! Two map shapes are needed and kept as distinct, clearly-named builders so each call
+//! Three map shapes are needed and kept as distinct, clearly-named builders so each call
 //! site's bytes stay identical:
 //! - [`build_file`] — the general multi-LOD builder ([`LodSpec`] per layer), used by
 //!   the reader's format-contract tests.
 //! - [`build_priority_tree`] — a fixed single-LOD NW-branch / NE-leaf quadtree, used by
 //!   the renderer's priority-saturation test.
+//! - [`build_bench_map`] — the deterministic two-LOD bench fixture `obc-bench` renders and
+//!   hashes (issue #327); its bytes must stay identical on every machine, forever.
 //!
 //! Style records are `(id, z_index, color_rgb565, weight, priority)`; feature encoders
 //! ([`pack_line`], [`pack_line16`], [`pack_poly`], [`pack_poly_hole`]) return one
@@ -270,6 +272,227 @@ pub fn pack_poly_holes(style_id: u8, ax: i32, ay: i32, ext_deltas: &[(i8, i8)], 
         push_deltas8(&mut v, hole);
     }
     v
+}
+
+// ---------------------------------------------------------------------------
+// Deterministic bench fixture (issue #327)
+// ---------------------------------------------------------------------------
+
+/// Bounding box of [`build_bench_map`] (µdeg, `(min_lon, min_lat, max_lon, max_lat)`): a 54 000 µdeg
+/// square near 47° N (≈ 6 km of latitude, ≈ 4.1 km of ground longitude at that latitude's aspect).
+/// Divisible by 8 on both axes so the depth-3 quadtree subdivides into uniform leaves. Public so the
+/// bench aims its camera at the fixture's center without re-deriving it.
+pub const BENCH_BBOX: (i32, i32, i32, i32) = (8_500_000, 47_000_000, 8_554_000, 47_054_000);
+
+/// A quadtree-node bbox in the builders' `(min_lon, min_lat, max_lon, max_lat)` µdeg spelling.
+type LeafBox = (i32, i32, i32, i32);
+
+/// A tiny inline xorshift64* PRNG — deterministic and dependency-free (no `rand`, no time/OS
+/// input), so [`build_bench_map`] produces the *same bytes on every machine, forever*. The bench's
+/// committed frame hashes depend on that.
+struct BenchRng(u64);
+
+impl BenchRng {
+    fn next_u32(&mut self) -> u32 {
+        let mut x = self.0;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.0 = x;
+        (x.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 32) as u32
+    }
+
+    /// Uniform-ish `i32` in `[lo, hi)` (the modulo bias is irrelevant for fixture generation).
+    fn range(&mut self, lo: i32, hi: i32) -> i32 {
+        debug_assert!(hi > lo);
+        lo + (self.next_u32() % (hi - lo) as u32) as i32
+    }
+}
+
+/// Build a **complete, uniform-depth** breadth-first quadtree over `bbox` — the generalization of
+/// [`build_priority_tree`]'s hand-laid 9-node index to depth `k`. Nodes are laid out exactly like
+/// the packer flattens them: level by level, each branch pointing at its four children's block in
+/// the next level, children in NW/NE/SW/SE order with floor-division midpoints (matching the
+/// reader's `walk_leaves` split). Every level-`depth` node is a leaf holding chunk id = its
+/// breadth-first position, so the caller packs one chunk per leaf in returned-bbox order.
+///
+/// Returns `(index, leaf_bboxes)`: the flat `u32` node array and each leaf's bbox in chunk-id order.
+fn uniform_quadtree(bbox: LeafBox, depth: u32) -> (Vec<u32>, Vec<LeafBox>) {
+    let mut index = Vec::new();
+    let mut boxes = vec![bbox]; // current level's node bboxes, breadth-first
+    let mut level_start = 0usize; // flat index where the current level begins
+    for _ in 0..depth {
+        // Every node above the leaf level is a branch; node j's children start at
+        // `child_start + 4*j` — the packer's breadth-first child-block layout.
+        let child_start = level_start + boxes.len();
+        for j in 0..boxes.len() {
+            index.push(BRANCH_BIT | (child_start + 4 * j) as u32);
+        }
+        let mut next = Vec::with_capacity(boxes.len() * 4);
+        for &(min_lon, min_lat, max_lon, max_lat) in &boxes {
+            // Floor-division midpoints + NW/NE/SW/SE order — must match the reader's `walk_leaves`
+            // subdivision or the leaf bboxes (and thus every anchor base) disagree.
+            let mid_lon = (min_lon + max_lon).div_euclid(2);
+            let mid_lat = (min_lat + max_lat).div_euclid(2);
+            next.push((min_lon, mid_lat, mid_lon, max_lat)); // NW
+            next.push((mid_lon, mid_lat, max_lon, max_lat)); // NE
+            next.push((min_lon, min_lat, mid_lon, mid_lat)); // SW
+            next.push((mid_lon, min_lat, max_lon, mid_lat)); // SE
+        }
+        level_start = child_start;
+        boxes = next;
+    }
+    for cid in 0..boxes.len() {
+        index.push(cid as u32);
+    }
+    (index, boxes)
+}
+
+/// One coarse-LOD chunk: a leaf-covering land backdrop, a lake on roughly half the leaves, and 225
+/// short 3-point road stubs cycling the three line styles. 16 leaves × ~226 features ≈ 3 620 —
+/// deliberately **over `obc_render::MAX_SPANS` (3072)** so a full-map overview scene saturates the
+/// span buffer and exercises the priority-drop path. ~3.7 KB, under the 4 KB chunk size.
+fn bench_coarse_chunk(rng: &mut BenchRng, leaf: LeafBox) -> Vec<u8> {
+    let (min_lon, min_lat, max_lon, max_lat) = leaf;
+    let (w, h) = (max_lon - min_lon, max_lat - min_lat);
+    let mut c = Vec::new();
+    // Land backdrop covering the leaf (16-bit deltas: the leaf spans 13 500 µdeg).
+    c.extend(pack_poly16(1, 0, 0, &[(w as i16, 0), (0, h as i16), (-w as i16, 0)]));
+    // A lake on roughly half the leaves.
+    if rng.range(0, 2) == 0 {
+        let (lw, lh) = (rng.range(1_500, 4_000), rng.range(1_500, 4_000));
+        let (ax, ay) = (rng.range(0, w - lw), rng.range(0, h - lh));
+        c.extend(pack_poly16(2, ax, ay, &[(lw as i16, 0), (0, lh as i16), (-lw as i16, 0)]));
+    }
+    for k in 0..225 {
+        let style = [5u8, 4, 3][k % 3];
+        let (ax, ay) = (rng.range(130, w - 130), rng.range(0, h - 260));
+        let d0 = (rng.range(-120, 121) as i8, rng.range(1, 121) as i8);
+        let d1 = (rng.range(-120, 121) as i8, rng.range(1, 121) as i8);
+        c.extend(pack_line(style, ax, ay, &[d0, d1]));
+    }
+    c
+}
+
+/// One fine-LOD chunk: a leaf-covering backdrop, an occasional lake, small 8-bit-delta buildings
+/// (every fourth with a hole), a few long 16-bit-delta roads, and a batch of short 8-bit paths of
+/// varying vertex counts — the riding-zoom feature mix. ≤ ~2 KB, well under the 4 KB chunk size.
+fn bench_fine_chunk(rng: &mut BenchRng, leaf: LeafBox) -> Vec<u8> {
+    let (min_lon, min_lat, max_lon, max_lat) = leaf;
+    let (w, h) = (max_lon - min_lon, max_lat - min_lat);
+    let mut c = Vec::new();
+    // Land backdrop covering the leaf — a polygon big enough to *force* 16-bit deltas (6 750 µdeg).
+    c.extend(pack_poly16(1, 0, 0, &[(w as i16, 0), (0, h as i16), (-w as i16, 0)]));
+    // A lake on roughly a third of the leaves.
+    if rng.range(0, 3) == 0 {
+        let (lw, lh) = (rng.range(500, 1_800), rng.range(500, 1_800));
+        let (ax, ay) = (rng.range(0, w - lw), rng.range(0, h - lh));
+        c.extend(pack_poly16(2, ax, ay, &[(lw as i16, 0), (0, lh as i16), (-lw as i16, 0)]));
+    }
+    // Buildings: small 8-bit-delta rectangles; every fourth big-enough one carries a hole.
+    for k in 0..rng.range(8, 16) {
+        let (bw, bh) = (rng.range(40, 120), rng.range(40, 120));
+        let (ax, ay) = (rng.range(0, w - bw), rng.range(0, h - bh));
+        let ext = [(bw as i8, 0), (0, bh as i8), (-bw as i8, 0)];
+        if k % 4 == 3 && bw > 60 && bh > 60 {
+            let (hw, hh) = (bw - 40, bh - 40);
+            let hole = [(20i8, 20i8), (hw as i8, 0), (0, hh as i8), (-hw as i8, 0)];
+            c.extend(pack_poly_hole(6, ax, ay, &ext, &hole));
+        } else {
+            c.extend(pack_poly(6, ax, ay, &ext));
+        }
+    }
+    // Long roads: 16-bit random walks crossing the leaf, cycling major/secondary/minor.
+    for k in 0..rng.range(3, 7) {
+        let style = [5u8, 4, 3][k as usize % 3];
+        let mut deltas = Vec::new();
+        for _ in 0..rng.range(4, 9) {
+            deltas.push((rng.range(-1_400, 1_401) as i16, rng.range(-1_400, 1_401) as i16));
+        }
+        let (ax, ay) = (rng.range(0, w), rng.range(0, h));
+        c.extend(pack_line16(style, ax, ay, &deltas));
+    }
+    // Short paths: 8-bit walks of varying vertex counts (weight-1 minor exercises the Polyline path).
+    for k in 0..rng.range(10, 20) {
+        let style = if k % 3 == 0 { 4 } else { 3 };
+        let mut deltas = Vec::new();
+        for _ in 0..rng.range(3, 20) {
+            deltas.push((rng.range(-100, 101) as i8, rng.range(-100, 101) as i8));
+        }
+        let (ax, ay) = (rng.range(0, w), rng.range(0, h));
+        c.extend(pack_line(style, ax, ay, &deltas));
+    }
+    // A "village" cluster within ~700 µdeg of **every leaf corner**. The bench's riding camera sits
+    // at the map center — the shared corner of the four center leaves — so corner clusters guarantee
+    // the ~0.5 m/px scenes draw a realistic feature load instead of a near-empty frame, whichever
+    // leaves the view straddles.
+    for &(qx, qy) in &[(0, 0), (1, 0), (0, 1), (1, 1)] {
+        for _ in 0..rng.range(5, 10) {
+            let (bw, bh) = (rng.range(40, 110), rng.range(40, 110));
+            let ax = if qx == 0 { rng.range(0, 700) } else { rng.range(w - 700 - bw, w - bw) };
+            let ay = if qy == 0 { rng.range(0, 700) } else { rng.range(h - 700 - bh, h - bh) };
+            c.extend(pack_poly(6, ax, ay, &[(bw as i8, 0), (0, bh as i8), (-bw as i8, 0)]));
+        }
+        for k in 0..rng.range(3, 6) {
+            let style = if k == 0 { 4 } else { 3 };
+            let mut deltas = Vec::new();
+            for _ in 0..rng.range(5, 14) {
+                deltas.push((rng.range(-100, 101) as i8, rng.range(-100, 101) as i8));
+            }
+            let ax = if qx == 0 { rng.range(0, 700) } else { rng.range(w - 700, w) };
+            let ay = if qy == 0 { rng.range(0, 700) } else { rng.range(h - 700, h) };
+            c.extend(pack_line(style, ax, ay, &deltas));
+        }
+    }
+    c
+}
+
+/// The deterministic **bench fixture** (issue #327): a two-LOD OBCM v5 map whose bytes are
+/// identical on every machine, forever — the `obc-bench` frame hashes are computed over renders of
+/// it, so any byte drift here invalidates the committed golden file.
+///
+/// Shape:
+/// - **Coarse LOD** (`max_mpp = ∞`): a uniform depth-2 quadtree (16 leaves, one 4 KB chunk each)
+///   holding ≈ 3 620 features — over `obc_render::MAX_SPANS` (3072) in a full-map view, so the
+///   overview scenes saturate the span buffer and take the priority-drop path.
+/// - **Fine LOD** (`max_mpp = 2.0`): a real depth-3 multi-chunk quadtree (64 leaves, one chunk
+///   each), built breadth-first exactly like the packer, holding the riding-zoom mix: per-leaf
+///   backdrop polygons (16-bit deltas), buildings with and without holes, long 16-bit roads and
+///   short 8-bit paths of varying vertex counts.
+/// - **6 styles** spanning priorities 1–4 and z-indices −10…4, including an obvious backdrop
+///   (lowest z) and line weights 1, 2 and 3 (weight 1 exercises the `Polyline` path, ≥ 2 the
+///   span-stroke path).
+///
+/// Geometry is generated by the inline seeded [`BenchRng`] and packed through the same `pack_*`
+/// encoders the format tests use, so a v6 layout bump lands here automatically.
+pub fn build_bench_map() -> Vec<u8> {
+    const CHUNK: usize = 4096; // the packer's default — every chunk stays cacheable
+    let styles: [Style; 6] = [
+        (1, -10, 0xD6DA, 0, 1), // land backdrop — lowest z, fills under everything
+        (2, -5, 0x64DD, 0, 2),  // water
+        (6, 1, 0x9CD3, 0, 3),   // buildings
+        (5, 4, 0xFC00, 3, 2),   // major road, weight 3
+        (4, 3, 0xFEA0, 2, 3),   // secondary road, weight 2
+        (3, 2, 0xFFFF, 1, 4),   // minor path, weight 1 (Polyline path)
+    ];
+
+    let mut rng = BenchRng(0x0BC0_0327_D00D_F00D); // hard-coded seed — never change casually
+    let (coarse_index, coarse_leaves) = uniform_quadtree(BENCH_BBOX, 2);
+    let coarse_chunks: Vec<Vec<u8>> =
+        coarse_leaves.iter().map(|&leaf| pad(bench_coarse_chunk(&mut rng, leaf), CHUNK)).collect();
+    let (fine_index, fine_leaves) = uniform_quadtree(BENCH_BBOX, 3);
+    let fine_chunks: Vec<Vec<u8>> =
+        fine_leaves.iter().map(|&leaf| pad(bench_fine_chunk(&mut rng, leaf), CHUNK)).collect();
+
+    build_file(
+        BENCH_BBOX,
+        &styles,
+        &[
+            // Strictly decreasing max_mpp, coarse (∞) first — the LOD-table ordering the reader expects.
+            LodSpec { max_mpp: f32::INFINITY, index: coarse_index, chunks: coarse_chunks, chunk_size: CHUNK },
+            LodSpec { max_mpp: 2.0, index: fine_index, chunks: fine_chunks, chunk_size: CHUNK },
+        ],
+    )
 }
 
 /// A line whose **declared** exterior point count (`decl_count`, the `uint16` in the feature

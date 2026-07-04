@@ -2357,6 +2357,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "obc-bench"
+version = "0.1.0"
+dependencies = [
+ "embedded-graphics",
+ "obc-platform",
+ "obc-reader",
+ "obc-render",
+ "obcm-testkit",
+]
+
+[[package]]
 name = "obc-ble"
 version = "0.1.0"
 dependencies = [
