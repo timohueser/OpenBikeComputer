@@ -164,8 +164,8 @@ pub struct Render<'a, 'd> {
     /// strippable render-instrumentation seam.
     pub clock: &'a dyn Clock,
     /// What the base screen's map render drew this frame, for the host's stats panel / frame log.
-    /// Reset to default by the host each frame; only the [`Map`](crate::screen::map) screen (and
-    /// Home's contour timing) write it — every other screen leaves it untouched.
+    /// Reset to default by the host each frame; only the [`Map`](crate::screen::map) screen writes
+    /// it — every other screen leaves it untouched.
     pub stats: RenderStats,
 }
 
