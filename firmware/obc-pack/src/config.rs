@@ -386,11 +386,15 @@ mod tests {
         let text = format!("{{\"features\": {{}}, \"lods\": [{}]}}", entries.join(","));
         assert!(Config::parse(&text).is_ok(), "exactly maxItems LODs must parse");
 
-        // chunk_size cap is the serializer's safe maximum, enforced at pack time.
+        // chunk_size bounds are the serializer's safe range, enforced at pack time.
         let max = schema["properties"]["chunk_size"]["maximum"].as_u64().expect("chunk_size maximum") as usize;
         assert_eq!(max, crate::serialize::MAX_SAFE_CHUNK_SIZE);
         assert!(crate::serialize::validate_chunk_size(max).is_ok());
         assert!(crate::serialize::validate_chunk_size(max + 1).is_err());
+        let min = schema["properties"]["chunk_size"]["minimum"].as_u64().expect("chunk_size minimum") as usize;
+        assert_eq!(min, crate::serialize::MIN_CHUNK_SIZE);
+        assert!(crate::serialize::validate_chunk_size(min).is_ok());
+        assert!(crate::serialize::validate_chunk_size(min - 1).is_err());
     }
 
     #[test]
