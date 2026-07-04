@@ -70,6 +70,9 @@ public final class MainScreenModel {
     /// upload commits or a rename/re-import changes the content.
     public private(set) var onDevice: [RouteID: OnDeviceState] = [:]
     public private(set) var rides: [RideSummary] = []
+    /// Recently Deleted (#292): trashed rides, most recently trashed first —
+    /// the trash screen's rows and the Tracked tab's entry-row count.
+    public private(set) var trashedRides: [RideSummary] = []
     public var tab: Tab = .planned
     public var searchText = ""
     /// #303: non-nil once a connected device reports an incompatible
@@ -108,6 +111,9 @@ public final class MainScreenModel {
     /// Mirror of `library.deletedRideIDs()` — device rides deleted on the
     /// phone; the merge hides them so a sync/reload can't resurrect them.
     @ObservationIgnored private var deletedRideIDs: Set<RideID> = []
+    /// Mirror of `library.trashedRideIDs()` — rides in Recently Deleted (#292),
+    /// with when each was trashed (orders the trash, drives the retention purge).
+    @ObservationIgnored private var trashedRideIDs: [RideID: Date] = [:]
     /// Mirror of the store's planned routes, keyed for the detail/rename paths.
     @ObservationIgnored private var plannedRecords: [RouteID: PlannedRouteRecord] = [:]
     /// Mirror of the store's synced-ride **summaries** — tracklogs stay on disk
@@ -118,17 +124,27 @@ public final class MainScreenModel {
     @ObservationIgnored private var streamTasks: [Task<Void, Never>] = []
     @ObservationIgnored private var loadTask: Task<Void, Never>?
 
+    /// How long a trashed ride survives before the start-up sweep removes it
+    /// for good — the trash screen's copy quotes this.
+    public static let trashRetentionDays = 30
+
+    /// The trash retention clock — injectable so tests can age the trash
+    /// without waiting a month.
+    private let now: () -> Date
+
     /// The default `library` keeps persistence out of previews and tests that
     /// don't care; the composition root always passes its chosen store.
     public init(
         transport: any DeviceTransport,
         library: any LibraryStore = InMemoryLibraryStore(),
         syncTiming: RideSyncCoordinator.Timing = RideSyncCoordinator.Timing(),
-        nameReconciler: DeviceNameReconciler? = nil
+        nameReconciler: DeviceNameReconciler? = nil,
+        now: @escaping () -> Date = Date.init
     ) {
         self.transport = transport
         self.library = library
         self.nameReconciler = nameReconciler
+        self.now = now
         self.sync = RideSyncCoordinator(transport: transport, library: library, timing: syncTiming)
         // The coordinator's seams back into this model — weak, so the closures
         // the model's own coordinator holds can never pin the model.
@@ -163,8 +179,11 @@ public final class MainScreenModel {
         let storedSummaries = library.rideSummaries()
         rideSummaries = Dictionary(uniqueKeysWithValues: storedSummaries.map { ($0.id, $0) })
         deletedRideIDs = library.deletedRideIDs()
+        trashedRideIDs = library.trashedRideIDs()
+        purgeExpiredTrash()
         routes = plannedList()
-        rides = storedSummaries
+        rides = trackedList()
+        trashedRides = trashedList()
 
         // Open-ended stream loops are `[weak self]` + per-iteration `guard let
         // self` (the SettingsModel/RouteDetailModel convention) — the streams
@@ -314,20 +333,52 @@ public final class MainScreenModel {
         library.deletePlannedRoute(id)
     }
 
-    /// Remove a tracked ride from the phone (list + library) — **never** from
-    /// the device: the SD-card copy stays. The tombstone keeps it that way
-    /// durably — the id stays marked synced (the next sync doesn't re-download
-    /// it) and marked deleted (the merge doesn't re-list the device's copy).
-    /// The sync coordinator's synced-ids mirror sees the insertion through the
-    /// library: it re-reads `syncedRideIDs()` at the start of every sync, so
+    /// Move a tracked ride to Recently Deleted (#292) — recoverable, and
+    /// **never** touching the device: the SD-card copy stays. The stored files
+    /// stay too (that's what makes Recover instant); only the Tracked list
+    /// hides the ride. The id stays marked synced so the next sync doesn't
+    /// re-download it while — or after — it sits in the trash; the coordinator
+    /// re-reads `syncedRideIDs()` at the start of every sync, so
     /// `markRideSynced` here is the whole hand-off.
     public func deleteRide(_ id: RideID) {
         rides.removeAll { $0.id == id }
+        let date = now()
+        trashedRideIDs[id] = date
+        library.markRideTrashed(id, at: date)
+        library.markRideSynced(id)
+        trashedRides = trashedList()
+    }
+
+    /// Put a trashed ride back in Tracked — just clearing the trash mark; the
+    /// stored summary and tracklog never moved.
+    public func recoverRide(_ id: RideID) {
+        trashedRideIDs[id] = nil
+        library.unmarkRideTrashed(id)
+        rides = trackedList()
+        trashedRides = trashedList()
+    }
+
+    /// Permanently delete a trashed ride: the stored files go, and the durable
+    /// tombstone takes over — the id stays marked synced (the next sync doesn't
+    /// re-download it) and is marked deleted (the merge doesn't re-list the
+    /// device's copy). What `deleteRide` did before the trash existed (#292).
+    public func deleteRideForever(_ id: RideID) {
+        trashedRideIDs[id] = nil
+        library.unmarkRideTrashed(id)
         rideSummaries[id] = nil
         library.deleteRide(id)
-        library.markRideSynced(id)
         deletedRideIDs.insert(id)
         library.markRideDeleted(id)
+        trashedRides = trashedList()
+    }
+
+    /// The start-up retention sweep: anything trashed more than
+    /// `trashRetentionDays` ago is removed for good.
+    private func purgeExpiredTrash() {
+        let cutoff = now().addingTimeInterval(-TimeInterval(Self.trashRetentionDays) * 86_400)
+        for (id, date) in trashedRideIDs where date < cutoff {
+            deleteRideForever(id)
+        }
     }
 
     // MARK: Rename (H12) + import landing (E1) — phone-side library edits
@@ -453,12 +504,21 @@ public final class MainScreenModel {
     /// on the device but not yet downloaded is deliberately *not* here: it has
     /// only summary stats, no tracklog or preview, and a half-empty card is
     /// worse than none (the device's `listRides()` drives Sync, never the rows).
-    /// Deleted rides are already gone from `rideSummaries`; the tombstone filter
-    /// is belt-and-suspenders.
+    /// Permanently deleted rides are already gone from `rideSummaries`; the
+    /// tombstone filter is belt-and-suspenders. Trashed rides *are* still in
+    /// `rideSummaries` (their files stay for Recover) — the trash filter is
+    /// what hides them here.
     private func trackedList() -> [RideSummary] {
         rideSummaries.values
-            .filter { !deletedRideIDs.contains($0.id) }
+            .filter { !deletedRideIDs.contains($0.id) && trashedRideIDs[$0.id] == nil }
             .sorted { $0.date > $1.date }
+    }
+
+    /// The Recently Deleted rows: trashed rides, most recently trashed first.
+    private func trashedList() -> [RideSummary] {
+        trashedRideIDs
+            .sorted { $0.value > $1.value }
+            .compactMap { rideSummaries[$0.key] }
     }
 
     private func filtered<T>(_ items: [T], by name: KeyPath<T, String>) -> [T] {
