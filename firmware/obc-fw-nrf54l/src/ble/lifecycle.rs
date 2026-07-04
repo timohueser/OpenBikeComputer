@@ -16,10 +16,16 @@
 //!
 //! ### Watchdog policy
 //!
-//! **No hardware WDT in the `ble` build (yet).** The lifecycle is a *structural* watchdog: every host
-//! operation is `with_timeout`-bounded, the serve loop only ever exits on a real disconnect event, and
-//! the outer loop has no path that can block permanently — a stuck procedure degrades to a reconnect
-//! rather than a hang.
+//! Two layers (#277/A9). The lifecycle is the *structural* first line: every host operation is
+//! `with_timeout`-bounded (here and in the data plane), the serve loop only ever exits on a real
+//! disconnect event, and the outer loop has no path that can block permanently — a stuck procedure
+//! degrades to a reconnect rather than a hang, so no error path lands in a wedged non-advertising
+//! state. Beneath it sits the **hardware watchdog**: since #270 folded map + BLE into one image the
+//! ride loop (`ride::run_app`) runs in every build and feeds the dog, gated on the input-plane
+//! heartbeat. It catches what the structural layer can't reach — a *synchronous* wedge that never
+//! yields to `with_timeout` at all: an SD access in the upload/commit path hanging blocks the shared
+//! thread-mode executor (and, via the shared SD/settings mutex, stalls the ride loop's own feed),
+//! resetting within ~24 s.
 
 use defmt::{info, warn};
 use embassy_futures::select::{select, Either};

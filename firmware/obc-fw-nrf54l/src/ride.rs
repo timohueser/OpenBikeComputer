@@ -236,6 +236,10 @@ pub(crate) async fn run_app(
         let hw = stackmeter::used(now);
         if hw > stack_hw {
             stack_hw = hw;
+            // Surface the peak in the diagnostics blob for the A9 soak rig (#277) — the ride loop owns the
+            // stackmeter, so on a `ble` build it publishes the mark into the BLE state the blob reads.
+            #[cfg(feature = "ble")]
+            crate::ble::publish_stack_high_water(hw);
             defmt::info!("stack high-water {=usize} / {=usize} B (new peak)", hw, stackmeter::total());
         }
 

@@ -31,6 +31,9 @@ final class EchoCentral: NSObject, @unchecked Sendable {
     private var characteristics: [CBUUID: CBCharacteristic] = [:]
     private var readyCont: CheckedContinuation<EchoLink, Error>?
     private var openedChannel = false
+    // Resolved by the disconnect delegate callback when the harness *induced* the drop (`disconnect()`)
+    // — the A9 drop/restart + storm scenarios wait on it so a reconnect can't race the teardown.
+    private var disconnectCont: CheckedContinuation<Void, Never>?
 
     // Device → app `status` messages, buffered so a waiter that registers just after a notification
     // arrives still sees it (no ordering race with the `transferControl`/`command` write that
@@ -51,15 +54,55 @@ final class EchoCentral: NSObject, @unchecked Sendable {
         _ = central // force manager creation (and the first state callback)
     }
 
-    /// Scan → connect → discover → open the CoC. Resolves when the link is ready.
+    /// Scan → connect → discover → open the CoC. Resolves when the link is ready. Re-entrant: a second
+    /// call after a `disconnect()` (or a device-side drop) re-scans and brings a **fresh** `EchoLink`
+    /// up — the reconnect the A9 drop/restart, storm, and back-to-back scenarios lean on. The bonded
+    /// keys live in the OS keychain, so a reconnect re-encrypts with no pairing dialog.
     func connect() async throws -> EchoLink {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<EchoLink, Error>) in
             queue.async { [self] in
+                resetLinkState()  // drop any stale per-link state so the reconnect starts clean
                 readyCont = cont
                 if central.state == .poweredOn { startScan() }
                 // else: wait for centralManagerDidUpdateState → .poweredOn.
             }
         }
+    }
+
+    /// Drop the link on purpose — the A9 fault injector. Used to kill a transfer at a randomized point
+    /// (the device must discard the partial and restart, spec §1 principle 4) and to cycle a
+    /// connect/disconnect storm. Resolves once CoreBluetooth confirms the disconnect, so the caller can
+    /// reconnect without racing the teardown. A no-op when not connected.
+    ///
+    /// The caller must not have a `next*()` result outstanding when it drops (the scenarios induce drops
+    /// only between awaited steps) — the CoC byte reads are `withTimeout`-bounded instead, so a read
+    /// left hanging by the drop surfaces as a timeout, never a leaked continuation.
+    func disconnect() async {
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            queue.async { [self] in
+                guard let p = peripheral, p.state == .connected || p.state == .connecting else {
+                    cont.resume()
+                    return
+                }
+                disconnectCont = cont
+                central.cancelPeripheralConnection(p)
+            }
+        }
+    }
+
+    /// Drop all per-link state so the next `connect()` starts clean (queue-confined). Fails any in-flight
+    /// GATT read; the status/announce waiter queues are empty by construction at a reconnect point (the
+    /// scenarios never induce a drop with a result outstanding), so there is nothing to orphan.
+    private func resetLinkState() {
+        openedChannel = false
+        peripheral = nil
+        characteristics.removeAll()
+        pendingStatuses.removeAll()
+        pendingAnnounces.removeAll()
+        for waiters in pendingReads.values {
+            for w in waiters { w.resume(throwing: HarnessError.disconnected) }
+        }
+        pendingReads.removeAll()
     }
 
     /// Write the 16-byte `TransferControl` descriptor that opens/aborts a transfer (S0 §4.2).
@@ -199,6 +242,12 @@ extension EchoCentral: CBCentralManagerDelegate {
     func centralManager(
         _ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?
     ) {
+        // An induced `disconnect()` is waiting on this — resolve it so the scenario can reconnect.
+        if let cont = disconnectCont {
+            disconnectCont = nil
+            cont.resume()
+        }
+        // A drop *during bring-up* fails the pending `connect()`.
         if readyCont != nil { fail(HarnessError.disconnected) }
     }
 }
@@ -271,6 +320,10 @@ enum HarnessError: Error, CustomStringConvertible {
     case digestUnchanged
     case routeNotListed
     case timedOut
+    case badDiagnostics
+    /// A scenario invariant broke — both a harness-side check and a device-ledger (diagnostics)
+    /// disagreement funnel here with a human-readable reason.
+    case assertion(String)
 
     var description: String {
         switch self {
@@ -285,6 +338,8 @@ enum HarnessError: Error, CustomStringConvertible {
         case .digestUnchanged: return "the store digest revision did not change"
         case .routeNotListed: return "the route is not in the device's routeList"
         case .timedOut: return "timed out (no CoC bytes flowed — channel likely closed)"
+        case .badDiagnostics: return "the diagnostics blob was not valid UTF-8"
+        case .assertion(let why): return why
         }
     }
 }

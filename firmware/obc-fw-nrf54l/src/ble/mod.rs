@@ -41,6 +41,11 @@ mod gatt;
 mod lifecycle;
 mod state;
 
+// The ride loop publishes its stack high-water mark here (#277/A9) so the diagnostics blob can post it
+// over the link; the map plane owns the stackmeter, this is the one value that crosses into the BLE
+// module tree.
+pub use state::publish_stack_high_water;
+
 use core::mem::MaybeUninit;
 use core::sync::atomic::Ordering;
 

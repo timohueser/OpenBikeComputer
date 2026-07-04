@@ -40,8 +40,8 @@ use crate::SharedStoreMutex;
 use super::gatt::{firmware_revision, serial_string, Server, HARDWARE_REVISION};
 use super::lifecycle::{conn_params, HOST_OP_TIMEOUT};
 use super::state::{
-    battery, status, transfer_result, transfer_result_at, Armed, StatusBytes, TRANSFER_ABORT, TRANSFER_ACTIVE,
-    TRANSFER_ARM,
+    battery, stack_high_water, status, transfer_result, transfer_result_at, Armed, StatusBytes, TRANSFER_ABORT,
+    TRANSFER_ACTIVE, TRANSFER_ARM,
 };
 
 /// The L2CAP CoC data plane: accept the app's channel on the OBC SPSM and serve the transfers
@@ -124,9 +124,7 @@ pub(crate) async fn publish_store_change(
     let digest = store.borrow().digest();
     let bytes = digest.encode();
     let _ = server.set(&server.obc.object_store, &bytes);
-    if let Err(e) = server.notify(stack, server.obc.object_store.handle, &bytes).await {
-        warn!("ble: [store] digest notify failed: {:?}", defmt::Debug2Format(&e));
-    }
+    notify_bounded(stack, server, server.obc.object_store.handle, &bytes, "digest").await;
     let msg = StatusMessage::StoreChanged(StoreChanged { ty: ObjectType::Route, revision: digest.revision });
     notify_status(server, stack, msg.encode()).await;
 }
@@ -246,6 +244,7 @@ async fn run_download(
         connects: s.connects,
         disconnects: s.disconnects,
         last_disconnect_reason: s.last_disconnect_reason,
+        stack_hw: stack_high_water(),
     };
     let opened = {
         let mut guard = shared.lock().await;
@@ -261,8 +260,15 @@ async fn run_download(
     // Announce on `transferControl` (same 16 bytes, total_len + crc32 filled in), then stream.
     let announce = tx.announce();
     info!("ble: [coc] download start: {} bytes from offset {}", announce.total_len, announce.offset);
-    if let Err(e) = server.notify(stack, server.obc.transfer_control.handle, &announce.encode()).await {
-        warn!("ble: [coc] announce notify failed: {:?}", defmt::Debug2Format(&e));
+    // The announce carries the size + CRC the app streams against — `HOST_OP_TIMEOUT`-bounded like every
+    // host op, and a timeout is treated exactly like a failure (the app never sees a stream start).
+    let announced = matches!(
+        with_timeout(HOST_OP_TIMEOUT, server.notify(stack, server.obc.transfer_control.handle, &announce.encode()))
+            .await,
+        Ok(Ok(()))
+    );
+    if !announced {
+        warn!("ble: [coc] announce notify failed/timed out — abandoning download");
         {
             let mut guard = shared.lock().await;
             store.borrow_mut().download_close(&mut guard);
@@ -400,14 +406,31 @@ async fn run_echo(
     TransferOutcome::Answered
 }
 
-/// Notify one `status` message (the CoC data plane's channel to the app).
+/// Notify one `status` message (the CoC data plane's channel to the app), `HOST_OP_TIMEOUT`-bounded.
 async fn notify_status(
     server: &Server<'_>,
     stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
     (buf, len): StatusBytes,
 ) {
-    if let Err(e) = server.notify(stack, server.obc.status.handle, &buf[..len]).await {
-        warn!("ble: [coc] status notify failed: {:?}", defmt::Debug2Format(&e));
+    notify_bounded(stack, server, server.obc.status.handle, &buf[..len], "status").await;
+}
+
+/// One host notify, [`HOST_OP_TIMEOUT`]-bounded so a peer that stops draining its ATT queue can't stall
+/// a plane's task past the link's supervision timeout — the structural backstop beneath the hardware
+/// watchdog (see `lifecycle`'s watchdog policy; #277/A9). A timeout or error is logged and abandoned:
+/// the caller's state machine moves on, since a lost notification is the app's to recover by re-reading,
+/// never a reason to wedge the link.
+pub(crate) async fn notify_bounded(
+    stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
+    server: &Server<'_>,
+    handle: u16,
+    bytes: &[u8],
+    what: &str,
+) {
+    match with_timeout(HOST_OP_TIMEOUT, server.notify(stack, handle, bytes)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => warn!("ble: [coc] {} notify failed: {:?}", what, defmt::Debug2Format(&e)),
+        Err(_) => warn!("ble: [coc] {} notify timed out — abandoning", what),
     }
 }
 
@@ -443,9 +466,7 @@ pub(crate) async fn battery_task(
     loop {
         let pct = battery();
         let _ = conn.set(&level, &pct); // keep the readable value in step with the notify
-        if let Err(e) = server.notify(stack, level.handle, &pct).await {
-            warn!("ble: [bas] battery notify failed: {:?}", defmt::Debug2Format(&e));
-        }
+        notify_bounded(stack, server, level.handle, &[pct], "battery").await;
         Timer::after_secs(30).await;
     }
 }

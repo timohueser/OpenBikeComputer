@@ -30,7 +30,7 @@ use trouble_host::prelude::*;
 use crate::object_store::ObjectStore;
 use crate::{SharedStore, SharedStoreMutex};
 
-use super::data_plane::publish_store_change;
+use super::data_plane::{notify_bounded, publish_store_change};
 use super::gatt::{config_blob, Server};
 use super::state::{publish, transfer_result, Armed, StatusBytes, TRANSFER_ABORT, TRANSFER_ACTIVE, TRANSFER_ARM};
 
@@ -230,9 +230,7 @@ pub(crate) async fn serve_connection(
                     Err(e) => warn!("ble: [gatt] error sending response: {:?}", e),
                 }
                 if let Some((buf, len)) = status_msg {
-                    if let Err(e) = server.notify(stack, server.obc.status.handle, &buf[..len]).await {
-                        warn!("ble: [gatt] status notify failed: {:?}", defmt::Debug2Format(&e));
-                    }
+                    notify_bounded(stack, server, server.obc.status.handle, &buf[..len], "status").await;
                 }
                 if store_changed {
                     publish_store_change(stack, server, store).await;
