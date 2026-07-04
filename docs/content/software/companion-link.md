@@ -93,7 +93,7 @@ Every bulk payload is a typed **object**. The set is small and closed:
 |--------|--------|-----------|---------|
 | `1` | `route` | app → device (upload) · device → app (detail read) | an [OBCR](../formats/) route file, verbatim |
 | `2` | `ride` | device → app | the compact ride object (a tracked ride) |
-| `4` | `diagnostics` | device → app | an opaque text blob (boot count, storage stats…) |
+| `4` | `diagnostics` | device → app | an opaque text blob (boot count, link + storage counters, stack high-water…) |
 | `6` / `7` | `routeList` / `rideList` | device → app | the store catalogs — fixed 72-byte entries |
 | `3` | `config` | — | reserved on the CoC; the Config blob crosses GATT |
 

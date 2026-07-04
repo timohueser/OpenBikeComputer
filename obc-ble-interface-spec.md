@@ -440,10 +440,12 @@ List header (4 bytes):
 
 ### 7.5 `diagnostics`
 
-An opaque UTF-8 text blob: the device's diagnostic ring buffer (boot count,
-last panic message, storage stats) rendered as text. No binary layout is
-pinned — it is a human-readable debugging artifact, not an API. Downloaded
-over the CoC like any object (object id `0`); may be empty (`total_len = 0`).
+An opaque UTF-8 text blob: the device's runtime diagnostics (boot count, uptime,
+the BLE link counters, storage stats, and the stack high-water) rendered as text.
+No binary layout is pinned — it is a human-readable debugging artifact, not an API.
+Downloaded over the CoC like any object (object id `0`); may be empty
+(`total_len = 0`). The A9 soak rig reads it after every scenario and reconciles
+these counters with its own observations.
 
 ---
 
