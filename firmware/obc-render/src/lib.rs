@@ -186,9 +186,6 @@ pub struct RenderStats {
     pub collect_us: u32,
     pub sort_us: u32,
     pub draw_us: u32,
-    /// Wall time (µs) to compute + stroke the **Home screensaver's contour backdrop**
-    /// (marching-squares), filled by `HomeScreen::draw`; `0` on every non-Home / untimed frame.
-    pub contour_us: u32,
 }
 
 /// Reusable renderer holding every scratch buffer. Construct once, call
