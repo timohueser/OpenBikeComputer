@@ -101,6 +101,10 @@ public final class MainScreenModel {
 
     private let transport: any DeviceTransport
     private let library: any LibraryStore
+    /// Desired-name reconcile (#361), run once per established connection —
+    /// the logic lives in `DeviceNameReconciler`; this model only owns the
+    /// "connection established" trigger. `nil` (tests/previews) skips it.
+    private let nameReconciler: DeviceNameReconciler?
     /// Mirror of `library.deletedRideIDs()` — device rides deleted on the
     /// phone; the merge hides them so a sync/reload can't resurrect them.
     @ObservationIgnored private var deletedRideIDs: Set<RideID> = []
@@ -118,10 +122,12 @@ public final class MainScreenModel {
     public init(
         transport: any DeviceTransport,
         library: any LibraryStore = InMemoryLibraryStore(),
-        syncTiming: RideSyncCoordinator.Timing = RideSyncCoordinator.Timing()
+        syncTiming: RideSyncCoordinator.Timing = RideSyncCoordinator.Timing(),
+        nameReconciler: DeviceNameReconciler? = nil
     ) {
         self.transport = transport
         self.library = library
+        self.nameReconciler = nameReconciler
         self.sync = RideSyncCoordinator(transport: transport, library: library, timing: syncTiming)
         // The coordinator's seams back into this model — weak, so the closures
         // the model's own coordinator holds can never pin the model.
@@ -166,8 +172,17 @@ public final class MainScreenModel {
                 connection = state
                 // A regained link (never the stream's replayed first value):
                 // re-read the lists — the reconnect is what makes the badges
-                // and ride list trustworthy again.
-                if state == .connected, let was = previous, was != .connected { reload() }
+                // and ride list trustworthy again — and run the desired-name
+                // reconcile (#361), the once-per-connect self-heal for a
+                // rename whose config write never landed. Fire-and-forget:
+                // the reconciler captures only its own transport + bond
+                // store, never this model.
+                if state == .connected, let was = previous, was != .connected {
+                    reload()
+                    if let nameReconciler {
+                        Task { await nameReconciler.reconcile() }
+                    }
+                }
                 previous = state
             }
         })
@@ -193,6 +208,18 @@ public final class MainScreenModel {
                 protocolMismatch = ProtocolMismatch(expected: expected, found: found)
             }
         })
+        // Desired-name reconcile for the *launch* connection (#361) — the
+        // reconnect edge above never fires for the stream's replayed first
+        // value. After the first load for the same reason as the identity
+        // read: a fault armed for "the first read" (S3) must hit the lists,
+        // not this config read. Launched disconnected, the pass skips
+        // silently and the reconnect edge owns every later connect.
+        if let nameReconciler {
+            streamTasks.append(Task {
+                await firstLoad?.value
+                await nameReconciler.reconcile()
+            })
+        }
     }
 
     deinit {

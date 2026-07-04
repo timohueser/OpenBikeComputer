@@ -631,4 +631,35 @@ final class MainScreenModelTests: XCTestCase {
         XCTAssertEqual(model.routes.map(\.id), [record.id], "planned stays browsable")
         XCTAssertEqual(model.rides.map(\.id), [ride.id], "tracked stays browsable")
     }
+
+    // MARK: Desired-name reconcile (#361)
+
+    /// The once-per-connect trigger: the launch connection reconciles after
+    /// the first load, and every regained link reconciles again — a rename
+    /// whose config write never landed converges without any user action.
+    func testConnectRunsTheDesiredNameReconcile() async {
+        let control = MockControl(scenario: .happyPath)
+        control.latency = .zero
+        // A rename whose write never landed: bond says Summit, device Trailhead.
+        control.bondedName = "Summit"
+        let transport = MockTransport(control: control)
+        let model = MainScreenModel(
+            transport: transport,
+            nameReconciler: DeviceNameReconciler(
+                transport: transport, bondStore: MockBondStore(control: control))
+        )
+        model.start()
+        await waitFor("launch reconcile") { control.fixtures.config.name == "Summit" }
+
+        // Diverge again (the renamed-from-another-phone edge — last-writer-
+        // wins) and drop/regain the link: the reconnect edge reconciles once
+        // more, no hot retry in between.
+        var fixtures = control.fixtures
+        fixtures.config = DeviceConfig(name: "Trailhead")
+        control.fixtures = fixtures
+        control.connection = .disconnected
+        await waitFor("link down") { model.connection == .disconnected }
+        control.connection = .connected
+        await waitFor("reconnect reconcile") { control.fixtures.config.name == "Summit" }
+    }
 }

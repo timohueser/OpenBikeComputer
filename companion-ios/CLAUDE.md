@@ -121,6 +121,9 @@ piecemeal (if that ever flips, it's its own issue).
   one-conformer change. Never parse/encode outside `OBCFormats`/`Codecs`.
 - **The `LibraryStore` persists canonical models, never wire bytes.** Screens
   read the store first, then reconcile with the device.
+- **Device-bound writes must surface failure or self-heal on reconnect** —
+  never a silent `try?` across the link (the H3 rename's `DeviceNameReconciler`
+  is the pattern). Phone-local library writes stay best-effort.
 - **Open-ended stream loops in view models** (`for await` over `transport.state`
   etc.): `[weak self]` + `guard let self` **inside** the loop, store the `Task`,
   cancel it in `deinit` (cancellation only — no main-actor state in `deinit`).

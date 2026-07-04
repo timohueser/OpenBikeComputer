@@ -45,7 +45,13 @@ struct RootView: View {
         let importer = RouteImporter(decoders: [GPXRouteDecoder(), TCXRouteDecoder()])
         self.importer = importer
         _launchModel = State(initialValue: LaunchFlowModel(transport: transport, bondStore: bondStore))
-        _mainModel = State(initialValue: MainScreenModel(transport: transport, library: library))
+        _mainModel = State(initialValue: MainScreenModel(
+            transport: transport, library: library,
+            // The rename self-heal (#361): once per established connection,
+            // push the bond record's desired name if the device config
+            // disagrees (a rename whose write never landed).
+            nameReconciler: DeviceNameReconciler(transport: transport, bondStore: bondStore)
+        ))
         _importModel = State(initialValue: ImportFlowModel(
             // The decode stays app-side (formats at the edges — OBCUI doesn't
             // import OBCFormats); the flow model gets a closure over it, and a
