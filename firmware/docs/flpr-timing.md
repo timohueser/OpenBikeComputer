@@ -84,3 +84,5 @@ Each lever lands as its own commit with the before/after `frame OK` measurement 
 | Lever | Frame (µs, 320 rows) | Δ | Glass check |
 |---|---|---|---|
 | Baseline (#347 merge) | 95 910–95 959 | — | ✓ (#347) |
+| 1a: drop the 2 × `DATA_SETUP_TOPUP` busys (the pack **is** the setup window) | 82 714–82 729 | −13.2 ms | ✓ (with 1b) |
+| 1b: drop the 2 × `BCK_HALF` busys (presents + next pack **are** the half-width) | 60 053 | −22.7 ms | ✓ contours crisp, no doubling/sparkle/banding |
