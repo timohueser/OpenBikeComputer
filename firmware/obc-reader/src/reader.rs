@@ -69,15 +69,15 @@ const CACHE_SLOT_BYTES: usize = 4096;
 /// view, so 64 slots keep them resident across all four passes and across frames (a slow pan
 /// re-hits last frame's chunks). 64 × 4 KB = 256 KB.
 ///
-/// The constrained `nrf-mem` profile drops to 2 slots (~8 KB): a riding-zoom working set already
+/// The constrained `nrf-mem` profile drops to a single slot: a riding-zoom working set already
 /// exceeded the previous 3 slots (measured: 0 hits, misses ≈ chunks × passes — the DK is
-/// SD-bound either way), so the extra slot bought nothing; what the cull buys is room for the
-/// BLE stack next to the map path on the 256 KB part (issue #270). Tight zooms with ≤ 2 visible
-/// chunks still hit across passes and frames.
+/// SD-bound either way), so extra slots bought nothing; what the cull buys is room for the
+/// BLE stack next to the map path — and stack headroom under the combined build's deep ride
+/// path — on the 256 KB part (issue #270). A one-chunk view still hits across passes and frames.
 #[cfg(not(feature = "nrf-mem"))]
 const MAP_CHUNK_SLOTS: usize = 64;
 #[cfg(feature = "nrf-mem")]
-const MAP_CHUNK_SLOTS: usize = 2;
+const MAP_CHUNK_SLOTS: usize = 1;
 
 /// Block size + count of the quadtree-index cache. The leaf walk reads 4-byte nodes (siblings
 /// adjacent in the file); caching a few aligned blocks coalesces those into a handful of SD

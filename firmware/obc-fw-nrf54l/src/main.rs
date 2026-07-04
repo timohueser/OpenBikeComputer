@@ -8,13 +8,12 @@
 //! only the nRF HAL wiring + the display `DisplayDriver` backends are board-specific.
 //!
 //! **The `ble` build** (`cargo run --release --no-default-features --features ble`): the same
-//! firmware with the BLE stack folded in (`ble.rs`: MPSL, the SoftDevice Controller, TrouBLE).
-//! On the 256 KB DK it compiles the **map plane out** (the build.rs-emitted `has_map` cfg — no
-//! `App`/`MapCache`/`RouteCache`/`RouteIndex`, ~80 KB freed) and boots [`run_status`] — a
-//! text-only BLE status UI on the same panel — instead of [`run_app`]; SD, RRAM settings,
-//! buttons, sensors, and the FLPR display all stay up, so the radio runs inside the real
-//! executor/interrupt/storage layout. The 512 KB LM20 re-enables map + BLE together by relaxing
-//! `has_map` in build.rs; the budget assert arbitrates.
+//! firmware with the BLE stack folded in (`ble/`: MPSL, the SoftDevice Controller, TrouBLE) —
+//! **map + BLE in one image** (#270). [`ble::run`] is spawned beside the ride loop; both drive the
+//! shared SD + settings store ([`SharedStore`] — the ride loop locks it per frame across the
+//! render, the object plane per chunk between frames). Fits the 256 KB DK on the culled `nrf-mem`
+//! caps; the budget assert + the ~53 KB residual stack (deep-ride peak ~36 KB) are the margins.
+//! `--no-default-features` stays mandatory — it swaps the critical-section impl to MPSL's.
 //!
 //! Clock: the M33 application core runs at 128 MHz; embassy-time is driven by the **GRTC**
 //! (Global RTC) via the `time-driver-grtc` feature — the nRF54L has no legacy RTC time-driver.
@@ -98,7 +97,7 @@
 //!     FLPR's per-frame doorbell the async present awaits, #347).
 //!   - **P3**: the SWI01 `InterruptExecutor` (input/bulge plane + the DK COM task) and the
 //!     SERIAL30 sensor-bus ISR.
-//!   - **Thread mode**: the map/status plane (`run_app` / `run_status`) + the sensor task.
+//!   - **Thread mode**: the map plane (`run_app`), the BLE stack (`ble::run`, `ble` builds), and the sensor task.
 //!
 //!   MPSL's P0 lane preempts everything, including the P3 planes — safe by construction for the
 //!   panel: the FLPR scans the framebuffer autonomously (#347), so M33 preemption can no longer
@@ -146,13 +145,10 @@ mod display;
 // handle, the high-priority input/overlay tasks + the gesture channel, and their executor/ISR
 // statics. `main` constructs the panels and spawns the tasks; the planes live there.
 mod planes;
-// The map/ride thread-mode plane: `run_app` + its loop-only helpers. `has_map` builds only (the
-// `ble` DK build compiles the whole map plane out and boots `run_status` instead).
+// The map/ride thread-mode plane: `run_app` + its loop-only helpers. In every build now (#270); on
+// `ble` builds it runs joined with the BLE stack, both driving the shared SD + settings store.
 #[cfg(has_map)]
 mod ride;
-// The `ble` status build's thread-mode plane: `run_status`, the text-only BLE status UI.
-#[cfg(not(has_map))]
-mod status;
 // Persistent device settings over on-chip RRAM (the SD-independent settings store); boot-load +
 // save-on-dirty are wired in `run_app`.
 mod settings;
@@ -161,8 +157,8 @@ mod settings;
 // nor `debug-uart`), since `synth`/`debug-uart` supply the location source instead.
 #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
 mod sensors;
-// The BLE stack: MPSL + SDC + TrouBLE, the advertise loop, and the link-status plumbing +
-// status-screen drawer [`run_status`] presents. `ble` builds only.
+// The BLE stack: MPSL + SDC + TrouBLE, the advertise loop, and the link-status plumbing.
+// `ble` builds only; spawned beside the ride loop (see `spawn_ble_stack`).
 #[cfg(feature = "ble")]
 mod ble;
 // The device object store: object ids / revision / upload state over the SD catalog, and the Config ↔
@@ -173,18 +169,15 @@ mod object_store;
 // The `ble` feature-matrix guards. MPSL *provides* the critical-section impl (its radio timing
 // forbids global-interrupt-disable critical sections; two impls = duplicate link symbols), so the
 // default `cs-single-core` must be off — fail with the right invocation rather than a cryptic linker
-// error. The other combinations are meaningless on the status build: no ride loop exists for the host
-// feed / synthetic walk to drive, and the status UI targets the shipping LS021/FLPR panel.
+// error. `tft` stays incompatible (the BLE stack targets the shipping LS021/FLPR panel). `ble` now
+// carries the map ride loop, so `debug-uart` (VCOM-fed ride) and `synth` (synthetic ride) compose
+// with it — a headless ride + a live BLE link is a useful combined-build test rig.
 #[cfg(all(feature = "ble", feature = "cs-single-core"))]
 compile_error!(
     "`ble` uses MPSL's critical-section impl — build with `cargo run --release --no-default-features --features ble`"
 );
 #[cfg(all(feature = "ble", feature = "tft"))]
 compile_error!("the `ble` build drives the LS021/FLPR panel — it does not support `tft`");
-#[cfg(all(feature = "ble", feature = "debug-uart"))]
-compile_error!("the `ble` status build has no ride loop — `debug-uart`'s host feed has nothing to drive");
-#[cfg(all(feature = "ble", feature = "synth"))]
-compile_error!("the `ble` status build has no ride loop — `synth` has nothing to drive");
 
 use defmt::info;
 use display::{FRAME_H, FRAME_W};
@@ -338,25 +331,19 @@ const NRF_RAM_BYTES: usize = ls021_flpr::M33_RAM_BYTES;
 /// ride → finish-to-GPX), so a change that squeezes the residual below what the deepest path
 /// actually reaches fails at compile time (e.g. a `ble` + map build on the 256 KB DK) instead of
 /// overflowing the stack on glass.
-#[cfg(has_map)]
+/// On the combined `ble` build the SDC/host futures and MPSL's ISRs also ride the main stack on top
+/// of the deep-render path, so keep the same generous floor.
 const STACK_RESERVE: usize = 36 * 1024;
-/// The `ble` status build's floor: no deep-render path, but the SDC/host futures and MPSL's ISRs all
-/// ride the main stack — and the ~128 KB the excluded map plane frees leaves room to be generous.
-#[cfg(not(has_map))]
-const STACK_RESERVE: usize = 32 * 1024;
 /// The single RGB222 framebuffer: one byte per pixel over the 240×320 frame = 75 KB.
 const FB_BYTES: usize = FRAME_W * FRAME_H;
 
 /// The map plane's residents (the table above). Includes the active route's `RouteIndex`, kept
-/// resident across frames. **Zero on the `ble` DK build** — the whole plane is compiled out.
-#[cfg(has_map)]
+/// resident across frames. Present in every build now (#270 — map + BLE coexist).
 const MAP_RESIDENT: usize = core::mem::size_of::<obc_app::App>()
     + core::mem::size_of::<obc_reader::MapCache>()
     + core::mem::size_of::<obc_reader::MapTables>()
     + core::mem::size_of::<obc_route::RouteCache>()
     + core::mem::size_of::<obc_route::RouteIndex>();
-#[cfg(not(has_map))]
-const MAP_RESIDENT: usize = 0;
 /// The BLE stack's residents (`ble::RESIDENT_BYTES`: the MPSL handle + SDC memory block + TrouBLE's
 /// host arena + its global packet pool + the CRACEN RNG); zero without the feature. Keeping both terms
 /// in one sum is what makes "`ble` + map don't fit on 256 KB" a *compile-time* fact: when the LM20
@@ -380,7 +367,7 @@ const BAND_RESERVE: usize = BAND_BYTES;
 const BAND_RESERVE: usize = 0;
 const _: () = assert!(
     RESIDENT_BYTES + STACK_RESERVE <= NRF_RAM_BYTES,
-    "nRF resident set (framebuffer + RowDiff + band + map plane [App/MapCache/MapTables/RouteCache/RouteIndex] + BLE stack [MPSL/SDC mem/host arena]) + stack reserve overruns RAM — the map plane and the BLE stack do not coexist on the 256 KB DK (issue #270); on the LM20 trim the `nrf-mem` caps (#124) instead"
+    "nRF resident set (framebuffer + RowDiff + band + map plane [App/MapCache/MapTables/RouteCache/RouteIndex] + BLE stack [MPSL/SDC mem/host arena]) + stack reserve overruns RAM — re-trim the `nrf-mem` caps (#270 culled them so map + BLE share the 256 KB DK; the LM20 relaxes everything)"
 );
 
 /// The resident device-native RGB222 framebuffer: one byte per pixel over the 240×320 panel
@@ -452,6 +439,26 @@ pub(crate) struct SharedStore {
 }
 /// The shared-store handle threaded into [`ride::run_app`] and the BLE object plane (#270).
 pub(crate) type SharedStoreMutex = Mutex<NoopRawMutex, SharedStore>;
+
+/// Spawn-trampoline for the BLE stack (#270). [`ble::run`]'s future is ~31 KB; constructing its
+/// spawn token materializes that future as a **stack temporary in the constructing function's poll
+/// frame** — and Rust allocates a poll frame's full slot set at entry, so doing it in `main` cost
+/// `main` a ~31 KB frame from its first instruction and overflowed the combined build's ~40 KB
+/// stack before boot even reached the SD card (caught by DWT watchpoint: stack frames overwriting
+/// `.bss` task pools → a bogus "Busy" at the com_task spawn). This tiny task is polled directly by
+/// the executor at ~2 KB depth, where the one-shot 31 KB construction temporary is harmless; its
+/// own pool static holds just the arguments until the inner spawn moves them into `ble::run`'s.
+#[cfg(feature = "ble")]
+#[embassy_executor::task]
+async fn spawn_ble_stack(
+    spawner: Spawner,
+    mpsl_p: nrf_sdc::mpsl::Peripherals<'static>,
+    sdc_p: nrf_sdc::Peripherals<'static>,
+    cracen_p: embassy_nrf::Peri<'static, embassy_nrf::peripherals::CRACEN>,
+    shared: &'static SharedStoreMutex,
+) {
+    spawner.spawn(defmt::unwrap!(ble::run(spawner, mpsl_p, sdc_p, cracen_p, shared)));
+}
 
 /// Idle camera zoom for the boot map, in ground metres-per-pixel (the 0.5–4 mpp riding band). A
 /// coarse-ish 2 mpp shows a town-scale overview rather than a tight patch.
@@ -689,8 +696,8 @@ async fn main(_spawner: Spawner) {
         #[cfg(not(feature = "tft"))]
         let sd_cs = Output::new(p.P0_00, Level::High, OutputDrive::Standard);
         let storage = sd::init(sd_spi, sd_cs);
-        // A missing/bad card is fatal only where the map streams from it. The `ble` status build keeps
-        // booting — the card is a status line there ("sd --").
+        // A missing/bad card is fatal — the map streams from it. (SharedStore keeps an Option seam
+        // for a future card-less variant where BLE config/bond/diagnostics still serve.)
         #[cfg(has_map)]
         let Some(mut storage) = storage
         else {
@@ -1004,8 +1011,7 @@ async fn main(_spawner: Spawner) {
         defmt::info!("boot #{=u32}", boot_count);
 
         // The hardware watchdog (#349): the last-resort net under both planes, fed by the ride
-        // loop (gated on the input plane's heartbeat). Map builds only — the `ble` status build's
-        // loop sleeps indefinitely by design and has no feeder. 24 s is generous on purpose: the
+        // loop (gated on the input plane's heartbeat) in every build. 24 s is generous on purpose: the
         // dog must never fire on a slow frame or a long SD reconcile, only on a genuine wedge. It
         // counts through sleep but **pauses under a debugger halt** (`HaltConfig::Pause`) so a
         // breakpoint doesn't cascade into a reset — and so probe-rs can flash with the dog live.
@@ -1030,43 +1036,31 @@ async fn main(_spawner: Spawner) {
         // The shared store: the mounted card + the RRAM settings move behind one async mutex, so the
         // ride loop and the BLE object plane can each lock it per pass. Built in place in `.bss`
         // (warm-reset-safe via `init_static`, like the caches above). `storage`/`settings_store` are
-        // consumed here; both planes reach them through the guard. The map build already unwrapped
-        // `storage` to a `Storage` (idling at boot without a card); the `ble` build keeps it `Option`
-        // (no card → config/bond/diagnostics still serve).
+        // consumed here; both planes reach them through the guard. `storage` was unwrapped to a
+        // `Storage` at boot (the build idles without a card), so it goes in as `Some` — the `Option`
+        // is the seam a future card-less variant would use.
         static mut SHARED_STORE: MaybeUninit<SharedStoreMutex> = MaybeUninit::uninit();
-        #[cfg(has_map)]
         let shared_store: &'static SharedStoreMutex = unsafe {
             init_static(
                 core::ptr::addr_of_mut!(SHARED_STORE),
                 Mutex::new(SharedStore { storage: Some(storage), settings: settings_store }),
             )
         };
-        #[cfg(all(feature = "ble", not(has_map)))]
-        let shared_store: &'static SharedStoreMutex = unsafe {
-            init_static(
-                core::ptr::addr_of_mut!(SHARED_STORE),
-                Mutex::new(SharedStore { storage, settings: settings_store }),
-            )
-        };
 
-        // The `ble` build's object store: the catalog/upload/digest semantics over the shared card +
-        // settings. It no longer owns storage — it scans the catalog through a boot-time lock of
-        // `shared_store` and, at runtime, the BLE planes lock the store per call and pass the guard in.
-        // The status screen keeps only the boot-time `sd` flag.
-        #[cfg(all(feature = "ble", not(has_map)))]
-        let (ble_store, sd_ok) = {
-            let mut guard = shared_store.lock().await;
-            let sd_ok = guard.storage.is_some();
-            (object_store::ObjectStore::new(&mut guard), sd_ok)
-        };
+        // (The `ble` build's ObjectStore is built inside `ble::run` — the ~8 KB value and its
+        // construction temporary must not cost `main`'s frame or the trampoline's pool; see
+        // `spawn_ble_stack`.)
 
         // --- The BLE stack, `ble` builds: group the peripheral claims (MPSL: GRTC CH7–11 + TIMER10/20
         // + TEMP + its PPI/PPIB lanes; SDC: the PPI10 fan-out + PPIB bridges; CRACEN for the LL's crypto
-        // RNG) and build the never-returning stack future — polled from the tail join below. Nothing
-        // here clashes with the rest of `main` (embassy's GRTC time driver allocates channels from CH0
-        // up; TIMER10/20 and the PPI lanes are otherwise unused). ---
-        #[cfg(all(feature = "ble", not(has_map)))]
-        let ble_fut = {
+        // RNG) and spawn [`spawn_ble_stack`] — the trampoline that spawns [`ble::run`] from a shallow
+        // poll frame (see its doc: constructing the ~31 KB `ble::run` future in `main` put a ~31 KB
+        // temporary slot in **`main`'s poll frame**, allocated at frame entry, which overflowed the
+        // combined build's ~40 KB stack before the first line of `main` ran — #270). Nothing here
+        // clashes with the rest of `main` (embassy's GRTC time driver allocates channels from CH0 up;
+        // TIMER10/20 and the PPI lanes are otherwise unused). ---
+        #[cfg(feature = "ble")]
+        {
             let mpsl_p = nrf_sdc::mpsl::Peripherals::new(
                 p.GRTC_CH7,
                 p.GRTC_CH8,
@@ -1102,8 +1096,8 @@ async fn main(_spawner: Spawner) {
                 p.PPIB10_CH2,
                 p.PPIB10_CH3,
             );
-            ble::run(_spawner, mpsl_p, sdc_p, p.CRACEN, ble_store, shared_store)
-        };
+            _spawner.spawn(defmt::unwrap!(spawn_ble_stack(_spawner, mpsl_p, sdc_p, p.CRACEN, shared_store)));
+        }
 
         // Hand the built display + the resident set to the shared, backend-agnostic ride loop. The
         // `display` (one of the two `MapDisplay` definitions) is the only per-backend value crossing this
@@ -1125,17 +1119,10 @@ async fn main(_spawner: Spawner) {
             wdt_handle,
             (cam_lon, cam_lat),
         );
-        #[cfg(all(has_map, not(feature = "ble")))]
+        // The ride loop is `main`'s tail future in every build. On `ble` builds the BLE stack runs
+        // beside it as the task spawned above — both on the one thread-mode executor, both driving
+        // the shared SD + settings store (the ride loop locks it per frame across the render; the
+        // object plane per chunk between frames).
         app_fut.await;
-        // The LM20 shape (map + BLE in one image) needs the ride loop and the object plane to share the
-        // SD card and the settings store — an arbitration that doesn't exist yet. The DK budget assert
-        // already forbids the combo by size; this keeps the gap explicit.
-        #[cfg(all(has_map, feature = "ble"))]
-        compile_error!(
-            "map + BLE in one image is the LM20 shape (#270): the A6 object plane and the ride loop must arbitrate SD/settings first"
-        );
-        // The `ble` DK build: the radio + the status UI, joined forever.
-        #[cfg(not(has_map))]
-        embassy_futures::join::join(ble_fut, status::run_status(display, sd_ok, &mut led)).await;
     }
 }
