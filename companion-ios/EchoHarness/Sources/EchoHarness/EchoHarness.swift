@@ -6,11 +6,13 @@ import OBCTransport
 /// byte plane (`BLEChannel` + `L2CAPByteChannel` + the `TransferControl`/`StatusMessage`/`RouteList`
 /// codecs) from the terminal — the oracle that isn't the iOS app, so failures localize.
 ///
-/// Two planes:
-/// - **echo** (A5, #273): round-trip N objects through the loopback, byte-identical + committed.
-/// - **route object plane** (A6, #274): upload an OBCR file → SD, list/detail/delete the catalog,
-///   and prove an interrupted upload is discarded + cleanly re-uploaded (uploads restart, not
-///   resume — spec §1 principle 4).
+/// Two layers:
+/// - **bring-up planes** (A5–A7): the echo loopback (#273), the route object plane (#274 — upload → SD,
+///   list/detail/delete, abort → discard → re-upload; uploads restart, not resume, spec §1 principle 4),
+///   and the diagnostics blob (§7.5).
+/// - **A9 soak + fault injection** (#277): golden-path soak, the drop/restart matrix, CRC/offset/malformed
+///   corruption, the connect/disconnect storm, and concurrency probes — each reconciling the device's
+///   diagnostics counters with the harness's own tally (see `Scenarios.swift`).
 ///
 /// Run on a Mac with the device powered + advertising:
 /// ```
@@ -20,6 +22,11 @@ import OBCTransport
 /// swift run echo-harness detail 7 route.obcr              # download + byte-identity check
 /// swift run echo-harness delete 7
 /// swift run echo-harness abort-test route.obcr            # abort mid-upload → discard → re-upload
+/// swift run echo-harness soak route.obcr --count 50       # A9 headline: 50 uploads, ledgers agree
+/// swift run echo-harness drop-matrix route.obcr            # kill the link mid-transfer → restart + verify
+/// swift run echo-harness corruption route.obcr             # CRC / offset / malformed → typed rejects
+/// swift run echo-harness storm --iterations 50             # connect/disconnect churn
+/// swift run echo-harness concurrency route.obcr            # busy gate + back-to-back reconnects
 /// ```
 @main
 struct EchoHarness {
@@ -50,6 +57,22 @@ struct EchoHarness {
                 }
                 try await runDelete(id: id)
             case "abort-test": try await runAbortTest(path: try requirePath(positionals.first, "abort-test <file.obcr>"))
+            // ── A9 soak rig (#277) ──
+            case "soak":
+                let files = fileArgs(after: subcommand, in: args, valueFlags: ["--count"])
+                guard !files.isEmpty else { throw CLIError.usage("soak <file.obcr> [more.obcr ...] [--count N] [--no-cleanup]") }
+                try await runSoak(paths: files, count: intOption("--count", default: 50, in: args), cleanup: !hasFlag("--no-cleanup", in: args))
+            case "drop-matrix":
+                let file = try requirePath(fileArgs(after: subcommand, in: args, valueFlags: ["--iterations"]).first, "drop-matrix <file.obcr> [--iterations K]")
+                try await runDropMatrix(path: file, iterations: intOption("--iterations", default: 10, in: args))
+            case "corruption":
+                try await runCorruption(path: try requirePath(fileArgs(after: subcommand, in: args, valueFlags: []).first, "corruption <file.obcr>"))
+            case "storm":
+                try await runStorm(iterations: intOption("--iterations", default: 20, in: args))
+            case "concurrency":
+                try await runConcurrency(path: try requirePath(fileArgs(after: subcommand, in: args, valueFlags: []).first, "concurrency <file.obcr>"))
+            case "diagnostics":
+                try await runDiagnostics(verbose: hasFlag("--verbose", in: args))
             default:
                 throw CLIError.usage("unknown subcommand '\(subcommand)'")
             }
@@ -301,6 +324,40 @@ struct EchoHarness {
         return flags[i + 1]
     }
 
+    /// An `--name N` integer option, or `default` if absent/unparseable.
+    static func intOption(_ name: String, default def: Int, in args: [String]) -> Int {
+        guard let i = args.firstIndex(of: name), i + 1 < args.count, let v = Int(args[i + 1]) else { return def }
+        return max(1, v)
+    }
+
+    /// Whether a boolean `--flag` is present.
+    static func hasFlag(_ name: String, in args: [String]) -> Bool { args.contains(name) }
+
+    /// Positional (file) arguments after the subcommand, **excluding** the values consumed by
+    /// value-taking flags (so `soak a.obcr b.obcr --count 50` yields `[a.obcr, b.obcr]`, not `…, 50`).
+    static func fileArgs(after subcommand: String, in args: [String], valueFlags: Set<String>) -> [String] {
+        var result: [String] = []
+        var skipNext = false
+        var droppedSubcommand = false
+        for a in args {
+            if skipNext {
+                skipNext = false
+                continue
+            }
+            if valueFlags.contains(a) {
+                skipNext = true
+                continue
+            }
+            if a.hasPrefix("-") { continue }
+            if !droppedSubcommand {
+                droppedSubcommand = true  // the subcommand token itself
+                continue
+            }
+            result.append(a)
+        }
+        return result
+    }
+
     static func hex(_ v: UInt32) -> String { "0x" + String(v, radix: 16, uppercase: true) }
     static func fmtKm(_ meters: UInt32) -> String { String(format: "%.1f", Double(meters) / 1000) }
 
@@ -309,23 +366,38 @@ struct EchoHarness {
     }
 
     static let usage = """
-        echo-harness — drive the firmware BLE data planes over the real app byte layer
+        echo-harness — drive + soak-test the firmware BLE data planes over the real app byte layer
 
         USAGE: swift run echo-harness <subcommand> [args]
 
-        SUBCOMMANDS
+        BRING-UP / SINGLE-SHOT (A5/A6/A7)
           echo [--count N] [--size BYTES] [--corrupt]   A5 loopback (#273); default subcommand
           upload <file.obcr>                            upload a route → SD, assert committed (A6)
           list                                          download + print the routeList (§7.4)
           detail <id> [reference.obcr] [--out file]     download a route; verify CRC + byte-identity
           delete <id>                                   deleteObject; assert command ok + storeChanged
           abort-test <file.obcr>                        abort mid-upload → discard → re-upload + verify
-          --help                                        this message
+          diagnostics [--verbose]                       read + print the device diagnostics blob (§7.5)
+
+        A9 SOAK + FAULT INJECTION (#277) — each asserts the device counters agree with the harness
+          soak <file.obcr>... [--count N] [--no-cleanup]  N golden-path uploads, verify-by-list each
+          drop-matrix <file.obcr> [--iterations K]        kill the link mid up/download → restart + verify
+          corruption <file.obcr>                          CRC / offset / malformed → typed rejects, clean state
+          storm [--iterations K]                          N connect/disconnect cycles; counters must track
+          concurrency <file.obcr>                         busy gate, command-during-transfer, back-to-back reconnects
+
+          --help                                          this message
 
         ECHO OPTIONS
           --count N       objects to echo (default 100; the A5 DoD run is 1000)
           --size BYTES    bytes per object (default 32768)
           --corrupt       flip one byte per object; expect the device to reject with crcMismatch
+
+        SOAK OPTIONS
+          --count N       soak: uploads to run (default 50 — the epic's headline DoD gate)
+          --iterations K  drop-matrix / storm: cycles to run (default 10 / 20)
+          --no-cleanup    soak: keep every uploaded route (default deletes each after verifying)
+          --verbose       diagnostics: also print the full raw blob
         """
 }
 
