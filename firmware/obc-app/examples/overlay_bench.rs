@@ -3,7 +3,10 @@
 //! **writes** and times the call, swept across zoom. Decode happens up front, so the timed loop is
 //! the pure stroke path (project → simplify → clip → eg thick `Polyline` + the round-joint discs).
 //!
-//!   cargo run -p obc-render --example overlay_bench --release -- firmware/routes/kandel.obcr
+//! Lives in `obc-app` (not `obc-render`) because it decodes a real `.obcr` for its input polyline
+//! — the renderer itself no longer knows the route format (issue #332).
+//!
+//!   cargo run -p obc-app --example overlay_bench --release -- firmware/routes/kandel.obcr
 
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
 use heapless::Vec as HVec;

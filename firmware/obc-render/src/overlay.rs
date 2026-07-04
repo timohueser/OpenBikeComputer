@@ -33,6 +33,25 @@ const ARROW_BACK: f32 = 2.5;
 /// line, framed by the route colour whatever map colour the line crosses.
 const ARROW_HALF: f32 = 4.5;
 
+/// What the route overlay needs to know about one route chunk.
+pub struct OverlayChunk {
+    pub bbox: obc_reader::BBox,
+    /// Cumulative route distance (m) at this chunk's first point.
+    pub cum_distance_m: u32,
+}
+
+/// The route overlay's view of an active route — implemented by the host over its
+/// route reader. Keeps obc-render ignorant of the OBCR format.
+pub trait RouteOverlaySource {
+    fn chunk_count(&self) -> usize;
+    fn chunk(&self, k: usize) -> OverlayChunk;
+    fn total_distance_m(&self) -> u32;
+    /// Decode chunk `k` and hand its points — `(lon, lat)` microdegrees — to `visit`
+    /// as one slice. Implementations own their decode scratch. A failed decode
+    /// (flaky SD) simply doesn't call `visit`.
+    fn visit_points(&self, k: usize, visit: &mut dyn FnMut(&[(i32, i32)]));
+}
+
 impl MapRenderer {
     /// Draw the user-position marker: a chevron at `(lon, lat)` pointing along `course` (degrees CW
     /// from north), or a non-directional diamond when `course` is `None`. Fixed screen-space size.
@@ -93,8 +112,11 @@ impl MapRenderer {
     /// Stroke an active route as a polyline overlay, with optional travel-direction chevrons. Call
     /// **after** [`render`](MapRenderer::render).
     ///
-    /// Streams chunk-by-chunk — only chunks intersecting the view are decoded and stroked, via
-    /// [`Stroker`] (view-clipped). Consecutive chunks share a seam vertex so the strokes join.
+    /// The route arrives through the [`RouteOverlaySource`] seam — chunked `(lon, lat)`
+    /// microdegree polylines with per-chunk bbox + cumulative distance — so the renderer never
+    /// sees the route file format. Streams chunk-by-chunk: only chunks intersecting the view are
+    /// decoded (by the source) and stroked, via [`Stroker`] (view-clipped). Consecutive chunks
+    /// share a seam vertex so the strokes join.
     ///
     /// `arrows_at` is the rider's matched route distance (m), or `None` to skip chevrons. When set,
     /// chevrons are drawn in a **second pass** (so they sit on top where the route doubles back)
@@ -108,7 +130,7 @@ impl MapRenderer {
         &mut self,
         target: &mut D,
         vp: &Viewport,
-        route: &obc_route::RouteReader,
+        route: &dyn RouteOverlaySource,
         color: D::Color,
         weight: u32,
         arrow_color: D::Color,
@@ -119,61 +141,59 @@ impl MapRenderer {
     {
         let (w, h) = (vp.w as i32, vp.h as i32);
         let view = vp.visible_bbox();
-        let chunks = route.chunks();
-        let mut pts = Vec::<obc_route::RoutePoint, { obc_route::MAX_POINTS_PER_CHUNK }>::new();
         // Split the borrow so the fills can take `xs` while we build the polyline in `screen`.
         let DrawScratch { screen, xs } = &mut self.draw;
         let (mut route_chunks, mut route_points, mut route_drawn) = (0usize, 0usize, 0usize);
 
         // Pass 1 — stroke every visible chunk, in full, before any chevron is drawn.
-        for (k, cm) in chunks.iter().enumerate() {
-            if !cm.bbox.intersects(&view) {
+        for k in 0..route.chunk_count() {
+            if !route.chunk(k).bbox.intersects(&view) {
                 continue;
             }
-            if route.decode_chunk(k, &mut pts).is_err() {
-                continue;
-            }
-            // Adjacent chunks share a seam vertex, counted on both — matching the points eg strokes.
-            route_chunks += 1;
-            route_points += pts.len();
-            let projected = pts.iter().map(|p| vp.project(p.lon, p.lat));
-            // Per-chunk `Stroker` (a handful of copies): it must drop before the chevron pass
-            // below borrows `xs` on its own.
-            route_drawn += Stroker::new(target, screen, xs, color, weight, w, h).stroke(projected);
+            route.visit_points(k, &mut |pts| {
+                // Adjacent chunks share a seam vertex, counted on both — matching the strokes.
+                route_chunks += 1;
+                route_points += pts.len();
+                let projected = pts.iter().map(|&(lon, lat)| vp.project(lon, lat));
+                // Per-chunk `Stroker` (a handful of copies): it must drop before the chevron pass
+                // below borrows `xs` on its own.
+                route_drawn += Stroker::new(target, screen, xs, color, weight, w, h).stroke(projected);
+            });
         }
 
         // Pass 2 — chevrons, anchored to route distance and windowed around the rider.
         let Some(progress_m) = arrows_at else {
             return (route_chunks, route_points, route_drawn);
         };
-        let total = route.total_distance_m;
+        let total = route.total_distance_m();
         // Ground spacing for *this* frame: a fixed screen cadence scaled by m/px (`.max` guards
         // divide-by-zero at absurd zoom-in). The window is then a chevron *count* either side.
         let spacing_m = (ARROW_SPACING_PX * vp.meters_per_pixel()).max(1e-3);
         let lo = (progress_m as f32 - ARROW_BEHIND_COUNT as f32 * spacing_m).max(0.0);
         let hi = (progress_m as f32 + ARROW_AHEAD_COUNT as f32 * spacing_m).min(total as f32);
-        for (k, cm) in chunks.iter().enumerate() {
+        for k in 0..route.chunk_count() {
             // Skip chunks whose cumulative-distance span misses the window (then the view).
+            let cm = route.chunk(k);
             let chunk_start = cm.cum_distance_m as f32;
-            let chunk_end = chunks.get(k + 1).map_or(total, |c| c.cum_distance_m) as f32;
+            let next_start = if k + 1 < route.chunk_count() { route.chunk(k + 1).cum_distance_m } else { total };
+            let chunk_end = next_start as f32;
             if chunk_end < lo || chunk_start > hi || !cm.bbox.intersects(&view) {
                 continue;
             }
-            if route.decode_chunk(k, &mut pts).is_err() {
-                continue;
-            }
-            walk_route_arrows(&pts, chunk_start, lo, hi, spacing_m, vp.aspect, |a, b, f| {
-                let (ax, ay) = vp.to_screen(a.lon, a.lat);
-                let (bx, by) = vp.to_screen(b.lon, b.lat);
-                let (ax, ay, bx, by) = (ax as f32, ay as f32, bx as f32, by as f32);
-                let (dx, dy) = (bx - ax, by - ay);
-                let m = dx.abs().max(dy.abs()) + 0.41 * dx.abs().min(dy.abs());
-                if m < 1e-3 {
-                    return;
-                }
-                let fwd = (dx / m, dy / m); // screen travel dir (north-up & heading-up)
-                let centre = (ax + dx * f, ay + dy * f); // chevron centre along the segment
-                fill_chevron(target, xs, centre, fwd, ARROW_TIP, ARROW_BACK, ARROW_HALF, arrow_color, w, h);
+            route.visit_points(k, &mut |pts| {
+                walk_route_arrows(pts, chunk_start, lo, hi, spacing_m, vp.aspect, |a, b, f| {
+                    let (ax, ay) = vp.to_screen(a.0, a.1);
+                    let (bx, by) = vp.to_screen(b.0, b.1);
+                    let (ax, ay, bx, by) = (ax as f32, ay as f32, bx as f32, by as f32);
+                    let (dx, dy) = (bx - ax, by - ay);
+                    let m = dx.abs().max(dy.abs()) + 0.41 * dx.abs().min(dy.abs());
+                    if m < 1e-3 {
+                        return;
+                    }
+                    let fwd = (dx / m, dy / m); // screen travel dir (north-up & heading-up)
+                    let centre = (ax + dx * f, ay + dy * f); // chevron centre along the segment
+                    fill_chevron(target, xs, centre, fwd, ARROW_TIP, ARROW_BACK, ARROW_HALF, arrow_color, w, h);
+                });
             });
         }
         (route_chunks, route_points, route_drawn)
@@ -195,20 +215,21 @@ impl MapRenderer {
     }
 }
 
-/// Walk a decoded route chunk (points plus `s0`, the cumulative route distance in metres at its
-/// first point) and call `emit(&a, &b, f)` for every chevron whose route distance is a multiple of
-/// `spacing_m` inside `[lo, hi]` — `f` is the fraction along segment `a`→`b`. Anchoring to the
-/// route's cumulative distance pins each chevron to one ground spot as the camera pans; `[lo, hi]`
-/// keeps them near the rider. Segment length is real ground metres; `cl` is the viewport's hoisted
-/// `cos(lat)` (computed once per frame), so the walk costs no per-segment `cosf`.
-fn walk_route_arrows<F>(pts: &[obc_route::RoutePoint], s0: f32, lo: f32, hi: f32, spacing_m: f32, cl: f32, mut emit: F)
+/// Walk a decoded route chunk (`(lon, lat)` microdegree points plus `s0`, the cumulative route
+/// distance in metres at its first point) and call `emit(a, b, f)` for every chevron whose route
+/// distance is a multiple of `spacing_m` inside `[lo, hi]` — `f` is the fraction along segment
+/// `a`→`b`. Anchoring to the route's cumulative distance pins each chevron to one ground spot as
+/// the camera pans; `[lo, hi]` keeps them near the rider. Segment length is real ground metres;
+/// `cl` is the viewport's hoisted `cos(lat)` (computed once per frame), so the walk costs no
+/// per-segment `cosf`.
+fn walk_route_arrows<F>(pts: &[(i32, i32)], s0: f32, lo: f32, hi: f32, spacing_m: f32, cl: f32, mut emit: F)
 where
-    F: FnMut(&obc_route::RoutePoint, &obc_route::RoutePoint, f32),
+    F: FnMut((i32, i32), (i32, i32), f32),
 {
     let mut s = s0;
     for seg in pts.windows(2) {
-        let (a, b) = (&seg[0], &seg[1]);
-        let dl = obc_route::ground_dist_m_cl((a.lon, a.lat), (b.lon, b.lat), cl);
+        let (a, b) = (seg[0], seg[1]);
+        let dl = obc_reader::ground_dist_m_cl(a, b, cl);
         if dl > 1e-3 {
             // Grid multiples of spacing_m that fall on this segment and in the window.
             let lo_seg = s.max(lo);
@@ -256,25 +277,23 @@ mod tests {
     use super::walk_route_arrows;
     use crate::viewport::aspect_for_lat;
     use heapless::Vec;
-    use obc_route::{ground_dist_m, RoutePoint};
+    use obc_reader::ground_dist_m;
 
     /// Fixed spacing (m) to pin the grid maths; the app derives it per-frame from the zoom.
     const SPACING: f32 = 33.0;
 
     /// A due-north two-point segment ~300 m long (fixed longitude, so length is pure latitude).
-    /// Returned with its ground length.
-    fn north_line() -> (Vec<RoutePoint, 4>, f32) {
-        let mut v = Vec::new();
-        v.push(RoutePoint { lon: 7_800_000, lat: 48_000_000, ele: 0 }).unwrap();
-        v.push(RoutePoint { lon: 7_800_000, lat: 48_002_700, ele: 0 }).unwrap();
-        let dl = ground_dist_m((v[0].lon, v[0].lat), (v[1].lon, v[1].lat));
+    /// Returned with its ground length. Points are `(lon, lat)` microdegrees — the seam's shape.
+    fn north_line() -> ([(i32, i32); 2], f32) {
+        let v = [(7_800_000, 48_000_000), (7_800_000, 48_002_700)];
+        let dl = ground_dist_m(v[0], v[1]);
         (v, dl)
     }
 
     /// Route distances (m from the segment start) at which chevrons land for a window `[lo,hi]`.
-    fn distances(pts: &[RoutePoint], dl: f32, lo: f32, hi: f32) -> Vec<i32, 64> {
+    fn distances(pts: &[(i32, i32)], dl: f32, lo: f32, hi: f32) -> Vec<i32, 64> {
         let mut v = Vec::new();
-        let cl = aspect_for_lat(pts[0].lat);
+        let cl = aspect_for_lat(pts[0].1);
         walk_route_arrows(pts, 0.0, lo, hi, SPACING, cl, |_, _, f| {
             let _ = v.push(libm::roundf(f * dl) as i32);
         });

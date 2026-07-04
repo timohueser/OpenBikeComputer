@@ -11,7 +11,10 @@
 //! jumps ~8×. The span path is a flat ~27 µs at every width ≥ 2 and ~10× faster there — but can't
 //! draw 1 px (a zero-width rectangle has no scanline crossings). So the split sits at 1 px.
 //!
-//!   cargo run -p obc-render --example stroke_study --release -- firmware/routes/kandel.obcr
+//! Lives in `obc-app` (not `obc-render`) because it decodes a real `.obcr` for its route polyline
+//! — the renderer itself no longer knows the route format (issue #332).
+//!
+//!   cargo run -p obc-app --example stroke_study --release -- firmware/routes/kandel.obcr
 
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
 use heapless::Vec as HVec;
