@@ -37,7 +37,7 @@ pub(crate) async fn run_status(
     let mut redraw = true; // boot: paint the first frame + seed the RowDiff store
     loop {
         let now = Instant::now().as_millis() as u32;
-        let hw = stackmeter::used();
+        let hw = stackmeter::used(now);
         if hw > stack_hw {
             stack_hw = hw;
             defmt::info!("stack high-water {=usize} / {=usize} B (new peak)", hw, stackmeter::total());

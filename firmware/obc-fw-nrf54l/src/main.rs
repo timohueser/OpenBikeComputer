@@ -328,12 +328,14 @@ const NRF_RAM_BYTES: usize = 256 * 1024;
 const NRF_RAM_BYTES: usize = ls021_flpr::M33_RAM_BYTES;
 /// Headroom kept free under the resident statics for the main stack + embassy's executor/task arenas
 /// (statics grow up from the RAM base, the stack down from the top). This is only the build-time
-/// *floor* the assert enforces — the real stack is the residual `RAM − statics` (~34 KB on the default
-/// build). Pinned to the **measured ~33 KB deep-route-load render peak** + margin, not a loose floor:
-/// this is what fails a `ble` + map build on the 256 KB DK at compile time instead of letting it link
-/// and overflow the stack on the first deep render.
+/// *floor* the assert enforces — the real stack is the residual `RAM − statics` (~37.8 KB on the
+/// default build). Pinned above the **measured deep-path peak**: 35,808 / 37,760 B on 2026-07-04
+/// (debug-uart FLPR build, post-#351 split; VCOM-harness full ride — fix on Home → route load →
+/// ride → finish-to-GPX), so a change that squeezes the residual below what the deepest path
+/// actually reaches fails at compile time (e.g. a `ble` + map build on the 256 KB DK) instead of
+/// overflowing the stack on glass.
 #[cfg(has_map)]
-const STACK_RESERVE: usize = 34 * 1024;
+const STACK_RESERVE: usize = 36 * 1024;
 /// The `ble` status build's floor: no deep-render path, but the SDC/host futures and MPSL's ISRs all
 /// ride the main stack — and the ~128 KB the excluded map plane frees leaves room to be generous.
 #[cfg(not(has_map))]
@@ -452,9 +454,28 @@ async fn idle_blink(led: &mut Output<'static>) -> ! {
 /// then reports the deepest reach by finding the lowest still-painted word (the stack runs
 /// `_stack_start` top → `_stack_end` bottom, and a deep call overwrites the sentinel). The ride loop
 /// logs only on a *new* peak, so it's silent once warm but flags any future change that creeps the deep
-/// route-load render toward the 256 KB-DK's ~36 KB ceiling. Cheap (one boot paint + a per-frame scan).
+/// route-load render toward the 256 KB-DK's ~36 KB ceiling (#352 kept it, cheap, for the DK era).
+///
+/// The scan must be **bottom-up to the first non-painted word** — a frame doesn't write every word it
+/// covers (big uninitialized locals leave painted *islands* inside the used region), so any scan that
+/// starts from the used side under-reports by whole buffers (measured on glass: a top-down variant saw
+/// 4.7 KB where the truth was 26 KB). What makes it cheap instead: sentinel evidence is *permanent*
+/// (an overwritten word never repaints), so [`used`] runs the full scan at most once per
+/// [`SCAN_INTERVAL_MS`] and returns the cached mark between scans — a peak is never lost, it just
+/// logs up to a second late. Steady state is one timestamp compare per wake; each actual scan costs
+/// reads proportional to the *remaining headroom* (~40–90 µs at 128 MHz).
 mod stackmeter {
+    use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+
     const PAINT: u32 = 0xC0DE_DEAD;
+    /// Minimum gap between two full scans. Peaks land in the log within this of the wake that made
+    /// them — prompt enough for the VCOM-harness milestone readings (each step dwells ≥1 s).
+    const SCAN_INTERVAL_MS: u32 = 1000;
+    /// Wall-clock (loop `now`, ms) of the last full scan.
+    static LAST_SCAN_MS: AtomicU32 = AtomicU32::new(0);
+    /// The last scan's result. 0 = never scanned (paint leaves ≥512 B unpainted below the paint-time
+    /// SP, so a real measurement can't be 0) → the first call always scans.
+    static LAST_USED: AtomicUsize = AtomicUsize::new(0);
     extern "C" {
         static _stack_start: u32;
         static _stack_end: u32;
@@ -476,9 +497,16 @@ mod stackmeter {
             unsafe { (a as *mut u32).write_volatile(PAINT) };
             a += 4;
         }
+        LAST_USED.store(0, Ordering::Relaxed);
     }
-    /// Bytes of stack used at the deepest point reached so far (the high-water mark).
-    pub fn used() -> usize {
+    /// Bytes of stack used at the deepest point reached so far (the high-water mark). `now` is the
+    /// caller's loop timestamp (ms); calls within [`SCAN_INTERVAL_MS`] of the last scan return the
+    /// cached mark without touching the stack region.
+    pub fn used(now: u32) -> usize {
+        let cached = LAST_USED.load(Ordering::Relaxed);
+        if cached != 0 && now.wrapping_sub(LAST_SCAN_MS.load(Ordering::Relaxed)) < SCAN_INTERVAL_MS {
+            return cached;
+        }
         let (top, bottom) = (top(), bottom());
         let mut a = bottom;
         while a < top {
@@ -487,6 +515,8 @@ mod stackmeter {
             }
             a += 4;
         }
+        LAST_SCAN_MS.store(now, Ordering::Relaxed);
+        LAST_USED.store(top - a, Ordering::Relaxed);
         top - a
     }
     /// Total usable stack (`_stack_start - _stack_end`).
