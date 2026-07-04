@@ -100,8 +100,8 @@ static FLPR_BLOB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/flpr.bin"));
 // definition site — it also derives the carved memory.x and the FLPR's flpr.ld from the same values,
 // so no side can fork). This include! splices `FLPR_RAM_BASE`, `CONTROL_ADDR`, `MAX_DIRTY_SPANS`,
 // `LAYOUT_MAGIC`, `FLPR_ALIVE`, `FLPR_BADMAG`, and `CMD_RUN_FRAME` in here; the C blob includes the
-// equivalent generated `flpr_contract.h`. The production carve-out is **12 KB**: the blob is ~1 KB +
-// a shallow stack (an 8 KB `FLPR_RAM`), so the M33 links 244 KB; `SHARED` (the 4 KB handshake page
+// equivalent generated `flpr_contract.h`. The production carve-out is **8 KB**: the blob is ~820 B +
+// a shallow leaf stack (a 4 KB `FLPR_RAM`), so the M33 links 248 KB; `SHARED` (the 4 KB handshake page
 // at `CONTROL_ADDR`) holds just the control block — the ping-pong row buffers that used to follow it
 // are gone (contract v2, #347: the FLPR scans the framebuffer directly). ──
 include!(concat!(env!("OUT_DIR"), "/flpr_contract.rs"));

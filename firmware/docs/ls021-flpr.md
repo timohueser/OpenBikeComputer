@@ -111,19 +111,19 @@ RISC-V toolchain** and keeps the full 256 KB.
 The FLPR executes from on-chip SRAM at the **M33-visible address** (no remap on this part):
 the M33 copies the blob to the region base and writes that base into `INITPC`. Nordic's
 guidance is **≤96 KB to the FLPR**. F0 reserved a generous 28 KB top slice; #165 shrank it to
-the production **8 KB** (the blob is ~1 KB + a shallow scan stack), handing ~20 KB back to the
+the production **8 KB**, and #347 to **4 KB** (the scan blob is ~820 B + a shallow leaf stack), handing the rest back to the
 M33 so the full app + framebuffer fit. The carve-out is emitted by `build.rs` under **either**
 FLPR feature (`CARGO_FEATURE_LS021_FLPR` for the bin, `CARGO_FEATURE_PANEL_LS021` for the app),
 so the default ST7789 `main.rs` is untouched and keeps the full 256 KB.
 
 | Region | Range | Size | Owner / contents |
 |---|---|---|---|
-| `RAM` | `0x2000_0000 .. 0x2003_D000` | 244 KB | **M33** `.data`/`.bss`/stack (the linked `RAM`) |
-| `FLPR_RAM` | `0x2003_D000 .. 0x2003_F000` | 8 KB | **FLPR** image + stack; `INITPC = 0x2003_D000`, `_stack_top = 0x2003_F000` |
-| `SHARED` | `0x2003_F000 .. 0x2004_0000` | 4 KB | **cross-core** control block (F1 — the 64-byte `Control`/`flpr_control_t`; see [comms](#m33--flpr-comms)) |
+| `RAM` | `0x2000_0000 .. 0x2003_E000` | 248 KB | **M33** `.data`/`.bss`/stack (the linked `RAM`) |
+| `FLPR_RAM` | `0x2003_E000 .. 0x2003_F000` | 4 KB | **FLPR** image + stack; `INITPC = 0x2003_E000`, `_stack_top = 0x2003_F000` (#347 shrank it from 8 KB — the scan blob is ~820 B, and the M33 deep-render stack needs the headroom) |
+| `SHARED` | `0x2003_F000 .. 0x2004_0000` | 4 KB | **cross-core** control block (the 96-byte v2 `Control`/`flpr_control_t`; see [comms](#m33--flpr-comms)) |
 
 - The map is **single-sourced in `build.rs`'s `contract` module** (issue #346): from those
-  constants it *generates* the carved `memory.x` (shrinks the M33 `RAM` to 244 KB), the FLPR's
+  constants it *generates* the carved `memory.x` (shrinks the M33 `RAM` to 248 KB), the FLPR's
   `flpr.ld` (image base `0x2003_D000`, `_stack_top` at the SHARED boundary), `flpr_contract.rs`
   (include!'d by `src/ls021_flpr.rs` — `FLPR_RAM_BASE`, the control-block address, the magic /
   status / command words, `MAX_DIRTY_SPANS`), and `flpr_contract.h` (included by
