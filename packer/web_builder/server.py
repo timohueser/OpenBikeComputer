@@ -219,12 +219,12 @@ def job_events(job_id: str):
     )
 
 
-@app.get("/")
-def index():
-    # Serve index.html with mtime-stamped asset URLs. The plain `/static/app.js`
-    # URL is otherwise cached heuristically by browsers and silently goes stale
-    # after an edit (the page loads, but with last session's JS/CSS); stamping
-    # `?v=<mtime>` makes every edit a fresh URL, so it always loads.
+@app.get("/legacy")
+def legacy_index():
+    # The previous editor, kept alive until the new advanced editor ships.
+    # Serve its index.html with mtime-stamped asset URLs: the plain
+    # `/static/app.js` URL is cached heuristically by browsers and silently
+    # goes stale after an edit; `?v=<mtime>` makes every edit a fresh URL.
     with open(os.path.join(STATIC_DIR, "index.html")) as f:
         html = f.read()
     for asset in ("style.css", "app.js"):
@@ -237,3 +237,28 @@ def index():
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+# The redesigned SPA (packer/web_builder/frontend/, built by Vite into
+# static/dist/ — gitignored, so a fresh checkout needs one `npm run build`).
+# Mounted last: every /api route above wins, everything else falls through to
+# the app. Without a build, "/" explains how to produce one.
+DIST_DIR = os.path.join(STATIC_DIR, "dist")
+
+if os.path.exists(os.path.join(DIST_DIR, "index.html")):
+    app.mount("/", StaticFiles(directory=DIST_DIR, html=True), name="app")
+else:
+
+    @app.get("/")
+    def missing_dist():
+        return HTMLResponse(
+            "<!doctype html><meta charset='utf-8'><title>OBCM Web Builder</title>"
+            "<body style='font-family: system-ui; max-width: 40rem; margin: 4rem auto;"
+            " color: #24331c; background: #ece8cf; padding: 0 1rem;'>"
+            "<h1>Frontend not built yet</h1>"
+            "<p>The web builder's UI is compiled from <code>packer/web_builder/frontend/</code>. "
+            "Build it once (requires Node):</p>"
+            "<pre>cd packer/web_builder/frontend\nnpm ci\nnpm run build</pre>"
+            "<p>…then restart this server. The previous editor is still available at "
+            "<a href='/legacy'>/legacy</a>.</p>",
+            status_code=503,
+        )
