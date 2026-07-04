@@ -1,0 +1,48 @@
+{
+  "points" : [
+    [
+      2000,
+      47,
+      7,
+      300
+    ],
+    [
+      2060,
+      47.1,
+      7.2
+    ]
+  ],
+  "summary" : {
+    "averageSpeedMps" : 6.9,
+    "climbMeters" : 410,
+    "date" : 2000,
+    "distanceMeters" : 31000,
+    "id" : "ride-v1-fixture",
+    "movingTime" : 4500,
+    "name" : "Dawn Patrol",
+    "preview" : {
+      "aspectRatio" : 1.5,
+      "coordinates" : [
+        [
+          47,
+          7
+        ],
+        [
+          47.1,
+          7.2
+        ]
+      ],
+      "points" : [
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          0
+        ]
+      ]
+    }
+  },
+  "version" : 1
+}

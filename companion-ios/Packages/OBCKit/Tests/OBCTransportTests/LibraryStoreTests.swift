@@ -197,16 +197,172 @@ final class LibraryStoreTests: XCTestCase {
         XCTAssertEqual(json["version"] as? Int, 1)
     }
 
-    // MARK: Rides + the synced set (H9/H10)
+    // MARK: Rides + the synced set (H9/H10) — split summary/points (#360)
 
-    func testRidesRoundTripNewestFirst() {
+    func testRideSummariesRoundTripNewestFirst() {
         let (store, dir) = makeFileStore()
         let older = makeRide(id: "ride-a", date: Date(timeIntervalSince1970: 2_000))
         let newer = makeRide(id: "ride-b", name: "Lunch Loop", date: Date(timeIntervalSince1970: 8_000))
         store.saveRide(older)
         store.saveRide(newer)
 
-        XCTAssertEqual(FileLibraryStore(directory: dir).rides(), [newer, older])
+        // A second instance over the same directory = the app relaunched.
+        let summaries = FileLibraryStore(directory: dir).rideSummaries()
+        XCTAssertEqual(summaries, [newer.summary, older.summary], "newest first, every field intact")
+        XCTAssertEqual(
+            summaries.first?.trackPreview?.coordinates,
+            newer.summary.trackPreview?.coordinates,
+            "the basemap coordinates (#294) survive the round-trip"
+        )
+    }
+
+    func testRidePointsRoundTripAcrossInstances() {
+        let (store, dir) = makeFileStore()
+        let ride = makeRide()
+        store.saveRide(ride)
+
+        XCTAssertEqual(FileLibraryStore(directory: dir).ridePoints(ride.id), ride.points)
+        XCTAssertNil(store.ridePoints(RideID("never-synced")), "an unknown id has no tracklog")
+    }
+
+    /// The #360 point: listing summaries must not read — let alone decode — the
+    /// points files. A deliberately corrupt points file proves it (correctness
+    /// beats a flaky timing assert).
+    func testRideSummariesNeverDecodeThePointsFiles() {
+        let (store, dir) = makeFileStore()
+        let ride = makeRide()
+        store.saveRide(ride)
+        try? Data("not json".utf8).write(
+            to: dir.appendingPathComponent("rides/ride-1/points.json"))
+
+        XCTAssertEqual(store.rideSummaries(), [ride.summary],
+                       "a broken tracklog never costs the list row")
+        XCTAssertNil(store.ridePoints(ride.id),
+                     "the corrupt points read degrades to summary-only, not a crash")
+    }
+
+    /// Loose perf pin, shape not stopwatch: a big library's summaries all load
+    /// while **every** points file is unreadable — the only way that passes is
+    /// if `rideSummaries()` never touches them.
+    func testABigLibraryListsWithoutTouchingAnyPointsFile() {
+        let (store, dir) = makeFileStore()
+        for index in 0..<200 {
+            store.saveRide(makeRide(id: "ride-\(index)",
+                                    date: Date(timeIntervalSince1970: Double(index))))
+            try? Data("points deliberately unreadable".utf8).write(
+                to: dir.appendingPathComponent("rides/ride-\(index)/points.json"))
+        }
+
+        XCTAssertEqual(store.rideSummaries().count, 200)
+    }
+
+    /// A points file gone missing entirely (half-written v2 dir, manual sweep)
+    /// mirrors the undecodable-payload rule: the ride stays a summary-only row
+    /// rather than being dropped.
+    func testMissingPointsFileKeepsTheSummaryRow() {
+        let (store, dir) = makeFileStore()
+        let ride = makeRide()
+        store.saveRide(ride)
+        try? FileManager.default.removeItem(
+            at: dir.appendingPathComponent("rides/ride-1/points.json"))
+
+        XCTAssertEqual(store.rideSummaries(), [ride.summary])
+        XCTAssertNil(store.ridePoints(ride.id))
+    }
+
+    /// H12 for rides: a rename persists through the summary-only write — the
+    /// tracklog file's bytes stay byte-identical (never re-encoded).
+    func testSaveRideSummaryUpdatesTheRowWithoutRewritingPoints() throws {
+        let (store, dir) = makeFileStore()
+        let ride = makeRide()
+        store.saveRide(ride)
+        let pointsURL = dir.appendingPathComponent("rides/ride-1/points.json")
+        let pointBytes = try Data(contentsOf: pointsURL)
+
+        var renamed = ride.summary
+        renamed.name = "Dawn Patrol II"
+        store.saveRideSummary(renamed)
+
+        XCTAssertEqual(FileLibraryStore(directory: dir).rideSummaries(), [renamed])
+        XCTAssertEqual(try Data(contentsOf: pointsURL), pointBytes)
+        XCTAssertEqual(store.ridePoints(ride.id), ride.points)
+    }
+
+    // MARK: v1 → v2 ride migration (#360)
+
+    /// Copy the checked-in v1 whole-ride file (written verbatim by the pre-#360
+    /// store) into a store's `rides/` directory.
+    private func installV1RideFixture(in dir: URL) throws {
+        let fixture = try XCTUnwrap(Bundle.module.url(
+            forResource: "ride-v1", withExtension: "json", subdirectory: "Fixtures"))
+        let ridesDir = dir.appendingPathComponent("rides", isDirectory: true)
+        try FileManager.default.createDirectory(at: ridesDir, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(
+            at: fixture, to: ridesDir.appendingPathComponent("ride-v1-fixture.json"))
+    }
+
+    func testV1RideFileMigratesOnFirstListRead() throws {
+        let (store, dir) = makeFileStore()
+        try installV1RideFixture(in: dir)
+
+        // First read: the v1 file loads whole and comes back as a summary…
+        let loaded = try XCTUnwrap(store.rideSummaries().first)
+        XCTAssertEqual(loaded.id, RideID("ride-v1-fixture"))
+        XCTAssertEqual(loaded.name, "Dawn Patrol")
+        XCTAssertEqual(loaded.date, Date(timeIntervalSince1970: 2_000))
+        XCTAssertEqual(loaded.trackPreview?.coordinates.count, 2)
+
+        // …and the store is rewritten split: old file gone, v2 files in place.
+        let rideDir = dir.appendingPathComponent("rides/ride-v1-fixture")
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: dir.appendingPathComponent("rides/ride-v1-fixture.json").path))
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: rideDir.appendingPathComponent("summary.json").path))
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: rideDir.appendingPathComponent("points.json").path))
+
+        // The migrated store survives a second read (= the next launch) with the
+        // tracklog intact — elevation-less samples included.
+        let relaunched = FileLibraryStore(directory: dir)
+        XCTAssertEqual(relaunched.rideSummaries(), [loaded])
+        let points = try XCTUnwrap(relaunched.ridePoints(loaded.id))
+        XCTAssertEqual(points.count, 2)
+        XCTAssertEqual(points.first?.elevationMeters, 300)
+        XCTAssertNil(points.last?.elevationMeters)
+    }
+
+    /// The detail-before-list order: `ridePoints` on an un-migrated ride splits
+    /// the file too — the store never depends on which read comes first.
+    func testV1RideFileMigratesOnAPointsRead() throws {
+        let (store, dir) = makeFileStore()
+        try installV1RideFixture(in: dir)
+
+        let points = try XCTUnwrap(store.ridePoints(RideID("ride-v1-fixture")))
+        XCTAssertEqual(points.count, 2)
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: dir.appendingPathComponent("rides/ride-v1-fixture.json").path))
+        XCTAssertEqual(store.rideSummaries().count, 1)
+    }
+
+    /// A rename must migrate a lingering v1 file *first* — otherwise the next
+    /// lazy migration would rewrite the summary from the stale whole-ride file
+    /// and silently undo the rename.
+    func testRenameOfAnUnmigratedRideSurvivesTheNextRead() throws {
+        let (store, dir) = makeFileStore()
+        try installV1RideFixture(in: dir)
+
+        // No list read first: the summary-only write itself finds the v1 file.
+        let renamed = RideSummary(
+            id: RideID("ride-v1-fixture"), name: "Renamed After Migration",
+            date: Date(timeIntervalSince1970: 2_000),
+            distanceMeters: 31_000, movingTime: 4_500,
+            averageSpeedMps: 6.9, climbMeters: 410
+        )
+        store.saveRideSummary(renamed)
+
+        let relaunched = FileLibraryStore(directory: dir)
+        XCTAssertEqual(relaunched.rideSummaries().first?.name, "Renamed After Migration")
+        XCTAssertEqual(relaunched.ridePoints(renamed.id)?.count, 2, "the tracklog rode along")
     }
 
     func testSyncedIDsSurviveRideDeleteAndRelaunch() {
@@ -217,7 +373,7 @@ final class LibraryStoreTests: XCTestCase {
         store.deleteRide(ride.id)
 
         let relaunched = FileLibraryStore(directory: dir)
-        XCTAssertTrue(relaunched.rides().isEmpty)
+        XCTAssertTrue(relaunched.rideSummaries().isEmpty)
         // The idempotence marker outlives the ride — a deleted ride must not
         // come back as "new" on the next sync.
         XCTAssertEqual(relaunched.syncedRideIDs(), [ride.id])
@@ -244,7 +400,7 @@ final class LibraryStoreTests: XCTestCase {
         store.saveRide(a)
         store.saveRide(b)
 
-        let reloaded = FileLibraryStore(directory: dir).rides()
+        let reloaded = FileLibraryStore(directory: dir).rideSummaries()
         XCTAssertEqual(Set(reloaded.map(\.id)), [a.id, b.id])
     }
 
@@ -259,13 +415,21 @@ final class LibraryStoreTests: XCTestCase {
         store.saveRide(ride)
         store.markRideSynced(ride.id)
         XCTAssertEqual(store.plannedRoutes(), [record])
-        XCTAssertEqual(store.rides(), [ride])
+        XCTAssertEqual(store.rideSummaries(), [ride.summary])
+        XCTAssertEqual(store.ridePoints(ride.id), ride.points)
+
+        var renamed = ride.summary
+        renamed.name = "Dawn Patrol II"
+        store.saveRideSummary(renamed)
+        XCTAssertEqual(store.rideSummaries(), [renamed])
+        XCTAssertEqual(store.ridePoints(ride.id), ride.points, "a rename never touches points")
 
         store.deletePlannedRoute(record.id)
         store.markRideDeleted(ride.id)
         store.deleteRide(ride.id)
         XCTAssertTrue(store.plannedRoutes().isEmpty)
-        XCTAssertTrue(store.rides().isEmpty)
+        XCTAssertTrue(store.rideSummaries().isEmpty)
+        XCTAssertNil(store.ridePoints(ride.id), "the tracklog dies with the ride")
         XCTAssertEqual(store.syncedRideIDs(), [ride.id], "the synced marker survives the delete")
         XCTAssertEqual(store.deletedRideIDs(), [ride.id], "the tombstone survives the delete")
     }
