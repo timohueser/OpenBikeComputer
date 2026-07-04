@@ -57,11 +57,20 @@ pub trait Surface {
     /// just past the string (see [`draw_text`]).
     fn text(&mut self, s: &str, at: Point, font: Font, align: TextAlign, color: u16) -> Point;
 
-    /// [`text`](Surface::text) vertically centred in the span `top..top + h`: the anchor's y is
-    /// computed from the font's [`cap_height`](Font::cap_height)
-    /// (`top + (h - cap_height) / 2`), so a row/strip/button centres its label without a
+    /// [`text`](Surface::text) vertically centred in the `v_span = (top, height)` span: the
+    /// anchor's y is computed from the font's [`cap_height`](Font::cap_height)
+    /// (`top + (height - cap_height) / 2`), so a row/strip/button centres its label without a
     /// hand-tuned baseline offset. Horizontal anchoring is `x` + `align`, unchanged.
-    fn text_vcentered(&mut self, s: &str, x: i32, top: i32, h: i32, font: Font, align: TextAlign, color: u16) -> Point {
+    fn text_vcentered(
+        &mut self,
+        s: &str,
+        x: i32,
+        v_span: (i32, i32),
+        font: Font,
+        align: TextAlign,
+        color: u16,
+    ) -> Point {
+        let (top, h) = v_span;
         let y = top + (h - font.cap_height() as i32) / 2;
         self.text(s, Point::new(x, y), font, align, color)
     }

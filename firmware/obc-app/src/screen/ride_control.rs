@@ -94,7 +94,7 @@ impl RideControl {
         cv.round(rect(px, py, pw, ph), 8, PARCHMENT);
         cv.round(rect(px, py, pw, 32), 8, HUD);
         cv.fill(rect(px, py + 16, pw, 16), HUD);
-        cv.text_vcentered("PAUSED", w / 2, py, 32, Font::Label, TextAlign::Center, PARCHMENT);
+        cv.text_vcentered("PAUSED", w / 2, (py, 32), Font::Label, TextAlign::Center, PARCHMENT);
 
         // Guarded rows fill warning-red — Finish/Discard are irreversible.
         let geo = super::GuardedRowsGeometry {

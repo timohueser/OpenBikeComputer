@@ -134,7 +134,7 @@ impl StatFieldsScreen {
                 let pcy = top + (rh - 22) / 2 + 11; // the label's cap-height midline
                 cv.hline(px - 6, pcy, 13, INK);
                 cv.vline(px, pcy - 6, 13, 1, INK);
-                cv.text_vcentered("Add field", px + 18, top, rh, Font::Body, TextAlign::Left, INK);
+                cv.text_vcentered("Add field", px + 18, (top, rh), Font::Body, TextAlign::Left, INK);
             } else {
                 let f = fields[row.index];
                 let grabbed = row.selected && self.grabbed;
