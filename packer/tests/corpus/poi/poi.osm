@@ -1,0 +1,75 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<!--
+  Hand-authored POI-extraction corpus fixture (issue #422).
+
+  Exercises the poi.rs pipeline end to end through ingest_osm: node + closed-way
+  extraction, name folding, and the dedup pair. Coordinates sit near Freiburg on
+  a tidy grid; only tags + relative distances matter.
+
+  Expected result (any config — POI extraction is config-free), 5 POIs kept,
+  2 dedup-dropped, verified by ingest::tests::poi_fixture_end_to_end:
+    N1 (501) -> water/drinking_water, "Marktbrunnen", node        KEPT
+    N2 (502) -> resupply/supermarket, "Edeka Mueller" (folded ü)  KEPT (node
+                 beats W1's way-centroid ~27 m away)
+    N3 (503) -> water/drinking_water, CJK name folds to EMPTY     KEPT, unnamed
+    N4 (504) -> amenity=parking: not in the table                 (no candidate)
+    N5 (505) -> water/drinking_water, "Brunnen A", node           KEPT (named
+                 beats the unnamed spring N6 ~40 m away)
+    N6 (506) -> water/spring, unnamed, 40 m from N5               DROPPED (dedup)
+    W1 (601) -> resupply/supermarket closed way, centroid
+                 (47.9901, 7.8601) inside the N2 pair             DROPPED (dedup)
+    W2 (602) -> campsite/camp_site closed way, unnamed,
+                 centroid (48.0002, 7.8702)                       KEPT
+  Way nodes 511-514 / 521-524 are untagged geometry only.
+-->
+<osm version="0.6" generator="hand-authored-obcm-poi-fixture">
+  <!-- N1: named water node, isolated -->
+  <node id="501" version="1" lat="47.9950" lon="7.8500">
+    <tag k="amenity" v="drinking_water"/>
+    <tag k="name" v="Marktbrunnen"/>
+  </node>
+  <!-- N2: supermarket entrance node at W1's corner (~27 m from its centroid) -->
+  <node id="502" version="1" lat="47.9899" lon="7.8599">
+    <tag k="shop" v="supermarket"/>
+    <tag k="name" v="Edeka Müller"/>
+  </node>
+  <!-- N3: water node whose CJK name folds to empty -> unnamed -->
+  <node id="503" version="1" lat="47.9800" lon="7.8400">
+    <tag k="amenity" v="drinking_water"/>
+    <tag k="name" v="北京"/>
+  </node>
+  <!-- N4: tagged but not in the POI table -> no candidate -->
+  <node id="504" version="1" lat="47.9850" lon="7.8450">
+    <tag k="amenity" v="parking"/>
+  </node>
+  <!-- N5 + N6: same-category (water) pair ~40 m apart -> one POI, named wins -->
+  <node id="505" version="1" lat="47.9700" lon="7.8300">
+    <tag k="amenity" v="drinking_water"/>
+    <tag k="name" v="Brunnen A"/>
+  </node>
+  <node id="506" version="1" lat="47.97036" lon="7.8300">
+    <tag k="natural" v="spring"/>
+  </node>
+  <!-- W1 ring: supermarket building outline around (47.9901, 7.8601) -->
+  <node id="511" version="1" lat="47.9899" lon="7.8599"/>
+  <node id="512" version="1" lat="47.9899" lon="7.8603"/>
+  <node id="513" version="1" lat="47.9903" lon="7.8603"/>
+  <node id="514" version="1" lat="47.9903" lon="7.8599"/>
+  <!-- W2 ring: campsite area around (48.0002, 7.8702) -->
+  <node id="521" version="1" lat="48.0000" lon="7.8700"/>
+  <node id="522" version="1" lat="48.0000" lon="7.8704"/>
+  <node id="523" version="1" lat="48.0004" lon="7.8704"/>
+  <node id="524" version="1" lat="48.0004" lon="7.8700"/>
+
+  <!-- W1: closed supermarket way, same tags as N2 (OSM double-mapping) -->
+  <way id="601" version="1">
+    <nd ref="511"/><nd ref="512"/><nd ref="513"/><nd ref="514"/><nd ref="511"/>
+    <tag k="shop" v="supermarket"/>
+    <tag k="name" v="Edeka Müller"/>
+  </way>
+  <!-- W2: closed unnamed campsite way -> centroid POI, subtype-label fallback -->
+  <way id="602" version="1">
+    <nd ref="521"/><nd ref="522"/><nd ref="523"/><nd ref="524"/><nd ref="521"/>
+    <tag k="tourism" v="camp_site"/>
+  </way>
+</osm>
