@@ -1,7 +1,8 @@
 //! `obc-pack` CLI — the full end-to-end pipeline (`.osm.pbf` → `.obcm`): multi-PBF
 //! **merge** → ingest (lines + closed ways + multipolygon relations) → bbox →
 //! **land generation** → per-LOD simplify + quadtree → serialize. Positional CLI:
-//! `<pbf...> <config.json> <out.obcm>`, plus `--chunk-size` and `--no-land`. It
+//! `<pbf...> <config.json> <out.obcm>`, plus `--chunk-size`, `--no-land`, and
+//! `--dump-pois` (print the classified POI list for eyeballing). It
 //! prints one stage string per phase ("Merging", "Pass 1/2", "Calculating BBox",
 //! "Generating land", "Building Quadtree", "Serializing", "Writing") so the web
 //! builder UI can show progress. `obc-pack schema` prints the config's JSON
@@ -31,12 +32,14 @@ struct Args {
     output: String,
     chunk_size: Option<usize>,
     no_land: bool,
+    dump_pois: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut positional = Vec::new();
     let mut chunk_size = None;
     let mut no_land = false;
+    let mut dump_pois = false;
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -44,18 +47,21 @@ fn parse_args() -> Result<Args, String> {
                 chunk_size = Some(it.next().and_then(|s| s.parse().ok()).ok_or("--chunk-size needs a number")?);
             }
             "--no-land" => no_land = true,
+            "--dump-pois" => dump_pois = true,
             _ => positional.push(a),
         }
     }
     // `<pbf...> <config.json> <out.obcm>`: last two positionals are config + output.
     if positional.len() < 3 {
-        return Err("usage: obc-pack <pbf...> <config.json> <out.obcm> [--chunk-size N] [--no-land]\n       \
+        return Err(
+            "usage: obc-pack <pbf...> <config.json> <out.obcm> [--chunk-size N] [--no-land] [--dump-pois]\n       \
                     obc-pack schema   (print the config JSON Schema envelope)"
-            .into());
+                .into(),
+        );
     }
     let output = positional.pop().unwrap();
     let config = positional.pop().unwrap();
-    Ok(Args { pbfs: positional, config, output, chunk_size, no_land })
+    Ok(Args { pbfs: positional, config, output, chunk_size, no_land, dump_pois })
 }
 
 fn run() -> Result<(), String> {
@@ -88,10 +94,16 @@ fn run() -> Result<(), String> {
         args.pbfs[0].clone()
     };
 
-    // --- Ingest (two passes: nodes, then ways; prints its own Pass 1/2 stages). ---
+    // --- Ingest (two passes: nodes, then ways; prints its own Pass 1/2 stages
+    // and the per-category POI counts line). ---
     let mut ingested = ingest_osm(&pbf_to_ingest, &config)?;
     if ingested.features.is_empty() && ingested.coastlines.is_empty() {
         return Err("no features found matching config".into());
+    }
+    // POIs stop here until the OBCM v6 POI section lands (#423) — the dump flag
+    // is the eyeball-against-a-known-extract debug aid from #422.
+    if args.dump_pois {
+        obc_pack::poi::dump(&ingested.pois);
     }
 
     // --- Global bbox over features + coastlines, TRUNCATED toward zero (not rounded)
