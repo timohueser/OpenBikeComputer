@@ -12,6 +12,7 @@ import OBCDomain
 ///     rides/<id>/points.json      versioned tracklog, compact JSON (read on demand)
 ///     synced-rides.json           every ride id ever downloaded (H9)
 ///     deleted-rides.json          ride ids deleted on the phone (device keeps its copy)
+///     trashed-rides.json          ride ids in Recently Deleted, with trash dates (#292)
 ///
 /// Rides split summary from tracklog (#360, ride schema v2) so launching never
 /// decodes a season of points to draw list rows. A v1 whole-ride file
@@ -188,6 +189,35 @@ public struct FileLibraryStore: LibraryStore, Sendable {
         write(SyncedRidesFile(version: Self.schemaVersion, ids: ids.map(\.rawValue).sorted()), to: deletedURL)
     }
 
+    public func trashedRideIDs() -> [RideID: Date] {
+        guard let file: TrashedRidesFile = read(trashedURL), file.version == Self.schemaVersion
+        else { return [:] }
+        return Dictionary(
+            file.entries.map { (RideID($0.id), $0.trashedAt) },
+            uniquingKeysWith: { first, _ in first }
+        )
+    }
+
+    public func markRideTrashed(_ id: RideID, at date: Date) {
+        var ids = trashedRideIDs()
+        ids[id] = date
+        writeTrashed(ids)
+    }
+
+    public func unmarkRideTrashed(_ id: RideID) {
+        var ids = trashedRideIDs()
+        guard ids.removeValue(forKey: id) != nil else { return }
+        writeTrashed(ids)
+    }
+
+    private func writeTrashed(_ ids: [RideID: Date]) {
+        ensure(directory)
+        let entries = ids
+            .map { TrashedRidesFile.Entry(id: $0.key.rawValue, trashedAt: $0.value) }
+            .sorted { $0.id < $1.id }
+        write(TrashedRidesFile(version: Self.schemaVersion, entries: entries), to: trashedURL)
+    }
+
     // MARK: Paths + IO
 
     private static let schemaVersion = 1
@@ -199,6 +229,7 @@ public struct FileLibraryStore: LibraryStore, Sendable {
     private var ridesDir: URL { directory.appendingPathComponent("rides", isDirectory: true) }
     private var syncedURL: URL { directory.appendingPathComponent("synced-rides.json") }
     private var deletedURL: URL { directory.appendingPathComponent("deleted-rides.json") }
+    private var trashedURL: URL { directory.appendingPathComponent("trashed-rides.json") }
 
     private func rideDir(_ id: RideID) -> URL {
         ridesDir.appendingPathComponent(Self.fileSafe(id.rawValue), isDirectory: true)
@@ -517,4 +548,16 @@ private struct RideSummaryDTO: Codable {
 private struct SyncedRidesFile: Codable {
     var version: Int
     var ids: [String]
+}
+
+/// `trashed-rides.json` — the Recently Deleted set (#292): which ride ids are
+/// in the trash and when each landed there (the retention purge's clock).
+private struct TrashedRidesFile: Codable {
+    struct Entry: Codable {
+        var id: String
+        var trashedAt: Date
+    }
+
+    var version: Int
+    var entries: [Entry]
 }

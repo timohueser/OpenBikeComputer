@@ -56,6 +56,15 @@ public protocol LibraryStore: Sendable {
     /// rides instead of resurrecting them on every sync/reload.
     func deletedRideIDs() -> Set<RideID>
     func markRideDeleted(_ id: RideID)
+
+    /// Rides in the phone-side trash (#292), keyed to when each was trashed.
+    /// A trashed ride keeps its stored files — `rideSummaries()`/`ridePoints()`
+    /// still serve it; only the Tracked list hides it — so Recover is just
+    /// clearing the mark. A permanent delete pairs `deleteRide` with
+    /// `unmarkRideTrashed`; the dates drive the model's retention purge.
+    func trashedRideIDs() -> [RideID: Date]
+    func markRideTrashed(_ id: RideID, at date: Date)
+    func unmarkRideTrashed(_ id: RideID)
 }
 
 /// The no-filesystem conformer: unit tests, previews, and Debug mock runs
@@ -68,6 +77,7 @@ public final class InMemoryLibraryStore: LibraryStore, @unchecked Sendable {
     private var points: [RideID: [RidePoint]] = [:]
     private var synced: Set<RideID> = []
     private var deleted: Set<RideID> = []
+    private var trashed: [RideID: Date] = [:]
 
     public init() {}
 
@@ -123,5 +133,17 @@ public final class InMemoryLibraryStore: LibraryStore, @unchecked Sendable {
 
     public func markRideDeleted(_ id: RideID) {
         lock.withLock { _ = deleted.insert(id) }
+    }
+
+    public func trashedRideIDs() -> [RideID: Date] {
+        lock.withLock { trashed }
+    }
+
+    public func markRideTrashed(_ id: RideID, at date: Date) {
+        lock.withLock { trashed[id] = date }
+    }
+
+    public func unmarkRideTrashed(_ id: RideID) {
+        lock.withLock { trashed[id] = nil }
     }
 }
