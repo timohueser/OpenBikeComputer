@@ -5,7 +5,7 @@
 //! wider.
 
 use core::cell::Cell;
-use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
@@ -106,6 +106,21 @@ pub fn publish_battery(pct: u8) {
 /// The latest published battery percent (BAS seed + notify).
 pub(crate) fn battery() -> u8 {
     BATTERY.load(Ordering::Relaxed)
+}
+
+/// The deepest stack use seen so far (bytes), published by the status loop from its
+/// [`stackmeter`](crate::stackmeter) paint-scan and surfaced in the diagnostics blob (§7.5) so the
+/// A9 soak rig can post the stack high-water without RTT. 0 = not measured yet.
+static STACK_HIGH_WATER: AtomicU32 = AtomicU32::new(0);
+
+/// Publish a new stack high-water peak (called by `run_status` when the mark grows).
+pub fn publish_stack_high_water(bytes: usize) {
+    STACK_HIGH_WATER.store(bytes as u32, Ordering::Relaxed);
+}
+
+/// The latest stack high-water mark (bytes) for the diagnostics blob.
+pub(crate) fn stack_high_water() -> u32 {
+    STACK_HIGH_WATER.load(Ordering::Relaxed)
 }
 
 // ============================ Data-plane arming ============================

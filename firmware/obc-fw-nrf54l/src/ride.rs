@@ -39,20 +39,10 @@ use crate::{sd, settings, stackmeter};
 
 // ── Hardware watchdog (#349): the last-resort net under a wedged plane. The ride loop feeds it,
 // gated on the input plane's heartbeat, so **either** plane wedging trips the dog — not just
-// thread mode staying alive. Deliberately generous: it must never fire on a slow frame or a deep
-// SD reconcile, only on a genuine wedge. ──
-/// Watchdog period: 24 s of 32768 Hz LFCLK ticks (the issue's 16–30 s band).
-pub(crate) const WDT_TIMEOUT_TICKS: u32 = 24 * 32768;
-/// Cap (ms) on the ride loop's event-driven sleep, ~WDT/2 — an otherwise-idle device still wakes
-/// to feed the dog. One extra wake per ~12 s is negligible next to [`IDLE_REPOLL_MS`].
-const WDT_FEED_CAP_MS: u32 = 12_000;
-/// How stale [`INPUT_HB_MS`] may be before the ride loop **withholds** the feed. The idle input
-/// plane legitimately sleeps [`IDLE_REPOLL_MS`] (30 s) between stamps, so the window is 2× that
-/// plus margin — no false trip on a parked device; a wedged input plane trips the dog within
-/// roughly this window + the WDT period (~90 s worst case, fine for a last resort). A stamp
-/// slightly *newer* than the loop's own `now` (the planes race on `Instant::now()`) counts as
-/// fresh, not as a wrapped ~u32::MAX staleness.
-const INPUT_HB_STALE_MS: u32 = 65_000;
+// thread mode staying alive. The discipline constants ([`WDT_TIMEOUT_TICKS`], [`WDT_FEED_CAP_MS`],
+// [`INPUT_HB_STALE_MS`]) live at the crate root, shared with the `ble` build's status loop so the two
+// planes feed the same dog with the same config. ──
+use crate::{INPUT_HB_STALE_MS, WDT_FEED_CAP_MS};
 
 /// Synthetic-walk advance cadence (ms) on the `synth` build: the stand-in GPS publishes no `Signal`,
 /// so the event-driven loop has no sensor event to wake on and falls back to this timer to step the
