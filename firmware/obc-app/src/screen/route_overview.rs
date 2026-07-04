@@ -22,7 +22,7 @@ use obc_render::{
 use crate::activity::Mode;
 use crate::input::Gesture;
 
-use super::{palette, title_frame, Ctx, MapScreen, Render, Screen, Transition, LIST_TOP};
+use super::{ledger_row, palette, title_frame, Ctx, MapScreen, Render, Screen, Transition, LIST_TOP};
 
 /// Chart band: below the title bar, deep enough to read the terrain, clear of the stat tiles.
 const BAND_TOP: i32 = LIST_TOP + 8;
@@ -173,24 +173,5 @@ impl RouteOverviewScreen {
         let px = tx - 5 * Font::Body.char_width() as i32 - 16;
         let mid = by + BUTTON_H / 2;
         cv.triangle(Point::new(px, mid - 7), Point::new(px, mid + 7), Point::new(px + 11, mid), INK);
-    }
-}
-
-/// One ledger row: olive caption on the left, the Display value right-aligned with a small unit
-/// suffix (baselines shared), and an optional climb/descent triangle just left of the value
-/// (`Some(true)` = up). All text sits on the parchment — no pane.
-fn ledger_row(cv: &mut impl Surface, w: i32, y: i32, caption: &str, value: &str, unit: &str, arrow: Option<bool>) {
-    use palette::*;
-    // Display cap is 26 from `y + 6`, Label cap 18 from `y + 14` — both bottom out at `y + 32`.
-    cv.text(caption, Point::new(16, y + 14), Font::Label, TextAlign::Left, SUBTEXT);
-    cv.text(unit, Point::new(w - 16, y + 14), Font::Label, TextAlign::Right, SUBTEXT);
-    let unit_w = unit.chars().count() as i32 * Font::Label.char_width() as i32;
-    let vx = w - 16 - unit_w - 6;
-    cv.text(value, Point::new(vx, y + 6), Font::Display, TextAlign::Right, INK);
-    if let Some(up) = arrow {
-        let value_w = value.chars().count() as i32 * Font::Display.char_width() as i32;
-        let ax = vx - value_w - 18;
-        let (flat, tip) = if up { (y + 30, y + 12) } else { (y + 12, y + 30) };
-        cv.triangle(Point::new(ax, flat), Point::new(ax + 13, flat), Point::new(ax + 6, tip), INK);
     }
 }
