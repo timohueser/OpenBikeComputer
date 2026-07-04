@@ -13,6 +13,7 @@ import OBCDomain
 /// | `coldRead` | S2 (skeletons) |
 /// | `readError` | S3 |
 /// | `outOfRange` | S4 + disconnected banner |
+/// | `deviceUnreachable` | A-timeout connect-failed screen (bonded, device silent) |
 /// | `noDevice` | D1→D4 pairing flow; H4 on import |
 /// | `pairingTimeout` / `pairingRejected` | D5 |
 /// | `bluetoothOff` / `permissionDenied` | H8 / H7 |
@@ -29,6 +30,7 @@ public enum Scenario: String, CaseIterable, Sendable {
     case coldRead
     case readError
     case outOfRange
+    case deviceUnreachable
     case noDevice
     case pairingTimeout
     case pairingRejected
@@ -103,6 +105,11 @@ extension Scenario {
             return ScenarioPreset(pendingFailure: .readFailed)
         case .outOfRange:
             return ScenarioPreset(connection: .outOfRange)
+        case .deviceUnreachable:
+            // Bonded but the device never answers: connect() parks on the huge
+            // latency the way the real transport's scan parks on an absent
+            // peripheral — the launch flow must time out, not hang.
+            return ScenarioPreset(connection: .disconnected, latency: .seconds(3_600))
         case .noDevice:
             return ScenarioPreset(connection: .disconnected, bonded: false)
         case .pairingTimeout:

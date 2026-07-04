@@ -11,9 +11,9 @@ final class ScenarioLaunchTests: XCTestCase {
     /// list is what proves each token boots the app end to end.
     private static let scenarios = [
         "happyPath", "emptyLibrary", "coldRead", "readError", "outOfRange",
-        "noDevice", "pairingTimeout", "pairingRejected", "bluetoothOff",
-        "permissionDenied", "syncUpToDate", "syncDrop", "uploadDrop",
-        "unsupportedFile",
+        "deviceUnreachable", "noDevice", "pairingTimeout", "pairingRejected",
+        "bluetoothOff", "permissionDenied", "syncUpToDate", "syncDrop",
+        "uploadDrop", "unsupportedFile",
     ]
 
     override func setUp() {

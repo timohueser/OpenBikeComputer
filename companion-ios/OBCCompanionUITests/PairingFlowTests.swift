@@ -142,4 +142,28 @@ final class PairingFlowTests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 15))
     }
+
+    /// Bonded but the device never answers (asleep / out of range): the A
+    /// grace window expires onto the connect-failed screen — never a
+    /// forever-spinner — and Go to routes still reaches the library.
+    @MainActor
+    func testDeviceUnreachableTimesOutToConnectFailedAndRoutesStayReachable() {
+        let app = launch(scenario: "deviceUnreachable")
+
+        XCTAssertTrue(app.staticTexts["launch.connectingTitle"].waitForExistence(timeout: 10), "A state missing")
+        // The default 8 s connect grace must expire onto the timeout screen.
+        let title = app.staticTexts["launch.connectFailedTitle"]
+        XCTAssertTrue(title.waitForExistence(timeout: 15), "connect-failed screen missing")
+        XCTAssertEqual(title.label, "Can't reach Trailhead")
+        XCTAssertTrue(app.buttons["launch.tryAgain"].exists)
+        snap(app, "A-timeout-connect-failed")
+
+        // Try again re-enters A, and the still-silent device times out again.
+        app.buttons["launch.tryAgain"].tap()
+        XCTAssertTrue(app.staticTexts["launch.connectingTitle"].waitForExistence(timeout: 10), "retry must re-enter A")
+        XCTAssertTrue(title.waitForExistence(timeout: 15), "second timeout missing")
+
+        app.buttons["launch.goToRoutes"].tap()
+        XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10), "library must stay reachable")
+    }
 }
