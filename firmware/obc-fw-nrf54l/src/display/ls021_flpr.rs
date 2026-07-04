@@ -35,6 +35,8 @@ impl DisplayDriver for Ls021Flpr<'_> {
     /// (only `[x0, x0+w)` carry the overlay) and fast-forwards the gate over the rest — see
     /// [`push_overlay`](Ls021Flpr::push_overlay) for the stack-frugal, lock-once composite.
     async fn present_overlay(&mut self, region: OverlayRegion, draw_overlay: &mut dyn FnMut(&mut Band)) -> bool {
-        self.push_overlay(region.x0, region.y0, region.w, region.rows, draw_overlay).await
+        // Deliberately completes synchronously inside the async fn: the composite scratch + save
+        // window must stay stack transients, not task-future state (see `push_overlay`'s doc).
+        self.push_overlay(region.x0, region.y0, region.w, region.rows, draw_overlay)
     }
 }
