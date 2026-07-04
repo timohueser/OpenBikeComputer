@@ -265,8 +265,8 @@ screens! {
     Home(HomeScreen) => Nav,
     Map(MapScreen) => Riding,
     Statistics(StatisticsScreen) => Riding,
-    /// The pause menu — the only overlay: it draws over the still-visible map.
-    RideControl(RideControl) => Overlay,
+    /// The pause page: ride-so-far ledger + the guarded Resume / Finish / Discard rows.
+    RideControl(RideControl) => Nav,
     Menu(MenuScreen) => Nav,
     RouteMenu(RouteMenuScreen) => Nav,
     RouteOverview(RouteOverviewScreen) => Nav,
@@ -410,6 +410,34 @@ pub(crate) fn tile(cv: &mut impl Surface, area: Rectangle, label: &str, value: &
         x + 8
     };
     cv.text(value, Point::new(vx, vy), Font::Display, TextAlign::Left, INK);
+}
+
+/// One stat-ledger row — olive caption on the left, the Display value right-aligned with a small
+/// unit suffix (baselines shared), and an optional climb/descent triangle just left of the value
+/// (`Some(true)` = up). All text sits on the parchment — no pane; that look is reserved for the
+/// riding grid's live tiles. Shared by the Route overview and the Paused page.
+pub(crate) fn ledger_row(
+    cv: &mut impl Surface,
+    w: i32,
+    y: i32,
+    caption: &str,
+    value: &str,
+    unit: &str,
+    arrow: Option<bool>,
+) {
+    use palette::*;
+    // Display cap is 26 from `y + 6`, Label cap 18 from `y + 14` — both bottom out at `y + 32`.
+    cv.text(caption, Point::new(16, y + 14), Font::Label, TextAlign::Left, SUBTEXT);
+    cv.text(unit, Point::new(w - 16, y + 14), Font::Label, TextAlign::Right, SUBTEXT);
+    let unit_w = unit.chars().count() as i32 * Font::Label.char_width() as i32;
+    let vx = w - 16 - unit_w - 6;
+    cv.text(value, Point::new(vx, y + 6), Font::Display, TextAlign::Right, INK);
+    if let Some(up) = arrow {
+        let value_w = value.chars().count() as i32 * Font::Display.char_width() as i32;
+        let ax = vx - value_w - 18;
+        let (flat, tip) = if up { (y + 30, y + 12) } else { (y + 12, y + 30) };
+        cv.triangle(Point::new(ax, flat), Point::new(ax + 13, flat), Point::new(ax + 6, tip), INK);
+    }
 }
 
 /// Draw a centered two-line empty state — a bold `title` over a muted `hint` — the shared

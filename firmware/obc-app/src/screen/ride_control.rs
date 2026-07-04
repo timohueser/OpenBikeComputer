@@ -1,20 +1,29 @@
-//! The Ride control overlay — the pause menu: Resume / Finish / Discard, drawn over the still-
-//! visible map.
+//! The Paused page — a full screen (no longer the small overlay): the ride-so-far as a stat
+//! ledger (ride time / distance / climb, the Route overview's pane-free look) over the pause
+//! menu's option rows, Resume / Finish / Discard.
 //!
 //! Each option has a `guard` flag: non-guarded (Resume) fire on `press`; guarded, irreversible ones
 //! (Finish, Discard) fire only on a completed `hold`, their row filling with a warning bar as the
 //! encoder is held (release early → no `Hold` gesture → nothing happens). `back` resumes.
 
-use obc_render::{
-    rect,
-    text::{Font, TextAlign},
-    Surface,
-};
+use core::fmt::Write;
+
+use obc_render::Surface;
 
 use crate::activity::{Mode, TrackAction};
 use crate::input::Gesture;
+use crate::stat_fields::{fmt_hms, fmt_km};
 
-use super::{list, palette, Ctx, MenuItem, Render, Transition};
+use super::{ledger_row, list, palette, title_frame, Ctx, MenuItem, Render, Transition};
+
+/// The ride-so-far ledger: three caption/value rows under the title bar.
+const ROWS_TOP: i32 = 50;
+const ROW_PITCH: i32 = 42;
+
+/// The option rows: sized so three rows end just above the bottom frame margin.
+const OPTIONS_TOP: i32 = 178;
+const OPTION_ROW_H: i32 = 38;
+const OPTION_GAP: i32 = 8;
 
 const ITEMS: [MenuItem; 3] = [
     MenuItem { label: "Resume", guard: false },
@@ -25,7 +34,7 @@ const ITEMS: [MenuItem; 3] = [
 const FINISH: usize = 1;
 const DISCARD: usize = 2;
 
-/// The pause overlay. State is just the highlighted option.
+/// The Paused page. State is just the highlighted option.
 #[derive(Debug, Default)]
 pub struct RideControl {
     selected: usize,
@@ -85,24 +94,38 @@ impl RideControl {
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         use palette::*;
         let (w, h) = (rx.w, rx.h);
-        let (pw, ph) = (210, 176);
-        let (px, py) = (w / 2 - pw / 2, h / 2 - ph / 2);
+        title_frame(cv, w, h, "PAUSED", "");
 
-        // Parchment panel + dark HUD title strip over the map. The strip follows the panel's
-        // 8 px top rounding (a square fill would clip the corners); its lower half is squared
-        // off so the bottom edge stays flat against the rows.
-        cv.round(rect(px, py, pw, ph), 8, PARCHMENT);
-        cv.round(rect(px, py, pw, 32), 8, HUD);
-        cv.fill(rect(px, py + 16, pw, 16), HUD);
-        cv.text_vcentered("PAUSED", w / 2, (py, 32), Font::Label, TextAlign::Center, PARCHMENT);
+        // The ride so far, in the shared pane-free ledger: what you're about to Finish (or throw
+        // away with Discard) is on screen while the option rows are armed below.
+        let units = rx.settings.units;
+        let act = rx.activity;
+        let time = fmt_hms(act.moving_s);
+        let dist = fmt_km(units.dist(act.ridden_m / 1000.0));
+        let dist_unit = if units.is_imperial() { "mi" } else { "km" };
+        let mut climb: heapless::String<8> = heapless::String::new();
+        let _ = write!(climb, "{}", units.elev(act.climb_m()) as u32);
+
+        let rows: [(&str, &str, &str, Option<bool>); 3] = [
+            ("RIDE TIME", &time, "", None),
+            ("DISTANCE", &dist, dist_unit, None),
+            ("CLIMB", &climb, units.elev_label(), Some(true)),
+        ];
+        for (i, (caption, value, unit, arrow)) in rows.iter().enumerate() {
+            let y = ROWS_TOP + i as i32 * ROW_PITCH;
+            ledger_row(cv, w, y, caption, value, unit, *arrow);
+            if i + 1 < rows.len() {
+                cv.hline(16, y + ROW_PITCH - 4, w - 32, RULE);
+            }
+        }
 
         // Guarded rows fill warning-red — Finish/Discard are irreversible.
         let geo = super::GuardedRowsGeometry {
-            x: px + 10,
-            w: pw - 20,
-            top: py + 40,
-            row_h: 38,
-            gap: 6,
+            x: 14,
+            w: w - 28,
+            top: OPTIONS_TOP,
+            row_h: OPTION_ROW_H,
+            gap: OPTION_GAP,
             label_dx: 12,
             label_dy: 5,
         };

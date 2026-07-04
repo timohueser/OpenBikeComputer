@@ -1,6 +1,6 @@
 //! Screen-stack tests: navigation [`Transition`]s per gesture, the guarded-action "needs a completed
-//! hold" rule, the stack discipline ([`apply`]), and a render snapshot proving Ride control
-//! composites over the map.
+//! hold" rule, the stack discipline ([`apply`]), and a render snapshot proving pausing swaps the
+//! map view for the full-screen Paused page.
 
 use embedded_graphics::pixelcolor::Rgb888;
 use embedded_graphics::prelude::RgbColor; // for `Rgb888::r()` in the compositing snapshot
@@ -484,10 +484,10 @@ fn apply_pushes_pops_replaces_and_returns_home() {
     assert_eq!(stack.len(), 1, "the Home root is never popped");
 }
 
-// Render snapshot: the map, and Ride control composited over it.
+// Render snapshot: pausing swaps the riding map for the full-screen Paused page.
 
 #[test]
-fn ride_control_composites_over_the_map() {
+fn pausing_swaps_the_map_for_the_paused_page() {
     let bytes = build_min_obcm(0xF800);
     let mut app = App::new(AppState::new(0, 0, 0.05));
 
@@ -495,7 +495,7 @@ fn ride_control_composites_over_the_map() {
     let map = render(&mut app, &bytes);
     let backdrop = map.get(60, 60);
 
-    // A press (Down+Up within the threshold) pauses into Ride control.
+    // A press (Down+Up within the threshold) pauses into the Paused page.
     let mut press = keys(&[
         InputEvent::Button(ButtonEvent::Down(Button::Encoder)),
         InputEvent::Button(ButtonEvent::Up(Button::Encoder)),
@@ -503,11 +503,11 @@ fn ride_control_composites_over_the_map() {
     app.handle_input(InputClock(0), &mut press);
     assert_eq!(app.mode(), Mode::Paused, "press paused the ride");
 
-    // Now the center carries the parchment Ride-control panel, not the backdrop.
+    // Now the center carries the parchment Paused page, not the map.
     let paused = render(&mut app, &bytes);
-    let panel = paused.get(60, 60);
-    assert_ne!(panel, backdrop, "the overlay changed the center");
-    assert!(panel.r() > backdrop.r(), "parchment panel is lighter than the sea backdrop");
+    let page = paused.get(60, 60);
+    assert_ne!(page, backdrop, "pausing replaced the view");
+    assert!(page.r() > backdrop.r(), "the parchment page is lighter than the sea backdrop");
 }
 
 fn render(app: &mut App, bytes: &[u8]) -> Buf {
