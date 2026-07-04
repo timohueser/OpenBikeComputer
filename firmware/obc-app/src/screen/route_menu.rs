@@ -98,7 +98,8 @@ impl RouteMenuScreen {
             cv.text(&dist, Point::new(44, sy), Font::Label, TextAlign::Left, accent);
 
             let cx0 = 126;
-            cv.triangle(Point::new(cx0, sy + 9), Point::new(cx0 + 9, sy + 9), Point::new(cx0 + 4, sy), accent);
+            // The climb arrow, vertically centred on the Label cap (cap 18 px from `sy`, arrow 9).
+            cv.triangle(Point::new(cx0, sy + 14), Point::new(cx0 + 9, sy + 14), Point::new(cx0 + 4, sy + 5), accent);
             let mut climb: heapless::String<12> = heapless::String::new();
             let _ = write!(climb, "{} m", route.climb_m);
             cv.text(&climb, Point::new(cx0 + 16, sy), Font::Label, TextAlign::Left, accent);
