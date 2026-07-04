@@ -20,10 +20,12 @@
 //! `with_timeout`-bounded (here and in the data plane), the serve loop only ever exits on a real
 //! disconnect event, and the outer loop has no path that can block permanently — a stuck procedure
 //! degrades to a reconnect rather than a hang, so no error path lands in a wedged non-advertising
-//! state. Beneath it sits the **hardware watchdog**, fed by the status loop (`status::run_status`)
-//! gated on the input-plane heartbeat: it catches what the structural layer can't reach — a
-//! *synchronous* wedge that never yields to `with_timeout` at all (an SD access in the upload/commit
-//! path hanging blocks the whole thread-mode task, including the feeder), resetting within ~24 s.
+//! state. Beneath it sits the **hardware watchdog**: since #270 folded map + BLE into one image the
+//! ride loop (`ride::run_app`) runs in every build and feeds the dog, gated on the input-plane
+//! heartbeat. It catches what the structural layer can't reach — a *synchronous* wedge that never
+//! yields to `with_timeout` at all: an SD access in the upload/commit path hanging blocks the shared
+//! thread-mode executor (and, via the shared SD/settings mutex, stalls the ride loop's own feed),
+//! resetting within ~24 s.
 
 use defmt::{info, warn};
 use embassy_futures::select::{select, Either};

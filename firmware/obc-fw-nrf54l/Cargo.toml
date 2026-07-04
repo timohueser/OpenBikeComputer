@@ -81,11 +81,10 @@ com-hw = []
 # global-irq-disable one (`cs-single-core`) to MPSL's, which the radio's timing requires — a
 # `compile_error!` in main.rs catches the wrong invocation. The feature re-enables the two
 # obc-platform default legs itself, so nothing else is lost with `--no-default-features`.
-# On the 256 KB DK the `ble` build also **cfg's out the whole map path** (no `App`, `MapCache`,
-# `RouteCache`, `RouteIndex` — ~128 KB freed) and boots a text-only BLE status UI instead; SD,
-# RRAM settings, buttons, sensors, and the FLPR display all stay up. That exclusion is keyed on
-# the build.rs-emitted `has_map` cfg — the single line the 512 KB LM20 relaxes to run map + BLE
-# together (the budget assert then arbitrates, at compile time).
+# Map + BLE run **in one image** (#270): `ble::run` is spawned beside the ride loop and both
+# drive the shared SD + settings store, fitting the 256 KB DK on the culled `nrf-mem` caps (the
+# budget assert + the residual-stack margin arbitrate at compile time; the 512 KB LM20 relaxes
+# everything). Composes with `debug-uart`/`synth` for a headless ride beside a live link.
 ble = ["dep:nrf-sdc", "dep:nrf-mpsl", "dep:bt-hci", "dep:trouble-host", "dep:static_cell", "dep:heapless09", "dep:obc-ble", "obc-platform/sensor-link", "obc-platform/input-wait"]
 
 [dependencies]

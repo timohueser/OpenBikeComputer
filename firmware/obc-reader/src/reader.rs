@@ -46,7 +46,15 @@ pub const LOD_ENTRY_LEN: usize = 18;
 /// format stores `chunk_size` as a `u16` (≤ 65535) but real maps pack far smaller (the packer
 /// defaults to 4096), so this caps the scratch below the format ceiling to save RAM. A chunk
 /// between a cache slot and this decodes through the scratch, uncached.
+///
+/// `nrf-mem` halves the scratch (issue #270 — the map path must coexist with the BLE stack on
+/// the 256 KB DK): a map packed with `chunk_size` past 8192 loads on the host/sim but is
+/// rejected on the device. The packer default (4096) clears it with room; the 512 KB LM20
+/// re-decides the cap.
+#[cfg(not(feature = "nrf-mem"))]
 pub const MAX_CHUNK_BYTES: usize = 16384;
+#[cfg(feature = "nrf-mem")]
+pub const MAX_CHUNK_BYTES: usize = 8192;
 
 /// Size of one geometry-chunk **cache** slot. A chunk this size or smaller is cached (kept
 /// resident across the frame's priority passes); a larger one — up to [`MAX_CHUNK_BYTES`] — is
@@ -61,13 +69,15 @@ const CACHE_SLOT_BYTES: usize = 4096;
 /// view, so 64 slots keep them resident across all four passes and across frames (a slow pan
 /// re-hits last frame's chunks). 64 × 4 KB = 256 KB.
 ///
-/// The constrained `nrf-mem` profile drops to 3 slots (~25 KB) — a frame's working set still hits
-/// within a redraw, but a wider set re-reads across passes/frames. Freeing the map cache's ~16 KB
-/// is what buys the stack headroom the deep ride-loop render path needs on the 256 KB part.
+/// The constrained `nrf-mem` profile drops to a single slot: a riding-zoom working set already
+/// exceeded the previous 3 slots (measured: 0 hits, misses ≈ chunks × passes — the DK is
+/// SD-bound either way), so extra slots bought nothing; what the cull buys is room for the
+/// BLE stack next to the map path — and stack headroom under the combined build's deep ride
+/// path — on the 256 KB part (issue #270). A one-chunk view still hits across passes and frames.
 #[cfg(not(feature = "nrf-mem"))]
 const MAP_CHUNK_SLOTS: usize = 64;
 #[cfg(feature = "nrf-mem")]
-const MAP_CHUNK_SLOTS: usize = 3;
+const MAP_CHUNK_SLOTS: usize = 1;
 
 /// Block size + count of the quadtree-index cache. The leaf walk reads 4-byte nodes (siblings
 /// adjacent in the file); caching a few aligned blocks coalesces those into a handful of SD

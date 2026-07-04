@@ -3,12 +3,12 @@
         "id": "high-detail",
         "name": "High detail",
         "description": "Everything the panel can show: every road and path, building outlines by type, full landuse — for dense city riding.",
-        "version": 1,
+        "version": 2,
         "swatch": ["#FF5500", "#FFAA00", "#5500FF", "#55AAFF", "#FFFFAA", "#AAAAAA"]
     },
     "lods": [
-        {"max_mpp": null, "simplify": 50},
-        {"max_mpp": 120, "simplify": 12},
+        {"max_mpp": null, "simplify": 120},
+        {"max_mpp": 120, "simplify": 18},
         {"max_mpp": 18, "simplify": 0}
     ],
     "features": {

@@ -141,7 +141,12 @@ fn read_shapefile(
             }
             return Err(format!("read record header: {e}"));
         }
-        let content_len = (be_i32(&rh[4..8]) as i64) * 2; // bytes of record content
+        // Content length (16-bit words → bytes). Shorter than the shape-type field
+        // would make the skip seeks below go BACKWARDS and loop forever — reject.
+        let content_len = (be_i32(&rh[4..8]) as i64) * 2;
+        if content_len < 4 {
+            return Err(format!("{}: malformed record (content length {content_len})", shp.display()));
+        }
 
         // Shape type (little-endian) leads the content.
         let mut t = [0u8; 4];
@@ -154,6 +159,9 @@ fn read_shapefile(
         }
 
         // Record MBR (4 doubles) — the bounding-box skip filter.
+        if content_len < 4 + 32 {
+            return Err(format!("{}: polygon record too short ({content_len} bytes)", shp.display()));
+        }
         let mut bbuf = [0u8; 32];
         r.read_exact(&mut bbuf).map_err(|e| format!("read record bbox: {e}"))?;
         consumed += 32;
@@ -270,22 +278,38 @@ fn cache_dir() -> Result<PathBuf, String> {
 /// Return the cached `land_polygons.shp`, downloading + extracting the dataset on
 /// first use (~950 MB). There's no `Last-Modified` freshness check — delete the
 /// cache dir to force a refresh.
+///
+/// Concurrency-safe: download + extract go to pid-suffixed temp paths, then the
+/// extracted directory is renamed into place. Two cold-cache packers racing each
+/// other both succeed — the loser's rename fails against the winner's directory
+/// and its temp files are cleaned up.
 fn ensure_dataset() -> Result<PathBuf, String> {
     let dir = cache_dir()?;
-    let shp = dir.join("land-polygons-split-3857/land_polygons.shp");
+    let dataset = dir.join("land-polygons-split-3857");
+    let shp = dataset.join("land_polygons.shp");
     if shp.exists() {
         return Ok(shp);
     }
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-    let zip = dir.join("land-polygons.zip");
+    let pid = std::process::id();
+    let zip = dir.join(format!("land-polygons.zip.part-{pid}"));
+    let extract_dir = dir.join(format!("extract-{pid}"));
     let zip_s = zip.to_string_lossy();
-    let dir_s = dir.to_string_lossy();
+    let extract_s = extract_dir.to_string_lossy();
     eprintln!("Downloading land polygons (~950 MB, one-time) from {LAND_URL} ...");
     run_tool("curl", &["-fL", "--retry", "3", "-o", &zip_s, LAND_URL])?;
     eprintln!("Extracting land polygons ...");
-    run_tool("unzip", &["-o", "-q", &zip_s, "-d", &dir_s])?;
+    run_tool("unzip", &["-o", "-q", &zip_s, "-d", &extract_s])?;
+    // Move the extracted dataset into place; a rename failure is fine iff a
+    // concurrent run installed the dataset first.
+    let installed = std::fs::rename(extract_dir.join("land-polygons-split-3857"), &dataset);
+    let _ = std::fs::remove_file(&zip);
+    let _ = std::fs::remove_dir_all(&extract_dir);
     if !shp.exists() {
-        return Err(format!("land dataset missing after download: {}", shp.display()));
+        return Err(match installed {
+            Err(e) => format!("install land dataset {}: {e}", dataset.display()),
+            Ok(()) => format!("land dataset missing after download: {}", shp.display()),
+        });
     }
     Ok(shp)
 }

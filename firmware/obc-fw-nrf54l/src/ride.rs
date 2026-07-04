@@ -35,14 +35,24 @@ use obc_route::{RouteCache, RouteIndex, RouteReader};
 
 use crate::display::{DisplayDriver, FRAME_H, FRAME_W};
 use crate::planes::{MapDisplay, GESTURES, INPUT_HB_MS, LOOP_MS};
-use crate::{sd, settings, stackmeter};
+use crate::{sd, stackmeter, SharedStore, SharedStoreMutex};
 
 // ── Hardware watchdog (#349): the last-resort net under a wedged plane. The ride loop feeds it,
 // gated on the input plane's heartbeat, so **either** plane wedging trips the dog — not just
-// thread mode staying alive. The discipline constants ([`WDT_TIMEOUT_TICKS`], [`WDT_FEED_CAP_MS`],
-// [`INPUT_HB_STALE_MS`]) live at the crate root, shared with the `ble` build's status loop so the two
-// planes feed the same dog with the same config. ──
-use crate::{INPUT_HB_STALE_MS, WDT_FEED_CAP_MS};
+// thread mode staying alive. Deliberately generous: it must never fire on a slow frame or a deep
+// SD reconcile, only on a genuine wedge. ──
+/// Watchdog period: 24 s of 32768 Hz LFCLK ticks (the issue's 16–30 s band).
+pub(crate) const WDT_TIMEOUT_TICKS: u32 = 24 * 32768;
+/// Cap (ms) on the ride loop's event-driven sleep, ~WDT/2 — an otherwise-idle device still wakes
+/// to feed the dog. One extra wake per ~12 s is negligible next to [`IDLE_REPOLL_MS`].
+const WDT_FEED_CAP_MS: u32 = 12_000;
+/// How stale [`INPUT_HB_MS`] may be before the ride loop **withholds** the feed. The idle input
+/// plane legitimately sleeps [`IDLE_REPOLL_MS`] (30 s) between stamps, so the window is 2× that
+/// plus margin — no false trip on a parked device; a wedged input plane trips the dog within
+/// roughly this window + the WDT period (~90 s worst case, fine for a last resort). A stamp
+/// slightly *newer* than the loop's own `now` (the planes race on `Instant::now()`) counts as
+/// fresh, not as a wrapped ~u32::MAX staleness.
+const INPUT_HB_STALE_MS: u32 = 65_000;
 
 /// Synthetic-walk advance cadence (ms) on the `synth` build: the stand-in GPS publishes no `Signal`,
 /// so the event-driven loop has no sensor event to wake on and falls back to this timer to step the
@@ -125,13 +135,15 @@ fn desired_gps_power(app: &App) -> sensor_link::GpsPower {
 pub(crate) async fn run_app(
     mut display: MapDisplay,
     app: &mut App,
-    storage: &mut sd::Storage,
+    // The SD card + RRAM settings behind one async mutex (#193, #270). The loop locks it once per
+    // pass and holds the guard across the render, then releases it before the event-wait so a future
+    // BLE object plane can reach the card between passes. Replaces the by-value `Storage`/settings
+    // store this fn used to own.
+    shared: &SharedStoreMutex,
     map_tables: &MapTables,
     map_cache: &MapCache,
     route_cache: &RouteCache,
     led: &mut Output<'static>,
-    // The persistent RRAM settings store (#193): seeds the app at boot, persists on a settings edit.
-    mut settings_store: settings::RramSettingsStore,
     // The hardware watchdog's feed handle (#349), `None` only if the boot-time `try_new` found the
     // dog already running with a foreign config. Fed once per pass below, gated on the input
     // plane's heartbeat.
@@ -196,8 +208,12 @@ pub(crate) async fn run_app(
     let mut prev_hold_p = 0.0f32;
 
     // Settings: seed the app from the persistent RRAM store at boot (a blank/corrupt page decodes to
-    // `None` → defaults), then persist on any change the settings screens make.
-    app.set_settings(settings_store.load().unwrap_or_default());
+    // `None` → defaults), then persist on any change the settings screens make. One brief lock,
+    // released at once — the loop re-locks the shared store each pass.
+    app.set_settings({
+        let mut store = shared.lock().await;
+        store.settings.load().unwrap_or_default()
+    });
 
     // Align the GPS to the persisted fix interval: push it to the sensor task once at boot (the task
     // boots at a 1 s default), then again whenever the Power screen edits it. `prev_interval` gates the
@@ -220,6 +236,10 @@ pub(crate) async fn run_app(
         let hw = stackmeter::used(now);
         if hw > stack_hw {
             stack_hw = hw;
+            // Surface the peak in the diagnostics blob for the A9 soak rig (#277) — the ride loop owns the
+            // stackmeter, so on a `ble` build it publishes the mark into the BLE state the blob reads.
+            #[cfg(feature = "ble")]
+            crate::ble::publish_stack_high_water(hw);
             defmt::info!("stack high-water {=usize} / {=usize} B (new peak)", hw, stackmeter::total());
         }
 
@@ -260,6 +280,14 @@ pub(crate) async fn run_app(
             app.apply_gesture(g);
         }
         app.advance_animations(InputClock(now));
+
+        // Lock the shared store for the rest of this pass: the settings save just below, the card
+        // reconcile, the per-frame route/track/map sources, and the render that reads them all run
+        // under one guard — held across the render `.await`, then dropped before the event-wait at the
+        // loop tail so a future BLE object plane reaches the card between passes (#270). Destructured
+        // into the two names the body already uses (`storage`, `settings_store`).
+        let mut store_guard = shared.lock().await;
+        let SharedStore { storage, settings: settings_store } = &mut *store_guard;
 
         // Persist settings the moment a settings screen changes one: one in-place 16-byte RRAM line,
         // skipped when nothing changed.
@@ -320,8 +348,12 @@ pub(crate) async fn run_app(
             // A Save also writes the durable ride object: snapshot the app's ride totals + wall-clock
             // anchor in the same frame, so the header matches the log's last points.
             let stats = (action == Some(obc_app::TrackAction::Save)).then(|| app.ride_stats());
-            storage.reconcile_route(active);
-            storage.reconcile_track(action, session, &name, stats.as_ref());
+            // `storage` is `Option` (a card-less `ble` combined build still serves BLE, map idle); the
+            // map build always has `Some`. No card ⇒ nothing to reconcile.
+            if let Some(s) = storage.as_mut() {
+                s.reconcile_route(active);
+                s.reconcile_track(action, session, &name, stats.as_ref());
+            }
             prev_active = active;
             prev_session = session;
         }
@@ -332,7 +364,7 @@ pub(crate) async fn run_app(
         if index_route != active {
             route_cache.clear(); // a route switch: drop stale slots (the cache keys by chunk index only)
             match active {
-                Some(_) => match storage.build_route_index() {
+                Some(_) => match storage.as_ref().and_then(|s| s.build_route_index()) {
                     Some(idx) => {
                         route_index = Some(idx);
                         index_route = active; // cached — no more rebuilds until the route changes
@@ -354,14 +386,14 @@ pub(crate) async fn run_app(
         // This frame's route reader = the cached index + a fresh geometry source (both cheap, no I/O —
         // the source just wraps the open handle). Geometry streams lazily where it's read: the matcher
         // on a fresh fix, the renderer on a redraw frame.
-        let route_src = storage.route_source();
+        let route_src = storage.as_ref().and_then(|s| s.route_source());
         let route = match (route_index.as_ref(), route_src.as_ref()) {
             (Some(idx), Some(src)) => Some(RouteReader::new_cached(idx, src, route_cache)),
             _ => None,
         };
         // The ride-log sink, built every tick (it only wraps the open log handle, no I/O), so a fresh
         // fix is written to the `.gpx` the moment it arrives, at the fix rate.
-        let mut tsink = storage.track_sink();
+        let mut tsink = storage.as_ref().and_then(|s| s.track_sink());
         let track_dyn = tsink.as_mut().map(|t| t as &mut dyn TrackSink);
 
         // Feed the sensors → integrate the fix → map-match to the route → log the track point. Three
@@ -463,7 +495,7 @@ pub(crate) async fn run_app(
             // SD read, no parse, no stack spike (what kept this deep path inside the 256 KB stack). The
             // only per-frame failure left is the source handle being momentarily unavailable (a flaky SD
             // link); skip the redraw, keep the last frame, latch a retry.
-            let map_src = if needs_map { storage.map_source() } else { None };
+            let map_src = if needs_map { storage.as_ref().and_then(|s| s.map_source()) } else { None };
             let reader = map_src.as_ref().map(|s| Reader::new(s, map_tables, map_cache));
             if needs_map && reader.is_none() {
                 pending_map_redraw = true;
@@ -557,6 +589,11 @@ pub(crate) async fn run_app(
         if dirty.map && overlay_span.is_some() {
             display.present_bulge(overlay_span, false).await;
         }
+
+        // All card + settings work for this pass is done — release the shared store before the tail
+        // (telemetry, LED, and the event-wait `.await`) so a future BLE object plane isn't held off
+        // across the sleep (#270). `storage`/`settings_store` are unused past here.
+        drop(store_guard);
 
         // Publish render-stats telemetry host-ward at ~2 Hz: throttled here (not in the TX task) so the
         // link never floods and the device never stalls on it.
