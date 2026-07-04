@@ -41,10 +41,10 @@ mod gatt;
 mod lifecycle;
 mod state;
 
-// The stable `ble::…` surface the rest of the crate consumes (`main.rs`'s status plane). Kept as
-// re-exports so the submodule split doesn't churn the call sites.
-pub use gatt::draw_status_screen;
-pub use state::{publish_battery, publish_stack_high_water, wait_status_change};
+// The ride loop publishes its stack high-water mark here (#277/A9) so the diagnostics blob can post it
+// over the link; the map plane owns the stackmeter, this is the one value that crosses into the BLE
+// module tree.
+pub use state::publish_stack_high_water;
 
 use core::mem::MaybeUninit;
 use core::sync::atomic::Ordering;
@@ -62,6 +62,7 @@ use trouble_host::prelude::*;
 
 use crate::init_static;
 use crate::object_store::ObjectStore;
+use crate::SharedStoreMutex;
 
 use control::serve_connection;
 use data_plane::{battery_task, serve_coc};
@@ -156,17 +157,30 @@ fn build_sdc<'d, const N: usize>(
 /// link edge for the status UI. Joined against `run_status` on the thread-mode executor in
 /// `main.rs`. The MPSL/SDC peripheral sets are built in `main` (where the `Peripherals` struct
 /// is split) and handed in whole.
+/// An **embassy task**, not a plain future: its ~36 KB state machine must live in this task's
+/// `.bss` pool static, built **in place** by the spawn. As a `join`-ed local future in `main` it
+/// was a giant stack temporary inside `main`'s poll frame — which overflowed the combined build's
+/// ~36 KB stack straight into `.bss` before the first frame rendered (#270; caught by a DWT
+/// watchpoint — the corrupted task pool panicked "Busy" at the com_task spawn).
+#[embassy_executor::task]
 pub async fn run(
     spawner: Spawner,
     mpsl_p: mpsl::Peripherals<'static>,
     sdc_p: sdc::Peripherals<'static>,
     cracen_p: Peri<'static, peripherals::CRACEN>,
-    store: ObjectStore,
+    shared: &'static SharedStoreMutex,
 ) -> ! {
-    // The object store: SD catalog + RRAM settings behind one RefCell. The control plane (GATT writes)
-    // and the data plane (CoC transfers) both borrow it, always synchronously — never across an
-    // `await` — which is sound on the one thread-mode executor.
-    let store = core::cell::RefCell::new(store);
+    // The object store: the catalog/upload/digest semantics behind a RefCell — both BLE planes (GATT
+    // control + CoC data) borrow it synchronously, never across an `await`. The SD card + RRAM
+    // settings it operates on live in `shared` (the async mutex the ride loop shares), which each
+    // plane locks per call and passes into the store method (#270). Built **here**, not in `main`:
+    // the ~8 KB value then lives in this task's future (its pool static) and its construction
+    // temporary lands on this task's shallow poll frame — in `main` both cost stack the combined
+    // build doesn't have (see `spawn_ble_stack`).
+    let store = {
+        let mut guard = shared.lock().await;
+        core::cell::RefCell::new(ObjectStore::new(&mut guard))
+    };
     // LFCLK = the internal RC at Nordic's recommended calibration cadence (calibrate every
     // 16×0.25 s = 4 s; temp-check every 2 intervals) — guarantees the ±500 ppm class the accuracy
     // field claims. NOT the 32 k crystal — see the module doc (unprogrammed XO INTCAPs → HCI 0x3E).
@@ -229,7 +243,11 @@ pub async fn run(
     // Re-establish the stored bond: hand it to the host so the controller's resolving list resolves the
     // bonded phone's RPA on reconnect and re-encrypts with the stored LTK — no dialog, no interaction.
     // Absent/torn → open pairing.
-    if let Some(bond) = store.borrow_mut().load_bond() {
+    let stored_bond = {
+        let mut guard = shared.lock().await;
+        store.borrow_mut().load_bond(&mut guard)
+    };
+    if let Some(bond) = stored_bond {
         match stack.add_bond_information(bond) {
             Ok(()) => info!("ble: restored stored bond — bonded reconnect armed"),
             Err(e) => warn!("ble: add_bond_information failed: {:?}", defmt::Debug2Format(&e)),
@@ -307,10 +325,10 @@ pub async fn run(
             // concurrently and never returns, so `select` tears it all down the moment the link drops
             // (any disconnect drops straight back to advertising).
             let reason = match select(
-                serve_connection(&stack, &server, &conn, &store),
+                serve_connection(&stack, &server, &conn, &store, shared),
                 join3(
                     negotiate_link(&stack, &conn),
-                    serve_coc(&stack, &server, &conn, &store),
+                    serve_coc(&stack, &server, &conn, &store, shared),
                     battery_task(&stack, &server, &conn),
                 ),
             )
@@ -322,7 +340,10 @@ pub async fn run(
             // The drop may have cancelled the data plane mid-transfer (at an await): discard any
             // in-flight upload + release the store's open handles, clear the one-transfer gate, and
             // drain any latched arm/abort so the next connection starts clean (uploads restart).
-            store.borrow_mut().link_reset();
+            {
+                let mut guard = shared.lock().await;
+                store.borrow_mut().link_reset(&mut guard);
+            }
             TRANSFER_ACTIVE.store(false, Ordering::Relaxed);
             TRANSFER_ARM.reset();
             TRANSFER_ABORT.reset();

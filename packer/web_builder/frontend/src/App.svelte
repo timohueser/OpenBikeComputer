@@ -50,9 +50,18 @@
 
     main {
         flex: 1;
-        width: min(1180px, 100% - 32px);
+        width: min(1400px, 100% - 32px);
         margin: 0 auto;
         padding: 18px 0 28px;
+        display: flex;
+        flex-direction: column;
+    }
+
+    /* Fill the viewport so the map (Home's grid) grows into tall screens. */
+    .route {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
     }
 
     .route[hidden] {
@@ -60,7 +69,7 @@
     }
 
     footer {
-        width: min(1180px, 100% - 32px);
+        width: min(1400px, 100% - 32px);
         margin: 0 auto;
         padding: 10px 0 18px;
         border-top: 1px solid var(--line);

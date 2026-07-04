@@ -13,6 +13,7 @@
     let presets = $state<Preset[]>([]);
     let presetError = $state<string | null>(null);
     let selection = $state<AreaSelection | null>(null);
+    let mapPanel = $state<{ removeRegion: (id: string) => void }>();
 
     onMount(async () => {
         const restored = working.restore();
@@ -25,44 +26,61 @@
         }
     });
 
-    const areaSummary = $derived.by(() => {
-        if (!selection) return null;
-        if (selection.mode === "bbox") {
-            if (!selection.bbox) return null;
-            const [w, s, e, n] = selection.bbox;
-            const huge = (selection.areaKm2Raw ?? 0) > 500_000;
-            return {
-                title: `Box W ${w.toFixed(3)} · S ${s.toFixed(3)} · E ${e.toFixed(3)} · N ${n.toFixed(3)}`,
-                hint: selection.coveringNames.length
-                    ? `≈ ${selection.areaKm2} · from ${selection.coveringNames.join(", ")}` +
-                      (huge ? " · large area — expect a long download and build" : "")
-                    : "no downloadable region covers this area",
-                warn: selection.coveringNames.length === 0 || huge,
-            };
-        }
-        if (selection.regionIds.length === 0) return null;
+    const bboxSummary = $derived.by(() => {
+        if (!selection || selection.mode !== "bbox" || !selection.bbox) return null;
+        const [w, s, e, n] = selection.bbox;
+        const huge = (selection.areaKm2Raw ?? 0) > 500_000;
         return {
-            title: selection.regionNames.join(", "),
-            hint: `${selection.regionIds.length} ${selection.regionIds.length === 1 ? "region" : "regions"}`,
-            warn: false,
+            title: `Box W ${w.toFixed(3)} · S ${s.toFixed(3)} · E ${e.toFixed(3)} · N ${n.toFixed(3)}`,
+            hint: selection.coveringNames.length
+                ? `≈ ${selection.areaKm2} · from ${selection.coveringNames.join(", ")}` +
+                  (huge ? " · large area — expect a long download and build" : "")
+                : "no downloadable region covers this area",
+            warn: selection.coveringNames.length === 0 || huge,
         };
     });
+
+    const regionCount = $derived(
+        selection?.mode === "regions" ? selection.regionIds.length : 0,
+    );
+
+    const areaHint = $derived(
+        selection?.mode === "bbox"
+            ? (bboxSummary?.hint ?? null)
+            : regionCount
+              ? `${regionCount} ${regionCount === 1 ? "region" : "regions"}`
+              : null,
+    );
 </script>
 
 <div class="layout">
-    <MapPanel {active} onchange={(sel) => (selection = sel)} />
+    <MapPanel {active} bind:this={mapPanel} onchange={(sel) => (selection = sel)} />
 
     <div class="steps">
         <section class="card">
             <div class="step-head">
                 <span class="num">1</span>
                 <h3>Area</h3>
-                {#if areaSummary}
-                    <span class="small faint">{areaSummary.hint}</span>
+                {#if areaHint}
+                    <span class="small faint">{areaHint}</span>
                 {/if}
             </div>
-            {#if areaSummary}
-                <p class="summary" class:warn={areaSummary.warn}>{areaSummary.title}</p>
+            {#if selection?.mode === "regions" && regionCount}
+                <div class="region-chips">
+                    {#each selection.regionIds as id, i (id)}
+                        <span class="chip">
+                            {selection.regionNames[i]}
+                            <button
+                                type="button"
+                                title="Remove {selection.regionNames[i]}"
+                                aria-label="Remove {selection.regionNames[i]}"
+                                onclick={() => mapPanel?.removeRegion(id)}>×</button
+                            >
+                        </span>
+                    {/each}
+                </div>
+            {:else if bboxSummary}
+                <p class="summary" class:warn={bboxSummary.warn}>{bboxSummary.title}</p>
             {:else}
                 <p class="summary muted small">
                     Click regions on the map, search by name, or switch to “Draw box” for a custom
@@ -95,8 +113,9 @@
 
 <style>
     .layout {
+        flex: 1; /* fills main's column so the map absorbs tall screens */
         display: grid;
-        grid-template-columns: minmax(0, 1.3fr) minmax(330px, 1fr);
+        grid-template-columns: minmax(0, 1.5fr) minmax(330px, 1fr);
         gap: 14px;
         align-items: stretch;
     }
@@ -140,6 +159,12 @@
     .summary {
         margin: 0;
         font-size: 14px;
+    }
+
+    .region-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
     }
 
     .summary.warn {

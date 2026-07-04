@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addLodTier, exportFile, importFile, newStyleDef, removeCategory, removeLodTier, reorderCategory } from "./edit";
+import { addLodTier, autoSimplify, editLodTier, exportFile, importFile, newStyleDef, removeCategory, removeLodTier, reorderCategory } from "./edit";
 import { ENVELOPE_VERSION } from "./migrations";
 import type { PackConfig } from "./model";
 import type { WorkingEnvelope } from "./storage.svelte";
@@ -7,8 +7,8 @@ import type { WorkingEnvelope } from "./storage.svelte";
 function config(): PackConfig {
     return {
         lods: [
-            { max_mpp: null, simplify: 50 },
-            { max_mpp: 120, simplify: 12 },
+            { max_mpp: null, simplify: 120 },
+            { max_mpp: 120, simplify: 18 },
             { max_mpp: 18, simplify: 0 },
         ],
         features: {
@@ -24,10 +24,47 @@ function config(): PackConfig {
 }
 
 describe("LOD tier edits", () => {
+    it("autoSimplify is the next tier's ceiling, 0 for the finest", () => {
+        const cfg = config();
+        expect(autoSimplify(cfg, 0)).toBe(120);
+        expect(autoSimplify(cfg, 1)).toBe(18);
+        expect(autoSimplify(cfg, 2)).toBe(0);
+    });
+
     it("adds a finer tier at half the previous ceiling", () => {
         const cfg = config();
         addLodTier(cfg);
         expect(cfg.lods[3]).toEqual({ max_mpp: 9, simplify: 0 });
+        // The old finest tier picks up the pixel-accurate default.
+        expect(cfg.lods[2].simplify).toBe(9);
+    });
+
+    it("keeps a hand-set simplify on the old finest tier when adding", () => {
+        const cfg = config();
+        cfg.lods[2].simplify = 5;
+        addLodTier(cfg);
+        expect(cfg.lods[2].simplify).toBe(5);
+    });
+
+    it("a default simplify follows the next tier's ceiling edit", () => {
+        const cfg = config();
+        editLodTier(cfg, 1, "max_mpp", 100);
+        expect(cfg.lods[0].simplify).toBe(100); // was 120 = default, tracks
+        editLodTier(cfg, 2, "max_mpp", 20);
+        expect(cfg.lods[1].simplify).toBe(20); // was 18 = default, tracks
+    });
+
+    it("a hand-set simplify does not follow ceiling edits", () => {
+        const cfg = config();
+        editLodTier(cfg, 0, "simplify", 40);
+        editLodTier(cfg, 1, "max_mpp", 100);
+        expect(cfg.lods[0].simplify).toBe(40);
+    });
+
+    it("re-defaults a tracking simplify when the next tier is removed", () => {
+        const cfg = config();
+        removeLodTier(cfg, 1);
+        expect(cfg.lods[0].simplify).toBe(18); // now tracks the old tier 2
     });
 
     it("remaps min_lod on removal: above shifts down, at collapses", () => {

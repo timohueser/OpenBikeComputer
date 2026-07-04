@@ -84,11 +84,12 @@ fn long_curvy_ride_distributes_and_stays_bounded() {
     assert!(longest <= total / 20.0, "one segment spans too much: {longest:.0} m of {total:.0} m");
 
     // And the line still tracks the ride, bounded, never the straight-line collapse. The deviation
-    // budget scales with spine density: the `nrf-mem` profile halves SPINE_CAP, so the same weave is
-    // drawn with half the points and strays roughly twice as far.
+    // budget scales with spine density: the `nrf-mem` profile quarters SPINE_CAP (256 vs 1024), so
+    // the same weave is drawn with a quarter the points and strays several times further — still
+    // sub-pixel on a whole-ride view (~833 m/px for a 200 km ride on the 240 px panel).
     let out: std::vec::Vec<(i32, i32)> = bc.points().collect();
     let dev = max_deviation_m(&input, &out);
-    let dev_budget = if cfg!(feature = "nrf-mem") { 80.0 } else { 40.0 };
+    let dev_budget = if cfg!(feature = "nrf-mem") { 200.0 } else { 40.0 };
     assert!(dev <= dev_budget, "trail strays {dev:.1} m from a 200 km weave on a fixed point budget");
 }
 
@@ -107,7 +108,10 @@ fn curve_within_budget_is_faithful() {
     assert!(bc.spine_iter().count() > 50, "spine exercised");
     let out: std::vec::Vec<(i32, i32)> = bc.points().collect();
     let dev = max_deviation_m(&input, &out);
-    assert!(dev <= SHAPE_TOL_M, "breadcrumb strays {dev:.2} m from the weave");
+    // The aged points overflow the spine and simplify; the constrained `nrf-mem` profile keeps a
+    // quarter the points (SPINE_CAP 256 vs 1024), so the same weave strays several times further.
+    let tol = if cfg!(feature = "nrf-mem") { 20.0 } else { SHAPE_TOL_M };
+    assert!(dev <= tol, "breadcrumb strays {dev:.2} m from the weave");
 }
 
 #[test]

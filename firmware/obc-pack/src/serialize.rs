@@ -12,8 +12,9 @@ use obc_reader::format::{
 };
 
 /// Max delta (microdegrees) before a segment is densified to keep deltas in
-/// 16-bit range.
-const MAX_SEGMENT: i64 = 30_000;
+/// 16-bit range. Crate-visible so `geom::packed_size_budget` can count the
+/// midpoints `densify` will insert.
+pub(crate) const MAX_SEGMENT: i64 = 30_000;
 
 /// Fixed header length (bytes).
 pub const HEADER_LEN: usize = 32;
@@ -34,8 +35,16 @@ pub const MAX_SAFE_CHUNK_SIZE: usize = (obc_reader::MAX_FEAT_PTS - 1) * 2 + 12;
 // The safe ceiling must itself fit the on-wire `u16` chunk_size field, or the bound is moot.
 const _: () = assert!(MAX_SAFE_CHUNK_SIZE <= u16::MAX as usize, "chunk_size is a u16 in the format");
 
-/// Reject a `chunk_size` the reader can't decode without truncating a feature (see
-/// [`MAX_SAFE_CHUNK_SIZE`]), so a misconfigured pack fails loudly.
+/// Smallest accepted `chunk_size` (bytes). The format decodes any positive size,
+/// but below this even modest features exceed the chunk and [`pack_chunk`] drops
+/// them wholesale — the pack "succeeds" and the map is silently near-empty. The
+/// value is a judgment call (a few dozen mid-size features per chunk), kept in
+/// lock-step with the schema's `chunk_size.minimum`.
+pub const MIN_CHUNK_SIZE: usize = 256;
+
+/// Reject a `chunk_size` outside [`MIN_CHUNK_SIZE`]..=[`MAX_SAFE_CHUNK_SIZE`]:
+/// above the max the reader silently truncates vertices, below the min features
+/// get dropped wholesale. Either way a misconfigured pack fails loudly.
 pub fn validate_chunk_size(chunk_size: usize) -> Result<(), String> {
     if chunk_size > MAX_SAFE_CHUNK_SIZE {
         return Err(format!(
@@ -43,6 +52,12 @@ pub fn validate_chunk_size(chunk_size: usize) -> Result<(), String> {
              could then pack more than {} vertices, which the device reader silently truncates \
              (issue #2). Lower chunk_size, or raise the LOD's simplify tolerance.",
             obc_reader::MAX_FEAT_PTS
+        ));
+    }
+    if chunk_size < MIN_CHUNK_SIZE {
+        return Err(format!(
+            "chunk_size {chunk_size} is below the minimum {MIN_CHUNK_SIZE}: features larger than the \
+             chunk are dropped at pack time, so a tiny chunk_size produces a mostly-empty map."
         ));
     }
     Ok(())
@@ -97,9 +112,10 @@ pub struct LodLayer {
 
 /// `v * 1e6` to microdegrees, **round-half-to-even** — NOT `f64::round`
 /// (half-away-from-zero), which would shift vertices by a microdegree. The value is
-/// integer-valued before the `as i64`, so the cast is exact.
+/// integer-valued before the `as i64`, so the cast is exact. Crate-visible so
+/// `geom::packed_size_budget` rounds exactly like the packer does.
 #[inline]
-fn to_udeg(v: f64) -> i64 {
+pub(crate) fn to_udeg(v: f64) -> i64 {
     (v * 1e6).round_ties_even() as i64
 }
 
@@ -245,24 +261,29 @@ pub fn pack_feature(f: &Feature, node_bbox: (i64, i64, i64, i64)) -> Vec<u8> {
 }
 
 /// Pack features into a fixed-size chunk, padded with `0xFF`. A feature that
-/// would overflow the chunk (and every feature after it) is dropped.
-pub fn pack_chunk(features: &[Feature], node_bbox: (i64, i64, i64, i64), chunk_size: usize) -> Vec<u8> {
+/// would overflow the chunk (and every feature after it) is dropped; the second
+/// return value is the number dropped, so callers can warn instead of losing
+/// map content silently.
+pub fn pack_chunk(features: &[Feature], node_bbox: (i64, i64, i64, i64), chunk_size: usize) -> (Vec<u8>, usize) {
     let mut data = Vec::new();
+    let mut kept = 0usize;
     for f in features {
         let packed = pack_feature(f, node_bbox);
         if data.len() + packed.len() > chunk_size {
             break;
         }
         data.extend_from_slice(&packed);
+        kept += 1;
     }
     data.resize(chunk_size, 0xFF);
-    data
+    (data, features.len() - kept)
 }
 
-/// Flatten one quadtree into `(index_bytes, node_count, chunk_bytes,
-/// chunk_count)` via BFS. Child order and chunk-id assignment order are BFS, which
-/// fixes the byte layout.
-pub fn serialize_tree(root: &Node, chunk_size: usize) -> (Vec<u8>, u32, Vec<u8>, u32) {
+/// Flatten one quadtree into `(index_bytes, node_count, chunk_bytes, chunk_count,
+/// dropped_features)` via BFS. Child order and chunk-id assignment order are BFS,
+/// which fixes the byte layout. `dropped_features` counts chunk-overflow drops
+/// across all leaves (see [`pack_chunk`]).
+pub fn serialize_tree(root: &Node, chunk_size: usize) -> (Vec<u8>, u32, Vec<u8>, u32, usize) {
     // BFS in enqueue order. Children are appended contiguously, so a branch's
     // first-child index is the length of `nodes` at the moment we expand it.
     let mut nodes: Vec<&Node> = vec![root];
@@ -282,6 +303,7 @@ pub fn serialize_tree(root: &Node, chunk_size: usize) -> (Vec<u8>, u32, Vec<u8>,
     let mut index: Vec<u32> = Vec::with_capacity(nodes.len());
     let mut chunks: Vec<u8> = Vec::new();
     let mut chunk_count: u32 = 0;
+    let mut dropped: usize = 0;
     for (idx, node) in nodes.iter().enumerate() {
         match node {
             Node::Leaf { bbox, features } => {
@@ -289,7 +311,9 @@ pub fn serialize_tree(root: &Node, chunk_size: usize) -> (Vec<u8>, u32, Vec<u8>,
                     index.push(EMPTY_LEAF);
                 } else {
                     let chunk_id = chunk_count;
-                    chunks.extend_from_slice(&pack_chunk(features, *bbox, chunk_size));
+                    let (chunk, chunk_dropped) = pack_chunk(features, *bbox, chunk_size);
+                    chunks.extend_from_slice(&chunk);
+                    dropped += chunk_dropped;
                     chunk_count += 1;
                     index.push(chunk_id & !BRANCH_BIT);
                 }
@@ -304,7 +328,7 @@ pub fn serialize_tree(root: &Node, chunk_size: usize) -> (Vec<u8>, u32, Vec<u8>,
     for v in &index {
         index_bytes.extend_from_slice(&v.to_le_bytes());
     }
-    (index_bytes, index.len() as u32, chunks, chunk_count)
+    (index_bytes, index.len() as u32, chunks, chunk_count, dropped)
 }
 
 /// The 32-byte OBCM header `<4sBiiiiIBIH>`: magic, version, bbox stored as
@@ -343,13 +367,15 @@ fn push_lod_entry(table: &mut Vec<u8>, max_mpp: Option<f64>, index_offset: u32, 
 }
 
 /// Serialize a pyramid of LOD layers into the full v5 `.obcm` byte stream (header
-/// field order, LOD table layout, and the bbox stored as lat,lon,lat,lon).
+/// field order, LOD table layout, and the bbox stored as lat,lon,lat,lon). The
+/// second return value is the total chunk-overflow feature drops (see
+/// [`pack_chunk`]).
 pub fn serialize_lods(
     lods: &[LodLayer],
     styles: &[Style],
     marker_color: u16,
     global_bbox: (i64, i64, i64, i64),
-) -> Vec<u8> {
+) -> (Vec<u8>, usize) {
     let style_data = pack_style_dict(styles);
     let lod_count = lods.len();
     let lod_table_offset = HEADER_LEN + style_data.len();
@@ -363,8 +389,10 @@ pub fn serialize_lods(
         mpp: Option<f64>,
     }
     let mut blocks = Vec::with_capacity(lod_count);
+    let mut dropped = 0usize;
     for lod in lods {
-        let (ib, nc, cb, cc) = serialize_tree(&lod.root, lod.chunk_size);
+        let (ib, nc, cb, cc, lod_dropped) = serialize_tree(&lod.root, lod.chunk_size);
+        dropped += lod_dropped;
         blocks.push(Block { ib, nc, cb, cc, cs: lod.chunk_size, mpp: lod.max_mpp });
     }
 
@@ -383,7 +411,7 @@ pub fn serialize_lods(
     out.extend_from_slice(&style_data);
     out.extend_from_slice(&table);
     out.extend_from_slice(&payload);
-    out
+    (out, dropped)
 }
 
 /// Streaming counterpart to [`serialize_lods`]: writes the **same** v5 byte stream,
@@ -394,7 +422,9 @@ pub fn serialize_lods(
 /// table entries need the built trees. So we write header + style table + a
 /// **zeroed** LOD table, stream each LOD's `index ++ chunks`, then `seek` back and
 /// patch the table. Byte-identical to `serialize_lods` for the same trees
-/// (asserted by `streaming_matches_in_memory`). Returns bytes written.
+/// (asserted by `streaming_matches_in_memory`). Returns `(bytes_written,
+/// dropped_features)` — the latter counts chunk-overflow drops (see
+/// [`pack_chunk`]) so the CLI can warn.
 ///
 /// `build(i)` yields LOD `i`'s `(root, chunk_size, max_mpp)`, called once per level
 /// in order; each tree is dropped before the next call.
@@ -405,7 +435,7 @@ pub fn serialize_lods_streaming<W, F>(
     marker_color: u16,
     global_bbox: (i64, i64, i64, i64),
     mut build: F,
-) -> io::Result<u64>
+) -> io::Result<(u64, usize)>
 where
     W: Write + Seek,
     F: FnMut(usize) -> (Node, usize, Option<f64>),
@@ -424,10 +454,12 @@ where
     // 3. Per-LOD: build → serialize → stream payload → drop the tree.
     let mut table = Vec::with_capacity(lod_count * LOD_ENTRY_LEN);
     let mut cursor = payload_start;
+    let mut dropped = 0usize;
     for i in 0..lod_count {
         let (root, chunk_size, max_mpp) = build(i);
-        let (ib, nc, cb, cc) = serialize_tree(&root, chunk_size);
+        let (ib, nc, cb, cc, lod_dropped) = serialize_tree(&root, chunk_size);
         drop(root); // free the tree before writing this LOD / building the next
+        dropped += lod_dropped;
         push_lod_entry(&mut table, max_mpp, cursor as u32, nc, chunk_size, cc);
         w.write_all(&ib)?;
         w.write_all(&cb)?;
@@ -438,7 +470,7 @@ where
     w.seek(SeekFrom::Start(lod_table_offset as u64))?;
     w.write_all(&table)?;
     w.seek(SeekFrom::Start(cursor as u64))?;
-    Ok(cursor as u64)
+    Ok((cursor as u64, dropped))
 }
 
 #[cfg(test)]
@@ -504,6 +536,13 @@ mod tests {
     }
 
     #[test]
+    fn validate_chunk_size_rejects_degenerate_minimum() {
+        assert!(validate_chunk_size(MIN_CHUNK_SIZE).is_ok(), "the minimum is inclusive");
+        assert!(validate_chunk_size(MIN_CHUNK_SIZE - 1).is_err(), "one under the floor is rejected");
+        assert!(validate_chunk_size(1).is_err(), "a chunk_size that drops every feature is rejected");
+    }
+
+    #[test]
     fn streaming_matches_in_memory() {
         // Streaming output must be byte-identical to `serialize_lods` for the same
         // 2-LOD pyramid.
@@ -529,15 +568,17 @@ mod tests {
             },
         ];
 
-        let reference = serialize_lods(&lods, &styles, 0xABCD, bbox);
+        let (reference, ref_dropped) = serialize_lods(&lods, &styles, 0xABCD, bbox);
+        assert_eq!(ref_dropped, 0, "nothing overflows in this fixture");
 
         let mut cur = Cursor::new(Vec::new());
-        let total = serialize_lods_streaming(&mut cur, lods.len(), &styles, 0xABCD, bbox, |i| {
+        let (total, dropped) = serialize_lods_streaming(&mut cur, lods.len(), &styles, 0xABCD, bbox, |i| {
             (lods[i].root.clone(), lods[i].chunk_size, lods[i].max_mpp)
         })
         .unwrap();
 
         assert_eq!(cur.into_inner(), reference, "streaming output must be byte-identical");
         assert_eq!(total as usize, reference.len());
+        assert_eq!(dropped, 0, "and reports the same (zero) drop count");
     }
 }
