@@ -86,3 +86,5 @@ Each lever lands as its own commit with the before/after `frame OK` measurement 
 | Baseline (#347 merge) | 95 910–95 959 | — | ✓ (#347) |
 | 1a: drop the 2 × `DATA_SETUP_TOPUP` busys (the pack **is** the setup window) | 82 714–82 729 | −13.2 ms | ✓ (with 1b) |
 | 1b: drop the 2 × `BCK_HALF` busys (presents + next pack **are** the half-width) | 60 053 | −22.7 ms | ✓ contours crisp, no doubling/sparkle/banding |
+| 2: `GCK_SETTLE` 5 µs → 1 µs (not an enumerated minimum; spec's only GCK floor is the ≥1 µs fast-forward width) + dummy-advance high 10 µs → 2 µs | 57 655 | −2.4 ms | ✓ (with 2b) |
+| 2b: recalibrate `GEN_HIGH`/`GEN_SETUP` to the measured 80.5 ns/iter — 310/207 iters ≈ 25.06/16.77 µs, in-spec with ~2 % margin (were ~7 % over via the stale 13 iters/µs label) | 56 215 | −1.4 ms | ✓ (with 2) |
