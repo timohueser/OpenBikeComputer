@@ -1,10 +1,16 @@
 """Background job runner: download selected PBFs, then run the native `obc-pack`.
 
-Each job records an append-only list of events. The SSE endpoint replays the
-list and follows new events, so reconnects and (single-user) multiple tabs both
-work. PBF downloads are cached on disk and reused across runs.
+Jobs enter a bounded FIFO queue served by a small worker pool
+(OBCM_MAX_CONCURRENT_JOBS, default 1 — obc-pack is memory-hungry), so a burst of
+requests can't fork a pile of packers. Each job records an append-only list of
+events; the SSE endpoint replays the list and follows new events, so reconnects
+and multiple tabs both work. PBF downloads are cached on disk and reused across
+runs. Outputs land in a per-job directory under OBCM_OUTPUT_DIR and are served
+by `GET /api/jobs/{id}/download`; finished jobs are swept by count and age.
 """
 import os
+import queue
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -13,28 +19,11 @@ import uuid
 
 import requests
 
-from . import geofabrik
-
-PBF_CACHE = os.path.expanduser("~/.cache/obcm/pbf")
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-REPO_ROOT = os.path.dirname(PROJECT_ROOT)
+from . import geofabrik, paths
 
 
-def _rust_pack_bin():
-    """Locate the native `obc-pack` packer binary, or None if it isn't built.
-
-    Override the path with OBC_PACK_BIN; otherwise prefer the release build
-    under firmware/target/ and fall back to debug. Build it with
-    `cargo build --release -p obc-pack` in firmware/.
-    """
-    override = os.environ.get("OBC_PACK_BIN")
-    if override:
-        return override if os.path.exists(override) else None
-    for profile in ("release", "debug"):
-        p = os.path.join(REPO_ROOT, "firmware", "target", profile, "obc-pack")
-        if os.path.exists(p) and os.access(p, os.X_OK):
-            return p
-    return None
+class QueueFull(Exception):
+    """Raised by create_job when the pending queue is at capacity (HTTP 429)."""
 
 
 # `obc-pack` prints these stage strings on stdout; they map to a coarse UI phase.
@@ -50,15 +39,32 @@ _STAGE_MARKERS = {
 }
 
 
+def _sanitize_output_name(name):
+    """A filesystem-friendly `.obcm` basename — the download filename."""
+    base = os.path.basename((name or "").strip())
+    base = "".join(c for c in base if c.isalnum() or c in "._- ").strip()
+    if not base or base == ".obcm":
+        base = "output.obcm"
+    if not base.endswith(".obcm"):
+        base += ".obcm"
+    return base
+
+
 class Job:
     def __init__(self, region_ids, config, chunk_size, output_name, bbox=None):
         self.id = uuid.uuid4().hex[:12]
         self.region_ids = region_ids
         self.config = config
         self.chunk_size = chunk_size
-        self.output_name = output_name
         self.bbox = bbox  # [west, south, east, north] in degrees, or None
-        self.status = "queued"
+        self.created_at = time.time()
+        # Coarse lifecycle for /api/jobs/{id}; the SSE events carry the
+        # fine-grained phase strings (downloading/cropping/converting/...).
+        self.state = "queued"  # queued | running | done | error
+        self.error = None
+        self.download_name = _sanitize_output_name(output_name)
+        self.out_dir = os.path.join(paths.OUTPUT_DIR, self.id)
+        self.out_path = os.path.join(self.out_dir, self.download_name)
         self.events = []
         self._lock = threading.Lock()
         self.finished = False
@@ -71,25 +77,96 @@ class Job:
         with self._lock:
             return self.events[start_index:], len(self.events)
 
+    def public_state(self):
+        """The `GET /api/jobs/{id}` snapshot: enough for a page reload to decide
+        whether to re-follow the event stream or offer the download directly."""
+        d = {
+            "id": self.id,
+            "state": self.state,
+            "created_at": self.created_at,
+            "output": self.download_name,
+        }
+        if self.state == "done" and os.path.exists(self.out_path):
+            d["size"] = os.path.getsize(self.out_path)
+            d["download_url"] = f"/api/jobs/{self.id}/download"
+        if self.error:
+            d["error"] = self.error
+        return d
+
 
 _JOBS = {}
+_QUEUE = queue.Queue()
+_workers_lock = threading.Lock()
+_workers_started = False
 
 
 def get_job(job_id):
     return _JOBS.get(job_id)
 
 
+def _ensure_workers():
+    global _workers_started
+    with _workers_lock:
+        if _workers_started:
+            return
+        for i in range(paths.MAX_CONCURRENT_JOBS):
+            threading.Thread(target=_worker, daemon=True, name=f"obcm-build-{i}").start()
+        _workers_started = True
+
+
+def _worker():
+    while True:
+        job = _QUEUE.get()
+        try:
+            _run(job)
+        finally:
+            _QUEUE.task_done()
+
+
+def _sweep():
+    """Evict finished jobs beyond KEEP_JOBS or older than KEEP_JOB_SECONDS
+    (deleting their output dirs), plus orphaned dirs from previous runs —
+    the in-memory job table doesn't survive a restart, the disk does."""
+    now = time.time()
+    finished = sorted(
+        (j for j in _JOBS.values() if j.finished),
+        key=lambda j: j.created_at,
+        reverse=True,
+    )
+    for i, job in enumerate(finished):
+        if i >= paths.KEEP_JOBS or now - job.created_at > paths.KEEP_JOB_SECONDS:
+            shutil.rmtree(job.out_dir, ignore_errors=True)
+            _JOBS.pop(job.id, None)
+    if os.path.isdir(paths.OUTPUT_DIR):
+        for name in os.listdir(paths.OUTPUT_DIR):
+            if name in _JOBS:
+                continue
+            p = os.path.join(paths.OUTPUT_DIR, name)
+            try:
+                orphaned = now - os.path.getmtime(p) > paths.KEEP_JOB_SECONDS
+            except OSError:
+                continue
+            if orphaned:
+                shutil.rmtree(p, ignore_errors=True)
+
+
 def create_job(region_ids, config, chunk_size, output_name, bbox=None):
+    _sweep()
+    pending = sum(1 for j in _JOBS.values() if j.state == "queued")
+    if pending >= paths.MAX_PENDING_JOBS:
+        raise QueueFull(f"{pending} builds already queued — try again in a bit.")
     job = Job(region_ids, config, chunk_size, output_name, bbox)
     _JOBS[job.id] = job
-    t = threading.Thread(target=_run, args=(job,), daemon=True)
-    t.start()
+    if pending:
+        job.emit({"type": "status", "status": "queued", "detail": f"position {pending + 1}"})
+    _ensure_workers()
+    _QUEUE.put(job)
     return job
 
 
 def _download_pbf(job, region_id, url):
-    os.makedirs(PBF_CACHE, exist_ok=True)
-    dest = os.path.join(PBF_CACHE, f"{region_id}.osm.pbf")
+    os.makedirs(paths.PBF_CACHE, exist_ok=True)
+    dest = os.path.join(paths.PBF_CACHE, f"{region_id}.osm.pbf")
     if os.path.exists(dest) and os.path.getsize(dest) > 0:
         job.emit({"type": "log", "line": f"Using cached PBF for {region_id}", "transient": False})
         return dest
@@ -169,15 +246,14 @@ def _stream_process(job, proc):
 
 def _run(job):
     crop_dir = None
+    job.state = "running"
     try:
-        job.status = "downloading"
         urls = geofabrik.region_pbf_urls(job.region_ids)
         pbf_paths = [_download_pbf(job, rid, url) for rid, url in urls]
 
         # Bounding-box build: crop each source PBF to the box before packing, so
         # obc-pack only sees the area of interest (and merges the crops as usual).
         if job.bbox:
-            job.status = "cropping"
             job.emit({"type": "status", "status": "cropping", "detail": "cropping"})
             crop_dir = tempfile.mkdtemp(prefix="obcm-crop-")
             cropped = []
@@ -193,7 +269,7 @@ def _run(job):
 
         # The native obc-pack binary is the only backend; fail fast (before any
         # temp file) with a clear message if it isn't built.
-        rust_bin = _rust_pack_bin()
+        rust_bin = paths.rust_pack_bin()
         if rust_bin is None:
             raise RuntimeError(
                 "obc-pack binary not found — build it with "
@@ -207,40 +283,34 @@ def _run(job):
             import json
             json.dump(job.config, f)
 
-        out_name = job.output_name
-        if not out_name.endswith(".obcm"):
-            out_name += ".obcm"
-        out_path = os.path.join(PROJECT_ROOT, os.path.basename(out_name))
-
-        job.status = "converting"
+        os.makedirs(job.out_dir, exist_ok=True)
         job.emit({"type": "status", "status": "converting", "detail": "starting"})
 
-        cmd = [rust_bin, *pbf_paths, cfg_path, out_path,
+        cmd = [rust_bin, *pbf_paths, cfg_path, job.out_path,
                "--chunk-size", str(job.chunk_size)]
         job.emit({"type": "log", "line": "$ " + " ".join(cmd), "transient": False})
 
         proc = subprocess.Popen(
-            cmd, cwd=PROJECT_ROOT, stdout=subprocess.PIPE,
+            cmd, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, text=True, bufsize=1,
         )
         _stream_process(job, proc)
         rc = proc.wait()
         os.remove(cfg_path)
 
-        if rc == 0 and os.path.exists(out_path):
-            size = os.path.getsize(out_path)
-            job.status = "done"
-            job.emit({"type": "done", "output": os.path.basename(out_path),
-                      "path": out_path, "size": size})
+        if rc == 0 and os.path.exists(job.out_path):
+            size = os.path.getsize(job.out_path)
+            job.state = "done"
+            job.emit({"type": "done", "output": job.download_name, "size": size,
+                      "download_url": f"/api/jobs/{job.id}/download"})
         else:
-            job.status = "failed"
-            job.emit({"type": "error", "message": f"obc-pack exited with code {rc}"})
+            raise RuntimeError(f"obc-pack exited with code {rc}")
     except Exception as exc:  # surface any failure to the browser
-        job.status = "failed"
+        job.state = "error"
+        job.error = str(exc)
         job.emit({"type": "error", "message": str(exc)})
     finally:
         if crop_dir:
-            import shutil
             shutil.rmtree(crop_dir, ignore_errors=True)
         job.finished = True
 

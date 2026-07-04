@@ -1390,7 +1390,13 @@ function handleEvent(ev) {
     appendLog(ev.line, ev.transient);
   } else if (ev.type === "done") {
     setProgress(100, "done");
-    finish(true, `Built ${ev.output} (${formatBytes(ev.size)}) in project folder.`);
+    finish(true, `Built ${ev.output} (${formatBytes(ev.size)}).`);
+    if (ev.download_url) {
+      const a = document.createElement("a");
+      a.href = ev.download_url;
+      a.textContent = "Download";
+      buildStatus.append(" ", a);
+    }
   } else if (ev.type === "error") {
     finish(false, ev.message);
   }
