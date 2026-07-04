@@ -60,6 +60,29 @@ cargo test -p obc-pack    # just the packer (fixtures under ../packer/tests/corp
 
 `cargo test` does **not** touch the excluded board crate.
 
+### Render benchmark + pixel-hash tripwire
+
+`obc-bench` renders six fixed scenes (riding / mid / overview × north-up /
+rotated) through the real reader → renderer pipeline over a deterministic
+fixture and prints per-stage timings plus a frame hash per scene. CI re-renders
+them and fails if any hash drifts from the committed golden file — timings are
+printed but never gated.
+
+```sh
+cargo run -p obc-bench --release                                  # the timing/hash table
+cargo run -p obc-bench --release -- --check obc-bench/hashes.txt  # what CI runs
+```
+
+A pure refactor must leave the hashes untouched. An **intentional** rendering
+change regenerates the golden file in the same PR (that's the review signal):
+
+```sh
+cargo run -p obc-bench --release -- --write-hashes obc-bench/hashes.txt
+```
+
+One-off runs against a real map:
+`cargo run -p obc-bench --release -- --map ../freiburg.obcm --mpp 4 --heading 35`.
+
 ## Format
 
 `rustfmt.toml` is committed (`max_width = 120`, `use_small_heuristics = "Max"`),
