@@ -94,14 +94,15 @@
 //!     timing-critical lane (`RADIO_0`, `TIMER10`, `GRTC_3`; MPSL raises these itself).
 //!   - **P1 (embassy default)**: on `ble` builds MPSL's low-priority scheduling (**`SWI00`** — why
 //!     the input executor sits on SWI01) + `CLOCK_POWER`; plus the default-priority peripheral
-//!     ISRs every build has (display/SD SPIM, VCOM UARTE, RRAMC).
+//!     ISRs every build has (display/SD SPIM, VCOM UARTE, RRAMC, and the EGU20 frame-ack — the
+//!     FLPR's per-frame doorbell the async present awaits, #347).
 //!   - **P3**: the SWI01 `InterruptExecutor` (input/bulge plane + the DK COM task) and the
 //!     SERIAL30 sensor-bus ISR.
 //!   - **Thread mode**: the map/status plane (`run_app` / `run_status`) + the sensor task.
 //!
-//!   MPSL's P0 lane preempts everything, including the P3 planes and the M33's FLPR row feeding —
-//!   safe by construction for the panel (the FLPR waits on `m33_seq`, so preemption stretches a
-//!   frame push, never tears it).
+//!   MPSL's P0 lane preempts everything, including the P3 planes — safe by construction for the
+//!   panel: the FLPR scans the framebuffer autonomously (#347), so M33 preemption can no longer
+//!   stretch a frame push at all (only the ack's delivery, which is untimed).
 //!
 //! ## Flash / RAM
 //!   From the `nrf54l15-app-s` `memory.x`: FLASH 1524K @ 0x0000_0000, RAM 256K @ 0x2000_0000.
@@ -338,17 +339,18 @@ static mut BAND: [u16; FRAME_W * BAND_ROWS] = [0; FRAME_W * BAND_ROWS];
 // stack temporary, plus its own ~4 KB read scratch): the ride loop rebuilds it each frame, so the
 // stack reserve carries that spike.
 //
-// The FLPR build reclaims room without re-trimming the caps: the carve-out leaves the M33 **244 KB**
-// (not 256) but the production blob is ~660 B so the carve is only ~12 KB, and the FLPR map path drops
+// The FLPR build reclaims room without re-trimming the caps: the carve-out leaves the M33 **248 KB**
+// (not 256) but the production blob is ~820 B so the carve is only ~8 KB, and the FLPR map path drops
 // the ~6.6 KB RGB565 band scratch — a net loosening, so the same caps clear the budget.
 
 /// Total SRAM the M33 app core sees. The opt-in ST7789 build (`--features tft`) links the full 256 KB
-/// (`memory.x`: RAM 256K @ 0x2000_0000); the default FLPR build links only 244 KB — the top 12 KB is
-/// the carved FLPR image + the shared handshake page (`build.rs` / `flpr.ld`).
+/// (`memory.x`: RAM 256K @ 0x2000_0000); the default FLPR build links what the carve leaves — taken
+/// straight from the generated contract (`build.rs` derives the carved `memory.x` and this constant
+/// from the same `FLPR_RAM_BASE`, so the budget can't fork from the linker map).
 #[cfg(feature = "tft")]
 const NRF_RAM_BYTES: usize = 256 * 1024;
 #[cfg(not(feature = "tft"))]
-const NRF_RAM_BYTES: usize = 244 * 1024;
+const NRF_RAM_BYTES: usize = ls021_flpr::M33_RAM_BYTES;
 /// Headroom kept free under the resident statics for the main stack + embassy's executor/task arenas
 /// (statics grow up from the RAM base, the stack down from the top). This is only the build-time
 /// *floor* the assert enforces — the real stack is the residual `RAM − statics` (~34 KB on the default
@@ -573,9 +575,10 @@ unsafe fn SWI01() {
 }
 
 /// The FLPR build's single high-priority executor: it free-runs **both** the COM driver (which must
-/// keep alternating `VCOM`/`VB`/`VA` so the panel never DC-biases, even while the M33 busy-polls a
-/// frame push) **and** the gesture-input plane (so button latency stays exact during the ~97 ms
-/// blocking whole-frame push). Pended from the same SWI01 vector @ P3.
+/// keep alternating `VCOM`/`VB`/`VA` so the panel never DC-biases, whatever the map plane is doing)
+/// **and** the gesture-input plane (so button latency stays exact during a ~97 ms full-frame scan —
+/// the M33 now *awaits* that scan (#347), but a deep map render still occupies thread mode).
+/// Pended from the same SWI01 vector @ P3.
 #[cfg(not(feature = "tft"))]
 static EXECUTOR_HP: InterruptExecutor = InterruptExecutor::new();
 
@@ -791,9 +794,13 @@ async fn input_overlay_task(
                 Some((y0, rows)) => OverlayRegion { x0: OVL_X0, y0, w: OVL_W, rows },
                 None => OverlayRegion { x0: OVL_X0, y0: OVL_Y0, w: OVL_W, rows: OVL_ROWS },
             };
-            bus.lock().await.present_overlay(region, &mut |band: &mut Band| {
-                input_plane.lock(|cell| cell.borrow().render_overlay(band, FRAME_W as f32, FRAME_H as f32, color_fn));
-            });
+            bus.lock()
+                .await
+                .present_overlay(region, &mut |band: &mut Band| {
+                    input_plane
+                        .lock(|cell| cell.borrow().render_overlay(band, FRAME_W as f32, FRAME_H as f32, color_fn));
+                })
+                .await;
         }
         // Event-driven sleep (issue #219): idle (all buttons released + settled, no live bulge) → sleep
         // on a button falling edge; otherwise keep the 8 ms poll so debounce / auto-repeat / the bulge
@@ -814,7 +821,7 @@ async fn input_overlay_task(
 
 /// The FLPR build's input plane: recognises gestures + animates the hold bulge. Runs on [`EXECUTOR_HP`]
 /// beside COM, preempting the thread-mode map render, so press latency + the auto-repeat cadence stay
-/// exact across the blocking whole-frame push. Each [`LOOP_MS`] it samples the buttons + (with
+/// exact across a deep map render. Each [`LOOP_MS`] it samples the buttons + (with
 /// `debug-uart`) the VCOM-injected `K` events and recognises gestures into [`GESTURES`] for the map
 /// plane to apply — **under the shared [`InputPlane`] lock**, so the live hold-bulge state it advances
 /// is the same one the map plane composites into its partial overlay push.
@@ -926,19 +933,20 @@ impl MapDisplay {
         mut render: impl FnMut(&mut dyn DisplayDriver) -> RenderStats,
     ) -> FramePresent {
         let mut guard = self.bus.lock().await;
-        let display: &mut dyn DisplayDriver = &mut *guard;
         let t_render = Instant::now();
-        let stats = render(display);
+        // `render` reaches the framebuffer through the seam's one dyn-safe method (`fb_mut`); the
+        // async present below is called on the concrete backend (`where Self: Sized`).
+        let stats = render(&mut *guard);
         let render_us = t_render.elapsed().as_micros();
         let t_push = Instant::now();
-        let ok = display.present(overlay_span);
+        let ok = guard.present(overlay_span).await;
         let push_us = t_push.elapsed().as_micros();
         FramePresent { ok, stats, render_us, push_us }
     }
 
     /// No-op: the ST7789 hold bulge is pushed by the input/overlay plane, not the map loop.
     #[inline(always)]
-    fn present_bulge(&mut self, _span: Option<(u16, u16)>, _dirty: bool) {}
+    async fn present_bulge(&mut self, _span: Option<(u16, u16)>, _dirty: bool) {}
 
     /// The live encoder hold-progress from the shared input plane (0.0–1.0), so the in-screen confirm
     /// fills (the factory-Reset bar) track the hold on this backend too.
@@ -1010,8 +1018,10 @@ impl MapDisplay {
         let render_us = t_render.elapsed().as_micros();
         let t_push = Instant::now();
         // Self-diffing present through the seam, clipped around a live bulge's rows so
-        // `present_bulge` owns them (issue #163/#201/#345).
-        let ok = self.panel.present(overlay_span);
+        // `present_bulge` owns them (issue #163/#201/#345). The await frees the M33 for the whole
+        // scan (#347) — and suspending the map plane here is exactly what guarantees the
+        // framebuffer stays untouched while the FLPR reads it.
+        let ok = self.panel.present(overlay_span).await;
         if !ok {
             // The push didn't reach glass (a stalled FLPR), but the self-diffing present already
             // advanced its row-hash store to this frame — so the caller's latched `pending_map_redraw`
@@ -1039,18 +1049,11 @@ impl MapDisplay {
     /// push), not the one-shot `overlay_dirty` edge — so a one-frame FLPR stall during the clear is
     /// retried on the next frame rather than stranding the bulge with no edge left to re-fire it.
     #[inline(always)]
-    fn present_bulge(&mut self, overlay_span: Option<(u16, u16)>, overlay_dirty: bool) {
+    async fn present_bulge(&mut self, overlay_span: Option<(u16, u16)>, overlay_dirty: bool) {
         let _ = overlay_dirty; // `last_overlay_span` drives the clear so a stalled clear retries — see the doc.
-        let color_fn = |c: u16| Rgb565::from(RawU16::new(c));
-        let input_plane = self.input_plane;
-        let composite = |panel: &mut Ls021Flpr, region: OverlayRegion| -> bool {
-            panel.present_overlay(region, &mut |band: &mut Band| {
-                input_plane.lock(|cell| cell.borrow().render_overlay(band, FRAME_W as f32, FRAME_H as f32, color_fn));
-            })
-        };
         if let Some((y0, rows)) = overlay_span {
             let t_push = Instant::now();
-            let ok = composite(&mut self.panel, OverlayRegion { x0: OVL_X0, y0, w: OVL_W, rows });
+            let ok = Self::composite_push(&mut self.panel, self.input_plane, y0, rows).await;
             let push_us = t_push.elapsed().as_micros();
             self.last_overlay_span = Some((y0, rows));
             if ok {
@@ -1064,12 +1067,31 @@ impl MapDisplay {
             // map restored under the just-gone bulge (the self-diffing map present may have skipped
             // them, so this is what actually wipes the bulge — see the method docs). Drop
             // `last_overlay_span` only when the push lands, so a stalled FLPR retries next frame.
-            if composite(&mut self.panel, OverlayRegion { x0: OVL_X0, y0, w: OVL_W, rows }) {
+            if Self::composite_push(&mut self.panel, self.input_plane, y0, rows).await {
                 self.last_overlay_span = None;
             } else {
                 defmt::warn!("overlay frame: trailing clear failed (FLPR stalled?) — retrying next frame");
             }
         }
+    }
+
+    /// One overlay composite + push of the bulge band's rows `[y0, y0+rows)` through the seam —
+    /// shared by the live-bulge repaint and the trailing clear above. An associated fn (not a
+    /// closure — closures can't await) taking the panel + plane apart so `present_bulge` can call
+    /// it around its `&mut self` borrows.
+    #[inline(always)]
+    async fn composite_push(
+        panel: &mut Ls021Flpr<'static>,
+        input_plane: &'static BlockingMutex<CriticalSectionRawMutex, RefCell<InputPlane>>,
+        y0: u16,
+        rows: u16,
+    ) -> bool {
+        let color_fn = |c: u16| Rgb565::from(RawU16::new(c));
+        panel
+            .present_overlay(OverlayRegion { x0: OVL_X0, y0, w: OVL_W, rows }, &mut |band: &mut Band| {
+                input_plane.lock(|cell| cell.borrow().render_overlay(band, FRAME_W as f32, FRAME_H as f32, color_fn));
+            })
+            .await
     }
 }
 
@@ -1492,7 +1514,7 @@ async fn run_app(
         // them fresh — no mid-pop flash; the trailing clear is unconditional now that the self-diffing
         // present may skip those rows). On ST7789 this is a no-op — its bulge rides the input/overlay
         // plane on the shared bus.
-        display.present_bulge(overlay_span, overlay_dirty);
+        display.present_bulge(overlay_span, overlay_dirty).await;
 
         // Publish render-stats telemetry host-ward at ~2 Hz: throttled here (not in the TX task) so the
         // link never floods and the device never stalls on it.
@@ -1585,7 +1607,7 @@ async fn run_status(
             defmt::info!("status frame: render {=u64} us + push {=u64} us", fp.render_us, fp.push_us);
         }
 
-        display.present_bulge(overlay_span, overlay_dirty);
+        display.present_bulge(overlay_span, overlay_dirty).await;
 
         if now.wrapping_sub(last_led) >= 500 {
             led.toggle();
@@ -1861,9 +1883,9 @@ async fn main(_spawner: Spawner) {
         // The map plane owns the `Ls021Flpr` panel directly (it scans a whole frame per push, so there
         // is no partial-window overlay to serialise — no bus mutex). The M33 configures every line the
         // FLPR drives (held as outputs for the program's life); `com_task` + the gesture `input_task`
-        // share the one high-priority executor (COM must keep alternating during the blocking push).
+        // share the one high-priority executor (COM must keep alternating whatever the map plane does).
         //
-        // ⚠️ These five P1 gate/BSP lines **must match `src/flpr/flpr_pingpong.c`'s masks** — confirm
+        // ⚠️ These five P1 gate/BSP lines **must match `src/flpr/flpr_scan.c`'s masks** — confirm
         // each is broken out on your DK and remap all three together if not (the source bus, BCK, and
         // COM stay on P2).
         #[cfg(not(feature = "tft"))]
@@ -1937,7 +1959,7 @@ async fn main(_spawner: Spawner) {
             let mut panel = Ls021Flpr::new_fb(fb, diff);
             // Datasheet Initial #0: an INTB-framed all-black frame (FB boots zeroed = black) while COM is
             // still held `Lo`. Then T4 ≥ 30 µs, then start COM — from here it free-runs forever.
-            panel.push_frame();
+            panel.push_frame().await;
             Timer::after_micros(50).await;
 
             // The shared `InputPlane`: `input_task` recognises + animates the bulge under this lock; the

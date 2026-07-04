@@ -88,7 +88,7 @@ brew install riscv64-elf-gcc        # GCC 16.x, bottled; same formula family as 
 riscv64-elf-gcc -march=rv32emc -mabi=ilp32e \
     -Os -ffreestanding -nostdlib -nostartfiles -fno-pic \
     -ffunction-sections -fdata-sections -Wall -Wextra -Wl,--gc-sections \
-    -I $OUT_DIR -T $OUT_DIR/flpr.ld src/flpr/start.S src/flpr/flpr_pingpong.c -o flpr.elf
+    -I $OUT_DIR -T $OUT_DIR/flpr.ld src/flpr/start.S src/flpr/flpr_scan.c -o flpr.elf
 riscv64-elf-objcopy -O binary flpr.elf flpr.bin        # raw image, no ELF headers
 ```
 
@@ -111,26 +111,25 @@ RISC-V toolchain** and keeps the full 256 KB.
 The FLPR executes from on-chip SRAM at the **M33-visible address** (no remap on this part):
 the M33 copies the blob to the region base and writes that base into `INITPC`. Nordic's
 guidance is **≤96 KB to the FLPR**. F0 reserved a generous 28 KB top slice; #165 shrank it to
-the production **8 KB** (the blob is ~660 B + a shallow scan stack), handing ~20 KB back to the
+the production **8 KB**, and #347 to **4 KB** (the scan blob is ~820 B + a shallow leaf stack), handing the rest back to the
 M33 so the full app + framebuffer fit. The carve-out is emitted by `build.rs` under **either**
 FLPR feature (`CARGO_FEATURE_LS021_FLPR` for the bin, `CARGO_FEATURE_PANEL_LS021` for the app),
 so the default ST7789 `main.rs` is untouched and keeps the full 256 KB.
 
 | Region | Range | Size | Owner / contents |
 |---|---|---|---|
-| `RAM` | `0x2000_0000 .. 0x2003_D000` | 244 KB | **M33** `.data`/`.bss`/stack (the linked `RAM`) |
-| `FLPR_RAM` | `0x2003_D000 .. 0x2003_F000` | 8 KB | **FLPR** image + stack; `INITPC = 0x2003_D000`, `_stack_top = 0x2003_F000` |
-| `SHARED` | `0x2003_F000 .. 0x2004_0000` | 4 KB | **cross-core** control block (F1 — the 64-byte `Control`/`flpr_control_t`; see [comms](#m33--flpr-comms)) |
+| `RAM` | `0x2000_0000 .. 0x2003_E000` | 248 KB | **M33** `.data`/`.bss`/stack (the linked `RAM`) |
+| `FLPR_RAM` | `0x2003_E000 .. 0x2003_F000` | 4 KB | **FLPR** image + stack; `INITPC = 0x2003_E000`, `_stack_top = 0x2003_F000` (#347 shrank it from 8 KB — the scan blob is ~820 B, and the M33 deep-render stack needs the headroom) |
+| `SHARED` | `0x2003_F000 .. 0x2004_0000` | 4 KB | **cross-core** control block (the 96-byte v2 `Control`/`flpr_control_t`; see [comms](#m33--flpr-comms)) |
 
 - The map is **single-sourced in `build.rs`'s `contract` module** (issue #346): from those
-  constants it *generates* the carved `memory.x` (shrinks the M33 `RAM` to 244 KB), the FLPR's
+  constants it *generates* the carved `memory.x` (shrinks the M33 `RAM` to 248 KB), the FLPR's
   `flpr.ld` (image base `0x2003_D000`, `_stack_top` at the SHARED boundary), `flpr_contract.rs`
-  (include!'d by `src/ls021_flpr.rs` — `FLPR_RAM_BASE`, the control/buffer addresses, the magic /
+  (include!'d by `src/ls021_flpr.rs` — `FLPR_RAM_BASE`, the control-block address, the magic /
   status / command words, `MAX_DIRTY_SPANS`), and `flpr_contract.h` (included by
-  `src/flpr/flpr_pingpong.c`) — a one-sided edit is impossible by construction. The M33 reaches
+  `src/flpr/flpr_scan.c`) — a one-sided edit is impossible by construction. The M33 reaches
   `FLPR_RAM`/`SHARED` **only by hardcoded address** (`memcpy` + the handshake word), never via the
-  linker — so shrinking `RAM` is the entire M33-side change. The `SHARED` page is unchanged, so the
-  control-block + ping-pong-buffer addresses did **not** move.
+  linker — so shrinking `RAM` is the entire M33-side change.
 - **The FLPR region is `rwx` to the FLPR but the M33's `RAM` stops at `0x2003_D000`**, so the
   M33 linker never allocates into it. The M33 *can still write* there (it's plain SRAM) — that
   is exactly how it loads the blob and the handshake.
@@ -149,10 +148,10 @@ so the default ST7789 `main.rs` is untouched and keeps the full 256 KB.
 > set (`App` scratch + caches + the 75 KB `FbDevice64` + stack) already filled ~254 KB of 256 KB (the
 > `nrf-mem` budget assert, issue #124), and the FLPR feature leaves the M33 only 244 KB — so ~32 KB
 > had to be freed. Without re-trimming the `nrf-mem` caps, two levers did it: (1) the **carve shrank
-> 32 → 12 KB** (the blob's real need is tiny — ~660 B + the ping-pong buffers, which already live in
+> 32 → 12 KB** (the blob's real need is tiny — ~1 KB; the control block lives in
 > the 4 KB `SHARED` page — so 28 KB of bring-up headroom became 8 KB), and (2) the FLPR map path
-> **drops the ~6.6 KB RGB565 band scratch** the ST7789 push needs (it packs the device-64 framebuffer
-> straight to the wire via `ls021_pack_row`). The result: ~209 KB statics + ~35 KB stack in the
+> **drops the ~6.6 KB RGB565 band scratch** the ST7789 push needs (the FLPR packs the device-64
+> framebuffer straight to the wire itself, #347). The result: ~209 KB statics + ~35 KB stack in the
 > 244 KB — the `main.rs` budget assert (retargeted to 244 KB under `panel-ls021`) passes with the same
 > caps as the ST7789 build.
 
@@ -251,34 +250,49 @@ block and these doorbells.
 > and an **EGU interrupt** for FLPR→M33. Both are exactly what F4 needs (the FLPR polls a
 > buffer-ready flag; the M33 sleeps until an IRQ says a buffer drained).
 
-### Control block (64 bytes at `0x2003_F000`)
+### Control block — **contract v2** (96 bytes at `0x2003_F000`, issue #347)
 
-Normative layout, **identical** in `Control` (Rust, `ls021_flpr_bringup.rs`) and `flpr_control_t`
-(C, `flpr_pingpong.c`) — both static-assert the 64-byte size. `#[repr(C)]` + all-`u32` members ⇒ no
-padding, deterministic offsets. Little-endian; every field is accessed `volatile` (the cores write
-it concurrently).
+Normative layout, **identical** in `Control` (Rust, `src/ls021_flpr.rs`) and `flpr_control_t` (C,
+`src/flpr/flpr_scan.c`) — both static-assert the 96-byte size; the shared constants (address,
+magic, command codes, span cap) are generated by `build.rs`'s `contract` module (issue #346).
+`#[repr(C)]` + all-`u32` members ⇒ no padding, deterministic offsets. Little-endian; every field is
+accessed `volatile` (the cores write it concurrently).
+
+**v2 = the direct-framebuffer scan** (#347): the F4 ping-pong `buf[2]` descriptors are gone — the
+resident device-64 framebuffer is a stable byte-per-pixel plane in shared SRAM, so the FLPR reads
+it directly (`fb_addr`, stride 240 B/row by contract) and packs the wire words itself (the pack is
+the line-for-line C port of the host-tested `obc_platform::ls021_wire`, riding inside the panel's
+mandatory data-setup windows where the old blob busy-spun). The M33's entire per-frame work:
+publish `fb_addr` + the span list, ring the doorbell, **await the EGU20 ack**. The map plane owns
+the fb and is suspended inside that await, which is what guarantees the fb stays untouched while
+the FLPR reads it (the hold bulge transiently composites *into* the fb with save/restore around its
+partial push).
 
 | off  | field         | writer | meaning |
 |------|---------------|--------|---------|
-| 0x00 | `magic`       | M33    | layout/version tag `0xF1C0_0001`; the FLPR refuses to act if it mismatches |
-| 0x04 | `m33_seq`     | M33    | command sequence counter — **the M33→FLPR doorbell** (bumped last, after `cmd`) |
-| 0x08 | `cmd`         | M33    | command word (F1: the value `N`) |
-| 0x0C | `flpr_seq`    | FLPR   | echoes the `m33_seq` it serviced (round-trip proof) |
-| 0x10 | `status`      | FLPR   | ack/result (F1: `cmd ^ 0xA11E`; boot: `0xA11E` alive, `0x0BAD_CAFE` = magic mismatch) |
-| 0x14 | `frame_count` | FLPR   | frames drained (F4; defined now, unused in F1) |
-| 0x18 | `buf[0..2]`   | both   | `BufDesc { ptr, len, ready, consumed }` ×2 (16 B each) — F4 ping-pong descriptors |
-| 0x38 | `reserved[2]` | —      | forward-compat headroom |
+| 0x00 | `magic`       | M33    | layout/version tag `0xF1C0_0002` (v2); the FLPR refuses to act if it mismatches |
+| 0x04 | `m33_seq`     | M33    | command sequence counter — **the M33→FLPR doorbell** (bumped last, after a `dsb`) |
+| 0x08 | `cmd`         | M33    | command word (`CMD_RUN_FRAME = 2`: one span-masked scan) |
+| 0x0C | `flpr_seq`    | FLPR   | echoes the `m33_seq` it serviced (the ack the M33 awaits) |
+| 0x10 | `status`      | FLPR   | ack/result (dirty rows scanned; boot: `0xA11E` alive, `0x0BAD_CAFE` = magic mismatch) |
+| 0x14 | `frame_count` | FLPR   | frames drained (bumped per `CMD_RUN_FRAME`) |
+| 0x18 | `fb_addr`     | M33    | resident device-64 framebuffer base the FLPR scans (stride 240 B/row) |
+| 0x1C | `n_spans`     | M33    | #dirty-row spans (clamped to `MAX_DIRTY_SPANS` by the blob — never trust shared RAM) |
+| 0x20 | `spans[16]`   | M33    | packed `(start_row << 16) \| count`, ascending + disjoint |
+
+(The F1/F4-era 64-byte block with the `BufDesc` ping-pong descriptors this section used to list is
+retired history — the F-stage sections below describe it as it was built.)
 
 ### Doorbells
 
 | direction | mechanism | detail |
 |---|---|---|
-| **M33 → FLPR** | shared-RAM **sequence** | M33 writes `cmd` then bumps `m33_seq` (+`dsb`); the FLPR polls `m33_seq` and services on a change. The FLPR is a dedicated core, so polling is correct — and this is exactly F4's "buffer ready" handshake. |
-| **FLPR → M33** | **EGU20** interrupt | the FLPR writes `EGU20.TASKS_TRIGGER[0]` (secure `0x500C_9000`) — a plain peripheral store, like driving GPIO. `EGU20.EVENTS_TRIGGERED[0]` raises the M33's **`EGU20` IRQ #201**; the ISR (`Priority::P3`) clears the event + signals an `embassy_sync::Signal`. No pin, and the M33 sleeps instead of busy-waiting. |
+| **M33 → FLPR** | shared-RAM **sequence** | M33 writes `fb_addr` + spans + `cmd`, `dsb`, then bumps `m33_seq`; the FLPR polls `m33_seq` and services on a change. The FLPR is a dedicated core, so polling is correct. |
+| **FLPR → M33** | **EGU20** interrupt | the FLPR writes `EGU20.TASKS_TRIGGER[0]` (secure `0x500C_9000`) — a plain peripheral store, like driving GPIO. `EGU20.EVENTS_TRIGGERED[0]` raises the M33's **`EGU20` IRQ #201**; the ISR (`Priority::P1`, armed in `launch_flpr`) clears the event + signals the `FRAME_ACK` `embassy_sync::Signal` the async present awaits — **the M33 runs other futures for the whole ~97 ms scan** instead of busy-waiting (#347), bounded by a 250 ms deadline that turns a stalled FLPR into a clean, retried `false`. |
 
 EGU is the nRF "software interrupt" peripheral and a normal, M33-writable peripheral (its `INTEN`
-accepts writes — the crux, see below). **Reserve `EGU20`** when this folds into the real firmware
-(F5) so nothing else claims it; `EGU10` is the spare alternative.
+accepts writes — the crux, see below). `EGU20` is reserved for this ack; `EGU10` is the spare
+alternative.
 
 ### Why not VEVIF
 
@@ -303,11 +317,14 @@ Lesson (echoing L1's "PWM won't route to the COM pins"): on this part, *compiles
 ### Memory ordering
 
 A flag must never be observed before the data it guards, across cores. The rule, both directions:
-the writer fills the data fields, then writes the **sequence field last** as the guard, with a
-**barrier before signalling** — the M33 uses `cortex_m::asm::dsb()`, the FLPR a RISC-V `fence`.
-Concretely: M33 writes `cmd` then `m33_seq` (+`dsb`); the FLPR, on seeing `m33_seq` change, writes
-`status` (+`fence`) then `flpr_seq` (+`fence`) then pokes the EGU. The FLPR blob uses **no CSRs**
-(only `fence`, base ISA), so the blob builds with plain `-march=rv32emc` — no Zicsr.
+the writer fills the data fields, then a **barrier**, then writes the **sequence field last** as
+the guard — the M33 uses `cortex_m::asm::dsb()`, the FLPR a RISC-V `fence`. Concretely: the M33
+writes `fb_addr` + spans + `cmd`, `dsb`, then `m33_seq` (issue #346 moved the barrier *between*
+payload and doorbell — it used to sit after, ordering nothing); the FLPR, on seeing `m33_seq`
+change, `fence`s before reading the payload, and writes `status` (+`fence`) then `flpr_seq`
+(+`fence`) then pokes the EGU. The M33 mirrors that on the read side with a `dmb` between the ack
+and the `status`/`frame_count` reads. The FLPR blob uses **no CSRs** (only `fence`, base ISA), so
+the blob builds with plain `-march=rv32emc` — no Zicsr.
 
 ## F2 — one source sub-line
 
