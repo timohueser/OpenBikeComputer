@@ -46,6 +46,7 @@ jobs:
       docs: ${{ steps.filter.outputs.docs }}
       wasm: ${{ steps.filter.outputs.wasm }}
       ios: ${{ steps.filter.outputs.ios }}
+      web: ${{ steps.filter.outputs.web }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -68,6 +69,9 @@ jobs:
               - '.github/workflows/ci.yml'
             ios:
               - 'companion-ios/**'
+              - '.github/workflows/ci.yml'
+            web:
+              - 'packer/web_builder/frontend/**'
               - '.github/workflows/ci.yml'
 
   # cargo fmt --check for both manifests. rustfmt walks up from each file and finds the shared
@@ -319,9 +323,32 @@ jobs:
 
   # Single aggregate gate: make THIS the required status check on main/develop. It succeeds
   # only if no needed job failed or was cancelled; jobs skipped by the path filters are fine.
+  # The web builder's Svelte frontend: type-check, unit tests, production build.
+  web:
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packer/web_builder/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: packer/web_builder/frontend/package-lock.json
+      - run: npm ci
+      - name: svelte-check
+        run: npm run check
+      - name: vitest
+        run: npm test
+      - name: production build
+        run: npm run build
+
   ci:
     if: always()
-    needs: [changes, fmt, clippy, test, embedded, device, deny, wasm, docs, ios-unit, ios-app]
+    needs: [changes, fmt, clippy, test, embedded, device, deny, wasm, docs, ios-unit, ios-app, web]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all required jobs succeeded (or were skipped)
