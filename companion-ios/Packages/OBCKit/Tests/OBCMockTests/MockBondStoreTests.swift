@@ -32,13 +32,27 @@ final class MockBondStoreTests: XCTestCase {
 
         XCTAssertNil(store.load())
 
-        store.save(BondRecord(deviceName: "whatever"))
+        store.save(BondRecord(deviceName: "Summit"))
         XCTAssertTrue(control.bonded)
-        // The served name is the control's live identity, not the saved string.
-        XCTAssertEqual(store.load(), BondRecord(deviceName: control.deviceInfo.name))
+        // The saved name is served back: the bond record is the *desired*
+        // name, which deliberately diverges from `deviceInfo` when a rename's
+        // config write failed — the gap the reconcile pass detects (#361).
+        XCTAssertEqual(store.load(), BondRecord(deviceName: "Summit"))
 
         store.clear()
         XCTAssertFalse(control.bonded)
         XCTAssertNil(store.load())
+    }
+
+    /// Scenario boots never `save` — the store serves the control's live
+    /// identity, and `apply()` drops any saved name with the rest of the knobs.
+    func testScenarioBootsServeTheLiveIdentityUntilASave() {
+        let control = MockControl(scenario: .happyPath)
+        let store = MockBondStore(control: control)
+        XCTAssertEqual(store.load(), BondRecord(deviceName: control.deviceInfo.name))
+
+        control.bondedName = "Stale"
+        control.apply(.happyPath)
+        XCTAssertEqual(store.load(), BondRecord(deviceName: control.deviceInfo.name))
     }
 }

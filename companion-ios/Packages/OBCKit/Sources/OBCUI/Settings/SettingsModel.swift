@@ -13,7 +13,9 @@ import OBCTransport
 /// new name shows across the app at once (top bar via the composition root's
 /// callback, the bond record for the next launch greeting) and rides to the
 /// device on the config write. Link-bound, so the row dims when unreachable
-/// (the S4 rule: actions that need the link dim).
+/// (the S4 rule: actions that need the link dim). A failed write surfaces once
+/// (`renameWriteFailed` → the view's toast) and self-heals on the next connect
+/// via `DeviceNameReconciler` (#361) — reconciliation over error dialogs.
 ///
 /// **Forget (H2)** clears the app's bond record and drops the link; the launch
 /// flow returns to the D1 pairing prompt. Everything on the phone stays — the
@@ -28,6 +30,12 @@ public final class SettingsModel {
     public private(set) var battery: Int?
     /// Raw firmware version ("0.4.2"), `nil` until `deviceInfo` lands.
     public private(set) var firmwareVersion: String?
+    /// The last rename's config write failed — the phone shows the new name
+    /// but the device never got it. The view surfaces this once (toast) and
+    /// clears it; `DeviceNameReconciler` pushes the bond name on the next
+    /// connect (#361), so there is no retry here. Settable: the toast's
+    /// auto-dismiss writes it back through the binding.
+    public var renameWriteFailed = false
 
     // MARK: Derived (design G copy)
 
@@ -137,12 +145,20 @@ public final class SettingsModel {
         deviceName = trimmed
         bondStore.save(BondRecord(deviceName: trimmed))
         onDeviceRenamed(trimmed)
-        Task { [transport] in
+        Task { [weak self, transport] in
             // Name rides in the Config blob (Delta 1): read-modify-write so the
             // other fields (units, …) survive the rename.
-            guard var config = try? await transport.readConfig() else { return }
-            config.name = trimmed
-            try? await transport.writeConfig(config)
+            do {
+                var config = try await transport.readConfig()
+                config.name = trimmed
+                try await transport.writeConfig(config)
+            } catch {
+                // Either leg failing means the device never got the name.
+                // Flag it once for the view's toast; the reconcile pass
+                // self-heals on the next connect (#361) — the bond record
+                // above already carries the desired name.
+                self?.renameWriteFailed = true
+            }
         }
         return true
     }
