@@ -41,7 +41,7 @@
     }
 
     .inner {
-        width: min(1180px, 100% - 32px);
+        width: min(1400px, 100% - 32px);
         margin: 0 auto;
         height: 100%;
         display: flex;
