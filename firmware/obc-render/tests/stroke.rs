@@ -1,4 +1,4 @@
-//! Joints, caps and body of thick lines. The span stroke (`stroke_overlay`/`flush_run`) lays each
+//! Joints, caps and body of thick lines. The span stroke (`Stroker::stroke`/`flush_run`) lays each
 //! segment as a scanline-filled **rectangle** with butt ends, then fills a disc (⌀ = stroke width)
 //! at each **run end** and at every interior vertex that bends sharply, so joints and ends read as
 //! smooth round arcs rather than butt notches. We probe the disc where it's unambiguous — a
