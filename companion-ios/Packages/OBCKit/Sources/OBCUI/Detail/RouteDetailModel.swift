@@ -29,7 +29,7 @@ public final class RouteDetailModel {
 
     // MARK: Observable state
 
-    /// Title — editable via `rename(to:)` on planned/tracked (H12).
+    /// Title — editable via `rename(to:)` on every dressing (H12).
     public private(set) var name: String
     /// Waypoints in ride order (W1); empty until the detail read lands.
     public private(set) var waypoints: [Waypoint] = []
@@ -109,12 +109,9 @@ public final class RouteDetailModel {
         return crc
     }
 
-    public var isRenamable: Bool {
-        switch dressing {
-        case .planned, .tracked: true
-        case .imported: false  // the name saves with the route; no pencil on E1
-        }
-    }
+    /// Every dressing renames (H12) — on E1 the pencil fixes the name *before*
+    /// save/upload, so an import doesn't have to round-trip through Planned.
+    public var isRenamable: Bool { true }
 
     // MARK: Wiring
 

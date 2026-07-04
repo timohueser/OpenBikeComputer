@@ -29,8 +29,9 @@ public struct TrackPreviewView: View {
         }
     }
 
-    /// Extra dots pinned on the polyline (the waypoints screen W1) — a unit
-    /// point plus a label drawn in an amber marker.
+    /// Extra dots pinned on the polyline (the W1 waypoint pins on the detail
+    /// hero's grid fallback) — a unit point plus a label drawn in an amber
+    /// marker.
     public struct Marker: Identifiable {
         public let id: Int
         public let point: TrackPreview.Point

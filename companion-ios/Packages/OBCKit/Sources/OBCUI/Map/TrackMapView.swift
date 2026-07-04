@@ -14,11 +14,18 @@ import MapKit
 /// draw here — the grid preview stays put when offline.
 public struct TrackMapView: View {
     private let coordinates: [Coordinate]
+    private let waypoints: [Waypoint]
     private let title: String
     private let onClose: () -> Void
 
-    public init(coordinates: [Coordinate], title: String, onClose: @escaping () -> Void) {
+    public init(
+        coordinates: [Coordinate],
+        waypoints: [Waypoint] = [],
+        title: String,
+        onClose: @escaping () -> Void
+    ) {
         self.coordinates = coordinates
+        self.waypoints = waypoints
         self.title = title
         self.onClose = onClose
     }
@@ -46,7 +53,7 @@ public struct TrackMapView: View {
     private var mapBody: some View {
         #if canImport(MapKit)
         Map(initialPosition: .region(MapGeometry.boundingRegion(for: coordinates, pad: 1.4))) {
-            TrackMapContent(coordinates: coordinates, dotRadius: 7)
+            TrackMapContent(coordinates: coordinates, dotRadius: 7, waypoints: waypoints)
         }
         .mapControls {
             MapCompass()
