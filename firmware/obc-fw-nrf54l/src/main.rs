@@ -218,13 +218,10 @@ use embassy_nrf::wdt;
 #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
 use embassy_nrf::twim::{self, Twim};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-#[cfg(has_map)]
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
-// The async `Mutex` guards two things, each needing a lock held across an `.await`: the ST7789
-// `BUS` (tft) and the shared SD + settings store ([`SharedStore`], every `has_map` build). A `tft`
-// build is a `has_map` build, so `has_map` covers both.
-#[cfg(has_map)]
+// The async `Mutex` guards things that need a lock held across an `.await`: the ST7789 `BUS` (tft)
+// and the shared SD + settings store ([`SharedStore`], every build).
 use embassy_sync::mutex::Mutex;
 // The map/ride half of obc-app lives only on `has_map` builds (the `ble` DK build compiles the map
 // plane out); the shared `InputPlane` is every build's.
@@ -442,20 +439,18 @@ unsafe fn init_static<T>(slot: *mut MaybeUninit<T>, val: T) -> &'static mut T {
     &mut *ptr
 }
 
-/// The two persistent resources the map plane's ride loop drives — and that, once map + BLE share
-/// one image (#270), the BLE object plane must share with it: the mounted SD card and the RRAM
+/// The two persistent resources both thread-mode planes drive: the mounted SD card (`None` = no
+/// card — the map plane then idles, the BLE plane still serves config/bond/diagnostics) and the RRAM
 /// settings store. Held behind an async [`Mutex`] so a locker can keep the guard **across an
-/// `.await`** — the ride loop holds it across a whole map render; a future object plane takes it
-/// per chunk between passes — which a `RefCell` can't (the ble planes today avoid that only by
-/// never borrowing across an await). `NoopRawMutex` suffices: both planes are cooperative futures
-/// on the one thread-mode executor and no ISR touches storage, so no critical section is needed.
-#[cfg(has_map)]
+/// `.await`** — the ride loop holds it across a whole map render; the BLE object plane takes it per
+/// chunk between passes — which a `RefCell` can't (the ble planes avoid that only by never borrowing
+/// across an await). `NoopRawMutex` suffices: both planes are cooperative futures on the one
+/// thread-mode executor and no ISR touches storage, so no critical section is needed.
 pub(crate) struct SharedStore {
-    pub(crate) storage: sd::Storage,
+    pub(crate) storage: Option<sd::Storage>,
     pub(crate) settings: settings::RramSettingsStore,
 }
-/// The shared-store handle threaded into [`ride::run_app`] (and, at #270, the object plane).
-#[cfg(has_map)]
+/// The shared-store handle threaded into [`ride::run_app`] and the BLE object plane (#270).
 pub(crate) type SharedStoreMutex = Mutex<NoopRawMutex, SharedStore>;
 
 /// Idle camera zoom for the boot map, in ground metres-per-pixel (the 0.5–4 mpp riding band). A
@@ -1032,30 +1027,37 @@ async fn main(_spawner: Spawner) {
             }
         };
 
-        // The map build's shared store: the mounted card + the RRAM settings move behind one async
-        // mutex, so the ride loop — and, once map + BLE share an image (#270), the BLE object plane —
-        // can each lock it per pass. Built in place in `.bss` (warm-reset-safe via `init_static`, like
-        // the caches above). `storage`/`settings_store` are consumed here; the loop reaches them through
-        // the guard.
+        // The shared store: the mounted card + the RRAM settings move behind one async mutex, so the
+        // ride loop and the BLE object plane can each lock it per pass. Built in place in `.bss`
+        // (warm-reset-safe via `init_static`, like the caches above). `storage`/`settings_store` are
+        // consumed here; both planes reach them through the guard. The map build already unwrapped
+        // `storage` to a `Storage` (idling at boot without a card); the `ble` build keeps it `Option`
+        // (no card → config/bond/diagnostics still serve).
+        static mut SHARED_STORE: MaybeUninit<SharedStoreMutex> = MaybeUninit::uninit();
         #[cfg(has_map)]
-        let shared_store: &'static SharedStoreMutex = {
-            static mut SHARED_STORE: MaybeUninit<SharedStoreMutex> = MaybeUninit::uninit();
-            unsafe {
-                init_static(
-                    core::ptr::addr_of_mut!(SHARED_STORE),
-                    Mutex::new(SharedStore { storage, settings: settings_store }),
-                )
-            }
+        let shared_store: &'static SharedStoreMutex = unsafe {
+            init_static(
+                core::ptr::addr_of_mut!(SHARED_STORE),
+                Mutex::new(SharedStore { storage: Some(storage), settings: settings_store }),
+            )
+        };
+        #[cfg(all(feature = "ble", not(has_map)))]
+        let shared_store: &'static SharedStoreMutex = unsafe {
+            init_static(
+                core::ptr::addr_of_mut!(SHARED_STORE),
+                Mutex::new(SharedStore { storage, settings: settings_store }),
+            )
         };
 
-        // The `ble` build's object store: the mounted card (`None` degrades route ops to typed errors,
-        // config still works) + the RRAM settings both move in here; the BLE planes drive it. The status
-        // screen keeps only the boot-time `sd` flag.
+        // The `ble` build's object store: the catalog/upload/digest semantics over the shared card +
+        // settings. It no longer owns storage — it scans the catalog through a boot-time lock of
+        // `shared_store` and, at runtime, the BLE planes lock the store per call and pass the guard in.
+        // The status screen keeps only the boot-time `sd` flag.
         #[cfg(all(feature = "ble", not(has_map)))]
         let (ble_store, sd_ok) = {
-            let store = object_store::ObjectStore::new(storage, settings_store);
-            let sd_ok = store.sd_ok();
-            (store, sd_ok)
+            let mut guard = shared_store.lock().await;
+            let sd_ok = guard.storage.is_some();
+            (object_store::ObjectStore::new(&mut guard), sd_ok)
         };
 
         // --- The BLE stack, `ble` builds: group the peripheral claims (MPSL: GRTC CH7–11 + TIMER10/20
@@ -1100,7 +1102,7 @@ async fn main(_spawner: Spawner) {
                 p.PPIB10_CH2,
                 p.PPIB10_CH3,
             );
-            ble::run(_spawner, mpsl_p, sdc_p, p.CRACEN, ble_store)
+            ble::run(_spawner, mpsl_p, sdc_p, p.CRACEN, ble_store, shared_store)
         };
 
         // Hand the built display + the resident set to the shared, backend-agnostic ride loop. The
