@@ -136,7 +136,8 @@ let rx = self.cos_c * ex - self.sin_c * ny;       // rotate to heading-up
 let ry = -self.sin_c * ex - self.cos_c * ny;
 let x = rx * self.zoom + self.w / 2.0;            // scale, centre
 let y = ry * self.zoom + self.h / 2.0;
-(roundf(x) as i32, roundf(y) as i32)              // round to nearest
+(round_coord(x), round_coord(y))                  // round to nearest — a branch + add,
+                                                  // no soft-float roundf on the hot path
 ```
 
 <figure class="fig">
