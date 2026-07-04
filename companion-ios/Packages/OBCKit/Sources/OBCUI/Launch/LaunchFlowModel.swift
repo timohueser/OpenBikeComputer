@@ -7,9 +7,12 @@ import OBCTransport
 /// H7 · H8). One `@Observable` state machine the host view renders:
 ///
 /// ```
-/// start() ─ bonded? ──yes──► connecting (A) ── connect ⊻ grace ──► main
-///              │                                (never an error — out of range
-///              no                                degrades to main + S4 banner)
+/// start() ─ bonded? ──yes──► connecting (A) ── link up ⊻ hard fail ──► main
+///              │                  │ grace expired (device silent)
+///              │                  ▼
+///              │            connectFailed ── Try again ──► connecting (A)
+///              │                  └─ Go to routes ──► main (S4 banner story)
+///              no
 ///              ▼
 ///          pairIntro (D1) ─ startPairing ─► scanning (D2) ── found ─► row tap
 ///              ▲                              │    │                     │
@@ -62,8 +65,14 @@ public final class LaunchFlowModel {
     public enum Phase: Equatable, Sendable {
         /// Pre-`start()` blank (parchment) — reads as the launch screen.
         case idle
-        /// A — bonded, quietly reconnecting. Always resolves to `.main`.
+        /// A — bonded, quietly reconnecting. Resolves to `.main` (link up, or a
+        /// hard connect failure that degrades) or `.connectFailed` (grace
+        /// expired with the device silent — asleep / out of range).
         case connecting(deviceName: String)
+        /// A-timeout — the bonded device didn't answer within the grace window.
+        /// Try again re-enters A; Go to routes lands on main (the background
+        /// attempt keeps listening either way).
+        case connectFailed(deviceName: String)
         /// D1 — the friendly pairing prompt.
         case pairIntro
         /// D2 — scanning; the row slides in when `discovered` is non-nil.
@@ -82,9 +91,10 @@ public final class LaunchFlowModel {
 
     /// Flow pacing — injectable so the model tests run in milliseconds.
     public struct Timing: Sendable {
-        /// How long the A state may hold before landing on main regardless
-        /// ("never a blocking full-screen spinner" — connect keeps trying in
-        /// the background and the S4 banner covers the degraded case).
+        /// How long the A state may hold before it resolves ("never a blocking
+        /// full-screen spinner"): the link coming up lands on main, expiry on
+        /// the connect-failed screen — while the connect attempt keeps trying
+        /// in the background.
         public var connectGrace: Duration
         /// The D2 scan window; expiry is the D5 "we scanned for 30 seconds" copy.
         public var scanTimeout: Duration
@@ -110,6 +120,8 @@ public final class LaunchFlowModel {
     private let bondStore: any BondStore
     private let timing: Timing
     @ObservationIgnored private var flowTask: Task<Void, Never>?
+    /// The one background bonded-connect attempt (see `startConnectAttemptIfNeeded`).
+    @ObservationIgnored private var connectAttempt: Task<Void, Never>?
 
     public init(
         transport: any DeviceTransport,
@@ -119,6 +131,11 @@ public final class LaunchFlowModel {
         self.transport = transport
         self.bondStore = bondStore
         self.timing = timing
+    }
+
+    deinit {
+        flowTask?.cancel()
+        connectAttempt?.cancel()
     }
 
     // MARK: The launch branch
@@ -137,23 +154,82 @@ public final class LaunchFlowModel {
         phase = .connecting(deviceName: bond.deviceName)
         flowTask = Task { [transport, timing] in
             // The state stream replays the latest value — already connected (or
-            // degraded but known) means there is nothing to wait for.
+            // degraded but known) means there is nothing to wait for, and out
+            // of range means the transport's own reconnect loop is already on
+            // it (no fresh attempt).
             var current: ConnectionState?
             for await state in transport.state { current = state; break }
-            if current != .connected && current != .outOfRange {
-                // Race connect against the grace cap. Either way we land on
-                // main: success connects silently, failure/expiry degrades to
-                // the S4 disconnected banner — never an error screen.
-                await withTaskGroup(of: Void.self) { group in
-                    group.addTask { try? await transport.connect() }
-                    group.addTask { try? await Task.sleep(for: timing.connectGrace) }
-                    await group.next()
-                    group.cancelAll()
-                }
+            if current == .connected || current == .outOfRange {
+                phase = .main
+                return
             }
+            startConnectAttemptIfNeeded()
+            // Watch for the link under the grace cap. The connect attempt runs
+            // unstructured (`connectAttempt`) because the real transport's
+            // `connect()` is not cancellation-responsive while it scans for an
+            // absent device: racing it *inside* a task group wedged the group's
+            // implicit drain, holding A on screen forever.
+            let connected = await Self.linkCameUp(transport.state, within: timing.connectGrace)
             guard !Task.isCancelled else { return }
-            phase = .main
+            phase = connected ? .main : .connectFailed(deviceName: bond.deviceName)
         }
+    }
+
+    /// The background bonded-connect attempt — started at most once. While the
+    /// device is out of reach the transport keeps scanning (its reconnect
+    /// contract), so "Try again" re-watches this same attempt under a fresh
+    /// grace window rather than stacking scans. When the attempt resolves it
+    /// finishes a still-waiting A / connect-failed screen: success means the
+    /// link is up; a hard failure (radio off/denied, connect refused) degrades
+    /// to main — the library never locks, and the S4 banner owns the
+    /// degraded-link story.
+    private func startConnectAttemptIfNeeded() {
+        guard connectAttempt == nil else { return }
+        connectAttempt = Task { [transport, weak self] in
+            try? await transport.connect()
+            guard let self, !Task.isCancelled else { return }
+            connectAttempt = nil
+            switch phase {
+            case .connecting, .connectFailed:
+                flowTask?.cancel()
+                phase = .main
+            default:
+                break
+            }
+        }
+    }
+
+    /// Whether `states` reports `.connected` within `grace`. Both children are
+    /// cancellation-responsive (stream iteration + sleep), so the group's
+    /// implicit drain cannot wedge.
+    private static func linkCameUp(
+        _ states: AsyncStream<ConnectionState>,
+        within grace: Duration
+    ) async -> Bool {
+        await withTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                for await state in states where state == .connected { return true }
+                return false
+            }
+            group.addTask {
+                try? await Task.sleep(for: grace)
+                return false
+            }
+            let first = await group.next() ?? false
+            group.cancelAll()
+            return first
+        }
+    }
+
+    /// Connect-failed "Try again": back to A under a fresh grace window. The
+    /// bond vanishing underneath (a raced forget) falls back to the D1 prompt.
+    public func retryConnect() {
+        guard let bond = bondStore.load() else {
+            phase = .pairIntro
+            return
+        }
+        flowTask?.cancel()
+        beginBondedConnect(bond)
     }
 
     // MARK: The pairing flow
@@ -233,7 +309,9 @@ public final class LaunchFlowModel {
         phase = .pairIntro
     }
 
-    /// H8/H7 secondary action — the library never locks (S-state law).
+    /// H8/H7 and connect-failed secondary action — the library never locks
+    /// (S-state law). A still-running connect attempt keeps listening, so the
+    /// link comes up on its own once the device is nearby.
     public func browseLibrary() {
         flowTask?.cancel()
         phase = .main
@@ -244,6 +322,8 @@ public final class LaunchFlowModel {
     /// return to the D1 pairing prompt.
     public func forgetDevice() {
         flowTask?.cancel()
+        connectAttempt?.cancel()  // its completion must not touch the phase now
+        connectAttempt = nil
         phase = .pairIntro
     }
 

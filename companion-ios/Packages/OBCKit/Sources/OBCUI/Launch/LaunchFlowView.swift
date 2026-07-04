@@ -35,6 +35,12 @@ public struct LaunchFlowView<Main: View>: View {
             OBCTheme.parchment.ignoresSafeArea()
         case .connecting(let deviceName):
             LaunchConnectingView(deviceName: deviceName)
+        case .connectFailed(let deviceName):
+            LaunchConnectFailedView(
+                deviceName: deviceName,
+                onRetry: { model.retryConnect() },
+                onGoToRoutes: { model.browseLibrary() }
+            )
         case .pairIntro:
             PairIntroView(onStart: { model.startPairing() })
         case .scanning(let discovered):
@@ -66,6 +72,7 @@ public struct LaunchFlowView<Main: View>: View {
         switch model.phase {
         case .idle: "idle"
         case .connecting: "connecting"
+        case .connectFailed: "connectFailed"
         case .pairIntro: "pairIntro"
         case .scanning: "scanning"
         case .pairing: "pairing"
