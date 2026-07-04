@@ -340,7 +340,7 @@ static mut BAND: [u16; FRAME_W * BAND_ROWS] = [0; FRAME_W * BAND_ROWS];
 // stack reserve carries that spike.
 //
 // The FLPR build reclaims room without re-trimming the caps: the carve-out leaves the M33 **244 KB**
-// (not 256) but the production blob is ~660 B so the carve is only ~12 KB, and the FLPR map path drops
+// (not 256) but the production blob is ~1 KB so the carve is only ~12 KB, and the FLPR map path drops
 // the ~6.6 KB RGB565 band scratch — a net loosening, so the same caps clear the budget.
 
 /// Total SRAM the M33 app core sees. The opt-in ST7789 build (`--features tft`) links the full 256 KB
