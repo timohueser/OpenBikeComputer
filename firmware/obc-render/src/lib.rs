@@ -26,6 +26,7 @@ pub mod surface;
 pub mod text;
 mod viewport;
 pub use canvas::{rect, Canvas};
+pub use overlay::{OverlayChunk, RouteOverlaySource};
 pub use surface::Surface;
 pub use text::{draw_text, text_width, Font, TextAlign};
 pub use viewport::{mpp_for_zoom, zoom_for_mpp, Viewport};

@@ -8,7 +8,6 @@
 #![allow(dead_code)]
 
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
-use obc_route::{ByteSink, Error};
 
 /// A `w`×`h` `Rgb888` buffer implementing `DrawTarget`, with clipped writes. Records
 /// the full colour so tests can count and locate distinctly-coloured features.
@@ -135,25 +134,6 @@ impl DrawTarget for BitBuf {
                 }
             }
         }
-        Ok(())
-    }
-}
-
-/// A `ByteSink` over a growable `Vec` — the host's "whole file to RAM" backing (the
-/// device uses a FatFs-backed sink instead).
-#[derive(Default)]
-pub struct VecSink {
-    pub buf: Vec<u8>,
-}
-
-impl ByteSink for VecSink {
-    fn write(&mut self, b: &[u8]) -> Result<(), Error> {
-        self.buf.extend_from_slice(b);
-        Ok(())
-    }
-    fn patch_at(&mut self, off: u32, b: &[u8]) -> Result<(), Error> {
-        let o = off as usize;
-        self.buf[o..o + b.len()].copy_from_slice(b);
         Ok(())
     }
 }
