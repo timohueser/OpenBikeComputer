@@ -128,6 +128,10 @@ piecemeal (if that ever flips, it's its own issue).
 - **Open-ended stream loops in view models** (`for await` over `transport.state`
   etc.): `[weak self]` + `guard let self` **inside** the loop, store the `Task`,
   cancel it in `deinit` (cancellation only — no main-actor state in `deinit`).
+- **New test suites use Swift Testing** (`import Testing`, `@Test`/`#expect`);
+  existing XCTest suites migrate only when substantially rewritten anyway —
+  never as drive-by churn. Both frameworks coexist in the same test target
+  under `swift test`; `CRC32Tests` is the template (incl. `@Test(arguments:)`).
 - **One feature per folder** under `OBCUI` (view + its view model).
 - **Never hand-edit the pbxproj** — it's regenerated; edit `project.yml`.
 
