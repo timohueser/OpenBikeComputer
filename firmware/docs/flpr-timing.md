@@ -96,7 +96,10 @@ sub-line is now 100 % useful work — pack + GPIO presents pace the wire (~210 n
 ~3× under the 660 ns spec minimum; owner decision 2026-07-04: keep max speed, the policy
 header documents the over-spec margins + the single-unit caveat). Fully in-spec BCK halves
 (660 ns) were costed at ~+36 ms/frame (~80 ms total) and declined per the issue's policy.
-A side effect worth knowing: bulge overlay pushes dropped ~20 → ~9 ms (5× faster gate
+Overlay (bulge) partial pushes, measured on glass at the end state: **64 dirty rows = 9.43 ms,
+88 rows = 12.3 ms, 112 rows = 15.7 ms** (~140–147 µs/row incl. the gate fast-forward) — vs
+~21 ms for the 64-row case pre-#348: no regression, a ~2.2× improvement.
+A side effect worth knowing: bulge overlay pushes dropped ~21 → ~9 ms (5× faster gate
 fast-forward), which makes the hold-pop animation's designed "fast lunge" visibly snappier —
 the animation is wall-clock-paced (`hold_hint.rs`), so durations are unchanged; retuning
 `POP_MS`/`POP_ATTACK` is a UI preference, not a #348 regression.
