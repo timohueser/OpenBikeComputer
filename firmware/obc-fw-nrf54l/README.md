@@ -243,9 +243,9 @@ builds on it:
   Moving back to the xtal (better idle power) means writing the `OSCILLATORS` INTCAP registers
   before MPSL init — a filed follow-up.
 - **Interrupts/peripherals MPSL+SDC claim.** Vectors: `RADIO_0`, `TIMER10`, `GRTC_3` (high-prio),
-  `CLOCK_POWER`, and `SWI00` (low-prio scheduling) — which is why `main.rs`'s high-priority
-  `InterruptExecutor` sits on **SWI01** (every build; the full priority ladder is in `main.rs`'s
-  module doc). Peripherals owned outright: GRTC CH7–11, `TIMER10`, `TIMER20`, `TEMP`, `CRACEN`
+  `CLOCK_POWER`, and `SWI00` (low-prio scheduling) — which is why the firmware's high-priority
+  `InterruptExecutor` (`src/planes.rs`) sits on **SWI01** (every build; the full priority ladder
+  is in `main.rs`'s module doc). Peripherals owned outright: GRTC CH7–11, `TIMER10`, `TIMER20`, `TEMP`, `CRACEN`
   (LL crypto RNG), and a raft of PPI/PPIB channels (grouped in `main.rs`, consumed by
   `ble::run`). The HF **crystal** is an MPSL hard requirement (`HfclkSource::ExternalXtal`) —
   the `ble` build's boot config sets it; non-BLE builds keep the internal RC.
