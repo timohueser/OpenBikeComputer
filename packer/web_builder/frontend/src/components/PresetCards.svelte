@@ -38,7 +38,7 @@
 
 {#if modified}
     <div class="custom small">
-        <span class="badge">Custom — based on {basedOnName}</span>
+        <span class="badge">{basedOnName ? `Custom — based on ${basedOnName}` : "Custom"}</span>
         <span class="muted">your edits are kept in this browser</span>
     </div>
 {/if}
