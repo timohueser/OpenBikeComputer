@@ -83,6 +83,71 @@ final class SettingsModelTests: XCTestCase {
         await waitFor("config write lands") { control.deviceInfo.name == "Summit" }
         // The bond record greets with the new name on the next launch.
         XCTAssertEqual(MockBondStore(control: control).load()?.deviceName, "Summit")
+        // The write landed → nothing to surface, nothing to reconcile.
+        XCTAssertFalse(model.renameWriteFailed)
+    }
+
+    /// #361 pin: rename is link-bound — a fully dropped link rejects it too
+    /// (not only `.outOfRange`), before any optimistic state moves.
+    func testRenameWhileDisconnectedReturnsFalse() async {
+        let (model, control) = makeModel(.happyPath)
+        model.start()
+        await waitFor("identity") { model.deviceName == "Trailhead" }
+
+        control.connection = .disconnected
+        await waitFor("link down") { model.connection == .disconnected }
+
+        XCTAssertFalse(model.rename(to: "Summit"))
+        XCTAssertEqual(model.deviceName, "Trailhead")
+        XCTAssertFalse(model.renameWriteFailed)
+    }
+
+    /// #361: a rename whose `writeConfig` leg fails — the phone keeps the
+    /// optimistic name, the one-shot flag drives the toast, and the *bond
+    /// record* keeps the desired name so the reconcile pass can converge.
+    func testRenameWriteFailureSetsTheFlagAndKeepsTheOptimisticName() async {
+        let transport = ConfigSpyTransport(config: DeviceConfig(name: "Trailhead"))
+        let bondStore = RecordingBondStore(BondRecord(deviceName: "Trailhead"))
+        let model = SettingsModel(transport: transport, bondStore: bondStore)
+        model.start()
+        await waitFor("connected") { model.connection == .connected }
+
+        transport.failNextWrite()
+        XCTAssertTrue(model.rename(to: "Summit"))
+
+        await waitFor("failure flag") { model.renameWriteFailed }
+        XCTAssertEqual(model.deviceName, "Summit", "the rename stays optimistic")
+        XCTAssertEqual(transport.config.name, "Trailhead", "the device never got it")
+        XCTAssertEqual(bondStore.load()?.deviceName, "Summit", "the desired name survives")
+
+        // "It'll retry next time you connect": the reconcile pass converges.
+        await DeviceNameReconciler(transport: transport, bondStore: bondStore).reconcile()
+        XCTAssertEqual(transport.config.name, "Summit")
+    }
+
+    /// #361, through the full mock wiring: the armed one-shot failure hits the
+    /// rename's `readConfig` leg (the first op) — same flag, same heal, and
+    /// `MockBondStore` serves the diverged desired name the way the real
+    /// `UserDefaultsBondStore` would.
+    func testRenameReadFailureFlagsAndReconcileHealsThroughTheMock() async {
+        let (model, control) = makeModel(.happyPath)
+        model.start()
+        await waitFor("identity") { model.deviceName == "Trailhead" }
+
+        control.failNextOp(.readFailed)
+        XCTAssertTrue(model.rename(to: "Summit"))
+
+        await waitFor("failure flag") { model.renameWriteFailed }
+        XCTAssertEqual(control.deviceInfo.name, "Trailhead", "the device never got it")
+        XCTAssertEqual(MockBondStore(control: control).load()?.deviceName, "Summit")
+
+        let reconciler = DeviceNameReconciler(
+            transport: MockTransport(control: control),
+            bondStore: MockBondStore(control: control)
+        )
+        await reconciler.reconcile()
+        XCTAssertEqual(control.fixtures.config.name, "Summit")
+        XCTAssertEqual(control.deviceInfo.name, "Summit")
     }
 
     func testRenameCapsOverLongNamesAtTheS0Limit() async {

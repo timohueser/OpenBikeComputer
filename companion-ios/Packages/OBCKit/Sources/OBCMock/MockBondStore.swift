@@ -14,17 +14,21 @@ public struct MockBondStore: BondStore {
     }
 
     public func load() -> BondRecord? {
-        control.bonded ? BondRecord(deviceName: control.deviceInfo.name) : nil
+        control.bonded ? BondRecord(deviceName: control.bondedName ?? control.deviceInfo.name) : nil
     }
 
-    /// The name is served live from `control.deviceInfo` (so a rename stays in
-    /// sync); saving just flips the bond bit.
+    /// A save keeps the record's name (it's the *desired* name — after a rename
+    /// whose config write failed it deliberately diverges from `deviceInfo`,
+    /// which is what the reconcile pass detects, #361). Scenario boots have no
+    /// saved name and fall back to `deviceInfo` live.
     public func save(_ record: BondRecord) {
         control.bonded = true
+        control.bondedName = record.deviceName
     }
 
     public func clear() {
         control.bonded = false
+        control.bondedName = nil
     }
 }
 #endif

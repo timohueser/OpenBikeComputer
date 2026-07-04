@@ -8,7 +8,7 @@ import OBCTransport
 /// implies a cloud or account (epic non-negotiable; the About footer says so
 /// in as many words).
 public struct SettingsView: View {
-    private let model: SettingsModel
+    @Bindable private var model: SettingsModel
     /// Debug-only: the hidden second entry into the mock dev panel (B1P's
     /// deferral) — five taps on the App version row. `nil` in Release wiring,
     /// where the gesture goes nowhere.
@@ -53,6 +53,15 @@ public struct SettingsView: View {
             name: $renameDraft,
             message: "Shown across the app and on the device.",
             onSave: { _ = model.rename(to: renameDraft) }
+        )
+        // The rename's config write failed (#361): say so once, plainly — the
+        // reconcile pass pushes the name on the next connect, no action needed.
+        .obcToast(
+            isPresented: $model.renameWriteFailed,
+            systemImage: "exclamationmark.triangle",
+            message: "Couldn't update the name on \(model.deviceName). "
+                + "It'll retry next time you connect.",
+            duration: .seconds(4)
         )
         .task { model.start() }
     }
