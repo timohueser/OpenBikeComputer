@@ -281,7 +281,7 @@ public struct RouteDetailView: View {
                     .obcDestructiveConfirm(
                         "Delete \"\(model.name)\"?",
                         isPresented: $deleteConfirmShown,
-                        message: "Removes it from your phone. The ride stays on the device.",
+                        message: "Moves it to Recently Deleted. The ride stays on the device.",
                         actionTitle: "Delete ride",
                         onConfirm: { onDelete?() }
                     )
