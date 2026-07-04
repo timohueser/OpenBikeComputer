@@ -34,14 +34,14 @@
 //! ([`FbDevice64`](obc_platform::FbDevice64)) straight via [`fb_mut`](Ls021Flpr::fb_mut)). What the
 //! self-diffing **present** then changes is the *push*: a single `CMD_RUN_FRAME` masked to the changed
 //! rows, the FLPR fast-forwarding its gate scan over the unchanged ones and early-stopping after the
-//! last. Render CPU is unchanged (a full draw), but the push — the dominant ~97 ms cost — scales to
+//! last. Render CPU is unchanged (a full draw), but the push — the dominant ~44 ms cost (#348; ~97 ms before its timing pass) — scales to
 //! the changed-row span. A full redraw is just the degenerate "every row changed" case.
 //!
 //! ## Why the FLPR reads the framebuffer, not a hand-off buffer
 //!
 //! The retired ping-pong write buffers (F4, `flpr_pingpong.c`) predated the resident framebuffer:
 //! with no fb to read, the M33 packed every row into two shared buffers under a per-row
-//! `ready`/`consumed` handshake, busy-polling for the whole ~97 ms frame. The resident fb made that
+//! `ready`/`consumed` handshake, busy-polling for the whole frame. The resident fb made that
 //! moot: it is a stable byte-per-pixel plane in shared SRAM the FLPR can read, and the map plane
 //! owns it for the duration of a push anyway (it presents, then renders — never both at once). So
 //! the M33's only per-frame work is publishing `fb_addr` + the span list and ringing the doorbell —
@@ -54,7 +54,7 @@
 //! The push is **async**: [`push_frame`](Ls021Flpr::push_frame) / [`push_spans`](Ls021Flpr::push_spans)
 //! ring the doorbell and **`await` the FLPR's EGU20 frame ack** (the blob pokes
 //! `EGU20.TASKS_TRIGGER[0]` after every frame; [`launch_flpr`] arms its `TRIGGERED[0]` IRQ, whose
-//! ISR signals [`FRAME_ACK`]). So the ~97 ms a full frame takes on the wire costs the M33
+//! ISR signals [`FRAME_ACK`]). So the ~44 ms a full frame takes on the wire costs the M33
 //! **nothing**: thread mode runs other futures (SD I/O, sensor ticks, the next frame's prep) while
 //! the FLPR scans. The wait is bounded by [`FRAME_DEADLINE`]; a timeout returns `false` exactly
 //! like a transport fault — the caller keeps the last frame, re-arms the diff, and retries (and
@@ -186,7 +186,7 @@ unsafe fn EGU20() {
     FRAME_ACK.signal(());
 }
 
-/// Deadline for one frame ack: the worst full-frame scan is ~100 ms, so 250 ms (≈2×, plus margin)
+/// Deadline for one frame ack: the worst full-frame scan is ~44 ms (#348), so 250 ms (>5×)
 /// only ever fires when the FLPR has genuinely stalled — turning a hang into a reported error the
 /// caller retries (and #349's relaunch escalation hooks).
 const FRAME_DEADLINE: Duration = Duration::from_millis(250);
@@ -321,7 +321,7 @@ pub struct Ls021Flpr<'b> {
     /// The **self-diffing present** store: a per-row hash of the last-pushed framebuffer, so
     /// [`present_within`](Self::present_within) re-hashes the frame and pushes only the rows that
     /// actually changed — a Home clock tick repaints its clock band (a few ms) instead of all 320 rows
-    /// (~97 ms). Borrowed from a `.bss` static (`main`), parallel to `fb` (it must outlive the pushes);
+    /// (~44 ms). Borrowed from a `.bss` static (`main`), parallel to `fb` (it must outlive the pushes);
     /// `FB_H` rows = 1.28 KB. The hashes track the clean `fb`, never the composited bulge (the bulge
     /// rides its own [`push_overlay`](Self::push_overlay) plane), so the store stays the source of truth
     /// for what the map present last put on glass.
@@ -397,7 +397,7 @@ impl<'b> Ls021Flpr<'b> {
     /// stack by that much (on glass: total 36.6 → 24.7 KB, and the first deep map render overflowed
     /// into `.bss` — a BusFault at boot). An overlay push is a few ms (≤192 rows, gate
     /// fast-forwarded), so briefly spinning costs what the pre-#347 path always cost, while the
-    /// ~97 ms map frames keep the async ack. The EGU20 ISR still fires per frame; the stale signal
+    /// ~44 ms map frames keep the async ack. The EGU20 ISR still fires per frame; the stale signal
     /// it leaves is dropped by the next async push's `FRAME_ACK.reset()`.
     fn run_spans_blocking(&mut self, spans: &[(u16, u16)]) -> bool {
         let total = span_row_total(spans);
@@ -537,7 +537,7 @@ impl<'b> Ls021Flpr<'b> {
     /// **Deliberately blocking** (`run_spans_blocking`): if those ~9 KB lived across an `await`
     /// they would move into the map-plane task's *static* future and permanently shrink the
     /// residual stack — the on-glass boot HardFault that forced this shape. A bulge push is a few
-    /// ms; the ~97 ms map presents are the ones that await (see [`run_spans_blocking`]'s doc).
+    /// ms; the ~44 ms map presents are the ones that await (see [`run_spans_blocking`]'s doc).
     pub fn push_overlay(
         &mut self,
         x0: u16,
