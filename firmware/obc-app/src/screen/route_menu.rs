@@ -1,10 +1,11 @@
-//! The Route menu — pick a route to load. Same chrome as the main [`Menu`](super::MenuScreen), with
-//! taller panes showing each route's distance and climb. Reached from Home (`press`) and the main
-//! Menu's Routes item; `press` loads the selected route and opens the Map, `back` returns.
+//! The Route menu — pick a route. The shared list chrome with taller panes showing each route's
+//! distance and climb. Reached from Home (`press`) and the main Menu's Routes station; `press`
+//! opens the [`Route overview`](super::RouteOverviewScreen) (or, mid-ride, resumes / opens the
+//! swap flow), `back` returns.
 //!
 //! Routes come from the app's catalog ([`Render::routes`]/[`Ctx::routes`]), populated by the host
-//! from its store. Loading sets [`Activity::active_route`](crate::Activity::active_route) and centers
-//! the camera on the route's bbox; the host then opens the geometry.
+//! from its store. Picking one sets [`Activity::active_route`](crate::Activity::active_route); the
+//! host keys geometry loading on it, so the route is streaming open while the overview shows.
 
 use core::fmt::Write;
 
@@ -14,11 +15,10 @@ use obc_render::{
     Surface,
 };
 
-use crate::activity::Mode;
 use crate::input::Gesture;
 
 use super::list::{self, ListGeometry, Separators};
-use super::{palette, Ctx, MapScreen, Render, RouteSwapScreen, Screen, Transition};
+use super::{palette, Ctx, MapScreen, Render, RouteOverviewScreen, RouteSwapScreen, Screen, Transition};
 
 /// Per-route pane height (two lines: name + stats), sized so four routes fill the list area.
 const ROW_H: i32 = 66;
@@ -48,13 +48,11 @@ impl RouteMenuScreen {
                     }
                     return Transition::Push(Screen::RouteSwap(RouteSwapScreen::new(i)));
                 }
-                // No session (loading from Idle): start tracking, drop into the riding view, open
-                // the Map. The host opens the geometry + the ride log on the session change.
-                cx.state.enter_riding_view(cx.routes[i].start_lon, cx.routes[i].start_lat);
-                cx.activity.mode = Mode::Riding;
-                cx.activity.active_route = Some(i);
-                cx.activity.start_session();
-                Transition::Root(Screen::Map(MapScreen::new()))
+                // No session (picking from Idle): open the Route overview. Setting `active_route`
+                // makes the host stream the route open (and the profile build) behind the page;
+                // the overview's `press` starts the session, its `back` restores the previous one.
+                let prev = cx.activity.active_route.replace(i);
+                Transition::Push(Screen::RouteOverview(RouteOverviewScreen::new(i, prev)))
             }
             Gesture::Back => Transition::Pop, // return to caller (Home / Menu)
             _ => Transition::None,
@@ -98,7 +96,8 @@ impl RouteMenuScreen {
             cv.text(&dist, Point::new(44, sy), Font::Label, TextAlign::Left, accent);
 
             let cx0 = 126;
-            cv.triangle(Point::new(cx0, sy + 9), Point::new(cx0 + 9, sy + 9), Point::new(cx0 + 4, sy), accent);
+            // The climb arrow, vertically centred on the Label cap (cap 18 px from `sy`, arrow 9).
+            cv.triangle(Point::new(cx0, sy + 14), Point::new(cx0 + 9, sy + 14), Point::new(cx0 + 4, sy + 5), accent);
             let mut climb: heapless::String<12> = heapless::String::new();
             let _ = write!(climb, "{} m", route.climb_m);
             cv.text(&climb, Point::new(cx0 + 16, sy), Font::Label, TextAlign::Left, accent);
@@ -107,8 +106,8 @@ impl RouteMenuScreen {
 }
 
 /// Fit a route name into `max_chars`, appending ".." when truncated (no ellipsis glyph).
-/// Truncates on a char boundary.
-fn fit_name(name: &str, max_chars: usize) -> heapless::String<64> {
+/// Truncates on a char boundary. Shared with the Route overview's title.
+pub(crate) fn fit_name(name: &str, max_chars: usize) -> heapless::String<64> {
     let mut s = heapless::String::new();
     if name.chars().count() <= max_chars {
         let _ = s.push_str(name);

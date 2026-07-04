@@ -408,12 +408,33 @@ pub fn page_fields(list: &StatFieldList, page: usize) -> heapless::Vec<Placed, S
     out
 }
 
+/// The global slot the `index`-th selected field starts at (`None` past the selection) — the same
+/// walk [`page_fields`] places with, so a cursor mapped through this always agrees with the drawn
+/// grid. `slot / SLOTS_PER_PAGE` is the page, the remainder the on-page cell.
+pub fn slot_of(list: &StatFieldList, index: usize) -> Option<usize> {
+    let mut found = None;
+    let mut i = 0usize;
+    walk(list, |_, slot| {
+        if i == index {
+            found = Some(slot);
+        }
+        i += 1;
+    });
+    found
+}
+
+/// The first slot past the selection (gaps included) — where the Fields editor's ghost "add"
+/// tile lands.
+pub fn next_free_slot(list: &StatFieldList) -> usize {
+    walk(list, |_, _| {})
+}
+
 // Value formatters + the grade helper — the field catalogue owns its own rendering. `grade_at` is
 // shared with the Statistics header readout.
 
 /// A km figure for a tile: one decimal up to 100 km, none past it, so the value stays ≤ 3 digits
 /// and fits the half-width tile.
-fn fmt_km(km: f32) -> heapless::String<8> {
+pub(crate) fn fmt_km(km: f32) -> heapless::String<8> {
     let mut s = heapless::String::new();
     let _ = if km >= 100.0 { write!(s, "{km:.0}") } else { write!(s, "{km:.1}") };
     s
@@ -458,7 +479,7 @@ fn fmt_elev(v: Option<f32>) -> heapless::String<8> {
 }
 
 /// A duration in seconds as `H:MM` (moving time) — hours uncapped, minutes zero-padded.
-fn fmt_hms(secs: f32) -> heapless::String<8> {
+pub(crate) fn fmt_hms(secs: f32) -> heapless::String<8> {
     let total_min = (secs as u32) / 60;
     let mut s = heapless::String::new();
     let _ = write!(s, "{}:{:02}", total_min / 60, total_min % 60);

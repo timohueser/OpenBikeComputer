@@ -1,13 +1,13 @@
 //! Screen-stack tests: navigation [`Transition`]s per gesture, the guarded-action "needs a completed
-//! hold" rule, the stack discipline ([`apply`]), and a render snapshot proving Ride control
-//! composites over the map.
+//! hold" rule, the stack discipline ([`apply`]), and a render snapshot proving pausing swaps the
+//! map view for the full-screen Paused page.
 
 use embedded_graphics::pixelcolor::Rgb888;
 use embedded_graphics::prelude::RgbColor; // for `Rgb888::r()` in the compositing snapshot
 use obc_app::activity::Activity;
 use obc_app::screen::{
-    apply, Ctx, HomeScreen, MapScreen, MenuScreen, RideControl, RouteMenuScreen, RouteSwapScreen, Screen, Stack,
-    Transition,
+    apply, Ctx, HomeScreen, MapScreen, MenuScreen, RideControl, RouteMenuScreen, RouteOverviewScreen, RouteSwapScreen,
+    Screen, ScreenTick, Stack, Transition,
 };
 use obc_app::{
     App, AppState, Button, ButtonEvent, CameraMode, Fix, Gesture, InputClock, InputEvent, Mode, PanAxis, RideClock,
@@ -169,6 +169,35 @@ fn menu_back_returns_to_caller() {
     assert!(matches!(t, Transition::Pop));
 }
 
+/// The Menu's compass-needle sweep contract: a turn arms a per-frame wake, the sweep converges in
+/// well under a second of ticks, and a settled menu is [`ScreenTick::idle`] — so a resting menu
+/// costs the event-driven host no timed repaints (the invariant
+/// `ms_until_next_wake_reports_the_home_minute_then_none_on_a_static_menu` also leans on).
+#[test]
+fn menu_needle_sweep_arms_then_settles() {
+    let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Idle));
+    let mut m = MenuScreen::new();
+    assert_eq!(m.tick_timers(0), ScreenTick::idle(), "a fresh menu has no animation pending");
+
+    m.handle(Gesture::Turn(1), &mut ctx(&mut st, &mut act));
+    let t0 = m.tick_timers(1_000);
+    assert!(t0.next_wake_ms.is_some(), "a turn puts the sweep in flight");
+
+    let mut now = 1_000;
+    let mut settled = false;
+    for _ in 0..60 {
+        now += 16;
+        let t = m.tick_timers(now);
+        if t.next_wake_ms.is_none() {
+            assert!(t.changed, "the landing tick still repaints (the final snap to target)");
+            settled = true;
+            break;
+        }
+    }
+    assert!(settled, "the sweep converges within 60 frames (~1 s)");
+    assert_eq!(m.tick_timers(now + 16), ScreenTick::idle(), "after landing the menu is idle again");
+}
+
 // The Home → Route menu → Map flow.
 
 #[test]
@@ -179,23 +208,47 @@ fn home_press_opens_the_route_menu() {
 }
 
 #[test]
-fn route_menu_loads_the_selected_route_and_opens_the_map() {
+fn route_menu_press_opens_the_overview_and_preloads_the_route() {
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Idle));
-    st.mode = CameraMode::Free; // the map-viewer default; loading must flip to Follow
-    st.heading_up = false;
     let routes = test_routes();
     let mut rm = RouteMenuScreen::new();
     rm.handle(Gesture::Turn(1), &mut route_ctx(&mut st, &mut act, &routes)); // highlight route 1
     let t = rm.handle(Gesture::Press, &mut route_ctx(&mut st, &mut act, &routes));
-    assert!(matches!(t, Transition::Root(Screen::Map(_))), "loading lands on a clean [Home, Map]");
-    assert_eq!(act.mode, Mode::Riding, "loading starts tracking");
-    assert_eq!(act.active_route, Some(1), "the selected route is the active one");
-    assert!(act.is_tracking(), "loading from Idle begins a tracking session");
-    // Loading drops into the riding view: follow + heading-up, seeded at the start.
+    assert!(matches!(t, Transition::Push(Screen::RouteOverview(_))), "picking opens the overview");
+    assert_eq!(act.active_route, Some(1), "the pick preloads the route so the overview gets a profile");
+    assert_eq!(act.mode, Mode::Idle, "no riding yet — the overview's START does that");
+    assert!(!act.is_tracking(), "and no session either");
+}
+
+#[test]
+fn overview_start_begins_the_session_and_opens_the_map() {
+    let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Idle));
+    st.mode = CameraMode::Free; // the map-viewer default; starting must flip to Follow
+    st.heading_up = false;
+    act.active_route = Some(1); // the Route menu preloaded the preview
+    let routes = test_routes();
+    let t = RouteOverviewScreen::new(1, None).handle(Gesture::Press, &mut route_ctx(&mut st, &mut act, &routes));
+    assert!(matches!(t, Transition::Root(Screen::Map(_))), "starting lands on a clean [Home, Map]");
+    assert_eq!(act.mode, Mode::Riding, "START begins tracking");
+    assert_eq!(act.active_route, Some(1), "the previewed route is the active one");
+    assert!(act.is_tracking(), "START opens a tracking session");
+    // Starting drops into the riding view: follow + heading-up, seeded at the start.
     assert_eq!(st.mode, CameraMode::Follow);
     assert!(st.heading_up);
     assert_eq!((st.cam_lon, st.cam_lat), (100, 100), "camera seeded at the route start");
     assert!(st.zoom > 0.2 && st.zoom < 0.25, "~0.5 m/px riding zoom, got {}", st.zoom);
+}
+
+#[test]
+fn overview_back_cancels_and_restores_the_previous_route() {
+    let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Idle));
+    act.active_route = Some(2); // the Route menu preloaded the preview…
+    let routes = test_routes();
+    // …over a previously loaded route 0, which back must put back.
+    let t = RouteOverviewScreen::new(2, Some(0)).handle(Gesture::Back, &mut route_ctx(&mut st, &mut act, &routes));
+    assert!(matches!(t, Transition::Pop), "back returns to the Route menu");
+    assert_eq!(act.active_route, Some(0), "the previous route is restored");
+    assert!(!act.is_tracking(), "browsing started nothing");
 }
 
 #[test]
@@ -322,13 +375,16 @@ fn list_window_keeps_the_selection_visible() {
 
 #[test]
 fn boot_flow_walks_home_to_route_menu_to_riding_map() {
-    // End to end through `App`: Idle Home → press → Route menu → press → riding Map.
+    // End to end through `App`: Idle Home → press → Route menu → press → overview → press → Map.
     let mut app = App::new_idle(AppState::new(0, 0, 0.05));
     app.set_routes(&test_routes());
     assert_eq!(app.mode(), Mode::Idle);
     press(&mut app); // Home → Route menu
     assert_eq!(app.mode(), Mode::Idle, "opening the route list doesn't start riding yet");
-    press(&mut app); // Route menu → load route 0 → Map
+    press(&mut app); // Route menu → Route overview (route preloads, still not riding)
+    assert_eq!(app.mode(), Mode::Idle, "the overview previews; START is what rides");
+    assert_eq!(app.activity.active_route, Some(0), "the preview loads the route");
+    press(&mut app); // START RIDE → Map
     assert_eq!(app.mode(), Mode::Riding);
     assert_eq!(app.activity.active_route, Some(0));
 }
@@ -428,10 +484,10 @@ fn apply_pushes_pops_replaces_and_returns_home() {
     assert_eq!(stack.len(), 1, "the Home root is never popped");
 }
 
-// Render snapshot: the map, and Ride control composited over it.
+// Render snapshot: pausing swaps the riding map for the full-screen Paused page.
 
 #[test]
-fn ride_control_composites_over_the_map() {
+fn pausing_swaps_the_map_for_the_paused_page() {
     let bytes = build_min_obcm(0xF800);
     let mut app = App::new(AppState::new(0, 0, 0.05));
 
@@ -439,7 +495,7 @@ fn ride_control_composites_over_the_map() {
     let map = render(&mut app, &bytes);
     let backdrop = map.get(60, 60);
 
-    // A press (Down+Up within the threshold) pauses into Ride control.
+    // A press (Down+Up within the threshold) pauses into the Paused page.
     let mut press = keys(&[
         InputEvent::Button(ButtonEvent::Down(Button::Encoder)),
         InputEvent::Button(ButtonEvent::Up(Button::Encoder)),
@@ -447,11 +503,11 @@ fn ride_control_composites_over_the_map() {
     app.handle_input(InputClock(0), &mut press);
     assert_eq!(app.mode(), Mode::Paused, "press paused the ride");
 
-    // Now the center carries the parchment Ride-control panel, not the backdrop.
+    // Now the center carries the parchment Paused page, not the map.
     let paused = render(&mut app, &bytes);
-    let panel = paused.get(60, 60);
-    assert_ne!(panel, backdrop, "the overlay changed the center");
-    assert!(panel.r() > backdrop.r(), "parchment panel is lighter than the sea backdrop");
+    let page = paused.get(60, 60);
+    assert_ne!(page, backdrop, "pausing replaced the view");
+    assert!(page.r() > backdrop.r(), "the parchment page is lighter than the sea backdrop");
 }
 
 fn render(app: &mut App, bytes: &[u8]) -> Buf {
