@@ -102,7 +102,12 @@ impl RramSettingsStore {
 
     /// Read-increment-write the persisted boot counter and return this boot's ordinal. A
     /// missing/foreign line (blank page, torn write) restarts the count at 1.
-    pub fn bump_boot_count(&mut self) -> u32 {
+    ///
+    /// `reset_reas` — this boot's `RESETREAS` snapshot (#349) — rides in the same 16-byte line
+    /// (bytes 8..12, previously padding), so the diagnostics blob's one durable fact also records
+    /// *why* the device last rebooted: a watchdog boot (`dog0`, bit 1) stays visible after the RTT
+    /// log is gone. Same single line write — the annotation is free.
+    pub fn bump_boot_count(&mut self, reset_reas: u32) -> u32 {
         let off = region_offset() + BOOT_COUNT_OFFSET;
         let mut line = [0u8; RRAM_WRITE_LINE];
         let stored = match self.rram.read(off, &mut line) {
@@ -113,6 +118,7 @@ impl RramSettingsStore {
         let mut out = [0u8; RRAM_WRITE_LINE];
         out[..4].copy_from_slice(&BOOT_COUNT_MAGIC);
         out[4..8].copy_from_slice(&count.to_le_bytes());
+        out[8..12].copy_from_slice(&reset_reas.to_le_bytes());
         if let Err(e) = self.rram.write(off, &out) {
             defmt::warn!("settings: boot-counter write failed: {}", e);
         }
