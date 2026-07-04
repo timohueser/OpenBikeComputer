@@ -127,6 +127,14 @@ fn decode_lod(r: &Reader, lod: usize) -> Vec<Decoded> {
     out
 }
 
+/// Collect every leaf `for_each_chunk` yields — the uncapped replacement for the
+/// removed `Reader::query` test convenience.
+fn query_all(r: &Reader, lod: usize, view: &BBox) -> Vec<(u32, BBox)> {
+    let mut out = Vec::new();
+    r.for_each_chunk(lod, view, |cid, node| out.push((cid, node)));
+    out
+}
+
 #[test]
 fn header_round_trips() {
     let bytes = packed();
@@ -231,11 +239,11 @@ fn query_finds_the_leaf() {
     // A view overlapping the global bbox hits the single populated leaf; the
     // returned node bbox is the global bbox.
     let inside = BBox { min_lon: 90_000, min_lat: 90_000, max_lon: 130_000, max_lat: 130_000 };
-    let hits = r.query::<8>(0, &inside);
+    let hits = query_all(&r, 0, &inside);
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].1, r.bbox);
 
     // A view fully outside the bbox hits nothing.
     let outside = BBox { min_lon: 9_000_000, min_lat: 9_000_000, max_lon: 9_001_000, max_lat: 9_001_000 };
-    assert!(r.query::<8>(0, &outside).is_empty());
+    assert!(query_all(&r, 0, &outside).is_empty());
 }
