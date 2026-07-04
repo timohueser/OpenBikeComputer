@@ -3,13 +3,13 @@
         "id": "default",
         "name": "Bikepacking",
         "description": "The full touring map: roads by class, trails and cycleways, rail, water, forests and landuse, buildings up close.",
-        "version": 1,
+        "version": 2,
         "swatch": ["#FF5500", "#FFAA00", "#5500FF", "#55AAFF", "#55AA55", "#AAAAAA"],
         "palette_note": "Colors are RGB565 but the LS021B7DD02 panel only shows 64 (RGB222: 4 levels/channel = 0,85,170,255). Every value below is chosen to land exactly on that grid, so the web builder picker and the device agree. OSM/Komoot conventions on a near-white 'paper' base: warm = through-roads, grey = local roads, brown = trails, indigo = cycleways (a cycling computer's key feature, lifted out of the brown trail group), green = vegetation, azure = water, cream = built-up landuse fill (residential / commercial / industrial / retail — the only near-white tint the gamut offers, so towns read as a faint warm blush without colliding with the grey buildings on top). Verify the gamut with `obc-sim --palette`."
     },
     "lods": [
-        {"max_mpp": null, "simplify": 50},
-        {"max_mpp": 120, "simplify": 12},
+        {"max_mpp": null, "simplify": 120},
+        {"max_mpp": 120, "simplify": 18},
         {"max_mpp": 18, "simplify": 0}
     ],
     "features": {

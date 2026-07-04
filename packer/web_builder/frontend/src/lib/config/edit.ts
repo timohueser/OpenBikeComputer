@@ -6,11 +6,42 @@ import { ENVELOPE_VERSION } from "./migrations";
 import { deepCopy, normalizeConfig, type PackConfig, type StyleDef } from "./model";
 import type { WorkingEnvelope } from "./storage.svelte";
 
-/** Append a finer tier: half the previous ceiling, no simplification. */
+/**
+ * The pixel-accurate simplify default for tier `i`: one pixel at the finest
+ * scale the tier is drawn at, which is the next finer tier's ceiling. The
+ * finest tier keeps full detail (0).
+ */
+export function autoSimplify(config: PackConfig, i: number): number {
+    return config.lods[i + 1]?.max_mpp ?? 0;
+}
+
+/**
+ * Set one tier field. A coarser neighbor whose simplify still sits at the
+ * pixel-accurate default follows a ceiling change; a hand-set value stays.
+ */
+export function editLodTier(
+    config: PackConfig,
+    i: number,
+    field: "max_mpp" | "simplify",
+    value: number,
+) {
+    if (field === "max_mpp" && i > 0 && config.lods[i - 1].simplify === config.lods[i].max_mpp) {
+        config.lods[i - 1].simplify = value;
+    }
+    config.lods[i][field] = value;
+}
+
+/**
+ * Append a finer tier at half the previous ceiling, with full detail. The
+ * old finest tier is no longer finest: unless it was hand-set, its simplify
+ * moves from 0 to the new pixel-accurate default.
+ */
 export function addLodTier(config: PackConfig) {
     const last = config.lods[config.lods.length - 1];
     const prev = last.max_mpp != null ? last.max_mpp : 120;
-    config.lods.push({ max_mpp: Math.max(1, Math.round(prev / 2)), simplify: 0 });
+    const next = Math.max(1, Math.round(prev / 2));
+    if (!last.simplify) last.simplify = next;
+    config.lods.push({ max_mpp: next, simplify: 0 });
 }
 
 /**
@@ -20,8 +51,14 @@ export function addLodTier(config: PackConfig) {
  */
 export function removeLodTier(config: PackConfig, k: number) {
     if (config.lods.length <= 1) return;
+    const removed = config.lods[k];
     config.lods.splice(k, 1);
     config.lods[0].max_mpp = null;
+    // A coarser neighbor tracking the removed ceiling re-defaults to the
+    // tier that took its place.
+    if (k > 0 && config.lods[k - 1].simplify === removed.max_mpp) {
+        config.lods[k - 1].simplify = autoSimplify(config, k - 1);
+    }
     const n = config.lods.length;
     for (const cat of Object.keys(config.features)) {
         for (const name of Object.keys(config.features[cat])) {
