@@ -125,7 +125,7 @@ The orange waypoints matter for a reason worth stating up front: the cheap stage
 
 ## 1 · Projection: ground to screen
 
-The camera is a [`Viewport`](src:firmware/obc-render/src/lib.rs) — a centre point in microdegrees, a zoom, an aspect correction for the latitude, and a rotation. Its hot path is `to_screen`, called once per vertex, so it's written to keep full precision while staying fast:
+The camera is a [`Viewport`](src:firmware/obc-render/src/viewport.rs) — a centre point in microdegrees, a zoom, an aspect correction for the latitude, and a rotation. Its hot path is `to_screen`, called once per vertex, so it's written to keep full precision while staying fast:
 
 ```rust
 let delta_lon = lon.wrapping_sub(self.cam_lon);   // i32 µdeg, relative to camera
@@ -442,7 +442,7 @@ for level in 1..=4u8 {
 <figcaption>Because passes run low-number-first and each fills the buffers before the next starts, saturation drops strictly by priority across <i>all</i> chunks. Each feature matches exactly one level, so its coordinates are decoded only once per frame even though the chunks are walked four times.</figcaption>
 </figure>
 
-Every kept feature becomes a 14-byte **span** — a compact draw record that says *what* and *where* without copying the geometry again ([`Span`](src:firmware/obc-render/src/lib.rs)):
+Every kept feature becomes a 14-byte **span** — a compact draw record that says *what* and *where* without copying the geometry again ([`Span`](src:firmware/obc-render/src/collect.rs)):
 
 ```rust
 struct Span {
@@ -735,7 +735,7 @@ A compile-time assertion fails the build if the renderer's total buffer footprin
 
 ## Where this lives
 
-- The renderer and all its rasterisers: [`obc-render/src/lib.rs`](src:firmware/obc-render/src/lib.rs)
+- The renderer and all its rasterisers: [`obc-render/src/`](src:firmware/obc-render/src) — the frame loop and buffers in `lib.rs`; projection, collection, stroking, polygon fill and the overlays in `viewport.rs` / `collect.rs` / `stroke.rs` / `fill.rs` / `overlay.rs`
 - The map parsing, quadtree walk, and skip-don't-decode: [`obc-reader/src/reader.rs`](src:firmware/obc-reader/src/reader.rs)
 - A from-scratch reference walkthrough with `file:line` anchors: [`firmware/docs/rendering_pipeline.md`](src:firmware/docs/rendering_pipeline.md)
 
