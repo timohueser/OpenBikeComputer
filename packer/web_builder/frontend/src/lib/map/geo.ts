@@ -130,9 +130,13 @@ export function regionsForBbox(
 }
 
 /** Approximate area of a lon/lat box in km² (a size hint, not survey-grade). */
-export function bboxAreaKm2(w: number, s: number, e: number, n: number): string {
+export function bboxAreaKm2Raw(w: number, s: number, e: number, n: number): number {
     const latMid = (((s + n) / 2) * Math.PI) / 180;
-    const area = Math.abs(n - s) * 110.574 * Math.abs(e - w) * 111.32 * Math.cos(latMid);
+    return Math.abs(n - s) * 110.574 * Math.abs(e - w) * 111.32 * Math.cos(latMid);
+}
+
+export function bboxAreaKm2(w: number, s: number, e: number, n: number): string {
+    const area = bboxAreaKm2Raw(w, s, e, n);
     if (area >= 1000) return Math.round(area).toLocaleString() + " km²";
     return area.toFixed(area < 10 ? 1 : 0) + " km²";
 }

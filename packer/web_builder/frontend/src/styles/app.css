@@ -232,12 +232,17 @@ select:focus {
 .bbox-handle {
     background: var(--parchment);
     border: 2px solid var(--coral);
-    border-radius: 3px;
-    cursor: grab;
+    border-radius: 4px;
 }
 
-.bbox-handle:active {
-    cursor: grabbing;
+.bbox-handle-nw,
+.bbox-handle-se {
+    cursor: nwse-resize;
+}
+
+.bbox-handle-ne,
+.bbox-handle-sw {
+    cursor: nesw-resize;
 }
 
 .bbox-cursor {
