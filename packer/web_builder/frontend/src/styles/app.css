@@ -1,0 +1,245 @@
+@import "./tokens.css";
+
+* {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    margin: 0;
+    height: 100%;
+}
+
+body {
+    font-family: var(--sans);
+    color: var(--ink);
+    background: var(--parchment);
+    font-size: 15px;
+    line-height: 1.5;
+}
+
+#app {
+    min-height: 100%;
+    display: flex;
+    flex-direction: column;
+}
+
+h1,
+h2,
+h3 {
+    font-family: var(--serif);
+    font-weight: 600;
+    color: var(--ink);
+    margin: 0;
+}
+
+a {
+    color: var(--forest);
+    text-decoration: none;
+}
+
+a:hover {
+    color: var(--forest-deep);
+    text-decoration: underline;
+}
+
+button {
+    font-family: var(--sans);
+    font-size: 14px;
+    cursor: pointer;
+}
+
+input,
+select {
+    font-family: var(--sans);
+    font-size: 14px;
+    color: var(--ink);
+    background: var(--parchment);
+    border: 1px solid var(--parchment-3);
+    border-radius: 8px;
+    padding: 7px 10px;
+}
+
+input:focus,
+select:focus {
+    outline: none;
+    border-color: var(--wood);
+    box-shadow: 0 0 0 3px rgba(95, 125, 61, 0.18);
+}
+
+/* --- shared components (field-guide look) --- */
+
+.card {
+    background: linear-gradient(180deg, var(--parchment-2), var(--parchment));
+    border: 1px solid var(--parchment-3);
+    border-radius: 16px;
+    padding: 16px;
+    box-shadow: 0 1px 2px rgba(36, 51, 28, 0.06);
+}
+
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    border-radius: 11px;
+    padding: 9px 16px;
+    font-weight: 600;
+    border: 1px solid transparent;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.btn.primary {
+    background: var(--ink);
+    color: var(--parchment);
+    box-shadow: 0 6px 14px rgba(36, 51, 28, 0.22);
+}
+
+.btn.primary:hover:not(:disabled) {
+    background: var(--forest-deep);
+}
+
+.btn.primary:disabled {
+    opacity: 0.55;
+    cursor: default;
+    box-shadow: none;
+}
+
+.btn.ghost {
+    background: transparent;
+    color: var(--ink);
+    border-color: var(--wood);
+}
+
+.btn.ghost:hover {
+    background: rgba(95, 125, 61, 0.1);
+}
+
+.chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--parchment);
+    border: 1px solid var(--parchment-3);
+    border-radius: 999px;
+    padding: 4px 10px;
+    font-size: 13px;
+    color: var(--ink);
+}
+
+.chip button {
+    background: none;
+    border: none;
+    color: var(--ink-faint);
+    padding: 0 2px;
+    font-size: 14px;
+    line-height: 1;
+}
+
+.chip button:hover {
+    color: var(--coral);
+}
+
+.muted {
+    color: var(--ink-soft);
+}
+
+.faint {
+    color: var(--ink-faint);
+}
+
+.small {
+    font-size: 12.5px;
+}
+
+.mono {
+    font-family: var(--mono);
+}
+
+/* Segmented toggle (Regions | Draw box) */
+.seg {
+    display: inline-flex;
+    border: 1px solid var(--parchment-3);
+    border-radius: 999px;
+    overflow: hidden;
+    background: var(--parchment);
+}
+
+.seg button {
+    border: none;
+    background: transparent;
+    color: var(--ink-soft);
+    padding: 6px 14px;
+    font-size: 13px;
+}
+
+.seg button.active {
+    background: var(--ink);
+    color: var(--parchment);
+}
+
+/* Leaflet: blend the raster tiles into the parchment look, restyle chrome. */
+.leaflet-tile-pane {
+    filter: sepia(0.22) saturate(0.82) contrast(0.95) brightness(1.02);
+}
+
+.leaflet-container {
+    font-family: var(--sans);
+    background: var(--parchment-2);
+}
+
+.leaflet-popup-content-wrapper,
+.leaflet-tooltip {
+    background: var(--panel);
+    color: var(--ink);
+    border: 1px solid var(--parchment-3);
+    border-radius: 10px;
+    box-shadow: 0 6px 18px rgba(36, 51, 28, 0.18);
+}
+
+.leaflet-popup-tip {
+    background: var(--panel);
+}
+
+.region-popup {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 220px;
+    overflow: auto;
+}
+
+.region-popup button {
+    text-align: left;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 7px;
+    padding: 5px 9px;
+    font-size: 13px;
+    color: var(--ink);
+}
+
+.region-popup button:hover {
+    background: rgba(95, 125, 61, 0.12);
+}
+
+.region-popup button.selected {
+    border-color: var(--forest);
+    color: var(--forest-deep);
+    font-weight: 600;
+}
+
+.bbox-handle {
+    background: var(--parchment);
+    border: 2px solid var(--coral);
+    border-radius: 3px;
+    cursor: grab;
+}
+
+.bbox-handle:active {
+    cursor: grabbing;
+}
+
+.bbox-cursor {
+    cursor: crosshair !important;
+}
