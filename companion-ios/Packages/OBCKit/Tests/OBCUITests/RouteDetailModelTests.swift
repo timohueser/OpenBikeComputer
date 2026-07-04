@@ -204,7 +204,7 @@ final class RouteDetailModelTests: XCTestCase {
         XCTAssertEqual(model.subtitle, "schwarzwald.gpx")
         XCTAssertEqual(model.tag.text, "New · unsaved")
         XCTAssertEqual(model.importedFromLine, "Imported from Komoot")
-        XCTAssertFalse(model.isRenamable)
+        XCTAssertTrue(model.isRenamable, "E1 renames before save")
         XCTAssertEqual(model.waypoints.count, 2)
         XCTAssertEqual(model.elevationProfile.count, 10)
         XCTAssertEqual(model.stats.map(\.key), ["Distance", "Climb", "Descent", "Est. time"])
