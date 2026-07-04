@@ -35,7 +35,7 @@ use obc_route::{RouteCache, RouteIndex, RouteReader};
 
 use crate::display::{DisplayDriver, FRAME_H, FRAME_W};
 use crate::planes::{MapDisplay, GESTURES, INPUT_HB_MS, LOOP_MS};
-use crate::{sd, settings, stackmeter};
+use crate::{sd, stackmeter, SharedStore, SharedStoreMutex};
 
 // ── Hardware watchdog (#349): the last-resort net under a wedged plane. The ride loop feeds it,
 // gated on the input plane's heartbeat, so **either** plane wedging trips the dog — not just
@@ -135,13 +135,15 @@ fn desired_gps_power(app: &App) -> sensor_link::GpsPower {
 pub(crate) async fn run_app(
     mut display: MapDisplay,
     app: &mut App,
-    storage: &mut sd::Storage,
+    // The SD card + RRAM settings behind one async mutex (#193, #270). The loop locks it once per
+    // pass and holds the guard across the render, then releases it before the event-wait so a future
+    // BLE object plane can reach the card between passes. Replaces the by-value `Storage`/settings
+    // store this fn used to own.
+    shared: &SharedStoreMutex,
     map_tables: &MapTables,
     map_cache: &MapCache,
     route_cache: &RouteCache,
     led: &mut Output<'static>,
-    // The persistent RRAM settings store (#193): seeds the app at boot, persists on a settings edit.
-    mut settings_store: settings::RramSettingsStore,
     // The hardware watchdog's feed handle (#349), `None` only if the boot-time `try_new` found the
     // dog already running with a foreign config. Fed once per pass below, gated on the input
     // plane's heartbeat.
@@ -206,8 +208,12 @@ pub(crate) async fn run_app(
     let mut prev_hold_p = 0.0f32;
 
     // Settings: seed the app from the persistent RRAM store at boot (a blank/corrupt page decodes to
-    // `None` → defaults), then persist on any change the settings screens make.
-    app.set_settings(settings_store.load().unwrap_or_default());
+    // `None` → defaults), then persist on any change the settings screens make. One brief lock,
+    // released at once — the loop re-locks the shared store each pass.
+    app.set_settings({
+        let mut store = shared.lock().await;
+        store.settings.load().unwrap_or_default()
+    });
 
     // Align the GPS to the persisted fix interval: push it to the sensor task once at boot (the task
     // boots at a 1 s default), then again whenever the Power screen edits it. `prev_interval` gates the
@@ -270,6 +276,14 @@ pub(crate) async fn run_app(
             app.apply_gesture(g);
         }
         app.advance_animations(InputClock(now));
+
+        // Lock the shared store for the rest of this pass: the settings save just below, the card
+        // reconcile, the per-frame route/track/map sources, and the render that reads them all run
+        // under one guard — held across the render `.await`, then dropped before the event-wait at the
+        // loop tail so a future BLE object plane reaches the card between passes (#270). Destructured
+        // into the two names the body already uses (`storage`, `settings_store`).
+        let mut store_guard = shared.lock().await;
+        let SharedStore { storage, settings: settings_store } = &mut *store_guard;
 
         // Persist settings the moment a settings screen changes one: one in-place 16-byte RRAM line,
         // skipped when nothing changed.
@@ -567,6 +581,11 @@ pub(crate) async fn run_app(
         if dirty.map && overlay_span.is_some() {
             display.present_bulge(overlay_span, false).await;
         }
+
+        // All card + settings work for this pass is done — release the shared store before the tail
+        // (telemetry, LED, and the event-wait `.await`) so a future BLE object plane isn't held off
+        // across the sleep (#270). `storage`/`settings_store` are unused past here.
+        drop(store_guard);
 
         // Publish render-stats telemetry host-ward at ~2 Hz: throttled here (not in the TX task) so the
         // link never floods and the device never stalls on it.

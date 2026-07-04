@@ -218,8 +218,13 @@ use embassy_nrf::wdt;
 #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
 use embassy_nrf::twim::{self, Twim};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+#[cfg(has_map)]
+use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
-#[cfg(feature = "tft")]
+// The async `Mutex` guards two things, each needing a lock held across an `.await`: the ST7789
+// `BUS` (tft) and the shared SD + settings store ([`SharedStore`], every `has_map` build). A `tft`
+// build is a `has_map` build, so `has_map` covers both.
+#[cfg(has_map)]
 use embassy_sync::mutex::Mutex;
 // The map/ride half of obc-app lives only on `has_map` builds (the `ble` DK build compiles the map
 // plane out); the shared `InputPlane` is every build's.
@@ -436,6 +441,22 @@ unsafe fn init_static<T>(slot: *mut MaybeUninit<T>, val: T) -> &'static mut T {
     ptr.write(val);
     &mut *ptr
 }
+
+/// The two persistent resources the map plane's ride loop drives — and that, once map + BLE share
+/// one image (#270), the BLE object plane must share with it: the mounted SD card and the RRAM
+/// settings store. Held behind an async [`Mutex`] so a locker can keep the guard **across an
+/// `.await`** — the ride loop holds it across a whole map render; a future object plane takes it
+/// per chunk between passes — which a `RefCell` can't (the ble planes today avoid that only by
+/// never borrowing across an await). `NoopRawMutex` suffices: both planes are cooperative futures
+/// on the one thread-mode executor and no ISR touches storage, so no critical section is needed.
+#[cfg(has_map)]
+pub(crate) struct SharedStore {
+    pub(crate) storage: sd::Storage,
+    pub(crate) settings: settings::RramSettingsStore,
+}
+/// The shared-store handle threaded into [`ride::run_app`] (and, at #270, the object plane).
+#[cfg(has_map)]
+pub(crate) type SharedStoreMutex = Mutex<NoopRawMutex, SharedStore>;
 
 /// Idle camera zoom for the boot map, in ground metres-per-pixel (the 0.5–4 mpp riding band). A
 /// coarse-ish 2 mpp shows a town-scale overview rather than a tight patch.
@@ -1011,6 +1032,22 @@ async fn main(_spawner: Spawner) {
             }
         };
 
+        // The map build's shared store: the mounted card + the RRAM settings move behind one async
+        // mutex, so the ride loop — and, once map + BLE share an image (#270), the BLE object plane —
+        // can each lock it per pass. Built in place in `.bss` (warm-reset-safe via `init_static`, like
+        // the caches above). `storage`/`settings_store` are consumed here; the loop reaches them through
+        // the guard.
+        #[cfg(has_map)]
+        let shared_store: &'static SharedStoreMutex = {
+            static mut SHARED_STORE: MaybeUninit<SharedStoreMutex> = MaybeUninit::uninit();
+            unsafe {
+                init_static(
+                    core::ptr::addr_of_mut!(SHARED_STORE),
+                    Mutex::new(SharedStore { storage, settings: settings_store }),
+                )
+            }
+        };
+
         // The `ble` build's object store: the mounted card (`None` degrades route ops to typed errors,
         // config still works) + the RRAM settings both move in here; the BLE planes drive it. The status
         // screen keeps only the boot-time `sd` flag.
@@ -1072,27 +1109,17 @@ async fn main(_spawner: Spawner) {
         // only on the `synth` build (the host feed + the real GPS stream absolute positions, so they need
         // no synthetic-loop centre).
         #[cfg(all(has_map, any(feature = "debug-uart", not(feature = "synth"))))]
-        let app_fut = ride::run_app(
-            display,
-            app,
-            &mut storage,
-            map_tables,
-            map_cache,
-            route_cache,
-            &mut led,
-            settings_store,
-            wdt_handle,
-        );
+        let app_fut =
+            ride::run_app(display, app, shared_store, map_tables, map_cache, route_cache, &mut led, wdt_handle);
         #[cfg(all(has_map, not(feature = "debug-uart"), feature = "synth"))]
         let app_fut = ride::run_app(
             display,
             app,
-            &mut storage,
+            shared_store,
             map_tables,
             map_cache,
             route_cache,
             &mut led,
-            settings_store,
             wdt_handle,
             (cam_lon, cam_lat),
         );
