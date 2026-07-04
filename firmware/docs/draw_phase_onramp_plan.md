@@ -90,12 +90,15 @@ dashed  → stroke_dashed(color)                         // admin borders
 railway → solid base in `color`, then stroke_dashed(color2) on top
 ```
 
-* Add **`stroke_dashed`** next to `stroke_overlay` (`stroke.rs`): walk the
-  already-projected screen points, accumulate arc-length in **screen pixels**
-  (zoom-independent dash look), emit short eg `Line` strokes for the "on"
-  intervals. **Reuse the existing clip + run machinery** — it should clip first
-  (`clip_segment`) exactly like `stroke_overlay`, so off-screen dashes cost
-  nothing. The `DrawScratch::screen` run buffer is reused.
+* Add **`stroke_dashed`** as a method on the `Stroker` context (`stroke.rs`),
+  next to `Stroker::stroke` — the struct already carries the per-stroke state
+  (`target`/`run`/`xs`/`color`/`weight`/grown clip) a dash phase accumulator
+  joins. Walk the already-projected screen points, accumulate arc-length in
+  **screen pixels** (zoom-independent dash look), emit short eg `Line` strokes
+  for the "on" intervals. **Reuse the existing clip + run machinery** — it
+  should clip first (`clip_segment`) exactly like `Stroker::stroke`, so
+  off-screen dashes cost nothing. The `DrawScratch::screen` run buffer is
+  reused.
 * `draw_line`'s signature gains the style (or just `line_style: u8, color2:
   D::Color`, resolved by the caller through `color_fn` so dashes quantize on the
   device like everything else). Keep `weight`.
