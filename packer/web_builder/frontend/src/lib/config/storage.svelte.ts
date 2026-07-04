@@ -52,15 +52,29 @@ export class WorkingConfig {
         this.persist();
     }
 
-    /** Call after any edit to the config tree (the advanced editor's hook). */
-    markModified() {
-        if (!this.envelope) return;
-        this.envelope.modified = true;
+    /** Replace the whole envelope (import). */
+    adopt(envelope: WorkingEnvelope) {
+        this.envelope = envelope;
         this.persist();
     }
 
+    /**
+     * Call after any edit to the config tree (the advanced editor's hook).
+     * Persisting is debounced: number inputs fire per keystroke and the
+     * envelope is tens of KB of JSON.
+     */
+    markModified() {
+        if (!this.envelope) return;
+        this.envelope.modified = true;
+        clearTimeout(this.saveTimer);
+        this.saveTimer = setTimeout(() => this.persist(), 400);
+    }
+
+    private saveTimer: ReturnType<typeof setTimeout> | undefined;
+
     persist() {
         if (!this.envelope) return;
+        clearTimeout(this.saveTimer);
         try {
             localStorage.setItem(STORAGE_KEY, JSON.stringify(this.envelope));
         } catch {
