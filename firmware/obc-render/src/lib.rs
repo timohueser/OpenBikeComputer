@@ -57,6 +57,13 @@ pub const MAX_SPANS: usize = 3072;
 pub const MAX_SPANS: usize = 768;
 
 /// Maximum total vertices across all visible features per frame (8 bytes each).
+///
+/// Known `nrf-mem` oddity, kept deliberately: there the frame cap (1536) sits *below* the
+/// single-feature decode cap [`MAX_DECODE_POINTS`] (2048), so a legal max-size feature can never
+/// be admitted to the frame buffers — the capacity check drops it every frame, and it counts into
+/// `features_dropped`. It's undroppable-by-design: a 256 KB-DK artifact (the shipping LM20
+/// relaxes the trim), and real map features rarely approach 2048 points. Do not "fix" it by
+/// raising this cap or trimming the decode caps.
 #[cfg(not(feature = "nrf-mem"))]
 pub const MAX_FRAME_POINTS: usize = 12_288;
 #[cfg(feature = "nrf-mem")]
@@ -68,10 +75,14 @@ pub const MAX_FRAME_RINGS: usize = 3072;
 #[cfg(feature = "nrf-mem")]
 pub const MAX_FRAME_RINGS: usize = 384;
 
-/// Maximum vertices for a single feature during decode (reused per feature).
+/// Maximum vertices for a single feature during decode (reused per feature). Must equal
+/// `obc_reader::MAX_FEAT_PTS` (asserted below) — never trimmed per profile. On `nrf-mem` this
+/// exceeds [`MAX_FRAME_POINTS`], so a max-size feature decodes fine but is undroppable-by-design
+/// at the frame stage (see the note there).
 pub const MAX_DECODE_POINTS: usize = 2048;
 
-/// Maximum rings for a single feature during decode.
+/// Maximum rings for a single feature during decode. Must equal `obc_reader::MAX_FEAT_RINGS`
+/// (asserted below).
 pub const MAX_DECODE_RINGS: usize = 32;
 
 /// Maximum projected screen points for drawing one feature. The fill/polyline path projects
@@ -98,6 +109,13 @@ const _: () = assert!(MAX_SPANS <= u16::MAX as usize, "Span::seq is u16");
 // (`screen[base..base + len]`), so it must hold at least a full decode buffer or it indexes
 // past the points and panics.
 const _: () = assert!(MAX_SCREEN_POINTS >= MAX_DECODE_POINTS, "`screen` must hold a whole decoded feature");
+// The decode scratch pairs with the reader's format bounds across the crate seam: the reader's
+// `read_ring` pushes with `let _ = out.push(..)`, so a smaller render-side buffer would *silently
+// truncate geometry* rather than fail. Pin the pairing at compile time so neither crate's
+// constant can drift alone.
+const _: () =
+    assert!(MAX_DECODE_POINTS == obc_reader::MAX_FEAT_PTS, "decode scratch must hold the format's max feature");
+const _: () = assert!(MAX_DECODE_RINGS == obc_reader::MAX_FEAT_RINGS, "ring scratch must hold the format's max rings");
 
 /// Static RAM the [`MapRenderer`]'s scratch buffers occupy on the 32-bit MCU target (`usize` = 4
 /// bytes there). `pub` so a board crate's RAM-budget assert can add it to the framebuffer + caches
