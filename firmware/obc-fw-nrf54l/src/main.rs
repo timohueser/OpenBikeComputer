@@ -339,17 +339,18 @@ static mut BAND: [u16; FRAME_W * BAND_ROWS] = [0; FRAME_W * BAND_ROWS];
 // stack temporary, plus its own ~4 KB read scratch): the ride loop rebuilds it each frame, so the
 // stack reserve carries that spike.
 //
-// The FLPR build reclaims room without re-trimming the caps: the carve-out leaves the M33 **244 KB**
-// (not 256) but the production blob is ~1 KB so the carve is only ~12 KB, and the FLPR map path drops
+// The FLPR build reclaims room without re-trimming the caps: the carve-out leaves the M33 **248 KB**
+// (not 256) but the production blob is ~820 B so the carve is only ~8 KB, and the FLPR map path drops
 // the ~6.6 KB RGB565 band scratch — a net loosening, so the same caps clear the budget.
 
 /// Total SRAM the M33 app core sees. The opt-in ST7789 build (`--features tft`) links the full 256 KB
-/// (`memory.x`: RAM 256K @ 0x2000_0000); the default FLPR build links only 244 KB — the top 12 KB is
-/// the carved FLPR image + the shared handshake page (`build.rs` / `flpr.ld`).
+/// (`memory.x`: RAM 256K @ 0x2000_0000); the default FLPR build links what the carve leaves — taken
+/// straight from the generated contract (`build.rs` derives the carved `memory.x` and this constant
+/// from the same `FLPR_RAM_BASE`, so the budget can't fork from the linker map).
 #[cfg(feature = "tft")]
 const NRF_RAM_BYTES: usize = 256 * 1024;
 #[cfg(not(feature = "tft"))]
-const NRF_RAM_BYTES: usize = 244 * 1024;
+const NRF_RAM_BYTES: usize = ls021_flpr::M33_RAM_BYTES;
 /// Headroom kept free under the resident statics for the main stack + embassy's executor/task arenas
 /// (statics grow up from the RAM base, the stack down from the top). This is only the build-time
 /// *floor* the assert enforces — the real stack is the residual `RAM − statics` (~34 KB on the default
