@@ -4,6 +4,9 @@ import OBCDomain
 
 /// Geometry rules behind the drawing components — the letterbox transform in
 /// `TrackPreviewView` and the waypoint-marker placement in `WaypointsListView`.
+/// `@MainActor` because the helpers are statics on `@MainActor` SwiftUI views
+/// (and the returned transform closure is non-Sendable, so it must stay there).
+@MainActor
 final class TrackGeometryTests: XCTestCase {
     // ------------------------------------------------------- letterbox fitting
     func testWideTrackLetterboxesVertically() {

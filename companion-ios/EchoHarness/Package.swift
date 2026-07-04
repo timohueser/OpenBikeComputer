@@ -1,4 +1,4 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.0
 import PackageDescription
 
 // EchoHarness — a macOS command-line rig that drives the firmware's A5 L2CAP CoC echo
@@ -21,7 +21,7 @@ let package = Package(
         .executableTarget(
             name: "EchoHarness",
             dependencies: [.product(name: "OBCTransport", package: "OBCKit")],
-            swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
+            swiftSettings: [.swiftLanguageMode(.v6)]
         )
     ]
 )
