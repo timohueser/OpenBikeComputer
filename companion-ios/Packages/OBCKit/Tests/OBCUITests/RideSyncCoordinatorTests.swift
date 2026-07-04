@@ -13,16 +13,22 @@ import OBCTransport
 /// `MainScreenModelTests`.
 @MainActor
 final class RideSyncCoordinatorTests: XCTestCase {
-    /// Short pacing so the done-hold / line-hold timers fire in test time.
-    private static let fastTiming = RideSyncCoordinator.Timing(
-        syncDoneHold: .milliseconds(60),
-        syncedLineHold: .milliseconds(500)
+    /// Sticky holds: the done-hold and line-hold timers race the poll loop on
+    /// wall-clock time, so a CI scheduling stall can expire `.done` (or the
+    /// confirm line) *between* two polls and the wait times out on a state
+    /// that's already gone. Holds this long are terminal within a test —
+    /// completion waits observe them race-free. The expiry behavior itself is
+    /// asserted separately with short timers, waiting only on the terminal
+    /// state *after* the timer (stable once reached).
+    private static let stickyTiming = RideSyncCoordinator.Timing(
+        syncDoneHold: .seconds(300),
+        syncedLineHold: .seconds(300)
     )
 
     private func makeCoordinator(
         _ scenario: Scenario,
         library: any LibraryStore = InMemoryLibraryStore(),
-        timing: RideSyncCoordinator.Timing = fastTiming
+        timing: RideSyncCoordinator.Timing = stickyTiming
     ) -> (RideSyncCoordinator, MockControl) {
         let control = MockControl(scenario: scenario)
         control.latency = .zero
@@ -36,7 +42,7 @@ final class RideSyncCoordinatorTests: XCTestCase {
     /// Poll until `condition` holds (the coordinator moves on free-running tasks).
     private func waitFor(
         _ what: String,
-        timeout: Duration = .seconds(5),
+        timeout: Duration = .seconds(30),
         _ condition: () -> Bool
     ) async {
         let deadline = ContinuousClock.now.advanced(by: timeout)
@@ -80,18 +86,41 @@ final class RideSyncCoordinatorTests: XCTestCase {
     // MARK: The SYNC button contract
 
     func testFirstSyncPullsEverythingThenIdles() async {
-        let (coordinator, _) = makeCoordinator(.happyPath)
+        // Short done-hold so the return to idle is observable; sticky line-hold
+        // so asserting the confirm line can't race its own expiry.
+        let (coordinator, _) = makeCoordinator(
+            .happyPath,
+            timing: .init(syncDoneHold: .milliseconds(60), syncedLineHold: .seconds(300)))
         await startConnected(coordinator)
 
         coordinator.sync()
-        await waitFor("syncing") { coordinator.syncState == .syncing }
-        await waitFor("done + confirm line") {
-            coordinator.syncState == .done && coordinator.lastSyncCount == 4
-        }
+        // The sticky confirm line is the completion marker; `.done` itself is a
+        // 60 ms window here, and reaching `.idle` below proves it ran — the
+        // machine only idles out of a completed sync through the done-hold.
+        await waitFor("confirm line") { coordinator.lastSyncCount == 4 }
         XCTAssertNil(coordinator.syncProgress)
         await waitFor("done hold expires") { coordinator.syncState == .idle }
         XCTAssertEqual(coordinator.lastSyncCount, 4)   // the line outlives the check
-        await waitFor("confirm line expires") { coordinator.lastSyncCount == nil }
+    }
+
+    /// The confirm line expires on its own timer after the check. Both holds
+    /// short; the wait targets only the terminal end state (idle button, line
+    /// gone), armed *after* durable proof the batch landed (the library) — no
+    /// wait ever targets a transient window.
+    func testConfirmLineExpiresAfterTheCheck() async {
+        let library = InMemoryLibraryStore()
+        let (coordinator, _) = makeCoordinator(
+            .happyPath, library: library,
+            timing: .init(syncDoneHold: .milliseconds(60), syncedLineHold: .milliseconds(60)))
+        await startConnected(coordinator)
+
+        coordinator.sync()
+        await waitFor("batch lands") { library.rides().count == 4 }
+        // From here the machine walks count-set → done → idle → line-expiry on
+        // its own; idle + nil only coexist once the whole sequence has run.
+        await waitFor("confirm line expires") {
+            coordinator.syncState == .idle && coordinator.lastSyncCount == nil
+        }
     }
 
     func testSecondSyncIsUpToDate() async {
@@ -100,8 +129,9 @@ final class RideSyncCoordinatorTests: XCTestCase {
 
         coordinator.sync()
         await waitFor("first sync done") { coordinator.lastSyncCount == 4 }
-        await waitFor("idle again") { coordinator.syncState == .idle }
 
+        // Re-arm straight from the sticky `.done` — the gate only rejects
+        // a *running* sync, so waiting out the done-hold isn't needed.
         coordinator.sync()
         // H9: quiet toast, straight back to idle — never an empty "done".
         await waitFor("up-to-date toast") { coordinator.upToDateToastVisible }
@@ -117,7 +147,6 @@ final class RideSyncCoordinatorTests: XCTestCase {
 
         coordinator.sync()
         await waitFor("first sync") { coordinator.lastSyncCount == 4 }
-        await waitFor("idle") { coordinator.syncState == .idle }
 
         control.emit(.rideAdded(RideSummary(
             id: RideID("ride-new"),
@@ -272,7 +301,7 @@ final class RideSyncCoordinatorTests: XCTestCase {
             ]
         )
         let coordinator = RideSyncCoordinator(
-            transport: transport, library: library, timing: Self.fastTiming)
+            transport: transport, library: library, timing: Self.stickyTiming)
         await startConnected(coordinator)
 
         coordinator.sync()

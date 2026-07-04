@@ -7,7 +7,6 @@
 
 use embedded_graphics::prelude::Point;
 use obc_render::{
-    rect,
     text::{Font, TextAlign},
     Surface,
 };
@@ -93,14 +92,16 @@ impl RouteSwapScreen {
             SUBTEXT,
         );
 
-        let (row_h, gap) = (46, 8);
-        let first = super::TITLE_BAR_H + 46;
-        for (i, item) in ITEMS.iter().enumerate() {
-            let y = first + i as i32 * (row_h + gap);
-            let row = rect(12, y, w - 24, row_h);
-            // Guarded rows fill amber (not warning-red — this confirms a save, it isn't destructive).
-            super::confirm_row(cv, row, i == self.selected, item.guard, rx.hold_progress, AMBER, 6);
-            cv.text(item.label, Point::new(28, y + 11), Font::Body, TextAlign::Left, INK);
-        }
+        // Guarded rows fill amber (not warning-red — this confirms a save, it isn't destructive).
+        let geo = super::GuardedRowsGeometry {
+            x: 12,
+            w: w - 24,
+            top: super::TITLE_BAR_H + 46,
+            row_h: 46,
+            gap: 8,
+            label_dx: 16,
+            label_dy: 11,
+        };
+        super::draw_guarded_rows(cv, &ITEMS, self.selected, rx.hold_progress, AMBER, geo);
     }
 }

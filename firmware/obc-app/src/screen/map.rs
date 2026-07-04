@@ -136,11 +136,17 @@ impl MapScreen {
         // The remaining chrome draws in the palette vocabulary, back through the canvas.
         // Top-center status pill, shown only when there's something to say. "No GPS Fix" takes
         // priority over off-route: with no fix the match is stale, so cross-track distance is
-        // meaningless.
-        if rx.no_fix {
-            draw_no_fix_pill(cv, rx);
-        } else if rx.activity.off_route {
-            draw_off_route_pill(cv, rx);
+        // meaningless. Suppressed while panning — the pan HUD owns the top edge (the chevron and
+        // compass would collide with the pill), and panning is deliberate map inspection anyway;
+        // the pill returns the moment pan exits.
+        if rx.state.pan.is_none() {
+            if rx.no_fix {
+                draw_status_pill(cv, rx.w, "No GPS Fix");
+            } else if rx.activity.off_route {
+                let mut s: heapless::String<20> = heapless::String::new();
+                super::write_off_route(&mut s, "off route ", rx.activity.dist_to_route_m, rx.settings.units);
+                draw_status_pill(cv, rx.w, &s);
+            }
         }
 
         // Pan-mode HUD. Drawn last so it sits over the map + marker, and only while panning.
@@ -165,12 +171,11 @@ fn handle_pan(g: Gesture, cx: &mut Ctx) -> Transition {
     Transition::None
 }
 
-/// A compact "No GPS Fix" chip at the top of the map — shown while the device has no current fix,
-/// vanishing the moment one lands. Same look + slot as the off-route pill.
-fn draw_no_fix_pill(cv: &mut impl Surface, rx: &Render) {
+/// A compact top-centre status chip ("No GPS Fix", "off route NNNm") — the one warning slot on the
+/// map. The caller owns the priority rule of what to say; the pill vanishes the moment there's
+/// nothing to report.
+fn draw_status_pill(cv: &mut impl Surface, w: i32, s: &str) {
     use super::palette::*;
-    let w = rx.w;
-    let s = "No GPS Fix";
     let font = Font::Body;
     let tw = text_width(s, font) as i32;
     let (pw, ph) = (tw + 28, 36);
@@ -179,23 +184,6 @@ fn draw_no_fix_pill(cv: &mut impl Surface, rx: &Render) {
     cv.round(rect(px, py, pw, ph), 9, PARCHMENT);
     cv.round_outline(rect(px, py, pw, ph), 9, WARNING);
     cv.text(s, Point::new(w / 2, py + 5), font, TextAlign::Center, WARNING);
-}
-
-/// A compact "off route NNNm" chip at the top of the map — shown only while off-route, vanishing on
-/// rejoin.
-fn draw_off_route_pill(cv: &mut impl Surface, rx: &Render) {
-    use super::palette::*;
-    let w = rx.w;
-    let mut s: heapless::String<20> = heapless::String::new();
-    super::write_off_route(&mut s, "off route ", rx.activity.dist_to_route_m, rx.settings.units);
-    let font = Font::Body;
-    let tw = text_width(&s, font) as i32;
-    let (pw, ph) = (tw + 28, 36);
-    let px = (w - pw) / 2;
-    let py = 10;
-    cv.round(rect(px, py, pw, ph), 9, PARCHMENT);
-    cv.round_outline(rect(px, py, pw, ph), 9, WARNING);
-    cv.text(&s, Point::new(w / 2, py + 5), font, TextAlign::Center, WARNING);
 }
 
 /// Pan-mode HUD geometry — every tunable pixel size in one place. (The camera-travel-per-detent

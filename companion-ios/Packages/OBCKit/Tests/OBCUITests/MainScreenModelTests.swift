@@ -11,17 +11,20 @@ import OBCTransport
 /// (#358); syncs here only stage list/reconcile behavior.
 @MainActor
 final class MainScreenModelTests: XCTestCase {
-    /// Short pacing so the done-hold / line-hold timers fire in test time.
-    private static let fastTiming = RideSyncCoordinator.Timing(
-        syncDoneHold: .milliseconds(60),
-        syncedLineHold: .milliseconds(500)
+    /// Sticky holds — terminal within a test, so waits on `.done` / the confirm
+    /// line can't race their own expiry timers on a stalled CI runner. The
+    /// timers' expiry behavior is `RideSyncCoordinatorTests`' concern, not this
+    /// file's.
+    private static let stickyTiming = RideSyncCoordinator.Timing(
+        syncDoneHold: .seconds(300),
+        syncedLineHold: .seconds(300)
     )
 
     private func makeModel(
         _ scenario: Scenario,
         library: any LibraryStore = InMemoryLibraryStore(),
         seedLibrary: Bool = true,
-        timing: RideSyncCoordinator.Timing = fastTiming
+        timing: RideSyncCoordinator.Timing = stickyTiming
     ) -> (MainScreenModel, MockControl) {
         let control = MockControl(scenario: scenario)
         control.latency = .zero
@@ -63,7 +66,7 @@ final class MainScreenModelTests: XCTestCase {
     /// Poll until `condition` holds (the model moves on free-running tasks).
     private func waitFor(
         _ what: String,
-        timeout: Duration = .seconds(5),
+        timeout: Duration = .seconds(30),
         _ condition: () -> Bool
     ) async {
         let deadline = ContinuousClock.now.advanced(by: timeout)
@@ -84,17 +87,18 @@ final class MainScreenModelTests: XCTestCase {
     /// Load, then pull the device's rides in — the Tracked list is library-first
     /// (#296), so a ride only becomes a row once it's synced. Tests that assert
     /// on ride rows start from here. Waits for a real post-sync marker (never the
-    /// pre-sync `.idle`, which would race the async sync task), then for it to
-    /// settle back to idle.
+    /// pre-sync `.idle`, which would race the async sync task), then for the
+    /// progress caption to come down.
     private func startSynced(_ model: MainScreenModel) async {
         await startLoaded(model)
         model.sync.sync()
         await waitFor("sync completes") {
             model.sync.syncState == .done || model.sync.upToDateToastVisible
         }
-        await waitFor("sync settles") {
-            model.sync.syncState == .idle && model.sync.syncProgress == nil
-        }
+        // Under sticky timing `.done` never yields to `.idle` in test time —
+        // "settled" is the progress caption coming down, which both branches
+        // guarantee by the time their state above is visible.
+        await waitFor("sync settles") { model.sync.syncProgress == nil }
     }
 
     // MARK: Stream lifecycle (#356)

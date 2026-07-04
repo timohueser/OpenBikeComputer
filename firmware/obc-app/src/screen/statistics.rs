@@ -26,7 +26,7 @@ use crate::input::Gesture;
 use crate::settings::Settings;
 use crate::stat_fields;
 
-use super::{palette, title_frame, Ctx, MapScreen, Render, Screen, Transition};
+use super::{palette, title_frame, Ctx, MapScreen, Render, Screen, ScreenTick, Transition};
 
 /// Cursor scrub per encoder detent, as a fraction of the whole route — ~42 detents end to end.
 const CURSOR_STEP_FRAC: f32 = 1.0 / 42.0;
@@ -45,6 +45,10 @@ const CHART_BOT: i32 = 110;
 /// The peak elevation maps here (a few px below `CHART_TOP`) so the apex clears the bar.
 const BAND_TOP: i32 = CHART_TOP + 4;
 const SIDE_MARGIN: i32 = 12;
+/// "Near the peak" for the cursor's elevation label, in **screen px**: inside this of the peak the
+/// label drops below the dot so it can't overlap the apex. Screen-space (not a route fraction) so
+/// it stays a constant on-glass distance at every zoom; an off-window peak is never near.
+const PEAK_NEAR_PX: i32 = 36;
 
 /// What `turn` does: scrub the cursor, or zoom the view about it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,7 +69,8 @@ pub struct StatisticsScreen {
     /// Instant of the last cursor scrub (not a deadline, so the `wrapping_sub` elapsed check stays
     /// correct across the `u32` millis wrap). The cursor springs back once `IDLE_MS` elapse.
     last_scrub_ms: u32,
-    /// Which page of the stat grid is showing; [`animate`](Self::animate) auto-cycles it on a timer.
+    /// Which page of the stat grid is showing; [`tick_timers`](Self::tick_timers) auto-cycles it on
+    /// a timer.
     page: usize,
     /// Instant of the last page flip (wrap-safe like `last_scrub_ms`). `None` until the first frame
     /// anchors it, so the first page gets a full dwell on entry.
@@ -123,63 +128,62 @@ impl StatisticsScreen {
         self.last_scrub_ms = 0;
     }
 
-    /// Advance the idle spring-back on the input clock, returning whether it fired. Once [`IDLE_MS`]
-    /// elapse since the last scrub (Cursor mode only — Zoom never springs back), the cursor drops
-    /// back to tracking live. Makes observable the transition that [`effective_cursor`] already does
-    /// lazily, so the dirty-tracking host (issue #47) can redraw at the right moment. Idempotent:
-    /// once sprung back it returns `false`.
-    pub fn animate(&mut self, now_ms: u32, settings: &Settings) -> bool {
-        let sprung_back =
-            self.mode == Mode::Cursor && self.cursor.is_some() && now_ms.wrapping_sub(self.last_scrub_ms) >= IDLE_MS;
-        if sprung_back {
-            self.cursor = None;
-        }
-        sprung_back | self.advance_page(now_ms, settings)
-    }
+    /// Poll the view's two timers in one body — the cursor's idle spring-back and the stat grid's
+    /// page auto-cycle — firing whichever is due and reporting the soonest residual deadline from
+    /// the same elapsed-time locals, so what fired and when to wake next can never disagree. Both
+    /// elapsed checks are `wrapping_sub`, so they stay correct across the `u32` millis wrap.
+    ///
+    /// Spring-back: once [`IDLE_MS`] elapse since the last scrub (Cursor mode only — Zoom never
+    /// springs back), the cursor drops back to tracking live — making observable the transition
+    /// [`effective_cursor`] already does lazily, so the dirty-tracking host (issue #47) redraws at
+    /// the right moment. Idempotent: once sprung back, nothing fires and nothing is pending.
+    ///
+    /// Page cycle: with more than one page, the view dwells [`stat_cycle_s`](Settings::stat_cycle_s)
+    /// on each; with one page it pins page 0 and re-anchors the timer so a later expansion starts a
+    /// fresh dwell. The anchor is lazily set on the first poll, so entering the screen gives page 0
+    /// a full dwell.
+    pub fn tick_timers(&mut self, now_ms: u32, settings: &Settings) -> ScreenTick {
+        let mut changed = false;
 
-    /// Advance the grid's page auto-cycle, returning whether the page flipped. With more than one
-    /// page, the view dwells [`stat_cycle_s`](Settings::stat_cycle_s) on each; with one page it pins
-    /// page 0 and re-anchors the timer so a later expansion starts a fresh dwell. The anchor is
-    /// wrap-safe and lazily set on the first frame, so entering the screen gives page 0 a full dwell.
-    fn advance_page(&mut self, now_ms: u32, settings: &Settings) -> bool {
+        // Cursor spring-back: armed only while a scrub is live in Cursor mode. Due → fire (drop
+        // back to live); not yet → the remainder is the deadline, strictly positive by the gate.
+        let mut spring = None;
+        if self.mode == Mode::Cursor && self.cursor.is_some() {
+            let elapsed = now_ms.wrapping_sub(self.last_scrub_ms);
+            if elapsed >= IDLE_MS {
+                self.cursor = None;
+                changed = true;
+            } else {
+                spring = Some(IDLE_MS - elapsed);
+            }
+        }
+
+        // Page auto-cycle: always pending with more than one page (a flip re-arms a full dwell).
         let pages = stat_fields::page_count(&settings.stat_fields);
         let last = *self.last_flip_ms.get_or_insert(now_ms);
-        if pages <= 1 {
+        let page = if pages <= 1 {
             self.page = 0;
             self.last_flip_ms = Some(now_ms);
-            return false;
-        }
-        self.page = self.page.min(pages - 1);
-        let period_ms = settings.stat_cycle_s.max(1) as u32 * 1000;
-        if now_ms.wrapping_sub(last) >= period_ms {
-            self.page = (self.page + 1) % pages;
-            self.last_flip_ms = Some(now_ms);
-            true
+            None
         } else {
-            false
-        }
-    }
-
-    /// Milliseconds until this screen's next timed redraw — the wake deadline the event-driven host
-    /// (issue #219) arms a single timer to. The soonest of `animate`'s two timers: the cursor spring-
-    /// back and the grid page auto-cycle. `None` when neither is pending. Mirrors `animate`'s gating
-    /// exactly, so the host wakes precisely when `animate` would fire.
-    pub fn next_wake_in(&self, now_ms: u32, settings: &Settings) -> Option<u32> {
-        // Spring-back: pending only while a scrub is live in Cursor mode. `animate` ran first this
-        // frame, so any due spring-back already fired — the remainder here is strictly positive.
-        let spring = (self.mode == Mode::Cursor && self.cursor.is_some())
-            .then(|| IDLE_MS.saturating_sub(now_ms.wrapping_sub(self.last_scrub_ms)))
-            .filter(|&r| r > 0);
-        // Page cycle: pending only with more than one page; the dwell is anchored lazily.
-        let page = (stat_fields::page_count(&settings.stat_fields) > 1).then(|| {
+            self.page = self.page.min(pages - 1);
             let period_ms = settings.stat_cycle_s.max(1) as u32 * 1000;
-            let last = self.last_flip_ms.unwrap_or(now_ms);
-            period_ms.saturating_sub(now_ms.wrapping_sub(last)).max(1)
-        });
-        match (spring, page) {
+            let elapsed = now_ms.wrapping_sub(last);
+            if elapsed >= period_ms {
+                self.page = (self.page + 1) % pages;
+                self.last_flip_ms = Some(now_ms);
+                changed = true;
+                Some(period_ms)
+            } else {
+                Some(period_ms - elapsed)
+            }
+        };
+
+        let next_wake_ms = match (spring, page) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
-        }
+        };
+        ScreenTick { changed, next_wake_ms }
     }
 
     /// The cursor fraction in effect now: the scrub position while it's still live,
@@ -295,7 +299,8 @@ impl StatisticsScreen {
         // else just above, clamped inside the band and clear of the baseline/bar.
         let mut ele_s: heapless::String<8> = heapless::String::new();
         let _ = write!(ele_s, "{} {}", units.elev(cur_ele as f32) as i32, units.elev_label());
-        let near_peak = (cursor_frac - profile.peak_frac()).abs() < 0.07;
+        let peak_x = frac_to_x(profile.peak_frac());
+        let near_peak = (chart_x..chart_x + chart_w).contains(&peak_x) && (cursor_x - peak_x).abs() < PEAK_NEAR_PX;
         let label_y = (if near_peak { cur_y + 9 } else { cur_y - 5 }).clamp(CHART_TOP + 2, band_bot - 24);
         if cursor_x < w - 44 {
             cv.text(&ele_s, Point::new(cursor_x + 8, label_y), Font::Label, TextAlign::Left, INK);
@@ -315,7 +320,7 @@ impl StatisticsScreen {
             cv.round(rect(chart_x, prog_y, fill_w, 8), 4, live_color);
         }
 
-        // Customizable stat grid: the rider's fields, paginated (3x2) and auto-cycled by `animate`.
+        // Customizable stat grid: the rider's fields, paginated (3x2) and auto-cycled by `tick_timers`.
         // Each placed field renders its own tile via the registry; a two-span field fills a row.
         let fields = &rx.settings.stat_fields;
         let page = self.page.min(stat_fields::page_count(fields) - 1);
@@ -394,33 +399,33 @@ mod tests {
         assert_eq!(s.effective_cursor(1_000 + IDLE_MS, LIVE), LIVE);
     }
 
-    /// `animate` fires `true` exactly once, at the deadline, and agrees with the lazy spring-back
-    /// `effective_cursor` does. Between the scrub and the deadline it's `false`.
+    /// `tick_timers` fires `changed` exactly once, at the deadline, and agrees with the lazy
+    /// spring-back `effective_cursor` does. Between the scrub and the deadline it's `false`.
     #[test]
-    fn animate_reports_the_spring_back_once_at_the_deadline() {
+    fn tick_timers_reports_the_spring_back_once_at_the_deadline() {
         // Default = six tiles = one page, so the page auto-cycle never fires — isolates the spring-back.
         let cfg = Settings::default();
         let mut s = StatisticsScreen::new();
         // Untouched: tracking the live position already, nothing to settle.
-        assert!(!s.animate(1_000, &cfg), "an untouched view never self-dirties");
+        assert!(!s.tick_timers(1_000, &cfg).changed, "an untouched view never self-dirties");
 
         s.on_turn(1, LIVE, 1_000); // scrub the cursor away from live
-        assert!(!s.animate(1_000, &cfg), "the scrub frame itself isn't a spring-back");
-        assert!(!s.animate(1_000 + IDLE_MS - 1, &cfg), "still frozen inside the idle window");
-        assert!(s.animate(1_000 + IDLE_MS, &cfg), "springs back exactly at the deadline → dirty once");
+        assert!(!s.tick_timers(1_000, &cfg).changed, "the scrub frame itself isn't a spring-back");
+        assert!(!s.tick_timers(1_000 + IDLE_MS - 1, &cfg).changed, "still frozen inside the idle window");
+        assert!(s.tick_timers(1_000 + IDLE_MS, &cfg).changed, "springs back exactly at the deadline → dirty once");
         assert_eq!(s.effective_cursor(1_000 + IDLE_MS, LIVE), LIVE, "and it really is back at live");
-        assert!(!s.animate(1_000 + IDLE_MS + 5_000, &cfg), "and only once — it stays put afterwards");
+        assert!(!s.tick_timers(1_000 + IDLE_MS + 5_000, &cfg).changed, "and only once — it stays put afterwards");
     }
 
     /// Zoom mode is exempt from the spring-back (the frozen cursor is the zoom centre), so
-    /// `animate` must never fire there.
+    /// `tick_timers` must never fire there.
     #[test]
-    fn animate_never_springs_back_in_zoom_mode() {
+    fn tick_timers_never_springs_back_in_zoom_mode() {
         let cfg = Settings::default();
         let mut s = StatisticsScreen::new();
         s.on_turn(1, LIVE, 0); // a scrub…
         s.mode = Mode::Zoom; // …then into zoom (as `Hold` would)
-        assert!(!s.animate(IDLE_MS * 3, &cfg), "zoom mode holds the cursor — no spring-back");
+        assert!(!s.tick_timers(IDLE_MS * 3, &cfg).changed, "zoom mode holds the cursor — no spring-back");
     }
 
     /// A seven-field selection (two pages) auto-cycles: the first frame anchors a full dwell, the
@@ -433,13 +438,13 @@ mod tests {
         let period = cfg.stat_cycle_s as u32 * 1000;
         let mut s = StatisticsScreen::new();
         // First frame anchors the timer — page 0 gets a full dwell, no flip.
-        assert!(!s.animate(10_000, &cfg), "the anchoring frame doesn't flip");
+        assert!(!s.tick_timers(10_000, &cfg).changed, "the anchoring frame doesn't flip");
         assert_eq!(s.page, 0);
-        assert!(!s.animate(10_000 + period - 1, &cfg), "still dwelling just before the deadline");
+        assert!(!s.tick_timers(10_000 + period - 1, &cfg).changed, "still dwelling just before the deadline");
         assert_eq!(s.page, 0);
-        assert!(s.animate(10_000 + period, &cfg), "flips to page 1 at the deadline → dirty");
+        assert!(s.tick_timers(10_000 + period, &cfg).changed, "flips to page 1 at the deadline → dirty");
         assert_eq!(s.page, 1);
-        assert!(s.animate(10_000 + 2 * period, &cfg), "and wraps back to page 0 a period later");
+        assert!(s.tick_timers(10_000 + 2 * period, &cfg).changed, "and wraps back to page 0 a period later");
         assert_eq!(s.page, 0);
     }
 
@@ -448,42 +453,50 @@ mod tests {
     fn single_page_grid_never_flips() {
         let cfg = Settings::default();
         let mut s = StatisticsScreen::new();
-        assert!(!s.animate(1_000, &cfg));
-        assert!(!s.animate(1_000_000, &cfg), "one page never flips");
+        assert!(!s.tick_timers(1_000, &cfg).changed);
+        assert!(!s.tick_timers(1_000_000, &cfg).changed, "one page never flips");
         assert_eq!(s.page, 0);
     }
 
-    /// `next_wake_in` reports the time left until the same timer `animate` would fire. A live scrub
+    /// `next_wake_ms` reports the time left until the same timer would fire `changed`. A live scrub
     /// counts down to its `IDLE_MS` spring-back; an untouched single-page view has no timed redraw.
     #[test]
-    fn next_wake_in_counts_down_to_the_spring_back() {
+    fn next_wake_counts_down_to_the_spring_back() {
         let cfg = Settings::default(); // single page → only the cursor spring-back can be pending
         let mut s = StatisticsScreen::new();
-        assert_eq!(s.next_wake_in(1_000, &cfg), None, "an untouched view needs no timed wake");
+        assert_eq!(s.tick_timers(1_000, &cfg).next_wake_ms, None, "an untouched view needs no timed wake");
         s.on_turn(1, LIVE, 1_000); // scrub → the spring-back timer is now armed
-        assert_eq!(s.next_wake_in(1_000, &cfg), Some(IDLE_MS), "the full idle window remains at the scrub");
-        assert_eq!(s.next_wake_in(1_000 + 1_000, &cfg), Some(IDLE_MS - 1_000), "counts down as time passes");
-        // Once it has sprung back (animate fired), there's nothing left to wake for.
-        assert!(s.animate(1_000 + IDLE_MS, &cfg));
-        assert_eq!(s.next_wake_in(1_000 + IDLE_MS, &cfg), None, "sprung back → no further timed wake");
+        assert_eq!(s.tick_timers(1_000, &cfg).next_wake_ms, Some(IDLE_MS), "the full idle window remains at the scrub");
+        assert_eq!(
+            s.tick_timers(1_000 + 1_000, &cfg).next_wake_ms,
+            Some(IDLE_MS - 1_000),
+            "counts down as time passes"
+        );
+        // The poll that springs back reports the change and, in the same result, nothing left to wake for.
+        let tick = s.tick_timers(1_000 + IDLE_MS, &cfg);
+        assert!(tick.changed);
+        assert_eq!(tick.next_wake_ms, None, "sprung back → no further timed wake");
     }
 
-    /// With more than one page the auto-cycle is always pending, so `next_wake_in` tracks the dwell
+    /// With more than one page the auto-cycle is always pending, so `next_wake_ms` tracks the dwell
     /// remaining (and, when both timers are live, the spring-back wins if it's sooner).
     #[test]
-    fn next_wake_in_tracks_the_page_dwell_and_takes_the_soonest() {
+    fn next_wake_tracks_the_page_dwell_and_takes_the_soonest() {
         let mut cfg = Settings::default();
         assert!(cfg.stat_fields.push(crate::stat_fields::StatField::Grade), "7 fields → two pages");
         cfg.stat_cycle_s = 5;
         let period = cfg.stat_cycle_s as u32 * 1000;
         let mut s = StatisticsScreen::new();
-        // Before the first frame anchors the dwell, the whole period remains.
-        assert_eq!(s.next_wake_in(10_000, &cfg), Some(period), "unanchored dwell = the full period");
-        let _ = s.animate(10_000, &cfg); // anchor the dwell at t = 10 s
-        assert_eq!(s.next_wake_in(10_000 + 2_000, &cfg), Some(period - 2_000), "2 s into the dwell");
+        // The first poll anchors the dwell at t = 10 s — the whole period remains.
+        assert_eq!(s.tick_timers(10_000, &cfg).next_wake_ms, Some(period), "the anchoring poll = the full period");
+        assert_eq!(s.tick_timers(10_000 + 2_000, &cfg).next_wake_ms, Some(period - 2_000), "2 s into the dwell");
         // A fresh scrub arms the spring-back too; IDLE_MS (4 s) < the 3 s left? no — 3 s page wins.
         s.on_turn(1, LIVE, 10_000 + 2_000);
-        assert_eq!(s.next_wake_in(10_000 + 2_000, &cfg), Some(period - 2_000), "the sooner of the two deadlines");
+        assert_eq!(
+            s.tick_timers(10_000 + 2_000, &cfg).next_wake_ms,
+            Some(period - 2_000),
+            "the sooner of the two deadlines"
+        );
     }
 
     /// The page timer is wrap-safe like the cursor spring-back: anchored just before the `u32` millis
@@ -496,9 +509,9 @@ mod tests {
         let period = cfg.stat_cycle_s as u32 * 1000;
         let t0 = u32::MAX - 1_000; // anchor 1 s before the wrap
         let mut s = StatisticsScreen::new();
-        assert!(!s.animate(t0, &cfg), "the anchoring frame doesn't flip");
-        assert!(!s.animate(t0.wrapping_add(period - 1), &cfg), "still dwelling across the wrap");
-        assert!(s.animate(t0.wrapping_add(period), &cfg), "flips a full period later, across the wrap");
+        assert!(!s.tick_timers(t0, &cfg).changed, "the anchoring frame doesn't flip");
+        assert!(!s.tick_timers(t0.wrapping_add(period - 1), &cfg).changed, "still dwelling across the wrap");
+        assert!(s.tick_timers(t0.wrapping_add(period), &cfg).changed, "flips a full period later, across the wrap");
         assert_eq!(s.page, 1);
     }
 

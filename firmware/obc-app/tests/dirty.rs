@@ -124,7 +124,7 @@ fn one_route() -> RouteSummary {
 #[test]
 fn statistics_spring_back_is_wired_into_the_dirty_signal() {
     // Navigate to Statistics, then prove the cursor's timed spring-back surfaces as a map-dirty
-    // through `handle_input`'s animate sweep — with no input and no fix in between.
+    // through `handle_input`'s timer-poll sweep — with no input and no fix in between.
     let mut app = App::new_idle(AppState::new(0, 0, 0.05)); // [Home]
     app.set_routes(&[one_route()]);
 
