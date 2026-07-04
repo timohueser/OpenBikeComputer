@@ -25,6 +25,10 @@ use crate::input::Gesture;
 use super::list;
 use super::{palette, Ctx, Render, Screen, Transition};
 
+/// Re-exported for the settings screens (the kit is their one-stop `super::`), so a sub-screen
+/// like Add field never reaches for `super::super::`.
+pub(super) use super::empty_state;
+
 mod add_field;
 mod datetime;
 mod fields;

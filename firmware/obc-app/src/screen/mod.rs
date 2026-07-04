@@ -79,7 +79,10 @@ pub fn apply(stack: &mut Stack, t: Transition) {
     match t {
         Transition::None => {}
         Transition::Push(s) => {
-            let _ = stack.push(s); // an overflow just no-ops
+            // An overflow no-ops in release (the top screen just doesn't open); in sim/tests a
+            // navigation tree grown past MAX_DEPTH fails loudly instead of silently dropping it.
+            let r = stack.push(s);
+            debug_assert!(r.is_ok(), "screen stack overflow — raise MAX_DEPTH");
         }
         Transition::Pop => {
             if stack.len() > 1 {
@@ -93,7 +96,8 @@ pub fn apply(stack: &mut Stack, t: Transition) {
         }
         Transition::Root(s) => {
             stack.truncate(1); // keep the Home root
-            let _ = stack.push(s);
+            let r = stack.push(s); // can't overflow: len is 1 and MAX_DEPTH > 1
+            debug_assert!(r.is_ok(), "screen stack overflow — raise MAX_DEPTH");
         }
         Transition::Home => stack.truncate(1),
     }
