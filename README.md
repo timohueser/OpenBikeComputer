@@ -137,21 +137,25 @@ device palette, watch build progress:
 ```
 
 It drives the `obc-pack` binary you built above (override its path with the
-`OBC_PACK_BIN` env var). Features:
+`OBC_PACK_BIN` env var). The UI is a Svelte app compiled once with Node
+(`cd packer/web_builder/frontend && npm ci && npm run build`). Features:
 
-- **Region picker** — browse the Geofabrik tree and select one or more extracts;
-  builds stream live progress over server-sent events.
+- **Region picker** — click regions or search the Geofabrik tree; builds stream
+  live progress over server-sent events and finish with a download link.
 - **Bounding-box build mode** — draw a crop box on the map and the selected PBFs
   are cropped to it before packing, so you can target a small area precisely.
-- **Style editor** — edit colors / z-order / weights / per-LOD detail, with the
-  color picker defaulting to the device's 64-color gamut (`palette.json`).
-- **Persistent edits** — the presets under `packer/presets/` are read-only
-  factory defaults; your edits are auto-saved to `user_config.json` (gitignored)
-  and persist between sessions. **Restore defaults** discards them.
-- **Stylesheets** — **Export** / **Import** the current styling as a standalone
-  `.json`, independent of any `.obcm`.
-- Feature/category fields autocomplete from a curated OSM tag catalog
-  (`packer/web_builder/static/osm_catalog.json`); any freeform tag still works.
+- **Style presets** — pick Bikepacking / Minimal / High detail on the main page
+  (the files under `packer/presets/`); the **advanced editor** exposes every
+  knob: per-feature colors / z-order / weights / per-LOD detail, LOD tiers, and
+  output settings, with the color picker defaulting to the device's 64-color
+  gamut (`palette.json`).
+- **Your edits live in the browser** (localStorage) as "Custom — based on
+  &lt;preset&gt;"; **Reset to preset** re-applies the shipped version. Nothing
+  is stored server-side.
+- **Export / Import** — the exported `.json` is a complete packer config,
+  directly usable with the `obc-pack` CLI; old stylesheet exports import fine.
+- Feature/category fields autocomplete from a curated OSM tag catalog; any
+  freeform tag still works.
 
 ---
 
