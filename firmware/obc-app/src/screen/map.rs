@@ -7,7 +7,7 @@
 
 use embedded_graphics::{draw_target::DrawTarget, prelude::Point};
 use obc_render::{
-    rect,
+    rect, round_coord,
     text::{text_width, Font, TextAlign},
     Canvas, Surface, Viewport,
 };
@@ -213,15 +213,9 @@ mod hud {
     pub const OFFSCREEN_MARGIN: f32 = 6.0;
 }
 
-/// Round an f32 pixel coordinate to the nearest device pixel (no_std, no `libm`).
-#[inline]
-fn ri(v: f32) -> i32 {
-    (v + if v >= 0.0 { 0.5 } else { -0.5 }) as i32
-}
-
 #[inline]
 fn pt(x: f32, y: f32) -> Point {
-    Point::new(ri(x), ri(y))
+    Point::new(round_coord(x), round_coord(y))
 }
 
 /// A filled, ink-outlined triangle pointing along `(ux, uy)` — the solid back-to-you marker.
@@ -333,7 +327,7 @@ fn chevron(cv: &mut impl Surface, center: (f32, f32), dir: (f32, f32), fill: u16
         arm(cv, tip, rb, hw, color);
         // `disc(c, r)` spans diameter `2r+1` (true radius `r+0.5`), so pass `hw-0.5` to make
         // the round cap exactly `hw` wide — matching the arm, not bulging half a pixel past it.
-        let r = ri(hw - 0.5).max(1) as u32;
+        let r = round_coord(hw - 0.5).max(1) as u32;
         cv.disc(pt(lb.0, lb.1), r, color);
         cv.disc(pt(tip.0, tip.1), r, color);
         cv.disc(pt(rb.0, rb.1), r, color);

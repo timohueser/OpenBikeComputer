@@ -148,9 +148,16 @@ pub(crate) fn aspect_for_lat(cam_lat: i32) -> f32 {
     libm::cosf((cam_lat as f32 / 1e6).to_radians())
 }
 
-/// Round sub-pixel `(x, y)` to the nearest integer-pixel [`Point`] — the shared rounding convention
-/// for every screen-space vertex.
+/// Round to nearest, half away from zero — the shared rounding convention for every
+/// screen-space vertex. Same result as `libm::roundf` for all in-screen magnitudes,
+/// without the soft-float call on the hot per-vertex path.
+#[inline]
+pub fn round_coord(v: f32) -> i32 {
+    (v + if v >= 0.0 { 0.5 } else { -0.5 }) as i32
+}
+
+/// Round sub-pixel `(x, y)` to the nearest integer-pixel [`Point`] — [`round_coord`] on both axes.
 #[inline]
 pub(crate) fn round_pt(x: f32, y: f32) -> Point {
-    Point::new(libm::roundf(x) as i32, libm::roundf(y) as i32)
+    Point::new(round_coord(x), round_coord(y))
 }
