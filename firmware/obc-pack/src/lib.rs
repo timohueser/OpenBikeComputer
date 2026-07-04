@@ -9,6 +9,7 @@ pub mod config;
 pub mod geom;
 pub mod ingest;
 pub mod land;
+pub mod poi;
 pub mod quadtree;
 pub mod serialize;
 
