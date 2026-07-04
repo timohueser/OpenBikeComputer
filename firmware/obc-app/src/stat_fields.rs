@@ -408,6 +408,27 @@ pub fn page_fields(list: &StatFieldList, page: usize) -> heapless::Vec<Placed, S
     out
 }
 
+/// The global slot the `index`-th selected field starts at (`None` past the selection) — the same
+/// walk [`page_fields`] places with, so a cursor mapped through this always agrees with the drawn
+/// grid. `slot / SLOTS_PER_PAGE` is the page, the remainder the on-page cell.
+pub fn slot_of(list: &StatFieldList, index: usize) -> Option<usize> {
+    let mut found = None;
+    let mut i = 0usize;
+    walk(list, |_, slot| {
+        if i == index {
+            found = Some(slot);
+        }
+        i += 1;
+    });
+    found
+}
+
+/// The first slot past the selection (gaps included) — where the Fields editor's ghost "add"
+/// tile lands.
+pub fn next_free_slot(list: &StatFieldList) -> usize {
+    walk(list, |_, _| {})
+}
+
 // Value formatters + the grade helper — the field catalogue owns its own rendering. `grade_at` is
 // shared with the Statistics header readout.
 

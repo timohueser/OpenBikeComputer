@@ -15,7 +15,7 @@
 
 use core::fmt::Write;
 
-use embedded_graphics::{prelude::Point, primitives::Rectangle};
+use embedded_graphics::prelude::Point;
 use obc_render::{
     rect,
     text::{Font, TextAlign},
@@ -335,7 +335,7 @@ impl StatisticsScreen {
             let x = chart_x + placed.col as i32 * (col_w + gap);
             let y = grid_top + placed.row as i32 * (row_h + gap);
             let tile_w = if placed.field.span() == 2 { chart_w } else { col_w };
-            tile(cv, rect(x, y, tile_w, row_h), &cell.caption, &cell.value, cell.arrow);
+            super::tile(cv, rect(x, y, tile_w, row_h), &cell.caption, &cell.value, cell.arrow, PARCHMENT_SHADE);
         }
     }
 }
@@ -355,26 +355,6 @@ fn draw_zoom_icon(cv: &mut impl Surface, x: i32, y: i32) {
     for k in 0..3 {
         cv.disc(Point::new(lx + 4 + k, ly + 4 + k), 2, INK);
     }
-}
-
-/// Draw one stat tile: a tan rounded pane with an olive caption over a big ink Display value,
-/// optionally prefixed by an up-triangle for climb figures (the panel font has no ↑ glyph).
-fn tile(cv: &mut impl Surface, area: Rectangle, label: &str, value: &str, arrow: bool) {
-    use palette::*;
-    let (x, y) = (area.top_left.x, area.top_left.y);
-    cv.round(area, 5, PARCHMENT_SHADE);
-    // Caption inset less than the value so wide unit captions sit nearer the tile centre.
-    cv.text(label, Point::new(x + 5, y + 4), Font::Label, TextAlign::Left, SUBTEXT);
-    let vy = y + 22;
-    let vx = if arrow {
-        // Up-triangle sized to sit alongside the Display digits.
-        let ax = x + 8;
-        cv.triangle(Point::new(ax, vy + 26), Point::new(ax + 13, vy + 26), Point::new(ax + 6, vy + 6), INK);
-        x + 26
-    } else {
-        x + 8
-    };
-    cv.text(value, Point::new(vx, vy), Font::Display, TextAlign::Left, INK);
 }
 
 #[cfg(test)]
