@@ -118,6 +118,11 @@
         emit();
     }
 
+    /** Deselect a single region — the Area card's chip × calls this. */
+    export function removeRegion(id: string) {
+        if (picker?.selected.has(id)) picker.toggleRegion(id);
+    }
+
     function pickSearchResult(id: string) {
         if (!picker) return;
         if (!picker.selected.has(id)) picker.toggleRegion(id);
