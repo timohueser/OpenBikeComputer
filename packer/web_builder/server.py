@@ -14,9 +14,8 @@ PROJECT_ROOT = paths.PACKER_ROOT
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 # Shipped style presets: complete packer configs + a _meta block, default first.
 PRESETS_DIR = os.path.join(PROJECT_ROOT, "presets")
-# The read-only factory default served to the legacy editor.
-FACTORY_CONFIG = os.path.join(PRESETS_DIR, "default.json")
-# user_config.json (gitignored) holds the user's persisted edits, if any.
+# user_config.json: the retired editor's server-side persistence. Served once
+# via /api/config/legacy so the new app can offer a one-shot import.
 USER_CONFIG = os.path.join(PROJECT_ROOT, "user_config.json")
 # palette.json ships with the repo: the device's 64-color gamut offered as the
 # default color picker. Editable, with a generated fallback if it's missing.
@@ -140,33 +139,13 @@ def get_schema():
     )
 
 
-@app.get("/api/config")
-def get_config():
-    """DEPRECATED (legacy editor): the user's persisted config, else the default preset."""
-    path = USER_CONFIG if os.path.exists(USER_CONFIG) else FACTORY_CONFIG
-    return JSONResponse(_read_config(path))
-
-
-@app.get("/api/config/factory")
-def get_factory_config():
-    """DEPRECATED (legacy editor): the read-only factory-default config."""
-    return JSONResponse(_read_config(FACTORY_CONFIG))
-
-
-@app.put("/api/config")
-def put_config(config: dict):
-    """DEPRECATED (legacy editor): persist the working config to user_config.json."""
-    with open(USER_CONFIG, "w") as f:
-        json.dump(config, f, indent=2)
-    return {"ok": True}
-
-
-@app.delete("/api/config")
-def reset_config():
-    """DEPRECATED (legacy editor): discard user edits and return factory defaults."""
-    if os.path.exists(USER_CONFIG):
-        os.remove(USER_CONFIG)
-    return JSONResponse(_read_config(FACTORY_CONFIG))
+@app.get("/api/config/legacy")
+def get_legacy_config():
+    """The retired editor's user_config.json, if it exists — the new app offers
+    to import it into the browser-held working config once."""
+    if not os.path.exists(USER_CONFIG):
+        raise HTTPException(status_code=404, detail="No legacy config")
+    return JSONResponse(_read_config(USER_CONFIG))
 
 
 @app.post("/api/jobs")
@@ -219,29 +198,10 @@ def job_events(job_id: str):
     )
 
 
-@app.get("/legacy")
-def legacy_index():
-    # The previous editor, kept alive until the new advanced editor ships.
-    # Serve its index.html with mtime-stamped asset URLs: the plain
-    # `/static/app.js` URL is cached heuristically by browsers and silently
-    # goes stale after an edit; `?v=<mtime>` makes every edit a fresh URL.
-    with open(os.path.join(STATIC_DIR, "index.html")) as f:
-        html = f.read()
-    for asset in ("style.css", "app.js"):
-        try:
-            ver = int(os.path.getmtime(os.path.join(STATIC_DIR, asset)))
-        except OSError:
-            continue
-        html = html.replace(f"/static/{asset}", f"/static/{asset}?v={ver}")
-    return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
-
-
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-
-# The redesigned SPA (packer/web_builder/frontend/, built by Vite into
-# static/dist/ — gitignored, so a fresh checkout needs one `npm run build`).
-# Mounted last: every /api route above wins, everything else falls through to
-# the app. Without a build, "/" explains how to produce one.
+# The SPA (packer/web_builder/frontend/, built by Vite into static/dist/ —
+# gitignored, so a fresh checkout needs one `npm run build`). Mounted last:
+# every /api route above wins, everything else falls through to the app.
+# Without a build, "/" explains how to produce one.
 DIST_DIR = os.path.join(STATIC_DIR, "dist")
 
 if os.path.exists(os.path.join(DIST_DIR, "index.html")):
@@ -258,7 +218,6 @@ else:
             "<p>The web builder's UI is compiled from <code>packer/web_builder/frontend/</code>. "
             "Build it once (requires Node):</p>"
             "<pre>cd packer/web_builder/frontend\nnpm ci\nnpm run build</pre>"
-            "<p>…then restart this server. The previous editor is still available at "
-            "<a href='/legacy'>/legacy</a>.</p>",
+            "<p>…then restart this server.</p>",
             status_code=503,
         )
