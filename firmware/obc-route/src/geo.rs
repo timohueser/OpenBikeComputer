@@ -9,8 +9,8 @@
 //! needs: the matcher's clamped on-segment projection and the decimators'
 //! Visvalingam–Whyatt triangle area.
 
-pub(crate) use obc_reader::geo::{delta_m, seg_dist_m, seg_dist_m_cl};
 pub use obc_reader::geo::{cos_lat, ground_dist_m, ground_dist_m_cl};
+pub(crate) use obc_reader::geo::{delta_m, seg_dist_m, seg_dist_m_cl};
 
 /// Project point `p` onto the segment `a → b`, **clamped** to the segment's ends, in the
 /// local-equirectangular metric for a band with precomputed `cl = cos_lat`. Returns

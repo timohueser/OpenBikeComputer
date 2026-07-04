@@ -35,8 +35,8 @@ pub mod reader;
 // does when it re-exports it as `obc_route::Error`.
 pub use byte_io::{ByteSink, ByteSource, SliceSource};
 pub use color::rgb565_to_device64;
-pub use geo::{cos_lat, ground_dist_m, ground_dist_m_cl};
 pub use color::rgb565_to_rgb888;
+pub use geo::{cos_lat, ground_dist_m, ground_dist_m_cl};
 pub use reader::{
     read_header, CacheStats, FeatureRef, Kind, Lod, MapCache, MapHeader, MapTables, Reader, Style, HEADER_LEN,
     MAX_CHUNK_BYTES, MAX_FEAT_PTS, MAX_FEAT_RINGS,

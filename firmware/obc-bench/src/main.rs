@@ -127,10 +127,8 @@ fn run_scene(map: &[u8], name: &str, mpp: f32, heading_deg: f32, clock: &StdCloc
 /// fixture's bbox center (chunk 1 repeats chunk 0's last vertex — the seam, exactly as the OBCR
 /// reader hands chunks over). A zigzag sized to cross the mid-zoom view, so the stroke, the view
 /// clip and both chevron-window bounds are all exercised.
-const ROUTE_DELTAS: [&[(i32, i32)]; 2] = [
-    &[(-9000, -8000), (-4000, -2500), (-1500, -4000), (0, 0)],
-    &[(0, 0), (1500, 3000), (4500, 2000), (8000, 8000)],
-];
+const ROUTE_DELTAS: [&[(i32, i32)]; 2] =
+    [&[(-9000, -8000), (-4000, -2500), (-1500, -4000), (0, 0)], &[(0, 0), (1500, 3000), (4500, 2000), (8000, 8000)]];
 
 /// A static, deterministic [`RouteOverlaySource`] over the bench fixture — the seam is trivially
 /// fakeable, so the hash tripwire covers the route overlay (stroke + chevrons) with no OBCR file.
@@ -203,7 +201,7 @@ fn run_route_scene(map: &[u8], clock: &StdClock) -> SceneResult {
     // ROUTE_WEIGHT / palette from the app path: magenta 0xF81F stroke, white chevrons.
     let (route_c, arrow_c) = (color_fn(0xF81F), color_fn(0xFFFF));
 
-    let mut draw = |buf: &mut [u16], renderer: &mut MapRenderer| {
+    let draw = |buf: &mut [u16], renderer: &mut MapRenderer| {
         let mut fb = Framebuffer565::new(buf, WIDTH, HEIGHT);
         let stats = renderer.render_timed(&mut fb, &reader, &vp, bg, color_fn, clock);
         renderer.draw_route(&mut fb, &vp, &route, route_c, 11, arrow_c, arrows_at);
@@ -461,8 +459,8 @@ mod tests {
         assert!(magenta > 100, "expected a visible magenta route stroke, got {magenta} px");
 
         let (arrowed, ..) = frame(Some(route.cum_m[1]));
-        let white_gain = arrowed.iter().filter(|&&p| p == 0xFFFF).count()
-            - plain.iter().filter(|&&p| p == 0xFFFF).count();
+        let white_gain =
+            arrowed.iter().filter(|&&p| p == 0xFFFF).count() - plain.iter().filter(|&&p| p == 0xFFFF).count();
         assert!(white_gain > 20, "chevrons must add white pixels over the stroke, gained {white_gain} px");
     }
 
