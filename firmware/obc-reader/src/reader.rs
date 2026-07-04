@@ -651,18 +651,21 @@ fn for_each_hole(chunk: &[u8], mut off: usize, mut ring: impl FnMut(&[u8], usize
 /// Advance `off` past one ring's encoded deltas without decoding, mirroring [`read_ring`]'s offset
 /// arithmetic exactly so skip and decode stay byte-aligned. `is_hole` selects the hole encoding
 /// (every point a delta) vs the exterior encoding (first point is the anchor, not stored).
-fn skip_ring(chunk: &[u8], mut off: usize, pt_count: usize, is_hole: bool, dsize: usize) -> usize {
+fn skip_ring(chunk: &[u8], off: usize, pt_count: usize, is_hole: bool, dsize: usize) -> usize {
     if pt_count == 0 {
         return off;
     }
     let num_deltas = if is_hole { pt_count } else { pt_count - 1 };
-    for _ in 0..num_deltas {
-        if off + dsize * 2 > chunk.len() {
-            break;
-        }
-        off += dsize * 2;
+    let step = dsize * 2;
+    // Common case: the whole ring fits in the chunk — one multiply, no division.
+    let want = num_deltas * step;
+    let remain = chunk.len().saturating_sub(off);
+    if want <= remain {
+        return off + want;
     }
-    off
+    // Truncated ring: advance by whole delta steps only — mirrors the old loop's
+    // `off + step > len ⇒ break`, so skip and decode stay byte-for-byte aligned.
+    off + (remain / step) * step
 }
 
 #[allow(clippy::too_many_arguments)]
