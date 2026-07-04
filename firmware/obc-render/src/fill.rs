@@ -5,7 +5,7 @@ use heapless::Vec;
 use embedded_graphics::{prelude::*, primitives::Rectangle};
 
 use crate::viewport::Viewport;
-use crate::{MAX_CROSSINGS, MAX_SCREEN_POINTS};
+use crate::{MAX_CROSSINGS, MAX_DECODE_RINGS, MAX_SCREEN_POINTS};
 
 /// Project a feature's microdegree rings into `screen` and scanline-fill them. The draw phase's
 /// `Kind::Polygon` arm; also the marker diamond's path.
@@ -53,16 +53,44 @@ pub(crate) fn fill_polygon<D>(
     if ymin > ymax {
         return;
     }
+    // Per-ring y-ranges, hoisted out of the row loop so a scanline outside a ring's band skips it
+    // without touching its edges — the whole-polygon `ymin/ymax` above only bounds the union, so
+    // this is what saves work on multi-ring features and tall-skinny-ring layouts. Sized to
+    // `MAX_DECODE_RINGS` (the decode path's cap); the fixed tiny arrays other callers pass always
+    // fit, but if a ring doesn't (overflow), it simply isn't culled — today's always-test behavior.
+    let mut ring_y: Vec<(i32, i32), MAX_DECODE_RINGS> = Vec::new();
+    {
+        let mut base = 0usize;
+        for &len in ring_lens {
+            let mut ry_min = i32::MAX;
+            let mut ry_max = i32::MIN;
+            for p in &screen[base..base + len] {
+                ry_min = ry_min.min(p.y);
+                ry_max = ry_max.max(p.y);
+            }
+            base += len;
+            if ring_y.push((ry_min, ry_max)).is_err() {
+                break;
+            }
+        }
+    }
     for y in ymin..=ymax {
         let yc = y as f32 + 0.5;
         xs.clear();
         let mut base = 0usize;
         let mut saturated = false;
-        'rings: for &len in ring_lens {
+        'rings: for (r, &len) in ring_lens.iter().enumerate() {
             let ring = &screen[base..base + len];
             base += len;
             if len < 2 {
                 continue;
+            }
+            // Rows outside the ring's y-band can't cross it; rings past the (unreachable in the
+            // decode path) `ring_y` capacity fall back to the full edge test.
+            if let Some(&(ry_min, ry_max)) = ring_y.get(r) {
+                if yc < ry_min as f32 || yc > ry_max as f32 {
+                    continue;
+                }
             }
             let mut j = len - 1;
             for i in 0..len {
