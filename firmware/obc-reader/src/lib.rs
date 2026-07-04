@@ -13,6 +13,9 @@
 //! - [`color`] — RGB565 → display color conversions.
 //! - [`codec`] — little-endian field readers/writers shared with the route format.
 //! - [`format`] — the OBCM flag/sentinel bit constants, shared by the reader and the packer.
+//! - [`geo`] — the shared Earth-model distance core ([`M_PER_DEG`] in `f32` clothing):
+//!   microdegrees → ground meters, used identically by the route format's stored distances
+//!   and the layers that render or match against them.
 //!
 //! All coordinates are integer microdegrees (1e-6 degrees), as stored in the
 //! file. Projection to screen space is the renderer's job.
@@ -24,6 +27,7 @@ pub mod byte_io;
 pub mod codec;
 pub mod color;
 pub mod format;
+pub mod geo;
 pub mod reader;
 
 // The byte-I/O traits are re-exported at the crate root for convenience; its `Error` is **not**
@@ -32,6 +36,7 @@ pub mod reader;
 pub use byte_io::{ByteSink, ByteSource, SliceSource};
 pub use color::rgb565_to_device64;
 pub use color::rgb565_to_rgb888;
+pub use geo::{cos_lat, ground_dist_m, ground_dist_m_cl};
 pub use reader::{
     read_header, CacheStats, FeatureRef, Kind, Lod, MapCache, MapHeader, MapTables, Reader, Style, HEADER_LEN,
     MAX_CHUNK_BYTES, MAX_FEAT_PTS, MAX_FEAT_RINGS,
