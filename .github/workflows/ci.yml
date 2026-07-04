@@ -54,6 +54,7 @@ jobs:
           filters: |
             rust:
               - 'firmware/**'
+              - 'packer/presets/**'
               - 'rust-toolchain.toml'
               - 'deny.toml'
               - '.github/workflows/ci.yml'

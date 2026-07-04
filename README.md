@@ -44,7 +44,7 @@ the normative byte layouts: [`OBCM_Spec.md`](OBCM_Spec.md) /
 | `firmware/obc-app/` | `no_std` — the **application + hardware-abstraction layer**: camera, camera mode (follow-user / free), screen stack, input model, route tracking. One per-frame entry point (`App::render_frame`) both hosts call. Builds for `thumbv8m.main-none-eabihf`. |
 | `firmware/obc-sim/` | Desktop **simulator host** (eframe/egui, pure Rust — no SDL): renders `obc-app` into a framebuffer at the device's 240×320 / 64-color look, plus a control panel, GPX replay, and headless capture. |
 | `firmware/obc-pack/` | The **map packer** (Rust): OSM `.osm.pbf` → `.obcm` — ingest, multipolygon assembly, land generation, quadtree build, streaming serialize. |
-| `packer/config.json` | Feature selection + styling — which OSM tags to keep, their colors, z-order, and per-LOD detail. The read-only **factory default**. |
+| `packer/presets/` | Style presets — complete packer configs (features + LODs + marker, plus a `_meta` block). `default.json` ("Bikepacking") is the read-only factory default; `minimal.json` and `high-detail.json` ship alongside. |
 | `packer/palette.json` | The device's 64-color (RGB222) gamut, offered as the web builder's default color picker so the editor and the panel agree. |
 | `packer/web_builder/` | **Web builder** (FastAPI): pick regions on a map, edit styles, and build an `.obcm` in the browser — shells out to `obc-pack`. |
 | `firmware/obc-ble/` | `no_std` — the **BLE data-plane core** (epic #267): the S0 control-plane descriptor codecs, CRC-32, list objects, and the whole-object transfer state machine. Radio-free and host-tested; the board crate drives the L2CAP bytes through it. |
@@ -98,7 +98,7 @@ Download an OSM extract (e.g. from [Geofabrik](https://download.geofabrik.de/)),
 then:
 
 ```sh
-firmware/target/release/obc-pack region.osm.pbf packer/config.json region.obcm
+firmware/target/release/obc-pack region.osm.pbf packer/presets/default.json region.obcm
 ```
 
 ```
@@ -113,10 +113,11 @@ usage: obc-pack <pbf...> <config.json> <out.obcm> [--chunk-size N] [--no-land]
   land-polygon dataset is downloaded and cached under `~/.cache/obcm/` on first
   use.
 
-### `config.json` — features, styles, and LODs
+### The config — features, styles, and LODs
 
-`config.json` is the single source of truth for *what* gets packed and *how it
-looks*:
+The config JSON (any preset under `packer/presets/`, or your own file) is the
+single source of truth for *what* gets packed and *how it looks*
+(`obc-pack schema` prints its JSON Schema):
 
 - **`lods`** — the LOD pyramid. Each tier has a `max_mpp` (meters-per-pixel
   ceiling, `null` = the coarsest/overview tier) and a `simplify` tolerance.
@@ -144,9 +145,9 @@ It drives the `obc-pack` binary you built above (override its path with the
   are cropped to it before packing, so you can target a small area precisely.
 - **Style editor** — edit colors / z-order / weights / per-LOD detail, with the
   color picker defaulting to the device's 64-color gamut (`palette.json`).
-- **Persistent edits** — `config.json` is the read-only factory default; your
-  edits are auto-saved to `user_config.json` (gitignored) and persist between
-  sessions. **Restore defaults** discards them.
+- **Persistent edits** — the presets under `packer/presets/` are read-only
+  factory defaults; your edits are auto-saved to `user_config.json` (gitignored)
+  and persist between sessions. **Restore defaults** discards them.
 - **Stylesheets** — **Export** / **Import** the current styling as a standalone
   `.json`, independent of any `.obcm`.
 - Feature/category fields autocomplete from a curated OSM tag catalog
