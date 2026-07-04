@@ -88,22 +88,12 @@ pub(crate) fn status() -> Status {
     STATUS.lock(|c| c.get())
 }
 
-/// Sleep until the next [`publish`] — the status UI's wake edge.
-pub async fn wait_status_change() {
-    STATUS_EDGE.wait().await
-}
-
-/// The latest battery percent for the BAS characteristic — written by the status plane
-/// ([`publish_battery`], which owns the [`FuelGauge`]) and read by `battery_task` to seed + notify.
-/// Seeded to the `StubFuelGauge` default so a read before the first poll is still plausible.
+/// The battery percent for the BAS characteristic, read by `battery_task` to seed + notify. A
+/// constant [`StubFuelGauge`]-matching 75 % until the real nPM1300 fuel gauge is wired across the
+/// plane seam (the ride loop owns the gauge; feeding it into BAS is a #270 follow-up).
 static BATTERY: AtomicU8 = AtomicU8::new(75);
 
-/// Publish the latest battery percent for BAS (called by `run_status` after each fuel poll).
-pub fn publish_battery(pct: u8) {
-    BATTERY.store(pct, Ordering::Relaxed);
-}
-
-/// The latest published battery percent (BAS seed + notify).
+/// The latest battery percent (BAS seed + notify).
 pub(crate) fn battery() -> u8 {
     BATTERY.load(Ordering::Relaxed)
 }
