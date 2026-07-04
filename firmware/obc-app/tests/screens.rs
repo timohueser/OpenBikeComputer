@@ -6,8 +6,8 @@ use embedded_graphics::pixelcolor::Rgb888;
 use embedded_graphics::prelude::RgbColor; // for `Rgb888::r()` in the compositing snapshot
 use obc_app::activity::Activity;
 use obc_app::screen::{
-    apply, Ctx, HomeScreen, MapScreen, MenuScreen, RideControl, RouteMenuScreen, RouteSwapScreen, Screen, ScreenTick,
-    Stack, Transition,
+    apply, Ctx, HomeScreen, MapScreen, MenuScreen, RideControl, RouteMenuScreen, RouteOverviewScreen, RouteSwapScreen,
+    Screen, ScreenTick, Stack, Transition,
 };
 use obc_app::{
     App, AppState, Button, ButtonEvent, CameraMode, Fix, Gesture, InputClock, InputEvent, Mode, PanAxis, RideClock,
@@ -208,23 +208,47 @@ fn home_press_opens_the_route_menu() {
 }
 
 #[test]
-fn route_menu_loads_the_selected_route_and_opens_the_map() {
+fn route_menu_press_opens_the_overview_and_preloads_the_route() {
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Idle));
-    st.mode = CameraMode::Free; // the map-viewer default; loading must flip to Follow
-    st.heading_up = false;
     let routes = test_routes();
     let mut rm = RouteMenuScreen::new();
     rm.handle(Gesture::Turn(1), &mut route_ctx(&mut st, &mut act, &routes)); // highlight route 1
     let t = rm.handle(Gesture::Press, &mut route_ctx(&mut st, &mut act, &routes));
-    assert!(matches!(t, Transition::Root(Screen::Map(_))), "loading lands on a clean [Home, Map]");
-    assert_eq!(act.mode, Mode::Riding, "loading starts tracking");
-    assert_eq!(act.active_route, Some(1), "the selected route is the active one");
-    assert!(act.is_tracking(), "loading from Idle begins a tracking session");
-    // Loading drops into the riding view: follow + heading-up, seeded at the start.
+    assert!(matches!(t, Transition::Push(Screen::RouteOverview(_))), "picking opens the overview");
+    assert_eq!(act.active_route, Some(1), "the pick preloads the route so the overview gets a profile");
+    assert_eq!(act.mode, Mode::Idle, "no riding yet — the overview's START does that");
+    assert!(!act.is_tracking(), "and no session either");
+}
+
+#[test]
+fn overview_start_begins_the_session_and_opens_the_map() {
+    let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Idle));
+    st.mode = CameraMode::Free; // the map-viewer default; starting must flip to Follow
+    st.heading_up = false;
+    act.active_route = Some(1); // the Route menu preloaded the preview
+    let routes = test_routes();
+    let t = RouteOverviewScreen::new(1, None).handle(Gesture::Press, &mut route_ctx(&mut st, &mut act, &routes));
+    assert!(matches!(t, Transition::Root(Screen::Map(_))), "starting lands on a clean [Home, Map]");
+    assert_eq!(act.mode, Mode::Riding, "START begins tracking");
+    assert_eq!(act.active_route, Some(1), "the previewed route is the active one");
+    assert!(act.is_tracking(), "START opens a tracking session");
+    // Starting drops into the riding view: follow + heading-up, seeded at the start.
     assert_eq!(st.mode, CameraMode::Follow);
     assert!(st.heading_up);
     assert_eq!((st.cam_lon, st.cam_lat), (100, 100), "camera seeded at the route start");
     assert!(st.zoom > 0.2 && st.zoom < 0.25, "~0.5 m/px riding zoom, got {}", st.zoom);
+}
+
+#[test]
+fn overview_back_cancels_and_restores_the_previous_route() {
+    let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Idle));
+    act.active_route = Some(2); // the Route menu preloaded the preview…
+    let routes = test_routes();
+    // …over a previously loaded route 0, which back must put back.
+    let t = RouteOverviewScreen::new(2, Some(0)).handle(Gesture::Back, &mut route_ctx(&mut st, &mut act, &routes));
+    assert!(matches!(t, Transition::Pop), "back returns to the Route menu");
+    assert_eq!(act.active_route, Some(0), "the previous route is restored");
+    assert!(!act.is_tracking(), "browsing started nothing");
 }
 
 #[test]
@@ -351,13 +375,16 @@ fn list_window_keeps_the_selection_visible() {
 
 #[test]
 fn boot_flow_walks_home_to_route_menu_to_riding_map() {
-    // End to end through `App`: Idle Home → press → Route menu → press → riding Map.
+    // End to end through `App`: Idle Home → press → Route menu → press → overview → press → Map.
     let mut app = App::new_idle(AppState::new(0, 0, 0.05));
     app.set_routes(&test_routes());
     assert_eq!(app.mode(), Mode::Idle);
     press(&mut app); // Home → Route menu
     assert_eq!(app.mode(), Mode::Idle, "opening the route list doesn't start riding yet");
-    press(&mut app); // Route menu → load route 0 → Map
+    press(&mut app); // Route menu → Route overview (route preloads, still not riding)
+    assert_eq!(app.mode(), Mode::Idle, "the overview previews; START is what rides");
+    assert_eq!(app.activity.active_route, Some(0), "the preview loads the route");
+    press(&mut app); // START RIDE → Map
     assert_eq!(app.mode(), Mode::Riding);
     assert_eq!(app.activity.active_route, Some(0));
 }

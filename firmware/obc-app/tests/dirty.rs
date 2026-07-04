@@ -129,7 +129,8 @@ fn statistics_spring_back_is_wired_into_the_dirty_signal() {
     app.set_routes(&[one_route()]);
 
     let _ = frame(&mut app, &mut NoFix, 0, &tap(Button::Encoder)); // Home press → Route menu
-    let _ = frame(&mut app, &mut NoFix, 10, &tap(Button::Encoder)); // load route → Map
+    let _ = frame(&mut app, &mut NoFix, 10, &tap(Button::Encoder)); // pick route → Route overview
+    let _ = frame(&mut app, &mut NoFix, 15, &tap(Button::Encoder)); // START RIDE → Map
     let _ = frame(&mut app, &mut NoFix, 20, &tap(Button::Back)); // Map `back` → Statistics
 
     // Scrub the cursor (a Turn on Statistics) → that frame is dirty (the scrub moved it)…
