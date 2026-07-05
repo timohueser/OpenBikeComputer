@@ -6,8 +6,8 @@ use embedded_graphics::pixelcolor::Rgb888;
 use embedded_graphics::prelude::RgbColor; // for `Rgb888::r()` in the compositing snapshot
 use obc_app::activity::Activity;
 use obc_app::screen::{
-    apply, Ctx, HomeScreen, MapScreen, MenuScreen, RideControl, RouteMenuScreen, RouteOverviewScreen, RouteSwapScreen,
-    Screen, ScreenTick, Stack, Transition,
+    apply, Ctx, HomeScreen, MapScreen, MenuScreen, PoiScratch, RideControl, RouteMenuScreen, RouteOverviewScreen,
+    RouteSwapScreen, Screen, ScreenTick, Stack, Transition,
 };
 use obc_app::{
     App, AppState, Button, ButtonEvent, CameraMode, Fix, Gesture, InputClock, InputEvent, Mode, PanAxis, RideClock,
@@ -25,15 +25,21 @@ fn leaked_settings() -> &'static mut Settings {
     Box::leak(Box::new(Settings::default()))
 }
 
+/// An empty [`PoiScratch`] for the handle `Ctx` — leaked so it satisfies the `&'a` borrow without a
+/// lifetime dance in each helper. The non-POI screens under test never read it.
+fn leaked_scratch() -> &'static PoiScratch {
+    Box::leak(Box::new(PoiScratch::new()))
+}
+
 /// A handle [`Ctx`] over freshly-made state/activity. The Route-menu tests pass a catalog via
 /// [`route_ctx`].
 fn ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity) -> Ctx<'a> {
-    Ctx { state, activity, settings: leaked_settings(), routes: &[], now_ms: 0 }
+    Ctx { state, activity, settings: leaked_settings(), routes: &[], poi_scratch: leaked_scratch(), now_ms: 0 }
 }
 
 /// A handle [`Ctx`] carrying a route catalog, for the Route-menu tests.
 fn route_ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity, routes: &'a [RouteSummary]) -> Ctx<'a> {
-    Ctx { state, activity, settings: leaked_settings(), routes, now_ms: 0 }
+    Ctx { state, activity, settings: leaked_settings(), routes, poi_scratch: leaked_scratch(), now_ms: 0 }
 }
 
 /// A small synthetic route catalog (names + totals + a unit bbox to center on).

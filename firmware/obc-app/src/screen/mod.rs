@@ -29,6 +29,7 @@ mod home;
 mod list;
 mod map;
 mod menu;
+mod poi_detail;
 mod poi_list;
 mod poi_menu;
 mod ride_control;
@@ -42,6 +43,7 @@ pub use home::HomeScreen;
 pub use list::window_start;
 pub use map::MapScreen;
 pub use menu::MenuScreen;
+pub use poi_detail::PoiDetailScreen;
 pub use poi_list::{PoiListScreen, PoiScratch};
 pub use poi_menu::PoiMenuScreen;
 pub use ride_control::RideControl;
@@ -119,6 +121,10 @@ pub struct Ctx<'a> {
     /// to save. Every other screen leaves it untouched.
     pub settings: &'a mut Settings,
     pub routes: &'a [RouteSummary],
+    /// The App-owned POI-list snapshot, **read-only** here. The POI list's `Gesture::Press` reads
+    /// the highlighted [`Poi`](obc_reader::Poi) out of it to hand to the detail screen — the one
+    /// place `handle` reaches the draw-taken snapshot. Every other screen leaves it untouched.
+    pub poi_scratch: &'a PoiScratch,
     pub now_ms: u32,
 }
 
@@ -281,6 +287,8 @@ screens! {
     PoiMenu(PoiMenuScreen) => Nav,
     /// One category's distance-sorted nearest-16 with live bearing arrows.
     PoiList(PoiListScreen) => Nav,
+    /// A single POI's detail: full name, subtype, live bearing arrow, today's hours + open/closed.
+    PoiDetail(PoiDetailScreen) => Nav,
     RouteMenu(RouteMenuScreen) => Nav,
     RouteOverview(RouteOverviewScreen) => Nav,
     RouteSwap(RouteSwapScreen) => Nav,
