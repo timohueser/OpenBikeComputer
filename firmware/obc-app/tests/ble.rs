@@ -68,6 +68,99 @@ fn a_link_change_repaints_the_menu_title_bar() {
     assert_eq!(app.take_dirty(), Dirty::CLEAN, "an unchanged status doesn't re-dirty the Menu");
 }
 
+// --- the passkey card (P2): host-pushed open/close on the seam's passkey --------
+
+fn pairing(passkey: u32) -> BleStatus {
+    BleStatus { connected: false, passkey: Some(passkey) }
+}
+
+#[test]
+fn a_passkey_opens_the_card_and_clearing_it_closes_the_card() {
+    let mut app = App::new_idle(AppState::new(0, 0, 0.05)); // [Home]
+    assert!(!app.passkey_card_up(), "no card at boot");
+    let _ = app.take_dirty();
+
+    // A passkey going Some opens the host-pushed card over whatever is up, dirtying the map once.
+    app.set_ble_status(pairing(42));
+    assert!(app.passkey_card_up(), "a passkey opens the card");
+    assert!(app.take_dirty().map, "opening the card dirties the map (it covers the screen below)");
+
+    // The same passkey re-fed each pass (the steady state the board pushes) is a no-op — no re-dirty.
+    app.set_ble_status(pairing(42));
+    assert!(app.passkey_card_up(), "the card stays up");
+    assert_eq!(app.take_dirty(), Dirty::CLEAN, "an unchanged passkey never re-dirties");
+
+    // Clearing the passkey (pairing complete/failed, or disconnect) removes the card and repaints
+    // what it covered — again exactly once.
+    app.set_ble_status(BleStatus::DISCONNECTED);
+    assert!(!app.passkey_card_up(), "clearing the passkey closes the card");
+    assert!(app.take_dirty().map, "closing the card repaints the screen it covered");
+
+    // And clearing again (steady disconnected state) does nothing.
+    app.set_ble_status(BleStatus::DISCONNECTED);
+    assert_eq!(app.take_dirty(), Dirty::CLEAN, "no card, no passkey — a no-op");
+}
+
+#[test]
+fn the_card_opens_over_whatever_screen_is_up_and_restores_it_on_close() {
+    // The rider is deep in a menu when pairing starts: the card overlays it, and closing returns to it.
+    let mut app = App::new_idle(AppState::new(0, 0, 0.05)); // [Home]
+    app.apply_gesture(obc_app::Gesture::BackHold); // Home → Menu
+    let _ = app.take_dirty();
+
+    app.set_ble_status(pairing(7));
+    assert!(app.passkey_card_up(), "the card opens over the Menu");
+
+    app.set_ble_status(BleStatus::DISCONNECTED);
+    assert!(!app.passkey_card_up(), "the card is gone");
+    // The Menu is the input-receiving screen again (the card left no residue on the stack).
+    app.apply_gesture(obc_app::Gesture::Back); // Menu → Home (proves the Menu, not the card, took it)
+    assert!(!app.passkey_card_up());
+}
+
+#[test]
+fn the_card_is_not_dismissible_by_input() {
+    // Pairing is modal + time-boxed: Back/press on the card do nothing (the rider can't lose the code).
+    let mut app = App::new_idle(AppState::new(0, 0, 0.05));
+    app.set_ble_status(pairing(99));
+    assert!(app.passkey_card_up());
+
+    app.apply_gesture(obc_app::Gesture::Back);
+    assert!(app.passkey_card_up(), "Back does not dismiss the card");
+    app.apply_gesture(obc_app::Gesture::Press);
+    assert!(app.passkey_card_up(), "press does not dismiss the card");
+    app.apply_gesture(obc_app::Gesture::Turn(1));
+    assert!(app.passkey_card_up(), "a turn does not dismiss the card");
+
+    // Only the seam clearing the passkey closes it.
+    app.set_ble_status(BleStatus::DISCONNECTED);
+    assert!(!app.passkey_card_up());
+}
+
+#[test]
+fn a_hold_charging_defers_the_card_until_the_hold_settles() {
+    // A host-pushed screen must never land mid-hold — it would yank the hold target out from under
+    // the rider. The board feeds the live encoder hold-progress via `set_hold_progress`.
+    let mut app = App::new_idle(AppState::new(0, 0, 0.05));
+
+    app.set_hold_progress(0.5); // a hold is charging
+    app.set_ble_status(pairing(1));
+    assert!(!app.passkey_card_up(), "the card is deferred while a hold charges");
+
+    // The desired state is re-fed every pass; once the hold settles the reconcile lands.
+    app.set_hold_progress(0.0);
+    app.set_ble_status(pairing(1));
+    assert!(app.passkey_card_up(), "the card opens once the hold settles");
+
+    // Closing is deferred too: don't pop mid-hold.
+    app.set_hold_progress(0.5);
+    app.set_ble_status(BleStatus::DISCONNECTED);
+    assert!(app.passkey_card_up(), "the card is held up while a hold charges");
+    app.set_hold_progress(0.0);
+    app.set_ble_status(BleStatus::DISCONNECTED);
+    assert!(!app.passkey_card_up(), "the card closes once the hold settles");
+}
+
 // --- the indicator is NOT on the riding views: no repaint there --------------
 
 #[test]

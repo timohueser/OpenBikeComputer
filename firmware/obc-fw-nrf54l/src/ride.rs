@@ -7,8 +7,9 @@
 
 use core::sync::atomic::Ordering;
 
-// The event-driven loop's wake select: `select4` over gesture / hold-wake / sensor / deadline.
-use embassy_futures::select::select4;
+// The event-driven loop's wake select: `select5` over gesture / hold-wake / sensor / BLE link-edge /
+// deadline (the BLE arm is `pending()` on a map build — see `wait_ble_edge`).
+use embassy_futures::select::select5;
 use embassy_nrf::gpio::Output;
 use embassy_nrf::wdt;
 use embassy_time::{Instant, Timer};
@@ -77,6 +78,21 @@ async fn wait_sensor_event() {
 #[cfg(all(not(feature = "debug-uart"), feature = "synth"))]
 async fn wait_sensor_event() {
     Timer::after_millis(SYNTH_TICK_MS).await
+}
+
+/// The BLE link-edge wake the event-driven map loop selects on (epic #447, P2): a link change — a
+/// connect/disconnect, or the pairing `PassKeyDisplay` — must pull the loop out of warm sleep so it
+/// feeds the fresh status into `set_ble_status` and renders the passkey card on glass. Reuses the
+/// BLE side's existing `publish` edge (`STATUS_EDGE`) via [`ble::wait_status_change`]; it invents no
+/// new wake path. On a **map build** (no radio) there's no link, so this never fires — a bare
+/// `pending()` — keeping the loop's select shape identical across builds.
+#[cfg(feature = "ble")]
+async fn wait_ble_edge() {
+    crate::ble::wait_status_change().await
+}
+#[cfg(not(feature = "ble"))]
+async fn wait_ble_edge() {
+    core::future::pending::<()>().await
 }
 
 /// A `no_std` [`Clock`](obc_render::Clock) over embassy's monotonic `Instant`, in microseconds — the
@@ -678,8 +694,10 @@ pub(crate) async fn run_app(
         // (`GESTURES` non-empty — a non-consuming `ready_to_receive`, so the drain at the loop top still
         // gets it), a hold starting to charge (`INPUT_WAKE` — a press emits no gesture, so without this
         // arm the loop slept through the whole charge on a quiet screen and the bulge's first frame on
-        // glass was the confirm pop), a fresh sensor/host datapoint (`wait_sensor_event`), or the
-        // soonest screen animation deadline the app reports. The body's reconciles are all edge-gated,
+        // glass was the confirm pop), a fresh sensor/host datapoint (`wait_sensor_event`), a BLE link
+        // edge (`wait_ble_edge` — connect/disconnect *and* the pairing passkey, so the passkey card
+        // wakes the loop from warm sleep), or the soonest screen animation deadline the app reports.
+        // The body's reconciles are all edge-gated,
         // so running them only on a wake is correct — a parked Home screen wakes ~once a minute (the
         // clock minute-tick) instead of 125×/s, and an idle device with the GPS asleep wakes only on a
         // button or that minute tick.
@@ -699,10 +717,13 @@ pub(crate) async fn run_app(
         // to feed the watchdog — the `None` (sleep-until-input/sensor) arm becomes a long timer.
         #[cfg(not(feature = "debug-uart"))]
         let ms = next_ms.unwrap_or(WDT_FEED_CAP_MS).min(WDT_FEED_CAP_MS);
-        let _ = select4(
+        let _ = select5(
             GESTURES.ready_to_receive(),
             INPUT_WAKE.wait(),
             wait_sensor_event(),
+            // A BLE link edge — connect/disconnect *and* the pairing passkey — so the passkey card
+            // wakes the loop from warm sleep (epic #447, P2). `pending()` on a map build.
+            wait_ble_edge(),
             Timer::after_millis(ms as u64),
         )
         .await;
