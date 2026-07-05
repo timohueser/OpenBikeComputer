@@ -21,6 +21,7 @@ use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 use crate::device_input::DeviceInput;
 use crate::framebuffer::Framebuffer;
 use crate::present::Present;
+use crate::rides::RideStore;
 use crate::routes::RouteStore;
 use crate::settings_store::FileSettingsStore;
 use crate::sim_compass::SimCompass;
@@ -130,8 +131,11 @@ struct SimGui {
     app: App,
     /// The routes folder (the device-SD stand-in): the menu catalog + active geometry.
     store: RouteStore,
-    /// The tracks folder (device-SD `/tracks` stand-in): the `.obct` ride log + saved `.gpx`.
-    /// Reconciled to the app's tracking session each frame.
+    /// The tracks folder as the **ride catalog** (device-SD `/tracks` stand-in): the `RD{id}.ORD`
+    /// summaries + synced flags the Rides screen lists (#454). Rescanned when a ride is saved/deleted.
+    ride_store: RideStore,
+    /// The tracks folder (device-SD `/tracks` stand-in): the `.obct` ride log + saved `RD{id}.ORD` /
+    /// `.gpx`. Reconciled to the app's tracking session each frame.
     tracks: TrackStore,
     /// The persisted-settings store (device-RRAM stand-in): seeds the app at boot, written on
     /// each settings change so they survive a relaunch.
@@ -242,6 +246,7 @@ impl SimGui {
             app.reseed_home(seed);
         }
         let store = RouteStore::open(args.routes_dir());
+        let ride_store = RideStore::open(args.tracks_dir());
         let tracks = TrackStore::open(args.tracks_dir());
         // Seed the live settings from the persisted store, falling back to defaults on a first
         // run / unreadable file — the device's boot path.
@@ -254,6 +259,7 @@ impl SimGui {
         let mut gui = SimGui {
             app,
             store,
+            ride_store,
             tracks,
             settings_store,
             loc,
@@ -290,6 +296,7 @@ impl SimGui {
             kbd_back: false,
         };
         gui.app.set_routes_with_ids(gui.store.catalog(), gui.store.ids());
+        gui.app.set_rides(gui.ride_store.catalog(), gui.ride_store.ids());
         // `--gpx` opens with a track loaded, paused at the start.
         if let Some(path) = &args.gpx {
             gui.load_gpx(Path::new(path));
@@ -370,6 +377,19 @@ impl SimGui {
             }
         }
 
+        // Drain a hold-to-delete request from the Rides screen (#454): delete the `RD{id}.ORD` +
+        // sidecar flag and re-feed the ride catalog, mirroring the route delete above (the device
+        // routes this through `ObjectStore`; the sim deletes the file directly).
+        if let Some(id) = self.app.take_ride_delete() {
+            if self.ride_store.delete_by_id(id) {
+                self.app.set_rides(self.ride_store.catalog(), self.ride_store.ids());
+            }
+        }
+
+        // A ride finishing this frame writes a fresh `RD{id}.ORD` — rescan the tracks folder and
+        // re-feed the Rides menu so it appears without a relaunch (the device's store-changed rescan).
+        let ride_saved = self.app.activity.has_track_action();
+
         // Open the active route's geometry *before* ticking so the map-matcher gets it (reloads
         // only on selection change). It stays borrowed through `tick` + `render_frame` below.
         self.store.sync_active(self.app.activity.active_route);
@@ -382,6 +402,12 @@ impl SimGui {
 
         // Reconcile the ride log to the app's tracking session before ticking.
         crate::reconcile_tracks(&mut self.app, &mut self.tracks);
+        // If that reconcile just finalised a ride, rescan the tracks folder and re-feed the Rides
+        // menu so the new `RD{id}.ORD` shows up live (#454).
+        if ride_saved {
+            self.ride_store.rescan();
+            self.app.set_rides(self.ride_store.catalog(), self.ride_store.ids());
+        }
 
         // Drive the app from whichever location source is active. A loaded GPX replay takes over
         // from the manual panel fix (as the device's GPS would).

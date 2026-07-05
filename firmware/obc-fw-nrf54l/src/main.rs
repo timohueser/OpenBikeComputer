@@ -770,7 +770,10 @@ async fn main(_spawner: Spawner) {
             &mut *slot
         };
         #[cfg(has_map)]
-        ride::load_routes(&mut storage, app);
+        {
+            ride::load_routes(&mut storage, app);
+            ride::load_rides(&mut storage, app);
+        }
 
         // The four DK push-buttons (active-low, internal pull-up; polled by `ButtonInput`). User
         // mapping: BTN0 PREV, BTN1 NEXT, BTN3 SELECT, BTN2 BACK — `new(prev, next, select, back)`.

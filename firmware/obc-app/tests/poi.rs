@@ -51,11 +51,12 @@ fn render(app: &mut App, bytes: &[u8]) -> Buf {
 }
 
 /// Walk an idle `App` from Home into the POI list for `category`, leaving the list on top. Uses the
-/// real gesture flow: Home `back-hold` → Menu, one clockwise detent to the POIs station, press →
-/// category list, `steps` clockwise detents to the category, press → POI list.
+/// real gesture flow: Home `back-hold` → Menu, two clockwise detents to the POIs station (the menu
+/// order is Routes · Rides · POIs · Map · Settings), press → category list, `steps` clockwise detents
+/// to the category, press → POI list.
 fn open_poi_list(app: &mut App, steps: i32) {
     app.apply_gesture(Gesture::BackHold); // Home → Menu (compass)
-    app.apply_gesture(Gesture::Turn(1)); // Routes(N) → POIs(E)
+    app.apply_gesture(Gesture::Turn(2)); // Routes → Rides → POIs
     app.apply_gesture(Gesture::Press); // → category list
     if steps != 0 {
         app.apply_gesture(Gesture::Turn(steps));
@@ -67,9 +68,9 @@ fn open_poi_list(app: &mut App, steps: i32) {
 #[test]
 fn menu_to_category_to_list_navigation() {
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
-    // Home → Menu → POIs station → category list.
+    // Home → Menu → POIs station (two detents past Routes) → category list.
     app.apply_gesture(Gesture::BackHold);
-    app.apply_gesture(Gesture::Turn(1));
+    app.apply_gesture(Gesture::Turn(2));
     app.apply_gesture(Gesture::Press);
     assert!(matches!(app.top_screen(), Screen::PoiMenu(_)), "POIs opens the category list");
 

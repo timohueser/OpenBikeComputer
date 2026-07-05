@@ -138,7 +138,15 @@ mod tests {
     fn run(scr: &mut BluetoothScreen, st: &mut AppState, s: &mut Settings, g: Gesture) -> Transition {
         let mut act = Activity::new(Mode::Idle);
         let scratch = crate::screen::PoiScratch::new();
-        let mut cx = Ctx { state: st, activity: &mut act, settings: s, routes: &[], poi_scratch: &scratch, now_ms: 0 };
+        let mut cx = Ctx {
+            state: st,
+            activity: &mut act,
+            settings: s,
+            routes: &[],
+            rides: &[],
+            poi_scratch: &scratch,
+            now_ms: 0,
+        };
         scr.handle(g, &mut cx)
     }
 
