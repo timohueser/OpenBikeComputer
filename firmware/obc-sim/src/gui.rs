@@ -49,6 +49,9 @@ struct PanelState {
     /// [`obc_app::BleStatus`] — not just a `connected` bool — so P2/P4 can add passkey / upload
     /// injection by extending this field and its widgets with no restructuring.
     ble: obc_app::BleStatus,
+    /// The "Inject upload" combo's selected catalog row (epic #447, P4) — which route the panel's
+    /// upload-injection buttons duplicate (new) or rewrite (replace-by-id).
+    upload_sel: usize,
 }
 
 /// In-progress 1:1 size calibration: the user measures the on-screen reference bar and
@@ -220,6 +223,7 @@ impl SimGui {
                 heading_deg: f.course.unwrap_or(0.0),
                 compass_deg: f.course.unwrap_or(0.0),
                 ble: obc_app::BleStatus::DISCONNECTED,
+                upload_sel: 0,
             },
             None => PanelState {
                 lat_deg: 0.0,
@@ -227,6 +231,7 @@ impl SimGui {
                 heading_deg: 0.0,
                 compass_deg: 0.0,
                 ble: obc_app::BleStatus::DISCONNECTED,
+                upload_sel: 0,
             },
         };
 

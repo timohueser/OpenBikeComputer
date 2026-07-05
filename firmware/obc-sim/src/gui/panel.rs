@@ -285,6 +285,65 @@ impl SimGui {
             self.app.set_routes_with_ids(self.store.catalog(), self.store.ids());
         }
         ui.weak("re-scans the routes folder like a BLE commit/delete");
+
+        // Upload injection (P4): the route-upload popups' driver. Pick a catalog route, then
+        // inject it as a fresh upload (a new file — copy of the pick) or a replace-by-id (the
+        // pick's bytes rewritten in place). Each button runs the exact device sequence via
+        // [`SimGui::inject_upload`]; replace the *actively navigated* route to see the
+        // forced-adoption info card.
+        let mut inject: Option<bool> = None; // Some(replace?)
+        {
+            let routes = self.app.routes();
+            if routes.is_empty() {
+                ui.weak("no routes to inject — add .obcr files to the routes folder");
+            } else {
+                self.panel.upload_sel = self.panel.upload_sel.min(routes.len() - 1);
+                let ids = self.app.route_ids();
+                egui::ComboBox::from_label("upload")
+                    .selected_text(routes[self.panel.upload_sel].name.as_str())
+                    .show_ui(ui, |ui| {
+                        for (i, r) in routes.iter().enumerate() {
+                            ui.selectable_value(
+                                &mut self.panel.upload_sel,
+                                i,
+                                format!("{} (id {})", r.name.as_str(), ids[i]),
+                            );
+                        }
+                    });
+                ui.horizontal(|ui| {
+                    if ui.button("Inject upload (new)").clicked() {
+                        inject = Some(false);
+                    }
+                    if ui.button("Inject upload (replace)").clicked() {
+                        inject = Some(true);
+                    }
+                });
+                ui.weak("rescan + upload event → idle / mid-ride / active-replace popup");
+            }
+        }
+        if let Some(replace) = inject {
+            self.inject_upload(self.panel.upload_sel, replace);
+        }
+    }
+
+    /// Drive the exact device route-upload sequence from the control panel (epic #447, P4):
+    /// mutate the routes folder (a fresh copy for "new"; an in-place bytes rewrite for
+    /// "replace-by-id"), then the store-changed edge → rescan + identity remap, **then** the
+    /// upload event carrying the durable id — the same ordering the board's ride loop sees (the
+    /// rescan first, so the id resolves in the fresh catalog). A replace also drops the cached
+    /// active-route bytes so the next frame reopens them, mirroring the board's
+    /// close-and-reopen of the geometry handle.
+    fn inject_upload(&mut self, sel: usize, replace: bool) {
+        let id = if replace { self.store.touch_route(sel) } else { self.store.duplicate_route(sel) };
+        let Some(id) = id else { return };
+        self.app.notify_store_changed();
+        let _ = self.app.take_store_changed();
+        self.store.rescan();
+        self.app.set_routes_with_ids(self.store.catalog(), self.store.ids());
+        if replace {
+            self.store.sync_active(None); // force the geometry reopen off the fresh bytes
+        }
+        self.app.notify_route_uploaded(id, replace);
     }
 
     /// The loaded-track controls: play/pause (auto-follows), a seek scrubber, and a 1×–10× speed

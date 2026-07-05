@@ -116,6 +116,13 @@ struct Args {
     /// Headless `--png` only: render with a stored bond, so the Bluetooth screen's Paired row
     /// reads "yes" (and its Forget row arms). Stands in for the control panel's "Paired" toggle.
     ble_paired: bool,
+    /// Headless `--png` only: inject a committed route upload `(object id, replaced-existing)`
+    /// after the script runs (epic #447, P4), so the three upload popups render — the idle
+    /// "ROUTE RECEIVED" prompt, the mid-ride swap prompt, or (`--inject-upload-replace` of the
+    /// navigated id) the "ROUTE UPDATED" info card. Stands in for the control panel's inject
+    /// buttons; the catalog is already scanned, so this is exactly the device's rescan-then-event
+    /// order.
+    inject_upload: Option<(u16, bool)>,
 }
 
 impl Default for Args {
@@ -152,6 +159,7 @@ impl Default for Args {
             ble_connected: false,
             ble_passkey: None,
             ble_paired: false,
+            inject_upload: None,
         }
     }
 }
@@ -249,6 +257,14 @@ fn parse_args() -> Result<Args, String> {
                 a.clock = Some(parse_clock(&it.next().ok_or("--clock needs YYYY-MM-DDTHH:MM")?)?);
             }
             "--ble-connected" => a.ble_connected = true,
+            "--inject-upload" => {
+                let id = it.next().and_then(|s| s.parse().ok()).ok_or("--inject-upload needs an object id")?;
+                a.inject_upload = Some((id, false));
+            }
+            "--inject-upload-replace" => {
+                let id = it.next().and_then(|s| s.parse().ok()).ok_or("--inject-upload-replace needs an object id")?;
+                a.inject_upload = Some((id, true));
+            }
             "--ble-passkey" => {
                 a.ble_passkey = Some(
                     it.next()
@@ -488,7 +504,7 @@ fn main() {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: obc-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--home-seed N] [--clock YYYY-MM-DDTHH:MM] [--ble-connected] [--ble-passkey N] [--ble-paired]");
+            eprintln!("error: {e}\nusage: obc-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--home-seed N] [--clock YYYY-MM-DDTHH:MM] [--ble-connected] [--ble-passkey N] [--ble-paired] [--inject-upload ID] [--inject-upload-replace ID]");
             std::process::exit(2);
         }
     };
@@ -666,6 +682,12 @@ fn main() {
             }
         }
 
+        // Inject a committed route upload (epic #447, P4) after the script (so a `p p p` script
+        // is already riding when the event lands): the catalog above is the "already rescanned"
+        // store, and this is the upload event with the id — the device's exact order.
+        if let Some((id, replaced)) = args.inject_upload {
+            app.notify_route_uploaded(id, replaced);
+        }
         // The script may have loaded a route; open its geometry for the Map.
         store.sync_active(app.activity.active_route);
         let route_src = store.active_source();
