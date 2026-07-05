@@ -5,13 +5,17 @@
 //! a header marker color, a per-style priority level, the trailing POI directory,
 //! and the hours-pool section — see OBCM_Spec.md): a file holds N levels of detail,
 //! each its own quadtree + chunk set, selected at render time from the current
-//! meters-per-pixel, plus a per-category POI index (the hours pool is parse-only
-//! here — the per-POI lookup + open-now evaluation is P3, #443).
+//! meters-per-pixel, plus a per-category POI index and a deduplicated hours pool
+//! ([`Reader::poi_hours`](crate::Reader::poi_hours) resolves a POI's schedule on
+//! demand for the detail screen — #443).
 //!
 //! Modules:
 //! - [`byte_io`] — the [`ByteSource`]/[`ByteSink`] seam (+ [`SliceSource`]) the map and route
 //!   formats both stream through, so neither needs the whole file resident.
 //! - [`reader`] — header / style / LOD-table parsing and per-LOD query + decode.
+//! - [`hours`] — the device-side view over a hours-pool blob (spec §7.5): decode a pooled
+//!   [`WeeklySchedule`], select today's intervals, answer *open now*, and the Zeller weekday
+//!   helper the app maps its local clock through.
 //! - [`color`] — RGB565 → display color conversions.
 //! - [`codec`] — little-endian field readers/writers shared with the route format.
 //! - [`format`] — the OBCM flag/sentinel bit constants, shared by the reader and the packer.
@@ -32,6 +36,7 @@ pub mod codec;
 pub mod color;
 pub mod format;
 pub mod geo;
+pub mod hours;
 pub mod poi_table;
 pub mod reader;
 
@@ -42,11 +47,14 @@ pub use byte_io::{ByteSink, ByteSource, SliceSource};
 pub use color::rgb565_to_device64;
 pub use color::rgb565_to_rgb888;
 pub use geo::{cos_lat, ground_dist_m, ground_dist_m_cl};
+pub use hours::{
+    weekday_from_ymd, Interval, WeeklySchedule, HOURS_FLAG_SEASONAL, HOURS_FLAG_TRUNCATED, MINUTES_PER_DAY,
+};
 pub use poi_table::{category_of, label_of, subtype_row, PoiCategory, PoiSubtype, SUBTYPES};
 pub use reader::{
     read_header, CacheStats, FeatureRef, Kind, Lod, MapCache, MapHeader, MapTables, Poi, PoiCatEntry, PoiDirectory,
-    Reader, Style, HEADER_LEN, MAX_CHUNK_BYTES, MAX_FEAT_PTS, MAX_FEAT_RINGS, MAX_POI_RESULTS, POI_MAX_CATEGORIES,
-    POI_MAX_CHUNK_BYTES, POI_NAME_MAX,
+    Reader, Style, HEADER_LEN, MAX_CHUNK_BYTES, MAX_FEAT_PTS, MAX_FEAT_RINGS, MAX_POI_RESULTS, POI_HOURS_BLOB_LEN,
+    POI_MAX_CATEGORIES, POI_MAX_CHUNK_BYTES, POI_NAME_MAX,
 };
 
 /// Meters of ground per degree of latitude (and of longitude at the equator) — the
