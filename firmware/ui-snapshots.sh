@@ -55,10 +55,12 @@ cp "$ROUTES/ride-v1.bin" "$TRACKS/RD1.ORD"
 # The warning-red "not synced" delete footer: `p H` opens the Rides screen and partial-holds the
 # encoder over the highlighted (unsynced) ride, so the trash + red bar + "not synced" cue draw.
 "$SIM" "$MAP" --boot --tracks-dir "$TRACKS" --script "B r w p H"   --png "$OUT/rides-delete-unsynced.png"
-# The footer greyed while a ride is being recorded (#454): ride route 0 (`p p p` → Map, riding),
-# BackHold to the Menu (`B`), turn to the Rides station (`r w`), press in, then partial-hold — the
-# footer shows the "Recording" greyed state and no delete bar fills.
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --tracks-dir "$TRACKS" --script "p p p B r w p H" --png "$OUT/rides-delete-recording.png"
+# The footer greyed while a ride is being recorded (#454): ride route 0 (`p p p` → Map, riding)
+# **with the GPX replay driving fixes** — the tracking session only starts once positions flow, and
+# `is_tracking` (the greying predicate) is `session.is_some()`, so without `--gpx` this frame would
+# wrongly show the live red footer. Then BackHold to the Menu (`B`), turn to the Rides station
+# (`r w`), press in, and partial-hold — the footer shows the "Recording" greyed state, no bar fills.
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --tracks-dir "$TRACKS" --gpx "$GPX" --at 30 --script "p p p B r w p H" --png "$OUT/rides-delete-recording.png"
 "$SIM" "$MAP" --boot --script "B r r w"      --png "$OUT/menu-pois.png"
 # POIs browser (#425): the category list, then a populated nearest-16 list. The list's bearing
 # arrows are live, so pin a deterministic fix (grimsel map centre) + heading so they reproduce.
