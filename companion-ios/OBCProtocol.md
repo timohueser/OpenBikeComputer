@@ -57,7 +57,7 @@ UUID, which custom services must not use — `S0` replaced them:
 
 | `XXXX` | Characteristic | Properties | Role |
 |---|---|---|---|
-| `0001` | `command` | write | small imperatives — spec §4.4: `deleteObject` (cmd 1: `type u8 · id u16`) and `ackRides` (cmd 2: `count u8 · count × id u16` — the phone's ride-**possession ack**; the device flags every listed ride it still stores as synced). `ackRides` is monotonic (never un-flags), idempotent and order-free — the app re-sends its whole synced list on every connect (`RideSyncCoordinator`), chunked ≤ 31 ids per write (`AckRidesCommand`); `commandResult.detail` = newly-flagged count |
+| `0001` | `command` | write | small imperatives: `deleteObject` (cmd 1: `type u8 · id u16`), `ackRides` (cmd 2: `count u8 · count × id u16` — the ride-possession ack, below) — spec §4.4 |
 | `0002` | `status` | notify | typed device → app messages (`StatusMessage`: transferResult / storeChanged / commandResult) — spec §4.3 |
 | `0003` | `objectStore` | read + notify | 10-byte store digest (revision + route/ride counts); **full lists are CoC objects** — they outgrow the 512-byte ATT attribute cap |
 | `0004` | `config` | read + write | the Config object incl. **device name** (see *Delta 1*) → `DeviceConfig` |
@@ -177,6 +177,21 @@ progress/cancel/resume) over a `ByteChannel` — the L2CAP CoC (`L2CAPByteChanne
 on the real path, an in-memory pipe in tests. Field widths, the CRC variant, and
 the GATT UUIDs (`BLE/GATT.swift`) are **frozen** and pinned byte-exactly against
 the shared `protocol-vectors/` fixtures by `ProtocolVectorTests`.
+
+**Synced-ride reconciliation — `ackRides` (cmd 2, spec §4.4).** Rides are deleted
+**only on the device** (its Rides screen), where a per-ride *"synced"* flag drives
+a delete-guard cue ("this ride isn't on your phone yet"). To keep that flag
+honest, the app **owns the ground truth** for "the phone holds this ride" and
+sends it back: on every connect (and after edits, at will) it writes an
+`ackRides` command — `count u8 · count × device-namespace ride id u16` — and the
+device **sets** (never clears) the synced flag for each id it still stores.
+`commandResult.detail` returns the newly-flagged count. This makes the flag
+*reconciled state* rather than an inference from download events: rides synced
+before the device tracked the flag, a reflashed card, or an app reinstall all
+self-heal on the next connect, instead of the device permanently believing a
+ride the phone already holds was never synced. `deleteObject` for a ride
+(type 2) stays **reserved** — the app tombstones synced rides locally so a
+re-sync can't resurrect them.
 
 ---
 

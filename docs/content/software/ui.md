@@ -74,6 +74,10 @@ screens! {
     Rides(RidesScreen) => Nav,             // see + delete stored rides (hold-to-delete, unsynced guard)
     RouteOverview(RouteOverviewScreen) => Nav, // look-before-you-ride: profile + stats + START
     RouteSwap(RouteSwapScreen) => Nav,
+    // Host-pushed cards — opened by the BLE seam, not a gesture (see "Screens the companion link pushes")
+    RouteReceived(RouteReceivedScreen) => Nav, // idle "ROUTE RECEIVED" — Start navigation / Dismiss
+    RouteUpdated(RouteUpdatedScreen) => Nav,   // info-only: the actively-navigated route was replaced
+    Passkey(PasskeyScreen) => Nav,             // the 6-digit pairing code, modal + non-dismissible
     // The Settings tree — a list plus one screen each for Date & Time, Units, Power, Bluetooth,
     // Reset, and Stats (which opens onto Fields → AddField, the stat-grid panel manager). The
     // `Settings` kind is what holds the debounced settings save while one of these is on top.
@@ -295,6 +299,52 @@ Gesture::Hold => match self.selected {     // reaching this arm IS the confirmat
 ```
 
 The factory **Reset** screen is the one place a hold guards a *destructive* action. The hold threshold is a fixed ~500 ms — too short to feel safe alone — so reset is **two deliberate steps**: a press *arms* the screen, then a hold *erases*. A stray hold on an un-armed screen does nothing; only an armed, completed hold clears the settings (with a bar filling on the live progress).
+
+### Deleting things — the hold-to-delete footer
+
+The same guarded hold does duty as a **delete** control. Rather than a modal "are you sure?", a screen that can delete its selected item reserves a **footer band** below the list: a rule and a *"hold to delete"* row whose bar fills with the live hold-progress, exactly like a guarded confirm row. The completed hold *is* the confirmation — there is no second popup. This began on the Stats **Fields** editor (remove a panel) and now drives deletion on **three** screens with one shared footer: the **Route menu**, the **Rides** screen, and Fields. One idiom, three places — a rider who learns it once knows it everywhere.
+
+Two behaviours make the footer safe to press without thinking:
+
+- **Greyed when the item is in use.** The footer disables (a hold does nothing) when deleting would break live state: the Route menu greys it for the route you're *actively navigating* (deleting the file under an open geometry handle mid-ride would break navigation — but a route merely *previewed* from idle is still deletable), and the Rides screen greys it for the ride you're *currently recording* (its file isn't even written until Finish, and the filesystem refuses to delete an open handle).
+- **Warning-red when a ride is unsynced.** A tracked ride the phone hasn't downloaded yet is unrecoverable if deleted, so the Rides footer renders **warning-red with a "not synced" cue** for those — still deletable, just *informed*. (Routes get no such cue: the phone can always re-upload one.)
+
+<figure class="fig">
+<svg viewBox="0 0 720 250" role="img" aria-label="The hold-to-delete footer across three screens. On the left, a list with a footer band below it holding a rule and a hold-to-delete row that fills with a progress bar as you hold. On the right, the footer's three states stacked: normal — hold to delete, an active green route or a recording ride greyed and disabled, and an unsynced ride shown warning-red with a not-synced cue.">
+  <text class="d-tag" x="20" y="24">One footer, three screens — Route menu · Rides · Fields</text>
+
+  <!-- the screen with a footer -->
+  <rect class="d-panel" x="24" y="42" width="228" height="188" rx="11" />
+  <rect x="32" y="50" width="212" height="18" rx="3" style="fill:#aa5500" /><text class="d-sub" x="42" y="63" style="fill:#fff;font-size:9px">RIDES</text>
+  <rect x="32" y="74" width="212" height="30" rx="4" class="d-amber" />
+  <text class="d-sub" x="42" y="88" style="fill:#000;font-size:9.5px">Kandel Loop · Sat</text>
+  <text class="d-sub" x="42" y="100" style="fill:#000;font-size:8.5px">42 km · 3:10 · 780 m</text>
+  <text class="d-sub" x="42" y="126" style="font-size:9.5px">Rhine flats · Thu</text>
+  <text class="d-sub" x="42" y="152" style="font-size:9.5px">Vosges climb · Mon</text>
+  <!-- footer band -->
+  <line x1="36" y1="182" x2="240" y2="182" stroke="#aaaa55" stroke-width="1" />
+  <rect x="36" y="190" width="120" height="30" rx="6" style="fill:#c0492e" />
+  <rect x="156" y="190" width="84" height="30" rx="6" class="d-muted" />
+  <text class="d-sub" x="138" y="209" text-anchor="middle" style="fill:#fff;font-size:9px">hold to delete</text>
+  <text class="d-sub" x="138" y="238" text-anchor="middle" style="font-size:8.5px">bar fills on the live hold</text>
+
+  <!-- the three footer states -->
+  <text class="d-tag" x="292" y="60">the footer, three states</text>
+  <rect x="292" y="72" width="404" height="30" rx="6" class="d-muted" />
+  <text class="d-sub" x="308" y="91" style="font-size:10px">hold to delete</text>
+  <text class="d-sub" x="470" y="91" style="font-size:9px;fill:#6b7758">— normal · a completed hold deletes</text>
+
+  <rect x="292" y="110" width="404" height="30" rx="6" style="fill:#e7e6dd" />
+  <text class="d-sub" x="308" y="129" style="font-size:10px;fill:#9a9a86">hold to delete</text>
+  <text class="d-sub" x="470" y="129" style="font-size:9px;fill:#6b7758">— greyed · item is active / recording</text>
+
+  <rect x="292" y="148" width="404" height="30" rx="6" style="fill:#f6e3dc;stroke:#c0492e;stroke-width:1.2" />
+  <path d="M306 157 l6 12 l-12 0 z" fill="#c0492e" /><text class="d-sub" x="303" y="167" style="font-size:8px;fill:#fff">!</text>
+  <text class="d-sub" x="322" y="167" style="font-size:10px;fill:#a9501c">hold to delete · not synced</text>
+  <text class="d-sub" x="322" y="176" style="font-size:8.5px;fill:#a9501c">— unsynced ride · deletes for good</text>
+</svg>
+<figcaption>The footer reuses the guarded-hold machinery wholesale — the same <code>confirm_row</code> fill, driven by the same live <code>hold_progress</code> — so there's no new gesture and no new confirmation dialog. What varies per screen is only the <b>guard</b>: greyed when the highlighted item is in use (an actively-navigated route, a recording ride), and warning-red for an unsynced ride. A device-side delete then flows through the object store, so the phone reconciles it on the next connect (see the <a href="../companion-link/#staying-in-sync-the-change-digest">companion link</a>).</figcaption>
+</figure>
 
 ## The POIs browser
 
@@ -596,6 +646,26 @@ Most navigation *replaces* the view, but the stack also supports screens that dr
 <figcaption>Every current screen is opaque and replaces the view; the <code>Overlay</code> kind stays for transient panels that should not steal the whole display — a notification composites over the map, and the host keeps folding in GPS fixes behind it, so the ride doesn't visually freeze.</figcaption>
 </figure>
 
+## Screens the companion link pushes
+
+Almost every screen is opened by a **gesture** — a press or a menu pick. A few are opened by the **BLE link instead**: the host distils the radio into a tiny app-side [`BleStatus`](../companion-link/) snapshot each pass, and when it changes the app pushes (or pops) a card the rider never navigated to. The screen system needs *nothing* new for this — a host-pushed card is a plain `Nav` screen and a `Push`/`Pop` on the same stack — but the *policy* around it is what makes the link feel like part of the device rather than a separate app.
+
+### The passkey card
+
+Pairing puts a **6-digit code** on the glass for the rider to type into the phone. That code is a full-screen card, but unlike every other screen it's **host-pushed**: [`set_ble_status`](../companion-link/#pairing-and-staying-paired) opens it the instant the seam's passkey goes `Some` and pops it the instant it clears (pairing done, failed, or link dropped). It is deliberately **non-dismissible** — `Back` and `press` both do nothing — so a stray button can't lose the code mid-pairing; the SMP handshake time-boxes the window, so the app runs no timeout of its own. The card is opaque, so when it pops the map plane repaints whatever was underneath exactly once.
+
+### Route-upload prompts
+
+A route arriving over BLE surfaces as one of three **advisory** cards — advisory because the route is committed to the store (and the Route menu) *before* the prompt, so dismissing loses nothing. All three auto-close after 30 s (timeout = dismiss), and the display **wakes** to show them (an upload usually means the phone is right there). Which one appears depends on the rider's state: an idle *"Route received — Start navigation / Dismiss"*, a mid-ride guarded *swap* prompt (the same shape a mid-ride route pick uses), or — when the upload *replaced the route being navigated* — an info-only card, because the device has already adopted the new version (the old file is gone). The [companion-link page](../companion-link/#when-a-route-lands-the-devices-side) tells the full story; the UI-side rules are the interesting part: a prompt **never lands while a hold is charging** (it defers a tick, so a half-done *Save & start new* hold can't complete onto it — the same [stack-change hold-cancel](#hold-to-confirm) at work), **consecutive uploads replace** the prompt by object id rather than stacking, and the **passkey card outranks** it (a pending prompt is dropped, not queued).
+
+### The connected indicator
+
+A single **static** Bluetooth rune says "a phone is linked right now." It appears in exactly two places: the **main Menu's title bar** (the right slot of the framed header) and the **Home screen**, next to the battery gauge — the two screens a rider glances at between rides. It is deliberately **absent from the riding views**. That's not an oversight but a [render-on-demand](#render-on-demand-and-the-idle-path-is-free) decision: the Map and Statistics screens repaint only when something they show moves, and a phone connecting or dropping is *not* something the ride cares about — putting a link glyph there would dirty an expensive map frame on every BLE edge. So the indicator lives only where the panel is already cheap to redraw.
+
+### The Bluetooth settings screen
+
+Settings ▸ **Bluetooth** is where the link's few knobs live. It's an ordinary settings screen (two-level focus like the rest), carrying: an **on/off** toggle for the radio (persisted in `Settings` like every other setting, and pushed to the radio plane by the host), a read-only **status line** (Off / Advertising / Connected, straight from the seam), a **"Paired: yes/no"** row (no phone name — deliberately not worth a protocol addition), and a hold-guarded **Forget phone** row. Forget uses the [delete-footer's guarded hold](#deleting-things-the-hold-to-delete-footer) — a completed hold fills it warning-red and clears the bond — and it matters more than it looks: because [a stored bond now rejects new pairings](../companion-link/#pairing-and-staying-paired), Forget phone is the **only** way to re-pair a replaced or reset phone. The guarded hold is the confirmation; there's no extra popup.
+
 ## The whole flow
 
 Put the pieces together and the navigation graph is small and legible. Two screens are **riding views** — the Map and the Elevation/Statistics profile — and they're siblings: `back` swaps between them without growing the stack, and both share the same `press` (pause) and `back-hold` (Menu) bindings. Each also has a `hold`-entered sub-mode (Pan on the Map, Zoom on the profile).
@@ -679,6 +749,9 @@ The UI is styled like a weatherproof field map — a wood frame, a parchment pan
 ## Where this lives
 
 - The screen system, stack, and `Transition`: [`obc-app/src/screen/mod.rs`](src:firmware/obc-app/src/screen/mod.rs)
+- The host→app BLE seam (`BleStatus` — the connected indicator, passkey, paired): [`obc-app/src/ble.rs`](src:firmware/obc-app/src/ble.rs)
+- The host-pushed cards — the passkey card and the route-upload prompts: [`obc-app/src/screen/passkey.rs`](src:firmware/obc-app/src/screen/passkey.rs), [`obc-app/src/screen/route_received.rs`](src:firmware/obc-app/src/screen/route_received.rs)
+- The Rides screen and the Bluetooth settings screen: [`obc-app/src/screen/rides.rs`](src:firmware/obc-app/src/screen/rides.rs), [`obc-app/src/screen/settings/bluetooth.rs`](src:firmware/obc-app/src/screen/settings/bluetooth.rs)
 - The settings screens (the two-level editors + the shared kit): [`obc-app/src/screen/settings/`](src:firmware/obc-app/src/screen/settings)
 - The `Settings` value + its byte codec, and the `SettingsStore` seam: [`obc-app/src/settings.rs`](src:firmware/obc-app/src/settings.rs), [`obc-app/src/hal.rs`](src:firmware/obc-app/src/hal.rs)
 - The gesture recognizer: [`obc-app/src/input.rs`](src:firmware/obc-app/src/input.rs)

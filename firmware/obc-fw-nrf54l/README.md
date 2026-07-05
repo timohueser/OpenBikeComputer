@@ -273,15 +273,17 @@ host-tested `obc-ble` crate (`cargo test -p obc-ble`, pinned to `protocol-vector
   uploaded route shows in the on-device menu after a reflash. Every ride Finish on the map build
   writes `/tracks/RDnn.ORD` (byte-for-byte the S0 §7.2 ride object) — the only save artifact; the `ble`
   build just serves those. The id in each filename is recovered at boot and is what the app's
-  synced-set keys on. App-side ride deletes are tombstoned in the app — the device keeps every ride
-  (`deleteObject` on a ride answers `notFound` deliberately).
+  synced-set keys on. A ride is deleted **only on the device** (its Rides screen, hold-to-delete);
+  the wire `deleteObject` on a ride answers `notFound` deliberately, and app-side deletes are
+  tombstoned in the app.
 - **Config + bond persist in the RRAM SETTINGS carve** (`settings.rs`), which survives power cycles
   **and a firmware reflash** (it sits above the app image, so `probe-rs download` leaves it): the
   device name (config codec v3) @0, the boot counter @2048, the single 64-byte CRC-checked bond slot
   (LTK + peer IRK, `ObjectStore::{load,save,clear}_bond`) @`BOND_OFFSET`. Pairing is LESC passkey
-  **display** — the 6-digit code renders on the status screen (`Font::Huge`). One bond slot; a fresh
-  pairing replaces it (no device-side clear gesture — the on-screen passkey is the anti-stranger
-  control).
+  **display** — the 6-digit code renders on the app's passkey card (`Font::Huge`). One bond slot, and
+  while it's occupied the device **rejects** every new pairing attempt (#455): the hold-guarded
+  **Forget phone** in Settings ▸ Bluetooth is the only device-side clear, so physical possession
+  guards the *clear* step (it no longer silently replaces the bond on a fresh pairing).
 
 **Verify on glass** (nRF Connect is the pre-app oracle for A3–A4; the iOS app + harness for A5+):
 - **nRF Connect** — service/char table matches the spec, DIS strings + serial real, BAS notifies,
@@ -297,9 +299,11 @@ host-tested `obc-ble` crate (`cargo test -p obc-ble`, pinned to `protocol-vector
   the map build (`synth` is fine indoors), reflash `ble`, sync pulls them; spot-check a decoded ride's
   totals in the app against the device's Paused ledger. Ids must survive a power cycle; the boot
   counter must increment across them.
-- **Pairing** — passkey on the panel (webcam) typed on the phone → bond lands; power-cycle / app
-  restart / walk-away → silent reconnect, no dialog; reflash `ble` → still no dialog; app *Forget* +
-  iOS Bluetooth forget → next contact re-pairs with a fresh passkey.
+- **Pairing** — passkey card on the panel typed on the phone → bond lands; power-cycle / app
+  restart / walk-away → silent reconnect, no dialog; reflash `ble` → still no dialog. A **second
+  phone** is rejected while bonded (no passkey card, generic failure on the stranger). Re-pair path:
+  device **Settings ▸ Bluetooth ▸ Forget phone** (hold) + app *Forget* + iOS Bluetooth forget → next
+  contact pairs with a fresh passkey.
 
 ## Driving it from a host (`debug-uart`)
 
