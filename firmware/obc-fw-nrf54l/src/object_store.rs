@@ -38,8 +38,28 @@ use obc_ble::{
     TransferControl, TransferStatus,
 };
 
+use core::sync::atomic::{AtomicU32, Ordering};
+
 use crate::sd::Storage;
 use crate::SharedStore;
+
+/// Store-movement edge for the app UI (epic #447): [`bump_revision`](ObjectStore::bump_revision) —
+/// the single chokepoint for every commit/delete — increments this, the same edge that notifies the
+/// phone's `storeChanged`. The map plane's ride loop drains it each pass via
+/// [`take_store_changed`] and rings [`App::notify_store_changed`](obc_app::App::notify_store_changed),
+/// so the on-device catalog can react (the live rescan is P3 #450). A counter, not a flag, so a
+/// burst of commits between passes is never coalesced into a single missed edge.
+///
+/// It lives as a module static rather than a field because the `ObjectStore` lives behind the BLE
+/// planes' `RefCell` while the app lives in the ride loop — this is the lock-free hand-off between
+/// them, matching the `ble::state` publish pattern.
+static STORE_CHANGED: AtomicU32 = AtomicU32::new(0);
+
+/// Drain the count of store movements since the last call (epic #447). The ride loop calls this once
+/// per pass and rings `App::notify_store_changed` that many times. `0` = nothing moved.
+pub fn take_store_changed() -> u32 {
+    STORE_CHANGED.swap(0, Ordering::Relaxed)
+}
 
 /// One catalog slot: the object id and where its bytes live (routes and rides alike).
 struct ObjectSlot {
@@ -196,6 +216,10 @@ impl ObjectStore {
 
     fn bump_revision(&mut self) -> u32 {
         self.revision = self.revision.wrapping_add(1);
+        // Signal the app UI (epic #447): every commit/delete funnels through here, so this is the one
+        // spot that raises the store-changed edge the ride loop drains — the same movement that
+        // notifies the phone's `storeChanged`.
+        STORE_CHANGED.fetch_add(1, Ordering::Relaxed);
         self.revision
     }
 
