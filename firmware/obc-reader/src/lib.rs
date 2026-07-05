@@ -1,10 +1,11 @@
 //! OBCM map format reader and renderer.
 //!
 //! `no_std`, zero-alloc (heapless) so the exact same code runs in the desktop
-//! simulator and in the nRF54L firmware. Parses format **v5** (the LOD pyramid,
-//! a header marker color, and a per-style priority level — see OBCM_Spec.md): a
-//! file holds N levels of detail, each its own quadtree + chunk set, selected at
-//! render time from the current meters-per-pixel.
+//! simulator and in the nRF54L firmware. Parses format **v6** (the LOD pyramid,
+//! a header marker color, a per-style priority level, and the trailing POI
+//! directory — see OBCM_Spec.md): a file holds N levels of detail, each its own
+//! quadtree + chunk set, selected at render time from the current
+//! meters-per-pixel, plus a per-category POI index (parse-only in v6).
 //!
 //! Modules:
 //! - [`byte_io`] — the [`ByteSource`]/[`ByteSink`] seam (+ [`SliceSource`]) the map and route
@@ -38,8 +39,8 @@ pub use color::rgb565_to_device64;
 pub use color::rgb565_to_rgb888;
 pub use geo::{cos_lat, ground_dist_m, ground_dist_m_cl};
 pub use reader::{
-    read_header, CacheStats, FeatureRef, Kind, Lod, MapCache, MapHeader, MapTables, Reader, Style, HEADER_LEN,
-    MAX_CHUNK_BYTES, MAX_FEAT_PTS, MAX_FEAT_RINGS,
+    read_header, CacheStats, FeatureRef, Kind, Lod, MapCache, MapHeader, MapTables, PoiCatEntry, PoiDirectory, Reader,
+    Style, HEADER_LEN, MAX_CHUNK_BYTES, MAX_FEAT_PTS, MAX_FEAT_RINGS, POI_MAX_CATEGORIES, POI_MAX_CHUNK_BYTES,
 };
 
 /// Meters of ground per degree of latitude (and of longitude at the equator) — the
