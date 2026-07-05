@@ -295,7 +295,7 @@ The factory **Reset** screen is the one place a hold guards a *destructive* acti
 *POIs* is one of the compass Menu's stations, and it answers a bikepacker's question directly: *where's the nearest water / campsite / bakery?* The flow is two screens — a **category** list, then that category's **nearest-16** list — both built from the same [`screens!` table](#a-screen-is-a-value-not-a-widget-tree) rows and the shared list widget as every other menu, so there's almost nothing new in the plumbing. What's new is where the data comes from and how one element stays live.
 
 <figure class="fig">
-<svg viewBox="0 0 720 250" role="img" aria-label="The POIs browser flow. The compass Menu's POIs station opens the category screen: a six-row list of Water, Campsite, Accommodation, Resupply, Pharmacy and Bike shop, each with a small icon. Pressing a category opens the list screen: that category's nearest sixteen POIs sorted by distance, each row a name, a bearing arrow and a distance. Back climbs one step; selecting a POI does nothing this iteration.">
+<svg viewBox="0 0 720 250" role="img" aria-label="The POIs browser flow. The compass Menu's POIs station opens the category screen: a six-row list of Water, Campsite, Lodging, Resupply, Pharmacy and Bike shop, each with a small icon. Pressing a category opens the list screen: that category's nearest sixteen POIs sorted by distance, each row a name, a bearing arrow and a distance. Back climbs one step; selecting a POI does nothing this iteration.">
   <defs>
     <marker id="aU9" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
   </defs>
@@ -315,7 +315,7 @@ The factory **Reset** screen is the one place a hold guards a *destructive* acti
     <rect x="210" y="78" width="172" height="20" rx="4" class="d-amber" />
     <circle cx="222" cy="88" r="4" fill="#000" /><text class="d-sub" x="234" y="92" style="fill:#000;font-size:9.5px">Water</text>
     <circle cx="222" cy="110" r="4" fill="#24331c" /><text class="d-sub" x="234" y="114" style="font-size:9.5px">Campsite</text>
-    <circle cx="222" cy="130" r="4" fill="#24331c" /><text class="d-sub" x="234" y="134" style="font-size:9.5px">Accommodation</text>
+    <circle cx="222" cy="130" r="4" fill="#24331c" /><text class="d-sub" x="234" y="134" style="font-size:9.5px">Lodging</text>
     <circle cx="222" cy="150" r="4" fill="#24331c" /><text class="d-sub" x="234" y="154" style="font-size:9.5px">Resupply</text>
     <circle cx="222" cy="170" r="4" fill="#24331c" /><text class="d-sub" x="234" y="174" style="font-size:9.5px">Pharmacy</text>
     <circle cx="222" cy="190" r="4" fill="#24331c" /><text class="d-sub" x="234" y="194" style="font-size:9.5px">Bike shop</text>
