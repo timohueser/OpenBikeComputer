@@ -243,13 +243,20 @@ impl SimGui {
     /// The Bluetooth injection controls — the sim's face of the host→app BLE seam (epic #447). P1
     /// exposes the connected toggle (the connected indicator's driver); P2 adds the passkey injection
     /// (the passkey card); P3 adds the store-changed injection (the live-catalog rescan's driver);
-    /// P4 will add the full inject-upload UI — all editing the same [`obc_app::BleStatus`] mirror
-    /// the checkbox does here (`self.panel.ble`), pushed into the app each frame, so no
+    /// P8 adds the paired flag (the Bluetooth screen's "Paired" row — its Forget hold clears it,
+    /// like the board's RRAM clear; the radio-off state isn't injected here — it's the device's own
+    /// `Settings::ble_enabled`, flipped on the Bluetooth screen); P4 will add the full inject-upload
+    /// UI — all editing the same [`obc_app::BleStatus`] mirror pushed into the app each frame, so no
     /// restructuring is needed then.
     fn show_ble_controls(&mut self, ui: &mut egui::Ui) {
+        use obc_app::BleLink;
         ui.label(egui::RichText::new("Bluetooth").strong());
-        ui.checkbox(&mut self.panel.ble.connected, "Phone connected");
-        ui.weak("drives the connected indicator on the menu bar + Home");
+        let mut connected = self.panel.ble.link == BleLink::Connected;
+        if ui.checkbox(&mut connected, "Phone connected").changed() {
+            self.panel.ble.link = if connected { BleLink::Connected } else { BleLink::Advertising };
+        }
+        ui.checkbox(&mut self.panel.ble.paired, "Paired (bond stored)");
+        ui.weak("drives the indicator + the Bluetooth screen's status/Paired rows");
 
         // Passkey injection (P2): a "Pairing" toggle mirrors the BLE side's `PassKeyDisplay` →
         // `passkey: Some` (opens the card) / cleared → `None` (closes it), with a numeric field to

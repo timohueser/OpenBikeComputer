@@ -30,6 +30,7 @@ use super::{palette, Ctx, Render, Screen, Transition};
 pub(super) use super::empty_state;
 
 mod add_field;
+mod bluetooth;
 mod datetime;
 mod fields;
 mod power;
@@ -38,6 +39,7 @@ mod stats;
 mod units;
 
 pub use add_field::AddFieldScreen;
+pub use bluetooth::BluetoothScreen;
 pub use datetime::DateTimeScreen;
 pub use fields::StatFieldsScreen;
 pub use power::PowerScreen;
@@ -46,7 +48,7 @@ pub use stats::StatsScreen;
 pub use units::UnitsScreen;
 
 /// The Settings list entries, in order. Each row pushes its sub-screen.
-const ITEMS: [&str; 5] = ["Date & Time", "Units", "Stats", "Power", "Reset"];
+const ITEMS: [&str; 6] = ["Date & Time", "Units", "Stats", "Power", "Bluetooth", "Reset"];
 
 /// The Settings list — a nav menu whose rows open the individual settings screens. State is the
 /// highlighted row.
@@ -68,6 +70,7 @@ impl SettingsScreen {
                 1 => Transition::Push(Screen::Units(UnitsScreen::new())),
                 2 => Transition::Push(Screen::Stats(StatsScreen::new())),
                 3 => Transition::Push(Screen::Power(PowerScreen::new())),
+                4 => Transition::Push(Screen::Bluetooth(BluetoothScreen::new())),
                 _ => Transition::Push(Screen::Reset(ResetScreen::new())),
             },
             Gesture::Back => Transition::Pop, // climb back to the main Menu

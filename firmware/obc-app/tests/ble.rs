@@ -1,31 +1,49 @@
-//! The host→app BLE event/state seam (epic #447, P1): [`App::set_ble_status`] and
-//! [`App::notify_store_changed`], and the connected indicator's dirty-tracking contract — a link
-//! change repaints only where the glyph is drawn (Home / the menu title bar), never on a riding view
-//! or a static screen whose status is unchanged.
+//! The host→app BLE event/state seam (epic #447, P1 + the P8 extension): [`App::set_ble_status`]
+//! and [`App::notify_store_changed`], the three-state link + paired flag the Bluetooth screen
+//! reads, and the connected indicator's dirty-tracking contract — a link change repaints only
+//! where the state is drawn (Home / the menu title bar / the Bluetooth screen), never on a riding
+//! view or a static screen whose status is unchanged.
 
-use obc_app::{App, AppState, BleStatus, Dirty};
+use obc_app::{App, AppState, BleLink, BleStatus, Dirty};
 
 mod common;
 
 fn connected() -> BleStatus {
-    BleStatus { connected: true, passkey: None }
+    BleStatus { link: BleLink::Connected, passkey: None, paired: true }
 }
 
 // --- the state seam ----------------------------------------------------------
 
 #[test]
-fn set_ble_status_records_connection_and_passkey() {
+fn set_ble_status_records_link_paired_and_passkey() {
     let mut app = App::new_idle(AppState::new(0, 0, 0.05));
-    assert!(!app.state.ble_connected, "boots disconnected");
+    assert_eq!(app.state.ble_link, BleLink::Advertising, "boots unlinked (radio on, nobody connected)");
+    assert!(!app.state.ble_connected(), "…which reads as not connected for the indicator");
+    assert!(!app.state.ble_paired, "no bond at boot");
     assert_eq!(app.ble_passkey(), None, "no passkey at boot");
 
-    app.set_ble_status(BleStatus { connected: true, passkey: Some(123_456) });
-    assert!(app.state.ble_connected, "connection is recorded on AppState (the indicator reads it)");
+    app.set_ble_status(BleStatus { link: BleLink::Connected, passkey: Some(123_456), paired: true });
+    assert!(app.state.ble_connected(), "connection is recorded on AppState (the indicator reads it)");
+    assert!(app.state.ble_paired, "the stored-bond flag rides the seam (the Paired row reads it)");
     assert_eq!(app.ble_passkey(), Some(123_456), "passkey rides the seam (P2 consumes it)");
 
-    app.set_ble_status(BleStatus::DISCONNECTED);
-    assert!(!app.state.ble_connected, "disconnect clears it");
+    app.set_ble_status(BleStatus { link: BleLink::Off, ..BleStatus::DISCONNECTED });
+    assert_eq!(app.state.ble_link, BleLink::Off, "the radio-off state crosses the seam (P8 status line)");
+    assert!(!app.state.ble_connected(), "Off is not connected");
     assert_eq!(app.ble_passkey(), None);
+
+    app.set_ble_status(BleStatus::DISCONNECTED);
+    assert_eq!(app.state.ble_link, BleLink::Advertising, "back to the powered-and-unlinked default");
+}
+
+/// The Forget-phone one-shot: `take_ble_forget` drains the screen's pending request exactly once.
+#[test]
+fn take_ble_forget_is_a_one_shot() {
+    let mut app = App::new_idle(AppState::new(0, 0, 0.05));
+    assert!(!app.take_ble_forget(), "nothing pending at boot");
+    app.state.ble_forget_pending = true; // as the Bluetooth screen's guarded hold sets it
+    assert!(app.take_ble_forget(), "the pending request drains…");
+    assert!(!app.take_ble_forget(), "…exactly once");
 }
 
 #[test]
@@ -68,10 +86,35 @@ fn a_link_change_repaints_the_menu_title_bar() {
     assert_eq!(app.take_dirty(), Dirty::CLEAN, "an unchanged status doesn't re-dirty the Menu");
 }
 
+/// The Bluetooth screen (P8) draws the status line + Paired row, so every seam change repaints it
+/// — including transitions the indicator ignores (Advertising ↔ Off, a paired flip).
+#[test]
+fn a_link_change_repaints_the_bluetooth_screen() {
+    let mut app = App::new_idle(AppState::new(0, 0, 0.05)); // [Home]
+    app.apply_gesture(obc_app::Gesture::BackHold); // → Menu
+    app.apply_gesture(obc_app::Gesture::Turn(-1)); // compass: one ccw detent to Settings
+    app.apply_gesture(obc_app::Gesture::Press); // → Settings list
+    for _ in 0..4 {
+        app.apply_gesture(obc_app::Gesture::Turn(1)); // → the Bluetooth row
+    }
+    app.apply_gesture(obc_app::Gesture::Press); // → Bluetooth screen
+    assert!(matches!(app.top_screen(), obc_app::Screen::Bluetooth(_)), "navigated to the Bluetooth screen");
+    let _ = app.take_dirty();
+
+    app.set_ble_status(connected());
+    assert!(app.take_dirty().map, "connecting repaints the status line");
+    app.set_ble_status(BleStatus { link: BleLink::Off, passkey: None, paired: true });
+    assert!(app.take_dirty().map, "the radio winding down to Off repaints it too");
+    app.set_ble_status(BleStatus { link: BleLink::Off, passkey: None, paired: false });
+    assert!(app.take_dirty().map, "a forget's paired yes→no repaints the Paired row");
+    app.set_ble_status(BleStatus { link: BleLink::Off, passkey: None, paired: false });
+    assert_eq!(app.take_dirty(), Dirty::CLEAN, "the steady state repaints nothing");
+}
+
 // --- the passkey card (P2): host-pushed open/close on the seam's passkey --------
 
 fn pairing(passkey: u32) -> BleStatus {
-    BleStatus { connected: false, passkey: Some(passkey) }
+    BleStatus { link: BleLink::Advertising, passkey: Some(passkey), paired: false }
 }
 
 #[test]

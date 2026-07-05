@@ -113,6 +113,9 @@ struct Args {
     /// (epic #447, P2), for the `passkey-card.png` snapshot. Stands in for the sim control panel's
     /// "Pairing" toggle.
     ble_passkey: Option<u32>,
+    /// Headless `--png` only: render with a stored bond, so the Bluetooth screen's Paired row
+    /// reads "yes" (and its Forget row arms). Stands in for the control panel's "Paired" toggle.
+    ble_paired: bool,
 }
 
 impl Default for Args {
@@ -148,6 +151,7 @@ impl Default for Args {
             clock: None,
             ble_connected: false,
             ble_passkey: None,
+            ble_paired: false,
         }
     }
 }
@@ -253,6 +257,7 @@ fn parse_args() -> Result<Args, String> {
                         .ok_or("--ble-passkey needs 0..=999999")?,
                 )
             }
+            "--ble-paired" => a.ble_paired = true,
             other => {
                 if a.map.is_empty() {
                     a.map = other.to_string();
@@ -483,7 +488,7 @@ fn main() {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: obc-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--home-seed N] [--clock YYYY-MM-DDTHH:MM] [--ble-connected] [--ble-passkey N]");
+            eprintln!("error: {e}\nusage: obc-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--home-seed N] [--clock YYYY-MM-DDTHH:MM] [--ble-connected] [--ble-passkey N] [--ble-paired]");
             std::process::exit(2);
         }
     };
@@ -635,6 +640,12 @@ fn main() {
         // can be drawn.
         let mut store = RouteStore::open(args.routes_dir());
         app.set_routes_with_ids(store.catalog(), store.ids());
+        // Inject the BLE link state (epic #447) **before** the script runs: `--ble-connected` shows
+        // the connected indicator, `--ble-passkey N` puts the host-pushed passkey card up (P2), and
+        // `--ble-paired` a stored bond — so a scripted gesture on the Bluetooth screen (its Forget
+        // hold arms only while paired) sees the bond, exactly as the control panel drives it live.
+        let link = if args.ble_connected { obc_app::BleLink::Connected } else { obc_app::BleLink::Advertising };
+        app.set_ble_status(obc_app::BleStatus { link, passkey: args.ble_passkey, paired: args.ble_paired });
         if let Some(script) = &args.script {
             // The `d` token flushes lazy draw-time state (the POI snapshot / detail hours) by drawing
             // one throwaway frame against the map reader — `route: None` since the POI screens the
@@ -646,10 +657,7 @@ fn main() {
             };
             apply_script(&mut app, script, &mut render);
         }
-        // Inject the BLE link state (epic #447): with `--ble-connected` the connected indicator
-        // shows in the snapshot; with `--ble-passkey N` the host-pushed passkey card (P2) is up —
-        // both exactly as the control panel's toggles drive them live.
-        app.set_ble_status(obc_app::BleStatus { connected: args.ble_connected, passkey: args.ble_passkey });
+
         // The script may have loaded a route; open its geometry for the Map.
         store.sync_active(app.activity.active_route);
         let route_src = store.active_source();

@@ -55,13 +55,17 @@ pub use state::app_ble_status;
 // and render the passkey card.
 pub use state::wait_status_change;
 
+// The settings→radio controls (#455): the ride loop pushes the persisted Bluetooth switch each pass
+// and rings the Bluetooth screen's Forget-phone request; the lifecycle loop below honours both.
+pub use state::{request_forget_bond, set_radio_enabled};
+
 use core::mem::MaybeUninit;
 use core::sync::atomic::Ordering;
 
 use defmt::{info, unwrap, warn};
 use embassy_executor::Spawner;
-use embassy_futures::join::{join, join3};
-use embassy_futures::select::{select, Either};
+use embassy_futures::join::{join, join4};
+use embassy_futures::select::{select, select3, Either, Either3};
 use embassy_nrf::mode::Blocking;
 use embassy_nrf::{bind_interrupts, cracen, peripherals, Peri};
 use embassy_time::Timer;
@@ -80,7 +84,7 @@ use gatt::{
     HARDWARE_REVISION, OBC_PSM,
 };
 use lifecycle::{advertise_lifecycle, negotiate_link};
-use state::{publish, LinkState, TRANSFER_ABORT, TRANSFER_ACTIVE, TRANSFER_ARM};
+use state::{publish, LinkState, FORGET_BOND, TRANSFER_ABORT, TRANSFER_ACTIVE, TRANSFER_ARM};
 
 bind_interrupts!(struct Irqs {
     SWI00 => nrf_sdc::mpsl::LowPrioInterruptHandler;
@@ -94,8 +98,9 @@ bind_interrupts!(struct Irqs {
 const CONNECTIONS_MAX: usize = 1;
 /// Advertising sets — one legacy connectable set is all the advertise policy needs.
 const ADV_SETS_MAX: usize = 1;
-/// Bonded peers stored in the host: exactly one. A fresh pairing replaces it, so the resolving list
-/// never holds more than the single phone (matches the app's single-peer model).
+/// Bonded peers stored in the host: exactly one. While it is occupied new pairings are rejected
+/// (#455) and only Forget phone clears it, so the resolving list never holds more than the single
+/// phone (matches the app's single-peer model).
 const BONDS_MAX: usize = 1;
 /// L2CAP signal + ATT + the data-plane CoC.
 const L2CAP_CHANNELS_MAX: usize = 3;
@@ -256,12 +261,19 @@ pub async fn run(
         let mut guard = shared.lock().await;
         store.borrow_mut().load_bond(&mut guard)
     };
+    // The paired flag drives both the app's "Paired" row and the reject-when-bonded pairing policy
+    // (S0 §8 as amended by #455) — seed it before the first advertise.
+    publish(|s| s.paired = stored_bond.is_some());
     if let Some(bond) = stored_bond {
         match stack.add_bond_information(bond) {
             Ok(()) => info!("ble: restored stored bond — bonded reconnect armed"),
             Err(e) => warn!("ble: add_bond_information failed: {:?}", defmt::Debug2Format(&e)),
         }
     }
+
+    // Seed the radio switch from the persisted settings (#455): a device toggled off stays off
+    // across a reboot, before the first advertise. The ride loop re-pushes the live value each pass.
+    state::seed_radio_enabled(store.borrow().settings().ble_enabled);
 
     let runner = stack.runner();
     let mut peripheral = stack.peripheral();
@@ -286,9 +298,36 @@ pub async fn run(
         serial_string().as_str()
     );
 
-    // The lifecycle loop: advertise → serve → re-advertise, forever, with no terminal state.
+    // The lifecycle loop: advertise → serve → re-advertise, forever, with no terminal state — and,
+    // since #455, a parked **Off** state the rider's Bluetooth switch gates.
     join(host_task(runner), async {
         loop {
+            // A Forget-phone request latched between phases: honour it before the next advertise,
+            // so the freshly-open pairing window never races a stale bond.
+            if FORGET_BOND.try_take().is_some() {
+                forget_bond(&stack, &store, shared).await;
+            }
+
+            // The radio switch (#455): while off, publish Off and park — the advertiser is not
+            // running (dropped with the previous phase), so the device vanishes from scans. Forget
+            // is honoured while parked too (the rider clears the bond with the radio down).
+            if !state::radio_enabled() {
+                info!("ble: radio off — parked until re-enabled");
+                publish(|s| {
+                    s.state = LinkState::Off;
+                    s.peer = None;
+                    s.conn_interval_ms = 0;
+                    s.att_mtu = 0;
+                    s.phy_2m = false;
+                    s.passkey = None;
+                    s.secured = false;
+                });
+                if let Either::Second(()) = select(state::radio_enabled_wait(), FORGET_BOND.wait()).await {
+                    forget_bond(&stack, &store, shared).await;
+                }
+                continue;
+            }
+
             publish(|s| {
                 s.state = LinkState::Advertising;
                 s.peer = None;
@@ -307,13 +346,27 @@ pub async fn run(
                 store.borrow_mut().refresh_settings_if_changed(&mut guard);
             }
             let adv_name = advertised_name(&store.borrow());
-            let conn = match advertise_lifecycle(adv_name.as_str(), &mut peripheral, &server).await {
-                Ok(conn) => conn,
-                Err(e) => {
+            // Advertise until a central connects — or the radio switch flips off (dropping the
+            // advertiser future stops advertising), or a Forget request lands (handled, then this
+            // phase restarts — a moment of re-advertising is harmless).
+            let conn = match select3(
+                advertise_lifecycle(adv_name.as_str(), &mut peripheral, &server),
+                state::radio_disabled(),
+                FORGET_BOND.wait(),
+            )
+            .await
+            {
+                Either3::First(Ok(conn)) => conn,
+                Either3::First(Err(e)) => {
                     // An advertise error must not take the firmware down and must not wedge the loop —
                     // log it, wait a beat, and try again.
                     warn!("ble: advertise error: {:?} — retrying in 1 s", defmt::Debug2Format(&e));
                     Timer::after_secs(1).await;
+                    continue;
+                }
+                Either3::Second(()) => continue, // radio off — park at the loop top
+                Either3::Third(()) => {
+                    forget_bond(&stack, &store, shared).await;
                     continue;
                 }
             };
@@ -327,24 +380,34 @@ pub async fn run(
                 s.connects += 1;
             });
 
-            // Allow this link to bond: the trouble default is *not* bondable, so a passkey pairing
-            // wouldn't persist keys without this. Set before the peer starts SMP.
-            if let Err(e) = conn.raw().set_bondable(true) {
+            // Bonding policy (S0 §8, amended by #455): the link is bondable only while **no** bond
+            // is stored. With a bond present the link stays at trouble's not-bondable default and
+            // the control plane rejects the pairing attempt outright (see `serve_connection`) —
+            // a stranger can never mint a replacement bond; Forget phone is the only re-pair path.
+            // The bonded phone's silent reconnect is encryption resumption, not pairing, so it is
+            // untouched by either knob.
+            let open_pairing = !state::status().paired;
+            if let Err(e) = conn.raw().set_bondable(open_pairing) {
                 warn!("ble: set_bondable failed: {:?}", defmt::Debug2Format(&e));
+            }
+            if !open_pairing {
+                info!("ble: bond stored — new pairing attempts on this link will be rejected");
             }
 
             // Serve the link until the peer drops it. `serve_connection` pumps GATT + connection
             // events (so the phone's own MTU/PHY/DLE moves are serviced and our control-plane writes
             // are answered) and owns the exit — it returns the disconnect reason. The background set
-            // (parameter negotiation, the CoC accept-and-drain, and the BAS battery notify) runs
-            // concurrently and never returns, so `select` tears it all down the moment the link drops
-            // (any disconnect drops straight back to advertising).
+            // (parameter negotiation, the CoC accept-and-drain, the BAS battery notify, and the
+            // #455 link control — radio-off / Forget both end in a local disconnect) runs
+            // concurrently and never returns before the teardown, so `select` tears it all down the
+            // moment the link drops (any disconnect drops straight back to the loop top).
             let reason = match select(
                 serve_connection(&stack, &server, &conn, &store, shared),
-                join3(
+                join4(
                     negotiate_link(&stack, &conn),
                     serve_coc(&stack, &server, &conn, &store, shared),
                     battery_task(&stack, &server, &conn),
+                    link_control(&stack, &conn, &store, shared),
                 ),
             )
             .await
@@ -370,6 +433,54 @@ pub async fn run(
     })
     .await;
     unreachable!()
+}
+
+/// Forget the bonded phone (#455): zero the RRAM bond slot (a reboot lands in open pairing), drop
+/// the bond from the host's table + the controller resolving list (the forgotten phone can't
+/// silently re-encrypt this session), and lower the paired flag — which re-opens pairing on the
+/// next connection and reads "Paired: no" on the Bluetooth screen.
+async fn forget_bond(
+    stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
+    store: &core::cell::RefCell<ObjectStore>,
+    shared: &SharedStoreMutex,
+) {
+    {
+        let mut guard = shared.lock().await;
+        store.borrow_mut().clear_bond(&mut guard);
+    }
+    let identity = stack.with_bond_information(|bonds| bonds.first().map(|b| b.identity));
+    if let Some(identity) = identity {
+        if let Err(e) = stack.remove_bond_information(identity) {
+            warn!("ble: remove_bond_information failed: {:?}", defmt::Debug2Format(&e));
+        }
+    }
+    publish(|s| s.paired = false);
+    info!("ble: bond forgotten — open pairing re-armed");
+}
+
+/// The per-connection control watcher (#455): rides the background `join4` beside the serve loop
+/// and waits for either the radio switch flipping **off** or a **Forget phone** request. Both end
+/// in a local disconnect; the `Disconnected` event then unwinds `serve_connection` and the outer
+/// loop lands back at its top (parked Off, or re-advertising with pairing open). Returns after the
+/// disconnect request — the enclosing `join4` keeps waiting on its never-returning siblings, so the
+/// teardown still comes from the one `select` exit path.
+async fn link_control(
+    stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
+    conn: &GattConnection<'_, '_, DefaultPacketPool>,
+    store: &core::cell::RefCell<ObjectStore>,
+    shared: &SharedStoreMutex,
+) {
+    match select(state::radio_disabled(), FORGET_BOND.wait()).await {
+        Either::First(()) => info!("ble: radio switched off — dropping the live connection"),
+        Either::Second(()) => {
+            // Forget with a live link: clear the bond first, then drop the connection (locked
+            // decision). The single-peer model means the peer is the bonded phone in every real
+            // flow; an unbonded peer that happens to hold the link just reconnects.
+            forget_bond(stack, store, shared).await;
+            info!("ble: forget phone — dropping the live connection");
+        }
+    }
+    conn.raw().disconnect();
 }
 
 /// The host's transport pump — must run forever alongside the advertise loop.

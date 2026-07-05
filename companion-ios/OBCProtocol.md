@@ -70,13 +70,23 @@ The app-facing characteristics require an **encrypted, LESC-authenticated** link
 (firmware `A8`); the phone is the only bonded peer. DIS/BAS/`protocolVersion` stay
 open so the app can identity/version-check before pairing.
 
-**Pairing / bonding (A8, canonical spec §8).** The device is `DisplayOnly`: it
-shows a 6-digit **passkey** on its screen, iOS raises the system pairing dialog
-(`OBCSystemPairing`), the rider types it — LESC passkey entry, MITM-protected.
-Pairing *is* `connect()`: reading a gated characteristic / opening the CoC on the
-unencrypted link makes iOS pair, and the encrypted link completing is what
-resolves the connect. A declined / wrong passkey surfaces as a pairing failure
-(→ D5). One bonded peer; a fresh passkey pairing replaces the stored bond.
+**Pairing / bonding (A8 + #455, canonical spec §8).** The device is
+`DisplayOnly`: it shows a 6-digit **passkey** on its screen, iOS raises the
+system pairing dialog (`OBCSystemPairing`), the rider types it — LESC passkey
+entry, MITM-protected. Pairing *is* `connect()`: reading a gated characteristic
+/ opening the CoC on the unencrypted link makes iOS pair, and the encrypted
+link completing is what resolves the connect. A declined / wrong passkey
+surfaces as a pairing failure (→ D5). One bonded peer — and **while a bond is
+stored the device rejects every new pairing attempt** (spec §8, reversing the
+old replace-on-pairing rule): the device suppresses its passkey and drops the
+link, so the attempt surfaces as a **generic** pairing/connection failure. No
+distinguishable SMP reason reaches the app (the device's host stack can't
+attach one, and CoreBluetooth wouldn't surface it), so the "already paired to
+another phone" copy must key on context, not a code (#461). The rider clears
+the bond on the device (Settings ▸ Bluetooth ▸ **Forget phone**, hold-guarded)
+to re-open pairing. The device also has a Bluetooth **off** switch: off = no
+advertising, live link dropped — the app simply sees the device disappear
+(bond retained; reconnect resumes when it's back on).
 
 **Reconnect.** The device keeps a **stable** static address, so once bonded, iOS
 reconnects silently on any contact (no dialog) — power-cycle either side, walk
@@ -85,8 +95,11 @@ for the launch greeting; CoreBluetooth owns the real crypto bond.
 
 **Forget (H2).** `BondStore.clear()` drops the app's record, but iOS keeps the CB
 bond until the user also removes it in **Settings ▸ Bluetooth** — the H2 copy
-says so. After a true forget, the next contact re-pairs with a fresh passkey (the
-device replaces its single bond).
+says so. A true phone-side forget is **not enough to re-pair** (#455): the
+device still holds its bond and rejects the fresh pairing attempt until the
+rider also runs **Forget phone** on the device. The full re-pair recipe is
+therefore: forget on the phone (app + iOS Settings) **and** Forget phone on the
+device, then pair with a fresh passkey.
 
 ### Data plane = L2CAP CoC
 

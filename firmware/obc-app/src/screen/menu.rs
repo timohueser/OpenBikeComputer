@@ -104,7 +104,7 @@ impl MenuScreen {
     }
 
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
-        let ble = rx.state.ble_connected;
+        let ble = rx.state.ble_connected();
         if COMPASS {
             draw_compass(cv, rx.w, rx.h, self.selected, self.needle_deg, ble);
         } else {

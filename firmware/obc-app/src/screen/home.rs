@@ -82,7 +82,7 @@ impl HomeScreen {
         let clock_top = h * 40 / 100 - Font::Huge.line_height() as i32 / 2;
         cv.text(&clock, Point::new(w / 2, clock_top), Font::Huge, TextAlign::Center, palette::PARCHMENT);
 
-        battery(cv, w, h * 64 / 100, rx.state.battery_pct, rx.state.ble_connected);
+        battery(cv, w, h * 64 / 100, rx.state.battery_pct, rx.state.ble_connected());
     }
 }
 
