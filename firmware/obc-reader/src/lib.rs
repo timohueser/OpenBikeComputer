@@ -17,6 +17,8 @@
 //! - [`geo`] — the shared Earth-model distance core ([`M_PER_DEG`] in `f32` clothing):
 //!   microdegrees → ground meters, used identically by the route format's stored distances
 //!   and the layers that render or match against them.
+//! - [`poi_table`] — the canonical POI category/subtype table (spec §7.4), the single firmware
+//!   source of truth the packer and the app both mirror.
 //!
 //! All coordinates are integer microdegrees (1e-6 degrees), as stored in the
 //! file. Projection to screen space is the renderer's job.
@@ -29,6 +31,7 @@ pub mod codec;
 pub mod color;
 pub mod format;
 pub mod geo;
+pub mod poi_table;
 pub mod reader;
 
 // The byte-I/O traits are re-exported at the crate root for convenience; its `Error` is **not**
@@ -38,9 +41,11 @@ pub use byte_io::{ByteSink, ByteSource, SliceSource};
 pub use color::rgb565_to_device64;
 pub use color::rgb565_to_rgb888;
 pub use geo::{cos_lat, ground_dist_m, ground_dist_m_cl};
+pub use poi_table::{category_of, label_of, subtype_row, PoiCategory, PoiSubtype, SUBTYPES};
 pub use reader::{
-    read_header, CacheStats, FeatureRef, Kind, Lod, MapCache, MapHeader, MapTables, PoiCatEntry, PoiDirectory, Reader,
-    Style, HEADER_LEN, MAX_CHUNK_BYTES, MAX_FEAT_PTS, MAX_FEAT_RINGS, POI_MAX_CATEGORIES, POI_MAX_CHUNK_BYTES,
+    read_header, CacheStats, FeatureRef, Kind, Lod, MapCache, MapHeader, MapTables, Poi, PoiCatEntry, PoiDirectory,
+    Reader, Style, HEADER_LEN, MAX_CHUNK_BYTES, MAX_FEAT_PTS, MAX_FEAT_RINGS, MAX_POI_RESULTS, POI_MAX_CATEGORIES,
+    POI_MAX_CHUNK_BYTES, POI_NAME_MAX,
 };
 
 /// Meters of ground per degree of latitude (and of longitude at the equator) — the
