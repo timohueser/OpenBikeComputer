@@ -66,6 +66,30 @@ pub fn take_store_changed() -> u32 {
     STORE_CHANGED.swap(0, Ordering::Relaxed)
 }
 
+/// The latest **committed route upload** for the app UI (epic #447, P4): which durable id landed
+/// and whether it replaced a stored slot — what the store-changed edge alone can't say, and what
+/// the upload popups key their variant on. Packed `present-bit | replaced-bit | id` (`0` = none);
+/// deliberately a **single latest-wins slot**, which *is* the locked popup rule (consecutive
+/// uploads replace the prompt, most recent wins), so a burst between passes needs no queue.
+///
+/// Published by [`ObjectStore::upload_finish`] **before** its revision bump, so the pass the
+/// [`STORE_WAKE`] pulls out of warm sleep sees the rescan edge and this event together; the ride
+/// loop drains the rescan **first** (the id must resolve against the fresh catalog), then rings
+/// [`App::notify_route_uploaded`](obc_app::App::notify_route_uploaded). Same module-static
+/// hand-off pattern as [`STORE_CHANGED`] — the store lives behind the BLE planes' `RefCell`, the
+/// app in the ride loop; both are cooperative tasks on the one executor, so `Relaxed` suffices.
+static UPLOAD_EVENT: AtomicU32 = AtomicU32::new(0);
+const UPLOAD_EVENT_PRESENT: u32 = 1 << 17;
+const UPLOAD_EVENT_REPLACED: u32 = 1 << 16;
+
+/// Drain the latest committed route upload since the last call: `(object_id, replaced_existing)`,
+/// or `None` when nothing landed. The ride loop calls this once per pass, strictly *after* it has
+/// serviced [`take_store_changed`] (see [`UPLOAD_EVENT`]).
+pub(crate) fn take_route_uploaded() -> Option<(u16, bool)> {
+    let v = UPLOAD_EVENT.swap(0, Ordering::Relaxed);
+    (v & UPLOAD_EVENT_PRESENT != 0).then_some((v as u16, v & UPLOAD_EVENT_REPLACED != 0))
+}
+
 /// Wakes the **event-driven** ride loop on a store movement (#450): a parked device (Home, GPS
 /// asleep) otherwise dozes up to the watchdog-feed cap (~12 s) before its next pass would notice
 /// [`STORE_CHANGED`] — an upload from the phone should hit the Route menu now, not "eventually". A
@@ -483,6 +507,12 @@ impl ObjectStore {
                         id
                     }
                 };
+                // The app-UI upload event (#451): the committed id + fresh-vs-replace, published
+                // before the revision bump so the STORE_WAKE'd pass sees both edges together.
+                UPLOAD_EVENT.store(
+                    UPLOAD_EVENT_PRESENT | ((replace_idx.is_some() as u32) << 16) | id as u32,
+                    Ordering::Relaxed,
+                );
                 self.bump_revision();
                 (id, TransferStatus::Committed)
             }
