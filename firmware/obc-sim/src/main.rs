@@ -634,7 +634,7 @@ fn main() {
         // Load the routes folder so the Route menu has real entries and a picked route
         // can be drawn.
         let mut store = RouteStore::open(args.routes_dir());
-        app.set_routes(store.catalog());
+        app.set_routes_with_ids(store.catalog(), store.ids());
         if let Some(script) = &args.script {
             // The `d` token flushes lazy draw-time state (the POI snapshot / detail hours) by drawing
             // one throwaway frame against the map reader — `route: None` since the POI screens the

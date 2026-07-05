@@ -242,9 +242,10 @@ impl SimGui {
 
     /// The Bluetooth injection controls — the sim's face of the host→app BLE seam (epic #447). P1
     /// exposes the connected toggle (the connected indicator's driver); P2 adds the passkey injection
-    /// (the passkey card), and P4 will add an "inject upload" button, all editing the same
-    /// [`obc_app::BleStatus`] mirror the checkbox does here (`self.panel.ble`), pushed into the app
-    /// each frame — so no restructuring is needed then.
+    /// (the passkey card); P3 adds the store-changed injection (the live-catalog rescan's driver);
+    /// P4 will add the full inject-upload UI — all editing the same [`obc_app::BleStatus`] mirror
+    /// the checkbox does here (`self.panel.ble`), pushed into the app each frame, so no
+    /// restructuring is needed then.
     fn show_ble_controls(&mut self, ui: &mut egui::Ui) {
         ui.label(egui::RichText::new("Bluetooth").strong());
         ui.checkbox(&mut self.panel.ble.connected, "Phone connected");
@@ -265,6 +266,18 @@ impl SimGui {
                     .custom_formatter(|n, _| format!("{:06}", n as u32)),
             );
         }
+
+        // The store-changed edge (#450), exactly the device's sequence: the store notifies, the
+        // host rescans and re-feeds the id-carrying catalog, the app remaps held indices by id.
+        // Drop/remove an `.obcr` in the routes folder, then click — a mid-session upload/delete
+        // without a radio (P4 adds the full inject-upload popup flow on top of this edge).
+        if ui.button("Store changed (rescan routes)").clicked() {
+            self.app.notify_store_changed();
+            let _ = self.app.take_store_changed();
+            self.store.rescan();
+            self.app.set_routes_with_ids(self.store.catalog(), self.store.ids());
+        }
+        ui.weak("re-scans the routes folder like a BLE commit/delete");
     }
 
     /// The loaded-track controls: play/pause (auto-follows), a seek scrubber, and a 1×–10× speed

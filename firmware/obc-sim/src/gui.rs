@@ -284,7 +284,7 @@ impl SimGui {
             kbd_enc: false,
             kbd_back: false,
         };
-        gui.app.set_routes(gui.store.catalog());
+        gui.app.set_routes_with_ids(gui.store.catalog(), gui.store.ids());
         // `--gpx` opens with a track loaded, paused at the start.
         if let Some(path) = &args.gpx {
             gui.load_gpx(Path::new(path));
@@ -709,7 +709,7 @@ impl eframe::App for SimGui {
                     }
                     Err(e) => self.gpx_error = Some(e),
                 }
-                self.app.set_routes(self.store.catalog());
+                self.app.set_routes_with_ids(self.store.catalog(), self.store.ids());
             }
         }
 

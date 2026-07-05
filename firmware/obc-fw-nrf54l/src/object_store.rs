@@ -4,11 +4,14 @@
 //!
 //! - **Object ids**: `u16`, **durable for uploaded objects** — the id is encoded in the SD filename
 //!   (`RT{id}.OBR`, see `sd.rs`), recovered at the mount scan, and fresh ids continue monotonically
-//!   past the highest stored one. Durability matters because the phone persists the id an upload
+//!   past `max(highest stored one + 1, the persisted RRAM high-water floor)` (#450) — so an id is
+//!   **never reused**, even after a delete drops the highest stored file and the device reboots.
+//!   Durability matters because the phone persists the id an upload
 //!   commits under (`PlannedRouteRecord.deviceObjectID`) and uses it to badge-reconcile and
 //!   replace-in-place across device reboots. Side-loaded `.obcr` files carry no id in their name and
-//!   get a *session-scoped* one from the reserved [`SIDELOAD_ID_BASE`] band — the app never persists
-//!   those.
+//!   get a *session-scoped* one from the reserved [`SIDELOAD_ID_BASE`] band, handed out by the
+//!   registry in `sd.rs` that the ride loop's catalog scan shares (identical ids in both tables) —
+//!   the app never persists those.
 //! - **Store revision + digest**: bumped on every commit/delete; the BLE plane notifies `storeChanged`
 //!   + the digest characteristic from it.
 //! - **The upload state machine**: descriptor → [`Receiver`] (+ temp-file sink) → commit. Uploads are
@@ -31,6 +34,8 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::signal::Signal;
 use embedded_sdmmc::ShortFileName;
 use heapless::Vec;
 use obc_app::settings::DeviceName;
@@ -59,6 +64,19 @@ static STORE_CHANGED: AtomicU32 = AtomicU32::new(0);
 /// per pass and rings `App::notify_store_changed` that many times. `0` = nothing moved.
 pub fn take_store_changed() -> u32 {
     STORE_CHANGED.swap(0, Ordering::Relaxed)
+}
+
+/// Wakes the **event-driven** ride loop on a store movement (#450): a parked device (Home, GPS
+/// asleep) otherwise dozes up to the watchdog-feed cap (~12 s) before its next pass would notice
+/// [`STORE_CHANGED`] — an upload from the phone should hit the Route menu now, not "eventually". A
+/// coalescing `Signal` (level, not queue), like the input plane's wake: the pass drains the counter
+/// whole, so one wake covers a burst.
+static STORE_WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+/// The ride loop's store-movement wake arm — resolves when a commit/delete lands after the last
+/// pass. Folded into the loop's sensor-wake select (see `ride::wait_host_or_sensor_event`).
+pub(crate) async fn wait_store_changed() {
+    STORE_WAKE.wait().await
 }
 
 // ==================== settings-coherence signals (#456) ====================
@@ -112,10 +130,9 @@ pub const MAX_RIDES: usize = 128;
 /// from the same scratch — one transfer at a time).
 const LIST_BUF_LEN: usize = ListHeader::object_len(if MAX_RIDES > MAX_ROUTES { MAX_RIDES } else { MAX_ROUTES });
 
-/// First id of the reserved **session-scoped** band handed to side-loaded `.obcr` files at the
-/// mount scan (their names carry no durable id). Uploaded ids grow monotonically from 0 and
-/// reject at this floor — 65,024 lifetime uploads before a card must be cleared, i.e. never.
-const SIDELOAD_ID_BASE: u16 = 0xFF00;
+// The side-load id band base lives in `sd.rs` beside the session registry both scanners share
+// (the ride loop's catalog scan assigns the *same* session ids — see `Storage::sideload_id`).
+use crate::sd::SIDELOAD_ID_BASE;
 
 pub struct ObjectStore {
     /// The persisted settings, loaded once at boot — the config plane's read/modify cache. The SD
@@ -153,6 +170,12 @@ impl ObjectStore {
         };
         store.rescan(shared);
         store.rescan_rides(shared);
+        // The durable id floor (#450): fresh upload ids start at `max(scan_max + 1, stored floor)`,
+        // so an id deleted last session can't be re-issued (the phone's persisted `deviceObjectID`s
+        // key on it). A blank/torn line is "no floor" → exactly the old scan-derived start.
+        if let Some(m) = shared.settings.load_id_marks() {
+            store.next_id = store.next_id.max(m.next_route_id);
+        }
         store
     }
 
@@ -169,9 +192,6 @@ impl ObjectStore {
                 let _ = names.push(n.clone());
             }
         });
-        // The reserved session band is [SIDELOAD_ID_BASE, u16::MAX] — 256 ids. Track it in a u32
-        // so the exhausted case is "past u16::MAX", not a saturating collapse onto 0xFFFF.
-        let mut next_sideload: u32 = SIDELOAD_ID_BASE as u32;
         for name in &names {
             match storage.route_object_info(name) {
                 Some((byte_len, _)) => {
@@ -180,17 +200,13 @@ impl ObjectStore {
                             self.next_id = self.next_id.max(id.saturating_add(1));
                             id
                         }
-                        None => {
-                            // Band spent (256 side-loads): skip the rest rather than saturate onto
-                            // 0xFFFF — an aliased id would serve the wrong file on download.
-                            if next_sideload > u16::MAX as u32 {
-                                defmt::warn!("store: side-load id band exhausted — a route is not listed");
-                                continue;
-                            }
-                            let id = next_sideload as u16;
-                            next_sideload += 1;
-                            id
-                        }
+                        // Side-loads draw from the session registry shared with the ride loop's
+                        // catalog scan (`Storage::sideload_id`) so both tables carry identical
+                        // ids; `None` = band/registry exhausted → not listed rather than aliased.
+                        None => match storage.sideload_id(name) {
+                            Some(id) => id,
+                            None => continue,
+                        },
                     };
                     let _ = self.routes.push(ObjectSlot { id, file: name.clone(), byte_len });
                 }
@@ -253,8 +269,9 @@ impl ObjectStore {
         self.revision = self.revision.wrapping_add(1);
         // Signal the app UI (epic #447): every commit/delete funnels through here, so this is the one
         // spot that raises the store-changed edge the ride loop drains — the same movement that
-        // notifies the phone's `storeChanged`.
+        // notifies the phone's `storeChanged` — and wakes the loop if it's parked (#450).
         STORE_CHANGED.fetch_add(1, Ordering::Relaxed);
+        STORE_WAKE.signal(());
         self.revision
     }
 
@@ -430,6 +447,12 @@ impl ObjectStore {
                     None => {
                         let id = self.next_id;
                         self.next_id += 1;
+                        // Bump the persisted high-water past the assignment (#450) — one 16-byte
+                        // RRAM line per fresh upload — so this id stays reserved across deletes
+                        // and reboots. The ride floor in the same line is untouched.
+                        let mut m = shared.settings.load_id_marks().unwrap_or_default();
+                        m.next_route_id = m.next_route_id.max(self.next_id);
+                        shared.settings.save_id_marks(&m);
                         let _ = self.routes.push(ObjectSlot { id, file, byte_len });
                         id
                     }
