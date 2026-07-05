@@ -444,6 +444,15 @@ impl MapDisplay {
             p.encoder_hold_progress() > 0.0 || p.back_hold_progress() > 0.0
         })
     }
+
+    /// Cancel any in-flight hold on the shared input plane — rung by the ride loop after a gesture
+    /// changed the screen stack ([`App::take_hold_cancel`](obc_app::App::take_hold_cancel)), so a
+    /// long-press charging over the *old* top can't complete onto the new one (issue #480).
+    #[cfg_attr(not(has_map), allow(dead_code))]
+    #[inline(always)]
+    pub(crate) fn cancel_holds(&self) {
+        self.input_plane.lock(|c| c.borrow_mut().cancel_holds());
+    }
 }
 
 /// Consecutive failed presents that trigger one FLPR relaunch (#349): each failure already costs a
@@ -523,6 +532,15 @@ impl MapDisplay {
             let p = c.borrow();
             p.encoder_hold_progress() > 0.0 || p.back_hold_progress() > 0.0
         })
+    }
+
+    /// Cancel any in-flight hold on the shared input plane — rung by the ride loop after a gesture
+    /// changed the screen stack ([`App::take_hold_cancel`](obc_app::App::take_hold_cancel)), so a
+    /// long-press charging over the *old* top can't complete onto the new one (issue #480).
+    #[cfg_attr(not(has_map), allow(dead_code))]
+    #[inline(always)]
+    pub(crate) fn cancel_holds(&self) {
+        self.input_plane.lock(|c| c.borrow_mut().cancel_holds());
     }
 
     /// Render the clean frame into the owned panel and **self-diff** it to glass: push only the rows

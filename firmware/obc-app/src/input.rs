@@ -129,6 +129,22 @@ impl Gestures {
         None
     }
 
+    /// Cancel any in-flight press on either button: mark it already-fired, so the pending
+    /// `Hold`/`BackHold` never emits, the eventual release is silent (no surprise tap), and the
+    /// hold-progress reads 0 (the bulge retracts). A fresh press recognises normally.
+    ///
+    /// Called when a gesture-driven screen **transition** changes what is under the rider's
+    /// finger: a long-press that started charging over one screen must not complete onto
+    /// whatever replaced it — e.g. a hold aimed at a popup's "Save & new" landing on the Route
+    /// menu's hold-to-**delete** footer after a Back tap dismissed the popup (issue #480).
+    pub fn cancel_holds(&mut self) {
+        for h in [&mut self.encoder, &mut self.back] {
+            if h.since.is_some() {
+                h.fired_long = true;
+            }
+        }
+    }
+
     /// Hold-progress (0.0–1.0) of an in-flight encoder long-press, for the confirm
     /// ring. 0 when not held or once the `Hold` has already fired.
     pub fn encoder_progress(&self, now: u32) -> f32 {
@@ -251,6 +267,26 @@ mod tests {
         assert!(g.back_progress(500) > 0.0 && g.back_progress(500) < 1.0);
         // Back crosses next.
         assert_eq!(g.tick(600), Some(Gesture::BackHold));
+    }
+
+    /// A cancelled in-flight hold fires nothing — not the pending long-press, not a tap on
+    /// release, no progress — while a fresh press afterwards recognises normally.
+    #[test]
+    fn cancel_holds_suppresses_the_pending_long_press_and_the_release() {
+        let mut g = Gestures::new(500);
+        g.on_event(down(Button::Encoder), 0);
+        assert!(g.encoder_progress(300) > 0.0, "charging before the cancel");
+        g.cancel_holds();
+        assert_eq!(g.encoder_progress(300), 0.0, "a cancelled hold reads no progress");
+        assert_eq!(g.tick(600), None, "the long-press never fires");
+        assert_eq!(g.on_event(up(Button::Encoder), 650), None, "the release is silent, not a tap");
+        // A fresh press afterwards is a clean slate.
+        g.on_event(down(Button::Encoder), 1_000);
+        assert_eq!(g.tick(1_500), Some(Gesture::Hold), "the next hold recognises normally");
+        // Cancelling with nothing in flight is a no-op.
+        g.cancel_holds();
+        g.on_event(down(Button::Back), 2_000);
+        assert_eq!(g.on_event(up(Button::Back), 2_100), Some(Gesture::Back), "an idle cancel affects nothing");
     }
 
     /// `tick` emits **at most one** gesture per call, so when both buttons cross the threshold in
