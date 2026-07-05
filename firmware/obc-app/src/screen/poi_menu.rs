@@ -138,21 +138,28 @@ fn icon_pharmacy(cv: &mut impl Surface, c: Point, color: u16, bg: u16) {
     cv.fill(rect(c.x - 7, c.y - 2, 15, 5), bg);
 }
 
-/// A bicycle: two wheels, a frame triangle, and the seat/bar stubs — the bike-shop glyph (echoes the
-/// project's bike-computer identity).
+/// A bicycle: two spoked wheels and a proper diamond frame with a saddle + handlebar — the bike-shop
+/// glyph (echoes the project's bike-computer identity).
 fn icon_bike(cv: &mut impl Surface, c: Point, color: u16, bg: u16) {
-    let (lw, rw) = (Point::new(c.x - 8, c.y + 5), Point::new(c.x + 8, c.y + 5));
-    // Wheels: ring = filled disc with a punched hub hole.
-    for w in [lw, rw] {
-        cv.disc(w, 5, color);
-        cv.disc(w, 3, bg);
+    // Wheels as rims: a filled disc with the hub punched out, plus a small hub dot.
+    let rear = Point::new(c.x - 8, c.y + 6);
+    let front = Point::new(c.x + 8, c.y + 6);
+    for wheel in [rear, front] {
+        cv.disc(wheel, 5, color);
+        cv.disc(wheel, 3, bg);
+        cv.disc(wheel, 1, color);
     }
-    // Frame: hub-to-hub bottom bar + a rising strut to a shared top node.
-    let top = Point::new(c.x, c.y - 4);
-    cv.line(lw, rw, color);
-    cv.line(lw, top, color);
-    cv.line(rw, top, color);
-    // Seat post + handlebar stub.
-    cv.line(top, Point::new(c.x - 1, c.y - 8), color);
-    cv.line(rw, Point::new(c.x + 9, c.y - 6), color);
+    // Diamond frame: bottom bracket low-centre, saddle up-and-back, head tube up-and-front.
+    let bb = Point::new(c.x - 1, c.y + 6);
+    let saddle = Point::new(c.x - 5, c.y - 5);
+    let head = Point::new(c.x + 5, c.y - 4);
+    cv.line(rear, bb, color); // chainstay
+    cv.line(bb, saddle, color); // seat tube
+    cv.line(saddle, head, color); // top tube
+    cv.line(head, bb, color); // down tube
+    cv.line(head, front, color); // head tube + fork
+    cv.line(rear, saddle, color); // seat stay
+                                  // Saddle bar + handlebar stub.
+    cv.line(Point::new(saddle.x - 3, saddle.y), Point::new(saddle.x + 2, saddle.y), color);
+    cv.line(Point::new(head.x - 1, head.y - 2), Point::new(head.x + 4, head.y - 3), color);
 }
