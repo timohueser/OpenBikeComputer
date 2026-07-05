@@ -149,6 +149,7 @@ final class ConfigSpyTransport: DeviceTransport, @unchecked Sendable {
         AsyncStream { $0.yield(.connected); $0.finish() }
     }
     var battery: AsyncStream<Int> { AsyncStream { $0.finish() } }
+    var storeChanges: AsyncStream<StoreChanged> { AsyncStream { $0.finish() } }
     func connect() async throws {}
     func disconnect() async {}
     func deviceInfo() async throws -> DeviceInfo {

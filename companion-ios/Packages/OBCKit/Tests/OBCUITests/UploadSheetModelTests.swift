@@ -244,6 +244,7 @@ private final class ControlledUploadTransport: DeviceTransport, @unchecked Senda
 
     var state: AsyncStream<ConnectionState> { stateMulticast.stream() }
     var battery: AsyncStream<Int> { batteryMulticast.stream() }
+    var storeChanges: AsyncStream<StoreChanged> { AsyncStream { $0.finish() } }
 
     func uploadRoute(_ route: RouteBlob) -> TransferHandle {
         TransferHandle(

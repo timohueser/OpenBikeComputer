@@ -549,6 +549,22 @@ final class MainScreenModelTests: XCTestCase {
         XCTAssertFalse(model.isUploaded(record.id), "deleting clears the badge")
     }
 
+    /// An **on-device** delete while the app is open and connected (epic #447
+    /// P6, the Route menu's hold-to-delete): the device notifies `storeChanged`
+    /// and the badge clears live — no reconnect, no manual refresh. The mock's
+    /// `deviceDeletesRoute` sends exactly the wire sequence (catalog forgets
+    /// the copy, then the `storeChanged` edge).
+    func testOnDeviceDeleteClearsTheBadgeLive() async {
+        let (model, control) = makeModel(.happyPath)
+        await startLoaded(model)
+        XCTAssertTrue(model.isUploaded(RouteID("kettle-moraine-loop")), "the fixture starts on-device")
+
+        control.deviceDeletesRoute(DeviceObjectID(7)) // kettle-moraine-loop's device copy
+        await waitFor("badge clears on storeChanged") { !model.isUploaded(RouteID("kettle-moraine-loop")) }
+        // The record survives — only its device link is gone, so a re-upload is offered.
+        XCTAssertTrue(model.routes.contains { $0.id == RouteID("kettle-moraine-loop") })
+    }
+
     /// The update lifecycle: an uploaded route is **up to date** (nothing to
     /// push) until its content moves — a rename out-dates it (the name rides
     /// in the payload), and the next committed upload brings it current again

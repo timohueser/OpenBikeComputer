@@ -32,6 +32,9 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     private let stateMulticast = AsyncMulticast<ConnectionState>(.disconnected)
     /// `nil` until the first real BAS value — the seed must not replay as "0%".
     private let batteryMulticast = AsyncMulticast<Int?>(nil)
+    /// `nil` seed = no replay: a `storeChanged` is an edge, not a state (the
+    /// `storeChanges` doc on the protocol) — only live movements fan out.
+    private let storeChangedMulticast = AsyncMulticast<StoreChanged?>(nil)
 
     private var peripheral: CBPeripheral?
     private var characteristics: [CBUUID: CBCharacteristic] = [:]
@@ -92,6 +95,21 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         // Drop the not-yet-known seed: subscribers get the first *real* reading
         // (read at discovery + BAS notifies), never a fabricated 0%.
         let source = batteryMulticast.stream()
+        return AsyncStream { continuation in
+            let pump = Task {
+                for await value in source {
+                    if let value { continuation.yield(value) }
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in pump.cancel() }
+        }
+    }
+
+    public var storeChanges: AsyncStream<StoreChanged> {
+        // Same drop-the-seed pump as `battery`: subscribers see only movements
+        // that happen after they subscribed, never the `nil` seed or a replay.
+        let source = storeChangedMulticast.stream()
         return AsyncStream { continuation in
             let pump = Task {
                 for await value in source {
@@ -460,7 +478,13 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         switch message {
         case .transferResult, .commandResult:
             pendingStatuses.append(message)
-        case .storeChanged, .unknown:
+        case .storeChanged(let change):
+            // Unsolicited → never buffered (it must not pile up for the
+            // session's life), but fanned out live so the main screen can
+            // re-reconcile its "on device" badges when the device's store
+            // moves under an open app (on-device delete, epic #447 P6).
+            storeChangedMulticast.send(change)
+        case .unknown:
             break  // unsolicited signals are not buffered
         }
     }

@@ -198,6 +198,7 @@ private struct PreviewUploadTransport: DeviceTransport {
 
     var state: AsyncStream<ConnectionState> { AsyncStream { _ in } }
     var battery: AsyncStream<Int> { AsyncStream { _ in } }
+    var storeChanges: AsyncStream<StoreChanged> { AsyncStream { $0.finish() } }
     func connect() async throws {}
     func disconnect() async {}
     func deviceInfo() async throws -> DeviceInfo { DeviceInfo(name: "Trailhead", firmwareVersion: "0") }
