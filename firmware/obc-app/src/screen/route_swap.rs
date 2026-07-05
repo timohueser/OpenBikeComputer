@@ -27,15 +27,23 @@ const SAVE_NEW: usize = 1;
 const CANCEL: usize = 2;
 
 /// The prompt. Carries the route the rider picked (`pending`) plus the highlighted option.
+/// `pending` is `None` once a live catalog rescan (#450) removed the picked route from under the
+/// prompt — Swap / Save & new then cancel out instead of navigating whatever slid into its index.
 #[derive(Debug)]
 pub struct RouteSwapScreen {
-    pending: usize,
+    pending: Option<usize>,
     selected: usize,
 }
 
 impl RouteSwapScreen {
     pub fn new(pending: usize) -> Self {
-        RouteSwapScreen { pending, selected: 0 }
+        RouteSwapScreen { pending: Some(pending), selected: 0 }
+    }
+
+    /// Re-point the picked route after a live catalog rescan (#450): follow its identity to the
+    /// new index, or mark it vanished (`None`) so a later fire can't swap onto the wrong route.
+    pub(crate) fn remap_routes(&mut self, remap: &dyn Fn(usize) -> Option<usize>) {
+        self.pending = self.pending.and_then(remap);
     }
 
     /// True when the highlighted option needs a hold: its row fills with the live hold progress in
@@ -55,6 +63,11 @@ impl RouteSwapScreen {
                 _ => Transition::None, // Save & new is guarded — press does nothing
             },
             Gesture::Hold if self.selected == SAVE_NEW => {
+                // The picked route vanished under the prompt (rescan): cancel — don't finalise
+                // the ride for a swap that can no longer happen.
+                if self.pending.is_none() {
+                    return Transition::Pop;
+                }
                 // Save the current ride, then begin a fresh session on the picked route. The
                 // host drains the Save (finalising the old log) before it opens the new one.
                 cx.activity.request_track(TrackAction::Save);
@@ -66,12 +79,13 @@ impl RouteSwapScreen {
         }
     }
 
-    /// Point navigation at the picked route and drop onto the riding Map.
+    /// Point navigation at the picked route and drop onto the riding Map. A vanished/out-of-range
+    /// pick (a rescan removed it) cancels instead — indexing by position here is exactly the
+    /// "silently navigate a shifted route" bug the identity remap exists to prevent.
     fn swap_route(&self, cx: &mut Ctx) -> Transition {
-        if cx.routes.is_empty() {
+        let Some(i) = self.pending.filter(|&i| i < cx.routes.len()) else {
             return Transition::Pop;
-        }
-        let i = self.pending.min(cx.routes.len() - 1);
+        };
         cx.state.enter_riding_view(cx.routes[i].start_lon, cx.routes[i].start_lat);
         cx.activity.mode = Mode::Riding;
         cx.activity.active_route = Some(i);

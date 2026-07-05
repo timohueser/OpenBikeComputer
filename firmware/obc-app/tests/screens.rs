@@ -451,6 +451,134 @@ fn set_routes_replaces_the_previous_catalog() {
     assert!(app.routes().is_empty(), "a rescan replaces the catalog rather than appending");
 }
 
+// ==================== live catalog: identity remap across rescans (#450) ====================
+//
+// The catalog carries durable object ids; every held catalog index — `active_route`, an open
+// Route-menu highlight, a pending swap — is remapped by id on every `set_routes_with_ids`. These
+// pin the sharpest latent bug in epic #447: a rescan that inserts/removes a route must never
+// silently shift which route is navigated.
+
+/// Ids for [`test_routes`] — deliberately non-positional, so an index-as-id shortcut can't pass.
+const IDS3: [u16; 3] = [10, 20, 30];
+
+/// The DoD case: while navigating route X, a *different* route is uploaded/deleted → the app
+/// still navigates X, at its new index.
+#[test]
+fn rescan_keeps_active_route_on_the_same_route() {
+    let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+    let routes = test_routes(); // Alpha, Beta, Gamma
+    app.set_routes_with_ids(&routes, &IDS3);
+    app.activity.active_route = Some(1); // navigating Beta (id 20)
+
+    // Delete Alpha: the list shrinks, Beta shifts 1 → 0 — navigation follows the identity.
+    app.set_routes_with_ids(&routes[1..], &IDS3[1..]);
+    assert_eq!(app.activity.active_route, Some(0), "shrunk list: the index moved with the route");
+    assert_eq!(app.routes()[0].name.as_str(), "Beta");
+
+    // An upload re-inserts Alpha ahead of it: the list grows, Beta shifts back 0 → 1.
+    app.set_routes_with_ids(&routes, &IDS3);
+    let active = app.activity.active_route.expect("still navigating");
+    assert_eq!(app.routes()[active].name.as_str(), "Beta", "grown list: still the same route");
+}
+
+/// The *navigated* route vanishing unloads navigation — `None`, never a neighbour aliased in by
+/// the index shift.
+#[test]
+fn rescan_unloads_a_vanished_active_route() {
+    let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+    let routes = test_routes();
+    app.set_routes_with_ids(&routes, &IDS3);
+    app.activity.active_route = Some(1); // Beta
+    let keep = [routes[0].clone(), routes[2].clone()]; // Beta deleted
+    app.set_routes_with_ids(&keep, &[IDS3[0], IDS3[2]]);
+    assert_eq!(app.activity.active_route, None, "the deleted route unloads; Gamma is not aliased in");
+}
+
+/// An open Route menu across a rescan: the highlight follows the previously-highlighted route's
+/// identity to its new row.
+#[test]
+fn rescan_follows_the_open_route_menu_selection() {
+    let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+    let routes = test_routes();
+    app.set_routes_with_ids(&routes, &IDS3);
+    app.apply_gesture(Gesture::Press); // Home → Route menu
+    app.apply_gesture(Gesture::Turn(1)); // highlight Beta
+    app.set_routes_with_ids(&routes[1..], &IDS3[1..]); // Alpha deleted under the open menu
+    app.apply_gesture(Gesture::Press); // open the highlighted route
+    let active = app.activity.active_route.expect("the overview loaded the highlighted route");
+    assert_eq!(app.routes()[active].name.as_str(), "Beta", "the highlight followed Beta to its new row");
+}
+
+/// A vanished highlight falls back to the nearest row (clamped), never a dangling index.
+#[test]
+fn rescan_clamps_a_vanished_menu_selection() {
+    let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+    let routes = test_routes();
+    app.set_routes_with_ids(&routes, &IDS3);
+    app.apply_gesture(Gesture::Press); // Home → Route menu
+    app.apply_gesture(Gesture::Turn(2)); // highlight Gamma (last row)
+    app.set_routes_with_ids(&routes[..2], &IDS3[..2]); // Gamma deleted
+    app.apply_gesture(Gesture::Press); // open whatever is highlighted now
+    let active = app.activity.active_route.expect("a clamped highlight still opens a real route");
+    assert_eq!(app.routes()[active].name.as_str(), "Beta", "the highlight clamped to the last row");
+}
+
+/// Ride to the Map on Alpha, then open the swap prompt for Gamma — the shared mid-ride setup for
+/// the pending-swap remap cases.
+fn app_with_pending_swap_on_gamma() -> App {
+    let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+    app.set_routes_with_ids(&test_routes(), &IDS3);
+    app.apply_gesture(Gesture::Press); // Home → Route menu
+    app.apply_gesture(Gesture::Press); // Alpha → overview
+    app.apply_gesture(Gesture::Press); // START RIDE → Map, session running
+    assert_eq!(app.mode(), Mode::Riding);
+    assert_eq!(app.activity.active_route, Some(0));
+    app.apply_gesture(Gesture::BackHold); // Map → Menu
+    app.apply_gesture(Gesture::Press); // Routes station → Route menu
+    app.apply_gesture(Gesture::Turn(2)); // highlight Gamma
+    app.apply_gesture(Gesture::Press); // a different route mid-ride → the swap prompt
+    assert!(matches!(app.top_screen(), Screen::RouteSwap(_)), "the swap prompt is up");
+    app
+}
+
+/// A pending swap follows its pick's identity across a rescan: firing "Swap route" navigates the
+/// route the rider picked, not whatever slid into its old index.
+#[test]
+fn rescan_remaps_a_pending_swap_by_identity() {
+    let mut app = app_with_pending_swap_on_gamma();
+    let routes = test_routes();
+    let keep = [routes[0].clone(), routes[2].clone()]; // Beta deleted: Gamma shifts 2 → 1
+    app.set_routes_with_ids(&keep, &[IDS3[0], IDS3[2]]);
+    app.apply_gesture(Gesture::Press); // fire "Swap route"
+    let active = app.activity.active_route.expect("swap navigated");
+    assert_eq!(app.routes()[active].name.as_str(), "Gamma", "the swap followed the picked route");
+}
+
+/// A pending swap whose pick vanished cancels — it must not navigate an aliased neighbour.
+#[test]
+fn rescan_cancels_a_swap_whose_pick_vanished() {
+    let mut app = app_with_pending_swap_on_gamma();
+    let routes = test_routes();
+    app.set_routes_with_ids(&routes[..2], &IDS3[..2]); // Gamma itself deleted
+    app.apply_gesture(Gesture::Press); // fire "Swap route" → cancels out
+    assert!(matches!(app.top_screen(), Screen::RouteMenu(_)), "the prompt popped back to the menu");
+    let active = app.activity.active_route.expect("the original navigation is untouched");
+    assert_eq!(app.routes()[active].name.as_str(), "Alpha", "still navigating the original route");
+}
+
+/// The store-changed drain: `take_store_changed` returns the pending count once and resets it —
+/// the edge the board's live rescan keys on.
+#[test]
+fn take_store_changed_drains_the_pending_count() {
+    let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+    assert_eq!(app.take_store_changed(), 0);
+    app.notify_store_changed();
+    app.notify_store_changed();
+    assert_eq!(app.store_changed_pending(), 2, "the read-only observer still sees the count");
+    assert_eq!(app.take_store_changed(), 2);
+    assert_eq!(app.store_changed_pending(), 0, "drained");
+}
+
 /// Feed a single encoder press (down+up within the threshold) to the app.
 fn press(app: &mut App) {
     let mut s = keys(&[

@@ -21,6 +21,17 @@ pub struct RouteStore {
     dir: PathBuf,
     catalog: Vec<RouteSummary>,
     paths: Vec<PathBuf>,
+    /// Each catalog entry's **session-stable id**, parallel to `catalog`/`paths` — the sim's face
+    /// of the device's durable object ids (#450). Handed to
+    /// [`App::set_routes_with_ids`](obc_app::App::set_routes_with_ids) so a mid-session rescan
+    /// (a dropped-in `.obcr`, a GPX import, the panel's store-changed button) exercises the same
+    /// identity remap the firmware relies on.
+    ids: Vec<u16>,
+    /// The session id registry (path → id) + the next fresh one. Append-only, so a file keeps its
+    /// id across rescans no matter what is added or removed around it — the device's `RT{id}` /
+    /// side-load-registry behaviour in miniature.
+    assigned: Vec<(PathBuf, u16)>,
+    next_id: u16,
     active: Option<usize>,
     active_bytes: Option<Vec<u8>>,
 }
@@ -30,21 +41,36 @@ impl RouteStore {
     /// Open and scan the routes folder. A missing folder is fine (scans to an empty catalog);
     /// it's created lazily on the first import.
     pub fn open(dir: impl Into<PathBuf>) -> Self {
-        let mut s =
-            RouteStore { dir: dir.into(), catalog: Vec::new(), paths: Vec::new(), active: None, active_bytes: None };
+        let mut s = RouteStore {
+            dir: dir.into(),
+            catalog: Vec::new(),
+            paths: Vec::new(),
+            ids: Vec::new(),
+            assigned: Vec::new(),
+            next_id: 0,
+            active: None,
+            active_bytes: None,
+        };
         s.rescan();
         s
     }
 
-    /// The route catalog (summaries), for [`App::set_routes`](obc_app::App::set_routes).
+    /// The route catalog (summaries), for [`App::set_routes_with_ids`](obc_app::App::set_routes_with_ids).
     pub fn catalog(&self) -> &[RouteSummary] {
         &self.catalog
     }
 
-    /// Re-read the folder's `.obcr` files into the catalog (sorted by filename).
+    /// Each catalog entry's session-stable id, parallel to [`catalog`](RouteStore::catalog).
+    pub fn ids(&self) -> &[u16] {
+        &self.ids
+    }
+
+    /// Re-read the folder's `.obcr` files into the catalog (sorted by filename), each keeping its
+    /// session-stable id from the registry (fresh files get the next one).
     pub fn rescan(&mut self) {
         self.catalog.clear();
         self.paths.clear();
+        self.ids.clear();
         if let Ok(rd) = std::fs::read_dir(&self.dir) {
             let mut files: Vec<PathBuf> = rd
                 .flatten()
@@ -55,17 +81,33 @@ impl RouteStore {
             for p in files {
                 if let Ok(bytes) = std::fs::read(&p) {
                     if let Ok(sum) = RouteSummary::read(&SliceSource(&bytes)) {
+                        let id = self.id_for(&p);
                         self.catalog.push(sum);
                         self.paths.push(p);
+                        self.ids.push(id);
                     }
                 }
             }
         }
-        // A reshuffled folder can invalidate the active index; drop it if so.
+        // A reshuffled folder can invalidate the active index; drop it if so. (The *app*'s
+        // active_route is remapped by id in `set_routes_with_ids`; `sync_active` then re-feeds
+        // this store the remapped index.)
         if self.active.is_some_and(|i| i >= self.catalog.len()) {
             self.active = None;
             self.active_bytes = None;
         }
+    }
+
+    /// The session id for `path`: registered, or freshly assigned. Append-only for the session —
+    /// ids are never reused, matching the device's contract.
+    fn id_for(&mut self, path: &Path) -> u16 {
+        if let Some((_, id)) = self.assigned.iter().find(|(p, _)| p == path) {
+            return *id;
+        }
+        let id = self.next_id;
+        self.assigned.push((path.to_path_buf(), id));
+        self.next_id = self.next_id.saturating_add(1);
+        id
     }
 
     /// Convert a GPX file into the store (named after its file stem) and rescan — the same
@@ -107,6 +149,7 @@ impl RouteStore {
 #[cfg(target_arch = "wasm32")]
 pub struct RouteStore {
     catalog: Vec<RouteSummary>,
+    ids: Vec<u16>,
     bytes: Vec<Vec<u8>>,
     active: Option<usize>,
 }
@@ -115,7 +158,7 @@ pub struct RouteStore {
 impl RouteStore {
     /// `dir` is ignored on the web; the signature matches the native store.
     pub fn open(_dir: impl Into<PathBuf>) -> Self {
-        let mut s = RouteStore { catalog: Vec::new(), bytes: Vec::new(), active: None };
+        let mut s = RouteStore { catalog: Vec::new(), ids: Vec::new(), bytes: Vec::new(), active: None };
         s.seed_embedded();
         s
     }
@@ -126,6 +169,7 @@ impl RouteStore {
         for route in [include_bytes!("../assets/grimsel-climb.obcr").as_slice()] {
             if let Ok(sum) = RouteSummary::read(&SliceSource(route)) {
                 self.catalog.push(sum);
+                self.ids.push(self.ids.len() as u16); // fixed catalog → positional ids are stable
                 self.bytes.push(route.to_vec());
             }
         }
@@ -133,6 +177,11 @@ impl RouteStore {
 
     pub fn catalog(&self) -> &[RouteSummary] {
         &self.catalog
+    }
+
+    /// Each catalog entry's id, parallel to [`catalog`](RouteStore::catalog) (fixed on the web).
+    pub fn ids(&self) -> &[u16] {
+        &self.ids
     }
 
     /// No folder to re-read on the web; the embedded catalog is fixed.

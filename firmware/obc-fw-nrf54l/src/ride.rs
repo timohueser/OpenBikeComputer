@@ -95,6 +95,18 @@ async fn wait_ble_edge() {
     core::future::pending::<()>().await
 }
 
+/// The loop's third select arm: a sensor/host datapoint, **or** (`ble` builds) a store movement —
+/// a BLE route commit/delete wakes the loop so the live-catalog rescan (#450) lands now, not at
+/// the next timer/sensor wake (a parked device otherwise dozes up to the ~12 s watchdog-feed cap).
+#[cfg(feature = "ble")]
+async fn wait_host_or_sensor_event() {
+    embassy_futures::select::select(wait_sensor_event(), crate::object_store::wait_store_changed()).await;
+}
+#[cfg(not(feature = "ble"))]
+async fn wait_host_or_sensor_event() {
+    wait_sensor_event().await
+}
+
 /// A `no_std` [`Clock`](obc_render::Clock) over embassy's monotonic `Instant`, in microseconds — the
 /// time base for the map render's per-stage timing (collect / sort / draw) the VCOM telemetry
 /// carries. The same monotonic clock the loop's frame `Instant` reads, so the stages reconcile.
@@ -105,15 +117,18 @@ impl obc_render::Clock for InstantClock {
     }
 }
 
-/// Scan the card's `/routes/*.obcr` catalog into the app's Route menu. Deliberately its **own
-/// `#[inline(never)]` frame**: the ~5 KB [`Catalog`](obc_app::Catalog) (`Vec<RouteSummary,
-/// MAX_ROUTES>`, 64 × ~84 B) lives here and is popped on return, so it never sits on `main`'s frame
-/// *beneath* the long-lived [`run_app`] ride loop — where a resident 5 KB catalog would steal from the
-/// deep route-load render path's stack and overflow the 256 KB part.
+/// Scan the card's `/routes` catalog into the app's Route menu, carrying each entry's durable
+/// object id so the app can remap held indices by identity across rescans (#450). Called at boot
+/// (from `main`) and again on every store-changed edge (the live rescan below — same machinery).
+/// Deliberately its **own `#[inline(never)]` frame**: the ~5 KB [`Catalog`](obc_app::Catalog)
+/// (`Vec<RouteSummary, MAX_ROUTES>`, 64 × ~84 B) lives here and is popped on return, so it never
+/// sits resident *beneath* the long-lived [`run_app`] ride loop — where 5 KB would steal from the
+/// deep route-load render path's stack and overflow the 256 KB part. The mid-session call runs
+/// sequentially with (never under) that deep render path, so it adds nothing to the pass's peak.
 #[inline(never)]
 pub(crate) fn load_routes(storage: &mut sd::Storage, app: &mut App) {
     let catalog = storage.scan_routes();
-    app.set_routes(&catalog);
+    app.set_routes_with_ids(&catalog, storage.route_ids());
 }
 
 /// The GPS power state the ride wants: deep-sleep when not tracking, full-power fixes while riding, or
@@ -340,6 +355,26 @@ pub(crate) async fn run_app(
         let mut store_guard = shared.lock().await;
         let SharedStore { storage, settings: settings_store } = &mut *store_guard;
 
+        // ── Live route catalog (#450), on the store-changed edge only ──
+        // A BLE commit/delete moved `/routes` under the app: re-run the boot scan (same
+        // `load_routes` machinery — its ~5 KB catalog lives in its own popped frame, sequential
+        // with, never under, the deep render path) and re-feed `set_routes_with_ids`, which
+        // remaps every held catalog index by durable object id — so the route being navigated
+        // (or highlighted, or pending in a swap prompt) can never silently shift. Then force the
+        // reconcile below to re-derive everything positional: the filename table was rebuilt (the
+        // open handle's index may now name a different file) and a replace-upload may have
+        // swapped the bytes under the open geometry handle — close it and let the reconcile
+        // reopen + re-index off the fresh scan.
+        #[cfg(feature = "ble")]
+        if app.take_store_changed() > 0 {
+            if let Some(s) = storage.as_mut() {
+                load_routes(s, app);
+                s.reconcile_route(None);
+            }
+            prev_active = None; // force reconcile_route/track to re-run against the new indexing
+            index_route = None; // and the chunk index to rebuild off the freshly-opened file
+        }
+
         // Settings coherence, phone → device (#456): a BLE Config write persisted units + name to
         // RRAM but the live `App` copy never learned. Reload the BLE-owned fields into it *before*
         // the change-detection save below, so (a) the UI re-captions same-session and (b) the app's
@@ -422,7 +457,7 @@ pub(crate) async fn run_app(
             // map build always has `Some`. No card ⇒ nothing to reconcile.
             if let Some(s) = storage.as_mut() {
                 s.reconcile_route(active);
-                s.reconcile_track(action, session, &name, stats.as_ref());
+                s.reconcile_track(action, session, &name, stats.as_ref(), settings_store);
             }
             prev_active = active;
             prev_session = session;
@@ -666,7 +701,7 @@ pub(crate) async fn run_app(
         // `animating` below keeps the loop's short cadence while a save is still pending.
         if overlay_span.is_none() && !overlay_dirty {
             if let Some(s) = storage.as_mut() {
-                s.run_pending_save();
+                s.run_pending_save(settings_store);
             }
         }
         let save_pending = storage.as_ref().is_some_and(|s| s.has_pending_save());
@@ -720,7 +755,9 @@ pub(crate) async fn run_app(
         let _ = select5(
             GESTURES.ready_to_receive(),
             INPUT_WAKE.wait(),
-            wait_sensor_event(),
+            // A sensor/host datapoint, or (`ble` builds) a store movement — an upload/delete
+            // rescans the catalog now, not at the next timer wake (#450).
+            wait_host_or_sensor_event(),
             // A BLE link edge — connect/disconnect *and* the pairing passkey — so the passkey card
             // wakes the loop from warm sleep (epic #447, P2). `pending()` on a map build.
             wait_ble_edge(),
