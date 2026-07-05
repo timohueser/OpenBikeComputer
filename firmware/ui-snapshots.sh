@@ -8,17 +8,20 @@
 #
 # Env overrides:
 #   SIM   the obc-sim binary   (default: <repo>/firmware/target/release/obc-sim)
-#   MAP   the .obcm map        (default: /Users/timo/Documents/OSM/freiburg.obcm)
-#   GPX   the replay track     (default: /Users/timo/Documents/OSM/kandel.gpx)
+#   MAP   the .obcm map        (default: the committed Grimsel showcase fixture, OBCM v6)
+#   GPX   the replay track     (default: the committed Grimsel climb fixture)
 #
-# Routes come from the repo's protocol-vectors/ fixtures. Exits non-zero on the
-# first failing render (set -e), so a broken sim can't produce a silently short sweep.
+# The defaults are the OBCM **v6** fixtures baked into obc-sim (the Grimsel showcase
+# map + its climb replay), so the sweep runs out-of-the-box; point MAP/GPX at a local
+# map to sweep a different region. Routes come from the repo's protocol-vectors/
+# fixtures. Exits non-zero on the first failing render (set -e), so a broken sim can't
+# produce a silently short sweep.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 SIM="${SIM:-$repo_root/firmware/target/release/obc-sim}"
-MAP="${MAP:-/Users/timo/Documents/OSM/freiburg.obcm}"
-GPX="${GPX:-/Users/timo/Documents/OSM/kandel.gpx}"
+MAP="${MAP:-$repo_root/firmware/obc-sim/assets/grimsel.obcm}"
+GPX="${GPX:-$repo_root/firmware/obc-sim/assets/grimsel-climb.gpx}"
 ROUTES="$repo_root/protocol-vectors"
 OUT="${1:-ui-snapshots}"
 
