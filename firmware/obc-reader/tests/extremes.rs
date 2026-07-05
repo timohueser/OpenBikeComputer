@@ -328,10 +328,10 @@ fn header_straddling_chunk_end_is_not_misread() {
 #[test]
 fn truncated_style_table_parses_only_present_records() {
     let bytes = single_leaf(GLOBAL, pack_line(1, 10, 10, &[(1, 1)]), 64);
-    // style_offset is fixed at HEADER_LEN (32) by the builder; the count byte is the first byte of
-    // the style table.
+    // style_offset is fixed at HEADER_LEN (36 in v6) by the builder; the count byte is the first byte
+    // of the style table.
     let style_off = u32::from_le_bytes(bytes[21..25].try_into().unwrap()) as usize;
-    assert_eq!(style_off, 32);
+    assert_eq!(style_off, obc_reader::HEADER_LEN);
     let mut forged = bytes.clone();
     forged[style_off] = 8; // claim 8 styles; only 2 records (12 bytes) follow before the LOD table
 

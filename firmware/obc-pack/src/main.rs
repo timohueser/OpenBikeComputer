@@ -100,8 +100,8 @@ fn run() -> Result<(), String> {
     if ingested.features.is_empty() && ingested.coastlines.is_empty() {
         return Err("no features found matching config".into());
     }
-    // POIs stop here until the OBCM v6 POI section lands (#423) — the dump flag
-    // is the eyeball-against-a-known-extract debug aid from #422.
+    // The classified POIs are serialized into the v6 POI section below; the dump
+    // flag is the eyeball-against-a-known-extract debug aid from #422.
     if args.dump_pois {
         obc_pack::poi::dump(&ingested.pois);
     }
@@ -138,8 +138,14 @@ fn run() -> Result<(), String> {
     let styles = config.styles();
     let file = std::fs::File::create(&args.output).map_err(|e| format!("create {}: {e}", args.output))?;
     let mut w = std::io::BufWriter::new(file);
-    let (total, dropped) =
-        serialize_lods_streaming(&mut w, config.lods.len(), &styles, config.marker_color, global_bbox, |i| {
+    let (total, dropped) = serialize_lods_streaming(
+        &mut w,
+        config.lods.len(),
+        &styles,
+        config.marker_color,
+        global_bbox,
+        &ingested.pois,
+        |i| {
             let lod = &config.lods[i];
             println!("Building Quadtree LOD {i} (simplify {}m)...", lod.simplify_m);
             let tol = if lod.simplify_m > 0.0 { lod.simplify_m / M_PER_DEG } else { 0.0 };
@@ -157,8 +163,9 @@ fn run() -> Result<(), String> {
                 })
                 .collect();
             (build_lod(level, global_bbox, chunk_size), chunk_size, lod.max_mpp)
-        })
-        .map_err(|e| format!("write {}: {e}", args.output))?;
+        },
+    )
+    .map_err(|e| format!("write {}: {e}", args.output))?;
     w.flush().map_err(|e| format!("flush {}: {e}", args.output))?;
     // With densify-aware quadtree budgeting this should stay zero; a non-zero count
     // means real map content is missing (a feature too big for its chunk even at
