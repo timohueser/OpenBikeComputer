@@ -44,7 +44,9 @@ use embedded_sdmmc::{
     LfnBuffer, Mode, RawDirectory, RawFile, SdCard, ShortFileName, TimeSource, Timestamp, VolumeIdx, VolumeManager,
 };
 use heapless::{String, Vec};
-use obc_app::{decode_synced_rides, encode_synced_rides, SyncedRides, MAX_RIDES, MAX_ROUTES, SYNCED_RIDES_MAX_LEN};
+use obc_app::{
+    decode_synced_rides, encode_synced_rides, SyncedRides, MAX_RIDES, MAX_ROUTES, SYNCED_RIDES_MAX_LEN, UI_RIDES_CAP,
+};
 use obc_platform::{SdByteSink, SdByteSource, SdTrackSink};
 use obc_route::{track_to_ride, RideInfo, RideStats, RouteIndex, RouteObjectInfo, RouteSummary, NAME_CAP};
 
@@ -138,11 +140,11 @@ pub struct Storage {
     /// 8.3 filename of each *ride* catalog entry, parallel to the ride order
     /// [`scan_rides`](Storage::scan_rides) last returned — so a ride's durable object id resolves back
     /// to the `RD{id}.ORD` file for a hold-to-delete (`delete_ride_by_id`, map-only build).
-    ride_files: Vec<ShortFileName, MAX_RIDES>,
+    ride_files: Vec<ShortFileName, UI_RIDES_CAP>,
     /// Each ride catalog entry's **durable object id**, parallel to [`ride_files`](Storage::ride_files)
     /// — filename-encoded (`RD{id}.ORD`), the identity the app's ride-menu remap and the phone's
     /// synced/tombstone sets key on.
-    ride_ids: Vec<u16, MAX_RIDES>,
+    ride_ids: Vec<u16, UI_RIDES_CAP>,
     /// The session's side-load id registry: filename → assigned [`SIDELOAD_ID_BASE`]-band id.
     /// **Append-only** (a delete leaves a tombstone), so a name keeps one id for the whole session
     /// no matter how often — or in which order — the ride loop and the BLE `ObjectStore` rescan;
@@ -406,14 +408,20 @@ impl Storage {
     }
 
     /// Scan `/tracks` for stored ride objects into the app's Rides menu (epic #447 P7 / #454):
-    /// [`RideSummary`](obc_app::RideSummary) per `RD{id}.ORD`, **newest first** (by `start_time`),
-    /// each stamped with its `synced` flag from the [`SYNCED_SET`] sidecar. Fills the parallel
-    /// [`ride_files`](Storage::ride_files)/[`ride_ids`](Storage::ride_ids) tables so a hold-to-delete
-    /// can resolve a durable id back to its file. The synced sidecar is read once here (not per file).
-    /// Deliberately its own frame like [`scan_routes`](Storage::scan_routes): the ~few-KB catalog is
-    /// popped on return, never resident under the deep render path.
-    pub fn scan_rides(&mut self) -> Vec<obc_app::RideSummary, MAX_RIDES> {
-        let mut catalog: Vec<obc_app::RideSummary, MAX_RIDES> = Vec::new();
+    /// [`RideSummary`](obc_app::RideSummary) per `RD{id}.ORD` — the **newest [`UI_RIDES_CAP`]**
+    /// (by `start_time`), newest first — each stamped with its `synced` flag from the
+    /// [`SYNCED_SET`] sidecar (read once here, not per file). Fills the parallel
+    /// [`ride_files`](Storage::ride_files)/[`ride_ids`](Storage::ride_ids) tables so a
+    /// hold-to-delete can resolve a durable id back to its file.
+    ///
+    /// **Stack discipline** (this fn hard-faulted the 256 KB part at boot, twice, before it
+    /// respected the budget): the first cut stacked an ~8 KB aligned sort temp on the ~6 KB
+    /// 128-cap catalog (>16 KB one frame); the second kept a 128-cap catalog whose *resident*
+    /// twin in `App`+`Storage` ate the deep-render path's last ~1.6 KB of margin — statics and
+    /// stack are zero-sum on this part. Now the catalog is [`UI_RIDES_CAP`]-capped (~1.4 KB) and
+    /// ordering is a bounded **top-K insertion** as summaries are read — no sort temp at all.
+    pub fn scan_rides(&mut self) -> Vec<obc_app::RideSummary, UI_RIDES_CAP> {
+        let mut catalog: Vec<obc_app::RideSummary, UI_RIDES_CAP> = Vec::new();
         self.ride_files.clear();
         self.ride_ids.clear();
         let synced = self.load_synced_set();
@@ -434,12 +442,10 @@ impl Storage {
             defmt::warn!("SD: scan: more than {=usize} ride files — the excess is not listed", MAX_RIDES);
         }
 
-        // Build summaries straight into the result trio (catalog + the parallel file/id tables),
-        // in directory order. NO aligned sort temp: a `Vec<(id, name, summary), 128>` here was an
-        // ~8 KB frame on top of the ~6 KB catalog — with `entries` that peaked past 16 KB in one
-        // frame and **blew the ~36 KB stack at boot** (the #188/#270 law: catalog frames are the
-        // stack's biggest tenants; this one crashed in the field). The newest-first order is
-        // applied afterwards by permuting the trio in place through a 128-entry index array.
+        // Read each header and keep the newest UI_RIDES_CAP via bounded insertion: find the
+        // summary's slot by descending start_time; a full catalog drops the oldest (or skips the
+        // candidate when it is the oldest). The three parallel tables move together on every
+        // insert/evict, staying aligned.
         for (id, n) in &entries {
             let (file, len, borrowed) = match self.vmgr.open_file_in_dir(dir, n, Mode::ReadOnly) {
                 Ok(f) => (f, self.vmgr.file_length(f).unwrap_or(0), false),
@@ -454,9 +460,18 @@ impl Storage {
             match RideInfo::read(&SdByteSource::new(&self.vmgr, file, len)) {
                 Ok(info) => {
                     let sum = obc_app::RideSummary::from_info(&info, synced.contains(*id));
-                    if catalog.push(sum).is_ok() {
-                        let _ = self.ride_files.push(n.clone());
-                        let _ = self.ride_ids.push(*id);
+                    let pos = catalog.iter().position(|c| sum.start_time > c.start_time).unwrap_or(catalog.len());
+                    // A full catalog evicts its oldest for a newer candidate; a candidate older
+                    // than everything listed is simply not one of the newest UI_RIDES_CAP.
+                    if catalog.is_full() && pos < catalog.len() {
+                        let _ = catalog.pop();
+                        let _ = self.ride_files.pop();
+                        let _ = self.ride_ids.pop();
+                    }
+                    if pos <= catalog.len() && !catalog.is_full() {
+                        let _ = catalog.insert(pos, sum);
+                        let _ = self.ride_files.insert(pos, n.clone());
+                        let _ = self.ride_ids.insert(pos, *id);
                     }
                 }
                 Err(_) => defmt::warn!("SD: scan: ride {} unreadable — not listed", defmt::Debug2Format(n)),
@@ -466,24 +481,8 @@ impl Storage {
             }
         }
 
-        // Newest first (descending start_time), via an index permutation (256 B, not an 8 KB row
-        // temp): sort indices by the catalog's start_time, then apply the permutation in place with
-        // the standard chase-forward swap — positions before `i` are final, so an `order` value
-        // pointing below `i` is chased to where that element was swapped to. All three parallel
-        // tables move together, staying aligned.
-        let mut order: Vec<u16, MAX_RIDES> = Vec::new();
-        for i in 0..catalog.len() {
-            let _ = order.push(i as u16);
-        }
-        order.sort_unstable_by_key(|&i| core::cmp::Reverse(catalog[i as usize].start_time));
-        for i in 0..order.len() {
-            let mut src = order[i] as usize;
-            while src < i {
-                src = order[src] as usize;
-            }
-            catalog.swap(i, src);
-            self.ride_files.swap(i, src);
-            self.ride_ids.swap(i, src);
+        if entries.len() > catalog.len() {
+            defmt::info!("SD: rides menu lists the newest {=usize} of {=usize} stored", catalog.len(), entries.len());
         }
         defmt::info!("SD: {=usize} ride(s) in /tracks", catalog.len());
         catalog

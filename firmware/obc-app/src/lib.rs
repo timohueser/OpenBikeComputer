@@ -40,7 +40,7 @@ pub use hal::{
 pub use hold_hint::HoldHints;
 pub use input::{Gesture, Gestures, DEFAULT_HOLD_MS, DEFAULT_TAP_MS};
 pub use input_plane::InputPlane;
-pub use ride::{RideCatalog, RideSummary, MAX_RIDES};
+pub use ride::{RideCatalog, RideSummary, MAX_RIDES, UI_RIDES_CAP};
 pub use route::{Catalog, RouteSummary, MAX_ROUTES};
 pub use screen::{Screen, ScreenKind, Transition};
 pub use settings::{

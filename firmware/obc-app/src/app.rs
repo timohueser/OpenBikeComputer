@@ -369,7 +369,7 @@ pub struct App {
     /// Each ride-catalog entry's **durable object id**, parallel to [`ride_catalog`](App::ride_catalog)
     /// — the identity the Rides-menu selection follows across a live rescan, and what the
     /// hold-to-delete drain resolves a highlighted index to.
-    ride_catalog_ids: heapless::Vec<u16, { crate::ride::MAX_RIDES }>,
+    ride_catalog_ids: heapless::Vec<u16, { crate::ride::UI_RIDES_CAP }>,
     /// The screen stack (root = Home). The top screen receives input; drawing starts from the
     /// topmost opaque screen so overlays composite over the map.
     stack: Stack,
@@ -990,7 +990,7 @@ impl App {
         let old_ids = self.ride_catalog_ids.clone();
         self.ride_catalog.clear();
         self.ride_catalog_ids.clear();
-        for (s, &id) in summaries.iter().zip(ids).take(crate::ride::MAX_RIDES) {
+        for (s, &id) in summaries.iter().zip(ids).take(crate::ride::UI_RIDES_CAP) {
             let _ = self.ride_catalog.push(s.clone());
             let _ = self.ride_catalog_ids.push(id);
         }
