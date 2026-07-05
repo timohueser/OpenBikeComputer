@@ -17,13 +17,23 @@ struct RootView: View {
     @State private var launchModel: LaunchFlowModel
     @State private var mainModel: MainScreenModel
     @State private var importModel: ImportFlowModel
+    /// The foreground-only link policy (#459): a real background transition
+    /// suspends the link (after draining any in-flight transfer under the
+    /// system grace window); foreground re-raises it via the bonded
+    /// silent-reconnect path. Fed raw `scenePhase` changes below.
+    @State private var lifecycleModel: LinkLifecycleModel
     /// Online/offline signal for the MapKit basemap previews (#294), injected
     /// into the whole tree as `\.obcIsOnline`.
     @State private var reachability: ReachabilityStore
     @State private var path: [MainDestination] = []
+    @Environment(\.scenePhase) private var scenePhase
 
     private let transport: any DeviceTransport
     private let bondStore: any BondStore
+    /// The in-flight transfer ledger (#459) — shared by the upload sheets and
+    /// the ride-sync coordinator (the writers) and the lifecycle model (the
+    /// reader draining before a background disconnect).
+    private let transferActivity: TransferActivity
     /// The registered import formats (B6): GPX + TCX. Adding a format = one
     /// more decoder here; the picker filter and share-sheet registration
     /// follow `supportedFileExtensions`.
@@ -37,6 +47,7 @@ struct RootView: View {
         bondStore: any BondStore,
         library: any LibraryStore = InMemoryLibraryStore(),
         reachability: any NetworkReachability = PathMonitorReachability(),
+        backgroundTasks: any BackgroundTaskRunner = UIKitBackgroundTaskRunner(),
         importAtLaunch: (data: Data, fileName: String)? = nil
     ) {
         self.transport = transport
@@ -44,13 +55,19 @@ struct RootView: View {
         self.importAtLaunch = importAtLaunch
         let importer = RouteImporter(decoders: [GPXRouteDecoder(), TCXRouteDecoder()])
         self.importer = importer
+        let transferActivity = TransferActivity()
+        self.transferActivity = transferActivity
         _launchModel = State(initialValue: LaunchFlowModel(transport: transport, bondStore: bondStore))
+        _lifecycleModel = State(initialValue: LinkLifecycleModel(
+            transport: transport, activity: transferActivity, backgroundTasks: backgroundTasks
+        ))
         _mainModel = State(initialValue: MainScreenModel(
             transport: transport, library: library,
             // The rename self-heal (#361): once per established connection,
             // push the bond record's desired name if the device config
             // disagrees (a rename whose write never landed).
-            nameReconciler: DeviceNameReconciler(transport: transport, bondStore: bondStore)
+            nameReconciler: DeviceNameReconciler(transport: transport, bondStore: bondStore),
+            transferActivity: transferActivity
         ))
         _importModel = State(initialValue: ImportFlowModel(
             // The decode stays app-side (formats at the edges — OBCUI doesn't
@@ -101,6 +118,7 @@ struct RootView: View {
         .fullScreenCover(item: $importModel.pendingImport) { pending in
             ImportLandingHost(
                 transport: transport,
+                activity: transferActivity,
                 route: pending.route,
                 fileName: pending.fileName,
                 deviceName: mainModel.deviceName,
@@ -164,10 +182,18 @@ struct RootView: View {
             Text("A route with this name is already in your library — pick a different one.")
         }
         .task {
+            lifecycleModel.start()
             reachability.start()
             if let importAtLaunch {
                 importModel.open(data: importAtLaunch.data, fileName: importAtLaunch.fileName)
             }
+        }
+        // The foreground-only link (#459): only a real `.background` transition
+        // suspends (the model ignores `.inactive` flickers — notification
+        // shade, app switcher); `.active` re-raises via the bonded
+        // silent-reconnect path.
+        .onChange(of: scenePhase) { _, newPhase in
+            lifecycleModel.scenePhaseChanged(to: newPhase)
         }
         // Share-sheet / "open with OBC" delivery: iOS hands route files here
         // (registered in project.yml → CFBundleDocumentTypes). Same path as a
@@ -189,6 +215,7 @@ struct RootView: View {
             if let route = mainModel.routes.first(where: { $0.id == id }) {
                 RouteDetailScreen(
                     transport: transport,
+                    activity: transferActivity,
                     dressing: .planned(route),
                     // Routes saved from an import keep their parsed waypoints/
                     // profile app-side; the device can't serve them.
@@ -217,6 +244,7 @@ struct RootView: View {
             if let ride = mainModel.rides.first(where: { $0.id == id }) {
                 RouteDetailScreen(
                     transport: transport,
+                    activity: transferActivity,
                     dressing: .tracked(ride),
                     // The full tracklog (#294) — the interactive map draws this,
                     // never the ride card's downsampled preview.

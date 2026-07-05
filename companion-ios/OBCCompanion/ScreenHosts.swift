@@ -51,6 +51,9 @@ struct RouteDetailScreen: View {
     @State private var model: RouteDetailModel
     @State private var uploadRequest: UploadRequest?
     private let transport: any DeviceTransport
+    /// The #459 in-flight ledger the upload sheet claims a token from — `nil`
+    /// in previews that don't exercise the lifecycle.
+    private let activity: TransferActivity?
     private let deviceName: String
     private let onDelete: (() -> Void)?
     private let onRename: ((String) -> Void)?
@@ -59,6 +62,7 @@ struct RouteDetailScreen: View {
 
     init(
         transport: any DeviceTransport,
+        activity: TransferActivity? = nil,
         dressing: RouteDetailModel.Dressing,
         preloadedDetail: RouteDetail? = nil,
         plannedGeometry: ImportedRoute? = nil,
@@ -77,6 +81,7 @@ struct RouteDetailScreen: View {
             rideGeometry: rideGeometry
         ))
         self.transport = transport
+        self.activity = activity
         self.deviceName = deviceName
         self.onDelete = onDelete
         self.onRename = onRename
@@ -93,6 +98,7 @@ struct RouteDetailScreen: View {
                     transport: transport,
                     blob: model.makeUploadBlob(),
                     deviceName: deviceName,
+                    activity: activity,
                     onCompleted: { [model] objectID, crc in
                         // Pin the committed id + fingerprint on the live model
                         // too — a second Upload on this same screen must
@@ -122,6 +128,8 @@ struct ImportLandingHost: View {
     @State private var uploadRequest: UploadRequest?
     @State private var uploadCompleted = false
     private let transport: any DeviceTransport
+    /// The #459 in-flight ledger the upload sheet claims a token from.
+    private let activity: TransferActivity?
     private let deviceName: String
     private let noDevicePaired: Bool
     private let onSave: (RouteDetail) -> Void
@@ -131,6 +139,7 @@ struct ImportLandingHost: View {
 
     init(
         transport: any DeviceTransport,
+        activity: TransferActivity? = nil,
         route: ImportedRoute,
         fileName: String,
         deviceName: String,
@@ -153,6 +162,7 @@ struct ImportLandingHost: View {
             importedRouteID: replacing?.id
         ))
         self.transport = transport
+        self.activity = activity
         self.deviceName = deviceName
         self.noDevicePaired = noDevicePaired
         self.onSave = onSave
@@ -170,6 +180,7 @@ struct ImportLandingHost: View {
                     transport: transport,
                     blob: model.makeUploadBlob(),
                     deviceName: deviceName,
+                    activity: activity,
                     onCompleted: { [model] objectID, crc in
                         uploadCompleted = true
                         if let objectID { model.recordUploaded(objectID: objectID, crc32: crc) }

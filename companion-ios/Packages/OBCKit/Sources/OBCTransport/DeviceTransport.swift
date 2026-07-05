@@ -37,6 +37,19 @@ public protocol DeviceTransport: Sendable {
     func authenticate() async throws
     /// Tear the link down.
     func disconnect() async
+    /// Foreground-only lifecycle, background half (#459): drop the link **and
+    /// pause the transport's own reconnect behaviour** until `resumeLink()`.
+    /// The app calls this on a real `scenePhase == .background` transition (after
+    /// any in-flight transfer drained) — a transport that kept scanning or held
+    /// a pending connect would fight the intentional disconnect and re-raise
+    /// the link behind the user's back.
+    func suspendLink() async
+    /// Foreground-only lifecycle, foreground half (#459): undo `suspendLink()`
+    /// by re-arming the reconnect machinery — the **existing bonded
+    /// silent-reconnect path**, never a fresh pairing flow. Failure is silent
+    /// (the S4 banner owns the degraded-link story); callers only invoke this
+    /// when a link existed before the suspend.
+    func resumeLink() async
 
     // MARK: Control plane (GATT — DIS / BAS / OBC Control)
 
@@ -88,4 +101,14 @@ extension DeviceTransport {
     /// both to defer the gated ops past the D2 row tap (#297).
     public func discover() async throws { try await connect() }
     public func authenticate() async throws {}
+
+    /// Default foreground-only lifecycle (#459) for conformers without their own
+    /// reconnect machinery (the mock, previews): suspending is a plain teardown
+    /// and resuming replays the full connect, errors swallowed (a background
+    /// reconnect is silent — the S4 banner tells the degraded-link story).
+    /// `BLETransport` overrides `resumeLink()`: its reconnect is a re-armed
+    /// intent latch, not a fresh `connect()` (which would park new
+    /// discover/authenticate continuations over any still waiting).
+    public func suspendLink() async { await disconnect() }
+    public func resumeLink() async { try? await connect() }
 }
