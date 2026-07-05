@@ -817,8 +817,15 @@ impl App {
     /// A change in `connected` dirties the map so the connected indicator repaints — but only where
     /// it's actually drawn (the menu title bar / Home), via the same `AppState`-comparison gate the
     /// riding views use, so an unchanged status (the steady state, fed every pass) repaints nothing.
-    /// The passkey is recorded off `AppState` and drawn by no screen yet (P2), so it never gates a
-    /// redraw.
+    ///
+    /// The **passkey** (epic #447, P2) drives the host-pushed [`PasskeyScreen`](crate::screen::PasskeyScreen):
+    /// a passkey going `Some` opens the card over whatever is up, and its clearing (pairing
+    /// complete/failed, or disconnect — all cleared BLE-side) closes it. Fed every pass with an
+    /// unchanged status, [`reconcile_passkey_card`](App::reconcile_passkey_card) is a no-op, so the
+    /// steady state never re-dirties. Because it's a host-pushed screen, it also **defers while a
+    /// hold is charging** (yanking the hold target out from under the rider mid-charge would break
+    /// the confirm) — the reconcile just skips that pass and lands on the next, since the desired
+    /// state is re-fed every pass.
     pub fn set_ble_status(&mut self, status: crate::ble::BleStatus) {
         let state_before = self.state;
         self.state.ble_connected = status.connected;
@@ -830,6 +837,63 @@ impl App {
             self.map_dirty = true;
         }
         self.ble_passkey = status.passkey;
+        self.reconcile_passkey_card();
+    }
+
+    /// Open or close the host-pushed passkey card to match the seam's passkey ([`ble_passkey`](App::ble_passkey)):
+    /// push a [`PasskeyScreen`](crate::screen::PasskeyScreen) when a passkey is present and no card is
+    /// up, remove it when the passkey clears. Idempotent — the steady state (same passkey re-fed each
+    /// pass) does nothing, so it never re-dirties. **Deferred while a hold charges** so a host-pushed
+    /// screen never lands mid-hold (push *or* pop); the desired state is re-fed every pass, so the
+    /// deferral is simply "try again next pass". Each transition dirties the map exactly once: opening
+    /// covers the screen below (its own draw); closing repaints whatever the card covered.
+    ///
+    /// The card outranks the P4 route-upload popups: a popup consults
+    /// [`passkey_card_up`](App::passkey_card_up) and drops its prompt while the card is showing.
+    fn reconcile_passkey_card(&mut self) {
+        // Never move a host-pushed screen onto/off the stack while a hold is charging.
+        if self.hold_charging() {
+            return;
+        }
+        match (self.ble_passkey, self.passkey_card_index()) {
+            // A passkey to show and no card up → open it over the current top.
+            (Some(passkey), None) => {
+                let r = self.stack.push(Screen::Passkey(crate::screen::PasskeyScreen::new(passkey)));
+                debug_assert!(r.is_ok(), "screen stack overflow — raise MAX_DEPTH");
+                self.map_dirty = true;
+            }
+            // No passkey but a card is up → remove it wherever it sits (the rider may not have
+            // touched anything), and repaint what it covered.
+            (None, Some(i)) => {
+                let _ = self.stack.remove(i);
+                self.map_dirty = true;
+            }
+            // Card already matches the passkey (both present, or both absent): nothing to do.
+            _ => {}
+        }
+    }
+
+    /// The stack index of the passkey card, or `None` when it isn't up. The card only ever sits as
+    /// the top (it swallows input, and nothing navigates past it), but this searches the whole stack
+    /// so a close removes it wherever it ended up.
+    fn passkey_card_index(&self) -> Option<usize> {
+        self.stack.iter().position(|s| matches!(s, Screen::Passkey(_)))
+    }
+
+    /// Whether the passkey card is currently up (epic #447). The P4 route-upload popups poll this to
+    /// honour the priority rule — a popup is dropped, not queued, while the card shows.
+    pub fn passkey_card_up(&self) -> bool {
+        self.passkey_card_index().is_some()
+    }
+
+    /// Whether a hold gesture is charging right now — either button down, its long-press not yet
+    /// fired. Reads the host-fed encoder progress ([`set_hold_progress`](App::set_hold_progress), the
+    /// two-plane firmware) and `App`'s own input plane (the single-loop hosts). Gates the host-pushed
+    /// passkey card's open/close so it never lands mid-hold.
+    fn hold_charging(&self) -> bool {
+        self.hold_progress_override.is_some_and(|p| p > 0.0)
+            || self.input.encoder_hold_progress() > 0.0
+            || self.input.back_hold_progress() > 0.0
     }
 
     /// Whether the base (lowest opaque) screen draws the connected indicator — Home, or any framed

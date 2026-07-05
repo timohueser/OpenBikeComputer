@@ -29,6 +29,7 @@ mod home;
 mod list;
 mod map;
 mod menu;
+mod passkey;
 mod poi_detail;
 mod poi_list;
 mod poi_menu;
@@ -43,6 +44,7 @@ pub use home::HomeScreen;
 pub use list::window_start;
 pub use map::MapScreen;
 pub use menu::MenuScreen;
+pub use passkey::PasskeyScreen;
 pub use poi_detail::PoiDetailScreen;
 pub use poi_list::{PoiListScreen, PoiScratch};
 pub use poi_menu::PoiMenuScreen;
@@ -292,6 +294,9 @@ screens! {
     RouteMenu(RouteMenuScreen) => Nav,
     RouteOverview(RouteOverviewScreen) => Nav,
     RouteSwap(RouteSwapScreen) => Nav,
+    /// The BLE pairing passkey card (epic #447, P2). **Host-pushed** by [`App::set_ble_status`]
+    /// when the seam's passkey goes `Some`, popped when it clears. Opaque + non-dismissible.
+    Passkey(PasskeyScreen) => Nav,
     Settings(SettingsScreen) => Settings,
     DateTime(DateTimeScreen) => Settings,
     Units(UnitsScreen) => Settings,

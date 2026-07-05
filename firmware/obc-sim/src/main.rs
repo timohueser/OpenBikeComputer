@@ -109,6 +109,10 @@ struct Args {
     /// shows (the menu title bar / Home). Stands in for the sim control panel's "Phone connected"
     /// toggle when capturing a snapshot.
     ble_connected: bool,
+    /// Headless `--png` only: inject a BLE pairing passkey so the host-pushed passkey card is up
+    /// (epic #447, P2), for the `passkey-card.png` snapshot. Stands in for the sim control panel's
+    /// "Pairing" toggle.
+    ble_passkey: Option<u32>,
 }
 
 impl Default for Args {
@@ -143,6 +147,7 @@ impl Default for Args {
             home_seed: None,
             clock: None,
             ble_connected: false,
+            ble_passkey: None,
         }
     }
 }
@@ -240,6 +245,14 @@ fn parse_args() -> Result<Args, String> {
                 a.clock = Some(parse_clock(&it.next().ok_or("--clock needs YYYY-MM-DDTHH:MM")?)?);
             }
             "--ble-connected" => a.ble_connected = true,
+            "--ble-passkey" => {
+                a.ble_passkey = Some(
+                    it.next()
+                        .and_then(|s| s.parse().ok())
+                        .filter(|&n| n <= 999_999)
+                        .ok_or("--ble-passkey needs 0..=999999")?,
+                )
+            }
             other => {
                 if a.map.is_empty() {
                     a.map = other.to_string();
@@ -470,7 +483,7 @@ fn main() {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: obc-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--home-seed N] [--clock YYYY-MM-DDTHH:MM] [--ble-connected]");
+            eprintln!("error: {e}\nusage: obc-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--home-seed N] [--clock YYYY-MM-DDTHH:MM] [--ble-connected] [--ble-passkey N]");
             std::process::exit(2);
         }
     };
@@ -634,8 +647,9 @@ fn main() {
             apply_script(&mut app, script, &mut render);
         }
         // Inject the BLE link state (epic #447): with `--ble-connected` the connected indicator
-        // shows in the snapshot, exactly as the control panel's toggle drives it live.
-        app.set_ble_status(obc_app::BleStatus { connected: args.ble_connected, passkey: None });
+        // shows in the snapshot; with `--ble-passkey N` the host-pushed passkey card (P2) is up —
+        // both exactly as the control panel's toggles drive them live.
+        app.set_ble_status(obc_app::BleStatus { connected: args.ble_connected, passkey: args.ble_passkey });
         // The script may have loaded a route; open its geometry for the Map.
         store.sync_active(app.activity.active_route);
         let route_src = store.active_source();
