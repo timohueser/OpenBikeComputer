@@ -142,10 +142,39 @@ public final class RideSyncCoordinator {
         // self` (the #356 convention) — the stream never finishes, so a strong
         // capture would pin the coordinator (and its owner) for the session.
         connectionWatch = Task { [weak self, transport] in
+            var wasConnected = false
             for await state in transport.state {
                 guard let self else { return }
                 connection = state
+                // Possession-ack reconciliation (spec §4.4 `ackRides`), on every
+                // edge into `.connected` — including the stream's replayed first
+                // value (an app launched against a live link should heal too):
+                // send the device the ride ids the library holds, so its
+                // per-ride "synced" flag trues up against the phone's ground
+                // truth. This is what heals rides synced before the device
+                // tracked the flag, a sidecar lost with a reflashed card, or an
+                // app reinstall — cases a download-completion event can never
+                // reach, because an already-held ride is never re-downloaded.
+                if state == .connected, !wasConnected {
+                    ackPossessedRides()
+                }
+                wasConnected = state == .connected
             }
+        }
+    }
+
+    /// Fire-and-forget the possession ack (the `DeviceNameReconciler` pattern:
+    /// a failed send self-heals on the next connect by construction — the whole
+    /// list is re-sent every time — so the error is deliberately dropped rather
+    /// than surfaced). Captures only the transport and the id snapshot, never
+    /// `self`. Tombstoned/trashed rides stay in `syncedRideIDs()` (they landed
+    /// once), which is exactly the flag's meaning — "downloaded at least once".
+    private func ackPossessedRides() {
+        guard canSync() else { return }
+        let ids = Array(library.syncedRideIDs())
+        guard !ids.isEmpty else { return }
+        Task { [transport] in
+            try? await transport.ackRides(ids)
         }
     }
 

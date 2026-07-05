@@ -236,6 +236,27 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         guard try await nextCommandResult().status == .ok else { throw DeviceError.writeFailed }
     }
 
+    public func ackRides(_ ids: [RideID]) async throws {
+        // `ackRides` (cmd 2): the possession list, chunked to the device's 64-byte
+        // command value — spec §4.4. Only device-namespace ids can be acked (mock/
+        // test ids that never came from a catalog have nothing to reconcile).
+        let chunks = AckRidesCommand.chunks(ids.compactMap(\.deviceObjectID))
+        guard !chunks.isEmpty else { return }
+        // Hold the transfer slot across the whole batch, for `deleteRoute`'s
+        // reason (#302): command results and transfer results share one
+        // `pendingStatuses` buffer, so an ungated command write could wipe a
+        // slot-holding transfer's buffered result out from under it.
+        await acquireTransferSlot()
+        defer { releaseTransferSlot() }
+        clearPendingStatuses()
+        for chunk in chunks {
+            try await write(chunk, to: GATT.command)
+            // Each chunk is answered on its own; the command is idempotent, so a
+            // caller retrying after a mid-batch failure just re-sends everything.
+            guard try await nextCommandResult().status == .ok else { throw DeviceError.writeFailed }
+        }
+    }
+
     public func listRoutes() async throws -> [RouteCatalogEntry] {
         // The `routeList` object (type 6, spec §7.4) over the CoC → the catalog.
         // Consumed for reconcile (the "on device" badge), never as list rows —
