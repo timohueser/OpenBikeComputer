@@ -153,6 +153,21 @@ pub(crate) async fn serve_connection(
                 // sends below (#270). The ride loop's map render can hold the same lock, so a control
                 // write may wait a frame for it — harmless against the seconds-long supervision timeout.
                 let mut guard = shared.lock().await;
+                // Settings coherence, device → phone (#456): if the ride loop persisted an on-device
+                // settings change since the last event, its RRAM blob moved and our config cache is
+                // stale. Refresh the cache from RRAM (a no-op when nothing changed) and re-seed the
+                // Config attribute so a Config *read* this connection serves the fresh units/name
+                // without a reboot. The read path returns the seeded attribute value, not a live
+                // `config_blob`, so the re-seed is what actually makes the read fresh.
+                let config_refreshed = {
+                    let mut s = store.borrow_mut();
+                    let before = *s.settings();
+                    s.refresh_settings_if_changed(&mut guard);
+                    *s.settings() != before
+                };
+                if config_refreshed {
+                    let _ = server.set(&server.obc.config, &config_blob(&store.borrow()));
+                }
                 // Extract what a control-plane write needs answered *before* accepting (which consumes
                 // the event), then notify the `status` message(s) — never a hang / bare ATT failure. A
                 // validated transfer instead arms the CoC data plane (`serve_coc`), which answers when
