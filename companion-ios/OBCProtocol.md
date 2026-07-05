@@ -124,10 +124,12 @@ transfer carries **no per-chunk framing**. Instead (spec §4.2/§4.3, mirrored i
    reassembly buffer — the point on a RAM-limited MCU).
 
 3. A **`transferResult`** message closes it over `status` (a typed envelope:
-   `msg u8 = 1 · object_id u16 · status u8 {committed, crcMismatch, aborted,
-   error, notFound, busy} · committed_offset u32`; for a fresh upload the result
-   carries the **assigned** id). `status` also carries `storeChanged` (msg 2) and
-   `commandResult` (msg 3) messages — unknown discriminators are ignored.
+   `msg u8 = 1 · object_id u16 · status u8 {committed 0, crcMismatch 1, aborted 2,
+   error 3, notFound 4, busy 5, storageFull 6} · committed_offset u32`; for a
+   fresh upload the result carries the **assigned** id). `status` also carries
+   `storeChanged` (msg 2) and `commandResult` (msg 3) messages — unknown
+   discriminators are ignored, and an unknown *status* code decodes as a generic
+   device error (forward compat).
 
 - **CRC once, end-to-end.** One whole-object CRC verified at commit — a mismatch
   **rejects** the object (`DeviceError.crcMismatch`), never commits it. This is the
@@ -138,6 +140,13 @@ transfer carries **no per-chunk framing**. Instead (spec §4.2/§4.3, mirrored i
   flows (the B7 ride sync) resume at whole-object granularity: rides that fully
   landed are kept, the rest are re-requested from byte 0.
 - **Cancelable** — abort over `TransferControl` + channel teardown; clean both ends.
+- **Storage-full reject (descriptor-open).** A **new**-route upload (`op=1`, route
+  type, `object_id = 0xFFFF` or a route id the device doesn't hold) that would grow
+  the catalog past its cap (64 routes) is rejected at the `TransferControl` write,
+  **before any bytes stream**, with `transferResult` status `storageFull` (6) — no
+  channel opens, no partial file. **Replace-by-id uploads of an existing route are
+  exempt** (they reuse a slot). The app surfaces this as "delete routes on the
+  device".
 
 `firmware` is **reserved** for a future OTA type — no codec in this epic; `echo`
 is the `A5` dev/test loopback. At most **one transfer is in flight at a time**.
