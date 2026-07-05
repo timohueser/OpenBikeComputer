@@ -153,6 +153,7 @@ fn run() -> Result<(), String> {
         config.marker_color,
         global_bbox,
         &ingested.pois,
+        &ingested.nav_graph,
         |i| {
             let lod = &config.lods[i];
             println!("Building Quadtree LOD {i} (simplify {}m)...", lod.simplify_m);

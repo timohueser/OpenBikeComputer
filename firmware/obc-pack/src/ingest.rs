@@ -35,9 +35,8 @@ pub struct IngestFeature {
 
 /// Coastlines are captured separately (always) — they feed the bbox and land/sea.
 /// POIs are the classified + deduped point-of-interest set ([`crate::poi`]),
-/// consumed by serialization once the OBCM v6 POI section lands (#423).
-/// `nav_graph` is the in-memory routable graph ([`crate::nav`]); R2 (#464) will
-/// tile + serialize it. It is built here but nothing is written to the `.obcm` yet.
+/// serialized into the OBCM POI section (§7). `nav_graph` is the in-memory
+/// routable graph ([`crate::nav`]), serialized into the v8 nav-graph section (§8).
 pub struct Ingested {
     pub features: Vec<IngestFeature>,
     pub coastlines: Vec<Vec<(f64, f64)>>,
@@ -150,7 +149,7 @@ pub fn ingest_osm(pbf_path: &str, config: &Config) -> Result<Ingested, String> {
     println!("{}", poi::format_counts(&pois, poi_dropped));
 
     // --- Nav graph: junctions + deduped edges from the routable ways. ---
-    // In-memory only; R2 (#464) serializes it. Logged alongside the POI counts.
+    // Serialized into the §8 nav section. Logged alongside the POI counts.
     let nav_graph = nav::build_graph(&routable_ways);
     println!("{}", nav::format_summary(&nav_graph));
 
