@@ -1,0 +1,210 @@
+//! Functionality for the BLE central role.
+use bt_hci::cmd::le::{
+    LeAddDeviceToFilterAcceptList, LeClearFilterAcceptList, LeCreateConn, LeExtCreateConn, LeSetDefaultRateParameters,
+};
+use bt_hci::controller::{Controller, ControllerCmdAsync, ControllerCmdSync};
+use bt_hci::param::{AddrKind, BdAddr, InitiatingPhy, LeConnRole, PhyParams};
+use embassy_futures::select::{select, Either};
+
+use crate::connection::{ConnectConfig, ConnectRateParams, Connection, PhySet};
+use crate::host::BleHost;
+use crate::{bt_hci_duration, Address, BleHostError, Error, PacketPool};
+
+/// A type implementing the BLE central role.
+pub struct Central<'stack, C, P: PacketPool> {
+    pub(crate) host: &'stack BleHost<'stack, C, P>,
+}
+
+impl<'stack, C: Controller, P: PacketPool> Central<'stack, C, P> {
+    pub(crate) fn new(host: &'stack BleHost<'stack, C, P>) -> Self {
+        Self { host }
+    }
+
+    /// Attempt to create a connection with the provided config.
+    pub async fn connect(&mut self, config: &ConnectConfig<'_>) -> Result<Connection<'stack, P>, BleHostError<C::Error>>
+    where
+        C: ControllerCmdSync<LeClearFilterAcceptList>
+            + ControllerCmdSync<LeAddDeviceToFilterAcceptList>
+            + ControllerCmdAsync<LeCreateConn>,
+    {
+        if config.scan_config.filter_accept_list.is_empty() {
+            return Err(Error::ConfigFilterAcceptListIsEmpty.into());
+        }
+
+        let host = self.host;
+        let _drop = crate::host::OnDrop::new(|| {
+            host.connect_command_state.cancel(true);
+        });
+        host.connect_command_state.request().await;
+
+        self.set_accept_filter(config.scan_config.filter_accept_list).await?;
+
+        host.async_command(LeCreateConn::new(
+            bt_hci_duration(config.scan_config.interval),
+            bt_hci_duration(config.scan_config.window),
+            true,
+            AddrKind::PUBLIC,
+            BdAddr::default(),
+            host.own_addr_kind(),
+            bt_hci_duration(config.connect_params.min_connection_interval),
+            bt_hci_duration(config.connect_params.max_connection_interval),
+            config.connect_params.max_latency,
+            bt_hci_duration(config.connect_params.supervision_timeout),
+            bt_hci_duration(config.connect_params.min_event_length),
+            bt_hci_duration(config.connect_params.max_event_length),
+        ))
+        .await?;
+        match select(
+            host.connections
+                .accept(LeConnRole::Central, config.scan_config.filter_accept_list),
+            host.connect_command_state.wait_idle(),
+        )
+        .await
+        {
+            Either::First(conn) => {
+                _drop.defuse();
+                host.connect_command_state.done();
+                Ok(conn)
+            }
+            Either::Second(_) => Err(Error::Timeout.into()),
+        }
+    }
+
+    /// Attempt to create a connection with the provided config.
+    pub async fn connect_ext(
+        &mut self,
+        config: &ConnectConfig<'_>,
+    ) -> Result<Connection<'stack, P>, BleHostError<C::Error>>
+    where
+        C: ControllerCmdSync<LeClearFilterAcceptList>
+            + ControllerCmdSync<LeAddDeviceToFilterAcceptList>
+            + ControllerCmdAsync<LeExtCreateConn>,
+    {
+        if config.scan_config.filter_accept_list.is_empty() {
+            return Err(Error::ConfigFilterAcceptListIsEmpty.into());
+        }
+
+        let host = self.host;
+        // Ensure no other connect ongoing.
+        let _drop = crate::host::OnDrop::new(|| {
+            host.connect_command_state.cancel(true);
+        });
+        host.connect_command_state.request().await;
+
+        self.set_accept_filter(config.scan_config.filter_accept_list).await?;
+
+        let initiating = InitiatingPhy {
+            scan_interval: bt_hci_duration(config.scan_config.interval),
+            scan_window: bt_hci_duration(config.scan_config.window),
+            conn_interval_min: bt_hci_duration(config.connect_params.min_connection_interval),
+            conn_interval_max: bt_hci_duration(config.connect_params.max_connection_interval),
+            max_latency: config.connect_params.max_latency,
+            supervision_timeout: bt_hci_duration(config.connect_params.supervision_timeout),
+            min_ce_len: bt_hci_duration(config.connect_params.min_event_length),
+            max_ce_len: bt_hci_duration(config.connect_params.max_event_length),
+        };
+        let phy_params = create_phy_params(initiating, config.scan_config.phys);
+
+        host.async_command(LeExtCreateConn::new(
+            true,
+            host.own_addr_kind(),
+            AddrKind::PUBLIC,
+            BdAddr::default(),
+            phy_params,
+        ))
+        .await?;
+
+        match select(
+            host.connections
+                .accept(LeConnRole::Central, config.scan_config.filter_accept_list),
+            host.connect_command_state.wait_idle(),
+        )
+        .await
+        {
+            Either::First(conn) => {
+                _drop.defuse();
+                host.connect_command_state.done();
+                Ok(conn)
+            }
+            Either::Second(_) => Err(Error::Timeout.into()),
+        }
+    }
+
+    pub(crate) async fn set_accept_filter(
+        &mut self,
+        filter_accept_list: &[Address],
+    ) -> Result<(), BleHostError<C::Error>>
+    where
+        C: ControllerCmdSync<LeClearFilterAcceptList> + ControllerCmdSync<LeAddDeviceToFilterAcceptList>,
+    {
+        let host = self.host;
+        host.command(LeClearFilterAcceptList::new()).await?;
+        for entry in filter_accept_list {
+            // Resolve RPAs to identity addresses using bond information so the controller
+            // can match new RPAs via the resolving list.
+            #[cfg(feature = "security")]
+            let addr = host
+                .connections
+                .security_manager
+                .get_peer_bond_information(&(*entry).into())
+                .map(|bond| bond.identity.addr)
+                .unwrap_or(*entry);
+            #[cfg(not(feature = "security"))]
+            let addr = *entry;
+            host.command(LeAddDeviceToFilterAcceptList::new(addr.kind, addr.addr))
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Set default connection rate parameters for all future ACL connections.
+    pub async fn set_default_connection_rate_parameters(
+        &self,
+        conn_rate_params: &ConnectRateParams,
+    ) -> Result<(), BleHostError<C::Error>>
+    where
+        C: ControllerCmdSync<LeSetDefaultRateParameters>,
+    {
+        let min_interval = bt_hci_duration(conn_rate_params.min_connection_interval);
+        let max_interval = bt_hci_duration(conn_rate_params.max_connection_interval);
+        let timeout = bt_hci_duration(conn_rate_params.supervision_timeout);
+        let min_ce = bt_hci_duration(conn_rate_params.min_ce_length);
+        let max_ce = bt_hci_duration(conn_rate_params.max_ce_length);
+        match self
+            .host
+            .command(LeSetDefaultRateParameters::new(
+                min_interval,
+                max_interval,
+                conn_rate_params.subrate_min,
+                conn_rate_params.subrate_max,
+                conn_rate_params.max_latency,
+                conn_rate_params.continuation_number,
+                timeout,
+                min_ce,
+                max_ce,
+            ))
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+}
+
+pub(crate) fn create_phy_params<P: Copy>(phy: P, phys: PhySet) -> PhyParams<P> {
+    let phy_params: PhyParams<P> = PhyParams {
+        le_1m_phy: match phys {
+            PhySet::M1 | PhySet::M1M2 | PhySet::M1Coded | PhySet::M1M2Coded => Some(phy),
+            _ => None,
+        },
+        le_2m_phy: match phys {
+            PhySet::M2 | PhySet::M1M2 | PhySet::M2Coded | PhySet::M1M2Coded => Some(phy),
+            _ => None,
+        },
+        le_coded_phy: match phys {
+            PhySet::M2Coded | PhySet::Coded | PhySet::M1Coded | PhySet::M1M2Coded => Some(phy),
+            _ => None,
+        },
+    };
+    phy_params
+}

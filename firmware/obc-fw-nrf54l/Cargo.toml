@@ -221,3 +221,17 @@ opt-level = 3
 lto = "fat"
 codegen-units = 1
 debug = 2
+
+# ==== LOCAL PATCH: trouble-host 0.7.0 (forget-phone reconnect flap, issue #481) ====
+# Stock trouble-host answers a central's encryption start with a hard DISCONNECT
+# (AuthenticationFailure) when it holds no LTK for the peer — instead of the spec's
+# `LE Long Term Key Request Negative Reply` (Core 5.4 Vol 4 Part E §7.8.26). A
+# stale-bonded iPhone therefore never learns its key is dead after the rider's
+# "Forget phone": it keeps the bond and reconnect-loops (the advertising⇄connected
+# flap) until the device is removed in iOS Settings. The vendored copy in
+# `vendor/trouble-host/` is byte-identical to the crates.io 0.7.0 release except
+# the one negative-reply hunk in `connection_manager.rs` (grep "OBC LOCAL PATCH")
+# and the matching `SecurityCmds` bound in `lib.rs`. Drop this patch (and the
+# vendor dir) once the fix lands upstream (embassy-rs/trouble).
+[patch.crates-io]
+trouble-host = { path = "vendor/trouble-host" }
