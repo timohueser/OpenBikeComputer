@@ -13,44 +13,63 @@
 
 use std::collections::HashMap;
 
-use obc_reader::M_PER_DEG;
+use obc_reader::{category_of, label_of, M_PER_DEG};
 
-/// One row of the canonical table: `key=value` ⇒ (category, subtype), with the
-/// label the device shows when OSM has no usable name (≤ 14 chars).
+/// One row of the canonical table: the OSM `key=value` classification and the
+/// subtype id it maps to. The subtype's **category** and **fallback label** are
+/// *not* stored here — they live once in `obc-reader`'s `poi_table` (the firmware
+/// source of truth mirrored in `OBCM_Spec.md` §7.4), and this row derives them via
+/// [`PoiKind::category`] / [`PoiKind::label`], so the category/label mapping is never
+/// maintained in two places. Only the OSM tag classification (which the device never
+/// needs) stays packer-side.
 pub struct PoiKind {
-    pub category: u8,
     pub subtype: u8,
     pub key: &'static str,
     pub value: &'static str,
-    pub label: &'static str,
 }
 
-const fn kind(category: u8, subtype: u8, key: &'static str, value: &'static str, label: &'static str) -> PoiKind {
-    PoiKind { category, subtype, key, value, label }
+impl PoiKind {
+    /// The category id (spec §7.4) this subtype belongs to, derived from `obc-reader`'s canonical
+    /// table. Every `POI_TABLE` subtype is valid there, so the unwrap never trips (the pinning test
+    /// guarantees it for every row).
+    pub fn category(&self) -> u8 {
+        category_of(self.subtype).expect("POI_TABLE subtype is in obc-reader's canonical table").id()
+    }
+
+    /// The device fallback label for this subtype, from `obc-reader`'s canonical table (shown when
+    /// OSM has no usable name). Valid for every `POI_TABLE` subtype (see the pinning test).
+    pub fn label(&self) -> &'static str {
+        label_of(self.subtype).expect("POI_TABLE subtype is in obc-reader's canonical table")
+    }
 }
 
-/// The canonical category/subtype table (normative ids — append-only, never
-/// renumber). Category ids: 1 Water, 2 Campsite, 3 Accommodation, 4 Resupply,
-/// 5 Pharmacy, 6 Bike shop.
+const fn kind(subtype: u8, key: &'static str, value: &'static str) -> PoiKind {
+    PoiKind { subtype, key, value }
+}
+
+/// The canonical OSM-tag → subtype classification (normative subtype ids —
+/// append-only, never renumber). The subtype→category/label half of the table lives
+/// in `obc-reader`'s `poi_table` (spec §7.4); this half is the OSM tag mapping the
+/// packer owns. First match in table order wins (see [`classify`]).
 pub const POI_TABLE: [PoiKind; 18] = [
-    kind(1, 1, "amenity", "drinking_water", "Drinking water"),
-    kind(1, 2, "natural", "spring", "Spring"),
-    kind(1, 3, "man_made", "water_tap", "Water tap"),
-    kind(1, 4, "amenity", "water_point", "Water point"),
-    kind(2, 5, "tourism", "camp_site", "Campsite"),
-    kind(2, 6, "tourism", "caravan_site", "Caravan site"),
-    kind(3, 7, "tourism", "hotel", "Hotel"),
-    kind(3, 8, "tourism", "hostel", "Hostel"),
-    kind(3, 9, "tourism", "guest_house", "Guest house"),
-    kind(3, 10, "tourism", "motel", "Motel"),
-    kind(3, 11, "tourism", "wilderness_hut", "Wilderness hut"),
-    kind(3, 12, "tourism", "alpine_hut", "Alpine hut"),
-    kind(4, 13, "shop", "supermarket", "Supermarket"),
-    kind(4, 14, "shop", "convenience", "Convenience"),
-    kind(4, 15, "shop", "bakery", "Bakery"),
-    kind(4, 16, "amenity", "marketplace", "Marketplace"),
-    kind(5, 17, "amenity", "pharmacy", "Pharmacy"),
-    kind(6, 18, "shop", "bicycle", "Bike shop"),
+    kind(1, "amenity", "drinking_water"),
+    kind(2, "natural", "spring"),
+    kind(3, "man_made", "water_tap"),
+    kind(4, "amenity", "water_point"),
+    kind(5, "tourism", "camp_site"),
+    kind(6, "tourism", "caravan_site"),
+    kind(7, "tourism", "hotel"),
+    kind(8, "tourism", "hostel"),
+    kind(9, "tourism", "guest_house"),
+    kind(10, "tourism", "motel"),
+    kind(11, "tourism", "wilderness_hut"),
+    kind(12, "tourism", "alpine_hut"),
+    kind(13, "shop", "supermarket"),
+    kind(14, "shop", "convenience"),
+    kind(15, "shop", "bakery"),
+    kind(16, "amenity", "marketplace"),
+    kind(17, "amenity", "pharmacy"),
+    kind(18, "shop", "bicycle"),
 ];
 
 /// Category display names for the pack log, indexed by category id (0 unused).
@@ -271,12 +290,12 @@ pub fn dedupe(mut candidates: Vec<Poi>) -> (Vec<Poi>, usize) {
     'cand: for p in candidates {
         let (x, y) = meters(&p);
         let (cx, cy) = ((x / DEDUP_RADIUS_M).floor() as i64, (y / DEDUP_RADIUS_M).floor() as i64);
-        let cat = table_row(p.subtype).category;
+        let cat = table_row(p.subtype).category();
         for dx in -1..=1 {
             for dy in -1..=1 {
                 for &i in grid.get(&(cx + dx, cy + dy)).into_iter().flatten() {
                     let q = &kept[i];
-                    if table_row(q.subtype).category != cat {
+                    if table_row(q.subtype).category() != cat {
                         continue;
                     }
                     let (qx, qy) = meters(q);
@@ -298,7 +317,7 @@ pub fn dedupe(mut candidates: Vec<Poi>) -> (Vec<Poi>, usize) {
 pub fn format_counts(pois: &[Poi], dropped: usize) -> String {
     let mut counts = [0usize; CATEGORY_NAMES.len()];
     for p in pois {
-        counts[table_row(p.subtype).category as usize] += 1;
+        counts[table_row(p.subtype).category() as usize] += 1;
     }
     let per_cat: Vec<String> =
         (1..CATEGORY_NAMES.len()).map(|c| format!("{} {}", CATEGORY_NAMES[c], counts[c])).collect();
@@ -311,9 +330,9 @@ pub fn dump(pois: &[Poi]) {
         let row = table_row(p.subtype);
         println!(
             "poi: {}/{} ({}) at {:.6},{:.6} name={:?} src={}",
-            CATEGORY_NAMES[row.category as usize],
+            CATEGORY_NAMES[row.category() as usize],
             row.value,
-            row.label,
+            row.label(),
             p.lat_udeg as f64 / 1e6,
             p.lon_udeg as f64 / 1e6,
             p.name.as_deref().unwrap_or("-"),
@@ -326,38 +345,43 @@ pub fn dump(pois: &[Poi]) {
 mod tests {
     use super::*;
 
-    /// Pin the whole canonical table — ids are normative and append-only, so any
-    /// edit to an existing row must fail a test, not slip through review.
+    /// Pin the packer's OSM-tag classification — subtype ids are normative and
+    /// append-only, so any edit to an existing row must fail a test, not slip through
+    /// review. The category/label half of each row lives in `obc-reader`'s canonical
+    /// table; this test also asserts every subtype maps back to the **expected**
+    /// category + label there, so the two crates can't drift.
     #[test]
     fn table_is_pinned() {
-        let expect: [(u8, u8, &str, &str, &str); 18] = [
-            (1, 1, "amenity", "drinking_water", "Drinking water"),
-            (1, 2, "natural", "spring", "Spring"),
-            (1, 3, "man_made", "water_tap", "Water tap"),
-            (1, 4, "amenity", "water_point", "Water point"),
-            (2, 5, "tourism", "camp_site", "Campsite"),
-            (2, 6, "tourism", "caravan_site", "Caravan site"),
-            (3, 7, "tourism", "hotel", "Hotel"),
-            (3, 8, "tourism", "hostel", "Hostel"),
-            (3, 9, "tourism", "guest_house", "Guest house"),
-            (3, 10, "tourism", "motel", "Motel"),
-            (3, 11, "tourism", "wilderness_hut", "Wilderness hut"),
-            (3, 12, "tourism", "alpine_hut", "Alpine hut"),
-            (4, 13, "shop", "supermarket", "Supermarket"),
-            (4, 14, "shop", "convenience", "Convenience"),
-            (4, 15, "shop", "bakery", "Bakery"),
-            (4, 16, "amenity", "marketplace", "Marketplace"),
-            (5, 17, "amenity", "pharmacy", "Pharmacy"),
-            (6, 18, "shop", "bicycle", "Bike shop"),
+        // (subtype, key, value, expected category id, expected fallback label). The category + label
+        // columns are what `obc-reader`'s table must return for this subtype — the cross-crate guard.
+        let expect: [(u8, &str, &str, u8, &str); 18] = [
+            (1, "amenity", "drinking_water", 1, "Drinking water"),
+            (2, "natural", "spring", 1, "Spring"),
+            (3, "man_made", "water_tap", 1, "Water tap"),
+            (4, "amenity", "water_point", 1, "Water point"),
+            (5, "tourism", "camp_site", 2, "Campsite"),
+            (6, "tourism", "caravan_site", 2, "Caravan site"),
+            (7, "tourism", "hotel", 3, "Hotel"),
+            (8, "tourism", "hostel", 3, "Hostel"),
+            (9, "tourism", "guest_house", 3, "Guest house"),
+            (10, "tourism", "motel", 3, "Motel"),
+            (11, "tourism", "wilderness_hut", 3, "Wilderness hut"),
+            (12, "tourism", "alpine_hut", 3, "Alpine hut"),
+            (13, "shop", "supermarket", 4, "Supermarket"),
+            (14, "shop", "convenience", 4, "Convenience"),
+            (15, "shop", "bakery", 4, "Bakery"),
+            (16, "amenity", "marketplace", 4, "Marketplace"),
+            (17, "amenity", "pharmacy", 5, "Pharmacy"),
+            (18, "shop", "bicycle", 6, "Bike shop"),
         ];
-        for (row, &(cat, sub, k, v, label)) in POI_TABLE.iter().zip(expect.iter()) {
-            assert_eq!((row.category, row.subtype, row.key, row.value, row.label), (cat, sub, k, v, label));
+        for (row, &(sub, k, v, cat, label)) in POI_TABLE.iter().zip(expect.iter()) {
+            assert_eq!((row.subtype, row.key, row.value), (sub, k, v), "packer classification pinned");
+            // The derived (obc-reader) category + label match the pinned expectation → no drift.
+            assert_eq!((row.category(), row.label()), (cat, label), "obc-reader table agrees for subtype {sub}");
         }
-        // Subtype ids are dense and 1-based (table_row indexes on that), and
-        // every fallback label fits the device row (≤ 14 chars).
+        // Subtype ids are dense and 1-based (table_row indexes on that).
         for (i, row) in POI_TABLE.iter().enumerate() {
             assert_eq!(row.subtype as usize, i + 1);
-            assert!(row.label.len() <= 14, "{} label too long", row.value);
         }
     }
 

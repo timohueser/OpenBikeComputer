@@ -526,7 +526,7 @@ pub fn serialize_poi_section(pois: &[Poi], global_bbox: (i64, i64, i64, i64), se
     // Bucket points by category (id 1..=6). Index 0 is unused (no category 0).
     let mut by_cat: Vec<Vec<PoiPoint>> = (0..=POI_CATEGORY_COUNT as usize).map(|_| Vec::new()).collect();
     for p in pois {
-        let cat = table_row(p.subtype).category as usize;
+        let cat = table_row(p.subtype).category() as usize;
         by_cat[cat].push(PoiPoint {
             lon_udeg: p.lon_udeg,
             lat_udeg: p.lat_udeg,
