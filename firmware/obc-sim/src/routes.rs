@@ -125,6 +125,20 @@ impl RouteStore {
         Ok(stats)
     }
 
+    /// Delete the route with session id `id` (the on-device hold-to-delete, epic #447 P6): remove its
+    /// `.obcr` from the folder and rescan. `true` = a file was deleted. The registry is append-only,
+    /// so the id is retired, not reused — mirroring the device's never-reuse contract. The caller then
+    /// re-feeds [`App::set_routes_with_ids`](obc_app::App::set_routes_with_ids) so the app remaps.
+    pub fn delete_by_id(&mut self, id: u16) -> bool {
+        let Some(pos) = self.ids.iter().position(|&x| x == id) else { return false };
+        let path = self.paths[pos].clone();
+        if std::fs::remove_file(&path).is_err() {
+            return false;
+        }
+        self.rescan();
+        true
+    }
+
     /// Make the active route match `want`, (re)reading its bytes from disk only on a change.
     /// Cheap to call every frame.
     pub fn sync_active(&mut self, want: Option<usize>) {
@@ -195,6 +209,24 @@ impl RouteStore {
 
     pub fn sync_active(&mut self, want: Option<usize>) {
         self.active = want.filter(|&i| i < self.bytes.len());
+    }
+
+    /// Delete the route with id `id` from the in-memory catalog (the web build's face of the
+    /// on-device hold-to-delete, epic #447 P6). `true` = removed. The id isn't re-issued (the
+    /// embedded catalog is fixed and positional).
+    pub fn delete_by_id(&mut self, id: u16) -> bool {
+        let Some(pos) = self.ids.iter().position(|&x| x == id) else { return false };
+        self.catalog.remove(pos);
+        self.ids.remove(pos);
+        self.bytes.remove(pos);
+        if self.active == Some(pos) {
+            self.active = None;
+        } else if let Some(a) = self.active.as_mut() {
+            if *a > pos {
+                *a -= 1;
+            }
+        }
+        true
     }
 
     pub fn active_source(&self) -> Option<SliceSource<'_>> {

@@ -31,6 +31,13 @@ mkdir -p "$OUT"
 # ccw detent (`l`, wrapping) from the Routes start. `w` settles the needle sweep after a turn.
 "$SIM" "$MAP" --boot --png "$OUT/home.png" --battery 45
 "$SIM" "$MAP" --boot --script "p"            --routes-dir "$ROUTES" --png "$OUT/routemenu.png"
+# Route menu hold-to-delete footer (#453): `p H` opens the menu and partial-holds the encoder over
+# the highlighted route, so the trash + warning-red delete bar draws mid-charge.
+"$SIM" "$MAP" --boot --script "p H"          --routes-dir "$ROUTES" --png "$OUT/routemenu-delete.png"
+# The footer greyed while the highlighted route is the active-ride route (#453): ride route 0
+# (`p p p`), climb back to the Route menu (`B p`) with it still highlighted, then partial-hold — the
+# footer shows the "In use" greyed state and no delete bar fills.
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p B p H" --png "$OUT/routemenu-delete-active.png"
 "$SIM" "$MAP" --boot --script "B"            --png "$OUT/menu.png"
 "$SIM" "$MAP" --boot --script "B r w"        --png "$OUT/menu-pois.png"
 # POIs browser (#425): the category list, then a populated nearest-16 list. The list's bearing

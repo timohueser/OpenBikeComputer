@@ -77,6 +77,14 @@ pub struct Activity {
     /// A one-shot disposition for the open log, drained by the host via
     /// [`take_track_action`](Activity::take_track_action).
     track_action: Option<TrackAction>,
+    /// A one-shot **route-delete request** (epic #447, P6): the catalog *index* of a route the Route
+    /// menu's hold-to-delete footer asked to remove, drained by the host via
+    /// [`App::take_route_delete`](crate::App::take_route_delete) which translates it to the route's
+    /// durable object id. An index (not the id) because the screen holds indices; the id lookup is
+    /// `App`'s, which owns the parallel [`route_ids`](crate::App::route_ids) table. Recorded by
+    /// [`request_route_delete`](Activity::request_route_delete); the actual file delete + rescan is
+    /// the host's, and the resulting store-changed edge re-feeds the catalog with the route gone.
+    delete_route: Option<usize>,
 
     // live map-match (from the GPS fix)
     /// Total distance of the active route (m), mirrored from its header so the riding views can
@@ -185,6 +193,26 @@ impl Activity {
     /// storage reconcile on actual change without draining the one-shot.
     pub fn has_track_action(&self) -> bool {
         self.track_action.is_some()
+    }
+
+    /// Record a one-shot request to delete the catalog route at `index` (epic #447, P6) — set by the
+    /// Route menu's hold-to-delete footer, drained by [`App::take_route_delete`](crate::App::take_route_delete).
+    /// The index is resolved to the route's durable object id at drain, so a rescan racing between the
+    /// hold and the drain can't delete the wrong route (a vanished route resolves to nothing).
+    pub(crate) fn request_route_delete(&mut self, index: usize) {
+        self.delete_route = Some(index);
+    }
+
+    /// Take (and clear) the pending route-delete request's catalog **index**, if any — `App` drains
+    /// this and maps the index to its durable object id for the host to delete.
+    pub(crate) fn take_route_delete(&mut self) -> Option<usize> {
+        self.delete_route.take()
+    }
+
+    /// Non-consuming peek at whether a route-delete request is pending — the board gates its per-pass
+    /// store work on this without draining the one-shot.
+    pub(crate) fn has_route_delete(&self) -> bool {
+        self.delete_route.is_some()
     }
 
     /// The elevation (m) to stamp on a logged [`TrackPoint`](obc_route::TrackPoint): the

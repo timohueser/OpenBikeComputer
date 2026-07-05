@@ -354,6 +354,17 @@ impl SimGui {
         // idempotent — an unchanged status repaints nothing.
         self.app.set_ble_status(self.panel.ble);
 
+        // Drain a hold-to-delete request from the Route menu (epic #447 P6) *before* the store is
+        // borrowed for geometry: delete the route file and re-feed the id-carrying catalog — the
+        // same rescan sequence the panel's "Store changed" button runs, so the app's P3 remap keeps
+        // `active_route` + the menu highlight on the right routes. (The device routes this through
+        // `ObjectStore`; the sim deletes the file directly.)
+        if let Some(id) = self.app.take_route_delete() {
+            if self.store.delete_by_id(id) {
+                self.app.set_routes_with_ids(self.store.catalog(), self.store.ids());
+            }
+        }
+
         // Open the active route's geometry *before* ticking so the map-matcher gets it (reloads
         // only on selection change). It stays borrowed through `tick` + `render_frame` below.
         self.store.sync_active(self.app.activity.active_route);
