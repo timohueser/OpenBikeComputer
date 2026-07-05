@@ -1,8 +1,9 @@
 //! `obc-pack` CLI — the full end-to-end pipeline (`.osm.pbf` → `.obcm`): multi-PBF
 //! **merge** → ingest (lines + closed ways + multipolygon relations) → bbox →
 //! **land generation** → per-LOD simplify + quadtree → serialize. Positional CLI:
-//! `<pbf...> <config.json> <out.obcm>`, plus `--chunk-size`, `--no-land`, and
-//! `--dump-pois` (print the classified POI list for eyeballing). It
+//! `<pbf...> <config.json> <out.obcm>`, plus `--chunk-size`, `--no-land`,
+//! `--dump-pois` (print the classified POI list for eyeballing), and
+//! `--dump-hours` (print each POI's parsed weekly schedule). It
 //! prints one stage string per phase ("Merging", "Pass 1/2", "Calculating BBox",
 //! "Generating land", "Building Quadtree", "Serializing", "Writing") so the web
 //! builder UI can show progress. `obc-pack schema` prints the config's JSON
@@ -33,6 +34,7 @@ struct Args {
     chunk_size: Option<usize>,
     no_land: bool,
     dump_pois: bool,
+    dump_hours: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -40,6 +42,7 @@ fn parse_args() -> Result<Args, String> {
     let mut chunk_size = None;
     let mut no_land = false;
     let mut dump_pois = false;
+    let mut dump_hours = false;
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -48,20 +51,20 @@ fn parse_args() -> Result<Args, String> {
             }
             "--no-land" => no_land = true,
             "--dump-pois" => dump_pois = true,
+            "--dump-hours" => dump_hours = true,
             _ => positional.push(a),
         }
     }
     // `<pbf...> <config.json> <out.obcm>`: last two positionals are config + output.
     if positional.len() < 3 {
-        return Err(
-            "usage: obc-pack <pbf...> <config.json> <out.obcm> [--chunk-size N] [--no-land] [--dump-pois]\n       \
+        return Err("usage: obc-pack <pbf...> <config.json> <out.obcm> [--chunk-size N] [--no-land] [--dump-pois] \
+                    [--dump-hours]\n       \
                     obc-pack schema   (print the config JSON Schema envelope)"
-                .into(),
-        );
+            .into());
     }
     let output = positional.pop().unwrap();
     let config = positional.pop().unwrap();
-    Ok(Args { pbfs: positional, config, output, chunk_size, no_land, dump_pois })
+    Ok(Args { pbfs: positional, config, output, chunk_size, no_land, dump_pois, dump_hours })
 }
 
 fn run() -> Result<(), String> {
@@ -104,6 +107,11 @@ fn run() -> Result<(), String> {
     // flag is the eyeball-against-a-known-extract debug aid from #422.
     if args.dump_pois {
         obc_pack::poi::dump(&ingested.pois);
+    }
+    // The parsed opening_hours schedules are pooled + stored by P2 (#441); this
+    // flag eyeballs the parsed weekly hours against the raw extract (#440).
+    if args.dump_hours {
+        obc_pack::poi::dump_hours(&ingested.pois);
     }
 
     // --- Global bbox over features + coastlines, TRUNCATED toward zero (not rounded)

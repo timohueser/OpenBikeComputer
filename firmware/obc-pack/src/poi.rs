@@ -15,6 +15,8 @@ use std::collections::HashMap;
 
 use obc_reader::{category_of, label_of, M_PER_DEG};
 
+use crate::hours::Schedule;
+
 /// One row of the canonical table: the OSM `key=value` classification and the
 /// subtype id it maps to. The subtype's **category** and **fallback label** are
 /// *not* stored here — they live once in `obc-reader`'s `poi_table` (the firmware
@@ -86,6 +88,10 @@ pub struct Poi {
     pub name: Option<String>,
     /// Nodes mark entrances; way-centroids are derived. Drives dedup priority.
     pub from_node: bool,
+    /// Parsed weekly schedule from the OSM `opening_hours` tag, or `None` when the
+    /// POI has no (parseable) hours. In-memory only in P1 (#440) — P2 pools these
+    /// and stores a `hours_ref` on the POI record.
+    pub hours: Option<Schedule>,
 }
 
 /// Look up a subtype's table row (subtype ids are 1-based and dense).
@@ -94,17 +100,25 @@ pub fn table_row(subtype: u8) -> &'static PoiKind {
 }
 
 /// Classify a tag set against [`POI_TABLE`] — first match in **table order**
-/// wins — and pull the normalized `name` alongside. One pass over the tags, no
-/// allocation on the (overwhelmingly common) no-match path.
-pub fn classify<'a, I>(tags: I) -> Option<(u8, Option<String>)>
+/// wins — and pull the normalized `name` plus the **raw** `opening_hours` value
+/// alongside. One pass over the tags, no allocation on the (overwhelmingly common)
+/// no-match path. The `opening_hours` string is returned unparsed (a borrowed
+/// slice) so the fast path stays alloc-free; the caller parses it into a
+/// [`Schedule`] via [`crate::hours::parse`] only on a match.
+pub fn classify<'a, I>(tags: I) -> Option<(u8, Option<String>, Option<&'a str>)>
 where
     I: IntoIterator<Item = (&'a str, &'a str)>,
 {
     let mut best: Option<usize> = None;
     let mut raw_name: Option<&str> = None;
+    let mut raw_hours: Option<&str> = None;
     for (k, v) in tags {
         if k == "name" {
             raw_name = Some(v);
+            continue;
+        }
+        if k == "opening_hours" {
+            raw_hours = Some(v);
             continue;
         }
         for (i, kind) in POI_TABLE.iter().enumerate() {
@@ -117,7 +131,7 @@ where
             }
         }
     }
-    best.map(|i| (POI_TABLE[i].subtype, raw_name.and_then(normalize_name)))
+    best.map(|i| (POI_TABLE[i].subtype, raw_name.and_then(normalize_name), raw_hours))
 }
 
 /// Convert exact-osmium degrees to the µdeg grid.
@@ -341,6 +355,18 @@ pub fn dump(pois: &[Poi]) {
     }
 }
 
+/// `--dump-hours` output: one line per POI that carries a parsed schedule, for
+/// eyeballing the parsed weekly hours against the raw `opening_hours` in an
+/// extract. POIs without hours are skipped.
+pub fn dump_hours(pois: &[Poi]) {
+    for p in pois {
+        if let Some(sched) = &p.hours {
+            let name = p.name.as_deref().unwrap_or_else(|| table_row(p.subtype).label());
+            println!("hours: {}: {}", name, crate::hours::describe(sched));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -402,8 +428,11 @@ mod tests {
     fn classify_no_match_and_name_capture() {
         assert_eq!(classify([("amenity", "parking"), ("name", "P1")]), None);
         assert_eq!(classify([("shop", "butcher")]), None);
-        let (sub, name) = classify([("name", "Alte Quelle"), ("natural", "spring")]).unwrap();
-        assert_eq!((sub, name.as_deref()), (2, Some("Alte Quelle")));
+        let (sub, name, hours) = classify([("name", "Alte Quelle"), ("natural", "spring")]).unwrap();
+        assert_eq!((sub, name.as_deref(), hours), (2, Some("Alte Quelle"), None));
+        // opening_hours captured raw alongside the match (parsed by the caller).
+        let (sub, _, hours) = classify([("shop", "supermarket"), ("opening_hours", "Mo-Fr 08:00-18:00")]).unwrap();
+        assert_eq!((sub, hours), (13, Some("Mo-Fr 08:00-18:00")));
         // Key and value must both match — near misses don't classify.
         assert_eq!(classify([("natural", "water")]), None);
         assert_eq!(classify([("building", "supermarket")]), None);
@@ -461,7 +490,14 @@ mod tests {
     }
 
     fn poi(subtype: u8, lat: f64, lon: f64, name: Option<&str>, from_node: bool) -> Poi {
-        Poi { subtype, lon_udeg: to_udeg(lon), lat_udeg: to_udeg(lat), name: name.map(String::from), from_node }
+        Poi {
+            subtype,
+            lon_udeg: to_udeg(lon),
+            lat_udeg: to_udeg(lat),
+            name: name.map(String::from),
+            from_node,
+            hours: None,
+        }
     }
 
     #[test]
