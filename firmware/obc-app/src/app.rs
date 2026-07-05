@@ -113,12 +113,23 @@ pub struct AppState {
     /// Battery charge, 0–100 %. [`App::tick`] writes it from the [`FuelGauge`](crate::FuelGauge);
     /// the Home screen draws the gauge from it (filled bars coloured by level, empty bars dim grey).
     pub battery_pct: u8,
-    /// A phone holds the BLE link. [`App::set_ble_status`] writes it from the host's
-    /// [`BleStatus`](crate::BleStatus); the connected indicator (the menu title bar's right slot and
-    /// the Home battery row) draws when set, absent otherwise. It lives **on** `AppState` — unlike
-    /// `temp_c` — precisely because two drawn views react to it: a change is meant to gate a repaint,
-    /// and the `state != state_before` comparison already routes that to the screen that draws it.
-    pub ble_connected: bool,
+    /// The BLE link phase (Off / Advertising / Connected). [`App::set_ble_status`] writes it from
+    /// the host's [`BleStatus`](crate::BleStatus); the connected indicator (the menu title bar's
+    /// right slot and the Home battery row) draws on [`Connected`](crate::BleLink::Connected) only
+    /// — see [`ble_connected`](AppState::ble_connected) — while the Bluetooth settings screen's
+    /// status line shows all three states. It lives **on** `AppState` — unlike `temp_c` — precisely
+    /// because drawn views react to it: a change is meant to gate a repaint, and the
+    /// `state != state_before` comparison already routes that to the screen that draws it.
+    pub ble_link: crate::BleLink,
+    /// A BLE bond is stored (the board's RRAM bond slot / the sim's injected flag) — the Bluetooth
+    /// screen's "Paired: yes/no" row. Fed by [`App::set_ble_status`] like [`ble_link`](AppState::ble_link).
+    pub ble_paired: bool,
+    /// The Bluetooth screen's **"Forget phone"** request (epic #447, P8): set by the screen's
+    /// guarded hold, drained by the host via [`App::take_ble_forget`] — which clears the RRAM bond
+    /// slot and drops the bonded connection on the board, or clears the injected `paired` flag in
+    /// the sim. A pending app→host command, carried here because `AppState` is the one mutable
+    /// app-wide state a screen's `handle` reaches (the `TrackAction` pattern, one plane over).
+    pub ble_forget_pending: bool,
 }
 
 impl AppState {
@@ -137,8 +148,16 @@ impl AppState {
             // Stand-in until a [`FuelGauge`](crate::FuelGauge) feeds a real reading on the first tick.
             battery_pct: 75,
             // No phone linked until the host feeds the first [`BleStatus`](crate::BleStatus).
-            ble_connected: false,
+            ble_link: crate::BleLink::Advertising,
+            ble_paired: false,
+            ble_forget_pending: false,
         }
+    }
+
+    /// Whether a phone holds the BLE link — the connected indicator's one question
+    /// ([`ble_link`](AppState::ble_link) == [`Connected`](crate::BleLink::Connected)).
+    pub fn ble_connected(&self) -> bool {
+        self.ble_link == crate::BleLink::Connected
     }
 
     /// Advance one tick: poll the location source and, in [`Follow`](CameraMode::Follow) mode,
@@ -896,9 +915,10 @@ impl App {
     /// injects it from the control panel. Called like [`set_routes`](App::set_routes): a plain host
     /// event, no BLE crate type crossing the boundary.
     ///
-    /// A change in `connected` dirties the map so the connected indicator repaints — but only where
-    /// it's actually drawn (the menu title bar / Home), via the same `AppState`-comparison gate the
-    /// riding views use, so an unchanged status (the steady state, fed every pass) repaints nothing.
+    /// A change in the link phase or the paired flag dirties the map so the drawn state repaints —
+    /// but only where it's actually drawn (the menu title bar / Home / the Bluetooth screen), via
+    /// the same `AppState`-comparison gate the riding views use, so an unchanged status (the steady
+    /// state, fed every pass) repaints nothing.
     ///
     /// The **passkey** (epic #447, P2) drives the host-pushed [`PasskeyScreen`](crate::screen::PasskeyScreen):
     /// a passkey going `Some` opens the card over whatever is up, and its clearing (pairing
@@ -910,11 +930,12 @@ impl App {
     /// state is re-fed every pass.
     pub fn set_ble_status(&mut self, status: crate::ble::BleStatus) {
         let state_before = self.state;
-        self.state.ble_connected = status.connected;
-        // `connected` lives in `AppState` but is drawn only on Home and the menu title bars, so —
-        // like the Home-only battery gate — a change dirties the map only when one of those is the
-        // base screen. Counting it toward `shows_live_data` would force a full map render on the
-        // riding views, which never draw the indicator.
+        self.state.ble_link = status.link;
+        self.state.ble_paired = status.paired;
+        // The link state lives in `AppState` but is drawn only on Home, the menu title bars, and
+        // the Bluetooth screen, so — like the Home-only battery gate — a change dirties the map
+        // only when one of those is the base screen. Counting it toward `shows_live_data` would
+        // force a full map render on the riding views, which never draw the indicator.
         if self.state != state_before && self.indicator_visible() {
             self.map_dirty = true;
         }
@@ -976,6 +997,14 @@ impl App {
         self.hold_progress_override.is_some_and(|p| p > 0.0)
             || self.input.encoder_hold_progress() > 0.0
             || self.input.back_hold_progress() > 0.0
+    }
+
+    /// Drain the Bluetooth screen's pending **"Forget phone"** request (epic #447, P8): `true` at
+    /// most once per guarded hold. The board's ride loop rings the BLE plane (clear the RRAM bond
+    /// slot + drop the bonded connection); the sim clears its injected `paired` flag. The
+    /// `TrackAction` shape: a one-shot the host consumes, not a level.
+    pub fn take_ble_forget(&mut self) -> bool {
+        core::mem::take(&mut self.state.ble_forget_pending)
     }
 
     /// Whether the base (lowest opaque) screen draws the connected indicator — Home, or any framed
@@ -1129,7 +1158,7 @@ impl App {
     /// with the charging hold-progress to redraw only when the fill would actually animate;
     /// holding the encoder on any other screen changes no pixels, so no repaint is owed.
     pub fn top_wants_hold_fill(&self) -> bool {
-        self.stack.last().is_some_and(|s| s.wants_hold_fill(&self.settings))
+        self.stack.last().is_some_and(|s| s.wants_hold_fill(&self.settings, &self.state))
     }
 
     /// **Debug/benchmark hook** (the USB-CDC `Z` command): set the map camera to exactly `mpp`

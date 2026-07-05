@@ -23,6 +23,9 @@ pub(crate) enum LinkState {
     Advertising,
     /// A central holds the (single) link.
     Connected,
+    /// The radio is switched **off** (the Bluetooth setting, #455): not advertising, no link, and
+    /// the lifecycle loop parked until [`set_radio_enabled`] re-arms it.
+    Off,
 }
 
 /// One coherent snapshot of the link for the status UI — published by the BLE plumbing below,
@@ -51,6 +54,10 @@ pub(crate) struct Status {
     /// True once the link is encrypted (a fresh pairing or a resumed bond) — the status screen's
     /// "secured" marker and the CoC's open-gate.
     pub secured: bool,
+    /// A bond is stored in the RRAM slot (#455): seeded at boot from `load_bond`, raised when a
+    /// fresh pairing persists, cleared by Forget phone. Drives the app's "Paired" row **and** the
+    /// reject-when-bonded pairing policy (the control plane refuses new pairing attempts while set).
+    pub paired: bool,
 }
 
 impl Status {
@@ -65,6 +72,7 @@ impl Status {
         last_disconnect_reason: 0,
         passkey: None,
         secured: false,
+        paired: false,
     };
 }
 
@@ -97,14 +105,87 @@ pub fn wait_status_change() -> impl core::future::Future<Output = ()> {
     STATUS_EDGE.wait()
 }
 
-/// The link distilled into the app-facing [`obc_app::BleStatus`] (epic #447, P1): connected + the
-/// pairing passkey. The ride loop reads this each pass and feeds it through
-/// [`App::set_ble_status`](obc_app::App::set_ble_status), so `obc-app` sees the link in its own
-/// vocabulary without any `ble` type crossing the seam. `Init`/`Advertising` both read as *not*
-/// connected.
+/// The link distilled into the app-facing [`obc_app::BleStatus`] (epic #447, P1 + P8): the
+/// three-state link, the pairing passkey, and the stored-bond flag. The ride loop reads this each
+/// pass and feeds it through [`App::set_ble_status`](obc_app::App::set_ble_status), so `obc-app`
+/// sees the link in its own vocabulary without any `ble` type crossing the seam. `Init` reads as
+/// `Advertising` (the UI never needs "stack coming up").
 pub fn app_ble_status() -> obc_app::BleStatus {
     let s = status();
-    obc_app::BleStatus { connected: s.state == LinkState::Connected, passkey: s.passkey }
+    let link = match s.state {
+        LinkState::Off => obc_app::BleLink::Off,
+        LinkState::Init | LinkState::Advertising => obc_app::BleLink::Advertising,
+        LinkState::Connected => obc_app::BleLink::Connected,
+    };
+    obc_app::BleStatus { link, passkey: s.passkey, paired: s.paired }
+}
+
+// ============================ Settings → radio control (#455) ============================
+
+/// The rider's Bluetooth switch, mirrored across the plane boundary: the ride loop owns the
+/// persisted [`Settings`](obc_app::Settings) and pushes the value here each pass
+/// ([`set_radio_enabled`]); the lifecycle loop in [`super::run`] reads it and parks the radio while
+/// off. Defaults **on** so a BLE build without the ride loop's seed still advertises; `run` re-seeds
+/// it from the persisted settings at boot, before the first advertise.
+static RADIO_ENABLED: AtomicBool = AtomicBool::new(true);
+
+/// Edge for the lifecycle loop: signalled whenever [`RADIO_ENABLED`] *changes*, so the advertise /
+/// serve phases can wake, re-check the level, and wind the radio up or down. Level + edge (not just
+/// a `Signal` payload) so a toggle bounced off-and-on between polls degrades to a harmless
+/// re-advertise, never a stuck state.
+static RADIO_EDGE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+/// The Bluetooth screen's **Forget phone** (#455), rung by the ride loop after
+/// [`App::take_ble_forget`](obc_app::App::take_ble_forget): the lifecycle loop clears the RRAM bond
+/// slot + the host's bond table and drops the bonded connection. Latching, so a request raised
+/// between phases is picked up at the next loop top.
+pub(crate) static FORGET_BOND: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+/// Push the rider's Bluetooth switch to the radio plane (called by the ride loop once per pass —
+/// one atomic swap; the edge fires only on a change). `false` stops advertising and drops a live
+/// connection; `true` resumes the normal advertising lifecycle (policy unchanged).
+pub fn set_radio_enabled(enabled: bool) {
+    if RADIO_ENABLED.swap(enabled, Ordering::Relaxed) != enabled {
+        RADIO_EDGE.signal(());
+    }
+}
+
+/// Boot seed for [`RADIO_ENABLED`] from the persisted settings — no edge (the lifecycle loop hasn't
+/// started; it reads the level at its first pass).
+pub(crate) fn seed_radio_enabled(enabled: bool) {
+    RADIO_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+/// The current radio switch level.
+pub(crate) fn radio_enabled() -> bool {
+    RADIO_ENABLED.load(Ordering::Relaxed)
+}
+
+/// Resolve once the radio switch reads **off** — the advertise / serve phases' wind-down arm.
+/// Consumes [`RADIO_EDGE`] signals while enabled, so a bounced toggle just re-checks the level.
+pub(crate) async fn radio_disabled() {
+    loop {
+        if !radio_enabled() {
+            return;
+        }
+        RADIO_EDGE.wait().await;
+    }
+}
+
+/// Resolve once the radio switch reads **on** — the parked Off phase's wake.
+pub(crate) async fn radio_enabled_wait() {
+    loop {
+        if radio_enabled() {
+            return;
+        }
+        RADIO_EDGE.wait().await;
+    }
+}
+
+/// Ring the Forget-phone request (called by the ride loop; the BLE lifecycle honours it in any
+/// phase — parked, advertising, or connected).
+pub fn request_forget_bond() {
+    FORGET_BOND.signal(());
 }
 
 /// The battery percent for the BAS characteristic, read by `battery_task` to seed + notify. A

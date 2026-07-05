@@ -53,8 +53,8 @@ pub use route_menu::RouteMenuScreen;
 pub use route_overview::RouteOverviewScreen;
 pub use route_swap::RouteSwapScreen;
 pub use settings::{
-    AddFieldScreen, DateTimeScreen, PowerScreen, ResetScreen, SettingsScreen, StatFieldsScreen, StatsScreen,
-    UnitsScreen,
+    AddFieldScreen, BluetoothScreen, DateTimeScreen, PowerScreen, ResetScreen, SettingsScreen, StatFieldsScreen,
+    StatsScreen, UnitsScreen,
 };
 pub use statistics::StatisticsScreen;
 
@@ -304,6 +304,8 @@ screens! {
     StatFields(StatFieldsScreen) => Settings,
     AddField(AddFieldScreen) => Settings,
     Power(PowerScreen) => Settings,
+    /// The Bluetooth screen: radio on/off, status line, Paired row, hold-guarded Forget phone.
+    Bluetooth(BluetoothScreen) => Settings,
     Reset(ResetScreen) => Settings,
 }
 
@@ -320,12 +322,13 @@ impl Screen {
     /// [`App::top_wants_hold_fill`](crate::App::top_wants_hold_fill) to repaint a charging hold
     /// only when the fill would actually draw. Intentionally partial, like
     /// [`tick_timers`](Screen::tick_timers): most screens draw nothing hold-driven.
-    pub(crate) fn wants_hold_fill(&self, settings: &Settings) -> bool {
+    pub(crate) fn wants_hold_fill(&self, settings: &Settings, state: &crate::AppState) -> bool {
         match self {
             Screen::RideControl(s) => s.selection_is_guarded(),
             Screen::RouteSwap(s) => s.selection_is_guarded(),
             Screen::Reset(s) => s.hold_fill_active(),
             Screen::StatFields(s) => s.selection_is_deletable(settings),
+            Screen::Bluetooth(s) => s.selection_is_guarded(state.ble_paired),
             _ => false,
         }
     }
