@@ -207,6 +207,81 @@ OSM ways draw the *coast*, but not the sea or the land fill. Those come from a s
 <figcaption>The packer reads the land shapefile directly and reprojects it from Web Mercator with closed-form math — no GIS stack — decoding only the records whose bounding box touches the query. The result flows through the same simplify-and-quadtree path as every other feature, so by the time the device sees it, land is just more geometry.</figcaption>
 </figure>
 
+### Extracting POIs
+
+The same OSM extract carries more than geometry. Amenities a bikepacker actually looks for — water, campsites, lodging, resupply, pharmacies, bike shops — are tagged on nodes and areas the geometry pipeline would otherwise style-and-forget. A separate stage harvests them into the map's [POI section](../formats/#pois-a-nearest-list-not-a-map-layer), where the device browses them by category. It's config-free on purpose: the tag → category mapping is **hardcoded in the packer** (a locked decision), so packing the same extract always yields the same POIs.
+
+<figure class="fig">
+<svg viewBox="0 0 720 300" role="img" aria-label="POI extraction. On the left, two OSM sources: a tagged node used as-is, and a closed way whose polygon centroid becomes a point. Both are classified against a fixed table of tag-equals-value rules mapping to a category and subtype. Names are folded to ASCII and capped at 20 bytes. Finally a dedup step collapses a node and a way-centroid of the same category within 50 metres into one POI, keeping the node.">
+  <defs>
+    <marker id="aP6" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24">Nodes + way-centroids → classify → fold names → dedup</text>
+
+  <!-- sources -->
+  <rect class="d-panel-2" x="24" y="44" width="150" height="40" rx="9" />
+  <text class="d-sub" x="40" y="62" style="font-size:10px">a tagged node</text>
+  <text class="d-sub" x="40" y="77" style="font-size:9px">amenity=drinking_water</text>
+  <circle cx="158" cy="64" r="4" class="d-hot-fill" />
+
+  <rect class="d-panel-2" x="24" y="94" width="150" height="52" rx="9" />
+  <text class="d-sub" x="40" y="112" style="font-size:10px">a closed way</text>
+  <text class="d-sub" x="40" y="127" style="font-size:9px">tourism=camp_site</text>
+  <!-- small polygon with centroid dot -->
+  <path d="M120 118 L150 116 L156 136 L126 140 Z" fill="none" stroke="#3c6b39" stroke-width="1.2" />
+  <circle cx="138" cy="127" r="3" class="d-hot-fill" />
+  <text class="d-sub" x="120" y="152" style="font-size:8.5px;fill:#a9501c">→ ring centroid</text>
+
+  <!-- classify -->
+  <line class="d-flow" x1="178" y1="64"  x2="224" y2="86" marker-end="url(#aP6)" />
+  <line class="d-flow" x1="178" y1="120" x2="224" y2="98" marker-end="url(#aP6)" />
+  <rect class="d-panel" x="230" y="56" width="204" height="92" rx="10" />
+  <text class="d-tag" x="246" y="76">fixed table · first match</text>
+  <g font-family="var(--mono)">
+    <text class="d-sub" x="246" y="96"  style="font-size:9.5px">amenity=drinking_water → Water</text>
+    <text class="d-sub" x="246" y="112" style="font-size:9.5px">natural=spring &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;→ Water</text>
+    <text class="d-sub" x="246" y="128" style="font-size:9.5px">tourism=camp_site &nbsp;&nbsp;→ Campsite</text>
+    <text class="d-sub" x="246" y="142" style="font-size:9px;fill:#a9501c">… 18 subtypes, 6 categories</text>
+  </g>
+
+  <!-- fold names -->
+  <line class="d-flow" x1="438" y1="102" x2="484" y2="102" marker-end="url(#aP6)" />
+  <rect class="d-panel-2" x="490" y="72" width="206" height="60" rx="10" />
+  <text class="d-tag" x="506" y="90">fold name → ASCII, ≤ 20 B</text>
+  <text class="d-sub" x="506" y="110" font-family="var(--mono)" style="font-size:10px">"Bäckerei Müller"</text>
+  <text class="d-sub" x="506" y="124" font-family="var(--mono)" style="font-size:10px;fill:#a9501c">→ "Baeckerei Mueller"</text>
+
+  <!-- dedup -->
+  <line class="d-flow" x1="360" y1="150" x2="360" y2="196" marker-end="url(#aP6)" />
+  <rect class="d-hot" x="120" y="200" width="480" height="76" rx="12" style="fill:#f8efe4" />
+  <text class="d-tag" x="138" y="220" style="fill:#a9501c">dedup — same category within 50 m = one POI</text>
+  <!-- node + centroid merging -->
+  <circle cx="168" cy="248" r="5" class="d-hot-fill" /><text class="d-sub" x="150" y="268" style="font-size:9px">node</text>
+  <circle cx="210" cy="248" r="4" class="d-water" /><text class="d-sub" x="196" y="268" style="font-size:9px">centroid</text>
+  <line x1="176" y1="248" x2="202" y2="248" stroke="#9aa884" stroke-width="1.2" stroke-dasharray="3 2" />
+  <line class="d-flow" x1="250" y1="248" x2="300" y2="248" marker-end="url(#aP6)" />
+  <circle cx="330" cy="248" r="5" class="d-hot-fill" /><text class="d-sub" x="346" y="252" style="font-size:9.5px">the node wins</text>
+  <text class="d-sub" x="470" y="240" style="font-size:9px">priority: node beats centroid,</text>
+  <text class="d-sub" x="470" y="254" style="font-size:9px">then named beats unnamed,</text>
+  <text class="d-sub" x="470" y="268" style="font-size:9px">then first-seen.</text>
+</svg>
+<figcaption>Both an OSM <b>node</b> and a <b>closed way</b> can be a POI — a way is reduced to its shoelace-weighted <b>ring centroid</b>, so a campsite polygon becomes a single point. Each candidate is classified against a fixed <code>key=value</code> table (first match in table order wins, the same rule as the style config), and its name is <b>folded to printable ASCII</b> and capped at 20 bytes. The last step matters because OSM double-maps: a drinking-water node sitting inside a same-tagged area, an entrance node beside a campsite polygon. Two candidates of the <b>same category within ~50 m</b> collapse to one, and the winner is chosen by priority — a node (a real placed point) beats a derived centroid, a named POI beats an unnamed one.</figcaption>
+</figure>
+
+Why fold names at all? Because the device font is **[Terminus](../ui/#the-field-map-look), printable ASCII only** — it has no glyph for `ä` or `é`. Rather than ship mojibake or a heavier font, the packer transliterates at pack time: German umlauts get their proper digraphs (`ä → ae`, `ß → ss`), the rest of Latin strips to its base letter, and anything genuinely unmappable (CJK, Cyrillic, Greek) becomes a word break rather than gluing neighbours together. A name that folds away to nothing is stored as unnamed, and the device falls back to the subtype's label ("Spring", "Bakery"). The 20-byte cap is a device-row width, not a storage worry — POI bytes are noise next to geometry.
+
+```rust
+pub const POI_TABLE: [PoiKind; 18] = [
+    kind(1, "amenity", "drinking_water"), // → Water / "Drinking water"
+    kind(2, "natural", "spring"),         // → Water / "Spring"
+    kind(5, "tourism", "camp_site"),      // → Campsite
+    kind(13, "shop", "supermarket"),      // → Resupply / "Supermarket"
+    // … 18 rows, ids append-only — the subtype id is normative (OBCM_Spec §7.4)
+];
+```
+
+The subtype *ids* are normative and shared: the packer owns only the OSM `key=value` half of the table, while each subtype's category and fallback label live once in [`obc-reader`'s `poi_table`](src:firmware/obc-reader/src/poi_table.rs) — the same table the device reads — so the two crates can't drift, and a pinning test asserts every row agrees. The extracted, deduped, name-folded POIs are handed to the serializer, which builds the [per-category quadtrees](../formats/#pois-a-nearest-list-not-a-map-layer) of the POI section.
+
 ### Building the LOD pyramid
 
 Now the heart of it. The file is a [pyramid of detail levels](../formats/#the-file-front-to-back), and the packer builds each one independently. Two knobs from the config drive it: every feature's **`min_lod`** (the coarsest tier it's allowed into) and each tier's **simplify tolerance**. So the country tier holds a handful of feature types, heavily simplified; the street tier holds everything, at full detail. The presets pick each tolerance pixel-accurately: one pixel at the finest scale the tier is drawn at, which is the next finer tier's `max_mpp` ceiling.
@@ -461,6 +536,7 @@ let (back, fwd) = if !self.started {
 - OSM ingest + relation assembly: [`obc-pack/src/ingest.rs`](src:firmware/obc-pack/src/ingest.rs)
 - The quadtree build: [`obc-pack/src/quadtree.rs`](src:firmware/obc-pack/src/quadtree.rs)
 - Land generation: [`obc-pack/src/land.rs`](src:firmware/obc-pack/src/land.rs)
+- POI extraction, classification, name folding + dedup: [`obc-pack/src/poi.rs`](src:firmware/obc-pack/src/poi.rs)
 - The route map-matcher: [`obc-route/src/matcher.rs`](src:firmware/obc-route/src/matcher.rs)
 - GPX → OBCR conversion: [`obc-route/src/convert.rs`](src:firmware/obc-route/src/convert.rs)
 
