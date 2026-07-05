@@ -12,6 +12,8 @@
 //!   ([`RouteReader`], [`RouteSummary`], [`ChunkMeta`], [`RoutePoint`]).
 //! - [`profile`] — a route's elevation sampled to a fixed-width [`Profile`] for the
 //!   Elevation screen's band + cursor + peak label.
+//! - [`nav`] — the on-device A* router over the map's §8 nav graph ([`plan_route`]),
+//!   emitting its result as a normal OBCR through the shared converter internals.
 //!
 //! Coordinates are integer microdegrees (1e-6 degrees) like the map; distances and
 //! elevations are whole meters. [`obc_reader::BBox`] is reused for bounding boxes so
@@ -28,6 +30,7 @@ pub mod deadband;
 mod geo;
 pub mod gpx;
 pub mod matcher;
+pub mod nav;
 pub mod profile;
 pub mod reader;
 pub mod ride;
@@ -39,6 +42,7 @@ pub use deadband::{DeadBand, Elev, ELE_DEADBAND_M};
 pub use geo::{cos_lat, ground_dist_m, ground_dist_m_cl, tri_area_m2, tri_area_m2_cl};
 pub use gpx::{GpxScanner, RawPoint, RawWaypoint, WptScanner};
 pub use matcher::{Match, RouteMatch};
+pub use nav::{plan_route, NavError, NavScratch, NAV_MAX_NODES};
 pub use profile::{Profile, Window, PROFILE_COLS};
 pub use reader::{
     for_each_waypoint, ChunkMeta, RouteCache, RouteIndex, RouteObjectInfo, RoutePoint, RouteReader, RouteSummary,
