@@ -105,6 +105,10 @@ struct Args {
     /// the OPEN/CLOSED-now badge for a reproducible render. Defaults to the device default
     /// (2025-01-01 12:00, a Wednesday noon).
     clock: Option<obc_app::settings::DateTime>,
+    /// Headless `--png` only: render with a phone linked over BLE, so the connected indicator
+    /// shows (the menu title bar / Home). Stands in for the sim control panel's "Phone connected"
+    /// toggle when capturing a snapshot.
+    ble_connected: bool,
 }
 
 impl Default for Args {
@@ -138,6 +142,7 @@ impl Default for Args {
             battery: None,
             home_seed: None,
             clock: None,
+            ble_connected: false,
         }
     }
 }
@@ -234,6 +239,7 @@ fn parse_args() -> Result<Args, String> {
             "--clock" => {
                 a.clock = Some(parse_clock(&it.next().ok_or("--clock needs YYYY-MM-DDTHH:MM")?)?);
             }
+            "--ble-connected" => a.ble_connected = true,
             other => {
                 if a.map.is_empty() {
                     a.map = other.to_string();
@@ -464,7 +470,7 @@ fn main() {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: obc-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--home-seed N] [--clock YYYY-MM-DDTHH:MM]");
+            eprintln!("error: {e}\nusage: obc-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--home-seed N] [--clock YYYY-MM-DDTHH:MM] [--ble-connected]");
             std::process::exit(2);
         }
     };
@@ -627,6 +633,9 @@ fn main() {
             };
             apply_script(&mut app, script, &mut render);
         }
+        // Inject the BLE link state (epic #447): with `--ble-connected` the connected indicator
+        // shows in the snapshot, exactly as the control panel's toggle drives it live.
+        app.set_ble_status(obc_app::BleStatus { connected: args.ble_connected, passkey: None });
         // The script may have loaded a route; open its geometry for the Map.
         store.sync_active(app.activity.active_route);
         let route_src = store.active_source();
