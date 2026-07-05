@@ -239,9 +239,14 @@ device is a *display-only* peer: it shows a **6-digit passkey** on its screen
 that the rider types into the phone's system dialog. That's LE Secure
 Connections passkey entry — man-in-the-middle-protected — and the on-screen code
 is what makes it safe: **physical possession of the device is the control.**
-There is exactly one bonded peer, and because seeing the screen is the gate, a
-fresh passkey pairing simply *replaces* the stored bond — there's no separate
-"clear bond" gesture to hunt for.
+There is exactly one bonded peer — and while that bond exists the device
+**rejects any new pairing attempt**: a stranger's phone gets a generic pairing
+failure and the device screen shows nothing. Re-pairing (a new or reset phone)
+goes through the hold-guarded **Forget phone** action in the device's
+Settings ▸ Bluetooth, which clears the bond and re-opens pairing — so physical
+possession still gates the swap, at the *clear* step. The same screen carries
+the Bluetooth **off** switch: off stops advertising and drops the link, while
+the bond survives for when the radio comes back.
 
 <figure class="fig">
 <svg viewBox="0 0 720 300" role="img" aria-label="Pairing and reconnect in two rows. Top row, first pairing, done once: the device shows a six-digit passkey on its screen; the rider reads it and types it into the phone; the two run an LESC elliptic-curve key exchange; both sides store the resulting bond keys. Bottom row, every time after, silent: the device advertises with a stable address; the phone recognises that identity from the bond; the two re-encrypt with the stored long-term key and the phone's rotating address is resolved via the stored identity key; the result is a connected, encrypted link with no dialog.">
