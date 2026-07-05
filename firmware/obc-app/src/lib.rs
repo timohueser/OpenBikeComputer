@@ -14,6 +14,7 @@
 
 pub mod activity;
 pub mod app;
+pub mod ble;
 pub mod breadcrumb;
 pub mod dirty;
 pub mod hal;
@@ -28,6 +29,7 @@ pub mod wall_clock;
 
 pub use activity::{Activity, Mode, TrackAction};
 pub use app::{App, AppState, CameraMode, Pan, PanAxis};
+pub use ble::BleStatus;
 pub use breadcrumb::Breadcrumb;
 pub use dirty::Dirty;
 pub use hal::{
