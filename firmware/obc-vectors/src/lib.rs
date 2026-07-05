@@ -212,6 +212,9 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         ("transfer-abort.bin", transfer_control(3, 1, 0xFFFF, 0, 0, 0)),
         // Closing result: committed, assigned id 7, all bytes durable.
         ("status-transfer-result.bin", status_transfer_result(7, 0, len)),
+        // Reject: a new-route upload (id 0xFFFF) refused at descriptor-open time
+        // because the catalog is full. status=6 storageFull, nothing committed.
+        ("status-transfer-storage-full.bin", status_transfer_result(0xFFFF, 6, 0)),
         ("status-store-changed.bin", status_store_changed(1, 42)),
         ("object-store.bin", object_store(42, 3, 5)),
         // Catalog for both stored route fixtures: fields from their OBCR headers

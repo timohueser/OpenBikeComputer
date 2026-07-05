@@ -100,6 +100,13 @@
       "status": "committed (0)",
       "committed_offset": 300
     },
+    "status-transfer-storage-full.bin": {
+      "format": "status msg 1 (spec 4.3)",
+      "msg": 1,
+      "object_id": 65535,
+      "status": "storageFull (6)",
+      "committed_offset": 0
+    },
     "status-store-changed.bin": {
       "format": "status msg 2 (spec 4.3)",
       "msg": 2,
