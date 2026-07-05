@@ -92,12 +92,13 @@ impl DrawTarget for Buf {
 
 // Minimal OBCM fixture.
 
-/// A minimal valid v5 `.obcm`: one sea-backdrop style, one LOD with a single empty leaf and no
-/// chunks. It renders as a flat backdrop, so the only non-backdrop pixels come from whatever is drawn
-/// on top — making overlays/markers trivial to detect. `marker` is the header's marker color (pass
-/// `0` when ignored).
+/// A minimal valid v6 `.obcm`: one sea-backdrop style, one LOD with a single empty leaf and no
+/// chunks, and an empty POI directory (six empty categories). It renders as a flat backdrop, so the
+/// only non-backdrop pixels come from whatever is drawn on top — making overlays/markers trivial to
+/// detect. `marker` is the header's marker color (pass `0` when ignored).
 pub fn build_min_obcm(marker: u16) -> Vec<u8> {
-    let style_off: u32 = 32;
+    // v6 header is 36 bytes; the style table follows immediately.
+    let style_off: u32 = 36;
     // Style table: count=1, then (id=1, z=0, color=0x001F blue sea, weight=1, flags=0).
     let mut styles = vec![1u8];
     styles.push(1);
@@ -120,9 +121,22 @@ pub fn build_min_obcm(marker: u16) -> Vec<u8> {
     // Index: a single empty leaf (no chunk).
     let index = 0x7FFF_FFFFu32.to_le_bytes();
 
+    // POI section starts right after the index (no LOD chunks here). Empty directory:
+    // count=6, chunk_size=512, then six 13-byte entries (all node_count/chunk_count 0).
+    let poi_section_off = index_off + index.len();
+    let after_dir = (poi_section_off + 3 + 6 * 13) as u32;
+    let mut poi_dir = vec![6u8]; // category_count
+    poi_dir.extend_from_slice(&512u16.to_le_bytes()); // shared chunk_size
+    for id in 1u8..=6 {
+        poi_dir.push(id);
+        poi_dir.extend_from_slice(&after_dir.to_le_bytes()); // index_offset (zero-length here)
+        poi_dir.extend_from_slice(&0u32.to_le_bytes()); // node_count
+        poi_dir.extend_from_slice(&0u32.to_le_bytes()); // chunk_count
+    }
+
     let mut f = Vec::new();
     f.extend_from_slice(b"OBCM");
-    f.push(5);
+    f.push(6);
     for v in [-1000i32, -1000, 1000, 1000] {
         f.extend_from_slice(&v.to_le_bytes()); // bbox: min_lat, min_lon, max_lat, max_lon
     }
@@ -130,9 +144,11 @@ pub fn build_min_obcm(marker: u16) -> Vec<u8> {
     f.push(1); // lod count
     f.extend_from_slice(&(lod_tab_off as u32).to_le_bytes());
     f.extend_from_slice(&marker.to_le_bytes());
+    f.extend_from_slice(&(poi_section_off as u32).to_le_bytes());
     f.extend_from_slice(&styles);
     f.extend_from_slice(&table);
     f.extend_from_slice(&index);
+    f.extend_from_slice(&poi_dir);
     f
 }
 

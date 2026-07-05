@@ -22,7 +22,7 @@ const sampleConfig = {
 
 const mockSchema: SchemaEnvelope = {
     schema_version: 1,
-    format_version: 5,
+    format_version: 6,
     source: "binary",
     schema: {
         $defs: {

@@ -1,13 +1,19 @@
-//! Hand-written OBCM v5 byte builder shared by the `obc-reader` and `obc-render`
+//! Hand-written OBCM v6 byte builder shared by the `obc-reader` and `obc-render`
 //! integration tests.
 //!
 //! Both crates need to synthesise `.obcm` byte buffers by hand (rather than checking
-//! in a binary fixture) so the Rust reader stays pinned to `OBCM_Spec.md` /
-//! `packer/obcm/serialize.py`: if either drifts, the format tests break. Before this
-//! kit the 32-byte header + style-record pack and the `pack_*` feature encoders were
-//! copy-pasted into both crates' `tests/format.rs` / `tests/priority.rs`, so a v6
-//! format bump would have meant editing the same layout in two places. This crate is
-//! the single source: a v6 bump edits it once.
+//! in a binary fixture) so the Rust reader stays pinned to `OBCM_Spec.md`: if
+//! either drifts, the format tests break. Before this kit the header + style-record
+//! pack and the `pack_*` feature encoders were copy-pasted into both crates'
+//! `tests/format.rs` / `tests/priority.rs`, so a format bump would have meant
+//! editing the same layout in two places. This crate is the single source: a bump
+//! edits it once.
+//!
+//! v6 grew the header to 36 bytes (the trailing `POI Section Offset`) and appended
+//! the POI section (spec §7). [`build_file`]/[`build_priority_tree`] write an
+//! **empty** POI directory (six empty categories) so the reader accepts them; the
+//! POI-directory + record builders ([`poi_directory`], [`pack_poi_record`]) let the
+//! contract tests pin the section's bytes explicitly.
 //!
 //! Three map shapes are needed and kept as distinct, clearly-named builders so each call
 //! site's bytes stay identical:
@@ -34,6 +40,19 @@ use obc_reader::format::{FEATURE_FLAG_16BIT, FEATURE_FLAG_HOLES, FEATURE_FLAG_PO
 /// reader's round-trip test is meaningful.
 pub const MARKER: u16 = 0xABCD;
 
+/// POI category count in a v6 directory (spec §7.1): ids 1..=6.
+pub const POI_CATEGORY_COUNT: u8 = 6;
+/// One 32-byte POI record (spec §7.3).
+pub const POI_RECORD_LEN: usize = 32;
+/// The fixed POI chunk capacity the packer writes (spec §7.1); the builders use it too.
+pub const POI_CHUNK_SIZE: usize = 512;
+/// One 13-byte POI-directory category entry (spec §7.1).
+pub const POI_CAT_ENTRY_LEN: usize = 13;
+
+/// The v6 header length (bytes); the Style Table conventionally follows immediately, so it is the
+/// builders' `style_off`. Kept in lock-step with [`obc_reader::HEADER_LEN`].
+pub const HEADER_LEN: usize = 36;
+
 /// One LOD layer: its quadtree index (flat u32 nodes) and padded data chunks.
 pub struct LodSpec {
     pub max_mpp: f32,
@@ -56,20 +75,21 @@ fn style_table(styles: &[Style]) -> Vec<u8> {
     style_bytes
 }
 
-/// The 32-byte OBCM v5 header, shared by both file builders.
+/// The 36-byte OBCM v6 header, shared by both file builders.
 ///
-/// `<4sBiiiiIBIH`: magic, ver, min_lat, min_lon, max_lat, max_lon, style_off, lod_count,
-/// lod_table_off, marker_color. `bbox` is `(min_lon, min_lat, max_lon, max_lat)`.
+/// `<4sBiiiiIBIHI`: magic, ver, min_lat, min_lon, max_lat, max_lon, style_off, lod_count,
+/// lod_table_off, marker_color, poi_section_off. `bbox` is `(min_lon, min_lat, max_lon, max_lat)`.
 fn obcm_header(
     bbox: (i32, i32, i32, i32),
     style_off: usize,
     lod_count: u8,
     lod_tab_off: usize,
     marker: u16,
+    poi_section_off: usize,
 ) -> Vec<u8> {
     let mut f = Vec::new();
     f.extend_from_slice(b"OBCM");
-    f.push(5);
+    f.push(6);
     f.extend_from_slice(&bbox.1.to_le_bytes()); // min_lat
     f.extend_from_slice(&bbox.0.to_le_bytes()); // min_lon
     f.extend_from_slice(&bbox.3.to_le_bytes()); // max_lat
@@ -78,8 +98,72 @@ fn obcm_header(
     f.push(lod_count);
     f.extend_from_slice(&(lod_tab_off as u32).to_le_bytes());
     f.extend_from_slice(&marker.to_le_bytes());
-    assert_eq!(f.len(), 32, "header must be 32 bytes");
+    f.extend_from_slice(&(poi_section_off as u32).to_le_bytes());
+    assert_eq!(f.len(), 36, "header must be 36 bytes");
     f
+}
+
+/// One POI-directory category entry (spec §7.1): `category_id, index_offset, index_node_count,
+/// chunk_count`. Used by [`poi_directory`] and the reader's POI contract tests.
+pub struct PoiCat {
+    pub category_id: u8,
+    pub index_offset: u32,
+    pub node_count: u32,
+    pub chunk_count: u32,
+}
+
+/// Build a POI directory (spec §7.1): the count byte, the shared `chunk_size`, then one 13-byte
+/// entry per category. The caller supplies the (already-computed) per-category offsets/counts —
+/// this only lays out the directory bytes, not the indexes/chunks that follow.
+pub fn poi_directory(chunk_size: u16, cats: &[PoiCat]) -> Vec<u8> {
+    let mut d = Vec::with_capacity(3 + cats.len() * POI_CAT_ENTRY_LEN);
+    d.push(cats.len() as u8);
+    d.extend_from_slice(&chunk_size.to_le_bytes());
+    for c in cats {
+        d.push(c.category_id);
+        d.extend_from_slice(&c.index_offset.to_le_bytes());
+        d.extend_from_slice(&c.node_count.to_le_bytes());
+        d.extend_from_slice(&c.chunk_count.to_le_bytes());
+    }
+    d
+}
+
+/// An **empty** POI directory (spec §7.1): six categories, all with `node_count 0` and `chunk_count
+/// 0`, their `index_offset` pointing just past the directory (where a zero-length index would
+/// begin). `section_off` is the directory's absolute byte offset. This is what a map with no POIs
+/// carries, and what [`build_file`]/[`build_priority_tree`] append so the v6 reader accepts them.
+pub fn empty_poi_directory(section_off: usize) -> Vec<u8> {
+    let after_dir = (section_off + 3 + POI_CATEGORY_COUNT as usize * POI_CAT_ENTRY_LEN) as u32;
+    let cats: Vec<PoiCat> = (1..=POI_CATEGORY_COUNT)
+        .map(|id| PoiCat { category_id: id, index_offset: after_dir, node_count: 0, chunk_count: 0 })
+        .collect();
+    poi_directory(POI_CHUNK_SIZE as u16, &cats)
+}
+
+/// Pack one 32-byte POI record (spec §7.3): absolute `int32 lat, int32 lon`, `u8 subtype`, `u8
+/// name_len`, a 20-byte `0xFF`-padded name, and `0xFF 0xFF` reserved. `name` is stored as-is (the
+/// caller pre-folds it to ≤ 20 ASCII bytes, as the packer does).
+pub fn pack_poi_record(lat: i32, lon: i32, subtype: u8, name: &str) -> [u8; POI_RECORD_LEN] {
+    let mut rec = [0xFFu8; POI_RECORD_LEN];
+    rec[0..4].copy_from_slice(&lat.to_le_bytes());
+    rec[4..8].copy_from_slice(&lon.to_le_bytes());
+    rec[8] = subtype;
+    let bytes = name.as_bytes();
+    let len = bytes.len().min(20);
+    rec[9] = len as u8;
+    rec[10..10 + len].copy_from_slice(&bytes[..len]);
+    rec
+}
+
+/// Pack POI records into one `chunk_size`-byte chunk (spec §7.3): the records back-to-back, a `0xFF`
+/// subtype sentinel after the last, then `0xFF` padding — mirroring the packer's `pack_poi_chunk`.
+pub fn pack_poi_chunk(records: &[[u8; POI_RECORD_LEN]], chunk_size: usize) -> Vec<u8> {
+    let mut c = Vec::with_capacity(chunk_size);
+    for r in records {
+        c.extend_from_slice(r);
+    }
+    c.resize(chunk_size, 0xFF);
+    c
 }
 
 /// Start a feature record: `style_id`, the `uint16` exterior point count, the i32 anchor
@@ -116,7 +200,7 @@ fn push_deltas16(v: &mut Vec<u8>, deltas: &[(i16, i16)]) {
 /// its own quadtree index and padded chunks. The header carries [`MARKER`] as the
 /// marker color.
 pub fn build_file(bbox: (i32, i32, i32, i32), styles: &[Style], lods: &[LodSpec]) -> Vec<u8> {
-    let style_off = 32usize;
+    let style_off = HEADER_LEN;
 
     let style_bytes = style_table(styles);
 
@@ -145,10 +229,15 @@ pub fn build_file(bbox: (i32, i32, i32, i32), styles: &[Style], lods: &[LodSpec]
         payload.extend_from_slice(&chunk_bytes);
     }
 
-    let mut f = obcm_header(bbox, style_off, lods.len() as u8, lod_tab_off, MARKER);
+    // The POI section begins right after the LOD payload (`cursor` now points there).
+    let poi_section_off = cursor;
+    let poi_dir = empty_poi_directory(poi_section_off);
+
+    let mut f = obcm_header(bbox, style_off, lods.len() as u8, lod_tab_off, MARKER, poi_section_off);
     f.extend_from_slice(&style_bytes);
     f.extend_from_slice(&table);
     f.extend_from_slice(&payload);
+    f.extend_from_slice(&poi_dir);
     f
 }
 
@@ -164,7 +253,7 @@ pub fn build_priority_tree(
     nw_chunks: [Vec<u8>; 4],
     ne_chunk: Vec<u8>,
 ) -> Vec<u8> {
-    let style_off = 32usize;
+    let style_off = HEADER_LEN;
     let style_bytes = style_table(styles);
 
     let lod_tab_off = style_off + style_bytes.len();
@@ -190,13 +279,16 @@ pub fn build_priority_tree(
     table.extend_from_slice(&(chunk_size as u16).to_le_bytes());
     table.extend_from_slice(&(chunks.len() as u32).to_le_bytes());
 
-    let mut f = obcm_header(bbox, style_off, 1, lod_tab_off, 0); // marker unused here → 0
+    // The POI section begins right after the index + all chunk bytes.
+    let poi_section_off = index_off + idx_bytes.len() + chunks.len() * chunk_size;
+    let mut f = obcm_header(bbox, style_off, 1, lod_tab_off, 0, poi_section_off); // marker unused here → 0
     f.extend_from_slice(&style_bytes);
     f.extend_from_slice(&table);
     f.extend_from_slice(&idx_bytes);
     for c in chunks {
         f.extend_from_slice(&pad(c, chunk_size));
     }
+    f.extend_from_slice(&empty_poi_directory(poi_section_off));
     f
 }
 

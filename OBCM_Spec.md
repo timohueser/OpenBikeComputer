@@ -1,4 +1,4 @@
-# OBCM File Format Specification (v5)
+# OBCM File Format Specification (v6)
 
 OBCM (OpenStreetMap Binary Chunked Map) is a compact binary map format designed
 for efficient rendering on memory-constrained devices such as microcontrollers
@@ -15,7 +15,15 @@ decoding fine geometry just to skip it.
 **Version 4** appends a single 2-byte field to the header — the **user-position
 marker color** (RGB565).
 
-**Version 5** adds a 6th byte to style records for flags (bit 0 = priority). **v5 is the only supported version**; earlier versions (v4, v3 LOD-only, v2 single detail level) have been dropped.
+**Version 5** adds a 6th byte to style records for flags (bit 0 = priority).
+
+**Version 6** appends a 4-byte **POI Section Offset** to the header (32 → 36
+bytes) and a new **POI section** (§7): the OSM points-of-interest the packer
+bakes in (water, campsites, accommodation, resupply, pharmacies, bike shops),
+indexed by a small quadtree per category over 32-byte records. The section is
+**always present** — a map with no POIs writes an empty directory, never a
+sentinel-zero offset. **v6 is the only supported version**; earlier versions (v5,
+v4, v3 LOD-only, v2 single detail level) have been dropped.
 
 ## Design principles
 
@@ -40,13 +48,14 @@ screen space is the renderer's responsibility, not the format's.
 ## File layout
 
 ```
-[Header]                            (32 bytes, fixed)
+[Header]                            (36 bytes, fixed)
 [Style Table]                       (global — shared by all LODs)
 [LOD Table]                         (LOD Count entries)
 [LOD 0 Index][LOD 0 Data Chunks]    (coarsest)
 [LOD 1 Index][LOD 1 Data Chunks]
 ...
 [LOD N-1 Index][LOD N-1 Data Chunks] (finest)
+[POI Directory][POI Indexes + Chunks] (§7)
 ```
 
 The byte layout is produced by `firmware/obc-pack/src/serialize.rs` (`serialize_lods`) and
@@ -54,14 +63,14 @@ parsed by `firmware/obc-reader/src/reader.rs`. All multi-byte integers are **lit
 
 ---
 
-## 1. Header (32 bytes)
+## 1. Header (36 bytes)
 
-Packed as `struct "<4sBiiiiIBIH"`.
+Packed as `struct "<4sBiiiiIBIHI"`.
 
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
 | 0 | Magic | 4 | `char[4]` | Must be `b"OBCM"` |
-| 4 | Version | 1 | `uint8` | `0x05` |
+| 4 | Version | 1 | `uint8` | `0x06` |
 | 5 | Min Lat | 4 | `int32` | Global bbox min latitude (microdegrees) |
 | 9 | Min Lon | 4 | `int32` | Global bbox min longitude |
 | 13 | Max Lat | 4 | `int32` | Global bbox max latitude |
@@ -70,9 +79,12 @@ Packed as `struct "<4sBiiiiIBIH"`.
 | 25 | LOD Count | 1 | `uint8` | Number of LOD levels (≥ 1) |
 | 26 | LOD Table Offset | 4 | `uint32` | Byte offset to the LOD Table |
 | 30 | Marker Color | 2 | `uint16` | User-position marker color (RGB565) |
+| 32 | POI Section Offset | 4 | `uint32` | Byte offset to the POI Directory (§7) |
 
 Note the bbox field order in the file is **lat, lon, lat, lon**. In practice the
-Style Table immediately follows the header, so `Style Offset` is `32`.
+Style Table immediately follows the header, so `Style Offset` is `36` (it was `32`
+in v5, before the POI Section Offset was appended). The POI section is always
+present, so `POI Section Offset` is never `0`.
 
 ### Marker Color
 
@@ -275,11 +287,118 @@ it survives the packer's automatic ID assignment. Land is then painted on top.
 
 ---
 
+## 7. POI Section (v6)
+
+Point-of-interest features the packer classifies from OSM nodes and closed-way
+centroids (see the category table below). Unlike geometry, POIs are **not**
+rendered on the map; the device surfaces them as a category → nearest-list
+browser. They are indexed for a nearest-N query, not a viewport walk, so each
+category gets its own small quadtree over 32-byte point records.
+
+The section is reached from `POI Section Offset` (header offset 32) and is
+**always present**: a map with no POIs writes a directory of six empty
+categories, never a zero offset.
+
+### 7.1 POI Directory
+
+```
+uint8   Category Count            (= 6 in v6)
+uint16  Chunk Size                (POI chunk capacity in bytes — the packer writes 512)
+per category (Category Count entries, 13 bytes each):
+  uint8   Category ID
+  uint32  Index Offset            (byte offset to this category's quadtree index)
+  uint32  Index Node Count        (number of uint32 nodes; 0 ⇒ category empty)
+  uint32  Chunk Count             (number of data chunks in this category)
+```
+
+`Chunk Size` is shared by every category (all POI chunks are the same fixed
+capacity). As with a LOD, a category's data chunks begin at
+`Index Offset + Index Node Count * 4` — the exact §3/§4 convention, so the reader's
+`walk_leaves` leaf-walk and chunk-offset math are reused verbatim. An empty
+category (`Index Node Count == 0`) still has a directory entry; its `Index Offset`
+points at where its (zero-length) index would start and `Chunk Count` is `0`.
+
+### 7.2 Per-category quadtree
+
+Identical to the geometry quadtree (§4): a flat `uint32` array using the same
+node encoding (branch bit / empty-leaf sentinel / chunk id), built over the **same
+global bbox from the header**, with the same floor-division-midpoint NW/NE/SW/SE
+subdivision. Point features make these trees small and shallow. A reader walks
+one exactly as it walks a LOD index, collecting `(chunk_id, node_bbox)` for each
+non-empty leaf; the `node_bbox` is **not** needed to decode a POI record (records
+store absolute coordinates), only to prune the walk.
+
+### 7.3 POI records — fixed 32 bytes
+
+Records are packed into `Chunk Size`-byte chunks (512 ⇒ 16 records/chunk). Each
+record is exactly 32 bytes. A `0xFF` **Subtype** byte marks the end of records in
+a chunk (mirrors the geometry chunk's `0xFF` style-ID sentinel); trailing bytes
+of a partial final chunk are `0xFF`-padded.
+
+| Offset | Field | Size | Type | Description |
+| :-- | :-- | :-- | :-- | :-- |
+| 0 | Lat | 4 | `int32` | Latitude, **absolute** microdegrees |
+| 4 | Lon | 4 | `int32` | Longitude, **absolute** microdegrees |
+| 8 | Subtype | 1 | `uint8` | Canonical subtype id (§7.4); `0xFF` = end-of-chunk sentinel |
+| 9 | Name Len | 1 | `uint8` | Length of the stored name in bytes (`0` = unnamed) |
+| 10 | Name | 20 | `char[20]` | Pre-folded printable ASCII; unused tail bytes are `0xFF` |
+| 30 | Reserved | 2 | — | `0xFF 0xFF` (reserved for future flags) |
+
+Coordinates are **absolute** (no per-node anchor/delta as in geometry §5): at a
+fixed 32 bytes the delta win isn't worth the decode asymmetry with geometry
+chunks, and fixed-size records keep chunk packing trivial (`Chunk Size / 32`
+records per chunk, no per-record length bookkeeping). The **category** is not
+stored per record — it is derived on-device from the subtype (each subtype maps to
+exactly one category, §7.4) — and is implicit anyway from which category's
+quadtree the record came from.
+
+Names are ASCII-folded at pack time to the device font's printable set
+(`0x20..=0x7E`, Terminus) and capped at **20 bytes**; an unnamed POI (`Name Len ==
+0`) shows its subtype's fallback label on-device. The 20-byte `Name` field is
+`0xFF`-padded past `Name Len` so a record is always exactly 32 bytes.
+
+### 7.4 Canonical category / subtype table (normative)
+
+This is the **normative home** of the id table; `obc-pack`'s `poi.rs` mirrors it
+exactly and the device firmware mirrors it. **Ids are append-only** — an existing
+row's category or subtype id must never be renumbered (an old map's records would
+then decode as the wrong POI). Subtype `0` is reserved; `0xFF` is the
+end-of-chunk sentinel and can never be a subtype id.
+
+| Category ID | Category | Subtype ID | OSM tag (`key=value`) | Fallback label |
+| :-- | :-- | :-- | :-- | :-- |
+| 1 | Water | 1 | `amenity=drinking_water` | Drinking water |
+| 1 | Water | 2 | `natural=spring` | Spring |
+| 1 | Water | 3 | `man_made=water_tap` | Water tap |
+| 1 | Water | 4 | `amenity=water_point` | Water point |
+| 2 | Campsite | 5 | `tourism=camp_site` | Campsite |
+| 2 | Campsite | 6 | `tourism=caravan_site` | Caravan site |
+| 3 | Accommodation | 7 | `tourism=hotel` | Hotel |
+| 3 | Accommodation | 8 | `tourism=hostel` | Hostel |
+| 3 | Accommodation | 9 | `tourism=guest_house` | Guest house |
+| 3 | Accommodation | 10 | `tourism=motel` | Motel |
+| 3 | Accommodation | 11 | `tourism=wilderness_hut` | Wilderness hut |
+| 3 | Accommodation | 12 | `tourism=alpine_hut` | Alpine hut |
+| 4 | Resupply | 13 | `shop=supermarket` | Supermarket |
+| 4 | Resupply | 14 | `shop=convenience` | Convenience |
+| 4 | Resupply | 15 | `shop=bakery` | Bakery |
+| 4 | Resupply | 16 | `amenity=marketplace` | Marketplace |
+| 5 | Pharmacy | 17 | `amenity=pharmacy` | Pharmacy |
+| 6 | Bike shop | 18 | `shop=bicycle` | Bike shop |
+
+Subtype ids are dense and 1-based, so a subtype id indexes directly into the
+table (`row = subtype - 1`). The category count in the directory (`6`) equals the
+number of distinct category ids; every subtype belongs to exactly one category.
+
+---
+
 ## Reference implementations
 
 - **Writer (Rust, std host):** `firmware/obc-pack/src/serialize.rs` (`serialize_lods`,
-  `serialize_tree`, `pack_feature`, `pack_chunk`, `pack_style_dict`).
+  `serialize_tree`, `serialize_poi_section`, `pack_feature`, `pack_chunk`,
+  `pack_style_dict`) and `firmware/obc-pack/src/poi.rs` (the category/subtype table
+  mirrored in §7.4).
 - **Reader + renderer (Rust, no_std):** `firmware/obc-reader` — `reader.rs`
-  (`Reader`, `for_each_feature`, `select_lod_for_mpp`) — and `firmware/obc-render`
-  (`Viewport`, `MapRenderer`). Format-contract tests in
-  `firmware/obc-reader/tests/format.rs`.
+  (`Reader`, `for_each_feature`, `select_lod_for_mpp`, the POI directory in
+  `MapTables`) — and `firmware/obc-render` (`Viewport`, `MapRenderer`).
+  Format-contract tests in `firmware/obc-reader/tests/format.rs`.
