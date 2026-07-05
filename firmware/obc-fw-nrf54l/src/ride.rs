@@ -821,6 +821,23 @@ pub(crate) async fn run_app(
                 s.run_pending_save(settings_store);
             }
         }
+        // A ride object landed this pass (the deferred Finish above, or a back-to-back flush inside
+        // `begin_track`/`reconcile_track` earlier in the pass) — raise the store edge so a fresh
+        // `RD{id}.ORD` is visible *now*, not after a reboot (the boot scan used to be the only
+        // reader). `ble`: post the saved-ride edge to the BLE plane, which owns the `ObjectStore`
+        // — it re-scans its catalog + bumps the revision (phone `storeChanged(ride)` + digest), and
+        // the resulting `STORE_CHANGED` edge re-feeds the Rides menu next pass: one edge, every
+        // consumer, exactly like an upload or delete. Map-only: re-feed the Rides menu directly
+        // (`load_rides` is its own popped frame — see its stack note — called sequentially here,
+        // never under the deep render path).
+        if storage.as_mut().is_some_and(sd::Storage::take_ride_saved) {
+            #[cfg(feature = "ble")]
+            crate::object_store::note_ride_saved();
+            #[cfg(not(feature = "ble"))]
+            if let Some(s) = storage.as_mut() {
+                load_rides(s, app);
+            }
+        }
         let save_pending = storage.as_ref().is_some_and(|s| s.has_pending_save());
 
         // All card + settings work for this pass is done — release the shared store before the tail
