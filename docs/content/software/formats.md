@@ -68,10 +68,10 @@ Where they differ is *shape*: a map is a 2-D area indexed by a quadtree; a route
 
 ### The file, front to back
 
-An OBCM file (current version **5**) opens with a fixed 32-byte header, then a global style table and a level-of-detail (LOD) table, then the LOD layers themselves — coarsest first. Each LOD layer is wholly self-contained: its own quadtree index immediately followed by its own geometry chunks.
+An OBCM file (current version **6**) opens with a fixed 36-byte header, then a global style table and a level-of-detail (LOD) table, then the LOD layers themselves — coarsest first. Each LOD layer is wholly self-contained: its own quadtree index immediately followed by its own geometry chunks. After the finest layer comes one more section — the [POIs](#pois-a-nearest-list-not-a-map-layer) — reached, like everything else, by an offset the header stores.
 
 <figure class="fig">
-<svg viewBox="0 0 720 210" role="img" aria-label="The OBCM file as a horizontal ribbon: a 32-byte header, a global style table, an LOD table, then LOD layer 0 (coarsest) through LOD layer N minus 1 (finest). Detail increases left to right across the LOD layers. One LOD layer is exploded below to show it is a quadtree index followed by data chunks.">
+<svg viewBox="0 0 720 210" role="img" aria-label="The OBCM file as a horizontal ribbon: a 36-byte header, a global style table, an LOD table, LOD layer 0 (coarsest) through LOD layer N minus 1 (finest), then a POI section at the tail. Detail increases left to right across the LOD layers. One LOD layer is exploded below to show it is a quadtree index followed by data chunks.">
   <defs>
     <marker id="aF2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
   </defs>
@@ -79,32 +79,35 @@ An OBCM file (current version **5**) opens with a fixed 32-byte header, then a g
 
   <!-- ribbon -->
   <g stroke="#3c6b39" stroke-width="1.4">
-    <rect x="24"  y="56" width="64"  height="44" class="d-forest" />
-    <rect x="88"  y="56" width="92"  height="44" class="d-amber" />
-    <rect x="180" y="56" width="92"  height="44" class="d-water" />
-    <rect x="272" y="56" width="132" height="44" class="d-muted" />
-    <rect x="404" y="56" width="116" height="44" class="d-muted" />
-    <rect x="520" y="56" width="176" height="44" class="d-muted" />
+    <rect x="24"  y="56" width="60"  height="44" class="d-forest" />
+    <rect x="84"  y="56" width="82"  height="44" class="d-amber" />
+    <rect x="166" y="56" width="80"  height="44" class="d-water" />
+    <rect x="246" y="56" width="112" height="44" class="d-muted" />
+    <rect x="358" y="56" width="100" height="44" class="d-muted" />
+    <rect x="458" y="56" width="130" height="44" class="d-muted" />
+    <rect x="588" y="56" width="108" height="44" class="d-hot-fill" />
   </g>
-  <text class="d-label" x="56"  y="80" text-anchor="middle" style="fill:#fff">Header</text>
-  <text class="d-sub"   x="56"  y="94" text-anchor="middle" style="fill:#e7ead8">32 B</text>
-  <text class="d-label" x="134" y="80" text-anchor="middle">Style table</text>
-  <text class="d-sub"   x="134" y="94" text-anchor="middle">global</text>
-  <text class="d-label" x="226" y="80" text-anchor="middle" style="fill:#fff">LOD table</text>
-  <text class="d-sub"   x="226" y="94" text-anchor="middle" style="fill:#dfe6e0">N × 18 B</text>
-  <text class="d-label" x="338" y="80" text-anchor="middle">LOD 0</text>
-  <text class="d-sub"   x="338" y="94" text-anchor="middle">coarsest</text>
-  <text class="d-label" x="462" y="80" text-anchor="middle">LOD 1</text>
-  <text class="d-label" x="608" y="80" text-anchor="middle">LOD N−1</text>
-  <text class="d-sub"   x="608" y="94" text-anchor="middle">finest</text>
+  <text class="d-label" x="54"  y="80" text-anchor="middle" style="fill:#fff">Header</text>
+  <text class="d-sub"   x="54"  y="94" text-anchor="middle" style="fill:#e7ead8">36 B</text>
+  <text class="d-label" x="125" y="80" text-anchor="middle">Style table</text>
+  <text class="d-sub"   x="125" y="94" text-anchor="middle">global</text>
+  <text class="d-label" x="206" y="80" text-anchor="middle" style="fill:#fff">LOD table</text>
+  <text class="d-sub"   x="206" y="94" text-anchor="middle" style="fill:#dfe6e0">N × 18 B</text>
+  <text class="d-label" x="302" y="80" text-anchor="middle">LOD 0</text>
+  <text class="d-sub"   x="302" y="94" text-anchor="middle">coarsest</text>
+  <text class="d-label" x="408" y="80" text-anchor="middle">LOD 1</text>
+  <text class="d-label" x="523" y="80" text-anchor="middle">LOD N−1</text>
+  <text class="d-sub"   x="523" y="94" text-anchor="middle">finest</text>
+  <text class="d-label" x="642" y="80" text-anchor="middle" style="fill:#fff">POIs</text>
+  <text class="d-sub"   x="642" y="94" text-anchor="middle" style="fill:#f6e6d8">§7 · tail</text>
 
   <!-- detail arrow -->
-  <line x1="276" y1="114" x2="692" y2="114" stroke="#cf6a2a" stroke-width="1.6" marker-end="url(#aF2)" />
-  <text class="d-sub" x="484" y="128" text-anchor="middle" style="fill:#a9501c">detail increases →</text>
+  <line x1="250" y1="114" x2="576" y2="114" stroke="#cf6a2a" stroke-width="1.6" marker-end="url(#aF2)" />
+  <text class="d-sub" x="413" y="128" text-anchor="middle" style="fill:#a9501c">detail increases →</text>
 
   <!-- explode LOD 0 -->
-  <line x1="272" y1="100" x2="232" y2="152" stroke="#9aa884" stroke-width="1.2" />
-  <line x1="404" y1="100" x2="544" y2="152" stroke="#9aa884" stroke-width="1.2" />
+  <line x1="246" y1="100" x2="232" y2="152" stroke="#9aa884" stroke-width="1.2" />
+  <line x1="358" y1="100" x2="544" y2="152" stroke="#9aa884" stroke-width="1.2" />
   <rect class="d-panel-2" x="232" y="152" width="160" height="40" rx="7" />
   <text class="d-label" x="312" y="170" text-anchor="middle">quadtree index</text>
   <text class="d-sub"   x="312" y="184" text-anchor="middle">flat u32 nodes</text>
@@ -112,7 +115,7 @@ An OBCM file (current version **5**) opens with a fixed 32-byte header, then a g
   <text class="d-label" x="468" y="170" text-anchor="middle">data chunks</text>
   <text class="d-sub"   x="468" y="184" text-anchor="middle">fixed-size blocks</text>
 </svg>
-<figcaption>The header, style table and LOD table are read once when the file opens — they're tiny. Everything after is the LOD pyramid: each layer its own <b>(index + chunks)</b> pair, simplified to that zoom. Reaching any section is an explicit offset, so there is no scanning to "find" where a layer begins.</figcaption>
+<figcaption>The header, style table and LOD table are read once when the file opens — they're tiny. The bulk of the file is the LOD pyramid: each layer its own <b>(index + chunks)</b> pair, simplified to that zoom. The <b>POI section</b> at the tail (coral) is a different beast — not a map layer but a nearest-list index, covered <a href="#pois-a-nearest-list-not-a-map-layer">below</a>. Reaching any section is an explicit offset, so there is no scanning to "find" where a layer begins.</figcaption>
 </figure>
 
 Why a pyramid, rather than one detailed tree with a min-zoom tag on every feature? Because the latter forces the device to *decode* fine geometry just to discover it should be skipped when zoomed out. With independent layers, zooming out reads a small coarse layer and touches nothing else. The renderer's job of [picking the right layer](../rendering/#2-level-of-detail-pick-the-right-layer) for the current zoom is covered on the rendering page; here we only care that the layers exist side by side in the file.
@@ -131,53 +134,58 @@ Eighteen bytes per entry — the `N × 18 B` in the ribbon above. Because the in
 
 ### The header
 
-The 32-byte header is the one fixed-size, always-present part of the file. Everything else is found through offsets it stores.
+The 36-byte header is the one fixed-size, always-present part of the file. Everything else is found through offsets it stores.
 
 <figure class="fig">
-<svg viewBox="0 0 720 170" role="img" aria-label="The 32-byte OBCM header drawn as a byte ruler: bytes 0 to 3 are the magic OBCM, byte 4 is the version, bytes 5 to 20 are the global bounding box as four 32-bit integers, bytes 21 to 24 are the style-table offset, byte 25 is the LOD count, bytes 26 to 29 are the LOD-table offset, and bytes 30 to 31 are the marker colour.">
-  <text class="d-tag" x="20" y="24">The 32-byte header, byte by byte</text>
+<svg viewBox="0 0 720 170" role="img" aria-label="The 36-byte OBCM header drawn as a byte ruler: bytes 0 to 3 are the magic OBCM, byte 4 is the version, bytes 5 to 20 are the global bounding box as four 32-bit integers, bytes 21 to 24 are the style-table offset, byte 25 is the LOD count, bytes 26 to 29 are the LOD-table offset, bytes 30 to 31 are the marker colour, and bytes 32 to 35 are the POI-section offset appended in v6.">
+  <text class="d-tag" x="20" y="24">The 36-byte header, byte by byte</text>
 
   <!-- field names -->
-  <text class="d-sub" x="88"  y="56" text-anchor="middle">Magic</text>
-  <text class="d-sub" x="138" y="56" text-anchor="middle" style="font-size:9px">ver</text>
-  <text class="d-sub" x="308" y="50" text-anchor="middle">global bbox</text>
-  <text class="d-sub" x="308" y="62" text-anchor="middle" style="font-size:9px">4 × i32 · µdeg</text>
-  <text class="d-sub" x="508" y="56" text-anchor="middle">style off</text>
-  <text class="d-sub" x="558" y="56" text-anchor="middle" style="font-size:9px">n</text>
-  <text class="d-sub" x="608" y="56" text-anchor="middle">LOD-tbl off</text>
-  <text class="d-sub" x="668" y="56" text-anchor="middle">marker</text>
+  <text class="d-sub" x="78"  y="56" text-anchor="middle">Magic</text>
+  <text class="d-sub" x="120" y="56" text-anchor="middle" style="font-size:9px">ver</text>
+  <text class="d-sub" x="272" y="50" text-anchor="middle">global bbox</text>
+  <text class="d-sub" x="272" y="62" text-anchor="middle" style="font-size:9px">4 × i32 · µdeg</text>
+  <text class="d-sub" x="452" y="56" text-anchor="middle">style off</text>
+  <text class="d-sub" x="498" y="56" text-anchor="middle" style="font-size:9px">n</text>
+  <text class="d-sub" x="544" y="56" text-anchor="middle">LOD-tbl off</text>
+  <text class="d-sub" x="600" y="56" text-anchor="middle">marker</text>
+  <text class="d-sub" x="666" y="50" text-anchor="middle" style="fill:#a9501c">POI off</text>
+  <text class="d-sub" x="666" y="62" text-anchor="middle" style="fill:#a9501c;font-size:9px">v6</text>
 
   <!-- ruler fields -->
   <g stroke="#20301d" stroke-width="1">
-    <rect x="48"  y="72" width="80" height="32" class="d-forest" />
-    <rect x="128" y="72" width="20" height="32" class="d-amber" />
-    <rect x="148" y="72" width="320" height="32" class="d-water" />
-    <rect x="468" y="72" width="80" height="32" class="d-muted" />
-    <rect x="548" y="72" width="20" height="32" class="d-amber" />
-    <rect x="568" y="72" width="80" height="32" class="d-muted" />
-    <rect x="648" y="72" width="40" height="32" class="d-hot-fill" />
+    <rect x="44"  y="72" width="72" height="32" class="d-forest" />
+    <rect x="116" y="72" width="18" height="32" class="d-amber" />
+    <rect x="134" y="72" width="288" height="32" class="d-water" />
+    <rect x="422" y="72" width="72" height="32" class="d-muted" />
+    <rect x="494" y="72" width="18" height="32" class="d-amber" />
+    <rect x="512" y="72" width="72" height="32" class="d-muted" />
+    <rect x="584" y="72" width="36" height="32" style="fill:#e3ad33" />
+    <rect x="620" y="72" width="72" height="32" class="d-hot-fill" />
   </g>
   <!-- per-byte ticks -->
   <g stroke="#20301d" stroke-opacity="0.18" stroke-width="1">
-    <line x1="68" y1="72" x2="68" y2="104"/><line x1="88" y1="72" x2="88" y2="104"/><line x1="108" y1="72" x2="108" y2="104"/>
-    <line x1="168" y1="72" x2="168" y2="104"/><line x1="188" y1="72" x2="188" y2="104"/><line x1="208" y1="72" x2="208" y2="104"/><line x1="228" y1="72" x2="228" y2="104"/><line x1="248" y1="72" x2="248" y2="104"/><line x1="268" y1="72" x2="268" y2="104"/><line x1="288" y1="72" x2="288" y2="104"/><line x1="308" y1="72" x2="308" y2="104"/><line x1="328" y1="72" x2="328" y2="104"/><line x1="348" y1="72" x2="348" y2="104"/><line x1="368" y1="72" x2="368" y2="104"/><line x1="388" y1="72" x2="388" y2="104"/><line x1="408" y1="72" x2="408" y2="104"/><line x1="428" y1="72" x2="428" y2="104"/><line x1="448" y1="72" x2="448" y2="104"/>
-    <line x1="488" y1="72" x2="488" y2="104"/><line x1="508" y1="72" x2="508" y2="104"/><line x1="528" y1="72" x2="528" y2="104"/>
-    <line x1="588" y1="72" x2="588" y2="104"/><line x1="608" y1="72" x2="608" y2="104"/><line x1="628" y1="72" x2="628" y2="104"/>
-    <line x1="668" y1="72" x2="668" y2="104"/>
+    <line x1="62" y1="72" x2="62" y2="104"/><line x1="80" y1="72" x2="80" y2="104"/><line x1="98" y1="72" x2="98" y2="104"/>
+    <line x1="152" y1="72" x2="152" y2="104"/><line x1="170" y1="72" x2="170" y2="104"/><line x1="188" y1="72" x2="188" y2="104"/><line x1="206" y1="72" x2="206" y2="104"/><line x1="224" y1="72" x2="224" y2="104"/><line x1="242" y1="72" x2="242" y2="104"/><line x1="260" y1="72" x2="260" y2="104"/><line x1="278" y1="72" x2="278" y2="104"/><line x1="296" y1="72" x2="296" y2="104"/><line x1="314" y1="72" x2="314" y2="104"/><line x1="332" y1="72" x2="332" y2="104"/><line x1="350" y1="72" x2="350" y2="104"/><line x1="368" y1="72" x2="368" y2="104"/><line x1="386" y1="72" x2="386" y2="104"/><line x1="404" y1="72" x2="404" y2="104"/>
+    <line x1="440" y1="72" x2="440" y2="104"/><line x1="458" y1="72" x2="458" y2="104"/><line x1="476" y1="72" x2="476" y2="104"/>
+    <line x1="530" y1="72" x2="530" y2="104"/><line x1="548" y1="72" x2="548" y2="104"/><line x1="566" y1="72" x2="566" y2="104"/>
+    <line x1="602" y1="72" x2="602" y2="104"/>
+    <line x1="638" y1="72" x2="638" y2="104"/><line x1="656" y1="72" x2="656" y2="104"/><line x1="674" y1="72" x2="674" y2="104"/>
   </g>
   <!-- value + byte ranges -->
-  <text class="d-label" x="88" y="93" text-anchor="middle" style="fill:#fff;font-size:11px">OBCM</text>
-  <text class="d-sub" x="88"  y="122" text-anchor="middle" style="font-size:9px">0–3</text>
-  <text class="d-sub" x="138" y="122" text-anchor="middle" style="font-size:9px">4</text>
-  <text class="d-sub" x="308" y="122" text-anchor="middle" style="font-size:9px">5–20</text>
-  <text class="d-sub" x="508" y="122" text-anchor="middle" style="font-size:9px">21–24</text>
-  <text class="d-sub" x="558" y="122" text-anchor="middle" style="font-size:9px">25</text>
-  <text class="d-sub" x="608" y="122" text-anchor="middle" style="font-size:9px">26–29</text>
-  <text class="d-sub" x="668" y="122" text-anchor="middle" style="font-size:9px">30–31</text>
+  <text class="d-label" x="80" y="93" text-anchor="middle" style="fill:#fff;font-size:11px">OBCM</text>
+  <text class="d-sub" x="80"  y="122" text-anchor="middle" style="font-size:9px">0–3</text>
+  <text class="d-sub" x="125" y="122" text-anchor="middle" style="font-size:9px">4</text>
+  <text class="d-sub" x="278" y="122" text-anchor="middle" style="font-size:9px">5–20</text>
+  <text class="d-sub" x="458" y="122" text-anchor="middle" style="font-size:9px">21–24</text>
+  <text class="d-sub" x="503" y="122" text-anchor="middle" style="font-size:9px">25</text>
+  <text class="d-sub" x="548" y="122" text-anchor="middle" style="font-size:9px">26–29</text>
+  <text class="d-sub" x="602" y="122" text-anchor="middle" style="font-size:9px">30–31</text>
+  <text class="d-sub" x="656" y="122" text-anchor="middle" style="fill:#a9501c;font-size:9px">32–35</text>
 
-  <text class="d-sub" x="48" y="150" style="font-size:11px">A short read here is the only "is this even a map?" check the reader needs.</text>
+  <text class="d-sub" x="44" y="150" style="font-size:11px">A short read here is the only "is this even a map?" check the reader needs.</text>
 </svg>
-<figcaption>Fixed offsets, no surprises. Two small details a reader notices: the bbox is stored <b>lat, lon</b> (a packer ordering quirk), and the <b>marker colour</b> — the you-are-here chevron — rides in the header rather than the style table, because the marker isn't an OpenStreetMap feature. It's RGB565 like every style colour and is quantised to the panel the same way.</figcaption>
+<figcaption>Fixed offsets, no surprises. Three small details a reader notices: the bbox is stored <b>lat, lon</b> (a packer ordering quirk); the <b>marker colour</b> — the you-are-here chevron — rides in the header rather than the style table, because the marker isn't an OpenStreetMap feature; and v6 tacked a <b>POI-section offset</b> (coral) onto the tail, the one growth that pushed the header from 32 to 36 bytes. That offset is never zero — the section is always present, empty or not.</figcaption>
 </figure>
 
 The **style table** that follows maps small numeric ids to how a feature looks. Each record is six bytes:
@@ -369,6 +377,69 @@ A feature is introduced by a 12-byte header, and a flags byte in it says how to 
 
 There's a quiet payoff to the holes layout: a polygon's holes are just extra rings appended after the exterior. The [scanline fill](../rendering/#polygons-even-odd-scanline-fill) treats them as additional edges in the same crossing list, so holes "fall out" of the even-odd rule with no special case — the format and the rasteriser were designed to meet in the middle.
 
+### POIs: a nearest-list, not a map layer
+
+Everything so far serves one question — *what's on screen right now?* — and the quadtree answers it by viewport: give me the chunks a rectangle touches. Version **6** adds a section that answers a different question — *where's the nearest water / campsite / bakery?* — and that changes the shape of the index. The [points of interest](../packer-routing/#extracting-pois) the packer harvests from OpenStreetMap aren't drawn on the map at all; the device surfaces them as a category → nearest-list [browser](../ui/#the-pois-browser). So they're indexed for a **nearest-N** query, not a viewport walk.
+
+The section is a small **directory** followed by, per category, a familiar pair: a quadtree index and its data chunks. There are six categories — Water, Campsite, Accommodation, Resupply, Pharmacy, Bike shop — and each gets *its own* quadtree, so "nearest bakery" scans only bakeries.
+
+<figure class="fig">
+<svg viewBox="0 0 720 250" role="img" aria-label="The POI section. On the left, the directory: a category count of 6, a shared chunk size, then one entry per category holding a category id, index offset, node count and chunk count. An arrow leads to one category's quadtree index followed by its data chunks — the same index-then-chunks shape as an LOD layer. On the right, one POI record drawn as a 32-byte ruler: four bytes latitude, four bytes longitude, one byte subtype, one byte name length, twenty bytes name, two reserved bytes.">
+  <defs>
+    <marker id="aF5" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24">The POI section — a quadtree per category over 32-byte records</text>
+
+  <!-- directory -->
+  <rect class="d-panel-2" x="24" y="44" width="150" height="72" rx="9" />
+  <text class="d-label" x="40" y="64" style="font-size:11px">directory</text>
+  <text class="d-sub" x="40" y="82"  style="font-size:9.5px">count = 6 · chunk size</text>
+  <text class="d-sub" x="40" y="98"  style="font-size:9.5px">per cat: id · index off</text>
+  <text class="d-sub" x="40" y="110" style="font-size:9.5px">node count · chunk count</text>
+
+  <!-- one category's index + chunks (LOD-shaped) -->
+  <line class="d-flow" x1="176" y1="80" x2="214" y2="80" marker-end="url(#aF5)" />
+  <g stroke="#3c6b39" stroke-width="1.2">
+    <rect x="220" y="56" width="96"  height="44" class="d-muted" />
+    <rect x="316" y="56" width="112" height="44" class="d-water" />
+  </g>
+  <text class="d-label" x="268" y="76" text-anchor="middle" style="font-size:10.5px">quadtree</text>
+  <text class="d-sub"   x="268" y="90" text-anchor="middle" style="font-size:9px">flat u32 · §4</text>
+  <text class="d-label" x="372" y="76" text-anchor="middle" style="fill:#fff;font-size:10.5px">POI chunks</text>
+  <text class="d-sub"   x="372" y="90" text-anchor="middle" style="fill:#dfe6e0;font-size:9px">512 B · 16 recs</text>
+  <text class="d-sub" x="324" y="118" text-anchor="middle" style="font-size:9px;fill:#a9501c">same index-then-chunks shape as a LOD</text>
+
+  <!-- one record: 32-byte ruler -->
+  <text class="d-tag" x="20" y="152">one record — a fixed 32 bytes</text>
+  <g stroke="#20301d" stroke-width="1">
+    <rect x="24"  y="164" width="120" height="34" class="d-water" />
+    <rect x="144" y="164" width="120" height="34" class="d-water" />
+    <rect x="264" y="164" width="34"  height="34" class="d-hot-fill" />
+    <rect x="298" y="164" width="34"  height="34" class="d-amber" />
+    <rect x="332" y="164" width="300" height="34" class="d-forest" />
+    <rect x="632" y="164" width="60"  height="34" class="d-muted" />
+  </g>
+  <text class="d-sub" x="84"  y="185" text-anchor="middle" style="fill:#fff;font-size:9.5px">Lat (i32)</text>
+  <text class="d-sub" x="204" y="185" text-anchor="middle" style="fill:#fff;font-size:9.5px">Lon (i32)</text>
+  <text class="d-sub" x="281" y="180" text-anchor="middle" style="fill:#fff;font-size:8.5px">sub</text>
+  <text class="d-sub" x="281" y="192" text-anchor="middle" style="fill:#fff;font-size:8px">type</text>
+  <text class="d-sub" x="315" y="180" text-anchor="middle" style="font-size:8.5px">len</text>
+  <text class="d-sub" x="482" y="185" text-anchor="middle" style="fill:#fff;font-size:9.5px">Name — 20 B printable ASCII</text>
+  <text class="d-sub" x="662" y="185" text-anchor="middle" style="font-size:8.5px">rsvd</text>
+  <text class="d-sub" x="84"  y="214" text-anchor="middle" style="font-size:9px">0–3</text>
+  <text class="d-sub" x="204" y="214" text-anchor="middle" style="font-size:9px">4–7</text>
+  <text class="d-sub" x="281" y="214" text-anchor="middle" style="font-size:9px">8</text>
+  <text class="d-sub" x="315" y="214" text-anchor="middle" style="font-size:9px">9</text>
+  <text class="d-sub" x="482" y="214" text-anchor="middle" style="font-size:9px">10–29</text>
+  <text class="d-sub" x="662" y="214" text-anchor="middle" style="font-size:9px">30–31</text>
+</svg>
+<figcaption>Each category's index and chunks are laid out <b>exactly</b> like a LOD layer — a flat <code>u32</code> quadtree (the same branch-bit / empty-leaf / chunk-id encoding) built over the <b>same global bbox from the header</b>, its chunks packed straight after. So the reader walks a POI category with the very same leaf-walk it uses for geometry. The record differs in one telling way: coordinates are stored <b>absolute</b>, not anchored-and-deltated. At a fixed 32 bytes the delta saving isn't worth breaking symmetry with geometry, and fixed-size records make chunk packing trivial — exactly <code>512 / 32 = 16</code> per chunk, no length bookkeeping.</figcaption>
+</figure>
+
+Two design notes are worth pulling out. First, the **category is never stored in the record** — it's implied by *which* category's quadtree the record came from, and each subtype maps to exactly one category anyway. Second, **names are folded to printable ASCII at pack time** and capped at 20 bytes, because the device font ([Terminus](../packer-routing/#extracting-pois)) has no glyphs beyond that set; an unnamed POI (name length `0`) shows its subtype's fallback label on-device. A `0xFF` subtype byte ends a chunk, mirroring geometry's `0xFF`-style-id sentinel.
+
+The full directory bytes, the canonical category/subtype id table, and the record fields are in [`OBCM_Spec.md` §7](src:OBCM_Spec.md). What the packer harvests and how, and how the device browses the result, are the [extraction stage](../packer-routing/#extracting-pois) and the [POIs browser](../ui/#the-pois-browser).
+
 ## OBCR — the route
 
 A route is a single ordered polyline with elevation, plus precomputed ride statistics. It borrows every OBCM convention — little-endian, microdegrees, anchor + delta — but where the map is 2-D and indexed by a quadtree, a route is a *path*, so its index is a flat list scanned in order.
@@ -543,7 +614,8 @@ The map's caches matter because the [priority multi-pass](../rendering/#4-decode
 
 ## Where this lives
 
-- Map reader, quadtree walk, and chunk decode: [`obc-reader/src/reader.rs`](src:firmware/obc-reader/src/reader.rs)
+- Map reader, quadtree walk, chunk decode, and the POI nearest-16 query: [`obc-reader/src/reader.rs`](src:firmware/obc-reader/src/reader.rs)
+- The canonical POI category/subtype table (shared by reader + packer): [`obc-reader/src/poi_table.rs`](src:firmware/obc-reader/src/poi_table.rs)
 - Route reader, index, and decode: [`obc-route/src/reader.rs`](src:firmware/obc-route/src/reader.rs)
 - The shared byte seam: [`obc-reader/src/byte_io.rs`](src:firmware/obc-reader/src/byte_io.rs)
 - The byte-level specs: [`OBCM_Spec.md`](src:OBCM_Spec.md) · [`OBCR_Spec.md`](src:OBCR_Spec.md) · [`obc-ble-interface-spec.md`](src:obc-ble-interface-spec.md) (the wire contract routes/rides cross to the companion app)
