@@ -136,6 +136,15 @@ impl InputPlane {
         dirty
     }
 
+    /// Cancel any in-flight hold (see [`Gestures::cancel_holds`]). The map plane rings this after
+    /// a gesture **transitioned the screen stack** ([`App::take_hold_cancel`](crate::App::take_hold_cancel)),
+    /// so a long-press that was charging over the old top can't complete onto the new one. The
+    /// bulge retracts on the next [`recognize`](InputPlane::recognize) — a cancelled hold's
+    /// progress reads 0.
+    pub fn cancel_holds(&mut self) {
+        self.gestures.cancel_holds();
+    }
+
     /// The most recently recognized gesture (host input readout), if any.
     pub fn last_gesture(&self) -> Option<Gesture> {
         self.last_gesture

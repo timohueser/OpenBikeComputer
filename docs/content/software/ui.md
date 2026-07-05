@@ -236,6 +236,8 @@ That the recognizer is fed by an injected `InputSource` is the key boundary: on 
 
 Some actions are irreversible — finishing or discarding a ride. Rather than a modal "are you sure?", the UI uses a **guarded-action** pattern that's reusable across screens: a guarded option fires only on a *completed* `Hold`, and its row fills with a warning bar tracking the live hold-progress. Let go early and nothing happens — the recognizer makes that clean at the gesture level: a press is a `Press` only if released within a brief tap window (~200 ms); released *after* the window but *before* the hold completes, it's a **cancelled long-press** that yields nothing, never a surprise tap.
 
+A hold is also cancelled if the **screen stack changes** while it charges — the two buttons recognise independently, so a Back tap can dismiss a popup mid-hold, and a long-press that started over one screen must never complete onto whatever replaced it (a hold aimed at a prompt's "Save & new" landing on the Route menu's hold-to-delete footer would silently delete a route). The transition cancels the in-flight hold; the bar retracts, the release stays silent, and the next press starts clean.
+
 <figure class="fig">
 <svg viewBox="0 0 720 250" role="img" aria-label="Top: a timeline showing the encoder pressed down. A release within the 200ms tap window yields a Press; a release after the window but before the 500ms hold threshold is a cancelled long-press and yields nothing; holding past 500ms yields a Hold the instant it crosses. Bottom: a Discard row filling left to right with a warning bar at 0 percent, 60 percent holding, and 100 percent commit.">
   <text class="d-tag" x="20" y="24">Hold to confirm — the guarded-action pattern</text>
