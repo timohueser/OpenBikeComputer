@@ -84,7 +84,7 @@ pub struct Poi {
     pub subtype: u8,
     pub lon_udeg: i32,
     pub lat_udeg: i32,
-    /// Normalized (ASCII-folded, ≤ 20 bytes) — `None` shows the subtype label.
+    /// Normalized (ASCII-folded, ≤ 24 bytes) — `None` shows the subtype label.
     pub name: Option<String>,
     /// Nodes mark entrances; way-centroids are derived. Drives dedup priority.
     pub from_node: bool,
@@ -238,9 +238,10 @@ fn fold_char(c: char) -> Option<&'static str> {
 /// Normalize an OSM `name` for the device font (Terminus, printable ASCII
 /// `0x20..=0x7F` — see `obc-render/src/font_data.rs`): ASCII-fold, replace
 /// anything unmappable with a word break, collapse whitespace, trim, cap at
-/// **20 bytes**. Empty after all that ⇒ `None` (device shows the subtype label).
+/// **24 bytes** (the v7 record's widened `Name` field). Empty after all that ⇒
+/// `None` (device shows the subtype label).
 pub fn normalize_name(raw: &str) -> Option<String> {
-    let mut out = String::with_capacity(raw.len().min(24));
+    let mut out = String::with_capacity(raw.len().min(28));
     let mut pending_space = false;
     let emit = |s: &str, out: &mut String, pending: &mut bool| {
         if *pending && !out.is_empty() {
@@ -266,7 +267,7 @@ pub fn normalize_name(raw: &str) -> Option<String> {
     }
     // Byte cap: everything is ASCII by now, so bytes == chars; re-trim in case
     // the cut lands just after a space.
-    out.truncate(20);
+    out.truncate(24);
     while out.ends_with(' ') {
         out.pop();
     }
@@ -479,14 +480,14 @@ mod tests {
     }
 
     #[test]
-    fn name_truncates_at_20_bytes() {
-        let exact = "12345678901234567890"; // 20 bytes
+    fn name_truncates_at_24_bytes() {
+        let exact = "123456789012345678901234"; // 24 bytes (the v7 Name field width)
         assert_eq!(normalize_name(exact).as_deref(), Some(exact));
-        assert_eq!(normalize_name("123456789012345678901").as_deref(), Some(exact));
+        assert_eq!(normalize_name("1234567890123456789012345").as_deref(), Some(exact));
         // A cut landing right after a space must not leave a trailing space.
-        assert_eq!(normalize_name("1234567890123456789 X").as_deref(), Some("1234567890123456789"));
-        // Fold digraphs count toward the cap (bytes, not source chars).
-        assert_eq!(normalize_name("äääääääääää").as_deref(), Some("aeaeaeaeaeaeaeaeaeae"));
+        assert_eq!(normalize_name("12345678901234567890123 X").as_deref(), Some("12345678901234567890123"));
+        // Fold digraphs count toward the cap (bytes, not source chars): 12 × "ae" = 24 bytes.
+        assert_eq!(normalize_name("ääääääääääää").as_deref(), Some("aeaeaeaeaeaeaeaeaeaeaeae"));
     }
 
     fn poi(subtype: u8, lat: f64, lon: f64, name: Option<&str>, from_node: bool) -> Poi {

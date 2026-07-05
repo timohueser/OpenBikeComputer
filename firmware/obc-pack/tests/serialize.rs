@@ -73,13 +73,15 @@ fn serialize_lods_header_single_empty_leaf() {
     let (bin, dropped) = serialize_lods(&lods, &[], 0xF800, (0, 0, 100, 100), &[]);
     assert_eq!(dropped, 0);
 
-    // v6 header(36) + style count(1) + 1 LOD entry(18) + index(4) = 59, then the
-    // empty POI directory: count(1) + chunk_size(2) + 6 entries × 13 = 81 bytes.
-    let poi_dir_len = 1 + 2 + 6 * 13;
-    assert_eq!(bin.len(), 59 + poi_dir_len);
+    // v7 header(36) + style count(1) + 1 LOD entry(18) + index(4) = 59, then the empty POI directory
+    // — count(1) + chunk_size(2) + 6 entries × 13 + the two v7 pool fields (offset u32 + count u16 =
+    // 6) = 87 bytes — followed by the empty hours pool (a bare `count u16` = 2 bytes).
+    let poi_dir_len = 1 + 2 + 6 * 13 + 6;
+    let hours_pool_len = 2; // an empty pool is just its count
+    assert_eq!(bin.len(), 59 + poi_dir_len + hours_pool_len);
     assert_eq!(&bin[0..4], b"OBCM");
-    assert_eq!(bin[4], 6); // version
-    assert_eq!(u32::from_le_bytes([bin[21], bin[22], bin[23], bin[24]]), 36); // style offset (was 32 in v5)
+    assert_eq!(bin[4], 7); // version
+    assert_eq!(u32::from_le_bytes([bin[21], bin[22], bin[23], bin[24]]), 36); // style offset (36 since v6)
     assert_eq!(bin[25], 1); // lod count
     let lod_tbl = u32::from_le_bytes([bin[26], bin[27], bin[28], bin[29]]) as usize;
     assert_eq!(lod_tbl, 37); // 36 header + 1 style-count byte
@@ -90,6 +92,15 @@ fn serialize_lods_header_single_empty_leaf() {
     assert_eq!(poi_off, 59);
     assert_eq!(bin[poi_off], 6, "empty POI directory still declares 6 categories");
     assert_eq!(u16::from_le_bytes([bin[poi_off + 1], bin[poi_off + 2]]), 512); // shared chunk_size
+
+    // The v7 hours-pool fields trail the six 13-byte entries: offset u32 + count u16. Count is 0 (no
+    // hours), and the pool region (its bare `count u16`) begins right after the directory.
+    let pool_fields_off = poi_off + 3 + 6 * 13;
+    let hours_pool_off = u32::from_le_bytes(bin[pool_fields_off..pool_fields_off + 4].try_into().unwrap()) as usize;
+    let hours_pool_count = u16::from_le_bytes(bin[pool_fields_off + 4..pool_fields_off + 6].try_into().unwrap());
+    assert_eq!(hours_pool_count, 0, "no hours in this map");
+    assert_eq!(hours_pool_off, poi_off + poi_dir_len, "pool follows the directory (no categories)");
+    assert_eq!(u16::from_le_bytes(bin[hours_pool_off..hours_pool_off + 2].try_into().unwrap()), 0, "empty pool count");
 
     let mpp = f32::from_le_bytes([bin[lod_tbl], bin[lod_tbl + 1], bin[lod_tbl + 2], bin[lod_tbl + 3]]);
     assert!(mpp.is_infinite()); // coarsest layer

@@ -144,7 +144,7 @@ fn header_round_trips() {
     let src = SliceSource(&bytes);
     let tables = MapTables::parse(&src).unwrap();
     let r = Reader::new(&src, &tables, &cache);
-    assert_eq!(r.version, 6);
+    assert_eq!(r.version, 7);
     assert_eq!(r.marker_color, MARKER);
     // bbox stored lat,lon,lat,lon in the header; the reader must hand it back
     // with lon and lat in the right fields (max_lon=2°, max_lat=1°).
