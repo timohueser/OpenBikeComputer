@@ -113,6 +113,12 @@ pub struct AppState {
     /// Battery charge, 0–100 %. [`App::tick`] writes it from the [`FuelGauge`](crate::FuelGauge);
     /// the Home screen draws the gauge from it (filled bars coloured by level, empty bars dim grey).
     pub battery_pct: u8,
+    /// A phone holds the BLE link. [`App::set_ble_status`] writes it from the host's
+    /// [`BleStatus`](crate::BleStatus); the connected indicator (the menu title bar's right slot and
+    /// the Home battery row) draws when set, absent otherwise. It lives **on** `AppState` — unlike
+    /// `temp_c` — precisely because two drawn views react to it: a change is meant to gate a repaint,
+    /// and the `state != state_before` comparison already routes that to the screen that draws it.
+    pub ble_connected: bool,
 }
 
 impl AppState {
@@ -130,6 +136,8 @@ impl AppState {
             compass_deg: None,
             // Stand-in until a [`FuelGauge`](crate::FuelGauge) feeds a real reading on the first tick.
             battery_pct: 75,
+            // No phone linked until the host feeds the first [`BleStatus`](crate::BleStatus).
+            ble_connected: false,
         }
     }
 
@@ -419,6 +427,17 @@ pub struct App {
     /// by the POI list screen's first draw; invalidated in [`apply_gesture`](App::apply_gesture)
     /// when a POI list opens, so re-entering a category re-queries.
     poi_scratch: screen::PoiScratch,
+    /// The live BLE pairing passkey ([`BleStatus::passkey`](crate::BleStatus)), fed by
+    /// [`set_ble_status`](App::set_ble_status). **Plumbed but not yet drawn** — the passkey card is
+    /// P2 (#449). Held off `AppState` so plumbing it never gates a map redraw; [`ble_passkey`](App::ble_passkey)
+    /// exposes it for that PR (and for tests to observe the seam carrying it).
+    ble_passkey: Option<u32>,
+    /// Count of [`notify_store_changed`](App::notify_store_changed) calls not yet acted on. **Recorded
+    /// but inert** — the live-catalog rescan it drives is P3 (#450); for now the app only *observes*
+    /// the pending signal (via [`store_changed_pending`](App::store_changed_pending)), so the seam and
+    /// its board wiring are testable before the consumer lands. A counter, not a bool, so a burst of
+    /// commits between drains is never coalesced into a single missed rescan.
+    store_changed_pending: u32,
 }
 
 /// A fix older than this (map-plane millis) means "no current GPS fix". The window is the larger of
@@ -479,6 +498,8 @@ impl App {
             last_fix_ms: None,
             prev_no_fix: true,
             poi_scratch: screen::PoiScratch::new(),
+            ble_passkey: None,
+            store_changed_pending: 0,
         }
     }
 
@@ -535,6 +556,8 @@ impl App {
             addr_of_mut!((*slot).last_fix_ms).write(None);
             addr_of_mut!((*slot).prev_no_fix).write(true);
             addr_of_mut!((*slot).poi_scratch).write(screen::PoiScratch::new());
+            addr_of_mut!((*slot).ble_passkey).write(None);
+            addr_of_mut!((*slot).store_changed_pending).write(0);
         }
     }
 
@@ -784,6 +807,63 @@ impl App {
     /// The resident route catalog.
     pub fn routes(&self) -> &[RouteSummary] {
         &self.catalog
+    }
+
+    /// Feed the host's BLE link snapshot ([`BleStatus`](crate::BleStatus)) — the host→app event seam
+    /// (epic #447). The board's BLE plane distils its `ble::state` into this each pass; the simulator
+    /// injects it from the control panel. Called like [`set_routes`](App::set_routes): a plain host
+    /// event, no BLE crate type crossing the boundary.
+    ///
+    /// A change in `connected` dirties the map so the connected indicator repaints — but only where
+    /// it's actually drawn (the menu title bar / Home), via the same `AppState`-comparison gate the
+    /// riding views use, so an unchanged status (the steady state, fed every pass) repaints nothing.
+    /// The passkey is recorded off `AppState` and drawn by no screen yet (P2), so it never gates a
+    /// redraw.
+    pub fn set_ble_status(&mut self, status: crate::ble::BleStatus) {
+        let state_before = self.state;
+        self.state.ble_connected = status.connected;
+        // `connected` lives in `AppState` but is drawn only on Home and the menu title bars, so —
+        // like the Home-only battery gate — a change dirties the map only when one of those is the
+        // base screen. Counting it toward `shows_live_data` would force a full map render on the
+        // riding views, which never draw the indicator.
+        if self.state != state_before && self.indicator_visible() {
+            self.map_dirty = true;
+        }
+        self.ble_passkey = status.passkey;
+    }
+
+    /// Whether the base (lowest opaque) screen draws the connected indicator — Home, or any framed
+    /// screen with a title bar (a menu / list / prompt), i.e. everything that isn't a full-screen
+    /// riding view. Gates [`set_ble_status`](App::set_ble_status)'s repaint so a link change never
+    /// re-renders the map on the Map / Statistics screens, which deliberately omit the glyph.
+    fn indicator_visible(&self) -> bool {
+        let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
+        !matches!(self.stack.get(base), Some(Screen::Map(_) | Screen::Statistics(_)))
+    }
+
+    /// The live BLE pairing passkey, or `None` when not pairing — [`BleStatus::passkey`](crate::BleStatus)
+    /// as last fed to [`set_ble_status`](App::set_ble_status). Consumed by the passkey card in P2
+    /// (#449); exposed now so the seam is observable end to end.
+    pub fn ble_passkey(&self) -> Option<u32> {
+        self.ble_passkey
+    }
+
+    /// Signal that the object store committed or deleted an object (epic #447) — rung from the board's
+    /// `ObjectStore` commit/delete paths, the same edge that notifies the phone's `storeChanged`.
+    ///
+    /// For now it only **records** the pending signal (a counter the app/tests observe via
+    /// [`store_changed_pending`](App::store_changed_pending)); the live-catalog rescan + identity
+    /// remap it will drive is P3 (#450). Deliberately behaviour-free here so this foundation PR wires
+    /// the edge without changing what the device shows.
+    pub fn notify_store_changed(&mut self) {
+        self.store_changed_pending = self.store_changed_pending.saturating_add(1);
+    }
+
+    /// How many [`notify_store_changed`](App::notify_store_changed) signals are pending (not yet acted
+    /// on). Non-zero once the store has moved since the last drain; P3's rescan will consume it. A
+    /// read-only observation hook for the board wiring and the seam tests.
+    pub fn store_changed_pending(&self) -> u32 {
+        self.store_changed_pending
     }
 
     /// The screen currently on top of the stack (receiving input). Always present — the Home root is

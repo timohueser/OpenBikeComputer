@@ -184,6 +184,10 @@ impl SimGui {
 
                     separator_above(ui);
 
+                    self.show_ble_controls(ui);
+
+                    separator_above(ui);
+
                     self.show_display_controls(ui);
 
                     separator_above(ui);
@@ -234,6 +238,16 @@ impl SimGui {
         if let Some(e) = &self.calib_error {
             ui.colored_label(ERROR_RED, e);
         }
+    }
+
+    /// The Bluetooth injection controls — the sim's face of the host→app BLE seam (epic #447). P1
+    /// exposes just the connected toggle (the connected indicator's driver); P2/P4 extend this block
+    /// with passkey entry and an "inject upload" button, editing the same [`obc_app::BleStatus`]
+    /// mirror the checkbox does here (`self.panel.ble`), so no restructuring is needed then.
+    fn show_ble_controls(&mut self, ui: &mut egui::Ui) {
+        ui.label(egui::RichText::new("Bluetooth").strong());
+        ui.checkbox(&mut self.panel.ble.connected, "Phone connected");
+        ui.weak("drives the connected indicator on the menu bar + Home");
     }
 
     /// The loaded-track controls: play/pause (auto-follows), a seek scrubber, and a 1×–10× speed

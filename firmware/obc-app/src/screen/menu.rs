@@ -18,7 +18,7 @@ use obc_render::{
 use crate::input::Gesture;
 
 use super::{
-    list, palette, title_frame, Ctx, PoiMenuScreen, Render, RouteMenuScreen, Screen, ScreenTick, SettingsScreen,
+    list, palette, title_frame_ble, Ctx, PoiMenuScreen, Render, RouteMenuScreen, Screen, ScreenTick, SettingsScreen,
     Transition,
 };
 
@@ -104,10 +104,11 @@ impl MenuScreen {
     }
 
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
+        let ble = rx.state.ble_connected;
         if COMPASS {
-            draw_compass(cv, rx.w, rx.h, self.selected, self.needle_deg);
+            draw_compass(cv, rx.w, rx.h, self.selected, self.needle_deg, ble);
         } else {
-            draw_grid(cv, rx.w, rx.h, self.selected);
+            draw_grid(cv, rx.w, rx.h, self.selected, ble);
         }
     }
 }
@@ -117,9 +118,9 @@ impl MenuScreen {
 /// centred between the bar and the name strip — which works out to exactly `h / 2`. The needle
 /// points at `needle_deg` (0° = N, clockwise) — mid-sweep that's between stations; the station
 /// highlight and the name snap to the selection immediately.
-fn draw_compass(cv: &mut impl Surface, w: i32, h: i32, selected: usize, needle_deg: f32) {
+fn draw_compass(cv: &mut impl Surface, w: i32, h: i32, selected: usize, needle_deg: f32, ble_connected: bool) {
     use palette::*;
-    title_frame(cv, w, h, "MENU", "");
+    title_frame_ble(cv, w, h, "MENU", "", ble_connected);
 
     let c = Point::new(w / 2, h / 2);
 
@@ -171,9 +172,9 @@ fn draw_compass(cv: &mut impl Surface, w: i32, h: i32, selected: usize, needle_d
 
 /// The 2×2 card-grid layout under the standard title bar: amber fill on the selected card, a tan
 /// outline on the rest, each with its icon over a centred label.
-fn draw_grid(cv: &mut impl Surface, w: i32, h: i32, selected: usize) {
+fn draw_grid(cv: &mut impl Surface, w: i32, h: i32, selected: usize, ble_connected: bool) {
     use palette::*;
-    title_frame(cv, w, h, "MENU", "");
+    title_frame_ble(cv, w, h, "MENU", "", ble_connected);
     for (i, label) in ITEMS.iter().enumerate() {
         let col = (i % 2) as i32;
         let row = (i / 2) as i32;
