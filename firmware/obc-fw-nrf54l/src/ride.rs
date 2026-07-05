@@ -485,11 +485,13 @@ pub(crate) async fn run_app(
         display.present_bulge(overlay_span, overlay_dirty).await;
 
         if dirty.map {
-            // The map pipeline runs **only when the base screen actually draws the map** (the Map
-            // view). On a menu / Statistics / Home redraw it's skipped entirely — no SD style-table
-            // parse, no `Reader` build (so no stack spike), no map render — that screen draws just its
-            // own chrome. A non-map frame costs only its own draw + the push.
-            let needs_map = app.base_draws_map();
+            // The map pipeline runs **only when the base screen needs the streamed `Reader`** — the
+            // Map view, and the POI list on the frame it takes its one-shot snapshot (#425, its
+            // query runs in the draw path off `rx.reader`). On a menu / Statistics / Home redraw, or
+            // a POI list already showing its frozen snapshot, it's skipped entirely — no SD
+            // style-table parse, no `Reader` build (so no stack spike), no map render — that screen
+            // draws just its own chrome. Such a frame costs only its own draw + the push.
+            let needs_map = app.base_needs_reader();
             // Build the streamed `Reader` **only** on a map frame, `None` otherwise. A *cheap* borrow of
             // the boot-parsed `MapTables` + a fresh `src` + the session-long `MapCache` — no style-table
             // SD read, no parse, no stack spike (what kept this deep path inside the 256 KB stack). The
