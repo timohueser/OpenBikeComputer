@@ -212,7 +212,7 @@ OSM ways draw the *coast*, but not the sea or the land fill. Those come from a s
 The same OSM extract carries more than geometry. Amenities a bikepacker actually looks for — water, campsites, lodging, resupply, pharmacies, bike shops — are tagged on nodes and areas the geometry pipeline would otherwise style-and-forget. A separate stage harvests them into the map's [POI section](../formats/#pois-a-nearest-list-not-a-map-layer), where the device browses them by category. It's config-free on purpose: the tag → category mapping is **hardcoded in the packer** (a locked decision), so packing the same extract always yields the same POIs.
 
 <figure class="fig">
-<svg viewBox="0 0 720 300" role="img" aria-label="POI extraction. On the left, two OSM sources: a tagged node used as-is, and a closed way whose polygon centroid becomes a point. Both are classified against a fixed table of tag-equals-value rules mapping to a category and subtype. Names are folded to ASCII and capped at 20 bytes. Finally a dedup step collapses a node and a way-centroid of the same category within 50 metres into one POI, keeping the node.">
+<svg viewBox="0 0 720 300" role="img" aria-label="POI extraction. On the left, two OSM sources: a tagged node used as-is, and a closed way whose polygon centroid becomes a point. Both are classified against a fixed table of tag-equals-value rules mapping to a category and subtype. Names are folded to ASCII and capped at 24 bytes. Finally a dedup step collapses a node and a way-centroid of the same category within 50 metres into one POI, keeping the node.">
   <defs>
     <marker id="aP6" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
   </defs>
@@ -247,7 +247,7 @@ The same OSM extract carries more than geometry. Amenities a bikepacker actually
   <!-- fold names -->
   <line class="d-flow" x1="438" y1="102" x2="484" y2="102" marker-end="url(#aP6)" />
   <rect class="d-panel-2" x="490" y="72" width="206" height="60" rx="10" />
-  <text class="d-tag" x="506" y="90">fold name → ASCII, ≤ 20 B</text>
+  <text class="d-tag" x="506" y="90">fold name → ASCII, ≤ 24 B</text>
   <text class="d-sub" x="506" y="110" font-family="var(--mono)" style="font-size:10px">"Bäckerei Müller"</text>
   <text class="d-sub" x="506" y="124" font-family="var(--mono)" style="font-size:10px;fill:#a9501c">→ "Baeckerei Mueller"</text>
 
@@ -265,10 +265,10 @@ The same OSM extract carries more than geometry. Amenities a bikepacker actually
   <text class="d-sub" x="470" y="254" style="font-size:9px">then named beats unnamed,</text>
   <text class="d-sub" x="470" y="268" style="font-size:9px">then first-seen.</text>
 </svg>
-<figcaption>Both an OSM <b>node</b> and a <b>closed way</b> can be a POI — a way is reduced to its shoelace-weighted <b>ring centroid</b>, so a campsite polygon becomes a single point. Each candidate is classified against a fixed <code>key=value</code> table (first match in table order wins, the same rule as the style config), and its name is <b>folded to printable ASCII</b> and capped at 20 bytes. The last step matters because OSM double-maps: a drinking-water node sitting inside a same-tagged area, an entrance node beside a campsite polygon. Two candidates of the <b>same category within ~50 m</b> collapse to one, and the winner is chosen by priority — a node (a real placed point) beats a derived centroid, a named POI beats an unnamed one.</figcaption>
+<figcaption>Both an OSM <b>node</b> and a <b>closed way</b> can be a POI — a way is reduced to its shoelace-weighted <b>ring centroid</b>, so a campsite polygon becomes a single point. Each candidate is classified against a fixed <code>key=value</code> table (first match in table order wins, the same rule as the style config), and its name is <b>folded to printable ASCII</b> and capped at 24 bytes. The last step matters because OSM double-maps: a drinking-water node sitting inside a same-tagged area, an entrance node beside a campsite polygon. Two candidates of the <b>same category within ~50 m</b> collapse to one, and the winner is chosen by priority — a node (a real placed point) beats a derived centroid, a named POI beats an unnamed one.</figcaption>
 </figure>
 
-Why fold names at all? Because the device font is **[Terminus](../ui/#the-field-map-look), printable ASCII only** — it has no glyph for `ä` or `é`. Rather than ship mojibake or a heavier font, the packer transliterates at pack time: German umlauts get their proper digraphs (`ä → ae`, `ß → ss`), the rest of Latin strips to its base letter, and anything genuinely unmappable (CJK, Cyrillic, Greek) becomes a word break rather than gluing neighbours together. A name that folds away to nothing is stored as unnamed, and the device falls back to the subtype's label ("Spring", "Bakery"). The 20-byte cap is a device-row width, not a storage worry — POI bytes are noise next to geometry.
+Why fold names at all? Because the device font is **[Terminus](../ui/#the-field-map-look), printable ASCII only** — it has no glyph for `ä` or `é`. Rather than ship mojibake or a heavier font, the packer transliterates at pack time: German umlauts get their proper digraphs (`ä → ae`, `ß → ss`), the rest of Latin strips to its base letter, and anything genuinely unmappable (CJK, Cyrillic, Greek) becomes a word break rather than gluing neighbours together. A name that folds away to nothing is stored as unnamed, and the device falls back to the subtype's label ("Spring", "Bakery"). The 24-byte cap is a device-row width, not a storage worry — POI bytes are noise next to geometry.
 
 ```rust
 pub const POI_TABLE: [PoiKind; 18] = [
@@ -281,6 +281,54 @@ pub const POI_TABLE: [PoiKind; 18] = [
 ```
 
 The subtype *ids* are normative and shared: the packer owns only the OSM `key=value` half of the table, while each subtype's category and fallback label live once in [`obc-reader`'s `poi_table`](src:firmware/obc-reader/src/poi_table.rs) — the same table the device reads — so the two crates can't drift, and a pinning test asserts every row agrees. The extracted, deduped, name-folded POIs are handed to the serializer, which builds the [per-category quadtrees](../formats/#pois-a-nearest-list-not-a-map-layer) of the POI section.
+
+### Parsing opening hours
+
+A POI carries one more thing worth harvesting: when it's *open*. OSM stores that in the [`opening_hours`](https://wiki.openstreetmap.org/wiki/Key:opening_hours) tag — a compact grammar like `Mo-Fr 08:00-18:00; Sa 09:00-13:00; PH off`. Parsing that grammar is a **host job that never runs on the device**: the microcontroller has no room for a date library and no reason to re-derive the same answer every frame. So the packer parses `opening_hours` **once, at pack time**, into the fixed [29-byte weekly schedule](../formats/#opening-hours-a-pooled-weekly-schedule) the device reads with a single array lookup.
+
+The parser is a deliberate **subset**, not a full `opening_hours` engine — the real data (town shops, campsites) exercises a small corner of the grammar, and a full engine would drag a time model into a build tool that has no clock. It handles weekday ranges and lists (`Mo-Fr`, `Mo,We,Fr`), `HH:MM-HH:MM` intervals (including a split lunch, two per day), `24/7`, `off`/`closed`, bare time-only rules that apply every day, and overnight wrap. Times are rounded to the nearest quarter-hour with the same **round-half-to-even** convention the packer uses for coordinates. Anything it *can't* model it **drops and flags** rather than guessing — it never invents hours that aren't there.
+
+<figure class="fig">
+<svg viewBox="0 0 720 250" role="img" aria-label="The opening_hours stage. A raw OSM opening_hours string is parsed at pack time into a normalized weekly schedule of seven days. A seasonal date rule is flattened to a representative in-season week and flagged seasonal; a public-holiday or unmodellable rule is dropped and flagged truncated. All resulting schedules are then deduplicated into a small pool, and each POI stores only its pool index.">
+  <defs>
+    <marker id="aOH" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24">opening_hours → normalize → flag → dedup pool</text>
+
+  <!-- raw string -->
+  <rect class="d-panel-2" x="24" y="44" width="238" height="52" rx="9" />
+  <text class="d-sub" x="40" y="62" style="font-size:9.5px">raw OSM tag</text>
+  <text class="d-sub" x="40" y="80" font-family="var(--mono)" style="font-size:9px">Mo-Fr 08:00-18:00; Sa 09-13</text>
+  <text class="d-sub" x="40" y="92" font-family="var(--mono)" style="font-size:9px">Apr-Oct: …; PH off</text>
+
+  <!-- parse -->
+  <line class="d-flow" x1="266" y1="70" x2="312" y2="70" marker-end="url(#aOH)" />
+  <rect class="d-panel" x="318" y="44" width="196" height="52" rx="10" />
+  <text class="d-tag" x="334" y="64">parse (subset grammar)</text>
+  <text class="d-sub" x="334" y="84" style="font-size:9px">→ 7 days × ≤2 intervals</text>
+
+  <!-- flags -->
+  <line class="d-flow" x1="416" y1="96" x2="416" y2="120" marker-end="url(#aOH)" />
+  <rect class="d-panel-2" x="300" y="126" width="232" height="58" rx="10" />
+  <text class="d-sub" x="316" y="146" style="font-size:9.5px;fill:#a9501c">seasonal — Apr-Oct flattened to</text>
+  <text class="d-sub" x="316" y="159" style="font-size:9px">a representative in-season week</text>
+  <text class="d-sub" x="316" y="176" style="font-size:9.5px;fill:#a9501c">truncated — PH / 3rd interval dropped</text>
+
+  <!-- dedup pool -->
+  <line class="d-flow" x1="300" y1="155" x2="230" y2="200" marker-end="url(#aOH)" />
+  <rect class="d-hot" x="24" y="196" width="300" height="44" rx="12" style="fill:#f8efe4" />
+  <text class="d-tag" x="40" y="216" style="fill:#a9501c">dedup — a region's shops share hours</text>
+  <text class="d-sub" x="40" y="232" style="font-size:9px">identical schedules → one blob; POI stores its index</text>
+
+  <!-- only-with-hours note -->
+  <rect class="d-panel-2" x="344" y="196" width="352" height="44" rx="10" />
+  <text class="d-sub" x="360" y="214" style="font-size:9.5px">a POI with no parseable hours stores <tspan font-family="var(--mono)">0xFFFF</tspan></text>
+  <text class="d-sub" x="360" y="230" style="font-size:9px">— only POIs that actually have hours cost a pool slot</text>
+</svg>
+<figcaption>The stage runs per POI, after classification. Two cases need flattening. A <b>seasonal</b> rule (<code>Apr-Oct: …</code>) carries a date selector the weekly blob can't express, so the packer bakes a <b>representative in-season week</b> and sets the <i>seasonal</i> flag — the v1 device ignores it, but the bit is there for a future season-aware pass. A rule the subset genuinely can't model — a public-holiday <code>PH</code> clause, a <code>sunrise/sunset</code> time, or a third interval on a day — is <b>dropped</b> and the <i>truncated</i> flag set, so the device knows the schedule is partial rather than wrong. Finally every schedule is <b>deduplicated</b> into a shared pool: because a whole town's shops so often keep the same hours, the pool stays tiny, and a POI with no parseable hours (the common case) costs nothing but a <code>0xFFFF</code> sentinel in its record.</figcaption>
+</figure>
+
+The subset grammar, the flag semantics, and the quarter-hour encoding live in [`obc-pack/src/hours.rs`](src:firmware/obc-pack/src/hours.rs); the pooled bytes are described in [`OBCM_Spec.md` §7.5](src:OBCM_Spec.md). The device end — turning a pooled blob into *today's hours* and an *open-now* badge — is the [POI detail view](../ui/#the-poi-detail-view).
 
 ### Building the LOD pyramid
 
