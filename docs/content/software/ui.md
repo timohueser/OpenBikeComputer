@@ -67,6 +67,8 @@ screens! {
     Statistics(StatisticsScreen) => Riding,
     RideControl(RideControl) => Nav,       // the Paused page: ride-so-far ledger + Resume/Finish/Discard
     Menu(MenuScreen) => Nav,               // the compass dial
+    PoiMenu(PoiMenuScreen) => Nav,         // POIs browser: the category list
+    PoiList(PoiListScreen) => Nav,         // one category's nearest-16, with live bearing arrows
     RouteMenu(RouteMenuScreen) => Nav,
     RouteOverview(RouteOverviewScreen) => Nav, // look-before-you-ride: profile + stats + START
     RouteSwap(RouteSwapScreen) => Nav,

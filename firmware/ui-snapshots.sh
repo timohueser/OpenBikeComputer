@@ -33,6 +33,10 @@ mkdir -p "$OUT"
 "$SIM" "$MAP" --boot --script "p"            --routes-dir "$ROUTES" --png "$OUT/routemenu.png"
 "$SIM" "$MAP" --boot --script "B"            --png "$OUT/menu.png"
 "$SIM" "$MAP" --boot --script "B r w"        --png "$OUT/menu-pois.png"
+# POIs browser (#425): the category list, then a populated nearest-16 list. The list's bearing
+# arrows are live, so pin a deterministic fix (grimsel map centre) + heading so they reproduce.
+"$SIM" "$MAP" --boot --script "B r w p"      --png "$OUT/poi-menu.png"
+"$SIM" "$MAP" --boot --center 8305000,46601000 --heading 0 --script "B r w p p" --png "$OUT/poi-list.png"
 "$SIM" "$MAP" --boot --script "B l p"        --png "$OUT/settings.png"
 "$SIM" "$MAP" --boot --script "B l p p"      --png "$OUT/datetime.png"
 "$SIM" "$MAP" --boot --script "B l p r p"    --png "$OUT/units.png"
@@ -48,4 +52,4 @@ mkdir -p "$OUT"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p B p r p" --png "$OUT/routeswap.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p h" --png "$OUT/map-pan.png"
 
-echo "ui-snapshots: 17 screens rendered into $OUT/"
+echo "ui-snapshots: 19 screens rendered into $OUT/"
