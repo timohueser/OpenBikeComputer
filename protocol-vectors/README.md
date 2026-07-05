@@ -27,6 +27,7 @@ A drift on either side fails that side's tests — the files are the contract.
 | `transfer-download-request.bin` | `transferControl` §4.2 | download request for the `rideList` object |
 | `transfer-abort.bin` | `transferControl` §4.2 | abort of the active upload |
 | `status-transfer-result.bin` | `status` msg 1 §4.3 | `committed`, assigned id 7, all bytes durable |
+| `status-transfer-storage-full.bin` | `status` msg 1 §4.3 | `storageFull` (6) — new-route upload (id `0xFFFF`) rejected at descriptor-open time, catalog full, nothing committed |
 | `status-store-changed.bin` | `status` msg 2 §4.3 | route store changed, revision 42 |
 | `object-store.bin` | `objectStore` §4.5 | revision 42 · 3 routes · 5 rides |
 | `route-list.bin` | `routeList` object §7.4 | both stored route fixtures as catalog entries (ids 7 + 8, fields from their OBCR headers) |

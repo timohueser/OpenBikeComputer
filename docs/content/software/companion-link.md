@@ -176,6 +176,14 @@ and back.
 > at **whole-object granularity**: the rides that fully landed are kept, and the
 > rest re-send from byte zero.
 
+> **Full means full — up front.** The device holds a bounded route catalog (64
+> routes). A **new**-route upload that would overflow it is refused the instant the
+> descriptor arrives — *before any bytes stream* — with a distinct `storageFull`
+> result, so the phone can tell the rider to delete routes on the device rather
+> than wait out a doomed transfer. Re-uploading an *existing* route (a replace by
+> id) is exempt: it reuses a slot rather than growing the catalog, so updating the
+> route you're actively navigating never hits the cap.
+
 ## Staying in sync — the change digest
 
 After anything changes on the device — a route uploaded, a ride finished, an

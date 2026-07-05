@@ -69,6 +69,28 @@ fn status_transfer_result_vector() {
     assert_eq!(&buf[..len], &bytes[..]);
 }
 
+/// The storage-full reject fixture: a new-route upload (id `0xFFFF`) refused at descriptor-open
+/// time because the catalog is full. `status = 6` (`StorageFull`), nothing committed. Pins the
+/// discriminant byte so the Swift half decodes the same value.
+#[test]
+fn status_transfer_storage_full_vector() {
+    let bytes = fixture("status-transfer-storage-full.bin");
+
+    // The status byte lives at offset 3 of the transferResult envelope.
+    assert_eq!(bytes[3], 6, "storageFull discriminant is 6");
+
+    let msg = StatusMessage::decode(&bytes).unwrap().expect("known discriminator");
+    let StatusMessage::TransferResult(result) = msg else { panic!("expected transferResult") };
+    assert_eq!(result.object_id, 0xFFFF, "the rejected new-id request");
+    assert_eq!(result.status, TransferStatus::StorageFull);
+    assert_eq!(result.committed_offset, 0, "nothing committed");
+
+    // Re-encode reproduces the fixture byte-for-byte.
+    let rebuilt = Msg::TransferResult(TransferResult::new(0xFFFF, TransferStatus::StorageFull, 0));
+    let (buf, len) = rebuilt.encode();
+    assert_eq!(&buf[..len], &bytes[..]);
+}
+
 #[test]
 fn status_store_changed_vector() {
     let bytes = fixture("status-store-changed.bin");
@@ -100,6 +122,71 @@ fn config_vector() {
     let mut out = [0u8; Config::MAX_ENCODED];
     let len = Config::encode(&config, &mut out).unwrap();
     assert_eq!(&out[..len], &bytes[..]);
+}
+
+/// Every `TransferStatus` variant round-trips through `as_u8`/`from_u8` and survives a full
+/// `transferResult` encode→decode. Pins the discriminant values (`StorageFull == 6`) so a rename
+/// or reorder can't silently shift the wire byte.
+#[test]
+fn transfer_status_round_trips_all_variants() {
+    use TransferStatus::*;
+    for (status, code) in
+        [(Committed, 0u8), (CrcMismatch, 1), (Aborted, 2), (Error, 3), (NotFound, 4), (Busy, 5), (StorageFull, 6)]
+    {
+        assert_eq!(status.as_u8(), code, "{status:?} discriminant");
+        assert_eq!(TransferStatus::from_u8(code).unwrap(), status, "{status:?} from_u8");
+
+        let (buf, len) = Msg::TransferResult(TransferResult::new(0xFFFF, status, 0)).encode();
+        let StatusMessage::TransferResult(r) = StatusMessage::decode(&buf[..len]).unwrap().unwrap() else {
+            panic!("expected transferResult")
+        };
+        assert_eq!(r.status, status, "{status:?} survives encode→decode");
+    }
+}
+
+/// An unknown `status` discriminator inside a well-formed `transferResult` envelope is an error
+/// (the discriminator IS known — only the status byte is out of range). Forward-compat for the
+/// status field lives on the *decoding* side (the app treats a decode failure / unknown status as
+/// a generic error); the codec itself rejects a byte it can't name.
+#[test]
+fn unknown_transfer_status_byte_is_rejected() {
+    let (mut buf, len) = Msg::TransferResult(TransferResult::new(0xFFFF, TransferStatus::Committed, 0)).encode();
+    buf[3] = 0x7F; // a status code past the highest defined variant
+    assert!(StatusMessage::decode(&buf[..len]).is_err());
+}
+
+/// The descriptor-open reject rule (issue #452), as a truth table. This is the exact classifier the
+/// board crate's `ObjectStore::upload_open` calls; the board crate can't host-test (bare-metal, no
+/// `test` crate), so the rule is pinned here.
+#[test]
+fn upload_open_reject_rule() {
+    use obc_ble::TransferControl;
+    let new = TransferControl::NEW_OBJECT_ID; // 0xFFFF
+    let known = 7u16; // a route the device holds
+    let unknown = 42u16; // a named id the device does NOT hold
+
+    // Not full: new + replace both proceed; a named-but-unknown id is a genuine client error.
+    assert_eq!(TransferStatus::upload_open_reject(new, false, false), None, "new, room → arm");
+    assert_eq!(TransferStatus::upload_open_reject(known, true, false), None, "replace, room → arm");
+    assert_eq!(
+        TransferStatus::upload_open_reject(unknown, false, false),
+        Some(TransferStatus::NotFound),
+        "named-but-unknown id, room → notFound"
+    );
+
+    // Full: a new upload is rejected up front; a replace-by-id of an existing route is EXEMPT.
+    assert_eq!(
+        TransferStatus::upload_open_reject(new, false, true),
+        Some(TransferStatus::StorageFull),
+        "new + full → storageFull"
+    );
+    assert_eq!(TransferStatus::upload_open_reject(known, true, true), None, "replace at the cap still commits");
+    // At the cap, even a named-but-unknown id reads as storage-full (it would grow the catalog).
+    assert_eq!(
+        TransferStatus::upload_open_reject(unknown, false, true),
+        Some(TransferStatus::StorageFull),
+        "unknown id + full → storageFull"
+    );
 }
 
 /// An unknown `status` discriminator decodes to `None` (ignored), never an error — forward
