@@ -57,6 +57,12 @@ public protocol DeviceTransport: Sendable {
     func deviceInfo() async throws -> DeviceInfo
     /// Battery percentage (BAS notify). **Replays the latest** value.
     var battery: AsyncStream<Int> { get }
+    /// Unsolicited device store movements (`storeChanged`, spec §4.3 msg 2) —
+    /// an object committed or deleted **on the device** while connected (the
+    /// on-device route delete, epic #447 P6). **Live edges only, no replay**:
+    /// a movement is an event, not a state — late subscribers reconcile via
+    /// their own connect-time reload, never against a stale edge.
+    var storeChanges: AsyncStream<StoreChanged> { get }
     /// Read the device config blob.
     func readConfig() async throws -> DeviceConfig
     /// Write the device config blob — including device rename (H3, Delta 1).

@@ -372,6 +372,7 @@ private struct HardFailingDownloadTransport: DeviceTransport {
 
     var state: AsyncStream<ConnectionState> { base.state }
     var battery: AsyncStream<Int> { base.battery }
+    var storeChanges: AsyncStream<StoreChanged> { base.storeChanges }
     func connect() async throws { try await base.connect() }
     func disconnect() async { await base.disconnect() }
     func deviceInfo() async throws -> DeviceInfo { try await base.deviceInfo() }

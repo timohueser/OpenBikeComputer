@@ -27,6 +27,19 @@ public struct MockTransport: DeviceTransport {
 
     public var state: AsyncStream<ConnectionState> { control.stateMulticast.stream() }
     public var battery: AsyncStream<Int> { control.batteryMulticast.stream() }
+    public var storeChanges: AsyncStream<StoreChanged> {
+        // Drop the `nil` seed — live edges only, matching the real transport.
+        let source = control.storeChangedMulticast.stream()
+        return AsyncStream { continuation in
+            let pump = Task {
+                for await value in source {
+                    if let value { continuation.yield(value) }
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in pump.cancel() }
+        }
+    }
 
     public func connect() async throws {
         // The full link = both phases (bonded reconnect + the direct-connect tests).

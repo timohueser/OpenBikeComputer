@@ -44,6 +44,9 @@ public final class MockControl: @unchecked Sendable {
     // Live streams — thread-safe on their own; `connection`/`battery` are views onto them.
     let stateMulticast: AsyncMulticast<ConnectionState>
     let batteryMulticast: AsyncMulticast<Int>
+    /// `nil` seed = no replay, matching the real transport: a `storeChanged` is
+    /// an edge, not a state (see `DeviceTransport.storeChanges`).
+    let storeChangedMulticast = AsyncMulticast<StoreChanged?>(nil)
 
     private let lock = NSLock()
     private var _scenario: Scenario
@@ -322,6 +325,15 @@ public final class MockControl: @unchecked Sendable {
                 _fixtures.routes[index].deviceObjectID = nil
             }
         }
+    }
+
+    /// Simulate an **on-device** route delete (epic #447 P6, the Route menu's
+    /// hold-to-delete): the device forgets its copy and notifies `storeChanged`,
+    /// exactly the wire sequence the real firmware sends — the app's live
+    /// badge-reconcile input. Dev-panel/test hook.
+    public func deviceDeletesRoute(_ id: DeviceObjectID) {
+        removeRoute(id)
+        storeChangedMulticast.send(StoreChanged(type: .route, revision: 0))
     }
 
     /// Begin a simulated route upload. On commit it reports a device object id (a

@@ -219,6 +219,19 @@ public final class MainScreenModel {
                 battery = percent
             }
         })
+        streamTasks.append(Task { [weak self, transport] in
+            for await change in transport.storeChanges {
+                guard let self else { return }
+                // The device's store moved under an open app — an on-device
+                // route delete (epic #447 P6) or an upload committed from
+                // elsewhere. Re-read + reconcile so the "on device" badge
+                // clears (and a re-upload is offered) without a reconnect.
+                // Rides move only through Sync, so only route movements
+                // trigger the reload; `reload()` cancels its predecessor, so
+                // a burst of movements coalesces into one fresh read.
+                if change.type == .route { reload() }
+            }
+        })
         reload()
         // Identity after the first library read: a fault armed for "the first
         // read" (the S3 scenario) must hit the lists, not this fetch. The same
