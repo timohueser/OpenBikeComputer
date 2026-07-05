@@ -2354,6 +2354,7 @@ dependencies = [
  "obc-reader",
  "obc-render",
  "obc-route",
+ "obcm-testkit",
 ]
 
 [[package]]
