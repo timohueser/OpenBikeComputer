@@ -463,6 +463,25 @@ impl ObjectStore {
         true
     }
 
+    /// Reconcile the synced sidecar from the phone's possession ack (`ackRides`, spec §4.4 cmd 2):
+    /// flag every acked id **the device still stores** as synced — the phone's library is the ground
+    /// truth for "the phone has this ride", so this heals every divergence the download-completion
+    /// event alone leaves permanent (rides downloaded before the sidecar existed, a sidecar lost
+    /// with the card, an app reinstall). Monotonic: nothing is ever un-flagged here. One sidecar
+    /// read-modify-write for the whole batch; a change bumps the revision once, so the ride loop's
+    /// `STORE_CHANGED` rescan re-feeds the Rides menu with the freshened flags (same funnel as a
+    /// download-completion mark). Returns the newly-flagged count (the `commandResult.detail`,
+    /// saturating at 255).
+    pub fn ack_rides(&mut self, shared: &mut SharedStore, ack: &obc_ble::AckRides) -> u8 {
+        let Some(storage) = &mut shared.storage else { return 0 };
+        let rides = &self.rides;
+        let added = storage.mark_rides_synced(ack.iter().filter(|id| rides.iter().any(|s| s.id == *id)));
+        if added > 0 {
+            self.bump_revision();
+        }
+        added.min(u8::MAX as usize) as u8
+    }
+
     /// Adopt locally-saved rides into the live catalog: re-scan `/tracks` and bump the revision, so
     /// the phone's `storeChanged(ride)` + digest and the ride loop's [`STORE_CHANGED`] edge (→ the
     /// Rides menu re-feed) all move from this one edge — the exact path an upload commit or a delete

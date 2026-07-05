@@ -5,9 +5,10 @@
 //! connection lifecycle (PHY/params/pairing) events. Writes are answered with the typed `status`
 //! envelope, never a hang or a bare ATT failure:
 //!
-//! - A `command` write ([`run_command`]) — `deleteObject` for routes; rides are never deleted over the
-//!   link (the app tombstones them locally) — answers `commandResult` and, on a store movement,
-//!   notifies `storeChanged` + the refreshed digest.
+//! - A `command` write ([`run_command`]) — `deleteObject` for routes (rides are never deleted over
+//!   the link; the app tombstones them locally) and `ackRides` (the phone's possession list
+//!   reconciles the synced sidecar) — answers `commandResult` and, on a store movement, notifies
+//!   `storeChanged` + the refreshed digest.
 //! - A `transfer_control` write is decoded + [`classify_transfer`]-ed. A validated transfer is
 //!   **armed** — signalled to the CoC task ([`super::state::TRANSFER_ARM`]) and answered later by the
 //!   data plane; everything invalid (or an abort with nothing in flight) gets an immediate typed
@@ -43,32 +44,46 @@ struct CommandOutcome {
 }
 
 /// Execute a `command` write. `deleteObject` (cmd 1: `type u8 · object_id u16`) deletes a stored route
-/// through the [`ObjectStore`]. Ride deletion is **deliberately not implemented** (`notFound`): the
-/// device retains every tracked ride until a future device-side
-/// management UI — the app hides synced rides locally (tombstones) rather than deleting them
-/// here, so a re-sync can never resurrect them. Any other command byte is `unknownCommand`.
+/// through the [`ObjectStore`]. Ride deletion over the link is **deliberately not implemented**
+/// (`notFound`): rides are deleted only from the device's Rides screen (#454) — the app hides synced
+/// rides locally (tombstones) rather than deleting them here, so a re-sync can never resurrect them.
+/// `ackRides` (cmd 2: `count u8 · count × object_id u16`) reconciles the synced sidecar from the
+/// phone's possession list ([`ObjectStore::ack_rides`]); its `commandResult.detail` reports the
+/// newly-flagged count. Any other command byte is `unknownCommand`.
 fn run_command(data: &[u8], store: &RefCell<ObjectStore>, shared: &mut SharedStore) -> CommandOutcome {
     let cmd = data.first().copied().unwrap_or(0);
-    let (status, store_changed) = match (cmd, data) {
-        (1, [_, ty, lo, hi, ..]) => {
+    let (status, detail, store_changed) = match (cmd, data) {
+        (obc_ble::CMD_DELETE_OBJECT, [_, ty, lo, hi, ..]) => {
             let id = u16::from_le_bytes([*lo, *hi]);
             match ObjectType::from_u8(*ty) {
                 Ok(ObjectType::Route) => {
                     if store.borrow_mut().delete_route(shared, id) {
                         info!("ble: [cmd] deleted route object {}", id);
-                        (CommandStatus::Ok, Some(ObjectType::Route))
+                        (CommandStatus::Ok, 0, Some(ObjectType::Route))
                     } else {
-                        (CommandStatus::NotFound, None)
+                        (CommandStatus::NotFound, 0, None)
                     }
                 }
                 // Rides are never deleted over the link (see the fn doc); nothing else deletes.
-                _ => (CommandStatus::NotFound, None),
+                _ => (CommandStatus::NotFound, 0, None),
             }
         }
-        (1, _) => (CommandStatus::Error, None), // deleteObject with a truncated arg list
-        _ => (CommandStatus::UnknownCommand, None),
+        (obc_ble::CMD_DELETE_OBJECT, _) => (CommandStatus::Error, 0, None), // truncated arg list
+        (obc_ble::CMD_ACK_RIDES, _) => match obc_ble::AckRides::decode(data) {
+            Ok(ack) => {
+                let newly = store.borrow_mut().ack_rides(shared, &ack);
+                info!("ble: [cmd] ackRides: {} acked, {} newly flagged", ack.count(), newly);
+                // Only an actual flag change moved the store (and only the ride side of it).
+                (CommandStatus::Ok, newly, (newly > 0).then_some(ObjectType::Ride))
+            }
+            Err(_) => (CommandStatus::Error, 0, None), // count promises more ids than the write carries
+        },
+        _ => (CommandStatus::UnknownCommand, 0, None),
     };
-    CommandOutcome { result: StatusMessage::CommandResult(CommandResult::new(cmd, status)).encode(), store_changed }
+    CommandOutcome {
+        result: StatusMessage::CommandResult(CommandResult::with_detail(cmd, status, detail)).encode(),
+        store_changed,
+    }
 }
 
 /// How a decoded `transfer_control` write proceeds.

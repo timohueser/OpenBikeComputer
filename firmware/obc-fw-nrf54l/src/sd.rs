@@ -524,12 +524,20 @@ impl Storage {
     /// call — the handle is opened, written truncating, and closed here, so it never counts against
     /// the open-file budget across an `await`.
     pub fn mark_ride_synced(&mut self, id: u16) -> bool {
+        self.mark_rides_synced(core::iter::once(id)) > 0
+    }
+
+    /// Record a batch of ride ids as synced in **one** sidecar read-modify-write (the `ackRides`
+    /// command can carry dozens of ids — a per-id rewrite would be that many file round-trips).
+    /// Returns how many ids were **newly** flagged; `0` = the sidecar was not rewritten. Ids
+    /// already flagged (or dropped by a full set) count as nothing-new.
+    pub fn mark_rides_synced(&mut self, ids: impl Iterator<Item = u16>) -> usize {
         let mut set = self.load_synced_set();
-        if !set.insert(id) {
-            return false; // already synced (or the set is full) — no rewrite
+        let added = ids.filter(|&id| set.insert(id)).count();
+        if added > 0 {
+            self.write_synced_set(&set);
         }
-        self.write_synced_set(&set);
-        true
+        added
     }
 
     /// Retire ride `id`'s synced flag from the sidecar (a deleted ride — ids never reuse, so this is

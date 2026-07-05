@@ -56,9 +56,11 @@ pub(crate) struct BatteryService {
 /// read/write/subscribe.
 #[gatt_service(uuid = "3C920000-9916-4EBA-ABC2-342FE08F6B10")]
 pub(crate) struct ObcControlService {
-    /// Small imperative commands. Write; answered by a `status` `commandResult`.
+    /// Small imperative commands. Write; answered by a `status` `commandResult`. 64 bytes fits the
+    /// biggest write: an `ackRides` chunk of 31 ids (`2 + 31 × 2`) — the app splits longer
+    /// possession lists across writes (the command is idempotent and order-free).
     #[characteristic(uuid = "3C920001-9916-4EBA-ABC2-342FE08F6B10", write, permissions(authenticated))]
-    pub command: heapless09::Vec<u8, 8>,
+    pub command: heapless09::Vec<u8, 64>,
     /// Typed device → app messages. Notify-only.
     #[characteristic(uuid = "3C920002-9916-4EBA-ABC2-342FE08F6B10", notify, permissions(authenticated))]
     pub status: heapless09::Vec<u8, 8>,
