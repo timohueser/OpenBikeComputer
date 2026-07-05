@@ -24,6 +24,7 @@ use osmpbf::{Element, ElementReader, RelMemberType};
 use crate::config::Config;
 use crate::geom::{assemble_multipolygon, polygon_is_valid, Geom};
 use crate::hours;
+use crate::nav::{self, NavGraph, RoutableWay};
 use crate::poi::{self, Poi};
 
 pub struct IngestFeature {
@@ -35,10 +36,13 @@ pub struct IngestFeature {
 /// Coastlines are captured separately (always) — they feed the bbox and land/sea.
 /// POIs are the classified + deduped point-of-interest set ([`crate::poi`]),
 /// consumed by serialization once the OBCM v6 POI section lands (#423).
+/// `nav_graph` is the in-memory routable graph ([`crate::nav`]); R2 (#464) will
+/// tile + serialize it. It is built here but nothing is written to the `.obcm` yet.
 pub struct Ingested {
     pub features: Vec<IngestFeature>,
     pub coastlines: Vec<Vec<(f64, f64)>>,
     pub pois: Vec<Poi>,
+    pub nav_graph: NavGraph,
 }
 
 /// A pass-1 area relation awaiting member geometry (pass 2) and assembly.
@@ -95,6 +99,10 @@ pub fn ingest_osm(pbf_path: &str, config: &Config) -> Result<Ingested, String> {
     let mut features = Vec::new();
     let mut coastlines = Vec::new();
     let mut member_geom: HashMap<i64, Vec<(f64, f64)>> = HashMap::with_capacity(needed_ways.len());
+    // Routable-way topology for the nav graph ([`crate::nav`]). We keep the OSM node
+    // ids here (which the render path drops) so shared nodes can be recovered as
+    // junctions after the pass; the graph is built from these once all ways are seen.
+    let mut routable_ways: Vec<RoutableWay> = Vec::new();
     ElementReader::from_path(pbf_path)
         .map_err(|e| format!("open {pbf_path}: {e}"))?
         .for_each(|el| {
@@ -103,6 +111,7 @@ pub fn ingest_osm(pbf_path: &str, config: &Config) -> Result<Ingested, String> {
                 // A missing node aborts the whole way — osmium would raise
                 // `InvalidLocationError` here, and the way is dropped.
                 let Some(coords) = resolve_coords(&refs, &nodes) else { return };
+                push_routable_way(&w, &refs, &coords, &mut routable_ways);
                 process_way(&w, &refs, &coords, config, &mut features, &mut coastlines, &mut poi_cands);
                 if needed_ways.contains(&w.id()) {
                     member_geom.insert(w.id(), coords);
@@ -140,7 +149,29 @@ pub fn ingest_osm(pbf_path: &str, config: &Config) -> Result<Ingested, String> {
     let (pois, poi_dropped) = poi::dedupe(poi_cands);
     println!("{}", poi::format_counts(&pois, poi_dropped));
 
-    Ok(Ingested { features, coastlines, pois })
+    // --- Nav graph: junctions + deduped edges from the routable ways. ---
+    // In-memory only; R2 (#464) serializes it. Logged alongside the POI counts.
+    let nav_graph = nav::build_graph(&routable_ways);
+    println!("{}", nav::format_summary(&nav_graph));
+
+    Ok(Ingested { features, coastlines, pois, nav_graph })
+}
+
+/// Capture a routable way's node-id sequence + µdeg coords for the nav graph.
+/// Routability is tag-based ([`nav::is_routable`]) and independent of styling — a
+/// way can be routable without a render style and vice-versa. Ways with fewer than
+/// two nodes carry no edge and are skipped. `coords` is the way's f64-degree
+/// geometry from [`resolve_coords`]; it is snapped to the µdeg grid here (the same
+/// grid POIs and the serializer use) so edge lengths and later serialization agree.
+fn push_routable_way(w: &osmpbf::Way, refs: &[i64], coords: &[(f64, f64)], out: &mut Vec<RoutableWay>) {
+    if refs.len() < 2 {
+        return;
+    }
+    if !nav::is_routable(w.tags()) {
+        return;
+    }
+    let coords_udeg = coords.iter().map(|&(x, y)| (poi::to_udeg(x), poi::to_udeg(y))).collect();
+    out.push(RoutableWay { node_ids: refs.to_vec(), coords: coords_udeg });
 }
 
 /// Classify one node's tags against the POI table; push a candidate on match.
