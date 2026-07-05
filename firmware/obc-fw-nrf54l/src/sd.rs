@@ -44,7 +44,7 @@ use embedded_sdmmc::{
     LfnBuffer, Mode, RawDirectory, RawFile, SdCard, ShortFileName, TimeSource, Timestamp, VolumeIdx, VolumeManager,
 };
 use heapless::{String, Vec};
-use obc_app::MAX_ROUTES;
+use obc_app::{decode_synced_rides, encode_synced_rides, SyncedRides, MAX_RIDES, MAX_ROUTES, SYNCED_RIDES_MAX_LEN};
 use obc_platform::{SdByteSink, SdByteSource, SdTrackSink};
 use obc_route::{track_to_ride, RideInfo, RideStats, RouteIndex, RouteObjectInfo, RouteSummary, NAME_CAP};
 
@@ -63,6 +63,13 @@ const SD_FAST_HZ: Frequency = Frequency::M8;
 /// name). Truncated-and-reused per ride, converted to the `RD{id}.ORD` ride object, then
 /// deleted on Finish.
 const TRACK_TMP: &str = "TRACK.OBT";
+
+/// The synced-ride sidecar in `/tracks` (epic #447 P7 / #454): the set of ride object ids the phone
+/// has downloaded at least once, so the Rides screen can render an *unsynced* ride's delete footer
+/// with the warning cue. In `/tracks` (not RRAM) so it survives a reflash and travels with the card
+/// alongside the rides it flags. Rewritten on a download completion; parsed leniently (a torn/missing
+/// file = "nothing synced"). Codec + torn-line semantics live in `obc-app::settings` (host-tested).
+const SYNCED_SET: &str = "SYNCED.SET";
 
 /// The in-flight BLE route upload, inside `/routes`. Its extension never matches the catalog scan,
 /// so a partial upload — a drop, a power cut — is invisible until [`Storage::upload_commit`]
@@ -128,6 +135,14 @@ pub struct Storage {
     /// indices by across live rescans (#450). Uploaded routes carry it in the filename
     /// (`RT{id}.OBR`); side-loaded `.obcr` files get a session id from [`sideload_id`](Storage::sideload_id).
     route_ids: Vec<u16, MAX_ROUTES>,
+    /// 8.3 filename of each *ride* catalog entry, parallel to the ride order
+    /// [`scan_rides`](Storage::scan_rides) last returned — so a ride's durable object id resolves back
+    /// to the `RD{id}.ORD` file for a hold-to-delete (`delete_ride_by_id`, map-only build).
+    ride_files: Vec<ShortFileName, MAX_RIDES>,
+    /// Each ride catalog entry's **durable object id**, parallel to [`ride_files`](Storage::ride_files)
+    /// — filename-encoded (`RD{id}.ORD`), the identity the app's ride-menu remap and the phone's
+    /// synced/tombstone sets key on.
+    ride_ids: Vec<u16, MAX_RIDES>,
     /// The session's side-load id registry: filename → assigned [`SIDELOAD_ID_BASE`]-band id.
     /// **Append-only** (a delete leaves a tombstone), so a name keeps one id for the whole session
     /// no matter how often — or in which order — the ride loop and the BLE `ObjectStore` rescan;
@@ -278,6 +293,8 @@ impl Storage {
             tracks_dir,
             route_files: Vec::new(),
             route_ids: Vec::new(),
+            ride_files: Vec::new(),
+            ride_ids: Vec::new(),
             sideload_ids: Vec::new(),
             next_sideload: SIDELOAD_ID_BASE as u32,
             open_route: None,
@@ -386,6 +403,154 @@ impl Storage {
     /// [`App::set_routes_with_ids`](obc_app::App::set_routes_with_ids).
     pub fn route_ids(&self) -> &[u16] {
         &self.route_ids
+    }
+
+    /// Scan `/tracks` for stored ride objects into the app's Rides menu (epic #447 P7 / #454):
+    /// [`RideSummary`](obc_app::RideSummary) per `RD{id}.ORD`, **newest first** (by `start_time`),
+    /// each stamped with its `synced` flag from the [`SYNCED_SET`] sidecar. Fills the parallel
+    /// [`ride_files`](Storage::ride_files)/[`ride_ids`](Storage::ride_ids) tables so a hold-to-delete
+    /// can resolve a durable id back to its file. The synced sidecar is read once here (not per file).
+    /// Deliberately its own frame like [`scan_routes`](Storage::scan_routes): the ~few-KB catalog is
+    /// popped on return, never resident under the deep render path.
+    pub fn scan_rides(&mut self) -> Vec<obc_app::RideSummary, MAX_RIDES> {
+        let mut catalog: Vec<obc_app::RideSummary, MAX_RIDES> = Vec::new();
+        self.ride_files.clear();
+        self.ride_ids.clear();
+        let synced = self.load_synced_set();
+        let Some(dir) = self.tracks_dir else { return catalog };
+
+        // Collect (id, name) for every RD{id}.ORD; an in-flight download's open handle is read
+        // through rather than re-opened (embedded-sdmmc refuses a second open, #480).
+        let mut entries: Vec<(u16, ShortFileName), MAX_RIDES> = Vec::new();
+        let mut overflow = false;
+        self.iter_dir_lfn(dir, |e, _| {
+            if let Some(id) = stored_ride_id(&e.name) {
+                if entries.push((id, e.name.clone())).is_err() {
+                    overflow = true;
+                }
+            }
+        });
+        if overflow {
+            defmt::warn!("SD: scan: more than {=usize} ride files — the excess is not listed", MAX_RIDES);
+        }
+
+        // Build summaries, keeping name/id/summary aligned in a temp so we can sort newest-first.
+        let mut rows: Vec<(u16, ShortFileName, obc_app::RideSummary), MAX_RIDES> = Vec::new();
+        for (id, n) in &entries {
+            let (file, len, borrowed) = match self.vmgr.open_file_in_dir(dir, n, Mode::ReadOnly) {
+                Ok(f) => (f, self.vmgr.file_length(f).unwrap_or(0), false),
+                Err(_) => match &self.open_object {
+                    Some((on, of, olen)) if on == n => (*of, *olen, true),
+                    _ => {
+                        defmt::warn!("SD: scan: cannot open ride {} — not listed", defmt::Debug2Format(n));
+                        continue;
+                    }
+                },
+            };
+            match RideInfo::read(&SdByteSource::new(&self.vmgr, file, len)) {
+                Ok(info) => {
+                    let sum = obc_app::RideSummary::from_info(&info, synced.contains(*id));
+                    let _ = rows.push((*id, n.clone(), sum));
+                }
+                Err(_) => defmt::warn!("SD: scan: ride {} unreadable — not listed", defmt::Debug2Format(n)),
+            }
+            if !borrowed {
+                let _ = self.vmgr.close_file(file);
+            }
+        }
+        // Newest first (descending start_time) — the Rides screen lists most-recent at the top.
+        rows.sort_unstable_by(|a, b| b.2.start_time.cmp(&a.2.start_time));
+        for (id, name, sum) in rows {
+            if catalog.push(sum).is_ok() {
+                let _ = self.ride_files.push(name);
+                let _ = self.ride_ids.push(id);
+            }
+        }
+        defmt::info!("SD: {=usize} ride(s) in /tracks", catalog.len());
+        catalog
+    }
+
+    /// Each ride catalog entry's durable object id, parallel to the catalog
+    /// [`scan_rides`](Storage::scan_rides) last returned — the second argument to
+    /// [`App::set_rides`](obc_app::App::set_rides).
+    pub fn ride_ids(&self) -> &[u16] {
+        &self.ride_ids
+    }
+
+    /// Read the synced-ride sidecar (`/tracks/SYNCED.SET`) into a [`SyncedRides`] set. A missing,
+    /// torn, or malformed sidecar decodes to the **empty** set ("nothing synced") — never a panic
+    /// (the codec + torn-line semantics are host-tested in `obc-app::settings`). One file read.
+    pub fn load_synced_set(&self) -> SyncedRides {
+        let Some(dir) = self.tracks_dir else { return SyncedRides::new() };
+        let Ok(file) = self.vmgr.open_file_in_dir(dir, SYNCED_SET, Mode::ReadOnly) else {
+            return SyncedRides::new(); // absent = nothing synced
+        };
+        let mut buf = [0u8; SYNCED_RIDES_MAX_LEN];
+        let n = self.vmgr.read(file, &mut buf).unwrap_or(0);
+        let _ = self.vmgr.close_file(file);
+        decode_synced_rides(&buf[..n])
+    }
+
+    /// Record ride `id` as synced and persist the sidecar, but only when it's a **new** entry (a
+    /// re-download of an already-flagged ride rewrites nothing). Returns `true` if the sidecar
+    /// changed. Called at a ride download's completion (epic #447 P7). Read-modify-write within the
+    /// call — the handle is opened, written truncating, and closed here, so it never counts against
+    /// the open-file budget across an `await`.
+    pub fn mark_ride_synced(&mut self, id: u16) -> bool {
+        let mut set = self.load_synced_set();
+        if !set.insert(id) {
+            return false; // already synced (or the set is full) — no rewrite
+        }
+        self.write_synced_set(&set);
+        true
+    }
+
+    /// Retire ride `id`'s synced flag from the sidecar (a deleted ride — ids never reuse, so this is
+    /// belt-and-braces tidiness). Rewrites the sidecar only when the flag was present. The `ble`
+    /// build's `ObjectStore::delete_ride` calls this (the map-only [`delete_ride_by_id`] inlines it).
+    pub fn forget_ride_synced(&mut self, id: u16) {
+        let mut set = self.load_synced_set();
+        if set.remove(id) {
+            self.write_synced_set(&set);
+        }
+    }
+
+    /// Overwrite the synced-ride sidecar (truncating). A write failure is warned, not fatal — the
+    /// worst case is a ride reads as unsynced next boot (the safe default), never a crash.
+    fn write_synced_set(&mut self, set: &SyncedRides) {
+        let Some(dir) = self.tracks_dir else { return };
+        let mut buf = [0u8; SYNCED_RIDES_MAX_LEN];
+        let n = encode_synced_rides(set, &mut buf);
+        match self.vmgr.open_file_in_dir(dir, SYNCED_SET, Mode::ReadWriteCreateOrTruncate) {
+            Ok(file) => {
+                if self.vmgr.write(file, &buf[..n]).is_err() {
+                    defmt::warn!("SD: synced-set write failed — a ride may read unsynced next boot");
+                }
+                let _ = self.vmgr.flush_file(file);
+                let _ = self.vmgr.close_file(file);
+            }
+            Err(e) => defmt::warn!("SD: cannot open synced-set: {}", defmt::Debug2Format(&e)),
+        }
+    }
+
+    /// Delete the stored ride with durable object id `id` (the map-only build's hold-to-delete, epic
+    /// #447 P7 / #454): resolve the id → `RD{id}.ORD` file via the scan-parallel
+    /// [`ride_ids`](Storage::ride_ids)/[`ride_files`](Storage::ride_files) tables, close it if this
+    /// `Storage` holds it open, delete it, and retire its flag from the synced sidecar. `true` =
+    /// deleted. The `ble` build routes deletes through `ObjectStore` instead (see `object_store.rs`).
+    pub fn delete_ride_by_id(&mut self, id: u16) -> bool {
+        let Some(pos) = self.ride_ids.iter().position(|&x| x == id) else { return false };
+        let name = self.ride_files[pos].clone();
+        // An open detail-download handle on this ride must be closed before the delete — embedded-sdmmc
+        // refuses to delete an open file (#485).
+        if matches!(&self.open_object, Some((on, ..)) if *on == name) {
+            self.close_object();
+        }
+        if !self.delete_ride_file(&name) {
+            return false;
+        }
+        self.forget_ride_synced(id); // tidy the sidecar (ids never reuse, so belt-and-braces)
+        true
     }
 
     /// The **session-scoped** id for a side-loaded route file: the one already registered for this

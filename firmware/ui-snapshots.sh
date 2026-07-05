@@ -27,8 +27,18 @@ OUT="${1:-ui-snapshots}"
 
 mkdir -p "$OUT"
 
-# Menu navigation: the compass menu is Routes / POIs / Map / Settings, so Settings is one
-# ccw detent (`l`, wrapping) from the Routes start. `w` settles the needle sweep after a turn.
+# A deterministic /tracks fixture for the Rides screen (#454): two stored ride objects. The pinned
+# `ride-v1.bin` protocol vector *is* a valid `RD{id}.ORD` (the stored file == the wire object), so we
+# copy it under two ids. No `SYNCED.SET` → both read as unsynced, which is what the warning-red delete
+# footer snapshot needs. Staged in a temp dir cleaned on exit.
+TRACKS="$(mktemp -d)"
+trap 'rm -rf "$TRACKS"' EXIT
+cp "$ROUTES/ride-v1.bin" "$TRACKS/RD0.ORD"
+cp "$ROUTES/ride-v1.bin" "$TRACKS/RD1.ORD"
+
+# Menu navigation: the compass menu is Routes / Rides / POIs / Map / Settings, so Settings is one
+# ccw detent (`l`, wrapping) from the Routes start, Rides is one cw (`r`), POIs two cw (`r r`). `w`
+# settles the needle sweep after a turn.
 "$SIM" "$MAP" --boot --png "$OUT/home.png" --battery 45
 "$SIM" "$MAP" --boot --script "p"            --routes-dir "$ROUTES" --png "$OUT/routemenu.png"
 # Route menu hold-to-delete footer (#453): `p H` opens the menu and partial-holds the encoder over
@@ -39,18 +49,28 @@ mkdir -p "$OUT"
 # footer shows the "In use" greyed state and no delete bar fills.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p B p H" --png "$OUT/routemenu-delete-active.png"
 "$SIM" "$MAP" --boot --script "B"            --png "$OUT/menu.png"
-"$SIM" "$MAP" --boot --script "B r w"        --png "$OUT/menu-pois.png"
+# Rides screen (#454): the two-line list, then the two delete-footer states. The tracks fixture holds
+# two unsynced rides. `p` presses into the Rides screen from the Menu (one `r` detent + `w` settle).
+"$SIM" "$MAP" --boot --tracks-dir "$TRACKS" --script "B r w p"     --png "$OUT/rides.png"
+# The warning-red "not synced" delete footer: `p H` opens the Rides screen and partial-holds the
+# encoder over the highlighted (unsynced) ride, so the trash + red bar + "not synced" cue draw.
+"$SIM" "$MAP" --boot --tracks-dir "$TRACKS" --script "B r w p H"   --png "$OUT/rides-delete-unsynced.png"
+# The footer greyed while a ride is being recorded (#454): ride route 0 (`p p p` → Map, riding),
+# BackHold to the Menu (`B`), turn to the Rides station (`r w`), press in, then partial-hold — the
+# footer shows the "Recording" greyed state and no delete bar fills.
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --tracks-dir "$TRACKS" --script "p p p B r w p H" --png "$OUT/rides-delete-recording.png"
+"$SIM" "$MAP" --boot --script "B r r w"      --png "$OUT/menu-pois.png"
 # POIs browser (#425): the category list, then a populated nearest-16 list. The list's bearing
 # arrows are live, so pin a deterministic fix (grimsel map centre) + heading so they reproduce.
-"$SIM" "$MAP" --boot --script "B r w p"      --png "$OUT/poi-menu.png"
-"$SIM" "$MAP" --boot --center 8305000,46601000 --heading 0 --script "B r w p p" --png "$OUT/poi-list.png"
+"$SIM" "$MAP" --boot --script "B r r w p"    --png "$OUT/poi-menu.png"
+"$SIM" "$MAP" --boot --center 8305000,46601000 --heading 0 --script "B r r w p p" --png "$OUT/poi-list.png"
 # POI detail (#444): the hours + open/closed badge need the hours-rich monaco fixture (grimsel has
 # no shop hours). Pin the Resupply "Carrefour" supermarket (--center on it → row 0), a fix +heading
 # for the live arrow, and a deterministic --clock (Mon 2025-01-06 12:00 → OPEN). `p d p` presses into
 # the list, draws once to fill the lazy snapshot, then presses the POI into its detail.
 MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 "$SIM" "$MONACO" --boot --center 7416969,43730798 --heading 0 --clock "2025-01-06T12:00" \
-    --script "B r w p r r r p d p" --png "$OUT/poi-detail.png"
+    --script "B r r w p r r r p d p" --png "$OUT/poi-detail.png"
 "$SIM" "$MAP" --boot --script "B l p"        --png "$OUT/settings.png"
 "$SIM" "$MAP" --boot --script "B l p p"      --png "$OUT/datetime.png"
 "$SIM" "$MAP" --boot --script "B l p r p"    --png "$OUT/units.png"
@@ -86,4 +106,4 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 # Active route replaced (riding id 0, id 0 re-uploaded): the info-only "ROUTE UPDATED" card.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p" --inject-upload-replace 0 --png "$OUT/route-updated.png"
 
-echo "ui-snapshots: 30 screens rendered into $OUT/"
+echo "ui-snapshots: 33 screens rendered into $OUT/"

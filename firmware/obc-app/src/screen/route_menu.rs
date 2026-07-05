@@ -238,8 +238,15 @@ mod tests {
         let mut st = AppState::new(0, 0, 1.0);
         let mut settings = Settings::default();
         let scratch = crate::screen::PoiScratch::new();
-        let mut cx =
-            Ctx { state: &mut st, activity: act, settings: &mut settings, routes, poi_scratch: &scratch, now_ms: 0 };
+        let mut cx = Ctx {
+            state: &mut st,
+            activity: act,
+            settings: &mut settings,
+            routes,
+            rides: &[],
+            poi_scratch: &scratch,
+            now_ms: 0,
+        };
         scr.handle(g, &mut cx)
     }
 

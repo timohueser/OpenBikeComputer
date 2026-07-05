@@ -22,6 +22,7 @@ use crate::activity::{Activity, Mode};
 use crate::app::AppState;
 use crate::breadcrumb::Breadcrumb;
 use crate::input::Gesture;
+use crate::ride::RideSummary;
 use crate::route::RouteSummary;
 use crate::settings::{DateTime, Settings, Units};
 
@@ -34,6 +35,7 @@ mod poi_detail;
 mod poi_list;
 mod poi_menu;
 mod ride_control;
+mod rides;
 mod route_menu;
 mod route_overview;
 mod route_received;
@@ -50,6 +52,7 @@ pub use poi_detail::PoiDetailScreen;
 pub use poi_list::{PoiListScreen, PoiScratch};
 pub use poi_menu::PoiMenuScreen;
 pub use ride_control::RideControl;
+pub use rides::RidesScreen;
 pub use route_menu::RouteMenuScreen;
 pub use route_overview::RouteOverviewScreen;
 pub use route_received::{RouteReceivedScreen, RouteUpdatedScreen};
@@ -125,6 +128,9 @@ pub struct Ctx<'a> {
     /// to save. Every other screen leaves it untouched.
     pub settings: &'a mut Settings,
     pub routes: &'a [RouteSummary],
+    /// The resident ride catalog (read-only here) — the Rides screen lists it and its hold-to-delete
+    /// footer records a delete by index against it (epic #447, P7).
+    pub rides: &'a [RideSummary],
     /// The App-owned POI-list snapshot, **read-only** here. The POI list's `Gesture::Press` reads
     /// the highlighted [`Poi`](obc_reader::Poi) out of it to hand to the detail screen — the one
     /// place `handle` reaches the draw-taken snapshot. Every other screen leaves it untouched.
@@ -149,6 +155,9 @@ pub struct Render<'a, 'd> {
     /// [`units`](Settings::units) to caption + scale their readouts.
     pub settings: &'a Settings,
     pub routes: &'a [RouteSummary],
+    /// The resident ride catalog (read-only) — the Rides screen draws its two-line rows + the
+    /// hold-to-delete footer from it (epic #447, P7).
+    pub rides: &'a [RideSummary],
     /// The active route's geometry (the Map strokes it), or `None` when no route is loaded.
     /// Host-owned, streamed on demand.
     pub route: Option<&'a RouteReader<'a>>,
@@ -294,6 +303,9 @@ screens! {
     /// A single POI's detail: full name, subtype, live bearing arrow, today's hours + open/closed.
     PoiDetail(PoiDetailScreen) => Nav,
     RouteMenu(RouteMenuScreen) => Nav,
+    /// The Rides screen (Menu → Rides): a see-and-delete list of stored rides with a hold-to-delete
+    /// footer (greyed while recording, warning-red for an unsynced ride). Epic #447, P7 (#454).
+    Rides(RidesScreen) => Nav,
     RouteOverview(RouteOverviewScreen) => Nav,
     RouteSwap(RouteSwapScreen) => Nav,
     /// The idle route-upload prompt (epic #447, P4): "ROUTE RECEIVED" — Start navigation / Dismiss.
@@ -339,6 +351,7 @@ impl Screen {
         state: &crate::AppState,
         activity: &Activity,
         routes: &[RouteSummary],
+        rides: &[RideSummary],
     ) -> bool {
         match self {
             Screen::RideControl(s) => s.selection_is_guarded(),
@@ -347,6 +360,7 @@ impl Screen {
             Screen::StatFields(s) => s.selection_is_deletable(settings),
             Screen::Bluetooth(s) => s.selection_is_guarded(state.ble_paired),
             Screen::RouteMenu(s) => s.selection_is_deletable(activity, routes.len()),
+            Screen::Rides(s) => s.selection_is_deletable(activity, rides.len()),
             _ => false,
         }
     }

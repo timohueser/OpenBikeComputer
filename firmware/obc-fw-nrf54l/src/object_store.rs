@@ -129,6 +129,23 @@ pub(crate) async fn wait_route_delete() -> u16 {
     ROUTE_DELETE_REQ.wait().await
 }
 
+/// On-device **ride**-delete request (epic #447, P7 / #454) — the ride-namespace twin of
+/// [`ROUTE_DELETE_REQ`]. The ride loop's Rides-menu hold posts a ride's durable object id; the BLE
+/// plane drains it and runs [`ObjectStore::delete_ride`], so an on-device ride delete goes through
+/// the same catalog + revision + `storeChanged` path a phone-initiated delete does.
+static RIDE_DELETE_REQ: Signal<CriticalSectionRawMutex, u16> = Signal::new();
+
+/// Post a ride-delete request from the ride loop (epic #447, P7). Overwrites any un-drained request
+/// (one delete in flight at a time — the footer fires one at a time and the drain runs promptly).
+pub(crate) fn request_ride_delete(id: u16) {
+    RIDE_DELETE_REQ.signal(id);
+}
+
+/// The BLE plane's ride-delete arm: resolves with the ride id to delete once the ride loop posts one.
+pub(crate) async fn wait_ride_delete() -> u16 {
+    RIDE_DELETE_REQ.wait().await
+}
+
 // ==================== settings-coherence signals (#456) ====================
 //
 // Settings are the one thing both thread-mode planes edit: the ride loop (the on-device Settings
@@ -406,6 +423,35 @@ impl ObjectStore {
         self.routes.remove(idx);
         self.bump_revision();
         true
+    }
+
+    /// Delete a stored **ride** by object id (epic #447, P7 / #454) — the ride-namespace twin of
+    /// [`delete_route`](Self::delete_route). Routes the delete through the store (revision bump +
+    /// `storeChanged`) so the phone's device-rides reconcile; retires the ride's synced-set flag too.
+    /// `true` = deleted. Ids never reuse, so the phone's synced/tombstone bookkeeping stays coherent.
+    pub fn delete_ride(&mut self, shared: &mut SharedStore, id: u16) -> bool {
+        let Some(idx) = self.rides.iter().position(|s| s.id == id) else { return false };
+        let Some(storage) = &mut shared.storage else { return false };
+        if !storage.delete_ride_file(&self.rides[idx].file) {
+            return false;
+        }
+        // Retire the synced flag (belt-and-braces — ids never reuse) so the sidecar stays tidy.
+        storage.forget_ride_synced(id);
+        self.rides.remove(idx);
+        self.bump_revision();
+        true
+    }
+
+    /// Mark a ride as synced (epic #447, P7): set the `/tracks` synced-set flag when a ride download
+    /// **completes**, so the Rides screen's delete footer drops the "not synced" cue. A revision bump
+    /// funnels the change to the ride loop (via `STORE_CHANGED`) so its live rescan re-feeds the Rides
+    /// menu with the freshened flag — without changing the ride *count* the phone reconciles on.
+    /// A no-op (no bump) when the ride was already flagged.
+    pub fn mark_ride_synced(&mut self, shared: &mut SharedStore, id: u16) {
+        let Some(storage) = &mut shared.storage else { return };
+        if storage.mark_ride_synced(id) {
+            self.bump_revision();
+        }
     }
 
     // ==================== upload ====================

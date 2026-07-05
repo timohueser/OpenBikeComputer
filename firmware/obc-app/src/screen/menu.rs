@@ -1,12 +1,13 @@
 //! The Menu overlay — **layout prototype pass**: two candidate designs behind the [`COMPASS`]
-//! switch. Both show the four planned entries (Routes / POIs / Map / Settings — Map is still an
+//! switch. Both show the five entries (Routes / Rides / POIs / Map / Settings — Map is still an
 //! inert placeholder until that screen exists) and keep the list semantics: `turn` moves the
 //! selection (wrapping), `press` enters, `back` returns to the caller.
 //!
-//! * Compass dial: a wood bezel ring with the four entries as stations at N/E/S/W, an amber
-//!   needle that *sweeps* to the selection (an ease-out driven through
-//!   [`tick_timers`](MenuScreen::tick_timers)), and the selected name in Display type below.
-//! * Card grid: the conventional 2×2 icon-card layout under the standard title bar.
+//! * Compass dial: a wood bezel ring with the five entries as stations evenly spaced around the
+//!   ring (72° apart, starting from N — see [`station_dir`]), an amber needle that *sweeps* to the
+//!   selection (an ease-out driven through [`tick_timers`](MenuScreen::tick_timers)), and the
+//!   selected name in Display type below.
+//! * Card grid: the conventional icon-card layout under the standard title bar.
 
 use embedded_graphics::prelude::Point;
 use obc_render::{
@@ -18,30 +19,38 @@ use obc_render::{
 use crate::input::Gesture;
 
 use super::{
-    list, palette, title_frame_ble, Ctx, PoiMenuScreen, Render, RouteMenuScreen, Screen, ScreenTick, SettingsScreen,
-    Transition,
+    list, palette, title_frame_ble, Ctx, PoiMenuScreen, Render, RidesScreen, RouteMenuScreen, Screen, ScreenTick,
+    SettingsScreen, Transition,
 };
 
-const ITEMS: [&str; 4] = ["Routes", "POIs", "Map", "Settings"];
+const ITEMS: [&str; 5] = ["Routes", "Rides", "POIs", "Map", "Settings"];
 
 /// Prototype switch: `true` draws the compass dial, `false` the 2×2 card grid.
 const COMPASS: bool = true;
 
-/// Station directions in item order: N (Routes), E (POIs), S (Map), W (Settings) — so a clockwise
-/// encoder turn walks the ring clockwise.
-const DIRS: [(i32, i32); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
+/// The station's unit direction for item `i` of `n`, starting at N (0°) and stepping clockwise, so a
+/// clockwise encoder turn walks the ring clockwise. Replaces the old fixed N/E/S/W table now that the
+/// menu holds five entries (`Rides` joined Routes/POIs/Map/Settings).
+fn station_dir(i: usize, n: usize) -> (f32, f32) {
+    let a = (i as f32 / n as f32) * core::f32::consts::TAU;
+    (libm::sinf(a), -libm::cosf(a)) // screen coords: 0° = up, clockwise positive
+}
+
+/// Degrees the needle sweeps per encoder detent — one station step around the ring of [`ITEMS`]
+/// (360° ÷ five entries = 72°).
+const DETENT_DEG: f32 = 360.0 / ITEMS.len() as f32;
 
 /// Needle sweep tuning: an ease-out — the needle moves at `SWEEP_RATE` of the remaining arc per
-/// second, floored at `SWEEP_MIN_DEG_S` so the tail doesn't crawl. A 90° detent lands in ≈200 ms.
+/// second, floored at `SWEEP_MIN_DEG_S` so the tail doesn't crawl. A one-detent step lands in ≈200 ms.
 const SWEEP_RATE: f32 = 8.0;
 const SWEEP_MIN_DEG_S: f32 = 180.0;
 /// The frame cadence the sweep asks the host for while in flight.
 const SWEEP_FRAME_MS: u32 = 16;
 
 /// The main menu. State is the highlighted entry plus the needle sweep: `target_deg` accumulates
-/// ±90° per detent (so the needle always follows the *turn direction*, including across the wrap)
-/// and `needle_deg` chases it in [`tick_timers`](Self::tick_timers); both are normalized back into
-/// one revolution when the sweep lands.
+/// ±[`DETENT_DEG`] per detent (so the needle always follows the *turn direction*, including across
+/// the wrap) and `needle_deg` chases it in [`tick_timers`](Self::tick_timers); both are normalized
+/// back into one revolution when the sweep lands.
 #[derive(Debug, Default)]
 pub struct MenuScreen {
     selected: usize,
@@ -59,13 +68,14 @@ impl MenuScreen {
     pub fn handle(&mut self, g: Gesture, _cx: &mut Ctx) -> Transition {
         match g {
             Gesture::Turn(n) => {
-                self.target_deg += (n * 90) as f32;
+                self.target_deg += n as f32 * DETENT_DEG;
                 list::on_turn(&mut self.selected, n, ITEMS.len())
             }
             Gesture::Press => match self.selected {
                 0 => Transition::Push(Screen::RouteMenu(RouteMenuScreen::new())), // Routes
-                1 => Transition::Push(Screen::PoiMenu(PoiMenuScreen::new())),     // POIs
-                3 => Transition::Push(Screen::Settings(SettingsScreen::new())),   // Settings
+                1 => Transition::Push(Screen::Rides(RidesScreen::new())),         // Rides
+                2 => Transition::Push(Screen::PoiMenu(PoiMenuScreen::new())),     // POIs
+                4 => Transition::Push(Screen::Settings(SettingsScreen::new())),   // Settings
                 _ => Transition::None,                                            // Map — future screen
             },
             Gesture::Back => Transition::Pop, // return to caller (Home or Map)
@@ -152,9 +162,12 @@ fn draw_compass(cv: &mut impl Surface, w: i32, h: i32, selected: usize, needle_d
     cv.disc(c, 6, INK);
     cv.disc(c, 2, PARCHMENT);
 
-    // Stations: amber-filled when selected, a thin tan ring otherwise.
-    for (i, &(dx, dy)) in DIRS.iter().enumerate() {
-        let sc = Point::new(c.x + dx * 72, c.y + dy * 72);
+    // Stations: amber-filled when selected, a thin tan ring otherwise. Evenly spaced around the ring
+    // by `station_dir`, so the five entries sit at 72° detents starting from N.
+    let n = ITEMS.len();
+    for i in 0..n {
+        let (dx, dy) = station_dir(i, n);
+        let sc = Point::new(c.x + si(1.0, dx * 72.0), c.y + si(1.0, dy * 72.0));
         let is_sel = i == selected;
         if is_sel {
             cv.disc(sc, 24, AMBER);
@@ -200,10 +213,24 @@ fn draw_grid(cv: &mut impl Surface, w: i32, h: i32, selected: usize, ble_connect
 fn draw_icon(cv: &mut impl Surface, i: usize, c: Point, k: f32, color: u16, bg: u16) {
     match i {
         0 => icon_route(cv, c, k, color),
-        1 => icon_poi(cv, c, k, color, bg),
-        2 => icon_map(cv, c, k, color),
+        1 => icon_rides(cv, c, k, color, bg),
+        2 => icon_poi(cv, c, k, color, bg),
+        3 => icon_map(cv, c, k, color),
         _ => icon_sliders(cv, c, k, color),
     }
+}
+
+/// The Rides glyph: a stopwatch — a round face with a top stem/button and a single hand, reading as
+/// "recorded ride" (time + distance) distinct from the route icon's road line.
+fn icon_rides(cv: &mut impl Surface, c: Point, k: f32, color: u16, bg: u16) {
+    let r = si(k, 9.0) as u32;
+    cv.disc(c, r, color);
+    cv.disc(c, si(k, 6.5) as u32, bg); // punch the face out to a ring
+                                       // Top button/stem.
+    cv.fill(rect(c.x - si(k, 2.0), c.y - si(k, 13.0), si(k, 4.0), si(k, 4.0)), color);
+    // A single hand from the centre up-right.
+    cv.line(c, Point::new(c.x + si(k, 4.0), c.y - si(k, 4.0)), color);
+    cv.disc(c, si(k, 1.5).max(1) as u32, color); // hub
 }
 
 /// Scale an icon-space offset by `k`, rounding away from zero so mirrored offsets stay symmetric.
