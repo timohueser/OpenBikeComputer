@@ -29,7 +29,7 @@ use crate::input::Gesture;
 use crate::settings::Units;
 
 use super::list::{self, ListGeometry, Separators};
-use super::{palette, Ctx, Render, Transition};
+use super::{palette, Ctx, PoiDetailScreen, Render, Screen, Transition};
 
 /// Per-POI row height — two lines (name above, bearing arrow + distance below) with margin to keep
 /// the distance clear of the row separator / selected-row fill; the nearest-16 still page through
@@ -81,6 +81,14 @@ impl PoiScratch {
     pub(crate) fn len(&self) -> usize {
         self.pois.len()
     }
+
+    /// The snapshotted POI at `index` (ascending by distance), or `None` past the end. The POI
+    /// list's `Gesture::Press` reads it through [`Ctx`](super::Ctx) to hand the selected `Poi` to the
+    /// detail screen — the one place `handle` reaches the draw-taken snapshot (the query itself still
+    /// only runs at draw).
+    pub(crate) fn get(&self, index: usize) -> Option<&Poi> {
+        self.pois.get(index)
+    }
 }
 
 impl Default for PoiScratch {
@@ -111,14 +119,20 @@ impl PoiListScreen {
         self.category
     }
 
-    pub fn handle(&mut self, g: Gesture, _cx: &mut Ctx) -> Transition {
+    pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
             // The row count isn't known here (the scratch is in the draw ctx), so wrap over the full
             // 16 cap; `draw` clamps the selection to the real length, so a turn past the end is
             // harmless. A short list still highlights a valid row.
             Gesture::Turn(n) => list::on_turn(&mut self.selected, n, MAX_POI_RESULTS),
-            // Selecting a POI is a no-op this epic (open/navigate is a follow-up); no hint row.
-            Gesture::Press => Transition::None,
+            // Open the detail screen for the highlighted POI (epic #439 P4 #444). The snapshot is
+            // taken at draw, so it lives in the App-owned scratch `cx` carries read-only; clamp the
+            // selection to the real length (a turn can wrap past a short list). An empty scratch
+            // (never drawn / no fix) ⇒ `get` is `None` ⇒ nothing to open, stay put.
+            Gesture::Press => match cx.poi_scratch.get(self.selected.min(cx.poi_scratch.len().saturating_sub(1))) {
+                Some(poi) => Transition::Push(Screen::PoiDetail(PoiDetailScreen::new(poi.clone()))),
+                None => Transition::None,
+            },
             Gesture::Back => Transition::Pop, // return to the category list
             _ => Transition::None,
         }
@@ -228,7 +242,8 @@ fn draw_poi_row(
 }
 
 /// Half-size of the bearing-arrow glyph (px) — a chevron ~`2 * ARROW_R` across, ~2 chars wide.
-const ARROW_R: i32 = 7;
+/// Shared with the [detail screen](super::PoiDetailScreen), which draws the same live arrow.
+pub(super) const ARROW_R: i32 = 7;
 
 /// Draw a 16-direction bearing chevron centred at `c`, pointing from the rider toward the POI
 /// **relative to the rider's heading** — a filled triangular arrowhead like the user-position
@@ -238,7 +253,9 @@ const ARROW_R: i32 = 7;
 /// component scaled by `cos_lat` (local-equirectangular, matching the reader's distance metric);
 /// subtracting the heading gives the on-screen angle, where 0° points up and clockwise is positive,
 /// so the unit direction is `(sin θ, -cos θ)`.
-fn draw_bearing_arrow(cv: &mut impl Surface, c: Point, pos: (i32, i32), poi: (i32, i32), heading_deg: f32) {
+///
+/// Shared with the [detail screen](super::PoiDetailScreen) so the one arrow trig lives in one place.
+pub(super) fn draw_bearing_arrow(cv: &mut impl Surface, c: Point, pos: (i32, i32), poi: (i32, i32), heading_deg: f32) {
     let dlat = (poi.1 - pos.1) as f32;
     let dlon = (poi.0 - pos.0) as f32;
     let east = dlon * cos_lat(pos.1);

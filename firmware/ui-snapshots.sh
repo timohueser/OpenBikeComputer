@@ -37,6 +37,13 @@ mkdir -p "$OUT"
 # arrows are live, so pin a deterministic fix (grimsel map centre) + heading so they reproduce.
 "$SIM" "$MAP" --boot --script "B r w p"      --png "$OUT/poi-menu.png"
 "$SIM" "$MAP" --boot --center 8305000,46601000 --heading 0 --script "B r w p p" --png "$OUT/poi-list.png"
+# POI detail (#444): the hours + open/closed badge need the hours-rich monaco fixture (grimsel has
+# no shop hours). Pin the Resupply "Carrefour" supermarket (--center on it → row 0), a fix +heading
+# for the live arrow, and a deterministic --clock (Mon 2025-01-06 12:00 → OPEN). `p d p` presses into
+# the list, draws once to fill the lazy snapshot, then presses the POI into its detail.
+MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
+"$SIM" "$MONACO" --boot --center 7416969,43730798 --heading 0 --clock "2025-01-06T12:00" \
+    --script "B r w p r r r p d p" --png "$OUT/poi-detail.png"
 "$SIM" "$MAP" --boot --script "B l p"        --png "$OUT/settings.png"
 "$SIM" "$MAP" --boot --script "B l p p"      --png "$OUT/datetime.png"
 "$SIM" "$MAP" --boot --script "B l p r p"    --png "$OUT/units.png"
@@ -52,4 +59,4 @@ mkdir -p "$OUT"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p B p r p" --png "$OUT/routeswap.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p h" --png "$OUT/map-pan.png"
 
-echo "ui-snapshots: 19 screens rendered into $OUT/"
+echo "ui-snapshots: 20 screens rendered into $OUT/"
