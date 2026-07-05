@@ -96,6 +96,13 @@ public protocol DeviceTransport: Sendable {
     /// compact-binary payload as it lands; `handle` carries batch progress /
     /// cancel / restart (whole rides are the resume granularity).
     func downloadRides(_ ids: [RideID]) -> RideDownload
+    /// Ack the rides the phone's library holds (`ackRides`, spec §4.4 cmd 2) —
+    /// the device reconciles its per-ride "synced" flag from this possession
+    /// list (monotonic: it only ever *sets* flags). Idempotent and order-free,
+    /// so callers re-send the whole list on every connect; the transport chunks
+    /// a long list across writes. Ids outside the device namespace (mock/test
+    /// ids that never came from a catalog) are skipped.
+    func ackRides(_ ids: [RideID]) async throws
     /// Read the device diagnostics/crash-log blob.
     func readDiagnostics() async throws -> Data
 }
@@ -117,4 +124,11 @@ extension DeviceTransport {
     /// discover/authenticate continuations over any still waiting).
     public func suspendLink() async { await disconnect() }
     public func resumeLink() async { try? await connect() }
+
+    /// Default: no possession ack — for preview/test stand-ins that model no
+    /// device-side synced state. `BLETransport` sends the real command;
+    /// `MockTransport` records the ack for tests. Safe as a no-op because the
+    /// ack is pure reconciliation — skipping it only leaves the device's
+    /// synced flags where they were.
+    public func ackRides(_ ids: [RideID]) async throws {}
 }

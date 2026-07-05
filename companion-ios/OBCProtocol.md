@@ -57,7 +57,7 @@ UUID, which custom services must not use — `S0` replaced them:
 
 | `XXXX` | Characteristic | Properties | Role |
 |---|---|---|---|
-| `0001` | `command` | write | small imperatives: `deleteObject` (cmd 1: `type u8 · id u16`) — spec §4.4 |
+| `0001` | `command` | write | small imperatives — spec §4.4: `deleteObject` (cmd 1: `type u8 · id u16`) and `ackRides` (cmd 2: `count u8 · count × id u16` — the phone's ride-**possession ack**; the device flags every listed ride it still stores as synced). `ackRides` is monotonic (never un-flags), idempotent and order-free — the app re-sends its whole synced list on every connect (`RideSyncCoordinator`), chunked ≤ 31 ids per write (`AckRidesCommand`); `commandResult.detail` = newly-flagged count |
 | `0002` | `status` | notify | typed device → app messages (`StatusMessage`: transferResult / storeChanged / commandResult) — spec §4.3 |
 | `0003` | `objectStore` | read + notify | 10-byte store digest (revision + route/ride counts); **full lists are CoC objects** — they outgrow the 512-byte ATT attribute cap |
 | `0004` | `config` | read + write | the Config object incl. **device name** (see *Delta 1*) → `DeviceConfig` |
