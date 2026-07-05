@@ -3,7 +3,7 @@
 //! The nRF54L15 driving the reflective LS021B7DD02 memory-LCD through the FLPR coprocessor is
 //! what the project ships on — the **default build**; the ST7789 EYESPI TFT stays as the opt-in
 //! `tft` bring-up backend. This crate ports the
-//! shared `obc-app` onto it (load route → ride → save GPX). Nothing app-facing lives here:
+//! shared `obc-app` onto it (load route → ride → save the ride object). Nothing app-facing lives here:
 //! `obc-render` / `obc-app` / `obc-reader` / `obc-route` + `obc-platform` stay board-agnostic;
 //! only the nRF HAL wiring + the display `DisplayDriver` backends are board-specific.
 //!
@@ -328,7 +328,7 @@ const NRF_RAM_BYTES: usize = ls021_flpr::M33_RAM_BYTES;
 /// *floor* the assert enforces — the real stack is the residual `RAM − statics` (~37.8 KB on the
 /// default build). Pinned above the **measured deep-path peak**: 35,808 / 37,760 B on 2026-07-04
 /// (debug-uart FLPR build, post-#351 split; VCOM-harness full ride — fix on Home → route load →
-/// ride → finish-to-GPX), so a change that squeezes the residual below what the deepest path
+/// ride → finish-to-save), so a change that squeezes the residual below what the deepest path
 /// actually reaches fails at compile time (e.g. a `ble` + map build on the 256 KB DK) instead of
 /// overflowing the stack on glass.
 /// On the combined `ble` build the SDC/host futures and MPSL's ISRs also ride the main stack on top
@@ -637,9 +637,10 @@ async fn main(_spawner: Spawner) {
     // LED0 (P2_09) heartbeat — a liveness blink visible even before looking at the panel.
     let mut led = Output::new(p.P2_09, Level::Low, OutputDrive::Standard);
 
-    // load → ride → save-GPX: stream the SD `.obcm` into the resident RGB222 framebuffer through the
+    // load → ride → save: stream the SD `.obcm` into the resident RGB222 framebuffer through the
     // shared `obc-app`, pick a route from the card catalog, ride it (VCOM-streamed GPS or the
-    // `SynthLocation` square loop), map-match + log the track, and write a `.gpx` to `/tracks` on Finish.
+    // `SynthLocation` square loop), map-match + log the track, and write the `RD{id}.ORD` ride
+    // object to `/tracks` on Finish (GPX export happens phone-side after sync).
     {
         // --- VCOM debug-sensor stream, behind `debug-uart`. Bring it up first so the J-Link VCOM is
         // live while the SD card + panel come up; the parsed fixes land in obc-platform's signals, ready

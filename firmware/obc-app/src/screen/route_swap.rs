@@ -1,7 +1,7 @@
 //! The "route already active" prompt — shown when a new route is picked mid-ride. Loading a route
 //! while tracking is ambiguous: keep recording and re-navigate, or save and begin fresh. **Swap
 //! route** (press) keeps the session and only changes the navigated route; **Save & new** (hold-
-//! guarded) finalises the current track to a `.gpx` and starts a new session; **Cancel** (back)
+//! guarded) finalises the current track (the host's Save) and starts a new session; **Cancel** (back)
 //! returns. Reached from [`RouteMenuScreen`](super::RouteMenuScreen) when a session is active and a
 //! *different* route is chosen.
 
