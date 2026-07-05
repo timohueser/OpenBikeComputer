@@ -176,7 +176,17 @@ impl AppState {
     /// electronic compass when stopped (no course), or 0 (north) when neither is known. Used by
     /// [`course_rad`](AppState::course_rad), on entering pan, and when `hold` flips to heading-up.
     fn live_course_rad(&self) -> f32 {
-        self.user_fix.and_then(|f| f.course).or(self.compass_deg).map_or(0.0, |deg| deg.to_radians())
+        self.effective_heading_deg().map_or(0.0, |deg| deg.to_radians())
+    }
+
+    /// The rider's heading reference in degrees CW from north, or `None` when neither is known —
+    /// the GPS [`course`](Fix::course) while moving, else the electronic [`compass_deg`] while
+    /// stopped (the #231 seam). Unlike [`live_course_rad`](AppState::live_course_rad) this doesn't
+    /// fall back to north: a consumer that must *hide* rather than mislead (the POI list's
+    /// bearing arrows) keys off the `None`. The heading-up map's rotation folds this `None` to
+    /// north through `live_course_rad`, so the arrow and the map agree whenever a heading exists.
+    pub fn effective_heading_deg(&self) -> Option<f32> {
+        self.user_fix.and_then(|f| f.course).or(self.compass_deg)
     }
 
     /// Switch to the **riding view** — what loading a route should look like on the
@@ -403,6 +413,12 @@ pub struct App {
     /// timer edge that flips the "No GPS Fix" banner dirties the live-data views exactly once.
     /// Starts `true` — no fix at boot.
     prev_no_fix: bool,
+    /// The single POI-list snapshot buffer (issue #425), threaded into the draw context as
+    /// [`Render::poi_scratch`]. Held once here rather than per-screen so the ~800 B doesn't multiply
+    /// across the screen-stack union (see [`PoiScratch`](crate::screen::PoiScratch)). Filled lazily
+    /// by the POI list screen's first draw; invalidated in [`apply_gesture`](App::apply_gesture)
+    /// when a POI list opens, so re-entering a category re-queries.
+    poi_scratch: screen::PoiScratch,
 }
 
 /// A fix older than this (map-plane millis) means "no current GPS fix". The window is the larger of
@@ -462,6 +478,7 @@ impl App {
             temp_c: None,
             last_fix_ms: None,
             prev_no_fix: true,
+            poi_scratch: screen::PoiScratch::new(),
         }
     }
 
@@ -517,6 +534,7 @@ impl App {
             addr_of_mut!((*slot).temp_c).write(None);
             addr_of_mut!((*slot).last_fix_ms).write(None);
             addr_of_mut!((*slot).prev_no_fix).write(true);
+            addr_of_mut!((*slot).poi_scratch).write(screen::PoiScratch::new());
         }
     }
 
@@ -708,6 +726,31 @@ impl App {
         matches!(self.stack.get(base), Some(Screen::Map(_)))
     }
 
+    /// Whether the frame needs the streamed-map [`Reader`] built and passed to
+    /// [`render_map_timed`](App::render_map_timed) — a superset of [`base_draws_map`](App::base_draws_map).
+    /// The Map always does; the **POI list** screen (issue #425) does too, but only until it has
+    /// taken its one-shot snapshot: its query runs in the *draw* path off `rx.reader`, so a
+    /// render-on-demand host (the board's two-plane loop) must build the `Reader` on the frame the
+    /// snapshot is taken. Once [`poi_snapshot_pending`](App::poi_snapshot_pending) is false the POI
+    /// list draws from the frozen scratch with no `Reader`, so the host skips the build again.
+    ///
+    /// The sim's `render_frame` always passes `Some(reader)`, so it never consults this — only the
+    /// board host does, keeping its per-frame `Reader` build (and stack spike) off every non-map,
+    /// already-snapshotted frame.
+    pub fn base_needs_reader(&self) -> bool {
+        if self.base_draws_map() {
+            return true;
+        }
+        let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
+        matches!(self.stack.get(base), Some(Screen::PoiList(s)) if self.poi_snapshot_pending(s))
+    }
+
+    /// Whether the given POI list screen still needs a `Reader` at draw — its category's snapshot
+    /// hasn't been taken into the shared scratch yet. Drives [`base_needs_reader`](App::base_needs_reader).
+    fn poi_snapshot_pending(&self, screen: &crate::screen::PoiListScreen) -> bool {
+        !self.poi_scratch.holds(screen.category())
+    }
+
     /// The fix-staleness window (map-plane millis): the larger of [`NO_FIX_FLOOR_MS`] and a few
     /// configured fix intervals, so a long interval doesn't flag "no fix" in the normal gap between
     /// its own fixes. A 1 s interval gives the 5 s floor; a 30 s interval gives 90 s.
@@ -734,6 +777,18 @@ impl App {
     /// The resident route catalog.
     pub fn routes(&self) -> &[RouteSummary] {
         &self.catalog
+    }
+
+    /// The screen currently on top of the stack (receiving input). Always present — the Home root is
+    /// never popped. A read-only handle for a host/test that needs to know which screen is up.
+    pub fn top_screen(&self) -> &Screen {
+        self.stack.last().expect("the stack always has the Home root")
+    }
+
+    /// Number of POIs in the current [`poi_scratch`](App::poi_scratch) snapshot (0 when none has
+    /// been taken). A test/introspection hook for the POIs browser's static snapshot.
+    pub fn poi_snapshot_len(&self) -> usize {
+        self.poi_scratch.len()
     }
 
     /// Re-roll the Home screensaver's contour pattern to `seed`. The app does this itself when the
@@ -889,6 +944,12 @@ impl App {
         let t = stack.last_mut().expect("the stack always has the Home root").handle(g, &mut cx);
         let depth_before = stack.len();
         screen::apply(stack, t);
+        // Opening a POI list drops any previous snapshot so its first draw re-queries at the current
+        // fix — the "re-enter to refresh" contract (issue #425). Gated on this being a fresh open
+        // (the stack grew), so a turn *within* the list doesn't wipe the frozen snapshot.
+        if stack.len() > depth_before && matches!(stack.last(), Some(Screen::PoiList(_))) {
+            self.poi_scratch.invalidate();
+        }
         // Returning to the bare Home root re-opens the screensaver — re-roll its contour seed so the
         // topo peaks drift for this visit. Gated on the *edge* (was deeper, now 1) so it fires once
         // per return; being in `apply_gesture` means a clock/battery re-render (which never touches
@@ -1035,7 +1096,9 @@ impl App {
         // firmware's separate input plane); fall back to `App`'s own input on the single-loop hosts.
         let hold_progress = self.hold_progress_override.unwrap_or_else(|| self.input.encoder_hold_progress());
         let no_fix = !self.has_live_fix(self.now_ms);
-        let App { state, activity, settings, catalog, renderer, stack, now_ms, profile, breadcrumb, .. } = self;
+        let App {
+            state, activity, settings, catalog, renderer, stack, now_ms, profile, breadcrumb, poi_scratch, ..
+        } = self;
         let mut rx = Render {
             reader,
             renderer,
@@ -1046,6 +1109,7 @@ impl App {
             route,
             profile: profile.as_ref(),
             breadcrumb: &*breadcrumb,
+            poi_scratch,
             w: w as i32,
             h: h as i32,
             now_ms: *now_ms,
