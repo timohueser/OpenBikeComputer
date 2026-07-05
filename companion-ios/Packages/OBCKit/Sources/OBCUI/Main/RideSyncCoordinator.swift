@@ -62,7 +62,25 @@ public final class RideSyncCoordinator {
 
     // MARK: Observable state
 
-    public private(set) var syncState: OBCSyncButtonState = .idle
+    public private(set) var syncState: OBCSyncButtonState = .idle {
+        // The batch is mid-flight exactly while `.syncing` (#459): `runSync`
+        // raises it, and every way out — done, idle, the H10 interrupt — lowers
+        // it. Mirroring the transitions here keeps the `TransferActivity` claim
+        // in lock-step with the state machine's many exit paths, including an
+        // interruption whose consuming loop deliberately stays alive awaiting
+        // the stalled stream (a stalled batch must NOT hold the background
+        // grace window — waiting longer won't finish a transfer whose link is
+        // gone; Resume restarts it after the foreground reconnect).
+        didSet {
+            guard oldValue != syncState else { return }
+            if syncState == .syncing {
+                if activityToken == nil { activityToken = activity?.begin() }
+            } else if let token = activityToken {
+                activityToken = nil
+                activity?.end(token)
+            }
+        }
+    }
     /// Non-nil while syncing — feeds the amber "N of M rides" caption.
     public private(set) var syncProgress: SyncProgress?
     /// Non-nil after a successful sync — feeds "Synced N new rides just now".
@@ -78,6 +96,11 @@ public final class RideSyncCoordinator {
     private let transport: any DeviceTransport
     private let library: any LibraryStore
     private let timing: Timing
+    /// The foreground-only policy's in-flight ledger (#459) — `nil` in tests
+    /// and previews that don't exercise the lifecycle.
+    @ObservationIgnored private let activity: TransferActivity?
+    /// This coordinator's claim while a batch is `.syncing`.
+    @ObservationIgnored private var activityToken: TransferActivity.Token?
     /// The model's veto (#303): `false` while the connected device reports an
     /// incompatible `protocol_version` — that state lives with the model's
     /// reload/identity path; the coordinator only asks.
@@ -108,11 +131,13 @@ public final class RideSyncCoordinator {
     public init(
         transport: any DeviceTransport,
         library: any LibraryStore,
-        timing: Timing = Timing()
+        timing: Timing = Timing(),
+        activity: TransferActivity? = nil
     ) {
         self.transport = transport
         self.library = library
         self.timing = timing
+        self.activity = activity
         // Open-ended stream loops are `[weak self]` + per-iteration `guard let
         // self` (the #356 convention) — the stream never finishes, so a strong
         // capture would pin the coordinator (and its owner) for the session.

@@ -139,13 +139,17 @@ public final class MainScreenModel {
         library: any LibraryStore = InMemoryLibraryStore(),
         syncTiming: RideSyncCoordinator.Timing = RideSyncCoordinator.Timing(),
         nameReconciler: DeviceNameReconciler? = nil,
+        transferActivity: TransferActivity? = nil,
         now: @escaping () -> Date = Date.init
     ) {
         self.transport = transport
         self.library = library
         self.nameReconciler = nameReconciler
         self.now = now
-        self.sync = RideSyncCoordinator(transport: transport, library: library, timing: syncTiming)
+        self.sync = RideSyncCoordinator(
+            transport: transport, library: library, timing: syncTiming,
+            activity: transferActivity
+        )
         // The coordinator's seams back into this model — weak, so the closures
         // the model's own coordinator holds can never pin the model.
         sync.canSync = { [weak self] in self?.protocolMismatch == nil }
