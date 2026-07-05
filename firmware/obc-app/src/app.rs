@@ -473,6 +473,24 @@ pub struct App {
     /// A counter, not a bool, so a burst of commits between drains is never coalesced into a single
     /// missed rescan.
     store_changed_pending: u32,
+    /// The one **pending route-upload prompt** (epic #447, P4), set by
+    /// [`notify_route_uploaded`](App::notify_route_uploaded) and delivered (or dropped) by
+    /// [`reconcile_upload_prompt`](App::reconcile_upload_prompt). Deliberately a single slot:
+    /// consecutive uploads replace it — most recent wins, the popup rule. Carried by **durable
+    /// object id**, never a catalog index, so a rescan between arrival and a hold-deferred
+    /// delivery can't retarget it.
+    pending_upload: Option<UploadEvent>,
+}
+
+/// One committed route upload, as [`notify_route_uploaded`](App::notify_route_uploaded) queues it
+/// for prompt delivery (epic #447, P4).
+#[derive(Debug, Clone, Copy)]
+struct UploadEvent {
+    /// The committed route's durable object id — resolved to a catalog index at *delivery* time.
+    id: u16,
+    /// The upload replaced the **actively-navigated** route (snapshotted at arrival): the
+    /// info-only "ROUTE UPDATED" card instead of a choice prompt — adoption already happened.
+    active_replace: bool,
 }
 
 /// A fix older than this (map-plane millis) means "no current GPS fix". The window is the larger of
@@ -537,6 +555,7 @@ impl App {
             poi_scratch: screen::PoiScratch::new(),
             ble_passkey: None,
             store_changed_pending: 0,
+            pending_upload: None,
         }
     }
 
@@ -597,6 +616,7 @@ impl App {
             addr_of_mut!((*slot).poi_scratch).write(screen::PoiScratch::new());
             addr_of_mut!((*slot).ble_passkey).write(None);
             addr_of_mut!((*slot).store_changed_pending).write(0);
+            addr_of_mut!((*slot).pending_upload).write(None);
         }
     }
 
@@ -904,6 +924,8 @@ impl App {
                 Screen::RouteMenu(m) => m.remap_routes(&remap, new_len),
                 Screen::RouteOverview(o) => o.remap_routes(&remap),
                 Screen::RouteSwap(sw) => sw.remap_routes(&remap),
+                Screen::RouteReceived(rc) => rc.remap_routes(&remap),
+                Screen::RouteUpdated(ru) => ru.remap_routes(&remap),
                 _ => {}
             }
         }
@@ -992,8 +1014,14 @@ impl App {
             return;
         }
         match (self.ble_passkey, self.passkey_card_index()) {
-            // A passkey to show and no card up → open it over the current top.
+            // A passkey to show and no card up → open it over the current top. The card outranks
+            // the route-upload popups (P4) in *both* directions: a popup arriving under the card
+            // is dropped (see `reconcile_upload_prompt`), and a passkey arriving while a popup is
+            // up **replaces** it — remove the popup rather than stacking the card over it (it's
+            // advisory; the route is in the menu either way). The manual, menu-opened Route-swap
+            // prompt is not a popup and stays put under the card.
             (Some(passkey), None) => {
+                self.remove_received_popups();
                 let r = self.stack.push(Screen::Passkey(crate::screen::PasskeyScreen::new(passkey)));
                 debug_assert!(r.is_ok(), "screen stack overflow — raise MAX_DEPTH");
                 self.map_dirty = true;
@@ -1080,6 +1108,150 @@ impl App {
     /// commits is observable, though one rescan covers them all.
     pub fn take_store_changed(&mut self) -> u32 {
         core::mem::take(&mut self.store_changed_pending)
+    }
+
+    /// A route upload **committed** to the host's store (epic #447, P4) — the event that raises
+    /// the route-upload popups. `id` is the committed route's durable object id; `replaced` says
+    /// the upload swapped the bytes of an already-stored route rather than adding a new one.
+    ///
+    /// **Ordering contract**: the host rings this *after* it has answered the accompanying
+    /// store-changed edge with the rescan → [`set_routes_with_ids`](App::set_routes_with_ids), so
+    /// `id` resolves against the fresh catalog (the board's ride loop drains the rescan first in
+    /// the same pass; the sim's inject button drives the same sequence).
+    ///
+    /// Two things happen here, deliberately decoupled:
+    ///
+    /// 1. **Forced adoption** (unconditional): if the replaced id is the actively-navigated route,
+    ///    the bytes under navigation just changed — the same-id remap kept the matcher/profile
+    ///    caches alive across the rescan, so they now describe *stale geometry*. Drop them: the
+    ///    matcher re-locks and re-runs map-matching from the current fix on the next tick, the
+    ///    profile rebuilds from the reopened geometry at the next render, and the match-derived
+    ///    readouts (progress / off-route / cross-track) clear until recomputed. The recording
+    ///    session is untouched. This runs even when the popup is suppressed.
+    /// 2. **The advisory prompt**: queued (single slot — consecutive uploads replace it, most
+    ///    recent wins) and delivered by [`reconcile_upload_prompt`](App::reconcile_upload_prompt):
+    ///    the info-only "ROUTE UPDATED" card for an active replace, the retitled
+    ///    [`RouteSwapScreen`](crate::screen::RouteSwapScreen) while tracking, or the idle
+    ///    "ROUTE RECEIVED" prompt. Dropped while the passkey card shows; deferred a tick while a
+    ///    hold charges.
+    pub fn notify_route_uploaded(&mut self, id: u16, replaced: bool) {
+        let active_id = self.activity.active_route.and_then(|i| self.catalog_ids.get(i).copied());
+        let active_replace = replaced && active_id == Some(id);
+        if active_replace {
+            // Same index, same id — but new bytes. Invalidate everything derived from the old
+            // geometry (the remap deliberately preserves same-id state; a replace is the one case
+            // where that preservation would carry stale state onto new geometry).
+            self.route_match.reset();
+            self.matched_route = None; // tick re-locks the matcher from the current fix
+            self.profile = None;
+            self.profile_route = None; // the next render rebuilds from the reopened geometry
+            self.activity.progress_m = 0;
+            self.activity.off_route = false;
+            self.activity.dist_to_route_m = 0;
+            self.map_dirty = true; // the drawn route line + progress changed under the rider
+        }
+        self.pending_upload = Some(UploadEvent { id, active_replace });
+        self.reconcile_upload_prompt();
+    }
+
+    /// Deliver (or drop) the pending route-upload prompt (epic #447, P4). Called on arrival and
+    /// once per [`advance_animations`](App::advance_animations) pass, so a hold-deferred prompt
+    /// lands on the next tick — the P2 host-pushed-screen precedent, adapted to a one-shot event
+    /// (the pending slot *is* the re-fed desired state).
+    ///
+    /// The locked popup rules, in order:
+    /// - **Passkey outranks**: while the card is up the prompt is dropped, not queued (advisory —
+    ///   the route is in the Route menu regardless).
+    /// - **Never lands mid-hold**: delivery waits a tick while either button's hold charges.
+    /// - **Vanished id**: a route deleted between commit and delivery drops the prompt.
+    /// - **Replace, don't stack**: an existing upload popup — or a manual
+    ///   [`RouteSwapScreen`](crate::screen::RouteSwapScreen) opened from the menu — is replaced in
+    ///   place by the new prompt (most recent wins; selection resets with the fresh screen).
+    fn reconcile_upload_prompt(&mut self) {
+        let Some(ev) = self.pending_upload else { return };
+        if self.passkey_card_up() {
+            self.pending_upload = None; // dropped, not queued — the card outranks
+            return;
+        }
+        if self.hold_charging() {
+            return; // defer a tick; retried from `advance_animations`
+        }
+        self.pending_upload = None;
+        // Resolve the durable id in the (already rescanned) catalog; a vanished route drops the
+        // advisory prompt entirely.
+        let Some(idx) = self.catalog_ids.iter().position(|&x| x == ev.id) else { return };
+        let screen = if ev.active_replace {
+            Screen::RouteUpdated(crate::screen::RouteUpdatedScreen::new(idx, self.now_ms))
+        } else if self.activity.is_tracking() {
+            Screen::RouteSwap(crate::screen::RouteSwapScreen::received(idx, self.now_ms))
+        } else {
+            Screen::RouteReceived(crate::screen::RouteReceivedScreen::new(idx, self.now_ms))
+        };
+        match self.upload_prompt_index() {
+            Some(i) => self.stack[i] = screen,
+            None => {
+                let r = self.stack.push(screen);
+                debug_assert!(r.is_ok(), "screen stack overflow — raise MAX_DEPTH");
+            }
+        }
+        self.map_dirty = true;
+    }
+
+    /// The stack index of the screen an incoming upload prompt **replaces**: any upload popup, or
+    /// the manual Route-swap prompt (the locked "same rule when the manual swap is up"). `None`
+    /// when the prompt should push fresh.
+    fn upload_prompt_index(&self) -> Option<usize> {
+        self.stack
+            .iter()
+            .position(|s| matches!(s, Screen::RouteReceived(_) | Screen::RouteUpdated(_) | Screen::RouteSwap(_)))
+    }
+
+    /// Remove every host-pushed upload popup from the stack (the passkey card just opened over
+    /// them — card outranks). The **manual** Route-swap prompt is rider-opened, not a popup, and
+    /// stays. Returns whether anything was removed.
+    fn remove_received_popups(&mut self) -> bool {
+        let mut removed = false;
+        let mut i = 0;
+        while i < self.stack.len() {
+            let popup = match &self.stack[i] {
+                Screen::RouteReceived(_) | Screen::RouteUpdated(_) => true,
+                Screen::RouteSwap(s) => s.is_received(),
+                _ => false,
+            };
+            if popup {
+                let _ = self.stack.remove(i);
+                removed = true;
+            } else {
+                i += 1;
+            }
+        }
+        removed
+    }
+
+    /// Auto-close any upload popup past its 30 s deadline — **timeout = dismiss** (epic #447,
+    /// P4): the popup is removed exactly as Back would, nothing else changes. Deferred while a
+    /// hold charges (the P2 rule: never move a host-pushed screen mid-hold); the popups'
+    /// `tick_timers` keep a short residual wake armed until the sweep lands.
+    fn close_expired_upload_popups(&mut self) {
+        if self.hold_charging() {
+            return;
+        }
+        let now = self.now_ms;
+        let mut i = 0;
+        while i < self.stack.len() {
+            let expired = match &self.stack[i] {
+                Screen::RouteReceived(s) => s.expired(now),
+                Screen::RouteUpdated(s) => s.expired(now),
+                Screen::RouteSwap(s) => s.expired(now),
+                _ => false,
+            };
+            if expired {
+                let _ = self.stack.remove(i);
+                self.map_dirty = true; // repaint what the popup covered
+            } else {
+                i += 1;
+            }
+        }
     }
 
     /// The screen currently on top of the stack (receiving input). Always present — the Home root is
@@ -1333,6 +1505,12 @@ impl App {
         }
         self.map_dirty |= changed;
         self.next_wake_ms = next_wake;
+        // The route-upload popups' per-pass reconcile (epic #447, P4): land a hold-deferred
+        // prompt, and run the 30 s auto-close (timeout = dismiss). Here — the one hook every host
+        // runs each pass — rather than a new timer path; the popups' `tick_timers` above already
+        // armed the wake that gets a parked device to this line at the deadline.
+        self.reconcile_upload_prompt();
+        self.close_expired_upload_popups();
     }
 
     /// The single "next wake deadline" the event-driven host arms one timer to: the soonest, in

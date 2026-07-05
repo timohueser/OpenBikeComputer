@@ -19,10 +19,9 @@ use obc_render::{
     Surface,
 };
 
-use crate::activity::Mode;
 use crate::input::Gesture;
 
-use super::{ledger_row, palette, title_frame, Ctx, MapScreen, Render, Screen, Transition, LIST_TOP};
+use super::{ledger_row, palette, title_frame, Ctx, Render, Transition, LIST_TOP};
 
 /// Chart band: below the title bar, deep enough to read the terrain, clear of the stat tiles.
 const BAND_TOP: i32 = LIST_TOP + 8;
@@ -61,17 +60,9 @@ impl RouteOverviewScreen {
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
             // Start: the session begin that Route-menu `press` used to do — riding camera on the
-            // route's start, tracking on, and a clean [Home, Map] stack.
-            Gesture::Press => {
-                let Some(route) = cx.routes.get(self.route) else {
-                    return Transition::Pop;
-                };
-                cx.state.enter_riding_view(route.start_lon, route.start_lat);
-                cx.activity.mode = Mode::Riding;
-                cx.activity.active_route = Some(self.route);
-                cx.activity.start_session();
-                Transition::Root(Screen::Map(MapScreen::new()))
-            }
+            // route's start, tracking on, and a clean [Home, Map] stack. The shared
+            // [`start_ride`](super::start_ride) path, also the upload popup's *Start navigation*.
+            Gesture::Press => super::start_ride(cx, self.route),
             // Cancel: put back whatever route was loaded before the preview.
             Gesture::Back => {
                 cx.activity.active_route = self.prev_active;

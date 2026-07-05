@@ -445,6 +445,17 @@ pub(crate) async fn run_app(
             }
         }
 
+        // The upload-arrived event (#451), drained strictly **after** the rescan above so the id
+        // resolves against the fresh catalog. `notify_route_uploaded` raises the right popup
+        // (idle prompt / mid-ride swap / active-replaced info card) and — on a replace of the
+        // navigated route — drops the app's stale matcher progress + elevation profile, while the
+        // rescan block already closed the open geometry handle and the reconcile below reopens +
+        // re-indexes it off the new bytes: the full forced-adoption chain, one pass.
+        #[cfg(feature = "ble")]
+        if let Some((id, replaced)) = crate::object_store::take_route_uploaded() {
+            app.notify_route_uploaded(id, replaced);
+        }
+
         // Settings coherence, phone → device (#456): a BLE Config write persisted units + name to
         // RRAM but the live `App` copy never learned. Reload the BLE-owned fields into it *before*
         // the change-detection save below, so (a) the UI re-captions same-session and (b) the app's

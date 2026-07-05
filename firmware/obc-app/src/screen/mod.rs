@@ -36,6 +36,7 @@ mod poi_menu;
 mod ride_control;
 mod route_menu;
 mod route_overview;
+mod route_received;
 mod route_swap;
 mod settings;
 mod statistics;
@@ -51,6 +52,7 @@ pub use poi_menu::PoiMenuScreen;
 pub use ride_control::RideControl;
 pub use route_menu::RouteMenuScreen;
 pub use route_overview::RouteOverviewScreen;
+pub use route_received::{RouteReceivedScreen, RouteUpdatedScreen};
 pub use route_swap::RouteSwapScreen;
 pub use settings::{
     AddFieldScreen, BluetoothScreen, DateTimeScreen, PowerScreen, ResetScreen, SettingsScreen, StatFieldsScreen,
@@ -294,6 +296,14 @@ screens! {
     RouteMenu(RouteMenuScreen) => Nav,
     RouteOverview(RouteOverviewScreen) => Nav,
     RouteSwap(RouteSwapScreen) => Nav,
+    /// The idle route-upload prompt (epic #447, P4): "ROUTE RECEIVED" — Start navigation / Dismiss.
+    /// **Host-pushed** by [`App::notify_route_uploaded`]; auto-closes (= dismisses) after
+    /// [`UPLOAD_POPUP_TIMEOUT_MS`]. Advisory — the route is already committed and in the Route menu.
+    RouteReceived(RouteReceivedScreen) => Nav,
+    /// The active-route-replaced info card (epic #447, P4). Adoption already happened when it
+    /// opens (the app dropped the stale matcher/profile; the host reopened the geometry) — this
+    /// only *tells* the rider. Dismiss on any press/Back, or the same auto-close.
+    RouteUpdated(RouteUpdatedScreen) => Nav,
     /// The BLE pairing passkey card (epic #447, P2). **Host-pushed** by [`App::set_ble_status`]
     /// when the seam's passkey goes `Some`, popped when it clears. Opaque + non-dismissible.
     Passkey(PasskeyScreen) => Nav,
@@ -364,6 +374,12 @@ impl Screen {
             Screen::Statistics(s) => s.tick_timers(now_ms, settings),
             Screen::Home(s) => s.tick_timers(now, ms_to_next_minute),
             Screen::Menu(s) => s.tick_timers(now_ms),
+            // The route-upload popups' 30 s auto-close deadline (epic #447, P4): the residual
+            // wake keeps the event-driven host armed so the timeout-dismiss fires from warm
+            // sleep; the removal itself runs in `App::advance_animations`' popup sweep.
+            Screen::RouteReceived(s) => s.tick_timers(now_ms),
+            Screen::RouteUpdated(s) => s.tick_timers(now_ms),
+            Screen::RouteSwap(s) => s.tick_timers(now_ms),
             _ => ScreenTick::idle(),
         }
     }
@@ -462,6 +478,28 @@ pub(crate) fn ble_glyph(cv: &mut impl Surface, x: i32, cy: i32, color: u16) {
     // stacked chevrons. Upper tip → lower-left, lower tip → upper-left.
     cv.line(up_tip, Point::new(left_x, bot - quarter), color);
     cv.line(lo_tip, Point::new(left_x, top + quarter), color);
+}
+
+/// How long a route-upload popup (epic #447, P4) stays up before it auto-closes; the timeout **is**
+/// a dismiss — the popups are advisory (the route is committed before any prompt), so expiring
+/// loses nothing. Long enough to read mid-ride, short enough that a parked device returns to warm
+/// sleep on its own.
+pub const UPLOAD_POPUP_TIMEOUT_MS: u32 = 30_000;
+
+/// Start riding catalog route `i` from a non-tracking state — **the** route-start path: the riding
+/// camera seeded on the route's start, [`Mode::Riding`], `active_route` pointed at it, a fresh
+/// tracking session, and a clean `[Home, Map]` stack. Shared by the Route overview's START RIDE
+/// press and the "ROUTE RECEIVED" popup's *Start navigation* (locked to be exactly this path), so
+/// the two can never drift. An out-of-range `i` (the route vanished in a rescan) pops instead.
+pub(crate) fn start_ride(cx: &mut Ctx, i: usize) -> Transition {
+    let Some(route) = cx.routes.get(i) else {
+        return Transition::Pop;
+    };
+    cx.state.enter_riding_view(route.start_lon, route.start_lat);
+    cx.activity.mode = Mode::Riding;
+    cx.activity.active_route = Some(i);
+    cx.activity.start_session();
+    Transition::Root(Screen::Map(MapScreen::new()))
 }
 
 /// The gestures the two riding views (Map and Statistics) bind identically: `press` pauses
