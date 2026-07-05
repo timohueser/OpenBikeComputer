@@ -1,6 +1,6 @@
 ---
 title: The companion link
-description: How the OpenBikeComputer device and its phone companion app talk over Bluetooth Low Energy — the two-plane GATT / L2CAP split, the object model, a whole-object transfer end to end, the digest-driven sync loop, and passkey pairing with silent reconnect.
+description: How the OpenBikeComputer device and its phone companion app talk over Bluetooth Low Energy — the two-plane GATT / L2CAP split, the object model, a whole-object transfer end to end, the device-side upload prompts, the digest-driven sync loop with synced-ride reconciliation, on-device deletes flowing back, and passkey pairing with reject-when-bonded and silent reconnect.
 ---
 
 # The companion link
@@ -184,6 +184,38 @@ and back.
 > id) is exempt: it reuses a slot rather than growing the catalog, so updating the
 > route you're actively navigating never hits the cap.
 
+### When a route lands — the device's side
+
+A committed upload isn't silent on the device. A route usually arrives because
+the rider just pressed *send* on the phone sitting next to it, so the display
+**wakes** and shows a short prompt — then returns to warm sleep. The prompt is
+strictly **advisory**: the route is already in the store (and the Route menu)
+before it appears, so dismissing it loses nothing. It **auto-closes after 30
+seconds**, and that timeout *is* a dismiss. What the prompt offers depends on
+what the rider is doing:
+
+- **Not riding** → *"Route received — Start navigation / Dismiss."* Start
+  navigation behaves exactly like picking the route in the Route menu.
+- **Riding** → the same guarded **swap** shape a mid-ride route pick uses (*Swap
+  route / Save &amp; start new / Cancel*), retitled for a received route — so an
+  uploaded route mid-ride can't silently take over navigation.
+- **Replacing the route you're navigating** → an **info-only** card. The device
+  has no choice here: the replace-commit already overwrote the file on the card,
+  so the old bytes are gone. The device *adopts the new version immediately* —
+  it reopens the geometry handle, re-runs map-matching from the current fix, and
+  recomputes progress — and the card just tells the rider it happened. The
+  recording session is untouched.
+
+Two rules keep the prompt from ever doing harm. It **never lands while a hold
+gesture is charging** — a popup appearing under a half-completed *Save &amp; start
+new* hold could complete onto the wrong action, so it waits a tick (the same
+stack-change hold-cancel the [UI page](../ui/#hold-to-confirm) describes).
+And consecutive uploads **replace** the prompt rather than stacking — most
+recent wins, carried by object id, not menu position, so a live rescan can't
+point *Start navigation* at whatever route slid into the slot. A pending prompt
+is also **outranked** by the passkey card: if pairing starts, the route prompt
+is dropped (not queued) — it's only advisory, and the route is safe in the menu.
+
 ## Staying in sync — the change digest
 
 After anything changes on the device — a route uploaded, a ride finished, an
@@ -193,17 +225,19 @@ device publishes a tiny **10-byte digest**: a `revision` counter plus the route
 and ride counts, on a characteristic the app can read *and* subscribe to.
 
 <figure class="fig">
-<svg viewBox="0 0 720 250" role="img" aria-label="The sync loop as four stages left to right. One: a store change on the device — an upload commits, a ride is tracked, or an object is deleted. Two: the device bumps the revision in its 10-byte objectStore digest and notifies it. Three: the app compares the digest; if the revision moved it downloads the relevant list object — routeList or rideList — over the CoC. Four: the app fetches only the objects that actually changed. A curved arrow returns from stage four to stage one, labelled on the next change, showing the loop.">
+<svg viewBox="0 0 720 300" role="img" aria-label="The sync loop as four stages left to right. One: a store change on the device — an upload from the phone commits, a ride is tracked, or the rider deletes a route or ride on the device itself; every path goes through the one object store. Two: the device bumps the revision in its 10-byte objectStore digest and notifies it. Three: the app compares the digest; if the revision moved it downloads the relevant list object — routeList or rideList — over the CoC. Four: the app fetches only the objects that actually changed. A curved arrow returns from stage four to stage one, labelled on the next change, showing the loop. Below, a separate reverse lane: on every connect the phone sends an ackRides command back to the device — the ids it holds — and the device marks those rides synced.">
   <defs>
     <marker id="sy-a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
     <marker id="sy-m" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#9aa884" /></marker>
+    <marker id="sy-k" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
   </defs>
   <text class="d-tag" x="20" y="22">The change signal — read the digest, fetch what moved</text>
 
   <rect class="d-panel" x="16" y="70" width="150" height="72" rx="10" />
   <text class="d-sub" x="91" y="42" text-anchor="middle" style="fill:#6b7758">on the device</text>
-  <text class="d-label" x="91" y="100" text-anchor="middle">store changes</text>
-  <text class="d-sub" x="91" y="120" text-anchor="middle">upload · ride · delete</text>
+  <text class="d-label" x="91" y="98" text-anchor="middle">store changes</text>
+  <text class="d-sub" x="91" y="116" text-anchor="middle">upload · ride</text>
+  <text class="d-sub" x="91" y="132" text-anchor="middle" style="fill:#a9501c">device-side delete</text>
 
   <rect class="d-panel-2" x="198" y="70" width="150" height="72" rx="10" style="fill:#eef2df" />
   <text class="d-label" x="273" y="98" text-anchor="middle" style="fill:#3c6b39">revision ++</text>
@@ -226,11 +260,60 @@ and ride counts, on a characteristic the app can read *and* subscribe to.
   <line class="d-flow" x1="530" y1="106" x2="560" y2="106" marker-end="url(#sy-a)" />
 
   <!-- loop back -->
-  <path d="M633 142 C 633 210, 91 210, 91 144" fill="none" stroke="#9aa884" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#sy-m)" />
-  <text class="d-sub" x="360" y="228" text-anchor="middle" style="fill:#6b7758">on the next change</text>
+  <path d="M633 142 C 633 190, 91 190, 91 144" fill="none" stroke="#9aa884" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#sy-m)" />
+  <text class="d-sub" x="360" y="182" text-anchor="middle" style="fill:#6b7758">on the next change</text>
+
+  <!-- ackRides reverse lane -->
+  <line x1="20" y1="216" x2="700" y2="216" style="stroke:#d6cda8;stroke-width:1" />
+  <text class="d-tag" x="20" y="242" style="fill:#a9501c">The other direction — reconcile synced rides on connect</text>
+  <rect class="d-panel" x="380" y="252" width="150" height="34" rx="9" />
+  <text class="d-sub" x="455" y="273" text-anchor="middle">phone — ids it holds</text>
+  <line x1="378" y1="269" x2="168" y2="269" style="stroke:#cf6a2a;stroke-width:1.6" marker-end="url(#sy-k)" />
+  <text class="d-sub" x="273" y="262" text-anchor="middle" style="fill:#a9501c;font-size:9px">ackRides (GATT command)</text>
+  <rect class="d-hot" x="16" y="252" width="150" height="34" rx="9" style="fill:#f8efe4" />
+  <text class="d-sub" x="91" y="273" text-anchor="middle" style="fill:#a9501c">device marks synced</text>
 </svg>
-<figcaption>The digest is the cheap "did anything change?" signal that replaces polling the CoC-sized lists. The app reads it on connect and subscribes to it; when the <code>revision</code> moves it pulls the relevant <b>list</b> object (a compact catalog of fixed-size entries), then downloads only the objects that are new to it. A companion <code>storeChanged</code> notification additionally says <em>which</em> store moved, so a route upload doesn't trigger a ride re-list.</figcaption>
+<figcaption>The digest is the cheap "did anything change?" signal that replaces polling the CoC-sized lists. The app reads it on connect and subscribes to it; when the <code>revision</code> moves it pulls the relevant <b>list</b> object (a compact catalog of fixed-size entries), then downloads only the objects that are new to it. A companion <code>storeChanged</code> notification additionally says <em>which</em> store moved, so a route upload doesn't trigger a ride re-list. A change is a change whether the phone caused it or the rider deleted something on the device — both go through the one object store, so both bump the same revision. The lower lane is the one flow that runs the other way: an <code>ackRides</code> command carries the phone's held ride ids <em>to</em> the device, which marks them synced (below).</figcaption>
 </figure>
+
+The device is the other half of this loop. A change doesn't only come *from* the
+phone — the rider can delete a stored route from the device's Route menu or a
+tracked ride from its Rides screen, both with a hold-to-delete footer (see the
+[UI system](../ui/#deleting-things-the-hold-to-delete-footer)). A device-side
+delete goes **through the same object store** the wire commits do, so it bumps
+the `revision`, fires `storeChanged`, and shows up to the phone as *"the ride
+store moved"* on the next notify — no separate "the device deleted something"
+message, and no way for the two to disagree about what's on the card. The phone
+reconciles by re-reading the list and tombstoning what vanished, exactly as it
+would after any other change.
+
+**Ids are never reused — which is what keeps the bookkeeping honest.** The phone
+persists *"I uploaded route 7"* and *"I've synced ride 12"* by durable object id.
+If a delete freed id 7 and the next upload re-took it, the phone's note would
+now point at a *different* route. So the device tracks a **high-water mark** for
+each store in its persistent settings and allocates strictly above it: a freed
+id stays retired forever. That is the invariant the whole reconciliation rests
+on — a `storeChanged` the phone can trust never to lie about identity.
+
+### Synced rides — reconciled state, not event inference
+
+A tracked ride is precious (unlike a route, the phone can't re-upload it), so the
+device keeps a **"synced" flag** per ride — has the phone downloaded this one at
+least once? It drives the *"not synced"* warning on the device's delete footer,
+so a rider deleting an un-downloaded ride is told what they're about to lose.
+
+The naïve way to set that flag is to flip it when a ride download completes. But
+that makes it an *event inference* — and events are lossy. A ride synced before
+the device tracked the flag, a card reflashed, an app reinstalled: any of these
+leaves the device's flag out of step with what the phone actually holds, and
+*permanently*, because a ride the phone already has is never re-downloaded to
+correct it. So the flag is instead **reconciled state**. The phone's library is
+the ground truth for "I have this ride", and on every connect it sends the device
+the list of ride ids it holds — a small `ackRides` command. The device sets
+(never clears) the synced flag for each; a change bumps the ride revision so the
+Rides screen's cue updates live. The flag becomes *"the phone has confirmed it
+holds this"*, self-healing on every reconnect rather than riding on a single
+download event landing.
 
 ## Pairing, and staying paired
 
@@ -238,18 +321,26 @@ Access is gated by a **bond** — a one-time, mutually-authenticated pairing. Th
 device is a *display-only* peer: it shows a **6-digit passkey** on its screen
 that the rider types into the phone's system dialog. That's LE Secure
 Connections passkey entry — man-in-the-middle-protected — and the on-screen code
-is what makes it safe: **physical possession of the device is the control.**
+is what makes it safe: **physical possession of the device is the control.** On
+the device that code is a full-screen [**passkey card**](../ui/#the-passkey-card):
+the host pushes it the instant the radio raises a passkey and pops it the instant
+pairing ends, and it's deliberately non-dismissible — no button can lose the code
+mid-pairing — because the SMP handshake time-boxes the window anyway.
+
 There is exactly one bonded peer — and while that bond exists the device
 **rejects any new pairing attempt**: a stranger's phone gets a generic pairing
-failure and the device screen shows nothing. Re-pairing (a new or reset phone)
-goes through the hold-guarded **Forget phone** action in the device's
-Settings ▸ Bluetooth, which clears the bond and re-opens pairing — so physical
-possession still gates the swap, at the *clear* step. The same screen carries
-the Bluetooth **off** switch: off stops advertising and drops the link, while
-the bond survives for when the radio comes back.
+failure and the device screen shows nothing (no passkey card, because there's no
+pairing to complete). Re-pairing (a new or reset phone) goes through the
+hold-guarded **Forget phone** action in the device's Settings ▸ Bluetooth, which
+clears the bond and re-opens pairing — so physical possession still gates the
+swap, at the *clear* step. This *reverses* an earlier "a fresh pairing replaces
+the stored bond" rule: a lost or wiped phone can no longer silently re-pair, and
+Forget phone is now the **only** re-pair path. The same screen carries the
+Bluetooth **off** switch: off stops advertising and drops the link, while the
+bond survives for when the radio comes back.
 
 <figure class="fig">
-<svg viewBox="0 0 720 300" role="img" aria-label="Pairing and reconnect in two rows. Top row, first pairing, done once: the device shows a six-digit passkey on its screen; the rider reads it and types it into the phone; the two run an LESC elliptic-curve key exchange; both sides store the resulting bond keys. Bottom row, every time after, silent: the device advertises with a stable address; the phone recognises that identity from the bond; the two re-encrypt with the stored long-term key and the phone's rotating address is resolved via the stored identity key; the result is a connected, encrypted link with no dialog.">
+<svg viewBox="0 0 720 400" role="img" aria-label="Pairing, reconnect, and rejection in three rows. Top row, first pairing, done once: the device shows a six-digit passkey on its screen; the rider reads it and types it into the phone; the two run an LESC elliptic-curve key exchange; both sides store the resulting bond keys. Middle row, every time after, silent: the device advertises with a stable address; the phone recognises that identity from the bond; the two re-encrypt with the stored long-term key and the phone's rotating address is resolved via the stored identity key; the result is a connected, encrypted link with no dialog. Bottom row, reject-when-bonded: a different phone tries to pair while a bond already exists; the device suppresses its passkey and drops the link; the other phone sees only a generic pairing failure; the only way through is the rider running Forget phone on the device to clear the bond.">
   <defs>
     <marker id="pk-a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
   </defs>
@@ -303,9 +394,34 @@ the bond survives for when the radio comes back.
   <line class="d-flow" x1="166" y1="213" x2="220" y2="213" marker-end="url(#pk-a)" />
   <line class="d-flow" x1="372" y1="213" x2="426" y2="213" marker-end="url(#pk-a)" />
   <line class="d-flow" x1="578" y1="213" x2="620" y2="213" marker-end="url(#pk-a)" />
-  <text class="d-sub" x="360" y="278" text-anchor="middle" style="fill:#6b7758">bonded + powered + in range  ⇒  connected + encrypted, no interaction</text>
+  <text class="d-sub" x="360" y="266" text-anchor="middle" style="fill:#6b7758">bonded + powered + in range  ⇒  connected + encrypted, no interaction</text>
+
+  <!-- divider -->
+  <line x1="20" y1="290" x2="700" y2="290" style="stroke:#d6cda8;stroke-width:1" />
+
+  <!-- Row 3: reject-when-bonded -->
+  <text class="d-tag" x="20" y="322" style="fill:#a9501c">③ Another phone, while bonded — rejected</text>
+
+  <rect class="d-panel" x="16" y="336" width="150" height="52" rx="10" />
+  <text class="d-sub" x="91" y="358" text-anchor="middle">a different phone</text>
+  <text class="d-sub" x="91" y="374" text-anchor="middle">tries to pair</text>
+
+  <rect class="d-panel-2" x="222" y="336" width="184" height="52" rx="10" style="fill:#f4e7de" />
+  <text class="d-sub" x="314" y="358" text-anchor="middle" style="fill:#a9501c">bond exists →</text>
+  <text class="d-sub" x="314" y="374" text-anchor="middle" style="fill:#a9501c">no passkey, link dropped</text>
+
+  <rect class="d-panel-2" x="462" y="336" width="120" height="52" rx="10" />
+  <text class="d-sub" x="522" y="358" text-anchor="middle">phone sees a</text>
+  <text class="d-sub" x="522" y="374" text-anchor="middle">generic failure</text>
+
+  <rect class="d-hot" x="606" y="336" width="98" height="52" rx="10" style="fill:#f8efe4" />
+  <text class="d-sub" x="655" y="356" text-anchor="middle" style="fill:#a9501c">only way in:</text>
+  <text class="d-sub" x="655" y="372" text-anchor="middle">Forget phone</text>
+
+  <line class="d-flow" x1="166" y1="362" x2="220" y2="362" marker-end="url(#pk-a)" />
+  <line class="d-flow" x1="406" y1="362" x2="460" y2="362" marker-end="url(#pk-a)" />
 </svg>
-<figcaption>Pairing happens once, with the passkey on the glass. After that the device keeps a <b>stable</b> address (no device-side privacy rotation), so the phone — which stored that identity at bonding — reconnects silently on any contact and re-encrypts with the stored long-term key; the phone's own rotating address is resolved back to it via the stored identity key. The bond lives in the device's persistent settings storage, so it survives power cycles <em>and firmware updates</em>.</figcaption>
+<figcaption>Pairing happens once, with the passkey on the glass. After that the device keeps a <b>stable</b> address (no device-side privacy rotation), so the phone — which stored that identity at bonding — reconnects silently on any contact and re-encrypts with the stored long-term key; the phone's own rotating address is resolved back to it via the stored identity key. The bond lives in the device's persistent settings storage, so it survives power cycles <em>and firmware updates</em>. The third row is the guard: while a bond exists, <b>a second phone can't pair</b> — the device shows no passkey and drops the attempt, so the interloper sees only a generic failure and the rider must deliberately <b>Forget phone</b> to open a swap.</figcaption>
 </figure>
 
 What the bond protects, and what stays open:
@@ -327,6 +443,7 @@ banner rather than trapping) before it ever asks to pair.
 - The wire contract, normative: [`obc-ble-interface-spec.md`](src:obc-ble-interface-spec.md)
 - The host-tested, radio-free core — descriptor codecs, CRC-32, the transfer state machine: [`obc-ble`](src:firmware/obc-ble) ([`transfer.rs`](src:firmware/obc-ble/src/transfer.rs) · [`descriptor.rs`](src:firmware/obc-ble/src/descriptor.rs))
 - On the device — the GATT server, connection lifecycle, and the CoC data plane: [`obc-fw-nrf54l/src/ble/`](src:firmware/obc-fw-nrf54l/src/ble)
+- The device UI's link seam — the connected indicator, passkey card, and upload prompts consume this: [`obc-app/src/ble.rs`](src:firmware/obc-app/src/ble.rs) (and the [UI system](../ui/#screens-the-companion-link-pushes))
 - The phone side — the SwiftUI companion app and its transport layer: [`companion-ios/`](src:companion-ios)
 - Shared fixtures pinning the byte layouts on both sides: [`protocol-vectors/`](src:protocol-vectors)
 - The route and ride formats that cross the link: [Data formats](../formats/)
