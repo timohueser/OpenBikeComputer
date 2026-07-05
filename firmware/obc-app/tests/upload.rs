@@ -4,8 +4,11 @@
 //! auto-close = dismiss, passkey priority in both directions, hold deferral, deleted-route
 //! validation, and the forced-adoption invalidation of stale match state on an active replace.
 
+mod common;
+
+use common::{down, keys, up};
 use obc_app::screen::UPLOAD_POPUP_TIMEOUT_MS;
-use obc_app::{App, AppState, BleLink, BleStatus, Gesture, InputClock, Mode, RouteSummary, Screen};
+use obc_app::{App, AppState, BleLink, BleStatus, Button, Gesture, InputClock, Mode, RouteSummary, Screen};
 use obc_reader::BBox;
 
 /// A three-route catalog with deliberately non-positional durable ids (10 / 11 / 12), so any test
@@ -365,6 +368,88 @@ fn a_pending_deferred_prompt_for_a_deleted_route_is_dropped() {
     app.set_hold_progress(0.0);
     app.advance_animations(InputClock(100));
     assert!(matches!(app.top_screen(), Screen::Home(_)), "a prompt for a vanished id never lands");
+}
+
+// --- stray holds across a popup dismissal (the #480 vanishing-routes delete) --------------------
+
+/// The user-reported loss path: mid-ride, an upload popup covers the Route menu; the rider starts
+/// a hold on the popup (aiming at the hold-guarded "Save & new"), thinks better of it and taps
+/// **Back while the encoder is still held**. Back pops the popup — and the encoder hold then
+/// crosses its threshold with the Route menu as the new top, whose own hold is hold-to-**delete**:
+/// without the transition-cancels-holds rule, the highlighted route is silently deleted from SD.
+#[test]
+fn a_hold_charging_when_back_dismisses_the_popup_cannot_delete_a_route() {
+    let mut app = idle_app();
+    start_riding(&mut app); // tracking id 10 (index 0), stack [Home, Map]
+
+    // Open the Route menu over the ride and highlight a non-active route (row 1, "Beta") — the
+    // hold-to-delete footer is live there (only the active-ride route's is greyed).
+    app.apply_gesture(Gesture::BackHold); // Menu
+    app.apply_gesture(Gesture::Press); // Routes
+    app.apply_gesture(Gesture::Turn(1)); // highlight index 1
+    assert!(matches!(app.top_screen(), Screen::RouteMenu(_)));
+
+    // A route lands mid-ride: the swap popup covers the menu.
+    app.notify_route_uploaded(12, false);
+    assert!(matches!(app.top_screen(), Screen::RouteSwap(_)));
+
+    // Encoder down (the hold starts charging on the popup)…
+    app.handle_input(InputClock(1_000), &mut keys(&[down(Button::Encoder)]));
+    // …then a Back tap while the encoder is still held: the popup pops, the Route menu is top.
+    app.handle_input(InputClock(1_100), &mut keys(&[down(Button::Back)]));
+    app.handle_input(InputClock(1_180), &mut keys(&[up(Button::Back)]));
+    assert!(matches!(app.top_screen(), Screen::RouteMenu(_)), "Back dismissed the popup");
+
+    // The encoder hold crosses its 500 ms threshold — over the Route menu now. It was aimed at
+    // the popup, so it must be cancelled by the transition, not delivered as a delete.
+    app.handle_input(InputClock(1_700), &mut keys(&[]));
+    assert_eq!(app.take_route_delete(), None, "a stray hold must never delete the highlighted route");
+    assert!(matches!(app.top_screen(), Screen::RouteMenu(_)));
+
+    // And the eventual release stays silent — no surprise Press either.
+    app.handle_input(InputClock(1_800), &mut keys(&[up(Button::Encoder)]));
+    assert!(matches!(app.top_screen(), Screen::RouteMenu(_)));
+
+    // A fresh, deliberate hold afterwards still deletes (the cancel is one-shot, not a lockout).
+    app.handle_input(InputClock(2_000), &mut keys(&[down(Button::Encoder)]));
+    app.handle_input(InputClock(2_600), &mut keys(&[]));
+    assert_eq!(app.take_route_delete(), Some(11), "a real hold on the menu still requests its delete");
+}
+
+/// The same rule holds within one recognition batch: a `Hold` recognised *behind* the
+/// stack-changing gesture (both queued before the app saw either) is dropped, not delivered to
+/// the screen that replaced its target.
+#[test]
+fn a_hold_queued_behind_the_dismissing_back_in_one_batch_is_dropped() {
+    let mut app = idle_app();
+    start_riding(&mut app);
+    app.apply_gesture(Gesture::BackHold);
+    app.apply_gesture(Gesture::Press);
+    app.apply_gesture(Gesture::Turn(1));
+    app.notify_route_uploaded(12, false);
+    assert!(matches!(app.top_screen(), Screen::RouteSwap(_)));
+
+    // One long-unpolled frame delivers everything at once: the encoder went down at 1 000; at
+    // 1 700 a Back tap arrives *and* the encoder hold has crossed its threshold. Recognition
+    // emits [Back, Hold] into one batch; the Back's pop must swallow the trailing Hold.
+    app.handle_input(InputClock(1_000), &mut keys(&[down(Button::Encoder)]));
+    app.handle_input(InputClock(1_700), &mut keys(&[down(Button::Back), up(Button::Back)]));
+    assert!(matches!(app.top_screen(), Screen::RouteMenu(_)), "Back dismissed the popup");
+    assert_eq!(app.take_route_delete(), None, "the batched stray hold is dropped too");
+}
+
+/// The two-plane firmware's surface for the same rule: a gesture that changes the screen stack
+/// raises the one-shot [`App::take_hold_cancel`] edge (its input plane charges holds out of the
+/// app's sight, so the board must be told to cancel them).
+#[test]
+fn a_stack_transition_raises_the_hold_cancel_edge_for_the_two_plane_host() {
+    let mut app = idle_app();
+    assert!(!app.take_hold_cancel(), "quiet at boot");
+    app.apply_gesture(Gesture::Press); // Home → Route menu: a stack change
+    assert!(app.take_hold_cancel(), "the transition rings the cancel edge");
+    assert!(!app.take_hold_cancel(), "one-shot: drained");
+    app.apply_gesture(Gesture::Turn(1)); // a highlight move transitions nothing
+    assert!(!app.take_hold_cancel(), "no stack change, no cancel");
 }
 
 #[test]
