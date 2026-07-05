@@ -7,6 +7,7 @@
 
 pub mod config;
 pub mod geom;
+pub mod hours;
 pub mod ingest;
 pub mod land;
 pub mod poi;

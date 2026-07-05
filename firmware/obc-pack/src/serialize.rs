@@ -855,6 +855,7 @@ mod tests {
             lat_udeg: lat,
             name: name.map(String::from),
             from_node: true,
+            hours: None,
         };
         let pois = vec![
             poi(1, 100_000, 100_000, Some("Brunnen")),
