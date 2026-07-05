@@ -14,7 +14,7 @@ use obc_app::{TrackAction, TrackSink};
 #[cfg(not(target_arch = "wasm32"))]
 use {
     crate::vec_sink::VecSink,
-    obc_route::{encode_record, track_to_gpx, SliceSource, TrackPoint},
+    obc_route::{encode_record, track_to_gpx, track_to_ride, RideStats, SliceSource, TrackPoint},
     std::fs::{self, File, OpenOptions},
     std::io::Write,
 };
@@ -56,10 +56,18 @@ impl TrackStore {
 
     /// Reconcile the open log to the app's tracking intent — call once per frame *before*
     /// ticking. Drains the action first (finalising / abandoning the *current* log), then opens
-    /// a fresh log when the session id changes. `name` is the save filename.
-    pub fn reconcile(&mut self, action: Option<TrackAction>, session: Option<u32>, name: Option<&str>) {
+    /// a fresh log when the session id changes. `name` is the save filename; `stats` are the app's
+    /// ride totals at Finish (from [`App::ride_stats`](obc_app::App::ride_stats)) — needed to write
+    /// the durable `RD{id}.ORD` ride object the Rides screen lists, exactly as the device does.
+    pub fn reconcile(
+        &mut self,
+        action: Option<TrackAction>,
+        session: Option<u32>,
+        name: Option<&str>,
+        stats: Option<RideStats>,
+    ) {
         match action {
-            Some(TrackAction::Save) => self.finalize(),
+            Some(TrackAction::Save) => self.finalize(stats),
             Some(TrackAction::Discard) => self.abandon(),
             None => {}
         }
@@ -90,25 +98,66 @@ impl TrackStore {
         }
     }
 
-    /// Finalise the open log to `<name>.gpx` and drop the temp.
-    fn finalize(&mut self) {
+    /// Finalise the open log and drop the temp. Writes the durable `RD{id}.ORD` ride object (the
+    /// device's Finish artifact — what the Rides screen lists) when `stats` are supplied, *and* a
+    /// human-readable `<name>.gpx` (the sim's legacy convenience export; the device no longer writes
+    /// GPX). With no stats (only possible on the headless `--save-track` path) it keeps just the GPX.
+    fn finalize(&mut self, stats: Option<RideStats>) {
         let Some(mut log) = self.open.take() else { return };
         let _ = log.file.flush();
         drop(log.file);
-        match fs::read(&log.temp) {
-            Ok(bytes) => {
-                let mut sink = VecSink::default();
-                if track_to_gpx(&SliceSource(&bytes), &log.name, &mut sink).is_ok() {
-                    let path = self.unique_gpx(&log.name);
-                    match fs::write(&path, sink.bytes()) {
-                        Ok(()) => eprintln!("track: saved {}", path.display()),
-                        Err(e) => eprintln!("track: cannot write {}: {e}", path.display()),
-                    }
+        let bytes = match fs::read(&log.temp) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("track: cannot read log {}: {e}", log.temp.display());
+                let _ = fs::remove_file(&log.temp);
+                return;
+            }
+        };
+        // The ride object `RD{id}.ORD` — the durable artifact the Rides screen scans (issue #454).
+        if let Some(stats) = stats {
+            let id = self.next_ride_id();
+            let mut sink = VecSink::default();
+            if track_to_ride(&SliceSource(&bytes), &log.name, &stats, &mut sink).is_ok() {
+                let path = self.dir.join(format!("RD{id}.ORD"));
+                match fs::write(&path, sink.bytes()) {
+                    Ok(()) => eprintln!("track: saved ride {}", path.display()),
+                    Err(e) => eprintln!("track: cannot write {}: {e}", path.display()),
                 }
             }
-            Err(e) => eprintln!("track: cannot read log {}: {e}", log.temp.display()),
+        }
+        // The convenience `.gpx` (sim-only).
+        let mut sink = VecSink::default();
+        if track_to_gpx(&SliceSource(&bytes), &log.name, &mut sink).is_ok() {
+            let path = self.unique_gpx(&log.name);
+            match fs::write(&path, sink.bytes()) {
+                Ok(()) => eprintln!("track: saved {}", path.display()),
+                Err(e) => eprintln!("track: cannot write {}: {e}", path.display()),
+            }
         }
         let _ = fs::remove_file(&log.temp);
+    }
+
+    /// The next unused `RD{id}.ORD` id — one past the highest already in the tracks folder (0 on a
+    /// virgin folder). Mirrors the device's scan-based ride-id allocation; the sim doesn't persist a
+    /// high-water floor, which is fine (it never reflashes mid-session).
+    fn next_ride_id(&self) -> u16 {
+        let mut next = 0u16;
+        if let Ok(rd) = fs::read_dir(&self.dir) {
+            for e in rd.flatten() {
+                if let Some(id) = e
+                    .path()
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .and_then(|n| n.strip_prefix("RD"))
+                    .and_then(|n| n.strip_suffix(".ORD"))
+                    .and_then(|n| n.parse::<u16>().ok())
+                {
+                    next = next.max(id + 1);
+                }
+            }
+        }
+        next
     }
 
     /// Drop the open log without saving (Discard, or a no-session reconcile).
@@ -161,8 +210,15 @@ impl TrackStore {
     }
 
     /// Mirror the native reconcile's recording flag without touching a filesystem:
-    /// a drained Save/Discard ends the ride, then a live session id (re)starts it.
-    pub fn reconcile(&mut self, action: Option<TrackAction>, session: Option<u32>, _name: Option<&str>) {
+    /// a drained Save/Discard ends the ride, then a live session id (re)starts it. `stats` are unused
+    /// on the web (no ride object is written — the fixed catalog seeds the Rides list instead).
+    pub fn reconcile(
+        &mut self,
+        action: Option<TrackAction>,
+        session: Option<u32>,
+        _name: Option<&str>,
+        _stats: Option<obc_route::RideStats>,
+    ) {
         if matches!(action, Some(TrackAction::Save) | Some(TrackAction::Discard)) {
             self.recording = false;
         }

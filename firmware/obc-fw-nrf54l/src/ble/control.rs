@@ -5,9 +5,10 @@
 //! connection lifecycle (PHY/params/pairing) events. Writes are answered with the typed `status`
 //! envelope, never a hang or a bare ATT failure:
 //!
-//! - A `command` write ([`run_command`]) — `deleteObject` for routes; rides are never deleted over the
-//!   link (the app tombstones them locally) — answers `commandResult` and, on a store movement,
-//!   notifies `storeChanged` + the refreshed digest.
+//! - A `command` write ([`run_command`]) — `deleteObject` for routes (rides are never deleted over
+//!   the link; the app tombstones them locally) and `ackRides` (the phone's possession list
+//!   reconciles the synced sidecar) — answers `commandResult` and, on a store movement, notifies
+//!   `storeChanged` + the refreshed digest.
 //! - A `transfer_control` write is decoded + [`classify_transfer`]-ed. A validated transfer is
 //!   **armed** — signalled to the CoC task ([`super::state::TRANSFER_ARM`]) and answered later by the
 //!   data plane; everything invalid (or an abort with nothing in flight) gets an immediate typed
@@ -35,40 +36,54 @@ use super::gatt::{config_blob, Server};
 use super::state;
 use super::state::{publish, transfer_result, Armed, StatusBytes, TRANSFER_ABORT, TRANSFER_ACTIVE, TRANSFER_ARM};
 
-/// What a `command` write did: the `commandResult` to notify, plus whether the store changed
-/// (→ the caller also notifies `storeChanged` + the digest characteristic).
+/// What a `command` write did: the `commandResult` to notify, plus which store (if any) it moved
+/// (→ the caller also notifies `storeChanged` + the digest characteristic, typed accordingly).
 struct CommandOutcome {
     result: StatusBytes,
-    store_changed: bool,
+    store_changed: Option<ObjectType>,
 }
 
 /// Execute a `command` write. `deleteObject` (cmd 1: `type u8 · object_id u16`) deletes a stored route
-/// through the [`ObjectStore`]. Ride deletion is **deliberately not implemented** (`notFound`): the
-/// device retains every tracked ride until a future device-side
-/// management UI — the app hides synced rides locally (tombstones) rather than deleting them
-/// here, so a re-sync can never resurrect them. Any other command byte is `unknownCommand`.
+/// through the [`ObjectStore`]. Ride deletion over the link is **deliberately not implemented**
+/// (`notFound`): rides are deleted only from the device's Rides screen (#454) — the app hides synced
+/// rides locally (tombstones) rather than deleting them here, so a re-sync can never resurrect them.
+/// `ackRides` (cmd 2: `count u8 · count × object_id u16`) reconciles the synced sidecar from the
+/// phone's possession list ([`ObjectStore::ack_rides`]); its `commandResult.detail` reports the
+/// newly-flagged count. Any other command byte is `unknownCommand`.
 fn run_command(data: &[u8], store: &RefCell<ObjectStore>, shared: &mut SharedStore) -> CommandOutcome {
     let cmd = data.first().copied().unwrap_or(0);
-    let (status, store_changed) = match (cmd, data) {
-        (1, [_, ty, lo, hi, ..]) => {
+    let (status, detail, store_changed) = match (cmd, data) {
+        (obc_ble::CMD_DELETE_OBJECT, [_, ty, lo, hi, ..]) => {
             let id = u16::from_le_bytes([*lo, *hi]);
             match ObjectType::from_u8(*ty) {
                 Ok(ObjectType::Route) => {
                     if store.borrow_mut().delete_route(shared, id) {
                         info!("ble: [cmd] deleted route object {}", id);
-                        (CommandStatus::Ok, true)
+                        (CommandStatus::Ok, 0, Some(ObjectType::Route))
                     } else {
-                        (CommandStatus::NotFound, false)
+                        (CommandStatus::NotFound, 0, None)
                     }
                 }
                 // Rides are never deleted over the link (see the fn doc); nothing else deletes.
-                _ => (CommandStatus::NotFound, false),
+                _ => (CommandStatus::NotFound, 0, None),
             }
         }
-        (1, _) => (CommandStatus::Error, false), // deleteObject with a truncated arg list
-        _ => (CommandStatus::UnknownCommand, false),
+        (obc_ble::CMD_DELETE_OBJECT, _) => (CommandStatus::Error, 0, None), // truncated arg list
+        (obc_ble::CMD_ACK_RIDES, _) => match obc_ble::AckRides::decode(data) {
+            Ok(ack) => {
+                let newly = store.borrow_mut().ack_rides(shared, &ack);
+                info!("ble: [cmd] ackRides: {} acked, {} newly flagged", ack.count(), newly);
+                // Only an actual flag change moved the store (and only the ride side of it).
+                (CommandStatus::Ok, newly, (newly > 0).then_some(ObjectType::Ride))
+            }
+            Err(_) => (CommandStatus::Error, 0, None), // count promises more ids than the write carries
+        },
+        _ => (CommandStatus::UnknownCommand, 0, None),
     };
-    CommandOutcome { result: StatusMessage::CommandResult(CommandResult::new(cmd, status)).encode(), store_changed }
+    CommandOutcome {
+        result: StatusMessage::CommandResult(CommandResult::with_detail(cmd, status, detail)).encode(),
+        store_changed,
+    }
 }
 
 /// How a decoded `transfer_control` write proceeds.
@@ -174,7 +189,7 @@ pub(crate) async fn serve_connection(
                 // validated transfer instead arms the CoC data plane (`serve_coc`), which answers when
                 // it ends. Store borrows stay inside the sync `with_data` closures — never across an await.
                 let mut status_msg: Option<StatusBytes> = None;
-                let mut store_changed = false;
+                let mut store_changed: Option<ObjectType> = None;
                 let mut config_written = false;
                 let reply = match event {
                     GattEvent::Write(e) => {
@@ -248,8 +263,8 @@ pub(crate) async fn serve_connection(
                 if let Some((buf, len)) = status_msg {
                     notify_bounded(stack, server, server.obc.status.handle, &buf[..len], "status").await;
                 }
-                if store_changed {
-                    publish_store_change(stack, server, store).await;
+                if let Some(ty) = store_changed {
+                    publish_store_change(stack, server, store, ty).await;
                 }
                 if config_written {
                     // Re-seed the characteristic with the canonical blob (what a read serves).

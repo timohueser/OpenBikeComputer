@@ -12,6 +12,7 @@ use crate::dirty::Dirty;
 use crate::hal::{Fix, InputClock, InputSource, LocationSource, RideClock, Sensors};
 use crate::input::Gesture;
 use crate::input_plane::InputPlane;
+use crate::ride::RideSummary;
 use crate::route::{Catalog, RouteSummary};
 use crate::screen::{self, Ctx, HomeScreen, MapScreen, Render, Screen, Stack};
 use crate::settings::{DateTime, Settings};
@@ -360,6 +361,15 @@ pub struct App {
     /// route is navigated. The firmware feeds the filename-encoded upload ids (+ session-scoped
     /// side-load ids); hosts without ids get positional ones from [`set_routes`](App::set_routes).
     catalog_ids: heapless::Vec<u16, { crate::route::MAX_ROUTES }>,
+    /// The resident ride catalog (summaries), populated by the host ([`set_rides`](App::set_rides)) —
+    /// the Rides screen lists it (epic #447, P7). Each entry carries its `synced` flag; the parallel
+    /// [`ride_catalog_ids`](App::ride_catalog_ids) holds the durable object ids the hold-to-delete
+    /// footer resolves against.
+    ride_catalog: crate::ride::RideCatalog,
+    /// Each ride-catalog entry's **durable object id**, parallel to [`ride_catalog`](App::ride_catalog)
+    /// — the identity the Rides-menu selection follows across a live rescan, and what the
+    /// hold-to-delete drain resolves a highlighted index to.
+    ride_catalog_ids: heapless::Vec<u16, { crate::ride::UI_RIDES_CAP }>,
     /// The screen stack (root = Home). The top screen receives input; drawing starts from the
     /// topmost opaque screen so overlays composite over the map.
     stack: Stack,
@@ -528,6 +538,8 @@ impl App {
             activity: Activity::new(Mode::Idle),
             catalog: Catalog::new(),
             catalog_ids: heapless::Vec::new(),
+            ride_catalog: crate::ride::RideCatalog::new(),
+            ride_catalog_ids: heapless::Vec::new(),
             stack,
             profile: None,
             profile_route: None,
@@ -586,6 +598,8 @@ impl App {
             addr_of_mut!((*slot).activity).write(Activity::new(Mode::Idle));
             addr_of_mut!((*slot).catalog).write(Catalog::new());
             addr_of_mut!((*slot).catalog_ids).write(heapless::Vec::new());
+            addr_of_mut!((*slot).ride_catalog).write(crate::ride::RideCatalog::new());
+            addr_of_mut!((*slot).ride_catalog_ids).write(heapless::Vec::new());
             // The screen stack: empty in place, then push the always-present Home root.
             // `heapless::Vec::push` isn't `const`, so the root can't be part of a literal.
             addr_of_mut!((*slot).stack).write(Stack::new());
@@ -963,6 +977,65 @@ impl App {
     /// [`Activity::has_track_action`](crate::Activity::has_track_action)).
     pub fn has_route_delete(&self) -> bool {
         self.activity.has_route_delete()
+    }
+
+    /// Replace the resident **ride** catalog from the host's store (epic #447, P7), carrying each
+    /// ride's durable object id (`ids` parallel to `summaries`) and its `synced` flag (baked into the
+    /// summary by the host from the SD synced-set sidecar). Re-points an open Rides-menu selection by
+    /// id across the rescan, so a finished ride, a phone-side ride delete, or an on-device delete
+    /// appears/disappears without a reboot. Clones up to [`MAX_RIDES`](crate::MAX_RIDES); any beyond
+    /// that are ignored. Sorted-by-`start_time` is the host's job (the board scan and the sim store
+    /// both hand newest-first). Dirties the map once — a store change is a repaint-worthy event.
+    pub fn set_rides(&mut self, summaries: &[RideSummary], ids: &[u16]) {
+        let old_ids = self.ride_catalog_ids.clone();
+        self.ride_catalog.clear();
+        self.ride_catalog_ids.clear();
+        for (s, &id) in summaries.iter().zip(ids).take(crate::ride::UI_RIDES_CAP) {
+            let _ = self.ride_catalog.push(s.clone());
+            let _ = self.ride_catalog_ids.push(id);
+        }
+        // Re-point the Rides menu's highlight by identity (its id in `old_ids` → new index), the
+        // ride-namespace twin of the route remap. Only the Rides screen holds a ride index.
+        let new_ids = &self.ride_catalog_ids;
+        let remap = |i: usize| -> Option<usize> {
+            let id = *old_ids.get(i)?;
+            new_ids.iter().position(|&x| x == id)
+        };
+        let new_len = new_ids.len();
+        for s in self.stack.iter_mut() {
+            if let Screen::Rides(m) = s {
+                m.remap_rides(&remap, new_len);
+            }
+        }
+        self.map_dirty = true;
+    }
+
+    /// The resident ride catalog (summaries) — what the Rides screen lists.
+    pub fn rides(&self) -> &[RideSummary] {
+        &self.ride_catalog
+    }
+
+    /// Each ride-catalog entry's durable object id, parallel to [`rides`](App::rides) — as last fed to
+    /// [`set_rides`](App::set_rides).
+    pub fn ride_ids(&self) -> &[u16] {
+        &self.ride_catalog_ids
+    }
+
+    /// Drain the Rides screen's pending ride-delete request (epic #447, P7), resolved to the ride's
+    /// **durable object id** — the ride-namespace twin of [`take_route_delete`](App::take_route_delete).
+    /// A `Some(id)` is the host's cue to delete that ride object (`ObjectStore::delete_ride` on the
+    /// board, the tracks-dir file on the sim); the store-changed edge re-feeds the ride catalog with
+    /// it gone. Resolved against the live [`ride_ids`](App::ride_ids), so a rescan racing the hold
+    /// drains a vanished ride to `None` rather than the wrong id.
+    pub fn take_ride_delete(&mut self) -> Option<u16> {
+        let idx = self.activity.take_ride_delete()?;
+        self.ride_catalog_ids.get(idx).copied()
+    }
+
+    /// Non-consuming peek at whether a ride-delete request is pending — lets the board gate its
+    /// per-pass store work without draining the one-shot.
+    pub fn has_ride_delete(&self) -> bool {
+        self.activity.has_ride_delete()
     }
 
     /// Feed the host's BLE link snapshot ([`BleStatus`](crate::BleStatus)) — the host→app event seam
@@ -1363,9 +1436,15 @@ impl App {
     /// with the charging hold-progress to redraw only when the fill would actually animate;
     /// holding the encoder on any other screen changes no pixels, so no repaint is owed.
     pub fn top_wants_hold_fill(&self) -> bool {
-        self.stack
-            .last()
-            .is_some_and(|s| s.wants_hold_fill(&self.settings, &self.state, &self.activity, self.catalog.as_slice()))
+        self.stack.last().is_some_and(|s| {
+            s.wants_hold_fill(
+                &self.settings,
+                &self.state,
+                &self.activity,
+                self.catalog.as_slice(),
+                self.ride_catalog.as_slice(),
+            )
+        })
     }
 
     /// **Debug/benchmark hook** (the USB-CDC `Z` command): set the map camera to exactly `mpp`
@@ -1435,8 +1514,16 @@ impl App {
         // Snapshot the settings so a settings-screen edit is detected by one `==` (Settings is
         // `Copy + Eq`). A change flags a save for the host to pick up via `take_settings_dirty`.
         let settings_before = self.settings;
-        let App { state, activity, settings, catalog, stack, now_ms, poi_scratch, .. } = self;
-        let mut cx = Ctx { state, activity, settings, routes: catalog.as_slice(), poi_scratch, now_ms: *now_ms };
+        let App { state, activity, settings, catalog, ride_catalog, stack, now_ms, poi_scratch, .. } = self;
+        let mut cx = Ctx {
+            state,
+            activity,
+            settings,
+            routes: catalog.as_slice(),
+            rides: ride_catalog.as_slice(),
+            poi_scratch,
+            now_ms: *now_ms,
+        };
         let t = stack.last_mut().expect("the stack always has the Home root").handle(g, &mut cx);
         let depth_before = stack.len();
         // Whether this transition actually changes the stack (Pop/Home at the root are no-ops).
@@ -1613,7 +1700,18 @@ impl App {
         let hold_progress = self.hold_progress_override.unwrap_or_else(|| self.input.encoder_hold_progress());
         let no_fix = !self.has_live_fix(self.now_ms);
         let App {
-            state, activity, settings, catalog, renderer, stack, now_ms, profile, breadcrumb, poi_scratch, ..
+            state,
+            activity,
+            settings,
+            catalog,
+            ride_catalog,
+            renderer,
+            stack,
+            now_ms,
+            profile,
+            breadcrumb,
+            poi_scratch,
+            ..
         } = self;
         let mut rx = Render {
             reader,
@@ -1622,6 +1720,7 @@ impl App {
             activity,
             settings,
             routes: catalog.as_slice(),
+            rides: ride_catalog.as_slice(),
             route,
             profile: profile.as_ref(),
             breadcrumb: &*breadcrumb,

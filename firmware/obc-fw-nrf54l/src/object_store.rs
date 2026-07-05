@@ -20,9 +20,9 @@
 //! - **Downloads**: the `routeList` / `rideList` objects are built into a resident buffer; a route or
 //!   ride detail is served straight off the card (CRC pre-pass, then chunk reads — a stored
 //!   `RD{id}.ORD` *is* the wire object, so a ride download is verbatim).
-//! - **Rides are read-only here**: recorded by the map build's ride loop, scanned once at boot, never
-//!   mutated over the link — the device retains them until a future device-side delete, and the app
-//!   hides synced rides locally instead of deleting them.
+//! - **Rides are read-only over the link**: recorded by the ride loop (which posts the saved-ride
+//!   edge so this catalog follows mid-session) and deleted only from the device's Rides screen
+//!   (#454) — never by a phone command; the app hides synced rides locally instead of deleting them.
 //! - **Config ↔ settings**: the Config blob reads from / writes through the persisted [`Settings`]
 //!   (`device_name` + `units`), so a rename survives a power cycle and feeds the advertised name.
 //!
@@ -129,6 +129,43 @@ pub(crate) async fn wait_route_delete() -> u16 {
     ROUTE_DELETE_REQ.wait().await
 }
 
+/// On-device **ride**-delete request (epic #447, P7 / #454) — the ride-namespace twin of
+/// [`ROUTE_DELETE_REQ`]. The ride loop's Rides-menu hold posts a ride's durable object id; the BLE
+/// plane drains it and runs [`ObjectStore::delete_ride`], so an on-device ride delete goes through
+/// the same catalog + revision + `storeChanged` path a phone-initiated delete does.
+static RIDE_DELETE_REQ: Signal<CriticalSectionRawMutex, u16> = Signal::new();
+
+/// Post a ride-delete request from the ride loop (epic #447, P7). Overwrites any un-drained request
+/// (one delete in flight at a time — the footer fires one at a time and the drain runs promptly).
+pub(crate) fn request_ride_delete(id: u16) {
+    RIDE_DELETE_REQ.signal(id);
+}
+
+/// The BLE plane's ride-delete arm: resolves with the ride id to delete once the ride loop posts one.
+pub(crate) async fn wait_ride_delete() -> u16 {
+    RIDE_DELETE_REQ.wait().await
+}
+
+/// A locally-finished ride committed its `RD{id}.ORD` (the ride loop drained
+/// [`Storage::take_ride_saved`](crate::sd::Storage::take_ride_saved)). The BLE plane drains this and
+/// runs [`ObjectStore::adopt_saved_rides`] — the `/tracks` rescan + revision bump — so **one edge**
+/// feeds every consumer exactly like an upload or delete does: the phone gets `storeChanged(ride)` +
+/// the fresh digest, and the resulting [`STORE_CHANGED`] edge re-feeds the on-device Rides menu next
+/// pass. Without it a finished ride was invisible everywhere until a reboot (the boot scan was the
+/// only thing that ever read `/tracks` into either catalog). A coalescing `Signal<()>` — the drain
+/// rescans the whole directory, so a burst of saves needs no queue and no payload.
+static RIDE_SAVED: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+/// Post the saved-ride edge from the ride loop (`ble` builds; map-only re-feeds its menu directly).
+pub(crate) fn note_ride_saved() {
+    RIDE_SAVED.signal(());
+}
+
+/// The BLE plane's saved-ride arm: resolves once a ride object lands after the last drain.
+pub(crate) async fn wait_ride_saved() {
+    RIDE_SAVED.wait().await
+}
+
 // ==================== settings-coherence signals (#456) ====================
 //
 // Settings are the one thing both thread-mode planes edit: the ride loop (the on-device Settings
@@ -192,9 +229,10 @@ pub struct ObjectStore {
     /// through a `RefCell` (never across an `await`) while the card is locked separately per call.
     settings: Settings,
     routes: Vec<ObjectSlot, MAX_ROUTES>,
-    /// The stored rides, scanned once at boot: the `ble` build has no ride loop, so the catalog can't
-    /// change while it runs (rides are recorded by the map build, then served here after a reflash —
-    /// same card).
+    /// The stored rides: scanned at boot and re-scanned on the saved-ride edge ([`RIDE_SAVED`]) —
+    /// since the de-split the `ble` build *is* the map build, so the ride loop records new rides
+    /// mid-session and this catalog must follow (it feeds the `rideList` object and the digest's
+    /// `ride_count` the phone syncs against).
     rides: Vec<ObjectSlot, MAX_RIDES>,
     /// The next fresh-upload object id (ids are never reused within a boot).
     next_id: u16,
@@ -406,6 +444,63 @@ impl ObjectStore {
         self.routes.remove(idx);
         self.bump_revision();
         true
+    }
+
+    /// Delete a stored **ride** by object id (epic #447, P7 / #454) — the ride-namespace twin of
+    /// [`delete_route`](Self::delete_route). Routes the delete through the store (revision bump +
+    /// `storeChanged`) so the phone's device-rides reconcile; retires the ride's synced-set flag too.
+    /// `true` = deleted. Ids never reuse, so the phone's synced/tombstone bookkeeping stays coherent.
+    pub fn delete_ride(&mut self, shared: &mut SharedStore, id: u16) -> bool {
+        let Some(idx) = self.rides.iter().position(|s| s.id == id) else { return false };
+        let Some(storage) = &mut shared.storage else { return false };
+        if !storage.delete_ride_file(&self.rides[idx].file) {
+            return false;
+        }
+        // Retire the synced flag (belt-and-braces — ids never reuse) so the sidecar stays tidy.
+        storage.forget_ride_synced(id);
+        self.rides.remove(idx);
+        self.bump_revision();
+        true
+    }
+
+    /// Reconcile the synced sidecar from the phone's possession ack (`ackRides`, spec §4.4 cmd 2):
+    /// flag every acked id **the device still stores** as synced — the phone's library is the ground
+    /// truth for "the phone has this ride", so this heals every divergence the download-completion
+    /// event alone leaves permanent (rides downloaded before the sidecar existed, a sidecar lost
+    /// with the card, an app reinstall). Monotonic: nothing is ever un-flagged here. One sidecar
+    /// read-modify-write for the whole batch; a change bumps the revision once, so the ride loop's
+    /// `STORE_CHANGED` rescan re-feeds the Rides menu with the freshened flags (same funnel as a
+    /// download-completion mark). Returns the newly-flagged count (the `commandResult.detail`,
+    /// saturating at 255).
+    pub fn ack_rides(&mut self, shared: &mut SharedStore, ack: &obc_ble::AckRides) -> u8 {
+        let Some(storage) = &mut shared.storage else { return 0 };
+        let rides = &self.rides;
+        let added = storage.mark_rides_synced(ack.iter().filter(|id| rides.iter().any(|s| s.id == *id)));
+        if added > 0 {
+            self.bump_revision();
+        }
+        added.min(u8::MAX as usize) as u8
+    }
+
+    /// Adopt locally-saved rides into the live catalog: re-scan `/tracks` and bump the revision, so
+    /// the phone's `storeChanged(ride)` + digest and the ride loop's [`STORE_CHANGED`] edge (→ the
+    /// Rides menu re-feed) all move from this one edge — the exact path an upload commit or a delete
+    /// takes. Driven by [`wait_ride_saved`] in `ble::run`'s `ride_saved_task`.
+    pub fn adopt_saved_rides(&mut self, shared: &mut SharedStore) {
+        self.rescan_rides(shared);
+        self.bump_revision();
+    }
+
+    /// Mark a ride as synced (epic #447, P7): set the `/tracks` synced-set flag when a ride download
+    /// **completes**, so the Rides screen's delete footer drops the "not synced" cue. A revision bump
+    /// funnels the change to the ride loop (via `STORE_CHANGED`) so its live rescan re-feeds the Rides
+    /// menu with the freshened flag — without changing the ride *count* the phone reconciles on.
+    /// A no-op (no bump) when the ride was already flagged.
+    pub fn mark_ride_synced(&mut self, shared: &mut SharedStore, id: u16) {
+        let Some(storage) = &mut shared.storage else { return };
+        if storage.mark_ride_synced(id) {
+            self.bump_revision();
+        }
     }
 
     // ==================== upload ====================

@@ -380,6 +380,27 @@ impl DateTime {
         let days = era * 146_097 + doe - 719_468; // days since 1970-01-01
         (days * 86_400 + self.hour as i64 * 3_600 + self.minute as i64 * 60) as u32
     }
+
+    /// The inverse of [`to_unix`](DateTime::to_unix): a UTC date/time from unix seconds (Howard
+    /// Hinnant's `civil_from_days`). Used by the Rides screen to date a ride's `start_time`; a caller
+    /// wanting *local* time adds the UTC offset before calling. Seconds are dropped (the struct's
+    /// finest field is the minute).
+    pub fn from_unix(secs: u32) -> DateTime {
+        let secs = secs as i64;
+        let days = secs.div_euclid(86_400);
+        let rem = secs.rem_euclid(86_400);
+        let z = days + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z - era * 146_097; // 0..=146096
+        let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // 0..=399
+        let y = yoe + era * 400;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // 0..=365
+        let mp = (5 * doy + 2) / 153; // 0..=11 (Mar-based)
+        let day = (doy - (153 * mp + 2) / 5 + 1) as u8; // 1..=31
+        let month = (if mp < 10 { mp + 3 } else { mp - 9 }) as u8; // 1..=12
+        let year = (y + (month <= 2) as i64) as u16;
+        DateTime { year, month, day, hour: (rem / 3_600) as u8, minute: (rem % 3_600 / 60) as u8 }
+    }
 }
 
 /// UTC-offset stepper bounds + granularity (minutes). 15-minute steps cover the real-world
@@ -682,6 +703,131 @@ pub fn decode_id_marks(bytes: &[u8]) -> Option<IdMarks> {
     Some(IdMarks { next_route_id: u16::from_le_bytes([b[6], b[7]]), next_ride_id: u16::from_le_bytes([b[8], b[9]]) })
 }
 
+// ==================== synced-ride sidecar (#454) ====================
+//
+// The unsynced-ride delete guard (epic #447 P7, locked option b): the device records "the phone
+// has downloaded this ride at least once" per ride, set when a ride-object download **completes**.
+// It's persisted in a small SD **sidecar file in /tracks** (`SYNCED.SET`) so it survives a reflash
+// and travels with the card/rides — deliberately *not* the RRAM settings carve (which a reflash may
+// wipe and which doesn't move with the card). The Rides screen renders an unsynced ride's delete
+// footer warning-red with a "not synced" cue; a synced ride gets the standard footer.
+//
+// The codec lives here — beside the id-marks + settings codecs, the established host-testable
+// precedent — so the "torn/missing sidecar = nothing synced, never a crash" contract is unit-tested
+// without the board crate. The format is intentionally simple: a magic + version + a `u16` count +
+// that many little-endian `u16` ride ids + a trailing CRC-16 over everything before it. A blank
+// page, a short slice, a torn write, or an unknown version all decode to the **empty** set — which
+// reads as "nothing synced", the safe default (every ride shows the warning footer, all deletable).
+
+/// The sidecar magic tag; anything else there decodes to the empty synced set.
+const SYNCED_MAGIC: [u8; 4] = *b"OBCS";
+/// Sidecar layout version — bump on any format change (an old version reads as empty).
+const SYNCED_VERSION: u8 = 1;
+/// Fixed header bytes before the id list: `magic(4) · version(1) · pad(1) · count u16 LE`.
+const SYNCED_HEADER_LEN: usize = 8;
+
+/// The persisted set of ride ids the phone has downloaded at least once. Bounded by
+/// [`MAX_RIDES`](crate::ride::MAX_RIDES) (a ride can only be synced if it's stored). `Default` is the
+/// empty set — "nothing synced".
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SyncedRides {
+    ids: heapless::Vec<u16, { crate::ride::MAX_RIDES }>,
+}
+
+impl SyncedRides {
+    /// An empty synced set.
+    pub fn new() -> Self {
+        SyncedRides::default()
+    }
+
+    /// Whether ride `id` has been downloaded at least once.
+    pub fn contains(&self, id: u16) -> bool {
+        self.ids.contains(&id)
+    }
+
+    /// Record ride `id` as synced. Returns `true` if it was newly added (so the caller only rewrites
+    /// the sidecar on an actual change). Idempotent; a full set silently ignores a new id.
+    pub fn insert(&mut self, id: u16) -> bool {
+        if self.ids.contains(&id) {
+            return false;
+        }
+        self.ids.push(id).is_ok()
+    }
+
+    /// Drop ride `id` from the synced set (a deleted ride's id is retired so a later scan doesn't
+    /// carry a stale flag — though ids never reuse, so this is belt-and-braces). Returns `true` if it
+    /// was present.
+    pub fn remove(&mut self, id: u16) -> bool {
+        if let Some(pos) = self.ids.iter().position(|&x| x == id) {
+            self.ids.swap_remove(pos);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// The synced ids, for the codec / tests.
+    pub fn ids(&self) -> &[u16] {
+        &self.ids
+    }
+}
+
+/// The encoded sidecar's byte length for `count` synced ids: the fixed header, the `u16` id list,
+/// then the trailing CRC-16.
+pub const fn synced_rides_len(count: usize) -> usize {
+    SYNCED_HEADER_LEN + count * 2 + 2
+}
+
+/// The largest an encoded sidecar can be (a full synced set) — the buffer a host reserves to write it.
+pub const SYNCED_RIDES_MAX_LEN: usize = synced_rides_len(crate::ride::MAX_RIDES);
+
+/// Pack the synced-ride set into `out`, returning the encoded byte length. `out` must be at least
+/// [`synced_rides_len`]`(set.ids().len())` (use a [`SYNCED_RIDES_MAX_LEN`] buffer). Inverse of
+/// [`decode_synced_rides`].
+pub fn encode_synced_rides(set: &SyncedRides, out: &mut [u8]) -> usize {
+    let ids = set.ids();
+    let len = synced_rides_len(ids.len());
+    out[0..4].copy_from_slice(&SYNCED_MAGIC);
+    out[4] = SYNCED_VERSION;
+    out[5] = 0;
+    out[6..8].copy_from_slice(&(ids.len() as u16).to_le_bytes());
+    for (i, &id) in ids.iter().enumerate() {
+        let o = SYNCED_HEADER_LEN + i * 2;
+        out[o..o + 2].copy_from_slice(&id.to_le_bytes());
+    }
+    let crc = crc16(&out[..len - 2]);
+    out[len - 2..len].copy_from_slice(&crc.to_le_bytes());
+    len
+}
+
+/// Decode a synced-ride sidecar, always returning a set — a blank page, a short slice, a torn write,
+/// an unknown version, a count that overruns the slice, or a CRC mismatch all yield the **empty**
+/// set ("nothing synced", the safe default). Never panics on malformed input.
+pub fn decode_synced_rides(bytes: &[u8]) -> SyncedRides {
+    let empty = SyncedRides::new();
+    if bytes.len() < SYNCED_HEADER_LEN + 2 {
+        return empty; // shorter than an empty-set sidecar → treat as absent
+    }
+    if bytes[0..4] != SYNCED_MAGIC || bytes[4] != SYNCED_VERSION {
+        return empty;
+    }
+    let count = u16::from_le_bytes([bytes[6], bytes[7]]) as usize;
+    let len = synced_rides_len(count);
+    if count > crate::ride::MAX_RIDES || bytes.len() < len {
+        return empty; // a count that claims more ids than the slice (or the cap) holds is corrupt
+    }
+    let crc = u16::from_le_bytes([bytes[len - 2], bytes[len - 1]]);
+    if crc != crc16(&bytes[..len - 2]) {
+        return empty;
+    }
+    let mut set = SyncedRides::new();
+    for i in 0..count {
+        let o = SYNCED_HEADER_LEN + i * 2;
+        let _ = set.insert(u16::from_le_bytes([bytes[o], bytes[o + 1]]));
+    }
+    set
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -875,6 +1021,88 @@ mod tests {
         assert_eq!(m.alloc_route(5), 5);
         assert_eq!(m.next_ride_id, 0, "route allocation leaves the ride floor untouched");
         assert_eq!(m.alloc_route(0), 6, "and the route floor advanced past the assignment");
+    }
+
+    // ---- synced-ride sidecar (#454) ----
+
+    /// A synced set round-trips through the sidecar codec — order-insensitive membership, exact ids.
+    #[test]
+    fn synced_rides_codec_round_trips() {
+        let mut set = SyncedRides::new();
+        assert!(set.insert(3));
+        assert!(set.insert(7));
+        assert!(set.insert(41));
+        assert!(!set.insert(7), "a duplicate insert is a no-op");
+        assert!(set.contains(3) && set.contains(7) && set.contains(41));
+        assert!(!set.contains(4));
+
+        let mut buf = [0u8; SYNCED_RIDES_MAX_LEN];
+        let n = encode_synced_rides(&set, &mut buf);
+        assert_eq!(n, synced_rides_len(3));
+        let got = decode_synced_rides(&buf[..n]);
+        assert_eq!(got, set);
+
+        // The empty set is a valid, non-crashing round-trip too.
+        let empty = SyncedRides::new();
+        let n = encode_synced_rides(&empty, &mut buf);
+        assert_eq!(decode_synced_rides(&buf[..n]), empty);
+    }
+
+    /// The DoD guarantee: a torn, blank, short, or foreign sidecar decodes to "nothing synced" —
+    /// never a crash, never a false positive that would drop the warning footer on an unsynced ride.
+    #[test]
+    fn synced_rides_torn_or_missing_reads_as_nothing_synced() {
+        let mut set = SyncedRides::new();
+        set.insert(9);
+        set.insert(12);
+        let mut buf = [0u8; SYNCED_RIDES_MAX_LEN];
+        let n = encode_synced_rides(&set, &mut buf);
+
+        assert_eq!(decode_synced_rides(&[]), SyncedRides::new(), "an absent sidecar → nothing synced");
+        assert_eq!(decode_synced_rides(&[0u8; 4]), SyncedRides::new(), "a runt slice → nothing synced");
+        assert_eq!(decode_synced_rides(&[0u8; SYNCED_HEADER_LEN + 2]), SyncedRides::new(), "a blank page");
+        assert_eq!(decode_synced_rides(&[0xFF; 64]), SyncedRides::new(), "an erased page → nothing synced");
+
+        let mut torn = buf;
+        torn[SYNCED_HEADER_LEN] ^= 0xFF; // flip an id byte without fixing the CRC
+        assert_eq!(decode_synced_rides(&torn[..n]), SyncedRides::new(), "a CRC mismatch → nothing synced");
+
+        let mut bad_count = buf;
+        bad_count[6..8].copy_from_slice(&0xFFFFu16.to_le_bytes()); // claim more ids than the slice holds
+        assert_eq!(decode_synced_rides(&bad_count[..n]), SyncedRides::new(), "an overrunning count → nothing");
+
+        let mut old = buf;
+        old[4] = SYNCED_VERSION + 1;
+        assert_eq!(decode_synced_rides(&old[..n]), SyncedRides::new(), "a foreign version → nothing synced");
+    }
+
+    /// `remove` retires an id (the deleted-ride cleanup) without disturbing the rest.
+    #[test]
+    fn synced_rides_remove_retires_one_id() {
+        let mut set = SyncedRides::new();
+        set.insert(1);
+        set.insert(2);
+        set.insert(3);
+        assert!(set.remove(2));
+        assert!(!set.remove(2), "removing an absent id is a no-op");
+        assert!(set.contains(1) && !set.contains(2) && set.contains(3));
+    }
+
+    /// `from_unix` is the exact inverse of `to_unix` (minute granularity) across epoch, a leap day,
+    /// and a modern date — the Rides screen dates a ride off this.
+    #[test]
+    fn datetime_from_unix_inverts_to_unix() {
+        for dt in [
+            DateTime { year: 1970, month: 1, day: 1, hour: 0, minute: 0 },
+            DateTime { year: 2000, month: 2, day: 29, hour: 12, minute: 34 },
+            DateTime { year: 2026, month: 7, day: 5, hour: 9, minute: 41 },
+            DateTime { year: 2038, month: 1, day: 19, hour: 3, minute: 14 },
+        ] {
+            assert_eq!(DateTime::from_unix(dt.to_unix()), dt, "round-trip {dt:?}");
+        }
+        // Seconds are dropped to the minute, not rounded.
+        let d = DateTime::from_unix(59);
+        assert_eq!((d.year, d.month, d.day, d.hour, d.minute), (1970, 1, 1, 0, 0));
     }
 
     /// February's day count follows the leap rule, and stepping the month off Jan 31 re-pins

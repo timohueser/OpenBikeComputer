@@ -278,13 +278,17 @@ impl SimGui {
         // host rescans and re-feeds the id-carrying catalog, the app remaps held indices by id.
         // Drop/remove an `.obcr` in the routes folder, then click — a mid-session upload/delete
         // without a radio (P4 adds the full inject-upload popup flow on top of this edge).
-        if ui.button("Store changed (rescan routes)").clicked() {
+        if ui.button("Store changed (rescan routes + rides)").clicked() {
             self.app.notify_store_changed();
             let _ = self.app.take_store_changed();
             self.store.rescan();
             self.app.set_routes_with_ids(self.store.catalog(), self.store.ids());
+            // The same edge covers the ride catalog (#454): a dropped-in `RD{id}.ORD` or an edited
+            // `SYNCED.SET` shows up on the Rides screen without a relaunch.
+            self.ride_store.rescan();
+            self.app.set_rides(self.ride_store.catalog(), self.ride_store.ids());
         }
-        ui.weak("re-scans the routes folder like a BLE commit/delete");
+        ui.weak("re-scans the routes + tracks folders like a BLE commit/delete");
 
         // Upload injection (P4): the route-upload popups' driver. Pick a catalog route, then
         // inject it as a fresh upload (a new file — copy of the pick) or a replace-by-id (the

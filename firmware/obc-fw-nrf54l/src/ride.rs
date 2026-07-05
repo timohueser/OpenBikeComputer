@@ -131,6 +131,17 @@ pub(crate) fn load_routes(storage: &mut sd::Storage, app: &mut App) {
     app.set_routes_with_ids(&catalog, storage.route_ids());
 }
 
+/// Scan the card's `/tracks` into the app's Rides menu (epic #447 P7 / #454), carrying each ride's
+/// durable object id + its synced flag (from the `/tracks` synced-set sidecar). Called at boot and on
+/// every store-changed edge (a finished ride, an on-device or phone-side ride delete). Its own
+/// `#[inline(never)]` frame for the same stack reason as [`load_routes`]: the ride catalog is popped
+/// on return, never resident under the deep render path.
+#[inline(never)]
+pub(crate) fn load_rides(storage: &mut sd::Storage, app: &mut App) {
+    let catalog = storage.scan_rides();
+    app.set_rides(&catalog, storage.ride_ids());
+}
+
 /// The GPS power state the ride wants: deep-sleep when not tracking, full-power fixes while riding, or
 /// the M10's low-power tracking when the `power_saver` toggle is on. Recomputed each frame in
 /// [`run_app`] and pushed to the sensor task (via [`sensor_link::set_power`]) only on a change.
@@ -406,6 +417,10 @@ pub(crate) async fn run_app(
                 // below reopens it off the fresh tables.
                 s.reconcile_route(None);
                 load_routes(s, app);
+                // The same edge covers rides (a phone-side ride delete, or a ride download that just
+                // flipped a synced flag): re-scan `/tracks` and re-feed the Rides menu, which remaps
+                // its highlight by id (#454). Cheap when nothing ride-related moved.
+                load_rides(s, app);
             }
             prev_active = None; // force reconcile_route/track to re-run against the new indexing
             index_route = None; // and the chunk index to rebuild off the freshly-opened file
@@ -441,6 +456,27 @@ pub(crate) async fn run_app(
                     }
                     prev_active = None; // force the reconcile below to re-derive off the new indexing
                     index_route = None;
+                }
+            }
+        }
+
+        // ── On-device ride delete (epic #447, P7 / #454), on the Rides-menu hold-to-delete edge ──
+        // The same seam as the route delete, in the ride namespace: the app resolves the highlighted
+        // ride's durable object id. On `ble`, post it to the BLE plane (it owns the `ObjectStore`
+        // `RefCell`) so the delete goes through the store — revision bump + `storeChanged`, coherent
+        // with a phone-initiated delete; the rescan returns on the resulting store-changed edge above.
+        // Map-only: delete the `RD{id}.ORD` directly (retiring its synced-set flag) and re-feed the
+        // Rides menu locally. The greying while recording already keeps the delete legal (no open
+        // TRACK.OBT / pending save collides).
+        if app.has_ride_delete() {
+            if let Some(_id) = app.take_ride_delete() {
+                #[cfg(feature = "ble")]
+                crate::object_store::request_ride_delete(_id);
+                #[cfg(not(feature = "ble"))]
+                if let Some(s) = storage.as_mut() {
+                    if s.delete_ride_by_id(_id) {
+                        load_rides(s, app);
+                    }
                 }
             }
         }
@@ -783,6 +819,23 @@ pub(crate) async fn run_app(
         if overlay_span.is_none() && !overlay_dirty {
             if let Some(s) = storage.as_mut() {
                 s.run_pending_save(settings_store);
+            }
+        }
+        // A ride object landed this pass (the deferred Finish above, or a back-to-back flush inside
+        // `begin_track`/`reconcile_track` earlier in the pass) — raise the store edge so a fresh
+        // `RD{id}.ORD` is visible *now*, not after a reboot (the boot scan used to be the only
+        // reader). `ble`: post the saved-ride edge to the BLE plane, which owns the `ObjectStore`
+        // — it re-scans its catalog + bumps the revision (phone `storeChanged(ride)` + digest), and
+        // the resulting `STORE_CHANGED` edge re-feeds the Rides menu next pass: one edge, every
+        // consumer, exactly like an upload or delete. Map-only: re-feed the Rides menu directly
+        // (`load_rides` is its own popped frame — see its stack note — called sequentially here,
+        // never under the deep render path).
+        if storage.as_mut().is_some_and(sd::Storage::take_ride_saved) {
+            #[cfg(feature = "ble")]
+            crate::object_store::note_ride_saved();
+            #[cfg(not(feature = "ble"))]
+            if let Some(s) = storage.as_mut() {
+                load_rides(s, app);
             }
         }
         let save_pending = storage.as_ref().is_some_and(|s| s.has_pending_save());

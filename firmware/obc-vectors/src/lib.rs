@@ -139,6 +139,20 @@ pub fn status_store_changed(ty: u8, revision: u32) -> Vec<u8> {
     v
 }
 
+/// `status` message `commandResult` (spec §4.3): 4 bytes.
+pub fn status_command_result(cmd: u8, status: u8, detail: u8) -> Vec<u8> {
+    vec![3u8, cmd, status, detail]
+}
+
+/// The `ackRides` command write (spec §4.4, cmd 2): `cmd u8 · count u8 · count × object_id u16 LE`.
+pub fn command_ack_rides(ids: &[u16]) -> Vec<u8> {
+    let mut v = vec![2u8, ids.len() as u8];
+    for id in ids {
+        v.extend_from_slice(&le16(*id));
+    }
+    v
+}
+
 /// One `routeList` entry (spec §7.4): 72 bytes, name zero-padded to 48.
 #[allow(clippy::too_many_arguments)] // mirrors the spec's field list one-to-one
 pub fn route_list_entry(
@@ -216,6 +230,10 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         // because the catalog is full. status=6 storageFull, nothing committed.
         ("status-transfer-storage-full.bin", status_transfer_result(0xFFFF, 6, 0)),
         ("status-store-changed.bin", status_store_changed(1, 42)),
+        // The phone's ride-possession ack (cmd 2): three of the digest's five stored rides.
+        ("command-ack-rides.bin", command_ack_rides(&[3, 5, 9])),
+        // Its answer: ok, detail = 3 newly-flagged rides.
+        ("status-command-result-ack.bin", status_command_result(2, 0, 3)),
         ("object-store.bin", object_store(42, 3, 5)),
         // Catalog for both stored route fixtures: fields from their OBCR headers
         // (distance 2207 m, ascent 76 m, 9 points), ids continuing from 7.

@@ -19,6 +19,10 @@ obc-platform = { path = "../obc-platform" }
 # crate the USB feeder (obc-usb-host) uses, so a recorded ride plays back identically here.
 obc-replay = { path = "../obc-replay" }
 embedded-graphics = "0.8"
+# The fixed-cap string type `RideSummary.name` carries (same 0.8 the shared crates pin) — the
+# wasm demo `RideStore` constructs summaries directly, so the crate needs its own dep (the
+# native store only ever parses them out of ORD files via obc-route).
+heapless = "0.8"
 # GUI host: the device-screen window + control panel. Pure-Rust window stack
 # (native) and a WebGL canvas (wasm) — the same eframe app drives both, so the
 # web demo is the firmware-identical render path, never a stale screenshot.
