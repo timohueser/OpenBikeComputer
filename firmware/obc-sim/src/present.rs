@@ -197,6 +197,42 @@ mod tests {
         assert!(pan > H as usize / 2, "a map pan pushes ~all rows, got {pan}");
     }
 
+    /// Real-data pack→parse of the v6 POI section (#423): the committed `monaco.obcm` — a POI-dense
+    /// coastal fixture the packer produced from a real OSM extract — must parse as v6 and expose a
+    /// full six-category POI directory with several **non-empty** categories, each carrying a real
+    /// quadtree (non-zero node + chunk counts). This complements the reader's hand-built byte pins
+    /// (`obc-reader/tests/format.rs`) by exercising the whole write→read path on real geometry, and
+    /// gives the #425 POI browser a map with POIs to browse in the sim/snapshot suite.
+    #[test]
+    fn monaco_fixture_parses_a_populated_v6_poi_directory() {
+        use obc_reader::{MapCache, MapTables, Reader, SliceSource};
+
+        let bytes = include_bytes!("../assets/monaco.obcm").to_vec();
+        let src = SliceSource(&bytes);
+        let tables = MapTables::parse(&src).expect("monaco.obcm parses as a valid v6 map");
+        let cache = MapCache::new();
+        let r = Reader::new(&src, &tables, &cache);
+
+        assert_eq!(r.version, 6, "the fixture is OBCM v6");
+        let dir = r.poi_directory();
+        // The directory is always present with all six categories (spec §7.1).
+        assert_eq!(dir.entries.len(), 6, "six-category POI directory");
+        assert_eq!(dir.chunk_size, 512, "the packer's fixed 512-byte POI chunks");
+        // Monaco is a dense coastal city → several categories populated. Each non-empty category
+        // must carry a real quadtree: node_count and chunk_count both non-zero, ids in 1..=6.
+        let populated: Vec<u8> = dir
+            .entries
+            .iter()
+            .filter(|e| !e.is_empty())
+            .inspect(|e| {
+                assert!((1..=6).contains(&e.category_id), "category id {} in range", e.category_id);
+                assert!(e.node_count > 0 && e.chunk_count > 0, "a non-empty category has a real tree");
+            })
+            .map(|e| e.category_id)
+            .collect();
+        assert!(populated.len() >= 3, "Monaco packs ≥3 POI categories, got {populated:?}");
+    }
+
     #[test]
     fn presented_tracks_a_sequence_of_partial_changes() {
         let mut p = Present::new(3, 6);
