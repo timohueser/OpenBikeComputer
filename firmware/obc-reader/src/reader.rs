@@ -28,7 +28,9 @@ use crate::codec::{rd_f32, rd_i32, rd_u16, rd_u32};
 use crate::format::{
     BRANCH_BIT, EMPTY_LEAF, FEATURE_FLAG_16BIT, FEATURE_FLAG_HOLES, FEATURE_FLAG_POLYGON, STYLE_PRIORITY_MASK,
 };
-use crate::{BBox, Error};
+use crate::geo::{cos_lat, ground_dist_m_cl};
+use crate::poi_table::PoiCategory;
+use crate::{BBox, Error, M_PER_DEG};
 
 /// Upper bound on the vertices of a single decoded feature — the capacity a caller
 /// sizes the `points` scratch buffer to for [`Reader::for_each_feature`].
@@ -58,6 +60,32 @@ pub const POI_MAX_CATEGORIES: usize = 8;
 /// nearest-N query (#424) would try to buffer. Generous headroom over the packer's 512 without
 /// approaching the geometry scratch.
 pub const POI_MAX_CHUNK_BYTES: usize = 4096;
+
+/// A POI record is a fixed 32 bytes (spec §7.3): `int32 lat, int32 lon, u8 subtype, u8 name_len,
+/// [u8;20] name, [0xFF;2] reserved`. The record loop steps by this and derives records-per-chunk as
+/// `chunk_size / POI_RECORD_LEN`.
+const POI_RECORD_LEN: usize = 32;
+
+/// Max results the nearest-N POI query returns (locked on epic #115). The caller owns a
+/// `heapless::Vec<Poi, MAX_POI_RESULTS>`; the query fills it ascending by distance and never
+/// exceeds it. 16 × ≈36 B ≈ 600 B, on the caller's stack.
+pub const MAX_POI_RESULTS: usize = 16;
+
+/// Max stored POI name length (spec §7.3: the 20-byte `Name` field). A [`Poi::name`] is a
+/// `heapless::String<POI_NAME_MAX>`; a record whose `name_len` exceeds this is clamped (defensive —
+/// the packer never writes one).
+pub const POI_NAME_MAX: usize = 20;
+
+/// Initial half-extent of the POI search bbox, in latitude µdeg (~2 km: `2000 / 111.32e-3 m/µdeg ≈
+/// 17 966`, rounded up). Doubled each pass until the nearest-16 are provably found (see
+/// [`Reader::nearest_pois`]). The longitude half-extent is this scaled by `1/cos_lat`.
+const POI_SEARCH_HALF_UDEG: i32 = 18_000;
+
+/// The POI-scan stack scratch window, in bytes (spec §7.1's default chunk size, 16 records). One
+/// chunk streams through this fixed window `POI_SCAN_WINDOW` bytes at a time regardless of the
+/// accepted `chunk_size`, so the query's scratch stays tiny (no `MapCache` growth). `POI_RECORD_LEN`
+/// divides it, so a record never straddles two reads.
+const POI_SCAN_WINDOW: usize = 512;
 
 /// Upper bound on a single map data chunk, in bytes — the size of the decode scratch, and the
 /// largest `chunk_size` the reader accepts ([`MapTables::parse`] rejects a bigger one). The
@@ -114,6 +142,40 @@ const _: () = assert!(MAX_CHUNK_BYTES <= u16::MAX as usize, "chunk_size is a u16
 /// a degenerate point the quadrants stop shrinking while `intersects(view)` stays true, so an
 /// unbounded walk recurses forever → stack overflow → HardFault (no MMU guard page on the MCU).
 const MAX_QUADTREE_DEPTH: u32 = 32;
+
+/// A flat `uint32` quadtree index over the header's global bbox — the layout shared by a geometry
+/// [`Lod`] and a POI category ([`PoiCatEntry`]), per spec §4/§7.2. The leaf walk needs only where
+/// the index starts and how many nodes it holds; [`Reader::walk_leaves`] is generic over this so
+/// the geometry `for_each_chunk` and the POI query drive one implementation (continuing the
+/// packer's shared `FlattenTree` DRY).
+trait QuadIndex {
+    /// Byte offset of node 0 in the file.
+    fn index_offset(&self) -> usize;
+    /// Number of `uint32` nodes in the index; `0` ⇒ empty (no walk).
+    fn node_count(&self) -> usize;
+}
+
+impl QuadIndex for Lod {
+    #[inline]
+    fn index_offset(&self) -> usize {
+        self.index_offset
+    }
+    #[inline]
+    fn node_count(&self) -> usize {
+        self.node_count
+    }
+}
+
+impl QuadIndex for PoiCatEntry {
+    #[inline]
+    fn index_offset(&self) -> usize {
+        self.index_offset
+    }
+    #[inline]
+    fn node_count(&self) -> usize {
+        self.node_count
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct Style {
@@ -198,6 +260,38 @@ impl PoiCatEntry {
     pub fn data_start(&self) -> Option<usize> {
         self.node_count.checked_mul(4)?.checked_add(self.index_offset)
     }
+
+    /// Byte range `[start, end)` of POI chunk `chunk_id` given the directory's shared `chunk_size`,
+    /// or `None` if `chunk_id` is out of range or any offset overflows `usize`. Mirrors
+    /// [`Lod::chunk_range`] (the §7.1 chunk-size is directory-wide, not per-entry, so it's passed
+    /// in). `chunk_id` comes from a quadtree leaf (arbitrary in a corrupt map), so it's validated
+    /// against `chunk_count` with checked arithmetic.
+    #[inline]
+    fn chunk_range(&self, chunk_id: u32, chunk_size: usize) -> Option<(usize, usize)> {
+        let id = chunk_id as usize;
+        if id >= self.chunk_count {
+            return None;
+        }
+        let start = id.checked_mul(chunk_size)?.checked_add(self.data_start()?)?;
+        let end = start.checked_add(chunk_size)?;
+        Some((start, end))
+    }
+}
+
+/// A single POI result from [`Reader::nearest_pois`]. Coordinates are absolute microdegrees (§7.3);
+/// `distance_m` is the ground distance from the query position, computed during the scan. `name` is
+/// empty for an unnamed POI — the app then shows the subtype's fallback label
+/// ([`label_of`](crate::label_of)).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Poi {
+    pub lat: i32,
+    pub lon: i32,
+    /// Canonical subtype id (§7.4), always in `1..=18` for a returned POI.
+    pub subtype: u8,
+    /// Stored name (≤ [`POI_NAME_MAX`] bytes); empty ⇒ unnamed.
+    pub name: heapless::String<POI_NAME_MAX>,
+    /// Ground distance from the query position, rounded to whole meters.
+    pub distance_m: u32,
 }
 
 /// The parsed POI directory (spec §7.1): the shared chunk size plus one bounded entry per category.
@@ -446,11 +540,173 @@ impl<'a> Reader<'a> {
         &self.tables.lods
     }
 
-    /// The parsed POI directory (spec §7). Parse-only in v6 — the nearest-N query walks these
-    /// per-category quadtrees in #424. Always present (six categories, some possibly empty).
+    /// The parsed POI directory (spec §7): the shared chunk size + one entry per category. Always
+    /// present (six categories, some possibly empty). [`Reader::nearest_pois`] walks these
+    /// per-category quadtrees.
     #[inline]
     pub fn poi_directory(&self) -> &PoiDirectory {
         &self.tables.pois
+    }
+
+    /// The nearest [`MAX_POI_RESULTS`] POIs of `category` to `pos` (a `(lon, lat)` µdeg pair, the
+    /// crate's coordinate order), ascending by ground distance. Fills the caller-owned `out`
+    /// (cleared first) — fewer than 16 when the category holds fewer in the whole map, empty when
+    /// the category is empty. On-demand (a user opening a list), never per-frame.
+    ///
+    /// **Expanding-ring scan (spec §7.2 / epic #115).** Walks the category's quadtree over a square
+    /// search bbox that starts ~2 km half-extent around `pos` and **doubles** until the nearest-16
+    /// are provably found — the set is full *and* its 16th is no farther than the bbox half-extent
+    /// (anything outside a square bbox is at least half-extent away), or the bbox has grown to
+    /// contain the whole map (then the pass was exhaustive). No new persistent state: each chunk
+    /// streams through a single 512-byte stack scratch, `pos`'s `cos_lat` is hoisted once, and the
+    /// 16-slot best-set lives in `out`. A record revisited on a wider pass is deduped by its
+    /// `(lat, lon, subtype)` so it's never returned twice. Corrupt input (a `chunk_size == 0`, an
+    /// out-of-range subtype, a truncated chunk) is skipped, never a panic — matching the reader's
+    /// posture elsewhere.
+    ///
+    /// # Reentrancy
+    ///
+    /// Like the geometry walk, this streams from the source through the internal cache; do not call
+    /// it from inside a `for_each_feature*` / `for_each_chunk` callback (it would re-borrow the
+    /// cache and panic).
+    pub fn nearest_pois(
+        &self,
+        category: PoiCategory,
+        pos: (i32, i32),
+        out: &mut Vec<Poi, MAX_POI_RESULTS>,
+    ) -> Result<(), Error> {
+        out.clear();
+        let dir = &self.tables.pois;
+        let entry = match dir.entries.iter().find(|e| e.category_id == category.id()) {
+            // An absent or empty category is a valid "no POIs here" answer, not an error.
+            Some(e) if !e.is_empty() => *e,
+            _ => return Ok(()),
+        };
+        // `chunk_size / POI_RECORD_LEN` is the record cap; a corrupt 0 would divide-by-zero / loop
+        // forever, so treat the whole (unwalkable) section as empty.
+        if dir.chunk_size < POI_RECORD_LEN {
+            return Ok(());
+        }
+
+        // Hoist `cos_lat` once for the query band. Guard a degenerate `cl` (≈0 near the poles, or a
+        // corrupt latitude) so the lon half-extent below can't divide by zero / overflow.
+        let cl = cos_lat(pos.1).max(1e-3);
+        let map = self.bbox;
+
+        let mut half = POI_SEARCH_HALF_UDEG;
+        loop {
+            // Square in ground meters: the lon half-extent is scaled by 1/cos_lat so both axes span
+            // the same ~ `half`-µdeg-of-latitude ground distance. Saturating so a huge `half` (late
+            // passes) can't wrap i32.
+            let lon_half = ((half as f32 / cl) as i32).max(1);
+            let search = BBox {
+                min_lon: pos.0.saturating_sub(lon_half),
+                min_lat: pos.1.saturating_sub(half),
+                max_lon: pos.0.saturating_add(lon_half),
+                max_lat: pos.1.saturating_add(half),
+            };
+            // Re-walk from scratch each pass (the set dedups revisits). The set only ever holds the
+            // true nearest-16 seen so far, so a superset pass converges it.
+            self.poi_scan(&entry, dir.chunk_size, pos, cl, &search, out);
+
+            // The half-extent as a ground radius: everything outside the square is at least this far
+            // (the tighter of the two axes' meter half-extents — they're ~equal by construction, but
+            // take the min to stay a sound lower bound). `half` µdeg-of-latitude → meters.
+            let half_m = (half as f32) * (M_PER_DEG as f32) * 1e-6;
+            let full = out.len() == MAX_POI_RESULTS;
+            if full && (out[MAX_POI_RESULTS - 1].distance_m as f32) <= half_m {
+                return Ok(());
+            }
+            // The search bbox already covers the whole map ⇒ this pass was exhaustive; whatever is in
+            // the set is the final answer (even if < 16).
+            if search.min_lon <= map.min_lon
+                && search.min_lat <= map.min_lat
+                && search.max_lon >= map.max_lon
+                && search.max_lat >= map.max_lat
+            {
+                return Ok(());
+            }
+            // Double the ring and re-walk. Saturating so we can't overflow before the map-cover check
+            // above trips.
+            half = half.saturating_mul(2);
+        }
+    }
+
+    /// One expanding-ring pass: walk `entry`'s quadtree for leaves overlapping `search` and, for each
+    /// non-empty leaf, decode its 32-byte records through a single 512-byte stack scratch, folding
+    /// every valid record into the nearest-16 `out` set (deduped by `(lat, lon, subtype)`). `cl` is
+    /// the hoisted `cos_lat`; distances are equirectangular ground meters via the shared
+    /// [`crate::geo`] core.
+    ///
+    /// The chunk decode runs **inside** the walk callback: `walk_leaves` releases its index-cache
+    /// borrow before invoking the callback, and the POI chunk read goes through a plain
+    /// `src.read_at` stack scratch (never the `MapCache`), so the two never nest — and the pass is
+    /// truly streaming with **no per-leaf buffer**, so an exhaustive (map-covering) final pass can't
+    /// silently drop a leaf however dense the category.
+    fn poi_scan(
+        &self,
+        entry: &PoiCatEntry,
+        chunk_size: usize,
+        pos: (i32, i32),
+        cl: f32,
+        search: &BBox,
+        out: &mut Vec<Poi, MAX_POI_RESULTS>,
+    ) {
+        // The whole chunk's record count. A chunk with no sentinel room (records × 32 == chunk_size)
+        // is bounded by this count instead (mirrors `for_each_feature_filtered`).
+        let records_per_chunk = chunk_size / POI_RECORD_LEN;
+        self.walk_leaves(entry, 0, self.bbox, search, 0, &mut |cid, _node| {
+            let (start, end) = match entry.chunk_range(cid, chunk_size) {
+                Some(r) => r,
+                None => return,
+            };
+            if end > self.src.len() as usize {
+                return;
+            }
+            self.scan_poi_chunk(start as u32, records_per_chunk, pos, cl, out);
+        });
+    }
+
+    /// Stream one POI chunk's records through a single **512-byte** stack scratch — `POI_SCAN_WINDOW`
+    /// bytes (16 records) at a time — folding each valid record into `out`. Reading in a fixed window
+    /// keeps the scratch tiny regardless of the accepted `chunk_size` (up to `POI_MAX_CHUNK_BYTES`);
+    /// `POI_RECORD_LEN` divides the window so a record never straddles two reads. `start` is the
+    /// chunk's byte offset, already bounds-checked by the caller. Terminates on the `0xFF` subtype
+    /// sentinel or after `record_cap` records (a sentinel-less full chunk).
+    fn scan_poi_chunk(
+        &self,
+        start: u32,
+        record_cap: usize,
+        pos: (i32, i32),
+        cl: f32,
+        out: &mut Vec<Poi, MAX_POI_RESULTS>,
+    ) {
+        const RECS_PER_WINDOW: usize = POI_SCAN_WINDOW / POI_RECORD_LEN;
+        let mut scratch = [0u8; POI_SCAN_WINDOW];
+        let mut done = 0usize;
+        while done < record_cap {
+            let take = (record_cap - done).min(RECS_PER_WINDOW);
+            let win = &mut scratch[..take * POI_RECORD_LEN];
+            if self.src.read_at(start + (done * POI_RECORD_LEN) as u32, win).is_err() {
+                return; // a flaky read ends this chunk cleanly (skip, no panic)
+            }
+            for r in 0..take {
+                let off = r * POI_RECORD_LEN;
+                let subtype = win[off + 8];
+                if subtype == 0xFF {
+                    return; // end-of-records sentinel — nothing valid follows in this chunk
+                }
+                // Skip an out-of-range subtype (0, or past the table) cleanly — never panic/UB.
+                if crate::poi_table::subtype_row(subtype).is_none() {
+                    continue;
+                }
+                let lat = rd_i32(win, off);
+                let lon = rd_i32(win, off + 4);
+                let distance_m = ground_dist_m_cl(pos, (lon, lat), cl) as u32;
+                consider_poi(out, PoiCand { lat, lon, subtype, distance_m }, win, off);
+            }
+            done += take;
+        }
     }
 
     #[inline]
@@ -480,13 +736,13 @@ impl<'a> Reader<'a> {
         chosen
     }
 
-    /// Read quadtree node `idx` of `lod` (a `u32`), streamed through the index block cache. `None`
+    /// Read node `idx` of a [`QuadIndex`] (a `u32`), streamed through the index block cache. `None`
     /// on a read failure — the walk then skips that subtree. `idx < node_count` and the index
-    /// region lies within the file (both guaranteed by `walk_leaves`/`parse_lod_table`), so the
-    /// offset never overflows `u32`.
+    /// region lies within the file (both guaranteed by `walk_leaves`/`parse_lod_table` /
+    /// `parse_poi_directory`), so the offset never overflows `u32`.
     #[inline]
-    fn read_node(&self, lod: &Lod, idx: usize) -> Option<u32> {
-        let off = (lod.index_offset + idx * 4) as u32;
+    fn read_node(&self, index: &dyn QuadIndex, idx: usize) -> Option<u32> {
+        let off = (index.index_offset() + idx * 4) as u32;
         let mut b = [0u8; 4];
         self.cache.borrow_mut().index_read(self.src, off, &mut b).ok()?;
         Some(u32::from_le_bytes(b))
@@ -506,9 +762,14 @@ impl<'a> Reader<'a> {
         }
     }
 
+    /// Visit `(chunk_id, node_bbox)` for every non-empty leaf of a [`QuadIndex`] overlapping `view`,
+    /// walking the flat `u32` tree over the header's global `bbox` (§4/§7.2). Shared by the geometry
+    /// [`Reader::for_each_chunk`] and the POI query — both indexes use the identical node encoding
+    /// and subdivision, so one implementation serves both. `index` is `&dyn` so the two call sites
+    /// don't monomorphize the (recursive) walk twice.
     fn walk_leaves<F: FnMut(u32, BBox)>(
         &self,
-        lod: &Lod,
+        index: &dyn QuadIndex,
         idx: usize,
         node: BBox,
         view: &BBox,
@@ -517,12 +778,12 @@ impl<'a> Reader<'a> {
     ) {
         // The depth cap is the hard stack bound against a corrupt cyclic branch (see
         // `MAX_QUADTREE_DEPTH`); a well-formed tree never reaches it.
-        if idx >= lod.node_count || depth > MAX_QUADTREE_DEPTH || !node.intersects(view) {
+        if idx >= index.node_count() || depth > MAX_QUADTREE_DEPTH || !node.intersects(view) {
             return;
         }
         // Read the node *before* descending/visiting so the index-cache borrow is released by the
         // time a leaf's `visit` triggers a geometry-chunk read (no nested `RefCell` borrow).
-        let val = match self.read_node(lod, idx) {
+        let val = match self.read_node(index, idx) {
             Some(v) => v,
             None => return,
         };
@@ -552,7 +813,7 @@ impl<'a> Reader<'a> {
             BBox { min_lon: mid_lon, min_lat: node.min_lat, max_lon: node.max_lon, max_lat: mid_lat },
         ];
         for (i, kb) in kids.iter().enumerate() {
-            self.walk_leaves(lod, child + i, *kb, view, depth + 1, visit);
+            self.walk_leaves(index, child + i, *kb, view, depth + 1, visit);
         }
     }
 
@@ -637,6 +898,63 @@ impl<'a> Reader<'a> {
         };
         decode_chunk_into(chunk, node, points, ring_lens, should_decode, visit);
     }
+}
+
+/// A decoded POI record's scalar fields, before the (lazy) name decode — the value
+/// [`consider_poi`] folds into the nearest-16 set.
+struct PoiCand {
+    lat: i32,
+    lon: i32,
+    subtype: u8,
+    distance_m: u32,
+}
+
+/// Fold one decoded record into the sorted nearest-16 `out` set: reject it if the set is full and
+/// it's no closer than the current 16th, dedup an already-present `(lat, lon, subtype)` (a record
+/// revisited on a wider ring), else insert it in distance order (ties keep the earlier-seen, a
+/// stable order). `buf`/`off` locate the record for the **lazy** name decode, which only runs once
+/// the record is known to belong in the set.
+fn consider_poi(out: &mut Vec<Poi, MAX_POI_RESULTS>, cand: PoiCand, buf: &[u8], off: usize) {
+    let PoiCand { lat, lon, subtype, distance_m } = cand;
+    // Cheap rejection before any dedup scan or name decode: a full set whose worst is closer.
+    if out.len() == MAX_POI_RESULTS && distance_m >= out[MAX_POI_RESULTS - 1].distance_m {
+        return;
+    }
+    // Dedup: the same POI reappears on every wider ring. Key on (lat, lon, subtype).
+    if out.iter().any(|p| p.lat == lat && p.lon == lon && p.subtype == subtype) {
+        return;
+    }
+    // Insertion index: first slot whose distance is strictly greater (so equal distances keep
+    // insertion order — a stable, deterministic tie-break).
+    let at = out.iter().position(|p| p.distance_m > distance_m).unwrap_or(out.len());
+    // If the set is full, drop the current last to make room (its distance is > this one, since the
+    // cheap-reject above let this through).
+    if out.len() == MAX_POI_RESULTS {
+        let _ = out.pop();
+    }
+    let poi = Poi { lat, lon, subtype, name: decode_poi_name(buf, off), distance_m };
+    // `at` is a valid index in `0..=out.len()` and the set has room now; the insert can't fail.
+    let _ = out.insert(at, poi);
+}
+
+/// Decode a POI record's name (spec §7.3) from `buf` at record offset `off`: `name_len` at `off+9`,
+/// the up-to-20-byte `Name` at `off+10`. Empty for an unnamed record (`name_len == 0`). The stored
+/// name is already pre-folded printable ASCII, but this stays defensive — `name_len` is clamped to
+/// what the field and the buffer hold, and any non-printable byte (a corrupt record) is dropped —
+/// so a bad chunk yields a short/empty name, never a panic or garbage glyph.
+fn decode_poi_name(buf: &[u8], off: usize) -> heapless::String<POI_NAME_MAX> {
+    let mut name = heapless::String::new();
+    let name_off = off + 10;
+    // Clamp to the 20-byte field and to the bytes actually present in the buffer.
+    let len = (buf[off + 9] as usize).min(POI_NAME_MAX).min(buf.len().saturating_sub(name_off));
+    for &b in &buf[name_off..name_off + len] {
+        // Printable ASCII only (the device font's range); drop anything else rather than trust a
+        // corrupt byte. `push` can't fail — `len <= POI_NAME_MAX` == the String capacity.
+        if (0x20..=0x7E).contains(&b) {
+            let _ = name.push(b as char);
+        }
+    }
+    name
 }
 
 /// Running vertex bounds, accumulated as a feature decodes so its bbox is ready

@@ -166,6 +166,157 @@ pub fn pack_poi_chunk(records: &[[u8; POI_RECORD_LEN]], chunk_size: usize) -> Ve
     c
 }
 
+/// One POI to place in a [`build_poi_map`] category: absolute `(lat, lon)` µdeg, its subtype id, and
+/// its (already-folded, ≤ 20-byte) name. Mirrors a serializer `PoiPoint`.
+#[derive(Clone)]
+pub struct PoiSpec {
+    pub lat: i32,
+    pub lon: i32,
+    pub subtype: u8,
+    pub name: String,
+}
+
+/// Serialize one category's POIs into a per-category quadtree over `bbox` — the flat `u32` index +
+/// its data chunks (spec §7.2/§7.3), built to walk **identically** to the reader/packer: a leaf
+/// holds ≤ `chunk_size/32` records; an over-full leaf subdivides on floor-division midpoints in
+/// NW/NE/SW/SE order (east/north of the midline is `>= mid`), stopping at the 10-µdeg recursion
+/// floor. Returns `(index_bytes, node_count, chunk_bytes, chunk_count)`. The test-only mirror of
+/// `obc-pack`'s `build_poi_tree` + `flatten_tree`, so the reader tests need no GEOS-linked packer.
+fn serialize_poi_category(
+    pois: &[PoiSpec],
+    bbox: (i32, i32, i32, i32),
+    chunk_size: usize,
+) -> (Vec<u8>, u32, Vec<u8>, u32) {
+    // A node of the recursively-built tree: a leaf (its records) or a branch (four children).
+    enum PoiNode {
+        Leaf(Vec<PoiSpec>),
+        Branch(Box<[PoiNode; 4]>),
+    }
+    fn build(points: Vec<PoiSpec>, bbox: (i32, i32, i32, i32), capacity: usize) -> PoiNode {
+        let (min_lon, min_lat, max_lon, max_lat) = bbox;
+        if points.len() <= capacity || max_lon - min_lon < 10 || max_lat - min_lat < 10 {
+            return PoiNode::Leaf(points);
+        }
+        let mid_lon = (min_lon + max_lon).div_euclid(2);
+        let mid_lat = (min_lat + max_lat).div_euclid(2);
+        // West is lon < mid, South is lat < mid — a point on a midline lands East/North (>= mid),
+        // matching the packer's assignment so it stays inside its leaf's bbox for the query.
+        let mut quads: [Vec<PoiSpec>; 4] = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+        for p in points {
+            let east = p.lon >= mid_lon;
+            let north = p.lat >= mid_lat;
+            let q = match (north, east) {
+                (true, false) => 0,  // NW
+                (true, true) => 1,   // NE
+                (false, false) => 2, // SW
+                (false, true) => 3,  // SE
+            };
+            quads[q].push(p);
+        }
+        let boxes = [
+            (min_lon, mid_lat, mid_lon, max_lat), // NW
+            (mid_lon, mid_lat, max_lon, max_lat), // NE
+            (min_lon, min_lat, mid_lon, mid_lat), // SW
+            (mid_lon, min_lat, max_lon, mid_lat), // SE
+        ];
+        let [q0, q1, q2, q3] = quads;
+        let [b0, b1, b2, b3] = boxes;
+        PoiNode::Branch(Box::new([
+            build(q0, b0, capacity),
+            build(q1, b1, capacity),
+            build(q2, b2, capacity),
+            build(q3, b3, capacity),
+        ]))
+    }
+
+    let capacity = chunk_size / POI_RECORD_LEN;
+    let root = build(pois.to_vec(), bbox, capacity);
+
+    // BFS-flatten exactly like the packer: children appended contiguously, chunk ids in BFS leaf
+    // order, empty leaves → EMPTY_LEAF, branches → BRANCH_BIT | first-child index.
+    let mut nodes: Vec<&PoiNode> = vec![&root];
+    let mut first_child: Vec<usize> = vec![0];
+    let mut i = 0;
+    while i < nodes.len() {
+        if let PoiNode::Branch(kids) = nodes[i] {
+            first_child[i] = nodes.len();
+            for k in kids.iter() {
+                nodes.push(k);
+                first_child.push(0);
+            }
+        }
+        i += 1;
+    }
+    let mut index: Vec<u32> = Vec::with_capacity(nodes.len());
+    let mut chunks: Vec<u8> = Vec::new();
+    let mut chunk_count = 0u32;
+    for (idx, node) in nodes.iter().enumerate() {
+        match node {
+            PoiNode::Branch(_) => index.push(BRANCH_BIT | first_child[idx] as u32),
+            PoiNode::Leaf(pts) if pts.is_empty() => index.push(EMPTY_LEAF),
+            PoiNode::Leaf(pts) => {
+                index.push(chunk_count);
+                let recs: Vec<[u8; POI_RECORD_LEN]> =
+                    pts.iter().map(|p| pack_poi_record(p.lat, p.lon, p.subtype, &p.name)).collect();
+                chunks.extend_from_slice(&pack_poi_chunk(&recs, chunk_size));
+                chunk_count += 1;
+            }
+        }
+    }
+    let mut index_bytes = Vec::with_capacity(index.len() * 4);
+    for n in &index {
+        index_bytes.extend_from_slice(&n.to_le_bytes());
+    }
+    (index_bytes, index.len() as u32, chunks, chunk_count)
+}
+
+/// Build a full v6 `.obcm` with a **populated POI section** — the query-test analogue of
+/// [`build_file`]. `bbox` is `(min_lon, min_lat, max_lon, max_lat)`; a minimal one-line geometry LOD
+/// keeps the map valid; `pois_by_cat` maps a category id (1..=6) to the POIs to place there (each a
+/// full per-category quadtree over `bbox`, `chunk_size`-byte chunks). Categories absent from the map
+/// are written empty. The section is assembled at its file-absolute offset so the reader's
+/// `walk_leaves`/`chunk_range` math resolves.
+pub fn build_poi_map(bbox: (i32, i32, i32, i32), chunk_size: usize, pois_by_cat: &[(u8, Vec<PoiSpec>)]) -> Vec<u8> {
+    // A trivial single-leaf geometry LOD so the file is a valid map (the query never touches it).
+    let styles: &[Style] = &[(1, 0, 0xFFFF, 1, 1)];
+    let base = build_file(
+        bbox,
+        styles,
+        &[LodSpec {
+            max_mpp: f32::INFINITY,
+            index: vec![0],
+            chunks: vec![pad(pack_line(1, bbox.0, bbox.1, &[(0, 0)]), 64)],
+            chunk_size: 64,
+        }],
+    );
+    let poi_off = u32::from_le_bytes(base[32..36].try_into().unwrap()) as usize;
+
+    // Lay out: [directory][cat index+chunks]* — categories in id order 1..=6, populated ones first
+    // getting their index right after the directory. Compute each category's absolute offsets.
+    let dir_len = 3 + POI_CATEGORY_COUNT as usize * POI_CAT_ENTRY_LEN;
+    let mut payload = Vec::new(); // everything after the directory
+    let mut cats: Vec<PoiCat> = Vec::new();
+    let mut cursor = poi_off + dir_len; // absolute offset of the next category's index
+    for id in 1..=POI_CATEGORY_COUNT {
+        let pois = pois_by_cat.iter().find(|(c, _)| *c == id).map(|(_, v)| v.as_slice()).unwrap_or(&[]);
+        if pois.is_empty() {
+            // Empty category: its (zero-length) index "starts" at the cursor, no chunks.
+            cats.push(PoiCat { category_id: id, index_offset: cursor as u32, node_count: 0, chunk_count: 0 });
+            continue;
+        }
+        let (index_bytes, node_count, chunk_bytes, chunk_count) = serialize_poi_category(pois, bbox, chunk_size);
+        cats.push(PoiCat { category_id: id, index_offset: cursor as u32, node_count, chunk_count });
+        cursor += index_bytes.len() + chunk_bytes.len();
+        payload.extend_from_slice(&index_bytes);
+        payload.extend_from_slice(&chunk_bytes);
+    }
+
+    let mut f = base[..poi_off].to_vec();
+    f.extend_from_slice(&poi_directory(chunk_size as u16, &cats));
+    f.extend_from_slice(&payload);
+    f
+}
+
 /// Start a feature record: `style_id`, the `uint16` exterior point count, the i32 anchor
 /// `(ax, ay)`, and the `flags` byte — the common prefix of every `pack_*` encoder.
 fn feature_header(style_id: u8, point_count: u16, ax: i32, ay: i32, flags: u8) -> Vec<u8> {
