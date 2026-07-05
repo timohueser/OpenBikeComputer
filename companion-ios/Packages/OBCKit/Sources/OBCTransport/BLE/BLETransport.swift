@@ -149,6 +149,32 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         }
     }
 
+    // `suspendLink()` (#459) uses the protocol default — `disconnect()` — which
+    // is already the full suspend: it drops `wantsConnect` (the latch every
+    // reconnect re-issue in `didFailToConnect` / `didDisconnectPeripheral` and
+    // every `startConnectIfReady` checks), cancels the pending connect iOS
+    // holds, and stops the scan. That latch IS the background-reconnect loop's
+    // pause switch: while it's down, nothing in the delegate flow re-raises
+    // the link.
+
+    public func resumeLink() async {
+        // Foreground return (#459): re-arm the intent latch and let the existing
+        // delegate flow re-raise the link — scan → didDiscover → connect →
+        // discovery → `beginAuthenticate()` → CoC → `.connected`, the same
+        // unsolicited bonded silent-reconnect path a mid-ride drop takes (no
+        // passkey sheet; iOS re-encrypts from the stored keys). Deliberately
+        // NOT `connect()`: that parks fresh discover/authenticate continuations,
+        // clobbering (and leaking) any still waiting from a launch attempt the
+        // suspend interrupted.
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            queue.async { [self] in
+                wantsConnect = true
+                startConnectIfReady()
+                cont.resume()
+            }
+        }
+    }
+
     // MARK: DeviceTransport — control plane
 
     public func deviceInfo() async throws -> DeviceInfo {
