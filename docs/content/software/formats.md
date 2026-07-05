@@ -68,7 +68,7 @@ Where they differ is *shape*: a map is a 2-D area indexed by a quadtree; a route
 
 ### The file, front to back
 
-An OBCM file (current version **6**) opens with a fixed 36-byte header, then a global style table and a level-of-detail (LOD) table, then the LOD layers themselves — coarsest first. Each LOD layer is wholly self-contained: its own quadtree index immediately followed by its own geometry chunks. After the finest layer comes one more section — the [POIs](#pois-a-nearest-list-not-a-map-layer) — reached, like everything else, by an offset the header stores.
+An OBCM file (current version **7**) opens with a fixed 36-byte header, then a global style table and a level-of-detail (LOD) table, then the LOD layers themselves — coarsest first. Each LOD layer is wholly self-contained: its own quadtree index immediately followed by its own geometry chunks. After the finest layer come two more sections — the [POIs](#pois-a-nearest-list-not-a-map-layer) and, at the very tail, their shared [hours pool](#opening-hours-a-pooled-weekly-schedule) — each reached, like everything else, by an offset stored earlier in the file.
 
 <figure class="fig">
 <svg viewBox="0 0 720 210" role="img" aria-label="The OBCM file as a horizontal ribbon: a 36-byte header, a global style table, an LOD table, LOD layer 0 (coarsest) through LOD layer N minus 1 (finest), then a POI section at the tail. Detail increases left to right across the LOD layers. One LOD layer is exploded below to show it is a quadtree index followed by data chunks.">
@@ -137,7 +137,7 @@ Eighteen bytes per entry — the `N × 18 B` in the ribbon above. Because the in
 The 36-byte header is the one fixed-size, always-present part of the file. Everything else is found through offsets it stores.
 
 <figure class="fig">
-<svg viewBox="0 0 720 170" role="img" aria-label="The 36-byte OBCM header drawn as a byte ruler: bytes 0 to 3 are the magic OBCM, byte 4 is the version, bytes 5 to 20 are the global bounding box as four 32-bit integers, bytes 21 to 24 are the style-table offset, byte 25 is the LOD count, bytes 26 to 29 are the LOD-table offset, bytes 30 to 31 are the marker colour, and bytes 32 to 35 are the POI-section offset appended in v6.">
+<svg viewBox="0 0 720 170" role="img" aria-label="The 36-byte OBCM header drawn as a byte ruler: bytes 0 to 3 are the magic OBCM, byte 4 is the version (7), bytes 5 to 20 are the global bounding box as four 32-bit integers, bytes 21 to 24 are the style-table offset, byte 25 is the LOD count, bytes 26 to 29 are the LOD-table offset, bytes 30 to 31 are the marker colour, and bytes 32 to 35 are the POI-section offset.">
   <text class="d-tag" x="20" y="24">The 36-byte header, byte by byte</text>
 
   <!-- field names -->
@@ -150,7 +150,7 @@ The 36-byte header is the one fixed-size, always-present part of the file. Every
   <text class="d-sub" x="544" y="56" text-anchor="middle">LOD-tbl off</text>
   <text class="d-sub" x="600" y="56" text-anchor="middle">marker</text>
   <text class="d-sub" x="666" y="50" text-anchor="middle" style="fill:#a9501c">POI off</text>
-  <text class="d-sub" x="666" y="62" text-anchor="middle" style="fill:#a9501c;font-size:9px">v6</text>
+  <text class="d-sub" x="666" y="62" text-anchor="middle" style="fill:#a9501c;font-size:9px">→ §7</text>
 
   <!-- ruler fields -->
   <g stroke="#20301d" stroke-width="1">
@@ -174,6 +174,7 @@ The 36-byte header is the one fixed-size, always-present part of the file. Every
   </g>
   <!-- value + byte ranges -->
   <text class="d-label" x="80" y="93" text-anchor="middle" style="fill:#fff;font-size:11px">OBCM</text>
+  <text class="d-label" x="125" y="93" text-anchor="middle" style="font-size:11px">7</text>
   <text class="d-sub" x="80"  y="122" text-anchor="middle" style="font-size:9px">0–3</text>
   <text class="d-sub" x="125" y="122" text-anchor="middle" style="font-size:9px">4</text>
   <text class="d-sub" x="278" y="122" text-anchor="middle" style="font-size:9px">5–20</text>
@@ -185,7 +186,7 @@ The 36-byte header is the one fixed-size, always-present part of the file. Every
 
   <text class="d-sub" x="44" y="150" style="font-size:11px">A short read here is the only "is this even a map?" check the reader needs.</text>
 </svg>
-<figcaption>Fixed offsets, no surprises. Three small details a reader notices: the bbox is stored <b>lat, lon</b> (a packer ordering quirk); the <b>marker colour</b> — the you-are-here chevron — rides in the header rather than the style table, because the marker isn't an OpenStreetMap feature; and v6 tacked a <b>POI-section offset</b> (coral) onto the tail, the one growth that pushed the header from 32 to 36 bytes. That offset is never zero — the section is always present, empty or not.</figcaption>
+<figcaption>Fixed offsets, no surprises. Three small details a reader notices: the bbox is stored <b>lat, lon</b> (a packer ordering quirk); the <b>marker colour</b> — the you-are-here chevron — rides in the header rather than the style table, because the marker isn't an OpenStreetMap feature; and a <b>POI-section offset</b> (coral) sits at the tail — the growth that once pushed the header from 32 to 36 bytes. That offset is never zero — the section is always present, empty or not. <b>v7 left the header untouched</b>: only the version byte and the POI record itself changed.</figcaption>
 </figure>
 
 The **style table** that follows maps small numeric ids to how a feature looks. Each record is six bytes:
@@ -379,23 +380,24 @@ There's a quiet payoff to the holes layout: a polygon's holes are just extra rin
 
 ### POIs: a nearest-list, not a map layer
 
-Everything so far serves one question — *what's on screen right now?* — and the quadtree answers it by viewport: give me the chunks a rectangle touches. Version **6** adds a section that answers a different question — *where's the nearest water / campsite / bakery?* — and that changes the shape of the index. The [points of interest](../packer-routing/#extracting-pois) the packer harvests from OpenStreetMap aren't drawn on the map at all; the device surfaces them as a category → nearest-list [browser](../ui/#the-pois-browser). So they're indexed for a **nearest-N** query, not a viewport walk.
+Everything so far serves one question — *what's on screen right now?* — and the quadtree answers it by viewport: give me the chunks a rectangle touches. Version **6** added a section that answers a different question — *where's the nearest water / campsite / bakery?* — and that changes the shape of the index. The [points of interest](../packer-routing/#extracting-pois) the packer harvests from OpenStreetMap aren't drawn on the map at all; the device surfaces them as a category → nearest-list [browser](../ui/#the-pois-browser). So they're indexed for a **nearest-N** query, not a viewport walk. Version **7** widened each record to carry the POI's opening hours, pooled into a [shared section](#opening-hours-a-pooled-weekly-schedule) at the file tail.
 
 The section is a small **directory** followed by, per category, a familiar pair: a quadtree index and its data chunks. There are six categories — Water, Campsite, Accommodation, Resupply, Pharmacy, Bike shop — and each gets *its own* quadtree, so "nearest bakery" scans only bakeries.
 
 <figure class="fig">
-<svg viewBox="0 0 720 250" role="img" aria-label="The POI section. On the left, the directory: a category count of 6, a shared chunk size, then one entry per category holding a category id, index offset, node count and chunk count. An arrow leads to one category's quadtree index followed by its data chunks — the same index-then-chunks shape as an LOD layer. On the right, one POI record drawn as a 32-byte ruler: four bytes latitude, four bytes longitude, one byte subtype, one byte name length, twenty bytes name, two reserved bytes.">
+<svg viewBox="0 0 720 250" role="img" aria-label="The POI section. On the left, the directory: a category count of 6, a shared chunk size, then one entry per category holding a category id, index offset, node count and chunk count, plus the trailing hours-pool offset and count. An arrow leads to one category's quadtree index followed by its data chunks — the same index-then-chunks shape as an LOD layer. On the right, one POI record drawn as a 36-byte ruler: four bytes latitude, four bytes longitude, one byte subtype, one byte name length, twenty-four bytes name, and a two-byte HoursRef index into the hours pool.">
   <defs>
     <marker id="aF5" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
   </defs>
-  <text class="d-tag" x="20" y="24">The POI section — a quadtree per category over 32-byte records</text>
+  <text class="d-tag" x="20" y="24">The POI section — a quadtree per category over 36-byte records</text>
 
   <!-- directory -->
-  <rect class="d-panel-2" x="24" y="44" width="150" height="72" rx="9" />
-  <text class="d-label" x="40" y="64" style="font-size:11px">directory</text>
-  <text class="d-sub" x="40" y="82"  style="font-size:9.5px">count = 6 · chunk size</text>
-  <text class="d-sub" x="40" y="98"  style="font-size:9.5px">per cat: id · index off</text>
-  <text class="d-sub" x="40" y="110" style="font-size:9.5px">node count · chunk count</text>
+  <rect class="d-panel-2" x="24" y="44" width="150" height="88" rx="9" />
+  <text class="d-label" x="40" y="62" style="font-size:11px">directory</text>
+  <text class="d-sub" x="40" y="78"  style="font-size:9.5px">count = 6 · chunk size</text>
+  <text class="d-sub" x="40" y="92"  style="font-size:9.5px">per cat: id · index off</text>
+  <text class="d-sub" x="40" y="104" style="font-size:9.5px">node count · chunk count</text>
+  <text class="d-sub" x="40" y="122" style="font-size:9.5px;fill:#a9501c">+ hours-pool off · count</text>
 
   <!-- one category's index + chunks (LOD-shaped) -->
   <line class="d-flow" x1="176" y1="80" x2="214" y2="80" marker-end="url(#aF5)" />
@@ -406,39 +408,124 @@ The section is a small **directory** followed by, per category, a familiar pair:
   <text class="d-label" x="268" y="76" text-anchor="middle" style="font-size:10.5px">quadtree</text>
   <text class="d-sub"   x="268" y="90" text-anchor="middle" style="font-size:9px">flat u32 · §4</text>
   <text class="d-label" x="372" y="76" text-anchor="middle" style="fill:#fff;font-size:10.5px">POI chunks</text>
-  <text class="d-sub"   x="372" y="90" text-anchor="middle" style="fill:#dfe6e0;font-size:9px">512 B · 16 recs</text>
+  <text class="d-sub"   x="372" y="90" text-anchor="middle" style="fill:#dfe6e0;font-size:9px">512 B · 14 recs</text>
   <text class="d-sub" x="324" y="118" text-anchor="middle" style="font-size:9px;fill:#a9501c">same index-then-chunks shape as a LOD</text>
 
-  <!-- one record: 32-byte ruler -->
-  <text class="d-tag" x="20" y="152">one record — a fixed 32 bytes</text>
+  <!-- one record: 36-byte ruler -->
+  <text class="d-tag" x="20" y="152">one record — a fixed 36 bytes <tspan style="fill:#a9501c">(v7)</tspan></text>
   <g stroke="#20301d" stroke-width="1">
-    <rect x="24"  y="164" width="120" height="34" class="d-water" />
-    <rect x="144" y="164" width="120" height="34" class="d-water" />
-    <rect x="264" y="164" width="34"  height="34" class="d-hot-fill" />
-    <rect x="298" y="164" width="34"  height="34" class="d-amber" />
-    <rect x="332" y="164" width="300" height="34" class="d-forest" />
-    <rect x="632" y="164" width="60"  height="34" class="d-muted" />
+    <rect x="24"  y="164" width="74"  height="34" class="d-water" />
+    <rect x="98"  y="164" width="74"  height="34" class="d-water" />
+    <rect x="172" y="164" width="19"  height="34" class="d-hot-fill" />
+    <rect x="191" y="164" width="19"  height="34" class="d-amber" />
+    <rect x="210" y="164" width="408" height="34" class="d-forest" />
+    <rect x="618" y="164" width="74"  height="34" style="fill:#cf6a2a" />
   </g>
-  <text class="d-sub" x="84"  y="185" text-anchor="middle" style="fill:#fff;font-size:9.5px">Lat (i32)</text>
-  <text class="d-sub" x="204" y="185" text-anchor="middle" style="fill:#fff;font-size:9.5px">Lon (i32)</text>
-  <text class="d-sub" x="281" y="180" text-anchor="middle" style="fill:#fff;font-size:8.5px">sub</text>
-  <text class="d-sub" x="281" y="192" text-anchor="middle" style="fill:#fff;font-size:8px">type</text>
-  <text class="d-sub" x="315" y="180" text-anchor="middle" style="font-size:8.5px">len</text>
-  <text class="d-sub" x="482" y="185" text-anchor="middle" style="fill:#fff;font-size:9.5px">Name — 20 B printable ASCII</text>
-  <text class="d-sub" x="662" y="185" text-anchor="middle" style="font-size:8.5px">rsvd</text>
-  <text class="d-sub" x="84"  y="214" text-anchor="middle" style="font-size:9px">0–3</text>
-  <text class="d-sub" x="204" y="214" text-anchor="middle" style="font-size:9px">4–7</text>
-  <text class="d-sub" x="281" y="214" text-anchor="middle" style="font-size:9px">8</text>
-  <text class="d-sub" x="315" y="214" text-anchor="middle" style="font-size:9px">9</text>
-  <text class="d-sub" x="482" y="214" text-anchor="middle" style="font-size:9px">10–29</text>
-  <text class="d-sub" x="662" y="214" text-anchor="middle" style="font-size:9px">30–31</text>
+  <text class="d-sub" x="61"  y="185" text-anchor="middle" style="fill:#fff;font-size:9.5px">Lat (i32)</text>
+  <text class="d-sub" x="135" y="185" text-anchor="middle" style="fill:#fff;font-size:9.5px">Lon (i32)</text>
+  <text class="d-sub" x="181" y="180" text-anchor="middle" style="fill:#fff;font-size:8px">sub</text>
+  <text class="d-sub" x="181" y="192" text-anchor="middle" style="fill:#fff;font-size:7.5px">type</text>
+  <text class="d-sub" x="200" y="184" text-anchor="middle" style="font-size:8px">len</text>
+  <text class="d-sub" x="414" y="185" text-anchor="middle" style="fill:#fff;font-size:9.5px">Name — 24 B printable ASCII</text>
+  <text class="d-sub" x="655" y="180" text-anchor="middle" style="fill:#fff;font-size:8px">Hours</text>
+  <text class="d-sub" x="655" y="192" text-anchor="middle" style="fill:#fff;font-size:7.5px">Ref u16</text>
+  <text class="d-sub" x="61"  y="214" text-anchor="middle" style="font-size:9px">0–3</text>
+  <text class="d-sub" x="135" y="214" text-anchor="middle" style="font-size:9px">4–7</text>
+  <text class="d-sub" x="181" y="214" text-anchor="middle" style="font-size:9px">8</text>
+  <text class="d-sub" x="200" y="214" text-anchor="middle" style="font-size:9px">9</text>
+  <text class="d-sub" x="414" y="214" text-anchor="middle" style="font-size:9px">10–33</text>
+  <text class="d-sub" x="655" y="214" text-anchor="middle" style="font-size:9px">34–35</text>
 </svg>
-<figcaption>Each category's index and chunks are laid out <b>exactly</b> like a LOD layer — a flat <code>u32</code> quadtree (the same branch-bit / empty-leaf / chunk-id encoding) built over the <b>same global bbox from the header</b>, its chunks packed straight after. So the reader walks a POI category with the very same leaf-walk it uses for geometry. The record differs in one telling way: coordinates are stored <b>absolute</b>, not anchored-and-deltated. At a fixed 32 bytes the delta saving isn't worth breaking symmetry with geometry, and fixed-size records make chunk packing trivial — exactly <code>512 / 32 = 16</code> per chunk, no length bookkeeping.</figcaption>
+<figcaption>Each category's index and chunks are laid out <b>exactly</b> like a LOD layer — a flat <code>u32</code> quadtree (the same branch-bit / empty-leaf / chunk-id encoding) built over the <b>same global bbox from the header</b>, its chunks packed straight after. So the reader walks a POI category with the very same leaf-walk it uses for geometry. The record differs in one telling way: coordinates are stored <b>absolute</b>, not anchored-and-deltated. At a fixed 36 bytes the delta saving isn't worth breaking symmetry with geometry, and fixed-size records make chunk packing trivial — exactly <code>512 / 36 = 14</code> per chunk, no length bookkeeping. The final two bytes are a <b>HoursRef</b> (coral) — a <code>u16</code> index into the hours pool below, or <code>0xFFFF</code> when the POI has no listed hours.</figcaption>
 </figure>
 
-Two design notes are worth pulling out. First, the **category is never stored in the record** — it's implied by *which* category's quadtree the record came from, and each subtype maps to exactly one category anyway. Second, **names are folded to printable ASCII at pack time** and capped at 20 bytes, because the device font ([Terminus](../packer-routing/#extracting-pois)) has no glyphs beyond that set; an unnamed POI (name length `0`) shows its subtype's fallback label on-device. A `0xFF` subtype byte ends a chunk, mirroring geometry's `0xFF`-style-id sentinel.
+Two design notes are worth pulling out. First, the **category is never stored in the record** — it's implied by *which* category's quadtree the record came from, and each subtype maps to exactly one category anyway. Second, **names are folded to printable ASCII at pack time** and capped at 24 bytes, because the device font ([Terminus](../packer-routing/#extracting-pois)) has no glyphs beyond that set; an unnamed POI (name length `0`) shows its subtype's fallback label on-device. A `0xFF` subtype byte ends a chunk, mirroring geometry's `0xFF`-style-id sentinel.
 
 The full directory bytes, the canonical category/subtype id table, and the record fields are in [`OBCM_Spec.md` §7](src:OBCM_Spec.md). What the packer harvests and how, and how the device browses the result, are the [extraction stage](../packer-routing/#extracting-pois) and the [POIs browser](../ui/#the-pois-browser).
+
+### Opening hours: a pooled weekly schedule
+
+That `HoursRef` at the end of every record points into one last section, written at the **file tail**: a single **hours pool**. OSM tags opening hours as a terse little grammar — `Mo-Fr 08:00-18:00; Sa 09:00-13:00; PH off` — that a microcontroller has no business parsing. So the packer [parses it once, at pack time](../packer-routing/#extracting-pois), into a fixed **29-byte weekly schedule** the device can read with a single array lookup. No `opening_hours` string ever reaches the device.
+
+<figure class="fig">
+<svg viewBox="0 0 720 300" role="img" aria-label="The hours pool. A single 29-byte schedule blob is drawn as a ruler: one flags byte, then seven days from Monday to Sunday, each day two interval slots, each slot an open-quarter and a close-quarter byte. Below, the dedup pool: many POI records with a HoursRef index point into a small list of unique blobs, so shops that share hours share one entry.">
+  <defs>
+    <marker id="aH7" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24">One 29-byte schedule blob — flags + 7 days × 2 slots</text>
+
+  <!-- blob ruler: flags + Mon..Sun (each 2 slots of open_q/close_q) -->
+  <g stroke="#20301d" stroke-width="1">
+    <rect x="24" y="44" width="34" height="34" class="d-amber" />
+    <rect x="58" y="44" width="88" height="34" class="d-water" />
+    <rect x="146" y="44" width="88" height="34" class="d-forest" />
+    <rect x="234" y="44" width="88" height="34" class="d-water" />
+    <rect x="322" y="44" width="88" height="34" class="d-forest" />
+    <rect x="410" y="44" width="88" height="34" class="d-water" />
+    <rect x="498" y="44" width="88" height="34" class="d-forest" />
+    <rect x="586" y="44" width="88" height="34" class="d-water" />
+  </g>
+  <text class="d-sub" x="41"  y="65" text-anchor="middle" style="fill:#000;font-size:9px">flags</text>
+  <text class="d-sub" x="102" y="65" text-anchor="middle" style="fill:#fff;font-size:10px">Mon</text>
+  <text class="d-sub" x="190" y="65" text-anchor="middle" style="fill:#fff;font-size:10px">Tue</text>
+  <text class="d-sub" x="278" y="65" text-anchor="middle" style="fill:#fff;font-size:10px">Wed</text>
+  <text class="d-sub" x="366" y="65" text-anchor="middle" style="fill:#fff;font-size:10px">Thu</text>
+  <text class="d-sub" x="454" y="65" text-anchor="middle" style="fill:#fff;font-size:10px">Fri</text>
+  <text class="d-sub" x="542" y="65" text-anchor="middle" style="fill:#fff;font-size:10px">Sat</text>
+  <text class="d-sub" x="630" y="65" text-anchor="middle" style="fill:#fff;font-size:10px">Sun</text>
+  <text class="d-sub" x="41"  y="92" text-anchor="middle" style="font-size:9px">0</text>
+  <text class="d-sub" x="102" y="92" text-anchor="middle" style="font-size:9px">1–4</text>
+  <text class="d-sub" x="630" y="92" text-anchor="middle" style="font-size:9px">25–28</text>
+
+  <!-- one day exploded into 2 slots × (open_q, close_q) -->
+  <line x1="58"  y1="78" x2="120" y2="110" stroke="#9aa884" stroke-width="1.1" />
+  <line x1="146" y1="78" x2="420" y2="110" stroke="#9aa884" stroke-width="1.1" />
+  <g stroke="#20301d" stroke-width="1">
+    <rect x="120" y="112" width="76" height="30" class="d-panel" />
+    <rect x="196" y="112" width="76" height="30" class="d-panel" />
+    <rect x="272" y="112" width="76" height="30" class="d-panel-2" />
+    <rect x="348" y="112" width="76" height="30" class="d-panel-2" />
+  </g>
+  <text class="d-sub" x="158" y="131" text-anchor="middle" style="font-size:9.5px">open q</text>
+  <text class="d-sub" x="234" y="131" text-anchor="middle" style="font-size:9.5px">close q</text>
+  <text class="d-sub" x="310" y="131" text-anchor="middle" style="font-size:9.5px">open q</text>
+  <text class="d-sub" x="386" y="131" text-anchor="middle" style="font-size:9.5px">close q</text>
+  <text class="d-sub" x="196" y="156" text-anchor="middle" style="font-size:8.5px;fill:#a9501c">slot 0</text>
+  <text class="d-sub" x="348" y="156" text-anchor="middle" style="font-size:8.5px;fill:#a9501c">slot 1</text>
+  <text class="d-sub" x="470" y="126" style="font-size:9.5px">each byte = quarter-hours</text>
+  <text class="d-sub" x="470" y="140" style="font-size:9.5px">from midnight, 0…96 (96 = 24:00)</text>
+
+  <!-- dedup pool -->
+  <text class="d-tag" x="20" y="192">the pool — identical schedules collapse to one blob</text>
+  <g font-family="var(--mono)">
+    <text class="d-sub" x="30" y="216" style="font-size:9.5px">POI · HoursRef 0</text>
+    <text class="d-sub" x="30" y="234" style="font-size:9.5px">POI · HoursRef 0</text>
+    <text class="d-sub" x="30" y="252" style="font-size:9.5px">POI · HoursRef 2</text>
+    <text class="d-sub" x="30" y="270" style="font-size:9.5px">POI · HoursRef 0xFFFF</text>
+  </g>
+  <line class="d-flow" x1="180" y1="212" x2="300" y2="221" marker-end="url(#aH7)" />
+  <line class="d-flow" x1="180" y1="230" x2="300" y2="223" marker-end="url(#aH7)" />
+  <line class="d-flow" x1="180" y1="248" x2="300" y2="279" marker-end="url(#aH7)" />
+  <text class="d-sub" x="150" y="286" style="font-size:8.5px;fill:#a9501c">0xFFFF = no hours (no arrow)</text>
+
+  <!-- pool blobs -->
+  <g stroke="#3c6b39" stroke-width="1.1">
+    <rect x="306" y="210" width="180" height="26" class="d-water" />
+    <rect x="306" y="238" width="180" height="26" class="d-muted" />
+    <rect x="306" y="266" width="180" height="26" class="d-water" />
+  </g>
+  <text class="d-sub" x="316" y="227" style="fill:#fff;font-size:9.5px">blob 0 — 29 B</text>
+  <text class="d-sub" x="316" y="255" style="fill:#fff;font-size:9.5px">blob 1 — 29 B</text>
+  <text class="d-sub" x="316" y="283" style="fill:#fff;font-size:9.5px">blob 2 — 29 B</text>
+  <text class="d-sub" x="504" y="227" style="font-size:9px">count u16, then</text>
+  <text class="d-sub" x="504" y="241" style="font-size:9px">count × 29-byte blobs;</text>
+  <text class="d-sub" x="504" y="255" style="font-size:9px">blob i at</text>
+  <text class="d-sub" x="504" y="269" style="font-size:9px" font-family="var(--mono)">pool_off + 2 + i·29</text>
+</svg>
+<figcaption>A schedule is a <b>flags byte</b> then seven days (Mon…Sun), each holding up to two open intervals. An interval is two bytes — an <b>open</b> and a <b>close</b> quarter-hour from midnight (<code>0…96</code>, so <code>96</code> = 24:00, a 15-minute resolution). A closed day is <code>(0, 0)</code>; a 24-hour day is <code>(0, 96)</code>; an <b>overnight</b> interval (say 22:00–02:00) stores <code>close ≤ open</code> and wraps past midnight in place, never split across two days. Two <b>flag bits</b> record what the packer couldn't keep verbatim: <b>seasonal</b> (a month/date rule was flattened to a representative in-season week) and <b>truncated</b> (a public-holiday rule, a <code>sunrise/sunset</code> time, or a third interval on a day was dropped). Both are baked but ignored by the v1 UI. Because a whole region's shops share the same handful of schedules, the pool is <b>deduplicated</b>: identical 29-byte blobs collapse to one, and a record's <code>HoursRef</code> is just its index — <code>0xFFFF</code> meaning "no hours listed."</figcaption>
+</figure>
+
+The pool's exact layout — the leading `count`, the blob byte order, the flag bits, and the overnight/24-hour conventions — is [`OBCM_Spec.md` §7.5](src:OBCM_Spec.md). The pack-time parser that fills it is the [`opening_hours` stage](../packer-routing/#parsing-opening-hours); the device-side lookup that turns a blob into *today's hours* and an *open-now* answer drives the [POI detail view](../ui/#the-poi-detail-view).
 
 ## OBCR — the route
 
