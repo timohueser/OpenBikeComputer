@@ -119,6 +119,16 @@ public struct MockTransport: DeviceTransport {
         return control.fixtures.rides.map(\.summary)
     }
 
+    public func ackRides(_ ids: [RideID]) async throws {
+        // The possession ack (spec §4.4 cmd 2). The mock keeps no device-side
+        // synced state; recording the batch is the observable effect the
+        // coordinator tests assert. Same prelude as every control-plane op, so
+        // an unreachable link or an armed fault behaves like the real write.
+        guard !ids.isEmpty else { return }
+        try await preludeThrowing()
+        control.recordAckedRides(ids)
+    }
+
     public func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail {
         // A device object id, exactly like the real transport ("download the
         // route object"). Library-saved routes answer E2 from their own record

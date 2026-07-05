@@ -62,6 +62,9 @@ public final class MockControl: @unchecked Sendable {
     /// Monotonic stand-in for the device's object-id assignment on upload — starts
     /// above every fixture `deviceObjectID` so a fresh id can't collide.
     private var _nextObjectID: UInt16 = 1000
+    /// Every `ackRides` batch the transport sent, in order — the coordinator
+    /// tests assert the connect-time possession ack lands here.
+    private var _ackedRideBatches: [[RideID]] = []
 
     /// Build from a named `Scenario`, loading its fixture set and applying its knobs.
     public init(scenario: Scenario = .happyPath) {
@@ -314,6 +317,18 @@ public final class MockControl: @unchecked Sendable {
     /// The stored copy behind a device object id (`routeDetail` on the mock).
     func deviceRouteEntry(_ id: DeviceObjectID) -> RouteEntry? {
         lock.withLocked { _fixtures.routes.first { $0.deviceObjectID == id } }
+    }
+
+    /// Record an `ackRides` possession batch (the mock's stand-in for the
+    /// device's sidecar reconcile — the mock models no device-side synced
+    /// state, so recording is the observable effect).
+    func recordAckedRides(_ ids: [RideID]) {
+        lock.withLocked { _ackedRideBatches.append(ids) }
+    }
+
+    /// The `ackRides` batches sent so far, in send order (test hook).
+    public var ackedRideBatches: [[RideID]] {
+        lock.withLocked { _ackedRideBatches }
     }
 
     /// Delete a stored route by its device object id (the `deleteObject`
