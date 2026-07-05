@@ -44,6 +44,11 @@ struct PanelState {
     /// The "Compass" slider — the magnetometer heading orienting a heading-up map while the
     /// rider is stopped (GPS course drops to `None`). Pushed into [`SimCompass`].
     compass_deg: f32,
+    /// The injected BLE link state (epic #447): the host→app seam the sim drives from the control
+    /// panel, pushed into the app each frame via [`obc_app::App::set_ble_status`]. It's the whole
+    /// [`obc_app::BleStatus`] — not just a `connected` bool — so P2/P4 can add passkey / upload
+    /// injection by extending this field and its widgets with no restructuring.
+    ble: obc_app::BleStatus,
 }
 
 /// In-progress 1:1 size calibration: the user measures the on-screen reference bar and
@@ -214,8 +219,15 @@ impl SimGui {
                 lon_deg: f.lon as f64 / 1e6,
                 heading_deg: f.course.unwrap_or(0.0),
                 compass_deg: f.course.unwrap_or(0.0),
+                ble: obc_app::BleStatus::DISCONNECTED,
             },
-            None => PanelState { lat_deg: 0.0, lon_deg: 0.0, heading_deg: 0.0, compass_deg: 0.0 },
+            None => PanelState {
+                lat_deg: 0.0,
+                lon_deg: 0.0,
+                heading_deg: 0.0,
+                compass_deg: 0.0,
+                ble: obc_app::BleStatus::DISCONNECTED,
+            },
         };
 
         // Boot at the device's real power-on state (Home / Idle, no route) unless `start_on_map`
@@ -336,6 +348,11 @@ impl SimGui {
         let map_src = SliceSource(&self.bytes);
         let reader = Reader::new(&map_src, &self.map_tables, &self.map_cache);
         let tc = self.true_color;
+
+        // Feed the host→app BLE seam (epic #447): the control panel's injected link state, pushed
+        // every frame exactly as the board's ride loop feeds its `ble::state` snapshot. Cheap and
+        // idempotent — an unchanged status repaints nothing.
+        self.app.set_ble_status(self.panel.ble);
 
         // Open the active route's geometry *before* ticking so the map-matcher gets it (reloads
         // only on selection change). It stays borrowed through `tick` + `render_frame` below.
