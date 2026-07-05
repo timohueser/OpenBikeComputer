@@ -50,6 +50,11 @@ pub use state::publish_stack_high_water;
 // pass. The only BLE state that crosses into the app seam, already distilled to `obc_app` vocabulary.
 pub use state::app_ble_status;
 
+// The link-edge wake (epic #447, P2): the ride loop's event-driven sleep selects on this so a link
+// change — connect/disconnect, and the pairing passkey — pulls it out of warm sleep to feed the seam
+// and render the passkey card.
+pub use state::wait_status_change;
+
 use core::mem::MaybeUninit;
 use core::sync::atomic::Ordering;
 

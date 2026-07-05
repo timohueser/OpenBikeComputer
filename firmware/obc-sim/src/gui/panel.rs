@@ -241,13 +241,30 @@ impl SimGui {
     }
 
     /// The Bluetooth injection controls — the sim's face of the host→app BLE seam (epic #447). P1
-    /// exposes just the connected toggle (the connected indicator's driver); P2/P4 extend this block
-    /// with passkey entry and an "inject upload" button, editing the same [`obc_app::BleStatus`]
-    /// mirror the checkbox does here (`self.panel.ble`), so no restructuring is needed then.
+    /// exposes the connected toggle (the connected indicator's driver); P2 adds the passkey injection
+    /// (the passkey card), and P4 will add an "inject upload" button, all editing the same
+    /// [`obc_app::BleStatus`] mirror the checkbox does here (`self.panel.ble`), pushed into the app
+    /// each frame — so no restructuring is needed then.
     fn show_ble_controls(&mut self, ui: &mut egui::Ui) {
         ui.label(egui::RichText::new("Bluetooth").strong());
         ui.checkbox(&mut self.panel.ble.connected, "Phone connected");
         ui.weak("drives the connected indicator on the menu bar + Home");
+
+        // Passkey injection (P2): a "Pairing" toggle mirrors the BLE side's `PassKeyDisplay` →
+        // `passkey: Some` (opens the card) / cleared → `None` (closes it), with a numeric field to
+        // set the 6-digit code the card renders. `set_ble_status` reconciles the host-pushed card
+        // each frame from `self.panel.ble.passkey`, exactly as the board's ride loop does.
+        let mut pairing = self.panel.ble.passkey.is_some();
+        if ui.checkbox(&mut pairing, "Pairing (show passkey card)").changed() {
+            self.panel.ble.passkey = pairing.then_some(123_456);
+        }
+        if let Some(passkey) = self.panel.ble.passkey.as_mut() {
+            ui.add(
+                egui::Slider::new(passkey, 0..=999_999)
+                    .text("passkey")
+                    .custom_formatter(|n, _| format!("{:06}", n as u32)),
+            );
+        }
     }
 
     /// The loaded-track controls: play/pause (auto-follows), a seek scrubber, and a 1×–10× speed

@@ -88,6 +88,15 @@ pub(crate) fn status() -> Status {
     STATUS.lock(|c| c.get())
 }
 
+/// Wait for the next link-edge [`publish`] — the wake the event-driven map loop selects on so a link
+/// change (connect/disconnect, and crucially the pairing `PassKeyDisplay`) pulls it out of warm
+/// sleep to feed `set_ble_status` and render the passkey card (epic #447, P2). Reuses the existing
+/// `publish` edge (`STATUS_EDGE`); it invents no new wake path. `Signal` is level/coalescing, so a
+/// burst of publishes wakes the loop once and the next snapshot read carries the latest state.
+pub fn wait_status_change() -> impl core::future::Future<Output = ()> {
+    STATUS_EDGE.wait()
+}
+
 /// The link distilled into the app-facing [`obc_app::BleStatus`] (epic #447, P1): connected + the
 /// pairing passkey. The ride loop reads this each pass and feeds it through
 /// [`App::set_ble_status`](obc_app::App::set_ble_status), so `obc-app` sees the link in its own
