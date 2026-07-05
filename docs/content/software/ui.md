@@ -71,6 +71,7 @@ screens! {
     PoiList(PoiListScreen) => Nav,         // one category's nearest-16, with live bearing arrows
     PoiDetail(PoiDetailScreen) => Nav,     // one POI: full name, subtype, arrow, today's hours + open/closed
     RouteMenu(RouteMenuScreen) => Nav,
+    Rides(RidesScreen) => Nav,             // see + delete stored rides (hold-to-delete, unsynced guard)
     RouteOverview(RouteOverviewScreen) => Nav, // look-before-you-ride: profile + stats + START
     RouteSwap(RouteSwapScreen) => Nav,
     // The Settings tree — a list plus one screen each for Date & Time, Units, Power, Bluetooth,
@@ -167,13 +168,14 @@ clock uses (see *Render on demand* below), so it costs nothing once the needle h
 fn handle(&mut self, g: Gesture, _cx: &mut Ctx) -> Transition {
     match g {
         Gesture::Turn(n) => {
-            self.target_deg += (n * 90) as f32; // the needle chases this in tick_timers
-            list::on_turn(&mut self.selected, n, ITEMS.len()) // Routes / POIs / Map / Settings
+            self.target_deg += n as f32 * DETENT_DEG; // the needle chases this in tick_timers
+            list::on_turn(&mut self.selected, n, ITEMS.len()) // Routes / Rides / POIs / Map / Settings
         }
         Gesture::Press   => match self.selected {
             0 => Transition::Push(Screen::RouteMenu(RouteMenuScreen::new())), // Routes
-            1 => Transition::Push(Screen::PoiMenu(PoiMenuScreen::new())),     // POIs
-            3 => Transition::Push(Screen::Settings(SettingsScreen::new())),   // Settings
+            1 => Transition::Push(Screen::Rides(RidesScreen::new())),         // Rides
+            2 => Transition::Push(Screen::PoiMenu(PoiMenuScreen::new())),     // POIs
+            4 => Transition::Push(Screen::Settings(SettingsScreen::new())),   // Settings
             _ => Transition::None,                                            // Map — future screen
         },
         Gesture::Back    => Transition::Pop, // return to whoever opened the Menu
