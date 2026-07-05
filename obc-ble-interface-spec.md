@@ -77,17 +77,25 @@ UUIDs, descriptor layouts, object types, and status codes.
   scan response if it doesn't fit the primary PDU.
 - **Intervals**: *fast* advertising at **40 ms** for **30 s** after power-on and
   after every disconnect, then *slow* advertising at **1000 ms** indefinitely.
-- **Policy — "always just works"**: the device advertises connectable whenever
-  it is powered and unconnected. There is no advertising timeout and no
-  "pairing mode" gate for reconnection. The device uses a **stable static random
-  address** (derived from `FICR.DEVICEID`) and never rotates it — so the phone,
-  which stores that identity at bonding, silently reconnects on any contact.
-  Once bonded (A8), the device still advertises generally; bonded-data access
-  (the gated OBC Control characteristics + the CoC) is denied to any peer that
-  isn't LESC-authenticated, and a new pairing requires the 6-digit passkey shown
-  on the device screen (§8) — physical possession is the gate, so there is **no
-  device-side "clear bond" step**. A new passkey pairing simply replaces the
-  single stored bond.
+- **The Bluetooth switch** (#455): the rider can turn the radio **off** in
+  Settings ▸ Bluetooth. Off = advertising stops and any live connection is
+  dropped; the device vanishes from scans until the switch is turned back on,
+  which resumes the normal lifecycle (fast → slow, exactly as after a boot).
+  The stored bond is **retained** across the off state and across reboots with
+  the radio off. The switch itself persists in the device settings.
+- **Policy — "always just works"**: while the Bluetooth switch is on, the
+  device advertises connectable whenever it is powered and unconnected. There
+  is no advertising timeout and no "pairing mode" gate for reconnection. The
+  device uses a **stable static random address** (derived from `FICR.DEVICEID`)
+  and never rotates it — so the phone, which stores that identity at bonding,
+  silently reconnects on any contact. Once bonded (A8/#455), the device still
+  advertises generally; bonded-data access (the gated OBC Control
+  characteristics + the CoC) is denied to any peer that isn't
+  LESC-authenticated, and **while a bond is stored, new pairing attempts are
+  rejected outright** (§8) — the on-device **Forget phone** action
+  (Settings ▸ Bluetooth, hold-guarded) is the only way to clear the bond and
+  re-open pairing. *(This reverses the original A8 rule, under which a fresh
+  passkey pairing replaced the stored bond.)*
 
 ## 3. GATT control plane
 
@@ -489,12 +497,32 @@ these counters with its own observations.
   bond so the phone's rotating RPA reconnect resolves against the stored peer IRK
   and re-encrypts with the stored LTK — no dialog, no interaction.
 
-- **Single-peer policy**: exactly one bond slot. A fresh passkey pairing
-  **replaces** it — the on-screen passkey (physical possession) is the control
-  against a stranger hijacking the device, so there is no separate device-side
-  "clear bond" gesture. If the phone forgets the device (app H2 + iOS Settings)
-  and re-pairs, the device sees the pairing request against its stale bond,
-  discards it, and stores the new bond — a clean re-pair with a fresh passkey.
+- **Single-peer policy — reject-when-bonded** (#455, reverses the original A8
+  rule): exactly one bond slot, and **while it is occupied the device refuses
+  every new pairing attempt** — whether from a stranger or from a peer claiming
+  the bonded identity. A stored bond can only be cleared by the rider: the
+  hold-guarded **Forget phone** action in Settings ▸ Bluetooth zeroes the bond
+  slot, removes the peer from the host's bond table + resolving list, and drops
+  the connection if that peer is connected. After Forget, the next pairing is
+  open again (passkey display, as at first pairing). Physical possession is
+  thus still the gate — but it now guards the *clear* step instead of the
+  replace step, so a stranger who can see the screen can no longer silently
+  evict the rider's phone by pairing.
+- **Reject mechanics + what the rejected phone sees**: the pairing link is not
+  bondable while a bond is stored (a completed pairing could never persist
+  keys), and the device refuses the attempt at its first SMP surface — it
+  suppresses the passkey display and **drops the link**. The stranger's phone
+  surfaces a generic OS pairing failure; the device screen shows nothing
+  (locked: the "this device is already paired to another phone" message is
+  app-side only). **No distinguishable SMP failure reason crosses the wire**:
+  the host stack auto-answers the SMP Pairing Request before the application
+  sees it (no hook to answer with a chosen reason code such as
+  `Pairing Not Supported`, 0x05), and iOS would not surface an SMP reason code
+  to the app anyway — CoreBluetooth reports only a generic pairing/connection
+  failure. The app must infer "already bonded elsewhere" from context, not
+  from a code (see the iOS epic's already-bonded UX issue).
+  If the phone forgets the device (app H2 + iOS Settings) its re-pair attempt
+  is rejected like any other until the rider runs Forget phone on the device.
 
 - **Reconnect policy**: the device keeps a **stable static random address** and
   does **not** enable device-side privacy/RPA — the phone stores that identity
