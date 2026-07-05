@@ -88,6 +88,16 @@ pub(crate) fn status() -> Status {
     STATUS.lock(|c| c.get())
 }
 
+/// The link distilled into the app-facing [`obc_app::BleStatus`] (epic #447, P1): connected + the
+/// pairing passkey. The ride loop reads this each pass and feeds it through
+/// [`App::set_ble_status`](obc_app::App::set_ble_status), so `obc-app` sees the link in its own
+/// vocabulary without any `ble` type crossing the seam. `Init`/`Advertising` both read as *not*
+/// connected.
+pub fn app_ble_status() -> obc_app::BleStatus {
+    let s = status();
+    obc_app::BleStatus { connected: s.state == LinkState::Connected, passkey: s.passkey }
+}
+
 /// The battery percent for the BAS characteristic, read by `battery_task` to seed + notify. A
 /// constant [`StubFuelGauge`]-matching 75 % until the real nPM1300 fuel gauge is wired across the
 /// plane seam (the ride loop owns the gauge; feeding it into BAS is a #270 follow-up).

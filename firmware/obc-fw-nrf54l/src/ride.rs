@@ -287,6 +287,20 @@ pub(crate) async fn run_app(
         }
         app.advance_animations(InputClock(now));
 
+        // ── BLE → app seam (epic #447), once per pass, cheap ──
+        // Feed the link snapshot (connected + passkey) — a couple of atomic reads distilled to the
+        // app's own `BleStatus`; `set_ble_status` compares against the last and dirties nothing on the
+        // steady state. Then drain the object-store movement edge and ring `notify_store_changed` per
+        // commit/delete (the same edge that notifies the phone). Both `ble`-only: the map build has no
+        // radio and no `object_store`, so the app simply stays disconnected there.
+        #[cfg(feature = "ble")]
+        {
+            app.set_ble_status(crate::ble::app_ble_status());
+            for _ in 0..crate::object_store::take_store_changed() {
+                app.notify_store_changed();
+            }
+        }
+
         // This frame's hold-bulge state, sampled once: the live row span on both backends (the
         // present goes around it); the dirty edge only on the FLPR (whose map plane owns the bulge
         // re-push — on ST7789 the input/overlay plane consumes that edge itself).
