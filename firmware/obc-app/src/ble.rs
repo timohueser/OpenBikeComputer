@@ -5,8 +5,8 @@
 //! host — the board's BLE plane, or the simulator's control panel — distils its link into a
 //! [`BleStatus`] and pushes it through [`App::set_ble_status`](crate::App::set_ble_status); the
 //! object-store commit/delete paths ring [`App::notify_store_changed`](crate::App::notify_store_changed).
-//! The app's own consumers (the connected indicator, the Bluetooth settings screen's status line;
-//! the passkey card and live catalog in later PRs) read only these app-side types.
+//! The app's own consumers (the connected indicator, the Bluetooth settings screen's status line,
+//! the passkey card, the live catalog) read only these app-side types.
 
 /// The radio's link phase, in app vocabulary — what the Bluetooth settings screen's status line
 /// shows (P8, #455). Three states, deliberately coarser than the board's own `LinkState`: the UI
@@ -36,9 +36,11 @@ pub struct BleStatus {
     /// The radio's link phase. [`Connected`](BleLink::Connected) drives the connected indicator
     /// (menu title bar + Home); the full three states drive the Bluetooth screen's status line.
     pub link: BleLink,
-    /// The 6-digit LESC passkey to show while pairing, or `None` otherwise. **Plumbed but not yet
-    /// consumed** — the passkey card is P2 (#449); until then this rides the seam so the board's
-    /// publish path is complete and the sim can inject it.
+    /// The 6-digit LESC passkey to show while pairing, or `None` otherwise. Drives the passkey
+    /// card (P2, #449): [`App::set_ble_status`](crate::App::set_ble_status) opens a
+    /// [`PasskeyScreen`](crate::screen::PasskeyScreen) when this goes `Some` and closes it when it
+    /// clears. The board publishes it from the pairing exchange; the sim injects it from the
+    /// control panel.
     pub passkey: Option<u32>,
     /// A bond is stored — the Bluetooth screen's "Paired: yes/no" row (deliberately no phone name).
     /// The board reads its RRAM bond slot; the sim injects it from the control panel.
