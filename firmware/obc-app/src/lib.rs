@@ -29,7 +29,7 @@ pub mod wall_clock;
 
 pub use activity::{Activity, Mode, TrackAction};
 pub use app::{App, AppState, CameraMode, Pan, PanAxis};
-pub use ble::BleStatus;
+pub use ble::{BleLink, BleStatus};
 pub use breadcrumb::Breadcrumb;
 pub use dirty::Dirty;
 pub use hal::{

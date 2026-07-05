@@ -428,6 +428,12 @@ pub struct Settings {
     /// The user-facing device name (empty = factory `OBC-XXXX`). Written by the companion app over
     /// BLE, not any on-device screen — it lives here so the one settings blob persists it.
     pub device_name: DeviceName,
+    /// The Bluetooth radio switch (the Bluetooth screen's toggle, epic #447 P8). Off = stop
+    /// advertising + drop any live connection; on = the normal advertising lifecycle. **Device-only**
+    /// — deliberately *not* one of the BLE-writable fields [`adopt_ble_fields`](Settings::adopt_ble_fields)
+    /// pulls across (a phone must never be able to switch the radio out from under the rider, and
+    /// couldn't turn it back on). Default **on**.
+    pub ble_enabled: bool,
 }
 
 impl Default for Settings {
@@ -442,6 +448,7 @@ impl Default for Settings {
             stat_fields: StatFieldList::default(),
             stat_cycle_s: STAT_CYCLE_DEFAULT,
             device_name: DeviceName::EMPTY,
+            ble_enabled: true,
         }
     }
 }
@@ -488,7 +495,8 @@ impl Settings {
 
 /// Codec version — bump when the byte layout changes; [`decode`] rejects any other version (the
 /// host then falls back to [`Settings::default`], i.e. settings reset on a format change).
-pub const VERSION: u8 = 3;
+/// v4 appended the `ble_enabled` byte (#455).
+pub const VERSION: u8 = 4;
 
 /// Fixed encoded length: the [`PAYLOAD_LEN`] CRC-covered bytes + a 2-byte CRC, **rounded up to the
 /// device RRAM's 16-byte write line** (the firmware store writes whole 128-bit lines) — so a codec
@@ -497,13 +505,15 @@ pub const VERSION: u8 = 3;
 pub const ENCODED_LEN: usize = (PAYLOAD_LEN + 2).div_ceil(16) * 16;
 
 /// Payload size before the trailing CRC. The CRC follows immediately at this offset.
-const PAYLOAD_LEN: usize = NAME_OFF + 1 + DEVICE_NAME_MAX;
+const PAYLOAD_LEN: usize = BLE_OFF + 1;
 /// Byte offset of the field selection (right after the 14-byte head).
 const STAT_FIELDS_OFF: usize = 14;
 /// Byte offset of `stat_cycle_s` (right after the field selection).
 const STAT_CYCLE_OFF: usize = STAT_FIELDS_OFF + 1 + MAX_STAT_FIELDS;
 /// Byte offset of the device name (right after `stat_cycle_s`).
 const NAME_OFF: usize = STAT_CYCLE_OFF + 2;
+/// Byte offset of the `ble_enabled` flag (the v4 tail, right after the device name).
+const BLE_OFF: usize = NAME_OFF + 1 + DEVICE_NAME_MAX;
 
 /// CRC-16/CCITT-FALSE (poly `0x1021`, init `0xFFFF`) over `data` — small, table-free, and
 /// plenty to reject a blank/half-written blob. Guards the codec on both stores.
@@ -543,6 +553,8 @@ pub fn encode(s: &Settings) -> [u8; ENCODED_LEN] {
     let name = s.device_name.as_str().as_bytes();
     b[NAME_OFF] = name.len() as u8;
     b[NAME_OFF + 1..NAME_OFF + 1 + name.len()].copy_from_slice(name);
+    // v4 tail: the Bluetooth radio switch.
+    b[BLE_OFF] = s.ble_enabled as u8;
     let crc = crc16(&b[0..PAYLOAD_LEN]);
     b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
     b
@@ -581,6 +593,7 @@ pub fn decode(bytes: &[u8]) -> Option<Settings> {
             n if n <= DEVICE_NAME_MAX => DeviceName::from_bytes(&b[NAME_OFF + 1..NAME_OFF + 1 + n]),
             _ => DeviceName::EMPTY,
         },
+        ble_enabled: b[BLE_OFF] != 0,
     };
     s.sanitize();
     Some(s)
@@ -690,8 +703,26 @@ mod tests {
             stat_fields,
             stat_cycle_s: 8,
             device_name: DeviceName::from_str_lossy("Timo's OBC"),
+            ble_enabled: false,
         };
         assert_eq!(decode(&encode(&s)), Some(s));
+    }
+
+    /// The v4 tail: the Bluetooth switch round-trips, defaults **on**, and is device-only —
+    /// [`adopt_ble_fields`] must never pull it across, so a BLE Config write can't switch the
+    /// radio out from under the rider (or strand it off with the link already gone).
+    #[test]
+    fn ble_enabled_round_trips_and_is_device_only() {
+        assert!(Settings::default().ble_enabled, "the radio defaults on");
+        assert_eq!(VERSION, 4, "the ble_enabled tail is the v4 layout (settings reset on flash)");
+        let s = Settings { ble_enabled: false, ..Settings::default() };
+        assert_eq!(decode(&encode(&s)), Some(s), "the off state round-trips");
+
+        // Device-only across the #456 coherence paths: the phone's blob says on, ours stays off.
+        let mut app = Settings { ble_enabled: false, ..Settings::default() };
+        app.adopt_ble_fields(&Settings { units: Units::Imperial, ..Settings::default() });
+        assert!(!app.ble_enabled, "adopt_ble_fields leaves the radio switch alone");
+        assert_eq!(app.units, Units::Imperial, "while the BLE-owned fields still land");
     }
 
     /// The v3 device-name tail: set → truncate on a char boundary at the 48-byte cap, and a
@@ -1053,6 +1084,7 @@ mod tests {
         let mut store = FakeStore::new(&boot);
         let mut app = boot;
         app.fix_interval_s = 9; // a pending on-device edit the app will save this frame
+        app.ble_enabled = false; // and a pending radio-off toggle (device-only, like the interval)
 
         // Phone writes units=imperial + a rename. `apply_config`: object-store cache + RRAM.
         let mut objstore = store.load();
@@ -1073,6 +1105,7 @@ mod tests {
         assert_eq!(persisted.units, Units::Imperial, "the phone's units survive the app save (no clobber)");
         assert_eq!(persisted.device_name.as_str(), "Ridgeline", "the phone's rename survives too");
         assert_eq!(persisted.fix_interval_s, 9, "the app's own device-only edit still persists");
+        assert!(!persisted.ble_enabled, "the radio-off toggle survives the coherence path (device-only)");
     }
 
     /// The clobber *without* the fix, pinned as the exact bug #456 removes: if the app saves its

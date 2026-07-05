@@ -50,7 +50,11 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 "$SIM" "$MAP" --boot --script "B l p r r p"  --png "$OUT/stats-settings.png"
 "$SIM" "$MAP" --boot --script "B l p r r p r p" --png "$OUT/fields.png"
 "$SIM" "$MAP" --boot --script "B l p r r r p"   --png "$OUT/power.png"
-"$SIM" "$MAP" --boot --script "B l p r r r r p p H" --png "$OUT/reset-hold.png"
+# Bluetooth screen (#455): the main state (radio on, advertising, a stored bond -> Paired: yes) and
+# the Forget-phone guarded hold mid-charge (select the Forget row, then a partial hold fills it).
+"$SIM" "$MAP" --boot --ble-paired --script "B l p r r r r p"     --png "$OUT/bluetooth.png"
+"$SIM" "$MAP" --boot --ble-paired --script "B l p r r r r p r H" --png "$OUT/bluetooth-forget-hold.png"
+"$SIM" "$MAP" --boot --script "B l p r r r r r p p H" --png "$OUT/reset-hold.png"
 # Riding flows go through the Route overview now: pick (p) → overview → START (p) → Map.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p"     --png "$OUT/routeoverview.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p"   --gpx "$GPX" --at 30 --png "$OUT/map.png"
@@ -66,4 +70,4 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 # injects the passkey exactly as the sim control-panel "Pairing" toggle does; the card auto-opens.
 "$SIM" "$MAP" --boot --ble-passkey 42 --png "$OUT/passkey-card.png"
 
-echo "ui-snapshots: 23 screens rendered into $OUT/"
+echo "ui-snapshots: 25 screens rendered into $OUT/"
