@@ -42,6 +42,10 @@ public final class UploadSheetModel {
 
     public private(set) var phase: Phase = .uploading
     public private(set) var progress: TransferProgress
+    /// Why the transfer failed — set alongside `.failed` so the failure copy can
+    /// speak to the actual cause (storage-full vs. a generic no-answer failure).
+    /// `nil` in every non-failed phase.
+    public private(set) var failure: DeviceError?
     /// Flips when the sheet should go away — a finished cancel, F₂'s Done /
     /// auto-dismiss, or Close on a failure. The view observes and dismisses.
     public private(set) var shouldDismiss = false
@@ -112,6 +116,24 @@ public final class UploadSheetModel {
         )
     }
 
+    // MARK: Failure copy (design — Couldn't upload)
+
+    /// The failure card's heading — cause-specific so a storage-full reject reads
+    /// as a device-storage problem, not a lost link.
+    public var failedTitle: String {
+        failure == .storageFull ? "Device storage full" : "Couldn't upload"
+    }
+
+    /// The failure card's body. Storage-full gets actionable copy (delete routes
+    /// on the device); everything else keeps the "device didn't answer" framing.
+    /// The storage-full line deliberately says nothing about *updating* an
+    /// existing route — the device exempts replace-by-id uploads from the cap.
+    public var failedMessage: String {
+        failure == .storageFull
+            ? "\(deviceName)'s route storage is full. Delete routes on the device to make room, then try again."
+            : "\(deviceName) didn't answer. Check that it's awake and nearby, then try again."
+    }
+
     // MARK: Lifecycle
 
     /// Start the transfer and watch it (call once, from `.task`).
@@ -171,7 +193,8 @@ public final class UploadSheetModel {
                 shouldDismiss = true
             case .canceled:
                 shouldDismiss = true
-            case .failed:
+            case .failed(let error):
+                failure = error
                 phase = .failed
             }
         })
