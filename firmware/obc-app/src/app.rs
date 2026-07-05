@@ -473,9 +473,10 @@ pub struct App {
     /// when a POI list opens, so re-entering a category re-queries.
     poi_scratch: screen::PoiScratch,
     /// The live BLE pairing passkey ([`BleStatus::passkey`](crate::BleStatus)), fed by
-    /// [`set_ble_status`](App::set_ble_status). **Plumbed but not yet drawn** — the passkey card is
-    /// P2 (#449). Held off `AppState` so plumbing it never gates a map redraw; [`ble_passkey`](App::ble_passkey)
-    /// exposes it for that PR (and for tests to observe the seam carrying it).
+    /// [`set_ble_status`](App::set_ble_status) and driving the passkey card (P2, #449) via
+    /// [`reconcile_passkey_card`](App::reconcile_passkey_card). Held off `AppState` so feeding it
+    /// never gates a map redraw; [`ble_passkey`](App::ble_passkey) exposes it for tests to observe
+    /// the seam carrying it.
     ble_passkey: Option<u32>,
     /// Count of [`notify_store_changed`](App::notify_store_changed) calls not yet acted on. The host
     /// drains it once per pass via [`take_store_changed`](App::take_store_changed) and answers a
