@@ -5,9 +5,12 @@
 //! than checking in a binary fixture keeps the Rust and Python encoders pinned to one layout: if
 //! either drifts, these break. `obcm-testkit` shares the layout with `obc-render`'s priority test.
 
-use obc_reader::{BBox, Error, Kind, MapCache, MapTables, Reader, SliceSource, MAX_FEAT_PTS, MAX_FEAT_RINGS};
+use obc_reader::{
+    BBox, Error, Kind, MapCache, MapTables, Reader, SliceSource, HEADER_LEN, MAX_FEAT_PTS, MAX_FEAT_RINGS,
+};
 use obcm_testkit::{
-    build_file, pack_line, pack_line16, pack_poly_hole, pad, LodSpec, Style, BRANCH_BIT, EMPTY_LEAF, MARKER,
+    build_file, empty_poi_directory, pack_line, pack_line16, pack_poi_chunk, pack_poi_record, pack_poly_hole, pad,
+    poi_directory, LodSpec, PoiCat, Style, BRANCH_BIT, EMPTY_LEAF, MARKER, POI_RECORD_LEN,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,7 +91,7 @@ fn header_and_lod_table() {
     let tables = MapTables::parse(&src).unwrap();
     let r = Reader::new(&src, &tables, &cache);
 
-    assert_eq!(r.version, 5);
+    assert_eq!(r.version, 6);
     assert_eq!(r.marker_color, MARKER);
     assert_eq!(r.bbox.min_lon, 0);
     assert_eq!(r.bbox.min_lat, 0);
@@ -342,7 +345,7 @@ fn rejects_bad_input() {
     assert_eq!(err(&bytes), Error::BadMagic);
 
     let mut bytes = two_lod_file();
-    bytes[4] = 4; // v4 (and earlier) no longer supported — only v5 is read
+    bytes[4] = 5; // v5 (and earlier) no longer supported — only v6 is read
     assert_eq!(err(&bytes), Error::BadVersion);
 }
 
@@ -546,4 +549,192 @@ fn walk_caps_depth_on_forward_chain() {
     let mut seen = 0;
     r.for_each_chunk(0, &r.bbox, |_cid, _node| seen += 1);
     assert_eq!(seen, 0, "the depth cap must prune the over-cap leaf before it is reached");
+}
+
+// === POI section (v6, spec §7) — byte-pinned contract =======================
+//
+// These pin the new v6 layout explicitly: the 36-byte header + its POI-section
+// offset field, the always-present POI directory (empty + populated), a POI
+// record's exact 32 bytes, the 0xFF sentinel + padding, and the v5-rejected guard.
+// Where `build_file` writes an empty directory, the populated-directory test
+// hand-assembles the section so the record + index bytes are pinned, not derived.
+
+/// `build_file` (empty-POI) is a valid v6 map: 36-byte header, a POI-section offset
+/// pointing just past the LOD payload, and a six-category empty directory.
+#[test]
+fn header_is_36_bytes_with_poi_offset() {
+    let bytes = two_lod_file();
+
+    // Version byte is 6; the style table follows the header, so the style offset equals the 36-byte
+    // header length.
+    assert_eq!(HEADER_LEN, 36);
+    assert_eq!(bytes[4], 6);
+    assert_eq!(u32::from_le_bytes(bytes[21..25].try_into().unwrap()) as usize, HEADER_LEN);
+
+    // The POI section offset lives at header byte 32 (right after the 2-byte marker at 30) and is
+    // never 0 — the section is always present.
+    let poi_off = u32::from_le_bytes(bytes[32..36].try_into().unwrap()) as usize;
+    assert!(poi_off >= HEADER_LEN && poi_off < bytes.len(), "POI offset {poi_off} points into the file");
+
+    // The directory there declares six categories and the shared 512-byte chunk size.
+    assert_eq!(bytes[poi_off], 6, "category_count");
+    assert_eq!(u16::from_le_bytes(bytes[poi_off + 1..poi_off + 3].try_into().unwrap()), 512, "shared chunk_size");
+}
+
+/// The parsed empty directory: six categories, ids 1..=6, all empty. This is what a
+/// map with no POIs carries — always present, never a zero offset.
+#[test]
+fn empty_poi_directory_parses_six_empty_categories() {
+    let bytes = two_lod_file();
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let cache = MapCache::new();
+    let r = Reader::new(&src, &tables, &cache);
+
+    let dir = r.poi_directory();
+    assert_eq!(dir.chunk_size, 512);
+    assert_eq!(dir.entries.len(), 6);
+    for (k, e) in dir.entries.iter().enumerate() {
+        assert_eq!(e.category_id, (k + 1) as u8, "category ids are 1..=6 in order");
+        assert!(e.is_empty(), "category {} is empty in a no-POI map", e.category_id);
+        assert_eq!(e.node_count, 0);
+        assert_eq!(e.chunk_count, 0);
+    }
+}
+
+/// Hand-assemble a v6 file whose POI section carries **one populated category** (id
+/// 3, Accommodation) with a two-record chunk, the other five empty. Pins the record
+/// bytes, the 0xFF sentinel + padding, the single-leaf index, and that the parsed
+/// directory reports the right counts + offsets.
+#[test]
+fn populated_poi_category_round_trips_with_record_layout() {
+    // Reuse build_file for everything up to (but not including) the POI section, then
+    // replace its trailing empty directory with a populated one. build_file's POI
+    // section starts at the offset stored in the header (byte 32).
+    let base = build_file(
+        GLOBAL,
+        STYLES,
+        &[LodSpec {
+            max_mpp: f32::INFINITY,
+            index: vec![0],
+            chunks: vec![pad(pack_line(1, 0, 0, &[(1, 1)]), CS)],
+            chunk_size: CS,
+        }],
+    );
+    let poi_off = u32::from_le_bytes(base[32..36].try_into().unwrap()) as usize;
+
+    // Two accommodation records (subtype 7 = hotel, subtype 11 = wilderness hut). One
+    // named, one unnamed — exercises Name Len 0 vs a stored ASCII name.
+    let rec_a = pack_poi_record(48_000_000, 7_800_000, 7, "Hotel Krone");
+    let rec_b = pack_poi_record(48_010_000, 7_810_000, 11, "");
+    let chunk = pack_poi_chunk(&[rec_a, rec_b], 512);
+
+    // Directory: category 3 populated (1-node index → chunk 0), the rest empty. The
+    // populated index lives right after the directory; its chunk right after the index.
+    let dir_len = 3 + 6 * 13;
+    let cat3_index_off = poi_off + dir_len;
+    let cat3_chunk_off = cat3_index_off + 4; // one u32 node
+    let after = (cat3_chunk_off + chunk.len()) as u32; // where empty cats' zero-length index "starts"
+    let cats: Vec<PoiCat> = (1..=6u8)
+        .map(|id| {
+            if id == 3 {
+                PoiCat { category_id: 3, index_offset: cat3_index_off as u32, node_count: 1, chunk_count: 1 }
+            } else {
+                PoiCat { category_id: id, index_offset: after, node_count: 0, chunk_count: 0 }
+            }
+        })
+        .collect();
+
+    // Assemble: base up to the POI offset, then [directory][cat3 index][cat3 chunk].
+    let mut bytes = base[..poi_off].to_vec();
+    bytes.extend_from_slice(&poi_directory(512, &cats));
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // cat 3's single leaf → chunk 0
+    bytes.extend_from_slice(&chunk);
+
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let cache = MapCache::new();
+    let r = Reader::new(&src, &tables, &cache);
+
+    let dir = r.poi_directory();
+    assert_eq!(dir.chunk_size, 512);
+    assert_eq!(dir.entries.len(), 6);
+    let cat3 = dir.entries.iter().find(|e| e.category_id == 3).expect("category 3");
+    assert!(!cat3.is_empty());
+    assert_eq!(cat3.node_count, 1);
+    assert_eq!(cat3.chunk_count, 1);
+    assert_eq!(cat3.index_offset, cat3_index_off);
+    assert_eq!(cat3.data_start(), Some(cat3_chunk_off), "chunks start after the 1-node index");
+    // Every other category is still present and empty.
+    assert_eq!(dir.entries.iter().filter(|e| e.is_empty()).count(), 5);
+
+    // Pin the first record's exact 32 bytes (spec §7.3): lat, lon, subtype, name_len, name, reserved.
+    let rec = &bytes[cat3_chunk_off..cat3_chunk_off + POI_RECORD_LEN];
+    assert_eq!(i32::from_le_bytes(rec[0..4].try_into().unwrap()), 48_000_000, "lat");
+    assert_eq!(i32::from_le_bytes(rec[4..8].try_into().unwrap()), 7_800_000, "lon");
+    assert_eq!(rec[8], 7, "subtype (hotel)");
+    assert_eq!(rec[9], "Hotel Krone".len() as u8, "name_len");
+    assert_eq!(&rec[10..10 + "Hotel Krone".len()], b"Hotel Krone", "stored ASCII name");
+    assert!(rec[10 + "Hotel Krone".len()..30].iter().all(|&b| b == 0xFF), "unused name tail is 0xFF");
+    assert_eq!(&rec[30..32], &[0xFF, 0xFF], "reserved bytes are 0xFF");
+
+    // The unnamed second record: Name Len 0, whole 20-byte name field 0xFF.
+    let rec2 = &bytes[cat3_chunk_off + POI_RECORD_LEN..cat3_chunk_off + 2 * POI_RECORD_LEN];
+    assert_eq!(rec2[8], 11, "subtype (wilderness hut)");
+    assert_eq!(rec2[9], 0, "unnamed ⇒ name_len 0");
+    assert!(rec2[10..30].iter().all(|&b| b == 0xFF), "unnamed record's name field is all 0xFF");
+
+    // The 0xFF subtype sentinel ends the records (byte 8 of the 3rd record slot), and the chunk
+    // pads with 0xFF to 512.
+    let sentinel_at = cat3_chunk_off + 2 * POI_RECORD_LEN + 8;
+    assert_eq!(bytes[sentinel_at], 0xFF, "a 0xFF subtype byte ends the records");
+    assert!(
+        bytes[cat3_chunk_off + 2 * POI_RECORD_LEN..cat3_chunk_off + 512].iter().all(|&b| b == 0xFF),
+        "chunk padded to 512 with 0xFF"
+    );
+}
+
+/// A v5 file (version byte 5) is rejected — the reader accepts v6 only. Forging the
+/// version byte alone is enough; the rest of the bytes never get parsed.
+#[test]
+fn v5_file_is_rejected() {
+    let mut bytes = two_lod_file();
+    bytes[4] = 5; // downgrade the version byte to v5
+    assert!(matches!(MapTables::parse(&SliceSource(&bytes)), Err(Error::BadVersion)));
+}
+
+/// A directory whose `category_count` exceeds the reader's bound, or whose
+/// `chunk_size` exceeds the POI cap, is a corrupt header ⇒ rejected (not an
+/// unbounded parse). Both are the POI analogue of the LOD-table overflow guards.
+#[test]
+fn poi_directory_rejects_out_of_bound_count_and_chunk_size() {
+    let bytes = two_lod_file();
+    let poi_off = u32::from_le_bytes(bytes[32..36].try_into().unwrap()) as usize;
+
+    // category_count past POI_MAX_CATEGORIES (8).
+    let mut forged = bytes.clone();
+    forged[poi_off] = 9;
+    assert!(matches!(MapTables::parse(&SliceSource(&forged)), Err(Error::BadOffset)), "count 9 > cap");
+
+    // chunk_size past POI_MAX_CHUNK_BYTES (4096).
+    let mut forged = bytes.clone();
+    forged[poi_off + 1..poi_off + 3].copy_from_slice(&8192u16.to_le_bytes());
+    assert!(matches!(MapTables::parse(&SliceSource(&forged)), Err(Error::BadOffset)), "chunk_size 8192 > cap");
+
+    // A POI section offset past EOF is likewise rejected (always-present section, no zero-sentinel).
+    let mut forged = bytes.clone();
+    let past = bytes.len() as u32;
+    forged[32..36].copy_from_slice(&past.to_le_bytes());
+    assert!(matches!(MapTables::parse(&SliceSource(&forged)), Err(Error::BadOffset)), "POI offset at EOF");
+}
+
+/// The `empty_poi_directory` builder and the reader agree on the empty layout — a
+/// direct pin of the testkit helper the other suites lean on.
+#[test]
+fn empty_poi_directory_builder_matches_reader() {
+    let dir = empty_poi_directory(1000);
+    // count(1) + chunk_size(2) + 6 × 13-byte entries.
+    assert_eq!(dir.len(), 3 + 6 * 13);
+    assert_eq!(dir[0], 6);
+    assert_eq!(u16::from_le_bytes([dir[1], dir[2]]), 512);
 }
