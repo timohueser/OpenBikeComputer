@@ -227,24 +227,31 @@ struct PairFailedView: View {
                     }
                     .padding(.bottom, 24)
 
-                Text(title)
+                Text(failure.title)
                     .font(.obcSerif(size: 25))
                     .foregroundStyle(OBCTheme.ink)
                     .multilineTextAlignment(.center)
                     .accessibilityIdentifier("pair.failedTitle")
                     .padding(.bottom, 8)
 
-                Text(reason)
+                Text(failure.reason)
                     .font(.system(size: 14))
                     .foregroundStyle(OBCTheme.inkSoft)
                     .multilineTextAlignment(.center)
                     .lineSpacing(3)
                     .frame(maxWidth: 250)
-                    .padding(.bottom, 20)
+                    .padding(.bottom, failure == .timeout ? 20 : 0)
+                    .accessibilityIdentifier("pair.failedReason")
 
-                VStack(spacing: 10) {
-                    checkItem("The device is showing **“pairing”** on its screen.")
-                    checkItem("It's a few metres away, not asleep.")
+                // The scan-recovery hints only make sense for a timeout; the
+                // `.rejected` combined copy carries its own recovery inline
+                // (retry the passkey / Forget phone on the device), so no hint
+                // rows there — no dead rows (#461).
+                if failure == .timeout {
+                    VStack(spacing: 10) {
+                        checkItem("The device is showing **“pairing”** on its screen.")
+                        checkItem("It's a few metres away, not asleep.")
+                    }
                 }
             }
         } actions: {
@@ -254,20 +261,6 @@ struct PairFailedView: View {
             Button("Pairing help", action: onHelp)
                 .buttonStyle(.obcGhost)
                 .accessibilityIdentifier("pair.help")
-        }
-    }
-
-    private var title: String {
-        switch failure {
-        case .timeout: "Couldn't find your OBC"
-        case .rejected: "Pairing didn't finish"
-        }
-    }
-
-    private var reason: String {
-        switch failure {
-        case .timeout: "We scanned for 30 seconds and didn't see it. A couple of things to check:"
-        case .rejected: "The pairing request didn't go through. A couple of things to check:"
         }
     }
 

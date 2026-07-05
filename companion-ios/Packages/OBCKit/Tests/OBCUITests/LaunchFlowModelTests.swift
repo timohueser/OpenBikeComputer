@@ -204,6 +204,65 @@ final class LaunchFlowModelTests: XCTestCase {
         await waitFor("D5 rejected") { model.phase == .pairFailed(.rejected) }
     }
 
+    /// #461: an **already-bonded** refusal is indistinguishable on the wire from a
+    /// declined passkey (spec §8 / `OBCProtocol.md`) — the device suppresses its
+    /// passkey and drops the link, and CoreBluetooth surfaces only a generic
+    /// `DeviceError.pairingFailed`. So there is nothing to classify: it must land
+    /// on the *same* `.pairFailed(.rejected)` screen the declined passkey does,
+    /// which is why that one screen carries the combined copy. This pins that the
+    /// generic transport pairing failure maps to `.rejected` (not a new case).
+    func testGenericPairingFailureLandsOnRejectedForBondedCase() async {
+        let (model, _) = makeModel(.pairingRejected)
+        model.start()
+        model.startPairing()
+        await waitFor("discovered row") {
+            model.phase == .scanning(discovered: .init(name: "Trailhead"))
+        }
+        model.confirmPairing()
+        await waitFor("generic pairing failure → rejected") {
+            model.phase == .pairFailed(.rejected)
+        }
+    }
+
+    // MARK: D5 copy (#461)
+
+    /// The `.rejected` screen's copy is *combined*: it must name the
+    /// already-paired possibility and its recovery (Forget phone on the device)
+    /// **without asserting** which failure happened, while still offering the
+    /// passkey retry. Copy lives on the model so it's testable without rendering.
+    func testRejectedCopyCoversBothPasskeyAndAlreadyBonded() {
+        let reason = LaunchFlowModel.PairingFailure.rejected.reason
+
+        // Doesn't assert a single cause — offers the passkey retry AND names the
+        // already-paired possibility conditionally ("If … / If …").
+        XCTAssertTrue(reason.contains("passkey"), "must mention the passkey path")
+        XCTAssertTrue(
+            reason.localizedCaseInsensitiveContains("already paired to another phone"),
+            "must name the already-bonded possibility"
+        )
+        XCTAssertTrue(
+            reason.contains("If the passkey was wrong") && reason.contains("If the device is already paired"),
+            "must present both as possibilities, not assert one"
+        )
+
+        // Names the concrete bonded-case recovery (#455): Forget phone on the device.
+        XCTAssertTrue(
+            reason.contains("Forget phone"),
+            "must point at Forget phone as the re-pair recovery"
+        )
+
+        XCTAssertEqual(LaunchFlowModel.PairingFailure.rejected.title, "Pairing didn't finish")
+    }
+
+    /// The timeout variant is untouched — still its own scan copy, distinct from
+    /// the rejected combined copy.
+    func testTimeoutCopyUnchanged() {
+        let timeout = LaunchFlowModel.PairingFailure.timeout
+        XCTAssertEqual(timeout.title, "Couldn't find your OBC")
+        XCTAssertTrue(timeout.reason.contains("scanned for 30 seconds"))
+        XCTAssertFalse(timeout.reason.contains("Forget phone"))
+    }
+
     func testScanWindowExpiryIsATimeout() async {
         let (model, control) = makeModel(
             .noDevice,

@@ -34,9 +34,39 @@ public final class LaunchFlowModel {
     public enum PairingFailure: Equatable, Sendable {
         /// Scan ended without finding the device (`DeviceError.deviceNotFound`).
         case timeout
-        /// Found it, but pairing/connection didn't complete (declined sheet,
-        /// link error).
+        /// Found it, but pairing/connection didn't complete. Covers both a
+        /// declined / wrong passkey **and** the device refusing because it's
+        /// already bonded to another phone (#455): the device suppresses its
+        /// passkey and drops the link, and no distinguishable SMP reason reaches
+        /// the app — CoreBluetooth reports only a generic pairing/connection
+        /// failure (spec §8, `OBCProtocol.md`). So this one case carries the
+        /// combined copy that names the already-paired possibility without
+        /// asserting it (#461).
         case rejected
+
+        /// D5 headline for this failure. Lives on the model (not the view) so the
+        /// copy is testable without a rendered SwiftUI hierarchy.
+        public var title: String {
+            switch self {
+            case .timeout: "Couldn't find your OBC"
+            case .rejected: "Pairing didn't finish"
+            }
+        }
+
+        /// D5 body copy. For `.rejected` this is deliberately *combined*: it can't
+        /// tell a declined passkey from an already-bonded refusal (they arrive
+        /// identically over the wire), so it offers both recoveries without
+        /// claiming which one happened — retry the passkey, or, if the device is
+        /// already paired to another phone, clear that bond first with Forget
+        /// phone on the device.
+        public var reason: String {
+            switch self {
+            case .timeout:
+                "We scanned for 30 seconds and didn't see it. A couple of things to check:"
+            case .rejected:
+                "Pairing didn't go through. If the passkey was wrong, try again. If the device is already paired to another phone, use Forget phone in its Bluetooth settings, then pair again."
+            }
+        }
     }
 
     /// Why the radio is unusable — H8 (off) vs the post-denial H7 state.
