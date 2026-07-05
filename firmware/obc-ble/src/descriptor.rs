@@ -161,6 +161,8 @@ pub enum TransferStatus {
     NotFound = 4,
     /// A transfer is already active.
     Busy = 5,
+    /// The route catalog is full — a new-route upload was rejected at descriptor-open time.
+    StorageFull = 6,
 }
 
 impl TransferStatus {
@@ -176,8 +178,35 @@ impl TransferStatus {
             3 => Self::Error,
             4 => Self::NotFound,
             5 => Self::Busy,
+            6 => Self::StorageFull,
             other => return Err(DescriptorError::UnknownStatus(other)),
         })
+    }
+
+    /// The descriptor-open reject rule for a route **upload**, before any byte streams (issue #452).
+    ///
+    /// A *new* upload — id [`TransferControl::NEW_OBJECT_ID`] (`0xFFFF`) or a named id the device
+    /// doesn't hold — grows the catalog, so it is refused when the store can't index another object
+    /// (`catalog_full`: the route table is at `MAX_ROUTES` or the durable id space is exhausted):
+    ///
+    /// - new + full → [`StorageFull`](Self::StorageFull) — the phone tells the rider to free space.
+    /// - named-but-unknown id with room to spare → [`NotFound`](Self::NotFound) — a real client error.
+    /// - a *replace-by-id* of an existing route (`id_known`) reuses its slot → **exempt**; `None`
+    ///   (proceed), even at the cap. Updating the actively-navigated route must never hit storage-full.
+    ///
+    /// `None` means "no reject at this stage" — the caller proceeds to arm the transfer.
+    pub const fn upload_open_reject(object_id: u16, id_known: bool, catalog_full: bool) -> Option<Self> {
+        let is_new = object_id == TransferControl::NEW_OBJECT_ID || !id_known;
+        if !is_new {
+            return None; // replace-by-id: exempt from the cap
+        }
+        if catalog_full {
+            return Some(Self::StorageFull);
+        }
+        if object_id != TransferControl::NEW_OBJECT_ID {
+            return Some(Self::NotFound); // named-but-unknown id, room to spare
+        }
+        None
     }
 }
 
