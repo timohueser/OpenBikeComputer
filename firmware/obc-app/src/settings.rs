@@ -586,6 +586,89 @@ pub fn decode(bytes: &[u8]) -> Option<Settings> {
     Some(s)
 }
 
+// ==================== durable object-id high-water marks (#450) ====================
+//
+// The device names stored objects by durable `u16` ids (`RT{id}.OBR` routes, `RD{id}.ORD` rides);
+// the phone persists those ids (`deviceObjectID`, ride synced/tombstone sets), so an id must
+// **never be reused** — even after the file it named is deleted and a reboot re-scans the card.
+// `scan-max + 1` alone re-issues a deleted id; these high-water marks are the durable floor:
+// one CRC-checked 16-byte RRAM line holding the next fresh id per namespace, bumped on every
+// assignment. Allocation = `max(scan_max + 1, stored_next)`.
+//
+// The codec lives here — beside the settings blob codec, the established precedent — because the
+// board crate is target-only: encode/decode/torn-line semantics must be host-testable.
+
+/// The id high-water line's fixed length: one RRAM write line (16 bytes), like the bond and
+/// boot-counter lines. Layout: `magic(4) · version(1) · pad(1) · next_route_id u16 LE ·
+/// next_ride_id u16 LE · pad(2) · crc16 LE · pad(2)` — CRC-16 over bytes `[0..12]`.
+pub const ID_MARKS_LEN: usize = 16;
+/// The id-marks line's tag; anything else there (blank page, torn write, older layout) decodes to
+/// "no floor" and allocation falls back to scan-max + 1 (exactly today's behaviour).
+const ID_MARKS_MAGIC: [u8; 4] = *b"OBCI";
+/// Id-marks layout version — bump on any field change (an old version reads as no floor).
+const ID_MARKS_VERSION: u8 = 1;
+/// CRC-covered prefix of the id-marks line.
+const ID_MARKS_PAYLOAD: usize = 12;
+
+/// The durable id floors: the next fresh **route** and **ride** object id the store may hand out.
+/// `Default` (both 0) is "no floor" — a fresh device / reflash allocates from the scan alone.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct IdMarks {
+    /// One past the highest route object id ever assigned (`RT{id}.OBR` uploads).
+    pub next_route_id: u16,
+    /// One past the highest ride object id ever assigned (`RD{id}.ORD` saves).
+    pub next_ride_id: u16,
+}
+
+impl IdMarks {
+    /// Allocate the next fresh **route** id: `max(scan_next, stored floor)`, bumping the floor past
+    /// it — call with `scan_next` = one past the highest id the card scan saw, then persist `self`.
+    pub fn alloc_route(&mut self, scan_next: u16) -> u16 {
+        let id = self.next_route_id.max(scan_next);
+        self.next_route_id = id.saturating_add(1);
+        id
+    }
+
+    /// Allocate the next fresh **ride** id — the ride-namespace twin of
+    /// [`alloc_route`](IdMarks::alloc_route).
+    pub fn alloc_ride(&mut self, scan_next: u16) -> u16 {
+        let id = self.next_ride_id.max(scan_next);
+        self.next_ride_id = id.saturating_add(1);
+        id
+    }
+}
+
+/// Pack the id high-water marks into their fixed 16-byte RRAM line. Inverse of
+/// [`decode_id_marks`].
+pub fn encode_id_marks(m: &IdMarks) -> [u8; ID_MARKS_LEN] {
+    let mut b = [0u8; ID_MARKS_LEN];
+    b[0..4].copy_from_slice(&ID_MARKS_MAGIC);
+    b[4] = ID_MARKS_VERSION;
+    b[6..8].copy_from_slice(&m.next_route_id.to_le_bytes());
+    b[8..10].copy_from_slice(&m.next_ride_id.to_le_bytes());
+    let crc = crc16(&b[0..ID_MARKS_PAYLOAD]);
+    b[ID_MARKS_PAYLOAD..ID_MARKS_PAYLOAD + 2].copy_from_slice(&crc.to_le_bytes());
+    b
+}
+
+/// Decode an id high-water line, or `None` for anything but a clean read of this format — a blank
+/// page, a torn write, a short slice, or an older layout. `None` means **no floor**: the caller
+/// falls back to scan-max + 1, so a fresh device behaves exactly as before the marks existed.
+pub fn decode_id_marks(bytes: &[u8]) -> Option<IdMarks> {
+    if bytes.len() < ID_MARKS_LEN {
+        return None;
+    }
+    let b = &bytes[..ID_MARKS_LEN];
+    if b[0..4] != ID_MARKS_MAGIC || b[4] != ID_MARKS_VERSION {
+        return None;
+    }
+    let crc = u16::from_le_bytes([b[ID_MARKS_PAYLOAD], b[ID_MARKS_PAYLOAD + 1]]);
+    if crc != crc16(&b[0..ID_MARKS_PAYLOAD]) {
+        return None;
+    }
+    Some(IdMarks { next_route_id: u16::from_le_bytes([b[6], b[7]]), next_ride_id: u16::from_le_bytes([b[8], b[9]]) })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -700,6 +783,67 @@ mod tests {
         assert!((1..=12).contains(&got.clock.month));
         assert!(got.clock.day >= 1 && got.clock.day <= 31);
         assert!(got.fix_interval_s <= FIX_INTERVAL_MAX);
+    }
+
+    // ---- durable id high-water marks (#450) ----
+
+    /// The 16-byte id-marks line round-trips, and every torn/blank/foreign shape decodes to
+    /// `None` — "no floor", the fall-back-to-scan-max behaviour.
+    #[test]
+    fn id_marks_codec_round_trips_and_rejects_torn_lines() {
+        let m = IdMarks { next_route_id: 7, next_ride_id: 41 };
+        assert_eq!(decode_id_marks(&encode_id_marks(&m)), Some(m));
+        assert_eq!(decode_id_marks(&encode_id_marks(&IdMarks::default())), Some(IdMarks::default()));
+
+        assert_eq!(decode_id_marks(&[0u8; ID_MARKS_LEN]), None, "a blank (all-zero) line is no floor");
+        assert_eq!(decode_id_marks(&[0xFF; ID_MARKS_LEN]), None, "an erased (all-ones) line is no floor");
+        assert_eq!(decode_id_marks(&encode_id_marks(&m)[..ID_MARKS_LEN - 1]), None, "a short slice is rejected");
+        let mut torn = encode_id_marks(&m);
+        torn[7] ^= 0xFF; // flip a payload byte without fixing the CRC — the torn-write shape
+        assert_eq!(decode_id_marks(&torn), None, "a CRC mismatch (torn write) is no floor");
+        let mut old = encode_id_marks(&m);
+        old[4] = ID_MARKS_VERSION + 1;
+        let crc = crc16(&old[0..ID_MARKS_PAYLOAD]);
+        old[ID_MARKS_PAYLOAD..ID_MARKS_PAYLOAD + 2].copy_from_slice(&crc.to_le_bytes());
+        assert_eq!(decode_id_marks(&old), None, "a foreign layout version is no floor");
+    }
+
+    /// The DoD guarantee: with the marks persisted across "reboots", an id is **never reused after
+    /// a delete** — even when the delete lowers the card's scan-max below an already-issued id.
+    /// Simulates the store as the set of live filename-encoded ids, exactly what a mount scan sees.
+    #[test]
+    fn id_allocation_never_reuses_after_delete() {
+        let mut card: heapless::Vec<u16, 8> = heapless::Vec::new(); // the live RD{id}/RT{id} files
+        let mut marks = IdMarks::default(); // fresh device: no floor
+        let scan_next = |card: &[u16]| card.iter().max().map_or(0, |m| m + 1);
+
+        // Three rides saved: 0, 1, 2 — identical to scan-max+1 while nothing deletes.
+        for want in 0..3u16 {
+            let id = marks.alloc_ride(scan_next(&card));
+            assert_eq!(id, want);
+            let _ = card.push(id);
+        }
+
+        // Delete the highest (id 2) — the trap: scan-max+1 alone would re-issue 2.
+        card.retain(|&id| id != 2);
+        // "Reboot": the floor survives in RRAM (marks kept), the scan is rebuilt from the card.
+        let mut rebooted = decode_id_marks(&encode_id_marks(&marks)).expect("persisted floor survives");
+        let id = rebooted.alloc_ride(scan_next(&card));
+        assert_eq!(id, 3, "the deleted id 2 is never reused");
+        let _ = card.push(id);
+
+        // A torn floor line falls back cleanly: allocation degrades to scan-max+1 (no floor) —
+        // ids can collide with tombstones again, but only exactly as they did before the marks.
+        let mut torn = encode_id_marks(&rebooted);
+        torn[9] ^= 0x55;
+        let mut no_floor = decode_id_marks(&torn).unwrap_or_default();
+        assert_eq!(no_floor.alloc_ride(scan_next(&card)), 4, "torn line → scan-max+1");
+
+        // The two namespaces are independent: route allocations never disturb ride marks.
+        let mut m = IdMarks::default();
+        assert_eq!(m.alloc_route(5), 5);
+        assert_eq!(m.next_ride_id, 0, "route allocation leaves the ride floor untouched");
+        assert_eq!(m.alloc_route(0), 6, "and the route floor advanced past the assignment");
     }
 
     /// February's day count follows the leap rule, and stepping the month off Jan 31 re-pins

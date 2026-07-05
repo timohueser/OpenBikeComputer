@@ -334,6 +334,13 @@ pub struct App {
     /// The resident route catalog (summaries), populated by the host ([`set_routes`](App::set_routes)).
     /// The Route menu lists it; `active_route` indexes it.
     catalog: Catalog,
+    /// Each catalog entry's **durable object id**, parallel to [`catalog`](App::catalog) (#450).
+    /// The identity that survives a live rescan: on every [`set_routes_with_ids`](App::set_routes_with_ids)
+    /// every held catalog *index* (`active_route`, an open Route-menu selection, a pending swap) is
+    /// remapped old-id → new-index, so an inserted/removed route can never silently shift which
+    /// route is navigated. The firmware feeds the filename-encoded upload ids (+ session-scoped
+    /// side-load ids); hosts without ids get positional ones from [`set_routes`](App::set_routes).
+    catalog_ids: heapless::Vec<u16, { crate::route::MAX_ROUTES }>,
     /// The screen stack (root = Home). The top screen receives input; drawing starts from the
     /// topmost opaque screen so overlays composite over the map.
     stack: Stack,
@@ -432,11 +439,11 @@ pub struct App {
     /// P2 (#449). Held off `AppState` so plumbing it never gates a map redraw; [`ble_passkey`](App::ble_passkey)
     /// exposes it for that PR (and for tests to observe the seam carrying it).
     ble_passkey: Option<u32>,
-    /// Count of [`notify_store_changed`](App::notify_store_changed) calls not yet acted on. **Recorded
-    /// but inert** — the live-catalog rescan it drives is P3 (#450); for now the app only *observes*
-    /// the pending signal (via [`store_changed_pending`](App::store_changed_pending)), so the seam and
-    /// its board wiring are testable before the consumer lands. A counter, not a bool, so a burst of
-    /// commits between drains is never coalesced into a single missed rescan.
+    /// Count of [`notify_store_changed`](App::notify_store_changed) calls not yet acted on. The host
+    /// drains it once per pass via [`take_store_changed`](App::take_store_changed) and answers a
+    /// non-zero count with a store rescan → [`set_routes_with_ids`](App::set_routes_with_ids) (#450).
+    /// A counter, not a bool, so a burst of commits between drains is never coalesced into a single
+    /// missed rescan.
     store_changed_pending: u32,
 }
 
@@ -474,6 +481,7 @@ impl App {
             state,
             activity: Activity::new(Mode::Idle),
             catalog: Catalog::new(),
+            catalog_ids: heapless::Vec::new(),
             stack,
             profile: None,
             profile_route: None,
@@ -529,6 +537,7 @@ impl App {
             addr_of_mut!((*slot).state).write(state);
             addr_of_mut!((*slot).activity).write(Activity::new(Mode::Idle));
             addr_of_mut!((*slot).catalog).write(Catalog::new());
+            addr_of_mut!((*slot).catalog_ids).write(heapless::Vec::new());
             // The screen stack: empty in place, then push the always-present Home root.
             // `heapless::Vec::push` isn't `const`, so the root can't be part of a literal.
             addr_of_mut!((*slot).stack).write(Stack::new());
@@ -795,18 +804,91 @@ impl App {
         self.last_fix_ms.is_some_and(|t| now_ms.wrapping_sub(t) <= self.no_fix_window_ms())
     }
 
-    /// Replace the resident route catalog from the host's store. Clones up to
-    /// [`MAX_ROUTES`](crate::MAX_ROUTES) summaries; any beyond that are ignored.
+    /// Replace the resident route catalog from a host store without durable ids, assigning
+    /// **positional** ids (`0..n`). Everything indexed remaps by position — i.e. an index that is
+    /// still in range survives, one past the end falls back — which is the sanest reading of an
+    /// id-less store. Hosts with real object identity (the firmware's filename-encoded ids, the
+    /// sim's session ids) call [`set_routes_with_ids`](App::set_routes_with_ids) instead; don't mix
+    /// the two on one `App`, or a positional id will remap against a durable one.
     pub fn set_routes(&mut self, summaries: &[RouteSummary]) {
+        let mut ids: heapless::Vec<u16, { crate::route::MAX_ROUTES }> = heapless::Vec::new();
+        for i in 0..summaries.len().min(crate::route::MAX_ROUTES) {
+            let _ = ids.push(i as u16);
+        }
+        self.set_routes_with_ids(summaries, &ids);
+    }
+
+    /// Replace the resident route catalog from the host's store, carrying each route's **durable
+    /// object id** (`ids` parallel to `summaries`), then remap every held catalog index by id
+    /// (#450). Clones up to [`MAX_ROUTES`](crate::MAX_ROUTES) entries; any beyond that are ignored.
+    ///
+    /// The remap is the live-catalog contract: a rescan that inserts or removes a route re-points
+    /// [`Activity::active_route`], the matcher/profile caches keyed on it, an open Route-menu
+    /// selection, a Route-overview preview, and a pending
+    /// [`RouteSwapScreen`](crate::screen::RouteSwapScreen) at the *same route* (by id) in the new
+    /// order. A vanished route falls back sanely: navigation unloads (`active_route = None`, stale
+    /// matcher progress + profile dropped), a menu selection clamps near its old position, a
+    /// preview/swap subject turns into its screen's own missing-route path. Dirties the map once —
+    /// a store change is a repaint-worthy host event (the open menu refreshes in place).
+    pub fn set_routes_with_ids(&mut self, summaries: &[RouteSummary], ids: &[u16]) {
+        let old_ids = self.catalog_ids.clone();
         self.catalog.clear();
-        for s in summaries.iter().take(crate::route::MAX_ROUTES) {
+        self.catalog_ids.clear();
+        for (s, &id) in summaries.iter().zip(ids).take(crate::route::MAX_ROUTES) {
             let _ = self.catalog.push(s.clone());
+            let _ = self.catalog_ids.push(id);
+        }
+        self.remap_route_indices(&old_ids);
+        self.map_dirty = true;
+    }
+
+    /// Re-point every held catalog index after the catalog was replaced: old index → its id in
+    /// `old_ids` → that id's new index (or `None` if the route vanished). See
+    /// [`set_routes_with_ids`](App::set_routes_with_ids).
+    fn remap_route_indices(&mut self, old_ids: &[u16]) {
+        let new_ids = &self.catalog_ids;
+        let remap = |i: usize| -> Option<usize> {
+            let id = *old_ids.get(i)?;
+            new_ids.iter().position(|&x| x == id)
+        };
+
+        // The navigated route + the caches keyed on it. When the identity survives, all three move
+        // together, so nothing resets (no matcher re-lock, no profile rebuild). When it vanished,
+        // navigation unloads and the stale per-route state is dropped with it.
+        let old_active = self.activity.active_route;
+        self.activity.active_route = old_active.and_then(remap);
+        if old_active.is_some() && self.activity.active_route.is_none() {
+            self.route_match.reset(); // drop stale progress/off-route from the vanished route
+        }
+        self.matched_route = self.matched_route.and_then(remap);
+        let old_profile = self.profile_route;
+        self.profile_route = old_profile.and_then(remap);
+        if old_profile.is_some() && self.profile_route.is_none() {
+            self.profile = None;
+        }
+
+        // Every screen on the stack that holds a catalog index.
+        let new_len = new_ids.len();
+        for s in self.stack.iter_mut() {
+            match s {
+                Screen::RouteMenu(m) => m.remap_routes(&remap, new_len),
+                Screen::RouteOverview(o) => o.remap_routes(&remap),
+                Screen::RouteSwap(sw) => sw.remap_routes(&remap),
+                _ => {}
+            }
         }
     }
 
     /// The resident route catalog.
     pub fn routes(&self) -> &[RouteSummary] {
         &self.catalog
+    }
+
+    /// Each catalog entry's durable object id, parallel to [`routes`](App::routes) — as last fed to
+    /// [`set_routes_with_ids`](App::set_routes_with_ids) (positional for plain
+    /// [`set_routes`](App::set_routes)).
+    pub fn route_ids(&self) -> &[u16] {
+        &self.catalog_ids
     }
 
     /// Feed the host's BLE link snapshot ([`BleStatus`](crate::BleStatus)) — the host→app event seam
@@ -915,19 +997,27 @@ impl App {
     /// Signal that the object store committed or deleted an object (epic #447) — rung from the board's
     /// `ObjectStore` commit/delete paths, the same edge that notifies the phone's `storeChanged`.
     ///
-    /// For now it only **records** the pending signal (a counter the app/tests observe via
-    /// [`store_changed_pending`](App::store_changed_pending)); the live-catalog rescan + identity
-    /// remap it will drive is P3 (#450). Deliberately behaviour-free here so this foundation PR wires
-    /// the edge without changing what the device shows.
+    /// Records the pending signal; the host drains it via
+    /// [`take_store_changed`](App::take_store_changed) and answers with a `/routes` rescan →
+    /// [`set_routes_with_ids`](App::set_routes_with_ids) (the live catalog + identity remap, #450).
     pub fn notify_store_changed(&mut self) {
         self.store_changed_pending = self.store_changed_pending.saturating_add(1);
     }
 
     /// How many [`notify_store_changed`](App::notify_store_changed) signals are pending (not yet acted
-    /// on). Non-zero once the store has moved since the last drain; P3's rescan will consume it. A
-    /// read-only observation hook for the board wiring and the seam tests.
+    /// on). Non-zero once the store has moved since the last drain. A read-only observation hook for
+    /// the board wiring and the seam tests; the acting consumer is
+    /// [`take_store_changed`](App::take_store_changed).
     pub fn store_changed_pending(&self) -> u32 {
         self.store_changed_pending
+    }
+
+    /// Drain the pending store-changed signals (#450): returns the count and resets it. The host
+    /// calls this once per pass and, when non-zero, rescans its store and re-feeds
+    /// [`set_routes_with_ids`](App::set_routes_with_ids). A count (not a bool) so a burst of
+    /// commits is observable, though one rescan covers them all.
+    pub fn take_store_changed(&mut self) -> u32 {
+        core::mem::take(&mut self.store_changed_pending)
     }
 
     /// The screen currently on top of the stack (receiving input). Always present — the Home root is
