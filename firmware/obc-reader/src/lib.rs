@@ -43,8 +43,9 @@ pub use color::rgb565_to_rgb888;
 pub use geo::{cos_lat, ground_dist_m, ground_dist_m_cl};
 pub use poi_table::{category_of, label_of, subtype_row, PoiCategory, PoiSubtype, SUBTYPES};
 pub use reader::{
-    read_header, CacheStats, FeatureRef, Kind, Lod, MapCache, MapHeader, MapTables, PoiCatEntry, PoiDirectory, Reader,
-    Style, HEADER_LEN, MAX_CHUNK_BYTES, MAX_FEAT_PTS, MAX_FEAT_RINGS, POI_MAX_CATEGORIES, POI_MAX_CHUNK_BYTES,
+    read_header, CacheStats, FeatureRef, Kind, Lod, MapCache, MapHeader, MapTables, Poi, PoiCatEntry, PoiDirectory,
+    Reader, Style, HEADER_LEN, MAX_CHUNK_BYTES, MAX_FEAT_PTS, MAX_FEAT_RINGS, MAX_POI_RESULTS, POI_MAX_CATEGORIES,
+    POI_MAX_CHUNK_BYTES, POI_NAME_MAX,
 };
 
 /// Meters of ground per degree of latitude (and of longitude at the equator) — the
