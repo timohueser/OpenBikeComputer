@@ -330,6 +330,16 @@ pub(crate) async fn run_app(
             for _ in 0..crate::object_store::take_store_changed() {
                 app.notify_store_changed();
             }
+            // The settings→radio switch (#455): push the persisted Bluetooth toggle across the
+            // plane boundary — one atomic swap; the radio plane wakes only on a change (off = stop
+            // advertising + drop the link; on = the normal lifecycle). Fire-and-forget by design:
+            // this loop never blocks on the radio winding down, so no wake source here can go dead
+            // with the radio off (#438's lesson). Then drain the Bluetooth screen's Forget-phone
+            // hold and ring the bond clear the same way.
+            crate::ble::set_radio_enabled(app.settings().ble_enabled);
+            if app.take_ble_forget() {
+                crate::ble::request_forget_bond();
+            }
         }
 
         // This frame's hold-bulge state, sampled once: the live row span on both backends (the

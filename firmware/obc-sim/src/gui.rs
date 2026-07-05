@@ -417,6 +417,13 @@ impl SimGui {
             self.app.tick(RideClock(now_ms), sensors, route.as_ref());
         }
 
+        // Drain the Bluetooth screen's Forget-phone request (epic #447, P8): the sim's "bond" is
+        // the injected panel flag, so forgetting just clears it — the next seam feed shows
+        // Paired: no, exactly as the board's RRAM clear + status publish would.
+        if self.app.take_ble_forget() {
+            self.panel.ble.paired = false;
+        }
+
         // Time the whole frame draw into `render_us` (`obc-render` is clockless, so the host
         // fills it; the device uses the DWT cycle counter).
         let t0 = web_time::Instant::now();

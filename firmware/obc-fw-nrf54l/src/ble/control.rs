@@ -32,6 +32,7 @@ use crate::{SharedStore, SharedStoreMutex};
 
 use super::data_plane::{notify_bounded, publish_store_change};
 use super::gatt::{config_blob, Server};
+use super::state;
 use super::state::{publish, transfer_result, Armed, StatusBytes, TRANSFER_ABORT, TRANSFER_ACTIVE, TRANSFER_ARM};
 
 /// What a `command` write did: the `commandResult` to notify, plus whether the store changed
@@ -277,28 +278,58 @@ pub(crate) async fn serve_connection(
             // The device is DisplayOnly: the phone drives passkey *entry*, so `PassKeyDisplay` is
             // the one we expect — show the 6-digit code big on the status screen; the rider types
             // it into the iOS dialog. (Confirm/Input are handled defensively for completeness.)
+            //
+            // **Reject-when-bonded (#455, S0 §8 amendment):** while a bond is stored, a pairing
+            // attempt can only be a stranger — or the bonded phone having lost its keys — and both
+            // are refused: Forget phone is the only re-pair path. trouble-host 0.7 has no app hook
+            // to answer the SMP Pairing Request itself (the SM auto-responds before any event
+            // reaches us), so the reject lands at the first app-visible SMP event: suppress the
+            // passkey (never show a code for a pairing we refuse) and drop the link. The stranger's
+            // phone sees a generic pairing failure; the device shows nothing (locked: app-side
+            // message only). The bonded phone's silent reconnect is encryption *resumption* — no
+            // pairing events — so it never passes through here.
             GattConnectionEvent::PassKeyDisplay(passkey) => {
-                info!("ble: [pair] display passkey {=u32:06}", passkey.value());
-                publish(|s| s.passkey = Some(passkey.value()));
+                if state::status().paired {
+                    warn!("ble: [pair] pairing attempt while bonded — rejecting (forget phone to re-pair)");
+                    conn.raw().disconnect();
+                } else {
+                    info!("ble: [pair] display passkey {=u32:06}", passkey.value());
+                    publish(|s| s.passkey = Some(passkey.value()));
+                }
             }
             GattConnectionEvent::PassKeyConfirm(passkey) => {
-                info!("ble: [pair] confirm passkey {=u32:06}", passkey.value());
-                publish(|s| s.passkey = Some(passkey.value()));
+                if state::status().paired {
+                    warn!("ble: [pair] pairing attempt while bonded — rejecting (forget phone to re-pair)");
+                    conn.raw().disconnect();
+                } else {
+                    info!("ble: [pair] confirm passkey {=u32:06}", passkey.value());
+                    publish(|s| s.passkey = Some(passkey.value()));
+                }
             }
             GattConnectionEvent::PassKeyInput => {
                 info!("ble: [pair] peer requests passkey input");
             }
             GattConnectionEvent::PairingComplete { security_level, bond } => {
-                info!("ble: [pair] complete — level {:?}, bonded {}", security_level, bond.is_some());
-                // Persist the single bond: a fresh pairing replaces whatever was stored.
-                if let Some(bond) = bond {
-                    let mut guard = shared.lock().await;
-                    store.borrow_mut().save_bond(&mut guard, &bond);
+                if state::status().paired {
+                    // Belt-and-braces behind the passkey-stage reject: a pairing that slipped
+                    // through anyway (e.g. a Just-Works attempt with no passkey stage) must not
+                    // stand. The link is not bondable while a bond is stored, so `bond` is `None`
+                    // here — nothing to persist — and the session's keys die with the link.
+                    warn!("ble: [pair] pairing completed while bonded — dropping the link (not replacing the bond)");
+                    conn.raw().disconnect();
+                } else {
+                    info!("ble: [pair] complete — level {:?}, bonded {}", security_level, bond.is_some());
+                    // Persist the single bond (the open-pairing path: nothing was stored).
+                    if let Some(bond) = bond {
+                        let mut guard = shared.lock().await;
+                        store.borrow_mut().save_bond(&mut guard, &bond);
+                        publish(|s| s.paired = true);
+                    }
+                    publish(|s| {
+                        s.passkey = None;
+                        s.secured = true;
+                    });
                 }
-                publish(|s| {
-                    s.passkey = None;
-                    s.secured = true;
-                });
             }
             GattConnectionEvent::PairingFailed(e) => {
                 warn!("ble: [pair] failed: {:?}", defmt::Debug2Format(&e));
@@ -314,11 +345,12 @@ pub(crate) async fn serve_connection(
                 });
             }
             GattConnectionEvent::BondLost => {
-                // The peer paired again despite our stored bond ⇒ it lost its keys (the app/OS
-                // "forgot" us). Drop our stale bond so this fresh pairing is the new one.
-                warn!("ble: [pair] peer lost its bond — clearing stored bond");
-                let mut guard = shared.lock().await;
-                store.borrow_mut().clear_bond(&mut guard);
+                // The peer sent a pairing request that collides with our stored bond. Under A8 this
+                // cleared the stored bond (auto-replace); #455 **reverses** that: the bond survives
+                // — a peer merely *claiming* the bonded identity must not be able to evict the real
+                // phone — and the pairing attempt itself is rejected at its passkey stage above.
+                // A phone that genuinely lost its keys re-pairs via Forget phone on the device.
+                warn!("ble: [pair] peer re-pairing against our stored bond — keeping it (reject-when-bonded)");
             }
             _ => {}
         }
