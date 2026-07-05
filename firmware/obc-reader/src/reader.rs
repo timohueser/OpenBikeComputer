@@ -1,5 +1,6 @@
-//! OBCM **v5** format reader: header, style table, LOD table, and per-LOD
-//! quadtree query + chunk decode.
+//! OBCM **v6** format reader: header, style table, LOD table, per-LOD
+//! quadtree query + chunk decode, and the trailing POI directory (parse-only in
+//! v6 — the nearest-N query is #424).
 //!
 //! All coordinates are integer microdegrees (1e-6 degrees), as stored in the
 //! file. Projection to screen space is the renderer's job.
@@ -36,10 +37,27 @@ pub const MAX_FEAT_PTS: usize = 2048;
 /// capacity for the `ring_lens` scratch buffer of [`Reader::for_each_feature`].
 pub const MAX_FEAT_RINGS: usize = 32;
 
-/// The header is fixed-size; everything after it is reached via explicit offsets.
-pub const HEADER_LEN: usize = 32;
+/// The header is fixed-size; everything after it is reached via explicit offsets. v6 grew it from
+/// 32 to 36 bytes (the trailing `POI Section Offset` u32).
+pub const HEADER_LEN: usize = 36;
 /// Each LOD table entry: `max_mpp f32, index_off u32, node_count u32, chunk_size u16, chunk_count u32`.
 pub const LOD_ENTRY_LEN: usize = 18;
+
+/// One POI-directory category entry (spec §7.1): `u8 category_id, u32 index_offset, u32
+/// index_node_count, u32 chunk_count`.
+const POI_CAT_ENTRY_LEN: usize = 13;
+
+/// POI directory categories in v6 (spec §7.1): category ids `1..=6`. The parsed [`MapTables::pois`]
+/// bounds its `heapless::Vec` at this so a corrupt `category_count` can't request an unbounded
+/// allocation; a directory declaring more categories than this is rejected.
+pub const POI_MAX_CATEGORIES: usize = 8;
+
+/// Upper bound on the POI `chunk_size` the reader accepts (spec §7.1). POI records are a fixed 32
+/// bytes and the packer writes 512-byte chunks (16 records); this caps the on-wire `u16` well below
+/// the geometry [`MAX_CHUNK_BYTES`] so a corrupt directory can't advertise a huge chunk the
+/// nearest-N query (#424) would try to buffer. Generous headroom over the packer's 512 without
+/// approaching the geometry scratch.
+pub const POI_MAX_CHUNK_BYTES: usize = 4096;
 
 /// Upper bound on a single map data chunk, in bytes — the size of the decode scratch, and the
 /// largest `chunk_size` the reader accepts ([`MapTables::parse`] rejects a bigger one). The
@@ -150,6 +168,49 @@ impl Lod {
     }
 }
 
+/// One category's entry in the parsed POI directory (spec §7.1). Parse-only in v6:
+/// the nearest-N query (#424) walks this category's quadtree exactly as it walks a
+/// [`Lod`] index — the layout is shared, so its `data_start`/`chunk_range` math
+/// reuses the same convention.
+#[derive(Debug, Clone, Copy)]
+pub struct PoiCatEntry {
+    /// Canonical category id (1..=6; spec §7.4).
+    pub category_id: u8,
+    /// Byte offset to this category's quadtree index.
+    pub index_offset: usize,
+    /// Number of `uint32` nodes in the index; `0` ⇒ the category is empty in this map.
+    pub node_count: usize,
+    /// Number of POI data chunks in this category.
+    pub chunk_count: usize,
+}
+
+impl PoiCatEntry {
+    /// This category is empty in this map (no quadtree, no chunks).
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.node_count == 0
+    }
+
+    /// Byte offset where this category's data chunks begin (right after its index),
+    /// or `None` if the arithmetic overflows `usize` (a corrupt directory on the
+    /// 32-bit MCU). Mirrors [`Lod::data_start`] — the shared §7.1 convention.
+    #[inline]
+    pub fn data_start(&self) -> Option<usize> {
+        self.node_count.checked_mul(4)?.checked_add(self.index_offset)
+    }
+}
+
+/// The parsed POI directory (spec §7.1): the shared chunk size plus one bounded entry per category.
+/// Parse-only in v6 — [`MapTables::parse`] fills it so the sim keeps loading v6 maps; the nearest-N
+/// query lands in #424, which walks each `entries[i]`'s quadtree.
+#[derive(Debug, Clone)]
+pub struct PoiDirectory {
+    /// Fixed capacity (bytes) of every POI chunk, shared by all categories (spec §7.1).
+    pub chunk_size: usize,
+    /// One entry per category present in the directory (bounded at [`POI_MAX_CATEGORIES`]).
+    pub entries: Vec<PoiCatEntry, POI_MAX_CATEGORIES>,
+}
+
 /// A feature decoded into caller-owned scratch buffers, borrowed for one
 /// [`Reader::for_each_feature`] callback. No per-feature allocation: `points`
 /// holds every ring's vertices concatenated, `ring_lens[0]` is the exterior
@@ -237,7 +298,7 @@ fn parse_header(h: &[u8; HEADER_LEN]) -> Result<MapHeader, Error> {
         return Err(Error::BadMagic);
     }
     let version = h[4];
-    if version != 5 {
+    if version != 6 {
         return Err(Error::BadVersion);
     }
     // Header field order: lat,lon,lat,lon (see `obc-pack`'s `serialize.rs` header pack).
@@ -274,6 +335,9 @@ pub struct MapTables {
     pub marker_color: u16,
     /// LOD layers ordered coarsest (0) → finest (N-1). Always at least one.
     lods: Vec<Lod, 16>,
+    /// The parsed POI directory (spec §7). Always present in v6 (six categories, some possibly
+    /// empty). Parse-only here — exposed via [`Reader::poi_directory`] for the #424 nearest-N query.
+    pois: PoiDirectory,
     /// Styles indexed by id (0..=255) for O(1) lookup during rendering.
     styles: [Option<Style>; 256],
     /// The backdrop style (bottom of the paint order; see [`Reader::backdrop_style`]), resolved
@@ -303,6 +367,7 @@ impl MapTables {
         let style_offset = rd_u32(&header, 21) as usize;
         let lod_count = header[25] as usize;
         let lod_table_offset = rd_u32(&header, 26) as usize;
+        let poi_section_offset = rd_u32(&header, 32) as usize;
 
         if style_offset < HEADER_LEN || style_offset > total {
             return Err(Error::BadOffset);
@@ -323,6 +388,7 @@ impl MapTables {
         let mut styles = [None; 256];
         parse_styles(src, style_offset, total, &mut styles)?;
         let lods = parse_lod_table(src, lod_table_offset, lod_count, total)?;
+        let pois = parse_poi_directory(src, poi_section_offset, total)?;
         // Resolve the backdrop (lowest `z_index`, ties broken by lowest id) once here; the table is
         // immutable after parse, so `Reader::backdrop_style` never has to re-scan the 256 slots.
         let backdrop = styles.iter().filter_map(|s| s.as_ref()).min_by_key(|s| (s.z_index, s.id)).copied();
@@ -331,7 +397,7 @@ impl MapTables {
         // suffices: the counter is the only shared state and only uniqueness matters.
         static GEN: AtomicU32 = AtomicU32::new(0);
         let generation = GEN.fetch_add(1, Ordering::Relaxed) + 1;
-        Ok(MapTables { version, bbox, marker_color, lods, styles, backdrop, generation })
+        Ok(MapTables { version, bbox, marker_color, lods, pois, styles, backdrop, generation })
     }
 }
 
@@ -378,6 +444,13 @@ impl<'a> Reader<'a> {
     #[inline]
     pub fn lods(&self) -> &[Lod] {
         &self.tables.lods
+    }
+
+    /// The parsed POI directory (spec §7). Parse-only in v6 — the nearest-N query walks these
+    /// per-category quadtrees in #424. Always present (six categories, some possibly empty).
+    #[inline]
+    pub fn poi_directory(&self) -> &PoiDirectory {
+        &self.tables.pois
     }
 
     #[inline]
@@ -846,6 +919,68 @@ fn parse_lod_table(src: &dyn ByteSource, offset: usize, lod_count: usize, total:
         let _ = lods.push(lod);
     }
     Ok(lods)
+}
+
+/// Parse the POI directory (spec §7.1) at `offset` from `src` (file is `total` bytes): the count
+/// byte, the shared `chunk_size`, then one 13-byte entry per category. Parse-only in v6 — validates
+/// the directory layout and each category's index/chunk region, but does **not** walk the trees (the
+/// nearest-N query is #424). The directory is always present, so `offset` at/past EOF, a
+/// `category_count` past [`POI_MAX_CATEGORIES`], a `chunk_size` past [`POI_MAX_CHUNK_BYTES`], or an
+/// out-of-file index/chunk region is a corrupt header ⇒ [`Error::BadOffset`].
+///
+/// Every offset/length product is checked (32-bit target): a corrupt `node_count`/`chunk_count`
+/// can wrap `usize`, so the region-end could land below `total` and admit a category indexing out of
+/// the file — the same overflow guard style as [`parse_lod_table`]/[`Lod::chunk_range`].
+fn parse_poi_directory(src: &dyn ByteSource, offset: usize, total: usize) -> Result<PoiDirectory, Error> {
+    // The directory header is 3 bytes (count + chunk_size u16); it must fit the file.
+    if offset < HEADER_LEN || offset.checked_add(3).is_none_or(|end| end > total) {
+        return Err(Error::BadOffset);
+    }
+    let mut hdr = [0u8; 3];
+    src.read_at(offset as u32, &mut hdr).map_err(|_| Error::BadOffset)?;
+    let category_count = hdr[0] as usize;
+    let chunk_size = rd_u16(&hdr, 1) as usize;
+    if category_count > POI_MAX_CATEGORIES || chunk_size > POI_MAX_CHUNK_BYTES {
+        return Err(Error::BadOffset);
+    }
+    // The whole directory (header + entries) must lie within the file.
+    let entries_end = category_count
+        .checked_mul(POI_CAT_ENTRY_LEN)
+        .and_then(|len| offset.checked_add(3)?.checked_add(len))
+        .ok_or(Error::BadOffset)?;
+    if entries_end > total {
+        return Err(Error::BadOffset);
+    }
+
+    let mut entries = Vec::new();
+    let mut e = [0u8; POI_CAT_ENTRY_LEN];
+    for k in 0..category_count {
+        let o = offset + 3 + k * POI_CAT_ENTRY_LEN;
+        src.read_at(o as u32, &mut e).map_err(|_| Error::BadOffset)?;
+        let entry = PoiCatEntry {
+            category_id: e[0],
+            index_offset: rd_u32(&e, 1) as usize,
+            node_count: rd_u32(&e, 5) as usize,
+            chunk_count: rd_u32(&e, 9) as usize,
+        };
+        // An empty category (node_count 0) still carries an entry; its index/chunk region is
+        // zero-length, so only the offset itself needs to be in-file. A populated one must have its
+        // whole index + chunk region inside the file — checked, so a corrupt count can't wrap past
+        // `total`.
+        if entry.node_count > 0 {
+            let region_end = entry
+                .data_start()
+                .and_then(|start| entry.chunk_count.checked_mul(chunk_size).and_then(|len| start.checked_add(len)))
+                .ok_or(Error::BadOffset)?;
+            if entry.index_offset < HEADER_LEN || region_end > total {
+                return Err(Error::BadOffset);
+            }
+        } else if entry.index_offset > total {
+            return Err(Error::BadOffset);
+        }
+        let _ = entries.push(entry);
+    }
+    Ok(PoiDirectory { chunk_size, entries })
 }
 
 /// A snapshot of the [`Reader`]'s streaming counters: chunk-cache hit/miss tally and raw SD-read
@@ -1331,12 +1466,13 @@ mod tests {
     fn synth_header(min_lon: i32, min_lat: i32, max_lon: i32, max_lat: i32, marker: u16) -> [u8; HEADER_LEN] {
         let mut h = [0u8; HEADER_LEN];
         h[0..4].copy_from_slice(b"OBCM");
-        h[4] = 5;
+        h[4] = 6;
         h[5..9].copy_from_slice(&min_lat.to_le_bytes()); // field order is lat,lon,lat,lon
         h[9..13].copy_from_slice(&min_lon.to_le_bytes());
         h[13..17].copy_from_slice(&max_lat.to_le_bytes());
         h[17..21].copy_from_slice(&max_lon.to_le_bytes());
         h[30..32].copy_from_slice(&marker.to_le_bytes());
+        // h[32..36] (POI section offset) is untouched by read_header.
         h
     }
 
@@ -1348,7 +1484,7 @@ mod tests {
         assert_eq!(
             got,
             MapHeader {
-                version: 5,
+                version: 6,
                 bbox: BBox { min_lon: -34, min_lat: 12, max_lon: 78, max_lat: 56 },
                 marker_color: 0xBEEF
             }
@@ -1364,7 +1500,7 @@ mod tests {
         h[0..4].copy_from_slice(b"NOPE");
         assert_eq!(read_header(&SliceSource(&h)), Err(Error::BadMagic));
         h[0..4].copy_from_slice(b"OBCM");
-        h[4] = 4; // unsupported version
+        h[4] = 5; // v5 (and earlier) no longer supported — only v6 is read
         assert_eq!(read_header(&SliceSource(&h)), Err(Error::BadVersion));
     }
 }
