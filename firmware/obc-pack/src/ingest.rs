@@ -23,6 +23,7 @@ use osmpbf::{Element, ElementReader, RelMemberType};
 
 use crate::config::Config;
 use crate::geom::{assemble_multipolygon, polygon_is_valid, Geom};
+use crate::hours;
 use crate::poi::{self, Poi};
 
 pub struct IngestFeature {
@@ -148,13 +149,14 @@ fn push_node_poi<'a, I>(tags: I, decimicro_lon: i32, decimicro_lat: i32, out: &m
 where
     I: IntoIterator<Item = (&'a str, &'a str)>,
 {
-    if let Some((subtype, name)) = poi::classify(tags) {
+    if let Some((subtype, name, raw_hours)) = poi::classify(tags) {
         out.push(Poi {
             subtype,
             lon_udeg: poi::to_udeg(to_deg(decimicro_lon)),
             lat_udeg: poi::to_udeg(to_deg(decimicro_lat)),
             name,
             from_node: true,
+            hours: raw_hours.and_then(hours::parse),
         });
     }
 }
@@ -225,9 +227,16 @@ fn process_way(
     // all). The building-tagged supermarket way and the area campsite are the
     // motivating cases; relations are out of scope (#115).
     if is_closed {
-        if let Some((subtype, name)) = poi::classify(tags.iter().map(|(&k, &v)| (k, v))) {
+        if let Some((subtype, name, raw_hours)) = poi::classify(tags.iter().map(|(&k, &v)| (k, v))) {
             let (cx, cy) = poi::ring_centroid(coords);
-            pois.push(Poi { subtype, lon_udeg: poi::to_udeg(cx), lat_udeg: poi::to_udeg(cy), name, from_node: false });
+            pois.push(Poi {
+                subtype,
+                lon_udeg: poi::to_udeg(cx),
+                lat_udeg: poi::to_udeg(cy),
+                name,
+                from_node: false,
+                hours: raw_hours.and_then(hours::parse),
+            });
         }
     }
 
