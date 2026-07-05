@@ -68,7 +68,7 @@ impl PoiCategory {
         match self {
             PoiCategory::Water => "Water",
             PoiCategory::Campsite => "Campsite",
-            PoiCategory::Accommodation => "Accommodation",
+            PoiCategory::Accommodation => "Lodging",
             PoiCategory::Resupply => "Resupply",
             PoiCategory::Pharmacy => "Pharmacy",
             PoiCategory::BikeShop => "Bike shop",

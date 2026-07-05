@@ -31,8 +31,10 @@ use crate::settings::Units;
 use super::list::{self, ListGeometry, Separators};
 use super::{palette, Ctx, Render, Transition};
 
-/// Per-POI row height — a single Label line, sized so the nearest-16 page through the list widget.
-const ROW_H: i32 = 44;
+/// Per-POI row height — two lines (name above, bearing arrow + distance below) with margin to keep
+/// the distance clear of the row separator / selected-row fill; the nearest-16 still page through
+/// the list widget.
+const ROW_H: i32 = 64;
 
 /// The [`App`](crate::App)-owned snapshot of one category's nearest-16. **One** buffer, shared by
 /// whatever POI-list screen is on top — never owned by the screen variant.
@@ -186,9 +188,10 @@ impl PoiListScreen {
     }
 }
 
-/// Draw one POI row: name (left, ellipsized) then a bearing arrow + right-aligned distance. The
-/// name falls back to the subtype label when the POI is unnamed. `fix`/`heading` drive the live
-/// arrow; `units` scales the distance.
+/// Draw one POI row on two lines: the name (or its subtype fallback label) on top, in the row's
+/// prominent Body type across the full width; the live bearing arrow + the distance below it, in
+/// muted Label type. Giving the name its own line is what lets a real POI name fit instead of a
+/// truncated stub. `fix`/`heading` drive the live arrow; `units` scales the distance.
 fn draw_poi_row(
     cv: &mut impl Surface,
     poi: &Poi,
@@ -199,30 +202,29 @@ fn draw_poi_row(
     units: Units,
 ) {
     use palette::*;
-    let y = area.top_left.y;
-    let mid = y + area.size.height as i32 / 2;
+    let x = area.top_left.x + 8;
+    let top = area.top_left.y;
 
-    // Distance, right-aligned, units-aware (sub-km reads as `NNNm`/`NNNft`). Reuses the shared
-    // off-route compaction with an empty prefix.
+    // Line 1 — the name, the row's primary element, now on its own full-width line so most names
+    // fit whole (only a genuinely long one still gets the ".." from `fit`).
+    let name = if poi.name.is_empty() { label_of(poi.subtype).unwrap_or("POI") } else { poi.name.as_str() };
+    let name_top = top + 6;
+    let name_max = ((w - x - 12) / Font::Body.char_width() as i32).max(6) as usize;
+    cv.text(&fit(name, name_max), Point::new(x, name_top), Font::Body, TextAlign::Left, INK);
+
+    // Line 2 — bearing arrow + distance, secondary (smaller, muted), stacked under the name.
+    let line2_top = name_top + Font::Body.cap_height() as i32 + 4;
     let mut dist: heapless::String<12> = heapless::String::new();
     super::write_off_route(&mut dist, "", poi.distance_m, units);
-    cv.text(&dist, Point::new(w - 16, mid - 9), Font::Label, TextAlign::Right, INK);
-    let dist_w = dist.chars().count() as i32 * Font::Label.char_width() as i32;
-
-    // Bearing arrow just left of the distance — only when a heading reference exists (else hidden).
-    let arrow_right = w - 16 - dist_w - 8;
-    let arrow_cx = arrow_right - ARROW_R;
+    let mut text_x = x;
+    // Arrow at the left of line 2 (only when a heading reference exists — else hidden), distance
+    // just to its right.
     if let (Some(fix), Some(heading)) = (fix, heading) {
-        draw_bearing_arrow(cv, Point::new(arrow_cx, mid), (fix.lon, fix.lat), (poi.lon, poi.lat), heading);
+        let arrow_mid = line2_top + Font::Label.cap_height() as i32 / 2;
+        draw_bearing_arrow(cv, Point::new(x + ARROW_R, arrow_mid), (fix.lon, fix.lat), (poi.lon, poi.lat), heading);
+        text_x = x + 2 * ARROW_R + 8;
     }
-
-    // Name (or the subtype fallback label), ellipsized to the space left of the arrow/distance.
-    let name = if poi.name.is_empty() { label_of(poi.subtype).unwrap_or("POI") } else { poi.name.as_str() };
-    let name_left = area.top_left.x + 6;
-    let name_right = arrow_cx - ARROW_R - 8;
-    let name_max = ((name_right - name_left) / Font::Label.char_width() as i32).max(4) as usize;
-    let fitted = fit(name, name_max);
-    cv.text(&fitted, Point::new(name_left, mid - 9), Font::Label, TextAlign::Left, INK);
+    cv.text(&dist, Point::new(text_x, line2_top), Font::Label, TextAlign::Left, SUBTEXT);
 }
 
 /// Half-size of the bearing-arrow glyph (px) — a chevron ~`2 * ARROW_R` across, ~2 chars wide.
