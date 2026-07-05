@@ -58,5 +58,9 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p" --gpx "$GPX" --at 30 --png "$OUT/ridecontrol.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p B p r p" --png "$OUT/routeswap.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p h" --png "$OUT/map-pan.png"
+# BLE connected indicator (#448): the static Bluetooth rune on the Home battery row and the menu
+# title bar. `--ble-connected` injects a linked phone, exactly as the sim control-panel toggle does.
+"$SIM" "$MAP" --boot --ble-connected --png "$OUT/home-ble.png" --battery 45
+"$SIM" "$MAP" --boot --ble-connected --script "B" --png "$OUT/menu-ble.png"
 
-echo "ui-snapshots: 20 screens rendered into $OUT/"
+echo "ui-snapshots: 22 screens rendered into $OUT/"
