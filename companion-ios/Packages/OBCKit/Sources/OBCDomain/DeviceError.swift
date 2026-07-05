@@ -37,8 +37,16 @@ public enum DeviceError: Error, Equatable, Sendable {
     /// re-requested (transfers restart, not resume).
     case transferDropped
     /// The device answered a transfer with a terminal reject (`error` /
-    /// `notFound` / `busy`, spec §4.3) — nothing was committed.
+    /// `notFound` / `busy`, spec §4.3) — nothing was committed. An **unknown**
+    /// transfer status code also lands here (forward compat: a reject the app
+    /// doesn't recognize is still a generic device-side failure, never a trap).
     case transferRejected
+    /// The device rejected a **new**-route upload because its route storage is
+    /// full (`storageFull`, spec §4.3) — the reject lands at descriptor-open time,
+    /// before any bytes stream, and nothing is committed. **Replace-by-id uploads
+    /// of an existing route are exempt** (they reuse a slot), so this only ever
+    /// surfaces for a route the device doesn't already hold.
+    case storageFull
     /// A received object failed CRC validation before commit (see `OBCProtocol.md`
     /// → *CoC framing*). The object is rejected, never committed.
     case crcMismatch

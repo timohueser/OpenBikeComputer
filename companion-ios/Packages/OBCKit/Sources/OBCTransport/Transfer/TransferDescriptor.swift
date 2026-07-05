@@ -97,6 +97,10 @@ public struct TransferControl: Equatable, Sendable {
 /// was committed); the codec maps it to a `nil` `objectID` here so consumers
 /// never compare against the raw sentinel.
 public struct TransferResult: Equatable, Sendable {
+    /// Terminal transfer status (spec §4.3). An **unknown** code is *not* a member
+    /// here — the decoder maps it to `.error` (generic device failure) rather than
+    /// throwing, so a future reject the app doesn't recognize can't wedge a
+    /// transfer or fail the link (forward compat).
     public enum Status: UInt8, Equatable, Sendable, CaseIterable {
         case committed = 0    // stored + CRC verified
         case crcMismatch = 1  // rejected, not committed
@@ -104,6 +108,7 @@ public struct TransferResult: Equatable, Sendable {
         case error = 3        // storage / internal failure
         case notFound = 4     // unknown object type/id
         case busy = 5         // a transfer is already active
+        case storageFull = 6  // new-route upload rejected at open — catalog full
     }
 
     public var objectID: DeviceObjectID?
@@ -188,9 +193,12 @@ public enum StatusMessage: Equatable, Sendable {
         switch msg {
         case 1:
             guard data.count >= 8 else { throw DescriptorError.truncated }
-            guard let status = TransferResult.Status(rawValue: data[b + 3]) else {
-                throw DescriptorError.unknownStatus(data[b + 3])
-            }
+            // Forward compat (spec §4.3): an unrecognized transfer status is not a
+            // decode failure — it's a generic device reject. Fall back to `.error`
+            // so the result still delivers and the transfer resolves as a failure,
+            // rather than throwing (which would silently drop the message and wedge
+            // the transfer, since the notification handler decodes with `try?`).
+            let status = TransferResult.Status(rawValue: data[b + 3]) ?? .error
             let rawID: UInt16 = data.readLE(at: b + 1)
             self = .transferResult(TransferResult(
                 objectID: rawID == TransferControl.newObjectID ? nil : DeviceObjectID(rawID),

@@ -111,6 +111,16 @@ final class ProtocolVectorTests: XCTestCase {
         )))
         XCTAssertEqual(result.encode(), resultBytes)
 
+        // The storage-full reject: a new-route upload (id 0xFFFF → nil) refused at
+        // descriptor-open time with nothing committed. The `0xFFFF` sentinel maps
+        // to a nil objectID.
+        let storageFullBytes = try fixture("status-transfer-storage-full.bin")
+        let storageFull = try StatusMessage(decoding: storageFullBytes)
+        XCTAssertEqual(storageFull, .transferResult(TransferResult(
+            objectID: nil, status: .storageFull, committedOffset: 0
+        )))
+        XCTAssertEqual(storageFull.encode(), storageFullBytes)
+
         let changedBytes = try fixture("status-store-changed.bin")
         let changed = try StatusMessage(decoding: changedBytes)
         XCTAssertEqual(changed, .storeChanged(StoreChanged(type: .route, revision: 42)))
