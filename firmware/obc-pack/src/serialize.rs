@@ -1,11 +1,12 @@
-//! OBCM v6 serializer — lay out the `.obcm` bytes per `OBCM_Spec.md`.
+//! OBCM v7 serializer — lay out the `.obcm` bytes per `OBCM_Spec.md`.
 //!
 //! Deterministic: same feature list + quadtree → same output. Geometry arrives
 //! already clipped + simplified; this module rounds lon/lat to microdegrees
 //! (round-half-to-even), densifies long segments, delta-encodes rings, and lays out
-//! the chunk / index / LOD-table / header bytes. The trailing **POI section** (v6,
-//! §7 of the spec) is a per-category quadtree over fixed 32-byte point records,
-//! reusing the same BFS-flatten + u32 node encoding as the geometry tree.
+//! the chunk / index / LOD-table / header bytes. The trailing **POI section** (v7,
+//! §7 of the spec) is a per-category quadtree over fixed 36-byte point records
+//! (each carrying a `hours_ref` u16 into the shared hours-pool section at the file
+//! tail), reusing the same BFS-flatten + u32 node encoding as the geometry tree.
 
 use std::io::{self, Seek, SeekFrom, Write};
 
@@ -20,32 +21,47 @@ use crate::poi::{table_row, Poi};
 /// midpoints `densify` will insert.
 pub(crate) const MAX_SEGMENT: i64 = 30_000;
 
-/// Fixed header length (bytes) — v6 appended the 4-byte POI Section Offset (§1).
+/// Fixed header length (bytes) — v6 appended the 4-byte POI Section Offset (§1);
+/// v7 didn't grow the header (only the version byte + POI section changed).
 pub const HEADER_LEN: usize = 36;
 /// One LOD-table entry, `<fIIHI>`.
 pub const LOD_ENTRY_LEN: usize = 18;
 
 /// The OBCM format version byte written into the header (`OBCM_Spec.md` §1).
-pub const OBCM_VERSION: u8 = 6;
+pub const OBCM_VERSION: u8 = 7;
 
-/// POI category count baked into every v6 map's directory (§7.1). Fixed by the
+/// POI category count baked into every v7 map's directory (§7.1). Fixed by the
 /// canonical [`crate::poi::POI_TABLE`]: category ids 1..=6.
 pub const POI_CATEGORY_COUNT: u8 = 6;
 
-/// One 32-byte POI record (§7.3): `int32 lat, int32 lon, u8 subtype, u8 name_len,
-/// [u8; 20] name, [0xFF; 2] reserved`.
-pub const POI_RECORD_LEN: usize = 32;
+/// One 36-byte POI record (§7.3): `int32 lat, int32 lon, u8 subtype, u8 name_len,
+/// [u8; 24] name, u16 hours_ref`. v7 widened the name 20 → 24 and replaced the two
+/// v6 reserved bytes with `hours_ref`.
+pub const POI_RECORD_LEN: usize = 36;
 
-/// The `Name` field width inside a POI record (§7.3): 20 bytes, `0xFF`-padded.
-pub const POI_NAME_LEN: usize = 20;
+/// The `Name` field width inside a POI record (§7.3): 24 bytes, `0xFF`-padded.
+pub const POI_NAME_LEN: usize = 24;
 
-/// Fixed POI chunk capacity (bytes) the packer writes (§7.1). 512 ⇒ 16 records per
-/// chunk. Shared by every category, stored once in the directory's `Chunk Size`.
+/// `hours_ref` sentinel (§7.3): the POI has no pooled hours. Stored at record
+/// bytes `[34..36]` when a POI has no parseable `opening_hours`.
+pub const POI_HOURS_REF_NONE: u16 = 0xFFFF;
+
+/// One hours-pool blob (§7.5): `flags u8` + `7 days × 2 slots × (open_q, close_q)`.
+/// Matches [`crate::hours::BLOB_LEN`]; re-asserted equal below.
+pub const POI_HOURS_BLOB_LEN: usize = 29;
+
+/// Fixed POI chunk capacity (bytes) the packer writes (§7.1). 512 ⇒ `512 / 36 = 14`
+/// records per chunk. Shared by every category, stored once in the directory's
+/// `Chunk Size`.
 pub const POI_CHUNK_SIZE: usize = 512;
 
 /// One POI-directory category entry (§7.1): `u8 category_id, u32 index_offset,
 /// u32 index_node_count, u32 chunk_count`.
 pub const POI_CAT_ENTRY_LEN: usize = 13;
+
+// The serializer's blob length must equal `hours.rs`'s `Schedule::encode` width, or
+// the pool bytes and the `POI_HOURS_BLOB_LEN` the directory advertises disagree.
+const _: () = assert!(POI_HOURS_BLOB_LEN == crate::hours::BLOB_LEN, "hours blob length must match hours.rs");
 
 /// Largest `chunk_size` (bytes) that keeps every feature within the reader's
 /// [`obc_reader::MAX_FEAT_PTS`] vertex cap. Densest encoding is 8-bit deltas
@@ -399,15 +415,19 @@ pub fn serialize_tree(root: &Node, chunk_size: usize) -> (Vec<u8>, u32, Vec<u8>,
     flatten_tree(root, chunk_size)
 }
 
-// --- POI section (v6, spec §7) ------------------------------------------------
+// --- POI section (v7, spec §7) ------------------------------------------------
 
 /// A POI record's absolute microdegree coordinates + the fields packed into its
-/// 32-byte record (§7.3). Owned so the tree can move records into leaves.
+/// 36-byte record (§7.3). Owned so the tree can move records into leaves.
+/// `hours_ref` is the 0-based index into the map's hours-pool section (§7.5), or
+/// [`POI_HOURS_REF_NONE`] when the POI has no pooled hours — resolved before
+/// tree-building so it travels with the record.
 struct PoiPoint {
     lon_udeg: i32,
     lat_udeg: i32,
     subtype: u8,
     name: Option<String>,
+    hours_ref: u16,
 }
 
 /// One node of a category's POI quadtree, mirroring the geometry [`Node`] shape so
@@ -434,11 +454,11 @@ impl FlattenTree for PoiNode {
     }
 }
 
-/// Pack one 32-byte POI record (§7.3): absolute `int32 lat, int32 lon`, `u8
-/// subtype`, `u8 name_len`, a 20-byte `0xFF`-padded name, and `0xFF 0xFF`
-/// reserved. The name is already ASCII-folded + ≤ 20 bytes at ingest
-/// ([`crate::poi::normalize_name`]); truncate defensively so a stray long name can
-/// never overrun the fixed field.
+/// Pack one 36-byte POI record (§7.3): absolute `int32 lat, int32 lon`, `u8
+/// subtype`, `u8 name_len`, a 24-byte `0xFF`-padded name, and a `u16 hours_ref`
+/// (0-based hours-pool index, [`POI_HOURS_REF_NONE`] = none). The name is already
+/// ASCII-folded + ≤ 24 bytes at ingest ([`crate::poi::normalize_name`]); truncate
+/// defensively so a stray long name can never overrun the fixed field.
 fn pack_poi_record(p: &PoiPoint) -> [u8; POI_RECORD_LEN] {
     let mut rec = [0xFFu8; POI_RECORD_LEN];
     rec[0..4].copy_from_slice(&p.lat_udeg.to_le_bytes());
@@ -449,16 +469,17 @@ fn pack_poi_record(p: &PoiPoint) -> [u8; POI_RECORD_LEN] {
     let len = bytes.len().min(POI_NAME_LEN);
     rec[9] = len as u8;
     rec[10..10 + len].copy_from_slice(&bytes[..len]);
-    // rec[10 + len .. 30] stays 0xFF (name pad); rec[30..32] stays 0xFF (reserved).
+    // rec[10 + len .. 34] stays 0xFF (name pad).
+    rec[34..36].copy_from_slice(&p.hours_ref.to_le_bytes());
     rec
 }
 
 /// Pack a leaf's POI records into one `chunk_size`-byte chunk (§7.3): as many fixed
-/// 32-byte records as fit, back-to-back, then a `0xFF` **subtype** sentinel + `0xFF`
+/// 36-byte records as fit, back-to-back, then a `0xFF` **subtype** sentinel + `0xFF`
 /// padding to `chunk_size`. Returns `(bytes, dropped)`. `build_poi_tree` splits a
 /// leaf before it exceeds the chunk capacity, so `dropped` is 0 in practice; the cap
 /// is the safety net for the one case the tree can't split away — more than
-/// `chunk_size / 32` distinct POIs inside the 10-µdeg (~1 m) recursion floor, which
+/// `chunk_size / 36` distinct POIs inside the 10-µdeg (~1 m) recursion floor, which
 /// dedup makes effectively impossible. Truncating loudly beats corrupting the chunk.
 fn pack_poi_chunk(points: &[PoiPoint], chunk_size: usize) -> (Vec<u8>, usize) {
     let capacity = chunk_size / POI_RECORD_LEN;
@@ -516,26 +537,41 @@ fn build_poi_tree(points: Vec<PoiPoint>, bbox: (i64, i64, i64, i64), capacity: u
 }
 
 /// Serialize the full POI section (spec §7): the directory followed by each
-/// category's quadtree index + data chunks. `pois` is the deduped classified list;
-/// each is bucketed by its subtype's category ([`crate::poi::table_row`]). Category
-/// ids are `1..=POI_CATEGORY_COUNT` and every one gets a directory entry, empty or
-/// not (§7.1) — a map with no POIs writes six empty entries, never a zero offset.
+/// category's quadtree index + data chunks, then the shared **hours-pool section**
+/// (§7.5) at the tail. `pois` is the deduped classified list; each is bucketed by
+/// its subtype's category ([`crate::poi::table_row`]). Category ids are
+/// `1..=POI_CATEGORY_COUNT` and every one gets a directory entry, empty or not
+/// (§7.1) — a map with no POIs writes six empty entries, never a zero offset.
 /// `section_offset` is the section's absolute byte offset in the file, needed so the
-/// directory's per-category `index_offset` fields are file-absolute.
+/// directory's per-category `index_offset` fields and the `hours_pool_offset` are
+/// file-absolute.
+///
+/// The hours pool is built **once** over the whole `pois` slice ([`build_hours_pool`]):
+/// identical 29-byte weekly-schedule blobs collapse to one, and each POI's 0-based
+/// `hours_ref` (or [`POI_HOURS_REF_NONE`]) is stamped onto its record **before**
+/// tree-building so it travels into the right leaf. The pool bytes (`count u16` +
+/// `count × 29-byte blobs`) are appended after every category's index+chunks, and
+/// the directory records the pool's absolute offset + count.
 pub fn serialize_poi_section(pois: &[Poi], global_bbox: (i64, i64, i64, i64), section_offset: usize) -> Vec<u8> {
-    // Bucket points by category (id 1..=6). Index 0 is unused (no category 0).
+    // Dedup the weekly schedules into a pool once over the whole list; `refs[k]` is
+    // POI k's 0-based pool index (or `None` ⇒ no hours). Aligned to `pois`.
+    let (pool, refs) = crate::hours::build_hours_pool(pois, |p| p.hours.as_ref());
+
+    // Bucket points by category (id 1..=6). Index 0 is unused (no category 0). Each
+    // point carries its resolved `hours_ref` so it survives tree-building + chunking.
     let mut by_cat: Vec<Vec<PoiPoint>> = (0..=POI_CATEGORY_COUNT as usize).map(|_| Vec::new()).collect();
-    for p in pois {
+    for (p, hours_ref) in pois.iter().zip(refs.iter()) {
         let cat = table_row(p.subtype).category() as usize;
         by_cat[cat].push(PoiPoint {
             lon_udeg: p.lon_udeg,
             lat_udeg: p.lat_udeg,
             subtype: p.subtype,
             name: p.name.clone(),
+            hours_ref: hours_ref.unwrap_or(POI_HOURS_REF_NONE),
         });
     }
 
-    // Records per chunk = chunk_size / record_len (512 / 32 = 16), so a leaf holds
+    // Records per chunk = chunk_size / record_len (512 / 36 = 14), so a leaf holds
     // at most that many before the tree splits.
     let capacity = POI_CHUNK_SIZE / POI_RECORD_LEN;
 
@@ -561,25 +597,39 @@ pub fn serialize_poi_section(pois: &[Poi], global_bbox: (i64, i64, i64, i64), se
         blocks.push(CatBlock { cat_id, index, node_count, chunks, chunk_count });
     }
 
-    // Directory size: count byte + chunk_size u16 + one entry per category.
-    let dir_len = 1 + 2 + POI_CATEGORY_COUNT as usize * POI_CAT_ENTRY_LEN;
+    // Directory size: count byte + chunk_size u16 + one entry per category + the two
+    // v7 hours-pool fields (offset u32 + count u16).
+    let dir_len = 1 + 2 + POI_CATEGORY_COUNT as usize * POI_CAT_ENTRY_LEN + 4 + 2;
 
-    // Assign each category's index offset (file-absolute), laid out sequentially
-    // after the directory: [index][chunks] per category, empties contributing zero.
+    // Lay categories out sequentially after the directory: [index][chunks] per
+    // category, empties contributing zero. The hours pool follows the last category.
     let mut cursor = section_offset + dir_len;
-    let mut dir = Vec::with_capacity(dir_len);
-    dir.push(POI_CATEGORY_COUNT);
-    dir.extend_from_slice(&(POI_CHUNK_SIZE as u16).to_le_bytes());
     let mut payload = Vec::new();
+    let mut cat_entries = Vec::with_capacity(POI_CATEGORY_COUNT as usize);
     for b in &blocks {
-        dir.push(b.cat_id);
-        dir.extend_from_slice(&(cursor as u32).to_le_bytes());
-        dir.extend_from_slice(&b.node_count.to_le_bytes());
-        dir.extend_from_slice(&b.chunk_count.to_le_bytes());
+        cat_entries.push((b.cat_id, cursor as u32, b.node_count, b.chunk_count));
         payload.extend_from_slice(&b.index);
         payload.extend_from_slice(&b.chunks);
         cursor += b.index.len() + b.chunks.len();
     }
+
+    // The hours-pool section begins right after the last category's chunks (`cursor`).
+    let hours_pool_offset = cursor;
+    let hours_pool = pack_hours_pool(&pool);
+    payload.extend_from_slice(&hours_pool);
+
+    // Now emit the directory with the resolved offsets + pool fields.
+    let mut dir = Vec::with_capacity(dir_len);
+    dir.push(POI_CATEGORY_COUNT);
+    dir.extend_from_slice(&(POI_CHUNK_SIZE as u16).to_le_bytes());
+    for (cat_id, index_offset, node_count, chunk_count) in cat_entries {
+        dir.push(cat_id);
+        dir.extend_from_slice(&index_offset.to_le_bytes());
+        dir.extend_from_slice(&node_count.to_le_bytes());
+        dir.extend_from_slice(&chunk_count.to_le_bytes());
+    }
+    dir.extend_from_slice(&(hours_pool_offset as u32).to_le_bytes());
+    dir.extend_from_slice(&(pool.len() as u16).to_le_bytes());
     debug_assert_eq!(dir.len(), dir_len);
 
     let mut out = Vec::with_capacity(dir_len + payload.len());
@@ -588,9 +638,22 @@ pub fn serialize_poi_section(pois: &[Poi], global_bbox: (i64, i64, i64, i64), se
     out
 }
 
-/// The 36-byte OBCM v6 header `<4sBiiiiIBIHI>`: magic, version, bbox stored as
+/// Pack the hours-pool section (§7.5): `count u16` then `count × 29-byte` blobs,
+/// back-to-back. `blob i` (as referenced by a record's `hours_ref`) lands at
+/// `hours_pool_offset + 2 + i * 29`. An empty pool is just the `0` count (2 bytes).
+fn pack_hours_pool(pool: &[[u8; POI_HOURS_BLOB_LEN]]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(2 + pool.len() * POI_HOURS_BLOB_LEN);
+    out.extend_from_slice(&(pool.len() as u16).to_le_bytes());
+    for blob in pool {
+        out.extend_from_slice(blob);
+    }
+    out
+}
+
+/// The 36-byte OBCM v7 header `<4sBiiiiIBIHI>`: magic, version, bbox stored as
 /// lat,lon,lat,lon, style offset, lod count, lod-table offset, marker color, and
-/// (v6) the POI section offset. Shared by both serializers.
+/// the POI section offset. Unchanged from v6 (v7 only bumps the version byte + the
+/// POI section). Shared by both serializers.
 fn header_bytes(
     lod_count: usize,
     marker_color: u16,
@@ -625,7 +688,7 @@ fn push_lod_entry(table: &mut Vec<u8>, max_mpp: Option<f64>, index_offset: u32, 
     table.extend_from_slice(&cc.to_le_bytes());
 }
 
-/// Serialize a pyramid of LOD layers into the full v6 `.obcm` byte stream (header
+/// Serialize a pyramid of LOD layers into the full v7 `.obcm` byte stream (header
 /// field order, LOD table layout, the bbox stored as lat,lon,lat,lon, and the
 /// trailing POI section §7). `pois` is the deduped classified POI list (empty ⇒ an
 /// empty POI directory, still written). The second return value is the total
@@ -679,7 +742,7 @@ pub fn serialize_lods(
     (out, dropped)
 }
 
-/// Streaming counterpart to [`serialize_lods`]: writes the **same** v6 byte stream,
+/// Streaming counterpart to [`serialize_lods`]: writes the **same** v7 byte stream,
 /// but builds, serializes, and drops one LOD tree at a time. Peak memory is ~one
 /// tree + one LOD's chunk bytes rather than all trees plus the whole output buffer.
 ///
@@ -825,8 +888,10 @@ mod tests {
     #[test]
     fn streaming_matches_in_memory() {
         // Streaming output must be byte-identical to `serialize_lods` for the same
-        // 2-LOD pyramid *and* POI section — the POI back-patch in the streaming path
-        // is easy to drift, so the fixture carries POIs of a few categories.
+        // 2-LOD pyramid *and* POI section — the POI back-patch + the trailing
+        // hours-pool section in the streaming path are easy to drift, so the fixture
+        // carries POIs of a few categories, two sharing one pooled schedule and one
+        // with a distinct one (exercises the dedup pool + `hours_ref` stamping).
         use crate::geom::Geom;
         use crate::poi::Poi;
         use std::io::Cursor;
@@ -849,18 +914,19 @@ mod tests {
                 ),
             },
         ];
-        let poi = |subtype, lon, lat, name: Option<&str>| Poi {
+        let poi = |subtype, lon, lat, name: Option<&str>, hours: Option<&str>| Poi {
             subtype,
             lon_udeg: lon,
             lat_udeg: lat,
             name: name.map(String::from),
             from_node: true,
-            hours: None,
+            hours: hours.and_then(crate::hours::parse),
         };
         let pois = vec![
-            poi(1, 100_000, 100_000, Some("Brunnen")),
-            poi(5, 200_000, 200_000, None),
-            poi(17, 300_000, 300_000, Some("Apotheke")),
+            poi(1, 100_000, 100_000, Some("Brunnen"), None),
+            poi(5, 200_000, 200_000, None, Some("Mo-Fr 08:00-18:00")),
+            poi(17, 300_000, 300_000, Some("Apotheke"), Some("Mo-Fr 08:00-18:00")),
+            poi(18, 400_000, 400_000, Some("Velowerkstatt"), Some("24/7")),
         ];
 
         let (reference, ref_dropped) = serialize_lods(&lods, &styles, 0xABCD, bbox, &pois);

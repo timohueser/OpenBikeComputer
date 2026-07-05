@@ -25,7 +25,7 @@ fn render_overlay_touches_only_overlay_pixels() {
     let bytes = build_min_obcm(0);
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let tables = MapTables::parse(&src).expect("valid v5 file");
+    let tables = MapTables::parse(&src).expect("valid v7 file");
     let reader = Reader::new(&src, &tables, &cache);
     let (w, h) = (240i32, 320i32);
     let hud = rgb(palette::HUD); // the near-black bulge color
@@ -66,7 +66,7 @@ fn render_frame_equals_map_then_overlay() {
     let bytes = build_min_obcm(0);
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let tables = MapTables::parse(&src).expect("valid v5 file");
+    let tables = MapTables::parse(&src).expect("valid v7 file");
     let reader = Reader::new(&src, &tables, &cache);
     let (w, h) = (240i32, 320i32);
 

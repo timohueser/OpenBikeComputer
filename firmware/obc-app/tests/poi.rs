@@ -26,12 +26,13 @@ const POS: (i32, i32) = (7_500_000, 43_500_000);
 /// label shows).
 fn fixture() -> Vec<u8> {
     let water = vec![
-        PoiSpec { lat: 43_500_500, lon: 7_500_000, subtype: 1, name: "Fountain North".into() }, // due north, nearest
-        PoiSpec { lat: 43_500_000, lon: 7_501_000, subtype: 2, name: "Spring East".into() },    // due east
-        PoiSpec { lat: 43_490_000, lon: 7_500_000, subtype: 1, name: "Well South".into() },     // due south, farther
+        PoiSpec { lat: 43_500_500, lon: 7_500_000, subtype: 1, name: "Fountain North".into(), hours_ref: 0xFFFF }, // due north, nearest
+        PoiSpec { lat: 43_500_000, lon: 7_501_000, subtype: 2, name: "Spring East".into(), hours_ref: 0xFFFF }, // due east
+        PoiSpec { lat: 43_490_000, lon: 7_500_000, subtype: 1, name: "Well South".into(), hours_ref: 0xFFFF }, // due south, farther
     ];
     // Unnamed campsite (subtype 5 → "Campsite" fallback label).
-    let campsite = vec![PoiSpec { lat: 43_501_000, lon: 7_500_000, subtype: 5, name: String::new() }];
+    let campsite =
+        vec![PoiSpec { lat: 43_501_000, lon: 7_500_000, subtype: 5, name: String::new(), hours_ref: 0xFFFF }];
     build_poi_map(BBOX, 512, &[(1, water), (2, campsite)])
 }
 
@@ -39,7 +40,7 @@ fn fixture() -> Vec<u8> {
 fn render(app: &mut App, bytes: &[u8]) -> Buf {
     let cache = MapCache::new();
     let src = SliceSource(bytes);
-    let tables = MapTables::parse(&src).expect("valid v6 file");
+    let tables = MapTables::parse(&src).expect("valid v7 file");
     let reader = Reader::new(&src, &tables, &cache);
     let mut buf = Buf::new(240, 320);
     app.render_frame(&mut buf, &reader, None, 240.0, 320.0, |c| {
