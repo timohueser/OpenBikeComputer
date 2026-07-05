@@ -156,14 +156,18 @@ public struct UploadSheetView: View {
 
     private var failedContent: some View {
         VStack(spacing: 0) {
-            iconTile(systemImage: "exclamationmark.triangle", color: OBCTheme.warning)
-                .padding(.top, 6)
-                .padding(.bottom, 14)
+            iconTile(
+                systemImage: model.failure == .storageFull ? "externaldrive.badge.exclamationmark" : "exclamationmark.triangle",
+                color: OBCTheme.warning
+            )
+            .padding(.top, 6)
+            .padding(.bottom, 14)
 
-            Text("Couldn't upload")
+            Text(model.failedTitle)
                 .font(.obcSerif(size: 20))
                 .foregroundStyle(OBCTheme.ink)
-            Text("\(model.deviceName) didn't answer. Check that it's awake and nearby, then try again.")
+                .accessibilityIdentifier("upload.failedTitle")
+            Text(model.failedMessage)
                 .font(.system(size: 13.5))
                 .lineSpacing(3)
                 .foregroundStyle(OBCTheme.inkSoft)
@@ -171,6 +175,7 @@ public struct UploadSheetView: View {
                 .frame(maxWidth: 260)
                 .padding(.top, 6)
                 .padding(.bottom, 18)
+                .accessibilityIdentifier("upload.failedMessage")
 
             Button("Close") { model.dismiss() }
                 .buttonStyle(.obcGhost)

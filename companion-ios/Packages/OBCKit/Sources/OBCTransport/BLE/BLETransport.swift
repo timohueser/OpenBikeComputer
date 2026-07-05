@@ -490,7 +490,13 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     }
 
     private func rejectError(_ status: TransferResult.Status) -> DeviceError {
-        status == .crcMismatch ? .crcMismatch : .transferRejected
+        switch status {
+        case .crcMismatch: .crcMismatch
+        case .storageFull: .storageFull
+        // committed/aborted aren't rejects; if one ever reaches here it's a
+        // generic device-side failure like the rest.
+        case .committed, .aborted, .error, .notFound, .busy: .transferRejected
+        }
     }
 
     private func deliverAnnounce(_ descriptor: TransferControl) {
@@ -835,6 +841,8 @@ private actor UploadRunner {
                 finish(.failed(.crcMismatch))
             case .aborted:
                 finish(.canceled)  // our cancel raced the completion
+            case .storageFull:
+                finish(.failed(.storageFull))  // catalog full — a new-route reject
             case .error, .notFound, .busy:
                 finish(.failed(.transferRejected))
             }

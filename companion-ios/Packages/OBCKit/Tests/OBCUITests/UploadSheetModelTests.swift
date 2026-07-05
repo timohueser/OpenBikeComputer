@@ -223,6 +223,56 @@ final class UploadSheetModelTests: XCTestCase {
         model.dismiss()
         XCTAssertTrue(model.shouldDismiss)
     }
+
+    // MARK: Storage-full reject copy (L2 / #460)
+
+    /// Build a model over a transport we drive straight to a chosen failure, so
+    /// the copy mapping can be asserted without a scenario for each reject kind.
+    private func failedModel(_ error: DeviceError) async -> UploadSheetModel {
+        let transport = ControlledUploadTransport()
+        let blob = RouteBlob(
+            summary: RouteSummary(
+                id: RouteID("fail-copy"), name: "Kettle Moraine Loop",
+                distanceMeters: 62_400, elevationGainMeters: 840
+            ),
+            waypoints: [],
+            payload: Data(count: 1_000)
+        )
+        let model = UploadSheetModel(
+            transport: transport, blob: blob, deviceName: "Trailhead", timing: Self.fastTiming
+        )
+        model.start()
+        try? await Task.sleep(for: .milliseconds(20))  // let the outcome watcher suspend
+        transport.outcomePromise.fulfill(.failed(error))
+        await waitFor("failed") { model.phase == .failed }
+        return model
+    }
+
+    func testStorageFullFailureGetsDedicatedCopy() async {
+        let model = await failedModel(.storageFull)
+        XCTAssertEqual(model.failure, .storageFull)
+        XCTAssertEqual(model.failedTitle, "Device storage full")
+        XCTAssertEqual(
+            model.failedMessage,
+            "Trailhead's route storage is full. Delete routes on the device to make room, then try again."
+        )
+        // The copy must not imply an *update* of an existing route hits the cap.
+        XCTAssertFalse(model.failedMessage.lowercased().contains("update"))
+    }
+
+    func testGenericRejectKeepsTheDefaultCopy() async {
+        // A non-storage reject — including the forward-compat generic
+        // `.transferRejected` an unknown status code decodes to — keeps the
+        // "didn't answer" framing, byte-for-byte unchanged.
+        let model = await failedModel(.transferRejected)
+        XCTAssertEqual(model.failure, .transferRejected)
+        XCTAssertNotEqual(model.failure, .storageFull)
+        XCTAssertEqual(model.failedTitle, "Couldn't upload")
+        XCTAssertEqual(
+            model.failedMessage,
+            "Trailhead didn't answer. Check that it's awake and nearby, then try again."
+        )
+    }
 }
 
 /// A hand-driven transport whose upload handle the test controls: the outcome
