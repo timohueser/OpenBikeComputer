@@ -1,4 +1,4 @@
-# OBCM File Format Specification (v6)
+# OBCM File Format Specification (v7)
 
 OBCM (OpenStreetMap Binary Chunked Map) is a compact binary map format designed
 for efficient rendering on memory-constrained devices such as microcontrollers
@@ -22,8 +22,17 @@ bytes) and a new **POI section** (§7): the OSM points-of-interest the packer
 bakes in (water, campsites, accommodation, resupply, pharmacies, bike shops),
 indexed by a small quadtree per category over 32-byte records. The section is
 **always present** — a map with no POIs writes an empty directory, never a
-sentinel-zero offset. **v6 is the only supported version**; earlier versions (v5,
-v4, v3 LOD-only, v2 single detail level) have been dropped.
+sentinel-zero offset.
+
+**Version 7** widens the POI record 32 → 36 bytes: the `Name` field grows 20 → 24
+bytes and the two trailing reserved bytes become a `HoursRef` u16 into a new
+**hours-pool section** (§7.5) at the file tail. The POI directory (§7.1) gains
+`hours_pool_offset` + `hours_pool_count`. The pool holds deduplicated 29-byte
+weekly-schedule blobs (today's opening hours, normalized at pack time from OSM
+`opening_hours`), so a POI's hours are a single index lookup on-device. The header
+does **not** grow (still 36 bytes) — only the version byte and the POI section
+change. **v7 is the only supported version**; earlier versions (v6, v5, v4, v3
+LOD-only, v2 single detail level) have been dropped.
 
 ## Design principles
 
@@ -56,6 +65,7 @@ screen space is the renderer's responsibility, not the format's.
 ...
 [LOD N-1 Index][LOD N-1 Data Chunks] (finest)
 [POI Directory][POI Indexes + Chunks] (§7)
+[Hours-Pool Section]                  (§7.5 — file tail)
 ```
 
 The byte layout is produced by `firmware/obc-pack/src/serialize.rs` (`serialize_lods`) and
@@ -70,7 +80,7 @@ Packed as `struct "<4sBiiiiIBIHI"`.
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
 | 0 | Magic | 4 | `char[4]` | Must be `b"OBCM"` |
-| 4 | Version | 1 | `uint8` | `0x06` |
+| 4 | Version | 1 | `uint8` | `0x07` |
 | 5 | Min Lat | 4 | `int32` | Global bbox min latitude (microdegrees) |
 | 9 | Min Lon | 4 | `int32` | Global bbox min longitude |
 | 13 | Max Lat | 4 | `int32` | Global bbox max latitude |
@@ -287,28 +297,33 @@ it survives the packer's automatic ID assignment. Land is then painted on top.
 
 ---
 
-## 7. POI Section (v6)
+## 7. POI Section (v7)
 
 Point-of-interest features the packer classifies from OSM nodes and closed-way
 centroids (see the category table below). Unlike geometry, POIs are **not**
 rendered on the map; the device surfaces them as a category → nearest-list
 browser. They are indexed for a nearest-N query, not a viewport walk, so each
-category gets its own small quadtree over 32-byte point records.
+category gets its own small quadtree over 36-byte point records (v7 widened them
+from 32).
 
 The section is reached from `POI Section Offset` (header offset 32) and is
 **always present**: a map with no POIs writes a directory of six empty
-categories, never a zero offset.
+categories, never a zero offset. Each POI record carries a `HoursRef` u16 into
+the trailing **hours-pool section** (§7.5), reached from the directory's
+`hours_pool_offset`.
 
 ### 7.1 POI Directory
 
 ```
-uint8   Category Count            (= 6 in v6)
+uint8   Category Count            (= 6 in v7)
 uint16  Chunk Size                (POI chunk capacity in bytes — the packer writes 512)
 per category (Category Count entries, 13 bytes each):
   uint8   Category ID
   uint32  Index Offset            (byte offset to this category's quadtree index)
   uint32  Index Node Count        (number of uint32 nodes; 0 ⇒ category empty)
   uint32  Chunk Count             (number of data chunks in this category)
+uint32  Hours Pool Offset         (byte offset to the hours-pool section, §7.5)
+uint16  Hours Pool Count          (number of 29-byte blobs; 0 ⇒ no hours in this map)
 ```
 
 `Chunk Size` is shared by every category (all POI chunks are the same fixed
@@ -317,6 +332,12 @@ capacity). As with a LOD, a category's data chunks begin at
 `walk_leaves` leaf-walk and chunk-offset math are reused verbatim. An empty
 category (`Index Node Count == 0`) still has a directory entry; its `Index Offset`
 points at where its (zero-length) index would start and `Chunk Count` is `0`.
+
+The two **v7 hours-pool fields** trail the per-category entries. `Hours Pool
+Offset` is the absolute byte offset of the hours-pool section (§7.5); `Hours Pool
+Count` is the number of 29-byte blobs there and MUST equal the `count` written at
+that offset. `Hours Pool Count == 0` means the map has no hours (the pool is a bare
+`0` count); a record's `HoursRef == 0xFFFF` likewise means "no hours."
 
 ### 7.2 Per-category quadtree
 
@@ -328,12 +349,13 @@ one exactly as it walks a LOD index, collecting `(chunk_id, node_bbox)` for each
 non-empty leaf; the `node_bbox` is **not** needed to decode a POI record (records
 store absolute coordinates), only to prune the walk.
 
-### 7.3 POI records — fixed 32 bytes
+### 7.3 POI records — fixed 36 bytes
 
-Records are packed into `Chunk Size`-byte chunks (512 ⇒ 16 records/chunk). Each
-record is exactly 32 bytes. A `0xFF` **Subtype** byte marks the end of records in
-a chunk (mirrors the geometry chunk's `0xFF` style-ID sentinel); trailing bytes
-of a partial final chunk are `0xFF`-padded.
+Records are packed into `Chunk Size`-byte chunks (512 ⇒ `512 / 36 = 14`
+records/chunk). Each record is exactly 36 bytes (v7 widened them from 32). A `0xFF`
+**Subtype** byte marks the end of records in a chunk (mirrors the geometry chunk's
+`0xFF` style-ID sentinel); trailing bytes of a partial final chunk are
+`0xFF`-padded.
 
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
@@ -341,21 +363,26 @@ of a partial final chunk are `0xFF`-padded.
 | 4 | Lon | 4 | `int32` | Longitude, **absolute** microdegrees |
 | 8 | Subtype | 1 | `uint8` | Canonical subtype id (§7.4); `0xFF` = end-of-chunk sentinel |
 | 9 | Name Len | 1 | `uint8` | Length of the stored name in bytes (`0` = unnamed) |
-| 10 | Name | 20 | `char[20]` | Pre-folded printable ASCII; unused tail bytes are `0xFF` |
-| 30 | Reserved | 2 | — | `0xFF 0xFF` (reserved for future flags) |
+| 10 | Name | 24 | `char[24]` | Pre-folded printable ASCII; unused tail bytes are `0xFF` |
+| 34 | HoursRef | 2 | `uint16` | 0-based index into the hours pool (§7.5); `0xFFFF` = no hours |
 
 Coordinates are **absolute** (no per-node anchor/delta as in geometry §5): at a
-fixed 32 bytes the delta win isn't worth the decode asymmetry with geometry
-chunks, and fixed-size records keep chunk packing trivial (`Chunk Size / 32`
+fixed 36 bytes the delta win isn't worth the decode asymmetry with geometry
+chunks, and fixed-size records keep chunk packing trivial (`Chunk Size / 36`
 records per chunk, no per-record length bookkeeping). The **category** is not
 stored per record — it is derived on-device from the subtype (each subtype maps to
 exactly one category, §7.4) — and is implicit anyway from which category's
 quadtree the record came from.
 
 Names are ASCII-folded at pack time to the device font's printable set
-(`0x20..=0x7E`, Terminus) and capped at **20 bytes**; an unnamed POI (`Name Len ==
-0`) shows its subtype's fallback label on-device. The 20-byte `Name` field is
-`0xFF`-padded past `Name Len` so a record is always exactly 32 bytes.
+(`0x20..=0x7E`, Terminus) and capped at **24 bytes** (v7 widened the field from
+20); an unnamed POI (`Name Len == 0`) shows its subtype's fallback label
+on-device. The 24-byte `Name` field is `0xFF`-padded past `Name Len`.
+
+`HoursRef` is a 0-based index into the hours-pool section (§7.5): blob `i` lives at
+`hours_pool_offset + 2 + i*29`. `0xFFFF` means the POI has no (parseable) hours.
+Duplicate weekly schedules collapse to one pooled blob, so many POIs in a region
+can share a single `HoursRef`.
 
 ### 7.4 Canonical category / subtype table (normative)
 
@@ -390,15 +417,56 @@ Subtype ids are dense and 1-based, so a subtype id indexes directly into the
 table (`row = subtype - 1`). The category count in the directory (`6`) equals the
 number of distinct category ids; every subtype belongs to exactly one category.
 
+### 7.5 Hours-pool section (v7)
+
+A single deduplicated pool of weekly opening-hours schedules, written at the
+**file tail** and reached from the directory's `Hours Pool Offset` (§7.1). A POI
+record's `HoursRef` (§7.3) is a 0-based index into it; identical schedules collapse
+to one blob, so a region's shops share entries and the pool stays small (only POIs
+with parseable hours cost anything).
+
+```
+uint16  Count                     (number of blobs; equals Hours Pool Count in the directory)
+per blob (Count entries, 29 bytes each):
+  uint8   Flags
+  per day (7 days, Mon..Sun, 2 slots each):
+    uint8  Open Q                 (quarter-hours from midnight, 0..=96)
+    uint8  Close Q
+```
+
+Blob `i` (a record's `HoursRef == i`) lives at `Hours Pool Offset + 2 + i*29`. An
+empty pool is just the 2-byte `Count == 0`. Hours are parsed and normalized from
+OSM `opening_hours` **at pack time** (the grammar never runs on the device); the
+device does a trivial weekday lookup.
+
+**Blob layout (29 bytes).** `Flags` bit 0 = **seasonal** (the source rule carried a
+month/date/season selector and a representative in-season week was baked — the UI
+ignores this in v1), bit 1 = **truncated** (a rule the encoding can't model — a
+`PH`/`SH` non-`off` rule, `sunrise`/`sunset`, or a 3rd+ interval on a day — was
+dropped); other bits reserved `0`. The seven days run **Mon (index 0) .. Sun (index
+6)**, each with up to two `(Open Q, Close Q)` intervals.
+
+**Time convention.** A time-of-day is quarter-hours from midnight, `0..=96` (`96` =
+24:00), so the resolution is 15 minutes. Per interval:
+
+- **Unused slot** — `(0, 0)`.
+- **Closed day** — both slots `(0, 0)`.
+- **Open all day (24 h)** — slot 0 `(0, 96)`, slot 1 `(0, 0)`.
+- **Overnight wrap** — `Close Q <= Open Q` (both nonzero): the interval runs past
+  midnight, stored as-is (never split across days). E.g. `22:00-02:00` → `(88, 8)`.
+- A day with more than two intervals is truncated to the first two and the blob's
+  `Flags` truncated bit is set.
+
 ---
 
 ## Reference implementations
 
 - **Writer (Rust, std host):** `firmware/obc-pack/src/serialize.rs` (`serialize_lods`,
   `serialize_tree`, `serialize_poi_section`, `pack_feature`, `pack_chunk`,
-  `pack_style_dict`) and `firmware/obc-pack/src/poi.rs` (the category/subtype table
-  mirrored in §7.4).
+  `pack_style_dict`), `firmware/obc-pack/src/poi.rs` (the category/subtype table
+  mirrored in §7.4), and `firmware/obc-pack/src/hours.rs` (the `opening_hours`
+  parser + 29-byte blob encoder + dedup pool for §7.5).
 - **Reader + renderer (Rust, no_std):** `firmware/obc-reader` — `reader.rs`
-  (`Reader`, `for_each_feature`, `select_lod_for_mpp`, the POI directory in
-  `MapTables`) — and `firmware/obc-render` (`Viewport`, `MapRenderer`).
-  Format-contract tests in `firmware/obc-reader/tests/format.rs`.
+  (`Reader`, `for_each_feature`, `select_lod_for_mpp`, the POI directory +
+  hours-pool offset/count in `MapTables`) — and `firmware/obc-render` (`Viewport`,
+  `MapRenderer`). Format-contract tests in `firmware/obc-reader/tests/format.rs`.
