@@ -1,6 +1,6 @@
 //! Query-contract tests for the nearest-16 POI scan (`Reader::nearest_pois`, #424).
 //!
-//! Each test builds a synthetic v7 `.obcm` whose POI section is a real per-category quadtree (via
+//! Each test builds a synthetic v8 `.obcm` whose POI section is a real per-category quadtree (via
 //! `obcm-testkit`'s `build_poi_map`, which mirrors the packer's tree build), then asserts the
 //! reader's expanding-ring scan returns exactly the brute-force nearest-16 — same set, same order,
 //! same distances. The last test runs the query against the committed real Monaco map.

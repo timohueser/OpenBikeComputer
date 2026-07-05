@@ -1,13 +1,16 @@
 //! OBCM map format reader and renderer.
 //!
 //! `no_std`, zero-alloc (heapless) so the exact same code runs in the desktop
-//! simulator and in the nRF54L firmware. Parses format **v7** (the LOD pyramid,
-//! a header marker color, a per-style priority level, the trailing POI directory,
-//! and the hours-pool section — see OBCM_Spec.md): a file holds N levels of detail,
-//! each its own quadtree + chunk set, selected at render time from the current
-//! meters-per-pixel, plus a per-category POI index and a deduplicated hours pool
-//! ([`Reader::poi_hours`](crate::Reader::poi_hours) resolves a POI's schedule on
-//! demand for the detail screen — #443).
+//! simulator and in the nRF54L firmware. Parses format **v8** (the LOD pyramid,
+//! a header marker color, a per-style priority level, the POI directory + hours
+//! pool, and the trailing nav-graph section — see OBCM_Spec.md): a file holds N
+//! levels of detail, each its own quadtree + chunk set, selected at render time
+//! from the current meters-per-pixel, plus a per-category POI index, a
+//! deduplicated hours pool ([`Reader::poi_hours`](crate::Reader::poi_hours)
+//! resolves a POI's schedule on demand — #443), and a tiled routable graph
+//! ([`Reader::for_each_nav_node`](crate::Reader::for_each_nav_node) /
+//! [`Reader::nav_edge`](crate::Reader::nav_edge) — parse/decode only; the A* is
+//! R3, #465).
 //!
 //! Modules:
 //! - [`byte_io`] — the [`ByteSource`]/[`ByteSink`] seam (+ [`SliceSource`]) the map and route
@@ -52,9 +55,10 @@ pub use hours::{
 };
 pub use poi_table::{category_of, label_of, subtype_row, PoiCategory, PoiSubtype, SUBTYPES};
 pub use reader::{
-    read_header, CacheStats, FeatureRef, Kind, Lod, MapCache, MapHeader, MapTables, Poi, PoiCatEntry, PoiDirectory,
-    Reader, Style, HEADER_LEN, MAX_CHUNK_BYTES, MAX_FEAT_PTS, MAX_FEAT_RINGS, MAX_POI_RESULTS, POI_HOURS_BLOB_LEN,
-    POI_MAX_CATEGORIES, POI_MAX_CHUNK_BYTES, POI_NAME_MAX,
+    read_header, CacheStats, FeatureRef, Kind, Lod, MapCache, MapHeader, MapTables, NavDirectory, NavNeighbor,
+    NavNodeRef, Poi, PoiCatEntry, PoiDirectory, Reader, Style, HEADER_LEN, MAX_CHUNK_BYTES, MAX_FEAT_PTS,
+    MAX_FEAT_RINGS, MAX_POI_RESULTS, NAV_EDGE_FIXED_LEN, NAV_MAX_CHUNK_BYTES, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN,
+    POI_HOURS_BLOB_LEN, POI_MAX_CATEGORIES, POI_MAX_CHUNK_BYTES, POI_NAME_MAX,
 };
 
 /// Meters of ground per degree of latitude (and of longitude at the equator) — the

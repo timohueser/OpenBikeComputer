@@ -70,26 +70,28 @@ fn serialize_lods_header_single_empty_leaf() {
         chunk_size: 2048,
         root: Node::Leaf { bbox: (0, 0, 100, 100), features: vec![] },
     }];
-    let (bin, dropped) = serialize_lods(&lods, &[], 0xF800, (0, 0, 100, 100), &[]);
+    let (bin, dropped) = serialize_lods(&lods, &[], 0xF800, (0, 0, 100, 100), &[], &Default::default());
     assert_eq!(dropped, 0);
 
-    // v7 header(36) + style count(1) + 1 LOD entry(18) + index(4) = 59, then the empty POI directory
+    // v8 header(40) + style count(1) + 1 LOD entry(18) + index(4) = 63, then the empty POI directory
     // — count(1) + chunk_size(2) + 6 entries × 13 + the two v7 pool fields (offset u32 + count u16 =
-    // 6) = 87 bytes — followed by the empty hours pool (a bare `count u16` = 2 bytes).
+    // 6) = 87 bytes — the empty hours pool (a bare `count u16` = 2 bytes), and the empty v8 nav
+    // directory (22 bytes) at the tail.
     let poi_dir_len = 1 + 2 + 6 * 13 + 6;
     let hours_pool_len = 2; // an empty pool is just its count
-    assert_eq!(bin.len(), 59 + poi_dir_len + hours_pool_len);
+    let nav_dir_len = 22; // an empty graph is just its directory
+    assert_eq!(bin.len(), 63 + poi_dir_len + hours_pool_len + nav_dir_len);
     assert_eq!(&bin[0..4], b"OBCM");
-    assert_eq!(bin[4], 7); // version
-    assert_eq!(u32::from_le_bytes([bin[21], bin[22], bin[23], bin[24]]), 36); // style offset (36 since v6)
+    assert_eq!(bin[4], 8); // version
+    assert_eq!(u32::from_le_bytes([bin[21], bin[22], bin[23], bin[24]]), 40); // style offset (40 since v8)
     assert_eq!(bin[25], 1); // lod count
     let lod_tbl = u32::from_le_bytes([bin[26], bin[27], bin[28], bin[29]]) as usize;
-    assert_eq!(lod_tbl, 37); // 36 header + 1 style-count byte
+    assert_eq!(lod_tbl, 41); // 40 header + 1 style-count byte
 
     // The POI section offset (header byte 32) points just past the LOD payload: the
-    // section is 59 bytes in (header 36 + style 1 + LOD entry 18 + index 4).
+    // section is 63 bytes in (header 40 + style 1 + LOD entry 18 + index 4).
     let poi_off = u32::from_le_bytes([bin[32], bin[33], bin[34], bin[35]]) as usize;
-    assert_eq!(poi_off, 59);
+    assert_eq!(poi_off, 63);
     assert_eq!(bin[poi_off], 6, "empty POI directory still declares 6 categories");
     assert_eq!(u16::from_le_bytes([bin[poi_off + 1], bin[poi_off + 2]]), 512); // shared chunk_size
 
@@ -101,6 +103,15 @@ fn serialize_lods_header_single_empty_leaf() {
     assert_eq!(hours_pool_count, 0, "no hours in this map");
     assert_eq!(hours_pool_off, poi_off + poi_dir_len, "pool follows the directory (no categories)");
     assert_eq!(u16::from_le_bytes(bin[hours_pool_off..hours_pool_off + 2].try_into().unwrap()), 0, "empty pool count");
+
+    // The nav section offset (header byte 36) points just past the hours pool; an empty graph is
+    // the bare 22-byte directory — zero index nodes / chunks / edges, chunk_size still written.
+    let nav_off = u32::from_le_bytes(bin[36..40].try_into().unwrap()) as usize;
+    assert_eq!(nav_off, hours_pool_off + hours_pool_len, "nav section at the file tail");
+    assert_eq!(u32::from_le_bytes(bin[nav_off + 4..nav_off + 8].try_into().unwrap()), 0, "index_node_count 0");
+    assert_eq!(u32::from_le_bytes(bin[nav_off + 8..nav_off + 12].try_into().unwrap()), 0, "node_chunk_count 0");
+    assert_eq!(u32::from_le_bytes(bin[nav_off + 16..nav_off + 20].try_into().unwrap()), 0, "edge_chunk_count 0");
+    assert_eq!(u16::from_le_bytes(bin[nav_off + 20..nav_off + 22].try_into().unwrap()), 512, "nav chunk_size");
 
     let mpp = f32::from_le_bytes([bin[lod_tbl], bin[lod_tbl + 1], bin[lod_tbl + 2], bin[lod_tbl + 3]]);
     assert!(mpp.is_infinite()); // coarsest layer
@@ -298,7 +309,8 @@ fn serialize_keeps_chunk_index_consistent_when_a_feature_overflows() {
         chunk_size: 20,
         root: Node::Leaf { bbox: (1_000_000, 1_000_000, 1_010_000, 1_010_000), features: vec![a, b] },
     }];
-    let (bin, dropped) = serialize_lods(&lods, &[], 0xF800, (1_000_000, 1_000_000, 1_010_000, 1_010_000), &[]);
+    let (bin, dropped) =
+        serialize_lods(&lods, &[], 0xF800, (1_000_000, 1_000_000, 1_010_000, 1_010_000), &[], &Default::default());
     assert_eq!(dropped, 1, "the overflowing feature is reported dropped");
 
     // Locate the LOD table and read its node/chunk counts + index offset.

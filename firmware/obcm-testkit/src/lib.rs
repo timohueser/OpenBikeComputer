@@ -1,4 +1,4 @@
-//! Hand-written OBCM v7 byte builder shared by the `obc-reader` and `obc-render`
+//! Hand-written OBCM v8 byte builder shared by the `obc-reader` and `obc-render`
 //! integration tests.
 //!
 //! Both crates need to synthesise `.obcm` byte buffers by hand (rather than checking
@@ -13,10 +13,13 @@
 //! the POI section (spec §7). **v7** widened the POI record 32 → 36 bytes (name
 //! 20 → 24 plus a `hours_ref` u16), appended two directory fields
 //! (`hours_pool_offset`, `hours_pool_count`), and added the tail hours-pool section
-//! (§7.5). [`build_file`]/[`build_priority_tree`] write an **empty** POI directory (six
-//! empty categories, empty pool) so the reader accepts them; the POI-directory,
-//! record, and pool builders ([`poi_directory`], [`pack_poi_record`], [`hours_pool`])
-//! let the contract tests pin the section's bytes explicitly.
+//! (§7.5). **v8** grew the header to 40 bytes (the trailing `Nav Graph Offset`) and
+//! appended the nav-graph section (spec §8): a node quadtree over variable-length
+//! junction records plus a chunked edge pool. [`build_file`]/[`build_priority_tree`]
+//! write **empty** POI + nav sections so the reader accepts them; the directory,
+//! record, and pool builders ([`poi_directory`], [`pack_poi_record`], [`hours_pool`],
+//! [`nav_directory`], [`pack_nav_record`], [`pack_nav_edge_record`]) let the
+//! contract tests pin each section's bytes explicitly.
 //!
 //! Three map shapes are needed and kept as distinct, clearly-named builders so each call
 //! site's bytes stay identical:
@@ -59,9 +62,22 @@ pub const POI_CAT_ENTRY_LEN: usize = 13;
 /// u32` + `hours_pool_count u16`.
 pub const POI_DIR_POOL_FIELDS_LEN: usize = 6;
 
-/// The v7 header length (bytes); the Style Table conventionally follows immediately, so it is the
+/// The nav directory length (spec §8.1): `index_offset u32, index_node_count u32, node_chunk_count
+/// u32, edge_pool_offset u32, edge_chunk_count u32, chunk_size u16`.
+pub const NAV_DIR_LEN: usize = 22;
+/// Fixed prefix of a §8.3 junction record (`lat i32, lon i32, node_id u32, degree u8`).
+pub const NAV_NODE_FIXED_LEN: usize = 13;
+/// One §8.3 neighbor entry (`neighbor_id u32, neighbor_lat i32, neighbor_lon i32, edge_id u32,
+/// cost_m u32`).
+pub const NAV_NEIGHBOR_LEN: usize = 20;
+/// Fixed prefix of a §8.4 edge record (`length_m u32, pt_count u16, anchor_lat i32, anchor_lon i32`).
+pub const NAV_EDGE_FIXED_LEN: usize = 14;
+/// The fixed nav chunk capacity the packer writes (spec §8.1), shared by node + edge chunks.
+pub const NAV_CHUNK_SIZE: usize = 512;
+
+/// The v8 header length (bytes); the Style Table conventionally follows immediately, so it is the
 /// builders' `style_off`. Kept in lock-step with [`obc_reader::HEADER_LEN`].
-pub const HEADER_LEN: usize = 36;
+pub const HEADER_LEN: usize = 40;
 
 /// One LOD layer: its quadtree index (flat u32 nodes) and padded data chunks.
 pub struct LodSpec {
@@ -85,10 +101,12 @@ fn style_table(styles: &[Style]) -> Vec<u8> {
     style_bytes
 }
 
-/// The 36-byte OBCM v7 header, shared by both file builders.
+/// The 40-byte OBCM v8 header, shared by both file builders.
 ///
-/// `<4sBiiiiIBIHI`: magic, ver, min_lat, min_lon, max_lat, max_lon, style_off, lod_count,
-/// lod_table_off, marker_color, poi_section_off. `bbox` is `(min_lon, min_lat, max_lon, max_lat)`.
+/// `<4sBiiiiIBIHII`: magic, ver, min_lat, min_lon, max_lat, max_lon, style_off, lod_count,
+/// lod_table_off, marker_color, poi_section_off, nav_section_off. `bbox` is
+/// `(min_lon, min_lat, max_lon, max_lat)`.
+#[allow(clippy::too_many_arguments)]
 fn obcm_header(
     bbox: (i32, i32, i32, i32),
     style_off: usize,
@@ -96,10 +114,11 @@ fn obcm_header(
     lod_tab_off: usize,
     marker: u16,
     poi_section_off: usize,
+    nav_section_off: usize,
 ) -> Vec<u8> {
     let mut f = Vec::new();
     f.extend_from_slice(b"OBCM");
-    f.push(7);
+    f.push(8);
     f.extend_from_slice(&bbox.1.to_le_bytes()); // min_lat
     f.extend_from_slice(&bbox.0.to_le_bytes()); // min_lon
     f.extend_from_slice(&bbox.3.to_le_bytes()); // max_lat
@@ -109,7 +128,8 @@ fn obcm_header(
     f.extend_from_slice(&(lod_tab_off as u32).to_le_bytes());
     f.extend_from_slice(&marker.to_le_bytes());
     f.extend_from_slice(&(poi_section_off as u32).to_le_bytes());
-    assert_eq!(f.len(), 36, "header must be 36 bytes");
+    f.extend_from_slice(&(nav_section_off as u32).to_le_bytes());
+    assert_eq!(f.len(), 40, "header must be 40 bytes");
     f
 }
 
@@ -162,7 +182,7 @@ pub fn hours_pool(blobs: &[[u8; POI_HOURS_BLOB_LEN]]) -> Vec<u8> {
 /// `node_count 0` and `chunk_count 0`, their `index_offset` pointing just past the directory (where a
 /// zero-length index would begin); the hours pool (a bare `count 0`) sits right after, at the same
 /// offset. `section_off` is the directory's absolute byte offset. This is what a map with no POIs
-/// carries, and what [`build_file`]/[`build_priority_tree`] append so the v7 reader accepts them.
+/// carries, and what [`build_file`]/[`build_priority_tree`] append so the reader accepts them.
 pub fn empty_poi_directory(section_off: usize) -> Vec<u8> {
     let after_dir = (section_off + poi_dir_len()) as u32;
     let cats: Vec<PoiCat> = (1..=POI_CATEGORY_COUNT)
@@ -172,6 +192,86 @@ pub fn empty_poi_directory(section_off: usize) -> Vec<u8> {
     let mut d = poi_directory(POI_CHUNK_SIZE as u16, &cats, after_dir, 0);
     d.extend_from_slice(&hours_pool(&[]));
     d
+}
+
+/// Build a v8 nav directory (spec §8.1). The caller supplies the (already-computed) absolute
+/// offsets/counts — this only lays out the 22 directory bytes, not the index/chunks/pool that
+/// follow.
+pub fn nav_directory(
+    index_offset: u32,
+    index_node_count: u32,
+    node_chunk_count: u32,
+    edge_pool_offset: u32,
+    edge_chunk_count: u32,
+    chunk_size: u16,
+) -> Vec<u8> {
+    let mut d = Vec::with_capacity(NAV_DIR_LEN);
+    d.extend_from_slice(&index_offset.to_le_bytes());
+    d.extend_from_slice(&index_node_count.to_le_bytes());
+    d.extend_from_slice(&node_chunk_count.to_le_bytes());
+    d.extend_from_slice(&edge_pool_offset.to_le_bytes());
+    d.extend_from_slice(&edge_chunk_count.to_le_bytes());
+    d.extend_from_slice(&chunk_size.to_le_bytes());
+    assert_eq!(d.len(), NAV_DIR_LEN);
+    d
+}
+
+/// An **empty** v8 nav directory (spec §8.1): no quadtree, no chunks, no edges — what a map with
+/// no routable ways carries, and what [`build_file`]/[`build_priority_tree`] append so the v8
+/// reader accepts them. The zero-length index and edge pool "start" just past the directory.
+pub fn empty_nav_directory(section_off: usize) -> Vec<u8> {
+    let after = (section_off + NAV_DIR_LEN) as u32;
+    nav_directory(after, 0, 0, after, 0, NAV_CHUNK_SIZE as u16)
+}
+
+/// One §8.3 neighbor entry for [`pack_nav_record`]: `(neighbor_id, lat, lon, edge_id, cost_m)`.
+pub type NavNeighborSpec = (u32, i32, i32, u32, u32);
+
+/// Pack one variable-length §8.3 junction record: `lat i32, lon i32, node_id u32, degree u8`,
+/// then one 20-byte entry per neighbor. Coordinates are absolute µdeg, lat first (the §7.3/§8
+/// record convention).
+pub fn pack_nav_record(lat: i32, lon: i32, node_id: u32, neighbors: &[NavNeighborSpec]) -> Vec<u8> {
+    let mut rec = Vec::with_capacity(NAV_NODE_FIXED_LEN + neighbors.len() * NAV_NEIGHBOR_LEN);
+    rec.extend_from_slice(&lat.to_le_bytes());
+    rec.extend_from_slice(&lon.to_le_bytes());
+    rec.extend_from_slice(&node_id.to_le_bytes());
+    rec.push(neighbors.len() as u8);
+    for &(id, nlat, nlon, edge_id, cost_m) in neighbors {
+        rec.extend_from_slice(&id.to_le_bytes());
+        rec.extend_from_slice(&nlat.to_le_bytes());
+        rec.extend_from_slice(&nlon.to_le_bytes());
+        rec.extend_from_slice(&edge_id.to_le_bytes());
+        rec.extend_from_slice(&cost_m.to_le_bytes());
+    }
+    rec
+}
+
+/// Pack junction records into one `chunk_size`-byte nav chunk (spec §8.3): back-to-back, then
+/// `0xFF` padding — whose first byte lands on the next record's `degree` slot, the end sentinel.
+pub fn pack_nav_chunk(records: &[Vec<u8>], chunk_size: usize) -> Vec<u8> {
+    let mut c = Vec::with_capacity(chunk_size);
+    for r in records {
+        c.extend_from_slice(r);
+    }
+    assert!(c.len() <= chunk_size, "records exceed the nav chunk");
+    c.resize(chunk_size, 0xFF);
+    c
+}
+
+/// Pack one §8.4 edge record: `length_m u32, pt_count u16, anchor_lat i32, anchor_lon i32`, then
+/// `pt_count - 1` × `(dlat i16, dlon i16)`. The polyline is absolute µdeg `(lat, lon)` pairs (lat
+/// first, the §8 record convention); the caller keeps deltas within `i16`.
+pub fn pack_nav_edge_record(length_m: u32, polyline: &[(i32, i32)]) -> Vec<u8> {
+    let mut rec = Vec::with_capacity(NAV_EDGE_FIXED_LEN + (polyline.len() - 1) * 4);
+    rec.extend_from_slice(&length_m.to_le_bytes());
+    rec.extend_from_slice(&(polyline.len() as u16).to_le_bytes());
+    rec.extend_from_slice(&polyline[0].0.to_le_bytes()); // anchor lat
+    rec.extend_from_slice(&polyline[0].1.to_le_bytes()); // anchor lon
+    for w in polyline.windows(2) {
+        rec.extend_from_slice(&((w[1].0 - w[0].0) as i16).to_le_bytes()); // dlat
+        rec.extend_from_slice(&((w[1].1 - w[0].1) as i16).to_le_bytes()); // dlon
+    }
+    rec
 }
 
 /// Pack one 36-byte v7 POI record (spec §7.3): absolute `int32 lat, int32 lon`, `u8 subtype`, `u8
@@ -308,7 +408,7 @@ fn serialize_poi_category(
     (index_bytes, index.len() as u32, chunks, chunk_count)
 }
 
-/// Build a full v7 `.obcm` with a **populated POI section** — the query-test analogue of
+/// Build a full v8 `.obcm` with a **populated POI section** — the query-test analogue of
 /// [`build_file`]. `bbox` is `(min_lon, min_lat, max_lon, max_lat)`; a minimal one-line geometry LOD
 /// keeps the map valid; `pois_by_cat` maps a category id (1..=6) to the POIs to place there (each a
 /// full per-category quadtree over `bbox`, `chunk_size`-byte chunks). Categories absent from the map
@@ -370,6 +470,11 @@ pub fn build_poi_map_with_hours(
     let mut f = base[..poi_off].to_vec();
     f.extend_from_slice(&poi_directory(chunk_size as u16, &cats, hours_pool_offset, hours_blobs.len() as u16));
     f.extend_from_slice(&payload);
+    // The populated POI section displaced `base`'s tail sections, so re-append the empty nav
+    // section at the new tail and patch the header's nav offset (byte 36) to match.
+    let nav_section_off = f.len();
+    f[36..40].copy_from_slice(&(nav_section_off as u32).to_le_bytes());
+    f.extend_from_slice(&empty_nav_directory(nav_section_off));
     f
 }
 
@@ -436,15 +541,18 @@ pub fn build_file(bbox: (i32, i32, i32, i32), styles: &[Style], lods: &[LodSpec]
         payload.extend_from_slice(&chunk_bytes);
     }
 
-    // The POI section begins right after the LOD payload (`cursor` now points there).
+    // The POI section begins right after the LOD payload (`cursor` now points there); the empty
+    // nav section follows it at the file tail.
     let poi_section_off = cursor;
     let poi_dir = empty_poi_directory(poi_section_off);
+    let nav_section_off = poi_section_off + poi_dir.len();
 
-    let mut f = obcm_header(bbox, style_off, lods.len() as u8, lod_tab_off, MARKER, poi_section_off);
+    let mut f = obcm_header(bbox, style_off, lods.len() as u8, lod_tab_off, MARKER, poi_section_off, nav_section_off);
     f.extend_from_slice(&style_bytes);
     f.extend_from_slice(&table);
     f.extend_from_slice(&payload);
     f.extend_from_slice(&poi_dir);
+    f.extend_from_slice(&empty_nav_directory(nav_section_off));
     f
 }
 
@@ -486,16 +594,21 @@ pub fn build_priority_tree(
     table.extend_from_slice(&(chunk_size as u16).to_le_bytes());
     table.extend_from_slice(&(chunks.len() as u32).to_le_bytes());
 
-    // The POI section begins right after the index + all chunk bytes.
+    // The POI section begins right after the index + all chunk bytes; the empty nav section
+    // follows it.
     let poi_section_off = index_off + idx_bytes.len() + chunks.len() * chunk_size;
-    let mut f = obcm_header(bbox, style_off, 1, lod_tab_off, 0, poi_section_off); // marker unused here → 0
+    let poi_dir = empty_poi_directory(poi_section_off);
+    let nav_section_off = poi_section_off + poi_dir.len();
+    // marker unused here → 0
+    let mut f = obcm_header(bbox, style_off, 1, lod_tab_off, 0, poi_section_off, nav_section_off);
     f.extend_from_slice(&style_bytes);
     f.extend_from_slice(&table);
     f.extend_from_slice(&idx_bytes);
     for c in chunks {
         f.extend_from_slice(&pad(c, chunk_size));
     }
-    f.extend_from_slice(&empty_poi_directory(poi_section_off));
+    f.extend_from_slice(&poi_dir);
+    f.extend_from_slice(&empty_nav_directory(nav_section_off));
     f
 }
 
@@ -746,7 +859,7 @@ fn bench_fine_chunk(rng: &mut BenchRng, leaf: LeafBox) -> Vec<u8> {
     c
 }
 
-/// The deterministic **bench fixture** (issue #327): a two-LOD OBCM v7 map whose bytes are
+/// The deterministic **bench fixture** (issue #327): a two-LOD OBCM v8 map whose bytes are
 /// identical on every machine, forever — the `obc-bench` frame hashes are computed over renders of
 /// it, so any byte drift here invalidates the committed golden file.
 ///
@@ -763,7 +876,7 @@ fn bench_fine_chunk(rng: &mut BenchRng, leaf: LeafBox) -> Vec<u8> {
 ///   span-stroke path).
 ///
 /// Geometry is generated by the inline seeded [`BenchRng`] and packed through the same `pack_*`
-/// encoders the format tests use, so a v6 layout bump lands here automatically.
+/// encoders the format tests use, so a format layout bump lands here automatically.
 pub fn build_bench_map() -> Vec<u8> {
     const CHUNK: usize = 4096; // the packer's default — every chunk stays cacheable
     let styles: [Style; 6] = [

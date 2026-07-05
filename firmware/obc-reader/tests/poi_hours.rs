@@ -1,6 +1,6 @@
 //! Contract tests for the device-side POI hours lookup (`Reader::poi_hours`, epic #439 P3 #443).
 //!
-//! Each test builds a synthetic v7 `.obcm` whose POI section carries a real hours pool (via
+//! Each test builds a synthetic v8 `.obcm` whose POI section carries a real hours pool (via
 //! `obcm-testkit`'s pool + record builders, mirroring the packer's `serialize.rs`), then asserts the
 //! reader resolves a POI's `hours_ref` back to the pooled [`WeeklySchedule`] — and that every
 //! out-of-range / corrupt case yields `None`, never a panic. The `WeeklySchedule` eval semantics
@@ -12,7 +12,8 @@ use obc_reader::{
     POI_HOURS_BLOB_LEN,
 };
 use obcm_testkit::{
-    build_file, hours_pool, pack_poi_chunk, pack_poi_record, pad, poi_dir_len, poi_directory, LodSpec, PoiCat, Style,
+    build_file, empty_nav_directory, hours_pool, pack_poi_chunk, pack_poi_record, pad, poi_dir_len, poi_directory,
+    LodSpec, PoiCat, Style,
 };
 
 const CS: usize = 64;
@@ -38,7 +39,7 @@ fn iv(open_q: u8, close_q: u8) -> Interval {
     Interval { open_q, close_q }
 }
 
-/// Assemble a full v7 `.obcm` with one accommodation category (id 3) holding two POI records and a
+/// Assemble a full v8 `.obcm` with one accommodation category (id 3) holding two POI records and a
 /// hours pool of `blobs`. Records A/B reference `hours_ref` `ref_a`/`ref_b`. Mirrors the format
 /// suite's `populated_poi_category_round_trips_with_record_layout` assembly.
 fn build_map_with_pool(blobs: &[[u8; POI_HOURS_BLOB_LEN]], ref_a: u16, ref_b: u16) -> Vec<u8> {
@@ -74,6 +75,11 @@ fn build_map_with_pool(blobs: &[[u8; POI_HOURS_BLOB_LEN]], ref_a: u16, ref_b: u1
     bytes.extend_from_slice(&0u32.to_le_bytes()); // cat 3's single leaf → chunk 0
     bytes.extend_from_slice(&chunk);
     bytes.extend_from_slice(&pool);
+    // The populated POI section displaced base's tail nav section: re-append an empty one and
+    // patch the header's nav offset (byte 36).
+    let nav_off = bytes.len();
+    bytes[36..40].copy_from_slice(&(nav_off as u32).to_le_bytes());
+    bytes.extend_from_slice(&empty_nav_directory(nav_off));
     bytes
 }
 
