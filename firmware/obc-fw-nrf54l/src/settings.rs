@@ -66,11 +66,23 @@ const BOOT_COUNT_OFFSET: u32 = 2048;
 /// count 0 rather than garbage.
 const BOOT_COUNT_MAGIC: [u8; 4] = *b"OBCD";
 
+/// Byte offset of the **durable object-id high-water line** (#450) within the reserved settings
+/// page — one 16-byte line holding the next fresh route + ride object id, so an id is never
+/// reused after a delete (allocation = `max(scan_max + 1, stored floor)`; the phone's persisted
+/// `deviceObjectID` / ride tombstones key on these ids). Placed at the upper half's quarter mark,
+/// clear of the other residents; the carve layout is now: **settings slot @0** (low 2 KB reserved
+/// for its future two-slot upgrade) · **boot counter @2048** · **id high-water @2560** ·
+/// **BLE bond @3072** (64 B). Codec (magic/version/CRC, torn line → "no floor") lives host-tested
+/// in [`obc_app::settings`].
+const ID_MARKS_OFFSET: u32 = 2560;
+/// The id line is one RRAM write line by construction — pin it so a codec growth fails loud.
+const _: () = assert!(obc_app::settings::ID_MARKS_LEN == RRAM_WRITE_LINE);
+
 /// Byte offset of the **BLE bond slot** within the reserved settings page: the one bonded peer's
 /// identity + keys (LTK/IRK), persisted so a power cycle or a firmware reflash lands straight back in
 /// the bonded-and-encrypted link. Placed in the page's upper half — clear of the settings slot @0
-/// (which reserves the low half for a future two-slot upgrade) and the boot counter @2048. One slot:
-/// a fresh pairing replaces it (single-peer policy).
+/// (which reserves the low half for a future two-slot upgrade), the boot counter @2048, and the id
+/// high-water line @2560. One slot: a fresh pairing replaces it (single-peer policy).
 #[cfg(feature = "ble")]
 const BOND_OFFSET: u32 = 3072;
 /// The bond slot's tag; anything else there (blank page, torn write, older layout) reads as
@@ -131,6 +143,32 @@ impl RramSettingsStore {
     #[cfg(feature = "ble")]
     pub fn boot_count(&self) -> u32 {
         self.boot_count
+    }
+
+    /// Load the durable object-id high-water marks (#450), or `None` when the line is blank /
+    /// torn / a foreign layout — "no floor", i.e. allocation falls back to scan-max + 1 exactly
+    /// as before the marks existed (fresh devices and reflashes behave identically until the
+    /// first delete).
+    pub fn load_id_marks(&mut self) -> Option<obc_app::settings::IdMarks> {
+        let off = region_offset() + ID_MARKS_OFFSET;
+        let mut buf = [0u8; obc_app::settings::ID_MARKS_LEN];
+        match self.rram.read(off, &mut buf) {
+            Ok(()) => obc_app::settings::decode_id_marks(&buf),
+            Err(e) => {
+                defmt::warn!("settings: id-marks RRAM read failed: {} → no floor (scan-max+1)", e);
+                None
+            }
+        }
+    }
+
+    /// Persist the id high-water marks — one aligned 16-byte line write, no erase; called once
+    /// per id assignment (a route upload commit / a ride finish), so the write rate is negligible.
+    pub fn save_id_marks(&mut self, m: &obc_app::settings::IdMarks) {
+        let off = region_offset() + ID_MARKS_OFFSET;
+        let bytes = obc_app::settings::encode_id_marks(m);
+        if let Err(e) = self.rram.write(off, &bytes) {
+            defmt::warn!("settings: id-marks RRAM write failed: {}", e);
+        }
     }
 
     /// Load the stored BLE bond, or `None` when the slot is blank / torn / CRC-bad — in which case

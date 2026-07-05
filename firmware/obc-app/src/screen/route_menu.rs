@@ -34,6 +34,14 @@ impl RouteMenuScreen {
         RouteMenuScreen { selected: 0 }
     }
 
+    /// Re-point the highlight after a live catalog rescan (#450): the selection follows the
+    /// previously-highlighted route's *identity* to its new index; if that route vanished it falls
+    /// back to the nearest row (clamped near its old position — never a dangling index). The list
+    /// itself refreshes in place via the shared catalog.
+    pub(crate) fn remap_routes(&mut self, remap: &dyn Fn(usize) -> Option<usize>, new_len: usize) {
+        self.selected = remap(self.selected).unwrap_or_else(|| self.selected.min(new_len.saturating_sub(1)));
+    }
+
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         let len = cx.routes.len();
         match g {

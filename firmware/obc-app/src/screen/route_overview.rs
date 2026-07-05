@@ -50,6 +50,14 @@ impl RouteOverviewScreen {
         RouteOverviewScreen { route, prev_active }
     }
 
+    /// Re-point both held indices after a live catalog rescan (#450). A vanished preview subject
+    /// becomes an out-of-range index — exactly the missing-summary path `draw`/`handle` already
+    /// have ("No route" + `press` pops); a vanished `prev_active` restores to `None` on cancel.
+    pub(crate) fn remap_routes(&mut self, remap: &dyn Fn(usize) -> Option<usize>) {
+        self.route = remap(self.route).unwrap_or(usize::MAX);
+        self.prev_active = self.prev_active.and_then(remap);
+    }
+
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
             // Start: the session begin that Route-menu `press` used to do — riding camera on the

@@ -69,6 +69,11 @@ const TRACK_TMP: &str = "TRACK.OBT";
 /// promotes it. Truncated-and-reused per upload.
 const UPLOAD_TMP: &str = "UPLOAD.TMP";
 
+/// First id of the reserved **session-scoped** band handed to side-loaded `.obcr` files (their
+/// names carry no durable id — see [`Storage::sideload_id`]). Uploaded ids grow monotonically from
+/// 0 and reject at this floor — 65,024 lifetime uploads before a card must be cleared, i.e. never.
+pub(crate) const SIDELOAD_ID_BASE: u16 = 0xFF00;
+
 /// The concrete SD stack for this board: embassy-nrf's blocking `Spim` wrapped as the `SpiDevice`
 /// the card driver wants, an [`SdCard`], and a 4-file/4-dir [`VolumeManager`]. The chip-select is
 /// a no-op [`NoCs`] — the *real* CS (P1_12) is held low for the whole session (see [`NoCs`]/[`init`]).
@@ -101,6 +106,21 @@ pub struct Storage {
     /// route index reopens the right `.obcr` (the menu shows the *internal* route name, not
     /// the filename, so 8.3 truncation is invisible).
     route_files: Vec<ShortFileName, MAX_ROUTES>,
+    /// Each catalog entry's **object id**, parallel to [`route_files`](Storage::route_files) —
+    /// the identity [`App::set_routes_with_ids`](obc_app::App::set_routes_with_ids) remaps held
+    /// indices by across live rescans (#450). Uploaded routes carry it in the filename
+    /// (`RT{id}.OBR`); side-loaded `.obcr` files get a session id from [`sideload_id`](Storage::sideload_id).
+    route_ids: Vec<u16, MAX_ROUTES>,
+    /// The session's side-load id registry: filename → assigned [`SIDELOAD_ID_BASE`]-band id.
+    /// **Append-only** (a delete leaves a tombstone), so a name keeps one id for the whole session
+    /// no matter how often — or in which order — the ride loop and the BLE `ObjectStore` rescan;
+    /// without this, a delete would shift later side-load ids between the two scans' tables and
+    /// the identity remap would unload the wrong route. Session-scoped by design: the app never
+    /// persists these ids, and side-loaded files only change while the card is out of the device.
+    sideload_ids: Vec<(ShortFileName, u16), MAX_ROUTES>,
+    /// Next unassigned side-load id, `u32` so the exhausted case is "past `u16::MAX`", not a
+    /// saturating collapse onto 0xFFFF (an aliased id would remap/serve the wrong file).
+    next_sideload: u32,
     /// The active route's open geometry file: `(catalog index, handle, length)`. Reopened only
     /// when the selected route changes.
     open_route: Option<(usize, RawFile, u32)>,
@@ -234,6 +254,9 @@ impl Storage {
             routes_dir,
             tracks_dir,
             route_files: Vec::new(),
+            route_ids: Vec::new(),
+            sideload_ids: Vec::new(),
+            next_sideload: SIDELOAD_ID_BASE as u32,
             open_route: None,
             open_map: None,
             open_track: None,
@@ -244,11 +267,17 @@ impl Storage {
         })
     }
 
-    /// Scan `/routes` for `*.obcr`, read each header into a [`RouteSummary`], and return the
-    /// catalog for [`App::set_routes`](obc_app::App::set_routes). Also records the 8.3 filenames
-    /// (parallel to the catalog) so a later selection reopens the right file. Filenames are
-    /// collected first, then opened — opening a file inside the iteration callback would
-    /// re-enter the volume manager's lock.
+    /// Scan `/routes` for the catalog (side-loaded `.obcr` + uploaded `.OBR`), read each header
+    /// into a [`RouteSummary`], and return the catalog for
+    /// [`App::set_routes_with_ids`](obc_app::App::set_routes_with_ids). Also records, parallel to
+    /// the catalog, the 8.3 filenames (so a later selection reopens the right file) and each
+    /// entry's object id ([`route_ids`](Storage::route_ids)) — recovered from an upload's
+    /// `RT{id}.OBR` name, or a session-stable [`sideload_id`](Storage::sideload_id) for `.obcr`
+    /// files. Filenames are collected first, then opened — opening a file inside the iteration
+    /// callback would re-enter the volume manager's lock.
+    ///
+    /// Called at boot **and** on every store-changed edge (#450) — the live rescan is this same
+    /// scan re-run; identity across the re-runs is exactly what the id column carries.
     ///
     /// Matching is on the **long** name: the 8.3 short name truncates `.obcr`/`.obcm` to the
     /// 3-char `OBC`, so the short extension can't tell routes from maps. The long name also lets
@@ -256,6 +285,7 @@ impl Storage {
     pub fn scan_routes(&mut self) -> Vec<RouteSummary, MAX_ROUTES> {
         let mut catalog: Vec<RouteSummary, MAX_ROUTES> = Vec::new();
         self.route_files.clear();
+        self.route_ids.clear();
         let Some(dir) = self.routes_dir else { return catalog };
 
         let mut names: Vec<ShortFileName, MAX_ROUTES> = Vec::new();
@@ -266,18 +296,51 @@ impl Storage {
         });
 
         for n in &names {
+            // Id first: a route without an id can't be listed (the remap and the BLE catalog both
+            // key on it) — only the exhausted side-load band hits this, warned in `sideload_id`.
+            let Some(id) = uploaded_route_id(n).or_else(|| self.sideload_id(n)) else { continue };
             let Ok(file) = self.vmgr.open_file_in_dir(dir, n, Mode::ReadOnly) else { continue };
             let len = self.vmgr.file_length(file).unwrap_or(0);
             let src = SdByteSource::new(&self.vmgr, file, len);
             if let Ok(sum) = RouteSummary::read(&src) {
                 if catalog.push(sum).is_ok() {
                     let _ = self.route_files.push(n.clone());
+                    let _ = self.route_ids.push(id);
                 }
             }
             let _ = self.vmgr.close_file(file);
         }
         defmt::info!("SD: {=usize} route(s) in /routes", catalog.len());
         catalog
+    }
+
+    /// Each catalog entry's object id, parallel to the catalog [`scan_routes`](Storage::scan_routes)
+    /// last returned — the second argument to
+    /// [`App::set_routes_with_ids`](obc_app::App::set_routes_with_ids).
+    pub fn route_ids(&self) -> &[u16] {
+        &self.route_ids
+    }
+
+    /// The **session-scoped** id for a side-loaded route file: the one already registered for this
+    /// name, or the next from the [`SIDELOAD_ID_BASE`] band. The registry is append-only for the
+    /// session (see the field doc), so every scan — the ride loop's and the BLE `ObjectStore`'s,
+    /// in any order, across deletes — hands the same name the same id. `None` when the band or the
+    /// registry is exhausted (the route is then not listed, rather than aliased onto a wrong id).
+    pub(crate) fn sideload_id(&mut self, name: &ShortFileName) -> Option<u16> {
+        if let Some((_, id)) = self.sideload_ids.iter().find(|(n, _)| n == name) {
+            return Some(*id);
+        }
+        if self.next_sideload > u16::MAX as u32 {
+            defmt::warn!("SD: side-load id band exhausted — a route is not listed");
+            return None;
+        }
+        let id = self.next_sideload as u16;
+        if self.sideload_ids.push((name.clone(), id)).is_err() {
+            defmt::warn!("SD: side-load id registry full — a route is not listed");
+            return None;
+        }
+        self.next_sideload += 1;
+        Some(id)
     }
 
     /// Open the first `*.obcm` in the card root and hold it open for the session, so the map can
@@ -356,13 +419,16 @@ impl Storage {
     /// ticking, mirroring the sim's `TrackStore::reconcile`. Drains the one-shot disposition
     /// first (finalising / abandoning the current log), then opens a fresh log when the session
     /// id changes. `name` is the active route's name (the save filename); `stats` is the app's
-    /// ride totals + wall-clock anchor, read the same frame — the ride object's header.
+    /// ride totals + wall-clock anchor, read the same frame — the ride object's header. `marks`
+    /// is the RRAM id high-water store (#450), threaded through for the ride-id allocation a
+    /// back-to-back begin's early flush may need.
     pub fn reconcile_track(
         &mut self,
         action: Option<obc_app::TrackAction>,
         session: Option<u32>,
         name: &str,
         stats: Option<&RideStats>,
+        marks: &mut crate::settings::RramSettingsStore,
     ) {
         use obc_app::TrackAction;
         match action {
@@ -371,7 +437,7 @@ impl Storage {
             None => {}
         }
         match session {
-            Some(id) if self.open_track.as_ref().map(|o| o.session) != Some(id) => self.begin_track(id, name),
+            Some(id) if self.open_track.as_ref().map(|o| o.session) != Some(id) => self.begin_track(id, name, marks),
             None => self.abandon_track(), // no session → ensure nothing is left open
             _ => {}                       // same session → keep appending
         }
@@ -383,11 +449,11 @@ impl Storage {
     }
 
     /// Open (truncating) a fresh `TRACK.OBT` for session `id`, to be saved as `name`.
-    fn begin_track(&mut self, id: u32, name: &str) {
+    fn begin_track(&mut self, id: u32, name: &str, marks: &mut crate::settings::RramSettingsStore) {
         // A still-deferred previous Finish must convert **before** the truncate below destroys its
         // log — the rare back-to-back case (Finish, then a new ride within the same quiet moment)
         // pays the blocking save up front rather than losing the ride.
-        self.run_pending_save();
+        self.run_pending_save(marks);
         self.abandon_track(); // close any previous handle first
         let Some(dir) = self.tracks_dir else { return };
         match self.vmgr.open_file_in_dir(dir, TRACK_TMP, Mode::ReadWriteCreateOrTruncate) {
@@ -438,7 +504,13 @@ impl Storage {
     /// This is the ride path's one long blocking SD stretch, which is exactly why it is deferred:
     /// the ride loop calls it only when the hold bulge is quiet, and [`begin_track`](Self::begin_track)
     /// flushes it early if a new ride would otherwise truncate the unconverted temp.
-    pub fn run_pending_save(&mut self) {
+    ///
+    /// `marks` is the RRAM id high-water store (#450): the ride id is allocated as
+    /// `max(scan_max + 1, stored floor)` and the floor is bumped past it **before** the object is
+    /// written — so once device-side ride deletion exists, a deleted id can never be re-issued to
+    /// a later ride and alias it in the phone's synced/tombstone sets. A blank/torn floor line
+    /// decodes to "no floor" and this degrades to exactly the old scan-max + 1.
+    pub fn run_pending_save(&mut self, marks: &mut crate::settings::RramSettingsStore) {
         let Some(ps) = self.pending_save.take() else { return };
         let Some(dir) = self.tracks_dir else { return };
         let Ok(src_file) = self.vmgr.open_file_in_dir(dir, TRACK_TMP, Mode::ReadOnly) else {
@@ -447,7 +519,9 @@ impl Storage {
         };
         let len = self.vmgr.file_length(src_file).unwrap_or(0);
 
-        let id = self.next_ride_id(dir);
+        let mut m = marks.load_id_marks().unwrap_or_default();
+        let id = m.alloc_ride(self.next_ride_id(dir));
+        marks.save_id_marks(&m); // one 16-byte RRAM line per ride finish — the durable never-reuse floor
         let saved = match self.fresh_object_name(dir, "RD", id, "ORD") {
             Some(file_name) => match self.vmgr.open_file_in_dir(dir, &file_name, Mode::ReadWriteCreateOrTruncate) {
                 Ok(dst_file) => {
@@ -484,10 +558,10 @@ impl Storage {
         }
     }
 
-    /// One past the highest ride object id stored in `/tracks` (0 on a virgin card). Rides are
-    /// never deleted on the device today (the app hides synced rides locally), so scan-max + 1
-    /// can't resurrect an id the phone has already seen; when device-side deletion lands it must
-    /// keep deleted ids reserved (the Ride Trashcan follow-up).
+    /// One past the highest ride object id stored in `/tracks` (0 on a virgin card) — the **scan
+    /// half** of the ride-id allocation. On its own it would resurrect a deleted id; the caller
+    /// (`run_pending_save`) maxes it against the persisted RRAM high-water floor (#450), which is
+    /// what keeps ids unique across deletes and reboots.
     fn next_ride_id(&self, dir: RawDirectory) -> u16 {
         let mut next = 0u16;
         self.iter_dir_lfn(dir, |e, _| {
