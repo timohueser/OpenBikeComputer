@@ -459,7 +459,7 @@ impl Storage {
             }
         }
         // Newest first (descending start_time) — the Rides screen lists most-recent at the top.
-        rows.sort_unstable_by(|a, b| b.2.start_time.cmp(&a.2.start_time));
+        rows.sort_unstable_by_key(|r| core::cmp::Reverse(r.2.start_time));
         for (id, name, sum) in rows {
             if catalog.push(sum).is_ok() {
                 let _ = self.ride_files.push(name);
