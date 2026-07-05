@@ -29,6 +29,8 @@
 //! call and drops the guard before its next `await`. `ObjectStore` itself (catalog + settings cache)
 //! stays behind a `RefCell` the BLE planes borrow **never across an `await`** (single executor).
 
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
 use embedded_sdmmc::ShortFileName;
 use heapless::Vec;
 use obc_app::settings::DeviceName;
@@ -37,8 +39,6 @@ use obc_ble::{
     Crc32, ListHeader, ObjectStoreDigest, ObjectType, Receiver, RideListEntry, RouteListEntry, StreamSender,
     TransferControl, TransferStatus,
 };
-
-use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::sd::Storage;
 use crate::SharedStore;
@@ -59,6 +59,41 @@ static STORE_CHANGED: AtomicU32 = AtomicU32::new(0);
 /// per pass and rings `App::notify_store_changed` that many times. `0` = nothing moved.
 pub fn take_store_changed() -> u32 {
     STORE_CHANGED.swap(0, Ordering::Relaxed)
+}
+
+// ==================== settings-coherence signals (#456) ====================
+//
+// Settings are the one thing both thread-mode planes edit: the ride loop (the on-device Settings
+// screens) and the BLE Config write. The RRAM blob behind `SharedStore.settings` is the single
+// source of truth; these two flags carry a *change* across the plane boundary so neither cache goes
+// stale (and, crucially, so the ride loop's change-detection save can't clobber a BLE write).
+//
+// Kept at the board-crate level (a plain `AtomicBool`, host→app style like `App::set_routes`)
+// deliberately independent of the P1 BLE→app event seam (#448 / obc-app) so this PR lands on its
+// own; a merge-time consolidation onto that seam is fine if it ships first. `Relaxed` is enough:
+// both planes are cooperative futures on the one executor, and a settings change is idempotent
+// (worst case a flag is observed one pass late — a reload/refresh that changes nothing).
+
+/// Raised by a BLE Config write ([`ObjectStore::apply_config`]); the ride loop drains it and
+/// reloads the BLE-owned fields (units + name) into the live `App` settings **before** its next
+/// change-detection save, so the phone's write reaches the UI same-session and is never clobbered.
+static BLE_CONFIG_WRITTEN: AtomicBool = AtomicBool::new(false);
+
+/// Raised by the ride loop after it persists an on-device settings change; the BLE plane drains it
+/// and refreshes the [`ObjectStore`] config cache from RRAM before serving a Config read (or the
+/// advertised name), so a read after an on-device units change is fresh without a reboot.
+static DEVICE_SETTINGS_CHANGED: AtomicBool = AtomicBool::new(false);
+
+/// The ride loop's cue to reload BLE-written settings before its next save (see
+/// [`BLE_CONFIG_WRITTEN`]). `true` at most once per BLE Config write; drains on read.
+pub(crate) fn take_ble_config_written() -> bool {
+    BLE_CONFIG_WRITTEN.swap(false, Ordering::Relaxed)
+}
+
+/// The ride loop signals that it persisted an on-device settings edit, so the BLE plane's config
+/// cache is now stale (see [`DEVICE_SETTINGS_CHANGED`]). Cheap: one relaxed store per settings save.
+pub(crate) fn mark_device_settings_changed() {
+    DEVICE_SETTINGS_CHANGED.store(true, Ordering::Relaxed);
 }
 
 /// One catalog slot: the object id and where its bytes live (routes and rides alike).
@@ -247,10 +282,30 @@ impl ObjectStore {
     /// Apply a validated Config write: persist name + units through the RRAM store. The name is stored
     /// verbatim; an empty name clears back to factory (the factory `OBC-XXXX` returns to the
     /// advertisement).
+    ///
+    /// The cache is updated *from the fresh RRAM blob*, not just its two edited fields: an on-device
+    /// change may have landed since this cache was last synced, so re-seeding from the store keeps
+    /// every field coherent (not only units + name). Then [`BLE_CONFIG_WRITTEN`] is raised so the
+    /// ride loop reloads the units + name into the live `App` copy before its next save — the phone's
+    /// write reaches the UI and can't be clobbered by the app's change-detection save (#456).
     pub fn apply_config(&mut self, shared: &mut SharedStore, name: &str, units: u8) {
+        // Start from the current persisted truth so an on-device edit racing this write isn't dropped.
+        self.settings = shared.settings.load().unwrap_or_default();
         self.settings.device_name = DeviceName::from_str_lossy(name);
         self.settings.units = if units == 1 { obc_app::Units::Imperial } else { obc_app::Units::Metric };
         shared.settings.save(&self.settings);
+        BLE_CONFIG_WRITTEN.store(true, Ordering::Relaxed);
+    }
+
+    /// Refresh the config cache from RRAM **if** the ride loop flagged an on-device settings change
+    /// ([`DEVICE_SETTINGS_CHANGED`]) — the *device → phone* half of coherence. Called by the BLE
+    /// plane before it reads the config cache (a Config read, the advertised name) so a read after an
+    /// on-device units/clock change serves fresh values without a reboot. Cheap when nothing changed
+    /// (one relaxed load); one RRAM slice read + decode when it did.
+    pub fn refresh_settings_if_changed(&mut self, shared: &mut SharedStore) {
+        if DEVICE_SETTINGS_CHANGED.swap(false, Ordering::Relaxed) {
+            self.settings = shared.settings.load().unwrap_or_default();
+        }
     }
 
     // ==================== BLE bond ↔ RRAM ====================

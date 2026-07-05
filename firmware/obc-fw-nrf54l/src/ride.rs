@@ -324,10 +324,28 @@ pub(crate) async fn run_app(
         let mut store_guard = shared.lock().await;
         let SharedStore { storage, settings: settings_store } = &mut *store_guard;
 
+        // Settings coherence, phone → device (#456): a BLE Config write persisted units + name to
+        // RRAM but the live `App` copy never learned. Reload the BLE-owned fields into it *before*
+        // the change-detection save below, so (a) the UI re-captions same-session and (b) the app's
+        // `==`-diff save can't clobber the phone's write with its own stale copy. Only units + name
+        // are BLE-writable, so the merge is narrow (`adopt_ble_fields`) — a device-only edit pending
+        // this frame is untouched. Board-crate flag, drained once per BLE write; a no-op otherwise.
+        #[cfg(feature = "ble")]
+        if crate::object_store::take_ble_config_written() {
+            let mut settings = *app.settings();
+            settings.adopt_ble_fields(&settings_store.load().unwrap_or_default());
+            app.set_settings(settings);
+        }
+
         // Persist settings the moment a settings screen changes one: one in-place 16-byte RRAM line,
         // skipped when nothing changed.
         if app.take_settings_dirty() {
             settings_store.save(app.settings());
+            // Settings coherence, device → phone (#456): the RRAM blob just moved, so the BLE
+            // config-read cache is stale — flag it so the BLE plane refreshes from RRAM before its
+            // next Config read / advertised-name read. One relaxed store; a no-op on non-BLE builds.
+            #[cfg(feature = "ble")]
+            crate::object_store::mark_device_settings_changed();
             // Push a changed GPS fix interval to the sensor task → it re-VALSETs the M10's rate.
             #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
             if app.settings().fix_interval_s != prev_interval {
