@@ -197,23 +197,24 @@ mod tests {
         assert!(pan > H as usize / 2, "a map pan pushes ~all rows, got {pan}");
     }
 
-    /// Real-data pack→parse of the v6 POI section (#423): the committed `monaco.obcm` — a POI-dense
-    /// coastal fixture the packer produced from a real OSM extract — must parse as v6 and expose a
+    /// Real-data pack→parse of the POI section (#423): the committed `monaco.obcm` — a POI-dense
+    /// coastal fixture the packer produced from a real OSM extract — must parse as v8 and expose a
     /// full six-category POI directory with several **non-empty** categories, each carrying a real
-    /// quadtree (non-zero node + chunk counts). This complements the reader's hand-built byte pins
-    /// (`obc-reader/tests/format.rs`) by exercising the whole write→read path on real geometry, and
-    /// gives the #425 POI browser a map with POIs to browse in the sim/snapshot suite.
+    /// quadtree (non-zero node + chunk counts), plus a populated §8 nav graph (#464). This
+    /// complements the reader's hand-built byte pins (`obc-reader/tests/format.rs`) by exercising
+    /// the whole write→read path on real geometry, and gives the #425 POI browser a map with POIs
+    /// to browse in the sim/snapshot suite.
     #[test]
-    fn monaco_fixture_parses_a_populated_v6_poi_directory() {
+    fn monaco_fixture_parses_populated_poi_and_nav_sections() {
         use obc_reader::{MapCache, MapTables, Reader, SliceSource};
 
         let bytes = include_bytes!("../assets/monaco.obcm").to_vec();
         let src = SliceSource(&bytes);
-        let tables = MapTables::parse(&src).expect("monaco.obcm parses as a valid v7 map");
+        let tables = MapTables::parse(&src).expect("monaco.obcm parses as a valid v8 map");
         let cache = MapCache::new();
         let r = Reader::new(&src, &tables, &cache);
 
-        assert_eq!(r.version, 7, "the fixture is OBCM v7");
+        assert_eq!(r.version, 8, "the fixture is OBCM v8");
         let dir = r.poi_directory();
         // The directory is always present with all six categories (spec §7.1).
         assert_eq!(dir.entries.len(), 6, "six-category POI directory");
@@ -231,6 +232,21 @@ mod tests {
             .map(|e| e.category_id)
             .collect();
         assert!(populated.len() >= 3, "Monaco packs ≥3 POI categories, got {populated:?}");
+
+        // The §8 nav graph: a dense city extract must bake a real routable graph — a populated
+        // node quadtree and a non-empty edge pool, streets everywhere in the bbox.
+        let nav = r.nav_directory();
+        assert!(!nav.is_empty(), "Monaco has routable streets");
+        assert!(nav.chunk_count > 0 && nav.edge_chunk_count > 0, "node chunks + edge pool present");
+        assert_eq!(nav.chunk_size, 512, "the packer's fixed 512-byte nav chunks");
+        let mut scratch = [0u8; 512];
+        let mut nodes = 0usize;
+        r.for_each_nav_node(&r.bbox, &mut scratch, |n| {
+            nodes += 1;
+            assert!(n.degree() >= 1, "a junction always carries at least one arc");
+        })
+        .expect("nav walk over the whole bbox");
+        assert!(nodes > 100, "a city extract yields a real junction set, got {nodes}");
     }
 
     #[test]
