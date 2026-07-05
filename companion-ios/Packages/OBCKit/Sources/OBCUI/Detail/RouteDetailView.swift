@@ -430,6 +430,7 @@ public struct ImportLandingView: View {
 private struct PreviewNoopTransport: DeviceTransport {
     var state: AsyncStream<ConnectionState> { AsyncStream { $0.finish() } }
     var battery: AsyncStream<Int> { AsyncStream { $0.finish() } }
+    var storeChanges: AsyncStream<StoreChanged> { AsyncStream { $0.finish() } }
     func connect() async throws {}
     func disconnect() async {}
     func deviceInfo() async throws -> DeviceInfo { DeviceInfo(name: "Preview", firmwareVersion: "0") }

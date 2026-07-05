@@ -259,6 +259,7 @@ private final class SpyTransport: DeviceTransport, @unchecked Sendable {
 
     var state: AsyncStream<ConnectionState> { stateMulticast.stream() }
     var battery: AsyncStream<Int> { AsyncStream { $0.finish() } }
+    var storeChanges: AsyncStream<StoreChanged> { AsyncStream { $0.finish() } }
 
     func connect() async throws {
         record("connect")
