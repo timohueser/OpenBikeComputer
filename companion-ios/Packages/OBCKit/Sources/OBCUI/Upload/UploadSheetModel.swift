@@ -63,6 +63,14 @@ public final class UploadSheetModel {
     /// CRC-32 (the `OnDeviceState` fingerprint) — the E1 landing saves the route
     /// here ("Uploading saves it too") and records it as on-device, up to date.
     private let onCompleted: (DeviceObjectID?, UInt32) -> Void
+    /// The foreground-only policy's in-flight ledger (#459) — `nil` in tests
+    /// and previews that don't exercise the lifecycle.
+    @ObservationIgnored private let activity: TransferActivity?
+    /// This upload's claim while an attempt is actually moving bytes. Released
+    /// on a drop (`.interrupted` — a stalled upload must not hold the
+    /// background grace window; it restarts after the foreground reconnect),
+    /// on any terminal outcome, and on sheet teardown; re-claimed by `resume()`.
+    @ObservationIgnored private var activityToken: TransferActivity.Token?
     @ObservationIgnored private var handle: TransferHandle?
     @ObservationIgnored private var watchers: [Task<Void, Never>] = []
     @ObservationIgnored private var started = false
@@ -72,6 +80,7 @@ public final class UploadSheetModel {
         blob: RouteBlob,
         deviceName: String,
         timing: Timing = Timing(),
+        activity: TransferActivity? = nil,
         onCompleted: @escaping (DeviceObjectID?, UInt32) -> Void = { _, _ in }
     ) {
         self.transport = transport
@@ -80,6 +89,7 @@ public final class UploadSheetModel {
         self.deviceName = deviceName
         self.hasWaypoints = !blob.waypoints.isEmpty
         self.timing = timing
+        self.activity = activity
         self.onCompleted = onCompleted
         self.progress = TransferProgress(bytesDone: 0, total: blob.payload.count)
     }
@@ -108,6 +118,7 @@ public final class UploadSheetModel {
     public func start() {
         guard !started else { return }
         started = true
+        setTransferActive(true)
 
         let handle = transport.uploadRoute(blob)
         self.handle = handle
@@ -117,7 +128,10 @@ public final class UploadSheetModel {
             for await tick in handle.progress {
                 guard let self else { return }
                 progress = tick
-                if phase == .interrupted { phase = .uploading }
+                if phase == .interrupted {
+                    phase = .uploading
+                    setTransferActive(true)  // moving again — re-claim
+                }
             }
         })
 
@@ -131,6 +145,10 @@ public final class UploadSheetModel {
                 let dropped = state == .outOfRange || state == .disconnected
                 if dropped, phase == .uploading, handle.currentOutcome == nil {
                     phase = .interrupted
+                    // Stalled, not moving — release the ledger claim so the
+                    // background grace window doesn't wait on a transfer whose
+                    // link is already gone.
+                    setTransferActive(false)
                 }
             }
         })
@@ -144,6 +162,7 @@ public final class UploadSheetModel {
             // `.completed` branch re-saves the route and re-arms `shouldDismiss`
             // on an already-torn-down sheet.
             guard let self, !Task.isCancelled else { return }
+            setTransferActive(false)  // terminal either way — release the claim
             switch outcome {
             case .completed:
                 phase = .done
@@ -170,6 +189,7 @@ public final class UploadSheetModel {
         handle?.resume()
         // Optimistic — the next tick confirms; a second drop re-interrupts.
         phase = .uploading
+        setTransferActive(true)
     }
 
     /// F₂'s Done / a failure's Close.
@@ -184,6 +204,10 @@ public final class UploadSheetModel {
         if let handle, handle.currentOutcome == nil { handle.cancel() }
         watchers.forEach { $0.cancel() }
         watchers.removeAll()
+        // The cancel above resolves the outcome, but its watcher just died —
+        // release the ledger claim here so a torn-down sheet can't hold the
+        // background grace window open.
+        setTransferActive(false)
     }
 
     /// Backstop for a model released without `sheetDismissed()` — the watchers
@@ -191,5 +215,18 @@ public final class UploadSheetModel {
     /// would keep them consuming stream events for the session.
     deinit {
         watchers.forEach { $0.cancel() }
+    }
+
+    /// The #459 ledger claim, idempotent in both directions — the release runs
+    /// from several exits (drop-watch, terminal outcome, sheet teardown) that
+    /// can race pairwise.
+    private func setTransferActive(_ active: Bool) {
+        if active {
+            guard activityToken == nil else { return }
+            activityToken = activity?.begin()
+        } else if let token = activityToken {
+            activityToken = nil
+            activity?.end(token)
+        }
     }
 }
