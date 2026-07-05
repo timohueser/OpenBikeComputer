@@ -428,6 +428,15 @@ pub struct App {
     /// feeds live progress in each frame via [`set_hold_progress`](App::set_hold_progress), since
     /// its holds live on a separate plane `App`'s own never sees.
     hold_progress_override: Option<f32>,
+    /// Set by [`apply_gesture`](App::apply_gesture) whenever a gesture **changed the screen
+    /// stack**: any hold charging at that moment was aimed at a screen that is no longer the
+    /// top, so it must be cancelled rather than delivered to whatever replaced it (a hold aimed
+    /// at a popup's "Save & new" must never land on the Route menu's hold-to-delete footer —
+    /// issue #480). [`handle_input`](App::handle_input) drains it inline (cancelling `input`'s
+    /// holds and dropping stray `Hold`/`BackHold`s later in the same batch); the two-plane
+    /// firmware drains it via [`take_hold_cancel`](App::take_hold_cancel) and cancels its own
+    /// input plane's recogniser.
+    hold_cancel_pending: bool,
     /// Millis of the last battery [`FuelGauge`](crate::FuelGauge) poll, or `None` before the first.
     /// Read on a slow cadence ([`BATTERY_POLL_MS`]) — *not* every tick — so a real PMIC read never
     /// spins the I²C bus at the frame rate.
@@ -520,6 +529,7 @@ impl App {
             wall_clock: WallClock::new(Settings::default().local_clock()),
             settings_dirty: false,
             hold_progress_override: None,
+            hold_cancel_pending: false,
             last_battery_poll_ms: None,
             temp_c: None,
             last_fix_ms: None,
@@ -579,6 +589,7 @@ impl App {
             addr_of_mut!((*slot).wall_clock).write(WallClock::new(Settings::default().local_clock()));
             addr_of_mut!((*slot).settings_dirty).write(false);
             addr_of_mut!((*slot).hold_progress_override).write(None);
+            addr_of_mut!((*slot).hold_cancel_pending).write(false);
             addr_of_mut!((*slot).last_battery_poll_ms).write(None);
             addr_of_mut!((*slot).temp_c).write(None);
             addr_of_mut!((*slot).last_fix_ms).write(None);
@@ -1214,10 +1225,29 @@ impl App {
         self.input.recognize(clock, input, |g| {
             let _ = pending.push(g);
         });
+        // A gesture that changes the stack cancels any hold charging at that moment
+        // (`apply_gesture` handles the recogniser). A `Hold`/`BackHold` *already recognised into
+        // this batch* behind such a transition escaped that cancel — it was aimed at the old top,
+        // so drop it here rather than deliver it to the screen that replaced it (issue #480).
+        let mut cancelled = false;
         for g in pending {
+            if cancelled && matches!(g, Gesture::Hold | Gesture::BackHold) {
+                continue;
+            }
             self.apply_gesture(g);
+            cancelled |= self.take_hold_cancel();
         }
         self.advance_animations(clock);
+    }
+
+    /// Drain the pending hold-cancel edge (see `hold_cancel_pending`): `true` when a gesture
+    /// changed the screen stack since the last drain, i.e. any hold charging on the host's input
+    /// plane is aimed at a vanished target and must be cancelled
+    /// ([`InputPlane::cancel_holds`](crate::InputPlane::cancel_holds)). The two-plane firmware
+    /// checks this after each drained gesture; [`handle_input`](App::handle_input) consumes it
+    /// itself, so single-loop hosts never see it.
+    pub fn take_hold_cancel(&mut self) -> bool {
+        core::mem::take(&mut self.hold_cancel_pending)
     }
 
     /// Apply one recognised gesture to the top screen and run the navigation transition it returns —
@@ -1237,6 +1267,13 @@ impl App {
         let mut cx = Ctx { state, activity, settings, routes: catalog.as_slice(), poi_scratch, now_ms: *now_ms };
         let t = stack.last_mut().expect("the stack always has the Home root").handle(g, &mut cx);
         let depth_before = stack.len();
+        // Whether this transition actually changes the stack (Pop/Home at the root are no-ops).
+        // A change invalidates any in-flight hold's target — see `hold_cancel_pending`.
+        let stack_changed = match &t {
+            screen::Transition::None => false,
+            screen::Transition::Pop | screen::Transition::Home => depth_before > 1,
+            screen::Transition::Push(_) | screen::Transition::Replace(_) | screen::Transition::Root(_) => true,
+        };
         screen::apply(stack, t);
         // Opening a POI list drops any previous snapshot so its first draw re-queries at the current
         // fix — the "re-enter to refresh" contract (issue #425). Gated on this being a fresh open
@@ -1252,6 +1289,13 @@ impl App {
             if let Some(Screen::Home(home)) = stack.first_mut() {
                 home.reseed(*now_ms);
             }
+        }
+        // The top screen changed under the rider's finger: cancel any hold charging right now
+        // (both `App`'s own recogniser and, via the pending flag, the two-plane firmware's input
+        // plane), so a long-press aimed at the *old* top can't complete onto the new one.
+        if stack_changed {
+            self.input.cancel_holds();
+            self.hold_cancel_pending = true;
         }
         if self.settings != settings_before {
             self.settings_dirty = true;
