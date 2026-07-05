@@ -209,11 +209,11 @@ mod tests {
 
         let bytes = include_bytes!("../assets/monaco.obcm").to_vec();
         let src = SliceSource(&bytes);
-        let tables = MapTables::parse(&src).expect("monaco.obcm parses as a valid v6 map");
+        let tables = MapTables::parse(&src).expect("monaco.obcm parses as a valid v7 map");
         let cache = MapCache::new();
         let r = Reader::new(&src, &tables, &cache);
 
-        assert_eq!(r.version, 6, "the fixture is OBCM v6");
+        assert_eq!(r.version, 7, "the fixture is OBCM v7");
         let dir = r.poi_directory();
         // The directory is always present with all six categories (spec §7.1).
         assert_eq!(dir.entries.len(), 6, "six-category POI directory");

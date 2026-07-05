@@ -1,6 +1,6 @@
 //! Query-contract tests for the nearest-16 POI scan (`Reader::nearest_pois`, #424).
 //!
-//! Each test builds a synthetic v6 `.obcm` whose POI section is a real per-category quadtree (via
+//! Each test builds a synthetic v7 `.obcm` whose POI section is a real per-category quadtree (via
 //! `obcm-testkit`'s `build_poi_map`, which mirrors the packer's tree build), then asserts the
 //! reader's expanding-ring scan returns exactly the brute-force nearest-16 — same set, same order,
 //! same distances. The last test runs the query against the committed real Monaco map.
@@ -105,9 +105,9 @@ fn grid_nearest_matches_brute_force() {
             let lon = 7_100_000 + j * 9_000;
             let name = format!("P{i}{j}");
             if (i + j) % 2 == 0 {
-                water.push(PoiSpec { lat, lon, subtype: 1, name });
+                water.push(PoiSpec { lat, lon, subtype: 1, name, hours_ref: 0xFFFF });
             } else {
-                bikes.push(PoiSpec { lat, lon, subtype: 18, name });
+                bikes.push(PoiSpec { lat, lon, subtype: 18, name, hours_ref: 0xFFFF });
             }
         }
     }
@@ -136,6 +136,7 @@ fn clusters_across_multiple_chunks() {
                 lon: clon + (k / 5) * 300,
                 subtype: 1,
                 name: format!("C{ci}-{k}"),
+                hours_ref: 0xFFFF,
             });
         }
     }
@@ -153,7 +154,13 @@ fn clusters_across_multiple_chunks() {
 fn all_in_one_chunk() {
     let mut pois = Vec::new();
     for k in 0..12 {
-        pois.push(PoiSpec { lat: 43_500_000 + k * 200, lon: 7_500_000 + k * 150, subtype: 5, name: String::new() });
+        pois.push(PoiSpec {
+            lat: 43_500_000 + k * 200,
+            lon: 7_500_000 + k * 150,
+            subtype: 5,
+            name: String::new(),
+            hours_ref: 0xFFFF,
+        });
     }
     let bytes = build_poi_map(BBOX, CS, &[(2, pois.clone())]);
     let pos = (7_500_000, 43_500_000);
@@ -179,6 +186,7 @@ fn dense_category_exhaustive_pass_drops_no_leaf() {
                 lon: 7_300_000 + j * 35_000,
                 subtype: 1,
                 name: format!("G{n}"),
+                hours_ref: 0xFFFF,
             });
             n += 1;
         }
@@ -203,6 +211,7 @@ fn more_than_16_in_first_ring() {
             lon: 7_500_000 + (k / 6) * 800 - 2000,
             subtype: 17,
             name: format!("Ph{k}"),
+            hours_ref: 0xFFFF,
         });
     }
     let bytes = build_poi_map(BBOX, CS, &[(5, pois.clone())]);
@@ -226,11 +235,12 @@ fn ring_expansion_finds_the_16th_just_outside() {
             lon: 7_500_000 + (k / 4) * 600 - 900,
             subtype: 7,
             name: format!("H{k}"),
+            hours_ref: 0xFFFF,
         });
     }
     // The 16th: ~3 km north — outside the initial 2 km half-extent, so the first ring finds only 15
     // and can't prove completeness (d[14] is fine but the set isn't full). Must expand and find it.
-    let far = PoiSpec { lat: 43_500_000 + 27_000, lon: 7_500_000, subtype: 7, name: "Far".into() };
+    let far = PoiSpec { lat: 43_500_000 + 27_000, lon: 7_500_000, subtype: 7, name: "Far".into(), hours_ref: 0xFFFF };
     pois.push(far.clone());
     let bytes = build_poi_map(BBOX, CS, &[(3, pois.clone())]);
     let got = query(&bytes, PoiCategory::Accommodation, pos);
@@ -254,6 +264,7 @@ fn straddling_ring_boundary_no_duplicates() {
             lon: 7_500_000 + (r as f32 * ang.sin() * 1.4) as i32,
             subtype: 13,
             name: format!("S{k}"),
+            hours_ref: 0xFFFF,
         });
     }
     let bytes = build_poi_map(BBOX, CS, &[(4, pois.clone())]);
@@ -271,7 +282,7 @@ fn straddling_ring_boundary_no_duplicates() {
 #[test]
 fn empty_category_returns_empty_ok() {
     // Only Water populated; query Campsite (empty).
-    let water = vec![PoiSpec { lat: 43_500_000, lon: 7_500_000, subtype: 1, name: "W".into() }];
+    let water = vec![PoiSpec { lat: 43_500_000, lon: 7_500_000, subtype: 1, name: "W".into(), hours_ref: 0xFFFF }];
     let bytes = build_poi_map(BBOX, CS, &[(1, water)]);
     let got = query(&bytes, PoiCategory::Campsite, (7_500_000, 43_500_000));
     assert!(got.is_empty(), "an empty category returns no POIs");
@@ -281,8 +292,8 @@ fn empty_category_returns_empty_ok() {
 #[test]
 fn names_and_fields_round_trip() {
     let pois = vec![
-        PoiSpec { lat: 43_500_100, lon: 7_500_200, subtype: 15, name: "Backerei Mueller".into() },
-        PoiSpec { lat: 43_500_300, lon: 7_500_400, subtype: 13, name: String::new() },
+        PoiSpec { lat: 43_500_100, lon: 7_500_200, subtype: 15, name: "Backerei Mueller".into(), hours_ref: 0xFFFF },
+        PoiSpec { lat: 43_500_300, lon: 7_500_400, subtype: 13, name: String::new(), hours_ref: 0xFFFF },
     ];
     let bytes = build_poi_map(BBOX, CS, &[(4, pois)]);
     let got = query(&bytes, PoiCategory::Resupply, (7_500_000, 43_500_000));
@@ -300,7 +311,7 @@ fn names_and_fields_round_trip() {
 /// treats the (unwalkable) section as empty and returns `Ok`.
 #[test]
 fn corrupt_zero_chunk_size_is_safe() {
-    let pois = vec![PoiSpec { lat: 43_500_000, lon: 7_500_000, subtype: 1, name: "W".into() }];
+    let pois = vec![PoiSpec { lat: 43_500_000, lon: 7_500_000, subtype: 1, name: "W".into(), hours_ref: 0xFFFF }];
     let mut bytes = build_poi_map(BBOX, CS, &[(1, pois)]);
     let poi_off = u32::from_le_bytes(bytes[32..36].try_into().unwrap()) as usize;
     // Forge the shared chunk_size (u16 at poi_off+1) to 0. `MapTables::parse` accepts a 0 chunk_size
@@ -315,8 +326,8 @@ fn corrupt_zero_chunk_size_is_safe() {
 #[test]
 fn corrupt_out_of_range_subtype_is_skipped() {
     let pois = vec![
-        PoiSpec { lat: 43_500_000, lon: 7_500_000, subtype: 1, name: "Good".into() },
-        PoiSpec { lat: 43_500_100, lon: 7_500_100, subtype: 1, name: "AlsoGood".into() },
+        PoiSpec { lat: 43_500_000, lon: 7_500_000, subtype: 1, name: "Good".into(), hours_ref: 0xFFFF },
+        PoiSpec { lat: 43_500_100, lon: 7_500_100, subtype: 1, name: "AlsoGood".into(), hours_ref: 0xFFFF },
     ];
     let mut bytes = build_poi_map(BBOX, CS, &[(1, pois)]);
     // Find the Water category's first chunk and clobber the SECOND record's subtype byte to 99
@@ -327,8 +338,8 @@ fn corrupt_out_of_range_subtype_is_skipped() {
     let idx_off = u32::from_le_bytes(bytes[e1 + 1..e1 + 5].try_into().unwrap()) as usize;
     let node_count = u32::from_le_bytes(bytes[e1 + 5..e1 + 9].try_into().unwrap()) as usize;
     let data_start = idx_off + node_count * 4;
-    // Second record's subtype byte is at data_start + 32 + 8.
-    bytes[data_start + 32 + 8] = 99;
+    // Second record's subtype byte is at data_start + 36 + 8 (36-byte v7 record stride).
+    bytes[data_start + 36 + 8] = 99;
     let got = query(&bytes, PoiCategory::Water, (7_500_000, 43_500_000));
     // The clobbered record is skipped; the first (valid) one remains.
     assert_eq!(got.len(), 1, "the out-of-range-subtype record is skipped, the valid one kept");
@@ -342,15 +353,15 @@ fn corrupt_missing_sentinel_stops_at_chunk_end() {
     // One POI ⇒ one record, then a 0xFF sentinel, then padding. Overwrite the sentinel's subtype
     // byte with 1 (a valid subtype) — the record loop must still stop at records_per_chunk, and the
     // forged "record" (all-0xFF coords, name) is either skipped or bounded, never a panic.
-    let pois = vec![PoiSpec { lat: 43_500_000, lon: 7_500_000, subtype: 1, name: "One".into() }];
+    let pois = vec![PoiSpec { lat: 43_500_000, lon: 7_500_000, subtype: 1, name: "One".into(), hours_ref: 0xFFFF }];
     let mut bytes = build_poi_map(BBOX, CS, &[(1, pois)]);
     let poi_off = u32::from_le_bytes(bytes[32..36].try_into().unwrap()) as usize;
     let e1 = poi_off + 3;
     let idx_off = u32::from_le_bytes(bytes[e1 + 1..e1 + 5].try_into().unwrap()) as usize;
     let node_count = u32::from_le_bytes(bytes[e1 + 5..e1 + 9].try_into().unwrap()) as usize;
     let data_start = idx_off + node_count * 4;
-    // Sentinel subtype byte is at the 2nd record slot: data_start + 32 + 8. Forge it to 1.
-    bytes[data_start + 32 + 8] = 1;
+    // Sentinel subtype byte is at the 2nd record slot: data_start + 36 + 8 (36-byte stride). Forge to 1.
+    bytes[data_start + 36 + 8] = 1;
     // This must not panic and must not read past the chunk; result is well-formed (≤ records/chunk).
     let got = query(&bytes, PoiCategory::Water, (7_500_000, 43_500_000));
     assert!(got.len() <= 16, "bounded by the chunk, no over-read");
