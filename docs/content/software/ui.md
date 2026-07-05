@@ -170,8 +170,9 @@ fn handle(&mut self, g: Gesture, _cx: &mut Ctx) -> Transition {
         }
         Gesture::Press   => match self.selected {
             0 => Transition::Push(Screen::RouteMenu(RouteMenuScreen::new())), // Routes
+            1 => Transition::Push(Screen::PoiMenu(PoiMenuScreen::new())),     // POIs
             3 => Transition::Push(Screen::Settings(SettingsScreen::new())),   // Settings
-            _ => Transition::None,                                            // future screens
+            _ => Transition::None,                                            // Map — future screen
         },
         Gesture::Back    => Transition::Pop, // return to whoever opened the Menu
         _ => Transition::None,
@@ -288,6 +289,102 @@ Gesture::Hold => match self.selected {     // reaching this arm IS the confirmat
 ```
 
 The factory **Reset** screen is the one place a hold guards a *destructive* action. The hold threshold is a fixed ~500 ms — too short to feel safe alone — so reset is **two deliberate steps**: a press *arms* the screen, then a hold *erases*. A stray hold on an un-armed screen does nothing; only an armed, completed hold clears the settings (with a bar filling on the live progress).
+
+## The POIs browser
+
+*POIs* is one of the compass Menu's stations, and it answers a bikepacker's question directly: *where's the nearest water / campsite / bakery?* The flow is two screens — a **category** list, then that category's **nearest-16** list — both built from the same [`screens!` table](#a-screen-is-a-value-not-a-widget-tree) rows and the shared list widget as every other menu, so there's almost nothing new in the plumbing. What's new is where the data comes from and how one element stays live.
+
+<figure class="fig">
+<svg viewBox="0 0 720 250" role="img" aria-label="The POIs browser flow. The compass Menu's POIs station opens the category screen: a six-row list of Water, Campsite, Accommodation, Resupply, Pharmacy and Bike shop, each with a small icon. Pressing a category opens the list screen: that category's nearest sixteen POIs sorted by distance, each row a name, a bearing arrow and a distance. Back climbs one step; selecting a POI does nothing this iteration.">
+  <defs>
+    <marker id="aU9" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24">Menu → categories → the nearest-16 of one category</text>
+
+  <!-- Menu station -->
+  <rect class="d-panel-2" x="24" y="88" width="120" height="44" rx="10" />
+  <text class="d-label" x="84" y="108" text-anchor="middle">Menu</text>
+  <text class="d-sub" x="84" y="123" text-anchor="middle" style="font-size:9px">POIs station</text>
+
+  <!-- category screen -->
+  <line class="d-flow" x1="146" y1="110" x2="196" y2="110" marker-end="url(#aU9)" />
+  <text class="d-sub" x="171" y="102" text-anchor="middle" style="font-size:9px">press</text>
+  <rect class="d-panel" x="202" y="44" width="188" height="168" rx="11" />
+  <rect x="210" y="52" width="172" height="20" rx="4" style="fill:#aa5500" /><text class="d-sub" x="220" y="66" style="fill:#fff;font-size:9px">POIS</text>
+  <g font-family="var(--mono)">
+    <rect x="210" y="78" width="172" height="20" rx="4" class="d-amber" />
+    <circle cx="222" cy="88" r="4" fill="#000" /><text class="d-sub" x="234" y="92" style="fill:#000;font-size:9.5px">Water</text>
+    <circle cx="222" cy="110" r="4" fill="#24331c" /><text class="d-sub" x="234" y="114" style="font-size:9.5px">Campsite</text>
+    <circle cx="222" cy="130" r="4" fill="#24331c" /><text class="d-sub" x="234" y="134" style="font-size:9.5px">Accommodation</text>
+    <circle cx="222" cy="150" r="4" fill="#24331c" /><text class="d-sub" x="234" y="154" style="font-size:9.5px">Resupply</text>
+    <circle cx="222" cy="170" r="4" fill="#24331c" /><text class="d-sub" x="234" y="174" style="font-size:9.5px">Pharmacy</text>
+    <circle cx="222" cy="190" r="4" fill="#24331c" /><text class="d-sub" x="234" y="194" style="font-size:9.5px">Bike shop</text>
+  </g>
+
+  <!-- list screen -->
+  <line class="d-flow" x1="392" y1="110" x2="442" y2="110" marker-end="url(#aU9)" />
+  <text class="d-sub" x="417" y="102" text-anchor="middle" style="font-size:9px">press</text>
+  <rect class="d-panel" x="448" y="44" width="248" height="168" rx="11" />
+  <rect x="456" y="52" width="232" height="20" rx="4" style="fill:#aa5500" /><text class="d-sub" x="466" y="66" style="fill:#fff;font-size:9px">Water · 1/16</text>
+  <g font-family="var(--mono)">
+    <!-- selected row -->
+    <rect x="456" y="78" width="232" height="24" rx="4" class="d-amber" />
+    <text class="d-sub" x="466" y="94" style="fill:#000;font-size:9.5px">Stadtbrunnen</text>
+    <path d="M636 84 l6 -6 l6 6 l-4 0 l0 8 l-4 0 l0 -8 z" fill="#000" />
+    <text class="d-sub" x="656" y="94" style="fill:#000;font-size:9px">210m</text>
+    <!-- more rows -->
+    <text class="d-sub" x="466" y="118" style="font-size:9.5px">Spring</text>
+    <path d="M638 110 l8 4 l-8 4 l3 -4 z" fill="#24331c" /><text class="d-sub" x="656" y="118" style="font-size:9px">410m</text>
+    <text class="d-sub" x="466" y="140" style="font-size:9.5px">Brunnen Nord</text>
+    <path d="M642 132 l0 8 l-3 -3 M642 140 l3 -3" fill="none" stroke="#24331c" stroke-width="1.4" /><text class="d-sub" x="656" y="140" style="font-size:9px">820m</text>
+    <text class="d-sub" x="466" y="162" style="font-size:9.5px">Drinking water</text>
+    <text class="d-sub" x="656" y="162" style="font-size:9px">1km</text>
+    <text class="d-sub" x="466" y="188" style="font-size:9px;fill:#a9501c">name · arrow · distance</text>
+  </g>
+</svg>
+<figcaption>Six categories in fixed id order, each a hand-drawn icon in the main-menu style; selecting one opens its list — the <b>nearest 16</b> POIs within the loaded map, sorted by distance to the GPS fix (fewer than 16 is normal). A row is a <b>name, a bearing arrow, and a distance</b>. The name falls back to the subtype label ("Spring", "Drinking water") when OSM has none. <code>back</code> climbs one step; selecting a POI is a deliberate no-op this iteration — opening or navigating to it is a follow-up epic, so there's no dead "press to open" hint row.</figcaption>
+</figure>
+
+### A static list with one live element
+
+The list is a **static snapshot**, frozen the moment you enter. Membership, order and distances don't move — rows never reshuffle under the cursor as you turn, and the SD card isn't re-scanned every frame. Re-enter the category to refresh it against your current position. Under the hood the [nearest-16 query](../formats/#pois-a-nearest-list-not-a-map-layer) needs the streaming map `Reader`, which lives only in the [`draw` context](#logic-and-drawing-get-different-views-of-the-world) — so the snapshot is taken *lazily on the first draw* that has both a reader and a fix, into a single buffer the app owns (holding it per-screen would inflate every slot of the screen stack). Opening a list invalidates that buffer, so the next draw re-queries.
+
+The one thing that *is* live is the **bearing arrow** — recomputed every frame from the POI's stored coordinates and the rider's current heading, pure trig with zero SD access. It points from you toward the POI **relative to your heading**, so "straight up" means "dead ahead." That heading has two sources, and which one is used depends on whether you're moving:
+
+<figure class="fig">
+<svg viewBox="0 0 720 210" role="img" aria-label="One POI list row, dissected. The row holds a name on the left, a bearing arrow, and a right-aligned distance. Below, the arrow's heading reference has two sources: while moving, the GPS course; while stationary, the electronic compass heading from the ICM-20948; when neither is known, the arrow is hidden rather than pointing wrong.">
+  <text class="d-tag" x="20" y="24">The row, and where the arrow's "up" comes from</text>
+
+  <!-- the row -->
+  <rect class="d-panel" x="24" y="42" width="672" height="40" rx="8" />
+  <text class="d-sub" x="44" y="66" font-family="var(--mono)" style="font-size:12px">Stadtbrunnen</text>
+  <text class="d-sub" x="240" y="60" style="font-size:9px;fill:#a9501c">name (or subtype label if unnamed)</text>
+  <!-- arrow -->
+  <path d="M556 54 l8 -8 l8 8 l-5 0 l0 10 l-6 0 l0 -10 z" fill="#cf6a2a" />
+  <text class="d-sub" x="540" y="78" style="font-size:8.5px;fill:#a9501c">bearing</text>
+  <!-- distance -->
+  <text class="d-sub" x="672" y="66" text-anchor="end" font-family="var(--mono)" style="font-size:12px">210m</text>
+  <text class="d-sub" x="672" y="78" text-anchor="end" style="font-size:8.5px">distance</text>
+
+  <!-- heading sources -->
+  <text class="d-tag" x="20" y="118">the arrow's heading reference</text>
+  <rect class="d-panel-2" x="24" y="128" width="216" height="66" rx="10" />
+  <text class="d-label" x="40" y="150" style="font-size:11px">moving</text>
+  <text class="d-sub" x="40" y="170" style="font-size:10px">GPS course over ground</text>
+  <text class="d-sub" x="40" y="185" style="font-size:9px">— the direction you're going</text>
+
+  <rect class="d-panel-2" x="252" y="128" width="216" height="66" rx="10" />
+  <text class="d-label" x="268" y="150" style="font-size:11px">stationary</text>
+  <text class="d-sub" x="268" y="170" style="font-size:10px">ICM-20948 compass</text>
+  <text class="d-sub" x="268" y="185" style="font-size:9px">— which way you're facing</text>
+
+  <rect class="d-hot" x="480" y="128" width="216" height="66" rx="10" style="fill:#f8efe4" />
+  <text class="d-label" x="496" y="150" style="fill:#a9501c;font-size:11px">neither known</text>
+  <text class="d-sub" x="496" y="170" style="font-size:10px">arrow hidden</text>
+  <text class="d-sub" x="496" y="185" style="font-size:9px">— don't point wrong</text>
+</svg>
+<figcaption>A stopped GPS reports no course, so the arrow would freeze pointing wherever you last moved — useless when you're standing at a junction deciding which way to turn. So the row uses the GPS <b>course while moving</b> and the <b>electronic compass while stopped</b> (the same #231 heading seam the heading-up map uses). If <i>neither</i> exists — no course and no compass — the arrow is simply <b>hidden</b> rather than shown pointing the wrong way. The rest of the row (name, distance) is part of the frozen snapshot; only the arrow re-rotates.</figcaption>
+</figure>
 
 ## Settings: a second level of focus
 
