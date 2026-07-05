@@ -3,7 +3,9 @@
 The **real hardware target** for OpenBikeComputer: the shared `obc-app` running on
 an nRF54L15-DK (Cortex-M33), with map/routes/tracks streamed from a microSD card —
 load a route, ride it (driven by the **real SAM-M10Q GPS + BMP581 altimeter** on the shared I²C
-bus, issue #218, or a `--features synth`/`debug-uart` stand-in for indoor work), and save a GPX. The default firmware drives
+bus, issue #218, or a `--features synth`/`debug-uart` stand-in for indoor work), and save the ride
+as the durable `RDnn.ORD` ride object (GPX export happens in the companion app after sync — the
+device writes no GPX). The default firmware drives
 the reflective **LS021B7DD02** memory LCD (the panel the project ships on) via the
 nRF54L's **FLPR** (the VPR RISC-V coprocessor); the Adafruit **ST7789** EYESPI panel
 (240×320) is kept as the opt-in `--features tft` bring-up backend. The LS021 protocol
@@ -269,7 +271,7 @@ host-tested `obc-ble` crate (`cargo test -p obc-ble`, pinned to `protocol-vector
   files (the `OBCR` magic held back as zeros until commit, so a power cut never leaves a half-route
   the boot scan accepts); the **map build's** catalog scan matches `*.OBR` beside `.obcr`, so an
   uploaded route shows in the on-device menu after a reflash. Every ride Finish on the map build
-  writes `/tracks/RDnn.ORD` (byte-for-byte the S0 §7.2 ride object) next to the `.gpx`; the `ble`
+  writes `/tracks/RDnn.ORD` (byte-for-byte the S0 §7.2 ride object) — the only save artifact; the `ble`
   build just serves those. The id in each filename is recovered at boot and is what the app's
   synced-set keys on. App-side ride deletes are tombstoned in the app — the device keeps every ride
   (`deleteObject` on a ride answers `notFound` deliberately).
@@ -292,8 +294,9 @@ host-tested `obc-ble` crate (`cargo test -p obc-ble`, pinned to `protocol-vector
   `crcMismatch`. `upload`/`list`/`detail`/`delete`/`abort-test` exercise the route plane.
 - **E2E golden path** — share a GPX to the iOS app, upload (B5 sheet), reflash the **map** build; the
   route is in the device menu and rideable (SD persists across flashes). For sync: record 2–3 rides on
-  the map build (`synth` is fine indoors), reflash `ble`, sync pulls them; spot-check a decoded ride
-  against its `.gpx` twin. Ids must survive a power cycle; the boot counter must increment across them.
+  the map build (`synth` is fine indoors), reflash `ble`, sync pulls them; spot-check a decoded ride's
+  totals in the app against the device's Paused ledger. Ids must survive a power cycle; the boot
+  counter must increment across them.
 - **Pairing** — passkey on the panel (webcam) typed on the phone → bond lands; power-cycle / app
   restart / walk-away → silent reconnect, no dialog; reflash `ble` → still no dialog; app *Forget* +
   iOS Bluetooth forget → next contact re-pairs with a fresh passkey.

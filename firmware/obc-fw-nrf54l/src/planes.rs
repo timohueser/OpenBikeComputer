@@ -21,6 +21,7 @@ use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::channel::{Channel, Sender};
 #[cfg(feature = "tft")]
 use embassy_sync::mutex::Mutex;
+use embassy_sync::signal::Signal;
 use embassy_time::{Instant, Timer};
 use embedded_graphics::pixelcolor::{raw::RawU16, Rgb565};
 use obc_app::{Gesture, InputClock, InputEvent, InputPlane, InputSource};
@@ -66,6 +67,15 @@ const GESTURE_QUEUE: usize = 16;
 /// Recognised gestures flowing from the input plane (high priority) to the map plane (thread mode) —
 /// the only lock-free shared state between the two planes.
 pub(crate) static GESTURES: Channel<CriticalSectionRawMutex, Gesture, GESTURE_QUEUE> = Channel::new();
+
+/// Wakes the event-driven map loop the moment a hold starts **charging** (and keeps it awake while
+/// the bulge is live). Without it the loop has no wake source for a press: a button-*down* emits no
+/// gesture (`Press` fires on release, `Hold` at the 500 ms threshold), so on a quiet screen the map
+/// plane slept through the whole charge and the first thing to reach glass was the confirm pop —
+/// the "nothing, then the bulge jumps out" bug. The input plane signals this every recognizer tick
+/// while a hold is in flight or the overlay is animating; a `Signal` (a coalescing level wake, not
+/// a queue) is exactly the semantics a repeated 8 ms nudge wants.
+pub(crate) static INPUT_WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 /// The high-priority executor the input/overlay plane runs on, pended from the SWI01 vector (SWI00 is
 /// MPSL's low-prio lane on `ble` builds, so every build pends from SWI01). The FLPR build uses
@@ -198,7 +208,7 @@ pub(crate) async fn input_overlay_task(
         // never held across an await/push). Each gesture is pushed to the map plane; the bulge is
         // advanced regardless, so the press is confirmed on screen below even before the map plane
         // drains the channel.
-        let (dirty, overlay_span, overlay_active) = input_plane.lock(|cell| {
+        let (dirty, overlay_span, overlay_active, hold_charging) = input_plane.lock(|cell| {
             let plane = &mut *cell.borrow_mut();
             // Physical buttons + (with `debug-uart`) the VCOM-injected `K` events, drained into one
             // recogniser pass — so a host can drive taps/holds like the real buttons.
@@ -209,9 +219,21 @@ pub(crate) async fn input_overlay_task(
                     defmt::warn!("gesture channel full — dropped a gesture (map plane stalled?)");
                 }
             });
-            // `overlay_active` (the bulge is still live, incl. its retract) gates the idle sleep below.
-            (plane.take_overlay_dirty(), plane.overlay_rows(FRAME_W as i32, FRAME_H as i32), plane.overlay_active())
+            // `overlay_active` (the bulge is still live, incl. its retract) gates the idle sleep below;
+            // `hold_charging` (either button down, long-press not yet fired) feeds the map-loop wake.
+            (
+                plane.take_overlay_dirty(),
+                plane.overlay_rows(FRAME_W as i32, FRAME_H as i32),
+                plane.overlay_active(),
+                plane.encoder_hold_progress() > 0.0 || plane.back_hold_progress() > 0.0,
+            )
         });
+        // Nudge the event-driven map loop for the whole hold lifecycle (charge → pop/retract): a
+        // press emits no gesture, so without this the loop sleeps through the charge and the
+        // in-screen hold fills (and, on the FLPR, the bulge itself) never animate — see [`INPUT_WAKE`].
+        if hold_charging || overlay_active {
+            INPUT_WAKE.signal(());
+        }
 
         // Repaint the bulge only when it changed (plus the one trailing clear `take_overlay_dirty`
         // reports): re-present just the right-edge region over a static map through the seam — while
@@ -279,7 +301,7 @@ pub(crate) async fn input_task(
         // Physical buttons + (with `debug-uart`) the VCOM-injected `K` events, one recogniser pass.
         // Also read whether the hold bulge is still live (charging / popping / retracting): the input
         // plane must keep animating it even after the button is released, so it gates the idle sleep.
-        let overlay_active = input_plane.lock(|cell| {
+        let (overlay_active, hold_charging) = input_plane.lock(|cell| {
             let plane = &mut *cell.borrow_mut();
             let mut dbg = debug_input();
             let mut input = ChainedInput { a: &mut buttons, b: &mut dbg };
@@ -288,8 +310,15 @@ pub(crate) async fn input_task(
                     defmt::warn!("gesture channel full — dropped a gesture (map plane stalled?)");
                 }
             });
-            plane.overlay_active()
+            (plane.overlay_active(), plane.encoder_hold_progress() > 0.0 || plane.back_hold_progress() > 0.0)
         });
+        // Nudge the event-driven map loop for the whole hold lifecycle (charge → pop/retract). On
+        // this backend the *map plane* owns every bulge push, and a press emits no gesture — so
+        // without this wake the loop sleeps through the charge on a quiet screen and the first
+        // thing on glass is the confirm pop (see [`INPUT_WAKE`]).
+        if hold_charging || overlay_active {
+            INPUT_WAKE.signal(());
+        }
         // Event-driven sleep (issue #219): once every button is released + settled and no bulge is
         // animating, sleep on a button falling edge instead of polling — a parked device burns no CPU
         // here. While a button is down / debouncing / repeating, or a bulge is live, keep the 8 ms poll
@@ -403,6 +432,18 @@ impl MapDisplay {
     pub(crate) fn hold_progress(&self) -> f32 {
         self.input_plane.lock(|c| c.borrow().encoder_hold_progress())
     }
+
+    /// Whether a hold is **charging** right now — either button down, its long-press not yet fired.
+    /// The pre-fire window the ride loop defers expensive map redraws in, so the charge animation
+    /// keeps its cadence instead of waiting out a 150–300 ms map frame.
+    #[cfg_attr(not(has_map), allow(dead_code))]
+    #[inline(always)]
+    pub(crate) fn hold_charging(&self) -> bool {
+        self.input_plane.lock(|c| {
+            let p = c.borrow();
+            p.encoder_hold_progress() > 0.0 || p.back_hold_progress() > 0.0
+        })
+    }
 }
 
 /// Consecutive failed presents that trigger one FLPR relaunch (#349): each failure already costs a
@@ -470,6 +511,18 @@ impl MapDisplay {
     #[inline(always)]
     pub(crate) fn hold_progress(&self) -> f32 {
         self.input_plane.lock(|c| c.borrow().encoder_hold_progress())
+    }
+
+    /// Whether a hold is **charging** right now — either button down, its long-press not yet fired.
+    /// The pre-fire window the ride loop defers expensive map redraws in, so the bulge keeps its
+    /// cadence instead of waiting out a 150–300 ms map frame mid-charge.
+    #[cfg_attr(not(has_map), allow(dead_code))]
+    #[inline(always)]
+    pub(crate) fn hold_charging(&self) -> bool {
+        self.input_plane.lock(|c| {
+            let p = c.borrow();
+            p.encoder_hold_progress() > 0.0 || p.back_hold_progress() > 0.0
+        })
     }
 
     /// Render the clean frame into the owned panel and **self-diff** it to glass: push only the rows
