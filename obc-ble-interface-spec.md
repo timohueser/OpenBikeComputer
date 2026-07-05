@@ -241,6 +241,17 @@ A descriptor that names an unknown type/id, carries a non-zero offset, or
 arrives mid-transfer is answered with a `transferResult` carrying `error` /
 `notFound` / `busy` (§4.3) and does not disturb an active transfer.
 
+**Storage-full reject (descriptor-open).** A **new**-route upload — `op=1`,
+route type, `object_id = 0xFFFF` (or a route id the device doesn't hold) —
+that would grow the catalog past its cap is rejected at the `transferControl`
+write, **before any bytes stream**, with `transferResult` status `storageFull`
+(§4.3); no CoC opens and no partial file is created. **Replace-by-id uploads of
+an existing route are exempt** — they reuse a catalog slot rather than growing
+it, so updating a stored (or actively-navigated) route never hits the cap. The
+`object_id` in the reject echoes the request (`0xFFFF` for a fresh upload). The
+app surfaces this as "delete routes on the device"; the reference cap is 64
+routes.
+
 ### 4.3 `status` — typed device → app notifications
 
 Every `status` notification is one message: a `u8` discriminator + fixed body.
@@ -255,6 +266,9 @@ msg = 1  transferResult (8 bytes total):
                          3 = error         storage / internal failure
                          4 = notFound      unknown object type/id
                          5 = busy          a transfer is already active
+                         6 = storageFull   the route catalog is full — a NEW-route
+                                           upload was rejected at descriptor-open
+                                           time (§4.2), before any bytes streamed
   committed_offset  u32       durable byte count: total_len on `committed`, else 0
                               (a download's explicit close reports its total_len)
 

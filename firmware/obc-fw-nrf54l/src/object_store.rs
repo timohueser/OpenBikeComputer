@@ -349,9 +349,15 @@ impl ObjectStore {
     /// here: the data plane opens it via [`upload_begin`](Self::upload_begin) at the first CoC byte,
     /// so an armed transfer whose CoC never opens holds no storage handle.
     pub fn upload_open(&mut self, shared: &SharedStore, desc: &TransferControl) -> Result<Receiver, TransferStatus> {
-        // A named id must exist (0xFFFF = fresh); check before arming.
-        if desc.object_id != TransferControl::NEW_OBJECT_ID && self.slot_index(desc.object_id).is_none() {
-            return Err(TransferStatus::NotFound);
+        // Descriptor-open reject, before any byte streams (issue #452): a *new* upload (id 0xFFFF or a
+        // named id we don't hold) is refused when the catalog can't grow — StorageFull if the route
+        // table is at MAX_ROUTES or the durable-id space is exhausted, NotFound for a named-but-unknown
+        // id with room to spare. A replace-by-id of an existing route reuses its slot and is exempt
+        // (updating the actively-navigated route must never hit the cap). The wire crate owns the rule.
+        let catalog_full = self.routes.is_full() || self.next_id >= SIDELOAD_ID_BASE;
+        let id_known = self.slot_index(desc.object_id).is_some();
+        if let Some(status) = TransferStatus::upload_open_reject(desc.object_id, id_known, catalog_full) {
+            return Err(status);
         }
         // No card ⇒ no upload; answer now rather than after the CoC opens.
         if shared.storage.is_none() {
@@ -404,10 +410,11 @@ impl ObjectStore {
         }
         let fresh = rx.object_id() == TransferControl::NEW_OBJECT_ID;
         if fresh && (self.routes.is_full() || self.next_id >= SIDELOAD_ID_BASE) {
-            // Storage-full, typed: the catalog can't index another object (or the durable-id space is
-            // exhausted — practically unreachable), so reject before touching the card's name slots.
+            // Storage-full backstop: `upload_open` already rejects new uploads at descriptor-open
+            // time (before any byte streams), so reaching here means the catalog filled *during* the
+            // transfer. Same typed status, so the phone's handling is identical either way.
             self.upload_discard(shared);
-            return (rx.object_id(), TransferStatus::Error);
+            return (rx.object_id(), TransferStatus::StorageFull);
         }
         let replace_idx = if fresh { None } else { self.slot_index(rx.object_id()) };
         let Some(storage) = &mut shared.storage else { return (rx.object_id(), TransferStatus::Error) };
