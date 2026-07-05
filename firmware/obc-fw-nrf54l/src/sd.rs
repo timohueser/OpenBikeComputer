@@ -434,8 +434,12 @@ impl Storage {
             defmt::warn!("SD: scan: more than {=usize} ride files — the excess is not listed", MAX_RIDES);
         }
 
-        // Build summaries, keeping name/id/summary aligned in a temp so we can sort newest-first.
-        let mut rows: Vec<(u16, ShortFileName, obc_app::RideSummary), MAX_RIDES> = Vec::new();
+        // Build summaries straight into the result trio (catalog + the parallel file/id tables),
+        // in directory order. NO aligned sort temp: a `Vec<(id, name, summary), 128>` here was an
+        // ~8 KB frame on top of the ~6 KB catalog — with `entries` that peaked past 16 KB in one
+        // frame and **blew the ~36 KB stack at boot** (the #188/#270 law: catalog frames are the
+        // stack's biggest tenants; this one crashed in the field). The newest-first order is
+        // applied afterwards by permuting the trio in place through a 128-entry index array.
         for (id, n) in &entries {
             let (file, len, borrowed) = match self.vmgr.open_file_in_dir(dir, n, Mode::ReadOnly) {
                 Ok(f) => (f, self.vmgr.file_length(f).unwrap_or(0), false),
@@ -450,7 +454,10 @@ impl Storage {
             match RideInfo::read(&SdByteSource::new(&self.vmgr, file, len)) {
                 Ok(info) => {
                     let sum = obc_app::RideSummary::from_info(&info, synced.contains(*id));
-                    let _ = rows.push((*id, n.clone(), sum));
+                    if catalog.push(sum).is_ok() {
+                        let _ = self.ride_files.push(n.clone());
+                        let _ = self.ride_ids.push(*id);
+                    }
                 }
                 Err(_) => defmt::warn!("SD: scan: ride {} unreadable — not listed", defmt::Debug2Format(n)),
             }
@@ -458,13 +465,25 @@ impl Storage {
                 let _ = self.vmgr.close_file(file);
             }
         }
-        // Newest first (descending start_time) — the Rides screen lists most-recent at the top.
-        rows.sort_unstable_by_key(|r| core::cmp::Reverse(r.2.start_time));
-        for (id, name, sum) in rows {
-            if catalog.push(sum).is_ok() {
-                let _ = self.ride_files.push(name);
-                let _ = self.ride_ids.push(id);
+
+        // Newest first (descending start_time), via an index permutation (256 B, not an 8 KB row
+        // temp): sort indices by the catalog's start_time, then apply the permutation in place with
+        // the standard chase-forward swap — positions before `i` are final, so an `order` value
+        // pointing below `i` is chased to where that element was swapped to. All three parallel
+        // tables move together, staying aligned.
+        let mut order: Vec<u16, MAX_RIDES> = Vec::new();
+        for i in 0..catalog.len() {
+            let _ = order.push(i as u16);
+        }
+        order.sort_unstable_by_key(|&i| core::cmp::Reverse(catalog[i as usize].start_time));
+        for i in 0..order.len() {
+            let mut src = order[i] as usize;
+            while src < i {
+                src = order[src] as usize;
             }
+            catalog.swap(i, src);
+            self.ride_files.swap(i, src);
+            self.ride_ids.swap(i, src);
         }
         defmt::info!("SD: {=usize} ride(s) in /tracks", catalog.len());
         catalog
