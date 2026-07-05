@@ -76,5 +76,14 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 # BLE passkey card (#449): the host-pushed 6-digit LESC pairing code, rendered huge. `--ble-passkey N`
 # injects the passkey exactly as the sim control-panel "Pairing" toggle does; the card auto-opens.
 "$SIM" "$MAP" --boot --ble-passkey 42 --png "$OUT/passkey-card.png"
+# Route-upload popups (#451), all three variants. `--inject-upload[-replace] ID` raises the upload
+# event after the script, exactly as the control panel's inject buttons do. protocol-vectors holds
+# two routes: id 0 = route-plain, id 1 = route-waypoints (filename order).
+# Idle: "ROUTE RECEIVED" — Start navigation / Dismiss.
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --inject-upload 0 --png "$OUT/route-received.png"
+# Tracking (riding id 0, id 1 arrives): the retitled Route-swap popup.
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p" --inject-upload 1 --png "$OUT/routeswap-received.png"
+# Active route replaced (riding id 0, id 0 re-uploaded): the info-only "ROUTE UPDATED" card.
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p" --inject-upload-replace 0 --png "$OUT/route-updated.png"
 
-echo "ui-snapshots: 25 screens rendered into $OUT/"
+echo "ui-snapshots: 30 screens rendered into $OUT/"

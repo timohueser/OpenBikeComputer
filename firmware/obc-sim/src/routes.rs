@@ -139,6 +139,31 @@ impl RouteStore {
         true
     }
 
+    /// Duplicate route `i`'s file under a fresh name — the control panel's "**new** upload"
+    /// stand-in (a real upload writes a new file to `/routes`) — then rescan and return the new
+    /// file's session id, ready for `App::notify_route_uploaded(id, false)`.
+    pub fn duplicate_route(&mut self, i: usize) -> Option<u16> {
+        let src = self.paths.get(i)?.clone();
+        let bytes = std::fs::read(&src).ok()?;
+        let stem = src.file_stem()?.to_str()?.to_string();
+        let out = (1..1000).map(|n| self.dir.join(format!("{stem}-up{n}.obcr"))).find(|c| !c.exists())?;
+        std::fs::write(&out, &bytes).ok()?;
+        self.rescan();
+        let k = self.paths.iter().position(|p| p == &out)?;
+        Some(self.ids[k])
+    }
+
+    /// Rewrite route `i`'s file in place with its own bytes — the control panel's
+    /// "**replace-by-id** upload" stand-in (same id, the bytes on disk swapped under any open
+    /// handle, as the device's replace-commit does). Returns the route's (unchanged) id for
+    /// `App::notify_route_uploaded(id, true)`.
+    pub fn touch_route(&mut self, i: usize) -> Option<u16> {
+        let path = self.paths.get(i)?.clone();
+        let bytes = std::fs::read(&path).ok()?;
+        std::fs::write(&path, bytes).ok()?;
+        self.ids.get(i).copied()
+    }
+
     /// Make the active route match `want`, (re)reading its bytes from disk only on a change.
     /// Cheap to call every frame.
     pub fn sync_active(&mut self, want: Option<usize>) {
@@ -200,6 +225,16 @@ impl RouteStore {
 
     /// No folder to re-read on the web; the embedded catalog is fixed.
     pub fn rescan(&mut self) {}
+
+    /// Upload injection is a native control-panel tool; the fixed web catalog has no store to move.
+    pub fn duplicate_route(&mut self, _i: usize) -> Option<u16> {
+        None
+    }
+
+    /// See [`duplicate_route`](RouteStore::duplicate_route) — unavailable on the web build.
+    pub fn touch_route(&mut self, _i: usize) -> Option<u16> {
+        None
+    }
 
     /// GPX import (USB-drop equivalent) isn't wired up on the web yet — a file-input
     /// upload path replaces the native dialog later.
