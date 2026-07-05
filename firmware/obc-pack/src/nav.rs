@@ -1,8 +1,8 @@
 //! `nav.rs` — build an in-memory **routable navigation graph** from the ingested
 //! `highway=*` ways (epic #116, sub-issue R1 #463). The graph is junction
 //! **nodes** joined by undirected **edges** whose polyline interiors carry no
-//! junctions; R2 (#464) tiles and serializes it into the OBCM. Nothing here
-//! touches the `.obcm` bytes.
+//! junctions; `serialize.rs`'s `serialize_nav_section` tiles and serializes it
+//! into the OBCM §8 nav-graph section. Nothing here touches the `.obcm` bytes.
 //!
 //! Today highways are render-only geometry with no topology: `ingest.rs` drops
 //! OSM node ids the moment it resolves coordinates. This pass keeps, **for
@@ -146,7 +146,8 @@ impl NavGraph {
 /// nearest integer, saturating into `u32`. Reuses the shared per-segment helper so
 /// edge lengths match the metric the route format and renderer already use; the
 /// sum accumulates in `f64` so a long edge doesn't lose precision to `f32`.
-fn polyline_len_m(pts: &[(i32, i32)]) -> u32 {
+/// Crate-visible: the serializer re-measures the pieces of a split edge (§8.4).
+pub(crate) fn polyline_len_m(pts: &[(i32, i32)]) -> u32 {
     let mut acc = 0.0f64;
     for w in pts.windows(2) {
         acc += ground_dist_m(w[0], w[1]) as f64;

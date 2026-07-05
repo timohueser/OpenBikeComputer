@@ -97,8 +97,8 @@ impl DrawTarget for Buf {
 /// flat backdrop, so the only non-backdrop pixels come from whatever is drawn on top — making
 /// overlays/markers trivial to detect. `marker` is the header's marker color (pass `0` when ignored).
 pub fn build_min_obcm(marker: u16) -> Vec<u8> {
-    // v7 header is 36 bytes; the style table follows immediately.
-    let style_off: u32 = 36;
+    // v8 header is 40 bytes; the style table follows immediately.
+    let style_off: u32 = 40;
     // Style table: count=1, then (id=1, z=0, color=0x001F blue sea, weight=1, flags=0).
     let mut styles = vec![1u8];
     styles.push(1);
@@ -121,7 +121,7 @@ pub fn build_min_obcm(marker: u16) -> Vec<u8> {
     // Index: a single empty leaf (no chunk).
     let index = 0x7FFF_FFFFu32.to_le_bytes();
 
-    // POI section starts right after the index (no LOD chunks here). Empty directory (v7):
+    // POI section starts right after the index (no LOD chunks here). Empty directory:
     // count=6, chunk_size=512, six 13-byte entries (all node_count/chunk_count 0), then the two
     // v7 pool fields (hours_pool_offset u32 + hours_pool_count u16), then an empty hours pool
     // (a bare `count 0`). The directory length is 3 + 6*13 + 6 = 87.
@@ -140,9 +140,20 @@ pub fn build_min_obcm(marker: u16) -> Vec<u8> {
     poi_dir.extend_from_slice(&0u16.to_le_bytes()); // hours_pool_count = 0
     poi_dir.extend_from_slice(&0u16.to_le_bytes()); // the empty pool's own `count u16` = 0
 
+    // Empty v8 nav directory (22 bytes) at the tail: zero-length index + edge pool.
+    let nav_section_off = poi_section_off + poi_dir.len();
+    let after_nav = (nav_section_off + 22) as u32;
+    let mut nav_dir = Vec::new();
+    nav_dir.extend_from_slice(&after_nav.to_le_bytes()); // index_offset (zero-length)
+    nav_dir.extend_from_slice(&0u32.to_le_bytes()); // index_node_count
+    nav_dir.extend_from_slice(&0u32.to_le_bytes()); // node_chunk_count
+    nav_dir.extend_from_slice(&after_nav.to_le_bytes()); // edge_pool_offset (zero-length)
+    nav_dir.extend_from_slice(&0u32.to_le_bytes()); // edge_chunk_count
+    nav_dir.extend_from_slice(&512u16.to_le_bytes()); // chunk_size
+
     let mut f = Vec::new();
     f.extend_from_slice(b"OBCM");
-    f.push(7);
+    f.push(8);
     for v in [-1000i32, -1000, 1000, 1000] {
         f.extend_from_slice(&v.to_le_bytes()); // bbox: min_lat, min_lon, max_lat, max_lon
     }
@@ -151,10 +162,12 @@ pub fn build_min_obcm(marker: u16) -> Vec<u8> {
     f.extend_from_slice(&(lod_tab_off as u32).to_le_bytes());
     f.extend_from_slice(&marker.to_le_bytes());
     f.extend_from_slice(&(poi_section_off as u32).to_le_bytes());
+    f.extend_from_slice(&(nav_section_off as u32).to_le_bytes());
     f.extend_from_slice(&styles);
     f.extend_from_slice(&table);
     f.extend_from_slice(&index);
     f.extend_from_slice(&poi_dir);
+    f.extend_from_slice(&nav_dir);
     f
 }
 

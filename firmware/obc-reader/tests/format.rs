@@ -1,4 +1,4 @@
-//! Format-contract tests for the OBCM v7 reader.
+//! Format-contract tests for the OBCM v8 reader.
 //!
 //! Each test builds a synthetic `.obcm` with the shared `obcm-testkit` builder (which mirrors the
 //! Rust packer's `serialize.rs`), then asserts the reader parses it back. Building the bytes rather
@@ -9,9 +9,10 @@ use obc_reader::{
     BBox, Error, Kind, MapCache, MapTables, Reader, SliceSource, HEADER_LEN, MAX_FEAT_PTS, MAX_FEAT_RINGS,
 };
 use obcm_testkit::{
-    build_file, empty_poi_directory, hours_pool, pack_line, pack_line16, pack_poi_chunk, pack_poi_record,
-    pack_poly_hole, pad, poi_dir_len, poi_directory, LodSpec, PoiCat, Style, BRANCH_BIT, EMPTY_LEAF, MARKER,
-    POI_HOURS_BLOB_LEN, POI_RECORD_LEN,
+    build_file, empty_nav_directory, empty_poi_directory, hours_pool, nav_directory, pack_line, pack_line16,
+    pack_nav_chunk, pack_nav_edge_record, pack_nav_record, pack_poi_chunk, pack_poi_record, pack_poly_hole, pad,
+    poi_dir_len, poi_directory, LodSpec, PoiCat, Style, BRANCH_BIT, EMPTY_LEAF, MARKER, NAV_CHUNK_SIZE, NAV_DIR_LEN,
+    NAV_EDGE_FIXED_LEN, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN, POI_HOURS_BLOB_LEN, POI_RECORD_LEN,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,7 +93,7 @@ fn header_and_lod_table() {
     let tables = MapTables::parse(&src).unwrap();
     let r = Reader::new(&src, &tables, &cache);
 
-    assert_eq!(r.version, 7);
+    assert_eq!(r.version, 8);
     assert_eq!(r.marker_color, MARKER);
     assert_eq!(r.bbox.min_lon, 0);
     assert_eq!(r.bbox.min_lat, 0);
@@ -346,7 +347,7 @@ fn rejects_bad_input() {
     assert_eq!(err(&bytes), Error::BadMagic);
 
     let mut bytes = two_lod_file();
-    bytes[4] = 6; // v6 (and earlier) no longer supported — only v7 is read
+    bytes[4] = 7; // v7 (and earlier) no longer supported — only v8 is read
     assert_eq!(err(&bytes), Error::BadVersion);
 }
 
@@ -554,7 +555,7 @@ fn walk_caps_depth_on_forward_chain() {
 
 // === POI section (v7, spec §7) — byte-pinned contract =======================
 //
-// These pin the v7 layout explicitly: the 36-byte header + its POI-section offset
+// These pin the §7 layout explicitly: the 40-byte header + its POI-section offset
 // field, the always-present POI directory (empty + populated) with its two appended
 // hours-pool fields, a POI record's exact 36 bytes (24-byte name + hours_ref), the
 // 0xFF sentinel + padding, the tail hours-pool section (shared + distinct blobs, and
@@ -562,17 +563,17 @@ fn walk_caps_depth_on_forward_chain() {
 // directory, the populated-directory test hand-assembles the section so the record +
 // index + pool bytes are pinned, not derived.
 
-/// `build_file` (empty-POI) is a valid v7 map: 36-byte header, a POI-section offset
-/// pointing just past the LOD payload, a six-category empty directory, and an empty
-/// hours pool.
+/// `build_file` (empty-POI, empty-nav) is a valid v8 map: 40-byte header, a POI-section
+/// offset pointing just past the LOD payload, a six-category empty directory, an empty
+/// hours pool, and an empty nav directory at the tail.
 #[test]
-fn header_is_36_bytes_with_poi_offset() {
+fn header_is_40_bytes_with_poi_and_nav_offsets() {
     let bytes = two_lod_file();
 
-    // Version byte is 7; the style table follows the header, so the style offset equals the 36-byte
-    // header length. (The header didn't grow v6 → v7 — only the version byte + POI section changed.)
-    assert_eq!(HEADER_LEN, 36);
-    assert_eq!(bytes[4], 7);
+    // Version byte is 8; the style table follows the header, so the style offset equals the 40-byte
+    // header length (v8 appended the 4-byte Nav Graph Offset, 36 → 40).
+    assert_eq!(HEADER_LEN, 40);
+    assert_eq!(bytes[4], 8);
     assert_eq!(u32::from_le_bytes(bytes[21..25].try_into().unwrap()) as usize, HEADER_LEN);
 
     // The POI section offset lives at header byte 32 (right after the 2-byte marker at 30) and is
@@ -583,6 +584,12 @@ fn header_is_36_bytes_with_poi_offset() {
     // The directory there declares six categories and the shared 512-byte chunk size.
     assert_eq!(bytes[poi_off], 6, "category_count");
     assert_eq!(u16::from_le_bytes(bytes[poi_off + 1..poi_off + 3].try_into().unwrap()), 512, "shared chunk_size");
+
+    // The nav-graph offset (v8) lives at header byte 36 and is likewise never 0 — an empty graph
+    // still writes its 22-byte directory (here at the file tail).
+    let nav_off = u32::from_le_bytes(bytes[36..40].try_into().unwrap()) as usize;
+    assert!(nav_off >= HEADER_LEN && nav_off + NAV_DIR_LEN <= bytes.len(), "nav offset {nav_off} points into the file");
+    assert_eq!(nav_off + NAV_DIR_LEN, bytes.len(), "the empty nav directory is the file tail");
 }
 
 /// The parsed empty directory: six categories, ids 1..=6, all empty, and an empty
@@ -611,7 +618,7 @@ fn empty_poi_directory_parses_six_empty_categories() {
     assert_eq!(u16::from_le_bytes(bytes[dir.hours_pool_offset..dir.hours_pool_offset + 2].try_into().unwrap()), 0);
 }
 
-/// Hand-assemble a v7 file whose POI section carries **one populated category** (id
+/// Hand-assemble a v8 file whose POI section carries **one populated category** (id
 /// 3, Accommodation) with a two-record chunk plus a **two-blob hours pool**: the two
 /// records reference blob 0 and blob 1 respectively. Pins the 36-byte record layout
 /// (each field at its offset, incl. the `hours_ref` at [34..36]), the 24-byte name,
@@ -669,12 +676,16 @@ fn populated_poi_category_round_trips_with_record_layout() {
         })
         .collect();
 
-    // Assemble: base up to the POI offset, then [directory][cat3 index][cat3 chunk][pool].
+    // Assemble: base up to the POI offset, then [directory][cat3 index][cat3 chunk][pool],
+    // then the (displaced) empty nav section back at the tail, header nav offset patched.
     let mut bytes = base[..poi_off].to_vec();
     bytes.extend_from_slice(&poi_directory(512, &cats, pool_off as u32, 2));
     bytes.extend_from_slice(&0u32.to_le_bytes()); // cat 3's single leaf → chunk 0
     bytes.extend_from_slice(&chunk);
     bytes.extend_from_slice(&pool);
+    let nav_off = bytes.len();
+    bytes[36..40].copy_from_slice(&(nav_off as u32).to_le_bytes());
+    bytes.extend_from_slice(&empty_nav_directory(nav_off));
 
     let src = SliceSource(&bytes);
     let tables = MapTables::parse(&src).unwrap();
@@ -732,12 +743,13 @@ fn populated_poi_category_round_trips_with_record_layout() {
     assert_eq!(&bytes[blob1_at..blob1_at + POI_HOURS_BLOB_LEN], &blob1, "blob 1 at index 1");
 }
 
-/// A v6 file (version byte 6) is rejected — the reader accepts v7 only. Forging the
-/// version byte alone is enough; the rest of the bytes never get parsed.
+/// A v7 file (version byte 7) is rejected — the reader accepts v8 only ("current
+/// version only": old maps get repacked). Forging the version byte alone is enough;
+/// the rest of the bytes never get parsed.
 #[test]
-fn v6_file_is_rejected() {
+fn v7_file_is_rejected() {
     let mut bytes = two_lod_file();
-    bytes[4] = 6; // downgrade the version byte to v6
+    bytes[4] = 7; // downgrade the version byte to v7
     assert!(matches!(MapTables::parse(&SliceSource(&bytes)), Err(Error::BadVersion)));
 }
 
@@ -774,7 +786,7 @@ fn poi_directory_rejects_out_of_bound_count_and_chunk_size() {
     assert!(matches!(MapTables::parse(&SliceSource(&forged)), Err(Error::BadOffset)), "pool count runs past EOF");
 }
 
-/// The `empty_poi_directory` builder and the reader agree on the empty v7 layout — a
+/// The `empty_poi_directory` builder and the reader agree on the empty §7 layout — a
 /// direct pin of the testkit helper the other suites lean on.
 #[test]
 fn empty_poi_directory_builder_matches_reader() {
@@ -788,4 +800,202 @@ fn empty_poi_directory_builder_matches_reader() {
     // The hours_pool_count field (last 2 bytes of the directory, before the pool's own count) is 0.
     let count_field = 3 + 6 * 13 + 4;
     assert_eq!(u16::from_le_bytes([dir[count_field], dir[count_field + 1]]), 0, "empty pool");
+}
+
+// === Nav-graph section (v8, spec §8) — byte-pinned contract ==================
+//
+// These pin the v8 §8 layout explicitly: the 22-byte nav directory, the §8.3
+// variable-length junction record (each field at its offset, the inline neighbor
+// entries, the 0xFF degree sentinel + padding), the §8.4 edge record (anchor +
+// i16 delta pairs) with its pool-relative-byte-offset addressing, the empty-graph
+// convention, and the corrupt-directory guards. Where `build_file` writes an empty
+// nav directory, the populated test hand-assembles the section so the bytes are
+// pinned, not derived.
+
+/// Replace `base`'s tail (empty) nav section with a hand-assembled populated one:
+/// two junction nodes joined by one 3-point edge. Returns `(bytes, nav_off)`.
+/// Layout at `nav_off`: [22-byte directory][1-node index][one 512 B node chunk]
+/// [one 512 B edge-pool chunk].
+fn nav_two_node_map() -> (Vec<u8>, usize) {
+    let base = two_lod_file();
+    let nav_off = u32::from_le_bytes(base[36..40].try_into().unwrap()) as usize;
+    // build_file writes the empty nav directory as the file tail, so truncating
+    // there and appending the populated section keeps the header offset valid.
+    assert_eq!(nav_off + NAV_DIR_LEN, base.len(), "precondition: empty nav dir at the tail");
+    let mut bytes = base[..nav_off].to_vec();
+
+    // One edge, polyline (lat, lon): (100,200) → (500,500) → (900,800), 1234 m.
+    // Its record starts the pool ⇒ wire edge_id 0 (pool-relative byte offset).
+    let edge = pack_nav_edge_record(1234, &[(100, 200), (500, 500), (900, 800)]);
+    assert_eq!(edge.len(), NAV_EDGE_FIXED_LEN + 2 * 4, "3-point record: fixed head + two delta pairs");
+
+    // Two degree-1 junctions, each carrying the other inline + edge 0 + its cost.
+    let rec0 = pack_nav_record(100, 200, 0, &[(1, 900, 800, 0, 1234)]);
+    let rec1 = pack_nav_record(900, 800, 1, &[(0, 100, 200, 0, 1234)]);
+    assert_eq!(rec0.len(), NAV_NODE_FIXED_LEN + NAV_NEIGHBOR_LEN, "degree-1 record is 33 bytes");
+
+    let index_offset = nav_off + NAV_DIR_LEN;
+    let edge_pool_offset = index_offset + 4 + NAV_CHUNK_SIZE; // 1-node index + one node chunk
+    bytes.extend_from_slice(&nav_directory(
+        index_offset as u32,
+        1, // index_node_count: a single leaf
+        1, // node_chunk_count
+        edge_pool_offset as u32,
+        1, // edge_chunk_count
+        NAV_CHUNK_SIZE as u16,
+    ));
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // the single leaf → node chunk 0
+    bytes.extend_from_slice(&pack_nav_chunk(&[rec0, rec1], NAV_CHUNK_SIZE));
+    bytes.extend_from_slice(&pad(edge, NAV_CHUNK_SIZE)); // edge pool chunk 0
+    (bytes, nav_off)
+}
+
+/// The parsed empty nav directory: what a map with no routable ways carries —
+/// always present, never a zero offset; walks visit nothing and edge fetches fail
+/// cleanly, exactly like an empty POI category.
+#[test]
+fn empty_nav_directory_parses_and_walks_nothing() {
+    let bytes = two_lod_file();
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let cache = MapCache::new();
+    let r = Reader::new(&src, &tables, &cache);
+
+    let nav = r.nav_directory();
+    assert!(nav.is_empty());
+    assert_eq!(nav.node_count, 0);
+    assert_eq!(nav.chunk_count, 0);
+    assert_eq!(nav.edge_chunk_count, 0);
+    assert_eq!(nav.chunk_size, 512, "chunk_size is written even for an empty graph");
+
+    let mut scratch = [0u8; 512];
+    let mut seen = 0;
+    r.for_each_nav_node(&r.bbox, &mut scratch, |_| seen += 1).unwrap();
+    assert_eq!(seen, 0, "an empty graph visits nothing");
+    let mut pts = heapless::Vec::<(i32, i32), 8>::new();
+    assert_eq!(r.nav_edge(0, &mut pts), None, "no edge pool ⇒ no edge");
+}
+
+/// Pin the populated §8 bytes: the directory fields, the exact junction-record
+/// layout (lat, lon, id, degree, then 20-byte neighbor entries), the 0xFF degree
+/// sentinel + padding, and the §8.4 edge record (length, pt_count, anchor, i16
+/// delta pairs) — then parse it all back through the reader.
+#[test]
+fn populated_nav_section_round_trips_with_record_layout() {
+    let (bytes, nav_off) = nav_two_node_map();
+
+    // Directory bytes (§8.1) at their fixed offsets.
+    let index_offset = u32::from_le_bytes(bytes[nav_off..nav_off + 4].try_into().unwrap()) as usize;
+    assert_eq!(index_offset, nav_off + NAV_DIR_LEN, "index follows the directory");
+    assert_eq!(u32::from_le_bytes(bytes[nav_off + 4..nav_off + 8].try_into().unwrap()), 1, "index_node_count");
+    assert_eq!(u32::from_le_bytes(bytes[nav_off + 8..nav_off + 12].try_into().unwrap()), 1, "node_chunk_count");
+    let edge_pool_offset = u32::from_le_bytes(bytes[nav_off + 12..nav_off + 16].try_into().unwrap()) as usize;
+    assert_eq!(edge_pool_offset, index_offset + 4 + 512, "edge pool follows the node chunks");
+    assert_eq!(u32::from_le_bytes(bytes[nav_off + 16..nav_off + 20].try_into().unwrap()), 1, "edge_chunk_count");
+    assert_eq!(u16::from_le_bytes(bytes[nav_off + 20..nav_off + 22].try_into().unwrap()), 512, "chunk_size");
+
+    // Node chunk starts right after the 1-node index (the §3/§4 convention). Pin
+    // record 0's exact 33 bytes: lat, lon, id, degree, then the neighbor entry.
+    let chunk_off = index_offset + 4;
+    let rec = &bytes[chunk_off..chunk_off + 33];
+    assert_eq!(i32::from_le_bytes(rec[0..4].try_into().unwrap()), 100, "lat");
+    assert_eq!(i32::from_le_bytes(rec[4..8].try_into().unwrap()), 200, "lon");
+    assert_eq!(u32::from_le_bytes(rec[8..12].try_into().unwrap()), 0, "node id");
+    assert_eq!(rec[12], 1, "degree");
+    assert_eq!(u32::from_le_bytes(rec[13..17].try_into().unwrap()), 1, "neighbor_id");
+    assert_eq!(i32::from_le_bytes(rec[17..21].try_into().unwrap()), 900, "neighbor_lat (inline)");
+    assert_eq!(i32::from_le_bytes(rec[21..25].try_into().unwrap()), 800, "neighbor_lon (inline)");
+    assert_eq!(u32::from_le_bytes(rec[25..29].try_into().unwrap()), 0, "edge_id");
+    assert_eq!(u32::from_le_bytes(rec[29..33].try_into().unwrap()), 1234, "cost_m");
+    // After the two 33-byte records the padding's first byte lands on the next
+    // degree slot (record offset 12) — but every padding byte is 0xFF, so the
+    // whole tail is the sentinel.
+    assert!(bytes[chunk_off + 66..chunk_off + 512].iter().all(|&b| b == 0xFF), "0xFF padding ends the records");
+
+    // Edge record bytes (§8.4) at pool offset 0: length, pt_count, anchor, deltas.
+    let e = &bytes[edge_pool_offset..edge_pool_offset + 22];
+    assert_eq!(u32::from_le_bytes(e[0..4].try_into().unwrap()), 1234, "length_m");
+    assert_eq!(u16::from_le_bytes(e[4..6].try_into().unwrap()), 3, "pt_count");
+    assert_eq!(i32::from_le_bytes(e[6..10].try_into().unwrap()), 100, "anchor_lat");
+    assert_eq!(i32::from_le_bytes(e[10..14].try_into().unwrap()), 200, "anchor_lon");
+    assert_eq!(i16::from_le_bytes(e[14..16].try_into().unwrap()), 400, "dlat 0");
+    assert_eq!(i16::from_le_bytes(e[16..18].try_into().unwrap()), 300, "dlon 0");
+    assert_eq!(i16::from_le_bytes(e[18..20].try_into().unwrap()), 400, "dlat 1");
+    assert_eq!(i16::from_le_bytes(e[20..22].try_into().unwrap()), 300, "dlon 1");
+
+    // Parse back through the reader: directory, walk, record fields, neighbors.
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let cache = MapCache::new();
+    let r = Reader::new(&src, &tables, &cache);
+    let nav = r.nav_directory();
+    assert!(!nav.is_empty());
+    assert_eq!((nav.node_count, nav.chunk_count, nav.edge_chunk_count), (1, 1, 1));
+
+    let mut scratch = [0u8; 512];
+    let mut seen: Vec<(u32, i32, i32, Vec<obc_reader::NavNeighbor>)> = Vec::new();
+    r.for_each_nav_node(&r.bbox, &mut scratch, |n| {
+        seen.push((n.id, n.lat, n.lon, n.neighbors().collect()));
+    })
+    .unwrap();
+    assert_eq!(seen.len(), 2, "both junctions decode");
+    assert_eq!((seen[0].0, seen[0].1, seen[0].2), (0, 100, 200));
+    assert_eq!((seen[1].0, seen[1].1, seen[1].2), (1, 900, 800));
+    assert_eq!(seen[0].3.len(), 1);
+    let n = seen[0].3[0];
+    assert_eq!((n.id, n.lat, n.lon, n.edge_id, n.cost_m), (1, 900, 800, 0, 1234));
+    let n = seen[1].3[0];
+    assert_eq!((n.id, n.lat, n.lon, n.edge_id, n.cost_m), (0, 100, 200, 0, 1234));
+
+    // Edge fetch by pool-relative byte offset: id 0 decodes the polyline as the
+    // crate's (lon, lat) pairs and returns length_m.
+    let mut pts = heapless::Vec::<(i32, i32), 8>::new();
+    assert_eq!(r.nav_edge(0, &mut pts), Some(1234));
+    assert_eq!(pts.as_slice(), &[(200, 100), (500, 500), (800, 900)]);
+
+    // A mis-addressed id degrades to None, never a panic: id 22 lands in the 0xFF
+    // padding (pt_count 0xFFFF ⇒ record overflows the chunk), and an id past the
+    // pool fails the bounds check.
+    assert_eq!(r.nav_edge(22, &mut pts), None, "padding is not a record");
+    assert_eq!(r.nav_edge(512, &mut pts), None, "past the one-chunk pool");
+
+    // A scratch smaller than chunk_size is a caller bug, surfaced loudly.
+    let mut small = [0u8; 64];
+    assert!(matches!(r.for_each_nav_node(&r.bbox, &mut small, |_| {}), Err(Error::TooShort)));
+}
+
+/// Corrupt nav directories are rejected at parse — the §8 analogue of the LOD /
+/// POI overflow guards: an offset past EOF, a zero or oversized chunk_size, and a
+/// node_count whose region wraps/overruns the file.
+#[test]
+fn nav_directory_rejects_corrupt_fields() {
+    let bytes = two_lod_file();
+    let nav_off = u32::from_le_bytes(bytes[36..40].try_into().unwrap()) as usize;
+
+    // Nav offset past EOF (always-present section, no zero sentinel).
+    let mut forged = bytes.clone();
+    let past = bytes.len() as u32;
+    forged[36..40].copy_from_slice(&past.to_le_bytes());
+    assert!(matches!(MapTables::parse(&SliceSource(&forged)), Err(Error::BadOffset)), "nav offset at EOF");
+
+    // chunk_size 0 would divide-by-zero the edge addressing.
+    let mut forged = bytes.clone();
+    forged[nav_off + 20..nav_off + 22].copy_from_slice(&0u16.to_le_bytes());
+    assert!(matches!(MapTables::parse(&SliceSource(&forged)), Err(Error::BadOffset)), "chunk_size 0");
+
+    // chunk_size past the reader's scratch bound (NAV_MAX_CHUNK_BYTES).
+    let mut forged = bytes.clone();
+    forged[nav_off + 20..nav_off + 22].copy_from_slice(&((obc_reader::NAV_MAX_CHUNK_BYTES + 1) as u16).to_le_bytes());
+    assert!(matches!(MapTables::parse(&SliceSource(&forged)), Err(Error::BadOffset)), "chunk_size over cap");
+
+    // A node_count big enough to wrap the index+chunks region past the file.
+    let mut forged = bytes.clone();
+    forged[nav_off + 4..nav_off + 8].copy_from_slice(&u32::MAX.to_le_bytes());
+    forged[nav_off + 8..nav_off + 12].copy_from_slice(&u32::MAX.to_le_bytes());
+    assert!(matches!(MapTables::parse(&SliceSource(&forged)), Err(Error::BadOffset)), "node region overruns");
+
+    // An edge_chunk_count whose pool region runs past EOF.
+    let mut forged = bytes.clone();
+    forged[nav_off + 16..nav_off + 20].copy_from_slice(&u32::MAX.to_le_bytes());
+    assert!(matches!(MapTables::parse(&SliceSource(&forged)), Err(Error::BadOffset)), "edge pool overruns");
 }

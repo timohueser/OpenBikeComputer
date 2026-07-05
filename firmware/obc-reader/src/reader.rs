@@ -1,7 +1,7 @@
-//! OBCM **v7** format reader: header, style table, LOD table, per-LOD
-//! quadtree query + chunk decode, and the trailing POI directory + hours-pool
-//! section (the hours pool is parse-only here — the per-POI lookup + open-now
-//! evaluation is P3, #443).
+//! OBCM **v8** format reader: header, style table, LOD table, per-LOD
+//! quadtree query + chunk decode, the POI directory + hours-pool section, and
+//! the trailing nav-graph section (parse + leaf-walk/record-decode only here —
+//! the A* traversal over it is R3, #465).
 //!
 //! All coordinates are integer microdegrees (1e-6 degrees), as stored in the
 //! file. Projection to screen space is the renderer's job.
@@ -41,9 +41,8 @@ pub const MAX_FEAT_PTS: usize = 2048;
 pub const MAX_FEAT_RINGS: usize = 32;
 
 /// The header is fixed-size; everything after it is reached via explicit offsets. v6 grew it from
-/// 32 to 36 bytes (the trailing `POI Section Offset` u32); v7 keeps it at 36 (only the version byte
-/// + POI section changed).
-pub const HEADER_LEN: usize = 36;
+/// 32 to 36 bytes (the trailing `POI Section Offset` u32); v8 to 40 (the `Nav Graph Offset` u32).
+pub const HEADER_LEN: usize = 40;
 /// Each LOD table entry: `max_mpp f32, index_off u32, node_count u32, chunk_size u16, chunk_count u32`.
 pub const LOD_ENTRY_LEN: usize = 18;
 
@@ -94,6 +93,35 @@ const POI_SEARCH_HALF_UDEG: i32 = 18_000;
 /// growth). Each read pulls a whole number of records (`take * POI_RECORD_LEN`), so a record never
 /// straddles two reads.
 const POI_SCAN_WINDOW: usize = 512;
+
+/// The nav directory (spec §8.1): `index_offset u32, index_node_count u32, node_chunk_count u32,
+/// edge_pool_offset u32, edge_chunk_count u32, chunk_size u16` — the graph's whole resident
+/// footprint (parsed into [`NavDirectory`]).
+const NAV_DIR_LEN: usize = 22;
+
+/// Fixed prefix of a §8.3 junction record: `lat i32, lon i32, node_id u32, degree u8`. The `degree`
+/// byte at record offset 12 doubles as the end-of-chunk sentinel (`0xFF`, mirroring the POI
+/// subtype sentinel — a real degree is capped far below it, spec §8.3).
+pub const NAV_NODE_FIXED_LEN: usize = 13;
+
+/// One §8.3 neighbor entry: `neighbor_id u32, neighbor_lat i32, neighbor_lon i32, edge_id u32,
+/// cost_m u32`. Neighbor coords are inline so A* (R3) computes `f = g + h` at relaxation with no
+/// second fetch.
+pub const NAV_NEIGHBOR_LEN: usize = 20;
+
+/// Fixed prefix of a §8.4 edge record: `length_m u32, pt_count u16, anchor_lat i32, anchor_lon
+/// i32`; `pt_count - 1` × `(dlat i16, dlon i16)` deltas follow.
+pub const NAV_EDGE_FIXED_LEN: usize = 14;
+
+/// Upper bound on the nav `chunk_size` the reader accepts (spec §8.1). The packer writes 512;
+/// the cap bounds the caller-owned scratch [`Reader::for_each_nav_node`] requires and R4's
+/// graph-tile cache slots (2 slots × 2 KB stays trivially small next to the map path).
+pub const NAV_MAX_CHUNK_BYTES: usize = 2048;
+
+/// The per-read window of [`Reader::nav_edge`]'s delta stream, bytes (a multiple of the 4-byte
+/// delta pair, so a pair never straddles two reads). Edge polylines are fetched once per route
+/// emit, so a small fixed stack window is plenty.
+const NAV_EDGE_WINDOW: usize = 128;
 
 /// Upper bound on a single map data chunk, in bytes — the size of the decode scratch, and the
 /// largest `chunk_size` the reader accepts ([`MapTables::parse`] rejects a bigger one). The
@@ -286,6 +314,113 @@ impl PoiCatEntry {
     }
 }
 
+/// The parsed nav directory (spec §8.1) — the graph's **entire resident state** (the quadtree and
+/// every record stream on demand). Empty graph (`node_count == 0`) ⇒ no walk, exactly like an
+/// empty POI category. Parse-only in R2: [`Reader::for_each_nav_node`] walks the node quadtree and
+/// [`Reader::nav_edge`] fetches one polyline; the A* over them is R3 (#465).
+#[derive(Debug, Clone, Copy)]
+pub struct NavDirectory {
+    /// Byte offset to the node quadtree index (§8.2 — the §4 encoding over the global bbox).
+    pub index_offset: usize,
+    /// Number of `uint32` nodes in the index; `0` ⇒ the map has no routable graph.
+    pub node_count: usize,
+    /// Number of node data chunks (they begin at `index_offset + node_count * 4`, the §3/§4
+    /// convention).
+    pub chunk_count: usize,
+    /// Byte offset of the edge pool (§8.4).
+    pub edge_pool_offset: usize,
+    /// Number of `chunk_size`-byte chunks in the edge pool.
+    pub edge_chunk_count: usize,
+    /// Fixed capacity (bytes) of every nav chunk — node chunks and edge-pool chunks alike.
+    pub chunk_size: usize,
+}
+
+impl NavDirectory {
+    /// The map carries no routable graph (no quadtree, no chunks, no edges).
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.node_count == 0
+    }
+
+    /// Byte offset where the node data chunks begin (right after the index), or `None` on
+    /// `usize` overflow (a corrupt directory on the 32-bit MCU). Mirrors [`Lod::data_start`].
+    #[inline]
+    pub fn data_start(&self) -> Option<usize> {
+        self.node_count.checked_mul(4)?.checked_add(self.index_offset)
+    }
+
+    /// Byte range `[start, end)` of node chunk `chunk_id`, or `None` if out of range / on
+    /// overflow. Mirrors [`Lod::chunk_range`].
+    #[inline]
+    fn chunk_range(&self, chunk_id: u32) -> Option<(usize, usize)> {
+        let id = chunk_id as usize;
+        if id >= self.chunk_count {
+            return None;
+        }
+        let start = id.checked_mul(self.chunk_size)?.checked_add(self.data_start()?)?;
+        let end = start.checked_add(self.chunk_size)?;
+        Some((start, end))
+    }
+}
+
+impl QuadIndex for NavDirectory {
+    #[inline]
+    fn index_offset(&self) -> usize {
+        self.index_offset
+    }
+    #[inline]
+    fn node_count(&self) -> usize {
+        self.node_count
+    }
+}
+
+/// One adjacency entry of a decoded §8.3 junction record. Coordinates are absolute microdegrees;
+/// `edge_id` addresses the §8.4 edge pool ([`Reader::nav_edge`]); `cost_m` is the edge's ground
+/// length in meters (the plain-distance A* cost).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NavNeighbor {
+    pub id: u32,
+    pub lat: i32,
+    pub lon: i32,
+    pub edge_id: u32,
+    pub cost_m: u32,
+}
+
+/// One §8.3 junction record, borrowed from the chunk scratch for a single
+/// [`Reader::for_each_nav_node`] callback. Neighbor entries decode lazily through
+/// [`NavNodeRef::neighbors`] — A* relaxes them straight off the record with no intermediate copy.
+#[derive(Debug, Clone, Copy)]
+pub struct NavNodeRef<'a> {
+    /// Absolute microdegrees.
+    pub lat: i32,
+    /// Absolute microdegrees.
+    pub lon: i32,
+    /// The pack-run-dense node id (the A* hash key).
+    pub id: u32,
+    /// Raw neighbor bytes, `degree` × [`NAV_NEIGHBOR_LEN`] — length-validated by the walk.
+    neighbors: &'a [u8],
+}
+
+impl<'a> NavNodeRef<'a> {
+    /// This junction's degree (0..=254; the packer caps it far lower, spec §8.3).
+    #[inline]
+    pub fn degree(&self) -> usize {
+        self.neighbors.len() / NAV_NEIGHBOR_LEN
+    }
+
+    /// Iterate the adjacency entries in record order.
+    #[inline]
+    pub fn neighbors(&self) -> impl Iterator<Item = NavNeighbor> + 'a {
+        self.neighbors.chunks_exact(NAV_NEIGHBOR_LEN).map(|e| NavNeighbor {
+            id: rd_u32(e, 0),
+            lat: rd_i32(e, 4),
+            lon: rd_i32(e, 8),
+            edge_id: rd_u32(e, 12),
+            cost_m: rd_u32(e, 16),
+        })
+    }
+}
+
 /// A single POI result from [`Reader::nearest_pois`]. Coordinates are absolute microdegrees (§7.3);
 /// `distance_m` is the ground distance from the query position, computed during the scan. `name` is
 /// empty for an unnamed POI — the app then shows the subtype's fallback label
@@ -405,7 +540,7 @@ pub struct MapHeader {
     pub marker_color: u16,
 }
 
-/// Decode + validate the fixed 36-byte OBCM header (magic, version, bbox, marker color).
+/// Decode + validate the fixed 40-byte OBCM header (magic, version, bbox, marker color).
 /// Shared by [`read_header`] and [`MapTables::parse`] so the byte layout lives in one place.
 /// Offsets follow `obc-pack`'s header pack (see OBCM_Spec.md).
 fn parse_header(h: &[u8; HEADER_LEN]) -> Result<MapHeader, Error> {
@@ -413,7 +548,7 @@ fn parse_header(h: &[u8; HEADER_LEN]) -> Result<MapHeader, Error> {
         return Err(Error::BadMagic);
     }
     let version = h[4];
-    if version != 7 {
+    if version != 8 {
         return Err(Error::BadVersion);
     }
     // Header field order: lat,lon,lat,lon (see `obc-pack`'s `serialize.rs` header pack).
@@ -450,10 +585,14 @@ pub struct MapTables {
     pub marker_color: u16,
     /// LOD layers ordered coarsest (0) → finest (N-1). Always at least one.
     lods: Vec<Lod, 16>,
-    /// The parsed POI directory (spec §7). Always present in v7 (six categories, some possibly
+    /// The parsed POI directory (spec §7). Always present (six categories, some possibly
     /// empty, plus the hours-pool offset/count). Parse-only here — exposed via
     /// [`Reader::poi_directory`] for the nearest-N query and the P3 (#443) hours lookup.
     pois: PoiDirectory,
+    /// The parsed nav directory (spec §8.1). Always present in v8 (possibly empty). The graph's
+    /// only resident state — everything else streams via [`Reader::for_each_nav_node`] /
+    /// [`Reader::nav_edge`].
+    nav: NavDirectory,
     /// Styles indexed by id (0..=255) for O(1) lookup during rendering.
     styles: [Option<Style>; 256],
     /// The backdrop style (bottom of the paint order; see [`Reader::backdrop_style`]), resolved
@@ -484,6 +623,7 @@ impl MapTables {
         let lod_count = header[25] as usize;
         let lod_table_offset = rd_u32(&header, 26) as usize;
         let poi_section_offset = rd_u32(&header, 32) as usize;
+        let nav_section_offset = rd_u32(&header, 36) as usize;
 
         if style_offset < HEADER_LEN || style_offset > total {
             return Err(Error::BadOffset);
@@ -505,6 +645,7 @@ impl MapTables {
         parse_styles(src, style_offset, total, &mut styles)?;
         let lods = parse_lod_table(src, lod_table_offset, lod_count, total)?;
         let pois = parse_poi_directory(src, poi_section_offset, total)?;
+        let nav = parse_nav_directory(src, nav_section_offset, total)?;
         // Resolve the backdrop (lowest `z_index`, ties broken by lowest id) once here; the table is
         // immutable after parse, so `Reader::backdrop_style` never has to re-scan the 256 slots.
         let backdrop = styles.iter().filter_map(|s| s.as_ref()).min_by_key(|s| (s.z_index, s.id)).copied();
@@ -513,7 +654,7 @@ impl MapTables {
         // suffices: the counter is the only shared state and only uniqueness matters.
         static GEN: AtomicU32 = AtomicU32::new(0);
         let generation = GEN.fetch_add(1, Ordering::Relaxed) + 1;
-        Ok(MapTables { version, bbox, marker_color, lods, pois, styles, backdrop, generation })
+        Ok(MapTables { version, bbox, marker_color, lods, pois, nav, styles, backdrop, generation })
     }
 }
 
@@ -768,6 +909,125 @@ impl<'a> Reader<'a> {
             }
             done += take;
         }
+    }
+
+    /// The parsed nav directory (spec §8.1). Always present in v8; `is_empty()` for a map with no
+    /// routable ways.
+    #[inline]
+    pub fn nav_directory(&self) -> &NavDirectory {
+        &self.tables.nav
+    }
+
+    /// Visit every §8.3 junction record whose quadtree leaf overlaps `view`, in quadtree order —
+    /// the R3 A* spatial-refetch primitive: settling a node is one descent to its coord's leaf
+    /// (a degenerate one-point `view`) + one chunk read + this decode. Parse-only here: no
+    /// traversal state, no ordering beyond the walk.
+    ///
+    /// `scratch` is the caller-owned chunk buffer and must hold at least the directory's
+    /// `chunk_size` bytes (≤ [`NAV_MAX_CHUNK_BYTES`], enforced at parse) — `Err(Error::TooShort)`
+    /// otherwise. R3/R4 point this at their graph-tile cache slot; tests pass a stack array. An
+    /// empty graph visits nothing. Corrupt input (a truncated record, a chunk range past EOF) ends
+    /// that chunk cleanly — never a panic, matching the POI scan's posture.
+    ///
+    /// # Reentrancy
+    ///
+    /// Like [`Reader::nearest_pois`], the quadtree walk streams through the internal index cache;
+    /// do not call this from inside a `for_each_feature*` / `for_each_chunk` callback.
+    pub fn for_each_nav_node(
+        &self,
+        view: &BBox,
+        scratch: &mut [u8],
+        mut visit: impl FnMut(NavNodeRef),
+    ) -> Result<(), Error> {
+        let dir = self.tables.nav;
+        if dir.is_empty() {
+            return Ok(());
+        }
+        if scratch.len() < dir.chunk_size {
+            return Err(Error::TooShort);
+        }
+        self.walk_leaves(&dir, 0, self.bbox, view, 0, &mut |cid, _node| {
+            let (start, end) = match dir.chunk_range(cid) {
+                Some(r) => r,
+                None => return,
+            };
+            if end > self.src.len() as usize {
+                return;
+            }
+            let chunk = &mut scratch[..dir.chunk_size];
+            if self.src.read_at(start as u32, chunk).is_err() {
+                return; // a flaky read skips this leaf cleanly
+            }
+            decode_nav_chunk(chunk, &mut visit);
+        });
+        Ok(())
+    }
+
+    /// Fetch one §8.4 edge polyline by its `edge_id` (a pool-relative byte offset — chunk
+    /// `id / chunk_size`, offset `id % chunk_size`, spec §8.4), decoding anchor + deltas into
+    /// `points` as the crate's `(lon, lat)` µdeg pairs. Returns the edge's `length_m`. R3 calls
+    /// this only at OBCR emit, stitching the came-from chain's geometry.
+    ///
+    /// `None` for an empty graph, an out-of-pool or non-record-aligned id, a record that would
+    /// straddle its chunk (the packer never writes one), a read failure, or a polyline exceeding
+    /// `P` — a corrupt id degrades to "no geometry", never a panic. The deltas stream through a
+    /// small fixed stack window; no cache is touched, so (like [`Reader::poi_hours`]) this is safe
+    /// to call from anywhere.
+    pub fn nav_edge<const P: usize>(&self, edge_id: u32, points: &mut Vec<(i32, i32), P>) -> Option<u32> {
+        points.clear();
+        let dir = &self.tables.nav;
+        let cs = dir.chunk_size;
+        if dir.edge_chunk_count == 0 || cs == 0 {
+            return None;
+        }
+        // Pool bounds + intra-chunk bounds for the fixed head. All checked: `edge_id` is
+        // unvalidated input (a corrupt map, or R3 handed a stale id).
+        let pool_len = dir.edge_chunk_count.checked_mul(cs)?;
+        let id = edge_id as usize;
+        let within = id % cs;
+        if within + NAV_EDGE_FIXED_LEN > cs || id + NAV_EDGE_FIXED_LEN > pool_len {
+            return None;
+        }
+        let start = dir.edge_pool_offset.checked_add(id)?;
+        let mut head = [0u8; NAV_EDGE_FIXED_LEN];
+        let head_off = u32::try_from(start).ok()?;
+        if start + NAV_EDGE_FIXED_LEN > self.src.len() as usize {
+            return None;
+        }
+        self.src.read_at(head_off, &mut head).ok()?;
+        let length_m = rd_u32(&head, 0);
+        let pt_count = rd_u16(&head, 4) as usize;
+        let anchor_lat = rd_i32(&head, 6);
+        let anchor_lon = rd_i32(&head, 10);
+        if pt_count == 0 {
+            return None;
+        }
+        // The whole record must lie inside its chunk (the §8.4 no-straddle contract) and the file.
+        let rec_len = NAV_EDGE_FIXED_LEN.checked_add((pt_count - 1).checked_mul(4)?)?;
+        if within + rec_len > cs || id + rec_len > pool_len || start + rec_len > self.src.len() as usize {
+            return None;
+        }
+        if pt_count > P {
+            return None; // caller's buffer can't hold the polyline — corrupt or mis-sized
+        }
+        points.push((anchor_lon, anchor_lat)).ok()?;
+        // Stream the (dlat, dlon) pairs through a fixed window, accumulating absolutes.
+        let (mut lat, mut lon) = (anchor_lat, anchor_lon);
+        let mut win = [0u8; NAV_EDGE_WINDOW];
+        let mut done = 0usize; // delta pairs decoded
+        while done < pt_count - 1 {
+            let take = (pt_count - 1 - done).min(NAV_EDGE_WINDOW / 4);
+            let buf = &mut win[..take * 4];
+            let off = start + NAV_EDGE_FIXED_LEN + done * 4;
+            self.src.read_at(off as u32, buf).ok()?;
+            for pair in buf.chunks_exact(4) {
+                lat = lat.wrapping_add(i16::from_le_bytes([pair[0], pair[1]]) as i32);
+                lon = lon.wrapping_add(i16::from_le_bytes([pair[2], pair[3]]) as i32);
+                points.push((lon, lat)).ok()?;
+            }
+            done += take;
+        }
+        Some(length_m)
     }
 
     #[inline]
@@ -1392,6 +1652,83 @@ fn parse_poi_directory(src: &dyn ByteSource, offset: usize, total: usize) -> Res
     Ok(PoiDirectory { chunk_size, entries, hours_pool_offset, hours_pool_count })
 }
 
+/// Decode one nav node chunk's §8.3 records, handing each to `visit`. Records are back-to-back;
+/// the `degree` byte at record offset 12 is `0xFF` in the `0xFF` padding, ending the walk (the POI
+/// sentinel trick — the padding's first byte always lands on a would-be degree slot). A record
+/// whose declared neighbors run past the chunk is corrupt: stop cleanly, decode nothing further.
+fn decode_nav_chunk(chunk: &[u8], visit: &mut impl FnMut(NavNodeRef)) {
+    let mut off = 0usize;
+    while off + NAV_NODE_FIXED_LEN <= chunk.len() {
+        let degree = chunk[off + 12] as usize;
+        if degree == 0xFF {
+            break;
+        }
+        let end = off + NAV_NODE_FIXED_LEN + degree * NAV_NEIGHBOR_LEN;
+        if end > chunk.len() {
+            break;
+        }
+        visit(NavNodeRef {
+            lat: rd_i32(chunk, off),
+            lon: rd_i32(chunk, off + 4),
+            id: rd_u32(chunk, off + 8),
+            neighbors: &chunk[off + NAV_NODE_FIXED_LEN..end],
+        });
+        off = end;
+    }
+}
+
+/// Parse the nav directory (spec §8.1) at `offset` from `src` (file is `total` bytes). Parse-only:
+/// validates the directory scalars, the node index + chunk region, and the edge-pool region lie
+/// in-file, but walks/decodes nothing. The section is always present, so `offset` at/past EOF, a
+/// `chunk_size` of `0` or past [`NAV_MAX_CHUNK_BYTES`], or an out-of-file region is a corrupt
+/// header ⇒ [`Error::BadOffset`]. Every offset/length product is checked (32-bit target) — the
+/// same overflow-guard style as [`parse_lod_table`] / [`parse_poi_directory`].
+fn parse_nav_directory(src: &dyn ByteSource, offset: usize, total: usize) -> Result<NavDirectory, Error> {
+    if offset < HEADER_LEN || offset.checked_add(NAV_DIR_LEN).is_none_or(|end| end > total) {
+        return Err(Error::BadOffset);
+    }
+    let mut d = [0u8; NAV_DIR_LEN];
+    src.read_at(offset as u32, &mut d).map_err(|_| Error::BadOffset)?;
+    let dir = NavDirectory {
+        index_offset: rd_u32(&d, 0) as usize,
+        node_count: rd_u32(&d, 4) as usize,
+        chunk_count: rd_u32(&d, 8) as usize,
+        edge_pool_offset: rd_u32(&d, 12) as usize,
+        edge_chunk_count: rd_u32(&d, 16) as usize,
+        chunk_size: rd_u16(&d, 20) as usize,
+    };
+    // A zero chunk_size would divide-by-zero the edge addressing; the packer always writes 512.
+    if dir.chunk_size == 0 || dir.chunk_size > NAV_MAX_CHUNK_BYTES {
+        return Err(Error::BadOffset);
+    }
+    // Node index + chunk region: like an empty POI category, an empty graph only needs its
+    // (zero-length) offsets in-file; a populated one the whole region.
+    if dir.node_count > 0 {
+        let region_end = dir
+            .data_start()
+            .and_then(|start| dir.chunk_count.checked_mul(dir.chunk_size).and_then(|len| start.checked_add(len)))
+            .ok_or(Error::BadOffset)?;
+        if dir.index_offset < HEADER_LEN || region_end > total {
+            return Err(Error::BadOffset);
+        }
+    } else if dir.index_offset > total {
+        return Err(Error::BadOffset);
+    }
+    // Edge pool region.
+    if dir.edge_pool_offset < HEADER_LEN {
+        return Err(Error::BadOffset);
+    }
+    let pool_end = dir
+        .edge_chunk_count
+        .checked_mul(dir.chunk_size)
+        .and_then(|len| dir.edge_pool_offset.checked_add(len))
+        .ok_or(Error::BadOffset)?;
+    if pool_end > total {
+        return Err(Error::BadOffset);
+    }
+    Ok(dir)
+}
+
 /// A snapshot of the [`Reader`]'s streaming counters: chunk-cache hit/miss tally and raw SD-read
 /// overhead (read calls + bytes). The renderer reports the per-frame delta.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1870,18 +2207,18 @@ mod tests {
         assert_eq!(inner.stats().sd_reads, before.sd_reads + 1, "post-clear index read must re-read");
     }
 
-    /// A minimal 36-byte OBCM header with the given bbox/marker, enough for the cache-free
+    /// A minimal 40-byte OBCM header with the given bbox/marker, enough for the cache-free
     /// [`read_header`] (no style/LOD tables, which it doesn't touch).
     fn synth_header(min_lon: i32, min_lat: i32, max_lon: i32, max_lat: i32, marker: u16) -> [u8; HEADER_LEN] {
         let mut h = [0u8; HEADER_LEN];
         h[0..4].copy_from_slice(b"OBCM");
-        h[4] = 7;
+        h[4] = 8;
         h[5..9].copy_from_slice(&min_lat.to_le_bytes()); // field order is lat,lon,lat,lon
         h[9..13].copy_from_slice(&min_lon.to_le_bytes());
         h[13..17].copy_from_slice(&max_lat.to_le_bytes());
         h[17..21].copy_from_slice(&max_lon.to_le_bytes());
         h[30..32].copy_from_slice(&marker.to_le_bytes());
-        // h[32..36] (POI section offset) is untouched by read_header.
+        // h[32..36] (POI section offset) and h[36..40] (nav offset) are untouched by read_header.
         h
     }
 
@@ -1893,7 +2230,7 @@ mod tests {
         assert_eq!(
             got,
             MapHeader {
-                version: 7,
+                version: 8,
                 bbox: BBox { min_lon: -34, min_lat: 12, max_lon: 78, max_lat: 56 },
                 marker_color: 0xBEEF
             }
@@ -1909,7 +2246,7 @@ mod tests {
         h[0..4].copy_from_slice(b"NOPE");
         assert_eq!(read_header(&SliceSource(&h)), Err(Error::BadMagic));
         h[0..4].copy_from_slice(b"OBCM");
-        h[4] = 6; // v6 (and earlier) no longer supported — only v7 is read
+        h[4] = 7; // v7 (and earlier) no longer supported — only v8 is read
         assert_eq!(read_header(&SliceSource(&h)), Err(Error::BadVersion));
     }
 }
