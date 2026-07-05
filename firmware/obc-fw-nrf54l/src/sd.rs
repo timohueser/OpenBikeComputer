@@ -660,6 +660,17 @@ impl Storage {
         self.vmgr.delete_file_in_dir(dir, name).is_ok()
     }
 
+    /// Delete a stored route by its **object id** — the map-only (non-`ble`) build's on-device
+    /// hold-to-delete path (epic #447, P6). Resolves the id to its 8.3 filename through the
+    /// scan-parallel [`route_ids`](Storage::route_ids)/[`route_files`](Storage::route_files) tables,
+    /// then deletes the file. `true` = deleted; the caller re-scans the catalog. (The `ble` build
+    /// routes deletes through the shared `ObjectStore` instead, keeping the wire revision coherent.)
+    pub fn delete_route_by_id(&mut self, id: u16) -> bool {
+        let Some(pos) = self.route_ids.iter().position(|&x| x == id) else { return false };
+        let name = self.route_files[pos].clone();
+        self.delete_route_file(&name)
+    }
+
     /// Open (truncating) the upload temp for a fresh transfer, dropping any stale handle.
     pub fn upload_begin(&mut self) -> bool {
         self.upload_close();

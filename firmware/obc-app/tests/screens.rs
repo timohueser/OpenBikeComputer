@@ -523,6 +523,66 @@ fn rescan_clamps_a_vanished_menu_selection() {
     assert_eq!(app.routes()[active].name.as_str(), "Beta", "the highlight clamped to the last row");
 }
 
+// ==================== on-device route delete (epic #447, P6) ====================
+//
+// The Route menu's hold-to-delete footer records a delete request the host drains as the route's
+// durable object id; after the delete + rescan, P3's remap keeps `active_route` + the highlight on
+// the right routes.
+
+/// Holding the encoder over the highlighted route records a delete request the host drains as that
+/// route's **durable object id** (not its index) — the id lookup is `App`'s.
+#[test]
+fn hold_delete_requests_the_highlighted_route_id() {
+    let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+    app.set_routes_with_ids(&test_routes(), &IDS3); // ids 10, 20, 30
+    app.apply_gesture(Gesture::Press); // Home → Route menu
+    app.apply_gesture(Gesture::Turn(1)); // highlight Beta (id 20)
+    assert!(!app.has_route_delete(), "no request until the hold completes");
+    app.apply_gesture(Gesture::Hold); // guarded hold = delete Beta
+    assert!(app.has_route_delete(), "the hold recorded a delete request");
+    assert_eq!(app.take_route_delete(), Some(20), "drained as Beta's durable id, not its index");
+    assert_eq!(app.take_route_delete(), None, "the one-shot drains");
+}
+
+/// The DoD case: deleting a *non-highlighted* route (the host removes it + re-feeds the catalog)
+/// keeps the highlight on the same route, by identity — not on whatever slid into its old row.
+#[test]
+fn deleting_a_non_highlighted_route_keeps_the_highlight_by_id() {
+    let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+    let routes = test_routes(); // Alpha(10), Beta(20), Gamma(30)
+    app.set_routes_with_ids(&routes, &IDS3);
+    app.apply_gesture(Gesture::Press); // Home → Route menu
+    app.apply_gesture(Gesture::Turn(1)); // highlight Beta (id 20)
+
+    // Simulate the host handling a delete of Alpha (a *different* route) — remove it and rescan.
+    let keep = [routes[1].clone(), routes[2].clone()];
+    app.set_routes_with_ids(&keep, &[IDS3[1], IDS3[2]]); // Beta shifts 1 → 0
+
+    // Pressing opens the highlighted route: still Beta, now at its new row.
+    app.apply_gesture(Gesture::Press);
+    let active = app.activity.active_route.expect("the overview loaded the highlighted route");
+    assert_eq!(app.routes()[active].name.as_str(), "Beta", "the highlight stayed on Beta across the delete");
+}
+
+/// Deleting the *highlighted* route moves the highlight sanely (clamped to the nearest surviving
+/// row), never a dangling index — the host removed the route the menu was pointing at.
+#[test]
+fn deleting_the_highlighted_route_moves_the_highlight_sanely() {
+    let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+    let routes = test_routes();
+    app.set_routes_with_ids(&routes, &IDS3);
+    app.apply_gesture(Gesture::Press); // Home → Route menu
+    app.apply_gesture(Gesture::Turn(2)); // highlight Gamma (id 30, last row)
+    app.apply_gesture(Gesture::Hold); // request its delete
+    assert_eq!(app.take_route_delete(), Some(30));
+
+    // The host deletes Gamma and re-feeds the catalog: the highlight clamps to the new last row.
+    app.set_routes_with_ids(&routes[..2], &IDS3[..2]);
+    app.apply_gesture(Gesture::Press); // open whatever is highlighted now
+    let active = app.activity.active_route.expect("a clamped highlight still opens a real route");
+    assert_eq!(app.routes()[active].name.as_str(), "Beta", "the highlight clamped to the surviving last row");
+}
+
 /// Ride to the Map on Alpha, then open the swap prompt for Gamma — the shared mid-ride setup for
 /// the pending-swap remap cases.
 fn app_with_pending_swap_on_gamma() -> App {

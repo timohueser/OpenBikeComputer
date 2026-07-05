@@ -910,6 +910,28 @@ impl App {
         &self.catalog_ids
     }
 
+    /// Drain the Route menu's pending route-delete request (epic #447, P6), resolved to the route's
+    /// **durable object id**. The host calls this once per pass; a `Some(id)` is its cue to delete
+    /// that route object (`ObjectStore::delete_route` on the board, the routes-dir file on the sim) —
+    /// the resulting store-changed edge re-feeds the catalog with the route gone, and P3's identity
+    /// remap keeps `active_route` / the menu selection pointing at the right routes.
+    ///
+    /// The request is recorded as a catalog **index** (what the screen holds) and translated here
+    /// against the live [`route_ids`](App::route_ids), so a rescan racing between the hold and this
+    /// drain can never resolve to the wrong route: a still-present index yields its id, an
+    /// out-of-range one (the route already vanished) drains to `None`.
+    pub fn take_route_delete(&mut self) -> Option<u16> {
+        let idx = self.activity.take_route_delete()?;
+        self.catalog_ids.get(idx).copied()
+    }
+
+    /// Non-consuming peek at whether a route-delete request is pending — lets the board gate its
+    /// per-pass store work on actual change without draining the one-shot (mirrors
+    /// [`Activity::has_track_action`](crate::Activity::has_track_action)).
+    pub fn has_route_delete(&self) -> bool {
+        self.activity.has_route_delete()
+    }
+
     /// Feed the host's BLE link snapshot ([`BleStatus`](crate::BleStatus)) — the host→app event seam
     /// (epic #447). The board's BLE plane distils its `ble::state` into this each pass; the simulator
     /// injects it from the control panel. Called like [`set_routes`](App::set_routes): a plain host
@@ -1158,7 +1180,9 @@ impl App {
     /// with the charging hold-progress to redraw only when the fill would actually animate;
     /// holding the encoder on any other screen changes no pixels, so no repaint is owed.
     pub fn top_wants_hold_fill(&self) -> bool {
-        self.stack.last().is_some_and(|s| s.wants_hold_fill(&self.settings, &self.state))
+        self.stack
+            .last()
+            .is_some_and(|s| s.wants_hold_fill(&self.settings, &self.state, &self.activity, self.catalog.as_slice()))
     }
 
     /// **Debug/benchmark hook** (the USB-CDC `Z` command): set the map camera to exactly `mpp`
