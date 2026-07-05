@@ -100,6 +100,11 @@ struct Args {
     /// Seed for the Home screensaver's contour pattern. On the device the seed is the
     /// wall-clock millis at each return to Home; this pins it for a headless render.
     home_seed: Option<u32>,
+    /// Headless `--png` only: seed the device's local wall-clock to `YYYY-MM-DDTHH:MM` (in manual
+    /// mode, so `local_clock()` returns it verbatim). Pins the POI-detail "today's hours" weekday +
+    /// the OPEN/CLOSED-now badge for a reproducible render. Defaults to the device default
+    /// (2025-01-01 12:00, a Wednesday noon).
+    clock: Option<obc_app::settings::DateTime>,
 }
 
 impl Default for Args {
@@ -132,6 +137,7 @@ impl Default for Args {
             start_on_map: false,
             battery: None,
             home_seed: None,
+            clock: None,
         }
     }
 }
@@ -162,6 +168,21 @@ impl Args {
     pub(crate) fn settings_path(&self) -> String {
         "obc-settings.bin".to_string()
     }
+}
+
+/// Parse a `--clock` value `YYYY-MM-DDTHH:MM` into a [`DateTime`](obc_app::settings::DateTime).
+/// Rejects a malformed stamp with a message (out-of-range fields are clamped by `Settings::decode`'s
+/// sanitiser when seeded, but the format itself must be well-formed).
+fn parse_clock(s: &str) -> Result<obc_app::settings::DateTime, String> {
+    let (date, time) = s.split_once('T').ok_or("--clock format is YYYY-MM-DDTHH:MM")?;
+    let mut d = date.split('-');
+    let mut t = time.split(':');
+    let year = d.next().and_then(|v| v.parse().ok()).ok_or("bad --clock year")?;
+    let month = d.next().and_then(|v| v.parse().ok()).ok_or("bad --clock month")?;
+    let day = d.next().and_then(|v| v.parse().ok()).ok_or("bad --clock day")?;
+    let hour = t.next().and_then(|v| v.parse().ok()).ok_or("bad --clock hour")?;
+    let minute = t.next().and_then(|v| v.parse().ok()).ok_or("bad --clock minute")?;
+    Ok(obc_app::settings::DateTime { year, month, day, hour, minute })
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -209,6 +230,9 @@ fn parse_args() -> Result<Args, String> {
             }
             "--home-seed" => {
                 a.home_seed = Some(it.next().and_then(|s| s.parse().ok()).ok_or("--home-seed needs a u32")?)
+            }
+            "--clock" => {
+                a.clock = Some(parse_clock(&it.next().ok_or("--clock needs YYYY-MM-DDTHH:MM")?)?);
             }
             other => {
                 if a.map.is_empty() {
@@ -358,7 +382,13 @@ fn feed(app: &mut App, now: u32, events: Vec<InputEvent>) {
 /// Apply a gesture script (see `Args::script`) to `app`. Synthesizes the raw encoder/Back
 /// events with a rising clock — including the threshold crossing that turns a held button
 /// into a `Hold`/`BackHold` — exactly as the real recognizer would see them.
-fn apply_script(app: &mut App, script: &str) {
+///
+/// `render` draws one throwaway headless frame against the current app state — the `d` token uses
+/// it to **flush lazy draw-time state** that only fills at draw (the POI-list snapshot, then the
+/// detail's hours read), so a script can `p` into a POI *and then* `d p` to open its detail (the
+/// Press needs the snapshot the first draw takes). Without a `d` the whole script runs before the
+/// single final render, so lazy state never fills mid-script.
+fn apply_script(app: &mut App, script: &str, render: &mut dyn FnMut(&mut App)) {
     let down = |b| InputEvent::Button(ButtonEvent::Down(b));
     let up = |b| InputEvent::Button(ButtonEvent::Up(b));
     let hold = obc_app::DEFAULT_HOLD_MS;
@@ -414,6 +444,10 @@ fn apply_script(app: &mut App, script: &str) {
                     feed(app, now, vec![]);
                 }
             }
+            // Draw one throwaway frame to flush lazy draw-time state (the POI-list snapshot / the
+            // detail's hours read) so the next gesture sees it — e.g. `p d p` opens a POI list, fills
+            // its snapshot, then presses a POI into its detail.
+            'd' => render(app),
             other => eprintln!("warning: ignoring unknown --script token '{other}'"),
         }
     }
@@ -430,7 +464,7 @@ fn main() {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: obc-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--home-seed N]");
+            eprintln!("error: {e}\nusage: obc-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--home-seed N] [--clock YYYY-MM-DDTHH:MM]");
             std::process::exit(2);
         }
     };
@@ -571,12 +605,27 @@ fn main() {
         if let Some(seed) = args.home_seed {
             app.reseed_home(seed);
         }
+        // `--clock`: seed the local wall-clock in manual mode (`gps_time = false` ⇒ `local_clock()`
+        // returns it verbatim), pinning the POI-detail weekday + OPEN/CLOSED-now badge. `set_settings`
+        // restamps the WallClock from this local set-point (see `App::set_settings`).
+        if let Some(clock) = args.clock {
+            let settings = obc_app::settings::Settings { gps_time: false, clock, ..Default::default() };
+            app.set_settings(settings);
+        }
         // Load the routes folder so the Route menu has real entries and a picked route
         // can be drawn.
         let mut store = RouteStore::open(args.routes_dir());
         app.set_routes(store.catalog());
         if let Some(script) = &args.script {
-            apply_script(&mut app, script);
+            // The `d` token flushes lazy draw-time state (the POI snapshot / detail hours) by drawing
+            // one throwaway frame against the map reader — `route: None` since the POI screens the
+            // token targets never draw the route, and the route isn't opened until below anyway.
+            let (rw, rh, rtc) = (args.width, args.height, args.true_color);
+            let mut render = |app: &mut App| {
+                let mut fb = Framebuffer::new(rw, rh);
+                let _ = app.render_frame(&mut fb, &reader, None, rw as f32, rh as f32, |c| color_of(c, rtc));
+            };
+            apply_script(&mut app, script, &mut render);
         }
         // The script may have loaded a route; open its geometry for the Map.
         store.sync_active(app.activity.active_route);

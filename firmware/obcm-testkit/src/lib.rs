@@ -313,9 +313,23 @@ fn serialize_poi_category(
 /// keeps the map valid; `pois_by_cat` maps a category id (1..=6) to the POIs to place there (each a
 /// full per-category quadtree over `bbox`, `chunk_size`-byte chunks). Categories absent from the map
 /// are written empty. An **empty hours pool** (`count 0`) follows at the tail — the query tests don't
-/// exercise hours, and each `PoiSpec` carries its own `hours_ref` into its record. The section is
+/// exercise hours, and each `PoiSpec` carries its own `hours_ref` into its record. Use
+/// [`build_poi_map_with_hours`] to bake a real pool (the detail-screen tests). The section is
 /// assembled at its file-absolute offset so the reader's `walk_leaves`/`chunk_range` math resolves.
 pub fn build_poi_map(bbox: (i32, i32, i32, i32), chunk_size: usize, pois_by_cat: &[(u8, Vec<PoiSpec>)]) -> Vec<u8> {
+    build_poi_map_with_hours(bbox, chunk_size, pois_by_cat, &[])
+}
+
+/// Like [`build_poi_map`] but bakes a real **hours pool** of `hours_blobs` (spec §7.5) at the file
+/// tail, with the directory's `hours_pool_offset`/`hours_pool_count` pointing at it. Each
+/// [`PoiSpec`]'s `hours_ref` indexes into `hours_blobs` (`0xFFFF` = no hours). Used by the POI
+/// detail-screen tests to exercise the reader's `poi_hours` lookup end to end through the app.
+pub fn build_poi_map_with_hours(
+    bbox: (i32, i32, i32, i32),
+    chunk_size: usize,
+    pois_by_cat: &[(u8, Vec<PoiSpec>)],
+    hours_blobs: &[[u8; POI_HOURS_BLOB_LEN]],
+) -> Vec<u8> {
     // A trivial single-leaf geometry LOD so the file is a valid map (the query never touches it).
     let styles: &[Style] = &[(1, 0, 0xFFFF, 1, 1)];
     let base = build_file(
@@ -349,12 +363,12 @@ pub fn build_poi_map(bbox: (i32, i32, i32, i32), chunk_size: usize, pois_by_cat:
         payload.extend_from_slice(&chunk_bytes);
     }
 
-    // The (empty) hours pool follows the last category's chunks (`cursor`).
+    // The hours pool follows the last category's chunks (`cursor`); the directory points at it.
     let hours_pool_offset = cursor as u32;
-    payload.extend_from_slice(&hours_pool(&[]));
+    payload.extend_from_slice(&hours_pool(hours_blobs));
 
     let mut f = base[..poi_off].to_vec();
-    f.extend_from_slice(&poi_directory(chunk_size as u16, &cats, hours_pool_offset, 0));
+    f.extend_from_slice(&poi_directory(chunk_size as u16, &cats, hours_pool_offset, hours_blobs.len() as u16));
     f.extend_from_slice(&payload);
     f
 }

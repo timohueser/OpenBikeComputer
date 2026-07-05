@@ -729,20 +729,27 @@ impl App {
     /// Whether the frame needs the streamed-map [`Reader`] built and passed to
     /// [`render_map_timed`](App::render_map_timed) — a superset of [`base_draws_map`](App::base_draws_map).
     /// The Map always does; the **POI list** screen (issue #425) does too, but only until it has
-    /// taken its one-shot snapshot: its query runs in the *draw* path off `rx.reader`, so a
-    /// render-on-demand host (the board's two-plane loop) must build the `Reader` on the frame the
-    /// snapshot is taken. Once [`poi_snapshot_pending`](App::poi_snapshot_pending) is false the POI
-    /// list draws from the frozen scratch with no `Reader`, so the host skips the build again.
+    /// taken its one-shot snapshot; and the **POI detail** screen (issue #444) does until it has
+    /// resolved its one hours read. Both read the `Reader` in the *draw* path off `rx.reader`, so a
+    /// render-on-demand host (the board's two-plane loop) must build the `Reader` on the frame each
+    /// one-shot read is taken. Once the list's [`poi_snapshot_pending`](App::poi_snapshot_pending) is
+    /// false — or the detail's schedule cache has resolved — the screen draws from its frozen
+    /// state with no `Reader`, so the host skips the build again.
     ///
     /// The sim's `render_frame` always passes `Some(reader)`, so it never consults this — only the
     /// board host does, keeping its per-frame `Reader` build (and stack spike) off every non-map,
-    /// already-snapshotted frame.
+    /// already-resolved frame.
     pub fn base_needs_reader(&self) -> bool {
         if self.base_draws_map() {
             return true;
         }
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
-        matches!(self.stack.get(base), Some(Screen::PoiList(s)) if self.poi_snapshot_pending(s))
+        match self.stack.get(base) {
+            Some(Screen::PoiList(s)) => self.poi_snapshot_pending(s),
+            // The detail's hours read runs at draw off `rx.reader`; keep it built until it lands.
+            Some(Screen::PoiDetail(s)) => s.hours_pending(),
+            _ => false,
+        }
     }
 
     /// Whether the given POI list screen still needs a `Reader` at draw — its category's snapshot
@@ -939,8 +946,8 @@ impl App {
         // Snapshot the settings so a settings-screen edit is detected by one `==` (Settings is
         // `Copy + Eq`). A change flags a save for the host to pick up via `take_settings_dirty`.
         let settings_before = self.settings;
-        let App { state, activity, settings, catalog, stack, now_ms, .. } = self;
-        let mut cx = Ctx { state, activity, settings, routes: catalog.as_slice(), now_ms: *now_ms };
+        let App { state, activity, settings, catalog, stack, now_ms, poi_scratch, .. } = self;
+        let mut cx = Ctx { state, activity, settings, routes: catalog.as_slice(), poi_scratch, now_ms: *now_ms };
         let t = stack.last_mut().expect("the stack always has the Home root").handle(g, &mut cx);
         let depth_before = stack.len();
         screen::apply(stack, t);
