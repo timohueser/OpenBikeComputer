@@ -1,6 +1,6 @@
 //! The Menu overlay — **layout prototype pass**: two candidate designs behind the [`COMPASS`]
-//! switch. Both show the four planned entries (Routes / POIs / Map / Settings — POIs and Map are
-//! inert placeholders until those screens exist) and keep the list semantics: `turn` moves the
+//! switch. Both show the four planned entries (Routes / POIs / Map / Settings — Map is still an
+//! inert placeholder until that screen exists) and keep the list semantics: `turn` moves the
 //! selection (wrapping), `press` enters, `back` returns to the caller.
 //!
 //! * Compass dial: a wood bezel ring with the four entries as stations at N/E/S/W, an amber
@@ -17,7 +17,10 @@ use obc_render::{
 
 use crate::input::Gesture;
 
-use super::{list, palette, title_frame, Ctx, Render, RouteMenuScreen, Screen, ScreenTick, SettingsScreen, Transition};
+use super::{
+    list, palette, title_frame, Ctx, PoiMenuScreen, Render, RouteMenuScreen, Screen, ScreenTick, SettingsScreen,
+    Transition,
+};
 
 const ITEMS: [&str; 4] = ["Routes", "POIs", "Map", "Settings"];
 
@@ -61,8 +64,9 @@ impl MenuScreen {
             }
             Gesture::Press => match self.selected {
                 0 => Transition::Push(Screen::RouteMenu(RouteMenuScreen::new())), // Routes
+                1 => Transition::Push(Screen::PoiMenu(PoiMenuScreen::new())),     // POIs
                 3 => Transition::Push(Screen::Settings(SettingsScreen::new())),   // Settings
-                _ => Transition::None,                                            // POIs / Map — future screens
+                _ => Transition::None,                                            // Map — future screen
             },
             Gesture::Back => Transition::Pop, // return to caller (Home or Map)
             Gesture::Hold => Transition::None,
