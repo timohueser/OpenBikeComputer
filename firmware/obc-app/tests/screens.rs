@@ -34,12 +34,20 @@ fn leaked_scratch() -> &'static PoiScratch {
 /// A handle [`Ctx`] over freshly-made state/activity. The Route-menu tests pass a catalog via
 /// [`route_ctx`].
 fn ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity) -> Ctx<'a> {
-    Ctx { state, activity, settings: leaked_settings(), routes: &[], poi_scratch: leaked_scratch(), now_ms: 0 }
+    Ctx {
+        state,
+        activity,
+        settings: leaked_settings(),
+        routes: &[],
+        rides: &[],
+        poi_scratch: leaked_scratch(),
+        now_ms: 0,
+    }
 }
 
 /// A handle [`Ctx`] carrying a route catalog, for the Route-menu tests.
 fn route_ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity, routes: &'a [RouteSummary]) -> Ctx<'a> {
-    Ctx { state, activity, settings: leaked_settings(), routes, poi_scratch: leaked_scratch(), now_ms: 0 }
+    Ctx { state, activity, settings: leaked_settings(), routes, rides: &[], poi_scratch: leaked_scratch(), now_ms: 0 }
 }
 
 /// A small synthetic route catalog (names + totals + a unit bbox to center on).

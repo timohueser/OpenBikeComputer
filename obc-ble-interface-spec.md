@@ -301,8 +301,32 @@ A write of `cmd u8` + fixed args. Every command is answered with a
 
 | `cmd` | Command | Args | Effect |
 |---|---|---|---|
-| `1` | `deleteObject` | `type u8 · object_id u16` | delete a stored route (`1`); bumps the store revision. Ride (`2`) deletion is **reserved** — the reference firmware answers `notFound`: the device retains every tracked ride until a (future) device-side management UI, and the app hides synced rides locally (tombstones) so a re-sync can't resurrect them |
-| `2`–`15` | — | — | reserved (identify/find-my-device, factory reset, …) |
+| `1` | `deleteObject` | `type u8 · object_id u16` | delete a stored route (`1`); bumps the store revision. Ride (`2`) deletion over the link is **reserved** — the reference firmware answers `notFound`: rides are deleted only on the device itself (its Rides screen), and the app hides synced rides locally (tombstones) so a re-sync can't resurrect them |
+| `2` | `ackRides` | `count u8 · count × object_id u16` | the app's **ride-possession ack**: the device marks every listed ride id it still stores as synced ("downloaded at least once"). `commandResult.detail` = the newly-flagged count (saturating at 255); a flag change bumps the **ride** store revision. See below |
+| `3`–`15` | — | — | reserved (identify/find-my-device, factory reset, …) |
+
+**`ackRides` — possession reconciliation.** The device keeps a per-ride
+"synced" flag (it drives the delete-guard cue on the device's Rides screen).
+Setting it only when a ride download completes leaves the flag an *event
+inference* — any divergence between the app's library and the device's record
+(rides synced before the device tracked the flag, a record lost with a
+reflashed card, an app reinstall) would be permanent, because a ride the app
+already holds is never downloaded again. `ackRides` converts the flag into
+*reconciled state*: the app's library is the ground truth for "the phone has
+this ride", and the app sends the device-namespace ride ids it holds on every
+connect (and after edits, as it likes). Rules:
+
+- **Monotonic**: the device only sets flags from an ack, never clears them —
+  the flag means "downloaded at least once", not "still held by the phone".
+  (A phone-side delete keeps the ride's tombstone, so its id stays in the
+  ack list; ids never reuse, so a stale flag can't mislabel a future ride.)
+- **Idempotent and order-free**: re-acking a flagged ride changes nothing, so
+  the app may chunk a long list across several `command` writes (the
+  reference firmware accepts ≤ 31 ids per write — a 64-byte value) and
+  re-send the whole list every connect.
+- **Unknown ids are ignored**, answered `ok`: the app may hold rides the
+  device has since deleted. `error` is answered only for a malformed write
+  (`count` promising more ids than the write carries).
 
 ### 4.5 `objectStore` — the store digest
 

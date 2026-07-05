@@ -21,6 +21,7 @@ pub mod hal;
 pub mod hold_hint;
 pub mod input;
 pub mod input_plane;
+pub mod ride;
 pub mod route;
 pub mod screen;
 pub mod settings;
@@ -39,8 +40,12 @@ pub use hal::{
 pub use hold_hint::HoldHints;
 pub use input::{Gesture, Gestures, DEFAULT_HOLD_MS, DEFAULT_TAP_MS};
 pub use input_plane::InputPlane;
+pub use ride::{RideCatalog, RideSummary, MAX_RIDES, UI_RIDES_CAP};
 pub use route::{Catalog, RouteSummary, MAX_ROUTES};
 pub use screen::{Screen, ScreenKind, Transition};
-pub use settings::{DateTime, Settings, Units};
+pub use settings::{
+    decode_synced_rides, encode_synced_rides, synced_rides_len, DateTime, Settings, SyncedRides, Units,
+    SYNCED_RIDES_MAX_LEN,
+};
 pub use stat_fields::{StatField, StatFieldList};
 pub use wall_clock::{MinuteTicker, WallClock};

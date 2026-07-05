@@ -28,6 +28,7 @@ mod present;
 // `--palette` is a native-only standalone window; keep its native APIs out of the wasm compile.
 #[cfg(not(target_arch = "wasm32"))]
 mod palette;
+mod rides;
 mod routes;
 mod settings_store;
 mod sim_compass;
@@ -39,6 +40,7 @@ mod vec_sink;
 use framebuffer::Framebuffer;
 use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 use obc_route::{RouteIndex, RouteReader};
+use rides::RideStore;
 use routes::RouteStore;
 use track::TrackStore;
 
@@ -389,7 +391,10 @@ fn reconcile_tracks(app: &mut App, tracks: &mut TrackStore) {
     let action = app.activity.take_track_action();
     let session = app.activity.session;
     let name = app.activity.active_route.and_then(|i| app.routes().get(i)).map(|r| r.name.as_str().to_string());
-    tracks.reconcile(action, session, name.as_deref());
+    // Snapshot the ride totals for a Save so the durable `RD{id}.ORD` ride object the Rides screen
+    // lists carries them, exactly as the device does (#454).
+    let stats = matches!(action, Some(obc_app::TrackAction::Save)).then(|| app.ride_stats());
+    tracks.reconcile(action, session, name.as_deref(), stats);
 }
 
 /// Encode a framebuffer to a PNG, upscaling by `scale` with nearest-neighbor so the
@@ -656,6 +661,10 @@ fn main() {
         // can be drawn.
         let mut store = RouteStore::open(args.routes_dir());
         app.set_routes_with_ids(store.catalog(), store.ids());
+        // Load the tracks folder so the Rides screen (#454) lists real `RD{id}.ORD` rides + their
+        // synced flags.
+        let mut ride_store = RideStore::open(args.tracks_dir());
+        app.set_rides(ride_store.catalog(), ride_store.ids());
         // Inject the BLE link state (epic #447) **before** the script runs: `--ble-connected` shows
         // the connected indicator, `--ble-passkey N` puts the host-pushed passkey card up (P2), and
         // `--ble-paired` a stored bond — so a scripted gesture on the Bluetooth screen (its Forget
@@ -678,6 +687,13 @@ fn main() {
             if let Some(id) = app.take_route_delete() {
                 if store.delete_by_id(id) {
                     app.set_routes_with_ids(store.catalog(), store.ids());
+                }
+            }
+            // A scripted hold-to-delete in the Rides screen (#454) — same per-frame drain, ride
+            // namespace: delete the `RD{id}.ORD` + sidecar flag and re-feed the ride catalog.
+            if let Some(id) = app.take_ride_delete() {
+                if ride_store.delete_by_id(id) {
+                    app.set_rides(ride_store.catalog(), ride_store.ids());
                 }
             }
         }

@@ -104,6 +104,46 @@ fn status_store_changed_vector() {
     assert_eq!(&buf[..len], &bytes[..]);
 }
 
+/// The `ackRides` command fixture (spec §4.4, cmd 2) decodes through the production codec, its
+/// answer fixture decodes as the documented `commandResult` (detail = newly-flagged count), and
+/// re-encoding both reproduces the files byte-for-byte — the Swift side pins the same bytes.
+#[test]
+fn command_ack_rides_vector() {
+    use obc_ble::{AckRides, CommandResult, CommandStatus, CMD_ACK_RIDES};
+
+    let bytes = fixture("command-ack-rides.bin");
+    let ack = AckRides::decode(&bytes).expect("valid ackRides");
+    assert_eq!(ack.count(), 3);
+    assert_eq!(ack.iter().collect::<Vec<_>>(), [3, 5, 9]);
+
+    let mut out = [0u8; AckRides::encoded_len(3)];
+    let len = AckRides::encode(&[3, 5, 9], &mut out).unwrap();
+    assert_eq!(&out[..len], &bytes[..], "re-encode");
+
+    // The answer: commandResult{cmd 2, ok, detail 3} — detail is the newly-flagged count.
+    let result_bytes = fixture("status-command-result-ack.bin");
+    let StatusMessage::CommandResult(r) = StatusMessage::decode(&result_bytes).unwrap().unwrap() else {
+        panic!("expected commandResult")
+    };
+    assert_eq!((r.command, r.status, r.detail), (CMD_ACK_RIDES, CommandStatus::Ok, 3));
+    let (buf, len) = Msg::CommandResult(CommandResult::with_detail(CMD_ACK_RIDES, CommandStatus::Ok, 3)).encode();
+    assert_eq!(&buf[..len], &result_bytes[..]);
+}
+
+/// `ackRides` decode edges: a `count` promising more ids than the write carries is truncated; a
+/// wrong command byte is refused; an empty ack and ignored trailing bytes are both fine.
+#[test]
+fn ack_rides_decode_edges() {
+    use obc_ble::{AckRides, DescriptorError};
+
+    assert!(matches!(AckRides::decode(&[2, 3, 1, 0]), Err(DescriptorError::Truncated)), "short of its count");
+    assert!(matches!(AckRides::decode(&[2]), Err(DescriptorError::Truncated)), "no count byte");
+    assert!(matches!(AckRides::decode(&[1, 0]), Err(DescriptorError::UnknownOp(1))), "not ackRides");
+    assert_eq!(AckRides::decode(&[2, 0]).unwrap().count(), 0, "empty ack is well-formed");
+    let ack = AckRides::decode(&[2, 1, 7, 0, 0xEE]).unwrap();
+    assert_eq!(ack.iter().collect::<Vec<_>>(), [7], "trailing bytes past count are ignored");
+}
+
 #[test]
 fn object_store_vector() {
     let bytes = fixture("object-store.bin");

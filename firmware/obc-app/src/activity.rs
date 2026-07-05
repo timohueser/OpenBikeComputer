@@ -85,6 +85,13 @@ pub struct Activity {
     /// [`request_route_delete`](Activity::request_route_delete); the actual file delete + rescan is
     /// the host's, and the resulting store-changed edge re-feeds the catalog with the route gone.
     delete_route: Option<usize>,
+    /// A one-shot **ride-delete request** (epic #447, P7): the catalog *index* of a ride the Rides
+    /// screen's hold-to-delete footer asked to remove, drained by
+    /// [`App::take_ride_delete`](crate::App::take_ride_delete) which translates it to the ride's
+    /// durable object id (the parallel [`ride_ids`](crate::App::ride_ids) table). The ride namespace's
+    /// twin of [`delete_route`](Activity::delete_route); the host deletes the ride object + rescans,
+    /// and the resulting store-changed edge re-feeds the ride catalog with it gone.
+    delete_ride: Option<usize>,
 
     // live map-match (from the GPS fix)
     /// Total distance of the active route (m), mirrored from its header so the riding views can
@@ -213,6 +220,26 @@ impl Activity {
     /// store work on this without draining the one-shot.
     pub(crate) fn has_route_delete(&self) -> bool {
         self.delete_route.is_some()
+    }
+
+    /// Record a one-shot request to delete the ride-catalog entry at `index` (epic #447, P7) — set by
+    /// the Rides screen's hold-to-delete footer, drained by
+    /// [`App::take_ride_delete`](crate::App::take_ride_delete), which resolves it to the ride's durable
+    /// object id at drain (so a rescan racing the hold can't delete the wrong ride).
+    pub(crate) fn request_ride_delete(&mut self, index: usize) {
+        self.delete_ride = Some(index);
+    }
+
+    /// Take (and clear) the pending ride-delete request's catalog **index**, if any — `App` drains
+    /// this and maps the index to its durable object id for the host to delete.
+    pub(crate) fn take_ride_delete(&mut self) -> Option<usize> {
+        self.delete_ride.take()
+    }
+
+    /// Non-consuming peek at whether a ride-delete request is pending — the board gates its per-pass
+    /// store work on this without draining the one-shot.
+    pub(crate) fn has_ride_delete(&self) -> bool {
+        self.delete_ride.is_some()
     }
 
     /// The elevation (m) to stamp on a logged [`TrackPoint`](obc_route::TrackPoint): the

@@ -120,12 +120,13 @@ pub(crate) async fn publish_store_change(
     stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
     server: &Server<'_>,
     store: &RefCell<ObjectStore>,
+    ty: ObjectType,
 ) {
     let digest = store.borrow().digest();
     let bytes = digest.encode();
     let _ = server.set(&server.obc.object_store, &bytes);
     notify_bounded(stack, server, server.obc.object_store.handle, &bytes, "digest").await;
-    let msg = StatusMessage::StoreChanged(StoreChanged { ty: ObjectType::Route, revision: digest.revision });
+    let msg = StatusMessage::StoreChanged(StoreChanged { ty, revision: digest.revision });
     notify_status(server, stack, msg.encode()).await;
 }
 
@@ -210,7 +211,7 @@ async fn run_upload(
     let offset = if committed { rx.total_len() } else { 0 };
     notify_status(server, stack, transfer_result_at(id, status, offset)).await;
     if committed {
-        publish_store_change(stack, server, store).await;
+        publish_store_change(stack, server, store, ObjectType::Route).await;
     }
     TransferOutcome::Answered
 }
@@ -336,7 +337,15 @@ async fn run_download(
     }
     {
         let mut guard = shared.lock().await;
-        store.borrow_mut().download_close(&mut guard);
+        let mut st = store.borrow_mut();
+        st.download_close(&mut guard);
+        // A **ride** download that reached completion is the unsynced-guard's commit point (epic #447
+        // P7 / #454): flag this ride id as "downloaded at least once" in the `/tracks` synced sidecar
+        // so the Rides screen drops its "not synced" delete cue. A no-op if already flagged; when it
+        // flips it bumps the store revision, and the ride loop's rescan re-feeds the freshened flag.
+        if desc.ty == ObjectType::Ride {
+            st.mark_ride_synced(&mut guard, desc.object_id);
+        }
     }
     let result = tx.outcome().unwrap(); // complete ⇒ Some
     info!("ble: [coc] download done: {} bytes", result.committed_offset);

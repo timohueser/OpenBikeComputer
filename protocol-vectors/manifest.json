@@ -113,6 +113,20 @@
       "type": 1,
       "revision": 42
     },
+    "command-ack-rides.bin": {
+      "format": "ackRides command (spec 4.4, cmd 2)",
+      "byte_len": 8,
+      "cmd": 2,
+      "count": 3,
+      "ride_ids": [3, 5, 9]
+    },
+    "status-command-result-ack.bin": {
+      "format": "status msg 3 (spec 4.3)",
+      "msg": 3,
+      "cmd": 2,
+      "status": "ok (0)",
+      "detail": 3
+    },
     "object-store.bin": {
       "format": "objectStore (spec 4.5)",
       "revision": 42,
