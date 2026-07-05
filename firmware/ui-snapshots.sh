@@ -62,5 +62,8 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 # title bar. `--ble-connected` injects a linked phone, exactly as the sim control-panel toggle does.
 "$SIM" "$MAP" --boot --ble-connected --png "$OUT/home-ble.png" --battery 45
 "$SIM" "$MAP" --boot --ble-connected --script "B" --png "$OUT/menu-ble.png"
+# BLE passkey card (#449): the host-pushed 6-digit LESC pairing code, rendered huge. `--ble-passkey N`
+# injects the passkey exactly as the sim control-panel "Pairing" toggle does; the card auto-opens.
+"$SIM" "$MAP" --boot --ble-passkey 42 --png "$OUT/passkey-card.png"
 
-echo "ui-snapshots: 22 screens rendered into $OUT/"
+echo "ui-snapshots: 23 screens rendered into $OUT/"
