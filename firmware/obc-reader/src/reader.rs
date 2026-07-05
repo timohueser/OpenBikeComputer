@@ -421,6 +421,102 @@ impl<'a> NavNodeRef<'a> {
     }
 }
 
+/// Graph-tile cache slots. Two cover the router's working set: consecutive A* settles have strong
+/// spatial locality (the frontier advances through one leaf at a time), but a frontier straddling a
+/// leaf boundary ping-pongs between two chunks, which a single slot would thrash. More slots buy
+/// little for a search that only ever revisits its immediate neighborhood — and the cache lives in
+/// the device's `.bss` next to the router's ~10 kB scratch, so it stays deliberately small.
+pub const NAV_TILE_SLOTS: usize = 2;
+
+/// Empty-slot tag for [`NavTileCache`]: a chunk's absolute file offset never reaches `u32::MAX`
+/// (its whole extent must lie inside a `u32`-addressed source).
+const NAV_TILE_EMPTY: u32 = u32::MAX;
+
+/// A snapshot of the [`NavTileCache`] counters. `misses` doubles as the SD-read count: every miss
+/// is exactly one `chunk_size`-byte `read_at`, and hits read nothing — the number R4 logs on-glass
+/// (the device is SD-bound; this cache is the epic's named thrash mitigation).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NavCacheStats {
+    /// Nav-chunk requests served from a resident slot (no SD read).
+    pub hits: u32,
+    /// Nav-chunk requests that missed and read `chunk_size` bytes from the source.
+    pub misses: u32,
+}
+
+/// A tiny caller-owned cache of whole nav chunks (node **and** edge-pool — both are `chunk_size`
+/// ≤ [`NAV_MAX_CHUNK_BYTES`] bytes, spec §8.1), keyed by the chunk's absolute file offset so the
+/// two chunk spaces can't collide. [`Reader::for_each_nav_node_cached`] and
+/// [`Reader::nav_edge_oriented`] stream through it so the router's per-settle spatial re-fetch
+/// doesn't re-read the same leaf from the SD (epic #116's named risk). Round-robin eviction: with
+/// two slots and a working set of at most two chunks, recency bookkeeping buys nothing.
+///
+/// ~4 KB, owned by the caller (the device puts it in `.bss`); `new()` is `const` so a `static`
+/// lands zero-initialized. The tags are only meaningful against one map/source — the router
+/// resets it per `plan_route`, so a map switch can never cross-serve a stale chunk.
+pub struct NavTileCache {
+    slots: [[u8; NAV_MAX_CHUNK_BYTES]; NAV_TILE_SLOTS],
+    /// Absolute file offset of the chunk each slot holds, or [`NAV_TILE_EMPTY`].
+    tags: [u32; NAV_TILE_SLOTS],
+    /// Round-robin eviction cursor.
+    next: u8,
+    hits: u32,
+    misses: u32,
+}
+
+impl NavTileCache {
+    pub const fn new() -> Self {
+        NavTileCache {
+            slots: [[0; NAV_MAX_CHUNK_BYTES]; NAV_TILE_SLOTS],
+            tags: [NAV_TILE_EMPTY; NAV_TILE_SLOTS],
+            next: 0,
+            hits: 0,
+            misses: 0,
+        }
+    }
+
+    /// Invalidate every slot and zero the counters — call before a fresh route computation (or
+    /// after a map switch) so stale tags can't serve another file's bytes and the counters read
+    /// as "this run's I/O".
+    pub fn reset(&mut self) {
+        self.tags = [NAV_TILE_EMPTY; NAV_TILE_SLOTS];
+        self.next = 0;
+        self.hits = 0;
+        self.misses = 0;
+    }
+
+    /// Snapshot of the hit/miss counters since the last [`NavTileCache::reset`].
+    #[inline]
+    pub fn stats(&self) -> NavCacheStats {
+        NavCacheStats { hits: self.hits, misses: self.misses }
+    }
+
+    /// The `len`-byte chunk at absolute `offset`, from a resident slot or (on miss) read from
+    /// `src` into the round-robin victim. `None` on a read failure — the victim's tag is cleared
+    /// *before* the read so a short/failed fill can never leave a stale tag over garbage bytes.
+    fn chunk(&mut self, src: &dyn ByteSource, offset: u32, len: usize) -> Option<&[u8]> {
+        debug_assert!(len <= NAV_MAX_CHUNK_BYTES);
+        for i in 0..NAV_TILE_SLOTS {
+            if self.tags[i] == offset {
+                self.hits += 1;
+                return Some(&self.slots[i][..len]);
+            }
+        }
+        let i = self.next as usize % NAV_TILE_SLOTS;
+        self.tags[i] = NAV_TILE_EMPTY;
+        src.read_at(offset, &mut self.slots[i][..len]).ok()?;
+        self.tags[i] = offset;
+        self.next = self.next.wrapping_add(1);
+        self.misses += 1;
+        Some(&self.slots[i][..len])
+    }
+}
+
+impl Default for NavTileCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// A single POI result from [`Reader::nearest_pois`]. Coordinates are absolute microdegrees (§7.3);
 /// `distance_m` is the ground distance from the query position, computed during the scan. `name` is
 /// empty for an unnamed POI — the app then shows the subtype's fallback label
@@ -1026,6 +1122,125 @@ impl<'a> Reader<'a> {
                 points.push((lon, lat)).ok()?;
             }
             done += take;
+        }
+        Some(length_m)
+    }
+
+    /// [`Reader::for_each_nav_node`] with the chunk read routed through a caller-owned
+    /// [`NavTileCache`] instead of a bare scratch — the router's settle primitive (#465). A*'s
+    /// spatial re-fetch settles one node at a time (a degenerate one-point `view`), and
+    /// consecutive settles land in the same quadtree leaf far more often than not, so serving the
+    /// repeat from a resident slot is what keeps the SD-bound device from re-reading a chunk per
+    /// settle. Same decode, same corrupt-input posture, same reentrancy rule as the uncached walk.
+    pub fn for_each_nav_node_cached(
+        &self,
+        view: &BBox,
+        tiles: &mut NavTileCache,
+        mut visit: impl FnMut(NavNodeRef),
+    ) -> Result<(), Error> {
+        let dir = self.tables.nav;
+        if dir.is_empty() {
+            return Ok(());
+        }
+        self.walk_leaves(&dir, 0, self.bbox, view, 0, &mut |cid, _node| {
+            let (start, end) = match dir.chunk_range(cid) {
+                Some(r) => r,
+                None => return,
+            };
+            if end > self.src.len() as usize {
+                return;
+            }
+            let off = match u32::try_from(start) {
+                Ok(o) => o,
+                Err(_) => return,
+            };
+            // A failed fill skips this leaf cleanly (the cache never keeps a bad slot).
+            if let Some(chunk) = tiles.chunk(self.src, off, dir.chunk_size) {
+                decode_nav_chunk(chunk, &mut visit);
+            }
+        });
+        Ok(())
+    }
+
+    /// Fetch one §8.4 edge polyline **oriented to begin at `start`** (a `(lon, lat)` µdeg node
+    /// coord), streaming each point through `emit` and returning the edge's `length_m`. Edge
+    /// records run `a → b`; the router traverses them either way, so this picks the direction by
+    /// matching `start` against the record's endpoints (node coords and polyline endpoints are
+    /// bit-identical by the packer's construction) and reverses on the fly when the hop runs
+    /// `b → a` — no caller-side point buffer, however long the polyline.
+    ///
+    /// The record's whole containing chunk comes through `tiles` (the §8.4 no-straddle contract
+    /// keeps a record inside one chunk): consecutive path edges usually share a pool chunk, and a
+    /// resident chunk makes the reversed decode free — the deltas are summed forward once for the
+    /// `b` endpoint, then walked backward subtracting. `None` for an out-of-pool / misaligned id,
+    /// a record matching neither endpoint, or a read failure — a corrupt id degrades to "no
+    /// geometry", never a panic, mirroring [`Reader::nav_edge`].
+    pub fn nav_edge_oriented(
+        &self,
+        tiles: &mut NavTileCache,
+        edge_id: u32,
+        start: (i32, i32),
+        mut emit: impl FnMut((i32, i32)),
+    ) -> Option<u32> {
+        let dir = &self.tables.nav;
+        let cs = dir.chunk_size;
+        if dir.edge_chunk_count == 0 || cs == 0 {
+            return None;
+        }
+        // Pool + intra-chunk bounds, checked exactly as `nav_edge` (`edge_id` is unvalidated).
+        let id = edge_id as usize;
+        let within = id % cs;
+        if id / cs >= dir.edge_chunk_count || within + NAV_EDGE_FIXED_LEN > cs {
+            return None;
+        }
+        let chunk_start = dir.edge_pool_offset.checked_add(id - within)?;
+        if chunk_start.checked_add(cs)? > self.src.len() as usize {
+            return None;
+        }
+        let chunk = tiles.chunk(self.src, u32::try_from(chunk_start).ok()?, cs)?;
+        let length_m = rd_u32(chunk, within);
+        let pt_count = rd_u16(chunk, within + 4) as usize;
+        let anchor = (rd_i32(chunk, within + 10), rd_i32(chunk, within + 6)); // (lon, lat)
+        if pt_count == 0 {
+            return None;
+        }
+        let rec_len = NAV_EDGE_FIXED_LEN.checked_add((pt_count - 1).checked_mul(4)?)?;
+        if within + rec_len > cs {
+            return None;
+        }
+        let deltas = &chunk[within + NAV_EDGE_FIXED_LEN..within + rec_len];
+        let step = |(lon, lat): (i32, i32), pair: &[u8]| {
+            (
+                lon.wrapping_add(i16::from_le_bytes([pair[2], pair[3]]) as i32),
+                lat.wrapping_add(i16::from_le_bytes([pair[0], pair[1]]) as i32),
+            )
+        };
+        if anchor == start {
+            // Forward: the record already runs `start → …`.
+            let mut p = anchor;
+            emit(p);
+            for pair in deltas.chunks_exact(4) {
+                p = step(p, pair);
+                emit(p);
+            }
+            return Some(length_m);
+        }
+        // Maybe reversed: forward-sum the deltas for the `b` endpoint…
+        let mut p = anchor;
+        for pair in deltas.chunks_exact(4) {
+            p = step(p, pair);
+        }
+        if p != start {
+            return None; // matches neither endpoint — a stale/corrupt edge id
+        }
+        // …then walk them backward, undoing one delta per point.
+        emit(p);
+        for pair in deltas.chunks_exact(4).rev() {
+            p = (
+                p.0.wrapping_sub(i16::from_le_bytes([pair[2], pair[3]]) as i32),
+                p.1.wrapping_sub(i16::from_le_bytes([pair[0], pair[1]]) as i32),
+            );
+            emit(p);
         }
         Some(length_m)
     }
