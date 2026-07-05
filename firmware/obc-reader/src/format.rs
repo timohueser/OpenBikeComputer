@@ -1,4 +1,4 @@
-//! OBCM v5 on-wire flag/sentinel bit constants — the single definition, referenced by **both** the
+//! OBCM on-wire flag/sentinel bit constants — the single definition, referenced by **both** the
 //! reader ([`crate::reader`]) and the packer (`obc-pack`) so a layout change is one edit rather
 //! than two hand-synced literals. A one-bit drift between the two sides still parses but decodes
 //! wrong (a polygon read as a line, a branch walked as a leaf) — the hardest corruption to trace.

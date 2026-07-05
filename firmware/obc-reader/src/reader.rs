@@ -1,6 +1,7 @@
-//! OBCM **v6** format reader: header, style table, LOD table, per-LOD
-//! quadtree query + chunk decode, and the trailing POI directory (parse-only in
-//! v6 — the nearest-N query is #424).
+//! OBCM **v7** format reader: header, style table, LOD table, per-LOD
+//! quadtree query + chunk decode, and the trailing POI directory + hours-pool
+//! section (the hours pool is parse-only here — the per-POI lookup + open-now
+//! evaluation is P3, #443).
 //!
 //! All coordinates are integer microdegrees (1e-6 degrees), as stored in the
 //! file. Projection to screen space is the renderer's job.
@@ -40,7 +41,8 @@ pub const MAX_FEAT_PTS: usize = 2048;
 pub const MAX_FEAT_RINGS: usize = 32;
 
 /// The header is fixed-size; everything after it is reached via explicit offsets. v6 grew it from
-/// 32 to 36 bytes (the trailing `POI Section Offset` u32).
+/// 32 to 36 bytes (the trailing `POI Section Offset` u32); v7 keeps it at 36 (only the version byte
+/// + POI section changed).
 pub const HEADER_LEN: usize = 36;
 /// Each LOD table entry: `max_mpp f32, index_off u32, node_count u32, chunk_size u16, chunk_count u32`.
 pub const LOD_ENTRY_LEN: usize = 18;
@@ -49,7 +51,7 @@ pub const LOD_ENTRY_LEN: usize = 18;
 /// index_node_count, u32 chunk_count`.
 const POI_CAT_ENTRY_LEN: usize = 13;
 
-/// POI directory categories in v6 (spec §7.1): category ids `1..=6`. The parsed [`MapTables::pois`]
+/// POI directory categories in v7 (spec §7.1): category ids `1..=6`. The parsed [`MapTables::pois`]
 /// bounds its `heapless::Vec` at this so a corrupt `category_count` can't request an unbounded
 /// allocation; a directory declaring more categories than this is rejected.
 pub const POI_MAX_CATEGORIES: usize = 8;
@@ -61,30 +63,36 @@ pub const POI_MAX_CATEGORIES: usize = 8;
 /// approaching the geometry scratch.
 pub const POI_MAX_CHUNK_BYTES: usize = 4096;
 
-/// A POI record is a fixed 32 bytes (spec §7.3): `int32 lat, int32 lon, u8 subtype, u8 name_len,
-/// [u8;20] name, [0xFF;2] reserved`. The record loop steps by this and derives records-per-chunk as
-/// `chunk_size / POI_RECORD_LEN`.
-const POI_RECORD_LEN: usize = 32;
+/// A POI record is a fixed 36 bytes (spec §7.3): `int32 lat, int32 lon, u8 subtype, u8 name_len,
+/// [u8;24] name, u16 hours_ref`. The record loop steps by this and derives records-per-chunk as
+/// `chunk_size / POI_RECORD_LEN` (`512 / 36 = 14`).
+const POI_RECORD_LEN: usize = 36;
+
+/// A single hours-pool blob (spec §7.5): `flags u8` + `7 days × 2 slots × (open_q, close_q)`. The
+/// pool is parse-only in v7 — [`parse_poi_directory`] validates the pool region lies in-file; the
+/// per-POI lookup + open-now evaluation is P3 (#443). Kept here so the bounds math names the width.
+pub const POI_HOURS_BLOB_LEN: usize = 29;
 
 /// Max results the nearest-N POI query returns (locked on epic #115). The caller owns a
 /// `heapless::Vec<Poi, MAX_POI_RESULTS>`; the query fills it ascending by distance and never
 /// exceeds it. 16 × ≈36 B ≈ 600 B, on the caller's stack.
 pub const MAX_POI_RESULTS: usize = 16;
 
-/// Max stored POI name length (spec §7.3: the 20-byte `Name` field). A [`Poi::name`] is a
+/// Max stored POI name length (spec §7.3: the 24-byte `Name` field). A [`Poi::name`] is a
 /// `heapless::String<POI_NAME_MAX>`; a record whose `name_len` exceeds this is clamped (defensive —
 /// the packer never writes one).
-pub const POI_NAME_MAX: usize = 20;
+pub const POI_NAME_MAX: usize = 24;
 
 /// Initial half-extent of the POI search bbox, in latitude µdeg (~2 km: `2000 / 111.32e-3 m/µdeg ≈
 /// 17 966`, rounded up). Doubled each pass until the nearest-16 are provably found (see
 /// [`Reader::nearest_pois`]). The longitude half-extent is this scaled by `1/cos_lat`.
 const POI_SEARCH_HALF_UDEG: i32 = 18_000;
 
-/// The POI-scan stack scratch window, in bytes (spec §7.1's default chunk size, 16 records). One
-/// chunk streams through this fixed window `POI_SCAN_WINDOW` bytes at a time regardless of the
-/// accepted `chunk_size`, so the query's scratch stays tiny (no `MapCache` growth). `POI_RECORD_LEN`
-/// divides it, so a record never straddles two reads.
+/// The POI-scan stack scratch window, in bytes (spec §7.1's default chunk size, 14 records of 36 =
+/// 504 bytes, plus a few slack bytes). One chunk streams through this fixed window at a time
+/// regardless of the accepted `chunk_size`, so the query's scratch stays tiny (no `MapCache`
+/// growth). Each read pulls a whole number of records (`take * POI_RECORD_LEN`), so a record never
+/// straddles two reads.
 const POI_SCAN_WINDOW: usize = 512;
 
 /// Upper bound on a single map data chunk, in bytes — the size of the decode scratch, and the
@@ -294,15 +302,24 @@ pub struct Poi {
     pub distance_m: u32,
 }
 
-/// The parsed POI directory (spec §7.1): the shared chunk size plus one bounded entry per category.
-/// Parse-only in v6 — [`MapTables::parse`] fills it so the sim keeps loading v6 maps; the nearest-N
-/// query lands in #424, which walks each `entries[i]`'s quadtree.
+/// The parsed POI directory (spec §7.1): the shared chunk size, one bounded entry per category, and
+/// (v7) the hours-pool section's absolute offset + blob count. [`MapTables::parse`] fills it; the
+/// nearest-N query walks each `entries[i]`'s quadtree, and the hours fields locate the pool for the
+/// P3 (#443) per-POI hours lookup + open-now evaluation — parse-only here, the pool bytes are just
+/// bounds-validated to lie in-file.
 #[derive(Debug, Clone)]
 pub struct PoiDirectory {
     /// Fixed capacity (bytes) of every POI chunk, shared by all categories (spec §7.1).
     pub chunk_size: usize,
     /// One entry per category present in the directory (bounded at [`POI_MAX_CATEGORIES`]).
     pub entries: Vec<PoiCatEntry, POI_MAX_CATEGORIES>,
+    /// Absolute byte offset of the hours-pool section (spec §7.5): a `count u16` then `count ×
+    /// 29-byte` blobs. Blob `i` (a record's `hours_ref`) lives at `hours_pool_offset + 2 + i*29`.
+    /// Meaningful only when `hours_pool_count > 0`.
+    pub hours_pool_offset: usize,
+    /// Number of 29-byte blobs in the hours pool (spec §7.5); `0` ⇒ no hours in this map. Equals the
+    /// `count u16` written at `hours_pool_offset`, validated equal at parse.
+    pub hours_pool_count: usize,
 }
 
 /// A feature decoded into caller-owned scratch buffers, borrowed for one
@@ -384,7 +401,7 @@ pub struct MapHeader {
     pub marker_color: u16,
 }
 
-/// Decode + validate the fixed 32-byte OBCM header prefix (magic, version, bbox, marker color).
+/// Decode + validate the fixed 36-byte OBCM header (magic, version, bbox, marker color).
 /// Shared by [`read_header`] and [`MapTables::parse`] so the byte layout lives in one place.
 /// Offsets follow `obc-pack`'s header pack (see OBCM_Spec.md).
 fn parse_header(h: &[u8; HEADER_LEN]) -> Result<MapHeader, Error> {
@@ -392,7 +409,7 @@ fn parse_header(h: &[u8; HEADER_LEN]) -> Result<MapHeader, Error> {
         return Err(Error::BadMagic);
     }
     let version = h[4];
-    if version != 6 {
+    if version != 7 {
         return Err(Error::BadVersion);
     }
     // Header field order: lat,lon,lat,lon (see `obc-pack`'s `serialize.rs` header pack).
@@ -429,8 +446,9 @@ pub struct MapTables {
     pub marker_color: u16,
     /// LOD layers ordered coarsest (0) → finest (N-1). Always at least one.
     lods: Vec<Lod, 16>,
-    /// The parsed POI directory (spec §7). Always present in v6 (six categories, some possibly
-    /// empty). Parse-only here — exposed via [`Reader::poi_directory`] for the #424 nearest-N query.
+    /// The parsed POI directory (spec §7). Always present in v7 (six categories, some possibly
+    /// empty, plus the hours-pool offset/count). Parse-only here — exposed via
+    /// [`Reader::poi_directory`] for the nearest-N query and the P3 (#443) hours lookup.
     pois: PoiDirectory,
     /// Styles indexed by id (0..=255) for O(1) lookup during rendering.
     styles: [Option<Style>; 256],
@@ -540,9 +558,11 @@ impl<'a> Reader<'a> {
         &self.tables.lods
     }
 
-    /// The parsed POI directory (spec §7): the shared chunk size + one entry per category. Always
-    /// present (six categories, some possibly empty). [`Reader::nearest_pois`] walks these
-    /// per-category quadtrees.
+    /// The parsed POI directory (spec §7): the shared chunk size, one entry per category, and the
+    /// v7 hours-pool offset/count. Always present (six categories, some possibly empty).
+    /// [`Reader::nearest_pois`] walks the per-category quadtrees; P3 (#443) reads
+    /// [`PoiDirectory::hours_pool_offset`]/[`PoiDirectory::hours_pool_count`] to resolve a POI's
+    /// pooled schedule.
     #[inline]
     pub fn poi_directory(&self) -> &PoiDirectory {
         &self.tables.pois
@@ -633,7 +653,7 @@ impl<'a> Reader<'a> {
     }
 
     /// One expanding-ring pass: walk `entry`'s quadtree for leaves overlapping `search` and, for each
-    /// non-empty leaf, decode its 32-byte records through a single 512-byte stack scratch, folding
+    /// non-empty leaf, decode its 36-byte records through a single 512-byte stack scratch, folding
     /// every valid record into the nearest-16 `out` set (deduped by `(lat, lon, subtype)`). `cl` is
     /// the hoisted `cos_lat`; distances are equirectangular ground meters via the shared
     /// [`crate::geo`] core.
@@ -938,14 +958,15 @@ fn consider_poi(out: &mut Vec<Poi, MAX_POI_RESULTS>, cand: PoiCand, buf: &[u8], 
 }
 
 /// Decode a POI record's name (spec §7.3) from `buf` at record offset `off`: `name_len` at `off+9`,
-/// the up-to-20-byte `Name` at `off+10`. Empty for an unnamed record (`name_len == 0`). The stored
-/// name is already pre-folded printable ASCII, but this stays defensive — `name_len` is clamped to
-/// what the field and the buffer hold, and any non-printable byte (a corrupt record) is dropped —
-/// so a bad chunk yields a short/empty name, never a panic or garbage glyph.
+/// the up-to-24-byte `Name` at `off+10` (bytes `[off+10 .. off+34]`; `hours_ref` follows at
+/// `[off+34 .. off+36]`). Empty for an unnamed record (`name_len == 0`). The stored name is already
+/// pre-folded printable ASCII, but this stays defensive — `name_len` is clamped to what the field
+/// and the buffer hold, and any non-printable byte (a corrupt record) is dropped — so a bad chunk
+/// yields a short/empty name, never a panic or garbage glyph.
 fn decode_poi_name(buf: &[u8], off: usize) -> heapless::String<POI_NAME_MAX> {
     let mut name = heapless::String::new();
     let name_off = off + 10;
-    // Clamp to the 20-byte field and to the bytes actually present in the buffer.
+    // Clamp to the 24-byte field and to the bytes actually present in the buffer.
     let len = (buf[off + 9] as usize).min(POI_NAME_MAX).min(buf.len().saturating_sub(name_off));
     for &b in &buf[name_off..name_off + len] {
         // Printable ASCII only (the device font's range); drop anything else rather than trust a
@@ -1240,15 +1261,18 @@ fn parse_lod_table(src: &dyn ByteSource, offset: usize, lod_count: usize, total:
 }
 
 /// Parse the POI directory (spec §7.1) at `offset` from `src` (file is `total` bytes): the count
-/// byte, the shared `chunk_size`, then one 13-byte entry per category. Parse-only in v6 — validates
-/// the directory layout and each category's index/chunk region, but does **not** walk the trees (the
-/// nearest-N query is #424). The directory is always present, so `offset` at/past EOF, a
-/// `category_count` past [`POI_MAX_CATEGORIES`], a `chunk_size` past [`POI_MAX_CHUNK_BYTES`], or an
-/// out-of-file index/chunk region is a corrupt header ⇒ [`Error::BadOffset`].
+/// byte, the shared `chunk_size`, one 13-byte entry per category, then (v7) the `hours_pool_offset
+/// u32` + `hours_pool_count u16`. Parse-only — validates the directory layout, each category's
+/// index/chunk region, and that the hours-pool region lies in-file, but does **not** walk the trees
+/// or decode any blob (the nearest-N query and the P3 (#443) hours lookup do). The directory is
+/// always present, so `offset` at/past EOF, a `category_count` past [`POI_MAX_CATEGORIES`], a
+/// `chunk_size` past [`POI_MAX_CHUNK_BYTES`], an out-of-file index/chunk region, or an out-of-file
+/// hours-pool region is a corrupt header ⇒ [`Error::BadOffset`].
 ///
-/// Every offset/length product is checked (32-bit target): a corrupt `node_count`/`chunk_count`
-/// can wrap `usize`, so the region-end could land below `total` and admit a category indexing out of
-/// the file — the same overflow guard style as [`parse_lod_table`]/[`Lod::chunk_range`].
+/// Every offset/length product is checked (32-bit target): a corrupt `node_count`/`chunk_count`/
+/// `hours_pool_count` can wrap `usize`, so the region-end could land below `total` and admit a
+/// category (or a pool blob) indexing out of the file — the same overflow guard style as
+/// [`parse_lod_table`]/[`Lod::chunk_range`].
 fn parse_poi_directory(src: &dyn ByteSource, offset: usize, total: usize) -> Result<PoiDirectory, Error> {
     // The directory header is 3 bytes (count + chunk_size u16); it must fit the file.
     if offset < HEADER_LEN || offset.checked_add(3).is_none_or(|end| end > total) {
@@ -1261,12 +1285,14 @@ fn parse_poi_directory(src: &dyn ByteSource, offset: usize, total: usize) -> Res
     if category_count > POI_MAX_CATEGORIES || chunk_size > POI_MAX_CHUNK_BYTES {
         return Err(Error::BadOffset);
     }
-    // The whole directory (header + entries) must lie within the file.
-    let entries_end = category_count
+    // The whole directory (header + entries + the two v7 pool fields) must lie within the file.
+    let pool_fields_off = category_count
         .checked_mul(POI_CAT_ENTRY_LEN)
         .and_then(|len| offset.checked_add(3)?.checked_add(len))
         .ok_or(Error::BadOffset)?;
-    if entries_end > total {
+    // 4 (hours_pool_offset u32) + 2 (hours_pool_count u16) trail the per-category entries.
+    let dir_end = pool_fields_off.checked_add(6).ok_or(Error::BadOffset)?;
+    if dir_end > total {
         return Err(Error::BadOffset);
     }
 
@@ -1298,7 +1324,27 @@ fn parse_poi_directory(src: &dyn ByteSource, offset: usize, total: usize) -> Res
         }
         let _ = entries.push(entry);
     }
-    Ok(PoiDirectory { chunk_size, entries })
+
+    // The two v7 hours-pool directory fields (spec §7.5): the section's absolute offset + blob
+    // count. When the count is non-zero, the whole pool region (`count u16` + `count × 29-byte`
+    // blobs) must lie in-file — checked, so a corrupt count can't wrap `usize` past `total`. An
+    // empty pool (count 0) still validates its 2-byte `count` header lies in-file.
+    let mut pf = [0u8; 6];
+    src.read_at(pool_fields_off as u32, &mut pf).map_err(|_| Error::BadOffset)?;
+    let hours_pool_offset = rd_u32(&pf, 0) as usize;
+    let hours_pool_count = rd_u16(&pf, 4) as usize;
+    if hours_pool_offset < HEADER_LEN {
+        return Err(Error::BadOffset);
+    }
+    let pool_end = hours_pool_count
+        .checked_mul(POI_HOURS_BLOB_LEN)
+        .and_then(|blobs| hours_pool_offset.checked_add(2)?.checked_add(blobs))
+        .ok_or(Error::BadOffset)?;
+    if pool_end > total {
+        return Err(Error::BadOffset);
+    }
+
+    Ok(PoiDirectory { chunk_size, entries, hours_pool_offset, hours_pool_count })
 }
 
 /// A snapshot of the [`Reader`]'s streaming counters: chunk-cache hit/miss tally and raw SD-read
@@ -1779,12 +1825,12 @@ mod tests {
         assert_eq!(inner.stats().sd_reads, before.sd_reads + 1, "post-clear index read must re-read");
     }
 
-    /// A minimal 32-byte OBCM header with the given bbox/marker, enough for the cache-free
+    /// A minimal 36-byte OBCM header with the given bbox/marker, enough for the cache-free
     /// [`read_header`] (no style/LOD tables, which it doesn't touch).
     fn synth_header(min_lon: i32, min_lat: i32, max_lon: i32, max_lat: i32, marker: u16) -> [u8; HEADER_LEN] {
         let mut h = [0u8; HEADER_LEN];
         h[0..4].copy_from_slice(b"OBCM");
-        h[4] = 6;
+        h[4] = 7;
         h[5..9].copy_from_slice(&min_lat.to_le_bytes()); // field order is lat,lon,lat,lon
         h[9..13].copy_from_slice(&min_lon.to_le_bytes());
         h[13..17].copy_from_slice(&max_lat.to_le_bytes());
@@ -1802,7 +1848,7 @@ mod tests {
         assert_eq!(
             got,
             MapHeader {
-                version: 6,
+                version: 7,
                 bbox: BBox { min_lon: -34, min_lat: 12, max_lon: 78, max_lat: 56 },
                 marker_color: 0xBEEF
             }
@@ -1818,7 +1864,7 @@ mod tests {
         h[0..4].copy_from_slice(b"NOPE");
         assert_eq!(read_header(&SliceSource(&h)), Err(Error::BadMagic));
         h[0..4].copy_from_slice(b"OBCM");
-        h[4] = 5; // v5 (and earlier) no longer supported — only v6 is read
+        h[4] = 6; // v6 (and earlier) no longer supported — only v7 is read
         assert_eq!(read_header(&SliceSource(&h)), Err(Error::BadVersion));
     }
 }

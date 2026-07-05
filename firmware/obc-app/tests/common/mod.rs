@@ -92,12 +92,12 @@ impl DrawTarget for Buf {
 
 // Minimal OBCM fixture.
 
-/// A minimal valid v6 `.obcm`: one sea-backdrop style, one LOD with a single empty leaf and no
-/// chunks, and an empty POI directory (six empty categories). It renders as a flat backdrop, so the
-/// only non-backdrop pixels come from whatever is drawn on top — making overlays/markers trivial to
-/// detect. `marker` is the header's marker color (pass `0` when ignored).
+/// A minimal valid v7 `.obcm`: one sea-backdrop style, one LOD with a single empty leaf and no
+/// chunks, an empty POI directory (six empty categories), and an empty hours pool. It renders as a
+/// flat backdrop, so the only non-backdrop pixels come from whatever is drawn on top — making
+/// overlays/markers trivial to detect. `marker` is the header's marker color (pass `0` when ignored).
 pub fn build_min_obcm(marker: u16) -> Vec<u8> {
-    // v6 header is 36 bytes; the style table follows immediately.
+    // v7 header is 36 bytes; the style table follows immediately.
     let style_off: u32 = 36;
     // Style table: count=1, then (id=1, z=0, color=0x001F blue sea, weight=1, flags=0).
     let mut styles = vec![1u8];
@@ -121,10 +121,13 @@ pub fn build_min_obcm(marker: u16) -> Vec<u8> {
     // Index: a single empty leaf (no chunk).
     let index = 0x7FFF_FFFFu32.to_le_bytes();
 
-    // POI section starts right after the index (no LOD chunks here). Empty directory:
-    // count=6, chunk_size=512, then six 13-byte entries (all node_count/chunk_count 0).
+    // POI section starts right after the index (no LOD chunks here). Empty directory (v7):
+    // count=6, chunk_size=512, six 13-byte entries (all node_count/chunk_count 0), then the two
+    // v7 pool fields (hours_pool_offset u32 + hours_pool_count u16), then an empty hours pool
+    // (a bare `count 0`). The directory length is 3 + 6*13 + 6 = 87.
     let poi_section_off = index_off + index.len();
-    let after_dir = (poi_section_off + 3 + 6 * 13) as u32;
+    let dir_len = 3 + 6 * 13 + 6;
+    let after_dir = (poi_section_off + dir_len) as u32; // where the empty pool's `count` sits
     let mut poi_dir = vec![6u8]; // category_count
     poi_dir.extend_from_slice(&512u16.to_le_bytes()); // shared chunk_size
     for id in 1u8..=6 {
@@ -133,10 +136,13 @@ pub fn build_min_obcm(marker: u16) -> Vec<u8> {
         poi_dir.extend_from_slice(&0u32.to_le_bytes()); // node_count
         poi_dir.extend_from_slice(&0u32.to_le_bytes()); // chunk_count
     }
+    poi_dir.extend_from_slice(&after_dir.to_le_bytes()); // hours_pool_offset
+    poi_dir.extend_from_slice(&0u16.to_le_bytes()); // hours_pool_count = 0
+    poi_dir.extend_from_slice(&0u16.to_le_bytes()); // the empty pool's own `count u16` = 0
 
     let mut f = Vec::new();
     f.extend_from_slice(b"OBCM");
-    f.push(6);
+    f.push(7);
     for v in [-1000i32, -1000, 1000, 1000] {
         f.extend_from_slice(&v.to_le_bytes()); // bbox: min_lat, min_lon, max_lat, max_lon
     }

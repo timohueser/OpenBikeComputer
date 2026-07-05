@@ -23,7 +23,7 @@ fn rgb(c: u16) -> Rgb888 {
 fn render(app: &mut App, bytes: &[u8]) -> Buf {
     let cache = MapCache::new();
     let src = SliceSource(bytes);
-    let tables = MapTables::parse(&src).expect("valid v5 file");
+    let tables = MapTables::parse(&src).expect("valid v7 file");
     let reader = Reader::new(&src, &tables, &cache);
     let mut buf = Buf::new(240, 320);
     app.render_frame(&mut buf, &reader, None, 240.0, 320.0, rgb);
