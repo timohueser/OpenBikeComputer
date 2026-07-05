@@ -7,8 +7,8 @@
 
 use core::sync::atomic::Ordering;
 
-// The event-driven loop's wake select: `select3` over gesture / sensor / deadline.
-use embassy_futures::select::select3;
+// The event-driven loop's wake select: `select4` over gesture / hold-wake / sensor / deadline.
+use embassy_futures::select::select4;
 use embassy_nrf::gpio::Output;
 use embassy_nrf::wdt;
 use embassy_time::{Instant, Timer};
@@ -22,7 +22,7 @@ use obc_app::{App, InputClock, RideClock, Sensors, TrackSink};
 #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
 use obc_platform::sensor_link;
 // The `synth`-build stand-in GPS: walks a slow square loop so a saved ride is a non-degenerate
-// `.gpx` (the default streams the real SAM-M10Q; `debug-uart` a recorded host ride).
+// ride object (the default streams the real SAM-M10Q; `debug-uart` a recorded host ride).
 #[cfg(all(not(feature = "debug-uart"), feature = "synth"))]
 use obc_platform::SynthLocation;
 // The map render's framebuffer adapter (the status screen builds its own inside `ble.rs`) + the
@@ -34,7 +34,7 @@ use obc_reader::{MapCache, MapTables, Reader};
 use obc_route::{RouteCache, RouteIndex, RouteReader};
 
 use crate::display::{DisplayDriver, FRAME_H, FRAME_W};
-use crate::planes::{MapDisplay, GESTURES, INPUT_HB_MS, LOOP_MS};
+use crate::planes::{MapDisplay, GESTURES, INPUT_HB_MS, INPUT_WAKE, LOOP_MS};
 use crate::{sd, stackmeter, SharedStore, SharedStoreMutex};
 
 // ── Hardware watchdog (#349): the last-resort net under a wedged plane. The ride loop feeds it,
@@ -120,9 +120,15 @@ fn desired_gps_power(app: &App) -> sensor_link::GpsPower {
 /// The shared map plane + ride loop, driving present through [`MapDisplay`] so it carries **no backend
 /// `#[cfg]`**. Each tick: drain the gestures the input plane recognised, advance the visible screens'
 /// timed content, reconcile the card to the app's intent (open the selected route's geometry; begin /
-/// finalise-to-GPX the ride log), feed the sensors → `tick` (integrate the fix, map-match, log the
+/// finalise the ride log), feed the sensors → `tick` (integrate the fix, map-match, log the
 /// track point), then re-render the map only on `dirty.map` and present it. A static screen does zero
 /// map renders. LED0 keeps a ~1 Hz heartbeat. Never returns.
+///
+/// A finished ride persists as the durable ride object `RD{id}.ORD` only — the device writes no
+/// GPX (the phone owns human-format export after sync). The conversion is **deferred**: Finish
+/// stashes it and the loop runs it once the confirm pop has left the glass (see
+/// `Storage::run_pending_save`), so the save's blocking SD stretch never freezes the hold
+/// animation.
 ///
 /// The remaining `#[cfg]`s here are the orthogonal `debug-uart` *feature* (a host sensor feed +
 /// telemetry vs. the `SynthLocation` stand-in), not the display backend — that is wholly behind
@@ -281,6 +287,21 @@ pub(crate) async fn run_app(
         }
         app.advance_animations(InputClock(now));
 
+        // This frame's hold-bulge state, sampled once: the live row span on both backends (the
+        // present goes around it); the dirty edge only on the FLPR (whose map plane owns the bulge
+        // re-push — on ST7789 the input/overlay plane consumes that edge itself).
+        //
+        // The bulge pushes **first in the pass**, before the store lock, the SD reconcile, and any
+        // screen redraw (#348 follow-up, widened here): a fired hold usually navigates — and a
+        // fired *Finish* triggers the ride save — so with the bulge later in the pass its confirm
+        // pop queued behind the new screen's render (~40–300 ms) or, worse, the whole SD save,
+        // and the 220 ms pop expired unseen ("sometimes it just snaps"). Bulge-first, the pop's
+        // attack lands on glass within ~10 ms of the fire — composited over the *old* fb for that
+        // one frame, which is correct: that is what is on glass until the present below. ST7789:
+        // no-op (its input plane pushes the bulge itself).
+        let (overlay_dirty, overlay_span) = display.poll_overlay();
+        display.present_bulge(overlay_span, overlay_dirty).await;
+
         // Lock the shared store for the rest of this pass: the settings save just below, the card
         // reconcile, the per-frame route/track/map sources, and the render that reads them all run
         // under one guard — held across the render `.await`, then dropped before the event-wait at the
@@ -333,7 +354,8 @@ pub(crate) async fn run_app(
         }
 
         // Reconcile the card to the app's intent: open/close the active route's geometry and the ride
-        // log (begin on load, finalise-to-GPX on Finish), reading the save name from the active route.
+        // log (begin on load, close + stash the deferred save on Finish), reading the save name from
+        // the active route.
         // Gated on the same edges `reconcile_*` test internally (a route swap, a session change, or a
         // pending track action) so the dominant static frame does no per-tick `String<64>` copy or
         // state re-walk. `has_track_action` is a non-consuming peek; `take_track_action` stays inside,
@@ -392,7 +414,7 @@ pub(crate) async fn run_app(
             _ => None,
         };
         // The ride-log sink, built every tick (it only wraps the open log handle, no I/O), so a fresh
-        // fix is written to the `.gpx` the moment it arrives, at the fix rate.
+        // fix is written to the `.obt` log the moment it arrives, at the fix rate.
         let mut tsink = storage.as_ref().and_then(|s| s.track_sink());
         let track_dyn = tsink.as_mut().map(|t| t as &mut dyn TrackSink);
 
@@ -470,19 +492,16 @@ pub(crate) async fn run_app(
         }
         prev_hold_p = hold_p;
 
-        // This frame's hold-bulge state, sampled once: the live row span on both backends (the present
-        // goes around it); the dirty edge only on the FLPR (whose map plane owns the bulge re-push —
-        // on ST7789 the input/overlay plane consumes that edge itself).
-        let (overlay_dirty, overlay_span) = display.poll_overlay();
-
-        // The hold bulge pushes **before** any screen redraw this pass (#348 follow-up): a fired hold
-        // usually navigates, so with the bulge last its confirm pop's first frame queued behind the
-        // new screen's render + present — ~40 ms on a menu, 150–300 ms on the map view, where the
-        // whole 220 ms pop expired unseen (the "sometimes it just snaps" inconsistency). Bulge-first,
-        // the pop's attack lands on glass within ~10 ms of the fire, holds at pop depth while the new
-        // screen renders (composited over the *old* fb for that one frame — correct: that is what is
-        // on glass until the present below), and eases out on the following passes. ST7789: no-op.
-        display.present_bulge(overlay_span, overlay_dirty).await;
+        // While a hold is *charging* on the **map view**, defer expensive map redraws instead of
+        // rendering them: a 150–300 ms map frame between two bulge pushes is exactly the mid-charge
+        // freeze that made the bulge jerky while riding (a 1 Hz fix redraw deferred ≤500 ms is
+        // invisible; the latched frame lands on the pass after the hold resolves). Only the map
+        // base is deferred — cheap screens redraw per-frame anyway for their in-screen hold fills.
+        // Once the hold *fires*, charging drops to 0, so a navigation's redraw is never held up.
+        if dirty.map && app.base_draws_map() && display.hold_charging() {
+            pending_map_redraw = true;
+            dirty.map = false;
+        }
 
         if dirty.map {
             // The map pipeline runs **only when the base screen needs the streamed `Reader`** — the
@@ -592,6 +611,18 @@ pub(crate) async fn run_app(
             display.present_bulge(overlay_span, false).await;
         }
 
+        // A deferred ride save (Finish stashed it — see `Storage::run_pending_save`): run it only
+        // once the hold bulge is fully quiet, i.e. the confirm pop and its trailing clear have
+        // played out. The ORD conversion is the one long blocking SD stretch left in this loop, so
+        // it grinds against a static, already-presented screen instead of freezing the animation.
+        // `animating` below keeps the loop's short cadence while a save is still pending.
+        if overlay_span.is_none() && !overlay_dirty {
+            if let Some(s) = storage.as_mut() {
+                s.run_pending_save();
+            }
+        }
+        let save_pending = storage.as_ref().is_some_and(|s| s.has_pending_save());
+
         // All card + settings work for this pass is done — release the shared store before the tail
         // (telemetry, LED, and the event-wait `.await`) so a future BLE object plane isn't held off
         // across the sleep (#270). `storage`/`settings_store` are unused past here.
@@ -613,15 +644,20 @@ pub(crate) async fn run_app(
         // ===================== Event-driven sleep =====================
         // Instead of a fixed ~8 ms tick, block until the next *real* wake: a recognised gesture
         // (`GESTURES` non-empty — a non-consuming `ready_to_receive`, so the drain at the loop top still
-        // gets it), a fresh sensor/host datapoint (`wait_sensor_event`), or the soonest screen animation
-        // deadline the app reports. The body's reconciles are all edge-gated, so running them only on a
-        // wake is correct — a parked Home screen wakes ~once a minute (the clock minute-tick) instead of
-        // 125×/s, and an idle device with the GPS asleep wakes only on a button or that minute tick.
+        // gets it), a hold starting to charge (`INPUT_WAKE` — a press emits no gesture, so without this
+        // arm the loop slept through the whole charge on a quiet screen and the bulge's first frame on
+        // glass was the confirm pop), a fresh sensor/host datapoint (`wait_sensor_event`), or the
+        // soonest screen animation deadline the app reports. The body's reconciles are all edge-gated,
+        // so running them only on a wake is correct — a parked Home screen wakes ~once a minute (the
+        // clock minute-tick) instead of 125×/s, and an idle device with the GPS asleep wakes only on a
+        // button or that minute tick.
         // While something is **actively animating** — a live hold bulge (`overlay_*`, incl. its retract),
-        // a charging in-screen hold (`hold_p`), or a redraw a flaky SD glitch couldn't service
-        // (`pending_map_redraw`) — keep the short cadence so it stays fluid; otherwise arm the app's
-        // single next-wake deadline, or sleep indefinitely until input/sensor.
-        let animating = hold_p > 0.0 || pending_map_redraw || overlay_dirty || overlay_span.is_some();
+        // a charging hold on either button (`charging`), a redraw a flaky SD glitch couldn't service
+        // (`pending_map_redraw`), or a deferred ride save (`save_pending`) — keep the short cadence so
+        // it stays fluid; otherwise arm the app's single next-wake deadline, or sleep indefinitely
+        // until input/sensor.
+        let charging = hold_p > 0.0 || display.hold_charging();
+        let animating = charging || pending_map_redraw || overlay_dirty || overlay_span.is_some() || save_pending;
         let next_ms = if animating { Some(LOOP_MS as u32) } else { app.ms_until_next_wake(now) };
         // debug-uart host build: keep a ~2 Hz floor so streamed telemetry / `Z` zoom commands stay
         // responsive even on an otherwise-quiet screen (well under the WDT feed cap).
@@ -631,6 +667,12 @@ pub(crate) async fn run_app(
         // to feed the watchdog — the `None` (sleep-until-input/sensor) arm becomes a long timer.
         #[cfg(not(feature = "debug-uart"))]
         let ms = next_ms.unwrap_or(WDT_FEED_CAP_MS).min(WDT_FEED_CAP_MS);
-        let _ = select3(GESTURES.ready_to_receive(), wait_sensor_event(), Timer::after_millis(ms as u64)).await;
+        let _ = select4(
+            GESTURES.ready_to_receive(),
+            INPUT_WAKE.wait(),
+            wait_sensor_event(),
+            Timer::after_millis(ms as u64),
+        )
+        .await;
     }
 }

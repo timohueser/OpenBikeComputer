@@ -40,7 +40,8 @@ pub enum Mode {
 /// (`take_track_action`) which owns the file I/O.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrackAction {
-    /// Finalise the open log to a `.gpx` (Finish, or "Save & start new").
+    /// Finalise the open log to the host's saved-ride artifact (Finish, or "Save & start new")
+    /// — a `.gpx` on the sim, the durable `RD{id}.ORD` ride object on the device.
     Save,
     /// Throw the open log away (Discard).
     Discard,
@@ -175,7 +176,7 @@ impl Activity {
     }
 
     /// Take (and clear) the pending [`TrackAction`], if any — the host calls this each frame
-    /// and performs the file I/O (finalise-to-GPX / discard).
+    /// and performs the file I/O (finalise / discard).
     pub fn take_track_action(&mut self) -> Option<TrackAction> {
         self.track_action.take()
     }

@@ -81,7 +81,7 @@ impl RideControl {
         }
     }
 
-    /// End the tracking session: record the log's disposition (Save → GPX / Discard → drop,
+    /// End the tracking session: record the log's disposition (Save → the saved ride / Discard → drop,
     /// performed by the host), end the session, go Idle, clear the route, and return Home.
     fn end_ride(&self, cx: &mut Ctx, action: TrackAction) -> Transition {
         cx.activity.request_track(action);

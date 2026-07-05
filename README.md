@@ -226,8 +226,9 @@ The route workflow mirrors what the device will do:
    live **map-matches** the current fix (progress along route / off-route),
    tracks actually-ridden distance / time / climb (barometer), shows a zoomable
    elevation profile, and records a breadcrumb.
-3. **Save** — the finished ride is exported back to a `.gpx` in the tracks
-   folder.
+3. **Save** — the finished ride is stored durably: the simulator exports a
+   `.gpx` to the tracks folder; the device writes the compact ride object the
+   companion app syncs (and exports to GPX phone-side).
 
 ---
 
@@ -278,7 +279,7 @@ over SPI.
 **Working now:** OBCM v5 packing (CLI + web builder); the shared LOD-pyramid
 renderer (quadtree query, polygon fill with holes, weighted lines, z-ordering,
 RGB565 → RGB222 quantization); the on-device UI (screen stack + encoder/Back
-input); route loading with live map-matching, ride logging, and GPX export; the
+input); route loading with live map-matching, ride logging, and ride saving; the
 nRF54L firmware booting into the full load → ride → save loop on the DK (see
 [`firmware/obc-fw-nrf54l`](firmware/obc-fw-nrf54l)); and the reflective
 **LS021B7DD02** panel driver, its waveform backend running on the nRF54L's FLPR
