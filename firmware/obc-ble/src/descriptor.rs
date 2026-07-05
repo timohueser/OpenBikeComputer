@@ -277,6 +277,88 @@ impl CommandResult {
     pub fn new(command: u8, status: CommandStatus) -> Self {
         Self { command, status, detail: 0 }
     }
+
+    /// A result whose `detail` byte carries a documented, command-specific value (`ackRides`
+    /// reports its newly-flagged count here).
+    pub fn with_detail(command: u8, status: CommandStatus, detail: u8) -> Self {
+        Self { command, status, detail }
+    }
+}
+
+/// `command` byte: `deleteObject` (§4.4, cmd 1) — `type u8 · object_id u16 LE`.
+pub const CMD_DELETE_OBJECT: u8 = 1;
+/// `command` byte: `ackRides` (§4.4, cmd 2) — see [`AckRides`].
+pub const CMD_ACK_RIDES: u8 = 2;
+
+/// The `ackRides` command (§4.4, cmd `2`): `cmd u8 · count u8 · count × object_id u16 LE` — the
+/// phone's **possession ack** for stored rides.
+///
+/// The device's per-ride "synced" flag is otherwise inferred from one event (a ride download
+/// completing), so any divergence between the phone's library and the device's sidecar — rides
+/// downloaded before the sidecar existed, a sidecar lost with a reflashed card, an app reinstall —
+/// was permanent. This command makes the phone's library the ground truth: on connect (and whenever
+/// it likes) the app lists the ride ids it holds, and the device flags every listed id it still
+/// stores as synced. **Monotonic** — ids the phone lost are never un-flagged (the flag means
+/// "downloaded at least once", not "still held") — and **idempotent and order-free**, so a list
+/// longer than one GATT write is simply split across writes. Unknown ids are ignored (`ok` either
+/// way): the phone may legitimately hold rides the device has since deleted.
+///
+/// Borrowed view over the id bytes (alloc-free, like [`Config`]); trailing bytes past
+/// `count × 2` are ignored.
+#[derive(Clone, Copy, Debug)]
+pub struct AckRides<'a> {
+    /// Exactly `count × 2` little-endian id bytes.
+    ids: &'a [u8],
+}
+
+impl<'a> AckRides<'a> {
+    /// The encoded length of an ack carrying `count` ids.
+    pub const fn encoded_len(count: usize) -> usize {
+        2 + count * 2
+    }
+
+    /// Decode a full `command` write (starting at the command byte). Errors: not `ackRides`
+    /// ([`DescriptorError::UnknownOp`]) or fewer id bytes than `count` promises
+    /// ([`DescriptorError::Truncated`]).
+    pub fn decode(data: &'a [u8]) -> Result<Self, DescriptorError> {
+        let [cmd, count, rest @ ..] = data else {
+            return Err(DescriptorError::Truncated);
+        };
+        if *cmd != CMD_ACK_RIDES {
+            return Err(DescriptorError::UnknownOp(*cmd));
+        }
+        let n = *count as usize * 2;
+        match rest.get(..n) {
+            Some(ids) => Ok(Self { ids }),
+            None => Err(DescriptorError::Truncated),
+        }
+    }
+
+    /// How many ride ids this ack carries.
+    pub fn count(&self) -> usize {
+        self.ids.len() / 2
+    }
+
+    /// The acked ride ids, in write order.
+    pub fn iter(&self) -> impl Iterator<Item = u16> + 'a {
+        self.ids.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]]))
+    }
+
+    /// Encode `ids` into `out` (must be ≥ [`encoded_len`](Self::encoded_len)); returns the written
+    /// length, or `None` for more than 255 ids or a too-small buffer. The app side encodes (its
+    /// Swift codec mirrors this); the firmware only decodes — this exists for the shared-vector
+    /// and round-trip tests.
+    pub fn encode(ids: &[u16], out: &mut [u8]) -> Option<usize> {
+        if ids.len() > u8::MAX as usize || out.len() < Self::encoded_len(ids.len()) {
+            return None;
+        }
+        out[0] = CMD_ACK_RIDES;
+        out[1] = ids.len() as u8;
+        for (i, id) in ids.iter().enumerate() {
+            out[2 + i * 2..4 + i * 2].copy_from_slice(&id.to_le_bytes());
+        }
+        Some(Self::encoded_len(ids.len()))
+    }
 }
 
 /// One `status` characteristic notification: a `u8` discriminator + fixed body. The app **ignores

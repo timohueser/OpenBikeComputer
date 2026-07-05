@@ -25,8 +25,8 @@ pub mod transfer;
 
 pub use crc32::Crc32;
 pub use descriptor::{
-    CommandResult, CommandStatus, Config, DescriptorError, ObjectStoreDigest, ObjectType, Op, StatusMessage,
-    StoreChanged, TransferControl, TransferResult, TransferStatus,
+    AckRides, CommandResult, CommandStatus, Config, DescriptorError, ObjectStoreDigest, ObjectType, Op, StatusMessage,
+    StoreChanged, TransferControl, TransferResult, TransferStatus, CMD_ACK_RIDES, CMD_DELETE_OBJECT,
 };
 pub use list::{ListHeader, RideListEntry, RouteListEntry, LIST_ENTRY_LEN};
 pub use transfer::{Receiver, StreamSender, TransferError};
