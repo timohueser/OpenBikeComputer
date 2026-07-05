@@ -46,6 +46,10 @@ mod state;
 // module tree.
 pub use state::publish_stack_high_water;
 
+// The app-facing link snapshot (epic #447): the ride loop feeds it into `App::set_ble_status` each
+// pass. The only BLE state that crosses into the app seam, already distilled to `obc_app` vocabulary.
+pub use state::app_ble_status;
+
 use core::mem::MaybeUninit;
 use core::sync::atomic::Ordering;
 
