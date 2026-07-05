@@ -9,8 +9,8 @@
 use embedded_graphics::pixelcolor::Rgb888;
 use obc_app::screen::Screen;
 use obc_app::{App, AppState, Fix, Gesture};
-use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader, SliceSource};
-use obcm_testkit::{build_poi_map, PoiSpec};
+use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader, SliceSource, POI_HOURS_BLOB_LEN};
+use obcm_testkit::{build_poi_map, build_poi_map_with_hours, PoiSpec};
 
 mod common;
 use common::Buf;
@@ -154,6 +154,109 @@ fn empty_category_snapshots_empty() {
     let _ = render(&mut app, &bytes);
     assert!(!app.base_needs_reader(), "an empty category still counts as snapshotted (query ran)");
     assert_eq!(app.poi_snapshot_len(), 0, "the empty category snapshots to zero POIs");
+}
+
+/// A 29-byte hours-pool blob from `flags` + per-day `(open_q, close_q)` slot pairs (Mon..Sun) — the
+/// shared shape the reader/packer hours tests build.
+fn blob(flags: u8, days: [[(u8, u8); 2]; 7]) -> [u8; POI_HOURS_BLOB_LEN] {
+    let mut b = [0u8; POI_HOURS_BLOB_LEN];
+    b[0] = flags;
+    let mut i = 1;
+    for day in &days {
+        for &(o, c) in day {
+            b[i] = o;
+            b[i + 1] = c;
+            i += 2;
+        }
+    }
+    b
+}
+
+/// A Water category with two POIs referencing a two-blob hours pool: one Mon–Sun 08:00–18:00 shop
+/// (ref 0) and one with no hours (ref 0xFFFF), so the detail tests cover both the "has hours" and
+/// "hours not listed" branches from a real file layout.
+fn hours_fixture() -> Vec<u8> {
+    // Blob 0: open every day 08:00-18:00 (quarter-hours 32..72).
+    let all_week = blob(0, [[(32, 72), (0, 0)]; 7]);
+    let water = vec![
+        PoiSpec { lat: 43_500_500, lon: 7_500_000, subtype: 1, name: "Shop North".into(), hours_ref: 0 }, // nearest, has hours
+        PoiSpec { lat: 43_490_000, lon: 7_500_000, subtype: 2, name: "Well South".into(), hours_ref: 0xFFFF }, // farther, no hours
+    ];
+    build_poi_map_with_hours(BBOX, 512, &[(1, water)], &[all_week])
+}
+
+/// Pressing a POI in the list opens the detail screen; back returns to the list.
+#[test]
+fn press_opens_detail_and_back_returns() {
+    let bytes = hours_fixture();
+    let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    app.state.user_fix = Some(Fix::at(POS.1, POS.0));
+
+    open_poi_list(&mut app, 0); // Water
+    let _ = render(&mut app, &bytes); // first draw takes the snapshot (Press needs it)
+    assert_eq!(app.poi_snapshot_len(), 2, "two Water POIs snapshotted");
+
+    app.apply_gesture(Gesture::Press);
+    assert!(matches!(app.top_screen(), Screen::PoiDetail(_)), "pressing a POI opens the detail");
+
+    app.apply_gesture(Gesture::Back);
+    assert!(matches!(app.top_screen(), Screen::PoiList(_)), "back returns to the POI list");
+}
+
+/// Pressing before any snapshot exists (no draw yet) is a no-op — nothing to open.
+#[test]
+fn press_without_snapshot_is_noop() {
+    let bytes = hours_fixture();
+    let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    app.state.user_fix = Some(Fix::at(POS.1, POS.0));
+    open_poi_list(&mut app, 0);
+    // No render → no snapshot yet.
+    app.apply_gesture(Gesture::Press);
+    assert!(matches!(app.top_screen(), Screen::PoiList(_)), "no snapshot ⇒ press stays on the list");
+    let _ = bytes;
+}
+
+/// The detail screen resolves its hours on the first draw with a `Reader`, and the reader-build seam
+/// reflects it: pending before the draw, satisfied after (so the board host stops rebuilding).
+#[test]
+fn detail_resolves_hours_on_first_draw() {
+    let bytes = hours_fixture();
+    let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    app.state.user_fix = Some(Fix::at(POS.1, POS.0));
+
+    open_poi_list(&mut app, 0);
+    let _ = render(&mut app, &bytes); // snapshot
+    app.apply_gesture(Gesture::Press); // open the detail for the nearest (Shop North, ref 0)
+    assert!(matches!(app.top_screen(), Screen::PoiDetail(_)));
+
+    // Before the detail's first draw its hours read is pending — the seam keeps the Reader built.
+    assert!(app.base_needs_reader(), "the detail needs the Reader until it resolves its hours");
+    let _ = render(&mut app, &bytes); // the first detail draw resolves the schedule
+    assert!(!app.base_needs_reader(), "once resolved the detail draws without the Reader");
+    // A few more frames must not re-ask (the cache is sticky).
+    for _ in 0..3 {
+        let _ = render(&mut app, &bytes);
+    }
+    assert!(!app.base_needs_reader(), "the resolved schedule cache stays put");
+}
+
+/// A POI with `hours_ref` 0xFFFF resolves to *no hours* on the first draw too — the seam stops
+/// asking for the Reader even though there's nothing to show ("Hours not listed").
+#[test]
+fn detail_no_hours_still_resolves_once() {
+    let bytes = hours_fixture();
+    let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    app.state.user_fix = Some(Fix::at(POS.1, POS.0));
+
+    open_poi_list(&mut app, 0);
+    let _ = render(&mut app, &bytes); // snapshot (nearest is Shop North; turn to the no-hours one)
+    app.apply_gesture(Gesture::Turn(1)); // highlight Well South (ref 0xFFFF)
+    app.apply_gesture(Gesture::Press);
+    assert!(matches!(app.top_screen(), Screen::PoiDetail(_)));
+
+    assert!(app.base_needs_reader(), "the no-hours detail still needs one Reader frame to resolve");
+    let _ = render(&mut app, &bytes);
+    assert!(!app.base_needs_reader(), "a no-hours POI resolves (to None) once, then draws alone");
 }
 
 /// With no fix ever, the query can't run: the list stays un-snapshotted and shows the "No position"
