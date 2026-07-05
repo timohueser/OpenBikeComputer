@@ -55,10 +55,10 @@ pub use hours::{
 };
 pub use poi_table::{category_of, label_of, subtype_row, PoiCategory, PoiSubtype, SUBTYPES};
 pub use reader::{
-    read_header, CacheStats, FeatureRef, Kind, Lod, MapCache, MapHeader, MapTables, NavDirectory, NavNeighbor,
-    NavNodeRef, Poi, PoiCatEntry, PoiDirectory, Reader, Style, HEADER_LEN, MAX_CHUNK_BYTES, MAX_FEAT_PTS,
-    MAX_FEAT_RINGS, MAX_POI_RESULTS, NAV_EDGE_FIXED_LEN, NAV_MAX_CHUNK_BYTES, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN,
-    POI_HOURS_BLOB_LEN, POI_MAX_CATEGORIES, POI_MAX_CHUNK_BYTES, POI_NAME_MAX,
+    read_header, CacheStats, FeatureRef, Kind, Lod, MapCache, MapHeader, MapTables, NavCacheStats, NavDirectory,
+    NavNeighbor, NavNodeRef, NavTileCache, Poi, PoiCatEntry, PoiDirectory, Reader, Style, HEADER_LEN, MAX_CHUNK_BYTES,
+    MAX_FEAT_PTS, MAX_FEAT_RINGS, MAX_POI_RESULTS, NAV_EDGE_FIXED_LEN, NAV_MAX_CHUNK_BYTES, NAV_NEIGHBOR_LEN,
+    NAV_NODE_FIXED_LEN, NAV_TILE_SLOTS, POI_HOURS_BLOB_LEN, POI_MAX_CATEGORIES, POI_MAX_CHUNK_BYTES, POI_NAME_MAX,
 };
 
 /// Meters of ground per degree of latitude (and of longitude at the equator) — the
