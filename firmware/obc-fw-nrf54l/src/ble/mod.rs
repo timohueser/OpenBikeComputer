@@ -294,7 +294,13 @@ pub async fn run(
                 s.secured = false;
             });
             // Re-read the advertised name each cycle — a rename (Config write) takes effect on the next
-            // advertising start, no reboot.
+            // advertising start, no reboot. Refresh the config cache from RRAM first (a no-op unless
+            // the ride loop flagged an on-device settings change, #456) so the cache stays coherent
+            // with the persisted truth across an advertise cycle.
+            {
+                let mut guard = shared.lock().await;
+                store.borrow_mut().refresh_settings_if_changed(&mut guard);
+            }
             let adv_name = advertised_name(&store.borrow());
             let conn = match advertise_lifecycle(adv_name.as_str(), &mut peripheral, &server).await {
                 Ok(conn) => conn,

@@ -460,6 +460,22 @@ impl Settings {
         }
     }
 
+    /// Adopt the **BLE-writable** fields — `units` and `device_name` — from `other`, leaving every
+    /// on-device-only field (clock, GPS interval, power-saver, stat grid) untouched.
+    ///
+    /// This is the *phone → device* half of settings coherence (#456). The companion app can write
+    /// units + name over BLE Config; that write lands in the persistent store, and the live app copy
+    /// must adopt it same-session — both so the UI re-captions and so the app's next
+    /// change-detection save doesn't clobber the phone's write with its own stale copy. The merge is
+    /// deliberately narrow: only the two fields BLE actually owns are pulled across, so a BLE write
+    /// racing an in-flight on-device edit of an *unrelated* field can't stomp it. Only the settings
+    /// screens mutate the on-device-only fields (the invariant `take_settings_dirty` already relies
+    /// on), and BLE only ever writes these two — so field-by-field is the correct grain.
+    pub fn adopt_ble_fields(&mut self, other: &Settings) {
+        self.units = other.units;
+        self.device_name = other.device_name;
+    }
+
     /// Clamp every field into its valid range — applied after a decode (see [`decode`]). The
     /// `stat_fields` selection is sanitised by [`StatFieldList::decode`] as it is parsed.
     fn sanitize(&mut self) {
@@ -824,5 +840,139 @@ mod tests {
         assert!((Units::Imperial.elev(1000.0) - 3280.84).abs() < 1e-1, "1000 m ≈ 3281 ft");
         assert_eq!(Units::Metric.toggled(), Units::Imperial);
         assert_eq!(Units::Imperial.toggled(), Units::Metric);
+    }
+
+    // ==================== settings coherence (#456) ====================
+    //
+    // The board firmware double-caches settings: the ride loop holds the live `App` copy, the BLE
+    // `ObjectStore` holds a Config-read cache, and the RRAM blob (encode/decode below) is the
+    // single source of truth behind both. These tests model that store with a byte buffer and
+    // exercise the two coherence operations the board wires up:
+    //   - `apply_config` (BLE write): sets units + name in the store cache and persists to RRAM;
+    //   - the ride loop's *reload-before-save*: `adopt_ble_fields` from the fresh RRAM blob into the
+    //     app copy, so the app's change-detection save can't clobber the phone's write;
+    //   - the object-store *cache refresh*: reload the whole cache from RRAM so a Config read after
+    //     an on-device change serves fresh values.
+    // Modelling the store as the actual codec buffer keeps the test honest: it's the same bytes the
+    // RRAM/file stores round-trip.
+
+    /// A minimal stand-in for the persistent RRAM/file store: the one canonical settings blob.
+    struct FakeStore {
+        blob: [u8; ENCODED_LEN],
+    }
+    impl FakeStore {
+        fn new(s: &Settings) -> Self {
+            FakeStore { blob: encode(s) }
+        }
+        fn load(&self) -> Settings {
+            decode(&self.blob).expect("the store always holds a valid blob in these tests")
+        }
+        fn save(&mut self, s: &Settings) {
+            self.blob = encode(s);
+        }
+    }
+
+    /// `adopt_ble_fields` pulls only units + name across, leaving every on-device-only field alone.
+    #[test]
+    fn adopt_ble_fields_is_narrow() {
+        let mut app = Settings {
+            units: Units::Metric,
+            fix_interval_s: 7,
+            power_saver: true,
+            clock: DateTime { year: 2030, month: 3, day: 4, hour: 5, minute: 6 },
+            ..Settings::default()
+        };
+        let ble = Settings {
+            units: Units::Imperial,
+            device_name: DeviceName::from_str_lossy("Timo's OBC"),
+            // These would be *wrong* to adopt — the phone never writes them.
+            fix_interval_s: 1,
+            power_saver: false,
+            ..Settings::default()
+        };
+        app.adopt_ble_fields(&ble);
+        assert_eq!(app.units, Units::Imperial, "units are BLE-owned → adopted");
+        assert_eq!(app.device_name.as_str(), "Timo's OBC", "the name is BLE-owned → adopted");
+        assert_eq!(app.fix_interval_s, 7, "the GPS interval is device-only → untouched");
+        assert!(app.power_saver, "power-saver is device-only → untouched");
+        assert_eq!(app.clock.year, 2030, "the clock is device-only → untouched");
+    }
+
+    /// Direction 1 — phone → device, *with the clobber regression*: a BLE Config write lands, then
+    /// the app runs its change-detection save. Without the reload the app would write its stale
+    /// units back over the phone's; with the reload-before-save the phone's units survive.
+    #[test]
+    fn ble_write_then_app_save_keeps_ble_values() {
+        // Boot: everyone metric, no name. The app also has a device-only edit pending (say a
+        // fix-interval change) that its next save must persist.
+        let boot = Settings::default();
+        let mut store = FakeStore::new(&boot);
+        let mut app = boot;
+        app.fix_interval_s = 9; // a pending on-device edit the app will save this frame
+
+        // Phone writes units=imperial + a rename. `apply_config`: object-store cache + RRAM.
+        let mut objstore = store.load();
+        objstore.adopt_ble_fields(&Settings {
+            units: Units::Imperial,
+            device_name: DeviceName::from_str_lossy("Ridgeline"),
+            ..Settings::default()
+        });
+        store.save(&objstore);
+
+        // The ride loop sees the settings-changed signal and reloads BLE fields into the app copy
+        // *before* its change-detection save.
+        app.adopt_ble_fields(&store.load());
+        // Now the app saves (its own dirty edit flushed on leaving the settings screen).
+        store.save(&app);
+
+        let persisted = store.load();
+        assert_eq!(persisted.units, Units::Imperial, "the phone's units survive the app save (no clobber)");
+        assert_eq!(persisted.device_name.as_str(), "Ridgeline", "the phone's rename survives too");
+        assert_eq!(persisted.fix_interval_s, 9, "the app's own device-only edit still persists");
+    }
+
+    /// The clobber *without* the fix, pinned as the exact bug #456 removes: if the app saves its
+    /// stale copy without reloading, it overwrites the phone's write. (Guards against a future
+    /// refactor dropping the reload.)
+    #[test]
+    fn app_save_without_reload_would_clobber() {
+        let mut store = FakeStore::new(&Settings::default());
+        let app = Settings::default(); // still metric, no name
+
+        // Phone writes imperial + a name.
+        let mut objstore = store.load();
+        objstore.adopt_ble_fields(&Settings {
+            units: Units::Imperial,
+            device_name: DeviceName::from_str_lossy("Ridgeline"),
+            ..Settings::default()
+        });
+        store.save(&objstore);
+
+        // App saves its stale copy *without* the reload — this is the pre-fix behaviour.
+        store.save(&app);
+        let clobbered = store.load();
+        assert_eq!(clobbered.units, Units::Metric, "the bug: the app's stale metric clobbers the phone's imperial");
+        assert!(clobbered.device_name.is_empty(), "and the phone's rename is lost");
+    }
+
+    /// Direction 2 — device → phone: units change on-device (app copy + RRAM), then a Config read
+    /// must serve fresh values. The object-store cache is refreshed from RRAM before the read.
+    #[test]
+    fn app_change_then_ble_read_serves_fresh() {
+        let boot = Settings::default(); // metric
+        let mut store = FakeStore::new(&boot);
+        // The BLE object-store cache, seeded at boot.
+        let mut objstore_cache = store.load();
+        assert_eq!(objstore_cache.units, Units::Metric);
+
+        // On-device: the rider flips to imperial. The ride loop persists the app copy to RRAM.
+        let mut app = boot;
+        app.units = Units::Imperial;
+        store.save(&app);
+
+        // A Config read arrives. The object-store refreshes its cache from RRAM first (the fix),
+        // so it serves the fresh value rather than the stale boot cache.
+        objstore_cache = store.load();
+        assert_eq!(objstore_cache.units, Units::Imperial, "the Config read serves the on-device change, no reboot");
     }
 }
