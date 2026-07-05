@@ -68,9 +68,9 @@ pub const POI_MAX_CHUNK_BYTES: usize = 4096;
 /// `chunk_size / POI_RECORD_LEN` (`512 / 36 = 14`).
 const POI_RECORD_LEN: usize = 36;
 
-/// A single hours-pool blob (spec §7.5): `flags u8` + `7 days × 2 slots × (open_q, close_q)`. The
-/// pool is parse-only in v7 — [`parse_poi_directory`] validates the pool region lies in-file; the
-/// per-POI lookup + open-now evaluation is P3 (#443). Kept here so the bounds math names the width.
+/// A single hours-pool blob (spec §7.5): `flags u8` + `7 days × 2 slots × (open_q, close_q)`.
+/// [`parse_poi_directory`] validates the pool region lies in-file; [`Reader::poi_hours`] reads one
+/// blob on demand into a stack buffer and decodes it to a [`crate::hours::WeeklySchedule`] (#443).
 pub const POI_HOURS_BLOB_LEN: usize = 29;
 
 /// Max results the nearest-N POI query returns (locked on epic #115). The caller owns a
@@ -298,6 +298,10 @@ pub struct Poi {
     pub subtype: u8,
     /// Stored name (≤ [`POI_NAME_MAX`] bytes); empty ⇒ unnamed.
     pub name: heapless::String<POI_NAME_MAX>,
+    /// 0-based index into the hours pool (§7.5), decoded from record bytes `[34..36]`; `0xFFFF` = no
+    /// hours. Carried into the detail screen (#444) so it can resolve the schedule via
+    /// [`Reader::poi_hours`] without re-running the query.
+    pub hours_ref: u16,
     /// Ground distance from the query position, rounded to whole meters.
     pub distance_m: u32,
 }
@@ -566,6 +570,43 @@ impl<'a> Reader<'a> {
     #[inline]
     pub fn poi_directory(&self) -> &PoiDirectory {
         &self.tables.pois
+    }
+
+    /// Resolve a POI's pooled weekly schedule (spec §7.5) from its `hours_ref`. `None` for the
+    /// no-hours sentinel `0xFFFF`, an index `>= hours_pool_count`, or any read/decode failure — so a
+    /// corrupt directory (a bad `hours_pool_offset`/`count`) or a flaky read yields `None`, never a
+    /// panic/UB. On-demand: the detail screen (#444) calls this once with the [`Poi::hours_ref`] the
+    /// list snapshot carried; it reads the single 29-byte blob into a **stack** buffer via
+    /// [`ByteSource::read_at`] (no [`MapCache`] growth, no static/`.bss` buffer).
+    ///
+    /// Blob `hours_ref` lives at `hours_pool_offset + 2 + hours_ref*29` (the `+2` skips the pool's
+    /// `count u16`). Every step is checked 32-bit so a corrupt offset/count can't wrap or read past
+    /// the file.
+    ///
+    /// # Reentrancy
+    ///
+    /// Unlike [`Reader::nearest_pois`], this does **not** touch the [`MapCache`] — it's a plain
+    /// stack read, safe to call from anywhere (including inside a `for_each_*` callback).
+    pub fn poi_hours(&self, hours_ref: u16) -> Option<crate::hours::WeeklySchedule> {
+        // The no-hours sentinel and any index past the pool ⇒ no schedule.
+        let dir = &self.tables.pois;
+        if hours_ref == 0xFFFF || (hours_ref as usize) >= dir.hours_pool_count {
+            return None;
+        }
+        // Byte offset of blob `hours_ref`: hours_pool_offset + 2 + hours_ref*29. All checked so a
+        // corrupt directory can't wrap `u32` or address past the file.
+        let blob_off = (hours_ref as u32)
+            .checked_mul(POI_HOURS_BLOB_LEN as u32)?
+            .checked_add(2)?
+            .checked_add(u32::try_from(dir.hours_pool_offset).ok()?)?;
+        let end = blob_off.checked_add(POI_HOURS_BLOB_LEN as u32)?;
+        if end > self.src.len() {
+            return None;
+        }
+        // A single small stack read — no cache, no static buffer.
+        let mut blob = [0u8; POI_HOURS_BLOB_LEN];
+        self.src.read_at(blob_off, &mut blob).ok()?;
+        crate::hours::WeeklySchedule::decode(&blob)
     }
 
     /// The nearest [`MAX_POI_RESULTS`] POIs of `category` to `pos` (a `(lon, lat)` µdeg pair, the
@@ -952,7 +993,11 @@ fn consider_poi(out: &mut Vec<Poi, MAX_POI_RESULTS>, cand: PoiCand, buf: &[u8], 
     if out.len() == MAX_POI_RESULTS {
         let _ = out.pop();
     }
-    let poi = Poi { lat, lon, subtype, name: decode_poi_name(buf, off), distance_m };
+    // The record's `hours_ref` at `[off+34 .. off+36]` (§7.3); carried so the detail screen can
+    // resolve the pooled schedule without a re-query. The scan window always holds a whole record
+    // (`take * POI_RECORD_LEN`), so these two bytes are in-bounds.
+    let hours_ref = rd_u16(buf, off + 34);
+    let poi = Poi { lat, lon, subtype, name: decode_poi_name(buf, off), hours_ref, distance_m };
     // `at` is a valid index in `0..=out.len()` and the set has room now; the insert can't fail.
     let _ = out.insert(at, poi);
 }
