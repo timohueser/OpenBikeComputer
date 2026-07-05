@@ -80,7 +80,7 @@ fn packed() -> Vec<u8> {
         chunk_size: 8192, // must hold the ~4 KiB MAX_FEAT_PTS line
         root: Node::Leaf { bbox: GLOBAL, features: vec![line(1, LINE16), line(5, &big_line_points())] },
     };
-    let (bytes, dropped) = serialize_lods(&[lod0, lod1], &styles(), MARKER, GLOBAL);
+    let (bytes, dropped) = serialize_lods(&[lod0, lod1], &styles(), MARKER, GLOBAL, &[]);
     assert_eq!(dropped, 0, "every fixture feature fits its chunk");
     bytes
 }
@@ -144,7 +144,7 @@ fn header_round_trips() {
     let src = SliceSource(&bytes);
     let tables = MapTables::parse(&src).unwrap();
     let r = Reader::new(&src, &tables, &cache);
-    assert_eq!(r.version, 5);
+    assert_eq!(r.version, 6);
     assert_eq!(r.marker_color, MARKER);
     // bbox stored lat,lon,lat,lon in the header; the reader must hand it back
     // with lon and lat in the right fields (max_lon=2°, max_lat=1°).

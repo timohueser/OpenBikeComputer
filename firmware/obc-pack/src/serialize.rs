@@ -1,9 +1,11 @@
-//! OBCM v5 serializer — lay out the `.obcm` bytes per `OBCM_Spec.md`.
+//! OBCM v6 serializer — lay out the `.obcm` bytes per `OBCM_Spec.md`.
 //!
 //! Deterministic: same feature list + quadtree → same output. Geometry arrives
 //! already clipped + simplified; this module rounds lon/lat to microdegrees
 //! (round-half-to-even), densifies long segments, delta-encodes rings, and lays out
-//! the chunk / index / LOD-table / header bytes.
+//! the chunk / index / LOD-table / header bytes. The trailing **POI section** (v6,
+//! §7 of the spec) is a per-category quadtree over fixed 32-byte point records,
+//! reusing the same BFS-flatten + u32 node encoding as the geometry tree.
 
 use std::io::{self, Seek, SeekFrom, Write};
 
@@ -11,18 +13,39 @@ use obc_reader::format::{
     BRANCH_BIT, EMPTY_LEAF, FEATURE_FLAG_16BIT, FEATURE_FLAG_HOLES, FEATURE_FLAG_POLYGON, STYLE_PRIORITY_MASK,
 };
 
+use crate::poi::{table_row, Poi};
+
 /// Max delta (microdegrees) before a segment is densified to keep deltas in
 /// 16-bit range. Crate-visible so `geom::packed_size_budget` can count the
 /// midpoints `densify` will insert.
 pub(crate) const MAX_SEGMENT: i64 = 30_000;
 
-/// Fixed header length (bytes).
-pub const HEADER_LEN: usize = 32;
+/// Fixed header length (bytes) — v6 appended the 4-byte POI Section Offset (§1).
+pub const HEADER_LEN: usize = 36;
 /// One LOD-table entry, `<fIIHI>`.
 pub const LOD_ENTRY_LEN: usize = 18;
 
 /// The OBCM format version byte written into the header (`OBCM_Spec.md` §1).
-pub const OBCM_VERSION: u8 = 5;
+pub const OBCM_VERSION: u8 = 6;
+
+/// POI category count baked into every v6 map's directory (§7.1). Fixed by the
+/// canonical [`crate::poi::POI_TABLE`]: category ids 1..=6.
+pub const POI_CATEGORY_COUNT: u8 = 6;
+
+/// One 32-byte POI record (§7.3): `int32 lat, int32 lon, u8 subtype, u8 name_len,
+/// [u8; 20] name, [0xFF; 2] reserved`.
+pub const POI_RECORD_LEN: usize = 32;
+
+/// The `Name` field width inside a POI record (§7.3): 20 bytes, `0xFF`-padded.
+pub const POI_NAME_LEN: usize = 20;
+
+/// Fixed POI chunk capacity (bytes) the packer writes (§7.1). 512 ⇒ 16 records per
+/// chunk. Shared by every category, stored once in the directory's `Chunk Size`.
+pub const POI_CHUNK_SIZE: usize = 512;
+
+/// One POI-directory category entry (§7.1): `u8 category_id, u32 index_offset,
+/// u32 index_node_count, u32 chunk_count`.
+pub const POI_CAT_ENTRY_LEN: usize = 13;
 
 /// Largest `chunk_size` (bytes) that keeps every feature within the reader's
 /// [`obc_reader::MAX_FEAT_PTS`] vertex cap. Densest encoding is 8-bit deltas
@@ -279,18 +302,44 @@ pub fn pack_chunk(features: &[Feature], node_bbox: (i64, i64, i64, i64), chunk_s
     (data, features.len() - kept)
 }
 
-/// Flatten one quadtree into `(index_bytes, node_count, chunk_bytes, chunk_count,
-/// dropped_features)` via BFS. Child order and chunk-id assignment order are BFS,
-/// which fixes the byte layout. `dropped_features` counts chunk-overflow drops
-/// across all leaves (see [`pack_chunk`]).
-pub fn serialize_tree(root: &Node, chunk_size: usize) -> (Vec<u8>, u32, Vec<u8>, u32, usize) {
+/// One node of an abstract quadtree, for the shared BFS-flatten [`flatten_tree`]:
+/// either a leaf that packs into (at most) one chunk, or a branch over its four
+/// NW/NE/SW/SE children. The geometry [`Node`] and the POI [`PoiNode`] both view
+/// as this so the index-byte layout (branch bit / empty-leaf sentinel / chunk id)
+/// lives in exactly one place.
+enum TreeNode<'a, N> {
+    /// A leaf. `pack` returns `None` for an empty leaf (→ [`EMPTY_LEAF`]) or the
+    /// leaf's chunk bytes + its own chunk-overflow drop count.
+    Leaf(&'a N),
+    /// A branch over its four children in NW/NE/SW/SE order.
+    Branch(&'a [N; 4]),
+}
+
+/// A quadtree the BFS-flatten can walk: classify a node into leaf/branch, and pack
+/// one leaf into its chunk. Implemented for the geometry [`Node`] and the POI
+/// [`PoiNode`], so [`flatten_tree`] serializes both to the identical index layout.
+trait FlattenTree: Sized {
+    /// View this node as a leaf or a branch over its four children.
+    fn classify(&self) -> TreeNode<'_, Self>;
+    /// Pack a leaf's payload into its chunk: `None` for an empty leaf (no chunk),
+    /// else `(chunk_bytes, dropped)` where `dropped` is the chunk-overflow count.
+    fn pack_leaf(&self, chunk_size: usize) -> Option<(Vec<u8>, usize)>;
+}
+
+/// Flatten any [`FlattenTree`] into `(index_bytes, node_count, chunk_bytes,
+/// chunk_count, dropped)` via BFS. Child order and chunk-id assignment order are
+/// BFS, which fixes the byte layout: a branch's four children are appended
+/// contiguously, so its first-child index is the node count at the moment it is
+/// expanded (`child > idx` always — the invariant the reader's `walk_leaves`
+/// relies on). `dropped` is the total chunk-overflow drop count across all leaves.
+fn flatten_tree<N: FlattenTree>(root: &N, chunk_size: usize) -> (Vec<u8>, u32, Vec<u8>, u32, usize) {
     // BFS in enqueue order. Children are appended contiguously, so a branch's
     // first-child index is the length of `nodes` at the moment we expand it.
-    let mut nodes: Vec<&Node> = vec![root];
+    let mut nodes: Vec<&N> = vec![root];
     let mut first_child: Vec<usize> = vec![0];
     let mut i = 0;
     while i < nodes.len() {
-        if let Node::Branch(children) = nodes[i] {
+        if let TreeNode::Branch(children) = nodes[i].classify() {
             first_child[i] = nodes.len();
             for c in children.iter() {
                 nodes.push(c);
@@ -305,22 +354,18 @@ pub fn serialize_tree(root: &Node, chunk_size: usize) -> (Vec<u8>, u32, Vec<u8>,
     let mut chunk_count: u32 = 0;
     let mut dropped: usize = 0;
     for (idx, node) in nodes.iter().enumerate() {
-        match node {
-            Node::Leaf { bbox, features } => {
-                if features.is_empty() {
-                    index.push(EMPTY_LEAF);
-                } else {
+        match node.classify() {
+            TreeNode::Leaf(leaf) => match leaf.pack_leaf(chunk_size) {
+                None => index.push(EMPTY_LEAF),
+                Some((chunk, chunk_dropped)) => {
                     let chunk_id = chunk_count;
-                    let (chunk, chunk_dropped) = pack_chunk(features, *bbox, chunk_size);
                     chunks.extend_from_slice(&chunk);
                     dropped += chunk_dropped;
                     chunk_count += 1;
                     index.push(chunk_id & !BRANCH_BIT);
                 }
-            }
-            Node::Branch(_) => {
-                index.push(first_child[idx] as u32 | BRANCH_BIT);
-            }
+            },
+            TreeNode::Branch(_) => index.push(first_child[idx] as u32 | BRANCH_BIT),
         }
     }
 
@@ -331,14 +376,227 @@ pub fn serialize_tree(root: &Node, chunk_size: usize) -> (Vec<u8>, u32, Vec<u8>,
     (index_bytes, index.len() as u32, chunks, chunk_count, dropped)
 }
 
-/// The 32-byte OBCM header `<4sBiiiiIBIH>`: magic, version, bbox stored as
-/// lat,lon,lat,lon, header length, lod count, lod-table offset, marker color.
-/// Shared by both serializers.
+impl FlattenTree for Node {
+    fn classify(&self) -> TreeNode<'_, Node> {
+        match self {
+            Node::Leaf { .. } => TreeNode::Leaf(self),
+            Node::Branch(children) => TreeNode::Branch(children),
+        }
+    }
+    fn pack_leaf(&self, chunk_size: usize) -> Option<(Vec<u8>, usize)> {
+        match self {
+            Node::Leaf { bbox, features } if !features.is_empty() => Some(pack_chunk(features, *bbox, chunk_size)),
+            _ => None,
+        }
+    }
+}
+
+/// Flatten one geometry quadtree into `(index_bytes, node_count, chunk_bytes,
+/// chunk_count, dropped_features)` via BFS. Thin wrapper over the shared
+/// [`flatten_tree`]; `dropped_features` counts chunk-overflow drops across all
+/// leaves (see [`pack_chunk`]).
+pub fn serialize_tree(root: &Node, chunk_size: usize) -> (Vec<u8>, u32, Vec<u8>, u32, usize) {
+    flatten_tree(root, chunk_size)
+}
+
+// --- POI section (v6, spec §7) ------------------------------------------------
+
+/// A POI record's absolute microdegree coordinates + the fields packed into its
+/// 32-byte record (§7.3). Owned so the tree can move records into leaves.
+struct PoiPoint {
+    lon_udeg: i32,
+    lat_udeg: i32,
+    subtype: u8,
+    name: Option<String>,
+}
+
+/// One node of a category's POI quadtree, mirroring the geometry [`Node`] shape so
+/// the shared [`flatten_tree`] serializes it to the identical index layout. A leaf
+/// carries the points that fall inside its bbox; a branch its four NW/NE/SW/SE
+/// children.
+enum PoiNode {
+    Leaf(Vec<PoiPoint>),
+    Branch(Box<[PoiNode; 4]>),
+}
+
+impl FlattenTree for PoiNode {
+    fn classify(&self) -> TreeNode<'_, PoiNode> {
+        match self {
+            PoiNode::Leaf(_) => TreeNode::Leaf(self),
+            PoiNode::Branch(children) => TreeNode::Branch(children),
+        }
+    }
+    fn pack_leaf(&self, chunk_size: usize) -> Option<(Vec<u8>, usize)> {
+        match self {
+            PoiNode::Leaf(points) if !points.is_empty() => Some(pack_poi_chunk(points, chunk_size)),
+            _ => None,
+        }
+    }
+}
+
+/// Pack one 32-byte POI record (§7.3): absolute `int32 lat, int32 lon`, `u8
+/// subtype`, `u8 name_len`, a 20-byte `0xFF`-padded name, and `0xFF 0xFF`
+/// reserved. The name is already ASCII-folded + ≤ 20 bytes at ingest
+/// ([`crate::poi::normalize_name`]); truncate defensively so a stray long name can
+/// never overrun the fixed field.
+fn pack_poi_record(p: &PoiPoint) -> [u8; POI_RECORD_LEN] {
+    let mut rec = [0xFFu8; POI_RECORD_LEN];
+    rec[0..4].copy_from_slice(&p.lat_udeg.to_le_bytes());
+    rec[4..8].copy_from_slice(&p.lon_udeg.to_le_bytes());
+    rec[8] = p.subtype;
+    let name = p.name.as_deref().unwrap_or("");
+    let bytes = name.as_bytes();
+    let len = bytes.len().min(POI_NAME_LEN);
+    rec[9] = len as u8;
+    rec[10..10 + len].copy_from_slice(&bytes[..len]);
+    // rec[10 + len .. 30] stays 0xFF (name pad); rec[30..32] stays 0xFF (reserved).
+    rec
+}
+
+/// Pack a leaf's POI records into one `chunk_size`-byte chunk (§7.3): as many fixed
+/// 32-byte records as fit, back-to-back, then a `0xFF` **subtype** sentinel + `0xFF`
+/// padding to `chunk_size`. Returns `(bytes, dropped)`. `build_poi_tree` splits a
+/// leaf before it exceeds the chunk capacity, so `dropped` is 0 in practice; the cap
+/// is the safety net for the one case the tree can't split away — more than
+/// `chunk_size / 32` distinct POIs inside the 10-µdeg (~1 m) recursion floor, which
+/// dedup makes effectively impossible. Truncating loudly beats corrupting the chunk.
+fn pack_poi_chunk(points: &[PoiPoint], chunk_size: usize) -> (Vec<u8>, usize) {
+    let capacity = chunk_size / POI_RECORD_LEN;
+    let kept = points.len().min(capacity);
+    let mut data = Vec::with_capacity(chunk_size);
+    for p in &points[..kept] {
+        data.extend_from_slice(&pack_poi_record(p));
+    }
+    // A 0xFF subtype byte ends the records (mirrors the geometry chunk's style-id
+    // sentinel). `data.resize` writes it and the rest of the padding in one go —
+    // never a truncation, since `kept * 32 <= chunk_size` by construction.
+    data.resize(chunk_size, 0xFF);
+    (data, points.len() - kept)
+}
+
+/// Build one category's POI quadtree over the **global bbox** (§7.2), splitting a
+/// leaf once it holds more points than one chunk can carry. Split geometry matches
+/// the reader's `walk_leaves` exactly: floor-division midpoints (`div_euclid(2)`),
+/// NW/NE/SW/SE order, and a 10-µdeg recursion guard (identical to the geometry
+/// `quadtree.rs`) so a dense cluster can't recurse forever. A point on a midline is
+/// assigned deterministically (east of / north of the midpoint is `>= mid`), which
+/// keeps it inside its leaf's bbox for the query.
+fn build_poi_tree(points: Vec<PoiPoint>, bbox: (i64, i64, i64, i64), capacity: usize) -> PoiNode {
+    let (min_lon, min_lat, max_lon, max_lat) = bbox;
+    // Fits a chunk, or the box is too small to subdivide — a leaf. The guard
+    // matches the geometry quadtree's 10-µdeg floor so both agree on when to stop.
+    if points.len() <= capacity || max_lon - min_lon < 10 || max_lat - min_lat < 10 {
+        return PoiNode::Leaf(points);
+    }
+    let mid_lon = (min_lon + max_lon).div_euclid(2);
+    let mid_lat = (min_lat + max_lat).div_euclid(2);
+    // Partition into the four quadrants. West is `lon < mid`, South is `lat < mid`,
+    // so a point exactly on a midline lands in the East / North child — inside that
+    // child's bbox either way (the reader's boxes share the midline edge).
+    let mut nw = Vec::new();
+    let mut ne = Vec::new();
+    let mut sw = Vec::new();
+    let mut se = Vec::new();
+    for p in points {
+        let west = (p.lon_udeg as i64) < mid_lon;
+        let south = (p.lat_udeg as i64) < mid_lat;
+        match (west, south) {
+            (true, false) => nw.push(p),
+            (false, false) => ne.push(p),
+            (true, true) => sw.push(p),
+            (false, true) => se.push(p),
+        }
+    }
+    PoiNode::Branch(Box::new([
+        build_poi_tree(nw, (min_lon, mid_lat, mid_lon, max_lat), capacity), // NW
+        build_poi_tree(ne, (mid_lon, mid_lat, max_lon, max_lat), capacity), // NE
+        build_poi_tree(sw, (min_lon, min_lat, mid_lon, mid_lat), capacity), // SW
+        build_poi_tree(se, (mid_lon, min_lat, max_lon, mid_lat), capacity), // SE
+    ]))
+}
+
+/// Serialize the full POI section (spec §7): the directory followed by each
+/// category's quadtree index + data chunks. `pois` is the deduped classified list;
+/// each is bucketed by its subtype's category ([`crate::poi::table_row`]). Category
+/// ids are `1..=POI_CATEGORY_COUNT` and every one gets a directory entry, empty or
+/// not (§7.1) — a map with no POIs writes six empty entries, never a zero offset.
+/// `section_offset` is the section's absolute byte offset in the file, needed so the
+/// directory's per-category `index_offset` fields are file-absolute.
+pub fn serialize_poi_section(pois: &[Poi], global_bbox: (i64, i64, i64, i64), section_offset: usize) -> Vec<u8> {
+    // Bucket points by category (id 1..=6). Index 0 is unused (no category 0).
+    let mut by_cat: Vec<Vec<PoiPoint>> = (0..=POI_CATEGORY_COUNT as usize).map(|_| Vec::new()).collect();
+    for p in pois {
+        let cat = table_row(p.subtype).category as usize;
+        by_cat[cat].push(PoiPoint {
+            lon_udeg: p.lon_udeg,
+            lat_udeg: p.lat_udeg,
+            subtype: p.subtype,
+            name: p.name.clone(),
+        });
+    }
+
+    // Records per chunk = chunk_size / record_len (512 / 32 = 16), so a leaf holds
+    // at most that many before the tree splits.
+    let capacity = POI_CHUNK_SIZE / POI_RECORD_LEN;
+
+    // Flatten every category's tree first; the directory's index offsets are then
+    // laid out sequentially after the fixed-size directory itself.
+    struct CatBlock {
+        cat_id: u8,
+        index: Vec<u8>,
+        node_count: u32,
+        chunks: Vec<u8>,
+        chunk_count: u32,
+    }
+    let mut blocks = Vec::with_capacity(POI_CATEGORY_COUNT as usize);
+    for cat_id in 1..=POI_CATEGORY_COUNT {
+        let pts = std::mem::take(&mut by_cat[cat_id as usize]);
+        if pts.is_empty() {
+            blocks.push(CatBlock { cat_id, index: Vec::new(), node_count: 0, chunks: Vec::new(), chunk_count: 0 });
+            continue;
+        }
+        let root = build_poi_tree(pts, global_bbox, capacity);
+        let (index, node_count, chunks, chunk_count, dropped) = flatten_tree(&root, POI_CHUNK_SIZE);
+        debug_assert_eq!(dropped, 0, "fixed-size POI records never overflow a split leaf");
+        blocks.push(CatBlock { cat_id, index, node_count, chunks, chunk_count });
+    }
+
+    // Directory size: count byte + chunk_size u16 + one entry per category.
+    let dir_len = 1 + 2 + POI_CATEGORY_COUNT as usize * POI_CAT_ENTRY_LEN;
+
+    // Assign each category's index offset (file-absolute), laid out sequentially
+    // after the directory: [index][chunks] per category, empties contributing zero.
+    let mut cursor = section_offset + dir_len;
+    let mut dir = Vec::with_capacity(dir_len);
+    dir.push(POI_CATEGORY_COUNT);
+    dir.extend_from_slice(&(POI_CHUNK_SIZE as u16).to_le_bytes());
+    let mut payload = Vec::new();
+    for b in &blocks {
+        dir.push(b.cat_id);
+        dir.extend_from_slice(&(cursor as u32).to_le_bytes());
+        dir.extend_from_slice(&b.node_count.to_le_bytes());
+        dir.extend_from_slice(&b.chunk_count.to_le_bytes());
+        payload.extend_from_slice(&b.index);
+        payload.extend_from_slice(&b.chunks);
+        cursor += b.index.len() + b.chunks.len();
+    }
+    debug_assert_eq!(dir.len(), dir_len);
+
+    let mut out = Vec::with_capacity(dir_len + payload.len());
+    out.extend_from_slice(&dir);
+    out.extend_from_slice(&payload);
+    out
+}
+
+/// The 36-byte OBCM v6 header `<4sBiiiiIBIHI>`: magic, version, bbox stored as
+/// lat,lon,lat,lon, style offset, lod count, lod-table offset, marker color, and
+/// (v6) the POI section offset. Shared by both serializers.
 fn header_bytes(
     lod_count: usize,
     marker_color: u16,
     global_bbox: (i64, i64, i64, i64),
     lod_table_offset: usize,
+    poi_section_offset: usize,
 ) -> Vec<u8> {
     let mut out = Vec::with_capacity(HEADER_LEN);
     out.extend_from_slice(b"OBCM");
@@ -351,6 +609,7 @@ fn header_bytes(
     out.push(lod_count as u8);
     out.extend_from_slice(&(lod_table_offset as u32).to_le_bytes());
     out.extend_from_slice(&marker_color.to_le_bytes());
+    out.extend_from_slice(&(poi_section_offset as u32).to_le_bytes());
     debug_assert_eq!(out.len(), HEADER_LEN);
     out
 }
@@ -366,15 +625,17 @@ fn push_lod_entry(table: &mut Vec<u8>, max_mpp: Option<f64>, index_offset: u32, 
     table.extend_from_slice(&cc.to_le_bytes());
 }
 
-/// Serialize a pyramid of LOD layers into the full v5 `.obcm` byte stream (header
-/// field order, LOD table layout, and the bbox stored as lat,lon,lat,lon). The
-/// second return value is the total chunk-overflow feature drops (see
-/// [`pack_chunk`]).
+/// Serialize a pyramid of LOD layers into the full v6 `.obcm` byte stream (header
+/// field order, LOD table layout, the bbox stored as lat,lon,lat,lon, and the
+/// trailing POI section §7). `pois` is the deduped classified POI list (empty ⇒ an
+/// empty POI directory, still written). The second return value is the total
+/// chunk-overflow feature drops (see [`pack_chunk`]).
 pub fn serialize_lods(
     lods: &[LodLayer],
     styles: &[Style],
     marker_color: u16,
     global_bbox: (i64, i64, i64, i64),
+    pois: &[Poi],
 ) -> (Vec<u8>, usize) {
     let style_data = pack_style_dict(styles);
     let lod_count = lods.len();
@@ -406,34 +667,42 @@ pub fn serialize_lods(
         cursor += b.ib.len() + b.cb.len();
     }
 
-    let mut out = Vec::with_capacity(lod_table_offset + table.len() + payload.len());
-    out.extend_from_slice(&header_bytes(lod_count, marker_color, global_bbox, lod_table_offset));
+    // The POI section starts right after the last LOD's chunks (`cursor`).
+    let poi_section = serialize_poi_section(pois, global_bbox, cursor);
+
+    let mut out = Vec::with_capacity(lod_table_offset + table.len() + payload.len() + poi_section.len());
+    out.extend_from_slice(&header_bytes(lod_count, marker_color, global_bbox, lod_table_offset, cursor));
     out.extend_from_slice(&style_data);
     out.extend_from_slice(&table);
     out.extend_from_slice(&payload);
+    out.extend_from_slice(&poi_section);
     (out, dropped)
 }
 
-/// Streaming counterpart to [`serialize_lods`]: writes the **same** v5 byte stream,
+/// Streaming counterpart to [`serialize_lods`]: writes the **same** v6 byte stream,
 /// but builds, serializes, and drops one LOD tree at a time. Peak memory is ~one
 /// tree + one LOD's chunk bytes rather than all trees plus the whole output buffer.
 ///
-/// The header, style table, and LOD-table offset are known up front; only per-LOD
-/// table entries need the built trees. So we write header + style table + a
-/// **zeroed** LOD table, stream each LOD's `index ++ chunks`, then `seek` back and
-/// patch the table. Byte-identical to `serialize_lods` for the same trees
-/// (asserted by `streaming_matches_in_memory`). Returns `(bytes_written,
-/// dropped_features)` — the latter counts chunk-overflow drops (see
-/// [`pack_chunk`]) so the CLI can warn.
+/// The header, style table, and LOD-table offset are known up front, but the POI
+/// section offset is not (it depends on every LOD's serialized size). So we write
+/// header + style table (with a **placeholder** POI offset) + a **zeroed** LOD
+/// table, stream each LOD's `index ++ chunks`, append the POI section at the
+/// resulting cursor, then `seek` back and patch both the LOD table and the header's
+/// POI-section-offset field. Byte-identical to `serialize_lods` for the same trees
+/// and POIs (asserted by `streaming_matches_in_memory`). Returns `(bytes_written,
+/// dropped_features)` — the latter counts chunk-overflow drops (see [`pack_chunk`])
+/// so the CLI can warn.
 ///
 /// `build(i)` yields LOD `i`'s `(root, chunk_size, max_mpp)`, called once per level
-/// in order; each tree is dropped before the next call.
+/// in order; each tree is dropped before the next call. The POI section is built in
+/// memory (small — point records, not geometry) after the LODs stream out.
 pub fn serialize_lods_streaming<W, F>(
     w: &mut W,
     lod_count: usize,
     styles: &[Style],
     marker_color: u16,
     global_bbox: (i64, i64, i64, i64),
+    pois: &[Poi],
     mut build: F,
 ) -> io::Result<(u64, usize)>
 where
@@ -444,10 +713,12 @@ where
     let lod_table_offset = HEADER_LEN + style_data.len();
     let payload_start = lod_table_offset + lod_count * LOD_ENTRY_LEN;
 
-    // 1. Header (bbox stored lat,lon,lat,lon) — needs no tree.
-    w.write_all(&header_bytes(lod_count, marker_color, global_bbox, lod_table_offset))?;
+    // 1. Header (bbox stored lat,lon,lat,lon) — needs no tree. The POI section
+    // offset isn't known until the LODs are sized, so write a 0 placeholder and
+    // patch it in step 5.
+    w.write_all(&header_bytes(lod_count, marker_color, global_bbox, lod_table_offset, 0))?;
 
-    // 2. Style table, then a zeroed LOD table we patch in step 4.
+    // 2. Style table, then a zeroed LOD table we patch in step 5.
     w.write_all(&style_data)?;
     w.write_all(&vec![0u8; lod_count * LOD_ENTRY_LEN])?;
 
@@ -466,9 +737,18 @@ where
         cursor += ib.len() + cb.len();
     }
 
-    // 4. Back-patch the LOD table in place, then leave the cursor at EOF.
+    // 4. The POI section begins at the current cursor (right after the last LOD).
+    let poi_section_offset = cursor;
+    let poi_section = serialize_poi_section(pois, global_bbox, poi_section_offset);
+    w.write_all(&poi_section)?;
+    cursor += poi_section.len();
+
+    // 5. Back-patch the LOD table and the header's POI-section-offset field, then
+    // leave the cursor at EOF. The POI offset lives at header byte 32 (§1).
     w.seek(SeekFrom::Start(lod_table_offset as u64))?;
     w.write_all(&table)?;
+    w.seek(SeekFrom::Start(32))?;
+    w.write_all(&(poi_section_offset as u32).to_le_bytes())?;
     w.seek(SeekFrom::Start(cursor as u64))?;
     Ok((cursor as u64, dropped))
 }
@@ -545,8 +825,10 @@ mod tests {
     #[test]
     fn streaming_matches_in_memory() {
         // Streaming output must be byte-identical to `serialize_lods` for the same
-        // 2-LOD pyramid.
+        // 2-LOD pyramid *and* POI section — the POI back-patch in the streaming path
+        // is easy to drift, so the fixture carries POIs of a few categories.
         use crate::geom::Geom;
+        use crate::poi::Poi;
         use std::io::Cursor;
 
         let bbox = (0, 0, 1_000_000, 1_000_000);
@@ -567,12 +849,24 @@ mod tests {
                 ),
             },
         ];
+        let poi = |subtype, lon, lat, name: Option<&str>| Poi {
+            subtype,
+            lon_udeg: lon,
+            lat_udeg: lat,
+            name: name.map(String::from),
+            from_node: true,
+        };
+        let pois = vec![
+            poi(1, 100_000, 100_000, Some("Brunnen")),
+            poi(5, 200_000, 200_000, None),
+            poi(17, 300_000, 300_000, Some("Apotheke")),
+        ];
 
-        let (reference, ref_dropped) = serialize_lods(&lods, &styles, 0xABCD, bbox);
+        let (reference, ref_dropped) = serialize_lods(&lods, &styles, 0xABCD, bbox, &pois);
         assert_eq!(ref_dropped, 0, "nothing overflows in this fixture");
 
         let mut cur = Cursor::new(Vec::new());
-        let (total, dropped) = serialize_lods_streaming(&mut cur, lods.len(), &styles, 0xABCD, bbox, |i| {
+        let (total, dropped) = serialize_lods_streaming(&mut cur, lods.len(), &styles, 0xABCD, bbox, &pois, |i| {
             (lods[i].root.clone(), lods[i].chunk_size, lods[i].max_mpp)
         })
         .unwrap();
