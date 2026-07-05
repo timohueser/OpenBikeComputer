@@ -29,6 +29,8 @@ mod home;
 mod list;
 mod map;
 mod menu;
+mod poi_list;
+mod poi_menu;
 mod ride_control;
 mod route_menu;
 mod route_overview;
@@ -40,6 +42,8 @@ pub use home::HomeScreen;
 pub use list::window_start;
 pub use map::MapScreen;
 pub use menu::MenuScreen;
+pub use poi_list::{PoiListScreen, PoiScratch};
+pub use poi_menu::PoiMenuScreen;
 pub use ride_control::RideControl;
 pub use route_menu::RouteMenuScreen;
 pub use route_overview::RouteOverviewScreen;
@@ -144,6 +148,11 @@ pub struct Render<'a, 'd> {
     /// The travelled-path breadcrumb (bounded RAM); the Map strokes it under the route. Empty when
     /// nothing has been recorded yet, so the Map can skip it with [`Breadcrumb::is_empty`].
     pub breadcrumb: &'a Breadcrumb,
+    /// The single [`App`](crate::App)-owned POI-list snapshot buffer. Only the
+    /// [`PoiList`](crate::screen::poi_list) screen touches it — it takes its static snapshot into
+    /// this on the first draw with a `Reader` + fix (see [`PoiScratch`]); every other screen leaves
+    /// it untouched. `&mut` because that lazy fill is the one screen write that happens at draw time.
+    pub poi_scratch: &'a mut PoiScratch,
     /// Panel size in device pixels. Integer, because every screen lays out in whole pixels;
     /// the Map computes its `f32` viewport locally.
     pub w: i32,
@@ -268,6 +277,10 @@ screens! {
     /// The pause page: ride-so-far ledger + the guarded Resume / Finish / Discard rows.
     RideControl(RideControl) => Nav,
     Menu(MenuScreen) => Nav,
+    /// The POIs browser's category list (Menu → POIs).
+    PoiMenu(PoiMenuScreen) => Nav,
+    /// One category's distance-sorted nearest-16 with live bearing arrows.
+    PoiList(PoiListScreen) => Nav,
     RouteMenu(RouteMenuScreen) => Nav,
     RouteOverview(RouteOverviewScreen) => Nav,
     RouteSwap(RouteSwapScreen) => Nav,
