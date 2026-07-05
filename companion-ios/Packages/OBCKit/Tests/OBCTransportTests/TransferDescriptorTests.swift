@@ -65,6 +65,17 @@ final class TransferDescriptorTests: XCTestCase {
         XCTAssertEqual(try StatusMessage(decoding: Data([0x7F, 1, 2, 3])), .unknown(0x7F))
     }
 
+    func testUnknownTransferStatusDecodesAsGenericErrorNotThrow() throws {
+        // Forward compatibility (spec §4.3): an unrecognized *transfer status* code
+        // (e.g. 0x63) is NOT a decode failure — the transferResult still delivers
+        // and folds to the generic `.error` status, so a future reject the app
+        // doesn't know can't wedge a transfer or fail the link.
+        let bytes = Data([1, 0x07, 0x00, 0x63, 0x00, 0x00, 0x00, 0x00])  // msg 1, id 7, status 0x63
+        let message = try StatusMessage(decoding: bytes)
+        XCTAssertEqual(message, .transferResult(
+            TransferResult(objectID: DeviceObjectID(7), status: .error, committedOffset: 0)))
+    }
+
     func testObjectStoreDigestRoundTrips() throws {
         let digest = ObjectStoreDigest(revision: 42, routeCount: 3, rideCount: 5)
         let encoded = digest.encode()
@@ -100,9 +111,12 @@ final class TransferDescriptorTests: XCTestCase {
             XCTAssertEqual($0 as? DescriptorError, .unknownType(0x7F))
         }
 
-        var result = StatusMessage.transferResult(TransferResult(objectID: DeviceObjectID(1), status: .committed, committedOffset: 0)).encode()
-        result[result.startIndex + 3] = 0x7F
-        XCTAssertThrowsError(try StatusMessage(decoding: result)) {
+        // A transfer status is deliberately forward-compatible (unknown → generic
+        // error, not a throw) — pinned by `testUnknownTransferStatusDecodesAsGenericErrorNotThrow`.
+        // The *command* result status stays strict: an unknown command status throws.
+        var command = StatusMessage.commandResult(CommandResult(command: 1, status: .ok)).encode()
+        command[command.startIndex + 2] = 0x7F
+        XCTAssertThrowsError(try StatusMessage(decoding: command)) {
             XCTAssertEqual($0 as? DescriptorError, .unknownStatus(0x7F))
         }
     }
