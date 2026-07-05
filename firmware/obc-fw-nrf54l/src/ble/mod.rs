@@ -64,7 +64,7 @@ use core::sync::atomic::Ordering;
 
 use defmt::{info, unwrap, warn};
 use embassy_executor::Spawner;
-use embassy_futures::join::{join, join4};
+use embassy_futures::join::{join3, join4};
 use embassy_futures::select::{select, select3, Either, Either3};
 use embassy_nrf::mode::Blocking;
 use embassy_nrf::{bind_interrupts, cracen, peripherals, Peri};
@@ -299,8 +299,10 @@ pub async fn run(
     );
 
     // The lifecycle loop: advertise → serve → re-advertise, forever, with no terminal state — and,
-    // since #455, a parked **Off** state the rider's Bluetooth switch gates.
-    join(host_task(runner), async {
+    // since #455, a parked **Off** state the rider's Bluetooth switch gates. The route-delete task
+    // runs beside it for the whole lifetime (epic #447, P6) so an on-device delete executes whether
+    // the phone is connected, the device is parked advertising, or the radio is off.
+    join3(host_task(runner), route_delete_task(&stack, &server, &store, shared), async {
         loop {
             // A Forget-phone request latched between phases: honour it before the next advertise,
             // so the freshly-open pairing window never races a stale bond.
@@ -489,6 +491,41 @@ async fn host_task<C: Controller, P: PacketPool>(mut runner: Runner<'_, C, P>) -
         if let Err(e) = runner.run().await {
             let e = defmt::Debug2Format(&e);
             defmt::panic!("ble: host runner error: {:?}", e);
+        }
+    }
+}
+
+/// Drain on-device route-delete requests (epic #447, P6) for the whole `ble::run` lifetime — folded
+/// into the top-level `join`, so it runs whether the phone is connected or the device is parked
+/// advertising. The ride loop's Route-menu hold posts a route's durable id
+/// ([`request_route_delete`](crate::object_store::request_route_delete)); this executes it through
+/// [`ObjectStore::delete_route`] — the same catalog + revision + `storeChanged` path a phone
+/// `deleteObject` command takes — so the on-device delete is coherent with the wire.
+///
+/// The `RefCell<ObjectStore>` borrow never spans an `await` (it ends before `publish_store_change`),
+/// matching the store's single-executor discipline. `publish_store_change` notifies a *connected*
+/// phone's `storeChanged` + digest; when disconnected its notifies fail harmlessly (no subscriber),
+/// and the re-seeded digest attribute + the revision bump make the next read/reconnect reflect the
+/// deletion. The `ObjectStore`'s own `bump_revision` rings the `STORE_CHANGED` edge the ride loop
+/// drains for the live catalog rescan + P3 remap.
+async fn route_delete_task(
+    stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
+    server: &Server<'_>,
+    store: &core::cell::RefCell<ObjectStore>,
+    shared: &'static SharedStoreMutex,
+) -> ! {
+    loop {
+        let id = crate::object_store::wait_route_delete().await;
+        let deleted = {
+            let mut guard = shared.lock().await;
+            store.borrow_mut().delete_route(&mut guard, id)
+        };
+        if deleted {
+            info!("ble: [delete] on-device delete of route object {}", id);
+            // Notify a connected phone (harmless no-op when disconnected) and re-seed the digest.
+            data_plane::publish_store_change(stack, server, store).await;
+        } else {
+            warn!("ble: [delete] on-device delete of route object {} found nothing", id);
         }
     }
 }

@@ -79,6 +79,32 @@ pub(crate) async fn wait_store_changed() {
     STORE_WAKE.wait().await
 }
 
+/// On-device route-delete request (epic #447, P6): the durable object id of a route the Route menu's
+/// hold-to-delete footer asked to remove. The **ride loop** posts it (it drains the app's
+/// `take_route_delete`), and the **BLE plane** — the sole owner of the `RefCell<ObjectStore>` —
+/// executes it via [`ObjectStore::delete_route`], so the delete goes through the same catalog +
+/// revision + `storeChanged` path a phone-initiated delete does (never raw SD). A coalescing
+/// `Signal` (level, one id in flight) rather than a queue: the footer fires one delete at a time and
+/// the drain runs promptly, so a second request can't stack up behind the first.
+///
+/// It lives as a module static, like [`STORE_CHANGED`], because the `ObjectStore` is trapped behind
+/// the BLE task's `RefCell` while the app lives in the ride loop — this is the lock-free hand-off
+/// from the loop that owns the *intent* to the plane that owns the *store*.
+static ROUTE_DELETE_REQ: Signal<CriticalSectionRawMutex, u16> = Signal::new();
+
+/// Post a route-delete request from the ride loop (epic #447, P6) — the BLE plane drains it and runs
+/// the `ObjectStore` delete. Overwrites any un-drained request (one delete in flight at a time).
+pub(crate) fn request_route_delete(id: u16) {
+    ROUTE_DELETE_REQ.signal(id);
+}
+
+/// The BLE plane's route-delete arm: resolves with the id to delete once the ride loop posts one.
+/// Folded into the BLE lifetime `join` so it drains whether the phone is connected or the device is
+/// parked advertising (see `ble::run`).
+pub(crate) async fn wait_route_delete() -> u16 {
+    ROUTE_DELETE_REQ.wait().await
+}
+
 // ==================== settings-coherence signals (#456) ====================
 //
 // Settings are the one thing both thread-mode planes edit: the ride loop (the on-device Settings

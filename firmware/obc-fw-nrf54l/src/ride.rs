@@ -385,6 +385,37 @@ pub(crate) async fn run_app(
             index_route = None; // and the chunk index to rebuild off the freshly-opened file
         }
 
+        // ── On-device route delete (epic #447, P6), on the hold-to-delete edge only ──
+        // The Route menu's guarded hold recorded a delete request; the app resolves it to the route's
+        // durable object id. Route it to storage **through `ObjectStore`** (never raw SD) so the
+        // catalog, revision, digest, and phone `storeChanged` notify all move together, exactly as a
+        // phone-initiated delete does — then the store-changed edge (next pass) brings the live
+        // rescan + P3 remap around, so `active_route` and the menu highlight follow by identity.
+        //
+        // `ble` builds: the `ObjectStore` lives behind the BLE task's `RefCell`, unreachable from
+        // here (they're separate thread-mode tasks; there is no shared handle). Post the id to the
+        // BLE plane (`request_route_delete`), which owns that `RefCell` and drains it whether the
+        // phone is connected or the device is parked advertising — that keeps the whole delete on the
+        // one `ObjectStore`, revision-and-notify coherent, and RefCell-legal (the ride loop never
+        // borrows the store). The rescan comes back on the resulting `STORE_CHANGED` edge above.
+        if app.has_route_delete() {
+            if let Some(_id) = app.take_route_delete() {
+                #[cfg(feature = "ble")]
+                crate::object_store::request_route_delete(_id);
+                // Map-only build: no `ObjectStore`/radio, so delete the file directly and re-scan the
+                // catalog locally (the same `load_routes` machinery the store-changed edge runs).
+                #[cfg(not(feature = "ble"))]
+                if let Some(s) = storage.as_mut() {
+                    if s.delete_route_by_id(_id) {
+                        load_routes(s, app);
+                        s.reconcile_route(None);
+                        prev_active = None; // force the reconcile below to re-derive off the new indexing
+                        index_route = None;
+                    }
+                }
+            }
+        }
+
         // Settings coherence, phone → device (#456): a BLE Config write persisted units + name to
         // RRAM but the live `App` copy never learned. Reload the BLE-owned fields into it *before*
         // the change-detection save below, so (a) the UI re-captions same-session and (b) the app's

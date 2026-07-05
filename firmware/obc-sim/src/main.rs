@@ -656,6 +656,14 @@ fn main() {
                 let _ = app.render_frame(&mut fb, &reader, None, rw as f32, rh as f32, |c| color_of(c, rtc));
             };
             apply_script(&mut app, script, &mut render);
+            // A scripted hold-to-delete in the Route menu (epic #447 P6) records a delete request;
+            // execute it here (delete the file + re-feed the id-carrying catalog) so the rendered
+            // frame reflects the route being gone, mirroring the GUI's per-frame drain.
+            if let Some(id) = app.take_route_delete() {
+                if store.delete_by_id(id) {
+                    app.set_routes_with_ids(store.catalog(), store.ids());
+                }
+            }
         }
 
         // The script may have loaded a route; open its geometry for the Map.
