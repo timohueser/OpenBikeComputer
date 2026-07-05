@@ -169,6 +169,14 @@ pub struct Storage {
     /// once the confirm animation has left the glass, so the save's blocking SD stretch never
     /// freezes the hold bulge (the "finishing a ride is laggy" bug).
     pending_save: Option<PendingSave>,
+    /// A ride object landed on the card this pass ([`run_pending_save`](Storage::run_pending_save)
+    /// committed an `RD{id}.ORD`) and the store edge hasn't been raised yet. Set by **every** save
+    /// path (the quiet-glass deferred run *and* the back-to-back flush inside
+    /// [`begin_track`](Storage::begin_track)/[`reconcile_track`](Storage::reconcile_track)), drained
+    /// once per ride-loop pass via [`take_ride_saved`](Storage::take_ride_saved) — which is what
+    /// makes a freshly-finished ride reach the Rides menu (and, on `ble`, the phone's catalog)
+    /// without a reboot.
+    ride_saved: bool,
     /// The BLE object plane's open route/ride file (a detail download in flight): `(filename,
     /// handle, length)`. A separate slot from `open_route` so a download can't disturb an active
     /// ride's geometry. The name is kept so the catalog scan can recognise (and read through)
@@ -303,6 +311,7 @@ impl Storage {
             open_map: None,
             open_track: None,
             pending_save: None,
+            ride_saved: false,
             open_object: None,
             open_upload: None,
             _cs: cs,
@@ -805,7 +814,21 @@ impl Storage {
         // Drop the temp only after the ride is confirmed written; otherwise keep it.
         if saved {
             let _ = self.vmgr.delete_file_in_dir(dir, TRACK_TMP);
+            // Raise the saved-ride flag for the ride loop's per-pass drain (`take_ride_saved`) —
+            // the edge that gets the fresh `RD{id}.ORD` into the Rides menu (and the phone's
+            // catalog) without a reboot. Set here, at the single commit point, so every caller
+            // (deferred run and back-to-back flush alike) raises it.
+            self.ride_saved = true;
         }
+    }
+
+    /// Drain the saved-ride flag: `true` exactly once after [`run_pending_save`] committed a ride
+    /// object. The ride loop checks this once per pass and raises the store edge from it — on `ble`
+    /// by posting [`crate::object_store::note_ride_saved`] (the BLE plane re-scans its catalog and
+    /// bumps the revision, so the phone's `storeChanged`/digest and the Rides menu learn from the
+    /// same edge), map-only by re-feeding the Rides menu directly.
+    pub fn take_ride_saved(&mut self) -> bool {
+        core::mem::take(&mut self.ride_saved)
     }
 
     /// One past the highest ride object id stored in `/tracks` (0 on a virgin card) — the **scan

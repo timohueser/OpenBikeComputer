@@ -20,9 +20,9 @@
 //! - **Downloads**: the `routeList` / `rideList` objects are built into a resident buffer; a route or
 //!   ride detail is served straight off the card (CRC pre-pass, then chunk reads — a stored
 //!   `RD{id}.ORD` *is* the wire object, so a ride download is verbatim).
-//! - **Rides are read-only here**: recorded by the map build's ride loop, scanned once at boot, never
-//!   mutated over the link — the device retains them until a future device-side delete, and the app
-//!   hides synced rides locally instead of deleting them.
+//! - **Rides are read-only over the link**: recorded by the ride loop (which posts the saved-ride
+//!   edge so this catalog follows mid-session) and deleted only from the device's Rides screen
+//!   (#454) — never by a phone command; the app hides synced rides locally instead of deleting them.
 //! - **Config ↔ settings**: the Config blob reads from / writes through the persisted [`Settings`]
 //!   (`device_name` + `units`), so a rename survives a power cycle and feeds the advertised name.
 //!
@@ -146,6 +146,26 @@ pub(crate) async fn wait_ride_delete() -> u16 {
     RIDE_DELETE_REQ.wait().await
 }
 
+/// A locally-finished ride committed its `RD{id}.ORD` (the ride loop drained
+/// [`Storage::take_ride_saved`](crate::sd::Storage::take_ride_saved)). The BLE plane drains this and
+/// runs [`ObjectStore::adopt_saved_rides`] — the `/tracks` rescan + revision bump — so **one edge**
+/// feeds every consumer exactly like an upload or delete does: the phone gets `storeChanged(ride)` +
+/// the fresh digest, and the resulting [`STORE_CHANGED`] edge re-feeds the on-device Rides menu next
+/// pass. Without it a finished ride was invisible everywhere until a reboot (the boot scan was the
+/// only thing that ever read `/tracks` into either catalog). A coalescing `Signal<()>` — the drain
+/// rescans the whole directory, so a burst of saves needs no queue and no payload.
+static RIDE_SAVED: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+/// Post the saved-ride edge from the ride loop (`ble` builds; map-only re-feeds its menu directly).
+pub(crate) fn note_ride_saved() {
+    RIDE_SAVED.signal(());
+}
+
+/// The BLE plane's saved-ride arm: resolves once a ride object lands after the last drain.
+pub(crate) async fn wait_ride_saved() {
+    RIDE_SAVED.wait().await
+}
+
 // ==================== settings-coherence signals (#456) ====================
 //
 // Settings are the one thing both thread-mode planes edit: the ride loop (the on-device Settings
@@ -209,9 +229,10 @@ pub struct ObjectStore {
     /// through a `RefCell` (never across an `await`) while the card is locked separately per call.
     settings: Settings,
     routes: Vec<ObjectSlot, MAX_ROUTES>,
-    /// The stored rides, scanned once at boot: the `ble` build has no ride loop, so the catalog can't
-    /// change while it runs (rides are recorded by the map build, then served here after a reflash —
-    /// same card).
+    /// The stored rides: scanned at boot and re-scanned on the saved-ride edge ([`RIDE_SAVED`]) —
+    /// since the de-split the `ble` build *is* the map build, so the ride loop records new rides
+    /// mid-session and this catalog must follow (it feeds the `rideList` object and the digest's
+    /// `ride_count` the phone syncs against).
     rides: Vec<ObjectSlot, MAX_RIDES>,
     /// The next fresh-upload object id (ids are never reused within a boot).
     next_id: u16,
@@ -440,6 +461,15 @@ impl ObjectStore {
         self.rides.remove(idx);
         self.bump_revision();
         true
+    }
+
+    /// Adopt locally-saved rides into the live catalog: re-scan `/tracks` and bump the revision, so
+    /// the phone's `storeChanged(ride)` + digest and the ride loop's [`STORE_CHANGED`] edge (→ the
+    /// Rides menu re-feed) all move from this one edge — the exact path an upload commit or a delete
+    /// takes. Driven by [`wait_ride_saved`] in `ble::run`'s `ride_saved_task`.
+    pub fn adopt_saved_rides(&mut self, shared: &mut SharedStore) {
+        self.rescan_rides(shared);
+        self.bump_revision();
     }
 
     /// Mark a ride as synced (epic #447, P7): set the `/tracks` synced-set flag when a ride download

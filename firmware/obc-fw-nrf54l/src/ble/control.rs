@@ -35,11 +35,11 @@ use super::gatt::{config_blob, Server};
 use super::state;
 use super::state::{publish, transfer_result, Armed, StatusBytes, TRANSFER_ABORT, TRANSFER_ACTIVE, TRANSFER_ARM};
 
-/// What a `command` write did: the `commandResult` to notify, plus whether the store changed
-/// (→ the caller also notifies `storeChanged` + the digest characteristic).
+/// What a `command` write did: the `commandResult` to notify, plus which store (if any) it moved
+/// (→ the caller also notifies `storeChanged` + the digest characteristic, typed accordingly).
 struct CommandOutcome {
     result: StatusBytes,
-    store_changed: bool,
+    store_changed: Option<ObjectType>,
 }
 
 /// Execute a `command` write. `deleteObject` (cmd 1: `type u8 · object_id u16`) deletes a stored route
@@ -56,17 +56,17 @@ fn run_command(data: &[u8], store: &RefCell<ObjectStore>, shared: &mut SharedSto
                 Ok(ObjectType::Route) => {
                     if store.borrow_mut().delete_route(shared, id) {
                         info!("ble: [cmd] deleted route object {}", id);
-                        (CommandStatus::Ok, true)
+                        (CommandStatus::Ok, Some(ObjectType::Route))
                     } else {
-                        (CommandStatus::NotFound, false)
+                        (CommandStatus::NotFound, None)
                     }
                 }
                 // Rides are never deleted over the link (see the fn doc); nothing else deletes.
-                _ => (CommandStatus::NotFound, false),
+                _ => (CommandStatus::NotFound, None),
             }
         }
-        (1, _) => (CommandStatus::Error, false), // deleteObject with a truncated arg list
-        _ => (CommandStatus::UnknownCommand, false),
+        (1, _) => (CommandStatus::Error, None), // deleteObject with a truncated arg list
+        _ => (CommandStatus::UnknownCommand, None),
     };
     CommandOutcome { result: StatusMessage::CommandResult(CommandResult::new(cmd, status)).encode(), store_changed }
 }
@@ -174,7 +174,7 @@ pub(crate) async fn serve_connection(
                 // validated transfer instead arms the CoC data plane (`serve_coc`), which answers when
                 // it ends. Store borrows stay inside the sync `with_data` closures — never across an await.
                 let mut status_msg: Option<StatusBytes> = None;
-                let mut store_changed = false;
+                let mut store_changed: Option<ObjectType> = None;
                 let mut config_written = false;
                 let reply = match event {
                     GattEvent::Write(e) => {
@@ -248,8 +248,8 @@ pub(crate) async fn serve_connection(
                 if let Some((buf, len)) = status_msg {
                     notify_bounded(stack, server, server.obc.status.handle, &buf[..len], "status").await;
                 }
-                if store_changed {
-                    publish_store_change(stack, server, store).await;
+                if let Some(ty) = store_changed {
+                    publish_store_change(stack, server, store, ty).await;
                 }
                 if config_written {
                     // Re-seed the characteristic with the canonical blob (what a read serves).

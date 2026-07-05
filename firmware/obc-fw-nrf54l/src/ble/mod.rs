@@ -64,7 +64,7 @@ use core::sync::atomic::Ordering;
 
 use defmt::{info, unwrap, warn};
 use embassy_executor::Spawner;
-use embassy_futures::join::join4;
+use embassy_futures::join::{join4, join5};
 use embassy_futures::select::{select, select3, Either, Either3};
 use embassy_nrf::mode::Blocking;
 use embassy_nrf::{bind_interrupts, cracen, peripherals, Peri};
@@ -301,11 +301,13 @@ pub async fn run(
     // The lifecycle loop: advertise → serve → re-advertise, forever, with no terminal state — and,
     // since #455, a parked **Off** state the rider's Bluetooth switch gates. The route-delete task
     // runs beside it for the whole lifetime (epic #447, P6) so an on-device delete executes whether
-    // the phone is connected, the device is parked advertising, or the radio is off.
-    join4(
+    // the phone is connected, the device is parked advertising, or the radio is off; the ride-saved
+    // task likewise, so a ride finished with the radio off still reaches the catalog + Rides menu.
+    join5(
         host_task(runner),
         route_delete_task(&stack, &server, &store, shared),
         ride_delete_task(&stack, &server, &store, shared),
+        ride_saved_task(&stack, &server, &store, shared),
         async {
             loop {
                 // A Forget-phone request latched between phases: honour it before the next advertise,
@@ -528,7 +530,7 @@ async fn route_delete_task(
         if deleted {
             info!("ble: [delete] on-device delete of route object {}", id);
             // Notify a connected phone (harmless no-op when disconnected) and re-seed the digest.
-            data_plane::publish_store_change(stack, server, store).await;
+            data_plane::publish_store_change(stack, server, store, obc_ble::ObjectType::Route).await;
         } else {
             warn!("ble: [delete] on-device delete of route object {} found nothing", id);
         }
@@ -555,9 +557,33 @@ async fn ride_delete_task(
         };
         if deleted {
             info!("ble: [delete] on-device delete of ride object {}", id);
-            data_plane::publish_store_change(stack, server, store).await;
+            data_plane::publish_store_change(stack, server, store, obc_ble::ObjectType::Ride).await;
         } else {
             warn!("ble: [delete] on-device delete of ride object {} found nothing", id);
         }
+    }
+}
+
+/// Drain the ride loop's **saved-ride** edge for the whole `ble::run` lifetime: a locally-finished
+/// ride committed its `RD{id}.ORD` (`Storage::run_pending_save`), so re-scan `/tracks` into the
+/// [`ObjectStore`] catalog and bump the revision ([`ObjectStore::adopt_saved_rides`]). That one edge
+/// then feeds everyone the way an upload commit does: a connected phone gets `storeChanged(ride)` +
+/// the fresh digest (its next `listRides` includes the ride), and the `STORE_CHANGED` edge re-feeds
+/// the on-device Rides menu next pass. Before this task existed, both catalogs were boot-scans only
+/// and a freshly-finished ride was invisible everywhere until a reboot.
+async fn ride_saved_task(
+    stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
+    server: &Server<'_>,
+    store: &core::cell::RefCell<ObjectStore>,
+    shared: &'static SharedStoreMutex,
+) -> ! {
+    loop {
+        crate::object_store::wait_ride_saved().await;
+        {
+            let mut guard = shared.lock().await;
+            store.borrow_mut().adopt_saved_rides(&mut guard);
+        }
+        info!("ble: [store] adopted freshly-saved ride(s) into the catalog");
+        data_plane::publish_store_change(stack, server, store, obc_ble::ObjectType::Ride).await;
     }
 }

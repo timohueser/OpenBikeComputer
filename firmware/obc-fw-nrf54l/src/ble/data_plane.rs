@@ -120,12 +120,13 @@ pub(crate) async fn publish_store_change(
     stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
     server: &Server<'_>,
     store: &RefCell<ObjectStore>,
+    ty: ObjectType,
 ) {
     let digest = store.borrow().digest();
     let bytes = digest.encode();
     let _ = server.set(&server.obc.object_store, &bytes);
     notify_bounded(stack, server, server.obc.object_store.handle, &bytes, "digest").await;
-    let msg = StatusMessage::StoreChanged(StoreChanged { ty: ObjectType::Route, revision: digest.revision });
+    let msg = StatusMessage::StoreChanged(StoreChanged { ty, revision: digest.revision });
     notify_status(server, stack, msg.encode()).await;
 }
 
@@ -210,7 +211,7 @@ async fn run_upload(
     let offset = if committed { rx.total_len() } else { 0 };
     notify_status(server, stack, transfer_result_at(id, status, offset)).await;
     if committed {
-        publish_store_change(stack, server, store).await;
+        publish_store_change(stack, server, store, ObjectType::Route).await;
     }
     TransferOutcome::Answered
 }
