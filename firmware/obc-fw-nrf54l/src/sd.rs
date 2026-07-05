@@ -75,12 +75,29 @@ const UPLOAD_TMP: &str = "UPLOAD.TMP";
 pub(crate) const SIDELOAD_ID_BASE: u16 = 0xFF00;
 
 /// The concrete SD stack for this board: embassy-nrf's blocking `Spim` wrapped as the `SpiDevice`
-/// the card driver wants, an [`SdCard`], and a 4-file/4-dir [`VolumeManager`]. The chip-select is
+/// the card driver wants, an [`SdCard`], and a 6-file/4-dir [`VolumeManager`]. The chip-select is
 /// a no-op [`NoCs`] — the *real* CS (P1_12) is held low for the whole session (see [`NoCs`]/[`init`]).
+///
+/// **Why 6 open files** (the default 4 loses mid-ride uploads): riding with tracking holds three
+/// handles for the whole session — the map stream, the active route's geometry, and the ORD track
+/// log. A BLE route upload adds its temp (4), and `upload_commit`'s copy-promote (embedded-sdmmc
+/// can't rename, see the note above [`Storage::upload_commit`]) holds the reopened temp **and**
+/// the final `.OBR` at once — a 5-handle peak, which the 4-slot default answered with a failed
+/// commit exactly and only mid-ride. 6 = that peak + one slot of headroom; each slot is a few
+/// dozen bytes of `FileInfo`, so the RAM cost is noise.
 type SdSpi = Spim<'static>;
 type SdDev = ExclusiveDevice<SdSpi, NoCs, Delay>;
 type Sd = SdCard<SdDev, Delay>;
-type Vmgr = VolumeManager<Sd, NullTime>;
+/// The open-handle budget (see the 6-file note above) — one set of consts so the manager and the
+/// `obc-platform` wrapper aliases below can never drift apart.
+const SD_MAX_DIRS: usize = 4;
+const SD_MAX_FILES: usize = 6;
+const SD_MAX_VOLUMES: usize = 1;
+type Vmgr = VolumeManager<Sd, NullTime, SD_MAX_DIRS, SD_MAX_FILES, SD_MAX_VOLUMES>;
+/// [`SdByteSource`] over this board's manager (the wrappers are generic over the handle budget).
+type Source<'a> = SdByteSource<'a, Sd, NullTime, SD_MAX_DIRS, SD_MAX_FILES, SD_MAX_VOLUMES>;
+/// [`SdTrackSink`] over this board's manager.
+type TrackSinkT<'a> = SdTrackSink<'a, Sd, NullTime, SD_MAX_DIRS, SD_MAX_FILES, SD_MAX_VOLUMES>;
 
 /// FAT timestamps need a clock; the device has none yet (see [`obc_route::TrackPoint::t_ms`]),
 /// so every file gets the epoch. Real dates wait on a clock source.
@@ -229,7 +246,9 @@ impl Storage {
 
     /// Mount the first FAT volume and open the root / `routes` / `tracks` directories.
     fn mount(card: Sd, cs: Output<'static>) -> Option<Storage> {
-        let vmgr = VolumeManager::new(card, NullTime);
+        // `new()` is pinned to the 4,4,1 defaults — the custom budget goes through `new_with_limits`
+        // (5000 = the id offset `new()` itself uses).
+        let vmgr: Vmgr = VolumeManager::new_with_limits(card, NullTime, 5000);
         let volume = match vmgr.open_raw_volume(VolumeIdx(0)) {
             Ok(v) => v,
             Err(e) => {
@@ -373,7 +392,7 @@ impl Storage {
     /// no map was opened ([`open_map`](Self::open_map) returned `None`). Cheap — the source just wraps
     /// the already-open handle, so it's rebuilt every redraw, keeping no borrow across the `&mut self`
     /// route/track operations.
-    pub fn map_source(&self) -> Option<SdByteSource<'_, Sd, NullTime>> {
+    pub fn map_source(&self) -> Option<Source<'_>> {
         self.open_map.map(|(f, len)| SdByteSource::new(&self.vmgr, f, len))
     }
 
@@ -400,7 +419,7 @@ impl Storage {
     /// A [`ByteSource`](obc_route::ByteSource) over the active route's open file, for opening a
     /// [`RouteReader`](obc_route::RouteReader) to stream geometry from. `None` when no route is
     /// loaded.
-    pub fn route_source(&self) -> Option<SdByteSource<'_, Sd, NullTime>> {
+    pub fn route_source(&self) -> Option<Source<'_>> {
         self.open_route.map(|(_, f, len)| SdByteSource::new(&self.vmgr, f, len))
     }
 
@@ -444,7 +463,7 @@ impl Storage {
     }
 
     /// The [`TrackSink`](obc_app::TrackSink) for the open log, or `None` when not recording.
-    pub fn track_sink(&self) -> Option<SdTrackSink<'_, Sd, NullTime>> {
+    pub fn track_sink(&self) -> Option<TrackSinkT<'_>> {
         self.open_track.as_ref().map(|o| SdTrackSink::new(&self.vmgr, o.file))
     }
 
@@ -901,7 +920,7 @@ impl Storage {
 
     /// A [`ByteSource`](obc_route::ByteSource) over the open object — the CRC pre-pass and the
     /// chunked sends both read through it.
-    pub fn object_source(&self) -> Option<SdByteSource<'_, Sd, NullTime>> {
+    pub fn object_source(&self) -> Option<Source<'_>> {
         self.open_object.map(|(f, len)| SdByteSource::new(&self.vmgr, f, len))
     }
 
