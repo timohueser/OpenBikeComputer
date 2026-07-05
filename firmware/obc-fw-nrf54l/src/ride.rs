@@ -311,10 +311,30 @@ pub(crate) async fn run_app(
             }
         }
 
+        // Feed the input plane's live hold-progress before anything below consults it: every
+        // hold-deferral rule this pass runs (`hold_charging` — the upload popups' delivery and
+        // auto-close, the passkey card's open/close) must read *this* pass's charge state. A loop
+        // woken from warm sleep by INPUT_WAKE otherwise saw the previous pass's seconds-stale 0.0
+        // and could land or close a host-pushed screen mid-charge.
+        app.set_hold_progress(display.hold_progress());
+
         // Apply the high-priority plane's recognised gestures, in order, then advance animations.
         // The screen transition lands a frame after the overlay already confirmed the press.
+        // A gesture that changed the screen stack invalidates any hold charging at that moment —
+        // it was aimed at the *old* top (e.g. a popup's "Save & new"), and completing it onto the
+        // new one can be destructive (the Route menu's hold-to-delete footer, issue #480): drop
+        // any `Hold`/`BackHold` queued behind the transition and cancel the input plane's
+        // in-flight recognition.
+        let mut holds_cancelled = false;
         while let Ok(g) = GESTURES.try_receive() {
+            if holds_cancelled && matches!(g, obc_app::Gesture::Hold | obc_app::Gesture::BackHold) {
+                continue;
+            }
             app.apply_gesture(g);
+            holds_cancelled |= app.take_hold_cancel();
+        }
+        if holds_cancelled {
+            display.cancel_holds();
         }
         app.advance_animations(InputClock(now));
 
@@ -378,8 +398,14 @@ pub(crate) async fn run_app(
         #[cfg(feature = "ble")]
         if app.take_store_changed() > 0 {
             if let Some(s) = storage.as_mut() {
-                load_routes(s, app);
+                // Close the active route's geometry handle BEFORE the scan: embedded-sdmmc
+                // refuses a second open of an open file (`FileAlreadyOpen`, even ReadOnly), so a
+                // scan that met the still-open geometry silently omitted it — and the identity
+                // remap then unloaded the navigated route and it vanished from the Route menu
+                // until the next rescan (the #480 vanishing-routes bug). The forced reconcile
+                // below reopens it off the fresh tables.
                 s.reconcile_route(None);
+                load_routes(s, app);
             }
             prev_active = None; // force reconcile_route/track to re-run against the new indexing
             index_route = None; // and the chunk index to rebuild off the freshly-opened file
@@ -404,14 +430,17 @@ pub(crate) async fn run_app(
                 crate::object_store::request_route_delete(_id);
                 // Map-only build: no `ObjectStore`/radio, so delete the file directly and re-scan the
                 // catalog locally (the same `load_routes` machinery the store-changed edge runs).
+                // Geometry handle closed FIRST, for the same two reasons as the store-changed
+                // rescan above: an open file can't be deleted, and a scan that meets it silently
+                // drops it from the catalog (#480).
                 #[cfg(not(feature = "ble"))]
                 if let Some(s) = storage.as_mut() {
+                    s.reconcile_route(None);
                     if s.delete_route_by_id(_id) {
                         load_routes(s, app);
-                        s.reconcile_route(None);
-                        prev_active = None; // force the reconcile below to re-derive off the new indexing
-                        index_route = None;
                     }
+                    prev_active = None; // force the reconcile below to re-derive off the new indexing
+                    index_route = None;
                 }
             }
         }

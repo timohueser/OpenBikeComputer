@@ -152,9 +152,13 @@ pub struct Storage {
     /// once the confirm animation has left the glass, so the save's blocking SD stretch never
     /// freezes the hold bulge (the "finishing a ride is laggy" bug).
     pending_save: Option<PendingSave>,
-    /// The BLE object plane's open route file (a detail download in flight): `(handle, length)`.
-    /// A separate slot from `open_route` so a download can't disturb an active ride's geometry.
-    open_object: Option<(RawFile, u32)>,
+    /// The BLE object plane's open route/ride file (a detail download in flight): `(filename,
+    /// handle, length)`. A separate slot from `open_route` so a download can't disturb an active
+    /// ride's geometry. The name is kept so the catalog scan can recognise (and read through)
+    /// this handle instead of a second open — embedded-sdmmc refuses every second open of an
+    /// open file (`FileAlreadyOpen`, even ReadOnly), which would silently drop the route from
+    /// the catalog (issue #480).
+    open_object: Option<(ShortFileName, RawFile, u32)>,
     /// The in-flight BLE upload's open [`UPLOAD_TMP`] handle.
     open_upload: Option<RawFile>,
     /// The real chip-select (P1_12), held LOW for the whole session so the card stays selected.
@@ -303,31 +307,75 @@ impl Storage {
     /// us skip macOS `._*`/`.DS_Store` clutter (any dot-prefixed name).
     pub fn scan_routes(&mut self) -> Vec<RouteSummary, MAX_ROUTES> {
         let mut catalog: Vec<RouteSummary, MAX_ROUTES> = Vec::new();
+        // A file this `Storage` already holds open can't be opened a second time — embedded-sdmmc
+        // 0.9 answers `FileAlreadyOpen` for *any* re-open, ReadOnly included — so a scan that meets
+        // one must read through the existing handle or the route silently drops out of the catalog
+        // and the identity remap unloads it from the menu (the #480 vanishing-routes bug). The ride
+        // loop closes the geometry handle before its rescan; this is the backstop for that, and the
+        // fix for a scan racing an in-flight detail download (`open_object`). The geometry's name is
+        // resolved against the *outgoing* table, before the clear below.
+        let open_geometry =
+            self.open_route.and_then(|(i, f, len)| self.route_files.get(i).map(|n| (n.clone(), f, len)));
         self.route_files.clear();
         self.route_ids.clear();
         let Some(dir) = self.routes_dir else { return catalog };
 
         let mut names: Vec<ShortFileName, MAX_ROUTES> = Vec::new();
+        let mut overflow = false;
         self.iter_dir_lfn(dir, |e, long| {
-            if is_route_entry(e, long) && !names.is_full() {
-                let _ = names.push(e.name.clone());
+            if is_route_entry(e, long) && names.push(e.name.clone()).is_err() {
+                overflow = true;
             }
         });
+        if overflow {
+            defmt::warn!("SD: scan: more than {=usize} route files — the excess is not listed", MAX_ROUTES);
+        }
 
         for n in &names {
             // Id first: a route without an id can't be listed (the remap and the BLE catalog both
             // key on it) — only the exhausted side-load band hits this, warned in `sideload_id`.
-            let Some(id) = uploaded_route_id(n).or_else(|| self.sideload_id(n)) else { continue };
-            let Ok(file) = self.vmgr.open_file_in_dir(dir, n, Mode::ReadOnly) else { continue };
-            let len = self.vmgr.file_length(file).unwrap_or(0);
+            let Some(id) = uploaded_route_id(n).or_else(|| self.sideload_id(n)) else {
+                defmt::warn!("SD: scan: {} has no object id — not listed", defmt::Debug2Format(n));
+                continue;
+            };
+            // Open the file — or serve it through a handle this `Storage` already holds (above).
+            let (file, len, borrowed) = match self.vmgr.open_file_in_dir(dir, n, Mode::ReadOnly) {
+                Ok(f) => (f, self.vmgr.file_length(f).unwrap_or(0), false),
+                Err(e) => match (&open_geometry, &self.open_object) {
+                    (Some((gn, gf, glen)), _) if gn == n => (*gf, *glen, true),
+                    (_, Some((on, of, olen))) if on == n => (*of, *olen, true),
+                    _ => {
+                        defmt::warn!(
+                            "SD: scan: cannot open {}: {} — route not listed until the next rescan",
+                            defmt::Debug2Format(n),
+                            defmt::Debug2Format(&e)
+                        );
+                        continue;
+                    }
+                },
+            };
             let src = SdByteSource::new(&self.vmgr, file, len);
-            if let Ok(sum) = RouteSummary::read(&src) {
-                if catalog.push(sum).is_ok() {
-                    let _ = self.route_files.push(n.clone());
-                    let _ = self.route_ids.push(id);
+            match RouteSummary::read(&src) {
+                Ok(sum) => {
+                    if catalog.push(sum).is_ok() {
+                        let _ = self.route_files.push(n.clone());
+                        let _ = self.route_ids.push(id);
+                    }
                 }
+                Err(_) => defmt::warn!("SD: scan: {} unreadable — not listed", defmt::Debug2Format(n)),
             }
-            let _ = self.vmgr.close_file(file);
+            if !borrowed {
+                let _ = self.vmgr.close_file(file);
+            }
+        }
+        // The open geometry's catalog *index* may have moved with the rebuilt tables — re-point it
+        // so `reconcile_route`/`route_source` keep serving the right file (or release the handle if
+        // the file left the catalog altogether).
+        if let Some((gn, gf, glen)) = open_geometry {
+            self.open_route = self.route_files.iter().position(|n| *n == gn).map(|i| (i, gf, glen));
+            if self.open_route.is_none() {
+                let _ = self.vmgr.close_file(gf);
+            }
         }
         defmt::info!("SD: {=usize} route(s) in /routes", catalog.len());
         catalog
@@ -650,8 +698,19 @@ impl Storage {
 
     /// A stored route's byte length + the wire facts its `routeList` entry serves. One header (+ v2
     /// extension) read; `None` when the file doesn't parse as OBCR.
+    ///
+    /// The actively-open geometry is read **through its existing handle**: embedded-sdmmc refuses
+    /// a second open (`FileAlreadyOpen`), which otherwise failed every mid-ride `routeList` build
+    /// (the whole list errors on one unreadable slot, by design) and made `upload_finish`'s
+    /// liveness re-check misread the open — very much present — file as gone (issue #480).
     pub fn route_object_info(&self, name: &ShortFileName) -> Option<(u32, RouteObjectInfo)> {
         let dir = self.routes_dir?;
+        if let Some((i, f, len)) = self.open_route {
+            if self.route_files.get(i) == Some(name) {
+                let info = RouteObjectInfo::read(&SdByteSource::new(&self.vmgr, f, len)).ok()?;
+                return Some((len, info));
+            }
+        }
         let file = self.vmgr.open_file_in_dir(dir, name, Mode::ReadOnly).ok()?;
         let len = self.vmgr.file_length(file).unwrap_or(0);
         let info = RouteObjectInfo::read(&SdByteSource::new(&self.vmgr, file, len)).ok();
@@ -673,10 +732,39 @@ impl Storage {
         zeroed
     }
 
-    /// Delete a stored route file (the `deleteObject` command / a replace-upload's swap).
+    /// Release the active route's open geometry handle **if** it is `name`. embedded-sdmmc 0.9
+    /// refuses to delete — or truncate-open, or re-open — a file with a live handle
+    /// (`FileAlreadyOpen`), so every path about to delete or replace a route file must call this
+    /// first: an idle-previewed route keeps its geometry open, and a phone-side delete/replace of
+    /// the navigated route arrives with it open too. Dropping the handle here is always safe —
+    /// the store-changed edge forces the ride loop's reconcile to re-derive and reopen
+    /// (`prev_active = None`).
+    fn close_route_if_open(&mut self, name: &ShortFileName) {
+        if let Some((i, f, _)) = self.open_route {
+            if self.route_files.get(i) == Some(name) {
+                let _ = self.vmgr.close_file(f);
+                self.open_route = None;
+            }
+        }
+    }
+
+    /// Delete a stored route file (the `deleteObject` command / a replace-upload's swap / the
+    /// on-device hold-to-delete). Closes our own open geometry handle on it first — an open file
+    /// can't be deleted (see [`close_route_if_open`](Self::close_route_if_open)).
     pub fn delete_route_file(&mut self, name: &ShortFileName) -> bool {
         let Some(dir) = self.routes_dir else { return false };
-        self.vmgr.delete_file_in_dir(dir, name).is_ok()
+        self.close_route_if_open(name);
+        match self.vmgr.delete_file_in_dir(dir, name) {
+            Ok(()) => true,
+            Err(e) => {
+                defmt::warn!(
+                    "SD: delete {} failed: {} — file kept, catalog unchanged",
+                    defmt::Debug2Format(name),
+                    defmt::Debug2Format(&e)
+                );
+                false
+            }
+        }
     }
 
     /// Delete a stored route by its **object id** — the map-only (non-`ble`) build's on-device
@@ -762,7 +850,18 @@ impl Storage {
         // discipline: a bus glitch can never green-light overwriting a stored route).
         let final_name = match replace {
             Some(name) => {
-                let _ = self.vmgr.delete_file_in_dir(dir, name);
+                // A replace of the actively-navigated (or idle-previewed) route arrives with its
+                // geometry handle open — release it first, or both this delete *and* the
+                // truncate-open below are refused (`FileAlreadyOpen`) and the whole commit fails
+                // with the old file intact but the upload lost (issue #480).
+                self.close_route_if_open(name);
+                if let Err(e) = self.vmgr.delete_file_in_dir(dir, name) {
+                    defmt::warn!(
+                        "SD: replace: cannot delete old {}: {}",
+                        defmt::Debug2Format(name),
+                        defmt::Debug2Format(&e)
+                    );
+                }
                 name.clone()
             }
             None => match self.fresh_upload_name(dir, fresh_id) {
@@ -779,6 +878,11 @@ impl Storage {
         let copied = match self.vmgr.open_file_in_dir(dir, &final_name, Mode::ReadWriteCreateOrTruncate) {
             Ok(dst_file) => {
                 let ok = self.copy_with_held_magic(src_file, dst_file, len);
+                if !ok {
+                    // On a replace the old file is already deleted — this is the destructive
+                    // window (temp dropped below, old bytes gone): must be loud, never silent.
+                    defmt::warn!("SD: upload copy failed — commit aborted (a replaced route's old file is gone)");
+                }
                 let _ = self.vmgr.close_file(dst_file);
                 ok
             }
@@ -914,19 +1018,19 @@ impl Storage {
         self.close_object();
         let file = self.vmgr.open_file_in_dir(dir?, name, Mode::ReadOnly).ok()?;
         let len = self.vmgr.file_length(file).unwrap_or(0);
-        self.open_object = Some((file, len));
+        self.open_object = Some((name.clone(), file, len));
         Some(len)
     }
 
     /// A [`ByteSource`](obc_route::ByteSource) over the open object — the CRC pre-pass and the
     /// chunked sends both read through it.
     pub fn object_source(&self) -> Option<Source<'_>> {
-        self.open_object.map(|(f, len)| SdByteSource::new(&self.vmgr, f, len))
+        self.open_object.as_ref().map(|(_, f, len)| SdByteSource::new(&self.vmgr, *f, *len))
     }
 
     /// Close the detail-download handle (transfer done, aborted, or superseded).
     pub fn close_object(&mut self) {
-        if let Some((file, _)) = self.open_object.take() {
+        if let Some((_, file, _)) = self.open_object.take() {
             let _ = self.vmgr.close_file(file);
         }
     }
