@@ -18,22 +18,33 @@ use obc_route::{encode_record, ByteSink, ByteSource, Error, TrackPoint};
 /// [`RouteReader`](obc_route::RouteReader) / [`RouteSummary::read`]. Each
 /// [`read_at`](ByteSource::read_at) seeks the file then reads, so a route never has to be resident.
 /// The length is captured once at construction (the file doesn't grow under a reader).
-pub struct SdByteSource<'a, D: BlockDevice, T: TimeSource> {
-    vmgr: &'a VolumeManager<D, T>,
+pub struct SdByteSource<
+    'a,
+    D: BlockDevice,
+    T: TimeSource,
+    const MAX_DIRS: usize = 4,
+    const MAX_FILES: usize = 4,
+    const MAX_VOLUMES: usize = 1,
+> {
+    vmgr: &'a VolumeManager<D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>,
     file: RawFile,
     len: u32,
 }
 
-impl<'a, D: BlockDevice, T: TimeSource> SdByteSource<'a, D, T> {
+impl<'a, D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: usize, const MAX_VOLUMES: usize>
+    SdByteSource<'a, D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>
+{
     /// Wrap an already-open `file` (its length is `len`) for reading. The caller owns the
     /// handle's lifetime: the source borrows the manager but not the handle, so closing the
     /// file is the caller's job once the source is dropped.
-    pub fn new(vmgr: &'a VolumeManager<D, T>, file: RawFile, len: u32) -> Self {
+    pub fn new(vmgr: &'a VolumeManager<D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>, file: RawFile, len: u32) -> Self {
         SdByteSource { vmgr, file, len }
     }
 }
 
-impl<D: BlockDevice, T: TimeSource> ByteSource for SdByteSource<'_, D, T> {
+impl<D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: usize, const MAX_VOLUMES: usize> ByteSource
+    for SdByteSource<'_, D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>
+{
     fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), Error> {
         // Seeking past EOF is an out-of-range request, not a medium failure.
         self.vmgr.file_seek_from_start(self.file, offset).map_err(|_| Error::BadOffset)?;
@@ -62,19 +73,30 @@ impl<D: BlockDevice, T: TimeSource> ByteSource for SdByteSource<'_, D, T> {
 /// `patch_at` is unused by the on-device flow (the `.obct` log is append-only and `track_to_gpx`
 /// writes front-to-back); it's implemented for `ByteSink` completeness + the host-side route
 /// conversion that does patch a header.
-pub struct SdByteSink<'a, D: BlockDevice, T: TimeSource> {
-    vmgr: &'a VolumeManager<D, T>,
+pub struct SdByteSink<
+    'a,
+    D: BlockDevice,
+    T: TimeSource,
+    const MAX_DIRS: usize = 4,
+    const MAX_FILES: usize = 4,
+    const MAX_VOLUMES: usize = 1,
+> {
+    vmgr: &'a VolumeManager<D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>,
     file: RawFile,
 }
 
-impl<'a, D: BlockDevice, T: TimeSource> SdByteSink<'a, D, T> {
+impl<'a, D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: usize, const MAX_VOLUMES: usize>
+    SdByteSink<'a, D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>
+{
     /// Wrap an open, writable `file`. The caller flushes/closes it when done.
-    pub fn new(vmgr: &'a VolumeManager<D, T>, file: RawFile) -> Self {
+    pub fn new(vmgr: &'a VolumeManager<D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>, file: RawFile) -> Self {
         SdByteSink { vmgr, file }
     }
 }
 
-impl<D: BlockDevice, T: TimeSource> ByteSink for SdByteSink<'_, D, T> {
+impl<D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: usize, const MAX_VOLUMES: usize> ByteSink
+    for SdByteSink<'_, D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>
+{
     fn write(&mut self, buf: &[u8]) -> Result<(), Error> {
         self.vmgr.write(self.file, buf).map_err(|_| Error::Io)
     }
@@ -96,15 +118,24 @@ impl<D: BlockDevice, T: TimeSource> ByteSink for SdByteSink<'_, D, T> {
 /// [`record`](TrackSink::record) is infallible by the app's contract, so a failed SD write can't
 /// propagate — it's latched in [`had_error`](Self::had_error) so the board can surface "the ride log
 /// dropped points" after the fact, rather than handling a write error mid-frame.
-pub struct SdTrackSink<'a, D: BlockDevice, T: TimeSource> {
-    vmgr: &'a VolumeManager<D, T>,
+pub struct SdTrackSink<
+    'a,
+    D: BlockDevice,
+    T: TimeSource,
+    const MAX_DIRS: usize = 4,
+    const MAX_FILES: usize = 4,
+    const MAX_VOLUMES: usize = 1,
+> {
+    vmgr: &'a VolumeManager<D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>,
     file: RawFile,
     error: bool,
 }
 
-impl<'a, D: BlockDevice, T: TimeSource> SdTrackSink<'a, D, T> {
+impl<'a, D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: usize, const MAX_VOLUMES: usize>
+    SdTrackSink<'a, D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>
+{
     /// Wrap the open, append-mode `.obct` log file.
-    pub fn new(vmgr: &'a VolumeManager<D, T>, file: RawFile) -> Self {
+    pub fn new(vmgr: &'a VolumeManager<D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>, file: RawFile) -> Self {
         SdTrackSink { vmgr, file, error: false }
     }
 
@@ -115,7 +146,9 @@ impl<'a, D: BlockDevice, T: TimeSource> SdTrackSink<'a, D, T> {
     }
 }
 
-impl<D: BlockDevice, T: TimeSource> TrackSink for SdTrackSink<'_, D, T> {
+impl<D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: usize, const MAX_VOLUMES: usize> TrackSink
+    for SdTrackSink<'_, D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>
+{
     fn record(&mut self, p: TrackPoint) {
         if self.vmgr.write(self.file, &encode_record(&p)).is_err() {
             self.error = true;
