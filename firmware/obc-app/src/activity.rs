@@ -47,6 +47,47 @@ pub enum TrackAction {
     Discard,
 }
 
+/// A one-shot **route-planning request** (epic #116, R4): the POI create-route confirm asks the
+/// host to run the on-device router from the rider's fix to the POI. Coordinates are `(lon, lat)`
+/// microdegrees (the OBCM/renderer convention); the name is the POI's stored name (or its subtype
+/// fallback label, matching the list row), carried as a fixed inline buffer so the request — like
+/// every other one-shot on [`Activity`] — stays `Copy`. Drained by
+/// [`App::take_nav_request`](crate::App::take_nav_request); the host answers with
+/// [`App::notify_nav_result`](crate::App::notify_nav_result).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NavRequest {
+    /// The rider's fix, `(lon, lat)` µdeg — the route's start.
+    pub from: (i32, i32),
+    /// The POI coordinate, `(lon, lat)` µdeg — the route's goal.
+    pub to: (i32, i32),
+    /// The route name bytes (UTF-8, `name_len` valid) — read via [`name`](NavRequest::name).
+    name: [u8; obc_reader::POI_NAME_MAX],
+    name_len: u8,
+}
+
+impl NavRequest {
+    /// Build a request, truncating `name` to the POI name cap on a char boundary.
+    pub fn new(from: (i32, i32), to: (i32, i32), name: &str) -> Self {
+        let mut buf = [0u8; obc_reader::POI_NAME_MAX];
+        let mut len = 0usize;
+        for ch in name.chars() {
+            let n = ch.len_utf8();
+            if len + n > buf.len() {
+                break;
+            }
+            ch.encode_utf8(&mut buf[len..]);
+            len += n;
+        }
+        NavRequest { from, to, name: buf, name_len: len as u8 }
+    }
+
+    /// The route name to bake into the emitted OBCR (what the catalog then lists).
+    pub fn name(&self) -> &str {
+        // The buffer was filled from `&str` chars, so it is valid UTF-8 by construction.
+        core::str::from_utf8(&self.name[..self.name_len as usize]).unwrap_or("")
+    }
+}
+
 /// What [`record_motion`](Activity::record_motion) decided about one fix: whether to **log**
 /// it (feed the breadcrumb + ride log) and whether it **starts a new track segment** (the
 /// first fix of a session, or the first after a pause / GPS gap → a fresh GPX `<trkseg>`).
@@ -92,6 +133,11 @@ pub struct Activity {
     /// twin of [`delete_route`](Activity::delete_route); the host deletes the ride object + rescans,
     /// and the resulting store-changed edge re-feeds the ride catalog with it gone.
     delete_ride: Option<usize>,
+    /// A one-shot **route-planning request** (epic #116, R4), set by the POI create-route confirm
+    /// and drained by the host via [`App::take_nav_request`](crate::App::take_nav_request), which
+    /// runs the A* router, writes the reserved nav route, rescans, and answers through
+    /// [`App::notify_nav_result`](crate::App::notify_nav_result).
+    nav_request: Option<NavRequest>,
 
     // live map-match (from the GPS fix)
     /// Total distance of the active route (m), mirrored from its header so the riding views can
@@ -240,6 +286,22 @@ impl Activity {
     /// store work on this without draining the one-shot.
     pub(crate) fn has_ride_delete(&self) -> bool {
         self.delete_ride.is_some()
+    }
+
+    /// Record a one-shot route-planning request (epic #116, R4) — set by the POI create-route
+    /// confirm, drained by [`App::take_nav_request`](crate::App::take_nav_request).
+    pub(crate) fn request_nav(&mut self, req: NavRequest) {
+        self.nav_request = Some(req);
+    }
+
+    /// Take (and clear) the pending route-planning request, if any.
+    pub(crate) fn take_nav_request(&mut self) -> Option<NavRequest> {
+        self.nav_request.take()
+    }
+
+    /// Non-consuming peek at whether a route-planning request is pending.
+    pub(crate) fn has_nav_request(&self) -> bool {
+        self.nav_request.is_some()
     }
 
     /// The elevation (m) to stamp on a logged [`TrackPoint`](obc_route::TrackPoint): the
