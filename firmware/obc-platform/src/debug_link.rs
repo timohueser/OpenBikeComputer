@@ -21,6 +21,12 @@
 //!   debug/benchmark hook: it drives the zoom directly instead of stepping the encoder (which
 //!   only moves in fixed 1.2× detents) and always forces one map redraw, so a host sweep can
 //!   pin an exact scale and read back one fresh render-stats line per setting.
+//! - `N <from_lon> <from_lat> <to_lon> <to_lat>` — **route-plan trigger** (issue #500 perf bench),
+//!   all integer **microdegrees**, **LON FIRST** (the OBCM `(lon, lat)` tuple order, unlike the
+//!   lat-first `F` line). Starts a plan from `from` to `to` exactly as the POI create-route confirm
+//!   would (records the request *and* shows the spinning-compass planning screen), so a host can
+//!   drive the resumable router repeatably and read the per-phase `nav route:` RTT line without
+//!   navigating the POI browser. `debug-uart` + `has_nav` builds only.
 //!
 //! Device → host (see [`Telemetry`]): `T <frame_us> <lod> <feat_drawn> <feat_tried> <feat_dropped>
 //! <chunks> <cache_hits> <cache_misses> <sd_reads> <bytes_read> <collect_us> <read_us> <sort_us>
@@ -61,6 +67,10 @@ pub enum Msg {
     Input(InputEvent),
     /// A debug camera-scale command: set the map viewport to exactly this meters-per-pixel.
     Zoom(f32),
+    /// A debug route-plan trigger (#500 perf bench): plan from `from` to `to`, both `(lon, lat)`
+    /// microdegrees, exactly as the POI create-route confirm would — the repeatable stand-in for
+    /// driving the UI, so the `nav route:` RTT breakdown can be captured over VCOM.
+    Nav { from: (i32, i32), to: (i32, i32) },
 }
 
 /// Parse one line into a [`Msg`], or `None` if the tag is unknown or the required fields are
@@ -79,6 +89,15 @@ pub fn parse_line(line: &str) -> Option<Msg> {
         "A" => Some(Msg::Alt(it.next()?.parse::<f32>().ok()?)),
         "C" => Some(Msg::Compass(it.next()?.parse::<f32>().ok()?)),
         "Z" => Some(Msg::Zoom(it.next()?.parse::<f32>().ok()?)),
+        // `N <from_lon> <from_lat> <to_lon> <to_lat>` — LON FIRST (the OBCM `(lon, lat)` tuple
+        // convention, matching `nav_repro`), unlike the lat-first `F` fix line.
+        "N" => {
+            let from_lon = it.next()?.parse::<i32>().ok()?;
+            let from_lat = it.next()?.parse::<i32>().ok()?;
+            let to_lon = it.next()?.parse::<i32>().ok()?;
+            let to_lat = it.next()?.parse::<i32>().ok()?;
+            Some(Msg::Nav { from: (from_lon, from_lat), to: (to_lon, to_lat) })
+        }
         "K" => parse_key(&mut it),
         _ => None,
     }
@@ -304,6 +323,9 @@ mod handoff {
     /// Latest debug camera-scale command (meters-per-pixel), `try_take`-once like a sensor (the `Z`
     /// wire command). Drained by the map loop each frame → `App::set_map_mpp`.
     static ZOOM: Signal<CriticalSectionRawMutex, f32> = Signal::new();
+    /// Latest debug route-plan trigger (`(from, to)`, both `(lon, lat)` µdeg), `try_take`-once like
+    /// the `Z` command. Drained by the ride loop → `App::debug_start_nav` (#500 perf bench).
+    static NAV: Signal<CriticalSectionRawMutex, ((i32, i32), (i32, i32))> = Signal::new();
     /// A single "a datapoint arrived" wake, the `debug-uart` twin of `sensor_link::EVENT`: pulsed
     /// by [`dispatch`] on any host-streamed sensor sample so the event-driven loop's [`wait_event`]
     /// wakes the render once. Injected *input* (`Msg::Input`) does **not** pulse it — that wakes the
@@ -333,6 +355,10 @@ mod handoff {
             }
             Msg::Zoom(z) => {
                 ZOOM.signal(z);
+                EVENT.signal(());
+            }
+            Msg::Nav { from, to } => {
+                NAV.signal((from, to));
                 EVENT.signal(());
             }
             // Drop on the (unreachable) overflow rather than block the RX task. No `EVENT` pulse —
@@ -395,6 +421,13 @@ mod handoff {
         ZOOM.try_take()
     }
 
+    /// Take a pending debug route-plan trigger (`(from, to)`, both `(lon, lat)` µdeg) — `try_take`-once,
+    /// like [`take_zoom`]. The ride loop calls this each pass and hands any value to
+    /// `App::debug_start_nav` (#500 perf bench).
+    pub fn take_nav() -> Option<((i32, i32), (i32, i32))> {
+        NAV.try_take()
+    }
+
     /// Publish the latest telemetry (called by the app loop, throttled). Overwrites any unsent
     /// value, so the host always gets the freshest snapshot.
     pub fn set_telemetry(t: Telemetry) {
@@ -412,7 +445,7 @@ mod handoff {
 // (`debug_link::DebugLocation`, `debug_link::feed_bytes`, …) are unchanged by the split.
 #[cfg(feature = "debug-link")]
 pub use handoff::{
-    dispatch, feed_bytes, set_telemetry, take_zoom, wait_event, wait_telemetry, DebugAltimeter, DebugCompass,
+    dispatch, feed_bytes, set_telemetry, take_nav, take_zoom, wait_event, wait_telemetry, DebugAltimeter, DebugCompass,
     DebugInput, DebugLocation,
 };
 
@@ -457,6 +490,17 @@ mod tests {
         assert_eq!(parse_line("Z 5"), Some(Msg::Zoom(5.0)));
         assert_eq!(parse_line("Z"), None); // missing value
         assert_eq!(parse_line("Z x"), None); // non-numeric
+    }
+
+    #[test]
+    fn parses_nav() {
+        // LON FIRST, unlike the lat-first `F` line: from (lon,lat) then to (lon,lat).
+        assert_eq!(
+            parse_line("N 7809000 48126000 7808898 48139394"),
+            Some(Msg::Nav { from: (7809000, 48126000), to: (7808898, 48139394) })
+        );
+        assert_eq!(parse_line("N 7809000 48126000 7808898"), None); // missing to_lat
+        assert_eq!(parse_line("N"), None); // no coords
     }
 
     #[test]
