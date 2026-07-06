@@ -1,7 +1,7 @@
 //! The Map screen — the Riding view. The camera lives in [`AppState`](crate::AppState) (shared with
 //! the host's pan/zoom); the screen itself holds only a [`MinuteTicker`] for the clock overlay. `draw`
 //! renders the base map plus the route, travel chevrons, breadcrumb, user marker, and the map chrome:
-//! a top-centre clock pill, a bottom-centre one-slot warning chip, a bottom-left scale bar, a
+//! floating top-centre clock digits, a one-slot warning chip below them, a bottom-left scale bar, a
 //! low-battery cue in the top-left corner, and the pan HUD.
 //!
 //! Bindings: `turn` = zoom, `press` = pause → Ride control, `back` = the sibling Statistics view,
@@ -55,10 +55,10 @@ const BREADCRUMB_WEIGHT: u32 = 3;
 
 /// The live map / Follow view. The camera is the shared [`AppState`](crate::AppState); the only
 /// screen-local state is the clock overlay's [`MinuteTicker`], which fires a region-clipped repaint
-/// of the clock pill once each minute the wall clock rolls over.
+/// of the clock digits once each minute the wall clock rolls over.
 #[derive(Debug, Default)]
 pub struct MapScreen {
-    /// Fires a repaint of the clock pill each minute the wall clock rolls over (see
+    /// Fires a repaint of the clock digits each minute the wall clock rolls over (see
     /// [`tick_timers`](MapScreen::tick_timers)) so `HH:MM` advances without a full map redraw.
     ticker: MinuteTicker,
 }
@@ -69,9 +69,9 @@ impl MapScreen {
     }
 
     /// Poll the clock overlay's minute tick — the Map's half of the screens' timed
-    /// [`tick_timers`](super::Screen::tick_timers) contract. When the clock pill is **visible** (the
+    /// [`tick_timers`](super::Screen::tick_timers) contract. When the clock is **visible** (the
     /// `Clock on map` setting is on and we're not panning — the pan chevron owns the top-centre slot),
-    /// a minute rollover self-dirties just the [`clock_pill_region`], and the host clips the repaint
+    /// a minute rollover self-dirties just the [`clock_region`], and the host clips the repaint
     /// to it (the region path from #500/#513) so the map plane isn't re-rendered. When the pill is
     /// **hidden** the minute wake is not armed at all — a parked map isn't woken to no purpose.
     pub fn tick_timers(
@@ -91,7 +91,7 @@ impl MapScreen {
         ScreenTick {
             changed: self.ticker.changed(now),
             next_wake_ms: Some(ms_to_next_minute),
-            region: Some(clock_pill_region(w)),
+            region: Some(clock_region(w)),
         }
     }
 
@@ -187,32 +187,35 @@ impl MapScreen {
             draw_low_battery(cv);
         }
 
-        // Clock pill (top-centre): a small muted HH:MM, shown when the setting is on. Hidden while
+        // Clock (top-centre): a small floating HH:MM — bare ink digits with a parchment halo, no
+        // pill, so it informs without drawing the eye. Shown when the setting is on. Hidden while
         // panning — the pan HUD's top chevron / compass own the top edge — so it never fights the
         // chevron; `tick_timers` mirrors that gate when arming the minute wake.
         if rx.settings.map_clock && !panning {
-            draw_clock_pill(cv, rx.w, rx.now);
+            draw_clock(cv, rx.w, rx.now);
         }
 
-        // Bottom-centre one-slot status chip, shown only when there's something to say. "No GPS Fix"
-        // takes priority over off-route: with no fix the match is stale, so cross-track distance is
-        // meaningless. Suppressed while panning — the pan HUD's bottom chevron owns the bottom-centre
-        // slot (they'd collide), exactly as the pill mirrored the top chevron before it moved down;
-        // panning is deliberate map inspection anyway, and the chip returns the moment pan exits.
+        // Top-centre one-slot status chip, shown only when there's something to say — right at the
+        // top edge, or just below the clock digits while those are shown. "No GPS Fix" takes
+        // priority over off-route: with no fix the match is stale, so cross-track distance is
+        // meaningless. Suppressed while panning — the pan HUD's top chevron owns the top edge
+        // (they'd collide), and panning is deliberate map inspection anyway; the chip returns the
+        // moment pan exits.
         if !panning {
+            let below_clock = rx.settings.map_clock;
             if rx.no_fix {
-                draw_status_chip(cv, rx.w, rx.h, "No GPS Fix");
+                draw_status_chip(cv, rx.w, below_clock, "No GPS Fix");
             } else if rx.activity.off_route {
                 let mut s: heapless::String<20> = heapless::String::new();
                 super::write_off_route(&mut s, "off route ", rx.activity.dist_to_route_m, rx.settings.units);
-                draw_status_chip(cv, rx.w, rx.h, &s);
+                draw_status_chip(cv, rx.w, below_clock, &s);
             }
         }
 
         // Scale bar (bottom-left corner): the largest round distance that fits the target on-screen
-        // width at the current zoom, in the units setting's system. Compact and far-left; drawn
-        // **after** the centre chip so its extreme-left corner stays readable even when a wide chip
-        // ("off route 153km") reaches toward it. Visible in pan mode too (where it's most useful).
+        // width at the current zoom, in the units setting's system. Compact and tucked into the
+        // corner. Visible in pan mode too (where it's most useful) — the pan HUD's bottom chevron is
+        // centred, well clear of it.
         if rx.settings.map_scale_bar {
             draw_scale_bar(cv, rx.h, vp.meters_per_pixel(), rx.settings.units);
         }
@@ -239,61 +242,54 @@ fn handle_pan(g: Gesture, cx: &mut Ctx) -> Transition {
     Transition::None
 }
 
-/// A compact **bottom-centre** status chip ("No GPS Fix", "off route NNNm") — the one warning slot on
-/// the map. The caller owns the priority rule of what to say; the chip vanishes the moment there's
-/// nothing to report. Warning-orange, so it reads as an alert (the quieter clock pill uses ink).
-fn draw_status_chip(cv: &mut impl Surface, w: i32, h: i32, s: &str) {
+/// A compact **top-centre** status chip ("No GPS Fix", "off route NNNm") — the one warning slot on
+/// the map. It sits right at the top edge, or just below the clock digits when `below_clock` (the
+/// clock setting is on — the two are visible together, warning under time). The caller owns the
+/// priority rule of what to say; the chip vanishes the moment there's nothing to report.
+/// Warning-orange, so it reads as an alert (the quieter clock uses bare ink).
+fn draw_status_chip(cv: &mut impl Surface, w: i32, below_clock: bool, s: &str) {
     use super::palette::*;
     let font = Font::Body;
     let tw = text_width(s, font) as i32;
     let (pw, ph) = (tw + 28, 36);
     let px = (w - pw) / 2;
-    let py = h - ph - CHIP_MARGIN;
+    let py = if below_clock { CLOCK_TOP + Font::Label.line_height() as i32 + 8 } else { CHIP_MARGIN };
     cv.round(rect(px, py, pw, ph), 9, PARCHMENT);
     cv.round_outline(rect(px, py, pw, ph), 9, WARNING);
     cv.text(s, Point::new(w / 2, py + 5), font, TextAlign::Center, WARNING);
 }
 
-/// Inset (px) of the bottom-centre status chip from the bottom edge — clears the frame and sits just
-/// above where the pan bottom chevron would draw (the two never coexist; the chip is pan-suppressed).
+/// Inset (px) of the top-centre status chip from the top edge when the clock is hidden.
 const CHIP_MARGIN: i32 = 10;
 
-// ---- Clock pill (top-centre) ---------------------------------------------
+// ---- Clock (top-centre) ---------------------------------------------------
 
-/// The clock pill's height and top inset — a compact `HH:MM` band centred at the top edge.
-const CLOCK_PILL_H: i32 = 26;
-const CLOCK_PILL_TOP: i32 = 8;
-/// Horizontal padding inside the pill, each side of the `HH:MM` text.
-const CLOCK_PILL_PAD: i32 = 12;
+/// Top inset of the floating `HH:MM` digits.
+const CLOCK_TOP: i32 = 8;
 
-/// The pill's width for a fixed 5-glyph `HH:MM` in [`Font::Label`] — constant, so the pill and its
-/// [`clock_pill_region`] don't shift as the digits change (`11` vs `22` etc.).
-fn clock_pill_w() -> i32 {
-    text_width("00:00", Font::Label) as i32 + 2 * CLOCK_PILL_PAD
-}
-
-/// The rectangle the top-centre clock pill occupies, in panel pixels — the dirty region
+/// The rectangle the top-centre clock digits occupy, in panel pixels — the dirty region
 /// [`tick_timers`](MapScreen::tick_timers) reports so the host clips the minute repaint to just the
-/// pill instead of re-rendering the whole map plane. A pixel of margin on every side covers the
-/// rounded-corner and outline rasterisation.
-pub fn clock_pill_region(w: i32) -> Rectangle {
-    let pw = clock_pill_w();
-    let px = (w - pw) / 2;
-    Rectangle::new(Point::new(px - 1, CLOCK_PILL_TOP - 1), Size::new(pw as u32 + 2, CLOCK_PILL_H as u32 + 2))
+/// digits instead of re-rendering the whole map plane. Sized for a fixed 5-glyph `HH:MM` in
+/// [`Font::Label`] — constant, so the region doesn't shift as the digits change (`11` vs `22`) —
+/// with two pixels of margin all round covering the halo strokes.
+pub fn clock_region(w: i32) -> Rectangle {
+    let tw = text_width("00:00", Font::Label) as i32;
+    let th = Font::Label.line_height() as i32;
+    Rectangle::new(Point::new((w - tw) / 2 - 2, CLOCK_TOP - 2), Size::new(tw as u32 + 4, th as u32 + 4))
 }
 
-/// Draw the small top-centre `HH:MM` clock pill: a quiet parchment band with a thin ink outline and
-/// ink text — deliberately *muted* (the warning-orange of [`draw_status_chip`] stays reserved for
-/// alerts). "Small and simple, just readable."
-fn draw_clock_pill(cv: &mut impl Surface, w: i32, now: DateTime) {
+/// Draw the small top-centre `HH:MM` clock: bare ink digits floating on the map — no pill, just the
+/// scale-bar label's parchment halo so they stay readable over dark terrain. Deliberately *muted*
+/// (the warning-orange of [`draw_status_chip`] stays reserved for alerts). "Small and simple, just
+/// readable."
+fn draw_clock(cv: &mut impl Surface, w: i32, now: DateTime) {
     use super::palette::*;
     let mut s: heapless::String<8> = heapless::String::new();
     let _ = write!(s, "{:02}:{:02}", now.hour, now.minute);
-    let pw = clock_pill_w();
-    let px = (w - pw) / 2;
-    cv.round(rect(px, CLOCK_PILL_TOP, pw, CLOCK_PILL_H), 7, PARCHMENT);
-    cv.round_outline(rect(px, CLOCK_PILL_TOP, pw, CLOCK_PILL_H), 7, SUBTEXT);
-    cv.text_vcentered(&s, w / 2, (CLOCK_PILL_TOP, CLOCK_PILL_H), Font::Label, TextAlign::Center, INK);
+    for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+        cv.text(&s, Point::new(w / 2 + dx, CLOCK_TOP + dy), Font::Label, TextAlign::Center, PARCHMENT);
+    }
+    cv.text(&s, Point::new(w / 2, CLOCK_TOP), Font::Label, TextAlign::Center, INK);
 }
 
 // ---- Low-battery cue (top-left corner) -----------------------------------
@@ -321,15 +317,14 @@ fn draw_low_battery(cv: &mut impl Surface) {
 
 /// Largest on-screen width (px) the scale bar may reach — the chosen round distance is the biggest
 /// `1/2/5 × 10ⁿ` that fits inside it (~⅓ of the 240px panel), long enough to read but short enough to
-/// clear the bottom-centre chip / chevron. The 1/2/5 steps keep the realised bar within ~40–90 px.
+/// clear the pan HUD's centred bottom chevron. The 1/2/5 steps keep the realised bar within ~40–90 px.
 const SCALE_TARGET_MAX_PX: f32 = 90.0;
-/// The scale bar's left inset and the tick half-height. Its baseline sits above the bottom-centre
-/// chip band ([`SCALE_MARGIN_Y`]) so a wide chip ("off route 153km") never runs under it — the two
-/// share the bottom edge but not a row. In pan mode (no chip) it's still comfortably bottom-left,
-/// clear of the centred bottom chevron.
+/// The scale bar's left inset and the tick half-height — tucked into the bottom-left corner (the
+/// warning chip lives at the top now, so the corner is the bar's alone; the pan HUD's bottom chevron
+/// is centred, well clear of it).
 const SCALE_MARGIN_X: i32 = 12;
-/// Baseline inset from the bottom edge — just above the 36 px chip band (`h - 46` top) plus a gap.
-const SCALE_MARGIN_Y: i32 = 52;
+/// Baseline inset from the bottom edge.
+const SCALE_MARGIN_Y: i32 = 12;
 const SCALE_TICK_H: i32 = 5;
 
 /// Draw the scale bar at the bottom-left: a horizontal ink line with end ticks and a length label,
@@ -672,7 +667,7 @@ mod tests {
         // A minute rollover fires, region-clipped to the pill (never a full-frame None).
         let t1 = scr.tick_timers(dt(14, 41), 60_000, w, false, true);
         assert!(t1.changed);
-        assert_eq!(t1.region, Some(clock_pill_region(w)));
+        assert_eq!(t1.region, Some(clock_region(w)));
         assert!(t1.region.unwrap().size.width < w as u32, "the pill region is a small band, not the whole width");
         // Hidden by the setting: no change, no wake, even across a rollover.
         let off = scr.tick_timers(dt(14, 42), 60_000, w, false, false);

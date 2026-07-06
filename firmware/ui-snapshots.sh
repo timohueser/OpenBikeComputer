@@ -119,8 +119,9 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 "$SIM" "$MAP" --boot --script "B l p r r r r r r p p H" --png "$OUT/reset-hold.png"
 # Riding flows: Home press → Menu → Routes (p) → Route menu → pick (p) → overview → START (p) → Map.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p"     --png "$OUT/routeoverview.png"
-# The Map's chrome overlays land here: the top-centre clock pill (pinned time via --clock), the
-# bottom-left scale bar, and — priority order unchanged — the bottom-centre one-slot warning chip.
+# The Map's chrome overlays land here: the floating top-centre clock digits (pinned time via
+# --clock), the bottom-left corner scale bar, and — priority order unchanged — the one-slot warning
+# chip, top-centre (below the clock digits while those are shown).
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --script "p p p p"   --gpx "$GPX" --at 30 --png "$OUT/map.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p b" --gpx "$GPX" --at 30 --png "$OUT/statistics.png"
 # The low-battery cue (issue: < 10 %): a warning-red battery glyph in the map's top-left corner.
@@ -138,7 +139,7 @@ cp "$repo_root/firmware/obc-sim/assets/grimsel-climb.obcr" "$CLIMBROUTES/"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p p" --gpx "$GPX" --at 30 --png "$OUT/ridecontrol.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p B p r p" --png "$OUT/routeswap.png"
 # Pan mode: the pan HUD (chevrons + compass) plus the bottom-left scale bar (visible in pan too);
-# the clock pill is suppressed while panning (the top chevron owns the slot).
+# the clock digits are suppressed while panning (the top chevron owns the slot).
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --script "p p p p h" --png "$OUT/map-pan.png"
 # BLE connected indicator (#448): the static Bluetooth rune on the Home battery row and the menu
 # title bar. `--ble-connected` injects a linked phone, exactly as the sim control-panel toggle does.
