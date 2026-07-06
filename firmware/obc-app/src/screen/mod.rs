@@ -16,7 +16,7 @@ use obc_render::{
     text::{Font, TextAlign},
     Canvas, Clock, MapRenderer, RenderStats, Surface,
 };
-use obc_route::{Profile, RouteReader};
+use obc_route::{ClimbProfile, ClimbSeg, Profile, RouteReader};
 
 use crate::activity::{Activity, Mode};
 use crate::app::AppState;
@@ -140,6 +140,21 @@ pub struct Ctx<'a> {
     pub now_ms: u32,
 }
 
+/// The currently-tracked climb, surfaced to the riding views (C3). Bundles the active
+/// [`ClimbSeg`] with its resident detail [`ClimbProfile`], both borrowed from the App-owned climb
+/// state — present exactly when [`Activity::active_climb`](crate::activity::Activity) is `Some`, so
+/// the two are always consistent and a screen never draws a stale buffer. The Climb screen (C4)
+/// reads `seg` for the base/top/gain/grade tiles and `profile` for the striped elevation panel +
+/// cursor; nothing draws it yet at C3.
+#[derive(Clone, Copy)]
+pub struct ActiveClimb<'a> {
+    /// The active climb's segment: interval, base/top elevation, gain, average grade.
+    pub seg: &'a ClimbSeg,
+    /// The active climb's resident detail profile (elevation-per-column, derived grade), scoped to
+    /// this climb's `[start_m, end_m]` — refilled only on climb entry, so free to read per frame.
+    pub profile: &'a ClimbProfile,
+}
+
 /// Render context handed to [`Screen::draw`]: the read-only state plus the map
 /// `Reader`, the reusable `MapRenderer`, and the in-flight encoder hold-progress
 /// (0.0–1.0) the guarded-action confirm ring fills with.
@@ -166,6 +181,12 @@ pub struct Render<'a, 'd> {
     /// The active route's elevation profile (the Elevation screen draws it), rebuilt on route load
     /// and cached — `None` when no route is loaded. Resident, so the screen never re-reads to draw.
     pub profile: Option<&'a Profile>,
+    /// The climb the rider is currently on, or `None` between climbs (C3). Bundles the two things
+    /// the Climb screen (C4) draws — the active [`ClimbSeg`] (base/top/gain/grade) and its resident
+    /// detail [`ClimbProfile`] — behind one `Option` so a `Some` is exactly "a climb is being
+    /// tracked, both are valid". `None` whenever [`Activity::active_climb`](crate::activity::Activity)
+    /// is `None` (no route, off any climb), so a screen never reads a stale detail buffer.
+    pub climb: Option<ActiveClimb<'a>>,
     /// The travelled-path breadcrumb (bounded RAM); the Map strokes it under the route. Empty when
     /// nothing has been recorded yet, so the Map can skip it with [`Breadcrumb::is_empty`].
     pub breadcrumb: &'a Breadcrumb,
@@ -210,6 +231,7 @@ impl Render<'_, '_> {
             units: self.settings.units,
             route: self.route,
             profile: self.profile,
+            climb: self.climb,
             now: self.now,
         }
     }

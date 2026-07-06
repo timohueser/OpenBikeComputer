@@ -37,6 +37,10 @@ pub struct Readout<'a> {
     pub route: Option<&'a RouteReader<'a>>,
     /// The active route's elevation profile, or `None` when no route is loaded.
     pub profile: Option<&'a Profile>,
+    /// The climb the rider is currently on (C3), or `None` between climbs — the source for the
+    /// climb-scoped tiles (to-top / to-climb / grade) the Climb screen adds in C4. `Some` exactly
+    /// when [`Activity::active_climb`](crate::activity::Activity) is `Some`.
+    pub climb: Option<crate::screen::ActiveClimb<'a>>,
     /// The live wall-clock time (the [`Clock`](StatField::Clock) tile).
     pub now: DateTime,
 }
@@ -638,7 +642,7 @@ mod tests {
     /// A bare readout over `activity` — no fix, no route, no profile. The point of [`Readout`]:
     /// formatting a cell needs no `MapRenderer`, no `Render`.
     fn readout(activity: &Activity, units: Units) -> Readout<'_> {
-        Readout { fix: None, activity, units, route: None, profile: None, now: DateTime::default() }
+        Readout { fix: None, activity, units, route: None, profile: None, climb: None, now: DateTime::default() }
     }
 
     /// The Elevation tile reads the live barometric altitude, not the route profile: it shows the
