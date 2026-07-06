@@ -59,6 +59,10 @@ pub mod button_input;
 // only the embassy-sync `Signal`/`Channel` plumbing + HAL-trait sources are gated inside the module
 // behind `debug-link`, so the host workspace build never pulls embassy-sync.
 pub mod debug_link;
+// The map file's FAT chain resolved once into extent runs → direct-block `read_at` (issue #500):
+// the seek-per-read `sd` adapters stay the general path; this is the fast path for the one big
+// read-only file whose scattered reads dominate (the `.obcm` map).
+pub mod fat_extents;
 pub mod framebuffer;
 pub mod ls021_wire;
 // Stand-in battery fuel gauge — a fixed level until the nPM1300 PMIC gauge is wired in.
@@ -80,6 +84,7 @@ pub mod ubx;
 pub mod sensor_link;
 
 pub use button_input::{ButtonInput, Timing};
+pub use fat_extents::{ExtentSource, ExtentTable};
 pub use framebuffer::{device64_to_rgb565, FbDevice64, Framebuffer565};
 pub use fuel::StubFuelGauge;
 pub use ls021_wire::pack_row as ls021_pack_row;
