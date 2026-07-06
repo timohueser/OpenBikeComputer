@@ -716,11 +716,11 @@ fn pausing_swaps_the_map_for_the_paused_page() {
     let bytes = build_min_obcm(0xF800);
     let mut app = App::new(AppState::new(0, 0, 0.05));
 
-    // Riding: sample the (blue sea) backdrop at a point clear of the map chrome — the top-centre
-    // clock + "No GPS Fix" chip band ends ~y70 on the 120px test frame, and the bottom-left scale
-    // bar (+ its label) owns the left of the bottom band, so mid-right is bare map.
+    // Riding: sample the (blue sea) backdrop at a point clear of the map chrome — the clock digits
+    // end ~y28, the bottom-centre "No GPS Fix" chip band starts ~y74 on the 120px test frame, and
+    // the scale bar + label own the bottom-left, so mid-right between them is bare map.
     let map = render(&mut app, &bytes);
-    let backdrop = map.get(95, 78);
+    let backdrop = map.get(95, 45);
 
     // A press (Down+Up within the threshold) pauses into the Paused page.
     let mut press = keys(&[
@@ -732,7 +732,7 @@ fn pausing_swaps_the_map_for_the_paused_page() {
 
     // Now the same point carries the parchment Paused page, not the map.
     let paused = render(&mut app, &bytes);
-    let page = paused.get(95, 78);
+    let page = paused.get(95, 45);
     assert_ne!(page, backdrop, "pausing replaced the view");
     assert!(page.r() > backdrop.r(), "the parchment page is lighter than the sea backdrop");
 }

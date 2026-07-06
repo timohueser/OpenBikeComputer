@@ -1,8 +1,9 @@
 //! The Map screen — the Riding view. The camera lives in [`AppState`](crate::AppState) (shared with
 //! the host's pan/zoom); the screen itself holds only a [`MinuteTicker`] for the clock overlay. `draw`
 //! renders the base map plus the route, travel chevrons, breadcrumb, user marker, and the map chrome:
-//! floating top-centre clock digits, a one-slot warning chip below them, a bottom-left scale bar, a
-//! low-battery cue in the top-left corner, and the pan HUD.
+//! floating top-centre clock digits, a bottom-centre one-slot warning chip, a bottom-left scale bar
+//! (stepping up above the chip while one is up), a low-battery cue in the top-left corner, and the
+//! pan HUD.
 //!
 //! Bindings: `turn` = zoom, `press` = pause → Ride control, `back` = the sibling Statistics view,
 //! `back-hold` = Menu, `hold` = enter Pan mode.
@@ -195,29 +196,29 @@ impl MapScreen {
             draw_clock(cv, rx.w, rx.now);
         }
 
-        // Top-centre one-slot status chip, shown only when there's something to say — in the fixed
-        // slot below the clock digits (clock hidden or not, so it clears the low-battery glyph at
-        // the top-left even at full "off route 153km" width). "No GPS Fix" takes
-        // priority over off-route: with no fix the match is stale, so cross-track distance is
-        // meaningless. Suppressed while panning — the pan HUD's top chevron owns the top edge
-        // (they'd collide), and panning is deliberate map inspection anyway; the chip returns the
-        // moment pan exits.
-        if !panning {
+        // Bottom-centre one-slot status chip, shown only when there's something to say. "No GPS
+        // Fix" takes priority over off-route: with no fix the match is stale, so cross-track
+        // distance is meaningless. Suppressed while panning — the pan HUD's bottom chevron owns the
+        // bottom-centre slot (they'd collide), and panning is deliberate map inspection anyway; the
+        // chip returns the moment pan exits.
+        let chip_up = !panning && (rx.no_fix || rx.activity.off_route);
+        if chip_up {
             if rx.no_fix {
-                draw_status_chip(cv, rx.w, "No GPS Fix");
-            } else if rx.activity.off_route {
+                draw_status_chip(cv, rx.w, rx.h, "No GPS Fix");
+            } else {
                 let mut s: heapless::String<20> = heapless::String::new();
                 super::write_off_route(&mut s, "off route ", rx.activity.dist_to_route_m, rx.settings.units);
-                draw_status_chip(cv, rx.w, &s);
+                draw_status_chip(cv, rx.w, rx.h, &s);
             }
         }
 
-        // Scale bar (bottom-left corner): the largest round distance that fits the target on-screen
-        // width at the current zoom, in the units setting's system. Compact and tucked into the
-        // corner. Visible in pan mode too (where it's most useful) — the pan HUD's bottom chevron is
-        // centred, well clear of it.
+        // Scale bar (bottom-left): the largest round distance that fits the target on-screen width
+        // at the current zoom, in the units setting's system. Right in the corner — except while
+        // the warning chip is up, when it steps to just above the chip band so a wide chip
+        // ("off route 153km") never runs under it. Visible in pan mode too (where it's most
+        // useful) — the pan HUD's bottom chevron is centred, well clear of the corner.
         if rx.settings.map_scale_bar {
-            draw_scale_bar(cv, rx.h, vp.meters_per_pixel(), rx.settings.units);
+            draw_scale_bar(cv, rx.h, chip_up, vp.meters_per_pixel(), rx.settings.units);
         }
 
         // Pan-mode HUD. Drawn last so it sits over the map + marker, and only while panning.
@@ -242,23 +243,26 @@ fn handle_pan(g: Gesture, cx: &mut Ctx) -> Transition {
     Transition::None
 }
 
-/// A compact **top-centre** status chip ("No GPS Fix", "off route NNNm") — the one warning slot on
-/// the map. It always sits in the slot just below the clock digits — one fixed home whether or not
-/// the clock is drawn, so a wide chip never overlaps the top-left low-battery glyph the way it
-/// would flush at the edge. The caller owns the priority rule of what to say; the chip vanishes the
-/// moment there's nothing to report. Warning-orange, so it reads as an alert (the quieter clock
-/// uses bare ink).
-fn draw_status_chip(cv: &mut impl Surface, w: i32, s: &str) {
+/// A compact **bottom-centre** status chip ("No GPS Fix", "off route NNNm") — the one warning slot
+/// on the map, kept away from the top's clock + low-battery chrome. The caller owns the priority
+/// rule of what to say; the chip vanishes the moment there's nothing to report. Warning-orange, so
+/// it reads as an alert (the quieter clock uses bare ink).
+fn draw_status_chip(cv: &mut impl Surface, w: i32, h: i32, s: &str) {
     use super::palette::*;
     let font = Font::Body;
     let tw = text_width(s, font) as i32;
-    let (pw, ph) = (tw + 28, 36);
+    let (pw, ph) = (tw + 28, CHIP_H);
     let px = (w - pw) / 2;
-    let py = CLOCK_TOP + Font::Label.line_height() as i32 + 8;
+    let py = h - CHIP_H - CHIP_MARGIN;
     cv.round(rect(px, py, pw, ph), 9, PARCHMENT);
     cv.round_outline(rect(px, py, pw, ph), 9, WARNING);
     cv.text(s, Point::new(w / 2, py + 5), font, TextAlign::Center, WARNING);
 }
+
+/// The status chip's band height and its inset from the bottom edge (above the panel frame, below
+/// where the pan bottom chevron would draw — the two never coexist; the chip is pan-suppressed).
+const CHIP_H: i32 = 36;
+const CHIP_MARGIN: i32 = 10;
 
 // ---- Clock (top-centre) ---------------------------------------------------
 
@@ -317,26 +321,26 @@ fn draw_low_battery(cv: &mut impl Surface) {
 /// `1/2/5 × 10ⁿ` that fits inside it (~⅓ of the 240px panel), long enough to read but short enough to
 /// clear the pan HUD's centred bottom chevron. The 1/2/5 steps keep the realised bar within ~40–90 px.
 const SCALE_TARGET_MAX_PX: f32 = 90.0;
-/// The scale bar's left inset and the tick half-height — tucked into the bottom-left corner (the
-/// warning chip lives at the top now, so the corner is the bar's alone; the pan HUD's bottom chevron
-/// is centred, well clear of it).
+/// The scale bar's left inset and the tick half-height.
 const SCALE_MARGIN_X: i32 = 12;
-/// Baseline inset from the bottom edge.
+/// Baseline inset from the bottom edge — right in the corner normally, stepped up past the chip
+/// band (its height + inset + a gap) while the warning chip is up.
 const SCALE_MARGIN_Y: i32 = 12;
+const SCALE_MARGIN_Y_CHIP: i32 = CHIP_H + CHIP_MARGIN + 12;
 const SCALE_TICK_H: i32 = 5;
 
 /// Draw the scale bar at the bottom-left: a horizontal ink line with end ticks and a length label,
 /// haloed in parchment so it reads over terrain. The distance is the largest 1/2/5 × 10ⁿ that fits
 /// [`SCALE_TARGET_MIN_PX`]..[`SCALE_TARGET_MAX_PX`] at the current `mpp` (metres per pixel), in the
 /// `units` system.
-fn draw_scale_bar(cv: &mut impl Surface, h: i32, mpp: f32, units: Units) {
+fn draw_scale_bar(cv: &mut impl Surface, h: i32, chip_up: bool, mpp: f32, units: Units) {
     use super::palette::*;
     let Some((bar_px, label)) = scale_bar_choice(mpp, units) else {
         return; // a degenerate zoom (non-finite mpp) — draw nothing rather than a bogus bar
     };
     let x0 = SCALE_MARGIN_X;
     let x1 = x0 + bar_px;
-    let y = h - SCALE_MARGIN_Y;
+    let y = h - if chip_up { SCALE_MARGIN_Y_CHIP } else { SCALE_MARGIN_Y };
     // Parchment halo: the same strokes one pixel thicker/offset, drawn first.
     for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
         cv.line(Point::new(x0 + dx, y + dy), Point::new(x1 + dx, y + dy), PARCHMENT);
