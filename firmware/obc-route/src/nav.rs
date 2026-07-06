@@ -31,11 +31,26 @@
 //! exhausted the fixed table ~1.5 km out; the goal-greedy inflated search settles a
 //! narrow corridor instead, planning multi-km routes in the same table.
 //!
-//! **The caller drives liveness** through the `progress` hook: [`plan_route`] is a
-//! long synchronous computation (seconds on the SD-bound device), and the hook is
-//! called every [`PROGRESS_EVERY_SETTLES`] settles so the board can feed its
-//! watchdog (and a host can abort). Between calls the executor is still starved —
-//! accepted for v1.
+//! **The planner is resumable** (#499): planning is a [`NavPlanner`] step machine —
+//! snap → search ([`NAV_SETTLES_PER_STEP`] settles per step) → emit
+//! ([`NAV_EMIT_HOPS_PER_STEP`] edge fetches per step) → done — and the host runs
+//! **one bounded [`step`](NavPlanner::step) per loop pass**, so render/input/watchdog
+//! all run normally *between* steps and a multi-second plan no longer freezes the UI
+//! (the old sync `plan_route` starved the executor for the whole search). The
+//! one-shot [`plan_route`] convenience just loops `step` — hosts that don't need
+//! interactivity (tests, the headless sim) use it unchanged. Cancelling is simply
+//! **not calling `step` again**: nothing is written to the sink before the emit
+//! phase, so an abandoned search leaves the sink untouched and the caller only has
+//! to discard its own file.
+//!
+//! **UB tripwire**: this module and the reader's record decode are deliberately
+//! **cast-free** — every §8 record field is assembled byte-wise (`from_le_bytes` on
+//! `&[u8]`), because records sit at odd offsets by design and any typed view over
+//! them is instant alignment UB on ARM (PR #501's on-glass HardFault; the board
+//! build also compiles `+strict-align`, see its `.cargo/config.toml`). The standing
+//! host-side check is **Miri** over this suite:
+//! `cargo +nightly miri test -p obc-route --test nav` — green as of 2026-07-06;
+//! run it when touching the planner or the record decode.
 //!
 //! **No distance cap** (Timo, post-#496): the rider may try to route to *anything*;
 //! the fixed table is the real limit and the attempt is the feedback —
@@ -43,15 +58,17 @@
 //! consequences: (1) `h` (`u16` meters, saturating) saturates for very distant goals,
 //! so ordering degrades gracefully toward uniform expansion and the search exhausts —
 //! exactly the intended outcome; (2) a hopeless target burns a **full exhaustion
-//! search** before failing — bounded by the table (the progress callback keeps the
-//! watchdog fed throughout); a time-budget abort via that same callback is the named
-//! future lever if the wait annoys.
+//! search** before failing — bounded by the table, and spread across bounded steps,
+//! so the stepping host's loop keeps feeding its watchdog (and rendering, and taking
+//! input — including the cancel) between them; a step-count budget in the stepping
+//! host is the named future lever if the wait annoys.
 
 use heapless::Vec;
 
 use crate::byte_io::ByteSink;
 use crate::convert::{EmitStats, ObcrEmitter, RouteStats, WpPlace, MAX_WAYPOINTS};
 use crate::geo::{cos_lat, ground_dist_m, ground_dist_m_cl};
+use crate::reader::NAME_CAP;
 use obc_reader::{BBox, NavTileCache, Reader, M_PER_DEG};
 
 /// Snap radius, meters (locked on #116): each endpoint snaps to the nearest routable
@@ -66,10 +83,17 @@ pub const NAV_EPSILON_NUM: u32 = 13;
 /// ε's denominator — see [`NAV_EPSILON_NUM`].
 pub const NAV_EPSILON_DEN: u32 = 10;
 
-/// How many settles between two `progress` callbacks — frequent enough that the
-/// board's watchdog is fed every few hundred ms of SD-bound settling, rare enough
-/// to stay measurement noise.
-pub const PROGRESS_EVERY_SETTLES: u32 = 8;
+/// Search-phase step budget: settles per [`NavPlanner::step`] — small enough that a
+/// step returns within a few SD chunk reads (the host's pass stays responsive and
+/// the watchdog is fed between steps), large enough that per-step overhead stays
+/// measurement noise. (Succeeds the removed per-`PROGRESS_EVERY_SETTLES` callback —
+/// the step boundary *is* the liveness point now.)
+pub const NAV_SETTLES_PER_STEP: u32 = 8;
+
+/// Emit-phase step budget: path hops (edge-geometry fetches + OBCR pushes) per
+/// [`NavPlanner::step`] — the emit is short next to the search, so a few hops per
+/// step finishes it in a handful of passes without one long blocking tail.
+pub const NAV_EMIT_HOPS_PER_STEP: u16 = 4;
 
 /// How the router surfaces failure — the two-tier UX maps [`NavError::Exhausted`] to
 /// "Too far to route here" (with no distance cap, running out of table **is** the
@@ -77,9 +101,9 @@ pub const PROGRESS_EVERY_SETTLES: u32 = 8;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NavError {
     /// No route: an endpoint failed to snap within 250 m, the frontier emptied without
-    /// reaching the goal, a read/write failed mid-flight, or the host's `progress`
-    /// hook aborted the search — every non-range failure lands here so the UX
-    /// stays two-tier.
+    /// reaching the goal, or a read/write failed mid-flight — every non-range failure
+    /// lands here so the UX stays two-tier. (A rider cancel never produces an error at
+    /// all: the host just stops stepping.)
     NoPath,
     /// The fixed scratch filled before the goal was reached — the device's honest
     /// "too far" (dense graph, long route, or an unreachable/hopeless target).
@@ -336,22 +360,368 @@ impl<const N: usize> Default for NavScratch<N> {
     }
 }
 
-/// Plan a route over the map's §8 nav graph from `from` (the rider fix) to `to` (the
-/// POI coord), both `(lon, lat)` µdeg, and write it as a complete OBCR named `name` to
-/// `sink`. Returns the emitted route's [`RouteStats`] (`total_distance_m` = summed
-/// edge costs, saturated at 65 535 m; elevation/ascent all zero — no DEM, locked on
-/// #116). The found path is at most ε = 1.3× the true shortest (see the module doc).
+/// One [`NavPlanner::step`] outcome: keep stepping, or the plan's terminal result.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Step {
+    /// More work remains — call [`step`](NavPlanner::step) again (typically next host pass).
+    Running,
+    /// The route is fully emitted and the OBCR header patched; the plan's [`RouteStats`].
+    Done(RouteStats),
+    /// The plan failed; nothing useful is in the sink past the reserved header (and nothing at
+    /// all if the failure predates the emit phase). The caller discards its file.
+    Failed(NavError),
+}
+
+/// The planner's coarse phase — what the *next* [`step`](NavPlanner::step) will spend its budget
+/// on. The board's per-phase RTT instrumentation attributes each step's wall time to the phase
+/// read **before** the call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NavPhase {
+    /// Snapping an endpoint to the graph (one endpoint per step; a bounded ring walk each).
+    Snap,
+    /// The weighted-A\* search, [`NAV_SETTLES_PER_STEP`] settles per step.
+    Search,
+    /// Streaming the found path's edge geometry into the OBCR ([`NAV_EMIT_HOPS_PER_STEP`] hops
+    /// per step), then the finishing header patch.
+    Emit,
+    /// Terminal — [`step`](NavPlanner::step) idempotently re-returns the outcome.
+    Done,
+}
+
+/// One snapped plan endpoint: `(node_id, (lon, lat))` µdeg — see [`NavPlanner::endpoints`].
+pub type NavEndpoint = (u32, (i32, i32));
+
+/// The fine-grained internal phase; [`NavPhase`] is its public projection.
+enum PhaseState {
+    SnapFrom,
+    SnapTo,
+    Search,
+    Emit,
+    Finish,
+    Terminal(Result<RouteStats, NavError>),
+}
+
+/// The **resumable route planner** (#499): plans from `from` (the rider fix) to `to` (the POI
+/// coord), both `(lon, lat)` µdeg, writing a complete OBCR named `name` to the step's `sink` —
+/// one bounded unit of work per [`step`](NavPlanner::step) so the host's loop (render, input,
+/// watchdog) keeps running between steps.
 ///
-/// The caller owns all big state: `scratch` (the fixed A\* table) and `tiles`
-/// (the reader's 2-slot graph-tile cache, ~4 kB) — the device keeps both in `.bss`,
-/// the sim heap-allocates the big host table. Both are reset here, so `tiles.stats()`
-/// afterwards reads as this route's I/O.
+/// All *search* state lives in the caller-owned [`NavScratch`]/[`NavTileCache`] exactly as
+/// before; what the planner itself holds is the phase + cursors **and the [`ObcrEmitter`]**,
+/// which must survive across emit steps. The emitter is ~9 kB by value (a chunk-index table + a
+/// point staging buffer), which is why a `NavPlanner` is a **caller-owned object** — a `.bss`
+/// slot on the device, a heap box in the sim — and not a stack local. The zero-sum accounting
+/// (stack ↔ `.bss`): the old one-shot carried the emitter in its deepest frame, so the measured
+/// plan stack high-water shrinks by roughly the same ~9 kB the planner adds to `.bss` (the
+/// emitter is only *constructed* on entering the emit phase, so a step's transient stack cost is
+/// one emitter-sized move at the shallow step frame).
 ///
-/// `progress` is called every [`PROGRESS_EVERY_SETTLES`] settles; returning `false`
-/// aborts the search cleanly as [`NavError::NoPath`] (the generic failure tier). The
-/// board feeds its watchdog here — the plan is a long synchronous computation and
-/// still starves the executor *between* callbacks (accepted for v1).
-#[allow(clippy::too_many_arguments)] // the seam deliberately takes every caller-owned buffer
+/// The plan's contract with the sink: **nothing is written before the emit phase** (snap +
+/// search are read-only), so cancelling — dropping the planner, or just never stepping again —
+/// during the search leaves the sink pristine; a cancel mid-emit leaves a headerless torn
+/// prefix the caller deletes. `tiles.stats()` after the last step reads as the whole plan's I/O
+/// (reset in the first step, like the scratch).
+pub struct NavPlanner {
+    phase: PhaseState,
+    from: (i32, i32),
+    to: (i32, i32),
+    /// The route's name, applied by the finishing header patch.
+    name: heapless::String<NAME_CAP>,
+    /// The snapped endpoints (valid once their phase has run).
+    start_id: u32,
+    start_c: (i32, i32),
+    goal_id: u32,
+    goal_c: (i32, i32),
+    /// Total settles so far — the RTT line's `settles=` figure, and the budget tests' probe.
+    settles: u32,
+    /// Emit cursors: the staged chain length, the next hop to emit (descending to 1), the summed
+    /// path cost, and the cross-hop seam-dedup vertex.
+    chain_len: u16,
+    hop: u16,
+    total_m: u32,
+    last: Option<(i32, i32)>,
+    /// The OBCR emitter — created on entering the emit phase (its constructor writes the
+    /// reserved header), consumed by the finish. The planner's one big field (~9 kB).
+    em: Option<ObcrEmitter>,
+}
+
+impl NavPlanner {
+    /// A planner for one route request. Touches nothing yet — the first [`step`](NavPlanner::step)
+    /// resets the caller's scratch + tile cache and starts snapping.
+    pub fn new(from: (i32, i32), to: (i32, i32), name: &str) -> Self {
+        let mut nm = heapless::String::new();
+        for ch in name.chars() {
+            if nm.push(ch).is_err() {
+                break;
+            }
+        }
+        NavPlanner {
+            phase: PhaseState::SnapFrom,
+            from,
+            to,
+            name: nm,
+            start_id: 0,
+            start_c: (0, 0),
+            goal_id: 0,
+            goal_c: (0, 0),
+            settles: 0,
+            chain_len: 0,
+            hop: 0,
+            total_m: 0,
+            last: None,
+            em: None,
+        }
+    }
+
+    /// The public phase the **next** step will work on — the board's per-phase timing key.
+    pub fn phase(&self) -> NavPhase {
+        match &self.phase {
+            PhaseState::SnapFrom | PhaseState::SnapTo => NavPhase::Snap,
+            PhaseState::Search => NavPhase::Search,
+            PhaseState::Emit | PhaseState::Finish => NavPhase::Emit,
+            PhaseState::Terminal(_) => NavPhase::Done,
+        }
+    }
+
+    /// Total nodes settled so far — the RTT line's `settles=` figure.
+    pub fn settles(&self) -> u32 {
+        self.settles
+    }
+
+    /// The snapped endpoints — `((start_id, start_coord), (goal_id, goal_coord))`, `(lon, lat)`
+    /// µdeg; zeroes for an endpoint whose snap phase hasn't run yet. A diagnostic for the
+    /// `nav_repro` harness (#501): lets a host run report exactly which graph nodes the plan
+    /// ran between.
+    pub fn endpoints(&self) -> (NavEndpoint, NavEndpoint) {
+        ((self.start_id, self.start_c), (self.goal_id, self.goal_c))
+    }
+
+    /// Terminal-transition helper: latch and return the failure.
+    fn fail(&mut self, e: NavError) -> Step {
+        self.phase = PhaseState::Terminal(Err(e));
+        Step::Failed(e)
+    }
+
+    /// Run **one bounded unit** of planning: one endpoint snap, [`NAV_SETTLES_PER_STEP`]
+    /// settles, [`NAV_EMIT_HOPS_PER_STEP`] emit hops, or the finishing header patch — then
+    /// return. `reader`/`scratch`/`tiles`/`sink` are the caller's per-pass views over the same
+    /// underlying state every step (on the board: a fresh `Reader` borrow + a sink over the same
+    /// open file each pass). Terminal outcomes are idempotent — further steps re-return them.
+    pub fn step<const N: usize>(
+        &mut self,
+        reader: &Reader,
+        scratch: &mut NavScratch<N>,
+        tiles: &mut NavTileCache,
+        sink: &mut dyn ByteSink,
+    ) -> Step {
+        match self.phase {
+            PhaseState::SnapFrom => {
+                // First step of the plan: claim the caller's buffers.
+                scratch.reset();
+                tiles.reset();
+                let Some((id, c)) = snap(reader, tiles, self.from) else {
+                    return self.fail(NavError::NoPath);
+                };
+                self.start_id = id;
+                self.start_c = c;
+                self.phase = PhaseState::SnapTo;
+                Step::Running
+            }
+            PhaseState::SnapTo => {
+                let Some((id, c)) = snap(reader, tiles, self.to) else {
+                    return self.fail(NavError::NoPath);
+                };
+                self.goal_id = id;
+                self.goal_c = c;
+                // Seed the frontier with the start node (its own predecessor, no edge).
+                let si = match scratch.insert(self.start_id, self.start_c.0, self.start_c.1) {
+                    Ok(si) => si,
+                    Err(e) => return self.fail(e),
+                };
+                scratch.entries[si].h = sat16(ground_dist_m(self.start_c, self.goal_c) as u32);
+                scratch.entries[si].came_from = si as u16;
+                scratch.heap_push(si);
+                self.phase = PhaseState::Search;
+                Step::Running
+            }
+            // Settle up to the step budget: pop the best-f node, close it, relax its record's
+            // neighbors. Terminates: a settle closes a node or (re-open) strictly lowers an
+            // integer g ≥ 0, and the frontier is bounded by the table.
+            PhaseState::Search => {
+                for _ in 0..NAV_SETTLES_PER_STEP {
+                    let Some(idx) = scratch.heap_pop() else {
+                        // Frontier emptied without the goal — disconnected (or an empty graph).
+                        return self.fail(NavError::NoPath);
+                    };
+                    if scratch.entries[idx].node_id == self.goal_id {
+                        return match self.stage_chain(scratch, idx) {
+                            Ok(()) => {
+                                self.phase = PhaseState::Emit;
+                                Step::Running
+                            }
+                            Err(e) => self.fail(e),
+                        };
+                    }
+                    self.settles = self.settles.wrapping_add(1);
+                    scratch.entries[idx].meta |= META_CLOSED;
+                    if let Err(e) = settle::<N>(reader, scratch, tiles, idx, self.goal_c) {
+                        return self.fail(e);
+                    }
+                }
+                Step::Running
+            }
+            // Stream up to the hop budget of edge geometry start→goal. I/O failures degrade to
+            // the generic "couldn't find a route" tier — the UX is two-tier by design.
+            PhaseState::Emit => {
+                if self.em.is_none() {
+                    match self.arm_emitter(scratch, sink) {
+                        Ok(true) => return Step::Running, // degenerate single-point route emitted
+                        Ok(false) => {}
+                        Err(e) => return self.fail(e),
+                    }
+                }
+                for _ in 0..NAV_EMIT_HOPS_PER_STEP {
+                    if self.hop < 1 {
+                        break;
+                    }
+                    if let Err(e) = self.emit_hop(reader, scratch, tiles, sink) {
+                        return self.fail(e);
+                    }
+                    self.hop -= 1;
+                }
+                if self.hop < 1 {
+                    self.phase = PhaseState::Finish;
+                }
+                Step::Running
+            }
+            PhaseState::Finish => match self.finish_emit(sink) {
+                Ok(route) => {
+                    self.phase = PhaseState::Terminal(Ok(route));
+                    Step::Done(route)
+                }
+                Err(e) => self.fail(e),
+            },
+            PhaseState::Terminal(r) => match r {
+                Ok(stats) => Step::Done(stats),
+                Err(e) => Step::Failed(e),
+            },
+        }
+    }
+
+    /// Arm the emitter on entering the emit phase — its constructor writes the reserved OBCR
+    /// header, the plan's **first** sink write (everything before this point was read-only).
+    /// Returns `Ok(true)` when the degenerate single-point route (both endpoints snapped to one
+    /// node) was fully emitted and the phase advanced straight to Finish.
+    ///
+    /// `#[inline(never)]` — the #419/#501 stack discipline: the ~9 kB `ObcrEmitter` construction
+    /// temporary must live in THIS immediately-popped frame. Inlined, fat LTO reserved its slot
+    /// in the whole step frame for **every** step — part of the measured 26.5 kB `nav_step`
+    /// monster frame that overflowed the DK stack (the #501 on-glass HardFault's true cause).
+    #[inline(never)]
+    fn arm_emitter<const N: usize>(
+        &mut self,
+        scratch: &NavScratch<N>,
+        sink: &mut dyn ByteSink,
+    ) -> Result<bool, NavError> {
+        let em = ObcrEmitter::new(sink).map_err(|_| NavError::NoPath)?;
+        self.em = Some(em);
+        if self.chain_len == 1 {
+            let e = &scratch.entries[scratch.heap[0] as usize];
+            let (lon, lat) = (e.lon, e.lat);
+            if self.em.as_mut().is_none_or(|em| em.push(sink, lon, lat, 0, 0).is_err()) {
+                return Err(NavError::NoPath);
+            }
+            self.phase = PhaseState::Finish;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// Consume the emitter and patch the header — the plan's last writes.
+    ///
+    /// `#[inline(never)]` for the same reason as [`arm_emitter`](Self::arm_emitter):
+    /// `Option::take` moves the ~9 kB emitter into a local; that temporary belongs in this
+    /// popped frame, never in the step frame.
+    #[inline(never)]
+    fn finish_emit(&mut self, sink: &mut dyn ByteSink) -> Result<RouteStats, NavError> {
+        let stats =
+            EmitStats { min_ele_m: 0, max_ele_m: 0, ascent_m: 0, descent_m: 0, total_distance_m: Some(self.total_m) };
+        let Some(em) = self.em.take() else {
+            return Err(NavError::NoPath); // unreachable: Emit always arms it
+        };
+        em.finish(sink, &self.name, stats, &mut Vec::<WpPlace, MAX_WAYPOINTS>::new()).map_err(|_| NavError::NoPath)
+    }
+
+    /// Stage the found path goal→start in the (now dead) heap array — `came_from` holds **slot
+    /// indices**, so the walk is direct indexing; path length is bounded by the tracked-node
+    /// count, so it always fits. Sets the emit cursors + the summed-cost header total (the
+    /// goal's `g`, saturated at 65 535 m like every stored cost).
+    #[inline(never)] // #419/#501: keep the step dispatcher thin
+    fn stage_chain<const N: usize>(&mut self, scratch: &mut NavScratch<N>, goal_idx: usize) -> Result<(), NavError> {
+        self.total_m = scratch.entries[goal_idx].g as u32;
+        let mut chain_len = 0usize;
+        let mut cur = goal_idx;
+        loop {
+            if chain_len >= scratch.used as usize {
+                return Err(NavError::NoPath); // longer than the tracked set = a corrupt cycle
+            }
+            scratch.heap[chain_len] = cur as u16;
+            chain_len += 1;
+            if scratch.entries[cur].node_id == self.start_id {
+                break;
+            }
+            cur = scratch.entries[cur].came_from as usize;
+            if cur >= N {
+                return Err(NavError::NoPath); // corrupt slot index — fail, don't index OOB
+            }
+        }
+        self.chain_len = chain_len as u16;
+        self.hop = chain_len as u16 - 1;
+        self.last = None;
+        Ok(())
+    }
+
+    /// Emit one path hop: fetch hop `self.hop`'s edge polyline oriented via
+    /// [`Reader::nav_edge_oriented`] and push it, deduping the seam vertex shared with the
+    /// previous hop so the OBCR carries one continuous polyline. Elevation is zero throughout
+    /// (no DEM, locked on #116).
+    #[inline(never)] // #419/#501: a phase-boundary frame — never inlined into the step frame
+    fn emit_hop<const N: usize>(
+        &mut self,
+        reader: &Reader,
+        scratch: &mut NavScratch<N>,
+        tiles: &mut NavTileCache,
+        sink: &mut dyn ByteSink,
+    ) -> Result<(), NavError> {
+        let hop = self.hop as usize;
+        let prev = &scratch.entries[scratch.heap[hop] as usize];
+        let cur = &scratch.entries[scratch.heap[hop - 1] as usize];
+        let em = self.em.as_mut().ok_or(NavError::NoPath)?;
+        let mut last = self.last;
+        let mut werr = false;
+        reader
+            .nav_edge_oriented(tiles, cur.edge_used, (prev.lon, prev.lat), |pt| {
+                if werr || last == Some(pt) {
+                    return; // seam vertex already emitted by the previous hop
+                }
+                if em.push(sink, pt.0, pt.1, 0, 0).is_err() {
+                    werr = true;
+                    return;
+                }
+                last = Some(pt);
+            })
+            .ok_or(NavError::NoPath)?;
+        self.last = last;
+        if werr {
+            return Err(NavError::NoPath);
+        }
+        Ok(())
+    }
+}
+
+/// One-shot convenience over [`NavPlanner`]: loop [`step`](NavPlanner::step) to completion.
+/// What the route-level tests and the headless sim use; interactive hosts step the planner
+/// themselves, one bounded step per pass.
 pub fn plan_route<const N: usize>(
     reader: &Reader,
     from: (i32, i32),
@@ -359,44 +729,23 @@ pub fn plan_route<const N: usize>(
     name: &str,
     scratch: &mut NavScratch<N>,
     tiles: &mut NavTileCache,
-    progress: &mut dyn FnMut() -> bool,
     sink: &mut dyn ByteSink,
 ) -> Result<RouteStats, NavError> {
-    scratch.reset();
-    tiles.reset();
-
-    let (start_id, start_c) = snap(reader, tiles, from).ok_or(NavError::NoPath)?;
-    let (goal_id, goal_c) = snap(reader, tiles, to).ok_or(NavError::NoPath)?;
-
-    // Seed the frontier with the start node (its own predecessor, no edge).
-    let si = scratch.insert(start_id, start_c.0, start_c.1)?;
-    scratch.entries[si].h = sat16(ground_dist_m(start_c, goal_c) as u32);
-    scratch.entries[si].came_from = si as u16;
-    scratch.heap_push(si);
-
-    // Settle loop: pop the best-f node, close it, and relax its record's neighbors.
-    // Terminates: a settle closes a node or (re-open) strictly lowers an integer g ≥ 0,
-    // and the frontier is bounded by the table.
-    let mut settles: u32 = 0;
-    while let Some(idx) = scratch.heap_pop() {
-        if scratch.entries[idx].node_id == goal_id {
-            return emit_route(reader, scratch, tiles, name, idx, start_id, sink);
+    let mut planner = NavPlanner::new(from, to, name);
+    loop {
+        match planner.step(reader, scratch, tiles, sink) {
+            Step::Running => {}
+            Step::Done(stats) => return Ok(stats),
+            Step::Failed(e) => return Err(e),
         }
-        settles = settles.wrapping_add(1);
-        if settles.is_multiple_of(PROGRESS_EVERY_SETTLES) && !progress() {
-            return Err(NavError::NoPath); // host-aborted — the generic failure tier
-        }
-        scratch.entries[idx].meta |= META_CLOSED;
-        settle::<N>(reader, scratch, tiles, idx, goal_c)?;
     }
-    // Frontier emptied without reaching the goal — disconnected (or the graph is empty).
-    Err(NavError::NoPath)
 }
 
 /// One settle: descend the node quadtree to the settled node's leaf (a degenerate
 /// one-point view — the spatial re-fetch) and relax each of its §8.3 neighbors from
 /// the inline `(coord, cost_m)`. A node the walk doesn't yield (corrupt map) simply
 /// relaxes nothing; the search continues on whatever frontier remains.
+#[inline(never)] // #419/#501: a phase-boundary frame — never inlined into the step frame
 fn settle<const N: usize>(
     reader: &Reader,
     scratch: &mut NavScratch<N>,
@@ -464,6 +813,7 @@ fn settle<const N: usize>(
 /// snap radius. The cap makes the final ring exhaustive by construction (a 250 m
 /// half-extent square contains the whole 250 m disc), so unlike the POI query no
 /// map-cover fallback is needed. Repeat visits across rings re-hit the tile cache.
+#[inline(never)] // #419/#501: a phase-boundary frame — never inlined into the step frame
 fn snap(reader: &Reader, tiles: &mut NavTileCache, p: (i32, i32)) -> Option<(u32, (i32, i32))> {
     if reader.nav_directory().is_empty() {
         return None;
@@ -502,76 +852,4 @@ fn snap(reader: &Reader, tiles: &mut NavTileCache, p: (i32, i32)) -> Option<(u32
         }
         half = (half * 2).min(full_half);
     }
-}
-
-/// Walk `came_from` goal→start, then stream the path's edge geometry start→goal into
-/// the shared OBCR emitter. `came_from` holds **slot indices**, so the walk is direct
-/// indexing (no lookup); the chain is staged in the (now dead) heap array — path
-/// length is bounded by the tracked-node count, so it always fits; no extra buffer.
-/// Each hop's polyline is fetched oriented via [`Reader::nav_edge_oriented`] and the
-/// shared seam vertex deduped, so the OBCR carries one continuous polyline. Elevation
-/// is zero throughout (no DEM); the header total is the goal's `g` — the summed edge
-/// costs (locked on #116), saturated at 65 535 m like every stored cost.
-fn emit_route<const N: usize>(
-    reader: &Reader,
-    scratch: &mut NavScratch<N>,
-    tiles: &mut NavTileCache,
-    name: &str,
-    goal_idx: usize,
-    start_id: u32,
-    sink: &mut dyn ByteSink,
-) -> Result<RouteStats, NavError> {
-    let total_m = scratch.entries[goal_idx].g as u32;
-
-    // Stage the chain goal→start in the heap array (A* is done with it). Bounded by
-    // `used`; a longer walk means a corrupt came_from cycle — fail, don't spin.
-    let mut chain_len = 0usize;
-    let mut cur = goal_idx;
-    loop {
-        if chain_len >= scratch.used as usize {
-            return Err(NavError::NoPath);
-        }
-        scratch.heap[chain_len] = cur as u16;
-        chain_len += 1;
-        if scratch.entries[cur].node_id == start_id {
-            break;
-        }
-        cur = scratch.entries[cur].came_from as usize;
-        if cur >= N {
-            return Err(NavError::NoPath); // corrupt slot index — fail, don't index OOB
-        }
-    }
-
-    // Stream start→goal (the chain reversed). I/O failures degrade to the generic
-    // "couldn't find a route" tier — the UX is two-tier by design.
-    let mut em = ObcrEmitter::new(sink).map_err(|_| NavError::NoPath)?;
-    if chain_len == 1 {
-        // Both endpoints snapped to the same node: a single-point route of length 0.
-        let e = &scratch.entries[goal_idx];
-        em.push(sink, e.lon, e.lat, 0, 0).map_err(|_| NavError::NoPath)?;
-    }
-    let mut last: Option<(i32, i32)> = None;
-    for hop in (1..chain_len).rev() {
-        let prev = &scratch.entries[scratch.heap[hop] as usize];
-        let cur = &scratch.entries[scratch.heap[hop - 1] as usize];
-        let mut werr = false;
-        reader
-            .nav_edge_oriented(tiles, cur.edge_used, (prev.lon, prev.lat), |pt| {
-                if werr || last == Some(pt) {
-                    return; // seam vertex already emitted by the previous hop
-                }
-                if em.push(sink, pt.0, pt.1, 0, 0).is_err() {
-                    werr = true;
-                    return;
-                }
-                last = Some(pt);
-            })
-            .ok_or(NavError::NoPath)?;
-        if werr {
-            return Err(NavError::NoPath);
-        }
-    }
-
-    let stats = EmitStats { min_ele_m: 0, max_ele_m: 0, ascent_m: 0, descent_m: 0, total_distance_m: Some(total_m) };
-    em.finish(sink, name, stats, &mut Vec::<WpPlace, MAX_WAYPOINTS>::new()).map_err(|_| NavError::NoPath)
 }

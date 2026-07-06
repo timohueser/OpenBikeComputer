@@ -190,6 +190,12 @@ struct SimGui {
     /// signal the firmware gates its renders on. (Mouse pan/zoom bypasses the app's input path, so
     /// it isn't reflected; on the device every camera change goes through a gesture or a fix.)
     last_dirty: Dirty,
+    /// An in-flight route plan (#499): the resumable planner, stepped **once per frame** in
+    /// [`render_to_texture`] so the GUI stays interactive while a route computes — exactly the
+    /// board's one-step-per-pass shape. `None` when nothing is planning; a drained cancel
+    /// (Back on the planning screen) simply drops it — the sim's sink is in-memory, so there is
+    /// no partial file to delete.
+    nav_plan: Option<crate::NavPlan>,
     /// The device body color drawn by the housing chrome. Switchable in the control panel.
     colorway: Colorway,
     /// This frame's device-control keyboard state, read at the top of `update` (before a widget
@@ -290,6 +296,7 @@ impl SimGui {
             map_cache: MapCache::new(),
             last_stats: obc_render::RenderStats::default(),
             last_dirty: Dirty::CLEAN,
+            nav_plan: None,
             colorway,
             kbd_turn: 0,
             kbd_enc: false,
@@ -386,13 +393,34 @@ impl SimGui {
             }
         }
 
-        // Drain a POI create-route request (epic #116, R4): run the on-device router against the
-        // loaded map, write + rescan the reserved `_nav.obcr`, and answer the app — before
-        // `sync_active` below so a successful plan's activated route streams open this same frame.
+        // The resumable route planner (#499). A drained create-route request starts a plan; a
+        // drained cancel (Back on the planning screen) drops it (in-memory sink — nothing to
+        // delete); otherwise the in-flight plan runs **one bounded step this frame**, keeping
+        // the GUI fully interactive (the spinner animates, input works) while the route
+        // computes — the board's one-step-per-pass shape. A terminal outcome commits + answers
+        // before `sync_active` below, so a successful plan's activated route streams open this
+        // same frame.
         if let Some(req) = self.app.take_nav_request() {
+            self.nav_plan = Some(crate::NavPlan::start(&req));
+        }
+        if self.app.take_nav_cancel() {
+            self.nav_plan = None;
+        }
+        let step = self.nav_plan.as_mut().map(|plan| {
             let map_src = SliceSource(&self.bytes);
             let nav_reader = Reader::new(&map_src, &self.map_tables, &self.map_cache);
-            crate::run_nav_request(&mut self.app, &mut self.store, &nav_reader, &req);
+            plan.step(&nav_reader)
+        });
+        match step {
+            None | Some(obc_route::Step::Running) => {}
+            Some(obc_route::Step::Done(stats)) => {
+                let plan = self.nav_plan.take().expect("just stepped it");
+                crate::finish_nav_plan(&mut self.app, &mut self.store, Ok(stats), plan.bytes(), plan.tile_stats());
+            }
+            Some(obc_route::Step::Failed(e)) => {
+                let plan = self.nav_plan.take().expect("just stepped it");
+                crate::finish_nav_plan(&mut self.app, &mut self.store, Err(e), plan.bytes(), plan.tile_stats());
+            }
         }
 
         // A ride finishing this frame writes a fresh `RD{id}.ORD` — rescan the tracks folder and

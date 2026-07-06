@@ -48,7 +48,7 @@ pub use home::HomeScreen;
 pub use list::window_start;
 pub use map::MapScreen;
 pub use menu::MenuScreen;
-pub use nav_route::{NavConfirmScreen, NavFailScreen};
+pub use nav_route::{NavConfirmScreen, NavFailScreen, NavPlanningScreen};
 pub use passkey::PasskeyScreen;
 pub use poi_detail::PoiDetailScreen;
 pub use poi_list::{PoiListScreen, PoiScratch};
@@ -305,10 +305,13 @@ screens! {
     /// A single POI's detail: full name, subtype, live bearing arrow, today's hours + open/closed.
     PoiDetail(PoiDetailScreen) => Nav,
     /// The POI "Create a route?" confirm (epic #116, R4): *Create route* records the one-shot
-    /// [`NavRequest`](crate::activity::NavRequest); the host's answer
-    /// ([`App::notify_nav_result`]) replaces this screen with the computed-route overview or
-    /// the failure card.
+    /// [`NavRequest`](crate::activity::NavRequest) and swaps to the planning screen.
     NavConfirm(NavConfirmScreen) => Nav,
+    /// The route-**planning** screen (#499): the spinning-needle wait while the host steps the
+    /// resumable router; Back cancels (pops to the detail + rings [`App::take_nav_cancel`]). The
+    /// host's answer ([`App::notify_nav_result`]) replaces it with the computed-route overview
+    /// or the failure card.
+    NavPlanning(NavPlanningScreen) => Nav,
     /// The route-planning failure card (epic #116, R4): the locked two-tier copy ("Too far to
     /// route here" / "Couldn't find a route."), info-only — any press/Back returns to the detail.
     NavFail(NavFailScreen) => Nav,
@@ -404,6 +407,9 @@ impl Screen {
             Screen::RouteReceived(s) => s.tick_timers(now_ms),
             Screen::RouteUpdated(s) => s.tick_timers(now_ms),
             Screen::RouteSwap(s) => s.tick_timers(now_ms),
+            // The nav planning spinner (#499): free-runs at frame cadence until the host's
+            // answer (or a cancel) removes the screen.
+            Screen::NavPlanning(s) => s.tick_timers(now_ms),
             _ => ScreenTick::idle(),
         }
     }

@@ -1056,6 +1056,15 @@ impl App {
         self.activity.has_nav_request()
     }
 
+    /// Drain the pending **plan-cancel request** (#499) — recorded by the planning screen's Back
+    /// (which already popped back to the POI detail). A `true` is the host's cue to abort the
+    /// in-flight plan and discard the partial nav file; it answers **nothing** (there is no
+    /// planning screen left to answer into). Drained once per pass; a stale cancel with no plan
+    /// in flight is a no-op.
+    pub fn take_nav_cancel(&mut self) -> bool {
+        self.activity.take_nav_cancel()
+    }
+
     /// The host's answer to a drained [`take_nav_request`](App::take_nav_request) (epic #116, R4).
     ///
     /// `Ok(id)` is the committed nav route's **durable object id**, resolved against the already
@@ -1073,11 +1082,13 @@ impl App {
     /// distance cap — running out of the router's fixed table **is** the device's range limit),
     /// everything else → "Couldn't find a route."
     ///
-    /// If the confirm screen is gone (it can only be *replaced* by a host-pushed card, but stay
-    /// defensive), the answer is dropped — the committed route is still in the Route menu.
+    /// The answer lands in the **planning screen** (#499 — the confirm swapped to it when the
+    /// request was recorded). If it's gone — the rider cancelled (Back popped it), or a
+    /// host-pushed card replaced it — the answer is dropped: a committed route is still in the
+    /// Route menu, and a cancel already told the host to abort before any answer.
     pub fn notify_nav_result(&mut self, result: Result<u16, obc_route::nav::NavError>) {
         use obc_route::nav::NavError;
-        let Some(i) = self.stack.iter().position(|s| matches!(s, Screen::NavConfirm(_))) else {
+        let Some(i) = self.stack.iter().position(|s| matches!(s, Screen::NavPlanning(_))) else {
             return;
         };
         // Resolve the id in the (already rescanned) catalog; a missing id degrades to the

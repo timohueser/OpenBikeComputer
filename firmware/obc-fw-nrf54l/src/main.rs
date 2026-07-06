@@ -350,8 +350,9 @@ const MAP_RESIDENT: usize = core::mem::size_of::<obc_app::App>()
 /// out of the combined image because these two statics push its stack region ~1.9 KB below the
 /// measured deep-render peak on the 256 KB DK (see build.rs); the LM20 deletes the gate.
 #[cfg(has_nav)]
-const NAV_RESIDENT: usize =
-    core::mem::size_of::<obc_route::NavScratch>() + core::mem::size_of::<obc_reader::NavTileCache>();
+const NAV_RESIDENT: usize = core::mem::size_of::<obc_route::NavScratch>()
+    + core::mem::size_of::<obc_reader::NavTileCache>()
+    + core::mem::size_of::<obc_route::NavPlanner>();
 #[cfg(not(has_nav))]
 const NAV_RESIDENT: usize = 0;
 /// The BLE stack's residents (`ble::RESIDENT_BYTES`: the MPSL handle + SDC memory block + TrouBLE's
@@ -427,6 +428,14 @@ static mut NAV_SCRATCH: MaybeUninit<obc_route::NavScratch> = MaybeUninit::uninit
 /// `nav route:` RTT line logs). Same `.bss` placement + `has_nav` gate as [`NAV_SCRATCH`].
 #[cfg(has_nav)]
 static mut NAV_TILES: MaybeUninit<obc_reader::NavTileCache> = MaybeUninit::uninit();
+/// The **resumable planner**'s slot (#499, ~9.5 KB — it owns the OBCR emitter across steps).
+/// Unlike the two buffers above it is *not* `init_static`-once: the ride loop `ptr::write`s a
+/// fresh planner per create-route request (no `Drop`, so overwriting is sound) and only reads it
+/// while its `NavRun` bookkeeping says a plan is active. Zero-sum note: this ~9.5 KB used to be
+/// the emit frame's stack local — moving it here trades the plan path's stack high-water for
+/// `.bss`, byte for byte.
+#[cfg(has_nav)]
+static mut NAV_PLANNER: MaybeUninit<obc_route::NavPlanner> = MaybeUninit::uninit();
 
 /// Build a `'static` value into a `.bss` [`MaybeUninit`] slot, returning the sole `&'static mut` to it
 /// — the warm-reset-safe replacement for `StaticCell` that every runtime-built shared static (the bus
@@ -1054,6 +1063,9 @@ async fn main(_spawner: Spawner) {
         let nav = ride::NavBuffers {
             scratch: unsafe { init_static(core::ptr::addr_of_mut!(NAV_SCRATCH), obc_route::NavScratch::new()) },
             tiles: unsafe { init_static(core::ptr::addr_of_mut!(NAV_TILES), obc_reader::NavTileCache::new()) },
+            // SAFETY: the sole handle to the planner slot; the ride loop (re)writes it per
+            // request and reads it only while its plan bookkeeping is active.
+            planner: unsafe { &mut *core::ptr::addr_of_mut!(NAV_PLANNER) },
         };
         #[cfg(all(has_map, not(has_nav)))]
         let nav = ride::NavBuffers;

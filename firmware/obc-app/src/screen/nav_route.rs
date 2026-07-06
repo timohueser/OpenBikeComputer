@@ -1,13 +1,18 @@
-//! The POI **create-route** flow's two small screens (epic #116, R4):
+//! The POI **create-route** flow's screens (epic #116, R4 + the #499 resumable planner):
 //!
 //! - [`NavConfirmScreen`] — the "Create a route?" confirm, reached by pressing a POI's
 //!   [detail](super::PoiDetailScreen). *Create route* records a one-shot
-//!   [`NavRequest`](crate::activity::NavRequest) (rider fix → POI coord + the POI's name) that the
-//!   host drains via [`App::take_nav_request`](crate::App::take_nav_request), runs the on-device
-//!   A* router on, and answers through [`App::notify_nav_result`](crate::App::notify_nav_result) —
-//!   which swaps this screen for the computed-route
-//!   [overview](super::RouteOverviewScreen) (success) or the [`NavFailScreen`] (failure).
-//!   The confirm stays up while the host plans (the answer lands within the same host pass).
+//!   [`NavRequest`](crate::activity::NavRequest) (rider fix → POI coord + the POI's name) and
+//!   swaps itself for the planning screen; the host drains the request via
+//!   [`App::take_nav_request`](crate::App::take_nav_request) and steps the resumable router.
+//! - [`NavPlanningScreen`] — up while the host plans (#499): a **spinning compass needle** (the
+//!   Menu dial's needle, shared drawing) over plain copy, animated by
+//!   [`tick_timers`](NavPlanningScreen::tick_timers) between the host's planner steps. **Back
+//!   cancels**: it pops straight back to the POI detail *and* records a one-shot the host drains
+//!   ([`App::take_nav_cancel`](crate::App::take_nav_cancel)) to abort the plan and discard the
+//!   partial file — no failure card, the rider changed their mind. The host's answer
+//!   ([`App::notify_nav_result`](crate::App::notify_nav_result)) replaces this screen with the
+//!   computed-route [overview](super::RouteOverviewScreen) (success) or the [`NavFailScreen`].
 //! - [`NavFailScreen`] — the locked **two-tier failure** card: `Exhausted` → "Too far to route
 //!   here" (there is no distance cap; the router's fixed table running out **is** the device's
 //!   range limit), everything else → "Couldn't find a route." Info-only, like the
@@ -28,7 +33,7 @@ use obc_render::{
 use crate::activity::NavRequest;
 use crate::input::Gesture;
 
-use super::{list, palette, title_frame, Ctx, MenuItem, Render, Screen, Transition};
+use super::{list, palette, title_frame, Ctx, MenuItem, Render, Screen, ScreenTick, Transition};
 
 const ITEMS: [MenuItem; 2] =
     [MenuItem { label: "Create route", guard: false }, MenuItem { label: "Cancel", guard: false }];
@@ -70,9 +75,9 @@ impl NavConfirmScreen {
                     return Transition::Replace(Screen::NavFail(NavFailScreen::not_found()));
                 };
                 cx.activity.request_nav(NavRequest::new((fix.lon, fix.lat), self.to, &self.name));
-                // Stay put: the host drains the request and answers within its pass, replacing
-                // this screen with the overview or the failure card.
-                Transition::None
+                // Swap to the planning screen (#499): the host steps the resumable router across
+                // its passes and answers into it — the UI stays live (spinner + Back-to-cancel).
+                Transition::Replace(Screen::NavPlanning(NavPlanningScreen::new(&self.name)))
             }
             Gesture::Press => Transition::Pop, // Cancel
             Gesture::Back => Transition::Pop,  // Back = Cancel (return to the POI detail)
@@ -100,6 +105,81 @@ impl NavConfirmScreen {
             label_dy: 11,
         };
         super::draw_guarded_rows(cv, &ITEMS, self.selected, rx.hold_progress, AMBER, geo);
+    }
+}
+
+/// Degrees per second the planning spinner sweeps — a calm, steady rotation (one revolution per
+/// 1.5 s), advanced by real elapsed millis so the speed reads the same at any host frame rate.
+const SPIN_DPS: f32 = 240.0;
+
+/// Frame cadence the spinner asks the host for — smooth enough for a needle, cheap enough that a
+/// multi-second plan isn't dominated by repaints (on the board the practical cadence is the ride
+/// loop's per-step pass anyway).
+const SPIN_FRAME_MS: u32 = 66;
+
+/// The planning screen (#499): up from confirm-accept until the host's answer replaces it. Shows
+/// the shared compass needle spinning over plain copy. **Back = cancel** — pops to the POI detail
+/// and records the one-shot the host drains to abort the plan; no failure card.
+#[derive(Debug)]
+pub struct NavPlanningScreen {
+    /// The destination's name, echoed so the rider sees what's being planned.
+    name: heapless::String<POI_NAME_MAX>,
+    /// The spinner's current angle (0° = N, clockwise), advanced in [`tick_timers`].
+    needle_deg: f32,
+    /// Clock of the previous spin tick, for the per-frame `dt`; `None` before the first.
+    last_ms: Option<u32>,
+}
+
+impl NavPlanningScreen {
+    /// The planning screen for a route to `name` (truncated to the POI name cap).
+    pub fn new(name: &str) -> Self {
+        let mut nm = heapless::String::new();
+        for ch in name.chars() {
+            if nm.push(ch).is_err() {
+                break;
+            }
+        }
+        NavPlanningScreen { name: nm, needle_deg: 0.0, last_ms: None }
+    }
+
+    pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
+        match g {
+            // Cancel: back to the POI detail (this screen replaced the confirm, so one pop lands
+            // there), and ring the host so it aborts the plan + discards the partial file. No
+            // failure card — the rider changed their mind, nothing failed.
+            Gesture::Back => {
+                cx.activity.request_nav_cancel();
+                Transition::Pop
+            }
+            _ => Transition::None, // nothing else to do here — the plan finishes or is cancelled
+        }
+    }
+
+    /// [`Screen::tick_timers`] arm: spin the needle by real elapsed time and keep the host's
+    /// frame cadence armed — between the ride loop's planner steps this is what animates.
+    pub fn tick_timers(&mut self, now_ms: u32) -> ScreenTick {
+        let dt = self.last_ms.map_or(0.0, |last| now_ms.wrapping_sub(last) as f32 / 1000.0);
+        self.last_ms = Some(now_ms);
+        self.needle_deg = (self.needle_deg + SPIN_DPS * dt.min(0.25)) % 360.0;
+        ScreenTick { changed: dt > 0.0, next_wake_ms: Some(SPIN_FRAME_MS) }
+    }
+
+    pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
+        use palette::*;
+        let (w, h) = (rx.w, rx.h);
+
+        title_frame(cv, w, h, "CREATE ROUTE", "");
+        // The destination, so the wait reads as *this* route being found.
+        let max = (((w - 24) / Font::Label.char_width() as i32).max(6)) as usize;
+        let name = super::route_menu::fit_name(&self.name, max);
+        cv.text(&name, Point::new(w / 2, super::TITLE_BAR_H + 16), Font::Label, TextAlign::Center, SUBTEXT);
+
+        // The spinner: the Menu dial's needle (shared drawing), free-spinning while the host
+        // steps the planner.
+        super::menu::draw_needle(cv, Point::new(w / 2, h / 2), self.needle_deg, 42.0, 10.0);
+
+        // Label-tier: the full phrase overruns the panel at Body width (18 × 14 px > 240).
+        cv.text("Finding a route...", Point::new(w / 2, h * 72 / 100), Font::Label, TextAlign::Center, INK);
     }
 }
 

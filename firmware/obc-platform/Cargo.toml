@@ -59,7 +59,7 @@ heapless = "0.8"
 
 # `powf` for the BMP581 barometric pressure→altitude formula (issue #218): no `std` in this no_std
 # crate, so transcendental math goes through libm — the same 0.2 obc-render/obc-route already use.
-libm = "0.2"
+libm = { version = "0.2", default-features = false } # no arch asm — see the obc-reader edge (Miri tripwire)
 
 # The OBCR byte I/O the SD adapters implement (`ByteSource`/`ByteSink`/`Error`) plus the
 # track record codec — so `SdByteSource` drops into `RouteReader`/`RouteSummary::read` and
