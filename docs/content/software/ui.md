@@ -494,7 +494,7 @@ Pressing a list row opens the **detail view** for that POI — one more `Nav` sc
 
 Most screens have one focus: the row cursor. The **Settings** screens — Date & Time, Units, Stats, Power, Bluetooth, and the factory Reset — add a *second* level. A value isn't a separate sub-screen; it's edited **in place**. Rotating still moves the amber row cursor, but once you press a value row, focus drops *into* a field: a `▲▼` box marks the live one, rotating now changes *its* value, pressing steps to the next field, and back steps out. The same two-level model drives every editor — a date, a UTC offset, a fix interval — and the same toggle row flips GPS-set-time or the power saver. No new gestures; the existing five just mean different things at each level.
 
-The **Stats** screen configures the riding grid itself. Its *Page cycle* row sets how fast the grid auto-flips between pages; *Fields* opens the grid **editor — which simply *is* the grid**: the same 3×2 tile pages the riding view shows, placed by the same layout walk and painted by the same tile renderer, with live values. The grid draws from a predefined, in-code catalogue of fields (speed, distance, climb, grade, elevation, clock, …) — the rider picks which to show and in what order, and a field is either one column or a full-width two. The cursor is the amber tile (walking past a page's last tile flips pages), and reordering reuses the grab idiom: press *lifts* the tile (move arrows appear), rotating moves it through the order — the grid reflows live, so a two-column panel's row-aligned hops are something you watch, not infer — and press drops it. A ghost `+` tile in the first free slot opens the field picker, so a new panel visibly lands where the ghost sits; a panel is removed by a **hold-to-delete** bar, the same guarded hold as Reset's. The chosen panels lay out six to a page (3×2) and auto-cycle on the timer, so a long list stays glanceable. The selection and period live in the same persisted `Settings` value, so they survive a reboot like every other setting.
+The **Stats** screen configures the riding grid itself. Its *Page cycle* row sets how fast the grid auto-flips between pages; *Fields* opens the grid **editor — which simply *is* the grid**: the same 3×2 tile pages the riding view shows, placed by the same layout walk and painted by the same tile renderer, with live values. The grid draws from a predefined, in-code catalogue of fields (speed, distance, climb, grade, elevation, clock, …) — the rider picks which to show and in what order, and a field is either one column or a full-width two. The cursor is the amber tile (walking past a page's last tile flips pages), and reordering reuses the grab idiom: press *lifts* the tile (move arrows appear), rotating moves it through the order — the grid reflows live, so a two-column panel's row-aligned hops are something you watch, not infer — and press drops it. A ghost `+` tile in the first free slot opens the field picker, so a new panel visibly lands where the ghost sits; a panel is removed by a **hold-to-delete** bar, the same guarded hold as Reset's. The chosen panels lay out six to a page (3×2) and auto-cycle on the timer, so a long list stays glanceable. The selection and period live in the same persisted `Settings` value, so they survive a reboot like every other setting. The same screen also carries the **Climb** toggle — Off / Manual / Auto — that decides whether the [climb panel](#climbs-get-their-own-panel) appears on its own when a climb begins.
 
 <figure class="fig">
 <svg viewBox="0 0 720 232" role="img" aria-label="Settings screens have two focus levels. In row focus, rotate moves the amber row cursor, press flips a toggle or opens a value row's stepper, and back climbs one screen. Pressing a value row enters field focus, where rotate changes the live field's value shown in an up-down arrow box, press advances to the next field, and back — or pressing past the last field — steps back out to row focus.">
@@ -552,7 +552,7 @@ The simulator writes the blob to a file; the device writes it to a reserved slic
 
 ## Logic and drawing get different views of the world
 
-`handle` and `draw` are handed deliberately different contexts. `handle` gets `Ctx` — the **mutable** slice of app state a screen is allowed to change (the camera, the ride mode, the clock). `draw` gets `Render` — a **read-only** view plus the resources it needs to paint (the map reader, the renderer, the active route, its elevation profile, the breadcrumb, the in-flight hold-progress). A screen literally cannot mutate state while drawing, because it isn't given the means to.
+`handle` and `draw` are handed deliberately different contexts. `handle` gets `Ctx` — the **mutable** slice of app state a screen is allowed to change (the camera, the ride mode, the clock). `draw` gets `Render` — a **read-only** view plus the resources it needs to paint (the map reader, the renderer, the active route, its elevation profile, the active climb, the breadcrumb, the in-flight hold-progress). A screen literally cannot mutate state while drawing, because it isn't given the means to.
 
 <figure class="fig">
 <svg viewBox="0 0 720 220" role="img" aria-label="Two side-by-side contexts. On the left, handle receives Ctx, the mutable half: app state (camera, zoom, pan), the activity (ride mode), the route catalog, and the clock. On the right, draw receives Render, the read-only half: the map reader, the renderer, read-only state, the active route, its elevation profile, the breadcrumb, size, and hold-progress.">
@@ -668,9 +668,76 @@ A single **static** Bluetooth rune says "a phone is linked right now." It appear
 
 Settings ▸ **Bluetooth** is where the link's few knobs live. It's an ordinary settings screen (two-level focus like the rest), carrying: an **on/off** toggle for the radio (persisted in `Settings` like every other setting, and pushed to the radio plane by the host), a read-only **status line** (Off / Advertising / Connected, straight from the seam), a **"Paired: yes/no"** row (no phone name — deliberately not worth a protocol addition), and a hold-guarded **Forget phone** row. Forget uses the [delete-footer's guarded hold](#deleting-things-the-hold-to-delete-footer) — a completed hold fills it warning-red and clears the bond — and it matters more than it looks: because [a stored bond now rejects new pairings](../companion-link/#pairing-and-staying-paired), Forget phone is the **only** way to re-pair a replaced or reset phone. The guarded hold is the confirmation; there's no extra popup.
 
+## Climbs get their own panel
+
+A planned route's hard parts are its climbs, so a third riding view is given over to the one you're on. The **Climb** screen draws the current climb the way a dedicated climb computer does — a tall elevation trace with the **gradient shown as colour**, each column tinted by its local steepness from green through red. A "you are here" cursor rides the trace, and four tiles below read only *this* climb: the ascent and distance still to the top, the gradient here, and the average gradient of what's left.
+
+**The climbs are found once, at load.** Because the route is planned, its shape is known before you turn a pedal — so finding climbs is an offline *segmentation*, not a live detector. The same load-time pass that builds the whole-route [elevation profile](../formats/) walks the height-against-distance signal and cuts it into a handful of climbs on plain rules: a stretch counts only if it gains enough, averages steeply enough, and runs long enough; a shallow dip is bridged (a false flat is still one climb) while a deep col splits it in two. Deciding up front turns the live question — *am I on a climb?* — into an interval test on the matched distance, and the found climbs cost about a kilobyte of resident state.
+
+**Detail without a bigger buffer.** The whole-route profile is decimated to a few hundred columns — plenty for the Statistics band, far too coarse to read one climb's gradient. So the Climb screen draws from a *second*, finer profile scoped to the active climb alone: one small resident buffer, rebuilt only when you cross into a new climb, never per frame. It's the profile pyramid's trick again — precompute on load, read cheaply while riding — and, like the profile, it's a runtime structure. Nothing new is stored in the route file or sent over the link.
+
+**It appears on its own — or waits to be asked.** A *Climb* setting picks the manner: **Auto** (the default) switches to the panel the moment a climb starts and drops back to the Map when you crest; **Manual** keeps it out of the way but in reach; **Off** hides it. With the panel live, the riding views' `back` becomes a three-stop ring — **Map → Statistics → Climb → Map** — that collapses to the plain Map ↔ Statistics swap the instant the climb ends. The auto-switch is polite: it fires only from a riding view, never yanking you out of a menu.
+
+<figure class="fig">
+<svg viewBox="0 0 720 250" role="img" aria-label="Left, a device mock of the Climb screen: a wood CLIMB title bar reading a summit height, a rising elevation profile whose columns are tinted by local gradient from green through red, an amber you-are-here cursor, and four apricot stat tiles. Right, the gradient-to-colour ramp — under 3 percent green, 3 to 6 yellow, 6 to 9 amber, 9 to 12 orange, over 12 red — with notes that the climbs are segmented once at load and drawn from a finer profile scoped to the active climb.">
+  <text class="d-tag" x="20" y="24">The climb panel — gradient shown as colour</text>
+
+  <rect x="40" y="44" width="150" height="192" rx="10" style="fill:#ffffff;stroke:#aaaa55;stroke-width:1.5" />
+  <rect x="46" y="50" width="138" height="20" rx="5" style="fill:#aa5500" />
+  <text x="56" y="64" style="fill:#fff;font-family:var(--mono);font-size:9px">CLIMB</text>
+  <text x="178" y="64" text-anchor="end" style="fill:#fff;font-family:var(--mono);font-size:8px">1762 m</text>
+  <g>
+    <rect x="52" y="138" width="9" height="12" style="fill:#00aa00" />
+    <rect x="62.5" y="132" width="9" height="18" style="fill:#00aa00" />
+    <rect x="73" y="126" width="9" height="24" style="fill:#ffff00" />
+    <rect x="83.5" y="120" width="9" height="30" style="fill:#ffff00" />
+    <rect x="94" y="112" width="9" height="38" style="fill:#ffaa00" />
+    <rect x="104.5" y="105" width="9" height="45" style="fill:#ffaa00" />
+    <rect x="115" y="98" width="9" height="52" style="fill:#ff5500" />
+    <rect x="125.5" y="92" width="9" height="58" style="fill:#ff5500" />
+    <rect x="136" y="88" width="9" height="62" style="fill:#ff0000" />
+    <rect x="146.5" y="86" width="9" height="64" style="fill:#ff5500" />
+    <rect x="157" y="84" width="9" height="66" style="fill:#ffaa00" />
+    <rect x="167.5" y="82" width="9" height="68" style="fill:#ffff00" />
+  </g>
+  <line x1="105" y1="78" x2="105" y2="150" stroke="#ffaa00" stroke-width="2" />
+  <circle cx="105" cy="108" r="3.5" style="fill:#000" /><circle cx="105" cy="108" r="2.2" style="fill:#ffaa00" />
+  <line x1="52" y1="151" x2="176" y2="151" stroke="#aaaa55" stroke-width="1" />
+  <rect x="52" y="160" width="59" height="30" rx="4" style="fill:#ffaa55" />
+  <rect x="117" y="160" width="59" height="30" rx="4" style="fill:#ffaa55" />
+  <rect x="52" y="196" width="59" height="30" rx="4" style="fill:#ffaa55" />
+  <rect x="117" y="196" width="59" height="30" rx="4" style="fill:#ffaa55" />
+  <text x="57" y="172" style="fill:#6b5a2a;font-family:var(--mono);font-size:7px">TO CLIMB</text>
+  <text x="122" y="172" style="fill:#6b5a2a;font-family:var(--mono);font-size:7px">KM TO GO</text>
+  <text x="57" y="208" style="fill:#6b5a2a;font-family:var(--mono);font-size:7px">GRADE</text>
+  <text x="122" y="208" style="fill:#6b5a2a;font-family:var(--mono);font-size:7px">AVG GRAD</text>
+
+  <text class="d-sub" x="300" y="60" style="font-size:10.5px">local gradient → stripe colour</text>
+  <g>
+    <rect x="300" y="72" width="70" height="26" style="fill:#00aa00" />
+    <rect x="370" y="72" width="70" height="26" style="fill:#ffff00" />
+    <rect x="440" y="72" width="70" height="26" style="fill:#ffaa00" />
+    <rect x="510" y="72" width="70" height="26" style="fill:#ff5500" />
+    <rect x="580" y="72" width="70" height="26" style="fill:#ff0000" />
+  </g>
+  <text class="d-sub" x="335" y="114" text-anchor="middle" style="font-size:9px">&lt; 3%</text>
+  <text class="d-sub" x="405" y="114" text-anchor="middle" style="font-size:9px">3–6</text>
+  <text class="d-sub" x="475" y="114" text-anchor="middle" style="font-size:9px">6–9</text>
+  <text class="d-sub" x="545" y="114" text-anchor="middle" style="font-size:9px">9–12</text>
+  <text class="d-sub" x="615" y="114" text-anchor="middle" style="font-size:9px">&gt; 12%</text>
+
+  <text class="d-sub" x="300" y="150" style="font-size:10px">· climbs are segmented once, when the route loads</text>
+  <text class="d-sub" x="300" y="170" style="font-size:10px">· a dip is bridged, a deep col splits — plain gates on</text>
+  <text class="d-sub" x="312" y="186" style="font-size:10px">gain, average grade, and length</text>
+  <text class="d-sub" x="300" y="208" style="font-size:10px">· a finer profile, scoped to the active climb, rebuilt</text>
+  <text class="d-sub" x="312" y="224" style="font-size:10px">only when you cross into the next one</text>
+</svg>
+<figcaption>The Climb screen is the profile the way a paper route card would draw it — the trace tinted by gradient, hottest where it's steepest. The climbs themselves are found in one pass when the route loads (the same moment the whole-route profile is built), so riding only has to ask which segment the matched distance falls in; the panel then reads a second, finer profile scoped to that one climb — a small buffer rebuilt on each new climb, never per frame. Nothing new is stored in the route file.</figcaption>
+</figure>
+
 ## The whole flow
 
-Put the pieces together and the navigation graph is small and legible. Two screens are **riding views** — the Map and the Elevation/Statistics profile — and they're siblings: `back` swaps between them without growing the stack, and both share the same `press` (pause) and `back-hold` (Menu) bindings. Each also has a `hold`-entered sub-mode (Pan on the Map, Zoom on the profile).
+Put the pieces together and the navigation graph is small and legible. Two screens are always **riding views** — the Map and the Elevation/Statistics profile — and they're siblings: `back` swaps between them without growing the stack, and both share the same `press` (pause) and `back-hold` (Menu) bindings. Each also has a `hold`-entered sub-mode (Pan on the Map, Zoom on the profile). On a climb a [third view](#climbs-get-their-own-panel) joins the ring between them.
 
 <figure class="fig">
 <svg viewBox="0 0 720 340" role="img" aria-label="A navigation graph. Home, the root, opens the Route menu on press and the compass Menu on back-hold. The Menu opens the Route menu (Routes). Picking a route opens the Route overview; its START truncates to Home and pushes the Map (Root). The Map and Statistics are siblings swapped by back. The Map opens the Paused page on press and enters Pan on hold. From Paused, Resume pops back to the Map and Finish or Discard (held) clears to Home.">
@@ -689,6 +756,9 @@ Put the pieces together and the navigation graph is small and legible. Two scree
   <rect class="d-water" x="596" y="150" width="104" height="40" rx="9" /><text class="d-label" x="648" y="170" text-anchor="middle" style="fill:#fff">Statistics</text><text class="d-sub" x="648" y="183" text-anchor="middle" style="fill:#dfe6e0;font-size:8.5px">elevation</text>
   <rect class="d-hot" x="436" y="56" width="104" height="40" rx="9" style="fill:#f8efe4" /><text class="d-label" x="488" y="80" text-anchor="middle" style="fill:#a9501c">Paused</text>
   <rect class="d-panel-2" x="436" y="246" width="104" height="40" rx="9" /><text class="d-label" x="488" y="270" text-anchor="middle">Pan / Zoom</text>
+  <rect class="d-water" x="596" y="246" width="104" height="40" rx="9" /><text class="d-label" x="648" y="266" text-anchor="middle" style="fill:#fff">Climb</text><text class="d-sub" x="648" y="279" text-anchor="middle" style="fill:#dfe6e0;font-size:8.5px">on a climb</text>
+  <!-- Statistics -> Climb (only while on a climb) -->
+  <line x1="648" y1="190" x2="648" y2="244" stroke="#5f7d3d" stroke-width="1.4" stroke-dasharray="4 4" marker-end="url(#aU7)" /><text class="d-sub" x="654" y="222" style="font-size:9px">back</text>
 
   <!-- edges from Home -->
   <line x1="140" y1="164" x2="230" y2="86"  stroke="#5f7d3d" stroke-width="1.6" marker-end="url(#aU7)" /><text class="d-sub" x="168" y="116" style="font-size:9px">press</text>
@@ -711,7 +781,7 @@ Put the pieces together and the navigation graph is small and legible. Two scree
   <!-- Paused -> Home (finish/discard) -->
   <path d="M436 66 C 250 20, 90 70, 88 148" fill="none" stroke="#cf6a2a" stroke-width="1.6" stroke-dasharray="4 4" marker-end="url(#aU7c)" /><text class="d-sub" x="250" y="34" style="fill:#a9501c;font-size:9px">Finish / Discard (hold) → Home</text>
 </svg>
-<figcaption>Green edges are ordinary moves; coral marks the "go ride / stop riding" path. Picking a route opens the <b>Overview</b> — profile, distance/climb/descent, START — while the route streams open behind it; START uses <code>Root</code>, so you always land on a clean <code>[Home, Map]</code> instead of a Map buried under stale menus. Picking a <i>different</i> route mid-ride still detours through a guarded "swap or save &amp; start new" prompt, and the <b>Paused</b> page shows the ride-so-far ledger above its guarded Finish / Discard rows.</figcaption>
+<figcaption>Green edges are ordinary moves; coral marks the "go ride / stop riding" path. Picking a route opens the <b>Overview</b> — profile, distance/climb/descent, START — while the route streams open behind it; START uses <code>Root</code>, so you always land on a clean <code>[Home, Map]</code> instead of a Map buried under stale menus. Picking a <i>different</i> route mid-ride still detours through a guarded "swap or save &amp; start new" prompt, and the <b>Paused</b> page shows the ride-so-far ledger above its guarded Finish / Discard rows. On a climb, the Statistics view's <code>back</code> opens a third stop — the striped Climb panel — closing the ring back at the Map when you crest.</figcaption>
 </figure>
 
 ## The "field map" look
@@ -751,6 +821,7 @@ The UI is styled like a weatherproof field map — a wood frame, a parchment pan
 ## Where this lives
 
 - The screen system, stack, and `Transition`: [`obc-app/src/screen/mod.rs`](src:firmware/obc-app/src/screen/mod.rs)
+- The Climb screen: [`obc-app/src/screen/climb.rs`](src:firmware/obc-app/src/screen/climb.rs); the climb detection + per-climb profile it reads: [`obc-route/src/climb.rs`](src:firmware/obc-route/src/climb.rs), [`obc-route/src/climb_profile.rs`](src:firmware/obc-route/src/climb_profile.rs)
 - The host→app BLE seam (`BleStatus` — the connected indicator, passkey, paired): [`obc-app/src/ble.rs`](src:firmware/obc-app/src/ble.rs)
 - The host-pushed cards — the passkey card and the route-upload prompts: [`obc-app/src/screen/passkey.rs`](src:firmware/obc-app/src/screen/passkey.rs), [`obc-app/src/screen/route_received.rs`](src:firmware/obc-app/src/screen/route_received.rs)
 - The Rides screen and the Bluetooth settings screen: [`obc-app/src/screen/rides.rs`](src:firmware/obc-app/src/screen/rides.rs), [`obc-app/src/screen/settings/bluetooth.rs`](src:firmware/obc-app/src/screen/settings/bluetooth.rs)
