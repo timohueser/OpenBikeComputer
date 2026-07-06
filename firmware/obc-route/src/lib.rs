@@ -14,6 +14,8 @@
 //!   Elevation screen's band + cursor + peak label.
 //! - [`climb`] — offline segmentation of that elevation signal into a resident list of
 //!   [`Climbs`] (a hysteresis state machine over the same chunk sweep as the profile).
+//! - [`climb_profile`] — one detected climb re-bucketed into a small [`ClimbProfile`] detail
+//!   buffer (reading only the chunks overlapping the climb) for the ClimbPro-style Climb screen.
 //! - [`nav`] — the on-device A* router over the map's §8 nav graph ([`plan_route`]),
 //!   emitting its result as a normal OBCR through the shared converter internals.
 //!
@@ -28,6 +30,7 @@
 
 pub mod byte_io;
 pub mod climb;
+pub mod climb_profile;
 pub mod convert;
 pub mod deadband;
 mod geo;
@@ -43,6 +46,7 @@ pub use byte_io::{ByteSink, ByteSource, Error, SliceSource};
 pub use climb::{
     segment_climbs, ClimbSeg, Climbs, ElePt, MAX_CLIMBS, MAX_DROP, MAX_FLAT, MIN_AVG_GRADE, MIN_GAIN, MIN_LEN,
 };
+pub use climb_profile::{ClimbProfile, COLS as CLIMB_PROFILE_COLS};
 pub use convert::{gpx_to_obcr, RouteStats, MAX_WAYPOINTS};
 pub use deadband::{DeadBand, Elev, ELE_DEADBAND_M};
 pub use geo::{cos_lat, ground_dist_m, ground_dist_m_cl, tri_area_m2, tri_area_m2_cl};
