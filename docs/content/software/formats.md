@@ -68,10 +68,10 @@ Where they differ is *shape*: a map is a 2-D area indexed by a quadtree; a route
 
 ### The file, front to back
 
-An OBCM file (current version **7**) opens with a fixed 36-byte header, then a global style table and a level-of-detail (LOD) table, then the LOD layers themselves — coarsest first. Each LOD layer is wholly self-contained: its own quadtree index immediately followed by its own geometry chunks. After the finest layer come two more sections — the [POIs](#pois-a-nearest-list-not-a-map-layer) and, at the very tail, their shared [hours pool](#opening-hours-a-pooled-weekly-schedule) — each reached, like everything else, by an offset stored earlier in the file.
+An OBCM file (current version **8**) opens with a fixed 40-byte header, then a global style table and a level-of-detail (LOD) table, then the LOD layers themselves — coarsest first. Each LOD layer is wholly self-contained: its own quadtree index immediately followed by its own geometry chunks. After the finest layer come three more sections — the [POIs](#pois-a-nearest-list-not-a-map-layer), their shared [hours pool](#opening-hours-a-pooled-weekly-schedule), and, at the very tail, the [navigation graph](#the-navigation-graph-a-routable-network) the device routes over — each reached, like everything else, by an offset stored earlier in the file.
 
 <figure class="fig">
-<svg viewBox="0 0 720 210" role="img" aria-label="The OBCM file as a horizontal ribbon: a 36-byte header, a global style table, an LOD table, LOD layer 0 (coarsest) through LOD layer N minus 1 (finest), then a POI section at the tail. Detail increases left to right across the LOD layers. One LOD layer is exploded below to show it is a quadtree index followed by data chunks.">
+<svg viewBox="0 0 720 210" role="img" aria-label="The OBCM file as a horizontal ribbon: a 40-byte header, a global style table, an LOD table, LOD layer 0 (coarsest) through LOD layer N minus 1 (finest), then a POI section and a navigation-graph section at the tail. Detail increases left to right across the LOD layers. One LOD layer is exploded below to show it is a quadtree index followed by data chunks.">
   <defs>
     <marker id="aF2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
   </defs>
@@ -85,10 +85,11 @@ An OBCM file (current version **7**) opens with a fixed 36-byte header, then a g
     <rect x="246" y="56" width="112" height="44" class="d-muted" />
     <rect x="358" y="56" width="100" height="44" class="d-muted" />
     <rect x="458" y="56" width="130" height="44" class="d-muted" />
-    <rect x="588" y="56" width="108" height="44" class="d-hot-fill" />
+    <rect x="588" y="56" width="54"  height="44" class="d-hot-fill" />
+    <rect x="642" y="56" width="54"  height="44" class="d-water" />
   </g>
   <text class="d-label" x="54"  y="80" text-anchor="middle" style="fill:#fff">Header</text>
-  <text class="d-sub"   x="54"  y="94" text-anchor="middle" style="fill:#e7ead8">36 B</text>
+  <text class="d-sub"   x="54"  y="94" text-anchor="middle" style="fill:#e7ead8">40 B</text>
   <text class="d-label" x="125" y="80" text-anchor="middle">Style table</text>
   <text class="d-sub"   x="125" y="94" text-anchor="middle">global</text>
   <text class="d-label" x="206" y="80" text-anchor="middle" style="fill:#fff">LOD table</text>
@@ -98,8 +99,10 @@ An OBCM file (current version **7**) opens with a fixed 36-byte header, then a g
   <text class="d-label" x="408" y="80" text-anchor="middle">LOD 1</text>
   <text class="d-label" x="523" y="80" text-anchor="middle">LOD N−1</text>
   <text class="d-sub"   x="523" y="94" text-anchor="middle">finest</text>
-  <text class="d-label" x="642" y="80" text-anchor="middle" style="fill:#fff">POIs</text>
-  <text class="d-sub"   x="642" y="94" text-anchor="middle" style="fill:#f6e6d8">§7 · tail</text>
+  <text class="d-label" x="615" y="78" text-anchor="middle" style="fill:#fff;font-size:11px">POIs</text>
+  <text class="d-sub"   x="615" y="92" text-anchor="middle" style="fill:#f6e6d8;font-size:8.5px">§7</text>
+  <text class="d-label" x="669" y="78" text-anchor="middle" style="fill:#fff;font-size:11px">Nav</text>
+  <text class="d-sub"   x="669" y="92" text-anchor="middle" style="fill:#e7ead8;font-size:8.5px">§8 · tail</text>
 
   <!-- detail arrow -->
   <line x1="250" y1="114" x2="576" y2="114" stroke="#cf6a2a" stroke-width="1.6" marker-end="url(#aF2)" />
@@ -115,7 +118,7 @@ An OBCM file (current version **7**) opens with a fixed 36-byte header, then a g
   <text class="d-label" x="468" y="170" text-anchor="middle">data chunks</text>
   <text class="d-sub"   x="468" y="184" text-anchor="middle">fixed-size blocks</text>
 </svg>
-<figcaption>The header, style table and LOD table are read once when the file opens — they're tiny. The bulk of the file is the LOD pyramid: each layer its own <b>(index + chunks)</b> pair, simplified to that zoom. The <b>POI section</b> at the tail (coral) is a different beast — not a map layer but a nearest-list index, covered <a href="#pois-a-nearest-list-not-a-map-layer">below</a>. Reaching any section is an explicit offset, so there is no scanning to "find" where a layer begins.</figcaption>
+<figcaption>The header, style table and LOD table are read once when the file opens — they're tiny. The bulk of the file is the LOD pyramid: each layer its own <b>(index + chunks)</b> pair, simplified to that zoom. Two tail sections are different beasts — not map layers: the <b>POI section</b> (coral), a nearest-list index covered <a href="#pois-a-nearest-list-not-a-map-layer">below</a>, and the <b>navigation graph</b> (teal), a routable network the device runs A\* over, covered <a href="#the-navigation-graph-a-routable-network">last</a>. Reaching any section is an explicit offset, so there is no scanning to "find" where a layer begins.</figcaption>
 </figure>
 
 Why a pyramid, rather than one detailed tree with a min-zoom tag on every feature? Because the latter forces the device to *decode* fine geometry just to discover it should be skipped when zoomed out. With independent layers, zooming out reads a small coarse layer and touches nothing else. The renderer's job of [picking the right layer](../rendering/#2-level-of-detail-pick-the-right-layer) for the current zoom is covered on the rendering page; here we only care that the layers exist side by side in the file.
@@ -134,59 +137,64 @@ Eighteen bytes per entry — the `N × 18 B` in the ribbon above. Because the in
 
 ### The header
 
-The 36-byte header is the one fixed-size, always-present part of the file. Everything else is found through offsets it stores.
+The 40-byte header is the one fixed-size, always-present part of the file. Everything else is found through offsets it stores.
 
 <figure class="fig">
-<svg viewBox="0 0 720 170" role="img" aria-label="The 36-byte OBCM header drawn as a byte ruler: bytes 0 to 3 are the magic OBCM, byte 4 is the version (7), bytes 5 to 20 are the global bounding box as four 32-bit integers, bytes 21 to 24 are the style-table offset, byte 25 is the LOD count, bytes 26 to 29 are the LOD-table offset, bytes 30 to 31 are the marker colour, and bytes 32 to 35 are the POI-section offset.">
-  <text class="d-tag" x="20" y="24">The 36-byte header, byte by byte</text>
+<svg viewBox="0 0 720 170" role="img" aria-label="The 40-byte OBCM header drawn as a byte ruler: bytes 0 to 3 are the magic OBCM, byte 4 is the version (8), bytes 5 to 20 are the global bounding box as four 32-bit integers, bytes 21 to 24 are the style-table offset, byte 25 is the LOD count, bytes 26 to 29 are the LOD-table offset, bytes 30 to 31 are the marker colour, bytes 32 to 35 are the POI-section offset, and bytes 36 to 39 are the navigation-graph offset appended in version 8.">
+  <text class="d-tag" x="20" y="24">The 40-byte header, byte by byte</text>
 
   <!-- field names -->
-  <text class="d-sub" x="78"  y="56" text-anchor="middle">Magic</text>
-  <text class="d-sub" x="120" y="56" text-anchor="middle" style="font-size:9px">ver</text>
-  <text class="d-sub" x="272" y="50" text-anchor="middle">global bbox</text>
-  <text class="d-sub" x="272" y="62" text-anchor="middle" style="font-size:9px">4 × i32 · µdeg</text>
-  <text class="d-sub" x="452" y="56" text-anchor="middle">style off</text>
-  <text class="d-sub" x="498" y="56" text-anchor="middle" style="font-size:9px">n</text>
-  <text class="d-sub" x="544" y="56" text-anchor="middle">LOD-tbl off</text>
-  <text class="d-sub" x="600" y="56" text-anchor="middle">marker</text>
-  <text class="d-sub" x="666" y="50" text-anchor="middle" style="fill:#a9501c">POI off</text>
-  <text class="d-sub" x="666" y="62" text-anchor="middle" style="fill:#a9501c;font-size:9px">→ §7</text>
+  <text class="d-sub" x="74"  y="56" text-anchor="middle">Magic</text>
+  <text class="d-sub" x="112" y="56" text-anchor="middle" style="font-size:9px">ver</text>
+  <text class="d-sub" x="247" y="50" text-anchor="middle">global bbox</text>
+  <text class="d-sub" x="247" y="62" text-anchor="middle" style="font-size:9px">4 × i32 · µdeg</text>
+  <text class="d-sub" x="404" y="56" text-anchor="middle">style off</text>
+  <text class="d-sub" x="446" y="56" text-anchor="middle" style="font-size:9px">n</text>
+  <text class="d-sub" x="490" y="56" text-anchor="middle">LOD-tbl off</text>
+  <text class="d-sub" x="541" y="56" text-anchor="middle">mkr</text>
+  <text class="d-sub" x="597" y="50" text-anchor="middle" style="fill:#a9501c">POI off</text>
+  <text class="d-sub" x="597" y="62" text-anchor="middle" style="fill:#a9501c;font-size:9px">→ §7</text>
+  <text class="d-sub" x="657" y="50" text-anchor="middle" style="fill:#2c5230">Nav off</text>
+  <text class="d-sub" x="657" y="62" text-anchor="middle" style="fill:#2c5230;font-size:9px">→ §8 (v8)</text>
 
-  <!-- ruler fields -->
+  <!-- ruler fields (15 px / byte) -->
   <g stroke="#20301d" stroke-width="1">
-    <rect x="44"  y="72" width="72" height="32" class="d-forest" />
-    <rect x="116" y="72" width="18" height="32" class="d-amber" />
-    <rect x="134" y="72" width="288" height="32" class="d-water" />
-    <rect x="422" y="72" width="72" height="32" class="d-muted" />
-    <rect x="494" y="72" width="18" height="32" class="d-amber" />
-    <rect x="512" y="72" width="72" height="32" class="d-muted" />
-    <rect x="584" y="72" width="36" height="32" style="fill:#e3ad33" />
-    <rect x="620" y="72" width="72" height="32" class="d-hot-fill" />
+    <rect x="44"  y="72" width="60"  height="32" class="d-forest" />
+    <rect x="104" y="72" width="15"  height="32" class="d-amber" />
+    <rect x="119" y="72" width="240" height="32" class="d-water" />
+    <rect x="359" y="72" width="60"  height="32" class="d-muted" />
+    <rect x="419" y="72" width="15"  height="32" class="d-amber" />
+    <rect x="434" y="72" width="60"  height="32" class="d-muted" />
+    <rect x="494" y="72" width="30"  height="32" style="fill:#e3ad33" />
+    <rect x="524" y="72" width="60"  height="32" class="d-hot-fill" />
+    <rect x="584" y="72" width="60"  height="32" class="d-water" />
   </g>
   <!-- per-byte ticks -->
   <g stroke="#20301d" stroke-opacity="0.18" stroke-width="1">
-    <line x1="62" y1="72" x2="62" y2="104"/><line x1="80" y1="72" x2="80" y2="104"/><line x1="98" y1="72" x2="98" y2="104"/>
-    <line x1="152" y1="72" x2="152" y2="104"/><line x1="170" y1="72" x2="170" y2="104"/><line x1="188" y1="72" x2="188" y2="104"/><line x1="206" y1="72" x2="206" y2="104"/><line x1="224" y1="72" x2="224" y2="104"/><line x1="242" y1="72" x2="242" y2="104"/><line x1="260" y1="72" x2="260" y2="104"/><line x1="278" y1="72" x2="278" y2="104"/><line x1="296" y1="72" x2="296" y2="104"/><line x1="314" y1="72" x2="314" y2="104"/><line x1="332" y1="72" x2="332" y2="104"/><line x1="350" y1="72" x2="350" y2="104"/><line x1="368" y1="72" x2="368" y2="104"/><line x1="386" y1="72" x2="386" y2="104"/><line x1="404" y1="72" x2="404" y2="104"/>
-    <line x1="440" y1="72" x2="440" y2="104"/><line x1="458" y1="72" x2="458" y2="104"/><line x1="476" y1="72" x2="476" y2="104"/>
-    <line x1="530" y1="72" x2="530" y2="104"/><line x1="548" y1="72" x2="548" y2="104"/><line x1="566" y1="72" x2="566" y2="104"/>
-    <line x1="602" y1="72" x2="602" y2="104"/>
-    <line x1="638" y1="72" x2="638" y2="104"/><line x1="656" y1="72" x2="656" y2="104"/><line x1="674" y1="72" x2="674" y2="104"/>
+    <line x1="59" y1="72" x2="59" y2="104"/><line x1="74" y1="72" x2="74" y2="104"/><line x1="89" y1="72" x2="89" y2="104"/>
+    <line x1="134" y1="72" x2="134" y2="104"/><line x1="149" y1="72" x2="149" y2="104"/><line x1="164" y1="72" x2="164" y2="104"/><line x1="179" y1="72" x2="179" y2="104"/><line x1="194" y1="72" x2="194" y2="104"/><line x1="209" y1="72" x2="209" y2="104"/><line x1="224" y1="72" x2="224" y2="104"/><line x1="239" y1="72" x2="239" y2="104"/><line x1="254" y1="72" x2="254" y2="104"/><line x1="269" y1="72" x2="269" y2="104"/><line x1="284" y1="72" x2="284" y2="104"/><line x1="299" y1="72" x2="299" y2="104"/><line x1="314" y1="72" x2="314" y2="104"/><line x1="329" y1="72" x2="329" y2="104"/><line x1="344" y1="72" x2="344" y2="104"/>
+    <line x1="374" y1="72" x2="374" y2="104"/><line x1="389" y1="72" x2="389" y2="104"/><line x1="404" y1="72" x2="404" y2="104"/>
+    <line x1="449" y1="72" x2="449" y2="104"/><line x1="464" y1="72" x2="464" y2="104"/><line x1="479" y1="72" x2="479" y2="104"/>
+    <line x1="509" y1="72" x2="509" y2="104"/>
+    <line x1="539" y1="72" x2="539" y2="104"/><line x1="554" y1="72" x2="554" y2="104"/><line x1="569" y1="72" x2="569" y2="104"/>
+    <line x1="599" y1="72" x2="599" y2="104"/><line x1="614" y1="72" x2="614" y2="104"/><line x1="629" y1="72" x2="629" y2="104"/>
   </g>
   <!-- value + byte ranges -->
-  <text class="d-label" x="80" y="93" text-anchor="middle" style="fill:#fff;font-size:11px">OBCM</text>
-  <text class="d-label" x="125" y="93" text-anchor="middle" style="font-size:11px">7</text>
-  <text class="d-sub" x="80"  y="122" text-anchor="middle" style="font-size:9px">0–3</text>
-  <text class="d-sub" x="125" y="122" text-anchor="middle" style="font-size:9px">4</text>
-  <text class="d-sub" x="278" y="122" text-anchor="middle" style="font-size:9px">5–20</text>
-  <text class="d-sub" x="458" y="122" text-anchor="middle" style="font-size:9px">21–24</text>
-  <text class="d-sub" x="503" y="122" text-anchor="middle" style="font-size:9px">25</text>
-  <text class="d-sub" x="548" y="122" text-anchor="middle" style="font-size:9px">26–29</text>
-  <text class="d-sub" x="602" y="122" text-anchor="middle" style="font-size:9px">30–31</text>
-  <text class="d-sub" x="656" y="122" text-anchor="middle" style="fill:#a9501c;font-size:9px">32–35</text>
+  <text class="d-label" x="74" y="93" text-anchor="middle" style="fill:#fff;font-size:11px">OBCM</text>
+  <text class="d-label" x="112" y="93" text-anchor="middle" style="font-size:11px">8</text>
+  <text class="d-sub" x="74"  y="122" text-anchor="middle" style="font-size:9px">0–3</text>
+  <text class="d-sub" x="112" y="122" text-anchor="middle" style="font-size:9px">4</text>
+  <text class="d-sub" x="239" y="122" text-anchor="middle" style="font-size:9px">5–20</text>
+  <text class="d-sub" x="389" y="122" text-anchor="middle" style="font-size:9px">21–24</text>
+  <text class="d-sub" x="426" y="122" text-anchor="middle" style="font-size:9px">25</text>
+  <text class="d-sub" x="464" y="122" text-anchor="middle" style="font-size:9px">26–29</text>
+  <text class="d-sub" x="509" y="122" text-anchor="middle" style="font-size:9px">30–31</text>
+  <text class="d-sub" x="554" y="122" text-anchor="middle" style="fill:#a9501c;font-size:9px">32–35</text>
+  <text class="d-sub" x="614" y="122" text-anchor="middle" style="fill:#2c5230;font-size:9px">36–39</text>
 
   <text class="d-sub" x="44" y="150" style="font-size:11px">A short read here is the only "is this even a map?" check the reader needs.</text>
 </svg>
-<figcaption>Fixed offsets, no surprises. Three small details a reader notices: the bbox is stored <b>lat, lon</b> (a packer ordering quirk); the <b>marker colour</b> — the you-are-here chevron — rides in the header rather than the style table, because the marker isn't an OpenStreetMap feature; and a <b>POI-section offset</b> (coral) sits at the tail — the growth that once pushed the header from 32 to 36 bytes. That offset is never zero — the section is always present, empty or not. <b>v7 left the header untouched</b>: only the version byte and the POI record itself changed.</figcaption>
+<figcaption>Fixed offsets, no surprises. A few small details a reader notices: the bbox is stored <b>lat, lon</b> (a packer ordering quirk); the <b>marker colour</b> — the you-are-here chevron — rides in the header rather than the style table, because the marker isn't an OpenStreetMap feature; a <b>POI-section offset</b> (coral) and, appended by <b>v8</b>, a <b>navigation-graph offset</b> (teal) sit at the tail — the growth that carried the header from 32 → 36 → 40 bytes. Neither tail offset is ever zero — both sections are always present, empty or not. <b>v8's only header change</b> was appending that last offset; the earlier fields never move, so a v7 reader that stops at byte 36 still parses everything it knew.</figcaption>
 </figure>
 
 The **style table** that follows maps small numeric ids to how a feature looks. Each record is six bytes:
@@ -445,7 +453,7 @@ The full directory bytes, the canonical category/subtype id table, and the recor
 
 ### Opening hours: a pooled weekly schedule
 
-That `HoursRef` at the end of every record points into one last section, written at the **file tail**: a single **hours pool**. OSM tags opening hours as a terse little grammar — `Mo-Fr 08:00-18:00; Sa 09:00-13:00; PH off` — that a microcontroller has no business parsing. So the packer [parses it once, at pack time](../packer-routing/#extracting-pois), into a fixed **29-byte weekly schedule** the device can read with a single array lookup. No `opening_hours` string ever reaches the device.
+That `HoursRef` at the end of every record points into a pooled section written near the **file tail** (the [navigation graph](#the-navigation-graph-a-routable-network) is the only thing after it): a single **hours pool**. OSM tags opening hours as a terse little grammar — `Mo-Fr 08:00-18:00; Sa 09:00-13:00; PH off` — that a microcontroller has no business parsing. So the packer [parses it once, at pack time](../packer-routing/#extracting-pois), into a fixed **29-byte weekly schedule** the device can read with a single array lookup. No `opening_hours` string ever reaches the device.
 
 <figure class="fig">
 <svg viewBox="0 0 720 300" role="img" aria-label="The hours pool. A single 29-byte schedule blob is drawn as a ruler: one flags byte, then seven days from Monday to Sunday, each day two interval slots, each slot an open-quarter and a close-quarter byte. Below, the dedup pool: many POI records with a HoursRef index point into a small list of unique blobs, so shops that share hours share one entry.">
@@ -526,6 +534,125 @@ That `HoursRef` at the end of every record points into one last section, written
 </figure>
 
 The pool's exact layout — the leading `count`, the blob byte order, the flag bits, and the overnight/24-hour conventions — is [`OBCM_Spec.md` §7.5](src:OBCM_Spec.md). The pack-time parser that fills it is the [`opening_hours` stage](../packer-routing/#parsing-opening-hours); the device-side lookup that turns a blob into *today's hours* and an *open-now* answer drives the [POI detail view](../ui/#the-poi-detail-view).
+
+### The navigation graph: a routable network
+
+Everything so far is geometry you *look at*. Version **8** added a section for geometry you *travel* — a **routable graph** the device runs A\* over, so a rider can [pick a POI and get a route to it](../architecture/#on-device-routing-the-router-seam) with no phone and no pre-planning. Highways in the map are drawn but carry no *topology* — a road is just a styled polyline, with no notion of what connects to what. The [packer builds the graph](../packer-routing/#building-the-navigation-graph) from the OSM node ids highways *share*: junction **nodes** joined by **edges** whose interiors hold no junctions. This section is that graph on disk, at the very tail of the file.
+
+Its shape is set by one hard fact: the device has **no room for a node-id → offset table**. A real region has millions of graph elements; an index over all of them can't stay resident. So the section is arranged for the only access pattern that fits RAM — **spatial re-fetch**. A node lives in a leaf of a quadtree over the same global bbox, and each junction record carries its neighbours' coordinates *inline*.
+
+<figure class="fig">
+<svg viewBox="0 0 720 250" role="img" aria-label="The navigation-graph section, four parts in file order. A 22-byte nav directory — the graph's entire resident footprint — points at a node quadtree (the same flat u32 encoding as an LOD, over the header bbox), which points at variable-length junction records packed into chunks, and separately at a deduplicated edge pool addressed by byte offset. One junction record is exploded to show it stores its own coordinate and dense id, then a list of neighbour entries, each carrying the neighbour's id, its coordinate inline, the connecting edge id, and the edge cost in metres.">
+  <defs>
+    <marker id="aN1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24">§8 — directory · node quadtree · junction records · edge pool</text>
+
+  <!-- directory -->
+  <rect class="d-panel-2" x="24" y="48" width="150" height="66" rx="9" />
+  <text class="d-label" x="40" y="66" style="font-size:11px">nav directory</text>
+  <text class="d-sub" x="40" y="82"  style="font-size:9px">22 B — the whole</text>
+  <text class="d-sub" x="40" y="95"  style="font-size:9px">resident footprint</text>
+  <text class="d-sub" x="40" y="108" style="font-size:9px">offsets · counts · chunk size</text>
+
+  <!-- quadtree -->
+  <line class="d-flow" x1="176" y1="81" x2="212" y2="81" marker-end="url(#aN1)" />
+  <rect class="d-panel" x="218" y="56" width="120" height="50" rx="9" />
+  <text class="d-label" x="278" y="78" text-anchor="middle" style="font-size:10.5px">node quadtree</text>
+  <text class="d-sub" x="278" y="94" text-anchor="middle" style="font-size:9px">flat u32 · §4 · header bbox</text>
+
+  <!-- junction chunks -->
+  <line class="d-flow" x1="340" y1="81" x2="376" y2="81" marker-end="url(#aN1)" />
+  <rect class="d-water" x="382" y="56" width="130" height="50" rx="9" stroke="#3c6b39" stroke-width="1.2" />
+  <text class="d-label" x="447" y="76" text-anchor="middle" style="fill:#fff;font-size:10.5px">junction records</text>
+  <text class="d-sub" x="447" y="92" text-anchor="middle" style="fill:#dfe6e0;font-size:9px">variable · in 512 B chunks</text>
+
+  <!-- edge pool (separate offset) -->
+  <line class="d-flow" x1="99" y1="114" x2="99" y2="150" marker-end="url(#aN1)" />
+  <rect class="d-muted" x="24" y="152" width="150" height="46" rx="9" stroke="#3c6b39" stroke-width="1.2" />
+  <text class="d-label" x="40" y="172" style="font-size:10.5px">edge pool</text>
+  <text class="d-sub" x="40" y="188" style="font-size:9px">polylines · own offset · fetched at emit</text>
+  <text class="d-sub" x="182" y="176" style="font-size:8.5px;fill:#a9501c">edge id = pool-relative byte offset</text>
+  <text class="d-sub" x="182" y="189" style="font-size:8.5px">(chunk = id / 512) — zero index bytes</text>
+
+  <!-- explode one junction record -->
+  <line x1="382" y1="106" x2="392" y2="150" stroke="#9aa884" stroke-width="1.1" />
+  <line x1="512" y1="106" x2="700" y2="150" stroke="#9aa884" stroke-width="1.1" />
+  <rect class="d-hot" x="392" y="152" width="308" height="86" rx="10" style="fill:#f8efe4" />
+  <text class="d-tag" x="408" y="170" style="fill:#a9501c">one junction record</text>
+  <text class="d-sub" x="408" y="188" style="font-size:9.5px">lat · lon · dense id · degree</text>
+  <text class="d-sub" x="408" y="204" style="font-size:9.5px">then <b>degree</b> × neighbour (20 B each):</text>
+  <text class="d-sub" x="420" y="220" style="font-size:9px" font-family="var(--mono)">nbr id · nbr lat,lon · edge id · cost m</text>
+  <text class="d-sub" x="420" y="232" style="font-size:8.5px;fill:#a9501c">the neighbour's coord is INLINE — no second fetch for h</text>
+</svg>
+<figcaption>The whole section's resident cost is a <b>22-byte directory</b>: two offsets, three counts, one chunk size. Everything else streams. The <b>node quadtree</b> is byte-for-byte the same flat-<code>u32</code> encoding as an <a href="#the-quadtree-index">LOD index</a> — same branch-bit, same empty-leaf sentinel, built over the <b>same global bbox from the header</b> — so the reader walks it with the identical leaf-walk. Its leaves point at <b>junction records</b>, packed into the same 512-byte chunks (variable-length here, so <code>0xFF</code>-padding is the end-of-chunk sentinel). Each record stores its own coordinate and dense id, then its adjacency: one 20-byte entry per neighbour holding the neighbour's <b>coordinate inline</b>, the connecting edge's id, and its cost in metres. The <b>edge pool</b> — the actual polylines — sits behind its own offset and is touched <i>only when a route is emitted</i>; an edge is addressed by a <b>byte offset into the pool</b>, so there's no edge-id table to keep resident either.</figcaption>
+</figure>
+
+Why store the neighbour's coordinate twice — once in its own record, once in every record that points at it? Because that redundancy is exactly what makes the router cheap. A\* settling a node needs, for each neighbour, the straight-line distance to the goal (the heuristic `h`). With the coordinate inline, that number falls straight out of the record already in hand — no chase to the neighbour's own record just to read where it is. **One quadtree descent, one chunk read, then relax every neighbour from bytes already decoded.**
+
+<figure class="fig">
+<svg viewBox="0 0 720 300" role="img" aria-label="One A-star settle over the nav graph. On the left, the router descends the node quadtree to the leaf containing the settled node's coordinate — a single point query, not a viewport. That leaf resolves to one chunk id, and one chunk read brings the settled junction's record into RAM. On the right, that record's neighbour entries are relaxed in place: each entry already carries the neighbour's coordinate, so the great-circle distance to the goal is computed with no further read. Only when the final route is emitted is the edge pool touched, to stitch the came-from chain into a polyline.">
+  <defs>
+    <marker id="aN2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
+    <marker id="aN3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24">One A* settle — descend, read one chunk, relax inline</text>
+
+  <!-- 1 descend quadtree to leaf -->
+  <text class="d-sub" x="30" y="52" style="font-size:9px;fill:#6b7758">① descend to the settled node's leaf</text>
+  <!-- quadtree box -->
+  <rect x="34" y="60" width="150" height="150" fill="none" stroke="#9aa884" stroke-width="1.3" />
+  <line x1="109" y1="60" x2="109" y2="210" stroke="#9aa884" stroke-width="0.9" />
+  <line x1="34" y1="135" x2="184" y2="135" stroke="#9aa884" stroke-width="0.9" />
+  <!-- descend into SE quadrant, subdivide again -->
+  <line x1="146" y1="135" x2="146" y2="210" stroke="#c9bfa0" stroke-width="0.8" />
+  <line x1="109" y1="172" x2="184" y2="172" stroke="#c9bfa0" stroke-width="0.8" />
+  <!-- the leaf highlighted -->
+  <rect x="146" y="172" width="38" height="38" fill="#cf6a2a" fill-opacity="0.16" stroke="#cf6a2a" stroke-width="1.4" />
+  <!-- settled node point -->
+  <circle cx="165" cy="191" r="4" class="d-hot-fill" />
+  <text class="d-sub" x="150" y="228" style="font-size:8.5px;fill:#a9501c">settled node</text>
+  <text class="d-sub" x="40" y="245" style="font-size:8.5px">a point query — one leaf, not a viewport</text>
+
+  <!-- arrow: one chunk read -->
+  <line x1="196" y1="150" x2="252" y2="150" stroke="#cf6a2a" stroke-width="2" marker-end="url(#aN2)" />
+  <text x="224" y="142" text-anchor="middle" style="font-family:var(--mono);font-size:8.5px;fill:#a9501c">1 chunk read</text>
+
+  <!-- 2 the record in RAM -->
+  <text class="d-sub" x="264" y="52" style="font-size:9px;fill:#6b7758">② its record — one 512 B chunk in RAM</text>
+  <rect class="d-panel" x="264" y="60" width="180" height="150" rx="10" />
+  <text class="d-tag" x="280" y="80">junction record</text>
+  <text class="d-sub" x="280" y="100" style="font-size:9px">lat · lon · id · degree = 3</text>
+  <g stroke="#3c6b39" stroke-width="1">
+    <rect x="280" y="112" width="148" height="26" rx="4" class="d-water" />
+    <rect x="280" y="142" width="148" height="26" rx="4" class="d-water" />
+    <rect x="280" y="172" width="148" height="26" rx="4" class="d-water" />
+  </g>
+  <text class="d-sub" x="288" y="129" style="fill:#fff;font-size:8.5px">nbr A · coord · edge · cost</text>
+  <text class="d-sub" x="288" y="159" style="fill:#fff;font-size:8.5px">nbr B · coord · edge · cost</text>
+  <text class="d-sub" x="288" y="189" style="fill:#fff;font-size:8.5px">nbr C · coord · edge · cost</text>
+
+  <!-- 3 relax each neighbour -->
+  <line x1="452" y1="150" x2="508" y2="150" stroke="#3c6b39" stroke-width="2" marker-end="url(#aN3)" />
+  <text x="480" y="142" text-anchor="middle" style="font-family:var(--mono);font-size:8.5px;fill:#3c6b39">relax</text>
+  <text class="d-sub" x="520" y="52" style="font-size:9px;fill:#6b7758">③ relax — no further read</text>
+  <rect class="d-hot" x="520" y="60" width="180" height="150" rx="10" style="fill:#f8efe4" />
+  <text class="d-sub" x="536" y="84" style="font-size:9.5px">for each neighbour, from bytes</text>
+  <text class="d-sub" x="536" y="98" style="font-size:9.5px">already in hand:</text>
+  <text class="d-sub" x="536" y="120" style="font-family:var(--mono);font-size:9px">g' = g + cost_m</text>
+  <text class="d-sub" x="536" y="138" style="font-family:var(--mono);font-size:9px">h  = gc_dist(nbr, goal)</text>
+  <text class="d-sub" x="536" y="156" style="font-family:var(--mono);font-size:9px;fill:#a9501c">f  = g' + ε·h   (ε = 1.3)</text>
+  <text class="d-sub" x="536" y="182" style="font-size:8.5px">the neighbour's coord is inline,</text>
+  <text class="d-sub" x="536" y="195" style="font-size:8.5px">so <b>h</b> needs zero extra fetches</text>
+
+  <!-- edge-pool footnote -->
+  <rect class="d-panel-2" x="34" y="258" width="666" height="30" rx="8" />
+  <text class="d-sub" x="366" y="277" text-anchor="middle" style="font-size:9.5px">the <b>edge pool</b> is untouched until the route is <b>emitted</b> — then the came-from chain's edge ids stitch into one output polyline</text>
+</svg>
+<figcaption>A settle is <b>one descent + one read + a straight relax</b>. The quadtree walk is a <i>point</i> query — the leaf holding the node's coordinate, not a viewport rectangle — resolving to a single chunk. That chunk read brings the whole junction record into RAM, and every neighbour is relaxed straight off it: the cost <code>g</code> is the edge's stored metres, and the heuristic <code>h</code> is the great-circle distance from the neighbour's <b>inline</b> coordinate to the goal — no chase to the neighbour's own record. Because consecutive settles are spatially close, a small two-slot tile cache turns most of those chunk reads into hits (the device is SD-bound, so that cache is the whole performance story — see <a href="../architecture/#on-device-routing-the-router-seam">the router seam</a>). The <b>edge pool</b> — the heavy polyline geometry — is read only at the end, once, to turn the winning chain of nodes into the route's line.</figcaption>
+</figure>
+
+The full byte layout — the directory fields, the 20-byte neighbour entry, the `0xFF` degree sentinel and degree-24 cap, the edge record with its densified `int16` deltas, and how an over-long edge is split at synthetic junctions so no record ever straddles a chunk — is [`OBCM_Spec.md` §8](src:OBCM_Spec.md). What the packer does to *build* this graph from raw highways is the [extraction stage](../packer-routing/#building-the-navigation-graph); how the device turns it into a route the rest of the system can't tell from a GPX is [the router seam](../architecture/#on-device-routing-the-router-seam).
 
 ## OBCR — the route
 
@@ -701,7 +828,7 @@ The map's caches matter because the [priority multi-pass](../rendering/#4-decode
 
 ## Where this lives
 
-- Map reader, quadtree walk, chunk decode, and the POI nearest-16 query: [`obc-reader/src/reader.rs`](src:firmware/obc-reader/src/reader.rs)
+- Map reader, quadtree walk, chunk decode, the POI nearest-16 query, and the nav directory / node-leaf walk / edge fetch: [`obc-reader/src/reader.rs`](src:firmware/obc-reader/src/reader.rs)
 - The canonical POI category/subtype table (shared by reader + packer): [`obc-reader/src/poi_table.rs`](src:firmware/obc-reader/src/poi_table.rs)
 - Route reader, index, and decode: [`obc-route/src/reader.rs`](src:firmware/obc-route/src/reader.rs)
 - The shared byte seam: [`obc-reader/src/byte_io.rs`](src:firmware/obc-reader/src/byte_io.rs)
