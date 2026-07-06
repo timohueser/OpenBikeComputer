@@ -16,7 +16,7 @@ nrf-mem = []
 [dependencies]
 heapless = "0.8"
 # `no_std` float math for the `geo` distance core (`cosf`/`sqrtf` on the M33's f32 FPU).
-libm = "0.2"
+libm = { version = "0.2", default-features = false } # no arch asm: identical correctly-rounded results, keeps the suite Miri-runnable (the #501 alignment-UB tripwire)
 
 [dev-dependencies]
 # Shared OBCM byte builder for the format-contract tests (one source of the layout,

@@ -43,15 +43,25 @@
 //! phase, so an abandoned search leaves the sink untouched and the caller only has
 //! to discard its own file.
 //!
+//! **UB tripwire**: this module and the reader's record decode are deliberately
+//! **cast-free** — every §8 record field is assembled byte-wise (`from_le_bytes` on
+//! `&[u8]`), because records sit at odd offsets by design and any typed view over
+//! them is instant alignment UB on ARM (PR #501's on-glass HardFault; the board
+//! build also compiles `+strict-align`, see its `.cargo/config.toml`). The standing
+//! host-side check is **Miri** over this suite:
+//! `cargo +nightly miri test -p obc-route --test nav` — green as of 2026-07-06;
+//! run it when touching the planner or the record decode.
+//!
 //! **No distance cap** (Timo, post-#496): the rider may try to route to *anything*;
 //! the fixed table is the real limit and the attempt is the feedback —
 //! [`NavError::Exhausted`] **is** the "too far for this device" answer. Two accepted
 //! consequences: (1) `h` (`u16` meters, saturating) saturates for very distant goals,
 //! so ordering degrades gracefully toward uniform expansion and the search exhausts —
 //! exactly the intended outcome; (2) a hopeless target burns a **full exhaustion
-//! search** before failing — bounded by the table (the progress callback keeps the
-//! watchdog fed throughout); a time-budget abort via that same callback is the named
-//! future lever if the wait annoys.
+//! search** before failing — bounded by the table, and spread across bounded steps,
+//! so the stepping host's loop keeps feeding its watchdog (and rendering, and taking
+//! input — including the cancel) between them; a step-count budget in the stepping
+//! host is the named future lever if the wait annoys.
 
 use heapless::Vec;
 
@@ -91,9 +101,9 @@ pub const NAV_EMIT_HOPS_PER_STEP: u16 = 4;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NavError {
     /// No route: an endpoint failed to snap within 250 m, the frontier emptied without
-    /// reaching the goal, a read/write failed mid-flight, or the host's `progress`
-    /// hook aborted the search — every non-range failure lands here so the UX
-    /// stays two-tier.
+    /// reaching the goal, or a read/write failed mid-flight — every non-range failure
+    /// lands here so the UX stays two-tier. (A rider cancel never produces an error at
+    /// all: the host just stops stepping.)
     NoPath,
     /// The fixed scratch filled before the goal was reached — the device's honest
     /// "too far" (dense graph, long route, or an unreachable/hopeless target).

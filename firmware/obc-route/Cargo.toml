@@ -13,7 +13,7 @@ nrf-mem = ["obc-reader/nrf-mem"]
 
 [dependencies]
 heapless = "0.8"
-libm = "0.2"
+libm = { version = "0.2", default-features = false } # no arch asm: identical correctly-rounded results, keeps the suite Miri-runnable (the #501 alignment-UB tripwire)
 obc-reader = { path = "../obc-reader" }
 
 [dev-dependencies]
