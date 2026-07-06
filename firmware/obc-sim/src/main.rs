@@ -647,6 +647,14 @@ fn apply_script(app: &mut App, script: &str, render: &mut dyn FnMut(&mut App)) {
             // detail's hours read) so the next gesture sees it — e.g. `p d p` opens a POI list, fills
             // its snapshot, then presses a POI into its detail.
             'd' => render(app),
+            // Idle-elapse: jump the clock 5 min forward with no input and run one animation pass, so
+            // the app-level idle-return timeout (Part B) fires deterministically for a snapshot —
+            // e.g. `B l p I` sits in Settings, elapses, and lands back on Home. Longer than every
+            // configurable timeout (max 5 min), so it fires for any `Idle return` setting but Never.
+            'I' => {
+                now += 5 * 60_000 + 1_000;
+                feed(app, now, vec![]);
+            }
             other => eprintln!("warning: ignoring unknown --script token '{other}'"),
         }
     }

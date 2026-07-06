@@ -212,13 +212,27 @@ fn menu_needle_sweep_arms_then_settles() {
     assert_eq!(m.tick_timers(now + 16), ScreenTick::idle(), "after landing the menu is idle again");
 }
 
-// The Home → Route menu → Map flow.
+// The Home → Menu → Route menu → Map flow.
 
 #[test]
-fn home_press_opens_the_route_menu() {
+fn home_press_and_back_hold_both_open_the_menu() {
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Idle));
-    let t = HomeScreen::new().handle(Gesture::Press, &mut ctx(&mut st, &mut act));
-    assert!(matches!(t, Transition::Push(Screen::RouteMenu(_))));
+    // Both the press and the back-hold now open the compass Menu — the single door into the app.
+    let p = HomeScreen::new().handle(Gesture::Press, &mut ctx(&mut st, &mut act));
+    assert!(matches!(p, Transition::Push(Screen::Menu(_))), "press opens the Menu");
+    let b = HomeScreen::new().handle(Gesture::BackHold, &mut ctx(&mut st, &mut act));
+    assert!(matches!(b, Transition::Push(Screen::Menu(_))), "back-hold opens the Menu too");
+    // A turn on Home is ignored.
+    let t = HomeScreen::new().handle(Gesture::Turn(1), &mut ctx(&mut st, &mut act));
+    assert!(matches!(t, Transition::None), "encoder turns on Home are ignored");
+}
+
+#[test]
+fn menu_routes_station_opens_the_route_menu() {
+    // The Route menu is reached from the Menu's Routes station (selected 0 by default).
+    let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Idle));
+    let t = MenuScreen::new().handle(Gesture::Press, &mut ctx(&mut st, &mut act));
+    assert!(matches!(t, Transition::Push(Screen::RouteMenu(_))), "Menu → Routes → Route menu");
 }
 
 #[test]
@@ -389,11 +403,14 @@ fn list_window_keeps_the_selection_visible() {
 
 #[test]
 fn boot_flow_walks_home_to_route_menu_to_riding_map() {
-    // End to end through `App`: Idle Home → press → Route menu → press → overview → press → Map.
+    // End to end through `App`: Idle Home → press → Menu → press (Routes) → Route menu → press →
+    // overview → press → Map.
     let mut app = App::new_idle(AppState::new(0, 0, 0.05));
     app.set_routes(&test_routes());
     assert_eq!(app.mode(), Mode::Idle);
-    press(&mut app); // Home → Route menu
+    press(&mut app); // Home → Menu (Routes selected)
+    assert_eq!(app.mode(), Mode::Idle, "opening the menu doesn't start riding yet");
+    press(&mut app); // Menu → Route menu
     assert_eq!(app.mode(), Mode::Idle, "opening the route list doesn't start riding yet");
     press(&mut app); // Route menu → Route overview (route preloads, still not riding)
     assert_eq!(app.mode(), Mode::Idle, "the overview previews; START is what rides");
@@ -509,7 +526,8 @@ fn rescan_follows_the_open_route_menu_selection() {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
     let routes = test_routes();
     app.set_routes_with_ids(&routes, &IDS3);
-    app.apply_gesture(Gesture::Press); // Home → Route menu
+    app.apply_gesture(Gesture::Press); // Home → Menu (Routes selected)
+    app.apply_gesture(Gesture::Press); // Menu → Route menu
     app.apply_gesture(Gesture::Turn(1)); // highlight Beta
     app.set_routes_with_ids(&routes[1..], &IDS3[1..]); // Alpha deleted under the open menu
     app.apply_gesture(Gesture::Press); // open the highlighted route
@@ -523,7 +541,8 @@ fn rescan_clamps_a_vanished_menu_selection() {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
     let routes = test_routes();
     app.set_routes_with_ids(&routes, &IDS3);
-    app.apply_gesture(Gesture::Press); // Home → Route menu
+    app.apply_gesture(Gesture::Press); // Home → Menu (Routes selected)
+    app.apply_gesture(Gesture::Press); // Menu → Route menu
     app.apply_gesture(Gesture::Turn(2)); // highlight Gamma (last row)
     app.set_routes_with_ids(&routes[..2], &IDS3[..2]); // Gamma deleted
     app.apply_gesture(Gesture::Press); // open whatever is highlighted now
@@ -543,7 +562,8 @@ fn rescan_clamps_a_vanished_menu_selection() {
 fn hold_delete_requests_the_highlighted_route_id() {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
     app.set_routes_with_ids(&test_routes(), &IDS3); // ids 10, 20, 30
-    app.apply_gesture(Gesture::Press); // Home → Route menu
+    app.apply_gesture(Gesture::Press); // Home → Menu (Routes selected)
+    app.apply_gesture(Gesture::Press); // Menu → Route menu
     app.apply_gesture(Gesture::Turn(1)); // highlight Beta (id 20)
     assert!(!app.has_route_delete(), "no request until the hold completes");
     app.apply_gesture(Gesture::Hold); // guarded hold = delete Beta
@@ -559,7 +579,8 @@ fn deleting_a_non_highlighted_route_keeps_the_highlight_by_id() {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
     let routes = test_routes(); // Alpha(10), Beta(20), Gamma(30)
     app.set_routes_with_ids(&routes, &IDS3);
-    app.apply_gesture(Gesture::Press); // Home → Route menu
+    app.apply_gesture(Gesture::Press); // Home → Menu (Routes selected)
+    app.apply_gesture(Gesture::Press); // Menu → Route menu
     app.apply_gesture(Gesture::Turn(1)); // highlight Beta (id 20)
 
     // Simulate the host handling a delete of Alpha (a *different* route) — remove it and rescan.
@@ -579,7 +600,8 @@ fn deleting_the_highlighted_route_moves_the_highlight_sanely() {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
     let routes = test_routes();
     app.set_routes_with_ids(&routes, &IDS3);
-    app.apply_gesture(Gesture::Press); // Home → Route menu
+    app.apply_gesture(Gesture::Press); // Home → Menu (Routes selected)
+    app.apply_gesture(Gesture::Press); // Menu → Route menu
     app.apply_gesture(Gesture::Turn(2)); // highlight Gamma (id 30, last row)
     app.apply_gesture(Gesture::Hold); // request its delete
     assert_eq!(app.take_route_delete(), Some(30));
@@ -596,7 +618,8 @@ fn deleting_the_highlighted_route_moves_the_highlight_sanely() {
 fn app_with_pending_swap_on_gamma() -> App {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
     app.set_routes_with_ids(&test_routes(), &IDS3);
-    app.apply_gesture(Gesture::Press); // Home → Route menu
+    app.apply_gesture(Gesture::Press); // Home → Menu (Routes selected)
+    app.apply_gesture(Gesture::Press); // Menu → Route menu
     app.apply_gesture(Gesture::Press); // Alpha → overview
     app.apply_gesture(Gesture::Press); // START RIDE → Map, session running
     assert_eq!(app.mode(), Mode::Riding);

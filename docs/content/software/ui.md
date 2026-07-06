@@ -742,7 +742,7 @@ A planned route's hard parts are its climbs, so a third riding view is given ove
 Put the pieces together and the navigation graph is small and legible. Two screens are always **riding views** — the Map and the Elevation/Statistics profile — and they're siblings: `back` swaps between them without growing the stack, and both share the same `press` (pause) and `back-hold` (Menu) bindings. Each also has a `hold`-entered sub-mode (Pan on the Map, Zoom on the profile). On a climb a [third view](#climbs-get-their-own-panel) joins the ring between them.
 
 <figure class="fig">
-<svg viewBox="0 0 720 340" role="img" aria-label="A navigation graph. Home, the root, opens the Route menu on press and the compass Menu on back-hold. The Menu opens the Route menu (Routes). Picking a route opens the Route overview; its START truncates to Home and pushes the Map (Root). The Map and Statistics are siblings swapped by back. The Map opens the Paused page on press and enters Pan on hold. From Paused, Resume pops back to the Map and Finish or Discard (held) clears to Home.">
+<svg viewBox="0 0 720 340" role="img" aria-label="A navigation graph. Home, the root, opens the compass Menu on both press and back-hold — the single door into the app. The Menu opens the Route menu at its Routes station. Picking a route opens the Route overview; its START truncates to Home and pushes the Map (Root). The Map and Statistics are siblings swapped by back. The Map opens the Paused page on press and enters Pan on hold. From Paused, Resume pops back to the Map and Finish or Discard (held) clears to Home.">
   <defs>
     <marker id="aU7" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#5f7d3d" /></marker>
     <marker id="aU7c" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
@@ -762,9 +762,8 @@ Put the pieces together and the navigation graph is small and legible. Two scree
   <!-- Statistics -> Climb (only while on a climb) -->
   <line x1="648" y1="190" x2="648" y2="244" stroke="#5f7d3d" stroke-width="1.4" stroke-dasharray="4 4" marker-end="url(#aU7)" /><text class="d-sub" x="654" y="222" style="font-size:9px">back</text>
 
-  <!-- edges from Home -->
-  <line x1="140" y1="164" x2="230" y2="86"  stroke="#5f7d3d" stroke-width="1.6" marker-end="url(#aU7)" /><text class="d-sub" x="168" y="116" style="font-size:9px">press</text>
-  <line x1="140" y1="178" x2="230" y2="258" stroke="#5f7d3d" stroke-width="1.6" marker-end="url(#aU7)" /><text class="d-sub" x="150" y="232" style="font-size:9px">back-hold</text>
+  <!-- edge from Home: both press and back-hold open the Menu (the single door in) -->
+  <line x1="140" y1="170" x2="230" y2="262" stroke="#5f7d3d" stroke-width="1.6" marker-end="url(#aU7)" /><text class="d-sub" x="150" y="232" style="font-size:9px">press · back-hold</text>
   <!-- Menu -> Route menu -->
   <line x1="356" y1="250" x2="356" y2="98" stroke="#5f7d3d" stroke-width="1.6" marker-end="url(#aU7)" /><text class="d-sub" x="362" y="178" style="font-size:9px">Routes</text>
   <!-- Route menu -> Overview (press) -->
@@ -783,7 +782,7 @@ Put the pieces together and the navigation graph is small and legible. Two scree
   <!-- Paused -> Home (finish/discard) -->
   <path d="M436 66 C 250 20, 90 70, 88 148" fill="none" stroke="#cf6a2a" stroke-width="1.6" stroke-dasharray="4 4" marker-end="url(#aU7c)" /><text class="d-sub" x="250" y="34" style="fill:#a9501c;font-size:9px">Finish / Discard (hold) → Home</text>
 </svg>
-<figcaption>Green edges are ordinary moves; coral marks the "go ride / stop riding" path. Picking a route opens the <b>Overview</b> — profile, distance/climb/descent, START — while the route streams open behind it; START uses <code>Root</code>, so you always land on a clean <code>[Home, Map]</code> instead of a Map buried under stale menus. Picking a <i>different</i> route mid-ride still detours through a guarded "swap or save &amp; start new" prompt, and the <b>Paused</b> page shows the ride-so-far ledger above its guarded Finish / Discard rows. On a climb, the Statistics view's <code>back</code> opens a third stop — the striped Climb panel — closing the ring back at the Map when you crest.</figcaption>
+<figcaption>Green edges are ordinary moves; coral marks the "go ride / stop riding" path. Home has one door: both <code>press</code> and <code>back-hold</code> open the compass <b>Menu</b>, and the Route menu is reached from there at the Routes station. Picking a route opens the <b>Overview</b> — profile, distance/climb/descent, START — while the route streams open behind it; START uses <code>Root</code>, so you always land on a clean <code>[Home, Map]</code> instead of a Map buried under stale menus. Picking a <i>different</i> route mid-ride still detours through a guarded "swap or save &amp; start new" prompt, and the <b>Paused</b> page shows the ride-so-far ledger above its guarded Finish / Discard rows. On a climb, the Statistics view's <code>back</code> opens a third stop — the striped Climb panel — closing the ring back at the Map when you crest. Left untouched, the UI <b>returns on its own</b>: after a configurable idle timeout (default 30 s) it clears back to Home, or — mid-ride — back to the Map, so a menu or settings page left open doesn't strand the display away from the ride.</figcaption>
 </figure>
 
 ## The "field map" look

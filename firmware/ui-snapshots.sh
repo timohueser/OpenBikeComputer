@@ -39,18 +39,20 @@ trap 'rm -rf "$TRACKS" "$NAVDIR"' EXIT
 cp "$ROUTES/ride-v1.bin" "$TRACKS/RD0.ORD"
 cp "$ROUTES/ride-v1.bin" "$TRACKS/RD1.ORD"
 
-# Menu navigation: the compass menu is Routes / Rides / POIs / Map / Settings, so Settings is one
-# ccw detent (`l`, wrapping) from the Routes start, Rides is one cw (`r`), POIs two cw (`r r`). `w`
+# Menu navigation: Home's press (and back-hold) opens the compass Menu — the single door into the
+# app — so the Route menu is now `p p` from boot (open Menu, then press the Routes station, which the
+# menu starts on). The compass menu is Routes / Rides / POIs / Map / Settings, so Settings is one ccw
+# detent (`l`, wrapping) from the Routes start, Rides is one cw (`r`), POIs two cw (`r r`). `w`
 # settles the needle sweep after a turn.
 "$SIM" "$MAP" --boot --png "$OUT/home.png" --battery 45
-"$SIM" "$MAP" --boot --script "p"            --routes-dir "$ROUTES" --png "$OUT/routemenu.png"
-# Route menu hold-to-delete footer (#453): `p H` opens the menu and partial-holds the encoder over
-# the highlighted route, so the trash + warning-red delete bar draws mid-charge.
-"$SIM" "$MAP" --boot --script "p H"          --routes-dir "$ROUTES" --png "$OUT/routemenu-delete.png"
+"$SIM" "$MAP" --boot --script "p p"          --routes-dir "$ROUTES" --png "$OUT/routemenu.png"
+# Route menu hold-to-delete footer (#453): `p p H` opens the Menu, presses into the Route menu, and
+# partial-holds the encoder over the highlighted route, so the trash + warning-red delete bar draws.
+"$SIM" "$MAP" --boot --script "p p H"        --routes-dir "$ROUTES" --png "$OUT/routemenu-delete.png"
 # The footer greyed while the highlighted route is the active-ride route (#453): ride route 0
-# (`p p p`), climb back to the Route menu (`B p`) with it still highlighted, then partial-hold — the
-# footer shows the "In use" greyed state and no delete bar fills.
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p B p H" --png "$OUT/routemenu-delete-active.png"
+# (`p p p p`), climb back to the Route menu (`B p`: Map back-hold → Menu, then press Routes) with it
+# still highlighted, then partial-hold — the footer shows the "In use" greyed state and no bar fills.
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p B p H" --png "$OUT/routemenu-delete-active.png"
 "$SIM" "$MAP" --boot --script "B"            --png "$OUT/menu.png"
 # Rides screen (#454): the two-line list, then the two delete-footer states. The tracks fixture holds
 # two unsynced rides. `p` presses into the Rides screen from the Menu (one `r` detent + `w` settle).
@@ -58,12 +60,12 @@ cp "$ROUTES/ride-v1.bin" "$TRACKS/RD1.ORD"
 # The warning-red "not synced" delete footer: `p H` opens the Rides screen and partial-holds the
 # encoder over the highlighted (unsynced) ride, so the trash + red bar + "not synced" cue draw.
 "$SIM" "$MAP" --boot --tracks-dir "$TRACKS" --script "B r w p H"   --png "$OUT/rides-delete-unsynced.png"
-# The footer greyed while a ride is being recorded (#454): ride route 0 (`p p p` → Map, riding)
+# The footer greyed while a ride is being recorded (#454): ride route 0 (`p p p p` → Map, riding)
 # **with the GPX replay driving fixes** — the tracking session only starts once positions flow, and
 # `is_tracking` (the greying predicate) is `session.is_some()`, so without `--gpx` this frame would
 # wrongly show the live red footer. Then BackHold to the Menu (`B`), turn to the Rides station
 # (`r w`), press in, and partial-hold — the footer shows the "Recording" greyed state, no bar fills.
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --tracks-dir "$TRACKS" --gpx "$GPX" --at 30 --script "p p p B r w p H" --png "$OUT/rides-delete-recording.png"
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --tracks-dir "$TRACKS" --gpx "$GPX" --at 30 --script "p p p p B r w p H" --png "$OUT/rides-delete-recording.png"
 "$SIM" "$MAP" --boot --script "B r r w"      --png "$OUT/menu-pois.png"
 # POIs browser (#425): the category list, then a populated nearest-16 list. The list's bearing
 # arrows are live, so pin a deterministic fix (grimsel map centre) + heading so they reproduce.
@@ -111,10 +113,10 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 "$SIM" "$MAP" --boot --ble-paired --script "B l p r r r r p"     --png "$OUT/bluetooth.png"
 "$SIM" "$MAP" --boot --ble-paired --script "B l p r r r r p r H" --png "$OUT/bluetooth-forget-hold.png"
 "$SIM" "$MAP" --boot --script "B l p r r r r r p p H" --png "$OUT/reset-hold.png"
-# Riding flows go through the Route overview now: pick (p) → overview → START (p) → Map.
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p"     --png "$OUT/routeoverview.png"
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p"   --gpx "$GPX" --at 30 --png "$OUT/map.png"
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p b" --gpx "$GPX" --at 30 --png "$OUT/statistics.png"
+# Riding flows: Home press → Menu → Routes (p) → Route menu → pick (p) → overview → START (p) → Map.
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p"     --png "$OUT/routeoverview.png"
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p"   --gpx "$GPX" --at 30 --png "$OUT/map.png"
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p b" --gpx "$GPX" --at 30 --png "$OUT/statistics.png"
 # Climb screen (epic #506, C4). The default protocol-vectors routes don't match the Grimsel replay
 # (they're tiny test routes), so ride the committed grimsel-climb.obcr — the route the GPX follows,
 # giving the detector its three back-to-back climbs. `--at 1500` replays ~25 min in (progress ~5 km,
@@ -124,10 +126,10 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 # sim crate's assets, not protocol-vectors).
 CLIMBROUTES="$(mktemp -d)"; trap 'rm -rf "$TRACKS" "$NAVDIR" "$CLIMBROUTES"' EXIT
 cp "$repo_root/firmware/obc-sim/assets/grimsel-climb.obcr" "$CLIMBROUTES/"
-"$SIM" "$MAP" --boot --routes-dir "$CLIMBROUTES" --script "p p p" --gpx "$GPX" --at 1500 --open-climb --png "$OUT/climb.png"
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p" --gpx "$GPX" --at 30 --png "$OUT/ridecontrol.png"
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p B p r p" --png "$OUT/routeswap.png"
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p h" --png "$OUT/map-pan.png"
+"$SIM" "$MAP" --boot --routes-dir "$CLIMBROUTES" --script "p p p p" --gpx "$GPX" --at 1500 --open-climb --png "$OUT/climb.png"
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p p" --gpx "$GPX" --at 30 --png "$OUT/ridecontrol.png"
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p B p r p" --png "$OUT/routeswap.png"
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p h" --png "$OUT/map-pan.png"
 # BLE connected indicator (#448): the static Bluetooth rune on the Home battery row and the menu
 # title bar. `--ble-connected` injects a linked phone, exactly as the sim control-panel toggle does.
 "$SIM" "$MAP" --boot --ble-connected --png "$OUT/home-ble.png" --battery 45
@@ -141,9 +143,9 @@ cp "$repo_root/firmware/obc-sim/assets/grimsel-climb.obcr" "$CLIMBROUTES/"
 # Idle: "ROUTE RECEIVED" — Start navigation / Dismiss.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --inject-upload 0 --png "$OUT/route-received.png"
 # Tracking (riding id 0, id 1 arrives): the retitled Route-swap popup.
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p" --inject-upload 1 --png "$OUT/routeswap-received.png"
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p" --inject-upload 1 --png "$OUT/routeswap-received.png"
 # Active route replaced (riding id 0, id 0 re-uploaded): the info-only "ROUTE UPDATED" card.
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p" --inject-upload-replace 0 --png "$OUT/route-updated.png"
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p" --inject-upload-replace 0 --png "$OUT/route-updated.png"
 # Storage/sensor warnings (issue #504). The three undismissable boot faults are drawn standalone
 # (no app), exactly as `main` does at the fatal SD/map sites — `--boot-fault` bypasses render_frame.
 "$SIM" "$MAP" --boot-fault nocard --png "$OUT/fault-nocard.png"
@@ -154,4 +156,9 @@ cp "$repo_root/firmware/obc-sim/assets/grimsel-climb.obcr" "$CLIMBROUTES/"
 "$SIM" "$MAP" --boot --inject-warning gps --png "$OUT/warning-gps.png"
 "$SIM" "$MAP" --boot --inject-warning gps,altimeter,compass,map --png "$OUT/warning-all.png"
 
-echo "ui-snapshots: 44 screens rendered into $OUT/"
+# The Power settings page's new "Idle return" row (Home → Menu → Settings → Power, then two turns to
+# the row). And the idle-return timeout in action: sit in Settings, elapse (`I`), land back on Home.
+"$SIM" "$MAP" --boot --script "B l p r r r p r r" --png "$OUT/power-idle-return.png"
+"$SIM" "$MAP" --boot --script "B l p I"           --png "$OUT/idle-return-home.png"
+
+echo "ui-snapshots: 46 screens rendered into $OUT/"
