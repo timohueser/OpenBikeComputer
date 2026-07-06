@@ -391,11 +391,12 @@ fn replay_step<'s>(
 /// id-carrying catalog, and answer the app (`notify_nav_result` swaps the confirm screen for the
 /// computed-route overview or the failure card).
 ///
-/// The host-size A* table (`NAV_MAX_NODES` = 8192 ⇒ ~208 KB — the range fix's locked "sim handles
-/// 10 km" requirement) is **heap-allocated zeroed**: an all-zero `NavScratch` is bit-identical to
-/// `new()` (its `.bss`-placement contract; `plan_route` resets it anyway), and `Box::new` would
-/// first build the table on the stack — a silent trap on the wasm build's small stack. The
-/// `progress` hook is the trivial always-continue (the sim needs no watchdog feed).
+/// The A* table is the capped sim/LM20 size (`NAV_MAX_NODES` = 1536 ⇒ ~39 KB — the final
+/// device's 40 kB nav budget, deliberately emulated so sim range = final-device range) and is
+/// **heap-allocated zeroed**: an all-zero `NavScratch` is bit-identical to `new()` (its
+/// `.bss`-placement contract; `plan_route` resets it anyway), and `Box::new` would first build
+/// the table on the stack — a silent trap on the wasm build's small stack. The `progress` hook
+/// is the trivial always-continue (the sim needs no watchdog feed).
 fn run_nav_request(app: &mut obc_app::App, store: &mut RouteStore, reader: &Reader, req: &obc_app::NavRequest) {
     use obc_route::nav::{plan_route, NavError, NavScratch};
     // SAFETY: `NavScratch::new()` writes only zero bytes, so a zeroed allocation *is* the
