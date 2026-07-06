@@ -36,6 +36,16 @@
 //! called every [`PROGRESS_EVERY_SETTLES`] settles so the board can feed its
 //! watchdog (and a host can abort). Between calls the executor is still starved —
 //! accepted for v1.
+//!
+//! **No distance cap** (Timo, post-#496): the rider may try to route to *anything*;
+//! the fixed table is the real limit and the attempt is the feedback —
+//! [`NavError::Exhausted`] **is** the "too far for this device" answer. Two accepted
+//! consequences: (1) `h` (`u16` meters, saturating) saturates for very distant goals,
+//! so ordering degrades gracefully toward uniform expansion and the search exhausts —
+//! exactly the intended outcome; (2) a hopeless target burns a **full exhaustion
+//! search** before failing — bounded by the table (the progress callback keeps the
+//! watchdog fed throughout); a time-budget abort via that same callback is the named
+//! future lever if the wait annoys.
 
 use heapless::Vec;
 
@@ -43,10 +53,6 @@ use crate::byte_io::ByteSink;
 use crate::convert::{EmitStats, ObcrEmitter, RouteStats, WpPlace, MAX_WAYPOINTS};
 use crate::geo::{cos_lat, ground_dist_m, ground_dist_m_cl};
 use obc_reader::{BBox, NavTileCache, Reader, M_PER_DEG};
-
-/// Crow-flies routing cap, meters (locked on #116): a farther target is rejected as
-/// [`NavError::TooFar`] before any graph access.
-const MAX_CROW_FLIES_M: f32 = 10_000.0;
 
 /// Snap radius, meters (locked on #116): each endpoint snaps to the nearest routable
 /// node within this, or the route fails as [`NavError::NoPath`]. v1 snaps to nodes,
@@ -65,18 +71,18 @@ pub const NAV_EPSILON_DEN: u32 = 10;
 /// to stay measurement noise.
 pub const PROGRESS_EVERY_SETTLES: u32 = 8;
 
-/// How the router surfaces failure — R4's two-tier UX maps [`NavError::TooFar`] to
-/// "Too far to route here" and everything else to "Couldn't find a route."
+/// How the router surfaces failure — the two-tier UX maps [`NavError::Exhausted`] to
+/// "Too far to route here" (with no distance cap, running out of table **is** the
+/// device's range limit) and [`NavError::NoPath`] to "Couldn't find a route."
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NavError {
-    /// `to` is beyond the 10 km crow-flies cap (checked before any graph access).
-    TooFar,
     /// No route: an endpoint failed to snap within 250 m, the frontier emptied without
     /// reaching the goal, a read/write failed mid-flight, or the host's `progress`
-    /// hook aborted the search — every non-distance failure lands here so the UX
+    /// hook aborted the search — every non-range failure lands here so the UX
     /// stays two-tier.
     NoPath,
-    /// The fixed scratch filled before the goal was reached (dense graph / long route).
+    /// The fixed scratch filled before the goal was reached — the device's honest
+    /// "too far" (dense graph, long route, or an unreachable/hopeless target).
     Exhausted,
 }
 
@@ -96,9 +102,11 @@ pub enum NavError {
 ///
 /// 24 B entry + 2 B heap slot = **26 B/node** (compile-time asserted below; was
 /// 34 B/node with `u32` costs and id-keyed `came_from` before the 2026-07-06 range
-/// fix). `g`/`h` in `u16` meters saturate at 65 535 m — far past the ~13 km any
-/// meaningful path can reach under the 10 km crow-flies cap × ε — and a saturated
-/// `g` only makes its node maximally unattractive (never mis-ordered, never wrapped).
+/// fix). `g`/`h` in `u16` meters saturate at 65 535 m — far past anything the fixed
+/// table can span — and a saturated cost only makes its node maximally unattractive
+/// (never mis-ordered, never wrapped); with no distance cap a very distant goal just
+/// degrades the ordering toward uniform expansion until the table exhausts (see the
+/// module doc's no-cap note).
 /// `came_from` as a slot index (slots never move — open addressing, no deletion)
 /// both saves 2 B and turns the emit chain-walk into direct indexing.
 ///
@@ -354,10 +362,6 @@ pub fn plan_route<const N: usize>(
     progress: &mut dyn FnMut() -> bool,
     sink: &mut dyn ByteSink,
 ) -> Result<RouteStats, NavError> {
-    // Cheap crow-flies pre-check — before ANY graph access (locked two-tier UX).
-    if ground_dist_m(from, to) > MAX_CROW_FLIES_M {
-        return Err(NavError::TooFar);
-    }
     scratch.reset();
     tiles.reset();
 

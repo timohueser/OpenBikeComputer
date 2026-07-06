@@ -205,13 +205,25 @@ fn mid_ride_accept_opens_the_save_swap_prompt() {
 #[test]
 fn failure_tiers_swap_the_confirm_for_the_right_card() {
     let bytes = fixture();
-    for (err, tier) in [(NavError::TooFar, "too far"), (NavError::NoPath, "generic"), (NavError::Exhausted, "generic")]
+    // With no distance cap, **exhaustion is the range tier**: running out of the router's fixed
+    // table is the device's honest "too far", so it (and only it) shows "Too far to route here";
+    // everything else is the generic "Couldn't find a route."
+    for (err, tier, expect_too_far) in
+        [(NavError::Exhausted, "range (exhausted)", true), (NavError::NoPath, "generic", false)]
     {
         let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
         open_detail(&mut app, &bytes);
         let _req = request_route(&mut app);
         app.notify_nav_result(Err(err));
-        assert!(matches!(app.top_screen(), Screen::NavFail(_)), "{tier}: failure swaps in the card");
+        match app.top_screen() {
+            Screen::NavFail(card) => assert_eq!(
+                card.shows_too_far(),
+                expect_too_far,
+                "{tier}: the card must show the {} tier",
+                if expect_too_far { "range" } else { "generic" }
+            ),
+            _ => panic!("{tier}: failure swaps in the card"),
+        }
         assert_eq!(app.activity.active_route, None, "{tier}: nothing activates on failure");
         app.apply_gesture(Gesture::Press);
         assert!(matches!(app.top_screen(), Screen::PoiDetail(_)), "{tier}: any press dismisses to the detail");
