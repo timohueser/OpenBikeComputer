@@ -687,13 +687,17 @@ async fn main(_spawner: Spawner) {
             // 'static ring buffers backing the interrupt-fed UARTE (RX accumulates streamed bytes across
             // a long map render; TX queues the ≤192 B telemetry line). Parked in `.bss` and written in
             // place (the warm-reset-safe pattern), then the `&'static mut` halves move into the spawned
-            // `'static` tasks.
-            static mut RX_BUF: MaybeUninit<[u8; 256]> = MaybeUninit::uninit();
+            // `'static` tasks. RX is 512 B: a multi-second synchronous nav plan (epic #116, R4)
+            // starves the RX task between watchdog callbacks, and the ~1 Hz host feed overran the
+            // old 256 B ring mid-plan (`BufferedUarte buffer overrun` on-glass) — 512 B rides out
+            // several seconds of F/A/C lines. Cheap harness resilience, not a fix for the
+            // starvation itself (accepted for v1 — see `ride::nav_plan_only`).
+            static mut RX_BUF: MaybeUninit<[u8; 512]> = MaybeUninit::uninit();
             static mut TX_BUF: MaybeUninit<[u8; 256]> = MaybeUninit::uninit();
             // SAFETY: each ring is written once here, then handed to exactly one task half — no alias.
-            let (rx_buf, tx_buf): (&'static mut [u8; 256], &'static mut [u8; 256]) = unsafe {
+            let (rx_buf, tx_buf): (&'static mut [u8; 512], &'static mut [u8; 256]) = unsafe {
                 (
-                    init_static(core::ptr::addr_of_mut!(RX_BUF), [0; 256]),
+                    init_static(core::ptr::addr_of_mut!(RX_BUF), [0; 512]),
                     init_static(core::ptr::addr_of_mut!(TX_BUF), [0; 256]),
                 )
             };

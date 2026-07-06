@@ -1,12 +1,12 @@
-//! On-device point-to-point routing over the OBCM §8 nav graph (epic #116, R3).
+//! On-device point-to-point routing over the OBCM §8 nav graph (epic #116, R3/R4).
 //!
-//! [`plan_route`] runs A* from the rider's fix to a POI and writes the result as a
-//! complete OBCR through the shared [`ObcrEmitter`], so the caller (R4) saves it to
-//! `/routes/_nav.obcr` and the rest of the device can't tell it from a loaded GPX
-//! route. `no_std`, identical on device and sim; every buffer lives in caller-owned
-//! structs (`NavScratch` + the reader's `NavTileCache`) because this later runs under
-//! the nRF's ~36 kB stack next to the render peak — a fat local here is a HardFault
-//! on-glass (#419/#270).
+//! [`plan_route`] runs **weighted A\*** from the rider's fix to a POI and writes the
+//! result as a complete OBCR through the shared [`ObcrEmitter`], so the caller (R4)
+//! saves it to `/routes/_nav.obcr` and the rest of the device can't tell it from a
+//! loaded GPX route. `no_std`, identical on device and sim; every buffer lives in
+//! caller-owned structs (`NavScratch` + the reader's `NavTileCache`) because this
+//! runs under the nRF's tight stack next to the render peak — a fat local here is a
+//! HardFault on-glass (#419/#270).
 //!
 //! **Expansion by spatial re-fetch, not an id→offset table** (locked on #116): a
 //! global node-id index would be millions of entries and can't be resident. Settling
@@ -17,17 +17,25 @@
 //! per-settle re-read into a resident-slot hit (the device is SD-bound — the cache's
 //! hit/miss counters are the number R4 logs on-glass).
 //!
-//! **The scratch is fixed** (~10 kB, [`NAV_MAX_NODES`] tracked nodes) because the
-//! router must coexist with the map cache and the BLE stack in RAM; on a dense graph
-//! it fills and the search aborts with [`NavError::Exhausted`] — the locked
-//! "short routes only" framing accepts that a dense-urban 10 km route can fail.
+//! **The scratch is fixed** ([`NAV_MAX_NODES`] tracked nodes, per-target sized)
+//! because the router must coexist with the map cache and the render scratch in RAM;
+//! on a dense graph it fills and the search aborts with [`NavError::Exhausted`].
 //!
-//! **Admissibility invariant:** the heuristic is the great-circle distance to the
-//! goal node measured by [`ground_dist_m`] — the *same* local-equirectangular metric
-//! the packer summed for every edge's `cost_m` (`obc-reader`'s shared distance core).
-//! Any path's cost is a sum of polyline lengths ≥ the straight line between its ends
-//! in that same metric, so `h` never overestimates by construction and A* returns the
-//! true shortest path.
+//! **Bounded suboptimality, not exactness** (decided 2026-07-06 — range in fixed
+//! memory): the priority is `f = g + ε·h` with ε = [`NAV_EPSILON_NUM`] /
+//! [`NAV_EPSILON_DEN`] = 1.3. The heuristic itself never overestimates — it is the
+//! great-circle distance to the goal in the *same* local-equirectangular metric the
+//! packer summed for every edge's `cost_m` — so weighted A\* returns a path of length
+//! **≤ 1.3× the true shortest** (in practice a few percent on road networks). What ε
+//! buys is *reach*: plain A\* explores roughly quadratically with distance and
+//! exhausted the fixed table ~1.5 km out; the goal-greedy inflated search settles a
+//! narrow corridor instead, planning multi-km routes in the same table.
+//!
+//! **The caller drives liveness** through the `progress` hook: [`plan_route`] is a
+//! long synchronous computation (seconds on the SD-bound device), and the hook is
+//! called every [`PROGRESS_EVERY_SETTLES`] settles so the board can feed its
+//! watchdog (and a host can abort). Between calls the executor is still starved —
+//! accepted for v1.
 
 use heapless::Vec;
 
@@ -45,6 +53,18 @@ const MAX_CROW_FLIES_M: f32 = 10_000.0;
 /// not mid-edge (a noted future refinement).
 const SNAP_RADIUS_M: f32 = 250.0;
 
+/// Weighted-A\* heuristic inflation ε as an integer ratio: `f = g + (NUM·h)/DEN`
+/// (= 1.3). Applied on **all** targets — the found path is at most ε× the true
+/// shortest (see the module doc's bounded-suboptimality note, decided 2026-07-06).
+pub const NAV_EPSILON_NUM: u32 = 13;
+/// ε's denominator — see [`NAV_EPSILON_NUM`].
+pub const NAV_EPSILON_DEN: u32 = 10;
+
+/// How many settles between two `progress` callbacks — frequent enough that the
+/// board's watchdog is fed every few hundred ms of SD-bound settling, rare enough
+/// to stay measurement noise.
+pub const PROGRESS_EVERY_SETTLES: u32 = 8;
+
 /// How the router surfaces failure — R4's two-tier UX maps [`NavError::TooFar`] to
 /// "Too far to route here" and everything else to "Couldn't find a route."
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,73 +72,121 @@ pub enum NavError {
     /// `to` is beyond the 10 km crow-flies cap (checked before any graph access).
     TooFar,
     /// No route: an endpoint failed to snap within 250 m, the frontier emptied without
-    /// reaching the goal, or a read/write failed mid-flight — every non-distance failure
-    /// lands here so the UX stays two-tier.
+    /// reaching the goal, a read/write failed mid-flight, or the host's `progress`
+    /// hook aborted the search — every non-distance failure lands here so the UX
+    /// stays two-tier.
     NoPath,
     /// The fixed scratch filled before the goal was reached (dense graph / long route).
     Exhausted,
 }
 
-/// Nodes the fixed A* scratch tracks (open + closed together) — what ~10 kB buys.
+/// Nodes the fixed A\* scratch tracks (open + closed together) — per-target sized.
 ///
 /// Per tracked node, one open-addressed [`NavEntry`] plus one binary-heap slot:
 ///
-/// | field       | type  | bytes |                                               |
-/// |-------------|-------|-------|-----------------------------------------------|
-/// | `node_id`   | `u32` | 4     | hash key (pack-run-dense §8.3 id)             |
-/// | `lon`,`lat` | `i32` | 8     | µdeg coord — the settle's quadtree descent    |
-/// | `g`         | `u32` | 4     | best known cost from start, m                 |
-/// | `h`         | `u32` | 4     | great-circle to goal, m (computed once)       |
-/// | `came_from` | `u32` | 4     | predecessor node id                           |
-/// | `edge_used` | `u32` | 4     | §8.4 edge taken from the predecessor          |
-/// | `heap_pos`  | `u16` | 2     | index into the heap (`u16::MAX` = not queued) |
-/// | `flags`     | `u8`  | 1     | occupied / closed                             |
-/// | *(pad)*     |       | 1     |                                               |
+/// | field       | type  | bytes |                                                    |
+/// |-------------|-------|-------|----------------------------------------------------|
+/// | `node_id`   | `u32` | 4     | hash key (pack-run-dense §8.3 id)                  |
+/// | `lon`,`lat` | `i32` | 8     | µdeg coord — the settle's quadtree descent         |
+/// | `edge_used` | `u32` | 4     | §8.4 edge taken from the predecessor               |
+/// | `g`         | `u16` | 2     | best known cost from start, m (saturating)         |
+/// | `h`         | `u16` | 2     | great-circle to goal, m (computed once, saturating)|
+/// | `came_from` | `u16` | 2     | predecessor's **table slot index**                 |
+/// | `meta`      | `u16` | 2     | bit15 occupied · bit14 closed · bits 0..14 heap_pos|
 ///
-/// 32 B entry + 2 B heap slot = **34 B/node** ⇒ 300 × 34 + 4 B of lengths = 10 204 B,
-/// under the 10 kB budget (compile-time asserted below).
-pub const NAV_MAX_NODES: usize = 300;
+/// 24 B entry + 2 B heap slot = **26 B/node** (compile-time asserted below; was
+/// 34 B/node with `u32` costs and id-keyed `came_from` before the 2026-07-06 range
+/// fix). `g`/`h` in `u16` meters saturate at 65 535 m — far past the ~13 km any
+/// meaningful path can reach under the 10 km crow-flies cap × ε — and a saturated
+/// `g` only makes its node maximally unattractive (never mis-ordered, never wrapped).
+/// `came_from` as a slot index (slots never move — open addressing, no deletion)
+/// both saves 2 B and turns the emit chain-walk into direct indexing.
+///
+/// Per-target `N` (the const must stay trivial to bump):
+/// - **host/sim** (`not(nrf-mem)`): 8192 nodes ≈ 208 KB — host RAM is free; the sim
+///   heap-allocates it (a stack local would trap the wasm build). Sized so a 10 km
+///   plan in dense urban graphs succeeds (the locked sim requirement).
+/// - **device** (`nrf-mem`): 768 nodes ≈ 20 KB of `.bss`. Budget math (2026-07-06,
+///   DK debug-uart build): stack region 69 736 B, pre-nav render peak 35 808 B; the
+///   flattened plan frame's excursion is assumed ≤ render peak + ~8 KB ≈ 44 KB;
+///   keeping ≥ 6 KB of margin leaves ~20 KB for this table (the ~4 KB tile cache
+///   rides the same nav budget), i.e. ~800 slimmed nodes — chosen conservatively at
+///   768; the coordinator re-measures on-glass and bumps.
+#[cfg(not(feature = "nrf-mem"))]
+pub const NAV_MAX_NODES: usize = 8192;
+#[cfg(feature = "nrf-mem")]
+pub const NAV_MAX_NODES: usize = 768;
 
-const FLAG_OCCUPIED: u8 = 1;
-const FLAG_CLOSED: u8 = 2;
-/// `heap_pos` sentinel: not currently queued.
-const HEAP_NONE: u16 = u16::MAX;
+/// `meta` bit 15: the slot is occupied (the open-addressing "live" marker).
+const META_OCCUPIED: u16 = 1 << 15;
+/// `meta` bit 14: the node is closed (settled; may re-open on a shorter `g`).
+const META_CLOSED: u16 = 1 << 14;
+/// `meta` bits 0..14: the heap position, [`HEAP_NONE`] = not queued.
+const META_POS_MASK: u16 = 0x3FFF;
+/// `heap_pos` sentinel within [`META_POS_MASK`]: not currently queued.
+const HEAP_NONE: u16 = 0x3FFF;
 
 /// One tracked node — see the layout table at [`NAV_MAX_NODES`]. `repr(C)` pins the
-/// 32-byte size the budget math counts.
+/// 24-byte size the budget math counts.
 #[derive(Clone, Copy)]
 #[repr(C)]
 struct NavEntry {
     node_id: u32,
     lon: i32,
     lat: i32,
-    g: u32,
-    h: u32,
-    came_from: u32,
     edge_used: u32,
-    heap_pos: u16,
-    flags: u8,
+    g: u16,
+    h: u16,
+    /// Predecessor's **table slot index** (not a node id) — slots never move.
+    came_from: u16,
+    /// Packed occupied/closed flags + heap position (see the `META_*` consts).
+    meta: u16,
 }
 
 impl NavEntry {
-    /// All-zero (so a `static NavScratch` lands in `.bss`); `flags == 0` means the slot is free.
-    const EMPTY: NavEntry =
-        NavEntry { node_id: 0, lon: 0, lat: 0, g: 0, h: 0, came_from: 0, edge_used: 0, heap_pos: 0, flags: 0 };
+    /// All-zero (so a `static NavScratch` lands in `.bss`); `meta == 0` has the
+    /// occupied bit clear, so a zeroed slot reads as free.
+    const EMPTY: NavEntry = NavEntry { node_id: 0, lon: 0, lat: 0, edge_used: 0, g: 0, h: 0, came_from: 0, meta: 0 };
 
-    /// The A* priority `f = g + h`; saturating so a corrupt cost can't wrap the ordering.
+    /// The weighted-A\* priority `f = g + ε·h` in `u32` (max ≈ 65 535 + 1.3×65 535,
+    /// nowhere near wrapping; saturating for form).
     #[inline]
     fn f(&self) -> u32 {
-        self.g.saturating_add(self.h)
+        (self.g as u32).saturating_add(NAV_EPSILON_NUM * self.h as u32 / NAV_EPSILON_DEN)
+    }
+
+    #[inline]
+    fn occupied(&self) -> bool {
+        self.meta & META_OCCUPIED != 0
+    }
+
+    #[inline]
+    fn heap_pos(&self) -> u16 {
+        self.meta & META_POS_MASK
+    }
+
+    #[inline]
+    fn set_heap_pos(&mut self, pos: u16) {
+        self.meta = (self.meta & !META_POS_MASK) | (pos & META_POS_MASK);
     }
 }
 
+/// Saturate a `u32` meter figure into the entry's `u16` cost field (see the layout
+/// note at [`NAV_MAX_NODES`]: saturation only ever *overestimates*, pruning absurd
+/// nodes — it can never wrap the ordering).
+#[inline]
+fn sat16(m: u32) -> u16 {
+    m.min(u16::MAX as u32) as u16
+}
+
 /// The router's entire mutable state: an open-addressed `node_id → NavEntry` table and
-/// a binary min-heap of table indices ordered by `f = g + h` (`heap_pos` back-pointers
-/// make decrease-key O(log n), so a node is queued at most once — the heap can never
-/// outgrow the table). Caller-owned; the device keeps one in `.bss`
-/// ([`NavScratch::new`] is `const` and all-zero). `N` is generic so tests exercise the
-/// exhaustion path with a deterministic tiny table; production uses the
-/// [`NAV_MAX_NODES`] default.
+/// a binary min-heap of table indices ordered by `f = g + ε·h` (heap-position
+/// back-pointers make decrease-key O(log n), so a node is queued at most once — the
+/// heap can never outgrow the table). Caller-owned; the device keeps one in `.bss`
+/// ([`NavScratch::new`] is `const` and all-zero — an all-zero struct **is** `new()`,
+/// which is what lets the sim heap-allocate it zeroed). `N` is generic so tests
+/// exercise the exhaustion path with a deterministic tiny table; production uses the
+/// per-target [`NAV_MAX_NODES`] default.
 pub struct NavScratch<const N: usize = NAV_MAX_NODES> {
     entries: [NavEntry; N],
     heap: [u16; N],
@@ -128,20 +196,23 @@ pub struct NavScratch<const N: usize = NAV_MAX_NODES> {
     heap_len: u16,
 }
 
-// The ~10 kB budget, enforced at compile time (locked on #116); and the `u16`
-// heap/index encoding must cover every slot with `u16::MAX` left over as the sentinel.
-const _: () = assert!(core::mem::size_of::<NavScratch<NAV_MAX_NODES>>() <= 10 * 1024, "NavScratch busts ~10 kB");
-const _: () = assert!(NAV_MAX_NODES < u16::MAX as usize, "table indices are u16");
+// Per-target table budget, enforced at compile time: the device table must stay a
+// ~20 KB `.bss` static (the R4 budget math above); slot indices — heap positions and
+// `came_from` — are 14-bit, with `HEAP_NONE` left over as the sentinel.
+#[cfg(feature = "nrf-mem")]
+const _: () = assert!(core::mem::size_of::<NavScratch<NAV_MAX_NODES>>() <= 20 * 1024, "NavScratch busts ~20 kB");
+const _: () = assert!(NAV_MAX_NODES < HEAP_NONE as usize, "table indices are 14-bit (meta packs flags above them)");
+const _: () = assert!(core::mem::size_of::<NavEntry>() == 24, "the slimmed 24-byte entry layout drifted");
 
 impl<const N: usize> NavScratch<N> {
     pub const fn new() -> Self {
-        assert!(N > 0 && N < u16::MAX as usize);
+        assert!(N > 0 && N < HEAP_NONE as usize);
         NavScratch { entries: [NavEntry::EMPTY; N], heap: [0; N], used: 0, heap_len: 0 }
     }
 
     fn reset(&mut self) {
         for e in self.entries.iter_mut() {
-            e.flags = 0;
+            e.meta = 0;
         }
         self.used = 0;
         self.heap_len = 0;
@@ -153,7 +224,7 @@ impl<const N: usize> NavScratch<N> {
         let mut i = id as usize % N;
         for _ in 0..N {
             let e = &self.entries[i];
-            if e.flags & FLAG_OCCUPIED == 0 {
+            if !e.occupied() {
                 return None;
             }
             if e.node_id == id {
@@ -171,20 +242,11 @@ impl<const N: usize> NavScratch<N> {
             return Err(NavError::Exhausted);
         }
         let mut i = id as usize % N;
-        while self.entries[i].flags & FLAG_OCCUPIED != 0 {
+        while self.entries[i].occupied() {
             i = (i + 1) % N;
         }
-        self.entries[i] = NavEntry {
-            node_id: id,
-            lon,
-            lat,
-            g: 0,
-            h: 0,
-            came_from: 0,
-            edge_used: 0,
-            heap_pos: HEAP_NONE,
-            flags: FLAG_OCCUPIED,
-        };
+        self.entries[i] =
+            NavEntry { node_id: id, lon, lat, edge_used: 0, g: 0, h: 0, came_from: 0, meta: META_OCCUPIED | HEAP_NONE };
         self.used += 1;
         Ok(i)
     }
@@ -192,8 +254,8 @@ impl<const N: usize> NavScratch<N> {
     #[inline]
     fn heap_swap(&mut self, a: usize, b: usize) {
         self.heap.swap(a, b);
-        self.entries[self.heap[a] as usize].heap_pos = a as u16;
-        self.entries[self.heap[b] as usize].heap_pos = b as u16;
+        self.entries[self.heap[a] as usize].set_heap_pos(a as u16);
+        self.entries[self.heap[b] as usize].set_heap_pos(b as u16);
     }
 
     fn sift_up(&mut self, mut pos: usize) {
@@ -227,11 +289,11 @@ impl<const N: usize> NavScratch<N> {
     }
 
     /// Queue entry `idx` (must not already be queued). Cannot overflow: one heap slot
-    /// exists per table slot and `heap_pos` keeps each entry queued at most once.
+    /// exists per table slot and the heap position keeps each entry queued at most once.
     fn heap_push(&mut self, idx: usize) {
         let pos = self.heap_len as usize;
         self.heap[pos] = idx as u16;
-        self.entries[idx].heap_pos = pos as u16;
+        self.entries[idx].set_heap_pos(pos as u16);
         self.heap_len += 1;
         self.sift_up(pos);
     }
@@ -242,11 +304,11 @@ impl<const N: usize> NavScratch<N> {
             return None;
         }
         let idx = self.heap[0] as usize;
-        self.entries[idx].heap_pos = HEAP_NONE;
+        self.entries[idx].set_heap_pos(HEAP_NONE);
         self.heap_len -= 1;
         if self.heap_len > 0 {
             self.heap[0] = self.heap[self.heap_len as usize];
-            self.entries[self.heap[0] as usize].heap_pos = 0;
+            self.entries[self.heap[0] as usize].set_heap_pos(0);
             self.sift_down(0);
         }
         Some(idx)
@@ -262,11 +324,19 @@ impl<const N: usize> Default for NavScratch<N> {
 /// Plan a route over the map's §8 nav graph from `from` (the rider fix) to `to` (the
 /// POI coord), both `(lon, lat)` µdeg, and write it as a complete OBCR named `name` to
 /// `sink`. Returns the emitted route's [`RouteStats`] (`total_distance_m` = summed
-/// edge costs; elevation/ascent all zero — no DEM, locked on #116).
+/// edge costs, saturated at 65 535 m; elevation/ascent all zero — no DEM, locked on
+/// #116). The found path is at most ε = 1.3× the true shortest (see the module doc).
 ///
-/// The caller owns all big state: `scratch` (the fixed A* table, ~10 kB) and `tiles`
-/// (the reader's 2-slot graph-tile cache, ~4 kB) — the device keeps both in `.bss`.
-/// Both are reset here, so `tiles.stats()` afterwards reads as this route's I/O.
+/// The caller owns all big state: `scratch` (the fixed A\* table) and `tiles`
+/// (the reader's 2-slot graph-tile cache, ~4 kB) — the device keeps both in `.bss`,
+/// the sim heap-allocates the big host table. Both are reset here, so `tiles.stats()`
+/// afterwards reads as this route's I/O.
+///
+/// `progress` is called every [`PROGRESS_EVERY_SETTLES`] settles; returning `false`
+/// aborts the search cleanly as [`NavError::NoPath`] (the generic failure tier). The
+/// board feeds its watchdog here — the plan is a long synchronous computation and
+/// still starves the executor *between* callbacks (accepted for v1).
+#[allow(clippy::too_many_arguments)] // the seam deliberately takes every caller-owned buffer
 pub fn plan_route<const N: usize>(
     reader: &Reader,
     from: (i32, i32),
@@ -274,6 +344,7 @@ pub fn plan_route<const N: usize>(
     name: &str,
     scratch: &mut NavScratch<N>,
     tiles: &mut NavTileCache,
+    progress: &mut dyn FnMut() -> bool,
     sink: &mut dyn ByteSink,
 ) -> Result<RouteStats, NavError> {
     // Cheap crow-flies pre-check — before ANY graph access (locked two-tier UX).
@@ -288,18 +359,23 @@ pub fn plan_route<const N: usize>(
 
     // Seed the frontier with the start node (its own predecessor, no edge).
     let si = scratch.insert(start_id, start_c.0, start_c.1)?;
-    scratch.entries[si].h = ground_dist_m(start_c, goal_c) as u32;
-    scratch.entries[si].came_from = start_id;
+    scratch.entries[si].h = sat16(ground_dist_m(start_c, goal_c) as u32);
+    scratch.entries[si].came_from = si as u16;
     scratch.heap_push(si);
 
     // Settle loop: pop the best-f node, close it, and relax its record's neighbors.
     // Terminates: a settle closes a node or (re-open) strictly lowers an integer g ≥ 0,
     // and the frontier is bounded by the table.
+    let mut settles: u32 = 0;
     while let Some(idx) = scratch.heap_pop() {
         if scratch.entries[idx].node_id == goal_id {
             return emit_route(reader, scratch, tiles, name, idx, start_id, sink);
         }
-        scratch.entries[idx].flags |= FLAG_CLOSED;
+        settles = settles.wrapping_add(1);
+        if settles.is_multiple_of(PROGRESS_EVERY_SETTLES) && !progress() {
+            return Err(NavError::NoPath); // host-aborted — the generic failure tier
+        }
+        scratch.entries[idx].meta |= META_CLOSED;
         settle::<N>(reader, scratch, tiles, idx, goal_c)?;
     }
     // Frontier emptied without reaching the goal — disconnected (or the graph is empty).
@@ -327,22 +403,24 @@ fn settle<const N: usize>(
                 return;
             }
             for nb in n.neighbors() {
-                let tentative = settled.g.saturating_add(nb.cost_m);
+                // u16-saturating tentative cost: a saturated g is just maximally
+                // unattractive (see the layout note) — never wrapped, never mis-ordered.
+                let tentative = sat16((settled.g as u32).saturating_add(nb.cost_m));
                 match scratch.lookup(nb.id) {
                     Some(j) => {
                         if tentative < scratch.entries[j].g {
                             let e = &mut scratch.entries[j];
                             e.g = tentative;
-                            e.came_from = settled.node_id;
+                            e.came_from = idx as u16;
                             e.edge_used = nb.edge_id;
-                            if e.heap_pos == HEAP_NONE {
-                                // Re-open a closed node: `h` mixes cos_lat bands across the
-                                // route, so tiny inconsistencies are possible — correctness
-                                // over assuming perfect consistency.
-                                e.flags &= !FLAG_CLOSED;
+                            if e.heap_pos() == HEAP_NONE {
+                                // Re-open a closed node: the inflated `h` (and its cos_lat
+                                // banding) makes better-g rediscoveries routine — correctness
+                                // over assuming consistency; the ε bound still holds.
+                                e.meta &= !META_CLOSED;
                                 scratch.heap_push(j);
                             } else {
-                                let pos = scratch.entries[j].heap_pos as usize;
+                                let pos = scratch.entries[j].heap_pos() as usize;
                                 scratch.sift_up(pos);
                             }
                         }
@@ -351,8 +429,8 @@ fn settle<const N: usize>(
                         Ok(j) => {
                             let e = &mut scratch.entries[j];
                             e.g = tentative;
-                            e.h = ground_dist_m((nb.lon, nb.lat), goal_c) as u32;
-                            e.came_from = settled.node_id;
+                            e.h = sat16(ground_dist_m((nb.lon, nb.lat), goal_c) as u32);
+                            e.came_from = idx as u16;
                             e.edge_used = nb.edge_id;
                             scratch.heap_push(j);
                         }
@@ -416,12 +494,13 @@ fn snap(reader: &Reader, tiles: &mut NavTileCache, p: (i32, i32)) -> Option<(u32
 }
 
 /// Walk `came_from` goal→start, then stream the path's edge geometry start→goal into
-/// the shared OBCR emitter. The chain is staged in the (now dead) heap array — path
+/// the shared OBCR emitter. `came_from` holds **slot indices**, so the walk is direct
+/// indexing (no lookup); the chain is staged in the (now dead) heap array — path
 /// length is bounded by the tracked-node count, so it always fits; no extra buffer.
 /// Each hop's polyline is fetched oriented via [`Reader::nav_edge_oriented`] and the
 /// shared seam vertex deduped, so the OBCR carries one continuous polyline. Elevation
 /// is zero throughout (no DEM); the header total is the goal's `g` — the summed edge
-/// costs (locked on #116).
+/// costs (locked on #116), saturated at 65 535 m like every stored cost.
 fn emit_route<const N: usize>(
     reader: &Reader,
     scratch: &mut NavScratch<N>,
@@ -431,7 +510,7 @@ fn emit_route<const N: usize>(
     start_id: u32,
     sink: &mut dyn ByteSink,
 ) -> Result<RouteStats, NavError> {
-    let total_m = scratch.entries[goal_idx].g;
+    let total_m = scratch.entries[goal_idx].g as u32;
 
     // Stage the chain goal→start in the heap array (A* is done with it). Bounded by
     // `used`; a longer walk means a corrupt came_from cycle — fail, don't spin.
@@ -446,7 +525,10 @@ fn emit_route<const N: usize>(
         if scratch.entries[cur].node_id == start_id {
             break;
         }
-        cur = scratch.lookup(scratch.entries[cur].came_from).ok_or(NavError::NoPath)?;
+        cur = scratch.entries[cur].came_from as usize;
+        if cur >= N {
+            return Err(NavError::NoPath); // corrupt slot index — fail, don't index OOB
+        }
     }
 
     // Stream start→goal (the chain reversed). I/O failures degrade to the generic
