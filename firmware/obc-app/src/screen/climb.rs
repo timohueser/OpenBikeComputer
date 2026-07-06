@@ -100,12 +100,13 @@ impl ClimbScreen {
         // summit; below the base clamps to 0.0, past the summit to 1.0.
         let cursor_frac = profile.cursor_frac(rx.activity.progress_m);
 
-        // Header: "CLIMB" with the summit elevation in the right slot. The climb's 1-based index
-        // `n / N` the epic wants isn't cleanly reachable from `Render` (it carries the active
-        // `ActiveClimb`, not the `Climbs` list's length), so we show the summit height instead — a
-        // meaningful, always-available climb figure. (Revisit in C5, which already reaches the list.)
+        // Header: "CLIMB" with the summit elevation in the right slot — just the number + unit
+        // (e.g. "1762 m"). On a screen already titled CLIMB the figure reads as the summit without a
+        // "top" label. (The climb's 1-based index `n / N` isn't cleanly reachable from `Render` — it
+        // carries the active `ActiveClimb`, not the `Climbs` list length — and the summit height is a
+        // meaningful, always-available climb figure regardless.)
         let mut readout: heapless::String<16> = heapless::String::new();
-        let _ = write!(readout, "top {} {}", units.elev(seg.top_ele_m as f32) as i32, units.elev_label());
+        let _ = write!(readout, "{} {}", units.elev(seg.top_ele_m as f32) as i32, units.elev_label());
         title_frame(cv, w, h, "CLIMB", &readout);
 
         // Elevation → y over the climb's own base..summit span (not the whole route's), so a small
@@ -202,15 +203,16 @@ fn climb_tiles(climb: &ActiveClimb, progress_m: u32, units: Units) -> [ClimbCell
     [
         ClimbCell::new("TO CLIMB", fmt_int(units.elev(to_climb_m(climb, progress_m) as f32) as u32), true),
         ClimbCell::new(
-            &cap_dist(units, " TO TOP"),
+            &cap_dist(units, " TO GO"),
             crate::stat_fields::fmt_km(units.dist(to_top_m(seg, progress_m) as f32 / 1000.0)),
             false,
         ),
         ClimbCell::new("GRADE", fmt_pct(profile.grade_at(cursor)), false),
-        // The epic's "Avg → top": average grade over the climb's remainder. Captioned "AVG AHEAD"
-        // (not "AVG→TOP") because the panel font is ASCII-only — a `→` renders as `?` — and the
-        // 10-char "AVG TO TOP" clips past the half-width tile; "AVG AHEAD" fits like "KM TO TOP".
-        ClimbCell::new("AVG AHEAD", fmt_pct(avg_to_top_pct(climb, progress_m)), false),
+        // The epic's "Avg → top": average grade over the climb's remainder. Captioned "AVG GRAD"
+        // (average gradient) — a monospace 8-char caption that fits the half-width tile, where the
+        // 9-char "AVG AHEAD" (and "AVG→TOP", whose `→` renders `?` in the ASCII panel font) overshot.
+        // Reads as the average gradient still to come, paired with the instantaneous "GRADE" beside it.
+        ClimbCell::new("AVG GRAD", fmt_pct(avg_to_top_pct(climb, progress_m)), false),
     ]
 }
 
@@ -255,7 +257,7 @@ fn fmt_int(m: u32) -> heapless::String<8> {
     s
 }
 
-/// The "TO TOP" caption, unit-prefixed (`KM TO TOP` / `MI TO TOP`) so the distance unit lives in the
+/// The "TO GO" caption, unit-prefixed (`KM TO GO` / `MI TO GO`) so the distance unit lives in the
 /// caption and the big digits fit the half-width tile — the same idiom as `stat_fields`' distance
 /// tiles. (`stat_fields::cap` is private, so the glue is duplicated here rather than exported.)
 fn cap_dist(units: Units, tail: &str) -> heapless::String<12> {
@@ -368,7 +370,7 @@ mod tests {
         let cells = climb_tiles(&climb, 7_000, Units::Metric);
         assert_eq!(cells[0].caption.as_str(), "TO CLIMB");
         assert!(cells[0].arrow, "To climb is an ascent figure → up-arrow");
-        assert_eq!(cells[1].caption.as_str(), "KM TO TOP", "the distance tile prefixes the unit");
+        assert_eq!(cells[1].caption.as_str(), "KM TO GO", "the distance tile prefixes the unit");
         assert!(!cells[1].arrow);
         assert_eq!(cells[2].caption.as_str(), "GRADE");
         assert!(cells[3].caption.as_str().starts_with("AVG"));
@@ -382,7 +384,7 @@ mod tests {
         let (seg, profile) = synthetic();
         let climb = ActiveClimb { seg: &seg, profile: &profile };
         let cells = climb_tiles(&climb, 5_000, Units::Imperial);
-        assert_eq!(cells[1].caption.as_str(), "MI TO TOP");
+        assert_eq!(cells[1].caption.as_str(), "MI TO GO");
         // 4 km × 0.621371 ≈ 2.5 mi.
         assert_eq!(cells[1].value.as_str(), "2.5", "4 km reads 2.5 mi");
         // ~400 m × 3.28084 ≈ 1312 ft of remaining ascent (±ramp quantization).
