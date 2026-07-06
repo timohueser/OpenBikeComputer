@@ -6,14 +6,12 @@
 
 mod common;
 
-use std::cell::Cell;
-
 use common::{decode, VecSink};
 use obc_pack::nav::{Edge, NavGraph, Node};
 use obc_pack::{serialize_lods, LodLayer, Node as GeomNode};
 use obc_reader::{MapCache, MapTables, NavTileCache, Reader};
 use obc_route::nav::{plan_route, NavError, NavScratch};
-use obc_route::{ByteSource, Error, RouteIndex, RouteObjectInfo, RouteReader, SliceSource};
+use obc_route::{RouteIndex, RouteObjectInfo, RouteReader, SliceSource};
 
 /// Global bbox `(min_lon, min_lat, max_lon, max_lat)` µdeg — roomy so the node
 /// quadtree genuinely subdivides around the fixtures (multiple chunks ⇒ the tile
@@ -204,7 +202,7 @@ fn shortcut_wins_and_reversed_edge_geometry_is_exact() {
 fn disconnected_graph_is_no_path() {
     let a0 = (500_000, 500_000);
     let a1 = (505_000, 500_000);
-    let b0 = (550_000, 500_000); // ~5 km east of component A — inside the 10 km cap
+    let b0 = (550_000, 500_000); // ~5 km east of component A
     let b1 = (555_000, 500_000);
     let graph = NavGraph {
         nodes: vec![
@@ -255,7 +253,7 @@ fn tiny_scratch_exhausts() {
 fn unsnappable_endpoint_is_no_path() {
     let bytes = map_with(&grid3(false));
     let near0 = (BASE.0 + 100, BASE.1);
-    // ~4.4 km from the nearest node (well past 250 m) but inside the 10 km crow-flies cap.
+    // ~4.4 km from the nearest node — well past the 250 m snap radius.
     let lost = (BASE.0 + 60_000, BASE.1 + 60_000);
     let (res, _, _) = plan(&bytes, lost, near0, "x");
     assert_eq!(res, Err(NavError::NoPath), "`from` out of snap range");
@@ -271,42 +269,26 @@ fn empty_graph_is_no_path() {
     assert_eq!(res, Err(NavError::NoPath));
 }
 
-/// A [`ByteSource`] that counts `read_at` calls — proves the crow-flies pre-check
-/// rejects before ANY graph access.
-struct CountingSource<'a> {
-    inner: SliceSource<'a>,
-    reads: Cell<u32>,
-}
-
-impl ByteSource for CountingSource<'_> {
-    fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), Error> {
-        self.reads.set(self.reads.get() + 1);
-        self.inner.read_at(offset, buf)
-    }
-    fn len(&self) -> u32 {
-        self.inner.len()
-    }
-}
-
-/// `to` beyond 10 km crow-flies ⇒ `TooFar`, with zero reads and zero bytes written —
-/// the pre-check runs before snap, search, or emit touch anything.
+/// With **no distance cap** (Timo, post-#496) a far-beyond-range target is attempted
+/// and fails by **exhausting the fixed table** — the device's honest range answer,
+/// which the app maps to the "Too far to route here" tier. A ~30 km line at the
+/// capped sim table (1536 nodes): every node on the path must be tracked, so the
+/// table fills long before the goal.
 #[test]
-fn too_far_rejects_with_zero_graph_reads() {
-    let bytes = map_with(&grid3(false));
-    let src = CountingSource { inner: SliceSource(&bytes), reads: Cell::new(0) };
+fn far_beyond_range_target_exhausts_instead_of_precheck() {
+    let bytes = map_with(&line_graph(2000, 135, 15)); // ~30 km end to end
+    let src = SliceSource(&bytes);
     let tables = MapTables::parse(&src).unwrap();
     let cache = MapCache::new();
     let r = Reader::new(&src, &tables, &cache);
-    let reads_after_parse = src.reads.get();
-
-    let mut scratch = NavScratch::<{ obc_route::NAV_MAX_NODES }>::new();
+    let mut scratch = Box::new(NavScratch::<1536>::new());
     let mut tiles = NavTileCache::new();
     let mut sink = VecSink::default();
-    let to = (BASE.0, BASE.1 + 100_000); // ~11.1 km north
-    let res = plan_route(&r, BASE, to, "x", &mut scratch, &mut tiles, &mut || true, &mut sink);
-    assert_eq!(res, Err(NavError::TooFar));
-    assert_eq!(src.reads.get(), reads_after_parse, "TooFar must not read the map");
-    assert!(sink.buf.is_empty(), "TooFar must not write");
+    let from = (BASE.0 + 30, BASE.1);
+    let to = (BASE.0 + 1_999 * 135 - 30, BASE.1); // ~30 km away — pre-cap this was TooFar unseen
+    let res = plan_route(&r, from, to, "x", &mut scratch, &mut tiles, &mut || true, &mut sink);
+    assert_eq!(res, Err(NavError::Exhausted), "the burn-before-fail search ends at the table, not a pre-check");
+    assert!(sink.buf.is_empty(), "an exhausted plan writes nothing");
 }
 
 /// Both endpoints snapping to the same node degenerate to a single-point route of
