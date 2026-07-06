@@ -7,6 +7,24 @@ target = "thumbv8m.main-none-eabihf"
 # mis-parse as nested tables). `probe-rs chip list` names this die `nRF54L15` — that is the
 # M33 application core; the FLPR coprocessor is a separate probe-rs target we don't use yet.
 [target.'cfg(all(target_arch = "arm", target_os = "none"))']
+# `+strict-align` — forbid the backend from emitting ANY alignment-assuming memory access for
+# under-aligned data. Root cause (on-glass HardFault, PR #501 verify): the OBCM §8 nav records are
+# variable-length (13 + 20·degree bytes), so their multi-byte fields sit at odd offsets inside a
+# chunk *by design*; the reader decodes them with portable byte-wise `from_le_bytes` on `&[u8]`
+# (UB-free, `load i32, align 1` in IR — no typed casts anywhere, audited). But with unaligned
+# loads allowed (the thumbv8m default), LLVM's load-combining fused those byte-wise decodes into
+# word `ldr`s — legal, the M33 tolerates unaligned `ldr` — and then, under fat-LTO inlining
+# pressure, paired adjacent ones into **`ldrd`** (observed at the fault site: `ldrd r0, r1, [r0]`
+# against `chunk + off` with `off` odd). LDRD/LDM/VLDR always require word alignment regardless
+# of CCR.UNALIGN_TRP ⇒ UsageFault(UNALIGNED) ⇒ escalated HardFault, mid-plan. `+strict-align`
+# removes the whole class at the ISA level: align-1 IR loads lower to byte loads, and no
+# alignment-trapping form can ever be emitted for them. Cost: parsing paths (SD-bound anyway)
+# assemble multi-byte fields from byte loads — measured noise next to ~100 ms SD ops; aligned
+# struct/framebuffer access is unaffected (its IR alignment is ≥4 and still lowers to word ops).
+# rustc prints "unknown and unstable feature … still passed through" for this spelling on
+# thumbv8m — expected; the flag reaches LLVM and the record decode verifiably lowers to
+# `ldrb`+`orr` chains (disassembly-checked on both nav-closure monomorphizations).
+rustflags = ["-C", "target-feature=+strict-align"]
 # `--verify`: read the RRAM back after programming and confirm it matches the ELF. The nRF54L15 is
 # an RRAM part and probe-rs 0.31's program path corrupts the *first* write after a code change often
 # enough to matter — a mangled byte → a deterministic boot HardFault at a random PC (re-flashing the

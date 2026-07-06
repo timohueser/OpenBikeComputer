@@ -28,7 +28,7 @@ embedded-graphics = "0.8"
 heapless = "0.8"
 # sin/cos for the Menu compass needle at arbitrary sweep angles — the same no_std math
 # shim the renderer and route crates use.
-libm = "0.2"
+libm = { version = "0.2", default-features = false } # no arch asm: identical correctly-rounded results, keeps the suite Miri-runnable (the #501 alignment-UB tripwire)
 
 [dev-dependencies]
 # The hand-written OBCM v6 byte builder shared by the reader/renderer tests — the POIs-browser

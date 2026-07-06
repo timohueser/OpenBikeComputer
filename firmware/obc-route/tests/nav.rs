@@ -296,6 +296,21 @@ fn same_snap_node_emits_single_point_route() {
     assert_eq!((pts[0].lon, pts[0].lat), at(0, 0));
 }
 
+/// The §8.3 record stride is 13 + 20·degree bytes — **odd + even** — so in any multi-record
+/// chunk, consecutive records alternate start-offset parity and the suite provably decodes
+/// records (and their multi-byte fields) at **odd, unaligned offsets**. That is the invariant
+/// behind the byte-wise-decode contract (PR #501's on-glass HardFault: an ARM backend
+/// `ldrd`-fusion over these bytes; fixed with `+strict-align` on the board build) — pinned here
+/// so a format change that accidentally aligns every record doesn't silently stop exercising
+/// the unaligned path. The full UB tripwire is Miri over this suite (see the module doc).
+#[test]
+fn record_stride_keeps_odd_offsets_exercised() {
+    assert_eq!(obc_reader::NAV_NODE_FIXED_LEN % 2, 1, "the fixed record head is odd-length");
+    assert_eq!(obc_reader::NAV_NEIGHBOR_LEN % 2, 0, "neighbor entries are even-length");
+    // ⇒ record k+1 starts at (record k start) + odd ⇒ parity alternates ⇒ every ≥2-record
+    // chunk (all the grid/line fixtures here) decodes at least one odd-offset record.
+}
+
 /// The slimmed entry layout holds: 26 B/node (24 B entry + 2 B heap slot) plus the two
 /// length fields — per-target `NAV_MAX_NODES` sized (also compile-time asserted in the
 /// module for the device profile; this keeps the numbers visible in the test log).
