@@ -505,6 +505,25 @@ pub(crate) async fn run_app(
         }
         app.advance_animations(InputClock(now));
 
+        // ── Sensor presence → warning (issue #504), real-sensor build, once ──
+        // The sensor task publishes its boot I²C probe result a moment after boot; map any chip that
+        // didn't answer to a dismissable warning card. `try_take` yields once, so this fires a single
+        // pass; `notify_warning(NONE)` (all present) is a no-op.
+        #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+        if let Some(p) = sensor_link::take_presence() {
+            let mut w = obc_app::WarningFlags::NONE;
+            if !p.gps {
+                w |= obc_app::WarningFlags::NO_GPS;
+            }
+            if !p.altimeter {
+                w |= obc_app::WarningFlags::NO_ALTIMETER;
+            }
+            if !p.compass {
+                w |= obc_app::WarningFlags::NO_COMPASS;
+            }
+            app.notify_warning(w);
+        }
+
         // ── BLE → app seam (epic #447), once per pass, cheap ──
         // Feed the link snapshot (connected + passkey) — a couple of atomic reads distilled to the
         // app's own `BleStatus`; `set_ble_status` compares against the last and dirties nothing on the

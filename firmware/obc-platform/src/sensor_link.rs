@@ -44,6 +44,23 @@ static POWER: Signal<CriticalSectionRawMutex, GpsPower> = Signal::new();
 /// the independently-published heading and GPS time — then drains whichever per-source mailboxes
 /// have data via the normal `poll` path. Payload-less: purely the "wake the render" edge.
 static EVENT: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+/// Which sensors answered the boot I²C probe, published **once** by the sensor task after it probes
+/// all three chips, drained once by the ride loop ([`take_presence`]) → an on-glass warning for any
+/// that are absent (issue #504). Fresh-mailbox like the sample signals: `try_take` yields it once.
+static PRESENCE: Signal<CriticalSectionRawMutex, SensorPresence> = Signal::new();
+
+/// Which sensors answered the boot I²C probe — the sensor task's probe results, carried to the app
+/// so a missing module surfaces as a dismissable warning rather than only an RTT line. A missing
+/// GPS is distinct from "no fix yet" (the receiver is there, just no sky): this is the *module*.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SensorPresence {
+    /// The SAM-M10Q GPS answered its probe.
+    pub gps: bool,
+    /// The BMP581 barometric altimeter answered its probe.
+    pub altimeter: bool,
+    /// The ICM-20948 (compass / IMU) answered its probe.
+    pub compass: bool,
+}
 
 /// The GPS receiver's requested power state. The ride loop derives one from whether a ride is active
 /// and the `power_saver` toggle, and the sensor task drives the M10 to match: deep sleep when idle
@@ -91,6 +108,19 @@ pub fn dispatch_time(t: GpsTime) {
 pub fn dispatch_heading(deg: f32) {
     HEADING.signal(deg);
     EVENT.signal(());
+}
+
+/// Publish the boot probe result (once, after the sensor task probes all three chips). Pulses
+/// [`EVENT`] so the event-driven ride loop wakes and drains it via [`take_presence`].
+pub fn dispatch_presence(p: SensorPresence) {
+    PRESENCE.signal(p);
+    EVENT.signal(());
+}
+
+/// Drain the boot probe result — `Some` exactly once, on the pass after [`dispatch_presence`], then
+/// `None`. The ride loop maps any absent sensor to a warning flag.
+pub fn take_presence() -> Option<SensorPresence> {
+    PRESENCE.try_take()
 }
 
 /// Request a new GPS fix interval (seconds); the sensor task reconfigures the M10 on the next

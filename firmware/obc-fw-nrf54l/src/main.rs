@@ -496,9 +496,11 @@ async fn spawn_ble_stack(
 #[cfg(has_map)]
 const INIT_MPP: f32 = 2.0;
 
-/// Heartbeat-only idle for an unrecoverable bring-up failure (no card, no `.obcm`, or a map that isn't
-/// valid OBCM): blink LED0 forever rather than panic — a missing/bad card must **never** fault
-/// (acceptance criterion). Diverges.
+/// Heartbeat-only idle for an unrecoverable bring-up failure: blink LED0 forever rather than panic —
+/// a missing/bad card must **never** fault (acceptance criterion). The storage faults (no card, no
+/// `.obcm`, unreadable map) first paint an undismissable [`planes::show_boot_fault`] screen so the
+/// rider sees *why*, then land here; a bare heartbeat (no glass) remains only for a failure with no
+/// panel to draw on — an FLPR launch that never came alive. Diverges.
 async fn idle_blink(led: &mut Output<'static>) -> ! {
     loop {
         led.toggle();
@@ -725,102 +727,6 @@ async fn main(_spawner: Spawner) {
             info!("VCOM debug sensors up on UARTE20 (J-Link VCOM, TX P1_04 / RX P1_05) @ 115200");
         }
 
-        // microSD on its own SPIM (SERIAL22, P1 header — separate from the display bus on SERIAL00/P2).
-        // Init ≤400 kHz (SD spec); `sd::init` re-clocks to 8 MHz once the card answers. CS idles HIGH,
-        // then `init` holds it LOW for the session (the per-byte-CS workaround — see `sd::NoCs`).
-        // `orc = 0xFF` so any over-read clocks the SD idle byte.
-        let mut sd_cfg = spim::Config::default();
-        sd_cfg.frequency = sd::SD_INIT_HZ;
-        sd_cfg.orc = 0xFF;
-        let sd_spi = spim::Spim::new(p.SERIAL22, Irqs, p.P1_11, p.P1_07, p.P1_06, sd_cfg);
-        // CS is a plain GPIO held LOW for the session (the `sd::NoCs` workaround), not a SPIM-bus
-        // pin — so it can sit on any free GPIO. ST7789 build (`--features tft`): P1.12. Default FLPR:
-        // P1.12 carries GEN, and the DK's P1.00–14 are one pin short, so CS moves to **P0.00** (M33
-        // GPIO, the same port + drive as BTN3) — one jumper on the SD breakout. The SPIM bus pins
-        // (SCK/MISO/MOSI on P1.11/07/06) are unchanged in both builds.
-        #[cfg(feature = "tft")]
-        let sd_cs = Output::new(p.P1_12, Level::High, OutputDrive::Standard);
-        #[cfg(not(feature = "tft"))]
-        let sd_cs = Output::new(p.P0_00, Level::High, OutputDrive::Standard);
-        let storage = sd::init(sd_spi, sd_cs);
-        // A missing/bad card is fatal — the map streams from it. (SharedStore keeps an Option seam
-        // for a future card-less variant where BLE config/bond/diagnostics still serve.)
-        #[cfg(has_map)]
-        let Some(mut storage) = storage
-        else {
-            defmt::error!("SD: no card / mount failed — cannot load a map; idling with a heartbeat");
-            idle_blink(&mut led).await
-        };
-
-        // Open the `.obcm` and hold it open for the session — the map **streams** from it, never read
-        // resident into the 256 KB part. (The `/routes/*.obcr` catalog is scanned into the app's Route
-        // menu by `load_routes` *after* the app is built — in its own frame, so the ~5 KB `Catalog`
-        // never sits on `main`'s stack beneath the long-lived ride loop.)
-        #[cfg(has_map)]
-        storage.open_map();
-
-        // Place the streamed-map geometry cache in `.bss`, built in place (an all-zero
-        // `MaybeUninit::zeroed` → a `.bss` memset, never a stack temporary).
-        // SAFETY: sole owner of MAP_CACHE; single executor → no aliasing.
-        #[cfg(has_map)]
-        let map_cache: &MapCache = unsafe { init_static(core::ptr::addr_of_mut!(MAP_CACHE), MapCache::new()) };
-
-        // Parse the OBCM **header + style table + LOD pyramid once at boot** into the resident
-        // [`MAP_TABLES`]. These tables are immutable for the session, so the loop's per-frame readers
-        // *borrow* them instead of re-parsing — no per-frame style-table SD read and no ~4 KB parse stack
-        // spike (a 1536-byte style scratch + the ~2.3 KB style array) on the deep render path, which is
-        // what kept that path overrunning the 256 KB part's stack. The transient parse cost is paid
-        // **here**, at boot, where the call stack is shallow; a missing or structurally-bad map idles
-        // with a heartbeat. The idle camera centre is the parsed bbox. `init_src`'s `storage` borrow
-        // ends with this block, so the loop can rebuild a fresh source each redraw AND reconcile the card
-        // (`&mut storage`) between frames.
-        // SAFETY: sole owner of MAP_TABLES; single executor → no aliasing; written exactly once here.
-        #[cfg(has_map)]
-        let map_tables: &MapTables = unsafe {
-            let Some(init_src) = storage.map_source() else {
-                defmt::error!("SD: no .obcm map in card root — idling with a heartbeat");
-                idle_blink(&mut led).await
-            };
-            let slot = core::ptr::addr_of_mut!(MAP_TABLES) as *mut MapTables;
-            match MapTables::parse(&init_src) {
-                Ok(t) => {
-                    slot.write(t);
-                    &*slot
-                }
-                Err(e) => {
-                    defmt::error!("map: not valid OBCM: {} — idling with a heartbeat", defmt::Debug2Format(&e));
-                    idle_blink(&mut led).await
-                }
-            }
-        };
-        #[cfg(has_map)]
-        let (cam_lon, cam_lat) = {
-            let b = map_tables.bbox;
-            info!(
-                "map: streaming from SD; bbox lon[{=i32}..{=i32}] lat[{=i32}..{=i32}]",
-                b.min_lon, b.max_lon, b.min_lat, b.max_lat
-            );
-            (((b.min_lon as i64 + b.max_lon as i64) / 2) as i32, ((b.min_lat as i64 + b.max_lat as i64) / 2) as i32)
-        };
-
-        // Boot to **Home**: the user drives Home → Route menu → Map with the buttons. Built **in place**
-        // in `.bss` (`init_idle` writes each field where it sits; the ~30 KB renderer scratch is zeroed
-        // in place), never on the stack. The Route menu is filled from the card's catalog scanned above;
-        // selecting an entry opens the Map at that route's start and streams its geometry into the render
-        // + the map-matcher.
-        // SAFETY: sole owner of APP; `init_idle` fully initialises it before the `&mut` below reads it.
-        #[cfg(has_map)]
-        let app: &mut App = unsafe {
-            let slot = core::ptr::addr_of_mut!(APP) as *mut App;
-            App::init_idle(slot, AppState::new(cam_lon, cam_lat, zoom_for_mpp(INIT_MPP)));
-            &mut *slot
-        };
-        #[cfg(has_map)]
-        {
-            ride::load_routes(&mut storage, app);
-            ride::load_rides(&mut storage, app);
-        }
-
         // The four DK push-buttons (active-low, internal pull-up; polled by `ButtonInput`). User
         // mapping: BTN0 PREV, BTN1 NEXT, BTN3 SELECT, BTN2 BACK — `new(prev, next, select, back)`.
         // Shared by both backends — their pins (P1.13/09/08, P0.04) clash with neither panel's bus.
@@ -872,7 +778,7 @@ async fn main(_spawner: Spawner) {
         // sparkles. The shared state is parked in `.bss` + written **in place** rather than via
         // `StaticCell`, whose one-shot flag can panic "already full" on a warm reset.
         #[cfg(feature = "tft")]
-        let display = {
+        let mut display = {
             let cs = Output::new(p.P2_05, Level::High, OutputDrive::Standard);
             let dc = Output::new(p.P2_03, Level::Low, OutputDrive::Standard);
             let rst = Output::new(p.P2_00, Level::High, OutputDrive::Standard);
@@ -923,7 +829,7 @@ async fn main(_spawner: Spawner) {
         // each is broken out on your DK and remap all three together if not (the source bus, BCK, and
         // COM stay on P2).
         #[cfg(not(feature = "tft"))]
-        let display = {
+        let mut display = {
             // Gate + frame lines (P1) — GSP P1.00, GCK P1.01, GEN P1.12, INTB P1.10; held configured.
             // The DK breaks out only P1.00–14 (P1.02/03 are NFC, off-limits), which is one pin short
             // for everything on P1 — so SD `CS` moved to P0.00 (below), freeing P1.12 for GEN, and
@@ -973,7 +879,8 @@ async fn main(_spawner: Spawner) {
             // Launch the FLPR (copy the blob, arm the control block, wait ALIVE), with **one full
             // relaunch retry** on failure (#349) — a one-off cold-boot race deserves a second
             // attempt before the device gives up on the panel. A launch failure must never fault —
-            // degrade to a heartbeat idle, exactly like a missing/bad map card.
+            // degrade to a bare heartbeat idle. (Unlike the storage faults below, there's no live
+            // panel here to paint a fault screen on, so this one stays LED-only.)
             let launched = match launch_flpr().await {
                 Ok(()) => Ok(()),
                 Err(e) => {
@@ -1045,6 +952,117 @@ async fn main(_spawner: Spawner) {
                 _com_hw: com_hw,
             }
         };
+
+        // microSD on its own SPIM (SERIAL22, P1 header — separate from the display bus on SERIAL00/P2).
+        // Init ≤400 kHz (SD spec); `sd::init` re-clocks to 8 MHz once the card answers. CS idles HIGH,
+        // then `init` holds it LOW for the session (the per-byte-CS workaround — see `sd::NoCs`).
+        // `orc = 0xFF` so any over-read clocks the SD idle byte.
+        let mut sd_cfg = spim::Config::default();
+        sd_cfg.frequency = sd::SD_INIT_HZ;
+        sd_cfg.orc = 0xFF;
+        let sd_spi = spim::Spim::new(p.SERIAL22, Irqs, p.P1_11, p.P1_07, p.P1_06, sd_cfg);
+        // CS is a plain GPIO held LOW for the session (the `sd::NoCs` workaround), not a SPIM-bus
+        // pin — so it can sit on any free GPIO. ST7789 build (`--features tft`): P1.12. Default FLPR:
+        // P1.12 carries GEN, and the DK's P1.00–14 are one pin short, so CS moves to **P0.00** (M33
+        // GPIO, the same port + drive as BTN3) — one jumper on the SD breakout. The SPIM bus pins
+        // (SCK/MISO/MOSI on P1.11/07/06) are unchanged in both builds.
+        #[cfg(feature = "tft")]
+        let sd_cs = Output::new(p.P1_12, Level::High, OutputDrive::Standard);
+        #[cfg(not(feature = "tft"))]
+        let sd_cs = Output::new(p.P0_00, Level::High, OutputDrive::Standard);
+        let storage = sd::init(sd_spi, sd_cs);
+        // A missing/bad card is fatal — the map streams from it. The display is already up (brought
+        // up above, before the card), so instead of failing silently we put an **undismissable**
+        // fault screen on glass, then heartbeat-idle. (SharedStore keeps an Option seam for a future
+        // card-less variant where BLE config/bond/diagnostics still serve.)
+        #[cfg(has_map)]
+        let Some(mut storage) = storage
+        else {
+            defmt::error!("SD: no card / mount failed — showing the NO SD CARD fault screen, then heartbeat idle");
+            planes::show_boot_fault(&mut display, obc_app::BootFault::NoCard).await;
+            idle_blink(&mut led).await
+        };
+
+        // Open the `.obcm` and hold it open for the session — the map **streams** from it, never read
+        // resident into the 256 KB part. (The `/routes/*.obcr` catalog is scanned into the app's Route
+        // menu by `load_routes` *after* the app is built — in its own frame, so the ~5 KB `Catalog`
+        // never sits on `main`'s stack beneath the long-lived ride loop.)
+        #[cfg(has_map)]
+        storage.open_map();
+
+        // Place the streamed-map geometry cache in `.bss`, built in place (an all-zero
+        // `MaybeUninit::zeroed` → a `.bss` memset, never a stack temporary).
+        // SAFETY: sole owner of MAP_CACHE; single executor → no aliasing.
+        #[cfg(has_map)]
+        let map_cache: &MapCache = unsafe { init_static(core::ptr::addr_of_mut!(MAP_CACHE), MapCache::new()) };
+
+        // Parse the OBCM **header + style table + LOD pyramid once at boot** into the resident
+        // [`MAP_TABLES`]. These tables are immutable for the session, so the loop's per-frame readers
+        // *borrow* them instead of re-parsing — no per-frame style-table SD read and no ~4 KB parse stack
+        // spike (a 1536-byte style scratch + the ~2.3 KB style array) on the deep render path, which is
+        // what kept that path overrunning the 256 KB part's stack. The transient parse cost is paid
+        // **here**, at boot, where the call stack is shallow; a missing or structurally-bad map shows a
+        // fault screen, then idles. The idle camera centre is the parsed bbox. `init_src`'s `storage` borrow
+        // ends with this block, so the loop can rebuild a fresh source each redraw AND reconcile the card
+        // (`&mut storage`) between frames.
+        // SAFETY: sole owner of MAP_TABLES; single executor → no aliasing; written exactly once here.
+        #[cfg(has_map)]
+        let map_tables: &MapTables = unsafe {
+            let Some(init_src) = storage.map_source() else {
+                defmt::error!("SD: no .obcm map in card root — showing the NO MAP fault screen, then heartbeat idle");
+                planes::show_boot_fault(&mut display, obc_app::BootFault::NoMap).await;
+                idle_blink(&mut led).await
+            };
+            let slot = core::ptr::addr_of_mut!(MAP_TABLES) as *mut MapTables;
+            match MapTables::parse(&init_src) {
+                Ok(t) => {
+                    slot.write(t);
+                    &*slot
+                }
+                Err(e) => {
+                    defmt::error!(
+                        "map: not valid OBCM: {} — showing the MAP UNREADABLE fault screen, then idle",
+                        defmt::Debug2Format(&e)
+                    );
+                    planes::show_boot_fault(&mut display, obc_app::BootFault::BadMap).await;
+                    idle_blink(&mut led).await
+                }
+            }
+        };
+        #[cfg(has_map)]
+        let (cam_lon, cam_lat) = {
+            let b = map_tables.bbox;
+            info!(
+                "map: streaming from SD; bbox lon[{=i32}..{=i32}] lat[{=i32}..{=i32}]",
+                b.min_lon, b.max_lon, b.min_lat, b.max_lat
+            );
+            (((b.min_lon as i64 + b.max_lon as i64) / 2) as i32, ((b.min_lat as i64 + b.max_lat as i64) / 2) as i32)
+        };
+
+        // Boot to **Home**: the user drives Home → Route menu → Map with the buttons. Built **in place**
+        // in `.bss` (`init_idle` writes each field where it sits; the ~30 KB renderer scratch is zeroed
+        // in place), never on the stack. The Route menu is filled from the card's catalog scanned above;
+        // selecting an entry opens the Map at that route's start and streams its geometry into the render
+        // + the map-matcher.
+        // SAFETY: sole owner of APP; `init_idle` fully initialises it before the `&mut` below reads it.
+        #[cfg(has_map)]
+        let app: &mut App = unsafe {
+            let slot = core::ptr::addr_of_mut!(APP) as *mut App;
+            App::init_idle(slot, AppState::new(cam_lon, cam_lat, zoom_for_mpp(INIT_MPP)));
+            &mut *slot
+        };
+        #[cfg(has_map)]
+        {
+            ride::load_routes(&mut storage, app);
+            ride::load_rides(&mut storage, app);
+            // Issue #504: the map loaded but its extent table was refused (fragmented past the cap /
+            // failed verification), so reads fall back to the slow FAT-seek path. Surface it once as a
+            // dismissable notice — `notify_warning` pushes the card over Home; the ride loop shows it on
+            // the first frame. A contiguous map (the common case) sets nothing.
+            if storage.map_degraded() {
+                app.notify_warning(obc_app::WarningFlags::MAP_SLOW);
+            }
+        }
 
         // Place the decoded-route-geometry cache in `.bss`, built in place (a zeroed
         // `MaybeUninit::zeroed` → a `.bss` memset, never a stack temporary — like `MAP_CACHE`).

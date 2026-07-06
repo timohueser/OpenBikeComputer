@@ -74,10 +74,12 @@ screens! {
     Rides(RidesScreen) => Nav,             // see + delete stored rides (hold-to-delete, unsynced guard)
     RouteOverview(RouteOverviewScreen) => Nav, // look-before-you-ride: profile + stats + START
     RouteSwap(RouteSwapScreen) => Nav,
-    // Host-pushed cards — opened by the BLE seam, not a gesture (see "Screens the companion link pushes")
+    // Host-pushed cards — opened by an event, not a gesture: the BLE seam (route uploads + pairing,
+    // see "Screens the companion link pushes") or the boot/sensor path (the storage/sensor warning).
     RouteReceived(RouteReceivedScreen) => Nav, // idle "ROUTE RECEIVED" — Start navigation / Dismiss
     RouteUpdated(RouteUpdatedScreen) => Nav,   // info-only: the actively-navigated route was replaced
     Passkey(PasskeyScreen) => Nav,             // the 6-digit pairing code, modal + non-dismissible
+    Warning(WarningScreen) => Nav,             // advisory: missing sensor / slow (fragmented) map — dismissable
     // The Settings tree — a list plus one screen each for Date & Time, Units, Power, Bluetooth,
     // Reset, and Stats (which opens onto Fields → AddField, the stat-grid panel manager). The
     // `Settings` kind is what holds the debounced settings save while one of these is on top.
