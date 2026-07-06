@@ -211,6 +211,9 @@ fn a_link_change_does_not_repaint_the_map_or_statistics() {
     // The Map / Statistics views deliberately omit the glyph, so a link change must not force their
     // expensive redraw. `App::new` boots straight onto [Home, Map].
     let mut app = App::new(AppState::new(0, 0, 0.05)); // base = Map
+                                                       // Start a tracking session so the Map↔Statistics sibling ring exists (the Map's `back` swaps to
+                                                       // Statistics only while tracking; without a ride it pops back to the Menu).
+    app.activity.start_session();
     let _ = app.take_dirty();
     app.set_ble_status(connected());
     assert_eq!(app.take_dirty(), Dirty::CLEAN, "a link change never redraws the Map");
