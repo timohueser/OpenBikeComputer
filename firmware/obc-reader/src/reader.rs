@@ -133,6 +133,13 @@ const NAV_EDGE_WINDOW: usize = 128;
 /// the 256 KB DK): a map packed with `chunk_size` past 8192 loads on the host/sim but is
 /// rejected on the device. The packer default (4096) clears it with room; the 512 KB LM20
 /// re-decides the cap.
+///
+/// **Do not trim this below 8192 under `nrf-mem`** (tried in #116 R4, reverted): `nrf-mem` is an
+/// *additive* feature the all-features host CI enables, so this constant is an **acceptance**
+/// bound, not just a buffer size — shrinking it makes the host reader reject the deliberately
+/// large chunks the round-trip suite packs (obc-pack's `max_feat_pts_boundary_survives` puts two
+/// features, one at `MAX_FEAT_PTS`, into one 8192-byte chunk). Reclaiming the scratch's headroom
+/// would first need acceptance decoupled from the `nrf-mem` scratch size.
 #[cfg(not(feature = "nrf-mem"))]
 pub const MAX_CHUNK_BYTES: usize = 16384;
 #[cfg(feature = "nrf-mem")]
@@ -163,9 +170,15 @@ const MAP_CHUNK_SLOTS: usize = 1;
 
 /// Block size + count of the quadtree-index cache. The leaf walk reads 4-byte nodes (siblings
 /// adjacent in the file); caching a few aligned blocks coalesces those into a handful of SD
-/// reads per walk rather than one read per node. ≈4 KB total.
+/// reads per walk rather than one read per node. ≈4 KB total on the host; `nrf-mem` halves the
+/// block count (epic #116 R4's squeeze — the nav statics needed the room back): the walks stay
+/// block-coalesced, a wide index just re-reads a couple more 512 B blocks per walk on the
+/// already-SD-bound device.
 const INDEX_BLOCK: usize = 512;
+#[cfg(not(feature = "nrf-mem"))]
 const INDEX_BLOCKS: usize = 8;
+#[cfg(feature = "nrf-mem")]
+const INDEX_BLOCKS: usize = 4;
 
 // A slot must fit any chunk it caches, and the scratch any chunk the reader accepts; `chunk_size`
 // is a `u16`, so the accepted cap stays within range.

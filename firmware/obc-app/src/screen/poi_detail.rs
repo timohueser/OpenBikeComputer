@@ -36,7 +36,7 @@ use obc_render::{
 use crate::input::Gesture;
 
 use super::poi_list::{draw_bearing_arrow, ARROW_R};
-use super::{palette, title_frame, Ctx, Render, Transition, LIST_TOP};
+use super::{palette, title_frame, Ctx, Render, Screen, Transition, LIST_TOP};
 
 /// The POI detail. Carries the selected [`Poi`] (name / coords / subtype / `hours_ref`) plus a
 /// lazily-resolved schedule cache. The `Poi` widens the [`Screen`](super::Screen) enum by its size;
@@ -68,6 +68,17 @@ impl PoiDetailScreen {
 
     pub fn handle(&mut self, g: Gesture, _cx: &mut Ctx) -> Transition {
         match g {
+            // Create a route to this POI (epic #116, R4): press opens the "Create a route?"
+            // confirm. The route's name is the POI's stored name, or its subtype fallback label —
+            // the same fallback the list row shows, so the catalog entry reads like the row did.
+            Gesture::Press => {
+                let name = if self.poi.name.is_empty() {
+                    label_of(self.poi.subtype).unwrap_or("POI")
+                } else {
+                    self.poi.name.as_str()
+                };
+                Transition::Push(Screen::NavConfirm(super::NavConfirmScreen::new((self.poi.lon, self.poi.lat), name)))
+            }
             Gesture::Back => Transition::Pop, // return to the POI list
             _ => Transition::None,
         }

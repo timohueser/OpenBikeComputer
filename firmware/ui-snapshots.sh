@@ -32,7 +32,10 @@ mkdir -p "$OUT"
 # copy it under two ids. No `SYNCED.SET` → both read as unsynced, which is what the warning-red delete
 # footer snapshot needs. Staged in a temp dir cleaned on exit.
 TRACKS="$(mktemp -d)"
-trap 'rm -rf "$TRACKS"' EXIT
+# A scratch routes dir for the create-route sweep below — the router writes its reserved
+# `_nav.obcr` there instead of littering a `routes/` in the working directory.
+NAVDIR="$(mktemp -d)"
+trap 'rm -rf "$TRACKS" "$NAVDIR"' EXIT
 cp "$ROUTES/ride-v1.bin" "$TRACKS/RD0.ORD"
 cp "$ROUTES/ride-v1.bin" "$TRACKS/RD1.ORD"
 
@@ -73,6 +76,22 @@ cp "$ROUTES/ride-v1.bin" "$TRACKS/RD1.ORD"
 MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 "$SIM" "$MONACO" --boot --center 7416969,43730798 --heading 0 --clock "2025-01-06T12:00" \
     --script "B r r w p r r r p d p" --png "$OUT/poi-detail.png"
+# POI create-route flow (epic #116, R4). The `d` token also drains a pending create-route request
+# (running the real A* router over the map's v8 nav graph), so one script walks the whole flow.
+# The confirm: detail of a resupply POI ~600 m away → press.
+"$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
+    --script "B r r w p r r r p d p p" --png "$OUT/nav-confirm.png"
+# The computed-route overview (length only — no elevation band, no climb/descent rows): confirm →
+# Create route → `d` runs the router; the answer swaps in the overview.
+"$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
+    --script "B r r w p r r r p d p p p d" --png "$OUT/nav-overview.png"
+# The two locked failure tiers, on grimsel: a far-corner fix whose nearest Water POI is >10 km
+# crow-flies ("Too far to route here"), and a mountain fix with no routable node within the 250 m
+# snap radius ("Couldn't find a route.").
+"$SIM" "$MAP" --boot --routes-dir "$NAVDIR" --center 8480000,46750000 --heading 0 \
+    --script "B r r w p p d p p p d" --png "$OUT/nav-toofar.png"
+"$SIM" "$MAP" --boot --routes-dir "$NAVDIR" --center 8140000,46480000 --heading 0 \
+    --script "B r r w p p d p p p d" --png "$OUT/nav-nopath.png"
 "$SIM" "$MAP" --boot --script "B l p"        --png "$OUT/settings.png"
 "$SIM" "$MAP" --boot --script "B l p p"      --png "$OUT/datetime.png"
 "$SIM" "$MAP" --boot --script "B l p r p"    --png "$OUT/units.png"
@@ -108,4 +127,4 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 # Active route replaced (riding id 0, id 0 re-uploaded): the info-only "ROUTE UPDATED" card.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p" --inject-upload-replace 0 --png "$OUT/route-updated.png"
 
-echo "ui-snapshots: 33 screens rendered into $OUT/"
+echo "ui-snapshots: 37 screens rendered into $OUT/"

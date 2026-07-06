@@ -78,6 +78,13 @@ const SYNCED_SET: &str = "SYNCED.SET";
 /// promotes it. Truncated-and-reused per upload.
 const UPLOAD_TMP: &str = "UPLOAD.TMP";
 
+/// The reserved **computed-route** file (epic #116, R4): the on-device router's OBCR output,
+/// overwritten on every plan. The 8.3 face of the spec'd `/routes/_nav.obcr` — embedded-sdmmc
+/// creates short names only, and the 4-char `.obcr` extension needs an LFN it can't write, so the
+/// device uses the `.OBR` twin the catalog scan already lists. No `RT` prefix ⇒ no durable
+/// upload id; the scan hands it a session-scoped side-load id, exactly like a side-loaded `.obcr`.
+const NAV_ROUTE_FILE: &str = "_NAV.OBR";
+
 /// First id of the reserved **session-scoped** band handed to side-loaded `.obcr` files (their
 /// names carry no durable id — see [`Storage::sideload_id`]). Uploaded ids grow monotonically from
 /// 0 and reject at this floor — 65,024 lifetime uploads before a card must be cleared, i.e. never.
@@ -105,6 +112,8 @@ const SD_MAX_VOLUMES: usize = 1;
 type Vmgr = VolumeManager<Sd, NullTime, SD_MAX_DIRS, SD_MAX_FILES, SD_MAX_VOLUMES>;
 /// [`SdByteSource`] over this board's manager (the wrappers are generic over the handle budget).
 type Source<'a> = SdByteSource<'a, Sd, NullTime, SD_MAX_DIRS, SD_MAX_FILES, SD_MAX_VOLUMES>;
+/// [`SdByteSink`] over this board's manager — the router's OBCR emit writes through it.
+type Sink<'a> = SdByteSink<'a, Sd, NullTime, SD_MAX_DIRS, SD_MAX_FILES, SD_MAX_VOLUMES>;
 /// [`SdTrackSink`] over this board's manager.
 type TrackSinkT<'a> = SdTrackSink<'a, Sd, NullTime, SD_MAX_DIRS, SD_MAX_FILES, SD_MAX_VOLUMES>;
 
@@ -680,6 +689,54 @@ impl Storage {
     pub fn build_route_index(&self) -> Option<RouteIndex> {
         let src = self.route_source()?;
         RouteIndex::read(&src).ok()
+    }
+
+    /// Open (truncating) the reserved computed-route file `/routes/_NAV.OBR` for the router's
+    /// OBCR emit (epic #116, R4). Releases every handle this `Storage` may hold **on that file**
+    /// first — the reserved route can be the actively-previewed/ridden route (its geometry open)
+    /// or mid-detail-download — because embedded-sdmmc refuses a truncate-open of an open file
+    /// (`FileAlreadyOpen`). The ride loop re-derives + reopens geometry after the plan (it forces
+    /// its reconcile), so dropping the handles here is always safe. `None` = no card / no dir /
+    /// open failure — the caller degrades to the generic routing-failure tier.
+    pub fn nav_route_begin(&mut self) -> Option<RawFile> {
+        // Close the active geometry unconditionally (cheap; the loop reopens off the fresh scan) —
+        // and a detail download parked on the nav file, if any.
+        self.reconcile_route(None);
+        if let Ok(nav) = ShortFileName::create_from_str(NAV_ROUTE_FILE) {
+            if matches!(&self.open_object, Some((on, ..)) if *on == nav) {
+                self.close_object();
+            }
+        }
+        let dir = self.routes_dir_or_create()?;
+        self.vmgr.open_file_in_dir(dir, NAV_ROUTE_FILE, Mode::ReadWriteCreateOrTruncate).ok()
+    }
+
+    /// A [`ByteSink`](obc_route::ByteSink) over the open nav-route file — what
+    /// [`plan_route`](obc_route::plan_route) streams the emitted OBCR through.
+    pub fn nav_sink(&self, file: RawFile) -> Sink<'_> {
+        SdByteSink::new(&self.vmgr, file)
+    }
+
+    /// Flush + close the nav-route file after the plan. On failure (`ok == false`) the partial
+    /// file is deleted — a torn emit must not linger where the catalog scan would list it as an
+    /// unreadable route (the reserved name is rewritten on every plan anyway).
+    pub fn nav_route_finish(&mut self, file: RawFile, ok: bool) {
+        let _ = self.vmgr.flush_file(file);
+        let _ = self.vmgr.close_file(file);
+        if !ok {
+            if let Some(dir) = self.routes_dir {
+                let _ = self.vmgr.delete_file_in_dir(dir, NAV_ROUTE_FILE);
+            }
+        }
+    }
+
+    /// The committed nav route's object id, resolved against the tables the **last catalog scan**
+    /// filled — call after the post-plan [`scan_routes`](Storage::scan_routes). `None` when the
+    /// reserved file isn't in the catalog (the emit failed, or the scan couldn't read it).
+    pub fn nav_route_id(&self) -> Option<u16> {
+        let nav = ShortFileName::create_from_str(NAV_ROUTE_FILE).ok()?;
+        let pos = self.route_files.iter().position(|n| *n == nav)?;
+        self.route_ids.get(pos).copied()
     }
 
     /// Reconcile the open ride log to the app's tracking intent — call once per frame *before*

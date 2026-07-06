@@ -386,6 +386,15 @@ impl SimGui {
             }
         }
 
+        // Drain a POI create-route request (epic #116, R4): run the on-device router against the
+        // loaded map, write + rescan the reserved `_nav.obcr`, and answer the app — before
+        // `sync_active` below so a successful plan's activated route streams open this same frame.
+        if let Some(req) = self.app.take_nav_request() {
+            let map_src = SliceSource(&self.bytes);
+            let nav_reader = Reader::new(&map_src, &self.map_tables, &self.map_cache);
+            crate::run_nav_request(&mut self.app, &mut self.store, &nav_reader, &req);
+        }
+
         // A ride finishing this frame writes a fresh `RD{id}.ORD` — rescan the tracks folder and
         // re-feed the Rides menu so it appears without a relaunch (the device's store-changed rescan).
         let ride_saved = self.app.activity.has_track_action();

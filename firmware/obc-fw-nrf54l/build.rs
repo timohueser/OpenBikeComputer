@@ -116,6 +116,22 @@ fn main() {
         println!("cargo:rustc-cfg=has_map");
     }
 
+    // The on-device POI router (epic #116, R4) — `has_map` minus the `ble` build. Its two `.bss`
+    // statics (`NavScratch` ~10.2 KB + `NavTileCache` ~4.1 KB) don't fit next to the BLE stack on
+    // the 256 KB DK: with them the combined image's stack region lands at ~33.9 KB, ~1.9 KB
+    // **below** the ~35.8 KB measured deep-render peak — a silent on-glass overflow — and the
+    // acceptance-neutral `nrf-mem` trims are exhausted (PR #496's RAM table). A 256 KB-DK
+    // artifact, the same compile-time-fact pattern as main.rs's `MAP_RESIDENT`/`BLE_RESIDENT`
+    // arbitration: the 512 KB LM20 deletes this gate and the router rides every build. The gated
+    // ride loop still drains a create-route request and answers the generic failure tier
+    // ("Couldn't find a route."), so the POI confirm never hangs.
+    let ble = env::var_os("CARGO_FEATURE_BLE").is_some();
+    let has_nav = has_map && !ble;
+    println!("cargo:rustc-check-cfg=cfg(has_nav)");
+    if has_nav {
+        println!("cargo:rustc-cfg=has_nav");
+    }
+
     if flpr {
         fs::write(out.join("memory.x"), flpr_memory_x()).unwrap();
     } else {
