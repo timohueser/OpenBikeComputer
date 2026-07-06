@@ -23,7 +23,10 @@
 //! [`AppState::user_fix`](crate::AppState::user_fix) is essentially always present here. If it
 //! genuinely isn't, the confirm degrades straight to the "Couldn't find a route." tier.
 
-use embedded_graphics::prelude::Point;
+use embedded_graphics::{
+    prelude::{Point, Size},
+    primitives::Rectangle,
+};
 use obc_reader::POI_NAME_MAX;
 use obc_render::{
     text::{Font, TextAlign},
@@ -119,6 +122,29 @@ const SPIN_DPS: f32 = 240.0;
 /// glass) — unthrottled, the spinner starves the planner it's decorating (#500).
 const SPIN_FRAME_MS: u32 = 66;
 
+/// The spinner needle's sweep radius (px) — [`draw`](NavPlanningScreen::draw) passes it to the
+/// shared `draw_needle`, and [`needle_region`] sizes the reported dirty disc from it, so the two
+/// can't drift.
+const NEEDLE_R: f32 = 42.0;
+
+/// Half-extent (px) of [`needle_region`]'s square around the needle's centre: the [`NEEDLE_R`]
+/// sweep plus a rounding margin for the rasterizer (`draw_needle` rounds its triangle vertices
+/// away from zero, and the hub discs sit inside the sweep).
+const NEEDLE_CLIP_HALF: i32 = NEEDLE_R as i32 + 2;
+
+/// The square the spinning needle repaints inside, centred on the `(w/2, h/2)` the
+/// [`draw`](NavPlanningScreen::draw) spins it at — everything else on the planning screen (title
+/// bar, destination name, copy) is static while a plan runs. This is the dirty region
+/// [`tick_timers`](NavPlanningScreen::tick_timers) reports so the host can clip the repaint;
+/// `nav.rs`'s `needle_region_covers_the_spin` pins that the sweep never escapes it.
+pub fn needle_region(w: i32, h: i32) -> Rectangle {
+    let (cx, cy) = (w / 2, h / 2);
+    Rectangle::new(
+        Point::new(cx - NEEDLE_CLIP_HALF, cy - NEEDLE_CLIP_HALF),
+        Size::new(2 * NEEDLE_CLIP_HALF as u32 + 1, 2 * NEEDLE_CLIP_HALF as u32 + 1),
+    )
+}
+
 /// The planning screen (#499): up from confirm-accept until the host's answer replaces it. Shows
 /// the shared compass needle spinning over plain copy. **Back = cancel** — pops to the POI detail
 /// and records the one-shot the host drains to abort the plan; no failure card.
@@ -167,7 +193,11 @@ impl NavPlanningScreen {
     /// passes (see the constant's doc — an unthrottled claim per planner step starved the plan
     /// with ~40 ms chrome repaints, #500); the needle still advances by the full elapsed time,
     /// so a throttled frame just shows a slightly larger sweep.
-    pub fn tick_timers(&mut self, now_ms: u32) -> ScreenTick {
+    ///
+    /// The claim carries the [`needle_region`] as its dirty region — the chrome around the
+    /// needle never changes while planning — so the host repaints (and pushes) only the disc.
+    /// `w`/`h` of 0 (no frame rendered yet) abstains: `None` = full repaint.
+    pub fn tick_timers(&mut self, now_ms: u32, w: i32, h: i32) -> ScreenTick {
         let dt = self.last_ms.map_or(0.0, |last| now_ms.wrapping_sub(last) as f32 / 1000.0);
         self.last_ms = Some(now_ms);
         self.needle_deg = (self.needle_deg + SPIN_DPS * dt.min(0.25)) % 360.0;
@@ -175,7 +205,8 @@ impl NavPlanningScreen {
         if due {
             self.last_paint_ms = Some(now_ms);
         }
-        ScreenTick { changed: due && dt > 0.0, next_wake_ms: Some(SPIN_FRAME_MS) }
+        let region = (w > 0 && h > 0).then(|| needle_region(w, h));
+        ScreenTick { changed: due && dt > 0.0, next_wake_ms: Some(SPIN_FRAME_MS), region }
     }
 
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
@@ -189,8 +220,9 @@ impl NavPlanningScreen {
         cv.text(&name, Point::new(w / 2, super::TITLE_BAR_H + 16), Font::Label, TextAlign::Center, SUBTEXT);
 
         // The spinner: the Menu dial's needle (shared drawing), free-spinning while the host
-        // steps the planner.
-        super::menu::draw_needle(cv, Point::new(w / 2, h / 2), self.needle_deg, 42.0, 10.0);
+        // steps the planner. Centre + radius are what `needle_region` promises the host — keep
+        // any change to them inside its bound.
+        super::menu::draw_needle(cv, Point::new(w / 2, h / 2), self.needle_deg, NEEDLE_R, 10.0);
 
         // Label-tier: the full phrase overruns the panel at Body width (18 × 14 px > 240).
         cv.text("Finding a route...", Point::new(w / 2, h * 72 / 100), Font::Label, TextAlign::Center, INK);

@@ -7,7 +7,7 @@
 //! exactly like `poi.rs`.
 
 use embedded_graphics::pixelcolor::Rgb888;
-use obc_app::screen::Screen;
+use obc_app::screen::{needle_region, Screen};
 use obc_app::{App, AppState, Fix, Gesture, InputClock, Mode, NavRequest, RouteSummary};
 use obc_reader::{rgb565_to_rgb888, BBox, MapCache, MapTables, Reader, SliceSource};
 use obc_route::NavError;
@@ -31,17 +31,23 @@ fn fixture() -> Vec<u8> {
     build_poi_map(BBOX, 512, &[(1, water), (2, campsite)])
 }
 
-/// Render one frame against the fixture (fills the lazy POI snapshot, like the sim's draw).
-fn render(app: &mut App, bytes: &[u8]) {
+/// Render one frame against the fixture into `buf` (fills the lazy POI snapshot, like the sim's
+/// draw).
+fn render_into(app: &mut App, bytes: &[u8], buf: &mut Buf) {
     let cache = MapCache::new();
     let src = SliceSource(bytes);
     let tables = MapTables::parse(&src).expect("valid fixture");
     let reader = Reader::new(&src, &tables, &cache);
-    let mut buf = Buf::new(240, 320);
-    app.render_frame(&mut buf, &reader, None, 240.0, 320.0, |c| {
+    app.render_frame(buf, &reader, None, 240.0, 320.0, |c| {
         let (r, g, b) = rgb565_to_rgb888(c);
         Rgb888::new(r, g, b)
     });
+}
+
+/// [`render_into`] a throwaway frame, for the tests that only need the render's side effects.
+fn render(app: &mut App, bytes: &[u8]) {
+    let mut buf = Buf::new(240, 320);
+    render_into(app, bytes, &mut buf);
 }
 
 /// Walk an idle app from Home to the nearest Water POI's **detail**: Menu → POIs → Water list,
@@ -297,13 +303,133 @@ fn planning_spinner_throttles_repaints_to_its_cadence() {
     // repaints starve the plan they're decorating. (The needle still advances by real elapsed
     // time, so a throttled frame just shows a larger sweep.)
     let mut s = NavPlanningScreen::new("Fountain North");
-    let first = s.tick_timers(1_000); // anchors the clocks; nothing elapsed yet
+    let first = s.tick_timers(1_000, 240, 320); // anchors the clocks; nothing elapsed yet
     assert!(!first.changed, "no time elapsed, nothing to repaint");
     assert_eq!(first.next_wake_ms, Some(66), "the spinner keeps its frame cadence armed");
+    assert_eq!(first.region, Some(needle_region(240, 320)), "the spinner reports its needle-disc region");
 
     // 100 ride-loop passes at 8 ms: ~1 claim per ceil(66/8)·8 = 72 ms window, not 100.
-    let claims = (1..=100).filter(|i| s.tick_timers(1_000 + i * 8).changed).count();
+    let claims = (1..=100).filter(|i| s.tick_timers(1_000 + i * 8, 240, 320).changed).count();
     assert!((10..=13).contains(&claims), "expected ~800 ms / 72 ms ≈ 11 repaints, got {claims}");
+}
+
+#[test]
+fn needle_region_covers_the_spin() {
+    // The region-scoped repaint's contract (#500 follow-up): while a plan runs, successive
+    // full-repaint frames differ **only inside** the reported `needle_region`. The on-device
+    // repaint clips to that region and *discards* every write outside it, so a changing pixel
+    // out there would go stale on glass — this sweep is what makes the clip safe.
+    use embedded_graphics::prelude::Point;
+    let bytes = fixture();
+    let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    open_detail(&mut app, &bytes);
+    let _ = request_route(&mut app);
+    let region = needle_region(240, 320);
+
+    let mut prev = Buf::new(240, 320);
+    app.advance_animations(InputClock(40)); // anchors the spinner clocks (dt = 0: no sweep yet)
+    render_into(&mut app, &bytes, &mut prev);
+    // Step the spinner through more than a full revolution in odd, cadence-beating increments
+    // (81 ms · 20 ≈ 1.6 s ≈ 1.1 revolutions at 240°/s), diffing each frame against the last.
+    for i in 1..=20u32 {
+        app.advance_animations(InputClock(40 + i * 81));
+        let mut cur = Buf::new(240, 320);
+        render_into(&mut app, &bytes, &mut cur);
+        let mut diffs = 0;
+        for y in 0..320 {
+            for x in 0..240 {
+                if cur.get(x, y) != prev.get(x, y) {
+                    assert!(
+                        region.contains(Point::new(x, y)),
+                        "pixel ({x},{y}) changed outside needle_region at step {i}"
+                    );
+                    diffs += 1;
+                }
+            }
+        }
+        assert!(diffs > 0, "step {i}: the needle must actually have swept (vacuous diff)");
+        prev = cur;
+    }
+}
+
+#[test]
+fn clipped_replay_matches_the_full_render_inside_the_region() {
+    // The Canvas-level primitive rejection (`App::set_render_clip`): a clipped repaint replayed
+    // over the previous frame must be byte-identical to a full render **inside** the region —
+    // outside it the device framebuffer discards writes (obc-platform's clip tests), so inside
+    // is the half the app owns. Rejection being conservative (only fully-disjoint primitives
+    // skip) is exactly what this pins: a wrongly-rejected straddler would leave stale needle
+    // pixels in the region.
+    use embedded_graphics::prelude::Point;
+    let bytes = fixture();
+    let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    open_detail(&mut app, &bytes);
+    let _ = request_route(&mut app);
+    let region = needle_region(240, 320);
+
+    app.advance_animations(InputClock(40)); // anchor the spinner clocks
+    let mut prev = Buf::new(240, 320);
+    render_into(&mut app, &bytes, &mut prev);
+    for i in 1..=6u32 {
+        app.advance_animations(InputClock(40 + i * 81));
+        // The reference: a full render of the current state.
+        let mut full = Buf::new(240, 320);
+        render_into(&mut app, &bytes, &mut full);
+        // The clipped replay over the previous frame (what the device does each spinner tick).
+        let mut clipped = Buf::new(240, 320);
+        clipped.px.copy_from_slice(&prev.px);
+        app.set_render_clip(Some(region));
+        render_into(&mut app, &bytes, &mut clipped);
+        for y in 0..320 {
+            for x in 0..240 {
+                if region.contains(Point::new(x, y)) {
+                    assert_eq!(
+                        clipped.get(x, y),
+                        full.get(x, y),
+                        "step {i}: clipped replay diverges from the full render at ({x},{y})"
+                    );
+                }
+            }
+        }
+        prev = full;
+    }
+}
+
+#[test]
+fn planning_region_scopes_take_dirty() {
+    // The seam the board's clipped repaint hangs off: a spinner tick's dirt drains as
+    // `map: true` **with** the needle region; any full-frame demand in the same window folds
+    // the region away; and before a first frame states the panel size, the spinner abstains.
+    let bytes = fixture();
+    let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    open_detail(&mut app, &bytes);
+    let _ = request_route(&mut app);
+    let _ = app.take_dirty(); // drain the navigation's own dirt
+    app.advance_animations(InputClock(1_000)); // anchors the spinner clocks — nothing fired yet
+    assert_eq!(app.take_dirty(), obc_app::Dirty::CLEAN, "the anchoring tick claims nothing");
+
+    app.advance_animations(InputClock(1_066)); // one spinner cadence later: the repaint claim
+    let d = app.take_dirty();
+    assert!(d.map, "the spinner's claim dirties the map plane");
+    assert_eq!(d.region, Some(needle_region(240, 320)), "…scoped to the needle disc");
+
+    // A stack-changing gesture (Back = cancel → pop) in the same window is full-frame dirt: it
+    // overrides the region even though a spinner tick also fired.
+    app.advance_animations(InputClock(1_140));
+    app.apply_gesture(Gesture::Back);
+    let d = app.take_dirty();
+    assert!(d.map);
+    assert_eq!(d.region, None, "full-frame demand folds a tick's region away");
+
+    // No frame rendered yet → panel size unknown → the spinner abstains (full repaint).
+    let mut fresh = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    fresh.debug_start_nav(POS, POI, "Bench");
+    let _ = fresh.take_dirty();
+    fresh.advance_animations(InputClock(100));
+    fresh.advance_animations(InputClock(200));
+    let d = fresh.take_dirty();
+    assert!(d.map, "the spinner still claims its repaint");
+    assert_eq!(d.region, None, "…but abstains from a region before the first frame");
 }
 
 #[test]
