@@ -1,13 +1,18 @@
 //! The Stats screen — the riding [`Statistics`](crate::screen) page's configuration. **Page cycle**
 //! (how fast the grid auto-flips) is a stepper here; **Fields** opens the
-//! [`StatFields`](super::StatFieldsScreen) sub-screen for the panel selection + order. The cycle
-//! period is kept out of the field list deliberately — mixed among the panels it read as just
-//! another draggable row.
+//! [`StatFields`](super::StatFieldsScreen) sub-screen for the panel selection + order; **Climb**
+//! cycles the [`ClimbMode`](crate::settings::ClimbMode) that governs the Climb screen (epic #506).
+//! The cycle period is kept out of the field list deliberately — mixed among the panels it read as
+//! just another draggable row.
 
 use core::fmt::Write;
 
 use embedded_graphics::prelude::Point;
-use obc_render::{rect, text::Font, Surface};
+use obc_render::{
+    rect,
+    text::{text_width, Font, TextAlign},
+    Surface,
+};
 
 use crate::input::Gesture;
 use crate::screen::{title_frame, Ctx, Render, Screen, Transition, LIST_TOP};
@@ -21,7 +26,8 @@ const ROW_H: i32 = 58;
 
 const PAGE_CYCLE: usize = 0;
 const FIELDS: usize = 1;
-const ROWS: usize = 2;
+const CLIMB_PANEL: usize = 2;
+const ROWS: usize = 3;
 
 /// Step the page-cycle period by `n` detents (1 s each), clamped to the configured bounds.
 fn step_cycle(v: u16, n: i32) -> u16 {
@@ -29,7 +35,8 @@ fn step_cycle(v: u16, n: i32) -> u16 {
 }
 
 /// The Stats screen. `selected` is the highlighted row; `editing_cycle` is set only while the
-/// page-cycle stepper is open (the Fields row has no edit sub-mode — it navigates).
+/// page-cycle stepper is open (the Fields + Climb rows have no edit sub-mode — Fields navigates,
+/// Climb cycles its value in place).
 #[derive(Debug, Default)]
 pub struct StatsScreen {
     selected: usize,
@@ -55,6 +62,12 @@ impl StatsScreen {
                 // The cycle row's single field: press toggles the stepper open/closed.
                 PAGE_CYCLE => {
                     self.editing_cycle = !self.editing_cycle;
+                    Transition::None
+                }
+                // The Climb row: press cycles Off → Manual → Auto in place (a small three-way
+                // choice, so no edit sub-mode — like the Units screen's flip).
+                CLIMB_PANEL => {
+                    cx.settings.climb_mode = cx.settings.climb_mode.cycled();
                     Transition::None
                 }
                 // Fields → the panel manager.
@@ -97,6 +110,17 @@ impl StatsScreen {
         let cx0 = r1.top_left.x + r1.size.width as i32 - 22;
         let midy = r1.top_left.y + r1.size.height as i32 / 2;
         cv.triangle(Point::new(cx0, midy - 9), Point::new(cx0, midy + 9), Point::new(cx0 + 11, midy), INK);
+
+        // Row 2 — Climb panel (press cycles Off / Manual / Auto in place).
+        let r2 = super::row_rect(LIST_TOP + 8 + 2 * (ROW_H + 6), w, ROW_H);
+        super::row_cursor(cv, r2, self.selected == CLIMB_PANEL, false);
+        super::row_label(cv, r2, "Climb", Some("climb panel"));
+        // The current mode right-aligned, flanked by a ◄ that reads as "press to change".
+        let vx = r2.top_left.x + r2.size.width as i32 - 12;
+        let vmidy = r2.top_left.y + r2.size.height as i32 / 2;
+        cv.text_vcentered(rx.settings.climb_mode.name(), vx, (r2.top_left.y, ROW_H), Font::Body, TextAlign::Right, INK);
+        let ax = vx - text_width(rx.settings.climb_mode.name(), Font::Body) as i32 - 14;
+        cv.triangle(Point::new(ax, vmidy - 8), Point::new(ax, vmidy + 8), Point::new(ax - 10, vmidy), INK);
     }
 }
 
@@ -149,6 +173,21 @@ mod tests {
         assert!(matches!(run(&mut scr, &mut s, Gesture::Press), Transition::Push(Screen::StatFields(_))));
         run(&mut scr, &mut s, Gesture::Turn(-1)); // back to Page cycle row
         assert!(matches!(run(&mut scr, &mut s, Gesture::Back), Transition::Pop));
+    }
+
+    /// The Climb row cycles Off → Manual → Auto → Off in place on each press (no edit sub-mode).
+    #[test]
+    fn climb_row_cycles_the_mode() {
+        use crate::settings::ClimbMode;
+        let mut s = Settings { climb_mode: ClimbMode::Auto, ..Settings::default() };
+        let mut scr = StatsScreen::new();
+        run(&mut scr, &mut s, Gesture::Turn(2)); // → Climb row (0 → 1 → 2)
+        assert_eq!(scr.selected, CLIMB_PANEL);
+        // Auto → Off → Manual → Auto, one press each — and no navigation transition.
+        for expect in [ClimbMode::Off, ClimbMode::Manual, ClimbMode::Auto] {
+            assert!(matches!(run(&mut scr, &mut s, Gesture::Press), Transition::None));
+            assert_eq!(s.climb_mode, expect);
+        }
     }
 
     /// Back closes an open stepper before it pops — the staged escape.

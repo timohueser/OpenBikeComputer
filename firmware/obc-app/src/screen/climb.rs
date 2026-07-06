@@ -18,8 +18,10 @@
 //! [`tick_timers`](super::Screen::tick_timers) arm.
 //!
 //! Bindings reuse [`riding_common`](super::riding_common): `press` = pause → Ride control,
-//! `back-hold` = Menu. `back` is a **placeholder** sibling move to the Map until C5 replaces it with
-//! the real conditional Map→Stats→Climb 3-cycle.
+//! `back-hold` = Menu. `back` is the **last hop** of the conditional Back-cycle
+//! (Map → Statistics → Climb → Map, C5) — a sibling move back to the Map. The Statistics screen
+//! only routes here when a climb is active and [`ClimbMode`](crate::settings::ClimbMode) is on, so
+//! this hop always closes the ring at the Map.
 
 use core::fmt::Write;
 
@@ -68,8 +70,9 @@ impl ClimbScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            // Placeholder sibling move to the Map. C5 replaces this with the real conditional
-            // 3-cycle (Map → Stats → Climb → Map); the Climb screen just needs to *exist* at C4.
+            // The last hop of the Back-cycle: Map → Statistics → Climb → **Map**. Statistics only
+            // routes here when a climb is active and ClimbMode is on, so closing back to the Map is
+            // always correct (a crest that ends the climb auto-returns to the Map anyway, C5).
             Gesture::Back => Transition::Replace(Screen::Map(MapScreen::new())),
             // The two riding views' shared bindings (press → Ride control, back-hold → Menu).
             Gesture::Press | Gesture::BackHold => super::riding_common(g, cx),
@@ -266,6 +269,28 @@ fn cap_dist(units: Units, tail: &str) -> heapless::String<12> {
 mod tests {
     use super::*;
     use obc_route::{ClimbProfile, ClimbSeg};
+
+    /// Back closes the ring: the Climb screen's Back always returns to the Map (the last hop of the
+    /// Map → Statistics → Climb → Map 3-cycle).
+    #[test]
+    fn back_returns_to_map() {
+        use crate::activity::Activity;
+        use crate::{AppState, Mode, Settings};
+        let mut st = AppState::new(0, 0, 1.0);
+        let mut act = Activity::new(Mode::Riding);
+        let mut s = Settings::default();
+        let scratch = crate::screen::PoiScratch::new();
+        let mut cx = Ctx {
+            state: &mut st,
+            activity: &mut act,
+            settings: &mut s,
+            routes: &[],
+            rides: &[],
+            poi_scratch: &scratch,
+            now_ms: 0,
+        };
+        assert!(matches!(ClimbScreen::new().handle(Gesture::Back, &mut cx), Transition::Replace(Screen::Map(_))));
+    }
 
     /// A synthetic climb: base 1000 m at 5 000 m along the route, summit 1400 m at 9 000 m — a
     /// 400 m gain over 4 000 m (a clean 10 % average). The detail profile is built from a

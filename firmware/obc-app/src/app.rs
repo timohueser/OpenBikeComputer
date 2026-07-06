@@ -978,9 +978,54 @@ impl App {
                 self.climb_fill_count += 1;
             }
         }
-        // The active climb changed: the riding views' climb-scoped readouts (and, in C4, the Climb
-        // screen) must repaint.
+        // The active climb changed: the riding views' climb-scoped readouts (and the Climb screen)
+        // must repaint.
         self.map_dirty = true;
+        // Host-driven auto-switch / auto-return (C5), off the same entry/exit edge.
+        self.apply_climb_auto_switch(prev, next);
+    }
+
+    /// The Auto-mode screen follow (epic #506, C5), driven off the climb entry/exit edge in
+    /// [`update_active_climb`](App::update_active_climb) — the host-pushed-screen pattern (the P2
+    /// precedent [`reconcile_upload_prompt`](App::reconcile_upload_prompt) uses), applied to the
+    /// active-climb transition rather than a route upload:
+    ///
+    /// - **Entry** (`None → Some`): in [`Auto`](crate::settings::ClimbMode::Auto) mode, if the top
+    ///   screen is a **riding view** (Map or Statistics — a [`ScreenKind::Riding`], never a menu /
+    ///   overlay / ride-control / settings screen), switch it to the Climb screen. The riding-view
+    ///   guard is the whole point: the rider deep in a menu or the pause page is never yanked out.
+    /// - **Exit** (`Some → None`): if the top screen **is** the Climb screen — which it can only be
+    ///   in Auto (an entry switch) or because the rider cycled there manually — return to the Map on
+    ///   the crest, so a finished climb doesn't strand a stale "No climb" panel. This runs
+    ///   regardless of mode: the Climb screen is only reachable with a climb active, so once the
+    ///   climb ends there's nothing for it to show.
+    ///
+    /// [`Manual`](crate::settings::ClimbMode::Manual) and [`Off`](crate::settings::ClimbMode::Off)
+    /// never *enter*; the exit return still fires from Manual (the rider cycled to the Climb screen
+    /// themselves), but not from Off (the Climb screen is out of the ring, so the top is never it).
+    /// A `Replace` (not a push) so the ring's depth is unchanged — the Climb screen is a sibling of
+    /// the riding views, not an overlay.
+    fn apply_climb_auto_switch(&mut self, prev: Option<usize>, next: Option<usize>) {
+        use crate::screen::ScreenKind;
+        let top_is = |app: &Self, want: fn(&Screen) -> bool| app.stack.last().is_some_and(want);
+        match (prev, next) {
+            // Entry: Auto + on a riding view → show the Climb screen.
+            (None, Some(_))
+                if self.settings.climb_mode == crate::settings::ClimbMode::Auto
+                    && top_is(self, |s| s.kind() == ScreenKind::Riding) =>
+            {
+                if let Some(top) = self.stack.last_mut() {
+                    *top = Screen::Climb(crate::screen::ClimbScreen::new());
+                }
+            }
+            // Exit (crest): if we're sitting on the Climb screen, return to the Map.
+            (Some(_), None) if top_is(self, |s| matches!(s, Screen::Climb(_))) => {
+                if let Some(top) = self.stack.last_mut() {
+                    *top = Screen::Map(MapScreen::new());
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Whether the base screen shows live sensor data (user fix / ride accumulators) — Map,
@@ -3048,6 +3093,107 @@ mod tests {
         app.update_active_climb(&route);
         assert_eq!(app.activity.active_climb, Some(0), "off-route holds the current climb");
         assert_eq!(app.climb_fill_count, fills_on_climb, "no refill while off-route");
+    }
+
+    // --- host auto-switch / auto-return (C5, #511) ---
+    //
+    // Driven off the same climb entry/exit edge in `update_active_climb`, so these tests reuse the
+    // Grimsel fixture and step `progress_m` across a base / summit to fire the transition, then
+    // inspect which screen is on top. `App::new` gives stack `[Home, Map]` — top = Map, a riding view.
+
+    /// A Riding-view app with the fixture's climbs loaded and a given climb mode — the common
+    /// setup for the auto-switch cases below.
+    fn climb_app(mode: crate::settings::ClimbMode) -> (App, RouteIndex) {
+        let mut app = App::new(AppState::new(0, 0, 1.0)); // stack [Home, Map], Riding
+        app.settings.climb_mode = mode;
+        let idx = grimsel_index();
+        {
+            let src = SliceSource(GRIMSEL);
+            let route = RouteReader::new(&idx, &src);
+            app.climbs = route.detect_climbs();
+        }
+        (app, idx)
+    }
+
+    /// Enter a climb (drive progress across climb 0's base) via `update_active_climb`.
+    fn enter_first_climb(app: &mut App, idx: &RouteIndex) {
+        let src = SliceSource(GRIMSEL);
+        let route = RouteReader::new(idx, &src);
+        app.activity.progress_m = 5_000; // mid climb 0 (501–11067)
+        app.update_active_climb(&route);
+        assert_eq!(app.activity.active_climb, Some(0), "the fixture puts progress on climb 0");
+    }
+
+    /// Auto + on a riding view: entering a climb auto-switches the top to the Climb screen.
+    #[test]
+    fn auto_switches_to_climb_on_entry_from_a_riding_view() {
+        use crate::settings::ClimbMode;
+        let (mut app, idx) = climb_app(ClimbMode::Auto);
+        assert!(matches!(app.top_screen(), Screen::Map(_)), "starts on the Map (a riding view)");
+        enter_first_climb(&mut app, &idx);
+        assert!(matches!(app.top_screen(), Screen::Climb(_)), "Auto auto-shows the Climb screen on entry");
+    }
+
+    /// The menu guard: the rider deep in a menu (a non-riding view on top) is never yanked onto the
+    /// Climb screen, even in Auto — the switch only fires from a riding view.
+    #[test]
+    fn auto_never_switches_away_from_a_menu() {
+        use crate::screen::{MenuScreen, ScreenKind};
+        use crate::settings::ClimbMode;
+        let (mut app, idx) = climb_app(ClimbMode::Auto);
+        // Open the Menu over the Map (a Nav-kind screen on top).
+        let _ = app.stack.push(Screen::Menu(MenuScreen::new()));
+        assert_ne!(app.top_screen().kind(), ScreenKind::Riding, "top is now a menu, not a riding view");
+        enter_first_climb(&mut app, &idx);
+        assert!(matches!(app.top_screen(), Screen::Menu(_)), "the menu is left untouched by the entry edge");
+        // And the map underneath it is still the Map — the switch didn't reach past the menu.
+        assert!(matches!(app.stack[app.stack.len() - 2], Screen::Map(_)), "the base riding view is untouched too");
+    }
+
+    /// Manual and Off never auto-switch on entry (the rider reaches the Climb screen only by cycling
+    /// Back, or not at all).
+    #[test]
+    fn manual_and_off_never_auto_switch_on_entry() {
+        use crate::settings::ClimbMode;
+        for mode in [ClimbMode::Manual, ClimbMode::Off] {
+            let (mut app, idx) = climb_app(mode);
+            enter_first_climb(&mut app, &idx);
+            assert!(matches!(app.top_screen(), Screen::Map(_)), "{mode:?} leaves the rider on the Map on entry");
+        }
+    }
+
+    /// Crest auto-return: from the Climb screen, ending the climb (progress past the exit band)
+    /// returns to the Map — a stale "No climb" panel is never left up.
+    #[test]
+    fn crest_auto_returns_to_map_from_the_climb_screen() {
+        use crate::settings::ClimbMode;
+        let (mut app, idx) = climb_app(ClimbMode::Auto);
+        enter_first_climb(&mut app, &idx); // Auto → now on the Climb screen
+        assert!(matches!(app.top_screen(), Screen::Climb(_)));
+        // Jump progress past the last climb's exit band so the active climb clears (Some → None).
+        let src = SliceSource(GRIMSEL);
+        let route = RouteReader::new(&idx, &src);
+        app.activity.progress_m = 50_000;
+        app.update_active_climb(&route);
+        assert_eq!(app.activity.active_climb, None, "past every climb → no active climb");
+        assert!(matches!(app.top_screen(), Screen::Map(_)), "the crest returns to the Map from the Climb screen");
+    }
+
+    /// The crest return only touches the Climb screen: if the rider is on some other view when the
+    /// climb ends, that view is left as-is (never force-switched to the Map).
+    #[test]
+    fn crest_leaves_other_screens_untouched() {
+        use crate::screen::MenuScreen;
+        use crate::settings::ClimbMode;
+        let (mut app, idx) = climb_app(ClimbMode::Manual); // Manual: entry won't switch
+        enter_first_climb(&mut app, &idx);
+        let _ = app.stack.push(Screen::Menu(MenuScreen::new())); // now on a menu, mid-climb
+        let src = SliceSource(GRIMSEL);
+        let route = RouteReader::new(&idx, &src);
+        app.activity.progress_m = 50_000;
+        app.update_active_climb(&route);
+        assert_eq!(app.activity.active_climb, None);
+        assert!(matches!(app.top_screen(), Screen::Menu(_)), "a crest never yanks a menu to the Map");
     }
 
     /// Build-on-load / clear-on-unload wiring through `tick`: an active route with a reader segments
