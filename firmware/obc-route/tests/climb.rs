@@ -71,19 +71,22 @@ fn clean_single_climb() {
 /// whole rise, base at the start and top at the final summit.
 #[test]
 fn bridged_false_flat_stays_one_climb() {
-    let dip = (MAX_DROP - 5) as f32; // 10 m — clearly under the 15 m col tolerance
+    let dip = (MAX_DROP - 5) as f32; // clearly under the col tolerance — tracks a retune of MAX_DROP
+                                     // The recovery past the earlier summit is deliberately steep and short so the no-new-max run
+                                     // stays well under MAX_FLAT: this isolates the MAX_DROP (col) gate rather than the plateau gate,
+                                     // so a wider MAX_DROP can't accidentally push the re-ascent past MAX_FLAT and flip the result.
     let climbs = detect(&[
         (0.0, 100.0),
         (1000.0, 250.0),       // up 150
-        (1200.0, 250.0 - dip), // shallow dip (bridged)
-        (2200.0, 400.0),       // up past the earlier summit → new max
-        (3000.0, 400.0),
+        (1100.0, 250.0 - dip), // shallow dip over a short span (bridged, not a col)
+        (1300.0, 400.0),       // steep recovery past the earlier summit → new max
+        (2100.0, 400.0),
     ]);
     assert_eq!(climbs.len(), 1, "a dip shallower than MAX_DROP must not split the climb");
     let c = climbs[0];
     assert_eq!(c.base_ele_m, 100);
     assert_eq!(c.top_ele_m, 400);
-    assert_eq!(c.end_m, 2200);
+    assert_eq!(c.end_m, 1300);
 }
 
 /// A deep col: climb, a give-back deeper than [`MAX_DROP`] (40 m), then a second climb. The col

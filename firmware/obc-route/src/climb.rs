@@ -51,7 +51,7 @@ pub const MIN_AVG_GRADE: i16 = 3;
 /// the climb is closed at that max. A dip shallower than this is **bridged** (the climb
 /// continues over the saddle); a col deeper splits the route into two separate climbs. This is
 /// the primary "feel" knob — raising it merges passes, lowering it fragments them.
-pub const MAX_DROP: i16 = 15;
+pub const MAX_DROP: i16 = 25;
 
 /// Flat tolerance (m of distance): how far the profile may run without setting a new max before
 /// the candidate is closed. Bounds how long a plateau or false-flat can sit mid-climb before we
