@@ -1,5 +1,5 @@
 //! The Route menu — pick a route. The shared list chrome with taller panes showing each route's
-//! distance and climb. Reached from Home (`press`) and the main Menu's Routes station; `press`
+//! distance and climb. Reached from the main Menu's Routes station (Home → Menu → Routes); `press`
 //! opens the [`Route overview`](super::RouteOverviewScreen) (or, mid-ride, resumes / opens the
 //! swap flow), `back` returns.
 //!

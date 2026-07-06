@@ -8,7 +8,9 @@ mod common;
 
 use common::{down, keys, up};
 use obc_app::screen::UPLOAD_POPUP_TIMEOUT_MS;
-use obc_app::{App, AppState, BleLink, BleStatus, Button, Gesture, InputClock, Mode, RouteSummary, Screen};
+use obc_app::{
+    App, AppState, BleLink, BleStatus, Button, Gesture, IdleReturn, InputClock, Mode, RouteSummary, Screen, Settings,
+};
 use obc_reader::BBox;
 
 /// A three-route catalog with deliberately non-positional durable ids (10 / 11 / 12), so any test
@@ -33,20 +35,25 @@ fn routes() -> [RouteSummary; 3] {
     [mk("Alpha", 10, 100), mk("Beta", 20, 200), mk("Gamma", 30, 300)]
 }
 
-/// An idle app (Home root) with the id-carrying catalog loaded and the boot paint drained.
+/// An idle app (Home root) with the id-carrying catalog loaded and the boot paint drained. The
+/// idle-return timeout is disabled so these popup-timing tests (which advance the clock past the
+/// 30 s popup deadline — the same span as the default idle return) isolate the popup auto-close.
 fn idle_app() -> App {
     let mut app = App::new_idle(AppState::new(0, 0, 0.05));
+    app.set_settings(Settings { idle_return: IdleReturn::Never, ..Settings::default() });
     app.set_routes_with_ids(&routes(), &ids());
     let _ = app.take_dirty();
     app
 }
 
-/// Start riding catalog route 0 (id 10) through the real navigation: Home `press` → Route menu,
-/// `press` → Route overview, `press` → START RIDE. Leaves the stack at `[Home, Map]`, tracking.
+/// Start riding catalog route 0 (id 10) through the real navigation: Home `press` → Menu, `press`
+/// (Routes) → Route menu, `press` → Route overview, `press` → START RIDE. Leaves the stack at
+/// `[Home, Map]`, tracking.
 fn start_riding(app: &mut App) {
-    app.apply_gesture(Gesture::Press);
-    app.apply_gesture(Gesture::Press);
-    app.apply_gesture(Gesture::Press);
+    app.apply_gesture(Gesture::Press); // Home → Menu (Routes selected)
+    app.apply_gesture(Gesture::Press); // press Routes → Route menu
+    app.apply_gesture(Gesture::Press); // → Route overview
+    app.apply_gesture(Gesture::Press); // → START RIDE → Map
     assert!(matches!(app.top_screen(), Screen::Map(_)), "the ride opens on the Map");
     assert!(app.activity.is_tracking(), "START RIDE begins a tracking session");
     assert_eq!(app.activity.active_route, Some(0));
@@ -445,7 +452,7 @@ fn a_hold_queued_behind_the_dismissing_back_in_one_batch_is_dropped() {
 fn a_stack_transition_raises_the_hold_cancel_edge_for_the_two_plane_host() {
     let mut app = idle_app();
     assert!(!app.take_hold_cancel(), "quiet at boot");
-    app.apply_gesture(Gesture::Press); // Home → Route menu: a stack change
+    app.apply_gesture(Gesture::Press); // Home → Menu: a stack change
     assert!(app.take_hold_cancel(), "the transition rings the cancel edge");
     assert!(!app.take_hold_cancel(), "one-shot: drained");
     app.apply_gesture(Gesture::Turn(1)); // a highlight move transitions nothing

@@ -1,8 +1,9 @@
 //! The Home screen — the Idle screensaver and the permanent root of the stack (so Finish / Discard
 //! always have somewhere to land via [`Transition::Home`]).
 //!
-//! It draws a code-generated topographic backdrop, the wall clock, and the battery gauge. `press`
-//! opens the Route menu and `back-hold` the Menu.
+//! It draws a code-generated topographic backdrop, the wall clock, and the battery gauge. Both
+//! `press` and `back-hold` open the compass [`Menu`](MenuScreen) — the one entry point into the
+//! app; the Route menu is reached from there via the Routes station. Encoder turns are ignored.
 //!
 //! The backdrop is procedural: a smooth height field (a sum of [`Bump`] Lorentzians, [`field`])
 //! traced into iso-lines by marching squares ([`contours`]) — no map data or I/O. Its massif is
@@ -22,7 +23,7 @@ use crate::input::Gesture;
 use crate::settings::DateTime;
 use crate::wall_clock::MinuteTicker;
 
-use super::{palette, Ctx, MenuScreen, Render, RouteMenuScreen, Screen, ScreenTick, Transition};
+use super::{palette, Ctx, MenuScreen, Render, Screen, ScreenTick, Transition};
 
 /// The idle home screen.
 #[derive(Debug, Default)]
@@ -54,8 +55,9 @@ impl HomeScreen {
 
     pub fn handle(&mut self, g: Gesture, _cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Press => Transition::Push(Screen::RouteMenu(RouteMenuScreen::new())),
-            Gesture::BackHold => Transition::Push(Screen::Menu(MenuScreen::new())),
+            // Both the press and the back-hold open the Menu — the single door into the app. The
+            // Route menu is one step further in (Menu → Routes), never opened straight from Home.
+            Gesture::Press | Gesture::BackHold => Transition::Push(Screen::Menu(MenuScreen::new())),
             _ => Transition::None,
         }
     }

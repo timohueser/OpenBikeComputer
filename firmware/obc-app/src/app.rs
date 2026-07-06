@@ -457,6 +457,15 @@ pub struct App {
     /// [`ScreenTick::next_wake_ms`](screen::ScreenTick::next_wake_ms), stored there and read back by
     /// [`ms_until_next_wake`](App::ms_until_next_wake). `None` when nothing is time-animating.
     next_wake_ms: Option<u32>,
+    /// Map-plane millis of the last **user input** — any recognised gesture (see
+    /// [`apply_gesture`](App::apply_gesture)), plus a per-tick refresh while a hold charges (a
+    /// gesture in progress counts as activity). Drives the **idle-return** timeout
+    /// ([`apply_idle_return`](App::apply_idle_return)): after
+    /// [`idle_return`](crate::settings::Settings::idle_return) millis of silence the UI navigates
+    /// itself back to where it belongs. Deliberately advanced **only** on input — a GPS fix, a BLE
+    /// event, or a timed repaint must not reset it. Seeded to `0` (the boot origin), so the idle
+    /// clock runs from power-on until the first touch.
+    last_input_ms: u32,
     /// The persisted device settings, seeded from the host's store at boot
     /// ([`set_settings`](App::set_settings)) and edited in place by the settings screens.
     settings: Settings,
@@ -620,7 +629,7 @@ impl App {
     }
 
     /// Build the app at the device's real power-on state: the Home screensaver,
-    /// Idle, no route loaded. Loading a route (Home → Route menu → `press`) starts
+    /// Idle, no route loaded. Loading a route (Home → Menu → Routes → `press`) starts
     /// riding and opens the Map.
     pub fn new_idle(state: AppState) -> Self {
         let mut stack = Stack::new();
@@ -653,6 +662,7 @@ impl App {
             frame_size: (0, 0),
             render_clip: None,
             next_wake_ms: None,
+            last_input_ms: 0,
             settings: Settings::default(),
             // The wall clock starts from the same default set-point at the boot origin; the host's
             // `set_settings` re-stamps it from the persisted clock a moment later.
@@ -728,6 +738,7 @@ impl App {
             addr_of_mut!((*slot).frame_size).write((0, 0));
             addr_of_mut!((*slot).render_clip).write(None);
             addr_of_mut!((*slot).next_wake_ms).write(None);
+            addr_of_mut!((*slot).last_input_ms).write(0);
             addr_of_mut!((*slot).settings).write(Settings::default());
             addr_of_mut!((*slot).wall_clock).write(WallClock::new(Settings::default().local_clock()));
             addr_of_mut!((*slot).settings_dirty).write(false);
@@ -1868,6 +1879,9 @@ impl App {
         // design (a gesture a screen ignores still costs one redraw), which keeps the idle path
         // exact: with no gesture recognized, `apply_gesture` never runs and the map stays clean.
         self.map_dirty = true;
+        // Any recognised gesture is user activity: reset the idle-return clock (see
+        // `apply_idle_return`). A gesture the screen ignores still counts — a turn on Home, say.
+        self.last_input_ms = self.now_ms;
         // Snapshot the settings so a settings-screen edit is detected by one `==` (Settings is
         // `Copy + Eq`). A change flags a save for the host to pick up via `take_settings_dirty`.
         let settings_before = self.settings;
@@ -1963,6 +1977,111 @@ impl App {
         // armed the wake that gets a parked device to this line at the deadline.
         self.reconcile_upload_prompt();
         self.close_expired_upload_popups();
+        // The idle-return sweep (fire the return if we're past the deadline) and its residual wake,
+        // folded into the deadline the event-driven host arms so a parked device wakes to return.
+        self.apply_idle_return();
+        if let Some(rem) = self.idle_return_remaining_ms() {
+            self.next_wake_ms = Some(self.next_wake_ms.map_or(rem, |w| w.min(rem)));
+        }
+    }
+
+    /// Millis until the idle-return timeout expires, or `None` when no return is pending — the
+    /// mechanism is off ([`Never`](crate::settings::IdleReturn::Never)), a modal exemption is up, or
+    /// we're already at the target screen (Home when idle, a ride view while tracking), so no idle
+    /// wake is owed. At least `1` while pending, so a due return has already fired this pass and the
+    /// wake is strictly future.
+    fn idle_return_remaining_ms(&self) -> Option<u32> {
+        let timeout = self.settings.idle_return.timeout_ms()?;
+        if !self.idle_return_pending() {
+            return None;
+        }
+        let elapsed = self.now_ms.wrapping_sub(self.last_input_ms);
+        Some(timeout.saturating_sub(elapsed).max(1))
+    }
+
+    /// Whether an idle return would actually *move* somewhere — false when a modal exemption is up,
+    /// or we're already where the timeout would land (the Home root when not tracking, a deliberate
+    /// ride view while tracking). Gates both the idle wake and the sweep so an already-arrived
+    /// device arms no needless wake and re-checks nothing each tick.
+    fn idle_return_pending(&self) -> bool {
+        if self.idle_return_exempt() {
+            return false;
+        }
+        if self.activity.is_tracking() {
+            !self.is_ride_view()
+        } else {
+            self.stack.len() > 1
+        }
+    }
+
+    /// Whether the current top screen is **exempt** from the idle-return timeout — the modal cards
+    /// that must stay put until dismissed (the BLE passkey card, the three route-received /
+    /// -updated / -swap popups) and the route-planning spinner (a multi-second wait that isn't
+    /// idleness). While one of these is up, no idle return fires and no idle wake is armed.
+    fn idle_return_exempt(&self) -> bool {
+        matches!(
+            self.stack.last(),
+            Some(
+                Screen::Passkey(_)
+                    | Screen::RouteReceived(_)
+                    | Screen::RouteUpdated(_)
+                    | Screen::RouteSwap(_)
+                    | Screen::NavPlanning(_)
+            )
+        )
+    }
+
+    /// Whether the current top screen is one of the **deliberate ride views** that must never time
+    /// out while a ride is being tracked — the Map (the ride base), Statistics, Climb, and the
+    /// Paused / Ride-control page. A rider sitting on any of these is watching live ride data, not
+    /// lost in a menu. Every *other* screen (menus, lists, settings, route overview) returns to the
+    /// Map on the idle timeout when tracking.
+    fn is_ride_view(&self) -> bool {
+        matches!(
+            self.stack.last(),
+            Some(Screen::Map(_) | Screen::Statistics(_) | Screen::Climb(_) | Screen::RideControl(_))
+        )
+    }
+
+    /// Navigate "back to where it belongs" once the idle-return timeout ([`idle_return`]) has
+    /// elapsed with no user input — the app-level counterpart to the popups' timeout-dismiss sweep,
+    /// run once per [`advance_animations`](App::advance_animations) pass.
+    ///
+    /// - **Not tracking a ride:** from any screen, clear every overlay back to the Home root and
+    ///   reseed the screensaver backdrop (exactly as a manual return to Home does).
+    /// - **Tracking a ride:** a menu / list / settings / overview screen returns to the Map (the
+    ///   ride base). The deliberate ride views ([`is_ride_view`](App::is_ride_view)) stay put.
+    ///
+    /// Never fires while the timeout is disabled ([`Never`]), a modal exemption is up
+    /// ([`idle_return_exempt`](App::idle_return_exempt)), a hold is charging (a gesture in progress
+    /// is activity — deferred a tick, like the popup sweeps), or we're already at the target screen.
+    ///
+    /// [`idle_return`]: crate::settings::Settings::idle_return
+    /// [`Never`]: crate::settings::IdleReturn::Never
+    fn apply_idle_return(&mut self) {
+        let Some(timeout) = self.settings.idle_return.timeout_ms() else { return };
+        // Nothing to move (already home / on a ride view), a modal exemption is up, or a hold is
+        // charging (a gesture in progress is activity): defer, exactly like the popup sweeps.
+        if !self.idle_return_pending() || self.hold_charging() {
+            return;
+        }
+        if self.now_ms.wrapping_sub(self.last_input_ms) < timeout {
+            return;
+        }
+        // Past the deadline: consume it so the return fires once, not every pass hereafter.
+        self.last_input_ms = self.now_ms;
+        self.map_dirty = true;
+        if self.activity.is_tracking() {
+            // Mid-ride, on a non-ride screen: return to the Map (the ride base).
+            self.stack.truncate(1); // drop back toward the root…
+            let _ = self.stack.push(Screen::Map(MapScreen::new())); // …then land on the Map
+        } else {
+            // Not tracking: clear to the Home root and reseed the screensaver (as a manual return does).
+            self.stack.truncate(1);
+            if let Some(Screen::Home(home)) = self.stack.first_mut() {
+                home.reseed(self.now_ms);
+            }
+        }
     }
 
     /// The single "next wake deadline" the event-driven host arms one timer to: the soonest, in
@@ -2904,12 +3023,15 @@ mod tests {
     }
 
     /// `ms_until_next_wake` reports the soonest timed-redraw deadline across the visible stack. On
-    /// Home it's the wall-clock minute boundary; on a static menu it's `None` (sleep until input).
+    /// Home it's the wall-clock minute boundary; on a static menu the idle-return timeout is the
+    /// only pending wake (the menu itself animates on nothing). With the idle return disabled a
+    /// static menu reports `None` — sleep until input.
     #[test]
-    fn ms_until_next_wake_reports_the_home_minute_then_none_on_a_static_menu() {
+    fn ms_until_next_wake_reports_the_home_minute_then_the_idle_deadline_on_a_static_menu() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0)); // base = Home
         app.set_settings(crate::settings::Settings {
             clock: DateTime { year: 2025, month: 1, day: 1, hour: 12, minute: 0 },
+            idle_return: crate::settings::IdleReturn::Never, // isolate the clock deadline first
             ..Default::default()
         });
         // Home shows a clock → the deadline is the time left until the displayed minute rolls over.
@@ -2917,12 +3039,17 @@ mod tests {
         assert_eq!(app.ms_until_next_wake(0), Some(60_000), "at a boundary the whole minute remains");
         app.advance_animations(InputClock(25_000));
         assert_eq!(app.ms_until_next_wake(25_000), Some(35_000), "25 s in, 35 s until the next repaint");
-        // Navigate to the static Menu (BackHold): it animates on nothing, so there is no deadline —
-        // the host sleeps until the next input or sensor event. The same-frame `advance_animations`
-        // re-polls the now-visible stack, per `ms_until_next_wake`'s documented contract.
+        // Navigate to the static Menu (BackHold): with the idle return off, it animates on nothing,
+        // so there is no deadline — the host sleeps until the next input or sensor event.
         app.apply_gesture(Gesture::BackHold);
         app.advance_animations(InputClock(25_000));
-        assert_eq!(app.ms_until_next_wake(25_000), None, "a static menu needs no timed wake");
+        assert_eq!(app.ms_until_next_wake(25_000), None, "a static menu with idle-return off needs no timed wake");
+        // Turn the idle return on: the static menu now reports the idle-return deadline as its wake.
+        // The BackHold that opened the menu was the last input (at 25 s), so a full 30 s window
+        // remains at 25 s.
+        app.settings.idle_return = crate::settings::IdleReturn::S30;
+        app.advance_animations(InputClock(25_000));
+        assert_eq!(app.ms_until_next_wake(25_000), Some(30_000), "the idle-return timeout is the pending wake");
     }
 
     // --- climb state tracking (C3, #509) ---
@@ -3240,5 +3367,147 @@ mod tests {
         assert!(app.climbs.is_empty(), "unloading the route clears the climbs");
         assert!(app.climbs_route.is_none());
         assert_eq!(app.activity.active_climb, None, "and the on-climb state is dropped");
+    }
+
+    // --- idle-return timeout (Part B) ---
+    //
+    // The idle sweep runs in `advance_animations`; these tests set `last_input_ms`, push a screen,
+    // then advance the clock past the deadline and inspect the top screen. `App::new` starts on the
+    // Map (Riding, a tracking session isn't armed until `start_session`); `new_idle` starts on Home.
+
+    use crate::screen::{
+        MenuScreen, NavPlanningScreen, PasskeyScreen, RouteReceivedScreen, SettingsScreen, StatisticsScreen,
+    };
+    use crate::settings::IdleReturn;
+
+    /// Run one idle sweep at `now_ms` — the same path `advance_animations` takes, at a chosen clock.
+    fn idle_tick(app: &mut App, now_ms: u32) {
+        app.advance_animations(InputClock(now_ms));
+    }
+
+    /// Not tracking: after the timeout with no input, any screen clears to the Home root.
+    #[test]
+    fn idle_returns_to_home_when_not_tracking() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0)); // [Home], Idle
+        app.settings.idle_return = IdleReturn::S30;
+        let _ = app.stack.push(Screen::Menu(MenuScreen::new()));
+        let _ = app.stack.push(Screen::Settings(SettingsScreen::new()));
+        app.last_input_ms = 0;
+
+        idle_tick(&mut app, 29_000); // still inside the window
+        assert!(matches!(app.top_screen(), Screen::Settings(_)), "no return before the deadline");
+
+        idle_tick(&mut app, 30_000); // deadline reached
+        assert_eq!(app.stack.len(), 1, "cleared to the Home root");
+        assert!(matches!(app.top_screen(), Screen::Home(_)), "and the top is Home");
+    }
+
+    /// Returning to Home reseeds the screensaver backdrop, exactly as a manual return does.
+    #[test]
+    fn idle_return_home_reseeds_the_backdrop() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.settings.idle_return = IdleReturn::S15;
+        let _ = app.stack.push(Screen::Menu(MenuScreen::new()));
+        app.last_input_ms = 0;
+        idle_tick(&mut app, 20_000);
+        let Some(Screen::Home(home)) = app.stack.first() else { panic!("back on Home") };
+        assert_eq!(home.seed(), 20_000, "the backdrop reseeds to the return's clock");
+    }
+
+    /// Tracking: a menu screen returns to the Map; the deliberate ride views do not time out.
+    #[test]
+    fn idle_returns_to_map_when_tracking_from_a_menu() {
+        let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map], Riding
+        app.activity.start_session(); // arm a tracking session
+        app.settings.idle_return = IdleReturn::S30;
+        let _ = app.stack.push(Screen::Menu(MenuScreen::new()));
+        app.last_input_ms = 0;
+
+        idle_tick(&mut app, 30_000);
+        assert!(matches!(app.top_screen(), Screen::Map(_)), "a menu times out to the Map mid-ride");
+        assert_eq!(app.stack.len(), 2, "landed on [Home, Map], not deeper");
+    }
+
+    /// The ride views (Map, Statistics, Climb, RideControl) never time out while tracking.
+    #[test]
+    fn ride_views_never_time_out_while_tracking() {
+        for view in [
+            Screen::Map(MapScreen::new()),
+            Screen::Statistics(StatisticsScreen::new()),
+            Screen::RideControl(crate::screen::RideControl::new()),
+        ] {
+            let mut app = App::new(AppState::new(0, 0, 1.0));
+            app.activity.start_session();
+            app.settings.idle_return = IdleReturn::S15;
+            *app.stack.last_mut().unwrap() = view; // replace the base Map with the view under test
+            let kind_before = core::mem::discriminant(app.top_screen());
+            app.last_input_ms = 0;
+            idle_tick(&mut app, 60_000);
+            assert_eq!(core::mem::discriminant(app.top_screen()), kind_before, "a ride view is left put");
+        }
+    }
+
+    /// The modal cards (passkey, route popups) and the planning spinner are exempt — never yanked by
+    /// the idle sweep. Elapse to 20 s (past the 15 s idle deadline, but under the route popup's own
+    /// 30 s auto-close, so only the idle exemption is under test here).
+    #[test]
+    fn modal_cards_are_exempt_from_idle_return() {
+        for card in [
+            Screen::Passkey(PasskeyScreen::new(123_456)),
+            Screen::RouteReceived(RouteReceivedScreen::new(0, 0)),
+            Screen::NavPlanning(NavPlanningScreen::new("Route")),
+        ] {
+            let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+            app.settings.idle_return = IdleReturn::S15;
+            let kind = core::mem::discriminant(&card);
+            let _ = app.stack.push(card);
+            app.last_input_ms = 0;
+            idle_tick(&mut app, 20_000);
+            assert_eq!(core::mem::discriminant(app.top_screen()), kind, "the modal card stays up");
+        }
+    }
+
+    /// Any gesture resets the idle deadline — a turn 1 ms before it would fire buys another full window.
+    #[test]
+    fn a_gesture_resets_the_idle_deadline() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.settings.idle_return = IdleReturn::S30;
+        let _ = app.stack.push(Screen::Menu(MenuScreen::new()));
+        app.last_input_ms = 0;
+
+        // A gesture at 29 s (just shy of the deadline) resets the clock.
+        app.now_ms = 29_000;
+        app.apply_gesture(Gesture::Turn(1));
+        assert_eq!(app.last_input_ms, 29_000, "the gesture reset the idle clock");
+
+        idle_tick(&mut app, 30_000); // 1 s after the gesture — well inside the fresh window
+        assert!(matches!(app.top_screen(), Screen::Menu(_)), "the reset deadline hasn't elapsed");
+
+        idle_tick(&mut app, 59_000); // 30 s after the gesture
+        assert!(matches!(app.top_screen(), Screen::Home(_)), "and now it fires");
+    }
+
+    /// `Never` disables the mechanism entirely — no return however long the device idles, and no
+    /// idle wake is armed.
+    #[test]
+    fn never_disables_the_idle_return() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.settings.idle_return = IdleReturn::Never;
+        let _ = app.stack.push(Screen::Menu(MenuScreen::new()));
+        app.last_input_ms = 0;
+        idle_tick(&mut app, 10 * 60_000); // ten minutes
+        assert!(matches!(app.top_screen(), Screen::Menu(_)), "Never never returns");
+        assert_eq!(app.ms_until_next_wake(10 * 60_000), None, "and arms no idle wake");
+    }
+
+    /// The idle deadline is folded into the host's wake so a parked device wakes to return.
+    #[test]
+    fn idle_return_arms_a_wake() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.settings.idle_return = IdleReturn::S30;
+        let _ = app.stack.push(Screen::Menu(MenuScreen::new()));
+        app.last_input_ms = 0;
+        idle_tick(&mut app, 10_000);
+        assert_eq!(app.ms_until_next_wake(10_000), Some(20_000), "wake armed 20 s out (30 s − 10 s elapsed)");
     }
 }
