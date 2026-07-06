@@ -155,6 +155,14 @@ pub struct Activity {
     pub off_route: bool,
     /// Live cross-track distance to the route (m) — the "off route · NNN m" readout.
     pub dist_to_route_m: u32,
+    /// Index into the App-owned [`Climbs`](obc_route::Climbs) list of the climb the rider is
+    /// currently on, or `None` when between climbs / off any climb. Set by
+    /// [`App::update_active_climb`](crate::App::update_active_climb) on each matched fix — with
+    /// enter/exit hysteresis so it can't flap at a climb boundary — since `App`, not `Activity`,
+    /// owns the climbs list and the resident detail buffer keyed on this. The riding views (and, in
+    /// C4, the Climb screen) read it to decide whether a climb is being tracked. Cleared on every
+    /// route swap / unload / replace, alongside `progress_m` / `off_route`.
+    pub active_climb: Option<usize>,
 
     // actually-ridden accumulators
     /// Distance actually pedalled (m) — the `done` stat. Counts **every** sane fix, including
@@ -332,6 +340,9 @@ impl Activity {
         self.progress_m = 0;
         self.off_route = false;
         self.dist_to_route_m = 0;
+        // A fresh session restarts at progress 0; drop any on-climb state so the next matched fix
+        // re-derives it from the reset cursor rather than holding a climb the old ride was on.
+        self.active_climb = None;
         self.ridden_m = 0.0;
         self.moving_m = 0.0;
         self.moving_s = 0.0;
