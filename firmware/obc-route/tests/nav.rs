@@ -296,6 +296,95 @@ fn same_snap_node_emits_single_point_route() {
     assert_eq!((pts[0].lon, pts[0].lat), at(0, 0));
 }
 
+/// Miri model of the **device slot lifecycle** (#501 on-glass fault hunt): a `static mut
+/// MaybeUninit<NavPlanner>` (re)written per request and stepped exactly the way `ride.rs` does —
+/// `NavBuffers`-shaped `&'static mut` handles from `addr_of_mut!`, an `assume_init_ref().phase()`
+/// read before every step, `assume_init_mut()` inside the step frame with the scratch/tiles field
+/// borrows alive across the call, a fresh `Reader` view per pass, slot **overwrite without drop**
+/// on a replacing request, and the cancel interleaving (abandon mid-search, then a new request
+/// re-writes the slot). Under Miri this proves the pattern free of assume_init-before-write,
+/// `&mut` aliasing, and uninitialized reads; natively it pins the interleavings.
+#[test]
+fn device_slot_lifecycle_is_uninit_and_alias_clean() {
+    use core::mem::MaybeUninit;
+    use obc_route::nav::NAV_MAX_NODES;
+
+    struct DeviceNav {
+        scratch: &'static mut NavScratch<NAV_MAX_NODES>,
+        tiles: &'static mut NavTileCache,
+        planner: &'static mut MaybeUninit<NavPlanner>,
+    }
+    static mut SCRATCH: NavScratch<NAV_MAX_NODES> = NavScratch::new();
+    static mut TILES: NavTileCache = NavTileCache::new();
+    static mut PLANNER: MaybeUninit<NavPlanner> = MaybeUninit::uninit();
+    // SAFETY: this test is the statics' only user (test-local names), each borrowed exactly once.
+    let nav = DeviceNav {
+        scratch: unsafe { &mut *core::ptr::addr_of_mut!(SCRATCH) },
+        tiles: unsafe { &mut *core::ptr::addr_of_mut!(TILES) },
+        planner: unsafe { &mut *core::ptr::addr_of_mut!(PLANNER) },
+    };
+    let bytes = map_with(&grid3(false));
+    let tables_src = SliceSource(&bytes);
+    let tables = MapTables::parse(&tables_src).unwrap(); // the device's boot-parsed tables
+    let cache = MapCache::new();
+    let from = (BASE.0 + 100, BASE.1 - 100);
+    let goal = at(2, 2);
+    let to = (goal.0 - 100, goal.1 + 100);
+
+    // One device-shaped step: fresh source + Reader + sink view, phase read, then the step with
+    // the planner/scratch/tiles field borrows all live across the call — `ride.rs`'s nav_step.
+    fn step_once(
+        nav: &mut DeviceNav,
+        bytes: &[u8],
+        tables: &MapTables,
+        cache: &MapCache,
+        sink: &mut VecSink,
+    ) -> obc_route::Step {
+        // SAFETY (as on device): only called while a plan is active — the slot was written.
+        let _phase = unsafe { nav.planner.assume_init_ref() }.phase();
+        let src = SliceSource(bytes);
+        let reader = Reader::new(&src, tables, cache);
+        let planner = unsafe { nav.planner.assume_init_mut() };
+        planner.step(&reader, &mut *nav.scratch, &mut *nav.tiles, sink)
+    }
+    let mut nav = nav;
+
+    // Request 1: write the slot, step to completion (the plain short-route flow).
+    nav.planner.write(NavPlanner::new(from, to, "Dev"));
+    let mut sink = VecSink::default();
+    let stats = loop {
+        match step_once(&mut nav, &bytes, &tables, &cache, &mut sink) {
+            obc_route::Step::Running => {}
+            obc_route::Step::Done(stats) => break stats,
+            obc_route::Step::Failed(e) => panic!("device-model plan failed: {e:?}"),
+        }
+    };
+    assert_eq!(stats.total_distance_m, 4 * EDGE_COST);
+    let first = sink.buf.clone();
+
+    // Request 2 begins and is CANCELLED mid-search: the slot is overwritten (no drop — the
+    // device ptr-writes over the old plan), stepped a few times, then simply never stepped again.
+    nav.planner.write(NavPlanner::new(from, to, "Cancelled"));
+    let mut cancelled_sink = VecSink::default();
+    for _ in 0..2 {
+        assert!(matches!(step_once(&mut nav, &bytes, &tables, &cache, &mut cancelled_sink), obc_route::Step::Running));
+    }
+    assert!(cancelled_sink.buf.is_empty(), "a cancelled (abandoned) plan wrote nothing");
+
+    // Request 3 replaces the abandoned plan — another overwrite-without-drop — and completes;
+    // the emitted bytes must match request 1's exactly (no state bleed through the slot).
+    nav.planner.write(NavPlanner::new(from, to, "Dev"));
+    let mut sink3 = VecSink::default();
+    loop {
+        match step_once(&mut nav, &bytes, &tables, &cache, &mut sink3) {
+            obc_route::Step::Running => {}
+            obc_route::Step::Done(_) => break,
+            obc_route::Step::Failed(e) => panic!("replacement plan failed: {e:?}"),
+        }
+    }
+    assert_eq!(sink3.buf, first, "a slot overwrite leaks no state between plans");
+}
+
 /// The §8.3 record stride is 13 + 20·degree bytes — **odd + even** — so in any multi-record
 /// chunk, consecutive records alternate start-offset parity and the suite provably decodes
 /// records (and their multi-byte fields) at **odd, unaligned offsets**. That is the invariant
