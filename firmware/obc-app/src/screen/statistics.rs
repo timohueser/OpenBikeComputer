@@ -26,7 +26,7 @@ use crate::input::Gesture;
 use crate::settings::Settings;
 use crate::stat_fields;
 
-use super::{palette, title_frame, Ctx, MapScreen, Render, Screen, ScreenTick, Transition};
+use super::{palette, title_frame, ClimbScreen, Ctx, MapScreen, Render, Screen, ScreenTick, Transition};
 
 /// Cursor scrub per encoder detent, as a fraction of the whole route — ~42 detents end to end.
 const CURSOR_STEP_FRAC: f32 = 1.0 / 42.0;
@@ -109,12 +109,21 @@ impl StatisticsScreen {
                 Transition::None
             }
             Gesture::Back => match self.mode {
-                // Zoom: quick exit (springs back). Cursor: sibling toggle to the Map.
+                // Zoom: quick exit (springs back).
                 Mode::Zoom => {
                     self.reset();
                     Transition::None
                 }
-                Mode::Cursor => Transition::Replace(Screen::Map(MapScreen::new())),
+                // Cursor: the middle hop of the Back-cycle — on to the Climb screen when a climb is
+                // active and the Climb screen is enabled (Manual/Auto), else straight back to the
+                // Map (the collapsed Map↔Statistics 2-cycle when off-climb or Off).
+                Mode::Cursor => {
+                    if cx.settings.climb_mode.is_on() && cx.activity.active_climb.is_some() {
+                        Transition::Replace(Screen::Climb(ClimbScreen::new()))
+                    } else {
+                        Transition::Replace(Screen::Map(MapScreen::new()))
+                    }
+                }
             },
             Gesture::Press | Gesture::BackHold => super::riding_common(g, cx),
         }
@@ -360,6 +369,61 @@ fn draw_zoom_icon(cv: &mut impl Surface, x: i32, y: i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::activity::Activity;
+    use crate::settings::ClimbMode;
+    use crate::AppState;
+
+    /// Drive `handle` with a controlled climb mode + active-climb state, so the Back arm's
+    /// conditional 3-cycle is testable without a render context.
+    fn back_with(mode: ClimbMode, active_climb: Option<usize>) -> Transition {
+        let mut st = AppState::new(0, 0, 1.0);
+        // Fully-qualified so the local `Mode` (Cursor/Zoom) enum isn't shadowed by the ride `Mode`.
+        let mut act = Activity::new(crate::activity::Mode::Riding);
+        act.active_climb = active_climb;
+        let mut s = Settings { climb_mode: mode, ..Settings::default() };
+        let scratch = crate::screen::PoiScratch::new();
+        let mut cx = Ctx {
+            state: &mut st,
+            activity: &mut act,
+            settings: &mut s,
+            routes: &[],
+            rides: &[],
+            poi_scratch: &scratch,
+            now_ms: 0,
+        };
+        StatisticsScreen::new().handle(Gesture::Back, &mut cx)
+    }
+
+    /// Off-climb the Back-cycle collapses to the Map↔Statistics 2-cycle: Statistics-Back → Map,
+    /// for every mode (the Climb screen has nothing to show without an active climb).
+    #[test]
+    fn back_off_climb_is_the_two_cycle() {
+        for mode in [ClimbMode::Off, ClimbMode::Manual, ClimbMode::Auto] {
+            assert!(matches!(back_with(mode, None), Transition::Replace(Screen::Map(_))), "{mode:?} off-climb → Map");
+        }
+    }
+
+    /// On-climb with the Climb screen enabled (Manual **or** Auto), Statistics-Back inserts the
+    /// Climb hop: it's the middle of the 3-cycle.
+    #[test]
+    fn back_on_climb_inserts_the_climb_hop() {
+        for mode in [ClimbMode::Manual, ClimbMode::Auto] {
+            assert!(
+                matches!(back_with(mode, Some(0)), Transition::Replace(Screen::Climb(_))),
+                "{mode:?} on-climb → Climb"
+            );
+        }
+    }
+
+    /// `Off` keeps the Climb screen out of the ring entirely — even mid-climb, Statistics-Back goes
+    /// straight to the Map.
+    #[test]
+    fn back_off_mode_never_routes_to_climb() {
+        assert!(
+            matches!(back_with(ClimbMode::Off, Some(0)), Transition::Replace(Screen::Map(_))),
+            "Off keeps Climb out of the Back-cycle even mid-climb"
+        );
+    }
 
     /// A live position to scrub away from; one detent right lands at `scrubbed`.
     const LIVE: f32 = 0.5;
