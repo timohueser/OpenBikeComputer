@@ -118,6 +118,13 @@ struct Args {
     /// Headless `--png` only: render with a stored bond, so the Bluetooth screen's Paired row
     /// reads "yes" (and its Forget row arms). Stands in for the control panel's "Paired" toggle.
     ble_paired: bool,
+    /// Headless `--png` only: inject a **routing failure** (`exhausted` | `nopath`) after the
+    /// script runs, through the real `App::notify_nav_result` seam — so the two failure cards
+    /// render deterministically for the snapshot net. Needed because the range tier ("Too far to
+    /// route here" = the router's fixed table exhausting) is unreachable on the small fixture
+    /// graphs: grimsel plans even ~25 km routes inside the 1536-node table and monaco spans ~4 km.
+    /// The script must leave the CREATE ROUTE confirm on top (the card replaces it).
+    inject_nav_fail: Option<String>,
     /// Headless `--png` only: inject a committed route upload `(object id, replaced-existing)`
     /// after the script runs (epic #447, P4), so the three upload popups render — the idle
     /// "ROUTE RECEIVED" prompt, the mid-ride swap prompt, or (`--inject-upload-replace` of the
@@ -161,6 +168,7 @@ impl Default for Args {
             ble_connected: false,
             ble_passkey: None,
             ble_paired: false,
+            inject_nav_fail: None,
             inject_upload: None,
         }
     }
@@ -259,6 +267,13 @@ fn parse_args() -> Result<Args, String> {
                 a.clock = Some(parse_clock(&it.next().ok_or("--clock needs YYYY-MM-DDTHH:MM")?)?);
             }
             "--ble-connected" => a.ble_connected = true,
+            "--inject-nav-fail" => {
+                let kind = it.next().ok_or("--inject-nav-fail needs exhausted|nopath")?;
+                if kind != "exhausted" && kind != "nopath" {
+                    return Err("--inject-nav-fail needs exhausted|nopath".into());
+                }
+                a.inject_nav_fail = Some(kind);
+            }
             "--inject-upload" => {
                 let id = it.next().and_then(|s| s.parse().ok()).ok_or("--inject-upload needs an object id")?;
                 a.inject_upload = Some((id, false));
@@ -548,7 +563,7 @@ fn main() {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: obc-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--home-seed N] [--clock YYYY-MM-DDTHH:MM] [--ble-connected] [--ble-passkey N] [--ble-paired] [--inject-upload ID] [--inject-upload-replace ID]");
+            eprintln!("error: {e}\nusage: obc-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--home-seed N] [--clock YYYY-MM-DDTHH:MM] [--ble-connected] [--ble-passkey N] [--ble-paired] [--inject-upload ID] [--inject-upload-replace ID] [--inject-nav-fail exhausted|nopath]");
             std::process::exit(2);
         }
     };
@@ -746,6 +761,15 @@ fn main() {
                     app.set_rides(ride_store.catalog(), ride_store.ids());
                 }
             }
+        }
+
+        // Inject a routing failure (epic #116, R4) after the script left the CREATE ROUTE
+        // confirm on top: the answer goes through the real `notify_nav_result` seam, so the
+        // snapshot pins the exact error→tier mapping (`exhausted` → "Too far to route here",
+        // anything else → "Couldn't find a route.").
+        if let Some(kind) = &args.inject_nav_fail {
+            let err = if kind == "exhausted" { obc_route::NavError::Exhausted } else { obc_route::NavError::NoPath };
+            app.notify_nav_result(Err(err));
         }
 
         // Inject a committed route upload (epic #447, P4) after the script (so a `p p p` script
