@@ -118,6 +118,10 @@ struct Args {
     /// Headless `--png` only: render with a stored bond, so the Bluetooth screen's Paired row
     /// reads "yes" (and its Forget row arms). Stands in for the control panel's "Paired" toggle.
     ble_paired: bool,
+    /// Headless `--png` only: leave a recorded create-route request **un-drained**, so the
+    /// planning screen (spinner) stays on top for its snapshot instead of the plan completing
+    /// before the render. Implied by `--inject-nav-fail`.
+    nav_hold: bool,
     /// Headless `--png` only: inject a **routing failure** (`exhausted` | `nopath`) after the
     /// script runs, through the real `App::notify_nav_result` seam — so the two failure cards
     /// render deterministically for the snapshot net. Needed because the range tier ("Too far to
@@ -168,6 +172,7 @@ impl Default for Args {
             ble_connected: false,
             ble_passkey: None,
             ble_paired: false,
+            nav_hold: false,
             inject_nav_fail: None,
             inject_upload: None,
         }
@@ -267,6 +272,7 @@ fn parse_args() -> Result<Args, String> {
                 a.clock = Some(parse_clock(&it.next().ok_or("--clock needs YYYY-MM-DDTHH:MM")?)?);
             }
             "--ble-connected" => a.ble_connected = true,
+            "--nav-hold" => a.nav_hold = true,
             "--inject-nav-fail" => {
                 let kind = it.next().ok_or("--inject-nav-fail needs exhausted|nopath")?;
                 if kind != "exhausted" && kind != "nopath" {
@@ -400,43 +406,96 @@ fn replay_step<'s>(
     app.tick(RideClock(now_ms), sensors, route);
 }
 
-/// Run a drained POI create-route request (epic #116, R4) — the sim's host half of the nav seam,
-/// mirroring the board's `ride::plan_nav`: run the real `plan_route` against the loaded map,
-/// write the emitted OBCR to the reserved `_nav.obcr` in the routes folder, rescan + re-feed the
-/// id-carrying catalog, and answer the app (`notify_nav_result` swaps the confirm screen for the
-/// computed-route overview or the failure card).
+/// An in-flight route plan (#499): the resumable planner plus its caller-owned buffers and the
+/// in-memory sink. The GUI holds one and steps it **once per frame**, so the window stays fully
+/// interactive while a route computes (exactly how the board steps once per ride-loop pass); the
+/// headless path loops it to completion via `plan_route`.
 ///
 /// The A* table is the capped sim/LM20 size (`NAV_MAX_NODES` = 1536 ⇒ ~39 KB — the final
 /// device's 40 kB nav budget, deliberately emulated so sim range = final-device range) and is
 /// **heap-allocated zeroed**: an all-zero `NavScratch` is bit-identical to `new()` (its
-/// `.bss`-placement contract; `plan_route` resets it anyway), and `Box::new` would first build
-/// the table on the stack — a silent trap on the wasm build's small stack. The `progress` hook
-/// is the trivial always-continue (the sim needs no watchdog feed).
-fn run_nav_request(app: &mut obc_app::App, store: &mut RouteStore, reader: &Reader, req: &obc_app::NavRequest) {
-    use obc_route::nav::{plan_route, NavError, NavScratch};
-    // SAFETY: `NavScratch::new()` writes only zero bytes, so a zeroed allocation *is* the
-    // initialized value.
-    let mut scratch: Box<NavScratch> = unsafe { Box::new_zeroed().assume_init() };
-    let mut tiles = obc_reader::NavTileCache::new();
-    let mut sink = vec_sink::VecSink::default();
-    let result = plan_route(reader, req.from, req.to, req.name(), &mut scratch, &mut tiles, &mut || true, &mut sink)
-        .and_then(|stats| {
-            let id = store.write_nav_route(sink.bytes()).ok_or(NavError::NoPath)?;
-            app.set_routes_with_ids(store.catalog(), store.ids());
-            // A re-route rewrites the nav bytes under an unchanged catalog index — force the
-            // change-gated active-route read to re-open them.
-            store.invalidate_active();
-            let s = tiles.stats();
-            eprintln!(
-                "nav route: ok len={} m | tile-cache {} hit / {} miss (misses = chunk reads)",
-                stats.total_distance_m, s.hits, s.misses
-            );
-            Ok(id)
-        });
+/// `.bss`-placement contract; the first planner step resets it anyway), and `Box::new` would
+/// first build the table on the stack — a silent trap on the wasm build's small stack. The
+/// ~9 KB planner (it owns the OBCR emitter across steps) is boxed for the same reason.
+pub(crate) struct NavPlan {
+    planner: Box<obc_route::NavPlanner>,
+    scratch: Box<obc_route::nav::NavScratch>,
+    tiles: obc_reader::NavTileCache,
+    sink: vec_sink::VecSink,
+}
+
+impl NavPlan {
+    /// Begin a plan for a drained [`NavRequest`](obc_app::NavRequest).
+    pub(crate) fn start(req: &obc_app::NavRequest) -> Self {
+        // SAFETY: `NavScratch::new()` writes only zero bytes, so a zeroed allocation *is* the
+        // initialized value.
+        let scratch: Box<obc_route::nav::NavScratch> = unsafe { Box::new_zeroed().assume_init() };
+        NavPlan {
+            planner: Box::new(obc_route::NavPlanner::new(req.from, req.to, req.name())),
+            scratch,
+            tiles: obc_reader::NavTileCache::new(),
+            sink: vec_sink::VecSink::default(),
+        }
+    }
+
+    /// Run **one bounded planner step** (the GUI's per-frame unit). `Running` = keep going next
+    /// frame; a terminal outcome is handed to [`finish_nav_plan`].
+    pub(crate) fn step(&mut self, reader: &Reader) -> obc_route::Step {
+        self.planner.step(reader, &mut self.scratch, &mut self.tiles, &mut self.sink)
+    }
+
+    /// The emitted OBCR bytes so far (complete once the planner reported `Done`).
+    pub(crate) fn bytes(&self) -> &[u8] {
+        self.sink.bytes()
+    }
+
+    /// The plan's cumulative tile-cache counters (misses = chunk reads).
+    pub(crate) fn tile_stats(&self) -> obc_reader::NavCacheStats {
+        self.tiles.stats()
+    }
+}
+
+/// Commit / report a finished plan and answer the app — the shared tail of the GUI's stepped
+/// path and the headless one-shot: on success write the reserved `_nav.obcr`, rescan + re-feed
+/// the id-carrying catalog, and `notify_nav_result` (which swaps the planning screen for the
+/// computed-route overview or the failure card).
+fn finish_nav_plan(
+    app: &mut obc_app::App,
+    store: &mut RouteStore,
+    outcome: Result<obc_route::RouteStats, obc_route::NavError>,
+    sink_bytes: &[u8],
+    tile_stats: obc_reader::NavCacheStats,
+) {
+    use obc_route::NavError;
+    let result = outcome.and_then(|stats| {
+        let id = store.write_nav_route(sink_bytes).ok_or(NavError::NoPath)?;
+        app.set_routes_with_ids(store.catalog(), store.ids());
+        // A re-route rewrites the nav bytes under an unchanged catalog index — force the
+        // change-gated active-route read to re-open them.
+        store.invalidate_active();
+        eprintln!(
+            "nav route: ok len={} m | tile-cache {} hit / {} miss (misses = chunk reads)",
+            stats.total_distance_m, tile_stats.hits, tile_stats.misses
+        );
+        Ok(id)
+    });
     if let Err(e) = &result {
         eprintln!("nav route: failed ({e:?})");
     }
     app.notify_nav_result(result);
+}
+
+/// Headless one-shot for a drained request: loop the planner to completion (`plan_route`), then
+/// commit — scripted flows don't need frame-interleaved stepping.
+fn run_nav_request(app: &mut obc_app::App, store: &mut RouteStore, reader: &Reader, req: &obc_app::NavRequest) {
+    use obc_route::nav::{plan_route, NavScratch};
+    // SAFETY: see `NavPlan::start` — all-zero is the initialized value.
+    let mut scratch: Box<NavScratch> = unsafe { Box::new_zeroed().assume_init() };
+    let mut tiles = obc_reader::NavTileCache::new();
+    let mut sink = vec_sink::VecSink::default();
+    let outcome = plan_route(reader, req.from, req.to, req.name(), &mut scratch, &mut tiles, &mut sink);
+    let stats = tiles.stats();
+    finish_nav_plan(app, store, outcome, sink.bytes(), stats);
 }
 
 /// Reconcile the track store to the app's tracking intent (drains the one-shot action,
@@ -563,7 +622,7 @@ fn main() {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: obc-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--home-seed N] [--clock YYYY-MM-DDTHH:MM] [--ble-connected] [--ble-passkey N] [--ble-paired] [--inject-upload ID] [--inject-upload-replace ID] [--inject-nav-fail exhausted|nopath]");
+            eprintln!("error: {e}\nusage: obc-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--home-seed N] [--clock YYYY-MM-DDTHH:MM] [--ble-connected] [--ble-passkey N] [--ble-paired] [--inject-upload ID] [--inject-upload-replace ID] [--nav-hold] [--inject-nav-fail exhausted|nopath]");
             std::process::exit(2);
         }
     };
@@ -733,18 +792,25 @@ fn main() {
             // the whole POI→route flow: the request's answer swaps the confirm for the overview /
             // failure card, which the next token (or the final render) sees.
             let (rw, rh, rtc) = (args.width, args.height, args.true_color);
+            // `--nav-hold` / `--inject-nav-fail` leave the request un-drained so the planning
+            // screen stays up (for its own snapshot, or for the injected answer to land in).
+            let hold_nav = args.nav_hold || args.inject_nav_fail.is_some();
             let mut render = |app: &mut App| {
                 let mut fb = Framebuffer::new(rw, rh);
                 let _ = app.render_frame(&mut fb, &reader, None, rw as f32, rh as f32, |c| color_of(c, rtc));
-                if let Some(req) = app.take_nav_request() {
-                    run_nav_request(app, &mut store, &reader, &req);
+                if !hold_nav {
+                    if let Some(req) = app.take_nav_request() {
+                        run_nav_request(app, &mut store, &reader, &req);
+                    }
                 }
             };
             apply_script(&mut app, script, &mut render);
             // A create-route request recorded by the script's last press (no trailing `d`): drain
             // it now so the final render shows the answer, mirroring the delete drains below.
-            if let Some(req) = app.take_nav_request() {
-                run_nav_request(&mut app, &mut store, &reader, &req);
+            if !hold_nav {
+                if let Some(req) = app.take_nav_request() {
+                    run_nav_request(&mut app, &mut store, &reader, &req);
+                }
             }
             // A scripted hold-to-delete in the Route menu (epic #447 P6) records a delete request;
             // execute it here (delete the file + re-feed the id-carrying catalog) so the rendered

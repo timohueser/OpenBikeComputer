@@ -1884,6 +1884,15 @@ fn parse_poi_directory(src: &dyn ByteSource, offset: usize, total: usize) -> Res
 /// the `degree` byte at record offset 12 is `0xFF` in the `0xFF` padding, ending the walk (the POI
 /// sentinel trick — the padding's first byte always lands on a would-be degree slot). A record
 /// whose declared neighbors run past the chunk is corrupt: stop cleanly, decode nothing further.
+///
+/// **Byte-wise by contract — never a typed view.** The record stride is 13 + 20·degree bytes
+/// (odd + even), so records — and every multi-byte field in them — sit at **odd offsets** inside
+/// the chunk by design; all decoding goes through the `rd_*` `from_le_bytes`-on-`&[u8]` helpers.
+/// Two guards keep it that way (PR #501's on-glass HardFault dossier): the board build compiles
+/// with `+strict-align` (the ARM backend fused even these byte-wise decodes into an
+/// alignment-trapping `ldrd` under fat LTO — see `obc-fw-nrf54l/.cargo/config.toml`), and the
+/// obc-route nav suite runs clean under **Miri** (`cargo +nightly miri test -p obc-route --test
+/// nav`), which fails loudly if a typed view over these bytes ever creeps in.
 fn decode_nav_chunk(chunk: &[u8], visit: &mut impl FnMut(NavNodeRef)) {
     let mut off = 0usize;
     while off + NAV_NODE_FIXED_LEN <= chunk.len() {

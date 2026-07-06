@@ -149,18 +149,7 @@ fn draw_compass(cv: &mut impl Surface, w: i32, h: i32, selected: usize, needle_d
         }
     }
 
-    // Needle: amber head toward `needle_deg`, grey counterweight, hub cap on top. Screen coords:
-    // 0° = up, clockwise positive — so the direction is (sin, -cos) and its perpendicular (cos, sin).
-    let rad = needle_deg.to_radians();
-    let (dx, dy) = (libm::sinf(rad), -libm::cosf(rad));
-    let (px, py) = (-dy, dx);
-    let at = |ux: f32, uy: f32, r: f32| Point::new(c.x + si(1.0, ux * r), c.y + si(1.0, uy * r));
-    let b1 = at(px, py, 10.0);
-    let b2 = at(-px, -py, 10.0);
-    cv.triangle(at(dx, dy, 42.0), b1, b2, AMBER);
-    cv.triangle(at(-dx, -dy, 42.0), b1, b2, CONTOUR);
-    cv.disc(c, 6, INK);
-    cv.disc(c, 2, PARCHMENT);
+    draw_needle(cv, c, needle_deg, 42.0, 10.0);
 
     // Stations: amber-filled when selected, a thin tan ring otherwise. Evenly spaced around the ring
     // by `station_dir`, so the five entries sit at 72° detents starting from N.
@@ -181,6 +170,25 @@ fn draw_compass(cv: &mut impl Surface, w: i32, h: i32, selected: usize, needle_d
     }
 
     cv.text(ITEMS[selected], Point::new(w / 2, h - 38), Font::Display, TextAlign::Center, INK);
+}
+
+/// Draw the compass **needle** centred at `c`, pointing `deg` (0° = N, clockwise): amber head of
+/// length `r`, grey counterweight, ink hub with a parchment cap. Screen coords: the direction is
+/// `(sin, -cos)` and its perpendicular `(cos, sin)`; `half_w` is the base half-width. Shared by
+/// the Menu compass dial and the nav **planning** screen's spinner (#499), so the two needles can
+/// never drift apart.
+pub(super) fn draw_needle(cv: &mut impl Surface, c: Point, deg: f32, r: f32, half_w: f32) {
+    use palette::*;
+    let rad = deg.to_radians();
+    let (dx, dy) = (libm::sinf(rad), -libm::cosf(rad));
+    let (px, py) = (-dy, dx);
+    let at = |ux: f32, uy: f32, d: f32| Point::new(c.x + si(1.0, ux * d), c.y + si(1.0, uy * d));
+    let b1 = at(px, py, half_w);
+    let b2 = at(-px, -py, half_w);
+    cv.triangle(at(dx, dy, r), b1, b2, AMBER);
+    cv.triangle(at(-dx, -dy, r), b1, b2, CONTOUR);
+    cv.disc(c, 6, INK);
+    cv.disc(c, 2, PARCHMENT);
 }
 
 /// The 2×2 card-grid layout under the standard title bar: amber fill on the selected card, a tan

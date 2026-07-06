@@ -85,14 +85,19 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 # Create route → `d` runs the router; the answer swaps in the overview.
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
     --script "B r r w p r r r p d p p p d" --png "$OUT/nav-overview.png"
+# The planning screen (#499): accepting the confirm swaps to the spinning-needle wait while the
+# host steps the resumable planner. `--nav-hold` leaves the recorded request un-drained so the
+# screen stays up for the snapshot (needle at its deterministic initial angle).
+"$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
+    --script "B r r w p r r r p d p p p" --nav-hold --png "$OUT/nav-planning.png"
 # The two locked failure tiers. The range tier ("Too far to route here") = the router's fixed
 # table exhausting — with no distance cap that IS the device's range limit — which the small
 # fixture graphs can't reach (grimsel plans even ~25 km routes inside the 1536-node table), so
-# the card is injected through the real notify_nav_result seam with the confirm on top, pinning
-# the exhausted→range-tier mapping. The generic tier ("Couldn't find a route.") stays a real
-# plan: a mountain fix with no routable node within the 250 m snap radius.
+# the card is injected through the real notify_nav_result seam with the planning screen on top,
+# pinning the exhausted→range-tier mapping. The generic tier ("Couldn't find a route.") stays a
+# real plan: a mountain fix with no routable node within the 250 m snap radius.
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
-    --script "B r r w p r r r p d p p" --inject-nav-fail exhausted --png "$OUT/nav-toofar.png"
+    --script "B r r w p r r r p d p p p" --inject-nav-fail exhausted --png "$OUT/nav-toofar.png"
 "$SIM" "$MAP" --boot --routes-dir "$NAVDIR" --center 8140000,46480000 --heading 0 \
     --script "B r r w p p d p p p d" --png "$OUT/nav-nopath.png"
 "$SIM" "$MAP" --boot --script "B l p"        --png "$OUT/settings.png"
@@ -130,4 +135,4 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 # Active route replaced (riding id 0, id 0 re-uploaded): the info-only "ROUTE UPDATED" card.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p" --inject-upload-replace 0 --png "$OUT/route-updated.png"
 
-echo "ui-snapshots: 37 screens rendered into $OUT/"
+echo "ui-snapshots: 38 screens rendered into $OUT/"
