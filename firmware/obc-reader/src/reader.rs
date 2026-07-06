@@ -129,17 +129,21 @@ const NAV_EDGE_WINDOW: usize = 128;
 /// defaults to 4096), so this caps the scratch below the format ceiling to save RAM. A chunk
 /// between a cache slot and this decodes through the scratch, uncached.
 ///
-/// `nrf-mem` trims the scratch to the **largest chunk `obc-pack` can legally emit** (epic #116
-/// R4 — the router's ~14 KB of `.bss` statics squeezed the combined `ble` build's stack region):
-/// the packer's pack-time ceiling is `MAX_SAFE_CHUNK_SIZE = (MAX_FEAT_PTS - 1) * 2 + 12` — any
-/// larger chunk could hold a feature the reader silently truncates, so `obc-pack` rejects it —
-/// which makes the same formula here a zero-cost cap: **no packable map is refused**. A foreign
-/// map with a bigger `chunk_size` loads on the host/sim but is rejected on the device (as the
-/// previous 8192 cap already was, just at a higher line); the 512 KB LM20 re-decides the cap.
+/// `nrf-mem` halves the scratch (issue #270 — the map path must coexist with the BLE stack on
+/// the 256 KB DK): a map packed with `chunk_size` past 8192 loads on the host/sim but is
+/// rejected on the device. The packer default (4096) clears it with room; the 512 KB LM20
+/// re-decides the cap.
+///
+/// **Do not trim this below 8192 under `nrf-mem`** (tried in #116 R4, reverted): `nrf-mem` is an
+/// *additive* feature the all-features host CI enables, so this constant is an **acceptance**
+/// bound, not just a buffer size — shrinking it makes the host reader reject the deliberately
+/// large chunks the round-trip suite packs (obc-pack's `max_feat_pts_boundary_survives` puts two
+/// features, one at `MAX_FEAT_PTS`, into one 8192-byte chunk). Reclaiming the scratch's headroom
+/// would first need acceptance decoupled from the `nrf-mem` scratch size.
 #[cfg(not(feature = "nrf-mem"))]
 pub const MAX_CHUNK_BYTES: usize = 16384;
 #[cfg(feature = "nrf-mem")]
-pub const MAX_CHUNK_BYTES: usize = (MAX_FEAT_PTS - 1) * 2 + 12;
+pub const MAX_CHUNK_BYTES: usize = 8192;
 
 /// Size of one geometry-chunk **cache** slot. A chunk this size or smaller is cached (kept
 /// resident across the frame's priority passes); a larger one — up to [`MAX_CHUNK_BYTES`] — is
