@@ -37,6 +37,7 @@ mod poi_detail;
 mod poi_list;
 mod poi_menu;
 mod ride_control;
+mod ride_start;
 mod rides;
 mod route_menu;
 mod route_overview;
@@ -57,6 +58,7 @@ pub use poi_detail::PoiDetailScreen;
 pub use poi_list::{PoiListScreen, PoiScratch};
 pub use poi_menu::PoiMenuScreen;
 pub use ride_control::RideControl;
+pub use ride_start::RideStartScreen;
 pub use rides::RidesScreen;
 pub use route_menu::RouteMenuScreen;
 pub use route_overview::RouteOverviewScreen;
@@ -328,6 +330,9 @@ screens! {
     Climb(ClimbScreen) => Riding,
     /// The pause page: ride-so-far ledger + the guarded Resume / Finish / Discard rows.
     RideControl(RideControl) => Nav,
+    /// The route-less start card (Menu → Map → press): "Start ride" / "Back". *Start ride* begins a
+    /// tracking session with no route via [`start_ride_routeless`].
+    RideStart(RideStartScreen) => Nav,
     Menu(MenuScreen) => Nav,
     /// The POIs browser's category list (Menu → POIs).
     PoiMenu(PoiMenuScreen) => Nav,
@@ -581,9 +586,32 @@ pub(crate) fn start_ride(cx: &mut Ctx, i: usize) -> Transition {
     let Some(route) = cx.routes.get(i) else {
         return Transition::Pop;
     };
-    cx.state.enter_riding_view(route.start_lon, route.start_lat);
-    cx.activity.mode = Mode::Riding;
+    let (lon, lat) = (route.start_lon, route.start_lat);
     cx.activity.active_route = Some(i);
+    begin_riding_session(cx, lon, lat)
+}
+
+/// Start a **route-less** tracking session from a non-tracking state — the browse Map's start card
+/// (Menu → Map → press → *Start ride*). Identical to [`start_ride`] minus the route: no
+/// `active_route`, and the riding camera seeded on the rider's last fix (or the current camera when
+/// no fix yet) rather than a route start. The recorded ride saves and behaves exactly like a
+/// route-guided one (same session, ORD file, breadcrumb, BLE ride object) — only with no route to
+/// navigate against, so the route-relative stats read `--`.
+pub(crate) fn start_ride_routeless(cx: &mut Ctx) -> Transition {
+    // Seed the camera where the rider is (the last fix), falling back to the current camera so the
+    // first frame is sensible before any fix. Follow mode recenters on each fix regardless.
+    let (lon, lat) = cx.state.user_fix.map_or((cx.state.cam_lon, cx.state.cam_lat), |f| (f.lon, f.lat));
+    cx.activity.active_route = None;
+    begin_riding_session(cx, lon, lat)
+}
+
+/// The session-begin shared by [`start_ride`] and [`start_ride_routeless`]: enter the riding view
+/// (camera seeded at `(lon, lat)`), go [`Mode::Riding`], open a fresh tracking session, and root the
+/// stack to a clean `[Home, Map]`. The caller sets `active_route` first (a route index, or `None`
+/// for a route-less ride) — the one thing that differs between the two starts.
+fn begin_riding_session(cx: &mut Ctx, lon: i32, lat: i32) -> Transition {
+    cx.state.enter_riding_view(lon, lat);
+    cx.activity.mode = Mode::Riding;
     cx.activity.start_session();
     Transition::Root(Screen::Map(MapScreen::new()))
 }

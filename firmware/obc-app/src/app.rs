@@ -2080,7 +2080,10 @@ impl App {
         if self.activity.is_tracking() {
             !self.is_ride_view()
         } else {
-            self.stack.len() > 1
+            // Not tracking: any overlay above the Home root would return to Home — **except** the
+            // route-less browse Map (Menu → Map). Riding with the map open without recording is a
+            // deliberate view, not idleness, so it's exempt just like a ride view is mid-ride.
+            self.stack.len() > 1 && !matches!(self.stack.last(), Some(Screen::Map(_)))
         }
     }
 
@@ -2119,8 +2122,9 @@ impl App {
     /// elapsed with no user input — the app-level counterpart to the popups' timeout-dismiss sweep,
     /// run once per [`advance_animations`](App::advance_animations) pass.
     ///
-    /// - **Not tracking a ride:** from any screen, clear every overlay back to the Home root and
-    ///   reseed the screensaver backdrop (exactly as a manual return to Home does).
+    /// - **Not tracking a ride:** from any screen *except* the route-less browse Map (Menu → Map, a
+    ///   deliberate view — see [`idle_return_pending`](App::idle_return_pending)), clear every
+    ///   overlay back to the Home root and reseed the screensaver backdrop (as a manual return does).
     /// - **Tracking a ride:** a menu / list / settings / overview screen returns to the Map (the
     ///   ride base). The deliberate ride views ([`is_ride_view`](App::is_ride_view)) stay put.
     ///
@@ -3590,6 +3594,26 @@ mod tests {
             idle_tick(&mut app, 20_000);
             assert_eq!(core::mem::discriminant(app.top_screen()), kind, "the modal card stays up");
         }
+    }
+
+    /// The route-less **browse map** (Map on top, not tracking — Menu → Map) is a deliberate view,
+    /// so it's exempt from the idle-return timeout even though it isn't the Home root: elapse well
+    /// past the deadline and it stays put (unlike a menu, which would return to Home).
+    #[test]
+    fn browse_map_is_exempt_from_idle_return() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0)); // Idle, not tracking
+        app.settings.idle_return = IdleReturn::S15;
+        let _ = app.stack.push(Screen::Map(MapScreen::new())); // the browse map over Home
+        app.last_input_ms = 0;
+        idle_tick(&mut app, 60_000);
+        assert!(matches!(app.top_screen(), Screen::Map(_)), "the browse map is a deliberate view — never yanked");
+        assert_eq!(app.ms_until_next_wake(60_000), None, "and it arms no idle wake");
+
+        // A menu over Home, by contrast, does return.
+        *app.stack.last_mut().unwrap() = Screen::Menu(MenuScreen::new());
+        app.last_input_ms = 60_000;
+        idle_tick(&mut app, 120_000);
+        assert!(matches!(app.top_screen(), Screen::Home(_)), "a menu still returns to Home on the timeout");
     }
 
     /// Any gesture resets the idle deadline — a turn 1 ms before it would fire buys another full window.

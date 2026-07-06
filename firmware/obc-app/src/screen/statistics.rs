@@ -228,11 +228,28 @@ impl StatisticsScreen {
         use palette::*;
         let (w, h) = (rx.w, rx.h);
 
-        // The screen needs both the resident profile (the band) and the route (totals +
-        // cumulative climb). Either missing → the empty state, same as the Route menu's.
+        // The elevation band + progress bar + cursor need both the resident profile and the route
+        // (totals + cumulative climb). On a **route-less ride** neither is loaded: keep the same
+        // screen — the title bar and the customizable stat grid still work (route-relative tiles read
+        // `--`, everything else live) — but the chart region degrades to a "No route loaded" note
+        // where the band would be, and the progress bar is drawn empty. This is the graceful
+        // no-profile state, not a separate empty screen: a route-less rider still watches speed /
+        // distance / climb / clock.
         let (Some(profile), Some(route)) = (rx.profile, rx.route) else {
-            title_frame(cv, w, h, "STATS", "");
-            super::empty_state(cv, w, h, "No route loaded", "Load one from Routes");
+            title_frame(cv, w, h, "STATS", if rx.no_fix { "no GPS" } else { "" });
+            // The no-profile note, centred where the elevation band would draw.
+            cv.text(
+                "No route loaded",
+                Point::new(w / 2, (CHART_TOP + CHART_BOT) / 2 - 9),
+                Font::Label,
+                TextAlign::Center,
+                palette::SUBTEXT,
+            );
+            cv.hline(SIDE_MARGIN, CHART_BOT + 1, w - 2 * SIDE_MARGIN, palette::RULE);
+            // An empty progress bar in the usual slot, so the grid below sits where it always does.
+            let prog_y = CHART_BOT + 10;
+            cv.round(rect(SIDE_MARGIN, prog_y, w - 2 * SIDE_MARGIN, 8), 4, palette::PARCHMENT_SHADE);
+            self.draw_stat_grid(cv, rx, prog_y + 16);
             return;
         };
 
@@ -329,14 +346,25 @@ impl StatisticsScreen {
             cv.round(rect(chart_x, prog_y, fill_w, 8), 4, live_color);
         }
 
-        // Customizable stat grid: the rider's fields, paginated (3x2) and auto-cycled by `tick_timers`.
-        // Each placed field renders its own tile via the registry; a two-span field fills a row.
+        // Customizable stat grid below the progress bar.
+        self.draw_stat_grid(cv, rx, prog_y + 16);
+    }
+
+    /// Draw the customizable stat grid — the rider's fields, paginated (3×2) and auto-cycled by
+    /// [`tick_timers`](Self::tick_timers) — with its top at `grid_top`. Each placed field renders its
+    /// own tile via the registry; a two-span field fills a row. Shared by the route-present draw and
+    /// the route-less no-profile state, so the grid (and its `--` route-relative tiles) is identical
+    /// either way.
+    fn draw_stat_grid(&self, cv: &mut impl Surface, rx: &mut Render, grid_top: i32) {
+        use palette::*;
+        let (w, h) = (rx.w, rx.h);
+        let chart_x = SIDE_MARGIN;
+        let chart_w = w - 2 * SIDE_MARGIN;
         let fields = &rx.settings.stat_fields;
         let page = self.page.min(stat_fields::page_count(fields) - 1);
 
         let gap = 6;
         let col_w = (chart_w - gap) / 2;
-        let grid_top = prog_y + 16;
         let row_h = ((h - 10 - grid_top - 2 * gap) / stat_fields::ROWS_PER_PAGE as i32).max(20);
         let cx = rx.readout();
         for placed in stat_fields::page_fields(fields, page) {
