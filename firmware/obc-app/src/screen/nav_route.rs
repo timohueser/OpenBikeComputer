@@ -112,9 +112,11 @@ impl NavConfirmScreen {
 /// 1.5 s), advanced by real elapsed millis so the speed reads the same at any host frame rate.
 const SPIN_DPS: f32 = 240.0;
 
-/// Frame cadence the spinner asks the host for — smooth enough for a needle, cheap enough that a
-/// multi-second plan isn't dominated by repaints (on the board the practical cadence is the ride
-/// loop's per-step pass anyway).
+/// Frame cadence the spinner repaints at *and* asks the host to wake for — smooth enough for a
+/// needle, cheap enough that a multi-second plan isn't dominated by repaints. This is a hard
+/// throttle, not just a wake request: during a plan the ride loop passes by every planner step
+/// (far faster than this), and each claimed repaint costs a full chrome render + push (~40 ms on
+/// glass) — unthrottled, the spinner starves the planner it's decorating (#500).
 const SPIN_FRAME_MS: u32 = 66;
 
 /// The planning screen (#499): up from confirm-accept until the host's answer replaces it. Shows
@@ -128,6 +130,10 @@ pub struct NavPlanningScreen {
     needle_deg: f32,
     /// Clock of the previous spin tick, for the per-frame `dt`; `None` before the first.
     last_ms: Option<u32>,
+    /// Clock of the last tick that **claimed a repaint** — the [`SPIN_FRAME_MS`] throttle's
+    /// anchor, distinct from `last_ms` (the needle advances every tick; the glass repaints at
+    /// the spinner cadence).
+    last_paint_ms: Option<u32>,
 }
 
 impl NavPlanningScreen {
@@ -139,7 +145,7 @@ impl NavPlanningScreen {
                 break;
             }
         }
-        NavPlanningScreen { name: nm, needle_deg: 0.0, last_ms: None }
+        NavPlanningScreen { name: nm, needle_deg: 0.0, last_ms: None, last_paint_ms: None }
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
@@ -157,11 +163,19 @@ impl NavPlanningScreen {
 
     /// [`Screen::tick_timers`] arm: spin the needle by real elapsed time and keep the host's
     /// frame cadence armed — between the ride loop's planner steps this is what animates.
+    /// `changed` is claimed at most once per [`SPIN_FRAME_MS`] no matter how often the loop
+    /// passes (see the constant's doc — an unthrottled claim per planner step starved the plan
+    /// with ~40 ms chrome repaints, #500); the needle still advances by the full elapsed time,
+    /// so a throttled frame just shows a slightly larger sweep.
     pub fn tick_timers(&mut self, now_ms: u32) -> ScreenTick {
         let dt = self.last_ms.map_or(0.0, |last| now_ms.wrapping_sub(last) as f32 / 1000.0);
         self.last_ms = Some(now_ms);
         self.needle_deg = (self.needle_deg + SPIN_DPS * dt.min(0.25)) % 360.0;
-        ScreenTick { changed: dt > 0.0, next_wake_ms: Some(SPIN_FRAME_MS) }
+        let due = self.last_paint_ms.is_none_or(|last| now_ms.wrapping_sub(last) >= SPIN_FRAME_MS);
+        if due {
+            self.last_paint_ms = Some(now_ms);
+        }
+        ScreenTick { changed: due && dt > 0.0, next_wake_ms: Some(SPIN_FRAME_MS) }
     }
 
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {

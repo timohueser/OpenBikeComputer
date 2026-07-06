@@ -8,7 +8,7 @@
 
 use embedded_graphics::pixelcolor::Rgb888;
 use obc_app::screen::Screen;
-use obc_app::{App, AppState, Fix, Gesture, Mode, NavRequest, RouteSummary};
+use obc_app::{App, AppState, Fix, Gesture, InputClock, Mode, NavRequest, RouteSummary};
 use obc_reader::{rgb565_to_rgb888, BBox, MapCache, MapTables, Reader, SliceSource};
 use obc_route::NavError;
 use obcm_testkit::{build_poi_map, PoiSpec};
@@ -286,4 +286,68 @@ fn back_on_planning_cancels_cleanly() {
     app.notify_nav_result(Ok(7));
     assert!(matches!(app.top_screen(), Screen::PoiDetail(_)), "a post-cancel answer is dropped");
     assert_eq!(app.activity.active_route, None, "nothing activates after a cancel");
+}
+
+#[test]
+fn planning_spinner_throttles_repaints_to_its_cadence() {
+    use obc_app::screen::NavPlanningScreen;
+    // #500: during a plan the ride loop ticks the screen once per planner step — every ~8 ms —
+    // and each claimed repaint costs a full chrome render + push (~40 ms on glass). The spinner
+    // must claim `changed` at most once per its 66 ms frame cadence, not per tick, or the
+    // repaints starve the plan they're decorating. (The needle still advances by real elapsed
+    // time, so a throttled frame just shows a larger sweep.)
+    let mut s = NavPlanningScreen::new("Fountain North");
+    let first = s.tick_timers(1_000); // anchors the clocks; nothing elapsed yet
+    assert!(!first.changed, "no time elapsed, nothing to repaint");
+    assert_eq!(first.next_wake_ms, Some(66), "the spinner keeps its frame cadence armed");
+
+    // 100 ride-loop passes at 8 ms: ~1 claim per ceil(66/8)·8 = 72 ms window, not 100.
+    let claims = (1..=100).filter(|i| s.tick_timers(1_000 + i * 8).changed).count();
+    assert!((10..=13).contains(&claims), "expected ~800 ms / 72 ms ≈ 11 repaints, got {claims}");
+}
+
+#[test]
+fn overview_after_debug_plan_goes_quiet() {
+    // The #500 bench flow: planning pushed over Home (debug_start_nav), answered with a
+    // resolvable id → overview. The app must then go quiet: no repaint claims, no short wake.
+    let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    nav_catalog(&mut app);
+    app.debug_start_nav(POS, POI, "Bench");
+    assert!(matches!(app.top_screen(), Screen::NavPlanning(_)));
+    let _ = app.take_nav_request();
+    let _ = app.take_dirty();
+    app.notify_nav_result(Ok(7));
+    assert!(matches!(app.top_screen(), Screen::RouteOverview(_)), "answer swaps to the overview");
+    let _ = app.take_dirty();
+    for i in 1..=20u32 {
+        app.advance_animations(InputClock(1_000 + i * 107));
+        let wake = app.ms_until_next_wake(1_000 + i * 107);
+        assert!(
+            !app.take_dirty().map && wake.is_none(),
+            "pass {i}: overview must be quiet (dirty or wake {wake:?} claimed)"
+        );
+    }
+}
+
+#[test]
+fn repeated_debug_requests_stack_one_planning_screen() {
+    // The bench host repeats the `N` line against the flaky VCOM; only one planning screen may
+    // result, or the host's answer strands the extras spinning forever (the #500 bench artifact).
+    let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    nav_catalog(&mut app);
+    for _ in 0..3 {
+        app.debug_start_nav(POS, POI, "Bench");
+    }
+    let planning = |app: &App| {
+        // Count via the public seam: answering removes exactly the planning screens it finds.
+        matches!(app.top_screen(), Screen::NavPlanning(_))
+    };
+    assert!(planning(&app));
+    let _ = app.take_nav_request();
+    app.notify_nav_result(Ok(7));
+    assert!(matches!(app.top_screen(), Screen::RouteOverview(_)), "the answer lands on the one screen");
+    let _ = app.take_dirty();
+    app.advance_animations(InputClock(2_000));
+    assert!(!app.take_dirty().map, "no stranded spinner keeps repainting");
+    assert!(app.ms_until_next_wake(2_000).is_none(), "…or holds a short wake armed");
 }
