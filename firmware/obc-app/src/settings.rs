@@ -175,6 +175,76 @@ impl Units {
     }
 }
 
+/// How the Climb screen (epic #506) is reached. A device-only setting (the Stats settings screen
+/// cycles it), persisted in the settings codec next to [`ble_enabled`](Settings::ble_enabled).
+///
+/// The discriminants are a **stable on-disk contract** — appended, never renumbered — so a stored
+/// byte always decodes to the same mode (an unknown byte sanitises to the default, [`Auto`]).
+///
+/// [`Auto`]: ClimbMode::Auto
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ClimbMode {
+    /// The Climb screen is disabled: it's kept out of the Back-cycle entirely (Map ↔ Statistics
+    /// only) and never auto-shown.
+    Off = 0,
+    /// The Climb screen is in the Back-cycle when a climb is active, but the device never switches
+    /// to it on its own — the rider reaches it by cycling Back.
+    Manual = 1,
+    /// The Climb screen is in the Back-cycle **and** the device auto-switches to it on climb entry
+    /// (from a riding view) and auto-returns to the Map on the crest — the headline behavior.
+    Auto = 2,
+}
+
+impl Default for ClimbMode {
+    /// **Auto** out of the box — the climb panel is self-discovering (it shows itself on the first
+    /// climb). Easily changed here if a quieter default is wanted.
+    fn default() -> Self {
+        ClimbMode::Auto
+    }
+}
+
+impl ClimbMode {
+    /// The label for the Stats screen's Climb-panel row (`Off` / `Manual` / `Auto`).
+    #[inline]
+    pub const fn name(self) -> &'static str {
+        match self {
+            ClimbMode::Off => "Off",
+            ClimbMode::Manual => "Manual",
+            ClimbMode::Auto => "Auto",
+        }
+    }
+
+    /// Whether the Climb screen belongs in the Back-cycle at all — false only for [`Off`](ClimbMode::Off).
+    #[inline]
+    pub const fn is_on(self) -> bool {
+        !matches!(self, ClimbMode::Off)
+    }
+
+    /// The next mode in the Off → Manual → Auto → Off ring — the Stats row's one action (a turn or
+    /// press steps it).
+    #[inline]
+    pub const fn cycled(self) -> Self {
+        match self {
+            ClimbMode::Off => ClimbMode::Manual,
+            ClimbMode::Manual => ClimbMode::Auto,
+            ClimbMode::Auto => ClimbMode::Off,
+        }
+    }
+
+    /// Rebuild from a stored byte, sanitising an unknown value to the default ([`Auto`](ClimbMode::Auto))
+    /// — the decode-side clamp, exactly like the other codec fields.
+    #[inline]
+    fn from_byte(b: u8) -> Self {
+        match b {
+            0 => ClimbMode::Off,
+            1 => ClimbMode::Manual,
+            2 => ClimbMode::Auto,
+            _ => ClimbMode::default(),
+        }
+    }
+}
+
 /// Wrap `v` by `n` steps within the inclusive range `lo..=hi`. Shared by every
 /// [`DateTime`] stepper so a turn past either end rolls round (year 2099→2020, hour 23→0),
 /// matching the list selection's [`step_selection`](crate::screen::list::step_selection) feel.
@@ -455,6 +525,11 @@ pub struct Settings {
     /// pulls across (a phone must never be able to switch the radio out from under the rider, and
     /// couldn't turn it back on). Default **on**.
     pub ble_enabled: bool,
+    /// How the Climb screen (epic #506) is reached — Off / Manual / Auto (the Stats settings screen
+    /// cycles it). **Device-only**, like [`ble_enabled`](Settings::ble_enabled): deliberately *not*
+    /// one of the BLE-writable fields [`adopt_ble_fields`](Settings::adopt_ble_fields) pulls across.
+    /// Default **Auto** — the climb panel auto-shows on the first climb.
+    pub climb_mode: ClimbMode,
 }
 
 impl Default for Settings {
@@ -470,6 +545,7 @@ impl Default for Settings {
             stat_cycle_s: STAT_CYCLE_DEFAULT,
             device_name: DeviceName::EMPTY,
             ble_enabled: true,
+            climb_mode: ClimbMode::default(),
         }
     }
 }
@@ -516,8 +592,8 @@ impl Settings {
 
 /// Codec version — bump when the byte layout changes; [`decode`] rejects any other version (the
 /// host then falls back to [`Settings::default`], i.e. settings reset on a format change).
-/// v4 appended the `ble_enabled` byte (#455).
-pub const VERSION: u8 = 4;
+/// v4 appended the `ble_enabled` byte (#455); v5 appended the `climb_mode` byte (#511).
+pub const VERSION: u8 = 5;
 
 /// Fixed encoded length: the [`PAYLOAD_LEN`] CRC-covered bytes + a 2-byte CRC, **rounded up to the
 /// device RRAM's 16-byte write line** (the firmware store writes whole 128-bit lines) — so a codec
@@ -526,7 +602,7 @@ pub const VERSION: u8 = 4;
 pub const ENCODED_LEN: usize = (PAYLOAD_LEN + 2).div_ceil(16) * 16;
 
 /// Payload size before the trailing CRC. The CRC follows immediately at this offset.
-const PAYLOAD_LEN: usize = BLE_OFF + 1;
+const PAYLOAD_LEN: usize = CLIMB_OFF + 1;
 /// Byte offset of the field selection (right after the 14-byte head).
 const STAT_FIELDS_OFF: usize = 14;
 /// Byte offset of `stat_cycle_s` (right after the field selection).
@@ -535,6 +611,8 @@ const STAT_CYCLE_OFF: usize = STAT_FIELDS_OFF + 1 + MAX_STAT_FIELDS;
 const NAME_OFF: usize = STAT_CYCLE_OFF + 2;
 /// Byte offset of the `ble_enabled` flag (the v4 tail, right after the device name).
 const BLE_OFF: usize = NAME_OFF + 1 + DEVICE_NAME_MAX;
+/// Byte offset of the `climb_mode` byte (the v5 tail, right after `ble_enabled`).
+const CLIMB_OFF: usize = BLE_OFF + 1;
 
 /// CRC-16/CCITT-FALSE (poly `0x1021`, init `0xFFFF`) over `data` — small, table-free, and
 /// plenty to reject a blank/half-written blob. Guards the codec on both stores.
@@ -576,6 +654,8 @@ pub fn encode(s: &Settings) -> [u8; ENCODED_LEN] {
     b[NAME_OFF + 1..NAME_OFF + 1 + name.len()].copy_from_slice(name);
     // v4 tail: the Bluetooth radio switch.
     b[BLE_OFF] = s.ble_enabled as u8;
+    // v5 tail: the Climb-screen mode.
+    b[CLIMB_OFF] = s.climb_mode as u8;
     let crc = crc16(&b[0..PAYLOAD_LEN]);
     b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
     b
@@ -615,6 +695,9 @@ pub fn decode(bytes: &[u8]) -> Option<Settings> {
             _ => DeviceName::EMPTY,
         },
         ble_enabled: b[BLE_OFF] != 0,
+        // An unknown climb-mode byte (an older/newer writer, a bit-flip the CRC missed) sanitises
+        // to the default, exactly like the other out-of-range fields.
+        climb_mode: ClimbMode::from_byte(b[CLIMB_OFF]),
     };
     s.sanitize();
     Some(s)
@@ -850,6 +933,7 @@ mod tests {
             stat_cycle_s: 8,
             device_name: DeviceName::from_str_lossy("Timo's OBC"),
             ble_enabled: false,
+            climb_mode: ClimbMode::Manual,
         };
         assert_eq!(decode(&encode(&s)), Some(s));
     }
@@ -860,7 +944,6 @@ mod tests {
     #[test]
     fn ble_enabled_round_trips_and_is_device_only() {
         assert!(Settings::default().ble_enabled, "the radio defaults on");
-        assert_eq!(VERSION, 4, "the ble_enabled tail is the v4 layout (settings reset on flash)");
         let s = Settings { ble_enabled: false, ..Settings::default() };
         assert_eq!(decode(&encode(&s)), Some(s), "the off state round-trips");
 
@@ -869,6 +952,35 @@ mod tests {
         app.adopt_ble_fields(&Settings { units: Units::Imperial, ..Settings::default() });
         assert!(!app.ble_enabled, "adopt_ble_fields leaves the radio switch alone");
         assert_eq!(app.units, Units::Imperial, "while the BLE-owned fields still land");
+    }
+
+    /// The v5 tail: the Climb-screen mode round-trips, defaults **Auto** (the headline
+    /// auto-show behavior), sanitises an out-of-range byte back to Auto, and is device-only —
+    /// [`adopt_ble_fields`] must never pull it across (a phone can't reconfigure the climb UI).
+    #[test]
+    fn climb_mode_round_trips_and_is_device_only() {
+        assert_eq!(VERSION, 5, "the climb_mode tail is the v5 layout (settings reset on flash)");
+        assert_eq!(Settings::default().climb_mode, ClimbMode::Auto, "the climb panel defaults on (Auto)");
+
+        // Each mode round-trips through the codec byte-for-byte.
+        for mode in [ClimbMode::Off, ClimbMode::Manual, ClimbMode::Auto] {
+            let s = Settings { climb_mode: mode, ..Settings::default() };
+            assert_eq!(decode(&encode(&s)), Some(s), "{mode:?} round-trips");
+        }
+
+        // An out-of-range stored byte (a newer writer, a bit-flip the CRC missed) sanitises to the
+        // default Auto, not a garbage variant — re-stamp the CRC so only the payload is "wrong".
+        let mut b = encode(&Settings { climb_mode: ClimbMode::Off, ..Settings::default() });
+        b[CLIMB_OFF] = 200;
+        let crc = crc16(&b[0..PAYLOAD_LEN]);
+        b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
+        let got = decode(&b).expect("valid CRC → Some, just sanitised");
+        assert_eq!(got.climb_mode, ClimbMode::Auto, "an unknown climb-mode byte falls back to Auto");
+
+        // Device-only: a BLE blob's climb_mode never lands via the #456 coherence merge.
+        let mut app = Settings { climb_mode: ClimbMode::Off, ..Settings::default() };
+        app.adopt_ble_fields(&Settings { climb_mode: ClimbMode::Auto, ..Settings::default() });
+        assert_eq!(app.climb_mode, ClimbMode::Off, "adopt_ble_fields leaves the climb mode alone");
     }
 
     /// The v3 device-name tail: set → truncate on a char boundary at the 48-byte cap, and a
@@ -941,8 +1053,8 @@ mod tests {
         assert_eq!(decode(&encode(&Settings::default())[..ENCODED_LEN - 1]), None, "a short slice is rejected");
         let mut wrong = encode(&Settings::default());
         wrong[0] = VERSION + 1; // bump version, fix the CRC so only the version differs
-        let crc = crc16(&wrong[0..14]);
-        wrong[14..16].copy_from_slice(&crc.to_le_bytes());
+        let crc = crc16(&wrong[0..PAYLOAD_LEN]);
+        wrong[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
         assert_eq!(decode(&wrong), None, "a future version is rejected");
     }
 

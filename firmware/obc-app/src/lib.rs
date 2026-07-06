@@ -44,7 +44,7 @@ pub use ride::{RideCatalog, RideSummary, MAX_RIDES, UI_RIDES_CAP};
 pub use route::{Catalog, RouteSummary, MAX_ROUTES};
 pub use screen::{Screen, ScreenKind, Transition};
 pub use settings::{
-    decode_synced_rides, encode_synced_rides, synced_rides_len, DateTime, Settings, SyncedRides, Units,
+    decode_synced_rides, encode_synced_rides, synced_rides_len, ClimbMode, DateTime, Settings, SyncedRides, Units,
     SYNCED_RIDES_MAX_LEN,
 };
 pub use stat_fields::{StatField, StatFieldList};
