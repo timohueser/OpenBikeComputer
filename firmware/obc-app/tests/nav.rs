@@ -287,3 +287,21 @@ fn back_on_planning_cancels_cleanly() {
     assert!(matches!(app.top_screen(), Screen::PoiDetail(_)), "a post-cancel answer is dropped");
     assert_eq!(app.activity.active_route, None, "nothing activates after a cancel");
 }
+
+#[test]
+fn planning_spinner_throttles_repaints_to_its_cadence() {
+    use obc_app::screen::NavPlanningScreen;
+    // #500: during a plan the ride loop ticks the screen once per planner step — every ~8 ms —
+    // and each claimed repaint costs a full chrome render + push (~40 ms on glass). The spinner
+    // must claim `changed` at most once per its 66 ms frame cadence, not per tick, or the
+    // repaints starve the plan they're decorating. (The needle still advances by real elapsed
+    // time, so a throttled frame just shows a larger sweep.)
+    let mut s = NavPlanningScreen::new("Fountain North");
+    let first = s.tick_timers(1_000); // anchors the clocks; nothing elapsed yet
+    assert!(!first.changed, "no time elapsed, nothing to repaint");
+    assert_eq!(first.next_wake_ms, Some(66), "the spinner keeps its frame cadence armed");
+
+    // 100 ride-loop passes at 8 ms: ~1 claim per ceil(66/8)·8 = 72 ms window, not 100.
+    let claims = (1..=100).filter(|i| s.tick_timers(1_000 + i * 8).changed).count();
+    assert!((10..=13).contains(&claims), "expected ~800 ms / 72 ms ≈ 11 repaints, got {claims}");
+}
