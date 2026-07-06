@@ -1,7 +1,8 @@
 //! The Menu overlay — **layout prototype pass**: two candidate designs behind the [`COMPASS`]
-//! switch. Both show the five entries (Routes / Rides / POIs / Map / Settings — Map is still an
-//! inert placeholder until that screen exists) and keep the list semantics: `turn` moves the
-//! selection (wrapping), `press` enters, `back` returns to the caller.
+//! switch. Both show the five entries (Routes / Rides / POIs / Map / Settings) and keep the list
+//! semantics: `turn` moves the selection (wrapping), `press` enters, `back` returns to the caller.
+//! Four stations open a menu; the **Map** station opens the Map screen directly (see [`open_map`]) —
+//! the live riding map while tracking, else a route-less browse map.
 //!
 //! * Compass dial: a wood bezel ring with the five entries as stations evenly spaced around the
 //!   ring (72° apart, starting from N — see [`station_dir`]), an amber needle that *sweeps* to the
