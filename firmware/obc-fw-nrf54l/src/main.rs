@@ -343,7 +343,17 @@ const MAP_RESIDENT: usize = core::mem::size_of::<obc_app::App>()
     + core::mem::size_of::<obc_reader::MapCache>()
     + core::mem::size_of::<obc_reader::MapTables>()
     + core::mem::size_of::<obc_route::RouteCache>()
-    + core::mem::size_of::<obc_route::RouteIndex>();
+    + core::mem::size_of::<obc_route::RouteIndex>()
+    + NAV_RESIDENT;
+/// The on-device router's residents (epic #116, R4): the fixed A* scratch + graph-tile cache
+/// (~14.3 KB, the `NAV_*` statics below). Zero on the `ble` build — `has_nav` gates the router
+/// out of the combined image because these two statics push its stack region ~1.9 KB below the
+/// measured deep-render peak on the 256 KB DK (see build.rs); the LM20 deletes the gate.
+#[cfg(has_nav)]
+const NAV_RESIDENT: usize =
+    core::mem::size_of::<obc_route::NavScratch>() + core::mem::size_of::<obc_reader::NavTileCache>();
+#[cfg(not(has_nav))]
+const NAV_RESIDENT: usize = 0;
 /// The BLE stack's residents (`ble::RESIDENT_BYTES`: the MPSL handle + SDC memory block + TrouBLE's
 /// host arena + its global packet pool + the CRACEN RNG); zero without the feature. Keeping both terms
 /// in one sum is what makes "`ble` + map don't fit on 256 KB" a *compile-time* fact: when the LM20
@@ -405,6 +415,18 @@ static mut APP: MaybeUninit<App> = MaybeUninit::uninit();
 /// geometry off the card every frame.
 #[cfg(has_map)]
 static mut ROUTE_CACHE: MaybeUninit<RouteCache> = MaybeUninit::uninit();
+/// The on-device router's fixed A* table (epic #116, R4): ~10 kB of open-addressed node slots +
+/// heap, in `.bss` (`NavScratch::new()` is `const` and all-zero → a memset), **never** a local —
+/// `plan_route` is sync and runs at the ride loop's shallow per-pass depth, but a ~10 kB frame
+/// there would still eat a third of the deep-render path's headroom (#270/#419). Reset per plan.
+/// `has_nav`-gated: the `ble` build ships without the router (see build.rs; the LM20 ungates it).
+#[cfg(has_nav)]
+static mut NAV_SCRATCH: MaybeUninit<obc_route::NavScratch> = MaybeUninit::uninit();
+/// The router's graph-tile cache (~4 kB, 2 whole nav chunks): the per-settle spatial re-fetch
+/// reads through it, so its `misses` count **is** the plan's SD-read count (the number the
+/// `nav route:` RTT line logs). Same `.bss` placement + `has_nav` gate as [`NAV_SCRATCH`].
+#[cfg(has_nav)]
+static mut NAV_TILES: MaybeUninit<obc_reader::NavTileCache> = MaybeUninit::uninit();
 
 /// Build a `'static` value into a `.bss` [`MaybeUninit`] slot, returning the sole `&'static mut` to it
 /// — the warm-reset-safe replacement for `StaticCell` that every runtime-built shared static (the bus
@@ -548,6 +570,17 @@ mod stackmeter {
     pub fn total() -> usize {
         top() - bottom()
     }
+
+    /// [`used`], but forcing a **fresh** full scan regardless of the [`SCAN_INTERVAL_MS`]
+    /// throttle — for a caller that just finished a stack-notable operation (the nav router's
+    /// per-plan RTT line) and wants the peak *including it* now, not up to a second late.
+    /// Sentinel evidence is permanent, so this is still just one bottom-up scan (~40–90 µs).
+    /// Its one caller is the router's RTT line, so it's gated with it (`has_nav`).
+    #[cfg(has_nav)]
+    pub fn rescan(now: u32) -> usize {
+        LAST_USED.store(0, Ordering::Relaxed); // 0 = "never scanned" → `used` always rescans
+        used(now)
+    }
 }
 
 /// VCOM RX → sensor signals: read bytes from the interrupt-fed ring and feed each complete
@@ -654,13 +687,17 @@ async fn main(_spawner: Spawner) {
             // 'static ring buffers backing the interrupt-fed UARTE (RX accumulates streamed bytes across
             // a long map render; TX queues the ≤192 B telemetry line). Parked in `.bss` and written in
             // place (the warm-reset-safe pattern), then the `&'static mut` halves move into the spawned
-            // `'static` tasks.
-            static mut RX_BUF: MaybeUninit<[u8; 256]> = MaybeUninit::uninit();
+            // `'static` tasks. RX is 512 B: a multi-second synchronous nav plan (epic #116, R4)
+            // starves the RX task between watchdog callbacks, and the ~1 Hz host feed overran the
+            // old 256 B ring mid-plan (`BufferedUarte buffer overrun` on-glass) — 512 B rides out
+            // several seconds of F/A/C lines. Cheap harness resilience, not a fix for the
+            // starvation itself (accepted for v1 — see `ride::nav_plan_only`).
+            static mut RX_BUF: MaybeUninit<[u8; 512]> = MaybeUninit::uninit();
             static mut TX_BUF: MaybeUninit<[u8; 256]> = MaybeUninit::uninit();
             // SAFETY: each ring is written once here, then handed to exactly one task half — no alias.
-            let (rx_buf, tx_buf): (&'static mut [u8; 256], &'static mut [u8; 256]) = unsafe {
+            let (rx_buf, tx_buf): (&'static mut [u8; 512], &'static mut [u8; 256]) = unsafe {
                 (
-                    init_static(core::ptr::addr_of_mut!(RX_BUF), [0; 256]),
+                    init_static(core::ptr::addr_of_mut!(RX_BUF), [0; 512]),
                     init_static(core::ptr::addr_of_mut!(TX_BUF), [0; 256]),
                 )
             };
@@ -1006,6 +1043,21 @@ async fn main(_spawner: Spawner) {
         #[cfg(has_map)]
         let route_cache: &RouteCache = unsafe { init_static(core::ptr::addr_of_mut!(ROUTE_CACHE), RouteCache::new()) };
 
+        // The router's A* table + graph-tile cache (epic #116, R4), placed in `.bss` and built in
+        // place (both `new()`s are const all-zero → memsets). Threaded into the ride loop as one
+        // `NavBuffers` bundle, which `plan_nav` uses per drained create-route request — never
+        // stack locals. On the `ble` build (`not(has_nav)`, see build.rs) the bundle is the unit
+        // stand-in — no statics exist and the ride loop answers requests with the generic
+        // failure tier.
+        // SAFETY: sole owners of NAV_SCRATCH / NAV_TILES; single map plane → no aliasing.
+        #[cfg(has_nav)]
+        let nav = ride::NavBuffers {
+            scratch: unsafe { init_static(core::ptr::addr_of_mut!(NAV_SCRATCH), obc_route::NavScratch::new()) },
+            tiles: unsafe { init_static(core::ptr::addr_of_mut!(NAV_TILES), obc_reader::NavTileCache::new()) },
+        };
+        #[cfg(all(has_map, not(has_nav)))]
+        let nav = ride::NavBuffers;
+
         // The persistent settings store: takes the `RRAMC` peripheral, reads/writes the blob in the
         // carved RRAM page. Built here (where `p` is live) and moved into the ride loop, which seeds the
         // app at boot and saves on a settings edit. Every boot also bumps the persisted boot counter,
@@ -1110,7 +1162,7 @@ async fn main(_spawner: Spawner) {
         // no synthetic-loop centre).
         #[cfg(all(has_map, any(feature = "debug-uart", not(feature = "synth"))))]
         let app_fut =
-            ride::run_app(display, app, shared_store, map_tables, map_cache, route_cache, &mut led, wdt_handle);
+            ride::run_app(display, app, shared_store, map_tables, map_cache, route_cache, nav, &mut led, wdt_handle);
         #[cfg(all(has_map, not(feature = "debug-uart"), feature = "synth"))]
         let app_fut = ride::run_app(
             display,
@@ -1119,6 +1171,7 @@ async fn main(_spawner: Spawner) {
             map_tables,
             map_cache,
             route_cache,
+            nav,
             &mut led,
             wdt_handle,
             (cam_lon, cam_lat),

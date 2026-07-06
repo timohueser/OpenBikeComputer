@@ -30,6 +30,7 @@ mod home;
 mod list;
 mod map;
 mod menu;
+mod nav_route;
 mod passkey;
 mod poi_detail;
 mod poi_list;
@@ -47,6 +48,7 @@ pub use home::HomeScreen;
 pub use list::window_start;
 pub use map::MapScreen;
 pub use menu::MenuScreen;
+pub use nav_route::{NavConfirmScreen, NavFailScreen};
 pub use passkey::PasskeyScreen;
 pub use poi_detail::PoiDetailScreen;
 pub use poi_list::{PoiListScreen, PoiScratch};
@@ -302,6 +304,14 @@ screens! {
     PoiList(PoiListScreen) => Nav,
     /// A single POI's detail: full name, subtype, live bearing arrow, today's hours + open/closed.
     PoiDetail(PoiDetailScreen) => Nav,
+    /// The POI "Create a route?" confirm (epic #116, R4): *Create route* records the one-shot
+    /// [`NavRequest`](crate::activity::NavRequest); the host's answer
+    /// ([`App::notify_nav_result`]) replaces this screen with the computed-route overview or
+    /// the failure card.
+    NavConfirm(NavConfirmScreen) => Nav,
+    /// The route-planning failure card (epic #116, R4): the locked two-tier copy ("Too far to
+    /// route here" / "Couldn't find a route."), info-only — any press/Back returns to the detail.
+    NavFail(NavFailScreen) => Nav,
     RouteMenu(RouteMenuScreen) => Nav,
     /// The Rides screen (Menu → Rides): a see-and-delete list of stored rides with a hold-to-delete
     /// footer (greyed while recording, warning-red for an unsynced ride). Epic #447, P7 (#454).

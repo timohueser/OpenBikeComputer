@@ -36,17 +36,30 @@ const ROW_PITCH: i32 = 42;
 const BUTTON_H: i32 = 34;
 
 /// The Route overview. State is which catalog route it previews, plus the `active_route` that was
-/// loaded when it opened (restored on `back`).
+/// loaded when it opened (restored on `back`), and whether the route is a **computed** one (the
+/// on-device router's output, epic #116 R4) — which has no elevation data, so the page shows
+/// length only.
 #[derive(Debug, Default)]
 pub struct RouteOverviewScreen {
     route: usize,
     prev_active: Option<usize>,
+    /// The previewed route came from the on-device router (`/routes/_nav.obcr`): OSM highways
+    /// carry no elevation and there is no DEM, so its per-point elevation is all zero — the page
+    /// omits the elevation band and the climb/descent rows rather than showing a flat band and
+    /// "+0 m" (the locked "length only" overview).
+    computed: bool,
 }
 
 impl RouteOverviewScreen {
     /// Preview catalog route `route`; `prev_active` is the `active_route` to restore on cancel.
     pub fn new(route: usize, prev_active: Option<usize>) -> Self {
-        RouteOverviewScreen { route, prev_active }
+        RouteOverviewScreen { route, prev_active, computed: false }
+    }
+
+    /// Preview a **computed** route (the router's output): length only — no elevation band, no
+    /// climb/descent rows. Opened by [`App::notify_nav_result`](crate::App::notify_nav_result).
+    pub fn computed(route: usize, prev_active: Option<usize>) -> Self {
+        RouteOverviewScreen { route, prev_active, computed: true }
     }
 
     /// Re-point both held indices after a live catalog rescan (#450). A vanished preview subject
@@ -62,7 +75,18 @@ impl RouteOverviewScreen {
             // Start: the session begin that Route-menu `press` used to do — riding camera on the
             // route's start, tracking on, and a clean [Home, Map] stack. The shared
             // [`start_ride`](super::start_ride) path, also the upload popup's *Start navigation*.
-            Gesture::Press => super::start_ride(cx, self.route),
+            //
+            // Mid-ride (a computed-route overview can open while tracking — the POI flow, epic
+            // #116 R4), accepting is ambiguous the same way picking a route from the menu is, so
+            // it opens the **same** save/swap prompt instead of silently restarting the session;
+            // the Route menu's tracking arm never reaches an overview, so this arm fires only on
+            // that flow today.
+            Gesture::Press => {
+                if cx.activity.is_tracking() {
+                    return Transition::Push(super::Screen::RouteSwap(super::RouteSwapScreen::new(self.route)));
+                }
+                super::start_ride(cx, self.route)
+            }
             // Cancel: put back whatever route was loaded before the preview.
             Gesture::Back => {
                 cx.activity.active_route = self.prev_active;
@@ -86,6 +110,21 @@ impl RouteOverviewScreen {
 
         let chart_x = SIDE_MARGIN;
         let chart_w = w - 2 * SIDE_MARGIN;
+
+        // A computed route (the on-device router's output) has no elevation data at all — the
+        // locked "length only" page: one DISTANCE row (meter-resolution from the opened geometry,
+        // where the whole-km catalog figure would read "0 km" on a short POI route), no elevation
+        // band, no climb/descent. The START button below is shared.
+        if self.computed {
+            let units = rx.settings.units;
+            let total_m = rx.route.map(|r| r.total_distance_m).unwrap_or(summary.distance_km * 1000);
+            let mut dist: heapless::String<8> = heapless::String::new();
+            let _ = write!(dist, "{:.1}", units.dist(total_m as f32 / 1000.0));
+            let dist_unit = if units.is_imperial() { "mi" } else { "km" };
+            ledger_row(cv, w, LIST_TOP + 16, "DISTANCE", &dist, dist_unit, None);
+            draw_start_button(cv, w, h);
+            return;
+        }
 
         // The full-route elevation band — the Statistics silhouette without any of its live
         // layers (no traveled shading, no cursor, no progress bar). A small peak label gives the
@@ -164,13 +203,19 @@ impl RouteOverviewScreen {
             }
         }
 
-        // START RIDE: the page's one action, so it draws armed (amber) with a play wedge.
-        let by = h - 10 - BUTTON_H;
-        cv.round(rect(chart_x, by, chart_w, BUTTON_H), 8, AMBER);
-        let tx = w / 2 + 8;
-        cv.text_vcentered("START RIDE", tx, (by, BUTTON_H), Font::Body, TextAlign::Center, INK);
-        let px = tx - 5 * Font::Body.char_width() as i32 - 16;
-        let mid = by + BUTTON_H / 2;
-        cv.triangle(Point::new(px, mid - 7), Point::new(px, mid + 7), Point::new(px + 11, mid), INK);
+        draw_start_button(cv, w, h);
     }
+}
+
+/// START RIDE: the page's one action, so it draws armed (amber) with a play wedge. Shared by the
+/// full page and the computed-route (length-only) variant.
+fn draw_start_button(cv: &mut impl Surface, w: i32, h: i32) {
+    use palette::*;
+    let by = h - 10 - BUTTON_H;
+    cv.round(rect(SIDE_MARGIN, by, w - 2 * SIDE_MARGIN, BUTTON_H), 8, AMBER);
+    let tx = w / 2 + 8;
+    cv.text_vcentered("START RIDE", tx, (by, BUTTON_H), Font::Body, TextAlign::Center, INK);
+    let px = tx - 5 * Font::Body.char_width() as i32 - 16;
+    let mid = by + BUTTON_H / 2;
+    cv.triangle(Point::new(px, mid - 7), Point::new(px, mid + 7), Point::new(px + 11, mid), INK);
 }
