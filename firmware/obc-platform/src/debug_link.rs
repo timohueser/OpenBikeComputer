@@ -323,9 +323,11 @@ mod handoff {
     /// Latest debug camera-scale command (meters-per-pixel), `try_take`-once like a sensor (the `Z`
     /// wire command). Drained by the map loop each frame → `App::set_map_mpp`.
     static ZOOM: Signal<CriticalSectionRawMutex, f32> = Signal::new();
-    /// Latest debug route-plan trigger (`(from, to)`, both `(lon, lat)` µdeg), `try_take`-once like
-    /// the `Z` command. Drained by the ride loop → `App::debug_start_nav` (#500 perf bench).
-    static NAV: Signal<CriticalSectionRawMutex, ((i32, i32), (i32, i32))> = Signal::new();
+    /// A debug route-plan trigger's payload: `(from, to)`, both `(lon, lat)` µdeg.
+    type NavTrigger = ((i32, i32), (i32, i32));
+    /// Latest debug route-plan trigger, `try_take`-once like the `Z` command. Drained by the ride
+    /// loop → `App::debug_start_nav` (#500 perf bench).
+    static NAV: Signal<CriticalSectionRawMutex, NavTrigger> = Signal::new();
     /// A single "a datapoint arrived" wake, the `debug-uart` twin of `sensor_link::EVENT`: pulsed
     /// by [`dispatch`] on any host-streamed sensor sample so the event-driven loop's [`wait_event`]
     /// wakes the render once. Injected *input* (`Msg::Input`) does **not** pulse it — that wakes the
@@ -424,7 +426,7 @@ mod handoff {
     /// Take a pending debug route-plan trigger (`(from, to)`, both `(lon, lat)` µdeg) — `try_take`-once,
     /// like [`take_zoom`]. The ride loop calls this each pass and hands any value to
     /// `App::debug_start_nav` (#500 perf bench).
-    pub fn take_nav() -> Option<((i32, i32), (i32, i32))> {
+    pub fn take_nav() -> Option<NavTrigger> {
         NAV.try_take()
     }
 
