@@ -334,8 +334,9 @@ fn scratch_fits_the_per_target_budget() {
 
 /// A ~9 km straight-line path graph (600 nodes, 15 m apart): the pre-range-fix table
 /// (300 nodes — every node on the path must be tracked to reach the goal) provably
-/// exhausts, while the sim-size table plans it — pinning the 2026-07-06 range fix
-/// (bigger per-target tables + the slimmed 26 B/node entry that pays for them).
+/// exhausts, while the capped sim/LM20-size table (1536 nodes = the 40 kB nav budget)
+/// plans it — pinning the 2026-07-06 range fix (bigger per-target tables + the
+/// slimmed 26 B/node entry that pays for them).
 #[test]
 fn long_line_exhausts_old_table_but_plans_on_the_sim_table() {
     let bytes = map_with(&line_graph(600, 135, 15));
@@ -353,12 +354,12 @@ fn long_line_exhausts_old_table_but_plans_on_the_sim_table() {
     let res = plan_route(&r, from, to, "x", &mut small, &mut tiles, &mut || true, &mut sink);
     assert_eq!(res, Err(NavError::Exhausted), "the pre-fix 300-node table can't span ~9 km");
 
-    // The sim-size table (8192 on the host profile) plans the same route.
-    let mut big = Box::new(NavScratch::<8192>::new());
+    // The capped sim/LM20-size table (1536 = the 40 kB nav budget) plans the same route.
+    let mut big = Box::new(NavScratch::<1536>::new());
     let mut tiles = NavTileCache::new();
     let mut sink = VecSink::default();
     let res = plan_route(&r, from, to, "x", &mut big, &mut tiles, &mut || true, &mut sink);
-    let route = res.expect("the sim-size table spans the ~9 km line");
+    let route = res.expect("the capped sim table spans the ~9 km line");
     assert_eq!(route.total_distance_m, 599 * 15, "summed edge costs over the whole line");
 }
 
@@ -393,7 +394,7 @@ fn progress_abort_stops_the_search() {
     let tables = MapTables::parse(&src).unwrap();
     let cache = MapCache::new();
     let r = Reader::new(&src, &tables, &cache);
-    let mut scratch = Box::new(NavScratch::<8192>::new());
+    let mut scratch = Box::new(NavScratch::<1536>::new());
     let mut tiles = NavTileCache::new();
     let mut sink = VecSink::default();
     let mut calls = 0u32;
