@@ -644,6 +644,15 @@ pub(crate) async fn run_app(
                 match storage.as_mut().and_then(|s| s.nav_route_begin()) {
                     Some(file) => {
                         nav.planner.write(obc_route::NavPlanner::new(req.from, req.to, req.name()));
+                        // One diagnostic line per plan start (#501 fault hunt): the three nav
+                        // statics' addresses pin the memory map for a post-fault dossier without
+                        // needing the ELF at hand.
+                        defmt::debug!(
+                            "nav plan: start planner=0x{=usize:08x} scratch=0x{=usize:08x} tiles=0x{=usize:08x}",
+                            nav.planner.as_ptr() as usize,
+                            core::ptr::from_ref(&*nav.scratch) as usize,
+                            core::ptr::from_ref(&*nav.tiles) as usize
+                        );
                         nav_run = Some(NavRun { file, t0: Instant::now(), phase_us: [0; 3] });
                     }
                     // No card / no dir: nothing to route against — the generic failure tier.
