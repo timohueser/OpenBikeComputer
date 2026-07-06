@@ -109,10 +109,11 @@ impl PowerScreen {
         let r2 = super::row_rect(LIST_TOP + 8 + 2 * (ROW_H + 6), w, ROW_H);
         let editing = self.editing && self.selected == IDLE_RETURN;
         super::row_cursor(cv, r2, self.selected == IDLE_RETURN, editing);
-        super::row_label(cv, r2, "Idle return", Some("timeout"));
+        // Label + sub both as short as the GPS-fix row's — anything longer ("Idle return",
+        // "return timeout") runs under the value cell.
+        super::row_label(cv, r2, "Idle", Some("timeout"));
         let val = rx.settings.idle_return.name();
-        // A wider cell than the GPS-fix one — "1 min" / "Never" run long.
-        let (cw, ch) = (86, 32);
+        let (cw, ch) = (76, 32);
         let cell = rect(r2.top_left.x + r2.size.width as i32 - cw - 6, r2.top_left.y + (ROW_H - ch) / 2, cw, ch);
         super::stepper_field(cv, cell, val, editing, Font::Label);
     }
