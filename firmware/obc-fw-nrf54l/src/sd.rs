@@ -774,6 +774,16 @@ impl Storage {
         })
     }
 
+    /// Whether the open map reads through the **slow FAT-seek path** — [`build_map_extents`] refused
+    /// the extent table (fragmented past the cap or failed verification), so every backward seek is
+    /// O(offset) again (#500/#504). `false` with no map open and for a contiguous map (direct block
+    /// reads on). Surfaced on glass as a dismissable "map reads are slow — re-copy the card" warning:
+    /// it needs ~3× the reference card's fragmentation to trip, but when it does the rider gets an
+    /// actionable one-liner instead of a device that just went sluggish.
+    pub fn map_degraded(&self) -> bool {
+        self.open_map.is_some() && self.map_extents.is_none()
+    }
+
     /// Make the open route geometry match the app's selected route (a catalog index), reopening
     /// the `.obcr` only when the selection changes — cheap to call every frame, like the sim's
     /// `RouteStore::sync_active`.

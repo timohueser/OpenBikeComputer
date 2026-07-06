@@ -136,6 +136,15 @@ struct Args {
     /// buttons; the catalog is already scanned, so this is exactly the device's rescan-then-event
     /// order.
     inject_upload: Option<(u16, bool)>,
+    /// Headless `--png` only: raise device warnings (issue #504) through the real
+    /// `App::notify_warning` seam after the script, so the advisory warning card renders. A
+    /// comma-list of `gps` / `altimeter` / `compass` / `map` (e.g. `gps,map`). Stands in for a
+    /// missing-sensor probe / a fragmented map the sim has no real hardware to produce.
+    inject_warning: Option<obc_app::WarningFlags>,
+    /// Headless `--png` only: render the standalone **boot fault** screen (`nocard` | `nomap` |
+    /// `badmap`) instead of the app — the undismissable storage-failure screen `main` shows before
+    /// the app exists. Snapshots the three fatal SD/map sites without needing a bad card.
+    boot_fault: Option<obc_app::BootFault>,
 }
 
 impl Default for Args {
@@ -175,6 +184,8 @@ impl Default for Args {
             nav_hold: false,
             inject_nav_fail: None,
             inject_upload: None,
+            inject_warning: None,
+            boot_fault: None,
         }
     }
 }
@@ -287,6 +298,29 @@ fn parse_args() -> Result<Args, String> {
             "--inject-upload-replace" => {
                 let id = it.next().and_then(|s| s.parse().ok()).ok_or("--inject-upload-replace needs an object id")?;
                 a.inject_upload = Some((id, true));
+            }
+            "--inject-warning" => {
+                let spec = it.next().ok_or("--inject-warning needs gps,altimeter,compass,map")?;
+                let mut w = obc_app::WarningFlags::NONE;
+                for tok in spec.split(',') {
+                    w |= match tok.trim() {
+                        "gps" => obc_app::WarningFlags::NO_GPS,
+                        "altimeter" | "baro" => obc_app::WarningFlags::NO_ALTIMETER,
+                        "compass" | "imu" => obc_app::WarningFlags::NO_COMPASS,
+                        "map" => obc_app::WarningFlags::MAP_SLOW,
+                        _ => return Err("--inject-warning tokens: gps|altimeter|compass|map".into()),
+                    };
+                }
+                a.inject_warning = Some(w);
+            }
+            "--boot-fault" => {
+                let kind = it.next().ok_or("--boot-fault needs nocard|nomap|badmap")?;
+                a.boot_fault = Some(match kind.as_str() {
+                    "nocard" => obc_app::BootFault::NoCard,
+                    "nomap" => obc_app::BootFault::NoMap,
+                    "badmap" => obc_app::BootFault::BadMap,
+                    _ => return Err("--boot-fault needs nocard|nomap|badmap".into()),
+                });
             }
             "--ble-passkey" => {
                 a.ble_passkey = Some(
@@ -622,7 +656,7 @@ fn main() {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: obc-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--home-seed N] [--clock YYYY-MM-DDTHH:MM] [--ble-connected] [--ble-passkey N] [--ble-paired] [--inject-upload ID] [--inject-upload-replace ID] [--nav-hold] [--inject-nav-fail exhausted|nopath]");
+            eprintln!("error: {e}\nusage: obc-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--home-seed N] [--clock YYYY-MM-DDTHH:MM] [--ble-connected] [--ble-passkey N] [--ble-paired] [--inject-upload ID] [--inject-upload-replace ID] [--nav-hold] [--inject-nav-fail exhausted|nopath] [--inject-warning gps,altimeter,compass,map] [--boot-fault nocard|nomap|badmap]");
             std::process::exit(2);
         }
     };
@@ -844,6 +878,11 @@ fn main() {
         if let Some((id, replaced)) = args.inject_upload {
             app.notify_route_uploaded(id, replaced);
         }
+        // Raise device warnings (issue #504) through the real `notify_warning` seam, so the advisory
+        // card renders — the sim has no I²C probe / fragmented card to trip it for real.
+        if let Some(w) = args.inject_warning {
+            app.notify_warning(w);
+        }
         // The script may have loaded a route; open its geometry for the Map.
         store.sync_active(app.activity.active_route);
         let route_src = store.active_source();
@@ -884,6 +923,19 @@ fn main() {
 
         let mut fb = Framebuffer::new(args.width, args.height);
         let tc = args.true_color;
+
+        // The standalone boot-fault screen (issue #504): drawn *without* the app — at boot there may
+        // be no map to build one around — so it bypasses `render_frame`, exactly as `main` does at
+        // the fatal SD/map sites.
+        if let Some(fault) = args.boot_fault {
+            obc_app::draw_boot_fault(&mut fb, args.width as i32, args.height as i32, |c| color_of(c, tc), fault);
+            if let Err(e) = write_png(&fb, args.scale, path) {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+            eprintln!("wrote {path}");
+            return;
+        }
 
         // Time the whole frame draw into `render_us` (the no_std renderer has no clock, so
         // the host fills it) — same field the live panel shows.
