@@ -37,8 +37,8 @@ use embedded_sdmmc::{Block, BlockCount, BlockDevice, BlockIdx};
 use obc_route::{ByteSource, Error};
 
 /// A [`BlockDevice`] by shared reference — what lets one card serve **both** the `VolumeManager`
-/// (which takes its device by value) and this module's raw extent reads. The board wraps its
-/// `SdCard` in a `StaticCell`, hands the manager `SharedBlockDevice(&card)`, and keeps the same
+/// (which takes its device by value) and this module's raw extent reads. The board parks its
+/// `SdCard` in a `.bss` slot, hands the manager `SharedBlockDevice(&card)`, and keeps the same
 /// `&card` for [`ExtentTable::build`]/[`ExtentSource`]. Interleaved (never re-entrant) access is
 /// safe: `BlockDevice`'s methods take `&self`, and the single storage owner serialises calls.
 pub struct SharedBlockDevice<'a, D: BlockDevice>(pub &'a D);
@@ -109,10 +109,10 @@ struct Geometry {
 }
 
 /// The resolved file: its extent runs plus a resident one-block bounce buffer for the unaligned
-/// head/tail of a read. The bounce lives *here* — sized once, next to the `VolumeManager` that
-/// owns the card — rather than on the read path's stack: `read_at` is reached from the deepest
-/// render frames, where the ~36 KB stack budget has no spare 512 bytes (see the board crate's
-/// stack notes).
+/// head/tail of a read. The bounce lives *here* — sized once, resident with the table — rather
+/// than on the read path's stack: `read_at` is reached from the deepest render frames, where the
+/// tight ride-stack budget has no spare 512 bytes (see the board crate's stack notes). For the
+/// same reason the board keeps the whole table in a `.bss` slot and never moves it by value.
 pub struct ExtentTable {
     runs: heapless::Vec<Run, MAX_EXTENTS>,
     len: u32,
@@ -203,9 +203,9 @@ impl ExtentTable {
         // #500's fragmentation measurement even when the table can't be kept).
         let mut run_count = 0u32;
         let mut next_lba = u32::MAX; // where the current run would continue; MAX = no run yet
-        // The FAT sector under the walk cursor — one resident block, like the manager's own
-        // cache, but nothing else contends for it mid-walk, so a contiguous chain reads each FAT
-        // sector exactly once.
+                                     // The FAT sector under the walk cursor — one resident block, like the manager's own
+                                     // cache, but nothing else contends for it mid-walk, so a contiguous chain reads each FAT
+                                     // sector exactly once.
         let mut cached_fat_lba = u32::MAX;
         let mut cluster = first_cluster;
         for i in 0..clusters_needed {
@@ -295,6 +295,11 @@ impl<'a, D: BlockDevice> ExtentSource<'a, D> {
 }
 
 impl<D: BlockDevice> ByteSource for ExtentSource<'_, D> {
+    // `inline(never)`: called from the deepest render/nav frames — keep this body's locals out
+    // of them permanently, whatever the inliner decides later (deep-frame discipline; on-glass
+    // stack peaks have moved with inlining before). Measured free: one out-of-line call per
+    // multi-ms SD read.
+    #[inline(never)]
     fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), Error> {
         let end = offset.checked_add(buf.len() as u32).ok_or(Error::BadOffset)?;
         if end > self.table.len {

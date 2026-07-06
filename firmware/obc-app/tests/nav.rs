@@ -328,3 +328,26 @@ fn overview_after_debug_plan_goes_quiet() {
         );
     }
 }
+
+#[test]
+fn repeated_debug_requests_stack_one_planning_screen() {
+    // The bench host repeats the `N` line against the flaky VCOM; only one planning screen may
+    // result, or the host's answer strands the extras spinning forever (the #500 bench artifact).
+    let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    nav_catalog(&mut app);
+    for _ in 0..3 {
+        app.debug_start_nav(POS, POI, "Bench");
+    }
+    let planning = |app: &App| {
+        // Count via the public seam: answering removes exactly the planning screens it finds.
+        matches!(app.top_screen(), Screen::NavPlanning(_))
+    };
+    assert!(planning(&app));
+    let _ = app.take_nav_request();
+    app.notify_nav_result(Ok(7));
+    assert!(matches!(app.top_screen(), Screen::RouteOverview(_)), "the answer lands on the one screen");
+    let _ = app.take_dirty();
+    app.advance_animations(InputClock(2_000));
+    assert!(!app.take_dirty().map, "no stranded spinner keeps repainting");
+    assert!(app.ms_until_next_wake(2_000).is_none(), "…or holds a short wake armed");
+}

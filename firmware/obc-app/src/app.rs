@@ -1064,7 +1064,13 @@ impl App {
     /// no UI path reaches it.
     pub fn debug_start_nav(&mut self, from: (i32, i32), to: (i32, i32), name: &str) {
         self.activity.request_nav(crate::activity::NavRequest::new(from, to, name));
-        let _ = self.stack.push(Screen::NavPlanning(crate::screen::NavPlanningScreen::new(name)));
+        // At most one planning screen, ever: the bench host repeats the `N` line (the VCOM RX is
+        // flaky) and each repeat lands as a fresh request — but the answer replaces only the
+        // *first* planning screen it finds, so a second push here would survive it and spin
+        // forever (measured: a permanent ~9 Hz full-chrome repaint after the plan).
+        if !self.stack.iter().any(|s| matches!(s, Screen::NavPlanning(_))) {
+            let _ = self.stack.push(Screen::NavPlanning(crate::screen::NavPlanningScreen::new(name)));
+        }
         self.map_dirty = true;
     }
 

@@ -129,6 +129,13 @@ type TrackSinkT<'a> = SdTrackSink<'a, SdShared, NullTime, SD_MAX_DIRS, SD_MAX_FI
 /// extent read path can borrow it for `'static`.
 static mut SD_CARD: core::mem::MaybeUninit<Sd> = core::mem::MaybeUninit::uninit();
 
+/// The map's resolved [`ExtentTable`]'s home (#500) — its own `.bss` slot rather than a field
+/// *inside* [`Storage`], because `Storage` transits `main`'s async frame **by value** on its way
+/// into the shared store, and an async frame allocates every local at entry (#270): carrying the
+/// ~2 KB table inside `Storage` measurably cost the main-task future ~4 KB (two resident copies)
+/// and the ride stack region shrank by the same RAM. `Storage` holds `Option<&'static _>`.
+static mut MAP_EXTENTS: core::mem::MaybeUninit<ExtentTable> = core::mem::MaybeUninit::uninit();
+
 /// What [`Storage::map_source`] hands out: extent-mapped direct block reads when the map's chain
 /// resolved at open (#500), the manager's seek+read path otherwise. One enum rather than a trait
 /// object so the render/nav paths stay monomorphic (no vtable on the per-chunk hot path).
@@ -140,6 +147,10 @@ pub enum MapSource<'a> {
 }
 
 impl ByteSource for MapSource<'_> {
+    // `inline(never)`: reached from the deepest render/nav frames — keep the dispatch (and both
+    // arms' machinery) out of those frames' locals, whatever the inliner decides later; a call
+    // per multi-ms SD read is free. See the matching note on `ExtentSource::read_at`.
+    #[inline(never)]
     fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), obc_route::Error> {
         match self {
             MapSource::Extent(s) => s.read_at(offset, buf),
@@ -214,8 +225,9 @@ pub struct Storage {
     /// The open map's FAT chain resolved to extent runs (#500): when present, `map_source` serves
     /// direct block reads (zero per-read FAT traffic) instead of the manager's O(offset) seek.
     /// `None` = build refused (fragmented past the cap / odd geometry) or failed verification —
-    /// the seek path still works, just slowly, and open_map logged why.
-    map_extents: Option<ExtentTable>,
+    /// the seek path still works, just slowly, and open_map logged why. A reference into the
+    /// [`MAP_EXTENTS`] `.bss` slot — see its doc for why the table must not live in here by value.
+    map_extents: Option<&'static ExtentTable>,
     /// The open ride log for the current tracking session.
     open_track: Option<OpenTrack>,
     /// A finished ride whose log → ride-object conversion hasn't run yet. Finish only closes the
@@ -707,7 +719,12 @@ impl Storage {
         self.map_extents = None;
         match ExtentTable::build(self.card, entry_block, entry_offset, len) {
             Ok(table) => {
-                if self.verify_extents(&table, file, len) {
+                // Into the `.bss` slot before it can be captured anywhere by value (see
+                // `MAP_EXTENTS`). SAFETY: sole writer, same once-per-boot discipline as `SD_CARD`
+                // (a re-open overwrites in place; no `Drop`), the `init_static` contract.
+                let table: &'static ExtentTable =
+                    unsafe { crate::init_static(core::ptr::addr_of_mut!(MAP_EXTENTS), table) };
+                if self.verify_extents(table, file, len) {
                     defmt::info!(
                         "SD: map is {=usize} extent(s) over {=u32} bytes — direct block reads on",
                         table.extent_count(),
@@ -751,7 +768,7 @@ impl Storage {
     /// manager's seek path otherwise.
     pub fn map_source(&self) -> Option<MapSource<'_>> {
         let (f, len) = self.open_map?;
-        Some(match &self.map_extents {
+        Some(match self.map_extents {
             Some(table) => MapSource::Extent(ExtentSource::new(self.card, table)),
             None => MapSource::Seek(SdByteSource::new(&self.vmgr, f, len)),
         })
