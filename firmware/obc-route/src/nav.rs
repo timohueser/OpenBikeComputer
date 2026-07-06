@@ -388,6 +388,9 @@ pub enum NavPhase {
     Done,
 }
 
+/// One snapped plan endpoint: `(node_id, (lon, lat))` µdeg — see [`NavPlanner::endpoints`].
+pub type NavEndpoint = (u32, (i32, i32));
+
 /// The fine-grained internal phase; [`NavPhase`] is its public projection.
 enum PhaseState {
     SnapFrom,
@@ -485,6 +488,14 @@ impl NavPlanner {
         self.settles
     }
 
+    /// The snapped endpoints — `((start_id, start_coord), (goal_id, goal_coord))`, `(lon, lat)`
+    /// µdeg; zeroes for an endpoint whose snap phase hasn't run yet. A diagnostic for the
+    /// `nav_repro` harness (#501): lets a host run report exactly which graph nodes the plan
+    /// ran between.
+    pub fn endpoints(&self) -> (NavEndpoint, NavEndpoint) {
+        ((self.start_id, self.start_c), (self.goal_id, self.goal_c))
+    }
+
     /// Terminal-transition helper: latch and return the failure.
     fn fail(&mut self, e: NavError) -> Step {
         self.phase = PhaseState::Terminal(Err(e));
@@ -563,22 +574,10 @@ impl NavPlanner {
             // the generic "couldn't find a route" tier — the UX is two-tier by design.
             PhaseState::Emit => {
                 if self.em.is_none() {
-                    // Entering the emit phase: the constructor writes the reserved header — the
-                    // plan's first sink write (everything before this point was read-only).
-                    let em = match ObcrEmitter::new(sink) {
-                        Ok(em) => em,
-                        Err(_) => return self.fail(NavError::NoPath),
-                    };
-                    self.em = Some(em);
-                    if self.chain_len == 1 {
-                        // Both endpoints snapped to the same node: a single-point route, length 0.
-                        let e = &scratch.entries[scratch.heap[0] as usize];
-                        let (lon, lat) = (e.lon, e.lat);
-                        if self.em.as_mut().unwrap().push(sink, lon, lat, 0, 0).is_err() {
-                            return self.fail(NavError::NoPath);
-                        }
-                        self.phase = PhaseState::Finish;
-                        return Step::Running;
+                    match self.arm_emitter(scratch, sink) {
+                        Ok(true) => return Step::Running, // degenerate single-point route emitted
+                        Ok(false) => {}
+                        Err(e) => return self.fail(e),
                     }
                 }
                 for _ in 0..NAV_EMIT_HOPS_PER_STEP {
@@ -595,25 +594,13 @@ impl NavPlanner {
                 }
                 Step::Running
             }
-            PhaseState::Finish => {
-                let stats = EmitStats {
-                    min_ele_m: 0,
-                    max_ele_m: 0,
-                    ascent_m: 0,
-                    descent_m: 0,
-                    total_distance_m: Some(self.total_m),
-                };
-                let Some(em) = self.em.take() else {
-                    return self.fail(NavError::NoPath); // unreachable: Emit always sets it
-                };
-                match em.finish(sink, &self.name, stats, &mut Vec::<WpPlace, MAX_WAYPOINTS>::new()) {
-                    Ok(route) => {
-                        self.phase = PhaseState::Terminal(Ok(route));
-                        Step::Done(route)
-                    }
-                    Err(_) => self.fail(NavError::NoPath),
+            PhaseState::Finish => match self.finish_emit(sink) {
+                Ok(route) => {
+                    self.phase = PhaseState::Terminal(Ok(route));
+                    Step::Done(route)
                 }
-            }
+                Err(e) => self.fail(e),
+            },
             PhaseState::Terminal(r) => match r {
                 Ok(stats) => Step::Done(stats),
                 Err(e) => Step::Failed(e),
@@ -621,10 +608,55 @@ impl NavPlanner {
         }
     }
 
+    /// Arm the emitter on entering the emit phase — its constructor writes the reserved OBCR
+    /// header, the plan's **first** sink write (everything before this point was read-only).
+    /// Returns `Ok(true)` when the degenerate single-point route (both endpoints snapped to one
+    /// node) was fully emitted and the phase advanced straight to Finish.
+    ///
+    /// `#[inline(never)]` — the #419/#501 stack discipline: the ~9 kB `ObcrEmitter` construction
+    /// temporary must live in THIS immediately-popped frame. Inlined, fat LTO reserved its slot
+    /// in the whole step frame for **every** step — part of the measured 26.5 kB `nav_step`
+    /// monster frame that overflowed the DK stack (the #501 on-glass HardFault's true cause).
+    #[inline(never)]
+    fn arm_emitter<const N: usize>(
+        &mut self,
+        scratch: &NavScratch<N>,
+        sink: &mut dyn ByteSink,
+    ) -> Result<bool, NavError> {
+        let em = ObcrEmitter::new(sink).map_err(|_| NavError::NoPath)?;
+        self.em = Some(em);
+        if self.chain_len == 1 {
+            let e = &scratch.entries[scratch.heap[0] as usize];
+            let (lon, lat) = (e.lon, e.lat);
+            if self.em.as_mut().is_none_or(|em| em.push(sink, lon, lat, 0, 0).is_err()) {
+                return Err(NavError::NoPath);
+            }
+            self.phase = PhaseState::Finish;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// Consume the emitter and patch the header — the plan's last writes.
+    ///
+    /// `#[inline(never)]` for the same reason as [`arm_emitter`](Self::arm_emitter):
+    /// `Option::take` moves the ~9 kB emitter into a local; that temporary belongs in this
+    /// popped frame, never in the step frame.
+    #[inline(never)]
+    fn finish_emit(&mut self, sink: &mut dyn ByteSink) -> Result<RouteStats, NavError> {
+        let stats =
+            EmitStats { min_ele_m: 0, max_ele_m: 0, ascent_m: 0, descent_m: 0, total_distance_m: Some(self.total_m) };
+        let Some(em) = self.em.take() else {
+            return Err(NavError::NoPath); // unreachable: Emit always arms it
+        };
+        em.finish(sink, &self.name, stats, &mut Vec::<WpPlace, MAX_WAYPOINTS>::new()).map_err(|_| NavError::NoPath)
+    }
+
     /// Stage the found path goal→start in the (now dead) heap array — `came_from` holds **slot
     /// indices**, so the walk is direct indexing; path length is bounded by the tracked-node
     /// count, so it always fits. Sets the emit cursors + the summed-cost header total (the
     /// goal's `g`, saturated at 65 535 m like every stored cost).
+    #[inline(never)] // #419/#501: keep the step dispatcher thin
     fn stage_chain<const N: usize>(&mut self, scratch: &mut NavScratch<N>, goal_idx: usize) -> Result<(), NavError> {
         self.total_m = scratch.entries[goal_idx].g as u32;
         let mut chain_len = 0usize;
@@ -653,6 +685,7 @@ impl NavPlanner {
     /// [`Reader::nav_edge_oriented`] and push it, deduping the seam vertex shared with the
     /// previous hop so the OBCR carries one continuous polyline. Elevation is zero throughout
     /// (no DEM, locked on #116).
+    #[inline(never)] // #419/#501: a phase-boundary frame — never inlined into the step frame
     fn emit_hop<const N: usize>(
         &mut self,
         reader: &Reader,
@@ -712,6 +745,7 @@ pub fn plan_route<const N: usize>(
 /// one-point view — the spatial re-fetch) and relax each of its §8.3 neighbors from
 /// the inline `(coord, cost_m)`. A node the walk doesn't yield (corrupt map) simply
 /// relaxes nothing; the search continues on whatever frontier remains.
+#[inline(never)] // #419/#501: a phase-boundary frame — never inlined into the step frame
 fn settle<const N: usize>(
     reader: &Reader,
     scratch: &mut NavScratch<N>,
@@ -779,6 +813,7 @@ fn settle<const N: usize>(
 /// snap radius. The cap makes the final ring exhaustive by construction (a 250 m
 /// half-extent square contains the whole 250 m disc), so unlike the POI query no
 /// map-cover fallback is needed. Repeat visits across rings re-hit the tile cache.
+#[inline(never)] // #419/#501: a phase-boundary frame — never inlined into the step frame
 fn snap(reader: &Reader, tiles: &mut NavTileCache, p: (i32, i32)) -> Option<(u32, (i32, i32))> {
     if reader.nav_directory().is_empty() {
         return None;
