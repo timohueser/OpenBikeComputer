@@ -66,10 +66,22 @@ impl Pack for PackDevice64 {
 /// row-major), generic over the [`Pack`] (and thus the stored pixel type: `u16` for RGB565, `u8`
 /// for device-64). The buffer is the board's — the nRF's resident RGB222 frame in `.bss` or a
 /// per-band RGB565 scratch — so this owns nothing and only writes pixels. The `_pack` marker is
-/// zero-sized, so this is the same size as a bare `{ width, height, buf }`.
+/// zero-sized, so this is the same size as a bare `{ width, height, buf }` plus the clip bounds.
+///
+/// **Clip rect** ([`set_clip`](RawFb::set_clip)): pixel writes outside the clip are discarded, so a
+/// host that knows this frame's change is contained in a region (a screen's
+/// `ScreenTick::region`) can replay the full draw sequence and pay only for the region's pixels —
+/// the region-scoped repaint (#500 follow-up). The clip *is* the bounds check: it defaults to the
+/// whole frame, so an unclipped frame costs exactly what it always did.
 pub struct RawFb<'a, P: Pack> {
     width: u32,
     height: u32,
+    // Clip bounds, half-open (`cx0 <= x < cx1`), always ⊆ the frame. `put` checks against these
+    // *instead of* the frame edges, so the full-frame default adds no per-pixel cost.
+    cx0: i32,
+    cy0: i32,
+    cx1: i32,
+    cy1: i32,
     buf: &'a mut [P::Pixel],
     _pack: PhantomData<P>,
 }
@@ -91,7 +103,7 @@ impl<'a, P: Pack> RawFb<'a, P> {
     /// out-of-bounds later).
     pub fn new(buf: &'a mut [P::Pixel], width: u32, height: u32) -> Self {
         assert!(buf.len() >= (width * height) as usize, "framebuffer slice smaller than width*height");
-        RawFb { width, height, buf, _pack: PhantomData }
+        RawFb { width, height, cx0: 0, cy0: 0, cx1: width as i32, cy1: height as i32, buf, _pack: PhantomData }
     }
 
     pub fn width(&self) -> u32 {
@@ -102,11 +114,34 @@ impl<'a, P: Pack> RawFb<'a, P> {
         self.height
     }
 
-    /// Write one already-packed pixel, clipping silently to the buffer bounds (the
-    /// renderer projects geometry that can land off-screen).
+    /// Restrict every subsequent write to `area` (intersected with the frame): pixels outside are
+    /// discarded, exactly like the off-frame writes always were. The caller's contract is that the
+    /// content it *wants* changed lies inside `area` — the draw sequence outside must be a replay
+    /// of what the buffer already holds (the region-scoped repaint's premise), because those
+    /// writes are dropped, not deferred. A disjoint `area` empties the clip: every write discards.
+    pub fn set_clip(&mut self, area: Rectangle) {
+        let c = area.intersection(&Rectangle::new(Point::zero(), Size::new(self.width, self.height)));
+        self.cx0 = c.top_left.x;
+        self.cy0 = c.top_left.y;
+        self.cx1 = c.top_left.x + c.size.width as i32;
+        self.cy1 = c.top_left.y + c.size.height as i32;
+    }
+
+    /// The current clip as a `Rectangle` — the rect the fill paths intersect against (the whole
+    /// frame unless [`set_clip`](RawFb::set_clip) narrowed it).
+    fn clip_rect(&self) -> Rectangle {
+        Rectangle::new(
+            Point::new(self.cx0, self.cy0),
+            Size::new((self.cx1 - self.cx0) as u32, (self.cy1 - self.cy0) as u32),
+        )
+    }
+
+    /// Write one already-packed pixel, clipping silently to the clip bounds — the buffer bounds by
+    /// default (the renderer projects geometry that can land off-screen), narrowed by
+    /// [`set_clip`](RawFb::set_clip) on a region-scoped repaint.
     #[inline]
     fn put(&mut self, x: i32, y: i32, raw: P::Pixel) {
-        if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
+        if x < self.cx0 || y < self.cy0 || x >= self.cx1 || y >= self.cy1 {
             return;
         }
         self.buf[y as usize * self.width as usize + x as usize] = raw;
@@ -142,11 +177,11 @@ impl<P: Pack> DrawTarget for RawFb<'_, P> {
     /// element-indexed `buf[row + x] = raw` it can't prove in-bounds — the polygon
     /// scanline fill is the renderer's dominant draw cost (issue #98 P3).
     fn fill_solid(&mut self, area: &Rectangle, color: Self::Color) -> Result<(), Self::Error> {
-        let clipped = area.intersection(&self.bounding_box());
+        let clipped = area.intersection(&self.clip_rect());
         if let Some(br) = clipped.bottom_right() {
             let raw = P::pack(color);
             let w = self.width as usize;
-            // Clipped to `bounding_box` (origin 0,0): `0 <= x0 <= x1 < width` and
+            // Clipped to `clip_rect` (⊆ the frame): `0 <= x0 <= x1 < width` and
             // `0 <= y <= height-1`, so `row + x0 ..= row + x1` is always in bounds.
             let (x0, x1) = (clipped.top_left.x as usize, br.x as usize);
             for y in clipped.top_left.y..=br.y {
@@ -157,10 +192,29 @@ impl<P: Pack> DrawTarget for RawFb<'_, P> {
         Ok(())
     }
 
-    /// Fill the whole plane with `color` — the map redraw's clear.
+    /// The default `fill_contiguous` is `draw_iter` over the area's points — a *lazy* colors
+    /// iterator (the mono-font glyph decode on the text path). Rejecting a whole area that misses
+    /// the clip skips that decode for one rect test, which is where a region-scoped chrome repaint
+    /// spends its residual time (the static title/copy re-rasterizing into discarded writes).
+    fn fill_contiguous<I>(&mut self, area: &Rectangle, colors: I) -> Result<(), Self::Error>
+    where
+        I: IntoIterator<Item = Self::Color>,
+    {
+        if area.intersection(&self.clip_rect()).is_zero_sized() {
+            return Ok(());
+        }
+        // The default impl's body: pair the area's row-major points with the colors.
+        self.draw_iter(area.points().zip(colors).map(|(p, c)| Pixel(p, c)))
+    }
+
+    /// Fill the whole plane with `color` — the map redraw's clear (clipped like every write).
     fn clear(&mut self, color: Self::Color) -> Result<(), Self::Error> {
-        // `fill` lowers to a bulk memset, far cheaper than a per-pixel store on every map redraw.
-        self.buf.fill(P::pack(color));
+        if self.cx0 == 0 && self.cy0 == 0 && self.cx1 == self.width as i32 && self.cy1 == self.height as i32 {
+            // `fill` lowers to a bulk memset, far cheaper than a per-pixel store on every map redraw.
+            self.buf.fill(P::pack(color));
+        } else {
+            self.fill_solid(&self.clip_rect(), color)?;
+        }
         Ok(())
     }
 }
@@ -339,6 +393,98 @@ mod tests {
         // G channel (6-bit) → round(level*63/3).
         let g6 = |byte: u8| (device64_to_rgb565(byte) >> 5) & 0x3F;
         assert_eq!([g6(0b00_0000), g6(0b00_0100), g6(0b00_1000), g6(0b00_1100)], [0, 21, 42, 63]);
+    }
+
+    // --- clip rect (the region-scoped repaint, #500 follow-up) ---
+
+    /// `set_clip` discards `put`s outside the clip and keeps those inside — the same silent-drop
+    /// contract off-frame writes always had.
+    #[test]
+    fn clip_discards_pixel_writes_outside() {
+        let mut buf = [0u16; 4 * 4];
+        let mut fb = fb(&mut buf, 4, 4);
+        fb.set_clip(Rectangle::new(Point::new(1, 1), Size::new(2, 2)));
+        let red = Rgb565::from(RawU16::new(0xF800));
+        fb.draw_iter([
+            Pixel(Point::new(1, 1), red), // inside: lands
+            Pixel(Point::new(0, 0), red), // outside (before the clip): dropped
+            Pixel(Point::new(3, 2), red), // outside (past the clip's right edge): dropped
+        ])
+        .unwrap();
+        let at = |x: usize, y: usize| buf[y * 4 + x];
+        assert_eq!(at(1, 1), 0xF800);
+        assert_eq!(at(0, 0), 0x0000);
+        assert_eq!(at(3, 2), 0x0000);
+    }
+
+    /// `fill_solid` and `clear` both restrict to the clip: a clipped `clear` repaints only the
+    /// clip's pixels, leaving the rest of the frame byte-identical (what lets a region-scoped
+    /// repaint replay a full screen draw that opens with `clear`).
+    #[test]
+    fn clip_restricts_fill_solid_and_clear() {
+        let mut buf = [0u16; 4 * 4];
+        let mut fb = fb(&mut buf, 4, 4);
+        fb.set_clip(Rectangle::new(Point::new(2, 2), Size::new(2, 2)));
+        fb.clear(Rgb565::from(RawU16::new(0x07E0))).unwrap();
+        fb.fill_solid(&Rectangle::new(Point::new(0, 0), Size::new(4, 3)), Rgb565::from(RawU16::new(0x001F))).unwrap();
+        let at = |x: usize, y: usize| buf[y * 4 + x];
+        assert_eq!(at(0, 0), 0x0000, "outside the clip: clear + fill both discarded");
+        assert_eq!(at(2, 2), 0x001F, "inside the clip and the fill rect");
+        assert_eq!(at(2, 3), 0x07E0, "inside the clip, below the fill rect: keeps the clear");
+    }
+
+    /// `fill_contiguous` with an area disjoint from the clip is skipped whole (the glyph-decode
+    /// rejection); a straddling area still writes its in-clip pixels at the right offsets.
+    #[test]
+    fn clip_rejects_and_straddles_fill_contiguous() {
+        let red = Rgb565::from(RawU16::new(0xF800));
+        let mut buf = [0u16; 4 * 4];
+        {
+            let mut fb = fb(&mut buf, 4, 4);
+            fb.set_clip(Rectangle::new(Point::new(0, 2), Size::new(4, 2)));
+            // Disjoint (rows 0–1): consumed nothing, wrote nothing.
+            fb.fill_contiguous(&Rectangle::new(Point::new(0, 0), Size::new(2, 2)), [red; 4]).unwrap();
+            // Straddling rows 1–2: only row 2 (in-clip) lands, from the iterator's correct offsets.
+            fb.fill_contiguous(&Rectangle::new(Point::new(0, 1), Size::new(2, 2)), [red; 4]).unwrap();
+        }
+        let at = |x: usize, y: usize| buf[y * 4 + x];
+        assert_eq!(at(0, 0), 0x0000, "a disjoint contiguous fill is rejected whole");
+        assert_eq!(at(1, 1), 0x0000, "…and so is the straddler's out-of-clip row");
+        assert_eq!(at(0, 1), 0x0000, "the out-of-clip half is discarded");
+        assert_eq!(at(0, 2), 0xF800, "the in-clip half lands");
+        assert_eq!(at(1, 2), 0xF800);
+    }
+
+    /// A clip that misses the frame entirely empties: every write discards, nothing panics.
+    #[test]
+    fn clip_disjoint_from_frame_discards_everything() {
+        let mut buf = [0u16; 2 * 2];
+        let mut fb = fb(&mut buf, 2, 2);
+        fb.set_clip(Rectangle::new(Point::new(10, 10), Size::new(4, 4)));
+        let red = Rgb565::from(RawU16::new(0xF800));
+        fb.draw_iter([Pixel(Point::new(0, 0), red)]).unwrap();
+        fb.clear(red).unwrap();
+        fb.fill_solid(&Rectangle::new(Point::zero(), Size::new(2, 2)), red).unwrap();
+        assert!(buf.iter().all(|&p| p == 0));
+    }
+
+    /// A full-frame `set_clip` behaves exactly like no clip — the unclipped path *is* the
+    /// full-frame clip, so this pins that a host setting a frame-sized region changes nothing.
+    #[test]
+    fn full_frame_clip_is_identity() {
+        let red = Rgb565::from(RawU16::new(0xF800));
+        let mut plain = [0u16; 3 * 3];
+        let mut clipped = [0u16; 3 * 3];
+        let paint = |fb: &mut Framebuffer565| {
+            fb.clear(Rgb565::from(RawU16::new(0x07E0))).unwrap();
+            fb.fill_solid(&Rectangle::new(Point::new(1, 1), Size::new(5, 1)), red).unwrap();
+            fb.draw_iter([Pixel(Point::new(2, 2), red), Pixel(Point::new(-1, 5), red)]).unwrap();
+        };
+        paint(&mut fb(&mut plain, 3, 3));
+        let mut fbc = fb(&mut clipped, 3, 3);
+        fbc.set_clip(Rectangle::new(Point::zero(), Size::new(3, 3)));
+        paint(&mut fbc);
+        assert_eq!(plain, clipped);
     }
 
     #[test]

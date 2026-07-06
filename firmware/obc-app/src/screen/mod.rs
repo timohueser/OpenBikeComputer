@@ -48,7 +48,7 @@ pub use home::HomeScreen;
 pub use list::window_start;
 pub use map::MapScreen;
 pub use menu::MenuScreen;
-pub use nav_route::{NavConfirmScreen, NavFailScreen, NavPlanningScreen};
+pub use nav_route::{needle_region, NavConfirmScreen, NavFailScreen, NavPlanningScreen};
 pub use passkey::PasskeyScreen;
 pub use poi_detail::PoiDetailScreen;
 pub use poi_list::{PoiListScreen, PoiScratch};
@@ -390,12 +390,17 @@ impl Screen {
     /// ticks over each minute off the wall-clock `now`, adopting `ms_to_next_minute` — the minute
     /// boundary the host pre-computes (it owns the clock); the Menu sweeps its compass needle
     /// toward the selection at frame cadence until it lands.
+    /// `w`/`h` are the panel size in device pixels (the last rendered frame's — see
+    /// [`App::advance_animations`](crate::App::advance_animations)), for the screens that report a
+    /// dirty [`region`](ScreenTick::region); `0` before the first frame, which makes them abstain.
     pub fn tick_timers(
         &mut self,
         now_ms: u32,
         now: DateTime,
         ms_to_next_minute: u32,
         settings: &Settings,
+        w: i32,
+        h: i32,
     ) -> ScreenTick {
         match self {
             Screen::Statistics(s) => s.tick_timers(now_ms, settings),
@@ -408,8 +413,10 @@ impl Screen {
             Screen::RouteUpdated(s) => s.tick_timers(now_ms),
             Screen::RouteSwap(s) => s.tick_timers(now_ms),
             // The nav planning spinner (#499): free-runs at frame cadence until the host's
-            // answer (or a cancel) removes the screen.
-            Screen::NavPlanning(s) => s.tick_timers(now_ms),
+            // answer (or a cancel) removes the screen. The one screen that reports a dirty
+            // region — the spinning needle's disc — so the multi-second plan's repaints stay
+            // region-cheap (#500 follow-up).
+            Screen::NavPlanning(s) => s.tick_timers(now_ms, w, h),
             _ => ScreenTick::idle(),
         }
     }
@@ -426,12 +433,19 @@ pub struct ScreenTick {
     /// screen changes only on input or a fresh fix). Strictly positive: a due timer fired this
     /// poll instead.
     pub next_wake_ms: Option<u32>,
+    /// Where this poll's fired change is contained, in panel pixels — `None` means anywhere (the
+    /// full-frame repaint every screen implies by default; no screen has to opt in). `Some(r)` is
+    /// the screen's promise that the drawn output differs from the previous frame **only inside
+    /// `r`**, so a host may clip the repaint to it (the region-scoped repaint, #500 follow-up —
+    /// today only the nav-planning spinner's needle disc). Read only when
+    /// [`changed`](ScreenTick::changed) fired.
+    pub region: Option<Rectangle>,
 }
 
 impl ScreenTick {
     /// No timed content: nothing changed, nothing pending — the arm for every static screen.
     pub const fn idle() -> Self {
-        ScreenTick { changed: false, next_wake_ms: None }
+        ScreenTick { changed: false, next_wake_ms: None, region: None }
     }
 }
 
