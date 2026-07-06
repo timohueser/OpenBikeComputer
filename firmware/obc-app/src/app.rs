@@ -1056,6 +1056,18 @@ impl App {
         self.activity.has_nav_request()
     }
 
+    /// **Debug bench** (#500): start a route plan from `from` to `to` (both `(lon, lat)` µdeg) exactly
+    /// as the POI create-route confirm does — record the [`NavRequest`](crate::activity::NavRequest)
+    /// **and** push the planning screen — so the host steps the resumable router with the same live
+    /// spinner + between-step render cadence the rider sees, and the `nav route:` RTT line reflects the
+    /// real user-perceived cost. Only wired on the `debug-uart` build (driven by the `N` VCOM command);
+    /// no UI path reaches it.
+    pub fn debug_start_nav(&mut self, from: (i32, i32), to: (i32, i32), name: &str) {
+        self.activity.request_nav(crate::activity::NavRequest::new(from, to, name));
+        let _ = self.stack.push(Screen::NavPlanning(crate::screen::NavPlanningScreen::new(name)));
+        self.map_dirty = true;
+    }
+
     /// Drain the pending **plan-cancel request** (#499) — recorded by the planning screen's Back
     /// (which already popped back to the POI detail). A `true` is the host's cue to abort the
     /// in-flight plan and discard the partial nav file; it answers **nothing** (there is no
