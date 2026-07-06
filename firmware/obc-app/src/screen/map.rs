@@ -366,11 +366,35 @@ fn draw_scale_bar(cv: &mut impl Surface, h: i32, mpp: f32, units: Units) {
 /// progression (…, 500, 200, 100, 50, 20, 10, …).
 const NICE_STEPS: [u32; 3] = [5, 2, 1];
 
+/// The largest `1/2/5 × 10ⁿ` at or below `max`, or `None` below 1 — the classic scale-bar rounding.
+/// Bounded loop (no libm log): at most a handful of decades across the whole zoom range.
+fn nice_125(max: f32) -> Option<u32> {
+    if max < 1.0 {
+        return None; // sub-unit scale — no sensible round value
+    }
+    // Walk powers of ten up to the 10ⁿ at or just below `max`, then try 5·10ⁿ, 2·10ⁿ, 1·10ⁿ from the
+    // decade above down, taking the first (largest) that fits.
+    let mut pow: u32 = 1;
+    while (pow as f32) * 10.0 <= max {
+        pow = pow.saturating_mul(10);
+    }
+    for decade in [pow.saturating_mul(10), pow] {
+        for &m in &NICE_STEPS {
+            let dist = m.saturating_mul(decade);
+            if (dist as f32) <= max {
+                return Some(dist);
+            }
+        }
+    }
+    None
+}
+
 /// Pick the scale bar's `(pixel width, label)` for the current `mpp` and unit system, or `None` for a
 /// non-finite / non-positive `mpp` (a degenerate camera). The rule: the **largest** round distance
-/// `1/2/5 × 10ⁿ` (in the display unit — metres/kilometres, or feet/miles) whose on-screen width is
-/// at most [`SCALE_TARGET_MAX_PX`]. The distance math is derived straight from `mpp` (the render
-/// transform's metres-per-pixel), so the bar can never disagree with the map's true scale.
+/// `1/2/5 × 10ⁿ` — in the display unit the label will use: metres/kilometres, or feet *below* a mile
+/// and whole miles above it (a bar says "2mi", never the feet-rounded "1.8mi") — whose on-screen
+/// width is at most [`SCALE_TARGET_MAX_PX`]. The distance math is derived straight from `mpp` (the
+/// render transform's metres-per-pixel), so the bar can never disagree with the map's true scale.
 fn scale_bar_choice(mpp: f32, units: Units) -> Option<(i32, heapless::String<8>)> {
     if !(mpp.is_finite() && mpp > 0.0) {
         return None;
@@ -380,27 +404,15 @@ fn scale_bar_choice(mpp: f32, units: Units) -> Option<(i32, heapless::String<8>)
     let unit_per_px = if units.is_imperial() { mpp * crate::settings::FT_PER_M } else { mpp };
     // The largest base-unit distance that still fits the target width.
     let max_dist = SCALE_TARGET_MAX_PX * unit_per_px;
-    if max_dist < 1.0 {
-        return None; // sub-unit scale — no sensible round bar
-    }
-    // Walk powers of ten down from just above `max_dist`, trying 5·10ⁿ, 2·10ⁿ, 1·10ⁿ at each, and
-    // take the first (largest) that fits. Bounded loop (no libm log): at most a handful of decades
-    // across the whole zoom range.
-    let mut pow: u32 = 1;
-    while (pow as f32) * 10.0 <= max_dist {
-        pow = pow.saturating_mul(10);
-    }
-    // `pow` is now the 10ⁿ at or just below `max_dist`; also try the decade above for the 2·/5·steps.
-    for decade in [pow.saturating_mul(10), pow] {
-        for &m in &NICE_STEPS {
-            let dist = m.saturating_mul(decade);
-            if (dist as f32) <= max_dist {
-                let px = (dist as f32 / unit_per_px) as i32;
-                if px >= 1 {
-                    return Some((px, scale_label(dist, units)));
-                }
-            }
-        }
+    // Imperial rounds in 1/2/5 miles once a mile fits; in feet below that. Metric in metres/km.
+    let dist = if units.is_imperial() && max_dist >= crate::settings::FT_PER_MI as f32 {
+        nice_125(max_dist / crate::settings::FT_PER_MI as f32)?.saturating_mul(crate::settings::FT_PER_MI)
+    } else {
+        nice_125(max_dist)?
+    };
+    let px = (dist as f32 / unit_per_px) as i32;
+    if px >= 1 {
+        return Some((px, scale_label(dist, units)));
     }
     None
 }
@@ -625,11 +637,12 @@ mod tests {
         assert_eq!(scale_bar_choice(10.0, Units::Metric).unwrap().1.as_str(), "500m");
         assert_eq!(scale_bar_choice(50.0, Units::Metric).unwrap().1.as_str(), "2km");
         assert_eq!(scale_bar_choice(200.0, Units::Metric).unwrap().1.as_str(), "10km");
-        // Imperial: sub-mile feet, then the mile forms past 5280 ft (with a one-decimal fraction).
+        // Imperial: sub-mile feet, then whole 1/2/5 miles past 5280 ft — never a feet-rounded
+        // fraction like "1.8mi".
         assert_eq!(scale_bar_choice(1.0, Units::Imperial).unwrap().1.as_str(), "200ft");
         assert_eq!(scale_bar_choice(10.0, Units::Imperial).unwrap().1.as_str(), "2000ft");
-        assert_eq!(scale_bar_choice(50.0, Units::Imperial).unwrap().1.as_str(), "1.8mi");
-        assert_eq!(scale_bar_choice(200.0, Units::Imperial).unwrap().1.as_str(), "9.4mi");
+        assert_eq!(scale_bar_choice(50.0, Units::Imperial).unwrap().1.as_str(), "2mi");
+        assert_eq!(scale_bar_choice(200.0, Units::Imperial).unwrap().1.as_str(), "10mi");
     }
 
     /// A degenerate camera (non-finite or non-positive mpp) yields no bar, never a bogus one.
