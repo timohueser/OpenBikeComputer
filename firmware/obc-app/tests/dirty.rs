@@ -128,7 +128,8 @@ fn statistics_spring_back_is_wired_into_the_dirty_signal() {
     let mut app = App::new_idle(AppState::new(0, 0, 0.05)); // [Home]
     app.set_routes(&[one_route()]);
 
-    let _ = frame(&mut app, &mut NoFix, 0, &tap(Button::Encoder)); // Home press → Route menu
+    let _ = frame(&mut app, &mut NoFix, 0, &tap(Button::Encoder)); // Home press → Menu (Routes selected)
+    let _ = frame(&mut app, &mut NoFix, 5, &tap(Button::Encoder)); // press Routes → Route menu
     let _ = frame(&mut app, &mut NoFix, 10, &tap(Button::Encoder)); // pick route → Route overview
     let _ = frame(&mut app, &mut NoFix, 15, &tap(Button::Encoder)); // START RIDE → Map
     let _ = frame(&mut app, &mut NoFix, 20, &tap(Button::Back)); // Map `back` → Statistics

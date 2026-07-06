@@ -8,7 +8,7 @@
 
 use embedded_graphics::pixelcolor::Rgb888;
 use obc_app::screen::{needle_region, Screen};
-use obc_app::{App, AppState, Fix, Gesture, InputClock, Mode, NavRequest, RouteSummary};
+use obc_app::{App, AppState, Fix, Gesture, IdleReturn, InputClock, Mode, NavRequest, RouteSummary, Settings};
 use obc_reader::{rgb565_to_rgb888, BBox, MapCache, MapTables, Reader, SliceSource};
 use obc_route::NavError;
 use obcm_testkit::{build_poi_map, PoiSpec};
@@ -181,7 +181,8 @@ fn mid_ride_accept_opens_the_save_swap_prompt() {
     // Ride first: a tracking session over the (single-entry) catalog.
     nav_catalog(&mut app);
     app.state.user_fix = Some(Fix::at(POS.1, POS.0));
-    app.apply_gesture(Gesture::Press); // Home → Route menu
+    app.apply_gesture(Gesture::Press); // Home → Menu (Routes selected)
+    app.apply_gesture(Gesture::Press); // press Routes → Route menu
     app.apply_gesture(Gesture::Press); // → overview
     app.apply_gesture(Gesture::Press); // → START RIDE
     assert!(app.activity.is_tracking());
@@ -437,6 +438,9 @@ fn overview_after_debug_plan_goes_quiet() {
     // The #500 bench flow: planning pushed over Home (debug_start_nav), answered with a
     // resolvable id → overview. The app must then go quiet: no repaint claims, no short wake.
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    // Isolate the "spinner leaves no repaint / wake behind" claim from the idle-return wake (which
+    // the non-ride overview would otherwise legitimately arm).
+    app.set_settings(Settings { idle_return: IdleReturn::Never, ..Settings::default() });
     nav_catalog(&mut app);
     app.debug_start_nav(POS, POI, "Bench");
     assert!(matches!(app.top_screen(), Screen::NavPlanning(_)));
@@ -460,6 +464,7 @@ fn repeated_debug_requests_stack_one_planning_screen() {
     // The bench host repeats the `N` line against the flaky VCOM; only one planning screen may
     // result, or the host's answer strands the extras spinning forever (the #500 bench artifact).
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    app.set_settings(Settings { idle_return: IdleReturn::Never, ..Settings::default() });
     nav_catalog(&mut app);
     for _ in 0..3 {
         app.debug_start_nav(POS, POI, "Bench");

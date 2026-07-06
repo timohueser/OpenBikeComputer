@@ -245,6 +245,94 @@ impl ClimbMode {
     }
 }
 
+/// How long the UI sits idle (no user input) before it navigates itself back to where it belongs —
+/// the Home root when not tracking a ride, the Map when a ride is running (see
+/// [`App::apply_idle_return`](crate::App::apply_idle_return)). A device-only setting, cycled by the
+/// Power settings screen's value picker and persisted in the codec next to
+/// [`climb_mode`](Settings::climb_mode).
+///
+/// The discriminants are a **stable on-disk contract** — appended, never renumbered — so a stored
+/// byte always decodes to the same value (an unknown byte sanitises to the default, [`S30`]).
+///
+/// [`S30`]: IdleReturn::S30
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum IdleReturn {
+    /// 15 seconds.
+    S15 = 0,
+    /// 30 seconds — the default.
+    S30 = 1,
+    /// 1 minute.
+    M1 = 2,
+    /// 5 minutes.
+    M5 = 3,
+    /// Never — the idle-return mechanism is disabled entirely.
+    Never = 4,
+}
+
+impl Default for IdleReturn {
+    /// **30 s** out of the box — long enough not to yank an attentive rider mid-glance, short enough
+    /// that a device left in a menu drifts back to a useful screen on its own.
+    fn default() -> Self {
+        IdleReturn::S30
+    }
+}
+
+impl IdleReturn {
+    /// The ordered picker values (the left/right walk order), shortest to `Never`.
+    const ORDER: [IdleReturn; 5] =
+        [IdleReturn::S15, IdleReturn::S30, IdleReturn::M1, IdleReturn::M5, IdleReturn::Never];
+
+    /// The label for the Power screen's value picker (`15 s` / `30 s` / `1 min` / `5 min` / `Never`).
+    #[inline]
+    pub const fn name(self) -> &'static str {
+        match self {
+            IdleReturn::S15 => "15 s",
+            IdleReturn::S30 => "30 s",
+            IdleReturn::M1 => "1 min",
+            IdleReturn::M5 => "5 min",
+            IdleReturn::Never => "Never",
+        }
+    }
+
+    /// The idle timeout in millis, or `None` for [`Never`](IdleReturn::Never) (the mechanism is
+    /// off). `None` also disables the idle wake, so a parked device isn't woken to no purpose.
+    #[inline]
+    pub const fn timeout_ms(self) -> Option<u32> {
+        match self {
+            IdleReturn::S15 => Some(15_000),
+            IdleReturn::S30 => Some(30_000),
+            IdleReturn::M1 => Some(60_000),
+            IdleReturn::M5 => Some(300_000),
+            IdleReturn::Never => None,
+        }
+    }
+
+    /// Walk the picker `n` detents through [`ORDER`](IdleReturn::ORDER), wrapping at both ends — the
+    /// Power row's left/right value step.
+    #[inline]
+    pub fn stepped(self, n: i32) -> Self {
+        let i = Self::ORDER.iter().position(|&v| v == self).unwrap_or(1);
+        let len = Self::ORDER.len() as i32;
+        let j = (i as i32 + n).rem_euclid(len) as usize;
+        Self::ORDER[j]
+    }
+
+    /// Rebuild from a stored byte, sanitising an unknown value to the default
+    /// ([`S30`](IdleReturn::S30)) — the decode-side clamp, exactly like the other codec fields.
+    #[inline]
+    fn from_byte(b: u8) -> Self {
+        match b {
+            0 => IdleReturn::S15,
+            1 => IdleReturn::S30,
+            2 => IdleReturn::M1,
+            3 => IdleReturn::M5,
+            4 => IdleReturn::Never,
+            _ => IdleReturn::default(),
+        }
+    }
+}
+
 /// Wrap `v` by `n` steps within the inclusive range `lo..=hi`. Shared by every
 /// [`DateTime`] stepper so a turn past either end rolls round (year 2099→2020, hour 23→0),
 /// matching the list selection's [`step_selection`](crate::screen::list::step_selection) feel.
@@ -530,6 +618,11 @@ pub struct Settings {
     /// one of the BLE-writable fields [`adopt_ble_fields`](Settings::adopt_ble_fields) pulls across.
     /// Default **Auto** — the climb panel auto-shows on the first climb.
     pub climb_mode: ClimbMode,
+    /// How long the UI sits idle before it navigates itself back to where it belongs (Home when not
+    /// tracking, the Map mid-ride). **Device-only**, like [`climb_mode`](Settings::climb_mode):
+    /// deliberately *not* one of the BLE-writable fields [`adopt_ble_fields`](Settings::adopt_ble_fields)
+    /// pulls across. Default **30 s**; [`Never`](IdleReturn::Never) disables it entirely.
+    pub idle_return: IdleReturn,
 }
 
 impl Default for Settings {
@@ -546,6 +639,7 @@ impl Default for Settings {
             device_name: DeviceName::EMPTY,
             ble_enabled: true,
             climb_mode: ClimbMode::default(),
+            idle_return: IdleReturn::default(),
         }
     }
 }
@@ -592,8 +686,9 @@ impl Settings {
 
 /// Codec version — bump when the byte layout changes; [`decode`] rejects any other version (the
 /// host then falls back to [`Settings::default`], i.e. settings reset on a format change).
-/// v4 appended the `ble_enabled` byte (#455); v5 appended the `climb_mode` byte (#511).
-pub const VERSION: u8 = 5;
+/// v4 appended the `ble_enabled` byte (#455); v5 appended the `climb_mode` byte (#511); v6 appended
+/// the `idle_return` byte.
+pub const VERSION: u8 = 6;
 
 /// Fixed encoded length: the [`PAYLOAD_LEN`] CRC-covered bytes + a 2-byte CRC, **rounded up to the
 /// device RRAM's 16-byte write line** (the firmware store writes whole 128-bit lines) — so a codec
@@ -602,7 +697,7 @@ pub const VERSION: u8 = 5;
 pub const ENCODED_LEN: usize = (PAYLOAD_LEN + 2).div_ceil(16) * 16;
 
 /// Payload size before the trailing CRC. The CRC follows immediately at this offset.
-const PAYLOAD_LEN: usize = CLIMB_OFF + 1;
+const PAYLOAD_LEN: usize = IDLE_OFF + 1;
 /// Byte offset of the field selection (right after the 14-byte head).
 const STAT_FIELDS_OFF: usize = 14;
 /// Byte offset of `stat_cycle_s` (right after the field selection).
@@ -613,6 +708,8 @@ const NAME_OFF: usize = STAT_CYCLE_OFF + 2;
 const BLE_OFF: usize = NAME_OFF + 1 + DEVICE_NAME_MAX;
 /// Byte offset of the `climb_mode` byte (the v5 tail, right after `ble_enabled`).
 const CLIMB_OFF: usize = BLE_OFF + 1;
+/// Byte offset of the `idle_return` byte (the v6 tail, right after `climb_mode`).
+const IDLE_OFF: usize = CLIMB_OFF + 1;
 
 /// CRC-16/CCITT-FALSE (poly `0x1021`, init `0xFFFF`) over `data` — small, table-free, and
 /// plenty to reject a blank/half-written blob. Guards the codec on both stores.
@@ -656,6 +753,8 @@ pub fn encode(s: &Settings) -> [u8; ENCODED_LEN] {
     b[BLE_OFF] = s.ble_enabled as u8;
     // v5 tail: the Climb-screen mode.
     b[CLIMB_OFF] = s.climb_mode as u8;
+    // v6 tail: the idle-return timeout.
+    b[IDLE_OFF] = s.idle_return as u8;
     let crc = crc16(&b[0..PAYLOAD_LEN]);
     b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
     b
@@ -698,6 +797,8 @@ pub fn decode(bytes: &[u8]) -> Option<Settings> {
         // An unknown climb-mode byte (an older/newer writer, a bit-flip the CRC missed) sanitises
         // to the default, exactly like the other out-of-range fields.
         climb_mode: ClimbMode::from_byte(b[CLIMB_OFF]),
+        // Same clamp for the idle-return byte: an out-of-range value sanitises to the default.
+        idle_return: IdleReturn::from_byte(b[IDLE_OFF]),
     };
     s.sanitize();
     Some(s)
@@ -934,6 +1035,7 @@ mod tests {
             device_name: DeviceName::from_str_lossy("Timo's OBC"),
             ble_enabled: false,
             climb_mode: ClimbMode::Manual,
+            idle_return: IdleReturn::M5,
         };
         assert_eq!(decode(&encode(&s)), Some(s));
     }
@@ -959,7 +1061,6 @@ mod tests {
     /// [`adopt_ble_fields`] must never pull it across (a phone can't reconfigure the climb UI).
     #[test]
     fn climb_mode_round_trips_and_is_device_only() {
-        assert_eq!(VERSION, 5, "the climb_mode tail is the v5 layout (settings reset on flash)");
         assert_eq!(Settings::default().climb_mode, ClimbMode::Auto, "the climb panel defaults on (Auto)");
 
         // Each mode round-trips through the codec byte-for-byte.
@@ -981,6 +1082,51 @@ mod tests {
         let mut app = Settings { climb_mode: ClimbMode::Off, ..Settings::default() };
         app.adopt_ble_fields(&Settings { climb_mode: ClimbMode::Auto, ..Settings::default() });
         assert_eq!(app.climb_mode, ClimbMode::Off, "adopt_ble_fields leaves the climb mode alone");
+    }
+
+    /// The v6 tail: the idle-return timeout round-trips every value, defaults **30 s**, sanitises an
+    /// out-of-range byte back to the default, and is device-only — [`adopt_ble_fields`] must never
+    /// pull it across (a phone can't reconfigure the idle behavior).
+    #[test]
+    fn idle_return_round_trips_and_is_device_only() {
+        assert_eq!(VERSION, 6, "the idle_return tail is the v6 layout (settings reset on flash)");
+        assert_eq!(Settings::default().idle_return, IdleReturn::S30, "the idle return defaults to 30 s");
+
+        // Each value round-trips through the codec byte-for-byte.
+        for v in [IdleReturn::S15, IdleReturn::S30, IdleReturn::M1, IdleReturn::M5, IdleReturn::Never] {
+            let s = Settings { idle_return: v, ..Settings::default() };
+            assert_eq!(decode(&encode(&s)), Some(s), "{v:?} round-trips");
+        }
+
+        // An out-of-range stored byte sanitises to the default 30 s — re-stamp the CRC so only the
+        // payload byte is "wrong".
+        let mut b = encode(&Settings { idle_return: IdleReturn::S15, ..Settings::default() });
+        b[IDLE_OFF] = 200;
+        let crc = crc16(&b[0..PAYLOAD_LEN]);
+        b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
+        let got = decode(&b).expect("valid CRC → Some, just sanitised");
+        assert_eq!(got.idle_return, IdleReturn::S30, "an unknown idle-return byte falls back to 30 s");
+
+        // Device-only: a BLE blob's idle_return never lands via the #456 coherence merge.
+        let mut app = Settings { idle_return: IdleReturn::S15, ..Settings::default() };
+        app.adopt_ble_fields(&Settings { idle_return: IdleReturn::Never, ..Settings::default() });
+        assert_eq!(app.idle_return, IdleReturn::S15, "adopt_ble_fields leaves the idle return alone");
+    }
+
+    /// The picker's timeout mapping + the left/right walk order (wrapping at both ends).
+    #[test]
+    fn idle_return_timeout_and_stepping() {
+        assert_eq!(IdleReturn::S15.timeout_ms(), Some(15_000));
+        assert_eq!(IdleReturn::S30.timeout_ms(), Some(30_000));
+        assert_eq!(IdleReturn::M1.timeout_ms(), Some(60_000));
+        assert_eq!(IdleReturn::M5.timeout_ms(), Some(300_000));
+        assert_eq!(IdleReturn::Never.timeout_ms(), None, "Never disables the mechanism");
+
+        // Right walks toward Never, wrapping back to the shortest; left is the mirror.
+        assert_eq!(IdleReturn::S15.stepped(1), IdleReturn::S30);
+        assert_eq!(IdleReturn::M5.stepped(1), IdleReturn::Never);
+        assert_eq!(IdleReturn::Never.stepped(1), IdleReturn::S15, "wraps past Never");
+        assert_eq!(IdleReturn::S15.stepped(-1), IdleReturn::Never, "wraps past the start");
     }
 
     /// The v3 device-name tail: set → truncate on a char boundary at the 48-byte cap, and a
