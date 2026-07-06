@@ -157,23 +157,73 @@ pub(crate) struct NavBuffers {
 #[cfg(not(has_nav))]
 pub(crate) struct NavBuffers;
 
-/// Run a drained POI create-route request (epic #116, R4) against the resident map: the board's
-/// host half of the nav seam. Runs [`plan_route`](obc_route::plan_route) (sync) from the rider's
-/// fix to the POI, streams the emitted OBCR to the reserved `/routes/_NAV.OBR`
-/// ([`Storage::nav_route_begin`](sd::Storage::nav_route_begin) — the 8.3 face of the spec'd
-/// `_nav.obcr`), rescans the catalog (the same [`load_routes`] machinery every store edge uses),
-/// and answers the app — `notify_nav_result` activates the route and swaps the confirm screen for
-/// the computed-route overview (or the failure card).
+/// The **planning half** of a create-route request (epic #116, R4): open the reserved
+/// `/routes/_NAV.OBR` ([`Storage::nav_route_begin`](sd::Storage::nav_route_begin) — the 8.3 face
+/// of the spec'd `_nav.obcr`), build the cheap boot-parsed-tables `Reader` view, run
+/// [`plan_route`](obc_route::plan_route) (sync, weighted A*), and flush/patch the file. Returns
+/// the planned length in meters.
 ///
-/// **Stack discipline** (#270/#419): its own `#[inline(never)]` frame, called at the ride loop's
-/// **shallow** per-pass depth — the same level as [`load_routes`], sequential with (never under)
-/// the deep render path — and the two big A* buffers (`NavScratch` ~10 kB + `NavTileCache` ~4 kB)
-/// are `.bss` statics threaded from `main`, never locals. What this frame carries is the cheap
-/// per-frame `Reader` view, the SD sink, and A*'s own shallow call tree.
+/// **Stack discipline** (#270/#419, tightened after the 56.8 KB on-glass excursion): this frame
+/// holds *only* the plan — the ~2.4 KB `Reader` value, the SD sink, and A*'s call tree (whose
+/// deepest branch is the OBCR emit: the shared `ObcrEmitter` stages a chunk index + point buffer,
+/// ~9 KB by value). The catalog rescan that used to nest *inside* this frame now runs **after it
+/// returns** (see the drain arm in [`run_app`]) — flat frames, never stacked. The two big A*
+/// buffers stay `.bss` statics threaded from `main`, never locals.
+///
+/// **Liveness**: `plan_route` blocks the executor for the whole search (seconds on the SD-bound
+/// device — accepted for v1); the `progress` hook fires every ~8 settles and **feeds the
+/// watchdog**, so a long plan can't trip the dog. Other tasks (the VCOM RX ring, BLE) still
+/// starve between callbacks — the RX ring is sized to ride it out.
+#[cfg(has_nav)]
+#[inline(never)]
+fn nav_plan_only(
+    storage: &mut sd::Storage,
+    map_tables: &MapTables,
+    map_cache: &MapCache,
+    nav: &mut NavBuffers,
+    req: &obc_app::NavRequest,
+    wdt: &mut Option<wdt::WatchdogHandle>,
+) -> Result<u32, obc_route::NavError> {
+    use obc_route::NavError;
+    let file = storage.nav_route_begin().ok_or(NavError::NoPath)?;
+    let r = match storage.map_source() {
+        Some(map_src) => {
+            let reader = Reader::new(&map_src, map_tables, map_cache);
+            let mut sink = storage.nav_sink(file);
+            let mut progress = || {
+                if let Some(h) = wdt.as_mut() {
+                    h.pet();
+                }
+                true
+            };
+            obc_route::plan_route(
+                &reader,
+                req.from,
+                req.to,
+                req.name(),
+                &mut *nav.scratch,
+                &mut *nav.tiles,
+                &mut progress,
+                &mut sink,
+            )
+        }
+        None => Err(NavError::NoPath),
+    };
+    storage.nav_route_finish(file, r.is_ok());
+    r.map(|stats| stats.total_distance_m)
+}
+
+/// Run a drained POI create-route request end to end — the board's host half of the nav seam,
+/// deliberately a **thin orchestrator** of `#[inline(never)]` steps so no two fat frames ever
+/// nest: [`nav_plan_only`] (the plan; its frame pops before anything else runs), then
+/// [`load_routes`] (the rescan — the `notify_route_uploaded` ordering contract, reused), then the
+/// RTT line + the app's answer (`notify_nav_result` activates the route and swaps the confirm
+/// screen for the computed-route overview or the failure card).
 ///
 /// One RTT line per plan (grep `nav route:`): outcome, elapsed ms, the tile-cache counters
-/// (**misses = SD chunk reads** for the whole plan), and the stackmeter high-water re-scanned
-/// right after the run so the router's contribution to the peak is visible on-glass.
+/// (**misses = SD chunk reads** for the whole plan), and the stackmeter high-water — re-scanned
+/// here, *after* the plan frame popped, which still reads the in-plan peak (sentinel evidence is
+/// permanent) — so the router's contribution to the peak is visible on-glass.
 #[cfg(has_nav)]
 #[inline(never)]
 #[allow(clippy::too_many_arguments)]
@@ -184,46 +234,29 @@ fn plan_nav(
     map_cache: &MapCache,
     nav: &mut NavBuffers,
     req: &obc_app::NavRequest,
+    wdt: &mut Option<wdt::WatchdogHandle>,
     now: u32,
 ) {
     use obc_route::NavError;
     let t0 = Instant::now();
-    let planned: Result<(u16, u32), NavError> = (|| {
-        let file = storage.nav_route_begin().ok_or(NavError::NoPath)?;
-        let r = match storage.map_source() {
-            Some(map_src) => {
-                let reader = Reader::new(&map_src, map_tables, map_cache);
-                let mut sink = storage.nav_sink(file);
-                obc_route::plan_route(
-                    &reader,
-                    req.from,
-                    req.to,
-                    req.name(),
-                    &mut *nav.scratch,
-                    &mut *nav.tiles,
-                    &mut sink,
-                )
-            }
-            None => Err(NavError::NoPath),
-        };
-        storage.nav_route_finish(file, r.is_ok());
-        let stats = r?;
-        // Rescan + re-feed the id-carrying catalog so the answer's id resolves against the fresh
-        // tables — the notify_route_uploaded ordering contract, reused.
+    // Step 1: the plan, in its own popped frame.
+    let planned = nav_plan_only(storage, map_tables, map_cache, nav, req, wdt);
+    // Step 2: the rescan — sequential with (never under) the plan frame.
+    let result: Result<(u16, u32), NavError> = planned.and_then(|len| {
         load_routes(storage, app);
         let id = storage.nav_route_id().ok_or(NavError::NoPath)?;
-        Ok((id, stats.total_distance_m))
-    })();
+        Ok((id, len))
+    });
     let ms = t0.elapsed().as_millis();
     let cache = nav.tiles.stats();
     let hw = stackmeter::rescan(now);
-    let outcome = match &planned {
+    let outcome = match &result {
         Ok(_) => "ok",
         Err(NavError::TooFar) => "too-far",
         Err(NavError::NoPath) => "no-path",
         Err(NavError::Exhausted) => "exhausted",
     };
-    let len = planned.map(|(_, len)| len).unwrap_or(0);
+    let len = result.map(|(_, len)| len).unwrap_or(0);
     defmt::info!(
         "nav route: {=str} len={=u32} ms={=u64} sd_reads={=u32} cache_hits={=u32} stack_hw={=usize}/{=usize}",
         outcome,
@@ -234,7 +267,7 @@ fn plan_nav(
         hw,
         stackmeter::total()
     );
-    app.notify_nav_result(planned.map(|(id, _)| id));
+    app.notify_nav_result(result.map(|(id, _)| id));
 }
 
 /// The GPS power state the ride wants: deep-sleep when not tracking, full-power fixes while riding, or
@@ -597,7 +630,7 @@ pub(crate) async fn run_app(
                 #[cfg(has_nav)]
                 {
                     match storage.as_mut() {
-                        Some(s) => plan_nav(s, app, map_tables, map_cache, &mut nav, &req, now),
+                        Some(s) => plan_nav(s, app, map_tables, map_cache, &mut nav, &req, &mut wdt, now),
                         // No card: nothing to route against — the generic failure tier.
                         None => app.notify_nav_result(Err(obc_route::NavError::NoPath)),
                     }

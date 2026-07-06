@@ -82,6 +82,21 @@ fn grid3(shortcut: bool) -> NavGraph {
     NavGraph { nodes, edges }
 }
 
+/// A straight west→east path graph: `n` nodes `step_udeg` of longitude apart (near the
+/// fixture's ~0.5° latitude, ~0.11 m/µdeg), consecutive nodes joined by one
+/// `cost_m`-meter edge. Reaching the far end forces the router to track every node on
+/// the line — the deterministic range fixture.
+fn line_graph(n: u32, step_udeg: i32, cost_m: u32) -> NavGraph {
+    let nodes = (0..n).map(|i| Node { id: i, coord: (BASE.0 + i as i32 * step_udeg, BASE.1) }).collect::<Vec<_>>();
+    let edges = (0..n - 1)
+        .map(|i| {
+            let (ca, cb) = (nodes[i as usize].coord, nodes[i as usize + 1].coord);
+            Edge { a: i, b: i + 1, polyline: vec![ca, cb], length_m: cost_m }
+        })
+        .collect();
+    NavGraph { nodes, edges }
+}
+
 /// Parse `bytes` and run the router with a full-size scratch + fresh tile cache,
 /// returning `(result, obcr_bytes, cache_stats)`.
 fn plan(
@@ -97,7 +112,7 @@ fn plan(
     let mut scratch = NavScratch::<{ obc_route::NAV_MAX_NODES }>::new();
     let mut tiles = NavTileCache::new();
     let mut sink = VecSink::default();
-    let res = plan_route(&r, from, to, name, &mut scratch, &mut tiles, &mut sink);
+    let res = plan_route(&r, from, to, name, &mut scratch, &mut tiles, &mut || true, &mut sink);
     (res, sink.buf, tiles.stats())
 }
 
@@ -221,7 +236,16 @@ fn tiny_scratch_exhausts() {
     let mut tiles = NavTileCache::new();
     let mut sink = VecSink::default();
     let goal = at(2, 2);
-    let res = plan_route(&r, (BASE.0 + 100, BASE.1), (goal.0 - 100, goal.1), "x", &mut scratch, &mut tiles, &mut sink);
+    let res = plan_route(
+        &r,
+        (BASE.0 + 100, BASE.1),
+        (goal.0 - 100, goal.1),
+        "x",
+        &mut scratch,
+        &mut tiles,
+        &mut || true,
+        &mut sink,
+    );
     assert_eq!(res, Err(NavError::Exhausted));
 }
 
@@ -279,7 +303,7 @@ fn too_far_rejects_with_zero_graph_reads() {
     let mut tiles = NavTileCache::new();
     let mut sink = VecSink::default();
     let to = (BASE.0, BASE.1 + 100_000); // ~11.1 km north
-    let res = plan_route(&r, BASE, to, "x", &mut scratch, &mut tiles, &mut sink);
+    let res = plan_route(&r, BASE, to, "x", &mut scratch, &mut tiles, &mut || true, &mut sink);
     assert_eq!(res, Err(NavError::TooFar));
     assert_eq!(src.reads.get(), reads_after_parse, "TooFar must not read the map");
     assert!(sink.buf.is_empty(), "TooFar must not write");
@@ -299,10 +323,88 @@ fn same_snap_node_emits_single_point_route() {
     assert_eq!((pts[0].lon, pts[0].lat), at(0, 0));
 }
 
-/// The fixed scratch honors the locked ~10 kB budget (also compile-time asserted in
-/// the module; this keeps the number visible in the test log).
+/// The slimmed entry layout holds: 26 B/node (24 B entry + 2 B heap slot) plus the two
+/// length fields — per-target `NAV_MAX_NODES` sized (also compile-time asserted in the
+/// module for the device profile; this keeps the numbers visible in the test log).
 #[test]
-fn scratch_fits_the_budget() {
+fn scratch_fits_the_per_target_budget() {
     let size = core::mem::size_of::<NavScratch<{ obc_route::NAV_MAX_NODES }>>();
-    assert!(size <= 10 * 1024, "NavScratch is {size} B");
+    assert!(size <= 26 * obc_route::NAV_MAX_NODES + 8, "NavScratch is {size} B — the 26 B/node layout drifted");
+}
+
+/// A ~9 km straight-line path graph (600 nodes, 15 m apart): the pre-range-fix table
+/// (300 nodes — every node on the path must be tracked to reach the goal) provably
+/// exhausts, while the sim-size table plans it — pinning the 2026-07-06 range fix
+/// (bigger per-target tables + the slimmed 26 B/node entry that pays for them).
+#[test]
+fn long_line_exhausts_old_table_but_plans_on_the_sim_table() {
+    let bytes = map_with(&line_graph(600, 135, 15));
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let cache = MapCache::new();
+    let r = Reader::new(&src, &tables, &cache);
+    let from = (BASE.0 + 30, BASE.1);
+    let to = (BASE.0 + 599 * 135 - 30, BASE.1);
+
+    // The old fixed table: 300 tracked nodes < the 600 the path needs ⇒ Exhausted.
+    let mut small = NavScratch::<300>::new();
+    let mut tiles = NavTileCache::new();
+    let mut sink = VecSink::default();
+    let res = plan_route(&r, from, to, "x", &mut small, &mut tiles, &mut || true, &mut sink);
+    assert_eq!(res, Err(NavError::Exhausted), "the pre-fix 300-node table can't span ~9 km");
+
+    // The sim-size table (8192 on the host profile) plans the same route.
+    let mut big = Box::new(NavScratch::<8192>::new());
+    let mut tiles = NavTileCache::new();
+    let mut sink = VecSink::default();
+    let res = plan_route(&r, from, to, "x", &mut big, &mut tiles, &mut || true, &mut sink);
+    let route = res.expect("the sim-size table spans the ~9 km line");
+    assert_eq!(route.total_distance_m, 599 * 15, "summed edge costs over the whole line");
+}
+
+/// Costs saturate at `u16::MAX` meters instead of wrapping: a path whose true summed
+/// cost exceeds 65 535 m still plans (the saturated `g` is just maximally
+/// unattractive), the header total pins at the saturation ceiling, and nothing
+/// panics or mis-orders.
+#[test]
+fn saturated_costs_plan_without_panicking() {
+    // Three nodes ~100 m apart but with absurd 60 km edge costs: g saturates on hop 2.
+    // n1 nudged off-axis so the collinear-point decimator keeps it.
+    let (n0, n1, n2) = (BASE, (BASE.0 + 900, BASE.1 + 500), (BASE.0 + 1_800, BASE.1));
+    let graph = NavGraph {
+        nodes: vec![Node { id: 0, coord: n0 }, Node { id: 1, coord: n1 }, Node { id: 2, coord: n2 }],
+        edges: vec![
+            Edge { a: 0, b: 1, polyline: vec![n0, n1], length_m: 60_000 },
+            Edge { a: 1, b: 2, polyline: vec![n1, n2], length_m: 60_000 },
+        ],
+    };
+    let (res, obcr, _) = plan(&map_with(&graph), (n0.0 + 30, n0.1), (n2.0 - 30, n2.1), "Far");
+    let route = res.expect("a saturated-cost path still plans");
+    assert_eq!(route.total_distance_m, u16::MAX as u32, "the total pins at the u16 saturation ceiling");
+    assert_eq!(route_points(&obcr).len(), 3, "the geometry is intact regardless");
+}
+
+/// The host abort hook: `progress` returning `false` stops a long search cleanly as
+/// the generic `NoPath` tier (the board feeds its watchdog in the same hook).
+#[test]
+fn progress_abort_stops_the_search() {
+    let bytes = map_with(&line_graph(600, 135, 15));
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let cache = MapCache::new();
+    let r = Reader::new(&src, &tables, &cache);
+    let mut scratch = Box::new(NavScratch::<8192>::new());
+    let mut tiles = NavTileCache::new();
+    let mut sink = VecSink::default();
+    let mut calls = 0u32;
+    let mut progress = || {
+        calls += 1;
+        calls < 3 // allow two callbacks, abort on the third
+    };
+    let from = (BASE.0 + 30, BASE.1);
+    let to = (BASE.0 + 599 * 135 - 30, BASE.1);
+    let res = plan_route(&r, from, to, "x", &mut scratch, &mut tiles, &mut progress, &mut sink);
+    assert_eq!(res, Err(NavError::NoPath), "an aborted search lands in the generic failure tier");
+    assert_eq!(calls, 3, "the hook fires every few settles until it aborts");
+    assert!(sink.buf.is_empty(), "an aborted plan writes nothing");
 }

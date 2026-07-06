@@ -389,15 +389,22 @@ fn replay_step<'s>(
 /// mirroring the board's `ride::plan_nav`: run the real `plan_route` against the loaded map,
 /// write the emitted OBCR to the reserved `_nav.obcr` in the routes folder, rescan + re-feed the
 /// id-carrying catalog, and answer the app (`notify_nav_result` swaps the confirm screen for the
-/// computed-route overview or the failure card). The A* scratch + tile cache are stack locals —
-/// ~14 KB is nothing on the host; the device parks the same structs in `.bss`.
+/// computed-route overview or the failure card).
+///
+/// The host-size A* table (`NAV_MAX_NODES` = 8192 ⇒ ~208 KB — the range fix's locked "sim handles
+/// 10 km" requirement) is **heap-allocated zeroed**: an all-zero `NavScratch` is bit-identical to
+/// `new()` (its `.bss`-placement contract; `plan_route` resets it anyway), and `Box::new` would
+/// first build the table on the stack — a silent trap on the wasm build's small stack. The
+/// `progress` hook is the trivial always-continue (the sim needs no watchdog feed).
 fn run_nav_request(app: &mut obc_app::App, store: &mut RouteStore, reader: &Reader, req: &obc_app::NavRequest) {
     use obc_route::nav::{plan_route, NavError, NavScratch};
-    let mut scratch: NavScratch = NavScratch::new();
+    // SAFETY: `NavScratch::new()` writes only zero bytes, so a zeroed allocation *is* the
+    // initialized value.
+    let mut scratch: Box<NavScratch> = unsafe { Box::new_zeroed().assume_init() };
     let mut tiles = obc_reader::NavTileCache::new();
     let mut sink = vec_sink::VecSink::default();
-    let result =
-        plan_route(reader, req.from, req.to, req.name(), &mut scratch, &mut tiles, &mut sink).and_then(|stats| {
+    let result = plan_route(reader, req.from, req.to, req.name(), &mut scratch, &mut tiles, &mut || true, &mut sink)
+        .and_then(|stats| {
             let id = store.write_nav_route(sink.bytes()).ok_or(NavError::NoPath)?;
             app.set_routes_with_ids(store.catalog(), store.ids());
             // A re-route rewrites the nav bytes under an unchanged catalog index — force the
