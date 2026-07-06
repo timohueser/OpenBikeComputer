@@ -135,9 +135,14 @@ pub struct Activity {
     delete_ride: Option<usize>,
     /// A one-shot **route-planning request** (epic #116, R4), set by the POI create-route confirm
     /// and drained by the host via [`App::take_nav_request`](crate::App::take_nav_request), which
-    /// runs the A* router, writes the reserved nav route, rescans, and answers through
+    /// steps the resumable router, writes the reserved nav route, rescans, and answers through
     /// [`App::notify_nav_result`](crate::App::notify_nav_result).
     nav_request: Option<NavRequest>,
+    /// A one-shot **plan-cancel request** (#499): Back on the planning screen pops it *and*
+    /// records this; the host drains it via [`App::take_nav_cancel`](crate::App::take_nav_cancel)
+    /// and aborts the in-flight plan (discarding the partial file, answering nothing — the rider
+    /// is already back on the POI detail).
+    nav_cancel: bool,
 
     // live map-match (from the GPS fix)
     /// Total distance of the active route (m), mirrored from its header so the riding views can
@@ -302,6 +307,17 @@ impl Activity {
     /// Non-consuming peek at whether a route-planning request is pending.
     pub(crate) fn has_nav_request(&self) -> bool {
         self.nav_request.is_some()
+    }
+
+    /// Record a one-shot plan-cancel (#499) — set by the planning screen's Back, drained by
+    /// [`App::take_nav_cancel`](crate::App::take_nav_cancel).
+    pub(crate) fn request_nav_cancel(&mut self) {
+        self.nav_cancel = true;
+    }
+
+    /// Take (and clear) the pending plan-cancel request.
+    pub(crate) fn take_nav_cancel(&mut self) -> bool {
+        core::mem::take(&mut self.nav_cancel)
     }
 
     /// The elevation (m) to stamp on a logged [`TrackPoint`](obc_route::TrackPoint): the

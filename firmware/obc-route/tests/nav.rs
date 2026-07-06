@@ -10,7 +10,7 @@ use common::{decode, VecSink};
 use obc_pack::nav::{Edge, NavGraph, Node};
 use obc_pack::{serialize_lods, LodLayer, Node as GeomNode};
 use obc_reader::{MapCache, MapTables, NavTileCache, Reader};
-use obc_route::nav::{plan_route, NavError, NavScratch};
+use obc_route::nav::{plan_route, NavError, NavPhase, NavPlanner, NavScratch};
 use obc_route::{RouteIndex, RouteObjectInfo, RouteReader, SliceSource};
 
 /// Global bbox `(min_lon, min_lat, max_lon, max_lat)` µdeg — roomy so the node
@@ -110,7 +110,7 @@ fn plan(
     let mut scratch = NavScratch::<{ obc_route::NAV_MAX_NODES }>::new();
     let mut tiles = NavTileCache::new();
     let mut sink = VecSink::default();
-    let res = plan_route(&r, from, to, name, &mut scratch, &mut tiles, &mut || true, &mut sink);
+    let res = plan_route(&r, from, to, name, &mut scratch, &mut tiles, &mut sink);
     (res, sink.buf, tiles.stats())
 }
 
@@ -234,16 +234,7 @@ fn tiny_scratch_exhausts() {
     let mut tiles = NavTileCache::new();
     let mut sink = VecSink::default();
     let goal = at(2, 2);
-    let res = plan_route(
-        &r,
-        (BASE.0 + 100, BASE.1),
-        (goal.0 - 100, goal.1),
-        "x",
-        &mut scratch,
-        &mut tiles,
-        &mut || true,
-        &mut sink,
-    );
+    let res = plan_route(&r, (BASE.0 + 100, BASE.1), (goal.0 - 100, goal.1), "x", &mut scratch, &mut tiles, &mut sink);
     assert_eq!(res, Err(NavError::Exhausted));
 }
 
@@ -286,7 +277,7 @@ fn far_beyond_range_target_exhausts_instead_of_precheck() {
     let mut sink = VecSink::default();
     let from = (BASE.0 + 30, BASE.1);
     let to = (BASE.0 + 1_999 * 135 - 30, BASE.1); // ~30 km away — pre-cap this was TooFar unseen
-    let res = plan_route(&r, from, to, "x", &mut scratch, &mut tiles, &mut || true, &mut sink);
+    let res = plan_route(&r, from, to, "x", &mut scratch, &mut tiles, &mut sink);
     assert_eq!(res, Err(NavError::Exhausted), "the burn-before-fail search ends at the table, not a pre-check");
     assert!(sink.buf.is_empty(), "an exhausted plan writes nothing");
 }
@@ -333,14 +324,14 @@ fn long_line_exhausts_old_table_but_plans_on_the_sim_table() {
     let mut small = NavScratch::<300>::new();
     let mut tiles = NavTileCache::new();
     let mut sink = VecSink::default();
-    let res = plan_route(&r, from, to, "x", &mut small, &mut tiles, &mut || true, &mut sink);
+    let res = plan_route(&r, from, to, "x", &mut small, &mut tiles, &mut sink);
     assert_eq!(res, Err(NavError::Exhausted), "the pre-fix 300-node table can't span ~9 km");
 
     // The capped sim/LM20-size table (1536 = the 40 kB nav budget) plans the same route.
     let mut big = Box::new(NavScratch::<1536>::new());
     let mut tiles = NavTileCache::new();
     let mut sink = VecSink::default();
-    let res = plan_route(&r, from, to, "x", &mut big, &mut tiles, &mut || true, &mut sink);
+    let res = plan_route(&r, from, to, "x", &mut big, &mut tiles, &mut sink);
     let route = res.expect("the capped sim table spans the ~9 km line");
     assert_eq!(route.total_distance_m, 599 * 15, "summed edge costs over the whole line");
 }
@@ -367,10 +358,74 @@ fn saturated_costs_plan_without_panicking() {
     assert_eq!(route_points(&obcr).len(), 3, "the geometry is intact regardless");
 }
 
-/// The host abort hook: `progress` returning `false` stops a long search cleanly as
-/// the generic `NoPath` tier (the board feeds its watchdog in the same hook).
+/// The resumable planner (#499): manual stepping produces a **byte-identical** OBCR to the
+/// one-shot `plan_route` (which is itself the step loop), every step respects the phase
+/// budgets (≤ [`NAV_SETTLES_PER_STEP`] settles per search step), the phase sequence is
+/// snap → search → emit → done, and multiple `Running` steps genuinely occur (the plan is
+/// spread across host passes, which is the whole point).
 #[test]
-fn progress_abort_stops_the_search() {
+fn stepped_plan_matches_one_shot_and_respects_budgets() {
+    let bytes = map_with(&line_graph(120, 135, 15)); // ~1.8 km line — a multi-step search
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let cache = MapCache::new();
+    let r = Reader::new(&src, &tables, &cache);
+    let from = (BASE.0 + 30, BASE.1);
+    let to = (BASE.0 + 119 * 135 - 30, BASE.1);
+
+    // One-shot reference.
+    let mut scratch = Box::new(NavScratch::<1536>::new());
+    let mut tiles = NavTileCache::new();
+    let mut one_shot = VecSink::default();
+    let reference =
+        plan_route(&r, from, to, "Stepped", &mut scratch, &mut tiles, &mut one_shot).expect("the line plans one-shot");
+
+    // Manual stepping over the same fixture.
+    let mut planner = NavPlanner::new(from, to, "Stepped");
+    let mut tiles = NavTileCache::new();
+    let mut stepped = VecSink::default();
+    let mut steps = 0u32;
+    let mut saw = (false, false, false); // (snap, search, emit) phases observed
+    let stats = loop {
+        let phase = planner.phase();
+        match phase {
+            NavPhase::Snap => saw.0 = true,
+            NavPhase::Search => saw.1 = true,
+            NavPhase::Emit => saw.2 = true,
+            NavPhase::Done => panic!("stepping past the terminal outcome"),
+        }
+        let settles_before = planner.settles();
+        let step = planner.step(&r, &mut scratch, &mut tiles, &mut stepped);
+        assert!(
+            planner.settles() - settles_before <= obc_route::nav::NAV_SETTLES_PER_STEP,
+            "a step must respect the settle budget"
+        );
+        if phase != NavPhase::Search {
+            assert_eq!(planner.settles(), settles_before, "only search steps settle");
+        }
+        steps += 1;
+        assert!(steps < 10_000, "the step machine must terminate");
+        match step {
+            obc_route::Step::Running => {}
+            obc_route::Step::Done(stats) => break stats,
+            obc_route::Step::Failed(e) => panic!("the stepped plan failed: {e:?}"),
+        }
+    };
+    assert!(saw.0 && saw.1 && saw.2, "all three phases ran (saw {saw:?})");
+    assert!(steps > 3, "a real plan spans multiple steps (got {steps})");
+    assert_eq!(stats.total_distance_m, reference.total_distance_m);
+    assert_eq!(stepped.buf, one_shot.buf, "stepping is byte-identical to the one-shot");
+
+    // Terminal idempotence: stepping again re-returns Done without touching the sink.
+    let len = stepped.buf.len();
+    assert!(matches!(planner.step(&r, &mut scratch, &mut tiles, &mut stepped), obc_route::Step::Done(_)));
+    assert_eq!(stepped.buf.len(), len, "a terminal step writes nothing");
+}
+
+/// Cancelling = not stepping again: **nothing reaches the sink before the emit phase**, so a
+/// plan abandoned mid-search leaves the sink pristine — the host only discards its own file.
+#[test]
+fn abandoned_mid_search_plan_wrote_nothing() {
     let bytes = map_with(&line_graph(600, 135, 15));
     let src = SliceSource(&bytes);
     let tables = MapTables::parse(&src).unwrap();
@@ -379,15 +434,14 @@ fn progress_abort_stops_the_search() {
     let mut scratch = Box::new(NavScratch::<1536>::new());
     let mut tiles = NavTileCache::new();
     let mut sink = VecSink::default();
-    let mut calls = 0u32;
-    let mut progress = || {
-        calls += 1;
-        calls < 3 // allow two callbacks, abort on the third
-    };
     let from = (BASE.0 + 30, BASE.1);
     let to = (BASE.0 + 599 * 135 - 30, BASE.1);
-    let res = plan_route(&r, from, to, "x", &mut scratch, &mut tiles, &mut progress, &mut sink);
-    assert_eq!(res, Err(NavError::NoPath), "an aborted search lands in the generic failure tier");
-    assert_eq!(calls, 3, "the hook fires every few settles until it aborts");
-    assert!(sink.buf.is_empty(), "an aborted plan writes nothing");
+    let mut planner = NavPlanner::new(from, to, "x");
+    for _ in 0..10 {
+        // 2 snap steps + 8 search steps — well before the ~600-settle search could finish.
+        assert_eq!(planner.step(&r, &mut scratch, &mut tiles, &mut sink), obc_route::Step::Running);
+    }
+    assert_eq!(planner.phase(), NavPhase::Search, "still searching when abandoned");
+    drop(planner); // the cancel: never stepped again
+    assert!(sink.buf.is_empty(), "snap + search phases are read-only — a cancelled plan wrote nothing");
 }

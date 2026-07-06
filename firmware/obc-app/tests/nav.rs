@@ -58,11 +58,12 @@ fn open_detail(app: &mut App, bytes: &[u8]) {
 }
 
 /// Drive the detail into the confirm and press *Create route*, returning the drained request.
+/// The confirm swaps itself for the **planning** screen (#499) — the spinner the host answers into.
 fn request_route(app: &mut App) -> NavRequest {
     app.apply_gesture(Gesture::Press); // detail → confirm
     assert!(matches!(app.top_screen(), Screen::NavConfirm(_)), "detail press opens the confirm");
     app.apply_gesture(Gesture::Press); // Create route (row 0)
-    assert!(matches!(app.top_screen(), Screen::NavConfirm(_)), "the confirm stays up while the host plans");
+    assert!(matches!(app.top_screen(), Screen::NavPlanning(_)), "accepting swaps to the planning screen");
     app.take_nav_request().expect("Create route records the one-shot request")
 }
 
@@ -254,12 +255,35 @@ fn unresolvable_id_degrades_to_the_generic_tier() {
 }
 
 #[test]
-fn result_without_a_confirm_on_stack_is_dropped() {
+fn result_without_a_planning_screen_on_stack_is_dropped() {
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
     nav_catalog(&mut app);
     let _ = app.take_dirty();
     app.notify_nav_result(Ok(7));
-    assert!(matches!(app.top_screen(), Screen::Home(_)), "no confirm up ⇒ the answer is dropped");
+    assert!(matches!(app.top_screen(), Screen::Home(_)), "no planning screen up ⇒ the answer is dropped");
     assert_eq!(app.activity.active_route, None, "…and nothing activates behind the rider's back");
     assert!(!app.take_dirty().map, "…and nothing repaints");
+}
+
+#[test]
+fn back_on_planning_cancels_cleanly() {
+    let bytes = fixture();
+    let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    open_detail(&mut app, &bytes);
+    let _req = request_route(&mut app);
+    assert!(!app.take_nav_cancel(), "no cancel recorded yet");
+
+    // Back mid-plan: straight back to the POI detail — no failure card — and the host's
+    // cancel one-shot rings so it aborts the plan + discards the partial file.
+    app.apply_gesture(Gesture::Back);
+    assert!(matches!(app.top_screen(), Screen::PoiDetail(_)), "cancel returns to the detail");
+    assert!(app.take_nav_cancel(), "the cancel one-shot rings for the host");
+    assert!(!app.take_nav_cancel(), "…exactly once");
+
+    // A late answer (the host may have finished the step before draining the cancel — it
+    // shouldn't notify after an abort, but stay defensive) finds no planning screen: dropped.
+    nav_catalog(&mut app);
+    app.notify_nav_result(Ok(7));
+    assert!(matches!(app.top_screen(), Screen::PoiDetail(_)), "a post-cancel answer is dropped");
+    assert_eq!(app.activity.active_route, None, "nothing activates after a cancel");
 }
