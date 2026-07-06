@@ -12,6 +12,8 @@
 //!   ([`RouteReader`], [`RouteSummary`], [`ChunkMeta`], [`RoutePoint`]).
 //! - [`profile`] — a route's elevation sampled to a fixed-width [`Profile`] for the
 //!   Elevation screen's band + cursor + peak label.
+//! - [`climb`] — offline segmentation of that elevation signal into a resident list of
+//!   [`Climbs`] (a hysteresis state machine over the same chunk sweep as the profile).
 //! - [`nav`] — the on-device A* router over the map's §8 nav graph ([`plan_route`]),
 //!   emitting its result as a normal OBCR through the shared converter internals.
 //!
@@ -25,6 +27,7 @@
 #![no_std]
 
 pub mod byte_io;
+pub mod climb;
 pub mod convert;
 pub mod deadband;
 mod geo;
@@ -37,6 +40,9 @@ pub mod ride;
 pub mod track;
 
 pub use byte_io::{ByteSink, ByteSource, Error, SliceSource};
+pub use climb::{
+    segment_climbs, ClimbSeg, Climbs, ElePt, MAX_CLIMBS, MAX_DROP, MAX_FLAT, MIN_AVG_GRADE, MIN_GAIN, MIN_LEN,
+};
 pub use convert::{gpx_to_obcr, RouteStats, MAX_WAYPOINTS};
 pub use deadband::{DeadBand, Elev, ELE_DEADBAND_M};
 pub use geo::{cos_lat, ground_dist_m, ground_dist_m_cl, tri_area_m2, tri_area_m2_cl};
