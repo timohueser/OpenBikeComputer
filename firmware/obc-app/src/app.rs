@@ -1,7 +1,7 @@
 //! [`AppState`] — the device's view state — and [`App`], the shared per-frame
 //! driver that both hosts run.
 
-use embedded_graphics::draw_target::DrawTarget;
+use embedded_graphics::{draw_target::DrawTarget, primitives::Rectangle};
 use obc_reader::Reader;
 use obc_render::{zoom_for_mpp, Canvas, Clock, MapRenderer, NoopClock, RenderStats, Viewport};
 use obc_route::{Profile, RouteMatch, RouteReader, TrackPoint};
@@ -411,6 +411,26 @@ pub struct App {
     /// drained once per frame. Starts `true` so the host's first frame paints. (The overlay flag
     /// isn't accumulated here — it's derived from the live hold-bulge state at drain time.)
     map_dirty: bool,
+    /// Accumulated **region-scoped** repaint demand (#500 follow-up): the union of every
+    /// region-carrying screen-tick change since the last drain — the nav-planning spinner's
+    /// needle disc. Kept apart from [`map_dirty`](App::map_dirty) so the two can't blur: any
+    /// full-frame demand (every other `map_dirty = true` site) overrides this at
+    /// [`take_dirty`](App::take_dirty), and region ticks never set `map_dirty` — see the drain
+    /// for the fold.
+    region_dirty: Option<Rectangle>,
+    /// Panel size (device px) of the last rendered frame, recorded by
+    /// [`render_map_timed`](App::render_map_timed) — what
+    /// [`advance_animations`](App::advance_animations) hands the screen ticks so a reported
+    /// [`ScreenTick::region`](screen::ScreenTick::region) is sized to the real panel. `(0, 0)`
+    /// until the first frame; region reporting abstains (full repaint) until then.
+    frame_size: (i32, i32),
+    /// One-shot clip for the **next** [`render_map_timed`](App::render_map_timed): the host that
+    /// drained a region-scoped [`Dirty`](crate::Dirty) sets it via
+    /// [`set_render_clip`](App::set_render_clip) so the frame's `Canvas` rejects whole primitives
+    /// outside the region — the draw-call machinery (glyph decode, scanline iterators) a
+    /// pixel-level framebuffer clip can't skip. Taken (cleared) by the render, so a host that
+    /// never sets it — the sim, the tests — always draws full frames.
+    render_clip: Option<Rectangle>,
     /// The soonest timed-redraw deadline across the visible stack, in millis from the last
     /// [`advance_animations`](App::advance_animations) — the min-fold of each screen's
     /// [`ScreenTick::next_wake_ms`](screen::ScreenTick::next_wake_ms), stored there and read back by
@@ -553,6 +573,9 @@ impl App {
             now_ms: 0,
             // Force the host's first frame: nothing has been drawn yet, so the map is dirty.
             map_dirty: true,
+            region_dirty: None,
+            frame_size: (0, 0),
+            render_clip: None,
             next_wake_ms: None,
             settings: Settings::default(),
             // The wall clock starts from the same default set-point at the boot origin; the host's
@@ -618,6 +641,9 @@ impl App {
             addr_of_mut!((*slot).now_ms).write(0);
             // Force the host's first frame: nothing has been drawn yet, so the map is dirty.
             addr_of_mut!((*slot).map_dirty).write(true);
+            addr_of_mut!((*slot).region_dirty).write(None);
+            addr_of_mut!((*slot).frame_size).write((0, 0));
+            addr_of_mut!((*slot).render_clip).write(None);
             addr_of_mut!((*slot).next_wake_ms).write(None);
             addr_of_mut!((*slot).settings).write(Settings::default());
             addr_of_mut!((*slot).wall_clock).write(WallClock::new(Settings::default().local_clock()));
@@ -1684,14 +1710,22 @@ impl App {
         let now = self.wall_clock.now(self.now_ms);
         let ms_to_next_minute = self.wall_clock.ms_to_next_minute(self.now_ms);
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
-        let mut changed = false;
+        let (w, h) = self.frame_size;
         let mut next_wake = None;
         for scr in self.stack.iter_mut().skip(base) {
-            let tick = scr.tick_timers(self.now_ms, now, ms_to_next_minute, &self.settings);
-            changed |= tick.changed;
+            let tick = scr.tick_timers(self.now_ms, now, ms_to_next_minute, &self.settings, w, h);
+            // A change that promises a containing region accumulates apart from the full-frame
+            // demand (#500 follow-up): `take_dirty` folds the two — any `map_dirty` overrides
+            // every region, so a region-clipped repaint happens only when region ticks were the
+            // *sole* dirt since the last drain.
+            if tick.changed {
+                match tick.region {
+                    Some(r) => self.region_dirty = Some(self.region_dirty.map_or(r, |acc| union_rect(acc, r))),
+                    None => self.map_dirty = true,
+                }
+            }
             next_wake = next_wake.into_iter().chain(tick.next_wake_ms).min();
         }
-        self.map_dirty |= changed;
         self.next_wake_ms = next_wake;
         // The route-upload popups' per-pass reconcile (epic #447, P4): land a hold-deferred
         // prompt, and run the 30 s auto-close (timeout = dismiss). Here — the one hook every host
@@ -1786,6 +1820,12 @@ impl App {
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
+        // Record the panel size for the screen ticks' region reporting (`advance_animations`) —
+        // the one place every host states its real frame dimensions.
+        self.frame_size = (w as i32, h as i32);
+        // Drain the one-shot region clip (see `set_render_clip`) — `None` on every normal frame.
+        let render_clip = self.render_clip.take();
+
         // Rebuild the cached elevation profile when the active route changes — it streams every
         // chunk, so it's built once on load, never per frame; clears when no route is loaded.
         if self.activity.active_route != self.profile_route {
@@ -1837,7 +1877,10 @@ impl App {
         };
         // The one Canvas of the frame: every screen draws through it (the base screen — the only
         // possible Map — writes `rx.stats`; the overlays above it leave the stats untouched).
+        // A drained region clip makes it reject whole out-of-region primitives — the half of a
+        // region-scoped repaint the target's pixel clip can't save (#500 follow-up).
         let mut cv = Canvas::new(target, &color_fn);
+        cv.set_clip(render_clip);
         for scr in stack.iter().skip(base) {
             scr.draw(&mut cv, &mut rx);
         }
@@ -1878,8 +1921,18 @@ impl App {
     /// is live, plus one trailing frame after it goes quiet so the host can clear it off Layer 2.
     /// That trailing edge is tracked across calls, so draining twice in one frame swallows it — call
     /// exactly once per frame.
+    ///
+    /// [`region`](Dirty::region) carries the accumulated region-scoped tick demand — but only when
+    /// no full-frame demand joined it since the last drain: a set `map_dirty` covers any region, so
+    /// the region folds away and the host full-repaints (over-redraw is safe; under-redraw is a bug).
     pub fn take_dirty(&mut self) -> Dirty {
-        Dirty { map: core::mem::take(&mut self.map_dirty), overlay: self.input.take_overlay_dirty() }
+        let full = core::mem::take(&mut self.map_dirty);
+        let region = self.region_dirty.take();
+        Dirty {
+            map: full || region.is_some(),
+            overlay: self.input.take_overlay_dirty(),
+            region: if full { None } else { region },
+        }
     }
 
     /// The most recently recognized gesture (host input readout), if any.
@@ -1903,6 +1956,18 @@ impl App {
         self.hold_progress_override = Some(progress);
     }
 
+    /// Arm the one-shot region clip for the next [`render_map_timed`](App::render_map_timed) —
+    /// the render-side half of a region-scoped repaint (#500 follow-up). The host that drained a
+    /// [`Dirty`](crate::Dirty) whose [`region`](crate::Dirty::region) survived calls this with
+    /// that region right before rendering; the frame's `Canvas` then skips whole primitives whose
+    /// bounds miss it. Pair it with a matching pixel clip on the framebuffer (the two-plane
+    /// firmware's `FbDevice64::set_clip`): rejection alone leaves straddling primitives painting
+    /// outside the region. Cleared by the render itself; hosts that always repaint fully (the
+    /// sim) never call this.
+    pub fn set_render_clip(&mut self, clip: Option<Rectangle>) {
+        self.render_clip = clip;
+    }
+
     /// In-flight Back hold-progress (0.0–1.0).
     pub fn back_hold_progress(&self) -> f32 {
         self.input.back_hold_progress()
@@ -1912,6 +1977,18 @@ impl App {
     pub fn mode(&self) -> Mode {
         self.activity.mode
     }
+}
+
+/// The bounding union of two rects — how `advance_animations` folds multiple region-scoped tick
+/// changes into one containing dirty region (embedded-graphics 0.8 has `intersection` but no
+/// union). Both operands are screen regions, so non-empty by construction.
+fn union_rect(a: Rectangle, b: Rectangle) -> Rectangle {
+    use embedded_graphics::prelude::{Point, Size};
+    let x0 = a.top_left.x.min(b.top_left.x);
+    let y0 = a.top_left.y.min(b.top_left.y);
+    let x1 = (a.top_left.x + a.size.width as i32).max(b.top_left.x + b.size.width as i32);
+    let y1 = (a.top_left.y + a.size.height as i32).max(b.top_left.y + b.size.height as i32);
+    Rectangle::new(Point::new(x0, y0), Size::new((x1 - x0) as u32, (y1 - y0) as u32))
 }
 
 #[cfg(test)]

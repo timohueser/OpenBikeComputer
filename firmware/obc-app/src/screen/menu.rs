@@ -107,10 +107,10 @@ impl MenuScreen {
             self.needle_deg = landed;
             self.target_deg = landed;
             self.last_anim_ms = None;
-            return ScreenTick { changed: true, next_wake_ms: None };
+            return ScreenTick { changed: true, next_wake_ms: None, region: None };
         }
         self.needle_deg += if diff > 0.0 { step } else { -step };
-        ScreenTick { changed: step > 0.0, next_wake_ms: Some(SWEEP_FRAME_MS) }
+        ScreenTick { changed: step > 0.0, next_wake_ms: Some(SWEEP_FRAME_MS), region: None }
     }
 
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {

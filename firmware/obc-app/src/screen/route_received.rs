@@ -41,7 +41,7 @@ pub(crate) fn popup_expired(opened_ms: u32, now_ms: u32) -> bool {
 pub(crate) fn popup_tick(opened_ms: u32, now_ms: u32) -> ScreenTick {
     let elapsed = now_ms.wrapping_sub(opened_ms);
     let next = if elapsed >= UPLOAD_POPUP_TIMEOUT_MS { POPUP_RETRY_MS } else { UPLOAD_POPUP_TIMEOUT_MS - elapsed };
-    ScreenTick { changed: false, next_wake_ms: Some(next) }
+    ScreenTick { changed: false, next_wake_ms: Some(next), region: None }
 }
 
 /// Re-poll cadence once a popup is due but not yet removed (a hold deferred the sweep a tick).

@@ -183,7 +183,7 @@ impl StatisticsScreen {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
         };
-        ScreenTick { changed, next_wake_ms }
+        ScreenTick { changed, next_wake_ms, region: None }
     }
 
     /// The cursor fraction in effect now: the scrub position while it's still live,

@@ -1,5 +1,7 @@
 //! [`Dirty`] — the per-frame repaint signal the render-on-demand host drains.
 
+use embedded_graphics::primitives::Rectangle;
+
 /// Which display planes changed this frame and so must be repainted.
 ///
 /// The display composites two planes independently: the expensive **map** (base-map render, tens
@@ -26,11 +28,19 @@ pub struct Dirty {
     /// or retracting — or it just went quiet and the last frame must be cleared off the
     /// layer.
     pub overlay: bool,
+    /// Where this frame's [`map`](Dirty::map) demand is contained, in panel pixels — `None` means
+    /// anywhere (the full repaint every dirt source implies by default). `Some(r)` only when
+    /// *every* accumulated map demand came from a screen tick that promised its change lies inside
+    /// `r` ([`ScreenTick::region`](crate::screen::ScreenTick::region) — today the nav-planning
+    /// spinner's needle disc); any other source folds the region away. A host may then clip the
+    /// repaint (render + push) to `r`; ignoring it and repainting fully is always correct — the
+    /// region is an optimization bound, never a requirement (over-redraw stays safe).
+    pub region: Option<Rectangle>,
 }
 
 impl Dirty {
     /// Nothing changed — render neither plane.
-    pub const CLEAN: Dirty = Dirty { map: false, overlay: false };
+    pub const CLEAN: Dirty = Dirty { map: false, overlay: false, region: None };
 
     /// Whether either plane needs a repaint this frame.
     pub fn any(self) -> bool {
