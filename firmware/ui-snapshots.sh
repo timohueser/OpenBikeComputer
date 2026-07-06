@@ -146,10 +146,19 @@ cp "$repo_root/firmware/obc-sim/assets/grimsel-climb.obcr" "$CLIMBROUTES/"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p" --inject-upload 1 --png "$OUT/routeswap-received.png"
 # Active route replaced (riding id 0, id 0 re-uploaded): the info-only "ROUTE UPDATED" card.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p" --inject-upload-replace 0 --png "$OUT/route-updated.png"
+# Storage/sensor warnings (issue #504). The three undismissable boot faults are drawn standalone
+# (no app), exactly as `main` does at the fatal SD/map sites — `--boot-fault` bypasses render_frame.
+"$SIM" "$MAP" --boot-fault nocard --png "$OUT/fault-nocard.png"
+"$SIM" "$MAP" --boot-fault nomap  --png "$OUT/fault-nomap.png"
+"$SIM" "$MAP" --boot-fault badmap --png "$OUT/fault-badmap.png"
+# The dismissable warning card, raised through the real notify_warning seam: one missing sensor, and
+# the coalesced worst case (all three sensors absent + a slow/fragmented map).
+"$SIM" "$MAP" --boot --inject-warning gps --png "$OUT/warning-gps.png"
+"$SIM" "$MAP" --boot --inject-warning gps,altimeter,compass,map --png "$OUT/warning-all.png"
 
 # The Power settings page's new "Idle return" row (Home → Menu → Settings → Power, then two turns to
 # the row). And the idle-return timeout in action: sit in Settings, elapse (`I`), land back on Home.
 "$SIM" "$MAP" --boot --script "B l p r r r p r r" --png "$OUT/power-idle-return.png"
 "$SIM" "$MAP" --boot --script "B l p I"           --png "$OUT/idle-return-home.png"
 
-echo "ui-snapshots: 41 screens rendered into $OUT/"
+echo "ui-snapshots: 46 screens rendered into $OUT/"
