@@ -174,6 +174,26 @@ struct NavRun {
     phase_us: [u64; 3],
 }
 
+/// Construct + write a fresh request's planner into its `.bss` slot, in this immediately-popped
+/// frame — the #419/#501 stack discipline: `NavPlanner::new` materializes a ~9 kB temporary, and
+/// inlined into the ride loop that slot landed in the **main task's poll frame**, allocated at
+/// entry of every poll (measured 25.3 kB poll body; stacked under the 26.5 kB pre-flattening
+/// `nav_step` frame it overflowed the 50.6 kB stack region at ~60.5 kB on glass — the #501
+/// HardFault's true cause). The one plan-start defmt line lives here with it.
+#[cfg(has_nav)]
+#[inline(never)]
+fn nav_begin(nav: &mut NavBuffers, req: &obc_app::NavRequest) {
+    nav.planner.write(obc_route::NavPlanner::new(req.from, req.to, req.name()));
+    // One diagnostic line per plan start (#501 fault dossiers): the three nav statics' addresses
+    // pin the memory map without needing the ELF at hand.
+    defmt::debug!(
+        "nav plan: start planner=0x{=usize:08x} scratch=0x{=usize:08x} tiles=0x{=usize:08x}",
+        nav.planner.as_ptr() as usize,
+        core::ptr::from_ref(&*nav.scratch) as usize,
+        core::ptr::from_ref(&*nav.tiles) as usize
+    );
+}
+
 /// Run **one bounded planner step** at the ride loop's shallow per-pass depth (#270/#419: the
 /// step's frame carries only the cheap boot-parsed-tables `Reader` view, the SD sink over the
 /// held-open file, and the planner's own shallow call tree — the emitter lives in the planner's
@@ -643,16 +663,7 @@ pub(crate) async fn run_app(
                 }
                 match storage.as_mut().and_then(|s| s.nav_route_begin()) {
                     Some(file) => {
-                        nav.planner.write(obc_route::NavPlanner::new(req.from, req.to, req.name()));
-                        // One diagnostic line per plan start (#501 fault hunt): the three nav
-                        // statics' addresses pin the memory map for a post-fault dossier without
-                        // needing the ELF at hand.
-                        defmt::debug!(
-                            "nav plan: start planner=0x{=usize:08x} scratch=0x{=usize:08x} tiles=0x{=usize:08x}",
-                            nav.planner.as_ptr() as usize,
-                            core::ptr::from_ref(&*nav.scratch) as usize,
-                            core::ptr::from_ref(&*nav.tiles) as usize
-                        );
+                        nav_begin(&mut nav, &req);
                         nav_run = Some(NavRun { file, t0: Instant::now(), phase_us: [0; 3] });
                     }
                     // No card / no dir: nothing to route against — the generic failure tier.
