@@ -102,21 +102,30 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
     --script "B r r w p r r r p d p p p" --inject-nav-fail exhausted --png "$OUT/nav-toofar.png"
 "$SIM" "$MAP" --boot --routes-dir "$NAVDIR" --center 8140000,46480000 --heading 0 \
     --script "B r r w p p d p p p d" --png "$OUT/nav-nopath.png"
+# The Settings list (Date & Time, Units, Stats, Display, Power, Bluetooth, Reset — Display inserted
+# at index 3, so every row past it shifts one turn further in).
 "$SIM" "$MAP" --boot --script "B l p"        --png "$OUT/settings.png"
 "$SIM" "$MAP" --boot --script "B l p p"      --png "$OUT/datetime.png"
 "$SIM" "$MAP" --boot --script "B l p r p"    --png "$OUT/units.png"
 "$SIM" "$MAP" --boot --script "B l p r r p"  --png "$OUT/stats-settings.png"
 "$SIM" "$MAP" --boot --script "B l p r r p r p" --png "$OUT/fields.png"
-"$SIM" "$MAP" --boot --script "B l p r r r p"   --png "$OUT/power.png"
+# The Display page (row 3): the two Map-overlay toggles + the idle-return picker moved from Power.
+"$SIM" "$MAP" --boot --script "B l p r r r p"   --png "$OUT/display.png"
+"$SIM" "$MAP" --boot --script "B l p r r r r p" --png "$OUT/power.png"
 # Bluetooth screen (#455): the main state (radio on, advertising, a stored bond -> Paired: yes) and
 # the Forget-phone guarded hold mid-charge (select the Forget row, then a partial hold fills it).
-"$SIM" "$MAP" --boot --ble-paired --script "B l p r r r r p"     --png "$OUT/bluetooth.png"
-"$SIM" "$MAP" --boot --ble-paired --script "B l p r r r r p r H" --png "$OUT/bluetooth-forget-hold.png"
-"$SIM" "$MAP" --boot --script "B l p r r r r r p p H" --png "$OUT/reset-hold.png"
+"$SIM" "$MAP" --boot --ble-paired --script "B l p r r r r r p"     --png "$OUT/bluetooth.png"
+"$SIM" "$MAP" --boot --ble-paired --script "B l p r r r r r p r H" --png "$OUT/bluetooth-forget-hold.png"
+"$SIM" "$MAP" --boot --script "B l p r r r r r r p p H" --png "$OUT/reset-hold.png"
 # Riding flows: Home press → Menu → Routes (p) → Route menu → pick (p) → overview → START (p) → Map.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p"     --png "$OUT/routeoverview.png"
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p"   --gpx "$GPX" --at 30 --png "$OUT/map.png"
+# The Map's chrome overlays land here: the floating top-centre clock digits (pinned time via
+# --clock), the bottom-left scale bar (corner normally, stepped above the chip band while a chip is
+# up), and — priority order unchanged — the bottom-centre one-slot warning chip.
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --script "p p p p"   --gpx "$GPX" --at 30 --png "$OUT/map.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p b" --gpx "$GPX" --at 30 --png "$OUT/statistics.png"
+# The low-battery cue (issue: < 10 %): a warning-red battery glyph in the map's top-left corner.
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --battery 5 --script "p p p p" --gpx "$GPX" --at 30 --png "$OUT/map-lowbatt.png"
 # Climb screen (epic #506, C4). The default protocol-vectors routes don't match the Grimsel replay
 # (they're tiny test routes), so ride the committed grimsel-climb.obcr — the route the GPX follows,
 # giving the detector its three back-to-back climbs. `--at 1500` replays ~25 min in (progress ~5 km,
@@ -129,7 +138,9 @@ cp "$repo_root/firmware/obc-sim/assets/grimsel-climb.obcr" "$CLIMBROUTES/"
 "$SIM" "$MAP" --boot --routes-dir "$CLIMBROUTES" --script "p p p p" --gpx "$GPX" --at 1500 --open-climb --png "$OUT/climb.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p p" --gpx "$GPX" --at 30 --png "$OUT/ridecontrol.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p B p r p" --png "$OUT/routeswap.png"
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p h" --png "$OUT/map-pan.png"
+# Pan mode: the pan HUD (chevrons + compass) plus the bottom-left scale bar (visible in pan too);
+# the clock digits are suppressed while panning (the top chevron owns the slot).
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --script "p p p p h" --png "$OUT/map-pan.png"
 # BLE connected indicator (#448): the static Bluetooth rune on the Home battery row and the menu
 # title bar. `--ble-connected` injects a linked phone, exactly as the sim control-panel toggle does.
 "$SIM" "$MAP" --boot --ble-connected --png "$OUT/home-ble.png" --battery 45
@@ -156,9 +167,10 @@ cp "$repo_root/firmware/obc-sim/assets/grimsel-climb.obcr" "$CLIMBROUTES/"
 "$SIM" "$MAP" --boot --inject-warning gps --png "$OUT/warning-gps.png"
 "$SIM" "$MAP" --boot --inject-warning gps,altimeter,compass,map --png "$OUT/warning-all.png"
 
-# The Power settings page's new "Idle return" row (Home → Menu → Settings → Power, then two turns to
-# the row). And the idle-return timeout in action: sit in Settings, elapse (`I`), land back on Home.
-"$SIM" "$MAP" --boot --script "B l p r r r p r r" --png "$OUT/power-idle-return.png"
-"$SIM" "$MAP" --boot --script "B l p I"           --png "$OUT/idle-return-home.png"
+# The idle-return picker in its open (editing) state, now on the Display page's third row
+# (Home → Menu → Settings → Display, two turns down to Idle, press to open the picker). The idle
+# timeout still works end-to-end: sit in Settings, elapse (`I`), land back on Home.
+"$SIM" "$MAP" --boot --script "B l p r r r p r r p" --png "$OUT/display-idle-return.png"
+"$SIM" "$MAP" --boot --script "B l p I"             --png "$OUT/idle-return-home.png"
 
-echo "ui-snapshots: 46 screens rendered into $OUT/"
+echo "ui-snapshots: 48 screens rendered into $OUT/"

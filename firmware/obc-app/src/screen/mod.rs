@@ -63,8 +63,8 @@ pub use route_overview::RouteOverviewScreen;
 pub use route_received::{RouteReceivedScreen, RouteUpdatedScreen};
 pub use route_swap::RouteSwapScreen;
 pub use settings::{
-    AddFieldScreen, BluetoothScreen, DateTimeScreen, PowerScreen, ResetScreen, SettingsScreen, StatFieldsScreen,
-    StatsScreen, UnitsScreen,
+    AddFieldScreen, BluetoothScreen, DateTimeScreen, DisplayScreen, PowerScreen, ResetScreen, SettingsScreen,
+    StatFieldsScreen, StatsScreen, UnitsScreen,
 };
 pub use statistics::StatisticsScreen;
 pub use warning::{WarningFlags, WarningScreen};
@@ -372,6 +372,8 @@ screens! {
     Stats(StatsScreen) => Settings,
     StatFields(StatFieldsScreen) => Settings,
     AddField(AddFieldScreen) => Settings,
+    /// The Display screen: the Map's clock + scale-bar overlay toggles and the idle-return timeout.
+    Display(DisplayScreen) => Settings,
     Power(PowerScreen) => Settings,
     /// The Bluetooth screen: radio on/off, status line, Paired row, hold-guarded Forget phone.
     Bluetooth(BluetoothScreen) => Settings,
@@ -427,6 +429,8 @@ impl Screen {
     /// `w`/`h` are the panel size in device pixels (the last rendered frame's — see
     /// [`App::advance_animations`](crate::App::advance_animations)), for the screens that report a
     /// dirty [`region`](ScreenTick::region); `0` before the first frame, which makes them abstain.
+    /// `pan_active` lets the Map gate its clock overlay (the pan chevron owns the top slot).
+    #[allow(clippy::too_many_arguments)] // one poll fn threading every timed screen's inputs
     pub fn tick_timers(
         &mut self,
         now_ms: u32,
@@ -435,10 +439,14 @@ impl Screen {
         settings: &Settings,
         w: i32,
         h: i32,
+        pan_active: bool,
     ) -> ScreenTick {
         match self {
             Screen::Statistics(s) => s.tick_timers(now_ms, settings),
             Screen::Home(s) => s.tick_timers(now, ms_to_next_minute),
+            // The Map's clock overlay ticks over each minute (region-clipped to the pill), armed only
+            // when the pill is visible — the setting on and not panning (the pan chevron owns the slot).
+            Screen::Map(s) => s.tick_timers(now, ms_to_next_minute, w, pan_active, settings.map_clock),
             Screen::Menu(s) => s.tick_timers(now_ms),
             // The route-upload popups' 30 s auto-close deadline (epic #447, P4): the residual
             // wake keeps the event-driven host armed so the timeout-dismiss fires from warm

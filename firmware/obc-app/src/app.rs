@@ -2021,8 +2021,9 @@ impl App {
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
         let (w, h) = self.frame_size;
         let mut next_wake = None;
+        let pan_active = self.state.pan.is_some();
         for scr in self.stack.iter_mut().skip(base) {
-            let tick = scr.tick_timers(self.now_ms, now, ms_to_next_minute, &self.settings, w, h);
+            let tick = scr.tick_timers(self.now_ms, now, ms_to_next_minute, &self.settings, w, h, pan_active);
             // A change that promises a containing region accumulates apart from the full-frame
             // demand (#500 follow-up): `take_dirty` folds the two — any `map_dirty` overrides
             // every region, so a region-clipped repaint happens only when region ticks were the

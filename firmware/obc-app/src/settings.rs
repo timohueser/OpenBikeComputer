@@ -623,6 +623,14 @@ pub struct Settings {
     /// deliberately *not* one of the BLE-writable fields [`adopt_ble_fields`](Settings::adopt_ble_fields)
     /// pulls across. Default **30 s**; [`Never`](IdleReturn::Never) disables it entirely.
     pub idle_return: IdleReturn,
+    /// Show the small floating `HH:MM` clock on the Map (the Display settings screen's toggle).
+    /// **Device-only**, like [`climb_mode`](Settings::climb_mode): deliberately *not* one of the
+    /// BLE-writable fields [`adopt_ble_fields`](Settings::adopt_ble_fields) pulls across. Default
+    /// **on**.
+    pub map_clock: bool,
+    /// Show the scale bar at the Map's bottom-left (the Display settings screen's toggle).
+    /// **Device-only**, like [`map_clock`](Settings::map_clock). Default **on**.
+    pub map_scale_bar: bool,
 }
 
 impl Default for Settings {
@@ -640,6 +648,8 @@ impl Default for Settings {
             ble_enabled: true,
             climb_mode: ClimbMode::default(),
             idle_return: IdleReturn::default(),
+            map_clock: true,
+            map_scale_bar: true,
         }
     }
 }
@@ -687,8 +697,8 @@ impl Settings {
 /// Codec version — bump when the byte layout changes; [`decode`] rejects any other version (the
 /// host then falls back to [`Settings::default`], i.e. settings reset on a format change).
 /// v4 appended the `ble_enabled` byte (#455); v5 appended the `climb_mode` byte (#511); v6 appended
-/// the `idle_return` byte.
-pub const VERSION: u8 = 6;
+/// the `idle_return` byte; v7 appended the `map_clock` + `map_scale_bar` bytes.
+pub const VERSION: u8 = 7;
 
 /// Fixed encoded length: the [`PAYLOAD_LEN`] CRC-covered bytes + a 2-byte CRC, **rounded up to the
 /// device RRAM's 16-byte write line** (the firmware store writes whole 128-bit lines) — so a codec
@@ -697,7 +707,7 @@ pub const VERSION: u8 = 6;
 pub const ENCODED_LEN: usize = (PAYLOAD_LEN + 2).div_ceil(16) * 16;
 
 /// Payload size before the trailing CRC. The CRC follows immediately at this offset.
-const PAYLOAD_LEN: usize = IDLE_OFF + 1;
+const PAYLOAD_LEN: usize = SCALE_BAR_OFF + 1;
 /// Byte offset of the field selection (right after the 14-byte head).
 const STAT_FIELDS_OFF: usize = 14;
 /// Byte offset of `stat_cycle_s` (right after the field selection).
@@ -710,6 +720,10 @@ const BLE_OFF: usize = NAME_OFF + 1 + DEVICE_NAME_MAX;
 const CLIMB_OFF: usize = BLE_OFF + 1;
 /// Byte offset of the `idle_return` byte (the v6 tail, right after `climb_mode`).
 const IDLE_OFF: usize = CLIMB_OFF + 1;
+/// Byte offset of the `map_clock` flag (the v7 tail, right after `idle_return`).
+const MAP_CLOCK_OFF: usize = IDLE_OFF + 1;
+/// Byte offset of the `map_scale_bar` flag (the v7 tail, right after `map_clock`).
+const SCALE_BAR_OFF: usize = MAP_CLOCK_OFF + 1;
 
 /// CRC-16/CCITT-FALSE (poly `0x1021`, init `0xFFFF`) over `data` — small, table-free, and
 /// plenty to reject a blank/half-written blob. Guards the codec on both stores.
@@ -755,6 +769,9 @@ pub fn encode(s: &Settings) -> [u8; ENCODED_LEN] {
     b[CLIMB_OFF] = s.climb_mode as u8;
     // v6 tail: the idle-return timeout.
     b[IDLE_OFF] = s.idle_return as u8;
+    // v7 tail: the two Map-chrome overlay toggles.
+    b[MAP_CLOCK_OFF] = s.map_clock as u8;
+    b[SCALE_BAR_OFF] = s.map_scale_bar as u8;
     let crc = crc16(&b[0..PAYLOAD_LEN]);
     b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
     b
@@ -799,6 +816,9 @@ pub fn decode(bytes: &[u8]) -> Option<Settings> {
         climb_mode: ClimbMode::from_byte(b[CLIMB_OFF]),
         // Same clamp for the idle-return byte: an out-of-range value sanitises to the default.
         idle_return: IdleReturn::from_byte(b[IDLE_OFF]),
+        // The v7 Map-chrome toggles: any non-zero byte is "on" (like the other bool fields).
+        map_clock: b[MAP_CLOCK_OFF] != 0,
+        map_scale_bar: b[SCALE_BAR_OFF] != 0,
     };
     s.sanitize();
     Some(s)
@@ -1036,6 +1056,8 @@ mod tests {
             ble_enabled: false,
             climb_mode: ClimbMode::Manual,
             idle_return: IdleReturn::M5,
+            map_clock: false,
+            map_scale_bar: false,
         };
         assert_eq!(decode(&encode(&s)), Some(s));
     }
@@ -1089,7 +1111,6 @@ mod tests {
     /// pull it across (a phone can't reconfigure the idle behavior).
     #[test]
     fn idle_return_round_trips_and_is_device_only() {
-        assert_eq!(VERSION, 6, "the idle_return tail is the v6 layout (settings reset on flash)");
         assert_eq!(Settings::default().idle_return, IdleReturn::S30, "the idle return defaults to 30 s");
 
         // Each value round-trips through the codec byte-for-byte.
@@ -1127,6 +1148,30 @@ mod tests {
         assert_eq!(IdleReturn::M5.stepped(1), IdleReturn::Never);
         assert_eq!(IdleReturn::Never.stepped(1), IdleReturn::S15, "wraps past Never");
         assert_eq!(IdleReturn::S15.stepped(-1), IdleReturn::Never, "wraps past the start");
+    }
+
+    /// The v7 tail: the two Map-chrome toggles round-trip, default **on**, and are device-only —
+    /// [`adopt_ble_fields`] must never pull them across (a phone can't reconfigure the map overlays).
+    #[test]
+    fn map_overlays_round_trip_and_are_device_only() {
+        assert_eq!(VERSION, 7, "the map-overlay toggles are the v7 layout (settings reset on flash)");
+        assert!(Settings::default().map_clock, "the map clock defaults on");
+        assert!(Settings::default().map_scale_bar, "the scale bar defaults on");
+        // The RRAM carve is unchanged — the two new bytes fit inside the same 16-byte line rounding.
+        assert_eq!(ENCODED_LEN, 96, "the two v7 bytes don't cross a 16-byte RRAM line");
+
+        // Every on/off combination round-trips byte-for-byte.
+        for clock in [false, true] {
+            for bar in [false, true] {
+                let s = Settings { map_clock: clock, map_scale_bar: bar, ..Settings::default() };
+                assert_eq!(decode(&encode(&s)), Some(s), "clock={clock} bar={bar} round-trips");
+            }
+        }
+
+        // Device-only: a BLE blob's map toggles never land via the #456 coherence merge.
+        let mut app = Settings { map_clock: false, map_scale_bar: false, ..Settings::default() };
+        app.adopt_ble_fields(&Settings { map_clock: true, map_scale_bar: true, ..Settings::default() });
+        assert!(!app.map_clock && !app.map_scale_bar, "adopt_ble_fields leaves the map overlays alone");
     }
 
     /// The v3 device-name tail: set → truncate on a char boundary at the 48-byte cap, and a
