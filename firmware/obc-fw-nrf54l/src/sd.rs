@@ -47,8 +47,9 @@ use heapless::{String, Vec};
 use obc_app::{
     decode_synced_rides, encode_synced_rides, SyncedRides, MAX_RIDES, MAX_ROUTES, SYNCED_RIDES_MAX_LEN, UI_RIDES_CAP,
 };
+use obc_platform::fat_extents::{ExtentSource, ExtentTable, SharedBlockDevice};
 use obc_platform::{SdByteSink, SdByteSource, SdTrackSink};
-use obc_route::{track_to_ride, RideInfo, RideStats, RouteIndex, RouteObjectInfo, RouteSummary, NAME_CAP};
+use obc_route::{track_to_ride, ByteSource, RideInfo, RideStats, RouteIndex, RouteObjectInfo, RouteSummary, NAME_CAP};
 
 /// SD clock during the init handshake — the spec caps it at 400 kHz. embassy-nrf's discrete
 /// [`Frequency`] ladder has no 400 kHz step, so [`Frequency::K250`] is the fastest in-spec choice
@@ -104,18 +105,55 @@ pub(crate) const SIDELOAD_ID_BASE: u16 = 0xFF00;
 type SdSpi = Spim<'static>;
 type SdDev = ExclusiveDevice<SdSpi, NoCs, Delay>;
 type Sd = SdCard<SdDev, Delay>;
+/// What the manager actually owns: the card **by shared reference** ([`SharedBlockDevice`]), so
+/// the raw `&'static Sd` twin stays available for the map's extent-mapped direct block reads
+/// (#500) — `VolumeManager::device()` can't hand it back out (its 0.9 signature can only return
+/// the `TimeSource` type), so the share happens here, one level up. The card itself lives in
+/// [`SD_CARD`].
+type SdShared = SharedBlockDevice<'static, Sd>;
 /// The open-handle budget (see the 6-file note above) — one set of consts so the manager and the
 /// `obc-platform` wrapper aliases below can never drift apart.
 const SD_MAX_DIRS: usize = 4;
 const SD_MAX_FILES: usize = 6;
 const SD_MAX_VOLUMES: usize = 1;
-type Vmgr = VolumeManager<Sd, NullTime, SD_MAX_DIRS, SD_MAX_FILES, SD_MAX_VOLUMES>;
+type Vmgr = VolumeManager<SdShared, NullTime, SD_MAX_DIRS, SD_MAX_FILES, SD_MAX_VOLUMES>;
 /// [`SdByteSource`] over this board's manager (the wrappers are generic over the handle budget).
-type Source<'a> = SdByteSource<'a, Sd, NullTime, SD_MAX_DIRS, SD_MAX_FILES, SD_MAX_VOLUMES>;
+type Source<'a> = SdByteSource<'a, SdShared, NullTime, SD_MAX_DIRS, SD_MAX_FILES, SD_MAX_VOLUMES>;
 /// [`SdByteSink`] over this board's manager — the router's OBCR emit writes through it.
-type Sink<'a> = SdByteSink<'a, Sd, NullTime, SD_MAX_DIRS, SD_MAX_FILES, SD_MAX_VOLUMES>;
+type Sink<'a> = SdByteSink<'a, SdShared, NullTime, SD_MAX_DIRS, SD_MAX_FILES, SD_MAX_VOLUMES>;
 /// [`SdTrackSink`] over this board's manager.
-type TrackSinkT<'a> = SdTrackSink<'a, Sd, NullTime, SD_MAX_DIRS, SD_MAX_FILES, SD_MAX_VOLUMES>;
+type TrackSinkT<'a> = SdTrackSink<'a, SdShared, NullTime, SD_MAX_DIRS, SD_MAX_FILES, SD_MAX_VOLUMES>;
+
+/// The concrete [`SdCard`]'s home — a `.bss` slot written once by [`init`] (the warm-reset-safe
+/// `init_static` pattern, see `main.rs`), so both the [`VolumeManager`] (via [`SdShared`]) and the
+/// extent read path can borrow it for `'static`.
+static mut SD_CARD: core::mem::MaybeUninit<Sd> = core::mem::MaybeUninit::uninit();
+
+/// What [`Storage::map_source`] hands out: extent-mapped direct block reads when the map's chain
+/// resolved at open (#500), the manager's seek+read path otherwise. One enum rather than a trait
+/// object so the render/nav paths stay monomorphic (no vtable on the per-chunk hot path).
+pub enum MapSource<'a> {
+    /// Direct block reads through the resolved [`ExtentTable`] — zero FAT traffic per read.
+    Extent(ExtentSource<'a, Sd>),
+    /// The plain seek path — correct on any card, O(offset) on backward seeks.
+    Seek(Source<'a>),
+}
+
+impl ByteSource for MapSource<'_> {
+    fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), obc_route::Error> {
+        match self {
+            MapSource::Extent(s) => s.read_at(offset, buf),
+            MapSource::Seek(s) => s.read_at(offset, buf),
+        }
+    }
+
+    fn len(&self) -> u32 {
+        match self {
+            MapSource::Extent(s) => s.len(),
+            MapSource::Seek(s) => s.len(),
+        }
+    }
+}
 
 /// FAT timestamps need a clock; the device has none yet (see [`obc_route::TrackPoint::t_ms`]),
 /// so every file gets the epoch. Real dates wait on a clock source.
@@ -131,6 +169,8 @@ impl TimeSource for NullTime {
 /// and the per-frame reconcile state (which route's geometry is open, which session's log).
 pub struct Storage {
     vmgr: Vmgr,
+    /// The raw card the manager's [`SdShared`] borrows — the extent path's direct read handle.
+    card: &'static Sd,
     root: RawDirectory,
     /// `/routes`, or `None` if the card has no such folder (catalog is then empty).
     routes_dir: Option<RawDirectory>,
@@ -169,8 +209,13 @@ pub struct Storage {
     open_route: Option<(usize, RawFile, u32)>,
     /// The map `.obcm`, opened once at startup and held open for the whole session: `(handle,
     /// length)`. The map streams through this (issue #37) instead of being read resident into
-    /// RAM — `map_source` hands out a fresh [`SdByteSource`] over it each redraw.
+    /// RAM — `map_source` hands out a fresh source over it each redraw.
     open_map: Option<(RawFile, u32)>,
+    /// The open map's FAT chain resolved to extent runs (#500): when present, `map_source` serves
+    /// direct block reads (zero per-read FAT traffic) instead of the manager's O(offset) seek.
+    /// `None` = build refused (fragmented past the cap / odd geometry) or failed verification —
+    /// the seek path still works, just slowly, and open_map logged why.
+    map_extents: Option<ExtentTable>,
     /// The open ride log for the current tracking session.
     open_track: Option<OpenTrack>,
     /// A finished ride whose log → ride-object conversion hasn't run yet. Finish only closes the
@@ -230,7 +275,11 @@ pub fn init(mut spi: SdSpi, mut cs: Output<'static>) -> Option<Storage> {
     let _ = spi.blocking_write(&[0xFFu8; 10]);
     cs.set_low();
     let dev = ExclusiveDevice::new(spi, NoCs, Delay).ok()?;
-    let card = SdCard::new(dev, Delay);
+    // Into its `.bss` slot before anything else: the manager and the extent read path both want
+    // `'static` borrows of the one card.
+    // SAFETY: sole writer of SD_CARD; `init` runs once per boot on the one thread-mode executor,
+    // and a warm-reset re-run overwrites in place (no `Drop`), the `init_static` contract.
+    let card: &'static Sd = unsafe { crate::init_static(core::ptr::addr_of_mut!(SD_CARD), SdCard::new(dev, Delay)) };
     // `num_bytes` forces the SPI init sequence (must be ≤400 kHz, the bus's current setting).
     match card.num_bytes() {
         Ok(bytes) => defmt::info!("SD: card initialised, {=u64} MB", bytes >> 20),
@@ -283,10 +332,10 @@ impl Storage {
     }
 
     /// Mount the first FAT volume and open the root / `routes` / `tracks` directories.
-    fn mount(card: Sd, cs: Output<'static>) -> Option<Storage> {
+    fn mount(card: &'static Sd, cs: Output<'static>) -> Option<Storage> {
         // `new()` is pinned to the 4,4,1 defaults — the custom budget goes through `new_with_limits`
         // (5000 = the id offset `new()` itself uses).
-        let vmgr: Vmgr = VolumeManager::new_with_limits(card, NullTime, 5000);
+        let vmgr: Vmgr = VolumeManager::new_with_limits(SharedBlockDevice(card), NullTime, 5000);
         let volume = match vmgr.open_raw_volume(VolumeIdx(0)) {
             Ok(v) => v,
             Err(e) => {
@@ -307,6 +356,7 @@ impl Storage {
         defmt::info!("SD: mounted; /routes {=bool}, /tracks {=bool}", routes_dir.is_some(), tracks_dir.is_some());
         Some(Storage {
             vmgr,
+            card,
             root,
             routes_dir,
             tracks_dir,
@@ -318,6 +368,7 @@ impl Storage {
             next_sideload: SIDELOAD_ID_BASE as u32,
             open_route: None,
             open_map: None,
+            map_extents: None,
             open_track: None,
             pending_save: None,
             ride_saved: false,
@@ -627,13 +678,15 @@ impl Storage {
         if let Some((_, len)) = self.open_map {
             return Some(len);
         }
-        let mut found: Option<ShortFileName> = None;
+        // The name to open, plus the directory-entry location the extent build reads the first
+        // cluster from (public `DirEntry` facts, captured in the same scan).
+        let mut found: Option<(ShortFileName, embedded_sdmmc::BlockIdx, u32)> = None;
         self.iter_dir_lfn(self.root, |e, long| {
             if found.is_none() && !e.attributes.is_directory() && long_has_ext(long, b".obcm") {
-                found = Some(e.name.clone());
+                found = Some((e.name.clone(), e.entry_block, e.entry_offset));
             }
         });
-        let name = found?;
+        let (name, entry_block, entry_offset) = found?;
         let file = self.vmgr.open_file_in_dir(self.root, &name, Mode::ReadOnly).ok()?;
         let len = self.vmgr.file_length(file).unwrap_or(0);
         if len == 0 {
@@ -641,16 +694,67 @@ impl Storage {
             return None;
         }
         self.open_map = Some((file, len));
+        self.build_map_extents(entry_block, entry_offset, file, len);
         Some(len)
+    }
+
+    /// Resolve the just-opened map's FAT chain into [`map_extents`](Storage::map_extents) — the
+    /// one-time walk that makes every later map read a direct block read (#500). Any refusal
+    /// (fragmented past the cap, unexpected geometry, failed verification) leaves `None`: the
+    /// manager's seek path still serves the map, just at the old speed, and the log says why.
+    /// The logged extent count is also #500's fragmentation measurement — 1 = contiguous.
+    fn build_map_extents(&mut self, entry_block: embedded_sdmmc::BlockIdx, entry_offset: u32, file: RawFile, len: u32) {
+        self.map_extents = None;
+        match ExtentTable::build(self.card, entry_block, entry_offset, len) {
+            Ok(table) => {
+                if self.verify_extents(&table, file, len) {
+                    defmt::info!(
+                        "SD: map is {=usize} extent(s) over {=u32} bytes — direct block reads on",
+                        table.extent_count(),
+                        len
+                    );
+                    self.map_extents = Some(table);
+                } else {
+                    defmt::warn!("SD: map extent table failed verification — keeping the FAT-seek read path");
+                }
+            }
+            Err(e) => defmt::warn!(
+                "SD: map extent table unavailable ({}) — keeping the FAT-seek read path",
+                defmt::Debug2Format(&e)
+            ),
+        }
+    }
+
+    /// Cross-check a fresh extent table against the manager's own read of the same file: a small
+    /// window at the head and at the tail through **both** paths must agree byte-for-byte. Cheap
+    /// (one-time, four short reads), and it turns any geometry slip into a loud fallback instead
+    /// of wrong map bytes.
+    fn verify_extents(&self, table: &ExtentTable, file: RawFile, len: u32) -> bool {
+        let slow = Source::new(&self.vmgr, file, len);
+        let fast = ExtentSource::new(self.card, table);
+        let mut a = [0u8; 64];
+        let mut b = [0u8; 64];
+        for off in [0, len.saturating_sub(a.len() as u32)] {
+            let n = a.len().min(len as usize);
+            if slow.read_at(off, &mut a[..n]).is_err() || fast.read_at(off, &mut b[..n]).is_err() || a[..n] != b[..n] {
+                return false;
+            }
+        }
+        true
     }
 
     /// A [`ByteSource`](obc_route::ByteSource) over the open map file, for reading the header
     /// ([`obc_reader::read_header`]) or building a per-frame [`Reader`](obc_reader::Reader). `None` if
     /// no map was opened ([`open_map`](Self::open_map) returned `None`). Cheap — the source just wraps
     /// the already-open handle, so it's rebuilt every redraw, keeping no borrow across the `&mut self`
-    /// route/track operations.
-    pub fn map_source(&self) -> Option<Source<'_>> {
-        self.open_map.map(|(f, len)| SdByteSource::new(&self.vmgr, f, len))
+    /// route/track operations. Extent-mapped direct block reads when the table built (#500), the
+    /// manager's seek path otherwise.
+    pub fn map_source(&self) -> Option<MapSource<'_>> {
+        let (f, len) = self.open_map?;
+        Some(match &self.map_extents {
+            Some(table) => MapSource::Extent(ExtentSource::new(self.card, table)),
+            None => MapSource::Seek(SdByteSource::new(&self.vmgr, f, len)),
+        })
     }
 
     /// Make the open route geometry match the app's selected route (a catalog index), reopening
