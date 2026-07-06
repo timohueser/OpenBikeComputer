@@ -121,7 +121,7 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p"     --png "$OUT/routeoverview.png"
 # The Map's chrome overlays land here: the floating top-centre clock digits (pinned time via
 # --clock), the bottom-left corner scale bar, and — priority order unchanged — the one-slot warning
-# chip, top-centre (below the clock digits while those are shown).
+# chip in its fixed top-centre slot just below the clock digits (clock shown or not).
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --script "p p p p"   --gpx "$GPX" --at 30 --png "$OUT/map.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p b" --gpx "$GPX" --at 30 --png "$OUT/statistics.png"
 # The low-battery cue (issue: < 10 %): a warning-red battery glyph in the map's top-left corner.
