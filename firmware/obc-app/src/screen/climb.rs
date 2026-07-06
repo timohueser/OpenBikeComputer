@@ -204,10 +204,10 @@ fn climb_tiles(climb: &ActiveClimb, progress_m: u32, units: Units) -> [ClimbCell
             false,
         ),
         ClimbCell::new("GRADE", fmt_pct(profile.grade_at(cursor)), false),
-        // The epic's "Avg → top": average grade over the climb's remainder. Captioned "AVG TO GO"
+        // The epic's "Avg → top": average grade over the climb's remainder. Captioned "AVG AHEAD"
         // (not "AVG→TOP") because the panel font is ASCII-only — a `→` renders as `?` — and the
-        // 10-char "AVG TO TOP" clips past the half-width tile; "AVG TO GO" fits like "KM TO TOP".
-        ClimbCell::new("AVG TO GO", fmt_pct(avg_to_top_pct(climb, progress_m)), false),
+        // 10-char "AVG TO TOP" clips past the half-width tile; "AVG AHEAD" fits like "KM TO TOP".
+        ClimbCell::new("AVG AHEAD", fmt_pct(avg_to_top_pct(climb, progress_m)), false),
     ]
 }
 
