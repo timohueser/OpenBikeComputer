@@ -26,6 +26,7 @@ use crate::ride::RideSummary;
 use crate::route::RouteSummary;
 use crate::settings::{DateTime, Settings, Units};
 
+mod climb;
 mod home;
 mod list;
 mod map;
@@ -44,6 +45,7 @@ mod route_swap;
 mod settings;
 mod statistics;
 
+pub use climb::ClimbScreen;
 pub use home::HomeScreen;
 pub use list::window_start;
 pub use map::MapScreen;
@@ -317,6 +319,11 @@ screens! {
     Home(HomeScreen) => Nav,
     Map(MapScreen) => Riding,
     Statistics(StatisticsScreen) => Riding,
+    /// The Climb view (epic #506, C4): the current climb's grade-striped elevation profile + cursor
+    /// + four climb-scoped tiles. A full-screen riding view like the Map/Statistics siblings; C5
+    /// wires it into the Back-cycle and the auto-switch, so nothing reaches it yet except the
+    /// debug-open bench path.
+    Climb(ClimbScreen) => Riding,
     /// The pause page: ride-so-far ledger + the guarded Resume / Finish / Discard rows.
     RideControl(RideControl) => Nav,
     Menu(MenuScreen) => Nav,
@@ -771,8 +778,19 @@ pub mod palette {
     /// Faint neutral grey — the Home screensaver's contour lines and empty battery cells: dim
     /// enough to sit behind the clock, bright enough to read as fine topo lines.
     pub const CONTOUR: u16 = rgb565(96, 96, 96); // → (85,85,85) grey
-    /// Green — the "on" state of a settings toggle pill (ink = off). The only green on the panel.
+    /// Green — the "on" state of a settings toggle pill (ink = off), and the shallowest band of the
+    /// Climb screen's grade ramp (`< 3 %`). The only green on the panel.
     pub const ON: u16 = rgb565(0, 170, 0); // → (0,170,0) green
+    /// Yellow — the Climb screen's `3–6 %` grade band. Between [`ON`] green and [`AMBER`] on the
+    /// ClimbPro ramp; device-64 has a pure `(255,255,0)`, so it reads distinctly from amber.
+    pub const YELLOW: u16 = rgb565(255, 255, 0); // → (255,255,0) yellow
+    /// Red — the Climb screen's steepest grade band (`> 12 %`). The panel's pure red; hotter than the
+    /// [`WARNING`] orange so the two never blur into one another on the stripes.
+    pub const RED: u16 = rgb565(255, 0, 0); // → (255,0,0) red
+    /// Apricot — the Climb screen's tile background. Warmer + lighter than Statistics' tan
+    /// [`PARCHMENT_SHADE`], so the two riding views' grids read apart at a glance (decided with the
+    /// user). Device-64 `(255,170,85)`.
+    pub const CLIMB_TILE: u16 = rgb565(255, 170, 85); // → (255,170,85) apricot
     /// Magenta — the planned route line on the Map. The classic GPS route hue: it lands on no
     /// base-map feature, so it always reads as "the line to follow".
     pub const ROUTE: u16 = rgb565(255, 0, 255); // → (255,0,255) magenta

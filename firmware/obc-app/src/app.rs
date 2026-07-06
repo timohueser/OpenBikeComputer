@@ -983,13 +983,13 @@ impl App {
         self.map_dirty = true;
     }
 
-    /// Whether the base screen shows live sensor data (user fix / ride accumulators) — Map and
-    /// Statistics do, so a fresh fix must redraw them; Home and the menus don't. The base is the
-    /// lowest *opaque* drawn screen, so an overlay (Ride control) over a riding view still counts as
-    /// live since the map keeps moving under the pause panel.
+    /// Whether the base screen shows live sensor data (user fix / ride accumulators) — Map,
+    /// Statistics and Climb do, so a fresh fix must redraw them; Home and the menus don't. The base
+    /// is the lowest *opaque* drawn screen, so an overlay (Ride control) over a riding view still
+    /// counts as live since the map keeps moving under the pause panel.
     fn shows_live_data(&self) -> bool {
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
-        matches!(self.stack.get(base), Some(Screen::Map(_) | Screen::Statistics(_)))
+        matches!(self.stack.get(base), Some(Screen::Map(_) | Screen::Statistics(_) | Screen::Climb(_)))
     }
 
     /// Whether the base (lowest opaque) screen draws the **map** — the [`Map`](crate::screen::map)
@@ -1263,6 +1263,22 @@ impl App {
         self.map_dirty = true;
     }
 
+    /// **Debug / snapshot only** (epic #506, C4): open the [`Climb`](crate::screen::ClimbScreen)
+    /// screen directly. The screen isn't reachable through any gesture until C5 wires its Back-cycle
+    /// and auto-switch, so the UI-snapshot sweep drives it through this seam (the sim's `--open-climb`
+    /// flag) to capture the striped-profile PNG. Replaces the current base riding view (Map) rather
+    /// than stacking over it, so the frame is exactly the Climb screen; a no-op if a climb isn't
+    /// active (nothing to draw). No production path reaches this.
+    pub fn debug_open_climb(&mut self) {
+        if self.activity.active_climb.is_none() {
+            return;
+        }
+        if let Some(top) = self.stack.last_mut() {
+            *top = Screen::Climb(crate::screen::ClimbScreen::new());
+        }
+        self.map_dirty = true;
+    }
+
     /// Drain the pending **plan-cancel request** (#499) — recorded by the planning screen's Back
     /// (which already popped back to the POI detail). A `true` is the host's cue to abort the
     /// in-flight plan and discard the partial nav file; it answers **nothing** (there is no
@@ -1437,10 +1453,10 @@ impl App {
     /// Whether the base (lowest opaque) screen draws the connected indicator — Home, or any framed
     /// screen with a title bar (a menu / list / prompt), i.e. everything that isn't a full-screen
     /// riding view. Gates [`set_ble_status`](App::set_ble_status)'s repaint so a link change never
-    /// re-renders the map on the Map / Statistics screens, which deliberately omit the glyph.
+    /// re-renders the map on the Map / Statistics / Climb screens, which deliberately omit the glyph.
     fn indicator_visible(&self) -> bool {
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
-        !matches!(self.stack.get(base), Some(Screen::Map(_) | Screen::Statistics(_)))
+        !matches!(self.stack.get(base), Some(Screen::Map(_) | Screen::Statistics(_) | Screen::Climb(_)))
     }
 
     /// The live BLE pairing passkey, or `None` when not pairing — [`BleStatus::passkey`](crate::BleStatus)
