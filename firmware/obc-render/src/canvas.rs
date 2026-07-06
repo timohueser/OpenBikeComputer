@@ -29,11 +29,41 @@ pub fn rect(x: i32, y: i32, w: i32, h: i32) -> Rectangle {
 pub struct Canvas<'a, D, F> {
     target: &'a mut D,
     color_fn: &'a F,
+    /// Region-scoped repaint bound (#500 follow-up), `None` on a normal full frame. When set, the
+    /// [`Surface`](crate::Surface) impl **rejects whole primitives whose bounds miss it** before
+    /// any rasterizing runs — the per-pixel machinery (glyph decode, scanline iterators) is what a
+    /// pixel-level clip can't skip. Rejection only, never pixel clipping: a primitive that
+    /// *touches* the clip draws in full, and the host's clipped framebuffer discards the
+    /// out-of-region writes — so inside the clip the output is byte-identical to a full draw.
+    clip: Option<Rectangle>,
 }
 
 impl<'a, D, F> Canvas<'a, D, F> {
     pub fn new(target: &'a mut D, color_fn: &'a F) -> Self {
-        Canvas { target, color_fn }
+        Canvas { target, color_fn, clip: None }
+    }
+
+    /// Set (or clear) the region-scoped repaint bound for the draws that follow — see the field
+    /// doc. The caller owns the correctness contract: everything it wants changed lies inside
+    /// `clip`, and the target discards writes outside it.
+    pub fn set_clip(&mut self, clip: Option<Rectangle>) {
+        self.clip = clip;
+    }
+
+    /// Whether a primitive with bounding box `bbox` can be skipped outright: a clip is set and
+    /// `bbox` doesn't touch it. `false` on a full frame, so the normal path draws everything.
+    #[inline]
+    pub(crate) fn rejects(&self, bbox: &Rectangle) -> bool {
+        self.clip.is_some_and(|c| bbox.intersection(&c).is_zero_sized())
+    }
+
+    /// Ring-aware rejection for hollow primitives (the 1 px outlines): skip when the clip lies
+    /// entirely inside `hole` — the largest rectangle the primitive's stroke can never enter.
+    /// The full-frame outline every framed screen draws has a whole-screen bbox (so
+    /// [`rejects`](Canvas::rejects) keeps it), yet its ring can't touch an interior region clip.
+    #[inline]
+    pub(crate) fn rejects_ring(&self, hole: &Rectangle) -> bool {
+        self.clip.is_some_and(|c| hole.intersection(&c) == c)
     }
 
     /// The raw-target escape hatch: the underlying target + colour policy, for the one consumer

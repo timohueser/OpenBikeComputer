@@ -911,13 +911,21 @@ pub(crate) async fn run_app(
         app.set_hold_progress(hold_p);
 
         // Drain the per-frame dirty signal now that input + tick have run, and fold back a redraw a
-        // previous frame couldn't service on a transient reader-build failure.
+        // previous frame couldn't service on a transient reader-build failure. Every board-level
+        // demand folded in below is full-frame, so each also drops a region-scoped tick's clip
+        // (`dirty.region`) — the region only survives when the ticks were the sole dirt.
         let mut dirty = app.take_dirty();
-        dirty.map |= pending_map_redraw;
+        if pending_map_redraw {
+            dirty.map = true;
+            dirty.region = None;
+        }
         pending_map_redraw = false;
         // A FLPR relaunch landed since the last pass (#349): the fresh core has no frame history
         // and the diff store was reset — schedule the full repaint even if nothing else is dirty.
-        dirty.map |= display.take_relaunch_repaint();
+        if display.take_relaunch_repaint() {
+            dirty.map = true;
+            dirty.region = None;
+        }
         // While a hold *charges* on a cheap (non-map) screen — the factory-Reset prompt, the
         // hold-to-delete bar — redraw it each frame so its bar tracks the live progress, **and** once
         // more on the frame the hold drops back to 0 (the falling edge), so an early release clears the
@@ -928,6 +936,7 @@ pub(crate) async fn run_app(
         // Reset, the Fields Add row — repaints nothing.
         if (hold_p > 0.0 || prev_hold_p > 0.0) && !app.base_draws_map() && app.top_wants_hold_fill() {
             dirty.map = true;
+            dirty.region = None;
         }
         prev_hold_p = hold_p;
 
@@ -969,8 +978,20 @@ pub(crate) async fn run_app(
                 // composite below paints them). `render_map_timed` threads `InstantClock` so the stats
                 // carry the collect/sort/draw timings; the hold bulge is **not** composited here — it
                 // rides `present_bulge` on its own plane.
+                //
+                // A surviving `dirty.region` (the nav spinner's needle disc — only ever on a non-map
+                // chrome frame) clips the render at both layers (#500 follow-up): the app's Canvas
+                // rejects whole primitives whose bounds miss the region (the glyph/scanline machinery
+                // a pixel clip can't skip), and the framebuffer discards any straddler's out-of-region
+                // pixel writes — so a spinner frame costs the disc instead of the whole chrome, and
+                // the row-diffed push scales down with it.
+                let clip = if needs_map { None } else { dirty.region };
+                app.set_render_clip(clip);
                 let render = |d: &mut dyn DisplayDriver| {
                     let mut fbdev = FbDevice64::new(d.fb_mut(), FRAME_W as u32, FRAME_H as u32);
+                    if let Some(r) = clip {
+                        fbdev.set_clip(r);
+                    }
                     app.render_map_timed(
                         &mut fbdev,
                         reader.as_ref(),

@@ -66,7 +66,7 @@ impl HomeScreen {
     /// (`ms_to_next_minute`, pre-computed by the host, which owns the clock). The [`MinuteTicker`]
     /// reports only the actual rollover, so an idle Home repaints at most once a minute.
     pub fn tick_timers(&mut self, now: DateTime, ms_to_next_minute: u32) -> ScreenTick {
-        ScreenTick { changed: self.ticker.changed(now), next_wake_ms: Some(ms_to_next_minute) }
+        ScreenTick { changed: self.ticker.changed(now), next_wake_ms: Some(ms_to_next_minute), region: None }
     }
 
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
