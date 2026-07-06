@@ -623,7 +623,7 @@ pub struct Settings {
     /// deliberately *not* one of the BLE-writable fields [`adopt_ble_fields`](Settings::adopt_ble_fields)
     /// pulls across. Default **30 s**; [`Never`](IdleReturn::Never) disables it entirely.
     pub idle_return: IdleReturn,
-    /// Show the small `HH:MM` clock pill on the Map (the Display settings screen's toggle).
+    /// Show the small floating `HH:MM` clock on the Map (the Display settings screen's toggle).
     /// **Device-only**, like [`climb_mode`](Settings::climb_mode): deliberately *not* one of the
     /// BLE-writable fields [`adopt_ble_fields`](Settings::adopt_ble_fields) pulls across. Default
     /// **on**.
