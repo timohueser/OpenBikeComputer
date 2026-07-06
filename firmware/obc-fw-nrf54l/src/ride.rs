@@ -142,6 +142,21 @@ pub(crate) fn load_rides(storage: &mut sd::Storage, app: &mut App) {
     app.set_rides(&catalog, storage.ride_ids());
 }
 
+/// The on-device router's caller-owned buffers (epic #116, R4): the fixed A* table + graph-tile
+/// cache, `.bss` statics built in `main` and bundled so [`run_app`]'s signature and call sites
+/// stay identical across the `has_nav` gate.
+#[cfg(has_nav)]
+pub(crate) struct NavBuffers {
+    pub(crate) scratch: &'static mut obc_route::NavScratch,
+    pub(crate) tiles: &'static mut obc_reader::NavTileCache,
+}
+/// The `ble` build's stand-in: the router isn't in the combined image — its ~14.3 KB of statics
+/// would push the 256 KB DK's stack region below the measured deep-render peak (see build.rs's
+/// `has_nav` note). The ride loop still drains create-route requests and answers the generic
+/// failure tier, so the POI confirm never hangs. The 512 KB LM20 deletes this arm.
+#[cfg(not(has_nav))]
+pub(crate) struct NavBuffers;
+
 /// Run a drained POI create-route request (epic #116, R4) against the resident map: the board's
 /// host half of the nav seam. Runs [`plan_route`](obc_route::plan_route) (sync) from the rider's
 /// fix to the POI, streams the emitted OBCR to the reserved `/routes/_NAV.OBR`
@@ -159,6 +174,7 @@ pub(crate) fn load_rides(storage: &mut sd::Storage, app: &mut App) {
 /// One RTT line per plan (grep `nav route:`): outcome, elapsed ms, the tile-cache counters
 /// (**misses = SD chunk reads** for the whole plan), and the stackmeter high-water re-scanned
 /// right after the run so the router's contribution to the peak is visible on-glass.
+#[cfg(has_nav)]
 #[inline(never)]
 #[allow(clippy::too_many_arguments)]
 fn plan_nav(
@@ -166,8 +182,7 @@ fn plan_nav(
     app: &mut App,
     map_tables: &MapTables,
     map_cache: &MapCache,
-    scratch: &mut obc_route::NavScratch,
-    tiles: &mut obc_reader::NavTileCache,
+    nav: &mut NavBuffers,
     req: &obc_app::NavRequest,
     now: u32,
 ) {
@@ -179,7 +194,15 @@ fn plan_nav(
             Some(map_src) => {
                 let reader = Reader::new(&map_src, map_tables, map_cache);
                 let mut sink = storage.nav_sink(file);
-                obc_route::plan_route(&reader, req.from, req.to, req.name(), scratch, tiles, &mut sink)
+                obc_route::plan_route(
+                    &reader,
+                    req.from,
+                    req.to,
+                    req.name(),
+                    &mut *nav.scratch,
+                    &mut *nav.tiles,
+                    &mut sink,
+                )
             }
             None => Err(NavError::NoPath),
         };
@@ -192,7 +215,7 @@ fn plan_nav(
         Ok((id, stats.total_distance_m))
     })();
     let ms = t0.elapsed().as_millis();
-    let cache = tiles.stats();
+    let cache = nav.tiles.stats();
     let hw = stackmeter::rescan(now);
     let outcome = match &planned {
         Ok(_) => "ok",
@@ -265,8 +288,9 @@ pub(crate) async fn run_app(
     route_cache: &RouteCache,
     // The router's fixed A* table + graph-tile cache (epic #116, R4): `.bss` statics threaded
     // from `main` (never locals — the #270/#419 discipline), reset per plan inside `plan_route`.
-    nav_scratch: &'static mut obc_route::NavScratch,
-    nav_tiles: &'static mut obc_reader::NavTileCache,
+    // On `not(has_nav)` (the `ble` build) it's the unit stand-in — the router isn't in that image.
+    #[cfg(has_nav)] mut nav: NavBuffers,
+    #[cfg(not(has_nav))] nav: NavBuffers,
     led: &mut Output<'static>,
     // The hardware watchdog's feed handle (#349), `None` only if the boot-time `try_new` found the
     // dog already running with a foreign config. Fed once per pass below, gated on the input
@@ -564,15 +588,29 @@ pub(crate) async fn run_app(
         // The plan closed the active geometry handle and may have rewritten bytes under the
         // reserved name, so force the positional state to re-derive, exactly like the
         // store-changed rescan above.
+        //
+        // `not(has_nav)` (the `ble` build, whose image ships without the router — see build.rs):
+        // the request is still drained and answered with the generic failure tier ("Couldn't find
+        // a route."), so the POI confirm never hangs. The LM20 deletes that arm.
         if app.has_nav_request() {
             if let Some(req) = app.take_nav_request() {
-                match storage.as_mut() {
-                    Some(s) => plan_nav(s, app, map_tables, map_cache, nav_scratch, nav_tiles, &req, now),
-                    // No card: nothing to route against — the generic failure tier.
-                    None => app.notify_nav_result(Err(obc_route::NavError::NoPath)),
+                #[cfg(has_nav)]
+                {
+                    match storage.as_mut() {
+                        Some(s) => plan_nav(s, app, map_tables, map_cache, &mut nav, &req, now),
+                        // No card: nothing to route against — the generic failure tier.
+                        None => app.notify_nav_result(Err(obc_route::NavError::NoPath)),
+                    }
+                    prev_active = None; // reopen geometry / rebuild the chunk index off the fresh scan
+                    index_route = None;
                 }
-                prev_active = None; // reopen geometry / rebuild the chunk index off the fresh scan
-                index_route = None;
+                #[cfg(not(has_nav))]
+                {
+                    let _: &NavBuffers = &nav; // the unit stand-in — nothing to plan with
+                    let _ = &req;
+                    defmt::warn!("nav: router not built into the ble image (256K DK) — answering the failure tier");
+                    app.notify_nav_result(Err(obc_route::NavError::NoPath));
+                }
             }
         }
 
