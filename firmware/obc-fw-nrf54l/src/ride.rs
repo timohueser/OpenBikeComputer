@@ -772,6 +772,15 @@ pub(crate) async fn run_app(
             app.set_map_mpp(mpp);
         }
 
+        // A pending debug `N` route-plan trigger (#500 perf bench): start a plan between two fixed
+        // coords exactly as the POI confirm would (request + planning screen), so a host over VCOM
+        // can drive the resumable router repeatably and read the `nav route:` RTT breakdown — no
+        // POI-browser navigation needed. `has_nav` only (the router isn't in the `ble` image).
+        #[cfg(all(feature = "debug-uart", has_nav))]
+        if let Some((from, to)) = obc_platform::debug_link::take_nav() {
+            app.debug_start_nav(from, to, "Bench");
+        }
+
         let active = app.activity.active_route;
         // Re-centre the synthetic GPS onto a freshly-loaded route's start so Follow doesn't yank the
         // camera off it (`synth` build only — the host feed and the real GPS stream absolute positions).
