@@ -8,8 +8,9 @@
 //!   which swaps this screen for the computed-route
 //!   [overview](super::RouteOverviewScreen) (success) or the [`NavFailScreen`] (failure).
 //!   The confirm stays up while the host plans (the answer lands within the same host pass).
-//! - [`NavFailScreen`] — the locked **two-tier failure** card: `TooFar` → "Too far to route
-//!   here", everything else → "Couldn't find a route." Info-only, like the
+//! - [`NavFailScreen`] — the locked **two-tier failure** card: `Exhausted` → "Too far to route
+//!   here" (there is no distance cap; the router's fixed table running out **is** the device's
+//!   range limit), everything else → "Couldn't find a route." Info-only, like the
 //!   [`RouteUpdated`](super::route_received::RouteUpdatedScreen) card: any press/Back dismisses,
 //!   returning to the POI detail underneath.
 //!
@@ -106,20 +107,28 @@ impl NavConfirmScreen {
 /// to the POI detail).
 #[derive(Debug)]
 pub struct NavFailScreen {
-    /// `true` = the crow-flies pre-check rejected the target ("Too far to route here");
+    /// `true` = the range tier ("Too far to route here"): the router's fixed table exhausted
+    /// before the goal — with no distance cap, that **is** the device's range limit.
     /// `false` = every other failure ("Couldn't find a route.").
     too_far: bool,
 }
 
 impl NavFailScreen {
-    /// The `TooFar` tier: the target is beyond the router's crow-flies cap.
+    /// The range tier: the search exhausted the fixed table — the target is beyond what the
+    /// device can plan.
     pub fn too_far() -> Self {
         NavFailScreen { too_far: true }
     }
 
-    /// The generic tier: no snap, no path, scratch exhausted, or any host I/O failure.
+    /// The generic tier: no snap, no path, a host-aborted search, or any host I/O failure.
     pub fn not_found() -> Self {
         NavFailScreen { too_far: false }
+    }
+
+    /// Which tier the card shows (`true` = "Too far to route here") — lets the seam tests pin
+    /// the error→tier mapping without reading pixels.
+    pub fn shows_too_far(&self) -> bool {
+        self.too_far
     }
 
     pub fn handle(&mut self, g: Gesture, _cx: &mut Ctx) -> Transition {

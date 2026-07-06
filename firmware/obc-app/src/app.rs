@@ -1069,8 +1069,9 @@ impl App {
     /// unconditionally, the forced-adoption discipline of an active replace.
     ///
     /// `Err` swaps the confirm for the failure card — the locked two tiers:
-    /// [`TooFar`](obc_route::nav::NavError::TooFar) → "Too far to route here", everything else →
-    /// "Couldn't find a route."
+    /// [`Exhausted`](obc_route::nav::NavError::Exhausted) → "Too far to route here" (there is no
+    /// distance cap — running out of the router's fixed table **is** the device's range limit),
+    /// everything else → "Couldn't find a route."
     ///
     /// If the confirm screen is gone (it can only be *replaced* by a host-pushed card, but stay
     /// defensive), the answer is dropped — the committed route is still in the Route menu.
@@ -1100,7 +1101,9 @@ impl App {
                 self.activity.active_route = Some(idx);
                 Screen::RouteOverview(crate::screen::RouteOverviewScreen::computed(idx, prev))
             }
-            Err(NavError::TooFar) => Screen::NavFail(crate::screen::NavFailScreen::too_far()),
+            // Exhaustion is the device's honest "too far" — the range tier's trigger now that
+            // there is no crow-flies cap; everything else is the generic tier.
+            Err(NavError::Exhausted) => Screen::NavFail(crate::screen::NavFailScreen::too_far()),
             Err(_) => Screen::NavFail(crate::screen::NavFailScreen::not_found()),
         };
         self.stack[i] = screen;

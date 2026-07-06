@@ -250,9 +250,10 @@ fn plan_nav(
     let ms = t0.elapsed().as_millis();
     let cache = nav.tiles.stats();
     let hw = stackmeter::rescan(now);
+    // `exhausted` is the range tier ("Too far to route here" on glass — no distance cap);
+    // `no-path` the generic tier.
     let outcome = match &result {
         Ok(_) => "ok",
-        Err(NavError::TooFar) => "too-far",
         Err(NavError::NoPath) => "no-path",
         Err(NavError::Exhausted) => "exhausted",
     };
