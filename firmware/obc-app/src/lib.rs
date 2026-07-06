@@ -17,6 +17,7 @@ pub mod app;
 pub mod ble;
 pub mod breadcrumb;
 pub mod dirty;
+pub mod fault;
 pub mod hal;
 pub mod hold_hint;
 pub mod input;
@@ -33,6 +34,7 @@ pub use app::{App, AppState, CameraMode, Pan, PanAxis};
 pub use ble::{BleLink, BleStatus};
 pub use breadcrumb::Breadcrumb;
 pub use dirty::Dirty;
+pub use fault::{draw_boot_fault, BootFault};
 pub use hal::{
     AltimeterSource, Button, ButtonEvent, ClockSource, CompassSource, Fix, FuelGauge, GpsTime, InputClock, InputEvent,
     InputSource, LocationSource, RideClock, Sensors, SettingsStore, TemperatureSource, TrackSink,
@@ -42,7 +44,7 @@ pub use input::{Gesture, Gestures, DEFAULT_HOLD_MS, DEFAULT_TAP_MS};
 pub use input_plane::InputPlane;
 pub use ride::{RideCatalog, RideSummary, MAX_RIDES, UI_RIDES_CAP};
 pub use route::{Catalog, RouteSummary, MAX_ROUTES};
-pub use screen::{Screen, ScreenKind, Transition};
+pub use screen::{Screen, ScreenKind, Transition, WarningFlags, WarningScreen};
 pub use settings::{
     decode_synced_rides, encode_synced_rides, synced_rides_len, DateTime, Settings, SyncedRides, Units,
     SYNCED_RIDES_MAX_LEN,
