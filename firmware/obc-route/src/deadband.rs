@@ -80,6 +80,17 @@ impl<T: Elev> DeadBand<T> {
         }
     }
 
+    /// The current smoothed elevation: the reference the next sample is measured against, i.e.
+    /// the last elevation that moved at least [`Elev::DEADBAND`]. `None` until the first
+    /// [`push`](DeadBand::push). This is the dead-band's staircase view of the signal — the same
+    /// hysteresis that filters ascent/descent, exposed for callers (e.g. [climb
+    /// detection](crate::climb)) that segment on the *smoothed* height rather than the raw noisy
+    /// samples, so a sub-band wiggle can't spuriously open or close a segment.
+    #[inline]
+    pub fn smoothed(&self) -> Option<T> {
+        self.ref_ele
+    }
+
     /// Cumulative climb (m) booked so far.
     #[inline]
     pub fn ascent(&self) -> T {
