@@ -37,9 +37,9 @@ fn drive_split(app: &mut App, plane: &mut InputPlane, t: u32, evs: &[InputEvent]
 fn script() -> Vec<(u32, Vec<InputEvent>)> {
     vec![
         (0, vec![down(Button::Encoder)]),
-        (80, vec![up(Button::Encoder)]),     // Home press → Route menu
+        (80, vec![up(Button::Encoder)]),     // Home press → Menu (Routes selected)
         (200, vec![down(Button::Encoder)]),  //
-        (280, vec![up(Button::Encoder)]),    // load route → Map (riding)
+        (280, vec![up(Button::Encoder)]),    // press Routes → Route menu
         (400, vec![turn(1)]),                // Map zoom in
         (450, vec![turn(-1)]),               // Map zoom out
         (600, vec![down(Button::Encoder)]),  // begin an encoder hold…

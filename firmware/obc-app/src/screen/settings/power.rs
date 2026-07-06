@@ -1,6 +1,7 @@
-//! The Power screen — GPS fix interval + a power-saver toggle. `GPS Fix` is a value row whose stepper
-//! opens in place; the interval step adapts (1 s up to 10 s, then 5 s) so a long interval is a few
-//! detents. `Power Saver` is a click-to-flip toggle.
+//! The Power screen — GPS fix interval, a power-saver toggle, and the idle-return timeout. `GPS Fix`
+//! is a value row whose stepper opens in place; the interval step adapts (1 s up to 10 s, then 5 s)
+//! so a long interval is a few detents. `Power Saver` is a click-to-flip toggle. `Idle return` is a
+//! left/right value picker (15 s / 30 s / 1 min / 5 min / Never) that steps in place.
 
 use core::fmt::Write;
 
@@ -13,10 +14,11 @@ use crate::settings::{FIX_INTERVAL_MAX, FIX_INTERVAL_MIN};
 /// Row height — fits a two-line label (Body + sub-caption) plus a stepper field with arrow room.
 const ROW_H: i32 = 58;
 
-/// The two rows: the interval value row, then the power-saver toggle.
+/// The rows: the interval value row, the power-saver toggle, then the idle-return picker.
 const GPS_FIX: usize = 0;
 const POWER_SAVER: usize = 1;
-const ROWS: usize = 2;
+const IDLE_RETURN: usize = 2;
+const ROWS: usize = 3;
 
 /// Step the fix interval by `n` detents with adaptive granularity: 1 s under 10 s, 5 s at/above,
 /// clamped. Per-detent (multi-detent flicks compound) with the boundary re-checked each detent, so a
@@ -31,8 +33,8 @@ fn step_interval(v: u16, n: i32) -> u16 {
     x as u16
 }
 
-/// The Power screen. `selected` is the highlighted row; `editing` is set only while the GPS-fix
-/// stepper is open (the toggle has no edit sub-mode).
+/// The Power screen. `selected` is the highlighted row; `editing` is set only while a value row's
+/// picker is open (the GPS-fix stepper or the idle-return picker — the toggle has no edit sub-mode).
 #[derive(Debug, Default)]
 pub struct PowerScreen {
     selected: usize,
@@ -48,7 +50,12 @@ impl PowerScreen {
         match g {
             Gesture::Turn(n) => {
                 if self.editing {
-                    cx.settings.fix_interval_s = step_interval(cx.settings.fix_interval_s, n);
+                    // Editing a value row: a turn steps that row's value in place.
+                    match self.selected {
+                        GPS_FIX => cx.settings.fix_interval_s = step_interval(cx.settings.fix_interval_s, n),
+                        IDLE_RETURN => cx.settings.idle_return = cx.settings.idle_return.stepped(n),
+                        _ => {}
+                    }
                 } else {
                     self.selected = crate::screen::list::step_selection(self.selected, n, ROWS);
                 }
@@ -56,9 +63,9 @@ impl PowerScreen {
             }
             Gesture::Press => {
                 match self.selected {
-                    // The interval row's one field: press enters the stepper, press again (off the
-                    // single field) steps back out — so press just toggles editing.
-                    GPS_FIX => self.editing = !self.editing,
+                    // The value rows: press enters the picker, press again (there's one field) steps
+                    // back out — so press just toggles editing.
+                    GPS_FIX | IDLE_RETURN => self.editing = !self.editing,
                     POWER_SAVER => cx.settings.power_saver = !cx.settings.power_saver,
                     _ => {}
                 }
@@ -97,6 +104,17 @@ impl PowerScreen {
         super::row_cursor(cv, r1, self.selected == POWER_SAVER, false);
         super::row_label(cv, r1, "Power save", Some("low power"));
         super::toggle_slider(cv, r1, rx.settings.power_saver);
+
+        // Row 2 — Idle return (value picker: 15 s / 30 s / 1 min / 5 min / Never).
+        let r2 = super::row_rect(LIST_TOP + 8 + 2 * (ROW_H + 6), w, ROW_H);
+        let editing = self.editing && self.selected == IDLE_RETURN;
+        super::row_cursor(cv, r2, self.selected == IDLE_RETURN, editing);
+        super::row_label(cv, r2, "Idle return", Some("timeout"));
+        let val = rx.settings.idle_return.name();
+        // A wider cell than the GPS-fix one — "1 min" / "Never" run long.
+        let (cw, ch) = (86, 32);
+        let cell = rect(r2.top_left.x + r2.size.width as i32 - cw - 6, r2.top_left.y + (ROW_H - ch) / 2, cw, ch);
+        super::stepper_field(cv, cell, val, editing, Font::Label);
     }
 }
 
@@ -149,5 +167,26 @@ mod tests {
         assert_eq!(scr.selected, POWER_SAVER);
         run(&mut scr, &mut s, Gesture::Press);
         assert!(s.power_saver, "press flips the toggle");
+    }
+
+    /// The idle-return row: press opens its picker, a turn walks the values in place, press steps
+    /// back out, and Back closes an open picker before it pops the screen.
+    #[test]
+    fn idle_return_picker() {
+        use crate::settings::IdleReturn;
+        let mut s = Settings { idle_return: IdleReturn::S30, ..Settings::default() };
+        let mut scr = PowerScreen::new();
+        run(&mut scr, &mut s, Gesture::Turn(2)); // GPS Fix → Power Saver → Idle return
+        assert_eq!(scr.selected, IDLE_RETURN);
+        run(&mut scr, &mut s, Gesture::Press); // open the picker
+        assert!(scr.editing);
+        run(&mut scr, &mut s, Gesture::Turn(1));
+        assert_eq!(s.idle_return, IdleReturn::M1, "a turn walks 30 s → 1 min");
+        run(&mut scr, &mut s, Gesture::Turn(-1));
+        assert_eq!(s.idle_return, IdleReturn::S30, "and back");
+        // Back closes the open picker first (no pop), then a second Back pops the screen.
+        assert!(matches!(run(&mut scr, &mut s, Gesture::Back), Transition::None));
+        assert!(!scr.editing);
+        assert!(matches!(run(&mut scr, &mut s, Gesture::Back), Transition::Pop));
     }
 }
