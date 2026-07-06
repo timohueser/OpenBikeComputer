@@ -56,10 +56,12 @@ impl<D: BlockDevice> BlockDevice for SharedBlockDevice<'_, D> {
     }
 }
 
-/// Extent-run budget. A file written in one streaming copy is 1 run; tens of runs already means
-/// an unusually churned card. 32 keeps the table at a few hundred bytes while covering any sane
-/// card; past it the build refuses (fall back to the seek path) rather than growing.
-pub const MAX_EXTENTS: usize = 32;
+/// Extent-run budget. A file written in one streaming copy is 1 run, but real cards accumulate
+/// churn: the #500 reference card's map measured **46 extents** (the first cap tried, 32, was
+/// refused by the actual hardware). 128 runs = 1.5 KB — bounded and small against the nav/tile
+/// budgets, with ~3× margin over the measured card; past it the build refuses (fall back to the
+/// seek path, with the true count in the log) rather than growing.
+pub const MAX_EXTENTS: usize = 128;
 
 /// One run of file-contiguous, disk-contiguous 512-byte blocks.
 #[derive(Clone, Copy, Debug)]
@@ -85,8 +87,10 @@ pub enum BuildError {
     /// The FAT chain didn't cover the file's byte length (truncated chain, reserved/bad cluster
     /// id mid-chain, or a dir-entry size disagreeing with the open handle's length).
     Mismatch,
-    /// More than [`MAX_EXTENTS`] runs — the bounded table refuses rather than growing.
-    TooFragmented,
+    /// More than [`MAX_EXTENTS`] runs — the bounded table refuses rather than growing. Carries
+    /// the file's **true** extent count (the walk finishes for the count even once storage is
+    /// full), so the refusal log states exactly how fragmented the file is.
+    TooFragmented(u32),
 }
 
 /// The volume facts needed to turn a cluster id into an absolute LBA and to index the FAT —
@@ -194,6 +198,11 @@ impl ExtentTable {
         let clusters_needed = expected_len.div_ceil(bytes_per_cluster);
         let mut runs: heapless::Vec<Run, MAX_EXTENTS> = heapless::Vec::new();
         let mut file_block = 0u32;
+        // Run bookkeeping independent of storage, so an overflowing walk still finishes and
+        // reports the file's *true* extent count — the actionable number in the refusal (and
+        // #500's fragmentation measurement even when the table can't be kept).
+        let mut run_count = 0u32;
+        let mut next_lba = u32::MAX; // where the current run would continue; MAX = no run yet
         // The FAT sector under the walk cursor — one resident block, like the manager's own
         // cache, but nothing else contends for it mid-walk, so a contiguous chain reads each FAT
         // sector exactly once.
@@ -205,10 +214,21 @@ impl ExtentTable {
                 return Err(BuildError::Mismatch);
             }
             let lba = geo.data_start + (cluster - 2) * geo.spc;
-            match runs.last_mut() {
-                Some(r) if r.lba + r.blocks == lba => r.blocks += geo.spc,
-                _ => runs.push(Run { file_block, lba, blocks: geo.spc }).map_err(|_| BuildError::TooFragmented)?,
+            if lba == next_lba {
+                // Continues the current run — extend the stored twin only while storage still
+                // tracks the walk (past the cap the last stored run is an *earlier* run).
+                if run_count as usize == runs.len() {
+                    if let Some(r) = runs.last_mut() {
+                        r.blocks += geo.spc;
+                    }
+                }
+            } else {
+                run_count += 1;
+                // Past the cap the walk keeps going for the count alone; the stored runs are
+                // dead either way (the build returns `TooFragmented` below).
+                let _ = runs.push(Run { file_block, lba, blocks: geo.spc });
             }
+            next_lba = lba + geo.spc;
             file_block += geo.spc;
             if i + 1 < clusters_needed {
                 let (fat_lba, ent_off) = if geo.fat32 {
@@ -226,6 +246,9 @@ impl ExtentTable {
                     read_u16(&block.contents, ent_off) as u32
                 };
             }
+        }
+        if run_count as usize > MAX_EXTENTS {
+            return Err(BuildError::TooFragmented(run_count));
         }
         Ok(ExtentTable { runs, len: expected_len, bounce: RefCell::new(Block::new()) })
     }
@@ -519,12 +542,13 @@ mod tests {
     }
 
     #[test]
-    fn over_fragmented_build_is_refused() {
+    fn over_fragmented_build_is_refused_with_the_true_count() {
         let fs = setup(mkfs_fat32(), &["MAP.BIN", "OTHER.BIN"], MAX_EXTENTS + 3);
         let (eb, eo, len) = fs.entry_facts("MAP.BIN");
         assert_eq!(
             ExtentTable::build(fs.disk, eb, eo, len).err().expect("build should refuse"),
-            BuildError::TooFragmented
+            BuildError::TooFragmented((MAX_EXTENTS + 3) as u32),
+            "the refusal reports the file's true extent count, not just 'past the cap'"
         );
     }
 
