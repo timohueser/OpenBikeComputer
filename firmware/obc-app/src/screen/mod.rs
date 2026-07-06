@@ -44,6 +44,7 @@ mod route_received;
 mod route_swap;
 mod settings;
 mod statistics;
+mod warning;
 
 pub use climb::ClimbScreen;
 pub use home::HomeScreen;
@@ -66,6 +67,7 @@ pub use settings::{
     StatsScreen, UnitsScreen,
 };
 pub use statistics::StatisticsScreen;
+pub use warning::{WarningFlags, WarningScreen};
 
 /// Maximum overlay depth. Sized with headroom; the real flow never nests more than a few deep.
 pub const MAX_DEPTH: usize = 8;
@@ -361,6 +363,9 @@ screens! {
     /// The BLE pairing passkey card (epic #447, P2). **Host-pushed** by [`App::set_ble_status`]
     /// when the seam's passkey goes `Some`, popped when it clears. Opaque + non-dismissible.
     Passkey(PasskeyScreen) => Nav,
+    /// The advisory warning card (issue #504): missing sensors / a slow (fragmented) map.
+    /// **Host-pushed** by [`App::notify_warning`], coalesced, dismissed on any press.
+    Warning(WarningScreen) => Nav,
     Settings(SettingsScreen) => Settings,
     DateTime(DateTimeScreen) => Settings,
     Units(UnitsScreen) => Settings,

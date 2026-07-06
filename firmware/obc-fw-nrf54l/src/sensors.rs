@@ -174,6 +174,15 @@ pub async fn sensor_task(mut twim: Twim<'static>, mut txready: Input<'static>) {
     // bypass, so only its *presence* (a successful ICM probe + config) matters at read time.
     let compass_ok = icm_addr.is_some();
 
+    // Surface the probe result on glass (issue #504): any chip that didn't answer becomes a
+    // dismissable warning the ride loop raises. Published once — a missing module is a wiring/power
+    // fault, not a transient. (A missing GPS *module* is distinct from "no fix yet".)
+    sensor_link::dispatch_presence(sensor_link::SensorPresence {
+        gps: gps_ok,
+        altimeter: baro_addr.is_some(),
+        compass: compass_ok,
+    });
+
     let mut acc = [0u8; ACC_CAP];
     let mut acc_len = 0usize;
     let mut interval_s = DEFAULT_INTERVAL_S;

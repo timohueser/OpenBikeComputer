@@ -27,7 +27,7 @@ use embedded_graphics::pixelcolor::{raw::RawU16, Rgb565};
 use obc_app::{Gesture, InputClock, InputEvent, InputPlane, InputSource};
 // `Band` is the frame-absolute draw view both map backends' `present_overlay` drawers paint the
 // hold bulge into.
-use obc_platform::{Band, ButtonInput};
+use obc_platform::{Band, ButtonInput, FbDevice64};
 use obc_render::RenderStats;
 
 #[cfg(all(feature = "com-hw", not(feature = "tft")))]
@@ -360,6 +360,25 @@ pub(crate) struct FramePresent {
     pub(crate) stats: RenderStats,
     pub(crate) render_us: u64,
     pub(crate) push_us: u64,
+}
+
+/// Draw a full-screen [boot fault](obc_app::BootFault) to glass and return — the **undismissable**
+/// storage-failure screen (no card / no map file / unreadable map). `main` brings the display up
+/// first, then calls this at the fatal SD/map sites before dropping to the heartbeat idle, so the
+/// rider sees *what's wrong* instead of a silently dark panel. Reuses the map plane's
+/// [`render_present`](MapDisplay::render_present) so the fault frame lands through the same backend
+/// push (and the same self-diffing FLPR scan) as any other frame; one push holds, since the message
+/// never changes. Free-standing (not tied to an [`App`]) because at boot there may be no map to
+/// build one around. Backend-agnostic: the one concrete `MapDisplay` this build compiled.
+pub(crate) async fn show_boot_fault(display: &mut MapDisplay, fault: obc_app::BootFault) {
+    let color_fn = |c: u16| Rgb565::from(RawU16::new(c));
+    display
+        .render_present(None, |d| {
+            let mut fbdev = FbDevice64::new(d.fb_mut(), FRAME_W as u32, FRAME_H as u32);
+            obc_app::draw_boot_fault(&mut fbdev, FRAME_W as i32, FRAME_H as i32, color_fn, fault);
+            RenderStats::default()
+        })
+        .await;
 }
 
 /// ST7789 (`--features tft`): the map plane's handle is the `&'static` bus mutex it shares with the

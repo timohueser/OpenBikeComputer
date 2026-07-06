@@ -14,7 +14,7 @@ use crate::input::Gesture;
 use crate::input_plane::InputPlane;
 use crate::ride::RideSummary;
 use crate::route::{Catalog, RouteSummary};
-use crate::screen::{self, Ctx, HomeScreen, MapScreen, Render, Screen, Stack};
+use crate::screen::{self, Ctx, HomeScreen, MapScreen, Render, Screen, Stack, WarningFlags};
 use crate::settings::{DateTime, Settings};
 use crate::wall_clock::WallClock;
 
@@ -532,6 +532,15 @@ pub struct App {
     /// object id**, never a catalog index, so a rescan between arrival and a hold-deferred
     /// delivery can't retarget it.
     pending_upload: Option<UploadEvent>,
+    /// Device warnings **discovered but not yet shown** on the advisory card (issue #504) — a
+    /// missing-sensor probe result, or the map-slow flag. Accumulated by
+    /// [`notify_warning`](App::notify_warning) and delivered (or deferred behind a passkey card /
+    /// hold) by [`reconcile_warning`](App::reconcile_warning), like [`pending_upload`].
+    pending_warnings: WarningFlags,
+    /// Warnings **already shown** on a card this session, so each flag is surfaced once and a
+    /// dismissed notice doesn't nag — while a genuinely *new* flag (e.g. a late sensor timeout)
+    /// still re-opens the card. Never cleared (the boot's warnings are the boot's).
+    warned: WarningFlags,
 }
 
 /// One committed route upload, as [`notify_route_uploaded`](App::notify_route_uploaded) queues it
@@ -668,6 +677,8 @@ impl App {
             ble_passkey: None,
             store_changed_pending: 0,
             pending_upload: None,
+            pending_warnings: WarningFlags::NONE,
+            warned: WarningFlags::NONE,
         }
     }
 
@@ -741,6 +752,8 @@ impl App {
             addr_of_mut!((*slot).ble_passkey).write(None);
             addr_of_mut!((*slot).store_changed_pending).write(0);
             addr_of_mut!((*slot).pending_upload).write(None);
+            addr_of_mut!((*slot).pending_warnings).write(WarningFlags::NONE);
+            addr_of_mut!((*slot).warned).write(WarningFlags::NONE);
         }
     }
 
@@ -1627,6 +1640,58 @@ impl App {
         self.map_dirty = true;
     }
 
+    /// Raise one or more device [warnings](crate::screen::WarningScreen) (issue #504) — a missing
+    /// sensor the host's I²C probe never answered, or a map that loaded but reads slowly because
+    /// it's fragmented. Host-pushed, coalesced onto a single dismissable card; each distinct flag
+    /// is surfaced **once per boot** (a dismissed card doesn't nag, but a genuinely new flag
+    /// re-opens it). Call it whenever a fault is discovered — order and timing don't matter, the
+    /// flags accumulate. A no-op for [`WarningFlags::NONE`].
+    pub fn notify_warning(&mut self, flags: WarningFlags) {
+        if flags.is_empty() {
+            return;
+        }
+        self.pending_warnings |= flags;
+        self.reconcile_warning();
+    }
+
+    /// Deliver (or defer) the pending [warnings](App::notify_warning). Called on arrival and once
+    /// per [`advance_animations`](App::advance_animations) pass, so a warning deferred behind a
+    /// passkey card or a live hold lands on a later tick — the [`reconcile_upload_prompt`] pattern.
+    /// Only the not-yet-shown subset is surfaced (`pending & !warned`); it ORs into an open card or
+    /// pushes a fresh one.
+    fn reconcile_warning(&mut self) {
+        let fresh = self.pending_warnings & !self.warned;
+        if fresh.is_empty() {
+            self.pending_warnings = WarningFlags::NONE; // nothing new — drop any stale re-raise
+            return;
+        }
+        // Advisory: never cover the passkey card (it outranks) and never land mid-hold. Keep the
+        // flags pending and retry from `advance_animations` once the card clears / the hold resolves.
+        if self.passkey_card_up() || self.hold_charging() {
+            return;
+        }
+        self.warned |= fresh;
+        self.pending_warnings = WarningFlags::NONE;
+        match self.warning_index() {
+            Some(i) => {
+                if let Screen::Warning(s) = &mut self.stack[i] {
+                    s.add(fresh);
+                }
+            }
+            None => {
+                let r = self.stack.push(Screen::Warning(crate::screen::WarningScreen::new(fresh)));
+                debug_assert!(r.is_ok(), "screen stack overflow — raise MAX_DEPTH");
+            }
+        }
+        self.map_dirty = true;
+    }
+
+    /// The stack index of a live [warning card](crate::screen::WarningScreen), so a newly-discovered
+    /// fault ORs into it rather than stacking a second card. `None` when no card is open.
+    fn warning_index(&self) -> Option<usize> {
+        self.stack.iter().position(|s| matches!(s, Screen::Warning(_)))
+    }
+
     /// The stack index of the screen an incoming upload prompt **replaces**: any upload popup, or
     /// the manual Route-swap prompt (the locked "same rule when the manual swap is up"). `None`
     /// when the prompt should push fresh.
@@ -1963,6 +2028,8 @@ impl App {
         // armed the wake that gets a parked device to this line at the deadline.
         self.reconcile_upload_prompt();
         self.close_expired_upload_popups();
+        // Land any warning (issue #504) deferred behind a passkey card / a live hold on an earlier pass.
+        self.reconcile_warning();
     }
 
     /// The single "next wake deadline" the event-driven host arms one timer to: the soonest, in
@@ -2808,6 +2875,57 @@ mod tests {
     /// Upper bound of `Back` presses needed to unwind any settings case above (open field + the
     /// stacked screens), safely under test control rather than looping forever on a regression.
     const MAX_DEPTH_BACKOUT: usize = 8;
+
+    // --- device warning card (issue #504) ---
+
+    /// The `notify_warning` contract: a raised flag opens the card, further flags coalesce onto the
+    /// open one (never a second card), any press dismisses it, and each flag is shown **once** — an
+    /// already-shown flag stays quiet, but a genuinely new one re-opens the card with only itself.
+    #[test]
+    fn warning_card_opens_coalesces_and_shows_each_flag_once() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0)); // [Home]
+        assert!(matches!(app.top_screen(), Screen::Home(_)));
+
+        // An empty warning opens nothing.
+        app.notify_warning(WarningFlags::NONE);
+        assert!(matches!(app.top_screen(), Screen::Home(_)), "an empty warning is a no-op");
+
+        // The first flag opens the card.
+        app.notify_warning(WarningFlags::NO_GPS);
+        match app.top_screen() {
+            Screen::Warning(w) => assert!(w.flags().contains(WarningFlags::NO_GPS)),
+            _ => panic!("a raised warning opens the card"),
+        }
+
+        // A second flag while the card is up joins it — one card, both flags.
+        app.notify_warning(WarningFlags::MAP_SLOW);
+        assert_eq!(app.stack.len(), 2, "the new flag joins the open card, not a second one");
+        match app.top_screen() {
+            Screen::Warning(w) => {
+                assert!(w.flags().contains(WarningFlags::NO_GPS));
+                assert!(w.flags().contains(WarningFlags::MAP_SLOW));
+            }
+            _ => panic!("still the one card"),
+        }
+
+        // Any press dismisses it back to Home.
+        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.top_screen(), Screen::Home(_)), "dismiss pops the card");
+
+        // A flag already shown doesn't nag again.
+        app.notify_warning(WarningFlags::NO_GPS);
+        assert!(matches!(app.top_screen(), Screen::Home(_)), "an already-shown flag stays quiet");
+
+        // A brand-new flag re-opens the card — showing only the fresh flag, not the acknowledged ones.
+        app.notify_warning(WarningFlags::NO_COMPASS);
+        match app.top_screen() {
+            Screen::Warning(w) => {
+                assert!(w.flags().contains(WarningFlags::NO_COMPASS));
+                assert!(!w.flags().contains(WarningFlags::NO_GPS), "the re-opened card carries only the new flag");
+            }
+            _ => panic!("a new flag re-opens the card"),
+        }
+    }
 
     /// `set_settings` seeds the boot value without arming a save (the value came from the store /
     /// the default — re-persisting it would be a pointless write).
