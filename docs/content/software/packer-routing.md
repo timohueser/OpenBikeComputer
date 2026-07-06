@@ -5,7 +5,7 @@ description: How OpenStreetMap data becomes a device-ready OBCM map (the obc-pac
 
 # Packer & routing
 
-Two jobs bracket the device's own work. **Packing** turns raw OpenStreetMap data into a styled `.obcm` map — a heavy job, run once on a computer. **Routing** is the lighter on-device pair: turning a GPX you upload into a navigable `.obcr`, and **map-matching** your live position onto it as you ride. The device never computes a route for you — you bring your own line — so "routing" here means *following*, not pathfinding.
+Two jobs bracket the device's own work. **Packing** turns raw OpenStreetMap data into a styled `.obcm` map — a heavy job, run once on a computer, and (as of v8) it also bakes a [routable navigation graph](#building-the-navigation-graph) into the map. **Routing** is the lighter on-device work: turning a GPX you upload into a navigable `.obcr`, **map-matching** your live position onto it as you ride, and — new this iteration — **computing** a route to a POI on the device itself over that baked graph. So "routing" here is mostly *following* a line you brought, with a memory-bounded bit of *pathfinding* when you ask the device to reach a POI on its own.
 
 The packer ([`obc-pack`](src:firmware/obc-pack)) lives in the same Rust workspace as the device firmware and depends on the same [`obc-reader`](src:firmware/obc-reader), so the program that *writes* the format and the program that *reads* it can never disagree about a byte.
 
@@ -330,6 +330,81 @@ The parser is a deliberate **subset**, not a full `opening_hours` engine — the
 
 The subset grammar, the flag semantics, and the quarter-hour encoding live in [`obc-pack/src/hours.rs`](src:firmware/obc-pack/src/hours.rs); the pooled bytes are described in [`OBCM_Spec.md` §7.5](src:OBCM_Spec.md). The device end — turning a pooled blob into *today's hours* and an *open-now* badge — is the [POI detail view](../ui/#the-poi-detail-view).
 
+### Building the navigation graph
+
+The map so far is geometry the device *draws*. To let the device *route* — compute its own way to a POI — the packer builds one more thing the raw data doesn't contain: a **navigation graph**. Highways in OSM are ways, and the geometry pipeline turns them into styled polylines the moment it resolves their coordinates — dropping the node ids as it goes. But those node ids are the topology: two roads that *share* an OSM node meet there. This stage keeps the node ids for routable ways and recovers the graph from the shared ones. It's serialized into the map's [navigation-graph section](../formats/#the-navigation-graph-a-routable-network), and it's **always built** — a config-free, always-present section like the POIs, so packing the same extract always yields the same graph (there's no toggle to forget).
+
+<figure class="fig">
+<svg viewBox="0 0 720 300" role="img" aria-label="Building the navigation graph in three steps. First, a class-and-access filter keeps most highway ways but excludes motorway and trunk and their links, and hard-excludes anything tagged access equals no or private. Second, junction detection: a node touched by two or more routable ways, or sitting at a way's endpoint, becomes a junction; interior shape points do not. Third, each way is split at its junctions into edges, duplicate and reversed parallel ways are deduplicated by an unordered endpoint pair plus geometry key, and each edge's great-circle length becomes its cost. The result is junction nodes joined by edges.">
+  <defs>
+    <marker id="aNG" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24">Filter routable ways → find junctions → split + dedup into edges</text>
+
+  <!-- 1 class/access filter -->
+  <rect class="d-panel" x="24" y="52" width="200" height="120" rx="10" />
+  <text class="d-tag" x="40" y="72">① routable? highway + access</text>
+  <g font-family="var(--mono)">
+    <text class="d-sub" x="40" y="94"  style="font-size:9.5px;fill:#2c5230">residential · track · path ✓</text>
+    <text class="d-sub" x="40" y="110" style="font-size:9.5px;fill:#2c5230">cycleway · footway · service ✓</text>
+    <text class="d-sub" x="40" y="128" style="font-size:9.5px;fill:#a9501c">motorway · trunk (+ _link) ✗</text>
+    <text class="d-sub" x="40" y="144" style="font-size:9.5px;fill:#a9501c">access = no | private ✗</text>
+  </g>
+  <text class="d-sub" x="40" y="164" style="font-size:8.5px">independent of render styling</text>
+
+  <!-- 2 junction detection -->
+  <line class="d-flow" x1="228" y1="112" x2="264" y2="112" marker-end="url(#aNG)" />
+  <text class="d-sub" x="270" y="52" style="font-size:9px;fill:#6b7758">② a shared node = a junction</text>
+  <!-- two ways crossing at a node -->
+  <line x1="288" y1="140" x2="392" y2="96" stroke="#9aa884" stroke-width="2.4" />
+  <line x1="300" y1="86"  x2="380" y2="150" stroke="#9aa884" stroke-width="2.4" />
+  <!-- interior shape points (open) -->
+  <circle cx="322" cy="128" r="2.6" fill="#ece8cf" stroke="#9aa884" stroke-width="1"/>
+  <circle cx="360" cy="112" r="2.6" fill="#ece8cf" stroke="#9aa884" stroke-width="1"/>
+  <!-- the shared junction -->
+  <circle cx="340" cy="119" r="5" class="d-hot-fill" />
+  <text class="d-sub" x="340" y="172" text-anchor="middle" style="font-size:8.5px;fill:#a9501c">touched ≥2× → junction</text>
+  <text class="d-sub" x="270" y="192" style="font-size:8.5px">endpoints are always junctions;</text>
+  <text class="d-sub" x="270" y="204" style="font-size:8.5px">interior shape points never are</text>
+
+  <!-- 3 split + dedup -->
+  <line class="d-flow" x1="404" y1="112" x2="440" y2="112" marker-end="url(#aNG)" />
+  <rect class="d-hot" x="448" y="52" width="248" height="120" rx="10" style="fill:#f8efe4" />
+  <text class="d-tag" x="464" y="72" style="fill:#a9501c">③ split into edges + dedup</text>
+  <text class="d-sub" x="464" y="94"  style="font-size:9.5px">cut each way at every junction</text>
+  <text class="d-sub" x="464" y="110" style="font-size:9.5px">→ edge interiors are junction-free</text>
+  <text class="d-sub" x="464" y="130" style="font-size:9.5px">dedup key: unordered (a,b) + geometry</text>
+  <text class="d-sub" x="464" y="146" style="font-size:9px;fill:#a9501c">a way + its reverse = one edge</text>
+  <text class="d-sub" x="464" y="162" style="font-size:9px">cost = great-circle length, metres</text>
+
+  <!-- result graph -->
+  <line class="d-flow" x1="360" y1="216" x2="360" y2="242" marker-end="url(#aNG)" />
+  <rect class="d-panel-2" x="180" y="246" width="360" height="46" rx="10" />
+  <text class="d-sub" x="360" y="266" text-anchor="middle" style="font-size:10px">junction <b>nodes</b> (dense pack-run ids) joined by undirected <b>edges</b></text>
+  <text class="d-sub" x="360" y="282" text-anchor="middle" style="font-size:9px">→ serialized as the map's §8 navigation graph</text>
+</svg>
+<figcaption>The <b>routable predicate</b> reads only a way's <code>highway</code> and <code>access</code> tags — never the style config, so a road can be drawn but not routable, or the reverse. Most classes are in; <b>motorway and trunk</b> (and their <code>_link</code> ramps) are out — a bike router must never route onto a motorway — and <code>access=no</code>/<code>private</code> is a hard exclude on any class. <b>Junction detection</b> is pure counting: a node touched by two-or-more routable ways is a junction, as is any way's first or last node; a shape point touched once stays inside an edge. Each way is then <b>split</b> at its junctions into edges whose interiors carry no junction, and duplicate or reversed-parallel ways <b>collapse</b> — the dedup key is the unordered endpoint pair <i>plus</i> the geometry, so two genuinely different roads between the same pair both survive. Each edge's <b>cost</b> is its great-circle length in metres, summed with the very same helper the route format uses, so on-device costs can't drift from measured distance.</figcaption>
+</figure>
+
+```rust
+pub fn is_routable<'a, I: IntoIterator<Item = (&'a str, &'a str)>>(tags: I) -> bool {
+    let (mut highway, mut access) = (None, None);
+    for (k, v) in tags {
+        match k { "highway" => highway = Some(v), "access" => access = Some(v), _ => {} }
+    }
+    if matches!(access, Some("no") | Some("private")) { return false; } // hard exclude
+    highway.is_some_and(|h| ROUTABLE_HIGHWAY.contains(&h))              // + not motorway/trunk
+}
+```
+
+A real pack run logs the graph next to the POI counts, so a glance at the build output confirms it's there and plausibly sized:
+
+```
+nav graph: 12874 nodes, 15903 edges, 8421.6 km
+```
+
+The in-memory build — the routable-class set, junction detection, edge split and dedup, and great-circle lengths — lives in [`obc-pack/src/nav.rs`](src:firmware/obc-pack/src/nav.rs); turning that graph into the tiled, chunked [§8 section](../formats/#the-navigation-graph-a-routable-network) (the node quadtree, the inline-adjacency records, the byte-addressed edge pool, and the densify + long-edge split that keep every record inside one chunk) is the serializer's job, described in [`OBCM_Spec.md` §8](src:OBCM_Spec.md). What the device *does* with it — snap, weighted A\*, emit — is [the router seam](../architecture/#on-device-routing-the-router-seam).
+
 ### Building the LOD pyramid
 
 Now the heart of it. The file is a [pyramid of detail levels](../formats/#the-file-front-to-back), and the packer builds each one independently. Two knobs from the config drive it: every feature's **`min_lod`** (the coarsest tier it's allowed into) and each tier's **simplify tolerance**. So the country tier holds a handful of feature types, heavily simplified; the street tier holds everything, at full detail. The presets pick each tolerance pixel-accurately: one pixel at the finest scale the tier is drawn at, which is the next finer tier's `max_mpp` ceiling.
@@ -585,6 +660,8 @@ let (back, fwd) = if !self.started {
 - The quadtree build: [`obc-pack/src/quadtree.rs`](src:firmware/obc-pack/src/quadtree.rs)
 - Land generation: [`obc-pack/src/land.rs`](src:firmware/obc-pack/src/land.rs)
 - POI extraction, classification, name folding + dedup: [`obc-pack/src/poi.rs`](src:firmware/obc-pack/src/poi.rs)
+- The navigation-graph build (routable filter, junction detection, edge split + dedup): [`obc-pack/src/nav.rs`](src:firmware/obc-pack/src/nav.rs)
+- The on-device router (snap + weighted A\* + OBCR emit): [`obc-route/src/nav.rs`](src:firmware/obc-route/src/nav.rs)
 - The route map-matcher: [`obc-route/src/matcher.rs`](src:firmware/obc-route/src/matcher.rs)
 - GPX → OBCR conversion: [`obc-route/src/convert.rs`](src:firmware/obc-route/src/convert.rs)
 
