@@ -769,7 +769,7 @@ A route you draw doesn't need every GPS sample — a thinned polyline looks iden
 
 > **Convert where it lands.** There is no offline route step. The GPX→OBCR converter is one portable `no_std` routine: the device runs it on a USB upload, the simulator runs it on import, and both produce the same bytes. It streams the GPX in a single pass — O(1) RAM regardless of route length — emitting each finished chunk while keeping only a bounded index in memory. (BLE uploads arrive **already converted**: the companion app encodes imported GPX/TCX to OBCR on the phone, per the [BLE interface spec](src:obc-ble-interface-spec.md), so the device just writes the bytes to storage.)
 
-One thing the file *doesn't* store is the elevation **profile** the Statistics screen draws. That's rebuilt once when a route loads — a multi-resolution min/max pyramid over distance, the same coarse-to-fine idea as the map's LODs, so the profile can be zoomed and panned without ever re-reading geometry. It's a runtime structure rather than a format concern; the [UI page](../ui/) covers how it's drawn.
+One thing the file *doesn't* store is the elevation **profile** the Statistics screen draws. That's rebuilt once when a route loads — a multi-resolution min/max pyramid over distance, the same coarse-to-fine idea as the map's LODs, so the profile can be zoomed and panned without ever re-reading geometry. It's a runtime structure rather than a format concern; the [UI page](../ui/) covers how it's drawn. The route's **climbs** are the same kind of runtime derivation — segmented from that profile when the route loads, never stored in the file or sent over the link (the [Climb panel](../ui/) draws them).
 
 ## Streaming: resident vs on-demand
 

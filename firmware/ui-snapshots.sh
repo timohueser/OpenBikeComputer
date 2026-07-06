@@ -115,6 +115,16 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p"     --png "$OUT/routeoverview.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p"   --gpx "$GPX" --at 30 --png "$OUT/map.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p b" --gpx "$GPX" --at 30 --png "$OUT/statistics.png"
+# Climb screen (epic #506, C4). The default protocol-vectors routes don't match the Grimsel replay
+# (they're tiny test routes), so ride the committed grimsel-climb.obcr — the route the GPX follows,
+# giving the detector its three back-to-back climbs. `--at 1500` replays ~25 min in (progress ~5 km,
+# ~40 % up climb 0), so the cursor sits mid-profile with grade stripes on both sides. `--open-climb`
+# then swaps the base riding view for the Climb screen; it isn't reachable by gesture until C5 wires
+# the Back-cycle, so this debug seam opens it. Staged in a temp routes dir (the fixture lives in the
+# sim crate's assets, not protocol-vectors).
+CLIMBROUTES="$(mktemp -d)"; trap 'rm -rf "$TRACKS" "$NAVDIR" "$CLIMBROUTES"' EXIT
+cp "$repo_root/firmware/obc-sim/assets/grimsel-climb.obcr" "$CLIMBROUTES/"
+"$SIM" "$MAP" --boot --routes-dir "$CLIMBROUTES" --script "p p p" --gpx "$GPX" --at 1500 --open-climb --png "$OUT/climb.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p" --gpx "$GPX" --at 30 --png "$OUT/ridecontrol.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p B p r p" --png "$OUT/routeswap.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p h" --png "$OUT/map-pan.png"
@@ -144,4 +154,4 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 "$SIM" "$MAP" --boot --inject-warning gps --png "$OUT/warning-gps.png"
 "$SIM" "$MAP" --boot --inject-warning gps,altimeter,compass,map --png "$OUT/warning-all.png"
 
-echo "ui-snapshots: 43 screens rendered into $OUT/"
+echo "ui-snapshots: 44 screens rendered into $OUT/"
