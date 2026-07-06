@@ -185,6 +185,26 @@ impl ClimbProfile {
         p
     }
 
+    /// Build a profile whose columns rise **linearly** from `seg.base_ele_m` to `seg.top_ele_m` —
+    /// no geometry, no [`RouteReader`]. This is the synthetic constant-grade climb a UI test wants:
+    /// [`at`](Self::at) reads `base + gain·frac` and [`grade_at`](Self::grade_at) a steady average,
+    /// so a downstream screen's tile maths can be checked against a hand-computed expectation
+    /// without staging an `.obcr` fixture. The [`fill`](Self::fill) sweep is exercised by
+    /// `obc-route`'s own reader-backed placement tests; this is only the ideal ramp those approximate.
+    pub fn from_linear_ramp(seg: &ClimbSeg) -> Self {
+        let mut p = Self::new();
+        p.start_m = seg.start_m;
+        p.len_m = seg.len_m().max(1);
+        p.base_ele_m = seg.base_ele_m;
+        p.top_ele_m = seg.top_ele_m;
+        let last = COLS - 1;
+        let (base, gain) = (seg.base_ele_m as f32, (seg.top_ele_m - seg.base_ele_m) as f32);
+        for (i, c) in p.cols.iter_mut().enumerate() {
+            *c = (base + gain * (i as f32 / last as f32)) as i16;
+        }
+        p
+    }
+
     /// Elevation (m) at within-climb fraction `frac` (`0.0` = base, `1.0` = summit). The column
     /// read the screen uses to draw the profile line and place the cursor's readout. `frac` is
     /// clamped into `[0, 1]`, so an out-of-range cursor reads the nearest endpoint.
