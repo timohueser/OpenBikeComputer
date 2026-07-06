@@ -136,6 +136,11 @@ struct Args {
     /// buttons; the catalog is already scanned, so this is exactly the device's rescan-then-event
     /// order.
     inject_upload: Option<(u16, bool)>,
+    /// Headless `--png` only: after the track replay, open the [`Climb`](obc_app::screen) screen
+    /// directly (epic #506, C4) via `App::debug_open_climb`, so the striped-profile snapshot renders
+    /// before C5 wires the screen into the Back-cycle. A no-op unless the replay left a climb active
+    /// (so pair it with a `--gpx`/`--at` that reaches one).
+    open_climb: bool,
 }
 
 impl Default for Args {
@@ -175,6 +180,7 @@ impl Default for Args {
             nav_hold: false,
             inject_nav_fail: None,
             inject_upload: None,
+            open_climb: false,
         }
     }
 }
@@ -273,6 +279,7 @@ fn parse_args() -> Result<Args, String> {
             }
             "--ble-connected" => a.ble_connected = true,
             "--nav-hold" => a.nav_hold = true,
+            "--open-climb" => a.open_climb = true,
             "--inject-nav-fail" => {
                 let kind = it.next().ok_or("--inject-nav-fail needs exhausted|nopath")?;
                 if kind != "exhausted" && kind != "nopath" {
@@ -869,6 +876,13 @@ fn main() {
                 replay_step(&mut app, p, &mut baro, None, step, route.as_ref(), tracks.sink());
                 t += step;
             }
+        }
+
+        // `--open-climb` (epic #506, C4): swap the base riding view for the Climb screen now the
+        // replay has driven the matcher onto a climb, so the snapshot captures the striped profile.
+        // C5 makes it reachable by gesture; until then this debug seam is the only way in.
+        if args.open_climb {
+            app.debug_open_climb();
         }
 
         // `--save-track`: finalise the active ride to a `.gpx` (verifies the save loop).
