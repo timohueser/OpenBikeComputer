@@ -338,16 +338,22 @@ const STACK_RESERVE: usize = 36 * 1024;
 const FB_BYTES: usize = FRAME_W * FRAME_H;
 
 /// The map plane's residents (the table above). Includes the active route's `RouteIndex`, kept
-/// resident across frames, and — since epic #116 R4 — the on-device router's fixed A* scratch +
-/// graph-tile cache (~14.3 KB, the `NAV_*` statics below). Present in every build now (#270 —
-/// map + BLE coexist).
+/// resident across frames. Present in every build now (#270 — map + BLE coexist).
 const MAP_RESIDENT: usize = core::mem::size_of::<obc_app::App>()
     + core::mem::size_of::<obc_reader::MapCache>()
     + core::mem::size_of::<obc_reader::MapTables>()
     + core::mem::size_of::<obc_route::RouteCache>()
     + core::mem::size_of::<obc_route::RouteIndex>()
-    + core::mem::size_of::<obc_route::NavScratch>()
-    + core::mem::size_of::<obc_reader::NavTileCache>();
+    + NAV_RESIDENT;
+/// The on-device router's residents (epic #116, R4): the fixed A* scratch + graph-tile cache
+/// (~14.3 KB, the `NAV_*` statics below). Zero on the `ble` build — `has_nav` gates the router
+/// out of the combined image because these two statics push its stack region ~1.9 KB below the
+/// measured deep-render peak on the 256 KB DK (see build.rs); the LM20 deletes the gate.
+#[cfg(has_nav)]
+const NAV_RESIDENT: usize =
+    core::mem::size_of::<obc_route::NavScratch>() + core::mem::size_of::<obc_reader::NavTileCache>();
+#[cfg(not(has_nav))]
+const NAV_RESIDENT: usize = 0;
 /// The BLE stack's residents (`ble::RESIDENT_BYTES`: the MPSL handle + SDC memory block + TrouBLE's
 /// host arena + its global packet pool + the CRACEN RNG); zero without the feature. Keeping both terms
 /// in one sum is what makes "`ble` + map don't fit on 256 KB" a *compile-time* fact: when the LM20
@@ -413,12 +419,13 @@ static mut ROUTE_CACHE: MaybeUninit<RouteCache> = MaybeUninit::uninit();
 /// heap, in `.bss` (`NavScratch::new()` is `const` and all-zero → a memset), **never** a local —
 /// `plan_route` is sync and runs at the ride loop's shallow per-pass depth, but a ~10 kB frame
 /// there would still eat a third of the deep-render path's headroom (#270/#419). Reset per plan.
-#[cfg(has_map)]
+/// `has_nav`-gated: the `ble` build ships without the router (see build.rs; the LM20 ungates it).
+#[cfg(has_nav)]
 static mut NAV_SCRATCH: MaybeUninit<obc_route::NavScratch> = MaybeUninit::uninit();
 /// The router's graph-tile cache (~4 kB, 2 whole nav chunks): the per-settle spatial re-fetch
 /// reads through it, so its `misses` count **is** the plan's SD-read count (the number the
-/// `nav route:` RTT line logs). Same `.bss` placement story as [`NAV_SCRATCH`].
-#[cfg(has_map)]
+/// `nav route:` RTT line logs). Same `.bss` placement + `has_nav` gate as [`NAV_SCRATCH`].
+#[cfg(has_nav)]
 static mut NAV_TILES: MaybeUninit<obc_reader::NavTileCache> = MaybeUninit::uninit();
 
 /// Build a `'static` value into a `.bss` [`MaybeUninit`] slot, returning the sole `&'static mut` to it
@@ -568,6 +575,8 @@ mod stackmeter {
     /// throttle — for a caller that just finished a stack-notable operation (the nav router's
     /// per-plan RTT line) and wants the peak *including it* now, not up to a second late.
     /// Sentinel evidence is permanent, so this is still just one bottom-up scan (~40–90 µs).
+    /// Its one caller is the router's RTT line, so it's gated with it (`has_nav`).
+    #[cfg(has_nav)]
     pub fn rescan(now: u32) -> usize {
         LAST_USED.store(0, Ordering::Relaxed); // 0 = "never scanned" → `used` always rescans
         used(now)
@@ -1031,15 +1040,19 @@ async fn main(_spawner: Spawner) {
         let route_cache: &RouteCache = unsafe { init_static(core::ptr::addr_of_mut!(ROUTE_CACHE), RouteCache::new()) };
 
         // The router's A* table + graph-tile cache (epic #116, R4), placed in `.bss` and built in
-        // place (both `new()`s are const all-zero → memsets). Threaded into the ride loop, which
-        // hands them to `plan_nav` per drained create-route request — never stack locals.
+        // place (both `new()`s are const all-zero → memsets). Threaded into the ride loop as one
+        // `NavBuffers` bundle, which `plan_nav` uses per drained create-route request — never
+        // stack locals. On the `ble` build (`not(has_nav)`, see build.rs) the bundle is the unit
+        // stand-in — no statics exist and the ride loop answers requests with the generic
+        // failure tier.
         // SAFETY: sole owners of NAV_SCRATCH / NAV_TILES; single map plane → no aliasing.
-        #[cfg(has_map)]
-        let nav_scratch: &'static mut obc_route::NavScratch =
-            unsafe { init_static(core::ptr::addr_of_mut!(NAV_SCRATCH), obc_route::NavScratch::new()) };
-        #[cfg(has_map)]
-        let nav_tiles: &'static mut obc_reader::NavTileCache =
-            unsafe { init_static(core::ptr::addr_of_mut!(NAV_TILES), obc_reader::NavTileCache::new()) };
+        #[cfg(has_nav)]
+        let nav = ride::NavBuffers {
+            scratch: unsafe { init_static(core::ptr::addr_of_mut!(NAV_SCRATCH), obc_route::NavScratch::new()) },
+            tiles: unsafe { init_static(core::ptr::addr_of_mut!(NAV_TILES), obc_reader::NavTileCache::new()) },
+        };
+        #[cfg(all(has_map, not(has_nav)))]
+        let nav = ride::NavBuffers;
 
         // The persistent settings store: takes the `RRAMC` peripheral, reads/writes the blob in the
         // carved RRAM page. Built here (where `p` is live) and moved into the ride loop, which seeds the
@@ -1144,18 +1157,8 @@ async fn main(_spawner: Spawner) {
         // only on the `synth` build (the host feed + the real GPS stream absolute positions, so they need
         // no synthetic-loop centre).
         #[cfg(all(has_map, any(feature = "debug-uart", not(feature = "synth"))))]
-        let app_fut = ride::run_app(
-            display,
-            app,
-            shared_store,
-            map_tables,
-            map_cache,
-            route_cache,
-            nav_scratch,
-            nav_tiles,
-            &mut led,
-            wdt_handle,
-        );
+        let app_fut =
+            ride::run_app(display, app, shared_store, map_tables, map_cache, route_cache, nav, &mut led, wdt_handle);
         #[cfg(all(has_map, not(feature = "debug-uart"), feature = "synth"))]
         let app_fut = ride::run_app(
             display,
@@ -1164,8 +1167,7 @@ async fn main(_spawner: Spawner) {
             map_tables,
             map_cache,
             route_cache,
-            nav_scratch,
-            nav_tiles,
+            nav,
             &mut led,
             wdt_handle,
             (cam_lon, cam_lat),
