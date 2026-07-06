@@ -186,7 +186,7 @@ impl ExtentTable {
         if read_u32(entry, 28) != expected_len {
             return Err(BuildError::Mismatch);
         }
-        let hi = if geo.fat32 { read_u16(entry, 20) as u32} else { 0 };
+        let hi = if geo.fat32 { read_u16(entry, 20) as u32 } else { 0 };
         let first_cluster = (hi << 16) | read_u16(entry, 26) as u32;
 
         // ── One walk of the chain, compressed into runs ──
@@ -207,9 +207,7 @@ impl ExtentTable {
             let lba = geo.data_start + (cluster - 2) * geo.spc;
             match runs.last_mut() {
                 Some(r) if r.lba + r.blocks == lba => r.blocks += geo.spc,
-                _ => runs
-                    .push(Run { file_block, lba, blocks: geo.spc })
-                    .map_err(|_| BuildError::TooFragmented)?,
+                _ => runs.push(Run { file_block, lba, blocks: geo.spc }).map_err(|_| BuildError::TooFragmented)?,
             }
             file_block += geo.spc;
             if i + 1 < clusters_needed {
@@ -361,7 +359,14 @@ mod tests {
     struct Epoch;
     impl TimeSource for Epoch {
         fn get_timestamp(&self) -> Timestamp {
-            Timestamp { year_since_1970: 0, zero_indexed_month: 0, zero_indexed_day: 0, hours: 0, minutes: 0, seconds: 0 }
+            Timestamp {
+                year_since_1970: 0,
+                zero_indexed_month: 0,
+                zero_indexed_day: 0,
+                hours: 0,
+                minutes: 0,
+                seconds: 0,
+            }
         }
     }
 
@@ -467,10 +472,8 @@ mod tests {
         let vmgr: TestMgr = VolumeManager::new_with_limits(SharedBlockDevice(disk), Epoch, 5000);
         let volume = vmgr.open_raw_volume(VolumeIdx(0)).unwrap();
         let root = vmgr.open_root_dir(volume).unwrap();
-        let files: Vec<_> = names
-            .iter()
-            .map(|n| vmgr.open_file_in_dir(root, *n, Mode::ReadWriteCreate).unwrap())
-            .collect();
+        let files: Vec<_> =
+            names.iter().map(|n| vmgr.open_file_in_dir(root, *n, Mode::ReadWriteCreate).unwrap()).collect();
         for round in 0..appends {
             for (tag, f) in files.iter().enumerate() {
                 vmgr.write(*f, &pattern(tag as u8, round * 512, 512)).unwrap();
@@ -519,14 +522,20 @@ mod tests {
     fn over_fragmented_build_is_refused() {
         let fs = setup(mkfs_fat32(), &["MAP.BIN", "OTHER.BIN"], MAX_EXTENTS + 3);
         let (eb, eo, len) = fs.entry_facts("MAP.BIN");
-        assert_eq!(ExtentTable::build(fs.disk, eb, eo, len).err().expect("build should refuse"), BuildError::TooFragmented);
+        assert_eq!(
+            ExtentTable::build(fs.disk, eb, eo, len).err().expect("build should refuse"),
+            BuildError::TooFragmented
+        );
     }
 
     #[test]
     fn wrong_length_is_refused_and_eof_is_bad_offset() {
         let fs = setup(mkfs_fat32(), &["MAP.BIN"], 4);
         let (eb, eo, len) = fs.entry_facts("MAP.BIN");
-        assert_eq!(ExtentTable::build(fs.disk, eb, eo, len + 1).err().expect("build should refuse"), BuildError::Mismatch);
+        assert_eq!(
+            ExtentTable::build(fs.disk, eb, eo, len + 1).err().expect("build should refuse"),
+            BuildError::Mismatch
+        );
 
         let table = ExtentTable::build(fs.disk, eb, eo, len).unwrap();
         let src = ExtentSource::new(fs.disk, &table);
@@ -547,16 +556,8 @@ mod tests {
 
         let src = ExtentSource::new(fs.disk, &table);
         let file = fs.vmgr.open_file_in_dir(fs.root, "MAP.BIN", Mode::ReadOnly).unwrap();
-        let windows: &[(u32, usize)] = &[
-            (0, 512),
-            (0, len as usize),
-            (1, 511),
-            (7, 1300),
-            (509, 8),
-            (512, 512),
-            (len - 700, 700),
-            (len - 1, 1),
-        ];
+        let windows: &[(u32, usize)] =
+            &[(0, 512), (0, len as usize), (1, 511), (7, 1300), (509, 8), (512, 512), (len - 700, 700), (len - 1, 1)];
         for &(off, n) in windows {
             let mut got = vec![0u8; n];
             src.read_at(off, &mut got).unwrap();
