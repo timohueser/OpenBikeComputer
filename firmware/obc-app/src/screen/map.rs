@@ -195,20 +195,20 @@ impl MapScreen {
             draw_clock(cv, rx.w, rx.now);
         }
 
-        // Top-centre one-slot status chip, shown only when there's something to say — right at the
-        // top edge, or just below the clock digits while those are shown. "No GPS Fix" takes
+        // Top-centre one-slot status chip, shown only when there's something to say — in the fixed
+        // slot below the clock digits (clock hidden or not, so it clears the low-battery glyph at
+        // the top-left even at full "off route 153km" width). "No GPS Fix" takes
         // priority over off-route: with no fix the match is stale, so cross-track distance is
         // meaningless. Suppressed while panning — the pan HUD's top chevron owns the top edge
         // (they'd collide), and panning is deliberate map inspection anyway; the chip returns the
         // moment pan exits.
         if !panning {
-            let below_clock = rx.settings.map_clock;
             if rx.no_fix {
-                draw_status_chip(cv, rx.w, below_clock, "No GPS Fix");
+                draw_status_chip(cv, rx.w, "No GPS Fix");
             } else if rx.activity.off_route {
                 let mut s: heapless::String<20> = heapless::String::new();
                 super::write_off_route(&mut s, "off route ", rx.activity.dist_to_route_m, rx.settings.units);
-                draw_status_chip(cv, rx.w, below_clock, &s);
+                draw_status_chip(cv, rx.w, &s);
             }
         }
 
@@ -243,24 +243,22 @@ fn handle_pan(g: Gesture, cx: &mut Ctx) -> Transition {
 }
 
 /// A compact **top-centre** status chip ("No GPS Fix", "off route NNNm") — the one warning slot on
-/// the map. It sits right at the top edge, or just below the clock digits when `below_clock` (the
-/// clock setting is on — the two are visible together, warning under time). The caller owns the
-/// priority rule of what to say; the chip vanishes the moment there's nothing to report.
-/// Warning-orange, so it reads as an alert (the quieter clock uses bare ink).
-fn draw_status_chip(cv: &mut impl Surface, w: i32, below_clock: bool, s: &str) {
+/// the map. It always sits in the slot just below the clock digits — one fixed home whether or not
+/// the clock is drawn, so a wide chip never overlaps the top-left low-battery glyph the way it
+/// would flush at the edge. The caller owns the priority rule of what to say; the chip vanishes the
+/// moment there's nothing to report. Warning-orange, so it reads as an alert (the quieter clock
+/// uses bare ink).
+fn draw_status_chip(cv: &mut impl Surface, w: i32, s: &str) {
     use super::palette::*;
     let font = Font::Body;
     let tw = text_width(s, font) as i32;
     let (pw, ph) = (tw + 28, 36);
     let px = (w - pw) / 2;
-    let py = if below_clock { CLOCK_TOP + Font::Label.line_height() as i32 + 8 } else { CHIP_MARGIN };
+    let py = CLOCK_TOP + Font::Label.line_height() as i32 + 8;
     cv.round(rect(px, py, pw, ph), 9, PARCHMENT);
     cv.round_outline(rect(px, py, pw, ph), 9, WARNING);
     cv.text(s, Point::new(w / 2, py + 5), font, TextAlign::Center, WARNING);
 }
-
-/// Inset (px) of the top-centre status chip from the top edge when the clock is hidden.
-const CHIP_MARGIN: i32 = 10;
 
 // ---- Clock (top-centre) ---------------------------------------------------
 
