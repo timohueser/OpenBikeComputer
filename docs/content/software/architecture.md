@@ -255,6 +255,78 @@ On the device the loop goes one step further: it doesn't just skip the *drawing*
 <figcaption>The device loop is <b>event-driven</b>: it <code>select</code>s over three wake sources — <b>input</b> (a recognised gesture, or a hold starting to charge), a fresh <b>sensor sample</b>, and the soonest <b>animation deadline</b> the app reports — and the processor sleeps (WFI) until one fires. It then runs exactly one iteration and arms the next wake. When nothing on screen is animating and the GPS is asleep the only timer left is the long guard tick that feeds the hardware watchdog, so a parked Home screen wakes a handful of times a minute (the watchdog feed plus the clock minute-tick) instead of 125 times a second. The input plane sleeps the same way, on a button edge; only the panel's COM wave never stops — and on the production board that's a hardware timer, not the CPU.</figcaption>
 </figure>
 
+## On-device routing: the router seam
+
+The device can compute its own route to a POI — no phone, no pre-planned GPX. That capability arrives as a **fifth seam** in the same shape as the others: the shared core *asks*, the host *does*, and the answer flows back through one narrow call. The core never learns whether the route came off the SD card, over Bluetooth, or out of the on-device router — by the time it navigates, all three are the same OBCR bytes.
+
+The trick that keeps it simple is that the router's output is **a route file like any other**. It writes a normal OBCR to a *reserved* path — `/routes/_nav.obcr` (the 8.3 face `_NAV.OBR` on the card), overwritten in place on every plan — which the existing catalog scan picks up and the existing stream path loads. From the [per-frame loop's](#the-per-frame-loop) point of view, a computed route and an uploaded GPX are indistinguishable: same matcher, same elevation profile, same "distance to go."
+
+<figure class="fig">
+<svg viewBox="0 0 720 320" role="img" aria-label="The router seam as a request-and-answer loop. From a POI detail screen, a press opens a Create a route confirm. Accepting records a one-shot NavRequest — the rider's fix as the start, the POI coordinate as the goal. The host drains that request, runs obc-route's plan_route against the resident map on the SD card, and streams the emitted OBCR into the reserved nav file. It then rescans the route catalog and answers back through notify_nav_result with the new route's durable id — the same rescan-then-resolve contract BLE uploads use. On success the confirm is replaced by a length-only overview and the route activates, re-entering the normal load and navigation pipeline. On failure a two-tier card shows either too far to route here, beyond the ten kilometre cap, or couldn't find a route for everything else.">
+  <defs>
+    <marker id="aR1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+    <marker id="aR2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24">The core asks, the host routes, the answer re-enters the load path</text>
+
+  <!-- core column header -->
+  <text class="d-title" x="150" y="52" text-anchor="middle" style="font-size:12px">shared core (obc-app)</text>
+  <text class="d-title" x="560" y="52" text-anchor="middle" style="font-size:12px">host</text>
+  <line x1="360" y1="60" x2="360" y2="292" stroke="#9aa884" stroke-width="1.3" stroke-dasharray="3 4" />
+
+  <!-- core side -->
+  <rect class="d-panel-2" x="24" y="70" width="252" height="40" rx="9" />
+  <text class="d-label" x="40" y="88" style="font-size:10.5px">POI detail → press</text>
+  <text class="d-sub" x="40" y="102" style="font-size:9px">"Create a route?" confirm</text>
+
+  <rect class="d-hot" x="24" y="124" width="252" height="44" rx="10" style="fill:#f8efe4" />
+  <text class="d-label" x="40" y="143" style="fill:#a9501c;font-size:10.5px">NavRequest (one-shot)</text>
+  <text class="d-sub" x="40" y="158" style="font-size:9px">from = rider fix · to = POI coord · name</text>
+
+  <!-- request arrow to host -->
+  <line class="d-flow" x1="276" y1="146" x2="404" y2="146" marker-end="url(#aR1)" />
+  <text class="d-sub" x="340" y="138" text-anchor="middle" style="font-size:8.5px">take_nav_request()</text>
+
+  <!-- host side -->
+  <rect class="d-panel" x="404" y="70" width="292" height="120" rx="10" />
+  <text class="d-tag" x="420" y="90">plan against the resident map</text>
+  <text class="d-sub" x="420" y="110" style="font-size:9.5px">obc-route::plan_route — snap 250 m,</text>
+  <text class="d-sub" x="420" y="126" style="font-size:9.5px">weighted A* (ε = 1.3) over §8 graph</text>
+  <text class="d-sub" x="420" y="146" style="font-size:9.5px">→ stream OBCR into <tspan font-family="var(--mono)">/routes/_nav.obcr</tspan></text>
+  <text class="d-sub" x="420" y="162" style="font-size:9.5px">→ rescan catalog, resolve durable id</text>
+  <text class="d-sub" x="420" y="180" style="font-size:8.5px;fill:#a9501c">feeds the watchdog through a progress hook</text>
+
+  <!-- answer arrow back -->
+  <line class="d-flow" x1="404" y1="210" x2="276" y2="210" marker-end="url(#aR2)" stroke="#cf6a2a" stroke-width="2" />
+  <text class="d-sub" x="340" y="202" text-anchor="middle" style="font-size:8.5px;fill:#a9501c">notify_nav_result(Result)</text>
+
+  <!-- ok / err -->
+  <rect class="d-panel-2" x="24" y="224" width="252" height="40" rx="9" />
+  <text class="d-sub" x="40" y="242" style="font-size:9.5px;fill:#2c5230"><b>Ok(id)</b> → length-only overview,</text>
+  <text class="d-sub" x="40" y="256" style="font-size:9px;fill:#2c5230">route activates → normal load/nav path</text>
+
+  <rect class="d-panel-2" x="24" y="272" width="252" height="40" rx="9" />
+  <text class="d-sub" x="40" y="290" style="font-size:9.5px;fill:#c0492e"><b>Err</b> → two-tier card:</text>
+  <text class="d-sub" x="40" y="304" style="font-size:9px;fill:#c0492e">TooFar → "Too far…" · else "Couldn't find…"</text>
+
+  <!-- resident map note -->
+  <rect class="d-panel" x="404" y="224" width="292" height="88" rx="10" />
+  <text class="d-tag" x="420" y="244">re-enters the load path</text>
+  <text class="d-sub" x="420" y="264" style="font-size:9.5px">the reserved file is just another route</text>
+  <text class="d-sub" x="420" y="280" style="font-size:9.5px">in the catalog — same RouteReader,</text>
+  <text class="d-sub" x="420" y="296" style="font-size:9.5px">matcher, profile as a loaded GPX</text>
+</svg>
+<figcaption>The flow mirrors a <a href="../companion-link/">BLE route upload</a> exactly: the core records a <b>one-shot request</b>, the host does the slow work and <b>rescans-then-resolves</b> before answering with a durable id, and the answer either opens an overview or a failure card. What's host-specific is only the <i>doing</i> — running <code>plan_route</code> against the map already on the card and writing the reserved file. Everything downstream is the unchanged navigation pipeline, which is why a computed route rides through the same matcher and profile as any other.</figcaption>
+</figure>
+
+Three honest bounds are worth stating, because the router trades exactness and range for fitting in fixed RAM next to the map cache and the render scratch:
+
+- **A 10 km crow-flies cap.** A cheap straight-line pre-check rejects a far POI *before* any graph access — that's the `TooFar` tier ("Too far to route here"). Everything else that fails (nothing within the 250 m snap radius, the frontier emptying, or the fixed A\* scratch filling on a dense graph) is the generic "Couldn't find a route." tier.
+- **Weighted A\*, ε = 1.3 — not shortest path.** The priority is `f = g + 1.3·h`, so the search is deliberately goal-greedy: it settles a narrow corridor toward the POI rather than exploring outward like plain A\*. The returned path is at most 1.3× the true shortest (a few percent in practice), and in exchange the *fixed* scratch reaches multi-kilometre routes it would otherwise exhaust around a kilometre out. It's a range-in-fixed-memory trade, made deliberately.
+- **A ~40 kB nav budget, and the simulator sits inside it.** The A\* scratch is a fixed table sized per target: ~20 kB on the current 256 kB dev board, and on the host/simulator **exactly the final device's (LM20) 40 kB nav cap** — so the simulator's plannable range *is* the shipping device's range, by construction, not "however much desktop RAM there is." On the tight dev board the router is even compiled *out* of the Bluetooth build (its stack region would fall below the render peak); the default and the 512 kB LM20 builds carry it. On glass, planning is SD-bound — roughly 100 ms per chunk read — and the stack high-water stays flat regardless of route length, which is the measurement that actually gates it: the router's scratch lives in static memory, never a stack frame, precisely so it can't blow the device's tight stack next to the render peak.
+
+The router itself — snap, the weighted-A\* settle loop, and the OBCR emit — is [`obc-route/src/nav.rs`](src:firmware/obc-route/src/nav.rs); the §8 graph it reads is described on the [data formats](../formats/#the-navigation-graph-a-routable-network) page and built by the [packer](../packer-routing/#building-the-navigation-graph); the app-side request/answer seam is [`notify_nav_result`](src:firmware/obc-app/src/app.rs) alongside the BLE-upload notifications it deliberately mirrors.
+
 ## Staying responsive: the two planes
 
 There's a tension on the device. A dense map frame can take the better part of a tenth of a second to render and push to glass, but a button press must feel instant. If both lived on one thread, a press during a long render would stutter. So the device splits the work into **two cooperating planes**.
@@ -311,6 +383,7 @@ The split is a behaviour-preserving relocation: the same `InputPlane` either run
 - The per-frame driver, the screen stack, and the dirty tracking: [`obc-app/src/app.rs`](src:firmware/obc-app/src/app.rs)
 - The hardware-abstraction traits: [`obc-app/src/hal.rs`](src:firmware/obc-app/src/hal.rs)
 - The two-plane input model: [`obc-app/src/input_plane.rs`](src:firmware/obc-app/src/input_plane.rs)
+- The on-device router (snap · weighted A\* · OBCR emit): [`obc-route/src/nav.rs`](src:firmware/obc-route/src/nav.rs)
 - The byte-streaming seam: [`obc-reader/src/byte_io.rs`](src:firmware/obc-reader/src/byte_io.rs)
 - The device host (DrawTarget / ByteSource / sensors over real hardware): [`obc-platform`](src:firmware/obc-platform)
 
