@@ -15,6 +15,12 @@ use obc_route::{RouteStats, RouteSummary, SliceSource};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::vec_sink::VecSink;
 
+/// The reserved computed-route file the on-device router's output lands in (epic #116, R4):
+/// auto-overwritten on every plan, scanned into the catalog like any other route. The device's
+/// FatFs twin is `/routes/_NAV.OBR` (embedded-sdmmc can't write the 4-char LFN extension).
+#[cfg(not(target_arch = "wasm32"))]
+const NAV_ROUTE_FILE: &str = "_nav.obcr";
+
 /// The folder-backed route store: the catalog of summaries plus the bytes of the one active route.
 #[cfg(not(target_arch = "wasm32"))]
 pub struct RouteStore {
@@ -164,6 +170,19 @@ impl RouteStore {
         self.ids.get(i).copied()
     }
 
+    /// Write the router's emitted OBCR to the reserved nav-route file (epic #116, R4) —
+    /// `_nav.obcr`, overwritten in place so consecutive plans never accumulate — then rescan and
+    /// return the file's session-stable id (stable across overwrites: the id registry keys on the
+    /// path). `None` on an I/O failure — the caller degrades to the generic routing-failure tier.
+    pub fn write_nav_route(&mut self, bytes: &[u8]) -> Option<u16> {
+        std::fs::create_dir_all(&self.dir).ok()?;
+        let out = self.dir.join(NAV_ROUTE_FILE);
+        std::fs::write(&out, bytes).ok()?;
+        self.rescan();
+        let k = self.paths.iter().position(|p| p == &out)?;
+        Some(self.ids[k])
+    }
+
     /// Make the active route match `want`, (re)reading its bytes from disk only on a change.
     /// Cheap to call every frame.
     pub fn sync_active(&mut self, want: Option<usize>) {
@@ -172,6 +191,15 @@ impl RouteStore {
         }
         self.active = want;
         self.active_bytes = want.and_then(|i| self.paths.get(i)).and_then(|p| std::fs::read(p).ok());
+    }
+
+    /// Force the active route's bytes to re-read from disk on the next [`sync_active`] even if the
+    /// index is unchanged — the nav flow overwrites `_nav.obcr` **under** an unchanged catalog
+    /// index on a re-route, which the change-gated `sync_active` would otherwise keep serving
+    /// stale.
+    pub fn invalidate_active(&mut self) {
+        self.active = None;
+        self.active_bytes = None;
     }
 
     /// A [`ByteSource`](obc_route::ByteSource) over the active route's bytes, for
@@ -192,6 +220,11 @@ pub struct RouteStore {
     bytes: Vec<Vec<u8>>,
     active: Option<usize>,
 }
+
+/// The web store's reserved id for the in-memory nav route (out of the small positional band the
+/// embedded catalog uses), so a re-plan replaces the previous computed route in place.
+#[cfg(target_arch = "wasm32")]
+const WASM_NAV_ID: u16 = u16::MAX;
 
 #[cfg(target_arch = "wasm32")]
 impl RouteStore {
@@ -242,8 +275,32 @@ impl RouteStore {
         Err("GPX import is not available in the web build yet".into())
     }
 
+    /// The in-memory twin of the native store's reserved `_nav.obcr` write: replace (or append)
+    /// the computed route under the fixed [`WASM_NAV_ID`] and return it.
+    pub fn write_nav_route(&mut self, bytes: &[u8]) -> Option<u16> {
+        let sum = RouteSummary::read(&SliceSource(bytes)).ok()?;
+        match self.ids.iter().position(|&id| id == WASM_NAV_ID) {
+            Some(pos) => {
+                self.catalog[pos] = sum;
+                self.bytes[pos] = bytes.to_vec();
+            }
+            None => {
+                self.catalog.push(sum);
+                self.ids.push(WASM_NAV_ID);
+                self.bytes.push(bytes.to_vec());
+            }
+        }
+        Some(WASM_NAV_ID)
+    }
+
     pub fn sync_active(&mut self, want: Option<usize>) {
         self.active = want.filter(|&i| i < self.bytes.len());
+    }
+
+    /// See the native twin: force a re-read after the nav bytes are replaced under an unchanged
+    /// index (the web store serves bytes by index, so only the reset matters).
+    pub fn invalidate_active(&mut self) {
+        self.active = None;
     }
 
     /// Delete the route with id `id` from the in-memory catalog (the web build's face of the

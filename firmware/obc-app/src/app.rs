@@ -1039,6 +1039,74 @@ impl App {
         self.activity.has_ride_delete()
     }
 
+    /// Drain the pending **route-planning request** (epic #116, R4) — the POI create-route
+    /// confirm's one-shot. A `Some` is the host's cue to run
+    /// [`plan_route`](obc_route::nav::plan_route) from `from` to `to` against its map, write the
+    /// emitted OBCR to the reserved nav route (`/routes/_nav.obcr`), rescan the catalog
+    /// ([`set_routes_with_ids`](App::set_routes_with_ids)), and answer with
+    /// [`notify_nav_result`](App::notify_nav_result) — all within the same pass, so the confirm
+    /// screen is still up when the answer lands.
+    pub fn take_nav_request(&mut self) -> Option<crate::activity::NavRequest> {
+        self.activity.take_nav_request()
+    }
+
+    /// Non-consuming peek at whether a route-planning request is pending — lets the board gate
+    /// its per-pass router work without draining the one-shot.
+    pub fn has_nav_request(&self) -> bool {
+        self.activity.has_nav_request()
+    }
+
+    /// The host's answer to a drained [`take_nav_request`](App::take_nav_request) (epic #116, R4).
+    ///
+    /// `Ok(id)` is the committed nav route's **durable object id**, resolved against the already
+    /// rescanned catalog (the same ordering contract as
+    /// [`notify_route_uploaded`](App::notify_route_uploaded): rescan first, then this). The route
+    /// **activates** — [`Activity::active_route`] points at it so the host streams its geometry —
+    /// and the confirm screen is replaced by the computed-route
+    /// [overview](crate::screen::RouteOverviewScreen) (length only). Because the reserved nav file
+    /// is overwritten in place, a re-route can commit **new bytes under the same id**; every cache
+    /// derived from the old geometry (matcher lock, elevation profile, match readouts) is dropped
+    /// unconditionally, the forced-adoption discipline of an active replace.
+    ///
+    /// `Err` swaps the confirm for the failure card — the locked two tiers:
+    /// [`TooFar`](obc_route::nav::NavError::TooFar) → "Too far to route here", everything else →
+    /// "Couldn't find a route."
+    ///
+    /// If the confirm screen is gone (it can only be *replaced* by a host-pushed card, but stay
+    /// defensive), the answer is dropped — the committed route is still in the Route menu.
+    pub fn notify_nav_result(&mut self, result: Result<u16, obc_route::nav::NavError>) {
+        use obc_route::nav::NavError;
+        let Some(i) = self.stack.iter().position(|s| matches!(s, Screen::NavConfirm(_))) else {
+            return;
+        };
+        // Resolve the id in the (already rescanned) catalog; a missing id degrades to the
+        // generic failure tier.
+        let resolved = result.and_then(|id| self.catalog_ids.iter().position(|&x| x == id).ok_or(NavError::NoPath));
+        let screen = match resolved {
+            Ok(idx) => {
+                // New bytes may sit under a same-id reserved file (a re-route): drop everything
+                // derived from the old geometry so the matcher re-locks and the profile rebuilds
+                // from the fresh route — cheap, runs once per plan.
+                self.route_match.reset();
+                self.matched_route = None;
+                self.profile = None;
+                self.profile_route = None;
+                self.activity.progress_m = 0;
+                self.activity.off_route = false;
+                self.activity.dist_to_route_m = 0;
+                // Activate for the preview (the overview contract: the host streams the geometry
+                // while the page shows); `prev_active` restores whatever was loaded on cancel.
+                let prev = self.activity.active_route;
+                self.activity.active_route = Some(idx);
+                Screen::RouteOverview(crate::screen::RouteOverviewScreen::computed(idx, prev))
+            }
+            Err(NavError::TooFar) => Screen::NavFail(crate::screen::NavFailScreen::too_far()),
+            Err(_) => Screen::NavFail(crate::screen::NavFailScreen::not_found()),
+        };
+        self.stack[i] = screen;
+        self.map_dirty = true;
+    }
+
     /// Feed the host's BLE link snapshot ([`BleStatus`](crate::BleStatus)) — the host→app event seam
     /// (epic #447). The board's BLE plane distils its `ble::state` into this each pass; the simulator
     /// injects it from the control panel. Called like [`set_routes`](App::set_routes): a plain host

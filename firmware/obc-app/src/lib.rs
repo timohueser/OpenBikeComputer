@@ -28,7 +28,7 @@ pub mod settings;
 pub mod stat_fields;
 pub mod wall_clock;
 
-pub use activity::{Activity, Mode, TrackAction};
+pub use activity::{Activity, Mode, NavRequest, TrackAction};
 pub use app::{App, AppState, CameraMode, Pan, PanAxis};
 pub use ble::{BleLink, BleStatus};
 pub use breadcrumb::Breadcrumb;

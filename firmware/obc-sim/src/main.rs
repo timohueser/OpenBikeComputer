@@ -34,8 +34,8 @@ mod settings_store;
 mod sim_compass;
 mod sim_location;
 mod track;
-// Native-only: the web build has no filesystem to write to.
-#[cfg(not(target_arch = "wasm32"))]
+// In-memory `ByteSink` — the GPX import (native) and the nav router's emit (both builds) write
+// through it.
 mod vec_sink;
 use framebuffer::Framebuffer;
 use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
@@ -385,6 +385,37 @@ fn replay_step<'s>(
     app.tick(RideClock(now_ms), sensors, route);
 }
 
+/// Run a drained POI create-route request (epic #116, R4) — the sim's host half of the nav seam,
+/// mirroring the board's `ride::plan_nav`: run the real `plan_route` against the loaded map,
+/// write the emitted OBCR to the reserved `_nav.obcr` in the routes folder, rescan + re-feed the
+/// id-carrying catalog, and answer the app (`notify_nav_result` swaps the confirm screen for the
+/// computed-route overview or the failure card). The A* scratch + tile cache are stack locals —
+/// ~14 KB is nothing on the host; the device parks the same structs in `.bss`.
+fn run_nav_request(app: &mut obc_app::App, store: &mut RouteStore, reader: &Reader, req: &obc_app::NavRequest) {
+    use obc_route::nav::{plan_route, NavError, NavScratch};
+    let mut scratch: NavScratch = NavScratch::new();
+    let mut tiles = obc_reader::NavTileCache::new();
+    let mut sink = vec_sink::VecSink::default();
+    let result =
+        plan_route(reader, req.from, req.to, req.name(), &mut scratch, &mut tiles, &mut sink).and_then(|stats| {
+            let id = store.write_nav_route(sink.bytes()).ok_or(NavError::NoPath)?;
+            app.set_routes_with_ids(store.catalog(), store.ids());
+            // A re-route rewrites the nav bytes under an unchanged catalog index — force the
+            // change-gated active-route read to re-open them.
+            store.invalidate_active();
+            let s = tiles.stats();
+            eprintln!(
+                "nav route: ok len={} m | tile-cache {} hit / {} miss (misses = chunk reads)",
+                stats.total_distance_m, s.hits, s.misses
+            );
+            Ok(id)
+        });
+    if let Err(e) = &result {
+        eprintln!("nav route: failed ({e:?})");
+    }
+    app.notify_nav_result(result);
+}
+
 /// Reconcile the track store to the app's tracking intent (drains the one-shot action,
 /// opens / closes the `.obct` log). The save name comes from the active route's catalog entry.
 fn reconcile_tracks(app: &mut App, tracks: &mut TrackStore) {
@@ -675,12 +706,23 @@ fn main() {
             // The `d` token flushes lazy draw-time state (the POI snapshot / detail hours) by drawing
             // one throwaway frame against the map reader — `route: None` since the POI screens the
             // token targets never draw the route, and the route isn't opened until below anyway.
+            // It then drains a pending create-route request (epic #116, R4), so a script can walk
+            // the whole POI→route flow: the request's answer swaps the confirm for the overview /
+            // failure card, which the next token (or the final render) sees.
             let (rw, rh, rtc) = (args.width, args.height, args.true_color);
             let mut render = |app: &mut App| {
                 let mut fb = Framebuffer::new(rw, rh);
                 let _ = app.render_frame(&mut fb, &reader, None, rw as f32, rh as f32, |c| color_of(c, rtc));
+                if let Some(req) = app.take_nav_request() {
+                    run_nav_request(app, &mut store, &reader, &req);
+                }
             };
             apply_script(&mut app, script, &mut render);
+            // A create-route request recorded by the script's last press (no trailing `d`): drain
+            // it now so the final render shows the answer, mirroring the delete drains below.
+            if let Some(req) = app.take_nav_request() {
+                run_nav_request(&mut app, &mut store, &reader, &req);
+            }
             // A scripted hold-to-delete in the Route menu (epic #447 P6) records a delete request;
             // execute it here (delete the file + re-feed the id-carrying catalog) so the rendered
             // frame reflects the route being gone, mirroring the GUI's per-frame drain.

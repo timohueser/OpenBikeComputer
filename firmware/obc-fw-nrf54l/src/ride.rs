@@ -142,6 +142,78 @@ pub(crate) fn load_rides(storage: &mut sd::Storage, app: &mut App) {
     app.set_rides(&catalog, storage.ride_ids());
 }
 
+/// Run a drained POI create-route request (epic #116, R4) against the resident map: the board's
+/// host half of the nav seam. Runs [`plan_route`](obc_route::plan_route) (sync) from the rider's
+/// fix to the POI, streams the emitted OBCR to the reserved `/routes/_NAV.OBR`
+/// ([`Storage::nav_route_begin`](sd::Storage::nav_route_begin) — the 8.3 face of the spec'd
+/// `_nav.obcr`), rescans the catalog (the same [`load_routes`] machinery every store edge uses),
+/// and answers the app — `notify_nav_result` activates the route and swaps the confirm screen for
+/// the computed-route overview (or the failure card).
+///
+/// **Stack discipline** (#270/#419): its own `#[inline(never)]` frame, called at the ride loop's
+/// **shallow** per-pass depth — the same level as [`load_routes`], sequential with (never under)
+/// the deep render path — and the two big A* buffers (`NavScratch` ~10 kB + `NavTileCache` ~4 kB)
+/// are `.bss` statics threaded from `main`, never locals. What this frame carries is the cheap
+/// per-frame `Reader` view, the SD sink, and A*'s own shallow call tree.
+///
+/// One RTT line per plan (grep `nav route:`): outcome, elapsed ms, the tile-cache counters
+/// (**misses = SD chunk reads** for the whole plan), and the stackmeter high-water re-scanned
+/// right after the run so the router's contribution to the peak is visible on-glass.
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn plan_nav(
+    storage: &mut sd::Storage,
+    app: &mut App,
+    map_tables: &MapTables,
+    map_cache: &MapCache,
+    scratch: &mut obc_route::NavScratch,
+    tiles: &mut obc_reader::NavTileCache,
+    req: &obc_app::NavRequest,
+    now: u32,
+) {
+    use obc_route::NavError;
+    let t0 = Instant::now();
+    let planned: Result<(u16, u32), NavError> = (|| {
+        let file = storage.nav_route_begin().ok_or(NavError::NoPath)?;
+        let r = match storage.map_source() {
+            Some(map_src) => {
+                let reader = Reader::new(&map_src, map_tables, map_cache);
+                let mut sink = storage.nav_sink(file);
+                obc_route::plan_route(&reader, req.from, req.to, req.name(), scratch, tiles, &mut sink)
+            }
+            None => Err(NavError::NoPath),
+        };
+        storage.nav_route_finish(file, r.is_ok());
+        let stats = r?;
+        // Rescan + re-feed the id-carrying catalog so the answer's id resolves against the fresh
+        // tables — the notify_route_uploaded ordering contract, reused.
+        load_routes(storage, app);
+        let id = storage.nav_route_id().ok_or(NavError::NoPath)?;
+        Ok((id, stats.total_distance_m))
+    })();
+    let ms = t0.elapsed().as_millis();
+    let cache = tiles.stats();
+    let hw = stackmeter::rescan(now);
+    let outcome = match &planned {
+        Ok(_) => "ok",
+        Err(NavError::TooFar) => "too-far",
+        Err(NavError::NoPath) => "no-path",
+        Err(NavError::Exhausted) => "exhausted",
+    };
+    let len = planned.map(|(_, len)| len).unwrap_or(0);
+    defmt::info!(
+        "nav route: {=str} len={=u32} ms={=u64} sd_reads={=u32} cache_hits={=u32} stack_hw={=usize}/{=usize}",
+        outcome,
+        len,
+        ms,
+        cache.misses,
+        cache.hits,
+        hw,
+        stackmeter::total()
+    );
+    app.notify_nav_result(planned.map(|(id, _)| id));
+}
+
 /// The GPS power state the ride wants: deep-sleep when not tracking, full-power fixes while riding, or
 /// the M10's low-power tracking when the `power_saver` toggle is on. Recomputed each frame in
 /// [`run_app`] and pushed to the sensor task (via [`sensor_link::set_power`]) only on a change.
@@ -191,6 +263,10 @@ pub(crate) async fn run_app(
     map_tables: &MapTables,
     map_cache: &MapCache,
     route_cache: &RouteCache,
+    // The router's fixed A* table + graph-tile cache (epic #116, R4): `.bss` statics threaded
+    // from `main` (never locals — the #270/#419 discipline), reset per plan inside `plan_route`.
+    nav_scratch: &'static mut obc_route::NavScratch,
+    nav_tiles: &'static mut obc_reader::NavTileCache,
     led: &mut Output<'static>,
     // The hardware watchdog's feed handle (#349), `None` only if the boot-time `try_new` found the
     // dog already running with a foreign config. Fed once per pass below, gated on the input
@@ -478,6 +554,25 @@ pub(crate) async fn run_app(
                         load_rides(s, app);
                     }
                 }
+            }
+        }
+
+        // ── POI create-route request (epic #116, R4), on the confirm's one-shot edge only ──
+        // Run the A* router at this pass's shallow depth (see `plan_nav`'s stack note): plan,
+        // write + rescan the reserved nav route, and answer the app — whose `notify_nav_result`
+        // activates the computed route, so the reconcile below opens its geometry this same pass.
+        // The plan closed the active geometry handle and may have rewritten bytes under the
+        // reserved name, so force the positional state to re-derive, exactly like the
+        // store-changed rescan above.
+        if app.has_nav_request() {
+            if let Some(req) = app.take_nav_request() {
+                match storage.as_mut() {
+                    Some(s) => plan_nav(s, app, map_tables, map_cache, nav_scratch, nav_tiles, &req, now),
+                    // No card: nothing to route against — the generic failure tier.
+                    None => app.notify_nav_result(Err(obc_route::NavError::NoPath)),
+                }
+                prev_active = None; // reopen geometry / rebuild the chunk index off the fresh scan
+                index_route = None;
             }
         }
 
