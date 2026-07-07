@@ -77,7 +77,7 @@ fn four_way_crossing_round_trips_identically() {
         nodes.push(Node { id, coord: end });
         // One interior shape point halfway, nudged off-axis so geometry is distinctive.
         let mid = ((cross.0 + end.0) / 2, (cross.1 + end.1) / 2 + 1_000);
-        edges.push(Edge { a: 0, b: id, polyline: vec![cross, mid, end], length_m: 22_000 + k as u32 });
+        edges.push(Edge { a: 0, b: id, polyline: vec![cross, mid, end], length_m: 22_000 + k as u32, kind: 0 });
     }
     let graph = NavGraph { nodes, edges: edges.clone() };
     let bytes = map_with(&graph);
@@ -130,7 +130,7 @@ fn long_segment_edge_is_densified() {
     let b = (100_000, 200_000); // 100 000 µdeg of latitude in one hop
     let graph = NavGraph {
         nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: b }],
-        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, b], length_m: 11_132 }],
+        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, b], length_m: 11_132, kind: 0 }],
     };
     let bytes = map_with(&graph);
     let decoded = decode_all(&bytes);
@@ -159,7 +159,7 @@ fn over_long_edge_splits_at_a_synthetic_node() {
     let (a, b) = (*polyline.first().unwrap(), *polyline.last().unwrap());
     let graph = NavGraph {
         nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: b }],
-        edges: vec![Edge { a: 0, b: 1, polyline: polyline.clone(), length_m: 1_478 }],
+        edges: vec![Edge { a: 0, b: 1, polyline: polyline.clone(), length_m: 1_478, kind: 0 }],
     };
     let bytes = map_with(&graph);
     let decoded = decode_all(&bytes);
@@ -199,7 +199,7 @@ fn absurd_degree_node_is_capped_at_24() {
     for k in 1..=30u32 {
         let end = (500_000 + 1_000 * k as i32, 600_000);
         nodes.push(Node { id: k, coord: end });
-        edges.push(Edge { a: 0, b: k, polyline: vec![hub, end], length_m: 100 + k });
+        edges.push(Edge { a: 0, b: k, polyline: vec![hub, end], length_m: 100 + k, kind: 0 });
     }
     let bytes = map_with(&NavGraph { nodes, edges });
     let decoded = decode_all(&bytes);
@@ -224,7 +224,7 @@ fn self_loop_gets_one_adjacency_entry() {
     let loop_poly = vec![n, (502_000, 500_000), (502_000, 502_000), n];
     let graph = NavGraph {
         nodes: vec![Node { id: 0, coord: n }],
-        edges: vec![Edge { a: 0, b: 0, polyline: loop_poly.clone(), length_m: 668 }],
+        edges: vec![Edge { a: 0, b: 0, polyline: loop_poly.clone(), length_m: 668, kind: 0 }],
     };
     let bytes = map_with(&graph);
     let decoded = decode_all(&bytes);
@@ -251,7 +251,13 @@ fn dense_graph_subdivides_and_point_query_descends() {
             let id = (gy * 12 + gx) as u32;
             nodes.push(Node { id, coord: at(gx, gy) });
             if gx > 0 {
-                edges.push(Edge { a: id - 1, b: id, polyline: vec![at(gx - 1, gy), at(gx, gy)], length_m: 5_566 });
+                edges.push(Edge {
+                    a: id - 1,
+                    b: id,
+                    polyline: vec![at(gx - 1, gy), at(gx, gy)],
+                    length_m: 5_566,
+                    kind: 0,
+                });
             }
         }
     }
