@@ -79,7 +79,9 @@ impl BikeTypeScreen {
 
         // Hero: the pixel-art bike for the effective profile, matched by name and filling the space
         // under the title bar. A custom profile the matcher doesn't recognise gets the generic bike.
-        bike_icons::draw(cv, bike_icons::for_name(eff_name), w / 2, BIKE_TOP_Y, BIKE_SCALE, INK);
+        // Each type is drawn in its own hinting colour (road red, gravel brown, MTB green, …).
+        let bike = bike_icons::for_name(eff_name);
+        bike_icons::draw(cv, bike, w / 2, BIKE_TOP_Y, BIKE_SCALE, bike_icons::color_for(eff_name));
 
         // The one selector row — the current profile name centred in the amber cursor, flanked by
         // left/right arrows so it reads as "rotate to switch". `write_label` shows profile 0's name

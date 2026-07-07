@@ -9,6 +9,8 @@
 
 use obc_render::{rect, Surface};
 
+use crate::screen::palette;
+
 /// One sprite: ASCII rows, a non-space cell is an ink pixel. Every sprite is the same
 /// rectangular grid ([`draw`] centres on it).
 pub type Bike = &'static [&'static str];
@@ -188,10 +190,22 @@ pub const GENERIC: Bike = &[
     "                                                  ",
 ];
 
-/// The sprite for a profile name, case-insensitive substring match; unrecognised =>
-/// [`GENERIC`]. Keyed on the shipped default names and common synonyms so a custom
-/// profile that *mentions* a bike type still gets the right art.
-pub fn for_name(name: &str) -> Bike {
+/// The bike type a profile name resolves to. One classifier so the [sprite](for_name) and its
+/// [colour](color_for) can never disagree.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Road,
+    Gravel,
+    Mtb,
+    Touring,
+    /// An unrecognised custom profile.
+    Generic,
+}
+
+/// Classify a profile name, case-insensitive substring match; unrecognised => [`Kind::Generic`].
+/// Keyed on the shipped default names and common synonyms so a custom profile that *mentions* a
+/// bike type still resolves.
+fn kind_for(name: &str) -> Kind {
     let mut lower: heapless::String<20> = heapless::String::new();
     for c in name.chars().take(20) {
         for lc in c.to_lowercase() {
@@ -200,15 +214,40 @@ pub fn for_name(name: &str) -> Bike {
     }
     let n = lower.as_str();
     if n.contains("mtb") || n.contains("mountain") {
-        MTB
+        Kind::Mtb
     } else if n.contains("gravel") || n.contains("cyclocross") || n.contains("cx") {
-        GRAVEL
+        Kind::Gravel
     } else if n.contains("tour") {
-        TOURING
+        Kind::Touring
     } else if n.contains("road") || n.contains("race") {
-        ROAD
+        Kind::Road
     } else {
-        GENERIC
+        Kind::Generic
+    }
+}
+
+/// The sprite for a profile name (see [`kind_for`]); unrecognised => [`GENERIC`].
+pub fn for_name(name: &str) -> Bike {
+    match kind_for(name) {
+        Kind::Road => ROAD,
+        Kind::Gravel => GRAVEL,
+        Kind::Mtb => MTB,
+        Kind::Touring => TOURING,
+        Kind::Generic => GENERIC,
+    }
+}
+
+/// The ink colour for a profile's bike, hinting at its use: road red, gravel earth-brown, MTB
+/// trail-green, touring blue. A generic/custom profile stays plain ink. All chosen to land on
+/// clean device-64 colours (§ the `palette` quantiser) over the parchment background.
+pub fn color_for(name: &str) -> u16 {
+    use palette::rgb565;
+    match kind_for(name) {
+        Kind::Road => rgb565(200, 30, 30),    // → red
+        Kind::Gravel => rgb565(240, 90, 20),  // → orange
+        Kind::Mtb => rgb565(20, 130, 40),     // → green
+        Kind::Touring => rgb565(30, 70, 180), // → blue
+        Kind::Generic => palette::INK,
     }
 }
 
@@ -265,5 +304,18 @@ mod tests {
                 assert_eq!(row.len(), cols, "every row is the same width");
             }
         }
+    }
+
+    /// Each shipped type gets its own colour; a custom profile stays plain ink.
+    #[test]
+    fn each_type_has_a_distinct_colour() {
+        let cols = [color_for("Road"), color_for("Gravel"), color_for("MTB"), color_for("Touring")];
+        for (i, a) in cols.iter().enumerate() {
+            assert_ne!(*a, palette::INK, "a shipped type is coloured, not ink");
+            for b in &cols[i + 1..] {
+                assert_ne!(a, b, "the four bike colours must be distinct");
+            }
+        }
+        assert_eq!(color_for("Commuter"), palette::INK, "a custom profile stays ink");
     }
 }
