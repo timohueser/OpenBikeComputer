@@ -2,7 +2,7 @@
     // Generic editor for a style field known only from the served schema —
     // the forward-compatibility net: a knob added to obc-pack's schema shows
     // up here (typed input, bounds, enum options) before it gets bespoke UI.
-    import ColorControl from "./ColorControl.svelte";
+    import OptionalColorControl from "./OptionalColorControl.svelte";
 
     let {
         name,
@@ -16,10 +16,15 @@
         onchange: (v: unknown) => void;
     } = $props();
 
-    // Color-shaped fields (v6 `color2`, …) get the real picker: the schema
-    // marks them with the shared color definition's string-or-int oneOf.
+    // Color-shaped fields (v10 `color2`, …) get the real picker. The primary
+    // `color` is bespoke in StyleTable, so any color reaching SchemaField is a
+    // secondary/optional one: render it via OptionalColorControl, which keeps
+    // an explicit unset state (absence ⇒ key deleted, not coerced to black).
+    // The schema may spell the color shape either as a $ref to $defs/color
+    // (as `color2` does) or inline its string-or-int oneOf, so match on both.
     const isColor = $derived(
         name.startsWith("color") ||
+            (typeof prop.$ref === "string" && (prop.$ref as string).endsWith("/color")) ||
             (Array.isArray(prop.oneOf) &&
                 (prop.oneOf as { pattern?: string }[]).some((o) => o.pattern?.includes("0[xX]"))),
     );
@@ -32,9 +37,8 @@
 </script>
 
 {#if isColor}
-    <ColorControl
-        value={(value ?? fallback ?? "0x0000") as string}
-        showLabel={false}
+    <OptionalColorControl
+        value={value as string | number | null | undefined}
         onchange={(v) => onchange(v)}
     />
 {:else if options}
