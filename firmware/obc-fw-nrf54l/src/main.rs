@@ -1,8 +1,7 @@
 //! nRF54L15-DK board firmware for OpenBikeComputer — the **real hardware target**.
 //!
 //! The nRF54L15 driving the reflective LS021B7DD02 memory-LCD through the FLPR coprocessor is
-//! what the project ships on — the **default build**; the ST7789 EYESPI TFT stays as the opt-in
-//! `tft` bring-up backend. This crate ports the
+//! what the project ships on — the **only** display path. This crate ports the
 //! shared `obc-app` onto it (load route → ride → save the ride object). Nothing app-facing lives here:
 //! `obc-render` / `obc-app` / `obc-reader` / `obc-route` + `obc-platform` stay board-agnostic;
 //! only the nRF HAL wiring + the display `DisplayDriver` backends are board-specific.
@@ -38,28 +37,25 @@
 //! (the debouncer samples levels each loop — no GPIOTE async wait needed). They stay free because
 //! the display lives on P2 (below).
 //!
-//! ## Display SPIM — ST7789 EYESPI stand-in
-//!   Instance **SERIAL00 / SPIM00** — the only instance that reaches 32 MHz (fast/MCU power
-//!   domain, port P2); the panel wants a fast bus so it gets this one. Its pins are the DK's
-//!   on-board QSPI-flash bus (P2.00–P2.05). We never use that flash (maps live on SD), so the
-//!   **Board Configurator** app electronically disconnects it ("external memory → GPIO on the
-//!   P2 header") and routes the pins out — no soldering on current board revisions. The whole
-//!   panel then sits on the P2 header:
-//!     SCK P2_01 | MOSI P2_02 | CS P2_05 | DC P2_03 | RST P2_00   (MISO P2_04 unused, write-only)
-//!   CS is toggled in software per transaction (embassy-nrf drives no hardware CS), framing each
-//!   command/data write the way the ST7789 expects — see `st7789::St7789::transaction`. The panel's
-//!   level shifters want 3–5 V logic, so the DK I/O rail must be raised from its 1.8 V default
-//!   to **3.3 V** (VDDM, also in the Board Configurator — HW guide §2.2.1); Vin is fed from the
-//!   DK's 5 V (VBUS) so the panel's onboard 3.3 V LDO keeps headroom. Putting the display on P2
-//!   leaves all of P1 free for SD + VCOM + the buttons. The band push expands the RGB222
-//!   framebuffer → RGB565 and SPIM-DMAs a CASET/RASET window (wire-pack in the ST7789 backend's
-//!   `flush_window`, behind the board-agnostic `DisplayDriver` seam the LS021B7DD02 backend
-//!   implements too).
+//! ## Display — LS021B7DD02 via the FLPR coprocessor
+//!   The reflective memory-LCD is driven by the nRF's **FLPR** (VPR RISC-V) coprocessor, which
+//!   scans the resident RGB222 framebuffer straight out of shared SRAM and packs each line to the
+//!   panel's parallel gate/source wire itself — no SPIM, no full-frame second buffer (issue #347).
+//!   The M33 holds the panel's gate + source + COM lines as plain GPIO for the program's life; the
+//!   authoritative pin map (GSP/GCK/GEN/INTB on P1, BSP on P1.14, BCK + the 6 data lines on P2, COM
+//!   on P2 or — with `com-hw` — GPIOTE-capable P1) lives at the FLPR bring-up block below. The DK's
+//!   on-board QSPI-flash pins (P2.00–P2.05) carry the source bus; we never use that flash (maps
+//!   live on SD), so the **Board Configurator** electronically disconnects it ("external memory →
+//!   GPIO on the P2 header") — no soldering on current board revisions. The panel's logic wants
+//!   3–5 V, so the DK I/O rail is raised from its 1.8 V default to **3.3 V** (VDDM, also in the
+//!   Board Configurator — HW guide §2.2.1). The display path presents through the board-agnostic
+//!   `DisplayDriver` seam (`display::mod`), so the rendering stack never couples to the panel.
+//!   (SERIAL00 / SPIM00 — the only 32 MHz instance — is now unused; the FLPR needs no SPI bus.)
 //!
 //! ## microSD SPIM — map/route/track storage
 //!   Instance **SERIAL22 / SPIM22** — a standard-speed instance (SD doesn't need 32 MHz),
 //!   *separate* from the display bus, on its own software CS. DK expansion-header SPI pins:
-//!     SCK P1_11 | MISO P1_07 | MOSI P1_06 | CS P1_12   (FLPR build moves CS → P0_00, see below)
+//!     SCK P1_11 | MISO P1_07 | MOSI P1_06 | CS P0_00   (P1.12 carries the FLPR's GEN, see below)
 //!   CS is a free GPIO held LOW for the whole session (the held-low-CS workaround embedded-sdmmc's
 //!   per-byte framing needs over embassy SPI — see `sd::NoCs`); the bus inits ≤400 kHz then
 //!   re-clocks to 8 MHz (`sd::init`). embassy-nrf's `Spim` exposes **no** internal MISO pull-up,
@@ -113,30 +109,22 @@
 #![no_main]
 
 mod sd;
-// The ST7789 driver — the opt-in `tft` map backend only. The frame geometry both backends share
-// lives in `display::FRAME_W`/`FRAME_H`, so the default FLPR build compiles none of this.
-#[cfg(feature = "tft")]
-mod st7789;
-// LS021 FLPR backend — the **default** display: `main.rs` runs the real app on the reflective LS021
-// panel via the FLPR (the VPR coprocessor) unless `--features tft` selects the ST7789 panel instead.
-// The FLPR `DisplayDriver` backend + launch live in `ls021_flpr`; `com::com_task` free-runs the COM
-// lines (the FLPR drives frames; only the COM electrode square wave stays on the M33).
-#[cfg(not(feature = "tft"))]
+// LS021 FLPR backend — the display: `main.rs` runs the real app on the reflective LS021
+// panel via the FLPR (the VPR coprocessor). The FLPR `DisplayDriver` backend + launch live in
+// `ls021_flpr`; `com::com_task` free-runs the COM lines (the FLPR drives frames; only the COM
+// electrode square wave stays on the M33).
 mod com;
 // Zero-CPU hardware COM: drive the COM square wave from a TIMER→DPPI→GPIOTE toggle chain instead of
 // the M33 `com_task`, so the panel's anti-DC-bias COM keeps alternating with no core wakes and the M33
 // can WFI between events. Opt-in (`com-hw`) + production-board-only — the DK wires COM on P2, which has
 // no GPIOTE — so the default DK build keeps `com::com_task`. See `com_hw.rs`.
-#[cfg(all(feature = "com-hw", not(feature = "tft")))]
+#[cfg(feature = "com-hw")]
 mod com_hw;
-// `com-hw` drives the LS021 panel's COM, so it's meaningless on the ST7789 (`tft`) backend; and its
-// placeholder COM pins (P1.04/05) are the VCOM-UART pins the `debug-uart` host feed uses, so the two
-// can't share the board. Fail fast with a clear message rather than a confusing double-consume error.
-#[cfg(all(feature = "com-hw", feature = "tft"))]
-compile_error!("`com-hw` drives the LS021 COM lines — it has no effect with `tft` (the ST7789 backend)");
+// `com-hw`'s placeholder COM pins (P1.04/05) are the VCOM-UART pins the `debug-uart` host feed uses,
+// so the two can't share the board. Fail fast with a clear message rather than a confusing
+// double-consume error.
 #[cfg(all(feature = "com-hw", feature = "debug-uart"))]
 compile_error!("`com-hw` and `debug-uart` both claim P1.04/P1.05 — the hardware-COM build is the production low-power path, not the host-feed dev build");
-#[cfg(not(feature = "tft"))]
 mod ls021_flpr;
 // The board's display-driver seam — the single screen-write interface both panels implement, so the
 // map plane drives either through one path (`fb_mut` + `present`).
@@ -166,18 +154,16 @@ mod ble;
 #[cfg(feature = "ble")]
 mod object_store;
 
-// The `ble` feature-matrix guards. MPSL *provides* the critical-section impl (its radio timing
+// The `ble` feature-matrix guard. MPSL *provides* the critical-section impl (its radio timing
 // forbids global-interrupt-disable critical sections; two impls = duplicate link symbols), so the
 // default `cs-single-core` must be off — fail with the right invocation rather than a cryptic linker
-// error. `tft` stays incompatible (the BLE stack targets the shipping LS021/FLPR panel). `ble` now
-// carries the map ride loop, so `debug-uart` (VCOM-fed ride) and `synth` (synthetic ride) compose
-// with it — a headless ride + a live BLE link is a useful combined-build test rig.
+// error. `ble` now carries the map ride loop, so `debug-uart` (VCOM-fed ride) and `synth`
+// (synthetic ride) compose with it — a headless ride + a live BLE link is a useful combined-build
+// test rig.
 #[cfg(all(feature = "ble", feature = "cs-single-core"))]
 compile_error!(
     "`ble` uses MPSL's critical-section impl — build with `cargo run --release --no-default-features --features ble`"
 );
-#[cfg(all(feature = "ble", feature = "tft"))]
-compile_error!("the `ble` build drives the LS021/FLPR panel — it does not support `tft`");
 
 use defmt::info;
 use display::{FRAME_H, FRAME_W};
@@ -187,21 +173,9 @@ use embassy_nrf::{bind_interrupts, peripherals, spim};
 use embassy_time::Timer;
 use {defmt_rtt as _, panic_probe as _};
 
-// `Delay` (the ST7789 power-on waits) + the `St7789` driver type are the opt-in `tft` backend; the
-// default FLPR build replaces them with the `Ls021Flpr` `DisplayDriver` backend, so neither is there.
-#[cfg(feature = "tft")]
-use embassy_time::Delay;
-#[cfg(feature = "tft")]
-use st7789::St7789;
-
-// The ST7789 is the opt-in `tft` backend, so every ST7789-backend `cfg` below keys on
-// `feature = "tft"` and the rest of the file treats `not(feature = "tft")` as the default FLPR path.
-
 use core::cell::RefCell;
 use core::mem::MaybeUninit;
 
-#[cfg(feature = "tft")]
-use display::Display;
 use embassy_nrf::gpio::{Input, Pull};
 use embassy_nrf::interrupt;
 use embassy_nrf::interrupt::{InterruptExt, Priority};
@@ -213,8 +187,8 @@ use embassy_nrf::twim::{self, Twim};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
-// The async `Mutex` guards things that need a lock held across an `.await`: the ST7789 `BUS` (tft)
-// and the shared SD + settings store ([`SharedStore`], every build).
+// The async `Mutex` guards the shared SD + settings store ([`SharedStore`], every build) — a lock
+// held across an `.await` (the ride loop holds it across a whole map render).
 use embassy_sync::mutex::Mutex;
 // The map/ride half of obc-app lives only on `has_map` builds (the `ble` DK build compiles the map
 // plane out); the shared `InputPlane` is every build's.
@@ -233,11 +207,10 @@ use obc_route::RouteCache;
 // LS021 FLPR backend: the resident-framebuffer `DisplayDriver` backend + its launch, and the
 // free-running COM driver. The M33 `com_task` is the DK/default path; the `com-hw` build drives COM
 // from hardware instead, so the task isn't spawned there.
-#[cfg(all(not(feature = "tft"), not(feature = "com-hw")))]
+#[cfg(not(feature = "com-hw"))]
 use com::com_task;
-#[cfg(all(feature = "com-hw", not(feature = "tft")))]
+#[cfg(feature = "com-hw")]
 use com_hw::HwCom;
-#[cfg(not(feature = "tft"))]
 use ls021_flpr::{launch_flpr, relaunch_flpr, FlprError, Ls021Flpr};
 
 // VCOM debug-sensor / telemetry stream, behind `debug-uart`: the interrupt-buffered UARTE on the DK's
@@ -267,23 +240,6 @@ bind_interrupts!(struct SensorIrqs {
     SERIAL30 => twim::InterruptHandler<peripherals::SERIAL30>;
 });
 
-/// One band's worth of RGB565 scratch (`WIDTH * BAND_ROWS`), living in `.bss`. 14 rows ≈ 6.6 KB and
-/// tiles the 320-row frame in 23 bands. The banded push fills it — the map path expands the RGB222
-/// frame into it — then byte-swaps to big-endian and SPIM-DMAs it; borrowed exactly once below (single
-/// executor → no aliasing). Must stay ≥ the overlay window `OVL_W × OVL_ROWS`, asserted below
-/// (240×14 = 3360 ≥ 16×192 = 3072).
-///
-/// **ST7789-only** (`--features tft`). The default FLPR map path packs the RGB222 framebuffer straight
-/// to the LS021 wire and renders device-64 directly, so it needs no RGB565 band scratch (the FLPR
-/// build drops `BAND_BYTES` from the budget below).
-#[cfg(feature = "tft")]
-const BAND_ROWS: usize = 14;
-/// The band scratch in bytes (RGB565, 2 B/px) — the resident cost the budget assert reserves.
-#[cfg(feature = "tft")]
-const BAND_BYTES: usize = FRAME_W * BAND_ROWS * 2;
-#[cfg(feature = "tft")]
-static mut BAND: [u16; FRAME_W * BAND_ROWS] = [0; FRAME_W * BAND_ROWS];
-
 // ============================ Board memory budget ============================
 // The nRF54L15 has 256 KB RAM and no external RAM, so the whole resident working set of a full map
 // redraw must fit there. This build-time assert fails the build — rather than overflowing RAM on
@@ -305,23 +261,19 @@ static mut BAND: [u16; FRAME_W * BAND_ROWS] = [0; FRAME_W * BAND_ROWS];
 //                  nrf-mem, ~6 KB). Counted here because on the 256 KB part it materially shares the
 //                  budget, and because `RouteIndex::read` builds it on the *stack*, so keeping it ~6 KB
 //                  keeps that transient build spike inside the stack reserve below.
-//   - band scratch one RGB565 display band (`BAND_BYTES`, ~7.5 KB; ST7789 only).
 // plus `STACK_RESERVE` headroom for the main stack + embassy's executor/task arenas. The stack must
 // also absorb a per-redraw `Reader::new` (the OBCM style table → a ~2.4 KB `Reader` value built as a
 // stack temporary, plus its own ~4 KB read scratch): the ride loop rebuilds it each frame, so the
 // stack reserve carries that spike.
 //
-// The FLPR build reclaims room without re-trimming the caps: the carve-out leaves the M33 **248 KB**
-// (not 256) but the production blob is ~820 B so the carve is only ~8 KB, and the FLPR map path drops
-// the ~6.6 KB RGB565 band scratch — a net loosening, so the same caps clear the budget.
+// The FLPR carve-out leaves the M33 the SRAM below `FLPR_RAM_BASE` (not the full 256 KB), but the
+// production blob is ~820 B so the carve is only ~8 KB; and the FLPR map path packs the framebuffer
+// straight to the LS021 wire, so there is no RGB565 band scratch to reserve — the same caps clear
+// the budget.
 
-/// Total SRAM the M33 app core sees. The opt-in ST7789 build (`--features tft`) links the full 256 KB
-/// (`memory.x`: RAM 256K @ 0x2000_0000); the default FLPR build links what the carve leaves — taken
-/// straight from the generated contract (`build.rs` derives the carved `memory.x` and this constant
-/// from the same `FLPR_RAM_BASE`, so the budget can't fork from the linker map).
-#[cfg(feature = "tft")]
-const NRF_RAM_BYTES: usize = 256 * 1024;
-#[cfg(not(feature = "tft"))]
+/// Total SRAM the M33 app core sees — what the FLPR carve leaves, taken straight from the generated
+/// contract (`build.rs` derives the carved `memory.x` and this constant from the same `FLPR_RAM_BASE`,
+/// so the budget can't fork from the linker map).
 const NRF_RAM_BYTES: usize = ls021_flpr::M33_RAM_BYTES;
 /// Headroom kept free under the resident statics for the main stack + embassy's executor/task arenas
 /// (statics grow up from the RAM base, the stack down from the top). This is only the build-time
@@ -367,26 +319,17 @@ const BLE_RESIDENT: usize = 0;
 /// The resident set that must coexist during a redraw (see the table above).
 const RESIDENT_BYTES: usize = FB_BYTES
     + core::mem::size_of::<RowDiff<FRAME_H>>() // the self-diffing present store (#201, 1.28 KB)
-    + BAND_RESERVE
     + MAP_RESIDENT
     + BLE_RESIDENT;
-/// The RGB565 band scratch the budget reserves: `BAND_BYTES` on the ST7789 path, **zero** on the FLPR
-/// path (it packs the framebuffer straight to the wire — see [`BAND_ROWS`]).
-#[cfg(feature = "tft")]
-const BAND_RESERVE: usize = BAND_BYTES;
-#[cfg(not(feature = "tft"))]
-const BAND_RESERVE: usize = 0;
 const _: () = assert!(
     RESIDENT_BYTES + STACK_RESERVE <= NRF_RAM_BYTES,
-    "nRF resident set (framebuffer + RowDiff + band + map plane [App/MapCache/MapTables/RouteCache/RouteIndex] + BLE stack [MPSL/SDC mem/host arena]) + stack reserve overruns RAM — re-trim the `nrf-mem` caps (#270 culled them so map + BLE share the 256 KB DK; the LM20 relaxes everything)"
+    "nRF resident set (framebuffer + RowDiff + map plane [App/MapCache/MapTables/RouteCache/RouteIndex] + BLE stack [MPSL/SDC mem/host arena]) + stack reserve overruns RAM — re-trim the `nrf-mem` caps (#270 culled them so map + BLE share the 256 KB DK; the LM20 relaxes everything)"
 );
 
 /// The resident device-native RGB222 framebuffer: one byte per pixel over the 240×320 panel
 /// (`FB_BYTES` = 75 KB), in `.bss`. [`App::render_map`](obc_app::App::render_map) quantizes into it on
-/// store ([`FbDevice64`]). On the **ST7789** path it is borrowed into the [`Display`] behind [`BUS`]
-/// and the band push expands it back to RGB565, so the two planes reach it only under that mutex (no
-/// aliasing, no torn frame). On the default **FLPR** path it is owned by the `Ls021Flpr` panel — the
-/// map plane renders into it and `push_frame` packs it straight to the LS021 wire.
+/// store ([`FbDevice64`]). It is owned by the `Ls021Flpr` panel — the map plane renders into it and
+/// `push_frame` packs it straight to the LS021 wire (the FLPR reads it directly out of shared SRAM).
 static mut FB: [u8; FB_BYTES] = [0; FB_BYTES];
 
 /// The **self-diffing present** store: one 32-bit hash per framebuffer row of the last-pushed frame,
@@ -638,10 +581,9 @@ async fn vcom_tx_task(mut tx: BufferedUarteTx<'static, peripherals::SERIAL20>) {
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
     // Run the M33 at its full **128 MHz** — embassy-nrf's `Config::default()` boots it at only
-    // 64 MHz (`ClockSpeed::CK64`), which halves the per-band RGB222->RGB565->12-bit conversion *and*
-    // keeps the high-speed SERIAL00 SPIM off the clock domain it needs for 32 MHz. Both directly
-    // gate the banded push (the visible top-to-bottom fill), so this is the single biggest frame-time
-    // lever on this panel.
+    // 64 MHz (`ClockSpeed::CK64`), which halves the M33's map render (the CPU-bound `render_map` +
+    // the RGB222 quantise into the framebuffer). The FLPR then scans that framebuffer itself, so the
+    // render is the M33's biggest per-frame cost — this is the single biggest frame-time lever.
     let p = {
         let mut config = embassy_nrf::config::Config::default();
         config.clock_speed = embassy_nrf::config::ClockSpeed::CK128;
@@ -768,58 +710,7 @@ async fn main(_spawner: Spawner) {
             info!("sensors: SAM-M10Q + BMP581 task spawned on TWIM30 (SDA P0.01 / SCL P0.02, TX-Ready P0.03)");
         }
 
-        // ============= ST7789 backend (opt-in `tft`): two-plane display + input/overlay =============
-        // Build the panel + the shared `&'static` two-plane state, spawn the input/overlay plane (which
-        // owns the bulge re-push), and hand the map plane back just the `bus` for the unified present.
-        // Display on the (flash-freed) P2 header — CS idles HIGH and the driver pulses it low per
-        // transaction (the warm-reset-safe CSX framing — see `st7789::St7789::transaction`); RST idles
-        // high. SERIAL00 write-only SPIM at **32 MHz** (the max SERIAL00 reaches on the MCU-domain P2
-        // pins) so a full-frame banded push is ~38 ms; drop to `M16` if the jumpered bring-up bus
-        // sparkles. The shared state is parked in `.bss` + written **in place** rather than via
-        // `StaticCell`, whose one-shot flag can panic "already full" on a warm reset.
-        #[cfg(feature = "tft")]
-        let mut display = {
-            let cs = Output::new(p.P2_05, Level::High, OutputDrive::Standard);
-            let dc = Output::new(p.P2_03, Level::Low, OutputDrive::Standard);
-            let rst = Output::new(p.P2_00, Level::High, OutputDrive::Standard);
-            let mut config = spim::Config::default();
-            config.frequency = spim::Frequency::M32;
-            let spi = spim::Spim::new_txonly(p.SERIAL00, Irqs, p.P2_01, p.P2_02, config);
-            // SAFETY: sole references to BAND / FB; hereafter both are reached only through the bus
-            // mutex (the two planes never touch them concurrently → no aliasing, no torn frame).
-            let band = unsafe { &mut *core::ptr::addr_of_mut!(BAND) };
-            let mut panel = St7789::new(spi, dc, rst, cs, Delay, band);
-            panel.init();
-            let fb: &'static mut [u8] = unsafe { &mut *core::ptr::addr_of_mut!(FB) };
-            // SAFETY: sole reference to ROW_DIFF; held by `Display` behind the bus mutex for the rest of
-            // the program (the map plane is its only writer), never aliased.
-            let diff: &'static mut RowDiff<FRAME_H> = unsafe { &mut *core::ptr::addr_of_mut!(ROW_DIFF) };
-            info!("obc-fw-nrf54l N5: ST7789 up ({}x{}); two-plane input + map", FRAME_W, FRAME_H);
-
-            static mut BUS: MaybeUninit<Mutex<CriticalSectionRawMutex, Display>> = MaybeUninit::uninit();
-            // SAFETY: sole writer; initialised here before the `&'static` is shared with the input
-            // plane, never written again (single executor builds it, two planes only read it).
-            let bus: &'static Mutex<CriticalSectionRawMutex, Display> =
-                unsafe { init_static(core::ptr::addr_of_mut!(BUS), Mutex::new(Display { panel, fb, diff })) };
-            static mut INPUT_PLANE: MaybeUninit<BlockingMutex<CriticalSectionRawMutex, RefCell<InputPlane>>> =
-                MaybeUninit::uninit();
-            // SAFETY: as BUS — sole writer, initialised before shared, never rewritten.
-            let input_plane: &'static BlockingMutex<CriticalSectionRawMutex, RefCell<InputPlane>> = unsafe {
-                init_static(core::ptr::addr_of_mut!(INPUT_PLANE), BlockingMutex::new(RefCell::new(InputPlane::new())))
-            };
-
-            let input_spawner = planes::EXECUTOR_INPUT.start(interrupt::SWI01);
-            input_spawner.spawn(defmt::unwrap!(planes::input_overlay_task(
-                buttons,
-                input_plane,
-                bus,
-                planes::GESTURES.sender()
-            )));
-            info!("input plane: SWI01 interrupt executor @ P3 (preempts the map render); map plane: thread mode");
-            planes::MapDisplay { bus, input_plane }
-        };
-
-        // ============= FLPR LS021 backend (default; ST7789 is `--features tft`) =============
+        // ============= FLPR LS021 backend: two-plane display + input =============
         // The map plane owns the `Ls021Flpr` panel directly (it scans a whole frame per push, so there
         // is no partial-window overlay to serialise — no bus mutex). The M33 configures every line the
         // FLPR drives (held as outputs for the program's life); `com_task` + the gesture `input_task`
@@ -828,7 +719,6 @@ async fn main(_spawner: Spawner) {
         // ⚠️ These five P1 gate/BSP lines **must match `src/flpr/flpr_scan.c`'s masks** — confirm
         // each is broken out on your DK and remap all three together if not (the source bus, BCK, and
         // COM stay on P2).
-        #[cfg(not(feature = "tft"))]
         let mut display = {
             // Gate + frame lines (P1) — GSP P1.00, GCK P1.01, GEN P1.12, INTB P1.10; held configured.
             // The DK breaks out only P1.00–14 (P1.02/03 are NFC, off-limits), which is one pin short
@@ -953,7 +843,7 @@ async fn main(_spawner: Spawner) {
             }
         };
 
-        // microSD on its own SPIM (SERIAL22, P1 header — separate from the display bus on SERIAL00/P2).
+        // microSD on its own SPIM (SERIAL22, P1 header — separate from the FLPR panel lines).
         // Init ≤400 kHz (SD spec); `sd::init` re-clocks to 8 MHz once the card answers. CS idles HIGH,
         // then `init` holds it LOW for the session (the per-byte-CS workaround — see `sd::NoCs`).
         // `orc = 0xFF` so any over-read clocks the SD idle byte.
@@ -962,13 +852,10 @@ async fn main(_spawner: Spawner) {
         sd_cfg.orc = 0xFF;
         let sd_spi = spim::Spim::new(p.SERIAL22, Irqs, p.P1_11, p.P1_07, p.P1_06, sd_cfg);
         // CS is a plain GPIO held LOW for the session (the `sd::NoCs` workaround), not a SPIM-bus
-        // pin — so it can sit on any free GPIO. ST7789 build (`--features tft`): P1.12. Default FLPR:
-        // P1.12 carries GEN, and the DK's P1.00–14 are one pin short, so CS moves to **P0.00** (M33
-        // GPIO, the same port + drive as BTN3) — one jumper on the SD breakout. The SPIM bus pins
-        // (SCK/MISO/MOSI on P1.11/07/06) are unchanged in both builds.
-        #[cfg(feature = "tft")]
-        let sd_cs = Output::new(p.P1_12, Level::High, OutputDrive::Standard);
-        #[cfg(not(feature = "tft"))]
+        // pin — so it can sit on any free GPIO. P1.12 carries the FLPR's GEN line, and the DK's
+        // P1.00–14 are one pin short, so CS sits on **P0.00** (M33 GPIO, the same port + drive as
+        // BTN3) — one jumper on the SD breakout. The SPIM bus pins (SCK/MISO/MOSI on P1.11/07/06)
+        // are unchanged.
         let sd_cs = Output::new(p.P0_00, Level::High, OutputDrive::Standard);
         let storage = sd::init(sd_spi, sd_cs);
         // A missing/bad card is fatal — the map streams from it. The display is already up (brought

@@ -548,9 +548,8 @@ pub(crate) async fn run_app(
             }
         }
 
-        // This frame's hold-bulge state, sampled once: the live row span on both backends (the
-        // present goes around it); the dirty edge only on the FLPR (whose map plane owns the bulge
-        // re-push — on ST7789 the input/overlay plane consumes that edge itself).
+        // This frame's hold-bulge state, sampled once: the live row span (the present goes around it)
+        // and the dirty edge the map plane owns the bulge re-push off of.
         //
         // The bulge pushes **first in the pass**, before the store lock, the SD reconcile, and any
         // screen redraw (#348 follow-up, widened here): a fired hold usually navigates — and a
@@ -558,8 +557,7 @@ pub(crate) async fn run_app(
         // pop queued behind the new screen's render (~40–300 ms) or, worse, the whole SD save,
         // and the 220 ms pop expired unseen ("sometimes it just snaps"). Bulge-first, the pop's
         // attack lands on glass within ~10 ms of the fire — composited over the *old* fb for that
-        // one frame, which is correct: that is what is on glass until the present below. ST7789:
-        // no-op (its input plane pushes the bulge itself).
+        // one frame, which is correct: that is what is on glass until the present below.
         let (overlay_dirty, overlay_span) = display.poll_overlay();
         display.present_bulge(overlay_span, overlay_dirty).await;
 
@@ -991,10 +989,10 @@ pub(crate) async fn run_app(
                     "map: reader build failed this frame (flaky SD?) — kept frame, retrying redraw next frame"
                 );
             } else {
-                // Render the whole frame into the resident RGB222 plane, then present it — the single
-                // per-backend boundary, behind `MapDisplay::render_present` (ST7789 bands the whole
-                // frame under its bus lock; the FLPR scans it, going *around* a live bulge's rows so the
-                // composite below paints them). `render_map_timed` threads `InstantClock` so the stats
+                // Render the whole frame into the resident RGB222 plane, then present it — the
+                // display boundary, behind `MapDisplay::render_present` (the FLPR scans it, going
+                // *around* a live bulge's rows so the composite below paints them).
+                // `render_map_timed` threads `InstantClock` so the stats
                 // carry the collect/sort/draw timings; the hold bulge is **not** composited here — it
                 // rides `present_bulge` on its own plane.
                 //

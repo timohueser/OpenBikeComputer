@@ -91,9 +91,9 @@ pub struct RawFb<'a, P: Pack> {
 pub type Framebuffer565<'a> = RawFb<'a, PackRgb565>;
 
 /// The nRF's device-native **RGB222** full-frame plane: one byte per pixel (see [`PackDevice64`]),
-/// so the 240×320 frame is 75 KB and fits on-chip SRAM. The banded display push reads it back row by
-/// row, expanding each byte to RGB565 ([`device64_to_rgb565`]) for the ST7789. This is the device
-/// path the project ships on.
+/// so the 240×320 frame is 75 KB and fits on-chip SRAM. The overlay composite reads it back row by
+/// row, expanding each byte to RGB565 ([`device64_to_rgb565`]) to fill the overlay window (and the
+/// simulator expands it the same way). This is the device path the project ships on.
 pub type FbDevice64<'a> = RawFb<'a, PackDevice64>;
 
 impl<'a, P: Pack> RawFb<'a, P> {

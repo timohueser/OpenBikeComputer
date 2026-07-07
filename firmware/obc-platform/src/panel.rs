@@ -1,10 +1,10 @@
 //! [`Band`] — a frame-absolute draw view of one band (or window) of the frame — plus the
 //! [`composite_overlay_window`] overlay helper.
 //!
-//! The boards this project ships on have no scan-out engine, so a frame is pushed to the panel a
-//! **band** (a few rows) at a time over SPI/DMA. Each board's `DisplayDriver` owns that push (ST7789:
-//! pack RGB222 → 12-bit RGB444 + SPIM-DMA a CASET/RASET window; the FLPR/LS021B7DD02: pack to the
-//! source-line wire bytes). This module supplies the board-agnostic pieces both backends share.
+//! A frame — or a partial overlay window — is reformatted a **band** (a few rows) at a time. Each
+//! board's `DisplayDriver` owns the push to glass (the FLPR/LS021B7DD02 packs device-64 to the
+//! source-line wire bytes; the simulator expands to RGB565). This module supplies the board-agnostic
+//! pieces they share.
 //!
 //! [`Band`] makes "render the whole frame, band at a time" invisible to the drawing code: it wraps
 //! one band's scratch slice as a [`Framebuffer565`] with the band's `y0` baked in, yet reports the

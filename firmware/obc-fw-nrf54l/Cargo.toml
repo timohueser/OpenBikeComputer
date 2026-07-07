@@ -3,7 +3,7 @@ name = "obc-fw-nrf54l"
 version = "0.1.0"
 edition = "2021"
 publish = false  # board firmware — not published to crates.io
-description = "nRF54L15-DK board firmware for OpenBikeComputer — the real hardware target (Cortex-M33 + ST7789 EYESPI). Brings the shared obc-app up on glass; board-agnostic glue stays in obc-platform / obc-app."
+description = "nRF54L15-DK board firmware for OpenBikeComputer — the real hardware target (Cortex-M33 + the reflective LS021B7DD02 memory-LCD driven by the FLPR coprocessor). Brings the shared obc-app up on glass; board-agnostic glue stays in obc-platform / obc-app."
 
 # Standalone crate with its own (empty) workspace table so the firmware/ host
 # workspace — which builds its members for the host target — ignores this crate.
@@ -15,12 +15,11 @@ description = "nRF54L15-DK board firmware for OpenBikeComputer — the real hard
 # Default build = the **real map/ride app on the reflective LS021B7DD02 panel** (issues #165 / #173),
 # driven by the FLPR (the VPR RISC-V coprocessor): mount the SD card, stream the `.obcm`, render it
 # into the resident RGB222 framebuffer through the shared `obc-app`, and have the FLPR scan the whole
-# frame to the LS021 in one push. This is the shipping target path (buttons #126, sensors/GPX #127).
-# LS021 is the *baseline* — it's selected by the **absence** of `tft` — so every FLPR/LS021 `cfg` in
-# the crate keys on `not(feature = "tft")`. Like the old `panel-ls021` opt-in it pulls the `build.rs`
-# carve-out (the M33 shrinks to 244 KB; the top 12 KB is the FLPR image + handshake page) and
-# cross-compiles the RISC-V blob, so the default build needs a RISC-V gcc (`brew install
-# riscv64-elf-gcc`) and the Board-Configurator settings (3.3 V VDDM, ext-memory-off, VCOM HWFC off).
+# frame to the LS021 in one push. This is the shipping target path (buttons #126, sensors/GPX #127) —
+# the LS021/FLPR panel is the only display path. `build.rs` always emits the carve-out (the M33
+# shrinks to 248 KB; the top 8 KB is the FLPR image + handshake page) and cross-compiles the RISC-V
+# blob, so the build needs a RISC-V gcc (`brew install riscv64-elf-gcc`) and the Board-Configurator
+# settings (3.3 V VDDM, ext-memory-off, VCOM HWFC off).
 # The default build also drives the **real sensors** (issue #218): a u-blox SAM-M10Q GPS + a Bosch
 # BMP581 altimeter on a shared TWIM30 I²C bus (P0.01/02/03). `obc-platform/sensor-link` pulls the
 # embassy-sync `Signal` hand-off the board's `sensors::sensor_task` publishes through. Real sensors
@@ -44,13 +43,6 @@ cs-single-core = ["cortex-m/critical-section-single-core"]
 # *source* override, orthogonal to the panel backend; `sensor-link` stays linked (its Signals just go
 # unused) since Cargo can't disable a default feature. See issue #218.
 synth = []
-
-# `tft` selects the **ST7789** EYESPI panel (240×320) instead of the LS021 — the original bring-up
-# display, kept as an opt-in second backend. It is a *backend select* for `src/main.rs`: the
-# hand-rolled `St7789` SPIM driver (`src/st7789.rs`) replaces the FLPR `Ls021Flpr` backend, the app
-# renders into the same RGB222 plane and the band push expands it to RGB565 over SPI. No FLPR carve
-# and no RISC-V toolchain — it links the full 256 KB. Build with `cargo run --release --features tft`.
-tft = []
 
 # Stream fake GPS / altimeter / compass from a host over the **VCOM UART** (issue #127). The
 # nRF54L15 has no USB peripheral, so the debug-sensor /
@@ -100,8 +92,8 @@ embassy-nrf = { version = "0.11.0", features = ["defmt", "nrf54l15-app-s", "time
 # the SWI00 vector, see the module doc). `platform-cortex-m` for the Cortex-M arch backend.
 embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "executor-thread", "executor-interrupt", "defmt"] }
 # Cross-executor sync (#126): the lock-free `Channel` carrying recognised gestures from the
-# high-priority input plane to the thread-mode map plane, the async `Mutex` guarding the shared
-# ST7789/framebuffer bus, and the blocking `Mutex` over the `InputPlane`. ^0.8.0 is what the
+# high-priority input plane to the thread-mode map plane, the async `Mutex` guarding the shared SD +
+# settings store, and the blocking `Mutex` over the `InputPlane`. ^0.8.0 is what the
 # embassy-nrf 0.11 ecosystem resolves.
 embassy-sync = { version = "0.8.0", features = ["defmt"] }
 # `Timer` + the embassy-time backend (driven by `time-driver-grtc` above). `defmt-timestamp-uptime`
@@ -125,9 +117,9 @@ panic-probe = { version = "1.0", features = ["print-defmt"] }
 cortex-m = { version = "0.7", features = ["inline-asm"] }
 cortex-m-rt = "0.7"
 
-# embedded-hal 1.0 traits (SpiBus / OutputPin / DelayNs) the hand-rolled ST7789 panel
-# backend is generic over; embassy-nrf's `Spim` + `Output` and embassy-time's `Delay`
-# implement them. (#122)
+# embedded-hal 1.0 digital traits: `sd::NoCs` implements `ErrorType` / `OutputPin` for the
+# held-low chip-select the embedded-sdmmc `SpiDevice` wants (the per-byte-CS workaround).
+# embedded-hal-bus (below) also re-exports these; the direct dep pins the version they unify on.
 embedded-hal = "1.0"
 # `NorFlash`/`ReadNorFlash` — the traits embassy-nrf's `Rramc` (RRAM controller) driver implements;
 # the persistent settings store (#193) reads/writes its 16-byte blob to the carved RRAM page through
@@ -135,8 +127,8 @@ embedded-hal = "1.0"
 embedded-storage = "0.3"
 
 # The board-agnostic glue: the `Panel` banded-display seam + the `Band` frame-absolute draw view
-# the ST7789 backend implements, and `Framebuffer565`'s `RawFb`/`Pack` the band reuses (issue
-# #122). Pulls obc-app/route/reader transitively — all no_std, all defmt-free. `debug-link` stays
+# the LS021 backend implements, and `Framebuffer565`'s `RawFb`/`Pack` the overlay composite reuses
+# (issue #122). Pulls obc-app/route/reader transitively — all no_std, all defmt-free. `debug-link` stays
 # off (no embassy-sync) until the sensor stream at N6.
 obc-platform = { path = "../obc-platform" }
 # The shared text renderer — `draw_text` + the Terminus `Font` tiers every on-device screen uses. (#122)
