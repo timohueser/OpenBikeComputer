@@ -141,6 +141,15 @@
                     "minimum": 0,
                     "maximum": 255,
                     "default": 0
+                },
+                "line_style": {
+                    "description": "Line stroke style (OBCM v10, epic #556): \"solid\" (a flat stroke, the default) or \"dashed\". Ignored for polygons.",
+                    "enum": ["solid", "dashed"],
+                    "default": "solid"
+                },
+                "color2": {
+                    "description": "Optional secondary color (RGB565), specified exactly like `color`. Its role depends on line_style and geometry (OBCM v10, epic #556): a casing under a solid line, the base stripe of a dashed railway, or a polygon ring outline. Absent means no secondary color.",
+                    "$ref": "#/$defs/color"
                 }
             }
         },

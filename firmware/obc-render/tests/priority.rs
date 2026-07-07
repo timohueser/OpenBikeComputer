@@ -34,8 +34,8 @@ fn priority_one_survives_saturation_across_chunks() {
     // left and right halves of the screen respectively, so their colors never
     // overlap and can be counted independently.
     let styles: &[Style] = &[
-        (1, 0, LOW_565, 1, 4),  // priority 4 (lowest) — the bulk, in the early chunk
-        (2, 1, HIGH_565, 1, 1), // priority 1 (highest) — one polygon, in the late chunk
+        (1, 0, LOW_565, 1, 4, false, None), // priority 4 (lowest) — the bulk, in the early chunk
+        (2, 1, HIGH_565, 1, 1, false, None), // priority 1 (highest) — one polygon, in the late chunk
     ];
 
     // Early chunks (the four NW leaves, all in the left/upper quadrant): NUM_LOW small
