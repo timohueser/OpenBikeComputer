@@ -5,7 +5,7 @@ description: How OpenStreetMap data becomes a device-ready OBCM map (the obc-pac
 
 # Packer & routing
 
-Two jobs bracket the device's own work. **Packing** turns raw OpenStreetMap data into a styled `.obcm` map — a heavy job, run once on a computer, and (as of v8) it also bakes a [routable navigation graph](#building-the-navigation-graph) into the map. **Routing** is the lighter on-device work: turning a GPX you upload into a navigable `.obcr`, **map-matching** your live position onto it as you ride, and — new this iteration — **computing** a route to a POI on the device itself over that baked graph. So "routing" here is mostly *following* a line you brought, with a memory-bounded bit of *pathfinding* when you ask the device to reach a POI on its own.
+Two jobs bracket the device's own work. **Packing** turns raw OpenStreetMap data into a styled `.obcm` map — a heavy job, run once on a computer, and (as of v8) it also bakes a [routable navigation graph](#building-the-navigation-graph) into the map — one that v9 makes [bike-type-aware](#weighting-the-graph-bike-profiles). **Routing** is the lighter on-device work: turning a GPX you upload into a navigable `.obcr`, **map-matching** your live position onto it as you ride, and — new this iteration — **computing** a route to a POI on the device itself over that baked graph. So "routing" here is mostly *following* a line you brought, with a memory-bounded bit of *pathfinding* when you ask the device to reach a POI on its own.
 
 The packer ([`obc-pack`](src:firmware/obc-pack)) lives in the same Rust workspace as the device firmware and depends on the same [`obc-reader`](src:firmware/obc-reader), so the program that *writes* the format and the program that *reads* it can never disagree about a byte.
 
@@ -335,7 +335,7 @@ The subset grammar, the flag semantics, and the quarter-hour encoding live in [`
 The map so far is geometry the device *draws*. To let the device *route* — compute its own way to a POI — the packer builds one more thing the raw data doesn't contain: a **navigation graph**. Highways in OSM are ways, and the geometry pipeline turns them into styled polylines the moment it resolves their coordinates — dropping the node ids as it goes. But those node ids are the topology: two roads that *share* an OSM node meet there. This stage keeps the node ids for routable ways and recovers the graph from the shared ones. It's serialized into the map's [navigation-graph section](../formats/#the-navigation-graph-a-routable-network), and it's **always built** — a config-free, always-present section like the POIs, so packing the same extract always yields the same graph (there's no toggle to forget).
 
 <figure class="fig">
-<svg viewBox="0 0 720 300" role="img" aria-label="Building the navigation graph in three steps. First, a class-and-access filter keeps most highway ways but excludes motorway and trunk and their links, and hard-excludes anything tagged access equals no or private. Second, junction detection: a node touched by two or more routable ways, or sitting at a way's endpoint, becomes a junction; interior shape points do not. Third, each way is split at its junctions into edges, duplicate and reversed parallel ways are deduplicated by an unordered endpoint pair plus geometry key, and each edge's great-circle length becomes its cost. The result is junction nodes joined by edges.">
+<svg viewBox="0 0 720 300" role="img" aria-label="Building the navigation graph in three steps. First, a bike-legality filter keeps most highway ways but excludes motorway and its links, excludes trunk unless it is tagged bicycle equals yes, and hard-excludes anything tagged access equals no or private, bicycle equals no, or motorroad equals yes. Second, junction detection: a node touched by two or more routable ways, or sitting at a way's endpoint, becomes a junction; interior shape points do not. Third, each way is split at its junctions into edges, duplicate and reversed parallel ways are deduplicated by an unordered endpoint pair plus geometry key, and each edge's great-circle length becomes its cost. The result is junction nodes joined by edges.">
   <defs>
     <marker id="aNG" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
   </defs>
@@ -345,12 +345,12 @@ The map so far is geometry the device *draws*. To let the device *route* — com
   <rect class="d-panel" x="24" y="52" width="200" height="120" rx="10" />
   <text class="d-tag" x="40" y="72">① routable? highway + access</text>
   <g font-family="var(--mono)">
-    <text class="d-sub" x="40" y="94"  style="font-size:9.5px;fill:#2c5230">residential · track · path ✓</text>
-    <text class="d-sub" x="40" y="110" style="font-size:9.5px;fill:#2c5230">cycleway · footway · service ✓</text>
-    <text class="d-sub" x="40" y="128" style="font-size:9.5px;fill:#a9501c">motorway · trunk (+ _link) ✗</text>
-    <text class="d-sub" x="40" y="144" style="font-size:9.5px;fill:#a9501c">access = no | private ✗</text>
+    <text class="d-sub" x="40" y="92"  style="font-size:9px;fill:#2c5230">residential · track · path · cycleway ✓</text>
+    <text class="d-sub" x="40" y="107" style="font-size:9px;fill:#2c5230">footway · steps · service ✓ (walk a bike)</text>
+    <text class="d-sub" x="40" y="125" style="font-size:9px;fill:#a9501c">motorway ✗ · trunk ✗ unless bicycle=yes</text>
+    <text class="d-sub" x="40" y="140" style="font-size:9px;fill:#a9501c">access=no|private · bicycle=no ✗</text>
   </g>
-  <text class="d-sub" x="40" y="164" style="font-size:8.5px">independent of render styling</text>
+  <text class="d-sub" x="40" y="162" style="font-size:8.5px">independent of render styling</text>
 
   <!-- 2 junction detection -->
   <line class="d-flow" x1="228" y1="112" x2="264" y2="112" marker-end="url(#aNG)" />
@@ -383,17 +383,27 @@ The map so far is geometry the device *draws*. To let the device *route* — com
   <text class="d-sub" x="360" y="266" text-anchor="middle" style="font-size:10px">junction <b>nodes</b> (dense pack-run ids) joined by undirected <b>edges</b></text>
   <text class="d-sub" x="360" y="282" text-anchor="middle" style="font-size:9px">→ serialized as the map's §8 navigation graph</text>
 </svg>
-<figcaption>The <b>routable predicate</b> reads only a way's <code>highway</code> and <code>access</code> tags — never the style config, so a road can be drawn but not routable, or the reverse. Most classes are in; <b>motorway and trunk</b> (and their <code>_link</code> ramps) are out — a bike router must never route onto a motorway — and <code>access=no</code>/<code>private</code> is a hard exclude on any class. <b>Junction detection</b> is pure counting: a node touched by two-or-more routable ways is a junction, as is any way's first or last node; a shape point touched once stays inside an edge. Each way is then <b>split</b> at its junctions into edges whose interiors carry no junction, and duplicate or reversed-parallel ways <b>collapse</b> — the dedup key is the unordered endpoint pair <i>plus</i> the geometry, so two genuinely different roads between the same pair both survive. Each edge's <b>cost</b> is its great-circle length in metres, summed with the very same helper the route format uses, so on-device costs can't drift from measured distance.</figcaption>
+<figcaption>The <b>routable predicate</b> reads only a way's routing tags (<code>highway</code>, <code>access</code>, <code>bicycle</code>, <code>motorroad</code>) — never the style config, so a road can be drawn but not routable, or the reverse. Most classes are in; <b>motorway</b> (and its <code>_link</code> ramps) is always out — a bike router must never route onto one — while <b>trunk</b> is out <i>unless</i> the way is explicitly tagged <code>bicycle=yes</code>. <code>access=no</code>/<code>private</code>, <code>bicycle=no</code>/<code>use_sidepath</code>, and <code>motorroad=yes</code> are hard excludes on any class; <code>footway</code> and <code>steps</code> stay in, because it is legal to <i>walk</i> a bike there (preference, not legality, is the router's job — see [profiles](#weighting-the-graph-bike-profiles) below). <b>Junction detection</b> is pure counting: a node touched by two-or-more routable ways is a junction, as is any way's first or last node; a shape point touched once stays inside an edge. Each way is then <b>split</b> at its junctions into edges whose interiors carry no junction, and duplicate or reversed-parallel ways <b>collapse</b> — the dedup key is the unordered endpoint pair <i>plus</i> the geometry <i>plus</i> the way-kind, so two genuinely different roads between the same pair (even a cycleway drawn over a road) both survive. Each edge's <b>cost</b> is its great-circle length in metres, summed with the very same helper the route format uses, so on-device costs can't drift from measured distance. A final hygiene pass <b>prunes islands</b> — tiny disconnected components (fewer than <code>min_component_edges</code>, default 50, edges) are dropped so the device can't snap a rider onto an unroutable islet — and long edges are split at synthetic junctions so every neighbour delta and cost fits the §8 record's <code>int16</code>/<code>uint16</code> fields.</figcaption>
 </figure>
+
+A way is routable exactly when it can be *classified* — the same pass that decides legality also computes the edge's **way-kind** byte (its highway + surface class, [below](#weighting-the-graph-bike-profiles)), so `is_routable` is just `classify(tags).is_some()`:
 
 ```rust
 pub fn is_routable<'a, I: IntoIterator<Item = (&'a str, &'a str)>>(tags: I) -> bool {
-    let (mut highway, mut access) = (None, None);
-    for (k, v) in tags {
-        match k { "highway" => highway = Some(v), "access" => access = Some(v), _ => {} }
-    }
-    if matches!(access, Some("no") | Some("private")) { return false; } // hard exclude
-    highway.is_some_and(|h| ROUTABLE_HIGHWAY.contains(&h))              // + not motorway/trunk
+    classify(tags).is_some()
+}
+
+/// The packed way-kind byte, or None when the way is bike-illegal.
+pub fn classify<'a, I: IntoIterator<Item = (&'a str, &'a str)>>(tags: I) -> Option<u8> {
+    // ... read highway / surface / bicycle / access / motorroad from tags ...
+    if matches!(access, Some("no" | "private")) { return None; }            // hard excludes
+    if motorroad == Some("yes") { return None; }
+    if matches!(bicycle, Some("no" | "use_sidepath")) { return None; }
+    let hclass = match highway? {
+        "trunk" | "trunk_link" if bicycle == Some("yes") => 13,             // else excluded, like motorway
+        other => highway_class(other)?,                                     // None ⇒ not routable (motorway, …)
+    };
+    Some((surface_class(surface) << 5) | hclass)                            // way_kind = surface<<5 | highway
 }
 ```
 
@@ -403,7 +413,36 @@ A real pack run logs the graph next to the POI counts, so a glance at the build 
 nav graph: 12874 nodes, 15903 edges, 8421.6 km
 ```
 
-The in-memory build — the routable-class set, junction detection, edge split and dedup, and great-circle lengths — lives in [`obc-pack/src/nav.rs`](src:firmware/obc-pack/src/nav.rs); turning that graph into the tiled, chunked [§8 section](../formats/#the-navigation-graph-a-routable-network) (the node quadtree, the inline-adjacency records, the byte-addressed edge pool, and the densify + long-edge split that keep every record inside one chunk) is the serializer's job, described in [`OBCM_Spec.md` §8](src:OBCM_Spec.md). What the device *does* with it — snap, weighted A\*, emit — is [the router seam](../architecture/#on-device-routing-the-router-seam).
+The in-memory build — the way-kind classification, the bike-legality filter, junction detection, edge split and dedup, island pruning, and great-circle lengths — lives in [`obc-pack/src/nav.rs`](src:firmware/obc-pack/src/nav.rs); turning that graph into the tiled, chunked [§8 section](../formats/#the-navigation-graph-a-routable-network) (the node quadtree, the inline-adjacency records, the byte-addressed edge pool, and the densify + long-edge split that keep every record inside one chunk) is the serializer's job, described in [`OBCM_Spec.md` §8](src:OBCM_Spec.md). What the device *does* with it — snap, profile-weighted A\*, emit — is [the router seam](../architecture/#on-device-routing-the-router-seam).
+
+### Weighting the graph: bike profiles
+
+The graph so far is bike-*legal* but undifferentiated: every edge costs its metres, so the device would route a road bike down a muddy singletrack if it were a few metres shorter. What makes an MTB route differ from a road route — *why your MTB route differs* — is two more things the packer bakes in. Each edge carries a **way-kind** byte, and the section opens with a small table of **bike profiles**; on the device, A\* multiplies each edge's raw metres by the chosen profile's weight for that edge's way-kind, so "shortest" becomes "cheapest *for this bike*."
+
+**Way-kind** is one byte per edge, `way_kind = (surface_class << 5) | highway_class` — a 5-bit **highway class** (0 `cycleway`, 1 `path`, 2 `track`, 3 `footway`, … 10 `tertiary`, 11 `secondary`, 12 `primary`, and 13 `trunk_cycl` for a bike-legal trunk) and a 3-bit **surface class** (`paved`, `compacted`, `gravel`, `dirt`, `rough`, `cobbles`, `grass`, plus `unknown`). Both tables are **locked** and config-free — the same OSM extract always yields the same bytes — and they are the *single vocabulary* profiles are written against. The full canonical table is [`OBCM_Spec.md` §8.6](src:OBCM_Spec.md) (mirrored from the one source of truth, `nav.rs`); the device never sees a raw OSM tag, only this byte.
+
+A **profile** is a display name plus a multiplier for every highway class and every surface class, stored in `1/16` fixed-point (so `16` = 1.0×, and `0` means **forbidden** — that class is dropped from the profile's graph entirely). The map carries 1–8 of them (the default pack ships four); the device's effective weight for an edge is `(highway_mult × surface_mult) >> 4`. Here are the four default profiles' highway weights for a handful of classes (the [preset](src:packer/presets/default.json) has the rest, plus the surface axis):
+
+| highway class | Road | Gravel | MTB | Touring |
+|---|---|---|---|---|
+| cycleway | 1.0 | 1.1 | 1.3 | 1.0 |
+| primary  | 1.8 | 2.2 | 3.5 | 2.6 |
+| track    | 6.0 | 1.2 | 1.0 | 1.6 |
+| path     | 7.0 | 1.5 | 1.0 | 2.0 |
+| steps    | forbidden | forbidden | 3.0 | 6.0 |
+
+Read a column and you can predict the routing. **Worked example:** suppose a rider can reach the same destination two ways — a **1 km stretch of `primary`** road, or a **2 km `cycleway`** that loops around it (both `paved`, so each profile's surface weight scales both sides equally and drops out of the comparison). Multiply length by the highway weight:
+
+- **Road** — primary `1000 × 1.8 = 1800`, cycleway `2000 × 1.0 = 2000`. Road takes the **primary** (1800 < 2000): a road cyclist would rather ride 1 km of quiet main road than 2 km out of the way.
+- **MTB** — primary `1000 × 3.5 = 3500`, cycleway `2000 × 1.3 = 2600`. MTB takes the **cycleway** (2600 < 3500): to the MTB profile the primary is so heavily penalised that the 2× detour is still cheaper.
+
+Same two roads, same start and finish, opposite choice — that difference is entirely the profile, and you could have called it from the table above.
+
+**One rule constrains every profile: no weight below 1.0×** (a non-zero multiplier is always ≥ `16`). The on-device A\* uses a great-circle heuristic, which is only admissible — only *safe to trust* — if no edge can cost less than its straight-line distance. A weight under 1.0× would make some edge cheaper than the crow flies and quietly break the ε bound. So the packer **rejects** a config with a non-zero weight below 1.0 (naming the A\* bound in the error), and the reader **clamps** one up to 1.0× defensively. Which is what keeps **ε** meaningful: the router's `f = g + ε·h` with ε = 1.3 returns a path at most 1.3× the *cheapest route under the profile* — not the geometrically shortest, the cheapest once your bike's weights are applied. (When even the tight 1.3× bound exhausts the device's fixed search table, ε **escalates** — 1.3 → 2.0 → 3.0 — to reach farther in the same memory; the bound is then the successful rung's ε. That range mechanism lives with [the router seam](../architecture/#on-device-routing-the-router-seam).)
+
+Which profile the device uses is a single **Bike-type** setting — a bare index into the loaded map's profile table, persisted across reboots. Pick "MTB" and every plan re-weights accordingly; the created-route overview shows the profile it used. If the setting points past a particular map's profile count (a smaller map, a stale setting), the router falls back to profile 0 and the UI honestly shows *profile 0's* name rather than a profile the map doesn't have.
+
+Profiles are the one part of the routing graph that **is** configurable (the topology is not). The web builder's advanced editor has a **Bike-profiles panel**: one row per way-kind class, a multiplier cell per profile, and a **forbidden** toggle for the `0` case — schema-driven from the same class vocabulary above, and it enforces the ≥ 1.0× floor in the editor so a config that the packer would reject can't be exported in the first place. Like every other field, it round-trips to a plain CLI config.
 
 ### Building the LOD pyramid
 
@@ -661,7 +700,7 @@ let (back, fwd) = if !self.started {
 - Land generation: [`obc-pack/src/land.rs`](src:firmware/obc-pack/src/land.rs)
 - POI extraction, classification, name folding + dedup: [`obc-pack/src/poi.rs`](src:firmware/obc-pack/src/poi.rs)
 - The navigation-graph build (routable filter, junction detection, edge split + dedup): [`obc-pack/src/nav.rs`](src:firmware/obc-pack/src/nav.rs)
-- The on-device router (snap + weighted A\* + OBCR emit): [`obc-route/src/nav.rs`](src:firmware/obc-route/src/nav.rs)
+- The on-device router (snap + profile-weighted A\* + OBCR emit): [`obc-route/src/nav.rs`](src:firmware/obc-route/src/nav.rs)
 - The route map-matcher: [`obc-route/src/matcher.rs`](src:firmware/obc-route/src/matcher.rs)
 - GPX → OBCR conversion: [`obc-route/src/convert.rs`](src:firmware/obc-route/src/convert.rs)
 
