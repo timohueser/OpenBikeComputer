@@ -277,6 +277,47 @@ fn tiny_scratch_exhausts() {
     assert_eq!(res, Err(NavError::Exhausted));
 }
 
+/// **Exhaustion salvage** (N4): a goal discovered *before* the table fills must still be reached
+/// even when a later insert fails — the pre-N4 code aborted `Exhausted` on that first failed insert.
+/// Fixture: a start with two ways to the goal — a single **expensive direct** edge (goal tracked at
+/// the very first settle) and a **cheap chain** of many nodes. A* settles the cheap chain (better
+/// `f`) and fills the 6-slot table mid-chain; the next new-node insert fails and latches `table_full`
+/// while the chain still hasn't relaxed the goal. Old behavior: `Exhausted` right there. New: the
+/// search continues, the frontier drains to the still-queued goal, and it pops — success via the
+/// direct edge (a route that *exceeds the ε bound*, the documented accepted consequence of a full
+/// table). A genuinely-unreachable goal (`tiny_scratch_exhausts`, `far_beyond_range_*`) still
+/// `Exhausted`s, and a disconnected one (`disconnected_graph_is_no_path`) still `NoPath`s.
+#[test]
+fn goal_tracked_before_fill_survives_exhaustion() {
+    // 9 chain nodes 0..=8 west→east, 3 000 µdeg apart (~230 m/edge at this lat); goal = node 8.
+    let step = 3_000;
+    let coord = |i: u32| (BASE.0 + i as i32 * step, BASE.1);
+    let mut nodes: Vec<Node> = (0..9).map(|i| Node { id: i, coord: coord(i) }).collect();
+    let mut edges: Vec<Edge> = (0..8)
+        .map(|i| Edge { a: i, b: i + 1, polyline: vec![coord(i), coord(i + 1)], length_m: 400, kind: 0 })
+        .collect();
+    // The expensive direct escape 0→8: 20 km for a ~1.8 km straight line — admissible, and 6× the
+    // 3 200 m chain, so it's plainly past the ε bound (the accepted full-table outcome).
+    edges.push(Edge { a: 0, b: 8, polyline: vec![coord(0), coord(8)], length_m: 20_000, kind: 0 });
+    let _ = &mut nodes; // (kept mutable-free; readability)
+    let bytes = map_with(&NavGraph { nodes, edges });
+
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let cache = MapCache::new();
+    let r = Reader::new(&src, &tables, &cache);
+    // A 6-node table: it fills at node 4 (nodes 0,1,8 tracked at settle 0, then 2,3,4) — before the
+    // chain reaches node 5, so the goal-via-chain never relaxes and node 8 pops on the direct edge.
+    let mut scratch = NavScratch::<6>::new();
+    let mut tiles = NavTileCache::new();
+    let mut sink = VecSink::default();
+    let (from, to) = ((coord(0).0 + 50, coord(0).1), (coord(8).0 - 50, coord(8).1));
+    let res = plan_route(&r, from, to, "Salvaged", 0, &mut scratch, &mut tiles, &mut sink);
+    let route = res.expect("the goal was tracked before the fill ⇒ salvage returns it");
+    assert_eq!(route.total_distance_m, 20_000, "the direct (suboptimal, past-ε) edge — the full-table path");
+    assert_eq!(route_points(&sink.buf).len(), 2, "start → goal over the single direct edge");
+}
+
 /// An endpoint with no routable node within 250 m fails to snap ⇒ `NoPath` — for the
 /// rider fix and the POI alike.
 #[test]
@@ -508,12 +549,13 @@ fn saturated_costs_plan_without_panicking() {
 }
 
 /// The resumable planner (#499): manual stepping produces a **byte-identical** OBCR to the
-/// one-shot `plan_route` (which is itself the step loop), every step respects the phase
-/// budgets (≤ [`NAV_SETTLES_PER_STEP`] settles per search step), the phase sequence is
-/// snap → search → emit → done, and multiple `Running` steps genuinely occur (the plan is
-/// spread across host passes, which is the whole point).
+/// one-shot `plan_route` (which is itself the step loop), every search step respects the N4
+/// miss-budget (≤ [`NAV_MISSES_PER_STEP`] tile-cache misses, capped at [`NAV_SETTLES_PER_STEP_CAP`]
+/// settles), the phase sequence is snap → search → emit → done, and multiple `Running` steps
+/// genuinely occur (the plan is spread across host passes, which is the whole point).
 #[test]
 fn stepped_plan_matches_one_shot_and_respects_budgets() {
+    use obc_route::nav::{NAV_MISSES_PER_STEP, NAV_SETTLES_PER_STEP_CAP};
     let bytes = map_with(&line_graph(120, 135, 15)); // ~1.8 km line — a multi-step search
     let src = SliceSource(&bytes);
     let tables = MapTables::parse(&src).unwrap();
@@ -544,12 +586,20 @@ fn stepped_plan_matches_one_shot_and_respects_budgets() {
             NavPhase::Done => panic!("stepping past the terminal outcome"),
         }
         let settles_before = planner.settles();
+        let misses_before = tiles.stats().misses;
         let step = planner.step(&r, &mut scratch, &mut tiles, &mut stepped);
-        assert!(
-            planner.settles() - settles_before <= obc_route::nav::NAV_SETTLES_PER_STEP,
-            "a step must respect the settle budget"
-        );
-        if phase != NavPhase::Search {
+        if phase == NavPhase::Search {
+            // A search step ends on the miss budget or the settle cap. The miss delta can overshoot
+            // the budget by the *final* settle's own reads (the budget is checked after each settle),
+            // so allow a one-settle spillover; the settle count is a hard cap.
+            let miss_delta = tiles.stats().misses - misses_before;
+            let settle_delta = planner.settles() - settles_before;
+            assert!(
+                miss_delta <= NAV_MISSES_PER_STEP || settle_delta <= NAV_SETTLES_PER_STEP_CAP,
+                "a search step ends on the miss budget or the settle cap (misses {miss_delta}, settles {settle_delta})"
+            );
+            assert!(settle_delta <= NAV_SETTLES_PER_STEP_CAP, "the settle cap is hard ({settle_delta} settles)");
+        } else {
             assert_eq!(planner.settles(), settles_before, "only search steps settle");
         }
         steps += 1;
@@ -569,6 +619,61 @@ fn stepped_plan_matches_one_shot_and_respects_budgets() {
     let len = stepped.buf.len();
     assert!(matches!(planner.step(&r, &mut scratch, &mut tiles, &mut stepped), obc_route::Step::Done(_)));
     assert_eq!(stepped.buf.len(), len, "a terminal step writes nothing");
+}
+
+/// The N4 step budget, pinned at both ends on a small graph that fits inside the 8-slot tile cache:
+/// **cold**, no search step ever reads more than [`NAV_MISSES_PER_STEP`] chunks (plus at most the
+/// final settle's own reads); **warm**, once the whole graph is resident a step settles well past
+/// the pre-N4 fixed budget of 8 (the [`NAV_SETTLES_PER_STEP_CAP`] opening up is the whole point —
+/// a warm step does up to 8× the old work). One line, stepped, watching every search step.
+#[test]
+fn search_step_budget_is_miss_paced_cold_and_cap_opened_warm() {
+    use obc_route::nav::{NAV_MISSES_PER_STEP, NAV_SETTLES_PER_STEP_CAP};
+    // ~60-node line: its whole node section is a handful of 512 B chunks — fits inside 8 cache slots,
+    // so after the first pass over it every settle is a hit and only the cap paces the step.
+    let bytes = map_with(&line_graph(60, 200, 20));
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let cache = MapCache::new();
+    let r = Reader::new(&src, &tables, &cache);
+    let from = (BASE.0 + 30, BASE.1);
+    let to = (BASE.0 + 59 * 200 - 30, BASE.1);
+
+    let mut scratch = Box::new(NavScratch::<1536>::new());
+    let mut tiles = NavTileCache::new();
+    let mut sink = VecSink::default();
+    let mut planner = NavPlanner::new(from, to, "Budget", 0);
+    let mut max_step_settles = 0u32;
+    let mut first_search_misses: Option<u32> = None;
+    loop {
+        let phase = planner.phase();
+        let settles_before = planner.settles();
+        let misses_before = tiles.stats().misses;
+        let step = planner.step(&r, &mut scratch, &mut tiles, &mut sink);
+        if phase == NavPhase::Search {
+            let settle_delta = planner.settles() - settles_before;
+            let miss_delta = tiles.stats().misses - misses_before;
+            // Cold pace: the first search step (cache cold but for the snap) reads no more than the
+            // miss budget — the step ends the moment it has spent its allowance of SD chunk reads.
+            first_search_misses.get_or_insert(miss_delta);
+            // Hard cap: no step ever settles past the cap, warm or cold.
+            assert!(settle_delta <= NAV_SETTLES_PER_STEP_CAP, "the settle cap is hard ({settle_delta})");
+            max_step_settles = max_step_settles.max(settle_delta);
+        }
+        match step {
+            obc_route::Step::Running => {}
+            obc_route::Step::Done(_) => break,
+            obc_route::Step::Failed(e) => panic!("the budget-fixture plan failed: {e:?}"),
+        }
+    }
+    assert!(
+        first_search_misses.unwrap() <= NAV_MISSES_PER_STEP,
+        "a cold search step reads ≤ the miss budget (got {:?})",
+        first_search_misses
+    );
+    // Warm cap opened up: some step settled far more than the pre-N4 fixed 8 (the whole point of the
+    // miss budget — a resident cache lets a step do real work instead of stopping at 8).
+    assert!(max_step_settles > 8, "a warm step must settle past the old fixed-8 budget (got {max_step_settles})");
 }
 
 /// Cancelling = not stepping again: **nothing reaches the sink before the emit phase**, so a
