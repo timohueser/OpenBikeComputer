@@ -471,7 +471,8 @@ impl NavPlan {
     /// Begin a plan for a drained [`NavRequest`](obc_app::NavRequest).
     pub(crate) fn start(req: &obc_app::NavRequest) -> Self {
         NavPlan {
-            planner: Box::new(obc_route::NavPlanner::new(req.from, req.to, req.name())),
+            // Profile 0 until N5 threads the rider's bike-type setting (epic #533).
+            planner: Box::new(obc_route::NavPlanner::new(req.from, req.to, req.name(), 0)),
             // A zeroed heap allocation with no giant stack temp — obc-route owns the "all-zero *is*
             // `new()`" invariant (see `NavScratch::new_boxed`); the sim just asks for one.
             scratch: obc_route::nav::NavScratch::new_boxed(),
@@ -537,7 +538,8 @@ fn run_nav_request(app: &mut obc_app::App, store: &mut RouteStore, reader: &Read
     let mut scratch: Box<NavScratch> = NavScratch::new_boxed();
     let mut tiles = obc_reader::NavTileCache::new();
     let mut sink = vec_sink::VecSink::default();
-    let outcome = plan_route(reader, req.from, req.to, req.name(), &mut scratch, &mut tiles, &mut sink);
+    // Profile 0 until N5 threads the rider's bike-type setting (epic #533).
+    let outcome = plan_route(reader, req.from, req.to, req.name(), 0, &mut scratch, &mut tiles, &mut sink);
     let stats = tiles.stats();
     finish_nav_plan(app, store, outcome, sink.bytes(), stats);
 }

@@ -38,7 +38,7 @@ fn stepped<const N: usize>(reader: &Reader, from: (i32, i32), to: (i32, i32)) {
     let mut scratch: Box<NavScratch<N>> = unsafe { Box::new_zeroed().assume_init() };
     let mut tiles = NavTileCache::new();
     let mut sink = VecSink(Vec::new());
-    let mut planner = NavPlanner::new(from, to, "Repro");
+    let mut planner = NavPlanner::new(from, to, "Repro", 0);
     let mut steps_by_phase = [0u32; 4]; // snap, search, emit, done
     let outcome = loop {
         let phase = planner.phase();
@@ -82,7 +82,7 @@ fn one_shot(reader: &Reader, from: (i32, i32), to: (i32, i32)) {
     let mut scratch: Box<NavScratch<768>> = unsafe { Box::new_zeroed().assume_init() };
     let mut tiles = NavTileCache::new();
     let mut sink = VecSink(Vec::new());
-    let res = obc_route::plan_route(reader, from, to, "Repro", &mut scratch, &mut tiles, &mut sink);
+    let res = obc_route::plan_route(reader, from, to, "Repro", 0, &mut scratch, &mut tiles, &mut sink);
     let stats = tiles.stats();
     println!("  one-shot N=768:");
     match res {
