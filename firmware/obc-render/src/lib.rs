@@ -145,6 +145,36 @@ pub const MCU_RENDERER_BYTES: usize = MAX_DECODE_POINTS * 8
 // crate's whole-resident-set budget assert.
 const _: () = assert!(MCU_RENDERER_BYTES <= 200 * 1024, "MapRenderer exceeds the 200 KB MCU budget");
 
+/// Ground scale (metres per pixel) at which a style's configured `weight` renders at its **nominal**
+/// pixel width — i.e. the width ramp is the identity here. Chosen at mid-riding zoom so the presets
+/// look exactly as authored right where you actually ride; zooming in thickens roads, out thins them.
+const REF_MPP: f32 = 10.0;
+
+/// Exponent of the zoom→width ramp. `1.0` would scale strokes with true ground size — which fails at
+/// both ends (every road sub-pixel zoomed out; a motorway engulfs the panel zoomed in). A sub-linear
+/// exponent grows width perceptibly without blowing up: the standard cartographic road ramp.
+const WIDTH_GAMMA: f32 = 0.6;
+
+/// Upper clamp on a ramped stroke, in px — keeps a fat road class zoomed all the way in from eating
+/// the 240-px panel. The lower clamp is 1 px (a hairline never vanishes). See [`scale_weight`].
+const MAX_LINE_PX: u32 = 12;
+
+/// Per-frame width multiplier from the current ground scale: `(REF_MPP / mpp) ^ WIDTH_GAMMA`. A
+/// style's nominal `weight` times this is its on-screen px width, so a road thickens as you zoom in
+/// and thins as you zoom out. Computed **once per frame** (not per span) and fed to [`scale_weight`].
+#[inline]
+pub(crate) fn width_scale(mpp: f32) -> f32 {
+    libm::powf(REF_MPP / mpp.max(f32::MIN_POSITIVE), WIDTH_GAMMA)
+}
+
+/// A style's nominal `weight` scaled to on-screen px at the frame's [`width_scale`], rounded to a
+/// whole pixel and clamped to `1..=MAX_LINE_PX`. Rounding to an integer px + the map's ×1.2 zoom
+/// detents keep the width stepping cleanly frame to frame (no sub-pixel shimmer while zooming).
+#[inline]
+pub(crate) fn scale_weight(weight: u8, scale: f32) -> u32 {
+    (libm::roundf(weight as f32 * scale) as i32).clamp(1, MAX_LINE_PX as i32) as u32
+}
+
 /// The renderer's draw scratch: projected screen points (also the polyline run
 /// buffer) and the scanline-fill crossing buffer. Cleared per use.
 #[derive(Default)]
@@ -350,6 +380,11 @@ impl MapRenderer {
         let _ = lod; // reserved for the finest-LOD casing (#559) / polygon-outline (#560) gates.
                      // Disjoint borrows: spans/geometry read from `frame`, draw scratch written.
         let Self { frame, draw } = self;
+        // One zoom→width multiplier for the whole frame (see `width_scale`): a style's nominal
+        // `weight` ramps to its on-screen px width here, so roads thicken zoomed in and thin zoomed
+        // out instead of holding a fixed px at every scale. Polygons ignore it (fills carry no width);
+        // when casing (#559) lands it must derive its width from this same ramped value.
+        let wscale = width_scale(vp.meters_per_pixel());
         for span in frame.spans() {
             let ring_start = span.ring_start as usize;
             let pt_start = span.pt_start as usize;
@@ -373,7 +408,7 @@ impl MapRenderer {
                         vp,
                         &pts[..n],
                         color,
-                        span.weight.max(1) as u32,
+                        scale_weight(span.weight, wscale),
                         dashed,
                         color2,
                         &mut draw.screen,
@@ -382,5 +417,41 @@ impl MapRenderer {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod width_ramp_tests {
+    use super::{scale_weight, width_scale, MAX_LINE_PX, REF_MPP};
+
+    #[test]
+    fn identity_at_reference_scale() {
+        // At REF_MPP the ramp is the identity: presets render at exactly their authored weight.
+        let s = width_scale(REF_MPP);
+        assert!((s - 1.0).abs() < 1e-4, "scale at REF_MPP is 1.0, got {s}");
+        for w in 1..=5u8 {
+            assert_eq!(scale_weight(w, s), w as u32, "weight {w} unchanged at REF_MPP");
+        }
+    }
+
+    #[test]
+    fn thickens_zoomed_in_thins_zoomed_out() {
+        let (near, far) = (width_scale(1.0), width_scale(120.0));
+        assert!(near > 1.0, "zoomed in past REF_MPP grows width, got {near}");
+        assert!(far < 1.0, "zoomed out past REF_MPP shrinks width, got {far}");
+        // A motorway (weight 3): ~1 px in overview, ~12 px zoomed all the way in — the numbers
+        // quoted when this ramp was proposed. Exact px are by-eye, so assert the shape, not values.
+        assert_eq!(scale_weight(3, far), 1, "motorway is a hairline at 120 mpp");
+        assert!(scale_weight(3, near) >= 10, "motorway is fat at 1 mpp");
+    }
+
+    #[test]
+    fn clamps_to_one_and_cap() {
+        // Never vanishes: a thin road zoomed far out floors at 1 px.
+        assert_eq!(scale_weight(1, width_scale(1000.0)), 1);
+        // Never engulfs the panel: a heavy weight zoomed far in caps at MAX_LINE_PX.
+        assert_eq!(scale_weight(6, width_scale(0.05)), MAX_LINE_PX);
+        // Degenerate mpp (0) must not divide-by-zero into NaN and defeat the clamp.
+        assert_eq!(scale_weight(3, width_scale(0.0)), MAX_LINE_PX);
     }
 }
