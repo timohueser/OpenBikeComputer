@@ -13,14 +13,14 @@
     ],
     "features": {
         "highway": {
-            "motorway": {"z_index": 60, "color": "0xFAA0", "weight": 3, "min_lod": 0, "priority": 2},
-            "motorway_link": {"z_index": 58, "color": "0xFAA0", "weight": 2, "min_lod": 1, "priority": 2},
-            "trunk": {"z_index": 55, "color": "0xFAA0", "weight": 3, "min_lod": 0, "priority": 2},
-            "trunk_link": {"z_index": 53, "color": "0xFAA0", "weight": 2, "min_lod": 1, "priority": 2},
-            "primary": {"z_index": 50, "color": "0xFD40", "weight": 3, "min_lod": 0, "priority": 2},
-            "primary_link": {"z_index": 48, "color": "0xFD40", "weight": 2, "min_lod": 1, "priority": 2},
-            "secondary": {"z_index": 44, "color": "0xFD40", "weight": 2, "min_lod": 1, "priority": 2},
-            "tertiary": {"z_index": 34, "color": "0xFD40", "weight": 2, "min_lod": 1, "priority": 2}
+            "motorway": {"z_index": 60, "color": "0xFAA0", "weight": 3, "min_lod": 0, "priority": 2, "color2": "0xAAA0"},
+            "motorway_link": {"z_index": 58, "color": "0xFAA0", "weight": 2, "min_lod": 1, "priority": 2, "color2": "0xAAA0"},
+            "trunk": {"z_index": 55, "color": "0xFAA0", "weight": 3, "min_lod": 0, "priority": 2, "color2": "0xAAA0"},
+            "trunk_link": {"z_index": 53, "color": "0xFAA0", "weight": 2, "min_lod": 1, "priority": 2, "color2": "0xAAA0"},
+            "primary": {"z_index": 50, "color": "0xFD40", "weight": 3, "min_lod": 0, "priority": 2, "color2": "0xAD40"},
+            "primary_link": {"z_index": 48, "color": "0xFD40", "weight": 2, "min_lod": 1, "priority": 2, "color2": "0xAD40"},
+            "secondary": {"z_index": 44, "color": "0xFD40", "weight": 2, "min_lod": 1, "priority": 2, "color2": "0xAD40"},
+            "tertiary": {"z_index": 34, "color": "0xFD40", "weight": 2, "min_lod": 1, "priority": 2, "color2": "0xAD40"}
         },
         "railway": {
             "rail": {"z_index": 40, "color": "0x0000", "weight": 2, "min_lod": 1, "priority": 2, "line_style": "dashed", "color2": "0xFFFF"}
