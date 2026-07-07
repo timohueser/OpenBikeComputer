@@ -1,4 +1,4 @@
-# OBCM File Format Specification (v8)
+# OBCM File Format Specification (v9)
 
 OBCM (OpenStreetMap Binary Chunked Map) is a compact binary map format designed
 for efficient rendering on memory-constrained devices such as microcontrollers
@@ -35,11 +35,23 @@ weekly-schedule blobs (today's opening hours, normalized at pack time from OSM
 and a new **navigation-graph section** (§8) at the file tail: the routable graph
 the packer derives from OSM `highway=*` topology (junction nodes with inline
 adjacency, indexed by a §4-style quadtree, plus a chunked edge-geometry pool), so
-the device can run point-to-point A\* (epic #116) with only a 22-byte directory
+the device can run point-to-point A\* (epic #116) with only a small directory
 resident. The section is **always present** — a map with no routable ways writes
-an empty directory, never a sentinel-zero offset. **v8 is the only supported
-version**; earlier versions (v7 down to v2) have been dropped — old maps get
-repacked.
+an empty directory, never a sentinel-zero offset.
+
+**Version 9** (epic #533 N2) is a §8-only bump that makes the router **bike-type
+aware** and shrinks the section it reads (measured ~58% padding in v8 node
+chunks). The header stays 40 bytes; everything new hangs off the nav directory,
+which grows 22 → **28 bytes** to add a **Profile Table Offset/Count** (§8.6). The
+byte-level changes: each way now carries a packed **`way_kind`** class byte
+(5-bit highway class + 3-bit surface class) on both its adjacency entries and its
+edge record; neighbor entries slim **20 → 15 bytes** by storing each neighbor's
+coord as an `int16` delta from the record's own coord and its cost as a `uint16`;
+nav chunks are **pinned to 512 bytes** (the reader rejects any other value); node
+chunks are **bin-packed** so distinct index leaves may share a chunk; and a
+per-map **profile table** (§8.6) of `1..=8` bike profiles is baked in. **v9 is the
+only supported version**; earlier versions (v8 down to v2) have been dropped —
+old maps get repacked.
 
 ## Design principles
 
@@ -73,7 +85,7 @@ screen space is the renderer's responsibility, not the format's.
 [LOD N-1 Index][LOD N-1 Data Chunks] (finest)
 [POI Directory][POI Indexes + Chunks] (§7)
 [Hours-Pool Section]                  (§7.5)
-[Nav Directory][Node Index + Chunks][Edge Pool] (§8 — file tail)
+[Nav Directory][Profile Table][Node Index + Chunks][Edge Pool] (§8 — file tail)
 ```
 
 The byte layout is produced by `firmware/obc-pack/src/serialize.rs` (`serialize_lods`) and
@@ -88,7 +100,7 @@ Packed as `struct "<4sBiiiiIBIHII"`.
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
 | 0 | Magic | 4 | `char[4]` | Must be `b"OBCM"` |
-| 4 | Version | 1 | `uint8` | `0x08` |
+| 4 | Version | 1 | `uint8` | `0x09` |
 | 5 | Min Lat | 4 | `int32` | Global bbox min latitude (microdegrees) |
 | 9 | Min Lon | 4 | `int32` | Global bbox min longitude |
 | 13 | Max Lat | 4 | `int32` | Global bbox max latitude |
@@ -470,22 +482,25 @@ dropped); other bits reserved `0`. The seven days run **Mon (index 0) .. Sun (in
 
 ---
 
-## 8. Navigation-Graph Section (v8)
+## 8. Navigation-Graph Section (v9)
 
-The **routable graph** the on-device router (epic #116) runs A\* over: junction
-**nodes** (derived from OSM node ids shared across routable `highway=*` ways)
-joined by undirected **edges** (the polyline between two junctions, junction-free
-inside). The packer builds the graph in `nav.rs` (routable-class + `access`
-filter, junction split, dedup) and this section is its on-wire form.
+The **routable graph** the on-device router (epic #116, made bike-type-aware by
+#533) runs A\* over: junction **nodes** (derived from OSM node ids shared across
+routable `highway=*` ways) joined by undirected **edges** (the polyline between
+two junctions, junction-free inside). The packer builds the graph in `nav.rs`
+(way-kind classification, bike-legality filter, island pruning, junction split,
+dedup, edge splits) and this section is its on-wire form.
 
 The section is reached from `Nav Graph Offset` (header offset 36) and is **always
 present**: a map with no routable ways writes an empty directory (`Index Node
-Count == 0`), never a zero offset. Layout, in file order:
+Count == 0`) — but still carries its profile table (§8.6), never a zero offset.
+Layout, in file order:
 
 ```
-[Nav Directory]     (22 bytes — the graph's ENTIRE resident footprint)
+[Nav Directory]     (28 bytes — the graph's resident header, §8.1)
+[Profile Table]     (§8.6 — 1..=8 bike profiles, always present)
 [Node Quadtree]     (§4 encoding over the header global bbox)
-[Node Chunks]       (variable-length junction records, §8.3)
+[Node Chunks]       (variable-length junction records, bin-packed, §8.3)
 [Edge Pool]         (chunked edge records addressed by byte offset, §8.4)
 ```
 
@@ -494,8 +509,9 @@ region has millions of graph elements), so A\* **re-fetches spatially** — sett
 a node is one quadtree descent to its coord's leaf + one chunk read — and each
 record carries its neighbors' coords **inline** so relaxation (`f = g + h`) needs
 no second fetch. Edge geometry is touched only when the final route is emitted.
+Only the directory and the profile table (≤ `8 × 52 = 416` B) are resident.
 
-### 8.1 Nav Directory (22 bytes)
+### 8.1 Nav Directory (28 bytes)
 
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
@@ -504,17 +520,25 @@ no second fetch. Edge geometry is touched only when the final route is emitted.
 | 8 | Node Chunk Count | 4 | `uint32` | Number of node data chunks (§8.3) |
 | 12 | Edge Pool Offset | 4 | `uint32` | Byte offset to the edge pool (§8.4) |
 | 16 | Edge Chunk Count | 4 | `uint32` | Number of `Chunk Size`-byte chunks in the edge pool |
-| 20 | Chunk Size | 2 | `uint16` | Fixed capacity of every nav chunk (node **and** edge) — the packer writes `512` |
+| 20 | Chunk Size | 2 | `uint16` | Fixed capacity of every nav chunk — **must be `512`** (the reader rejects any other value) |
+| 22 | Profile Table Offset | 4 | `uint32` | Absolute byte offset of the §8.6 profile table |
+| 26 | Profile Count | 1 | `uint8` | Number of 52-byte profile records; **`1..=8`** (reader rejects `0` or `> 8`) |
+| 27 | Reserved | 1 | `uint8` | `0` (keeps the directory even-sized; no other meaning) |
 
 Node data chunks begin at `Index Offset + Index Node Count * 4` — the §3/§4
 convention, so the reader's leaf-walk and chunk-offset math are reused verbatim.
-An empty graph still writes `Chunk Size` and points both offsets just past the
-directory (zero-length regions), exactly like an empty POI category.
+The packer writes the **profile table immediately after this 28-byte directory**
+(before the node index), so `Index Offset` and `Edge Pool Offset` point past it.
+An empty graph still writes `Chunk Size` and the profile table, and points both
+data offsets just past the profile table (zero-length regions), exactly like an
+empty POI category.
 
-`Chunk Size` is 512 by convention (matching §7.1): a leaf then holds a handful of
-junction records — one chunk read serves one A\* settle — and the router's
-graph-tile cache stays around 1 KB for two slots. The reference reader accepts up
-to 2048 and rejects `0`.
+**`Chunk Size` is pinned to 512 in v9.** Earlier versions let it vary (up to
+2048); v9 fixes it so a leaf holds a handful of junction records — one chunk read
+serves one A\* settle — and the reader **rejects a directory whose `Chunk Size`
+is not 512** (a distinct parse error from the header version check, so an old
+file and a mis-sized v9 file are told apart). The geometry sections' configurable
+`chunk_size` (§5) is independent — that knob governs §5 only; nav is pinned.
 
 ### 8.2 Node quadtree
 
@@ -526,10 +550,29 @@ chunk — by **bytes**, since records are variable-length — with the same 10-�
 recursion floor. As with POIs, a node's `node_bbox` is not needed to decode its
 records (coordinates are absolute); the walk only uses it to prune.
 
+**Bin-packed chunks (v9).** After building the tree, the packer assigns chunk ids
+**first-fit over the leaves in BFS emission order**: each leaf's record block goes
+into the first already-open chunk with room, opening a new chunk only when none
+fits (v8 gave every leaf its own chunk, wasting the ~58% of a chunk a half-full
+leaf left empty). One consequence is load-bearing:
+
+> **Distinct index leaves may reference the same chunk id.** First-fit reaches
+> back to earlier chunks, so leaves sharing a chunk can be spatially distant. A
+> walk that visits several leaves sharing a chunk decodes that chunk once per
+> leaf, so a consumer may see the same junction record **more than once per
+> query** — and see records outside the leaf's own bbox. Consumers must therefore
+> be **idempotent**. The reference consumers are: A\* settle matches by `Node Id`
+> (a repeat is a no-op), and snap tracks the best candidate (a repeat can't
+> change the best). A single leaf's records never straddle a chunk boundary.
+
+The index still stores exactly one chunk id per leaf; only the leaf→chunk mapping
+changed (many-to-one instead of one-to-one). The reader's leaf-walk and
+chunk-decode are unchanged.
+
 ### 8.3 Junction records (variable length)
 
-Records are packed back-to-back into `Chunk Size`-byte chunks; unused trailing
-bytes are `0xFF`. A record is `13 + 20 × Degree` bytes:
+Records are packed back-to-back into 512-byte chunks; unused trailing bytes are
+`0xFF`. A record is `13 + 15 × Degree` bytes:
 
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
@@ -537,17 +580,25 @@ bytes are `0xFF`. A record is `13 + 20 × Degree` bytes:
 | 4 | Lon | 4 | `int32` | Longitude, **absolute** microdegrees |
 | 8 | Node Id | 4 | `uint32` | Dense pack-run node id (the A\* hash key; stable within one file) |
 | 12 | Degree | 1 | `uint8` | Neighbor count; **`0xFF` = end-of-chunk sentinel** |
-| 13 | Neighbors | 20 × Degree | | `Degree` entries, layout below |
+| 13 | Neighbors | 15 × Degree | | `Degree` entries, layout below |
 
-Per neighbor entry (20 bytes):
+Per neighbor entry (15 bytes):
 
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
 | 0 | Neighbor Id | 4 | `uint32` | The adjacent junction's `Node Id` |
-| 4 | Neighbor Lat | 4 | `int32` | Its latitude, absolute microdegrees (**inline** — no fetch for `h`) |
-| 8 | Neighbor Lon | 4 | `int32` | Its longitude |
-| 12 | Edge Id | 4 | `uint32` | The connecting edge, §8.4 addressing |
-| 16 | Cost M | 4 | `uint32` | The edge's ground length in meters (the plain-distance cost) |
+| 4 | Neighbor dLat | 2 | `int16` | Its latitude as a **delta from this record's `Lat`** (µdeg) |
+| 6 | Neighbor dLon | 2 | `int16` | Its longitude as a delta from this record's `Lon` |
+| 8 | Edge Id | 4 | `uint32` | The connecting edge, §8.4 addressing |
+| 12 | Cost M | 2 | `uint16` | The edge's raw ground length in meters (the unweighted distance) |
+| 14 | Way Kind | 1 | `uint8` | The edge's packed class byte (§8.6) — the input to profile weighting |
+
+The neighbor's absolute coord is reconstructed as `(Lat + dLat, Lon + dLon)`; the
+packer guarantees both endpoints of every edge sit within `int16` of each other
+(see §8.4) so the delta never overflows. `Cost M` is the **unweighted** ground
+distance; the profile-weighted cost A\* actually accumulates is
+`Cost M × effective_multiplier(Way Kind) >> 4` (§8.6), computed on device at
+relaxation — the file stores distance, not weight.
 
 Rules:
 
@@ -555,13 +606,13 @@ Rules:
   `Degree` would sit reads `0xFF` — the reader stops there (mirrors the POI
   subtype sentinel; the geometry chunks' style-id sentinel likewise). A record
   never straddles a chunk boundary, so a chunk decodes in isolation.
-- **Degree cap: 24.** `13 + 24 × 20 = 493 ≤ 512`, so a cap-degree record always
+- **Degree cap: 24.** `13 + 24 × 15 = 373 ≤ 512`, so a cap-degree record always
   fits one chunk; real OSM junction degrees never approach it. A pathological
   node keeps its **first 24** adjacency entries (edge-pool order, deterministic)
   and the packer warns; a dropped arc survives one-way via the neighbor's own
   record. `0xFF` can therefore never be a real degree.
 - **Undirected.** Every edge appears in both endpoints' records with the **same**
-  `Edge Id` (and the same `Cost M`). A self-loop (`a == b`, e.g. a lollipop
+  `Edge Id`, `Cost M`, and `Way Kind`. A self-loop (`a == b`, e.g. a lollipop
   loop) appears **once** in its node's record.
 - Degree `0` is valid to decode but the packer never emits it (every junction
   comes from at least one edge endpoint).
@@ -569,88 +620,188 @@ Rules:
 ### 8.4 Edge pool
 
 Deduplicated edge geometry, fetched **only at route emit** (stitching the A\*
-came-from chain into the output polyline). The pool is a run of `Edge Chunk
-Count` × `Chunk Size`-byte chunks; records are packed back-to-back, and a record
-that would cross a chunk boundary is pushed to the next chunk start (`0xFF`
-padding fills the gap), so **no record straddles a chunk** — one chunk-granular
-read always covers one edge.
+came-from chain into the output polyline; also the sum of `Length M` over the
+chain is the route's **displayed** distance — the weighted `g` is no longer a
+distance). The pool is a run of `Edge Chunk Count` × 512-byte chunks; records are
+packed back-to-back, and a record that would cross a chunk boundary is pushed to
+the next chunk start (`0xFF` padding fills the gap), so **no record straddles a
+chunk** — one chunk-granular read always covers one edge.
 
 **Addressing: `Edge Id` is the record's pool-relative byte offset.** The reader
-derives `chunk = Edge Id / Chunk Size`, `offset = Edge Id % Chunk Size` — zero
-resident index bytes, which is why this packing was chosen over a separate
-edge-id table. Ids are opaque to consumers (assigned at pack time, meaningless
-across files).
+derives `chunk = Edge Id / 512`, `offset = Edge Id % 512` — zero resident index
+bytes, which is why this packing was chosen over a separate edge-id table. Ids are
+opaque to consumers (assigned at pack time, meaningless across files).
 
-Edge record (`14 + 4 × (Pt Count - 1)` bytes):
+Edge record (`15 + 4 × (Pt Count - 1)` bytes):
 
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
 | 0 | Length M | 4 | `uint32` | Ground length in meters (equals the adjacency entries' `Cost M`) |
 | 4 | Pt Count | 2 | `uint16` | Polyline vertex count (≥ 2) |
-| 6 | Anchor Lat | 4 | `int32` | First vertex latitude, **absolute** microdegrees |
-| 10 | Anchor Lon | 4 | `int32` | First vertex longitude |
-| 14 | Deltas | 4 × (Pt Count − 1) | | Per vertex: `dlat int16, dlon int16`, chained from the previous vertex |
+| 6 | Way Kind | 1 | `uint8` | The edge's packed class byte (§8.6), same value as the adjacency entries' |
+| 7 | Anchor Lat | 4 | `int32` | First vertex latitude, **absolute** microdegrees |
+| 11 | Anchor Lon | 4 | `int32` | First vertex longitude |
+| 15 | Deltas | 4 × (Pt Count − 1) | | Per vertex: `dlat int16, dlon int16`, chained from the previous vertex |
 
 The polyline runs from endpoint `a` to endpoint `b` inclusive (first vertex = `a`'s
 coord, last = `b`'s); a consumer walking the edge from `b` reverses it. Deltas are
 **lat-first** like every §7/§8 record (the geometry sections §5 are lon-first —
 anchors there are viewport-space `x, y`).
 
-Packer guarantees that make the fixed `int16` deltas and the no-straddle rule
-hold:
+Packer guarantees that make the fixed `int16` deltas, the `int16` neighbor deltas
+(§8.3), the `uint16` cost, and the no-straddle rule all hold **by construction**:
 
 - **Densification.** Any segment whose lat **or** lon delta exceeds `30000`
   microdegrees is subdivided with interpolated vertices — the same threshold as
   §5 geometry and the OBCR track encoding. Readers need no special handling.
-- **Long-edge split.** An edge whose densified record would exceed one chunk
-  (`Pt Count > (Chunk Size − 14) / 4 + 1`, i.e. 125 points at 512) is split at a
-  polyline vertex into pieces joined by **synthetic degree-2 junctions** (new
-  dense ids past the real ones). Routing-neutral: each piece's `Length M` is
-  re-measured over its sub-polyline, so costs still sum to the original.
+- **Edge splits.** `nav.rs` splits any edge whose endpoint-to-endpoint lat/lon
+  delta exceeds `32000` µdeg (so the §8.3 neighbor delta fits `int16`) or whose
+  `Length M` exceeds `60000` m (so `Cost M` fits `uint16`), into pieces joined by
+  **synthetic degree-2 junctions** (new dense ids past the real ones). The
+  serializer additionally splits any piece whose densified record would exceed one
+  chunk (`Pt Count > (512 − 15) / 4 + 1`, i.e. 125 points) or whose endpoint span
+  would exceed the `int16` bound after densification. Routing-neutral: each piece's
+  `Length M` is re-measured over its sub-polyline, so costs still sum to the
+  original.
 
 ### 8.5 Worked example
 
 A minimal graph — two junctions `A`(lat 100, lon 200) and `B`(lat 900, lon 800)
-joined by one 3-vertex edge of 1234 m — with the section at file offset `S`:
+joined by one 3-vertex edge of 1234 m and way-kind `0x2A` (tertiary/paved: highway
+class 10 `| (`surface class 1 `<< 5)`) — with one profile "`Road`" and the section
+at file offset `S`:
 
 ```
-S+0    Nav Directory (22 B):
-         index_offset      = S+22      node quadtree: 1 node
-         index_node_count  = 1
-         node_chunk_count  = 1
-         edge_pool_offset  = S+538     (= S+22 + 4 + 512)
-         edge_chunk_count  = 1
-         chunk_size        = 512
-S+22   Node Quadtree (4 B):  [0x00000000]        single leaf → node chunk 0
-S+26   Node Chunk 0 (512 B):
+S+0    Nav Directory (28 B):
+         index_offset          = S+80      (= S+28 + 52 profile table)
+         index_node_count      = 1
+         node_chunk_count      = 1
+         edge_pool_offset      = S+596     (= S+80 + 4 index + 512 node chunk)
+         edge_chunk_count      = 1
+         chunk_size            = 512
+         profile_table_offset  = S+28
+         profile_count         = 1
+         reserved              = 0
+S+28   Profile Table (52 B):
+         profile 0: name="Road"      (12 B, 0xFF-padded)
+                    highway[32]       (u8 1/16 multipliers)
+                    surface[8]
+S+80   Node Quadtree (4 B):  [0x00000000]        single leaf → node chunk 0
+S+84   Node Chunk 0 (512 B):
          rec A: lat=100 lon=200 id=0 degree=1
-                nbr { id=1, lat=900, lon=800, edge_id=0, cost_m=1234 }   (33 B)
+                nbr { id=1, dLat=+800, dLon=+600, edge_id=0, cost_m=1234, way_kind=0x2A }  (28 B)
          rec B: lat=900 lon=800 id=1 degree=1
-                nbr { id=0, lat=100, lon=200, edge_id=0, cost_m=1234 }   (33 B)
-         0xFF × 446                                (padding = sentinel)
-S+538  Edge Pool chunk 0 (512 B):
+                nbr { id=0, dLat=-800, dLon=-600, edge_id=0, cost_m=1234, way_kind=0x2A }  (28 B)
+         0xFF × 456                                (padding = sentinel)
+S+596  Edge Pool chunk 0 (512 B):
          edge 0 (at pool offset 0 ⇒ edge_id = 0):
-           length_m=1234  pt_count=3  anchor=(lat 100, lon 200)
-           deltas: (+400,+300) (+400,+300)         → (500,500), (900,800)
-         0xFF × 490                                 (padding)
+           length_m=1234  pt_count=3  way_kind=0x2A  anchor=(lat 100, lon 200)
+           deltas: (+400,+300) (+400,+300)          → (500,500), (900,800)   (23 B)
+         0xFF × 489                                 (padding)
 ```
 
-Both directions of the edge carry `edge_id = 0`; fetching it decodes the polyline
-`(100,200) → (500,500) → (900,800)` and its 1234 m length in one ≤ 512-byte read.
+Node `A` reconstructs neighbor `B` as `(100 + 800, 200 + 600) = (900, 800)` — no
+edge fetch needed for `h`. Both directions of the edge carry `edge_id = 0`;
+fetching it decodes the polyline `(100,200) → (500,500) → (900,800)`, its way-kind
+`0x2A`, and its 1234 m length in one ≤ 512-byte read.
+
+### 8.6 Profile table (bike-type routing)
+
+`Profile Count` (1..=8) consecutive **52-byte** records at `Profile Table Offset`,
+one per selectable bike profile (Road / Gravel / MTB / Touring by default). The
+device picks one by index; A\* weights each edge by it. The table is **always
+present** — even an empty graph carries ≥ 1 profile — and the reader rejects a
+`Profile Count` of `0` or `> 8`.
+
+| Offset | Field | Size | Type | Description |
+| :-- | :-- | :-- | :-- | :-- |
+| 0 | Name | 12 | `char[12]` | UTF-8, `0xFF`-padded (the §7.3 POI-name convention) |
+| 12 | Highway Multipliers | 32 | `uint8[32]` | Weight per **highway class**, `1/16` fixed-point; `16` = 1.0×, `0` = **forbidden** |
+| 44 | Surface Multipliers | 8 | `uint8[8]` | Weight per **surface class**, same encoding |
+
+The **effective multiplier** for an edge whose packed `Way Kind` is `k` is:
+
+```
+mh = highway_mult[k & 0x1F]      # low 5 bits = highway class (0..=31)
+ms = surface_mult[k >> 5]        # high 3 bits = surface class (0..=7)
+effective = (mh × ms) >> 4       # u32 math; 16×16>>4 = 16 = 1.0×
+```
+
+The edge is **forbidden** (not routable under this profile) if either byte is `0`.
+The weighted A\* cost of the edge is `Cost M × effective >> 4` (saturating into the
+`uint16` frontier cost exactly as v8 did).
+
+**Admissibility invariant (normative).** Every **non-zero** multiplier is `≥ 16`
+(i.e. `≥ 1.0×`). This keeps the great-circle heuristic admissible, so the existing
+`ε = 1.3` bound survives — now meaning "≤ 1.3× the best route *under the profile*".
+The packer **rejects** a config whose quantized weight is non-zero but `< 16` with
+an error naming this A\* heuristic bound; the reader **clamps** a non-zero
+multiplier `< 16` up to `16` defensively (a hand-forged file can't hand the router
+an inadmissible weight).
+
+#### Canonical way-kind table (normative)
+
+`Way Kind = (surface_class << 5) | highway_class`. This mirrors the packer's single
+source of truth (`obc-pack/src/nav.rs` — `highway_class` / `surface_class` /
+`classify`); profile configs and the web builder key their multipliers by these
+class names.
+
+**Highway class** (5 bits, `0..=31`; `0..=13` assigned, `14..=31` reserved):
+
+| id | class | OSM `highway=` |
+|----|-------|----------------|
+| 0  | cycleway | `cycleway`, `cycleway_link` |
+| 1  | path | `path`, `path_link` |
+| 2  | track | `track` |
+| 3  | footway | `footway`, `pedestrian`, `footway_link` |
+| 4  | steps | `steps` |
+| 5  | bridleway | `bridleway`, `bridleway_link` |
+| 6  | living_street | `living_street`, `living_street_link` |
+| 7  | residential | `residential` |
+| 8  | service | `service`, `service_link` |
+| 9  | unclassified | `unclassified`, `road` |
+| 10 | tertiary | `tertiary`, `tertiary_link` |
+| 11 | secondary | `secondary`, `secondary_link` |
+| 12 | primary | `primary`, `primary_link` |
+| 13 | trunk_cycl | `trunk`/`trunk_link` **only when** `bicycle=yes` |
+
+**Surface class** (3 bits, `0..=7`):
+
+| id | class | OSM `surface=` |
+|----|-------|----------------|
+| 0  | unknown | absent / unrecognized |
+| 1  | paved | `paved`, `asphalt`, `concrete`, `paving_stones`, `concrete:plates`, `concrete:lanes` |
+| 2  | compacted | `compacted`, `fine_gravel` |
+| 3  | gravel | `gravel`, `pebblestone`, `unpaved` |
+| 4  | dirt | `ground`, `dirt`, `earth` |
+| 5  | rough | `sand`, `mud` |
+| 6  | cobbles | `cobblestone`, `sett`, `unhewn_cobblestone` |
+| 7  | grass | `grass`, `grass_paver` |
+
+**Bike legality** (which ways make it into the graph at all): a way is dropped when
+`highway=motorway|motorway_link`; `highway=trunk|trunk_link` without `bicycle=yes`;
+`motorroad=yes`; `bicycle=no|use_sidepath`; or `access=no|private`. Everything else
+— including `footway`/`steps` (legal to *walk* a bike) — is kept; preference (not
+legality) is the profile's job.
 
 ---
 
 ## Reference implementations
 
 - **Writer (Rust, std host):** `firmware/obc-pack/src/serialize.rs` (`serialize_lods`,
-  `serialize_tree`, `serialize_poi_section`, `serialize_nav_section`, `pack_feature`,
-  `pack_chunk`, `pack_style_dict`), `firmware/obc-pack/src/poi.rs` (the
-  category/subtype table mirrored in §7.4), `firmware/obc-pack/src/hours.rs` (the
-  `opening_hours` parser + 29-byte blob encoder + dedup pool for §7.5), and
-  `firmware/obc-pack/src/nav.rs` (the routable-graph builder behind §8).
+  `serialize_tree`, `serialize_poi_section`, `serialize_nav_section`,
+  `flatten_nav_tree` (§8.2 bin-packing), `pack_nav_record`, `pack_edge_record`,
+  `pack_profile_table`, `pack_feature`, `pack_chunk`, `pack_style_dict`),
+  `firmware/obc-pack/src/poi.rs` (the category/subtype table mirrored in §7.4),
+  `firmware/obc-pack/src/hours.rs` (the `opening_hours` parser + 29-byte blob
+  encoder + dedup pool for §7.5), `firmware/obc-pack/src/nav.rs` (the routable-graph
+  builder + the canonical way-kind table behind §8.6), and
+  `firmware/obc-pack/src/config.rs` (the `routing` config + profile quantization).
 - **Reader + renderer (Rust, no_std):** `firmware/obc-reader` — `reader.rs`
-  (`Reader`, `for_each_feature`, `select_lod_for_mpp`, the POI + nav directories
-  in `MapTables`, `for_each_nav_node`, `nav_edge`) — and `firmware/obc-render`
+  (`Reader`, `for_each_feature`, `select_lod_for_mpp`, the POI + nav directories +
+  the profile table in `MapTables`, `for_each_nav_node`, `NavNeighbor` delta
+  decode, `nav_edge`, `MapProfile::multiplier`) — and `firmware/obc-render`
   (`Viewport`, `MapRenderer`). Format-contract tests in
   `firmware/obc-reader/tests/format.rs` (byte pins) and
-  `firmware/obc-pack/tests/nav_round_trip.rs` (writer↔reader §8 round trip).
+  `firmware/obc-pack/tests/nav_round_trip.rs` (writer↔reader §8 round trip, incl.
+  the profile table, kinds, delta reconstruction, and the bin-packing fill floor).
