@@ -141,21 +141,36 @@ impl FrameScratch {
                         return;
                     }
 
-                    // Buffer full: evict a lowest-priority (highest-level) stub only if this
-                    // candidate is strictly better. Equal-or-worse candidates are dropped, so the
-                    // buffer never loses a higher-priority feature to a lower one.
+                    // Buffer full — a streaming "keep the K lowest-keyed" selection, key =
+                    // (priority_level, arrival). This candidate's arrival is the largest seen so far,
+                    // so it can only displace a *higher-level* held stub; and to keep exactly the K
+                    // lowest keys, the one it displaces is the **highest-arrival** stub at the worst
+                    // (highest) level present. Evicting that specific stub — not just any at that
+                    // level — makes the survivors identical to the old level-major collector's set
+                    // under saturation too, so the render stays byte-identical there, not only when
+                    // nothing saturates. Equal-or-worse candidates are dropped, so a higher-priority
+                    // feature is never lost to a lower one.
                     let worst = worst_level(&level_count);
                     if level < worst {
-                        for slot in slots.iter_mut() {
+                        let mut victim = 0usize;
+                        let mut victim_arrival = 0u16;
+                        let mut found = false;
+                        for (i, slot) in slots.iter().enumerate() {
                             let held = slot.stub();
-                            if reader.style(held.style_id).map_or(0, |s| s.priority) == worst {
-                                *slot = Slot::of_stub(stub);
-                                level_count[(worst - 1) as usize] -= 1;
-                                level_count[(level - 1) as usize] += 1;
-                                stats.stub_evictions += 1;
-                                break;
+                            // `held.seq` still holds the pass-A arrival (select overwrites it later).
+                            if reader.style(held.style_id).map_or(0, |s| s.priority) == worst
+                                && (!found || held.seq > victim_arrival)
+                            {
+                                victim = i;
+                                victim_arrival = held.seq;
+                                found = true;
                             }
                         }
+                        // `worst` has a positive count, so a victim always exists.
+                        slots[victim] = Slot::of_stub(stub);
+                        level_count[(worst - 1) as usize] -= 1;
+                        level_count[(level - 1) as usize] += 1;
+                        stats.stub_evictions += 1;
                     }
                 },
             );
