@@ -7,7 +7,9 @@ description = "Desktop simulator for OBCM maps using embedded-graphics (same ren
 
 [dependencies]
 obc-reader = { path = "../obc-reader" }
-obc-route = { path = "../obc-route" }
+# `alloc` gives us `NavScratch::new_boxed` — a zeroed heap allocation with no giant stack temporary
+# (the ~39 KB A* table would overflow the wasm build's small stack via a plain `Box::new`).
+obc-route = { path = "../obc-route", features = ["alloc"] }
 obc-render = { path = "../obc-render" }
 obc-app = { path = "../obc-app" }
 # The board-agnostic self-diffing present core (epic #199 / issue #200): `diff_rows` + `row_hash` +
